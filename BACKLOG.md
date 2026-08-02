@@ -6,7 +6,7 @@ Project backlog for sox-ecosystem. Each item: what's wrong, where, severity, and
 
 ## Current status — 2026-08-01 (regenerated mechanically; see BL-224)
 
-**Total open: 80.** (BL-259 resolved 2026-08-02 from PKT-15 — the reported second-run launchd collision does not reproduce on current HEAD (already fixed by BL-263's per-data-root label namespacing plus `enableOsUnit`'s pre-existing content-addressed idempotence); a named regression test was added and watched red→green — see CHANGELOG.md; BL-388 resolved 2026-08-02 from PKT-06's runtime acceptance — see CHANGELOG.md; BL-410 filed 2026-08-02 from that same acceptance run — a standalone-script race in the shared fastembed IPC channel crashes the process with an uncaught EPIPE, unrelated to BL-388's storage-boundary fix; BL-359 resolved 2026-08-01 — atomic BL-id allocation + pre-commit collision guard — see CHANGELOG.md; BL-397 resolved 2026-08-01 — see CHANGELOG.md; BL-408 filed 2026-08-01 from the same close-out — the source fix landed but memory-flush's bundled dist artifact is still unbuilt; BL-407 filed 2026-08-01 — the smoke-test exports preflight is workspace-wide BEFORE --extension filtering, so one agent's in-flight package.json wedges the mandatory merge gate for every other agent; BL-376 filed and resolved same-day 2026-08-01 from a follow-up on the BL-331 model-load regression — split the fastembed warmup timeout into a tight cache-hit budget and the original generous cache-miss budget, with real cache-presence detection deciding which applies — see CHANGELOG.md; BL-406 filed and resolved same-day 2026-08-01 from the post-deploy live-store audit — no embedding loss, but the stale-vector detector was blind to 1090 legacy rows — see CHANGELOG.md; BL-404, BL-405 filed 2026-08-01 from the reviewed memory-server redeploy — production never initialises telemetry, and every restart escalates to SIGKILL; BL-402 resolved 2026-08-01 — see CHANGELOG.md; BL-350 resolved 2026-08-01 from PKT-28's cluster-maintenance research — see CHANGELOG.md; BL-401 filed 2026-08-01 from PKT-02, the BL-351 acceptance-gap follow-up; BL-340, BL-325 resolved 2026-08-01 — see CHANGELOG.md; BL-395 filed and resolved same-day 2026-08-01 — see CHANGELOG.md; BL-394 filed 2026-08-01 from the BL-325 write-queue-bypass finding; BL-372 resolved 2026-08-01 — see CHANGELOG.md; BL-385 resolved 2026-08-01 — see CHANGELOG.md; BL-384 resolved 2026-08-01 — see CHANGELOG.md; BL-388, BL-389 filed 2026-08-01 from the storage-boundary lint pass; BL-287 resolved 2026-07-30; BL-293, BL-294, BL-295, BL-303 resolved 2026-07-16; BL-62 resolved 2026-07-18; BL-311 verified no live bug 2026-07-18; BL-313 (CRITICAL — live edge-table cascade-delete bug) found and resolved same-day 2026-07-18 — see CHANGELOG.md; BL-306..309 filed 2026-07-11 from native-addon/adapter research; BL-310 filed 2026-07-17, resolved 2026-07-23; BL-312 filed 2026-07-18 from the same memory-server data-integrity investigation; BL-314 filed 2026-07-18 from a stale local content-store mirror discovered while syncing installed skill docs; BL-316, BL-273, BL-254, BL-252, BL-264, BL-297 all resolved 2026-07-23 — see CHANGELOG.md).
+**Total open: 77.** (BL-390 resolved 2026-08-02 from PKT-37 — `registry:sync-index` now refuses a dirty tree (or stamps `provisional`/`builtFromCommit`), watched red→green — see CHANGELOG.md; BL-380 resolved 2026-08-02 from PKT-04 — the `vector-store` half (three `unwrap()` casts capability-gated) closes out alongside the already-done `memory-cli` half — see CHANGELOG.md; BL-364 resolved 2026-08-02 from the same fix — confirmed as the predicted BL-380 root cause, `hybrid-search` 15 red → 82/82 — see CHANGELOG.md; BL-411 filed 2026-08-02 from that same PKT-04 pass — `analysis.spec.ts` carries the identical raw-handle shape BL-364 diagnosed, unfixed, out of scope for that fix; BL-259 resolved 2026-08-02 from PKT-15 — the reported second-run launchd collision does not reproduce on current HEAD (already fixed by BL-263's per-data-root label namespacing plus `enableOsUnit`'s pre-existing content-addressed idempotence); a named regression test was added and watched red→green — see CHANGELOG.md; BL-388 resolved 2026-08-02 from PKT-06's runtime acceptance — see CHANGELOG.md; BL-410 resolved 2026-08-02 — `SharedFastembedProcessClient` now re-refs the shared fastembed child/IPC channel for the duration of each in-flight request (released once idle), so a standalone script's `warmupEmbed()` no longer races process exit and silently abandons its own pending request — watched red→green against a real standalone-process repro — see CHANGELOG.md; BL-359 resolved 2026-08-01 — atomic BL-id allocation + pre-commit collision guard — see CHANGELOG.md; BL-397 resolved 2026-08-01 — see CHANGELOG.md; BL-408 filed 2026-08-01 from the same close-out — the source fix landed but memory-flush's bundled dist artifact is still unbuilt; BL-407 filed 2026-08-01 — the smoke-test exports preflight is workspace-wide BEFORE --extension filtering, so one agent's in-flight package.json wedges the mandatory merge gate for every other agent; BL-376 filed and resolved same-day 2026-08-01 from a follow-up on the BL-331 model-load regression — split the fastembed warmup timeout into a tight cache-hit budget and the original generous cache-miss budget, with real cache-presence detection deciding which applies — see CHANGELOG.md; BL-406 filed and resolved same-day 2026-08-01 from the post-deploy live-store audit — no embedding loss, but the stale-vector detector was blind to 1090 legacy rows — see CHANGELOG.md; BL-404, BL-405 filed 2026-08-01 from the reviewed memory-server redeploy — production never initialises telemetry, and every restart escalates to SIGKILL; BL-402 resolved 2026-08-01 — see CHANGELOG.md; BL-350 resolved 2026-08-01 from PKT-28's cluster-maintenance research — see CHANGELOG.md; BL-401 filed 2026-08-01 from PKT-02, the BL-351 acceptance-gap follow-up; BL-340, BL-325 resolved 2026-08-01 — see CHANGELOG.md; BL-395 filed and resolved same-day 2026-08-01 — see CHANGELOG.md; BL-394 filed 2026-08-01 from the BL-325 write-queue-bypass finding; BL-372 resolved 2026-08-01 — see CHANGELOG.md; BL-385 resolved 2026-08-01 — see CHANGELOG.md; BL-384 resolved 2026-08-01 — see CHANGELOG.md; BL-388, BL-389 filed 2026-08-01 from the storage-boundary lint pass; BL-287 resolved 2026-07-30; BL-293, BL-294, BL-295, BL-303 resolved 2026-07-16; BL-62 resolved 2026-07-18; BL-311 verified no live bug 2026-07-18; BL-313 (CRITICAL — live edge-table cascade-delete bug) found and resolved same-day 2026-07-18 — see CHANGELOG.md; BL-306..309 filed 2026-07-11 from native-addon/adapter research; BL-310 filed 2026-07-17, resolved 2026-07-23; BL-312 filed 2026-07-18 from the same memory-server data-integrity investigation; BL-314 filed 2026-07-18 from a stale local content-store mirror discovered while syncing installed skill docs; BL-316, BL-273, BL-254, BL-252, BL-264, BL-297 all resolved 2026-07-23 — see CHANGELOG.md).
 This block is DERIVED from the `**...**` status marker on each
 `### BL-<n>` heading — an item is open iff its last heading marker starts with `Open`, `REOPENED`,
 or `BLOCKED`. **Do not hand-maintain this section.** The previous header (dated 2026-07-07) ranked
@@ -23,13 +23,13 @@ Check for duplicate ids (must print nothing) — see BL-359:
 grep -o '^### BL-[0-9]*' BACKLOG.md | sort -V | uniq -d
 ```
 
-Regenerated 2026-08-02: **80 open**.
+Regenerated 2026-08-02: **77 open**.
 
 | Priority | Open items |
 |---|---|
 | **CRITICAL** | — |
-| **HIGH** | BL-225, BL-284, BL-288, BL-301, BL-302, BL-319, BL-322, BL-326, BL-327, BL-329, BL-334, BL-338, BL-342, BL-345, BL-349, BL-351, BL-353, BL-356, BL-358, BL-364, BL-375, BL-380, BL-387, BL-390, BL-391, BL-393, BL-394, BL-399, BL-401, BL-404, BL-405, BL-407, BL-409 |
-| **MEDIUM** | BL-99, BL-104, BL-105, BL-228, BL-274, BL-282, BL-285, BL-291, BL-296, BL-306, BL-307, BL-308, BL-312, BL-315, BL-317, BL-318, BL-328, BL-332, BL-333, BL-337, BL-341, BL-360, BL-361, BL-362, BL-378, BL-383, BL-389, BL-396, BL-398, BL-400, BL-410 |
+| **HIGH** | BL-225, BL-284, BL-288, BL-301, BL-302, BL-319, BL-322, BL-326, BL-327, BL-329, BL-334, BL-338, BL-342, BL-345, BL-349, BL-351, BL-353, BL-356, BL-358, BL-375, BL-387, BL-390, BL-391, BL-393, BL-394, BL-399, BL-401, BL-404, BL-405, BL-407, BL-409 |
+| **MEDIUM** | BL-99, BL-104, BL-105, BL-228, BL-274, BL-282, BL-285, BL-291, BL-296, BL-306, BL-307, BL-308, BL-312, BL-315, BL-317, BL-318, BL-328, BL-332, BL-333, BL-337, BL-341, BL-360, BL-361, BL-362, BL-378, BL-383, BL-389, BL-396, BL-398, BL-400, BL-410, BL-411 |
 | **LOW** | BL-103, BL-202, BL-215, BL-258, BL-261, BL-283, BL-292, BL-298, BL-305, BL-309, BL-314, BL-355, BL-379, BL-392, BL-408 |
 | **UNSET** | BL-163 |
 
@@ -1575,28 +1575,6 @@ Citations: [wip/turso-live-metrics, performance-engineer, claude, sandbox P0.5, 
 
 ---
 
-### BL-364 — `SqliteVectorBackend` crashes on a raw `better-sqlite3` handle; 15 `hybrid-search` tests are red — **Open (HIGH)** (2026-07-31)
-
-**Driver:** `npx nx test hybrid-search` fails 15/82 with `TypeError: Cannot read properties of undefined (reading 'nativeVectors')` at `vector-store/src/index.ts:197`, reached from `hybrid-search.spec.ts:451`'s `new SqliteVectorBackend(db)`.[1][2]
-
-The constructor was converted to take a `StoreAdapter` during the store-adapter migration (`83cd0b0`, 2026-07-27) and now reads `adapter.capabilities.nativeVectors` — but the callers still pass a raw `better-sqlite3` `Database` handle, on which `.capabilities` is `undefined`.[3] There is no type error because the spec's local `Database.Database` type flows into an `any`-ish parameter position.
-
-Note the expression itself is also suspect: `adapter.capabilities.nativeVectors || true` is unconditionally `true`, so reading the capability at all is pointless — the crash is the only effect it has.[3]
-
-**Blast radius:** every `SqliteSearchBackend` integration test in the package, including the BL-294 vector-channel-isolation suite and the BL-295 `kind:"generic"` end-to-end test. The whole real-FTS5+vector integration surface of `hybrid-search` has been unexercised since 2026-07-27.
-
-**Fix sketch:** either accept both shapes (wrap a raw handle via `createSqliteAdapter(db)`) or require a `StoreAdapter` and update the callers. Given the `|| true`, deleting the capability read is also viable. Update the spec's helper either way.
-
-**Acceptance (red→green, must name BL-364):** `npx nx test hybrid-search` at 82/82, with the 15 currently-failing integration tests executing (not skipped).
-
-**Severity:** HIGH — 15 red tests hiding the package's only real integration coverage, and it survived four days of green-looking sweeps because the failures are inside one project's suite.
-
-**Related:** BL-357 (library builds compiling test files), BL-324/BL-325 (the same class of post-migration spec drift in memory-core).
-
-Citations: [wip/turso-live-metrics, database-administrator, claude, sandbox P0.7, 1: libs/data/search/hybrid-search/src/hybrid-search.spec.ts:449-464, 2: libs/data/vectors/vector-store/src/index.ts:195-200, 3: commit 83cd0b0 (`feat: full store-adapter migration`), 4: `npx nx test hybrid-search` output 2026-07-31]
-
----
-
 ### BL-360 — Turso's `PRAGMA integrity_check` reports a PERMANENT false positive on every store with an FTS index — **Open (MEDIUM)** (2026-07-31)
 
 **Driver:** `PRAGMA integrity_check` on a **freshly created, fully working** Turso FTS store emits:
@@ -1896,33 +1874,6 @@ Citations: [wip/turso-live-metrics, storage-boundary-lint, claude, storage-bound
 **Severity:** HIGH — the integrity surface is the thing operators trust to answer "is my store healthy?", and it answered yes for 13 hours while a third of the corpus was unsearchable by vector. Related: BL-334 (the status-surface meta-defect), BL-339 (the brake), BL-382 (the starved drain, fixed), BL-319 (missing computed throughput fields).
 
 Citations: [wip/turso-live-metrics, team-lead, claude, turso-go-live, 1: libs/data/store/store-adapter/src/integrity.ts:100-104, 2: libs/data/store/store-adapter/src/integrity.ts (grep -ci embed = 2, both comments), 3: (live memory_ping 2026-07-31, embed_backlog 3246 alongside integrity.overall ok / healthy true / 5 probes validated)]
-
----
-
-### BL-390 — `registry:sync-index` blesses an artifact built from an uncommitted tree state that no commit can reproduce — **Open (HIGH, process/integrity)** (2026-08-01)
-
-**Driver.** On 2026-08-01 an agent finishing BL-380 ran `npx nx build` + `npx nx run registry:sync-index` and committed the regenerated `registry/index.json`, recording `memory-server` checksum `sha256:9f95d587edbf…`.[1] At that moment **at least four other agents had uncommitted source edits in the same shared checkout** — `libs/memory-core/src/extensions.ts` (BL-384, +69/-13), `libs/memory-core/src/backup.ts` and `libs/data/store/store-adapter/src/{types,sqlite-adapter,turso-adapter}.ts` (BL-385), plus 18 memory-core spec files (BL-325).[2] The agent's own report noted "memory-core dep also rebuilt by a concurrent agent's in-flight work."
-
-**The defect is not contamination — it is unfalsifiability.** The checksum is now committed and `smoke-test.mjs` passes, because the recorded hash genuinely matches the bytes on disk. But those bytes were produced from a **working-tree state that was never committed and cannot be reconstructed**. Nobody — including the agent that built it — can determine whether that artifact contains half-finished BL-384 or BL-385 code, because the input no longer exists. A green checksum currently certifies *"the file on disk matches the file we hashed,"* not *"this artifact was built from this source."* Those are different guarantees, and only the second is worth anything.
-
-**Concrete live consequence, already present:** the deployed/running `memory-server` artifact is `6d1b2abc1c12` (verified by `memory_ping`, pid 32640), while the on-disk artifact and the committed registry are both `9f95d587edbf`.[3] `[inv:deploy-verified]` (service-lifecycle §9.4a) works by comparing the running artifact hash against the on-disk bundle — that comparison now reports a difference that means "someone rebuilt but did not deploy," which is **indistinguishable from the silent no-op deploy the invariant exists to detect** (BL-372, three occurrences). The one check that reliably caught a failed deploy has been made ambiguous by an unrelated rebuild.
-
-**Distinct from BL-235.** BL-235 says a diagnostic `nx build` is destructive because it `rm -rf`s `dist/` before knowing the rebuild succeeds — that is about *losing* a good artifact. This is the inverse: the build *succeeds* and produces a **plausible, checksummed, committed artifact of unknown provenance**. BL-235's warning would not have prevented it, and neither would the existing "commit source and regenerated `registry/index.json` together" rule — that rule was followed here.
-
-**Fix sketch — the guarantee has to be "built from committed source," and it must be mechanical:**
-1. `registry:sync-index` should **refuse to run against a dirty tree** for the projects whose artifacts it is hashing (or at minimum stamp the recording as provisional and fail CI). A `--allow-dirty` escape hatch is fine; silence is not.
-2. Stamp each registry entry with the **commit sha the artifact was built from**, so the question "does this artifact correspond to this source?" becomes answerable at all. Today there is no field that could answer it.
-3. Extend the parallel-dispatch rules in `CLAUDE.md`: the existing guidance covers disjoint *file* sets, but `nx build` reads the **whole dependency graph**, so an agent editing `memory-core` and an agent building `memory-server` are NOT disjoint even though they touch no common file. Building a shipped artifact is a repo-global operation and needs to be serialized like the pre-commit lint gate already is.
-
-**SECOND OCCURRENCE, same session, ~90 minutes later (2026-08-01).** The BL-372 agent ran the mandatory `registry:sync-index` after rebuilding `sox`'s dist. That rebuild also picked up `memory-cli`, `memory-flush` and `memory-server`, because their shared `embedding-provider` dependency (`fastembedProcessHost.ts`) was **uncommitted and dirty** at that moment from a different agent. Three more checksums moved in `registry/index.json` for extensions that agent never touched. It disclosed this unprompted and correctly declined to revert someone else's in-flight file.
-
-That file has since been committed by another party, so the recorded checksums were computed from a tree state that **no longer exists in any form** — not the working tree, not any commit. Whether they match committed source is now unknowable without a rebuild, which is the entire defect.
-
-Two independent, well-behaved agents hit this within 90 minutes while following every existing rule, including the "commit source and regenerated `registry/index.json` together" rule. **This is not agent error; the procedure itself is unsound under concurrency.** The mandatory-sync-index step and the shared-checkout dispatch model are in direct conflict, and the sync step currently has no way to know it is being run against a tree it cannot describe.
-
-**Severity:** HIGH — this is a supply-chain-shaped integrity gap in our own publish path, and it has already degraded the only reliable deploy check we have. Related: BL-235 (destructive builds), BL-372 (silent no-op deploys, the invariant this undermines), and the parallel-dispatch safety rules in `CLAUDE.md`.
-
-Citations: [wip/turso-live-metrics, team-lead, claude, turso-go-live, 1: registry/index.json (memory-server 1.3.0, checksum sha256:9f95d587edbf…), 2: git status at 13:05 showing uncommitted edits to libs/memory-core/src/{extensions,backup}.ts and libs/data/store/store-adapter/src/{types,sqlite-adapter,turso-adapter}.ts, 3: live memory_ping artifact 6d1b2abc1c12 / pid 32640 vs shasum of extensions/bundles/sox-memory-bundle/members/memory-server/dist/index.js = 9f95d587edbf]
 
 ---
 
@@ -2447,74 +2398,37 @@ Citations: [wip/turso-live-metrics, main, claude, PKT-47/PKT-14 dispatch, 1: `gi
 
 ---
 
-### BL-410 — standalone scripts crash `warmupEmbed()`/any shared-fastembed call: `unref()`'d IPC channel races process exit mid-model-load, then an unguarded `process.send()` throws EPIPE uncaught — **Open (MEDIUM)** (2026-08-02)
+### BL-411 — `analysis.spec.ts` has the identical BL-364 `new SqliteVectorBackend(db)`/`new SqliteGraphBackend(db)` raw-handle shape, still unfixed — **Open (MEDIUM)** (2026-08-02)
 
-**Driver.** Found running PKT-06's BL-388 runtime acceptance — `capture-write-perf-baseline.ts`'s
-`captureWritePerfBaseline()` crashed the whole Node process on its very first line of real work
-(`warmupEmbed()`), 3/3 times, before touching any store adapter. Not a BL-388 defect: it reproduces
-identically in a two-line standalone script that only calls `warmupEmbed()`, with zero storage
-involved, and reproduces with `SOX_EMBED_EXECUTION_PROVIDER=cpu` exactly as with default CoreML —
-ruling out ANE/CoreML contention as the cause.
+**Driver.** Found while fixing PKT-04 (BL-380's `vector-store` half + BL-364). BL-380's blast-radius note already flagged `analysis.spec.ts:23` as the second of two spec files importing `@adhd/sox-vector-store` at value level, but nobody had gone and checked it for the same defect BL-364 diagnosed in `hybrid-search.spec.ts`.[1] It has it, unchanged:
 
-**Symptom:**
+```ts
+function makeVecBackend(db: Database.Database): SqliteVectorBackend {
+  const vec = new SqliteVectorBackend(db);   // raw better-sqlite3.Database, not a StoreAdapter
+  vec.ensureSpace({ modelId: 'test-model', dim: 4 });
+  return vec;
+}
+
+function makeGraphBackend(db: Database.Database): SqliteGraphBackend {
+  const graph = new SqliteGraphBackend(db);  // same shape — SqliteGraphBackend also takes a StoreAdapter now
+  graph.applySchema();                       // also un-awaited; applySchema() is async
+  return graph;
+}
 ```
-node:events:486
-      throw er; // Unhandled 'error' event
-Error: write EPIPE
-    at target._send (node:internal/child_process:877:20)
-    at target.send (node:internal/child_process:751:19)
-    at send (.../embedding-provider/dist/fastembedProcessHost.js:234:19)
-    at handleRequest (.../embedding-provider/dist/fastembedProcessHost.js:240:13)
-libc++abi: terminating due to uncaught exception of type std::__1::system_error: mutex lock failed: Invalid argument
-```
+[2]
 
-**Root cause.** `sharedFastembedProcess.ts:81,127` deliberately `unref()`s both the forked
-fastembed-host child and its IPC channel (`c.unref()`, `c.channel?.unref()`) — the BL-370 comment
-above those calls explains this is so a long-lived *service* process (memory-server) can exit
-cleanly without the embed child pinning it open forever.[1] But in a **standalone script** whose
-only pending work is `await warmupEmbed()`, that same unref means nothing in the parent process's
-event loop is ref'd while the child is mid-model-load (fastembed init can take real wall-clock
-time). Node can decide there is nothing left to wait for and begin process teardown, closing its
-end of the IPC channel — *before* the child has replied. When the child later calls
-`process.send()` in `fastembedProcessHost.ts:293-295` (`send()`, unconditionally, no `.on('error',
-…)` guard anywhere in that file)[2], the write fails with EPIPE against a pipe the parent already
-tore down, and since nothing handles the child's own `process` `'error'` event, it crashes the
-child with an uncaught exception (compounding into a native `libc++abi` mutex-teardown abort).
+**Why this isn't fixed by BL-364/BL-380's landing.** Those items scoped their fix to `vector-store/src/index.ts` and `hybrid-search.spec.ts` only — `analysis`'s own spec file was never in scope for either. With the `vector-store` guard now capability-gated (BL-380), a raw `Database` reaching `SqliteVectorBackend`'s constructor throws `TypeError: Cannot read properties of undefined (reading 'nativeVectors')` inside `requireSqliteHandle()` instead of at the old call site — same crash, one frame deeper, not fixed.
 
-**Proof, not guess.** Added a harness-only `setInterval(() => {}, 1000)` around the `warmupEmbed()`
-call (in the acceptance script, not in shipped code) to keep the parent's event loop trivially
-ref'd for the duration — 100% reproducible crash without it (3/3), 100% clean with it (3/3), same
-dist, same machine, same day.[3]
+**Blast radius:** `npx nx test analysis` was not run as part of this finding (avoiding a build/test collision with concurrent agents in the shared checkout) but the file loads without an import-time error (confirmed via a `vitest run -t <no-match>` dry pass — 47 tests all skipped, 0 failed at collection time), meaning the crash is real but only fires once a test body actually calls `makeVecBackend`/`makeGraphBackend`. All `cluster`/`detectNearDupPairs`/`buildAutoLinks`/etc. integration tests in `analysis.spec.ts` that exercise real storage almost certainly hit it.
 
-**Why this matters beyond baseline-capture.** Any standalone CLI/script in this repo that calls
-into `getSharedFastembedProcess()`/`warmupEmbed()`/`FastembedProvider` without some other long-lived
-handle keeping the process alive (a server, an open MCP transport, a listening socket) is exposed to
-this exact race. It has stayed hidden because the only production caller today is `memory-server`,
-which always has other ref'd handles (stdio/MCP transport) masking it.
+**Fix sketch:** identical to BL-364's — wrap via `createSqliteAdapter(db)` before constructing `SqliteVectorBackend`/`SqliteGraphBackend`, and `await applySchema()`/`await writeNode(...)` everywhere `graph.*` async methods are called un-awaited (same audit `hybrid-search.spec.ts` needed — grep the file for every `graph.`/`vec.` call site, not just the constructors).
 
-**Fix sketch:** either (a) don't unconditionally `unref()` the channel — ref it for the duration of
-each in-flight `request()` and unref again once `pending` is empty, so a script with no other work
-still waits for outstanding replies; or (b) add `process.on('error', …)` in
-`fastembedProcessHost.ts` around the send path so a closed pipe degrades to a logged, swallowed
-failure instead of an uncaught process-crashing exception in the child. (a) is the more complete fix
-— (b) only stops the child from crashing, it doesn't stop the parent's promise from hanging forever
-once its channel is gone.
+**Acceptance (red→green, must name BL-411):** `npx nx test analysis` fully green, with every storage-backed test in the file actually executing (not skipped), plus a build/lint pass (`npx nx run-many -t lint,build,test -p analysis`).
 
-**Severity:** MEDIUM — no live-service impact (masked there), but blocks any new standalone script
-(baseline-capture, `reembed-memory`-style CLIs, future one-off tools) from being run reliably against
-the shared embed provider, and the failure mode (uncaught process crash, not a rejected promise) is
-maximally confusing to whoever hits it next without this investigation.
+**Severity:** MEDIUM — same defect class as BL-364 (HIGH there because it zeroed `hybrid-search`'s only real integration coverage); downgraded here pending confirmation of how many `analysis` tests are actually red vs. merely at risk, since this finding did not run the suite.
 
-Citations: [wip/turso-live-metrics, main (PKT-06), claude, BL-388 runtime acceptance,
-1: libs/data/embed/embedding-provider/src/sharedFastembedProcess.ts:81,127,
-2: libs/data/embed/embedding-provider/src/fastembedProcessHost.ts:293-295,240,234,
-3: three crash reproductions (default CoreML, forced `SOX_EMBED_EXECUTION_PROVIDER=cpu`, stable
-dist) followed by three clean runs with a harness-only keep-alive interval, 2026-08-01]
+**Related:** BL-364 (identical root cause, same fix shape, `hybrid-search` package — RESOLVED, see CHANGELOG.md), BL-380 (the `vector-store`-side capability guard that turned the crash's location, not its trigger), BL-340 (specs were never typechecked, which is how this class of bug hides).
 
----
-
-### BL-411 — RESERVED — placeholder from allocate-bl-id.mjs, replace before committing — **Open (RESERVED)** (2026-08-02)
-
-**Driver.** Reserved by `tools/allocate-bl-id.mjs` and not yet filled in. If you are reading this in a committed BACKLOG.md, the reservation was never completed — fill in the item's real content or delete this heading before committing.
+Citations: [wip/turso-live-metrics, team-lead, claude, PKT-04, 1: BL-380 §"vector-store sites... explicitly untouched", 2: libs/data/analysis/analysis/src/analysis.spec.ts:26-40, 3: libs/data/vectors/vector-store/src/index.ts requireSqliteHandle() (BL-380 fix), 4: `npx vitest run --config libs/data/analysis/analysis/vitest.config.ts -t xxxxnonexistent` — 47 tests collected/skipped, 0 import-time errors, 2026-08-02]
 
 ---

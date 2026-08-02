@@ -2,6 +2,154 @@
 
 ---
 
+## [Unreleased] — BL-410: a standalone script no longer silently abandons an in-flight embed warmup on exit
+
+**The bug.** `SharedFastembedProcessClient.ensureProcess()` forks the shared fastembed host
+process and immediately `unref()`s both the `ChildProcess` and its IPC channel (BL-370: so a
+long-lived *service*, memory-server, can exit cleanly without the embed child pinning it open
+forever). That's correct for a service, which always has other ref'd handles (stdio/MCP
+transport). But a **standalone script** whose only pending work is an in-flight `request()` —
+e.g. `warmupEmbed()` — has nothing else keeping its event loop alive while the request is in
+flight. Node can decide the loop is empty and tear the parent process down mid-model-load,
+silently abandoning the pending promise before the child's reply ever arrives. First observed
+running PKT-06's BL-388 runtime acceptance — `capture-write-perf-baseline.ts` exited on its very
+first line of real work, before touching any store adapter, 3/3 times against the real (cached)
+fastembed model, with or without `SOX_EMBED_EXECUTION_PROVIDER=cpu` (ruling out ANE/CoreML
+contention). At the time this was filed the symptom was an uncaught EPIPE crash in the orphaned
+child; a separate concurrent fix to `fastembedProcessHost.ts`'s `send()` (BL-405, guards
+`process.send()` against a closed parent channel) already stopped that literal crash, but left the
+underlying race intact — the parent still exits before its own request settles, silently.
+
+**The fix.** `SharedFastembedProcessClient` now re-`ref()`s the child process and its IPC channel
+for the duration of each in-flight `request()`, and un-refs again the instant `pending` drains
+(`refForPending()` / `unrefIfIdle()`, called from every settle path — message received, timeout
+fired, or error/exit). A script whose only work is `await warmupEmbed()` now blocks until the
+reply arrives (or the request's own timeout fires) instead of racing process exit against the
+child's reply; once nothing is outstanding, the process still exits promptly on its own, no hang.
+Also added a test-only `hostPathOverride` constructor param so tests can point the fork target at
+a lightweight fixture host instead of the real `fastembedProcessHost.js`, without loading fastembed
+or downloading a model.
+
+**Verification.** `libs/data/embed/embedding-provider/src/bl410-standalone-exit-survives-load.spec.ts`
+spawns a genuine standalone Node process (via `tsx`) that forks a stub host through the real
+`SharedFastembedProcessClient` and fires one `request()` without awaiting it at top level — the
+exact shape of the original bug. Watched RED (fix withheld: the standalone process exits before
+its request settles, silently) and GREEN (fix restored: the process waits for the reply, then
+exits cleanly with status 0) on 2026-08-01. A second case proves the process still exits promptly
+(no hang) once the request settles quickly — the explicitly-required outcome, since simply
+removing the `unref()` was rejected as a fix (it would turn every short script into a hang instead
+of a crash). `embedding-provider`'s full suite (8 files / 35 tests) and lint both pass clean.
+
+## [Unreleased] — BL-390: `registry:sync-index` refuses to bless a checksum built from a dirty tree
+
+**The bug.** `registry:sync-index` computed each extension's registry checksum straight off
+whatever was on disk in a shared, concurrently-edited checkout, with no check that the tree
+matched a commit. Two agents hit this independently within 90 minutes on 2026-08-01: one
+committed a `memory-server` checksum built while four other agents had uncommitted edits to
+files that rebuild pulled in (BL-384, BL-385, BL-325); the other's mandatory post-build
+`sync-index` picked up a dirty shared dependency (`embedding-provider`) through the nx build
+graph and moved three checksums (`memory-cli`, `memory-flush`, `memory-server`) it never
+touched directly. In both cases the recorded hash was real and `smoke-test.mjs` passed, but its
+provenance was unknowable — the working-tree state that produced it was never committed and
+could not be reconstructed. This had already degraded `[inv:deploy-verified]` (service-lifecycle
+§9.4a), the invariant that compares a running artifact's hash against the on-disk bundle to catch
+a silent no-op deploy (BL-372): a hash produced by an unrelated dirty rebuild is indistinguishable
+from that failure mode.
+
+**The fix.** `buildIndex()` (`scripts/build-index.ts`) now checks git state before hashing
+anything: if `root` is a git repository with uncommitted changes (staged, unstaged, or
+untracked — `git status --porcelain -uall`), it throws `DirtyTreeError` and writes nothing,
+naming the uncommitted files in the message. An explicit `allowDirty: true` (CLI `--allow-dirty`)
+escape hatch proceeds anyway, but stamps every entry `provisional: true` with `builtFromCommit`
+suffixed `"+dirty"` instead of silently succeeding. A clean run stamps the plain HEAD sha on every
+entry, so "was this artifact built from this source?" is answerable for the first time.
+`scripts/check-registry-sync.ts` strips both new fields before its drift comparison (they're
+per-run provenance metadata, not disk content the disk-scan mirror can recompute) and now warns
+if a committed registry entry is provisional, so a forced dirty run can't pass silently either.
+
+Also fixed a latent side effect uncovered while making this safe to test: `build-index.ts`'s CLI
+tail ran unconditionally on module load (no `require.main`-equivalent guard), which
+`build-index.test.ts`'s own `import { buildIndex }` was silently triggering as a real disk write
+on every test run — the exact side effect `check-registry-sync.ts`'s comments say it avoids by
+never importing this file. Now guarded behind `import.meta.url === file://${process.argv[1]}`.
+
+**Verification.** `scripts/build-index.test.ts` — 12/12 passing, including 6 new BL-390 cases:
+watched RED (uncaught `DirtyTreeError` naming the dirty file) before the fix, GREEN (refuses /
+`--allow-dirty` stamps `provisional` + `+dirty` commit sha / clean tree stamps a plain sha / a
+non-git root is ungated) after. Also verified live end-to-end via the CLI against a disposable
+scratch git repo (never `memory-server` or any real extension): clean run wrote a normal entry,
+dirty run exited 1 and wrote no `registry/index.json`, `--allow-dirty` wrote a `provisional`
+entry with a `+dirty`-suffixed commit sha matching `git rev-parse HEAD`.
+
+**Not done (separate item):** BL-393 — the trigger for the front-shim proxy silently respawning
+the backend onto an unreviewed bundle is unidentified; this item only closes BL-390's
+unreproducible-artifact precondition, not BL-393 itself.
+
+**Files:** `scripts/build-index.ts`, `scripts/build-index.test.ts`, `scripts/check-registry-sync.ts`.
+
+**Related:** BL-235 (destructive builds — the inverse defect: losing a good artifact, not
+producing an unprovenanced one), BL-372 (the deploy-verification invariant this was degrading),
+BL-393 (the artifact-identity gap this closes is BL-393's stated precondition).
+
+## [Unreleased] — BL-380/BL-364: `vector-store`'s last unguarded `unwrap()` casts, capability-gated; the 15 red `hybrid-search` integration tests were the same root cause
+
+**BL-380 (vector-store half).** The three remaining `(adapter as SqliteAdapter).unwrap()` casts in
+`libs/data/vectors/vector-store/src/index.ts` (`BruteForceBackend.search()`, the `SqliteVectorBackend`
+constructor, `openVectorStore()`) were unconditional — silent on `SqliteAdapter` (sync
+`better-sqlite3`), a `TypeError` deep inside a `.prepare()` call on `TursoAdapter` (async
+`@tursodatabase/database`, the default backend). Added `requireSqliteHandle(adapter)`, gated on
+`adapter.capabilities.nativeVectors` — the same blessed pattern `libs/memory-core/src/db.ts:373,896`
+already uses — so a Turso-shaped adapter now gets one clear `StorageError` ("SqliteVectorBackend
+requires a SqliteAdapter…") instead of an opaque runtime crash. `SqliteVectorBackend` is fundamentally
+a synchronous sqlite-vec/vec0 mechanism and cannot itself "work" against Turso — the fix is a correct,
+documented rejection with a pointer to `LanceDbVectorBackend`, matching how `db.ts`'s own gated sites
+choose a different code path rather than force a sync API onto an async handle. Also deleted the dead
+`adapter.capabilities.nativeVectors || true` expression at the old line 197 — unconditionally `true`,
+so reading the capability there was a no-op that only mattered because it crashed on `undefined`.
+`openVectorStore()`'s own `createSqliteAdapter({ dbPath })` cast was removed outright (not gated) —
+it's statically known to return `SqliteAdapter`, no assertion needed.
+
+**BL-364 (the `hybrid-search` fallout, confirmed as the predicted BL-380 root cause).** 15 of
+`hybrid-search`'s 82 tests were red for four days: `hybrid-search.spec.ts`'s `SqliteSearchBackend
+integration` describe block called `new SqliteVectorBackend(db)` / `new SqliteGraphBackend(db)` with a
+raw `better-sqlite3.Database` — both constructors take a `StoreAdapter` since the store-adapter
+migration (`83cd0b0`). Fixed by wrapping via `createSqliteAdapter(db)` (same underlying handle the
+graph and vector stores share) at all three call sites (`createTestVecStore`, `createTestGraphStore`,
+and the standalone `kind:"generic"` end-to-end test), and — once that crash stopped masking it — a
+second, previously-invisible bug surfaced: `SqliteGraphBackend.applySchema()` / `.writeNode()` /
+`.getNode()` are async now and were called without `await` throughout the spec (`seedNode`,
+`seedNodeInNamespace`, and the two inline `graph.writeNode()` calls in the BL-294 namespace-isolation
+block), so `id` was a `Promise<number>` flowing into `vec.upsert()`'s node-id parameter. All awaited.
+
+**Root-cause verification (per PKT-04's explicit ask — "verify before assuming").** Confirmed, not
+assumed: after the `vector-store` fix alone, the crash the constructor threw changed shape from
+`Cannot read properties of undefined (reading 'nativeVectors')` to `this.adapter.executeAll is not a
+function` inside `SqliteGraphBackend.applySchema()` — proving the vector-side symptom was real and the
+graph-side async-migration bug was a second, previously-hidden defect behind it, not a different root
+cause. Both are the same class (store-adapter migration converted a sync raw-handle API to an async
+`StoreAdapter` one; callers weren't updated) but two distinct call sites needed fixing.
+
+**Red→green, watched.** `npx nx test hybrid-search`: 15 failed / 67 passed / 30 unhandled-rejection
+errors → **82/82 passed**, all three test files actually executing (not skipped). `npx nx test
+vector-store`: 66/66 (unchanged) + 2 new BL-380 guard tests (68/68) — one proving the constructor
+throws `StorageError` (not a crash) against a Turso-shaped `StoreAdapter` double whose `unwrap()`
+deliberately throws if reached at all (proving the guard fires *before* the cast, not after), one
+proving a real `SqliteAdapter` still constructs normally. `npx nx lint vector-store` /
+`npx nx lint hybrid-search`: 0 errors (`vector-store` carries 4 pre-existing `sox/no-storage-backend-leak`
+warnings — expected, the same structural rule flags the blessed `db.ts` gated form too; `lancedb.ts`'s
+warning is BL-380's separate, untouched fourth site).
+
+**Scope note.** `libs/data/vectors/vector-store/src/lancedb.ts` was explicitly out of scope (a
+different open item) and not touched. `libs/data/analysis/analysis/src/analysis.spec.ts` has the
+identical `new SqliteVectorBackend(db)`/`new SqliteGraphBackend(db)` raw-handle shape and was NOT
+fixed here — filed as **BL-411** (new, MEDIUM) since it was outside this fix's assigned files and
+`npx nx test analysis` was not run (avoiding a build/test collision with a concurrent agent in the
+shared checkout).
+
+Citations: [wip/turso-live-metrics, team-lead, claude, PKT-04, 1: libs/data/vectors/vector-store/src/index.ts (requireSqliteHandle, BruteForceBackend.search, SqliteVectorBackend constructor, openVectorStore), 2: libs/data/vectors/vector-store/src/vector-store.spec.ts (BL-380 Turso-adapter-guard describe block), 3: libs/data/search/hybrid-search/src/hybrid-search.spec.ts (createTestVecStore/createTestGraphStore/seedNode/seedNodeInNamespace + kind:"generic" block), 4: `npx nx test hybrid-search` output pre-fix (15 failed/67 passed, 30 errors) and post-fix (82/82), 2026-08-02, 5: BL-377 (the first two unwrap() sites, fixed), 6: BL-388 (the memory-cli half of BL-380, resolved 2026-08-02)]
+
+---
+
 ## [Unreleased] — BL-259: verified `smoke-test.mjs` no longer collides across consecutive launchd-unit runs
 
 **The reported bug (2026-07-10).** A full smoke run reported `11 passed, 2 failed`
