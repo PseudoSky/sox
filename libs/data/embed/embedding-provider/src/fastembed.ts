@@ -1,4 +1,4 @@
-import { warmupTimeoutMs } from './index.js';
+import { warmupTimeoutMs, isModelCached } from './index.js';
 import { getSharedFastembedProcess, type SharedFastembedProcessClient } from './sharedFastembedProcess.js';
 import type { EmbeddingHealth, EmbeddingProvider, EmbeddingProviderMetadata, EmbedRole, FastEmbedModelConfig } from './index.js';
 
@@ -85,7 +85,7 @@ export class FastembedProvider implements EmbeddingProvider {
   // process-wide shared fastembed CHILD PROCESS singleton instead of
   // spawning our own `Worker`/process — see `sharedFastembedProcess.ts` for
   // the full root-cause writeup.
-  private shared: SharedFastembedProcessClient = getSharedFastembedProcess();
+  private shared: SharedFastembedProcessClient;
   private ready = false;
   private readyPromise: Promise<void> | null = null;
   private embedDim = 0;
@@ -93,10 +93,22 @@ export class FastembedProvider implements EmbeddingProvider {
   private _lastError: string | null = null;
   private _executionProvider: string = 'cpu';
 
-  constructor(model: string, dimensions: number, cacheDir: string) {
+  /**
+   * @param sharedClient Test-only injection point (BL-376): production code
+   * always relies on the default `getSharedFastembedProcess()` singleton.
+   * Tests pass a fake client here to inject an artificial init delay without
+   * forking a real fastembed child process or downloading a model.
+   */
+  constructor(
+    model: string,
+    dimensions: number,
+    cacheDir: string,
+    sharedClient: SharedFastembedProcessClient = getSharedFastembedProcess(),
+  ) {
     this.model = model;
     this.cacheDir = cacheDir;
     this.embedDim = dimensions;
+    this.shared = sharedClient;
     const cfg = MODEL_CONFIGS[model];
     this.maxTokensVal = cfg?.maxTokens ?? 512;
     this.metadata = {
@@ -254,9 +266,11 @@ export class FastembedProvider implements EmbeddingProvider {
 
   private async initModel(): Promise<void> {
     try {
+      const hfRepoId = MODEL_CONFIGS[this.model]?.hfRepoId;
+      const cacheHit = hfRepoId ? isModelCached(this.cacheDir, hfRepoId) : false;
       const res = await this.shared.request<InitOkResponse>(
         { type: 'init', model: this.model, cacheDir: this.cacheDir },
-        warmupTimeoutMs(),
+        warmupTimeoutMs(cacheHit),
       );
       if (res.dim > 0) {
         this.embedDim = res.dim;

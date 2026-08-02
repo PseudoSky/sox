@@ -1,6 +1,7 @@
 // @adhd/sox-embedding-provider — pluggable text→vector embedding
 // Authoritative interface spec: docs/plan/memory-refactor/COMPILED_INTERFACES.md
 
+import { existsSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 
@@ -212,9 +213,10 @@ async function createFastembedProvider(
 
   try {
     const provider = new FastembedProvider(modelId, cfg.dim, cacheDir);
+    const cacheHit = isModelCached(cacheDir, cfg.hfRepoId);
     await withTimeout(
       provider.embedSingle('warmup'),
-      warmupTimeoutMs(),
+      warmupTimeoutMs(cacheHit),
       'fastembed warmup',
     );
     return provider;
@@ -257,10 +259,39 @@ async function createRemoteProvider(
  * (fastembed.ts) that bounds the actual ONNX model load inside the worker
  * thread. Both now read this one function/env var so a cold ONNX model
  * download is bounded consistently end-to-end.
+ *
+ * BL-376: one budget used to cover both a cold network download (legitimately
+ * slow, ~180s) and a cached local load (measured ~650ms-12s depending on OS
+ * scheduling QoS). Sizing for the worst case meant a hung cache-hit load was
+ * indistinguishable from a slow download for the full 180s. The budget is now
+ * split by `cacheHit`, which callers determine up front via
+ * `isModelCached()` before choosing which number to ask for — this is NOT a
+ * renamed single constant, the caller genuinely branches on cache state.
+ *
+ * - `cacheHit === true`  → tight, single-digit-second budget (default 8s,
+ *   override via `SOX_EMBED_WARMUP_CACHED_TIMEOUT_MS`). The model binary is
+ *   already on disk; loading it should be near-instant, so a hang here must
+ *   surface fast instead of silently eating three minutes.
+ * - `cacheHit === false` → the original generous download budget (default
+ *   180s, override via `SOX_EMBED_WARMUP_TIMEOUT_MS`), unchanged.
  */
-export function warmupTimeoutMs(): number {
+export function warmupTimeoutMs(cacheHit: boolean): number {
+  if (cacheHit) {
+    const raw = Number(process.env['SOX_EMBED_WARMUP_CACHED_TIMEOUT_MS']);
+    return Number.isFinite(raw) && raw > 0 ? raw : 8_000;
+  }
   const raw = Number(process.env['SOX_EMBED_WARMUP_TIMEOUT_MS']);
   return Number.isFinite(raw) && raw > 0 ? raw : 180_000;
+}
+
+/**
+ * BL-376: determine cache-hit vs. cache-miss up front, synchronously, before
+ * either warmup timeout budget is chosen. fastembed lays the ONNX binary out
+ * at `<cacheDir>/<hfRepoId>/model_optimized.onnx` (verified against a live
+ * `~/.cache/sox/models/` tree) — its presence is the cache-hit signal.
+ */
+export function isModelCached(cacheDir: string, hfRepoId: string): boolean {
+  return existsSync(join(cacheDir, hfRepoId, 'model_optimized.onnx'));
 }
 
 function withTimeout<T>(p: Promise<T>, ms: number, label: string): Promise<T> {

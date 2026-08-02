@@ -2,6 +2,91 @@
 
 ---
 
+## [Unreleased] — BL-397: `memory-flush` no longer reaches around StoreAdapter in production or test code
+
+Filed and resolved same-day 2026-08-01. `memory-flush` (the SessionEnd/ScopePromotionProposed hook
+handler) was a fourth site with the BL-377/BL-380/BL-385 shape — a module outside
+`store-adapter` naming the storage backend directly, wrong on the default (Turso) backend where
+`.unwrap()` is async and a raw `better-sqlite3` cast is simply the wrong object.
+
+**Production (`src/index.ts`):** `openWriteDb()` constructed a raw `better-sqlite3` handle, loaded
+`sqlite-vec`, and set pragmas by hand instead of going through `openDb()` — every downstream
+operation (`enqueueEpisode`, session-node upsert in `handleSessionEnd`, the promotion copy in
+`handleScopePromotionProposed`) then called synchronous `.prepare()/.run()/.get()` on that handle.
+`openWriteDb()` is now `async` and delegates to `@adhd/sox-memory-core`'s `openDb()` — the same
+pragma/sqlite-vec/schema/integrity setup every other memory-core caller uses — returning a
+`StoreAdapter`. `enqueueEpisode` and both handlers now use the adapter's async API
+(`executeGet`/`executeRun`/`transaction`) and `await adapter.close()`. `handleScopePromotionProposed`
+also dropped an `as unknown as (...args: unknown[]) => Promise<...>` cast around
+`memCoreApplyPromotion` that was working around a stale-types worry that no longer applied —
+`applyPromotion`'s real signature already takes two `StoreAdapter`s and returns
+`Promise<ApplyPromotionResult>` directly.
+
+**Test (`src/index.spec.ts`):** `setupTestDb()` passed `adapter.unwrap() as Database.Database` into
+`memoryWrite()`, which takes a `StoreAdapter` — the exact BL-325 sync→async migration defect,
+surviving because `memory-flush`'s typecheck config (unlike `memory-core` pre-BL-340) already
+includes its specs. Now passes `adapter` directly. Two more `unwrap()`-then-sync-`.prepare()` sites in
+the same file (verifying episode persistence past an export failure) had the identical defect shape
+without tripping typecheck (`unwrap()` returns `unknown` on the base interface, so the cast type-checks
+even though it silently returns a Promise on Turso) — converted to `adapter.executeGet()` /
+`adapter.close()` alongside the cited fix rather than leaving a known-broken pattern next to the one
+that got caught.
+
+**Files:** `extensions/bundles/sox-memory-bundle/members/memory-flush/src/index.ts`,
+`extensions/bundles/sox-memory-bundle/members/memory-flush/src/index.spec.ts`,
+`extensions/bundles/sox-memory-bundle/members/memory-flush/package.json` (dropped the now-unused
+`better-sqlite3`/`sqlite-vec` runtime deps, added `@adhd/sox-store-adapter` as a type-only
+`devDependency` for the `StoreAdapter` import — `pnpm-lock.yaml` relocked).
+
+**Red→green, watched:** restored the pre-fix file contents from git (`git show HEAD:...`) and ran
+`npx nx run-many -t lint,typecheck -p memory-flush --skip-nx-cache`: typecheck failed with exactly the
+cited `TS2345: Argument of type 'Database' is not assignable to parameter of type 'StoreAdapter'` at
+`index.spec.ts:59`, lint failed with `'better-sqlite3' is a raw storage-driver import ... BL-380` at
+`index.ts:20`. Restored the fix and reran: both green. `npx nx run-many -t lint,typecheck,test -p
+memory-flush --skip-nx-cache` — 14/14 tests pass.
+
+## [Unreleased] — BL-376: one warmup timeout budget covered both a cold download and a cached load — split by real cache-hit detection
+
+Filed and resolved same-day 2026-08-01. `warmupTimeoutMs()`
+(`libs/data/embed/embedding-provider/src/index.ts`) bounded two operations that differ by ~3 orders of
+magnitude through one number: a cold ONNX model download (legitimately slow, ~180s) and a cached local
+load (measured ~650ms-12s depending on OS scheduling QoS). Sizing the one budget for the worst case
+meant a hung cache-hit load was indistinguishable from a slow download for the full 180s — exactly
+what let BL-331's 14x model-load regression run unnoticed for the length of that incident.
+
+**The split is real, not a rename.** `warmupTimeoutMs(cacheHit: boolean)` now takes the cache state as
+a parameter, and a new `isModelCached(cacheDir, hfRepoId)` determines that state synchronously, up
+front, by checking for `<cacheDir>/<hfRepoId>/model_optimized.onnx` on disk — the real layout fastembed
+uses, verified against a live `~/.cache/sox/models/` tree. Both call sites now branch on it before
+picking a budget:
+
+- `createFastembedProvider()` (`index.ts`) computes `cacheHit` from `cfg.hfRepoId` before wrapping
+  `embedSingle('warmup')` in `withTimeout`.
+- `FastembedProvider.initModel()` (`fastembed.ts`) computes it independently from `this.cacheDir` /
+  `this.model` before the IPC `request()` call to the shared fastembed child process.
+
+**Budgets:** cache-hit defaults to **8s** (`SOX_EMBED_WARMUP_CACHED_TIMEOUT_MS` override); cache-miss
+keeps the original **180s** default (`SOX_EMBED_WARMUP_TIMEOUT_MS`, unchanged env var name — no
+breaking config change).
+
+**Testability:** `FastembedProvider`'s constructor now accepts an optional `sharedClient` injection
+point (default: the real `getSharedFastembedProcess()` singleton), so tests can simulate a slow/hung
+model-init over IPC without forking a real child process or downloading a model.
+
+**Files:** `libs/data/embed/embedding-provider/src/index.ts` (`warmupTimeoutMs`, new `isModelCached`),
+`libs/data/embed/embedding-provider/src/fastembed.ts` (`initModel`, constructor injection point).
+
+**Red→green, watched:**
+`libs/data/embed/embedding-provider/src/bl376-warmup-timeout-split.spec.ts`. Reverted `warmupTimeoutMs`
+to ignore `cacheHit` and always return the 180s default; ran `npx nx test embedding-provider -- --run
+bl376`: 2/4 failed — the pure-function assertion (`expected 180000 to be less than 10000`) and the
+cache-hit end-to-end test hit the 5s vitest timeout still waiting on a fake-timer advance that could
+never satisfy an 8s-shaped assertion against a 180s real budget. Restored the fix and reran: 4/4 passed
+— cache-hit rejects a 15s+ injected hang at exactly the 8s tight budget
+(`/timed out after 8000ms/`), while cache-miss tolerates a 9s injected delay (longer than the tight
+budget, far under 180s) and resolves normally. `npx nx lint embedding-provider` clean; `npx nx test
+embedding-provider` — 7 files, 32 passed.
+
 ## [Unreleased] — BL-406: the stale-vector detector was structurally blind to unstamped legacy vectors, and nothing backfilled `embed_model`
 
 Filed and resolved same-day 2026-08-01, from the post-deploy live-store audit. **No embedding loss** —
