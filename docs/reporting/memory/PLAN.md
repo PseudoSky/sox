@@ -608,6 +608,20 @@ rewritten, only unblocked.
 **Produces:** a health surface that reports what it cannot verify instead of omitting it — `stale_vector_count` plus a distinct unstamped/unverifiable count and a `stamped_without_vector` count — and a backfill that closes the legacy gap without touching a single vector.
 **acceptance:** a test naming BL-406 seeding BOTH an unstamped-with-vector episode AND a stamped-without-vector episode, asserting each is visible in the stats surface rather than silently excluded, and that a backfill pass stamps the former while leaving its vector byte-identical. **All three counts must be non-zero in the red arm** — a red arm where the seeded rows don't appear proves nothing.
 
+### PKT-50 — BL-407: scope `smoke-test.mjs`'s exports preflight to what is actually under test
+**Goal:** `EXTENSION_FILTER` is parsed at `scripts/smoke-test.mjs:46` but not consulted until ~:399, while the BL-266 exports-contract preflight at :311-326 runs **unconditionally and workspace-wide** (`verify-exports-publint-attw.mjs --root <WORKSPACE>`) and FATALs the process. So `--extension memory-server` — the "Single extension fast pass" CLAUDE.md documents as supported — is not isolated, and any one of 41 projects can wedge it. In a shared non-worktree checkout with concurrent agents this is the normal condition, not an edge case: it was observed taking the mandatory merge gate down for every agent at once.
+**Closes:** BL-407
+**Files:** `scripts/smoke-test.mjs` (:46, :311-326, :399), possibly `tools/verify-exports-publint-attw.mjs` (accept a project list rather than only `--root`).
+**requires:** none
+**sequencing:** conflicts with PKT-15 (BL-259), which also owns `scripts/smoke-test.mjs`. **Coordinate with whoever holds PKT-15 before editing** — do not both edit this file.
+**tier:** sonnet, ~55k tokens / ~22 turns
+**orientation:** ~35k unavoidable before any edit — BL-407's body carries the line anchors; read the script and the nx project-graph API rather than re-deriving. **Fixed cost.**
+**budget:** ~22 turns / ~90k tokens. Guidance ceiling ~170k; **guidance, not a stop.** Commit incrementally by explicit path. **Sub-dispatch only to `general-purpose`/`haiku`/`claude`** — specialist types have no `Agent` tool.
+> **⛔ Do NOT "fix" this with a `--skip-preflight` flag.** That makes the gate optional under exactly the conditions where it matters, and the repo's whole problem is gates that quietly stop gating (BL-225, five times). Scope the preflight correctly: when `--extension <id>` is passed, check that extension plus its transitive workspace deps — the nx project graph already knows that set. The unfiltered run must keep its full-workspace check, because that is the real merge gate.
+> Also improve the FATAL message: it currently gives no hint that a targeted run was still workspace-scoped, which is why this cost an agent real time to diagnose.
+**Produces:** a fast path that is genuinely isolated, so concurrent agents stop blocking each other's gate runs — and a merge gate that still checks the whole workspace when it is actually gating a merge.
+**acceptance:** with a deliberately broken `package.json` in a project unrelated to the filter, `node scripts/smoke-test.mjs --extension memory-server` completes and reports its normal pass count; the SAME broken manifest still FATALs the unfiltered `node scripts/smoke-test.mjs`. **Both halves are required** — a fix that merely stops failing has removed the gate rather than scoped it. Name BL-407.
+
 ### PKT-41 — BL-391: federated recall's BM25 arm is dead on Turso, and the failure is swallowed whole-store
 **Goal:** a read-only Turso connection cannot run `fts_match` (measured: `readonly:false` → 1158 hits; `readonly:true` → `step failed: Error: Resource is read-only`; plain `COUNT(*)` works identically on both). `openDbReadOnly` passes `readonly: true` unconditionally and its **only** production caller is `getFederationConnection` (`recall.ts:1208`) — so single-store recall is unaffected (live recall still returns `provenance: ["vec","fts","temporal"]`) but federated recall is not.
 **Closes:** BL-391
@@ -1424,7 +1438,7 @@ Verified by diffing every packet's `Closes:` line against `grep -oE '^### BL-[0-
 | E | PKT-34 .. PKT-36 (3) | 2 (PKT-36 depends on PKT-35) | PKT-25 (PKT-34 only) |
 | F | PKT-37 .. PKT-40 (4) | 3 | PKT-16 (PKT-40 only) |
 
-**Total: 49 packets.** Tier distribution, derived from the `**tier:**` fields rather than hand-maintained: **sonnet 45**, **haiku 4** (PKT-09, 20, 22, 23), **opus 0**.
+**Total: 50 packets.** Tier distribution, derived from the `**tier:**` fields rather than hand-maintained: **sonnet 45**, **haiku 4** (PKT-09, 20, 22, 23), **opus 0**.
 
 > **No packet is opus.** Two independent reasons, both evidence rather than preference. First, the owner's standing constraint: *"No more opus agents."* Second — and this is the one that matters for estimation — **every agent dispatched in this program ran `claude-sonnet-5` regardless of what the packet said.** No `model:` override was ever passed, so the `Agent` tool used each agent type's default. The three packets that once read `opus` (PKT-01, 02, 28) were measured after the fact and had all run on sonnet; all three completed, including a CRITICAL architectural change and a research packet that produced a real measurement. The earlier tier argument in this document concerned a distinction that was never present in any dispatch. Tier is not the lever — task shape, prompt specificity, and budget realism are.
 

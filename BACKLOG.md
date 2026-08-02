@@ -6,7 +6,7 @@ Project backlog for sox-ecosystem. Each item: what's wrong, where, severity, and
 
 ## Current status — 2026-08-01 (regenerated mechanically; see BL-224)
 
-**Total open: 81.** (BL-406 filed and resolved same-day 2026-08-01 from the post-deploy live-store audit — no embedding loss, but the stale-vector detector was blind to 1090 legacy rows — see CHANGELOG.md; BL-404, BL-405 filed 2026-08-01 from the reviewed memory-server redeploy — production never initialises telemetry, and every restart escalates to SIGKILL; BL-402 resolved 2026-08-01 — see CHANGELOG.md; BL-350 resolved 2026-08-01 from PKT-28's cluster-maintenance research — see CHANGELOG.md; BL-401 filed 2026-08-01 from PKT-02, the BL-351 acceptance-gap follow-up; BL-340, BL-325 resolved 2026-08-01 — see CHANGELOG.md; BL-395 filed and resolved same-day 2026-08-01 — see CHANGELOG.md; BL-394 filed 2026-08-01 from the BL-325 write-queue-bypass finding; BL-372 resolved 2026-08-01 — see CHANGELOG.md; BL-385 resolved 2026-08-01 — see CHANGELOG.md; BL-384 resolved 2026-08-01 — see CHANGELOG.md; BL-388, BL-389 filed 2026-08-01 from the storage-boundary lint pass; BL-287 resolved 2026-07-30; BL-293, BL-294, BL-295, BL-303 resolved 2026-07-16; BL-62 resolved 2026-07-18; BL-311 verified no live bug 2026-07-18; BL-313 (CRITICAL — live edge-table cascade-delete bug) found and resolved same-day 2026-07-18 — see CHANGELOG.md; BL-306..309 filed 2026-07-11 from native-addon/adapter research; BL-310 filed 2026-07-17, resolved 2026-07-23; BL-312 filed 2026-07-18 from the same memory-server data-integrity investigation; BL-314 filed 2026-07-18 from a stale local content-store mirror discovered while syncing installed skill docs; BL-316, BL-273, BL-254, BL-252, BL-264, BL-297 all resolved 2026-07-23 — see CHANGELOG.md).
+**Total open: 81.** (BL-407 filed 2026-08-01 — the smoke-test exports preflight is workspace-wide BEFORE --extension filtering, so one agent's in-flight package.json wedges the mandatory merge gate for every other agent; BL-376 filed and resolved same-day 2026-08-01 from a follow-up on the BL-331 model-load regression — split the fastembed warmup timeout into a tight cache-hit budget and the original generous cache-miss budget, with real cache-presence detection deciding which applies — see CHANGELOG.md; BL-406 filed and resolved same-day 2026-08-01 from the post-deploy live-store audit — no embedding loss, but the stale-vector detector was blind to 1090 legacy rows — see CHANGELOG.md; BL-404, BL-405 filed 2026-08-01 from the reviewed memory-server redeploy — production never initialises telemetry, and every restart escalates to SIGKILL; BL-402 resolved 2026-08-01 — see CHANGELOG.md; BL-350 resolved 2026-08-01 from PKT-28's cluster-maintenance research — see CHANGELOG.md; BL-401 filed 2026-08-01 from PKT-02, the BL-351 acceptance-gap follow-up; BL-340, BL-325 resolved 2026-08-01 — see CHANGELOG.md; BL-395 filed and resolved same-day 2026-08-01 — see CHANGELOG.md; BL-394 filed 2026-08-01 from the BL-325 write-queue-bypass finding; BL-372 resolved 2026-08-01 — see CHANGELOG.md; BL-385 resolved 2026-08-01 — see CHANGELOG.md; BL-384 resolved 2026-08-01 — see CHANGELOG.md; BL-388, BL-389 filed 2026-08-01 from the storage-boundary lint pass; BL-287 resolved 2026-07-30; BL-293, BL-294, BL-295, BL-303 resolved 2026-07-16; BL-62 resolved 2026-07-18; BL-311 verified no live bug 2026-07-18; BL-313 (CRITICAL — live edge-table cascade-delete bug) found and resolved same-day 2026-07-18 — see CHANGELOG.md; BL-306..309 filed 2026-07-11 from native-addon/adapter research; BL-310 filed 2026-07-17, resolved 2026-07-23; BL-312 filed 2026-07-18 from the same memory-server data-integrity investigation; BL-314 filed 2026-07-18 from a stale local content-store mirror discovered while syncing installed skill docs; BL-316, BL-273, BL-254, BL-252, BL-264, BL-297 all resolved 2026-07-23 — see CHANGELOG.md).
 This block is DERIVED from the `**...**` status marker on each
 `### BL-<n>` heading — an item is open iff its last heading marker starts with `Open`, `REOPENED`,
 or `BLOCKED`. **Do not hand-maintain this section.** The previous header (dated 2026-07-07) ranked
@@ -28,9 +28,9 @@ Regenerated 2026-08-01: **81 open**.
 | Priority | Open items |
 |---|---|
 | **CRITICAL** | — |
-| **HIGH** | BL-225, BL-284, BL-288, BL-301, BL-302, BL-319, BL-322, BL-326, BL-327, BL-329, BL-334, BL-338, BL-342, BL-345, BL-349, BL-351, BL-353, BL-356, BL-358, BL-364, BL-375, BL-380, BL-387, BL-390, BL-391, BL-393, BL-394, BL-399, BL-401, BL-404, BL-405 |
-| **MEDIUM** | BL-99, BL-104, BL-105, BL-228, BL-259, BL-274, BL-282, BL-285, BL-291, BL-296, BL-306, BL-307, BL-308, BL-312, BL-315, BL-317, BL-318, BL-328, BL-332, BL-333, BL-337, BL-341, BL-359, BL-360, BL-361, BL-362, BL-376, BL-378, BL-383, BL-388, BL-389, BL-396, BL-397, BL-398, BL-400 |
-| **LOW** | BL-103, BL-202, BL-215, BL-258, BL-261, BL-283, BL-292, BL-298, BL-305, BL-309, BL-314, BL-355, BL-379, BL-392 |
+| **HIGH** | BL-225, BL-284, BL-288, BL-301, BL-302, BL-319, BL-322, BL-326, BL-327, BL-329, BL-334, BL-338, BL-342, BL-345, BL-349, BL-351, BL-353, BL-356, BL-358, BL-364, BL-375, BL-380, BL-387, BL-390, BL-391, BL-393, BL-394, BL-399, BL-401, BL-404, BL-405, BL-407 |
+| **MEDIUM** | BL-99, BL-104, BL-105, BL-228, BL-259, BL-274, BL-282, BL-285, BL-291, BL-296, BL-306, BL-307, BL-308, BL-312, BL-315, BL-317, BL-318, BL-328, BL-332, BL-333, BL-337, BL-341, BL-359, BL-360, BL-361, BL-362, BL-378, BL-383, BL-388, BL-389, BL-396, BL-398, BL-400 |
+| **LOW** | BL-103, BL-202, BL-215, BL-258, BL-261, BL-283, BL-292, BL-298, BL-305, BL-309, BL-314, BL-355, BL-379, BL-392, BL-408 |
 | **UNSET** | BL-163 |
 
 ## Audit
@@ -1396,37 +1396,6 @@ Citations: [wip/turso-live-metrics, team-lead, claude, turso-go-live, 1: libs/da
 
 ---
 
-### BL-376 — One 180 s budget covers both a network download and a cached local load, so it can never detect a regression — **Open (MEDIUM)** (2026-07-31)
-
-**Driver.** `warmupTimeoutMs()` (`libs/data/embed/embedding-provider/src/index.ts:261-264`) defaults to **180 000 ms** and bounds two very different operations through one number — the outer `createFastembedProvider()` wrapper around `embedSingle('warmup')`, and the inner `FastembedProvider` worker-init `readyPromise` that bounds the actual ONNX model load.
-
-Measured model-init cost with the model **already cached** on disk (`~/.cache/sox/models/fast-bge-base-en-v1.5/model_optimized.onnx`):
-
-| scheduling class | model init |
-|---|---|
-| normal (pri 31/20) | **642 / 686 / 686 ms** |
-| background (pri 4) | **8176 / 12012 / 9447 ms** |
-
-So the steady-state cost is **~650 ms** and the budget is **277x** that.
-
-**The number is not obviously wrong for what it was written for.** Its own comment states it bounds *"a cold ONNX model download"* — a first-ever run pulling weights over the network, which is legitimately slow and legitimately hard to bound. The defect is that **one budget covers both that and a cached local load**, and the two differ by roughly three orders of magnitude.
-
-**The consequence is the part that matters: this instrument cannot fail informatively.** BL-331's 14x model-load regression (650 ms → ~10 s) sat comfortably inside the 180 s budget for the entire incident. It did not time out, did not warn, and produced no signal in status. It merely looked slow to a human, eventually, if anyone happened to be watching. **A budget that generous is indistinguishable from no budget at all** for any regression short of a total hang — the same failure family as BL-347 (a probe that reads 0 whether the index is dead or healthy) and BL-319 (`time_to_vector_ms` populated on one of two paths).
-
-**Why it survived:** the QoS defect lives in `os-unit.ts` and affects **launchd-spawned processes only**. Anyone developing the embedding provider ran it from a terminal at pri 31 and saw ~650 ms. There was no reason to suspect anything, and no gate that would have told them. This reinforces BL-331's acceptance note — **a benchmark must run under the service's actual scheduling policy**, or it passes throughout an incident and proves nothing.
-
-**Fix sketch:** split the budget by what is actually being bounded — a generous download budget on cache-miss, and a **tight** load budget (single-digit seconds) once the model is on disk. Emit the measured init duration into status (BL-334) rather than only failing at the boundary, so a 14x regression is visible as a number long before it is visible as a timeout. Cache-presence is already determinable at the call site.
-
-**Acceptance (red→green, must name BL-376):** with the model cached, artificially slow model init to ~10 s and assert the warmup path **reports** the regression (status field or warning), rather than silently succeeding inside the budget. Must fail today.
-
-**Severity:** MEDIUM — no outage on its own, but it is the reason a 14x live regression ran unnoticed, and the same blindness applies to any future one.
-
-**Related:** BL-331 (the regression it failed to catch), BL-334 (surface the measurement), BL-319 / BL-347 (same failure family — a signal indistinguishable from normal), BL-282 (three separate model cache dirs exist on this machine, which is its own hazard).
-
-Citations: [wip/turso-live-metrics, team-lead, claude, turso-go-live, 1: libs/data/embed/embedding-provider/src/index.ts:250-264, 2: BL-331 interleaved A/B model-init measurements 2026-07-31, 3: live `find ~/.cache -name model_optimized.onnx` confirming the model is cached locally]
-
----
-
 ### BL-378 — The two emergency brakes are not independent: `SOX_DISABLE_PERIODIC_ENRICH` silently subsumes `SOX_DISABLE_EMBED_HEAL` — **Open (MEDIUM)** (2026-07-31)
 
 **Driver.** Both brakes were documented and operated as independent switches — BL-339 (`SOX_DISABLE_EMBED_HEAL`) and BL-346 (`SOX_DISABLE_PERIODIC_ENRICH`). They are not. The call chain is strictly nested:
@@ -2278,42 +2247,6 @@ Citations: [wip/turso-live-metrics, team-lead, claude, turso-go-live, 1: npx tsc
 
 ---
 
-### BL-397 — `memory-flush` reaches around StoreAdapter in both production and test code; its lint and typecheck are both red — **Open (MEDIUM)** (2026-08-01)
-
-**Found while:** getting the whole-repo gate green. `memory-flush` fails **two** targets, and the two failures are the same defect seen from opposite ends.[1]
-
-**`memory-flush:lint` — production.** `src/index.ts:20` imports the storage driver directly:
-
-```ts
-import Database from 'better-sqlite3';
-```
-
-Caught by `sox/no-storage-backend-leak`. This is the BL-377 / BL-380 / BL-385 shape: a module outside `store-adapter` naming a backend. On the default (Turso) backend a raw `better-sqlite3` handle is simply the wrong object.
-
-**`memory-flush:typecheck` — test.** `src/index.spec.ts:55-60` unwraps and passes the raw handle straight into a function that wants a `StoreAdapter`:
-
-```ts
-const adapter = await openDb(dbPath);
-const db = adapter.unwrap() as Database.Database;
-await memoryWrite(db, { ... });
-```
-```
-TS2345: Argument of type 'Database' is not assignable to parameter of type 'StoreAdapter'.
-  Type 'Database' is missing the following properties: executeGet, executeAll, executeRun, pragmaSet, and 5 more.
-```
-
-That is **exactly BL-325's defect** — the sync→async StoreAdapter migration leaving call sites holding a raw handle — surviving in `memory-flush` because BL-325's sweep was scoped to `memory-core`. Unlike memory-core before BL-340, `memory-flush`'s typecheck config already includes its specs, so it has been reporting this the whole time.
-
-**Not a duplicate.** BL-380 covers `vector-store` and `memory-cli`; BL-388 covers `tools/baseline-capture`; BL-325 covered `memory-core`'s specs. `memory-flush` is a fourth site and was in none of them — the storage-boundary audit that produced BL-380 missed it, which is the same gap that let BL-388 through.
-
-**Fix sketch:** the spec is the easy half — pass `adapter`, drop the unwrap and the cast (the surrounding function is already `async`), mirroring the `memory-cli` conversion in `bb6af3a`. For `src/index.ts:20`, establish whether the import is type-only (then it can go through `StoreAdapter`'s types) or a genuine value use (then it needs the adapter's async API). **`memory-flush` ships a bundled `dist` artifact**, so landing this means `nx build` + `registry:sync-index` + committing the regenerated checksums — and `nx build` in a shared checkout carries BL-390 (unreproducible checksums) and BL-393 (a build can silently redeploy a live service). Do it deliberately, not as a drive-by.
-
-**Severity:** MEDIUM — `memory-flush` is an export/backup utility, not the live read/write path, and no runtime failure is confirmed. But its typecheck has been red the entire time and nobody noticed, which is the BL-248 pattern: a gate that fails in a corner nobody reads is not a gate.
-
-Citations: [wip/turso-live-metrics, team-lead, claude, turso-go-live, 1: npx nx run-many -t lint,typecheck — memory-flush:lint and memory-flush:typecheck both failing, 2: extensions/bundles/sox-memory-bundle/members/memory-flush/src/index.ts:20, 3: extensions/bundles/sox-memory-bundle/members/memory-flush/src/index.spec.ts:55-60]
-
----
-
 ### BL-398 — BL-386's `weight`-as-cosine read reports a fabricated `cosine_sim: 1.0` for manually-merged pairs — **Open (MEDIUM)** (2026-08-01)
 
 **This is a defect in BL-386's fix, and the design decision was mine.** BL-386 correctly established that `applyNearDupResult` writes the cosine into `edge.weight` while `memoryNearDuplicates` read `edge.meta`, so every pair reported `cosine_sim: 0` and the `threshold` parameter returned an empty set. I directed the fix to read `weight` (with a `meta` fallback) rather than change the writer, because reading `weight` recovers the existing edges whereas rewriting the writer would have left all of them permanently unreadable. That reasoning still holds. What it missed is that **`applyNearDupResult` is not the only `SAME_AS` writer.**
@@ -2412,7 +2345,7 @@ Citations: [wip/turso-live-metrics, main, claude, PKT-02, 1: libs/observability/
 
 ---
 
-### BL-404 — nothing in production ever calls `initTelemetry()`: the live server runs `service:'unlabeled'`, `role:'test'`, `logSink:'none'` — the substrate persists nothing and is indistinguishable from test data — **Open (HIGH)** (2026-08-01)
+### BL-404 — nothing in production ever calls `initTelemetry()`: the live server runs `service:'unlabeled'`, `role:'test'`, `logSink:'none'` — the substrate persists nothing and is indistinguishable from test data — **Open (HIGH), code fix + red→green tests landed 2026-08-01 (PKT-47), live redeploy verification still pending** (2026-08-01)
 
 **Found while:** performing BL-401 gap 5 — the deliberate live-spawned verification, executed as part of the reviewed memory-server redeploy to artifact `4d2773bad484` (pid 8820). This is the finding gap 5 existed to produce, and it could not have been found in vitest.
 
@@ -2441,7 +2374,22 @@ All three branches return `'test'`.[3] The two environment probes cannot affect 
 
 **Severity:** HIGH — every telemetry guarantee shipped under BL-351/BL-365/BL-401 is, in production, writing to a null sink. The instrumentation is real; its persistence is not.
 
+**Status update (PKT-47, 2026-08-01) — code fix + red→green tests landed, live redeploy verification still open:**
+
+1. **Composition root wired.** `extensions/bundles/sox-memory-bundle/members/memory-server/src/index.ts` now calls `initTelemetry(MEMORY_SERVER_TELEMETRY_INIT_OPTIONS)` — `{ service: 'memory-server', role: 'live-service', logSink: 'file' }` — as the first statement inside `if (require.main === module)`, before the embed-warmup/driver-probe/backend-vs-direct-stdio dispatch that follows, so it covers BOTH run modes (backend-proxy and direct-stdio) before either can dispatch a tool call. The options are an exported named constant (not an inline literal) specifically so the regression test asserts against the real production value, not a copy that could drift.[4]
+2. **`defaultRole()` fixed, not deleted.** It now genuinely branches: `NODE_ENV==='test'` or a Vitest worker → `'test'`; otherwise → `'harness'` (a new, honest "uninitialised/ad-hoc" label — not a repeat of the `'test'` lie).[5]
+3. **Decision on the silent fallback: made loud.** Added a one-shot `process.stderr.write` warning (never stdout — the constraint against corrupting memory-server's MCP JSON-RPC channel is preserved) fired the first time `log.*` is called while `service==='unlabeled'` (i.e., `initTelemetry()` was never called in this process). Fires once per process, not once per call.[6]
+
+**Acceptance evidence (red→green, watched not asserted):**
+- `libs/observability/sox-telemetry/src/bl404-default-role-and-warning.spec.ts` — reverted `runtime.ts` via `git apply -R` and re-ran `npx nx test sox-telemetry --skip-nx-cache`: 2 of 12 tests failed (`role` came back `'test'` instead of `'harness'`; the warning array was empty). Re-applied the fix, re-ran: 12/12 pass.[7]
+- `extensions/bundles/sox-memory-bundle/members/memory-server/src/bl404-telemetry-composition-root.spec.ts` — reverted `index.ts` the same way and ran `npx nx test memory-server -- --run src/bl404-telemetry-composition-root.spec.ts`: all 3 tests failed, including the black-box one reproducing the exact reported symptom (`expected 'test' to be 'live-service'`) via a REAL spawned entrypoint (tsx running `src/index.ts` directly — never `dist/`, never in-process import, so `require.main === module` genuinely fires). Re-applied the fix, re-ran: 3/3 pass. Full `npx nx test memory-server` (22 files / 191 tests) also green.[8]
+- Whole-file blast radius: `npx nx typecheck sox-telemetry` and `npx nx lint sox-telemetry` both clean. `npx nx typecheck memory-server`/`typecheck-tests` currently fail, but exclusively in `src/backend.ts` (a `terminateEmbedWorkers` import not yet exported from `@adhd/sox-memory-core`'s current mid-edit source) — confirmed via `git status`/`git diff` that `backend.ts` is modified by a DIFFERENT, concurrently-active agent in this shared checkout, not touched by this fix; `npx nx test memory-server` (which doesn't route through `tsc`) is unaffected and fully green.[9]
+
+**What's still open (do not mark RESOLVED):** the live re-verification this ticket's acceptance criteria actually asks for — redeploying the running production memory-server (pid 8820 / artifact `4d2773bad484`) and confirming `memory_stats.telemetry_self_check.role === 'live-service'` plus a durable JSONL record actually landing on disk under the resolved log dir on the LIVE process. Per this ticket's own hard constraint, `npx nx build memory-server` was deliberately never run here (a build's `rm -rf dist` prelude can silently redeploy the live backend, BL-393) — the deploy is intentionally left to whoever owns that step. **Recommended live re-verification steps, to run AFTER a deliberate rebuild+redeploy:** (a) call `memory_stats` on the live server and confirm `telemetry_self_check.role === 'live-service'` (not `'test'`); (b) trigger any `store-adapter.withRetry` retry path (or otherwise force a `@adhd/sox-telemetry` `log.*` emission) and confirm a `memory-server.live-service-<date>.jsonl` file appears under `~/.adhd/sox-ecosystem/memory-server/logs/` with `service:'memory-server'`/`role:'live-service'` on every record — the in-process test proves the mechanism works, it does not prove the deployed binary is the one running it.
+
 **Related:** BL-401 (gap 5 is closed by this finding; gap 6 metric persistence compounds it), BL-351, BL-353, BL-365, BL-334.
+
+Citations: [wip/turso-live-metrics, general-purpose, claude, PKT-47, 4: extensions/bundles/sox-memory-bundle/members/memory-server/src/index.ts:2749-2778, 5: libs/observability/sox-telemetry/src/runtime.ts:60-81, 6: libs/observability/sox-telemetry/src/runtime.ts:159-197, 7: libs/observability/sox-telemetry/src/bl404-default-role-and-warning.spec.ts, 8: extensions/bundles/sox-memory-bundle/members/memory-server/src/bl404-telemetry-composition-root.spec.ts, 9: extensions/bundles/sox-memory-bundle/members/memory-server/src/backend.ts:33]
 
 Citations: [wip/turso-live-metrics, main, claude, BL-401 gap 5 / live deploy verification, 1: live `memory_stats` response from memory-server pid 8820 artifact sha256:4d2773bad484aa69, 2026-08-01T23:47:52Z, 2: repo-wide grep for `initTelemetry` across extensions/bundles/sox-memory-bundle/members/memory-server/src/ and libs/memory-core/src/ — spec-only, 3: libs/observability/sox-telemetry/src/runtime.ts:60-77]
 
@@ -2472,3 +2420,65 @@ The store survived *this* restart intact — deep integrity probes came back `ov
 
 Citations: [wip/turso-live-metrics, main, claude, live deploy verification, 1: `node bin/soxe service restart memory-server -s user` output, 2026-08-01T23:47Z — pid 18521 -> 8820, 2: live `memory_ping` integrity block from pid 8820, deep probes, 555.5ms, damaged: []]
 
+
+---
+
+### BL-407 — `smoke-test.mjs`'s exports preflight runs workspace-wide BEFORE `--extension` filtering, so one unrelated package wedges the entire mandatory merge gate — **Open (HIGH)** (2026-08-01)
+
+**Found while:** PKT-15 (BL-259) tried to reproduce its own red arm and could not run the suite at all — blocked by a package it does not own and is not modifying.
+
+**The defect.** `EXTENSION_FILTER` is parsed at `scripts/smoke-test.mjs:46` but not consulted until the per-extension loop (~:399). The BL-266 exports-contract preflight at `:311-326` runs **unconditionally and workspace-wide** before any filtering, shelling out to `verify-exports-publint-attw.mjs --root <WORKSPACE>`, and on failure prints `[smoke] FATAL: package exports contract violated` and aborts the process.[1]
+
+Consequence: `node scripts/smoke-test.mjs --extension memory-server` — the "Single extension fast pass" **documented in CLAUDE.md as a supported workflow** — is not isolated. It fails on a broken `package.json` in any of the 41 workspace projects, including ones the filter explicitly excludes.
+
+**Why this is HIGH and not cosmetic.** `rm -rf dist/smoke && node scripts/smoke-test.mjs` is the repo's ⛔-level mandatory pre-merge gate. Coupling it to workspace-wide manifest health means **any agent's in-flight `package.json` edit blocks every other agent's ability to run the gate at all** — in a shared non-worktree checkout with concurrent agents, that is not an edge case, it is the normal condition. Observed live: two agents added `workspace:*` edges (`memory-flush` → `@adhd/sox-store-adapter`, `hybrid-search` → `@adhd/sox-store-adapter`) without relocking, and `pnpm install --frozen-lockfile` now fails with `ERR_PNPM_OUTDATED_LOCKFILE`. Correct per BL-150/the relock rule — but it took the gate down for everyone, and the resulting pressure is to *skip the gate*, which is precisely how a gate stops being one.[2]
+
+**Fix sketch:** scope the preflight to what is actually under test. When `--extension <id>` is passed, run publint/attw against that extension and its transitive workspace dependencies only (the nx project graph already knows this set), not `--root WORKSPACE`. Keep the unfiltered full-workspace preflight for the unfiltered run, which is the real merge gate. Separately, make the failure message name the offending package(s) and say plainly that a `--extension` run was still workspace-scoped — the current FATAL gives no hint why an unrelated package stopped a targeted run.
+
+**Consider also:** a `--skip-preflight` escape hatch is the obvious shortcut and is probably the wrong answer — it makes the gate optional under exactly the conditions where it matters. Prefer correct scoping. If an escape hatch is added anyway, it must be loud and must be rejected in the unfiltered merge-gate path.
+
+**Acceptance (red→green, must name BL-407):** with a deliberately broken `package.json` in a project unrelated to the filter, `node scripts/smoke-test.mjs --extension memory-server` completes and reports its normal pass count; the same broken manifest still FATALs the unfiltered `node scripts/smoke-test.mjs`. Both halves required — a fix that merely stops failing would have removed the gate rather than scoped it.
+
+**Related:** BL-259 (blocked by this), BL-266 (introduced the preflight), BL-150 (the relock rule whose correct application triggered the wedge), BL-390 (uncommitted-tree hazards in a shared checkout).
+
+Citations: [wip/turso-live-metrics, main, claude, PKT-15 dispatch, 1: scripts/smoke-test.mjs:46 (filter parsed), :311-326 (unconditional workspace-wide preflight + FATAL), :399 (filter first consulted), 2: `pnpm install --frozen-lockfile` ERR_PNPM_OUTDATED_LOCKFILE against libs/data/search/hybrid-search/package.json, 2026-08-01]
+
+
+---
+
+### BL-408 — `memory-flush`'s bundled `dist/index.js` still ships the pre-BL-397 code — the source fix has not been built or deployed — **Open (LOW)** (2026-08-01)
+
+**Found while:** closing BL-397 (memory-flush reached around StoreAdapter to a raw `better-sqlite3`
+handle). The source fix (`src/index.ts`, `src/index.spec.ts`) is landed, lint/typecheck are both
+green, and 14/14 unit tests pass. But `memory-flush` ships a bundled `dist/index.js` (esbuild, per
+`docs/standards/extension-bundling.md`), and that artifact was last built 2026-08-01T18:44 — before
+this fix — so it still contains the raw `better-sqlite3` open/prepare/run calls BL-397 removed from
+source.[1] Any installed copy of the extension runs the old, unfixed code until the artifact is
+rebuilt.
+
+**Deliberately not done as part of BL-397.** `npx nx build memory-flush` begins with `rm -rf dist`
+(BL-235) — a diagnostic-looking build is a destructive operation on the live artifact — and this
+session has multiple concurrent agents in the same non-worktree checkout (BL-390: unreproducible
+checksums under concurrent builds; BL-393: a build can silently redeploy a live service; BL-407: an
+in-flight `package.json` edit elsewhere in the workspace can wedge the exports preflight that a build
+chain may trigger). BL-397's own acceptance criteria was scoped to lint+typecheck for exactly this
+reason. Rebuilding is real remaining work, not optional polish — memory-flush is only actually fixed
+once the shipped artifact matches the fixed source.
+
+**Fix sketch:** once the checkout is quiescent (no other agent mid-build), run `npx nx build
+memory-flush`, then `npx nx run registry:sync-index` to regenerate the checksum in
+`registry/index.json`, commit source-derived `dist/` + `registry/index.json` together, then `node
+bin/soxe upgrade --all` to push the rebuilt artifact to every installed consumer. Verify post-build
+that `dist/index.js` no longer contains the string `better-sqlite3` (it should not appear at all —
+`--external better-sqlite3 --external sqlite-vec` can be dropped from `project.json`'s build command
+now that neither is a production dependency of this package).
+
+**Severity:** LOW — `memory-flush` is an export/backup + promotion-approval hook, not the live
+read/write path (per BL-397's own severity note), and the stale artifact still functions on the sqlite
+backend (the shape that broke was Turso-async, and BL-397's tests all passed against the shipped
+adapter behavior). But an unfixed bug is still live in production data paths until this closes it out.
+
+**Related:** BL-397 (the source fix this artifact needs to catch up to), BL-235 (destructive-build
+warning), BL-390, BL-393, BL-407.
+
+Citations: [wip/turso-live-metrics, main, claude, PKT-08, 1: extensions/bundles/sox-memory-bundle/members/memory-flush/dist/index.js mtime 2026-08-01T18:44 vs src/index.ts fix committed after, `grep -c better-sqlite3 dist/index.js` = 6]

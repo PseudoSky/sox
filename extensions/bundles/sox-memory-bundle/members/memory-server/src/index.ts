@@ -101,7 +101,10 @@ import {
 // looked for two days") the substrate's own design doc calls out as
 // insufficient on its own. `telemetrySelfCheck()` is a pure, zero-I/O,
 // in-memory read (§5.7) — safe to call on every memory_stats request.
-import { telemetrySelfCheck } from '@adhd/sox-telemetry';
+// BL-404: initTelemetry is the composition-root call (see the require.main===module
+// block below) that wires this process's role:'live-service' + logSink:'file' state;
+// telemetrySelfCheck reads it back for memory_stats.
+import { initTelemetry, telemetrySelfCheck, type InitTelemetryOptions } from '@adhd/sox-telemetry';
 import * as crypto from 'node:crypto';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
@@ -2764,6 +2767,20 @@ scheduleNextDrain();
 //
 // The dispatch reads process.argv[1] guard so importing this module (e.g. from
 // backend.ts or tests) never auto-starts a server.
+
+// BL-404: the exact options this process's composition root passes to
+// initTelemetry() below. Exported (not an inline literal at the call site) so
+// bl404-telemetry-composition-root.spec.ts can assert against the real
+// production value directly — a drift here (e.g. someone flips `role` back to
+// a literal 'test' for local debugging and forgets to revert) fails the test
+// against the SAME object the entrypoint actually uses, not a copy-pasted
+// duplicate that could silently drift out of sync.
+export const MEMORY_SERVER_TELEMETRY_INIT_OPTIONS: InitTelemetryOptions = {
+  service: 'memory-server',
+  role: 'live-service',
+  logSink: 'file',
+};
+
 if (require.main === module) {
   // Schema emission (build step). `node dist/index.js --emit-schema` prints the
   // canonical tools/list result to stdout so gen-schema.cjs can write
@@ -2775,6 +2792,22 @@ if (require.main === module) {
     process.stdout.write(JSON.stringify(buildToolsListResult(), null, 2) + '\n');
     process.exit(0);
   }
+
+  // BL-404: this is the telemetry composition root. Before this fix, NOTHING
+  // outside a spec file ever called initTelemetry() — every emitter (memory-core,
+  // store-adapter's withRetry() instrumentation) ran against the module-level
+  // fallback state in @adhd/sox-telemetry's runtime.ts: logSink:'none' (the
+  // DurableJsonlSink was never constructed — the BL-365 crash-durability
+  // guarantee protected a sink production never instantiated) and role:'test'
+  // (defeating BL-353's separation of the live-service population from test/
+  // harness populations on the same disk). Called here — the earliest point in
+  // BOTH run modes below (backend-proxy AND direct-stdio), before either can
+  // dispatch a single tool call — so every emission for the rest of this
+  // process's life carries role:'live-service' and lands durably on disk.
+  // Never gated behind the --emit-schema branch above: that path is a one-shot
+  // build-time schema dump that exits immediately and never serves a request.
+  initTelemetry(MEMORY_SERVER_TELEMETRY_INIT_OPTIONS);
+
   // BL-89: proactively warm the real embedding backend at startup so a missing/broken
   // embedding runtime is reported LOUDLY at boot (stderr + memory_ping.last_embed_error).
   // Fire-and-forget: warmupEmbed() throws on failure (no degraded fallback — BL-250: the

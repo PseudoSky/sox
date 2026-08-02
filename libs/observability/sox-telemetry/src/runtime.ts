@@ -5,8 +5,15 @@
  *
  * Nothing here requires `initTelemetry()` to have been called. Every emitter
  * is safe to call from a library that never initialises telemetry at all —
- * it falls back to a `role: 'test'`-labelled, `logSink: 'none'` no-op state
+ * it falls back to a `service: 'unlabeled'`, `logSink: 'none'` no-op state
  * (BL-351 §5.0: "instrumentation is unconditionally safe to add anywhere").
+ * The fallback `role` is genuinely detected (`defaultRole()`, BL-404): `'test'`
+ * under NODE_ENV=test / a Vitest worker, `'harness'` otherwise — never a
+ * hardcoded lie. The FIRST emission made while still in this uninitialised
+ * fallback state prints a one-shot stderr warning (BL-404) so an unwired
+ * composition root is self-reporting instead of silently no-op'ing forever
+ * (this is exactly how BL-404 itself shipped unnoticed — a well-formed-looking
+ * `role: 'test'` on the live memory-server, no error, no warning).
  * `stdout` is not a representable `LogSink` value — the type system does not
  * offer it, because a stray stdout write corrupts memory-server's MCP
  * JSON-RPC channel.
@@ -57,10 +64,20 @@ interface RuntimeState {
   sink: DurableJsonlSink | null;
 }
 
+// BL-404: previously all three branches returned 'test' unconditionally —
+// the two env probes below were dead code that made the function READ as if
+// it detected its environment while actually being a hardcoded constant.
+// That is precisely how a live production process (memory-server, never
+// under NODE_ENV=test or a Vitest worker) ended up reporting role:'test' in
+// telemetry_self_check without anyone noticing: the function looked correct
+// on inspection. Now the probes actually gate the result. Processes that are
+// neither a detected test run nor an explicitly-initialised role (via
+// `initTelemetry`) fall back to 'harness' — an honest "unlabeled, ad-hoc
+// context", not a false claim of being a test.
 function defaultRole(): Role {
   if (process.env['NODE_ENV'] === 'test') return 'test';
   if (process.env['VITEST_WORKER_ID'] !== undefined) return 'test';
-  return 'test';
+  return 'harness';
 }
 
 function ecosystemHome(): string {
@@ -125,6 +142,7 @@ export function initTelemetry(opts: InitTelemetryOptions): TelemetryHandle {
 export function _resetTelemetryForTest(): void {
   _state.sink?.close();
   _state = { service: 'unlabeled', role: defaultRole(), logSink: 'none', sink: null };
+  _warnedUnlabeled = false;
   resetSelfCheck();
 }
 
@@ -134,9 +152,30 @@ export interface LogFields {
   [key: string]: unknown;
 }
 
+// BL-404: fires once per process, the first time anything is emitted while
+// `initTelemetry()` has never been called. `service === 'unlabeled'` is the
+// unambiguous signal — it is the literal default in `_state` above and is
+// never a value a real caller would pass to `initTelemetry` (BL-353 requires
+// a real service name). Deliberately independent of `st.logSink === 'none'`
+// short-circuit below: the whole point is that the uninitialised state is
+// ALSO the silent no-op sink, so this is the one path that must not be
+// silent.
+let _warnedUnlabeled = false;
+function warnIfUnlabeled(st: RuntimeState): void {
+  if (_warnedUnlabeled || st.service !== 'unlabeled') return;
+  _warnedUnlabeled = true;
+  process.stderr.write(
+    '[sox-telemetry] WARNING: emitting with no initTelemetry() call in this process ' +
+      `(role:'${st.role}', logSink:'none' — records are being silently dropped). ` +
+      'Call initTelemetry({ service, role, logSink }) at process startup, before any ' +
+      'handler can emit, or this process\'s telemetry is a permanent no-op (BL-404).\n',
+  );
+}
+
 function emitRecord(event: string, level: 'debug' | 'info' | 'warn' | 'error', fields?: LogFields): void {
   try {
     const st = _state;
+    warnIfUnlabeled(st);
     if (st.logSink === 'none') return;
     const traceId =
       (fields && typeof fields['trace_id'] === 'string' ? (fields['trace_id'] as string) : undefined) ??
