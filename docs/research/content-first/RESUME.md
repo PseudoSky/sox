@@ -91,16 +91,13 @@ This is where current work lives. **`proxy/cf-proxy.mjs` (port 3333) is the prod
 
 ## 6. Known issues / gotchas
 
-1. **The proxy must be running** for `proxy/cf` to work. Start with:
-   ```bash
-   kill $(lsof -ti:3333) 2>/dev/null; sleep 1
-   nohup node docs/research/content-first/proxy/cf-proxy.mjs > /tmp/cf-proxy.log 2>&1 & disown
-   ```
+1. **Restart the proxy with `restart-cf-proxy.sh`, NEVER `kill $(lsof -ti:3333)`.** The port-based kill has killed the opencode service TWICE: `lsof -i:3333` matches both the listener (proxy) AND any client — opencode holds a live client connection to 3333 during an active session, so `lsof -ti:3333` returns both PIDs and `kill $(...)` kills both. The safe script kills by exact process identity (`pgrep -f "^node cf-proxy\.mjs$"`), which can never match opencode. See `proxy/restart-cf-proxy.sh` for the documented procedure.
 2. **Per-session logs** are gitignored (`proxy/.gitignore` ignores `*.jsonl`) — session data is ephemeral, not committed
 3. **Commitlint scope warning** is cosmetic (scope `research` not in the allowed list) — commits still land
-4. **The `rewrite:` debug line** in stderr (`personaApplied=true agentRoleTokens=N`) verifies the persona actually reached the forwarded messages — check it when debugging persona application
+4. **The `rewrite:` debug line** in stderr (`personaApplied=true sharedSysLen=N`) verifies the persona actually reached the forwarded messages — check it when debugging persona application
 5. **Cache block minimum:** DeepSeek needs ~1,024 tokens before cache engages. Short conversations show 0 cache — expected, not a bug. Real sessions hit 95-99%+
 6. **Content dilution:** at 60K+ token contexts, a ~3K-token persona suffix is a small signal — the model may "not notice" the agent switch even though the SP is verifiably applied. This is a model-behavior property, not a proxy bug.
+7. **Uniform metrics schema (since `ab7ca0f`):** both RF and CF arms log the same per-turn fields — `{agent, turns, passthrough, tokens, cached, output, savings_pct, model}` — so per-agent cache comparison is direct. RF turns resolve the agent name from the opencode SP via `resolveAgent`.
 
 ---
 
