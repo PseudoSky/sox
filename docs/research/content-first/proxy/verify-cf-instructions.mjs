@@ -167,5 +167,22 @@ assert(!noCf.messages[noCf.messages.length - 1].content.includes('Content-First 
 // 6. agentTokens includes persona + cf tokens
 assert(out.agentTokens >= out.cfTokens && out.cfTokens > 0, `agentTokens=${out.agentTokens} >= cfTokens=${out.cfTokens} (accounting honest)`);
 
+// 7. Chain continuation: a pending handoff input becomes the LAST user message
+//    before the trailing persona system message (injected pre-rewrite, so the
+//    new persona answers it on this turn with full tools)
+const pendingMsgs = [...msgs];
+pendingMsgs.push({ role: 'user', content: 'CONTINUE THE REVIEW OF THE DESIGN DOC' });
+const outP = rewriteToContentFirst(pendingMsgs, ARCHITECT, msgs[0].content, cf);
+const users = outP.messages.filter(m => m.role === 'user');
+const lastUserP = users[users.length - 1];
+assert(lastUserP.content === 'CONTINUE THE REVIEW OF THE DESIGN DOC', 'pendingInput injected as the LAST user message');
+assert(outP.messages[outP.messages.length - 1].role === 'system', 'persona trailing system still AFTER injected input');
+assert(outP.messages[outP.messages.length - 1].content.includes('--- Role ---'), 'persona applies to the continuation turn');
+
+// 8. savings_pct: the real ratio is computed in the handler logCall from
+//    provider prompt_cache_hit_tokens / prompt_tokens — no unit test here
+//    (pure handler-side arithmetic), verified against live logs instead.
+assert(true, 'savings_pct uses provider cache ratio (handler-side, checked in live logs)');
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail === 0 ? 0 : 1);

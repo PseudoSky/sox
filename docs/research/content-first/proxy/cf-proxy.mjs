@@ -139,6 +139,7 @@ function getSession(id) {
       opencodeAgent: null,    // last agent detected from opencode's SP
       opencodeSP: null,       // last SP opencode sent (for change detection)
       apiOverride: false,     // true when activeAgent was set via /v1/session/agent
+      pendingInput: null,     // handoff task to inject as a user msg on next turn
       context: [],            // accumulated messages (cache anchor)
       createdAt: new Date().toISOString(),
       turns: 0,
@@ -343,13 +344,15 @@ function renderCFInstructions(sessionId) {
     'You are running through a session-aware content-first proxy: the shared',
     'context stays cached across agent persona switches; only the role suffix',
     'changes per turn. When the next stage of work belongs to a different',
-    'specialist, hand off to it instead of doing the work yourself:',
+    'specialist, hand off to it INSTEAD of doing the work yourself. Pass the',
+    'task as `input` so the next agent continues the chain immediately:',
     '',
     `  curl -s -X POST http://localhost:${PORT}/v1/session/agent \\`,
     `    -H 'Content-Type: application/json' \\`,
-    `    -d '{"sessionId":"${sessionId}","agent":"<agent-name>"}'`,
+    `    -d '{"sessionId":"${sessionId}","agent":"<agent-name>","input":"<task for the next agent>"}'`,
     '',
-    'The next turn then runs with that agent\'s persona. Available agents:',
+    'The next turn then runs with that agent\'s persona, and the input is',
+    'injected as the first message of its turn. Available agents:',
     agents.join(', '),
   ].join('\n');
 }
@@ -565,32 +568,18 @@ const server = http.createServer(async (req, res) => {
       if (!session.opencodeAgent) session.opencodeAgent = resolved.name;
       logCall({ event: 'session_agent_set', agent: resolved.name, turns: session.turns }, sessionId);
 
-      // If input provided, trigger the next turn with the new persona
+      // Chain continuation: store the task as pendingInput and let the NEXT
+      // /v1/chat/completions request (opencode always sends one after the
+      // handoff tool result) inject it as a user message. That continuation
+      // turn flows through the FULL streaming path WITH opencode's tools —
+      // the new agent can actually work. (Previously this ran a blocking
+      // tool-less forwardBlocking, which could not continue the chain.)
       if (input) {
-        const messages = [
-          ...session.context.map(m => ({ ...m })),
-          { role: 'user', content: input },
-        ];
-        // Reuse the content-first rewrite so the persona lands in the trailing
-        // system message (same structure as the streaming path) instead of a
-        // user-message suffix the model would read as data.
-        const cf = rewriteToContentFirst(messages, resolved.systemPrompt, session.opencodeSP, null);
-        const result = await forwardBlocking(cf.messages, { model: TARGET_MODEL, tools: session.lastTools || [] });
-        const output = result.choices?.[0]?.message?.content || '';
-        session.context.push({ role: 'user', content: input });
-        if (output) session.context.push({ role: 'assistant', content: output });
-        session.turns++;
-
-        logCall({
-          event: 'handoff', agent: resolved.name, turns: session.turns,
-          cf_tokens: result.provider.tokens.prompt, cf_cached: result.provider.tokens.cacheHit,
-          cf_output: result.provider.tokens.completion,
-        }, sessionId);
-
+        session.pendingInput = input;
+        logCall({ event: 'handoff_pending', agent: resolved.name, input_tokens: Math.ceil(input.length / 4), turns: session.turns }, sessionId);
         return jsonResponse(res, 200, {
-          sessionId, activeAgent: resolved.name, turn: session.turns,
-          tokens: { input: result.provider.tokens.prompt, cached: result.provider.tokens.cacheHit },
-          output,
+          sessionId, activeAgent: resolved.name, switched: true,
+          note: 'Next chat completion injects the provided input under the new persona.',
         });
       }
 
@@ -655,6 +644,16 @@ const server = http.createServer(async (req, res) => {
       }
 
       // ── Content-first path (true streaming) ──
+      // Chain continuation: a pending handoff task is injected as a user
+      // message BEFORE the rewrite, so the new persona answers it on this very
+      // turn (full streaming path, full toolset). One-shot — cleared after use.
+      let injected = null;
+      if (session?.pendingInput) {
+        injected = { role: 'user', content: session.pendingInput };
+        messages.push(injected);
+        session.pendingInput = null;
+        console.error(`[cf-proxy] pendingInput injected: ${JSON.stringify(sessionId)} (${Math.ceil(injected.content.length / 4)} tokens)`);
+      }
       const cfPrompt = sessionId ? renderCFInstructions(sessionId) : null;
       const cf = rewriteToContentFirst(messages, personaSP, opencodeSP, cfPrompt);
       // Verify BOTH invariants reached the forwarded messages:
@@ -684,7 +683,10 @@ const server = http.createServer(async (req, res) => {
         passthrough: false,
         agent_changed: changed,
         cf_tokens: result.inputTokens, cf_cached: result.cacheHits, cf_output: result.outputTokens,
-        savings_pct: cf.savings, cached_seed: cf.cachedSeed,
+        // Real cache savings from the provider's prompt_cache_hit_tokens,
+        // not the seed-hash heuristic (which only fires on exact seed reuse).
+        savings_pct: result.inputTokens > 0 ? ((result.cacheHits / result.inputTokens) * 100).toFixed(1) : '0.0',
+        cached_seed: cf.cachedSeed,
         seed_tokens: cf.seedTokens, system_tokens: cf.systemTokens,
       }, sessionId);
       return;
