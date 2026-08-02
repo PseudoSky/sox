@@ -34,6 +34,29 @@ export interface EmbedProvenanceStats {
    * when SOX_HEAL_STALE_VECTORS=1 is set.
    */
   stale_vector_count: number;
+  /**
+   * BL-406: live episodes with embed_model IS NULL but a vec_node row DOES
+   * exist — a vector whose model provenance is unknown. Pre-BL-88 rows land
+   * here. These were previously invisible to staleness detection entirely
+   * (excluded from stale_vector_count by the `embed_model IS NOT NULL` guard)
+   * and reported nowhere, so a store could carry old-model vectors after a
+   * model swap while `stale_vector_count: 0` claimed full freshness. Unknown
+   * provenance is reported as unknown here rather than folded into either
+   * "stale" (false negative risk: might actually be current) or "fresh"
+   * (false positive risk: might actually be stale) — see BL-406.
+   */
+  unverifiable_vector_count: number;
+  /**
+   * BL-406: live episodes with a non-null embed_model but NO vec_node row —
+   * a record claiming embed provenance with no vector to back it. Distinct
+   * from `unstamped`/`unverifiable_vector_count` (which have a vector but no
+   * claim) and from the embed backlog (which is model-agnostic); this is the
+   * specific claim-without-evidence shape. These rows are also counted by
+   * embedBacklogStats()/the embed heal queue (no embed_model filter there),
+   * so they get re-embedded on the next heal pass — this field exists purely
+   * so the contradiction is visible on the stats surface instead of silent.
+   */
+  stamped_without_vector: number;
   /** The active embedding model at the time of this stats query. */
   active_model: string;
 }
@@ -251,10 +274,34 @@ export async function memoryGetStats(
     [resolvedEmbedModel],
   );
 
+  // BL-406: unstamped rows that DO have a vector — provenance unknown, not
+  // excludable from view. See EmbedProvenanceStats.unverifiable_vector_count.
+  const unverifiableVecRow = await adapter.executeGet<{ cnt: number }>(
+    `SELECT COUNT(*) AS cnt
+     FROM node n
+     WHERE n.kind = 'episode'
+       AND n.t_invalid IS NULL
+       AND n.embed_model IS NULL
+       AND EXISTS (SELECT 1 FROM vec_node v WHERE v.node_id = n.rowid)`,
+  );
+
+  // BL-406: stamped rows with NO vector — a provenance claim with nothing to
+  // back it. See EmbedProvenanceStats.stamped_without_vector.
+  const stampedNoVecRow = await adapter.executeGet<{ cnt: number }>(
+    `SELECT COUNT(*) AS cnt
+     FROM node n
+     WHERE n.kind = 'episode'
+       AND n.t_invalid IS NULL
+       AND n.embed_model IS NOT NULL
+       AND NOT EXISTS (SELECT 1 FROM vec_node v WHERE v.node_id = n.rowid)`,
+  );
+
   const embedProvenance: EmbedProvenanceStats = {
     stamped: stampedRow?.cnt ?? 0,
     unstamped: unstampedRow?.cnt ?? 0,
     stale_vector_count: staleVecRow?.cnt ?? 0,
+    unverifiable_vector_count: unverifiableVecRow?.cnt ?? 0,
+    stamped_without_vector: stampedNoVecRow?.cnt ?? 0,
     active_model: resolvedEmbedModel,
   };
 

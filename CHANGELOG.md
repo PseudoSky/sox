@@ -2,6 +2,51 @@
 
 ---
 
+## [Unreleased] — BL-406: the stale-vector detector was structurally blind to unstamped legacy vectors, and nothing backfilled `embed_model`
+
+Filed and resolved same-day 2026-08-01, from the post-deploy live-store audit. **No embedding loss** —
+measured against the pre-deploy Turso snapshot, all 1090 `embed_model IS NULL` live episodes had valid
+`vec_node` rows; these are pre-BL-88 legacy rows (`t_valid` spans a closed 2026-06-21→2026-06-26
+window), not an ongoing leak. The defect was **detection**, not data: three surfaces silently excluded
+or mis-tracked provenance instead of reporting it.
+
+**Defect 1 — `stale_vector_count` excluded unstamped rows by construction.**
+`libs/memory-core/src/stats.ts`'s staleness query required `embed_model IS NOT NULL`, so an unstamped
+row could never be counted stale whatever model produced its vector — the live store reported
+`stale_vector_count: 0`, true only of the stamped subset. Fixed: `EmbedProvenanceStats` now carries a
+separate `unverifiable_vector_count` (unstamped rows that DO have a vector — provenance unknown, not
+folded into "fresh" or "stale").
+
+**Defect 2 — nothing backfilled `embed_model`.** `runBatchEnrich`'s legacy-stamp step (`enrich-batch.ts`)
+backfilled `enrich_ver` only; no pass, however many times run, ever closed the 1090 unstamped rows.
+Fixed: a new backfill step stamps `embed_model` from `memory_scope.embed_model` — the model the row
+was actually written under — on any live episode with `embed_model IS NULL` **and** an existing
+`vec_node` row (attribution only, never a re-embed; vector bytes are untouched).
+
+**Defect 3 — one stamped row had no vector, and the contradiction was invisible.** `EmbedProvenanceStats`
+now reports `stamped_without_vector` directly. The embed heal queue (`embedBacklogStats` /
+`healMissingVectors`, `embed-pipeline.ts`) already picks these rows up on its own — its query has no
+`embed_model` filter — so this half of the defect was a stats-surface visibility gap, not a missing
+enqueue; proven in the test rather than re-implemented.
+
+**Explicitly not done:** deleting and re-embedding the 1090 vectors — they are valid, and re-embedding
+22% of the corpus to close a bookkeeping gap would be strictly worse than stamping them.
+
+**Files:** `libs/memory-core/src/stats.ts` (`EmbedProvenanceStats.unverifiable_vector_count`,
+`.stamped_without_vector`), `libs/memory-core/src/enrich-batch.ts`
+(`BatchEnrichResult.embed_model_backfilled` + the Step 1b backfill).
+
+**Red→green, watched:** `libs/memory-core/src/bl406-stale-vector-blindness.spec.ts` — seeds an
+unstamped-with-vector episode and a stamped-without-vector episode. After writing the test, the
+`stats.ts`/`enrich-batch.ts` edits were reverted via `git restore` (patch saved first) and the suite
+re-run: all 3 tests failed, each on `expected undefined to be 1/0` — `unverifiable_vector_count`,
+`stamped_without_vector`, and `embed_model_backfilled` all simply absent from the pre-fix shape. The
+saved patch was then re-applied (`git apply`) and the suite re-run green: all three counts
+(`unverifiable_vector_count: 1`, `stamped_without_vector: 1`, `embedBacklogStats().count: 1`) non-zero
+in the red-arm seed, the backfill stamps the legacy row from `memory_scope.embed_model`, and its
+vector JSON is byte-identical before/after. `npx nx test memory-core` — 497 passed, 8 skipped. `npx nx
+typecheck memory-core`, `typecheck-tests`, `lint` all clean.
+
 ## [Unreleased] — BL-388 (partial): `baseline-capture` no longer unwraps its adapter back to a raw sqlite handle
 
 > **ID note — I filed this as BL-403 and that was a duplicate.** BL-388 already covered these exact
