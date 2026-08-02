@@ -170,6 +170,23 @@ worktree) and the agent registry — the same information the CF prompt injects
 into a CF session. It does not receive the chain's answers, deliverable
 formats, or termination rules from any prior run.
 
+**Observed behavioral divergence — claim/lock (2026-08-02):** the CF run's
+product agent **claimed** its selected feature via the backlog CLI
+(`backlog claim-item --repo adhd --human-id FEAT-002 --by
+"product:feat002-pipeline-20260802"` — verified in the session log + item
+state). The RF run's product agent **selected** FEAT-APIGEN-TS-TYPE-CODEGEN-001
+but did **not** claim it (item still OPEN, `claimedBy: None`, no claim note —
+verified in the DB). Neither prompt mentions claiming, so the divergence is
+agent initiative, not prompt content. **Interpretation: the CF run understood
+the mission better** — locking the chosen item is the mission-completing
+action (it prevents double-picking and leaves an audit trail); RF's product
+agent stopped at "select and state a decision." This is a behavioral-quality
+signal beyond the cache economics, and it compounds the A/B: the arms
+differ not just in cache reuse but in how completely each agent executes the
+intended workflow. Worth probing in a follow-up (e.g. whether the RF arm's
+failure to claim correlates with the thinner stage prompts or with the
+external-sequencing structure).
+
 **To run the A/B:** run the same task with the `cf-chain-dispatcher` agent
 (RF arm) and through the CF self-handoff chain (CF arm); compare
 `rf_cached/input` vs `cf_cached/input` per stage from the `proxy-ses_*.jsonl`
