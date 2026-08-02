@@ -2,6 +2,89 @@
 
 ---
 
+## [Unreleased] — BL-359: BL-id allocation race fixed — atomic reservation + pre-commit collision guard
+
+**The bug.** A new backlog id was chosen by reading the current maximum `### BL-<n>` heading in
+BACKLOG.md and adding one, with no reservation and no uniqueness check. Any two agents who read
+before either wrote picked the **same id**. On 2026-07-31 alone this produced two collisions —
+BL-344 (filed twice, second renumbered to BL-346) and BL-354 (filed four times across three
+agents, three renumbers, ending at BL-358 — "there is no BL-354 any longer"). A related, distinct
+failure mode hit again the next day: BL-395 was filed as a brand-new id that happened to collide
+with an already-resolved CHANGELOG.md entry, because the allocator only ever looked at
+BACKLOG.md's own headings and never scanned CHANGELOG.md, where resolved ids also live.
+
+**The fix — two parts.**
+
+1. **`tools/allocate-bl-id.mjs`** replaces "read max, add one" with an atomic reservation:
+   ```
+   node tools/allocate-bl-id.mjs          # BL-<n> — reserves and appends a placeholder heading
+   node tools/allocate-bl-id.mjs --dry-run   # BL-<n> — compute only, no write
+   ```
+   It computes the next id from every `BL-<n>` token across **both** BACKLOG.md and CHANGELOG.md
+   (closing the BL-395 blind spot), then takes an exclusive `mkdir`-based lock, re-reads both
+   files under the lock, and appends a `### BL-<n> — RESERVED ...` placeholder heading to
+   BACKLOG.md in the same write before releasing the lock — so a second caller racing in sees the
+   placeholder as part of its own max-scan and is guaranteed the next id after it. Verified live:
+   8 concurrent invocations (`for i in 1..8; do node tools/allocate-bl-id.mjs & done; wait`)
+   produced 8 consecutive, unique ids with zero collisions.
+
+2. **`tools/check-bl-id-integrity.mjs`**, wired as a pre-commit guard, rejects a commit that:
+   - leaves a duplicate `### BL-<n>` heading in BACKLOG.md (delegates to the existing
+     `check-backlog-markers.mjs`, which already enforced this — it was just never gated on);
+   - reuses a `BL-<n>` id that is already claimed by a primary (non-`(partial)`) CHANGELOG.md
+     release header — the exact BL-395 collision shape;
+   - ships an abandoned `allocate-bl-id.mjs` `RESERVED (RESERVED)` placeholder.
+
+   It also carries an **advisory, non-blocking** warning (never fails the commit) for the
+   duplicate-*content* failure mode raised alongside this item (BL-403: a genuinely new id filed
+   for a defect already covered by BL-388, missed because the dedupe search was by error string,
+   not file path) — if a newly-staged item's `**Files:**` line exactly matches an existing open
+   item's, it prints a WARN suggesting a merge. A guard cannot judge semantic duplication, so this
+   stays advisory rather than blocking; tightened further only if it proves useful in practice.
+
+   **Scope:** the guard only runs when BACKLOG.md or CHANGELOG.md is actually staged for the
+   commit (checked via `git diff --cached --name-only`), verified necessary live — this session
+   has several agents editing BACKLOG.md concurrently, and the file is routinely caught mid-edit
+   (BL-397 itself was observed staged with a written CHANGELOG.md entry but its BACKLOG.md
+   heading not yet deleted, while this script was being tested). An unconditional gate would have
+   blocked every commit repo-wide on pre-existing background inconsistency it did not introduce.
+
+**Hook wiring.** `.husky/pre-commit` runs `check-bl-id-integrity.mjs` ahead of the existing
+`nx affected --target=lint` step. That file was already present in the repo but **inert** — no
+`husky` devDependency, no `prepare` script, and `core.hooksPath` unset, so git had been running
+its untracked, all-`.sample` default `.git/hooks/`. `tools/install-git-hooks.mjs` activates it by
+copying `.husky/*` into `.git/hooks/*` directly (no `git config` mutation); every clone/worktree
+must run it once, since hooks are never tracked by git. Installed and verified live in this
+checkout.
+
+**Red→green, watched, in an isolated scratch git repo** (BACKLOG.md/CHANGELOG.md were mid-edit by
+other agents in the real repo throughout this work, so the demonstration used a disposable
+`git init` copy rather than touching the shared files):
+```
+RED    duplicate `### BL-1` heading staged → git commit → rejected, exit 1, HEAD unchanged
+       FAIL  BL-1: duplicate '###' heading (lines 9 and 15) ...
+GREEN  same change, `### BL-2` (unique id) instead → git commit → succeeds, exit 0
+       [main 57209d7] test: add BL-2 with a unique id
+```
+
+**Severity:** MEDIUM, process — no runtime impact, but it was corrupting the reference integrity
+of the project's own record on every parallel-agent session, and had already produced one
+permanently wrong cross-reference (BL-328's "Related" line, silently repointed by BL-354's
+renumbering) plus seven total collisions across two days.
+
+**Not done / explicitly out of scope:** the fix sketch's rank-1 idea of rejecting a *reference* to
+an id with no heading anywhere was evaluated and dropped — CHANGELOG.md's prose is full of
+legitimate inline mentions of ids whose canonical heading lives elsewhere (`### BL-253`'s body
+says "Follow-up (BL-258)"), so a blanket dangling-reference check produced false positives on
+BL-202 and BL-258 in this repo's real content during testing and was judged too noisy to enforce.
+Longer-term, this class of bug disappears entirely once ids are server-allocated by the backlog
+MCP tool (the markdown→tool import is already authorized and deferred) — this fix is the
+stopgap for as long as BACKLOG.md/CHANGELOG.md stay hand-authored markdown.
+
+Citations: [wip/turso-live-metrics, pkt-17, claude, turso-go-live PKT-17, 1: tools/allocate-bl-id.mjs, 2: tools/check-bl-id-integrity.mjs, 3: tools/install-git-hooks.mjs, 4: .husky/pre-commit, 5: live 8-way concurrent allocation test (2026-08-01, this session, no captured transcript — reproducible via the command shown above), 6: scratch git repo red→green demonstration (2026-08-01, this session, commits `71ccae0`/`57209d7` in a disposable `/tmp` repo, not part of this repo's history)]
+
+---
+
 ## [Unreleased] — BL-397: `memory-flush` no longer reaches around StoreAdapter in production or test code
 
 Filed and resolved same-day 2026-08-01. `memory-flush` (the SessionEnd/ScopePromotionProposed hook
@@ -132,12 +215,12 @@ in the red-arm seed, the backfill stamps the legacy row from `memory_scope.embed
 vector JSON is byte-identical before/after. `npx nx test memory-core` — 497 passed, 8 skipped. `npx nx
 typecheck memory-core`, `typecheck-tests`, `lint` all clean.
 
-## [Unreleased] — BL-388 (partial): `baseline-capture` no longer unwraps its adapter back to a raw sqlite handle
+## [Unreleased] — BL-388: `baseline-capture` no longer unwraps its adapter back to a raw sqlite handle, and now proven to run on default Turso
 
 > **ID note — I filed this as BL-403 and that was a duplicate.** BL-388 already covered these exact
 > two lines, filed the same day from the storage-boundary lint pass. I searched the backlog by error
 > string and not by file path, which is precisely the search the dedupe rule prescribes. BL-403 is
-> retracted; this entry is the BL-388 record. **BL-388 remains OPEN** — see the acceptance gap below.
+> retracted; this entry is the BL-388 record.
 
 Discovered mid-deploy: `npx nx run registry:sync-index` failed on `baseline-capture:build` with two
 `TS2345`s — `Argument of type 'Database' is not assignable to parameter of type 'StoreAdapter'`.
@@ -162,15 +245,48 @@ Two independent defects in one line:
 **Fix:** pass the `StoreAdapter` straight through. Both `.unwrap()` calls and both now-unused
 `SqliteAdapter` type imports deleted. `npx nx build baseline-capture` green.
 
-**What is NOT yet done — BL-388 stays open.** Its stated acceptance is to *run each baseline-capture
-entry point with no `STORE_ADAPTER` set (default Turso) and assert it completes without a raw-handle
-type error*. That was not executed. The unwrap is provably gone (grep + a compile that previously
-failed), but "it type-checks" is a weaker claim than "it runs on Turso", and this repo has been
-burned five times by treating the weaker claim as the stronger one (BL-225). PKT-06 carries the
-remaining runtime acceptance.
+**Runtime acceptance (PKT-06, red→green, BL-388) — DONE 2026-08-01.** Ran both entry points with
+`STORE_ADAPTER` unset (default Turso), against a copy of the read-only live-store snapshot
+(`/Users/nix/.claude/jobs/1557bcef/tmp/store-snapshot-1844/memory.db`), bounded so the run stayed
+seconds not hours (`clusterNodeCap: 200`, `iterations: 5`):
+
+- **`capture-enrichment-baseline.ts`** — red: reproduced a *second*, previously-undiscovered
+  raw-handle-shaped defect the moment it was first run against Turso. Step 1's WAL-checkpoint helper
+  hardcoded `createSqliteAdapter({ dbPath: liveDbPath })` regardless of `STORE_ADAPTER`, so it forced
+  better-sqlite3 onto a libsql-format file and crashed immediately: `SqliteError: malformed database
+  schema (__turso_internal_fts_dir_idx_fts_node_key) - near "USING": syntax error`. This is exactly
+  what the acceptance criterion exists to catch — the compile-level fix left one more unconditional
+  sqlite assumption standing. **Fix:** Step 1 now opens via `openDb(liveDbPath)` (respects
+  `STORE_ADAPTER`, same as every other adapter acquisition in this file) instead of constructing a
+  `SqliteAdapter` directly; the now-unused `createSqliteAdapter` import was removed. Green re-run:
+  completed end-to-end against Turso — WAL-checkpointed, snapshot copied and sha256'd, one real
+  `runBatchEnrich` pass over 8846 nodes / 47339 edges / 4889 episodes (`embed_model_backfilled: 1090`,
+  clustering skipped by its own degenerate-cluster guard at the bounded node cap), baseline JSON
+  written.
+- **`capture-write-perf-baseline.ts`** — green on the first Turso run with no code change: 5
+  sequential `memory_write` calls against a fresh `openDb()`-created Turso-backed disposable store,
+  p50 379.62ms / p99 549.99ms / mean 406.47ms, baseline JSON written. Confirms the eb70cc8 unwrap
+  removal already left this file's `StoreAdapter` usage fully backend-agnostic.
+
+**Unrelated environmental defect hit and worked around, not fixed here — filed separately as
+BL-408.** The first three attempts at the write-perf run crashed deterministically during
+`warmupEmbed()`, *before* any store code executed: `Error: write EPIPE` inside
+`fastembedProcessHost.js`'s `send()`, immediately followed by an uncaught
+`libc++abi: mutex lock failed`. Root-caused (not just observed): `sharedFastembedProcess.ts`
+deliberately `unref()`s both the forked child and its IPC channel (BL-370's comment explains why for
+a long-lived host), so in a **standalone script** with no other ref'd handle, Node's event loop can
+see nothing left to wait on and begin tearing down while the child is still mid-model-load; the
+child's later `process.send()` reply then hits a pipe the parent already closed, and
+`fastembedProcessHost.ts` has no `process.on('error', …)` guard around that send, so it crashes
+uncaught. Confirmed by adding a harness-only `setInterval` keep-alive around the `warmupEmbed()` call
+in the acceptance runner (not in either shipped file) — 100% reproducible without it, 100% clean with
+it, across `SOX_EMBED_EXECUTION_PROVIDER=cpu` and default CoreML alike, ruling out ANE/CoreML
+contention as the cause. This is a real defect in `libs/data/embed/embedding-provider/**`, entirely
+outside `tools/baseline-capture/**` — see BL-408.
 
 Files: `tools/baseline-capture/src/capture-enrichment-baseline.ts`,
-`tools/baseline-capture/src/capture-write-perf-baseline.ts`. Commit `eb70cc8`.
+`tools/baseline-capture/src/capture-write-perf-baseline.ts`. Commits `eb70cc8`, plus the Step 1
+`openDb()` fix and runtime acceptance above (2026-08-01, PKT-06).
 
 ---
 
