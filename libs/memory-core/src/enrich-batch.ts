@@ -70,6 +70,16 @@ export interface BatchEnrichResult {
   topics_backfilled: number;
   /** Number of nodes whose enrich_ver was set to "legacy" (first-pass backfill). */
   legacy_nodes_stamped: number;
+  /**
+   * BL-406: Number of live episodes whose embed_model was backfilled from
+   * memory_scope.embed_model. These are pre-BL-88 rows that have a valid
+   * vector but were never stamped with the model that produced it (BL-88
+   * added the column without a backfill pass). Only rows WITH a vec_node row
+   * are eligible — a row with no vector has no provenance to attribute (see
+   * EmbedProvenanceStats.stamped_without_vector in stats.ts instead, which
+   * the embed heal queue already picks up independently of this stamp).
+   */
+  embed_model_backfilled: number;
   /** Whether the cluster pass was skipped due to the degenerate-cluster guard (D5.5). */
   cluster_pass_skipped: boolean;
   /** If skipped: the reason string. */
@@ -126,6 +136,7 @@ export async function runBatchEnrich(
     relates_to_edges: 0,
     topics_backfilled: 0,
     legacy_nodes_stamped: 0,
+    embed_model_backfilled: 0,
     cluster_pass_skipped: false,
   };
 
@@ -136,6 +147,40 @@ export async function runBatchEnrich(
     [legacyStamp],
   );
   result.legacy_nodes_stamped = legacyResult.rowsAffected;
+
+  // ── Step 1b: Backfill embed_model for unstamped legacy vectors (BL-406) ────
+  // BL-88 added node.embed_model but never backfilled it, so pre-BL-88 rows
+  // stay unstamped forever regardless of how many enrich passes run — and an
+  // unstamped row is excluded BY CONSTRUCTION from stale_vector_count
+  // (libs/memory-core/src/stats.ts), so the store can silently retain
+  // old-model vectors after a model swap while reporting full freshness.
+  //
+  // Only rows that already HAVE a vector are eligible: we are attributing an
+  // existing vector to the model it was actually produced under (the scope's
+  // recorded embed_model), never re-embedding. A row with no vector has
+  // nothing to attribute — see stats.ts's `stamped_without_vector` for that
+  // shape, which is handled by the embed heal queue instead.
+  // Defensive: some lightweight test fixtures (enrich.spec.ts) build a minimal
+  // schema without a memory_scope table at all — mirrors the try/catch already
+  // used for the same query in stats.ts's degradedRecordCount.
+  let scopeEmbedModel: string | null = null;
+  try {
+    const scopeModelRow = await adapter.executeGet<{ embed_model: string | null }>(
+      `SELECT embed_model FROM memory_scope LIMIT 1`,
+    );
+    scopeEmbedModel = scopeModelRow?.embed_model ?? null;
+  } catch {
+    scopeEmbedModel = null;
+  }
+  if (scopeEmbedModel) {
+    const embedBackfillResult = await adapter.executeRun(
+      `UPDATE node SET embed_model = ?
+       WHERE kind = 'episode' AND t_invalid IS NULL AND embed_model IS NULL
+         AND EXISTS (SELECT 1 FROM vec_node v WHERE v.node_id = node.rowid)`,
+      [scopeEmbedModel],
+    );
+    result.embed_model_backfilled = embedBackfillResult.rowsAffected;
+  }
 
   // ── Step 2: Mixed-model guard (D5.3) ──────────────────────────────────────
   // Check: any live episode with enrich_ver IS NULL after stamping?

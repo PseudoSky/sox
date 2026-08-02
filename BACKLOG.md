@@ -6,7 +6,7 @@ Project backlog for sox-ecosystem. Each item: what's wrong, where, severity, and
 
 ## Current status — 2026-08-01 (regenerated mechanically; see BL-224)
 
-**Total open: 82.** (BL-406 filed 2026-08-01 from the post-deploy live-store audit — no embedding loss, but the stale-vector detector is blind to 1090 legacy rows; BL-404, BL-405 filed 2026-08-01 from the reviewed memory-server redeploy — production never initialises telemetry, and every restart escalates to SIGKILL; BL-402 resolved 2026-08-01 — see CHANGELOG.md; BL-350 resolved 2026-08-01 from PKT-28's cluster-maintenance research — see CHANGELOG.md; BL-401 filed 2026-08-01 from PKT-02, the BL-351 acceptance-gap follow-up; BL-340, BL-325 resolved 2026-08-01 — see CHANGELOG.md; BL-395 filed and resolved same-day 2026-08-01 — see CHANGELOG.md; BL-394 filed 2026-08-01 from the BL-325 write-queue-bypass finding; BL-372 resolved 2026-08-01 — see CHANGELOG.md; BL-385 resolved 2026-08-01 — see CHANGELOG.md; BL-384 resolved 2026-08-01 — see CHANGELOG.md; BL-388, BL-389 filed 2026-08-01 from the storage-boundary lint pass; BL-287 resolved 2026-07-30; BL-293, BL-294, BL-295, BL-303 resolved 2026-07-16; BL-62 resolved 2026-07-18; BL-311 verified no live bug 2026-07-18; BL-313 (CRITICAL — live edge-table cascade-delete bug) found and resolved same-day 2026-07-18 — see CHANGELOG.md; BL-306..309 filed 2026-07-11 from native-addon/adapter research; BL-310 filed 2026-07-17, resolved 2026-07-23; BL-312 filed 2026-07-18 from the same memory-server data-integrity investigation; BL-314 filed 2026-07-18 from a stale local content-store mirror discovered while syncing installed skill docs; BL-316, BL-273, BL-254, BL-252, BL-264, BL-297 all resolved 2026-07-23 — see CHANGELOG.md).
+**Total open: 81.** (BL-406 filed and resolved same-day 2026-08-01 from the post-deploy live-store audit — no embedding loss, but the stale-vector detector was blind to 1090 legacy rows — see CHANGELOG.md; BL-404, BL-405 filed 2026-08-01 from the reviewed memory-server redeploy — production never initialises telemetry, and every restart escalates to SIGKILL; BL-402 resolved 2026-08-01 — see CHANGELOG.md; BL-350 resolved 2026-08-01 from PKT-28's cluster-maintenance research — see CHANGELOG.md; BL-401 filed 2026-08-01 from PKT-02, the BL-351 acceptance-gap follow-up; BL-340, BL-325 resolved 2026-08-01 — see CHANGELOG.md; BL-395 filed and resolved same-day 2026-08-01 — see CHANGELOG.md; BL-394 filed 2026-08-01 from the BL-325 write-queue-bypass finding; BL-372 resolved 2026-08-01 — see CHANGELOG.md; BL-385 resolved 2026-08-01 — see CHANGELOG.md; BL-384 resolved 2026-08-01 — see CHANGELOG.md; BL-388, BL-389 filed 2026-08-01 from the storage-boundary lint pass; BL-287 resolved 2026-07-30; BL-293, BL-294, BL-295, BL-303 resolved 2026-07-16; BL-62 resolved 2026-07-18; BL-311 verified no live bug 2026-07-18; BL-313 (CRITICAL — live edge-table cascade-delete bug) found and resolved same-day 2026-07-18 — see CHANGELOG.md; BL-306..309 filed 2026-07-11 from native-addon/adapter research; BL-310 filed 2026-07-17, resolved 2026-07-23; BL-312 filed 2026-07-18 from the same memory-server data-integrity investigation; BL-314 filed 2026-07-18 from a stale local content-store mirror discovered while syncing installed skill docs; BL-316, BL-273, BL-254, BL-252, BL-264, BL-297 all resolved 2026-07-23 — see CHANGELOG.md).
 This block is DERIVED from the `**...**` status marker on each
 `### BL-<n>` heading — an item is open iff its last heading marker starts with `Open`, `REOPENED`,
 or `BLOCKED`. **Do not hand-maintain this section.** The previous header (dated 2026-07-07) ranked
@@ -23,13 +23,13 @@ Check for duplicate ids (must print nothing) — see BL-359:
 grep -o '^### BL-[0-9]*' BACKLOG.md | sort -V | uniq -d
 ```
 
-Regenerated 2026-08-01: **82 open**.
+Regenerated 2026-08-01: **81 open**.
 
 | Priority | Open items |
 |---|---|
 | **CRITICAL** | — |
 | **HIGH** | BL-225, BL-284, BL-288, BL-301, BL-302, BL-319, BL-322, BL-326, BL-327, BL-329, BL-334, BL-338, BL-342, BL-345, BL-349, BL-351, BL-353, BL-356, BL-358, BL-364, BL-375, BL-380, BL-387, BL-390, BL-391, BL-393, BL-394, BL-399, BL-401, BL-404, BL-405 |
-| **MEDIUM** | BL-99, BL-104, BL-105, BL-228, BL-259, BL-274, BL-282, BL-285, BL-291, BL-296, BL-306, BL-307, BL-308, BL-312, BL-315, BL-317, BL-318, BL-328, BL-332, BL-333, BL-337, BL-341, BL-359, BL-360, BL-361, BL-362, BL-376, BL-378, BL-383, BL-388, BL-389, BL-396, BL-397, BL-398, BL-400, BL-406 |
+| **MEDIUM** | BL-99, BL-104, BL-105, BL-228, BL-259, BL-274, BL-282, BL-285, BL-291, BL-296, BL-306, BL-307, BL-308, BL-312, BL-315, BL-317, BL-318, BL-328, BL-332, BL-333, BL-337, BL-341, BL-359, BL-360, BL-361, BL-362, BL-376, BL-378, BL-383, BL-388, BL-389, BL-396, BL-397, BL-398, BL-400 |
 | **LOW** | BL-103, BL-202, BL-215, BL-258, BL-261, BL-283, BL-292, BL-298, BL-305, BL-309, BL-314, BL-355, BL-379, BL-392 |
 | **UNSET** | BL-163 |
 
@@ -2472,48 +2472,3 @@ The store survived *this* restart intact — deep integrity probes came back `ov
 
 Citations: [wip/turso-live-metrics, main, claude, live deploy verification, 1: `node bin/soxe service restart memory-server -s user` output, 2026-08-01T23:47Z — pid 18521 -> 8820, 2: live `memory_ping` integrity block from pid 8820, deep probes, 555.5ms, damaged: []]
 
----
-
-### BL-406 — the stale-vector detector is structurally blind to 1090 live episodes, and nothing ever backfills `embed_model` — **Open (MEDIUM)** (2026-08-01)
-
-**Found while:** auditing the live store immediately after the reviewed redeploy, prompted by the owner's standing question *"why does the store not detect the bad state of the missing embeddings and re-embed them?"* This is a partial, measured answer to it.
-
-**FIRST, THE GOOD NEWS — there is no embedding loss.** Measured against the pre-deploy store snapshot with the production Turso flags (`index_method`, `multiprocess_wal`):
-
-| query | count |
-|---|---|
-| live episodes | 4889 |
-| unstamped (`embed_model IS NULL`) | 1090 |
-| **unstamped WITH a `vec_node` row** | **1090** |
-| unstamped with NO vector | **0** |
-| stamped with NO vector | **1** |
-
-All 1090 unstamped episodes **do** have vectors. The owner's CRITICAL bar — *"embedding vector loss is a critical failure"* — is **not** violated. `t_valid` on the unstamped set spans only `2026-06-21T21:39:06Z` → `2026-06-26T17:40:14Z`, a closed historical window: these are legacy rows written before BL-88 added the `node.embed_model` column, not an ongoing leak.[1]
-
-**Defect 1 — the staleness query cannot see them, by construction.** `computeStats` builds `stale_vector_count` as:
-```sql
-SELECT COUNT(*) FROM node n
- WHERE n.kind='episode' AND n.t_invalid IS NULL
-   AND n.embed_model IS NOT NULL          -- ← excludes all 1090
-   AND n.embed_model != ?
-   AND EXISTS (SELECT 1 FROM vec_node v WHERE v.node_id = n.rowid)
-```
-The `embed_model IS NOT NULL` predicate means an unstamped row can never be counted stale **whatever model produced its vector**. The live store reports `stale_vector_count: 0` — that number is true of the 3799 stamped rows and says nothing at all about the other 1090. On the next embed-model change, 22% of the corpus will silently retain vectors from the old model while the health surface reports full freshness.[2]
-
-**Defect 2 — nothing backfills `embed_model`.** `runBatchEnrich`'s "Step 1: Stamp legacy nodes" backfills **`enrich_ver`**, not `embed_model`:
-```sql
-UPDATE node SET enrich_ver = ? WHERE kind='episode' AND t_invalid IS NULL AND enrich_ver IS NULL
-```
-There is no equivalent statement for `embed_model` anywhere. The 1090 will therefore stay unstamped permanently — no pass, however many times it runs, will ever close this.[3]
-
-**Defect 3 — one live episode is stamped but has no vector.** Exactly 1 row has `embed_model IS NOT NULL` and no `vec_node` entry. `embed_backlog` is **0**, so nothing is queued to embed it and nothing ever will be. Small in count, but it is the shape of the failure that matters: a record can claim embed provenance it does not have, and no surface reports the contradiction.[1]
-
-**Fix sketch:** (a) make the staleness check treat `embed_model IS NULL` as *unknown-and-therefore-suspect* rather than silently excluding it — either count it in a separate `unstamped_vector_count` the surface actually reports, or resolve it against the store-level `memory_scope.embed_model` which is what those rows were written under; (b) add an `embed_model` backfill beside the existing `enrich_ver` one, stamping legacy rows with the scope-level model that produced them; (c) add a `stamped_without_vector` count so defect 3 is visible, and make the embed queue pick those rows up. **Do not "fix" this by deleting the 1090 vectors and re-embedding** — they are valid vectors, and re-embedding 22% of the corpus to solve a bookkeeping gap would be strictly worse than stamping them.
-
-**Acceptance (red→green, must name BL-406):** a test seeding both an unstamped-with-vector episode and a stamped-without-vector episode, asserting each is visible in the stats surface (not silently excluded), and that a backfill pass stamps the former without touching its vector. All three counts must be non-zero in the red arm.
-
-**Severity:** MEDIUM — no data is lost today and the corpus is intact; the defect is that the health surface **cannot detect** the bad state it is supposed to guard, which converts a future model migration into silent partial staleness.
-
-**Related:** BL-225 (documents that BL-88's `embed_model` column is written but not read by `reembed.ts` — this item is the *stats-side* consequence and the missing backfill, distinct root cause, cross-linked), BL-92, BL-88.
-
-Citations: [wip/turso-live-metrics, main, claude, live-store audit after the BL-401 gap-5 redeploy, 1: direct Turso queries against the pre-deploy snapshot of ~/.memory/memory.db taken 2026-08-01T18:44Z, 2: libs/memory-core/src/stats.ts:243-252 (`stale_vector_count`), 3: libs/memory-core/src/enrich-batch.ts:132-138 (legacy stamp backfills `enrich_ver` only)]
