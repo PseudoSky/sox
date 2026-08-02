@@ -592,7 +592,15 @@ const server = http.createServer(async (req, res) => {
       // Blocking call so we can intercept the virtual set_session_agent tool
       // BEFORE anything reaches the client. Returns the final assistant text.
       async function runTurn(turnMessages, allowVirtualTool) {
-        const upReq = { ...reqData, messages: turnMessages, model: TARGET_MODEL, stream: false };
+        const upReq = {
+          ...reqData,
+          messages: turnMessages,
+          model: TARGET_MODEL,
+          stream: false,
+        };
+        // strip streaming-only params that DeepSeek rejects on non-stream calls
+        delete upReq.stream_options;
+        delete upReq.stream;
         if (allowVirtualTool) upReq.tools = injectSessionTool(reqData.tools);
         else upReq.tools = (reqData.tools || []).filter(t => t?.function?.name !== 'set_session_agent');
         const response = await fetch(`${TARGET_BASE}/chat/completions`, {
