@@ -679,7 +679,7 @@ These are open, real, and belong to other subsystems. Listed so that "not in the
 rather than an oversight:
 
 - **Dispatch-optimizer / plan hygiene** — BL-99, BL-103, BL-104, BL-105, BL-228, BL-258, BL-261, BL-296, BL-298
-- **Packaging, native ABI, bundling** — BL-282, BL-284, BL-285, BL-288, BL-291, BL-292, BL-305, BL-306, BL-308, BL-314, BL-333, BL-355
+- **Packaging, native ABI, bundling** — BL-282, BL-284, BL-285, BL-288, BL-291, BL-292, BL-305, BL-306, BL-308, BL-314, BL-333, BL-355, BL-408
 - **Product surface** — BL-315 (`memory-server` has no REST API)
 - **Bundler / CI packaging** — BL-307 (`@lancedb/lancedb` missing from the bundler externals policy), BL-309 (no CI gate that every native dep in a bundled extension is `--external`)
 

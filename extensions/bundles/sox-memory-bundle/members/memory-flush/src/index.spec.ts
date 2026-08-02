@@ -16,7 +16,6 @@
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import Database from 'better-sqlite3';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 // Import the handler and config helpers
@@ -54,16 +53,15 @@ function makeTempDir(): { dir: string; cleanup: () => void } {
 
 async function setupTestDb(dbPath: string): Promise<void> {
   const adapter = await openDb(dbPath);
-  const db = adapter.unwrap() as Database.Database;
   try {
-    await memoryWrite(db, {
+    await memoryWrite(adapter, {
       content: 'Test episode for auto-export.',
       topic: 'test-topic',
       tags: ['test'],
       project_path: '/test/flush-project',
     });
   } finally {
-    db.close();
+    await adapter.close();
   }
 }
 
@@ -350,7 +348,7 @@ describe('memory-flush auto-export — failure isolation', () => {
       const dbPath = path.join(dbDir, 'test.db');
       // Create the DB so openWriteDb can open it
       const adapter = await openDb(dbPath);
-      (adapter.unwrap() as Database.Database).close();
+      await adapter.close();
 
       setExportConfig({
         export_enabled: true,
@@ -367,13 +365,12 @@ describe('memory-flush auto-export — failure isolation', () => {
       // Verify the episode was actually inserted into the DB despite export failure
       const adapter2 = await openDb(dbPath);
       try {
-        const db2 = adapter2.unwrap() as Database.Database;
-        const row = db2.prepare<[], { cnt: number }>(
+        const row = await adapter2.executeGet<{ cnt: number }>(
           `SELECT COUNT(*) AS cnt FROM node WHERE kind = 'episode' AND t_invalid IS NULL`,
-        ).get();
+        );
         expect(row?.cnt).toBeGreaterThanOrEqual(1);
       } finally {
-        (adapter2.unwrap() as Database.Database).close();
+        await adapter2.close();
       }
     } finally {
       dbCleanup();

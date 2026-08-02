@@ -277,6 +277,10 @@ importers:
       '@adhd/sox-vector-store':
         specifier: workspace:*
         version: link:../../vectors/vector-store
+    devDependencies:
+      '@adhd/sox-store-adapter':
+        specifier: workspace:*
+        version: link:../../store/store-adapter
 
   libs/data/store/blob-store:
     dependencies:
