@@ -62,29 +62,25 @@ This is where current work lives. **`proxy/cf-proxy.mjs` (port 3333) is the prod
 
 ---
 
-## 4. Open problem — the session id discovery question
+## 4. Session id discovery — problem RESOLVED IN DESIGN (see §7 options)
 
-**The user's question that remains unresolved:** When the agent successfully called `POST /v1/session/agent` to switch to `typescript` (log: `session_agent_set: typescript` at 19:02:05 in `proxy-ses_03c3312d1ffeebNMmJC5HoZ7Lg.jsonl`), how did the agent discover its own session id?
+**Background:** When the agent called `POST /v1/session/agent` to switch to `typescript` (log: `session_agent_set: typescript` at 19:02:05 in `proxy-ses_03c3312d1ffeebNMmJC5HoZ7Lg.jsonl`), how did it learn its own session id? We established:
+- opencode does NOT expose the session id to bash env vars (user-confirmed)
+- The session id appears nowhere in stored logs / tool results we can see
+- The agent's actual discovery method was fragile (grep session files, guess from context)
 
-**What we know:**
-- The session id `ses_03c3312d1ffeebNMmJC5HoZ7Lg` appears **nowhere** in any stored log content — the model never received it in a visible tool result
-- The per-session logger does NOT record the `/v1/session/agent` **request body** — only `event, agent, turns`
-- Raw captures (a different session) show the model's real tool calls were `bash` (git), not agent-MCP introspection — so it didn't use `agent_session_list` or `memory_get_session_state`
-- The agent's tool call that discovered the session id, and the command it ran, are **not recoverable from current logs**
-
-**What's missing:** The proxy must log the `/v1/session/agent` request body (the exact sessionId + agent the caller used). Without it, we cannot trace how the agent learned its session id.
-
-**Next step for this thread:** Add request-body logging to the `/v1/session/agent` handler (and ideally a `CF_RAW` capture for it), then have the user reproduce the handoff so we can see the exact value and trace where it came from.
+**The design insight (verified against code `cf-proxy.mjs:563-571`):** the proxy is a stateful *request* observer. Every turn, opencode sends full history (incl. previous `tool_calls` + `tool` results) to `/v1/chat/completions`, and the session is bound via the `x-session-id` **header** on that request. **The agent never needs to know its session id** — any switch the agent triggers is visible in the *next* request's history, and the proxy already knows which session that history belongs to. This reframes both requested solutions (see §7).
 
 ---
 
 ## 5. What was reverted / disabled (do not re-enable blindly)
 
-### The virtual `set_session_agent` tool — DISABLED
+### The virtual `set_session_agent` tool — DISABLED, and the approach is superseded
 - Was implemented, then reverted in `8367caf`
 - **Why:** the virtual tool required a *blocking* upstream call (to intercept the tool call before streaming to the client). With opencode's `max_tokens: 32000`, the blocking path waited for the FULL response before streaming → appeared hung / never completed
 - The fix attempt (strip `stream_options`, 7546767) fixed the 400 but not the hang
-- **To re-enable:** needs a different approach — intercept the `tool_call` delta *mid-stream* and re-issue, rather than blocking the whole response. Do NOT just flip it back on.
+- **Root cause, not just the hang:** opencode executes tools **client-side**. The proxy cannot synthesize a tool result into a stream the client already owns. Any interception-based design fights the client.
+- **Do NOT re-enable as-is.** The correct replacement is request-history observation (Option 1 in §7): the proxy reacts to tool calls in the *next* request's history instead of intercepting the stream.
 
 ### The chain proxy (`cf-chain.mjs`, port 3334)
 - Separate experiment for session-state chained agent switching (triage → judge → implement → review)
@@ -110,9 +106,17 @@ This is where current work lives. **`proxy/cf-proxy.mjs` (port 3333) is the prod
 
 ## 7. Immediate next steps (priority order)
 
-1. **Session-id discovery trace** — add `/v1/session/agent` request-body logging to `cf-proxy.mjs`, reproduce the handoff, capture the exact session id the agent used, and trace where it learned it. This closes the open question in section 4.
-2. **Re-enable virtual tool properly** — design mid-stream tool_call interception instead of the blocking round-trip (section 5).
-3. **Consider injecting the session id into context** — the proxy could append "Your session id is `ses_...`; to hand off, call POST /v1/session/agent" to the forwarded context, removing the agent's need to discover it via tools.
+**Decision on session-id discovery (user: "either tool-call switching handled by the proxy correctly, OR the endpoint resolves the session id without the agent specifying it"):**
+
+- **Option 1 (RECOMMENDED) — In-band switch via magic bash command.** Agent runs `bash: cf-switch typescript`. opencode executes it (bash always exists, no env dep). The NEXT `/v1/chat/completions` request carries that tool call in history; the proxy detects `cf-switch <agent>` in `tool_calls[].arguments.command`, applies the switch exactly like the endpoint does (`cf-proxy.mjs:523-528`), and rewrites the tool result to `✓ switched active agent to typescript` so the model sees success and continues in the new persona. Session id never transmitted by the agent — the request is already header-bound. No interception, no buffering, no hang. One-turn latency is inherent & fine.
+- **Option 2 — Session handle injected into context.** Proxy appends `[session:<short-handle>]` to the last user message inside `rewriteToContentFirst` (after persona suffix, cache-safe). Model reads its own handle from context — zero discovery. `/v1/session/agent` accepts either full id or handle (`:510`). Fixes the endpoint for external scripts too.
+- **Option 3 — Phantom tool in forwarded `tools` list.** Append a `set_session_agent` definition to `reqData.tools` so the model calls it natively; proxy applies switch + rewrites the (error) result on next request. Depends on opencode tolerating unknown tools gracefully — verify first.
+- **Option 4 — Single-active-session fallback** when `sessionId` absent. Fragile with concurrent sessions; last resort only.
+
+Implementation order:
+1. **Option 1 + 2** — magic bash switch + context handle injection. These compose: bash covers agent-initiated handoff, handle covers external curl.
+2. **Request-body logging** for `/v1/session/agent` (log the exact `sessionId`/`agent` the caller sent) — cheap, closes the audit gap.
+3. Option 3 only if opencode's unknown-tool handling checks out clean.
 4. **Long-term:** context pruning on agent switch to fight dilution (collapse prior agent's turns into a summary so the new persona isn't buried at 60K tokens).
 
 ---
