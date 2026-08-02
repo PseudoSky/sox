@@ -13,9 +13,19 @@
  *     Runs post-publish in CI.
  */
 
+import { execSync } from 'node:child_process';
 import * as crypto from 'node:crypto';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
+
+/**
+ * BL-390: raised when `buildIndex` is asked to hash artifacts out of a dirty
+ * working tree without `allowDirty`. A dedicated Error (not `process.exit`)
+ * so library callers (tests, future tooling) can catch it instead of the
+ * process dying mid-suite — only the CLI entry point below turns it into
+ * `process.exit(1)`.
+ */
+export class DirtyTreeError extends Error {}
 
 interface ExtensionManifest {
   $schema: string;
@@ -64,6 +74,56 @@ export interface IndexEntry {
   visibility?: 'public' | 'internal';
   /** R9: populated when visibility is "internal". The owning bundle's id. */
   bundleId?: string;
+  /**
+   * BL-390: the commit sha the working tree was at when this entry's checksum
+   * was computed. Suffixed `+dirty` when the tree had uncommitted changes and
+   * the run was forced with `--allow-dirty` (see `provisional`). Absent when
+   * `root` is not a git repository at all (e.g. some test fixtures).
+   */
+  builtFromCommit?: string;
+  /**
+   * BL-390: true iff this entry's checksum was computed from a dirty working
+   * tree via `--allow-dirty`. A provisional entry's checksum cannot be
+   * reproduced from any commit and should not be trusted as a supply-chain
+   * integrity record — it exists only so the run doesn't silently pretend
+   * otherwise.
+   */
+  provisional?: boolean;
+}
+
+/** BL-390: git state of `root`, used to gate/stamp registry entries. */
+interface GitState {
+  isGitRepo: boolean;
+  dirty: boolean;
+  commitSha: string | null;
+  /** Relative paths, uncommitted (staged + unstaged + untracked). */
+  dirtyFiles: string[];
+}
+
+function getGitState(root: string): GitState {
+  const runGit = (args: string): string =>
+    execSync(`git ${args}`, { cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] });
+
+  let commitSha: string | null;
+  try {
+    commitSha = runGit('rev-parse HEAD').trim();
+  } catch {
+    // Not a git repo (or no commits yet) — nothing to gate or stamp.
+    return { isGitRepo: false, dirty: false, commitSha: null, dirtyFiles: [] };
+  }
+
+  // -uall: list files inside a wholly-untracked directory individually rather
+  // than collapsing to the directory name — an agent's uncommitted new
+  // extension dir must show up as its actual files, not just "extensions/".
+  const statusOut = runGit('status --porcelain -uall');
+  const dirtyFiles = statusOut
+    .split('\n')
+    .map((line) => line.trimEnd())
+    .filter((line) => line.length > 0)
+    // porcelain lines are "XY <path>" (or "XY <old> -> <new>" for renames)
+    .map((line) => line.slice(3));
+
+  return { isGitRepo: true, dirty: dirtyFiles.length > 0, commitSha, dirtyFiles };
 }
 
 const DIR_TO_TYPE: Record<string, string> = {
@@ -240,8 +300,29 @@ function resolveChecksum(extDir: string, manifest: ExtensionManifest): string {
   return computeFileChecksum(path.join(extDir, 'extension.json'));
 }
 
-export function buildIndex(opts: { root: string }): IndexEntry[] {
-  const { root } = opts;
+export function buildIndex(opts: { root: string; allowDirty?: boolean }): IndexEntry[] {
+  const { root, allowDirty = false } = opts;
+
+  // BL-390: `registry:sync-index` must not bless a checksum computed from a
+  // tree state no commit can reproduce. Refuse outright unless the caller
+  // explicitly opts into a provisional run.
+  const gitState = getGitState(root);
+  if (gitState.isGitRepo && gitState.dirty && !allowDirty) {
+    const shown = gitState.dirtyFiles.slice(0, 20).map((f) => `    ${f}`).join('\n');
+    const rest = gitState.dirtyFiles.length > 20
+      ? `\n    ...and ${gitState.dirtyFiles.length - 20} more`
+      : '';
+    throw new DirtyTreeError(
+      `build-index: REFUSING to run against a dirty working tree (BL-390).\n` +
+      `  A checksum computed now would not correspond to any commit — no one could\n` +
+      `  answer "was this artifact built from this source?" after the fact.\n` +
+      `  ${gitState.dirtyFiles.length} uncommitted change(s) at ${root}:\n${shown}${rest}\n` +
+      `  Fix: commit (or let the owning agent commit) the pending changes, then re-run.\n` +
+      `  Escape hatch: buildIndex({ allowDirty: true }) / CLI \`--allow-dirty\` stamps every\n` +
+      `  entry \`provisional: true\` with \`builtFromCommit\` suffixed "+dirty" instead of refusing.`,
+    );
+  }
+
   const dirs = findExtensionDirs(root);
   const entries: IndexEntry[] = [];
 
@@ -325,6 +406,13 @@ export function buildIndex(opts: { root: string }): IndexEntry[] {
       }
     }
 
+    // BL-390: record the commit sha this entry's checksum was computed against,
+    // so "does this artifact correspond to this source?" is answerable later.
+    if (gitState.isGitRepo && gitState.commitSha) {
+      entry.builtFromCommit = gitState.dirty ? `${gitState.commitSha}+dirty` : gitState.commitSha;
+      if (gitState.dirty) entry.provisional = true;
+    }
+
     entries.push(entry);
   }
 
@@ -348,6 +436,29 @@ export async function checksumUrl(url: string): Promise<string> {
   return computeBytesChecksum(buf);
 }
 
-// CLI entry point
-const root = process.argv[2] ?? process.cwd();
-buildIndex({ root });
+// CLI entry point.
+//
+// Guarded to run only when this file is executed directly (`tsx
+// scripts/build-index.ts`), not when it's `import`ed — build-index.test.ts
+// imports `buildIndex` for in-process testing, and prior to BL-390 this tail
+// ran unconditionally on import too, silently writing registry/index.json as
+// a side effect of loading the module (see the "kept standalone" comment in
+// check-registry-sync.ts, which avoided importing this file specifically
+// because of that). Un-guarding it here also means the DirtyTreeError thrown
+// above would fire on every test run in a shared, routinely-dirty checkout —
+// which is not what a unit-test import should trigger.
+const isMainModule = import.meta.url === `file://${process.argv[1]}`;
+if (isMainModule) {
+  const args = process.argv.slice(2);
+  const allowDirty = args.includes('--allow-dirty');
+  const root = args.find((a) => !a.startsWith('--')) ?? process.cwd();
+  try {
+    buildIndex({ root, allowDirty });
+  } catch (e) {
+    if (e instanceof DirtyTreeError) {
+      console.error(e.message);
+      process.exit(1);
+    }
+    throw e;
+  }
+}

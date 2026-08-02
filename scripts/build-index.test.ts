@@ -11,11 +11,12 @@
  * check-registry-sync.ts; this test verifies the build-index side only.
  */
 
+import { execSync } from 'node:child_process';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { buildIndex } from './build-index.js';
+import { buildIndex, DirtyTreeError } from './build-index.js';
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -171,5 +172,120 @@ describe('[BL-80] buildIndex: service-type extensions are scanned from extension
     const dirToTypeBlock = dirToTypeMatch![0];
 
     expect(dirToTypeBlock).toContain("services: 'service'");
+  });
+});
+
+// ─── BL-390: sync-index must refuse (or provisional-stamp) a dirty tree ─────
+
+/**
+ * A real, disposable git repo — never the sox-ecosystem checkout itself and
+ * never a real extension. `buildIndex`'s dirty-tree gate only activates when
+ * `root` is an actual git repository (`git rev-parse HEAD` succeeds), so the
+ * BL-80 tests above (plain tmpdir, no `git init`) correctly exercise the
+ * "not a git repo" no-op path, and these tests exercise the gated path.
+ */
+function git(root: string, cmd: string): string {
+  return execSync(`git ${cmd}`, { cwd: root, encoding: 'utf8' });
+}
+
+function makeGitRoot(): string {
+  const root = makeTempRoot();
+  git(root, 'init -q');
+  git(root, 'config user.email "test@example.com"');
+  git(root, 'config user.name "Test"');
+  // Every repo needs at least one commit before `git status --porcelain`
+  // (used for dirty-detection) is meaningful and `rev-parse HEAD` succeeds.
+  fs.writeFileSync(path.join(root, '.gitkeep'), '');
+  git(root, 'add .gitkeep');
+  git(root, 'commit -q -m "initial"');
+  return root;
+}
+
+describe('[BL-390] buildIndex: dirty-tree gate on registry checksums', () => {
+  let root: string;
+
+  beforeEach(() => {
+    root = makeGitRoot();
+  });
+
+  afterEach(() => {
+    removeDirRecursive(root);
+  });
+
+  it('a clean committed tree builds normally and stamps builtFromCommit (no provisional)', () => {
+    makeExtension(root, 'skills', 'clean-skill');
+    git(root, 'add -A');
+    git(root, 'commit -q -m "add clean-skill"');
+    const headSha = git(root, 'rev-parse HEAD').trim();
+
+    const entries = buildIndex({ root });
+
+    const entry = entries.find((e) => e.id === 'clean-skill');
+    expect(entry).toBeDefined();
+    expect(entry!.builtFromCommit).toBe(headSha);
+    expect(entry!.provisional).toBeUndefined();
+  });
+
+  it('REFUSES (throws DirtyTreeError) when the scratch package dir is uncommitted — RED before the fix', () => {
+    // Simulates exactly the BL-390 driver scenario: an extension's source is
+    // present on disk but was never committed (another agent's in-flight
+    // work, in the real incident) when sync-index runs.
+    makeExtension(root, 'skills', 'dirty-skill');
+    // Deliberately NOT committed — `git status --porcelain` is non-empty.
+
+    expect(() => buildIndex({ root })).toThrow(DirtyTreeError);
+    try {
+      buildIndex({ root });
+      expect.unreachable('buildIndex should have thrown');
+    } catch (e) {
+      expect(e).toBeInstanceOf(DirtyTreeError);
+      expect((e as Error).message).toContain('BL-390');
+      expect((e as Error).message).toContain('dirty-skill');
+    }
+  });
+
+  it('does NOT write registry/index.json when refusing a dirty tree', () => {
+    makeExtension(root, 'skills', 'dirty-skill');
+    const registryPath = path.join(root, 'registry', 'index.json');
+
+    expect(() => buildIndex({ root })).toThrow(DirtyTreeError);
+    expect(fs.existsSync(registryPath)).toBe(false);
+  });
+
+  it('--allow-dirty (allowDirty: true) proceeds and stamps every entry provisional with a +dirty commit suffix — GREEN after the fix', () => {
+    makeExtension(root, 'skills', 'dirty-skill');
+    const headSha = git(root, 'rev-parse HEAD').trim();
+
+    const entries = buildIndex({ root, allowDirty: true });
+
+    const entry = entries.find((e) => e.id === 'dirty-skill');
+    expect(entry).toBeDefined();
+    expect(entry!.provisional).toBe(true);
+    expect(entry!.builtFromCommit).toBe(`${headSha}+dirty`);
+  });
+
+  it('a dirty tree caused by an untracked file (not just a modified one) also refuses', () => {
+    makeExtension(root, 'skills', 'tracked-skill');
+    git(root, 'add -A');
+    git(root, 'commit -q -m "add tracked-skill"');
+    // A brand-new, never-`git add`ed file — the exact shape of "another
+    // agent's in-flight, uncommitted work" from the BL-390 driver incident.
+    fs.writeFileSync(path.join(root, 'extensions', 'skills', 'tracked-skill', 'scratch.txt'), 'wip');
+
+    expect(() => buildIndex({ root })).toThrow(DirtyTreeError);
+  });
+
+  it('a non-git root is not gated at all — no throw, no builtFromCommit stamp', () => {
+    const plainRoot = makeTempRoot();
+    try {
+      makeExtension(plainRoot, 'skills', 'plain-skill');
+      const entries = buildIndex({ root: plainRoot });
+      const entry = entries.find((e) => e.id === 'plain-skill');
+      expect(entry).toBeDefined();
+      expect(entry!.builtFromCommit).toBeUndefined();
+      expect(entry!.provisional).toBeUndefined();
+    } finally {
+      removeDirRecursive(plainRoot);
+    }
   });
 });

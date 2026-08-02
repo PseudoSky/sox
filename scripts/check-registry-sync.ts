@@ -221,7 +221,41 @@ function buildLiveEntries(): unknown[] {
 }
 
 const liveEntries = buildLiveEntries();
-const committedEntries = JSON.parse(committedRaw) as unknown[];
+
+// BL-390: build-index.ts stamps every entry with `builtFromCommit` (and, for a
+// forced dirty run, `provisional: true`) recording the git state the checksum
+// was computed against. Those are per-run provenance metadata, not disk
+// content — this script never shells out to git and has no live counterpart
+// to compare them against. Strip both before the drift comparison so their
+// mere presence (or the commit sha changing between HEAD advancing) never
+// registers as false drift; the checksum/source/etc. fields they sit beside
+// are still compared in full.
+function stripProvenanceFields(entries: unknown[]): unknown[] {
+  return entries.map((e) => {
+    const { builtFromCommit: _builtFromCommit, provisional: _provisional, ...rest } =
+      e as Record<string, unknown>;
+    return rest;
+  });
+}
+
+const committedRawEntries = JSON.parse(committedRaw) as unknown[];
+
+// BL-390: a committed `provisional: true` entry means someone ran sync-index
+// with `--allow-dirty` and its checksum was NOT built from committed source.
+// That is a legitimate escape hatch, not a drift failure — but it must not
+// pass silently, or the whole point of stamping it is lost.
+const provisionalIds = committedRawEntries
+  .filter((e) => (e as { provisional?: boolean }).provisional === true)
+  .map((e) => (e as { id: string }).id);
+if (provisionalIds.length > 0) {
+  console.warn(
+    `check-registry-sync: WARNING — ${provisionalIds.length} committed entr${provisionalIds.length === 1 ? 'y is' : 'ies are'} ` +
+    `provisional (built from a dirty tree via --allow-dirty): ${provisionalIds.join(', ')}`,
+  );
+  console.warn('  Re-run `npx nx run registry:sync-index` against a clean tree to replace with a reproducible checksum.');
+}
+
+const committedEntries = stripProvenanceFields(committedRawEntries);
 
 // Sort both by id for stable comparison
 function sortedById(arr: unknown[]): unknown[] {
