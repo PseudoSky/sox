@@ -716,6 +716,7 @@ rather than an oversight:
 - **BL-225** — *status markers record intent, not verified outcome.* This is a **standing discipline, not a fixable task**, and it is already the acceptance standard for every packet above ("a watched red→green naming the BL id — never *tests pass*"). It stays open permanently by design. This session demonstrated it bites in **both** directions: four items were once marked RESOLVED while broken, and twelve were found marked Open while already fixed. Writing a packet for it would be a category error; leaving it unlisted would read as an oversight.
 - **OS service integration** — BL-163 (SMAppService login-items registration; already BLOCKED on its own dependency)
 - **Embedding-provider internals** — BL-283 (shared `RequestResponseChannel<T>` base for the ONNX/fastembed worker clients), BL-410 (standalone-script IPC-channel-unref race in `sharedFastembedProcess.ts`/`fastembedProcessHost.ts`, found by PKT-06 but scoped to `libs/data/embed/embedding-provider/**`, not `docs/reporting/memory/**`)
+- **`analysis` package test debt** — BL-411 (`analysis.spec.ts` has the identical raw-`Database`-vs-`StoreAdapter` shape BL-364 fixed in `hybrid-search.spec.ts`; found by PKT-04 but scoped to `libs/data/analysis/analysis/**`, not `docs/reporting/memory/**`)
 
 
 ---

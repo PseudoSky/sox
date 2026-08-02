@@ -85,6 +85,36 @@ function vecToBuffer(vec: Float32Array): Buffer {
   return Buffer.from(vec.buffer, vec.byteOffset, vec.byteLength);
 }
 
+// BL-380: `SqliteVectorBackend` is fundamentally a sqlite-vec/vec0 backend —
+// every query it issues is a SYNCHRONOUS `better-sqlite3` call, which only
+// exists on `SqliteAdapter`. `TursoAdapter.unwrap()` returns an ASYNC
+// `@tursodatabase/database` handle whose `.prepare().all()` returns a
+// Promise, not rows — an unguarded `(adapter as SqliteAdapter).unwrap()`
+// silently compiles and then crashes at runtime the moment a Turso store
+// (the default backend) reaches this class. Gate on `adapter.config.type`
+// the same way `libs/memory-core/src/db.ts:373`/`:896` gate on
+// `adapter.capabilities.nativeVectors` before reaching for the raw handle,
+// so a Turso-backed caller gets one clear, actionable error here instead of
+// a `TypeError` deep inside a `.prepare()` call (or, per BL-364, a crash on
+// `undefined.nativeVectors` when a caller skips the StoreAdapter wrapper
+// altogether and passes a raw driver handle).
+function requireSqliteHandle(adapter: StoreAdapter): import('better-sqlite3').Database {
+  // Blessed pattern (see libs/memory-core/src/db.ts:373,896): gate on the
+  // capability flag, never on config.type — nativeVectors is false ONLY for
+  // SqliteAdapter (needs the sqlite-vec extension loaded on a synchronous
+  // better-sqlite3 handle, which is exactly the shape this class requires);
+  // it's true for TursoAdapter, whose native vector support is reached
+  // through the async StoreAdapter API this class does not speak.
+  if (adapter.capabilities.nativeVectors) {
+    throw new StorageError(
+      `SqliteVectorBackend requires a SqliteAdapter (sqlite-vec/vec0 is a synchronous, sqlite-only mechanism) — ` +
+        `got an adapter with capabilities.nativeVectors=true (e.g. TursoAdapter). ` +
+        `Use LanceDbVectorBackend for a Turso-backed store, or wrap a sqlite handle via createSqliteAdapter().`,
+    );
+  }
+  return (adapter as SqliteAdapter).unwrap();
+}
+
 function cosineSimilarity(a: Float32Array, b: Float32Array): number {
   let dot = 0;
   let normA = 0;
@@ -140,7 +170,7 @@ class BruteForceBackend implements SimilarityBackend {
     tbl: string,
     filter?: VecFilter,
   ): Array<{ nodeId: number; score: number }> {
-    const db = (adapter as SqliteAdapter).unwrap();
+    const db = requireSqliteHandle(adapter);
     if (!tableExists(db, tbl)) return [];
 
     const clauses: string[] = [];
@@ -193,11 +223,16 @@ export class SqliteVectorBackend implements VectorBackend {
   constructor(adapter: StoreAdapter, similarity?: SimilarityBackend) {
     this.adapter = adapter;
     this.similarity = similarity ?? new BruteForceBackend();
+    // vecEnabled is unconditionally true here: requireSqliteHandle() below
+    // throws before construction completes if `adapter` isn't a sqlite-vec-
+    // capable SqliteAdapter, so reaching this line already proves vector
+    // support is available. (The old `adapter.capabilities.nativeVectors ||
+    // true` read the capability and then ignored it — dead code, BL-380.)
     this.capabilities = {
-      vecEnabled: adapter.capabilities.nativeVectors || true, // sqlite-vec provides vector support via SqliteAdapter path
+      vecEnabled: true,
     };
 
-    this.db = (adapter as SqliteAdapter).unwrap();
+    this.db = requireSqliteHandle(adapter);
     this.db.exec(`
       CREATE TABLE IF NOT EXISTS _vector_spaces (
         model_id TEXT PRIMARY KEY,
@@ -355,10 +390,15 @@ export function openVectorStore(
 ): SqliteVectorBackend {
   let adapter: StoreAdapter;
   if (typeof adapterOrPath === 'string') {
-    adapter = createSqliteAdapter({ dbPath: adapterOrPath });
-    const db = (adapter as SqliteAdapter).unwrap();
+    // createSqliteAdapter({ dbPath }) is statically typed to return
+    // SqliteAdapter — no cast needed, this is the legitimate "we just built
+    // it, we know what it is" case (unlike the casts above, which reach for
+    // unwrap() on a caller-supplied adapter of unknown provenance).
+    const sqliteAdapter = createSqliteAdapter({ dbPath: adapterOrPath });
+    const db = sqliteAdapter.unwrap();
     sqliteVec.load(db);
     db.pragma('journal_mode = WAL');
+    adapter = sqliteAdapter;
   } else {
     adapter = adapterOrPath;
   }

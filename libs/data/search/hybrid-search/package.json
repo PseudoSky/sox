@@ -28,6 +28,9 @@
     "@adhd/sox-graph-store": "workspace:*",
     "@adhd/sox-vector-store": "workspace:*"
   },
+  "devDependencies": {
+    "@adhd/sox-store-adapter": "workspace:*"
+  },
   "sox": {
     "area": "data",
     "group": "search",
