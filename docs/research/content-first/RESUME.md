@@ -134,6 +134,7 @@ Implementation order (remaining):
 |------|---------|
 | `proxy/cf-proxy.mjs` | **Production proxy** — session-aware, streaming, content-first (3333) |
 | `proxy/cf-chain.mjs` | Chain experiment — session-state persona handoffs (3334, not prod) |
+| `~/.config/opencode/agents/cf-chain-dispatcher.md` | **RF-mode chain conductor** — dispatches product→architect→typescript→review through `proxy/rf`, reproducing the CF chain externally (the RF A/B arm) |
 | `proxy/README.md` | Proxy harness docs — dual-model A/B, logging schema |
 | `scripts/verify-chain-mechanism.mjs` | 12-check session mechanism test |
 | `scripts/test-chain-*.mjs` | Chain tests (experimental) |
@@ -142,3 +143,32 @@ Implementation order (remaining):
 | `PATTERNS.md` | 26 patterns |
 | `instruction-hierarchy-experiment.md` | IHE-1 quality experiment |
 | `sessions/*.json` | Raw experimental session data |
+
+---
+
+## 9. RF vs CF — how to run the same task both ways
+
+The same multi-agent task (e.g. product → architect → typescript → review) runs
+in both modes; the difference IS the measurement:
+
+- **CF (`proxy/cf`)** — one session, self-handoff. The proxy appends the
+  persona as a trailing system message and swaps it on `/v1/session/agent`.
+  Position-0 shared anchor stays cached: ~99% reuse across handoffs (verified:
+  `ses_03bd61c17ffe1osvDE8wZAzV5c`, 148 turns, 3 handoffs, 90-99% savings).
+- **RF (`proxy/rf`)** — external sequencing required. The persona is the full
+  system prompt at position 0; a model cannot switch itself, so the
+  **`cf-chain-dispatcher`** agent dispatches each stage as its own opencode
+  agent through `proxy/rf`, forwarding each stage's output to the next.
+
+**Fairness constraint (BL-internal A/B discipline):** the dispatcher is the
+analog of the CF instruction the proxy injects (mechanism + registry), NOT a
+transcript of a winning session. It decides the chain, handoff format, and
+stopping rules from the task and each stage's live output. Do not seed it
+with the chain order, deliverable templates, brief-density targets, or
+termination rules learned from a prior CF run — that leaks the answers and
+invalidates the comparison.
+
+**To run the A/B:** run the same task with the `cf-chain-dispatcher` agent
+(RF arm) and through the CF self-handoff chain (CF arm); compare
+`rf_cached/input` vs `cf_cached/input` per stage from the `proxy-ses_*.jsonl`
+logs. The delta is the content-first thesis on identical work.
