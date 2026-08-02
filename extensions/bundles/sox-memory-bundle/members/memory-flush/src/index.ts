@@ -17,9 +17,8 @@
  */
 
 import { applyPromotion as memCoreApplyPromotion, exportMarkdown as memCoreExportMarkdown, openDb as memCoreOpenDb } from '@adhd/sox-memory-core';
-import Database from 'better-sqlite3';
+import type { StoreAdapter } from '@adhd/sox-store-adapter';
 import * as fs from 'node:fs';
-import * as sqliteVec from 'sqlite-vec';
 
 export const events = ['SessionEnd', 'ScopePromotionProposed'];
 
@@ -100,32 +99,35 @@ interface ScopePromotionPayload {
 /**
  * Enqueue an episode into organizer_queue via the write DB.
  */
-function enqueueEpisode(
-  db: Database.Database,
+async function enqueueEpisode(
+  db: StoreAdapter,
   nodeUid: string,
   scope: string,
   agentId: string | null,
-): void {
+): Promise<void> {
   const now = new Date().toISOString();
   const payload = JSON.stringify({ uid: nodeUid, scope, agent_id: agentId });
   const priority = scope === 'project' ? 0 : agentId ? 1 : 2;
-  db.prepare(
+  await db.executeRun(
     `INSERT INTO organizer_queue (op, payload, priority, enqueued)
      VALUES ('ingest', ?, ?, ?)`,
-  ).run(payload, priority, now);
+    [payload, priority, now],
+  );
 }
 
 /**
- * Open the write DB for a given path (minimal — no full schema setup).
+ * Open the write DB for a given path.
+ *
+ * Goes through the same `openDb()` every other memory-core caller uses —
+ * pragmas, sqlite-vec loading (sqlite backend) and schema/integrity setup
+ * are the adapter's job, not this module's (BL-397: this used to open a raw
+ * better-sqlite3 handle directly, which is the wrong shape on the default
+ * Turso backend).
  */
-function openWriteDb(dbPath: string): Database.Database | null {
+async function openWriteDb(dbPath: string): Promise<StoreAdapter | null> {
   try {
     if (!fs.existsSync(dbPath)) return null;
-    const db = new Database(dbPath);
-    sqliteVec.load(db);
-    db.exec('PRAGMA journal_mode = WAL;');
-    db.exec('PRAGMA busy_timeout = 5000;');
-    return db;
+    return await memCoreOpenDb(dbPath);
   } catch {
     return null;
   }
@@ -207,7 +209,7 @@ async function handleSessionEnd(payload: SessionEndPayload): Promise<void> {
 
   if (!db_path) return;
 
-  const db = openWriteDb(db_path);
+  const db = await openWriteDb(db_path);
   if (!db) return;
 
   try {
@@ -216,19 +218,21 @@ async function handleSessionEnd(payload: SessionEndPayload): Promise<void> {
       const now = new Date().toISOString();
       const state = JSON.stringify(working_memory);
 
-      db.transaction(() => {
+      await db.transaction(async (tx) => {
         // Close previous session node
-        db.prepare(
+        await tx.executeRun(
           `UPDATE node SET t_invalid = ? WHERE kind = 'session' AND session_id = ? AND t_invalid IS NULL`,
-        ).run(now, session_id);
+          [now, session_id],
+        );
 
         // Insert new session node
         const sessionUid = `session-${session_id}-${Date.now()}`;
-        db.prepare(
+        await tx.executeRun(
           `INSERT INTO node (uid, kind, session_id, resume_state, t_created, t_valid)
            VALUES (?, 'session', ?, ?, ?, ?)`,
-        ).run(sessionUid, session_id, state, now, now);
-      })();
+          [sessionUid, session_id, state, now, now],
+        );
+      });
     }
 
     // 2. Enqueue pending episodes for async organization.
@@ -243,36 +247,38 @@ async function handleSessionEnd(payload: SessionEndPayload): Promise<void> {
         const contentHash = Buffer.from(ep.content.trim().toLowerCase()).toString('base64');
 
         // Check dedup
-        const existing = db
-          .prepare<[string], { uid: string }>('SELECT uid FROM node WHERE content_hash = ?')
-          .get(contentHash);
+        const existing = await db.executeGet<{ uid: string }>(
+          'SELECT uid FROM node WHERE content_hash = ?',
+          [contentHash],
+        );
         if (existing) continue;
 
         try {
-          db.prepare(
+          await db.executeRun(
             `INSERT INTO node (uid, kind, content, agent_id, session_id, source, importance, content_hash, t_created, t_valid)
              VALUES (?, 'episode', ?, ?, ?, ?, ?, ?, ?, ?)`,
-          ).run(
-            uid,
-            ep.content,
-            ep.agent_id ?? null,
-            session_id,
-            ep.source ?? 'message',
-            ep.importance ?? 1.0,
-            contentHash,
-            now,
-            now,
+            [
+              uid,
+              ep.content,
+              ep.agent_id ?? null,
+              session_id,
+              ep.source ?? 'message',
+              ep.importance ?? 1.0,
+              contentHash,
+              now,
+              now,
+            ],
           );
 
           // Enqueue for organize
-          enqueueEpisode(db, uid, scope, ep.agent_id ?? null);
+          await enqueueEpisode(db, uid, scope, ep.agent_id ?? null);
         } catch {
           // Skip individual insert failures
         }
       }
     }
   } finally {
-    db.close();
+    await db.close();
   }
 
   // 3. (P5 BL-21) Auto-export — runs AFTER db.close() so the DB is not locked during export.
@@ -348,14 +354,14 @@ async function handleScopePromotionProposed(payload: ScopePromotionPayload): Pro
       return;
     }
 
-    const srcDbRaw = openWriteDb(decision.srcDbPath);
-    if (!srcDbRaw) {
+    const srcDb = await openWriteDb(decision.srcDbPath);
+    if (!srcDb) {
       console.error(`[memory-flush] cannot open source DB: ${decision.srcDbPath}`);
       return;
     }
-    const dstDbRaw = openWriteDb(decision.dstDbPath);
-    if (!dstDbRaw) {
-      srcDbRaw.close();
+    const dstDb = await openWriteDb(decision.dstDbPath);
+    if (!dstDb) {
+      await srcDb.close();
       console.error(`[memory-flush] cannot open destination DB: ${decision.dstDbPath}`);
       return;
     }
@@ -365,24 +371,20 @@ async function handleScopePromotionProposed(payload: ScopePromotionPayload): Pro
       let failed = 0;
 
       for (const item of items) {
-        // applyPromotion is async (embed is async); cast through unknown to handle
-        // stale dist type declarations while awaiting correctly.
-        const result = await (memCoreApplyPromotion as unknown as (...args: unknown[]) => Promise<{ ok: boolean; dst_uid?: string; error?: string }>)(
-          srcDbRaw, dstDbRaw, item.uid, from_scope, to_scope,
-        );
-        if (result?.ok) {
+        const result = await memCoreApplyPromotion(srcDb, dstDb, item.uid, from_scope, to_scope);
+        if (result.ok) {
           applied++;
           console.log(`[memory-flush] applied promotion: ${item.uid} → ${result.dst_uid} (${from_scope}→${to_scope})`);
         } else {
           failed++;
-          console.error(`[memory-flush] promotion apply failed for ${item.uid}: ${result?.error}`);
+          console.error(`[memory-flush] promotion apply failed for ${item.uid}: ${result.error}`);
         }
       }
 
       console.log(`[memory-flush] promotion complete: ${applied} applied, ${failed} failed`);
     } finally {
-      srcDbRaw.close();
-      dstDbRaw.close();
+      await srcDb.close();
+      await dstDb.close();
     }
   } catch (err) {
     console.error(`[memory-flush] promotion handler error:`, err);
