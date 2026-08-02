@@ -1395,51 +1395,6 @@ Citations: [wip/turso-live-metrics, team-lead, claude, turso-go-live, 1: extensi
 
 ---
 
-### BL-380 — `(adapter as SqliteAdapter).unwrap()` is an unchecked cast through the storage abstraction, and it is still live in two packages — **Open (HIGH)** (2026-07-31)
-
-**Driver.** BL-377 fixed two call sites that cast a `StoreAdapter` to `SqliteAdapter` and called `unwrap()` to reach the raw `better-sqlite3` handle. **The pattern was never audited, and it is still present in six more production sites:**
-
-| file | sites | form |
-|---|---|---|
-| `libs/data/vectors/vector-store/src/index.ts` | **143, 200, 359** | `(adapter as SqliteAdapter).unwrap()` |
-| `extensions/bundles/sox-memory-bundle/members/memory-cli/src/index.ts` | **180, 218, 322** | `(adapter as any).unwrap()` — casts through `any`, so even the assertion is gone |
-
-**Why the cast is the defect, not the symptom.** `as` is an *assertion*: it silences the compiler without checking anything. On sqlite the handle's `.prepare().all()` is **synchronous and returns an array**; on Turso it is **async and returns a Promise**. So the cast compiles, the call succeeds, and the result is a Promise that the caller iterates as if it were rows — `TypeError: episodes is not iterable`, at runtime, on the **default backend**. The type system was capable of catching this and was explicitly told not to.
-
-**Turso is the default.** Every one of these paths is therefore suspect on the backend the system actually runs, exactly as BL-377 proved for export and re-embed — which had been broken since the migration while everyone read the failures as test debt.
-
-**Strong candidate root cause for BL-364.** `SqliteVectorBackend` crashes with `Cannot read properties of undefined (reading 'nativeVectors')`, taking out **15 `hybrid-search` integration tests** — that package's entire real FTS5+vector coverage, red for four days behind green-looking sweeps. `vector-store/src/index.ts` holds three of these casts. **Verify before assuming**, but the shapes match.
-
-**The architectural question, which is the real one:** *why does a caller need the raw handle at all?* `StoreAdapter` exists precisely so callers do not know or care which engine is underneath. Every `unwrap()` is either (a) a **capability gap** — the adapter does not expose something a legitimate caller needs, which is a missing method, or (b) a caller **reaching around** the abstraction for convenience. Both are fixable; neither is fixed by a cast. BL-377's fix took route (b) → converted to `executeAll`/`executeGet`/`executeRun` and the cast disappeared.
-
-**Legitimate uses that must NOT be swept up in a blanket change:**
-- `db.ts:373,896` — loading the `sqlite-vec` extension, correctly **gated on `adapter.capabilities`**. The codebase already knew the pattern; the broken sites simply skipped the guard.
-- `backup.ts:171,202` — explicitly `createSqliteAdapter(...)`, i.e. deliberately sqlite-only. **But this raises its own open question, flagged by BL-377 and still unanswered: can a Turso store be backed up at all?**
-- `migration.ts:272,587` — sqlite-side of a migration; engine-specific by nature.
-
-**Fix sketch:**
-1. Audit all six sites. For each, decide **capability gap** or **reaching around**, and say which in the commit.
-2. Convert reach-arounds to the async adapter API (BL-377's pattern). For genuine capability gaps, **add the method to `StoreAdapter`** rather than widening the cast.
-3. Make `unwrap()` impossible to misuse: require a capability check, or return a discriminated union the caller must narrow. **A lint rule banning `as SqliteAdapter` and `(x as any).unwrap()` outside the adapter package** is the cheap structural guard — the codebase already demonstrates the correct gated form, so the rule encodes existing practice.
-
-**Acceptance (red→green, must name BL-380):** exercise each converted path against a **Turso** store and assert it works; the guard must reject a newly-introduced unguarded cast. Must fail today for the `vector-store` and `memory-cli` sites.
-
-**Severity:** HIGH — six unchecked casts on the default backend, one of which is the likely cause of 15 permanently-red integration tests. The class already shipped one silent production breakage (BL-377) that went undetected for weeks because its failures were misread as test debt.
-
-**Numbering note:** committed in `dd7a37a` whose message says "BL-379" — that id was claimed concurrently by another agent between my read and my write. This item is **BL-380**; references to BL-379 in `dd7a37a`'s message mean this one. Fourth id collision today — see BL-359.
-
-**Partial fix — `memory-cli` sites done in `bb6af3a`, `vector-store` sites untouched (2026-08-01).** All three `extensions/bundles/sox-memory-bundle/members/memory-cli/src/index.ts` sites (180, 218, 322 — `cmdInit`/`cmdStatus`/`cmdList`) converted from `(adapter as any).unwrap()` + synchronous `better-sqlite3` `.prepare().get()/.all()` to the adapter's async `executeGet`/`executeAll`/`executeRun` API. `cmdInit` also had a latent, independent bug the cast was masking: it called `initScope(db, …)` — `initScope` takes a `StoreAdapter`, not a raw `Database`, and the call wasn't `await`ed either, so `memory-cli:typecheck` was already red (6 errors) before this fix; both are fixed by passing `adapter` through directly. The suite's own `seedBareStore()` test helper in `index.spec.ts` carried the identical `unwrap()`-cast pattern plus three call sites with un-awaited `runCli(...)`, which is why the pre-existing BL-95 discovery tests silently passed on sqlite (synchronous, so the missing `await` didn't matter) and would have failed identically to production on turso — fixed the same way, in the same commit, as a required part of proving the site fix red→green.
-
-Proved on the **Turso backend** (the default; `STORE_ADAPTER` unset in the test env, and `libs/data/store/store-adapter/src/factory.ts:23` defaults to `'turso'` when unset — confirmed no env override in `memory-cli`'s vitest config). Added a dedicated `memory-cli init/status/list on the Turso adapter (BL-380)` describe block in `index.spec.ts` that additionally pins `STORE_ADAPTER=turso` explicitly and exercises `init` (fresh + idempotent), `status`, and `list` end-to-end against a real Turso-backed store — all 4 new tests fail against the pre-fix `unwrap()` code (`adapter.unwrap is not a function` — `TursoAdapter` has no `unwrap()`) and pass against the fix. Full gate green: `npx nx run-many -t lint,typecheck,build,test -p memory-cli` (8/8 tests pass, was 3/4 failing pre-fix once run on turso). `npx nx run registry:sync-index` run and `registry/index.json` checksums for `memory-cli` (and `memory-flush`/`memory-server`, which share the rebuilt `memory-core` dist) committed alongside.
-
-**`vector-store` sites (143, 200, 359) are explicitly untouched** — out of scope per this fix's assignment, and BL-380 stays **OPEN** for that remaining half. **Their blast radius was measured on 2026-08-01 and is trivial:** two spec files import the package at value level (`analysis.spec.ts:23`, `hybrid-search.spec.ts:16`), everything else is a type-only re-export, and `agent-source` — cited for a day as the reason not to touch this — **is not a package in this repo**. The remaining care needed is only `index.ts:196`'s dead `vecEnabled: … || true`, whose deletion turns 15 tests green while fixing nothing.
-
-**Related:** BL-377 (the first two sites, fixed), BL-364 (15 hybrid-search tests — likely the same cause), BL-291 (typed native-open errors across SQLite-backed packages), BL-340 (specs were never typechecked, which is how this class hides).
-
-Citations: [wip/turso-live-metrics, team-lead, claude, turso-go-live, 1: repo-wide audit of `as SqliteAdapter` / `.unwrap()` excluding specs, 2026-07-31, 2: libs/data/vectors/vector-store/src/index.ts:143,200,359, 3: extensions/bundles/sox-memory-bundle/members/memory-cli/src/index.ts:180,218,322, 4: BL-377, 5: libs/memory-core/src/db.ts:373 (the correctly-gated form)]
-
----
-
 ### BL-338 — A machine crash must not be able to damage the store, and recovery must be automatic — **Open (HIGH)** (2026-07-31)
 
 **Driver:** the host lost power / crashed on 2026-07-30 evening while the memory-server was live and mid-backfill. Outcome, verified afterward:
@@ -2083,6 +2038,49 @@ Citations: [wip/turso-live-metrics, main, claude, BL-367 attribution, 1: libs/da
 
 ### BL-393 — the proxy silently respawns the backend onto whatever bundle is staged, redeploying production with nobody asking — observed once, trigger not yet identified — **Open (HIGH)** (2026-08-01)
 
+> **⚠️ FIRST LIVE REPRODUCTION — 2026-08-02T00:15:29Z. Read this before theorising.**
+>
+> An agent finished work on `tools/baseline-capture` and ran `npx nx run registry:sync-index`,
+> following the repo's standard "dist-artifact changed" sequence. **`baseline-capture` is not a
+> registry extension** — but its nx dependency graph transitively rebuilt `embedding-provider`,
+> which transitively re-bundled **`memory-server`**. The operator never named `memory-server` and
+> did not know it had been touched; they noticed only because `registry/index.json` appeared in
+> `git status`, and correctly reverted rather than commit a checksum mismatched with the running
+> artifact.
+>
+> | | |
+> |---|---|
+> | deliberately deployed 2026-08-01T23:47Z | pid **8820**, artifact `4d2773bad484` |
+> | live after the incident | pid **65352**, `started_at` **2026-08-02T00:15:29Z** |
+> | artifact pid 65352 self-reports | **`4d2773bad484`** — still the reviewed one |
+> | on-disk `dist/index.js` after | **`ba49093f02e3e707`** — drifted |
+>
+> **Confirmed:** production restarted and no human chose it. That is this item's core symptom,
+> measured rather than inferred.
+>
+> **Not yet confirmed:** that the transitive rebuild *caused* the restart. The timestamps are close
+> but causation is unproven — the supervisor/proxy logs around `00:15:29Z` are what settle it. The
+> distinguishing variable worth testing is **direct vs transitive** rebuild: a direct
+> `nx build memory-server` did NOT bounce the backend in an earlier controlled test, and the
+> respawned process here came up on the **old** artifact, consistent with surviving on the unlinked
+> inode.
+>
+> **The armed hazard is the drift, not the restart.** On-disk and running now disagree, so the next
+> restart — for any reason, including machine sleep or a launchd hiccup — silently ships
+> `ba49093f`, which nobody reviewed, and which contains another agent's **half-finished**
+> graceful-shutdown work (`backend.ts:251`, `await terminateEmbedWorkers()`, in-flight BL-405).
+> "Nobody chose that deploy" is not hypothetical here; it is the current state.
+>
+> **Implication for the fix:** BL-390's dirty-tree refusal would have caught this at the moment it
+> happened. Additionally, `sync-index` should **name the extensions whose checksums it is about to
+> change** and require confirmation when the operator did not build them directly — the whole
+> incident turns on a transitive graph edge the operator could not see.
+>
+> Citations: [wip/turso-live-metrics, main, claude, PKT-06 fallout, live `memory_ping` from pid 65352
+> (artifact + started_at), `shasum` of dist/index.js, `soxe service status memory-server -s user`,
+> 2026-08-02T00:25Z]
+
+
 **This is the exact inverse of BL-372 and it happened on the same day.** BL-372: an explicit, deliberate `launchctl kickstart` restart does NOT deploy, because the backend survives as an orphan on the old bundle. BL-393: a build nobody intended as a deploy DOES deploy, because the backend dies and the front-shim proxy silently respawns it against the new `dist/`. **The deploy path and the "definitely not a deploy" path have swapped behaviours.** An operator has no reliable mental model in either direction.
 
 **Observed live, unprompted, on the production memory-server** (nobody ran a deploy; every agent that day explicitly disclaimed touching the live unit):[1]
@@ -2512,5 +2510,11 @@ Citations: [wip/turso-live-metrics, main (PKT-06), claude, BL-388 runtime accept
 2: libs/data/embed/embedding-provider/src/fastembedProcessHost.ts:293-295,240,234,
 3: three crash reproductions (default CoreML, forced `SOX_EMBED_EXECUTION_PROVIDER=cpu`, stable
 dist) followed by three clean runs with a harness-only keep-alive interval, 2026-08-01]
+
+---
+
+### BL-411 — RESERVED — placeholder from allocate-bl-id.mjs, replace before committing — **Open (RESERVED)** (2026-08-02)
+
+**Driver.** Reserved by `tools/allocate-bl-id.mjs` and not yet filled in. If you are reading this in a committed BACKLOG.md, the reservation was never completed — fill in the item's real content or delete this heading before committing.
 
 ---
