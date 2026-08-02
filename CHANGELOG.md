@@ -2,6 +2,50 @@
 
 ---
 
+## [Unreleased] — BL-259: verified `smoke-test.mjs` no longer collides across consecutive launchd-unit runs
+
+**The reported bug (2026-07-10).** A full smoke run reported `11 passed, 2 failed`
+(`memory-server-project-enable`, `tokenguard-project-enable`) on a second consecutive run, with
+`launchctl list` showing `com.sox.project.memory-server` / `com.sox.project.tokenguard` left over
+from an earlier run. `launchctl bootstrap` for the same label returned `Bootstrap failed: 5`
+(EIO, "already bootstrapped"), making the mandatory `rm -rf dist/smoke && node
+scripts/smoke-test.mjs` pre-merge gate non-idempotent.
+
+**Investigation (PKT-15, 2026-08-01/02).** The exact symptom does not reproduce on current HEAD.
+Two independent mechanisms, both already shipped, structurally prevent it:
+
+1. **BL-263** (`fea965d`, landed the same day BL-259 was filed) namespaces the launchd label with
+   a hash of `SOX_ECOSYSTEM_HOME` (`osUnitLabelFor`). `scripts/smoke-test.mjs` derives
+   `SOX_ECOSYSTEM_HOME` from a timestamped `TEST_ROOT` every invocation, so two consecutive runs
+   never share a label and can never contend for the same bootstrap slot.
+2. **`enableOsUnit`'s content-addressed idempotence** (present since the original Slice 2 commit,
+   predates BL-259): when a label is already loaded and the rendered content changed (e.g. a
+   different `--root` ⇒ different `workingDirectory` ⇒ different content-hash — the exact "left
+   loaded from an earlier run" shape BL-259 describes), it unloads the stale unit **before**
+   issuing a fresh `bootstrap`, never a bare double-bootstrap against a live label.
+
+**Evidence.**
+- `node scripts/smoke-test.mjs` (full suite, unfiltered) run **twice back to back with no
+  `bootout` between runs**: both `13 passed, 0 failed`, identical counts, launchd state clean
+  (`launchctl list` afterward shows only the two legitimate `com.sox.user.*` production units).
+- Same result via `bin/soxe install/service enable/status/disable` driven directly, twice, with
+  and without an intervening `disable` step, and with `SOX_ECOSYSTEM_HOME` deliberately held
+  constant across "runs" (removing BL-263's protection) to isolate the second mechanism — still
+  no collision, because of (2) above.
+- Added a regression test naming BL-259 in `libs/host-runtime/src/os-unit.spec.ts`
+  (`describe('BL-259 — two smoke-test.mjs runs never hit "Bootstrap failed: 5"')`), watched RED
+  (temporarily disabled the unload-before-reload branch in `enableOsUnit`, `AssertionError:
+  expected -1 to be greater than or equal to 0` on the bootout-before-bootstrap ordering check)
+  then GREEN with the fix restored (`git diff` on `os-unit.ts` clean — no net source change).
+  `npx nx test host-runtime`: 280/280 passed.
+
+**Files:** `libs/host-runtime/src/os-unit.spec.ts` (new regression test only — no production code
+changed; the fix already existed).
+
+**Related:** BL-263 (the label-namespacing fix that closes the primary collision path), BL-407
+(filed during this investigation — the smoke-test exports preflight is workspace-wide before
+`--extension` filtering, which blocked the first attempt to reproduce this and remains open).
+
 ## [Unreleased] — BL-359: BL-id allocation race fixed — atomic reservation + pre-commit collision guard
 
 **The bug.** A new backlog id was chosen by reading the current maximum `### BL-<n>` heading in
