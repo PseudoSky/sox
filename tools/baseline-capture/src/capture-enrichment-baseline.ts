@@ -24,7 +24,6 @@ import { createHash } from 'node:crypto';
 import { readFileSync, copyFileSync, mkdirSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
-import { createSqliteAdapter } from '@adhd/sox-store-adapter';
 import type { StoreAdapter } from '@adhd/sox-store-adapter';
 import { runBatchEnrich, openDb, type BatchEnrichOptions, type BatchEnrichResult } from '@adhd/sox-memory-core';
 
@@ -185,9 +184,14 @@ export async function captureEnrichmentBaseline(
   const baselineJsonPath = join(snapshotDir, 'enrichment-parity.json');
 
   // ── Step 1: Create a consistent snapshot ────────────────────────────────────
+  // Must open with the same adapter type the live store actually is (default
+  // Turso/libsql, selectable via STORE_ADAPTER) — a hardcoded `createSqliteAdapter`
+  // here previously forced better-sqlite3 onto a libsql-format file and crashed with
+  // `SqliteError: malformed database schema (__turso_internal_fts_dir_idx_fts_node_key)`
+  // the first time this script was ever run against a real Turso store (BL-388).
   log('Step 1: Creating consistent snapshot...');
   {
-    const tmpAdapter = createSqliteAdapter({ dbPath: liveDbPath });
+    const tmpAdapter = await openDb(liveDbPath);
     await tmpAdapter.exec('PRAGMA wal_checkpoint(TRUNCATE)');
     await tmpAdapter.close();
     log('  WAL checkpointed on live DB.');
