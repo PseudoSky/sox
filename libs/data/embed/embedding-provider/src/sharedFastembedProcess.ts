@@ -56,6 +56,19 @@ export class SharedFastembedProcessClient {
   private startingPromise: Promise<ChildProcess> | null = null;
   private nextId = 1;
   private pending = new Map<number, PendingEntry>();
+  private readonly hostPath: string | undefined;
+
+  /**
+   * @param hostPathOverride Test-only injection point (BL-410): points the
+   * fork target at a lightweight fixture host instead of the real
+   * `fastembedProcessHost.js`, so a test can exercise the fork/ref/unref
+   * contract without loading fastembed or downloading a model. Production
+   * code (`getSharedFastembedProcess()`) never passes this — it always
+   * resolves the real host path.
+   */
+  constructor(hostPathOverride?: string) {
+    this.hostPath = hostPathOverride;
+  }
 
   /** True once the underlying child process has been forked. */
   get started(): boolean {
@@ -68,7 +81,7 @@ export class SharedFastembedProcessClient {
     if (this.startingPromise) return this.startingPromise;
 
     this.startingPromise = new Promise<ChildProcess>((resolveStart) => {
-      const hostPath = resolveFastembedHostPath();
+      const hostPath = this.hostPath ?? resolveFastembedHostPath();
       const c = fork(hostPath, [], {
         stdio: ['ignore', 'inherit', 'inherit', 'ipc'],
         // Real inference is CPU-bound in native code; no need to keep the
@@ -81,6 +94,7 @@ export class SharedFastembedProcessClient {
         const pending = this.pending.get(msg.id);
         if (!pending) return;
         this.pending.delete(msg.id);
+        this.unrefIfIdle();
         if ('error' in msg && typeof msg['error'] === 'string') {
           pending.reject(new Error(msg['error'] as string));
         } else {
@@ -136,6 +150,34 @@ export class SharedFastembedProcessClient {
   }
 
   /**
+   * (BL-410) Ref the child process and its IPC channel while at least one
+   * request is in flight. `ensureProcess()` unrefs both immediately after
+   * forking so a long-lived *service* (memory-server) can exit cleanly
+   * without the embed child pinning it open forever (BL-370). But a
+   * **standalone script** whose only pending work is an in-flight
+   * `request()` has nothing else ref'd — Node can decide the event loop is
+   * empty and tear the process down mid-model-load, abandoning the pending
+   * promise before the child's reply ever arrives. Re-ref-ing for the
+   * duration of each in-flight request keeps such a script alive exactly
+   * long enough to receive its answer, and `unrefIfIdle()` (called from
+   * every settle path) immediately releases that ref again once nothing is
+   * outstanding — so a script with no other work still exits promptly, it
+   * just doesn't exit *before its own request completes*.
+   */
+  private refForPending(): void {
+    this.child?.ref();
+    this.child?.channel?.ref();
+  }
+
+  /** Counterpart to `refForPending()` — release the ref once `pending` drains. */
+  private unrefIfIdle(): void {
+    if (this.pending.size === 0) {
+      this.child?.unref();
+      this.child?.channel?.unref();
+    }
+  }
+
+  /**
    * Send a request to the shared fastembed process and await its correlated
    * response. Assigns a globally-unique `id` — the caller must NOT set its
    * own `id` (any `id` field on `payload` is ignored/overwritten).
@@ -152,6 +194,7 @@ export class SharedFastembedProcessClient {
       if (timeoutMs && timeoutMs > 0) {
         to = setTimeout(() => {
           this.pending.delete(id);
+          this.unrefIfIdle();
           reject(new Error(`shared fastembed process request timed out after ${timeoutMs}ms`));
         }, timeoutMs);
         if (typeof to.unref === 'function') to.unref();
@@ -167,15 +210,27 @@ export class SharedFastembedProcessClient {
           reject(e);
         },
       });
+      // BL-410: keep the parent's event loop ref'd until this request settles.
+      this.refForPending();
 
       child.send({ ...payload, id });
     });
   }
 
   /**
-   * Forcefully terminate the shared fastembed process. Intended ONLY for
-   * full process shutdown or test teardown that genuinely owns the whole
-   * process's fastembed lifecycle.
+   * Terminate the shared fastembed process. Intended ONLY for full process
+   * shutdown or test teardown that genuinely owns the whole process's
+   * fastembed lifecycle.
+   *
+   * (BL-405) Prefers the host protocol's own `{ __shutdown: true }` message
+   * (`fastembedProcessHost.ts`'s `process.on('message', ...)` already
+   * handles it via a clean `process.exit(0)`) over a raw `kill()` — a signal
+   * landing while the child is mid-`process.send()` for an unrelated reply
+   * is what produced the uncaught EPIPE crash this bug is named for. Bounded
+   * to `TERMINATE_GRACE_MS`: if the child doesn't exit on its own (wedged,
+   * or the IPC channel was already gone so the message silently no-op'd),
+   * `kill()` is still the fallback — this must never hang the CALLER's own
+   * shutdown sequence waiting on a child that will never exit gracefully.
    */
   async terminate(): Promise<void> {
     const c = this.child;
@@ -185,11 +240,29 @@ export class SharedFastembedProcessClient {
       reject(new Error('shared fastembed process terminated'));
     }
     this.pending.clear();
-    if (c) {
-      c.kill();
+    if (!c) return;
+
+    const exited = new Promise<void>((resolve) => {
+      c.once('exit', () => resolve());
+    });
+    try {
+      if (c.connected) c.send({ __shutdown: true });
+    } catch {
+      // IPC already gone — kill() below is the only path left.
     }
+    const timedOut = await Promise.race([
+      exited.then(() => false),
+      new Promise<boolean>((resolve) => {
+        const t = setTimeout(() => resolve(true), TERMINATE_GRACE_MS);
+        if (typeof t.unref === 'function') t.unref();
+      }),
+    ]);
+    if (timedOut) c.kill();
   }
 }
+
+/** (BL-405) How long `terminate()` waits for the graceful `__shutdown` message before falling back to `kill()`. */
+const TERMINATE_GRACE_MS = 1000;
 
 let _singleton: SharedFastembedProcessClient | null = null;
 
