@@ -4,7 +4,13 @@
  * Proves the backend JSON-RPC handler mirrors the MCP serve() surface:
  *   - initialize → serverInfo (content-addressed version) + tools capability
    *   - tools/list → the canonical 20-tool list (same shape serve() returns)
- *   - tools/call → routes to handleToolCall (here: memory_ping, no db touched)
+ *   - tools/call → routes to handleToolCall (here: memory_ping, no db touched —
+ *     see BL-412: this was FALSE until the memory_ping guard landed; a bare
+ *     memory_ping used to fall through to the real ~/.memory/memory.db and
+ *     register it into the enrich loop's openedPaths. The regression test for
+ *     that fix lives in bl412-ping-no-live-store.spec.ts; the assertions below
+ *     were tightened to assert `store.configured === false` directly so this
+ *     file can no longer silently regress the claim its own comment makes.)
  *   - the published schema.json hashes identically to the live tools/list
  *     ([contract:schema-hash], §9.5.3) so the shim's cache matches the backend.
  *   - runBackend binds a real UDS that a dialBackend client can round-trip against.
@@ -51,6 +57,13 @@ describe('memory-server backend handler', () => {
   });
 
   it('tools/call routes memory_ping through handleToolCall without touching a db', async () => {
+    const savedConfig = process.env['SOX_CONFIG_DB_PATH'];
+    delete process.env['SOX_CONFIG_DB_PATH'];
+    cleanups.push(() => {
+      if (savedConfig === undefined) delete process.env['SOX_CONFIG_DB_PATH'];
+      else process.env['SOX_CONFIG_DB_PATH'] = savedConfig;
+    });
+
     const resp = await handleBackendRequest({
       jsonrpc: '2.0',
       id: 3,
@@ -60,6 +73,11 @@ describe('memory-server backend handler', () => {
     const result = resp?.result as { content: Array<{ text: string }>; isError?: boolean };
     expect(result.isError).not.toBe(true);
     expect(result.content[0]?.text).toContain('ok');
+    // BL-412: with no arguments and no host-injected SOX_CONFIG_DB_PATH, this
+    // must NOT open a connection to the guessed live store — the comment
+    // above ("no db touched") is only true because of this assertion.
+    const parsed = JSON.parse(result.content[0]?.text ?? '{}') as { store: { configured?: boolean } | null };
+    expect(parsed.store?.configured).toBe(false);
   });
 
   it('notifications (no id) get no response', async () => {
