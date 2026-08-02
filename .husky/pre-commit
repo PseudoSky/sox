@@ -1,1 +1,16 @@
+#!/usr/bin/env sh
+# .husky/pre-commit — canonical pre-commit hook source.
+#
+# This file is not wired up by a `core.hooksPath` or a husky npm package —
+# there is no `prepare` script and `husky` is not a devDependency (verified
+# 2026-08-01, BL-359). It is installed into `.git/hooks/pre-commit` by
+# `node tools/install-git-hooks.mjs`, which every clone/worktree must run
+# once (hooks are never tracked by git). Edit THIS file, not the copy under
+# `.git/hooks/` — re-run the installer after editing to pick up changes.
+
+set -e
+
+# BL-359 — reject BL-<n> id collisions before they reach BACKLOG.md/CHANGELOG.md.
+node tools/check-bl-id-integrity.mjs
+
 npx nx affected --target=lint --base=HEAD~1 --head=HEAD
