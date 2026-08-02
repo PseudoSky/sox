@@ -245,76 +245,113 @@ function splitSystemPrompt(system) {
 
 /**
  * Content-first rewrite for a session turn.
- * The effective persona SP (session active agent) is split from the shared
- * boilerplate; shared stays at position 0 (cache anchor), persona is appended
- * to the LAST user message.
+ *
+ * Forwarded structure:
+ *   [0] system: shared boilerplate (from the OPENCODE SP)  ← position 0 cache anchor
+ *   [1..n] history (untouched)
+ *   [n+1] system: "--- Role ---" + persona SP + CF prompt  ← tail, per-agent
+ *
+ * Two critical invariants:
+ *   1. SHARED comes from the opencode system prompt, which is composed as
+ *      [agent_body][shared_boilerplate]. It is NEVER derived from the bare
+ *      persona body — that body has no boilerplate, so splitting against it
+ *      yields shared='' and the system message gets DESTROYED (the bug that
+ *      left the model with no system prompt and no cache anchor).
+ *   2. The persona is a TRAILING SYSTEM message, NOT a suffix on the last
+ *      user message. A model treats system-role content as its governing
+ *      instructions; user-role content reads as conversation data ("text you
+ *      pasted"). Appending the persona to the last user message meant the
+ *      model never internalized the persona switch. A trailing system message
+ *      is authoritative AND cache-safe: the shared prefix (position 0) stays
+ *      byte-identical across agent switches, and appending at the end never
+ *      disturbs assistant(tool_calls)→tool pairing.
  */
-function rewriteToContentFirst(messages, personaSP) {
+function rewriteToContentFirst(messages, personaSP, opencodeSP, cfPrompt) {
   const system = messages.find(m => m.role === 'system')?.content;
   const lastUserIdx = messages.findLastIndex(m => m.role === 'user');
   if (lastUserIdx === -1) {
     return { messages, system, savings: 0, cachedSeed: false, seedTokens: 0, systemTokens: 0, agentTokens: 0 };
   }
 
-  // Split the SHARED boilerplate out of the effective persona SP
-  const { shared, agentRole } = splitSystemPrompt(personaSP || system);
+  // SHARED always from the opencode SP (has the boilerplate).
+  const { shared } = splitSystemPrompt(opencodeSP || system);
+  // PERSONA from the session active agent's bare body; falls back to the
+  // opencode SP's agent body on first contact.
+  const { agentRole } = splitSystemPrompt(personaSP || opencodeSP || system);
   const systemTokens = Math.ceil((system || '').length / 4);
   const seedTokens = Math.ceil(messages[lastUserIdx].content.length / 4);
 
   const result = messages.map(m => ({ ...m }));
-  result[lastUserIdx] = {
-    ...result[lastUserIdx],
-    content: `${result[lastUserIdx].content}\n\n--- Role ---\n${agentRole}`,
-  };
-  // Shared boilerplate remains the system message (position 0, cached)
+  // Shared boilerplate remains the system message (position 0, cached).
   const sysIdx = result.findIndex(m => m.role === 'system');
   if (sysIdx !== -1) {
     result[sysIdx] = { ...result[sysIdx], content: shared };
   }
 
-  // Provider strictness: a `tool` message must be immediately preceded by an
-  // assistant message carrying `tool_calls`. If the last message is a `tool`
-  // result, the persona suffix appended to the last user message is fine —
-  // the sequence stays [user+role, assistant(tool_calls), tool]. But if the
-  // LAST message overall is a `tool` role (common in opencode: tool result is
-  // the most recent turn), the persona must be appended to the LAST USER
-  // message, which we already do — the tool result follows it, and the
-  // assistant tool_calls message precedes the tool result. However, when the
-  // last user message IS the turn input and a tool result follows, the
-  // provider still requires tool_calls before tool. opencode's array already
-  // satisfies this; we only touch the user message content, never reorder.
-  // The dangerous case is when there is NO user message after the last
-  // assistant(tool_calls) — then appending to a stale user message orphans
-  // the pairing. Guard: if the last message is role 'tool' and its preceding
-  // assistant has tool_calls, append the persona to the LAST user message
-  // that comes BEFORE that tool chain (i.e., the last user before the final
-  // tool message), leaving the tool chain intact at the end.
-
-  const lastMsg = result[result.length - 1];
-  if (lastMsg && lastMsg.role === 'tool') {
-    // Find the last user message BEFORE the final tool chain, and move the
-    // persona there if it's not already on the very last user message.
-    const lastUserBeforeTool = result.findLastIndex(m => m.role === 'user');
-    // The final tool message must still follow its assistant(tool_calls).
-    // The persona suffix we appended to result[lastUserIdx] may be AFTER the
-    // tool_calls/assistant message (if lastUserIdx > the assistant idx),
-    // which is fine. Nothing more to do — the pairing is preserved because
-    // we never reordered or removed the assistant(tool_calls) message.
-  }
+  // Persona + CF prompt as a TRAILING system message. Appending at the end
+  // keeps user/tool/assistant ordering intact (provider strictness on
+  // tool_calls pairing is preserved) and the shared prefix byte-identical.
+  const cfTail = cfPrompt ? `\n\n${cfPrompt}` : '';
+  result.push({
+    role: 'system',
+    content: `--- Role ---\n${agentRole}${cfTail}`,
+  });
 
   const seedHash = seedTokens > 100 ? `seed-${seedTokens}` : null;
   const cached = seedHash ? cache.get(seedHash) : false;
   if (seedHash && !cached) cache.set(seedHash, seedTokens);
 
+  const cfTokens = Math.ceil((cfPrompt || '').length / 4);
+  // Variable tail = persona + CF prompt (both per-session/per-turn); the
+  // shared seed is what cache reuses, so savings are measured against
+  // seed / (seed + persona + cf).
+  const tailTokens = Math.ceil(agentRole.length / 4) + cfTokens;
+
   return {
     messages: result,
     system: shared,
-    savings: cached ? ((seedTokens / (seedTokens + Math.ceil(agentRole.length / 4))) * 100).toFixed(1) : '0.0',
+    savings: cached ? ((seedTokens / (seedTokens + tailTokens)) * 100).toFixed(1) : '0.0',
     cachedSeed: cached,
     seedTokens,
     systemTokens,
-    agentTokens: Math.ceil(agentRole.length / 4),
+    agentTokens: tailTokens,
+    cfTokens,
   };
+}
+
+// ──────── CF flow instructions (Option 2: session handle in context) ────────
+
+/**
+ * Render the content-first process instructions with the session id baked in.
+ *
+ * Injected as the tail of the TRAILING system message (after the persona SP),
+ * so the shared-prefix cache anchor (position 0) is untouched — the session id
+ * lives in the message tail, which already varies per agent anyway.
+ *
+ * Final CF structure per forwarded turn:
+ *   [ ...context, system: "--- Role ---" + persona SP + CF prompt ]
+ *
+ * The agent learns its own session id from context (no env var, no discovery)
+ * and uses it to call POST /v1/session/agent when handing off to a different
+ * specialist persona.
+ */
+function renderCFInstructions(sessionId) {
+  const agents = [...AGENTS.keys()].sort();
+  return [
+    '--- Content-First Session Instructions ---',
+    `Your session id is: ${sessionId || '(unset)'}.`,
+    'You are running through a session-aware content-first proxy: the shared',
+    'context stays cached across agent persona switches; only the role suffix',
+    'changes per turn. When the next stage of work belongs to a different',
+    'specialist, hand off to it instead of doing the work yourself:',
+    '',
+    `  curl -s -X POST http://localhost:${PORT}/v1/session/agent \\`,
+    `    -H 'Content-Type: application/json' \\`,
+    `    -d '{"sessionId":"${sessionId}","agent":"<agent-name>"}'`,
+    '',
+    'The next turn then runs with that agent\'s persona. Available agents:',
+    agents.join(', '),
+  ].join('\n');
 }
 
 // ──────── Virtual tool definition ────────
@@ -530,12 +567,15 @@ const server = http.createServer(async (req, res) => {
 
       // If input provided, trigger the next turn with the new persona
       if (input) {
-        const { personaSP } = { personaSP: resolved.systemPrompt };
         const messages = [
           ...session.context.map(m => ({ ...m })),
-          { role: 'user', content: `${input}\n\n--- Role ---\n${resolved.systemPrompt}` },
+          { role: 'user', content: input },
         ];
-        const result = await forwardBlocking(messages, { model: TARGET_MODEL, tools: session.lastTools });
+        // Reuse the content-first rewrite so the persona lands in the trailing
+        // system message (same structure as the streaming path) instead of a
+        // user-message suffix the model would read as data.
+        const cf = rewriteToContentFirst(messages, resolved.systemPrompt, session.opencodeSP, null);
+        const result = await forwardBlocking(cf.messages, { model: TARGET_MODEL, tools: session.lastTools || [] });
         const output = result.choices?.[0]?.message?.content || '';
         session.context.push({ role: 'user', content: input });
         if (output) session.context.push({ role: 'assistant', content: output });
@@ -615,14 +655,16 @@ const server = http.createServer(async (req, res) => {
       }
 
       // ── Content-first path (true streaming) ──
-      // Build the effective SP: session persona (override) if available,
-      // else the opencode-supplied SP.
-      const effectiveSP = personaSP || opencodeSP;
-      const cf = rewriteToContentFirst(messages, effectiveSP);
-      // Verify the persona actually reached the forwarded messages
+      const cfPrompt = sessionId ? renderCFInstructions(sessionId) : null;
+      const cf = rewriteToContentFirst(messages, personaSP, opencodeSP, cfPrompt);
+      // Verify BOTH invariants reached the forwarded messages:
+      //  - personaApplied: trailing system message carries "--- Role ---"
+      //  - sharedSystem: position-0 system message is NOT emptied (the bug
+      //    that left the model with no system prompt / no cache anchor)
       const lastMsgContent = cf.messages[cf.messages.length - 1]?.content || '';
       const roleApplied = lastMsgContent.includes('--- Role ---');
-      console.error(`[cf-proxy] rewrite: activeAgent=${activeAgent || '?'} personaApplied=${roleApplied} agentRoleTokens=${cf.agentTokens} userMsgEnd=${JSON.stringify(lastMsgContent.slice(-60))}`);
+      const sharedSysLen = cf.messages[0]?.content?.length || 0;
+      console.error(`[cf-proxy] rewrite: activeAgent=${activeAgent || '?'} personaApplied=${roleApplied} sharedSysLen=${sharedSysLen} agentRoleTokens=${cf.agentTokens} userMsgEnd=${JSON.stringify(lastMsgContent.slice(-60))}`);
 
       // True streaming passthrough to upstream. The virtual tool is DISABLED
       // here (CF_VIRTUAL_TOOL=1 re-enables it later once the baseline works);

@@ -108,14 +108,21 @@ This is where current work lives. **`proxy/cf-proxy.mjs` (port 3333) is the prod
 
 **Decision on session-id discovery (user: "either tool-call switching handled by the proxy correctly, OR the endpoint resolves the session id without the agent specifying it"):**
 
-- **Option 1 (RECOMMENDED) — In-band switch via magic bash command.** Agent runs `bash: cf-switch typescript`. opencode executes it (bash always exists, no env dep). The NEXT `/v1/chat/completions` request carries that tool call in history; the proxy detects `cf-switch <agent>` in `tool_calls[].arguments.command`, applies the switch exactly like the endpoint does (`cf-proxy.mjs:523-528`), and rewrites the tool result to `✓ switched active agent to typescript` so the model sees success and continues in the new persona. Session id never transmitted by the agent — the request is already header-bound. No interception, no buffering, no hang. One-turn latency is inherent & fine.
-- **Option 2 — Session handle injected into context.** Proxy appends `[session:<short-handle>]` to the last user message inside `rewriteToContentFirst` (after persona suffix, cache-safe). Model reads its own handle from context — zero discovery. `/v1/session/agent` accepts either full id or handle (`:510`). Fixes the endpoint for external scripts too.
-- **Option 3 — Phantom tool in forwarded `tools` list.** Append a `set_session_agent` definition to `reqData.tools` so the model calls it natively; proxy applies switch + rewrites the (error) result on next request. Depends on opencode tolerating unknown tools gracefully — verify first.
-- **Option 4 — Single-active-session fallback** when `sessionId` absent. Fragile with concurrent sessions; last resort only.
+- **Option 1 (RECOMMENDED) — In-band switch via magic bash command.** Agent runs `bash: cf-switch <agent>`. opencode executes it (bash always exists, no env dep). The NEXT `/v1/chat/completions` request carries that tool call in history; the proxy detects `cf-switch <agent>` in `tool_calls[].arguments.command`, applies the switch exactly like the endpoint does, and rewrites the tool result to `✓ switched active agent to <agent>` so the model sees success and continues in the new persona. Session id never transmitted by the agent — the request is already header-bound. No interception, no buffering, no hang. One-turn latency is inherent & fine. **NOT YET IMPLEMENTED.**
+- **Option 2 — Session handle injected into context.** ✅ **IMPLEMENTED + VERIFIED.** `renderCFInstructions(sessionId)` bakes the session id + handoff curl recipe into every forwarded turn. The agent learns its session id from its own context. `/v1/session/agent` accepts full id (handle support not yet added — full id only).
+- **Option 3 — Phantom tool in forwarded `tools` list.** Not implemented.
+- **Option 4 — Single-active-session fallback.** Not implemented.
 
-Implementation order:
-1. **Option 1 + 2** — magic bash switch + context handle injection. These compose: bash covers agent-initiated handoff, handle covers external curl.
-2. **Request-body logging** for `/v1/session/agent` (log the exact `sessionId`/`agent` the caller sent) — cheap, closes the audit gap.
+**FIXES SHIPPED (2026-08-02, commit pending):**
+1. **Shared-split bug (the empty-system bug):** `rewriteToContentFirst` now derives `shared` from the **opencode SP** (`splitSystemPrompt(opencodeSP || system)`) and `agentRole` from the **persona body** (`splitSystemPrompt(personaSP || opencodeSP || system)`) — they were wrongly conflated via `personaSP || system`, which yielded `shared=''` once a session agent was active, destroying the system message AND the cache anchor. Verified: real-turn replay now yields `sharedSysLen=38033`, was `0`.
+2. **Persona placement (the perception bug):** the persona is now a **trailing SYSTEM message** (`--- Role ---\n<persona>` + CF prompt), NOT a suffix on the last user message. A model reads system-role content as its governing role; user-role content reads as "text you pasted". Verified live: `personaApplied=true`, user message left clean, tool chain intact.
+3. **Handoff-with-input path:** now routes through `rewriteToContentFirst` (consistent trailing-system persona) + fixes latent `session.lastTools` never-set bug (was passing `undefined`; now `|| []`).
+
+**Debug log line now reports both invariants:** `rewrite: activeAgent=? personaApplied=true sharedSysLen=38033 agentRoleTokens=...` — check `sharedSysLen>0` on real opencode turns to confirm the anchor survives.
+
+Implementation order (remaining):
+1. **Option 1** — magic bash switch (`cf-switch <agent>` detection in request history).
+2. **Request-body logging** for `/v1/session/agent` (log the exact `sessionId`/`agent` the caller sent).
 3. Option 3 only if opencode's unknown-tool handling checks out clean.
 4. **Long-term:** context pruning on agent switch to fight dilution (collapse prior agent's turns into a summary so the new persona isn't buried at 60K tokens).
 
