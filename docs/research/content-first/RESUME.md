@@ -1,174 +1,133 @@
-# Content-First Architecture — Empirical Study
+# Content-First Architecture — Session Handoff / Resume
 
-> **Research question:** Does placing the role instruction at the end of the user message (content-first) instead of at position 0 in the system prompt (role-first) provide measurable caching benefits in multi-agent LLM systems?
+> **For resuming work after a session compaction.** Current state of the content-first research + proxy development, what's proven, what's broken, what's next.
 
-**Status:** Complete — 7 experiments, 4 scripts, 22 session files
-**Provider:** DeepSeek Chat (deepseek-chat, temperature=0)
-**Date:** 2026-07-27
-
----
-
-## Architecture
-
-```
-Role-first (current standard — every multi-agent framework):
-  Agent A: system=[You are an architect...]   user=[<1,200t seed>]
-  Agent B: system=[You are a reviewer...]     user=[<1,200t seed>]    ← 0 cached, different sys
-  Agent C: system=[You are a backend dev...]  user=[<1,200t seed>]    ← 0 cached
-
-Content-first (proposed):
-  Agent A: user=[<1,200t seed>\n\nYou are an architect...]   ← cold
-  Agent B: user=[<1,200t seed>\n\nYou are a reviewer...]     ← ~1,024t cached from A
-  Agent C: user=[<1,200t seed>\n\nYou are a backend dev...]  ← ~1,024t cached from A
-         \_____________ cached ____________/ \_ 30t unique _/
-```
-
-**Cache anchor:** The first tokens determine the cache key.
-- **RF:** Position 0 = system prompt (changes per role → no content reuse)
-- **CF:** Position 0 = seed content (same for all roles → content reused)
+**Last updated:** 2026-08-02
+**Branch:** `wip/turso-live-metrics`
 
 ---
 
-## Key Finding
+## 1. Where to pick up
 
-| Metric | Role-First | Content-First |
-|--------|-----------|---------------|
-| Seed content caching | **0% across roles** — each agent pays full seed cost | **90% across roles** — seed cached after first agent |
-| System prompt caching | Cached on same-role repeat only | N/A (no system prompt) |
-| Scale with N roles | $O(N \cdot C)$ — each agent loads seed | $O(C + N \cdot R)$ — seed paid once |
-| Scale with seed size | $O(N \cdot C)$ — worsens linearly | $O(C)$ — fixed cost |
-| Per-agent unique cost | ~1,200t (full seed) | ~30t (role suffix only) |
+The work is split into two active threads. Read both before continuing.
 
-At 50K+ token seeds (single code file), savings converge to **90%+**. At 5K chars (~1,200t), savings are **57-60%**.
+### Thread A — The thesis (COMPLETE, background)
+- `README.md` — core idea, economics, vision
+- `content-first-thesis.md` — competitive thesis, moat
+- `PATTERNS.md` — 26 patterns (9 agent + 6 SDLC + 7 cross-domain)
+- `instruction-hierarchy-experiment.md` — IHE-1 quality experiment (CF ≡ RF proven, d=0.200)
+- All cache economics proven: 60-93% savings, 95% real-session hit rate
 
----
-
-## Experiments
-
-### E1-E2: agent-mcp (initial exploration)
-Agents created via `agent_agent_create` MCP tools → DeepSeek through agent-mcp abstraction layer.
-- **Result:** CF showed 86-88% cache reuse, RF showed 0%
-- **Caveat:** agent-mcp may transform payloads → cache measurement purity unclear
-
-### E3: First direct DeepSeek API
-`scripts/deepseek-experiment.mjs` — bypassed agent-mcp, direct fetch to DeepSeek API.
-- **Result:** CF 128t cached vs RF 0t on role switch. Cache contamination between phases (no isolation).
-- **Status:** Superseded
-
-### E4: Clean isolated (60s cooldown)
-`scripts/deepseek-clean.mjs` — 4-round sequential with 60-second cache cooldown between RF and CF.
-- **Result:** RF 1,024t cached / 5,425t unc. CF 3,072t cached / 3,379t unc. **38% savings.**
-- **Status:** Superseded
-
-### E5-E6: Sequential chain refinement
-6-round sequential with architect repeats (R1, R3, R5 same role). Seed-prefix isolation replaced 60s cooldown.
-- **Result:** RF 4.6% caching (only same-role repeats), CF 60.6% caching (all rounds). **17.7% savings.**
-- **File:** `scripts/content-first-proof.mjs --scenario 6 --mode deepseek`
-
-### E6 (clean): Fork — fresh content, real opencode prompts
-**The definitive fork experiment.** Unique UUID seed to guarantee cold cache. 6 real opencode agent files as system prompts. No prefixes.
-
-```
-RF (4 agents): 16,338t input,  4,562t uncached (= 4× seed cost)    $0.0029
-CF (4 agents):  4,417t input,  1,345t uncached (= seed + 3× suffix) $0.0012
-Savings: 60.3%
-```
-
-### E6 (chain): 6-round sequential with architect repeats
-Real opencode prompts, architect on R1/R3/R5. Demonstrates both RF same-role caching AND CF content caching.
-
-```
-RF Architect R1: 2,803t input, 2,688t cached (SP from prior run)
-RF Architect R3: 4,012t input, 2,688t cached (same SP → SP cached!)  ✅
-RF Architect R5: 5,223t input, 3,968t cached (SP + content cached)   ✅
-RF total: 26,475t input, 8,043t uncached  $0.0070
-
-CF R1:     74t input,   0t cached (cold)
-CF R2:    451t,         0t cached
-CF R3:  1,058t,       384t cached (first block)
-CF R4:  1,645t,     1,024t cached (compounding)
-CF R5:  2,222t,     1,536t cached
-CF R6:  2,731t,     2,176t cached
-CF total: 8,181t input, 3,061t uncached  $0.0045
-
-Savings: 34.7%
-```
-
-### E7: IHE-1 — Instruction Hierarchy Evaluation (generation complete)
-**The gating experiment.** Tests whether content-first instruction-following is equivalent to role-first when identical instruction text appears in different positions. 6 scenarios × 5 trials = 30 RF/CF output pairs.
-
-**Generator:** DeepSeek Chat (deepseek-chat, temperature=0)
-**Evaluation:** Pending — run `python evaluation/ihe1-eval.py --sessions sessions/*ihe1-outputs.json`
-
-| Metric | Detail |
-|--------|--------|
-| Scenarios | A (Role Adherence), B (Format Compliance), C (Multi-Constraint), D (Persona Depth), E (Trade-off Acknowledgment), F (Negation Density) |
-| Trials per scenario | 5 (30 total RF/CF pairs) |
-| Blind comparison | ArenaGEval with randomized A/B labels |
-| Judge model | Configurable — DeepSeek or GPT-4o |
-| Statistical methods | TOST equivalence (Δ=0.5), Cohen's d, binomial preference, length bias check |
-| Session file | `sessions/2026-07-29T18-01-28-330Z-ihe1-outputs.json` |
-| Status | **Generation complete — evaluation pending** |
+### Thread B — The proxy (ACTIVE, in progress)
+This is where current work lives. **`proxy/cf-proxy.mjs` (port 3333) is the production proxy.** `proxy/cf-chain.mjs` (port 3334) is a separate session-state experiment.
 
 ---
 
-## Scripts
+## 2. Proxy architecture (current state)
 
-| Script | Purpose | How to run |
-|--------|---------|-----------|
-| `scripts/content-first-proof.mjs` | **Comprehensive experiment.** 6 scenarios (4-6 rounds each). Chain + fork modes. | `node scripts/content-first-proof.mjs --scenario N --mode deepseek` |
-| `scripts/content-first-tests.mjs` | **Hypothesis test suite** — H1 through H10 with pass/fail assertions | `node scripts/content-first-tests.mjs` |
-| `scripts/content-first-verify.mjs` | **Quick smoke test.** Runs 1 scenario, prints verification checks | `node scripts/content-first-verify.mjs` |
-| `scripts/content-first-mcp.mjs` | **JSON output** for programmatic/CI consumption | `node scripts/content-first-mcp.mjs --pretty` |
+**File: `proxy/cf-proxy.mjs` — 726 lines, session-aware content-first proxy**
 
-All scripts share `lib/deepseek-experiment.mjs` which provides:
-- `deepseekCall({system?, messages})` — direct DeepSeek API client
-- `runRF(scenario)` / `runCF(scenario)` — sequential chain runners
-- `runForkRF(scenario)` / `runForkCF(scenario)` — parallel fork runners
-- `writeSession(...)` — writes full input+output to `sessions/`
-- `comparisonTable(...)` — cache boundary analysis table
-- `OPENCODE_AGENTS` — real system prompts from `~/.config/opencode/agents/`
+### What it does
+- OpenAI-compatible server. opencode points at it via the `proxy` provider (`proxy/cf` = content-first rewrite, `proxy/rf` = passthrough)
+- Reads opencode's real session id from the **`x-session-id` header** (opencode sends it — verified in raw capture)
+- Per-session log files: `proxy-<sessionid>.jsonl`
+- Content-first rewrite: shared boilerplate stays at position 0 (cache anchor), agent persona appended as `--- Role ---\n<agent body>` to the last user message
+- Session persona tracking: detects agent from opencode's system prompt, persists to session
+- API override via `POST /v1/session/agent` — switches the session's active agent
+- Virtual `set_session_agent` tool — **CURRENTLY DISABLED** (reverted, see section 4)
 
-**Requires:** `DEEPSEEK_API_KEY` environment variable.
+### Key verified behaviors (all tested)
+1. Agent SP detection on first message: ✅ (architect detected from real SP)
+2. Manual dropdown swap detection: ✅ (architect → review → refactor → typescript all detected)
+3. API override via `/v1/session/agent`: ✅
+4. Foreign-SP leak fix: ✅ (override holds against re-sent dropdown SP; releases on catch-up)
+5. True streaming: ✅ (reverted from blocking; the blocking path hung with opencode's max_tokens=32000)
 
----
-
-## Session Files
-
-21 JSON files in `sessions/` (22 previously; 1 superseded/consolidated) — each contains:
-- `meta`: Model, temperature, scenario, timestamp, isolation method
-- `rounds[]`: Per-round `inputContent` (full API input) + `output` (model response) for both RF and CF
-- `aggregates`: Total input/uncached/cached/cost/latency per paradigm
-- `comparison`: Savings percentage, caching ratios
+### Config / provider registration
+`opencode.json` has the `proxy` provider with models `rf` (passthrough) and `cf` (rewrite). Global config at `~/.config/opencode/opencode.json` also has it.
 
 ---
 
-## Methodology Notes
+## 3. Commits on this branch (chronological)
 
-1. **Cache isolation:** RF and CF have structurally different message arrays (RF has `system` field at position 0, CF has only `user`). No prefix needed — the JSON structure itself prevents cross-phase cache sharing.
+| Commit | What |
+|--------|------|
+| `1ae3251` | Session-aware proxy + chain experiments (initial) |
+| `7546767` | Strip `stream_options` from blocking upstream calls (fix: Upstream 400) |
+| `8367caf` | Revert to true streaming (fix: blocking path hung with max_tokens=32000) |
+| `2e6bcf5` | Add persona-application verification log |
+| `ddec69d` | **Fix foreign-SP leak** — override holds until dropdown catches up |
 
-2. **Within-experiment vs cross-experiment caching:** DeepSeek's cache is GLOBAL across all API calls. System prompts loaded from disk (opencode agent files) get cached across experiments. This inflates RF's cache numbers but doesn't affect the within-experiment comparison (what matters for the thesis).
-
-3. **DeepSeek cache blocks:** Cache hits occur in 1,024-token blocks. The seed must be large enough to fill at least one block (typically ~5K+ chars) for CF to show benefit. At 50K+ char seeds, every CF agent after R1 gets >90% cache.
-
-4. **Seed content vs role instruction:** The cache boundary breakdown shows what's actually cached:
-   - RF caches the **system prompt** (the instruction) — reused only when same role repeats
-   - CF caches the **seed content** (the artifact) — reused across ALL roles
+**The proxy on 3333 is the committed state = known-good baseline.**
 
 ---
 
-## Files
+## 4. Open problem — the session id discovery question
 
-```
-lib/deepseek-experiment.mjs          ← Shared library
-scripts/content-first-proof.mjs      ← S1: Comprehensive experiment
-scripts/content-first-tests.mjs      ← S2: Hypothesis test suite
-scripts/content-first-verify.mjs     ← S3: Quick verify
-scripts/content-first-mcp.mjs        ← S4: MCP JSON output
-scripts/deepseek-experiment.mjs      ← E3 (superseded)
-scripts/deepseek-clean.mjs           ← E4 (superseded)
-scripts/deepseek-comprehensive.mjs   ← E7 (superseded)
-sessions/*.json                      ← All experimental data with full I/O
-discovery-record.md                  ← Complete discovery record
-fork-join-architecture-from-plan.md  ← Fork-Join architecture concept
-```
+**The user's question that remains unresolved:** When the agent successfully called `POST /v1/session/agent` to switch to `typescript` (log: `session_agent_set: typescript` at 19:02:05 in `proxy-ses_03c3312d1ffeebNMmJC5HoZ7Lg.jsonl`), how did the agent discover its own session id?
+
+**What we know:**
+- The session id `ses_03c3312d1ffeebNMmJC5HoZ7Lg` appears **nowhere** in any stored log content — the model never received it in a visible tool result
+- The per-session logger does NOT record the `/v1/session/agent` **request body** — only `event, agent, turns`
+- Raw captures (a different session) show the model's real tool calls were `bash` (git), not agent-MCP introspection — so it didn't use `agent_session_list` or `memory_get_session_state`
+- The agent's tool call that discovered the session id, and the command it ran, are **not recoverable from current logs**
+
+**What's missing:** The proxy must log the `/v1/session/agent` request body (the exact sessionId + agent the caller used). Without it, we cannot trace how the agent learned its session id.
+
+**Next step for this thread:** Add request-body logging to the `/v1/session/agent` handler (and ideally a `CF_RAW` capture for it), then have the user reproduce the handoff so we can see the exact value and trace where it came from.
+
+---
+
+## 5. What was reverted / disabled (do not re-enable blindly)
+
+### The virtual `set_session_agent` tool — DISABLED
+- Was implemented, then reverted in `8367caf`
+- **Why:** the virtual tool required a *blocking* upstream call (to intercept the tool call before streaming to the client). With opencode's `max_tokens: 32000`, the blocking path waited for the FULL response before streaming → appeared hung / never completed
+- The fix attempt (strip `stream_options`, 7546767) fixed the 400 but not the hang
+- **To re-enable:** needs a different approach — intercept the `tool_call` delta *mid-stream* and re-issue, rather than blocking the whole response. Do NOT just flip it back on.
+
+### The chain proxy (`cf-chain.mjs`, port 3334)
+- Separate experiment for session-state chained agent switching (triage → judge → implement → review)
+- Has its own bugs (session id lookup, tool preservation) — NOT production-ready
+- The main proxy (3333) is the one to use
+
+---
+
+## 6. Known issues / gotchas
+
+1. **The proxy must be running** for `proxy/cf` to work. Start with:
+   ```bash
+   kill $(lsof -ti:3333) 2>/dev/null; sleep 1
+   nohup node docs/research/content-first/proxy/cf-proxy.mjs > /tmp/cf-proxy.log 2>&1 & disown
+   ```
+2. **Per-session logs** are gitignored (`proxy/.gitignore` ignores `*.jsonl`) — session data is ephemeral, not committed
+3. **Commitlint scope warning** is cosmetic (scope `research` not in the allowed list) — commits still land
+4. **The `rewrite:` debug line** in stderr (`personaApplied=true agentRoleTokens=N`) verifies the persona actually reached the forwarded messages — check it when debugging persona application
+5. **Cache block minimum:** DeepSeek needs ~1,024 tokens before cache engages. Short conversations show 0 cache — expected, not a bug. Real sessions hit 95-99%+
+6. **Content dilution:** at 60K+ token contexts, a ~3K-token persona suffix is a small signal — the model may "not notice" the agent switch even though the SP is verifiably applied. This is a model-behavior property, not a proxy bug.
+
+---
+
+## 7. Immediate next steps (priority order)
+
+1. **Session-id discovery trace** — add `/v1/session/agent` request-body logging to `cf-proxy.mjs`, reproduce the handoff, capture the exact session id the agent used, and trace where it learned it. This closes the open question in section 4.
+2. **Re-enable virtual tool properly** — design mid-stream tool_call interception instead of the blocking round-trip (section 5).
+3. **Consider injecting the session id into context** — the proxy could append "Your session id is `ses_...`; to hand off, call POST /v1/session/agent" to the forwarded context, removing the agent's need to discover it via tools.
+4. **Long-term:** context pruning on agent switch to fight dilution (collapse prior agent's turns into a summary so the new persona isn't buried at 60K tokens).
+
+---
+
+## 8. Key files map
+
+| File | Purpose |
+|------|---------|
+| `proxy/cf-proxy.mjs` | **Production proxy** — session-aware, streaming, content-first (3333) |
+| `proxy/cf-chain.mjs` | Chain experiment — session-state persona handoffs (3334, not prod) |
+| `proxy/README.md` | Proxy harness docs — dual-model A/B, logging schema |
+| `scripts/verify-chain-mechanism.mjs` | 12-check session mechanism test |
+| `scripts/test-chain-*.mjs` | Chain tests (experimental) |
+| `opencode.json` | `proxy` provider (`rf`/`cf` models) |
+| `README.md` | Thesis overview + document map |
+| `PATTERNS.md` | 26 patterns |
+| `instruction-hierarchy-experiment.md` | IHE-1 quality experiment |
+| `sessions/*.json` | Raw experimental session data |
