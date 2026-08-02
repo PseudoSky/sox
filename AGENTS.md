@@ -67,10 +67,13 @@ The CLI entrypoint is **`bin/soxe`** — a ~10-line ESM shim that loads the comp
 
 ---
 
-## ⛔ AGENT CONSTRAINT — GIT STAGING IS EXPLICIT-PATH ONLY
+## ⛔ AGENT CONSTRAINT — COMMIT BY PATHSPEC, NOT BY STAGING
 
-**Never run `git add -A`, `git add .`, or `git add --all`.**
-Stage by explicit path: `git add <file> <file> …`. Never stage `.nx/`, `.DS_Store`, `dist/`, or `*.js`/`*.d.ts` in `src/`.
+**Never run `git add -A`, `git add .`, `git add --all`, or a bare `git commit` after `git add`.**
+Commit with an explicit pathspec instead: `git commit <file> <file> … -m "..."`. This commits exactly
+those paths regardless of what else is sitting in the index — the index is shared across concurrent
+agents, so `git add <path>` followed by a bare `git commit` sweeps in whatever anyone else already
+staged (BL-409). Never let a commit touch `.nx/`, `.DS_Store`, `dist/`, or `*.js`/`*.d.ts` in `src/`.
 
 **Never run `git stash` (or `git stash pop/drop/clear`).** Commit to a branch instead.
 
