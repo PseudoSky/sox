@@ -16,6 +16,7 @@ import { SqliteGraphBackend } from '@adhd/sox-graph-store';
 import { SqliteVectorBackend } from '@adhd/sox-vector-store';
 import type { VectorBackend } from '@adhd/sox-vector-store';
 import type { GraphBackend } from '@adhd/sox-graph-store';
+import { createSqliteAdapter } from '@adhd/sox-store-adapter';
 
 // ── Mock SearchBackend for testing ─────────────────────────────────────────────
 
@@ -448,31 +449,46 @@ describe('SqliteSearchBackend integration', () => {
   }
 
   function createTestVecStore(db: Database.Database): VectorBackend {
-    const store = new SqliteVectorBackend(db);
+    // BL-364: SqliteVectorBackend's constructor takes a StoreAdapter (it
+    // reads adapter.config.type / adapter.capabilities internally, BL-380) —
+    // a raw better-sqlite3.Database has neither, and used to crash with
+    // "Cannot read properties of undefined (reading 'nativeVectors')".
+    // createSqliteAdapter(db) wraps the SAME handle the graph store below
+    // shares, rather than opening a second connection.
+    const adapter = createSqliteAdapter(db);
+    const store = new SqliteVectorBackend(adapter);
     store.ensureSpace({ modelId: 'test-model', dim: 4 });
     return store;
   }
 
-  function createTestGraphStore(db: Database.Database): GraphBackend {
-    const store = new SqliteGraphBackend(db);
-    store.applySchema();
+  async function createTestGraphStore(db: Database.Database): Promise<GraphBackend> {
+    // Same BL-364/BL-380 shape as createTestVecStore above: SqliteGraphBackend
+    // also takes a StoreAdapter now (`this.adapter.executeAll`/`executeGet`),
+    // not a raw better-sqlite3.Database — and applySchema() is async, so it
+    // must be awaited before any node write races the DDL.
+    const adapter = createSqliteAdapter(db);
+    const store = new SqliteGraphBackend(adapter);
+    await store.applySchema();
     return store;
   }
 
-  beforeEach(() => {
+  beforeEach(async () => {
     const db = createTestDb();
     vec = createTestVecStore(db);
-    graph = createTestGraphStore(db);
+    graph = await createTestGraphStore(db);
     backend = new SqliteSearchBackend(vec, graph);
   });
 
-  function seedNode(
+  // graph.writeNode() is async (StoreAdapter-backed, BL-364/BL-380) — seedNode
+  // must be awaited by every caller, or `id` is a Promise silently coerced
+  // into vec.upsert()'s node-id parameter instead of a number.
+  async function seedNode(
     content: string,
     topic: string,
     tags: string[],
     vecValues: number[],
-  ): number {
-    const id = graph.writeNode(content, {
+  ): Promise<number> {
+    const id = await graph.writeNode(content, {
       name: topic,
       topic,
       tags,
@@ -484,9 +500,9 @@ describe('SqliteSearchBackend integration', () => {
   }
 
   it('performs text-only search', async () => {
-    seedNode('Python is a great language for AI and data science', 'python', ['ai', 'programming'], [1.0, 0.0, 0.0, 0.0]);
-    seedNode('Rust is a systems language with memory safety', 'rust', ['systems', 'programming'], [0.0, 1.0, 0.0, 0.0]);
-    seedNode('TypeScript adds types to JavaScript', 'typescript', ['web', 'programming'], [0.0, 0.0, 1.0, 0.0]);
+    await seedNode('Python is a great language for AI and data science', 'python', ['ai', 'programming'], [1.0, 0.0, 0.0, 0.0]);
+    await seedNode('Rust is a systems language with memory safety', 'rust', ['systems', 'programming'], [0.0, 1.0, 0.0, 0.0]);
+    await seedNode('TypeScript adds types to JavaScript', 'typescript', ['web', 'programming'], [0.0, 0.0, 1.0, 0.0]);
 
     const results = await backend.search({ text: 'python' }, 10);
     expect(results.length).toBeGreaterThan(0);
@@ -496,8 +512,8 @@ describe('SqliteSearchBackend integration', () => {
   });
 
   it('performs vec-only search', async () => {
-    seedNode('Vector A — should match', 'topic-a', ['test'], [1.0, 0.5, 0.3, 0.1]);
-    seedNode('Vector B — far away', 'topic-b', ['test'], [-1.0, -0.5, -0.3, -0.1]);
+    await seedNode('Vector A — should match', 'topic-a', ['test'], [1.0, 0.5, 0.3, 0.1]);
+    await seedNode('Vector B — far away', 'topic-b', ['test'], [-1.0, -0.5, -0.3, -0.1]);
 
     const queryVec = new Float32Array([1.0, 0.5, 0.3, 0.1]);
     const results = await backend.search({ vec: queryVec }, 10);
@@ -505,8 +521,8 @@ describe('SqliteSearchBackend integration', () => {
   });
 
   it('performs hybrid text + vec search', async () => {
-    seedNode('Python async programming guide', 'python', ['programming'], [1.0, 0.0, 0.0, 0.0]);
-    seedNode('Rust programming guide', 'rust', ['programming'], [0.0, 1.0, 0.0, 0.0]);
+    await seedNode('Python async programming guide', 'python', ['programming'], [1.0, 0.0, 0.0, 0.0]);
+    await seedNode('Rust programming guide', 'rust', ['programming'], [0.0, 1.0, 0.0, 0.0]);
 
     const queryVec = new Float32Array([1.0, 0.1, 0.0, 0.0]);
     const results = await backend.search(
@@ -517,8 +533,8 @@ describe('SqliteSearchBackend integration', () => {
   });
 
   it('applies topic boost on exact match', async () => {
-    const id = seedNode('Python language details', 'python', ['programming'], [1.0, 0.0, 0.0, 0.0]);
-    seedNode('Other topics for contrast', 'other', ['misc'], [0.1, 0.1, 0.1, 0.1]);
+    const id = await seedNode('Python language details', 'python', ['programming'], [1.0, 0.0, 0.0, 0.0]);
+    await seedNode('Other topics for contrast', 'other', ['misc'], [0.1, 0.1, 0.1, 0.1]);
 
     const results = await backend.search({ text: 'python' }, 10);
     const pythonResult = results.find((r) => r.id === id);
@@ -527,7 +543,7 @@ describe('SqliteSearchBackend integration', () => {
 
   it('respects limit', async () => {
     for (let i = 0; i < 20; i++) {
-      seedNode(`Content ${i}`, `topic-${i}`, ['test'], [i * 0.05, (i % 4) * 0.25, 0, 0]);
+      await seedNode(`Content ${i}`, `topic-${i}`, ['test'], [i * 0.05, (i % 4) * 0.25, 0, 0]);
     }
 
     const results = await backend.search({ text: 'Content' }, 5);
@@ -535,8 +551,8 @@ describe('SqliteSearchBackend integration', () => {
   });
 
   it('filters by topic via graph backend', async () => {
-    const pyId = seedNode('Python async guide', 'python', ['ai'], [1.0, 0.0, 0.0, 0.0]);
-    seedNode('Rust ownership guide', 'rust', ['systems'], [0.0, 1.0, 0.0, 0.0]);
+    const pyId = await seedNode('Python async guide', 'python', ['ai'], [1.0, 0.0, 0.0, 0.0]);
+    await seedNode('Rust ownership guide', 'rust', ['systems'], [0.0, 1.0, 0.0, 0.0]);
 
     const results = await backend.search(
       { text: 'guide', filters: { topic: 'python' } },
@@ -550,7 +566,7 @@ describe('SqliteSearchBackend integration', () => {
   });
 
   it('returns fields for each result', async () => {
-    seedNode('Test content here', 'test-topic', ['demo'], [0.5, 0.5, 0.0, 0.0]);
+    await seedNode('Test content here', 'test-topic', ['demo'], [0.5, 0.5, 0.0, 0.0]);
 
     const results = await backend.search({ text: 'Test' }, 10);
     expect(results.length).toBeGreaterThan(0);
@@ -567,7 +583,7 @@ describe('SqliteSearchBackend integration', () => {
   });
 
   it('returns results with correct id types', async () => {
-    const id = seedNode('Number test', 'num', ['test'], [1.0, 0.0, 0.0, 0.0]);
+    const id = await seedNode('Number test', 'num', ['test'], [1.0, 0.0, 0.0, 0.0]);
 
     const results = await backend.search({ text: 'Number' }, 10);
     for (const r of results) {
@@ -578,19 +594,19 @@ describe('SqliteSearchBackend integration', () => {
   // ── BL-294: filter/namespace must constrain the vector channel too ───────────
 
   describe('vector channel filter isolation (BL-294)', () => {
-    function seedNodeInNamespace(
+    async function seedNodeInNamespace(
       content: string,
       namespace: string,
       vecValues: number[],
-    ): number {
-      const id = graph.writeNode(content, { namespace, importance: 5 });
+    ): Promise<number> {
+      const id = await graph.writeNode(content, { namespace, importance: 5 });
       vec.upsert(id, new Float32Array(vecValues), { modelId: 'test-model', dim: 4 });
       return id;
     }
 
     it('does not leak cross-namespace vector hits into a namespace-scoped vec-only search', async () => {
-      seedNodeInNamespace('tenant A secret', 'tenant-a', [1.0, 0.0, 0.0, 0.0]);
-      const bId = seedNodeInNamespace('tenant B secret', 'tenant-b', [1.0, 0.0, 0.0, 0.0]);
+      await seedNodeInNamespace('tenant A secret', 'tenant-a', [1.0, 0.0, 0.0, 0.0]);
+      const bId = await seedNodeInNamespace('tenant B secret', 'tenant-b', [1.0, 0.0, 0.0, 0.0]);
 
       // Identical vector, DIFFERENT namespace — a caller scoped to tenant-b must never
       // see tenant-a's node, even though it is the nearest (in fact identical) vector.
@@ -608,9 +624,9 @@ describe('SqliteSearchBackend integration', () => {
     });
 
     it('does not leak cross-namespace vector hits into a namespace-scoped hybrid (text+vec) search', async () => {
-      const aId = graph.writeNode('shared phrase alpha', { namespace: 'tenant-a' });
+      const aId = await graph.writeNode('shared phrase alpha', { namespace: 'tenant-a' });
       vec.upsert(aId, new Float32Array([1.0, 0.0, 0.0, 0.0]), { modelId: 'test-model', dim: 4 });
-      const bId = graph.writeNode('shared phrase beta', { namespace: 'tenant-b' });
+      const bId = await graph.writeNode('shared phrase beta', { namespace: 'tenant-b' });
       vec.upsert(bId, new Float32Array([1.0, 0.0, 0.0, 0.0]), { modelId: 'test-model', dim: 4 });
 
       const results = await backend.search(
@@ -625,7 +641,7 @@ describe('SqliteSearchBackend integration', () => {
     });
 
     it('returns zero vector candidates (not unfiltered results) when the filter matches no nodes', async () => {
-      seedNodeInNamespace('only node', 'tenant-a', [1.0, 0.0, 0.0, 0.0]);
+      await seedNodeInNamespace('only node', 'tenant-a', [1.0, 0.0, 0.0, 0.0]);
 
       const results = await backend.search(
         { vec: new Float32Array([1.0, 0.0, 0.0, 0.0]), filters: { namespace: 'nonexistent-tenant' } },
@@ -636,7 +652,7 @@ describe('SqliteSearchBackend integration', () => {
     });
 
     it('surfaces a degrade signal when a filter key cannot be enforced by either channel', async () => {
-      seedNodeInNamespace('some content', 'tenant-a', [1.0, 0.0, 0.0, 0.0]);
+      await seedNodeInNamespace('some content', 'tenant-a', [1.0, 0.0, 0.0, 0.0]);
 
       const backendResults = await backend.search(
         { vec: new Float32Array([1.0, 0.0, 0.0, 0.0]), filters: { totally_unrecognized_key: 'x' } },
@@ -660,7 +676,7 @@ describe('SqliteSearchBackend integration', () => {
     });
 
     it('does NOT set a degrade signal when all filter keys are recognized', async () => {
-      seedNodeInNamespace('clean filter node', 'tenant-a', [1.0, 0.0, 0.0, 0.0]);
+      await seedNodeInNamespace('clean filter node', 'tenant-a', [1.0, 0.0, 0.0, 0.0]);
 
       const results = await backend.search(
         { vec: new Float32Array([1.0, 0.0, 0.0, 0.0]), filters: { namespace: 'tenant-a' } },
@@ -686,11 +702,14 @@ describe('SqliteSearchBackend integration', () => {
     it('stores AND retrieves a kind:"generic" (sub-kind:"component") node through real hybrid FTS5(BM25)+vector search', async () => {
       const db = createTestDb();
       const genericVec = createTestVecStore(db);
-      const genericGraph = new SqliteGraphBackend(db);
-      genericGraph.applySchema();
+      // BL-364/BL-380: SqliteGraphBackend takes a StoreAdapter, not a raw
+      // Database — wrap the same handle genericVec's adapter shares.
+      const genericGraphAdapter = createSqliteAdapter(db);
+      const genericGraph = new SqliteGraphBackend(genericGraphAdapter);
+      await genericGraph.applySchema();
       const genericBackend = new SqliteSearchBackend(genericVec, genericGraph);
 
-      const id = genericGraph.writeNode(
+      const id = await genericGraph.writeNode(
         'A reusable Button component with primary and secondary variants',
         {
           kind: 'generic',
@@ -708,7 +727,7 @@ describe('SqliteSearchBackend integration', () => {
 
       // (a) it is genuinely a graph-store `node` row of kind='generic' carrying its
       // sub-kind in tags/metadata — the sanctioned non-memory reuse contract.
-      const stored = genericGraph.getNode(id);
+      const stored = await genericGraph.getNode(id);
       expect(stored).not.toBeNull();
       expect(stored!.kind).toBe('generic');
       expect(stored!.tags).toContain('component');

@@ -493,6 +493,62 @@ describe('SqliteVectorBackend', () => {
   });
 });
 
+// ── BL-380: SqliteVectorBackend must reject a Turso-shaped adapter with a ─────
+// clear error, never an unguarded `unwrap()` cast that crashes deep inside a
+// `.prepare()` call once Turso's async handle is treated as synchronous. ────
+
+describe('SqliteVectorBackend — Turso-adapter guard (BL-380)', () => {
+  // A minimal StoreAdapter double shaped exactly like a real TursoAdapter for
+  // the one property this class inspects (`capabilities.nativeVectors`).
+  // `unwrap()` deliberately throws if reached at all — the guard MUST fire
+  // BEFORE any unwrap() call, not after.
+  function makeTursoShapedAdapter(): StoreAdapter {
+    return {
+      config: { type: 'turso' },
+      capabilities: {
+        multiprocessWrite: true,
+        nativeVectors: true,
+        concurrentTransactions: true,
+        fts5: false,
+        fts: true,
+        needsWriteSerialization: false,
+      },
+      executeGet: async () => null,
+      executeAll: async () => ({ columns: [], rows: [] }),
+      executeRun: async () => ({ rowsAffected: 0, lastInsertRowid: 0 }),
+      exec: async () => {},
+      pragmaSet: async () => {},
+      pragmaGet: async () => undefined,
+      transaction: async (fn) => fn({
+        executeGet: async () => null,
+        executeAll: async () => ({ columns: [], rows: [] }),
+        executeRun: async () => ({ rowsAffected: 0, lastInsertRowid: 0 }),
+        exec: async () => {},
+      }),
+      executeMany: async () => [],
+      close: async () => {},
+      unwrap: () => {
+        throw new Error('unwrap() reached — the BL-380 capability guard did not fire before the raw-handle cast');
+      },
+    } as unknown as StoreAdapter;
+  }
+
+  it('constructor throws a StorageError instead of crashing inside unwrap()', () => {
+    const tursoAdapter = makeTursoShapedAdapter();
+    expect(() => new SqliteVectorBackend(tursoAdapter)).toThrow(StorageError);
+    expect(() => new SqliteVectorBackend(tursoAdapter)).toThrow(/requires a SqliteAdapter/);
+  });
+
+  it('a real SqliteAdapter (nativeVectors: false) still constructs normally', () => {
+    const tmp = makeTmpDb();
+    try {
+      expect(() => new SqliteVectorBackend(tmp.adapter)).not.toThrow();
+    } finally {
+      tmp.cleanup();
+    }
+  });
+});
+
 // ── openVectorStore ─────────────────────────────────────────────────────────
 
 describe('openVectorStore', () => {
