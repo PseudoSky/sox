@@ -75,7 +75,25 @@ those paths regardless of what else is sitting in the index — the index is sha
 agents, so `git add <path>` followed by a bare `git commit` sweeps in whatever anyone else already
 staged (BL-409). Never let a commit touch `.nx/`, `.DS_Store`, `dist/`, or `*.js`/`*.d.ts` in `src/`.
 
-**Never run `git stash` (or `git stash pop/drop/clear`).** Commit to a branch instead.
+**When a hot file is contended, pathspec is not enough — use `tools/commit-mine.mjs`.**
+`git commit <path>` is all-or-nothing per file, so it cannot help when two agents are editing
+different sections of `BACKLOG.md`, `CHANGELOG.md`, or `PLAN.md` at once. Worse, the shared index can
+hold a copy of a file *behind* HEAD: measured 2026-08-03, `BACKLOG.md` sat staged 21 lines behind
+HEAD, where a bare `git commit` would have silently reverted a fix committed minutes earlier.
+
+```
+node tools/commit-mine.mjs --dry-run -m "msg" --hunks 'REGEX' -- BACKLOG.md   # always dry-run first
+node tools/commit-mine.mjs -m "msg" --hunks 'REGEX' -- BACKLOG.md
+```
+
+It seeds a **private** `GIT_INDEX_FILE` from HEAD, applies only the hunks you selected, and moves the
+branch with `commit-tree`/`update-ref`. The shared index is never written and the working tree is
+never modified, so another agent's uncommitted edits survive untouched. It refuses to move the ref if
+HEAD changed while the commit was being built. It **bypasses hooks** — run
+`node tools/check-backlog-markers.mjs` and `node tools/plan-status.mjs --check` yourself first.
+
+**Never run `git stash` (or `git stash pop/drop/clear`).** Commit to a branch instead — `stash`
+"solves" contention by destroying the other agent's work, which is the whole problem.
 
 ---
 
