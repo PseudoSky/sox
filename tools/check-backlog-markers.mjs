@@ -26,10 +26,12 @@ import { readFileSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import path from 'node:path';
 
-const REPO_ROOT = path.resolve(
-  execFileSync('git', ['rev-parse', '--git-common-dir'], { encoding: 'utf8' }).trim(),
-  '..',
-);
+// BL-416: `--git-common-dir` + '..' resolves to the MAIN checkout's root
+// even when this script is invoked from a `git worktree add`-created
+// worktree, so it silently validated main's BACKLOG.md instead of the
+// worktree's own — the exact file the caller just edited. `--show-toplevel`
+// returns the invoking worktree's own root.
+const REPO_ROOT = execFileSync('git', ['rev-parse', '--show-toplevel'], { encoding: 'utf8' }).trim();
 const FILE = path.join(REPO_ROOT, 'BACKLOG.md');
 
 const STATUS =

@@ -21,12 +21,12 @@ A packet is **DONE** only when every BL id it targets is closed — code landing
 (BL-225). Several packets below have merged code and still read OPEN; that is correct, and the
 remedy is to close the backlog item with a red→green test, not to edit this table.
 
-**12 done · 3 partial · 41 open** of 56 packets.
+**14 done · 3 partial · 39 open** of 56 packets.
 
-- Open backlog items in this program's scope: **50**, of which **0** have no packet.
+- Open backlog items in this program's scope: **49**, of which **1** have no packet.
 - Open items deliberately out of scope: **29** — BL-99, BL-103, BL-104, BL-105, BL-163, BL-225, BL-228, BL-258, BL-261, BL-282, BL-283, BL-284, BL-285, BL-288, BL-291, BL-292, BL-296, BL-298, BL-305, BL-306, BL-307, BL-308, BL-309, BL-314, BL-315, BL-333, BL-355, BL-408, BL-411
-- Unscheduled in-scope items (need a packet): —
-- Packet targets already closed (15) — historical context only, no work remains: BL-259, BL-343, BL-348, BL-350, BL-359, BL-364, BL-376, BL-380, BL-388, BL-390, BL-397, BL-402, BL-406, BL-407, BL-410
+- Unscheduled in-scope items (need a packet): BL-416
+- Packet targets already closed (17) — historical context only, no work remains: BL-259, BL-343, BL-348, BL-350, BL-359, BL-364, BL-376, BL-380, BL-383, BL-388, BL-390, BL-397, BL-399, BL-402, BL-406, BL-407, BL-410
 
 | Packet | Status | Targets | Still open |
 |---|---|---|---|
@@ -39,7 +39,7 @@ remedy is to close the backlog item with a red→green test, not to edit this ta
 | PKT-07 | **OPEN** | BL-389 | BL-389 |
 | PKT-08 | **DONE** | BL-397 | — |
 | PKT-09 | **OPEN** | BL-396 | BL-396 |
-| PKT-10 | **OPEN** | BL-383 | BL-383 |
+| PKT-10 | **DONE** | BL-383 | — |
 | PKT-11 | **OPEN** | BL-400 | BL-400 |
 | PKT-12 | **OPEN** | BL-301, BL-302 | BL-301, BL-302 |
 | PKT-13 | **OPEN** | BL-378 | BL-378 |
@@ -65,7 +65,7 @@ remedy is to close the backlog item with a red→green test, not to edit this ta
 | PKT-33 | **OPEN** | BL-338 | BL-338 |
 | PKT-34 | **OPEN** | BL-387 | BL-387 |
 | PKT-35 | **OPEN** | BL-398 | BL-398 |
-| PKT-36 | **OPEN** | BL-399 | BL-399 |
+| PKT-36 | **DONE** | BL-399 | — |
 | PKT-37 | **PARTIAL** | BL-390, BL-393 | BL-393 |
 | PKT-38 | **OPEN** | BL-375 | BL-375 |
 | PKT-39 | **OPEN** | BL-332 | BL-332 |
@@ -1329,7 +1329,7 @@ completion, don't just assume no build ran.
 
 ### PKT-10 — BL-383: `autolink` writes to a `memory_scope.meta` column that exists on no backend
 
-> **status: OPEN** — still open: BL-383 · derived by `tools/plan-status.mjs`, do not hand-edit
+> **status: DONE** — all targets closed (BL-383) · derived by `tools/plan-status.mjs`, do not hand-edit
 
 **Closes:** BL-383
 **Files:** `libs/memory-core/src/autolink.ts` (lines 58-67 — either add the column via a real migration, or stop persisting the stoplist there and pick a column that exists; the swallowed `catch {}` must go regardless).
@@ -1717,7 +1717,7 @@ calibration undocumented (the guard becomes a pure safety net that should rarely
 
 ### PKT-36 — BL-399: swallowed `store.error: no such column: meta` on the graph tables
 
-> **status: OPEN** — still open: BL-399 · derived by `tools/plan-status.mjs`, do not hand-edit
+> **status: DONE** — all targets closed (BL-399) · derived by `tools/plan-status.mjs`, do not hand-edit
 
 **Goal:** first make `store.error` log the failing statement (or a fingerprint), not just the driver message — the current gap is what made this hard to place at all. Then determine which of the three named hypotheses holds (live schema drift / query targets a table missing the column / Turso misreports an unrelated rejection) by querying a **copy** of the live store's actual columns, per BL-330's copy-both-files rule. Fix accordingly — do not assume schema drift and hand-repair the live store.
 **Closes:** BL-399

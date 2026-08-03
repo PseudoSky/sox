@@ -58,10 +58,17 @@ import { readFileSync, appendFileSync, mkdirSync, rmdirSync, existsSync } from '
 import { execFileSync } from 'node:child_process';
 import path from 'node:path';
 
-const REPO_ROOT = path.resolve(
-  execFileSync('git', ['rev-parse', '--git-common-dir'], { encoding: 'utf8' }).trim(),
-  '..',
-);
+// BL-416: BACKLOG.md/CHANGELOG.md are per-worktree working-tree content, NOT
+// a shared install root like node_modules (see verify-native-abi.mjs's
+// deliberate, documented use of `--git-common-dir` for THAT case). Resolving
+// via `--git-common-dir` + '..' silently reads/writes the MAIN checkout's
+// BACKLOG.md/CHANGELOG.md when this script is run from inside a `git
+// worktree add`-created worktree, regardless of `cwd` — the worktree's own
+// edits are invisible to it, and its RESERVED placeholder writes land in a
+// file the invoking worktree does not own. `--show-toplevel` returns the
+// CURRENT worktree's own root (or the main checkout's root, when run there),
+// which is what "the repo root I was invoked from" actually means here.
+const REPO_ROOT = execFileSync('git', ['rev-parse', '--show-toplevel'], { encoding: 'utf8' }).trim();
 const BACKLOG = path.join(REPO_ROOT, 'BACKLOG.md');
 const CHANGELOG = path.join(REPO_ROOT, 'CHANGELOG.md');
 const LOCK_DIR = path.join(REPO_ROOT, '.bl-id.lock');
