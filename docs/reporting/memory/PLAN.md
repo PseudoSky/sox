@@ -21,11 +21,11 @@ A packet is **DONE** only when every BL id it targets is closed — code landing
 (BL-225). Several packets below have merged code and still read OPEN; that is correct, and the
 remedy is to close the backlog item with a red→green test, not to edit this table.
 
-**12 done · 3 partial · 40 open** of 55 packets.
+**12 done · 3 partial · 41 open** of 56 packets.
 
-- Open backlog items in this program's scope: **49**, of which **0** have no packet.
+- Open backlog items in this program's scope: **58**, of which **8** have no packet.
 - Open items deliberately out of scope: **29** — BL-99, BL-103, BL-104, BL-105, BL-163, BL-225, BL-228, BL-258, BL-261, BL-282, BL-283, BL-284, BL-285, BL-288, BL-291, BL-292, BL-296, BL-298, BL-305, BL-306, BL-307, BL-308, BL-309, BL-314, BL-315, BL-333, BL-355, BL-408, BL-411
-- Unscheduled in-scope items (need a packet): —
+- Unscheduled in-scope items (need a packet): BL-414, BL-415, BL-416, BL-417, BL-418, BL-419, BL-420, BL-421
 - Packet targets already closed (15) — historical context only, no work remains: BL-259, BL-343, BL-348, BL-350, BL-359, BL-364, BL-376, BL-380, BL-388, BL-390, BL-397, BL-402, BL-406, BL-407, BL-410
 
 | Packet | Status | Targets | Still open |
@@ -85,6 +85,7 @@ remedy is to close the backlog item with a red→green test, not to edit this ta
 | PKT-53 | **OPEN** | BL-412 | BL-412 |
 | PKT-54 | **OPEN** | BL-413 | BL-413 |
 | PKT-55 | **OPEN** | BL-202 | BL-202 |
+| PKT-56 | **OPEN** | BL-422 | BL-422 |
 
 <!-- PLAN-STATUS:END -->
 
@@ -840,6 +841,24 @@ rewritten, only unblocked.
 > **⚠️ Do not touch the Turso adapter's `needsWriteSerialization`/`concurrentTransactions` settings.** Three separate agents have "fixed" concurrency symptoms by flipping those and each time regressed the multi-process writer work this program exists to preserve. The re-entrancy lesson (BL-154) is about not enqueuing onto a queue you are already running on — it is not a mandate to serialise Turso writes.
 **Produces:** a memory-core suite whose failure set is stable across runs, making a count meaningful again.
 **acceptance:** a test naming BL-202, plus evidence that N consecutive full-suite runs produce an **identical** failing-name set (`comm -13` on sorted lists, empty both ways). A single green run is not evidence — the defect is variance.
+
+### PKT-56 — BL-422: a commit can land on a disposable worktree branch and be reachable from nowhere else
+
+> **status: OPEN** — still open: BL-422 · derived by `tools/plan-status.mjs`, do not hand-edit
+
+**Goal:** measured 2026-08-03 — two commits (`af45f77`, `e275039`) made with exemplary hygiene (explicit pathspec, shared index verified empty, watched red→green, disjoint from another agent's five in-flight files) landed on `worktree-agent-a54e5171a1615a001`, a **disposable branch belonging to a different agent's packet**, and `git branch --contains` found them nowhere else. Agent worktrees are auto-removed when unchanged; had it been discarded, a shipped fix and a handoff correction would have been unrecoverable. Recovered by cherry-pick only because the branch was inspected on a hunch.
+**Closes:** BL-422
+**Files:** `tools/commit-mine.mjs` (the natural home for the guard — it already refuses a detached HEAD), plus whatever performs supervisor sweep-up of finished agent work.
+**requires:** none
+**sequencing:** independent. Does not touch any `memory-core`/`memory-server` source.
+**tier:** sonnet, ~55k tokens / ~22 turns
+**orientation:** ~25k — BL-422's body carries the full measurement and the fix sketch. **Fixed cost.**
+**budget:** ~22 turns / ~85k tokens. Guidance ceiling ~150k; **guidance, not a stop.** Commit incrementally by pathspec (or via `commit-mine.mjs` itself). **Sub-dispatch only to `general-purpose`/`haiku`/`claude`.**
+> **BL-409 is NOT this item and its fix does not cover this.** BL-409 governs *what goes into a commit* (which paths, which hunks). BL-422 is *which branch the commit lands on*. An agent has no reason to check `git rev-parse --abbrev-ref HEAD` before committing — the directory looked like the repo, the files were right, the tests ran. Do not "resolve" this by re-stating the pathspec rule.
+> **Do not fix this by banning two agents from one worktree and stopping there.** That is fix (c) in the item and it is the least enforceable half — dispatch does not always control it. The guard in `commit-mine.mjs` (fix (b)) and the orphan-branch sweep (fix (d)) are what hold when the convention is violated anyway.
+> **The sweep must not trust self-reported SHAs.** The agent in this incident reported its commits accurately and confidently; the SHAs were real. What was wrong was the unstated assumption about which branch they were on. Enumerate `worktree-agent-*` refs for commits absent from the mainline.
+**Produces:** a commit path that cannot silently strand work on a disposable ref, and a sweep that finds it when one does.
+**acceptance:** a test naming BL-422 that creates a commit on an agent worktree branch from a mismatched agent id and asserts the guard refuses it — or that a sweep reports it as orphaned. The red arm is today's behaviour: the commit succeeds silently and is reachable from one disposable ref.
 
 ### PKT-41 — BL-391: federated recall's BM25 arm is dead on Turso, and the failure is swallowed whole-store
 
@@ -1798,7 +1817,7 @@ Verified by diffing every packet's `Closes:` line against `grep -oE '^### BL-[0-
 | D | PKT-32 .. PKT-33 (2) | 1 (PKT-33 depends on PKT-32) | none / PKT-32 |
 | E | PKT-34 .. PKT-36 (3) | 2 (PKT-36 depends on PKT-35) | PKT-25 (PKT-34 only) |
 | F | PKT-37 .. PKT-40 (4) | 3 | PKT-16 (PKT-40 only) |
-| G | PKT-41 .. PKT-55 (15) | high — mostly independent | see each packet's `requires:` |
+| G | PKT-41 .. PKT-56 (16) | high — mostly independent | see each packet's `requires:` |
 
 Wave G collects everything filed after the original A–F waves were drawn (2026-08-01 onward). It is
 not a phase so much as an inbox: the packets in it are individually gated by their own `requires:`
@@ -1806,7 +1825,7 @@ lines, not by a wave boundary. **PKT-54 (BL-413) is the one ordering constraint 
 it must precede PKT-29/PKT-30**, because clustering consumes what enrichment produces and the
 enrichment pass is currently dead.
 
-**Total: 55 packets.** Tier distribution, derived from the `**tier:**` fields rather than hand-maintained: **sonnet 45**, **haiku 4** (PKT-09, 20, 22, 23), **opus 0**.
+**Total: 56 packets.** Tier distribution, derived from the `**tier:**` fields rather than hand-maintained: **sonnet 45**, **haiku 4** (PKT-09, 20, 22, 23), **opus 0**.
 
 > **No packet is opus.** Two independent reasons, both evidence rather than preference. First, the owner's standing constraint: *"No more opus agents."* Second — and this is the one that matters for estimation — **every agent dispatched in this program ran `claude-sonnet-5` regardless of what the packet said.** No `model:` override was ever passed, so the `Agent` tool used each agent type's default. The three packets that once read `opus` (PKT-01, 02, 28) were measured after the fact and had all run on sonnet; all three completed, including a CRITICAL architectural change and a research packet that produced a real measurement. The earlier tier argument in this document concerned a distinction that was never present in any dispatch. Tier is not the lever — task shape, prompt specificity, and budget realism are.
 
