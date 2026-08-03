@@ -274,8 +274,13 @@ function rewriteToContentFirst(messages, personaSP, opencodeSP, cfPrompt) {
     return { messages, system, savings: 0, cachedSeed: false, seedTokens: 0, systemTokens: 0, agentTokens: 0 };
   }
 
-  // SHARED always from the opencode SP (has the boilerplate).
-  const { shared } = splitSystemPrompt(opencodeSP || system);
+  // SHARED always from the opencode SP (has the boilerplate). When the SP has
+  // no agent-body prefix (bare opencode base in a chained session),
+  // splitSystemPrompt returns shared='' — falling back to the FULL SP keeps
+  // position 0 non-empty and byte-identical across agents, so the provider's
+  // prefix cache survives every handoff (regression: sharedSysLen=0 destroyed
+  // the anchor and killed cross-agent cache reuse).
+  const shared = splitSystemPrompt(opencodeSP || system).shared || (opencodeSP || system) || '';
   // PERSONA from the session active agent's bare body; falls back to the
   // opencode SP's agent body on first contact.
   const { agentRole } = splitSystemPrompt(personaSP || opencodeSP || system);

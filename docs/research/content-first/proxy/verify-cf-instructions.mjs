@@ -83,7 +83,11 @@ function rewriteToContentFirst(messages, personaSP, opencodeSP, cfPrompt) {
   if (lastUserIdx === -1) {
     return { messages, system, savings: 0, cachedSeed: false, seedTokens: 0, systemTokens: 0, agentTokens: 0 };
   }
-  const { shared } = splitSystemPrompt(opencodeSP || system);
+  // Shared never empties: when the opencode SP has no agent-body prefix (bare
+  // base in a chained session), splitSystemPrompt returns shared='' — fall
+  // back to the FULL SP so position 0 stays byte-identical across agents and
+  // the provider prefix cache survives handoffs.
+  const shared = splitSystemPrompt(opencodeSP || system).shared || (opencodeSP || system) || '';
   const { agentRole } = splitSystemPrompt(personaSP || opencodeSP || system);
   const seedTokens = Math.ceil(messages[lastUserIdx].content.length / 4);
   const result = messages.map(m => ({ ...m }));
@@ -159,6 +163,26 @@ assert(outB.messages[0].content.includes('interactive CLI tool'), 'Path B (full 
 
 const outC = rewriteToContentFirst([...msgs], null, msgs[0].content, cf);
 assert(outC.messages[0].content.includes('interactive CLI tool'), 'Path C (opencodeSP alone): boilerplate at position 0');
+
+// 4b. THE regression: BARE opencode SP (no agent-body prefix) — the exact
+//     session shape that broke cache reuse for typescript/review in the CF
+//     chain (sharedSysLen=0 destroyed the position-0 anchor). Position 0 must
+//     fall back to the FULL opencode SP, never empty.
+const BARE_SP = 'You are opencode, an interactive CLI tool that helps users with software engineering tasks. Use tools.';
+const bareMsgs = [
+  { role: 'system', content: BARE_SP }, // bare opencode base — no agent body prefix
+  { role: 'user', content: USER_CONTENT },
+];
+const outBare = rewriteToContentFirst([...bareMsgs], ARCHITECT, BARE_SP, cf);
+assert(outBare.messages[0].content === BARE_SP, 'BARE SP: position-0 falls back to the full opencode SP (never empty)');
+assert(outBare.messages[0].content !== '', 'BARE SP: system message non-empty (empty-shared regression guard)');
+assert(outBare.messages[0].content.includes('interactive CLI tool'), 'BARE SP: boilerplate content preserved at position 0');
+assert(outBare.messages[1].content === USER_CONTENT, 'BARE SP: user content untouched (cache anchor intact)');
+// The two bare-SP rewrites MUST produce byte-identical position-0 — that's
+// what lets the provider cache prefix survive an agent handoff.
+const outBare2 = rewriteToContentFirst([...bareMsgs], 'You are the review agent.', BARE_SP, cf);
+assert(outBare2.messages[0].content === outBare.messages[0].content,
+  `BARE SP: position-0 byte-identical across personas (${outBare.messages[0].content.length} chars)`);
 
 // 5. cfPrompt=null omits CF block
 const noCf = rewriteToContentFirst(msgs, ARCHITECT, msgs[0].content, null);
