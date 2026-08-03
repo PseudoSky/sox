@@ -5,10 +5,11 @@
 **Last updated:** 2026-08-03
 **Branch:** `wip/turso-live-metrics`
 
-**Recent commits (2026-08-03 — cross-agent cache reuse restoration):**
-- `8c11661` **Restore persona-as-last-user-suffix** — reverted bc7de01's trailing-system-message change; persona now appended to last user message per §2 design. Restores the structure that produced 82-93% first-turn cache reuse in 03c0c039c/03c3312d1.
+**Recent commits (2026-08-03 — cross-agent cache reuse restoration + metrics):**
+- `35eb9a1` **Remove pendingInput injection** — handoff tasks read from session_agent_set tool call in conversation (no redundant message); restores monotonic prefix growth across handoffs. Add 6 per-request context metrics to turn logs and console.
+- `8c11661` **Restore persona-as-last-user-suffix** — reverted bc7de01's trailing-system-message change; persona appended to last user message per §2 design. Restores the structure that produced 82-93% first-turn cache reuse in 03c0c039c/03c3312d1.
 - `be2d312` **Move CF instructions to position 0** — session-constant handoff recipe moved from per-turn tail to cache anchor; saves ~268 tokens/turn.
-- `96185ef` **Never empty position-0** — shared anchor falls back to full opencode SP when splitSystemPrompt returns '' (bare base in chained sessions). Was `sharedSysLen=0` on typescript/review; now stable across all agents.
+- `96185ef` **Never empty position-0** — shared anchor falls back to full opencode SP when splitSystemPrompt returns '' (bare base in chained sessions).
 
 ---
 
