@@ -16,7 +16,7 @@ else. Earlier work scattered these across `docs/ideas/`, `docs/research/` and tw
 | # | Doc | What it answers | Read when |
 |---|---|---|---|
 | 1 | **[`STATE.md`](./STATE.md)** | **Where are we? What is next?** | **Always. Start here.** |
-| 2 | [`PLAN.md`](./PLAN.md) | What order does the work go in, and why? | Before starting a state |
+| 2 | [`PLAN.md`](./PLAN.md) | What order does the work go in, and why? Which packets remain? | Before starting a packet |
 | 3 | [`../../../BACKLOG.md`](../../../BACKLOG.md) | Every known defect, with citations | Before filing anything |
 | 4 | [`../../observability/README.md`](../../observability/README.md) | How do I read the telemetry logs? | Before quoting any measurement |
 
@@ -36,8 +36,15 @@ else. Earlier work scattered these across `docs/ideas/`, `docs/research/` and tw
 
 ## Rules for agents working here
 
-1. **Update [`STATE.md`](./STATE.md) when a state changes.** It is the only file that must stay
-   current. If you finish a state and do not move the `→` marker, the next agent redoes your work.
+1. **Status is derived — do not hand-write it.** Packet completion in `PLAN.md` and the progress
+   summary in `STATE.md` are generated from `BACKLOG.md` by `tools/plan-status.mjs`. Close the
+   backlog item, then run the tool; never edit a `status:` line or the block between the
+   `PLAN-STATUS` markers. Both files drifted badly while looking authoritative before this was
+   mechanical — `PLAN.md` named 39 already-closed ids and `STATE.md` led with a coverage warning
+   that had been false for two days.
+2. **Everything else in `STATE.md` is hand-written and must be kept current**, in particular the
+   "Live service" table — re-measure it from `memory_ping`/`memory_stats` rather than copying the
+   previous values, and update its timestamp when you do.
 2. **File every defect in the root `BACKLOG.md`**, even one you fix in a minute. Allocate the id
    programmatically as `max(existing)+1` — reading the max by eye caused three collisions in one
    afternoon (BL-359).
@@ -48,9 +55,11 @@ else. Earlier work scattered these across `docs/ideas/`, `docs/research/` and tw
 5. **Run the guards before committing:**
    ```
    node tools/check-backlog-markers.mjs
+   node tools/plan-status.mjs --check     # fails if PLAN.md/STATE.md drifted from BACKLOG.md
    node tools/check-no-nul-bytes.mjs
-   git diff --cached --name-only          # must be EMPTY before you stage
    ```
+   Then **commit by pathspec** — `git commit <path> … -m "..."`. Never `git add -A`, `git add .`,
+   or a bare `git commit` after staging: the index is shared across concurrent agents (BL-409).
 6. **Do not write to `~/.memory/*`.** It is the live store. Work on copies — and copy the `-wal`
    alongside the `.db`, or the copy is stale (BL-330).
 

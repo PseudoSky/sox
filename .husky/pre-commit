@@ -13,4 +13,13 @@ set -e
 # BL-359 — reject BL-<n> id collisions before they reach BACKLOG.md/CHANGELOG.md.
 node tools/check-bl-id-integrity.mjs
 
+# Keep the memory-program plan honest: PLAN.md's packet ledger and STATE.md's progress summary are
+# DERIVED from BACKLOG.md's heading markers. Closing an item without regenerating them leaves two
+# documents that read as authoritative while being wrong — the exact failure this guard exists to
+# stop (PLAN.md once named 39 already-closed ids). Only fires when BACKLOG.md is part of the commit;
+# a change elsewhere cannot invalidate the derived blocks.
+if git diff --cached --name-only | grep -qx 'BACKLOG.md'; then
+  node tools/plan-status.mjs --check
+fi
+
 npx nx affected --target=lint --base=HEAD~1 --head=HEAD
