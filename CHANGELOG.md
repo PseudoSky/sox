@@ -2,6 +2,63 @@
 
 ---
 
+## [Unreleased] — BL-399/BL-383: the loudest error in production — `store.error: no such column: meta` — deleted at the root
+
+**One defect, two backlog entries.** BL-399 measured the live symptom (154-162 occurrences/day, 14%
+of every memory-core log event on a representative day, on a store whose integrity surface reported
+`overall: ok`) without yet knowing which query carried it — its own write-up floated three
+hypotheses, including a wrong one (graph-store's `edge.meta`/`node.meta` columns, which are real and
+correctly declared). BL-383 had already diagnosed the actual call site the same day: `buildAutoLinks`
+(`libs/memory-core/src/autolink.ts:58-67`, pre-fix) tried to persist an entity stoplist to
+`memory_scope.meta` — a column that has **never** existed in any schema
+(`libs/memory-core/src/schema.ts:33-40` declares `memory_scope` with exactly six columns: `scope`,
+`scope_id`, `embed_model`, `embed_dim`, `schema_ver`, `created_at` — no `meta`, and no
+`ALTER TABLE memory_scope` exists anywhere in the repo).
+
+**Verdict: same defect.** Captured the actual failing SQL from today's live log
+(`~/.adhd/sox-ecosystem/memory/logs/memory-core-2026-08-03.jsonl`) — all 162 `store.error` records on
+2026-08-03 (not just the 154 counted through 19:22Z) carry the identical statement:
+`"sql":"SELECT meta FROM memory_scope LIMIT 1"`, `"error":"prepare failed: Parse error: no such column: meta"`.
+That is verbatim BL-383's driver, not a graph-store `edge`/`node` query — BL-399's hypothesis (2) was
+the correct one in spirit (a query targeting a table where `meta` does not exist) but the specific
+table is `memory_scope`, not an edge/node join. The call fires roughly every 2-7 minutes, correlating
+with `runBatchEnrich`'s periodic `buildAutoLinks` pass — exactly the cadence BL-383 already measured
+("twice in one 20-minute window").
+
+**The fix is deletion, not a migration.** `entity_stoplist` — the value the failing write was trying
+to persist — has zero readers anywhere in the repo (grep-confirmed: the only hit is the write itself).
+The stoplist is recomputed from scratch on every `buildAutoLinks` pass regardless of whether the
+persist succeeds, so the write was never load-bearing; it has failed on 100% of calls since it was
+introduced and cost nothing by failing. Per the owner's standing directive that a missing column must
+be fixed via the adapter's migration path, not a hand-patch — the only migration that is actually
+correct here is *no migration*: nothing legitimately needs this column, so declaring it would be
+adding schema for a write that has no reader. Deleted the dead `try { SELECT ... UPDATE memory_scope
+SET meta ... } catch {}` block from `autolink.ts` entirely. The bare `catch {}` that discarded the
+error is gone along with the query it was guarding — there is nothing left to swallow.
+
+**Regression test**
+(`libs/memory-core/src/bl399-autolink-scope-meta-swallow.spec.ts`, naming both BL-399 and BL-383),
+run against the real production adapter (`openDb`, not a hand-rolled fixture, so the schema is
+exactly `schema.ts`'s): asserts `buildAutoLinks()` emits zero `store.error` telemetry records and
+never issues any SQL statement referencing `memory_scope`. Watched RED against the pre-fix code —
+failed with the exact live signature (`sql: "SELECT meta FROM memory_scope LIMIT 1"`,
+`error: "prepare failed"` reproduced as SQLite's "no such column: meta") — then GREEN with the fix
+restored. `npx nx test memory-core --skip-nx-cache -- --run bl399-autolink-scope-meta-swallow`: 2/2
+passed. `npx nx typecheck memory-core` and `npx nx lint memory-core` both clean.
+
+**BL-342 residual, confirmed NOT the same defect.** The other error class in the same day's log (7x
+`"step failed: Parse error: malformed JSON"`, all on `SELECT ... json_each(n.tags) ...`) is a
+distinct, pre-existing corrupt-row issue (the known BL-342 malformed `tags` row) — out of scope here,
+left open.
+
+**Files:** `libs/memory-core/src/autolink.ts`, new
+`libs/memory-core/src/bl399-autolink-scope-meta-swallow.spec.ts`.
+
+**Related:** BL-381 (same swallow shape, near-dup), BL-353 (telemetry nobody read), BL-334 (surface
+caught failures), BL-301/BL-302 (schema single source of truth — not blocking here since the fix is
+deletion, not migration), BL-386/BL-398 (graph-store `edge.meta`/`weight` — confirmed unrelated to
+this call path once the actual SQL was captured), BL-342 (the separate malformed-JSON residual).
+
 ## [Unreleased] — BL-407: `smoke-test.mjs`'s `--extension` fast pass no longer wedges on unrelated packages
 
 **The bug.** `scripts/smoke-test.mjs`'s BL-266 exports-contract preflight (publint + attw) ran

@@ -55,16 +55,20 @@ export async function buildAutoLinks(
       }
     }
 
-    try {
-      const scopeRow = await adapter.executeGet<{ meta: string | null }>(`SELECT meta FROM memory_scope LIMIT 1`);
-      const scopeMeta: Record<string, unknown> = scopeRow?.meta
-        ? (JSON.parse(scopeRow.meta) as Record<string, unknown>)
-        : {};
-      scopeMeta['entity_stoplist'] = Array.from(stoplistUids);
-      await adapter.executeRun(`UPDATE memory_scope SET meta = ?`, [JSON.stringify(scopeMeta)]);
-    } catch {
-      // memory_scope.meta column may not exist in older stores
-    }
+    // BL-399/BL-383: this block used to persist the stoplist to a
+    // `memory_scope.meta` column that has never existed in any schema
+    // (libs/memory-core/src/schema.ts's `memory_scope` DDL has exactly six
+    // columns — scope, scope_id, embed_model, embed_dim, schema_ver,
+    // created_at — no `meta`, and nothing ever added one via migration).
+    // The write failed on 100% of calls and was swallowed by a bare
+    // `catch {}`, producing a `store.error: no such column: meta` on every
+    // enrich pass — 14% of ALL memory-core log events on a representative
+    // production day (154-162 occurrences/day). `entity_stoplist` has zero
+    // readers anywhere in the repo (grep confirmed) — the stoplist is
+    // recomputed from scratch every pass regardless (see above), so the
+    // persistence was never load-bearing. Deleting it is the actual fix:
+    // there is no missing schema to migrate, because nothing legitimately
+    // needs this column. See BACKLOG.md BL-399 / BL-383 fix sketch #1.
 
     const allMentionsResult = await adapter.executeAll<EpisodeEntityRow>(
       `SELECT n_ep.rowid AS episode_rowid, n_ep.uid AS episode_uid,
