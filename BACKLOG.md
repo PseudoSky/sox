@@ -2710,3 +2710,18 @@ Citations: [wip/turso-live-metrics, main, claude, PKT-48/BL-405 fallout, 1: exte
 
 ---
 
+
+### BL-420 — `enrich-batch.ts` carried an independent, hardcoded cluster threshold that shadowed `cluster.ts`'s own default — the shipped fallback was never the one that ran — **RESOLVED** (2026-08-03)
+
+**Found during PKT-29 (BL-326/BL-349)** while wiring the write-triggered incremental cluster join. `cluster.ts`'s `computeClusters()` resolves its threshold as `opts.threshold ?? resolveDefaultThreshold()` — but `enrich-batch.ts`'s `runBatchEnrich()`, the ONLY real production caller of `clusterStore()`, always computed and passed an explicit `threshold` via its own `resolveClusterThreshold()`, which hardcoded `0.82` completely independently of `cluster.ts`'s constant. Every real call therefore used `enrich-batch.ts`'s `0.82`, and `cluster.ts`'s own fallback default was dead code — unreachable in production, exercised only by tests that call `clusterStore()` directly with no `threshold`. Same shape as BL-326 (a fallback that looks live in the source but is provably never reached by the real call path): "the shipped default is not the default that runs."
+
+This made the defect materially worse than a harmless duplication: PKT-28's research (`docs/reporting/memory/findings/pkt28-clustering-strategy.md`) proved `0.82` is degenerate at the live corpus's current size (largest-cluster ratio 0.759 at N=4867) and that the correct interim constant is `0.87`. Fixing only `cluster.ts`'s internal default (as an agent might reasonably do first) would have shipped **zero** behavior change in production, because `enrich-batch.ts`'s independent `0.82` would still be the value actually used on every `runBatchEnrich()` call — exactly the trap this item exists to name so it does not recur elsewhere the same way.
+
+**Fix:** `enrich-batch.ts`'s `resolveClusterThreshold()` now delegates to `cluster.ts`'s exported `resolveDefaultThreshold()` instead of carrying its own constant, so there is exactly one source of truth (PKT-30/BL-328's future target-degree calibration only has to land in one place).
+
+**Acceptance (red→green, named BL-420):** `libs/memory-core/src/bl420-cluster-threshold-dead-fallback.spec.ts` constructs two episode embeddings at an EXACT cosine similarity of 0.845 (between the stale 0.82 and the correct 0.87, via Gram-Schmidt-orthogonalized unit vectors) plus non-degenerate distractors, then calls `runBatchEnrich(adapter, {})` with no threshold override — exactly what every real production call does. Watched red: with the pre-fix hardcoded `0.82` restored, the pair clusters (`communities_upserted: 1`) — wrong, since 0.845 should not clear the real 0.87 bar. Watched green: with the delegation restored, `communities_upserted: 0`. A second control test at cosine 0.92 confirms the same pair DOES cluster once similarity genuinely clears 0.87, proving the test is not just "clustering is broken."
+
+Citations: [wip/turso-live-metrics, main, claude, PKT-29 (BL-326/BL-349), 1: libs/memory-core/src/enrich-batch.ts:212 (`resolveClusterThreshold(clusterThreshold)` always passed as explicit `threshold` into `clusterStore()`), 2: libs/memory-core/src/enrich-batch.ts:337-340 (fixed: delegates to `resolveDefaultThreshold()`), 3: libs/memory-core/src/cluster.ts:626 (`computeClusters`'s `opts.threshold ?? resolveDefaultThreshold()` — the fallback that was unreachable in production before this fix), 4: libs/memory-core/src/cluster.ts:1168 (`resolveDefaultThreshold()`, exported, returns 0.87 per PKT-28), 5: libs/memory-core/src/bl420-cluster-threshold-dead-fallback.spec.ts (red→green acceptance, both arms watched), 2026-08-03]
+
+---
+
