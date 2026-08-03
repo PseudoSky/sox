@@ -26,6 +26,7 @@ set -euo pipefail
 # ── Defaults ──
 BACKLOG_ID=""
 REPO=""
+REPO_KEY="${REPO_KEY:-}"  # optional: backlog DB repo key, auto-detected if unset
 BASE_DIR="${BASE_DIR:-$HOME/dev/.sdlc-experiments}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROXY_DIR="${PROXY_DIR:-$SCRIPT_DIR}"
@@ -40,6 +41,7 @@ while [[ $# -gt 0 ]]; do
   case "$1" in
     --backlog-id) BACKLOG_ID="$2"; shift 2 ;;
     --repo)       REPO="$2"; shift 2 ;;
+    --repo-key)   REPO_KEY="$2"; shift 2 ;;
     --base-dir)   BASE_DIR="$2"; shift 2 ;;
     --proxy-dir)  PROXY_DIR="$2"; shift 2 ;;
     --stall)      STALL_SECONDS="$2"; shift 2 ;;
@@ -50,9 +52,10 @@ while [[ $# -gt 0 ]]; do
 done
 
 if [[ -z "$BACKLOG_ID" || -z "$REPO" ]]; then
-  echo "Usage: $0 --backlog-id <id> --repo <path-to-repo>"
+  echo "Usage: $0 --backlog-id <id> --repo <path-to-repo> [--repo-key <key>]"
   echo "  --backlog-id   Backlog item ID (e.g. FEAT-002)"
   echo "  --repo         Path to the bare/working git repo for worktree creation"
+  echo "  --repo-key     Backlog DB repo key (auto-detected via export-json if unset)"
   echo "  --base-dir     Worktree parent dir (default: ~/dev/.sdlc-experiments)"
   echo "  --proxy-dir    Directory with proxy-ses_*.jsonl logs (default: script dir)"
   echo "  --stall        Seconds before stall warning (default: 60)"
@@ -120,15 +123,40 @@ done
 # ── Step 2: Write FEATURE.md ──
 echo ""
 echo "=== Reading backlog item: $BACKLOG_ID ==="
-FEATURE_BODY=$(backlog get-item --repo PseudoSky/adhd --human-id "$BACKLOG_ID" 2>/dev/null | python3 -c "
+# Use export-json (works across repos, no --repo key needed) and filter by humanId
+FEATURE_BODY=$(backlog export-json 2>/dev/null | python3 -c "
 import sys, json
-raw = sys.stdin.read()
-try:
-    d = json.loads(raw)
-    item = d.get('data',{}).get('item') or d
-    print(json.dumps({'title': item.get('title',''), 'body': item.get('body','')}, indent=2))
-except: print(raw)
-" 2>/dev/null || echo '{"title":"UNKNOWN","body":"Could not fetch item. Manually write FEATURE.md."}')
+items = json.load(sys.stdin)
+for it in items:
+    hid = it.get('humanId','')
+    if hid == '$BACKLOG_ID':
+        repo = it.get('repo','')
+        print(f'REPO_KEY={repo}')
+        print(f'TITLE={it.get(\"title\",\"\")}')
+        print(f'BODY_START')
+        print(it.get('body',''))
+        break
+" 2>/dev/null)
+
+if [[ -z "$FEATURE_BODY" ]]; then
+  echo -e "${YELLOW}  Could not fetch item via backlog. Creating placeholder FEATURE.md.${NC}"
+  FEATURE_TITLE="Feature: $BACKLOG_ID"
+  FEATURE_DESC="Could not fetch item from backlog DB. Please write the feature description manually."
+  DETECTED_REPO_KEY=""
+else
+  DETECTED_REPO_KEY=$(echo "$FEATURE_BODY" | grep '^REPO_KEY=' | sed 's/^REPO_KEY=//')
+  FEATURE_TITLE=$(echo "$FEATURE_BODY" | grep '^TITLE=' | sed 's/^TITLE=//')
+  FEATURE_DESC=$(echo "$FEATURE_BODY" | sed -n '/^BODY_START$/,$ p' | tail -n +2)
+  echo "  title: $FEATURE_TITLE"
+  if [[ -n "$DETECTED_REPO_KEY" ]]; then
+    echo "  repo:  $DETECTED_REPO_KEY"
+  fi
+fi
+
+# Use detected repo key if none was specified
+if [[ -z "$REPO_KEY" && -n "$DETECTED_REPO_KEY" ]]; then
+  REPO_KEY="$DETECTED_REPO_KEY"
+fi
 
 for arm in rf cf; do
   WT="$BASE_DIR/arm-$arm/$BACKLOG_ID"
@@ -147,8 +175,8 @@ echo "=== Launching SDLC agents ==="
 # RF arm
 (
   cd "$WT_RF"
-  echo "  [RF] launching in $WT_RF"
-  $OPencode_CMD $OPENCODE_FLAGS --agent SDLC-RF "$BACKLOG_ID" &
+  echo "  [RF] launching in $WT_RF (log: $WT_RF/sdlc-rf.log)"
+  $OPencode_CMD run --agent SDLC-RF "${REPO_KEY}::${BACKLOG_ID}" >"$WT_RF/sdlc-rf.log" 2>&1 &
   RF_PID=$!
   SPAWNED+=($RF_PID)
   wait $RF_PID
@@ -159,8 +187,8 @@ SPAWNED+=($RF_JOB)
 # CF arm
 (
   cd "$WT_CF"
-  echo "  [CF] launching in $WT_CF"
-  $OPencode_CMD $OPENCODE_FLAGS --agent SDLC-CF "$BACKLOG_ID" &
+  echo "  [CF] launching in $WT_CF (log: $WT_CF/sdlc-cf.log)"
+  $OPencode_CMD run --agent SDLC-CF "${REPO_KEY}::${BACKLOG_ID}" >"$WT_CF/sdlc-cf.log" 2>&1 &
   CF_PID=$!
   SPAWNED+=($CF_PID)
   wait $CF_PID
