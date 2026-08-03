@@ -2610,6 +2610,62 @@ Citations: [wip/turso-live-metrics, main, claude, STATE/PLAN reconciliation, 1: 
 
 ---
 
+### BL-422 — an agent's commits can land on a disposable worktree branch and be reachable from nowhere else; "committed" is not the same as "committed somewhere that survives" — **Open (HIGH, process)** (2026-08-03)
+
+**Measured 2026-08-03.** A stood-down agent (`p0-cluster-calibration`) landed two commits with
+exemplary hygiene — explicit pathspec, shared index verified empty before and after, watched
+red→green, disjoint from the five files another agent had in flight in the same tree. Every rule this
+repo has about commit safety was followed.
+
+`git branch --contains` then placed both commits on **`worktree-agent-a54e5171a1615a001`** — a
+disposable, agent-scoped worktree branch belonging to a *different* agent's packet — **and nowhere
+else.** They were not on `wip/turso-live-metrics` and never had been.
+
+| commit | subject | reachable from |
+|---|---|---|
+| `af45f77` | fix(memory-core): always emit suspended_ms/blocked_ms, 0 included (BL-369) | `worktree-agent-a54e5171a1615a001` only |
+| `e275039` | docs(handoff): the suspension zero-emission question is settled | `worktree-agent-a54e5171a1615a001` only |
+
+Agent worktrees are **auto-removed when unchanged** and are treated throughout this program as
+disposable scratch. Had that worktree been discarded, reset, or simply had its branch deleted with
+the packet it belonged to, both commits would have been unrecoverable — a shipped fix with a watched
+red→green, plus a handoff correction, silently gone. Recovered by cherry-pick to
+`26549db` / `1d5e6a7` only because the branch was inspected on a hunch.
+
+**Why the existing rules do not catch this.** BL-409 and the pathspec constraint govern *what goes
+into a commit*. They are silent on *which branch the commit lands on*, and that is the axis that
+failed here. An agent has no reason to check `git rev-parse --abbrev-ref HEAD` before committing —
+the working directory looked like the repo, the files were right, the tests ran. Two agents sharing
+one worktree is the trigger: the second agent inherits the first's branch without ever choosing it.
+
+**Second-order damage even when nothing is lost:** commits from agent A sit in agent B's branch
+history, so reviewing B's packet means separating two agents' work by hand, and cherry-picking B
+either drags A's commits along or drops them depending on how the range is selected. Attribution and
+bisectability are both degraded — the same class of harm as BL-409's original 10-file sweep, arrived
+at from the opposite direction.
+
+**Fix sketch.** (a) An agent should assert its branch before its first commit and refuse to commit
+onto a branch belonging to a packet that is not its own — the `worktree-agent-<id>` naming makes this
+mechanically checkable. (b) `tools/commit-mine.mjs` already refuses a detached HEAD; extend it to
+warn (or refuse without an explicit flag) when the current branch is an agent worktree branch whose
+id does not match the committing agent. (c) Dispatch should not place a second agent into an existing
+agent's worktree at all; if it must, that agent needs its own branch. (d) At minimum, a supervisor
+sweeping up finished work must enumerate **all** `worktree-agent-*` branches for commits absent from
+the mainline, rather than trusting each agent's self-reported SHAs to be on the branch it assumes.
+
+**Acceptance (red→green, must name BL-422):** a test that creates a commit on an agent worktree branch
+from an agent whose id does not match, and asserts the guard refuses it (or that a sweep detects it as
+orphaned). The red arm is today's behaviour: the commit succeeds silently and is reachable from one
+disposable ref.
+
+**Related:** BL-409 (shared index/working tree — same family, different axis; that item's fix
+`tools/commit-mine.mjs` is the natural home for guard (b)), BL-393 (another case where the state that
+mattered — which artifact was live — was not the state anyone was watching).
+
+Citations: [wip/turso-live-metrics, main, claude, peer-relay verification, 1: `git branch -a --contains af45f77` and `--contains e275039` (both list only worktree-agent-a54e5171a1615a001), 2: `git worktree list` (agent worktrees under .claude/worktrees/, marked locked), 3: commits 26549db and 1d5e6a7 (the recovering cherry-picks), 4: tools/commit-mine.mjs (detached-HEAD refusal, the extension point for guard (b)), 2026-08-03]
+
+---
+
 ### BL-412 — running the test suite silently opens the LIVE production store and registers it into an in-process enrichment loop — **Open (HIGH)** (2026-08-02)
 
 **Found by:** the BL-405 agent, as a side effect of writing a shutdown regression test. It saw `store.integrity.repair_failed db_path: /Users/nix/.memory/memory.db` in its own `nx test` output — a **production** path, appearing in a test run.
