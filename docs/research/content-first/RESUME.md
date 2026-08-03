@@ -2,8 +2,13 @@
 
 > **For resuming work after a session compaction.** Current state of the content-first research + proxy development, what's proven, what's broken, what's next.
 
-**Last updated:** 2026-08-02
+**Last updated:** 2026-08-03
 **Branch:** `wip/turso-live-metrics`
+
+**Recent commits (2026-08-03 — cross-agent cache reuse restoration):**
+- `8c11661` **Restore persona-as-last-user-suffix** — reverted bc7de01's trailing-system-message change; persona now appended to last user message per §2 design. Restores the structure that produced 82-93% first-turn cache reuse in 03c0c039c/03c3312d1.
+- `be2d312` **Move CF instructions to position 0** — session-constant handoff recipe moved from per-turn tail to cache anchor; saves ~268 tokens/turn.
+- `96185ef` **Never empty position-0** — shared anchor falls back to full opencode SP when splitSystemPrompt returns '' (bare base in chained sessions). Was `sharedSysLen=0` on typescript/review; now stable across all agents.
 
 ---
 
@@ -57,8 +62,11 @@ This is where current work lives. **`proxy/cf-proxy.mjs` (port 3333) is the prod
 | `8367caf` | Revert to true streaming (fix: blocking path hung with max_tokens=32000) |
 | `2e6bcf5` | Add persona-application verification log |
 | `ddec69d` | **Fix foreign-SP leak** — override holds until dropdown catches up |
+| `96185ef` | **Never empty position-0** — shared anchor fallback for bare base SPs |
+| `be2d312` | **Move CF instructions to position 0** — cached once, zero per-turn waste |
+| `8c11661` | **Restore persona-as-last-user-suffix** — cross-agent cache reuse (reverts bc7de01 trailing-system regression) |
 
-**The proxy on 3333 is the committed state = known-good baseline.**
+**The proxy on 3333 matches the §2 design.**
 
 ---
 
