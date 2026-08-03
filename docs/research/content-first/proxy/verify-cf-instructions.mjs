@@ -102,7 +102,7 @@ function rewriteToContentFirst(messages, personaSP, opencodeSP, cfPrompt) {
   const personaMarker = '--- Role ---\n';
   const tailTokens = Math.ceil(agentRole.length / 4) + Math.ceil(personaMarker.length / 4);
   return {
-    messages: result, system: shared,
+    messages: result, system: shared, agentRole,
     savings: '0.0', cachedSeed: false, seedTokens, systemTokens: 0,
     agentTokens: tailTokens, cfTokens: 0,
   };

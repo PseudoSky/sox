@@ -139,8 +139,13 @@ function getSession(id) {
       opencodeAgent: null,    // last agent detected from opencode's SP
       opencodeSP: null,       // last SP opencode sent (for change detection)
       apiOverride: false,     // true when activeAgent was set via /v1/session/agent
-      pendingInput: null,     // handoff task to inject as a user msg on next turn
+      pendingInput: null,     // DEPRECATED — handoff tasks are read from the
+                              // session_agent_set tool call in the conversation,
+                              // not redundantly injected as a new user message
       context: [],            // accumulated messages (cache anchor)
+      // Per-persona metrics (reset on agent change)
+      personaTurns: 0,        // turns since the current persona started
+      personaCtxChars: 0,     // cumulative non-shared non-persona context chars
       createdAt: new Date().toISOString(),
       turns: 0,
     });
@@ -186,6 +191,9 @@ function resolveSessionPersona(session, opencodeSP) {
     // opencode genuinely switched (or first contact) → follow it
     session.activeAgent = detected?.name || null;
     session.customSP = detected ? null : (opencodeSP || '');
+    // Reset per-persona metrics on agent change
+    session.personaTurns = 0;
+    session.personaCtxChars = 0;
   }
   // Effective persona SP: activeAgent's registry SP, else custom SP
   const personaSP = session.activeAgent
@@ -322,6 +330,7 @@ function rewriteToContentFirst(messages, personaSP, opencodeSP, cfPrompt) {
   return {
     messages: result,
     system: shared,
+    agentRole,   // exposed for per-request context metrics
     savings: cached ? ((seedTokens / (seedTokens + tailTokens)) * 100).toFixed(1) : '0.0',
     cachedSeed: cached,
     seedTokens,
@@ -336,11 +345,14 @@ function rewriteToContentFirst(messages, personaSP, opencodeSP, cfPrompt) {
 /**
  * Render the content-first process instructions with the session id baked in.
  *
- * Injected at position 0 alongside the shared boilerplate (the cache anchor),
- * so the instructions are cached once and never re-tokenized per turn.
+ * Lives at position 0 alongside the shared boilerplate — cached once, zero
+ * per-turn waste.
  *
  * The agent learns its own session id from this anchor and uses it to call
- * POST /v1/session/agent when handing off to a different specialist persona.
+ * POST /v1/session/agent when handing off. The handoff task lives in the
+ * `input` field of the session_agent_set tool call — already in the
+ * conversation — so the next agent reads it from context without redundant
+ * message injection.
  */
 function renderCFInstructions(sessionId) {
   const agents = [...AGENTS.keys()].sort();
@@ -348,17 +360,17 @@ function renderCFInstructions(sessionId) {
     '--- Content-First Session Instructions ---',
     `Your session id is: ${sessionId || '(unset)'}.`,
     'You are running through a session-aware content-first proxy: the shared',
-    'context stays cached across agent persona switches; only the role suffix',
-    'changes per turn. When the next stage of work belongs to a different',
-    'specialist, hand off to it INSTEAD of doing the work yourself. Pass the',
-    'task as `input` so the next agent continues the chain immediately:',
+    'context stays cached across agent persona switches; only the user-message',
+    'suffix changes per turn. When the next stage belongs to a different',
+    'specialist, hand off to it instead of doing the work yourself:',
     '',
     `  curl -s -X POST http://localhost:${PORT}/v1/session/agent \\`,
     `    -H 'Content-Type: application/json' \\`,
-    `    -d '{"sessionId":"${sessionId}","agent":"<agent-name>","input":"<task for the next agent>"}'`,
+    `    -d '{"sessionId":"${sessionId}","agent":"<agent-name>","input":"<task>"}'`,
     '',
-    'The next turn then runs with that agent\'s persona, and the input is',
-    'injected as the first message of its turn. Available agents:',
+    'The next turn runs with that agent\'s persona. The handoff task is already',
+    'in the conversation (the `input` field of the session_agent_set tool call)',
+    '— read it from context; nothing is redundantly injected. Available agents:',
     agents.join(', '),
   ].join('\n');
 }
@@ -569,29 +581,20 @@ const server = http.createServer(async (req, res) => {
       session.activeAgent = resolved.name;
       session.customSP = null;
       session.apiOverride = true;
+      // Reset per-persona metrics on agent switch.
+      session.personaTurns = 0;
+      session.personaCtxChars = 0;
       // Seed opencodeAgent so the next request doesn't look like a manual
       // switch away from the override target.
       if (!session.opencodeAgent) session.opencodeAgent = resolved.name;
       logCall({ event: 'session_agent_set', agent: resolved.name, turns: session.turns }, sessionId);
 
-      // Chain continuation: store the task as pendingInput and let the NEXT
-      // /v1/chat/completions request (opencode always sends one after the
-      // handoff tool result) inject it as a user message. That continuation
-      // turn flows through the FULL streaming path WITH opencode's tools —
-      // the new agent can actually work. (Previously this ran a blocking
-      // tool-less forwardBlocking, which could not continue the chain.)
-      if (input) {
-        session.pendingInput = input;
-        logCall({ event: 'handoff_pending', agent: resolved.name, input_tokens: Math.ceil(input.length / 4), turns: session.turns }, sessionId);
-        return jsonResponse(res, 200, {
-          sessionId, activeAgent: resolved.name, switched: true,
-          note: 'Next chat completion injects the provided input under the new persona.',
-        });
-      }
-
+      // The handoff task is persisted in the conversation (the session_agent_set
+      // tool call args). The next agent reads it from context — no pendingInput
+      // injection needed. The input field is preserved in the log for audit.
       return jsonResponse(res, 200, {
         sessionId, activeAgent: resolved.name, switched: true,
-        note: 'Next /v1/chat/completions call for this session uses the new persona.',
+        note: 'Next turn runs with the new persona. Task is in the tool call conversation context.',
       });
     }
 
@@ -657,18 +660,26 @@ const server = http.createServer(async (req, res) => {
       }
 
       // ── Content-first path (true streaming) ──
-      // Chain continuation: a pending handoff task is injected as a user
-      // message BEFORE the rewrite, so the new persona answers it on this very
-      // turn (full streaming path, full toolset). One-shot — cleared after use.
-      let injected = null;
-      if (session?.pendingInput) {
-        injected = { role: 'user', content: session.pendingInput };
-        messages.push(injected);
-        session.pendingInput = null;
-        console.error(`[cf-proxy] pendingInput injected: ${JSON.stringify(sessionId)} (${Math.ceil(injected.content.length / 4)} tokens)`);
-      }
+      // The handoff task is ALREADY in the conversation (session_agent_set
+      // tool call args). Re-injecting it as pendingInput was redundant and
+      // broke prefix cache contiguity at every handoff — the extra user
+      // message shifted the sequence and prevented the provider from reusing
+      // the prior agent's full context. The new agent reads its task from the
+      // tool call `input` field in the conversation.
       const cfPrompt = sessionId ? renderCFInstructions(sessionId) : null;
       const cf = rewriteToContentFirst(messages, personaSP, opencodeSP, cfPrompt);
+
+      // ── Enhanced metrics ──
+      const totalMsgChars = cf.messages.reduce((s, m) => s + (m.content?.length || 0), 0);
+      const sharedChars = cf.messages[0]?.content?.length || 0;
+      const personaMarkerChars = '\n\n--- Role ---\n'.length;
+      const personaChars = (cf.agentRole ? cf.agentRole.length : 0) + personaMarkerChars;
+      const contextChars = totalMsgChars - sharedChars - personaChars;
+      // Increment per-persona metrics
+      if (session) {
+        session.personaTurns++;
+        session.personaCtxChars += contextChars;
+      }
       // Verify BOTH invariants reached the forwarded messages:
       //  - personaApplied: last USER message carries "--- Role ---" (persona suffix)
       //  - sharedSystem: position-0 system message is NOT emptied
@@ -676,7 +687,7 @@ const server = http.createServer(async (req, res) => {
       const lastUserContent = lastUserP?.content || '';
       const roleApplied = lastUserContent.includes('--- Role ---');
       const sharedSysLen = cf.messages[0]?.content?.length || 0;
-      console.error(`[cf-proxy] rewrite: activeAgent=${activeAgent || '?'} personaApplied=${roleApplied} sharedSysLen=${sharedSysLen} agentRoleTokens=${cf.agentTokens} userMsgEnd=${JSON.stringify(lastUserContent.slice(-60))}`);
+      console.error(`[cf-proxy] rewrite: agent=${activeAgent || '?'} shared=${sharedChars} persona=${personaChars} ctx=${contextChars} sessTurns=${session?.turns ?? 0} personaTurns=${session?.personaTurns ?? 0} personaCtx=${session?.personaCtxChars ?? 0} role=${roleApplied}`);
 
       // True streaming passthrough to upstream. The virtual tool is DISABLED
       // here (CF_VIRTUAL_TOOL=1 re-enables it later once the baseline works);
@@ -702,6 +713,12 @@ const server = http.createServer(async (req, res) => {
         cached_seed: cf.cachedSeed,
         seed_tokens: cf.seedTokens, system_tokens: cf.systemTokens,
         model: modelStr,
+        // Enhanced per-request context metrics
+        shared_chars: sharedChars,
+        persona_chars: personaChars,
+        context_chars: contextChars,
+        persona_turns: session?.personaTurns ?? 0,
+        persona_ctx_chars: session?.personaCtxChars ?? 0,
       }, sessionId);
       return;
     }
