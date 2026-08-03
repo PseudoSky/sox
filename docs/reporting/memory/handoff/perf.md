@@ -241,12 +241,24 @@ All three are `_ms`, so `duration_ms - suspended_ms - blocked_ms` is meaningful 
 `blocked_ms` is a **first-class sibling, not folded into `suspended_ms`** — different defects,
 different owners.
 
-> **One open disagreement, left for the next owner.** As shipped, the two counters are **omitted
-> when zero** (their presence is the signal, and the common case costs no log bytes).
-> `p1-tracing-research` proposed **always emitting `0`**, on the grounds that an absent field is
-> indistinguishable from "not instrumented" — the BL-319 shape. **Their argument is good and I did
-> not get to reconcile it.** The `docs/observability/README.md` boundary note currently documents
-> the omit-when-zero behaviour, so changing it means updating that note in the same commit.
+> **SETTLED — both counters are ALWAYS present, `0` rather than omitted** (`af45f77`). I shipped
+> omit-when-zero first; `p1-tracing-research` argued for always-emit and team-lead decided it.
+> **They were right:** an absent field is indistinguishable from "not instrumented", which is the
+> exact ambiguity behind BL-319 (`time_to_vector_ms` existing with zero samples), BL-347 (an FTS
+> probe reading 0 whether the index was dead or healthy), BL-376 and BL-378. In every one of those,
+> silence was read as health. A `0` is a **positive claim** that the ledger looked and found
+> nothing. Absence now means one thing only: a **pre-boundary record**.
+>
+> Two related facts settled in the same commit:
+>
+> - **Clock domain.** The ledger stores `Date.now()` endpoints and `annotateSuspension` computes
+>   its window from `Date.now()` — a same-domain subtraction. **Do not "improve" one side to
+>   `performance.now()`**: the two are identical in *rate* (0.002 ms over 250 ms) but have different
+>   *epochs*, so a mixed-domain overlap returns garbage **silently** rather than failing. The
+>   warning is at the call site.
+> - **Resolution floor.** `suspensionResolutionFloorMs()` (heartbeat + slack = **1750 ms**) is
+>   readable at runtime. `suspended_ms: 0` means "no suspension longer than the floor", not "no
+>   suspension" — quote the bound rather than implying infinite precision.
 
 **Effective-date boundary is recorded** in `docs/observability/README.md` §5.1(b), with the
 **corrected mechanism** (not just the date) — the section previously told readers the wrong reason.
