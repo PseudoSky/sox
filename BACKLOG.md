@@ -1989,7 +1989,27 @@ Citations: [wip/turso-live-metrics, main, claude, BL-367 attribution, 1: libs/da
 
 ### BL-393 — the proxy silently respawns the backend onto whatever bundle is staged, redeploying production with nobody asking — observed once, trigger not yet identified — **Open (HIGH)** (2026-08-01)
 
-> **⚠️ FIRST LIVE REPRODUCTION — 2026-08-02T00:15:29Z. Read this before theorising.**
+> **⚠️ TRIGGER IDENTIFIED 2026-08-02 — and it is NOT the transitive rebuild recorded below.**
+>
+> The block that follows was written while the rebuild was the leading hypothesis. **It is wrong on
+> causation and is retained only because its measurements of the *symptom* are accurate.** Read this
+> paragraph first and treat the rest as superseded on the question of cause.
+>
+> What actually happened: **doctor-tick's routine singleton-violation self-heal SIGTERM'd a duplicate
+> memory-server backend (pid 56514) at `2026-08-02T00:14:42Z`**, 47 seconds before the final pid
+> rotation. It was **not** a rebuild — the artifact hash was unchanged throughout — and **not** an
+> operator action, since no restart appears in the audit log. **What spawned the duplicate backend
+> has not been identified, and that is now the open question**, not "which build bounced it".
+>
+> The distinguishing evidence that killed the rebuild hypothesis: a direct `nx build memory-server`
+> did NOT bounce the backend in a controlled test, and the respawned process here came up on the
+> **old** artifact — consistent with surviving on the unlinked inode rather than being redeployed.
+>
+> See `docs/reporting/memory/handoff/bl393-respawn-trigger.md`.
+>
+> Citations: [wip/turso-live-metrics, main, claude, bl393 packet, doctor-tick self-heal log line at 2026-08-02T00:14:42Z (pid 56514), artifact hash unchanged across the window, absence of a restart entry in the audit log, 2026-08-02]
+
+> **⚠️ SYMPTOM MEASUREMENTS — 2026-08-02T00:15:29Z. Causation claim below is SUPERSEDED (see above).**
 >
 > An agent finished work on `tools/baseline-capture` and ran `npx nx run registry:sync-index`,
 > following the repo's standard "dist-artifact changed" sequence. **`baseline-capture` is not a
