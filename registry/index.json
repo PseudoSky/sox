@@ -10,7 +10,7 @@
     "compatibility": {
       "host": ">=1.0.0 <2.0.0"
     },
-    "builtFromCommit": "86aebc553f37c32a8385dae1aa3aa81bb9d5bbbc"
+    "builtFromCommit": "d016b63a8f4711ed7fea3ddf965a4c69fbf48e44"
   },
   {
     "id": "test-runner",
@@ -23,7 +23,7 @@
     "compatibility": {
       "host": ">=1.0.0 <2.0.0"
     },
-    "builtFromCommit": "86aebc553f37c32a8385dae1aa3aa81bb9d5bbbc"
+    "builtFromCommit": "d016b63a8f4711ed7fea3ddf965a4c69fbf48e44"
   },
   {
     "id": "sox-memory-bundle",
@@ -50,7 +50,7 @@
         "id": "memory-usage"
       }
     ],
-    "builtFromCommit": "86aebc553f37c32a8385dae1aa3aa81bb9d5bbbc"
+    "builtFromCommit": "d016b63a8f4711ed7fea3ddf965a4c69fbf48e44"
   },
   {
     "id": "memory-cli",
@@ -59,13 +59,13 @@
     "title": "Memory CLI",
     "description": "Use this when you need to manage the sox-memory store from the shell — provides memory init|status|list|registry subcommands for store lifecycle, scope selection, and registry inspection. Fully deterministic; zero LLM calls.",
     "source": "file:///Users/nix/dev/ai/sox-ecosystem/extensions/bundles/sox-memory-bundle/members/memory-cli",
-    "checksum": "sha256:480bc9593754ad9e6771a7bf30ddb344d0c5e26713c3261a664d89f1a116910c",
+    "checksum": "sha256:82c5b682d9d672183142ffdd90fb9d3cdc7d10901eb2d8fb58caf9d7379f804a",
     "compatibility": {
       "host": ">=1.0.0 <2.0.0"
     },
     "visibility": "internal",
     "bundleId": "sox-memory-bundle",
-    "builtFromCommit": "86aebc553f37c32a8385dae1aa3aa81bb9d5bbbc"
+    "builtFromCommit": "d016b63a8f4711ed7fea3ddf965a4c69fbf48e44"
   },
   {
     "id": "memory-flush",
@@ -74,13 +74,13 @@
     "title": "Memory Session Flush",
     "description": "Use this when you need session memory durably persisted at conversation end and scope promotions reviewed — binds SessionEnd (persists working memory, enqueues episodes, nudges memoryd) and ScopePromotionProposed (runs promotion approval policy). Deterministic; zero LLM calls.",
     "source": "file:///Users/nix/dev/ai/sox-ecosystem/extensions/bundles/sox-memory-bundle/members/memory-flush",
-    "checksum": "sha256:ee3d15847a59b49b495be3847fe748576b9482ba8c5ad374fe0ce023a372891a",
+    "checksum": "sha256:6f5e1d580de2b8c3bda8378f0e01f848473efccc30257061b27ad103a1e9b57a",
     "compatibility": {
       "host": ">=1.0.0 <2.0.0"
     },
     "visibility": "internal",
     "bundleId": "sox-memory-bundle",
-    "builtFromCommit": "86aebc553f37c32a8385dae1aa3aa81bb9d5bbbc"
+    "builtFromCommit": "d016b63a8f4711ed7fea3ddf965a4c69fbf48e44"
   },
   {
     "id": "memory-server",
@@ -89,7 +89,7 @@
     "title": "Agent Memory Server",
     "description": "Use this when an agent needs durable, searchable memory across sessions — exposes 7 memory_* tools over a single-file SQLite graph store with hybrid recall (vec+BM25+temporal, <50ms, zero LLM), write-enqueue, session state, community lookup, and bi-temporal invalidation.",
     "source": "file:///Users/nix/dev/ai/sox-ecosystem/extensions/bundles/sox-memory-bundle/members/memory-server",
-    "checksum": "sha256:bb698a6e437726a20c17dafab824018da24f7ffd202d60b37e8db8211cb33b8a",
+    "checksum": "sha256:709069137504c78b1593d94d7aaa454ad6dc0b7f202780104d76aa45553c10e4",
     "compatibility": {
       "host": ">=1.0.0 <2.0.0"
     },
@@ -99,7 +99,7 @@
     },
     "visibility": "internal",
     "bundleId": "sox-memory-bundle",
-    "builtFromCommit": "86aebc553f37c32a8385dae1aa3aa81bb9d5bbbc"
+    "builtFromCommit": "d016b63a8f4711ed7fea3ddf965a4c69fbf48e44"
   },
   {
     "id": "memory-usage",
@@ -114,7 +114,7 @@
     },
     "visibility": "internal",
     "bundleId": "sox-memory-bundle",
-    "builtFromCommit": "86aebc553f37c32a8385dae1aa3aa81bb9d5bbbc"
+    "builtFromCommit": "d016b63a8f4711ed7fea3ddf965a4c69fbf48e44"
   },
   {
     "id": "dep-inject",
@@ -127,7 +127,7 @@
     "compatibility": {
       "host": ">=1.0.0 <2.0.0"
     },
-    "builtFromCommit": "86aebc553f37c32a8385dae1aa3aa81bb9d5bbbc"
+    "builtFromCommit": "d016b63a8f4711ed7fea3ddf965a4c69fbf48e44"
   },
   {
     "id": "tokenguard",
@@ -140,7 +140,7 @@
     "compatibility": {
       "host": ">=1.0.0 <2.0.0"
     },
-    "builtFromCommit": "86aebc553f37c32a8385dae1aa3aa81bb9d5bbbc"
+    "builtFromCommit": "d016b63a8f4711ed7fea3ddf965a4c69fbf48e44"
   },
   {
     "id": "demo-creator",
@@ -153,7 +153,7 @@
     "compatibility": {
       "host": ">=1.0.0 <2.0.0"
     },
-    "builtFromCommit": "86aebc553f37c32a8385dae1aa3aa81bb9d5bbbc"
+    "builtFromCommit": "d016b63a8f4711ed7fea3ddf965a4c69fbf48e44"
   },
   {
     "id": "di-codex",
@@ -166,7 +166,7 @@
     "compatibility": {
       "host": ">=1.0.0 <2.0.0"
     },
-    "builtFromCommit": "86aebc553f37c32a8385dae1aa3aa81bb9d5bbbc"
+    "builtFromCommit": "d016b63a8f4711ed7fea3ddf965a4c69fbf48e44"
   },
   {
     "id": "dep-injector",
@@ -179,7 +179,7 @@
     "compatibility": {
       "host": ">=1.0.0 <2.0.0"
     },
-    "builtFromCommit": "86aebc553f37c32a8385dae1aa3aa81bb9d5bbbc"
+    "builtFromCommit": "d016b63a8f4711ed7fea3ddf965a4c69fbf48e44"
   },
   {
     "id": "forbidden-access",
@@ -192,7 +192,7 @@
     "compatibility": {
       "host": ">=1.0.0 <2.0.0"
     },
-    "builtFromCommit": "86aebc553f37c32a8385dae1aa3aa81bb9d5bbbc"
+    "builtFromCommit": "d016b63a8f4711ed7fea3ddf965a4c69fbf48e44"
   },
   {
     "id": "sox-ingest",
@@ -205,7 +205,7 @@
     "compatibility": {
       "host": ">=1.0.0 <2.0.0"
     },
-    "builtFromCommit": "86aebc553f37c32a8385dae1aa3aa81bb9d5bbbc"
+    "builtFromCommit": "d016b63a8f4711ed7fea3ddf965a4c69fbf48e44"
   },
   {
     "id": "tui-design",
@@ -218,7 +218,7 @@
     "compatibility": {
       "host": ">=1.0.0 <2.0.0"
     },
-    "builtFromCommit": "86aebc553f37c32a8385dae1aa3aa81bb9d5bbbc"
+    "builtFromCommit": "d016b63a8f4711ed7fea3ddf965a4c69fbf48e44"
   },
   {
     "id": "sox",
@@ -231,6 +231,6 @@
     "compatibility": {
       "host": ">=1.0.0 <2.0.0"
     },
-    "builtFromCommit": "86aebc553f37c32a8385dae1aa3aa81bb9d5bbbc"
+    "builtFromCommit": "d016b63a8f4711ed7fea3ddf965a4c69fbf48e44"
   }
 ]
