@@ -45,6 +45,15 @@
  *
  * This does NOT run hooks (it bypasses `git commit` entirely). Run the guards yourself first:
  *   node tools/check-backlog-markers.mjs && node tools/plan-status.mjs --check
+ *
+ * TWO GOTCHAS, both hit on first real use:
+ *   - `--hunks` applies to EVERY path in the invocation. A regex chosen for one file will silently
+ *     filter out an unrelated file's hunks entirely. Commit a new file in its own invocation
+ *     without `--hunks`, or check the reported "N hunk(s) left behind" count against what you meant.
+ *   - An UNTRACKED file does not appear in `git diff HEAD` at all, so it cannot be selected here.
+ *     Run `git add -N <path>` (intent-to-add — records the path, stages no content) first. Plain
+ *     `git add` also works but writes real content into the shared index, which is what this tool
+ *     exists to avoid.
  */
 
 import { execFileSync } from 'node:child_process';
