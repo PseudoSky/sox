@@ -155,6 +155,16 @@ export {
   hasPendingFullEnrich,
 } from './outbox-queue.js';
 
+// ── Enrich-stall escalation (BL-413) ──────────────────────────────────────────
+// A stalled periodic-enrich pass gets a durable, recorded corrective action —
+// not just an accurate status string. See enrich-stall.ts for the full story.
+export {
+  checkAndEscalateEnrichStall,
+  readEnrichStallEscalation,
+  _resetEnrichStallStateForTest,
+} from './enrich-stall.js';
+export type { EnrichStallEscalation, EnrichStallCheckInput } from './enrich-stall.js';
+
 // ── Update (in-place editor; two-phase since BL-189) ──────────────────────────
 export { memoryUpdate, memoryUpdatePhaseA, deepMerge } from './update.js';
 export type { UpdateParams, UpdateResult, UpdateError, UpdatePhaseAOutcome } from './update.js';

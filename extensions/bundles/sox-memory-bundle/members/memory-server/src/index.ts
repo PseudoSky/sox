@@ -39,6 +39,7 @@ import { defineTool, serve } from '@adhd/sox-mcp-runtime';
 import {
   autoBackup,
   buildFiltersClause,
+  checkAndEscalateEnrichStall,
   communityUidForRowid,
   embedBacklogStats,
   expandTilde,
@@ -68,6 +69,7 @@ import {
   memoryWriteBatch,
   memoryWriteBatchPhaseA,
   memoryWritePhaseA,
+  readEnrichStallEscalation,
   resolveStoreOrDbPath,
   runEnrichIsolated,
   schedulePendingEmbeds,
@@ -1007,6 +1009,13 @@ export async function handleToolCall(name: string, args: Record<string, unknown>
           resolveVerifyDepth(false) === 'off',
         );
 
+        // BL-413: the durable corrective-action record a stalled tick writes
+        // (see enrich-stall.ts / runEnrichPassOnDb). Read-only here — this
+        // call never writes; only a tick's own checkAndEscalateEnrichStall
+        // call does. null when the queue has never stalled, or the last
+        // stall already recovered.
+        const enrichStallEscalation = await readEnrichStallEscalation(adapter);
+
         storeBlock = {
           name: storeName,
           path: resolvedPath,
@@ -1026,6 +1035,12 @@ export async function handleToolCall(name: string, args: Record<string, unknown>
           queue_oldest_pending_at: queueOldestPendingAt,
           queue_last_done_at: queueLastDoneAt,
           enrichment: enrichmentHealth,
+          // BL-413: the recorded corrective action for a stalled queue — null
+          // means never escalated or already recovered. Distinct from
+          // `enrichment.state` (a live computed verdict): this is the
+          // PERSISTED record a tick actually wrote, carrying
+          // `consecutive_stalled_ticks` and the isolated pass's last error.
+          enrich_stall_escalation: enrichStallEscalation,
           // Phase-B embed backlog (additive, 2026-07-04 two-phase write):
           // live episodes without a vec_node row + the oldest one's t_created.
           embed_backlog: embedBacklog.count,
@@ -2271,6 +2286,50 @@ export async function runEnrichPassOnDb(
       `${isolated.error} — embed_healed=${heal.healed} backlog_before=${backlogBefore} ` +
       `backlog_after=${backlogAfter} (unaffected by cluster failure)`,
     );
+  }
+
+  // BL-413: take a DURABLE, RECORDED corrective action when the queue is
+  // actually stalled — not just report the string. `memory_ping`'s
+  // `enrichment.state: "stalled"` verdict was accurate for 90 consecutive
+  // 15-minute windows on the live server (queue_depth 46, queue_last_done_at
+  // 22.5h stale) and NOTHING consumed it: the only trace was the
+  // `console.error` calls above, which are stderr-only and never reach
+  // durable telemetry. This check runs the SAME stall predicate memory_ping
+  // uses (computeEnrichmentHealth) immediately after every tick and, when
+  // stalled, persists an escalation record (sox_store_meta, survives process
+  // restarts) plus a durable `enrich.stall.escalated` telemetry event — see
+  // enrich-stall.ts for the full rationale. Failure here must never fail the
+  // tick itself; it is pure bookkeeping on top of work that already happened.
+  try {
+    const qRow = await adapter.executeGet<{ q: number }>(
+      'SELECT COUNT(*) AS q FROM organizer_queue WHERE done_at IS NULL',
+    );
+    const oldRow = await adapter.executeGet<{ o: string | null }>(
+      'SELECT MIN(enqueued) AS o FROM organizer_queue WHERE done_at IS NULL',
+    );
+    const doneRow = await adapter.executeGet<{ d: string | null }>(
+      'SELECT MAX(done_at) AS d FROM organizer_queue',
+    );
+    const queueDepth = qRow?.q ?? 0;
+    const oldestPendingAt = oldRow?.o ?? null;
+    const lastDoneAt = doneRow?.d ?? null;
+    const health = computeEnrichmentHealth(queueDepth, oldestPendingAt, lastDoneAt, Date.now());
+    const escalation = await checkAndEscalateEnrichStall(adapter, dbPath, {
+      state: health.state,
+      queueDepth,
+      oldestPendingAt,
+      lastDoneAt,
+      lastIsolatedError: isolated.ok ? null : isolated.error,
+    });
+    if (escalation) {
+      console.error(
+        `[memory-server] enrich.stall.escalated (${dbPath}): ` +
+        `consecutive_stalled_ticks=${escalation.consecutive_stalled_ticks} ` +
+        `queue_depth=${escalation.queue_depth} last_isolated_error=${escalation.last_isolated_error ?? 'none'}`,
+      );
+    }
+  } catch (err) {
+    console.error(`[memory-server] enrich.stall escalation bookkeeping error (${dbPath}):`, err);
   }
 
   return {

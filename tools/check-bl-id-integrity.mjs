@@ -141,10 +141,16 @@ for (const id of backlogHeadingIds) {
 }
 
 // ── 3. abandoned allocate-bl-id.mjs reservation ──────────────────────────────
-if (/RESERVED \(RESERVED\)/.test(backlogText)) {
-  const m = backlogText.match(/^###\s*(BL-\d+)[^\n]*RESERVED \(RESERVED\)/m);
+// Match the placeholder HEADING, not the string anywhere in the file. The previous test was a
+// bare `/RESERVED \(RESERVED\)/` over the whole document, so any item that *quoted* the marker in
+// its prose tripped the guard — which is exactly what happened to BL-416's write-up, an item
+// ABOUT the reservation tooling that necessarily names the placeholder format it describes. A
+// guard that blocks its own bug report gets bypassed with --no-verify, and then it protects
+// nothing. Anchor on `^### BL-<n> ... RESERVED (RESERVED)` so only a real heading fails.
+const abandonedReservation = backlogText.match(/^###\s*(BL-\d+)[^\n]*RESERVED \(RESERVED\)/m);
+if (abandonedReservation) {
   fail(
-    `${m ? m[1] : 'a BL id'}: an allocate-bl-id.mjs placeholder is still in BACKLOG.md. ` +
+    `${abandonedReservation[1]}: an allocate-bl-id.mjs placeholder is still in BACKLOG.md. ` +
       `Fill in the real item or delete the heading before committing.`,
   );
 }
