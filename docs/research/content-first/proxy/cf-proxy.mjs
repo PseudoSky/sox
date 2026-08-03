@@ -352,31 +352,28 @@ function rewriteToContentFirst(messages, personaSP, opencodeSP, cfPrompt, handof
  * Render the content-first process instructions with the session id baked in.
  *
  * Lives at position 0 alongside the shared boilerplate — cached once, zero
- * per-turn waste.
- *
- * The agent learns its own session id from this anchor and uses it to call
- * POST /v1/session/agent when handing off. The handoff task lives in the
- * `input` field of the session_agent_set tool call — already in the
- * conversation — so the next agent reads it from context without redundant
- * message injection.
+ * per-turn waste. Documents the two handoff modes: warm (with input → task
+ * embedded in persona) and cold (no input → persona only).
  */
 function renderCFInstructions(sessionId) {
   const agents = [...AGENTS.keys()].sort();
   return [
     '--- Content-First Session Instructions ---',
     `Your session id is: ${sessionId || '(unset)'}.`,
-    'You are running through a session-aware content-first proxy: the shared',
-    'context stays cached across agent persona switches; only the user-message',
-    'suffix changes per turn. When the next stage belongs to a different',
-    'specialist, hand off to it instead of doing the work yourself:',
+    'You are running through a session-aware content-first proxy. When the',
+    'next stage belongs to a different specialist, hand off to it instead of',
+    'doing the work yourself:',
     '',
     `  curl -s -X POST http://localhost:${PORT}/v1/session/agent \\`,
     `    -H 'Content-Type: application/json' \\`,
     `    -d '{"sessionId":"${sessionId}","agent":"<agent-name>","input":"<task>"}'`,
     '',
-    'The next turn runs with that agent\'s persona. The handoff task is already',
-    'in the conversation (the `input` field of the session_agent_set tool call)',
-    '— read it from context; nothing is redundantly injected. Available agents:',
+    'Warm handoff (with `input`): the task is embedded in your persona suffix',
+    'as "Task: <input>" — you see it and act immediately on your first turn.',
+    '',
+    'Cold handoff (omit `input`): persona applied with no task — you can wait',
+    'or review. The task is always in the conversation context either way.',
+    'Available agents:',
     agents.join(', '),
   ].join('\n');
 }
