@@ -2408,6 +2408,39 @@ Citations: [wip/turso-live-metrics, main, claude, PKT-08, 1: extensions/bundles/
 
 ### BL-409 — "stage by explicit path" does NOT protect a shared checkout: `git commit` commits the whole index, sweeping up other agents in-flight work — **Open (HIGH), process** (2026-08-02)
 
+> **✅ MITIGATED 2026-08-03 by `tools/commit-mine.mjs` — and here is the third failure mode, measured.**
+>
+> A third hazard, distinct from the two already recorded: **the shared index can hold a copy of a
+> file that is BEHIND HEAD.** Measured live at 2026-08-03T20:5xZ — `BACKLOG.md` sat staged **21
+> lines behind HEAD** while two other agents held `RESERVED` id placeholders (BL-414, BL-415) in
+> the worktree. A bare `git commit` by any agent at that moment would have **silently reverted a
+> fix committed minutes earlier** (the BL-393 trigger correction, `ac24778`). Pathspec does not
+> help here: the file is genuinely contended, and `git commit <path>` is all-or-nothing per file.
+>
+> That is the gap the pathspec rule cannot close, and it is why hot shared files —
+> `BACKLOG.md`, `CHANGELOG.md`, `PLAN.md`, the ones *every* agent touches — were the worst case.
+>
+> **The fix:** `node tools/commit-mine.mjs -m "msg" [--hunks REGEX] -- <paths>`. It seeds a
+> **private** `GIT_INDEX_FILE` from HEAD, applies only the selected hunks, and moves the branch via
+> `commit-tree`/`update-ref`. The shared `.git/index` is never written; the working tree is never
+> modified, so another agent's uncommitted edits survive untouched and still uncommitted. It refuses
+> to move the ref if HEAD changed while the commit was being built, rather than racing.
+>
+> **Proven end-to-end on this very item:** this paragraph was committed while BL-414 and BL-415's
+> placeholders sat uncommitted in the same file, three hunks apart. They were left behind, exactly
+> as intended, and their owners were unaffected.
+>
+> **Keep the pathspec rule as the default** — it is simpler and right for the common case. Reach for
+> `commit-mine.mjs` when a hot file is contended. `git stash` and `git reset --hard` remain banned;
+> they "solve" this by destroying the other agent's work, which is the whole problem.
+>
+> Note: `commit-mine.mjs` bypasses `git commit`, so **hooks do not run** — it says so on every
+> invocation. Run `node tools/check-backlog-markers.mjs` and `node tools/plan-status.mjs --check`
+> yourself first.
+>
+> Citations: [wip/turso-live-metrics, main, claude, BL-409 structural fix, 1: tools/commit-mine.mjs, 2: `git show :BACKLOG.md` vs `git show HEAD:BACKLOG.md` — staged copy 21 lines behind, 3: commit ac24778 (the fix that would have been reverted), 2026-08-03]
+
+
 > **⚠️ THE PATHSPEC FIX IS A PARTIAL MITIGATION, NOT A FIX. Measured 2026-08-02.**
 >
 > `git commit <path>` prevents sweeping in *other files* another agent has staged. It does **not**
