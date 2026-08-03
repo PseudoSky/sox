@@ -2331,6 +2331,56 @@ Citations: [wip/turso-live-metrics, team-lead, claude, PKT-04, 1: BL-380 §"vect
 
 ### BL-413 — the periodic enrichment pass has not run for 22 hours while 46 items accumulated; `memory_ping` names the state `stalled` and nothing acts on it — **Open (HIGH), corrective-action fix landed with red→green unit tests, live redeploy verification NOT performed (out of scope per owner directive)** (2026-08-03)
 
+> **✅ ROOT CAUSE ESTABLISHED 2026-08-03T22:05Z — the isolated cluster pass TIMES OUT at 120s, and
+> the stall escalation shipped for this item is what found it, on its first tick after deploy.**
+>
+> Production log, `~/.adhd/sox-ecosystem/run/logs/proxy-backend-memory-server/memory-server-backend-2026-08-03.log`,
+> artifact `bb698a6e4377`, pid 43748:
+>
+> ```
+> [memory-server] enrich.tick.start tick_seq=1
+> [memory-server] periodic enrich (/Users/nix/.memory/memory.db): cluster_pass FAILED
+>                 (isolated, non-fatal): timeout — embed_healed=0 backlog_before=0 backlog_after=0
+> [memory-server] enrich.stall.escalated (/Users/nix/.memory/memory.db):
+>                 consecutive_stalled_ticks=1 queue_depth=56 last_isolated_error=timeout
+> [memory-server] enrich.tick.finish tick_seq=1 duration_ms=120054
+> ```
+>
+> **The chain, now fully established:** the tick fires correctly → `runEnrichIsolated` spawns the
+> child → the clustering pass exceeds `timeoutMs = 120_000` (`libs/memory-core/src/enrich-isolation.ts:107`)
+> → the child is SIGTERM'd → `isolated.ok === false` → `completeEnrichTriggerRows` is skipped
+> (`memory-server/src/index.ts:2247`, `isolated.ok ? await completeEnrichTriggerRows(...) : 0`) →
+> **no queue row is ever marked done** → `queue_last_done_at` frozen, `queue_depth` climbing.
+> `duration_ms=120054` against a 120,000 ms budget is the timeout firing to the millisecond.
+>
+> **This is PRE-EXISTING, not a regression from the PKT-29 clustering work.** The queue has been
+> frozen since 2026-08-02T20:52Z, well before that change landed; the incremental join was deployed
+> in the same artifact that produced this log and did not cause the timeout.
+>
+> **Two earlier diagnoses were wrong and are superseded by this measurement:**
+> 1. *"The tick never fires"* (my own triage, from zero `enrich.tick.*` events in the JSONL) — the
+>    tick fires fine. Those lines are `console.error` to **stderr**, and never reach the durable
+>    JSONL sink. Absence there was never evidence. **This is its own defect** — the enrich tick's
+>    lifecycle events must go through `log.*` like everything else, or the next person repeats this.
+> 2. *"BL-399 breaks clustering via `json_extract(meta, ...)` on `node`"* — verified false. The
+>    `node` table **does** declare `meta TEXT` (`libs/data/graph/graph-store/src/index.ts:16+`), so
+>    those nine `cluster.ts` call sites are valid. BL-399 was real but was a `memory_scope.meta`
+>    defect, and is now resolved.
+>
+> **The escalation earned its keep immediately.** It fired on tick 1 and named the cause in its own
+> message (`last_isolated_error=timeout`). Before it existed, this exact failure had repeated
+> silently for ~90 threshold windows across 22.5 hours.
+>
+> **Remaining work is now specific:** find why clustering 4956 episodes exceeds 120s and fix that —
+> either the pass is doing full-corpus work where the incremental join should now suffice, or 120s is
+> simply too small a budget for this corpus and needs to scale with N. **Do not "fix" this by raising
+> the timeout without first measuring where the 120s goes** — a budget raised blind converts a fast
+> failure into a slow one. Note the interaction with BL-345: any in-process background job starves
+> foreground reads, so a longer pass is not free.
+>
+> Citations: [wip/turso-live-metrics, main, claude, post-deploy live verification, 1: ~/.adhd/sox-ecosystem/run/logs/proxy-backend-memory-server/memory-server-backend-2026-08-03.log (tick_seq=1 sequence, verbatim above), 2: libs/memory-core/src/enrich-isolation.ts:107 (`timeoutMs = 120_000`), 3: extensions/bundles/sox-memory-bundle/members/memory-server/src/index.ts:2247 (`isolated.ok ? completeEnrichTriggerRows : 0`), 4: libs/data/graph/graph-store/src/index.ts:16+ (`node` DDL declares `meta TEXT`, refuting diagnosis 2), 5: live `memory_ping` pid 43748 (`queue_depth` 56, `queue_last_done_at` 2026-08-02T20:52:22Z), 2026-08-03T22:05Z]
+
+
 > **UPDATE 2026-08-03 (this session).** Ruled out two hypotheses first, per the standing triage
 > note: the emergency brake (`SOX_DISABLE_PERIODIC_ENRICH`) is confirmed absent from the live
 > launchd unit's `EnvironmentVariables`, and the embed pipeline is healthy (all 47
