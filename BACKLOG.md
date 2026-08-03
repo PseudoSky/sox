@@ -2486,6 +2486,25 @@ Citations: [wip/turso-live-metrics, team-lead, claude, PKT-04, 1: BL-380 §"vect
 
 ### BL-413 — the periodic enrichment pass has not run for 22 hours while 46 items accumulated; `memory_ping` names the state `stalled` and nothing acts on it — **Open (HIGH)** (2026-08-03)
 
+> **RULED OUT 2026-08-03 — the emergency brake is NOT set.** Read directly from the live launchd
+> unit `~/Library/LaunchAgents/com.sox.user.memory-server.plist`. Its `EnvironmentVariables` dict
+> contains exactly: `LANG`, `SOX_CONFIG_DB_PATH`, `SOX_CONFIG_HTTP_PORT`, `SOX_CONFIG_PORT`,
+> `HOME`, `PATH`, `LOGNAME`, `NODE_NO_WARNINGS`, `USER`. **Neither
+> `SOX_DISABLE_PERIODIC_ENRICH` nor `SOX_DISABLE_EMBED_HEAL` is present.** This was the cheapest
+> hypothesis and the one BL-375 makes most plausible (`service enable` silently drops tunables it
+> does not find in the invoking shell) — it is eliminated, so do not spend time on it again.
+>
+> **Also ruled out: this is not vector loss.** All 47 `embed_pipeline.apply.discarded` events in
+> today's log carry `reason: "exists"` — a recomputed vector meeting one already present, which is
+> the designed no-op. Embedding is healthy; exactly one stage is dead.
+>
+> **A further signal for whoever picks this up:** the 2026-08-03 telemetry file contains **no
+> `enrich.tick.*` event of any kind** across 1122 events. Whatever else is true, the tick is not
+> reaching its instrumented body. Compare against 2026-08-02, where the last successful pass appears.
+>
+> Citations: [wip/turso-live-metrics, main, claude, BL-413 triage, 1: ~/Library/LaunchAgents/com.sox.user.memory-server.plist (EnvironmentVariables dict, read via PlistBuddy), 2: ~/.adhd/sox-ecosystem/memory/logs/memory-core-2026-08-03.jsonl (event-type census; 47/47 discarded carry reason:"exists"; zero enrich.tick.* events), 2026-08-03]
+
+
 **Measured live, 2026-08-03T19:22Z**, against the running production server (pid 85177, artifact `a4892123287b`, up since 2026-08-02T00:36Z):[1]
 
 | field | value |
