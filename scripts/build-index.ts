@@ -96,8 +96,10 @@ interface GitState {
   isGitRepo: boolean;
   dirty: boolean;
   commitSha: string | null;
-  /** Relative paths, uncommitted (staged + unstaged + untracked). */
+  /** Relative paths, uncommitted (staged + unstaged + untracked), CHECKSUM-RELEVANT only. */
   dirtyFiles: string[];
+  /** Dirty files skipped as provably checksum-irrelevant (docs, agent scratch). Reported, never hidden. */
+  ignoredDirtyCount?: number;
 }
 
 function getGitState(root: string): GitState {
@@ -109,7 +111,7 @@ function getGitState(root: string): GitState {
     commitSha = runGit('rev-parse HEAD').trim();
   } catch {
     // Not a git repo (or no commits yet) — nothing to gate or stamp.
-    return { isGitRepo: false, dirty: false, commitSha: null, dirtyFiles: [] };
+    return { isGitRepo: false, dirty: false, commitSha: null, dirtyFiles: [], ignoredDirtyCount: 0 };
   }
 
   // -uall: list files inside a wholly-untracked directory individually rather
@@ -123,7 +125,56 @@ function getGitState(root: string): GitState {
     // porcelain lines are "XY <path>" (or "XY <old> -> <new>" for renames)
     .map((line) => line.slice(3));
 
-  return { isGitRepo: true, dirty: dirtyFiles.length > 0, commitSha, dirtyFiles };
+  const relevant = dirtyFiles.filter(isChecksumRelevant);
+  return {
+    isGitRepo: true,
+    dirty: relevant.length > 0,
+    commitSha,
+    dirtyFiles: relevant,
+    ignoredDirtyCount: dirtyFiles.length - relevant.length,
+  };
+}
+
+/**
+ * BL-390's gate refused on ANY dirty file. In a shared checkout that means one agent's
+ * uncommitted `docs/research/**` notes block every other agent's deploy — the gate fires on
+ * changes that provably cannot alter a single byte of any checksummed artifact. That is the same
+ * over-broad-scope shape as BL-407 (the smoke-test exports preflight ran workspace-wide before the
+ * `--extension` filter was applied), and it has the same consequence: a correct-in-principle guard
+ * that people route around, after which it protects nothing.
+ *
+ * This narrows the gate to paths that can actually enter a checksum. It **fails closed** — anything
+ * not explicitly listed here counts as relevant — because the cost of wrongly ignoring a file is a
+ * blessed checksum that corresponds to no commit (the BL-393 hazard), while the cost of wrongly
+ * including one is only an unnecessary refusal.
+ *
+ * Note what is deliberately NOT ignored: `extensions/**` markdown. A skill ships its `SKILL.md` and
+ * that file IS part of the checksummed payload, so a blanket `*.md` rule would be wrong.
+ */
+const CHECKSUM_IRRELEVANT_PREFIXES = [
+  'docs/', // project documentation — never packaged into an extension
+  '.claude/', // agent worktrees, session scratch, local skills
+  '.opencode/', // dispatch artifacts
+  '.worktrees/', // repo convention for experimental worktrees
+  '.nx/', // nx cache
+];
+
+/** Root-level documents that are never part of any extension payload. */
+const CHECKSUM_IRRELEVANT_ROOT_FILES = new Set([
+  'BACKLOG.md',
+  'CHANGELOG.md',
+  'README.md',
+  'AGENTS.md',
+  'CLAUDE.md',
+  'CONTRIBUTING.md',
+  'DOD.md',
+]);
+
+function isChecksumRelevant(file: string): boolean {
+  // Rename lines arrive as "old -> new"; judge the destination.
+  const p = (file.includes(' -> ') ? file.slice(file.indexOf(' -> ') + 4) : file).trim();
+  if (CHECKSUM_IRRELEVANT_ROOT_FILES.has(p)) return false;
+  return !CHECKSUM_IRRELEVANT_PREFIXES.some((prefix) => p.startsWith(prefix));
 }
 
 const DIR_TO_TYPE: Record<string, string> = {
@@ -307,6 +358,14 @@ export function buildIndex(opts: { root: string; allowDirty?: boolean }): IndexE
   // tree state no commit can reproduce. Refuse outright unless the caller
   // explicitly opts into a provisional run.
   const gitState = getGitState(root);
+  if (gitState.isGitRepo && (gitState.ignoredDirtyCount ?? 0) > 0) {
+    // Say so out loud. A guard that silently narrows its own scope is how the next person
+    // concludes it covered something it did not.
+    console.error(
+      `build-index: ignoring ${gitState.ignoredDirtyCount} dirty file(s) that cannot affect a ` +
+        `checksum (docs/, .claude/, .opencode/, .worktrees/, .nx/, root-level *.md).`,
+    );
+  }
   if (gitState.isGitRepo && gitState.dirty && !allowDirty) {
     const shown = gitState.dirtyFiles.slice(0, 20).map((f) => `    ${f}`).join('\n');
     const rest = gitState.dirtyFiles.length > 20
