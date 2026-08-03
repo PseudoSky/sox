@@ -29,13 +29,32 @@
  * anything. It also proves the legitimate paths — an explicit `db_path`, an
  * explicit `store`, or a host-injected `SOX_CONFIG_DB_PATH` — are UNCHANGED
  * and still open (and probe) the requested store normally.
+ *
+ * IMPLEMENTATION NOTE: this originally used `vi.spyOn(fs, 'existsSync')`
+ * against an ESM `import * as fs from 'node:fs'` binding. That throws
+ * `TypeError: Cannot redefine property` / "Module namespace is not
+ * configurable in ESM" in this vitest config — ES module namespace
+ * properties are non-configurable by spec, and neither a plain reassignment
+ * nor `vi.spyOn` can redefine them. All 3 tests in this file failed on that
+ * line before a single assertion ran (verified directly — this is exactly
+ * the "committed as a regression test, never actually watched pass" failure
+ * mode BL-225 exists to catch). Fixed by obtaining `fs` via CommonJS
+ * `createRequire(...)('node:fs')` instead — Node's real, mutable
+ * `module.exports` object for the `fs` module, which every ESM
+ * `import * as fs from 'node:fs'` elsewhere in the process (index.ts,
+ * memory-core) reads live off of, so recording calls against THIS
+ * reference observes every consumer. See vitest.setup.ts's own BL-412
+ * suite-wide guard for the same technique and a longer explanation.
  */
 
-import * as fs from 'node:fs';
+import { createRequire } from 'node:module';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
+import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 import { handleToolCall } from './index.js';
+
+const require = createRequire(__filename);
+const fs = require('node:fs') as typeof import('node:fs');
 
 const TEST_DIR = path.join(os.tmpdir(), `sox-bl412-${process.pid}`);
 const EXPLICIT_DB = path.join(TEST_DIR, 'explicit.db');
@@ -60,17 +79,37 @@ describe('memory_ping — BL-412: no arguments must never open the live store', 
   afterEach(() => {
     if (savedConfig === undefined) delete process.env['SOX_CONFIG_DB_PATH'];
     else process.env['SOX_CONFIG_DB_PATH'] = savedConfig;
-    vi.restoreAllMocks();
   });
 
   it('[BL-412] bare memory_ping (no args, no SOX_CONFIG_DB_PATH) never touches a path under the real ~/.memory/', async () => {
     delete process.env['SOX_CONFIG_DB_PATH'];
 
-    const existsSyncSpy = vi.spyOn(fs, 'existsSync');
-    const readFileSyncSpy = vi.spyOn(fs, 'readFileSync');
-    const statSyncSpy = vi.spyOn(fs, 'statSync');
+    const calls: Record<'existsSync' | 'readFileSync' | 'statSync', unknown[][]> = {
+      existsSync: [],
+      readFileSync: [],
+      statSync: [],
+    };
+    const originals = {
+      existsSync: fs.existsSync,
+      readFileSync: fs.readFileSync,
+      statSync: fs.statSync,
+    };
+    for (const name of Object.keys(calls) as Array<keyof typeof calls>) {
+      (fs as unknown as Record<string, unknown>)[name] = (...args: unknown[]) => {
+        calls[name].push(args);
+        return (originals[name] as (...a: unknown[]) => unknown).apply(fs, args);
+      };
+    }
 
-    const res = await handleToolCall('memory_ping', {});
+    let res: Awaited<ReturnType<typeof handleToolCall>>;
+    try {
+      res = await handleToolCall('memory_ping', {});
+    } finally {
+      for (const name of Object.keys(calls) as Array<keyof typeof calls>) {
+        (fs as unknown as Record<string, unknown>)[name] = originals[name];
+      }
+    }
+
     expect(res.isError).not.toBe(true);
     const parsed = JSON.parse((res.content[0] as { text: string }).text) as {
       ok: boolean;
@@ -90,14 +129,12 @@ describe('memory_ping — BL-412: no arguments must never open the live store', 
     // ~/.memory/ directory — the entrypoint self-hash read (getContentAddress)
     // is exempt (it reads the running artifact, never ~/.memory), so scope the
     // assertion precisely to the live store directory.
-    const touchedRealStore = (spy: ReturnType<typeof vi.spyOn>): boolean =>
-      // BL-414: `call` needs an explicit type — `vi.spyOn`'s return widens the tuple to `any[]`
-      // under `noImplicitAny`, and this project's typecheck is not optional (BL-248).
-      spy.mock.calls.some((call: unknown[]) => typeof call[0] === 'string' && call[0].startsWith(REAL_HOME_MEMORY_DIR));
+    const touchedRealStore = (recorded: unknown[][]): boolean =>
+      recorded.some((call) => typeof call[0] === 'string' && call[0].startsWith(REAL_HOME_MEMORY_DIR));
 
-    expect(touchedRealStore(existsSyncSpy)).toBe(false);
-    expect(touchedRealStore(readFileSyncSpy)).toBe(false);
-    expect(touchedRealStore(statSyncSpy)).toBe(false);
+    expect(touchedRealStore(calls.existsSync)).toBe(false);
+    expect(touchedRealStore(calls.readFileSync)).toBe(false);
+    expect(touchedRealStore(calls.statSync)).toBe(false);
   });
 
   it('[BL-412] explicit db_path still opens and probes the requested (non-live) store normally', async () => {

@@ -25,19 +25,40 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import Database from 'better-sqlite3';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 
-// These tests assert db_path permission ENFORCEMENT, not embedding quality — pin the fast,
-// deterministic hash backend so a `memory_write`'s cold real-ONNX model load never tips the
-// default 5s test timeout (the embed worker would also fight the restricted fs policy). Also
-// avoids spawning the ONNX worker thread under a permission-scrubbed env.
+// These tests assert db_path permission ENFORCEMENT, not embedding quality.
+//
+// BL-412-adjacent fix: this comment used to claim the suite "pin[s] the
+// fast, deterministic hash backend so a memory_write's cold real-ONNX model
+// load never tips the default 5s test timeout" — but no code anywhere in
+// this file ever set that (and the "hash backend" it describes was removed
+// entirely by BL-250; `EmbedBackend` is `'auto' | 'real'` only, see
+// libs/memory-core/src/embed.ts). The claim was false: every `memory_write`
+// call in this file ran the REAL bge-base-en-v1.5 ONNX backend, cold-loading
+// it repeatedly. Harmless on an idle machine; under concurrent load
+// (multiple agents/processes competing for CPU — exactly BL-405's own
+// finding about this repo) that cold load blew the 30s test timeout outright
+// (`Error: Test timed out in 30000ms`, observed on 5 of this file's tests in
+// a loaded run). Fixed for real via the BL-161 deterministic provider seam
+// (`_setEmbedProviderForTest` / `DeterministicTestProvider`, the same
+// mechanism async-embed.spec.ts uses) — no ONNX, no wall-clock dependency,
+// no permission-guard/ONNX-worker-thread interaction.
 
 // ── Import the testable internals ─────────────────────────────────────────────
 // We test via the exported handleToolCall and compilePolicyFromEnv. The guard
 // logic lives in index.ts; compilePolicyFromEnv comes from policy-guard.ts (the
 // vendored minimal implementation inside this extension, [mcp-path-guard.5]).
-import { openDb } from '@adhd/sox-memory-core';
+import { DeterministicTestProvider, openDb, _setEmbedProviderForTest } from '@adhd/sox-memory-core';
 import { compilePolicyFromEnv, handleToolCall } from './index.js';
+
+beforeAll(() => {
+  _setEmbedProviderForTest(new DeterministicTestProvider());
+});
+
+afterAll(() => {
+  _setEmbedProviderForTest(null);
+});
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -94,22 +115,54 @@ function clearEnforceEnv(): () => void {
 /** A db_path OUTSIDE the declared allowlist — [fix:evil-db] */
 const EVIL_DB = `/tmp/sox-c6-evil-${process.pid}.db`;
 
-/** A db_path INSIDE the declared allowlist — [fix:allowed-db] */
+/**
+ * BL-412-adjacent fix: the "allowed db_path" test proves the `~/.memory/**`
+ * ALLOW branch of the permission guard by writing a real, non-guessed
+ * `db_path` — but that path used to be computed against the REAL
+ * `os.homedir()`, so "prove the allowlist admits a `~/.memory/**` path"
+ * meant literally writing a scratch `.db`/`.db-wal`/`.db-shm` file into the
+ * user's actual live `~/.memory` directory on every test run. Caught by the
+ * whole-suite BL-412 guard in vitest.setup.ts (which fails on ANY fs touch
+ * under the real `~/.memory`, not just the memory_ping default-guess path
+ * BL-412 itself was filed against).
+ *
+ * Fix: point `os.homedir()` at a scratch directory for the lifetime of this
+ * file by overriding `process.env.HOME` — Node's `os.homedir()` honors
+ * `$HOME` on POSIX, and `~/.memory/**` allowlist-pattern expansion plus the
+ * real `expandTilde`/`resolveDbPath` code paths all resolve through
+ * `os.homedir()`, so this exercises the EXACT SAME allow-path logic against
+ * a directory that just happens not to be the user's real one. Restored in
+ * the outer `afterAll` below.
+ */
+const FAKE_HOME = fs.mkdtempSync(path.join(os.tmpdir(), `sox-c6-fakehome-${process.pid}-`));
+const REAL_HOME = process.env['HOME'];
+process.env['HOME'] = FAKE_HOME;
+
 const ALLOWED_DB = path.join(os.homedir(), '.memory', `c6-allowed-${process.pid}.db`);
 const ALLOWED_DIR = path.dirname(ALLOWED_DB);
 
 // ── Suite ─────────────────────────────────────────────────────────────────────
 
 describe('permission-guard — mcp-path-guard enforcement', () => {
+  // Restore the real HOME and remove the fake-home scratch dir once this
+  // file's tests are done. See the FAKE_HOME comment above ALLOWED_DB.
+  afterAll(() => {
+    if (REAL_HOME === undefined) delete process.env['HOME'];
+    else process.env['HOME'] = REAL_HOME;
+    try { fs.rmSync(FAKE_HOME, { recursive: true, force: true }); } catch { /* ignore */ }
+  });
+
   // BL-53: clean up allowed DB AND its SQLite WAL/SHM sidecars after each test.
   // The sidecars are created by SQLite in WAL mode; they linger when the process
-  // is killed before the connection is closed, polluting ~/.memory with orphaned
-  // *.db-wal / *.db-shm files whose base .db is absent.
+  // is killed before the connection is closed, polluting the fake-home
+  // `.memory/` scratch dir with orphaned *.db-wal / *.db-shm files whose
+  // base .db is absent.
   afterEach(() => {
     for (const suffix of ['', '-wal', '-shm']) {
       try { fs.rmSync(ALLOWED_DB + suffix, { force: true }); } catch { /* ignore */ }
     }
-    // Do NOT remove ALLOWED_DIR (~/.memory/) — it is the user's own dir
+    // ALLOWED_DIR is inside FAKE_HOME (a scratch dir), not the user's real
+    // ~/.memory — the whole FAKE_HOME tree is removed in the outer afterAll.
   });
 
   // ── [mcp-path-guard.1] + [mcp-path-guard.3] ──────────────────────────────────
