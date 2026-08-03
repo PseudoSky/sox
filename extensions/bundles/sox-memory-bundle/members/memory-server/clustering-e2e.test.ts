@@ -572,6 +572,7 @@ runSuite('turso');
 afterAll(() => {
   // Printed once, after every describe block in this file has finished —
   // the real sqlite-vs-turso comparison matrix backing the delivery report.
-  // eslint-disable-next-line no-console
+  // (No eslint-disable needed — `no-console` is not enabled for test files, and an unused
+  // directive is itself a lint warning.)
   console.log(`\n=== clustering-e2e backend matrix ===\n${JSON.stringify(matrix, null, 2)}\n`);
 });
