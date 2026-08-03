@@ -31,9 +31,9 @@ in [`PLAN.md`](./PLAN.md); this is the summary.
 | Packets complete | **12 / 56** |
 | Packets partial | 3 |
 | Packets not started | 41 |
-| Open backlog items, in scope | **58** |
+| Open backlog items, in scope | **50** |
 | Open backlog items, out of scope | 29 |
-| In-scope items with no packet | 8 (BL-414, BL-415, BL-416, BL-417, BL-418, BL-419, BL-420, BL-421) |
+| In-scope items with no packet | 0 |
 
 **Done:** PKT-01 PKT-04 PKT-05 PKT-06 PKT-08 PKT-14 PKT-15 PKT-17 PKT-46 PKT-49 PKT-50 PKT-52
 
