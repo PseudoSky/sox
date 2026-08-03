@@ -59,6 +59,38 @@ caught failures), BL-301/BL-302 (schema single source of truth — not blocking 
 deletion, not migration), BL-386/BL-398 (graph-store `edge.meta`/`weight` — confirmed unrelated to
 this call path once the actual SQL was captured), BL-342 (the separate malformed-JSON residual).
 
+## [Unreleased] — BL-420: cluster threshold now has one source of truth — the shipped default was never the one that ran
+
+**The bug.** `cluster.ts`'s `computeClusters()` resolves its threshold as `opts.threshold ??
+resolveDefaultThreshold()` — but `enrich-batch.ts`'s `runBatchEnrich()`, the ONLY real production
+caller of `clusterStore()`, always computed and passed an explicit `threshold` via its own
+`resolveClusterThreshold()`, which hardcoded `0.82` completely independently of `cluster.ts`'s
+constant. Every real call therefore used `enrich-batch.ts`'s `0.82`, and `cluster.ts`'s own
+fallback default was dead code — unreachable in production, exercised only by tests that call
+`clusterStore()` directly with no `threshold`. Same shape as BL-326: "the shipped default is not
+the default that runs." Found while implementing BL-326/BL-349's incremental cluster join (PKT-29).
+
+This made the defect materially worse than a harmless duplication: PKT-28's research
+(`docs/reporting/memory/findings/pkt28-clustering-strategy.md`) proved `0.82` is degenerate at the
+live corpus's current size (largest-cluster ratio 0.759 at N=4867) and that the correct interim
+constant is `0.87`. Fixing only `cluster.ts`'s internal default would have shipped zero behavior
+change in production, because `enrich-batch.ts`'s independent `0.82` would still be the value
+actually used on every `runBatchEnrich()` call.
+
+**The fix.** `enrich-batch.ts`'s `resolveClusterThreshold()` now delegates to `cluster.ts`'s
+exported `resolveDefaultThreshold()` instead of carrying its own constant — one source of truth,
+so PKT-30/BL-328's future target-degree calibration only has to land in one place.
+
+**Verified red→green** in `libs/memory-core/src/bl420-cluster-threshold-dead-fallback.spec.ts`:
+two episode embeddings constructed at an EXACT cosine similarity of 0.845 (between the stale 0.82
+and the correct 0.87, via Gram-Schmidt-orthogonalized unit vectors), clustered with a bare
+`runBatchEnrich(adapter, {})` — no threshold override, exactly what every real production call
+does. Watched red with the pre-fix hardcoded `0.82` restored (the pair wrongly clustered); watched
+green with the delegation restored (`communities_upserted: 0`). A control test at cosine 0.92
+confirms the same pair DOES cluster once similarity genuinely clears 0.87.
+
+---
+
 ## [Unreleased] — BL-407: `smoke-test.mjs`'s `--extension` fast pass no longer wedges on unrelated packages
 
 **The bug.** `scripts/smoke-test.mjs`'s BL-266 exports-contract preflight (publint + attw) ran
