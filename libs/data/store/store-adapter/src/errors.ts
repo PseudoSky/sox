@@ -8,6 +8,72 @@
  * driver types; these duck-type checks are the only portable way to inspect them.
  */
 
+// ── ETursoNativeStore (BL-329) ───────────────────────────────────────────
+
+/**
+ * (BL-329) Thrown by `SqliteAdapterImpl` when better-sqlite3 cannot open a
+ * store because it carries Turso-native FTS objects.
+ *
+ * Turso's Tantivy-backed FTS index (`CREATE INDEX ... USING fts (...)`) is
+ * NOT valid SQLite DDL — SQLite/better-sqlite3 cannot parse it. Opening the
+ * *connection* still succeeds (better-sqlite3 doesn't parse the schema at
+ * `new Database(path)` time), but the FIRST statement that touches
+ * `sqlite_master` — which is effectively any query, since SQLite parses
+ * every `CREATE` statement's SQL text to build the in-memory schema before
+ * running anything — throws:
+ *
+ *   SqliteError: malformed database schema (__turso_internal_fts_dir_idx_fts_node_key)
+ *     - near "USING": syntax error
+ *
+ * This is not a corrupt store; it's the wrong driver for the store's
+ * content. Naming the internal Tantivy directory object as if it were a
+ * generic schema corruption is actively misleading and has cost real
+ * debugging time (see `tools/baseline-capture`'s WAL-checkpoint helper,
+ * which hit exactly this against the live store). `SqliteAdapterImpl`
+ * proactively probes for this at open time (a single cheap
+ * `sqlite_master` read) and converts it into this typed, store-path-
+ * carrying error instead of letting the opaque driver message propagate
+ * from wherever the caller's first real query happens to be.
+ *
+ * The fix is never "revert to opening as SQLite" — better-sqlite3 is a
+ * fallback path; a Turso-native store must be opened with
+ * `TursoAdapterImpl`/`createTursoAdapter()` (or `STORE_ADAPTER=turso`)
+ * instead.
+ */
+export class ETursoNativeStore extends Error {
+  public readonly code = 'E_TURSO_NATIVE_STORE';
+
+  constructor(
+    public readonly dbPath: string,
+    /** The raw driver error (the opaque `malformed database schema
+     *  (__turso_internal_...)` SqliteError) — deliberately kept OFF this
+     *  error's `.message` (BL-329 requires the opaque text not reach the
+     *  caller by default) but preserved here for a caller that explicitly
+     *  wants to inspect the underlying driver failure. */
+    public readonly cause: unknown,
+  ) {
+    super(
+      `[BL-329] "${dbPath}" is a Turso-native store (it carries a Tantivy-backed FTS index) ` +
+        `— better-sqlite3 cannot open it. This is not a corrupt store; better-sqlite3 simply ` +
+        `cannot parse Turso's internal FTS directory objects (__turso_internal_fts_dir_*). ` +
+        `Open it with createTursoAdapter()/TursoAdapterImpl (or STORE_ADAPTER=turso) instead.`,
+    );
+    this.name = 'ETursoNativeStore';
+  }
+}
+
+/**
+ * True if `err` matches the specific opaque failure `ETursoNativeStore`
+ * exists to replace: better-sqlite3's `malformed database schema
+ * (__turso_internal_fts_dir_...)`. Exported so callers/tests can recognize
+ * the RAW driver symptom without needing to reproduce the regex — used
+ * internally by `SqliteAdapterImpl`'s open-time probe.
+ */
+export function isTursoNativeStoreSchemaError(err: unknown): boolean {
+  if (!(err instanceof Error)) return false;
+  return /malformed database schema \(__turso_internal_/i.test(err.message);
+}
+
 // ── Internal duck-type guard ─────────────────────────────────────────────
 
 /**

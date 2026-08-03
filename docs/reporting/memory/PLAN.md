@@ -21,12 +21,12 @@ A packet is **DONE** only when every BL id it targets is closed — code landing
 (BL-225). Several packets below have merged code and still read OPEN; that is correct, and the
 remedy is to close the backlog item with a red→green test, not to edit this table.
 
-**14 done · 3 partial · 39 open** of 56 packets.
+**16 done · 3 partial · 37 open** of 56 packets.
 
-- Open backlog items in this program's scope: **52**, of which **4** have no packet.
+- Open backlog items in this program's scope: **50**, of which **4** have no packet.
 - Open items deliberately out of scope: **29** — BL-99, BL-103, BL-104, BL-105, BL-163, BL-225, BL-228, BL-258, BL-261, BL-282, BL-283, BL-284, BL-285, BL-288, BL-291, BL-292, BL-296, BL-298, BL-305, BL-306, BL-307, BL-308, BL-309, BL-314, BL-315, BL-333, BL-355, BL-408, BL-411
 - Unscheduled in-scope items (need a packet): BL-414, BL-415, BL-416, BL-424
-- Packet targets already closed (17) — historical context only, no work remains: BL-259, BL-343, BL-348, BL-350, BL-359, BL-364, BL-376, BL-380, BL-383, BL-388, BL-390, BL-397, BL-399, BL-402, BL-406, BL-407, BL-410
+- Packet targets already closed (19) — historical context only, no work remains: BL-259, BL-329, BL-343, BL-348, BL-350, BL-359, BL-364, BL-376, BL-380, BL-383, BL-388, BL-390, BL-391, BL-397, BL-399, BL-402, BL-406, BL-407, BL-410
 
 | Packet | Status | Targets | Still open |
 |---|---|---|---|
@@ -48,7 +48,7 @@ remedy is to close the backlog item with a red→green test, not to edit this ta
 | PKT-16 | **OPEN** | BL-274 | BL-274 |
 | PKT-17 | **DONE** | BL-359 | — |
 | PKT-18 | **OPEN** | BL-215 | BL-215 |
-| PKT-19 | **OPEN** | BL-329 | BL-329 |
+| PKT-19 | **DONE** | BL-329 | — |
 | PKT-20 | **OPEN** | BL-360 | BL-360 |
 | PKT-21 | **OPEN** | BL-361 | BL-361 |
 | PKT-22 | **OPEN** | BL-392 | BL-392 |
@@ -70,7 +70,7 @@ remedy is to close the backlog item with a red→green test, not to edit this ta
 | PKT-38 | **OPEN** | BL-375 | BL-375 |
 | PKT-39 | **OPEN** | BL-332 | BL-332 |
 | PKT-40 | **OPEN** | BL-394 | BL-394 |
-| PKT-41 | **OPEN** | BL-391 | BL-391 |
+| PKT-41 | **DONE** | BL-391 | — |
 | PKT-42 | **OPEN** | BL-317, BL-318 | BL-317, BL-318 |
 | PKT-43 | **OPEN** | BL-362 | BL-362 |
 | PKT-44 | **OPEN** | BL-312 | BL-312 |
@@ -862,7 +862,7 @@ rewritten, only unblocked.
 
 ### PKT-41 — BL-391: federated recall's BM25 arm is dead on Turso, and the failure is swallowed whole-store
 
-> **status: OPEN** — still open: BL-391 · derived by `tools/plan-status.mjs`, do not hand-edit
+> **status: DONE** — all targets closed (BL-391) · derived by `tools/plan-status.mjs`, do not hand-edit
 
 **Goal:** a read-only Turso connection cannot run `fts_match` (measured: `readonly:false` → 1158 hits; `readonly:true` → `step failed: Error: Resource is read-only`; plain `COUNT(*)` works identically on both). `openDbReadOnly` passes `readonly: true` unconditionally and its **only** production caller is `getFederationConnection` (`recall.ts:1208`) — so single-store recall is unaffected (live recall still returns `provenance: ["vec","fts","temporal"]`) but federated recall is not.
 **Closes:** BL-391
@@ -1446,7 +1446,7 @@ completion, don't just assume no build ran.
 
 ### PKT-19 — BL-329: better-sqlite3 open on a Turso-native store must fail loudly, not with an opaque schema-parse error
 
-> **status: OPEN** — still open: BL-329 · derived by `tools/plan-status.mjs`, do not hand-edit
+> **status: DONE** — all targets closed (BL-329) · derived by `tools/plan-status.mjs`, do not hand-edit
 
 **Closes:** BL-329
 **Files:** `libs/memory-core/src/db.ts` (guard at the better-sqlite3 open path — around `_openDbInner`, :646, and the two other fallback sites named in the item: :198, :259).
