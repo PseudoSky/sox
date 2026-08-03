@@ -91,7 +91,9 @@ describe('memory_ping — BL-412: no arguments must never open the live store', 
     // is exempt (it reads the running artifact, never ~/.memory), so scope the
     // assertion precisely to the live store directory.
     const touchedRealStore = (spy: ReturnType<typeof vi.spyOn>): boolean =>
-      spy.mock.calls.some((call) => typeof call[0] === 'string' && call[0].startsWith(REAL_HOME_MEMORY_DIR));
+      // BL-414: `call` needs an explicit type — `vi.spyOn`'s return widens the tuple to `any[]`
+      // under `noImplicitAny`, and this project's typecheck is not optional (BL-248).
+      spy.mock.calls.some((call: unknown[]) => typeof call[0] === 'string' && call[0].startsWith(REAL_HOME_MEMORY_DIR));
 
     expect(touchedRealStore(existsSyncSpy)).toBe(false);
     expect(touchedRealStore(readFileSyncSpy)).toBe(false);
