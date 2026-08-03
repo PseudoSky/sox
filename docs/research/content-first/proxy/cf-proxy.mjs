@@ -146,6 +146,9 @@ function getSession(id) {
       // Per-persona metrics (reset on agent change)
       personaTurns: 0,        // turns since the current persona started
       personaCtxChars: 0,     // cumulative non-shared non-persona context chars
+      // Repeated-read tracking (cross-agent knowledge detection signal)
+      fileReads: new Map(),   // file path → turn number of last read
+      fileWrites: new Map(),  // file path → turn number of last write
       createdAt: new Date().toISOString(),
       turns: 0,
     });
@@ -513,6 +516,25 @@ function jsonResponse(res, status, data) {
   res.end(JSON.stringify(data));
 }
 
+/**
+ * Extract a normalized file path from a tool call's arguments.
+ * Handles the opencode pattern `<path>/Users/machine/repo/file.ts</path> <type>file</type>`
+ * as well as plain JSON path fields.
+ */
+function extractFilePath(toolName, args) {
+  if (!args) return null;
+  // OpenCode tool result pattern: <path>...</path>
+  let m = args.match(/<path>(.+?)<\/path>/);
+  if (m) return m[1].trim();
+  // JSON path fields
+  try {
+    const j = JSON.parse(args);
+    const p = j.filePath || j.path || j.file || j.file_path || j.fileName || '';
+    if (p) return p;
+  } catch {}
+  return null;
+}
+
 const server = http.createServer(async (req, res) => {
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'POST, GET, OPTIONS');
@@ -666,6 +688,29 @@ const server = http.createServer(async (req, res) => {
           if (lastUser) session.context.push({ role: 'user', content: lastUser.content });
           if (result.fullText) session.context.push({ role: 'assistant', content: result.fullText });
           session.turns++;
+          // Repeated-read detection (same as CF path)
+          let repeatedReads = 0;
+          if (result.toolCalls) {
+            const readTools = /^(read|Read|view|glimpse|open)$/i;
+            const writeTools = /^(edit|write|Write|create)$/i;
+            for (const tc of result.toolCalls) {
+              const name = tc.name || '';
+              const fp = extractFilePath(name, tc.args || '');
+              if (!fp) continue;
+              const turn = session.turns;
+              if (readTools.test(name)) {
+                const lastRead = session.fileReads.get(fp);
+                const lastWrite = session.fileWrites.get(fp);
+                if (lastRead !== undefined && (!lastWrite || lastWrite < lastRead)) repeatedReads++;
+                session.fileReads.set(fp, turn);
+              } else if (writeTools.test(name)) {
+                session.fileWrites.set(fp, turn);
+              }
+            }
+          }
+          if (repeatedReads > 0) {
+            logCall({ event: 'repeated_reads', count: repeatedReads, turns: session.turns }, sessionId);
+          }
         }
         return;
       }
@@ -715,6 +760,38 @@ const server = http.createServer(async (req, res) => {
         if (lastUser) session.context.push({ role: 'user', content: lastUser.content });
         if (result.fullText) session.context.push({ role: 'assistant', content: result.fullText });
         session.turns++;
+      }
+
+      // ── Repeated-read detection (cross-agent knowledge signal) ──
+      // Parse the model's tool calls for file operations. A repeated read
+      // means the agent opened a file that was already read in this session
+      // without an intervening write to it — a potential context-inefficiency
+      // signal (agent is re-reading rather than using conversation context).
+      let repeatedReads = 0;
+      if (session && result.toolCalls) {
+        const readTools = /^(read|Read|view|glimpse|open)$/i;
+        const writeTools = /^(edit|write|Write|create)$/i;
+        for (const tc of result.toolCalls) {
+          const name = tc.name || '';
+          const args = tc.args || '';
+          const filePath = extractFilePath(name, args);
+          if (!filePath) continue;
+          const turn = session.turns || 0;
+          if (readTools.test(name)) {
+            const lastRead = session.fileReads.get(filePath);
+            const lastWrite = session.fileWrites.get(filePath);
+            if (lastRead !== undefined && (!lastWrite || lastWrite < lastRead)) {
+              repeatedReads++;
+            }
+            session.fileReads.set(filePath, turn);
+          } else if (writeTools.test(name)) {
+            session.fileWrites.set(filePath, turn);
+          }
+        }
+      }
+      if (repeatedReads > 0) {
+        logCall({ event: 'repeated_reads', count: repeatedReads, turns: session?.turns ?? 0 }, sessionId);
+        console.error(`[cf-proxy] repeated_reads: ${repeatedReads} file(s) re-read on this turn (session ${sessionId})`);
       }
 
       logCall({
