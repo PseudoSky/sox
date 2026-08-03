@@ -30,7 +30,7 @@ import { serveBackend } from '@adhd/sox-service-proxy';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 
-import { autoBackup, closeAllAdapters, terminateEmbedWorkers } from '@adhd/sox-memory-core';
+import { autoBackup, closeAllAdapters, terminateEmbedWorkers, WriteQueue } from '@adhd/sox-memory-core';
 import { getContentAddress, handleToolCall, resolveDbPath, TOOLS } from './index.js';
 
 /**
@@ -197,11 +197,21 @@ export function __resetShutdownStateForTest(): void {
  *      the fastembed child's own in-flight `process.send()` threw an
  *      uncaught EPIPE — a fatal crash, reproduced on every SIGTERM tested,
  *      not just under load (see `terminateEmbedWorkers()` in `embed.ts`).
- *   2. AWAIT the real checkpoint+close (`closeAllAdapters` →
- *      `closeDbWithLease` → `PRAGMA wal_checkpoint(TRUNCATE)` +
- *      `adapter.close()` + lease release). This is what BL-330 credits for
- *      crash recovery; it must actually complete, not race an unrelated
- *      handle-close.
+ *   2. AWAIT the real checkpoint+close on BOTH connection sets:
+ *      `closeAllAdapters()` (→ `closeDbWithLease` → `PRAGMA
+ *      wal_checkpoint(TRUNCATE)` + `adapter.close()` + lease release — what
+ *      BL-330 credits for crash recovery) AND, as of the SECOND half of
+ *      BL-405, `WriteQueue.closeAllForShutdown()`. These are TWO DIFFERENT
+ *      connections to the SAME store: `WriteQueue._create()` opens its
+ *      dedicated write connection via the bare `openDb()`, which is NEVER
+ *      inserted into `getDb()`'s `adapterCache` — so `closeAllAdapters()`
+ *      alone never touched the connection that actually took every write.
+ *      Reproduced directly (see `WriteQueue.closeAllForShutdown`'s own doc
+ *      comment): with only `closeAllAdapters()` awaited, a real 2000-write
+ *      WAL was left at 4152 bytes (not truncated to ~0) and the write
+ *      queue's connection was STILL OPEN and accepting further writes after
+ *      "shutdown" had already finished. Both must complete, not race an
+ *      unrelated handle-close.
  *   3. Fire the pre-restart backup best-effort, bounded by its own timeout —
  *      never gates the exit (see `SHUTDOWN_BACKUP_TIMEOUT_MS` above).
  *   4. Close the UDS listener and exit.
@@ -260,6 +270,18 @@ export async function coordinatedShutdown(
     await closeAllAdapters();
   } catch (err) {
     process.stderr.write(`[memory-server backend] closeAllAdapters failed: ${err}\n`);
+  }
+
+  // 2b. (BL-405, second half) The write queue's DEDICATED connection is a
+  //     SEPARATE handle from anything `closeAllAdapters()` touches — see this
+  //     function's doc comment and `WriteQueue.closeAllForShutdown()`'s own
+  //     doc comment for the full reproduction. Without this step the
+  //     connection that actually took every write was never checkpointed or
+  //     closed by shutdown at all.
+  try {
+    await WriteQueue.closeAllForShutdown();
+  } catch (err) {
+    process.stderr.write(`[memory-server backend] WriteQueue.closeAllForShutdown failed: ${err}\n`);
   }
 
   // 3. Best-effort pre-restart backup, bounded — never gates exit (BL-405).

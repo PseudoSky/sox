@@ -30,19 +30,35 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-const { mockCloseAllAdapters, mockTerminateEmbedWorkers, mockAutoBackup } = vi.hoisted(() => ({
-  mockCloseAllAdapters: vi.fn<() => Promise<void>>(),
-  mockTerminateEmbedWorkers: vi.fn<() => Promise<void>>(),
-  mockAutoBackup: vi.fn<() => Promise<{ path: string; size: number; skipped: boolean }>>(),
-}));
+const { mockCloseAllAdapters, mockTerminateEmbedWorkers, mockAutoBackup, mockWriteQueueCloseAllForShutdown } =
+  vi.hoisted(() => ({
+    mockCloseAllAdapters: vi.fn<() => Promise<void>>(),
+    mockTerminateEmbedWorkers: vi.fn<() => Promise<void>>(),
+    mockAutoBackup: vi.fn<() => Promise<{ path: string; size: number; skipped: boolean }>>(),
+    mockWriteQueueCloseAllForShutdown: vi.fn<() => Promise<void>>(),
+  }));
 
 vi.mock('@adhd/sox-memory-core', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@adhd/sox-memory-core')>();
+  // WriteQueue has a private constructor, so it cannot be subclassed to
+  // override just one static method — proxy it instead, forwarding every
+  // property except `closeAllForShutdown` to the real class. This keeps
+  // these pure-ordering unit tests isolated from the REAL `WriteQueue`
+  // singleton map (`WriteQueue.instances`), which is process-global and, in
+  // a single-forked test worker, could otherwise carry real entries left
+  // over from an unrelated spec file that ran earlier in the same worker.
+  const WriteQueueProxy = new Proxy(actual.WriteQueue, {
+    get(target, prop, receiver) {
+      if (prop === 'closeAllForShutdown') return mockWriteQueueCloseAllForShutdown;
+      return Reflect.get(target, prop, receiver);
+    },
+  });
   return {
     ...actual,
     closeAllAdapters: mockCloseAllAdapters,
     terminateEmbedWorkers: mockTerminateEmbedWorkers,
     autoBackup: mockAutoBackup,
+    WriteQueue: WriteQueueProxy,
   };
 });
 
@@ -63,6 +79,7 @@ describe('BL-405 — coordinatedShutdown', () => {
     mockCloseAllAdapters.mockReset();
     mockTerminateEmbedWorkers.mockReset();
     mockAutoBackup.mockReset();
+    mockWriteQueueCloseAllForShutdown.mockReset();
     __resetShutdownStateForTest();
 
     mockTerminateEmbedWorkers.mockImplementation(async () => {
@@ -70,6 +87,9 @@ describe('BL-405 — coordinatedShutdown', () => {
     });
     mockCloseAllAdapters.mockImplementation(async () => {
       events.push('closeAllAdapters');
+    });
+    mockWriteQueueCloseAllForShutdown.mockImplementation(async () => {
+      events.push('writeQueueCloseAllForShutdown');
     });
     mockAutoBackup.mockImplementation(async () => {
       events.push('autoBackup');
@@ -128,6 +148,7 @@ describe('BL-405 — coordinatedShutdown', () => {
     expect(events).toEqual([
       'terminateEmbedWorkers',
       'closeAllAdapters',
+      'writeQueueCloseAllForShutdown',
       'autoBackup',
       'handle.close',
       'exit',

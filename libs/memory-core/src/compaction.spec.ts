@@ -119,8 +119,19 @@ describe('runCompactionPass', () => {
     await wq.walCheckpoint();
     // Monkey-patch _lastCheckpointAt to be old (beyond CHECKPOINT_IDLE_MS).
     // We use a casting trick since the field is private.
-    (wq as unknown as { _lastCheckpointAt: number })._lastCheckpointAt =
-      Date.now() - WriteQueue.CHECKPOINT_IDLE_MS - 1000;
+    const backdated = Date.now() - WriteQueue.CHECKPOINT_IDLE_MS - 1000;
+    (wq as unknown as { _lastCheckpointAt: number })._lastCheckpointAt = backdated;
+    // BL-405: `WriteQueue.lastCheckpointAtForPath()` (what `runCompactionPass`
+    // actually reads) now reads a PERSISTENT static map — keyed by store path,
+    // surviving instance removal — rather than the live instance's own field
+    // (see write-queue.ts's `_lastCheckpointByPath` doc comment: an instance
+    // field alone silently reset the metric to 0 the moment an instance was
+    // removed, e.g. on shutdown, which is exactly backwards for a durability
+    // signal). Backdate that map too, or this test's "long ago" setup has no
+    // effect on what runCompactionPass actually consults.
+    (
+      WriteQueue as unknown as { _lastCheckpointByPath: Map<string, number> }
+    )._lastCheckpointByPath.set(dbPath, backdated);
 
     const result = await runCompactionPass(db, {});
     expect(result.error).toBeNull();

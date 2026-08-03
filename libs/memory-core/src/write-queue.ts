@@ -232,6 +232,20 @@ export class WriteQueue {
   private static pending = new Map<string, Promise<WriteQueue>>();
   /** WP-1 negative control: when true, enqueue runs operations immediately (serialisation broken). */
   private static _bypass = !!process.env['SOX_DISABLE_WRITE_QUEUE'];
+  /**
+   * (BL-405) Last-successful-checkpoint time PER STORE PATH, surviving the
+   * owning `WriteQueue` instance's own removal from `instances`.
+   *
+   * Before this existed, `lastCheckpointAtForPath()` read `_lastCheckpointAt`
+   * straight off the live instance in `instances` — so the moment an
+   * instance was removed (`clearInstances()` in tests, or
+   * `closeAllForShutdown()` in production), the metric silently reset to 0,
+   * even for an instance whose LAST ACT was a successful checkpoint. That is
+   * exactly backwards for a durability signal: `memory_ping.store.
+   * last_checkpoint_at` must answer "when was this store last checkpointed",
+   * not "does a live in-memory WriteQueue object happen to still exist".
+   */
+  private static _lastCheckpointByPath = new Map<string, number>();
 
   /** (WP-5) Milliseconds of idle time after which a WAL checkpoint fires. */
   static readonly CHECKPOINT_IDLE_MS = 2000;
@@ -352,6 +366,87 @@ export class WriteQueue {
   }
 
   /**
+   * (BL-405) Checkpoint + close every WriteQueue's dedicated write connection,
+   * for PRODUCTION shutdown. `coordinatedShutdown()` in backend.ts must call
+   * this IN ADDITION to `closeAllAdapters()` — they close two DIFFERENT sets
+   * of connections.
+   *
+   * Root cause this exists to fix: `WriteQueue._create()` opens its dedicated
+   * write connection via the bare `openDb()` (see above), never via `getDb()`
+   * — deliberately, so a queue's write connection is never shared with ad-hoc
+   * `getDb()` callers. But `closeAllAdapters()` (db.ts) iterates ONLY
+   * `getDb()`'s `adapterCache`, which a `WriteQueue` connection was NEVER
+   * inserted into. Before this method existed, NOTHING in the shutdown path
+   * ever closed or checkpointed the write queue's connection — reproduced
+   * directly: 2000 real writes via the real `WriteQueue.forPath()` +
+   * `getDb()` + `closeAllAdapters()` sequence (the exact calls
+   * `handleToolCall`/`coordinatedShutdown` make) left the WAL at 4152 bytes
+   * (down from 1,763,392 — `closeAllAdapters()`'s checkpoint on the OTHER,
+   * `getDb`-cached connection still flushes most frames because WAL
+   * checkpointing is a file-level operation, but cannot fully TRUNCATE while
+   * the write queue's connection remains open) and left the write-queue
+   * connection fully open and accepting further writes AFTER
+   * `closeAllAdapters()` had already "finished". This also explains why
+   * `memory_ping.store.last_checkpoint_at` stayed `null` even when a
+   * checkpoint partially ran: `_lastCheckpointAt` is an instance field set
+   * ONLY by `WriteQueue.walCheckpoint()` (below) — `closeDbWithLease`'s
+   * checkpoint on the unrelated `getDb`-cached connection never touches it.
+   *
+   * Unlike `clearInstances()` (test-only; no checkpoint, no error surfacing —
+   * a fresh-queue reset, not a durability guarantee), this method: (1) cancels
+   * any pending WP-5 idle-checkpoint timer FIRST (otherwise that timer can
+   * fire mid-shutdown or just after, throwing "database connection is not
+   * open" against a connection this same method is about to close — observed
+   * live in production telemetry, 11 occurrences across distinct pids on
+   * 2026-08-03); (2) runs `PRAGMA wal_checkpoint(TRUNCATE)` explicitly and
+   * records success via the same `_lastCheckpointAt` field `memory_ping`
+   * reports; (3) LOGS a checkpoint failure instead of silently swallowing it
+   * (BL-399 pattern — a failure this consequential must not vanish); (4)
+   * closes the connection and clears the instance so a later `getDb`/
+   * `WriteQueue.forPath` call for the same path opens fresh rather than
+   * reusing a handle this method just tore down.
+   */
+  static async closeAllForShutdown(): Promise<void> {
+    for (const [dbPath, q] of WriteQueue.instances) {
+      q._cancelCheckpoint();
+      try {
+        await q._pragmaSetPromise;
+      } catch {
+        /* best effort — adapter may already be failing */
+      }
+      try {
+        const row = await q.adapter.executeGet<{ frames_checkpointed?: number }>(
+          'PRAGMA wal_checkpoint(TRUNCATE)',
+        );
+        const now = Date.now();
+        q._lastCheckpointAt = now;
+        WriteQueue._lastCheckpointByPath.set(dbPath, now);
+        log.info('writequeue.shutdown.checkpoint', {
+          store: dbPath,
+          frames_checkpointed: row?.frames_checkpointed ?? null,
+        });
+      } catch (err) {
+        // BL-405 / BL-399 pattern: a checkpoint failure here means the WAL
+        // will NOT be truncated by this shutdown — that must be visible, not
+        // a silent no-op indistinguishable from success.
+        log.error('writequeue.shutdown.checkpoint_failed', {
+          store: dbPath,
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
+      try {
+        await q.adapter.close();
+      } catch (err) {
+        log.error('writequeue.shutdown.close_failed', {
+          store: dbPath,
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
+    }
+    WriteQueue.instances.clear();
+  }
+
+  /**
    * Obtain (or create) the WriteQueue for a resolved store path.
    * The returned queue is a singleton — repeated calls return the same instance.
    * When `_bypass` is true, creates a new queue each time (no serialisation) so
@@ -435,11 +530,16 @@ export class WriteQueue {
 
   /**
    * (WP-5) Static accessor: last checkpoint time for a given store path.
-   * Returns 0 if the queue has no record (never checkpointed or no queue instance).
+   * Returns 0 if never checkpointed for this path in this process.
+   *
+   * BL-405: reads the persistent `_lastCheckpointByPath` map, NOT the live
+   * instance's own field — a live `WriteQueue` instance for `dbPath` may no
+   * longer exist (its LAST act, moments ago, may have been exactly the
+   * checkpoint this call is asking about — see `closeAllForShutdown()`), and
+   * "no instance" must never be conflated with "never checkpointed".
    */
   static lastCheckpointAtForPath(dbPath: string): number {
-    const q = WriteQueue.instances.get(dbPath);
-    return q ? q._lastCheckpointAt : 0;
+    return WriteQueue._lastCheckpointByPath.get(dbPath) ?? 0;
   }
 
   /** (WP-5) Read the WAL file size in bytes from the filesystem. Returns 0 if unavailable. */
@@ -464,9 +564,21 @@ export class WriteQueue {
       const row = await this.adapter.executeGet<{ frames_checkpointed: number }>(
         'PRAGMA wal_checkpoint(TRUNCATE)',
       );
-      this._lastCheckpointAt = Date.now();
+      const now = Date.now();
+      this._lastCheckpointAt = now;
+      WriteQueue._lastCheckpointByPath.set(this._storePath, now);
       return row?.frames_checkpointed ?? -1;
-    } catch {
+    } catch (err) {
+      // BL-405 / BL-399 pattern: this used to be a bare `catch { return -1; }`
+      // — the WP-5 idle-checkpoint timer's own failure (e.g. "database
+      // connection is not open" when this fires against an already-closed
+      // adapter, observed live in production: 11 occurrences across distinct
+      // pids on 2026-08-03) vanished with zero trace. Still returns -1 (the
+      // documented error sentinel), but now leaves a record.
+      log.error('writequeue.checkpoint_failed', {
+        store: this._storePath,
+        error: err instanceof Error ? err.message : String(err),
+      });
       return -1;
     }
   }

@@ -16,6 +16,7 @@
 
 import * as fs from 'node:fs';
 import type { StoreAdapter } from '@adhd/sox-store-adapter';
+import { log } from './telemetry.js';
 
 const { O_WRONLY, O_CREAT, O_EXCL } = fs.constants;
 
@@ -157,13 +158,24 @@ export function releaseWriteLease(dbPath: string): void {
 export async function closeDbWithLease(adapter: StoreAdapter, dbPath: string): Promise<void> {
   try {
     await adapter.exec('PRAGMA wal_checkpoint(TRUNCATE)');
-  } catch {
-    // best effort — adapter may already be closing
+  } catch (err) {
+    // BL-405 / BL-399 pattern: this used to be a bare, silent `catch {}` —
+    // an unnoticed checkpoint failure here means the WAL is NOT durable
+    // despite a "shutting down" log line implying a clean exit, and there
+    // was no way to ever discover that after the fact. Log it; still
+    // best-effort (never blocks close/lease-release below).
+    log.error('lease.close.checkpoint_failed', {
+      db_path: dbPath,
+      error: err instanceof Error ? err.message : String(err),
+    });
   }
   try {
     await adapter.close();
-  } catch {
-    // best effort — adapter may already be closed
+  } catch (err) {
+    log.error('lease.close.adapter_close_failed', {
+      db_path: dbPath,
+      error: err instanceof Error ? err.message : String(err),
+    });
   }
   releaseWriteLease(dbPath);
 }
