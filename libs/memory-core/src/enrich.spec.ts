@@ -27,6 +27,7 @@ import {
   clusterStats,
   clusterStore,
   computeImportance,
+  computeLinkDegree,
   detectNearDup,
   ENRICH_VERSION,
   enrichOnWrite,
@@ -954,6 +955,52 @@ describe('runBatchEnrich', () => {
       delete process.env['SOX_EMBED_BACKEND'];
       t1.cleanup();
       t2.cleanup();
+    }
+  });
+});
+
+// BL-413 / BUG-MEMORY-ENRICH-001: the indexed link-degree rewrite must preserve
+// exact OR semantics — live incident edges on either side, expired edges
+// excluded. The perf red→green for this regression is the measured profile
+// (full periodic pass 129.46s → 8.94s on a copy of the live store); this test
+// guards the SEMANTIC equivalence so a future edit cannot silently break the
+// count (missed direction, expired edges counted, self-loop double-count).
+describe('computeLinkDegree (BL-413 indexed rewrite)', () => {
+  it('counts live incident edges on BOTH sides, excludes expired edges', async () => {
+    const { db, adapter, cleanup } = await makeTmpDb();
+    try {
+      const now = new Date().toISOString();
+      const ins = db.prepare(
+        `INSERT INTO node (uid, kind, content, t_created, t_valid)
+         VALUES (?, 'episode', 'link degree fixture content', ?, ?)`,
+      );
+      const a = ins.run('ld-a', now, now).lastInsertRowid as number;
+      const b = ins.run('ld-b', now, now).lastInsertRowid as number;
+      const c = ins.run('ld-c', now, now).lastInsertRowid as number;
+      const d = ins.run('ld-d', now, now).lastInsertRowid as number;
+
+      const insEdge = db.prepare(
+        `INSERT INTO edge (src, dst, rel, t_created, t_expired) VALUES (?, ?, 'MENTIONS', ?, ?)`,
+      );
+      insEdge.run(a, b, now, null); // a: +1 as src
+      insEdge.run(b, c, now, null); // b: +1 src; c: +1 as dst
+      insEdge.run(c, a, now, null); // c: +1 src; a: +1 as dst
+      insEdge.run(a, c, now, now);  // expired edge on a — must be excluded
+
+      let degreeA = -1;
+      await adapter.transaction(async (tx) => {
+        degreeA = await computeLinkDegree(tx, a);
+      });
+      // 1 live src + 1 live dst = 2; the expired edge is not counted.
+      expect(degreeA).toBe(2);
+
+      let degreeD = -1;
+      await adapter.transaction(async (tx) => {
+        degreeD = await computeLinkDegree(tx, d);
+      });
+      expect(degreeD).toBe(0);
+    } finally {
+      cleanup();
     }
   });
 });
