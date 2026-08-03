@@ -78,7 +78,7 @@ function splitSystemPrompt(system) {
 }
 
 // ── rewriteToContentFirst (mirror of cf-proxy.mjs) ──
-function rewriteToContentFirst(messages, personaSP, opencodeSP, cfPrompt) {
+function rewriteToContentFirst(messages, personaSP, opencodeSP, cfPrompt, handoffTask) {
   const system = messages.find(m => m.role === 'system')?.content;
   const lastUserIdx = messages.findLastIndex(m => m.role === 'user');
   if (lastUserIdx === -1) {
@@ -96,9 +96,11 @@ function rewriteToContentFirst(messages, personaSP, opencodeSP, cfPrompt) {
     result[sysIdx] = { ...result[sysIdx], content: shared };
   }
   // Persona as a suffix on the LAST USER message — the proven cache-reuse structure.
+  // Optional handoffTask embedded between marker and persona body.
   const lastUser = result.filter(m => m.role === 'user');
   const lastUserMsg = lastUser[lastUser.length - 1];
-  lastUserMsg.content = `${lastUserMsg.content}\n\n--- Role ---\n${agentRole}`;
+  const taskBlock = handoffTask ? `Task: ${handoffTask}\n\n` : '';
+  lastUserMsg.content = `${lastUserMsg.content}\n\n--- Role ---\n${taskBlock}${agentRole}`;
   const personaMarker = '--- Role ---\n';
   const tailTokens = Math.ceil(agentRole.length / 4) + Math.ceil(personaMarker.length / 4);
   return {
@@ -218,6 +220,16 @@ assert(lastUserP.role === 'user', 'LAST message is the user (injected + persona)
 //    provider prompt_cache_hit_tokens / prompt_tokens — no unit test here
 //    (pure handler-side arithmetic), verified against live logs instead.
 assert(true, 'savings_pct uses provider cache ratio (handler-side, checked in live logs)');
+
+// 9. Handoff task embedded in persona suffix — no separate user message
+const taskOut = rewriteToContentFirst([...msgs], ARCHITECT, msgs[0].content, cf, 'Implement FEAT-001');
+const taskUser = taskOut.messages.filter(m => m.role === 'user');
+const taskLast = taskUser[taskUser.length - 1];
+assert(taskLast.content.includes('Task: Implement FEAT-001'), 'handoff task embedded in persona suffix');
+assert(taskLast.content.includes('--- Role ---'), 'role marker still present with task');
+assert(taskLast.content.includes(ARCHITECT.slice(0, 80)), 'persona body still present with task');
+// No extra messages — conversation stays monotonic
+assert(taskOut.messages.length === out.messages.length, 'message count unchanged — no injected user msg');
 
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail === 0 ? 0 : 1);

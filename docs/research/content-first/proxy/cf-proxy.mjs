@@ -139,9 +139,9 @@ function getSession(id) {
       opencodeAgent: null,    // last agent detected from opencode's SP
       opencodeSP: null,       // last SP opencode sent (for change detection)
       apiOverride: false,     // true when activeAgent was set via /v1/session/agent
-      pendingInput: null,     // DEPRECATED — handoff tasks are read from the
-                              // session_agent_set tool call in the conversation,
-                              // not redundantly injected as a new user message
+      pendingInput: null,     // handoff task — embedded in persona suffix,
+                              // not injected as a separate user message
+                              // (keeps the conversation prefix monotonic)
       context: [],            // accumulated messages (cache anchor)
       // Per-persona metrics (reset on agent change)
       personaTurns: 0,        // turns since the current persona started
@@ -280,7 +280,7 @@ function splitSystemPrompt(system) {
  *      persona suffix on the very last message — the entire preceding context
  *      remains in the cacheable prefix.
  */
-function rewriteToContentFirst(messages, personaSP, opencodeSP, cfPrompt) {
+function rewriteToContentFirst(messages, personaSP, opencodeSP, cfPrompt, handoffTask) {
   const system = messages.find(m => m.role === 'system')?.content;
   const lastUserIdx = messages.findLastIndex(m => m.role === 'user');
   if (lastUserIdx === -1) {
@@ -315,9 +315,15 @@ function rewriteToContentFirst(messages, personaSP, opencodeSP, cfPrompt) {
   // 03c3312d1: 52-80%). The conversation before the last user message is
   // byte-identical across agent switches → provider cache hits on the full
   // accumulated context.
+  //
+  // An optional handoffTask is embedded BETWEEN the role marker and the
+  // persona body — it gives the new agent an explicit "this is your task now"
+  // trigger WITHOUT injecting a new user message (which would break the
+  // monotonic prefix and kill cache reuse).
   const lastUser = result.filter(m => m.role === 'user');
   const lastUserMsg = lastUser[lastUser.length - 1];
-  lastUserMsg.content = `${lastUserMsg.content}\n\n--- Role ---\n${agentRole}`;
+  const taskBlock = handoffTask ? `Task: ${handoffTask}\n\n` : '';
+  lastUserMsg.content = `${lastUserMsg.content}\n\n--- Role ---\n${taskBlock}${agentRole}`;
   const personaMarker = '--- Role ---\n';
 
   const seedHash = seedTokens > 100 ? `seed-${seedTokens}` : null;
@@ -589,12 +595,20 @@ const server = http.createServer(async (req, res) => {
       if (!session.opencodeAgent) session.opencodeAgent = resolved.name;
       logCall({ event: 'session_agent_set', agent: resolved.name, turns: session.turns }, sessionId);
 
-      // The handoff task is persisted in the conversation (the session_agent_set
-      // tool call args). The next agent reads it from context — no pendingInput
-      // injection needed. The input field is preserved in the log for audit.
+      // Store the handoff task — it will be embedded in the persona suffix
+      // on the next turn (not injected as a separate user message, which
+      // would break the cache prefix).
+      if (input) {
+        session.pendingInput = input;
+        return jsonResponse(res, 200, {
+          sessionId, activeAgent: resolved.name, switched: true,
+          note: 'Handoff task will be embedded in the persona suffix on the next turn.',
+        });
+      }
+
       return jsonResponse(res, 200, {
         sessionId, activeAgent: resolved.name, switched: true,
-        note: 'Next turn runs with the new persona. Task is in the tool call conversation context.',
+        note: 'Next /v1/chat/completions call for this session uses the new persona.',
       });
     }
 
@@ -660,14 +674,18 @@ const server = http.createServer(async (req, res) => {
       }
 
       // ── Content-first path (true streaming) ──
-      // The handoff task is ALREADY in the conversation (session_agent_set
-      // tool call args). Re-injecting it as pendingInput was redundant and
-      // broke prefix cache contiguity at every handoff — the extra user
-      // message shifted the sequence and prevented the provider from reusing
-      // the prior agent's full context. The new agent reads its task from the
-      // tool call `input` field in the conversation.
+      // Handoff continuation: the task from the session_agent_set call is
+      // embedded in the persona suffix on the last user message — it gives
+      // the new agent an explicit trigger without injecting a separate
+      // message (which would break monotonic prefix growth and kill cache
+      // reuse at handoff boundaries).
+      const handoffTask = session?.pendingInput || null;
+      if (handoffTask) {
+        session.pendingInput = null; // one-shot, cleared after use
+        console.error(`[cf-proxy] handoff task embedded in persona: ${Math.ceil(handoffTask.length / 4)} tokens`);
+      }
       const cfPrompt = sessionId ? renderCFInstructions(sessionId) : null;
-      const cf = rewriteToContentFirst(messages, personaSP, opencodeSP, cfPrompt);
+      const cf = rewriteToContentFirst(messages, personaSP, opencodeSP, cfPrompt, handoffTask);
 
       // ── Enhanced metrics ──
       const totalMsgChars = cf.messages.reduce((s, m) => s + (m.content?.length || 0), 0);
