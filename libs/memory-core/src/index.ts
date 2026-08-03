@@ -202,10 +202,17 @@ export type {
 export { enrichOnWrite } from './enrich.js';
 export type { EnrichOnWriteParams, EnrichOnWriteResult } from './enrich.js';
 export type { NearDupResult } from './neardup.js';
-export { runBatchEnrich } from './enrich-batch.js';
+export { runBatchEnrich, computeLinkDegree } from './enrich-batch.js';
 export type { BatchEnrichOptions, BatchEnrichResult } from './enrich-batch.js';
 export type { ImportanceWeights } from './importance.js';
 export { ENRICH_VERSION } from './enrich-version.js';
+
+// ── Durable telemetry sink (memory-core JSONL — see docs/observability/README.md) ──
+// BL-413 follow-on: exposed so the memory-server tick lifecycle (enrich.tick.*,
+// enrich.pass.*) can emit through the same durable sink as memory-core itself
+// instead of console.error to stderr, which never reaches the JSONL and made the
+// 22.5h enrich stall invisible to telemetry-based triage.
+export { log, withTimedEvent } from './telemetry.js';
 
 // ── BL-348: committed-stage boundary — clustering/enrichment isolated from
 //    the embed path in its own child process (see enrich-isolation.ts). ──────

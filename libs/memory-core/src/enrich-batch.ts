@@ -110,6 +110,30 @@ interface EpisodeRow {
 }
 
 /**
+ * BL-413 / BUG-MEMORY-ENRICH-001: indexed link-degree count (live incident
+ * edges on EITHER side, excluding expired). The previous form
+ * `WHERE (src = ? OR dst = ?) AND t_expired IS NULL` forced a FULL scan of the
+ * partial `ix_edge_dst` index per episode (EXPLAIN QUERY PLAN: `SCAN edge USING
+ * INDEX ix_edge_dst`; 47,619 edge rows scanned per call, 24.3ms/call) — 4,956
+ * episodes = 120.23s of the ~129s periodic pass, which blew the 120s
+ * runEnrichIsolated budget on EVERY tick and froze the organizer_queue. The OR
+ * predicate cannot use both partial indexes; two scalar subqueries each hit
+ * their own leading-column partial index (EXPLAIN: `SEARCH ix_edge_src (src=?)`
+ * + `SEARCH ix_edge_dst (dst=?)`) at 0.04ms/call measured — ~600x faster. The
+ * sum is exactly equivalent to the OR only while no self-loop edge (src = dst)
+ * exists — verified 0 live self-loops on the live store 2026-08-03; if a
+ * self-loop ever becomes possible, switch to the UNION form (still 60x faster).
+ */
+export async function computeLinkDegree(tx: AdapterTransaction, rowid: number): Promise<number> {
+  const linkRow = await tx.executeGet<{ cnt: number }>(
+    `SELECT (SELECT COUNT(*) FROM edge WHERE src = ? AND t_expired IS NULL)
+          + (SELECT COUNT(*) FROM edge WHERE dst = ? AND t_expired IS NULL) AS cnt`,
+    [rowid, rowid],
+  );
+  return linkRow?.cnt ?? 0;
+}
+
+/**
  * Run batch enrichments (E6, E7 link/access, E9, E11) over the entire live corpus.
  *
  * Determinism guarantees:
@@ -260,11 +284,7 @@ export async function runBatchEnrich(
   const processEpisode = async (tx: AdapterTransaction, ep: EpisodeRow): Promise<void> => {
     const wordCount = (ep.content ?? '').split(/\s+/).filter(Boolean).length;
 
-    const linkRow = await tx.executeGet<{ cnt: number }>(
-      `SELECT COUNT(*) AS cnt FROM edge WHERE (src = ? OR dst = ?) AND t_expired IS NULL`,
-      [ep.rowid, ep.rowid],
-    );
-    const linkDegree = linkRow?.cnt ?? 0;
+    const linkDegree = await computeLinkDegree(tx, ep.rowid);
 
     const tagsRow = await tx.executeGet<{ tags: string | null }>(
       `SELECT tags FROM node WHERE rowid = ?`,

@@ -48,6 +48,7 @@ import {
   getEmbedPipelineMetrics,
   hasPendingFullEnrich,
   healMissingVectors,
+  log,
   memoryCurate,
   memoryGetEntityEpisodes,
   memoryGetNearDuplicates,
@@ -2262,31 +2263,36 @@ export async function runEnrichPassOnDb(
 
   if (isolated.ok) {
     const result = isolated.result;
-    console.error(
-      `[memory-server] periodic enrich (${dbPath}):` +
-      ` communities=${result.communities_upserted}` +
-      ` cluster_incremental_joined=${result.incremental_joined}` +
-      ` importance_updated=${result.importance_updated}` +
-      ` relates_to=${result.relates_to_edges}` +
-      ` queue_completed=${queueCompleted}` +
-      ` full_pass=${fullPass}` +
-      ` embed_healed=${heal.healed}` +
-      ` embed_heal_failed=${heal.failed}` +
-      ` backlog_before=${backlogBefore}` +
-      ` backlog_after=${backlogAfter}` +
-      ` backlog_delta=${backlogAfter - backlogBefore}` +
-      (heal.disabled ? ' embed_heal=DISABLED' : ''),
-    );
+    // BL-413 follow-on: durable sink, not console.error — the pre-fix stderr
+    // lines never reached the JSONL, which made the 22.5h enrich stall
+    // invisible to telemetry-based triage.
+    log.info('enrich.pass.finish', {
+      db_path: dbPath,
+      communities_upserted: result.communities_upserted,
+      cluster_incremental_joined: result.incremental_joined,
+      importance_updated: result.importance_updated,
+      relates_to_edges: result.relates_to_edges,
+      queue_completed: queueCompleted,
+      full_pass: fullPass,
+      embed_healed: heal.healed,
+      embed_heal_failed: heal.failed,
+      backlog_before: backlogBefore,
+      backlog_after: backlogAfter,
+      backlog_delta: backlogAfter - backlogBefore,
+      embed_heal_disabled: heal.disabled,
+    });
   } else {
     // BL-348: the entire point — a failed cluster pass is logged and moved
     // past, never allowed to touch the embed backlog it shares this tick
     // with. embed_healed/backlog above already ran and landed successfully
     // BEFORE this isolated call, unaffected by its outcome.
-    console.error(
-      `[memory-server] periodic enrich (${dbPath}): cluster_pass FAILED (isolated, non-fatal): ` +
-      `${isolated.error} — embed_healed=${heal.healed} backlog_before=${backlogBefore} ` +
-      `backlog_after=${backlogAfter} (unaffected by cluster failure)`,
-    );
+    log.error('enrich.pass.failed', {
+      db_path: dbPath,
+      error: isolated.error,
+      embed_healed: heal.healed,
+      backlog_before: backlogBefore,
+      backlog_after: backlogAfter,
+    });
   }
 
   // BL-413: take a DURABLE, RECORDED corrective action when the queue is
@@ -2359,8 +2365,13 @@ export async function runPeriodicEnrichPass(opts: { acquireHealSlot?: boolean } 
       const adapter = await getDb(dbPath);
       await runEnrichPassOnDb(adapter, dbPath, opts);
     } catch (err) {
-      // Log to stderr only — never stdout (JSON-RPC channel).
-      console.error(`[memory-server] periodic enrich error (${dbPath}):`, err);
+      // Durable sink — never stdout (JSON-RPC channel). The pre-fix
+      // console.error version made a per-DB enrich failure invisible to
+      // telemetry (BL-413 follow-on).
+      log.error('enrich.pass.error', {
+        db_path: dbPath,
+        error: err instanceof Error ? err.message : String(err),
+      });
     }
   }
 }
@@ -2440,15 +2451,12 @@ export async function runPeriodicEnrichPassGuarded(): Promise<void> {
   // mechanisms rather than one.
   if (_enrichPassInFlight) {
     _enrichTicksSkipped++;
-    console.error(
-      `[memory-server] enrich.tick.skipped tick_seq=${tickSeq}` +
-      ` — previous pass still in flight (skipped_total=${_enrichTicksSkipped})`,
-    );
+    log.warn('enrich.tick.skipped', { tick_seq: tickSeq, skipped_total: _enrichTicksSkipped });
     return;
   }
   _enrichPassInFlight = true;
   const tickStartedAt = Date.now();
-  console.error(`[memory-server] enrich.tick.start tick_seq=${tickSeq}`);
+  log.info('enrich.tick.start', { tick_seq: tickSeq });
   try {
     // BL-348: NOT wrapped in withBackgroundSlot any more. The clustering work
     // inside runPeriodicEnrichPass -> runEnrichPassOnDb now runs off-process
@@ -2459,15 +2467,13 @@ export async function runPeriodicEnrichPassGuarded(): Promise<void> {
     // BL-346 anti-stampede reason documented at withBackgroundSlot's
     // definition below.
     await runPeriodicEnrichPass();
-    console.error(
-      `[memory-server] enrich.tick.finish tick_seq=${tickSeq}` +
-      ` duration_ms=${Date.now() - tickStartedAt}`,
-    );
+    log.info('enrich.tick.finish', { tick_seq: tickSeq, duration_ms: Date.now() - tickStartedAt });
   } catch (err) {
-    console.error(
-      `[memory-server] enrich.tick.error tick_seq=${tickSeq}` +
-      ` duration_ms=${Date.now() - tickStartedAt}: ${err instanceof Error ? err.message : String(err)}`,
-    );
+    log.error('enrich.tick.error', {
+      tick_seq: tickSeq,
+      duration_ms: Date.now() - tickStartedAt,
+      error: err instanceof Error ? err.message : String(err),
+    });
     throw err;
   } finally {
     _enrichPassInFlight = false;
