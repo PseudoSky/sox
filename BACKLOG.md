@@ -2163,58 +2163,6 @@ Citations: [wip/turso-live-metrics, main, claude, BL-401 gap 5 / live deploy ver
 
 ---
 
-### BL-405 — the memory-server backend ignores SIGTERM and is SIGKILLed on every single restart — the crash path is the normal path — **Open (HIGH)** (2026-08-01)
-
-> **⚠️ LIVE VERIFICATION 2026-08-02T00:36Z — the RACE is fixed; the CHECKPOINT still does not happen in production. Item stays OPEN.**
->
-> Deliberate deploy of the fix (artifact `a4892123287b`, pid 65352 → **85177**):
->
-> **PASS — the race is genuinely gone.** `soxe service restart` printed `reaper: SIGTERM → pid 65352 (grace 5000ms)` and **no escalation line**. The previous restart printed `survived SIGTERM after 5000ms → SIGKILL`. Absence of that line was the packet's stated pass condition, and it is absent. The two competing `SIGTERM` listeners are demonstrably no longer racing.
->
-> **FAIL — the WAL is not being truncated.** The whole point of winning the race was to let `wal_checkpoint(TRUNCATE)` run:
->
-> | | bytes |
-> |---|---|
-> | `memory.db-wal` immediately before restart | **3,563,832** |
-> | same file after the clean restart | **3,596,792** |
->
-> It **grew**. It did not truncate. `last_checkpoint_at` is still `null`. The fix's own disposable-backend test measured 3.4MB → 4KB, so the mechanism works in isolation and does not work here — that difference is the remaining work, and it means the store is *still* effectively relying on crash recovery.
->
-> **Leading hypothesis, NOT confirmed — do not fix on this basis without checking:** under `multiprocess_wal`, a checkpoint cannot truncate while another process holds a reader slot. **BL-412** proves that `nx test` runs silently open the live store and register it into an enrichment loop, and several agents were running tests on this machine at the time. If that is the cause, BL-412 is a *prerequisite* for BL-405 rather than a sibling. Verify by checking reader-slot ownership in the `.tshm` sidecar at shutdown, or by repeating this measurement on a quiescent machine with no other process touching the store.
->
-> Alternative candidates not yet ruled out: the production close path may issue `PASSIVE` rather than `TRUNCATE`; or the new process may recreate the WAL before the size is observed.
->
-> Citations: [wip/turso-live-metrics, main, claude, deliberate deploy verification, `soxe service restart` output (no reaper escalation), `ls -la ~/.memory/memory.db-wal` before/after against the pre-restart snapshot, live `memory_ping` from pid 85177 (`last_checkpoint_at: null`), 2026-08-02T00:36Z]
-
-
-**Found while:** the reviewed redeploy to artifact `4d2773bad484`. Not a stress test, not an induced fault — this is the ordinary, documented restart verb.
-
-**Evidence, verbatim from `node bin/soxe service restart memory-server -s user`:**
-```
-reaper: SIGTERM → pid 18521 (grace 5000ms)
-reaper: pid 18521 survived SIGTERM after 5000ms → SIGKILL
-```
-[1] The backend did not exit within the 5s grace window and was killed uncleanly.
-
-**Why this matters more than a slow shutdown:** `close()` is where the store re-verifies WAL identity and runs `wal_checkpoint(PASSIVE)` — the mechanism credited with recovering 140/140 records under BL-330. Under SIGKILL that path **never runs**. Every restart therefore exercises the crash-recovery path rather than the clean-shutdown path, and the clean-shutdown path is consequently almost never executed in production — meaning it is also nearly untested in the only environment that counts.
-
-The store survived *this* restart intact — deep integrity probes came back `overall: ok`, `damaged: []`, WAL identity stable, `integrity_check` clean.[2] That is the durability work doing its job, and it is exactly why this has stayed invisible. It is not evidence that SIGKILL-on-restart is safe; it is evidence that the recovery path is currently absorbing the damage.
-
-**Root cause: not yet established — do not guess it.** Candidates to check in order: no `SIGTERM` handler registered on the backend at all; a handler registered but blocked behind an in-flight embed/enrich pass holding the `_bgSlot` mutex; a handler that awaits a drain with no deadline; or non-daemonised child processes (embed worker, enrich process host, fastembed host) keeping the event loop alive past the grace window. The 5s grace may also simply be too short for a legitimate checkpoint of a 98MB store — in which case the fix is a longer, *reasoned* grace plus a fast-path checkpoint, not a bigger magic number.
-
-**Acceptance (red→green, must name BL-405):** send SIGTERM to a spawned backend and assert it exits cleanly, well within grace, with the WAL checkpointed — and that `soxe service restart` completes without the reaper escalating to SIGKILL. The reaper's escalation line is the observable: its absence is the pass condition.
-
-**Severity:** HIGH — the owner's standing bar is that in the production-grade version "none of the crash data loss should be possible." Routing every ordinary restart through SIGKILL makes crash-recovery a load-bearing part of normal operation.
-
-**Related:** BL-330 (the checkpoint-on-close this bypasses), BL-335..BL-338 (post-crash integrity damage), BL-348 (the isolated enrich process is a new candidate for holding the loop open), BL-393.
-
-Citations: [wip/turso-live-metrics, main, claude, live deploy verification, 1: `node bin/soxe service restart memory-server -s user` output, 2026-08-01T23:47Z — pid 18521 -> 8820, 2: live `memory_ping` integrity block from pid 8820, deep probes, 555.5ms, damaged: []]
-
-
----
-
----
-
 ### BL-408 — `memory-flush`'s bundled `dist/index.js` still ships the pre-BL-397 code — the source fix has not been built or deployed — **Open (LOW)** (2026-08-01)
 
 **Found while:** closing BL-397 (memory-flush reached around StoreAdapter to a raw `better-sqlite3`
@@ -2608,28 +2556,6 @@ Citations: [wip/turso-live-metrics, main, claude, peer-relay verification, 1: `g
 
 ---
 
-### BL-412 — running the test suite silently opens the LIVE production store and registers it into an in-process enrichment loop — **Open (HIGH)** (2026-08-02)
-
-**Found by:** the BL-405 agent, as a side effect of writing a shutdown regression test. It saw `store.integrity.repair_failed db_path: /Users/nix/.memory/memory.db` in its own `nx test` output — a **production** path, appearing in a test run.
-
-**Two independent defects, same root cause: a default that guesses at the live store.**
-
-**1. `memory_ping` with no arguments opens the real store from inside tests.** Called with no `db_path`/`store` (`memory-server/src/index.ts` ~:876), it resolves to the default `~/.memory/memory.db`, opens a **real cached connection** via `getDb()`, and registers that path into `openedPaths` — the set the **periodic background enrich loop** iterates. So a test process does not merely read the production store; it enlists it into its own in-process enrichment scheduler.
-Measured attribution: **5 live-store touches from `backend.spec.ts` alone**, 0 from the new BL-405 spec. `backend.spec.ts`'s existing `memory_ping` tests carry a comment reading *"no db touched"* — **that comment is now false**, and it is exactly why nobody looked.
-
-**2. `runBackend()` guessed the backup path.** It called `resolveDbPath(undefined)` unconditionally, which falls back to the live store whenever `SOX_CONFIG_DB_PATH` is unset — true for any bare or test spawn. A stray SIGTERM reaching an unconfigured backend (e.g. a leaked listener from an earlier test in the same vitest worker, which is precisely what happened) therefore opened a connection to the production store as a side effect of `nx test`.
-**This half is FIXED** in commit `9068d16` — `backend.ts` now attempts the backup only when `SOX_CONFIG_DB_PATH` was explicitly set, matching the BL-62 "never infer" precedent. Defect 1 is untouched and is the reason this item is open.
-
-**Why HIGH.** Any test run on this machine — by any agent, in any worktree, at any time — can silently attach the user's live memory store to a test process's enrichment loop. That is concurrent unsupervised mutation of production data from a process that believes it is hermetic. It also means test runs and the live server can hold the same store open simultaneously, which is the substrate for the WAL/integrity damage tracked in BL-335..BL-338. The fact that a deliberate audit of the enrich isolation work (BL-348) did not surface this is itself evidence the surface is under-instrumented (BL-334).
-
-**Fix sketch:** `memory_ping` — and every tool whose default resolves to a real store — must not open a connection merely to answer a liveness/health question, and must never register a guessed path into `openedPaths`. Options, in preference order: (a) make the no-argument default explicit rather than inferred, refusing to resolve when neither `db_path` nor `store` is given in a non-production context; (b) add a hard test-mode guard (`NODE_ENV==='test'`/`VITEST_WORKER_ID`) that refuses any path under `~/.memory` unless explicitly opted in; (c) separate "is the server reachable" from "open the store", so a ping never needs a connection. Correct `backend.spec.ts`'s false comment in the same pass — a wrong comment is what let this survive.
-
-**Acceptance (red→green, must name BL-412):** a test asserting that a full `nx test memory-server` run produces **zero** connections to any path under `~/.memory` — instrumenting the open path and failing on any live-store touch. Must fail today (5 touches from `backend.spec.ts`).
-
-**Related:** BL-62 (the "never infer a store path" precedent this violates), BL-335..BL-338 (post-crash integrity damage this is a plausible contributor to), BL-334 (status surface under-reports), BL-405 (found during it; its half of the fix landed in `9068d16`).
-
-Citations: [wip/turso-live-metrics, main, claude, PKT-48/BL-405 fallout, 1: extensions/bundles/sox-memory-bundle/members/memory-server/src/index.ts ~:876 (`memory_ping` default resolution + `getDb()` + `openedPaths` registration), 2: .../src/backend.spec.ts (5 measured live-store touches; the "no db touched" comment), 3: commit 9068d16 (`runBackend()` no longer guesses the backup path), 2026-08-02]
-
 ### BL-416 — `allocate-bl-id.mjs` / `check-backlog-markers.mjs` resolve "repo root" via `git rev-parse --git-common-dir` + `..`, which is WRONG inside a worktree — silently reads/writes the MAIN checkout's `BACKLOG.md`, never the worktree's own — **Open (MEDIUM)** (2026-08-03)
 
 **Driver.** Both scripts compute their target file the same way:
@@ -2853,3 +2779,83 @@ Citations: [wip/turso-live-metrics, main, claude, BL-349/BL-326 backlog filing, 
 
 ---
 
+
+### BL-425 — `throughput-golden.spec.ts`'s TursoAdapter `beforeAll` hook intermittently times out at 30s under concurrent-agent CPU/ONNX contention — **Open (MEDIUM)** (2026-08-03)
+
+**Found while:** running the full `nx test memory-server` suite repeatedly during BL-412/BL-405
+verification. On one of several otherwise-clean runs: `Hook timed out in 30000ms` in
+`throughput-golden.spec.ts`'s TursoAdapter `beforeAll`, and separately, a `[fastembed] WARNING
+(BL-331)` line observed mid-run: *"another fastembed host process (pid 69700, started …) is ALREADY
+RUNNING on this machine. Concurrent onnxruntime-node CoreML/ANE execution across separate OS
+processes has been observed to cause severe (25-50x) embed latency due to Neural Engine/hardware
+queue contention."* This machine runs dozens of concurrent Claude agent sessions (per the active
+session's own agent roster) — real, expected contention, not a test bug per se, but the suite has no
+retry/backoff for it and the failure is a bare hook timeout with no diagnostic pointing at load.
+
+**Not caused by, and not fixed as part of, BL-412/BL-405** — the same three full-suite runs otherwise
+showed 0 BL-412 guard violations and 0 other failures; this is the one file that occasionally times
+out, and it toggled between failing and passing across otherwise-identical runs on the same
+unmodified code, which is the signature of external contention rather than a logic bug.
+
+**Fix sketch:** either (a) raise this specific `beforeAll`'s timeout well above 30s (the file already
+has precedent for per-hook overrides) with a comment explaining why, or (b) detect the BL-331
+fastembed-contention condition and skip/retry rather than hard-fail, or (c) both. Out of scope for
+this packet to fix — filed for whoever owns test-suite reliability under concurrent-agent load next.
+
+**Severity:** MEDIUM — does not affect production correctness, but produces false-negative CI/test
+signal that could mask a real regression on a loaded machine, and burns agent turns re-running the
+full suite to distinguish signal from noise (as it did here).
+
+**Related:** BL-331 (the fastembed contention warning this correlates with).
+
+Citations: [worktree-agent-ab3fed41eae79e637, claude, BL-412/BL-405 packet, 1: three consecutive
+`npx nx test memory-server` full-suite runs during this packet — 2 clean (0 failures), 1 showing
+`throughput-golden.spec.ts > throughput_writes_per_sec — TursoAdapter > Hook timed out in 30000ms`,
+2: `[fastembed] WARNING (BL-331): another fastembed host process (pid 69700 …) is ALREADY RUNNING`
+observed in the same session's test stderr, 2026-08-03]
+
+---
+
+### BL-426 — `libc++abi: terminating due to uncaught exception … mutex lock failed: Invalid argument` observed on backend SIGTERM during test teardown — **Open (MEDIUM)** (2026-08-03)
+
+**Found while:** running `bl412-ping-no-live-store.spec.ts` + `backend.spec.ts` together
+(`npx nx test memory-server -- .../bl412-ping-no-live-store.spec.ts .../backend.spec.ts`) as part of
+proving BL-412's red→green. Stderr, immediately after `[memory-server backend] SIGTERM — shutting
+down`:
+```
+libc++abi: terminating due to uncaught exception of type std::__1::system_error: mutex lock failed: Invalid argument
+```
+This is a native (C++, not JS) crash — almost certainly from the ONNX runtime / fastembed native
+addon or the Turso native binding, triggered somewhere in the shutdown path (the timing — immediately
+after the SIGTERM log line — points at `terminateEmbedWorkers()` or a native adapter's `close()`).
+Every test run in this packet that hit this line still reported all tests passing (the vitest process
+itself survived), so this crash is happening in a CHILD/worker process or a background native call
+whose failure isn't propagated to vitest's own exit code — it is not silently masking a test failure,
+but a native `mutex lock failed` during shutdown is exactly the kind of signal that could correlate
+with the BL-405 class of shutdown-path defects (a native mutex left in a bad state by concurrent
+close attempts) and deserves investigation on its own, not folded into BL-405's now-closed record.
+
+**Not investigated further** — out of scope for this packet's turn budget once the root cause was
+identified as native/child-process rather than JS. Root cause NOT established; do not guess it.
+
+**Severity:** MEDIUM — does not appear to fail any test today, but an uncaught native exception during
+shutdown is exactly the class of bug that graduates to a real crash (or a corrupted native handle) the
+moment timing shifts, and it is currently invisible to anything but a human reading raw stderr.
+
+**Fix sketch:** reproduce in isolation (single test file, not the combined run) to identify which
+native component throws; check whether it's the ONNX runtime's own thread-pool teardown, the fastembed
+host IPC teardown (`terminateEmbedWorkers()`), or a Turso native handle being closed twice
+concurrently (this packet's own BL-405 fix newly introduces a second close path —
+`WriteQueue.closeAllForShutdown()` — worth checking it isn't itself racing `closeAllAdapters()` on a
+shared native resource under real concurrent load, even though the regression test proves it's correct
+under this packet's own sequential-await conditions).
+
+**Related:** BL-405 (adjacent shutdown-path work; this surfaced during BL-405/BL-412 verification, not
+caused by it — the crash line appears identically whether or not this packet's fixes are present).
+
+Citations: [worktree-agent-ab3fed41eae79e637, claude, BL-412/BL-405 packet, 1: `npx nx test
+memory-server -- .../bl412-ping-no-live-store.spec.ts .../backend.spec.ts` stderr, 2026-08-03T16:23Z,
+verbatim: "libc++abi: terminating due to uncaught exception of type std::__1::system_error: mutex lock
+failed: Invalid argument" immediately following "[memory-server backend] SIGTERM — shutting down"]
+
+---
