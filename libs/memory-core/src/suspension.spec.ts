@@ -24,6 +24,7 @@ import {
   stopSuspensionTracking,
   suspensionBetween,
   suspensionFields,
+  suspensionResolutionFloorMs,
   suspensionIntervals,
 } from './suspension.js';
 
@@ -126,13 +127,25 @@ describe('BL-369 — duration accounting annotates, never subtracts', () => {
     expect(acc.blocked_ms).toBe(400);
   });
 
-  it('emits NOTHING when the process ran normally, so the common case costs no log bytes', () => {
-    expect(suspensionFields(durationOf(0, 500))).toEqual({});
+  // BOTH counters are always present, `0` rather than omitted. An absent field
+  // is indistinguishable from "not instrumented" — the ambiguity behind
+  // BL-319 (`time_to_vector_ms` with zero samples), BL-347 (an FTS probe
+  // reading 0 whether the index was dead or healthy), BL-376 and BL-378. A `0`
+  // is a positive claim that the ledger looked and found nothing.
+  it('emits BOTH counters as 0 when the process ran normally — silence is never the signal', () => {
+    expect(suspensionFields(durationOf(0, 500))).toEqual({ suspended_ms: 0, blocked_ms: 0 });
   });
 
-  it('emits the counters only when non-zero, so their presence is itself the signal', () => {
+  it('still emits the zero sibling when only one counter is non-zero', () => {
     _recordIntervalForTest({ startMs: 0, endMs: 300, kind: 'suspend', cpuUs: 0 });
-    expect(suspensionFields(durationOf(0, 1000))).toEqual({ suspended_ms: 300 });
+    expect(suspensionFields(durationOf(0, 1000))).toEqual({ suspended_ms: 300, blocked_ms: 0 });
+  });
+
+  it('reports a resolution floor, so `0` is never read as infinite precision', () => {
+    // A suspension shorter than the heartbeat + slack is invisible. A consumer
+    // publishing percentiles must be able to quote that bound.
+    expect(suspensionResolutionFloorMs()).toBeGreaterThan(0);
+    expect(suspensionResolutionFloorMs()).toBeLessThan(60_000);
   });
 });
 

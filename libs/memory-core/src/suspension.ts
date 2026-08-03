@@ -205,15 +205,35 @@ export function durationOf(startMs: number, nowMs = Date.now()): SuspensionAccou
 }
 
 /**
- * Fields to merge into a log record. Omits the two counters entirely when they
- * are zero, so the common case adds no bytes to the log and a reader can treat
- * their PRESENCE as the signal.
+ * Fields to merge into a log record.
+ *
+ * BOTH counters are ALWAYS present, `0` rather than omitted. This reverses an
+ * earlier omit-when-zero design, and the reasoning is the more important half:
+ * **an absent field is indistinguishable from "not instrumented."** That exact
+ * ambiguity has bitten this project repeatedly — `time_to_vector_ms` existing
+ * with zero samples (BL-319); BL-347's FTS probe reading 0 whether the index
+ * was dead or healthy; BL-376's warmup budget; BL-378's brakes. In every case
+ * silence was read as health.
+ *
+ * A `0` is a positive claim: the ledger looked and found nothing. Note it is
+ * bounded by `suspensionResolutionFloorMs()` — it means "no suspension longer
+ * than the floor", not "no suspension".
  */
 export function suspensionFields(
   a: SuspensionAccounting,
-): { suspended_ms?: number; blocked_ms?: number } {
-  return {
-    ...(a.suspended_ms > 0 ? { suspended_ms: a.suspended_ms } : {}),
-    ...(a.blocked_ms > 0 ? { blocked_ms: a.blocked_ms } : {}),
-  };
+): { suspended_ms: number; blocked_ms: number } {
+  return { suspended_ms: a.suspended_ms, blocked_ms: a.blocked_ms };
+}
+
+/**
+ * Resolution floor of the detector, in ms. A suspension shorter than this is
+ * invisible to the ledger.
+ *
+ * Exported so a status surface can REPORT the floor rather than implying
+ * infinite precision — `suspended_ms: 0` means "nothing longer than this was
+ * observed", not "the process ran continuously to the microsecond". Consumers
+ * that publish percentiles should quote it alongside.
+ */
+export function suspensionResolutionFloorMs(): number {
+  return TICK_MS + LATE_SLACK_MS;
 }

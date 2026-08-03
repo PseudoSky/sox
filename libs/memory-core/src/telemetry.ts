@@ -240,14 +240,18 @@ export interface LogFields {
 function annotateSuspension(fields?: LogFields): LogFields | undefined {
   const d = fields?.['duration_ms'];
   if (typeof d !== 'number' || !Number.isFinite(d) || d <= 0) return fields;
+  // CLOCK DOMAIN: the ledger stores `Date.now()` endpoints and this window is
+  // computed from `Date.now()`, so the overlap is a same-domain subtraction.
+  // Do NOT "improve" one side to `performance.now()` — the two clocks are
+  // identical in RATE (measured 0.002 ms apart over 250 ms) but have different
+  // EPOCHS, so a mixed-domain overlap silently returns garbage rather than
+  // failing. Both sides move together or neither does.
   const end = Date.now();
   const extra = suspensionBetween(end - d, end);
-  if (extra.suspended_ms === 0 && extra.blocked_ms === 0) return fields;
-  return {
-    ...fields,
-    ...(extra.suspended_ms > 0 ? { suspended_ms: extra.suspended_ms } : {}),
-    ...(extra.blocked_ms > 0 ? { blocked_ms: extra.blocked_ms } : {}),
-  };
+  // Always emit both, `0` included — an absent field is indistinguishable from
+  // "not instrumented" (BL-319/BL-347/BL-376/BL-378 all failed that way). A `0`
+  // is a positive claim that the ledger looked and found nothing.
+  return { ...fields, suspended_ms: extra.suspended_ms, blocked_ms: extra.blocked_ms };
 }
 
 function emit(level: LogLevel, event: string, rawFields?: LogFields): void {

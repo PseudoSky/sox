@@ -176,11 +176,21 @@ quoting a tail number.
 > | Records | How to read a tail number |
 > |---|---|
 > | **Before** the boundary | `duration_ms` silently includes suspension. Reconstruct it by hand — intersect each window with `pmset -g log` (`~/.adhd/sox-ecosystem/memory/log-analysis/bl331-sleep-overlap.py`). Every published p90/p99/max stays inflated; **they do not become correct retroactively.** |
-> | **After** the boundary | `duration_ms` is still the raw elapsed time, but a record that overlapped a suspension now also carries **`suspended_ms`** and/or **`blocked_ms`**. Drop or subtract those samples explicitly. |
+> | **After** the boundary | `duration_ms` is still the raw elapsed time, and **every** record carries **`suspended_ms`** and **`blocked_ms`**. Drop or subtract non-zero samples explicitly. |
 >
-> The counters are **omitted entirely when zero**, so their *presence* is the signal — do not read
-> an absent `suspended_ms` as "not yet instrumented" for a post-boundary record; it means the
-> process ran continuously.
+> **Both counters are ALWAYS present, `0` rather than omitted** — so a record that lacks them is
+> a *pre-boundary* record, and that is the only thing absence means. An earlier design omitted
+> them when zero; that was reversed, because **an absent field is indistinguishable from "not
+> instrumented"**, which is the exact ambiguity behind BL-319 (`time_to_vector_ms` existing with
+> zero samples), BL-347 (an FTS probe reading 0 whether the index was dead or healthy), BL-376 and
+> BL-378. In every one of those, silence was read as health. A `0` is a **positive claim**: the
+> ledger looked and found nothing.
+>
+> **A `0` is bounded, not absolute.** The detector's resolution floor is the heartbeat interval
+> plus slack (`suspensionResolutionFloorMs()`, currently **1750 ms**); a suspension shorter than
+> that is invisible. `suspended_ms: 0` means "no suspension longer than the floor", not "no
+> suspension". Quote the floor alongside any percentile derived from these fields rather than
+> implying infinite precision.
 >
 > **`blocked_ms` is a second, distinct finding, not a variant of the first.** The ledger separates
 > *system suspend* (no CPU consumed across the gap) from *event-loop block* (CPU consumed). A span
