@@ -201,6 +201,14 @@ export interface AdapterConfig {
   url?: string;
   authToken?: string;
   readonly?: boolean;
+  /** (BL-391) TursoAdapter only: combined with `readonly: true`, keeps
+   *  `fts_match`/`fts_score` working — Turso's native readonly connect
+   *  option blocks it outright (`Resource is read-only`), a genuine engine
+   *  limitation, not a missing experimental flag. See
+   *  `TursoAdapterImpl.connect()`'s doc comment for the full mechanism and
+   *  measurements. Ignored by SqliteAdapter (its native readonly already
+   *  coexists with FTS5). */
+  allowFtsInReadonly?: boolean;
   encryption?: {
     cipher: 'aegis256' | 'aes256gcm';
     hexkey: string;

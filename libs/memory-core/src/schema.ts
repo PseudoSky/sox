@@ -17,7 +17,12 @@ export const FTS_DDL = GraphFTS_DDL;
  *   - foreign_keys = ON
  *   - cache_size   = -64000
  *
- * Read-only connections additionally apply `query_only = ON` in openDbReadOnly().
+ * (BL-391) `openDbReadOnly()` no longer applies `PRAGMA query_only = ON` —
+ * on Turso that pragma blocks `fts_match`/`fts_score` the same way native
+ * readonly does. Read-only enforcement instead comes from
+ * `allowFtsInReadonly`'s application-level write guard on TursoAdapterImpl
+ * (see turso-adapter.ts's `_assertWritable()`), and from the real OS-level
+ * `readonly: true` on SqliteAdapter.
  */
 export const PRAGMAS = `
 PRAGMA journal_mode = WAL;

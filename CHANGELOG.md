@@ -89,6 +89,72 @@ does. Watched red with the pre-fix hardcoded `0.82` restored (the pair wrongly c
 green with the delegation restored (`communities_upserted: 0`). A control test at cosine 0.92
 confirms the same pair DOES cluster once similarity genuinely clears 0.87.
 
+## [Unreleased] — BL-391/BL-329: federated recall's BM25 arm works on Turso, dead arms are observable, and better-sqlite3 fails loud on a Turso-native store
+
+**BL-391 — a read-only Turso connection cannot run `fts_match`, so federated recall's BM25 arm was
+dead on the default backend, and the failure was swallowed whole-store.**
+
+Measured directly against the real driver: `readonly: false` → `fts_match` returns real hits;
+`readonly: true` → `step failed: Error: Resource is read-only`, while a plain `COUNT(*)` works
+identically under both. **This is not the missing `index_method` experimental flag** — that flag
+is unconditionally on for every Turso connection regardless of readonly
+(`turso-adapter.ts::connect()`). It is a genuine Turso engine limitation specific to
+`fts_match`/`fts_score` execution: independently, setting `PRAGMA query_only=ON` on an otherwise
+writable connection produces the same class of failure via a different message (`Parse error:
+Cannot execute write statement in query_only mode`) — Turso's query planner treats `fts_match` as
+a write-shaped statement.
+
+`openDbReadOnly` (`db.ts`) is the sole production entry point for federated recall's non-primary
+store connections (`getFederationConnection` → `recallFromOpenDb`, `recall.ts`), and it passed
+`readonly: true` unconditionally — killing the BM25 arm on every federated Turso store while
+single-store recall (which uses the writable primary connection) stayed unaffected.
+
+**The fix — `TursoAdapterImpl.connect({ readonly: true, allowFtsInReadonly: true })`:** opens the
+native driver connection WITHOUT its `readonly` option (so `fts_match` keeps working) and instead
+enforces read-only at the application layer — `executeRun`/`exec`/`transaction` all throw
+immediately (`_assertWritable()`). `openDbReadOnly` now always requests this mode and no longer
+sets `PRAGMA query_only` (which blocked `fts_match` identically). SqliteAdapter is unaffected —
+its native readonly already coexists with FTS5.
+
+**The silent swallow, closed too:** `memoryRecall`'s FTS query previously had a bare
+`catch { /* FTS query may fail on special chars */ }`, discarding ANY failure — including the
+read-only one — with zero signal. `RecallResponse` and `FederatedRecallResponse` now carry a
+`degradations: string[]` field (always present on the federated response, empty when clean) that
+surfaces per-channel failures (`fts: ...`, `vec: ...`) and unreachable stores
+(`scope=<scope>: store unreachable (<dbPath>) — <reason>`) instead of a dead arm looking like a
+clean, empty result.
+
+**BL-329 — a Turso FTS index permanently blocked EVERY better-sqlite3 fallback path with an opaque
+error.** Opening a Turso-native store (one carrying a Tantivy-backed `USING fts` index) with
+better-sqlite3 succeeded at `new Database(path)` (schema isn't parsed at open time) but threw on
+the FIRST query touching `sqlite_master` — effectively any query, since SQLite parses every
+`CREATE` statement's SQL text before running anything:
+`SqliteError: malformed database schema (__turso_internal_fts_dir_idx_fts_node_key) - near "USING": syntax error`,
+naming an internal Tantivy object as if it were generic corruption. This already cost real
+debugging time (`tools/baseline-capture`'s WAL-checkpoint helper hit it against the live store).
+
+`SqliteAdapterImpl`'s constructor now probes for this at open time with one cheap `sqlite_master`
+read and converts it into `ETursoNativeStore` — a typed, store-path-carrying error
+(`err.code === 'E_TURSO_NATIVE_STORE'`, `err.dbPath`) whose `.message` explains what's actually
+wrong ("this is a Turso-native store, better-sqlite3 cannot open it — use
+createTursoAdapter()/TursoAdapterImpl instead") without the opaque `malformed database schema
+(__turso_internal_...)` framing reaching the caller. The raw driver error is preserved on `.cause`
+for a caller that wants it.
+
+**Verified red→green** (fix disabled, confirmed the exact target failure, re-enabled, confirmed
+fixed) — never asserted from "it would fail":
+- `libs/data/store/store-adapter/src/__tests__/turso-readonly-fts.bl391.test.ts` — hard readonly
+  fails `fts_match` with "Resource is read-only"; soft readonly (`allowFtsInReadonly`) succeeds and
+  still refuses writes.
+- `libs/memory-core/src/recall-federation.bl391.spec.ts` — `federatedRecall` returns a real `bm25`
+  score-breakdown contribution from a non-primary read-only store; a forced dead FTS arm surfaces
+  in `response.degradations` instead of vanishing; an unreachable store surfaces too.
+- `libs/data/store/store-adapter/src/__tests__/sqlite-turso-native-store.bl329.test.ts` — raw
+  better-sqlite3 repro of the opaque error, `SqliteAdapterImpl`/`createSqliteAdapter` throwing
+  `ETursoNativeStore` instead, and a plain SQLite store proven unaffected (no false positive).
+
+Citations: [wip/turso-live-metrics, claude, BL-391/BL-329, 1: libs/data/store/store-adapter/src/turso-adapter.ts, 2: libs/data/store/store-adapter/src/sqlite-adapter.ts, 3: libs/data/store/store-adapter/src/errors.ts, 4: libs/data/store/store-adapter/src/types.ts, 5: libs/data/store/store-adapter/src/factory.ts, 6: libs/memory-core/src/db.ts, 7: libs/memory-core/src/recall.ts, 8: libs/memory-core/src/schema.ts]
+
 ---
 
 ## [Unreleased] — BL-407: `smoke-test.mjs`'s `--extension` fast pass no longer wedges on unrelated packages

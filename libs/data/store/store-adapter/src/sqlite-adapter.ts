@@ -23,6 +23,7 @@ import type {
   AllResult,
   TransactionOptions,
 } from './types.js';
+import { ETursoNativeStore, isTursoNativeStoreSchemaError } from './errors.js';
 
 type Sqlite3Database = import('better-sqlite3').Database;
 type Sqlite3Statement = import('better-sqlite3').Statement;
@@ -133,6 +134,32 @@ export class SqliteAdapterImpl implements SqliteAdapter {
       this.config = {
         type: 'sqlite',
       };
+    }
+
+    // (BL-329) `new DatabaseConstructor()` above succeeds even against a
+    // Turso-native store — better-sqlite3 doesn't parse the schema at open
+    // time. The failure would otherwise surface opaquely, named after
+    // whatever internal Tantivy object happens to sort first, from
+    // wherever the caller's FIRST real query happens to be (could be deep
+    // in an unrelated code path, minutes/hours later). Probe for it HERE,
+    // at open time, with a single cheap `sqlite_master` read — SQLite
+    // parses every CREATE statement's SQL text to build the schema before
+    // running ANY statement, so this one probe query is sufficient
+    // regardless of which table a caller eventually touches — and convert
+    // it into a typed, store-path-carrying error immediately.
+    try {
+      this.db.prepare('SELECT name FROM sqlite_master LIMIT 1').get();
+    } catch (err) {
+      if (isTursoNativeStoreSchemaError(err)) {
+        const path = this.config.dbPath ?? this.db.name ?? '<unknown path>';
+        try {
+          this.db.close();
+        } catch {
+          // best-effort — we're already throwing
+        }
+        throw new ETursoNativeStore(path, err);
+      }
+      throw err;
     }
 
     this.cache = new StatementCache(256);

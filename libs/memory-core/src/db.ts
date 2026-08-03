@@ -887,7 +887,15 @@ export async function openDbReadOnly(dbPath: string): Promise<StoreAdapter> {
   // BL-41: expand ~ at the sink (mirrors openDb).
   dbPath = expandDbPath(dbPath);
   const { createStoreAdapter } = await import('@adhd/sox-store-adapter');
-  const adapter = await createStoreAdapter({ dbPath, readonly: true });
+  // BL-391: allowFtsInReadonly is required — without it, federated recall's
+  // BM25 arm is dead on Turso. Turso's native readonly connect option (and,
+  // independently, `PRAGMA query_only=ON`) both make `fts_match`/`fts_score`
+  // fail with a write-shaped error even though the query is a pure SELECT —
+  // a genuine engine limitation, not a missing `index_method` experimental
+  // flag (that flag is unconditionally on for every Turso connection; see
+  // TursoAdapterImpl.connect()). On SqliteAdapter this option is a no-op —
+  // SQLite's native readonly already coexists fine with FTS5.
+  const adapter = await createStoreAdapter({ dbPath, readonly: true, allowFtsInReadonly: true });
 
   // Load sqlite-vec extension only for adapters without native vector support.
   // BL-323: named export only — see dropVec0ViaBetterSqlite3() above.
@@ -897,10 +905,18 @@ export async function openDbReadOnly(dbPath: string): Promise<StoreAdapter> {
     loadSqliteVec(rawDb);
   }
 
-  // WAL pragma needed for read-only connections; query_only prevents accidental writes
+  // WAL pragma needed for read-only connections.
   await adapter.pragmaSet('journal_mode', 'WAL');
   await adapter.pragmaSet('busy_timeout', 3000);
-  await adapter.pragmaSet('query_only', true);
+  // BL-391: `query_only` is intentionally NOT set here anymore. On Turso it
+  // blocks `fts_match`/`fts_score` exactly like native readonly does
+  // (`Parse error: Cannot execute write statement in query_only mode`,
+  // measured empirically) — it is not a safe belt-and-suspenders addition on
+  // this backend. Write protection instead comes from `allowFtsInReadonly`'s
+  // application-level guard on TursoAdapterImpl (`executeRun`/`exec`/
+  // `transaction` all throw — see `_assertWritable()`), and, on SQLite, from
+  // the real OS-level `readonly: true` passed to better-sqlite3 (which was
+  // never the problem and needs no additional pragma).
   return adapter;
 }
 

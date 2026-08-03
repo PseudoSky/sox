@@ -213,6 +213,16 @@ export interface RecallResponse {
     totalTokensAfterExpansion: number;
     expansionTruncated: boolean;
   };
+  /**
+   * (BL-391) Non-fatal per-channel failures observed while assembling this
+   * response — e.g. the FTS/BM25 arm failing (was previously swallowed
+   * silently at `catch { /* FTS query may fail on special chars *\/ }`,
+   * which made a federated store's BM25 arm dying on Turso's read-only
+   * `fts_match` limitation indistinguishable from "no FTS matches found").
+   * Absent (or empty) when nothing degraded — never omitted to hide a real
+   * failure.
+   */
+  degradations?: string[];
 }
 
 // ── Parent-context expansion ──────────────────────────────────────────────────
@@ -469,14 +479,21 @@ export async function memoryRecall(
   //    on getProviderCallCount().
   //
   //    BL-273: if embedding is dead (worker process gone), skip vec channel.
+  //
+  // BL-391: collects non-fatal per-channel failures so a caller can tell
+  // "channel found nothing" apart from "channel died silently" — surfaced on
+  // RecallResponse.degradations instead of being swallowed by a bare catch.
+  const degradations: string[] = [];
   let embedVecFailed = false;
   let queryVecJson: string | undefined;
   try {
     const queryVec = await embedWithRecallTimeout(query, resolveRecallEmbedTimeoutMs());
     queryVecJson = vecToJson(queryVec);
   } catch (err) {
-    console.error(`[sox-memory] WARNING: embed() failed or timed out in recall, skipping vec channel: ${err instanceof Error ? err.message : String(err)}`);
+    const msg = err instanceof Error ? err.message : String(err);
+    console.error(`[sox-memory] WARNING: embed() failed or timed out in recall, skipping vec channel: ${msg}`);
     embedVecFailed = true;
+    degradations.push(`vec: ${msg}`);
   }
 
   // Validity predicate
@@ -587,8 +604,17 @@ export async function memoryRecall(
         );
       }
       ftsResult.rows.forEach((r, i) => ftsRowids.set(r.rowid, i + 1));
-    } catch {
-      // FTS query may fail on special chars — silently ignore
+    } catch (err) {
+      // BL-391: the FTS/BM25 arm can fail for a benign reason (special-char
+      // query syntax) OR because the underlying connection cannot run
+      // fts_match at all (Turso read-only federation connections, before the
+      // allowFtsInReadonly fix — "Resource is read-only"). Either way this
+      // degrades results (BM25 signal silently missing) rather than failing
+      // the whole recall, but the degradation itself must be observable —
+      // record it instead of swallowing it outright.
+      const msg = err instanceof Error ? err.message : String(err);
+      console.error(`[sox-memory] WARNING: FTS/BM25 channel failed in recall, continuing without it: ${msg}`);
+      degradations.push(`fts: ${msg}`);
     }
   }
 
@@ -1100,6 +1126,7 @@ export async function memoryRecall(
     },
   };
   if (filterStats) response.filterStats = filterStats;
+  if (degradations.length > 0) response.degradations = degradations;
   return response;
 }
 
@@ -1124,6 +1151,16 @@ export interface StoreDescriptor {
 export interface FederatedRecallResponse {
   results: RecallResult[];
   provider_call_count: number;
+  /**
+   * (BL-391) Non-fatal degradations observed across the federated stores —
+   * a store's FTS/BM25 arm failing, a store's connection being entirely
+   * unreachable, or a per-store recall throwing outright. Each entry is
+   * prefixed `scope=<scope>: `. ALWAYS present (empty array when nothing
+   * degraded) — federated recall must never look "clean" when an arm
+   * quietly died; that silent-degrade-at-whole-store-granularity behavior
+   * is exactly what BL-391 exists to close.
+   */
+  degradations: string[];
 }
 
 /**
@@ -1202,12 +1239,24 @@ export function discoverStores(requestedScopes?: string[]): StoreDescriptor[] {
 // Keeps connections alive across multiple federatedRecall calls (warm page cache).
 const _connCache = new Map<string, StoreAdapter>();
 
+// (BL-391) Last connection-open failure reason per dbPath, so federatedRecall
+// can surface WHY a store was excluded instead of it silently vanishing from
+// results. Public signature of getFederationConnection() is unchanged
+// (StoreAdapter | null) for backward compatibility with existing external
+// callers — this is a side-channel federatedRecall reads, not part of the
+// return value.
+const _connErrors = new Map<string, string>();
+
 export async function getFederationConnection(dbPath: string): Promise<StoreAdapter | null> {
   if (!_connCache.has(dbPath)) {
     try {
       const adapter = await openDbReadOnly(dbPath);
       _connCache.set(dbPath, adapter);
-    } catch { return null; }
+      _connErrors.delete(dbPath);
+    } catch (err) {
+      _connErrors.set(dbPath, err instanceof Error ? err.message : String(err));
+      return null;
+    }
   }
   return _connCache.get(dbPath) ?? null;
 }
@@ -1222,17 +1271,27 @@ export async function closeFederationConnections(): Promise<void> {
 /**
  * Run per-store hybrid pipeline using a pre-opened connection.
  * Zero LLM calls.
+ *
+ * (BL-391) Previously this swallowed EVERY failure — including a dead
+ * FTS/BM25 arm inside memoryRecall AND an outright throw from memoryRecall
+ * itself — down to a bare `[]`, indistinguishable from "this store
+ * genuinely has no matches". That is the whole-store swallow: a federated
+ * query that lost its BM25 arm (or failed entirely) looked exactly like a
+ * clean, successful query with zero hits. Now both memoryRecall's own
+ * per-channel degradations AND an outright throw from memoryRecall are
+ * returned to the caller instead of being discarded.
  */
 async function recallFromOpenDb(
   adapter: StoreAdapter,
   scope: string,
   params: RecallParams,
-): Promise<RecallResult[]> {
+): Promise<{ results: RecallResult[]; degradations: string[] }> {
   try {
     const res = await memoryRecall(adapter, scope, params);
-    return res.results;
-  } catch {
-    return [];
+    return { results: res.results, degradations: res.degradations ?? [] };
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    return { results: [], degradations: [`recall failed entirely — ${msg}`] };
   }
 }
 
@@ -1271,21 +1330,32 @@ export async function federatedRecall(
   params: RecallParams,
 ): Promise<FederatedRecallResponse> {
   if (!stores || stores.length === 0) {
-    return { results: [], provider_call_count: 0 };
+    return { results: [], provider_call_count: 0, degradations: [] };
   }
 
   const beforeCount = getProviderCallCount();
 
   const { agent_id, token_budget = DEFAULT_TOKEN_BUDGET, limit = 10 } = params;
 
+  // (BL-391) Accumulates every non-fatal degradation across all stores —
+  // never dropped. See FederatedRecallResponse.degradations doc comment.
+  const federationDegradations: string[] = [];
+
   // Use cached connections (warm page cache, amortize open cost).
-  interface OpenConn { scope: string; adapter: StoreAdapter | null }
+  interface OpenConn { scope: string; dbPath: string; adapter: StoreAdapter | null }
   const openConns: OpenConn[] = await Promise.all(
     stores.map(async ({ scope, dbPath }): Promise<OpenConn> => {
       const adapter = await getFederationConnection(dbPath);
-      return { scope, adapter };
+      return { scope, dbPath, adapter };
     }),
   );
+  for (const { scope, dbPath, adapter } of openConns) {
+    if (adapter) continue;
+    // BL-391: a store that failed to open must not silently vanish from
+    // federated results as if it simply had no matches.
+    const reason = _connErrors.get(dbPath) ?? 'connection unavailable';
+    federationDegradations.push(`scope=${scope}: store unreachable (${dbPath}) — ${reason}`);
+  }
 
   // 1. Collect SUPERSEDES targets.
   const suppressedUids = new Set<string>();
@@ -1299,8 +1369,9 @@ export async function federatedRecall(
   const allStoreResults: Array<{ scope: string; results: RecallResult[] }> = [];
   for (const { scope, adapter } of openConns) {
     if (!adapter) continue;
-    const results = await recallFromOpenDb(adapter, scope, storeParams);
+    const { results, degradations } = await recallFromOpenDb(adapter, scope, storeParams);
     allStoreResults.push({ scope, results });
+    for (const d of degradations) federationDegradations.push(`scope=${scope}: ${d}`);
   }
 
   // 3. Merge with scope weighting + agent_id boost
@@ -1378,7 +1449,7 @@ export async function federatedRecall(
   }
 
   const afterCount = getProviderCallCount();
-  return { results, provider_call_count: afterCount - beforeCount };
+  return { results, provider_call_count: afterCount - beforeCount, degradations: federationDegradations };
 }
 
 // ── Helper functions (centralized from client/db.ts) ─────────────────────

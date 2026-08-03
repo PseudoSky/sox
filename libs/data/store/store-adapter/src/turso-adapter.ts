@@ -80,6 +80,12 @@ export class TursoAdapterImpl implements TursoAdapter {
    *  `connect()`. */
   _walBaseline: WalIdentity | null = null;
 
+  /** (BL-391) Set by `connect()` when opened with `readonly: true,
+   *  allowFtsInReadonly: true` — the native driver connection is writable
+   *  (required for `fts_match` to work at all), so this adapter enforces
+   *  read-only at the application layer instead. See `_assertWritable()`. */
+  private _softReadonly = false;
+
   /**
    * (BL-321) `this.db` is ONE shared connection handle — @tursodatabase/database
    * local mode has no per-transaction connection or session isolation. Two
@@ -140,6 +146,34 @@ export class TursoAdapterImpl implements TursoAdapter {
     dbPath?: string;
     authToken?: string;
     readonly?: boolean;
+    /**
+     * (BL-391) When combined with `readonly: true`, keeps `fts_match`/
+     * `fts_score` functional instead of failing with `Resource is
+     * read-only`. Measured empirically (2026-08-03): Turso's native
+     * `readonly` connect option treats `fts_match` as a write-shaped
+     * statement — it fails identically whether protection comes from the
+     * driver's `readonly` option OR from a `PRAGMA query_only=ON` on an
+     * otherwise-writable connection (`Parse error: Cannot execute write
+     * statement in query_only mode`). This is NOT the missing
+     * `index_method` flag — that experiment is unconditionally on above,
+     * with or without this option, and plain reads (`COUNT(*)`) work
+     * identically under real Turso readonly. It is a genuine Turso engine
+     * limitation specific to `fts_match`/`fts_score` execution.
+     *
+     * With this flag, the connection opens WITHOUT the native `readonly`
+     * driver option (so `fts_match` works), and this adapter instance
+     * enforces read-only at the application layer instead: `executeRun`,
+     * `exec`, and `transaction` all throw immediately (see
+     * `_assertWritable`). Metadata stamping / open-time integrity repair
+     * are still skipped, identically to hard `readonly: true` (BL-352's
+     * writes are exactly the kind of accidental mutation to a
+     * non-primary/federated store this option exists to prevent).
+     *
+     * Ignored unless `readonly` is also `true`. Default false — existing
+     * callers (e.g. `backup.ts`'s VACUUM INTO source, which never touches
+     * `fts_match`) are unaffected.
+     */
+    allowFtsInReadonly?: boolean;
     encryption?: AdapterConfig['encryption'];
     experimental?: { multiprocessWal?: boolean };
     defaultQueryTimeout?: number;
@@ -166,9 +200,17 @@ export class TursoAdapterImpl implements TursoAdapter {
       throw new Error('TursoAdapter requires either url or dbPath');
     }
 
+    // (BL-391) Soft-readonly: caller wants read-only semantics but needs
+    // fts_match to keep working, which Turso's native readonly option
+    // categorically blocks (see allowFtsInReadonly doc comment above). Do
+    // NOT forward `readonly` to the native driver in that case — the
+    // connection opens writable at the driver level, and this instance
+    // enforces read-only itself via `_assertWritable()`.
+    const softReadonly = opts.readonly === true && opts.allowFtsInReadonly === true;
+
     // Build DatabaseOpts
     const dbOpts: any = {};
-    if (opts.readonly !== undefined) dbOpts.readonly = opts.readonly;
+    if (opts.readonly !== undefined && !softReadonly) dbOpts.readonly = opts.readonly;
     if (opts.defaultQueryTimeout !== undefined) dbOpts.defaultQueryTimeout = opts.defaultQueryTimeout;
 
     // index_method is ALWAYS on, unconditionally — not a toggle. Turso's FTS
@@ -274,6 +316,7 @@ export class TursoAdapterImpl implements TursoAdapter {
     };
 
     const instance = new TursoAdapterImpl(db, config, capabilities);
+    instance._softReadonly = softReadonly;
 
     // Stamp adapter metadata (non-fatal)
     if (!opts.readonly) {
@@ -351,6 +394,20 @@ export class TursoAdapterImpl implements TursoAdapter {
     return { destPath, integrityCheck };
   }
 
+  /** (BL-391) Throws if this adapter was opened `readonly: true,
+   *  allowFtsInReadonly: true` — the native driver connection is writable in
+   *  that mode (a requirement for `fts_match`), so mutation must be blocked
+   *  here instead. Never triggers for a normal writable connection or for a
+   *  hard `readonly: true` (native driver already refuses those writes). */
+  private _assertWritable(): void {
+    if (this._softReadonly) {
+      throw new Error(
+        '[BL-391] TursoAdapter is read-only (opened with allowFtsInReadonly for federated ' +
+          'recall / read-only fan-out) — writes are not permitted on this connection.',
+      );
+    }
+  }
+
   async executeGet<T = Record<string, unknown>>(sql: string, args?: unknown[]): Promise<T | null> {
     const row = args !== undefined ? await this.db.get(sql, ...args) : await this.db.get(sql);
     return (row as T | null) ?? null;
@@ -364,6 +421,7 @@ export class TursoAdapterImpl implements TursoAdapter {
   }
 
   async executeRun(sql: string, args?: unknown[]): Promise<RunResult> {
+    this._assertWritable();
     const info = args !== undefined ? await this.db.run(sql, ...args) : await this.db.run(sql);
     return { rowsAffected: info.changes as number, lastInsertRowid: info.lastInsertRowid as number };
   }
@@ -385,6 +443,7 @@ export class TursoAdapterImpl implements TursoAdapter {
    * starts executing them for real.
    */
   async exec(sql: string): Promise<void> {
+    this._assertWritable();
     await this.db.exec(sql);
   }
 
@@ -402,6 +461,7 @@ export class TursoAdapterImpl implements TursoAdapter {
     fn: (tx: AdapterTransaction) => T | Promise<T>,
     opts?: TransactionOptions,
   ): Promise<T> {
+    this._assertWritable();
     // (BL-321) Serialize the entire BEGIN…COMMIT/ROLLBACK critical section —
     // including retries — against any other concurrent transaction() call on
     // this adapter instance. See `_withTxLock` doc comment above.

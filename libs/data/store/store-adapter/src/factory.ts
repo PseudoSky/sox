@@ -43,6 +43,7 @@ export async function createStoreAdapter(
     const authToken = config?.authToken || process.env.TURSO_AUTH_TOKEN;
     if (authToken !== undefined) tursoOpts.authToken = authToken;
     if (config?.readonly !== undefined) tursoOpts.readonly = config.readonly;
+    if (config?.allowFtsInReadonly !== undefined) tursoOpts.allowFtsInReadonly = config.allowFtsInReadonly;
     if (config?.experimental !== undefined) tursoOpts.experimental = config.experimental;
     adapter = await createTursoAdapter(tursoOpts);
   } else {
@@ -120,6 +121,7 @@ export async function createTursoAdapter(
     dbPath?: string;
     authToken?: string;
     readonly?: boolean;
+    allowFtsInReadonly?: boolean;
     experimental?: { multiprocessWal?: boolean };
   },
 ): Promise<TursoAdapter> {
