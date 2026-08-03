@@ -4,9 +4,9 @@ Project backlog for sox-ecosystem. Each item: what's wrong, where, severity, and
 
 ---
 
-## Current status — 2026-08-01 (regenerated mechanically; see BL-224)
+## Current status — 2026-08-03 (regenerated mechanically; see BL-224)
 
-**Total open: 77.** (BL-407 resolved 2026-08-02 from PKT-50 — `--only <dir>` (repeatable) added to `verify-exports-publint-attw.mjs`; `smoke-test.mjs` now computes the filtered extension's dir + bundle siblings + transitive nx-graph workspace deps and passes them as scope, verified live against the real repo (tokenguard: 2 packages, memory-server bundle: 17 packages incl. all bundle siblings) and pinned with a hermetic red→green fixture — see CHANGELOG.md; BL-390 resolved 2026-08-02 from PKT-37 — `registry:sync-index` now refuses a dirty tree (or stamps `provisional`/`builtFromCommit`), watched red→green — see CHANGELOG.md; BL-380 resolved 2026-08-02 from PKT-04 — the `vector-store` half (three `unwrap()` casts capability-gated) closes out alongside the already-done `memory-cli` half — see CHANGELOG.md; BL-364 resolved 2026-08-02 from the same fix — confirmed as the predicted BL-380 root cause, `hybrid-search` 15 red → 82/82 — see CHANGELOG.md; BL-411 filed 2026-08-02 from that same PKT-04 pass — `analysis.spec.ts` carries the identical raw-handle shape BL-364 diagnosed, unfixed, out of scope for that fix; BL-259 resolved 2026-08-02 from PKT-15 — the reported second-run launchd collision does not reproduce on current HEAD (already fixed by BL-263's per-data-root label namespacing plus `enableOsUnit`'s pre-existing content-addressed idempotence); a named regression test was added and watched red→green — see CHANGELOG.md; BL-388 resolved 2026-08-02 from PKT-06's runtime acceptance — see CHANGELOG.md; BL-410 resolved 2026-08-02 — `SharedFastembedProcessClient` now re-refs the shared fastembed child/IPC channel for the duration of each in-flight request (released once idle), so a standalone script's `warmupEmbed()` no longer races process exit and silently abandons its own pending request — watched red→green against a real standalone-process repro — see CHANGELOG.md; BL-359 resolved 2026-08-01 — atomic BL-id allocation + pre-commit collision guard — see CHANGELOG.md; BL-397 resolved 2026-08-01 — see CHANGELOG.md; BL-408 filed 2026-08-01 from the same close-out — the source fix landed but memory-flush's bundled dist artifact is still unbuilt; BL-407 filed 2026-08-01 — the smoke-test exports preflight is workspace-wide BEFORE --extension filtering, so one agent's in-flight package.json wedges the mandatory merge gate for every other agent; BL-376 filed and resolved same-day 2026-08-01 from a follow-up on the BL-331 model-load regression — split the fastembed warmup timeout into a tight cache-hit budget and the original generous cache-miss budget, with real cache-presence detection deciding which applies — see CHANGELOG.md; BL-406 filed and resolved same-day 2026-08-01 from the post-deploy live-store audit — no embedding loss, but the stale-vector detector was blind to 1090 legacy rows — see CHANGELOG.md; BL-404, BL-405 filed 2026-08-01 from the reviewed memory-server redeploy — production never initialises telemetry, and every restart escalates to SIGKILL; BL-402 resolved 2026-08-01 — see CHANGELOG.md; BL-350 resolved 2026-08-01 from PKT-28's cluster-maintenance research — see CHANGELOG.md; BL-401 filed 2026-08-01 from PKT-02, the BL-351 acceptance-gap follow-up; BL-340, BL-325 resolved 2026-08-01 — see CHANGELOG.md; BL-395 filed and resolved same-day 2026-08-01 — see CHANGELOG.md; BL-394 filed 2026-08-01 from the BL-325 write-queue-bypass finding; BL-372 resolved 2026-08-01 — see CHANGELOG.md; BL-385 resolved 2026-08-01 — see CHANGELOG.md; BL-384 resolved 2026-08-01 — see CHANGELOG.md; BL-388, BL-389 filed 2026-08-01 from the storage-boundary lint pass; BL-287 resolved 2026-07-30; BL-293, BL-294, BL-295, BL-303 resolved 2026-07-16; BL-62 resolved 2026-07-18; BL-311 verified no live bug 2026-07-18; BL-313 (CRITICAL — live edge-table cascade-delete bug) found and resolved same-day 2026-07-18 — see CHANGELOG.md; BL-306..309 filed 2026-07-11 from native-addon/adapter research; BL-310 filed 2026-07-17, resolved 2026-07-23; BL-312 filed 2026-07-18 from the same memory-server data-integrity investigation; BL-314 filed 2026-07-18 from a stale local content-store mirror discovered while syncing installed skill docs; BL-316, BL-273, BL-254, BL-252, BL-264, BL-297 all resolved 2026-07-23 — see CHANGELOG.md).
+**Total open: 78.** (BL-413 filed 2026-08-03 from the STATE/PLAN reconciliation — the live periodic enrichment pass has taken zero items in 22.5 hours while 46 accumulated, and `memory_ping` has been reporting `enrichment.state: "stalled"` across ~90 consecutive threshold windows with nothing acting on it; the same pass recorded BL-399's live rate at 154 occurrences/day, the loudest error in production; BL-407 resolved 2026-08-02 from PKT-50 — `--only <dir>` (repeatable) added to `verify-exports-publint-attw.mjs`; `smoke-test.mjs` now computes the filtered extension's dir + bundle siblings + transitive nx-graph workspace deps and passes them as scope, verified live against the real repo (tokenguard: 2 packages, memory-server bundle: 17 packages incl. all bundle siblings) and pinned with a hermetic red→green fixture — see CHANGELOG.md; BL-390 resolved 2026-08-02 from PKT-37 — `registry:sync-index` now refuses a dirty tree (or stamps `provisional`/`builtFromCommit`), watched red→green — see CHANGELOG.md; BL-380 resolved 2026-08-02 from PKT-04 — the `vector-store` half (three `unwrap()` casts capability-gated) closes out alongside the already-done `memory-cli` half — see CHANGELOG.md; BL-364 resolved 2026-08-02 from the same fix — confirmed as the predicted BL-380 root cause, `hybrid-search` 15 red → 82/82 — see CHANGELOG.md; BL-411 filed 2026-08-02 from that same PKT-04 pass — `analysis.spec.ts` carries the identical raw-handle shape BL-364 diagnosed, unfixed, out of scope for that fix; BL-259 resolved 2026-08-02 from PKT-15 — the reported second-run launchd collision does not reproduce on current HEAD (already fixed by BL-263's per-data-root label namespacing plus `enableOsUnit`'s pre-existing content-addressed idempotence); a named regression test was added and watched red→green — see CHANGELOG.md; BL-388 resolved 2026-08-02 from PKT-06's runtime acceptance — see CHANGELOG.md; BL-410 resolved 2026-08-02 — `SharedFastembedProcessClient` now re-refs the shared fastembed child/IPC channel for the duration of each in-flight request (released once idle), so a standalone script's `warmupEmbed()` no longer races process exit and silently abandons its own pending request — watched red→green against a real standalone-process repro — see CHANGELOG.md; BL-359 resolved 2026-08-01 — atomic BL-id allocation + pre-commit collision guard — see CHANGELOG.md; BL-397 resolved 2026-08-01 — see CHANGELOG.md; BL-408 filed 2026-08-01 from the same close-out — the source fix landed but memory-flush's bundled dist artifact is still unbuilt; BL-407 filed 2026-08-01 — the smoke-test exports preflight is workspace-wide BEFORE --extension filtering, so one agent's in-flight package.json wedges the mandatory merge gate for every other agent; BL-376 filed and resolved same-day 2026-08-01 from a follow-up on the BL-331 model-load regression — split the fastembed warmup timeout into a tight cache-hit budget and the original generous cache-miss budget, with real cache-presence detection deciding which applies — see CHANGELOG.md; BL-406 filed and resolved same-day 2026-08-01 from the post-deploy live-store audit — no embedding loss, but the stale-vector detector was blind to 1090 legacy rows — see CHANGELOG.md; BL-404, BL-405 filed 2026-08-01 from the reviewed memory-server redeploy — production never initialises telemetry, and every restart escalates to SIGKILL; BL-402 resolved 2026-08-01 — see CHANGELOG.md; BL-350 resolved 2026-08-01 from PKT-28's cluster-maintenance research — see CHANGELOG.md; BL-401 filed 2026-08-01 from PKT-02, the BL-351 acceptance-gap follow-up; BL-340, BL-325 resolved 2026-08-01 — see CHANGELOG.md; BL-395 filed and resolved same-day 2026-08-01 — see CHANGELOG.md; BL-394 filed 2026-08-01 from the BL-325 write-queue-bypass finding; BL-372 resolved 2026-08-01 — see CHANGELOG.md; BL-385 resolved 2026-08-01 — see CHANGELOG.md; BL-384 resolved 2026-08-01 — see CHANGELOG.md; BL-388, BL-389 filed 2026-08-01 from the storage-boundary lint pass; BL-287 resolved 2026-07-30; BL-293, BL-294, BL-295, BL-303 resolved 2026-07-16; BL-62 resolved 2026-07-18; BL-311 verified no live bug 2026-07-18; BL-313 (CRITICAL — live edge-table cascade-delete bug) found and resolved same-day 2026-07-18 — see CHANGELOG.md; BL-306..309 filed 2026-07-11 from native-addon/adapter research; BL-310 filed 2026-07-17, resolved 2026-07-23; BL-312 filed 2026-07-18 from the same memory-server data-integrity investigation; BL-314 filed 2026-07-18 from a stale local content-store mirror discovered while syncing installed skill docs; BL-316, BL-273, BL-254, BL-252, BL-264, BL-297 all resolved 2026-07-23 — see CHANGELOG.md).
 This block is DERIVED from the `**...**` status marker on each
 `### BL-<n>` heading — an item is open iff its last heading marker starts with `Open`, `REOPENED`,
 or `BLOCKED`. **Do not hand-maintain this section.** The previous header (dated 2026-07-07) ranked
@@ -2163,6 +2163,20 @@ Citations: [wip/turso-live-metrics, team-lead, claude, turso-go-live, 1: libs/me
 
 ### BL-399 — live `store.error: no such column: meta`, swallowed, on a healthy store whose schema declares that column — **Open (HIGH)** (2026-08-01)
 
+> **STILL LIVE 2026-08-03, and it is the single loudest error in production.** Today's telemetry
+> (`memory-core-2026-08-03.jsonl`, 1122 events, 00:00Z–19:22Z) contains **154 occurrences** of
+> `store.error / "prepare failed: Parse error: no such column: meta"` — 14% of every event the
+> server emitted today, all swallowed, on a store whose integrity reports `overall: ok`. It is by
+> far the highest-frequency error in the file; the only other error class present is 4x
+> `"step failed: Parse error: malformed JSON"` (the BL-342 residual row, rowid 9284).
+>
+> This raises the priority case: it is not an occasional swallowed warning, it is a per-operation
+> failure on a hot path that has been running at this rate for at least a day. Whatever query
+> carries `meta` is failing every time it runs and nothing downstream notices.
+>
+> Citations: [wip/turso-live-metrics, main, claude, STATE/PLAN reconciliation, ~/.adhd/sox-ecosystem/memory/logs/memory-core-2026-08-03.jsonl (event-type census: 154x store.error "no such column: meta", 4x "malformed JSON"), 2026-08-03T19:22Z]
+
+
 **Observed on the live store**, on freshly-deployed artifact `5e8e1fcc8625` (pid 18521), in the durable telemetry:[1]
 
 ```
@@ -2470,6 +2484,60 @@ Citations: [wip/turso-live-metrics, team-lead, claude, PKT-04, 1: BL-380 §"vect
 
 ---
 
+### BL-413 — the periodic enrichment pass has not run for 22 hours while 46 items accumulated; `memory_ping` names the state `stalled` and nothing acts on it — **Open (HIGH)** (2026-08-03)
+
+**Measured live, 2026-08-03T19:22Z**, against the running production server (pid 85177, artifact `a4892123287b`, up since 2026-08-02T00:36Z):[1]
+
+| field | value |
+|---|---|
+| `enrichment.state` | **`stalled`** |
+| `queue_depth` | **46** |
+| `queue_oldest_pending_at` | 2026-08-03T17:08:15Z |
+| `queue_last_done_at` | **2026-08-02T20:52:22Z** — 22h30m earlier |
+| `stall_threshold_ms` | 900000 (15 min) |
+| `enrichment_watermark` | `{"pass":"legacy","ts":"2026-07-31T17:27:11Z","note":"legacy"}` |
+
+The queue has taken **zero** items in 22.5 hours while 46 were enqueued, against a declared 15-minute
+stall threshold — so the condition has been true for ~90 consecutive threshold windows. The
+watermark has not advanced since 2026-07-31 and still reads `"pass":"legacy"`.
+
+**This is not the embed pipeline, which is healthy.** `embed_backlog: 0`, `embeds_completed: 126`,
+`embeds_failed: 0`, `applies_gone: 0`.[1] The 47 `embed_pipeline.apply.discarded` events in today's
+log all carry `reason: "exists"` — a recomputed vector meeting one already present, which is the
+designed no-op, **not** vector loss.[3] Embedding and enrichment are separate stages (BL-348), and
+exactly one of them is dead.
+
+**Consequence, visible in the coverage numbers.** Of 4947 episodes, only **2733 have a topic** and
+**1410 have tags**.[2] Every episode written since 2026-08-02T20:52 is unenriched and will stay that
+way — and because clustering is downstream of enrichment, this sits *underneath* BL-326/BL-349:
+fixing the clustering stub alone would still leave it fed by a queue that never drains.
+
+**Why HIGH.** The server reports the fault accurately and no code path responds to it. BL-334 already
+recorded that `memory_ping` "reported `enrichment: "stalled"` for five weeks with nothing acting on
+it" — that observation is now reproduced with a precise timestamp and item count, which makes this
+the concrete instance BL-334 described in the abstract. A self-reported `stalled` that persists for
+90 threshold windows is either a watchdog that does not exist or one that does not fire.
+
+**Not yet determined** (do not fix on assumption): whether the periodic tick stopped firing, whether
+it fires and finds no work through a query defect, whether it is wedged on a single poison item, or
+whether an emergency brake (`SOX_DISABLE_PERIODIC_ENRICH`) is set in the live unit env — the last is
+cheap to rule out first and is exactly the silent-drop failure mode BL-375 documents for
+`service enable`. BL-378 is also live-adjacent: the two brakes are not independent, so a brake set
+for embedding would take enrichment with it.
+
+**Acceptance (red→green, must name BL-413):** a test that enqueues an enrichment item, advances past
+`stall_threshold_ms` with the pass not draining it, and asserts the server takes a **recorded
+corrective action** rather than only setting a status string. Reporting `stalled` is not passing.
+
+**Related:** BL-334 (the status surface named this condition and nothing consumed it), BL-326/BL-349
+(clustering is downstream and blocked by this), BL-378 (brake coupling), BL-375 (a brake can be set
+silently by `service enable`), BL-318 (ghost episodes from this same pipeline), BL-348 (the stage
+isolation that correctly kept embedding alive while this died).
+
+Citations: [wip/turso-live-metrics, main, claude, STATE/PLAN reconciliation, 1: live `memory_ping` from pid 85177 at 2026-08-03T19:22Z (`enrichment`, `queue_depth`, `queue_last_done_at`, `enrichment_watermark`, `embed_pipeline.metrics.counters`), 2: live `memory_stats` same timestamp (`total_episodes` 4947, `with_topic` 2733, `with_tags` 1410), 3: ~/.adhd/sox-ecosystem/memory/logs/memory-core-2026-08-03.jsonl — 1122 events, all 47 `embed_pipeline.apply.discarded` carry `reason:"exists"`, 2026-08-03]
+
+---
+
 ### BL-412 — running the test suite silently opens the LIVE production store and registers it into an in-process enrichment loop — **Open (HIGH)** (2026-08-02)
 
 **Found by:** the BL-405 agent, as a side effect of writing a shutdown regression test. It saw `store.integrity.repair_failed db_path: /Users/nix/.memory/memory.db` in its own `nx test` output — a **production** path, appearing in a test run.
@@ -2495,3 +2563,4 @@ Citations: [wip/turso-live-metrics, main, claude, PKT-48/BL-405 fallout, 1: exte
 **Driver.** Reserved by `tools/allocate-bl-id.mjs` and not yet filled in. If you are reading this in a committed BACKLOG.md, the reservation was never completed — fill in the item's real content or delete this heading before committing.
 
 ---
+
