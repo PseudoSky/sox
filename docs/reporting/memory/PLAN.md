@@ -23,9 +23,9 @@ remedy is to close the backlog item with a red→green test, not to edit this ta
 
 **12 done · 3 partial · 41 open** of 56 packets.
 
-- Open backlog items in this program's scope: **58**, of which **8** have no packet.
+- Open backlog items in this program's scope: **50**, of which **0** have no packet.
 - Open items deliberately out of scope: **29** — BL-99, BL-103, BL-104, BL-105, BL-163, BL-225, BL-228, BL-258, BL-261, BL-282, BL-283, BL-284, BL-285, BL-288, BL-291, BL-292, BL-296, BL-298, BL-305, BL-306, BL-307, BL-308, BL-309, BL-314, BL-315, BL-333, BL-355, BL-408, BL-411
-- Unscheduled in-scope items (need a packet): BL-414, BL-415, BL-416, BL-417, BL-418, BL-419, BL-420, BL-421
+- Unscheduled in-scope items (need a packet): —
 - Packet targets already closed (15) — historical context only, no work remains: BL-259, BL-343, BL-348, BL-350, BL-359, BL-364, BL-376, BL-380, BL-388, BL-390, BL-397, BL-402, BL-406, BL-407, BL-410
 
 | Packet | Status | Targets | Still open |

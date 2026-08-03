@@ -72,6 +72,13 @@ const readBacklogStatuses = () => {
   const re = /^### BL-(\d+) — ([^\n]*)$/gm;
   let m;
   while ((m = re.exec(src)) !== null) {
+    // A RESERVED heading is an id placeholder written by tools/allocate-bl-id.mjs, not a defect.
+    // In a shared checkout several agents hold reservations in the worktree at once (8 were
+    // outstanding on 2026-08-03). Counting them as open items reports them as "in-scope work with
+    // no packet", which is a fabricated backlog — the exact kind of confidently-wrong derived
+    // number this tool exists to prevent. They are skipped entirely; they can never be committed
+    // anyway, since check-backlog-markers.mjs rejects them.
+    if (/RESERVED/.test(m[2])) continue;
     const marker = m[2].match(/\*\*(REOPENED|BLOCKED|RESOLVED|CLOSED|Open|OPEN|WONTFIX)/i);
     statuses.set(Number(m[1]), marker ? marker[1].toUpperCase() : 'UNMARKED');
   }
