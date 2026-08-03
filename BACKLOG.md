@@ -2632,6 +2632,24 @@ the packet it belonged to, both commits would have been unrecoverable — a ship
 red→green, plus a handoff correction, silently gone. Recovered by cherry-pick to
 `26549db` / `1d5e6a7` only because the branch was inspected on a hunch.
 
+**THE TRIGGER, narrowed by the agent it happened to — this is the generalisable form, and it is
+narrower and more useful than "check your branch".** The harness **moved the agent from the main
+checkout into `agent-a54e5171a1615a001` partway through its session.** Its earlier commits predate
+the move and landed on the mainline correctly; only the post-move ones stranded. After each commit it
+ran `git log --oneline -1` and saw its own commit at HEAD.
+
+**That check is true and worthless here.** `git log -1` confirms a commit *exists at HEAD*; it does
+not say *which branch HEAD is*. In a multi-worktree checkout those are two different questions, and
+only the first was ever asked. This is the same shape as BL-372 — `loaded: yes` and `kickstart`
+exit 0 are real success signals that answer a different question than "is the new code running". The
+agent had that trap written down in its own handoff and still walked into its sibling.
+
+**So the rule is not "check your branch" (nobody re-checks a constant). It is: after any change of
+working directory or environment — including one the harness performs for you, which you may not be
+told about — the next commit needs `git branch --show-current`, not just `git log -1`.** A guard
+should therefore fire on *directory/branch change since last commit*, not on every commit, or it will
+be tuned out.
+
 **Why the existing rules do not catch this.** BL-409 and the pathspec constraint govern *what goes
 into a commit*. They are silent on *which branch the commit lands on*, and that is the axis that
 failed here. An agent has no reason to check `git rev-parse --abbrev-ref HEAD` before committing —
