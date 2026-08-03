@@ -298,6 +298,32 @@ and unbuilt, with automatic clustering marked `grey` — never a corpus-attribut
   what production actually runs on, and it can exhaust its 3 retries and accept a degenerate
   partition anyway.
 
+> **⚠️ The numbers in this section are the N=1616 sample and are SUPERSEDED.** PKT-28 later measured
+> the **true full corpus, N=4867, with no projection**: τ=0.82 → **0.759**, τ=0.85 → **0.514**
+> (degenerate), only τ=0.87 holds at 0.181. Cite the full-corpus figures, in
+> [`findings/pkt28-clustering-strategy.md`](./findings/pkt28-clustering-strategy.md), not the ones
+> above. The 1616 measurement was an explicitly-labelled upper-bound trend that warned 0.87 might
+> also degenerate at full coverage; it did not, and a direct measurement beats a projection. The
+> section is kept because the *argument* — that τ cannot be a constant — is what survived, and it
+> survived at both scales.
+>
+> **⚠️ τ=0.87 IS A PAIRWISE NUMBER. Do not apply it to a centroid comparison.** It was calibrated
+> against single-linkage connected components over pairwise cosine. Measured offsets between mean
+> pairwise and mean to-centroid similarity on the three real-topic BL-328 cohorts: legal-ai-sanctions
+> 0.7639 → 0.8907 (**+0.127**), vector-stores 0.8365 → 0.9257 (**+0.089**), ai-sdr 0.8427 → 0.9286
+> (**+0.086**). A 0.87 bar on a centroid metric therefore behaves like roughly a **0.78** bar in the
+> regime it was calibrated for — and 0.82 is already degenerate at full scale, so 0.78 is well past
+> the cliff. An incremental join must either use max-similarity-to-any-member (single-link, so the
+> metric matches the calibration) or be calibrated separately on to-centroid distributions. Adding a
+> fixed offset is the weakest option: it hardcodes three cohorts' worth of correction, which is
+> exactly the drift-with-scale failure BL-356 exists to name.
+>
+> **Any O(1) join must also route through — or reimplement — the degenerate guard** at
+> `cluster.ts:465-484` (`max_cluster/total > 0.5 → τ+0.05` retry). A join that skips it is the
+> percolation failure the guard was written for, minus the guard.
+>
+> Citations: [wip/turso-live-metrics, main, claude + p0-cluster-calibration, PKT-28/PKT-29 relay, findings/pkt28-clustering-strategy.md (N=4867 full-corpus sweep), BL-328 cohort vectors at ~/.adhd/sox-ecosystem/memory/bl328-{extract,embed}.mjs, libs/memory-core/src/cluster.ts:465-484, 2026-08-03]
+
 **Constraints this puts on G4 when it is built:** select topics for distinctness (an arbitrary
 topic-labelled sample has inter-similarity ≥ intra-similarity — `topic` is enrichment, not a
 semantic partition); assert *purity + dominance*, never "one community per group" (no corpus,
