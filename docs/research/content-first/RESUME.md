@@ -202,3 +202,61 @@ external-sequencing structure).
 (RF arm) and through the CF self-handoff chain (CF arm); compare
 `rf_cached/input` vs `cf_cached/input` per stage from the `proxy-ses_*.jsonl`
 logs. The delta is the content-first thesis on identical work.
+
+## 8. Experiment Framework — SDLC-v0.0.1
+
+The experiment design, expected metrics, hypothesis, results template, and
+iteration process are documented in:
+
+**→ [`experiments/SDLC-v0.0.1.md`](./experiments/SDLC-v0.0.1.md)**
+
+### Summary
+
+**Flow:** product (acceptance criteria) → architect (spec) → typescript (implement)
+→ review (verify) → [correct?] → product (final sign-off)
+
+**Isolation:** worktrees under `~/dev/.sdlc-experiments/arm-{cf,rf}/` outside the
+repo. No shared state writes. Banned writes to `~/.adhd/`, repo, or shared paths.
+Both arms start chroot'd to their worktree.
+
+**Feature:** pre-written to `<worktree>/FEATURE.md` at experiment setup. Same
+feature for both arms. Product writes acceptance criteria to docs/ (not backlog).
+
+**Hypothesis:** CF will show 80–99% cross-agent first-turn cache reuse vs RF's
+near-0%; lower per-run SP loading overhead (same 63K anchor per turn vs per-agent
+SPs); faster handoff recovery; equivalent-quality deliverables.
+
+**Metrics collected per stage:** turns, tokens, cached, savings%, first-turn
+cached/savings, shared_chars, persona_chars, context_chars, persona_turns,
+persona_ctx_chars, SP loading overhead (shared_chars × turns for CF).
+
+**Aggregate metrics:** total tokens, handoff penalty (uncached tokens at first
+turns), SP loading overhead (chars), correction loops, review verdict.
+
+**Iteration:** each run writes results to the versioned file, notes improvements,
+then increments to `SDLC-v0.0.2.md`. RESUME.md points to latest.
+
+### Per-Turn CF Overhead (Aggregated from FEAT-002 Run)
+
+From session `03a14105a` (182 turns across architect/typescript/review):
+
+| Agent | Turns | Shared Chars | Shared/Turn | Tokens |
+|-------|-------|-------------|-------------|--------|
+| architect | 16 | 1,007,040 | 62,940 | 1.2M |
+| typescript | 154 | 9,692,760 | 62,940 | 29.6M |
+| review | 12 | 755,280 | 62,940 | 3.4M |
+
+**Total CF overhead:** ~11.5M chars of shared anchor loaded across 182 turns.
+This is the per-turn cost of the position-0 system prompt — identical for every
+agent. In RF, each agent loads its own full SP (67–71K chars) per session, with
+no cross-session reuse except generic boilerplate.
+
+### Cross-Agent Knowledge Detection (Stretch)
+
+Current thinking on automated signals (qualitative for v0.0.1):
+- **Re-read ratio:** typescript opens files architect already read (low = good)
+- **Reference pattern:** agent cites "per the spec..." vs re-discovers
+- **File access count:** fewer unique reads = context sufficient
+- **First-turn tool calls:** starts with prior agent's output (good) vs re-reads source
+
+See `SDLC-v0.0.1.md` for full experimental design, templates, and iteration process.
