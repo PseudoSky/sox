@@ -36,7 +36,7 @@ export interface ClusterResult {
 }
 
 export interface ClusterStoreOptions {
-  /** Cosine threshold τ (default 0.82). */
+  /** Cosine threshold τ (default: resolveDefaultThreshold(), currently 0.87). */
   threshold?: number;
   /** Soft cap on nodes per full pass (default 10000; D1.7). */
   nodeCap?: number;
@@ -50,6 +50,13 @@ export interface ClusterStoreResult {
   full_pass: boolean;
   /** Count of episodes with no cluster assignment (singletons, suppressed per D1.6). */
   unclustered_count: number;
+  /**
+   * BL-349: count of episodes joined to an EXISTING community via the
+   * incremental local-neighborhood join (non-full-pass only — §2.2 of
+   * `pkt28-clustering-strategy.md`). `undefined` on a full pass, where
+   * membership instead comes from `clusters`.
+   */
+  incremental_joined?: number;
 }
 
 export interface ClusterStats {
@@ -415,6 +422,196 @@ interface ComputeClustersOptions {
   salt?: string | undefined;
 }
 
+/** Scope predicate over a community node's `meta` column (alias `n`), matching `salt`. */
+function communityScopeClause(salt: string): string {
+  return salt
+    ? `json_extract(n.meta, '$.cluster_scope.hash') = ?`
+    : `(json_extract(n.meta, '$.cluster_scope.kind') IS NULL OR json_extract(n.meta, '$.cluster_scope.kind') = 'global')`;
+}
+
+/**
+ * BL-349/BL-326: write-triggered incremental association (PKT-29, per
+ * `pkt28-clustering-strategy.md` §2.2). Answers "which EXISTING community does
+ * a new episode join" in O(unclustered × live members), never a full O(n²)
+ * re-cluster over the whole corpus. This is the reachable replacement for the
+ * dead `incrementalOnly` stub that previously always returned `clusters: []`
+ * (BL-326: with the corpus past `nodeCap`, or simply run with
+ * `incrementalOnly:true` as the periodic tick does, NO ordinary write could
+ * ever result in a cluster assignment).
+ *
+ * ── Metric: single-link (max similarity to ANY live member), NOT centroid ──
+ * The full pass's τ is calibrated against pairwise cosine similarity under
+ * single-linkage connected components (D1: an episode joins a cluster if it
+ * is within τ of ANY existing member, and clusters transitively chain through
+ * such links). A candidate-vs-CENTROID (mean-of-members) comparison is a
+ * DIFFERENT metric with a systematically higher expected value — measured
+ * directly on three real BL-328 topic cohorts, mean pairwise vs. mean
+ * to-centroid similarity differs by +0.086 to +0.127. Reusing τ=0.87 against
+ * a centroid comparison behaves like roughly τ=0.78 in the domain τ was
+ * actually calibrated in — well past the point PKT-28 measured as degenerate
+ * (τ=0.82 already gives largest-cluster ratio 0.759 at full corpus scale).
+ * Shipping a centroid comparison at the pairwise-calibrated τ would silently
+ * re-introduce the exact percolation failure the research ruled out. So this
+ * function compares each candidate against every LIVE member vector of each
+ * candidate community and takes the max — the same connectivity test the
+ * full pass itself uses, just evaluated incrementally instead of over the
+ * whole corpus at once.
+ *
+ * ── Degenerate guard, incremental-path equivalent ──
+ * The full pass's guard (`computeClusters` above, D5.5: max_cluster/total >
+ * 0.5 → raise τ by 0.05 and retry) cannot be reused verbatim here — this
+ * function only ever sees a slice of candidates for ONE pass and does not
+ * own τ (only a full pass may recompute it, per §2.2). Instead: once a
+ * community's LIVE member count (existing + joined so far THIS pass) would
+ * exceed 50% of total live episodes, no further candidate may join it during
+ * this pass — it is left unclustered for the next full/subset pass to
+ * reconcile (§2.2/§3 of the research: split/merge/orphan reconciliation is
+ * explicitly a full-pass responsibility, not this O(1)-per-write step's).
+ * This stops incremental joins from being ABLE to grow a single community
+ * past the same degenerate bound the full pass enforces, without this
+ * function ever touching τ itself.
+ *
+ * Interim threshold policy (explicitly scoped, not silently hardcoded): per
+ * §2.2 of the research, an incremental join reuses the CURRENT threshold
+ * as-is — it never recomputes τ, because a single write does not change N or
+ * the similarity distribution enough to justify recalibration; only a full
+ * pass recomputes τ. The target-degree calibration function that replaces a
+ * fixed τ for FULL passes is PKT-30 (BL-328) — out of scope here. When
+ * PKT-30 lands, `resolveDefaultThreshold()` becomes a function of sampled
+ * data and this join simply keeps consuming whatever `threshold` its caller
+ * resolves, unchanged.
+ *
+ * Does not create new communities (that remains a full/subset pass's job)
+ * and does not touch community `meta` (member_count there is cosmetic;
+ * `clusterStats` computes coverage/largest-cluster live off `edge` rows,
+ * never off stored meta).
+ */
+async function incrementalJoin(
+  adapter: StoreAdapter,
+  episodes: EpRow[],
+  threshold: number,
+  salt: string,
+): Promise<{ joined: number; candidate_count: number }> {
+  if (episodes.length === 0) return { joined: 0, candidate_count: 0 };
+
+  const scopeClause = communityScopeClause(salt);
+  const scopeParams = salt ? [salt] : [];
+
+  // 1. Live communities in this scope (global salt='' or a specific subset
+  //    provenance hash) — the join targets.
+  const communityRows = (
+    await adapter.executeAll<{ community_rowid: number }>(
+      `SELECT n.rowid AS community_rowid
+       FROM node n
+       WHERE n.kind = 'community' AND n.t_invalid IS NULL AND ${scopeClause}`,
+      scopeParams,
+    )
+  ).rows;
+  if (communityRows.length === 0) return { joined: 0, candidate_count: 0 };
+  const communityRowids = communityRows.map((r) => r.community_rowid);
+
+  // 2. ALL live member vectors per community — the single-link comparison
+  //    set (see doc comment: NOT centroid-only). One JOIN query, not one
+  //    query per community.
+  const memberRows = (
+    await adapter.executeAll<{ community_rowid: number; node_id: number; embedding: Buffer }>(
+      `SELECT e.dst AS community_rowid, v.node_id AS node_id, v.embedding AS embedding
+       FROM edge e
+       JOIN vec_node v ON v.node_id = e.src
+       WHERE e.rel = 'MEMBER_OF' AND e.t_invalid IS NULL
+         AND e.dst IN (${communityRowids.map(() => '?').join(',')})`,
+      communityRowids as unknown[],
+    )
+  ).rows;
+
+  const communityMemberVecs = new Map<number, Float32Array[]>();
+  const communityLiveMemberCount = new Map<number, number>();
+  for (const row of memberRows) {
+    const vecs = communityMemberVecs.get(row.community_rowid) ?? [];
+    vecs.push(blobToFloat32(row.embedding));
+    communityMemberVecs.set(row.community_rowid, vecs);
+    communityLiveMemberCount.set(row.community_rowid, (communityLiveMemberCount.get(row.community_rowid) ?? 0) + 1);
+  }
+  if (communityMemberVecs.size === 0) return { joined: 0, candidate_count: 0 };
+
+  // 3. Episodes already MEMBER_OF a live community in this scope — excluded
+  //    from candidacy (the `assignedSet` below is exactly the src side of
+  //    the query in step 2, reused rather than re-queried).
+  const assignedSet = new Set(memberRows.map((r) => r.node_id));
+  const candidates = episodes.filter((e) => !assignedSet.has(e.rowid));
+  if (candidates.length === 0) return { joined: 0, candidate_count: 0 };
+
+  // 4. Vectors for candidates.
+  const candidateRowids = candidates.map((e) => e.rowid);
+  const candidateVecResult = await adapter.executeAll<VecRow>(
+    `SELECT node_id, embedding FROM vec_node WHERE node_id IN (${candidateRowids.map(() => '?').join(',')})`,
+    candidateRowids as unknown[],
+  );
+  if (candidateVecResult.rows.length === 0) return { joined: 0, candidate_count: candidates.length };
+
+  // 5. Total live episode count — denominator for the degenerate-ratio guard.
+  const totalLiveRow = await adapter.executeGet<{ cnt: number }>(
+    `SELECT COUNT(*) AS cnt FROM node WHERE kind = 'episode' AND t_invalid IS NULL`,
+  );
+  const totalLiveEpisodes = totalLiveRow?.cnt ?? candidates.length;
+
+  // 6. For each candidate (deterministic order — `episodes` is already
+  //    rowid-ASC per `selectEpisodes`), join the community with the highest
+  //    single-link (max-over-members) similarity if it clears `threshold`
+  //    AND admitting it would not push that community over the degenerate
+  //    bound (D5.5's 0.5 ratio, mirrored here per-pass). Otherwise leave the
+  //    candidate unclustered for the next full/subset pass.
+  const now = new Date().toISOString();
+  let joined = 0;
+  const joinedThisPass = new Map<number, number>(); // community_rowid -> count joined so far this call
+
+  for (const vRow of candidateVecResult.rows) {
+    const candidateVec = blobToFloat32(vRow.embedding);
+    let bestCommunityRowid: number | null = null;
+    let bestSim = -1;
+    for (const [communityRowid, memberVecs] of communityMemberVecs) {
+      for (const memberVec of memberVecs) {
+        const sim = cosineSim(candidateVec, memberVec);
+        if (sim > bestSim) {
+          bestSim = sim;
+          bestCommunityRowid = communityRowid;
+        }
+      }
+    }
+    if (bestCommunityRowid === null || bestSim < threshold) continue;
+
+    const priorSize = communityLiveMemberCount.get(bestCommunityRowid) ?? 0;
+    const alreadyJoinedThisPass = joinedThisPass.get(bestCommunityRowid) ?? 0;
+    const projectedSize = priorSize + alreadyJoinedThisPass + 1;
+    if (totalLiveEpisodes > 0 && projectedSize / totalLiveEpisodes > 0.5) {
+      // Degenerate-ratio guard (incremental-path equivalent of D5.5): this
+      // community would become a majority blob — refuse, defer to the next
+      // full/subset pass, which owns re-thresholding and reconciliation.
+      continue;
+    }
+
+    await adapter.executeRun(
+      `INSERT INTO edge (src, dst, rel, origin, weight, t_created)
+       VALUES (?, ?, 'MEMBER_OF', 'inferred', 1.0, ?)
+       ON CONFLICT(src, dst, rel) DO UPDATE SET t_invalid = NULL`,
+      [vRow.node_id, bestCommunityRowid, now],
+    );
+    joinedThisPass.set(bestCommunityRowid, alreadyJoinedThisPass + 1);
+    // Deliberately NOT added to `communityMemberVecs` as a comparison target
+    // for later candidates in this same pass: doing so would let candidates
+    // chain transitively through EACH OTHER within a single tick, which is
+    // extra percolation risk beyond what the degenerate-ratio guard above
+    // was sized for. A candidate that only matches another freshly-joined
+    // candidate (not an original live member) simply waits for the NEXT
+    // periodic tick, by which time that candidate IS a live member — this
+    // still converges, just one tick later, with a materially smaller blob
+    // risk per pass.
+    joined++;
+  }
+
+  return { joined, candidate_count: candidates.length };
+}
+
 /**
  * Pure clustering core shared by `clusterStore` (global) and `clusterSubset`
  * (filtered): fetch vectors for the given episodes, run the degenerate-guarded
@@ -436,8 +633,17 @@ async function computeClusters(
 
   const isFullPass = !opts.incrementalOnly && episodes.length <= nodeCap;
   if (!isFullPass) {
-    // Incremental mode: skip full re-cluster (TODO: local neighborhood check per D1.3)
-    return { clusters: [], full_pass: false, unclustered_count: episodes.length };
+    // BL-349/BL-326: incremental mode now performs a real, O(1)-per-episode
+    // local-neighborhood join against existing communities (createGraphBackend
+    // has already run in the caller — clusterStore/clusterSubset — before
+    // selectEpisodes, so `node`/`edge` are guaranteed to exist here).
+    const { joined, candidate_count } = await incrementalJoin(adapter, episodes, threshold, salt);
+    return {
+      clusters: [],
+      full_pass: false,
+      unclustered_count: candidate_count - joined,
+      incremental_joined: joined,
+    };
   }
 
   const rowids = episodes.map((e) => e.rowid);
@@ -917,6 +1123,48 @@ export async function dropSubsetLens(
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
-function resolveDefaultThreshold(): number {
-  return 0.82;
+/**
+ * Forward-compatibility context for threshold calibration. PKT-30 (BL-328) is
+ * scoped to implement target-mean-degree calibration: sample pairwise cosine
+ * similarity on `sampleVecs`, compute P(edge≥τ) for a candidate grid, and pick
+ * the smallest τ such that projected mean degree P(edge≥τ)×(targetN−1) stays
+ * at/under a target (recommended D_target=2.0) — see
+ * docs/reporting/memory/findings/pkt28-clustering-strategy.md §2. Neither field
+ * is consumed yet; they exist so PKT-30 can land without another call-site
+ * churn across cluster.ts/enrich-batch.ts.
+ */
+export interface ThresholdCalibrationContext {
+  /** Bounded sample of live embedding vectors to estimate edge probability from. */
+  sampleVecs?: Float32Array[];
+  /** Corpus size (N) the calibration should target. */
+  targetN?: number;
+}
+
+/**
+ * Resolve the clustering threshold τ.
+ *
+ * PKT-28's research (docs/reporting/memory/findings/pkt28-clustering-strategy.md)
+ * proved a FIXED global τ is not viable at any single value: single-linkage
+ * chaining means mean node degree grows with corpus size N, so a constant
+ * tuned for today's store degrades as it grows. Measured directly at the true
+ * full corpus (N=4867, no projection): τ=0.82 (the historical default here)
+ * has largest-cluster ratio 0.759 — degenerate; τ=0.85 is ALSO now degenerate
+ * at 0.514; only τ=0.87 held non-degenerate, at 0.181.
+ *
+ * §2.1 of that finding requires this function's signature to become
+ * `(sampleVecs, targetN) => number`, implementing target-mean-degree
+ * calibration — that is PKT-30 / BL-328's scope, NOT done here. This function
+ * accepts the future `ThresholdCalibrationContext` so PKT-30 can land without
+ * another signature change everywhere this is called, but currently ignores
+ * it and returns the single constant the research proved safe at present
+ * corpus scale: 0.87. This is deliberately NOT the historical 0.82 default —
+ * shipping a known-degenerate constant into the now-reachable incremental
+ * join path (BL-326/BL-349) would just trade "never joins" for "joins
+ * everything into one giant blob" the moment writes start flowing through it.
+ *
+ * TODO(PKT-30/BL-328): replace this constant with real target-degree
+ * calibration against `sampleVecs`/`targetN` (D_target≈2.0 per the research).
+ */
+export function resolveDefaultThreshold(_ctx: ThresholdCalibrationContext = {}): number {
+  return 0.87;
 }
