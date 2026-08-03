@@ -9,7 +9,8 @@
     "checksum": "sha256:9c64ba282f170b11f3e86c6cfece09aaae11c328d933e16bb240b4759e9a5057",
     "compatibility": {
       "host": ">=1.0.0 <2.0.0"
-    }
+    },
+    "builtFromCommit": "86aebc553f37c32a8385dae1aa3aa81bb9d5bbbc"
   },
   {
     "id": "test-runner",
@@ -21,7 +22,8 @@
     "checksum": "sha256:a6c5a2a88d17ed3fec829b244db666de085833d29b73a2583c5d062cabee3741",
     "compatibility": {
       "host": ">=1.0.0 <2.0.0"
-    }
+    },
+    "builtFromCommit": "86aebc553f37c32a8385dae1aa3aa81bb9d5bbbc"
   },
   {
     "id": "sox-memory-bundle",
@@ -47,7 +49,8 @@
       {
         "id": "memory-usage"
       }
-    ]
+    ],
+    "builtFromCommit": "86aebc553f37c32a8385dae1aa3aa81bb9d5bbbc"
   },
   {
     "id": "memory-cli",
@@ -56,12 +59,13 @@
     "title": "Memory CLI",
     "description": "Use this when you need to manage the sox-memory store from the shell — provides memory init|status|list|registry subcommands for store lifecycle, scope selection, and registry inspection. Fully deterministic; zero LLM calls.",
     "source": "file:///Users/nix/dev/ai/sox-ecosystem/extensions/bundles/sox-memory-bundle/members/memory-cli",
-    "checksum": "sha256:379a53dea67ff41d23882e5727c00bb1f48b51abea462492f7488e5dbb64b420",
+    "checksum": "sha256:480bc9593754ad9e6771a7bf30ddb344d0c5e26713c3261a664d89f1a116910c",
     "compatibility": {
       "host": ">=1.0.0 <2.0.0"
     },
     "visibility": "internal",
-    "bundleId": "sox-memory-bundle"
+    "bundleId": "sox-memory-bundle",
+    "builtFromCommit": "86aebc553f37c32a8385dae1aa3aa81bb9d5bbbc"
   },
   {
     "id": "memory-flush",
@@ -70,12 +74,13 @@
     "title": "Memory Session Flush",
     "description": "Use this when you need session memory durably persisted at conversation end and scope promotions reviewed — binds SessionEnd (persists working memory, enqueues episodes, nudges memoryd) and ScopePromotionProposed (runs promotion approval policy). Deterministic; zero LLM calls.",
     "source": "file:///Users/nix/dev/ai/sox-ecosystem/extensions/bundles/sox-memory-bundle/members/memory-flush",
-    "checksum": "sha256:e12a63326b77aec2f54d2b99f7da2033b84c76abefab38ff92e47cb261b4398d",
+    "checksum": "sha256:ee3d15847a59b49b495be3847fe748576b9482ba8c5ad374fe0ce023a372891a",
     "compatibility": {
       "host": ">=1.0.0 <2.0.0"
     },
     "visibility": "internal",
-    "bundleId": "sox-memory-bundle"
+    "bundleId": "sox-memory-bundle",
+    "builtFromCommit": "86aebc553f37c32a8385dae1aa3aa81bb9d5bbbc"
   },
   {
     "id": "memory-server",
@@ -84,7 +89,7 @@
     "title": "Agent Memory Server",
     "description": "Use this when an agent needs durable, searchable memory across sessions — exposes 7 memory_* tools over a single-file SQLite graph store with hybrid recall (vec+BM25+temporal, <50ms, zero LLM), write-enqueue, session state, community lookup, and bi-temporal invalidation.",
     "source": "file:///Users/nix/dev/ai/sox-ecosystem/extensions/bundles/sox-memory-bundle/members/memory-server",
-    "checksum": "sha256:4d2773bad484aa698e7eca9000f168cdb5f751b076279991261915120a6a2bfd",
+    "checksum": "sha256:bb698a6e437726a20c17dafab824018da24f7ffd202d60b37e8db8211cb33b8a",
     "compatibility": {
       "host": ">=1.0.0 <2.0.0"
     },
@@ -93,7 +98,8 @@
       "min_context_tokens": 8192
     },
     "visibility": "internal",
-    "bundleId": "sox-memory-bundle"
+    "bundleId": "sox-memory-bundle",
+    "builtFromCommit": "86aebc553f37c32a8385dae1aa3aa81bb9d5bbbc"
   },
   {
     "id": "memory-usage",
@@ -107,7 +113,8 @@
       "host": ">=1.0.0 <2.0.0"
     },
     "visibility": "internal",
-    "bundleId": "sox-memory-bundle"
+    "bundleId": "sox-memory-bundle",
+    "builtFromCommit": "86aebc553f37c32a8385dae1aa3aa81bb9d5bbbc"
   },
   {
     "id": "dep-inject",
@@ -119,7 +126,8 @@
     "checksum": "sha256:ec81e4822bb2e5b361781bb697eb4a8ecba8d1dd47789e79a4cdcd387ed7967f",
     "compatibility": {
       "host": ">=1.0.0 <2.0.0"
-    }
+    },
+    "builtFromCommit": "86aebc553f37c32a8385dae1aa3aa81bb9d5bbbc"
   },
   {
     "id": "tokenguard",
@@ -131,7 +139,8 @@
     "checksum": "sha256:083fe30810da10568f69dcc23d45ae5a7cf040156962e7ad45a668d521386cf8",
     "compatibility": {
       "host": ">=1.0.0 <2.0.0"
-    }
+    },
+    "builtFromCommit": "86aebc553f37c32a8385dae1aa3aa81bb9d5bbbc"
   },
   {
     "id": "demo-creator",
@@ -143,7 +152,8 @@
     "checksum": "sha256:2f21145ecce1aa3f1cba9119e9472567cbbd16132e7346c38fe5a4c61f8bf359",
     "compatibility": {
       "host": ">=1.0.0 <2.0.0"
-    }
+    },
+    "builtFromCommit": "86aebc553f37c32a8385dae1aa3aa81bb9d5bbbc"
   },
   {
     "id": "di-codex",
@@ -155,7 +165,8 @@
     "checksum": "sha256:e6942760c07daab1dba21959af95467dd200ee4a1700bbb05ca3ad6ed56d3a99",
     "compatibility": {
       "host": ">=1.0.0 <2.0.0"
-    }
+    },
+    "builtFromCommit": "86aebc553f37c32a8385dae1aa3aa81bb9d5bbbc"
   },
   {
     "id": "dep-injector",
@@ -167,7 +178,8 @@
     "checksum": "sha256:a2ad71fa3e7f522f105e8c0790698aeaedb0b0d0413dcc85518d94b5d3c995b3",
     "compatibility": {
       "host": ">=1.0.0 <2.0.0"
-    }
+    },
+    "builtFromCommit": "86aebc553f37c32a8385dae1aa3aa81bb9d5bbbc"
   },
   {
     "id": "forbidden-access",
@@ -179,7 +191,8 @@
     "checksum": "sha256:b6e9239b127ebaf493239063eaaab0f322f115c064e33c04130a24e705fc3ad2",
     "compatibility": {
       "host": ">=1.0.0 <2.0.0"
-    }
+    },
+    "builtFromCommit": "86aebc553f37c32a8385dae1aa3aa81bb9d5bbbc"
   },
   {
     "id": "sox-ingest",
@@ -191,7 +204,8 @@
     "checksum": "sha256:deda1d03c6875a25f58b05c585564c4afa09368af100477472ad5e89620d50f9",
     "compatibility": {
       "host": ">=1.0.0 <2.0.0"
-    }
+    },
+    "builtFromCommit": "86aebc553f37c32a8385dae1aa3aa81bb9d5bbbc"
   },
   {
     "id": "tui-design",
@@ -203,7 +217,8 @@
     "checksum": "sha256:530d04e570f53a129a32a91695a80b0ee2dcff70cb73c0d8932e7ff777953828",
     "compatibility": {
       "host": ">=1.0.0 <2.0.0"
-    }
+    },
+    "builtFromCommit": "86aebc553f37c32a8385dae1aa3aa81bb9d5bbbc"
   },
   {
     "id": "sox",
@@ -212,9 +227,10 @@
     "title": "soxe CLI",
     "description": "LLM extension ecosystem CLI — extension #0 (D1/D2 self-hosting)",
     "source": "file:///Users/nix/dev/ai/sox-ecosystem/apps/sox",
-    "checksum": "sha256:aec7456e0bc9e46da20f5fc729c0b3ef576367d452a85172aea9b264fab3a7a4",
+    "checksum": "sha256:b68d05cc8174f320e5aaee95bfa01e3456c0ef64598bcb7a2f5061468ea7f167",
     "compatibility": {
       "host": ">=1.0.0 <2.0.0"
-    }
+    },
+    "builtFromCommit": "86aebc553f37c32a8385dae1aa3aa81bb9d5bbbc"
   }
 ]
