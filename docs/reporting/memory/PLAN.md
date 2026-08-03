@@ -21,12 +21,12 @@ A packet is **DONE** only when every BL id it targets is closed — code landing
 (BL-225). Several packets below have merged code and still read OPEN; that is correct, and the
 remedy is to close the backlog item with a red→green test, not to edit this table.
 
-**16 done · 3 partial · 37 open** of 56 packets.
+**18 done · 3 partial · 35 open** of 56 packets.
 
-- Open backlog items in this program's scope: **50**, of which **4** have no packet.
+- Open backlog items in this program's scope: **50**, of which **6** have no packet.
 - Open items deliberately out of scope: **29** — BL-99, BL-103, BL-104, BL-105, BL-163, BL-225, BL-228, BL-258, BL-261, BL-282, BL-283, BL-284, BL-285, BL-288, BL-291, BL-292, BL-296, BL-298, BL-305, BL-306, BL-307, BL-308, BL-309, BL-314, BL-315, BL-333, BL-355, BL-408, BL-411
-- Unscheduled in-scope items (need a packet): BL-414, BL-415, BL-416, BL-424
-- Packet targets already closed (19) — historical context only, no work remains: BL-259, BL-329, BL-343, BL-348, BL-350, BL-359, BL-364, BL-376, BL-380, BL-383, BL-388, BL-390, BL-391, BL-397, BL-399, BL-402, BL-406, BL-407, BL-410
+- Unscheduled in-scope items (need a packet): BL-414, BL-415, BL-416, BL-424, BL-425, BL-426
+- Packet targets already closed (21) — historical context only, no work remains: BL-259, BL-329, BL-343, BL-348, BL-350, BL-359, BL-364, BL-376, BL-380, BL-383, BL-388, BL-390, BL-391, BL-397, BL-399, BL-402, BL-405, BL-406, BL-407, BL-410, BL-412
 
 | Packet | Status | Targets | Still open |
 |---|---|---|---|
@@ -77,12 +77,12 @@ remedy is to close the backlog item with a red→green test, not to edit this ta
 | PKT-45 | **OPEN** | BL-351, BL-401 | BL-351, BL-401 |
 | PKT-46 | **DONE** | BL-402 | — |
 | PKT-47 | **OPEN** | BL-404 | BL-404 |
-| PKT-48 | **OPEN** | BL-405 | BL-405 |
+| PKT-48 | **DONE** | BL-405 | — |
 | PKT-49 | **DONE** | BL-406 | — |
 | PKT-50 | **DONE** | BL-407 | — |
 | PKT-51 | **OPEN** | BL-409 | BL-409 |
 | PKT-52 | **DONE** | BL-410 | — |
-| PKT-53 | **OPEN** | BL-412 | BL-412 |
+| PKT-53 | **DONE** | BL-412 | — |
 | PKT-54 | **OPEN** | BL-413 | BL-413 |
 | PKT-55 | **OPEN** | BL-202 | BL-202 |
 | PKT-56 | **OPEN** | BL-422 | BL-422 |
@@ -707,7 +707,7 @@ rewritten, only unblocked.
 
 ### PKT-48 — BL-405: the backend ignores SIGTERM and is SIGKILLed on every restart
 
-> **status: OPEN** — still open: BL-405 · derived by `tools/plan-status.mjs`, do not hand-edit
+> **status: DONE** — all targets closed (BL-405) · derived by `tools/plan-status.mjs`, do not hand-edit
 
 **Goal:** `soxe service restart` reports, verbatim, `reaper: pid 18521 survived SIGTERM after 5000ms → SIGKILL`. `close()` — where the store re-verifies WAL identity and runs `wal_checkpoint(PASSIVE)`, the mechanism credited with recovering 140/140 records under BL-330 — never runs. Every ordinary restart therefore exercises crash recovery instead of clean shutdown, which also means the clean-shutdown path is nearly untested in the only environment that counts.
 **Closes:** BL-405
@@ -791,7 +791,7 @@ rewritten, only unblocked.
 
 ### PKT-53 — BL-412: the test suite silently opens the LIVE production store
 
-> **status: OPEN** — still open: BL-412 · derived by `tools/plan-status.mjs`, do not hand-edit
+> **status: DONE** — all targets closed (BL-412) · derived by `tools/plan-status.mjs`, do not hand-edit
 
 **Goal:** `memory_ping` called with no `db_path`/`store` (`memory-server/src/index.ts` ~:876) resolves to the default `~/.memory/memory.db`, opens a **real cached connection** via `getDb()`, and registers that path into `openedPaths` — the set the periodic background enrich loop iterates. A test process therefore doesn't merely read production; it enlists production into its own enrichment scheduler. Measured: **5 live-store touches from `backend.spec.ts` alone**, whose own comment reads *"no db touched"*.
 **Closes:** BL-412

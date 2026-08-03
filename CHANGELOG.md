@@ -2,6 +2,134 @@
 
 ---
 
+## [Unreleased] — BL-412/BL-405: the test suite no longer opens the live store, and shutdown actually checkpoints the WAL
+
+**BL-412 — the previously-committed fix (`91cdd35`) was never actually run.** Its own commit message
+said so: the worktree that authored it had no `node_modules`, so neither `vitest` nor the pre-commit
+hook could run, and it shipped under `--no-verify`. Installed dependencies and ran it for the first
+time. Found the regression test itself (`bl412-ping-no-live-store.spec.ts`) was ALSO broken —
+`vi.spyOn(fs, 'existsSync')` against an ESM `import * as fs from 'node:fs'` binding throws
+`TypeError: Cannot redefine property` / "Module namespace is not configurable in ESM" in this vitest
+config. All 3 of its tests failed on that line before a single assertion ran — a regression test
+committed and reported done, never once watched to pass, precisely the pattern BL-225 exists to
+catch. Fixed by obtaining `fs` via `createRequire(__filename)('node:fs')` instead of an ESM namespace
+import — Node's real, mutable `module.exports` object for the `fs` module, which every
+`import * as fs from 'node:fs'` elsewhere in the process (index.ts, the memory-core dist bundle)
+reads live off of, so recording calls against this reference observes every consumer.
+
+Added a whole-suite backstop to `vitest.setup.ts`: any test in the memory-server project that
+touches the real `~/.memory/**` directory (`existsSync`/`readFileSync`/`statSync`/`openSync`/
+`mkdirSync`/`writeFileSync`/`lstatSync`) now fails immediately with a stack trace to the call site —
+not just the one `memory_ping` path BL-412 was filed against, but any tool, in any spec file, ever.
+
+**Watched red→green**, naming BL-412: with the `memory_ping` guard in `index.ts` disabled,
+`bl412-ping-no-live-store.spec.ts` and `backend.spec.ts` both fail with real
+`openSync(/Users/…/.memory/memory.db)` / `mkdirSync(/Users/…/.memory)` touches recorded by the guard.
+With the guard restored, both pass (15/15). A full `nx test memory-server` run — run three times to
+rule out flakiness on this heavily-loaded machine — is clean: **25/25 files, 201/201 tests, 0 live-store
+touches.**
+
+The whole-suite guard caught a SECOND, independent real defect while proving this: `permission-guard.
+spec.ts`'s "[mcp-path-guard.2] allowed db_path" test computed its `db_path` against the REAL
+`os.homedir()` — proving the `~/.memory/**` allowlist admits a path meant literally writing scratch
+`.db`/`.db-wal`/`.db-shm` files into the user's live directory on every test run. Fixed by overriding
+`process.env.HOME` to a scratch tmpdir for that file's lifetime (Node's `os.homedir()` honors `$HOME`
+on POSIX, and every tilde-expansion in the real code path resolves through it, so this exercises the
+identical allow-path logic against a directory that isn't the real one).
+
+The same file also carried a stale, never-true comment claiming it "pin\[s] the fast, deterministic
+hash backend so a `memory_write`'s cold real-ONNX model load never tips the default 5s test timeout"
+— no code in the file ever set that, and the hash backend it describes was removed entirely by
+BL-250. Every `memory_write` call in the file ran the real ONNX `bge-base-en-v1.5` backend, cold-loading
+it repeatedly; under concurrent load (many other agents active on this machine at the time) that blew
+the 30s test timeout on 5 tests. Fixed via the BL-161 deterministic provider seam
+(`_setEmbedProviderForTest`/`DeterministicTestProvider`, the same mechanism `async-embed.spec.ts`
+already uses) — no ONNX, no wall-clock dependency. The file now runs in well under a second instead
+of 150+ seconds.
+
+**BL-405 — the SIGTERM race was genuinely fixed (`9068d16`); the checkpoint still never reached the
+connection that mattered.** Live verification after that fix showed the WAL *growing* across a clean
+restart (3,563,832 → 3,596,792 bytes) and `last_checkpoint_at` staying `null`, even though the fix's
+own disposable-backend test measured a real 3.4MB → 4KB truncation. Root cause, found by reproducing
+the real production sequence directly (no mocks): `handleToolCall`'s write path calls BOTH
+`getDb(dbPath)` (populates `db.ts`'s `adapterCache`) AND `WriteQueue.forPath(dbPath)` — whose
+`_create()` opens its OWN connection via the bare `openDb()`, deliberately never inserted into
+`adapterCache` (so a queue's dedicated write connection is never shared with ad-hoc `getDb()`
+callers). **Every real write routes through the WriteQueue's connection.** `closeAllAdapters()`
+(`coordinatedShutdown`'s step 2) iterates ONLY `adapterCache` — so before this fix, shutdown never
+closed or checkpointed the connection that had taken every single write.
+
+Reproduced directly: 2000 real writes through the real `getDb` + `WriteQueue.forPath` +
+`closeAllAdapters()` sequence left the WAL at 4152 bytes (not truncated — `closeAllAdapters()`'s
+checkpoint on the OTHER connection still flushes most frames, since WAL checkpointing is a file-level
+operation, but cannot fully `TRUNCATE` while the write queue's own connection remains open) and left
+that connection open and accepting further writes after "shutdown" had already returned. This also
+explains why `last_checkpoint_at` stayed `null` even when *some* checkpoint activity occurred:
+`WriteQueue._lastCheckpointAt` (the field that metric reports) was set only by
+`WriteQueue.walCheckpoint()` — `closeDbWithLease`'s checkpoint on the unrelated `getDb`-cached
+connection never touched it.
+
+Also found live in production telemetry (`~/.adhd/sox-ecosystem/memory/logs/memory-core-*.jsonl`): 11
+`store.error` records — `"sql":"PRAGMA wal_checkpoint(TRUNCATE)"`, `"error":"The database connection
+is not open"`, `"method":"executeGet"` — across 11 distinct pids. The `method` field pins this to
+`WriteQueue.walCheckpoint()` (the WP-5 idle-checkpoint timer, which uses `executeGet`), not
+`closeDbWithLease` (which uses `.exec` and logged zero errors for the live server's own pid in the
+same window). Root cause: that timer is a bare, uncancelled `setTimeout(..., 2000ms)` fire-and-forget
+— nothing in shutdown ever cancelled it, so it could fire against an adapter shutdown had already
+closed.
+
+**Fix:** `WriteQueue.closeAllForShutdown()` (new static method, `write-queue.ts`) — cancels any
+pending WP-5 idle timer FIRST, checkpoints + closes every `WriteQueue`'s dedicated connection, and
+records success into a new persistent `WriteQueue._lastCheckpointByPath` map keyed by store path.
+That map is itself the fix for a second, independent bug: `last_checkpoint_at` previously lived only
+on the `WriteQueue` instance's own field, so it silently reset to 0 the instant an instance was
+removed from the singleton map (on shutdown, or in test teardown) — exactly backwards for a
+durability signal, since an instance's LAST act before removal could be exactly the checkpoint the
+metric is asking about. Wired into `coordinatedShutdown()` (`backend.ts`) as step 2b, immediately
+after `closeAllAdapters()`.
+
+Also fixed two silent-swallow catches, both matching the BL-399 "an error this loud went unnoticed
+for days" pattern: `closeDbWithLease`'s checkpoint catch (`lease.ts`) and `WriteQueue.walCheckpoint()`'s
+own catch (the WP-5 timer above) now `log.error` instead of discarding the failure outright.
+
+**Watched red→green**, naming BL-405, against the real production functions —
+`bl405-checkpoint-real.spec.ts`, no mocks (the disposable-backend proof that misled the previous
+attempt only ever mocked `closeAllAdapters`/`terminateEmbedWorkers`/`autoBackup` and proved step
+*ordering*, never a real checkpoint on a real WAL):
+- RED — `closeAllAdapters()` alone (the pre-fix sequence): WAL stays >100KB (not truncated), the
+  write-queue's connection is STILL OPEN and accepts a further write, `last_checkpoint_at` stays 0.
+- GREEN — `closeAllAdapters()` + `WriteQueue.closeAllForShutdown()` (the real `coordinatedShutdown`
+  sequence): WAL truncates to under 1% of its pre-checkpoint size (absolute ceiling 20KB),
+  `last_checkpoint_at` becomes a fresh timestamp, and the store reopens cleanly with all 2000 rows
+  intact afterward.
+
+`backend-shutdown.spec.ts` (the existing mocked step-ordering suite) updated to mock the new
+`WriteQueue.closeAllForShutdown` step via a `Proxy` (`WriteQueue` has a private constructor, so it
+cannot be subclassed to override one static method) — still 5/5 green, its ordering assertion now
+includes the new step. `compaction.spec.ts`'s "checkpoint was long ago" test updated for the new
+persistent-map semantics (it previously backdated only the instance field, which
+`lastCheckpointAtForPath` no longer reads).
+
+**Verification:** full `memory-core` suite 46/46 files, 497/497 tests, 0 failed (1 pre-existing test
+needed updating for the new map semantics — see above). Full `memory-server` suite 25/25 files,
+201/201 tests, 0 failed, 0 live-store touches (BL-412's whole-suite guard). Both projects lint and
+typecheck clean.
+
+Citations: [wip/turso-live-metrics, worktree-agent-ab3fed41eae79e637, claude, BL-412/BL-405 packet,
+1: extensions/bundles/sox-memory-bundle/members/memory-server/src/bl412-ping-no-live-store.spec.ts
+(createRequire fix + red/green proof), 2: extensions/bundles/sox-memory-bundle/members/memory-server/
+vitest.setup.ts (whole-suite BL-412 guard), 3: extensions/bundles/sox-memory-bundle/members/
+memory-server/src/permission-guard.spec.ts (FAKE_HOME fix + DeterministicTestProvider fix), 4:
+libs/memory-core/src/write-queue.ts (WriteQueue.closeAllForShutdown, _lastCheckpointByPath), 5:
+libs/memory-core/src/lease.ts (closeDbWithLease error logging), 6: extensions/bundles/
+sox-memory-bundle/members/memory-server/src/backend.ts (coordinatedShutdown step 2b), 7:
+extensions/bundles/sox-memory-bundle/members/memory-server/src/bl405-checkpoint-real.spec.ts
+(real-function red→green proof), 8: ~/.adhd/sox-ecosystem/memory/logs/memory-core-2026-08-03.jsonl
+(11 wal_checkpoint store.error records, pids 24123/53156/54892/82453/17300/25476/54432/90589/97737/
+97959/5267), commits dc41063 (BL-412) / a85d703 (BL-405) on worktree-agent-ab3fed41eae79e637, merged as be349a5 (BL-412) / 7b9f94a (BL-405) on wip/turso-live-metrics, 2026-08-03]
+
+---
+
 ## [Unreleased] — BL-399/BL-383: the loudest error in production — `store.error: no such column: meta` — deleted at the root
 
 **One defect, two backlog entries.** BL-399 measured the live symptom (154-162 occurrences/day, 14%
