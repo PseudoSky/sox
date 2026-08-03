@@ -88,19 +88,19 @@ function rewriteToContentFirst(messages, personaSP, opencodeSP, cfPrompt) {
   const { agentRole } = splitSystemPrompt(personaSP || opencodeSP || system);
   const seedTokens = Math.ceil(messages[lastUserIdx].content.length / 4);
   const result = messages.map(m => ({ ...m }));
-  // Position 0 = shared boilerplate + CF instructions (cached once, zero per-turn cost).
+  // Position 0 = shared boilerplate + CF instructions (cached once).
   const cfText = cfPrompt ? `\n\n${cfPrompt}` : '';
   const shared = baseShared + cfText;
   const sysIdx = result.findIndex(m => m.role === 'system');
   if (sysIdx !== -1) {
     result[sysIdx] = { ...result[sysIdx], content: shared };
   }
-  // Trailing system = persona only, no CF tail.
-  result.push({
-    role: 'system',
-    content: `--- Role ---\n${agentRole}`,
-  });
-  const tailTokens = Math.ceil(agentRole.length / 4);
+  // Persona as a suffix on the LAST USER message — the proven cache-reuse structure.
+  const lastUser = result.filter(m => m.role === 'user');
+  const lastUserMsg = lastUser[lastUser.length - 1];
+  lastUserMsg.content = `${lastUserMsg.content}\n\n--- Role ---\n${agentRole}`;
+  const personaMarker = '--- Role ---\n';
+  const tailTokens = Math.ceil(agentRole.length / 4) + Math.ceil(personaMarker.length / 4);
   return {
     messages: result, system: shared,
     savings: '0.0', cachedSeed: false, seedTokens, systemTokens: 0,
@@ -126,38 +126,45 @@ assert(cf.includes(`"sessionId":"${SESSION}"`), 'CF prompt contains sessionId in
 assert(cf.includes('/v1/session/agent'), 'CF prompt references the handoff endpoint');
 assert(cf.includes('architect') && cf.includes('review') && cf.includes('backend'), 'CF prompt lists available agents');
 
-// 2. rewrite: persona is a TRAILING SYSTEM message — persona ONLY, no CF tail.
-//    CF instructions moved to position 0 (cache anchor, zero per-turn waste).
+// 2. rewrite: persona is a suffix on the LAST USER message — the structure
+//    proven to produce cross-agent cache reuse (sessions 03c0c039c: 82-93%,
+//    03c3312d1: 52-80%).
 const BOILERPLATE = 'You are opencode, an interactive CLI tool that helps users with software engineering tasks. Use tools.';
 const msgs = [
   { role: 'system', content: `${ARCHITECT}\n\n${BOILERPLATE}` }, // full opencode SP
   { role: 'user', content: USER_CONTENT },
 ];
 const out = rewriteToContentFirst(msgs, ARCHITECT, msgs[0].content, cf);
+const users = out.messages.filter(m => m.role === 'user');
+const lastUser = users[users.length - 1];
+assert(lastUser.content.includes(USER_CONTENT), 'last user message still contains the original content');
+assert(lastUser.content.includes('--- Role ---'), 'last user message carries the persona marker');
+assert(lastUser.content.includes(ARCHITECT.slice(0, 80)), 'last user message contains the persona body');
+assert(!lastUser.content.includes('Content-First Session Instructions'), 'last user message does NOT contain CF instructions (they are at position 0)');
+// NO trailing system message — persona is in last user.
 const last = out.messages[out.messages.length - 1];
-assert(last.role === 'system', 'LAST message is the trailing SYSTEM message (persona home)');
-assert(last.content.includes('--- Role ---'), 'trailing system carries --- Role ---');
-const personaIdx = last.content.indexOf('--- Role ---');
-assert(personaIdx === 0, 'persona marker is the head of the trailing system message');
-assert(!last.content.includes('--- Content-First Session Instructions ---'), 'CF instructions NOT in trailing system (moved to position 0)');
-assert(last.content.includes(ARCHITECT.slice(0, 80)), 'trailing system contains the persona body');
-// CF instructions ARE at position 0 now:
-assert(out.messages[0].content.includes('--- Content-First Session Instructions ---'), 'CF instructions at position 0 (cache anchor, zero per-turn waste)');
+assert(last.role === 'user', 'LAST message is the user message (persona suffix, no trailing system)');
+// CF instructions at position 0:
+assert(out.messages[0].content.includes('--- Content-First Session Instructions ---'), 'CF instructions at position 0 (cache anchor)');
 assert(out.messages[0].content.includes(`"sessionId":"${SESSION}"`), 'CF instructions (with session id) baked into the shared anchor');
 
-// 3. The USER message is left CLEAN (no persona stuffed into user content —
-//    the old behavior that read as "text you pasted", not role)
-const userMsg = out.messages.find(m => m.role === 'user');
-assert(userMsg.content === USER_CONTENT, 'user message untouched — persona NOT in user content');
-assert(!userMsg.content.includes('--- Role ---'), 'user message has no role suffix');
-assert(!userMsg.content.includes('Content-First Session'), 'user message has no CF block');
+// 3. The LAST user message carries the persona suffix — this is the structure
+//    proven to produce cross-agent cache reuse. First users (if multiple) are
+//    untouched; only the last user gets the persona suffix.
+const allUsers = out.messages.filter(m => m.role === 'user');
+assert(allUsers.length === 1, 'single-user input: only one user carries the persona');
+// With a single user, the persona IS appended (it's both first and last).
+// With multiple users, only the LAST gets the suffix — that is tested in #7
+// (pendingInput) where an additional user message receives the persona.
 
 // 4. SHARED invariant (the fix): position-0 system is the opencode boilerplate,
-//    never emptied — across all three persona inputs
+//    never emptied — across all three persona inputs.
+//    The user message at [1] now carries the persona suffix (only the LAST user
+//    when multiple users are present; here there's one).
 const outA = rewriteToContentFirst([...msgs], ARCHITECT, msgs[0].content, cf);
 assert(outA.messages[0].content.includes('interactive CLI tool'), 'Path A (bare body): shared boilerplate at position 0 — NOT emptied');
 assert(outA.messages[0].content !== '', 'Path A: system message non-empty (regression guard for the empty-shared bug)');
-assert(outA.messages[1].content === USER_CONTENT, 'Path A: user content untouched at front (cache anchor)');
+assert(outA.messages[1].content.includes(USER_CONTENT), 'Path A: user content preserved (persona appended to last user)');
 
 const outB = rewriteToContentFirst([...msgs], `${ARCHITECT}\n\n${BOILERPLATE}`, msgs[0].content, cf);
 assert(outB.messages[0].content.includes('interactive CLI tool'), 'Path B (full SP): shared boilerplate at position 0');
@@ -179,32 +186,33 @@ const outBare = rewriteToContentFirst([...bareMsgs], ARCHITECT, BARE_SP, cf);
 assert(outBare.messages[0].content.includes(BARE_SP), 'BARE SP: position-0 includes the full opencode SP (fallback)');
 assert(outBare.messages[0].content.includes('Content-First Session Instructions'), 'BARE SP: CF instructions at position 0');
 assert(outBare.messages[0].content !== '', 'BARE SP: system message non-empty (empty-shared regression guard)');
-assert(outBare.messages[1].content === USER_CONTENT, 'BARE SP: user content untouched (cache anchor intact)');
+assert(outBare.messages[1].content.includes(USER_CONTENT), 'BARE SP: user content preserved (persona appended to last user)');
 // The two bare-SP rewrites MUST produce byte-identical position-0 — that's
 // what lets the provider cache prefix survive an agent handoff.
 const outBare2 = rewriteToContentFirst([...bareMsgs], 'You are the review agent.', BARE_SP, cf);
 assert(outBare2.messages[0].content === outBare.messages[0].content,
   `BARE SP: position-0 byte-identical across personas (${outBare.messages[0].content.length} chars)`);
 
-// 5. cfPrompt=null omits CF block
+// 5. cfPrompt=null: position 0 stays clean, no CF anywhere
 const noCf = rewriteToContentFirst(msgs, ARCHITECT, msgs[0].content, null);
-assert(!noCf.messages[noCf.messages.length - 1].content.includes('Content-First Session'), 'cfPrompt=null omits CF block');
+assert(!noCf.messages[0].content.includes('Content-First Session'), 'cfPrompt=null: no CF at position 0');
+const noCfUser = noCf.messages.filter(m => m.role === 'user');
+assert(!noCfUser[noCfUser.length - 1].content.includes('Content-First Session'), 'cfPrompt=null: no CF in last user message');
 
-// 6. agentTokens is persona-only (cfTokens=0 — CF instructions at position 0)
-assert(out.cfTokens === 0, `cfTokens=${out.cfTokens} — CF instructions moved to position 0 (cache anchor), not the tail`);
-assert(out.agentTokens > 0, `agentTokens=${out.agentTokens} — persona body in the trailing system`);
+// 6. agentTokens measures persona suffix size (cfTokens=0)
+assert(out.cfTokens === 0, `cfTokens=${out.cfTokens} — CF instructions at position 0, zero tail`);
+assert(out.agentTokens > 0, `agentTokens=${out.agentTokens} — persona suffix in the last user message`);
 
-// 7. Chain continuation: a pending handoff input becomes the LAST user message
-//    before the trailing persona system message (injected pre-rewrite, so the
-//    new persona answers it on this turn with full tools)
+// 7. Chain continuation: a pending handoff input becomes the LAST user message,
+//    and the persona suffix is appended to IT.
 const pendingMsgs = [...msgs];
 pendingMsgs.push({ role: 'user', content: 'CONTINUE THE REVIEW OF THE DESIGN DOC' });
 const outP = rewriteToContentFirst(pendingMsgs, ARCHITECT, msgs[0].content, cf);
-const users = outP.messages.filter(m => m.role === 'user');
-const lastUserP = users[users.length - 1];
-assert(lastUserP.content === 'CONTINUE THE REVIEW OF THE DESIGN DOC', 'pendingInput injected as the LAST user message');
-assert(outP.messages[outP.messages.length - 1].role === 'system', 'persona trailing system still AFTER injected input');
-assert(outP.messages[outP.messages.length - 1].content.includes('--- Role ---'), 'persona applies to the continuation turn');
+const usersP = outP.messages.filter(m => m.role === 'user');
+const lastUserP = usersP[usersP.length - 1];
+assert(lastUserP.content.includes('CONTINUE THE REVIEW OF THE DESIGN DOC'), 'pendingInput user content preserved');
+assert(lastUserP.content.includes('--- Role ---'), 'persona applied to the injected pendingInput user');
+assert(lastUserP.role === 'user', 'LAST message is the user (injected + persona), no trailing system');
 
 // 8. savings_pct: the real ratio is computed in the handler logCall from
 //    provider prompt_cache_hit_tokens / prompt_tokens — no unit test here
