@@ -372,6 +372,20 @@ the plist afterwards.** Snapshot: `~/.adhd/sox-ecosystem/memory/bl331-predeploy-
 - Several agents edit `BACKLOG.md` / `CHANGELOG.md` concurrently. When the index is **not** empty,
   do **not** reset and do **not** wait — `git commit -F <msg> -- <paths>` does a **partial commit**
   of only those paths and leaves other staged entries untouched.
-- **BL ids collide** — allocate `max(existing)+1` programmatically. Three collisions in one
-  afternoon; one of mine had to be renumbered post-hoc.
+- **BL ids collide** — allocate `max(existing)+1` programmatically (`tools/allocate-bl-id.mjs`).
+  Three collisions in one afternoon; one of mine had to be renumbered post-hoc. Delete the
+  `RESERVED` placeholder it writes before committing, or the marker check fails on a duplicate id.
+- **"Committed" and "committed somewhere that survives" are different claims.** Worktree branches
+  (`worktree-agent-*`) are disposable and auto-removed. `git log --oneline -1` confirms your commit
+  is at HEAD; it does **not** tell you which branch HEAD is. Two commits (`af45f77`, `e275039`) were
+  stranded on a worktree branch on 2026-08-03 and had to be cherry-picked to `wip/turso-live-metrics`
+  (`26549db`, `1d5e6a7`). After any change of working directory — **including one the harness makes
+  for you mid-session** — run `git branch --show-current` before trusting a commit, and
+  `git branch --contains <sha>` if it matters. Same shape as BL-372: a real success signal that
+  answers a different question than the one you are asking. Tracked as **BL-422**.
+- **When a hot file is genuinely contended, pathspec is not enough.** `git commit <path>` is
+  all-or-nothing per file, and the shared index can hold a copy *behind* HEAD (measured: `BACKLOG.md`
+  staged 21 lines behind HEAD, where a bare commit would have reverted a fix made minutes earlier).
+  Use `node tools/commit-mine.mjs -m "msg" --hunks 'REGEX' -- <paths>` — private `GIT_INDEX_FILE`,
+  shared index never written, working tree never modified. Dry-run first. Tracked as **BL-409**.
 - **Never assume a failure is someone else's** — see §2.5, which is method, not anecdote.
