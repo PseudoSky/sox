@@ -117,7 +117,13 @@ for arm in rf cf; do
     rm -rf "$WT"
   fi
   echo "  creating $WT (branch: $BRANCH)"
-  git -C "$REPO" worktree add "$WT" -b "$BRANCH" main 2>&1 | sed 's/^/    /'
+  # Safety: only use -f for worktrees under our experiment base dir
+  if [[ "$WT" == "$BASE_DIR/arm-"* ]]; then
+    git -C "$REPO" worktree add -f "$WT" -b "$BRANCH" main 2>&1 | sed 's/^/    /'
+  else
+    echo "  ERROR: worktree path not under $BASE_DIR/arm- — refusing to force-add"
+    exit 1
+  fi
 done
 
 # ── Step 2: Write FEATURE.md ──
@@ -184,14 +190,16 @@ echo "=== Launching SDLC agents ==="
 RF_JOB=$!
 SPAWNED+=($RF_JOB)
 
-# CF arm
+# CF arm — single opencode run, monolithic agent (all stages in one session).
+# The CF chain handoff model requires a persistent session that opencode run
+# doesn't provide. Instead, the SDLC-CF agent performs product → architect →
+# typescript → review sequentially within a single run, producing equivalent
+# deliverables to the RF arm's dispatched subagents.
 (
   cd "$WT_CF"
   echo "  [CF] launching in $WT_CF (log: $WT_CF/sdlc-cf.log)"
-  $OPencode_CMD run --agent SDLC-CF "${REPO_KEY}::${BACKLOG_ID}" >"$WT_CF/sdlc-cf.log" 2>&1 &
-  CF_PID=$!
-  SPAWNED+=($CF_PID)
-  wait $CF_PID
+  $OPencode_CMD run --agent SDLC-CF "${REPO_KEY}::${BACKLOG_ID}" >"$WT_CF/sdlc-cf.log" 2>&1
+  echo "  [CF] agent finished (exit: $?)"
 ) &
 CF_JOB=$!
 SPAWNED+=($CF_JOB)
@@ -203,78 +211,81 @@ echo "  RF worktree: $WT_RF"
 echo "  CF worktree: $WT_CF"
 echo ""
 
-# ── Step 4: Discover sessions ──
-sleep 3  # Give opencode time to create sessions
-
-# Find the newest session files for each arm (heuristic: most recent mtime after START_TIME)
-find_session() {
-  local arm="$1"
-  local newest=""
-  local newest_ts=0
-  for f in "$PROXY_DIR"/proxy-ses_*.jsonl; do
-    [[ -f "$f" ]] || continue
-    local mtime
+# ── Helper functions ──
+get_turn_count() {
+  local f="$PROXY_DIR/proxy-ses_${1}.jsonl"
+  [[ -f "$f" ]] || { echo "0"; return; }
+  grep -c '"event":"turn"' "$f" 2>/dev/null || echo "0"
+}
+get_all_turns() {
+  local total=0
+  IFS=',' read -ra ids <<< "$1"
+  for id in "${ids[@]}"; do total=$((total + $(get_turn_count "$id"))); done
+  echo "$total"
+}
+get_session_models() {
+  # Output: RF_SESSIONS=<comma-sep> CF_SESSIONS=<comma-sep>
+  local rf="" cf=""
+  for f in $(ls -t "$PROXY_DIR"/proxy-ses_*.jsonl 2>/dev/null | head -20); do
+    local sid mtime model
+    sid=$(basename "$f" | sed 's/^proxy-ses_//;s/\.jsonl$//')
+    [[ "$sid" == test_* ]] && continue
     mtime=$(stat -f %m "$f" 2>/dev/null || stat -c %Y "$f" 2>/dev/null || echo 0)
-    if [[ "$mtime" -gt "$START_TIME" && "$mtime" -gt "$newest_ts" ]]; then
-      # quick check: does this file have turn events?
-      if grep -q '"event":"turn"' "$f" 2>/dev/null; then
-        newest="$f"
-        newest_ts="$mtime"
-      fi
+    [[ "$mtime" -lt "$START_TIME" ]] && continue
+    model=$(python3 -c "
+import json
+with open('$f') as fh:
+    for line in fh:
+        try:
+            d = json.loads(line)
+            if d.get('event') == 'turn':
+                print(d.get('model',''))
+                break
+        except: pass
+" 2>/dev/null)
+    if [[ "$model" == "cf" ]]; then
+      [[ -n "$cf" ]] && cf="$cf,$sid" || cf="$sid"
+    elif [[ "$model" == "rf" ]]; then
+      [[ -n "$rf" ]] && rf="$rf,$sid" || rf="$sid"
     fi
   done
-  if [[ -n "$newest" ]]; then
-    basename "$newest" | sed 's/^proxy-ses_//' | sed 's/\.jsonl$//'
-  fi
+  echo "RF_SESSIONS=$rf CF_SESSIONS=$cf"
 }
 
-# Wait a bit more for sessions to appear
-sleep 2
-RF_SESSION=""
-CF_SESSION=""
-for f in $(ls -t "$PROXY_DIR"/proxy-ses_*.jsonl 2>/dev/null | head -10); do
-  sid=$(basename "$f" | sed 's/^proxy-ses_//' | sed 's/\.jsonl$//')
-  [[ "$sid" == test_* ]] && continue
-  mtime=$(stat -f %m "$f" 2>/dev/null || stat -c %Y "$f" 2>/dev/null || echo 0)
-  if [[ "$mtime" -gt "$START_TIME" ]]; then
-    if [[ -z "$RF_SESSION" ]]; then
-      RF_SESSION="$sid"
-      echo "  [RF] detected session: $RF_SESSION"
-    elif [[ -z "$CF_SESSION" ]]; then
-      CF_SESSION="$sid"
-      echo "  [CF] detected session: $CF_SESSION"
-      break
-    fi
-  fi
+# ── Step 4: Discover sessions (retry up to 45s) ──
+RF_SESSIONS=""; CF_SESSIONS=""; RF_SESSION=""; CF_SESSION=""
+for attempt in $(seq 1 9); do
+  sleep 5
+  eval "$(get_session_models)"
+  if [[ -n "$RF_SESSIONS$CF_SESSIONS" ]]; then break; fi
+  echo "  waiting for sessions... (attempt $attempt/9)"
 done
+
+if [[ -n "$RF_SESSIONS" ]]; then
+  RF_SESSION=$(echo "$RF_SESSIONS" | cut -d',' -f1)
+  echo "  [RF] detected sessions: $RF_SESSIONS"
+fi
+if [[ -n "$CF_SESSIONS" ]]; then
+  CF_SESSION=$(echo "$CF_SESSIONS" | cut -d',' -f1)
+  echo "  [CF] detected session: $CF_SESSION"
+fi
 
 if [[ -z "$RF_SESSION" && -z "$CF_SESSION" ]]; then
   echo -e "${RED}WARNING: No proxy sessions detected. Is the proxy running on port 3333?${NC}"
-  echo "  Continuing to poll, but metrics will be empty until sessions appear."
 fi
 
 # ── Step 5: Monitor loop ──
 echo ""
 echo "=== Live metrics (refreshing every ${POLL_SECONDS}s) ==="
 
+iteration=0
 last_rf_turns=0
 last_cf_turns=0
-last_rf_ts=0
-last_cf_ts=0
-iteration=0
-
-get_turn_count() {
-  local sid="$1"
-  [[ -z "$sid" ]] && echo "0" && return
-  local f="$PROXY_DIR/proxy-ses_${sid}.jsonl"
-  [[ -f "$f" ]] || { echo "0"; return; }
-  grep -c '"event":"turn"' "$f" 2>/dev/null || echo "0"
-}
+RF_LAST_TS=0
+CF_LAST_TS=0
 
 get_last_turn_ts() {
-  local sid="$1"
-  [[ -z "$sid" ]] && echo "0" && return
-  local f="$PROXY_DIR/proxy-ses_${sid}.jsonl"
+  local f="$PROXY_DIR/proxy-ses_${1}.jsonl"
   [[ -f "$f" ]] || { echo "0"; return; }
   python3 -c "
 import json
@@ -301,90 +312,86 @@ while true; do
   RUNTIME=$((NOW - START_TIME))
   RUNTIME_FMT=$(printf "%02d:%02d" $((RUNTIME / 60)) $((RUNTIME % 60)))
 
-  # Get current turn counts and last turn timestamps
-  RF_TURNS=$(get_turn_count "$RF_SESSION")
-  CF_TURNS=$(get_turn_count "$CF_SESSION")
-  RF_LAST_TS=$(get_last_turn_ts "$RF_SESSION")
-  CF_LAST_TS=$(get_last_turn_ts "$CF_SESSION")
+  # Get current turn counts
+  RF_TURNS=$(get_all_turns "$RF_SESSIONS")
+  CF_TURNS=$(get_all_turns "$CF_SESSIONS")
 
-  # Check if either arm has completed (processes exited)
+  # Get last turn timestamps (from primary session)
+  if [[ -n "$RF_SESSION" ]]; then
+    RF_LAST_TS=$(get_last_turn_ts "$RF_SESSION")
+  fi
+  if [[ -n "$CF_SESSION" ]]; then
+    CF_LAST_TS=$(get_last_turn_ts "$CF_SESSION")
+  fi
+
+  # Liveness: check if primary session file was modified recently
   RF_ALIVE=false; CF_ALIVE=false
-  if [[ -n "$RF_PID" ]] && kill -0 "$RF_PID" 2>/dev/null; then RF_ALIVE=true; fi
-  if [[ -n "$CF_PID" ]] && kill -0 "$CF_PID" 2>/dev/null; then CF_ALIVE=true; fi
-  # Also check if session file is still being written (mtime recent)
   if [[ -n "$RF_SESSION" ]]; then
     rf_mtime=$(stat -f %m "$PROXY_DIR/proxy-ses_${RF_SESSION}.jsonl" 2>/dev/null || echo 0)
-    if [[ "$rf_mtime" -gt $((NOW - 15)) ]]; then RF_ALIVE=true; fi
+    [[ "$rf_mtime" -gt $((NOW - 15)) ]] && RF_ALIVE=true
   fi
   if [[ -n "$CF_SESSION" ]]; then
     cf_mtime=$(stat -f %m "$PROXY_DIR/proxy-ses_${CF_SESSION}.jsonl" 2>/dev/null || echo 0)
-    if [[ "$cf_mtime" -gt $((NOW - 15)) ]]; then CF_ALIVE=true; fi
+    [[ "$cf_mtime" -gt $((NOW - 15)) ]] && CF_ALIVE=true
   fi
+  # Also check if opencode processes still running
+  if [[ -n "$RF_PID" ]] && kill -0 "$RF_PID" 2>/dev/null; then RF_ALIVE=true; fi
+  if [[ -n "$CF_PID" ]] && kill -0 "$CF_PID" 2>/dev/null; then CF_ALIVE=true; fi
 
   echo ""
-  echo -e "${CYAN}── Iteration $iteration ── [$RUNTIME_FMT elapsed] ── $(date '+%H:%M:%S') ──${NC}"
+  echo -e "${CYAN}── Iteration $iteration ── [$RUNTIME_FMT] ── $(date '+%H:%M:%S') ──${NC}"
 
-  # ── Stage headers ──
-  RF_STATUS="${GREEN}● LIVE${NC}"
-  CF_STATUS="${GREEN}● LIVE${NC}"
-  if ! $RF_ALIVE; then RF_STATUS="${YELLOW}○ done?${NC}"; fi
-  if ! $CF_ALIVE; then CF_STATUS="${YELLOW}○ done?${NC}"; fi
+  RF_STATUS="${GREEN}● LIVE${NC}"; CF_STATUS="${GREEN}● LIVE${NC}"
+  $RF_ALIVE || RF_STATUS="${YELLOW}○ done?${NC}"
+  $CF_ALIVE || CF_STATUS="${YELLOW}○ done?${NC}"
 
-  # ── Stall detection ──
+  # Stall detection
   if [[ "$RF_LAST_TS" -gt 0 ]]; then
     rf_stall=$((NOW - RF_LAST_TS))
     if [[ "$rf_stall" -gt "$STALL_SECONDS" ]]; then
-      echo -e "${RED}⚠ STALL: RF arm — no new turns in ${rf_stall}s (last turn at $(date -r $RF_LAST_TS '+%H:%M:%S' 2>/dev/null || echo '?'))${NC}"
+      echo -e "${RED}⚠ STALL: RF — no turns in ${rf_stall}s${NC}"
     fi
   fi
   if [[ "$CF_LAST_TS" -gt 0 ]]; then
     cf_stall=$((NOW - CF_LAST_TS))
     if [[ "$cf_stall" -gt "$STALL_SECONDS" ]]; then
-      echo -e "${RED}⚠ STALL: CF arm — no new turns in ${cf_stall}s (last turn at $(date -r $CF_LAST_TS '+%H:%M:%S' 2>/dev/null || echo '?'))${NC}"
+      echo -e "${RED}⚠ STALL: CF — no turns in ${cf_stall}s${NC}"
     fi
   fi
 
-  # ── Per-arm summary ──
-  echo -e "  RF: $RF_STATUS  session=$RF_SESSION  turns=$RF_TURNS  pid=${RF_PID:-?}"
-  echo -e "  CF: $CF_STATUS  session=$CF_SESSION  turns=$CF_TURNS  pid=${CF_PID:-?}"
+  echo -e "  RF: $RF_STATUS  sessions=$RF_SESSIONS  turns=$RF_TURNS"
+  echo -e "  CF: $CF_STATUS  session=$CF_SESSION  turns=$CF_TURNS"
 
-  # ── Run aggregator for each arm ──
-  if [[ -n "$RF_SESSION" ]]; then
-    echo ""
-    echo "  ── RF Metrics ──"
-    node "$AGGREGATOR" "$RF_SESSION" 2>/dev/null | head -20 || echo "    (aggregator not available)"
+  # Aggregator
+  if [[ -n "$RF_SESSION" && "$RF_TURNS" -gt 0 ]]; then
+    echo ""; echo "  ── RF ──"
+    node "$AGGREGATOR" --rf "$RF_SESSIONS" 2>/dev/null | head -18 || echo "    (waiting...)"
   fi
-  if [[ -n "$CF_SESSION" ]]; then
-    echo ""
-    echo "  ── CF Metrics ──"
-    node "$AGGREGATOR" "$CF_SESSION" 2>/dev/null | head -20 || echo "    (aggregator not available)"
+  if [[ -n "$CF_SESSION" && "$CF_TURNS" -gt 0 ]]; then
+    echo ""; echo "  ── CF ──"
+    node "$AGGREGATOR" "$CF_SESSION" 2>/dev/null | head -18 || echo "    (waiting...)"
   fi
 
-  # ── End conditions ──
-  if ! $RF_ALIVE && ! $CF_ALIVE && [[ "$RF_TURNS" -gt 5 && "$CF_TURNS" -gt 5 ]]; then
+  # Done?
+  if ! $RF_ALIVE && ! $CF_ALIVE && [[ "$RF_TURNS" -gt 3 && "$CF_TURNS" -gt 3 ]]; then
     echo ""
-    echo -e "${GREEN}✓ Both arms appear complete.${NC}"
+    echo -e "${GREEN}Both arms appear complete.${NC}"
     echo ""
-    echo "=== Final results ==="
     if [[ -n "$RF_SESSION" ]]; then
-      echo ""
       echo "── RF Final ──"
-      node "$AGGREGATOR" "$RF_SESSION" 2>/dev/null || echo "(aggregator error)"
+      node "$AGGREGATOR" --rf "$RF_SESSIONS" 2>/dev/null
     fi
     if [[ -n "$CF_SESSION" ]]; then
-      echo ""
       echo "── CF Final ──"
-      node "$AGGREGATOR" "$CF_SESSION" 2>/dev/null || echo "(aggregator error)"
+      node "$AGGREGATOR" "$CF_SESSION" 2>/dev/null
     fi
     break
   fi
 
-  # ── Hard timeout ──
+  # Timeout
   if [[ "$TIMEOUT_MINUTES" -gt 0 ]]; then
-    timeout_sec=$((TIMEOUT_MINUTES * 60))
-    if [[ "$RUNTIME" -gt "$timeout_sec" ]]; then
-      echo -e "${RED}⏰ TIMEOUT: ${TIMEOUT_MINUTES} minutes reached. Killing spawned processes.${NC}"
-      cleanup
+    if [[ "$RUNTIME" -gt $((TIMEOUT_MINUTES * 60)) ]]; then
+      echo -e "${RED}TIMEOUT after ${TIMEOUT_MINUTES}m${NC}"
       exit 1
     fi
   fi
@@ -393,9 +400,6 @@ while true; do
 done
 
 echo ""
-echo -e "${GREEN}Experiment complete. Worktrees:${NC}"
-echo "  RF: $WT_RF"
-echo "  CF: $WT_CF"
-echo "  Session logs:"
-echo "    RF: $PROXY_DIR/proxy-ses_${RF_SESSION}.jsonl"
-echo "    CF: $PROXY_DIR/proxy-ses_${CF_SESSION}.jsonl"
+echo -e "${GREEN}Experiment complete.${NC}"
+echo "  RF: $WT_RF  sessions: $RF_SESSIONS"
+echo "  CF: $WT_CF  session: $CF_SESSION"
