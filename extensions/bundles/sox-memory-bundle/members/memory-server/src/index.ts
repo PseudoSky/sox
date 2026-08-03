@@ -2265,6 +2265,7 @@ export async function runEnrichPassOnDb(
     console.error(
       `[memory-server] periodic enrich (${dbPath}):` +
       ` communities=${result.communities_upserted}` +
+      ` cluster_incremental_joined=${result.incremental_joined}` +
       ` importance_updated=${result.importance_updated}` +
       ` relates_to=${result.relates_to_edges}` +
       ` queue_completed=${queueCompleted}` +

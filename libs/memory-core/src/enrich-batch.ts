@@ -20,7 +20,7 @@
 
 import { createGraphBackend } from '@adhd/sox-graph-store';
 import { buildAutoLinks } from './autolink.js';
-import { clusterStore } from './cluster.js';
+import { clusterStore, resolveDefaultThreshold } from './cluster.js';
 import { computeImportance } from './importance.js';
 import type { ImportanceWeights } from './importance.js';
 import { ENRICH_VERSION } from './enrich-version.js';
@@ -29,7 +29,11 @@ import type { StoreAdapter, AdapterTransaction } from '@adhd/sox-store-adapter';
 export type { ImportanceWeights } from './importance.js';
 
 export interface BatchEnrichOptions {
-  /** Cosine similarity threshold for clustering (default 0.82 real, 0.70 hash). */
+  /**
+   * Cosine similarity threshold for clustering (default: resolveDefaultThreshold(),
+   * currently 0.87 — see cluster.ts; PKT-30/BL-328 replaces this constant with
+   * real target-degree calibration).
+   */
   clusterThreshold?: number;
   /** Near-dup threshold for SAME_AS edges (default 0.95 real, 0.98 hash). */
   nearDupThreshold?: number;
@@ -84,6 +88,15 @@ export interface BatchEnrichResult {
   cluster_pass_skipped: boolean;
   /** If skipped: the reason string. */
   cluster_skip_reason?: string;
+  /**
+   * BL-349: episodes joined to an EXISTING community by the incremental
+   * local-neighborhood join (incrementalCluster:true passes only; 0 on a full
+   * pass, where `communities_upserted`/`member_of_edges` carry the count
+   * instead). Independent traceability for clustering vs. embedding per the
+   * owner's requirement — this number is never touched when embedding fails
+   * or is skipped, and vice versa.
+   */
+  incremental_joined: number;
 }
 
 interface EpisodeRow {
@@ -138,6 +151,7 @@ export async function runBatchEnrich(
     legacy_nodes_stamped: 0,
     embed_model_backfilled: 0,
     cluster_pass_skipped: false,
+    incremental_joined: 0,
   };
 
   // ── Step 1: Stamp legacy nodes (first-pass backfill, E12) ──────────────────
@@ -202,9 +216,13 @@ export async function runBatchEnrich(
       incrementalOnly: incrementalCluster,
     });
 
-    if (clusterResult.clusters.length === 0 && !clusterResult.full_pass) {
+    result.incremental_joined = clusterResult.incremental_joined ?? 0;
+
+    if (clusterResult.clusters.length === 0 && !clusterResult.full_pass && result.incremental_joined === 0) {
       result.cluster_pass_skipped = true;
-      result.cluster_skip_reason = 'degenerate-cluster guard: threshold retries exhausted';
+      result.cluster_skip_reason = clusterResult.incremental_joined !== undefined
+        ? 'incremental join: no existing community within threshold (deferred to full/subset pass)'
+        : 'degenerate-cluster guard: threshold retries exhausted';
     } else {
       result.communities_upserted = clusterResult.clusters.length;
       for (const cluster of clusterResult.clusters) {
@@ -303,8 +321,20 @@ export async function runBatchEnrich(
   return result;
 }
 
-/** Resolve cluster threshold from option or default. */
+/**
+ * Resolve cluster threshold from option or default.
+ *
+ * BL-349/PKT-29: this used to hardcode its own `0.82` independent of
+ * cluster.ts's `resolveDefaultThreshold()` — two sources of truth for the
+ * same constant, and the ONE this function owns was the one every real
+ * `runBatchEnrich` call actually used (clusterStore's own internal default
+ * was unreachable dead code, since this always passes an explicit
+ * `threshold`). PKT-28's research proved 0.82 is degenerate at the live
+ * corpus's current size (largest-cluster ratio 0.759 at N=4867) — delegating
+ * here means the interim-safe constant (and, later, PKT-30/BL-328's real
+ * target-degree calibration) only has to change in one place.
+ */
 function resolveClusterThreshold(override: number | undefined): number {
   if (override !== undefined) return override;
-  return 0.82;
+  return resolveDefaultThreshold();
 }
