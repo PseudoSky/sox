@@ -1,12 +1,13 @@
 #!/usr/bin/env node
 /**
- * verify-cf-instructions.mjs — Verify Option 2: renderCFInstructions() bakes
- * the session id into the CF prompt, and rewriteToContentFirst appends it
- * AFTER the persona suffix on the last user message (message tail), leaving
- * the shared-prefix cache anchor (position 0) untouched.
+ * verify-cf-instructions.mjs — Verifies rewriteToContentFirst invariants:
+ *  - CF instructions live in position 0 (cache anchor, zero per-turn waste)
+ *  - persona as trailing system message only (no CF tail)
+ *  - sharedSysLen never zero (empty-shared regression guard)
+ *  - position-0 byte-identical across personas (handoff cache survival)
  *
- * This duplicates the two functions from cf-proxy.mjs so the test runs
- * without starting the server. Run: node verify-cf-instructions.mjs
+ * Duplicates the core functions from cf-proxy.mjs so tests run without the
+ * server. Run: node verify-cf-instructions.mjs
  */
 
 import fs from 'node:fs';
@@ -76,36 +77,34 @@ function splitSystemPrompt(system) {
   return { shared: '', agentRole: system };
 }
 
-// ── rewriteToContentFirst (copy of the new signature) ──
+// ── rewriteToContentFirst (mirror of cf-proxy.mjs) ──
 function rewriteToContentFirst(messages, personaSP, opencodeSP, cfPrompt) {
   const system = messages.find(m => m.role === 'system')?.content;
   const lastUserIdx = messages.findLastIndex(m => m.role === 'user');
   if (lastUserIdx === -1) {
     return { messages, system, savings: 0, cachedSeed: false, seedTokens: 0, systemTokens: 0, agentTokens: 0 };
   }
-  // Shared never empties: when the opencode SP has no agent-body prefix (bare
-  // base in a chained session), splitSystemPrompt returns shared='' — fall
-  // back to the FULL SP so position 0 stays byte-identical across agents and
-  // the provider prefix cache survives handoffs.
-  const shared = splitSystemPrompt(opencodeSP || system).shared || (opencodeSP || system) || '';
+  const baseShared = splitSystemPrompt(opencodeSP || system).shared || (opencodeSP || system) || '';
   const { agentRole } = splitSystemPrompt(personaSP || opencodeSP || system);
   const seedTokens = Math.ceil(messages[lastUserIdx].content.length / 4);
   const result = messages.map(m => ({ ...m }));
+  // Position 0 = shared boilerplate + CF instructions (cached once, zero per-turn cost).
+  const cfText = cfPrompt ? `\n\n${cfPrompt}` : '';
+  const shared = baseShared + cfText;
   const sysIdx = result.findIndex(m => m.role === 'system');
   if (sysIdx !== -1) {
     result[sysIdx] = { ...result[sysIdx], content: shared };
   }
-  const cfTail = cfPrompt ? `\n\n${cfPrompt}` : '';
+  // Trailing system = persona only, no CF tail.
   result.push({
     role: 'system',
-    content: `--- Role ---\n${agentRole}${cfTail}`,
+    content: `--- Role ---\n${agentRole}`,
   });
-  const cfTokens = Math.ceil((cfPrompt || '').length / 4);
-  const tailTokens = Math.ceil(agentRole.length / 4) + cfTokens;
+  const tailTokens = Math.ceil(agentRole.length / 4);
   return {
     messages: result, system: shared,
     savings: '0.0', cachedSeed: false, seedTokens, systemTokens: 0,
-    agentTokens: tailTokens, cfTokens,
+    agentTokens: tailTokens, cfTokens: 0,
   };
 }
 
@@ -127,8 +126,8 @@ assert(cf.includes(`"sessionId":"${SESSION}"`), 'CF prompt contains sessionId in
 assert(cf.includes('/v1/session/agent'), 'CF prompt references the handoff endpoint');
 assert(cf.includes('architect') && cf.includes('review') && cf.includes('backend'), 'CF prompt lists available agents');
 
-// 2. rewrite: persona is a TRAILING SYSTEM message (perception fix — the
-//    model treats system-role content as its governing role, not as data)
+// 2. rewrite: persona is a TRAILING SYSTEM message — persona ONLY, no CF tail.
+//    CF instructions moved to position 0 (cache anchor, zero per-turn waste).
 const BOILERPLATE = 'You are opencode, an interactive CLI tool that helps users with software engineering tasks. Use tools.';
 const msgs = [
   { role: 'system', content: `${ARCHITECT}\n\n${BOILERPLATE}` }, // full opencode SP
@@ -139,10 +138,12 @@ const last = out.messages[out.messages.length - 1];
 assert(last.role === 'system', 'LAST message is the trailing SYSTEM message (persona home)');
 assert(last.content.includes('--- Role ---'), 'trailing system carries --- Role ---');
 const personaIdx = last.content.indexOf('--- Role ---');
-const cfIdx = last.content.indexOf('--- Content-First Session Instructions ---');
 assert(personaIdx === 0, 'persona marker is the head of the trailing system message');
-assert(cfIdx !== -1 && cfIdx > personaIdx, 'CF prompt comes AFTER the persona in the trailing system');
+assert(!last.content.includes('--- Content-First Session Instructions ---'), 'CF instructions NOT in trailing system (moved to position 0)');
 assert(last.content.includes(ARCHITECT.slice(0, 80)), 'trailing system contains the persona body');
+// CF instructions ARE at position 0 now:
+assert(out.messages[0].content.includes('--- Content-First Session Instructions ---'), 'CF instructions at position 0 (cache anchor, zero per-turn waste)');
+assert(out.messages[0].content.includes(`"sessionId":"${SESSION}"`), 'CF instructions (with session id) baked into the shared anchor');
 
 // 3. The USER message is left CLEAN (no persona stuffed into user content —
 //    the old behavior that read as "text you pasted", not role)
@@ -174,9 +175,10 @@ const bareMsgs = [
   { role: 'user', content: USER_CONTENT },
 ];
 const outBare = rewriteToContentFirst([...bareMsgs], ARCHITECT, BARE_SP, cf);
-assert(outBare.messages[0].content === BARE_SP, 'BARE SP: position-0 falls back to the full opencode SP (never empty)');
+// Position 0 = baseShared (= full SP fallback) + CF instructions.
+assert(outBare.messages[0].content.includes(BARE_SP), 'BARE SP: position-0 includes the full opencode SP (fallback)');
+assert(outBare.messages[0].content.includes('Content-First Session Instructions'), 'BARE SP: CF instructions at position 0');
 assert(outBare.messages[0].content !== '', 'BARE SP: system message non-empty (empty-shared regression guard)');
-assert(outBare.messages[0].content.includes('interactive CLI tool'), 'BARE SP: boilerplate content preserved at position 0');
 assert(outBare.messages[1].content === USER_CONTENT, 'BARE SP: user content untouched (cache anchor intact)');
 // The two bare-SP rewrites MUST produce byte-identical position-0 — that's
 // what lets the provider cache prefix survive an agent handoff.
@@ -188,8 +190,9 @@ assert(outBare2.messages[0].content === outBare.messages[0].content,
 const noCf = rewriteToContentFirst(msgs, ARCHITECT, msgs[0].content, null);
 assert(!noCf.messages[noCf.messages.length - 1].content.includes('Content-First Session'), 'cfPrompt=null omits CF block');
 
-// 6. agentTokens includes persona + cf tokens
-assert(out.agentTokens >= out.cfTokens && out.cfTokens > 0, `agentTokens=${out.agentTokens} >= cfTokens=${out.cfTokens} (accounting honest)`);
+// 6. agentTokens is persona-only (cfTokens=0 — CF instructions at position 0)
+assert(out.cfTokens === 0, `cfTokens=${out.cfTokens} — CF instructions moved to position 0 (cache anchor), not the tail`);
+assert(out.agentTokens > 0, `agentTokens=${out.agentTokens} — persona body in the trailing system`);
 
 // 7. Chain continuation: a pending handoff input becomes the LAST user message
 //    before the trailing persona system message (injected pre-rewrite, so the

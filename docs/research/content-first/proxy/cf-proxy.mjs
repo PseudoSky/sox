@@ -248,9 +248,14 @@ function splitSystemPrompt(system) {
  * Content-first rewrite for a session turn.
  *
  * Forwarded structure:
- *   [0] system: shared boilerplate (from the OPENCODE SP)  ← position 0 cache anchor
+ *   [0] system: shared boilerplate + CF instructions ← position 0, cache anchor
  *   [1..n] history (untouched)
- *   [n+1] system: "--- Role ---" + persona SP + CF prompt  ← tail, per-agent
+ *   [n+1] system: "--- Role ---" + persona SP       ← tail, per-agent only
+ *
+ * CF instructions (handoff recipe + session id) are session-constant — they
+ * live in position 0 alongside the shared boilerplate, so the provider caches
+ * them once and they are never re-tokenized per turn. Previously they rode in
+ * the trailing persona tail, costing ~268 tokens every single turn.
  *
  * Two critical invariants:
  *   1. SHARED comes from the opencode system prompt, which is composed as
@@ -280,7 +285,7 @@ function rewriteToContentFirst(messages, personaSP, opencodeSP, cfPrompt) {
   // position 0 non-empty and byte-identical across agents, so the provider's
   // prefix cache survives every handoff (regression: sharedSysLen=0 destroyed
   // the anchor and killed cross-agent cache reuse).
-  const shared = splitSystemPrompt(opencodeSP || system).shared || (opencodeSP || system) || '';
+  const baseShared = splitSystemPrompt(opencodeSP || system).shared || (opencodeSP || system) || '';
   // PERSONA from the session active agent's bare body; falls back to the
   // opencode SP's agent body on first contact.
   const { agentRole } = splitSystemPrompt(personaSP || opencodeSP || system);
@@ -288,30 +293,29 @@ function rewriteToContentFirst(messages, personaSP, opencodeSP, cfPrompt) {
   const seedTokens = Math.ceil(messages[lastUserIdx].content.length / 4);
 
   const result = messages.map(m => ({ ...m }));
-  // Shared boilerplate remains the system message (position 0, cached).
+  // Position-0 system message = shared boilerplate + CF instructions.
+  // CF instructions are session-constant: cached once, zero per-turn cost.
+  const cfText = cfPrompt ? `\n\n${cfPrompt}` : '';
+  const shared = baseShared + cfText;
   const sysIdx = result.findIndex(m => m.role === 'system');
   if (sysIdx !== -1) {
     result[sysIdx] = { ...result[sysIdx], content: shared };
   }
 
-  // Persona + CF prompt as a TRAILING system message. Appending at the end
-  // keeps user/tool/assistant ordering intact (provider strictness on
-  // tool_calls pairing is preserved) and the shared prefix byte-identical.
-  const cfTail = cfPrompt ? `\n\n${cfPrompt}` : '';
+  // Persona ALONE as a TRAILING system message. Appending at the end keeps
+  // user/tool/assistant ordering intact (provider strictness on tool_calls
+  // pairing is preserved). CF instructions moved to position 0.
   result.push({
     role: 'system',
-    content: `--- Role ---\n${agentRole}${cfTail}`,
+    content: `--- Role ---\n${agentRole}`,
   });
 
   const seedHash = seedTokens > 100 ? `seed-${seedTokens}` : null;
   const cached = seedHash ? cache.get(seedHash) : false;
   if (seedHash && !cached) cache.set(seedHash, seedTokens);
 
-  const cfTokens = Math.ceil((cfPrompt || '').length / 4);
-  // Variable tail = persona + CF prompt (both per-session/per-turn); the
-  // shared seed is what cache reuses, so savings are measured against
-  // seed / (seed + persona + cf).
-  const tailTokens = Math.ceil(agentRole.length / 4) + cfTokens;
+  // Tail is persona only (CF instructions moved to position 0, zero per-turn waste).
+  const tailTokens = Math.ceil(agentRole.length / 4);
 
   return {
     messages: result,
@@ -321,7 +325,7 @@ function rewriteToContentFirst(messages, personaSP, opencodeSP, cfPrompt) {
     seedTokens,
     systemTokens,
     agentTokens: tailTokens,
-    cfTokens,
+    cfTokens: 0,  // moved to position 0; no longer variable tail
   };
 }
 
@@ -330,16 +334,11 @@ function rewriteToContentFirst(messages, personaSP, opencodeSP, cfPrompt) {
 /**
  * Render the content-first process instructions with the session id baked in.
  *
- * Injected as the tail of the TRAILING system message (after the persona SP),
- * so the shared-prefix cache anchor (position 0) is untouched — the session id
- * lives in the message tail, which already varies per agent anyway.
+ * Injected at position 0 alongside the shared boilerplate (the cache anchor),
+ * so the instructions are cached once and never re-tokenized per turn.
  *
- * Final CF structure per forwarded turn:
- *   [ ...context, system: "--- Role ---" + persona SP + CF prompt ]
- *
- * The agent learns its own session id from context (no env var, no discovery)
- * and uses it to call POST /v1/session/agent when handing off to a different
- * specialist persona.
+ * The agent learns its own session id from this anchor and uses it to call
+ * POST /v1/session/agent when handing off to a different specialist persona.
  */
 function renderCFInstructions(sessionId) {
   const agents = [...AGENTS.keys()].sort();
