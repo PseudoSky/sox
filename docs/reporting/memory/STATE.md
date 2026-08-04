@@ -71,6 +71,31 @@ Server: pid **78765**, artifact **`a0d8bbc1ee31`**, up since 2026-08-04T01:37:22
 | **Clustering** | ✅ **WORKING** | `cluster_count: 440`, `total_clustered: 3596`, `coverage: 0.725`, `with_community: 3596`, `with_topic: 4267` (+1527 backfilled). Recluster completed 2026-08-04 (74.4s); 139 orphans retired; orphan-GC on invalidation live (`community-gc.ts`) |
 | WAL checkpoint | ✅ **WORKING** | **BL-405 resolved 2026-08-04**: the WP-5 2s idle checkpoint never fired on the Turso `_noop` path (early return above the scheduling code) and the 5-min compaction tick was never wired — both fixed (commit 0afecff). Live-verified: `last_checkpoint_at` set 2026-08-04T19:47:53Z, `wal_bytes: 0` (full TRUNCATE succeeds with the two-connection topology) |
 
+### ⚠️ Two committed changes are NOT live yet — the next deploy will move production numbers
+
+The live backend serves the bundled `dist/`, so neither of these is in effect until a deliberate
+rebuild + `registry:sync-index` + restart. **Read this before reacting to the numbers they move.**
+
+- **PKT-30/BL-328 threshold calibration (`af2f563`)** replaces the fixed τ with target-mean-degree
+  calibration. Measured on a read-only copy at N=4950, from the shipped function: **clusters
+  441 → 506, largest-cluster ratio 0.1776 → 0.0483, coverage 0.727 → 0.606**, τ 0.87 → 0.89,
+  calibration cost 88 ms against a 23.5 s pass.
+  **The coverage drop is intended and is NOT a regression.** The surrendered 0.12 was chaining
+  through an 879-member blob; the 3.7× reduction in largest-cluster ratio is the point. The dial is
+  `SOX_CLUSTER_TARGET_DEGREE` (default 2.0, now measured rather than assumed — 0.5→τ0.93/cov 0.323,
+  1.0→0.91/0.472, 1.5→0.90/0.543, **2.0→0.89/0.606**, ≥3.0 inert at the floor).
+  τ=0.87 is now a **floor, not a default** — calibration may only raise it, so no corpus clusters
+  more loosely than today. Load-bearing: at the floor the live corpus already sits at mean degree
+  **1.80 against a 2.0 budget** — ~8% of growth from the constant becoming unsafe. That is the drift
+  a constant cannot track.
+- **BL-401 stage instrumentation (`c81c0b7`)** — live `stages_declared` stays **0** until deploy.
+  Verified `2` on a real spawned server. Expect `paths_with_zero_samples` to include
+  `memory-core.write_queue:queued` on production **by design**: the Turso adapter always takes the
+  bypass path. That is the self-check working, not a defect.
+
+At that build, capture the **OTel bundle-size delta** — unmeasured, and measuring it requires the
+destructive build. Research put SDK 1.x at +23.7% (573 KB); 2.10 is larger.
+
 **Residual data defects on the live store — re-measured 2026-08-04T23:14Z:** `malformed_rows:
 {count: 0, columns: [], sample_rowids: []}`. The BL-342 residual row 9284 is **gone**: a later
 batch-enrichment pass overwrote the malformed value as a side effect — nobody repaired it, it aged
