@@ -6,7 +6,7 @@ Project backlog for sox-ecosystem. Each item: what's wrong, where, severity, and
 
 ## Current status — 2026-08-03 (regenerated mechanically; see BL-224)
 
-**Total open: 78.** (BL-416 filed 2026-08-03 — the BACKLOG.md id-allocation/lint tooling resolves its target file via `git-common-dir`, which is worktree-unsafe and validates a different, concurrently-mutating file than the one any linked-worktree agent is actually committing; BL-415 filed 2026-08-03 — BL-412's own acceptance test cannot execute under Vitest's ESM `vi.spyOn(fs, ...)` limitation, so its red→green guarantee has never actually run; BL-414 filed 2026-08-03 — `memory-server:typecheck` carries one pre-existing implicit-`any` unrelated to this session's changes; BL-413 filed 2026-08-03 from the STATE/PLAN reconciliation, corrective-action fix landed same day with red→green unit tests (see BL-413's own entry) — the live periodic enrichment pass has taken zero items in 22.5 hours while 46 accumulated, and `memory_ping` has been reporting `enrichment.state: "stalled"` across ~90 consecutive threshold windows with nothing acting on it; the same pass recorded BL-399's live rate at 154 occurrences/day, the loudest error in production; BL-407 resolved 2026-08-02 from PKT-50 — `--only <dir>` (repeatable) added to `verify-exports-publint-attw.mjs`; `smoke-test.mjs` now computes the filtered extension's dir + bundle siblings + transitive nx-graph workspace deps and passes them as scope, verified live against the real repo (tokenguard: 2 packages, memory-server bundle: 17 packages incl. all bundle siblings) and pinned with a hermetic red→green fixture — see CHANGELOG.md; BL-390 resolved 2026-08-02 from PKT-37 — the live periodic enrichment pass has taken zero items in 22.5 hours while 46 accumulated, and `memory_ping` has been reporting `enrichment.state: "stalled"` across ~90 consecutive threshold windows with nothing acting on it; the same pass recorded BL-399's live rate at 154 occurrences/day, the loudest error in production; BL-407 resolved 2026-08-02 from PKT-50 — `--only <dir>` (repeatable) added to `verify-exports-publint-attw.mjs`; `smoke-test.mjs` now computes the filtered extension's dir + bundle siblings + transitive nx-graph workspace deps and passes them as scope, verified live against the real repo (tokenguard: 2 packages, memory-server bundle: 17 packages incl. all bundle siblings) and pinned with a hermetic red→green fixture — see CHANGELOG.md; BL-390 resolved 2026-08-02 from PKT-37 — `registry:sync-index` now refuses a dirty tree (or stamps `provisional`/`builtFromCommit`), watched red→green — see CHANGELOG.md; BL-380 resolved 2026-08-02 from PKT-04 — the `vector-store` half (three `unwrap()` casts capability-gated) closes out alongside the already-done `memory-cli` half — see CHANGELOG.md; BL-364 resolved 2026-08-02 from the same fix — confirmed as the predicted BL-380 root cause, `hybrid-search` 15 red → 82/82 — see CHANGELOG.md; BL-411 filed 2026-08-02 from that same PKT-04 pass — `analysis.spec.ts` carries the identical raw-handle shape BL-364 diagnosed, unfixed, out of scope for that fix; BL-259 resolved 2026-08-02 from PKT-15 — the reported second-run launchd collision does not reproduce on current HEAD (already fixed by BL-263's per-data-root label namespacing plus `enableOsUnit`'s pre-existing content-addressed idempotence); a named regression test was added and watched red→green — see CHANGELOG.md; BL-388 resolved 2026-08-02 from PKT-06's runtime acceptance — see CHANGELOG.md; BL-410 resolved 2026-08-02 — `SharedFastembedProcessClient` now re-refs the shared fastembed child/IPC channel for the duration of each in-flight request (released once idle), so a standalone script's `warmupEmbed()` no longer races process exit and silently abandons its own pending request — watched red→green against a real standalone-process repro — see CHANGELOG.md; BL-359 resolved 2026-08-01 — atomic BL-id allocation + pre-commit collision guard — see CHANGELOG.md; BL-397 resolved 2026-08-01 — see CHANGELOG.md; BL-408 filed 2026-08-01 from the same close-out — the source fix landed but memory-flush's bundled dist artifact is still unbuilt; BL-407 filed 2026-08-01 — the smoke-test exports preflight is workspace-wide BEFORE --extension filtering, so one agent's in-flight package.json wedges the mandatory merge gate for every other agent; BL-376 filed and resolved same-day 2026-08-01 from a follow-up on the BL-331 model-load regression — split the fastembed warmup timeout into a tight cache-hit budget and the original generous cache-miss budget, with real cache-presence detection deciding which applies — see CHANGELOG.md; BL-406 filed and resolved same-day 2026-08-01 from the post-deploy live-store audit — no embedding loss, but the stale-vector detector was blind to 1090 legacy rows — see CHANGELOG.md; BL-404, BL-405 filed 2026-08-01 from the reviewed memory-server redeploy — production never initialises telemetry, and every restart escalates to SIGKILL; BL-402 resolved 2026-08-01 — see CHANGELOG.md; BL-350 resolved 2026-08-01 from PKT-28's cluster-maintenance research — see CHANGELOG.md; BL-401 filed 2026-08-01 from PKT-02, the BL-351 acceptance-gap follow-up; BL-340, BL-325 resolved 2026-08-01 — see CHANGELOG.md; BL-395 filed and resolved same-day 2026-08-01 — see CHANGELOG.md; BL-394 filed 2026-08-01 from the BL-325 write-queue-bypass finding; BL-372 resolved 2026-08-01 — see CHANGELOG.md; BL-385 resolved 2026-08-01 — see CHANGELOG.md; BL-384 resolved 2026-08-01 — see CHANGELOG.md; BL-388, BL-389 filed 2026-08-01 from the storage-boundary lint pass; BL-287 resolved 2026-07-30; BL-293, BL-294, BL-295, BL-303 resolved 2026-07-16; BL-62 resolved 2026-07-18; BL-311 verified no live bug 2026-07-18; BL-313 (CRITICAL — live edge-table cascade-delete bug) found and resolved same-day 2026-07-18 — see CHANGELOG.md; BL-306..309 filed 2026-07-11 from native-addon/adapter research; BL-310 filed 2026-07-17, resolved 2026-07-23; BL-312 filed 2026-07-18 from the same memory-server data-integrity investigation; BL-314 filed 2026-07-18 from a stale local content-store mirror discovered while syncing installed skill docs; BL-316, BL-273, BL-254, BL-252, BL-264, BL-297 all resolved 2026-07-23 — see CHANGELOG.md).; BL-416 filed 2026-08-03 — `allocate-bl-id.mjs`/`check-backlog-markers.mjs` resolve repo root wrong inside a worktree, silently reading/writing main's `BACKLOG.md`; BL-399, BL-383 resolved 2026-08-03 — same root cause (`buildAutoLinks` persisting a dead entity-stoplist write to a `memory_scope.meta` column no schema ever declared), 154-162/day swallowed `store.error` events on the live store deleted at the source, not migrated — see CHANGELOG.md; BL-413 filed 2026-08-03 from the STATE/PLAN reconciliation — the live periodic enrichment pass has taken zero items in 22.5 hours while 46 accumulated, and `memory_ping` has been reporting `enrichment.state: "stalled"` across ~90 consecutive threshold windows with nothing acting on it; BL-407 resolved 2026-08-02 from PKT-50 — `--only <dir>` (repeatable) added to `verify-exports-publint-attw.mjs`; `smoke-test.mjs` now computes the filtered extension's dir + bundle siblings + transitive nx-graph workspace deps and passes them as scope, verified live against the real repo (tokenguard: 2 packages, memory-server bundle: 17 packages incl. all bundle siblings) and pinned with a hermetic red→green fixture — see CHANGELOG.md; BL-390 resolved 2026-08-02 from PKT-37 — `registry:sync-index` now refuses a dirty tree (or stamps `provisional`/`builtFromCommit`), watched red→green — see CHANGELOG.md; BL-380 resolved 2026-08-02 from PKT-04 — the `vector-store` half (three `unwrap()` casts capability-gated) closes out alongside the already-done `memory-cli` half — see CHANGELOG.md; BL-364 resolved 2026-08-02 from the same fix — confirmed as the predicted BL-380 root cause, `hybrid-search` 15 red → 82/82 — see CHANGELOG.md; BL-411 filed 2026-08-02 from that same PKT-04 pass — `analysis.spec.ts` carries the identical raw-handle shape BL-364 diagnosed, unfixed, out of scope for that fix; BL-259 resolved 2026-08-02 from PKT-15 — the reported second-run launchd collision does not reproduce on current HEAD (already fixed by BL-263's per-data-root label namespacing plus `enableOsUnit`'s pre-existing content-addressed idempotence); a named regression test was added and watched red→green — see CHANGELOG.md; BL-388 resolved 2026-08-02 from PKT-06's runtime acceptance — see CHANGELOG.md; BL-410 resolved 2026-08-02 — `SharedFastembedProcessClient` now re-refs the shared fastembed child/IPC channel for the duration of each in-flight request (released once idle), so a standalone script's `warmupEmbed()` no longer races process exit and silently abandons its own pending request — watched red→green against a real standalone-process repro — see CHANGELOG.md; BL-359 resolved 2026-08-01 — atomic BL-id allocation + pre-commit collision guard — see CHANGELOG.md; BL-397 resolved 2026-08-01 — see CHANGELOG.md; BL-408 filed 2026-08-01 from the same close-out — the source fix landed but memory-flush's bundled dist artifact is still unbuilt; BL-407 filed 2026-08-01 — the smoke-test exports preflight is workspace-wide BEFORE --extension filtering, so one agent's in-flight package.json wedges the mandatory merge gate for every other agent; BL-376 filed and resolved same-day 2026-08-01 from a follow-up on the BL-331 model-load regression — split the fastembed warmup timeout into a tight cache-hit budget and the original generous cache-miss budget, with real cache-presence detection deciding which applies — see CHANGELOG.md; BL-406 filed and resolved same-day 2026-08-01 from the post-deploy live-store audit — no embedding loss, but the stale-vector detector was blind to 1090 legacy rows — see CHANGELOG.md; BL-404, BL-405 filed 2026-08-01 from the reviewed memory-server redeploy — production never initialises telemetry, and every restart escalates to SIGKILL; BL-402 resolved 2026-08-01 — see CHANGELOG.md; BL-350 resolved 2026-08-01 from PKT-28's cluster-maintenance research — see CHANGELOG.md; BL-401 filed 2026-08-01 from PKT-02, the BL-351 acceptance-gap follow-up; BL-340, BL-325 resolved 2026-08-01 — see CHANGELOG.md; BL-395 filed and resolved same-day 2026-08-01 — see CHANGELOG.md; BL-394 filed 2026-08-01 from the BL-325 write-queue-bypass finding; BL-372 resolved 2026-08-01 — see CHANGELOG.md; BL-385 resolved 2026-08-01 — see CHANGELOG.md; BL-384 resolved 2026-08-01 — see CHANGELOG.md; BL-388, BL-389 filed 2026-08-01 from the storage-boundary lint pass; BL-287 resolved 2026-07-30; BL-293, BL-294, BL-295, BL-303 resolved 2026-07-16; BL-62 resolved 2026-07-18; BL-311 verified no live bug 2026-07-18; BL-313 (CRITICAL — live edge-table cascade-delete bug) found and resolved same-day 2026-07-18 — see CHANGELOG.md; BL-306..309 filed 2026-07-11 from native-addon/adapter research; BL-310 filed 2026-07-17, resolved 2026-07-23; BL-312 filed 2026-07-18 from the same memory-server data-integrity investigation; BL-314 filed 2026-07-18 from a stale local content-store mirror discovered while syncing installed skill docs; BL-316, BL-273, BL-254, BL-252, BL-264, BL-297 all resolved 2026-07-23 — see CHANGELOG.md).; BL-422 filed 2026-08-03 — two commits with exemplary hygiene landed on another agent's disposable worktree branch, reachable from nowhere else, and were recovered only by inspection; BL-409 governs what goes into a commit and nothing governs which branch it lands on. BL-413 filed 2026-08-03 from the STATE/PLAN reconciliation — the live periodic enrichment pass has taken zero items in 22.5 hours while 46 accumulated, and `memory_ping` has been reporting `enrichment.state: "stalled"` across ~90 consecutive threshold windows with nothing acting on it; the same pass recorded BL-399's live rate at 154 occurrences/day, the loudest error in production; BL-407 resolved 2026-08-02 from PKT-50 — `--only <dir>` (repeatable) added to `verify-exports-publint-attw.mjs`; `smoke-test.mjs` now computes the filtered extension's dir + bundle siblings + transitive nx-graph workspace deps and passes them as scope, verified live against the real repo (tokenguard: 2 packages, memory-server bundle: 17 packages incl. all bundle siblings) and pinned with a hermetic red→green fixture — see CHANGELOG.md; BL-390 resolved 2026-08-02 from PKT-37 — `registry:sync-index` now refuses a dirty tree (or stamps `provisional`/`builtFromCommit`), watched red→green — see CHANGELOG.md; BL-380 resolved 2026-08-02 from PKT-04 — the `vector-store` half (three `unwrap()` casts capability-gated) closes out alongside the already-done `memory-cli` half — see CHANGELOG.md; BL-364 resolved 2026-08-02 from the same fix — confirmed as the predicted BL-380 root cause, `hybrid-search` 15 red → 82/82 — see CHANGELOG.md; BL-411 filed 2026-08-02 from that same PKT-04 pass — `analysis.spec.ts` carries the identical raw-handle shape BL-364 diagnosed, unfixed, out of scope for that fix; BL-259 resolved 2026-08-02 from PKT-15 — the reported second-run launchd collision does not reproduce on current HEAD (already fixed by BL-263's per-data-root label namespacing plus `enableOsUnit`'s pre-existing content-addressed idempotence); a named regression test was added and watched red→green — see CHANGELOG.md; BL-388 resolved 2026-08-02 from PKT-06's runtime acceptance — see CHANGELOG.md; BL-410 resolved 2026-08-02 — `SharedFastembedProcessClient` now re-refs the shared fastembed child/IPC channel for the duration of each in-flight request (released once idle), so a standalone script's `warmupEmbed()` no longer races process exit and silently abandons its own pending request — watched red→green against a real standalone-process repro — see CHANGELOG.md; BL-359 resolved 2026-08-01 — atomic BL-id allocation + pre-commit collision guard — see CHANGELOG.md; BL-397 resolved 2026-08-01 — see CHANGELOG.md; BL-408 filed 2026-08-01 from the same close-out — the source fix landed but memory-flush's bundled dist artifact is still unbuilt; BL-407 filed 2026-08-01 — the smoke-test exports preflight is workspace-wide BEFORE --extension filtering, so one agent's in-flight package.json wedges the mandatory merge gate for every other agent; BL-376 filed and resolved same-day 2026-08-01 from a follow-up on the BL-331 model-load regression — split the fastembed warmup timeout into a tight cache-hit budget and the original generous cache-miss budget, with real cache-presence detection deciding which applies — see CHANGELOG.md; BL-406 filed and resolved same-day 2026-08-01 from the post-deploy live-store audit — no embedding loss, but the stale-vector detector was blind to 1090 legacy rows — see CHANGELOG.md; BL-404, BL-405 filed 2026-08-01 from the reviewed memory-server redeploy — production never initialises telemetry, and every restart escalates to SIGKILL; BL-402 resolved 2026-08-01 — see CHANGELOG.md; BL-350 resolved 2026-08-01 from PKT-28's cluster-maintenance research — see CHANGELOG.md; BL-401 filed 2026-08-01 from PKT-02, the BL-351 acceptance-gap follow-up; BL-340, BL-325 resolved 2026-08-01 — see CHANGELOG.md; BL-395 filed and resolved same-day 2026-08-01 — see CHANGELOG.md; BL-394 filed 2026-08-01 from the BL-325 write-queue-bypass finding; BL-372 resolved 2026-08-01 — see CHANGELOG.md; BL-385 resolved 2026-08-01 — see CHANGELOG.md; BL-384 resolved 2026-08-01 — see CHANGELOG.md; BL-388, BL-389 filed 2026-08-01 from the storage-boundary lint pass; BL-287 resolved 2026-07-30; BL-293, BL-294, BL-295, BL-303 resolved 2026-07-16; BL-62 resolved 2026-07-18; BL-311 verified no live bug 2026-07-18; BL-313 (CRITICAL — live edge-table cascade-delete bug) found and resolved same-day 2026-07-18 — see CHANGELOG.md; BL-306..309 filed 2026-07-11 from native-addon/adapter research; BL-310 filed 2026-07-17, resolved 2026-07-23; BL-312 filed 2026-07-18 from the same memory-server data-integrity investigation; BL-314 filed 2026-07-18 from a stale local content-store mirror discovered while syncing installed skill docs; BL-316, BL-273, BL-254, BL-252, BL-264, BL-297 all resolved 2026-07-23 — see CHANGELOG.md).
+**Total open: 86.** (BL-428..BL-436 filed 2026-08-04 from a multi-agent findings sweep whose results were recorded nowhere — BL-428 live-data residue: 86 episodes still carry `tags = '[]'` where the schema requires NULL, the BL-325 code fix landed but the backfill never did; BL-429 `stats-bl343-row-resilience.spec.ts` never awaits its six `async` seed calls, so the suite pinning BL-343's contract passes by timing accident; BL-430 NEEDS DECISION — no schema `CHECK (col IS NULL OR json_valid(col))` anywhere, BL-342's deferred defect #2, blocked on rewriting BL-343's fixture and on BL-302's absent migration mechanism; BL-431 `json_column_valid` costs ~262 ms on every store open (`fast` pass 91 → 587 ms), a real per-invocation tax for short-lived opens — the lever is a caller-side exclusion, never a weaker probe; BL-432 first direct measurement of BL-331's head-of-line-blocking question, `embed` `wait_ms` mean 890 ms vs `work_ms` mean 784 ms, but n=2 and cold-start-inclusive so it is a lead needing a real sample; BL-433 `plannedPath()` fixed the BL-319/BL-347 absent-field ambiguity for exactly one field while `TelemetryHandle.currentLogFilePath()` still returns `''`; BL-434 `embed.start` on the heal path emits `trace_id: null` — documented twice as a known gap and still open, the heal tick establishes no ambient trace context; BL-435 `STATE.md`'s hand-written "What to do next" goes stale silently outside `plan-status.mjs`'s guarded markers and sent a session at two DONE packets; BL-436 registry checksum drift armed across the rebuilt `sox-memory-bundle` member dists, sync owned at deploy. BL-425 updated same day with a second independent reproduction and the narrowed fix — raise this hook's timeout, do not shrink its 30-write sample. BL-411 resolved 2026-08-04 by `78e0eca` — 12 `analysis` DB-integrated tests dead since the store-adapter migration are alive and mutation-verified, 48/48 green, and `requireSqliteHandle` now throws a named `StorageError` instead of a bare `TypeError` — see CHANGELOG.md; BL-416 filed 2026-08-03 — the BACKLOG.md id-allocation/lint tooling resolves its target file via `git-common-dir`, which is worktree-unsafe and validates a different, concurrently-mutating file than the one any linked-worktree agent is actually committing; BL-415 filed 2026-08-03 — BL-412's own acceptance test cannot execute under Vitest's ESM `vi.spyOn(fs, ...)` limitation, so its red→green guarantee has never actually run; BL-414 filed 2026-08-03 — `memory-server:typecheck` carries one pre-existing implicit-`any` unrelated to this session's changes; BL-413 filed 2026-08-03 from the STATE/PLAN reconciliation, corrective-action fix landed same day with red→green unit tests (see BL-413's own entry) — the live periodic enrichment pass has taken zero items in 22.5 hours while 46 accumulated, and `memory_ping` has been reporting `enrichment.state: "stalled"` across ~90 consecutive threshold windows with nothing acting on it; the same pass recorded BL-399's live rate at 154 occurrences/day, the loudest error in production; BL-407 resolved 2026-08-02 from PKT-50 — `--only <dir>` (repeatable) added to `verify-exports-publint-attw.mjs`; `smoke-test.mjs` now computes the filtered extension's dir + bundle siblings + transitive nx-graph workspace deps and passes them as scope, verified live against the real repo (tokenguard: 2 packages, memory-server bundle: 17 packages incl. all bundle siblings) and pinned with a hermetic red→green fixture — see CHANGELOG.md; BL-390 resolved 2026-08-02 from PKT-37 — the live periodic enrichment pass has taken zero items in 22.5 hours while 46 accumulated, and `memory_ping` has been reporting `enrichment.state: "stalled"` across ~90 consecutive threshold windows with nothing acting on it; the same pass recorded BL-399's live rate at 154 occurrences/day, the loudest error in production; BL-407 resolved 2026-08-02 from PKT-50 — `--only <dir>` (repeatable) added to `verify-exports-publint-attw.mjs`; `smoke-test.mjs` now computes the filtered extension's dir + bundle siblings + transitive nx-graph workspace deps and passes them as scope, verified live against the real repo (tokenguard: 2 packages, memory-server bundle: 17 packages incl. all bundle siblings) and pinned with a hermetic red→green fixture — see CHANGELOG.md; BL-390 resolved 2026-08-02 from PKT-37 — `registry:sync-index` now refuses a dirty tree (or stamps `provisional`/`builtFromCommit`), watched red→green — see CHANGELOG.md; BL-380 resolved 2026-08-02 from PKT-04 — the `vector-store` half (three `unwrap()` casts capability-gated) closes out alongside the already-done `memory-cli` half — see CHANGELOG.md; BL-364 resolved 2026-08-02 from the same fix — confirmed as the predicted BL-380 root cause, `hybrid-search` 15 red → 82/82 — see CHANGELOG.md; BL-411 filed 2026-08-02 from that same PKT-04 pass — `analysis.spec.ts` carries the identical raw-handle shape BL-364 diagnosed, unfixed, out of scope for that fix; BL-259 resolved 2026-08-02 from PKT-15 — the reported second-run launchd collision does not reproduce on current HEAD (already fixed by BL-263's per-data-root label namespacing plus `enableOsUnit`'s pre-existing content-addressed idempotence); a named regression test was added and watched red→green — see CHANGELOG.md; BL-388 resolved 2026-08-02 from PKT-06's runtime acceptance — see CHANGELOG.md; BL-410 resolved 2026-08-02 — `SharedFastembedProcessClient` now re-refs the shared fastembed child/IPC channel for the duration of each in-flight request (released once idle), so a standalone script's `warmupEmbed()` no longer races process exit and silently abandons its own pending request — watched red→green against a real standalone-process repro — see CHANGELOG.md; BL-359 resolved 2026-08-01 — atomic BL-id allocation + pre-commit collision guard — see CHANGELOG.md; BL-397 resolved 2026-08-01 — see CHANGELOG.md; BL-408 filed 2026-08-01 from the same close-out — the source fix landed but memory-flush's bundled dist artifact is still unbuilt; BL-407 filed 2026-08-01 — the smoke-test exports preflight is workspace-wide BEFORE --extension filtering, so one agent's in-flight package.json wedges the mandatory merge gate for every other agent; BL-376 filed and resolved same-day 2026-08-01 from a follow-up on the BL-331 model-load regression — split the fastembed warmup timeout into a tight cache-hit budget and the original generous cache-miss budget, with real cache-presence detection deciding which applies — see CHANGELOG.md; BL-406 filed and resolved same-day 2026-08-01 from the post-deploy live-store audit — no embedding loss, but the stale-vector detector was blind to 1090 legacy rows — see CHANGELOG.md; BL-404, BL-405 filed 2026-08-01 from the reviewed memory-server redeploy — production never initialises telemetry, and every restart escalates to SIGKILL; BL-402 resolved 2026-08-01 — see CHANGELOG.md; BL-350 resolved 2026-08-01 from PKT-28's cluster-maintenance research — see CHANGELOG.md; BL-401 filed 2026-08-01 from PKT-02, the BL-351 acceptance-gap follow-up; BL-340, BL-325 resolved 2026-08-01 — see CHANGELOG.md; BL-395 filed and resolved same-day 2026-08-01 — see CHANGELOG.md; BL-394 filed 2026-08-01 from the BL-325 write-queue-bypass finding; BL-372 resolved 2026-08-01 — see CHANGELOG.md; BL-385 resolved 2026-08-01 — see CHANGELOG.md; BL-384 resolved 2026-08-01 — see CHANGELOG.md; BL-388, BL-389 filed 2026-08-01 from the storage-boundary lint pass; BL-287 resolved 2026-07-30; BL-293, BL-294, BL-295, BL-303 resolved 2026-07-16; BL-62 resolved 2026-07-18; BL-311 verified no live bug 2026-07-18; BL-313 (CRITICAL — live edge-table cascade-delete bug) found and resolved same-day 2026-07-18 — see CHANGELOG.md; BL-306..309 filed 2026-07-11 from native-addon/adapter research; BL-310 filed 2026-07-17, resolved 2026-07-23; BL-312 filed 2026-07-18 from the same memory-server data-integrity investigation; BL-314 filed 2026-07-18 from a stale local content-store mirror discovered while syncing installed skill docs; BL-316, BL-273, BL-254, BL-252, BL-264, BL-297 all resolved 2026-07-23 — see CHANGELOG.md).; BL-416 filed 2026-08-03 — `allocate-bl-id.mjs`/`check-backlog-markers.mjs` resolve repo root wrong inside a worktree, silently reading/writing main's `BACKLOG.md`; BL-399, BL-383 resolved 2026-08-03 — same root cause (`buildAutoLinks` persisting a dead entity-stoplist write to a `memory_scope.meta` column no schema ever declared), 154-162/day swallowed `store.error` events on the live store deleted at the source, not migrated — see CHANGELOG.md; BL-413 filed 2026-08-03 from the STATE/PLAN reconciliation — the live periodic enrichment pass has taken zero items in 22.5 hours while 46 accumulated, and `memory_ping` has been reporting `enrichment.state: "stalled"` across ~90 consecutive threshold windows with nothing acting on it; BL-407 resolved 2026-08-02 from PKT-50 — `--only <dir>` (repeatable) added to `verify-exports-publint-attw.mjs`; `smoke-test.mjs` now computes the filtered extension's dir + bundle siblings + transitive nx-graph workspace deps and passes them as scope, verified live against the real repo (tokenguard: 2 packages, memory-server bundle: 17 packages incl. all bundle siblings) and pinned with a hermetic red→green fixture — see CHANGELOG.md; BL-390 resolved 2026-08-02 from PKT-37 — `registry:sync-index` now refuses a dirty tree (or stamps `provisional`/`builtFromCommit`), watched red→green — see CHANGELOG.md; BL-380 resolved 2026-08-02 from PKT-04 — the `vector-store` half (three `unwrap()` casts capability-gated) closes out alongside the already-done `memory-cli` half — see CHANGELOG.md; BL-364 resolved 2026-08-02 from the same fix — confirmed as the predicted BL-380 root cause, `hybrid-search` 15 red → 82/82 — see CHANGELOG.md; BL-411 filed 2026-08-02 from that same PKT-04 pass — `analysis.spec.ts` carries the identical raw-handle shape BL-364 diagnosed, unfixed, out of scope for that fix; BL-259 resolved 2026-08-02 from PKT-15 — the reported second-run launchd collision does not reproduce on current HEAD (already fixed by BL-263's per-data-root label namespacing plus `enableOsUnit`'s pre-existing content-addressed idempotence); a named regression test was added and watched red→green — see CHANGELOG.md; BL-388 resolved 2026-08-02 from PKT-06's runtime acceptance — see CHANGELOG.md; BL-410 resolved 2026-08-02 — `SharedFastembedProcessClient` now re-refs the shared fastembed child/IPC channel for the duration of each in-flight request (released once idle), so a standalone script's `warmupEmbed()` no longer races process exit and silently abandons its own pending request — watched red→green against a real standalone-process repro — see CHANGELOG.md; BL-359 resolved 2026-08-01 — atomic BL-id allocation + pre-commit collision guard — see CHANGELOG.md; BL-397 resolved 2026-08-01 — see CHANGELOG.md; BL-408 filed 2026-08-01 from the same close-out — the source fix landed but memory-flush's bundled dist artifact is still unbuilt; BL-407 filed 2026-08-01 — the smoke-test exports preflight is workspace-wide BEFORE --extension filtering, so one agent's in-flight package.json wedges the mandatory merge gate for every other agent; BL-376 filed and resolved same-day 2026-08-01 from a follow-up on the BL-331 model-load regression — split the fastembed warmup timeout into a tight cache-hit budget and the original generous cache-miss budget, with real cache-presence detection deciding which applies — see CHANGELOG.md; BL-406 filed and resolved same-day 2026-08-01 from the post-deploy live-store audit — no embedding loss, but the stale-vector detector was blind to 1090 legacy rows — see CHANGELOG.md; BL-404, BL-405 filed 2026-08-01 from the reviewed memory-server redeploy — production never initialises telemetry, and every restart escalates to SIGKILL; BL-402 resolved 2026-08-01 — see CHANGELOG.md; BL-350 resolved 2026-08-01 from PKT-28's cluster-maintenance research — see CHANGELOG.md; BL-401 filed 2026-08-01 from PKT-02, the BL-351 acceptance-gap follow-up; BL-340, BL-325 resolved 2026-08-01 — see CHANGELOG.md; BL-395 filed and resolved same-day 2026-08-01 — see CHANGELOG.md; BL-394 filed 2026-08-01 from the BL-325 write-queue-bypass finding; BL-372 resolved 2026-08-01 — see CHANGELOG.md; BL-385 resolved 2026-08-01 — see CHANGELOG.md; BL-384 resolved 2026-08-01 — see CHANGELOG.md; BL-388, BL-389 filed 2026-08-01 from the storage-boundary lint pass; BL-287 resolved 2026-07-30; BL-293, BL-294, BL-295, BL-303 resolved 2026-07-16; BL-62 resolved 2026-07-18; BL-311 verified no live bug 2026-07-18; BL-313 (CRITICAL — live edge-table cascade-delete bug) found and resolved same-day 2026-07-18 — see CHANGELOG.md; BL-306..309 filed 2026-07-11 from native-addon/adapter research; BL-310 filed 2026-07-17, resolved 2026-07-23; BL-312 filed 2026-07-18 from the same memory-server data-integrity investigation; BL-314 filed 2026-07-18 from a stale local content-store mirror discovered while syncing installed skill docs; BL-316, BL-273, BL-254, BL-252, BL-264, BL-297 all resolved 2026-07-23 — see CHANGELOG.md).; BL-422 filed 2026-08-03 — two commits with exemplary hygiene landed on another agent's disposable worktree branch, reachable from nowhere else, and were recovered only by inspection; BL-409 governs what goes into a commit and nothing governs which branch it lands on. BL-413 filed 2026-08-03 from the STATE/PLAN reconciliation — the live periodic enrichment pass has taken zero items in 22.5 hours while 46 accumulated, and `memory_ping` has been reporting `enrichment.state: "stalled"` across ~90 consecutive threshold windows with nothing acting on it; the same pass recorded BL-399's live rate at 154 occurrences/day, the loudest error in production; BL-407 resolved 2026-08-02 from PKT-50 — `--only <dir>` (repeatable) added to `verify-exports-publint-attw.mjs`; `smoke-test.mjs` now computes the filtered extension's dir + bundle siblings + transitive nx-graph workspace deps and passes them as scope, verified live against the real repo (tokenguard: 2 packages, memory-server bundle: 17 packages incl. all bundle siblings) and pinned with a hermetic red→green fixture — see CHANGELOG.md; BL-390 resolved 2026-08-02 from PKT-37 — `registry:sync-index` now refuses a dirty tree (or stamps `provisional`/`builtFromCommit`), watched red→green — see CHANGELOG.md; BL-380 resolved 2026-08-02 from PKT-04 — the `vector-store` half (three `unwrap()` casts capability-gated) closes out alongside the already-done `memory-cli` half — see CHANGELOG.md; BL-364 resolved 2026-08-02 from the same fix — confirmed as the predicted BL-380 root cause, `hybrid-search` 15 red → 82/82 — see CHANGELOG.md; BL-411 filed 2026-08-02 from that same PKT-04 pass — `analysis.spec.ts` carries the identical raw-handle shape BL-364 diagnosed, unfixed, out of scope for that fix; BL-259 resolved 2026-08-02 from PKT-15 — the reported second-run launchd collision does not reproduce on current HEAD (already fixed by BL-263's per-data-root label namespacing plus `enableOsUnit`'s pre-existing content-addressed idempotence); a named regression test was added and watched red→green — see CHANGELOG.md; BL-388 resolved 2026-08-02 from PKT-06's runtime acceptance — see CHANGELOG.md; BL-410 resolved 2026-08-02 — `SharedFastembedProcessClient` now re-refs the shared fastembed child/IPC channel for the duration of each in-flight request (released once idle), so a standalone script's `warmupEmbed()` no longer races process exit and silently abandons its own pending request — watched red→green against a real standalone-process repro — see CHANGELOG.md; BL-359 resolved 2026-08-01 — atomic BL-id allocation + pre-commit collision guard — see CHANGELOG.md; BL-397 resolved 2026-08-01 — see CHANGELOG.md; BL-408 filed 2026-08-01 from the same close-out — the source fix landed but memory-flush's bundled dist artifact is still unbuilt; BL-407 filed 2026-08-01 — the smoke-test exports preflight is workspace-wide BEFORE --extension filtering, so one agent's in-flight package.json wedges the mandatory merge gate for every other agent; BL-376 filed and resolved same-day 2026-08-01 from a follow-up on the BL-331 model-load regression — split the fastembed warmup timeout into a tight cache-hit budget and the original generous cache-miss budget, with real cache-presence detection deciding which applies — see CHANGELOG.md; BL-406 filed and resolved same-day 2026-08-01 from the post-deploy live-store audit — no embedding loss, but the stale-vector detector was blind to 1090 legacy rows — see CHANGELOG.md; BL-404, BL-405 filed 2026-08-01 from the reviewed memory-server redeploy — production never initialises telemetry, and every restart escalates to SIGKILL; BL-402 resolved 2026-08-01 — see CHANGELOG.md; BL-350 resolved 2026-08-01 from PKT-28's cluster-maintenance research — see CHANGELOG.md; BL-401 filed 2026-08-01 from PKT-02, the BL-351 acceptance-gap follow-up; BL-340, BL-325 resolved 2026-08-01 — see CHANGELOG.md; BL-395 filed and resolved same-day 2026-08-01 — see CHANGELOG.md; BL-394 filed 2026-08-01 from the BL-325 write-queue-bypass finding; BL-372 resolved 2026-08-01 — see CHANGELOG.md; BL-385 resolved 2026-08-01 — see CHANGELOG.md; BL-384 resolved 2026-08-01 — see CHANGELOG.md; BL-388, BL-389 filed 2026-08-01 from the storage-boundary lint pass; BL-287 resolved 2026-07-30; BL-293, BL-294, BL-295, BL-303 resolved 2026-07-16; BL-62 resolved 2026-07-18; BL-311 verified no live bug 2026-07-18; BL-313 (CRITICAL — live edge-table cascade-delete bug) found and resolved same-day 2026-07-18 — see CHANGELOG.md; BL-306..309 filed 2026-07-11 from native-addon/adapter research; BL-310 filed 2026-07-17, resolved 2026-07-23; BL-312 filed 2026-07-18 from the same memory-server data-integrity investigation; BL-314 filed 2026-07-18 from a stale local content-store mirror discovered while syncing installed skill docs; BL-316, BL-273, BL-254, BL-252, BL-264, BL-297 all resolved 2026-07-23 — see CHANGELOG.md).
 This block is DERIVED from the `**...**` status marker on each
 `### BL-<n>` heading — an item is open iff its last heading marker starts with `Open`, `REOPENED`,
 or `BLOCKED`. **Do not hand-maintain this section.** The previous header (dated 2026-07-07) ranked
@@ -23,14 +23,14 @@ Check for duplicate ids (must print nothing) — see BL-359:
 grep -o '^### BL-[0-9]*' BACKLOG.md | sort -V | uniq -d
 ```
 
-Regenerated 2026-08-02: **77 open**.
+Regenerated 2026-08-04: **86 open**.
 
 | Priority | Open items |
 |---|---|
 | **CRITICAL** | — |
-| **HIGH** | BL-225, BL-284, BL-288, BL-301, BL-302, BL-319, BL-322, BL-326, BL-327, BL-329, BL-334, BL-338, BL-342, BL-345, BL-349, BL-351, BL-353, BL-356, BL-358, BL-375, BL-387, BL-391, BL-393, BL-394, BL-399, BL-401, BL-404, BL-405, BL-409, BL-412, BL-413, BL-416 |
-| **MEDIUM** | BL-99, BL-104, BL-105, BL-228, BL-274, BL-282, BL-285, BL-291, BL-296, BL-306, BL-307, BL-308, BL-312, BL-315, BL-317, BL-318, BL-328, BL-332, BL-333, BL-337, BL-341, BL-360, BL-361, BL-362, BL-378, BL-383, BL-389, BL-396, BL-398, BL-400, BL-411 |
-| **LOW** | BL-103, BL-202, BL-215, BL-258, BL-261, BL-283, BL-292, BL-298, BL-305, BL-309, BL-314, BL-355, BL-379, BL-392, BL-408 |
+| **HIGH** | BL-225, BL-284, BL-288, BL-301, BL-302, BL-319, BL-322, BL-326, BL-327, BL-334, BL-338, BL-342, BL-345, BL-349, BL-351, BL-353, BL-356, BL-358, BL-375, BL-387, BL-393, BL-394, BL-401, BL-404, BL-409, BL-413, BL-416, BL-422 |
+| **MEDIUM** | BL-99, BL-104, BL-105, BL-228, BL-274, BL-282, BL-285, BL-291, BL-296, BL-306, BL-307, BL-308, BL-312, BL-315, BL-317, BL-318, BL-328, BL-332, BL-333, BL-337, BL-341, BL-360, BL-361, BL-362, BL-378, BL-389, BL-396, BL-398, BL-400, BL-423, BL-425, BL-426, BL-428, BL-429, BL-430, BL-432, BL-433, BL-434, BL-435 |
+| **LOW** | BL-103, BL-202, BL-215, BL-258, BL-261, BL-283, BL-292, BL-298, BL-305, BL-309, BL-314, BL-355, BL-379, BL-392, BL-408, BL-424, BL-431, BL-436 |
 | **UNSET** | BL-163 |
 
 ## Audit
@@ -2294,41 +2294,6 @@ Citations: [wip/turso-live-metrics, main, claude, PKT-47/PKT-14 dispatch, 1: `gi
 
 ---
 
-### BL-411 — `analysis.spec.ts` has the identical BL-364 `new SqliteVectorBackend(db)`/`new SqliteGraphBackend(db)` raw-handle shape, still unfixed — **Open (MEDIUM)** (2026-08-02)
-
-**Driver.** Found while fixing PKT-04 (BL-380's `vector-store` half + BL-364). BL-380's blast-radius note already flagged `analysis.spec.ts:23` as the second of two spec files importing `@adhd/sox-vector-store` at value level, but nobody had gone and checked it for the same defect BL-364 diagnosed in `hybrid-search.spec.ts`.[1] It has it, unchanged:
-
-```ts
-function makeVecBackend(db: Database.Database): SqliteVectorBackend {
-  const vec = new SqliteVectorBackend(db);   // raw better-sqlite3.Database, not a StoreAdapter
-  vec.ensureSpace({ modelId: 'test-model', dim: 4 });
-  return vec;
-}
-
-function makeGraphBackend(db: Database.Database): SqliteGraphBackend {
-  const graph = new SqliteGraphBackend(db);  // same shape — SqliteGraphBackend also takes a StoreAdapter now
-  graph.applySchema();                       // also un-awaited; applySchema() is async
-  return graph;
-}
-```
-[2]
-
-**Why this isn't fixed by BL-364/BL-380's landing.** Those items scoped their fix to `vector-store/src/index.ts` and `hybrid-search.spec.ts` only — `analysis`'s own spec file was never in scope for either. With the `vector-store` guard now capability-gated (BL-380), a raw `Database` reaching `SqliteVectorBackend`'s constructor throws `TypeError: Cannot read properties of undefined (reading 'nativeVectors')` inside `requireSqliteHandle()` instead of at the old call site — same crash, one frame deeper, not fixed.
-
-**Blast radius:** `npx nx test analysis` was not run as part of this finding (avoiding a build/test collision with concurrent agents in the shared checkout) but the file loads without an import-time error (confirmed via a `vitest run -t <no-match>` dry pass — 47 tests all skipped, 0 failed at collection time), meaning the crash is real but only fires once a test body actually calls `makeVecBackend`/`makeGraphBackend`. All `cluster`/`detectNearDupPairs`/`buildAutoLinks`/etc. integration tests in `analysis.spec.ts` that exercise real storage almost certainly hit it.
-
-**Fix sketch:** identical to BL-364's — wrap via `createSqliteAdapter(db)` before constructing `SqliteVectorBackend`/`SqliteGraphBackend`, and `await applySchema()`/`await writeNode(...)` everywhere `graph.*` async methods are called un-awaited (same audit `hybrid-search.spec.ts` needed — grep the file for every `graph.`/`vec.` call site, not just the constructors).
-
-**Acceptance (red→green, must name BL-411):** `npx nx test analysis` fully green, with every storage-backed test in the file actually executing (not skipped), plus a build/lint pass (`npx nx run-many -t lint,build,test -p analysis`).
-
-**Severity:** MEDIUM — same defect class as BL-364 (HIGH there because it zeroed `hybrid-search`'s only real integration coverage); downgraded here pending confirmation of how many `analysis` tests are actually red vs. merely at risk, since this finding did not run the suite.
-
-**Related:** BL-364 (identical root cause, same fix shape, `hybrid-search` package — RESOLVED, see CHANGELOG.md), BL-380 (the `vector-store`-side capability guard that turned the crash's location, not its trigger), BL-340 (specs were never typechecked, which is how this class of bug hides).
-
-Citations: [wip/turso-live-metrics, team-lead, claude, PKT-04, 1: BL-380 §"vector-store sites... explicitly untouched", 2: libs/data/analysis/analysis/src/analysis.spec.ts:26-40, 3: libs/data/vectors/vector-store/src/index.ts requireSqliteHandle() (BL-380 fix), 4: `npx vitest run --config libs/data/analysis/analysis/vitest.config.ts -t xxxxnonexistent` — 47 tests collected/skipped, 0 import-time errors, 2026-08-02]
-
----
-
 ### BL-413 — the periodic enrichment pass has not run for 22 hours while 46 items accumulated; `memory_ping` names the state `stalled` and nothing acts on it — **Open (HIGH), corrective-action fix landed with red→green unit tests, live redeploy verification NOT performed (out of scope per owner directive)** (2026-08-03)
 
 > **✅ ROOT CAUSE ESTABLISHED 2026-08-03T22:05Z — the isolated cluster pass TIMES OUT at 120s, and
@@ -2779,6 +2744,33 @@ Citations: [worktree-agent-ab3fed41eae79e637, claude, BL-412/BL-405 packet, 1: t
 2: `[fastembed] WARNING (BL-331): another fastembed host process (pid 69700 …) is ALREADY RUNNING`
 observed in the same session's test stderr, 2026-08-03]
 
+**REPRODUCED AGAIN 2026-08-04, and the fix narrows to option (a).** A second, independent multi-agent
+session hit the identical failure — `throughput-golden.spec.ts > throughput_writes_per_sec —
+TursoAdapter`, `Hook timed out in 30000ms` in `beforeAll`, under concurrent embed load — and it
+again passed both in isolation and on a full-suite re-run of the same unmodified code. That is the
+second confirmed occurrence with the same signature, so this is a recurring flake rather than a
+one-off.
+
+The new detail that settles the fix: **the hook performs 30 synchronous-embed writes.** At the embed
+latencies this machine actually produces under concurrent-agent load — see BL-432, where a real
+measurement put `embed` `wait_ms` mean at ~890 ms with roughly half of it spent acquiring the shared
+fastembed child rather than on inference — 30 sequential sync embeds cannot reliably fit inside a
+30 s budget. The hook is not slow because anything is broken; the budget was set without reference
+to what an embed costs under contention.
+
+So **the fix is a longer `hookTimeout` on this specific hook, not a code change** — option (a) of
+the sketch above. Do not "optimize" the hook by reducing the write count: 30 writes is the sample
+size the throughput golden is measured over, and shrinking it silently weakens the assertion the
+file exists to make. Raise the timeout with a comment naming BL-425 and BL-432 so the number is
+traceable to the measurement that justifies it. Option (b) (detect BL-331 contention and skip) is
+strictly worse here — a skipped throughput golden reads as coverage and is the BL-367 failure mode.
+
+Citations: [wip/turso-live-metrics, backlog-filing agent, claude, multi-agent findings sweep,
+3: second independent reproduction of `throughput-golden.spec.ts > throughput_writes_per_sec —
+TursoAdapter > Hook timed out in 30000ms` under concurrent embed load, passing in isolation and on
+full-suite re-run, 2026-08-04, 4: BL-432 (this backlog) — `embed` `wait_ms` mean 890 ms / `work_ms`
+mean 784 ms measured on a real spawned memory-server, the cost that makes 30 sync embeds exceed 30 s]
+
 ---
 
 ### BL-426 — `libc++abi: terminating due to uncaught exception … mutex lock failed: Invalid argument` observed on backend SIGTERM during test teardown — **Open (MEDIUM)** (2026-08-03)
@@ -2825,3 +2817,398 @@ failed: Invalid argument" immediately following "[memory-server backend] SIGTERM
 
 ---
 
+
+### BL-428 — 86 live episodes carry `tags = '[]'` where the schema requires NULL — residue from the BL-325 regression window, never backfilled — **Open (MEDIUM)** (2026-08-04)
+
+**The code is correct today; the DATA is not.** `enrich.ts` carries an explicit comment that the
+BL-325 direct-SQL block "dropped its `tags.length > 0 ? JSON.stringify(tags) : null` guard —
+regressing every untagged write from NULL to the literal string `'[]'`", and states the contract:
+"an empty tags array means *no tags*, which the schema and every reader (`memory_recall`'s tags
+filter, etc.) represent as NULL, not `'[]'`."[1] The guard **is** restored — `enrich.ts` writes
+`resolvedTags.length > 0 ? JSON.stringify(resolvedTags) : null`[1] and `write.ts` computes
+`tags && tags.length > 0 ? JSON.stringify(tags) : null`[2]. Both paths are correct.
+
+What was never done is the **backfill**. The rows written during the regression window still hold
+`'[]'`, and every reader that treats "has tags" as `tags IS NOT NULL` counts them. Measured on the
+live store this session: **86 episodes with `tags = '[]'`**, inflating `with_tags` (1423) by 86.
+
+**Fix sketch:** a one-shot `UPDATE node SET tags = NULL WHERE tags = '[]'` guarded by a count-first
+dry run, shipped as a repair step next to the other store-repair paths rather than run by hand — the
+same class of residue-after-fix that BL-406 and BL-342 both produced, and neither was caught by a
+test because the *code* was already right.
+
+**Re-measure before repairing.** The 86 figure is this session's count and the store is live; the
+repair must count under the same transaction it updates in, not trust this number.
+
+**Severity:** MEDIUM — no correctness failure in the write path, but every tag-derived statistic and
+every `memory_recall` tags filter silently disagrees with the schema's own stated meaning.
+
+**Related:** BL-325 (the regression that produced it), BL-342 (the sibling empty-string-instead-of-NULL
+JSON-column residue), BL-430 (a schema `CHECK` would make the class structurally impossible).
+
+Citations: [wip/turso-live-metrics, backlog-filing agent, claude, multi-agent findings sweep,
+1: libs/memory-core/src/enrich.ts:212-222 (the BL-325 comment and the restored guard),
+2: libs/memory-core/src/write.ts:251 (`tagsJson`, correct), 3: live-store count of
+`tags = '[]'` episodes = 86 against `with_tags` = 1423, measured 2026-08-04]
+
+---
+
+### BL-429 — `stats-bl343-row-resilience.spec.ts` never awaits its seed helpers: the suite pinning the BL-343 contract passes by timing accident — **Open (MEDIUM)** (2026-08-04)
+
+**Both seed helpers are `async`, and not one of the six call sites awaits them.** `seedGood` is
+declared `async function seedGood(db: StoreAdapter, content: string): Promise<void>`[1] and
+`seedMalformed` likewise[2]; the calls at lines 73, 74, 75, 98, 99 and 125 are all bare[3]:
+
+```ts
+seedGood(db, 'first good episode');      // :73  — floating promise
+seedGood(db, 'second good episode');     // :74  — floating promise
+seedMalformed(db, 'tags');               // :75  — floating promise
+const result = await memoryGetStats(db, {}, ['memory_stats']);
+expect(result.total_episodes).toBe(3);   // passes only if all three inserts settled first
+```
+
+`expect(result.total_episodes).toBe(3)` is an exact-count assertion against inserts that were never
+waited on. It passes today because the `executeRun` calls happen to settle before `memoryGetStats`
+reads — a scheduling property, not a guarantee. Under different adapter latency (Turso vs sqlite),
+CPU contention, or any future added `await` inside `memoryGetStats`, the same code reports
+`total_episodes: 0..2` and `malformed_rows.count: 0`, and the failure reads as a BL-343 regression
+rather than a test bug.
+
+This is the **BL-325 missing-`await` shape** in the suite whose whole job is to pin the BL-343
+"stats survive malformed JSON rows" contract, and it is exactly what BL-340's `typecheck-tests` gate
+was built to catch — a floating promise from an `async` helper is not a type error, so it slips
+through.
+
+**Fix sketch:** `await` all six call sites and make the enclosing `it` bodies await them in order.
+Then verify it was actually load-bearing: with the awaits in place, the assertions must still pass;
+without them, an artificial delay inside `seedGood` must make the suite go red. If it does not go
+red, the assertion is not testing what it claims and needs strengthening too.
+
+**Severity:** MEDIUM — latent flake, not a live defect, but on the single suite guarding a HIGH item's
+contract, so a real regression there would be indistinguishable from the flake.
+
+**Related:** BL-343 (the contract this suite pins), BL-342 (the malformed-row shape it fixtures),
+BL-325 (the same missing-`await` class, 18 files), BL-340 (`typecheck-tests`, which cannot see this).
+
+Citations: [wip/turso-live-metrics, backlog-filing agent, claude, multi-agent findings sweep,
+1: libs/memory-core/src/stats-bl343-row-resilience.spec.ts:40 (`async function seedGood`),
+2: same file:52 (`async function seedMalformed`), 3: same file:73,74,75,98,99,125 (six unawaited
+call sites), 4: same file:80,103,129 (`expect(result.total_episodes).toBe(...)` exact-count
+assertions that depend on them)]
+
+---
+
+### BL-430 — no schema `CHECK (col IS NULL OR json_valid(col))` on any JSON column — the BL-342 defect class stays possible forever — **Open (MEDIUM, NEEDS DECISION)** (2026-08-04)
+
+**BL-342's defect #2, deliberately deferred and never re-raised.** There is **zero** `json_valid`
+usage in any schema DDL in the repo — `grep -rn 'json_valid' --include='*.ts' libs/data/graph/graph-store/src/ libs/memory-core/src/`
+filtered for `CHECK` returns nothing[1]. Every JSON-bearing column (`tags`, `enrich_ver`, `meta`)
+accepts arbitrary bytes, so the exact shape BL-342 produced — the empty string `''`, which is not
+valid JSON and aborts any statement whose `json_extract`/`json_each` touches it — can be written
+again by any bulk import, restore, or hand-repair. BL-343 made `memory_stats` *survive* it; nothing
+prevents it.
+
+**Why this is a decision and not a task — three real costs, all confirmed:**
+
+1. **It breaks `stats-bl343-row-resilience.spec.ts`.** That suite's `seedMalformed` helper inserts
+   the malformed shape *on purpose* as a fixture — `INSERT INTO node (…, ${column}, …) VALUES (…, '', …)`[2].
+   A `CHECK` constraint makes the fixture un-insertable, so BL-343's regression suite must be
+   rewritten (raw-handle bypass, a fixture store created without the constraint, or a table that
+   deliberately lacks it) before the constraint can land. Silently deleting the suite is not an
+   option — it pins a HIGH item's contract.
+2. **Existing stores need a full table rebuild.** SQLite cannot `ALTER TABLE … ADD CONSTRAINT`; the
+   only path is create-new / copy / drop / rename, on a live store carrying an FTS index — which
+   BL-337 already documents as un-`REINDEX`-able and BL-361 documents as capable of PANICking the
+   process when its backing table is disturbed. This is the riskiest kind of migration in this repo
+   and BL-302 records that no real migration mechanism exists yet.
+3. **New stores would be structurally immune at essentially zero risk** — which is the whole reason
+   to do it, and why "just leave it" is also not obviously right.
+
+**The decision to make:** (a) constraint on new stores only, existing stores stay unconstrained and
+rely on `json_column_valid` (BL-431) to detect drift; (b) constraint everywhere, accepting the
+rebuild and blocking on BL-302's migration mechanism; or (c) neither — close this and rely on the
+integrity probe alone. Owner call. Do not implement any of the three without it.
+
+**Severity:** MEDIUM — no live defect; this is prevention for a class that has already fired once
+(BL-342) and cost a bespoke `json_valid()` sweep to diagnose.
+
+**Related:** BL-342 (the incident, defect #2), BL-343 (survives it; the suite this blocks),
+BL-431 (`json_column_valid`, the detective control that exists instead), BL-302 (no migration
+mechanism), BL-337/BL-361 (why an FTS-bearing table rebuild is dangerous).
+
+Citations: [wip/turso-live-metrics, backlog-filing agent, claude, multi-agent findings sweep,
+1: repo-wide absence — `/usr/bin/grep -rn 'json_valid' --include='*.ts' libs/data/graph/graph-store/src/ libs/memory-core/src/`
+piped through `grep -i check` returns no match, 2026-08-04, 2: libs/memory-core/src/stats-bl343-row-resilience.spec.ts:52-57
+(`seedMalformed` inserts `''` into `tags`/`enrich_ver`/`meta` as the fixture)]
+
+---
+
+### BL-431 — `json_column_valid` adds ~262 ms to EVERY store open; the `fast` integrity pass went 207 ms → ~587 ms — **Open (LOW)** (2026-08-04)
+
+**Stated cost, in the probe's own header table.** `integrity.ts`'s cost table records
+`json_column_valid` at **262 ms** on the 105 MB live store — no warm/cold split for the smaller
+columns because it did not exist when they were measured — taking the **`fast` total from 91/96 ms
+to 587 ms**[1]. The comment is explicit and honest about it: "That probe is by far the most
+expensive one in `fast` and its cost is stated rather than buried: 262 ms warm / 372 ms cold, on
+10 135 nodes + 51 386 edges."[2]
+
+For the long-lived memory service this is irrelevant — it is paid once per process, against a
+process that lives for days. For **`memory-cli` and every other short-lived open** it is a
+per-invocation tax that now dominates startup: a CLI that previously spent ~91 ms proving the store
+healthy now spends ~587 ms, most of it scanning three JSON columns it will never read.
+
+**The lever is scope, not rigor.** Do **not** weaken the probe (sample N rows, skip large stores,
+downgrade to a warning) — it is in `fast` and not `deep` deliberately, because malformed JSON
+arrives from bulk import and restore, i.e. exactly the paths a short-lived tool takes[2]. The
+correct fix is a `VerifyOptions.only` / exclusion at the **caller**: short-lived openers opt out of
+`json_column_valid` explicitly and visibly, the service keeps it. `IntegrityProbe` is already a
+closed union[3] and `verifyIntegrity` already filters on `wanted(...)`[4], so the mechanism exists —
+what is missing is the per-caller policy and a documented rule for which callers may skip it.
+
+**Severity:** LOW — a latency cost, not a correctness one, and the correctness it buys is real.
+
+**Related:** BL-342 (why the probe exists), BL-430 (a schema `CHECK` would make it redundant for new
+stores), BL-387 (the same "integrity verdict must be complete" pressure pushing the other way).
+
+Citations: [wip/turso-live-metrics, backlog-filing agent, claude, multi-agent findings sweep,
+1: libs/data/store/store-adapter/src/integrity.ts:85-91 (cost table — `json_column_valid` 262 ms;
+`fast` total 91 ms / 96 ms / 587 ms), 2: same file:96-101 (the "most expensive probe in `fast`,
+stated rather than buried" note and the deliberate `fast`-not-`deep` placement),
+3: same file:134 (`IntegrityProbe` closed union includes `'json_column_valid'`),
+4: same file:1515 (`if (wanted('json_column_valid')) findings.push(...)` — the existing filter hook)]
+
+---
+
+### BL-432 — first direct measurement of BL-331's head-of-line-blocking question: embed `wait_ms` mean 890 ms vs `work_ms` mean 784 ms — **Open (MEDIUM, needs a real sample)** (2026-08-04)
+
+**Roughly half of embed latency is acquiring the shared fastembed child, not inference.** The
+BL-401 stage migration split `embed` into a `wait` half (`admit` — resolve config, acquire the
+shared provider) and a `work` half (`_embedWork`, the actual inference)[1]. The commit that landed
+it measured, on a real spawned `memory-server`: **`embed wait_ms` mean 890 ms vs `work_ms` mean
+784 ms**[2].
+
+That split was built *precisely* to answer BL-331's open question, and the code says so: "`admit` is
+acquiring the shared fastembed child process, `work` is the inference. That split is the direct
+measurement of BL-331's open question — cold model load and head-of-line blocking behind the single
+shared child land in `wait_ms`, inference lands in `work_ms`. Previously both were fused into one
+`embed.finish duration_ms` and had to be separated by correlating adjacent log lines by hand."[1]
+
+**⚠️ This is a lead, not a verdict.** Three reasons the number cannot be acted on as-is:
+- **n = 2.** Two embeds. Any mean over two samples is an anecdote.
+- **Cold start is included.** The first embed pays model load, which is exactly what inflates the
+  `wait` half; BL-376 already had to split the warmup budget into cache-hit and cache-miss cases for
+  this reason. A sample that does not separate first-embed from steady-state cannot distinguish
+  "cold load, one time" from "head-of-line blocking, every time" — and those imply opposite fixes.
+- **Wall-clock, not CPU (BL-369).** On a machine running dozens of concurrent agents, wall-clock
+  wait absorbs unrelated scheduling pressure.
+
+**Fix sketch:** take a proper sample before concluding anything — ≥200 embeds on an already-warm
+provider, first-N discarded, recorded from the live service's own telemetry rather than a spawned
+one-off, and bucketed by concurrency. If steady-state `wait_ms` stays anywhere near `work_ms`, BL-331
+is confirmed and the single-shared-child design needs revisiting; if it collapses toward zero, the
+890 ms was cold load and BL-331's question is answered in the negative. Either way this is the
+telemetry BL-353 was filed for — data written and never read.
+
+**Severity:** MEDIUM to fix, HIGH interest — it is the first quantitative signal on a HIGH-value
+open architecture question that has been argued from theory for weeks.
+
+**Related:** BL-331 (the head-of-line-blocking question this measures), BL-401 (which built the
+instrument), BL-376 (cache-hit vs cache-miss warmup budgets), BL-369 (wall-clock vs CPU),
+BL-353 (telemetry written and never analyzed).
+
+Citations: [wip/turso-live-metrics, backlog-filing agent, claude, multi-agent findings sweep,
+1: libs/memory-core/src/embed.ts:228-247 (the `wait`/`work` split and its stated purpose as BL-331's
+direct measurement), 2: commit c81c0b7 message, verbatim: "embed wait_ms mean 890ms vs work_ms mean
+784ms — roughly half of embed latency is acquiring the shared child, not inference", measured on a
+deliberately-non-live spawned memory-server, 2026-08-04]
+
+---
+
+### BL-433 — `plannedPath()` fixed the absent-field ambiguity for ONE field; `TelemetryHandle.currentLogFilePath()` still returns `''` and is still exported — **Open (MEDIUM)** (2026-08-04)
+
+**The fix exists and was not applied to the two surfaces that already had the bug.**
+`DurableJsonlSink.currentPath()` returns `''` until the first write, which makes a status surface
+reporting it **indistinguishable from "no sink configured"** — the BL-319/BL-347 absent-field
+ambiguity. `plannedPath()` was added specifically to fix that, and its own doc comment says so:
+"`currentPath()` is `''` until the first write, which makes a status surface reporting it
+indistinguishable from 'no sink configured' — the same absent-field ambiguity as BL-319/BL-347. A
+status field should answer 'where do I look?' whether or not anything has been written yet."[1]
+
+`plannedPath()` is then used for exactly one field — the metrics-snapshot `file`[2]. Meanwhile:
+
+- `TelemetryHandle.currentLogFilePath` is still declared on the public interface[3] and still
+  implemented as `() => _state.sink?.currentPath() ?? ''`[4] — **two** ways to produce `''`
+  (no sink at all, or a sink that has not written yet), collapsed into one indistinguishable value.
+- `memory-core` re-exports the same shape, so every downstream consumer inherits it.
+- The package's own spec drives assertions off `handle.currentLogFilePath()`[5], so the ambiguous
+  accessor is the tested path and the unambiguous one is not.
+
+A caller asking "where is telemetry being written?" gets `''` and cannot tell whether to fix the
+config or just wait — which is the precise failure BL-319 was filed about and BL-347 repeated.
+
+**Fix sketch:** make the handle's accessor answer the question the caller is actually asking —
+either return `plannedPath()` when nothing has been written yet, or return `null` for
+"no sink configured" and the planned path otherwise, so the two states are distinguishable in the
+type. Update `memory-core`'s re-export and the spec to assert both states. Whichever shape wins,
+`''` must stop being a legal return value.
+
+**Severity:** MEDIUM — no data loss, but it is a status surface that lies by omission, on the exact
+defect class two prior items were filed for and one of them was supposedly fixed.
+
+**Related:** BL-319 (absent-field ambiguity, HIGH), BL-347, BL-401 (which added `plannedPath()`),
+BL-404 (the live service reporting `logSink:'none'` — the other half of "where is telemetry going?").
+
+Citations: [wip/turso-live-metrics, backlog-filing agent, claude, multi-agent findings sweep,
+1: libs/observability/sox-telemetry/src/sink.ts:109-118 (`plannedPath()` and its BL-319/BL-347 doc
+comment), 2: libs/observability/sox-telemetry/src/runtime.ts:497 (`_snapshotSink?.plannedPath() ?? ''`
+— the one consumer), 3: libs/observability/sox-telemetry/src/runtime.ts:76
+(`currentLogFilePath(): string` on the public interface), 4: same file:224
+(`currentLogFilePath: () => _state.sink?.currentPath() ?? ''`),
+5: libs/observability/sox-telemetry/src/index.spec.ts:41,136 (specs read the ambiguous accessor)]
+
+---
+
+### BL-434 — `embed.start` on the heal path emits `trace_id: null`: heal-pass embeds cannot be correlated to anything — **Open (MEDIUM)** (2026-08-04)
+
+**Documented as a known gap, never closed, and the BL-401 stage split did not close it either.**
+`docs/observability/README.md` states it twice — as a known gap ("`embed.start` / `embed.finish`
+currently emit `trace_id: null` — the embed path…")[1] and again in its own defect table
+("**`embed.*` events carry `trace_id: null`** — embeds cannot be correlated to their originating
+write")[2].
+
+**Mechanism, confirmed in source.** Trace ids propagate *ambiently* via `AsyncLocalStorage`[3]; the
+logger resolves `trace_id` as `fields['trace_id'] ?? currentTraceId() ?? null`[4], and
+`_embedWork` logs `log.info('embed.start', { text_len: textLen })` with no explicit id[5]. So the
+value is entirely determined by whether the caller established ambient context:
+
+- **Write path** — the write establishes a real ULID before embedding, so `currentTraceId()` resolves
+  and `embed.start` carries it.
+- **Heal path** — `healStaleVectors` runs outside any write task (its own spec says so: the call "is
+  made OUTSIDE any WriteQueue task")[6] and the heal tick establishes no ambient context, so
+  `currentTraceId()` is undefined and the log line falls through to `null`.
+
+`withContendedStage` *propagates* ambient context, it does not *create* it — so the BL-401 migration,
+which correctly tags heal embeds with `stagePath: 'heal'`[7], gave them a stage label but still no
+trace id. You can now tell a heal embed from a write embed; you still cannot tell *which* heal tick,
+or join it to the row it re-embedded.
+
+**Fix sketch:** the heal tick establishes a trace id for its own pass (one per tick, or one per
+`embed_heal:${uid}` unit of work[8]) before calling `embed(..., 'heal')`. Same for the reembed path.
+Then delete the two "known gap" notes from `docs/observability/README.md` — a doc that permanently
+documents a gap is how this one survived.
+
+**Severity:** MEDIUM — no production failure, but it makes the heal path the one embed path that
+cannot be debugged from telemetry, and BL-353's whole complaint is that this telemetry is never
+usable enough to be read.
+
+**Related:** BL-351 (the observability architecture), BL-401 (added the stage split, not the trace
+id), BL-320 (added the `embed.start`/`finish` lines), BL-88 (`healStaleVectors` itself),
+BL-353 (telemetry written and never read).
+
+Citations: [wip/turso-live-metrics, backlog-filing agent, claude, multi-agent findings sweep,
+1: docs/observability/README.md:70 ("Known gap: `embed.start` / `embed.finish` currently emit
+`trace_id: null`"), 2: same file:339 (defect table row), 3: libs/observability/sox-telemetry/src/trace.ts:11-15
+(`AsyncLocalStorage<string>` trace storage), 4: libs/memory-core/src/telemetry.ts:266
+(`?? currentTraceId() ?? null`), 5: libs/memory-core/src/embed.ts:253
+(`log.info('embed.start', { text_len: textLen })` — no trace_id),
+6: libs/memory-core/src/embed-provenance.spec.ts:28 ("healStaleVectors call is made OUTSIDE any
+WriteQueue task"), 7: libs/memory-core/src/embed.ts:228-247 (`stagePath` union incl. `'heal'`),
+8: libs/memory-core/src/embed-pipeline.ts:713 (`embed_heal:${pending.uid}` label)]
+
+---
+
+### BL-435 — `STATE.md`'s hand-written sections go stale silently and no guard can catch them — the entry-point doc sent a session at two DONE packets — **Open (MEDIUM, process)** (2026-08-04)
+
+**It already cost real time.** `STATE.md` §"What to do next" led with PKT-41 (BL-391) and PKT-19
+(BL-329). Both were DONE in `PLAN.md`'s derived ledger and neither id was in `BACKLOG.md` — the
+project's own rule is that if an id is not in `BACKLOG.md`, it shipped. A session acted on that entry
+before catching it[1].
+
+**Why no guard catches it.** `plan-status.mjs` only rewrites and only `--check`s the region between
+its `<!-- PLAN-STATUS:BEGIN -->` / `END` markers[2], and its `--check` mode compares exactly that
+derived block against `BACKLOG.md`[3]. "What to do next" lives **outside** those markers, so
+`plan-status.mjs --check` returns `OK — derived blocks match BACKLOG.md` while the section a reader
+actually starts from names shipped work. Every routing doc in the repo points agents at `STATE.md`
+first, so the one section with no guard is the one with the highest blast radius.
+
+**What was done, and why it is not enough.** `e48c187` corrected the stale entry and added an
+in-place warning: "⚠️ This section is hand-written and goes stale silently — `plan-status.mjs --check`
+cannot catch it. Before acting on an item here, confirm it against the derived ledger in
+`PLAN.md`."[4] That is **mitigation, not a fix** — it delegates the check to every future reader and
+depends on each one performing it. The prior incident's root cause was a reader trusting the
+section; the remedy asks readers to distrust it.
+
+**Fix sketch — make it derivable or make it expire.** Three candidates, pick one:
+1. **Derive it.** Emit "What to do next" from `BACKLOG.md` priority + `PLAN.md` packet status inside
+   the `PLAN-STATUS` markers, so it is covered by the existing `--check`. Loses editorial nuance;
+   gains a guard.
+2. **Guard the references.** Extend `plan-status.mjs --check` to scan the hand-written prose for
+   `BL-\d+` / `PKT-\d+` tokens and fail if any names an id that is absent from `BACKLOG.md` or DONE
+   in `PLAN.md`. Cheap, mechanical, catches exactly the incident that happened, keeps the prose.
+2 is the smallest change that would have caught this. 3. **Expire it** — stamp the section with the
+`BACKLOG.md` revision it was written against and have the guard fail once they diverge.
+
+**Severity:** MEDIUM, process — no code defect, but the memory program's designated entry point
+(`docs/reporting/memory/README.md` routes every agent to `STATE.md` first) can confidently point at
+finished work, and the only current defense is a warning label.
+
+**Related:** BL-224 (the identical "derived fact maintained by hand" defect in `BACKLOG.md`'s own
+status header — solved by deriving it), BL-225 (status markers recording intent, not verified
+outcome), BL-258/BL-296 (plan state drifting from reality).
+
+Citations: [wip/turso-live-metrics, backlog-filing agent, claude, multi-agent findings sweep,
+1: commit e48c187 message ("The list led with PKT-41 (BL-391) + PKT-19 (BL-329). Both are DONE in
+PLAN.md's derived ledger and neither id is in BACKLOG.md … A session acted on that entry before
+catching it"), 2: tools/plan-status.mjs:43,151,189,246-249 (all rewriting/validation is bounded by
+the `PLAN-STATUS:BEGIN`/`END` markers), 3: tools/plan-status.mjs:255,273-278 (`--check` compares only
+the derived blocks; prints "OK — derived blocks match BACKLOG.md"),
+4: docs/reporting/memory/STATE.md:119-122 (`## What to do next` and the added ⚠️ warning, outside the
+markers)]
+
+---
+
+### BL-436 — registry checksum drift is armed: the `sox-memory-bundle` member dists were rebuilt and `registry/index.json` is unsynced — **Open (LOW, tracked — sync owned at deploy)** (2026-08-04)
+
+**Filed for traceability, not for someone to pick up.** The team lead is performing the
+`registry:sync-index` at deploy time on a clean tree; this item exists so the armed state is
+recorded rather than living only in one session's head.
+
+**State, measured.** All three `sox-memory-bundle` member dists were rebuilt today —
+`memory-cli`, `memory-server` and `memory-flush` each carry `index.js`,
+`enrich-process-host.js`, `embedWorker.js`, `sharedOnnxWorker.js` and `fastembedProcessHost.js`
+newer than `2026-08-04 00:00`[1] — as a downstream effect of rebuilding `store-adapter`,
+`vector-store` and `graph-store` (whose `dist/` bundles into the members). `registry/index.json` is
+unmodified in the working tree[2]. Per the repo's own build sequence, "after any rebuild of a `dist`
+artifact that ships in an extension, run `npx nx run registry:sync-index` — the rebuilt bundle's
+checksum will no longer match `registry/index.json`, and `smoke-test.mjs` fails with
+`CHECKSUM MISMATCH`."[3] So the mandatory merge gate is armed to fail until the sync happens.
+
+**Correction to a claim made while triaging this.** The drift is **not** in the three library dists
+directly: `registry/index.json` holds 16 entries and contains **zero** occurrences of
+`store-adapter`, `vector-store` or `graph-store`[4] — those libs are not registry-indexed. The
+checksummed artifacts are the bundle members that embed them. Anyone chasing this should look at the
+bundle entries, not the libs.
+
+**Sequencing constraint.** BL-390's fix makes `registry:sync-index` refuse a dirty tree (or stamp
+`provisional`), and this repo currently has several agents holding uncommitted work — so the sync
+must be the last step on a clean tree, not an opportunistic one.
+
+**Close condition:** `registry/index.json` regenerated and committed alongside the rebuilt artifacts,
+and `node scripts/smoke-test.mjs` reporting `summary.failed === 0`.
+
+**Severity:** LOW — a known, owned, sequenced deploy step; it becomes an incident only if someone
+merges before the sync and blames the resulting `CHECKSUM MISMATCH` on their own change.
+
+**Related:** BL-390 (`registry:sync-index` refuses a dirty tree), BL-235 (a diagnostic build is a
+destructive operation — the reason these rebuilds are load-bearing), BL-408 (the inverse: a source
+fix whose dist was never rebuilt).
+
+Citations: [wip/turso-live-metrics, backlog-filing agent, claude, multi-agent findings sweep,
+1: `/usr/bin/find extensions -name '*.js' -path '*/dist/*' -newermt '2026-08-04 00:00'` → 15 files
+across `extensions/bundles/sox-memory-bundle/members/{memory-cli,memory-server,memory-flush}/dist/`,
+2: `git status --porcelain registry/index.json` → empty, 2026-08-04,
+3: CLAUDE.md / AGENTS.md, "A DIAGNOSTIC `nx build` IS A DESTRUCTIVE OPERATION" section, closing
+paragraph, 4: `/usr/bin/grep -c 'store-adapter\|vector-store\|graph-store' registry/index.json` → 0,
+against 16 total entries]
+
+---
