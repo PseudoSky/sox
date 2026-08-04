@@ -233,14 +233,15 @@ export type { MemoryFilter } from './memory-filters.js';
 
 // ── Clustering ────────────────────────────────────────────────────────────────
 export {
-  clusterStats, clusterStore, clusterSubset, dropSubsetLens,
-  listSubsetLenses, materializeClusters, resolveDefaultThreshold
+  calibrateThreshold, clusterStats, clusterStore, clusterSubset, dropSubsetLens,
+  listSubsetLenses, materializeClusters, resolveDefaultThreshold,
+  CLUSTER_THRESHOLD_CEILING, CLUSTER_THRESHOLD_FLOOR, CLUSTER_TARGET_MEAN_DEGREE
 } from './cluster.js';
 export type {
   ClusterResult, ClusterStats, ClusterStoreOptions,
   ClusterStoreResult, ClusterSubsetOptions,
   ClusterSubsetResult, DropSubsetLensResult, MaterializeOptions,
-  SubsetLensDescriptor, ThresholdCalibrationContext
+  SubsetLensDescriptor, ThresholdCalibration, ThresholdCalibrationContext
 } from './cluster.js';
 
 // ── Auto-links ────────────────────────────────────────────────────────────────

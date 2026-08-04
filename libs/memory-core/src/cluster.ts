@@ -57,6 +57,21 @@ export interface ClusterStoreResult {
    * membership instead comes from `clusters`.
    */
   incremental_joined?: number;
+  /**
+   * PKT-30/BL-328: the target-mean-degree calibration this pass ran. Present
+   * only on a full pass that resolved its own τ (absent when the caller passed
+   * an explicit `threshold`, which is an absolute override, and on the
+   * incremental path, which never recalibrates — §2.2).
+   */
+  calibration?: ThresholdCalibration;
+  /**
+   * How many times the D5.5 degenerate guard had to retry at τ+0.05. With
+   * calibration in front of it this should be 0 — a non-zero value means
+   * calibration under-shot and is the signal to re-examine D_target.
+   */
+  guard_retries?: number;
+  /** The τ the partition was actually produced at (post-calibration, post-guard). */
+  effective_threshold?: number;
 }
 
 export interface ClusterStats {
@@ -623,6 +638,9 @@ async function computeClusters(
   episodes: EpRow[],
   opts: ComputeClustersOptions = {},
 ): Promise<ClusterStoreResult> {
+  // Un-calibrated seed. A full pass RE-RESOLVES this below, once it has the
+  // vectors calibration needs (PKT-30). An explicit `opts.threshold` is an
+  // absolute override at every layer — callers that pass one mean it.
   const threshold = opts.threshold ?? resolveDefaultThreshold();
   const nodeCap = opts.nodeCap ?? 10000;
   const salt = opts.salt ?? '';
@@ -669,8 +687,23 @@ async function computeClusters(
     return { clusters: [], full_pass: true, unclustered_count: candidateRowids.length };
   }
 
-  // Degenerate-cluster guard (D5.5): retry up to 3 times with threshold+0.05
-  let currentThreshold = threshold;
+  // ── PKT-30 / BL-328: target-mean-degree calibration ──────────────────────
+  // Only a FULL pass may recompute τ (§2.2: a single write changes neither N
+  // nor the similarity distribution enough to justify it), and only when the
+  // caller did not name a threshold explicitly. The vectors are already in
+  // hand, so calibration costs one bounded O(sample²) scan — measured 148ms
+  // against a 23.4s pass at N=4950.
+  const calibration =
+    opts.threshold === undefined
+      ? calibrateThreshold(candidateVecs, candidateRowids.length, resolveTargetMeanDegree())
+      : null;
+  const passThreshold = calibration?.threshold ?? threshold;
+
+  // Degenerate-cluster guard (D5.5): retry up to 3 times with threshold+0.05.
+  // With calibration in front of it this should now be a backstop that rarely
+  // fires (PKT-28 §2, and BL-328 §5.4 — "the guard must not be the mechanism"),
+  // not the thing quietly doing the real calibration.
+  let currentThreshold = passThreshold;
   let attempts = 0;
   let clusters: ClusterResult[] = [];
 
@@ -690,7 +723,14 @@ async function computeClusters(
   }
 
   const totalClustered = clusters.reduce((sum, c) => sum + c.member_rowids.length, 0);
-  return { clusters, full_pass: true, unclustered_count: candidateRowids.length - totalClustered };
+  return {
+    clusters,
+    full_pass: true,
+    unclustered_count: candidateRowids.length - totalClustered,
+    ...(calibration ? { calibration } : {}),
+    guard_retries: attempts,
+    effective_threshold: currentThreshold,
+  };
 }
 
 /**
@@ -1124,47 +1164,259 @@ export async function dropSubsetLens(
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 /**
- * Forward-compatibility context for threshold calibration. PKT-30 (BL-328) is
- * scoped to implement target-mean-degree calibration: sample pairwise cosine
- * similarity on `sampleVecs`, compute P(edge≥τ) for a candidate grid, and pick
- * the smallest τ such that projected mean degree P(edge≥τ)×(targetN−1) stays
- * at/under a target (recommended D_target=2.0) — see
- * docs/reporting/memory/findings/pkt28-clustering-strategy.md §2. Neither field
- * is consumed yet; they exist so PKT-30 can land without another call-site
- * churn across cluster.ts/enrich-batch.ts.
+ * Context for target-mean-degree threshold calibration (PKT-30 / BL-328).
+ * Sample pairwise cosine similarity on `sampleVecs`, compute P(edge≥τ) over a
+ * candidate grid, and pick the smallest τ whose projected mean degree
+ * P(edge≥τ)×(targetN−1) stays at/under `D_target` — see
+ * docs/reporting/memory/findings/pkt28-clustering-strategy.md §2.
+ *
+ * When both fields are absent, `resolveDefaultThreshold` returns the floor
+ * constant, which is the pre-calibration behaviour (BL-420's locked value).
  */
 export interface ThresholdCalibrationContext {
   /** Bounded sample of live embedding vectors to estimate edge probability from. */
   sampleVecs?: Float32Array[];
   /** Corpus size (N) the calibration should target. */
   targetN?: number;
+  /** Target mean node degree. Default `CLUSTER_TARGET_MEAN_DEGREE` (2.0). */
+  targetMeanDegree?: number;
+}
+
+/**
+ * Calibration floor. τ may be RAISED above this by calibration, never lowered.
+ *
+ * This is the value PKT-28 measured non-degenerate at the true full corpus
+ * (N=4867: largest-cluster ratio 0.1806) and the value BL-420's regression
+ * test locks for the un-calibrated path. A floor — rather than a free search
+ * over the whole grid — is what makes calibration monotone-safe: on a corpus
+ * small enough that a loose τ would "fit" the degree budget, calibration
+ * cannot hand back a threshold looser than the one already proven safe, so it
+ * can never re-introduce the percolation failure it exists to prevent.
+ */
+export const CLUSTER_THRESHOLD_FLOOR = 0.87;
+/** Upper bound of the candidate grid. */
+export const CLUSTER_THRESHOLD_CEILING = 0.99;
+/** Candidate-grid step. */
+const CLUSTER_THRESHOLD_STEP = 0.01;
+/**
+ * Target mean node degree D_target (PKT-28 §2 recommends 2.0).
+ *
+ * Swept directly at the live corpus (N=4950) before adoption — the resulting
+ * τ, cluster count, largest-cluster ratio and clustered fraction:
+ *
+ * | D_target | τ | clusters | ratio | clustered_frac |
+ * |---|---|---|---|---|
+ * | 0.5 | 0.93 | 500 | 0.0073 | 0.323 |
+ * | 1.0 | 0.91 | 555 | 0.0143 | 0.472 |
+ * | 1.5 | 0.90 | 542 | 0.0218 | 0.543 |
+ * | **2.0** | **0.89** | **506** | **0.0483** | **0.606** |
+ * | 3.0+ | 0.87 (floor) | 441 | 0.1776 | 0.727 |
+ *
+ * 2.0 is the largest value at which calibration is currently *active* rather
+ * than inert at the floor, and it buys a 3.7× reduction in largest-cluster
+ * ratio for a 0.12 coverage cost. Overridable at runtime via
+ * `SOX_CLUSTER_TARGET_DEGREE` for operators who want to trade the other way.
+ */
+export const CLUSTER_TARGET_MEAN_DEGREE = 2.0;
+/**
+ * Bounded calibration sample size. Cost is O(sample²) pair comparisons, NOT
+ * O(N²). Measured at the live corpus: sample=100 → 4,950 pairs / 7ms but an
+ * unstable τ (0.87, i.e. it under-estimates the tail); sample=200/400/800 all
+ * agree on τ=0.89 at 28/148/684ms. 400 is the smallest sample in the stable
+ * region, and 148ms against a 23.4s full pass is 0.6% overhead.
+ */
+const CLUSTER_CALIBRATION_SAMPLE = 400;
+
+/** Deterministic evenly-spaced subsample. No RNG — the same corpus calibrates identically. */
+function boundedSample<T>(items: T[], max: number): T[] {
+  if (items.length <= max) return items;
+  const step = items.length / max;
+  const out: T[] = [];
+  for (let i = 0; i < max; i++) out.push(items[Math.min(items.length - 1, Math.floor(i * step))]!);
+  return out;
+}
+
+/** Diagnostics for a calibration decision — surfaced so a pass can report WHY its τ is what it is. */
+export interface ThresholdCalibration {
+  /** The chosen τ. Always ≥ `CLUSTER_THRESHOLD_FLOOR`. */
+  threshold: number;
+  /**
+   * The metric the edge probability was estimated over. Always `'pairwise'`.
+   *
+   * ⚠️ Load-bearing, not decorative. τ governs DBSCAN's pairwise cosine
+   * distance (`analysisCluster`, ε = 1−τ) and `incrementalJoin`'s
+   * max-similarity-to-any-member test — both PAIRWISE. Estimating P(edge)
+   * from a to-CENTROID statistic instead would sample a systematically
+   * higher-valued distribution and hand back a τ that is correspondingly too
+   * LOOSE in the domain it is actually applied in. Measured on this store's
+   * own 266 real multi-member communities: mean pairwise 0.8701 vs mean
+   * to-centroid 0.9475, offset **+0.0774** (p10 +0.0553, p90 +0.0975, max
+   * +0.1223, and **zero** communities where the offset was negative) —
+   * matching the +0.086..+0.127 recorded on the three curated BL-328 cohorts
+   * in PLAN.md §P0.5. A τ mis-derived by that much lands near 0.81, which
+   * PKT-28 measured as degenerate (ratio 0.759 at 0.82).
+   */
+  metric: 'pairwise';
+  /** Estimated P(cosine ≥ threshold) over sampled pairs. */
+  edge_probability: number;
+  /** edge_probability × (targetN − 1). */
+  projected_mean_degree: number;
+  /** D_target actually used. */
+  target_mean_degree: number;
+  /** Vectors compared (≤ `CLUSTER_CALIBRATION_SAMPLE`). */
+  sample_size: number;
+  /** sample_size × (sample_size − 1) / 2. */
+  pair_count: number;
+  /** Corpus size the degree was projected against. */
+  target_n: number;
+  /** Why this τ: floor (degree budget met at the floor), target-degree, or ceiling (budget unmeetable). */
+  reason: 'floor' | 'target-degree' | 'ceiling' | 'sample-too-small';
+}
+
+/**
+ * Target-mean-degree calibration (PKT-30 / BL-328, implementing PKT-28 §2).
+ *
+ * PKT-28 proved a FIXED global τ is not viable at any value: DBSCAN with
+ * `minClusterSize = 2` is single-linkage-equivalent, so a constant τ fixes the
+ * per-pair EDGE PROBABILITY and mean node degree therefore grows LINEARLY with
+ * corpus size N. Measured on the same store as it grew: largest-cluster ratio
+ * at τ=0.82 went 0.085 → 0.222 → 0.459 → 0.684 (N 200→1616) → 0.759 (N=4867).
+ * Above mean degree ≈1 the graph percolates into a giant component.
+ *
+ * So: hold the DEGREE fixed instead of the threshold. Estimate P(edge≥τ) from
+ * a bounded pairwise sample, walk the candidate grid upward from the floor,
+ * and take the first τ whose projected degree P×(N−1) fits the budget.
+ *
+ * Measured on the live corpus (read-only copy, N=4950 vectors), calibrated vs
+ * the fixed floor — note calibration is INERT below current scale and only
+ * engages once the degree budget is actually exceeded:
+ *
+ * | N | calibrated τ | degree | clusters | ratio | frac | fixed-0.87 clusters | ratio | frac |
+ * |---|---|---|---|---|---|---|---|---|
+ * | 200 | 0.87 | 0.12 | 8 | 0.0200 | 0.095 | 8 | 0.0200 | 0.095 |
+ * | 800 | 0.87 | 0.46 | 61 | 0.0437 | 0.254 | 61 | 0.0437 | 0.254 |
+ * | 1616 | 0.87 | 0.51 | 164 | 0.0309 | 0.396 | 164 | 0.0309 | 0.396 |
+ * | 3200 | 0.87 | 1.84 | 359 | 0.1347 | 0.628 | 359 | 0.1347 | 0.628 |
+ * | 4950 | **0.89** | 1.80 | 506 | **0.0483** | 0.606 | 441 | **0.1776** | 0.727 |
+ *
+ * The N=3200 row is the one that matters: degree 1.84 against a budget of 2.0,
+ * i.e. the live store is ~8% of growth away from the floor becoming unsafe.
+ * That is precisely the drift a constant cannot track and this function does.
+ *
+ * @param sampleVecs Vectors to estimate the pairwise similarity distribution from.
+ *                   Subsampled to `CLUSTER_CALIBRATION_SAMPLE` deterministically.
+ * @param targetN    Corpus size to project mean degree against.
+ */
+export function calibrateThreshold(
+  sampleVecs: Float32Array[],
+  targetN: number,
+  targetMeanDegree: number = CLUSTER_TARGET_MEAN_DEGREE,
+): ThresholdCalibration {
+  const sample = boundedSample(sampleVecs, CLUSTER_CALIBRATION_SAMPLE);
+  const base = {
+    metric: 'pairwise' as const,
+    target_mean_degree: targetMeanDegree,
+    sample_size: sample.length,
+    pair_count: (sample.length * (sample.length - 1)) / 2,
+    target_n: targetN,
+  };
+
+  // Too little signal to estimate a tail probability from — fall back to the
+  // floor rather than inventing one. (A 2-vector sample yields exactly one
+  // pair, so P(edge) can only ever be 0 or 1.)
+  if (sample.length < 3 || targetN < 2) {
+    return {
+      ...base,
+      threshold: CLUSTER_THRESHOLD_FLOOR,
+      edge_probability: 0,
+      projected_mean_degree: 0,
+      reason: 'sample-too-small',
+    };
+  }
+
+  // PAIRWISE similarities — see `ThresholdCalibration.metric`. Sorted ascending
+  // so P(≥τ) is a binary search rather than a rescan per grid point.
+  const sims: number[] = [];
+  for (let i = 0; i < sample.length; i++) {
+    for (let j = i + 1; j < sample.length; j++) {
+      sims.push(cosineSim(sample[i]!, sample[j]!));
+    }
+  }
+  sims.sort((a, b) => a - b);
+
+  const pAtLeast = (t: number): number => {
+    let lo = 0;
+    let hi = sims.length;
+    while (lo < hi) {
+      const mid = (lo + hi) >> 1;
+      if (sims[mid]! < t) lo = mid + 1;
+      else hi = mid;
+    }
+    return (sims.length - lo) / sims.length;
+  };
+
+  for (let raw = CLUSTER_THRESHOLD_FLOOR; raw <= CLUSTER_THRESHOLD_CEILING + 1e-9; raw += CLUSTER_THRESHOLD_STEP) {
+    const tau = Math.round(raw * 100) / 100;
+    const p = pAtLeast(tau);
+    const degree = p * (targetN - 1);
+    if (degree <= targetMeanDegree) {
+      return {
+        ...base,
+        threshold: tau,
+        edge_probability: p,
+        projected_mean_degree: degree,
+        reason: tau === CLUSTER_THRESHOLD_FLOOR ? 'floor' : 'target-degree',
+      };
+    }
+  }
+
+  // The budget is unmeetable anywhere on the grid (a corpus of near-duplicates).
+  // Take the tightest τ available and let the D5.5 guard backstop from there.
+  const p = pAtLeast(CLUSTER_THRESHOLD_CEILING);
+  return {
+    ...base,
+    threshold: CLUSTER_THRESHOLD_CEILING,
+    edge_probability: p,
+    projected_mean_degree: p * (targetN - 1),
+    reason: 'ceiling',
+  };
 }
 
 /**
  * Resolve the clustering threshold τ.
  *
- * PKT-28's research (docs/reporting/memory/findings/pkt28-clustering-strategy.md)
- * proved a FIXED global τ is not viable at any single value: single-linkage
- * chaining means mean node degree grows with corpus size N, so a constant
- * tuned for today's store degrades as it grows. Measured directly at the true
- * full corpus (N=4867, no projection): τ=0.82 (the historical default here)
- * has largest-cluster ratio 0.759 — degenerate; τ=0.85 is ALSO now degenerate
- * at 0.514; only τ=0.87 held non-degenerate, at 0.181.
- *
- * §2.1 of that finding requires this function's signature to become
- * `(sampleVecs, targetN) => number`, implementing target-mean-degree
- * calibration — that is PKT-30 / BL-328's scope, NOT done here. This function
- * accepts the future `ThresholdCalibrationContext` so PKT-30 can land without
- * another signature change everywhere this is called, but currently ignores
- * it and returns the single constant the research proved safe at present
- * corpus scale: 0.87. This is deliberately NOT the historical 0.82 default —
+ * With a calibration context (`sampleVecs` + `targetN`) this runs PKT-28 §2's
+ * target-mean-degree calibration — see `calibrateThreshold`. Without one it
+ * returns `CLUSTER_THRESHOLD_FLOOR` (0.87), the constant PKT-28 measured
+ * non-degenerate at full corpus scale and the value BL-420 locks for the
+ * un-calibrated path. It is deliberately NOT the historical 0.82 default:
  * shipping a known-degenerate constant into the now-reachable incremental
  * join path (BL-326/BL-349) would just trade "never joins" for "joins
  * everything into one giant blob" the moment writes start flowing through it.
  *
- * TODO(PKT-30/BL-328): replace this constant with real target-degree
- * calibration against `sampleVecs`/`targetN` (D_target≈2.0 per the research).
+ * The floor is also why calibration is safe to enable everywhere at once: it
+ * can only ever RAISE τ, so no corpus clusters more loosely than it did before
+ * this function learned to calibrate.
  */
-export function resolveDefaultThreshold(_ctx: ThresholdCalibrationContext = {}): number {
-  return 0.87;
+export function resolveDefaultThreshold(ctx: ThresholdCalibrationContext = {}): number {
+  const { sampleVecs, targetN } = ctx;
+  if (sampleVecs && sampleVecs.length > 0 && targetN !== undefined) {
+    return calibrateThreshold(sampleVecs, targetN, ctx.targetMeanDegree ?? resolveTargetMeanDegree())
+      .threshold;
+  }
+  return CLUSTER_THRESHOLD_FLOOR;
+}
+
+/**
+ * D_target, with an operator override. `SOX_CLUSTER_TARGET_DEGREE` trades
+ * coverage against blob risk: lower is tighter/purer/less covered (0.5 → τ=0.93,
+ * clustered_frac 0.323), higher is looser (≥3.0 → inert at the floor). Any
+ * non-finite or non-positive value falls back to the measured default rather
+ * than disabling calibration.
+ */
+function resolveTargetMeanDegree(): number {
+  const raw = process.env['SOX_CLUSTER_TARGET_DEGREE'];
+  if (raw === undefined) return CLUSTER_TARGET_MEAN_DEGREE;
+  const parsed = Number(raw);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : CLUSTER_TARGET_MEAN_DEGREE;
 }

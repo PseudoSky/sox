@@ -20,7 +20,7 @@
 
 import { createGraphBackend } from '@adhd/sox-graph-store';
 import { buildAutoLinks } from './autolink.js';
-import { clusterStore, resolveDefaultThreshold } from './cluster.js';
+import { clusterStore, type ThresholdCalibration } from './cluster.js';
 import { computeImportance } from './importance.js';
 import type { ImportanceWeights } from './importance.js';
 import { ENRICH_VERSION } from './enrich-version.js';
@@ -106,6 +106,29 @@ export interface BatchEnrichResult {
    * or is skipped, and vice versa.
    */
   incremental_joined: number;
+  /**
+   * PKT-30/BL-328: the target-mean-degree calibration this full pass ran —
+   * the τ it chose, the sampled edge probability, and the projected mean
+   * degree that justified it. Absent on an incremental pass (which never
+   * recalibrates, §2.2) and when the caller passed an explicit threshold
+   * override (which is absolute).
+   *
+   * Surfaced rather than kept internal because BL-328 §5.4's finding was that
+   * the operating threshold was "0.82 plus whatever the guard escalated to —
+   * an undocumented, corpus-dependent number that no test asserts and no
+   * status surface reports." A pass that cannot say what τ it ran at is the
+   * defect, independently of which τ it picked.
+   */
+  cluster_calibration?: ThresholdCalibration;
+  /**
+   * How many times the D5.5 degenerate guard had to retry at τ+0.05 on this
+   * pass. Should be 0 now that calibration runs in front of it: a non-zero
+   * value means calibration under-shot and the guard is doing the real work
+   * again, which is the exact condition BL-328 §5.4 says must not hold.
+   */
+  cluster_guard_retries?: number;
+  /** The τ the partition was actually produced at (post-calibration, post-guard). */
+  cluster_effective_threshold?: number;
 }
 
 interface EpisodeRow {
@@ -243,14 +266,21 @@ export async function runBatchEnrich(
   // explicit triggers (memory_curate recluster / the in-process periodic enrichment
   // loop in memory-server, without the incremental flag).
   if (!hasNullEnrichVer) {
-    const defaultThreshold = resolveClusterThreshold(clusterThreshold);
+    const thresholdOverride = resolveClusterThreshold(clusterThreshold);
     const clusterResult = await clusterStore(adapter, {
-      threshold: defaultThreshold,
+      // Omitted (not set to undefined) when there is no override, so a full
+      // pass calibrates its own τ — see `resolveClusterThreshold` above.
+      ...(thresholdOverride !== undefined ? { threshold: thresholdOverride } : {}),
       nodeCap: clusterNodeCap,
       incrementalOnly: incrementalCluster,
     });
 
     result.incremental_joined = clusterResult.incremental_joined ?? 0;
+    if (clusterResult.calibration) result.cluster_calibration = clusterResult.calibration;
+    if (clusterResult.guard_retries !== undefined) result.cluster_guard_retries = clusterResult.guard_retries;
+    if (clusterResult.effective_threshold !== undefined) {
+      result.cluster_effective_threshold = clusterResult.effective_threshold;
+    }
 
     if (clusterResult.clusters.length === 0 && !clusterResult.full_pass && result.incremental_joined === 0) {
       result.cluster_pass_skipped = true;
@@ -360,11 +390,19 @@ export async function runBatchEnrich(
  * `runBatchEnrich` call actually used (clusterStore's own internal default
  * was unreachable dead code, since this always passes an explicit
  * `threshold`). PKT-28's research proved 0.82 is degenerate at the live
- * corpus's current size (largest-cluster ratio 0.759 at N=4867) — delegating
- * here means the interim-safe constant (and, later, PKT-30/BL-328's real
- * target-degree calibration) only has to change in one place.
+ * corpus's current size (largest-cluster ratio 0.759 at N=4867).
+ *
+ * PKT-30/BL-328: it now returns `undefined` when the caller named no
+ * override, and `clusterStore` is called WITHOUT a `threshold` in that case.
+ * That is load-bearing, not tidying — `computeClusters` treats an explicit
+ * `threshold` as an absolute override and only runs target-mean-degree
+ * calibration when none was given, so passing a resolved constant down from
+ * here would make the calibration unreachable in production exactly the way
+ * BL-420 made `resolveDefaultThreshold()` itself unreachable. Same defect
+ * shape, one layer up. The un-calibrated default a caller still gets from
+ * `resolveDefaultThreshold()` (0.87) is the calibration FLOOR, so behaviour
+ * is unchanged on any corpus small enough not to exceed the degree budget.
  */
-function resolveClusterThreshold(override: number | undefined): number {
-  if (override !== undefined) return override;
-  return resolveDefaultThreshold();
+function resolveClusterThreshold(override: number | undefined): number | undefined {
+  return override;
 }
