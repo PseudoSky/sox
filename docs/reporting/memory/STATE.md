@@ -8,7 +8,7 @@
 > Companion docs: [`PLAN.md`](./PLAN.md) (build order + per-packet ledger) · [`sandbox/README.md`](./sandbox/README.md) (sandbox spec)
 > · [`../../observability/README.md`](../../observability/README.md) (how to read the logs) · `BACKLOG.md` (all items)
 
-**Last updated:** 2026-08-03 19:22Z · **Branch:** `wip/turso-live-metrics`
+**Last updated:** 2026-08-04 01:40Z · **Branch:** `wip/turso-live-metrics`
 
 > **What is measured vs. what is asserted.** Every number in the "Live service" and "Progress"
 > sections below was read from the running server or derived from `BACKLOG.md` at the timestamp
@@ -51,50 +51,45 @@ and no crash path that can lose data.
 
 ---
 
-## Live service — measured 2026-08-03T19:22Z
+## Live service — measured 2026-08-04T01:40Z
 
-Server: pid **85177**, artifact **`a4892123287b`**, up since 2026-08-02T00:36Z. Store
-`~/.memory/memory.db`, adapter **turso**, 4947 episodes / 9657 nodes.
+Server: pid **78765**, artifact **`a0d8bbc1ee31`**, up since 2026-08-04T01:37:22Z. Store
+`~/.memory/memory.db`, adapter **turso**, 4962 live episodes.
 
 | Subsystem | State | Evidence |
 |---|---|---|
 | Keyword search (FTS) | ✅ working | `fts_index_live` probe: all 3 sentinel rows round-trip through `idx_fts_node` |
-| Vector recall | ✅ working | `embed_backlog: 0`; 4947/4947 episodes stamped, `unstamped: 0`, `stale_vector_count: 0` |
-| Embedding | ✅ real inference | `bge-base-en-v1.5`, execution provider **coreml**, `embeds_completed: 126`, **`embeds_failed: 0`**, `applies_gone: 0` |
-| Write path | ✅ healthy | write queue depth 0, in-flight 0, no busy/deadline rejections; `time_to_vector_ms` p50 1684 |
-| Integrity | ✅ `overall: ok` | deep probes, 615 ms, `damaged: []`, all 5 probes `validated: true` |
+| Vector recall | ✅ working | `embed_backlog: 0`; `unstamped: 0`, `stale_vector_count: 0` |
+| Embedding | ✅ real inference | `bge-base-en-v1.5`, execution provider **coreml**, `embeds_failed: 0` |
+| Write path | ✅ healthy | write queue depth 0, no busy/deadline rejections |
+| Integrity | ✅ `overall: ok` | deep probes clean, `damaged: []` |
 | Backup | ✅ working | BL-385 resolved 2026-08-01 |
 | Entity search | ✅ working | BL-384 resolved 2026-08-01 |
 | Near-duplicate detection | ✅ live KNN | BL-381/BL-386 resolved; ⚠️ manually-merged pairs still report a fabricated `cosine_sim: 1.0` (BL-398) |
-| Telemetry | ⚠️ initialised, unused | `role: "live-service"` (BL-404's fix is live) but **`stages_declared: 0`** — nothing declares spans, so BL-401 is unmet in production, not just in the repo |
-| **Enrichment** | ❌ **DEAD — 22.5h** | `state: "stalled"`, `queue_depth: 46`, `queue_last_done_at: 2026-08-02T20:52:22Z`, watermark still `"pass":"legacy"` from 07-31. **BL-413**, filed 2026-08-03 |
-| **Clustering** | ❌ **inert** | `cluster_count: 139` but `total_clustered: 0`, `coverage: 0`, `with_community: 0` against 4947 episodes. The `cluster.ts` incremental path is still a `return { clusters: [] }` stub. **BL-326 / BL-349** |
-| WAL checkpoint | ❌ never runs | `last_checkpoint_at: null`, `wal_bytes: 1,470,872`. **BL-405** — the SIGTERM race is fixed, the checkpoint is not |
+| Telemetry | ⚠️ partial | `role: "live-service"` and the enrich tick lifecycle (`enrich.tick.*` / `enrich.pass.*`) now emit durable JSONL (BL-413 follow-on, d016b63); **`stages_declared: 0`** still — BL-401 unmet |
+| **Enrichment** | ✅ **WORKING** | `state: "idle"`, `queue_depth: 0`, ticks **11.3s** (was 120.056s timeout cap). **BL-413 RESOLVED**: importance link-degree OR-COUNT → indexed two-scalar (`computeLinkDegree`), plus per-pass-type isolation budget (full passes 600s, `SOX_ENRICH_FULL_TIMEOUT_MS`) |
+| **Clustering** | ✅ **WORKING** | `cluster_count: 440`, `total_clustered: 3596`, `coverage: 0.725`, `with_community: 3596`, `with_topic: 4267` (+1527 backfilled). Recluster completed 2026-08-04 (74.4s); 139 orphans retired; orphan-GC on invalidation live (`community-gc.ts`) |
+| WAL checkpoint | ❌ never runs | `last_checkpoint_at: null` — **BL-405** still open (WAL truncates only on restart) |
 
 **Residual data defects on the live store:** 1 malformed row (rowid 9284, column `tags` — BL-342
-residual), `stamped_without_vector: 1`, and 2214 of 4947 episodes with no topic (a consequence of
-BL-413, not an independent defect).
+residual), `stamped_without_vector: 1`, and ~695 of 4962 episodes with no topic (down from 2214 —
+the recluster backfilled 1527 from cluster labels).
 
-**Loudest thing in production:** 154 occurrences/day of swallowed
-`store.error: "prepare failed: Parse error: no such column: meta"` — 14% of all events emitted
-2026-08-03, on a store reporting `overall: ok`. **BL-399**.
+**Loudest thing in production:** the `no such column: meta` storm (154/day on 08-03, **BL-399**)
+collapsed after the autolink fix removed its source write — 08-03 residual 29 occurrences,
+08-04 so far 4. Re-measure tomorrow for the steady-state rate; if it is not ~0, reopen BL-399.
 
 ---
 
 ## What to do next
 
-1. **PKT-54 (BL-413)** — the enrichment pass is dead. Do this **before** any clustering work:
-   clustering consumes what enrichment produces, so fixing the stub first yields a working component
-   with an empty input. Rule out a silently-dropped `SOX_DISABLE_PERIODIC_ENRICH` (BL-375/BL-378)
-   before anything else — it is the cheapest possible cause.
-2. **PKT-29 (BL-349 + BL-326)** — implement the clustering strategy. The spec has been finished and
-   sitting unimplemented at [`findings/pkt28-clustering-strategy.md`](./findings/pkt28-clustering-strategy.md)
-   since 2026-07-31; **PKT-29 was never dispatched.** This is the largest single functional gap.
-3. **PKT-53 (BL-412) → PKT-48 (BL-405)** — stop the test suite opening the live store, then
-   re-measure the checkpoint on a quiescent machine. BL-412 is plausibly BL-405's cause, not its
-   sibling: under `multiprocess_wal` a checkpoint cannot truncate while another process holds a
-   reader slot.
-4. **PKT-41 (BL-391) + PKT-19 (BL-329)** — the Turso FTS/read-only pair, which gate recall quality.
+1. **PKT-48 (BL-405)** — the WAL checkpoint still never runs (`last_checkpoint_at: null`); WAL
+   truncates only on restart. BL-412's fix is committed but its red→green was never executed —
+   re-verify on a quiescent machine first.
+2. **PKT-41 (BL-391) + PKT-19 (BL-329)** — the Turso FTS/read-only pair, which gate recall quality.
+3. **PKT-30 (BL-328)** — target-degree threshold calibration (the interim τ is fixed at 0.87; the
+   recluster's 440-community result is the measured baseline to calibrate against).
+4. **BL-401** — telemetry consumer migration (`stages_declared` still 0 in production).
 
 ---
 
@@ -291,3 +286,24 @@ here as "the biggest open unknown in the project": `recall-parity.test.ts` compa
 across two independent stores while `memoryWrite` mints a fresh `ulid()` per episode, so overlap was
 **0 by construction** and the test could never have passed. It is resolved and archived — but the
 lesson stands: a test that cannot pass is worse than a missing test, because it reads as coverage.
+
+## Deploys 2026-08-03/04 — stall fix, full-pass budget, recluster, orphan-GC (four artifacts)
+
+All four verified per §9.4a (`[inv:deploy-verified]`) with pid rotation + artifact hash + behaviour
+checks, not just liveness.
+
+- **d016b63 → `709069137504` (BL-413).** Importance link-degree OR-COUNT rewritten as indexed
+  two-scalar subqueries (`computeLinkDegree`); tick 129.46s → 11.3s live; the frozen queue drained
+  (`queue_completed: 58`); enrich tick lifecycle now durable telemetry (`enrich.tick.*` /
+  `enrich.pass.*` in the memory-core JSONL — the 22.5h blind window is closed).
+- **dae9733 → `32f7cdac3c00` (BL-413 follow-on).** The full recluster pass timed out at the 120s
+  incremental budget live (`enrich.pass.failed error:timeout`, tick_seq=8); per-pass-type isolation
+  budget: incremental ticks keep 120s, full passes 600s (`SOX_ENRICH_FULL_TIMEOUT_MS`). Recluster
+  then completed in 74.4s: **440 communities / 3596 members / 72.5% coverage / +1527 topics**; the
+  139 orphaned communities retired; queue idle.
+- **3dca9c1 → `a0d8bbc1ee31` (BUG-CLUSTER-ORPHANED-COMMUNITIES-NEVER-GC-001 + BUG-REPO-NUL-BYTE-001
+  + DEBT-MEMORY-ENRICH-001).** `gcOrphanedCommunityState` wired into memory_invalidate / near-dup /
+  merge_duplicates (invalidate.spec.ts red→green + clustering-e2e REPRO A flipped to assert
+  retirement); raw NUL byte in the lint rule replaced (`check-no-nul-bytes` green, 1066 files);
+  autolink write-lock chunking (deterministic). Live-verified: `memory_invalidate` ok on the live
+  store.
