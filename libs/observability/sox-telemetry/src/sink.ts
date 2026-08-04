@@ -106,6 +106,17 @@ export class DurableJsonlSink {
     return this._currentPath;
   }
 
+  /**
+   * The file the NEXT `write()` will land in, computed without opening
+   * anything. `currentPath()` is `''` until the first write, which makes a
+   * status surface reporting it indistinguishable from "no sink configured" —
+   * the same absent-field ambiguity as BL-319/BL-347. A status field should
+   * answer "where do I look?" whether or not anything has been written yet.
+   */
+  plannedPath(): string {
+    return path.join(this._opts.dir, `${this._opts.component}-${todayDateString()}.jsonl`);
+  }
+
   private _isOpen(): boolean {
     return this._fd !== null || this._stream !== null;
   }

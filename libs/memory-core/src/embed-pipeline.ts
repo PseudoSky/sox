@@ -553,7 +553,10 @@ export async function schedulePendingEmbeds(
           // via the pipeline-specific event below, and keeps its own duration
           // measurement for the embed-pipeline metrics ring.
           const embedStartMs = performance.now();
-          const vec = await embed(p.text); // off-slot: worker-thread ONNX
+          // BL-401: 'write' is passed explicitly, not left to the default —
+          // this is the pipeline sibling of the heal/reembed paths below, and
+          // the three of them are the exact set BL-319 was filed about.
+          const vec = await embed(p.text, 'write'); // off-slot: worker-thread ONNX
           const embedDurationMs = performance.now() - embedStartMs;
           tlog.debug('embed_pipeline.embed.finish', { uid: p.uid, rowid: p.rowid, duration_ms: Math.round(embedDurationMs) });
           metrics.embedDuration.push(embedDurationMs);
@@ -751,7 +754,9 @@ async function embedWithTimeout(text: string, timeoutMs: number): Promise<Float3
       reject(new Error(`embed() timed out after ${timeoutMs}ms`));
     }, timeoutMs);
     if (typeof timer.unref === 'function') timer.unref();
-    embed(text).then(
+    // BL-401/BL-319: the heal path, named. This is the path whose bypassing of
+    // write-path instrumentation left `time_to_vector_ms` with zero samples.
+    embed(text, 'heal').then(
       (v) => {
         clearTimeout(timer);
         resolve(v);
@@ -851,7 +856,10 @@ export async function healStaleVectors(
       );
 
       const embedStartMs = performance.now();
-      const vec = await embed(pending.text);
+      // BL-401: the stale-vector model-migration path — a third sibling, not a
+      // variant of 'heal'. Fusing them would hide a model migration inside the
+      // repair pass's distribution.
+      const vec = await embed(pending.text, 'reembed');
       metrics.embedDuration.push(performance.now() - embedStartMs);
       metrics.counters.embeds_completed++;
 

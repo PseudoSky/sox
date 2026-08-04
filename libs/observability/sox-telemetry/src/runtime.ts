@@ -22,6 +22,7 @@
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { DurableJsonlSink, type JsonlSinkOptions } from './sink.js';
+import { NOOP_OTEL, type OtelMetricPoint, type OtelRuntime, type OtelState } from './otel-types.js';
 import { currentTraceId } from './trace.js';
 
 export type Role = 'live-service' | 'test' | 'cli' | 'harness';
@@ -45,6 +46,27 @@ export interface InitTelemetryOptions {
   maxFiles?: number;
   /** `writeSync` durability (default true — BL-365). */
   durable?: boolean;
+  /**
+   * BL-401 gap 4: bring up the real OpenTelemetry SDK (context manager,
+   * `BasicTracerProvider` + `JsonlSpanProcessor`, pull-only `MeterProvider`).
+   *
+   * Defaults to **on for `live-service`/`cli`, off for `test`/`harness`** —
+   * loading the SDK costs a measured 91.5 ms and 23.6 MB RSS (`otel-types.ts`),
+   * which is the right price once at a composition root and the wrong price in
+   * every vitest worker. Pass `true` explicitly to opt a test in.
+   *
+   * The SDK is loaded through a dynamic `import()`, so bring-up completes a few
+   * ms AFTER `initTelemetry` returns. Nothing is lost in that window: the
+   * durable JSONL sink is fully live synchronously, and the OTel span/metric
+   * mirror is additive. `telemetrySelfCheck().otel.state` reports
+   * `pending`/`ready`/`failed`/`disabled` rather than leaving the caller to
+   * guess — the §5.3 principle that the system must report what it does not
+   * yet know. `await otelReady()` if you need determinism.
+   */
+  otel?: boolean;
+  /** Records written between activity-triggered metric snapshots (BL-401 gap 6,
+   *  §5.8 option C). `0` disables the activity trigger. Default 1000. */
+  snapshotEveryRecords?: number;
 }
 
 export interface TelemetryHandle {
@@ -54,6 +76,11 @@ export interface TelemetryHandle {
   currentLogFilePath(): string;
   /** Await any buffered writes (only meaningful in non-durable mode). */
   flush(): Promise<void>;
+  /** Resolves once OTel bring-up has settled (immediately when `otel: false`).
+   *  Never rejects — a failed bring-up is reported through
+   *  `telemetrySelfCheck().otel.state`, never thrown at the composition root,
+   *  because telemetry must not be able to prevent a service from starting. */
+  otelReady(): Promise<void>;
   close(): void;
 }
 
@@ -62,6 +89,8 @@ interface RuntimeState {
   role: Role;
   logSink: LogSink;
   sink: DurableJsonlSink | null;
+  otel: OtelRuntime;
+  otelState: OtelState;
 }
 
 // BL-404: previously all three branches returned 'test' unconditionally —
@@ -91,6 +120,8 @@ let _state: RuntimeState = {
   role: defaultRole(),
   logSink: 'none',
   sink: null,
+  otel: NOOP_OTEL,
+  otelState: 'disabled',
 };
 
 /** Not memoised across calls: honours whatever `initTelemetry` most recently
@@ -99,8 +130,28 @@ export function currentRuntimeState(): Readonly<RuntimeState> {
   return _state;
 }
 
+/** The active OTel runtime, or the null object. Never null — `stages.ts` has
+ *  ONE code path, not an `if (otel)` fork whose branches drift apart. */
+export function _currentOtel(): OtelRuntime {
+  return _state.otel;
+}
+
+let _otelReady: Promise<void> = Promise.resolve();
+
+/** Resolves once OTel bring-up has settled. Never rejects. */
+export function otelReady(): Promise<void> {
+  return _otelReady;
+}
+
+/** OTel defaults ON at a real composition root and OFF under test, because the
+ *  SDK costs 91.5 ms + 23.6 MB to load and a vitest worker pays that per file. */
+function otelDefaultFor(role: Role): boolean {
+  return role === 'live-service' || role === 'cli';
+}
+
 export function initTelemetry(opts: InitTelemetryOptions): TelemetryHandle {
   _state.sink?.close();
+  void _state.otel.shutdown();
 
   const logSink = opts.logSink ?? 'file';
   let sink: DurableJsonlSink | null = null;
@@ -124,16 +175,63 @@ export function initTelemetry(opts: InitTelemetryOptions): TelemetryHandle {
     sink = new DurableJsonlSink(sinkOpts);
   }
 
-  _state = { service: opts.service, role: opts.role, logSink, sink };
+  const wantOtel = opts.otel ?? otelDefaultFor(opts.role);
+  _state = {
+    service: opts.service,
+    role: opts.role,
+    logSink,
+    sink,
+    otel: NOOP_OTEL,
+    otelState: wantOtel ? 'pending' : 'disabled',
+  };
+  _snapshotEveryRecords = opts.snapshotEveryRecords ?? resolveSnapshotEveryRecords();
+  _recordsSinceSnapshot = 0;
   resetSelfCheck();
+  configureSnapshotSink(opts, logSink);
+
+  if (wantOtel) {
+    const generation = _state;
+    _otelReady = import('./otel.js')
+      .then(({ bringUpOtel }) => {
+        // A second initTelemetry() may have landed while the SDK was loading;
+        // do not resurrect telemetry for a superseded configuration.
+        if (_state !== generation) return;
+        _state.otel = bringUpOtel({
+          service: opts.service,
+          role: opts.role,
+          emit: (event, level, fields) => emitRecord(event, level, fields),
+        });
+        _state.otelState = 'ready';
+      })
+      .catch((err: unknown) => {
+        if (_state !== generation) return;
+        _state.otelState = 'failed';
+        // Loud, once, on stderr — never stdout (MCP JSON-RPC channel). A
+        // silently-absent SDK is the BL-404 shape all over again.
+        process.stderr.write(
+          `[sox-telemetry] WARNING: OpenTelemetry bring-up failed (${
+            err instanceof Error ? err.message : String(err)
+          }); spans/metrics are no-ops, durable JSONL is unaffected (BL-401).\n`,
+        );
+      });
+  } else {
+    _otelReady = Promise.resolve();
+  }
 
   return {
     service: opts.service,
     role: opts.role,
     currentLogFilePath: () => _state.sink?.currentPath() ?? '',
     flush: () => _state.sink?.flush() ?? Promise.resolve(),
+    otelReady: () => _otelReady,
     close: () => {
-      _state.sink?.close();
+      // §5.8: a snapshot on graceful shutdown, so the final window of
+      // non-recomputable state (counters, sink drop counts) is not lost.
+      void snapshotMetrics('shutdown').finally(() => {
+        void _state.otel.shutdown();
+        _state.sink?.close();
+        closeSnapshotSink();
+      });
     },
   };
 }
@@ -141,7 +239,20 @@ export function initTelemetry(opts: InitTelemetryOptions): TelemetryHandle {
 /** Test-only: drop all state back to the uninitialised default. */
 export function _resetTelemetryForTest(): void {
   _state.sink?.close();
-  _state = { service: 'unlabeled', role: defaultRole(), logSink: 'none', sink: null };
+  void _state.otel.shutdown();
+  closeSnapshotSink();
+  stopSnapshotTimer();
+  _state = {
+    service: 'unlabeled',
+    role: defaultRole(),
+    logSink: 'none',
+    sink: null,
+    otel: NOOP_OTEL,
+    otelState: 'disabled',
+  };
+  _otelReady = Promise.resolve();
+  _recordsSinceSnapshot = 0;
+  _snapshotsWritten = 0;
   _warnedUnlabeled = false;
   resetSelfCheck();
 }
@@ -197,6 +308,7 @@ function emitRecord(event: string, level: 'debug' | 'info' | 'warn' | 'error', f
     } else if (st.logSink === 'stderr') {
       process.stderr.write(line);
     }
+    noteRecordWritten();
   } catch {
     // Telemetry must NEVER break or slow the caller.
   }
@@ -305,6 +417,16 @@ export interface TelemetrySelfCheck {
   stages_with_zero_samples: string[];
   paths_with_zero_samples: string[];
   stages: StageSelfCheck[];
+  /** BL-401 gap 4. `state` is `disabled` (never asked for), `pending` (the
+   *  dynamic `import()` has not settled), `ready`, or `failed`. Reported rather
+   *  than inferred: "no spans" and "SDK never came up" are otherwise the same
+   *  silence, which is the BL-319/BL-404 failure shape. */
+  otel: { state: OtelState; spans_enabled: boolean };
+  /** BL-401 gap 6. `written` counts durable `metrics.snapshot` lines this
+   *  process has emitted; `records_since` is how much un-snapshotted activity
+   *  is currently at risk from a SIGKILL. `every_records: 0` means the activity
+   *  trigger is off and only pull/shutdown snapshots occur. */
+  metric_persistence: { written: number; records_since: number; every_records: number; file: string };
 }
 
 function summarize(stats: DurationStats): { count: number; mean: number; min: number; max: number } {
@@ -316,7 +438,20 @@ function summarize(stats: DurationStats): { count: number; mean: number; min: nu
   };
 }
 
+/** The public pull. Also the §5.8 option-A opportunistic snapshot trigger —
+ *  kept OUT of `telemetrySelfCheckCore()` so the snapshot writer can read the
+ *  aggregate without re-triggering itself. */
 export function telemetrySelfCheck(): TelemetrySelfCheck {
+  // Read BEFORE triggering. The snapshot resets `records_since`, so triggering
+  // first would make the field this surface exists to expose — how much
+  // un-snapshotted state is at risk — read `0` on every single pull, i.e. a
+  // number that is always reassuring and never true.
+  const view = telemetrySelfCheckCore();
+  scheduleOpportunisticSnapshot();
+  return view;
+}
+
+function telemetrySelfCheckCore(): TelemetrySelfCheck {
   const stagesWithZero: string[] = [];
   const pathsWithZero: string[] = [];
   const stages: StageSelfCheck[] = [];
@@ -354,5 +489,163 @@ export function telemetrySelfCheck(): TelemetrySelfCheck {
     stages_with_zero_samples: stagesWithZero,
     paths_with_zero_samples: pathsWithZero,
     stages,
+    otel: { state: _state.otelState, spans_enabled: _state.otel.enabled },
+    metric_persistence: {
+      written: _snapshotsWritten,
+      records_since: _recordsSinceSnapshot,
+      every_records: _snapshotEveryRecords,
+      file: _snapshotSink?.plannedPath() ?? '',
+    },
   };
+}
+
+// ── Metric persistence (BL-401 gap 6, §5.8) ─────────────────────────────────
+//
+// `telemetrySelfCheck()` is a live in-memory view and a crash takes it with
+// it. §5.8's reframing is what makes fixing that cheap: stage histograms are
+// RECOMPUTABLE by replaying the span records already on disk, so only the
+// non-recomputable state (cumulative counters, gauges, sink-drop counts) truly
+// needs its own durable copy — and only as often as that state changes.
+//
+// Triggers, per §5.8's costing:
+//   C (PRIMARY)  every N records written — no timer, so the zero-handle
+//                property (§3.3/BL-345) survives intact, and staleness is
+//                bounded by WORK DONE rather than wall-clock. An idle process
+//                has nothing to lose and snapshots nothing.
+//   A            opportunistically on the `telemetrySelfCheck()` pull.
+//   shutdown     on `handle.close()`.
+//   D (opt-in)   `SOX_TRACE_SNAPSHOT_MS` — an .unref()'d interval for a
+//                deliberate debugging session. OFF by default: it is the only
+//                option that costs a handle.
+//
+// Option B (piggyback the periodic enrich tick) is deliberately NOT used: that
+// tick is currently held down by the `SOX_DISABLE_PERIODIC_ENRICH` emergency
+// brake, and persistence that silently stops when an unrelated subsystem is
+// braked is worse than no persistence at all.
+
+const DEFAULT_SNAPSHOT_EVERY_RECORDS = 1000;
+
+function resolveSnapshotEveryRecords(): number {
+  const raw = process.env['SOX_TRACE_SNAPSHOT_EVERY'];
+  if (raw === undefined || raw === '') return DEFAULT_SNAPSHOT_EVERY_RECORDS;
+  const n = Number.parseInt(raw, 10);
+  return Number.isFinite(n) && n >= 0 ? n : DEFAULT_SNAPSHOT_EVERY_RECORDS;
+}
+
+let _snapshotSink: DurableJsonlSink | null = null;
+let _snapshotEveryRecords = DEFAULT_SNAPSHOT_EVERY_RECORDS;
+let _recordsSinceSnapshot = 0;
+let _snapshotsWritten = 0;
+let _snapshotInFlight = false;
+let _snapshotTimer: ReturnType<typeof setInterval> | null = null;
+
+/**
+ * §5.8's first consequence, implemented: the snapshot gets its OWN component,
+ * and therefore its own rotation/retention budget. Sharing the event stream's
+ * files would prune checkpoints alongside the very events they exist to
+ * outlive — at which point "recomputable by replay" quietly becomes false at
+ * exactly the ages where it was the whole point.
+ *
+ * The component separator is `.`, never `-` (§5.8's prefix-collision footgun:
+ * a pruner anchored on `memory-server-` also matches `memory-server-live-…`).
+ */
+function configureSnapshotSink(opts: InitTelemetryOptions, logSink: LogSink): void {
+  closeSnapshotSink();
+  if (logSink !== 'file') return;
+  const dir = opts.logDir ?? path.join(ecosystemHome(), opts.service, 'logs');
+  const sinkOpts: JsonlSinkOptions = { dir, component: `${opts.service}.${opts.role}.metrics-snapshot` };
+  if (opts.maxFiles !== undefined) sinkOpts.maxFiles = opts.maxFiles;
+  _snapshotSink = new DurableJsonlSink(sinkOpts);
+
+  stopSnapshotTimer();
+  const everyMs = Number.parseInt(process.env['SOX_TRACE_SNAPSHOT_MS'] ?? '', 10);
+  if (Number.isFinite(everyMs) && everyMs > 0) {
+    _snapshotTimer = setInterval(() => {
+      void snapshotMetrics('interval');
+    }, everyMs);
+    // .unref() keeps `getActiveResourcesInfo()` empty and does not hold the
+    // event loop open — measured in §5.9. Without it, opting into option D
+    // would make the process immortal.
+    _snapshotTimer.unref();
+  }
+}
+
+function closeSnapshotSink(): void {
+  _snapshotSink?.close();
+  _snapshotSink = null;
+}
+
+function stopSnapshotTimer(): void {
+  if (_snapshotTimer !== null) {
+    clearInterval(_snapshotTimer);
+    _snapshotTimer = null;
+  }
+}
+
+function noteRecordWritten(): void {
+  _recordsSinceSnapshot += 1;
+  if (_snapshotEveryRecords > 0 && _recordsSinceSnapshot >= _snapshotEveryRecords) {
+    void snapshotMetrics('activity');
+  }
+}
+
+function scheduleOpportunisticSnapshot(): void {
+  if (_recordsSinceSnapshot > 0) void snapshotMetrics('pull');
+}
+
+/**
+ * Write one durable `metrics.snapshot` line. Never throws and never rejects —
+ * it is called from the emission hot path.
+ *
+ * Deliberately NOT routed through `emitRecord`: that would increment the
+ * activity counter it is resetting and recurse, and it would put a large
+ * aggregate line into the event stream whose retention it must outlive.
+ */
+export async function snapshotMetrics(reason: 'activity' | 'pull' | 'shutdown' | 'interval'): Promise<void> {
+  if (_snapshotInFlight) return;
+  const sink = _snapshotSink;
+  if (!sink) {
+    _recordsSinceSnapshot = 0;
+    return;
+  }
+  _snapshotInFlight = true;
+  const covered = _recordsSinceSnapshot;
+  _recordsSinceSnapshot = 0;
+  try {
+    let otelMetrics: OtelMetricPoint[] = [];
+    try {
+      otelMetrics = await _state.otel.collect();
+    } catch {
+      otelMetrics = [];
+    }
+    const stagesView = telemetrySelfCheckCore();
+    const record = {
+      ts: new Date().toISOString(),
+      level: 'info',
+      event: 'metrics.snapshot',
+      service: _state.service,
+      role: _state.role,
+      pid: process.pid,
+      trace_id: null,
+      reason,
+      // §5.8's second consequence: a cumulative counter without its window is
+      // an unfalsifiable number (the BL-334 pattern). Both windows are stated.
+      window: 'since process start',
+      records_covered: covered,
+      snapshot_seq: _snapshotsWritten + 1,
+      self_check: stagesView,
+      otel_metrics: otelMetrics,
+    };
+    sink.write(JSON.stringify(record) + '\n');
+    _snapshotsWritten += 1;
+  } catch {
+    // A snapshot failure must never break or slow the caller.
+  } finally {
+    _snapshotInFlight = false;
+  }
+}
+
+/** Test seam: number of durable snapshots this process has written. */
+export function _snapshotCountForTest(): number {
+  return _snapshotsWritten;
 }

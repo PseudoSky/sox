@@ -127,7 +127,10 @@ afterEach(async () => {
  *  actually walks the `totalEpisodes >= 2` branch that used to contain the
  *  dead memory_scope.meta write (autolink.ts:40-67 pre-fix). */
 async function seedTwoLinkedEpisodes(adapter: StoreAdapter): Promise<void> {
-  for (const [uid, content] of [
+  // `_uid` is the tuple's label, unread here — the write path mints its own
+  // uid. Prefixed so `noUnusedLocals` passes without deleting the label that
+  // makes the fixture readable.
+  for (const [_uid, content] of [
     ['bl399-ep-1', 'bl399 regression: distinctive zeppelin narwhal content one'],
     ['bl399-ep-2', 'bl399 regression: distinctive zeppelin narwhal content two'],
   ] as const) {
