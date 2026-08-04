@@ -93,13 +93,32 @@ collapsed after the autolink fix removed its source write — 08-03 residual 29 
 
 ## What to do next
 
-1. **PKT-41 (BL-391) + PKT-19 (BL-329)** — the Turso FTS/read-only pair, which gate recall quality.
+> ⚠️ **This section is hand-written and goes stale silently — `plan-status.mjs --check` cannot
+> catch it.** Before acting on an item here, confirm it against the derived ledger in `PLAN.md`.
+> As of 2026-08-04 this list led with **PKT-41 (BL-391) + PKT-19 (BL-329)**, both of which had
+> already been **DONE** for some time (BL-391 and BL-329 are not in `BACKLOG.md` at all — if an id
+> is not there, it shipped). A session acted on that entry before catching it.
+
+1. **Deploy to close BL-401.** Gaps 4+6 are committed (`c81c0b7`, consumers migrated onto the stage
+   substrate), but live `stages_declared` is **still 0** — the running artifact predates the change.
+   The remaining step is a deploy per `[inv:deploy-verified]`, not more code. Note the registry
+   checksum is currently drifted (`store-adapter/dist` rebuilt, `registry/index.json` unsynced), so
+   `registry:sync-index` must run on a clean tree first or `smoke-test.mjs` fails `CHECKSUM MISMATCH`.
 2. **PKT-30 (BL-328)** — target-degree threshold calibration (the interim τ is fixed at 0.87; the
-   recluster's 440-community result is the measured baseline to calibrate against).
-3. **BL-401** — telemetry consumer migration (`stages_declared` still 0 in production).
-4. **Split-brain reconciliation** — root `BACKLOG.md` BL-413/BL-398/BL-405/BL-414/BL-415/BL-416 are
-   fixed (verified) but absent from the backlog graph; the graph is authoritative, the markdown
-   ledger needs the program's reconciliation pass.
+   recluster's 440-community result is the measured baseline to calibrate against). ⚠️ τ=0.87 is a
+   **pairwise** number — see `PLAN.md` §P0.5; the pairwise→centroid offset is +0.086 to +0.127.
+3. **Library publish readiness** — `docs/reporting/publishing/turso-library-publish-readiness.md`.
+   The libraries are already on npm (2026-07-27) but are ~91 commits stale, and the next publish
+   ships a broken install: `@adhd/sox-telemetry` is a hard runtime dep of `store-adapter` and
+   `memory-core` yet is **not published** (E404), and `check-publishable.ts` validates against the
+   workspace `private` flag rather than the registry, so it cannot detect this and runs green.
+4. **Split-brain reconciliation** — the `BL-###` corpus lives only in root `BACKLOG.md` while
+   `backlog_migration_status` reports **phase-3 (the graph is authoritative; every BACKLOG.md is a
+   generated projection, never hand-edited)**. Every repo tool — `plan-status.mjs`,
+   `check-backlog-markers.mjs`, `allocate-bl-id.mjs` — reads the markdown. Reconciliation in flight.
+5. **12 dead tests in `analysis:test`** — `analysis.spec.ts:32-35` passes a raw better-sqlite3
+   handle where `vector-store/src/index.ts:104-112` now requires a `StoreAdapter`. Dead tests read
+   as coverage (BL-367's lesson).
 
 ---
 
