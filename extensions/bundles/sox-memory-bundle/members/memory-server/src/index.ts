@@ -2046,6 +2046,20 @@ const drainBatchLimit = () => envMs('SOX_EMBED_DRAIN_BATCH', DEFAULT_DRAIN_BATCH
 const DEFAULT_ENRICH_ISOLATION_TIMEOUT_MS = 120_000;
 const enrichIsolationTimeoutMs = () => envMs('SOX_ENRICH_ISOLATION_TIMEOUT_MS', DEFAULT_ENRICH_ISOLATION_TIMEOUT_MS);
 
+// BL-413 follow-on (recluster timeout, 2026-08-04): FULL passes get their own,
+// larger budget. A full pass (pending memory_curate recluster trigger) is
+// intrinsically heavy — O(n²) clustering over the whole corpus + full-corpus
+// importance + autolink + materializeClusters (438 communities / 3,591 edges
+// measured) — and at launchd service priority with WAL-write contention against
+// the parent it exceeded the 120s incremental budget live (enrich.pass.failed
+// error:timeout, tick_seq=8, 2026-08-04T00:49:48Z) even though the same pass
+// measures 62.6s on a copy at terminal priority. Full passes are rare and
+// operator-initiated, so a long budget converts no fast-fail into a slow one
+// (the BL-413 warning applied to the INCREMENTAL tick, which keeps the 120s
+// default). Env-overridable via SOX_ENRICH_FULL_TIMEOUT_MS.
+const DEFAULT_ENRICH_FULL_TIMEOUT_MS = 600_000;
+const enrichFullTimeoutMs = () => envMs('SOX_ENRICH_FULL_TIMEOUT_MS', DEFAULT_ENRICH_FULL_TIMEOUT_MS);
+
 // ── Queue-drain health SLO (BL-172 follow-on) ─────────────────────────────────
 //
 // "HEALTHY" must require workload progress, not just RPC liveness: memory_ping
@@ -2256,7 +2270,13 @@ export async function runEnrichPassOnDb(
 
   // BL-348: isolated child process — see runEnrichIsolated's own doc for why
   // this never throws/rejects, even when the child crashes or times out.
-  const isolated = await runEnrichIsolated(dbPath, { incrementalCluster: !fullPass }, enrichIsolationTimeoutMs());
+  // BL-413 follow-on: a pending full-enrich trigger (memory_curate recluster)
+  // gets the full-pass budget; routine incremental ticks keep the 120s default.
+  const isolated = await runEnrichIsolated(
+    dbPath,
+    { incrementalCluster: !fullPass },
+    fullPass ? enrichFullTimeoutMs() : enrichIsolationTimeoutMs(),
+  );
 
   const queueCompleted = isolated.ok ? await completeEnrichTriggerRows(adapter, maxSeq) : 0;
   const backlogAfter = (await embedBacklogStats(adapter)).count;
