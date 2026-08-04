@@ -420,7 +420,9 @@ describe('fail — retry with exponential backoff', () => {
 
   it('calls onDead exactly once when a task goes dead via fail()', async () => {
     const onDead = vi.fn();
-    const q2 = freshQueue({ maxRetries: 0, defaultMaxRetries: 1, onDead });
+    // `maxRetries` is a per-TASK option, not a TaskQueueConfig field — passing it
+    // here was silently ignored at runtime and only `defaultMaxRetries` took effect.
+    const q2 = freshQueue({ defaultMaxRetries: 1, onDead });
     await q2.open();
     const { id } = await q2.enqueue({ type: 'test', payload: {} });
     await q2.dequeue('worker-1');

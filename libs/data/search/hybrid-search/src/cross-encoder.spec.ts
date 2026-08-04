@@ -48,7 +48,8 @@ describe('CrossEncoder', () => {
       ]);
 
       expect(scores.length).toBe(2);
-      const [relevantScore, irrelevantScore] = scores;
+      const relevantScore = scores[0]!;
+      const irrelevantScore = scores[1]!;
       // Real model inference — not lexical overlap — must rank the true
       // answer passage strictly above the unrelated one.
       expect(relevantScore).toBeGreaterThan(irrelevantScore);
@@ -69,11 +70,11 @@ describe('CrossEncoder', () => {
       ];
       const scores = await encoder.rerank(query, candidates);
       const ranked = candidates
-        .map((c, i) => ({ id: c.id, score: scores[i] }))
+        .map((c, i) => ({ id: c.id, score: scores[i]! }))
         .sort((a, b) => b.score - a.score);
 
-      expect(ranked[0].id).toBe('best');
-      expect(ranked[ranked.length - 1].id).toBe('unrelated');
+      expect(ranked[0]!.id).toBe('best');
+      expect(ranked[ranked.length - 1]!.id).toBe('unrelated');
       await encoder.dispose();
     },
     REAL_INFERENCE_TIMEOUT_MS,
@@ -98,8 +99,8 @@ describe('CrossEncoder', () => {
       );
 
       expect(allScores.length).toBe(2);
-      expect(allScores[0][0]).toBeGreaterThan(allScores[0][1]);
-      expect(allScores[1][0]).toBeGreaterThan(allScores[1][1]);
+      expect(allScores[0]![0]!).toBeGreaterThan(allScores[0]![1]!);
+      expect(allScores[1]![0]!).toBeGreaterThan(allScores[1]![1]!);
       await encoder.dispose();
     },
     REAL_INFERENCE_TIMEOUT_MS,

@@ -1,5 +1,4 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import * as fs from 'node:fs';
 import * as fsp from 'node:fs/promises';
 import * as path from 'node:path';
 import { tmpdir } from 'node:os';
@@ -7,10 +6,8 @@ import {
   BlobStore,
   createBlobStore,
   BlobNotFound,
-  IntegrityMismatch,
   GCInProgress,
   BlobStoreNotOpenError,
-  BlobStoreSystemError,
 } from './index.js';
 
 function randomHex(len: number): string {

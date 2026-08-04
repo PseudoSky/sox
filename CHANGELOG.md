@@ -2,6 +2,70 @@
 
 ---
 
+## [Unreleased] — publish-readiness Wave 0+1: `check-publishable` now asks npm, and `typecheck` is a real gate
+
+**`check-publishable` could not detect a dependency that does not exist on npm — now it can.**
+It built its "published" set from the workspace `private` flag and never queried a registry, so it
+reported `OK` while `@adhd/sox-telemetry` — a hard `workspace:*` **runtime** dep of `store-adapter`
+(`dist/retry.js:2`) and `memory-core` (`dist/telemetry.js:89`) — was E404. Changesets rewrites
+`workspace:*` to a concrete version at publish, so the next publish would have shipped a hard 404 to
+every consumer of both, and transitively to `graph-store`.
+
+```
+$ pnpm run check-publishable
+check-publishable: FAIL — publishable packages with a fresh-machine-404 shape:
+  - "@adhd/sox-telemetry" DOES NOT EXIST on https://registry.npmjs.org (registry returned 404 …),
+    but is a workspace:* RUNTIME dependency of: libs/data/store/store-adapter/package.json,
+    libs/memory-core/package.json. …
+```
+
+It fails **closed**, deliberately — a gate that goes green when it cannot check is the defect it
+exists to prevent:
+
+```
+$ npx tsx scripts/check-publishable.ts --offline
+check-publishable: FAIL — OFFLINE MODE. … 10 workspace:* runtime dependencies are UNVERIFIED
+```
+
+- `--registry <url>` — probe a mirror or private registry (also how the regression test simulates
+  the published case, so the gate carries no test backdoor).
+- A probe that times out or errors is `UNVERIFIABLE` → exit 1, never a pass. Positive results cache
+  for 24h under `node_modules/.cache/check-publishable/`; negatives are never cached.
+- A package with a **pending changeset** publishes in the same run, so its absence is a `NOTE`, not
+  an error — first publishes are not blocked.
+- Regression test `scripts/check-publishable.test.ts` (6 cases) stands up a local fixture registry
+  and covers red, green, pending-changeset, zero-versions, offline, and unreachable-registry.
+
+**Typecheck is now a gate on both pipelines, and 9 more public libs are visible to it.**
+`ci.yml` ran build/lint/test with no typecheck; `release.yml` built, shape-checked, and **published
+with no lint, test, or typecheck at all**. Both now run it — and it is not implied by `build`, which
+strips types without checking them (BL-248).
+
+- `typecheck` targets added to `graph-store`, `vector-store`, `hybrid-search`, `analysis`, `ingest`,
+  `embedding-provider`, `task-queue`, `blob-store`, `claim-verification` — previously invisible to
+  `nx affected -t typecheck`. All 9 are clean; the 35 errors this surfaced (all in spec files, none
+  in production source) were fixed, not silenced.
+- Four of those were tests that computed a value and never asserted on it — `newId` and `v3` in
+  `graph-store`'s supersession specs now assert the chain actually connects, and `h3Chunks` in
+  `ingest` asserts the heading-depth split it was named for.
+- `task-queue`'s `onDead` spec passed `maxRetries` in `TaskQueueConfig`, where it is not a field —
+  silently ignored at runtime.
+- Root `tsconfig.json` no longer re-compiles the five extensions that own a `typecheck` target; it
+  was applying `Node16` resolution to sources built as CJS/`node10` and reporting TS1541/TS1479
+  about the settings rather than the code. `memory-server/vitest.setup.ts` moves into
+  `typecheck-tests`, where `import.meta` is legal — a coverage gain, not a loss.
+  `npx nx run-many -t typecheck --skip-nx-cache` → **20 projects, all green.**
+
+**Fixes**
+- `@adhd/sox-store-adapter` declares `engines.node` and `publishConfig.access` — it was the only
+  publishable package missing both, and the sole `check-publishable` WARN.
+- Dead `@nx/js:tsc` `targetDefaults` block removed from `nx.json`; no project in the repo uses that
+  executor (`nx:run-commands`×38, `@nx/eslint:lint`×24, `@adhd/sox-nx:atomic-tsc`×24).
+- `ci.yml`'s header comment no longer describes a "ci-release guard" and an `nx release --dry-run`
+  that do not exist in this repo.
+
+---
+
 ## [Unreleased] — BL-414/BL-415/BL-427: the BL-412 regression gate actually runs, and one research fixture no longer halts every nx target
 
 **BL-415 (HIGH) and BL-414 (LOW) were both already fixed and had gone stale-open in `BACKLOG.md`.**

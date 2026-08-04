@@ -111,27 +111,27 @@ describe('WorkerPool', () => {
   it('heartbeats a long-running task on heartbeatIntervalMs cadence', async () => {
     await queue.enqueue({ type: 'test', payload: {} });
     const heartbeatSpy = vi.spyOn(queue, 'heartbeat');
-    let releaseHandler: (() => void) | null = null;
+    const gate: { release: (() => void) | null } = { release: null };
     const handler = vi.fn(async () => {
       await new Promise<void>((resolve) => {
-        releaseHandler = resolve;
+        gate.release = resolve;
       });
     });
     const pool = createWorkerPool({ queue, handler, heartbeatIntervalMs: 20, pollIntervalMs: 10 });
     await vi.advanceTimersByTimeAsync(10); // let it dequeue + start handler
     await vi.advanceTimersByTimeAsync(65); // >= 3 heartbeat intervals
     expect(heartbeatSpy.mock.calls.length).toBeGreaterThanOrEqual(2);
-    releaseHandler?.();
+    gate.release?.();
     await vi.advanceTimersByTimeAsync(20);
     await pool.stop();
   });
 
   it('stop() drains in-flight handlers before resolving', async () => {
     await queue.enqueue({ type: 'test', payload: {} });
-    let resolveHandler: (() => void) | null = null;
+    const drainGate: { release: (() => void) | null } = { release: null };
     const handler = vi.fn(async () => {
       await new Promise<void>((resolve) => {
-        resolveHandler = resolve;
+        drainGate.release = resolve;
       });
     });
     const pool = createWorkerPool({ queue, handler, pollIntervalMs: 10 });
@@ -144,7 +144,7 @@ describe('WorkerPool', () => {
     await vi.advanceTimersByTimeAsync(10);
     expect(stopped).toBe(false); // still draining
 
-    resolveHandler?.();
+    drainGate.release?.();
     await vi.advanceTimersByTimeAsync(50);
     await stopPromise;
     expect(stopped).toBe(true);

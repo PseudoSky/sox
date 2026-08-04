@@ -15,6 +15,12 @@
     "./package.json": "./package.json"
   },
   "files": ["dist"],
+  "engines": {
+    "node": ">=20"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
   "dependencies": {
     "@adhd/sox-telemetry": "workspace:*",
     "better-sqlite3": "^12.10.0"

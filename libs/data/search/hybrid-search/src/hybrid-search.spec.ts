@@ -586,6 +586,7 @@ describe('SqliteSearchBackend integration', () => {
     const id = await seedNode('Number test', 'num', ['test'], [1.0, 0.0, 0.0, 0.0]);
 
     const results = await backend.search({ text: 'Number' }, 10);
+    expect(results.map((r) => r.id)).toContain(id);
     for (const r of results) {
       expect(typeof r.id).toBe('number');
     }

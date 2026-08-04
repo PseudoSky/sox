@@ -1,10 +1,8 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect } from 'vitest';
 import {
   DefaultClaimNormalizer,
   LRUVerificationCache,
   InMemoryModelRegistry,
-  InvalidClaimInputError,
-  ModelNotLoadedError,
 } from './index.js';
 
 describe('DefaultClaimNormalizer', () => {
