@@ -167,6 +167,38 @@ describe('memoryWrite — P1 enrichment fields (BL-24)', () => {
     } finally { cleanup(); }
   });
 
+  // BL-342: the tags column must NEVER hold the empty string ''. The schema
+  // and every reader represent "no tags" as NULL (write.ts:251 coerces
+  // empty/absent tags to null); a malformed '' breaks json_valid and every
+  // tags reader. The live-store residual row 9284 was written by a pre-guard
+  // legacy path. RED (guard regressed): '' stored -> json_valid assertion
+  // fails. GREEN: NULL for both absent and empty-array inputs.
+  it('BL-342: empty or absent tags are stored as NULL, never the empty string', async () => {
+    const { dir, cleanup } = tmpDir();
+    try {
+      const db = await openDb(path.join(dir, 't.db'));
+
+      const absent = await memoryWrite(db, { content: 'No tags passed.', project_path: '/test/project' });
+      expect('episode_uid' in absent).toBe(true);
+      const uidAbsent = (absent as { episode_uid: string }).episode_uid;
+      const rowAbsent = (await db.executeGet<{ tags: string | null }>('SELECT tags FROM node WHERE uid = ?', [uidAbsent]))!;
+      expect(rowAbsent.tags).toBeNull();
+
+      const empty = await memoryWrite(db, { content: 'Empty tags array passed.', tags: [], project_path: '/test/project' });
+      expect('episode_uid' in empty).toBe(true);
+      const uidEmpty = (empty as { episode_uid: string }).episode_uid;
+      const rowEmpty = (await db.executeGet<{ tags: string | null }>('SELECT tags FROM node WHERE uid = ?', [uidEmpty]))!;
+      expect(rowEmpty.tags).toBeNull();
+
+      // Invariant: every stored tags value must be valid JSON (never '').
+      const malformed = await db.executeAll<{ rowid: number }>(
+        `SELECT rowid FROM node WHERE tags IS NOT NULL AND json_valid(tags) = 0`,
+      );
+      expect(malformed.rows).toHaveLength(0);
+      db.close();
+    } finally { cleanup(); }
+  });
+
   it('persists caller-supplied project_path', async () => {
     const { dir, cleanup } = tmpDir();
     try {
