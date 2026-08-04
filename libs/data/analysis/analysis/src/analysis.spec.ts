@@ -1,6 +1,50 @@
-import { describe, it, expect } from 'vitest';
+/**
+ * ── The DB-integrated block below was dead for 8 days ───────────────────────
+ *
+ * `83cd0b0` ("full store-adapter migration — all data packages + extensions",
+ * 2026-07-27) moved every backend constructor from a raw `better-sqlite3`
+ * handle to a `StoreAdapter`, and made the whole `GraphBackend` surface async.
+ * It migrated `hybrid-search.spec.ts`, `graph-store.spec.ts` and
+ * `analysis/src/index.ts` — and missed THIS file. Every one of the 12
+ * DB-integrated tests then died at fixture construction with
+ *
+ *   TypeError: Cannot read properties of undefined (reading 'nativeVectors')
+ *
+ * …from `vector-store/src/index.ts`'s `requireSqliteHandle`, which reads
+ * `adapter.capabilities` on what was still a raw driver handle. The production
+ * code had even anticipated this exact caller error in a comment (BL-364); the
+ * test was simply never brought along.
+ *
+ * This is the BL-367 failure mode: **a test that cannot pass is worse than a
+ * missing test, because it reads as coverage.** Twelve of them sat in the
+ * analysis layer's only integration suite.
+ *
+ * Two consequences for how this file is now written:
+ *
+ * 1. **`createSqliteAdapter`, never `createStoreAdapter`.** The default factory
+ *    returns a Turso adapter, and `SqliteVectorBackend` *rejects* it by design
+ *    — sqlite-vec/vec0 is a synchronous, sqlite-only mechanism, asserted in
+ *    `vector-store.spec.ts` ("requires a SqliteAdapter"). The backend under
+ *    test here is the sqlite one; the adapter choice is forced by its contract,
+ *    not a preference.
+ * 2. **Every assertion had to be re-read, not just re-plumbed.** Several of
+ *    these tests asserted `durationMs >= 0` or `communities.length >= 0` —
+ *    tautologies that pass on any input, including a completely broken
+ *    clusterer. Re-animating a test into a tautology just moves the blind spot,
+ *    so those now assert invariants that can actually fail (every seeded node
+ *    accounted for, the specific pair detected, the exact link cap).
+ */
+import { afterEach, describe, it, expect } from 'vitest';
 import Database from 'better-sqlite3';
+import * as fs from 'node:fs';
+import * as os from 'node:os';
+import * as path from 'node:path';
 import * as sqliteVec from 'sqlite-vec';
+import {
+  createSqliteAdapter,
+  type SqliteAdapter,
+  type StoreAdapter,
+} from '@adhd/sox-store-adapter';
 
 import {
   cluster,
@@ -23,21 +67,46 @@ import {
 import { SqliteVectorBackend } from '@adhd/sox-vector-store';
 import { SqliteGraphBackend } from '@adhd/sox-graph-store';
 
-function makeDb(): Database.Database {
-  const db = new Database(':memory:');
+// Adapters + temp dirs opened by the DB-integrated tests, torn down after each.
+const openFixtures: Array<() => void> = [];
+afterEach(() => {
+  while (openFixtures.length > 0) openFixtures.pop()!();
+});
+
+/**
+ * A sqlite-vec-capable store, on disk.
+ *
+ * Same shape as `vector-store.spec.ts`'s `makeTmpDb` — deliberately, so there
+ * is one way to build this fixture in the repo. `:memory:` is not usable here:
+ * `createSqliteAdapter` owns the handle, and the `sqlite-vec` extension has to
+ * be loaded onto *that* handle rather than a separate one the backend never
+ * sees.
+ */
+function makeDb(): { adapter: StoreAdapter; db: Database.Database } {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'analysis-test-'));
+  const adapter = createSqliteAdapter({ dbPath: path.join(dir, 'test.db') });
+  const db = (adapter as SqliteAdapter).unwrap();
   sqliteVec.load(db);
-  return db;
+  openFixtures.push(() => {
+    try {
+      adapter.close();
+    } catch {
+      /* already closed */
+    }
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+  return { adapter, db };
 }
 
-function makeVecBackend(db: Database.Database): SqliteVectorBackend {
-  const vec = new SqliteVectorBackend(db);
+function makeVecBackend(adapter: StoreAdapter): SqliteVectorBackend {
+  const vec = new SqliteVectorBackend(adapter);
   vec.ensureSpace({ modelId: 'test-model', dim: 4 });
   return vec;
 }
 
-function makeGraphBackend(db: Database.Database): SqliteGraphBackend {
-  const graph = new SqliteGraphBackend(db);
-  graph.applySchema();
+async function makeGraphBackend(adapter: StoreAdapter): Promise<SqliteGraphBackend> {
+  const graph = new SqliteGraphBackend(adapter);
+  await graph.applySchema();
   return graph;
 }
 
@@ -478,19 +547,36 @@ describe('packBatches', () => {
 });
 
 // ── DB-integrated tests ───────────────────────────────────────────────────────
+//
+// Every test below constructs its backends through `makeDb()` → a real
+// `SqliteAdapter`, and awaits every GraphBackend call. Both were forced by
+// `83cd0b0`; see this file's header for why they went 8 days without it.
 
-function seedDb(db: Database.Database): { vec: SqliteVectorBackend; graph: SqliteGraphBackend; ids: number[] } {
-  const vec = makeVecBackend(db);
-  const graph = makeGraphBackend(db);
+const SPACE = { modelId: 'test-model', dim: 4 } as const;
+
+async function seedDb(
+  adapter: StoreAdapter,
+): Promise<{ vec: SqliteVectorBackend; graph: SqliteGraphBackend; ids: number[] }> {
+  const vec = makeVecBackend(adapter);
+  const graph = await makeGraphBackend(adapter);
 
   const ids: number[] = [];
 
   // Create 5 nodes with vectors
   for (let i = 0; i < 5; i++) {
-    const id = graph.writeNode(`content-${i}`, { name: `node-${i}`, topic: i === 0 ? 'topic-a' : undefined });
+    // `topic` is spread in rather than set to `undefined`: under
+    // `exactOptionalPropertyTypes` an explicit `undefined` is NOT the same as
+    // an absent key, and `NodeMeta.topic` is `string`, not `string | undefined`.
+    // The original line here was `topic: i === 0 ? 'topic-a' : undefined` — a
+    // real type error that sat undetected because this project had no
+    // `typecheck` target at all (BL-248's exact shape).
+    const id = await graph.writeNode(`content-${i}`, {
+      name: `node-${i}`,
+      ...(i === 0 ? { topic: 'topic-a' } : {}),
+    });
     ids.push(id);
     const v = randomVec(i, 4, 42); // deterministic vectors
-    vec.upsert(id, v.vec, { modelId: 'test-model', dim: 4 });
+    vec.upsert(id, v.vec, SPACE);
   }
 
   return { vec, graph, ids };
@@ -498,162 +584,218 @@ function seedDb(db: Database.Database): { vec: SqliteVectorBackend; graph: Sqlit
 
 describe('clusterStore (DB-integrated)', () => {
   it('clusters nodes from the database', async () => {
-    const db = makeDb();
-    const { vec, graph } = seedDb(db);
+    const { adapter } = makeDb();
+    const { vec, graph, ids } = await seedDb(adapter);
+
     const result = await clusterStore(vec, graph, { threshold: 0.5 });
-    // With low threshold, should find some communities
-    expect(result.durationMs).toBeGreaterThanOrEqual(0);
-    expect(result.communities.length).toBeGreaterThanOrEqual(0);
+
+    // The original assertions here were `durationMs >= 0` and
+    // `communities.length >= 0` — both tautologies that hold even if
+    // clusterStore returns an empty result for a store it never read. Assert
+    // the partition invariant instead: every seeded node is either in exactly
+    // one community or in `unclustered`, and nothing is invented.
+    const clustered = result.communities.flatMap((c) => c.memberIds);
+    const placed = [...clustered, ...result.unclustered].sort((a, b) => a - b);
+    expect(placed).toEqual([...ids].sort((a, b) => a - b));
+    expect(new Set(clustered).size).toBe(clustered.length); // no node in two communities
   });
 
   it('produces deterministic results', async () => {
-    const db1 = makeDb();
-    const { vec: vec1, graph: graph1 } = seedDb(db1);
+    const { adapter: a1 } = makeDb();
+    const { vec: vec1, graph: graph1 } = await seedDb(a1);
     const r1 = await clusterStore(vec1, graph1, { threshold: 0.5 });
 
-    const db2 = makeDb();
-    const { vec: vec2, graph: graph2 } = seedDb(db2);
+    const { adapter: a2 } = makeDb();
+    const { vec: vec2, graph: graph2 } = await seedDb(a2);
     const r2 = await clusterStore(vec2, graph2, { threshold: 0.5 });
 
-    expect(r1.communities.length).toBe(r2.communities.length);
-    expect(r1.unclustered.length).toBe(r2.unclustered.length);
+    // Counts matching is weak — two empty results match too. Compare the
+    // actual membership, which is what "deterministic" has to mean.
+    const shape = (r: typeof r1): string =>
+      JSON.stringify({
+        communities: r.communities
+          .map((c) => [...c.memberIds].sort((x, y) => x - y))
+          .sort((x, y) => (x[0] ?? 0) - (y[0] ?? 0)),
+        unclustered: [...r.unclustered].sort((x, y) => x - y),
+      });
+    expect(shape(r1)).toBe(shape(r2));
   });
 });
 
 describe('clusterSubset (DB-integrated)', () => {
   it('clusters a filtered subset', async () => {
-    const db = makeDb();
-    const { vec, graph } = seedDb(db);
+    const { adapter } = makeDb();
+    const { vec, graph, ids } = await seedDb(adapter);
 
-    // Filter to first 3 nodes
-    const result = await clusterSubset(vec, graph, { ids: [1, 2, 3] }, { threshold: 0.5 });
-    expect(result.filter).toBeDefined();
+    // Filter to the first 3 seeded nodes (by their real ids, not assumed 1,2,3).
+    const subset = ids.slice(0, 3);
+    const result = await clusterSubset(vec, graph, { ids: subset }, { threshold: 0.5 });
+
+    expect(result.filter).toEqual({ ids: subset });
     expect(result.totalInSubset).toBe(3);
+    // The subset is a hard boundary: nothing outside it may appear in the
+    // output. Without this, a clusterSubset that ignored its filter entirely
+    // would still satisfy the two assertions above.
+    const placed = [...result.communities.flatMap((c) => c.memberIds), ...result.unclustered];
+    expect(placed.sort((a, b) => a - b)).toEqual([...subset].sort((a, b) => a - b));
   });
 });
 
 describe('detectNearDup (DB-integrated)', () => {
-  it('detects near-duplicates from database', () => {
-    const db = makeDb();
-    const vec = makeVecBackend(db);
-    const graph = makeGraphBackend(db);
+  it('detects near-duplicates from database', async () => {
+    const { adapter } = makeDb();
+    const vec = makeVecBackend(adapter);
+    const graph = await makeGraphBackend(adapter);
 
     // Create two nearly identical vectors
-    const id1 = graph.writeNode('content-1', { name: 'node-1' });
-    const id2 = graph.writeNode('content-2', { name: 'node-2' });
+    const id1 = await graph.writeNode('content-1', { name: 'node-1' });
+    const id2 = await graph.writeNode('content-2', { name: 'node-2' });
 
     const v1 = new Float32Array([1, 0, 0, 0]);
     const v2 = new Float32Array([0.999, 0.044, 0, 0]); // cos ≈ 0.999
-    vec.upsert(id1, v1, { modelId: 'test-model', dim: 4 });
-    vec.upsert(id2, v2, { modelId: 'test-model', dim: 4 });
+    vec.upsert(id1, v1, SPACE);
+    vec.upsert(id2, v2, SPACE);
 
-    const pairs = detectNearDup(vec, graph, { nearDupThreshold: 0.95 });
+    const pairs = await detectNearDup(vec, graph, { nearDupThreshold: 0.95 });
+
     expect(pairs.length).toBe(1);
     expect(pairs[0]!.status).toBe('near_dup');
+    // Name the pair and the score: a detector that returned one arbitrary pair
+    // would satisfy a bare length check.
+    expect([pairs[0]!.a, pairs[0]!.b].sort((a, b) => a - b)).toEqual([id1, id2].sort((a, b) => a - b));
+    expect(pairs[0]!.cosine).toBeGreaterThan(0.95);
+  });
+
+  it('leaves a distinct pair below the threshold undetected', async () => {
+    const { adapter } = makeDb();
+    const vec = makeVecBackend(adapter);
+    const graph = await makeGraphBackend(adapter);
+
+    const id1 = await graph.writeNode('content-1', { name: 'node-1' });
+    const id2 = await graph.writeNode('content-2', { name: 'node-2' });
+    vec.upsert(id1, new Float32Array([1, 0, 0, 0]), SPACE);
+    vec.upsert(id2, new Float32Array([0, 1, 0, 0]), SPACE); // orthogonal, cos = 0
+
+    // The negative control the suite never had: without it, a detector that
+    // reports every pair as near_dup passes the test above.
+    const pairs = await detectNearDup(vec, graph, { nearDupThreshold: 0.95 });
+    expect(pairs.filter((p) => p.status === 'near_dup')).toEqual([]);
   });
 });
 
 describe('computeImportance (DB-integrated)', () => {
-  it('assigns importance to nodes', () => {
-    const db = makeDb();
-    const vec = makeVecBackend(db);
-    const graph = makeGraphBackend(db);
+  it('assigns importance to nodes', async () => {
+    const { adapter } = makeDb();
+    const vec = makeVecBackend(adapter);
+    const graph = await makeGraphBackend(adapter);
 
-    const id = graph.writeNode('test content', { name: 'test' });
-    computeImportance(vec, graph);
-    const node = graph.getNode(id);
+    const id = await graph.writeNode('test content', { name: 'test' });
+    await computeImportance(vec, graph);
+    const node = await graph.getNode(id);
     expect(node?.importance).toBeDefined();
     expect(node!.importance!).toBeGreaterThanOrEqual(1);
     expect(node!.importance!).toBeLessThanOrEqual(10);
   });
 
-  it('respects dryRun', () => {
-    const db = makeDb();
-    const vec = makeVecBackend(db);
-    const graph = makeGraphBackend(db);
+  it('respects dryRun', async () => {
+    const { adapter } = makeDb();
+    const vec = makeVecBackend(adapter);
+    const graph = await makeGraphBackend(adapter);
 
-    const id = graph.writeNode('test', { name: 'test' });
-    computeImportance(vec, graph, { dryRun: true });
-    const node = graph.getNode(id);
+    const id = await graph.writeNode('test', { name: 'test' });
+    await computeImportance(vec, graph, { dryRun: true });
+    const node = await graph.getNode(id);
     // Should not have been updated since dryRun
     expect(node?.importance).toBe(1.0); // default
   });
 });
 
 describe('buildAutoLinks (DB-integrated)', () => {
-  it('creates RELATES_TO edges for similar vectors', () => {
-    const db = makeDb();
-    const vec = makeVecBackend(db);
-    const graph = makeGraphBackend(db);
+  it('creates RELATES_TO edges for similar vectors', async () => {
+    const { adapter } = makeDb();
+    const vec = makeVecBackend(adapter);
+    const graph = await makeGraphBackend(adapter);
 
-    const id1 = graph.writeNode('content-1', { name: 'node-1' });
-    const id2 = graph.writeNode('content-2', { name: 'node-2' });
+    const id1 = await graph.writeNode('content-1', { name: 'node-1' });
+    const id2 = await graph.writeNode('content-2', { name: 'node-2' });
 
     const v1 = new Float32Array([1, 0, 0, 0]);
     const v2 = new Float32Array([0.9, 0.4, 0, 0]); // cos ≈ 0.91
-    vec.upsert(id1, v1, { modelId: 'test-model', dim: 4 });
-    vec.upsert(id2, v2, { modelId: 'test-model', dim: 4 });
+    vec.upsert(id1, v1, SPACE);
+    vec.upsert(id2, v2, SPACE);
 
-    buildAutoLinks(vec, graph, { similarityThreshold: 0.8 });
-    const edges = graph.getEdges({ rel: 'RELATES_TO' });
+    await buildAutoLinks(vec, graph, { similarityThreshold: 0.8 });
+    const edges = await graph.getEdges({ rel: 'RELATES_TO' });
+
     expect(edges.length).toBeGreaterThanOrEqual(1);
+    // The edge must actually connect the two seeded nodes.
+    expect(
+      edges.some(
+        (e) => (e.src === id1 && e.dst === id2) || (e.src === id2 && e.dst === id1),
+      ),
+    ).toBe(true);
   });
 
-  it('respects maxLinksPerNode', () => {
-    const db = makeDb();
-    const vec = makeVecBackend(db);
-    const graph = makeGraphBackend(db);
+  it('respects maxLinksPerNode', async () => {
+    const { adapter } = makeDb();
+    const vec = makeVecBackend(adapter);
+    const graph = await makeGraphBackend(adapter);
 
     const ids: number[] = [];
     for (let i = 0; i < 10; i++) {
-      const id = graph.writeNode(`content-${i}`, { name: `node-${i}` });
+      const id = await graph.writeNode(`content-${i}`, { name: `node-${i}` });
       ids.push(id);
-      // All similar vectors → each node would want many links
-      const v = new Float32Array([0.9 + Math.random() * 0.1, 0.4, 0, 0]);
-      // L2 normalize
+      // All similar vectors → each node would want many links.
+      // Deterministic spread, not Math.random(): a flaky fixture in a test
+      // asserting a hard cap is how a real cap violation gets dismissed as
+      // noise.
+      const v = new Float32Array([0.9 + i * 0.01, 0.4, 0, 0]);
       let norm = 0;
       for (let j = 0; j < 4; j++) norm += v[j]! * v[j]!;
       norm = Math.sqrt(norm);
       for (let j = 0; j < 4; j++) v[j] = v[j]! / norm;
-      vec.upsert(id, v, { modelId: 'test-model', dim: 4 });
+      vec.upsert(id, v, SPACE);
     }
 
-    buildAutoLinks(vec, graph, { maxLinksPerNode: 2, similarityThreshold: 0.5 });
+    await buildAutoLinks(vec, graph, { maxLinksPerNode: 2, similarityThreshold: 0.5 });
 
     // Count edges per node
     const linkCounts = new Map<number, number>();
-    const edges = graph.getEdges({ rel: 'RELATES_TO' });
+    const edges = await graph.getEdges({ rel: 'RELATES_TO' });
     for (const e of edges) {
       linkCounts.set(e.src, (linkCounts.get(e.src) ?? 0) + 1);
       linkCounts.set(e.dst, (linkCounts.get(e.dst) ?? 0) + 1);
     }
 
+    // Zero edges would satisfy the cap vacuously — 10 mutually-similar vectors
+    // above a 0.5 threshold must produce some.
+    expect(edges.length).toBeGreaterThan(0);
     for (const count of linkCounts.values()) {
       expect(count).toBeLessThanOrEqual(2);
     }
   });
 
-  it('respects dryRun', () => {
-    const db = makeDb();
-    const vec = makeVecBackend(db);
-    const graph = makeGraphBackend(db);
+  it('respects dryRun', async () => {
+    const { adapter } = makeDb();
+    const vec = makeVecBackend(adapter);
+    const graph = await makeGraphBackend(adapter);
 
-    const id1 = graph.writeNode('content-1', { name: 'node-1' });
-    const id2 = graph.writeNode('content-2', { name: 'node-2' });
+    const id1 = await graph.writeNode('content-1', { name: 'node-1' });
+    const id2 = await graph.writeNode('content-2', { name: 'node-2' });
 
-    vec.upsert(id1, new Float32Array([1, 0, 0, 0]), { modelId: 'test-model', dim: 4 });
-    vec.upsert(id2, new Float32Array([0.9, 0.4, 0, 0]), { modelId: 'test-model', dim: 4 });
+    vec.upsert(id1, new Float32Array([1, 0, 0, 0]), SPACE);
+    vec.upsert(id2, new Float32Array([0.9, 0.4, 0, 0]), SPACE);
 
-    buildAutoLinks(vec, graph, { dryRun: true, similarityThreshold: 0.8 });
-    const edges = graph.getEdges({ rel: 'RELATES_TO' });
+    await buildAutoLinks(vec, graph, { dryRun: true, similarityThreshold: 0.8 });
+    const edges = await graph.getEdges({ rel: 'RELATES_TO' });
     expect(edges.length).toBe(0);
   });
 });
 
 describe('runBatchEnrich (DB-integrated)', () => {
   it('runs full batch enrichment', async () => {
-    const db = makeDb();
-    const { vec, graph } = seedDb(db);
+    const { adapter } = makeDb();
+    const { vec, graph } = await seedDb(adapter);
 
     const result = await runBatchEnrich(vec, graph);
     expect(result.nodesProcessed).toBe(5);
@@ -661,27 +803,33 @@ describe('runBatchEnrich (DB-integrated)', () => {
   });
 
   it('respects skip parameter', async () => {
-    const db = makeDb();
-    const { vec, graph } = seedDb(db);
+    const { adapter } = makeDb();
+    const { vec, graph } = await seedDb(adapter);
 
     const result = await runBatchEnrich(vec, graph, {
       skip: ['importance', 'nearDup', 'autoLinks', 'clustering'],
     });
     expect(result.nodesProcessed).toBe(5);
     expect(result.communitiesUpdated).toBe(0);
+    // Skipping must mean "did not run", not "ran and found nothing".
+    expect(result.nearDupPairsFound).toBe(0);
+    expect(result.autoLinksCreated).toBe(0);
   });
 
   it('respects dryRun', async () => {
-    const db = makeDb();
-    const { vec, graph } = seedDb(db);
+    const { adapter } = makeDb();
+    const { vec, graph } = await seedDb(adapter);
 
-    const beforeId = graph.writeNode('test', { name: 'test' });
-    const beforeNode = graph.getNode(beforeId);
+    const beforeId = await graph.writeNode('test', { name: 'test' });
+    const beforeNode = await graph.getNode(beforeId);
 
     await runBatchEnrich(vec, graph, { dryRun: true });
 
-    const afterNode = graph.getNode(beforeId);
+    const afterNode = await graph.getNode(beforeId);
     // Dry-run should not mutate
     expect(beforeNode?.importance).toBe(afterNode?.importance);
+    // …and no edges were written either, which the importance check alone
+    // does not cover.
+    expect(await graph.getEdges({ rel: 'RELATES_TO' })).toEqual([]);
   });
 });

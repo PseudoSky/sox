@@ -28,6 +28,9 @@
     "@adhd/sox-graph-store": "workspace:*",
     "density-clustering": "^1.3.0"
   },
+  "devDependencies": {
+    "@adhd/sox-store-adapter": "workspace:*"
+  },
   "sox": {
     "area": "data",
     "group": "analysis",
