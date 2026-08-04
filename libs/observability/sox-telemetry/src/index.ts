@@ -25,14 +25,18 @@
  */
 
 import { performance } from 'node:perf_hooks';
-import { _emitRecord, currentRuntimeState, type LogFields, log } from './runtime.js';
+import { _currentOtel, _emitRecord, currentRuntimeState, type LogFields, log } from './runtime.js';
+import type { OtelAttributes, OtelSpanHandle } from './otel-types.js';
 
 export {
   initTelemetry,
   currentRuntimeState,
   log,
   telemetrySelfCheck,
+  otelReady,
+  snapshotMetrics,
   _resetTelemetryForTest,
+  _snapshotCountForTest,
 } from './runtime.js';
 export type {
   Role,
@@ -44,6 +48,28 @@ export type {
   TelemetrySelfCheck,
   StageSelfCheck,
 } from './runtime.js';
+export type { OtelAttributes, OtelMetricPoint, OtelRuntime, OtelSpanHandle, OtelState } from './otel-types.js';
+
+/**
+ * Run `fn` inside a real OpenTelemetry span (BL-401 gap 4).
+ *
+ * Unlike `withTimedEvent` below, the `.start`/`.finish` JSONL lines are written
+ * by `JsonlSpanProcessor.onStart`/`onEnd` — the standard SDK extension point —
+ * rather than by this function. The hang guarantee survives the move: `onStart`
+ * fires BEFORE the span body runs, which is the property a `SpanExporter`
+ * structurally cannot provide (it only ever sees finished spans).
+ *
+ * When no SDK is up (any library, any test, any process that never called
+ * `initTelemetry`) this is `fn` plus one no-op object allocation — the whole
+ * point of the facade-only dependency shape (§5.0).
+ */
+export function withSpan<R>(
+  name: string,
+  attrs: OtelAttributes,
+  fn: (span: OtelSpanHandle) => Promise<R>,
+): Promise<R> {
+  return _currentOtel().withSpan(name, attrs, fn);
+}
 
 export { declareStages, StageCatalog } from './stages.js';
 export type { StageDeclaration, StageMap } from './stages.js';

@@ -84,6 +84,7 @@ import type { StoreAdapter } from '@adhd/sox-store-adapter';
 import { openDb } from './db.js';
 import { wrapDbError } from './errors.js';
 import { LatencyRing, summarizeLatencies } from './latency-stats.js';
+import { MEMORY_CORE_STAGES } from './stages.js';
 import { log, traceIdOrNew, withTrace } from './telemetry.js';
 
 // ── Error types (partial; full taxonomy is WP-2 / CONTRACTS §B) ───────────────
@@ -174,6 +175,18 @@ interface QueueItem<T = unknown> {
   /** BL-320: correlation id threaded through log.* calls made by `operation` (and
    *  anything it awaits transitively) via AsyncLocalStorage — see telemetry.ts. */
   traceId: string;
+  /**
+   * BL-401: called by `_processNext` at the instant this item reaches the head
+   * of the queue and is about to run — i.e. the ADMISSION boundary. This is the
+   * single point that turns queue wait from something reconstructed by joining
+   * `writequeue.enqueue` to `writequeue.task.start` on `trace_id` + `label`
+   * (`docs/observability/README.md` §5.3, never once actually computed) into a
+   * directly measured `sox.stage.wait_ms`.
+   *
+   * Ordering, admission control and the E_BUSY contract are untouched: this is
+   * one synchronous callback invoked from the existing dequeue point.
+   */
+  onAdmit: () => void;
 }
 
 const DEFAULT_MAX_QUEUE_SIZE = 100;
@@ -652,6 +665,47 @@ export class WriteQueue {
       // WP-5 contract: checkpoint ~2s after the last write.
       this._cancelCheckpoint();
       const scheduleIdleCheckpoint = (): void => { this._scheduleIdleCheckpoint(); };
+      // BL-401: the bypass path is the one the LIVE service takes (the Turso
+      // adapter sets `_noop`). Instrumenting only the FIFO path below would
+      // have produced a stage that reads zero in production while passing every
+      // test — BL-319's defect on the exact code path it was found in.
+      // `admit` is already-resolved by construction here: there is no queue to
+      // wait for, so `wait_ms ≈ 0` is a measured claim, not a missing one.
+      return MEMORY_CORE_STAGES.withContendedStage(
+        'write_queue',
+        'bypass',
+        () => Promise.resolve(),
+        (): Promise<T> => this._runBypass(label, operation, kind, resolvedTraceId, storeKey, scheduleIdleCheckpoint),
+      );
+    }
+
+    // (WP-5) Cancel pending idle checkpoint — new work arrived
+    this._cancelCheckpoint();
+
+    this._enqueueCount++;
+    log.info('writequeue.enqueue', {
+      trace_id: resolvedTraceId,
+      store: storeKey,
+      label,
+      kind,
+      queue_depth: this.queue.length,
+    });
+
+    return this._enqueueQueued(label, operation, kind, resolvedTraceId, storeKey);
+  }
+
+  /** The `_bypass`/`_noop` execution body, extracted verbatim from `enqueue` so
+   *  it can be handed to `withContendedStage` as the `work` half of the pair.
+   *  Behaviour is unchanged; only the wrapper is new. */
+  private _runBypass<T>(
+    label: string,
+    operation: (adapter: StoreAdapter) => T | Promise<T>,
+    kind: TaskKind,
+    resolvedTraceId: string,
+    storeKey: string,
+    scheduleIdleCheckpoint: () => void,
+  ): Promise<T> {
+    {
       const t0 = performance.now();
       log.info('writequeue.task.start', { trace_id: resolvedTraceId, store: storeKey, label, kind, mode: 'bypass' });
       try {
@@ -695,19 +749,19 @@ export class WriteQueue {
         return Promise.reject(err);
       }
     }
+  }
 
-    // (WP-5) Cancel pending idle checkpoint — new work arrived
-    this._cancelCheckpoint();
-
-    this._enqueueCount++;
-    log.info('writequeue.enqueue', {
-      trace_id: resolvedTraceId,
-      store: storeKey,
-      label,
-      kind,
-      queue_depth: this.queue.length,
-    });
-
+  /** The FIFO path, extracted verbatim from `enqueue`. Admission control, the
+   *  E_BUSY contract, ordering and every log line are unchanged; the only
+   *  addition is the `onAdmit` callback carried on the queue item, which
+   *  closes the wait/work pair at the dequeue point in `_processNext`. */
+  private _enqueueQueued<T>(
+    label: string,
+    operation: (adapter: StoreAdapter) => T | Promise<T>,
+    kind: TaskKind,
+    resolvedTraceId: string,
+    storeKey: string,
+  ): Promise<T> {
     // Overflow guard (hard SIZE cap — CONTRACTS §C, pinned by the
     // queue-overflow chaos spec: retry_after_ms stays the constant 250 here)
     if (this.queue.length >= this._maxSize) {
@@ -773,8 +827,28 @@ export class WriteQueue {
       }
     }
 
-    return new Promise<T>((resolve, reject) => {
-      this.queue.push({ label, kind, operation, resolve, reject, traceId: resolvedTraceId });
+    // BL-401 §5.2/§3.6: the wait/work pair, at the site the research document
+    // named as the flagship unmeasured contended resource. `admit` resolves the
+    // instant `_processNext` dequeues this item, so `wait_ms` is queue time and
+    // `work_ms` is execution time — measured, not predicted. (`estimated_wait_ms`
+    // in the admission guard above remains a PREDICTION derived from work
+    // latency; this is the observation it was standing in for. The two are
+    // deliberately independent: `LatencyRing` stays the control input, because a
+    // cumulative histogram cannot answer "mean of the most recent N".)
+    let grantAdmission: () => void = () => {};
+    const admitted = new Promise<void>((res) => {
+      grantAdmission = res;
+    });
+    const settled = new Promise<T>((resolve, reject) => {
+      this.queue.push({
+        label,
+        kind,
+        operation,
+        resolve,
+        reject,
+        traceId: resolvedTraceId,
+        onAdmit: grantAdmission,
+      });
       if (this.queue.length > this._highWatermark) {
         this._highWatermark = this.queue.length;
       }
@@ -785,6 +859,12 @@ export class WriteQueue {
         this._runningPromise = this._runningPromise.then(() => this._processNext());
       }
     });
+    return MEMORY_CORE_STAGES.withContendedStage(
+      'write_queue',
+      'queued',
+      () => admitted,
+      () => settled,
+    );
   }
 
   /**
@@ -957,6 +1037,10 @@ export class WriteQueue {
         trace_id: item.traceId, store: storeKey, label: item.label, kind: item.kind,
         queue_depth: this.queue.length,
       });
+      // BL-401: the admission boundary. Must fire BEFORE the operation is
+      // awaited — it is what separates `wait_ms` from `work_ms`, and a failed
+      // task must still have been admitted, so it is not in the try block.
+      item.onAdmit();
       try {
         // Pass StoreAdapter directly — callers manage their own transaction scope
         // via adapter.transaction() when needed. Simple INSERT/UPDATE operations

@@ -18,7 +18,13 @@
  */
 
 import { performance } from 'node:perf_hooks';
-import { _emitRecord, _recordStageDuration, _recordStageOutcome, _registerStageDeclaration } from './runtime.js';
+import {
+  _currentOtel,
+  _emitRecord,
+  _recordStageDuration,
+  _recordStageOutcome,
+  _registerStageDeclaration,
+} from './runtime.js';
 
 export interface StageDeclaration {
   /** Named code paths that can enter this stage. `telemetrySelfCheck()`
@@ -63,10 +69,35 @@ export class StageCatalog<T extends StageMap> {
     work: () => Promise<R>,
   ): Promise<R> {
     const key = this.stageKey(stage);
+    const attrs = { sox_package: this.pkg, sox_stage: stage as string, sox_path: stagePath as string };
+    const otel = _currentOtel();
+    // `suppressRecord` because this method writes its own, richer JSONL lines
+    // below (including the `.admitted` boundary, which is not a span edge).
+    // Without it every stage would land on disk twice under two shapes and
+    // `starts − (finishes + errors)` would double-count.
+    return otel.withSpan(
+      `sox.stage.${stage}`,
+      attrs,
+      async (span) => this._runStage(key, stage, stagePath, attrs, admit, work, span, otel),
+      { suppressRecord: true },
+    );
+  }
+
+  private async _runStage<K extends keyof T & string, R>(
+    key: string,
+    stage: K,
+    stagePath: T[K]['paths'][number],
+    attrs: { sox_package: string; sox_stage: string; sox_path: string },
+    admit: () => Promise<void>,
+    work: () => Promise<R>,
+    span: { setAttributes(a: Record<string, string | number | boolean>): void; recordError(e: unknown): void },
+    otel: ReturnType<typeof _currentOtel>,
+  ): Promise<R> {
     const waitStart = performance.now();
     _recordStageOutcome(key, stagePath, 'started');
+    otel.addCount('sox.stage.count', 1, { ...attrs, sox_outcome: 'started' });
     _emitRecord(`sox.stage.${stage}.start`, 'info', {
-      sox_package: this.pkg,
+      sox_package: attrs.sox_package,
       sox_stage: stage,
       sox_path: stagePath,
       sox_phase: 'wait',
@@ -75,8 +106,13 @@ export class StageCatalog<T extends StageMap> {
     await admit();
     const waitMs = Math.round(performance.now() - waitStart);
     _recordStageDuration(key, 'wait', waitMs);
+    // The wait/work pair is emitted to the metric backend from the SAME two
+    // lines that emit it to the log — there is no way to record one without
+    // the other in either destination (§5.2's whole point).
+    otel.recordHistogram('sox.stage.wait_ms', waitMs, { ...attrs, sox_phase: 'wait' });
+    span.setAttributes({ wait_ms: waitMs });
     _emitRecord(`sox.stage.${stage}.admitted`, 'info', {
-      sox_package: this.pkg,
+      sox_package: attrs.sox_package,
       sox_stage: stage,
       sox_path: stagePath,
       sox_phase: 'wait',
@@ -89,8 +125,11 @@ export class StageCatalog<T extends StageMap> {
       const workMs = Math.round(performance.now() - workStart);
       _recordStageDuration(key, 'work', workMs);
       _recordStageOutcome(key, stagePath, 'finished');
+      otel.recordHistogram('sox.stage.work_ms', workMs, { ...attrs, sox_phase: 'work' });
+      otel.addCount('sox.stage.count', 1, { ...attrs, sox_outcome: 'finished' });
+      span.setAttributes({ work_ms: workMs });
       _emitRecord(`sox.stage.${stage}.finish`, 'info', {
-        sox_package: this.pkg,
+        sox_package: attrs.sox_package,
         sox_stage: stage,
         sox_path: stagePath,
         sox_phase: 'work',
@@ -102,8 +141,12 @@ export class StageCatalog<T extends StageMap> {
       const workMs = Math.round(performance.now() - workStart);
       _recordStageDuration(key, 'work', workMs);
       _recordStageOutcome(key, stagePath, 'error');
+      otel.recordHistogram('sox.stage.work_ms', workMs, { ...attrs, sox_phase: 'work' });
+      otel.addCount('sox.stage.count', 1, { ...attrs, sox_outcome: 'error' });
+      span.setAttributes({ work_ms: workMs });
+      span.recordError(err);
       _emitRecord(`sox.stage.${stage}.error`, 'error', {
-        sox_package: this.pkg,
+        sox_package: attrs.sox_package,
         sox_stage: stage,
         sox_path: stagePath,
         sox_phase: 'work',

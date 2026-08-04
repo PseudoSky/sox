@@ -20,6 +20,7 @@ import type { StoreAdapter } from '@adhd/sox-store-adapter';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { performance } from 'node:perf_hooks';
+import { MEMORY_CORE_STAGES, type EmbedStagePath } from './stages.js';
 import { log } from './telemetry.js';
 
 // ── Public constants ──────────────────────────────────────────────────────────
@@ -224,7 +225,29 @@ function resolveEmbedTimeoutMs(): number {
  * `embed.timeout` line if SOX_EMBED_TIMEOUT_MS elapses first) with durations.
  * Never logs the text itself — only its length.
  */
-export async function embed(text: string): Promise<Float32Array> {
+export async function embed(text: string, stagePath: EmbedStagePath = 'write'): Promise<Float32Array> {
+  // BL-401: `admit` is acquiring the shared fastembed child process, `work` is
+  // the inference. That split is the direct measurement of BL-331's open
+  // question — cold model load and head-of-line blocking behind the single
+  // shared child land in `wait_ms`, inference lands in `work_ms`. Previously
+  // both were fused into one `embed.finish duration_ms` and had to be
+  // separated by correlating adjacent log lines by hand.
+  //
+  // `stagePath` defaults to 'write' so no existing caller changes behaviour;
+  // the heal and reembed paths pass theirs explicitly. It is a closed union —
+  // a new sibling path cannot be invented at a call site (BL-319).
+  return MEMORY_CORE_STAGES.withContendedStage(
+    'embed',
+    stagePath,
+    async () => {
+      _configCache ??= resolveConfig();
+      await getOrCreateProvider();
+    },
+    () => _embedWork(text),
+  );
+}
+
+async function _embedWork(text: string): Promise<Float32Array> {
   const t0 = performance.now();
   const textLen = text.length;
   log.info('embed.start', { text_len: textLen });

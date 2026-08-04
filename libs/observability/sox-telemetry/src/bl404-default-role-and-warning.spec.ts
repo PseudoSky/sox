@@ -93,8 +93,8 @@ describe('BL-404: one-shot stderr warning on first emission while uninitialised'
     log.error('third_call_while_unlabeled', {});
 
     const warnings = stderrSpy.mock.calls
-      .map((c) => String(c[0]))
-      .filter((line) => line.includes('WARNING') && line.includes('initTelemetry'));
+      .map((c: unknown[]) => String(c[0]))
+      .filter((line: string) => line.includes('WARNING') && line.includes('initTelemetry'));
     expect(warnings).toHaveLength(1);
     expect(warnings[0]).toContain('BL-404');
   });
@@ -109,8 +109,8 @@ describe('BL-404: one-shot stderr warning on first emission while uninitialised'
       initTelemetry({ service: 'memory-server', role: 'live-service', logDir: dir });
       log.info('should_not_warn', {});
       const warnings = stderrSpy.mock.calls
-        .map((c) => String(c[0]))
-        .filter((line) => line.includes('WARNING') && line.includes('initTelemetry'));
+        .map((c: unknown[]) => String(c[0]))
+        .filter((line: string) => line.includes('WARNING') && line.includes('initTelemetry'));
       expect(warnings).toHaveLength(0);
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
