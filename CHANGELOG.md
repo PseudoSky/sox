@@ -2,6 +2,56 @@
 
 ---
 
+## [Unreleased] — BL-414/BL-415/BL-427: the BL-412 regression gate actually runs, and one research fixture no longer halts every nx target
+
+**BL-415 (HIGH) and BL-414 (LOW) were both already fixed and had gone stale-open in `BACKLOG.md`.**
+Both were closed as a side effect of `be349a5` ("watched red->green for BL-412, whole-suite
+live-store guard"), which rewrote `bl412-ping-no-live-store.spec.ts` away from
+`vi.spyOn(fs, 'existsSync')` — the ESM limitation BL-415 was filed against — onto direct function
+wrapping, and typed the callback BL-414 was filed against. Neither item's marker was ever updated,
+so a HIGH-severity item sat open against a gate that had been green for a day.
+
+**Watched red→green**, naming BL-415, cache-busted (`--skip-nx-cache`) in both directions:
+- RED — the pre-fix spec restored verbatim from `83e5e7d`:
+  `TypeError: Cannot redefine property: existsSync` at `bl415-red-repro.spec.ts:69:30`,
+  1 failed | 2 passed. This is BL-415's exact recorded failure shape.
+- GREEN — the current spec: **3 passed (3)**, 0 failed.
+
+BL-414 verified independently: `npx nx typecheck memory-server --skip-nx-cache` passes clean, so the
+`TS7006` implicit-`any` at the old line 94 is gone and the project has the clean typecheck baseline
+BL-414 was filed to restore.
+
+**BL-427 — one untracked research fixture halted EVERY nx target in the repo.**
+`docs/research/content-first/proxy/transcripts/file-writes/cf_pre/packages/apigen/apigen-plugin-batch/project.json`
+is a captured transcript of a file write, saved **verbatim including its line-number prefixes**
+(`1: {`, `2:   "name": ...`), which is not valid JSON. nx parses every `project.json` in the
+workspace when it builds the project graph, so this single untracked fixture failed the graph
+outright:
+
+```
+NX   Failed to process project graph.
+  - .../apigen-plugin-batch/project.json: EndOfFileExpected at 1:2
+```
+
+Every `nx test`/`build`/`lint`/`typecheck` invocation in the repo was blocked. It surfaced while
+cache-busting the BL-415 verification above — the cached run had succeeded moments earlier, which is
+exactly the "cache masks a broken gate" shape this repo has been bitten by before.
+
+**Fix:** `docs/research` added to `.nxignore`. Scoped deliberately — `docs/plan/dispatch-optimizer`
+is a **real** nx project, so ignoring all of `docs/` would silently drop it from the graph. The
+comment in `.nxignore` records that constraint so the next person does not widen it.
+
+Citations: [wip/turso-live-metrics, claude, claude, memory restoration plan,
+1: extensions/bundles/sox-memory-bundle/members/memory-server/src/bl412-ping-no-live-store.spec.ts:33
+(implementation note recording the vi.spyOn removal),
+2: `git log -S 'vi.spyOn(fs' -- <spec>` → be349a5,
+3: `npx nx test memory-server --skip-nx-cache -- --run bl415-red-repro` (RED, 1 failed) and
+`--run bl412-ping-no-live-store` (GREEN, 3 passed), 2026-08-04,
+4: `npx nx typecheck memory-server --skip-nx-cache` → success, 2026-08-04,
+5: .nxignore, 6: `git ls-files 'docs/**/project.json'` → docs/plan/dispatch-optimizer/project.json]
+
+---
+
 ## [Unreleased] — BL-412/BL-405: the test suite no longer opens the live store, and shutdown actually checkpoints the WAL
 
 **BL-412 — the previously-committed fix (`91cdd35`) was never actually run.** Its own commit message
