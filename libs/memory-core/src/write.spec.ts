@@ -167,12 +167,20 @@ describe('memoryWrite — P1 enrichment fields (BL-24)', () => {
     } finally { cleanup(); }
   });
 
-  // BL-342: the tags column must NEVER hold the empty string ''. The schema
-  // and every reader represent "no tags" as NULL (write.ts:251 coerces
+  // BL-342: NO JSON-typed column may ever hold the empty string ''. The schema
+  // and every reader represent "absent" as NULL (write.ts:251 coerces
   // empty/absent tags to null); a malformed '' breaks json_valid and every
-  // tags reader. The live-store residual row 9284 was written by a pre-guard
-  // legacy path. RED (guard regressed): '' stored -> json_valid assertion
-  // fails. GREEN: NULL for both absent and empty-array inputs.
+  // reader of that column. The live-store residual row 9284 was written by a
+  // pre-guard legacy path. RED (guard regressed): '' stored -> json_valid
+  // assertion fails. GREEN: NULL for both absent and empty-array inputs.
+  //
+  // The sweep at the end covers `meta` and `enrich_ver` as well as `tags`, and
+  // that is the point of it: the live json_valid() sweep that diagnosed BL-342
+  // looked only at `tags`, and `tags` is NOT the column that throws —
+  // `with_tags` merely tests `tags IS NOT NULL` and never parses the value.
+  // The column that takes `memory_stats` offline is `enrich_ver`, via
+  // `json_extract(enrich_ver, '$.note')` in the legacy_episodes query. A guard
+  // scoped to `tags` would pass while the real failure mode was reintroduced.
   it('BL-342: empty or absent tags are stored as NULL, never the empty string', async () => {
     const { dir, cleanup } = tmpDir();
     try {
@@ -190,11 +198,36 @@ describe('memoryWrite — P1 enrichment fields (BL-24)', () => {
       const rowEmpty = (await db.executeGet<{ tags: string | null }>('SELECT tags FROM node WHERE uid = ?', [uidEmpty]))!;
       expect(rowEmpty.tags).toBeNull();
 
-      // Invariant: every stored tags value must be valid JSON (never '').
+      // A write that DOES carry metadata and tags, so the sweep below has a
+      // populated `meta` and a populated `tags` to examine rather than only
+      // NULLs — an all-NULL table satisfies json_valid vacuously.
+      const full = await memoryWrite(db, {
+        content: 'Metadata and tags both supplied.',
+        tags: ['alpha', 'beta'],
+        metadata: { origin: 'bl342-guard' },
+        project_path: '/test/project',
+      });
+      expect('episode_uid' in full).toBe(true);
+
+      // Invariant: EVERY JSON-typed column must hold valid JSON or NULL —
+      // never ''. Scoped to tags alone this assertion passes on exactly the
+      // store shape that took memory_stats offline.
       const malformed = await db.executeAll<{ rowid: number }>(
-        `SELECT rowid FROM node WHERE tags IS NOT NULL AND json_valid(tags) = 0`,
+        `SELECT rowid FROM node
+          WHERE (tags       IS NOT NULL AND json_valid(tags)       = 0)
+             OR (meta       IS NOT NULL AND json_valid(meta)       = 0)
+             OR (enrich_ver IS NOT NULL AND json_valid(enrich_ver) = 0)`,
       );
       expect(malformed.rows).toHaveLength(0);
+
+      // …and the columns were actually exercised, so the sweep is not vacuous.
+      const populated = (await db.executeGet<{ tags: number; meta: number; ver: number }>(
+        `SELECT SUM(tags IS NOT NULL) AS tags, SUM(meta IS NOT NULL) AS meta,
+                SUM(enrich_ver IS NOT NULL) AS ver FROM node WHERE kind = 'episode'`,
+      ))!;
+      expect(Number(populated.tags)).toBeGreaterThan(0);
+      expect(Number(populated.meta)).toBeGreaterThan(0);
+      expect(Number(populated.ver)).toBeGreaterThan(0);
       db.close();
     } finally { cleanup(); }
   });
