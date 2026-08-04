@@ -122,3 +122,61 @@ describe('BL-386 — SAME_AS cosine_sim survives the writer→reader round trip'
     );
   }, 60_000);
 });
+
+// BL-398: manual merges must not fabricate cosine_sim. The graph-store column
+// default `weight REAL DEFAULT 1.0` used to silently fill the SAME_AS edge's
+// NULL weight with 1.0, which memoryGetNearDuplicates misreported as a fake
+// cosine_sim: 1.0 for every manually-merged pair. The merge writer now sets
+// weight NULL explicitly and the reader reports null for unknown similarity.
+// RED (pre-fix): weight omitted -> column default 1.0 -> cosine_sim reported
+// 1.0. GREEN: weight NULL -> cosine_sim null.
+describe('BL-398 — manual-merge pairs report cosine_sim: null, never a fabricated value', () => {
+  let dir: string | undefined;
+  const priorAdapterEnv = process.env['STORE_ADAPTER'];
+
+  afterEach(async () => {
+    await closeAllAdapters();
+    if (dir) fsSync.rmSync(dir, { recursive: true, force: true });
+    dir = undefined;
+    if (priorAdapterEnv === undefined) delete process.env['STORE_ADAPTER'];
+    else process.env['STORE_ADAPTER'] = priorAdapterEnv;
+  });
+
+  it('a manually-merged pair reports cosine_sim null (not 1.0) and is excluded by any threshold', async () => {
+    dir = fsSync.mkdtempSync(path.join(os.tmpdir(), 'bl398-'));
+    const dbPath = path.join(dir, 'm.db');
+    process.env['STORE_ADAPTER'] = 'sqlite';
+
+    const adapter = await openDb(dbPath);
+    const now = new Date().toISOString();
+    const insA = await adapter.executeRun(
+      `INSERT INTO node (uid, kind, content, content_hash, t_created, t_valid)
+       VALUES ('bl398-a', 'episode', 'content a', 'hash-a', datetime('now'), datetime('now'))`,
+    );
+    const rowA = Number(insA.lastInsertRowid);
+    const insB = await adapter.executeRun(
+      `INSERT INTO node (uid, kind, content, content_hash, t_created, t_valid)
+       VALUES ('bl398-b', 'episode', 'content b', 'hash-b', datetime('now'), datetime('now'))`,
+    );
+    const rowB = Number(insB.lastInsertRowid);
+
+    // Manual-merge SAME_AS edge — exactly what merge_duplicates writes now:
+    // weight NULL (unknown similarity), meta records the manual provenance.
+    await adapter.executeRun(
+      `INSERT INTO edge (src, dst, rel, origin, weight, t_created, meta)
+       VALUES (?, ?, 'SAME_AS', 'user_asserted', NULL, ?, '{"merge":"manual"}')`,
+      [rowA, rowB, now],
+    );
+
+    const unfiltered = await memoryGetNearDuplicates(adapter, {});
+    expect(unfiltered.total).toBe(1);
+    // The honest answer: null, not the fabricated 1.0 (or 0) the pre-fix code
+    // reported for every manual merge.
+    expect(unfiltered.pairs[0]!.cosine_sim).toBeNull();
+
+    // With a threshold, an unknown-similarity pair cannot be proven to meet it.
+    const filtered = await memoryGetNearDuplicates(adapter, { threshold: 0.9 });
+    expect(filtered.total).toBe(0);
+    expect(filtered.pairs).toHaveLength(0);
+  }, 60_000);
+});

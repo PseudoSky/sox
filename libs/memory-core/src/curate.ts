@@ -325,9 +325,14 @@ async function curateMergeDuplicates(
       // BUG-CLUSTER-ORPHANED-COMMUNITIES-NEVER-GC-001: merge_duplicates
       // invalidates the dropped episode — GC its community state too.
       await gcOrphanedCommunityState(tx, dropRow.rowid, now);
+      // BL-398: the SAME_AS edge for a MANUAL merge must carry weight NULL —
+      // the graph-store column default `weight REAL DEFAULT 1.0` silently
+      // filled it with 1.0, and memoryGetNearDuplicates misreported that as a
+      // fabricated cosine_sim: 1.0. No detector measured this pair's
+      // similarity, so weight is NULL (unknown); meta records the provenance.
       await tx.executeRun(
-        `INSERT INTO edge (src, dst, rel, origin, t_created, meta)
-         SELECT ?, ?, 'SAME_AS', 'user_asserted', ?, '{"merge":"manual"}'
+        `INSERT INTO edge (src, dst, rel, origin, weight, t_created, meta)
+         SELECT ?, ?, 'SAME_AS', 'user_asserted', NULL, ?, '{"merge":"manual"}'
          WHERE NOT EXISTS (SELECT 1 FROM edge WHERE src=? AND dst=? AND rel='SAME_AS' AND t_expired IS NULL)`,
         [keepRow.rowid, dropRow.rowid, now, keepRow.rowid, dropRow.rowid],
       );

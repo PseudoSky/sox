@@ -73,6 +73,8 @@ import {
   readEnrichStallEscalation,
   resolveStoreOrDbPath,
   runEnrichIsolated,
+  runCompactionPass,
+  DEFAULT_COMPACTION_INTERVAL_MS,
   schedulePendingEmbeds,
   setLeaseInstanceId,
   supersedesUidForRowid,
@@ -2861,6 +2863,36 @@ scheduleNextEnrichTick();
 // they share only the background slot. The first pass is armed at the floor, so
 // a restart with a non-empty backlog starts draining within 30s rather than 5min.
 scheduleNextDrain();
+
+// BL-405: the 5-min compaction tick (PRAGMA optimize + ANALYZE + WAL
+// checkpoint) was exported from memory-core but NEVER started here — the only
+// checkpoint path was the WriteQueue idle checkpoint, which itself never fired
+// on the Turso _noop path (write-queue.ts enqueue() early-returned before
+// _scheduleIdleCheckpoint). Result: memory_ping.store.last_checkpoint_at stayed
+// null forever in production and the WAL grew until restart. Self-rescheduling
+// chain (mirrors the enrich tick); no-ops until a store is opened. Telemetry
+// via the durable sink so the cadence is visible in the JSONL.
+function scheduleNextCompactionTick(): void {
+  const timer = setTimeout(() => {
+    void (async () => {
+      for (const dbPath of openedPaths) {
+        try {
+          const adapter = await getDb(dbPath);
+          await runCompactionPass(adapter, {
+            log: (msg) => log.info('compaction.pass', { db_path: dbPath, detail: msg }),
+          });
+        } catch (err) {
+          log.error('compaction.pass.error', {
+            db_path: dbPath,
+            error: err instanceof Error ? err.message : String(err),
+          });
+        }
+      }
+    })().finally(scheduleNextCompactionTick);
+  }, DEFAULT_COMPACTION_INTERVAL_MS);
+  if (typeof timer.unref === 'function') timer.unref();
+}
+scheduleNextCompactionTick();
 
 // ── Entrypoint dispatch: backend mode vs direct-stdio (spec §9.5) ─────────────
 //

@@ -15,7 +15,10 @@ import { createGraphBackend } from '@adhd/sox-graph-store';
 export interface NearDuplicatePair {
   uid_a: string;
   uid_b: string;
-  cosine_sim: number;
+  /** Real measured cosine similarity (auto-detected pairs), or null when the
+   *  pair was merged manually and no similarity was ever measured (BL-398 —
+   *  never fabricated). */
+  cosine_sim: number | null;
   content_preview_a: string;
   content_preview_b: string;
   already_merged: boolean;
@@ -101,7 +104,14 @@ export async function memoryGetNearDuplicates(
     // nearDup.cosine_sim into the `weight` column, not `meta` (BL-386) — read
     // that first. Fall back to metadata.cosine_sim for any edge written by an
     // older path that did populate meta instead.
-    let cosineSim = 0;
+    //
+    // BL-398: MANUALLY-merged pairs (memory_curate merge_duplicates) write the
+    // SAME_AS edge with weight NULL and meta '{"merge":"manual"}' — no detector
+    // measured this pair, so any numeric report here would be fabricated.
+    // (Before the fix, the graph-store column default `weight REAL DEFAULT 1.0`
+    // silently filled NULL with 1.0 and every manual merge reported a fake
+    // cosine_sim: 1.0.) Report null for unknown.
+    let cosineSim: number | null = null;
     if (typeof e.weight === 'number') {
       cosineSim = e.weight;
     } else if (e.metadata) {
@@ -109,8 +119,9 @@ export async function memoryGetNearDuplicates(
       if (typeof sim === 'number') cosineSim = sim;
     }
 
-    // Apply threshold filter
-    if (typeof cosineThreshold === 'number' && cosineSim < cosineThreshold) {
+    // Apply threshold filter. A pair whose similarity is unknown (manual merge)
+    // cannot be proven to meet the threshold — exclude it when one is given.
+    if (typeof cosineThreshold === 'number' && (cosineSim === null || cosineSim < cosineThreshold)) {
       continue;
     }
 
