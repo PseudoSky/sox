@@ -1,2 +1,10 @@
 .claude/worktrees
 .worktrees
+
+# Research transcripts capture verbatim file writes — including a project.json
+# saved WITH its line-number prefixes ("1: {"), which is not valid JSON. nx scans
+# every project.json in the workspace, so one malformed fixture halts EVERY nx
+# target repo-wide with "Failed to process project graph". No real nx project
+# lives under docs/research (docs/plan/dispatch-optimizer does — do not widen
+# this to docs/).
+docs/research
