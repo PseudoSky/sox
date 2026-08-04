@@ -21,6 +21,10 @@
  *   and permanently block `REINDEX` of that table (BL-336).
  * - A WAL unlinked underneath a live connection: a graceful `close()` silently
  *   discarded every write since open (BL-330).
+ * - An empty string in a JSON-typed column, written by a bulk restore that
+ *   bypassed every write guard. One such row of 9 397 aborted every statement
+ *   parsing that column and took `memory_stats` — and the store-health verdict
+ *   it carries — offline for days (BL-342).
  *
  * **No `IF NOT EXISTS` DDL can ever detect a present-but-empty derived
  * structure.** Verification therefore has to interrogate the artifact's
@@ -55,6 +59,18 @@
  *    pass/fail on such a store yields "damaged" forever — see
  *    {@link isKnownFalsePositive}.
  *
+ * 4. **A JSON-column sweep scoped by column NAME reproduces the defect it is
+ *    meant to catch.** BL-342's live sweep looked only at `tags` and reported
+ *    one bad row; `tags` is not the column that throws. `enrich_ver` is, via
+ *    `json_extract(enrich_ver, '$.note')`. {@link probeJsonColumns} therefore
+ *    DISCOVERS JSON columns from the data distribution and names none — and,
+ *    because the inverse error would be catastrophic, it repairs only the
+ *    empty-string shape and only in a column that is ≥90% JSON objects/arrays.
+ *    Verified against the live store: it finds exactly the 5 real JSON columns
+ *    (`node.tags`, `node.meta`, `node.enrich_ver`, `edge.meta`,
+ *    `organizer_queue.payload`) and zero false positives across 10 135 nodes of
+ *    prose in `content` / `summary` / `name`.
+ *
  * ── Cost tiers (the tradeoff BL-352 asks to be made explicitly) ─────────────
  *
  * Measured on a COPY of the live store, 2026-07-31, **from a terminal-spawned
@@ -65,21 +81,35 @@
  * cost only now that it runs at priority 20. Re-measure after any scheduling
  * change rather than trusting the table.
  *
- * | Probe                   | 43 MB / 9 428 nodes | 69 MB / 9 488 nodes |
- * |-------------------------|---------------------|---------------------|
- * | `adapter_meta_unique`   | < 0.5 ms            | < 0.5 ms            |
- * | `fts_index_live`        | 9.3 ms              | 9.8 ms              |
- * | `btree_index_populated` | 78.5 ms             | 84 ms               |
- * | **`fast` total**        | **91 ms**           | **96 ms**           |
- * | **`deep` total**        | **392 ms**          | **424 ms**          |
+ * | Probe                   | 43 MB / 9 428 nodes | 69 MB / 9 488 nodes | 105 MB / 10 135 nodes |
+ * |-------------------------|---------------------|---------------------|-----------------------|
+ * | `adapter_meta_unique`   | < 0.5 ms            | < 0.5 ms            | < 0.5 ms              |
+ * | `fts_index_live`        | 9.3 ms              | 9.8 ms              | —                     |
+ * | `btree_index_populated` | 78.5 ms             | 84 ms               | —                     |
+ * | `json_column_valid`     | —                   | —                   | **262 ms**            |
+ * | **`fast` total**        | **91 ms**           | **96 ms**           | **587 ms**            |
+ * | **`deep` total**        | **392 ms**          | **424 ms**          | —                     |
  *
  * `deep` adds `PRAGMA integrity_check`. Note it tracks database SIZE, not row
  * count — 60 more rows but 26 MB more file cost ~30 ms.
  *
- * `fast` runs on **every open**. 91 ms is a fraction of the store open it is
- * part of, and it detects every one of the four production defects above —
- * on that same live copy it found the dead FTS index and the duplicate
- * `_adapter_meta` rows and repaired both, taking the open to 462 ms once.
+ * The 105 MB column was measured 2026-08-04 when `json_column_valid` (BL-342)
+ * was added; it is the same live store, later and larger. **That probe is by
+ * far the most expensive one in `fast` and its cost is stated rather than
+ * buried**: 262 ms warm / 372 ms cold, on 10 135 nodes + 51 386 edges. It is in
+ * `fast` and not `deep` deliberately — malformed JSON arrives from bulk-import
+ * paths that bypass the write guards entirely (that is exactly how BL-342
+ * happened), and `deep` only runs after an unclean shutdown or on request, so
+ * a `deep`-only placement would leave a store silently excluding rows from
+ * every JSON aggregate until an operator noticed. Its naive first
+ * implementation cost 989 ms; see {@link scanTableJsonColumns} for what the
+ * two-phase structure buys and why the cost is per-expression, not per-scan.
+ *
+ * `fast` runs on **every open**. It detects every one of the five production
+ * defects above — on that same live copy it found the dead FTS index and the
+ * duplicate `_adapter_meta` rows and repaired both, taking the open to 462 ms
+ * once, and with the BL-342 shape re-injected into all three JSON columns of
+ * the 105 MB copy it detected and repaired all three in a 1 027 ms open.
  * `deep` runs when the previous session did not shut down cleanly (the
  * crash-recovery flag, BL-338), on an explicit request, or on a cadence.
  * Deep is not the default because `integrity_check` is O(database) and grows
@@ -101,6 +131,7 @@ export type IntegrityProbe =
   | 'adapter_meta_unique'
   | 'btree_index_populated'
   | 'fts_index_live'
+  | 'json_column_valid'
   | 'pragma_integrity_check';
 
 export type IntegrityStatus =
@@ -983,6 +1014,369 @@ export async function probeAdapterMetaUnique(adapter: StoreAdapter): Promise<Int
   }
 }
 
+// ── Probe: JSON column validity (BL-342) ─────────────────────────────────────
+
+/**
+ * The 2026-07-30 restore wrote **the empty string** into JSON-typed columns
+ * where the schema means NULL. `''` is not valid JSON, so every `json_extract`
+ * / `json_each` that touches such a row aborts the whole statement with
+ *
+ * ```
+ * Error: step failed: Parse error: malformed JSON
+ * ```
+ *
+ * One row out of 9 397 took `memory_stats` — and with it the store-health
+ * verdict it carries — offline on the live store. BL-343 made the *readers*
+ * resilient (every `json_extract` is now gated on `json_valid`), which stops
+ * the outage; this probe fixes the **data**, which is what BL-342 is actually
+ * about. Without it the malformed rows stay excluded from every aggregate
+ * forever and the store never returns to a correct state.
+ *
+ * ── Why the column list is discovered, not hard-coded ────────────────────────
+ * This package is schema-agnostic; it cannot know that `node.enrich_ver` holds
+ * JSON. Naming columns here would also have reproduced the exact failure the
+ * backlog item warns about — the first live sweep looked only at `tags` and
+ * missed `enrich_ver`, the column that was actually throwing.
+ *
+ * ── Why the discovery threshold is deliberately conservative ─────────────────
+ * A column is treated as JSON-typed only when **≥90 % of its non-NULL values
+ * are valid JSON objects or arrays**. Anything looser misclassifies a prose
+ * column: one episode whose `content` happens to be a JSON document would
+ * otherwise make every ordinary sentence in that column read as "malformed
+ * JSON", and the repair below would NULL out the entire corpus. The threshold
+ * is the difference between a repair and a data-loss event.
+ */
+const JSON_COLUMN_RATIO = 0.9;
+
+/** Declared types that can hold text. `''` covers SQLite's untyped columns. */
+function isTextDeclaredType(declType: unknown): boolean {
+  const t = String(declType ?? '').toUpperCase();
+  if (t === '') return true; // untyped column — SQLite stores anything in it
+  return /CHAR|CLOB|TEXT|STRING|JSON/.test(t);
+}
+
+interface JsonColumnScan {
+  table: string;
+  column: string;
+  /** Non-NULL values in the column. */
+  nonNull: number;
+  /** Values that are valid JSON *objects or arrays* (the shape a JSON column holds). */
+  jsonShaped: number;
+  /** Non-NULL values that `json_valid()` rejects. */
+  invalid: number;
+  /** Of {@link invalid}, those that are empty or whitespace — the repairable shape. */
+  blank: number;
+}
+
+/** Real, non-internal, non-virtual tables. Virtual tables (vec0, fts5) are
+ *  excluded: scanning them is either meaningless or actively unsafe. */
+async function listScannableTables(adapter: StoreAdapter): Promise<string[]> {
+  const res = await adapter.executeAll<{ name: string; sql: string | null }>(
+    `SELECT name, sql FROM sqlite_master WHERE type='table'`,
+  );
+  return res.rows
+    .filter((r) => !isInternalObject(r.name))
+    .filter((r) => !/CREATE\s+VIRTUAL\s+TABLE/i.test(r.sql ?? ''))
+    .map((r) => r.name);
+}
+
+/**
+ * Rows examined when *classifying* which columns hold JSON. Classification is a
+ * property of the schema, not of any particular row, so a bounded prefix is
+ * enough — and a column with no value in the sample is escalated rather than
+ * skipped (see below), so sparsity cannot hide one.
+ */
+const JSON_CLASSIFY_SAMPLE_ROWS = 2000;
+
+/**
+ * Scan one table for JSON-typed columns and the malformed values in them.
+ *
+ * **Two phases, and the split is a measured cost decision, not a style one.**
+ * The naive shape — one aggregate evaluating `json_valid()` on every text
+ * column of every row — costs **989 ms** on the live store (105 MB, 10 135
+ * nodes / 51 386 edges, 24 text columns on `node` alone), measured 2026-08-04
+ * against a copy. The whole rest of the `fast` pass, which runs on **every
+ * open**, is 91 ms.
+ *
+ * The cost is per-expression evaluation over the scan, not the scan itself:
+ * `SELECT COUNT(*) FROM node` is 8 ms, while the same scan carrying 48 aggregate
+ * expressions is 206–411 ms. Swapping `substr(trim(c),1,1)` for a `LIKE '{%'`
+ * prefix test only took 411 ms → 220 ms, so the fix is to evaluate fewer
+ * expressions over fewer rows, not cheaper ones.
+ *
+ * **Phase 1 — classify, over at most {@link JSON_CLASSIFY_SAMPLE_ROWS} rows.**
+ * Two expressions per text column. A column is a candidate when the sample says
+ * it is JSON-typed, **or when the sample contained no value for it at all** —
+ * a sparse column (live `node.meta` is non-NULL on 975 of 10 135 rows) must not
+ * be silently skipped just because the leading rows are empty.
+ *
+ * **Phase 2 — validate, over the whole table, candidates only.** Four exact
+ * expressions per candidate. The classification is then re-applied to these
+ * whole-table numbers, so the sample never decides whether a finding is
+ * emitted; it only decides which columns are worth measuring exactly.
+ *
+ * Phase 1 is a classifier, not a validator. Its only failure mode is skipping a
+ * column whose sampled values are JSON-ish below the threshold — fail-safe: the
+ * probe declines to act, it never repairs a column it should not have.
+ */
+async function scanTableJsonColumns(
+  adapter: StoreAdapter,
+  table: string,
+): Promise<JsonColumnScan[] | null> {
+  let columns: string[];
+  try {
+    const info = await adapter.executeAll<{ name: string; type: string | null }>(
+      `PRAGMA table_info("${table}")`,
+    );
+    columns = info.rows.filter((c) => isTextDeclaredType(c.type)).map((c) => c.name);
+  } catch {
+    return null;
+  }
+  if (columns.length === 0) return [];
+
+  const quote = (name: string): string => `"${name.replace(/"/g, '""')}"`;
+  // A JSON column holds objects or arrays. The prefix test runs BEFORE
+  // json_valid so the parser is never invoked on prose.
+  const shaped = (c: string): string => `(${c} LIKE '{%' OR ${c} LIKE '[%') AND json_valid(${c})`;
+
+  // ── Phase 1: classify, on a bounded sample ─────────────────────────────────
+  const classifyExprs: string[] = [];
+  for (let i = 0; i < columns.length; i++) {
+    const c = quote(String(columns[i]));
+    classifyExprs.push(
+      `SUM(CASE WHEN ${c} IS NOT NULL THEN 1 ELSE 0 END) AS n${i}`,
+      `SUM(CASE WHEN ${c} IS NOT NULL AND ${shaped(c)} THEN 1 ELSE 0 END) AS s${i}`,
+    );
+  }
+
+  let classify: Record<string, unknown> | null | undefined;
+  try {
+    classify = await adapter.executeGet<Record<string, unknown>>(
+      `SELECT ${classifyExprs.join(', ')} FROM (SELECT * FROM "${table}" LIMIT ${JSON_CLASSIFY_SAMPLE_ROWS})`,
+    );
+  } catch {
+    return null;
+  }
+  if (!classify) return [];
+
+  const candidates: { index: number; column: string; sampled: boolean }[] = [];
+  for (let i = 0; i < columns.length; i++) {
+    const nonNull = Number(classify[`n${i}`] ?? 0);
+    const jsonShaped = Number(classify[`s${i}`] ?? 0);
+    if (nonNull === 0) {
+      // The sample says nothing about this column. Escalate, do not assume —
+      // live `node.project_path` and `node.meta` are both entirely NULL across
+      // the leading rows of the production store.
+      candidates.push({ index: i, column: String(columns[i]), sampled: false });
+    } else if (isJsonTypedColumn({ nonNull, jsonShaped })) {
+      candidates.push({ index: i, column: String(columns[i]), sampled: true });
+    }
+  }
+  if (candidates.length === 0) return [];
+
+  // ── Phase 2: validate exactly, whole table, candidates only ────────────────
+  // An escalated column carries only the two classification expressions: until
+  // the whole-table numbers say it is JSON at all, counting its malformed
+  // values would be counting prose. Live: 3 columns × 4 exprs + 6 × 2 rather
+  // than 9 × 4.
+  const validateExprs: string[] = [];
+  for (const cand of candidates) {
+    const c = quote(cand.column);
+    validateExprs.push(
+      `SUM(CASE WHEN ${c} IS NOT NULL THEN 1 ELSE 0 END) AS n${cand.index}`,
+      `SUM(CASE WHEN ${c} IS NOT NULL AND ${shaped(c)} THEN 1 ELSE 0 END) AS s${cand.index}`,
+    );
+    if (cand.sampled) {
+      validateExprs.push(
+        `SUM(CASE WHEN ${c} IS NOT NULL AND NOT json_valid(${c}) THEN 1 ELSE 0 END) AS i${cand.index}`,
+        `SUM(CASE WHEN ${c} IS NOT NULL AND NOT json_valid(${c}) AND trim(${c}) = '' THEN 1 ELSE 0 END) AS b${cand.index}`,
+      );
+    }
+  }
+
+  let validate: Record<string, unknown> | null | undefined;
+  try {
+    validate = await adapter.executeGet<Record<string, unknown>>(
+      `SELECT ${validateExprs.join(', ')} FROM "${table}"`,
+    );
+  } catch {
+    return null;
+  }
+  if (!validate) return null;
+
+  const scans: JsonColumnScan[] = [];
+  // Columns the sample could not classify but the whole table now says ARE
+  // JSON. Never observed on the production store; measured, not assumed.
+  const lateExprs: string[] = [];
+  const late: { index: number; column: string }[] = [];
+
+  for (const cand of candidates) {
+    const nonNull = Number(validate[`n${cand.index}`] ?? 0);
+    const jsonShaped = Number(validate[`s${cand.index}`] ?? 0);
+    if (!isJsonTypedColumn({ nonNull, jsonShaped })) continue;
+    if (cand.sampled) {
+      scans.push({
+        table,
+        column: cand.column,
+        nonNull,
+        jsonShaped,
+        invalid: Number(validate[`i${cand.index}`] ?? 0),
+        blank: Number(validate[`b${cand.index}`] ?? 0),
+      });
+      continue;
+    }
+    const c = quote(cand.column);
+    late.push({ index: cand.index, column: cand.column });
+    lateExprs.push(
+      `SUM(CASE WHEN ${c} IS NOT NULL THEN 1 ELSE 0 END) AS n${cand.index}`,
+      `SUM(CASE WHEN ${c} IS NOT NULL AND ${shaped(c)} THEN 1 ELSE 0 END) AS s${cand.index}`,
+      `SUM(CASE WHEN ${c} IS NOT NULL AND NOT json_valid(${c}) THEN 1 ELSE 0 END) AS i${cand.index}`,
+      `SUM(CASE WHEN ${c} IS NOT NULL AND NOT json_valid(${c}) AND trim(${c}) = '' THEN 1 ELSE 0 END) AS b${cand.index}`,
+    );
+  }
+
+  if (late.length > 0) {
+    try {
+      const lateRow = await adapter.executeGet<Record<string, unknown>>(
+        `SELECT ${lateExprs.join(', ')} FROM "${table}"`,
+      );
+      if (lateRow) {
+        for (const l of late) {
+          scans.push({
+            table,
+            column: l.column,
+            nonNull: Number(lateRow[`n${l.index}`] ?? 0),
+            jsonShaped: Number(lateRow[`s${l.index}`] ?? 0),
+            invalid: Number(lateRow[`i${l.index}`] ?? 0),
+            blank: Number(lateRow[`b${l.index}`] ?? 0),
+          });
+        }
+      }
+    } catch {
+      return null;
+    }
+  }
+
+  return scans;
+}
+
+/** True when the measured distribution says this column holds JSON. */
+export function isJsonTypedColumn(scan: {
+  nonNull: number;
+  jsonShaped: number;
+}): boolean {
+  return scan.jsonShaped > 0 && scan.jsonShaped >= scan.nonNull * JSON_COLUMN_RATIO;
+}
+
+/** Up to `max` rowids holding a malformed value, so an operator can go straight
+ *  to the rows rather than writing a bespoke `json_valid()` sweep. */
+async function sampleMalformedRowids(
+  adapter: StoreAdapter,
+  table: string,
+  column: string,
+  max = 10,
+): Promise<number[]> {
+  try {
+    const c = `"${column.replace(/"/g, '""')}"`;
+    const res = await adapter.executeAll<{ rowid: number }>(
+      `SELECT rowid FROM "${table}" WHERE ${c} IS NOT NULL AND NOT json_valid(${c}) LIMIT ${max}`,
+    );
+    return res.rows.map((r) => Number(r.rowid));
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Report every JSON-typed column carrying a value `json_valid()` rejects.
+ *
+ * **`repairable` is true only when every offending value is empty or
+ * whitespace.** Normalising `''` to NULL is information-preserving — `''` is
+ * how "absent" was mis-written, and NULL is how the schema spells it. Any other
+ * unparseable value (a truncated document, a raw string) may carry real
+ * content, and silently discarding it would be a worse defect than the one
+ * being fixed. Those are reported as damaged and left for a human.
+ */
+export async function probeJsonColumns(adapter: StoreAdapter): Promise<IntegrityFinding[]> {
+  const findings: IntegrityFinding[] = [];
+  let tables: string[];
+  try {
+    tables = await listScannableTables(adapter);
+  } catch {
+    return [];
+  }
+
+  for (const table of tables) {
+    const scans = await scanTableJsonColumns(adapter, table);
+    if (scans === null) {
+      findings.push({
+        probe: 'json_column_valid',
+        object: table,
+        status: 'unknown',
+        detail: `Could not scan "${table}" for JSON column validity (introspection or aggregate failed).`,
+        repairable: false,
+        backlog: 'BL-342',
+        probeValidated: false,
+      });
+      continue;
+    }
+    for (const scan of scans) {
+      if (!isJsonTypedColumn(scan)) continue;
+      if (scan.invalid === 0) {
+        findings.push({
+          probe: 'json_column_valid',
+          object: `${scan.table}.${scan.column}`,
+          status: 'ok',
+          detail:
+            `${scan.jsonShaped}/${scan.nonNull} non-NULL values are JSON objects/arrays; ` +
+            `0 values fail json_valid().`,
+          repairable: false,
+          backlog: 'BL-342',
+          probeValidated: true,
+        });
+        continue;
+      }
+      const sample = await sampleMalformedRowids(adapter, scan.table, scan.column);
+      const allBlank = scan.blank === scan.invalid;
+      findings.push({
+        probe: 'json_column_valid',
+        object: `${scan.table}.${scan.column}`,
+        status: 'damaged',
+        detail:
+          `${scan.invalid} of ${scan.nonNull} non-NULL values fail json_valid() in a column ` +
+          `whose values are otherwise JSON (${scan.jsonShaped}/${scan.nonNull} objects/arrays). ` +
+          (allBlank
+            ? `All ${scan.blank} are empty/whitespace — the BL-342 restore shape — and normalise to NULL.`
+            : `${scan.invalid - scan.blank} hold non-empty unparseable text and are NOT auto-repairable; ` +
+              `discarding them could destroy real content.`) +
+          (sample.length > 0 ? ` rowids: ${sample.join(', ')}.` : ''),
+        repairable: allBlank,
+        backlog: 'BL-342',
+        probeValidated: true,
+      });
+    }
+  }
+  return findings;
+}
+
+/**
+ * Normalise the empty-string values in one JSON column to NULL.
+ *
+ * Scoped by `trim(col) = ''` on purpose — the same predicate the probe used to
+ * decide the finding was repairable. It can never touch a value carrying
+ * content, even if the probe and the repair race a concurrent writer.
+ */
+async function repairJsonColumn(adapter: StoreAdapter, object: string): Promise<number> {
+  const dot = object.indexOf('.');
+  if (dot <= 0) throw new Error(`json_column_valid finding object "${object}" is not table.column`);
+  const table = object.slice(0, dot).replace(/"/g, '""');
+  const column = object.slice(dot + 1).replace(/"/g, '""');
+  const res = await adapter.executeRun(
+    `UPDATE "${table}" SET "${column}" = NULL WHERE "${column}" IS NOT NULL AND NOT json_valid("${column}") AND trim("${column}") = ''`,
+  );
+  return Number(res?.rowsAffected ?? 0);
+}
+
 // ── Probe: PRAGMA integrity_check (deep, BL-341) ─────────────────────────────
 
 /**
@@ -1118,6 +1512,7 @@ export async function verifyStoreIntegrity(
   if (wanted('adapter_meta_unique')) findings.push(...(await probeAdapterMetaUnique(adapter)));
   if (wanted('btree_index_populated')) findings.push(...(await probeBtreeIndexes(adapter)));
   if (wanted('fts_index_live')) findings.push(...(await probeFtsIndexes(adapter, opts?.ftsSampleSize ?? 3)));
+  if (wanted('json_column_valid')) findings.push(...(await probeJsonColumns(adapter)));
   if (depth === 'deep' && wanted('pragma_integrity_check')) {
     findings.push(...(await probeIntegrityCheck(adapter)));
   }
@@ -1259,6 +1654,11 @@ export async function repairStoreIntegrity(
         case 'pragma_integrity_check': {
           await adapter.exec(`REINDEX "${finding.object}"`);
           push(`reindexed "${finding.object}" individually`, true);
+          break;
+        }
+        case 'json_column_valid': {
+          const n = await repairJsonColumn(adapter, finding.object);
+          push(`normalised ${n} empty-string value(s) in "${finding.object}" to NULL`, true);
           break;
         }
         case 'fts_index_live': {
