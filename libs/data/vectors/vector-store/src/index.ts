@@ -99,6 +99,23 @@ function vecToBuffer(vec: Float32Array): Buffer {
 // `undefined.nativeVectors` when a caller skips the StoreAdapter wrapper
 // altogether and passes a raw driver handle).
 function requireSqliteHandle(adapter: StoreAdapter): import('better-sqlite3').Database {
+  // The comment above has promised "one clear, actionable error" for the
+  // raw-driver-handle case since BL-364, and until now it did not deliver one:
+  // reading `.capabilities` off a raw `better-sqlite3` handle throws
+  // `TypeError: Cannot read properties of undefined (reading 'nativeVectors')`,
+  // which names neither this class nor the mistake. That exact TypeError killed
+  // all 12 DB-integrated tests in `analysis.spec.ts` for 8 days after the
+  // store-adapter migration (83cd0b0) left that caller behind — the message was
+  // opaque enough that the suite read as a mysterious environment problem
+  // rather than a stale constructor call. Say what is actually wrong.
+  if (adapter === null || typeof adapter !== 'object' || adapter.capabilities === undefined) {
+    throw new StorageError(
+      `SqliteVectorBackend requires a StoreAdapter, not a raw driver handle — ` +
+        `the value passed has no \`capabilities\`. This is the pre-83cd0b0 calling convention: ` +
+        `\`new SqliteVectorBackend(db)\` became \`new SqliteVectorBackend(adapter)\`. ` +
+        `Wrap the handle with createSqliteAdapter({ dbPath }), or use openVectorStore(dbPath, { dim, modelId }).`,
+    );
+  }
   // Blessed pattern (see libs/memory-core/src/db.ts:373,896): gate on the
   // capability flag, never on config.type — nativeVectors is false ONLY for
   // SqliteAdapter (needs the sqlite-vec extension loaded on a synchronous

@@ -547,6 +547,32 @@ describe('SqliteVectorBackend — Turso-adapter guard (BL-380)', () => {
       tmp.cleanup();
     }
   });
+
+  // BL-364's comment has always claimed this case yields "one clear, actionable
+  // error". It did not: reading `.capabilities` off a raw better-sqlite3 handle
+  // threw `TypeError: Cannot read properties of undefined (reading
+  // 'nativeVectors')`, naming neither this class nor the mistake. That exact
+  // TypeError is what killed all 12 DB-integrated tests in `analysis.spec.ts`
+  // for 8 days after 83cd0b0 moved this constructor from a raw handle to a
+  // StoreAdapter — the suite's only integration coverage, and the message was
+  // opaque enough to read as an environment problem. This is the guard for the
+  // pre-migration calling convention, and the reason it must name it.
+  it('a raw better-sqlite3 handle (the pre-83cd0b0 calling convention) is rejected by name, not by TypeError', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'vector-store-rawhandle-'));
+    const raw = new Database(path.join(dir, 'raw.db'));
+    try {
+      const construct = (): SqliteVectorBackend =>
+        new SqliteVectorBackend(raw as unknown as StoreAdapter);
+      expect(construct).toThrow(StorageError);
+      expect(construct).toThrow(/requires a StoreAdapter, not a raw driver handle/);
+      // The negative control for the message itself: a TypeError here means the
+      // guard did not fire and the old cryptic failure is back.
+      expect(construct).not.toThrow(TypeError);
+    } finally {
+      raw.close();
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
 });
 
 // ── openVectorStore ─────────────────────────────────────────────────────────

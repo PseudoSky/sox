@@ -28,7 +28,19 @@ memory-refactor plan states.
 - Published npm name (`@adhd/sox-analysis`) is decoupled from this folder path —
   never rename the package name on a folder move.
 - Declared deps: `@adhd/sox-vector-store`, `@adhd/sox-graph-store`, `density-clustering`.
+  Dev-only: `@adhd/sox-store-adapter` — the DB-integrated spec builds its fixtures with
+  `createSqliteAdapter`. Same pattern as `hybrid-search`; it is **not** a runtime dep, since the
+  analysis functions take `VectorBackend` + `GraphBackend` and never an adapter.
   Do not add undeclared deps without updating package.json + COMPILED_INTERFACES.md.
+
+## Build / test — the DB-integrated block
+
+`SqliteVectorBackend` requires a **`SqliteAdapter`** and rejects a Turso one by design (vec0 is a
+synchronous, sqlite-only mechanism). Fixtures must therefore use `createSqliteAdapter({ dbPath })`,
+never the default `createStoreAdapter()`, which returns Turso. The whole `GraphBackend` surface is
+async — `writeNode`, `applySchema`, `getNode`, `getEdges` all return promises. Both facts date from
+`83cd0b0`, which migrated every other caller and missed this package's spec, killing all 12
+DB-integrated tests for 8 days while they still read as coverage.
 
 ## Build / test
 
