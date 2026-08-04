@@ -13,7 +13,7 @@ import {
   PRAGMAS,
   PUBLIC_EDGE_RELS,
 } from './index.js';
-import type { GraphBackend, NodeMeta, NodeRecord, EdgeRel } from './index.js';
+import type { GraphBackend, EdgeRel } from './index.js';
 
 async function freshBackend(): Promise<{ adapter: StoreAdapter; backend: GraphBackend }> {
   const adapter = new SqliteAdapterImpl(':memory:');
@@ -258,7 +258,11 @@ describe('supersede', () => {
     const oldId = await backend.writeNode('v1', {});
     const newId = await backend.supersede(oldId, 'v2', { name: 'v2' });
     expect((await backend.getNode(oldId))!.isSuperseded).toBe(true);
-    expect((await backend.getEdges({ rel: 'SUPERSEDES' }))).toHaveLength(1);
+    const chainEdges = await backend.getEdges({ rel: 'SUPERSEDES' });
+    expect(chainEdges).toHaveLength(1);
+    // The edge must actually connect the two nodes — `newId` was previously
+    // bound and never read, so nothing checked what the chain pointed at.
+    expect([chainEdges[0]!.src, chainEdges[0]!.dst].sort()).toEqual([oldId, newId].sort());
     await adapter.close();
   });
 
@@ -416,6 +420,8 @@ describe('getSupersessionChain', () => {
     const chain = await backend.getSupersessionChain(v2);
     expect(chain).toHaveLength(3);
     expect(chain[0]!.name).toBe('v1');
+    // `v3` was bound and never read — assert the chain actually reaches the head.
+    expect(chain.map((n) => n.id)).toEqual([v1, v2, v3]);
     await adapter.close();
   });
 });

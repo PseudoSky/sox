@@ -55,7 +55,13 @@ function dummyDb(): Database.Database {
 }
 
 function makeBackend(dir: string, index?: LanceDbVectorBackendConfig['index']): LanceDbVectorBackend {
-  return new LanceDbVectorBackend({ lancedbPath: dir, index, db: dummyDb() });
+  // `index` is an OPTIONAL property, not a `T | undefined` one — under
+  // exactOptionalPropertyTypes it must be omitted, never passed as undefined.
+  return new LanceDbVectorBackend({
+    lancedbPath: dir,
+    ...(index === undefined ? {} : { index }),
+    db: dummyDb(),
+  });
 }
 
 describe('LanceDbVectorBackend (real on-disk @lancedb/lancedb)', () => {

@@ -13,8 +13,6 @@ import {
   SpaceInvariantError,
   StorageError,
   SqliteVectorBackend,
-  type ReembedOpts,
-  type ReembedResult,
   type VectorSpace,
 } from './index.js';
 
@@ -332,7 +330,7 @@ describe('SqliteVectorBackend', () => {
         kind: 'generic',
       });
 
-      const query = unitVec(4, 0); // [1, 0, 0, 0]
+      // Query is [1, 0, 0, 0] — each `it` below builds its own copy.
       // out-of-scope vector is the TRUE nearest neighbor (cos = 1.0, identical
       // to the query); in-scope vector is farther (cos = 0.0) — so an
       // unfiltered/pre-filter-pushdown knn call must prefer the out-of-scope
@@ -519,7 +517,7 @@ describe('SqliteVectorBackend — Turso-adapter guard (BL-380)', () => {
       exec: async () => {},
       pragmaSet: async () => {},
       pragmaGet: async () => undefined,
-      transaction: async (fn) => fn({
+      transaction: async (fn: (tx: unknown) => unknown) => fn({
         executeGet: async () => null,
         executeAll: async () => ({ columns: [], rows: [] }),
         executeRun: async () => ({ rowsAffected: 0, lastInsertRowid: 0 }),
@@ -612,7 +610,6 @@ describe('openVectorStore', () => {
 // ── reembed ─────────────────────────────────────────────────────────────────
 
 describe('reembed', () => {
-  let db: Database.Database;
   let adapter: StoreAdapter;
   let backend: SqliteVectorBackend;
   let cleanup: () => void;
@@ -620,7 +617,6 @@ describe('reembed', () => {
   beforeEach(() => {
     const tmp = makeTmpDb();
     adapter = tmp.adapter;
-    db = tmp.db;
     cleanup = tmp.cleanup;
     backend = new SqliteVectorBackend(adapter);
   });
@@ -774,7 +770,6 @@ describe('reembed', () => {
 // ── Edge cases ───────────────────────────────────────────────────────────────
 
 describe('edge cases', () => {
-  let db: Database.Database;
   let adapter: StoreAdapter;
   let backend: SqliteVectorBackend;
   let cleanup: () => void;
@@ -782,7 +777,6 @@ describe('edge cases', () => {
   beforeEach(() => {
     const tmp = makeTmpDb();
     adapter = tmp.adapter;
-    db = tmp.db;
     cleanup = tmp.cleanup;
     backend = new SqliteVectorBackend(adapter);
   });

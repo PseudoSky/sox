@@ -1,19 +1,25 @@
-# ci.yml — CI pipeline: nx affected build/lint/test/validate + nx release dry-run check
+# ci.yml — CI pipeline: nx affected build/lint/typecheck/test/validate
 #
 # Triggers on every push and pull_request targeting main.
 # Uses `nx affected` so only changed packages (and their dependents) rebuild — B3.
 #
 # Flow:
 #   1. Install dependencies
-#   2. nx affected -t build  — compile only changed packages
-#   3. nx affected -t lint   — lint only changed packages
-#   4. nx affected -t test   — test only changed + dependent packages
-#   5. validate-manifests    — full manifest conformance (read-only, fast)
-#   6. registry drift gate   — registry/index.json must be up to date
+#   2. nx affected -t build     — compile only changed packages
+#   3. nx affected -t lint      — lint only changed packages
+#   4. nx affected -t typecheck — full `tsc --noEmit` on changed packages
+#   5. nx affected -t test      — test only changed + dependent packages
+#   6. validate-manifests       — full manifest conformance (read-only, fast)
+#   7. registry drift gate      — registry/index.json must be up to date
 #
-# Note: Changeset status gate is retired (D3). nx release --dry-run is verified
-# in the ci-release guard and is not a per-PR gate (it needs --first-release on
-# first run and is sensitive to git tags, making it unsuitable as a generic PR gate).
+# Note: releases run entirely through Changesets (`.changeset/config.json`,
+# `release.yml`). There is no `nx release` in this repo — `nx.json` has no
+# `release` key — so there is no dry-run release gate to gate a PR on.
+#
+# Why typecheck is a separate step from build: every bundled project builds
+# through esbuild/atomic-tsc paths that strip types WITHOUT checking them, so a
+# green `build` says nothing about type correctness (BL-248 — 15 real type
+# errors, two of them live bugs, shipped through a green build,lint,test sweep).
 #
 # Tooling: actions/checkout@v4, pnpm/action-setup@v3 (reference-arch §6 row 9).
 
@@ -67,16 +73,22 @@ jobs:
       - name: Lint (nx affected)
         run: pnpm exec nx affected -t lint --base=origin/main --head=HEAD
 
-      # Step 3: nx affected test — changed packages + their dependents
+      # Step 3: nx affected typecheck — `tsc --noEmit` on changed packages.
+      # Build strips types without checking them; this is the only gate that
+      # actually typechecks (BL-248).
+      - name: Typecheck (nx affected)
+        run: pnpm exec nx affected -t typecheck --base=origin/main --head=HEAD
+
+      # Step 4: nx affected test — changed packages + their dependents
       - name: Test (nx affected)
         run: pnpm exec nx affected -t test --base=origin/main --head=HEAD
 
-      # Step 4: validate-manifests — full scan (read-only, fast; no filter needed)
+      # Step 5: validate-manifests — full scan (read-only, fast; no filter needed)
       # --strict: DX-conformance advisory rules are errors; every extension must conform.
       - name: Validate extension manifests (strict)
         run: pnpm run validate-manifests -- --strict
 
-      # Step 5: registry drift gate — regenerate and fail if stale
+      # Step 6: registry drift gate — regenerate and fail if stale
       - name: Registry index up to date
         run: |
           pnpm build-index

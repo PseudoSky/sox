@@ -15,6 +15,23 @@
     // them with the ESM settings vitest actually runs them under. This root
     // catch-all was compiling only the `.test.ts` half as CommonJS, producing
     // TS1541/TS1479 that say nothing about the code.
-    "extensions/**/*.test.ts"
+    "extensions/**/*.test.ts",
+
+    // Same asymmetry, one level up: these five extensions own a `typecheck`
+    // target that compiles their sources under the module mode they are ACTUALLY
+    // built with (`module: CommonJS` + `moduleResolution: node10`, mirroring the
+    // esbuild CJS bundle). This root catch-all inherits tsconfig.base's
+    // `Node16`/`Node16` instead, so it re-compiled the same files under a mode
+    // nothing ships, and reported TS1541/TS1479 on `import type … from
+    // '@adhd/sox-store-adapter'` — a diagnostic about the compile settings, not
+    // about the code. Coverage is not lost by excluding them: every file below is
+    // compiled by its owning project's `typecheck` (and, for memory-server's
+    // vitest.setup.ts, `typecheck-tests`), which run in `nx run-many -t typecheck`
+    // and are now gates on both ci.yml and release.yml.
+    "extensions/bundles/sox-memory-bundle/members/memory-server/**",
+    "extensions/bundles/sox-memory-bundle/members/memory-flush/**",
+    "extensions/bundles/sox-memory-bundle/members/memory-cli/**",
+    "extensions/services/tokenguard/**",
+    "extensions/commands/di-command/**"
   ]
 }

@@ -100,9 +100,11 @@ Section 2 content.`;
 
 ### H3`;
     const chunks = chunker.chunk(doc, { maxHeadingDepth: 2 });
+    // H3 should not be a split point when maxHeadingDepth is 2 — the assertion the
+    // binding was always meant to carry (it was computed and then never read).
     const h3Chunks = chunks.filter((c) => c.metadata.heading?.includes('H3'));
-    // H3 should not be a split point when maxHeadingDepth is 2
     expect(chunks.length).toBeGreaterThanOrEqual(1);
+    expect(h3Chunks).toHaveLength(0);
   });
 
   it('throws for unsupported syntax', () => {
