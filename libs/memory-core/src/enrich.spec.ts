@@ -957,6 +957,44 @@ describe('runBatchEnrich', () => {
       t2.cleanup();
     }
   });
+
+  // DEBT-MEMORY-ENRICH-001: autolink chunking must not change results — the
+  // (i, j) iteration order is preserved across chunk boundaries, so chunk 1
+  // and chunk 500 produce identical RELATES_TO output. Semantic-equivalence
+  // guard for the write-lock chunking; the perf red->green is the measured
+  // single-transaction window (30,558 INSERTs, ~8s/tick).
+  it('DEBT-MEMORY-ENRICH-001: autolink chunking preserves determinism (chunk 500 vs 1 -> identical edges)', async () => {
+    const t1 = await makeTmpDb();
+    const t2 = await makeTmpDb();
+    try {
+      process.env['SOX_EMBED_BACKEND'] = 'auto';
+      const now = new Date().toISOString();
+      for (const t of [t1, t2]) {
+        // 3 episodes, 2 shared entities each -> 3 RELATES_TO pairs (0-1, 0-2, 1-2).
+        const eps = [1, 2, 3].map((i) =>
+          insertEpisode(t.db, `ep-al-${i}`, `Auto-link determinism episode ${i} about memory server telemetry.`, seedEmbedding(i)),
+        );
+        const ent = t.db.prepare(`INSERT INTO node (uid, kind, name, t_created, t_valid) VALUES (?, 'entity', ?, ?, ?)`);
+        const ent1 = ent.run('ent-al-1', 'memory-server', now, now).lastInsertRowid as number;
+        const ent2 = ent.run('ent-al-2', 'telemetry', now, now).lastInsertRowid as number;
+        const mention = t.db.prepare(`INSERT INTO edge (src, dst, rel, t_created) VALUES (?, ?, 'MENTIONS', ?)`);
+        for (const ep of eps) {
+          mention.run(ep, ent1, now);
+          mention.run(ep, ent2, now);
+        }
+      }
+
+      const r1 = await runBatchEnrich(t1.adapter, { incrementalCluster: true, autoLinkChunkSize: 500, entityStoplistThreshold: 1.5 });
+      const r2 = await runBatchEnrich(t2.adapter, { incrementalCluster: true, autoLinkChunkSize: 1, entityStoplistThreshold: 1.5 });
+
+      expect(r1.relates_to_edges).toBe(3);
+      expect(r2.relates_to_edges).toBe(r1.relates_to_edges);
+    } finally {
+      delete process.env['SOX_EMBED_BACKEND'];
+      t1.cleanup();
+      t2.cleanup();
+    }
+  });
 });
 
 // BL-413 / BUG-MEMORY-ENRICH-001: the indexed link-degree rewrite must preserve

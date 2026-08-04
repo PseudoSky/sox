@@ -47,6 +47,7 @@
  */
 
 import { enrichOnWrite } from './enrich.js';
+import { gcOrphanedCommunityState } from './community-gc.js';
 import { enqueueIngest } from './outbox-queue.js';
 import { applyEmbedding } from './embed-pipeline.js';
 import { vectorDialectFor } from './dialect.js';
@@ -766,6 +767,12 @@ export async function memoryInvalidate(
   await adapter.transaction(async (tx) => {
     // Close t_invalid (R5: never delete, invalidate instead)
     await tx.executeRun(`UPDATE node SET t_invalid = ? WHERE uid = ?`, [tTransition, claim_uid]);
+
+    // BUG-CLUSTER-ORPHANED-COMMUNITIES-NEVER-GC-001: invalidating an episode
+    // must also invalidate its live MEMBER_OF edge and any now-empty global
+    // community in the same transaction — otherwise churn leaves orphaned
+    // community state (the 139-communities/0-members leak signature).
+    await gcOrphanedCommunityState(tx, claim.rowid, tTransition);
 
     if (replacementRowid !== undefined) {
       supersedgesEdgeUid = `sup-${Date.now()}-${Math.random().toString(36).slice(2)}`;

@@ -284,7 +284,7 @@ module.exports = {
       for (const e of exceptions) {
         if ((e.fn ?? null) !== fn) continue;
         if (normalizeText(e.text) !== text) continue;
-        const key = `${fn} ${text}`;
+        const key = `${fn}.${text}`;
         const used = consumed.get(key) ?? 0;
         if (used >= (e.count ?? 1)) {
           // Budget spent. Report with the dedicated message rather than letting

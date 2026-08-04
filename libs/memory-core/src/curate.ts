@@ -13,6 +13,7 @@ import type { StoreAdapter } from '@adhd/sox-store-adapter';
 import { monotonicFactory } from 'ulid';
 import { ENRICH_VERSION } from './enrich-version.js';
 import { clusterSubset, dropSubsetLens, listSubsetLenses } from './cluster.js';
+import { gcOrphanedCommunityState } from './community-gc.js';
 import { enqueueEnrichFull } from './outbox-queue.js';
 import type { MemoryFilter } from './memory-filters.js';
 
@@ -321,6 +322,9 @@ async function curateMergeDuplicates(
   if (!dryRun) {
     await adapter.transaction(async (tx) => {
       await tx.executeRun(`UPDATE node SET t_invalid = ? WHERE uid = ?`, [now, uidDrop]);
+      // BUG-CLUSTER-ORPHANED-COMMUNITIES-NEVER-GC-001: merge_duplicates
+      // invalidates the dropped episode — GC its community state too.
+      await gcOrphanedCommunityState(tx, dropRow.rowid, now);
       await tx.executeRun(
         `INSERT INTO edge (src, dst, rel, origin, t_created, meta)
          SELECT ?, ?, 'SAME_AS', 'user_asserted', ?, '{"merge":"manual"}'

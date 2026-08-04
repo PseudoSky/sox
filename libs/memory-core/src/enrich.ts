@@ -21,6 +21,7 @@ import type { NearDupResult } from './neardup.js';
 import type { AdapterTransaction, VectorDialect } from '@adhd/sox-store-adapter';
 import { ENRICH_VERSION } from './enrich-version.js';
 import { log as tlog } from './telemetry.js';
+import { gcOrphanedCommunityState } from './community-gc.js';
 
 export type { NearDupResult } from './neardup.js';
 
@@ -120,6 +121,9 @@ export async function applyNearDupResult(
       `UPDATE node SET t_invalid = ? WHERE uid = ? AND t_invalid IS NULL`,
       [now, nearDup.existing_uid],
     );
+    // BUG-CLUSTER-ORPHANED-COMMUNITIES-NEVER-GC-001: near-dup supersession
+    // orphans community state exactly like memory_invalidate — GC it here too.
+    await gcOrphanedCommunityState(tx, neighborRow.rowid, now);
   }
 }
 /**

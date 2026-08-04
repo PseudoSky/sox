@@ -451,7 +451,7 @@ function runSuite(backend: 'sqlite' | 'turso'): void {
       ).toBe(dominantVals.length);
     });
 
-    it('REPRO A: invalidating a cluster\'s member episodes reproduces the live "139 communities / 0 members" anomaly', async () => {
+    it('REPRO A (BUG-CLUSTER-ORPHANED-COMMUNITIES-NEVER-GC-001): invalidating a cluster\'s member episodes RETIRES the now-empty community instead of orphaning it', async () => {
       const before = await clusterStats(adapter);
       expect(before.cluster_count).toBeGreaterThan(0);
 
@@ -460,7 +460,7 @@ function runSuite(backend: 'sqlite' | 'turso'): void {
         const res = await handleToolCall('memory_invalidate', {
           db_path: dbPath,
           claim_uid: uid,
-          reason: 'clustering-e2e anomaly repro (REPRO A)',
+          reason: 'clustering-e2e orphan-GC verification (REPRO A)',
         });
         expect(res.isError, `memory_invalidate failed for ${uid}: ${JSON.stringify(textOf(res))}`).toBeFalsy();
       }
@@ -476,24 +476,28 @@ function runSuite(backend: 'sqlite' | 'turso'): void {
         total_clustered_after: after.total_clustered,
       });
 
-      // THE anomaly, reproduced with real numbers: communities are STILL live
-      // (materializeClusters was never re-invoked — memory_invalidate only sets
-      // node.t_invalid, it never touches the community node or its edges) ...
+      // THE FIX (BUG-CLUSTER-ORPHANED-COMMUNITIES-NEVER-GC-001): memory_invalidate
+      // now also invalidates each member's MEMBER_OF edge and — once the LAST
+      // member of a community is gone — the now-empty community itself, in the
+      // same transaction. The target group's community retires (cluster_count -1)
+      // while the OTHER groups' communities survive (they still have live members).
+      // Before the fix, the target community stayed live with zero members: the
+      // "139 communities / 0 members" anomaly.
       expect(
         after.cluster_count,
-        'community nodes must remain live after ordinary episode invalidation — this IS the live anomaly',
-      ).toBe(before.cluster_count);
-      // ...but member coverage genuinely collapses, because clusterStats' JOIN
-      // requires src.t_invalid IS NULL (cluster.ts:659) and every member of the
-      // target group is now invalidated.
+        'the now-empty target community must be retired by the invalidation GC — exactly one community drops',
+      ).toBe(before.cluster_count - 1);
+      // Member coverage genuinely collapses: clusterStats' JOIN requires
+      // src.t_invalid IS NULL (cluster.ts:659) and every member of the target
+      // group is now invalidated.
       expect(
         after.total_clustered,
-        'total_clustered must drop once member episodes are invalidated, while cluster_count does not',
+        'total_clustered must drop once member episodes are invalidated',
       ).toBeLessThan(before.total_clustered);
 
       const orphanedCommunity = dominantByGroup[targetGroup]!;
       const state = await communityLiveState(adapter, orphanedCommunity);
-      expect(state, `the ${targetGroup} community must still be a LIVE node with all members gone`).toBe('live');
+      expect(state, `the ${targetGroup} community must be retired (invalidated), not left live with zero members`).toBe('invalidated');
     });
 
     it('REPRO B: a genuine second full pass RETIRES stale communities — it does NOT leave them live-with-zero-members', async () => {

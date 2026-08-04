@@ -59,6 +59,15 @@ export interface BatchEnrichOptions {
    * Set to 0 or Infinity to use a single transaction (original behaviour).
    */
   importanceChunkSize?: number;
+  /**
+   * DEBT-MEMORY-ENRICH-001: chunk size for the auto-link (RELATES_TO) pass.
+   * Default 500 episodes per outer-chunk transaction — releases the write lock
+   * between chunks instead of holding it across the whole pairwise pass
+   * (measured 30,558 INSERTs in one transaction, ~8s per tick). The (i, j)
+   * iteration order is unchanged, so results are byte-identical to the
+   * single-transaction form. 0 or Infinity → single transaction (original).
+   */
+  autoLinkChunkSize?: number;
 }
 
 export interface BatchEnrichResult {
@@ -163,6 +172,7 @@ export async function runBatchEnrich(
     entityStoplistThreshold = 0.30,
     incrementalCluster = false,
     importanceChunkSize = 500,
+    autoLinkChunkSize = 500,
   } = opts;
 
   const now = new Date().toISOString();
@@ -335,7 +345,7 @@ export async function runBatchEnrich(
   }
 
   // ── Step 5: Auto-links (E9) ────────────────────────────────────────────────
-  const autoLinkResult = await buildAutoLinks(adapter, entityStoplistThreshold);
+  const autoLinkResult = await buildAutoLinks(adapter, entityStoplistThreshold, autoLinkChunkSize);
   result.relates_to_edges = autoLinkResult.edges_inserted;
 
   return result;
