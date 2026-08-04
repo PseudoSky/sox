@@ -107,6 +107,34 @@ describe('WriteQueue — ordering and serialisation (WP-1)', () => {
   });
 
   /**
+   * BL-405: the WP-5 idle WAL checkpoint must ALSO be scheduled on the
+   * bypass/_noop path (the Turso adapter). The FIFO path schedules it from
+   * _processNext's completion; the bypass/_noop branch used to return EARLY
+   * above the shared scheduling code, so on Turso (needsWriteSerialization:
+   * false -> _noop) the 2s idle checkpoint never fired — memory_ping's
+   * last_checkpoint_at stayed null forever in production and the WAL grew
+   * until restart. RED: _checkpointPending stays false after a bypass
+   * enqueue. GREEN: true.
+   */
+  it('BL-405: a bypass/_noop enqueue schedules the idle WAL checkpoint (WP-5)', async () => {
+    WriteQueue.setBypass(true);
+    try {
+      const queue = await WriteQueue.forPath(dbPath);
+      await queue.enqueue('bl405-probe', async () => {
+        await new Promise<void>((r) => setTimeout(r, 5));
+        return 1;
+      });
+      // The operation settled -> the deferred idle checkpoint must be armed.
+      expect(queue._checkpointPending).toBe(true);
+      // Clean up: cancels the pending timer + closes the adapter so the timer
+      // can never fire against a closed connection in a later test.
+      await queue.drainAndClose();
+    } finally {
+      WriteQueue.setBypass(false);
+    }
+  });
+
+  /**
    * Overflow guard: queue with maxSize=1 rejects the second concurrent enqueue.
    */
   it('rejects with E_BUSY when queue is full', async () => {

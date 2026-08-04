@@ -588,7 +588,11 @@ describe('memory_near_duplicates (C2.10)', () => {
     for (const p of pairs) {
       expect(typeof p['uid_a']).toBe('string');
       expect(typeof p['uid_b']).toBe('string');
-      expect(typeof p['cosine_sim']).toBe('number');
+      // BL-398: cosine_sim is the REAL measured similarity for auto-detected
+      // pairs, or null for manually-merged pairs (no detector ever measured
+      // them — a numeric report would be fabricated; the graph-store column
+      // default 1.0 used to fake exactly that).
+      expect(p['cosine_sim'] === null || typeof p['cosine_sim'] === 'number').toBe(true);
       expect(typeof p['content_preview_a']).toBe('string');
       expect(typeof p['content_preview_b']).toBe('string');
       expect(typeof p['already_merged']).toBe('boolean');

@@ -642,6 +642,16 @@ export class WriteQueue {
     //   1. _bypass (static) — global kill-switch (SOX_DISABLE_WRITE_QUEUE=1)
     //   2. _noop (instance) — per-adapter: Turso et al. handle concurrent I/O natively.
     if (WriteQueue._bypass || this._noop) {
+      // (WP-5 / BL-405) New work arrived — cancel any pending idle checkpoint;
+      // it is re-scheduled once this operation settles (below). The FIFO path
+      // does this via _processNext's completion; the bypass/_noop path returns
+      // EARLY above the shared scheduling code (line ~686), so without this the
+      // 2s idle checkpoint never fires on the Turso adapter — memory_ping's
+      // last_checkpoint_at stayed null forever in production and the WAL grew
+      // until restart (BL-405). Scheduling after the settle reproduces the
+      // WP-5 contract: checkpoint ~2s after the last write.
+      this._cancelCheckpoint();
+      const scheduleIdleCheckpoint = (): void => { this._scheduleIdleCheckpoint(); };
       const t0 = performance.now();
       log.info('writequeue.task.start', { trace_id: resolvedTraceId, store: storeKey, label, kind, mode: 'bypass' });
       try {
@@ -650,6 +660,7 @@ export class WriteQueue {
           return result.then(
             (v) => {
               this._trackCompletion();
+              scheduleIdleCheckpoint();
               log.info('writequeue.task.finish', {
                 trace_id: resolvedTraceId, store: storeKey, label, kind, mode: 'bypass',
                 duration_ms: Math.round(performance.now() - t0),
@@ -657,6 +668,7 @@ export class WriteQueue {
               return v;
             },
             (err) => {
+              scheduleIdleCheckpoint();
               log.error('writequeue.task.error', {
                 trace_id: resolvedTraceId, store: storeKey, label, kind, mode: 'bypass',
                 duration_ms: Math.round(performance.now() - t0),
@@ -667,12 +679,14 @@ export class WriteQueue {
           );
         }
         this._trackCompletion();
+        scheduleIdleCheckpoint();
         log.info('writequeue.task.finish', {
           trace_id: resolvedTraceId, store: storeKey, label, kind, mode: 'bypass',
           duration_ms: Math.round(performance.now() - t0),
         });
         return Promise.resolve(result);
       } catch (err) {
+        scheduleIdleCheckpoint();
         log.error('writequeue.task.error', {
           trace_id: resolvedTraceId, store: storeKey, label, kind, mode: 'bypass',
           duration_ms: Math.round(performance.now() - t0),
