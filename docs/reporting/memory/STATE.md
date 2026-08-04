@@ -65,11 +65,11 @@ Server: pid **78765**, artifact **`a0d8bbc1ee31`**, up since 2026-08-04T01:37:22
 | Integrity | ✅ `overall: ok` | deep probes clean, `damaged: []` |
 | Backup | ✅ working | BL-385 resolved 2026-08-01 |
 | Entity search | ✅ working | BL-384 resolved 2026-08-01 |
-| Near-duplicate detection | ✅ live KNN | BL-381/BL-386 resolved; ⚠️ manually-merged pairs still report a fabricated `cosine_sim: 1.0` (BL-398) |
+| Near-duplicate detection | ✅ live KNN | BL-381/BL-386 resolved; **BL-398 resolved 2026-08-04** — manual-merge pairs now report `cosine_sim: null` (unknown), never a fabricated 1.0 |
 | Telemetry | ⚠️ partial | `role: "live-service"` and the enrich tick lifecycle (`enrich.tick.*` / `enrich.pass.*`) now emit durable JSONL (BL-413 follow-on, d016b63); **`stages_declared: 0`** still — BL-401 unmet |
 | **Enrichment** | ✅ **WORKING** | `state: "idle"`, `queue_depth: 0`, ticks **11.3s** (was 120.056s timeout cap). **BL-413 RESOLVED**: importance link-degree OR-COUNT → indexed two-scalar (`computeLinkDegree`), plus per-pass-type isolation budget (full passes 600s, `SOX_ENRICH_FULL_TIMEOUT_MS`) |
 | **Clustering** | ✅ **WORKING** | `cluster_count: 440`, `total_clustered: 3596`, `coverage: 0.725`, `with_community: 3596`, `with_topic: 4267` (+1527 backfilled). Recluster completed 2026-08-04 (74.4s); 139 orphans retired; orphan-GC on invalidation live (`community-gc.ts`) |
-| WAL checkpoint | ❌ never runs | `last_checkpoint_at: null` — **BL-405** still open (WAL truncates only on restart) |
+| WAL checkpoint | ✅ **WORKING** | **BL-405 resolved 2026-08-04**: the WP-5 2s idle checkpoint never fired on the Turso `_noop` path (early return above the scheduling code) and the 5-min compaction tick was never wired — both fixed (commit 0afecff). Live-verified: `last_checkpoint_at` set 2026-08-04T19:47:53Z, `wal_bytes: 0` (full TRUNCATE succeeds with the two-connection topology) |
 
 **Residual data defects on the live store:** 1 malformed row (rowid 9284, column `tags` — BL-342
 residual), `stamped_without_vector: 1`, and ~695 of 4962 episodes with no topic (down from 2214 —
@@ -83,13 +83,13 @@ collapsed after the autolink fix removed its source write — 08-03 residual 29 
 
 ## What to do next
 
-1. **PKT-48 (BL-405)** — the WAL checkpoint still never runs (`last_checkpoint_at: null`); WAL
-   truncates only on restart. BL-412's fix is committed but its red→green was never executed —
-   re-verify on a quiescent machine first.
-2. **PKT-41 (BL-391) + PKT-19 (BL-329)** — the Turso FTS/read-only pair, which gate recall quality.
-3. **PKT-30 (BL-328)** — target-degree threshold calibration (the interim τ is fixed at 0.87; the
+1. **PKT-41 (BL-391) + PKT-19 (BL-329)** — the Turso FTS/read-only pair, which gate recall quality.
+2. **PKT-30 (BL-328)** — target-degree threshold calibration (the interim τ is fixed at 0.87; the
    recluster's 440-community result is the measured baseline to calibrate against).
-4. **BL-401** — telemetry consumer migration (`stages_declared` still 0 in production).
+3. **BL-401** — telemetry consumer migration (`stages_declared` still 0 in production).
+4. **Split-brain reconciliation** — root `BACKLOG.md` BL-413/BL-398/BL-405/BL-414/BL-415/BL-416 are
+   fixed (verified) but absent from the backlog graph; the graph is authoritative, the markdown
+   ledger needs the program's reconciliation pass.
 
 ---
 
