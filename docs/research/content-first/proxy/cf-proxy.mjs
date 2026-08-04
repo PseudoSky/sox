@@ -52,7 +52,7 @@ const TARGET_BASE = process.env.CF_TARGET || 'https://api.deepseek.com/v1';
 const TARGET_MODEL = process.env.CF_MODEL || 'deepseek-v4-flash';
 const VERBOSE = process.env.CF_VERBOSE === '1';
 const PASSTHROUGH = process.env.CF_PASSTHROUGH === '1';
-const RAW_CAPTURE = process.env.CF_RAW === '1';
+const RAW_CAPTURE = process.env.CF_RAW !== '0'; // default ON — captures full request bodies; CF_RAW=0 disables
 const INJECT_TOOL = process.env.CF_DISABLE_TOOL !== '1';
 const LOG_BASE = process.env.CF_LOG || path.join(__dirname, 'proxy-cf-log.jsonl');
 const API_KEY = process.env.DEEPSEEK_API_KEY || process.env.ADHD_AGENT_DEEPSEEK_SECRET || process.env.OPENAI_API_KEY || '';
@@ -313,20 +313,50 @@ function rewriteToContentFirst(messages, personaSP, opencodeSP, cfPrompt, handof
     result[sysIdx] = { ...result[sysIdx], content: shared };
   }
 
-  // Persona as a suffix on the LAST USER message — the structure proven to
-  // produce cross-agent cache reuse (sessions 03c0c039c: 82-93%,
-  // 03c3312d1: 52-80%). The conversation before the last user message is
-  // byte-identical across agent switches → provider cache hits on the full
-  // accumulated context.
+  // Persona placement — OPTION C (fixed 2026-08-03, v3):
+  // OPTION C — persona placement (fixed 2026-08-03, v3):
   //
-  // An optional handoffTask is embedded BETWEEN the role marker and the
-  // persona body — it gives the new agent an explicit "this is your task now"
-  // trigger WITHOUT injecting a new user message (which would break the
-  // monotonic prefix and kill cache reuse).
-  const lastUser = result.filter(m => m.role === 'user');
-  const lastUserMsg = lastUser[lastUser.length - 1];
-  const taskBlock = handoffTask ? `Task: ${handoffTask}\n\n` : '';
-  lastUserMsg.content = `${lastUserMsg.content}\n\n--- Role ---\n${taskBlock}${agentRole}`;
+  // opencode does NOT persist the proxy's rewritten messages — the rewrite
+  // runs per-request, so the persona must be re-applied every turn. The
+  // question is WHERE, and the answer depends on whether this turn is a
+  // stage boundary:
+  //
+  //   * Handoff turn (agent changed) or last message is a USER message:
+  //     append the persona to the ACTUAL last message. At a handoff, the
+  //     persona content changes — placing it at the true end means only the
+  //     tail is invalidated and the provider prefix cache holds (measured
+  //     80-95% first-turn reuse on run 03610a02d). For interactive turns the
+  //     last message IS the user message, so this is the natural target.
+  //
+  //   * Tool-call continuation (same agent, last message is assistant/tool):
+  //     append the persona to the LAST USER message instead — a stable
+  //     position the model internalized at the stage start. Re-appending to
+  //     each new tool result made the model re-assert its identity every
+  //     turn ("I'm now the product agent") and re-tokenized the ~4.4K-token
+  //     persona body per turn. The persona content does NOT change here
+  //     (same agent), so position stability is what matters for cache.
+  //
+  // Idempotent: never append twice to the same message (double marker broke
+  // the upstream tool-call stream with 'Error: terminated' — fixed
+  // 2026-08-03).
+  const lastIdx = result.length - 1;
+  const lastMsg = result[lastIdx];
+  const isStageBoundary = handoffTask != null;          // persona just changed
+  const isUserLast = lastMsg && lastMsg.role === 'user';
+  const target = (isStageBoundary || isUserLast)
+    ? lastMsg
+    : (result.filter(m => m.role === 'user').pop() || lastMsg);
+  if (!target || (target.content && target.content.includes('--- Role ---'))) {
+    // no-op: persona already applied, or nothing to suffix
+  } else {
+    const taskBlock = handoffTask ? `Task: ${handoffTask}\n\n` : '';
+    const personaSuffix = `\n\n--- Role ---\n${taskBlock}${agentRole}`;
+    if (typeof target.content === 'string') {
+      target.content = target.content + personaSuffix;
+    } else {
+      target.content = (target.content || '') + personaSuffix;
+    }
+  }
   const personaMarker = '--- Role ---\n';
 
   const seedHash = seedTokens > 100 ? `seed-${seedTokens}` : null;
@@ -622,12 +652,14 @@ const server = http.createServer(async (req, res) => {
         return jsonResponse(res, 200, {
           sessionId, activeAgent: resolved.name, switched: true,
           note: 'Handoff task will be embedded in the persona suffix on the next turn.',
+          continue_hint: 'You are now the next specialist. Continue working in this session: your next request will run as this agent. Do NOT stop - proceed with the next stage of the chain.',
         });
       }
 
       return jsonResponse(res, 200, {
         sessionId, activeAgent: resolved.name, switched: true,
         note: 'Next /v1/chat/completions call for this session uses the new persona.',
+        continue_hint: 'You are now the next specialist. Continue working in this session: your next request will run as this agent. Do NOT stop - proceed with the next stage of the chain.',
       });
     }
 
@@ -674,14 +706,22 @@ const server = http.createServer(async (req, res) => {
         // Attribute the turn to the actual stage agent (product/architect/
         // typescript/review) even in RF mode — the name is in the opencode SP.
         const rfAgent = activeAgent || resolveAgent(opencodeSP)?.name || '(passthrough)';
+        // Enhanced per-request metrics (same as CF path)
+        const totalMsgChars = messages.reduce((s, m) => s + (m.content?.length || 0), 0);
+        const sharedChars = messages[0]?.content?.length || 0;
+        const personaChars = 0; // RF: no persona suffix; full SP at position 0
+        const contextChars = totalMsgChars - sharedChars;
         logCall({
           event: 'turn', agent: rfAgent, turns: session?.turns ?? 0,
           passthrough: true,
-          // Uniform metrics schema across both arms (rf and cf) so per-agent
-          // comparison is direct: same field names, same savings math.
           tokens: result.inputTokens, cached: result.cacheHits, output: result.outputTokens,
           savings_pct: result.inputTokens > 0 ? ((result.cacheHits / result.inputTokens) * 100).toFixed(1) : '0.0',
           model: modelStr,
+          shared_chars: sharedChars,
+          persona_chars: personaChars,
+          context_chars: contextChars,
+          persona_turns: session?.turns ?? 0,
+          persona_ctx_chars: contextChars * ((session?.turns ?? 1)),
         }, sessionId);
         if (session) {
           const lastUser = [...messages].reverse().find(m => m.role === 'user');

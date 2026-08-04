@@ -97,10 +97,23 @@ function rewriteToContentFirst(messages, personaSP, opencodeSP, cfPrompt, handof
   }
   // Persona as a suffix on the LAST USER message — the proven cache-reuse structure.
   // Optional handoffTask embedded between marker and persona body.
-  const lastUser = result.filter(m => m.role === 'user');
-  const lastUserMsg = lastUser[lastUser.length - 1];
-  const taskBlock = handoffTask ? `Task: ${handoffTask}\n\n` : '';
-  lastUserMsg.content = `${lastUserMsg.content}\n\n--- Role ---\n${taskBlock}${agentRole}`;
+  const users = result.filter(m => m.role === 'user');
+  const lastUserMsg = users.length > 0 ? users[users.length - 1] : result[result.length - 1];
+  // Idempotent append (BUGFIX, mirrors cf-proxy.mjs — HYBRID strategy):
+  // persona goes on the last USER message (stable position, no per-turn
+  // identity re-assertion); falls back to the true last message only when
+  // no user message exists. Never append twice.
+  if (!lastUserMsg || (lastUserMsg.content && lastUserMsg.content.includes('--- Role ---'))) {
+    // no-op: persona already applied
+  } else {
+    const taskBlock = handoffTask ? `Task: ${handoffTask}\n\n` : '';
+    const personaSuffix = `\n\n--- Role ---\n${taskBlock}${agentRole}`;
+    if (typeof lastUserMsg.content === 'string') {
+      lastUserMsg.content = lastUserMsg.content + personaSuffix;
+    } else {
+      lastUserMsg.content = (lastUserMsg.content || '') + personaSuffix;
+    }
+  }
   const personaMarker = '--- Role ---\n';
   const tailTokens = Math.ceil(agentRole.length / 4) + Math.ceil(personaMarker.length / 4);
   return {
@@ -231,5 +244,54 @@ assert(taskLast.content.includes(ARCHITECT.slice(0, 80)), 'persona body still pr
 // No extra messages — conversation stays monotonic
 assert(taskOut.messages.length === out.messages.length, 'message count unchanged — no injected user msg');
 
+
+// 10. REGRESSION (BUGFIX): idempotent persona append. On a tool-call
+//     round-trip, opencode re-sends the conversation including the prior
+//     turn's persona-suffixed user message. The rewrite must NOT append the
+//     persona a second time (double marker broke the upstream tool-call
+//     stream with 'Error: terminated'). Appending must be idempotent.
+const roundTrip = [...msgs]; // msgs[1] is the user message
+// Simulate first rewrite: persona appended
+const firstPass = rewriteToContentFirst(roundTrip, ARCHITECT, msgs[0].content, cf);
+// The rewritten user content feeds back in the next request (as opencode does)
+const toolRoundTrip = firstPass.messages.map(m => ({ ...m }));
+// Add the assistant tool-call + tool results the way opencode does
+toolRoundTrip.push({ role: 'assistant', content: null, tool_calls: [
+  { id: 'call_00_x', type: 'function', function: { name: 'read', arguments: '{}' } },
+] });
+toolRoundTrip.push({ role: 'tool', tool_call_id: 'call_00_x', content: 'file contents' });
+// Second rewrite — must NOT double-append the persona
+const secondPass = rewriteToContentFirst(toolRoundTrip, ARCHITECT, msgs[0].content, cf);
+const users2 = secondPass.messages.filter(m => m.role === 'user');
+const last2 = users2[users2.length - 1];
+const markerCount = (last2.content.match(/--- Role ---/g) || []).length;
+assert(markerCount === 1, `idempotent persona append: exactly 1 marker (got ${markerCount})`);
+assert(last2.content.includes('cf-run') || last2.content.includes('architecture'), 'original user text preserved');
+
+
+// 11. REGRESSION (HYBRID persona placement — fixed 2026-08-03): the persona
+//     goes on the last USER message (stable position). It must NOT be
+//     re-appended to each new tool result in an auto-advancing chain —
+//     that made the model re-assert its identity every turn ("I'm now the
+//     product agent") and wasted ~4.4K tokens/turn. The last user message
+//     keeps the persona at a position the model saw once, while the cache
+//     anchor holds because only tool results accumulate after it.
+const toolEnded = [
+  { role: 'system', content: 'BOILERPLATE' },
+  { role: 'user', content: 'todo list' },
+  { role: 'assistant', content: null, tool_calls: [{ id: 'c1', type: 'function', function: { name: 'read', arguments: '{}' } }] },
+  { role: 'tool', tool_call_id: 'c1', content: 'file contents' },
+];
+const outTool = rewriteToContentFirst(toolEnded, 'P'.repeat(100), 'BOILERPLATE', null);
+const lastToolMsg = outTool.messages[outTool.messages.length - 1];
+assert(lastToolMsg.role === 'tool', 'last message remains a tool message (ordering intact)');
+assert(!(lastToolMsg.content.includes('--- Role ---')), 'persona NOT on the tool message (no per-turn re-assertion)');
+const usersTool = outTool.messages.filter(m => m.role === 'user');
+const userTool = usersTool[usersTool.length - 1];
+assert(userTool.content.includes('--- Role ---'), 'persona stays on the last USER message (stable position)');
+assert(outTool.messages.length === toolEnded.length, 'no extra message injected');
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail === 0 ? 0 : 1);
+
+

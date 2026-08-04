@@ -25,13 +25,13 @@
 - **`experiments/SDLC-v0.0.1.md`** — hypothesis, expected metrics, results template
 - **`run-sdlc-experiment.sh`** — launches both arms in parallel, monitors proxy logs, runs aggregator
 - **`aggregate-session.mjs`** — per-stage and aggregate metrics from session logs
-- **Agents:** `SDLC-RF` (`model: proxy/rf`) and `SDLC-CF` (`model: proxy/cf`) — monolithic SDLC agents, identical prompts, differ only in proxy model
+- **Agents:** `SDLC-RF` (`model: proxy/rf`) and `SDLC-CF` (`model: proxy/cf`) — identical chained-flow prompts (todo-list driven), differ only in proxy model routing
 - **Removed:** `backlog-manager-cf/rf`, `backlog-triage-cf/rf`, `cf-chain-dispatcher`
 
 ### Proven
 - Cross-agent conversation cache reuse **confirmed working** on live CF chain (`0377c94e`: product→typescript→researcher, 62-73% first-turn reuse)
 - Handoff penalty formula verified: `new_agent_cached ≈ prev_total - prev_persona - user_text` (deviation <500 tokens for researcher handoff)
-- CF monolithic run: 111 turns, 14.6M tokens, 99.1% savings, delivered `acceptance.md` + `spec.md` + `review.md`
+- CF single-session chain run: 111 turns, 14.6M tokens, 99.1% savings, delivered `acceptance.md` + `spec.md` + `review.md`
 
 ---
 
@@ -68,6 +68,15 @@
 ```bash
 # Start proxy (if not running)
 cd docs/research/content-first/proxy && ./restart-cf-proxy.sh
+
+# ⚠️ ALWAYS verify the proxy actually reloaded the current code.
+# The proxy loads cf-proxy.mjs + the agent registry ONCE at startup; editing
+# the file or an agent .md does NOT hot-reload it. A stale proxy silently
+# runs OLD rewrite logic / OLD agent prompts (stale-registry bug, 2026-08-03:
+# sessions ran a pre-fix proxy for ~20 turns before the restart). Check:
+ps -o lstart= -p $(pgrep -f cf-proxy.mjs | head -1)   # proxy start time
+stat -f '%Sm' docs/research/content-first/proxy/cf-proxy.mjs   # file mtime
+# The start time MUST be AFTER the file mtime. If it isn't: restart again.
 
 # Run experiment
 ./run-sdlc-experiment.sh \
@@ -109,7 +118,7 @@ node aggregate-session.mjs --rf <rf-session-id>
 
 **→ [`experiments/SDLC-v0.0.1.md`](./experiments/SDLC-v0.0.1.md)**
 
-Both arms run the same monolithic SDLC prompt. Only difference: `proxy/rf` vs `proxy/cf`.
+Both arms run the same chained-flow SDLC prompt (todo-list driven). Only difference: `proxy/rf` vs `proxy/cf` — RF dispatches each stage as a fresh `task()` subagent context; CF runs stages in one session via proxy persona handoffs.
 
 | | RF | CF |
 |---|---|---|
@@ -134,7 +143,7 @@ Both arms run the same monolithic SDLC prompt. Only difference: `proxy/rf` vs `p
 2. **Commitlint scope warnings** are cosmetic — commits land.
 3. **`(passthrough)` / `(unassigned)` agent names** in old sessions — the proxy can't resolve SDLC agent bodies from the opencode SP because frontmatter is stripped. New aggregator maps these to `SDLC-RF`/`SDLC-CF` based on the model field.
 4. **Bare-repo worktree isolation** — `git worktree list` is public. External worktrees (`~/dev/.sdlc-experiments/`) are unreachable by `grep -r` from the repo but visible via git commands.
-5. **`opencode run` exits after completion** — CF chain handoffs need a persistent session. Current workaround: monolithic agents.
+5. **Auto-advance depends on two linked fixes (2026-08-03)** — the chain advances only when (a) the prompt instructs the agent to continue working after a handoff ("do not stop"), and (b) the persona suffix lands on the true last message so the provider prefix cache survives handoffs. Both are fixed; verified on run `03610a02d` (89-90% first-turn cache held across handoffs).
 
 ---
 
