@@ -71,9 +71,19 @@ Server: pid **78765**, artifact **`a0d8bbc1ee31`**, up since 2026-08-04T01:37:22
 | **Clustering** | ✅ **WORKING** | `cluster_count: 440`, `total_clustered: 3596`, `coverage: 0.725`, `with_community: 3596`, `with_topic: 4267` (+1527 backfilled). Recluster completed 2026-08-04 (74.4s); 139 orphans retired; orphan-GC on invalidation live (`community-gc.ts`) |
 | WAL checkpoint | ✅ **WORKING** | **BL-405 resolved 2026-08-04**: the WP-5 2s idle checkpoint never fired on the Turso `_noop` path (early return above the scheduling code) and the 5-min compaction tick was never wired — both fixed (commit 0afecff). Live-verified: `last_checkpoint_at` set 2026-08-04T19:47:53Z, `wal_bytes: 0` (full TRUNCATE succeeds with the two-connection topology) |
 
-**Residual data defects on the live store:** 1 malformed row (rowid 9284, column `tags` — BL-342
-residual), `stamped_without_vector: 1`, and ~695 of 4962 episodes with no topic (down from 2214 —
-the recluster backfilled 1527 from cluster labels).
+**Residual data defects on the live store — re-measured 2026-08-04T23:14Z:** `malformed_rows:
+{count: 0, columns: [], sample_rowids: []}`. The BL-342 residual row 9284 is **gone**: a later
+batch-enrichment pass overwrote the malformed value as a side effect — nobody repaired it, it aged
+out. A sweep of a full copy across all kinds (including invalidated rows) and `edge.meta` found
+zero. BL-342's repair path nevertheless landed (`e248fd1`) because nothing prevented the shape from
+returning; that deploy is now **preventive, not remedial**.
+
+Still residual: `stamped_without_vector: 1`, ~702 of 4973 episodes with no topic (down from 2214 —
+the recluster backfilled 1527 from cluster labels), and **86 live episodes carrying `tags = '[]'`
+where the representation should be NULL** — valid JSON, so `json_valid` and the new probe both pass
+it, but `enrich.ts:216-221` is explicit that an empty tags array means "no tags" and must be NULL.
+`write.ts:251` and `enrich.ts:222` both do this correctly today, so these are residue from the
+window when the guard was regressed. They make `with_tags` (1423) overcount by 86.
 
 **Loudest thing in production:** the `no such column: meta` storm (154/day on 08-03, **BL-399**)
 collapsed after the autolink fix removed its source write — 08-03 residual 29 occurrences,
