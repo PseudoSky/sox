@@ -95,13 +95,6 @@ collapsed after the autolink fix removed its source write — 08-03 residual 29 
 
 ## Known-unverified — do not treat as done
 
-- **BL-412's fix is committed (`91cdd35`) but its red→green was never run.** The worktree had no
-  `node_modules`, the agent used `--no-verify`, and no one has since executed the test. Under BL-225
-  that is not a fix, it is a claim.
-- **BL-405 is half-verified.** The pass condition was the absence of a reaper escalation line on
-  restart, and it is absent — the two racing SIGTERM listeners are genuinely gone. But the WAL grew
-  (3,563,832 → 3,596,792 bytes) across a clean restart instead of truncating, and
-  `last_checkpoint_at` is still `null` two days later.
 - **BL-409's mitigation covers half the problem.** Pathspec commits stop you sweeping another
   agent's *staged* files; they do nothing about their *uncommitted edits to the same file*, because
   the working tree is shared. For hot files (`BACKLOG.md`, `PLAN.md`, this file) it buys nothing.
