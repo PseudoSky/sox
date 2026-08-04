@@ -2,6 +2,101 @@
 
 ---
 
+## [Unreleased] — BL-411: 12 `analysis` tests that could not pass are alive again, and a raw handle now says so
+
+**The `analysis` package's only integration suite had been dead for 8 days and read as coverage.**
+`83cd0b0` ("full store-adapter migration", 2026-07-27) moved every backend constructor from a raw
+`better-sqlite3` handle to a `StoreAdapter` and made the whole `GraphBackend` surface async. It
+migrated `hybrid-search.spec.ts`, `graph-store.spec.ts` and `analysis/src/index.ts` — and missed
+`analysis.spec.ts`. All 12 DB-integrated tests had thrown at fixture construction ever since:
+
+```
+$ npx nx test analysis --skip-nx-cache
+TypeError: Cannot read properties of undefined (reading 'nativeVectors')
+   12 failed
+```
+
+```
+$ npx nx test analysis --skip-nx-cache
+ Test Files  1 passed (1)
+      Tests  48 passed (48)
+```
+
+The test was stale, not the production change: the new contract is deliberate, versioned, covered by
+`vector-store.spec.ts` (including the Turso rejection), and every other caller was migrated in that
+same commit. No API was walked back.
+
+- Fixtures build a real `createSqliteAdapter`, **not** `createStoreAdapter` — the default factory
+  returns Turso and `SqliteVectorBackend` rejects it by design (vec0 is a synchronous, sqlite-only
+  mechanism). The adapter choice is forced by the class contract, not a preference.
+- Every `GraphBackend` call awaited; every DB-integrated `it` is now async.
+  `@adhd/sox-store-adapter` declared as a devDependency (the house pattern — `hybrid-search`
+  declares it for the same reason), lockfile relocked in the same commit.
+- **Assertions were re-read, not just re-plumbed.** Several asserted `durationMs >= 0` or
+  `communities.length >= 0` — tautologies that hold for a completely broken clusterer. Re-animating
+  a test into a tautology only moves the blind spot, so those now assert invariants that can fail:
+  the clustering partition covers exactly the seeded ids with no node in two communities;
+  determinism compares membership rather than counts; `clusterSubset` may not emit a node outside
+  its filter; near-dup names the pair and the score; skip means "did not run", not "ran and found
+  nothing"; `dryRun` writes no edges. Added the negative control the suite never had (an orthogonal
+  pair must **not** be reported `near_dup`) and replaced a `Math.random()` fixture in the link-cap
+  test — a flaky fixture under a hard cap assertion is how a real cap violation gets dismissed as
+  noise.
+- **Every restored test mutation-verified:** 12/12 fail when their assertion's expected value is
+  altered, so none passes vacuously.
+
+**A raw driver handle now fails with a named `StorageError` instead of a bare `TypeError`.**
+`requireSqliteHandle` had promised "one clear, actionable error" for this case since BL-364 and did
+not deliver one for 8 days — the bare `TypeError` named neither the class nor the mistake, which is
+why the dead suite above read as an environment problem the whole time. Regression test asserts the
+message **and** that it is not a `TypeError`; watched red→green (guard disabled → "expected error to
+be instance of StorageError / TypeError"; restored → 69 passed).
+
+**`analysis` gained the `typecheck` target it never had, and it found a real error on the first run.**
+`topic: cond ? 'topic-a' : undefined` violates `exactOptionalPropertyTypes`. Fixed by spreading the
+key rather than weakening the flag. BL-248 again. (The other 8 `libs/data/*` packages were given
+`typecheck` targets in the publish-readiness entry below.)
+
+Commit `78e0eca`. `analysis` typecheck + lint + test green; `hybrid-search` 82/82;
+`memory-core` 532/532. **Closes BL-411.**
+
+---
+
+## [Unreleased] — telemetry: `memory-core` runs on the stage substrate, and `typecheck-tests` is green again
+
+> Partial progress on **BL-401**, which stays OPEN in `BACKLOG.md` — its live redeploy verification
+> has not been performed. This entry records what landed, not a closed item.
+
+`stages_declared` read `0` on the live `memory-server` because `@adhd/sox-telemetry`'s
+`declareStages`/`withContendedStage` had **no production consumer anywhere in the repo** — a
+published, fully tested interface wired to nothing. Every test for it passed; each one declared its
+own catalog.
+
+- `libs/memory-core/src/stages.ts` declares memory-core's inventory: `write_queue {queued,bypass}`
+  and `embed {write,heal,reembed}`. Only stages wired at a real call site are declared — an
+  aspirational stage would reproduce BL-319, where an instrument with zero samples is
+  indistinguishable from a broken one.
+- `WriteQueue.enqueue` measures wait vs work directly on **both** execution paths; the queued path
+  carries an `onAdmit` callback fired at the dequeue point, so queue wait is *observed* rather than
+  reconstructed by joining `writequeue.enqueue` to `writequeue.task.start`.
+- Gap 4 (OTel SDK) and gap 6 (metric persistence) landed with a `JsonlSpanProcessor` and a pull-only
+  `MetricReader` — neither `BatchSpanProcessor` nor `PeriodicExportingMetricReader` is used, since
+  both are timers doing work on `memory_recall`'s event loop (the BL-345 shape).
+
+**Also fixes the two `typecheck-tests` failures that gated the change** — an untyped `vi.spyOn`
+callback and an unread destructure, on `sox-telemetry` and `memory-core`. `typecheck-tests` is red
+→ green at HEAD.
+
+Measured on a real spawned `memory-server` (the live service was deliberately **not** redeployed):
+`stages_declared 2`, both stages sampled, OTel ready, three `metrics.snapshot` lines on disk carrying
+exponential histograms — and **`embed` `wait_ms` mean 890 ms vs `work_ms` mean 784 ms**, roughly half
+of embed latency spent acquiring the shared fastembed child rather than on inference. That number is
+n=2 and cold-start-inclusive; it is filed as **BL-432** for a proper sample, not treated as a verdict.
+
+Commit `c81c0b7`. BL-401 remains **open** — its live redeploy verification has not been performed.
+
+---
+
 ## [Unreleased] — publish-readiness Wave 0+1: `check-publishable` now asks npm, and `typecheck` is a real gate
 
 **`check-publishable` could not detect a dependency that does not exist on npm — now it can.**
