@@ -165,3 +165,75 @@ describe('memoryInvalidate — SUPERSEDES edge (BL-247)', () => {
     expect(claimRow.t_invalid).not.toBeNull();
   });
 });
+
+// BUG-CLUSTER-ORPHANED-COMMUNITIES-NEVER-GC-001: invalidating an episode must
+// ALSO invalidate its live MEMBER_OF edge and any community left with zero live
+// members — otherwise ordinary churn silently decays total_clustered toward 0
+// while cluster_count stays fixed (the orphaned-community leak; the live
+// 139-communities/0-members signature). A full cluster pass used to be the ONLY
+// repair; this makes invalidation self-cleaning at O(1) per episode.
+// RED: before the fix, the edge and community stay live (both assertions fail).
+// GREEN: after gcOrphanedCommunityState is wired into memoryInvalidate.
+describe('memoryInvalidate — orphaned-community GC (BUG-CLUSTER-ORPHANED-COMMUNITIES-NEVER-GC-001)', () => {
+  let cleanupDb: () => void;
+  let db: StoreAdapter;
+
+  beforeEach(async () => {
+    const { dir, cleanup } = tmpDir();
+    cleanupDb = cleanup;
+    db = await openDb(path.join(dir, 't.db'));
+  });
+
+  afterEach(() => {
+    if (db && raw(db).open) db.close();
+    cleanupDb();
+  });
+
+  it('invalidating a member episode invalidates its MEMBER_OF edge and the now-empty global community', async () => {
+    const write = await memoryWrite(db, {
+      content: 'Episode that will belong to a community before invalidation.',
+      project_path: '/test/project',
+    });
+    expect('episode_uid' in write).toBe(true);
+    const uid = (write as { episode_uid: string }).episode_uid;
+    const row = (await db.executeGet<{ rowid: number }>('SELECT rowid FROM node WHERE uid = ?', [uid]))!;
+    const now = new Date().toISOString();
+
+    // Seed a global community + MEMBER_OF edge, exactly as a full cluster pass
+    // would (cluster_scope.kind = 'global', origin 'inferred'). Reads/writes go
+    // through the StoreAdapter (this suite's openDb is the TURSO adapter, whose
+    // unwrapped handle renders NULL columns as `undefined` — vacuous for null
+    // assertions; the adapter's executeGet returns proper `null`).
+    await db.executeRun(
+      `INSERT INTO node (uid, kind, name, level, t_created, t_valid, meta)
+       VALUES ('comm-gc-test', 'community', 'GC Test Community', 0, ?, ?, ?)`,
+      [now, now, JSON.stringify({ cluster_scope: { kind: 'global' } })],
+    );
+    const comm = (await db.executeGet<{ rowid: number }>(`SELECT rowid FROM node WHERE uid = 'comm-gc-test'`))!;
+    await db.executeRun(
+      `INSERT INTO edge (src, dst, rel, origin, weight, t_created)
+       VALUES (?, ?, 'MEMBER_OF', 'inferred', 1.0, ?)`,
+      [row.rowid, comm.rowid, now],
+    );
+
+    // Pre-state self-check: the fixture MUST be live before invalidation, or
+    // the assertions below prove nothing (a broken fixture would pass vacuously).
+    const edgeBefore = await db.executeGet<{ t_invalid: string | null }>(`SELECT t_invalid FROM edge WHERE src = ? AND rel = 'MEMBER_OF'`, [row.rowid]);
+    expect(edgeBefore).toBeDefined();
+    expect(edgeBefore!.t_invalid).toBeNull();
+    const commBefore = await db.executeGet<{ t_invalid: string | null }>(`SELECT t_invalid FROM node WHERE uid = 'comm-gc-test'`);
+    expect(commBefore!.t_invalid).toBeNull();
+
+    const result = await memoryInvalidate(db, { claim_uid: uid, reason: 'orphan-GC test' });
+    expect('ok' in result && result.ok).toBe(true);
+
+    // 1. The episode's MEMBER_OF edge is invalidated with the same transition.
+    const edge = await db.executeGet<{ t_invalid: string | null }>(`SELECT t_invalid FROM edge WHERE src = ? AND rel = 'MEMBER_OF'`, [row.rowid]);
+    expect(edge).toBeDefined();
+    expect(edge!.t_invalid).not.toBeNull();
+
+    // 2. The now-empty global community is invalidated too — not left orphaned.
+    const commAfter = await db.executeGet<{ t_invalid: string | null }>(`SELECT t_invalid FROM node WHERE uid = 'comm-gc-test'`);
+    expect(commAfter!.t_invalid).not.toBeNull();
+  });
+});

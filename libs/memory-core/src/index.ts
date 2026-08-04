@@ -203,6 +203,7 @@ export { enrichOnWrite } from './enrich.js';
 export type { EnrichOnWriteParams, EnrichOnWriteResult } from './enrich.js';
 export type { NearDupResult } from './neardup.js';
 export { runBatchEnrich, computeLinkDegree } from './enrich-batch.js';
+export { gcOrphanedCommunityState } from './community-gc.js';
 export type { BatchEnrichOptions, BatchEnrichResult } from './enrich-batch.js';
 export type { ImportanceWeights } from './importance.js';
 export { ENRICH_VERSION } from './enrich-version.js';
