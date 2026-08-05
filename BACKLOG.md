@@ -3128,56 +3128,74 @@ Citations: [wip/turso-live-metrics, qa-expert/spec-audit, claude, libs/data spec
 
 ---
 
-## Open node typing in `@adhd/sox-graph-store` (BL-438..BL-444, 2026-08-05)
+## Open node + edge typing in `@adhd/sox-graph-store` (BL-438..BL-444, BL-447, BL-448 — 2026-08-05)
 
 Filed from `BUG-SOXGRAPH-TYPED-NODES-001` (graph, nodeId 563, HIGH, OPEN) after the owner ruled:
 *"Open `kind` and typing within memory-server rather than CHECK enums. It must be indexed."*
-Full design, the three open forks, and the reconstruction of why BL-295 was reverted live in
+The full design, the four **resolved** decisions, and the reconstruction of why BL-295 was reverted
+live in
 [`docs/reporting/memory/findings/open-node-typing-design.md`](docs/reporting/memory/findings/open-node-typing-design.md).
-Planned as PKT-57..PKT-63. **BL-438 gates every other item in this group** — it resolves the forks.
+Planned as PKT-67, PKT-58, PKT-59, PKT-68, PKT-60, PKT-61, PKT-62, PKT-63, in that order.
 
-### BL-438 — decide + record the open-node-typing architecture: three forks are open and no packet may start until they close — **Open (HIGH)** (2026-08-05)
+**The owner resolved all four forks on 2026-08-05** — D1 `kind` itself opens, **no `sub_kind`
+column**; D2 enforcement by injected policy closure; D3 existing stores migrate only by an opt-in,
+operator-invoked, offline command with verified rollback; D4 `edge.rel` opens in the **same pass**.
+BL-438 is now the decision record, not the open question. Two things changed shape as a result and
+must not be read from the pre-ruling bodies: **BL-442 is promoted to HIGH and moved onto the critical
+path** (deleting `sub_kind` made its rebuild the only way any existing store — including the live one
+— ever accepts a consumer type), and **BL-447 (CRITICAL) now gates the whole group** (the on-open
+rebuild trigger is a substring probe for a literal that exists only inside the CHECK being removed,
+so editing the DDL constants first arms a rebuild loop and an automatic legacy migration).
 
-**Problem.** The owner has set direction (open `kind`, type in memory-server, must be indexed) but
-not mechanism, and three mechanism forks change what every downstream packet builds. Left implicit,
-an agent will pick one silently and bury it in an implementation — which is how BL-295 got built and
-reverted inside 19 minutes.
+### BL-438 — record the resolved open-typing architecture as an ADR: the owner has ruled on all four forks and the design doc now states decisions, not options — **Open (HIGH)** (2026-08-05, forks resolved 2026-08-05)
 
-**The forks** (full trade-off tables in the design doc):
+**Status change.** This item was filed as *"three forks are open, no packet may start until they
+close."* **The owner has closed all four.** It is now a decision-capture item: the ruling exists, the
+design doc has been rewritten around it, and what remains is an ADR under `docs/decisions/` that each
+downstream packet can cite by section.
 
-1. **Where a consumer type lands.** (a) new `sub_kind TEXT` column + partial index, `kind` stays
-   coarse — *recommended*; (b) widen `kind` itself; (c) both.
-2. **How the vocabulary is enforced.** (a) injected `KindPolicy` closure validated at the write
-   boundary — *recommended*; (b) a `node_kind` registry table + trigger; (c) no store-level
-   enforcement at all.
-3. **Whether existing stores ever get an open `kind`.** (a) never; (b) opt-in explicit offline CLI
-   migration with verified rollback — *recommended*; (c) automatic on open — **this is exactly
-   BL-295 and is banned.**
+**The ruling.**
 
-Plus a fourth, surfaced so it is a decision rather than an omission: **does `edge.rel` open in the
-same pass?** Recommendation is *later* — `edge` is the table BL-313 destroyed, and `rel` has no
-`sub_kind`-shaped safe path because an edge's whole identity *is* its `rel`.
+| # | Decision | Prior recommendation | Why it matters downstream |
+|---|---|---|---|
+| **D1** | **`kind` itself opens. No `sub_kind` column.** Owner: *"I see no reason why kind is restricted."* | 1a (`sub_kind`) — **rejected** | The discriminator is `node.kind`, already served by `ix_node_kind` (index.ts:319,:105,:226; 10,150/10,150 populated). Zero new columns, zero new indexes. But existing stores get **nothing** until D3's migration runs — `sub_kind` was the only mechanism that would have served them without a rebuild. |
+| **D2** | **Injected policy closure**, validated at the write boundary. | 2a — **upheld** | graph-store ships a syntactic-only default; memory-core owns the vocabulary; no registry table, no trigger, and **no input by which registering a type reaches DDL**. |
+| **D3** | **Existing stores: opt-in, operator-invoked, offline migration with verified rollback.** Never automatic, never on open. | 3b — **upheld as mechanism, changed in role** | Was the optional last mile nothing depended on. Under D1 it is the **only** path by which any store alive today — including the live `~/.memory/memory.db` — accepts a consumer kind. It is now load-bearing. |
+| **D4** | **`edge.rel` opens in the same pass as `node.kind`.** | 4 ("later") — **overruled** | Same DDL edit, same policy, same migration. Tracked as BL-448. |
 
-**Why the recommendation is 1a/2a/3b.** SQLite makes exactly two of the needed operations cheap and
-exactly reversible on a populated table — `ALTER TABLE … ADD COLUMN` (metadata-only) and
-`CREATE INDEX` (`DROP INDEX` undoes it precisely). Removing a `CHECK` needs a
-rename→create→copy→drop rebuild, which on this schema is the literal BL-313 mechanism: `edge.src`/
-`edge.dst` are `REFERENCES node ON DELETE CASCADE`, so `DROP TABLE node_old` cascade-deletes every
-edge — 40,930 of them, silently, no exception, nothing in any log. So the recommended design reaches
-an indexed discriminator using only the safe operations, and opens `kind` for *new* stores via
-`CREATE TABLE IF NOT EXISTS` — the precedent BL-430 already set and documented in this very file
-(index.ts:15-42, "new stores only, and that is a deliberate decision, not an omission").
+**The consequence this item exists to keep visible.** D1 removed the `sub_kind` escape hatch
+*because* D3 accepts the rebuild. The two are a package: **D1 without a working D3 delivers open
+typing to new stores only.** The operation SQLite makes expensive and irreversible —
+rename→create→copy→drop on a populated `node` — moved from "conditional, may never be built" to
+"the feature's sole delivery mechanism for every existing store." That operation has already caused
+one CRITICAL incident on this exact store (BL-313: 40,930 edges silently cascade-deleted, no
+exception, nothing in any log). The mitigation is BL-442's: reuse the *fixed* `skipDrop` sequencing,
+a 90-edge fixture, `foreign_keys` asserted ON, automatic rollback from a verified backup.
 
-**Done when.** An ADR under `docs/decisions/` records the resolved forks with rationale, and the
-design doc's fork section is rewritten to state the decision rather than the options. **No red→green
-test applies — this item is a decision record, and it is the one item in this group exempt from the
-BL-225 test bar.** Its acceptance is that PKT-58..PKT-63 can each name the ADR section that
-authorises them.
+**Two new items fall out of the ruling and did not exist when the forks were open:**
 
-Citations: [wip/turso-live-metrics, architect-reviewer, claude, BUG-SOXGRAPH-TYPED-NODES-001 design,
-1: docs/reporting/memory/findings/open-node-typing-design.md, 2: CHANGELOG.md:1986-2040 (BL-313),
+- **BL-447 (CRITICAL, and it gates everything)** — `ensureCheckConstraints()` decides whether to
+  rebuild by substring-probing the live DDL for `'generic'` / `'DEPENDS_ON'`, literals that exist
+  only inside the CHECK clauses D1 and D4 delete. Opening the CHECKs therefore turns an existing
+  repair path into an unconditional rebuild-on-every-open loop, and rebuilds legacy stores to the
+  open schema automatically — D3-banned, BL-295-shaped, with no new rebuild code written.
+- **BL-448** — the `edge.rel` half of D4: no runtime `rel` validation exists at all today, so
+  dropping the CHECK without the policy in the same change leaves edges *completely* unvalidated.
+
+**Done when.** An ADR under `docs/decisions/` records D1–D4 with the rationale and the rejected
+alternatives, and every packet in the group (PKT-67, PKT-58, PKT-59, PKT-68, PKT-60, PKT-61, PKT-62,
+PKT-63) names the section authorising it. The design doc is already rewritten — §0 carries the
+decision table, §5 carries BL-447, §7 carries the corrected semver position. **No red→green test
+applies — this item is a decision record, and it is the one item in this group exempt from the
+BL-225 test bar.**
+
+Citations: [wip/turso-live-metrics, architect-reviewer, claude, BUG-SOXGRAPH-TYPED-NODES-001 design revision,
+1: docs/reporting/memory/findings/open-node-typing-design.md §0 (the decision table), §5 (BL-447), §7 (semver),
+2: CHANGELOG.md:1986-2040 (BL-313 — the cascade, the `skipDrop` fix, the 90-edge fixture),
 3: libs/data/graph/graph-store/src/index.ts:15-42 (BL-430 new-stores-only precedent),
-4: libs/data/graph/graph-store/src/index.ts:62 (node `kind` CHECK), 5: `git show 0ce39c7` / `git show --stat 1446028`]
+4: same:62,181,262 (the three `kind` CHECK declarations), :94,213,294 (the three `rel` CHECK declarations),
+5: same:319,105,226 (`ix_node_kind` in three live paths), :379 (`NodeMeta.kind?: string` — already open),
+6: same:811-852 (`ensureCheckConstraints`, sentinels at :820,825), 7: `git show 0ce39c7` / `git show --stat 1446028`]
 
 ---
 
@@ -3195,28 +3213,44 @@ memory-filters.ts:101,108; recall.ts:445,451), and `json_each` is a table-valued
 TEXT blob that SQLite cannot serve from an index at all. So "all nodes of consumer type X" is a full
 scan for every consumer while the library's own six types answer the identical question from a btree.
 
-**Fix (pending BL-438 fork 1).** Add `sub_kind TEXT` to `node` plus
-`CREATE INDEX ix_node_sub_kind ON node(sub_kind) WHERE sub_kind IS NOT NULL`, and expose
-`NodeMeta.subKind` / `NodeRecord.subKind` / `NodeFilter.subKind`. `NodeFilter.subKind` must compile
-to a plain indexed equality/`IN`, never a `json_each` subquery.
+**Fix — revised under BL-438 D1 (`kind` opens; there is no `sub_kind`).** Drop the `kind` CHECK from
+the fresh-store DDL (`graphDdl()` index.ts:62 and `INLINE_MIGRATION_DDL` :181) so `kind` is plain
+`TEXT NOT NULL`, and let the **already-existing** `ix_node_kind` serve it. This is strictly cheaper
+than the superseded `sub_kind` plan: **no new column, no new index, no new filter field.**
+`NodeMeta.kind` is already typed `string` (index.ts:379), so nothing widens on the node side.
+`writeNode`'s message steering consumers to `kind:'generic'` + tags (index.ts:865-869) is deleted,
+not softened — but the convention itself keeps working for anyone already on it, so no consumer is
+forced to migrate *data*.
 
-**Both operations are online and exactly reversible** — `ADD COLUMN` is metadata-only with no row
-rewrite and no FK interaction; `DROP INDEX` undoes the index precisely. **Nothing here rebuilds a
-table.** `sub_kind` is nullable, so every one of the ~10,150 existing rows reads back byte-identical.
+**Scope: new stores only, and say so out loud.** `CREATE TABLE IF NOT EXISTS` no-ops against an
+existing `node`, so every store alive today keeps `CHECK (kind IN (…))` and rejects a consumer kind
+at the SQLite level even with the policy permitting it. Serving existing stores is BL-442's job and
+BL-442 alone — under D1 there is no longer a second path. **This is the cost the owner accepted when
+rejecting `sub_kind`, and it must not be smuggled back by having this item "just also" rebuild.**
 
-**Acceptance.** A test naming BL-439 asserting via `EXPLAIN QUERY PLAN` that a `subKind` query
-resolves to `SEARCH node USING INDEX ix_node_sub_kind` with **zero** occurrences of `json_each` in
-the plan. The red arm is today's tag-based equivalent, whose plan contains
-`SCAN json_each VIRTUAL TABLE INDEX`. Plus a round-trip test against a **copy** of a real populated
-store proving row count, `edge` count, and every existing row's contents are unchanged after
-migration. **Never run this against `~/.memory/*`** — use a `cp` of a WAL-consistent backup, the
-method BL-313's own root-cause used.
+**⛔ BL-447 blocks this item.** `NODE_TABLE_DDL` is the target of an automatic on-open rebuild path
+whose trigger is a substring probe for `'generic'` — a literal that exists only inside the CHECK this
+item removes. Editing the DDL constants before BL-447 lands turns every legacy store's next open into
+an automatic migration to the open schema, and every migrated store's every open into a full rebuild
+loop. Read BL-447 before touching a DDL constant.
+
+**Acceptance.** A test naming BL-439 asserting via `EXPLAIN QUERY PLAN` that a `kind` query for a
+consumer-registered type resolves to `SEARCH node USING INDEX ix_node_kind` with **zero** occurrences
+of `json_each` in the plan. The red arm is today's tag-based equivalent, whose plan contains
+`SCAN json_each VIRTUAL TABLE INDEX`. Plus: assert on a store created by the **old** DDL that the
+consumer kind is still rejected (the honest statement of the new-stores-only scope, and the guard
+against an accidental rebuild), and a round-trip against a **copy** of a real populated store proving
+node count, `edge` count and every existing row unchanged. **Never run this against `~/.memory/*`** —
+use a `cp` of a WAL-consistent backup, the method BL-313's own root-cause used.
 
 Citations: [wip/turso-live-metrics, architect-reviewer, claude, BUG-SOXGRAPH-TYPED-NODES-001,
 1: libs/data/graph/graph-store/src/index.ts:62-76 (complete node index list — no tags/meta index),
 2: same:79-82 (`FTS_DDL` covers content/name/summary only), 3: same:105,226,319 (`ix_node_kind` in three live paths),
 4: same:678,683 (`json_each` tag filter), 5: libs/memory-core/src/memory-filters.ts:101,108,
-6: libs/memory-core/src/recall.ts:445,451, 7: BUG-SOXGRAPH-TYPED-NODES-001 notes[] (live probe: ix_node_kind 10,135/10,135)]
+6: libs/memory-core/src/recall.ts:445,451, 7: BUG-SOXGRAPH-TYPED-NODES-001 notes[] (live probe: ix_node_kind 10,135/10,135),
+8: libs/data/graph/graph-store/src/index.ts:59,181 (`CREATE TABLE IF NOT EXISTS` — why the scope is new stores only),
+9: same:379 (`NodeMeta.kind?: string` — already open, nothing widens), 10: same:865-869 (the `generic`-steer message this item deletes),
+11: same:811-852 (the on-open rebuild path BL-447 must defuse first)]
 
 ---
 
@@ -3233,12 +3267,31 @@ A published, generic, bi-temporal graph store is telling its users their domain 
 its type column. Under ADR-0007 D1 (`data/*` owns generic storage, memory-core hosts the domain)
 this constant is in the wrong package outright.
 
-**Fix (pending BL-438 fork 2).** Replace the baked vocabulary with an injected policy:
-`createGraphBackend(adapter, { kindPolicy?: KindPolicy })`, where `KindPolicy.validate(kind, subKind)`
-throws `ConstraintError`. graph-store's **default** policy is *syntactic only* — identifier shape and
-length, no vocabulary. Fresh-store DDL (`GRAPH_DDL` / `INLINE_MIGRATION_DDL`) drops the `kind` CHECK;
+**Fix — revised under BL-438 D2 + D4 (policy closure; `rel` opens in the same pass).** Replace the
+baked vocabulary with an injected policy:
+`createGraphBackend(adapter, { typePolicy?: TypePolicy })`, where `TypePolicy.validateKind(kind)` and
+`TypePolicy.validateRel(rel)` throw `ConstraintError`. graph-store's **default** policy is *syntactic
+only* — identifier shape and length, no vocabulary. Fresh-store DDL (`GRAPH_DDL` /
+`INLINE_MIGRATION_DDL`) drops the `kind` CHECK **and the `rel` CHECK together**;
 `CREATE TABLE IF NOT EXISTS` makes that a no-op on every existing store, so **no populated table is
 rebuilt** — the identical mechanism and rationale BL-430 used four days ago.
+
+**Two enforcement points, both verified funnels — not an audit of every statement.** Every node
+write reaches `writeNode` (:862): `writeNodeBatch` (:976) and `writeGraph` (:982) both loop over it.
+Every edge write reaches `writeEdgeInternal` (:1078): `writeEdge` (:1074) and `writeGraph` delegate.
+
+**⛔ The `rel` half is not symmetric with the `kind` half and must not be treated as such.**
+`writeEdgeInternal` performs **no runtime `rel` validation at all** (:1078-1096) — it passes `rel`
+into the INSERT and merely translates the SQLite CHECK failure at :1091. The closed `EdgeRel` TS
+union (:364-374) is the only guard, and it guards nothing at runtime, nothing for a JS caller, and
+nothing for a JSON tool payload. **Dropping the `rel` CHECK without landing `validateRel` in the same
+change leaves edges completely unvalidated on new stores** — strictly worse than today. Detail in
+BL-448.
+
+**⛔ BL-447 blocks this item.** `'DEPENDS_ON'` and `'generic'` — the literals this item removes — are
+the substring sentinels `ensureCheckConstraints()` uses to decide whether to rebuild `node` and
+`edge` on open (:820,:825). Editing the DDL constants first converts that repair path into an
+unconditional rebuild loop and an automatic on-open migration. Read BL-447 first.
 
 **This must not import memory-core.** `data→memory-core` is forbidden and lint-enforced
 (libs/data/CLAUDE.md). The policy *descends* by DI (ADR-0006), it is never imported upward.
@@ -3248,15 +3301,17 @@ implementation let `opts.kinds` flow into the `CHECK (kind IN (…))` clause and
 `rebuildTable` on the populated `node` table **implicitly, from `applySchema()`, at construction
 time** — so a consumer passing a new string to a constructor triggered a rename→create→copy→drop of
 a shared 10k-row table. Two days after that was reverted, BL-313 proved that exact rebuild
-cascade-deletes all 40,930 edges. **`KindPolicy` must have no path to DDL whatsoever.** It is pure
+cascade-deletes all 40,930 edges. **`TypePolicy` must have no path to DDL whatsoever.** It is pure
 in-process policy; there is no `CHECK` left for it to reach. If a design review finds any input by
 which registering a type can alter the schema, the design is wrong.
 
-**Acceptance.** A test naming BL-440 that (a) registers a consumer kind through the public factory,
-writes and reads it back, and asserts the store's `sqlite_master` DDL is **byte-identical before and
-after** — the direct regression guard against BL-295's failure mode; (b) asserts the default policy
-still rejects a malformed identifier; (c) asserts a caller passing no `kindPolicy` observes today's
-six-kind behaviour unchanged.
+**Acceptance.** A test naming BL-440 that (a) registers a consumer kind **and a consumer rel**
+through the public factory, writes and reads them back, and asserts the store's `sqlite_master` DDL
+is **byte-identical before and after** — the direct regression guard against BL-295's failure mode;
+(b) asserts the default policy still rejects a malformed identifier, for both `kind` and `rel`;
+(c) asserts a caller passing no `typePolicy` observes today's six-kind **and ten-rel** behaviour
+unchanged; (d) asserts an unregistered `rel` is rejected by the policy on a store whose `rel` CHECK
+is gone — the guard that D4 did not trade a CHECK for nothing.
 
 Citations: [wip/turso-live-metrics, architect-reviewer, claude, BUG-SOXGRAPH-TYPED-NODES-001,
 1: libs/data/graph/graph-store/src/index.ts:257 (`DEFAULT_NODE_KINDS`), 2: same:863-869 (the `generic`-steer `ConstraintError`),
@@ -3274,57 +3329,94 @@ silently mints a new type — replacing an over-strict library with no validatio
 directive is that typing lives *in memory-server*, which only holds if memory-server actually
 implements it.
 
-**Fix.** `memory-core` gains `MemoryOntologyPolicy`, implementing graph-store's `KindPolicy` and
-carrying the six memory kinds. It is supplied at backend construction — the DI direction ADR-0006
-mandates, with no upward import. memory-server exposes a registration surface so a consumer can
-declare its own types (name + optional sub-kinds) and get the same validation memory gets.
+**Fix.** `memory-core` gains `MemoryOntologyPolicy`, implementing graph-store's `TypePolicy` and
+carrying **the six memory kinds and the ten memory rels** (BL-438 D4 — `rel` opens in the same pass,
+so `rel` loses its CHECK in the same release and must gain an owner in the same release).
+It is supplied at backend construction — the DI direction ADR-0006 mandates, with no upward import.
+memory-server exposes a registration surface so a consumer can declare its own kinds and rels and get
+the same validation memory gets.
 
-**Fork 1 consequence to hold explicitly:** under the recommended 1a, consumer types ride
-`kind:'generic'` + `sub_kind:'<type>'` on **existing** stores and may use an open `kind` on **new**
-ones. The policy must accept both and must not make either a second-class citizen.
+**⛔ The construction seam is leaky and this item must close it, not decorate it.**
+`createGraphBackend(adapter)` is called with a bare adapter from **eight files, eleven references**
+in memory-core — `enrich-batch.ts:189`, `entity-episodes.ts:119`, `cluster.ts:749,820,886`,
+`near-duplicates.ts:44`, `list-entities.ts:63`, `related.ts:95`, `supersession-chain.ts:49`. Threading
+an optional policy argument through some of them yields partial enforcement that reviews as total,
+and the ninth call site added next month silently opts out. memory-core needs **one** composition
+point that supplies the policy, with the raw factory no longer called directly from feature modules.
+An acceptance test that only exercises one write path cannot detect this — assert the seam, not a
+sample.
 
-**Acceptance.** A test naming BL-441 asserting that a memory write with an unregistered kind is
-rejected with a named error **through the memory-server tool surface** (not the raw store), and that
-a consumer-registered type is accepted, written, and recalled. The red arm is a BL-440-only tree,
-where the unregistered kind is silently accepted.
+**BL-438 D1 consequence to hold explicitly:** consumer types ride an open `kind` on **new** stores
+and are **rejected by SQLite** on existing ones until BL-442's operator migration runs. The policy
+cannot paper over that — a kind the policy permits and the store's CHECK forbids must produce a
+comprehensible error naming the migration, not a raw `CHECK constraint failed`. The
+`kind:'generic'` + tags convention keeps working for anyone already on it and must not be broken,
+but it is no longer the sanctioned answer and must not be re-offered as the workaround.
+
+**Acceptance.** A test naming BL-441 asserting that a memory write with an unregistered kind **and**
+an edge with an unregistered rel are each rejected with a named error **through the memory-server
+tool surface** (not the raw store), and that a consumer-registered kind and rel are accepted, written
+and recalled. Plus: on a store still carrying the closed CHECK, a policy-permitted-but-CHECK-forbidden
+kind produces the migration-naming error, not a raw SQLite message. The red arm is a BL-440-only
+tree, where the unregistered kind and rel are both silently accepted.
 
 Citations: [wip/turso-live-metrics, architect-reviewer, claude, BUG-SOXGRAPH-TYPED-NODES-001,
 1: docs/decisions/0007-memory-single-writer-architecture.md:55 (D1 — memory hosts, data/* owns),
 2: docs/decisions/0006-public-bundles-private-and-di-for-live-objects.md, 3: libs/data/CLAUDE.md (boundary rules),
-4: libs/data/graph/graph-store/src/index.ts:257,863-869 (the vocabulary BL-440 removes)]
+4: libs/data/graph/graph-store/src/index.ts:257,863-869 (the node vocabulary BL-440 removes), :94,364-374,505 (the rel vocabulary D4 removes),
+5: `createGraphBackend` call sites — libs/memory-core/src/enrich-batch.ts:189, entity-episodes.ts:119, cluster.ts:749,820,886, near-duplicates.ts:44, list-entities.ts:63, related.ts:95, supersession-chain.ts:49,
+6: docs/reporting/memory/findings/open-node-typing-design.md §3 (the DI shape and the leaky-seam finding)]
 
 ---
 
-### BL-442 — existing stores keep a closed `kind` CHECK forever, and the only way to remove it is the operation that caused BL-313 — **Open (MEDIUM)** (2026-08-05)
+### BL-442 — existing stores keep closed `kind` and `rel` CHECKs forever, and the only way to remove them is the operation that caused BL-313 — now the sole delivery path, not an optional last mile — **Open (HIGH — promoted from MEDIUM by BL-438 D1)** (2026-08-05, rescoped 2026-08-05)
 
-**Problem.** BL-440 opens `kind` for **new** stores only, because `CREATE TABLE IF NOT EXISTS`
-no-ops against an existing table. Every store that exists today — including the live ~10,150-node
-`~/.memory/memory.db` — keeps `CHECK (kind IN ('episode',…,'generic'))` permanently. Removing it
-requires a rename→create→copy→drop rebuild, which on this schema is the exact BL-313 mechanism:
-with `PRAGMA foreign_keys = ON` (always on here), `ALTER TABLE node RENAME TO node_old` rewrites
-`edge`'s FK to dangle at `node_old`, and `DROP TABLE node_old` then cascade-deletes every edge.
+**Problem.** BL-440 opens `kind` and `rel` for **new** stores only, because `CREATE TABLE IF NOT
+EXISTS` no-ops against an existing table. Every store that exists today — including the live
+~10,150-node `~/.memory/memory.db` — keeps `CHECK (kind IN ('episode',…,'generic'))` and
+`CHECK (rel IN ('MENTIONS',…,'DEPENDS_ON'))` permanently. Removing them requires a
+rename→create→copy→drop rebuild, which on this schema is the exact BL-313 mechanism: with
+`PRAGMA foreign_keys = ON` (always on here — index.ts:7-13), `ALTER TABLE node RENAME TO node_old`
+rewrites `edge`'s FK to dangle at `node_old`, and `DROP TABLE node_old` then cascade-deletes every
+edge.
+
+**⚠️ Rescoped by BL-438 D1 — read this before scheduling.** This item was filed as the optional,
+conditional last mile that nothing depended on, because the superseded `sub_kind` design served
+existing stores without a rebuild. **D1 deleted `sub_kind`.** There is now no second path: this
+migration is the *only* mechanism by which any store in existence accepts a consumer kind or rel. It
+is on the critical path for the feature to mean anything on the machine this program runs on, and the
+operation it performs is the one that has already caused a CRITICAL data-loss incident here. **That
+trade was made deliberately by the owner; it is recorded so it is not rediscovered as a surprise.**
 
 **Fix.** An **explicit, operator-initiated, offline** migration — never reachable from
 `applySchema()`, never triggered by opening a connection, never a side effect of anything. It must:
-take a verified pre-migration backup; reuse `rebuildTable`'s existing `skipDrop` sequencing (the
-BL-313 fix — copy *every* FK-related table before dropping *any* `_old`); verify node count, edge
-count, per-relation edge breakdown and a content checksum against the pre-migration snapshot; and
-**roll back to the backup automatically on any mismatch**.
+take a verified pre-migration backup; rebuild **`node` and `edge` in one transaction** using
+`rebuildTable`'s existing `skipDrop` sequencing (rebuild-table.ts:52-54 — copy *every* FK-related
+table before dropping *any* `_old`; the shape is already modelled at index.ts:828-850); recreate all
+11 node indexes, the 4 edge indexes, the FTS triggers and the FTS content (index.ts:839-849); verify
+node count, edge count, per-relation edge breakdown and a content checksum against the pre-migration
+snapshot; and **roll back to the backup automatically on any mismatch**.
+
+**⛔ Turso is a hard constraint on this item, not a footnote.** The node rebuild drops and repopulates
+`fts_node`. BL-337 records the Turso FTS index as un-`REINDEX`-able; BL-361 records a driver PANIC
+that kills the process outright on a malformed FTS index row. A migration that runs blind on a
+Turso-backed store can take the process down mid-rebuild, between the rename and the drop. Detect the
+backend and either refuse or take the documented BL-337 repair path — **decide it explicitly and
+write the decision down; do not discover it at runtime.**
 
 **⛔ Do not resolve this by making the migration automatic.** Automatic-on-open is BL-295 verbatim.
 This item exists precisely so that opening `kind` on a populated store is a decision an operator
-makes, not something that happens to them.
+makes, not something that happens to them. **BL-447 is the related trap: an automatic path already
+exists and the CHECK removal re-points it at the open schema by itself.** BL-447 must land first.
 
-**Sequence this last.** Nothing else in the group depends on it: under BL-439, consumer types are
-already indexed on existing stores via `sub_kind` + `kind:'generic'`. This item is the last mile,
-and it is optional per BL-438 fork 3.
-
-**Acceptance.** A test naming BL-442 that seeds a store carrying **both** a stale `kind` CHECK and a
-populated `edge` table with `foreign_keys = ON`, runs the migration, and asserts every edge survives
-— red against a naive sequential rebuild (BL-313's regression fixture is the model: a single-edge
-fixture cannot catch this; seed 90 edges across 10 nodes). Plus a rollback test: corrupt the verify
-step and assert the store is restored bit-identical from backup. **Run against a `cp` of a backup,
-never `~/.memory/*`.**
+**Acceptance.** A test naming BL-442 that seeds a store carrying **both** stale `kind` and `rel`
+CHECKs and a populated `edge` table with `foreign_keys = ON` **asserted in the test**, runs the
+migration, and asserts every edge survives and every per-relation count matches — red against a naive
+sequential rebuild (BL-313's regression fixture is the model: a single-edge fixture cannot catch this;
+seed 90 edges across 10 nodes). Plus a rollback test: force the verify step to fail and assert the
+store is restored bit-identical from backup. Plus an assertion that the migration entry point is
+unreachable from `applySchema()` — a static guard, since a runtime test cannot prove absence.
+**Run against a `cp` of a backup, never `~/.memory/*`.**
 
 Citations: [wip/turso-live-metrics, architect-reviewer, claude, BUG-SOXGRAPH-TYPED-NODES-001,
 1: CHANGELOG.md:1986-2040 (BL-313 — the cascade mechanism, the `skipDrop` fix, the 90-edge fixture),
@@ -3345,9 +3437,16 @@ explicit acceptance requirement: *"driven through the published package, not an 
 
 **Fix.** A conformance fixture that `npm pack`s graph-store, installs the tarball into a disposable
 scratch project **outside** the workspace, and from there — importing only `@adhd/sox-graph-store` by
-its published name — registers a consumer type, writes it, reads it back, traverses an edge to it,
-queries it by type, and asserts via `EXPLAIN QUERY PLAN` that the query used the index and contained
-no `json_each`. This is the acceptance gate for the whole group.
+its published name — registers a consumer **kind and rel** (BL-438 D2/D4), writes a node of that
+kind, reads it back, traverses an edge of that rel to it, queries it by kind, and asserts via
+`EXPLAIN QUERY PLAN` that the query resolved to `SEARCH node USING INDEX ix_node_kind` with no
+`json_each`. This is the acceptance gate for the whole group.
+
+**The fixture must create a fresh store, and must also assert the negative.** Under BL-438 D1 the
+open `kind`/`rel` DDL reaches new stores only, so a fixture that happens to open a pre-existing file
+would test nothing. Include the complementary arm: against a store created with the closed DDL, the
+consumer kind is rejected — that is the published contract too, and it is the one a real consumer
+will hit first.
 
 **Acceptance.** A test naming BL-443 that fails when run against the tarball built from a tree
 without BL-439/BL-440 (the registration call does not exist / the type is rejected) and passes
@@ -3370,25 +3469,40 @@ on publish. Every graph-store version therefore forces four downstream republish
 one-line fix cost eight releases on 2026-08-04. BL-439, BL-440 and BL-441 each change the package.
 Published independently, that is three trains and twelve downstream releases.
 
-**Fix.** One train. BL-439/BL-440/BL-441 land on `main` **before anything is published** and ship
-together as a single **0.6.0 minor**. The change is additive throughout — new nullable column, new
-optional filter field, new optional constructor option, no removals — so 0.6.0 is honest semver and
-a caller passing nothing observes no behaviour change. BL-442 and BL-443 ride the same version.
+**Fix.** One train. BL-447/BL-439/BL-440/BL-448/BL-441 land on `main` **before anything is
+published** and ship together as a single **0.6.0**. BL-442 and BL-443 ride the same version.
+
+**⚠️ The "additive throughout" claim this item was filed with is false under BL-438 D1+D4, and is
+corrected here rather than repeated.** There is no new column and no new filter field — D1 deleted
+`sub_kind`, so the schema surface *shrinks* (two CHECKs removed) rather than growing. And D4 widens
+**`EdgeRel`**, a closed TS union (index.ts:364-374) that appears in ~15 public signatures and, the
+part that matters, in **return** position via `EdgeRecord.rel` (:424, assigned :609). Widening a
+parameter is safe; widening a return is source-breaking — `const r: EdgeRel = rec.rel` stops
+compiling. `EdgeRel | (string & {})` preserves autocomplete but does not fix that assignment, so it
+is a mitigation, not an escape. `PUBLIC_EDGE_RELS` (:505) also changes meaning from "what the store
+permits" to "what memory uses", and graph-store.spec.ts:28-35 asserts its length.
+
+**0.6.0 is still the correct number** — under 0.x semver the minor slot *is* the breaking slot — but
+the release note must **state what breaks** instead of asserting nothing does.
 
 **Backwards compatibility to assert explicitly, not assume.** `episode/entity/claim/community/
-session/generic` keep working; the `kind:'generic'` + tag convention keeps working and **nobody is
-forced to migrate**; `sub_kind` is nullable so every existing row reads back identically.
+session/generic` keep working; the ten rels keep working; the `kind:'generic'` + tag convention keeps
+working and **nobody is forced to migrate data**; every existing row reads back byte-identically
+because no column is added or removed; a caller passing no `typePolicy` sees today's behaviour.
 
-**⚠️ Coordinate with FEAT-SOX-001 (Turso adapter, OPEN).** Same `store`/schema layer. The only DDL
-this group emits on an existing store is `ADD COLUMN` + `CREATE INDEX`, both engine-neutral with no
-`REINDEX` and no FTS rebuild — so BL-337's un-`REINDEX`-able Turso FTS index and BL-361's PANIC are
-untouched. **But the two workstreams must not both hold `applySchema()`.** Check for a live owner
-before editing it.
+**⚠️ Coordinate with FEAT-SOX-001 (Turso adapter, OPEN).** Same `store`/schema layer. Under D1 this
+group emits **no DDL at all** on an existing store — the fresh-DDL change no-ops there, and nothing
+happens until an operator runs BL-442. The Turso collision therefore does not disappear, it
+**relocates into BL-442**, where the node rebuild meets BL-337's un-`REINDEX`-able FTS index and
+BL-361's PANIC. **The two workstreams must not both hold `applySchema()`** — and BL-447 edits it.
+Check for a live owner before editing it.
 
 **Acceptance.** A test naming BL-444 that installs the 0.6.0 tarball against the *previous*
 consumer source (unchanged, using no new API) and asserts it builds and its suite passes — proving
-the release is genuinely non-breaking rather than asserted to be. Plus a `pnpm install` +
-committed `pnpm-lock.yaml` diff, per the repo's relock-before-merge constraint.
+the non-breaking half is genuine rather than asserted. Its counterpart is mandatory and is the half
+this item originally lacked: a consumer that reads `EdgeRecord.rel` into an `EdgeRel`-typed binding
+must be shown to **fail** to compile, and that failure documented in the release note as intentional.
+Plus a `pnpm install` + committed `pnpm-lock.yaml` diff, per the repo's relock-before-merge constraint.
 
 Citations: [wip/turso-live-metrics, architect-reviewer, claude, BUG-SOXGRAPH-TYPED-NODES-001,
 1: libs/data/graph/graph-store/package.json:3 (0.5.2), 2: libs/data/analysis/analysis/package.json:28,
