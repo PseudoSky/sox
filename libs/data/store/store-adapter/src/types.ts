@@ -213,7 +213,22 @@ export interface AdapterConfig {
     cipher: 'aegis256' | 'aes256gcm';
     hexkey: string;
   };
-  /** Experimental feature flags. Currently: multiprocessWal enables multi-process write support. */
+  /** Experimental feature flags (TursoAdapter only).
+   *
+   *  `multiprocessWal` enables cross-process WAL coordination via `.tshm`
+   *  shared-memory sidecars, so several OS processes can open the same store.
+   *  **Opt-in, default `false`.** It is experimental upstream, its on-disk
+   *  `.tshm` format is versioned and its stability explicitly disclaimed, it is
+   *  mutually exclusive with MVCC, Turso rejects `VACUUM` on a store using it,
+   *  and a stale sidecar has made a real store permanently unopenable (BL-373).
+   *  Turn it on when — and only when — you actually have multiple processes.
+   *
+   *  Note this public shape is an **object**; it is translated internally to
+   *  Turso's own **array** form (`experimental: ['index_method',
+   *  'multiprocess_wal']`). If you bypass this adapter and call
+   *  `@tursodatabase/database`'s `connect()` yourself, you must pass the array
+   *  form — and you must include `'index_method'` on every connection that
+   *  runs `fts_match`/`fts_score` or the FTS index DDL. */
   experimental?: { multiprocessWal?: boolean };
   defaultQueryTimeout?: number;
 }
