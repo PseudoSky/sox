@@ -2,6 +2,37 @@
 
 ---
 
+## [Unreleased] — BL-360: the integrity suppression now names the driver it was measured on
+
+**A filter that hides a driver's bug is a claim about one version of that driver, and nothing recorded which one.** `isKnownFalsePositive()` swallows Turso's `wrong # of entries in index __turso_internal_fts_dir_*_key` — emitted by `PRAGMA integrity_check` on a *freshly created, fully working* FTS store, so without the filter every Turso store carrying an FTS index reports damage forever. Both manifests declare `^0.7.1`, which means an ordinary caret bump could move the store onto a driver nobody had measured, with no file in this repo changing, while the filter went on quietly swallowing whatever the new version emits — including a **real** `wrong # of entries` report.
+
+```console
+$ # the guard test now reads the driver actually resolved on disk, not a manifest range
+$ npx nx test store-adapter --skip-nx-cache -- --run integrity-selfheal
+ ✓ deep verification filters the Tantivy false positive and stays green on a healthy store
+ Test Files  1 passed (1)
+      Tests  23 passed (23)
+
+$ # …and says exactly what to do when the driver moves
+$ npx nx test store-adapter --skip-nx-cache -- --run integrity-selfheal   # SUPPRESSION_VALID_FOR = '0.8.0'
+ × deep verification filters the Tantivy false positive and stays green on a healthy store
+   → BL-360: isKnownFalsePositive() is a suppression measured against
+     @tursodatabase/database 0.8.0, and the installed driver has moved off it. Re-run the
+     reproduction on the new version: if the false positive is gone, DELETE
+     isKnownFalsePositive() and its call sites (that deletion is BL-360's acceptance); if it
+     still reproduces, bump SUPPRESSION_VALID_FOR and record the new measurement date.
+     Do not silence this by widening the comparison — an unmeasured driver is the state
+     this assertion exists to make loud.
+     expected '0.7.1' to be '0.8.0'
+```
+
+- **`SUPPRESSION_VALID_FOR = '0.7.1'`** sits beside the filter with its measurement date and the upstream URL. It is **not** a dependency pin — editing the manifests to an exact version is a supply-chain decision with blast radius far outside this filter, and it would not make the *suppression* honest either.
+- **The version is read from the package resolved on disk**, by resolving the entry point and walking up to the nearest matching `package.json`. The driver's `exports` map publishes only `.` and `./compat`, so `require('@tursodatabase/database/package.json')` is blocked outright.
+- **One test, not two.** The version assertion went into the *existing* message-still-emitted guard rather than a new test. Split apart they drift: "Turso still emits it" keeps passing on a version nobody measured, which is the exact silent state the constant exists to prevent. The two facts now fail as one unit.
+- **No verdict behaviour changed, deliberately.** Making the filter conditional on the driver version would return every store on every future driver to permanently-damaged — BL-360's own non-convergence, one step along. The reasoning sits above the assertion so it is not "improved" back. The signal belongs in CI, not in the health report.
+- **Reported upstream as a confirmation, not a duplicate.** An issue already existed — [tursodatabase/turso#7611](https://github.com/tursodatabase/turso/issues/7611), filed 2026-06-24 against `0.7.0-pre.10`. Re-measured on the **released 0.7.1** via the Node driver on darwin/arm64: 200/200 `fts_match` on the same store both `integrity_check` and `quick_check` call damaged, surviving a close/reopen. ([comment](https://github.com/tursodatabase/turso/issues/7611#issuecomment-5195105275))
+- **BL-360 closed; BL-462 filed to carry the deletion.** BL-360's acceptance — *"the guard test flips and the filter is removed"* — is satisfiable only by an upstream release, so as written it would have pinned a finished packet open forever: the same never-returns-to-`ok` failure this item is about, reproduced in the tracker instead of the health report. The successor is triggered by #7611 closing, not by a schedule; a driver bump alone needs no item, because the guard test already fails on one and carries the decision procedure in its assertion message.
+
 ## [Unreleased] — BL-361 / BL-362: the store that killed its own process, and the FTS damage fixture that finally reproduces
 
 **A Turso store whose FTS index row outlives its Tantivy backing objects does not fail — it aborts the process.** No exception, no `finally`, no exit hook: `panicked at core/vdbe/execute.rs:13189` → SIGABRT, exit 134. Nothing in-process can catch, diagnose or repair it, so the adapter now looks at the schema through a *different engine* before the driver is ever asked to open the file.
