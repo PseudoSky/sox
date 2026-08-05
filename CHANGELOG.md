@@ -2,6 +2,77 @@
 
 ---
 
+## [Unreleased] — BL-434 / BL-433: heal-path embeds are correlatable, and a log path stops lying by omission
+
+**Every embed path now carries a real trace id — including the two that run off the write queue.**
+Trace ids propagate ambiently through `AsyncLocalStorage`, and `withContendedStage` *propagates*
+context without ever *creating* it. The heal tick runs outside any `WriteQueue` task (BL-154), so it
+established nothing and every record beneath it fell through to `trace_id: null`: heal embeds were
+the one embed population that could not be joined to the work that requested them.
+
+```console
+$ jq -r 'select(.event=="embed.start") | .trace_id' memory-core-*.jsonl | sort -u
+null                                    # before
+
+$ jq -r 'select(.event=="embed.start") | .trace_id' memory-core-*.jsonl | sort -u
+01KYTRCCD5D60MT9KBXDK8RJ8R              # after — one per healed row
+...
+```
+
+Reconstruct a whole heal pass from the JSONL alone:
+
+```console
+$ jq -c 'select(.event=="embed_pipeline.heal.row.start")' memory-core-*.jsonl \
+    | jq -r '[.tick_trace_id, .trace_id, .uid] | @tsv'
+01KZ...TICK  01KZ...ROWA  ep_01k9...      # one tick, N rows
+01KZ...TICK  01KZ...ROWB  ep_01k9...
+
+$ jq -c 'select(.trace_id=="01KZ...ROWA")' memory-core-*.jsonl | jq -r .event
+embed_pipeline.heal.row.start
+embed.start
+embed.finish                              # ...plus sox.stage.embed.* in the substrate stream
+```
+
+- **Two levels, deliberately.** One id per *tick* (`tick_trace_id`) so tick-level records and any
+  future `tlog` call added there are correlated by construction rather than by a remembered
+  convention, and one per *row* unit of work so a given `embed.*` line identifies the single row it
+  re-embedded instead of a 500-row pass. `embed_pipeline.heal.row.start` is the join record.
+- **`healStaleVectors` (the `reembed` sibling) got the identical treatment** — it had the same hole,
+  and `embed_pipeline.reembed.row.start` is its join record.
+- New events: `embed_pipeline.{heal,reembed}.row.{start,error}`, documented in the
+  `docs/observability/README.md` §4 catalog.
+- The two "known gap" notes in `docs/observability/README.md` (§3.1 prose, §8 table) are **deleted**
+  and replaced with the per-path root-context table. A doc that permanently documents a gap is how
+  this one survived two rounds of substrate work.
+
+**`currentLogFilePath()` can no longer answer `''`.** `DurableJsonlSink.currentPath()` is `''` until
+the first write, which made a status surface reporting it indistinguishable from *"no sink
+configured"* — two states with opposite remedies (fix your config vs. just wait) collapsed into one
+value. `plannedPath()` was added to fix exactly that and was wired to exactly one field; both the
+handle accessor and memory-core's exported function still carried the ambiguity.
+
+```ts
+handle.currentLogFilePath()   // string | null — null ⇔ no file sink configured
+                              // non-null ⇔ where the NEXT record lands, written or not
+currentLogFilePath()          // memory-core: null ⇔ SOX_MEMORY_LOG_DISABLE=1
+telemetrySelfCheck().metric_persistence.file   // string | null, never ''
+```
+
+The distinction is now in the **type**, so a caller cannot fail to handle it by forgetting to.
+Same defect class as BL-319/BL-347: *a signal whose failure mode is indistinguishable from a
+legitimate value is worse than no signal.*
+
+Verification: `bl434-heal-trace-id.spec.ts` (5 tests) and the BL-433 cases in `index.spec.ts` /
+`telemetry.spec.ts` were each watched fail against the reverted source (`expected null to deeply
+equal Any<String>`; `expected "" to be null`) and pass against the fix. The stage-correlation test
+stands up the substrate sink and asserts `stageRecords.length > 0` before looping — an unguarded
+filter for `sox.stage.embed.*` returns `[]` in a process that never called `initTelemetry`, and
+every assertion under it would have passed vacuously (the BL-167 shape).
+
+`memory-core` 539 passed / 8 skipped, `sox-telemetry` 26 passed, lint + typecheck green on both.
+
+---
+
 ## [Unreleased] — BL-411: 12 `analysis` tests that could not pass are alive again, and a raw handle now says so
 
 **The `analysis` package's only integration suite had been dead for 8 days and read as coverage.**
