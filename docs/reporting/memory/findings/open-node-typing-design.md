@@ -1,7 +1,7 @@
 # Open node + edge typing in `@adhd/sox-graph-store` — the decided design
 
 **Status:** **DECIDED by the owner 2026-08-05.** Nothing here is implemented.
-**Drives:** `BUG-SOXGRAPH-TYPED-NODES-001` (graph, nodeId 563, HIGH, OPEN) → BL-438..BL-444 + BL-447, BL-448; PKT-57..PKT-63 + PKT-67, PKT-68.
+**Drives:** `BUG-SOXGRAPH-TYPED-NODES-001` (graph, nodeId 563, HIGH, OPEN) → BL-438..BL-444 + BL-447, BL-448; PKT-57..PKT-63 + PKT-73, PKT-74 (Wave J in `PLAN.md`).
 **Owner directive:**
 
 > Open `kind` and typing within memory-server rather than CHECK enums. It must be indexed.
@@ -43,7 +43,7 @@ None of the four decisions is unsafe *as a decision*. Three consequences are, an
 2. **Opening the two CHECKs silently converts an existing repair path into an unconditional
    rebuild-on-every-open loop** — BL-447, §5. This is not a risk, it is a defect the decisions
    *create* on contact, and it reconstitutes BL-295's exact shape without anyone writing a line of
-   new rebuild code. **PKT-67 must land before any DDL constant is edited.**
+   new rebuild code. **PKT-73 must land before any DDL constant is edited.**
 3. **`EdgeRel` is a closed TypeScript union in the published surface** (index.ts:364-374), read back
    out of `EdgeRecord.rel` (:609,:424). Widening it is a source-breaking change for a consumer that
    switches exhaustively — see §7. Under 0.x semver the minor slot *is* the breaking slot, so 0.6.0
@@ -303,7 +303,7 @@ stores that never trip the probe, so nothing in the suite would go red.
 (`user_version`, an `_adapter_meta` row, or a parse of the CHECK's presence rather than a search for
 one of its literals), and keep the automatic path targeting the **closed** DDL — the open DDL is
 reachable only from D3's operator command. The auto path's remaining job is what it was built for:
-upgrading a genuinely legacy store to the current *closed* shape. **PKT-67 lands this before any DDL
+upgrading a genuinely legacy store to the current *closed* shape. **PKT-73 lands this before any DDL
 constant is touched.**
 
 ---
@@ -332,7 +332,7 @@ all on a store where `kind` is open.
 publish) — so **every graph-store version costs four downstream republishes**, which is why a
 one-line fix cost eight releases on 2026-08-04.
 
-**Therefore: one release train, not one per packet.** PKT-67, PKT-58, PKT-59, PKT-68 and PKT-60 all
+**Therefore: one release train, not one per packet.** PKT-73, PKT-59, PKT-58, PKT-74 and PKT-60 all
 land on `main` before anything is published and ship together as a single **0.6.0**. PKT-61 and
 PKT-62 ride the same version. PKT-63 executes the train.
 
@@ -358,7 +358,7 @@ PKT-62 ride the same version. PKT-63 executes the train.
 design no longer emits `ADD COLUMN`/`CREATE INDEX` on existing stores at all; it emits **nothing**
 until an operator runs D3's migration, and that migration is the one that collides with BL-337's
 un-`REINDEX`-able Turso FTS index and BL-361's PANIC (§4.3). **The two workstreams must not both hold
-`applySchema()`.** PKT-67 and PKT-59 declare the conflict.
+`applySchema()`.** PKT-73 and PKT-58 declare the conflict.
 
 ---
 
@@ -368,7 +368,7 @@ un-`REINDEX`-able Turso FTS index and BL-361's PANIC (§4.3). **The two workstre
   the method BL-313's root-cause used.
 - **Never call `rebuildTable` on a populated `node` outside PKT-61**, and inside PKT-61 only behind
   an explicit operator command with a verified pre-backup.
-- **Never edit `NODE_TABLE_DDL` / `EDGE_TABLE_DDL` before PKT-67 lands.** They are the target of an
+- **Never edit `NODE_TABLE_DDL` / `EDGE_TABLE_DDL` before PKT-73 lands.** They are the target of an
   automatic on-open rebuild path (§5); changing them is a live migration, not a constant edit.
 - `PRAGMA foreign_keys` state must be asserted in any test touching a rebuild — BL-313 was a
   `foreign_keys = ON` interaction and is invisible with it off.
