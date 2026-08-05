@@ -2,6 +2,52 @@
 
 ---
 
+## [Unreleased] — BL-361 / BL-362: the store that killed its own process, and the FTS damage fixture that finally reproduces
+
+**A Turso store whose FTS index row outlives its Tantivy backing objects does not fail — it aborts the process.** No exception, no `finally`, no exit hook: `panicked at core/vdbe/execute.rs:13189` → SIGABRT, exit 134. Nothing in-process can catch, diagnose or repair it, so the adapter now looks at the schema through a *different engine* before the driver is ever asked to open the file.
+
+```console
+$ # before — an ordinary open of a damaged store takes the whole process with it
+$ node open-store.mjs ~/copy-of-damaged.db
+thread '<unnamed>' panicked at core/vdbe/execute.rs:13189:51:
+internal error: entered unreachable code: invalid transaction state for SetCookie
+$ echo $?
+134
+
+$ # after — the pre-flight drops the orphaned schema rows out of process and says so
+$ node open-store.mjs ~/copy-of-damaged.db
+{"evt":"store.integrity.repaired","detail":"[BL-361] FTS index(es) idx_fts_node had no Tantivy
+ backing objects; opening this store would have PANICKED the driver and aborted this process.
+ Dropped the orphaned schema rows (idx_fts_node, __turso_internal_fts_dir_idx_fts_node,
+ __turso_internal_fts_dir_idx_fts_node_key) out of process; the index is rebuilt by the normal
+ CREATE INDEX … USING fts path. If nobody damaged this store by hand, BL-361 is reachable
+ naturally and reclassifies to HIGH — say so on the item."}
+$ echo $?
+0
+```
+
+**BL-361's own account of the mechanism was wrong, and the correction is the useful part.** `connect()` does **not** panic. Measured on `@tursodatabase/database@0.7.1`, all of these succeed on a damaged store: `connect()`, `SELECT 1`, base-table reads, `SELECT name FROM sqlite_master`, `INSERT`, `CREATE INDEX IF NOT EXISTS … USING fts`, and even `DROP INDEX`. Exactly one statement aborts the process — **`fts_match` against the orphaned index**. The conclusion is unchanged, because `TursoAdapterImpl.connect()` issues that query itself via `runOpenTimeIntegrity` → `probeFtsIndexes`, which the marker-absent test arm demonstrates directly.
+
+- **`preflight.ts`** — a new out-of-process schema sanity check. Reads `sqlite_master` through `better-sqlite3` and, when an FTS index has lost either backing object, deletes the orphaned rows so the store opens; the consumer's ordinary `CREATE INDEX IF NOT EXISTS` rebuilds and backfills the index.
+- **`db.unsafeMode(true)` must precede `PRAGMA writable_schema = ON`** — better-sqlite3 runs SQLite in defensive mode by default, where that pragma is *silently a no-op*. This reconciles BL-329 ("better-sqlite3 cannot open a Turso-FTS store") with BL-362's by-product finding ("writable_schema opens it"): both are true, of different connection configurations.
+- **An out-of-band marker file (`<db>-openmark`), not the store's own unclean flag.** `consumeUncleanShutdownFlag()` reads `_adapter_meta` *through the adapter*, i.e. after `connect()` returned — structurally unreachable in the state it would be gating. The marker is written on open and cleared on an orderly close.
+- **The gate's cost is asserted, not assumed.** A test arm shows that with no marker the pre-flight does not run and the process still aborts — the accepted price of not adding a native open to every connect.
+- **The pre-flight can never break an open.** Missing file, unreadable schema, garbage where a database should be: every failure degrades to "did not run".
+
+**BL-362 — the Turso FTS probe now has a real negative control in CI, on the fixture nobody could build.** Four recorded recipes had failed. The reason is a decoy: the Tantivy segments do **not** live in `__turso_internal_fts_dir_<idx>` (that table holds 0 rows in every state, healthy or dead) — they live in `__turso_internal_fts_dir_<idx>_key`, an index declared `USING backing_btree`. Recipe 2 was sound and aimed one object to the left.
+
+```console
+$ npx nx test store-adapter --skip-nx-cache
+ Test Files  18 passed (18)
+      Tests  338 passed (338)
+```
+
+- **Repointing that backing btree at an empty page** produces exactly the BL-347 live-damage shape: every `sqlite_master` row present (so **nothing panics** — an absent row aborts the test runner instead of failing a test), the store opens, and `fts_match` silently returns nothing.
+- **Four arms watched red→green**: probe reports `damaged`; `CREATE INDEX IF NOT EXISTS` does *not* fix it (the BL-347 no-op, asserted); `repairStoreIntegrity` rebuilds it and re-verification reports `ok`; and an ordinary reopen self-heals — that last arm asserting the open *saw* the damage via `getLastIntegrityResult`, so it cannot pass on an undamaged store (BL-167).
+- **No anonymised live-store copy was needed.** BL-362's fallback goes unused; the negative control no longer depends on an artifact that exists on one machine.
+
+Full measurements, including which statements are safe on a damaged store and which one is not: [`docs/reporting/memory/findings/bl361-bl362-turso-fts-schema-anatomy.md`](docs/reporting/memory/findings/bl361-bl362-turso-fts-schema-anatomy.md).
+
 ## [Unreleased] — BL-394: the write queue stops advertising guards that cannot fire
 
 **`memory_ping` reported admission control as configured and active on the backend where neither guard can execute.** Turso sets `needsWriteSerialization: false`, so `enqueue` returns through `_runBypass` before reaching either check: the size cap is expressed over a queue that is never pushed to (`0 >= 100`, forever) and the deadline guard sits past the same early return. The zeroed rejection counters were not evidence of a healthy queue — they were evidence that the code incrementing them cannot run.
