@@ -93,7 +93,7 @@ remedy is to close the backlog item with a red→green test, not to edit this ta
 | PKT-61 | **OPEN** | BL-442 | BL-442 |
 | PKT-62 | **OPEN** | BL-443 | BL-443 |
 | PKT-63 | **OPEN** | BL-444 | BL-444 |
-| PKT-64 | **OPEN** | BL-445 | BL-445 |
+| PKT-64 | **DONE** | BL-445 | — |
 | PKT-65 | **OPEN** | BL-394 | BL-394 |
 | PKT-66 | **OPEN** | BL-274 | BL-274 |
 | PKT-67 | **OPEN** | BL-341, BL-449 | BL-341, BL-449 |
@@ -1903,7 +1903,7 @@ open-node-typing architecture (BL-438..BL-444) while this pass was in flight.
 
 ### PKT-64 — BL-445: the bypass path records almost nothing, and one of the things it does not record is the deadline guard's input
 
-> **status: OPEN** — still open: BL-445 · derived by `tools/plan-status.mjs`, do not hand-edit
+> **status: DONE** — all targets closed (BL-445) · derived by `tools/plan-status.mjs`, do not hand-edit
 
 **Goal:** on the production backend (Turso → `needsWriteSerialization: false` → `_noop = true`), `getMetrics()` returns 8 structurally-unreachable zeros, 3 configuration echoes, and exactly one live measurement. Feed the bypass path the signals `_processNext` already feeds — latency samples, completion counters, the slow-task check — and make the fields that describe a queue *that does not exist on this path* stop reporting `0`/`false` as if they had been measured.
 **Closes:** BL-445 (HIGH)
