@@ -47,6 +47,21 @@
  *      queue depth + high watermark, monotonic per-process counters. Pure and
  *      read-only — callable from a ping handler with zero side effects.
  *
+ *      (BL-445) The snapshot carries a `mode: 'fifo' | 'bypass'` discriminator
+ *      and BOTH paths feed it. Until 2026-08-05 every one of these signals was
+ *      recorded exclusively in `_processNext` — i.e. only on the FIFO path — so
+ *      on the PRODUCTION backend (Turso sets `needsWriteSerialization: false`,
+ *      which sets `_noop`, which routes every write through `_runBypass`) the
+ *      block reported 8 structurally-unreachable zeros, 3 configuration echoes
+ *      and exactly one live measurement. `_settleBypass` now records the same
+ *      signals from the bypass path, and the four fields that describe a queue
+ *      that does not exist there report `null` rather than a `0`/`false` no
+ *      code could ever change.
+ *
+ *      This is not cosmetic: `recent_avg_task_latency_ms` is the deadline
+ *      guard's ONLY input, so an unfed ring keeps that guard permanently
+ *      disabled regardless of where the guard is placed (BL-394).
+ *
  * ── Task-kind separation (two-phase write follow-on, 2026-07-04) ──────────────
  *
  * Phase-B `applyEmbedding` tasks ride the SAME serial queue as writes but have a
@@ -121,16 +136,39 @@ export type TaskKind = 'write' | 'apply';
  * per-process; the snapshot itself has zero side effects.
  */
 export interface WriteQueueMetrics {
-  /** Items waiting in the queue right now (excludes the in-flight task). */
-  queue_depth: number;
-  /** 1 when a task is currently executing, else 0. */
+  /**
+   * (BL-445) WHICH EXECUTION PATH PRODUCED THIS SNAPSHOT — read this field
+   * before interpreting any other.
+   *
+   *   'fifo'   — the serialized queue path (`_enqueueQueued`/`_processNext`).
+   *              Every field below is a real measurement of a real queue.
+   *   'bypass' — the adapter reports `needsWriteSerialization: false` (Turso —
+   *              async Rust with concurrent I/O), so `enqueue` runs the
+   *              operation immediately and THERE IS NO QUEUE. The global
+   *              kill-switch SOX_DISABLE_WRITE_QUEUE=1 lands here too.
+   *
+   * This discriminator exists because the queue-shaped fields previously
+   * reported `0`/`false` on the bypass path — values indistinguishable from a
+   * healthy idle queue, and unchangeable by any code path (BL-334's failure
+   * mode). They now report `null` there instead, and this field says why.
+   */
+  mode: 'fifo' | 'bypass';
+  /** Items waiting in the queue right now (excludes the in-flight task).
+   *  `null` in `mode: 'bypass'` — nothing is ever queued on that path. */
+  queue_depth: number | null;
+  /** Concurrently-executing operations. `mode: 'fifo'` — 1 while a task runs,
+   *  else 0 (the FIFO path admits exactly one at a time). `mode: 'bypass'` — a
+   *  REAL count of operations between entry and settle, which on that path is
+   *  genuinely unbounded and is the only meaningful occupancy measure. */
   in_flight: number;
   /** Configured hard size cap. */
   queue_max_size: number;
-  /** Highest queue depth observed since process start. */
-  queue_high_watermark: number;
-  /** True while the saturation warning is latched (hysteresis). */
-  saturated: boolean;
+  /** Highest queue depth observed since process start.
+   *  `null` in `mode: 'bypass'`. */
+  queue_high_watermark: number | null;
+  /** True while the saturation warning is latched (hysteresis).
+   *  `null` in `mode: 'bypass'` — saturation is a property of queue depth. */
+  saturated: boolean | null;
   /** Rolling latency distribution of WRITE-KIND tasks only (last ≤LATENCY_WINDOW
    *  write samples). Pre-kind-split this blended Phase-B apply tasks in; it is
    *  now write-only (more honest — noted in the CHANGELOG). */
@@ -307,6 +345,18 @@ export class WriteQueue {
     write: new LatencyRing(WriteQueue.LATENCY_WINDOW),
     apply: new LatencyRing(WriteQueue.LATENCY_WINDOW),
   };
+  /**
+   * (BL-445) Operations currently executing on the BYPASS path — incremented
+   * on entry to `_runBypass` and decremented at every settle point (both
+   * success branches and both error branches).
+   *
+   * `_processing` cannot serve this purpose: it is a boolean, set only in
+   * `_enqueueQueued`, and the bypass path is precisely where an unbounded
+   * number of operations can be in flight at once. This is the only occupancy
+   * measure that means anything on the backend production actually runs, and
+   * `getMetrics()` reports it as `in_flight` there.
+   */
+  private _bypassInFlight = 0;
   /** Highest pending-queue depth observed since process start. */
   private _highWatermark = 0;
   /** Saturation warning latch (hysteresis — one log line per transition). */
@@ -707,13 +757,17 @@ export class WriteQueue {
   ): Promise<T> {
     {
       const t0 = performance.now();
+      // (BL-445) Rolling average BEFORE this task — the slow-task baseline,
+      // captured at the same point `_processNext` captures it (:1029).
+      const avgAtStartMs = this._latencies.recentMean(WriteQueue.RECENT_AVG_WINDOW);
+      this._bypassInFlight++;
       log.info('writequeue.task.start', { trace_id: resolvedTraceId, store: storeKey, label, kind, mode: 'bypass' });
       try {
         const result = withTrace(resolvedTraceId, () => operation(this.adapter));
         if (result instanceof Promise) {
           return result.then(
             (v) => {
-              this._trackCompletion();
+              this._settleBypass(t0, avgAtStartMs, kind, label);
               scheduleIdleCheckpoint();
               log.info('writequeue.task.finish', {
                 trace_id: resolvedTraceId, store: storeKey, label, kind, mode: 'bypass',
@@ -722,6 +776,7 @@ export class WriteQueue {
               return v;
             },
             (err) => {
+              this._settleBypass(t0, avgAtStartMs, kind, label);
               scheduleIdleCheckpoint();
               log.error('writequeue.task.error', {
                 trace_id: resolvedTraceId, store: storeKey, label, kind, mode: 'bypass',
@@ -732,7 +787,7 @@ export class WriteQueue {
             },
           );
         }
-        this._trackCompletion();
+        this._settleBypass(t0, avgAtStartMs, kind, label);
         scheduleIdleCheckpoint();
         log.info('writequeue.task.finish', {
           trace_id: resolvedTraceId, store: storeKey, label, kind, mode: 'bypass',
@@ -740,6 +795,7 @@ export class WriteQueue {
         });
         return Promise.resolve(result);
       } catch (err) {
+        this._settleBypass(t0, avgAtStartMs, kind, label);
         scheduleIdleCheckpoint();
         log.error('writequeue.task.error', {
           trace_id: resolvedTraceId, store: storeKey, label, kind, mode: 'bypass',
@@ -749,6 +805,65 @@ export class WriteQueue {
         return Promise.reject(err);
       }
     }
+  }
+
+  /**
+   * (BL-445) Post-completion bookkeeping for the BYPASS path — the exact set of
+   * signals `_processNext` records at :1068-1084, minus the two that describe a
+   * queue (`_checkSaturation`, which is a function of `queue.length`, and the
+   * dequeue-time depth logging).
+   *
+   * Called from ALL FOUR settle points of `_runBypass`: async-resolve,
+   * async-reject, sync-return and sync-throw. The two error branches are
+   * deliberate and match `_processNext`'s own comment at :1066-1068 — a failed
+   * task still occupied service time, so excluding it would make the wait
+   * estimator systematically under-count exactly when the store is unhealthy.
+   *
+   * Before this existed, the bypass path called only `_trackCompletion()`, so
+   * on the production backend `tasks_completed`, `write_/apply_tasks_completed`,
+   * `slow_tasks`, the two latency distributions and `recent_avg_task_latency_ms`
+   * were all permanently zero — and `recent_avg_task_latency_ms` is the
+   * deadline guard's ONLY input (`_enqueueQueued`, gated by `if (avgMs > 0)`),
+   * which is why BL-394's "hoist the guard above the early return" fix was a
+   * no-op until this landed.
+   *
+   * All synchronous, no async hops (BL-154).
+   */
+  private _settleBypass(
+    startedAt: number,
+    avgAtStartMs: number,
+    kind: TaskKind,
+    label: string,
+  ): void {
+    const latencyMs = performance.now() - startedAt;
+    if (this._bypassInFlight > 0) this._bypassInFlight--;
+    this._recordLatencySample(latencyMs, kind);
+    this._counters.tasks_completed++;
+    if (kind === 'apply') this._counters.apply_tasks_completed++;
+    else this._counters.write_tasks_completed++;
+    this._trackCompletion();
+    if (
+      latencyMs > this._slowTaskMinMs &&
+      (avgAtStartMs === 0 || latencyMs > WriteQueue.SLOW_TASK_FACTOR * avgAtStartMs)
+    ) {
+      this._counters.slow_tasks++;
+      this._logSink(
+        `${LOG_PREFIX} SLOW task store=${this.adapter.config.dbPath ?? this._storePath} label=${label} ` +
+        `latency_ms=${Math.round(latencyMs)} recent_avg_ms=${Math.round(avgAtStartMs)} ` +
+        `in_flight=${this._bypassInFlight}`,
+      );
+    }
+  }
+
+  /**
+   * (BL-445) True when this queue's `enqueue` takes the bypass path — either
+   * because the adapter handles concurrent writes natively (`_noop`, e.g.
+   * Turso) or because the global kill-switch SOX_DISABLE_WRITE_QUEUE=1 is set.
+   * The single source of truth for `getMetrics().mode`, and it mirrors the
+   * branch condition in `enqueue` exactly.
+   */
+  private get _bypassActive(): boolean {
+    return WriteQueue._bypass || this._noop;
   }
 
   /** The FIFO path, extracted verbatim from `enqueue`. Admission control, the
@@ -942,12 +1057,20 @@ export class WriteQueue {
     while (this._completionTimes.length > 0 && this._completionTimes[0]! < cutoff) {
       this._completionTimes.shift();
     }
+    // (BL-445) The queue-shaped fields describe a queue that does not exist on
+    // the bypass path. Reporting `0`/`false` there is not a measurement — it is
+    // BL-334's failure mode: a value no code can change, indistinguishable from
+    // a healthy idle queue. They report `null` instead, and `mode` says why.
+    const bypass = this._bypassActive;
     return {
-      queue_depth: this.queue.length,
-      in_flight: this._processing ? 1 : 0,
+      mode: bypass ? 'bypass' : 'fifo',
+      queue_depth: bypass ? null : this.queue.length,
+      // in_flight is REAL on both paths — the FIFO path admits exactly one
+      // operation at a time, the bypass path admits as many as arrive.
+      in_flight: bypass ? this._bypassInFlight : (this._processing ? 1 : 0),
       queue_max_size: this._maxSize,
-      queue_high_watermark: this._highWatermark,
-      saturated: this._saturated,
+      queue_high_watermark: bypass ? null : this._highWatermark,
+      saturated: bypass ? null : this._saturated,
       // write_latency_ms is WRITE-KIND ONLY since the task-kind split (more
       // honest — Phase-B apply tasks no longer dilute the write distribution).
       write_latency_ms: {
@@ -986,8 +1109,10 @@ export class WriteQueue {
 
   /**
    * Record a completion timestamp and prune entries outside the rolling
-   * throughput window. Called from _processNext (queue path) and from the
-   * noop/bypass path in enqueue().
+   * throughput window. Called from `_processNext` (FIFO path) and from
+   * `_settleBypass` (bypass path) — this was, until BL-445, the ONLY signal
+   * the bypass path recorded, which is why `throughput_writes_per_sec` was
+   * live in production while every counter beside it read zero.
    */
   private _trackCompletion(): void {
     this._completionTimes.push(performance.now());
