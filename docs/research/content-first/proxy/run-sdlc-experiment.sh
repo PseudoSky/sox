@@ -28,6 +28,7 @@ BACKLOG_ID=""
 REPO=""
 REPO_KEY="${REPO_KEY:-}"  # optional: backlog DB repo key, auto-detected if unset
 BASE_DIR="${BASE_DIR:-$HOME/dev/.sdlc-experiments}"
+RESUME_ONLY=false  # --resume: monitor existing sessions without launching
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROXY_DIR="${PROXY_DIR:-$SCRIPT_DIR}"
 OPencode_CMD="${OPencode_CMD:-opencode}"
@@ -47,21 +48,25 @@ while [[ $# -gt 0 ]]; do
     --stall)      STALL_SECONDS="$2"; shift 2 ;;
     --poll)       POLL_SECONDS="$2"; shift 2 ;;
     --timeout)    TIMEOUT_MINUTES="$2"; shift 2 ;;
+    --resume)     RESUME_ONLY=true; shift ;;
     *) echo "Unknown flag: $1"; exit 1 ;;
   esac
 done
 
 if [[ -z "$BACKLOG_ID" || -z "$REPO" ]]; then
-  echo "Usage: $0 --backlog-id <id> --repo <path-to-repo> [--repo-key <key>]"
-  echo "  --backlog-id   Backlog item ID (e.g. FEAT-002)"
-  echo "  --repo         Path to the bare/working git repo for worktree creation"
-  echo "  --repo-key     Backlog DB repo key (auto-detected via export-json if unset)"
-  echo "  --base-dir     Worktree parent dir (default: ~/dev/.sdlc-experiments)"
-  echo "  --proxy-dir    Directory with proxy-ses_*.jsonl logs (default: script dir)"
-  echo "  --stall        Seconds before stall warning (default: 60)"
-  echo "  --poll         Metrics refresh interval (default: 10)"
-  echo "  --timeout      Hard kill after N minutes (0 = no timeout)"
-  exit 1
+  if ! $RESUME_ONLY; then
+    echo "Usage: $0 --backlog-id <id> --repo <path-to-repo> [--repo-key <key>] [--resume]"
+    echo "  --backlog-id   Backlog item ID (e.g. FEAT-002)"
+    echo "  --repo         Path to the bare/working git repo for worktree creation"
+    echo "  --repo-key     Backlog DB repo key (auto-detected via export-json if unset)"
+    echo "  --resume       Skip setup — just monitor existing sessions"
+    echo "  --base-dir     Worktree parent dir (default: ~/dev/.sdlc-experiments)"
+    echo "  --proxy-dir    Directory with proxy-ses_*.jsonl logs (default: script dir)"
+    echo "  --stall        Seconds before stall warning (default: 60)"
+    echo "  --poll         Metrics refresh interval (default: 10)"
+    echo "  --timeout      Hard kill after N minutes (0 = no timeout)"
+    exit 1
+  fi
 fi
 
 REPO="$(cd "$REPO" 2>/dev/null && pwd || echo "$REPO")"
@@ -107,7 +112,9 @@ cleanup() {
 }
 trap cleanup EXIT INT TERM
 
-# ── Step 1: Create worktrees ──
+# ── Steps 1-3: Setup (skip in --resume) ──
+if ! $RESUME_ONLY; then
+  # ── Step 1: Create worktrees ──
 echo "=== Creating worktrees ==="
 for arm in rf cf; do
   WT="$BASE_DIR/arm-$arm/$BACKLOG_ID"
@@ -182,27 +189,39 @@ echo "=== Launching SDLC agents ==="
 (
   cd "$WT_RF"
   echo "  [RF] launching in $WT_RF (log: $WT_RF/sdlc-rf.log)"
-  $OPencode_CMD run --agent SDLC-RF "${REPO_KEY}::${BACKLOG_ID}" >"$WT_RF/sdlc-rf.log" 2>&1 &
-  RF_PID=$!
-  SPAWNED+=($RF_PID)
-  wait $RF_PID
+  $OPencode_CMD run --agent SDLC-RF "${REPO_KEY}::${BACKLOG_ID}" >"$WT_RF/sdlc-rf.log" 2>&1
 ) &
 RF_JOB=$!
 SPAWNED+=($RF_JOB)
 
-# CF arm — single opencode run, monolithic agent (all stages in one session).
-# The CF chain handoff model requires a persistent session that opencode run
-# doesn't provide. Instead, the SDLC-CF agent performs product → architect →
-# typescript → review sequentially within a single run, producing equivalent
-# deliverables to the RF arm's dispatched subagents.
+# CF arm
 (
   cd "$WT_CF"
   echo "  [CF] launching in $WT_CF (log: $WT_CF/sdlc-cf.log)"
   $OPencode_CMD run --agent SDLC-CF "${REPO_KEY}::${BACKLOG_ID}" >"$WT_CF/sdlc-cf.log" 2>&1
-  echo "  [CF] agent finished (exit: $?)"
 ) &
 CF_JOB=$!
 SPAWNED+=($CF_JOB)
+
+else
+  # --resume mode: auto-detect from existing worktrees
+  echo "=== Resume mode: monitoring existing experiment ==="
+  # Auto-detect the backlog ID from the most recently modified arm-rf subdir
+  if [[ -z "$BACKLOG_ID" ]]; then
+    BACKLOG_ID=$(ls -t "$BASE_DIR/arm-rf/" 2>/dev/null | head -1)
+    if [[ -z "$BACKLOG_ID" ]]; then
+      echo "ERROR: No existing experiment found under $BASE_DIR/arm-rf/"
+      echo "Specify --backlog-id to target a specific experiment."
+      exit 1
+    fi
+  fi
+  WT_RF="$BASE_DIR/arm-rf/$BACKLOG_ID"
+  WT_CF="$BASE_DIR/arm-cf/$BACKLOG_ID"
+  echo "  Detected: $BACKLOG_ID"
+  echo "  Worktrees:"
+  echo "    RF: $WT_RF"
+  echo "    CF: $WT_CF"
+fi  # --resume skip
 
 START_TIME=$(date +%s)
 echo ""
@@ -324,19 +343,16 @@ while true; do
     CF_LAST_TS=$(get_last_turn_ts "$CF_SESSION")
   fi
 
-  # Liveness: check if primary session file was modified recently
+  # Liveness: session file modified in the last 60 seconds
   RF_ALIVE=false; CF_ALIVE=false
   if [[ -n "$RF_SESSION" ]]; then
     rf_mtime=$(stat -f %m "$PROXY_DIR/proxy-ses_${RF_SESSION}.jsonl" 2>/dev/null || echo 0)
-    [[ "$rf_mtime" -gt $((NOW - 15)) ]] && RF_ALIVE=true
+    [[ "$rf_mtime" -gt $((NOW - 60)) ]] && RF_ALIVE=true
   fi
   if [[ -n "$CF_SESSION" ]]; then
     cf_mtime=$(stat -f %m "$PROXY_DIR/proxy-ses_${CF_SESSION}.jsonl" 2>/dev/null || echo 0)
-    [[ "$cf_mtime" -gt $((NOW - 15)) ]] && CF_ALIVE=true
+    [[ "$cf_mtime" -gt $((NOW - 60)) ]] && CF_ALIVE=true
   fi
-  # Also check if opencode processes still running
-  if [[ -n "$RF_PID" ]] && kill -0 "$RF_PID" 2>/dev/null; then RF_ALIVE=true; fi
-  if [[ -n "$CF_PID" ]] && kill -0 "$CF_PID" 2>/dev/null; then CF_ALIVE=true; fi
 
   echo ""
   echo -e "${CYAN}── Iteration $iteration ── [$RUNTIME_FMT] ── $(date '+%H:%M:%S') ──${NC}"
@@ -372,10 +388,10 @@ while true; do
     node "$AGGREGATOR" "$CF_SESSION" 2>/dev/null | head -18 || echo "    (waiting...)"
   fi
 
-  # Done?
+  # Done only when both session files are inactive for STALL_SECONDS
   if ! $RF_ALIVE && ! $CF_ALIVE && [[ "$RF_TURNS" -gt 3 && "$CF_TURNS" -gt 3 ]]; then
     echo ""
-    echo -e "${GREEN}Both arms appear complete.${NC}"
+    echo -e "${GREEN}Both arms complete — no new turns in ${STALL_SECONDS}s.${NC}"
     echo ""
     if [[ -n "$RF_SESSION" ]]; then
       echo "── RF Final ──"

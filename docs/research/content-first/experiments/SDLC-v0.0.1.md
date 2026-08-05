@@ -484,3 +484,282 @@ is inherently qualitative. Possible automated signals:
 These cannot be automated from proxy logs alone — they require parsing the model's
 tool calls and textual output. For v0.0.1, capture qualitative observations;
 automation is a v0.0.2+ concern.
+
+---
+
+## RESULTS — v0.0.1 (2026-08-04) — THREE RUNS COMPLETED
+
+> **Feature:** BUG-WORKSPACE-GEN-006 (workspace-codegen-nx plugin generator emits stale configs)
+> **Model:** deepseek-v4-flash via `proxy/rf` / `proxy/cf`
+> **Session IDs:** RF `035dd677…` (+5 subs) · CF-pre `035ef41f5…` · CF-fresh `031bd2a82…`
+> **Full transcripts:** `proxy/transcripts/` · **Final file states:** `proxy/transcripts/file-writes/`
+> **Re-aggregate:** `node aggregate-session.mjs --rf 035dd677effeBusfTjza6XePMw` / `--cf <id>`
+
+### The three arms
+
+| Arm | Proxy state | What ran | Delivered |
+|---|---|---|---|
+| **RF** | passthrough, dispatcher | 6 sessions (dispatcher + 5 stage subs) | `docs/{acceptance,spec,review,final-review}.md` + generator fix (committed `fa470a4f`) |
+| **CF-pre** | Option C rewrite (pre-v4) | 1 session, 5 handoffs | `ACCEPTANCE.md` + `SPEC.md` + generator fix (in-tree) |
+| **CF-fresh** | v4 rewrite (always-tail fix) | 1 session, 5 handoffs | `ACCEPTANCE.md` + `SPEC.md` + `VERIFICATION.md` + `FOLLOWUPS.md` + **canonical-template fix** (uncommitted) |
+
+### Actual metrics (dead-time excluded)
+
+| Metric | RF | CF-pre | CF-fresh |
+|---|---|---|---|
+| Turns | 212 | **101** | 113 |
+| Total input tokens | 21,823,752 | **14,636,519** | 20,931,896 |
+| Total cached | 21,186,176 | 13,589,888 | 20,015,104 |
+| Total cache writes (miss) | 637,576 | 1,046,631 | 916,792 |
+| Cached-read % | 97.1% | 92.8% | 95.6% |
+| Output tokens | 194,462 | 107,898 | 182,112 |
+| Output per 1M input | 8,911 | 7,372 | 8,700 |
+| Handoff cold-start penalty (swap-seq, excl. first turn) | 166,395 | 248,151 (389,267 raw) | **42,311** |
+| Handoff penalty — prior metric (per-stage first-turn, incl. cold start) | 152,201 | 217,643 | 37,771 |
+| Cache wipes | 0 | **10 (643,712 re-charged)** | 0 |
+| First-turn cache reuse | 6.8–9.1% | 26–86% | **92–98%** |
+| Wall time (dead-excluded) | 38m 21s | **19m 10s** | 33m 50s |
+| Real cost (hit $0.07 / miss $0.27 / out $1.10) | **$1.869** | **$1.353** | $1.849 |
+
+> **Metric correction (2026-08-04):** the handoff cold-start penalty was recomputed
+> after review findings M1/M2 — it now excludes the session's first turn (initial cold
+> start, not a handoff) and counts every agent change in the chronological swap
+> sequence (correction loops + orchestrator wake-ups). CF-PRE's value is
+> data-source-dependent: the attribution-fixed live log reports 248,151 (the
+> corruption turn is relabeled 'typescript', hiding the real persona swap), while
+> the raw backup log reports the mechanically-correct 389,267 (corruption blow =
+> 142,140 counted as the handoff it was). Raw backup: `/tmp/cf-session-backup.jsonl`.
+> All other metrics (totals, cost, cached-read %, output) are unaffected.
+
+> **Verified additions (2026-08-04, from raw-capture replay + transcript forensics):**
+>
+> **Wipe-tax counterfactual (CF-pre):** the 10 floor wipes reproduce exactly from the
+> raw log — the 10 turns where provider cached-token count dropped, ΣΔcached =
+> **643,712** (61.5% of all 1,046,631 uncached; 4.4% of 14.6M total). All 10 are
+> handoff-adjacent (5 boundaries × 2 turns + 1 mid-stage corruption at g67) — zero
+> scattered. Wipe tax at $0.07/$0.27/$1.10 = **$128.74 = 9.5%** of CF-pre's cost.
+> No-wipe counterfactual: CachRd 97.25%, cost **$1,223.83** — would beat RF by 34.5%.
+> Even with the bug, CF-pre beats RF by 27.6%. The wipe-tax explains only ~25% of the
+> $0.516 cost gap; ~$0.39 of the saving is structural (turn count 101 vs 212).
+>
+> **Tool-call census (RF vs CF-pre, from transcripts):** RF made **306** tool calls vs
+> CF-pre's **127** (2.4×). The gap is reading, not writing: `read` 81 vs 14 (**5.8×**),
+> `bash` 149 vs 74 (2×), `grep` 15 vs 3 (5×), gitnexus 10 vs 0. edit+write nearly equal
+> (RF 18, CF-pre 27) — both arms did comparable authoring. Per-stage cold starts are
+> the read-tax: every RF stage re-uploaded its full SP and re-derived repo state.
+>
+> **Per-stage accounting (dead-time excluded, aggregator `--json`):** full stage tables
+> (turns/tokens/cached/uncached/CachRd/out/cost per stage) are recorded in the
+> forensics report; headline deltas: CF-pre typescript 54 turns/9.0M vs RF 80/10.7M;
+> CF-pre review 10 turns/2.1M vs RF 50/4.7M; CF-pre orchestrator 5 turns/277K/$30 vs
+> RF dispatcher 18 turns/1.03M/$100 (3.7× cheaper). CF-pre sends 41% more tokens/turn
+> (144,916 vs 102,942) but has 52% fewer turns — turn count dominates the volume gap.
+>
+> **CF-fixed vs CF-pre cost inversion — the always-tail narration tax (verified):**
+> v4's always-tail persona re-injection (cf-rewrite.mjs:176-183) makes the model
+> re-narrate identity/protocol every turn: 71 identity-pattern lines + 23 tooling-
+> disclosure blocks in CF-fixed vs 31 and 0 in CF-pre (persona sat at index 1, not
+> re-salient). Output tokens: CF-fixed 182,112 vs CF-pre 107,898 (1.7×). This is a
+> v4 design trade-off (documented v2 cost, RESUME.md:36) — the *better-cached* run is
+> the more expensive one partly because its cache correctness re-triggers narration.
+>
+> **"RF brief mandated more work" claim — SUBSTANTIATED (2026-08-04):** RF's
+> dispatcher briefs explicitly demanded independent gate re-runs ("Run the gates
+> YOURSELF and record real exit codes" — rf-035dd677.md:8180; "Gates — all must exit
+> 0... prove the templates end-to-end... `npx nx run <probe>:verify-dist-load` and
+> report the exit codes" — rf-035dd677.md:4638-4643) and RF executed them: 77 nx
+> test/build/lint runs, 14 gitnexus calls, gates table with real exit codes
+> (rf-035dd677.md:677-692), "13/13 PASS — every criterion verified with file reads at
+> exact paths and real exit codes" (:692). CF-pre's toolset lacked gitnexus/memory/
+> task entirely (cf-prefix-035ef41f5.md msg 222). Part of the 212-vs-101 turn gap is
+> mandated rigor, not pure session structure — v0.0.2 must control prompt/toolset
+> equality before attributing the full gap to architecture.
+
+### The three headline results
+
+**1. CF-pre beat RF dramatically — implementing fundamentally the same solution.**
+CF-pre delivered the same fix (regex-patch generator output, same `generator.ts` target,
+committed-equivalent worktree state) at:
+- **~72% of the dollar cost** ($1.353 vs $1.869)
+- **half the wall time** (19m vs 38m)
+- **half the turns** (101 vs 212)
+- **67% of the total tokens** (14.6M vs 21.8M)
+- similar output-per-million-tokens (7,372 vs 8,911 — within 17%)
+- **despite dramatically lower cache reuse** (first-turn 26–86% vs RF's 6.8–9.1% is actually *higher*, but overall cached-read 92.8% vs 97.1% is lower, AND it paid 10 wipes = 643K re-charged tokens)
+
+CF-pre won because the single shared session eliminated RF's per-stage cold starts:
+RF re-computes its full context at every stage boundary (166K swap-sequence cold-start
+penalty across 6 sessions); CF-pre carried the context forward but paid the wipe-tax at
+handoffs (248K from the fixed log; 389K mechanically, incl. the 142K corruption blow —
+worse than RF's 166K — the wipe bug made handoffs *more* expensive than RF's cold
+starts) — yet the shared-context benefit on the *within-stage* turns still swamped it.
+
+**2. CF-fresh implemented a dramatically better solution than either arm — but spent ~99% of RF's real cost.**
+CF-fresh is the only arm that fixed the *root cause*: it replaced the regex-patching
+approach with **canonical-template replacement** (`shared/templates.ts`), eliminating the
+whole class of "regex silently misses after a migration" bugs (documented in
+`templates.ts`'s own header). It also fixed the entrypoint `tsconfig` outDir that
+RF and CF-pre both left stale (`../../dist/entrypoint`), added `ensurePlaceholderSpec`
+(test-target guarantee), and produced deeper spec coverage (plugin + entrypoint + base
+specs). But that superior solution cost **$1.849 = 98.9% ≈ 99% of RF's $1.869 real cost** (20.9M tokens = 96% of RF's 21.8M by volume) — the
+shared-session design made every later-stage turn re-send the full accumulated context
+(~266–282K/turn in review vs RF's ~125K), so the "better fix" burned nearly RF's entire
+token budget.
+
+**3. The token-efficiency ordering is INVERTED from the cache-efficiency ordering.**
+- Cache efficiency: RF (97.1%) > CF-fresh (95.6%) > CF-pre (92.8%)
+- Dollar cost: CF-pre ($1.35) < CF-fresh ($1.85) < RF ($1.87)
+- Tokens to ship: CF-pre (14.6M) < CF-fresh (20.9M) < RF (21.8M)
+
+The run that *shipped the solution cheapest* (CF-pre) had the *worst* cache efficiency.
+The run with the *best solution* (CF-fresh) cost nearly as much as RF. Cache-read %
+does not predict cost — total turn count and per-turn context size dominate.
+
+### Quality comparison (from the delivered files)
+
+| | RF | CF-pre | CF-fresh |
+|---|---|---|---|
+| Fix approach | regex-patch | regex-patch | **canonical template** |
+| New template file | — | — | `shared/templates.ts` |
+| Entrypoint tsconfig outDir | `../../dist/entrypoint` (stale) | `../../dist/entrypoint` (stale) | `dist` (fixed) |
+| test target | patched | patched | `ensurePlaceholderSpec` |
+| Spec files | plugin spec | plugin + dbg (tmp) | plugin + entrypoint + base |
+| Git commit | `fa470a4f` | (uncommitted) | (uncommitted) |
+| Correction loop (product#2) | 12 turns | 4 turns | 11 turns |
+
+**User's quick assessment (2026-08-04):** CF-fresh implemented a dramatically better
+solution than either of the other two — the only arm that fixed the root cause
+(regex-patching was the bug) rather than patching symptoms. RF and CF-pre both
+regex-patched; only CF-fresh replaced the contract.
+
+**Verified three-arm code scores (2026-08-04, reviewer on verified ground truth — all 12
+code files esbuild-parse-clean):**
+
+| Criterion (weight) | RF | CF-pre | CF-fresh |
+|---|---|---|---|
+| Correctness/functionality (0.25) | 6.0 | 6.5 | 9.0 |
+| Architecture/design (0.20) | 4.0 | 4.5 | 9.0 |
+| Code quality/maintainability (0.15) | 6.0 | 6.5 | 8.5 |
+| Edge-case robustness (0.15) | 6.0 | 6.5 | 8.5 |
+| Completeness vs spec (0.15) | 5.0 | 5.5 | 9.0 |
+| Tests (0.10) | 7.0 | 7.5 | 8.0 |
+| **Weighted total** | **5.55** | **6.05** | **8.75** |
+
+Scoring basis (byte-verified): RF = commit `fa470a4f` (transcript-confirmed);
+CF-pre = raw-capture reconstruction in `file-writes/cf_pre_true/` (baseline 6f4d2c38 + 11
+unique edits replayed, 0 failures); CF-fresh = byte-identical to cf-run worktree.
+
+Notable verified findings: **CF-pre ships a real defect** — `release.version.
+generatorOptions.packageRoot = '{projectRoot}/dist'` (generator.ts:179-181) contradicts
+the reference's source-root convention (`apigen-plugin-batch/project.json:9`) and is
+test-locked as ground truth (plugin/generator.spec.ts:108). **RF's `nx-release-publish`
+dependsOn is truncated to `['build','test']` and gated on `!pub.dependsOn`** (committed
+generator.ts:239-240) — silently drops verify-dist-load/dist-manifest/publish-hygiene in
+the common case. **RF has the best test-teeth idea** — `@nx/vite/plugin` registration in
+the spec's `beforeEach` (the only suite that catches the pre-fix state) — worth porting.
+AC-8 gate-count note: the ground-truth reference lists FIVE gates (no `assets`);
+CF-fresh matches it exactly, CF-pre's six-gate list is a superset.
+
+**Attribution verdict (2026-08-04, decision-attribution forensics):** the persona system
+explains **reliability** (0 wipes, 92-98% handoff reuse) and a per-turn narration tax
+(CF-fixed 71 identity lines / 23 disclosure blocks vs CF-pre 31 / 0 → 1.7× output tokens).
+It does NOT explain cost or quality. CF-pre's cost win = single-session structure +
+replicable discipline (no re-reads, feasibility checks, one e2e) + two run-specific
+factors (a skipped red→green gate, broken-cache narration suppression). CF-fixed's
+quality win = replicable engineering (stage-0 full-file read, real-scaffold probing,
+empirical teeth) by byte-identical personas. Session structure → the RF-beating cost win;
+agent decisions + sampling variance → the quality gap. Full decision evidence: Q7 below.
+
+---
+
+## Open Questions — v0.0.1 (for v0.0.2 design)
+
+**Q1 — How did CF-pre beat RF with almost identical behavior?** → **ANSWERED (2026-08-04, raw-capture replay).**
+CF-pre's persona was placed at message-array index 1 ("Go") on **67 of 71 turns** (verified
+by replaying the pre-fix rewrite against the exact captured message arrays — only the 4
+handoff turns put it on the tail). That means CF-pre's forwarded requests had the persona
+in nearly the same position as... what RF does with a full SP at position 0? The
+*behavioral* difference between the arms is tiny (persona placement), yet the *cost*
+difference is 33%. **Verdict: CF-pre's win is the single-session vs multi-session structure
+(no per-stage cold start), independent of persona placement.** Evidence: the persona at
+index 1 was byte-identical within each stage → provider prefix stayed valid → 99.5-100%
+savings on ~90 of 101 turns; the 10 wipes all correlate exactly with handoffs (5
+boundaries × 2 turns + 1 mid-stage corruption g67), zero scattered. The placement bug
+concentrated its damage at stage boundaries and was inert elsewhere. The v4 fix's value is
+reliability (0 wipes, 92-98% handoff reuse), not cost — the wipe-tax counterfactual
+($1,223.83, 97.25% CachRd) matches the v4 run's behavior, but CF-fresh still spent more
+because it did more work.
+
+**Q2 — Is "cached read %" the right metric?** → **ANSWERED: no, it's a ratio that rewards
+small contexts.** CF-pre had the *worst* cached-read % (92.8%) but the *lowest* cost.
+Cached-read % doesn't capture total work. Total input tokens, total turns, and dollar cost
+are the economically meaningful numbers — CF-pre wins all three. Cache ordering (RF 97.1 >
+CF-fresh 95.6 > CF-pre 92.8) is fully INVERTED from cost ordering (CF-pre $1.35 < CF-fresh
+$1.85 < RF $1.87). Cache-read % does not predict cost; turn count × per-turn context size
+dominates.
+
+**Q3 — Output tokens ≠ value.** (unchanged — open)
+
+**Q4 — What does "more efficiently" mean when the best solution costs the most?** → sharpened
+(2026-08-04): the cost/quality inversion is NOT caused by the persona system. CF-fixed's
+superior solution was produced by replicable engineering decisions (full-file read at
+stage 0, real-scaffold probing, empirical red→green teeth) made by agents whose personas
+and tools were byte-identical to CF-pre's (registry `~/.config/opencode/agents/*.md`,
+cf-proxy.mjs:66-100). CF-fixed's extra cost = more scope of work (entrypoint fix, nx.json
+AC-7, placeholder spec, teeth experiment, pnpm install) + the always-tail narration tax.
+The experiment design still does not define the value trade-off — v0.0.2 must.
+
+**Q5 — The wipe-tax paradox.** → **ANSWERED: the fix's value is reliability, not raw cost.**
+CF-pre paid 10 wipes / 643,712 re-charged tokens (a pure bug cost, $128.74 = 9.5% of its
+cost) and STILL won at $1.353. The no-wipe counterfactual is $1,223.83 (97.25% CachRd).
+The v4 fix eliminated the wipes but the fresh run cost more (20.9M) because it did more
+work — and the always-tail re-injection adds a per-turn narration tax (~1.7× output tokens:
+182K vs 108K). Reliability (0 wipes, 92-98% handoff reuse) is the fix's measurable value.
+
+**Q6 — Tool behavior is orthogonal to cache efficiency.** → sharpened (2026-08-04): the
+tool-call census shows CF-pre made 127 calls vs RF's 306 — so the CF-vs-RF delta IS
+largely tool-call driven (RF's per-stage cold starts + mandated independent re-verification
+produced 5.8× the reads). But WITHIN the two CF arms, cache efficiency does not drive tool
+calls: CF-fixed made more calls/turn than CF-pre despite better caching. Cache saves
+re-send tokens, not tool calls.
+
+**Q7 — What decisions made CF-pre cheaper, and are they attributable to the persona system?**
+→ **ANSWERED (2026-08-04, decision-attribution forensics): NO — the persona system explains
+reliability only, not cost or quality.**
+- CF-pre's cost decisions (each verified in-transcript): (D1) feasibility check
+  (`node_modules: PRESENT` before planning, cf-prefix:1564 — CF-fixed's worktree lacked
+  node_modules and the typescript stage had to pnpm install, cf-fresh:2904/2934);
+  (D2) explicit cross-stage reuse of in-session reads ("already read" — cf-prefix:1712,
+  2285, git diff instead of re-reads :4050); (D3) read @nx source to pin patch points
+  (:1998) — quality-neutral; (D4) one exit-code-gated e2e + reference-package comparison
+  that found the 4th stale artifact (:3432, :3567-3634); (D5) review accepted
+  "structurally guaranteed" teeth without the empirical revert (:4506) — a verification
+  skip, the repo's own BL-225 anti-pattern; (D6) broken-cache luck: persona at index 1
+  suppressed per-turn identity narration (67/71 turns).
+- D1/D2/D4 are REPLICABLE good engineering; D5/D6 are RUN-SPECIFIC (D5 is a skipped gate,
+  D6 is the corruption bug itself).
+- CF-fixed's quality decisions (Q2 chain): stage-0 full-file read found entrypoint outDir
+  (cf-fresh:1103); product encoded it as AC-6 (:1613-1620); architect chose "own the
+  emitted template" over "patch-and-drift" (cf-fresh:2015, SPEC.md:9) triggered by the
+  FEATURE's "update the templates" direction (:337) + the drifted spec assertion (:1390);
+  typescript's real-scaffold probes found the 4th artifact (:3719) and the `},,` bug
+  (:3263); review ran the empirical red→green CF-pre declined (:4802/4840 vs :4506).
+- **Attribution verdict:** personas are byte-identical between arms; the rewrite's only
+  mechanism is cache placement; every quality decision's trigger is a code read, not
+  persona text. Persona system → reliability (0 wipes, 92-98% reuse) and a per-turn
+  narration tax. Session structure → the RF-beating cost win (shared by both CF arms).
+  Agent decisions + sampling variance → the quality gap.
+- Unverifiable confounds: per-run registry staleness (RESUME.md:120-121), LLM sampling
+  variance.
+
+**Q8 — How do we know the transcripts reflect what the arms actually executed?**
+→ **ANSWERED: the cf_pre code snapshot is now reconstructed from the raw capture, not the
+transcript.** The original `file-writes/cf_pre/` snapshot was corrupted (306/307 lines
+line-number-prefixed, truncated .mjs, fabricated `ln:` regex at line 181 that exists in no
+real tree). The verified reconstruction lives in `file-writes/cf_pre_true/`: baseline
+6f4d2c38 + the session's 11 unique edit calls replayed in order (0 failures, esbuild-parse
+clean). It contains the correct outDir regex (:195) and the full six-gate dependsOn
+(:258-265) — NOT the fabricated `ln:` regex. The `~/dev/.sdlc-experiments/arm-{rf,cf}/
+BUG-WORKSPACE-GEN-006` worktrees are from an EARLIER run (branched 15:16 vs session 23:58)
+and must not be used as cf_pre/cf_fresh ground truth. rf/ snapshot = byte-identical to
+commit fa470a4f (verified); cf_fresh/ = byte-identical to cf-run worktree (verified).

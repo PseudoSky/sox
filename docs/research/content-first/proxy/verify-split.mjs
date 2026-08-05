@@ -3,147 +3,122 @@
  * verify-split.mjs — Test that splitSystemPrompt correctly separates
  * shared boilerplate from agent-specific role content.
  *
- * Usage: node proxy/verify-split.mjs [proxy-cf-v4-flash.jsonl]
+ * Uses the REAL splitSystemPrompt from cf-rewrite.mjs (no inline copy — the
+ * old inline copy rotted when the function moved; this was "Split FAIL: 2"
+ * testing a dead function against a stale untracked fixture).
+ *
+ * Validates against CURRENT per-session logs: raw_request.full_body.messages
+ * (system prompt at role=system). Usage:
+ *   node verify-split.mjs [proxy-ses_<id>.jsonl]
+ *   node verify-split.mjs --selftest   (no log file needed)
  */
 
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import { splitSystemPrompt } from './cf-rewrite.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
-// ── Copy of splitSystemPrompt from cf-proxy.mjs ──
-
+// ── Real agent bodies (registry) — for the selftest assertions ──
 const AGENT_DIR = path.join(process.env.HOME || '/Users/nix', '.config', 'opencode', 'agents');
+const _agentBodies = [];
+try {
+  for (const file of fs.readdirSync(AGENT_DIR)) {
+    if (!file.endsWith('.md')) continue;
+    const raw = fs.readFileSync(path.join(AGENT_DIR, file), 'utf8');
+    const body = raw.replace(/^---[\s\S]*?---\n+/, '').trim();
+    if (body.length > 100) _agentBodies.push({ name: file.replace('.md', ''), body });
+  }
+} catch (e) { console.error('Failed to load agents:', e.message); }
 
-function loadAgentBodies() {
-  const agents = [];
-  try {
-    for (const file of fs.readdirSync(AGENT_DIR)) {
-      if (!file.endsWith('.md')) continue;
-      const raw = fs.readFileSync(path.join(AGENT_DIR, file), 'utf8');
-      const body = raw.replace(/^---[\s\S]*?---\n+/, '').trim();
-      if (body.length > 100) agents.push({ name: file.replace('.md', ''), body });
-    }
-  } catch (e) { console.error('Failed to load agents:', e.message); }
-  return agents;
+// ── Extract (system, user_last) pairs from a CURRENT per-session log ──
+// Current format: raw_request.full_body.messages[] with role=system first.
+function extractRequests(logFile) {
+  const requests = [];
+  const lines = fs.readFileSync(logFile, 'utf8').trim().split('\n').filter(Boolean);
+  for (const line of lines) {
+    let d;
+    try { d = JSON.parse(line); } catch { continue; }
+    let messages = null;
+    if (d.event === 'raw_request' && d.full_body?.messages) messages = d.full_body.messages;
+    else if (d.messages) messages = d.messages; // legacy flat format
+    if (!messages) continue;
+    const sys = messages.find(m => m.role === 'system');
+    if (!sys) continue;
+    const userMsgs = messages.filter(m => m.role === 'user');
+    requests.push({
+      system: typeof sys.content === 'string' ? sys.content : JSON.stringify(sys.content),
+      user_last: userMsgs.length ? (typeof userMsgs[userMsgs.length - 1].content === 'string'
+        ? userMsgs[userMsgs.length - 1].content : JSON.stringify(userMsgs[userMsgs.length - 1].content)) : '',
+    });
+  }
+  return requests;
 }
-const _agentBodies = loadAgentBodies();
 
-function splitSystemPrompt(system) {
-  if (!system) return { shared: '', agentRole: '', method: 'empty' };
-
-  let bestMatch = '';
-  let bestName = '';
-  for (const agent of _agentBodies) {
-    if (system.startsWith(agent.body)) {
-      if (agent.body.length > bestMatch.length) {
-        bestMatch = agent.body;
-        bestName = agent.name;
-      }
-    }
+// ── Self-test: no log file required. Builds synthetic SPs from the real
+//    agent registry and asserts the split contract. ──
+function selftest() {
+  let pass = 0, fail = 0;
+  const results = [];
+  for (const agent of _agentBodies.slice(0, 6)) {
+    const shared = '# Shared boilerplate\n## Rules\n- never write outside worktree\n\n## Disclosure\n- log bugs to BACKLOG.md\n';
+    const sp = `${agent.body}\n\n${shared}`;
+    const r = splitSystemPrompt(sp, new Map(_agentBodies.map(a => [a.name, { systemPrompt: a.body }])));
+    const ok = r.agentRole.length > 0 && r.shared.includes('Shared boilerplate');
+    const method = r.agentRole.length > 50 ? 'matched' : 'fallback';
+    results.push({ agent: agent.name, ok, roleLen: r.agentRole.length, sharedLen: r.shared.length, method });
+    ok ? pass++ : fail++;
   }
-
-  if (bestMatch.length > 50) {
-    return {
-      agentRole: bestMatch,
-      shared: system.slice(bestMatch.length).trim(),
-      method: `matched agent "${bestName}" (${bestMatch.length} chars)`,
-    };
+  console.log(`\n── Self-test (${pass + fail} agent SPs, no log file) ──`);
+  for (const r of results) {
+    console.log(`  ${r.ok ? '✅' : '❌'} ${r.agent}: role=${r.roleLen}c shared=${r.sharedLen}c (${r.method})`);
   }
-
-  return { shared: '', agentRole: system, method: 'fallback (no match)' };
+  console.log(`Self-test: ${pass} passed, ${fail} failed`);
+  return fail === 0;
 }
 
 // ── Main ──
+if (process.argv[2] === '--selftest') {
+  process.exit(selftest() ? 0 : 1);
+}
 
 const logFile = process.argv[2];
 if (!logFile) {
-  // No arg: use the latest proxy log from proxy/ dir
+  // No arg: use the most recent per-session log in proxy/
   const files = fs.readdirSync(__dirname)
-    .filter(f => f.endsWith('.jsonl') && f.startsWith('proxy-'))
+    .filter(f => f.endsWith('.jsonl') && f.startsWith('proxy-ses_'))
     .sort()
     .reverse();
   if (files.length === 0) {
-    console.error('No proxy log files found. Usage: verify-split.mjs <jsonl-file>');
+    console.error('No per-session proxy log files found. Pass one explicitly, or use --selftest.');
     process.exit(1);
   }
-  // Use the latest one
   process.argv.push(path.join(__dirname, files[0]));
 }
 
-const data = fs.readFileSync(process.argv[2], 'utf8');
-const lines = data.trim().split('\n').filter(Boolean).map(l => JSON.parse(l));
+const requests = extractRequests(process.argv[2]);
+console.log(`\nLoaded ${requests.length} requests from ${process.argv[2]}`);
 
-console.log(`\nLoaded ${lines.length} calls from ${process.argv[2]}\n`);
+let ok = 0, failed = 0;
+const agentMap = new Map(_agentBodies.map(a => [a.name, { systemPrompt: a.body }]));
 
-for (let i = 0; i < lines.length; i++) {
-  const d = lines[i];
-  const system = d.system || '';
-  const result = splitSystemPrompt(system);
-
-  console.log(`Call ${i}: ${d.passthrough ? 'RF (passthrough)' : 'CF (rewrite)'}  depth=${d.conversation_depth}`);
-  console.log(`  Method: ${result.method}`);
-
-  // Check where the agent role lands in the forwarded messages
-  const userStart = d.user_first || '';
-  const userEnd = d.user_last || '';
-
-  if (result.method.startsWith('matched')) {
-    const roleInUser = !d.passthrough && userEnd.includes(result.agentRole.slice(0, 20));
-    const roleInSystem = result.agentRole && system.includes(result.agentRole.slice(0, 20));
-
-    console.log(`  ✅ SPLIT OK`);
-    console.log(`     Shared boilerplate: ${result.shared.length} chars (${Math.round(result.shared.length / 4)}t)`);
-    console.log(`     Agent role:         ${result.agentRole.length} chars (${Math.round(result.agentRole.length / 4)}t)`);
-    console.log(`     System start: ${result.shared.slice(0, 80).replace(/\n/g, ' ')}`);
-    console.log(`     System end:   ...${result.shared.slice(-80).replace(/\n/g, ' ')}`);
-
-    // Confirm agent role is in user message (not in system prompt)
-    if (roleInSystem) {
-      console.log(`  ❌ Agent role FOUND in system prompt — split reversed?`);
-    } else {
-      console.log(`  ✅ Agent role NOT in system prompt`);
-    }
-    if (roleInUser) {
-      console.log(`  ✅ Agent role CONFIRMED at end of user message:`);
-      console.log(`     ...${userEnd.replace(/\n/g, ' ')}`);
-    } else {
-      console.log(`  ⚠️  Could not confirm agent role in user_last, checking user_first...`);
-      // The role might be long; check if user_start starts with the task
-      console.log(`     user_start: ${userStart.replace(/\n/g, ' ')}`);
-    }
+for (let i = 0; i < requests.length; i++) {
+  const { system, user_last } = requests[i];
+  const result = splitSystemPrompt(system, agentMap);
+  const isMatch = result.agentRole.length > 50;
+  console.log(`Request ${i}: method=${isMatch ? 'matched' : 'fallback'} | shared=${result.shared.length}c role=${result.agentRole.length}c`);
+  if (isMatch) {
+    console.log(`  ✅ SPLIT OK — role NOT in system: ${!system.includes(result.agentRole.slice(0, 30))}`);
+    ok++;
   } else {
-    console.log(`  ❌ SPLIT FAILED`);
-    console.log(`     System prompt: ${system.length} chars`);
-    console.log(`     First 80: ${system.slice(0, 80).replace(/\n/g, ' ')}`);
+    console.log(`  ❌ SPLIT FAILED — system=${system.length}c`);
+    failed++;
   }
-
-  // Token numbers from the proxy
-  if (d.cf_tokens) {
-    console.log(`     Tokens: ${d.cf_tokens}t in, ${d.cf_cached}t cached (${d.cf_output}t out)`);
-  }
-  if (d.rf_tokens) {
-    console.log(`     Tokens: ${d.rf_tokens}t in, ${d.rf_cached}t cached (${d.rf_output}t out)`);
-  }
-  console.log('');
 }
 
-// Summary
-const withSplit = lines.filter(l => splitSystemPrompt(l.system || '').method.startsWith('matched'));
-const failed = lines.filter(l => !splitPrompt(l.system || '').method.startsWith('matched'));
-
-function splitPrompt(s) { return splitSystemPrompt(s); }
-
-console.log(`--- Summary ---`);
-console.log(`Total calls: ${lines.length}`);
-console.log(`Split OK:    ${withSplit.length}`);
-console.log(`Split FAIL:  ${failed.length}`);
-
-if (withSplit.length > 0) {
-  const avgRole = withSplit.reduce((s, l) => s + splitPrompt(l.system).agentRole.length, 0) / withSplit.length;
-  const avgShared = withSplit.reduce((s, l) => s + splitPrompt(l.system).shared.length, 0) / withSplit.length;
-  console.log(`Avg agent role:     ${Math.round(avgRole)} chars (${Math.round(avgRole / 4)}t)`);
-  console.log(`Avg shared boilerplate: ${Math.round(avgShared)} chars (${Math.round(avgShared / 4)}t)`);
-  console.log(`Avg savings per agent switch: ${Math.round(avgShared / (avgRole + avgShared) * 100)}% of prompt cached`);
-}
+console.log(`\n--- Summary ---`);
+console.log(`Total requests: ${requests.length}`);
+console.log(`Split OK:       ${ok}`);
+console.log(`Split FAIL:     ${failed}`);
+process.exit(failed === 0 ? 0 : 1);
