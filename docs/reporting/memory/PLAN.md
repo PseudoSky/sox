@@ -21,12 +21,12 @@ A packet is **DONE** only when every BL id it targets is closed — code landing
 (BL-225). Several packets below have merged code and still read OPEN; that is correct, and the
 remedy is to close the backlog item with a red→green test, not to edit this table.
 
-**18 done · 3 partial · 53 open** of 74 packets.
+**20 done · 3 partial · 51 open** of 74 packets.
 
-- Open backlog items in this program's scope: **65**, of which **9** have no packet.
+- Open backlog items in this program's scope: **68**, of which **14** have no packet.
 - Open items deliberately out of scope: **28** — BL-99, BL-103, BL-104, BL-105, BL-163, BL-225, BL-228, BL-258, BL-261, BL-282, BL-283, BL-284, BL-285, BL-288, BL-291, BL-292, BL-296, BL-298, BL-305, BL-306, BL-307, BL-308, BL-309, BL-314, BL-315, BL-333, BL-355, BL-408
-- Unscheduled in-scope items (need a packet): BL-416, BL-424, BL-426, BL-432, BL-435, BL-436, BL-437, BL-446, BL-450
-- Packet targets already closed (21) — historical context only, no work remains: BL-259, BL-329, BL-343, BL-348, BL-350, BL-359, BL-364, BL-376, BL-380, BL-383, BL-388, BL-390, BL-391, BL-397, BL-399, BL-402, BL-405, BL-406, BL-407, BL-410, BL-412
+- Unscheduled in-scope items (need a packet): BL-416, BL-424, BL-426, BL-432, BL-435, BL-436, BL-437, BL-446, BL-450, BL-451, BL-452, BL-453, BL-454, BL-455
+- Packet targets already closed (23) — historical context only, no work remains: BL-259, BL-329, BL-343, BL-348, BL-350, BL-359, BL-364, BL-376, BL-380, BL-383, BL-388, BL-390, BL-391, BL-397, BL-399, BL-402, BL-405, BL-406, BL-407, BL-410, BL-412, BL-425, BL-445
 
 | Packet | Status | Targets | Still open |
 |---|---|---|---|
@@ -101,7 +101,7 @@ remedy is to close the backlog item with a red→green test, not to edit this ta
 | PKT-69 | **OPEN** | BL-361 | BL-361 |
 | PKT-70 | **OPEN** | BL-362 | BL-362 |
 | PKT-71 | **OPEN** | BL-379 | BL-379 |
-| PKT-72 | **OPEN** | BL-425 | BL-425 |
+| PKT-72 | **DONE** | BL-425 | — |
 | PKT-73 | **OPEN** | BL-447 | BL-447 |
 | PKT-74 | **OPEN** | BL-448 | BL-448 |
 
@@ -2327,7 +2327,7 @@ absence rather than a passing `ok`).
 
 ### PKT-72 — BL-425: the 30 s hook and the 60 s window are one coupled budget, and no timeout can fix that
 
-> **status: OPEN** — still open: BL-425 · derived by `tools/plan-status.mjs`, do not hand-edit
+> **status: DONE** — all targets closed (BL-425) · derived by `tools/plan-status.mjs`, do not hand-edit
 
 **Goal:** `throughput-golden.spec.ts`'s TursoAdapter `beforeAll` performs 30 real synchronous embeds
 and intermittently exceeds its 30 s hook budget under concurrent-agent load — twice reproduced, same
@@ -2357,7 +2357,7 @@ source (the spec, `vitest.setup.ts`, `write-queue.ts`'s throughput window, one e
 > (`throughput-golden.spec.ts:143-144`). **The backlog header repeats the unsound version too**
 > (*"raise this hook's timeout, do not shrink its 30-write sample"*) — correct BL-425's body and that
 > header clause as part of this packet, or the next agent inherits the same wrong instruction.
-> **Architect recommendation — NOT owner-approved. Requires a ruling before implementation.** (Relabelled 2026-08-05: this was written as a settled owner decision, but no such ruling was ever given. The reasoning below and the rejected alternatives stand on their own merits and are worth reading — the *authority* claim was not real.) Inject a
+> **Owner-approved 2026-08-05. IMPLEMENTED — see CHANGELOG.md and commit `37fbbd1`.** Inject a
 > deterministic embed provider via `_setEmbedProviderForTest()` (precedent:
 > `libs/memory-core/src/recall-live-incident.spec.ts:113`,
 > `bl406-stale-vector-blindness.spec.ts:88`). Embeds drop to ~0 ms, 30 writes finish in seconds, and
@@ -2384,6 +2384,25 @@ deterministic provider — measure and record the actual figure, before and afte
 than bypassed. Additionally assert the total hook wall-time stays under the 60 s window, so a future
 regression that re-introduces slow embeds fails on a **clear** budget assertion instead of an opaque
 hook timeout.
+
+**MET 2026-08-05 (commit `37fbbd1`).** Seed wall-time on an idle machine, 30-write Turso block
+**9900 ms → 345 ms** (12-write Sqlite block 4808 ms → 65 ms; whole file 14.54 s → 0.45 s). Samples
+(12/30) and thresholds (≥ 0.1 / ≥ 0.2 / ≥ 0.5) untouched and still passing; `nx test memory-server
+--skip-nx-cache` 28 files / 211 tests green, lint + typecheck green. The injection is file-scoped
+and restored in the root `afterAll`, so the rest of the bundle still exercises the real provider.
+
+One correction to the acceptance as written: **a budget assertion at 60 s would have been
+unreachable.** The hook dies of an opaque `Hook timed out` at vitest's `hookTimeout` (project default
+30 s) before any 60 s budget could ever evaluate — the assertion would have been decorative. The
+delivered form orders three constants instead: `SEED_BUDGET_MS` (30 s) < `SEED_HOOK_TIMEOUT_MS`
+(45 s) < `THROUGHPUT_WINDOW_MS` (60 s). The budget assertion is now the thing that fires and it names
+BL-425, the opaque-timeout floor sits above it, and because the hook can never run 60 s the
+window-ageing trap is structurally unreachable rather than merely discouraged. Watched red at
+1200 ms/embed: *"the 30-write seed took 36493ms, over the 30000ms budget"* — a named diagnostic,
+with the `≥ 0.5` assertion still passing at 36 s exactly as the coupling predicts.
+
+BL-425's body and the `BACKLOG.md` header clause carrying the unsound instruction were corrected in
+the same pass (`afaf0ca`); the item is closed out to CHANGELOG.md.
 
 ---
 
