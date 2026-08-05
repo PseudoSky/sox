@@ -21,11 +21,11 @@ A packet is **DONE** only when every BL id it targets is closed — code landing
 (BL-225). Several packets below have merged code and still read OPEN; that is correct, and the
 remedy is to close the backlog item with a red→green test, not to edit this table.
 
-**18 done · 3 partial · 51 open** of 72 packets.
+**18 done · 3 partial · 53 open** of 74 packets.
 
-- Open backlog items in this program's scope: **64**, of which **10** have no packet.
+- Open backlog items in this program's scope: **65**, of which **9** have no packet.
 - Open items deliberately out of scope: **28** — BL-99, BL-103, BL-104, BL-105, BL-163, BL-225, BL-228, BL-258, BL-261, BL-282, BL-283, BL-284, BL-285, BL-288, BL-291, BL-292, BL-296, BL-298, BL-305, BL-306, BL-307, BL-308, BL-309, BL-314, BL-315, BL-333, BL-355, BL-408
-- Unscheduled in-scope items (need a packet): BL-416, BL-424, BL-426, BL-432, BL-435, BL-436, BL-437, BL-446, BL-447, BL-448
+- Unscheduled in-scope items (need a packet): BL-416, BL-424, BL-426, BL-432, BL-435, BL-436, BL-437, BL-446, BL-450
 - Packet targets already closed (21) — historical context only, no work remains: BL-259, BL-329, BL-343, BL-348, BL-350, BL-359, BL-364, BL-376, BL-380, BL-383, BL-388, BL-390, BL-391, BL-397, BL-399, BL-402, BL-405, BL-406, BL-407, BL-410, BL-412
 
 | Packet | Status | Targets | Still open |
@@ -102,6 +102,8 @@ remedy is to close the backlog item with a red→green test, not to edit this ta
 | PKT-70 | **OPEN** | BL-362 | BL-362 |
 | PKT-71 | **OPEN** | BL-379 | BL-379 |
 | PKT-72 | **OPEN** | BL-425 | BL-425 |
+| PKT-73 | **OPEN** | BL-447 | BL-447 |
+| PKT-74 | **OPEN** | BL-448 | BL-448 |
 
 <!-- PLAN-STATUS:END -->
 
@@ -875,137 +877,6 @@ rewritten, only unblocked.
 > **The sweep must not trust self-reported SHAs.** The agent in this incident reported its commits accurately and confidently; the SHAs were real. What was wrong was the unstated assumption about which branch they were on. Enumerate `worktree-agent-*` refs for commits absent from the mainline.
 **Produces:** a commit path that cannot silently strand work on a disposable ref, and a sweep that finds it when one does.
 **acceptance:** a test naming BL-422 that creates a commit on an agent worktree branch from a mismatched agent id and asserts the guard refuses it — or that a sweep reports it as orphaned. The red arm is today's behaviour: the commit succeeds silently and is reachable from one disposable ref.
-
-### PKT-57 — BL-438: resolve the three open forks in the node-typing design before anyone writes code
-
-> **status: OPEN** — still open: BL-438 · derived by `tools/plan-status.mjs`, do not hand-edit
-
-**Goal:** the owner has ruled *"open `kind` and typing within memory-server rather than CHECK enums; it must be indexed"* — direction, not mechanism. Three forks remain open and each changes what PKT-58..PKT-63 build: **(1)** where a consumer type physically lands — new `sub_kind` column *(rec.)* vs. widening `kind` vs. both; **(2)** how the vocabulary is enforced — injected `KindPolicy` closure *(rec.)* vs. a `node_kind` registry table + trigger vs. nothing; **(3)** whether existing stores ever get an open `kind` — never vs. opt-in explicit offline migration *(rec.)* vs. automatic-on-open (**banned — that is BL-295 verbatim**). Plus a fourth surfaced deliberately: does `edge.rel` open in the same pass (rec. *later*)? Left implicit, an agent picks one silently and buries it in an implementation — which is precisely how BL-295 was built and reverted inside 19 minutes.
-**Closes:** BL-438
-**Files:** a new `docs/decisions/00NN-open-node-typing.md`; `docs/reporting/memory/findings/open-node-typing-design.md` (rewrite §4 from options to decision).
-**requires:** none
-**sequencing:** **gates PKT-58, PKT-59, PKT-60, PKT-61, PKT-62, PKT-63.** Nothing in this group starts until the ADR exists.
-**tier:** sonnet, ~45k tokens / ~15 turns — the analysis is done and written down; this is a decision-capture packet, not a research packet.
-**orientation:** ~25k — the design doc carries the fork tables, the BL-295 reconstruction and the SQLite-safety table. **Do not re-derive them.** **Fixed cost.**
-**budget:** ~15 turns / ~60k tokens. Guidance ceiling ~120k; **guidance, not a stop.** Commit by pathspec. **Sub-dispatch only to `general-purpose`/`haiku`/`claude`.**
-> **⛔ This packet does not choose for the owner.** Present the forks, carry the recommendation, and **ask**. This session already had one agent reason past an owner directive; do not be the second.
-> **⛔ Do not open fork 3 by writing "automatic on open".** That is the reverted BL-295 mechanism exactly, and BL-313 — found two days after that revert — proved it cascade-deletes all 40,930 edges silently.
-> **This is the one item in the group exempt from the BL-225 red→green bar**, because a decision record has no runtime behaviour to test. Say so explicitly in the ADR so a later auditor does not read the exemption as an oversight.
-**Produces:** an ADR that each of PKT-58..PKT-63 can cite by section as its authorisation, and a design doc that states a decision instead of a menu.
-**acceptance:** the ADR resolves all four forks with rationale; every downstream packet names the section authorising it; `docs/reporting/memory/findings/open-node-typing-design.md` §4 no longer reads as an open question.
-
-### PKT-58 — BL-439: give consumer types an indexed discriminator, using only operations that cannot rebuild a table
-
-> **status: OPEN** — still open: BL-439 · derived by `tools/plan-status.mjs`, do not hand-edit
-
-**Goal:** `ix_node_kind` is real, live in three code paths (index.ts:105, :226, :319) and populated 10,150/10,150 on the live store — and **no external consumer can reach it.** The sanctioned path is `kind:'generic'` + a sub-kind in `tags`/`meta`, and neither column carries an index of any kind; `fts_node` covers `content, name, summary` only (index.ts:79-82). The query shape is unindexable in principle: every tag filter is a correlated `EXISTS (SELECT 1 FROM json_each(n.tags) WHERE value = ?)` (index.ts:678,683; memory-filters.ts:101,108; recall.ts:445,451), and `json_each` is a table-valued function over a TEXT blob SQLite cannot serve from an index. So the library's six kinds answer "give me all X" from a btree and every consumer gets a full scan.
-**Closes:** BL-439
-**Files:** `libs/data/graph/graph-store/src/index.ts` (node DDL ~:62 and :181, `NODE_INDEX_DDLS` ~:319, `NodeMeta`/`NodeRecord`/`NodeFilter` ~:379,:398,:432, `buildNodeFilterClause` ~:655, `writeNode` ~:863), `drizzle/schema.ts` + a new migration, plus a new spec.
-**requires:** PKT-57
-**sequencing:** **conflicts with FEAT-SOX-001 (Turso adapter) over `applySchema()`** — check for a live owner before editing. Must land before PKT-60 and PKT-62.
-**tier:** sonnet, ~75k tokens / ~28 turns
-**orientation:** ~35k — the design doc's §2 SQLite-safety table and BL-439's body carry every anchor. **Fixed cost.**
-**budget:** ~28 turns / ~105k tokens. Guidance ceiling ~190k; **guidance, not a stop.** Commit by pathspec, incrementally. **Sub-dispatch only to `general-purpose`/`haiku`/`claude`.**
-> **⛔ Use only `ALTER TABLE … ADD COLUMN` and `CREATE INDEX`.** Both are online, metadata-only or btree-only, and exactly reversible (`DROP COLUMN` / `DROP INDEX`). **Do not touch `rebuildTable`.** The moment this packet rebuilds `node`, it is BL-313: `edge.src`/`edge.dst` are `REFERENCES node ON DELETE CASCADE`, `foreign_keys` is always ON here, and `DROP TABLE node_old` silently cascade-deletes every edge — 40,930 of them, no exception, nothing in any log.
-> **Do not "fix" this by adding an index over `tags`.** An index cannot serve `json_each`; the query shape is the defect, not the missing index. A packet that adds `CREATE INDEX … ON node(tags)` and declares victory has changed nothing measurable.
-> **Never open `~/.memory/*`.** Migration round-trip runs against a `cp` of a WAL-consistent backup — the method BL-313's own root-cause used.
-**Produces:** a discriminator an external consumer can write and query through an index, obtained without ever performing the operation that has already cost this store one CRITICAL incident.
-**acceptance:** a test naming BL-439 asserting via `EXPLAIN QUERY PLAN` that a `subKind` query yields `SEARCH node USING INDEX ix_node_sub_kind` with **zero** `json_each` in the plan; the red arm is the tag-based equivalent, whose plan contains `SCAN json_each VIRTUAL TABLE INDEX`. Plus a round-trip against a copy of a real populated store asserting node count, edge count and every existing row unchanged.
-
-### PKT-59 — BL-440: the storage library must stop hard-coding memory's ontology — and must not reacquire a path from a consumer's type to DDL
-
-> **status: OPEN** — still open: BL-440 · derived by `tools/plan-status.mjs`, do not hand-edit
-
-**Goal:** `writeNode` validates against `DEFAULT_NODE_KINDS`, memory's own six types, sitting as a module constant in a generic published storage library (index.ts:257) — and its failure message *instructs consumers to abandon typing*: `"Non-memory reuse (e.g. a component registry) should write kind:'generic' and carry a sub-kind in tags/metadata instead of registering a new kind."` (index.ts:863-869). Under ADR-0007 D1 that constant is in the wrong package outright.
-**Closes:** BL-440
-**Files:** `libs/data/graph/graph-store/src/index.ts` (`DEFAULT_NODE_KINDS` :257, `writeNode` :863-869, `GRAPH_DDL` :62, `INLINE_MIGRATION_DDL` :181, the factory at the file's end), `drizzle/schema.ts`, plus a new spec.
-**requires:** PKT-57
-**sequencing:** **same file as PKT-58 — serialize with it, do not run both at once.** Both must land before PKT-60.
-**tier:** sonnet, ~80k tokens / ~30 turns
-**orientation:** ~40k — read the design doc §1 (why BL-295 died) **and** `git show 0ce39c7 -- libs/data/graph/graph-store/src/index.ts` before writing a line. **Fixed cost.**
-**budget:** ~30 turns / ~115k tokens. Guidance ceiling ~200k; **guidance, not a stop.** Commit by pathspec, incrementally. **Sub-dispatch only to `general-purpose`/`haiku`/`claude`.**
-> **⛔ THE ONE FAILURE MODE THIS PACKET EXISTS TO AVOID.** BL-295 was built and reverted 19 minutes later. Its mechanism: `opts.kinds` flowed into the `CHECK (kind IN (…))` clause, and `applySchema()` then called `rebuildTable` on the populated `node` table **implicitly, at construction time**. So a consumer passing a new string to a constructor rebuilt a shared 10k-row table. Two days after the revert, BL-313 proved that exact rebuild cascade-deletes all 40,930 edges. **`KindPolicy` must have no path to DDL under any input.** It is pure in-process policy and there is no `CHECK` left for it to reach. If review finds *any* input by which registering a type alters the schema, the design is wrong — stop and report.
-> **The revert commit message is bare** — git's auto-generated body, no stated reason. The above is reconstruction from the diff plus the recorded Option-A decision in CHANGELOG.md:2245-2273; BL-313 is retrospective vindication, not the stated cause. Treat it as strong evidence, not as the author's words.
-> **⛔ Do not import memory-core.** `data→memory-core` is forbidden and lint-enforced (libs/data/CLAUDE.md). The policy **descends by DI** (ADR-0006); it is never imported upward. `nx lint graph-store` is the gate.
-> **Dropping the `kind` CHECK is for fresh DDL only.** `CREATE TABLE IF NOT EXISTS` no-ops on every existing store, so nothing is rebuilt — the identical mechanism and rationale BL-430 used four days ago and documented at index.ts:15-42. Existing stores are PKT-61's problem, and only if the owner picks fork 3b.
-**Produces:** a generic storage library that enforces what it is handed instead of what memory happens to need, with the BL-295 mechanism structurally unreachable rather than merely un-chosen.
-**acceptance:** a test naming BL-440 that (a) registers a consumer kind through the public factory, writes and reads it, and asserts `sqlite_master`'s DDL is **byte-identical before and after** — the direct guard against BL-295's failure mode; (b) asserts the default policy still rejects a malformed identifier; (c) asserts a caller passing no `kindPolicy` sees today's six-kind behaviour unchanged.
-
-### PKT-60 — BL-441: memory-core must pick up the ontology graph-store just put down
-
-> **status: OPEN** — still open: BL-441 · derived by `tools/plan-status.mjs`, do not hand-edit
-
-**Goal:** PKT-59 removes the six-kind vocabulary from graph-store. If memory-core does not take ownership in the **same release**, memory's ontology becomes unenforced and `kind:'entitiy'` silently mints a new type — trading an over-strict library for no validation at all. The owner's directive is that typing lives in memory-server, which only holds if memory-server implements it.
-**Closes:** BL-441
-**Files:** `libs/memory-core/src/` (backend construction seam + a new ontology module), `extensions/bundles/sox-memory-bundle/members/memory-server/src/index.ts` (the registration surface).
-**requires:** PKT-58, PKT-59
-**sequencing:** touches `memory-server/src/index.ts` — **serialize with the other `index.ts` packets** (PKT-01, 09, 13, 19, 25, 32, 34, 45, 47, 53, 54). Check for a live owner before editing.
-**tier:** sonnet, ~80k tokens / ~30 turns
-**orientation:** ~40k — BL-441's body plus the two upstream packets' landed diffs. **Fixed cost.**
-**budget:** ~30 turns / ~115k tokens. Guidance ceiling ~200k; **guidance, not a stop.** Commit by pathspec, incrementally. **Sub-dispatch only to `general-purpose`/`haiku`/`claude`.**
-> **⛔ There must be no window in which nothing validates.** PKT-59 and this packet ship in one release train (PKT-63); do not publish graph-store between them.
-> **Hold both shapes as first-class.** Under fork 1a, consumer types ride `kind:'generic'` + `sub_kind` on existing stores and may use an open `kind` on new ones. The policy must accept both. A policy that quietly treats `generic`+`sub_kind` as a legacy fallback re-creates the two-tier typing this whole group exists to end.
-> **Do not restart or redeploy the live memory-server** to check this (live artifact `172384a93ddf`, pid 22347). Test through the tool surface in-process.
-**Produces:** the memory ontology owned by the domain composer, as ADR-0007 D1 specifies, with consumer registration a supported operation rather than a fork of the library.
-**acceptance:** a test naming BL-441 asserting an unregistered kind is rejected with a named error **through the memory-server tool surface** (not the raw store), and that a consumer-registered type is accepted, written and recalled. The red arm is a PKT-59-only tree, where the unregistered kind is silently accepted.
-
-### PKT-61 — BL-442: opening `kind` on an already-populated store, without repeating the incident that emptied `edge`
-
-> **status: OPEN** — still open: BL-442 · derived by `tools/plan-status.mjs`, do not hand-edit
-
-**Goal:** PKT-59 opens `kind` for **new** stores only — `CREATE TABLE IF NOT EXISTS` no-ops on existing ones, so every store alive today, including the live ~10,150-node `~/.memory/memory.db`, keeps `CHECK (kind IN ('episode',…,'generic'))` permanently. Removing it needs a rename→create→copy→drop rebuild, which on this schema *is* BL-313: `foreign_keys` is always ON, `ALTER TABLE node RENAME TO node_old` rewrites `edge`'s FK to dangle at `node_old`, and `DROP TABLE node_old` cascade-deletes every edge.
-**Closes:** BL-442
-**Files:** `libs/data/graph/graph-store/src/index.ts` (`rebuildTable` + its existing `skipDrop` option), a new operator-invoked migration entry point, plus a new spec.
-**requires:** PKT-59
-**sequencing:** **Conditional on BL-438 fork 3 resolving to 3b — if the owner picks 3a, this packet does not exist.** **LAST in the group, and off the critical path.** Nothing depends on it: under PKT-58, consumer types are already indexed on existing stores via `sub_kind` + `kind:'generic'`.
-**tier:** sonnet, ~85k tokens / ~32 turns
-**orientation:** ~45k — CHANGELOG.md:1986-2040 (the full BL-313 incident, the `skipDrop` fix, and the 90-edge fixture) is mandatory reading, not optional. **Fixed cost.**
-**budget:** ~32 turns / ~125k tokens. Guidance ceiling ~210k; **guidance, not a stop.** Commit by pathspec, incrementally. **Sub-dispatch only to `general-purpose`/`haiku`/`claude`.**
-> **⛔ Explicit operator command only.** Never reachable from `applySchema()`, never triggered by opening a connection, never a side effect of anything. Automatic-on-open is BL-295 verbatim and it is the reason this work is being redone.
-> **⛔ Never run against `~/.memory/*`.** Use a `cp` of a WAL-consistent backup — the exact method BL-313's root-cause used. The live server holds artifact `172384a93ddf`, pid 22347; do not restart it.
-> **Reuse `skipDrop`, do not re-invent the sequencing.** BL-313's fix runs *both* rebuilds' rename→create→copy steps before dropping *either* `_old`, so a cascade can only empty tables already scheduled for deletion. A fresh implementation will get this wrong.
-> **A single-edge fixture cannot catch this** — BL-313 records that the pre-existing migration test used one and missed a total data loss. Seed 90 edges across 10 nodes with both constraints stale simultaneously.
-> **Assert `PRAGMA foreign_keys` state in the test.** The bug is invisible with foreign keys off; a test that leaves it off proves nothing.
-**Produces:** an existing store that can reach an open `kind` by a deliberate, verified, reversible operator action — and cannot reach it by accident.
-**acceptance:** a test naming BL-442 seeding a store with both a stale `kind` CHECK and a populated `edge` table under `foreign_keys = ON`, running the migration, asserting every edge survives — red against a naive sequential rebuild (0 edges survive, reproducing BL-313 exactly). Plus a rollback test: force the verify step to fail and assert the store is restored bit-identical from backup.
-
-### PKT-62 — BL-443: prove the public contract the way a consumer actually gets it — through the tarball
-
-> **status: OPEN** — still open: BL-443 · derived by `tools/plan-status.mjs`, do not hand-edit
-
-**Goal:** `@adhd/sox-graph-store` is published (0.5.2, `private: false`) with real external consumers, but every test resolves it through `tsconfig.base.json` `paths` straight to `src/`. `libs/data/CLAUDE.md` already warns about exactly this class of blind spot — *"a passing test is not evidence — `tsx`/`vitest` resolve workspace packages via `paths` straight to source, bypassing `node_modules` entirely."* The entire point of this group is a public API usable **without editing the library**, and nothing exercises it that way. `BUG-SOXGRAPH-TYPED-NODES-001` makes it an explicit acceptance requirement.
-**Closes:** BL-443
-**Files:** a new conformance fixture under `tools/` or `libs/data/graph/graph-store/` (`npm pack` → install into a scratch project outside the workspace → import by published name only).
-**requires:** PKT-58, PKT-59
-**sequencing:** independent of PKT-60/PKT-61. **This is the acceptance gate for the whole group** — PKT-63 must not publish until it is green.
-**tier:** sonnet, ~65k tokens / ~25 turns
-**orientation:** ~30k — BL-443's body plus `docs/standards/extension-bundling.md` for how this repo already does artifact-level verification. **Fixed cost.**
-**budget:** ~25 turns / ~95k tokens. Guidance ceiling ~170k; **guidance, not a stop.** Commit by pathspec. **Sub-dispatch only to `general-purpose`/`haiku`/`claude`.**
-> **⛔ Do not satisfy this with an in-repo import and a comment saying it simulates a consumer.** That is the exact defect. Install the tarball; import by published name; resolve through `node_modules`.
-> **Include a vacuity guard.** Deleting the built `dist/` must make the fixture fail **loudly**, not skip. BL-225 records five items that shipped RESOLVED behind tests that skipped the case they were named for.
-> **`npm pack` is safe; `npx nx build` is not.** Several build targets `rm -rf dist/` before knowing the rebuild succeeds, and in a shared checkout that `dist/` may be another agent's live artifact.
-**Produces:** the first test in this repo that exercises graph-store the way its users do, and the gate that decides whether 0.6.0 ships.
-**acceptance:** a test naming BL-443 that fails against a tarball built from a tree without PKT-58/PKT-59 (the registration call does not exist / the type is rejected) and passes against one with them, having registered a consumer type, written it, traversed an edge to it, queried it by type, and asserted via `EXPLAIN QUERY PLAN` that the query used the index with no `json_each`.
-
-### PKT-63 — BL-444: one release train, because each graph-store version costs four downstream republishes
-
-> **status: OPEN** — still open: BL-444 · derived by `tools/plan-status.mjs`, do not hand-edit
-
-**Goal:** graph-store 0.5.2 has four in-repo dependents — `analysis` (:28), `vector-store` (:27), `hybrid-search` (:28), `memory-core` (:28) — `workspace:*` in source, pinned exactly on publish. Every graph-store version forces four downstream releases; this is why a one-line fix cost eight releases on 2026-08-04. PKT-58, PKT-59 and PKT-60 each change the package. Published separately that is three trains and twelve downstream releases.
-**Closes:** BL-444
-**Files:** `.changeset/`, `libs/data/graph/graph-store/package.json` + `CHANGELOG.md`, the four dependents' manifests, `pnpm-lock.yaml`.
-**requires:** PKT-58, PKT-59, PKT-60, PKT-62
-**sequencing:** **last, and it is a gate not a chore.** PKT-61 (BL-442) rides the same version if it lands in time; if it does not, it ships in a later patch — it is additive and independent.
-**tier:** sonnet, ~60k tokens / ~24 turns
-**orientation:** ~30k — BL-444's body plus the repo's release constraints (relock-before-merge, registry sync, smoke test). **Fixed cost.**
-**budget:** ~24 turns / ~90k tokens. Guidance ceiling ~160k; **guidance, not a stop.** Commit by pathspec. **Sub-dispatch only to `general-purpose`/`haiku`/`claude`.**
-> **⛔ Do not publish anything before PKT-62 is green.** The external-consumer test is the acceptance gate for the group; publishing first makes it a post-mortem.
-> **0.6.0, one minor, everything together.** The change is additive throughout — nullable column, optional filter field, optional constructor option, no removals — so a minor is honest semver and a caller passing nothing observes no behaviour change.
-> **Assert backwards compatibility, do not claim it.** `episode/entity/claim/community/session/generic` keep working; the `kind:'generic'` + tag convention keeps working and **nobody is forced to migrate**; `sub_kind` is nullable so every existing row reads back identically.
-> **⚠️ Coordinate with FEAT-SOX-001 (Turso adapter, OPEN)** — same `store`/schema layer. The only DDL this group emits on an existing store is `ADD COLUMN` + `CREATE INDEX`, both engine-neutral with no `REINDEX` and no FTS rebuild, so BL-337's un-`REINDEX`-able Turso FTS index and BL-361's PANIC are untouched. **But the two workstreams must not both hold `applySchema()`.**
-> **`pnpm install` and commit the `pnpm-lock.yaml` diff in the same change** — the repo's relock-before-merge constraint (incident: BL-150). Run `node scripts/smoke-test.mjs` and confirm 0 failures before merging.
-**Produces:** the whole group shipped as one honest minor, at four downstream republishes instead of twelve.
-**acceptance:** a test naming BL-444 that installs the 0.6.0 tarball against the *previous* consumer source — unchanged, using no new API — and asserts it builds and its suite passes, proving non-breaking rather than asserting it. Plus a committed `pnpm-lock.yaml` diff and a 0-failure smoke run.
 
 ### PKT-41 — BL-391: federated recall's BM25 arm is dead on Turso, and the failure is swallowed whole-store
 
@@ -2517,6 +2388,583 @@ hook timeout.
 ---
 
 
+## Wave J — open node + edge typing: the owner's four rulings, and the trap they arm
+
+Nine packets against `BUG-SOXGRAPH-TYPED-NODES-001` (graph, nodeId 563, HIGH, OPEN), **rewritten
+2026-08-05 after the owner ruled on all four design forks.** The previous revision of these packets
+described a `sub_kind` column that the ruling deleted; every packet below has been rewritten around
+the ruling rather than annotated.
+
+**Read [`findings/open-node-typing-design.md`](./findings/open-node-typing-design.md) before
+dispatching any of them** — §0 is the ruling table, §3 the DI shape and the leaky construction seam,
+§4 the decided design, §5 the trap, §6 the acceptance bar, §7 the semver position. Every packet cites
+it by section, and none of it should be re-derived.
+
+**The ruling (BL-438; the authorisation every packet below names).**
+
+| # | Decision | Consequence for these packets |
+|---|---|---|
+| **D1** | **`kind` itself opens. There is no `sub_kind` column.** | The discriminator is `node.kind`, served by the already-live, already-populated `ix_node_kind` (`index.ts:105,:226,:319`). Zero new columns, zero new indexes — and **zero delivery to any existing store until D3 runs.** |
+| **D2** | **Enforcement is an injected policy closure** validated at the write boundary. | `createGraphBackend(adapter, { typePolicy })`. graph-store's default is syntactic only; memory-core owns the vocabulary; **no input by which registering a type reaches DDL.** |
+| **D3** | **Existing stores migrate only via an opt-in, operator-invoked, offline command with verified rollback.** Never automatic, never on open. | PKT-61 is no longer conditional and no longer optional: under D1 it is the *only* path by which any store alive today accepts a consumer kind. |
+| **D4** | **`edge.rel` opens in the same pass as `node.kind`.** | PKT-74 exists. `EdgeRel` widens, and that is a source-breaking change in return position — §7. |
+
+**Numbering — read this before cross-referencing.** PKT-73 (BL-447) and PKT-74 (BL-448) are new ids
+allocated 2026-08-05. The findings doc §7 and BL-438's "Done when" clause originally named these two
+packets **PKT-67 and PKT-68**; those ids were taken by Wave I (BL-341 + BL-449, and BL-360)
+concurrently with this revision. Both documents have been corrected to PKT-73/PKT-74.
+**PKT-64..PKT-72 are untouched and belong to Waves H and I.**
+
+**Dispatch order, and why it inverted.** The previous revision ran PKT-58 (open the column) before
+PKT-59 (add the policy), because under the rejected `sub_kind` design the column was additive and
+carried its own guard. Under D1+D2+D4 that order ships a **strictly worse intermediate**: dropping
+the `kind`/`rel` CHECKs before the policy exists leaves `writeEdgeInternal` — which performs no
+runtime `rel` validation whatsoever (`index.ts:1078-1096`; it only *translates* the SQLite failure at
+`:1091`) — with nothing at all in front of it. The order is therefore:
+
+```
+PKT-57 (ADR)
+  └─ PKT-73  BL-447  defuse the on-open rebuild sentinel   ⛔ HARD GATE: before any DDL constant is edited
+       └─ PKT-59  BL-440  land the policy, behaviour-preserving (no DDL change yet)
+            ├─ PKT-58  BL-439  drop the `kind` CHECK from fresh DDL   ┐ same three DDL declarations —
+            └─ PKT-74  BL-448  drop the `rel` CHECK from fresh DDL    ┘ serialize, PKT-58 first
+                 └─ PKT-60  BL-441  memory-core takes ownership of the vocabulary
+                      ├─ PKT-61  BL-442  the operator migration for existing stores
+                      └─ PKT-62  BL-443  the tarball conformance gate
+                           └─ PKT-63  BL-444  one release train → 0.6.0
+```
+
+Every step above is independently green: PKT-59 preserves today's behaviour exactly (the default
+policy *is* the six kinds and the ten rels), so PKT-58 and PKT-74 remove a CHECK that a live runtime
+guard already stands behind.
+
+**The three things this wave must not do**, each of which has already happened once in this repo:
+
+1. **Edit `NODE_TABLE_DDL`/`EDGE_TABLE_DDL` before PKT-73 lands.** That is not a constant edit, it is
+   an automatic migration of every legacy store, and it arms a rebuild-on-every-open loop on the
+   table BL-313 emptied. §5.
+2. **Let a consumer's type declaration reach DDL.** That is BL-295 verbatim — built and reverted
+   inside 19 minutes, and vindicated two days later by BL-313's 40,930 silently cascade-deleted
+   edges. §1.
+3. **Ship a green suite that proves nothing.** In-repo suites create fresh stores, which never trip
+   the sentinel and never carry a legacy CHECK. Every acceptance below therefore names its **red**
+   arm, and PKT-62 is the gate that the published artifact — not the `paths`-resolved source — is
+   what was tested.
+
+**Nothing is renumbered, but two packets changed shape completely.** PKT-58's mechanism was
+"`ALTER TABLE … ADD COLUMN sub_kind` + `CREATE INDEX ix_node_sub_kind`", both of which D1 deleted;
+PKT-61 lost its conditionality (it read "conditional on fork 3, may never be built"). Anyone holding
+a pre-2026-08-05 copy of PKT-58 or PKT-61 is holding a design the owner rejected.
+
+### PKT-57 — BL-438: record the four rulings as an ADR, so every packet cites an authorisation instead of a recollection
+
+> **status: OPEN** — still open: BL-438 · derived by `tools/plan-status.mjs`, do not hand-edit
+
+**Goal:** the owner has ruled on all four forks — D1 `kind` opens with no `sub_kind`, D2 injected
+policy closure, D3 opt-in operator-invoked offline migration only, D4 `edge.rel` opens in the same
+pass. The ruling currently exists in exactly two places: BL-438's table and the design doc's §0.
+Neither is a decision record, and this repo has already had one agent write fabricated "owner
+decision" headers into this plan (relabelled in `b263c22`). Give the ruling a citable home under
+`docs/decisions/`, with the rejected alternatives recorded so they are not re-litigated.
+**Closes:** BL-438 (HIGH)
+**Files:** a new `docs/decisions/0010-open-node-and-edge-typing.md` (0009 is the highest today);
+`docs/reporting/memory/findings/open-node-typing-design.md` (add the ADR back-reference to §0 — it is
+already written as decisions, do **not** rewrite it).
+**requires:** none
+**sequencing:** **gates PKT-73, PKT-59, PKT-58, PKT-74, PKT-60, PKT-61, PKT-62, PKT-63.** Touches no
+source. Fully parallel with every other wave.
+**tier:** sonnet, ~45k tokens / ~15 turns — the analysis is done and written down; this is decision
+capture, not research.
+**orientation:** ~44k unavoidable before any edit — 36k mandated docs (README+STATE+PLAN) + ~4k the
+design doc's §0/§5/§7 + ~4k backlog bodies (BL-438, BL-447, BL-448). **Fixed cost.**
+**budget:** ~15 turns / ~82k tokens. Guidance ceiling ~120k; **guidance, not a stop.** Commit by
+pathspec. **Sub-dispatch only to `general-purpose`/`haiku`/`claude`** — specialist types have no
+`Agent` tool.
+> **⛔ The forks are closed. Do not re-open them, and do not present them as open.** An earlier
+> revision of this packet said "present the forks, carry the recommendation, and **ask**." That was
+> correct then and is wrong now. The ADR records a ruling that has been given.
+> **⛔ Record only the four rulings as owner decisions.** D1–D4 above and nothing else. Everything
+> else in the design doc — the DI shape, the `user_version` sentinel proposal, the release train — is
+> an architect recommendation, and this repo has an incident of exactly this mislabelling
+> (`b263c22`). Where the ADR states a mechanism the owner did not rule on, say so in the sentence
+> that states it.
+> **Record what D1 costs, not just what it decides.** D1's rationale (*"I see no reason why kind is
+> restricted"*) removed the `sub_kind` escape hatch that would have served existing stores without a
+> rebuild, and D3 accepted the rebuild in its place. **D1 and D3 are a package**: D1 without a
+> working D3 delivers open typing to new stores only, and nothing at all to the ~10,150-node store
+> this program runs on. An ADR that records the decision without the trade invites someone to
+> re-litigate D3 as optional.
+> **This is the one packet in the wave exempt from the BL-225 red→green bar** — a decision record has
+> no runtime behaviour. **Say so inside the ADR**, so a later coverage audit reads the exemption as
+> deliberate rather than as an oversight.
+**Produces:** `ADR-0010`, which PKT-73, PKT-59, PKT-58, PKT-74, PKT-60, PKT-61, PKT-62 and PKT-63
+each name by section as their authorisation.
+**acceptance:** the ADR states D1–D4 with rationale and the rejected alternative for each; it names
+BL-447 and BL-448 as consequences the ruling created rather than defects it found; every packet in
+this wave cites a section of it; and the BL-225 exemption is stated in the document rather than
+inferred from its absence.
+
+### PKT-73 — BL-447: the on-open rebuild trigger is a substring probe for the literal being deleted — defuse it before anyone edits a DDL constant
+
+> **status: OPEN** — still open: BL-447 · derived by `tools/plan-status.mjs`, do not hand-edit
+
+**Goal:** `ensureCheckConstraints()` (`index.ts:811-852`), called unconditionally from
+`applySchema()` (`:806`) on every cold open, decides whether to rebuild the populated `node` and
+`edge` tables by substring-matching the live DDL against **one literal from inside the CHECK clause
+this wave removes**: `!nodeRow.sql.includes("'generic'")` (`:820`) and
+`!edgeRow.sql.includes("'DEPENDS_ON'")` (`:825`). `'generic'` occurs in `NODE_TABLE_DDL` only at
+`:262`, inside `CHECK (kind IN (…))`; `'DEPENDS_ON'` occurs in `EDGE_TABLE_DDL` only at `:294`,
+inside `CHECK (rel IN (…))`. Open the CHECKs and two things follow with no new code written: a
+migrated store fails the probe **forever**, rebuilding both populated tables, 11 node indexes, 4 edge
+indexes, the FTS triggers and the entire FTS content on **every** open of **every** process
+(`:827-851`); and every pre-`'generic'` legacy store is silently rebuilt *to the open schema* on its
+next open — automatic-on-open, which is precisely what D3 forbids and what BL-295 was reverted for.
+**Closes:** BL-447 (CRITICAL)
+**Files:** `libs/data/graph/graph-store/src/index.ts` (`ensureCheckConstraints` :811-852 — the two
+sentinels at :820,:825 and the rebuild at :827-851; `applySchema` :789-809), plus a new spec.
+`libs/data/graph/graph-store/src/rebuild-table.ts` is read-only here — do **not** change its
+sequencing.
+**requires:** PKT-57
+**sequencing:** ⛔ **HARD GATE. Nothing in this wave may edit a DDL constant until this lands** —
+PKT-59, PKT-58, PKT-74 and PKT-61 all depend on it. **Conflicts with FEAT-SOX-001 (Turso adapter,
+OPEN) over `applySchema()`** — check for a live owner before editing.
+**tier:** sonnet, ~70k tokens / ~26 turns
+**orientation:** ~52k unavoidable before any edit — 36k mandated docs (README+STATE+PLAN) + ~12k
+cited source (`ensureCheckConstraints` + `applySchema` + both DDL constants + `rebuild-table.ts`) +
+~4k backlog bodies (BL-447, plus BL-313's CHANGELOG entry at :1986-2040). **Fixed cost.**
+**budget:** ~26 turns / ~117k tokens. Guidance ceiling ~190k; **guidance, not a stop.** Commit by
+pathspec, incrementally. **Sub-dispatch only to `general-purpose`/`haiku`/`claude`.**
+> **⛔ This defect is authored by the decisions, not by an implementer's mistake.** It is filed
+> separately, and gated ahead of everything, precisely so that it cannot be discovered *inside* a DDL
+> packet by an agent who has already edited the constants.
+> **⛔ The automatic path must keep targeting the CLOSED DDL.** Its remaining job is what it was built
+> for: upgrading a genuinely legacy store to the current *closed* shape. The open DDL is reachable
+> only from PKT-61's operator command. A fix that points the automatic path at the open schema has
+> performed D3's banned migration on every machine that opens the store.
+> **Replace the sentinel with a positive schema-shape predicate — architect recommendation, NOT an
+> owner ruling.** `PRAGMA user_version`, an `_adapter_meta` row, or a test for the CHECK's *presence*
+> rather than a search for one of its literals. Whichever is chosen, the property that must hold is
+> **stability**: a store already at the target shape reports "no rebuild needed" on every subsequent
+> open, forever. Read `docs/decisions/0008-sql-migration-management.md` before inventing a new
+> versioning convention.
+> **No test in the repo catches this today and none will by accident.** In-repo suites create fresh
+> stores written by the current DDL, which never trip the probe. The red arm has to be constructed
+> deliberately — seed a store whose DDL lacks the literal.
+> **Never run against `~/.memory/*`.** Use a `cp` of a WAL-consistent backup — the method BL-313's own
+> root-cause used. Do not restart the live server to check anything.
+**Produces:** an on-open path whose rebuild decision is a property of the schema rather than of a
+string search, so that removing a CHECK literal in PKT-58/PKT-74 changes what is *allowed* and not
+what happens on connect.
+**acceptance:** two arms, both red today, both run with `foreign_keys = ON` **asserted in the test**
+and against a **populated** `edge` table so a regression appears as data loss rather than as a slow
+open. (1) With the CHECKs removed from the DDL constants, open a store, close it, reopen it, and
+assert **zero** rebuilds occurred on the second open — instrumented by table identity
+(`sqlite_master.rootpage`, or a marker row), never by absence of an exception. (2) Seed a genuine
+pre-`'generic'` legacy store, open it, and assert it is upgraded to the **closed** current shape and
+**not** to the open one.
+
+### PKT-59 — BL-440: land the policy first, behaviour-preserving, so the CHECKs come off in front of a guard rather than in front of nothing
+
+> **status: OPEN** — still open: BL-440 · derived by `tools/plan-status.mjs`, do not hand-edit
+
+**Goal:** `writeNode` validates `kind` against `DEFAULT_NODE_KINDS` — memory's own six types, a
+module constant in a generic published storage library (`index.ts:257`) — and on failure throws a
+`ConstraintError` that *instructs the consumer to abandon typing*: **"Non-memory reuse (e.g. a
+component registry) should write kind:'generic' and carry a sub-kind in tags/metadata instead of
+registering a new kind."** (`:864-870`). Under ADR-0007 D1 that constant is in the wrong package
+outright. Replace it with an injected policy — and land that **before** any CHECK is dropped, so no
+intermediate state exists in which a write is unguarded.
+**Closes:** BL-440 (HIGH)
+**Files:** `libs/data/graph/graph-store/src/index.ts` (`DEFAULT_NODE_KINDS` :257, `writeNode`
+:862-870, `writeEdgeInternal` :1078-1096, the `GraphBackend` interface ~:461, `createGraphBackend`
+:1282-1284 — which today takes **one** parameter, `adapter`), plus a new `TypePolicy` export and a
+new spec.
+**requires:** PKT-57, PKT-73
+**sequencing:** **first implementation packet in the wave.** PKT-58 and PKT-74 both depend on it and
+both edit the same file — serialize all three, in that order. Does **not** touch `applySchema()`, so
+it does not collide with FEAT-SOX-001.
+**tier:** sonnet, ~80k tokens / ~30 turns
+**orientation:** ~54k unavoidable before any edit — 36k mandated docs (README+STATE+PLAN) + ~14k
+cited source (`writeNode`, `writeEdgeInternal`, the funnels at :976/:982/:1000/:1074, the factory,
+design doc §3) + ~4k backlog bodies (BL-440, BL-448, BL-441). Plus **mandatory**:
+`git show 0ce39c7 -- libs/data/graph/graph-store/src/index.ts` before writing a line. **Fixed cost.**
+**budget:** ~30 turns / ~129k tokens. Guidance ceiling ~200k; **guidance, not a stop.** Commit by
+pathspec, incrementally. **Sub-dispatch only to `general-purpose`/`haiku`/`claude`.**
+> **⛔ THE ONE FAILURE MODE THIS PACKET EXISTS TO AVOID.** BL-295 let `opts.kinds` flow into the
+> `CHECK (kind IN (…))` clause and then called `rebuildTable` on the populated `node` table
+> **implicitly, from `applySchema()`, at construction time** — so a consumer passing a new string to a
+> constructor rebuilt a shared 10k-row table. It was reverted 19 minutes after landing; two days later
+> BL-313 proved that exact rebuild cascade-deletes all 40,930 edges, silently. **`TypePolicy` must
+> have no path to DDL under any input.** If review finds one, the design is wrong — stop and report
+> rather than gating it.
+> **The revert commit message is bare** — git's auto-generated body, no stated reason. The above is
+> reconstruction from the diff plus the recorded Option-A decision (`CHANGELOG.md:2245-2273`); BL-313
+> is retrospective vindication, not the author's stated cause. Strong evidence, not testimony.
+> **⛔ This packet changes no DDL and no behaviour.** The default policy **is** today's six kinds and
+> today's ten rels, so every existing caller observes exactly what it observes now. That is what makes
+> PKT-58 and PKT-74 safe: they remove a CHECK from in front of a live runtime guard. A packet that
+> also drops a CHECK has merged three packets and destroyed that property.
+> **`validateRel` is the half with no precedent — do not assume symmetry.** `writeNode` has validated
+> `kind` in TypeScript for years; `writeEdgeInternal` (`:1078-1096`) validates **nothing** — it passes
+> `rel` into the INSERT and only translates the SQLite error at `:1091`. So `validateKind` *replaces* a
+> guard while `validateRel` *creates the first one that has ever existed*. Detail in BL-448.
+> **Two enforcement points, both verified funnels — not an audit of every statement.** Every node
+> write reaches `writeNode` (`:862`): `writeNodeBatch` (`:976`) and `writeGraph` (`:982`) loop over
+> it. Every edge write reaches `writeEdgeInternal` (`:1078`): `writeEdge` (`:1074`) and `writeGraph`
+> (`:1000`) delegate. Two call sites, verified in source — not eleven.
+> **⛔ Do not import memory-core.** `data→memory-core` is forbidden and lint-enforced
+> (`libs/data/CLAUDE.md`). The policy **descends by DI** (ADR-0006); it is never imported upward.
+> `npx nx lint graph-store` is the gate.
+> **Delete the `generic`-steer message, do not soften it** (`:867-869`). The convention itself keeps
+> working byte-identically for anyone already on it — no consumer is forced to migrate *data* — but
+> the library must stop recommending it.
+**Produces:** a storage library that enforces what it is handed rather than what memory happens to
+need, with the BL-295 mechanism structurally unreachable rather than merely un-chosen — and a live
+runtime guard standing in front of both write funnels before either CHECK is removed.
+**acceptance:** a test naming BL-440 that (a) asserts `sqlite_master`'s DDL is **byte-identical**
+before and after constructing a backend with a custom `typePolicy` and writing through it — the direct
+regression guard against BL-295's failure mode; (b) asserts the default policy rejects
+`kind:'entitiy'` **and** an unregistered `rel`, each with a named `ConstraintError` — the `rel` arm is
+**red today**, where an unknown rel reaches SQLite and is caught only by a CHECK that PKT-74 removes;
+(c) asserts a caller passing no `typePolicy` observes today's six-kind and ten-rel behaviour
+unchanged; (d) asserts the default policy still rejects a malformed identifier for both.
+
+### PKT-58 — BL-439: `kind` itself opens — no new column, no new index, and new stores only
+
+> **status: OPEN** — still open: BL-439 · derived by `tools/plan-status.mjs`, do not hand-edit
+
+**Goal:** `ix_node_kind` is real, live in three code paths (`index.ts:105,:226,:319`) and populated
+10,150/10,150 on the live store — and **no external consumer can reach it.** The sanctioned path is
+`kind:'generic'` plus a sub-kind in `tags`/`meta`, and neither column carries an index of any kind
+(`fts_node` covers `content, name, summary` only, `:79-82`). The query shape is unindexable in
+principle: every tag filter in the codebase is a correlated
+`EXISTS (SELECT 1 FROM json_each(n.tags) WHERE value = ?)` (`index.ts:678,683`;
+`memory-filters.ts:101,108`; `recall.ts:445,451`), and `json_each` is a table-valued function over a
+TEXT blob SQLite cannot serve from an index. Under D1 the fix is to drop the `kind` CHECK from fresh
+DDL and let the index that already exists do its job.
+**Closes:** BL-439 (HIGH)
+**Files:** `libs/data/graph/graph-store/src/index.ts` (the `kind` CHECK at `:62` in `graphDdl()`,
+`:181` in `INLINE_MIGRATION_DDL`, `:262` in `NODE_TABLE_DDL`), `drizzle/schema.ts` if it mirrors the
+constraint, plus a new spec. **No `ALTER TABLE`, no new column, no new index, no new `NodeFilter`
+field.**
+**requires:** PKT-57, PKT-73, PKT-59
+**sequencing:** **same file and same DDL region as PKT-74 — serialize, this one first.** Must land
+before PKT-60 and PKT-62. **Conflicts with FEAT-SOX-001** over the schema layer.
+**tier:** sonnet, ~65k tokens / ~24 turns
+**orientation:** ~50k unavoidable before any edit — 36k mandated docs (README+STATE+PLAN) + ~10k
+cited source (the three `kind` CHECK declarations, `ix_node_kind`'s three paths, the `json_each`
+filters, design doc §2 and §6) + ~4k backlog bodies (BL-439, BL-447). **Fixed cost.**
+**budget:** ~24 turns / ~110k tokens. Guidance ceiling ~180k; **guidance, not a stop.** Commit by
+pathspec, incrementally. **Sub-dispatch only to `general-purpose`/`haiku`/`claude`.**
+> **⛔ The previous revision of this packet is dead. Do not implement it.** It said
+> "`ALTER TABLE … ADD COLUMN sub_kind` + `CREATE INDEX ix_node_sub_kind`, and never touch
+> `rebuildTable`." **D1 rejected `sub_kind` outright.** There is no new column, no new index and no
+> new filter field here — this packet is the deletion of three CHECK clauses. If you are reading a
+> `sub_kind` instruction anywhere, you are reading a pre-2026-08-05 copy.
+> **⛔ Do not touch `rebuildTable`, and do not "just also" migrate an existing store.** The whole
+> point of D1+D3 is that this packet reaches **new stores only** — `CREATE TABLE IF NOT EXISTS`
+> (`:59`, `:181`) no-ops on every store that exists, so their `CHECK (kind IN (…))` survives and a
+> consumer kind is rejected by SQLite even with the policy permitting it. That cost was accepted
+> deliberately when `sub_kind` was rejected; PKT-61 is the only sanctioned way to pay it down. This is
+> the identical mechanism and rationale BL-430 used four days ago (`:15-42`).
+> **⛔ PKT-73 must already be merged.** `'generic'` at `:262` is the substring sentinel that decides
+> whether `node` is rebuilt on open. Deleting it before PKT-73 lands turns every legacy store's next
+> open into an automatic migration and every migrated store's every open into a full rebuild loop.
+> **Do not "fix" the query shape by indexing `tags`.** An index cannot serve `json_each`; the query
+> shape is the defect. `CREATE INDEX … ON node(tags)` changes nothing measurable.
+> **Nothing widens on the node side.** `NodeMeta.kind` is already `string` (`:379`) — the one place
+> D1 is strictly cheaper than the rejected design.
+> **Never open `~/.memory/*`.** The populated round-trip runs against a `cp` of a WAL-consistent
+> backup.
+**Produces:** a discriminator an external consumer can write and query through an index it did not
+have to create, obtained without performing the operation that has already cost this store one
+CRITICAL incident.
+**acceptance:** a test naming BL-439 asserting via `EXPLAIN QUERY PLAN` that a `kind` query for a
+**consumer-registered** type resolves to `SEARCH node USING INDEX ix_node_kind` with **zero**
+occurrences of `json_each` in the plan; the red arm is today's tag-based equivalent, whose plan
+contains `SCAN json_each VIRTUAL TABLE INDEX`. Plus the honest-scope arm, which is not optional: on a
+store created by the **old** DDL, the consumer kind is still rejected — that assertion is
+simultaneously the statement of the new-stores-only scope and the guard against an accidental
+rebuild. Plus a round-trip against a **copy** of a real populated store proving node count, `edge`
+count and every existing row unchanged.
+
+### PKT-74 — BL-448: `edge.rel` opens in the same pass — and it is the half with no guard underneath
+
+> **status: OPEN** — still open: BL-448 · derived by `tools/plan-status.mjs`, do not hand-edit
+
+**Goal:** D4 rules that `edge.rel` opens with `node.kind`, so the `rel` CHECK (`index.ts:94` in
+`graphDdl()`, `:213` in `INLINE_MIGRATION_DDL`, `:294` in `EDGE_TABLE_DDL`) leaves fresh DDL. Two
+things make this **not** symmetric with the `kind` half. First, there is no runtime `rel` validation
+to fall back on: `writeEdgeInternal` (`:1078-1096`) passes `rel` straight into the INSERT and only
+*translates* the SQLite failure at `:1091` — so dropping the CHECK without a policy in place leaves
+edges completely unvalidated, and silently: a typo'd rel inserts, indexes, and is then never traversed
+by any query filtering on the correct one. Second, `EdgeRel` is a closed TS union (`:364-374`)
+appearing in ~15 public signatures **and in return position** via `EdgeRecord.rel` (`:424`, assigned
+`:609`) — widening it is source-breaking.
+**Closes:** BL-448 (HIGH)
+**Files:** `libs/data/graph/graph-store/src/index.ts` (the three `rel` CHECK declarations
+:94,:213,:294; `EdgeRel` :364-374; `EdgeRecord.rel` :424 and its assignment :609; `PUBLIC_EDGE_RELS`
+:505-513), `libs/data/graph/graph-store/src/graph-store.spec.ts` (:27-35 — the "contains 7 values"
+assertion), plus a new spec.
+**requires:** PKT-57, PKT-73, PKT-59, PKT-58
+**sequencing:** **same file and same DDL region as PKT-58 — serialize, PKT-58 first.** Must land in
+the **same release** as PKT-59, never after a publish. **Conflicts with FEAT-SOX-001** over the schema
+layer.
+**tier:** sonnet, ~70k tokens / ~26 turns
+**orientation:** ~52k unavoidable before any edit — 36k mandated docs (README+STATE+PLAN) + ~12k
+cited source (the three `rel` CHECKs, `writeEdgeInternal`, `EdgeRel` and every signature it appears
+in, `PUBLIC_EDGE_RELS`, the spec's length assertion, design doc §4.4 and §7) + ~4k backlog bodies
+(BL-448, BL-440, BL-444). **Fixed cost.**
+**budget:** ~26 turns / ~117k tokens. Guidance ceiling ~190k; **guidance, not a stop.** Commit by
+pathspec, incrementally. **Sub-dispatch only to `general-purpose`/`haiku`/`claude`.**
+> **⛔ Never land this before PKT-59.** BL-448 exists because the `rel` CHECK is, today, the *only*
+> thing standing between a JSON tool payload and the `edge` table. Removing it first is not a
+> refactor, it is deleting the validation.
+> **⛔ PKT-73 must already be merged.** `'DEPENDS_ON'` at `:294` is the substring sentinel for the
+> `edge` rebuild — deleting it arms an unconditional edge rebuild on every open.
+> **The `EdgeRel` widening is source-breaking and must be shipped as such.** Parameter positions are
+> safe; the **return** position is not — a consumer writing `const r: EdgeRel = rec.rel` or an
+> exhaustive `switch` stops compiling. `EdgeRel | (string & {})` preserves autocomplete but does
+> **not** make that assignment legal, so it is a mitigation, not an escape. Decide which shape ships,
+> write the decision into the release note (PKT-63), and **demonstrate the break in a test** rather
+> than let a consumer discover it.
+> **`PUBLIC_EDGE_RELS` changes meaning, and its test asserts a number.** It goes from "the rels this
+> store permits" to "the rels memory uses" — which under D2 is memory-core's property, not
+> graph-store's. `graph-store.spec.ts:27-35` asserts it has exactly 7 values, an assertion about
+> memory's ontology living in a storage library's suite. Move it or re-scope it **deliberately** and
+> say which in the packet output; do not silently edit the number.
+> **Existing stores keep the `rel` CHECK**, exactly as with `kind`, until PKT-61's operator migration.
+> Same mechanism, same accepted cost.
+**Produces:** an `edge.rel` column that is open to consumers and, for the first time, actually
+validated at runtime — instead of an open column with nothing in front of it.
+**acceptance:** a test naming BL-448 that, on a fresh open-`rel` store, asserts an unregistered rel is
+rejected by the policy with a named `ConstraintError` — **red against a tree that drops the CHECK
+without PKT-59's policy, where the edge is silently written and then invisible to every rel-filtered
+query.** That red arm is the point of the item; a happy-path test proves nothing here. Plus: a
+registered consumer rel round-trips through `writeEdge`, `getEdges` and `getNeighbors`; a caller
+passing no `typePolicy` still sees the ten default rels enforced; and the
+`EdgeRecord.rel`-into-`EdgeRel` compile break is **demonstrated** (a type-level test, or a documented
+`tsc` failure), not discovered downstream.
+
+### PKT-60 — BL-441: memory-core must pick up the ontology graph-store just put down — through one seam, not nine
+
+> **status: OPEN** — still open: BL-441 · derived by `tools/plan-status.mjs`, do not hand-edit
+
+**Goal:** PKT-59 removes the six-kind vocabulary from graph-store and PKT-74 removes the ten-rel one.
+If memory-core does not take ownership in the **same release**, memory's ontology becomes unenforced
+and `kind:'entitiy'` silently mints a new type — trading an over-strict library for no validation at
+all. The owner's directive is that typing lives in memory-server, which only holds if memory-server
+implements it.
+**Closes:** BL-441 (HIGH)
+**Files:** `libs/memory-core/src/` — a new ontology module (`MemoryOntologyPolicy`: the six kinds
+**and the ten rels**) plus **one** backend-construction composition point;
+`extensions/bundles/sox-memory-bundle/members/memory-server/src/index.ts` (the registration surface).
+**requires:** PKT-57, PKT-73, PKT-59, PKT-58, PKT-74
+**sequencing:** touches `memory-server/src/index.ts` — **serialize with the other `index.ts` packets**
+(PKT-01, 09, 13, 19, 25, 32, 34, 45, 47, 53, 54). Check for a live owner before editing.
+**tier:** sonnet, ~85k tokens / ~32 turns
+**orientation:** ~54k unavoidable before any edit — 36k mandated docs (README+STATE+PLAN) + ~14k
+cited source (all nine `createGraphBackend` call sites, the memory-server tool surface, design doc
+§3) + ~4k backlog bodies (BL-441, BL-440, BL-448). **Fixed cost.**
+**budget:** ~32 turns / ~134k tokens. Guidance ceiling ~210k; **guidance, not a stop.** Commit by
+pathspec, incrementally. **Sub-dispatch only to `general-purpose`/`haiku`/`claude`.**
+> **⛔ There must be no window in which nothing validates.** PKT-59/PKT-58/PKT-74 and this packet ship
+> in one release train (PKT-63). Do not publish graph-store between them.
+> **⛔ The construction seam is leaky — close it, do not decorate it.** `createGraphBackend(adapter)`
+> is called with a bare adapter from **nine live call sites across eight files**, verified by grep on
+> 2026-08-05: `enrich-batch.ts:189`, `entity-episodes.ts:119`, `cluster.ts:749`, `cluster.ts:820`,
+> `cluster.ts:886`, `near-duplicates.ts:44`, `list-entities.ts:63`, `related.ts:95`,
+> `supersession-chain.ts:49` (a tenth grep hit, `enrich.ts:208`, is a comment). Threading an optional
+> policy argument through *some* of them yields partial enforcement that reviews as total, and the
+> tenth call site added next month silently opts out. memory-core needs **one** composition point,
+> with the raw factory no longer called directly from feature modules. **Assert the seam, not a
+> sample** — a test that exercises one write path cannot detect this.
+> **⛔ The `sub_kind` guidance that used to be in this packet is void.** It said "hold both shapes as
+> first-class: consumer types ride `kind:'generic'` + `sub_kind` on existing stores." D1 deleted
+> `sub_kind`. There is exactly one shape now — an open `kind` — and it reaches new stores only until
+> PKT-61 runs. The `kind:'generic'` + tag convention still *works* for anyone already on it, and the
+> policy must not break them, but it is no longer a sanctioned second tier.
+> **The rel vocabulary needs an owner too, and it never had a coherent one.** `PUBLIC_EDGE_RELS` lists
+> 7 (`:505-513`) while the CHECK permits 10 (`:94`) — decide which set `MemoryOntologyPolicy` carries,
+> and say why, rather than copying one of them by reflex.
+> **Do not restart or redeploy the live memory-server** to check this. Test through the tool surface
+> in-process, and verify with `memory_ping` that the live artifact is unchanged on completion.
+**Produces:** the memory ontology owned by the domain composer, as ADR-0007 D1 specifies, with
+consumer registration a supported operation rather than a fork of the library — and a single
+construction seam a future call site cannot bypass by omission.
+**acceptance:** a test naming BL-441 asserting (a) an unregistered kind **and** an unregistered rel
+are each rejected with a named error **through the memory-server tool surface**, not the raw store;
+(b) a consumer-registered kind and rel are accepted, written and recalled; (c) **the seam itself** —
+that no module constructs a backend without the policy, enforced statically (a lint rule, a
+module-boundary test, or the raw factory being out of the feature modules' reach), because a runtime
+test cannot prove absence. The red arm is a PKT-59-only tree, where the unregistered kind and rel are
+both silently accepted.
+
+### PKT-61 — BL-442: the operator migration — no longer optional, and it performs the operation that emptied `edge`
+
+> **status: OPEN** — still open: BL-442 · derived by `tools/plan-status.mjs`, do not hand-edit
+
+**Goal:** PKT-58 and PKT-74 open `kind` and `rel` for **new** stores only — `CREATE TABLE IF NOT
+EXISTS` no-ops on existing ones — so every store alive today, including the live ~10,150-node
+`~/.memory/memory.db`, keeps both closed CHECKs permanently. Removing them requires a
+rename→create→copy→drop rebuild, which on this schema *is* BL-313: `foreign_keys` is always ON
+(`index.ts:7-13`), `ALTER TABLE node RENAME TO node_old` rewrites `edge`'s FK to dangle at `node_old`,
+and `DROP TABLE node_old` then cascade-deletes every edge — 40,930 of them last time, with no
+exception and nothing in any log.
+**Closes:** BL-442 (HIGH — promoted from MEDIUM by D1)
+**Files:** `libs/data/graph/graph-store/src/index.ts` + `rebuild-table.ts` (reuse `skipDrop`; do not
+re-sequence it), a new operator-invoked migration entry point, its CLI surface, plus a new spec.
+**requires:** PKT-57, PKT-73, PKT-59, PKT-58, PKT-74
+**sequencing:** **on the critical path, not off it** — see the rescope note below. Independent of
+PKT-62; may run in parallel with PKT-60 (different files) but must not race PKT-73 on `applySchema()`.
+**tier:** sonnet, ~90k tokens / ~34 turns
+**orientation:** ~56k unavoidable before any edit — 36k mandated docs (README+STATE+PLAN) + ~16k cited
+source (`ensureCheckConstraints`'s rebuild block as the model at :827-851, `rebuild-table.ts`, the
+index/FTS recreation at :839-849, the backup path) + **mandatory** `CHANGELOG.md:1986-2040`, the full
+BL-313 incident including the `skipDrop` fix and the 90-edge fixture. **Fixed cost.**
+**budget:** ~34 turns / ~141k tokens. Guidance ceiling ~220k; **guidance, not a stop.** Commit by
+pathspec, incrementally. **Sub-dispatch only to `general-purpose`/`haiku`/`claude`.**
+> **⚠️ RESCOPED — the previous revision of this packet said "conditional on fork 3; if the owner picks
+> 3a this packet does not exist" and "LAST in the group, off the critical path; nothing depends on
+> it."** Both statements are now false. D3 upheld the migration and D1 deleted the `sub_kind`
+> mechanism that made it optional. **This is the only path by which any store in existence accepts a
+> consumer kind or rel.** Without it the wave delivers open typing to new stores only — and to nothing
+> this program actually runs on.
+> **⛔ Explicit operator command only.** Never reachable from `applySchema()`, never triggered by
+> opening a connection, never a side effect of anything. Automatic-on-open is BL-295 verbatim and is
+> the reason this work is being redone. **Assert unreachability statically** — a runtime test cannot
+> prove absence.
+> **Reuse `skipDrop`; do not re-invent the sequencing.** BL-313's fix runs *both* rebuilds'
+> rename→create→copy steps before dropping *either* `_old`, so a cascade can only empty tables already
+> scheduled for deletion (`rebuild-table.ts:52-54`, modelled at `index.ts:828-850`). A fresh
+> implementation will get this wrong.
+> **A single-edge fixture cannot catch this.** BL-313 records that the pre-existing migration test used
+> one and missed a total data loss. Seed 90 edges across 10 nodes with **both** CHECKs stale
+> simultaneously.
+> **Assert `PRAGMA foreign_keys` state in the test.** The bug is invisible with foreign keys off; a
+> test that leaves it off proves nothing.
+> **⛔ Turso is a hard constraint here, not a footnote.** The node rebuild drops and repopulates
+> `fts_node`. BL-337 records the Turso FTS index as un-`REINDEX`-able and BL-361 records a driver PANIC
+> that kills the process on a malformed FTS row — so a migration that runs blind on a Turso-backed
+> store can take the process down *between the rename and the drop*. **Detect the backend and either
+> refuse or take the documented BL-337 repair path. Decide it explicitly and write the decision down;
+> do not discover it at runtime.** PKT-69 and PKT-70 own those two hazards — read their outputs before
+> choosing.
+> **Verify, then roll back on any mismatch.** Node count, edge count, per-relation edge breakdown and a
+> content checksum against a pre-migration snapshot; automatic restore from a verified backup if any of
+> them disagrees. Recreate all 11 node indexes, the 4 edge indexes, the FTS triggers and the FTS
+> content (`index.ts:839-849`).
+> **⛔ Never run against `~/.memory/*`.** Use a `cp` of a WAL-consistent backup — the exact method
+> BL-313's root-cause used. Do not restart the live server.
+**Produces:** an existing store that can reach open `kind` and `rel` by a deliberate, verified,
+reversible operator action — and cannot reach them by accident.
+**acceptance:** a test naming BL-442 seeding a store with **both** stale CHECKs and a populated `edge`
+table under `foreign_keys = ON` **asserted in the test**, running the migration, and asserting every
+edge survives and every per-relation count matches — red against a naive sequential rebuild, where 0
+edges survive and BL-313 reproduces exactly. Plus a rollback test: force the verify step to fail and
+assert the store is restored bit-identical from backup. Plus a static assertion that the entry point
+is unreachable from `applySchema()`.
+
+### PKT-62 — BL-443: prove the public contract the way a consumer actually gets it — through the tarball
+
+> **status: OPEN** — still open: BL-443 · derived by `tools/plan-status.mjs`, do not hand-edit
+
+**Goal:** `@adhd/sox-graph-store` is published (0.5.2, `private: false`) with real external consumers,
+but every test resolves it through `tsconfig.base.json` `paths` straight to `src/`.
+`libs/data/CLAUDE.md` already warns about exactly this blind spot — *"a passing test is not evidence —
+`tsx`/`vitest` resolve workspace packages via `paths` straight to source, bypassing `node_modules`
+entirely."* The entire point of this wave is a public API usable **without editing the library**, and
+nothing exercises it that way. `BUG-SOXGRAPH-TYPED-NODES-001` makes it an explicit acceptance
+requirement.
+**Closes:** BL-443 (MEDIUM)
+**Files:** a new conformance fixture under `tools/` or `libs/data/graph/graph-store/` — `npm pack` →
+install the tarball into a scratch project **outside** the workspace → import by published name only.
+**requires:** PKT-59, PKT-58, PKT-74
+**sequencing:** independent of PKT-60 and PKT-61. **This is the acceptance gate for the whole wave** —
+PKT-63 must not publish until it is green.
+**tier:** sonnet, ~65k tokens / ~25 turns
+**orientation:** ~50k unavoidable before any edit — 36k mandated docs (README+STATE+PLAN) + ~10k
+`docs/standards/extension-bundling.md` (how this repo already does artifact-level verification) + ~4k
+backlog bodies (BL-443, BL-439, BL-448). **Fixed cost.**
+**budget:** ~25 turns / ~113k tokens. Guidance ceiling ~170k; **guidance, not a stop.** Commit by
+pathspec. **Sub-dispatch only to `general-purpose`/`haiku`/`claude`.**
+> **⛔ Do not satisfy this with an in-repo import and a comment saying it simulates a consumer.** That
+> is the exact defect. Install the tarball; import by published name; resolve through `node_modules`.
+> **⛔ The fixture must create a fresh store — and must also assert the negative.** Under D1 the open
+> DDL reaches new stores only, so a fixture that opened a pre-existing file would test nothing. Include
+> the complementary arm: against a store created with the **closed** DDL, the consumer kind is
+> rejected. That is the published contract too, and it is the one a real consumer hits first.
+> **Cover the rel half.** D4 means the external surface now includes a registered consumer *rel*, an
+> edge written with it, and a traversal that finds it. A fixture that only exercises `kind` tests half
+> the release.
+> **Include a vacuity guard.** Deleting the built `dist/` must make the fixture fail **loudly**, not
+> skip. BL-225 records five items that shipped RESOLVED behind tests that skipped the case they were
+> named for.
+> **`npm pack` is safe; `npx nx build` is not.** Several build targets `rm -rf dist/` before knowing
+> the rebuild succeeds, and in a shared checkout that `dist/` may be another agent's live artifact
+> (BL-235).
+**Produces:** the first test in this repo that exercises graph-store the way its users do, and the gate
+that decides whether 0.6.0 ships.
+**acceptance:** a test naming BL-443 that fails against a tarball built from a tree without
+PKT-59/PKT-58/PKT-74 (the registration call does not exist / the type is rejected) and passes against
+one with them — having registered a consumer kind **and rel**, written a node of that kind, traversed
+an edge of that rel to it, queried it by kind, and asserted via `EXPLAIN QUERY PLAN` that the query
+used `ix_node_kind` with no `json_each`. Plus the closed-DDL rejection arm and the `dist/`-deleted
+vacuity guard.
+
+### PKT-63 — BL-444: one release train — and a release note that states what breaks
+
+> **status: OPEN** — still open: BL-444 · derived by `tools/plan-status.mjs`, do not hand-edit
+
+**Goal:** graph-store 0.5.2 has four in-repo dependents — `analysis` (:28), `vector-store` (:27),
+`hybrid-search` (:28), `memory-core` (:28) — `workspace:*` in source, pinned exactly on publish. Every
+graph-store version forces four downstream releases; this is why a one-line fix cost eight releases on
+2026-08-04. Five packets in this wave change the package. Published separately that is five trains and
+twenty downstream releases.
+**Closes:** BL-444 (MEDIUM)
+**Files:** `.changeset/`, `libs/data/graph/graph-store/package.json` + `CHANGELOG.md`, the four
+dependents' manifests, `pnpm-lock.yaml`.
+**requires:** PKT-73, PKT-59, PKT-58, PKT-74, PKT-60, PKT-62
+**sequencing:** **last, and it is a gate not a chore.** PKT-61 rides the same version if it lands in
+time; if it does not, it ships in a later patch — but say so in the release note, because until it
+ships **no existing store has the feature at all.**
+**tier:** sonnet, ~60k tokens / ~24 turns
+**orientation:** ~48k unavoidable before any edit — 36k mandated docs (README+STATE+PLAN) + ~8k the
+repo's release constraints (relock-before-merge, registry sync, smoke test) + ~4k backlog bodies
+(BL-444, BL-448). **Fixed cost.**
+**budget:** ~24 turns / ~108k tokens. Guidance ceiling ~160k; **guidance, not a stop.** Commit by
+pathspec. **Sub-dispatch only to `general-purpose`/`haiku`/`claude`.**
+> **⛔ Do not publish anything before PKT-62 is green.** The external-consumer test is the acceptance
+> gate for the wave; publishing first makes it a post-mortem.
+> **⛔ "The change is additive throughout" is FALSE, and it was in the previous revision of this
+> packet.** Under D1 the schema surface *shrinks* — two CHECKs removed, no column added — and under D4
+> **`EdgeRel` widens in return position** (`EdgeRecord.rel` `:424`, assigned `:609`), which is
+> source-breaking for a consumer that assigns it or switches exhaustively on it. `PUBLIC_EDGE_RELS`
+> also changes meaning. **0.6.0 is still the correct number** — under 0.x semver the minor slot *is*
+> the breaking slot — but the release note must **state what breaks** instead of asserting that
+> nothing does.
+> **Assert backwards compatibility, do not claim it.** `episode/entity/claim/community/session/generic`
+> keep working; the ten rels keep working; the `kind:'generic'` + tag convention keeps working and
+> **nobody is forced to migrate data**; every existing row reads back byte-identically because no
+> column is added or removed; a caller passing no `typePolicy` sees today's behaviour.
+> **⚠️ Coordinate with FEAT-SOX-001 (Turso adapter, OPEN).** Under D1 this wave emits **no DDL at all**
+> on an existing store — the fresh-DDL change no-ops there and nothing happens until an operator runs
+> PKT-61. The Turso collision does not disappear, it **relocates into PKT-61**, where the node rebuild
+> meets BL-337's un-`REINDEX`-able FTS index and BL-361's PANIC. **The two workstreams must not both
+> hold `applySchema()`** — and PKT-73 edits it. Check for a live owner.
+> **`pnpm install` and commit the `pnpm-lock.yaml` diff in the same change** (BL-150). Run
+> `node scripts/smoke-test.mjs` and confirm 0 failures before merging.
+**Produces:** the whole wave shipped as one honest minor, at four downstream republishes instead of
+twenty, with a release note a consumer can act on.
+**acceptance:** a test naming BL-444 that installs the 0.6.0 tarball against the *previous* consumer
+source — unchanged, using no new API — and asserts it builds and its suite passes, proving the
+non-breaking half rather than asserting it. **Its counterpart is mandatory and is the half the
+previous revision lacked:** a consumer that reads `EdgeRecord.rel` into an `EdgeRel`-typed binding must
+be shown to **fail** to compile, with that failure documented in the release note as intentional. Plus
+a committed `pnpm-lock.yaml` diff and a 0-failure smoke run.
+
+---
+
 ## Explicitly out of scope / no packet (in addition to the exclusion list already in this plan)
 
 - **BL-202** — memory-core suite flakiness under CPU load (`export.spec.ts`, `concurrency-harness.spec.ts`). Its own marker is explicit: **"NOT REPRODUCIBLE... do not `fix` until it reproduces."** ~30+ runs across serial/parallel/CPU-oversubscription produced zero failures. No packet — filing one would violate the item's own instruction. Leave open, revisit only if it reproduces again with a captured failure.
@@ -2536,14 +2984,24 @@ Verified by diffing every packet's `Closes:` line against `grep -oE '^### BL-[0-
 | E | PKT-34 .. PKT-36 (3) | 2 (PKT-36 depends on PKT-35) | PKT-25 (PKT-34 only) |
 | F | PKT-37 .. PKT-40 (4) | 3 | PKT-16 (PKT-40 only) |
 | G | PKT-41 .. PKT-56 (16) | high — mostly independent | see each packet's `requires:` |
+| H | PKT-64 .. PKT-66 (3) | 2 (PKT-65 hard-gated on PKT-64) | see each packet's `requires:` |
+| I | PKT-67 .. PKT-72 (6) | high — mostly independent | see each packet's `requires:` |
+| J | PKT-57, PKT-73, PKT-59, PKT-58, PKT-74, PKT-60 .. PKT-63 (9) | 2 (PKT-73 is a hard gate; PKT-61/PKT-62 parallel at the tail) | PKT-57 → PKT-73, then serial through the shared `index.ts` |
 
 Wave G collects everything filed after the original A–F waves were drawn (2026-08-01 onward). It is
 not a phase so much as an inbox: the packets in it are individually gated by their own `requires:`
 lines, not by a wave boundary. **PKT-54 (BL-413) is the one ordering constraint worth restating —
 it must precede PKT-29/PKT-30**, because clustering consumes what enrichment produces and the
-enrichment pass is currently dead.
+enrichment pass is currently dead. Waves H, I and J were drawn later still (2026-08-05) and are
+likewise gated per packet, not per wave.
 
-**Total: 56 packets.** Tier distribution, derived from the `**tier:**` fields rather than hand-maintained: **sonnet 45**, **haiku 4** (PKT-09, 20, 22, 23), **opus 0**.
+**Total: 74 packets.** Tier distribution, derived from the `**tier:**` fields rather than hand-maintained: **sonnet 67**, **haiku 7** (PKT-09, 20, 22, 23, 68, 71, 72), **opus 0**.
+
+> **This table is hand-maintained and lives outside the `PLAN-STATUS` markers, so no guard catches it
+> when it drifts — that is BL-435's defect in this file rather than in `STATE.md`.** It was stale for
+> two waves before 2026-08-05 (it read "Total: 56 packets" against a derived ledger of 72, and Waves H
+> and I were absent entirely). Recompute the totals with the snippet below rather than trusting them,
+> and add a row when you add a wave.
 
 > **No packet is opus.** Two independent reasons, both evidence rather than preference. First, the owner's standing constraint: *"No more opus agents."* Second — and this is the one that matters for estimation — **every agent dispatched in this program ran `claude-sonnet-5` regardless of what the packet said.** No `model:` override was ever passed, so the `Agent` tool used each agent type's default. The three packets that once read `opus` (PKT-01, 02, 28) were measured after the fact and had all run on sonnet; all three completed, including a CRITICAL architectural change and a research packet that produced a real measurement. The earlier tier argument in this document concerned a distinction that was never present in any dispatch. Tier is not the lever — task shape, prompt specificity, and budget realism are.
 
