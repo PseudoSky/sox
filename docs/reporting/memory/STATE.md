@@ -103,12 +103,21 @@ out. A sweep of a full copy across all kinds (including invalidated rows) and `e
 zero. BL-342's repair path nevertheless landed (`e248fd1`) because nothing prevented the shape from
 returning; that deploy is now **preventive, not remedial**.
 
-Still residual: `stamped_without_vector: 1`, ~702 of 4973 episodes with no topic (down from 2214 —
-the recluster backfilled 1527 from cluster labels), and **86 live episodes carrying `tags = '[]'`
-where the representation should be NULL** — valid JSON, so `json_valid` and the new probe both pass
-it, but `enrich.ts:216-221` is explicit that an empty tags array means "no tags" and must be NULL.
-`write.ts:251` and `enrich.ts:222` both do this correctly today, so these are residue from the
-window when the guard was regressed. They make `with_tags` (1423) overcount by 86.
+Still residual: `stamped_without_vector: 1` and ~702 of 4973 episodes with no topic (down from 2214 —
+the recluster backfilled 1527 from cluster labels).
+
+**The 86 `tags = '[]'` rows are fixed in code and awaiting the next open (BL-428, `b4040a6`).**
+`'[]'` is valid JSON, so `json_column_valid` passes it; the new `json_empty_array_null` probe
+detects it against a declared column list and the adapter's ordinary verify-and-repair path
+normalises it — no hand-run DDL. Verified on a copy of the live store (db + `-wal`) 2026-08-05:
+**86 of 1729** detected, repaired in **6.2 ms**, `with_tags` **1425 → 1339** (exactly −86) with
+`total` unchanged at 10 150. **The live store still holds all 86 until the next deploy**, because
+the running artifact predates the probe. New stores additionally carry
+`CHECK (col IS NULL OR json_valid(col))` on `node.tags` / `node.meta` / `edge.meta` (BL-430);
+existing stores acquire nothing — no rebuild, so BL-313's path is never entered.
+Short-lived openers can now exclude the JSON scan with `SOX_STORE_VERIFY_SKIP` (BL-431): measured on
+the same copy, the `fast` pass goes **428–435 ms → 149–162 ms**, and the skipped probe is reported
+`unknown` rather than omitted, so `ok` never means "verified" over a probe that did not run.
 
 **Loudest thing in production:** the `no such column: meta` storm (154/day on 08-03, **BL-399**)
 collapsed after the autolink fix removed its source write — 08-03 residual 29 occurrences,
