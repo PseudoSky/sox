@@ -23,9 +23,16 @@ node tools/check-bl-id-integrity.mjs
 # Keep the memory-program plan honest: PLAN.md's packet ledger and STATE.md's progress summary are
 # DERIVED from BACKLOG.md's heading markers. Closing an item without regenerating them leaves two
 # documents that read as authoritative while being wrong — the exact failure this guard exists to
-# stop (PLAN.md once named 39 already-closed ids). Only fires when BACKLOG.md is part of the commit;
-# a change elsewhere cannot invalidate the derived blocks.
-if git diff --cached --name-only | grep -qx 'BACKLOG.md'; then
+# stop (PLAN.md once named 39 already-closed ids).
+#
+# BL-435 — this must also fire on PLAN.md/STATE.md themselves. The old condition was BACKLOG.md
+# only, on the reasoning that "a change elsewhere cannot invalidate the derived blocks". That is
+# true of the derived blocks and false of the audited hand-written sections the same tool now
+# checks: STATE.md's "What to do next" went stale by someone editing STATE.md, a commit that never
+# stages BACKLOG.md. Guarding only the BACKLOG.md trigger would leave the guard blind to precisely
+# the edit that introduces the defect.
+if git diff --cached --name-only |
+  grep -qxE 'BACKLOG.md|docs/reporting/memory/(PLAN|STATE).md'; then
   node tools/plan-status.mjs --check
 fi
 
