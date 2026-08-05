@@ -21,11 +21,11 @@ A packet is **DONE** only when every BL id it targets is closed — code landing
 (BL-225). Several packets below have merged code and still read OPEN; that is correct, and the
 remedy is to close the backlog item with a red→green test, not to edit this table.
 
-**18 done · 3 partial · 45 open** of 66 packets.
+**18 done · 3 partial · 51 open** of 72 packets.
 
-- Open backlog items in this program's scope: **61**, of which **9** have no packet.
+- Open backlog items in this program's scope: **64**, of which **10** have no packet.
 - Open items deliberately out of scope: **28** — BL-99, BL-103, BL-104, BL-105, BL-163, BL-225, BL-228, BL-258, BL-261, BL-282, BL-283, BL-284, BL-285, BL-288, BL-291, BL-292, BL-296, BL-298, BL-305, BL-306, BL-307, BL-308, BL-309, BL-314, BL-315, BL-333, BL-355, BL-408
-- Unscheduled in-scope items (need a packet): BL-416, BL-424, BL-425, BL-426, BL-432, BL-435, BL-436, BL-437, BL-446
+- Unscheduled in-scope items (need a packet): BL-416, BL-424, BL-426, BL-432, BL-435, BL-436, BL-437, BL-446, BL-447, BL-448
 - Packet targets already closed (21) — historical context only, no work remains: BL-259, BL-329, BL-343, BL-348, BL-350, BL-359, BL-364, BL-376, BL-380, BL-383, BL-388, BL-390, BL-391, BL-397, BL-399, BL-402, BL-405, BL-406, BL-407, BL-410, BL-412
 
 | Packet | Status | Targets | Still open |
@@ -96,6 +96,12 @@ remedy is to close the backlog item with a red→green test, not to edit this ta
 | PKT-64 | **OPEN** | BL-445 | BL-445 |
 | PKT-65 | **OPEN** | BL-394 | BL-394 |
 | PKT-66 | **OPEN** | BL-274 | BL-274 |
+| PKT-67 | **OPEN** | BL-341, BL-449 | BL-341, BL-449 |
+| PKT-68 | **OPEN** | BL-360 | BL-360 |
+| PKT-69 | **OPEN** | BL-361 | BL-361 |
+| PKT-70 | **OPEN** | BL-362 | BL-362 |
+| PKT-71 | **OPEN** | BL-379 | BL-379 |
+| PKT-72 | **OPEN** | BL-425 | BL-425 |
 
 <!-- PLAN-STATUS:END -->
 
@@ -1035,7 +1041,14 @@ rewritten, only unblocked.
 **budget:** ~14 turns / ~85k tokens = 50k orientation + 14 x ~2.5k per turn. Guidance ceiling ~120k; **guidance, not a stop — do not truncate the work to hit a number.** **TURNS is the reliable unit, tokens are derived** (PKT-28 estimated ~30 turns and took ~30; its token figure was guessed wrong twice, 30k then 360k, against a ~130k reality). The failure actually guarded is an uncommitted buffer, not a token count: commit incrementally by explicit path, and if the fix sketch proves wrong, say so and stop — a success outcome. **You may sub-dispatch** once oriented, with PRE-DIGESTED context only (exact file, change, assertion) — never tell a subagent to read PLAN.md.
 **acceptance:** a test naming BL-318 asserting a write that would produce `content: null` is rejected or repaired at the boundary rather than persisted; a test naming BL-317 asserting the mislabelling shape is refused. Live cross-check: `memory_stats` currently reports `legacy_episodes: 2`, `stale_episodes: 2` — state whether these are the same rows.
 
-### PKT-43 — BL-362: no committable Turso FTS damage fixture
+### PKT-43 — BL-362: no committable Turso FTS damage fixture — ⛔ **SUPERSEDED by PKT-70, do not dispatch**
+
+> **status: OPEN** — still open: BL-362 · derived by `tools/plan-status.mjs`, do not hand-edit
+
+> **superseded-by:** PKT-70 (2026-08-04). Its BL-361 warning is correct and is carried forward. What
+> it lacks is an exit condition: four damage recipes have already failed, so "build a committable
+> fixture" is an open-ended search. PKT-70 names the ruled-out recipes, the two unexplored candidates,
+> and an accepted terminal outcome (anonymised fixture, or a written finding) so the packet can end.
 
 > **status: OPEN** — still open: BL-362 · derived by `tools/plan-status.mjs`, do not hand-edit
 
@@ -1607,7 +1620,14 @@ completion, don't just assume no build ran.
 **budget:** ~14 turns / ~86k tokens = 51k orientation + 14 x ~2.5k per turn. Guidance ceiling ~130k; **guidance, not a stop — do not truncate the work to hit a number.** **TURNS is the reliable unit, tokens are derived** (PKT-28 estimated ~30 turns and took ~30; its token figure was guessed wrong twice, 30k then 360k, against a ~130k reality). The failure actually guarded is an uncommitted buffer, not a token count: commit incrementally by explicit path, and if the fix sketch proves wrong, say so and stop — a success outcome. **You may sub-dispatch** once oriented, with PRE-DIGESTED context only (exact file, change, assertion) — never tell a subagent to read PLAN.md.
 **acceptance:** a test naming BL-329: create a Turso store with `idx_fts_node`, attempt a better-sqlite3 open, assert a clear diagnostic error (not `malformed database schema`).
 
-### PKT-20 — BL-360: Turso `integrity_check` false-positive — report upstream, pin driver version
+### PKT-20 — BL-360: Turso `integrity_check` false-positive — report upstream, pin driver version — ⛔ **SUPERSEDED by PKT-67-group (PKT-68), do not dispatch**
+
+> **status: OPEN** — still open: BL-360 · derived by `tools/plan-status.mjs`, do not hand-edit
+
+> **superseded-by:** PKT-68 (2026-08-04). Left in place because its `Closes:` line is what
+> `tools/plan-status.mjs` reads. PKT-68 corrects what "pin" means here — a constant asserted against
+> the *installed* driver version, not a `package.json` edit — and folds the version assertion into
+> the existing guard test so the two facts cannot drift apart.
 
 > **status: OPEN** — still open: BL-360 · derived by `tools/plan-status.mjs`, do not hand-edit
 
@@ -1619,7 +1639,15 @@ completion, don't just assume no build ran.
 **budget:** ~8 turns / ~76k tokens = 56k orientation + 8 x ~2.5k per turn. Guidance ceiling ~110k; **guidance, not a stop — do not truncate the work to hit a number.** **TURNS is the reliable unit, tokens are derived** (PKT-28 estimated ~30 turns and took ~30; its token figure was guessed wrong twice, 30k then 360k, against a ~130k reality). The failure actually guarded is an uncommitted buffer, not a token count: commit incrementally by explicit path, and if the fix sketch proves wrong, say so and stop — a success outcome. **You may sub-dispatch** once oriented, with PRE-DIGESTED context only (exact file, change, assertion) — never tell a subagent to read PLAN.md.
 **acceptance:** the existing guard test (already documented as failing if Turso stops emitting the message) stays green; a version pin constant is added and asserted against the installed `@tursodatabase/database` version at test time.
 
-### PKT-21 — BL-361: Turso panics and kills the process on a malformed FTS index row — needs an out-of-process pre-flight
+### PKT-21 — BL-361: Turso panics and kills the process on a malformed FTS index row — needs an out-of-process pre-flight — ⛔ **SUPERSEDED by PKT-69, do not dispatch**
+
+> **status: OPEN** — still open: BL-361 · derived by `tools/plan-status.mjs`, do not hand-edit
+
+> **superseded-by:** PKT-69 (2026-08-04). This packet's gate — "a store flagged unclean" — inherits
+> BL-361's fix sketch, and **that flag is unreachable at the moment it is needed**:
+> `consumeUncleanShutdownFlag()` reads `_adapter_meta` *through the adapter*
+> (`adapter-meta.ts:102-115`) and is called at `turso-adapter.ts:327`, after `connect()` returns —
+> and the panic happens inside `connect()`. PKT-69 gates on an out-of-band marker file instead.
 
 > **status: OPEN** — still open: BL-361 · derived by `tools/plan-status.mjs`, do not hand-edit
 
@@ -1643,7 +1671,14 @@ completion, don't just assume no build ran.
 **budget:** ~8 turns / ~60k tokens = 40k orientation + 8 x ~2.5k per turn. Guidance ceiling ~90k; **guidance, not a stop — do not truncate the work to hit a number.** **TURNS is the reliable unit, tokens are derived** (PKT-28 estimated ~30 turns and took ~30; its token figure was guessed wrong twice, 30k then 360k, against a ~130k reality). The failure actually guarded is an uncommitted buffer, not a token count: commit incrementally by explicit path, and if the fix sketch proves wrong, say so and stop — a success outcome. **You may sub-dispatch** once oriented, with PRE-DIGESTED context only (exact file, change, assertion) — never tell a subagent to read PLAN.md.
 **acceptance:** a test naming BL-392 asserting `SqliteVecDialect.createTableDDL` output contains `distance_metric=cosine`, and that `topKQuery` with `metric='cosine'` actually changes the computed distance (not just sort direction) versus the current default.
 
-### PKT-23 — BL-379: post-repair reverification silently skips the WAL-identity probe
+### PKT-23 — BL-379: post-repair reverification silently skips the WAL-identity probe — ⛔ **SUPERSEDED by PKT-71, do not dispatch**
+
+> **status: OPEN** — still open: BL-379 · derived by `tools/plan-status.mjs`, do not hand-edit
+
+> **superseded-by:** PKT-71 (2026-08-04). This packet offers the item's two fixes as interchangeable
+> alternatives. They are not: forwarding `walBaseline` is local, while emitting an explicit `unknown`
+> for any unrunnable probe changes what `report.unknown` contains for every reader of it, including
+> the hot open path. PKT-71 orders them and states the enumeration required before the second.
 
 > **status: OPEN** — still open: BL-379 · derived by `tools/plan-status.mjs`, do not hand-edit
 
@@ -1804,19 +1839,29 @@ calibration undocumented (the guard becomes a pure safety net that should rarely
 
 ## Wave D — repair helper + crash recovery (depends on nothing above, but internally ordered)
 
-### PKT-32 — BL-337 + BL-341: unified repair helper (REINDEX workaround) + backup integrity-check cap handling
+### PKT-32 — BL-337: unified repair helper (REINDEX workaround) — ⚠️ **narrowed 2026-08-04, its BL-341 half moved to PKT-67**
 
 > **status: OPEN** — still open: BL-337, BL-341 · derived by `tools/plan-status.mjs`, do not hand-edit
 
-**Goal:** BL-335/336/347 are already shipped (verify: CHANGELOG.md, do not redo). What remains is BL-337 (`REINDEX <table>` is impossible on a table carrying a Tantivy index — enumerate btree indexes and reindex individually, skip the FTS index, rebuild it via its own DDL) and BL-341 (`backup.ts`'s post-`VACUUM INTO` check doesn't detect the 100-message integrity_check cap, plus the still-open spike on whether Turso exposes any integrity-check equivalent at all).
-**Closes:** BL-337, BL-341
-**Files:** `libs/data/store/store-adapter/src/integrity.ts` (repair helper: enumerate + reindex btrees, rebuild FTS via DDL), `libs/memory-core/src/backup.ts` (lines 59-60, 196-197 — cap detection + explicit "capped, additional damage may exist" flag).
+> **BL-341 is no longer this packet's business.** The read behind Wave I found that BL-341's cap
+> detection already shipped (`integrity.ts:1589`, reported at `:1631`) and that the remaining defect
+> is elsewhere — the `ok` branch at `:1596` never reads `capped`, and the verdict cannot travel to
+> the caller anyway because `AdapterBackupResult.integrityCheck` is a bare string (`types.ts:191`).
+> That is a contract change in `backup.ts` and both adapters, not a repair-helper change. **PKT-67
+> owns it, together with the second hole in the same verdict (BL-449).** Everything below about
+> BL-337 stands unchanged.
+
+> **status: OPEN** — still open: BL-337, BL-341 · derived by `tools/plan-status.mjs`, do not hand-edit
+
+**Goal:** BL-335/336/347 are already shipped (verify: CHANGELOG.md, do not redo). What remains is BL-337: `REINDEX <table>` is impossible on a table carrying a Tantivy index — enumerate btree indexes and reindex individually, skip the FTS index, rebuild it via its own DDL. *(BL-341's spike is also answered and does not belong here any more: Turso DOES implement `integrity_check` — 299 ms on a copy of the live 43 MB store, with `quick_check` at 79 ms — recorded in BL-341's 2026-07-31 update. Do not re-run that spike.)*
+**Closes:** BL-337 *(BL-341 moved to PKT-67 on 2026-08-04 — see the note under this heading)*
+**Files:** `libs/data/store/store-adapter/src/integrity.ts` (repair helper: enumerate + reindex btrees, rebuild FTS via DDL). **`libs/memory-core/src/backup.ts` is NOT this packet's file any more — PKT-67 owns it. Do not edit it here; a concurrent PKT-67 agent is working in it.**
 **requires:** none
 **tier:** sonnet, ~35k tokens / ~14 turns
 **orientation:** ~59k unavoidable before any edit — 36k mandated docs (README+STATE+PLAN) + ~19k cited source + ~4k backlog bodies. **This is fixed cost and does not shrink with the size of the change.**
 **budget:** ~14 turns / ~94k tokens = 59k orientation + 14 x ~2.5k per turn. Guidance ceiling ~140k; **guidance, not a stop — do not truncate the work to hit a number.** **TURNS is the reliable unit, tokens are derived** (PKT-28 estimated ~30 turns and took ~30; its token figure was guessed wrong twice, 30k then 360k, against a ~130k reality). The failure actually guarded is an uncommitted buffer, not a token count: commit incrementally by explicit path, and if the fix sketch proves wrong, say so and stop — a success outcome. **You may sub-dispatch** once oriented, with PRE-DIGESTED context only (exact file, change, assertion) — never tell a subagent to read PLAN.md.
-**Produces:** a unified repair helper covering the REINDEX workaround (BL-337) and the post-`VACUUM INTO` integrity path (BL-341), callable from the adapter. Consumed by PKT-33, whose acceptance asserts the **auto-repaired** half — so this must expose a programmatic entry point, not only a CLI path.
-**acceptance:** BL-337, must name it: a repair routine returns a table with a Tantivy index to a clean `integrity_check` (filtered for BL-360's known false positive per that item's own amendment). BL-341, must name it: VACUUM INTO-backup a store seeded with >100 independent integrity violations, assert the backup's reported result is explicitly flagged as capped/incomplete, not silently reported as a bounded "100 issues."
+**Produces:** a unified repair helper covering the REINDEX workaround (BL-337), callable from the adapter. Consumed by PKT-33, whose acceptance asserts the **auto-repaired** half — so this must expose a programmatic entry point, not only a CLI path.
+**acceptance:** BL-337, must name it: a repair routine returns a table with a Tantivy index to a clean `integrity_check` (filtered for BL-360's known false positive per that item's own amendment). *(The BL-341 arm that used to live here — VACUUM INTO with >100 seeded violations — is now PKT-67's acceptance arm 1.)*
 
 ### PKT-33 — BL-338: crash-recovery test — SIGKILL under sustained write load
 
@@ -2056,6 +2101,421 @@ open-node-typing architecture (BL-438..BL-444) while this pass was in flight.
 **acceptance:** two arms, both naming BL-274. (1) **Safety, and it must fail today:** point the harness at a `SOX_CONFIG_DB_PATH` under `~/.memory` and assert it refuses to start — the red arm is that nothing currently stops it. (2) **Function:** against a disposable store, run interleaved writes and recalls at a stated concurrency and assert read-your-writes holds for every write the harness observed acknowledged, and that the run reports a non-zero peak in-flight count (a harness that never achieves concurrency is measuring nothing — that assertion is what proves the interleaving is real rather than accidentally serial).
 
 ---
+
+## Wave I — the integrity/backup verdict, the Turso engine's two hard edges, and one flake that is not a flake
+
+Six packets, drawn 2026-08-04 from an architecture pass over BL-341, BL-360, BL-361, BL-362, BL-379
+and BL-425 that read `integrity.ts`, both adapters' `backupTo()`, `backup.ts` and
+`throughput-golden.spec.ts` end to end rather than trusting the items' own fix sketches.
+**PKT-67 supersedes PKT-32's BL-341 half; PKT-68 supersedes PKT-20; PKT-69 supersedes PKT-21;
+PKT-70 supersedes PKT-43; PKT-71 supersedes PKT-23.** The superseded packets are left in place above
+with a forward pointer rather than deleted, for the same reason Wave H gives: their `Closes:` lines
+are what `tools/plan-status.mjs` reads, and their reasoning is the record of how the items were
+understood on 2026-07-31. **PKT-32 survives, narrowed to BL-337 only** — its REINDEX-workaround half
+is untouched and correct.
+
+**Numbered PKT-67+, not PKT-57+, because PKT-57..PKT-63 were claimed concurrently** by the
+open-node-typing architecture (BL-438..BL-444) and PKT-64..PKT-66 by the write-queue-bypass pass,
+both while this pass was in flight.
+
+**What the read changed.** Five findings, each verified in source, and each one invalidates part of
+an item's own fix sketch. Three of the six packets below would have produced a green, reviewed diff
+that fixed nothing if dispatched against the sketch as filed.
+
+1. **BL-341's cap handling is already shipped — and is still wrong on the path that matters.**
+   `probeIntegrityCheck` computes `capped = messages.length >= 100` (`integrity.ts:1589`) and reports
+   it in the `damaged` detail string (`:1631`). But the **`ok` branch (`:1596-1613`) never reads
+   `capped` at all.** Because the same function deliberately excludes BL-360's unconditional Tantivy
+   false positive and the page-accounting messages from the damage set (`:1574`, `:1587-1588`), a
+   store can fill all 100 message slots with filtered-away noise — the live copy carries 45 leaked
+   pages by BL-341's own measurement — and return `status: 'ok'` while real damage sits past the
+   truncation point, unseen and unreported. The cap is detected in the one case where it is
+   redundant (damage was already found) and dropped in the one case where it is load-bearing.
+2. **The cap flag cannot reach the caller even once it is reported.** `AdapterBackupResult`
+   (`types.ts:191`) and `BackupStoreResult` (`backup.ts:68`) both type the verdict as a bare
+   `integrityCheck: string`, and `backup.ts:195` tests it with `!== 'ok'`. There is no channel for
+   "checked, but the output was truncated". BL-341 cannot be closed without a contract change, which
+   its fix sketch does not mention. **Owner ruling (2026-08-04): additive structured field** —
+   see PKT-67.
+3. **The same verdict has a second, larger hole, now filed as BL-449.** Both adapters reverify the
+   backup copy with `only: ['pragma_integrity_check']` (`turso-adapter.ts:383-386`,
+   `sqlite-adapter.ts:225-228`), so `fts_index_live` never runs against a backup — and
+   `PRAGMA integrity_check` is structurally blind to Tantivy content, emitting only the false
+   positive that `isKnownFalsePositive()` then filters away. **A `VACUUM INTO` copy of a store with
+   the exact BL-347 live damage is certified `'ok'`.** Both adapters also read `report.ok`, which is
+   `damaged.length === 0` (`:1701`) and excludes `unknown` by design — the type's own doc-comment
+   warns callers about precisely this (`:178-189`) — so a probe that could not run at all also
+   reports `'ok'`. Same file, same function, same test: fix with BL-341.
+4. **BL-361's fix sketch is unimplementable as written.** It proposes a pre-flight "on a store
+   flagged as unclean." The unclean flag lives *inside the store*: `consumeUncleanShutdownFlag()`
+   reads `_adapter_meta` through the adapter (`adapter-meta.ts:102-115`) and is called at
+   `turso-adapter.ts:327` — **after `connect()` returns.** The panic happens *inside* `connect()`.
+   The gating signal is unreachable from before the event it is meant to gate. An agent following
+   the sketch would discover this several hours in. **Owner ruling: out-of-band marker file** —
+   see PKT-69.
+5. **BL-425's own narrowed fix is unsound, and the item says so in the wrong direction.** Its
+   2026-08-04 update concludes "the fix narrows to option (a)" — raise the 30 s hook timeout, keep
+   the 30-write sample. But the assertion the hook feeds is `throughput ≥ 0.5`, and throughput is
+   `30 writes ÷ WriteQueue.THROUGHPUT_WINDOW_MS`, a **fixed 60 000 ms rolling window**
+   (`write-queue.ts:275`, pruned at `:941`). Raising the hook timeout past 60 s makes the hook pass
+   and then **fails the assertion**, because the earliest completions age out of the window before
+   the ping reads it. The sibling Sqlite block already documents this exact trap in its own failure
+   message (`throughput-golden.spec.ts:143-144`: *"If writes took >60s total, some completions aged
+   out before the ping"*). The budget and the threshold are one coupled quantity; no timeout alone
+   can fix it. **Owner ruling: deterministic embed provider** — see PKT-72.
+
+### PKT-67 — BL-341 + BL-449: make the backup's integrity verdict say what it actually checked
+
+> **status: OPEN** — still open: BL-341, BL-449 · derived by `tools/plan-status.mjs`, do not hand-edit
+
+**Goal:** `backupStore()` returns a verdict an operator reasonably reads as "this backup was
+verified." Today that verdict can mean three different things it does not distinguish: verified
+clean; verified against one probe that cannot see the damage class this program exists to chase; or
+not verified at all. Make each of the three say so.
+**Closes:** BL-341 (MEDIUM), BL-449 (MEDIUM)
+**Files:** `libs/data/store/store-adapter/src/integrity.ts` (`probeIntegrityCheck`'s `ok` branch
+:1596-1613 — the `capped` value at :1589 already exists and is simply not read here),
+`libs/data/store/store-adapter/src/types.ts` (:191 — `AdapterBackupResult`),
+`libs/data/store/store-adapter/src/turso-adapter.ts` (:364-395 — drop the `only` narrowing, read
+`unknown`), `libs/data/store/store-adapter/src/sqlite-adapter.ts` (:214-237 — the identical block),
+`libs/memory-core/src/backup.ts` (:58-69 `BackupStoreResult`, :195-216 the `!== 'ok'` test and the
+success return).
+**requires:** none
+**sequencing:** **land before PKT-33 (BL-338).** PKT-33's acceptance asserts damage is "visible in
+status/logs without manual investigation" after a crash — the auto-backup taken on that path is one
+of the surfaces it will read, and asserting against a verdict that can say `'ok'` about an unverified
+copy makes that assertion vacuous. Independent of every other packet in this wave.
+**tier:** sonnet, ~50k tokens / ~20 turns
+**orientation:** ~54k unavoidable before any edit — 36k mandated docs (README+STATE+PLAN) + ~14k
+cited source (`integrity.ts`'s probe + report-shape regions, both adapters' `backupTo`, `backup.ts`'s
+result path) + ~4k backlog bodies (BL-341 **including its 2026-07-31 UPDATE**, BL-449). **Fixed cost.**
+**budget:** ~20 turns / ~104k tokens = 54k orientation + 20 × ~2.5k per turn. Guidance ceiling ~160k;
+**guidance, not a stop.** Commit by pathspec, incrementally. **Sub-dispatch only to
+`general-purpose`/`haiku`/`claude`** — specialist types have no `Agent` tool.
+> **⛔ Do not re-implement the 100-message cap detection. It exists.** BL-341's body as originally
+> filed asks for it; its own 2026-07-31 UPDATE then records that it shipped. The `capped` boolean is
+> live at `integrity.ts:1589` and reported at `:1631`. **The entire remaining defect is that the `ok`
+> branch at `:1596` does not read it.** An agent who writes a fresh cap detector has spent the packet
+> re-shipping working code and left the actual hole open.
+> **The `capped` threshold counts messages BEFORE filtering, and that is correct — do not "fix" it.**
+> Truncation is a property of the pragma's output, not of the damage set. Filtering first would make
+> a fully-truncated output look uncapped precisely when the noise is what filled it, which is the
+> live shape (45 leaked pages on the measured copy).
+> **`capped && real.length === 0` must NOT return `ok`.** `status: 'unknown'` is the correct verdict
+> and the type already carries it with exactly this meaning (`:157-160`: *"The probe could not be
+> run, or could not be shown to have exercised the artifact. NEVER treated as healthy."*)
+> **Owner decision, already taken 2026-08-04 — implement it, do not re-open it.** The verdict travels
+> as a **new, additive structured field**: add `integrityReport?: { capped: boolean; ok: boolean;
+> unknownCount: number; findings: … }` to `AdapterBackupResult` and `BackupStoreResult`, and keep
+> `integrityCheck: string` populated as it is today for compatibility. The two rejected options are
+> recorded so they are not re-litigated: encoding `capped:` into the string (rejected — makes the
+> caller parse prose, the failure class this repo keeps filing) and failing the backup outright when
+> capped (rejected — a store with ≥100 leaked free pages would become permanently unbackupable, which
+> is BL-360's non-convergence trap wearing a different hat).
+> **Dropping `only: ['pragma_integrity_check']` is a cost change on a real path.** The backup copy is
+> a throwaway read-only connection, so the hot-path argument does not apply — but `json_column_valid`
+> is a whole-table scan (BL-431 measured a live fast pass at 428-435 ms before its `skip` lever
+> existed). Measure the added time on a copy of the live store and record it in the packet output. If
+> a probe must come out, use `skip` so the exclusion is **visible in the report**, never `only`.
+**Produces:** a backup verdict that distinguishes verified-clean from verified-partially from
+not-verified, carried in a structured field rather than a prose string. PKT-33 (BL-338) reads this
+surface for its crash-recovery evidence assertion; the field names are the contract.
+**acceptance:** three arms, all red today, and each must be **watched** fail-then-pass.
+(1) BL-341, must name it: seed a store with >100 independent integrity violations, `backupTo()` it,
+assert the result is flagged capped/incomplete rather than reported as a bounded count.
+(2) BL-341, the load-bearing arm the item does not ask for: seed a store with **zero** real damage
+but ≥100 filtered messages (leaked pages and/or the Turso FTS false positive), assert the verdict is
+`unknown`, **not** `ok` — this is the case that reports a clean bill of health over truncated output
+today. (3) BL-449, must name it: seed a live-but-empty FTS index (reuse `seedEmptyFts5Index` in
+`integrity-selfheal.test.ts` — do not build a second damage helper), `backupTo()`, assert the verdict
+is not `'ok'`; plus force the integrity probe to return `unknown` and assert the same.
+
+### PKT-68 — BL-360: pin the driver the false-positive suppression is valid for, and report it upstream
+
+> **status: OPEN** — still open: BL-360 · derived by `tools/plan-status.mjs`, do not hand-edit
+
+>
+> **Supersedes PKT-20** — same item, corrected scope. PKT-20 says "pin the driver version" without
+> saying what a pin *is* here, and omits that the guard test has to fail loudly on upgrade rather
+> than silently stop asserting anything.
+
+**Goal:** `isKnownFalsePositive()` is a suppression against a specific driver's bug, not a fix. It is
+currently valid for `@tursodatabase/database@0.7.1` (installed version, verified 2026-08-04; the
+manifests declare `^0.7.1` — root `package.json:55` and `store-adapter/package.json:28`, so a caret
+bump can silently move the store off the version the suppression was measured against). Make the
+version the suppression is asserted against explicit and machine-checked, and file the bug upstream.
+**Closes:** BL-360 (MEDIUM)
+**Files:** `libs/data/store/store-adapter/src/integrity.ts` (:1528-1540 — a `SUPPRESSION_VALID_FOR`
+constant beside `isKnownFalsePositive`, documented with the measurement date),
+`libs/data/store/store-adapter/src/__tests__/integrity-selfheal.test.ts` (:599-624 — the existing
+guard test; extend, do not duplicate). Upstream report is external work performed **inside** this
+packet, not a follow-up: the issue URL goes in the code comment.
+**requires:** none
+**tier:** haiku, ~22k tokens / ~9 turns
+**orientation:** ~46k unavoidable before any edit — 36k mandated docs (README+STATE+PLAN) + ~6k cited
+source (the suppression, the guard test, the two manifests) + ~4k backlog bodies. **Fixed cost.**
+**budget:** ~9 turns / ~69k tokens = 46k orientation + 9 × ~2.5k per turn. Guidance ceiling ~100k;
+**guidance, not a stop.** Commit by pathspec. **Sub-dispatch only to `general-purpose`/`haiku`/`claude`.**
+> **⛔ Do not remove the filter.** BL-360's own acceptance is *"on a driver version where it is fixed,
+> the guard test flips and the filter is removed."* 0.7.1 is not that version — the message was
+> re-measured on a freshly created 200-row store returning `fts_match` 200/200. Removing it now
+> returns every Turso store carrying an FTS index to permanently-damaged.
+> **"Pin" here does not mean editing `package.json` to `0.7.1` exact.** That is a supply-chain
+> decision with blast radius far outside this item and it does not make the *suppression* honest. The
+> pin that matters is a constant in `integrity.ts` naming the version the behaviour was measured on,
+> plus a test that reads the **installed** version and fails when it moves. Say so in the comment.
+> **The existing guard test already fails if Turso stops emitting the message** (`:617-620`, with the
+> assertion message *"if Turso stops emitting it, drop the filter"*). Do not write a second one — add
+> the version assertion to it, so the two facts (message still emitted; version still the measured
+> one) fail as one unit and cannot drift apart.
+**Produces:** a suppression whose validity window is machine-checked rather than remembered, and an
+upstream issue that is the only path to actually deleting it. BL-335, BL-337 and BL-341's acceptance
+criteria all read "clean after filtering the known false positive" — this packet is what makes that
+phrase mean something specific.
+**acceptance:** a test naming BL-360 that reads the installed `@tursodatabase/database` version and
+fails when it differs from `SUPPRESSION_VALID_FOR` — verified red by temporarily setting the constant
+to a different version, green when restored. The existing message-still-emitted assertion stays
+green. The upstream issue URL is present in the source comment.
+
+### PKT-69 — BL-361: an out-of-process pre-flight, gated on a marker the panic cannot destroy
+
+> **status: OPEN** — still open: BL-361 · derived by `tools/plan-status.mjs`, do not hand-edit
+
+>
+> **Supersedes PKT-21** — same item, but PKT-21 inherits BL-361's "pre-flight before the first
+> `connect()` on a store flagged as unclean", and **that gate does not exist before `connect()`.**
+> See finding 4 above. Dispatching PKT-21 as written sends an agent to look for a signal that is
+> structurally unavailable at the moment it is needed.
+
+**Goal:** a Turso store whose `sqlite_master` carries an FTS index row with no backing
+`__turso_internal_fts_dir_*` table **panics in Rust and aborts the Node process inside `connect()`**
+(`panicked at core/vdbe/execute.rs:13189:51`, measured on 0.7.1). Nothing in-process can catch it,
+diagnose it, or repair it, because nothing in-process runs. Give the opener a way to find out before
+it asks.
+**Closes:** BL-361 (MEDIUM)
+**Files:** new pre-flight module in `libs/data/store/store-adapter/src/` (a schema sanity read via
+`better-sqlite3` with `PRAGMA writable_schema = ON` — **this open path works on a Turso-FTS store and
+is already proven**, see the constraint block), plus an out-of-band marker written/cleared alongside
+the existing clean-shutdown bookkeeping, plus the wire-in at `turso-adapter.ts`'s `connect()` (the
+region around :323-340).
+**requires:** none
+**sequencing:** **land before or with PKT-70 (BL-362).** PKT-70 builds damage fixtures on this exact
+store shape and its own note already warns that getting it wrong kills the test runner; a working
+pre-flight is what makes that fixture space safe to explore. Not a hard gate — PKT-70 can avoid the
+shape entirely — but the two are cheaper together and share the child-process harness.
+**tier:** sonnet, ~55k tokens / ~22 turns — **not haiku**: this is a new module on the open path of
+every store, with a process-death failure mode and a real cost question.
+**orientation:** ~50k unavoidable before any edit — 36k mandated docs (README+STATE+PLAN) + ~10k cited
+source (`turso-adapter.ts` `connect()`, `adapter-meta.ts`'s clean-shutdown pair, `integrity.ts`'s
+`recoverStaleWalIndex` as the precedent for a sidecar-file recovery, BL-329's guard) + ~4k backlog
+bodies (BL-361, BL-362 — **read BL-362's four failed damage recipes, they are the map**). **Fixed cost.**
+**budget:** ~22 turns / ~105k tokens = 50k orientation + 22 × ~2.5k per turn. Guidance ceiling ~170k;
+**guidance, not a stop.** Commit by pathspec, incrementally. **Sub-dispatch only to
+`general-purpose`/`haiku`/`claude`.**
+> **⛔ The store's own unclean flag CANNOT gate this. Verified, not assumed.**
+> `consumeUncleanShutdownFlag()` runs `SELECT … FROM _adapter_meta` through the adapter
+> (`adapter-meta.ts:102-115`) and is called at `turso-adapter.ts:327`, i.e. **after** `connect()`
+> returned. The process is already dead by then. If you find yourself reading `_adapter_meta` to
+> decide whether to pre-flight, stop — you have re-derived the defect.
+> **Owner decision, already taken 2026-08-04 — implement it, do not re-open it.** Gate on an
+> **out-of-band marker file** written outside the database (set on open, cleared on clean close,
+> alongside where `markCleanShutdown` already runs), and run the pre-flight only when it is present.
+> The two rejected options are recorded so they are not re-litigated: unconditional pre-flight on
+> every open (rejected — adds a native open plus a `sqlite_master` scan to the hot MCP open path;
+> revisit only if the marker proves unreliable **and** the cost is measured first) and
+> upstream-report-only (rejected — BL-338 requires a partially-damaged store to recover
+> automatically, and this one cannot even be opened).
+> **`better-sqlite3` CAN open a Turso-FTS store — with `PRAGMA writable_schema = ON`.** A plain open
+> fails with `malformed database schema (__turso_internal_fts_dir_idx_fts_node_key) - near "USING":
+> syntax error`; with the flag it reads and writes `sqlite_master` normally. This is BL-362's
+> by-product finding and it is the whole mechanism this packet stands on. **Note it contradicts
+> BL-329's framing** that no such escape hatch exists — if your change makes BL-329's guard fire on
+> the pre-flight's own open, that is a real interaction, not a nuisance: reconcile it in code and say
+> so in the packet output.
+> **Report upstream as part of this packet.** A `panic!` on malformed schema is a driver bug however
+> well we route around it. Issue URL in the source comment, same convention as PKT-68.
+> **BL-361's load-bearing question is still open and this packet does not close it:** whether a crash
+> can produce this state *naturally*. It was produced deliberately. If the pre-flight ever fires in
+> the wild on a store nobody damaged by hand, **BL-361 reclassifies to HIGH** — say so in the
+> pre-flight's own log line so the evidence arrives by itself.
+**Produces:** a store that reports a catchable error instead of killing its host process, plus the
+first out-of-band open-state marker in the adapter — which is also the shape any future
+"cannot-open-at-all" recovery will need.
+**acceptance:** a test naming BL-361 that reproduces the panic state (reinstate an `idx_fts_node`
+`sqlite_master` row without its directory table via `writable_schema`) and asserts the store either
+opens with a catchable error or is repaired by the pre-flight. **Run the subject in a child process**
+— the failure mode aborts the process, so an in-process test cannot report its own red arm; the
+harness must observe a non-zero exit and a SIGABRT/panic signature today, and a clean catchable error
+after the fix. A test that cannot be watched fail does not satisfy BL-225.
+
+### PKT-70 — BL-362: a committable Turso FTS damage fixture, or a written finding that there is none
+
+> **status: OPEN** — still open: BL-362 · derived by `tools/plan-status.mjs`, do not hand-edit
+
+>
+> **Supersedes PKT-43** — same item and the same BL-361 warning, but PKT-43 states the goal as
+> "build a committable fixture" with no accepted terminal outcome for the case where the mechanism
+> genuinely cannot be reproduced. Four recipes have already failed. An open-ended search with no
+> exit condition is how a packet burns a budget and reports nothing.
+
+**Goal:** the Turso FTS probe is verified against real damage exactly once — a copy of the live store
+that is not in the repo. CI proves the probe passes on a healthy index and never that it fails on a
+damaged one, which is precisely the BL-167 shape (a test named for an invariant that skips the case
+where the invariant breaks). Close that, or state in writing that it cannot be closed and why.
+**Closes:** BL-362 (MEDIUM)
+**Files:** `libs/data/store/store-adapter/src/__tests__/` — fixture seeding beside the existing
+`seedUnpopulatedIndex` / `seedEmptyFts5Index` / `seedDuplicateAdapterMeta` helpers
+(`integrity-selfheal.test.ts:83-147`), plus the test. If the outcome is the written finding, it goes
+to `docs/reporting/memory/findings/` and is linked from BL-362 — **not** left in a commit message.
+**requires:** none (cheaper after PKT-69; see that packet's sequencing note)
+**tier:** sonnet, ~55k tokens / ~22 turns — investigation with a real chance of a negative result.
+**orientation:** ~50k unavoidable before any edit — 36k mandated docs (README+STATE+PLAN) + ~10k cited
+source (the three existing seed helpers, the FTS probe `probeFtsIndexes` at `integrity.ts:842`, the
+repair path `repairFtsIndex` at `:1754`) + ~4k backlog bodies (BL-362 **in full — its four failed
+recipes are the map, re-running them is the single easiest way to waste this packet**, BL-347, BL-361).
+**Fixed cost.**
+**budget:** ~22 turns / ~105k tokens = 50k orientation + 22 × ~2.5k per turn. Guidance ceiling ~170k;
+**guidance, not a stop.** Commit by pathspec, incrementally. **Sub-dispatch only to
+`general-purpose`/`haiku`/`claude`.**
+> **⛔ Four recipes are already ruled out. Do not re-run them.** (1) Deleting the Tantivy directory
+> rows — Turso refuses; via `better-sqlite3` it succeeds and affects nothing, the table holds 0 rows
+> in every state. (2) Repointing the directory table's rootpage at an empty btree — FTS keeps
+> working, the content is not read through that table. (3) Inserting through a connection without
+> `experimental: ['index_method']` — the INSERT itself throws, so this is *not* how the live damage
+> happened. (4) Reinstating the `sqlite_master` row without the directory table — **panics and kills
+> the process**, that is BL-361.
+> **The fixture must be empty-but-present, never absent.** Recipe 4 is the failure mode: an absent
+> directory table aborts the test runner rather than failing a test.
+> **`VACUUM` and the go-live restore path are the two unexplored candidates**, named in BL-362's own
+> fix sketch — `~/.adhd/sox-ecosystem/memory/corrections-20260730/dbrepair/restore.mjs`. A torn WAL
+> over the index is a third. Try these before inventing new ones.
+> **⛔ Never write to `~/.memory/*`.** Work on copies, and **copy the `-wal` alongside the `.db`** or
+> the copy is stale — the mechanism you are hunting may live entirely in the WAL.
+> **A negative result is a SUCCESS outcome, and it is bounded.** If no recipe reproduces it, ship
+> **either** a small anonymised damaged fixture derived from a copy of the live store (BL-362's own
+> fallback, and it satisfies the acceptance) **or** a written finding naming every recipe tried and
+> what each proved. Do not leave this open pending a mechanism the evidence may not contain — that is
+> the PKT-44 disposition and it applies here identically.
+**Produces:** either a committed Turso FTS damage fixture that makes `fts_index_live` go red and then
+green through the real repair path, or a written finding that closes the question. Either way BL-347's
+negative control stops depending on an artifact that exists on one machine.
+**acceptance:** a committed test naming BL-362 that damages a Turso FTS index in-repo, asserts the
+sentinel probe reports damaged, then asserts it reports healthy after adapter repair — watched
+red→green. **Or** a written finding in `docs/reporting/memory/findings/` enumerating every recipe and
+its result, linked from BL-362, with the anonymised-fixture fallback shipped if it is viable.
+
+### PKT-71 — BL-379: a probe that cannot run must say so, not vanish
+
+> **status: OPEN** — still open: BL-379 · derived by `tools/plan-status.mjs`, do not hand-edit
+
+>
+> **Supersedes PKT-23** — same item and same two options, but PKT-23 presents them as
+> interchangeable ("forward the baseline, **or** emit `unknown`"). They are not: one is local, one
+> changes a verdict semantic every integrity surface in the repo reads. See the constraint block.
+
+**Goal:** `repairStoreIntegrity()` re-verifies with `verifyStoreIntegrity(adapter, { depth:
+report.depth })` (`integrity.ts:1863`) and forwards no `walBaseline`. `probeWalIdentity()` returns
+`null` without one (`:401-402`), and a `null` finding is simply not pushed (`:1656-1659`) — so
+`wal_identity` contributes nothing to any post-repair report, silently. A WAL unlinked *during* a
+repair pass is invisible to the verification that immediately follows it.
+**Closes:** BL-379 (LOW)
+**Files:** `libs/data/store/store-adapter/src/integrity.ts` — `RepairOptions` (:241-247, add
+`walBaseline`), the reverify call (:1863), and `verifyStoreIntegrity`'s probe loop (:1656-1659) if
+the explicit-`unknown` half is taken.
+**requires:** none
+**sequencing:** independent. **Serialize against PKT-67 on `integrity.ts`** — both touch that file;
+PKT-67 works in `probeIntegrityCheck`/report-shape (:1538-1638, :178-209) and this one in the
+repair/verify region (:241-247, :1656-1659, :1863), so the hunks are disjoint, but land one before
+starting the other rather than running them concurrently in the same checkout.
+**tier:** haiku, ~24k tokens / ~10 turns
+**orientation:** ~46k unavoidable before any edit — 36k mandated docs (README+STATE+PLAN) + ~6k cited
+source (the four regions above) + ~4k backlog bodies (BL-379, BL-330 for what the probe is *for*).
+**Fixed cost.**
+**budget:** ~10 turns / ~71k tokens = 46k orientation + 10 × ~2.5k per turn. Guidance ceiling ~100k;
+**guidance, not a stop.** Commit by pathspec. **Sub-dispatch only to `general-purpose`/`haiku`/`claude`.**
+> **The two options are not equivalent — take the narrow one first.** (a) **Forward `walBaseline`
+> through `RepairOptions`** is local, closes the item, and is what the acceptance actually tests.
+> (b) **Make `verifyStoreIntegrity` emit an explicit `unknown` for any requested probe that cannot
+> run** is the more principled fix *and* changes what `report.unknown` contains for every caller —
+> including `runOpenTimeIntegrity` (:2247) on the hot open path, the status surface, and the backup
+> verdict PKT-67 is teaching to read `unknown`. **Do (a) unconditionally. Do (b) only after
+> enumerating every reader of `report.unknown` and confirming none of them turns a newly-populated
+> `unknown` into a user-visible alarm on a healthy store.** That is BL-360's non-convergence trap:
+> a health surface that can never return to clean gets tuned out, and this repo has already paid for
+> that lesson twice (BL-360, BL-374).
+> **"Silently omitted" must not remain an option** — that is BL-379's own stated bar, and it is the
+> BL-374/BL-368 family: an instrument that appears wired and reports nothing. Whichever option lands,
+> the post-repair report must distinguish *ran and clean* from *did not run*.
+**Produces:** a post-repair verification that cannot silently skip a probe it was asked to run — and,
+if (b) is taken, a repo-wide `unknown`-on-unrunnable semantic that PKT-67's backup verdict composes
+with directly.
+**acceptance:** a test naming BL-379: unlink the WAL between the damage and the repair, assert the
+post-repair report contains a `wal_identity` finding rather than omitting it — must fail today
+(the finding is absent, not wrong, so **assert on presence**, and confirm the red arm actually shows
+absence rather than a passing `ok`).
+
+### PKT-72 — BL-425: the 30 s hook and the 60 s window are one coupled budget, and no timeout can fix that
+
+> **status: OPEN** — still open: BL-425 · derived by `tools/plan-status.mjs`, do not hand-edit
+
+**Goal:** `throughput-golden.spec.ts`'s TursoAdapter `beforeAll` performs 30 real synchronous embeds
+and intermittently exceeds its 30 s hook budget under concurrent-agent load — twice reproduced, same
+signature, passing in isolation and on re-run of identical code. Make the suite measure what it is
+for (the `WriteQueue._trackCompletion` accounting path) instead of the machine's current ONNX
+contention.
+**Closes:** BL-425 (MEDIUM)
+**Files:** `extensions/bundles/sox-memory-bundle/members/memory-server/src/throughput-golden.spec.ts`
+(the Turso `beforeAll` :197-208 and, for symmetry, the Sqlite one :115-121),
+`extensions/bundles/sox-memory-bundle/members/memory-server/vitest.setup.ts` **only if** the provider
+injection belongs suite-wide rather than file-local — decide and say which.
+**requires:** none
+**sequencing:** fully independent. Touches no production source.
+**tier:** haiku, ~25k tokens / ~10 turns
+**orientation:** ~46k unavoidable before any edit — 36k mandated docs (README+STATE+PLAN) + ~6k cited
+source (the spec, `vitest.setup.ts`, `write-queue.ts`'s throughput window, one existing
+`_setEmbedProviderForTest` call site as the pattern) + ~4k backlog bodies (BL-425 **including its
+2026-08-04 update**, BL-331). **Fixed cost.**
+**budget:** ~10 turns / ~71k tokens = 46k orientation + 10 × ~2.5k per turn. Guidance ceiling ~100k;
+**guidance, not a stop.** Commit by pathspec. **Sub-dispatch only to `general-purpose`/`haiku`/`claude`.**
+> **⛔ BL-425's own narrowed fix — "raise this hook's timeout, do not shrink its 30-write sample" —
+> is WRONG, and following it produces a red suite.** The assertion is `throughput ≥ 0.5`, which is
+> `30 writes ÷ THROUGHPUT_WINDOW_MS`, and that window is a **fixed 60 000 ms** rolling window
+> (`write-queue.ts:275`, pruned at `:941`). A hook allowed to run past 60 s ages its own earliest
+> completions out of the window before the ping reads it — the hook goes green and the assertion goes
+> red. The Sqlite block already documents this trap in its own failure text
+> (`throughput-golden.spec.ts:143-144`). **The backlog header repeats the unsound version too**
+> (*"raise this hook's timeout, do not shrink its 30-write sample"*) — correct BL-425's body and that
+> header clause as part of this packet, or the next agent inherits the same wrong instruction.
+> **Owner decision, already taken 2026-08-04 — implement it, do not re-open it.** Inject a
+> deterministic embed provider via `_setEmbedProviderForTest()` (precedent:
+> `libs/memory-core/src/recall-live-incident.spec.ts:113`,
+> `bl406-stale-vector-blindness.spec.ts:88`). Embeds drop to ~0 ms, 30 writes finish in seconds, and
+> **both** the hook budget and the 60 s window stop depending on machine load. The rejected option is
+> recorded so it is not re-litigated: fewer writes plus a raised timeout (rejected — keeps the real
+> embed path but remains load-sensitive, just with more headroom, and this flake has already survived
+> one "it passes on re-run" dismissal).
+> **`memory-server`'s `vitest.setup.ts` does NOT inject a test provider** — it sets only
+> `SOX_SYNC_EMBED=1` and `STORE_ADAPTER=sqlite` (:23-24). So every write in this suite runs a real
+> fastembed inference today. That is the cost, and it is why this file is the one that flakes.
+> **Do not weaken the assertion to make it pass.** The threshold exists to catch a broken
+> `_trackCompletion`; lowering it to survive a slow machine deletes the only thing the test does.
+> With a deterministic provider the existing `≥ 0.5` holds comfortably — keep it.
+> **This is not a licence to stub embeddings suite-wide.** Other specs in this bundle legitimately
+> exercise the real provider. Scope the injection to this file unless you can show the whole suite
+> wants it, and restore it in `afterAll`.
+**Produces:** a throughput suite whose result depends on the code under test rather than on how many
+agents are running on the machine — removing one of the two recurring sources of false-negative CI
+signal on this repo (the other is BL-202, which has no packet by its own instruction).
+**acceptance:** a test-level change naming BL-425, verified two ways because a flake cannot be
+watched red on demand: (1) the Turso block completes its `beforeAll` in **well under** 30 s with the
+deterministic provider — measure and record the actual figure, before and after; (2) the existing
+`≥ 0.5` throughput assertion still passes, proving the accounting path is still being measured rather
+than bypassed. Additionally assert the total hook wall-time stays under the 60 s window, so a future
+regression that re-introduces slow embeds fails on a **clear** budget assertion instead of an opaque
+hook timeout.
+
+---
+
 
 ## Explicitly out of scope / no packet (in addition to the exclusion list already in this plan)
 
