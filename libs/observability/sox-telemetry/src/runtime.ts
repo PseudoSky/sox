@@ -72,8 +72,21 @@ export interface InitTelemetryOptions {
 export interface TelemetryHandle {
   readonly service: string;
   readonly role: Role;
-  /** Full path of the file currently being written, '' if sink is not 'file'. */
-  currentLogFilePath(): string;
+  /**
+   * Where telemetry from this handle lands on disk.
+   *
+   * **`null` means "no file sink configured"** (`logSink: 'stderr' | 'none'`) —
+   * the ONLY meaning it has. A non-null value is the file the next record will
+   * be written to, whether or not anything has been written yet.
+   *
+   * BL-433: this used to return `''` for BOTH "no sink configured" AND "sink
+   * configured, nothing written yet" — two states with opposite remedies (fix
+   * your config vs. just wait) collapsed into one indistinguishable value, the
+   * BL-319/BL-347 absent-field ambiguity. `''` is no longer a legal return
+   * value; the two states are now distinguishable in the TYPE, so a caller
+   * cannot fail to handle the difference by forgetting to.
+   */
+  currentLogFilePath(): string | null;
   /** Await any buffered writes (only meaningful in non-durable mode). */
   flush(): Promise<void>;
   /** Resolves once OTel bring-up has settled (immediately when `otel: false`).
@@ -221,7 +234,10 @@ export function initTelemetry(opts: InitTelemetryOptions): TelemetryHandle {
   return {
     service: opts.service,
     role: opts.role,
-    currentLogFilePath: () => _state.sink?.currentPath() ?? '',
+    // BL-433: `plannedPath()`, not `currentPath()` — the question a caller is
+    // asking is "where do I look?", which has an answer before the first write.
+    // `null` is reserved for the one state that genuinely has no answer.
+    currentLogFilePath: () => _state.sink?.plannedPath() ?? null,
     flush: () => _state.sink?.flush() ?? Promise.resolve(),
     otelReady: () => _otelReady,
     close: () => {
@@ -426,7 +442,9 @@ export interface TelemetrySelfCheck {
    *  process has emitted; `records_since` is how much un-snapshotted activity
    *  is currently at risk from a SIGKILL. `every_records: 0` means the activity
    *  trigger is off and only pull/shutdown snapshots occur. */
-  metric_persistence: { written: number; records_since: number; every_records: number; file: string };
+  /** BL-433: `file` is `null` — never `''` — when no snapshot sink is configured,
+   *  and otherwise the path the next snapshot lands in, written or not. */
+  metric_persistence: { written: number; records_since: number; every_records: number; file: string | null };
 }
 
 function summarize(stats: DurationStats): { count: number; mean: number; min: number; max: number } {
@@ -494,7 +512,7 @@ function telemetrySelfCheckCore(): TelemetrySelfCheck {
       written: _snapshotsWritten,
       records_since: _recordsSinceSnapshot,
       every_records: _snapshotEveryRecords,
-      file: _snapshotSink?.plannedPath() ?? '',
+      file: _snapshotSink?.plannedPath() ?? null,
     },
   };
 }

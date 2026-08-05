@@ -204,9 +204,22 @@ export function _resetTelemetryForTest(): void {
   _writer = null;
 }
 
-/** The file currently being written, or '' if nothing has been logged yet. */
-export function currentLogFilePath(): string {
-  return getWriter().currentPath();
+/**
+ * Where memory-core telemetry lands on disk.
+ *
+ * **`null` means logging is switched off** (`SOX_MEMORY_LOG_DISABLE=1`) — the
+ * only meaning it has. A non-null value is the file the next record will be
+ * written to, whether or not anything has been written yet.
+ *
+ * BL-433: this used to return `getWriter().currentPath()`, i.e. `''` for BOTH
+ * "disabled" AND "enabled but nothing written yet" — two states with opposite
+ * remedies collapsed into one indistinguishable value (BL-319/BL-347). `''` is
+ * no longer a legal return value, and the distinction is now in the TYPE rather
+ * than in a convention a caller has to remember.
+ */
+export function currentLogFilePath(): string | null {
+  if (isDisabled()) return null;
+  return getWriter().plannedPath();
 }
 
 /** Test-only: await flush of every `log.*` call made so far (writes are async

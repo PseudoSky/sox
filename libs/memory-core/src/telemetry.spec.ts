@@ -30,8 +30,9 @@ function tmpLogDir(): { dir: string; cleanup: () => void } {
   return { dir, cleanup: () => fs.rmSync(dir, { recursive: true, force: true }) };
 }
 
-function readLines(filePath: string): Record<string, unknown>[] {
-  if (!fs.existsSync(filePath)) return [];
+function readLines(filePath: string | null): Record<string, unknown>[] {
+  // BL-433: currentLogFilePath() is `string | null` — null means logging is off.
+  if (filePath === null || !fs.existsSync(filePath)) return [];
   return fs
     .readFileSync(filePath, 'utf8')
     .split('\n')
@@ -80,8 +81,9 @@ describe('telemetry — structured JSONL logging (BL-320)', () => {
     log.info('test.event', { foo: 'bar', count: 3 });
     await _flushTelemetryForTest();
     const filePath = currentLogFilePath();
+    expect(filePath).not.toBeNull();
     expect(filePath).toContain('test-component-');
-    expect(filePath.endsWith('.jsonl')).toBe(true);
+    expect(filePath!.endsWith('.jsonl')).toBe(true);
     const lines = readLines(filePath);
     expect(lines).toHaveLength(1);
     const rec = lines[0]!;
@@ -122,7 +124,29 @@ describe('telemetry — structured JSONL logging (BL-320)', () => {
     process.env['SOX_MEMORY_LOG_DISABLE'] = '1';
     log.error('should.not.write', {});
     await _flushTelemetryForTest();
-    expect(currentLogFilePath()).toBe('');
+    // BL-433: `null` is now the ONE signal for "logging is off". It used to be
+    // `''`, which a sink that simply had not written yet returned as well.
+    expect(currentLogFilePath()).toBeNull();
+  });
+
+  it('BL-433: reports the path BEFORE the first write, and null only when disabled', async () => {
+    // Nothing has been logged in this case yet — the old `currentPath()`-backed
+    // accessor returned `''` here, indistinguishable from "logging is off".
+    const beforeAnyWrite = currentLogFilePath();
+    expect(beforeAnyWrite).not.toBeNull();
+    expect(beforeAnyWrite).toContain('test-component-');
+    expect(fs.existsSync(beforeAnyWrite!)).toBe(false); // genuinely not written yet
+
+    log.info('bl433.first.write', {});
+    await _flushTelemetryForTest();
+    // ...and it named the right file all along.
+    expect(currentLogFilePath()).toBe(beforeAnyWrite);
+    expect(fs.existsSync(beforeAnyWrite!)).toBe(true);
+
+    process.env['SOX_MEMORY_LOG_DISABLE'] = '1';
+    expect(currentLogFilePath()).toBeNull();
+    delete process.env['SOX_MEMORY_LOG_DISABLE'];
+    expect(currentLogFilePath()).toBe(beforeAnyWrite);
   });
 
   it('never throws even when fields contain a circular reference', () => {

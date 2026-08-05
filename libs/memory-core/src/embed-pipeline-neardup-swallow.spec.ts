@@ -60,8 +60,9 @@ vi.mock('./neardup.js', async (importOriginal) => {
   };
 });
 
-function readLines(filePath: string): Record<string, unknown>[] {
-  if (!fs.existsSync(filePath)) return [];
+function readLines(filePath: string | null): Record<string, unknown>[] {
+  // BL-433: currentLogFilePath() is `string | null` — null means logging is off.
+  if (filePath === null || !fs.existsSync(filePath)) return [];
   return fs
     .readFileSync(filePath, 'utf8')
     .split('\n')
