@@ -2,6 +2,33 @@
 
 ---
 
+## [Unreleased] — BL-463: staged entries that outlive their agent now have a teardown, and it cannot cause the loss it prevents
+
+**A stopped or finished agent leaves index entries behind, and nothing cleans them up.** Three occurrences on 2026-08-05, every one found by accident: `STATE.md` 50 lines behind HEAD; six paths at 2,687 deletions with `CHANGELOG.md` at −260; four paths with `BACKLOG.md` at −292/+174. In each, the working trees were correct and *only* the index was stale — so `git status` showed nothing alarming while a bare `git commit` by anyone would have reverted committed work in bulk.
+
+```console
+$ node tools/unstage-orphans.mjs
+unstage-orphans: 3 path(s) staged in the shared index and NOT in HEAD [BL-463]:
+  safe   BACKLOG.md  (staged bytes are identical to the working tree)
+  safe   STATE.md    (staged bytes are identical to the working tree)
+  HELD   CHANGELOG.md  (index-only content — read it with `git cat-file blob 05bcdc679`)
+unstage-orphans: report only. Re-run with --apply to clear (add --force for the HELD paths).
+
+$ node tools/unstage-orphans.mjs --apply --min-idle-min 10
+unstage-orphans: cleared 2 index entry(ies) to HEAD. Working tree untouched.
+unstage-orphans: 1 index-only path(s) left staged. Re-run with --force to clear them; …
+```
+
+- **It refuses to become the failure it prevents.** A staged entry whose content differs from the working tree exists *only* in the index; clearing it discards the sole reference to those bytes — a revert bomb converted into immediate data loss, which is the recurring inversion in this family of defects. Those paths are held back, reported with the blob sha that reads them, and cleared only under `--force`.
+- **`--min-idle-min <n>` refuses to run while another agent is staging**, keyed off `.git/index`'s mtime. Teardown should never race a live agent's index.
+- **`--json` reports `divergent` / `safe` / `held` / `applied` / `skippedReason`** for orchestrator teardown; the default is report-only and writes nothing.
+- **The non-destructiveness is now mechanically checked.** It was trusted three times on the strength of three recoveries; every arm of the test now asserts a byte-identical working-tree snapshot afterwards.
+- **The detonation is pinned as its own arm.** A seeded stale entry plus a bare `git commit` by the next agent reverts committed work — reproduced through a private-index commit, because a pathspec commit rewrites the very index entry that forms the seed.
+- **`commit-mine.mjs` was one of the *sources*, not immune to it** — see BL-465, fixed in the same pass. BL-463's original root-cause paragraph said the opposite and has been corrected.
+- Pinned by `tools/test-bl463-unstage-orphans.mjs` (6 arms, 10 assertions; 8 red without the tool).
+
+---
+
 ## [Unreleased] — BL-457: `git commit --amend` can no longer swallow the shared index behind an approved subject line
 
 **`--amend` reads as a message-only operation and commits the entire shared index.** A live incident ran `git commit --amend -F msg.txt` to correct a *subject line* and turned a reviewed 2-file / +282 commit into 8 files / +727 / −2567, swallowing and partially reverting four other agents' staged files — behind a subject that had already been read and approved.
