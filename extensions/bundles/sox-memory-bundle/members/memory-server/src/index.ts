@@ -2292,6 +2292,23 @@ export async function runEnrichPassOnDb(
       db_path: dbPath,
       communities_upserted: result.communities_upserted,
       cluster_incremental_joined: result.incremental_joined,
+      // BL-328/PKT-30: the τ this partition was ACTUALLY produced at, and why.
+      // The child has always returned these; this line used to drop them, so
+      // the only durable evidence a pass left behind was a cluster count —
+      // identical whether calibration ran and chose the floor or never ran at
+      // all. That ambiguity cost three sessions on 2026-08-05, when a genuine
+      // calibrated full pass (τ=0.87, reason 'floor', projected mean degree
+      // 1.98977 of a 2.0 budget) was read as "calibration is inert in
+      // production" because its log line said nothing either way.
+      //
+      // `?? null` rather than omission, deliberately: an ABSENT field is
+      // indistinguishable from "not instrumented" (the BL-319/347/376/378
+      // failure shape, and this defect's own). A `null` is a positive claim
+      // that this pass did not calibrate — which is correct and expected on
+      // the incremental path, where only a full pass recomputes τ.
+      cluster_calibration: result.cluster_calibration ?? null,
+      cluster_effective_threshold: result.cluster_effective_threshold ?? null,
+      cluster_guard_retries: result.cluster_guard_retries ?? null,
       importance_updated: result.importance_updated,
       relates_to_edges: result.relates_to_edges,
       queue_completed: queueCompleted,
