@@ -1570,15 +1570,19 @@ Measured on a 200-row store built from scratch whose `fts_match` returned **200/
 
 **Mitigated, not fixed:** `integrity.ts`'s `isKnownFalsePositive()` filters exactly this message shape and nothing else, with a test that fails if Turso stops emitting it.[3] That is a suppression against a driver bug, not a fix.
 
-**Fix sketch:** report upstream to `@tursodatabase/database` with the reproduction; pin the driver version the suppression is valid for; re-test on upgrade. Amend the acceptance criteria of BL-335/BL-337/BL-341 to "clean after filtering the known false positive."
+**Suppression's validity window is now machine-checked (PKT-68, 2026-08-05, `652bee2`).** `SUPPRESSION_VALID_FOR = '0.7.1'` sits beside `isKnownFalsePositive` and the guard test asserts it against the driver **resolved on disk**, not against a manifest.[4] Both manifests declare `^0.7.1`,[5][6] so a caret bump could previously move the store onto an unmeasured driver with no file in the repo changing and the filter silently swallowing whatever the new version emits. Deliberately the *same* test as the message-still-emitted assertion, so the two facts cannot drift apart. **No verdict behaviour changed** — making the filter conditional on the version would return every store on a future driver to permanently-damaged, which is this item's own non-convergence trap.
 
-**Acceptance (red→green, must name BL-360):** on a driver version where it is fixed, the guard test flips and the filter is removed.
+**Reported upstream — an issue already existed, so this is a confirmation, not a duplicate:** [tursodatabase/turso#7611](https://github.com/tursodatabase/turso/issues/7611) (open, filed 2026-06-24 against `0.7.0-pre.10`). Re-measured on the released 0.7.1 via the Node driver on darwin/arm64: 200/200 `fts_match` on the same store both `integrity_check` and `quick_check` call damaged, surviving a close/reopen.[7] That issue closing on a version we re-measure is the only event that retires the filter.
+
+**Fix sketch:** ~~report upstream; pin the driver version the suppression is valid for~~ — both done, see above. Remaining: re-test on upgrade (now enforced by the guard test rather than remembered), and amend the acceptance criteria of BL-335/BL-337/BL-341 to "clean after filtering the known false positive."
+
+**Acceptance (red→green, must name BL-360):** on a driver version where it is fixed, the guard test flips and the filter is removed. **Not reachable from this repo** — 0.7.1 is not that version and the fix is upstream's to ship. What is reachable, and is done, is that the upgrade which makes it reachable can no longer pass unnoticed.
 
 **Severity:** MEDIUM — no data risk, but it silently invalidates the acceptance criteria of three open HIGH items and would make an automatic repair loop non-convergent.
 
 **Related:** BL-341, BL-335, BL-337, BL-352, BL-347.
 
-Citations: [wip/turso-live-metrics, database-administrator, claude, sandbox P0.7, 1: integrity_check against a freshly built 200-row Turso FTS store, before and after reopen, 2026-07-31, 2: integrity_check after a successful DROP+CREATE rebuild on a copy of `~/.memory/memory.db` 2026-07-31, 3: libs/data/store/store-adapter/src/integrity.ts (`isKnownFalsePositive`) + integrity-selfheal.test.ts]
+Citations: [wip/turso-live-metrics, database-administrator, claude, sandbox P0.7, 1: integrity_check against a freshly built 200-row Turso FTS store, before and after reopen, 2026-07-31, 2: integrity_check after a successful DROP+CREATE rebuild on a copy of `~/.memory/memory.db` 2026-07-31, 3: libs/data/store/store-adapter/src/integrity.ts (`isKnownFalsePositive`) + integrity-selfheal.test.ts] · [wip/turso-live-metrics, debugger, claude, PKT-68, 4: libs/data/store/store-adapter/src/__tests__/integrity-selfheal.test.ts:69-92,678-690, 5: package.json:55, 6: libs/data/store/store-adapter/package.json:28, 7: https://github.com/tursodatabase/turso/issues/7611#issuecomment-5195105275]
 
 ---
 
