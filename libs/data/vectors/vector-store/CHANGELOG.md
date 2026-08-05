@@ -1,5 +1,13 @@
 # @adhd/sox-vector-store
 
+## 0.3.3
+
+### Patch Changes
+
+- Updated dependencies
+  - @adhd/sox-store-adapter@0.2.0
+  - @adhd/sox-graph-store@0.5.3
+
 ## 0.3.1
 
 ### Patch Changes

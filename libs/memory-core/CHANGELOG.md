@@ -1,5 +1,29 @@
 # @adhd/sox-memory-core
 
+## 0.5.0
+
+### Minor Changes
+
+- `WriteQueueMetrics` tells the truth about the path it is reporting on (BL-445, BL-394).
+
+  Turso handles concurrent writes natively, so `WriteQueue` bypasses its own FIFO on that adapter — and the bypass returned before either admission check, while `memory_ping` went on reporting `queue_max_size: 100`, `deadline_budget_ms: 20000` and `deadline_guard_enabled: true`. Guards that structurally cannot fire were being advertised as active, and eight metric fields were structurally unreachable zeros that read as "nothing has gone wrong".
+
+  - New `mode: 'fifo' | 'bypass'` discriminator, and `admission_control: 'active' | 'inactive — adapter handles concurrency natively'`.
+  - On the bypass path `queue_depth`, `queue_high_watermark`, `saturated`, `queue_max_size` and `deadline_budget_ms` are **`null`**, and `deadline_guard_enabled` is `false`. "There is no queue" is not "the queue is empty".
+  - `in_flight` becomes a **real** concurrent-operation count on the bypass path, and completions there now feed the latency ring and the task counters at all four settle points, including both error branches.
+
+  **No admission control was added.** The owner's ruling was honest reporting only: the live store shows `queue_depth: 0` with zero rejections and no evidence a bound is warranted. If one is ever needed it will be sized from measurement, and `in_flight` is now the instrument that would size it.
+
+  Breaking for anyone reading those five fields as `number`; additive for everyone else. Nothing in-repo outside tests consumed them.
+
+### Patch Changes
+
+- Updated dependencies
+  - @adhd/sox-store-adapter@0.2.0
+  - @adhd/sox-analysis@0.1.4
+  - @adhd/sox-graph-store@0.5.3
+  - @adhd/sox-hybrid-search@0.3.3
+
 ## 0.4.1
 
 ### Patch Changes
