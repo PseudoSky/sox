@@ -23,7 +23,7 @@ remedy is to close the backlog item with a red→green test, not to edit this ta
 
 **31 done · 4 partial · 50 open** of 85 packets.
 
-- Open backlog items in this program's scope: **70**, of which **2** have no packet.
+- Open backlog items in this program's scope: **71**, of which **2** have no packet.
 - Open items deliberately out of scope: **28** — BL-99, BL-103, BL-104, BL-105, BL-163, BL-225, BL-228, BL-258, BL-261, BL-282, BL-283, BL-284, BL-285, BL-288, BL-291, BL-292, BL-296, BL-298, BL-305, BL-306, BL-307, BL-308, BL-309, BL-314, BL-315, BL-333, BL-355, BL-408
 - Unscheduled in-scope items (need a packet): BL-436, BL-462
 - Packet targets already closed (30) — historical context only, no work remains: BL-259, BL-329, BL-341, BL-343, BL-348, BL-350, BL-359, BL-360, BL-361, BL-362, BL-364, BL-376, BL-379, BL-380, BL-383, BL-388, BL-390, BL-391, BL-394, BL-397, BL-399, BL-402, BL-405, BL-406, BL-407, BL-410, BL-412, BL-425, BL-445, BL-449
@@ -105,7 +105,7 @@ remedy is to close the backlog item with a red→green test, not to edit this ta
 | PKT-73 | **OPEN** | BL-447 | BL-447 |
 | PKT-74 | **OPEN** | BL-448 | BL-448 |
 | PKT-75 | **OPEN** | BL-416, BL-446, BL-454 | BL-416, BL-446, BL-454 |
-| PKT-76 | **OPEN** | BL-456, BL-457, BL-463 | BL-456, BL-457, BL-463 |
+| PKT-76 | **OPEN** | BL-456, BL-457, BL-463, BL-465 | BL-456, BL-457, BL-463, BL-465 |
 | PKT-77 | **OPEN** | BL-435, BL-464 | BL-435, BL-464 |
 | PKT-78 | **OPEN** | BL-451, BL-453, BL-458, BL-459 | BL-451, BL-453, BL-458, BL-459 |
 | PKT-79 | **OPEN** | BL-452, BL-460 | BL-452, BL-460 |
@@ -3029,17 +3029,18 @@ context, never by telling a subagent to read this file.
 **Decision needed, do not self-approve:** BL-416 turns on whether `BACKLOG.md` is a **per-worktree** file or a genuinely shared cross-worktree registry. BL-359 built the allocator around a single canonical file precisely to stop concurrent branches colliding on an id, so `--show-toplevel` is not automatically the right answer — it trades an id-collision race for correct file targeting. Both scripts must print the resolved absolute path on every write and every FAIL whichever way it lands. State the recommendation, implement only after a ruling.
 **acceptance:** naming each id. BL-416: a test that runs the allocator from a real `git worktree add` worktree and asserts the placeholder lands in a `BACKLOG.md` the invoking process can read back **and commit** (BL-423's inherited acceptance). BL-446: `--help` prints usage, exits 0, and leaves `BACKLOG.md` byte-identical; an unrecognised argument exits non-zero and writes nothing. BL-454: the annotation is regenerated (or capped) by a tool, with a fixture containing duplicate clauses reduced deterministically and no unique clause dropped.
 
-### PKT-76 — BL-456 + BL-457 + BL-463: the shared checkout's three unguarded blast radii
+### PKT-76 — BL-456 + BL-457 + BL-463 + BL-465: the shared checkout's four unguarded blast radii
 
-> **status: OPEN** — still open: BL-456, BL-457, BL-463 · derived by `tools/plan-status.mjs`, do not hand-edit
+> **status: OPEN** — still open: BL-456, BL-457, BL-463, BL-465 · derived by `tools/plan-status.mjs`, do not hand-edit
 
 **Goal:** three distinct doors onto the same hazard — a tool whose blast radius exceeds the agent's mental model of it in a shared, concurrently-edited checkout. (a) BL-457: `git commit --amend` with no pathspec commits the **shared index**; one live incident turned a reviewed 2-file/+282 commit into 8 files/+727/−2567, hiding the swallowed work behind an already-approved subject line. (b) BL-463: staged entries **outlive the agent that created them** — four occurrences on 2026-08-05, each a stale index silently ready to revert committed work; recovery is `git restore --staged`, verified non-destructive every time. (c) BL-456: `nx.json` sets `targetDefaults.test.dependsOn = ["^build"]`, so `nx test <project>` rebuilds upstream `dist/` from whatever source is on disk — including another agent's uncommitted edits — which means a suite can go green *against work its runner has never seen* and be reported as verification.
-**Closes:** BL-456, BL-457, BL-463
-**Files:** `CLAUDE.md` (the pathspec + destructive-build constraint sections), `tools/commit-mine.mjs` (an amend mode that rewrites only the message via `commit-tree`, never touching the index), optionally `tools/install-git-hooks.mjs` + a `pre-commit` guard.
+(d) **BL-465 — do this one first.** `commit-mine.mjs`, the *sanctioned* remedy for (b), manufactures (b) on every run: it moves the branch with `update-ref` and never resyncs the shared index, leaving every committed path in the index holding the **old** HEAD blob. Reproduced 2026-08-05 from a verified-clean index — `git diff --cached` went from empty to `+12/−247` across the commit. Compliance is the vector, on the hottest files.
+**Closes:** BL-456, BL-457, BL-463, BL-465
+**Files:** `CLAUDE.md` (the pathspec + destructive-build constraint sections), `tools/commit-mine.mjs` (the post-`update-ref` index resync at :160, and an amend mode that rewrites only the message via `commit-tree`, never touching the index), optionally `tools/install-git-hooks.mjs` + a `pre-commit` guard.
 **requires:** none — but read PKT-51 (BL-409) and PKT-56 (BL-422) first; this is the same family and must not contradict them.
 **tier:** sonnet, ~18 turns
 **Note on the structural fix.** All three items independently converge on **per-agent worktree isolation**, which is already the dispatch default and removes the shared index entirely. This packet is the defence-in-depth for the case where isolation is not in force — it is explicitly *not* a substitute for it, and should say so rather than implying the hazard is closed. Note also that worktree isolation currently inherits neither `node_modules` nor git hooks (STATE.md's known-unverified section), so "just use worktrees" has its own unpaid cost.
-**acceptance:** naming each id. BL-457: a guard that refuses a pathspec-less `--amend` while the shared index diverges from HEAD, red against a seeded stale index; plus `git reset --soft` recorded as the recovery. BL-463: a teardown step that `git restore --staged`s any path an agent staged but never committed, proven on a seeded divergence with every working-tree file asserted byte-identical afterwards. BL-456: documented alongside BL-235 **and** a mechanical check — assert `git status --porcelain` over the dependency set is reported with any suite result a packet offers as evidence.
+**acceptance:** naming each id. BL-465: seed a clean shared index, run `commit-mine` over a tracked file, assert `git diff --cached` is **empty** afterwards — red today, showing the full inverse of the commit; plus the protective arm — with another agent's content staged for a committed path, that entry is left byte-identical and the run warns. **A blanket `read-tree HEAD` against the shared index is the wrong fix** and turns a revert bomb into immediate data loss; resync only paths whose index entry still matches the old HEAD. BL-457: a guard that refuses a pathspec-less `--amend` while the shared index diverges from HEAD, red against a seeded stale index; plus `git reset --soft` recorded as the recovery. BL-463: a teardown step that `git restore --staged`s any path an agent staged but never committed, proven on a seeded divergence with every working-tree file asserted byte-identical afterwards. BL-456: documented alongside BL-235 **and** a mechanical check — assert `git status --porcelain` over the dependency set is reported with any suite result a packet offers as evidence.
 
 ### PKT-77 — BL-435 + BL-464: hand-maintained plan blocks the guard cannot see — outside the markers, and inside the stamp format
 
