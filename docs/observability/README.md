@@ -67,10 +67,20 @@ root context — normally `WriteQueue.enqueue` — causes **every nested `log.*`
 `write.ts`, `embed.ts`, `embed-pipeline.ts` and `db.ts` to carry the same `trace_id`, with **no
 signature changes** on any function in between.
 
-**Known gap:** `embed.start` / `embed.finish` currently emit `trace_id: null` — the embed path
-runs outside the enqueue-established context, so embeds cannot be correlated to the write that
-requested them. This is a real limitation for BL-331-class analysis and must be closed by
-BL-351's substrate work.
+**Every embed path establishes a root context, including the ones that run off the queue** (BL-434).
+`withContendedStage` *propagates* ambient context — it never *creates* it — so a path that starts
+outside `WriteQueue.enqueue` has to mint its own or every nested record falls through to
+`trace_id: null`:
+
+| Path | Root context established by | Correlates to |
+|---|---|---|
+| write | `WriteQueue.enqueue`, threaded to Phase B via `PendingEmbed.traceId` | the originating `memory_write` |
+| heal (`healMissingVectors`) | the tick mints a `tick_trace_id`; each row runs under its own id | the row, joined to the tick by `embed_pipeline.heal.row.start` |
+| reembed (`healStaleVectors`) | same two-level shape | the row, via `embed_pipeline.reembed.row.start` |
+
+So `embed.start` / `embed.finish` / `sox.stage.embed.*` carry a real ULID on all three paths. To
+reconstruct a heal pass: filter `embed_pipeline.heal.row.start` by `tick_trace_id`, then join every
+other record on `trace_id`.
 
 ---
 
@@ -107,6 +117,10 @@ are the ones that really fire). Counts are 2026-07-30 + 07-31 combined.
 ### Embed pipeline (Phase B = vector persist + post-processing)
 | Event | Fields | Count |
 |---|---|---|
+| `embed_pipeline.heal.row.start` | `uid`, `rowid`, `tick_trace_id` | BL-434, new |
+| `embed_pipeline.heal.row.error` | + `error` | BL-434, new |
+| `embed_pipeline.reembed.row.start` | `uid`, `rowid`, `tick_trace_id` | BL-434, new |
+| `embed_pipeline.reembed.row.error` | + `error` | BL-434, new |
 | `embed_pipeline.apply.finish` | `rowid`, `status`, `uid` | 87 |
 | `embed_pipeline.apply.discarded` | `reason`, `rowid`, `uid` | 1 |
 | `embed_pipeline.phaseB.error` | `error`, `rowid`, `uid` | 73 |
@@ -336,7 +350,6 @@ rotation cap in particular cannot be tuned where the volume actually accumulates
 |---|---|
 | **memory-core only** — `embedding-provider`, `store-adapter`, `graph-store`, `host-runtime` have no equivalent | BL-351 |
 | **Env controls scrubbed on the live service** | BL-344 |
-| **`embed.*` events carry `trace_id: null`** — embeds cannot be correlated to their originating write | BL-351 |
 | **No metrics aggregation** — raw events only; nothing computes throughput/percentiles, and nothing surfaces them via `memory_ping` | BL-319, BL-334 |
 | **`time_to_vector_ms` exists with 0 samples** — heal path bypasses write-path instrumentation | BL-319 |
 | **wait-vs-work not a first-class primitive** — must be reconstructed by hand | BL-351, BL-322, BL-345 |

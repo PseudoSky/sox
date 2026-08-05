@@ -71,7 +71,7 @@ import { applyNearDupResult, NEARDUP_THRESHOLD } from './enrich.js';
 import type { StoreAdapter, AdapterTransaction, VectorDialect } from '@adhd/sox-store-adapter';
 import { LatencyRing, summarizeLatencies } from './latency-stats.js';
 import type { WriteQueue } from './write-queue.js';
-import { log as tlog, traceIdOrNew, withTrace } from './telemetry.js';
+import { log as tlog, newTraceId, traceIdOrNew, withTrace } from './telemetry.js';
 
 /** Stderr log prefix — matches the writeq convention ([inv:no-stdout-diagnostics]). */
 const LOG_PREFIX = '[memory-core embed-pipeline]';
@@ -652,6 +652,33 @@ export async function healMissingVectors(
     out.disabled = true;
     return out;
   }
+  // BL-434: the heal tick establishes its OWN ambient trace context.
+  //
+  // Trace ids propagate ambiently through `AsyncLocalStorage`, and
+  // `withContendedStage` only PROPAGATES an ambient context — it never creates
+  // one. The heal tick runs outside any WriteQueue task (BL-154), so nothing
+  // upstream had established a context and every `embed.start`/`embed.finish`
+  // emitted from this path carried `trace_id: null`: heal embeds were the one
+  // embed population that could not be joined to the work that requested them.
+  //
+  // Two levels, deliberately: one id per TICK (so tick-level records and any
+  // future `tlog` call added here are correlated by construction, not by a
+  // remembered convention), and one id per ROW unit of work (so a given
+  // `embed.*` line identifies the single row it re-embedded rather than the
+  // whole 500-row pass). `embed_pipeline.heal.row.start` is the join record
+  // carrying `tick_trace_id`, which is what makes the two levels reconcilable
+  // from the JSONL alone.
+  const tickTraceId = newTraceId();
+  return withTrace(tickTraceId, () => _healMissingVectorsPass(adapter, wq, opts, out, tickTraceId));
+}
+
+async function _healMissingVectorsPass(
+  adapter: StoreAdapter,
+  wq: WriteQueue,
+  opts: { limit?: number; logSink?: (line: string) => void } | undefined,
+  out: HealResult,
+  tickTraceId: string,
+): Promise<HealResult> {
   const limit = opts?.limit ?? 500;
   const log = opts?.logSink ?? ((line: string) => console.error(line));
   const metrics = stateFor(wq.storePath);
@@ -698,45 +725,63 @@ export async function healMissingVectors(
     // NO startedAtMs: the in-process Phase-A stamp is gone (crash/restart) —
     // heal applies must not pollute the time_to_vector distribution.
     const pending: PendingEmbed = { uid: r.uid, rowid: r.rowid, text: r.content };
-    try {
-      const embedStartMs = performance.now();
-      // Use a timeout on the embed IPC call so a stuck child process does not
-      // hang the heal loop indefinitely. The timeout value is configurable via
-      // SOX_EMBED_HEAL_TIMEOUT_MS (default 120s — far above the ~335ms actual
-      // CoreML inference, but generous enough to not false-positive under
-      // moderate concurrent-loop queue wait).
-      const vec = await embedWithTimeout(pending.text, tickTimeoutMs);
-      metrics.embedDuration.push(performance.now() - embedStartMs);
-      metrics.counters.embeds_completed++;
-      trackEmbedCompletion(metrics);
-      const applied = await wq.enqueue(
-        `embed_heal:${pending.uid}`,
-        async (qdb) => {
-          return qdb.transaction(async (tx) => {
-            return applyEmbedding(tx, pending, vec, useBinaryFormat, vectorDialect);
-          }, { mode: 'immediate' });
-        },
-        'apply',
-      );
-      recordApplyOutcome(metrics, applied.status);
-      if (applied.status === 'applied') {
-        out.healed++;
-        metrics.counters.heals_applied++;
-        // heal_lag: WALL-CLOCK age of the healed node (t_created-based —
-        // labeled as such; the only signal that survives a process restart).
-        const createdMs = r.t_created === null ? NaN : Date.parse(r.t_created);
-        if (Number.isFinite(createdMs)) {
-          metrics.healLag.push(Math.max(0, Date.now() - createdMs));
-        }
-      } else if (applied.status === 'exists') out.exists++;
-      else out.gone++;
-      logApplyDiscarded(applied.status, pending.uid, pending.rowid);
-    } catch (err) {
-      out.failed++;
-      metrics.counters.heals_failed++;
-      const msg = err instanceof Error ? err.message : JSON.stringify(err);
-      log(`${LOG_PREFIX} heal FAILURE uid=${pending.uid} rowid=${pending.rowid}: ${msg}`);
-    }
+    // BL-434: one trace id per row unit of work, joined to the tick by the
+    // `heal.row.start` record below. Everything nested inside — `embed.start`,
+    // `embed.finish`, the `sox.stage.embed.*` wait/work pair, the apply task's
+    // queue records — inherits it ambiently with no signature changes.
+    const rowTraceId = newTraceId();
+    await withTrace(rowTraceId, async () => {
+      tlog.info('embed_pipeline.heal.row.start', {
+        uid: pending.uid,
+        rowid: pending.rowid,
+        tick_trace_id: tickTraceId,
+      });
+      try {
+        const embedStartMs = performance.now();
+        // Use a timeout on the embed IPC call so a stuck child process does not
+        // hang the heal loop indefinitely. The timeout value is configurable via
+        // SOX_EMBED_HEAL_TIMEOUT_MS (default 120s — far above the ~335ms actual
+        // CoreML inference, but generous enough to not false-positive under
+        // moderate concurrent-loop queue wait).
+        const vec = await embedWithTimeout(pending.text, tickTimeoutMs);
+        metrics.embedDuration.push(performance.now() - embedStartMs);
+        metrics.counters.embeds_completed++;
+        trackEmbedCompletion(metrics);
+        const applied = await wq.enqueue(
+          `embed_heal:${pending.uid}`,
+          async (qdb) => {
+            return qdb.transaction(async (tx) => {
+              return applyEmbedding(tx, pending, vec, useBinaryFormat, vectorDialect);
+            }, { mode: 'immediate' });
+          },
+          'apply',
+        );
+        recordApplyOutcome(metrics, applied.status);
+        if (applied.status === 'applied') {
+          out.healed++;
+          metrics.counters.heals_applied++;
+          // heal_lag: WALL-CLOCK age of the healed node (t_created-based —
+          // labeled as such; the only signal that survives a process restart).
+          const createdMs = r.t_created === null ? NaN : Date.parse(r.t_created);
+          if (Number.isFinite(createdMs)) {
+            metrics.healLag.push(Math.max(0, Date.now() - createdMs));
+          }
+        } else if (applied.status === 'exists') out.exists++;
+        else out.gone++;
+        logApplyDiscarded(applied.status, pending.uid, pending.rowid);
+      } catch (err) {
+        out.failed++;
+        metrics.counters.heals_failed++;
+        const msg = err instanceof Error ? err.message : JSON.stringify(err);
+        log(`${LOG_PREFIX} heal FAILURE uid=${pending.uid} rowid=${pending.rowid}: ${msg}`);
+        tlog.error('embed_pipeline.heal.row.error', {
+          uid: pending.uid,
+          rowid: pending.rowid,
+          tick_trace_id: tickTraceId,
+          error: msg,
+        });
+      }
+    });
   }
   return out;
 }
@@ -814,6 +859,20 @@ export async function healStaleVectors(
     return out;
   }
 
+  // BL-434: same two-level trace context as healMissingVectors — the reembed
+  // path is a third sibling of write/heal and had the identical `trace_id: null`
+  // hole. See the comment there for why `withContendedStage` cannot supply this.
+  const tickTraceId = newTraceId();
+  return withTrace(tickTraceId, () => _healStaleVectorsPass(adapter, wq, opts, out, tickTraceId));
+}
+
+async function _healStaleVectorsPass(
+  adapter: StoreAdapter,
+  wq: WriteQueue,
+  opts: { limit?: number; logSink?: (line: string) => void } | undefined,
+  out: StaleHealResult,
+  tickTraceId: string,
+): Promise<StaleHealResult> {
   const activeModel = getActiveEmbedModel() ?? 'unknown';
   const limit = opts?.limit ?? 500;
   const log = opts?.logSink ?? ((line: string) => console.error(line));
@@ -843,54 +902,68 @@ export async function healStaleVectors(
   for (const r of rows) {
     // NO startedAtMs: heal paths must not pollute the pipeline time_to_vector distribution.
     const pending: PendingEmbed = { uid: r.uid, rowid: r.rowid, text: r.content };
-    try {
-      // Delete the stale vec_node row first so applyEmbedding sees no existing row
-      // and proceeds with the INSERT (vec0 tables have no UPDATE trigger — BL-91).
-      await wq.enqueue(
-        `embed_stale_del:${pending.uid}`,
-        async (tx) => {
-          await tx.executeRun('DELETE FROM vec_node WHERE node_id = CAST(? AS INTEGER)', [pending.rowid]);
-          return { deleted: true };
-        },
-        'apply',
-      );
+    const rowTraceId = newTraceId();
+    await withTrace(rowTraceId, async () => {
+      tlog.info('embed_pipeline.reembed.row.start', {
+        uid: pending.uid,
+        rowid: pending.rowid,
+        tick_trace_id: tickTraceId,
+      });
+      try {
+        // Delete the stale vec_node row first so applyEmbedding sees no existing row
+        // and proceeds with the INSERT (vec0 tables have no UPDATE trigger — BL-91).
+        await wq.enqueue(
+          `embed_stale_del:${pending.uid}`,
+          async (tx) => {
+            await tx.executeRun('DELETE FROM vec_node WHERE node_id = CAST(? AS INTEGER)', [pending.rowid]);
+            return { deleted: true };
+          },
+          'apply',
+        );
 
-      const embedStartMs = performance.now();
-      // BL-401: the stale-vector model-migration path — a third sibling, not a
-      // variant of 'heal'. Fusing them would hide a model migration inside the
-      // repair pass's distribution.
-      const vec = await embed(pending.text, 'reembed');
-      metrics.embedDuration.push(performance.now() - embedStartMs);
-      metrics.counters.embeds_completed++;
+        const embedStartMs = performance.now();
+        // BL-401: the stale-vector model-migration path — a third sibling, not a
+        // variant of 'heal'. Fusing them would hide a model migration inside the
+        // repair pass's distribution.
+        const vec = await embed(pending.text, 'reembed');
+        metrics.embedDuration.push(performance.now() - embedStartMs);
+        metrics.counters.embeds_completed++;
 
-      const applied = await wq.enqueue(
-        `embed_stale_apply:${pending.uid}`,
-        async (qdb) => {
-          return qdb.transaction(async (tx) => {
-            return applyEmbedding(tx, pending, vec, useBinaryFormat, vectorDialect);
-          }, { mode: 'immediate' });
-        },
-        'apply',
-      );
-      recordApplyOutcome(metrics, applied.status);
-      if (applied.status === 'applied') {
-        out.healed++;
-        metrics.counters.heals_applied++;
-        // heal_lag: WALL-CLOCK age of the stale node (same shape as healMissingVectors).
-        const createdMs = r.t_created === null ? NaN : Date.parse(r.t_created);
-        if (Number.isFinite(createdMs)) {
-          metrics.healLag.push(Math.max(0, Date.now() - createdMs));
+        const applied = await wq.enqueue(
+          `embed_stale_apply:${pending.uid}`,
+          async (qdb) => {
+            return qdb.transaction(async (tx) => {
+              return applyEmbedding(tx, pending, vec, useBinaryFormat, vectorDialect);
+            }, { mode: 'immediate' });
+          },
+          'apply',
+        );
+        recordApplyOutcome(metrics, applied.status);
+        if (applied.status === 'applied') {
+          out.healed++;
+          metrics.counters.heals_applied++;
+          // heal_lag: WALL-CLOCK age of the stale node (same shape as healMissingVectors).
+          const createdMs = r.t_created === null ? NaN : Date.parse(r.t_created);
+          if (Number.isFinite(createdMs)) {
+            metrics.healLag.push(Math.max(0, Date.now() - createdMs));
+          }
+        } else {
+          out.gone++;
         }
-      } else {
-        out.gone++;
+        logApplyDiscarded(applied.status, pending.uid, pending.rowid);
+      } catch (err) {
+        out.failed++;
+        metrics.counters.heals_failed++;
+        const msg = err instanceof Error ? err.message : JSON.stringify(err);
+        log(`${LOG_PREFIX} stale-heal FAILURE uid=${pending.uid} rowid=${pending.rowid}: ${msg}`);
+        tlog.error('embed_pipeline.reembed.row.error', {
+          uid: pending.uid,
+          rowid: pending.rowid,
+          tick_trace_id: tickTraceId,
+          error: msg,
+        });
       }
-      logApplyDiscarded(applied.status, pending.uid, pending.rowid);
-    } catch (err) {
-      out.failed++;
-      metrics.counters.heals_failed++;
-      const msg = err instanceof Error ? err.message : JSON.stringify(err);
-      log(`${LOG_PREFIX} stale-heal FAILURE uid=${pending.uid} rowid=${pending.rowid}: ${msg}`);
-    }
+    });
   }
   return out;
 }

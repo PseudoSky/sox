@@ -16,8 +16,10 @@ function tmpDir(): string {
   return fs.mkdtempSync(path.join(os.tmpdir(), 'sox-telemetry-spec-'));
 }
 
-function readRecords(logFilePath: string): Record<string, unknown>[] {
-  if (!fs.existsSync(logFilePath)) return [];
+function readRecords(logFilePath: string | null): Record<string, unknown>[] {
+  // BL-433: `null` means no file sink is configured — a distinct state from
+  // "configured but nothing written yet", which returns a real path.
+  if (logFilePath === null || !fs.existsSync(logFilePath)) return [];
   return fs
     .readFileSync(logFilePath, 'utf8')
     .split('\n')
@@ -45,6 +47,49 @@ describe('initTelemetry — role is required and stamped on every record', () =>
     expect(records[0]?.['some_field']).toBe(1);
     // logSink type does not admit 'stdout' at all — compile-time guarantee;
     // the runtime guarantee is that the only sinks are file/stderr/none.
+  });
+});
+
+describe('BL-433: currentLogFilePath() distinguishes "not written yet" from "no sink"', () => {
+  let dir: string;
+  beforeEach(() => {
+    dir = tmpDir();
+  });
+  afterEach(() => {
+    _resetTelemetryForTest();
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('BL-433: answers "where do I look?" BEFORE the first write — never the empty string', () => {
+    const handle = initTelemetry({ service: 'spec-svc', role: 'test', logDir: dir, otel: false });
+    // Nothing logged yet. The old accessor (`sink.currentPath()`) returned `''`
+    // here — indistinguishable from a process with no file sink at all.
+    const planned = handle.currentLogFilePath();
+    expect(planned).not.toBeNull();
+    expect(planned).not.toBe('');
+    expect(planned).toContain(dir);
+    expect(planned).toContain('spec-svc.test-');
+    expect(fs.existsSync(planned!)).toBe(false); // genuinely nothing written
+
+    log.info('bl433.first', {});
+    // ...and it named the file the write actually landed in.
+    expect(handle.currentLogFilePath()).toBe(planned);
+    expect(readRecords(planned).map((r) => r['event'])).toEqual(['bl433.first']);
+  });
+
+  it('BL-433: returns null — the ONLY "no file sink configured" signal — for stderr/none', () => {
+    for (const logSink of ['none', 'stderr'] as const) {
+      const handle = initTelemetry({ service: 'spec-svc', role: 'test', logSink, otel: false });
+      expect(handle.currentLogFilePath()).toBeNull();
+      _resetTelemetryForTest();
+    }
+  });
+
+  it('BL-433: metric_persistence.file is null when no snapshot sink exists, never ""', () => {
+    initTelemetry({ service: 'spec-svc', role: 'test', logSink: 'none', otel: false });
+    const file = telemetrySelfCheck().metric_persistence.file;
+    expect(file).toBeNull();
+    expect(file).not.toBe('');
   });
 });
 
