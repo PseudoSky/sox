@@ -50,8 +50,35 @@ import * as os from 'node:os';
 import { spawnSync } from 'node:child_process';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+const MEMORY_SERVER_PROJECT = 'extensions/bundles/sox-memory-bundle/members/memory-server/project.json';
 const MEMORY_SERVER_ENTRY = 'extensions/bundles/sox-memory-bundle/members/memory-server/src/index.ts';
 const MEMORY_SERVER_TSCONFIG = 'extensions/bundles/sox-memory-bundle/members/memory-server/tsconfig.json';
+
+/**
+ * Derive `--external` from memory-server's REAL build command rather than hardcoding it.
+ *
+ * This guard originally pinned four externals inline. `@tursodatabase/database` was added to the
+ * real build on 2026-07-29 (65171ad) and the guard was never updated, so its scratch build stopped
+ * mirroring the deployed one: the bundle it produced died at require() time with MODULE_NOT_FOUND
+ * out of store-adapter, arm [2] failed for a reason unrelated to BL-313, and arm [3]'s negative
+ * control — the very check that proves this test is not vacuous — went red too. It stayed that way
+ * for seven days because nothing runs this file (BL-466).
+ *
+ * Reading the externals from project.json makes that class of drift structurally impossible: the
+ * scratch build is externally-identical to the real one by construction, and adding an external to
+ * the build target updates this guard in the same edit.
+ */
+function realBuildExternals() {
+  const proj = JSON.parse(fs.readFileSync(path.join(ROOT, MEMORY_SERVER_PROJECT), 'utf8'));
+  const commands = JSON.stringify(proj.targets?.build?.options ?? {});
+  const externals = [...commands.matchAll(/--external\s+(\S+?)(?=\s|\\|"|$)/g)].map((m) => m[1]);
+  if (externals.length === 0) {
+    console.error(`FATAL: no --external flags found in ${MEMORY_SERVER_PROJECT}'s build target.`);
+    console.error('Refusing to run a scratch build that does not mirror the real one. (BL-313/BL-466)');
+    process.exit(1);
+  }
+  return externals;
+}
 
 let failed = 0;
 const ok = (cond, msg) => {
@@ -61,7 +88,10 @@ const ok = (cond, msg) => {
 
 console.log('BL-313 — graph-store Drizzle migrations folder missing from bundled artifacts\n');
 
+const EXTERNALS = realBuildExternals();
+
 console.log('[1] end-to-end: build the real memory-server entry point into a scratch outdir');
+console.log(`    externals (derived from ${path.basename(MEMORY_SERVER_PROJECT)}): ${EXTERNALS.join(', ')}`);
 
 const SCRATCH_OUT = fs.mkdtempSync(path.join(os.tmpdir(), 'bl313-memsrv-out-'));
 const scratchDbPath = fs.mkdtempSync(path.join(os.tmpdir(), 'bl313-probe-db-')) + '/probe.db';
@@ -80,16 +110,26 @@ fs.symlinkSync(
   path.join(SCRATCH_OUT, 'node_modules'),
 );
 
+// store-adapter's adapter-meta reads its own version with `require('../package.json')`
+// (libs/data/store/store-adapter/dist/adapter-meta.js:13, landed 2026-07-31 in fa786a2). Once
+// esbuild inlines that into the single-file bundle, the specifier resolves relative to the EMITTED
+// bundle — `<outdir>/../package.json`. In production that is memory-server/package.json and it
+// exists, so the deployed artifact is fine; in a bare mkdtemp it does not, and the bundle died at
+// require() time for a reason that had nothing to do with BL-313. Mirroring the deployed layout is
+// this scratch dir's entire stated purpose (see the node_modules symlink above), so give it the
+// real package.json too rather than a fabricated stub — the version it reports must be the real one.
+fs.copyFileSync(
+  path.join(ROOT, 'extensions/bundles/sox-memory-bundle/members/memory-server/package.json'),
+  path.join(SCRATCH_OUT, 'package.json'),
+);
+
 try {
   const buildRes = spawnSync(process.execPath, [
     path.join(ROOT, 'tools', 'bundle-extension.cjs'),
     '--entry', MEMORY_SERVER_ENTRY,
     '--outdir', buildOutdir,
     '--tsconfig', MEMORY_SERVER_TSCONFIG,
-    '--external', 'better-sqlite3',
-    '--external', 'sqlite-vec',
-    '--external', 'fastembed',
-    '--external', 'onnxruntime-node',
+    ...EXTERNALS.flatMap((e) => ['--external', e]),
   ], { encoding: 'utf8', cwd: ROOT, maxBuffer: 64 * 1024 * 1024 });
 
   ok(buildRes.status === 0, `build exits 0 (got ${buildRes.status})`);
