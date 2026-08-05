@@ -833,16 +833,7 @@ tursoDescribe('BL-373 — a stale WAL-index sidecar is reconciled at open, not f
     expect(rawError).toMatch(/WAL frame|wal[- ]?index/i);
 
     // The adapter must recover where the raw driver could not.
-    //
-    // `multiprocessWal: true` is REQUIRED here and is not incidental: since the
-    // flag became opt-in (FEAT-SOX-001, see turso-multiprocess-wal-optin.test.ts)
-    // a default `connect()` never engages `.tshm` coordination at all, so it
-    // sails past a stale sidecar and this recovery path is unreachable. The
-    // BL-373 hazard exists *only* for stores opened in multiprocess-WAL mode —
-    // which is precisely the argument for not defaulting every consumer into it.
-    const adapter = track(
-      await TursoAdapterImpl.connect({ dbPath, experimental: { multiprocessWal: true } }),
-    );
+    const adapter = track(await TursoAdapterImpl.connect({ dbPath }));
     const rows = await adapter.executeGet<{ c: number }>('SELECT COUNT(*) AS c FROM t');
     expect(rows!.c, 'every row must still be there — recovery must not lose data').toBe(1200);
 
