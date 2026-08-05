@@ -21,12 +21,12 @@ A packet is **DONE** only when every BL id it targets is closed — code landing
 (BL-225). Several packets below have merged code and still read OPEN; that is correct, and the
 remedy is to close the backlog item with a red→green test, not to edit this table.
 
-**32 done · 4 partial · 49 open** of 85 packets.
+**33 done · 4 partial · 48 open** of 85 packets.
 
-- Open backlog items in this program's scope: **67**, of which **2** have no packet.
+- Open backlog items in this program's scope: **66**, of which **3** have no packet.
 - Open items deliberately out of scope: **28** — BL-99, BL-103, BL-104, BL-105, BL-163, BL-225, BL-228, BL-258, BL-261, BL-282, BL-283, BL-284, BL-285, BL-288, BL-291, BL-292, BL-296, BL-298, BL-305, BL-306, BL-307, BL-308, BL-309, BL-314, BL-315, BL-333, BL-355, BL-408
-- Unscheduled in-scope items (need a packet): BL-436, BL-462
-- Packet targets already closed (34) — historical context only, no work remains: BL-259, BL-329, BL-341, BL-343, BL-348, BL-350, BL-359, BL-360, BL-361, BL-362, BL-364, BL-376, BL-379, BL-380, BL-383, BL-388, BL-390, BL-391, BL-394, BL-397, BL-399, BL-402, BL-405, BL-406, BL-407, BL-410, BL-412, BL-425, BL-445, BL-449, BL-456, BL-457, BL-463, BL-465
+- Unscheduled in-scope items (need a packet): BL-436, BL-462, BL-466
+- Packet targets already closed (36) — historical context only, no work remains: BL-259, BL-329, BL-341, BL-343, BL-348, BL-350, BL-359, BL-360, BL-361, BL-362, BL-364, BL-376, BL-379, BL-380, BL-383, BL-388, BL-390, BL-391, BL-394, BL-397, BL-399, BL-402, BL-405, BL-406, BL-407, BL-410, BL-412, BL-425, BL-435, BL-445, BL-449, BL-456, BL-457, BL-463, BL-464, BL-465
 
 | Packet | Status | Targets | Still open |
 |---|---|---|---|
@@ -106,7 +106,7 @@ remedy is to close the backlog item with a red→green test, not to edit this ta
 | PKT-74 | **OPEN** | BL-448 | BL-448 |
 | PKT-75 | **OPEN** | BL-416, BL-446, BL-454 | BL-416, BL-446, BL-454 |
 | PKT-76 | **DONE** | BL-456, BL-457, BL-463, BL-465 | — |
-| PKT-77 | **OPEN** | BL-435, BL-464 | BL-435, BL-464 |
+| PKT-77 | **DONE** | BL-435, BL-464 | — |
 | PKT-78 | **OPEN** | BL-451, BL-453, BL-458, BL-459 | BL-451, BL-453, BL-458, BL-459 |
 | PKT-79 | **OPEN** | BL-452, BL-460 | BL-452, BL-460 |
 | PKT-80 | **OPEN** | BL-450, BL-455 | BL-450, BL-455 |
@@ -3032,7 +3032,7 @@ context, never by telling a subagent to read this file.
 
 ### PKT-77 — BL-435 + BL-464: hand-maintained plan blocks the guard cannot see — outside the markers, and inside the stamp format
 
-> **status: OPEN** — still open: BL-435, BL-464 · derived by `tools/plan-status.mjs`, do not hand-edit
+> **status: DONE** — all targets closed (BL-435, BL-464) · derived by `tools/plan-status.mjs`, do not hand-edit
 
 **Goal:** two halves of one defect in `tools/plan-status.mjs`. (a) BL-435: all rewriting and `--check`ing is bounded by the `PLAN-STATUS:BEGIN/END` markers, so `STATE.md`'s "What to do next" and `PLAN.md`'s "Wave summary" sit outside the guard — the first sent a session at two DONE packets, the second read "Total: 56 packets" against a derived ledger of 72 with two whole waves missing. (b) BL-464: `stampPackets`' replacement is **positional** — it inspects only the line after the heading — so a second stamp deeper in a body is never rewritten and never flagged. Six packets carry one; PKT-20/21/23/43 currently read `OPEN` for shipped work in the verbatim "derived … do not hand-edit" format.
 **Closes:** BL-435, BL-464
