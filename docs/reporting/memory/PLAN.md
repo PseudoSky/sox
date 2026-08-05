@@ -94,13 +94,13 @@ remedy is to close the backlog item with a red→green test, not to edit this ta
 | PKT-62 | **OPEN** | BL-443 | BL-443 |
 | PKT-63 | **OPEN** | BL-444 | BL-444 |
 | PKT-64 | **DONE** | BL-445 | — |
-| PKT-65 | **OPEN** | BL-394 | BL-394 |
+| PKT-65 | **DONE** | BL-394 | — |
 | PKT-66 | **OPEN** | BL-274 | BL-274 |
 | PKT-67 | **DONE** | BL-341, BL-449 | — |
 | PKT-68 | **OPEN** | BL-360 | BL-360 |
 | PKT-69 | **OPEN** | BL-361 | BL-361 |
 | PKT-70 | **OPEN** | BL-362 | BL-362 |
-| PKT-71 | **OPEN** | BL-379 | BL-379 |
+| PKT-71 | **DONE** | BL-379 | — |
 | PKT-72 | **DONE** | BL-425 | — |
 | PKT-73 | **OPEN** | BL-447 | BL-447 |
 | PKT-74 | **OPEN** | BL-448 | BL-448 |
@@ -1850,7 +1850,7 @@ calibration undocumented (the guard becomes a pure safety net that should rarely
 
 ### PKT-40 — BL-394: Turso write-serialization bypass also skips admission control (size cap + deadline guard)
 
-> **status: OPEN** — still open: BL-394 · derived by `tools/plan-status.mjs`, do not hand-edit
+> **status: DONE** — all targets closed (BL-394) · derived by `tools/plan-status.mjs`, do not hand-edit
 
 > **⛔ SUPERSEDED 2026-08-05 by PKT-64 + PKT-65 (Wave H) — do not dispatch this packet.** Its fix
 > ("hoist the two checks above the early return") is a verified no-op: `queue.length` is structurally
@@ -1922,7 +1922,7 @@ open-node-typing architecture (BL-438..BL-444) while this pass was in flight.
 
 ### PKT-65 — BL-394: admission control on a backend with no queue — ⚠️ CARRIES AN OWNER DECISION, DO NOT PICK SILENTLY
 
-> **status: OPEN** — still open: BL-394 · derived by `tools/plan-status.mjs`, do not hand-edit
+> **status: DONE** — all targets closed (BL-394) · derived by `tools/plan-status.mjs`, do not hand-edit
 
 **Goal:** restore backpressure on the default backend, where it is currently absent, and stop `memory_ping` reporting a size cap and a deadline guard as active when neither can fire. The *intent* of BL-394's fix sketch stands. Its *mechanism* does not, and the replacement is a design decision the owner has asked to make.
 **Closes:** BL-394 (HIGH)
