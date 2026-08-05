@@ -23,14 +23,99 @@
  * block share the same dbPath and therefore the same WriteQueue — clearing
  * between tests would destroy the queue singleton and make `memory_ping`
  * return `write_queue: null` for subsequent assertions.
+ *
+ * ── BL-425: why this file injects a deterministic embed provider ────────────
+ *
+ * The seeding hooks used to run 12 (Sqlite) + 30 (Turso) REAL fastembed/ONNX
+ * inferences, because `vitest.setup.ts` sets only `SOX_SYNC_EMBED=1` and
+ * `STORE_ADAPTER=sqlite` and injects no provider. On a machine running many
+ * concurrent agent sessions, embed latency degrades severely (BL-331: 25–50x
+ * from cross-process CoreML/ANE queue contention; BL-432), and the Turso
+ * `beforeAll` intermittently blew its 30 s `hookTimeout` — reproduced twice,
+ * both times passing in isolation and on re-run of identical code.
+ *
+ * ⛔ Raising `hookTimeout` DOES NOT fix this, and BL-425's original fix sketch
+ * (since corrected) said to do exactly that. The assertion under test is
+ * `throughput ≥ 0.5`, i.e. `30 writes ÷ THROUGHPUT_WINDOW_MS`, and that window
+ * is a FIXED 60 000 ms rolling window (`libs/memory-core/src/write-queue.ts`
+ * `THROUGHPUT_WINDOW_MS`, pruned in `getMetrics()`). A hook permitted to run
+ * past 60 s ages its own earliest completions out of the window before the
+ * ping reads it: the hook goes green and the assertion goes red. The hook
+ * budget and the measurement window are ONE coupled budget, so the only sound
+ * fix is to make the seeding fast and load-independent.
+ *
+ * Fix: inject `DeterministicTestProvider` via the BL-161 `_setEmbedProviderForTest`
+ * seam (same mechanism as `permission-guard.spec.ts`, `async-embed.spec.ts`,
+ * `libs/memory-core/src/recall-live-incident.spec.ts`). Embeds become ~0 ms, so
+ * both budgets stop depending on machine load. Scoped to THIS file and restored
+ * in the root `afterAll` — other specs in this bundle legitimately exercise the
+ * real provider.
+ *
+ * Measured on an IDLE machine, 2026-08-05 (seed wall-time, this file):
+ *
+ *              12-write (Sqlite)   30-write (Turso)   whole file
+ *   before        4 808 ms            9 900 ms          14.54 s
+ *   after            65 ms              345 ms           0.45 s
+ *
+ * The 9 900 ms figure is the whole of BL-425: idle, the flaking hook already
+ * consumed a THIRD of its 30 s budget, so a mere 3x degradation blows it — and
+ * BL-331 measured 25–50x. At 6x it crosses 60 s, where no hookTimeout can help
+ * because the window itself has moved on. After injection the same hook has 87x
+ * margin to the budget and 174x to the window.
+ *
+ * The sample sizes (12 / 30) and the thresholds (≥ 0.1 / ≥ 0.2 / ≥ 0.5) are
+ * UNCHANGED: they are the only thing this file measures about
+ * `WriteQueue._trackCompletion`, and shrinking or lowering either would delete
+ * the test while leaving it green. Each block additionally asserts its own hook
+ * wall-time against `SEED_BUDGET_MS`, so a future regression that re-introduces
+ * slow embeds fails on a CLEAR budget assertion naming BL-425 rather than on an
+ * opaque `Hook timed out in 30000ms`.
  */
 
-import { WriteQueue } from '@adhd/sox-memory-core';
+import { DeterministicTestProvider, WriteQueue, _setEmbedProviderForTest } from '@adhd/sox-memory-core';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { handleToolCall } from './index.js';
+
+/**
+ * BL-425 seeding budget. Must stay strictly below `THROUGHPUT_WINDOW_MS`
+ * (60 000 ms) — a seed phase that outlives the window ages its own earliest
+ * completions out before the ping reads them, which is the trap that makes
+ * "just raise the timeout" unsound. 30 s of headroom over a deterministic-embed
+ * seed that measures ~1 s is generous; if it is ever exceeded, embeds are real
+ * again (or something else regressed), and that is worth failing loudly on.
+ */
+const SEED_BUDGET_MS = 30_000;
+
+/**
+ * BL-425: explicit per-hook timeout for the two seeding hooks, deliberately
+ * chosen as `SEED_BUDGET_MS` < `SEED_HOOK_TIMEOUT_MS` < `THROUGHPUT_WINDOW_MS`.
+ *
+ *   30 000  budget  — clear, named failure with a diagnostic message
+ *   45 000  timeout — the opaque `Hook timed out` floor
+ *   60 000  window  — the point at which completions age out and the throughput
+ *                     assertion silently reds
+ *
+ * At the project default (`hookTimeout: 30_000`, `vitest.config.ts`) the budget
+ * assertion would be unreachable — the hook would die of an opaque timeout at
+ * exactly the instant the budget was breached, which is the failure mode BL-425
+ * is about. Raising it to 45 s makes the budget assertion the thing that fires,
+ * WITHOUT crossing 60 s, so the "raise the timeout" trap stays structurally
+ * unreachable: a hook can never run long enough to age out its own completions.
+ * Do not raise this to or past 60 000.
+ */
+const SEED_HOOK_TIMEOUT_MS = 45_000;
+
+// BL-425: deterministic, ~0 ms embeds for THIS FILE ONLY. Restored below.
+beforeAll(() => {
+  _setEmbedProviderForTest(new DeterministicTestProvider());
+});
+
+afterAll(() => {
+  _setEmbedProviderForTest(null);
+});
 
 // ── Turso availability check (synchronous at module load time) ──────────────
 // `{ skip: hasTurso }` in the describe block must be a fixed boolean at test
@@ -111,18 +196,35 @@ async function readThroughput(dbPath: string): Promise<number> {
 describe('throughput_writes_per_sec — SqliteAdapter', () => {
   const tmp = makeTempDir();
   const dbPath = path.join(tmp.dir, 'test.db');
+  let seedMs = Number.NaN;
 
   beforeAll(async () => {
     // Write 12 episodes → throughput = 12/60 = 0.2 (meets ideal ≥ 0.2).
     // The conservative golden threshold is ≥ 0.1, which 6 writes would
     // clear (6/60 = 0.1), but we test closer to real throughput by
     // meeting the ideal threshold.
+    const t0 = performance.now();
     await writeEpisodes(dbPath, 12);
-  });
+    seedMs = performance.now() - t0;
+  }, SEED_HOOK_TIMEOUT_MS);
 
   afterAll(async () => {
     await WriteQueue.clearInstances();
     tmp.cleanup();
+  });
+
+  it(`BL-425: seeding 12 writes stays inside the ${SEED_BUDGET_MS}ms budget`, () => {
+    expect(
+      seedMs,
+      `BL-425: the 12-write seed took ${seedMs.toFixed(0)}ms, over the ` +
+      `${SEED_BUDGET_MS}ms budget. This budget is NOT a timeout to be raised: ` +
+      `throughput is measured over a FIXED 60000ms rolling window ` +
+      `(WriteQueue.THROUGHPUT_WINDOW_MS), so a seed that runs long ages its own ` +
+      `earliest completions out of the window and reds the throughput assertion ` +
+      `below. The fix is to make embeds fast again — confirm this file's ` +
+      `_setEmbedProviderForTest(new DeterministicTestProvider()) injection is ` +
+      `still in force and has not been overridden by a later hook.`,
+    ).toBeLessThan(SEED_BUDGET_MS);
   });
 
   it('records non-zero throughput after writes (golden baseline ≥ 0.1)', async () => {
@@ -193,6 +295,7 @@ describe('throughput_writes_per_sec — TursoAdapter', () => {
   const tmp = makeTempDir();
   const dbPath = path.join(tmp.dir, 'test.db');
   let _origStoreAdapter: string | undefined;
+  let seedMs = Number.NaN;
 
   beforeAll(async () => {
     if (!_hasTurso) return;
@@ -203,9 +306,14 @@ describe('throughput_writes_per_sec — TursoAdapter', () => {
 
     // Write 30 episodes → throughput = 30/60 = 0.5 (meets golden threshold).
     // Turso writes bypass the queue (noop), so they are fast — only bounded
-    // by the sync embed time inside each operation.
+    // by the sync embed time inside each operation. BL-425: that embed is the
+    // deterministic provider injected at the top of this file, so this hook is
+    // load-independent; it used to run 30 real ONNX inferences and blow the
+    // 30 s hookTimeout under concurrent-agent contention.
+    const t0 = performance.now();
     await writeEpisodes(dbPath, 30);
-  });
+    seedMs = performance.now() - t0;
+  }, SEED_HOOK_TIMEOUT_MS);
 
   afterAll(async () => {
     // Restore STORE_ADAPTER regardless of test outcome
@@ -217,6 +325,25 @@ describe('throughput_writes_per_sec — TursoAdapter', () => {
     await WriteQueue.clearInstances();
     tmp.cleanup();
   });
+
+  it(
+    `BL-425: seeding 30 writes stays inside the ${SEED_BUDGET_MS}ms budget`,
+    { skip: !_hasTurso },
+    () => {
+      expect(
+        seedMs,
+        `BL-425: the 30-write seed took ${seedMs.toFixed(0)}ms, over the ` +
+        `${SEED_BUDGET_MS}ms budget. This is THE hook that flaked (twice ` +
+        `reproduced: "Hook timed out in 30000ms"), and the budget is NOT a ` +
+        `timeout to be raised: throughput is measured over a FIXED 60000ms ` +
+        `rolling window (WriteQueue.THROUGHPUT_WINDOW_MS), so a seed permitted ` +
+        `to run past 60s ages its own earliest completions out of the window — ` +
+        `the hook would go green and the ≥0.5 assertion below would go red. ` +
+        `Confirm this file's _setEmbedProviderForTest(new DeterministicTestProvider()) ` +
+        `injection is still in force; if embeds are real again, that is the bug.`,
+      ).toBeLessThan(SEED_BUDGET_MS);
+    },
+  );
 
   it(
     'records non-zero throughput after writes (golden baseline ≥ 0.5)',
