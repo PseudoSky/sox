@@ -86,11 +86,14 @@ const die = (msg) => {
 // ---- argument parsing -------------------------------------------------------------------------
 const argv = process.argv.slice(2);
 const sep = argv.indexOf('--');
-if (sep === -1) die('missing `--` separator. Usage: commit-mine.mjs -m "msg" [--hunks RE] -- <paths...>');
+const amendMessage = argv.includes('--amend-message');
+if (sep === -1 && !amendMessage) {
+  die('missing `--` separator. Usage: commit-mine.mjs -m "msg" [--hunks RE] -- <paths...>');
+}
 
-const flags = argv.slice(0, sep);
-const paths = argv.slice(sep + 1);
-if (paths.length === 0) die('no paths given after `--`.');
+const flags = sep === -1 ? argv : argv.slice(0, sep);
+const paths = sep === -1 ? [] : argv.slice(sep + 1);
+if (!amendMessage && paths.length === 0) die('no paths given after `--`.');
 
 const valueOf = (name) => {
   const i = flags.indexOf(name);
@@ -104,6 +107,49 @@ if (!message) die('missing -m "commit message".');
 // ---- guard: refuse to run outside a clean-enough situation ------------------------------------
 const repoRoot = git(['rev-parse', '--show-toplevel']).trim();
 process.chdir(repoRoot);
+
+// ---- [BL-457] --amend-message: rewrite HEAD's message and NOTHING else -------------------------
+// `git commit --amend` with no pathspec commits the SHARED index. One live incident turned a
+// reviewed 2-file/+282 commit into 8 files/+727/−2567, hiding the swallowed work behind a subject
+// line that had already been read and approved. This mode reuses HEAD's tree and parents verbatim,
+// so the amended commit is byte-identical in content to the one it replaces — the index is never
+// read for content and never written, and the working tree is never touched.
+if (amendMessage) {
+  if (paths.length) die('--amend-message rewrites only the message; it takes no paths.');
+  if (hunkRe) die('--amend-message rewrites only the message; --hunks is meaningless here.');
+
+  const head = git(['rev-parse', 'HEAD']).trim();
+  const tree = git(['rev-parse', 'HEAD^{tree}']).trim();
+  const parents = git(['rev-list', '--parents', '-n', '1', 'HEAD']).trim().split(/\s+/).slice(1);
+  const oldSubject = git(['log', '-1', '--format=%s', 'HEAD']).trim();
+
+  if (dryRun) {
+    console.error(`commit-mine: DRY RUN — would rewrite HEAD (${head.slice(0, 9)}) message only.`);
+    console.error(`  tree stays ${tree.slice(0, 9)}, parents stay [${parents.map((p) => p.slice(0, 9)).join(', ') || 'none — root commit'}]`);
+    console.log(`- ${oldSubject}\n+ ${message.split('\n')[0]}`);
+    process.exit(0);
+  }
+
+  const branch = git(['rev-parse', '--abbrev-ref', 'HEAD']).trim();
+  if (branch === 'HEAD') die('detached HEAD — refusing to move a ref you may not own.');
+
+  // Preserve the original authorship; only the message (and committer) may change.
+  const [an, ae, ad] = git(['log', '-1', '--format=%an%n%ae%n%aI', 'HEAD']).split('\n');
+  const authorEnv = { ...process.env, GIT_AUTHOR_NAME: an, GIT_AUTHOR_EMAIL: ae, GIT_AUTHOR_DATE: ad };
+
+  const parentArgs = parents.flatMap((p) => ['-p', p]);
+  const commit = git(['commit-tree', tree, ...parentArgs, '-m', message], { env: authorEnv }).trim();
+
+  if (git(['rev-parse', 'HEAD']).trim() !== head) {
+    die('HEAD moved while the message was being rewritten (another agent committed). Nothing was changed — re-run.');
+  }
+  git(['update-ref', `refs/heads/${branch}`, commit, head, '-m', `commit-mine --amend-message: ${message.split('\n')[0]}`]);
+
+  console.error(`commit-mine: rewrote the message of ${head.slice(0, 9)} as ${commit.slice(0, 9)} on ${branch} [BL-457].`);
+  console.error(`commit-mine: tree unchanged (${tree.slice(0, 9)}) — the shared index was neither read nor written.`);
+  console.error('commit-mine: hooks did NOT run. Verify with the repo guards if you have not already.');
+  process.exit(0);
+}
 
 // Report (do not touch) whatever another agent has staged, so the operator sees the contention.
 const stagedOther = git(['diff', '--cached', '--name-only']).trim().split('\n').filter(Boolean);
