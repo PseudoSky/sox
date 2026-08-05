@@ -28,6 +28,11 @@
  * seed damage, close, and reopen with the ordinary `openDb` every caller uses.
  * No test here issues repair SQL — if the adapter did not do it, it did not
  * happen.
+ *
+ * The SEEDING open uses `openLegacyDb` (BL-430): a store created today carries
+ * `CHECK (col IS NULL OR json_valid(col))` and cannot hold `''` at all, so the
+ * damaged population this repair exists for is exactly the pre-constraint one.
+ * The open under test is the plain `openDb` every caller performs.
  */
 import * as fs from 'node:fs';
 import * as os from 'node:os';
@@ -35,6 +40,7 @@ import * as path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import type { StoreAdapter } from '@adhd/sox-store-adapter';
 import { openDb } from './db.js';
+import { openLegacyDb } from './testing/legacy-store.js';
 import { memoryGetStats } from './stats.js';
 
 function tmpDir(): { dir: string; cleanup: () => void } {
@@ -93,7 +99,7 @@ describe('BL-342 — malformed JSON columns are repaired, not merely tolerated',
     process.env['SOX_EMBED_BACKEND'] = 'auto';
     const dbPath = path.join(dir, 't.db');
     try {
-      const seedDb = await openDb(dbPath);
+      const seedDb = await openLegacyDb(dbPath);
       let badRowid: number;
       try {
         for (let i = 0; i < 20; i++) await seedGood(seedDb, `good episode ${i}`);
@@ -142,7 +148,7 @@ describe('BL-342 — malformed JSON columns are repaired, not merely tolerated',
     process.env['SOX_EMBED_BACKEND'] = 'auto';
     const dbPath = path.join(dir, 't.db');
     try {
-      const seedDb = await openDb(dbPath);
+      const seedDb = await openLegacyDb(dbPath);
       try {
         for (let i = 0; i < 20; i++) await seedGood(seedDb, `good episode ${i}`);
         await seedMalformed(seedDb, 'tags');
@@ -183,7 +189,7 @@ describe('BL-342 — malformed JSON columns are repaired, not merely tolerated',
     process.env['SOX_EMBED_BACKEND'] = 'auto';
     const dbPath = path.join(dir, 't.db');
     try {
-      const seedDb = await openDb(dbPath);
+      const seedDb = await openLegacyDb(dbPath);
       try {
         for (let i = 0; i < 20; i++) await seedGood(seedDb, `good episode ${i}`);
       } finally {

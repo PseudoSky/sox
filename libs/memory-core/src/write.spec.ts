@@ -232,6 +232,49 @@ describe('memoryWrite — P1 enrichment fields (BL-24)', () => {
     } finally { cleanup(); }
   });
 
+  // BL-428 — the RECURRENCE guard for the 86 live rows carrying `tags = '[]'`.
+  //
+  // Those rows are residue: `enrich.ts`'s direct-SQL touch block dropped its
+  // `tags.length > 0 ? JSON.stringify(tags) : null` guard during the BL-325
+  // window and wrote the literal `'[]'` for every untagged write. The guard is
+  // restored, and the integrity pass now retires the residue — but a repair
+  // that runs against a write path free to reintroduce the shape is a treadmill.
+  //
+  // The assertion is deliberately `'[]'`-shaped rather than `json_valid`-shaped:
+  // `'[]'` IS valid JSON, so every BL-342-era guard passes it. This is the only
+  // check in the suite that can see it.
+  it("BL-428: no write path ever stores tags = '[]' — enrichment writes NULL for no tags", async () => {
+    const { dir, cleanup } = tmpDir();
+    try {
+      const db = await openDb(path.join(dir, 't.db'));
+
+      // Every shape that produces "no tags": omitted, explicitly empty, and a
+      // content body that derives none.
+      await memoryWrite(db, { content: 'Untagged episode, tags omitted entirely.', project_path: '/test/project' });
+      await memoryWrite(db, { content: 'Untagged episode, empty array supplied.', tags: [], project_path: '/test/project' });
+      const tagged = await memoryWrite(db, {
+        content: 'Tagged episode so the assertion is not vacuous.',
+        tags: ['alpha'],
+        project_path: '/test/project',
+      });
+      expect('episode_uid' in tagged).toBe(true);
+
+      const empties = await db.executeAll<{ rowid: number }>(
+        `SELECT rowid FROM node WHERE tags IS NOT NULL AND trim(tags) = '[]'`,
+      );
+      expect(empties.rows).toEqual([]);
+
+      // …and the column was genuinely exercised: an all-NULL tags column would
+      // satisfy the assertion above without proving anything.
+      const populated = await db.executeGet<{ n: number }>(
+        `SELECT COUNT(*) AS n FROM node WHERE tags IS NOT NULL AND json_array_length(tags) > 0`,
+      );
+      expect(Number(populated?.n)).toBeGreaterThan(0);
+
+      db.close();
+    } finally { cleanup(); }
+  });
+
   it('persists caller-supplied project_path', async () => {
     const { dir, cleanup } = tmpDir();
     try {

@@ -12,7 +12,50 @@ export const PRAGMAS: string[] = [
   'PRAGMA cache_size = -64000;',
 ];
 
-export const GRAPH_DDL = `
+/**
+ * BL-430 — every JSON-bearing column carries `CHECK (col IS NULL OR json_valid(col))`.
+ *
+ * BL-342 wrote the empty string `''` into `node.tags` / `node.enrich_ver`. `''`
+ * is not valid JSON, so any statement whose `json_extract` / `json_each`
+ * touched it aborted — which took `memory_stats` offline entirely until BL-343
+ * made the aggregate row-resilient. BL-343 makes the store *survive* the shape;
+ * this constraint stops it being writable in the first place.
+ *
+ * **Scope: new stores only, and that is a deliberate decision, not an
+ * omission.** `CREATE TABLE IF NOT EXISTS` no-ops against an existing `node` /
+ * `edge` table, so an existing store keeps exactly the schema it has and
+ * nothing about this change touches its data. SQLite cannot
+ * `ALTER TABLE … ADD CONSTRAINT`; acquiring the constraint on a populated store
+ * would require create-new / copy / drop / rename on a table carrying a Turso
+ * FTS index — which BL-337 records as un-`REINDEX`-able, BL-361 records as able
+ * to PANIC the process, and BL-313 records as having already caused one
+ * CRITICAL data-loss incident on this very store. Existing stores are covered
+ * by the detective control instead: `json_column_valid` (BL-342) runs in the
+ * `fast` integrity pass on every open, detects the shape, and repairs it.
+ *
+ * The constraint spells only `json_valid`. It deliberately does NOT also
+ * forbid `'[]'` (the BL-428 residue shape): `'[]'` is valid JSON, so rejecting
+ * it would turn any writer that has not yet been taught the NULL convention
+ * into a hard write failure. That normalisation belongs in the repair path
+ * (`json_empty_array_null`), where it is corrective rather than fatal.
+ */
+const JSON_COLUMN_CHECK = (column: string): string =>
+  ` CHECK (${column} IS NULL OR json_valid(${column}))`;
+
+/**
+ * The node/edge DDL. `jsonChecks: false` yields the **pre-BL-430 shape** —
+ * byte-for-byte what every store created before 2026-08-04 carries.
+ *
+ * Both forms come from this one template on purpose. The legacy form exists
+ * solely so fixtures can construct a genuine legacy store (see
+ * {@link GRAPH_DDL_PRE_BL430}); generating it from the same source is what
+ * stops the fixture's idea of "a store without the constraint" drifting away
+ * from the real population it is standing in for.
+ */
+function graphDdl(opts: { jsonChecks: boolean }): string {
+  const jsonCheck = (column: string): string =>
+    opts.jsonChecks ? JSON_COLUMN_CHECK(column) : '';
+  return `
 CREATE TABLE IF NOT EXISTS node (
   rowid        INTEGER PRIMARY KEY,
   uid          TEXT UNIQUE NOT NULL,
@@ -21,12 +64,12 @@ CREATE TABLE IF NOT EXISTS node (
   name         TEXT,
   summary      TEXT,
   topic        TEXT,
-  tags         TEXT,
+  tags         TEXT${jsonCheck('tags')},
   importance   REAL DEFAULT 1.0,
   confidence   REAL,
   content_hash TEXT,
   namespace    TEXT DEFAULT 'global',
-  meta         TEXT,
+  meta         TEXT${jsonCheck('meta')},
   agent_id     TEXT,
   session_id   TEXT,
   source       TEXT CHECK (source IN ('message','tool_output','observation','document','reflection','import')),
@@ -52,7 +95,7 @@ CREATE TABLE IF NOT EXISTS edge (
   weight    REAL DEFAULT 1.0,
   confidence REAL,
   origin    TEXT CHECK (origin IN ('extracted','inferred','user_asserted')),
-  meta      TEXT,
+  meta      TEXT${jsonCheck('meta')},
   t_created TEXT NOT NULL,
   t_expired TEXT,
   t_valid   TEXT,
@@ -75,6 +118,28 @@ CREATE INDEX IF NOT EXISTS ix_edge_dst        ON edge(dst, rel) WHERE t_expired 
 CREATE INDEX IF NOT EXISTS ix_edge_live       ON edge(t_invalid) WHERE t_invalid IS NULL;
 CREATE UNIQUE INDEX IF NOT EXISTS ix_edge_unique ON edge(src, dst, rel);
 `;
+}
+
+/** The canonical graph schema. Carries the BL-430 `json_valid` CHECKs. */
+export const GRAPH_DDL = graphDdl({ jsonChecks: true });
+
+/**
+ * The schema **as it was before BL-430** — no `json_valid` CHECK on any column.
+ *
+ * This is not dead code and it is not a fallback: it is the shape every store
+ * created before 2026-08-04 still has, and it exists so a test can construct a
+ * genuine legacy store rather than pretend one. `stats-bl343-row-resilience.spec.ts`
+ * has to insert `tags = ''` — the BL-342 shape — to prove `memory_stats` stays
+ * up on a store that already contains it. Under the constrained schema that
+ * INSERT is (correctly) rejected, so the fixture pre-creates `node` from this
+ * DDL and lets the store's own `CREATE TABLE IF NOT EXISTS` no-op over it.
+ *
+ * That is deliberately the *same* mechanism by which a real legacy store keeps
+ * its unconstrained schema, so the fixture cannot drift from the population it
+ * stands in for — and it needs no raw-SQL escape hatch, no test-only pragma,
+ * and no ability to defeat the constraint on a store that has it.
+ */
+export const GRAPH_DDL_PRE_BL430 = graphDdl({ jsonChecks: false });
 
 export const FTS_DDL = `
 CREATE VIRTUAL TABLE IF NOT EXISTS fts_node USING fts5(content, name, summary,
@@ -98,6 +163,17 @@ CREATE TRIGGER IF NOT EXISTS fts_node_au AFTER UPDATE ON node BEGIN
 END;
 `;
 
+/**
+ * Drizzle-generated create-if-absent DDL for standalone `GraphStore` consumers.
+ * Carries the same BL-430 `json_valid` CHECKs as {@link GRAPH_DDL}, on the same
+ * new-stores-only terms — `IF NOT EXISTS` no-ops against an existing table.
+ *
+ * `NODE_TABLE_DDL` / `EDGE_TABLE_DDL` below deliberately do **not** carry them:
+ * those feed `rebuildTable`, which copies an existing populated table's rows
+ * into a fresh one. A CHECK there would abort the migration on any store that
+ * already holds the BL-342 shape — turning a schema upgrade into an outage on
+ * exactly the stores that need it most.
+ */
 export const INLINE_MIGRATION_DDL = `
 CREATE TABLE IF NOT EXISTS "node" (
   "rowid" integer PRIMARY KEY NOT NULL,
@@ -107,12 +183,12 @@ CREATE TABLE IF NOT EXISTS "node" (
   "name" text,
   "summary" text,
   "topic" text,
-  "tags" text,
+  "tags" text CHECK ("tags" IS NULL OR json_valid("tags")),
   "importance" real DEFAULT 1.0,
   "confidence" real,
   "content_hash" text,
   "namespace" text DEFAULT 'global',
-  "meta" text,
+  "meta" text CHECK ("meta" IS NULL OR json_valid("meta")),
   "agent_id" text,
   "session_id" text,
   "source" text CHECK ("source" IN ('message','tool_output','observation','document','reflection','import')),
@@ -138,7 +214,7 @@ CREATE TABLE IF NOT EXISTS "edge" (
   "weight" real DEFAULT 1.0,
   "confidence" real,
   "origin" text CHECK ("origin" IN ('extracted','inferred','user_asserted')),
-  "meta" text,
+  "meta" text CHECK ("meta" IS NULL OR json_valid("meta")),
   "t_created" text NOT NULL,
   "t_expired" text,
   "t_valid" text,
