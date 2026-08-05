@@ -261,7 +261,7 @@ describe('throughput_writes_per_sec — SqliteAdapter', () => {
 
     // Sanity-check the full metrics shape from WriteQueueMetrics
     const expectedKeys = [
-      'mode', 'queue_depth', 'in_flight', 'queue_max_size', 'queue_high_watermark',
+      'mode', 'admission_control', 'queue_depth', 'in_flight', 'queue_max_size', 'queue_high_watermark',
       'saturated', 'write_latency_ms', 'apply_latency_ms',
       'recent_avg_task_latency_ms', 'deadline_budget_ms',
       'deadline_guard_enabled', 'throughput_writes_per_sec', 'counters',
@@ -275,6 +275,16 @@ describe('throughput_writes_per_sec — SqliteAdapter', () => {
     // Counters sub-object
     expect(wq['counters']).toHaveProperty('tasks_completed');
     expect(wq['counters']).toHaveProperty('write_tasks_completed');
+
+    // BL-394: on the SQLITE backend both admission guards genuinely apply, so
+    // the surface reports them active WITH their real configured values. This
+    // is the other half of the pair — the Turso block below must report the
+    // opposite, and before the fix both reported identically.
+    expect(wq['mode']).toBe('fifo');
+    expect(wq['admission_control']).toBe('active');
+    expect(wq['deadline_guard_enabled']).toBe(true);
+    expect(wq['queue_max_size']).toBe(100);
+    expect(wq['deadline_budget_ms']).toBe(20_000);
   });
 
   it('adapter_type is "sqlite" in ping store block', async () => {
@@ -380,7 +390,7 @@ describe('throughput_writes_per_sec — TursoAdapter', () => {
       const wq = (body['store'] as Record<string, unknown>)['write_queue'] as Record<string, unknown>;
 
       const expectedKeys = [
-        'mode', 'queue_depth', 'in_flight', 'queue_max_size', 'queue_high_watermark',
+        'mode', 'admission_control', 'queue_depth', 'in_flight', 'queue_max_size', 'queue_high_watermark',
         'saturated', 'write_latency_ms', 'apply_latency_ms',
         'recent_avg_task_latency_ms', 'deadline_budget_ms',
         'deadline_guard_enabled', 'throughput_writes_per_sec', 'counters',
@@ -424,6 +434,16 @@ describe('throughput_writes_per_sec — TursoAdapter', () => {
       expect(wq['queue_depth']).toBeNull();
       expect(wq['queue_high_watermark']).toBeNull();
       expect(wq['saturated']).toBeNull();
+      // BL-394, through the real memory_ping surface the item quotes: on the
+      // PRODUCTION backend neither admission guard can fire, so the block must
+      // not print `"deadline_guard_enabled": true, "queue_max_size": 100,
+      // "deadline_budget_ms": 20000` — the exact JSON BL-394 filed as the
+      // defect. The sqlite block above asserts the mirror image; before the fix
+      // the two were indistinguishable.
+      expect(wq['admission_control']).toBe('inactive — adapter handles concurrency natively');
+      expect(wq['deadline_guard_enabled']).toBe(false);
+      expect(wq['queue_max_size']).toBeNull();
+      expect(wq['deadline_budget_ms']).toBeNull();
       // in_flight, by contrast, IS meaningful on this path — it is a real count
       // of concurrently-executing operations, and this ping is taken at rest.
       expect(wq['in_flight']).toBe(0);

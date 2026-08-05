@@ -153,6 +153,28 @@ export interface WriteQueueMetrics {
    * mode). They now report `null` there instead, and this field says why.
    */
   mode: 'fifo' | 'bypass';
+  /**
+   * (BL-394) WHETHER THE SIZE CAP AND DEADLINE GUARD CAN FIRE AT ALL.
+   *
+   *   'active'   — `mode: 'fifo'`. Both guards are live: `queue_max_size` and
+   *                `deadline_budget_ms` are the values actually consulted, and
+   *                `counters.rejections_busy_*` can move.
+   *   'inactive — adapter handles concurrency natively'
+   *              — `mode: 'bypass'`. NEITHER guard is reachable. The size cap
+   *                is expressed over a queue that is never pushed to
+   *                (`0 >= 100` forever) and the deadline guard sits on the far
+   *                side of the same early return. `rejections_busy_*` reading
+   *                `0` here is not evidence of a healthy queue — it is
+   *                evidence the code that increments them cannot run.
+   *
+   * OWNER RULING 2026-08-05: this is deliberate and no bound is being added.
+   * Turso handles concurrent writes natively, the live store shows zero
+   * rejections, and there is no evidence a bound is needed. If a stress harness
+   * later shows a knee, a bound gets added then and sized from data. What was
+   * defective — and is fixed — is that the surface CLAIMED these guards were
+   * configured and active while they structurally could not fire.
+   */
+  admission_control: 'active' | 'inactive — adapter handles concurrency natively';
   /** Items waiting in the queue right now (excludes the in-flight task).
    *  `null` in `mode: 'bypass'` — nothing is ever queued on that path. */
   queue_depth: number | null;
@@ -161,8 +183,11 @@ export interface WriteQueueMetrics {
    *  REAL count of operations between entry and settle, which on that path is
    *  genuinely unbounded and is the only meaningful occupancy measure. */
   in_flight: number;
-  /** Configured hard size cap. */
-  queue_max_size: number;
+  /** Configured hard size cap — the value the overflow guard actually compares
+   *  against. (BL-394) `null` in `mode: 'bypass'`: there is no queue for a size
+   *  cap to bound, so printing the configured `100` claimed a guard that cannot
+   *  fire. See `admission_control`. */
+  queue_max_size: number | null;
   /** Highest queue depth observed since process start.
    *  `null` in `mode: 'bypass'`. */
   queue_high_watermark: number | null;
@@ -180,9 +205,14 @@ export interface WriteQueueMetrics {
    *  the admission-estimator input (apply tasks occupy the slot too; see module
    *  header for why this stays blended). */
   recent_avg_task_latency_ms: number;
-  /** Current deadline budget (SOX_WRITEQ_DEADLINE_MS or default). */
-  deadline_budget_ms: number;
-  /** False when SOX_WRITEQ_NO_DEADLINE=1 (kill-switch active). */
+  /** Current deadline budget (SOX_WRITEQ_DEADLINE_MS or default).
+   *  (BL-394) `null` in `mode: 'bypass'` — no budget is consulted there. */
+  deadline_budget_ms: number | null;
+  /** True only when the deadline guard can actually reject an enqueue.
+   *  False when SOX_WRITEQ_NO_DEADLINE=1 (kill-switch active) — and (BL-394)
+   *  false in `mode: 'bypass'`, where the guard sits on the far side of the
+   *  early return and can never evaluate regardless of the kill-switch. Read
+   *  `admission_control` to tell the two reasons apart. */
   deadline_guard_enabled: boolean;
   /** Throughput: number of write tasks completed in the last 60s rolling window. */
   throughput_writes_per_sec: number;
@@ -1064,11 +1094,18 @@ export class WriteQueue {
     const bypass = this._bypassActive;
     return {
       mode: bypass ? 'bypass' : 'fifo',
+      // (BL-394) Neither admission guard is reachable on the bypass path: the
+      // size cap compares a queue that is never pushed to, and the deadline
+      // guard sits past the same early return. Say so, rather than printing
+      // the configured values as though they were in force.
+      admission_control: bypass
+        ? 'inactive — adapter handles concurrency natively'
+        : 'active',
       queue_depth: bypass ? null : this.queue.length,
       // in_flight is REAL on both paths — the FIFO path admits exactly one
       // operation at a time, the bypass path admits as many as arrive.
       in_flight: bypass ? this._bypassInFlight : (this._processing ? 1 : 0),
-      queue_max_size: this._maxSize,
+      queue_max_size: bypass ? null : this._maxSize,
       queue_high_watermark: bypass ? null : this._highWatermark,
       saturated: bypass ? null : this._saturated,
       // write_latency_ms is WRITE-KIND ONLY since the task-kind split (more
@@ -1087,8 +1124,10 @@ export class WriteQueue {
       },
       // Estimator input stays ALL-KIND (blended) — see module header.
       recent_avg_task_latency_ms: this._latencies.recentMean(WriteQueue.RECENT_AVG_WINDOW),
-      deadline_budget_ms: this._deadlineBudgetMs,
-      deadline_guard_enabled: !deadlineGuardDisabled(),
+      deadline_budget_ms: bypass ? null : this._deadlineBudgetMs,
+      // The literal field BL-394 quotes as the defect. It reported `true` on
+      // the production backend for a guard that structurally cannot evaluate.
+      deadline_guard_enabled: !bypass && !deadlineGuardDisabled(),
       throughput_writes_per_sec:
         this._completionTimes.length / (WriteQueue.THROUGHPUT_WINDOW_MS / 1000),
       counters: { ...this._counters },
