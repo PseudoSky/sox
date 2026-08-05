@@ -2,6 +2,103 @@
 
 ---
 
+## [Unreleased] — BL-428 / BL-430 / BL-431 / BL-429: the store retires its own bad rows, and new stores can't make them
+
+**86 live episodes carried `tags = '[]'` where the schema means NULL — and no probe could see them,
+because `'[]'` is valid JSON.** BL-342's `json_column_valid` passes it, correctly. `enrich.ts` is
+explicit that an empty tags array means *no tags*, "which the schema and every reader
+(`memory_recall`'s tags filter, etc.) represent as NULL, not `'[]'`" — so every `tags IS NOT NULL`
+reader counted 86 episodes that carry no tags at all.
+
+```console
+# against a COPY of the live store (db + -wal, BL-330), auto-repair off:
+$ SOX_STORE_REPAIR=off tsx bl428-proof.mts /tmp/copy/memory.db
+BEFORE  {"empty_tags":86,"with_tags":1425,"total":10150}
+PROBE   json_empty_array_null  node.tags  damaged  repairable
+        "86 of 1729 non-NULL values hold the empty JSON array '[]' … they are valid JSON,
+         so json_valid() passes them, and every \"IS NOT NULL\" reader counts them."
+REPAIR  normalised 86 empty-array value(s) in "node.tags" to NULL   (6.2 ms)
+AFTER   {"empty_tags":0,"with_tags":1339,"total":10150}
+```
+
+`with_tags` 1425 → 1339 is exactly −86; `total` is unchanged, because a repair normalises a column
+and never deletes an episode. **No hand-run DDL and no manual step: the next ordinary open of the
+live store applies it**, the same way BL-347 and BL-342 healed themselves.
+
+- **Declared columns, not discovered ones.** `EMPTY_ARRAY_MUST_BE_NULL = ['node.tags']`. "Empty
+  means absent" is a claim the owning schema makes — in another schema `[]` could legitimately mean
+  "explicitly cleared" — so the rule is asserted per column rather than inferred from a distribution.
+  The repair predicate is the literal `trim(col) = '[]'`, which cannot widen to a non-empty array.
+- **Zero extra cost.** It rides on the aggregate `json_column_valid` already runs; one more
+  expression, no extra pass.
+- **The write path is pinned too**, so the repair is not a treadmill:
+  `write.spec.ts` `BL-428: no write path ever stores tags = '[]'` goes red the instant `enrich.ts`'s
+  `resolvedTags.length > 0 ? … : null` guard is dropped again — which is exactly how these 86 rows
+  were created during the BL-325 window.
+
+**A store created today cannot hold the shape at all.**
+
+```sql
+tags TEXT CHECK (tags IS NULL OR json_valid(tags)),
+meta TEXT CHECK (meta IS NULL OR json_valid(meta)),   -- node and edge
+```
+
+```console
+$ # on a new store
+INSERT INTO node (…, tags, …) VALUES (…, '', …);
+Runtime error: CHECK constraint failed: tags IS NULL OR json_valid (tags)
+```
+
+**New stores only, and that is the decision — not an omission.** `CREATE TABLE IF NOT EXISTS`
+no-ops against an existing table, so no populated store is rebuilt, nothing is copied, and BL-313's
+data-loss path is never entered. Existing stores keep the detective control (`json_column_valid` on
+every open) that already repairs the shape.
+
+**The fixture-versus-constraint conflict was solved, not traded away.** BL-343's suite must insert
+the malformed row on purpose, and the constraint makes it un-insertable. Rather than a raw-SQL
+escape hatch or a test-only pragma — either of which would be a way to defeat the constraint on a
+store that has it — `GRAPH_DDL_PRE_BL430` is generated from the *same template* with the checks off,
+and the fixture builds a genuine legacy store the same way a real one keeps its schema:
+
+```ts
+const db = await openLegacyDb(dbPath);   // pre-creates node/edge, openDb then no-ops over them
+// …and asserts the fixture survived: throws if node.sql ever contains json_valid
+```
+
+**`SOX_STORE_VERIFY_SKIP` — a short-lived opener can stop paying for the JSON scan.**
+
+```console
+$ # fast integrity pass, 3 warm runs each, live-store copy (105 MB, 10 150 nodes)
+full        428.0 / 435.3 ms
+skip-json   149.1 / 153.0 / 161.8 ms      ok=true  unknown=json_column_valid,json_empty_array_null
+```
+
+```console
+$ SOX_STORE_VERIFY_SKIP=json_column_valid,json_empty_array_null memory-cli …
+```
+
+- **A skipped probe is reported `unknown`, never omitted.** Omitting it would let `ok: true` mean
+  "verified" over a store nothing checked — the inference that let a dead FTS index read as healthy
+  for a day.
+- `skip` beats `only`, so a wider request cannot defeat an exclusion; an unrecognised name is
+  ignored, so a typo costs latency, never coverage.
+- The probe itself is **unchanged**: not sampled, not size-gated, not downgraded to a warning, and
+  **not** moved to `deep` — malformed JSON arrives from bulk-import and restore paths that bypass
+  every write guard, while `deep` only runs after an unclean shutdown.
+
+### Fixes
+
+- **BL-429** — `stats-bl343-row-resilience.spec.ts` called its two `async` seed helpers from six
+  sites with no `await`. `expect(result.total_episodes).toBe(3)` passed because the inserts happened
+  to settle first; with a 5 ms delay in front of each insert the same code reported
+  `expected +0 to be 3` on all three cases. The awaits landed **and the delay stayed**, so the
+  ordering is now a tested property: drop an `await` and the suite fails deterministically instead
+  of one run in N. This is the suite that pins BL-343's contract, where a real regression would
+  otherwise have been indistinguishable from the flake.
+- `libs/memory-core/src/testing/` is excluded from the built library — test fixtures do not ship.
+
+---
+
 ## [Unreleased] — BL-434 / BL-433: heal-path embeds are correlatable, and a log path stops lying by omission
 
 **Every embed path now carries a real trace id — including the two that run off the write queue.**
