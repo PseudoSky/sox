@@ -224,3 +224,119 @@ describe('memory-cli init/status/list on the Turso adapter (BL-380)', () => {
     expect(logs.join('\n')).toContain('project.db');
   });
 });
+
+// ═══════════════════════════════════════════════════════════════════════════
+// BL-449 — `memory-cli backup` printed `integrity: ok` for a backup that
+// verified nothing.
+//
+// `backupStore()` returns the legacy `integrityCheck` string alongside the
+// structured `integrityReport` verdict. The string reports what
+// `pragma_integrity_check` said — and on a copy that could not be fully
+// checked it genuinely did say `ok`. Printing it alone told an operator
+// "verified" about a backup that established nothing, which is the same false
+// reassurance BL-449 exists to remove, one display layer up.
+// ═══════════════════════════════════════════════════════════════════════════
+
+describe('memory-cli backup — the printed verdict never says ok about an unverified copy (BL-449)', () => {
+  let sandboxHome: string;
+  let savedHome: string | undefined;
+  let logSpy: ReturnType<typeof vi.spyOn>;
+  let logs: string[];
+
+  beforeEach(() => {
+    sandboxHome = fs.mkdtempSync(path.join(os.tmpdir(), 'sox-memory-cli-backup-home-'));
+    savedHome = process.env['HOME'];
+    process.env['HOME'] = sandboxHome;
+    fs.mkdirSync(path.join(sandboxHome, '.memory'), { recursive: true });
+
+    logs = [];
+    logSpy = vi.spyOn(console, 'log').mockImplementation((...args: unknown[]) => {
+      logs.push(args.map((a) => String(a)).join(' '));
+    });
+  });
+
+  afterEach(() => {
+    logSpy.mockRestore();
+    if (savedHome === undefined) delete process.env['HOME'];
+    else process.env['HOME'] = savedHome;
+    fs.rmSync(sandboxHome, { recursive: true, force: true });
+  });
+
+  /**
+   * A store inside the `~/.memory` allowlist, seeded with `rows` episodes whose
+   * content is produced by `body(i)`.
+   *
+   * The default body is ordinary prose. Callers that need the `fts_index_live`
+   * probe to come back `unknown` pass a body that is long enough to be sampled
+   * but carries no sentinel-eligible token — see `NO_SENTINEL_BODY`.
+   */
+  async function seedStore(
+    name: string,
+    rows: number,
+    body: (i: number) => string = (i) => `episode ${i} concerning quarterly hippopotamus logistics`,
+  ): Promise<string> {
+    const dbPath = path.join(sandboxHome, '.memory', `${name}.db`);
+    const db = await openDb(dbPath);
+    for (let i = 0; i < rows; i++) {
+      await db.executeRun(
+        `INSERT INTO node (uid, kind, content, t_created, t_valid)
+           VALUES (?, 'episode', ?, datetime('now'), datetime('now'))`,
+        [`${name}-${i}`, body(i)],
+      );
+    }
+    await db.close();
+    return dbPath;
+  }
+
+  /**
+   * Content that defeats sentinel selection while still being sampled.
+   *
+   * `probeFtsIndexes` samples rows with `length(content) > 24`, then asks
+   * `pickSentinelTokens` for a round-trip token — which matches only a COMPLETE
+   * letter run of 6–20 characters (`/(?<![A-Za-z])[A-Za-z]{6,20}(?![A-Za-z])/`,
+   * BL-374). Digits and short words yield nothing, so the row is sampled and
+   * then found unusable: exactly the `status: 'unknown'` branch, with the store
+   * itself perfectly healthy.
+   *
+   * NOTE: a store of ordinary short prose does NOT reach this branch — every
+   * such row hands the probe a usable token and the verdict is `verified`.
+   */
+  const NO_SENTINEL_BODY = (i: number): string => `${i} 20260805 4711 22 8 31 9 7 55 61 4 88 12 6`;
+
+  it('BL-449: prints `verified` with the probe count on a fully-checked backup', async () => {
+    const dbPath = await seedStore('cli-verified', 12);
+    const dest = path.join(sandboxHome, '.memory', 'cli-verified-backup.db');
+
+    await runCli(['backup', '--db', dbPath, '--dest', dest]);
+
+    const output = logs.join('\n');
+    expect(output, output).toMatch(/integrity:\s+verified \(\d+ probes\)/);
+    expect(output).not.toMatch(/NOT VERIFIED/);
+  });
+
+  it('BL-449: prints NOT VERIFIED — never a bare `ok` — when a probe established nothing', async () => {
+    // Rows long enough to be sampled, but carrying no sentinel-eligible token,
+    // so `fts_index_live` cannot validate itself and reports `unknown`. Nothing
+    // is damaged, so the backup is correctly KEPT — and that is exactly the
+    // case where the old output read `integrity:      ok`.
+    const dbPath = await seedStore('cli-unverified', 6, NO_SENTINEL_BODY);
+    const dest = path.join(sandboxHome, '.memory', 'cli-unverified-backup.db');
+
+    await runCli(['backup', '--db', dbPath, '--dest', dest]);
+
+    const output = logs.join('\n');
+    expect(output, output).toContain('NOT VERIFIED');
+    // It is the structured `unverified` verdict that drove the line, not some
+    // incidental text: the count of probes that established nothing is stated,
+    // and the unknown finding is named so the operator knows WHAT went unchecked.
+    expect(output, output).toMatch(
+      /integrity:\s+NOT VERIFIED — [1-9]\d* of \d+ probe\(s\) established nothing/,
+    );
+    expect(output, output).toMatch(/·\s+\S+: .*sentinel token.*unverified/);
+    // The precise regression: the line must not read as a clean bill of health.
+    expect(output, output).not.toMatch(/integrity:\s+ok\s*$/m);
+    expect(output, output).not.toMatch(/integrity:\s+verified/);
+    // The backup itself survives — `unverified` is not a failure.
+    expect(fs.existsSync(dest)).toBe(true);
+  });
+});
