@@ -132,6 +132,7 @@ export type IntegrityProbe =
   | 'btree_index_populated'
   | 'fts_index_live'
   | 'json_column_valid'
+  | 'json_empty_array_null'
   | 'pragma_integrity_check';
 
 export type IntegrityStatus =

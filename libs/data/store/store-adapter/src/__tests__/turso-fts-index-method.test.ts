@@ -127,26 +127,22 @@ tursoDescribe('TursoAdapterImpl — FTS index_method always-on (BL-321 follow-up
     expect(moonRows.rows.map((r) => r.id)).toEqual([2]);
   });
 
-  it('does not disturb multiprocess_wal — opt-in, and independently toggle-able either way', async () => {
-    // multiprocess_wal is opt-in (FEAT-SOX-001; see
-    // turso-multiprocess-wal-optin.test.ts, which owns that assertion).
-    // What THIS test owns is that index_method is unaffected by whichever
-    // branch the caller lands in.
+  it('does not disturb multiprocess_wal — still on by default, still independently toggle-able', async () => {
     const onPath = tempPath('mpwal-on');
-    const onAdapter = await TursoAdapterImpl.connect({
-      dbPath: onPath,
-      experimental: { multiprocessWal: true },
-    });
+    const onAdapter = await TursoAdapterImpl.connect({ dbPath: onPath });
     openAdapters.push(onAdapter);
     expect(onAdapter.capabilities.multiprocessWrite).toBe(true);
 
     const offPath = tempPath('mpwal-off');
-    const offAdapter = await TursoAdapterImpl.connect({ dbPath: offPath });
+    const offAdapter = await TursoAdapterImpl.connect({
+      dbPath: offPath,
+      experimental: { multiprocessWal: false },
+    });
     openAdapters.push(offAdapter);
     expect(offAdapter.capabilities.multiprocessWrite).toBe(false);
 
-    // FTS must still work with multiprocess_wal off — index_method is
-    // independent and must not be clobbered by either branch.
+    // FTS must still work even with multiprocess_wal explicitly disabled —
+    // index_method is independent and must not be clobbered by that opt-out.
     await offAdapter.exec('CREATE TABLE node (id INTEGER PRIMARY KEY, content TEXT)');
     await expect(
       offAdapter.exec('CREATE INDEX IF NOT EXISTS idx_fts_node ON "node" USING fts ("content")'),
