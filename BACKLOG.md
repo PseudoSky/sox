@@ -2819,7 +2819,8 @@ failed: Invalid argument" immediately following "[memory-server backend] SIGTERM
 
 ### BL-432 — the embed `wait ≈ work` lead is RETRACTED; `wait_ms` is structurally incapable of measuring BL-331's head-of-line blocking — **Open (MEDIUM, instrument in the wrong place)** (2026-08-04, resampled 2026-08-05)
 
-**Measured, n = 360 warm embeds: `wait_ms` median 0 ms, max 4 ms.** The 890 ms was cold model load.
+**Measured, n = 570 warm embeds across three runs — including one on a QUIET machine: `wait_ms`
+median 0 ms, max 4 ms, and exactly 0 in 559 of 570 samples.** The 890 ms was cold model load.
 Full write-up: [`docs/reporting/memory/findings/bl432-embed-wait-vs-work.md`](docs/reporting/memory/findings/bl432-embed-wait-vs-work.md).
 
 The original reading — *roughly half of embed latency is acquiring the shared fastembed child* —
@@ -2828,8 +2829,9 @@ rested on n = 2 with cold start included[2]. A proper sample retires it:
 | source | n | `wait_ms` median | `wait_ms` max | `work_ms` median |
 |---|---:|---:|---:|---:|
 | live service, pid 22347, organic traffic (warm) | 3 | **0** | 0 | 649–753 |
-| harness run A, concurrency 1/2/4/8 interleaved | 210 | **0** | — | 304 → 1521 |
-| harness run B, same + full distribution | 150 | **0** | **4** | 332 → 1506 |
+| harness run A, concurrency 1/2/4/8 interleaved (load 8.6→20.8, 3–4 competing hosts) | 210 | **0** | — | 304 → 1521 |
+| harness run B, same + full distribution (load 16.7→21.5, 3–4 competing hosts) | 150 | **0** | **4** | 332 → 1506 |
+| harness run C, **quiet machine** (load 4.9, **zero** competing hosts) | 210 | **0** | **2** | 306 → 1493 |
 
 `wait_ms` is flat across an 8× concurrency sweep that moves `work_ms` 5.0×.
 
@@ -2859,12 +2861,16 @@ the existing `@adhd/sox-telemetry` `instrumentBoundary` seam (no second telemetr
    warns about this on startup) and nothing in telemetry records whether one was present. Every
    embed-latency number gathered without it is unlabelled — the BL-433 defect class exactly.
 
-**Conditions, stated because an unlabelled measurement here is worse than none:** the machine never
-went quiet during this session (up to 8 concurrent agents; load average 8.6 → 21.5 on 10 CPUs; 3–4
-concurrent `fastembedProcessHost` processes, one of them another agent's vitest run at 455 % CPU).
-The `work_ms` column is contaminated by that and is *not* a baseline. The `wait_ms` column is the
-result and is robust to it — load inflates work and cannot make a resolved-promise await slow.
-Medians only, per BL-369 (`duration_ms` is wall-clock and accrues during system sleep).
+**Conditions, stated per run because an unlabelled measurement here is worse than none.** Runs A and
+B were taken under heavy contention (up to 8 concurrent agents; load average 8.6 → 21.5 on 10 CPUs;
+3–4 concurrent `fastembedProcessHost` processes, one of them another agent's vitest run at 455 % CPU
+— cross-process CoreML/ANE execution is itself a known 25–50x hazard). **Run C was taken once the
+machine finally went quiet** (load 4.90, zero competing hosts) and reproduces A and B on BOTH
+columns: `work_ms` 304/593/875/1521 contended vs 306/469/813/1493 quiet. So the concurrency response
+belongs to the shared child, not to background load, and the finding no longer rests on the load
+caveat in either direction. `wait_ms` was never load-sensitive to begin with — load inflates work and
+cannot make a resolved-promise await slow. Medians only, per BL-369 (`duration_ms` is wall-clock and
+accrues during system sleep).
 
 **Severity:** MEDIUM — no production failure; the cost is that a HIGH-value architecture question
 has an instrument pointed at the wrong side of the boundary and reads as if it were answered.
