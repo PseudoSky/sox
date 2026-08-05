@@ -46,9 +46,10 @@ import path from 'node:path';
 import os from 'node:os';
 import { fileURLToPath } from 'url';
 import {
-  MARKERS, buildCFInstructions, buildFJInstructions, resolveAgent,
+  MARKERS, buildCFInstructions, resolveAgent,
   rewriteToContentFirst as rewriteToContentFirstShared, predictCacheHit, serializeForwarded,
 } from './cf-rewrite.mjs';
+import { handleFJ } from './fj-proxy.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PORT = parseInt(process.env.CF_PORT || '3333', 10);
@@ -400,10 +401,6 @@ function rewriteToContentFirst(messages, personaSP, opencodeSP, cfPrompt, handof
  */
 function renderCFInstructions(sessionId) {
   return buildCFInstructions(sessionId, PORT);
-}
-
-function renderFJInstructions(sessionId) {
-  return buildFJInstructions(sessionId, PORT);
 }
 
 // ──────── Virtual tool definition ────────
@@ -945,277 +942,17 @@ const server = http.createServer(async (req, res) => {
       // seed populated, then the N outputs are JOINED back into the single
       // response opencode sees. See fj-mode-design.md §3.4.
       if (isFJModel) {
-        const preset = session?.presetSet || [];
-        const fjPrompt = sessionId ? renderFJInstructions(sessionId) : null;
-        if (preset.length === 0) {
-          // No preset set — behave as a standard single-agent turn (tools
-          // work, execution happens). The FJ instructions are appended to the
-          // session's persona at the TAIL (2026-08-05 user directive) so the
-          // model KNOWS the agent-set endpoint exists before it triggers a
-          // fork — but NOT injected at position 0 (position 0 stays the
-          // opencode SP, the cache anchor).
-          console.error(`[cf-proxy] fj: no preset set for session ${sessionId} — passthrough (FJ instructions appended to persona)`);
-          const fjStandard = rewriteToContentFirst(
-            messages,
-            personaSP ? `${personaSP}\n\n${fjPrompt}` : fjPrompt,  // FJ prompt rides the persona tail
-            opencodeSP,
-            null,             // NO position-0 injection
-            null,
-            activeAgent || '',
-          );
-          const result = await forwardStream(fjStandard.messages, reqData, res, { model: TARGET_MODEL, sessionId });
-          logCall({
-            event: 'fj_turn', agent: '(passthrough)', join_mode: session?.joinMode || 'concat',
-            preset: [], turns: session?.turns ?? 0, note: 'no preset set — standard turn',
-            shared_chars: fjStandard.messages[0]?.content?.length || 0,
-          }, sessionId);
-          return;
-        }
-
-        const cfPrompt = fjPrompt;
-        const presetAgents = preset
-          .map(name => resolveAgent(name, AGENTS))
-          .filter(Boolean);
-        if (presetAgents.length === 0) {
-          return jsonResponse(res, 404, { error: 'preset agents no longer resolve in registry', preset });
-        }
-
-        // ── FORK: one rewrite per preset agent (2026-08-05, user directive).
-        // The persona body comes from resolveAgent — the SAME pure resolver
-        // CF's resolveSessionPersona delegates to — so the fork gets the
-        // identical persona CF would use, WITHOUT the stateful session
-        // mutation (calling resolveSessionPersona here made the session think
-        // the agent changed N times, observed 2026-08-05).
-        //
-        // NO FJ instructions in forks (2026-08-05 user directive): the FJ
-        // prompt is injected ONLY into the non-forked passthrough, appended
-        // to the persona at the tail. Forks carry just the persona — no
-        // position-0 instruction injection — so they analyze rather than
-        // narrate the fork mechanism.
-        const forks = presetAgents.map(agent => rewriteToContentFirst(
-          messages,
-          agent.systemPrompt,   // personaSP — the resolved persona body
-          opencodeSP,
-          null,                 // NO FJ instructions in forks
-          null,                 // no handoff task in fj mode
-          agent.name,           // agentName — per-fork marker
-        ));
-
-        // ── EXECUTE: FULL PARALLEL (2026-08-05) ──
-        // In-session forks do NOT need seed-then-warm. The shared prefix is
-        // the conversation, which the provider ALREADY cached from the main
-        // agent's prior turns in this session (verified: turn-2 test — both
-        // forks hit the same 512 cached tokens, warm from turn 1, not from a
-        // seed). Seed-then-warm was copied from the one-shot /v1/chat/fork
-        // endpoint, where sharedContext is a FRESH string the provider has
-        // never seen — that is where seeding belongs, not here. In-session:
-        // all N forks fire at once, all hit the warm prefix cache, wall time
-        // = max(all forks) instead of seed + max(rest).
-        // Each fork CARRIES the session id (so its raw_request/raw_response
-        // attribute to the right per-session log).
-        const forkResults = [];
-        const execute = async (fork, idx) => {
-          const start = Date.now();
-          const resp = await forwardBlocking(fork.messages, {
-            model: TARGET_MODEL,
-            // temperature/max_tokens intentionally NOT overridden — let
-            // forwardBlocking's own defaults apply (2026-08-05 user directive:
-            // the hard-coded reqData.temperature ?? 0 / max_tokens ?? 2000
-            // were unrequested overrides).
-            // [fj:forks-analysis-only] Forks run WITHOUT the tool schema
-            // (tools: []). Reasons (2026-08-05):
-            //   1. Fork tool_calls can't execute — emitting them fabricates a
-            //      tool-call assistant message without reasoning_content →
-            //      DeepSeek 400 "reasoning_content must be passed back".
-            //   2. A fork that wants a tool returns EMPTY content → the concat
-            //      join produces useless empty perspective blocks.
-            // Forks analyze the shared context and answer; the main agent
-            // (which has tools) executes. Real fork tool-loops are the v2
-            // design — see fj-mode-design.md §[fj-tool-loop-v2].
-            tools: [],
-            sessionId,                     // carry the session id to the log
-            fork: presetAgents[idx].name,  // tag the fork in raw events
-          });
-          return {
-            index: idx,
-            agent: presetAgents[idx].name,
-            warm: idx > 0,
-            latencyMs: Date.now() - start,
-            tokensIn: resp.provider?.tokens?.prompt ?? 0,
-            cacheHit: resp.provider?.tokens?.cacheHit ?? 0,
-            tokensOut: resp.provider?.tokens?.completion ?? 0,
-            output: resp.choices?.[0]?.message?.content || '',
-            // The reasoning trail is the EVIDENCE behind the conclusion — the
-            // decisions live there (v0.0.1: architect's PATCH-vs-TEMPLATE call
-            // found in reasoning_content, cf-fresh:2015). Concatenating only
-            // content would hand the main agent conclusions without the
-            // analysis that produced them. Captured here so the join can
-            // include it.
-            reasoning: resp.choices?.[0]?.message?.reasoning_content || '',
-            // Tool calls the fork requested (forks carry opencode's tool
-            // schema). Captured for the dedup+merge in the join — opencode
-            // executes them client-side and the results join the posted
-            // prefix, cache-safe (write-through on posted input).
-            toolCalls: (resp.choices?.[0]?.message?.tool_calls || []).map(tc => ({
-              id: tc.id || `fj-${idx}-${tc.function?.name || 'tc'}-${Math.random().toString(36).slice(2, 8)}`,
-              name: tc.function?.name || '',
-              args: tc.function?.arguments || '',
-            })),
-          };
-        };
-        // ALL forks in parallel — the shared prefix is already provider-cached
-        // from the session's prior turns, so there is no cold seed to wait for.
-        forkResults.push(...(await Promise.all(forks.map((f, i) => execute(f, i)))));
-
-        // ── JOIN — switch preserved, judge NOT applied yet (2026-08-05) ──
-        // The switch selects the join strategy (concat | judge). The judge
-        // branch is STRUCTURALLY PRESENT but deliberately NOT reachable: per
-        // user directive, judge filtering is not applied yet — the join is
-        // concat unconditionally, and the model (which learned the agent-set
-        // endpoint from the FJ instructions) synthesizes the N perspectives
-        // itself. The switch stays so enabling judge filtering later is a
-        // one-line change (make the case reachable); the fj-judge agent and
-        // the endpoint's joinMode field remain for that moment.
-        let joined;
-        switch (session?.joinMode || 'concat') {
-          case 'judge': {
-            // [fj:judge-dormant] — judge filtering is NOT applied yet.
-            // When enabled: resolveAgent('fj-judge') → one forwardBlocking
-            // over the N outputs → parse FJ-CONTROL → apply preset changes.
-            // Deliberately falls through to concat until the user enables it.
-            console.error(`[cf-proxy] fj: join_mode=judge requested but judge filtering is not enabled yet — using concat`);
-            logCall({
-              event: 'fj_judge_stub', sessionId, turns: session?.turns ?? 0,
-              note: 'judge filtering not enabled (2026-08-05 directive) — concat used',
-            }, sessionId);
-            // fall through
-          }
-          case 'concat':
-          default: {
-            // Concat the fork CONCLUSIONS (content) only. The reasoning trail
-            // is NOT streamed into the output — it is captured in the
-            // per-fork raw_response log for forensics (v0.0.1: decisions live
-            // in reasoning — that is POST-HOC analysis, not runtime context).
-            // [fj:reasoning-internal] Streaming reasoning into the joined
-            // response makes it conversation content: it pollutes the cached
-            // prefix, is re-sent verbatim every turn, and the model reads its
-            // own old reasoning as ground truth (the "momentum and direction"
-            // persistence). Reasoning stays internal; content is the output.
-            joined = forkResults
-              .map(f => `\n\n--- CF-AGENT:${f.agent}:sha256:${f.index} ---\n${f.output}\n--- /CF-AGENT ---`)
-              .join('\n');
-            break;
-          }
-        }
-
-        // ── TOOL-CALL DEDUP + MERGE (2026-08-05) — LOG ONLY, NEVER EMITTED ──
-        // Forks carry opencode's tool schema and may each request tool calls.
-        // Collect + dedup them for AUDIT (per-fork behavior signal), but do
-        // NOT emit them as delta.tool_calls in the streamed response.
-        // [fj:no-tool-emit] Emitting tool_calls alongside the concat content
-        // makes opencode assemble ONE assistant message with content +
-        // tool_calls + NO reasoning_content — which DeepSeek rejects on the
-        // next turn ("reasoning_content must be passed back", 400). The
-        // reasoning-echo contract requires every tool-call assistant message
-        // to carry reasoning_content; a proxy-fabricated merge cannot. Forks
-        // are advisory: the main agent sees the joined perspectives (which
-        // can RECOMMEND tools in text) and decides what to actually run.
-        const mergedToolCalls = [];
-        {
-          const seen = new Set();
-          for (const f of forkResults) {
-            for (const tc of f.toolCalls || []) {
-              const key = `${tc.name}|${tc.args}`;
-              if (seen.has(key)) continue;
-              seen.add(key);
-              mergedToolCalls.push({
-                index: mergedToolCalls.length,
-                id: tc.id,
-                type: 'function',
-                function: { name: tc.name, arguments: tc.args },
-              });
-            }
-          }
-        }
-        if (mergedToolCalls.length > 0) {
-          console.error(`[cf-proxy] fj: observed ${mergedToolCalls.length} deduped tool call(s) from ${forkResults.length} forks (${forkResults.reduce((n, f) => n + (f.toolCalls?.length || 0), 0)} raw) — LOGGED, not emitted (reasoning-echo contract)`);
-        }
-
-        // ── Stream the joined result back to opencode as SSE ──
-        res.writeHead(200, {
-          'Content-Type': 'text/event-stream',
-          'Cache-Control': 'no-cache',
-          'Connection': 'keep-alive',
+        // The fj proxy is a STANDALONE module (fj-proxy.mjs) — mounted here as
+        // a route handler ONLY. It self-calls /v1/chat/completions (model=cf)
+        // for EVERY fj request (main turns AND forks), so all fj traffic flows
+        // through the CF path's rewrite/streaming. The fj module shares none of
+        // this file's code (2026-08-05 directive): the only couplings are this
+        // mount and the HTTP self-call.
+        return handleFJ(req, res, {
+          sessionId, session, messages, reqData, opencodeSP, personaSP, activeAgent,
+          AGENTS, logCall, getSession, jsonResponse,
+          PORT, TARGET_MODEL, RAW_CAPTURE,
         });
-        const totalIn = forkResults.reduce((s, f) => s + f.tokensIn, 0);
-        const totalHit = forkResults.reduce((s, f) => s + f.cacheHit, 0);
-        const totalOut = forkResults.reduce((s, f) => s + f.tokensOut, 0);
-        const chunk = {
-          id: `fj-${Date.now()}`, object: 'chat.completion.chunk', created: Math.floor(Date.now() / 1000),
-          model: TARGET_MODEL,
-          choices: [{
-            index: 0,
-            delta: { role: 'assistant', content: joined },
-            // finish_reason MUST be null on the content chunk — in the OpenAI
-            // SSE protocol, finish_reason belongs only on the FINAL chunk.
-            // The previous code put 'stop' here, and opencode (like most
-            // clients) stops consuming at the first chunk carrying a
-            // finish_reason — so the joined content was discarded and never
-            // rendered in the UI (observed 2026-08-05: fork executed, 359K
-            // tokens, but nothing showed). The final chunk below carries it.
-            finish_reason: null,
-          }],
-        };
-        res.write(`data: ${JSON.stringify(chunk)}\n\n`);
-        res.write(`data: ${JSON.stringify({
-          id: `fj-${Date.now()}`, object: 'chat.completion.chunk', created: Math.floor(Date.now() / 1000),
-          model: TARGET_MODEL,
-          choices: [{ index: 0, delta: {}, finish_reason: 'stop' }],
-          usage: { prompt_tokens: totalIn, completion_tokens: totalOut, prompt_cache_hit_tokens: totalHit },
-        })}\n\n`);
-        res.write('data: [DONE]\n\n');
-        res.end();
-
-        // ── Persist + metrics ──
-        if (session) {
-          const lastUser = [...messages].reverse().find(m => m.role === 'user');
-          if (lastUser) session.context.push({ role: 'user', content: lastUser.content });
-          session.context.push({ role: 'assistant', content: joined });
-          session.turns++;
-        }
-        logCall({
-          event: 'fj_turn', agent: presetAgents.map(a => a.name).join(','),
-          join_mode: session?.joinMode || 'concat', fork_count: forkResults.length, turns: session?.turns ?? 0,
-          tokens: totalIn, cached: totalHit, cache_miss: totalIn - totalHit, output: totalOut,
-          savings_pct: totalIn > 0 ? ((totalHit / totalIn) * 100).toFixed(1) : '0.0',
-          tool_calls_merged: mergedToolCalls.length,
-          tool_calls_raw: forkResults.reduce((n, f) => n + (f.toolCalls?.length || 0), 0),
-          forks: forkResults.map(f => ({
-            agent: f.agent, warm: f.warm, tokens_in: f.tokensIn,
-            cache_hit: f.cacheHit, tokens_out: f.tokensOut, latency_ms: f.latencyMs,
-            hit_ratio: f.tokensIn > 0 ? ((f.cacheHit / f.tokensIn) * 100).toFixed(1) : '0.0',
-            tool_calls: f.toolCalls?.map(tc => tc.name) || [],
-          })),
-        }, sessionId);
-
-        // ── AUTO-RESET (2026-08-05) — the fork is a ONE-SHOT trigger ──
-        // [fj:one-shot] After this fork runs, clear the preset so the session
-        // returns to standard single-agent mode. This makes fj an ALTERNATION
-        // (trigger → fork → concat → back to normal), not a sticky mode: the
-        // model's trigger fires ONE fork round, then tools/execution work
-        // normally until the model triggers again. Without this, every
-        // subsequent request (including opencode's tool continuations of the
-        // SAME user message) forks forever.
-        if (session) {
-          const wasPreset = session.presetSet;
-          session.presetSet = [];
-          console.error(`[cf-proxy] fj: fork completed — preset auto-reset (was [${wasPreset.join(', ')}]) → standard mode`);
-          logCall({
-            event: 'fj_auto_reset', sessionId, turns: session.turns,
-            cleared: wasPreset,
-          }, sessionId);
-        }
-        return;
       }
 
       // ── Content-first path (true streaming) ──
@@ -1229,7 +966,14 @@ const server = http.createServer(async (req, res) => {
         session.pendingInput = null; // one-shot, cleared after use
         console.error(`[cf-proxy] handoff task embedded in persona: ${Math.ceil(handoffTask.length / 4)} tokens`);
       }
-      const cfPrompt = sessionId ? renderCFInstructions(sessionId) : null;
+      // CF-instruction injection OPTION (2026-08-05): `cf_instructions: false`
+      // in the request body disables position-0 CF-instruction injection. The
+      // fj fork path uses this: fork self-calls keep position 0 as the RAW
+      // opencode SP, byte-identical across forks AND across the main session's
+      // turns, so the shared provider cache prefix survives (a per-fork
+      // session id baked into the instructions would break it). Persona-at-tail
+      // handling is unaffected — only the position-0 block is skipped.
+      const cfPrompt = (sessionId && reqData.cf_instructions !== false) ? renderCFInstructions(sessionId) : null;
             const cf = rewriteToContentFirst(messages, personaSP, opencodeSP, cfPrompt, handoffTask, activeAgent || '');
       // ── In-flight cache-blow predictor (v4) ──
       // Compare the previous forwarded prefix vs the current one. The provider
