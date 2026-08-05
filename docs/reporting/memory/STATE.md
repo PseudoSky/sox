@@ -31,7 +31,7 @@ in [`PLAN.md`](./PLAN.md); this is the summary.
 | Packets complete | **31 / 85** |
 | Packets partial | 4 |
 | Packets not started | 50 |
-| Open backlog items, in scope | **70** |
+| Open backlog items, in scope | **71** |
 | Open backlog items, out of scope | 28 |
 | In-scope items with no packet | 2 (BL-436, BL-462) |
 
