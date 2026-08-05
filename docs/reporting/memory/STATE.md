@@ -8,7 +8,7 @@
 > Companion docs: [`PLAN.md`](./PLAN.md) (build order + per-packet ledger) · [`sandbox/README.md`](./sandbox/README.md) (sandbox spec)
 > · [`../../observability/README.md`](../../observability/README.md) (how to read the logs) · `BACKLOG.md` (all items)
 
-**Last updated:** 2026-08-04 01:40Z · **Branch:** `wip/turso-live-metrics`
+**Last updated:** 2026-08-05 19:12Z · **Branch:** `wip/turso-live-metrics`
 
 > **What is measured vs. what is asserted.** Every number in the "Live service" and "Progress"
 > sections below was read from the running server or derived from `BACKLOG.md` at the timestamp
@@ -29,15 +29,15 @@ in [`PLAN.md`](./PLAN.md); this is the summary.
 | | |
 |---|---|
 | Packets complete | **31 / 85** |
-| Packets partial | 4 |
-| Packets not started | 50 |
-| Open backlog items, in scope | **71** |
+| Packets partial | 5 |
+| Packets not started | 49 |
+| Open backlog items, in scope | **69** |
 | Open backlog items, out of scope | 28 |
 | In-scope items with no packet | 2 (BL-436, BL-462) |
 
 **Done:** PKT-01 PKT-04 PKT-05 PKT-06 PKT-08 PKT-10 PKT-14 PKT-15 PKT-17 PKT-19 PKT-20 PKT-21 PKT-23 PKT-36 PKT-40 PKT-41 PKT-43 PKT-46 PKT-48 PKT-49 PKT-50 PKT-52 PKT-53 PKT-64 PKT-65 PKT-67 PKT-68 PKT-69 PKT-70 PKT-71 PKT-72
 
-**Partial:** PKT-03 PKT-28 PKT-32 PKT-37
+**Partial:** PKT-03 PKT-28 PKT-32 PKT-37 PKT-76
 
 <!-- PLAN-STATUS:END -->
 
@@ -51,10 +51,10 @@ and no crash path that can lose data.
 
 ---
 
-## Live service — measured 2026-08-04T01:40Z
+## Live service — measured 2026-08-05T19:12Z
 
-Server: pid **78765**, artifact **`a0d8bbc1ee31`**, up since 2026-08-04T01:37:22Z. Store
-`~/.memory/memory.db`, adapter **turso**, 4962 live episodes.
+Server: pid **55538**, artifact **`8ae1b0da3c82`**, up since 2026-08-05T17:54:56Z. Store
+`~/.memory/memory.db`, adapter **turso**, 5039 live episodes.
 
 | Subsystem | State | Evidence |
 |---|---|---|
@@ -62,22 +62,27 @@ Server: pid **78765**, artifact **`a0d8bbc1ee31`**, up since 2026-08-04T01:37:22
 | Vector recall | ✅ working | `embed_backlog: 0`; `unstamped: 0`, `stale_vector_count: 0` |
 | Embedding | ✅ real inference | `bge-base-en-v1.5`, execution provider **coreml**, `embeds_failed: 0` |
 | Write path | ✅ healthy | write queue depth 0, no busy/deadline rejections |
-| Integrity | ✅ `overall: ok` | deep probes clean, `damaged: []` |
+| Integrity | ✅ `overall: ok` | all 6 `fast` probes clean in 530.5 ms, `damaged: []`, `unknown: []` |
 | Backup | ✅ working | BL-385 resolved 2026-08-01 |
 | Entity search | ✅ working | BL-384 resolved 2026-08-01 |
 | Near-duplicate detection | ✅ live KNN | BL-381/BL-386 resolved; **BL-398 resolved 2026-08-04** — manual-merge pairs now report `cosine_sim: null` (unknown), never a fabricated 1.0 |
-| Telemetry | ⚠️ partial | `role: "live-service"` and the enrich tick lifecycle (`enrich.tick.*` / `enrich.pass.*`) now emit durable JSONL (BL-413 follow-on, d016b63); **`stages_declared: 0`** still — BL-401 unmet |
+| Telemetry | ✅ stages live | `role: "live-service"`, durable JSONL for the enrich tick lifecycle (BL-413 follow-on, d016b63), and **`stages_declared: 2`** with `stages_with_zero_samples: []` as of the `8ae1b0da3c82` deploy. `paths_with_zero_samples` holds `write_queue:queued` (by design — Turso always takes the bypass path) and `embed:reembed`. OTel `state: "ready"`, spans enabled |
 | **Enrichment** | ✅ **WORKING** | `state: "idle"`, `queue_depth: 0`, ticks **11.3s** (was 120.056s timeout cap). **BL-413 RESOLVED**: importance link-degree OR-COUNT → indexed two-scalar (`computeLinkDegree`), plus per-pass-type isolation budget (full passes 600s, `SOX_ENRICH_FULL_TIMEOUT_MS`) |
-| **Clustering** | ✅ **WORKING** | `cluster_count: 440`, `total_clustered: 3596`, `coverage: 0.725`, `with_community: 3596`, `with_topic: 4267` (+1527 backfilled). Recluster completed 2026-08-04 (74.4s); 139 orphans retired; orphan-GC on invalidation live (`community-gc.ts`) |
-| WAL checkpoint | ✅ **WORKING** | **BL-405 resolved 2026-08-04**: the WP-5 2s idle checkpoint never fired on the Turso `_noop` path (early return above the scheduling code) and the 5-min compaction tick was never wired — both fixed (commit 0afecff). Live-verified: `last_checkpoint_at` set 2026-08-04T19:47:53Z, `wal_bytes: 0` (full TRUNCATE succeeds with the two-connection topology) |
+| **Clustering** | ✅ **WORKING** | `cluster_count: 443`, `total_clustered: 3610`, `coverage: 0.716`, `with_community: 3610`, `with_topic: 4300`, `largest_cluster_size: 879`, `mean_intra_sim: 0.882` vs `mean_inter_sim: 0.629`. Orphan-GC on invalidation live (`community-gc.ts`) |
+| WAL checkpoint | ✅ **WORKING** | **BL-405 resolved 2026-08-04**: the WP-5 2s idle checkpoint never fired on the Turso `_noop` path (early return above the scheduling code) and the 5-min compaction tick was never wired — both fixed (commit 0afecff). Live-verified: `last_checkpoint_at` set 2026-08-05T18:16:05Z, `wal_bytes: 0` (full TRUNCATE succeeds with the two-connection topology) |
 
-### ⚠️ Two committed changes are NOT live yet — the next deploy will move production numbers
+### Both previously-pending changes shipped in `8ae1b0da3c82` (`61e4ff0`, 2026-08-05)
 
-The live backend serves the bundled `dist/`, so neither of these is in effect until a deliberate
-rebuild + `registry:sync-index` + restart. **Read this before reacting to the numbers they move.**
+The live backend serves the bundled `dist/`, so neither took effect until the deliberate rebuild +
+`registry:sync-index` + restart that `61e4ff0` performed. **Read this before reacting to the numbers
+they move.**
 
-- **PKT-30/BL-328 threshold calibration (`af2f563`)** replaces the fixed τ with target-mean-degree
-  calibration. Measured on a read-only copy at N=4950, from the shipped function: **clusters
+- **PKT-30/BL-328 threshold calibration (`af2f563`, live since `61e4ff0`)** replaces the fixed τ with
+  target-mean-degree calibration. **BL-328 and PKT-30 remain OPEN** — the code is deployed, the item
+  is not closed. The live partition still reads `cluster_count: 443` / `coverage: 0.716`, i.e. the
+  pre-calibration shape rather than the 506/0.606 the copy predicted; no full recluster has been
+  observed under the deployed calibration, so treat the prediction below as *unconfirmed in
+  production*. Measured on a read-only copy at N=4950, from the shipped function: **clusters
   441 → 506, largest-cluster ratio 0.1776 → 0.0483, coverage 0.727 → 0.606**, τ 0.87 → 0.89,
   calibration cost 88 ms against a 23.5 s pass.
   **The coverage drop is intended and is NOT a regression.** The surrendered 0.12 was chaining
@@ -88,40 +93,44 @@ rebuild + `registry:sync-index` + restart. **Read this before reacting to the nu
   more loosely than today. Load-bearing: at the floor the live corpus already sits at mean degree
   **1.80 against a 2.0 budget** — ~8% of growth from the constant becoming unsafe. That is the drift
   a constant cannot track.
-- **BL-401 stage instrumentation (`c81c0b7`)** — live `stages_declared` stays **0** until deploy.
-  Verified `2` on a real spawned server. Expect `paths_with_zero_samples` to include
-  `memory-core.write_queue:queued` on production **by design**: the Turso adapter always takes the
-  bypass path. That is the self-check working, not a defect.
+- **BL-401 stage instrumentation (`c81c0b7`)** — deployed. Live `stages_declared` is **2** with
+  `stages_with_zero_samples: []`. As predicted, `paths_with_zero_samples` holds
+  `memory-core.write_queue:queued` **by design** — the Turso adapter always takes the bypass path —
+  alongside `memory-core.embed:reembed`. That is the self-check working, not a defect.
 
 At that build, capture the **OTel bundle-size delta** — unmeasured, and measuring it requires the
 destructive build. Research put SDK 1.x at +23.7% (573 KB); 2.10 is larger.
 
-**Residual data defects on the live store — re-measured 2026-08-04T23:14Z:** `malformed_rows:
+**Residual data defects on the live store — re-measured 2026-08-05T19:12Z:** `malformed_rows:
 {count: 0, columns: [], sample_rowids: []}`. The BL-342 residual row 9284 is **gone**: a later
 batch-enrichment pass overwrote the malformed value as a side effect — nobody repaired it, it aged
 out. A sweep of a full copy across all kinds (including invalidated rows) and `edge.meta` found
 zero. BL-342's repair path nevertheless landed (`e248fd1`) because nothing prevented the shape from
 returning; that deploy is now **preventive, not remedial**.
 
-Still residual: `stamped_without_vector: 1` and ~702 of 4973 episodes with no topic (down from 2214 —
+Still residual: `stamped_without_vector: 1` and 739 of 5039 episodes with no topic (down from 2214 —
 the recluster backfilled 1527 from cluster labels).
 
-**The 86 `tags = '[]'` rows are fixed in code and awaiting the next open (BL-428, `b4040a6`).**
+**The 86 `tags = '[]'` rows are repaired on the live store as of the `8ae1b0da3c82` deploy (BL-428,
+`b4040a6`).** The live `json_empty_array_null` probe now reports **0 of 1670** non-NULL values holding
+`'[]'`, and `with_tags` sits at 1360.
 `'[]'` is valid JSON, so `json_column_valid` passes it; the new `json_empty_array_null` probe
 detects it against a declared column list and the adapter's ordinary verify-and-repair path
 normalises it — no hand-run DDL. Verified on a copy of the live store (db + `-wal`) 2026-08-05:
 **86 of 1729** detected, repaired in **6.2 ms**, `with_tags` **1425 → 1339** (exactly −86) with
-`total` unchanged at 10 150. **The live store still holds all 86 until the next deploy**, because
-the running artifact predates the probe. New stores additionally carry
+`total` unchanged at 10 150. New stores additionally carry
 `CHECK (col IS NULL OR json_valid(col))` on `node.tags` / `node.meta` / `edge.meta` (BL-430);
 existing stores acquire nothing — no rebuild, so BL-313's path is never entered.
 Short-lived openers can now exclude the JSON scan with `SOX_STORE_VERIFY_SKIP` (BL-431): measured on
 the same copy, the `fast` pass goes **428–435 ms → 149–162 ms**, and the skipped probe is reported
 `unknown` rather than omitted, so `ok` never means "verified" over a probe that did not run.
 
-**Loudest thing in production:** the `no such column: meta` storm (154/day on 08-03, **BL-399**)
-collapsed after the autolink fix removed its source write — 08-03 residual 29 occurrences,
-08-04 so far 4. Re-measure tomorrow for the steady-state rate; if it is not ~0, reopen BL-399.
+**The `no such column: meta` storm is over.** It ran 154/day on 08-03 (**BL-399**) and collapsed after
+the autolink fix removed its source write — 29 residual occurrences on 08-03, 4 on 08-04. The
+steady-state re-measure this section called for was taken 2026-08-05T19:12Z: **0 occurrences** across
+the whole of `memory-server.live-service-2026-08-05.jsonl` (239 KB, spanning the `8ae1b0da3c82`
+restart). BL-399 stays closed. Note the 08-03/08-04 logs have since rotated away, so that pair of
+figures can no longer be re-derived from disk.
 
 ---
 
@@ -133,11 +142,12 @@ collapsed after the autolink fix removed its source write — 08-03 residual 29 
 > already been **DONE** for some time (BL-391 and BL-329 are not in `BACKLOG.md` at all — if an id
 > is not there, it shipped). A session acted on that entry before catching it.
 
-1. **Deploy to close BL-401.** Gaps 4+6 are committed (`c81c0b7`, consumers migrated onto the stage
-   substrate), but live `stages_declared` is **still 0** — the running artifact predates the change.
-   The remaining step is a deploy per `[inv:deploy-verified]`, not more code. Note the registry
-   checksum is currently drifted (`store-adapter/dist` rebuilt, `registry/index.json` unsynced), so
-   `registry:sync-index` must run on a clean tree first or `smoke-test.mjs` fails `CHECKSUM MISMATCH`.
+1. **Close BL-401 — the deploy it was waiting on has happened.** Gaps 4+6 were committed (`c81c0b7`,
+   consumers migrated onto the stage substrate) and shipped to production in `61e4ff0`
+   (`8ae1b0da3c82`, pid 55538). Live `stages_declared` is **2** with `stages_with_zero_samples: []`,
+   so the `[inv:deploy-verified]` step this item asked for is done and the registry checksum drift it
+   warned about is cleared. BL-401 is still **Open** in `BACKLOG.md`: what remains is closing it
+   against its own acceptance with a red→green test per BL-225, not another deploy.
 2. **PKT-30 (BL-328)** — target-degree threshold calibration (the interim τ is fixed at 0.87; the
    recluster's 440-community result is the measured baseline to calibrate against). ⚠️ τ=0.87 is a
    **pairwise** number — see `PLAN.md` §P0.5; the pairwise→centroid offset is +0.086 to +0.127.
