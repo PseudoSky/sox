@@ -28,6 +28,7 @@ import * as path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import type { StoreAdapter } from '@adhd/sox-store-adapter';
 import { openDb } from './db.js';
+import { openLegacyDb } from './testing/legacy-store.js';
 import { memoryGetStats } from './stats.js';
 
 
@@ -36,8 +37,23 @@ function tmpDir(): { dir: string; cleanup: () => void } {
   return { dir, cleanup: () => fs.rmSync(dir, { recursive: true, force: true }) };
 }
 
+/**
+ * A deliberate scheduling gap in front of every seed insert (BL-429).
+ *
+ * The six call sites below were originally bare — `seedGood(db, …)` with no
+ * `await` on an `async` helper — and the exact-count assertions passed only
+ * because the inserts happened to settle before `memoryGetStats` read. This
+ * yield makes that ordering a *tested* property instead of an accident: drop
+ * any `await` and the enclosing `it` reads a store with fewer rows than it
+ * asserts, deterministically, rather than one flaky run in N.
+ */
+async function yieldBeforeSeed(): Promise<void> {
+  await new Promise<void>((resolve) => setTimeout(resolve, 5));
+}
+
 /** Insert a well-formed episode. */
 async function seedGood(db: StoreAdapter, content: string): Promise<void> {
+  await yieldBeforeSeed();
   const uid = `ok-${Math.random().toString(36).slice(2)}`;
   const now = new Date().toISOString();
   await db.executeRun(`INSERT INTO node (uid, kind, content, tags, topic, summary, project_path, enrich_ver, t_created, t_valid)
@@ -50,6 +66,7 @@ async function seedGood(db: StoreAdapter, content: string): Promise<void> {
  * json_each touching it aborts the statement.
  */
 async function seedMalformed(db: StoreAdapter, column: 'tags' | 'enrich_ver' | 'meta'): Promise<void> {
+  await yieldBeforeSeed();
   const uid = `bad-${column}-${Math.random().toString(36).slice(2)}`;
   const now = new Date().toISOString();
   await db.executeRun(`INSERT INTO node (uid, kind, content, ${column}, t_created, t_valid)
@@ -68,11 +85,11 @@ describe('BL-343 — memory_stats survives malformed JSON rows', () => {
     try {
       savedBackend = process.env['SOX_EMBED_BACKEND'];
       process.env['SOX_EMBED_BACKEND'] = 'auto';
-      const db = await openDb(path.join(dir, 't.db'));
+      const db = await openLegacyDb(path.join(dir, 't.db'));
       try {
-        seedGood(db, 'first good episode');
-        seedGood(db, 'second good episode');
-        seedMalformed(db, 'tags');
+        await seedGood(db, 'first good episode');
+        await seedGood(db, 'second good episode');
+        await seedMalformed(db, 'tags');
 
         // Pre-fix this rejects with "Parse error: malformed JSON".
         const result = await memoryGetStats(db, {}, ['memory_stats']);
@@ -93,10 +110,10 @@ describe('BL-343 — memory_stats survives malformed JSON rows', () => {
     try {
       savedBackend = process.env['SOX_EMBED_BACKEND'];
       process.env['SOX_EMBED_BACKEND'] = 'auto';
-      const db = await openDb(path.join(dir, 't.db'));
+      const db = await openLegacyDb(path.join(dir, 't.db'));
       try {
-        seedGood(db, 'good one');
-        seedMalformed(db, 'enrich_ver');
+        await seedGood(db, 'good one');
+        await seedMalformed(db, 'enrich_ver');
 
         const result = await memoryGetStats(db, {}, ['memory_stats']);
 
@@ -120,9 +137,9 @@ describe('BL-343 — memory_stats survives malformed JSON rows', () => {
     try {
       savedBackend = process.env['SOX_EMBED_BACKEND'];
       process.env['SOX_EMBED_BACKEND'] = 'auto';
-      const db = await openDb(path.join(dir, 't.db'));
+      const db = await openLegacyDb(path.join(dir, 't.db'));
       try {
-        seedGood(db, 'only good rows here');
+        await seedGood(db, 'only good rows here');
 
         const result = await memoryGetStats(db, {}, ['memory_stats']);
 
@@ -130,6 +147,39 @@ describe('BL-343 — memory_stats survives malformed JSON rows', () => {
         expect(result.malformed_rows.count).toBe(0);
         expect(result.malformed_rows.columns).toEqual([]);
         expect(result.malformed_rows.sample_rowids).toEqual([]);
+      } finally {
+        db.close();
+      }
+    } finally {
+      cleanup();
+    }
+  });
+});
+
+describe('BL-430 — a store created today cannot hold the BL-342 shape at all', () => {
+  it('BL-430: a NEW store rejects tags = \'\' and meta = \'\' with a CHECK constraint failure', async () => {
+    const { dir, cleanup } = tmpDir();
+    try {
+      savedBackend = process.env['SOX_EMBED_BACKEND'];
+      process.env['SOX_EMBED_BACKEND'] = 'auto';
+      // Note: openDb, NOT openLegacyDb — this is the constrained schema.
+      const db = await openDb(path.join(dir, 't.db'));
+      try {
+        for (const column of ['tags', 'meta'] as const) {
+          await expect(seedMalformed(db, column)).rejects.toThrow(/CHECK constraint failed/i);
+        }
+        // The constraint rejects the malformed shape, not JSON — and NULL,
+        // which is how "absent" is spelled, must still be writable.
+        await expect(seedGood(db, 'valid JSON tags still insert')).resolves.toBeUndefined();
+        await db.executeRun(
+          `INSERT INTO node (uid, kind, content, tags, meta, t_created, t_valid)
+             VALUES ('bl430-null', 'episode', 'null columns', NULL, NULL, ?, ?)`,
+          [new Date().toISOString(), new Date().toISOString()],
+        );
+        const row = await db.executeGet<{ n: number }>(
+          `SELECT COUNT(*) AS n FROM node WHERE tags = '' OR meta = ''`,
+        );
+        expect(Number(row?.n ?? -1)).toBe(0);
       } finally {
         db.close();
       }

@@ -87,7 +87,21 @@
  * | `fts_index_live`        | 9.3 ms              | 9.8 ms              | —                     |
  * | `btree_index_populated` | 78.5 ms             | 84 ms               | —                     |
  * | `json_column_valid`     | —                   | —                   | **262 ms**            |
+ * | `json_empty_array_null` | —                   | —                   | +0 ms (rides on it)   |
  * | **`fast` total**        | **91 ms**           | **96 ms**           | **587 ms**            |
+ *
+ * Re-measured 2026-08-05 against a fresh copy of the live store (105 MB, 10 150
+ * nodes), three warm runs each: **`fast` 428.0 / 435.3 ms** with the JSON scan,
+ * **149.1 / 153.0 / 161.8 ms** with `SOX_STORE_VERIFY_SKIP` excluding it. That
+ * ~280 ms delta is BL-431's whole subject — irrelevant to a service that pays
+ * it once per week, a real per-invocation tax on `memory-cli`. See
+ * {@link resolveSkippedProbes} for who may opt out and what may not be done
+ * instead.
+ *
+ * `json_empty_array_null` (BL-428) costs nothing measurable because it is one
+ * extra aggregate expression on the scan `json_column_valid` already performs —
+ * it does not add a pass. On the live copy it found and repaired all **86**
+ * `node.tags = '[]'` rows in **6.2 ms**.
  * | **`deep` total**        | **392 ms**          | **424 ms**          | —                     |
  *
  * `deep` adds `PRAGMA integrity_check`. Note it tracks database SIZE, not row
@@ -200,6 +214,23 @@ export interface VerifyOptions {
   depth?: VerifyDepth;
   /** Restrict to these probes. Default: all probes for the depth. */
   only?: IntegrityProbe[];
+  /**
+   * Probes to EXCLUDE (BL-431). Applied after {@link only}, so `skip` always
+   * wins. This is the supported lever for a short-lived opener that cannot
+   * afford `json_column_valid`'s whole-table scan on every invocation — it is
+   * an explicit, visible opt-out by the caller, never a weakening of the probe.
+   */
+  skip?: IntegrityProbe[];
+  /**
+   * `table.column` values whose empty JSON ARRAY (`'[]'`) means "absent" and
+   * must therefore be NULL (BL-428). Default {@link EMPTY_ARRAY_MUST_BE_NULL}.
+   *
+   * This is a declared list rather than a discovered one because emptiness is
+   * not self-describing: `[]` is valid JSON, and in another schema it could
+   * legitimately mean "explicitly cleared". Normalising it is only correct
+   * where the owning schema says the two spellings are the same thing.
+   */
+  emptyArrayIsNull?: string[];
   /** Rows sampled per FTS index for the sentinel round-trip. Default 3
    *  (first / median / last rowid — damage is usually a suffix or prefix). */
   ftsSampleSize?: number;
@@ -1067,7 +1098,30 @@ interface JsonColumnScan {
   invalid: number;
   /** Of {@link invalid}, those that are empty or whitespace — the repairable shape. */
   blank: number;
+  /** Values holding the empty JSON array `'[]'` — the BL-428 residue shape.
+   *  Counted only for columns named in {@link VerifyOptions.emptyArrayIsNull};
+   *  `null` means "not measured for this column". */
+  emptyArray: number | null;
 }
+
+/**
+ * Columns whose empty JSON array means "absent", and must therefore be NULL
+ * (BL-428).
+ *
+ * `node.tags` is the one live instance. `enrich.ts` states the contract — "an
+ * empty tags array means *no tags*, which the schema and every reader
+ * (`memory_recall`'s tags filter, etc.) represent as NULL, not `'[]'`" — and
+ * both write paths honour it today (`enrich.ts`'s
+ * `resolvedTags.length > 0 ? JSON.stringify(resolvedTags) : null` and
+ * `write.ts`'s `tagsJson`). The 86 live rows carrying `'[]'` are residue from
+ * the BL-325 window when that guard was momentarily dropped, and they make
+ * every `tags IS NOT NULL` reader — `with_tags`, `memory_recall`'s tags filter
+ * — disagree with the schema's own stated meaning.
+ *
+ * The write-side guard prevents new ones; it cannot retire the old ones. This
+ * is how the store heals itself instead of waiting for hand-run DDL.
+ */
+export const EMPTY_ARRAY_MUST_BE_NULL: readonly string[] = ['node.tags'];
 
 /** Real, non-internal, non-virtual tables. Virtual tables (vec0, fts5) are
  *  excluded: scanning them is either meaningless or actively unsafe. */
@@ -1123,6 +1177,7 @@ const JSON_CLASSIFY_SAMPLE_ROWS = 2000;
 async function scanTableJsonColumns(
   adapter: StoreAdapter,
   table: string,
+  emptyArrayColumns: readonly string[] = [],
 ): Promise<JsonColumnScan[] | null> {
   let columns: string[];
   try {
@@ -1192,6 +1247,13 @@ async function scanTableJsonColumns(
         `SUM(CASE WHEN ${c} IS NOT NULL AND NOT json_valid(${c}) THEN 1 ELSE 0 END) AS i${cand.index}`,
         `SUM(CASE WHEN ${c} IS NOT NULL AND NOT json_valid(${c}) AND trim(${c}) = '' THEN 1 ELSE 0 END) AS b${cand.index}`,
       );
+      // BL-428 rides along on the scan that is already happening: one extra
+      // aggregate expression on the declared columns only, no extra pass.
+      if (emptyArrayColumns.includes(cand.column)) {
+        validateExprs.push(
+          `SUM(CASE WHEN ${c} IS NOT NULL AND trim(${c}) = '[]' THEN 1 ELSE 0 END) AS e${cand.index}`,
+        );
+      }
     }
   }
 
@@ -1223,6 +1285,9 @@ async function scanTableJsonColumns(
         jsonShaped,
         invalid: Number(validate[`i${cand.index}`] ?? 0),
         blank: Number(validate[`b${cand.index}`] ?? 0),
+        emptyArray: emptyArrayColumns.includes(cand.column)
+          ? Number(validate[`e${cand.index}`] ?? 0)
+          : null,
       });
       continue;
     }
@@ -1234,6 +1299,11 @@ async function scanTableJsonColumns(
       `SUM(CASE WHEN ${c} IS NOT NULL AND NOT json_valid(${c}) THEN 1 ELSE 0 END) AS i${cand.index}`,
       `SUM(CASE WHEN ${c} IS NOT NULL AND NOT json_valid(${c}) AND trim(${c}) = '' THEN 1 ELSE 0 END) AS b${cand.index}`,
     );
+    if (emptyArrayColumns.includes(cand.column)) {
+      lateExprs.push(
+        `SUM(CASE WHEN ${c} IS NOT NULL AND trim(${c}) = '[]' THEN 1 ELSE 0 END) AS e${cand.index}`,
+      );
+    }
   }
 
   if (late.length > 0) {
@@ -1250,6 +1320,9 @@ async function scanTableJsonColumns(
             jsonShaped: Number(lateRow[`s${l.index}`] ?? 0),
             invalid: Number(lateRow[`i${l.index}`] ?? 0),
             blank: Number(lateRow[`b${l.index}`] ?? 0),
+            emptyArray: emptyArrayColumns.includes(l.column)
+              ? Number(lateRow[`e${l.index}`] ?? 0)
+              : null,
           });
         }
       }
@@ -1298,7 +1371,20 @@ async function sampleMalformedRowids(
  * content, and silently discarding it would be a worse defect than the one
  * being fixed. Those are reported as damaged and left for a human.
  */
-export async function probeJsonColumns(adapter: StoreAdapter): Promise<IntegrityFinding[]> {
+export async function probeJsonColumns(
+  adapter: StoreAdapter,
+  opts?: {
+    /** Emit `json_column_valid` findings. Default true. */
+    validity?: boolean;
+    /** Emit `json_empty_array_null` findings (BL-428). Default true. */
+    emptyArray?: boolean;
+    /** `table.column` targets for the empty-array rule. */
+    emptyArrayIsNull?: readonly string[];
+  },
+): Promise<IntegrityFinding[]> {
+  const wantValidity = opts?.validity !== false;
+  const wantEmptyArray = opts?.emptyArray !== false;
+  const emptyArrayTargets = opts?.emptyArrayIsNull ?? EMPTY_ARRAY_MUST_BE_NULL;
   const findings: IntegrityFinding[] = [];
   let tables: string[];
   try {
@@ -1308,7 +1394,12 @@ export async function probeJsonColumns(adapter: StoreAdapter): Promise<Integrity
   }
 
   for (const table of tables) {
-    const scans = await scanTableJsonColumns(adapter, table);
+    const emptyArrayColumns = wantEmptyArray
+      ? emptyArrayTargets
+          .filter((t) => t.slice(0, t.indexOf('.')) === table)
+          .map((t) => t.slice(t.indexOf('.') + 1))
+      : [];
+    const scans = await scanTableJsonColumns(adapter, table, emptyArrayColumns);
     if (scans === null) {
       findings.push({
         probe: 'json_column_valid',
@@ -1323,6 +1414,38 @@ export async function probeJsonColumns(adapter: StoreAdapter): Promise<Integrity
     }
     for (const scan of scans) {
       if (!isJsonTypedColumn(scan)) continue;
+
+      // BL-428: the empty-array rule is independent of json_valid — `'[]'` IS
+      // valid JSON, which is exactly why the BL-342 probe passes it and why
+      // these 86 rows survived every sweep that looked for malformed values.
+      if (scan.emptyArray !== null) {
+        findings.push(
+          scan.emptyArray === 0
+            ? {
+                probe: 'json_empty_array_null',
+                object: `${scan.table}.${scan.column}`,
+                status: 'ok',
+                detail: `0 of ${scan.nonNull} non-NULL values hold the empty JSON array '[]'.`,
+                repairable: false,
+                backlog: 'BL-428',
+                probeValidated: true,
+              }
+            : {
+                probe: 'json_empty_array_null',
+                object: `${scan.table}.${scan.column}`,
+                status: 'damaged',
+                detail:
+                  `${scan.emptyArray} of ${scan.nonNull} non-NULL values hold the empty JSON ` +
+                  `array '[]' where the schema spells "absent" as NULL. They are valid JSON, so ` +
+                  `json_valid() passes them, and every "IS NOT NULL" reader counts them.`,
+                repairable: true,
+                backlog: 'BL-428',
+                probeValidated: true,
+              },
+        );
+      }
+
+      if (!wantValidity) continue;
       if (scan.invalid === 0) {
         findings.push({
           probe: 'json_column_valid',
@@ -1374,6 +1497,29 @@ async function repairJsonColumn(adapter: StoreAdapter, object: string): Promise<
   const column = object.slice(dot + 1).replace(/"/g, '""');
   const res = await adapter.executeRun(
     `UPDATE "${table}" SET "${column}" = NULL WHERE "${column}" IS NOT NULL AND NOT json_valid("${column}") AND trim("${column}") = ''`,
+  );
+  return Number(res?.rowsAffected ?? 0);
+}
+
+/**
+ * Normalise the empty JSON arrays in one column to NULL (BL-428).
+ *
+ * Scoped by the literal `trim(col) = '[]'`. An empty array carries no
+ * information by construction, so this cannot destroy content — and the
+ * predicate is exact rather than semantic (`json_array_length(col) = 0`) so it
+ * can never widen to a non-empty array through a parser difference.
+ *
+ * The returned `rowsAffected` is the authoritative count: the probe's number is
+ * read before the update and the store is live, so the repair reports what it
+ * actually changed rather than what it expected to.
+ */
+async function repairEmptyArrayColumn(adapter: StoreAdapter, object: string): Promise<number> {
+  const dot = object.indexOf('.');
+  if (dot <= 0) throw new Error(`json_empty_array_null finding object "${object}" is not table.column`);
+  const table = object.slice(0, dot).replace(/"/g, '""');
+  const column = object.slice(dot + 1).replace(/"/g, '""');
+  const res = await adapter.executeRun(
+    `UPDATE "${table}" SET "${column}" = NULL WHERE "${column}" IS NOT NULL AND trim("${column}") = '[]'`,
   );
   return Number(res?.rowsAffected ?? 0);
 }
@@ -1503,7 +1649,8 @@ export async function verifyStoreIntegrity(
 ): Promise<IntegrityReport> {
   const started = performance.now();
   const depth: VerifyDepth = opts?.depth ?? 'fast';
-  const wanted = (p: IntegrityProbe): boolean => !opts?.only || opts.only.includes(p);
+  const wanted = (p: IntegrityProbe): boolean =>
+    (!opts?.only || opts.only.includes(p)) && !(opts?.skip ?? []).includes(p);
   const findings: IntegrityFinding[] = [];
 
   if (wanted('wal_identity')) {
@@ -1513,9 +1660,36 @@ export async function verifyStoreIntegrity(
   if (wanted('adapter_meta_unique')) findings.push(...(await probeAdapterMetaUnique(adapter)));
   if (wanted('btree_index_populated')) findings.push(...(await probeBtreeIndexes(adapter)));
   if (wanted('fts_index_live')) findings.push(...(await probeFtsIndexes(adapter, opts?.ftsSampleSize ?? 3)));
-  if (wanted('json_column_valid')) findings.push(...(await probeJsonColumns(adapter)));
+  // One scan serves both JSON probes — `json_empty_array_null` (BL-428) rides
+  // on the aggregate `json_column_valid` (BL-342) already runs. Skipping one
+  // does not pay for the other.
+  if (wanted('json_column_valid') || wanted('json_empty_array_null')) {
+    const jsonOpts: Parameters<typeof probeJsonColumns>[1] = {
+      validity: wanted('json_column_valid'),
+      emptyArray: wanted('json_empty_array_null'),
+    };
+    if (opts?.emptyArrayIsNull) jsonOpts.emptyArrayIsNull = opts.emptyArrayIsNull;
+    findings.push(...(await probeJsonColumns(adapter, jsonOpts)));
+  }
   if (depth === 'deep' && wanted('pragma_integrity_check')) {
     findings.push(...(await probeIntegrityCheck(adapter)));
+  }
+
+  // A skipped probe is recorded as `unknown`, never omitted (BL-431). Omitting
+  // it would let `ok: true` mean "nothing was found broken" over a store where
+  // the most expensive probe never ran — the precise inference that let a dead
+  // FTS index read as healthy for a day.
+  for (const p of opts?.skip ?? []) {
+    if (p === 'pragma_integrity_check' && depth !== 'deep') continue;
+    findings.push({
+      probe: p,
+      object: 'main',
+      status: 'unknown',
+      detail: `Probe "${p}" was skipped by the caller (SOX_STORE_VERIFY_SKIP / VerifyOptions.skip); this store is NOT verified against it.`,
+      repairable: false,
+      backlog: 'BL-431',
+      probeValidated: false,
+    });
   }
 
   const damaged = findings.filter((f) => f.status === 'damaged');
@@ -1660,6 +1834,11 @@ export async function repairStoreIntegrity(
         case 'json_column_valid': {
           const n = await repairJsonColumn(adapter, finding.object);
           push(`normalised ${n} empty-string value(s) in "${finding.object}" to NULL`, true);
+          break;
+        }
+        case 'json_empty_array_null': {
+          const n = await repairEmptyArrayColumn(adapter, finding.object);
+          push(`normalised ${n} empty-array value(s) in "${finding.object}" to NULL`, true);
           break;
         }
         case 'fts_index_live': {
@@ -1996,6 +2175,59 @@ export function resolveVerifyDepth(uncleanShutdown: boolean): VerifyDepth | 'off
   return uncleanShutdown ? 'deep' : 'fast';
 }
 
+/** Every probe name, for validating the skip list. */
+const ALL_PROBES: readonly IntegrityProbe[] = [
+  'wal_identity',
+  'adapter_meta_unique',
+  'btree_index_populated',
+  'fts_index_live',
+  'json_column_valid',
+  'json_empty_array_null',
+  'pragma_integrity_check',
+];
+
+/**
+ * Probes the caller has opted out of, from `SOX_STORE_VERIFY_SKIP` (BL-431).
+ *
+ * **This is a scope lever, not a rigor lever.** `json_column_valid` costs
+ * **262 ms warm / 372 ms cold** on the 105 MB live store and takes the `fast`
+ * pass from ~211 ms to **470.5 ms** — measured live 2026-08-04, not projected.
+ * Against a service process that lives for days that is free; against
+ * `memory-cli` and every other short-lived open it is a per-invocation tax
+ * larger than the rest of the pass combined.
+ *
+ * The permitted response is for a **short-lived caller to opt out explicitly
+ * and visibly**:
+ *
+ * ```
+ * SOX_STORE_VERIFY_SKIP=json_column_valid,json_empty_array_null memory-cli …
+ * ```
+ *
+ * The responses that are NOT permitted, and why:
+ * - **Sampling N rows / skipping large stores / downgrading to a warning.** The
+ *   probe would then report a clean bill of health it did not earn — the
+ *   failure mode BL-352 exists to prevent.
+ * - **Moving it to `deep`.** It is in `fast` deliberately: malformed JSON
+ *   arrives from bulk-import and restore paths that bypass every write guard
+ *   (exactly how BL-342 happened), while `deep` runs only after an unclean
+ *   shutdown. A `deep`-only placement leaves a store silently excluding rows
+ *   from every JSON aggregate until an operator happens to notice.
+ *
+ * Which callers may skip: any process whose lifetime is a single command AND
+ * which is not itself a bulk-import/restore path. A long-lived service may
+ * not — it pays the cost once and it is the process most likely to be the
+ * first to see damage. An importer may not — it is the source of the shape.
+ *
+ * An unrecognised name is ignored, which means the probe still runs: a typo
+ * costs latency, never coverage.
+ */
+export function resolveSkippedProbes(): IntegrityProbe[] {
+  const raw = process.env.SOX_STORE_VERIFY_SKIP ?? '';
+  if (raw.trim() === '') return [];
+  const requested = raw.split(',').map((t) => t.trim().toLowerCase());
+  return ALL_PROBES.filter((p) => requested.includes(p));
+}
+
 /** `SOX_STORE_REPAIR=off` disables automatic repair while leaving detection on. */
 export function repairEnabled(): boolean {
   const raw = (process.env.SOX_STORE_REPAIR ?? '').toLowerCase();
@@ -2024,10 +2256,12 @@ export async function runOpenTimeIntegrity(
   if (depth === 'off') return null;
 
   try {
+    const skip = resolveSkippedProbes();
     const verifyOpts: VerifyAndRepairOptions = {
       depth,
       walBaseline: opts.walBaseline,
       verifyOnly: !repairEnabled(),
+      ...(skip.length > 0 ? { skip } : {}),
     };
     if (opts.onReport) verifyOpts.onReport = opts.onReport;
     const result = await verifyAndRepair(adapter, verifyOpts);
