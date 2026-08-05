@@ -489,7 +489,30 @@ async function cmdBackup(dbFlag: string, destFlag: string, rest: string[]): Prom
       console.log(`[backup] complete`);
       console.log(`  source:         ${result.sourcePath}`);
       console.log(`  dest:           ${result.destPath}`);
-      console.log(`  integrity:      ${result.integrityCheck}`);
+      // (BL-449) Print the structured verdict, not just the legacy string.
+      // `integrityCheck` reports what `pragma_integrity_check` said, and on a
+      // copy that could not be fully checked it genuinely did say `ok` — so
+      // printing it alone tells an operator "verified" about a backup that
+      // verified nothing. That false reassurance is the whole defect.
+      const verdict = result.integrityReport;
+      if (verdict === undefined) {
+        console.log(`  integrity:      ${result.integrityCheck} (not checked)`);
+      } else if (verdict.status === 'verified') {
+        console.log(`  integrity:      verified (${verdict.probesRun.length} probes)`);
+      } else {
+        // `damaged` never reaches here — backupStore() deletes the copy and
+        // returns E_IO. This is the `unverified` path: the backup is KEPT
+        // because nothing was found broken, but something could not be
+        // checked, and the operator has to be told which.
+        console.log(
+          `  integrity:      NOT VERIFIED — ${verdict.unknownCount} of ${verdict.probesRun.length} ` +
+            `probe(s) established nothing` +
+            (verdict.capped ? '; integrity_check output was truncated at its message cap' : ''),
+        );
+        for (const f of verdict.findings.filter((x) => x.status === 'unknown')) {
+          console.log(`                  · ${f.object}: ${f.detail}`);
+        }
+      }
       console.log(`  started_at:     ${result.startedAt}`);
       console.log(`  completed_at:   ${result.completedAt}`);
     }
