@@ -180,14 +180,15 @@ describe('ingest()', () => {
       const chunks = result.chunks!;
       expect(chunks.length).toBeGreaterThan(1);
       for (let i = 0; i < chunks.length; i++) {
-        const chunk = chunks[i];
-        expect(chunk).toBeDefined();
-        if (chunk) {
-          expect(chunk.index).toBe(i);
-          expect(chunk.content).toBeTruthy();
-          expect(chunk.contentHash).toMatch(/^[a-f0-9]{64}$/);
-          expect(chunk.charOffset).toBeGreaterThanOrEqual(0);
-        }
+        // Was `if (chunk) { ...4 assertions... }` — a noUncheckedIndexedAccess guard that
+        // also skipped every assertion in exactly the case (a hole in the array) that
+        // would have made them worth running. `i < chunks.length`, so `!` is the honest
+        // spelling: a missing element now fails here rather than passing silently.
+        const chunk = chunks[i]!;
+        expect(chunk.index).toBe(i);
+        expect(chunk.content).toBeTruthy();
+        expect(chunk.contentHash).toMatch(/^[a-f0-9]{64}$/);
+        expect(chunk.charOffset).toBeGreaterThanOrEqual(0);
       }
     });
 

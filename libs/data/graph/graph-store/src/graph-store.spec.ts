@@ -260,9 +260,11 @@ describe('supersede', () => {
     expect((await backend.getNode(oldId))!.isSuperseded).toBe(true);
     const chainEdges = await backend.getEdges({ rel: 'SUPERSEDES' });
     expect(chainEdges).toHaveLength(1);
-    // The edge must actually connect the two nodes — `newId` was previously
-    // bound and never read, so nothing checked what the chain pointed at.
-    expect([chainEdges[0]!.src, chainEdges[0]!.dst].sort()).toEqual([oldId, newId].sort());
+    // The edge must connect the two nodes DIRECTIONALLY: supersede() writes
+    // src=newId -> dst=oldId. `newId` was previously bound and never read, so nothing
+    // checked what the chain pointed at; an endpoint-SET assertion still passes with the
+    // direction reversed, and the direction is the semantics of the chain.
+    expect({ src: chainEdges[0]!.src, dst: chainEdges[0]!.dst }).toEqual({ src: newId, dst: oldId });
     await adapter.close();
   });
 

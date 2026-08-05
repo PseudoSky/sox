@@ -297,11 +297,73 @@ describe('search() with mock backend', () => {
     expect(results.length).toBeGreaterThan(0);
   });
 
+  // ── topic boost ────────────────────────────────────────────────────────────
+  // topicBoost() is applied by THIS function (fusion), never by
+  // SqliteSearchBackend.search(). Until now nothing tested it: the only test bearing
+  // its name called the backend, which has no boost code in it at all.
+  //
+  // Three candidates, not two, on purpose. Under min_max the lowest candidate
+  // normalises to exactly 0, and the boost is MULTIPLICATIVE — so in any 2-candidate
+  // set the loser is pinned at 0 and no boost can ever move it. A 2-candidate fixture
+  // would therefore assert a reordering that cannot happen regardless of the boost.
+  it('topic boost on an exact topic match reorders results above a higher-scoring candidate', async () => {
+    const backend = new MockSearchBackend([
+      { id: 1, textScore: 1.0, fields: { content: 'a', topic: 'unrelated-high' } },
+      { id: 2, textScore: 0.8, fields: { content: 'b', topic: 'python' } },
+      { id: 3, textScore: 0.0, fields: { content: 'c', topic: 'unrelated-low' } },
+    ]);
+
+    // Control: with a query text that matches NO topic, every boost is 1.0 and the
+    // raw score order stands. This is what makes the experiment below attributable.
+    const unboosted = await search(backend, { text: 'zzz-matches-no-topic' });
+    expect(unboosted.map((r) => r.id)).toEqual([1, 2, 3]);
+
+    // Experiment: query text === node 2's topic -> 2.0x, which must lift it past
+    // node 1 (0.8 * 2.0 = 1.6 > 1.0 * 1.0).
+    const boosted = await search(backend, { text: 'python' });
+    expect(boosted.map((r) => r.id)).toEqual([2, 1, 3]);
+    expect(boosted[0]!.score).toBeCloseTo(1.6, 5);
+  });
+
+  it('topic boost is 1.5x for a substring topic match and 1.0x for no match', async () => {
+    const backend = new MockSearchBackend([
+      { id: 1, textScore: 1.0, fields: { content: 'a', topic: 'python-async' } },
+      { id: 2, textScore: 0.5, fields: { content: 'b', topic: 'rust' } },
+      { id: 3, textScore: 0.0, fields: { content: 'c', topic: 'go' } },
+    ]);
+    const results = await search(backend, { text: 'python' });
+    const byId = new Map(results.map((r) => [r.id, r.score]));
+    // id 1 normalises to 1.0 and its topic CONTAINS the query -> 1.5x.
+    expect(byId.get(1)).toBeCloseTo(1.5, 5);
+    // id 2 normalises to 0.5 and its topic does not match at all -> unchanged.
+    expect(byId.get(2)).toBeCloseTo(0.5, 5);
+  });
+
+  // BL-437. Documents a real limitation rather than asserting desired behaviour: the
+  // boost is MULTIPLICATIVE and min_max maps the minimum candidate to exactly 0, so the
+  // last-placed candidate is pinned at 0 and NO boost value can lift it. If this test
+  // ever goes red because the exact-match row now outranks the other, that is the
+  // limitation being fixed — update it, do not restore the 0.
+  it('BL-437: an exact topic match on the LOWEST-scoring candidate cannot be boosted off the floor', async () => {
+    const backend = new MockSearchBackend([
+      { id: 1, textScore: 1.0, fields: { content: 'a', topic: 'unrelated' } },
+      { id: 2, textScore: 0.2, fields: { content: 'b', topic: 'python' } },
+    ]);
+    const results = await search(backend, { text: 'python' });
+    const byId = new Map(results.map((r) => [r.id, r.score]));
+    // 0.0 * 2.0 === 0.0 — the 2x exact-topic boost is inert here.
+    expect(byId.get(2)).toBe(0);
+    // ...so the topic-matching row still loses, and in ANY 2-candidate set it always will.
+    expect(results.map((r) => r.id)).toEqual([1, 2]);
+  });
+
   it('respects limit option', async () => {
+    // Deterministic scores, not Math.random(): a random fixture under a hard-cap
+    // assertion is how a real cap violation gets written off as flake.
     const largeList = Array.from({ length: 50 }, (_, i) => ({
       id: i + 1,
-      textScore: Math.random(),
-      vecScore: Math.random(),
+      textScore: (50 - i) / 50,
+      vecScore: (i + 1) / 50,
       fields: { content: `item ${i}` },
     }));
     const backend = new MockSearchBackend(largeList);
@@ -314,14 +376,17 @@ describe('search() with mock backend', () => {
   });
 
   it('defaults limit to 20', async () => {
+    // Deterministic scores, not Math.random() — see 'respects limit option'.
     const largeList = Array.from({ length: 50 }, (_, i) => ({
       id: i + 1,
-      textScore: Math.random(),
+      textScore: (50 - i) / 50,
       fields: { content: `item ${i}` },
     }));
     const backend = new MockSearchBackend(largeList);
     const results = await search(backend, { text: 'test' });
-    expect(results.length).toBeLessThanOrEqual(20);
+    // `toBeLessThanOrEqual(20)` was satisfied by a default of 1, and by zero results.
+    // 50 candidates are supplied, so the default is observable EXACTLY.
+    expect(results).toHaveLength(20);
   });
 
   it('respects normalizer option', async () => {
@@ -532,13 +597,20 @@ describe('SqliteSearchBackend integration', () => {
     expect(results.length).toBeGreaterThan(0);
   });
 
-  it('applies topic boost on exact match', async () => {
+  // NB: this deliberately no longer claims to test the topic boost. `topicBoost` is
+  // applied by the fusion `search()` function, NOT by SqliteSearchBackend.search() —
+  // so the previous version of this test, named 'applies topic boost on exact match',
+  // called a code path that contains no boost at all and could not have failed for the
+  // reason its name gave. The real boost coverage now lives in
+  // 'search() with mock backend' -> 'topic boost ... reorders'.
+  it('returns the topic-matching row for a text query, with its topic field intact', async () => {
     const id = await seedNode('Python language details', 'python', ['programming'], [1.0, 0.0, 0.0, 0.0]);
     await seedNode('Other topics for contrast', 'other', ['misc'], [0.1, 0.1, 0.1, 0.1]);
 
     const results = await backend.search({ text: 'python' }, 10);
     const pythonResult = results.find((r) => r.id === id);
     expect(pythonResult).toBeDefined();
+    expect(pythonResult!.fields.topic).toBe('python');
   });
 
   it('respects limit', async () => {
@@ -547,7 +619,9 @@ describe('SqliteSearchBackend integration', () => {
     }
 
     const results = await backend.search({ text: 'Content' }, 5);
-    expect(results.length).toBeLessThanOrEqual(5);
+    // 20 rows match; `toBeLessThanOrEqual(5)` also passed on zero results, i.e. on a
+    // backend that returned nothing at all.
+    expect(results).toHaveLength(5);
   });
 
   it('filters by topic via graph backend', async () => {
@@ -558,10 +632,17 @@ describe('SqliteSearchBackend integration', () => {
       { text: 'guide', filters: { topic: 'python' } },
       10,
     );
+    // Two holes in the previous form, both of which made this unable to fail:
+    //   1. the guard `if (r.fields.topic !== 'python')` made the assertion body
+    //      unreachable in exactly the case where the filter WORKS, so on a passing
+    //      run nothing was ever asserted;
+    //   2. with no non-empty guard, a filter that excluded *everything* — including
+    //      the row it was asked for — iterated zero times and passed.
+    // Both rows match the text 'guide', so the filter is the only thing that can
+    // exclude the rust row.
+    expect(results.map((r) => r.id)).toEqual([pyId]);
     for (const r of results) {
-      if (r.fields.topic !== 'python') {
-        expect(r.id).toBe(pyId);
-      }
+      expect(r.fields.topic).toBe('python');
     }
   });
 

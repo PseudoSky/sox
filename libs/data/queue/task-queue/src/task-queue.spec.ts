@@ -418,18 +418,44 @@ describe('fail — retry with exponential backoff', () => {
     await expect(queue.fail(id, 'again')).rejects.toBeInstanceOf(TaskPermanentlyFailedError);
   });
 
-  it('calls onDead exactly once when a task goes dead via fail()', async () => {
+  // The original spelled `freshQueue({ maxRetries: 0, defaultMaxRetries: 1, onDead })`.
+  // `maxRetries` is a per-TASK option, not a TaskQueueConfig field, so it was a runtime
+  // no-op and only `defaultMaxRetries: 1` ever took effect — the stated setup was not
+  // the setup that ran. With one retry allowed there is also no intermediate failure in
+  // the run at all, so "exactly once" was never actually exercised: a single fail() can
+  // trivially only produce one call. What the name promises is that onDead fires on the
+  // DEAD transition and on no other failure, which needs >= 2 failures to observe.
+  it('calls onDead exactly once — not on an intermediate retry, and not again after dead', async () => {
+    vi.useFakeTimers();
     const onDead = vi.fn();
-    // `maxRetries` is a per-TASK option, not a TaskQueueConfig field — passing it
-    // here was silently ignored at runtime and only `defaultMaxRetries` took effect.
-    const q2 = freshQueue({ defaultMaxRetries: 1, onDead });
-    await q2.open();
-    const { id } = await q2.enqueue({ type: 'test', payload: {} });
-    await q2.dequeue('worker-1');
-    await q2.fail(id, 'boom');
-    expect(onDead).toHaveBeenCalledTimes(1);
-    expect(onDead.mock.calls[0]?.[0]?.id).toBe(id);
-    await q2.close();
+    const q2 = freshQueue({ defaultMaxRetries: 2, onDead });
+    try {
+      await q2.open();
+      const { id } = await q2.enqueue({ type: 'test', payload: {} });
+
+      // Failure 1: retryCount 0 -> 1, still < 2, so the task re-queues and is NOT dead.
+      await q2.dequeue('worker-1');
+      await q2.fail(id, 'boom-1');
+      expect((await q2.get(id))?.dead).toBe(false);
+      expect(onDead).not.toHaveBeenCalled();
+
+      // Backoff for retryCount=0 is 2^0*1000ms.
+      vi.advanceTimersByTime(1_001);
+
+      // Failure 2: retryCount 1 -> 2, 2 >= 2 -> dead. This is the only call.
+      await q2.dequeue('worker-1');
+      await q2.fail(id, 'boom-2');
+      expect(onDead).toHaveBeenCalledTimes(1);
+      expect(onDead.mock.calls[0]?.[0]?.id).toBe(id);
+      expect(onDead.mock.calls[0]?.[0]?.dead).toBe(true);
+
+      // A further fail() on a dead task rejects and must not re-fire the callback.
+      await expect(q2.fail(id, 'boom-3')).rejects.toBeInstanceOf(TaskPermanentlyFailedError);
+      expect(onDead).toHaveBeenCalledTimes(1);
+    } finally {
+      await closeQuietly(q2);
+      vi.useRealTimers();
+    }
   });
 });
 
