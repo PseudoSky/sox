@@ -392,6 +392,115 @@ describe('backupStore — BL-385 Turso backend', () => {
   );
 });
 
+// ── BL-341 + BL-449 — the backup verdict is structured and refuses to guess ──
+//
+// `backupStore()` deletes the destination and returns E_IO on a failed check,
+// so an operator reasonably reads a returned BackupStoreResult as "this backup
+// was verified". Before this suite it could equally mean "one pragma ran and it
+// cannot see FTS damage" or "nothing ran at all".
+
+describe('backupStore — BL-341/BL-449 structured integrity verdict', () => {
+  const priorAdapterEnv = process.env['STORE_ADAPTER'];
+  beforeEach(() => {
+    process.env['STORE_ADAPTER'] = 'sqlite';
+  });
+  afterEach(() => {
+    if (priorAdapterEnv === undefined) delete process.env['STORE_ADAPTER'];
+    else process.env['STORE_ADAPTER'] = priorAdapterEnv;
+  });
+
+  it('BL-449: a healthy backup carries a `verified` verdict naming the probes it ran', async () => {
+    const { db, dbPath } = await freshDbInsideAllowlist();
+    // Enough rows, with enough distinct vocabulary, that the FTS probe can pick
+    // sentinel tokens and actually validate itself. A near-empty store cannot —
+    // see the `unverified` test below, which is that case on purpose.
+    for (let i = 0; i < 12; i++) {
+      await db.executeRun(
+        `INSERT INTO node (uid, kind, content, t_created, t_valid)
+           VALUES (?, 'episode', ?, datetime('now'), datetime('now'))`,
+        [`bl449-ok-${i}`, `episode ${i} concerning quarterly hippopotamus logistics`],
+      );
+    }
+    await db.close();
+
+    const result = await backupStore(dbPath, destPathInsideAllowlist('-bl449-ok'), {
+      log: () => undefined,
+    });
+
+    expect(isBackupStoreError(result), JSON.stringify(result)).toBe(false);
+    const ok = result as import('./backup.js').BackupStoreResult;
+    expect(
+      ok.integrityReport?.status,
+      JSON.stringify(ok.integrityReport?.findings, null, 2),
+    ).toBe('verified');
+    expect(ok.integrityReport?.capped).toBe(false);
+    expect(ok.integrityReport?.unknownCount).toBe(0);
+    // The verdict names what was checked, so "verified" is an auditable claim
+    // rather than a word. More than one probe ran — the `only:` narrowing that
+    // reduced this to a single pragma is gone.
+    expect(ok.integrityReport!.probesRun.length).toBeGreaterThan(1);
+    expect(ok.integrityReport?.probesRun).toContain('pragma_integrity_check');
+    expect(ok.integrityReport?.probesRun).toContain('fts_index_live');
+  });
+
+  it('BL-449: a store too small to sample yields `unverified` — the backup is KEPT, not certified', async () => {
+    // Discovered by this packet's own negative control: on a one-row store the
+    // FTS probe cannot find a usable sentinel token, so it establishes nothing.
+    // Two wrong answers are available and both were rejected — calling it
+    // `verified` (the old behaviour, a lie) and deleting the backup (which
+    // would leave a brand-new store with no backup at all, the BL-360
+    // non-convergence trap). It is kept, and it says it is unverified.
+    const { db, dbPath } = await freshDbInsideAllowlist();
+    await db.executeRun(`INSERT INTO node (uid, kind, content, t_created, t_valid)
+                VALUES ('bl449-tiny-1', 'episode', 'x', datetime('now'), datetime('now'))`);
+    await db.close();
+
+    const dest = destPathInsideAllowlist('-bl449-tiny');
+    const logged: string[] = [];
+    const result = await backupStore(dbPath, dest, { log: (...a) => logged.push(a.join(' ')) });
+
+    expect(isBackupStoreError(result), JSON.stringify(result)).toBe(false);
+    const ok = result as import('./backup.js').BackupStoreResult;
+    expect(ok.integrityReport?.status).toBe('unverified');
+    expect(ok.integrityReport!.unknownCount).toBeGreaterThan(0);
+    expect(ok.integrityReport?.damagedCount).toBe(0);
+    // The backup survives …
+    expect(fs.existsSync(dest)).toBe(true);
+    // … and the fact that it is unverified is impossible to miss.
+    expect(logged.some((l) => /WARNING: this backup is NOT verified/.test(l))).toBe(true);
+  });
+
+  it('BL-449: a backup whose FTS index is dead is REJECTED, not returned as a result', async () => {
+    const { db, dbPath } = await freshDbInsideAllowlist();
+    for (let i = 0; i < 12; i++) {
+      await db.executeRun(
+        `INSERT INTO node (uid, kind, content, t_created, t_valid)
+           VALUES (?, 'episode', ?, datetime('now'), datetime('now'))`,
+        [`bl449-fts-${i}`, `episode ${i} concerning quarterly hippopotamus logistics`],
+      );
+    }
+    // The BL-347 damage shape: the FTS virtual table survives, its content does
+    // not. `PRAGMA integrity_check` is green on this file — it is a
+    // structurally perfect SQLite database whose keyword search is dead.
+    await db.exec(`INSERT INTO fts_node(fts_node) VALUES('delete-all')`);
+    await db.close();
+
+    const dest = destPathInsideAllowlist('-bl449-dead-fts');
+    const result = await backupStore(dbPath, dest, { log: () => undefined });
+
+    expect(
+      isBackupStoreError(result),
+      'a backup of a store with a dead FTS index must not be returned as a success: ' +
+        JSON.stringify(result),
+    ).toBe(true);
+    const err = result as { code: string; details?: Record<string, unknown> };
+    expect(err.code).toBe('E_IO');
+    expect(err.details?.['integrity_status']).toBe('damaged');
+    // The rejected copy is deleted, so nobody restores from it later.
+    expect(fs.existsSync(dest)).toBe(false);
+  });
+});
+
 describe('isBackupStoreError', () => {
   it('identifies BackupStoreError from BackupStoreResult', () => {
     expect(isBackupStoreError({ code: 'E_IO', message: 'x', retryable: false })).toBe(true);

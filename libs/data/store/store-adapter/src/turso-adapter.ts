@@ -11,9 +11,10 @@ import {
   isStaleWalIndexError,
   recoverStaleWalIndex,
   runOpenTimeIntegrity,
+  summarizeBackupIntegrity,
   verifyStoreIntegrity,
 } from './integrity.js';
-import type { WalIdentity } from './integrity.js';
+import type { BackupIntegrityReport, WalIdentity } from './integrity.js';
 import type {
   TursoAdapter,
   AdapterTransaction,
@@ -365,33 +366,43 @@ export class TursoAdapterImpl implements TursoAdapter {
     await this.db.exec(`VACUUM INTO '${destPath.replace(/'/g, "''")}'`);
 
     let integrityCheck = 'ok';
+    let integrityReport: BackupIntegrityReport | undefined;
     if (!opts.skipIntegrityCheck) {
       // Reopen the backup with the SAME experimental flags as the source —
       // `index_method` is required to even read the FTS index the copy
       // carries. verifyStoreIntegrity's pragma_integrity_check probe already
       // filters the known permanent Turso FTS false positive
       // (`isKnownFalsePositive`), so a clean copy reports 'ok' here.
+      //
+      // (BL-449) `allowFtsInReadonly` is required now that the full probe set
+      // runs: `fts_index_live` issues `fts_match`, which Turso's native
+      // readonly connect option blocks outright (BL-391). Without it the FTS
+      // probe cannot run on the copy, and "cannot run" is exactly the state
+      // this packet exists to stop reporting as healthy.
       const backupConnectOpts: Parameters<typeof TursoAdapterImpl.connect>[0] = {
         dbPath: destPath,
         readonly: true,
+        allowFtsInReadonly: true,
       };
       if (this.config.experimental !== undefined) {
         backupConnectOpts.experimental = this.config.experimental;
       }
       const backupAdapter = await TursoAdapterImpl.connect(backupConnectOpts);
       try {
-        const report = await verifyStoreIntegrity(backupAdapter, {
-          depth: 'deep',
-          only: ['pragma_integrity_check'],
-        });
-        integrityCheck = report.ok
-          ? 'ok'
-          : report.damaged.map((f) => `${f.object}: ${f.detail}`).join('; ');
+        // (BL-449) NO `only:` narrowing — see the SqliteAdapter twin for the
+        // full reasoning. `only: ['pragma_integrity_check']` excluded every
+        // probe written after it, silently and with no trace in the report.
+        const report = await verifyStoreIntegrity(backupAdapter, { depth: 'deep' });
+        const summary = summarizeBackupIntegrity(report);
+        integrityCheck = summary.legacyString;
+        integrityReport = summary.verdict;
       } finally {
         await backupAdapter.close();
       }
     }
-    return { destPath, integrityCheck };
+    return integrityReport === undefined
+      ? { destPath, integrityCheck }
+      : { destPath, integrityCheck, integrityReport };
   }
 
   /** (BL-391) Throws if this adapter was opened `readonly: true,

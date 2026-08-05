@@ -173,6 +173,17 @@ export interface IntegrityFinding {
   /** True when the probe demonstrably exercised the artifact (the negative
    *  control). `false` forces `status: 'unknown'`. */
   probeValidated: boolean;
+  /**
+   * (BL-341) True when the probe's own output was TRUNCATED by the backend and
+   * therefore describes an unknown subset of the store — `PRAGMA
+   * integrity_check` caps at 100 messages, so "100 issues" means "at least
+   * 100" and "0 real issues out of 100 messages" means nothing at all.
+   *
+   * This is a structural signal precisely so that a caller composing a verdict
+   * (see {@link summarizeBackupIntegrity}) never has to parse it back out of
+   * {@link detail}. Absent/`false` on every probe that cannot truncate.
+   */
+  truncated?: boolean;
 }
 
 export interface IntegrityReport {
@@ -1535,6 +1546,16 @@ async function repairEmptyArrayColumn(adapter: StoreAdapter, object: string): Pr
  * Filtering it here is why {@link probeFtsIndexes} has to exist as the real
  * FTS check.
  */
+/**
+ * SQLite's (and Turso's) documented hard cap on `PRAGMA integrity_check`
+ * output. Counted against the RAW message list, BEFORE any filtering —
+ * truncation is a property of the pragma's output, not of the damage set.
+ * Filtering first would make a fully-truncated run look uncapped precisely
+ * when filterable noise is what filled it, which is the live shape (45 leaked
+ * pages measured on a copy of the production store, 2026-07-31).
+ */
+export const INTEGRITY_CHECK_MESSAGE_CAP = 100;
+
 export function isKnownFalsePositive(message: string): boolean {
   return /wrong # of entries in index __turso_internal_fts_dir_.*_key/i.test(message);
 }
@@ -1586,7 +1607,7 @@ export async function probeIntegrityCheck(adapter: StoreAdapter): Promise<Integr
   // the same way BL-360's unconditional Tantivy message would.
   const leakedPages = notFalsePositive.filter((m) => /^Page\s+\d+/i.test(m));
   const real = notFalsePositive.filter((m) => !/^Page\s+\d+/i.test(m));
-  const capped = messages.length >= 100;
+  const capped = messages.length >= INTEGRITY_CHECK_MESSAGE_CAP;
   const pageNote =
     leakedPages.length === 0
       ? ''
@@ -1595,6 +1616,39 @@ export async function probeIntegrityCheck(adapter: StoreAdapter): Promise<Integr
 
   if (real.length === 0) {
     const filtered = messages.length - real.length - leakedPages.length;
+    // (BL-341) "No real damage among 100 messages" is NOT a clean bill of
+    // health — it is the absence of a bill. The cap is a property of the
+    // pragma's OUTPUT, not of the damage set, so a fully-truncated run whose
+    // visible messages all happen to be filterable (BL-360's unconditional
+    // Tantivy message, leaked free pages) tells us nothing about the messages
+    // that were never emitted. Reporting `ok` here is the exact shape that
+    // certified a backup clean over truncated output.
+    //
+    // `unknown` already carries this meaning verbatim (see IntegrityStatus:
+    // "could not be shown to have exercised the artifact… NEVER treated as
+    // healthy"), and it deliberately does not enter `IntegrityReport.ok`, so
+    // existing callers reading `.ok` are unaffected — only callers that read
+    // `unknown`, as a backup verdict must, change behaviour.
+    if (capped) {
+      return [
+        {
+          probe: 'pragma_integrity_check',
+          object: 'main',
+          status: 'unknown',
+          detail:
+            `integrity_check output hit the ${INTEGRITY_CHECK_MESSAGE_CAP}-message cap ` +
+            `(${messages.length} message(s) seen) and no un-filtered damage remained after ` +
+            `discarding ${filtered} known Turso FTS false positive(s) and ${leakedPages.length} ` +
+            `page-accounting message(s). Truncated output cannot show the store is clean — the ` +
+            `messages past the cap were never emitted. Re-run after an offline VACUUM to clear ` +
+            `the noise that filled the cap.` + pageNote,
+          repairable: false,
+          backlog: 'BL-341',
+          probeValidated: false,
+          truncated: true,
+        },
+      ];
+    }
     return [
       {
         probe: 'pragma_integrity_check',
@@ -1608,6 +1662,7 @@ export async function probeIntegrityCheck(adapter: StoreAdapter): Promise<Integr
         repairable: false,
         backlog: 'BL-341',
         probeValidated: true,
+        truncated: false,
       },
     ];
   }
@@ -1628,12 +1683,15 @@ export async function probeIntegrityCheck(adapter: StoreAdapter): Promise<Integr
     status: 'damaged' as const,
     detail:
       `integrity_check reported ${msgs.length} issue(s) against "${object}"` +
-      (capped ? ' (output hit the 100-message cap — the true count is higher)' : '') +
+      (capped
+        ? ` (output hit the ${INTEGRITY_CHECK_MESSAGE_CAP}-message cap — the true count is higher)`
+        : '') +
       `: ${msgs.slice(0, 3).join('; ')}${msgs.length > 3 ? ' …' : ''}` +
       pageNote,
     repairable: !isInternalObject(object) && object !== 'main',
     backlog: 'BL-341',
     probeValidated: true,
+    truncated: capped,
   }));
 }
 
@@ -1705,6 +1763,105 @@ export async function verifyStoreIntegrity(
     damaged,
     unknown,
   };
+}
+
+// ── Backup verdict (BL-341, BL-449) ──────────────────────────────────────────
+
+/**
+ * What a post-`VACUUM INTO` integrity run actually established about the copy.
+ *
+ * The three values are NOT a severity ladder — they are three different
+ * epistemic states that the old `integrityCheck: 'ok' | <prose>` string could
+ * not tell apart:
+ *
+ * - `verified`   — every requested probe ran, was validated, and found nothing.
+ * - `damaged`    — a probe interrogated the copy and found it broken.
+ * - `unverified` — one or more probes could not be run, could not be shown to
+ *                  have exercised the artifact, or were truncated. **Nothing
+ *                  is known.** This is not a weaker `verified`; it is the
+ *                  absence of a check, and it is never reported as healthy.
+ */
+export type BackupVerificationStatus = 'verified' | 'damaged' | 'unverified';
+
+/**
+ * (BL-341, BL-449) The structured verdict carried alongside the legacy
+ * `integrityCheck` string on `AdapterBackupResult` / `BackupStoreResult`.
+ *
+ * It exists so a caller never has to parse prose to learn whether the backup
+ * it is holding was verified. `integrityCheck` remains populated for
+ * compatibility, but this field is the contract.
+ */
+export interface BackupIntegrityReport {
+  /** @see BackupVerificationStatus */
+  status: BackupVerificationStatus;
+  /**
+   * `IntegrityReport.ok` verbatim — "no probe found damage". Deliberately NOT
+   * the same question as `status === 'verified'`: `ok` is true when nothing
+   * ran at all. Read {@link status}, not this, to decide whether to trust the
+   * copy.
+   */
+  ok: boolean;
+  /** True when any probe's output was truncated by the backend (BL-341). */
+  capped: boolean;
+  /** Findings with `status: 'damaged'`. */
+  damagedCount: number;
+  /** Findings with `status: 'unknown'` — each one is a probe that did not
+   *  establish anything. Non-zero forces `status: 'unverified'` (BL-449). */
+  unknownCount: number;
+  /** Every probe that contributed a finding, deduped — so an operator can see
+   *  what the copy was and was NOT checked against. */
+  probesRun: IntegrityProbe[];
+  /** The full finding list, unfiltered. */
+  findings: IntegrityFinding[];
+  /** Wall time of the verification run against the backup copy. */
+  durationMs: number;
+}
+
+/**
+ * Collapse a verification run over a backup copy into the verdict above, and
+ * the compatibility string that goes on `integrityCheck`.
+ *
+ * `damaged` outranks `unverified`: a copy known to be broken is a more
+ * actionable statement than a copy that is partly unchecked, and the caller
+ * deletes it either way.
+ */
+export function summarizeBackupIntegrity(report: IntegrityReport): {
+  verdict: BackupIntegrityReport;
+  /** Legacy `integrityCheck` value: `'ok'` iff `status === 'verified'`. */
+  legacyString: string;
+} {
+  const capped = report.findings.some((f) => f.truncated === true);
+  const status: BackupVerificationStatus =
+    report.damaged.length > 0 ? 'damaged' : report.unknown.length > 0 ? 'unverified' : 'verified';
+
+  const verdict: BackupIntegrityReport = {
+    status,
+    ok: report.ok,
+    capped,
+    damagedCount: report.damaged.length,
+    unknownCount: report.unknown.length,
+    probesRun: [...new Set(report.findings.map((f) => f.probe))],
+    findings: report.findings,
+    durationMs: report.durationMs,
+  };
+
+  // The legacy string keeps its EXACT pre-existing semantics — `'ok'` iff no
+  // probe found damage — because it is the compatibility surface and callers
+  // still compare it to `'ok'`. Every genuinely new distinction lives in
+  // `verdict`, which is the point of the field.
+  //
+  // In particular `'unverified'` still stringifies as `'ok'`. That is not an
+  // oversight: an `unverified` copy is one where nothing was found broken but
+  // something could not be checked (e.g. a store too small to yield an FTS
+  // sentinel row), and promoting it to a hard failure would make small and
+  // noisy stores permanently unbackupable — BL-360's non-convergence trap.
+  // Callers that must not act on an unchecked copy read `verdict.status`.
+  const legacyString =
+    report.damaged.length === 0
+      ? 'ok'
+      : report.damaged.map((f) => `${f.object}: ${f.detail}`).join('; ');
+
+  return { verdict, legacyString };
 }
 
 // ── Repairs ──────────────────────────────────────────────────────────────────

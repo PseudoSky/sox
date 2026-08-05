@@ -38,7 +38,7 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import type { StorageError } from './errors.js';
 import { expandDbPath } from './db.js';
-import type { StoreAdapter } from '@adhd/sox-store-adapter';
+import type { BackupIntegrityReport, StoreAdapter } from '@adhd/sox-store-adapter';
 
 // ── Public types ──────────────────────────────────────────────────────────────
 
@@ -64,8 +64,24 @@ export interface BackupStoreResult {
   startedAt: string;
   /** ISO timestamp at completion. */
   completedAt: string;
-  /** Result of PRAGMA integrity_check: 'ok' on success. */
+  /**
+   * Result of the post-backup integrity verification: 'ok' on success.
+   *
+   * **Prefer {@link integrityReport}.** This string collapses "verified
+   * clean" and "not verified at all" onto the same value (BL-449) and is kept
+   * only for compatibility with existing callers.
+   */
   integrityCheck: string;
+  /**
+   * (BL-341, BL-449) The structured verdict from the backup copy's
+   * verification run: `status` distinguishes `verified` / `damaged` /
+   * `unverified`, `capped` reports whether the backend truncated its own
+   * output, and `probesRun` says what the copy was actually checked against.
+   *
+   * Absent only when `skipIntegrityCheck` was set — nothing was checked, so
+   * there is no verdict.
+   */
+  integrityReport?: BackupIntegrityReport;
 }
 
 export type BackupStoreError = StorageError & { code: 'E_IO' | 'E_ALLOWLIST' };
@@ -192,7 +208,23 @@ export async function backupStore(
     const result = await srcAdapter.backupTo(resolvedDst, { skipIntegrityCheck });
     log(`[backup] VACUUM INTO complete`);
 
-    if (!skipIntegrityCheck && result.integrityCheck !== 'ok') {
+    // (BL-449) The reject rule is UNCHANGED — a backup is destroyed only when a
+    // probe actually found the copy damaged. What changed is how much can now
+    // be found: the copy is checked by every deep probe instead of one pragma
+    // that cannot read an FTS index, so a dead `idx_fts_node` lands here rather
+    // than sailing through as 'ok'.
+    //
+    // `unverified` deliberately does NOT delete the backup. Nothing was found
+    // broken; something merely could not be checked (a store too small to yield
+    // an FTS sentinel row, or an `integrity_check` truncated at its message cap
+    // by filterable noise). Failing there would make small and noisy stores
+    // permanently unbackupable, which is the non-convergence trap BL-360
+    // documents. It is reported instead — loudly, in the log and in the
+    // returned `integrityReport` — so it can never be mistaken for verified.
+    const verdict = result.integrityReport;
+    const damaged =
+      verdict !== undefined ? verdict.status === 'damaged' : result.integrityCheck !== 'ok';
+    if (!skipIntegrityCheck && damaged) {
       // Integrity failed — delete the corrupt backup and return E_IO, naming
       // the backend so an operator does not chase corruption on a healthy
       // store just because a different driver misread it (BL-385).
@@ -201,19 +233,52 @@ export async function backupStore(
         code: 'E_IO',
         message: `Backup integrity check failed on ${backend} backend: ${result.integrityCheck}. Backup file deleted.`,
         retryable: false,
-        details: { integrity_check: result.integrityCheck, backend },
+        details: {
+          integrity_check: result.integrityCheck,
+          backend,
+          ...(verdict === undefined
+            ? {}
+            : {
+                integrity_status: verdict.status,
+                integrity_capped: verdict.capped,
+                integrity_unknown_count: verdict.unknownCount,
+                integrity_damaged_count: verdict.damagedCount,
+                integrity_probes_run: verdict.probesRun,
+              }),
+        },
       };
     }
-    log(`[backup] integrity_check: ${result.integrityCheck}`);
+    log(
+      `[backup] integrity: ${verdict?.status ?? result.integrityCheck}` +
+        (verdict === undefined
+          ? ''
+          : ` (probes: ${verdict.probesRun.join(', ')}${verdict.capped ? '; output capped' : ''})`),
+    );
+    if (verdict?.status === 'unverified') {
+      // Never let this pass silently: the backup is KEPT, so the only thing
+      // standing between an operator and a false sense of safety is this line
+      // and the `integrityReport` on the returned result.
+      log(
+        `[backup] WARNING: this backup is NOT verified — ${verdict.unknownCount} probe(s) could ` +
+          `not establish anything` +
+          (verdict.capped ? ', and integrity_check output was truncated at its message cap' : '') +
+          `: ${verdict.findings
+            .filter((f) => f.status === 'unknown')
+            .map((f) => `${f.object}: ${f.detail}`)
+            .join('; ')}`,
+      );
+    }
 
     const completedAt = new Date().toISOString();
-    return {
+    const out: BackupStoreResult = {
       sourcePath: resolvedSrc,
       destPath: resolvedDst,
       startedAt,
       completedAt,
       integrityCheck: result.integrityCheck,
     };
+    if (verdict !== undefined) out.integrityReport = verdict;
+    return out;
   } catch (err) {
     // Clean up a partial dest file if it was created.
     try { if (fs.existsSync(resolvedDst)) fs.unlinkSync(resolvedDst); } catch { /* ignore */ }
