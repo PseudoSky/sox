@@ -255,6 +255,19 @@ export interface RepairOptions {
   /** Re-verify after repairing. Default true — a repair that is not verified
    *  is exactly the failure mode BL-347 shipped. */
   verify?: boolean;
+  /**
+   * (BL-379) Baseline WAL identity, forwarded to the post-repair
+   * re-verification.
+   *
+   * `probeWalIdentity` has no input of its own — without a baseline it returns
+   * `null` and the finding is simply never pushed, so `wal_identity` used to
+   * contribute **nothing** to any post-repair report, silently. Repair does
+   * real work (an FTS rebuild took 982 ms on the live store), and a WAL
+   * unlinked during that window was invisible to the verification that
+   * immediately followed it. Forwarding the baseline is what makes the reverify
+   * able to see it — the same "wired but silent" shape as BL-374/BL-368.
+   */
+  walBaseline?: WalIdentity | null;
 }
 
 // ── Stale WAL-index sidecar recovery (BL-373) ────────────────────────────────
@@ -2014,10 +2027,17 @@ export async function repairStoreIntegrity(
     }
   }
 
+  // (BL-379) The baseline travels into the reverify. Without it
+  // `probeWalIdentity` returns null and the finding is never pushed, so a WAL
+  // unlinked DURING this repair pass would be omitted from the report rather
+  // than reported — "silently absent" is not an outcome this surface may have.
   const verified =
     opts?.verify === false
       ? null
-      : await verifyStoreIntegrity(adapter, { depth: report.depth });
+      : await verifyStoreIntegrity(adapter, {
+          depth: report.depth,
+          walBaseline: opts?.walBaseline ?? null,
+        });
 
   return {
     ok: actions.every((a) => a.ok) && (verified === null || verified.damaged.length === 0),
@@ -2061,7 +2081,12 @@ export async function verifyAndRepair(
     return { verify, repair: null };
   }
 
-  const repair = await repairStoreIntegrity(adapter, verify);
+  // (BL-379) `verifyAndRepair` is the only caller that already holds the
+  // baseline, so it is the one place a forgotten hand-off would silence the
+  // probe on the open path itself.
+  const repair = await repairStoreIntegrity(adapter, verify, {
+    walBaseline: opts?.walBaseline ?? null,
+  });
   for (const a of repair.actions) {
     opts?.onReport?.(
       a.ok ? 'repaired' : 'repair_failed',
