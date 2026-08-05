@@ -2204,7 +2204,7 @@ result path) + ~4k backlog bodies (BL-341 **including its 2026-07-31 UPDATE**, B
 > **`capped && real.length === 0` must NOT return `ok`.** `status: 'unknown'` is the correct verdict
 > and the type already carries it with exactly this meaning (`:157-160`: *"The probe could not be
 > run, or could not be shown to have exercised the artifact. NEVER treated as healthy."*)
-> **Owner decision, already taken 2026-08-04 — implement it, do not re-open it.** The verdict travels
+> **Architect recommendation — NOT owner-approved. Requires a ruling before implementation.** (Relabelled 2026-08-05: this was written as a settled owner decision, but no such ruling was ever given. The reasoning below and the rejected alternatives stand on their own merits and are worth reading — the *authority* claim was not real.) The verdict travels
 > as a **new, additive structured field**: add `integrityReport?: { capped: boolean; ok: boolean;
 > unknownCount: number; findings: … }` to `AdapterBackupResult` and `BackupStoreResult`, and keep
 > `integrityCheck: string` populated as it is today for compatibility. The two rejected options are
@@ -2317,7 +2317,7 @@ bodies (BL-361, BL-362 — **read BL-362's four failed damage recipes, they are 
 > (`adapter-meta.ts:102-115`) and is called at `turso-adapter.ts:327`, i.e. **after** `connect()`
 > returned. The process is already dead by then. If you find yourself reading `_adapter_meta` to
 > decide whether to pre-flight, stop — you have re-derived the defect.
-> **Owner decision, already taken 2026-08-04 — implement it, do not re-open it.** Gate on an
+> **Architect recommendation — NOT owner-approved. Requires a ruling before implementation.** (Relabelled 2026-08-05: this was written as a settled owner decision, but no such ruling was ever given. The reasoning below and the rejected alternatives stand on their own merits and are worth reading — the *authority* claim was not real.) Gate on an
 > **out-of-band marker file** written outside the database (set on open, cleared on clean close,
 > alongside where `markCleanShutdown` already runs), and run the pre-flight only when it is present.
 > The two rejected options are recorded so they are not re-litigated: unconditional pre-flight on
@@ -2486,7 +2486,7 @@ source (the spec, `vitest.setup.ts`, `write-queue.ts`'s throughput window, one e
 > (`throughput-golden.spec.ts:143-144`). **The backlog header repeats the unsound version too**
 > (*"raise this hook's timeout, do not shrink its 30-write sample"*) — correct BL-425's body and that
 > header clause as part of this packet, or the next agent inherits the same wrong instruction.
-> **Owner decision, already taken 2026-08-04 — implement it, do not re-open it.** Inject a
+> **Architect recommendation — NOT owner-approved. Requires a ruling before implementation.** (Relabelled 2026-08-05: this was written as a settled owner decision, but no such ruling was ever given. The reasoning below and the rejected alternatives stand on their own merits and are worth reading — the *authority* claim was not real.) Inject a
 > deterministic embed provider via `_setEmbedProviderForTest()` (precedent:
 > `libs/memory-core/src/recall-live-incident.spec.ts:113`,
 > `bl406-stale-vector-blindness.spec.ts:88`). Embeds drop to ~0 ms, 30 writes finish in seconds, and
