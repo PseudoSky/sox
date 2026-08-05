@@ -21,11 +21,11 @@ A packet is **DONE** only when every BL id it targets is closed — code landing
 (BL-225). Several packets below have merged code and still read OPEN; that is correct, and the
 remedy is to close the backlog item with a red→green test, not to edit this table.
 
-**18 done · 3 partial · 42 open** of 63 packets.
+**18 done · 3 partial · 45 open** of 66 packets.
 
-- Open backlog items in this program's scope: **61**, of which **10** have no packet.
+- Open backlog items in this program's scope: **61**, of which **9** have no packet.
 - Open items deliberately out of scope: **28** — BL-99, BL-103, BL-104, BL-105, BL-163, BL-225, BL-228, BL-258, BL-261, BL-282, BL-283, BL-284, BL-285, BL-288, BL-291, BL-292, BL-296, BL-298, BL-305, BL-306, BL-307, BL-308, BL-309, BL-314, BL-315, BL-333, BL-355, BL-408
-- Unscheduled in-scope items (need a packet): BL-416, BL-424, BL-425, BL-426, BL-432, BL-435, BL-436, BL-437, BL-445, BL-446
+- Unscheduled in-scope items (need a packet): BL-416, BL-424, BL-425, BL-426, BL-432, BL-435, BL-436, BL-437, BL-446
 - Packet targets already closed (21) — historical context only, no work remains: BL-259, BL-329, BL-343, BL-348, BL-350, BL-359, BL-364, BL-376, BL-380, BL-383, BL-388, BL-390, BL-391, BL-397, BL-399, BL-402, BL-405, BL-406, BL-407, BL-410, BL-412
 
 | Packet | Status | Targets | Still open |
@@ -93,6 +93,9 @@ remedy is to close the backlog item with a red→green test, not to edit this ta
 | PKT-61 | **OPEN** | BL-442 | BL-442 |
 | PKT-62 | **OPEN** | BL-443 | BL-443 |
 | PKT-63 | **OPEN** | BL-444 | BL-444 |
+| PKT-64 | **OPEN** | BL-445 | BL-445 |
+| PKT-65 | **OPEN** | BL-394 | BL-394 |
+| PKT-66 | **OPEN** | BL-274 | BL-274 |
 
 <!-- PLAN-STATUS:END -->
 
@@ -892,7 +895,7 @@ rewritten, only unblocked.
 **Goal:** `ix_node_kind` is real, live in three code paths (index.ts:105, :226, :319) and populated 10,150/10,150 on the live store — and **no external consumer can reach it.** The sanctioned path is `kind:'generic'` + a sub-kind in `tags`/`meta`, and neither column carries an index of any kind; `fts_node` covers `content, name, summary` only (index.ts:79-82). The query shape is unindexable in principle: every tag filter is a correlated `EXISTS (SELECT 1 FROM json_each(n.tags) WHERE value = ?)` (index.ts:678,683; memory-filters.ts:101,108; recall.ts:445,451), and `json_each` is a table-valued function over a TEXT blob SQLite cannot serve from an index. So the library's six kinds answer "give me all X" from a btree and every consumer gets a full scan.
 **Closes:** BL-439
 **Files:** `libs/data/graph/graph-store/src/index.ts` (node DDL ~:62 and :181, `NODE_INDEX_DDLS` ~:319, `NodeMeta`/`NodeRecord`/`NodeFilter` ~:379,:398,:432, `buildNodeFilterClause` ~:655, `writeNode` ~:863), `drizzle/schema.ts` + a new migration, plus a new spec.
-**requires:** PKT-57 (BL-438)
+**requires:** PKT-57
 **sequencing:** **conflicts with FEAT-SOX-001 (Turso adapter) over `applySchema()`** — check for a live owner before editing. Must land before PKT-60 and PKT-62.
 **tier:** sonnet, ~75k tokens / ~28 turns
 **orientation:** ~35k — the design doc's §2 SQLite-safety table and BL-439's body carry every anchor. **Fixed cost.**
@@ -910,7 +913,7 @@ rewritten, only unblocked.
 **Goal:** `writeNode` validates against `DEFAULT_NODE_KINDS`, memory's own six types, sitting as a module constant in a generic published storage library (index.ts:257) — and its failure message *instructs consumers to abandon typing*: `"Non-memory reuse (e.g. a component registry) should write kind:'generic' and carry a sub-kind in tags/metadata instead of registering a new kind."` (index.ts:863-869). Under ADR-0007 D1 that constant is in the wrong package outright.
 **Closes:** BL-440
 **Files:** `libs/data/graph/graph-store/src/index.ts` (`DEFAULT_NODE_KINDS` :257, `writeNode` :863-869, `GRAPH_DDL` :62, `INLINE_MIGRATION_DDL` :181, the factory at the file's end), `drizzle/schema.ts`, plus a new spec.
-**requires:** PKT-57 (BL-438)
+**requires:** PKT-57
 **sequencing:** **same file as PKT-58 — serialize with it, do not run both at once.** Both must land before PKT-60.
 **tier:** sonnet, ~80k tokens / ~30 turns
 **orientation:** ~40k — read the design doc §1 (why BL-295 died) **and** `git show 0ce39c7 -- libs/data/graph/graph-store/src/index.ts` before writing a line. **Fixed cost.**
@@ -929,7 +932,7 @@ rewritten, only unblocked.
 **Goal:** PKT-59 removes the six-kind vocabulary from graph-store. If memory-core does not take ownership in the **same release**, memory's ontology becomes unenforced and `kind:'entitiy'` silently mints a new type — trading an over-strict library for no validation at all. The owner's directive is that typing lives in memory-server, which only holds if memory-server implements it.
 **Closes:** BL-441
 **Files:** `libs/memory-core/src/` (backend construction seam + a new ontology module), `extensions/bundles/sox-memory-bundle/members/memory-server/src/index.ts` (the registration surface).
-**requires:** PKT-58 (BL-439), PKT-59 (BL-440)
+**requires:** PKT-58, PKT-59
 **sequencing:** touches `memory-server/src/index.ts` — **serialize with the other `index.ts` packets** (PKT-01, 09, 13, 19, 25, 32, 34, 45, 47, 53, 54). Check for a live owner before editing.
 **tier:** sonnet, ~80k tokens / ~30 turns
 **orientation:** ~40k — BL-441's body plus the two upstream packets' landed diffs. **Fixed cost.**
@@ -947,8 +950,8 @@ rewritten, only unblocked.
 **Goal:** PKT-59 opens `kind` for **new** stores only — `CREATE TABLE IF NOT EXISTS` no-ops on existing ones, so every store alive today, including the live ~10,150-node `~/.memory/memory.db`, keeps `CHECK (kind IN ('episode',…,'generic'))` permanently. Removing it needs a rename→create→copy→drop rebuild, which on this schema *is* BL-313: `foreign_keys` is always ON, `ALTER TABLE node RENAME TO node_old` rewrites `edge`'s FK to dangle at `node_old`, and `DROP TABLE node_old` cascade-deletes every edge.
 **Closes:** BL-442
 **Files:** `libs/data/graph/graph-store/src/index.ts` (`rebuildTable` + its existing `skipDrop` option), a new operator-invoked migration entry point, plus a new spec.
-**requires:** PKT-59 (BL-440); **and BL-438 fork 3 must have resolved to 3b — if the owner picks 3a, this packet does not exist.**
-**sequencing:** **LAST in the group, and off the critical path.** Nothing depends on it: under PKT-58, consumer types are already indexed on existing stores via `sub_kind` + `kind:'generic'`.
+**requires:** PKT-59
+**sequencing:** **Conditional on BL-438 fork 3 resolving to 3b — if the owner picks 3a, this packet does not exist.** **LAST in the group, and off the critical path.** Nothing depends on it: under PKT-58, consumer types are already indexed on existing stores via `sub_kind` + `kind:'generic'`.
 **tier:** sonnet, ~85k tokens / ~32 turns
 **orientation:** ~45k — CHANGELOG.md:1986-2040 (the full BL-313 incident, the `skipDrop` fix, and the 90-edge fixture) is mandatory reading, not optional. **Fixed cost.**
 **budget:** ~32 turns / ~125k tokens. Guidance ceiling ~210k; **guidance, not a stop.** Commit by pathspec, incrementally. **Sub-dispatch only to `general-purpose`/`haiku`/`claude`.**
@@ -967,7 +970,7 @@ rewritten, only unblocked.
 **Goal:** `@adhd/sox-graph-store` is published (0.5.2, `private: false`) with real external consumers, but every test resolves it through `tsconfig.base.json` `paths` straight to `src/`. `libs/data/CLAUDE.md` already warns about exactly this class of blind spot — *"a passing test is not evidence — `tsx`/`vitest` resolve workspace packages via `paths` straight to source, bypassing `node_modules` entirely."* The entire point of this group is a public API usable **without editing the library**, and nothing exercises it that way. `BUG-SOXGRAPH-TYPED-NODES-001` makes it an explicit acceptance requirement.
 **Closes:** BL-443
 **Files:** a new conformance fixture under `tools/` or `libs/data/graph/graph-store/` (`npm pack` → install into a scratch project outside the workspace → import by published name only).
-**requires:** PKT-58 (BL-439), PKT-59 (BL-440)
+**requires:** PKT-58, PKT-59
 **sequencing:** independent of PKT-60/PKT-61. **This is the acceptance gate for the whole group** — PKT-63 must not publish until it is green.
 **tier:** sonnet, ~65k tokens / ~25 turns
 **orientation:** ~30k — BL-443's body plus `docs/standards/extension-bundling.md` for how this repo already does artifact-level verification. **Fixed cost.**
@@ -985,7 +988,7 @@ rewritten, only unblocked.
 **Goal:** graph-store 0.5.2 has four in-repo dependents — `analysis` (:28), `vector-store` (:27), `hybrid-search` (:28), `memory-core` (:28) — `workspace:*` in source, pinned exactly on publish. Every graph-store version forces four downstream releases; this is why a one-line fix cost eight releases on 2026-08-04. PKT-58, PKT-59 and PKT-60 each change the package. Published separately that is three trains and twelve downstream releases.
 **Closes:** BL-444
 **Files:** `.changeset/`, `libs/data/graph/graph-store/package.json` + `CHANGELOG.md`, the four dependents' manifests, `pnpm-lock.yaml`.
-**requires:** PKT-58 (BL-439), PKT-59 (BL-440), PKT-60 (BL-441), PKT-62 (BL-443)
+**requires:** PKT-58, PKT-59, PKT-60, PKT-62
 **sequencing:** **last, and it is a gate not a chore.** PKT-61 (BL-442) rides the same version if it lands in time; if it does not, it ships in a later patch — it is additive and independent.
 **tier:** sonnet, ~60k tokens / ~24 turns
 **orientation:** ~30k — BL-444's body plus the repo's release constraints (relock-before-merge, registry sync, smoke test). **Fixed cost.**
@@ -1548,6 +1551,15 @@ completion, don't just assume no build ran.
 
 > **status: OPEN** — still open: BL-274 · derived by `tools/plan-status.mjs`, do not hand-edit
 
+> **⛔ SUPERSEDED 2026-08-05 by PKT-66 (Wave H) — do not dispatch this packet.** Its `Files:` line
+> (a loose `tools/stress/proxy-concurrency.mjs`) and its acceptance ("no timeouts, no `SQLITE_BUSY`")
+> were written before anyone had read what the Turso bypass path does: that assertion passes
+> vacuously against code that cannot produce the error, and the packet does not say which store the
+> harness runs against — which, read literally, is the user's production corpus. PKT-66 carries the
+> safety constraint, the DRY constraint, and an acceptance that can fail.
+
+> **status: OPEN** — still open: BL-274 · derived by `tools/plan-status.mjs`, do not hand-edit
+
 **Closes:** BL-274
 **Files:** new `tools/stress/proxy-concurrency.mjs`.
 **requires:** none
@@ -1924,6 +1936,14 @@ calibration undocumented (the guard becomes a pure safety net that should rarely
 
 > **status: OPEN** — still open: BL-394 · derived by `tools/plan-status.mjs`, do not hand-edit
 
+> **⛔ SUPERSEDED 2026-08-05 by PKT-64 + PKT-65 (Wave H) — do not dispatch this packet.** Its fix
+> ("hoist the two checks above the early return") is a verified no-op: `queue.length` is structurally
+> `0` on the bypass path and the deadline guard's input ring is never fed there, so both hoisted
+> checks would sit dead. Its acceptance ("saturate the queue past `_maxSize`") is unsatisfiable on a
+> path with no queue. Its `requires: PKT-16` was also wrong — the red→green is a unit-level property
+> of `WriteQueue` and needs no proxy. PKT-64 lands the missing measurement (BL-445, a prerequisite);
+> PKT-65 lands admission control and carries the mechanism fork as an owner decision.
+
 **⛔ NOT a licence to serialize Turso writes — read the item's own warning before touching `write-queue.ts`. Three agents have already misread this.**
 **Goal:** `WriteQueue._noop = true` on Turso is correct and must stay. What's wrong is that the bypass path (`write-queue.ts:502-540`) also skips the size-cap and deadline-guard checks that have nothing to do with serialization — hoist those two checks above the bypass so they apply regardless of whether serialization is active, and leave FIFO serialization behind the bypass exactly as it is.
 **Closes:** BL-394
@@ -1934,6 +1954,106 @@ calibration undocumented (the guard becomes a pure safety net that should rarely
 **orientation:** ~49k unavoidable before any edit — 36k mandated docs (README+STATE+PLAN) + ~9k cited source + ~4k backlog bodies. **This is fixed cost and does not shrink with the size of the change.**
 **budget:** ~12 turns / ~79k tokens = 49k orientation + 12 x ~2.5k per turn. Guidance ceiling ~120k; **guidance, not a stop — do not truncate the work to hit a number.** **TURNS is the reliable unit, tokens are derived** (PKT-28 estimated ~30 turns and took ~30; its token figure was guessed wrong twice, 30k then 360k, against a ~130k reality). The failure actually guarded is an uncommitted buffer, not a token count: commit incrementally by explicit path, and if the fix sketch proves wrong, say so and stop — a success outcome. **You may sub-dispatch** once oriented, with PRE-DIGESTED context only (exact file, change, assertion) — never tell a subagent to read PLAN.md.
 **acceptance:** a test naming BL-394: with Turso's `_noop` bypass active, saturate the queue past `_maxSize`, assert `E_BUSY`/`rejections_busy_size` still fires — must fail today (not reached). Second assertion: `memory_ping`'s `write_queue.queue_max_size`/`deadline_budget_ms`/`deadline_guard_enabled` fields are proven live (not decorative) by the same test. **Explicitly assert concurrent Turso writes still complete without serialization** — a regression guard proving this packet did not reintroduce serialization.
+
+---
+
+## Wave H — the write-queue bypass path: what it stopped measuring, what it stopped guarding, and what nothing exercises
+
+Three packets, drawn 2026-08-05 from an architecture pass over BL-394 and BL-274 that read
+`write-queue.ts` end to end rather than trusting the two items' fix sketches. **PKT-64 and PKT-65
+supersede PKT-40; PKT-66 supersedes PKT-16.** The superseded packets are left in place above with a
+forward pointer rather than deleted, because their `Closes:` lines are what `tools/plan-status.mjs`
+reads and because their reasoning is the record of how the items were understood on 2026-08-01.
+
+**Numbered PKT-64+, not PKT-57+, because PKT-57..PKT-63 were claimed concurrently** by the
+open-node-typing architecture (BL-438..BL-444) while this pass was in flight.
+
+**What the read changed.** All three of the following are verified in source, not inferred:
+
+1. **BL-394's one open question is closed, and the benign answer is the true one.** There is no
+   second `WriteQueue` instance. `counters` and `throughput_writes_per_sec` come from one
+   `getMetrics()` on one instance, so the non-zero throughput proves that instance saw the writes;
+   the counters are zero because `_trackCompletion()` (`write-queue.ts:992-998`) increments nothing.
+   **Nobody needs to spend a packet determining this.** BL-394's body now records it.
+2. **BL-394's fix sketch does not survive contact with the code.** Hoisting `queue.length >= _maxSize`
+   above the early return is a literal no-op — `this.queue` is never pushed to on the bypass path, so
+   the comparison is `0 >= 100` forever. Hoisting the deadline guard is also a no-op — its input
+   `_latencies` is fed only at `:1069`, inside `_processNext`. A conscientious agent could produce a
+   clean, reviewed, green diff that changes nothing whatsoever, and its acceptance test as written
+   ("saturate the queue past `_maxSize`") is **unsatisfiable** on the path it is meant to test.
+3. **The loss is 8 fields, not 2 checks** — and one of those 8 is the guard's own input, which makes
+   the metrics work a hard prerequisite for the admission work rather than a cosmetic follow-on.
+   Filed as **BL-445**.
+
+### PKT-64 — BL-445: the bypass path records almost nothing, and one of the things it does not record is the deadline guard's input
+
+> **status: OPEN** — still open: BL-445 · derived by `tools/plan-status.mjs`, do not hand-edit
+
+**Goal:** on the production backend (Turso → `needsWriteSerialization: false` → `_noop = true`), `getMetrics()` returns 8 structurally-unreachable zeros, 3 configuration echoes, and exactly one live measurement. Feed the bypass path the signals `_processNext` already feeds — latency samples, completion counters, the slow-task check — and make the fields that describe a queue *that does not exist on this path* stop reporting `0`/`false` as if they had been measured.
+**Closes:** BL-445 (HIGH)
+**Files:** `libs/memory-core/src/write-queue.ts` (`_runBypass` :700-752 — the two settle points :716/:735 plus the two error paths; `_trackCompletion` :992-998; `getMetrics` :935-973). `extensions/bundles/sox-memory-bundle/members/memory-server/src/index.ts` :1055 **only if** the block's shape changes (a `mode` discriminator or `null`s) — if it does, that file is on the serialization list, check for a live owner first.
+**requires:** none
+**sequencing:** **land this before PKT-65.** PKT-65's deadline guard is inert without the latency ring this packet fills; shipping them in the other order produces a guard that passes review and never fires. Independent of PKT-66.
+**tier:** sonnet, ~65k tokens / ~24 turns
+**orientation:** ~52k unavoidable before any edit — 36k mandated docs (README+STATE+PLAN) + ~12k for `write-queue.ts` read end to end (1094 lines; the per-field feed table in BL-445's body is the map, but the file must be read — this packet is about which lines are reachable) + ~4k backlog bodies. **Fixed cost.**
+**budget:** ~24 turns / ~112k tokens = 52k orientation + 24 × ~2.5k per turn. Guidance ceiling ~180k; **guidance, not a stop.** Commit by pathspec, incrementally. **Sub-dispatch only to `general-purpose`/`haiku`/`claude`** — specialist types have no `Agent` tool.
+> **⛔ NOT a licence to serialize Turso writes.** Four agents have now misread this file that way. This packet changes only what the bypass path *records*. If you find yourself editing `needsWriteSerialization`, `concurrentTransactions`, or the `_noop` assignment at `:509-511`, you have left the packet.
+> **Do not "fix" this by deleting the inert fields.** They are the same fields the sqlite path legitimately populates; the block is shared. The question is per-field honesty, not removal.
+> **Match `_processNext`'s deliberate choices, don't reinvent them.** It records latency for *failed* tasks too (`:1066-1068`: "they occupied the slot, so their duration is service time for the wait estimator either way") — the bypass path's error branches must do the same, or the estimator silently under-counts exactly when the store is unhealthy.
+> **Decide `queue_depth`/`in_flight`/`queue_high_watermark`/`saturated` deliberately and write down the choice.** `0` and `false` are lies of the BL-334 family: they are indistinguishable from a healthy idle queue. `null`, or a `mode: "bypass" | "fifo"` discriminator on the block, are both defensible. **`in_flight` is the one to think hardest about** — unlike the other three it *is* meaningful on this path (concurrent operations genuinely are in flight) and PKT-65 may need it as its admission unit. State in your output whether you made it real or left it null; PKT-65 is written against that answer.
+**Produces:** a `WriteQueue` whose bypass path feeds `_latencies`/`_kindLatencies` and the completion counters, so `recent_avg_task_latency_ms > 0` on Turso — **this is PKT-65's precondition.** Plus a stated, documented decision on the four queue-shaped fields, and on whether `in_flight` became a real in-flight count (which decides whether PKT-65 inherits its admission unit or must build one).
+**acceptance:** a test naming BL-445 against a Turso-backed queue (follow `write-queue-turso-concurrency.spec.ts`'s existing skip-if-absent harness — do not build a second one): after N writes, assert `counters.tasks_completed === N` **and** `recent_avg_task_latency_ms > 0`. Both must fail today. The second assertion is the one that matters — it is the input PKT-65's guard reads, and a fix that lands the counters without the ring leaves BL-394 unfixable while looking done.
+
+### PKT-65 — BL-394: admission control on a backend with no queue — ⚠️ CARRIES AN OWNER DECISION, DO NOT PICK SILENTLY
+
+> **status: OPEN** — still open: BL-394 · derived by `tools/plan-status.mjs`, do not hand-edit
+
+**Goal:** restore backpressure on the default backend, where it is currently absent, and stop `memory_ping` reporting a size cap and a deadline guard as active when neither can fire. The *intent* of BL-394's fix sketch stands. Its *mechanism* does not, and the replacement is a design decision the owner has asked to make.
+**Closes:** BL-394 (HIGH)
+**Files:** `libs/memory-core/src/write-queue.ts` (`enqueue` :644-695, `_runBypass` :700-752, the size cap :767-782 and deadline guard :789-828 in `_enqueueQueued`, `getMetrics` :935-973). Possibly `extensions/bundles/sox-memory-bundle/members/memory-server/src/index.ts` :1055 for the reporting half.
+**requires:** PKT-64
+**sequencing:** hard-gated on PKT-64 — the deadline guard's only input is a ring PKT-64 fills. **STOP after the determination step below and report; do not implement past the fork.** PKT-66 is a useful end-to-end confirmation but is NOT a prerequisite (PKT-40 made it one; that was wrong — the red→green here is a unit-level property of `WriteQueue` and needs no server, no socket and no proxy).
+**tier:** sonnet, ~70k tokens / ~26 turns
+**orientation:** ~56k unavoidable before any edit — 36k mandated docs (README+STATE+PLAN) + ~12k `write-queue.ts` + ~8k of BL-394/BL-445 bodies and PKT-64's output. **Fixed cost.**
+**budget:** ~26 turns / ~121k tokens = 56k orientation + 26 × ~2.5k per turn. Guidance ceiling ~190k; **guidance, not a stop.** Commit by pathspec, incrementally. **Sub-dispatch only to `general-purpose`/`haiku`/`claude`.**
+> **⛔ NOT a licence to serialize Turso writes — this is the fifth time this warning has had to be written on this file.** Turso handling concurrent writes natively is owner-mandated and must not be reverted. `_noop` stays. FIFO stays behind the capability check. Nothing in this packet makes writes wait on each other *by default*.
+> **⛔ Do not implement the fix sketch as literally filed.** "Hoist the two checks above the early return" produces a diff that changes nothing: `queue.length` is structurally `0` on this path and `_latencies` is structurally empty (PKT-64 fixes the second, not the first). If your diff moves those two `if`s and stops, you have shipped a no-op with a green test suite — the precise failure mode BL-225 exists to catch.
+> **The acceptance test in the superseded PKT-40 is unsatisfiable.** "Saturate the queue past `_maxSize`" cannot be done on a path with no queue. Do not spend turns trying.
+>
+> **THE FORK — four answers to "what is the admission unit when there is no queue?" Present the trade-offs and get a decision. Do not choose alone.**
+>
+> | | mechanism | what it bounds | risk | cost |
+> |---|---|---|---|---|
+> | **A** | **in-flight concurrency cap** — count operations between entry and settle; reject `E_BUSY` above N, never wait | peak concurrency and peak memory | needs a *new* default: `_maxSize=100` was tuned as a bound on *pending* items, and reusing it as a concurrency bound is a different quantity with a different right answer | small — a counter and one check |
+> | **B** | **bounded-concurrency semaphore** — admit up to N, queue the rest | concurrency *and* burst, with no rejection until the wait queue fills | reintroduces waiting. N=8 is not serialization, but this is the shape four agents have already mistaken for "serialize Turso", so it must be commented defensively | medium |
+> | **C** | **deadline shedding only** — no cap; shed when predicted wait exceeds the budget | tail latency | needs PKT-64's ring and a wait model that means something without a queue; leaves peak concurrency unbounded | medium |
+> | **D** | **declare it inapplicable** — no cap; `memory_ping` reports `admission_control: "inactive — adapter handles concurrency natively"` | nothing | leaves the burst exposure BL-394 describes; but it is *honest*, which is the failure BL-394 actually observed | very small |
+>
+> **This architect's recommendation, for the owner to accept or overrule: A + D's reporting half.** D alone is the floor — it removes the false claim, which is the half of BL-394 that is demonstrably costing something today (a health surface affirming a guard that cannot fire), at near-zero risk. A adds the bound the item asks for without ever making one write wait on another, so it cannot be mistaken for serialization at review time or at runtime. B is the most capable and the most dangerous to leave in this file for the next agent to misread. C is a poor fit alone: it bounds latency but not the unbounded in-flight memory growth that is BL-394's stated consequence.
+> **Second, smaller decision, same rule:** if A is chosen, N's default value and whether it is env-tunable. Propose a number with reasoning; do not invent one silently.
+**Produces:** either a working admission bound on the bypass path with a stated, owner-approved mechanism, **or** — if the owner picks D — an honest status surface plus a written finding that admission control is deliberately not applied on natively-concurrent backends. **The second is a complete and acceptable outcome, not a failure.** In both cases: the `write_queue` block stops reporting configured values for guards that cannot fire.
+**acceptance:** a test naming BL-394, satisfiable on the bypass path — the shape depends on the fork, so write it after the decision, not before. For A: with `_noop` active, hold N+1 operations open simultaneously and assert the N+1th rejects with `E_BUSY` and `rejections_busy_size` (or a new in-flight counter) increments — must fail today, where it is admitted with nothing recorded. For D: assert `memory_ping`'s block reports the guards as inactive on a Turso-backed store and as active on a sqlite-backed one — must fail today, where both report identically. **In every case, a second assertion is mandatory and non-negotiable: N concurrent Turso writes below the bound still complete concurrently, with no serialization** — that is the regression guard against the misreading this file keeps attracting, and it must be present whichever fork is taken.
+
+### PKT-66 — BL-274: a concurrency harness that exercises the path production actually takes
+
+> **status: OPEN** — still open: BL-274 · derived by `tools/plan-status.mjs`, do not hand-edit
+
+**Goal:** there is no test of parallel writes + reads against a *served* memory store, and — more pointedly — nothing anywhere exercises the `_noop` bypass under concurrency through the real transport. `write-queue-turso-concurrency.spec.ts` covers the adapter's transaction lock in-process; `concurrency-harness.spec.ts` (BL-134) runs against `memory-core` directly. Neither goes through the UDS proxy, which is how every real client reaches the server.
+**Closes:** BL-274 (MEDIUM)
+**Files:** new harness — **home is a fork, see below** (`tools/stress/` as a new nx project, or an addition to the existing `tools/baseline-capture` package). Reuses `@adhd/sox-service-proxy` (`libs/service-proxy/src/index.ts` — `dialBackend`, `encodeFrame`/`FrameDecoder`, `backendSocketPath`, the JSON-RPC types). Plus one small deterministic spec wherever the harness lands.
+**requires:** none
+**sequencing:** fully independent. It is a **useful confirmation** for PKT-65 but not a gate on it, and PKT-65 must not wait for it. If this packet incidentally reproduces BL-394's unbounded-admission behaviour end to end, record it as evidence on BL-394 — **do not fix it here.**
+**tier:** sonnet, ~60k tokens / ~24 turns
+**orientation:** ~48k unavoidable before any edit — 36k mandated docs (README+STATE+PLAN) + ~8k (`service-proxy`'s exported surface, `baseline-capture`'s project shape, the two existing concurrency specs) + ~4k backlog bodies. **Fixed cost.**
+**budget:** ~24 turns / ~108k tokens = 48k orientation + 24 × ~2.5k per turn. Guidance ceiling ~170k; **guidance, not a stop.** Commit by pathspec, incrementally. **Sub-dispatch only to `general-purpose`/`haiku`/`claude`.**
+> **⛔ NEVER point this at the live store.** BL-274's original one-line fix says "against memory server", which reads as *the running one*. A write-heavy stress run against `~/.memory/memory.db` injects thousands of junk episodes into the user's production corpus, permanently. The harness spawns its **own** backend on a disposable `SOX_CONFIG_DB_PATH` (expressible because `runBackend()` now requires that path explicitly — commit `9068d16`, the BL-412 fix) and **refuses to start** if the resolved path is under `~/.memory`. That refusal is itself a test case, not a comment.
+> **Do not hand-roll the framing.** A second length-prefix/JSON-RPC implementation in a loose `.mjs` will drift from the shim it exists to exercise, and then it is testing itself. Import the real one.
+> **Do not assert "no `SQLITE_BUSY`".** On the default backend, writes take the bypass path — no queue, no admission control (BL-394), no metrics (BL-445) — so an assertion that a busy error does *not* occur passes vacuously against code that cannot currently produce one. That is a green test proving nothing, which is this program's signature failure. Assert what the path actually does: read-your-writes holds under interleaving, peak in-flight is observable, and the latency distribution is recorded.
+> **Do not make this a CI gate.** BL-202 is live and is precisely the finding that count-based assertions on concurrent suites are untrustworthy — three runs of one configuration gave 109/95/91 failures. Ship a dev/manual harness plus **one** small deterministic in-suite regression test. A flaky gate in the merge path costs every agent in the repo.
+>
+> **FORK for the owner — where the harness lives.** (a) **`tools/baseline-capture`**, the existing private nx dev-tooling package, which exists *because* BL-164 promoted loose `scripts/capture-*.mjs` for exactly this reason — recommended, it is the repo's own precedent and gives lint/typecheck/test targets for free. (b) **new `tools/stress/` nx project**, as BL-274's text literally says — cleaner separation, one more project to maintain. (c) **loose `tools/stress/proxy-concurrency.mjs`** as originally filed — cheapest, and re-creates the exact untyped, ungated, unlinted shape BL-164 was filed to end. **Recommendation: (a).** Do not take (c) without an explicit ruling.
+**Produces:** a repeatable concurrency harness that drives interleaved `memory_write`/`memory_recall` through the real UDS transport against a disposable Turso-backed store, reporting peak in-flight, latency distribution and read-your-writes violations — the end-to-end confirmation PKT-65's unit-level fix can be checked against, and the first coverage of the bypass path through the transport.
+**acceptance:** two arms, both naming BL-274. (1) **Safety, and it must fail today:** point the harness at a `SOX_CONFIG_DB_PATH` under `~/.memory` and assert it refuses to start — the red arm is that nothing currently stops it. (2) **Function:** against a disposable store, run interleaved writes and recalls at a stated concurrency and assert read-your-writes holds for every write the harness observed acknowledged, and that the run reports a non-zero peak in-flight count (a harness that never achieves concurrency is measuring nothing — that assertion is what proves the interleaving is real rather than accidentally serial).
 
 ---
 
