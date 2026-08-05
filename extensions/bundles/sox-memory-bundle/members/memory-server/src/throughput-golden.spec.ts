@@ -159,7 +159,7 @@ describe('throughput_writes_per_sec — SqliteAdapter', () => {
 
     // Sanity-check the full metrics shape from WriteQueueMetrics
     const expectedKeys = [
-      'queue_depth', 'in_flight', 'queue_max_size', 'queue_high_watermark',
+      'mode', 'queue_depth', 'in_flight', 'queue_max_size', 'queue_high_watermark',
       'saturated', 'write_latency_ms', 'apply_latency_ms',
       'recent_avg_task_latency_ms', 'deadline_budget_ms',
       'deadline_guard_enabled', 'throughput_writes_per_sec', 'counters',
@@ -253,7 +253,7 @@ describe('throughput_writes_per_sec — TursoAdapter', () => {
       const wq = (body['store'] as Record<string, unknown>)['write_queue'] as Record<string, unknown>;
 
       const expectedKeys = [
-        'queue_depth', 'in_flight', 'queue_max_size', 'queue_high_watermark',
+        'mode', 'queue_depth', 'in_flight', 'queue_max_size', 'queue_high_watermark',
         'saturated', 'write_latency_ms', 'apply_latency_ms',
         'recent_avg_task_latency_ms', 'deadline_budget_ms',
         'deadline_guard_enabled', 'throughput_writes_per_sec', 'counters',
@@ -278,7 +278,7 @@ describe('throughput_writes_per_sec — TursoAdapter', () => {
   );
 
   it(
-    'noop queue path reports queue_depth===0 and in_flight===0',
+    'BL-445: noop queue path reports mode=bypass and a NULL queue_depth, not a fake zero',
     { skip: !_hasTurso },
     async () => {
       const result = await handleToolCall('memory_ping', { db_path: dbPath });
@@ -287,11 +287,23 @@ describe('throughput_writes_per_sec — TursoAdapter', () => {
       ) as Record<string, unknown>;
       const wq = (body['store'] as Record<string, unknown>)['write_queue'] as Record<string, unknown>;
 
-      // Turso writes bypass the queue (noop path), so queue_depth===0 and
-      // in_flight===0 on a stable ping (no active writes). throughput is the
-      // real test — already checked in the golden baseline test above.
-      expect(wq['queue_depth']).toBe(0);
+      // This assertion used to read `queue_depth === 0`, which pinned BL-334's
+      // failure mode in place: on the Turso bypass path nothing is EVER pushed
+      // to `this.queue`, so that zero was not an observation of an idle queue —
+      // it was a value no code could change, indistinguishable from a healthy
+      // one. BL-445 replaced it with an explicit `null` plus a `mode`
+      // discriminator saying why.
+      expect(wq['mode']).toBe('bypass');
+      expect(wq['queue_depth']).toBeNull();
+      expect(wq['queue_high_watermark']).toBeNull();
+      expect(wq['saturated']).toBeNull();
+      // in_flight, by contrast, IS meaningful on this path — it is a real count
+      // of concurrently-executing operations, and this ping is taken at rest.
       expect(wq['in_flight']).toBe(0);
+      // BL-445's headline: the bypass path now records what it executes, so the
+      // deadline guard's input ring is non-empty on the production backend.
+      expect(wq['recent_avg_task_latency_ms']).toBeGreaterThan(0);
+      expect((wq['counters'] as Record<string, number>)['tasks_completed']).toBeGreaterThan(0);
     },
   );
 });
