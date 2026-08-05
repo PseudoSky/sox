@@ -272,4 +272,120 @@ describe('WriteQueue — Turso concurrent transactional writes (BL-321)', () => 
       expect(queue.getMetrics().in_flight).toBe(0);
     });
   });
+
+  // ── BL-394 ────────────────────────────────────────────────────────────────
+  //
+  // ⛔ THIS BLOCK IS NOT ABOUT SERIALIZING TURSO WRITES. Five agents have now
+  // misread `write-queue.ts` that way. Turso handling concurrent writes
+  // natively is owner-mandated; `_noop` stays; nothing here makes one write
+  // wait on another.
+  //
+  // BL-394's observable defect is a HONESTY defect: `memory_ping` reported
+  //
+  //     "queue_max_size": 100, "deadline_budget_ms": 20000,
+  //     "deadline_guard_enabled": true, "rejections_busy_size": 0
+  //
+  // on the production backend, where the size cap is expressed over a queue
+  // that is never pushed to (`0 >= 100` forever) and the deadline guard reads a
+  // ring that — before BL-445 — was never fed. Every one of those fields read
+  // as "admission control is configured and active"; none of it was in effect.
+  //
+  // OWNER RULING 2026-08-05 (fork D of PKT-65): no admission control is added.
+  // Turso handles concurrent writes natively, the live store shows zero
+  // rejections, and there is no evidence a bound is needed. If a stress harness
+  // later shows a knee, a bound gets added then and sized from data. What is
+  // fixed here is the claim, not the mechanism.
+  tursoDescribe('BL-394 — the surface must not claim guards that cannot fire', () => {
+    it('BL-394: a Turso-backed queue reports admission control INACTIVE, with no configured values for guards that cannot fire', async () => {
+      const queue = await WriteQueue.forPath(dbPath);
+      expect((queue as unknown as { _noop: boolean })._noop).toBe(true);
+
+      const m = queue.getMetrics();
+      // The three fields BL-394 quotes verbatim as the defect, asserted FIRST
+      // so the red arm fails on the reported lie itself rather than on the
+      // absence of the new field. Pre-fix these read `true` / `100` / `20000`.
+      expect(m.deadline_guard_enabled, 'the guard cannot fire on this path').toBe(false);
+      expect(m.queue_max_size, 'no queue exists for a size cap to bound').toBeNull();
+      expect(m.deadline_budget_ms, 'no budget is consulted on this path').toBeNull();
+      expect(m.mode).toBe('bypass');
+      expect(m.admission_control).toBe('inactive — adapter handles concurrency natively');
+    });
+
+    it('BL-394: a sqlite-backed queue reports admission control ACTIVE, with its real configured values', async () => {
+      // Same assertions, opposite backend. Before the fix BOTH queues reported
+      // identically — which is precisely the bug: the block described
+      // configuration, never the reality of the path taken.
+      process.env.STORE_ADAPTER = 'sqlite';
+      const sqlitePath = path.join(path.dirname(dbPath), 'bl394-sqlite.db');
+      const queue = await WriteQueue.forPath(sqlitePath);
+      expect((queue as unknown as { _noop: boolean })._noop).toBe(false);
+
+      const m = queue.getMetrics();
+      expect(m.mode).toBe('fifo');
+      expect(m.admission_control).toBe('active');
+      expect(m.deadline_guard_enabled).toBe(true);
+      expect(m.queue_max_size).toBe(100);
+      expect(m.deadline_budget_ms).toBe(20_000);
+    });
+
+    /**
+     * MANDATORY REGRESSION GUARD — the reason it asserts peak in-flight rather
+     * than "N writes completed".
+     *
+     * "N concurrent writes all resolved" passes just as happily against a
+     * serialized queue: FIFO completes all N too, only slower. This assertion
+     * cannot. Every operation parks on the same gate and the gate is not
+     * released until all N have been observed in flight simultaneously — so if
+     * anyone ever flips `needsWriteSerialization`, `concurrentTransactions` or
+     * the `_noop` assignment, operation #2 never starts, the observation is
+     * never made, and this test hangs to its timeout rather than quietly
+     * passing. Unreachable, not merely false.
+     */
+    it('BL-394: N Turso writes run CONCURRENTLY — this test is unreachable, not just red, if anyone serializes this path', async () => {
+      const queue = await WriteQueue.forPath(dbPath);
+      const adapter = (queue as unknown as { adapter: StoreAdapter }).adapter;
+      await adapter.exec('CREATE TABLE IF NOT EXISTS wq_c (id INTEGER PRIMARY KEY, val TEXT)');
+
+      const N = 8;
+      let release!: () => void;
+      const allInFlight = new Promise<void>((r) => { release = r; });
+      let entered = 0;
+
+      const held = Array.from({ length: N }, (_, i) =>
+        queue.enqueue(`bl394-conc-${i}`, async (a) => {
+          entered++;
+          // The last arrival frees everyone. Under serialization `entered`
+          // never reaches N, because #2 cannot start until #1 settles — and #1
+          // is waiting right here.
+          if (entered === N) release();
+          await allInFlight;
+          await a.executeRun('INSERT INTO wq_c (id, val) VALUES (?, ?)', [i, `v${i}`]);
+          return i;
+        }),
+      );
+
+      const peakInFlight = await Promise.race([
+        allInFlight.then(() => queue.getMetrics().in_flight),
+        new Promise<number>((_, rej) =>
+          setTimeout(() => rej(new Error(
+            'BL-394 regression: N Turso writes did not reach the gate together — ' +
+            'writes on this path are being serialized, which is exactly what must never happen.',
+          )), 5000),
+        ),
+      ]);
+
+      const results = await Promise.all(held);
+      expect(results.sort((a, b) => a - b)).toEqual(Array.from({ length: N }, (_, i) => i));
+      expect(peakInFlight, 'all N operations were in flight at once — no serialization').toBe(N);
+      expect(entered).toBe(N);
+
+      const count = await adapter.executeGet<{ cnt: number }>('SELECT COUNT(*) AS cnt FROM wq_c');
+      expect(count!.cnt).toBe(N);
+      // Admission control admitted every one of them, and said so honestly.
+      const m = queue.getMetrics();
+      expect(m.admission_control).toBe('inactive — adapter handles concurrency natively');
+      expect(m.counters.rejections_busy_size).toBe(0);
+      expect(m.counters.rejections_busy_deadline).toBe(0);
+    });
+  });
 });
