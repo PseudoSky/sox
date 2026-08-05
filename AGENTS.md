@@ -87,10 +87,44 @@ node tools/commit-mine.mjs -m "msg" --hunks 'REGEX' -- BACKLOG.md
 ```
 
 It seeds a **private** `GIT_INDEX_FILE` from HEAD, applies only the hunks you selected, and moves the
-branch with `commit-tree`/`update-ref`. The shared index is never written and the working tree is
-never modified, so another agent's uncommitted edits survive untouched. It refuses to move the ref if
-HEAD changed while the commit was being built. It **bypasses hooks** — run
-`node tools/check-backlog-markers.mjs` and `node tools/plan-status.mjs --check` yourself first.
+branch with `commit-tree`/`update-ref`. The working tree is never modified, so another agent's
+uncommitted edits survive untouched. It refuses to move the ref if HEAD changed while the commit was
+being built. It **bypasses hooks** — run `node tools/check-backlog-markers.mjs` and
+`node tools/plan-status.mjs --check` yourself first.
+
+**`--amend` is not a message-only operation — it commits the SHARED INDEX (BL-457).** The pathspec
+rule above is worded around `git add`, so `--amend` reads as exempt. It is not: one live incident ran
+`git commit --amend -F msg.txt` to correct a *subject line* and turned a reviewed 2-file/+282 commit
+into 8 files/+727/−2567, swallowing four other agents' staged files behind a subject that had already
+been approved. `.husky/pre-commit` now refuses the pathspec-less form while the index diverges from
+HEAD (run `node tools/install-git-hooks.mjs` once per clone/worktree — hooks are never tracked).
+
+```
+node tools/commit-mine.mjs --amend-message -m "corrected subject"   # message only; index untouched
+git commit --amend path/one path/two                                # amending real files: name them
+git reset --soft <good-sha>                                         # recovery if one already landed
+```
+
+**Do not run `git restore --staged` after `commit-mine` any more (BL-465).** That was the interim
+mitigation for a defect now fixed at the source: `update-ref` used to leave every committed path in
+the shared index holding the *old* HEAD blob, so `git diff --cached` read as the exact inverse of the
+commit and armed the next pathspec-less commit to revert it. `commit-mine` now resyncs those entries
+itself, and only those — a path where someone else has staged content is left byte-identical and
+named in a warning. If you see that warning, do not commit without a pathspec until its owner clears
+it.
+
+**Staged entries outlive the agent that staged them (BL-463).** A stopped or finished agent leaves
+index entries behind; `git status` looks fine and `git diff` (which compares against the *index*)
+actively misleads — use `git diff HEAD`. At teardown, or when you inherit a checkout:
+
+```
+node tools/unstage-orphans.mjs                        # report only
+node tools/unstage-orphans.mjs --apply --min-idle-min 10
+```
+
+It clears only entries whose staged bytes are identical to the working tree; content that exists
+*only* in the index is held back and reported with the blob sha that reads it, because clearing that
+would turn a revert bomb into real data loss.
 
 **Never run `git stash` (or `git stash pop/drop/clear`).** Commit to a branch instead — `stash`
 "solves" contention by destroying the other agent's work, which is the whole problem.
@@ -231,6 +265,27 @@ them took the live memory MCP server down mid-session.
 **After any rebuild of a `dist` artifact that ships in an extension, run `npx nx run registry:sync-index`** —
 the rebuilt bundle's checksum will no longer match `registry/index.json`, and `smoke-test.mjs` fails with
 `CHECKSUM MISMATCH`. Commit the regenerated `registry/index.json` alongside the source.
+
+**`nx test` is a build too — it carries the same hazard, from the other side (BL-456).** `nx.json`
+sets `targetDefaults.test.dependsOn = ["^build"]`, so `npx nx test <project>` rebuilds every upstream
+`dist/` from whatever source is on disk — **including another agent's uncommitted edits**. This is not
+theoretical: an agent's isolated runs were green and its first full `nx test memory-server
+--skip-nx-cache` went red on an assertion its packet had never touched, because a concurrent agent's
+in-flight `write-queue.ts` was compiled into `memory-core/dist` by the test run itself. The reverse is
+worse and silent — a suite can go **green** against code the running agent has never seen, and be
+reported as verification.
+
+So a suite result is evidence only when the tree state it ran against is stated with it:
+
+```
+node tools/check-suite-tree-state.mjs --project memory-server            # quote this with the result
+node tools/check-suite-tree-state.mjs --project memory-server --require-clean   # gate, exit 1 if dirty
+```
+
+It reports `git status --porcelain` restricted to the project's transitive nx dependency set — dirt
+elsewhere in the repo cannot reach that suite and is deliberately not reported. A dirty dependency set
+does not make the run wrong; it makes it **unattributable**. Re-run in an isolated worktree (the
+structural fix, already the dispatch default) or publish the dirt alongside the result.
 
 ---
 

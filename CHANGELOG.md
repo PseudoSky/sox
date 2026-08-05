@@ -2,6 +2,33 @@
 
 ---
 
+## [Unreleased] — BL-456: `nx test` builds other agents' uncommitted source, so a suite result now ships with the tree state it ran against
+
+**`nx test <project>` is not read-only with respect to `dist/`.** `nx.json` sets `targetDefaults.test.dependsOn = ["^build"]`, so every upstream project is rebuilt from whatever source is on disk — committed or not. Observed live during PKT-72: an agent's isolated runs were green, its first full `nx test memory-server --skip-nx-cache` went red on `expected null to be +0`, an assertion neither it nor its packet had touched. The input was a concurrent agent's uncommitted `write-queue.ts`, compiled into `memory-core/dist` by the test run itself. The silent direction is worse — a suite can go **green** against code the running agent has never seen, and be reported as verification.
+
+```console
+$ node tools/check-suite-tree-state.mjs --project memory-server
+check-suite-tree-state: DIRTY — 1 uncommitted path(s) inside memory-server's dependency set
+(13 project(s)) [BL-456]:
+   M libs/memory-core/src/write-queue.ts
+
+  `nx test` runs `^build` first, so these files WILL be compiled into the dist/ the suite
+  loads — including another agent's in-flight work. Quote this output alongside the suite
+  result, or re-run in an isolated worktree.
+
+$ node tools/check-suite-tree-state.mjs --project memory-server --require-clean; echo "exit=$?"
+exit=1
+```
+
+- **The report is restricted to the transitive nx dependency set.** Dirt elsewhere in the repo cannot reach that suite, and a report that is noisy is a report that gets ignored — a test arm asserts an uncommitted file *outside* the set is not reported.
+- **The hazard is asserted against `nx.json` rather than restated in prose.** The first arm reads `targetDefaults.test.dependsOn` from the file: if `^build` ever leaves, the check fails and takes itself out of service instead of quietly guarding nothing.
+- **It is evidence by default, a gate on request.** Plain runs exit 0 whether clean or dirty; `--require-clean` exits 1 for a packet whose acceptance *is* the suite result. `--json` emits the dependency set, source roots and porcelain lines for a report artifact.
+- **A dirty dependency set does not mean the run is wrong — it means it is unattributable.** The documentation says exactly that, and points at worktree isolation as the structural fix.
+- **Documented where the hazard's sibling already lives**, next to BL-235 in `AGENTS.md`: that constraint warned only about a *direct* `nx build`, while every agent is instructed to run `nx test` routinely, including in the mandatory pre-merge gate.
+- Pinned by `tools/test-bl456-suite-tree-state.mjs` (6 arms, 8 assertions, including a live run against the real repo graph).
+
+---
+
 ## [Unreleased] — BL-463: staged entries that outlive their agent now have a teardown, and it cannot cause the loss it prevents
 
 **A stopped or finished agent leaves index entries behind, and nothing cleans them up.** Three occurrences on 2026-08-05, every one found by accident: `STATE.md` 50 lines behind HEAD; six paths at 2,687 deletions with `CHANGELOG.md` at −260; four paths with `BACKLOG.md` at −292/+174. In each, the working trees were correct and *only* the index was stale — so `git status` showed nothing alarming while a bare `git commit` by anyone would have reverted committed work in bulk.
