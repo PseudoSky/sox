@@ -22,6 +22,12 @@ import {
   ADAPTER_META_KEYS,
 } from '../adapter-meta.js';
 
+// `stampAdapterMeta` stamps this package's OWN version — `adapter-meta.ts`
+// reads it out of package.json. Read it from the same source here rather than
+// hardcoding a literal, which goes red on every release bump for no reason
+// other than the bump: it did exactly that when 0.1.0 became 0.1.2.
+const { version: PKG_VERSION } = require('../../package.json') as { version: string };
+
 // ============================================================================
 // 1. ensureAdapterMetaTable — table creation is idempotent
 // ============================================================================
@@ -51,7 +57,7 @@ describe('stampAdapterMeta', () => {
 
     const meta = await readAdapterMeta(adapter);
     expect(meta.adapter_type).toBe('sqlite');
-    expect(meta.adapter_version).toBe('0.1.0');
+    expect(meta.adapter_version).toBe(PKG_VERSION);
     expect(meta.created_at).toBeTypeOf('string');
   });
 
@@ -115,7 +121,7 @@ describe('readAdapterMeta', () => {
 
     const meta = await readAdapterMeta(adapter);
     expect(meta.adapter_type).toBe('sqlite');
-    expect(meta.adapter_version).toBe('0.1.0');
+    expect(meta.adapter_version).toBe(PKG_VERSION);
     expect(meta.created_at).not.toBeNull();
 
     // Verify created_at is a valid ISO timestamp
