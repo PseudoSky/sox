@@ -106,9 +106,12 @@ export class TursoAdapterImpl implements TursoAdapter {
    * mutation to interleave with the reassignment below) that serializes the
    * critical section per adapter instance so concurrent callers wait their
    * turn instead of colliding. This is intentionally the ONLY change here:
-   * `needsWriteSerialization`/`concurrentTransactions`/`multiprocessWrite`
-   * stay at their Turso defaults (store owner directive — do not revert any
-   * Turso default or multiprocess-writer concurrency improvement). The
+   * `needsWriteSerialization`/`concurrentTransactions` stay at their Turso
+   * defaults (store owner directive — do not revert any Turso default or
+   * multiprocess-writer concurrency improvement; `multiprocessWrite` is a
+   * separate matter, see the `experiments` block in `connect()`: the
+   * *capability* is unchanged and still fully available, only the
+   * *default* moved to opt-in per FEAT-SOX-001's stated constraint). The
    * WriteQueue bypass (`_noop = true` for Turso) is UNCHANGED; this mutex is
    * defense-in-depth for callers that reach the adapter directly.
    */
@@ -175,6 +178,13 @@ export class TursoAdapterImpl implements TursoAdapter {
      */
     allowFtsInReadonly?: boolean;
     encryption?: AdapterConfig['encryption'];
+    /**
+     * Experimental engine flags. `multiprocessWal` is **opt-in, default
+     * `false`** — see the block comment at the `experiments` array below for
+     * why (FEAT-SOX-001's own constraint, the BL-373 permanently-unopenable
+     * incident, the disclaimed `.tshm` format, MVCC/VACUUM exclusivity).
+     * Set it to `true` only when more than one OS process opens this store.
+     */
     experimental?: { multiprocessWal?: boolean };
     defaultQueryTimeout?: number;
   }): Promise<TursoAdapterImpl> {
@@ -225,11 +235,32 @@ export class TursoAdapterImpl implements TursoAdapter {
     // FTS is a core feature, so this is unconditional — merged with, never
     // overwritten by, the multiprocess_wal toggle below.
     const experiments: string[] = ['index_method'];
-    // Enable multiprocess_wal by default for concurrent reader/writer support.
-    // Uses .tshm shared memory files for WAL coordination instead of exclusive fcntl locks.
-    // Independently toggle-able via experimental: { multiprocessWal: false } —
-    // must not clobber index_method above when opted out.
-    if (opts.experimental?.multiprocessWal !== false) {
+    // multiprocess_wal is OPT-IN — `experimental: { multiprocessWal: true }`.
+    //
+    // It uses `.tshm` shared-memory sidecars for cross-process WAL coordination
+    // instead of exclusive fcntl locks, which is the only way several OS
+    // processes can share one store. That is genuinely useful and it is why the
+    // memory bundle asks for it explicitly. It is NOT a safe library default:
+    //
+    //   - FEAT-SOX-001's own constraint list says "Multi-process WAL must be
+    //     opt-in (experimental, not default)". It shipped opt-OUT.
+    //   - `.tshm` is a versioned on-disk coordination format whose stability is
+    //     explicitly disclaimed upstream (docs/spec/sox-executor.md:582,613).
+    //   - BL-373: a stale `-tshm` sidecar made a real store PERMANENTLY
+    //     unopenable after an ordinary restart and crash-looped the backend.
+    //     The recovery path below exists because of that incident.
+    //   - It is mutually exclusive with MVCC, and Turso rejects VACUUM on a
+    //     multiprocess-WAL database.
+    //
+    // A third-party consumer that never asked for cross-process access should
+    // not inherit an experimental format-versioned coordination layer — and its
+    // first Turso outage should not be one we chose for it. Single-process
+    // consumers lose nothing by the default: Turso's in-process WAL
+    // coordination is the engine's own default.
+    //
+    // Merged with, never overwritten by, the unconditional `index_method`
+    // above — opting in must not clobber FTS.
+    if (opts.experimental?.multiprocessWal === true) {
       experiments.push('multiprocess_wal');
     }
     if (opts.encryption) {
@@ -307,7 +338,8 @@ export class TursoAdapterImpl implements TursoAdapter {
     if (opts.defaultQueryTimeout !== undefined) config.defaultQueryTimeout = opts.defaultQueryTimeout;
 
     const capabilities: AdapterCapabilities = {
-      multiprocessWrite: opts.experimental?.multiprocessWal ?? true, // enabled by default
+      // Mirrors the experiment actually requested above: opt-in, default off.
+      multiprocessWrite: opts.experimental?.multiprocessWal === true,
       nativeVectors: true,
       concurrentTransactions: true,
       fts5: false,
