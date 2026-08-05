@@ -2,6 +2,98 @@
 
 ---
 
+## [Unreleased] — BL-445: the production write path measured almost nothing, including the one number a safety guard reads
+
+**On the backend production actually runs, `memory_ping.store.write_queue` was 8 structurally-unreachable zeros, 3 configuration echoes, and exactly one live measurement.** Turso reports `needsWriteSerialization: false`, which sets `WriteQueue._noop`, which routes every write through `_runBypass` — a path that called `_trackCompletion()` and nothing else. Every other signal was recorded in `_processNext`, on the FIFO path, which Turso never takes.
+
+```console
+$ # before — a healthy-looking block that no code could ever change
+$ memory_ping | jq '.store.write_queue | {queue_depth, in_flight, saturated,
+    recent_avg_task_latency_ms, counters}'
+{ "queue_depth": 0, "in_flight": 0, "saturated": false,
+  "recent_avg_task_latency_ms": 0,
+  "counters": { "tasks_completed": 0, "write_tasks_completed": 0, "slow_tasks": 0 } }
+
+$ # after — measurements, plus an explicit "there is no queue on this path"
+$ memory_ping | jq '.store.write_queue | {mode, queue_depth, in_flight, saturated,
+    recent_avg_task_latency_ms, counters}'
+{ "mode": "bypass", "queue_depth": null, "in_flight": 0, "saturated": null,
+  "recent_avg_task_latency_ms": 3.4,
+  "counters": { "tasks_completed": 30, "write_tasks_completed": 29, "slow_tasks": 0 } }
+```
+
+**`recent_avg_task_latency_ms` is not a display field — it is the deadline guard's only input** (`_latencies.recentMean(...)`, gated by `if (avgMs > 0)`). An unfed ring keeps that guard permanently disabled *no matter where the guard sits*, which is why BL-394's "hoist the two admission checks above the early return" fix sketch is a no-op diff. This is its hard prerequisite.
+
+- **`_settleBypass()` records what `_processNext` records** — latency sample (all-kind estimator ring *and* per-kind reporting ring), `tasks_completed`, `write_`/`apply_tasks_completed`, and the slow-task check.
+- **All four settle points, including both error branches.** `_processNext` counts failed tasks deliberately — *"they occupied the slot, so their duration is service time for the wait estimator either way"* — and the bypass path now matches. Excluding them would make the estimator under-count exactly when the store is unhealthy.
+- **`mode: 'fifo' | 'bypass'` discriminator, and the queue-shaped fields stop lying.** `queue_depth`, `queue_high_watermark` and `saturated` report `null` in bypass mode. `0`/`false` there was BL-334's failure mode precisely: indistinguishable from a healthy idle queue, and unchangeable by any code path.
+- **`in_flight` became real.** `_bypassInFlight` counts operations between entry and settle. Unlike the other three it is genuinely meaningful on this path — concurrent operations really are in flight — and `_processing` could not serve, being a boolean set only in `_enqueueQueued`.
+- **A memory-server test that pinned the lie was removed.** `noop queue path reports queue_depth===0 and in_flight===0` asserted the exact symptom; it now asserts `mode === 'bypass'`, the three `null`s, and a non-zero estimator ring on the production backend.
+
+**Nothing about which path executes a write changed.** `needsWriteSerialization`, `concurrentTransactions` and the `_noop` assignment are untouched, and `write-queue-turso-concurrency.spec.ts` still asserts `_noop === true` plus N concurrent Turso writes committing without serialization.
+
+```console
+$ npx nx test memory-core --skip-nx-cache -- --run src/write-queue-turso-concurrency.spec.ts
+ Test Files  1 passed (1)
+      Tests  8 passed (8)
+```
+
+Red arm, before the fix: `tasks_completed: expected +0 to be 5`, `recent_avg_task_latency_ms` not `> 0`, `mode: expected undefined to be 'bypass'`, `in_flight: expected +0 to be 6`. Commits `cd4ac4d`, `0f17ef6` (PKT-64).
+
+---
+
+## [Unreleased] — BL-425: the flaking throughput hook, and why raising its timeout could never have fixed it
+
+**`throughput-golden.spec.ts`'s Turso `beforeAll` seeded 30 episodes through real fastembed/ONNX
+inference and intermittently died on `Hook timed out in 30000ms`** — twice reproduced under
+concurrent-agent load, both times passing in isolation and on re-run of identical code.
+
+BL-425's own narrowed fix said to raise the hook timeout. **That is unsound, and following it turns
+an opaque red into a confusing one.** The assertion is `throughput >= 0.5` — 30 writes divided by a
+*fixed* 60,000 ms rolling window (`WriteQueue.THROUGHPUT_WINDOW_MS`, pruned in `getMetrics()`). A
+hook permitted to run past 60 s ages its own earliest completions out of the window before the ping
+reads them: the hook goes green and the assertion goes red. The hook budget and the measurement
+window are one coupled budget.
+
+The sound fix is to make seeding fast and load-independent — the BL-161 deterministic provider seam,
+scoped to this file and restored in the root `afterAll`:
+
+```ts
+beforeAll(() => { _setEmbedProviderForTest(new DeterministicTestProvider()); });
+afterAll(()  => { _setEmbedProviderForTest(null); });
+```
+
+```console
+$ npx nx test memory-server --skip-nx-cache
+ Test Files  28 passed (28)
+      Tests  211 passed (211)
+```
+
+| seed wall-time, idle machine | 12-write (Sqlite) | 30-write (Turso) | whole file |
+|---|---|---|---|
+| before | 4808 ms | 9900 ms | 14.54 s |
+| after  | 65 ms | 345 ms | 0.45 s |
+
+Idle, the flaking hook already burned a third of its 30 s budget — a 3x degradation blows it, and
+BL-331 measured 25–50x. After injection it has 87x margin to the budget and 174x to the window.
+
+- **Sample sizes and thresholds are untouched** — 12/30 writes, `>= 0.1` / `>= 0.2` / `>= 0.5`. They
+  are the only thing this file measures about `WriteQueue._trackCompletion`; shrinking or lowering
+  either would have deleted the test while leaving it green.
+- **A regression now fails on a named budget, not an opaque timeout.** Each block asserts its own
+  seed wall-time, and the constants are deliberately ordered
+  `SEED_BUDGET_MS` (30 s) < `SEED_HOOK_TIMEOUT_MS` (45 s) < `THROUGHPUT_WINDOW_MS` (60 s): the budget
+  assertion is *reachable* (at the project-default 30 s `hookTimeout` it never could be — the hook
+  would die at the instant the budget was breached), while the >60 s trap stays structurally
+  unreachable. Watched red at 1200 ms/embed: *"the 30-write seed took 36493ms, over the 30000ms
+  budget"*, with the `>= 0.5` assertion still passing at 36 s, exactly as designed.
+- **The injection is file-scoped, not suite-wide** — other specs in this bundle legitimately exercise
+  the real provider.
+- **BL-425's body and the `BACKLOG.md` header clause that repeated the unsound instruction are
+  corrected**, so the next agent does not inherit it.
+
+---
+
 ## [Unreleased] — BL-428 / BL-430 / BL-431 / BL-429: the store retires its own bad rows, and new stores can't make them
 
 **86 live episodes carried `tags = '[]'` where the schema means NULL — and no probe could see them,
