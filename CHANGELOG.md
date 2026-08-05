@@ -2,6 +2,90 @@
 
 ---
 
+## [Unreleased] — BL-394: the write queue stops advertising guards that cannot fire
+
+**`memory_ping` reported admission control as configured and active on the backend where neither guard can execute.** Turso sets `needsWriteSerialization: false`, so `enqueue` returns through `_runBypass` before reaching either check: the size cap is expressed over a queue that is never pushed to (`0 >= 100`, forever) and the deadline guard sits past the same early return. The zeroed rejection counters were not evidence of a healthy queue — they were evidence that the code incrementing them cannot run.
+
+```console
+$ # before — every field reads "configured and active"; none of it is in effect
+$ memory_ping | jq '.store.write_queue | {queue_max_size, deadline_budget_ms,
+    deadline_guard_enabled, counters: {rejections_busy_size: .counters.rejections_busy_size}}'
+{ "queue_max_size": 100, "deadline_budget_ms": 20000,
+  "deadline_guard_enabled": true, "counters": { "rejections_busy_size": 0 } }
+
+$ # after, Turso (production) — the claim matches the code
+$ memory_ping | jq '.store.write_queue | {mode, admission_control, queue_max_size,
+    deadline_budget_ms, deadline_guard_enabled}'
+{ "mode": "bypass",
+  "admission_control": "inactive — adapter handles concurrency natively",
+  "queue_max_size": null, "deadline_budget_ms": null,
+  "deadline_guard_enabled": false }
+
+$ # after, sqlite — both guards genuinely apply, so the real values are reported
+{ "mode": "fifo", "admission_control": "active",
+  "queue_max_size": 100, "deadline_budget_ms": 20000,
+  "deadline_guard_enabled": true }
+```
+
+**No admission control was added, deliberately.** Turso handles concurrent writes natively, the live store shows `queue_depth: 0` and zero rejections, and there is no evidence a bound is needed. If a stress harness later shows a knee, a bound gets added then and sized from data. The defect BL-394 actually observed — a health surface affirming a safety mechanism that is inert — is what this fixes.
+
+- **`admission_control: 'active' | 'inactive — adapter handles concurrency natively'`** added to `WriteQueueMetrics`, so a reader can tell "no rejections because the store is healthy" from "no rejections because rejection is unreachable".
+- **`deadline_guard_enabled` is `false` on the bypass path**, and it now has two distinguishable false-reasons: the `SOX_WRITEQ_NO_DEADLINE=1` kill-switch, versus structurally inapplicable. `admission_control` tells them apart.
+- **`queue_max_size` and `deadline_budget_ms` are `null` on the bypass path.** Printing configured values for guards that cannot evaluate is the literal JSON BL-394 filed as the defect.
+- **BL-394's own fix sketch was not implemented, and could not have been.** "Hoist the two checks above the early return" is a no-op: `queue.length` is structurally `0` there, and the deadline guard's input ring was empty until BL-445 fed it. Its acceptance criterion — *"saturate the queue past `_maxSize`"* — is unsatisfiable on a path with no queue.
+
+**The regression guard asserts peak in-flight, not completion count.** "N concurrent writes all resolved" passes just as happily against a serialized queue — FIFO completes all N too, only slower. Instead, all N operations park on one gate that only the Nth arrival releases, so under serialization operation #2 never starts, the observation is never made, and the test **hangs to a named timeout rather than quietly passing**. Unreachable, not merely false — which is what five misreadings of this file have earned.
+
+```console
+$ npx nx test memory-core --skip-nx-cache
+ Test Files  54 passed (54)
+      Tests  552 passed | 8 skipped (560)
+```
+
+Red arm, before the fix — failing on BL-394's own quoted field: *"the guard cannot fire on this path: expected true to be false"*. Both backends reported identically beforehand, which was the bug. `needsWriteSerialization`, `concurrentTransactions` and the `_noop` assignment are untouched.
+
+> **Release note:** `WriteQueueMetrics` widening to nullable is a public type change on `@adhd/sox-memory-core` (published 0.4.2). It needs a release to reach consumers, and per BL-452 each memory-core release pulls its dependents along because `workspace:*` pins exactly.
+
+---
+
+## [Unreleased] — BL-379: a probe that cannot run must say so, not vanish
+
+**The post-repair re-verification could not see the WAL, and said nothing about it.** `repairStoreIntegrity()` re-verified with `verifyStoreIntegrity(adapter, { depth: report.depth })` and forwarded no `walBaseline`. `probeWalIdentity()` returns `null` without one, and a `null` finding is never pushed — so `wal_identity` contributed **nothing** to any post-repair report. Not a wrong answer: no answer, indistinguishable from health.
+
+```console
+$ # before — repair reverified, and the WAL probe simply was not in the report
+$ jq '.verified.findings | map(.probe)' < repair-report.json
+[ "json_empty_array_null", "json_column_valid", "json_column_valid", "json_column_valid" ]
+
+$ # after — the probe is there, and it says which of the two things it means
+$ jq '.verified.findings | map(select(.probe == "wal_identity")) | .[0] | {status, backlog, detail}' < repair-report.json
+{ "status": "damaged", "backlog": "BL-330",
+  "detail": "WAL was unlinked while this connection holds it open (baseline ino=301886788, path no longer exists). A graceful close() in this state discards every write since the last checkpoint, silently and without error." }
+```
+
+**Repair does real work, and that window was unwatched.** An FTS rebuild took 982 ms on the live store. A WAL unlinked during a repair pass — BL-330's damage, which a graceful `close()` turns into total loss of everything since the last checkpoint — was invisible to the verification that ran immediately afterwards. The close-path check still caught it, so this was a coverage gap rather than a data-loss path; the gap is now closed at the point where it was claimed to be covered.
+
+- **`RepairOptions.walBaseline`** — additive and optional. The baseline travels into the reverify, so the probe has the input it needs to run at all.
+- **`verifyAndRepair` forwards the baseline it already holds**, which puts the fix on the adapter open path (`runOpenTimeIntegrity`) rather than only in direct callers of `repairStoreIntegrity`. That is the one place a dropped hand-off would silence the probe on every store open.
+- **A healthy store reports `wal_identity: ok`, not silence.** *Ran and clean* and *did not run* are now different values in the report — BL-379's own stated bar, and the BL-374/BL-368 family it belongs to.
+- **No verdict semantics changed.** `report.unknown` is untouched, so no status surface gains a new alarm on a healthy store (the BL-360 non-convergence trap). The narrow fix landed alone; the repo-wide "`unknown` for any unrunnable probe" semantic was not taken.
+
+```console
+$ npx nx run-many -t lint,typecheck,test -p store-adapter --skip-nx-cache
+ Tests  327 passed (327)
+
+$ # red arm, forwarding reverted — all three fail on ABSENCE, which is the item's shape
+ × BL-379 negative control: WAL intact — the post-repair report says the probe RAN and is clean
+ × BL-379: a WAL unlinked BETWEEN the damage and the repair appears in the post-repair report
+ × BL-379: the open path forwards it too — verifyAndRepair reverifies with the baseline it holds
+ AssertionError: the post-repair report omitted wal_identity entirely (BL-379):
+   ["json_empty_array_null","json_column_valid","json_column_valid","json_column_valid"]: expected +0 to be 1
+```
+
+Regression: `libs/data/store/store-adapter/src/__tests__/integrity-repair-reverify.bl379.test.ts` — three arms (negative control, unlink-between-damage-and-repair, open path), every assertion on **presence**, watched red→green.
+
+---
+
 ## [Unreleased] — BL-341 / BL-449: the backup verdict says what it actually checked
 
 **`backupStore()` returned `integrityCheck: 'ok'` for three situations it could not tell apart** — a copy verified clean, a copy verified only against a pragma that is structurally incapable of reading an FTS index, and a copy not verified at all. It is the pre-restart auto-backup, i.e. the artifact you reach for after a crash.
