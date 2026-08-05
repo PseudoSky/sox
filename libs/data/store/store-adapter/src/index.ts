@@ -11,3 +11,4 @@ export * from './adapter-meta.js';
 export * from './integrity.js';
 export * from './integrity-status.js';
 export * from './migration.js';
+export * from './preflight.js';

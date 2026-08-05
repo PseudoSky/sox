@@ -15,6 +15,13 @@ import {
   verifyStoreIntegrity,
 } from './integrity.js';
 import type { BackupIntegrityReport, WalIdentity } from './integrity.js';
+import {
+  clearStoreOpenMarker,
+  describePreflight,
+  hasStoreOpenMarker,
+  markStoreOpen,
+  preflightSchemaSanity,
+} from './preflight.js';
 import type {
   TursoAdapter,
   AdapterTransaction,
@@ -257,6 +264,28 @@ export class TursoAdapterImpl implements TursoAdapter {
       return connect(url, { authToken: opts.authToken, ...dbOpts });
     };
 
+    // (BL-361) OUT-OF-PROCESS PRE-FLIGHT. An FTS index row whose Tantivy
+    // backing objects are missing does not fail the open below — it PANICS in
+    // Rust and aborts this process (SIGABRT), so no catch, no probe and no
+    // repair path downstream ever runs. The only defence is to look at
+    // `sqlite_master` through a different engine BEFORE asking Turso to open
+    // the file. See preflight.ts for the mechanism and the measurements.
+    //
+    // Gated on the out-of-band marker file, NOT on the store's own unclean
+    // flag: `consumeUncleanShutdownFlag()` reads `_adapter_meta` through this
+    // adapter, i.e. after `connect()` returned — unreachable on a store that
+    // kills the process inside `connect()`.
+    if (opts.dbPath && opts.readonly !== true && hasStoreOpenMarker(opts.dbPath)) {
+      const preflight = preflightSchemaSanity(opts.dbPath, { repair: true });
+      if (preflight.orphaned.length > 0) {
+        emitIntegrityReport(
+          opts.dbPath,
+          preflight.failed !== null ? 'repair_failed' : 'repaired',
+          describePreflight(preflight),
+        );
+      }
+    }
+
     let db: any;
     try {
       db = await openOnce();
@@ -318,6 +347,12 @@ export class TursoAdapterImpl implements TursoAdapter {
 
     const instance = new TursoAdapterImpl(db, config, capabilities);
     instance._softReadonly = softReadonly;
+
+    // (BL-361) The store is now open, so this session owns it. The marker is
+    // what tells the NEXT open that this session may not have ended cleanly —
+    // `close()` clears it. It lives outside the database on purpose: the state
+    // it guards against is one where the database cannot be read at all.
+    if (opts.readonly !== true) markStoreOpen(opts.dbPath);
 
     // Stamp adapter metadata (non-fatal)
     if (!opts.readonly) {
@@ -592,5 +627,11 @@ export class TursoAdapterImpl implements TursoAdapter {
     }
 
     await this.db.close();
+
+    // (BL-361) Orderly close — drop the out-of-band marker last, after the
+    // driver has actually let go of the file. Its presence at the next open is
+    // the ONLY signal that a session ended without getting here, and that is
+    // the population that can carry the panic-on-open schema state.
+    if (!this.config.readonly) clearStoreOpenMarker(this.config.dbPath);
   }
 }
