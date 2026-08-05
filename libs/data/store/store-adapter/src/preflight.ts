@@ -14,12 +14,20 @@
  * SetCookie: TransactionState::Read, should be write
  * ```
  *
- * Measured against `@tursodatabase/database@0.7.1`: the child process exits
- * with signal `SIGABRT` (status 134). Nothing in-process can catch it, log it,
- * or repair it, because nothing in-process runs — the panic happens *inside*
- * `connect()`, before any adapter code exists.
+ * Measured against `@tursodatabase/database@0.7.1`: the process exits with
+ * signal `SIGABRT` (status 134). Nothing in-process can catch it, log it, or
+ * repair it — a Rust `panic!` crossing the FFI boundary is not an exception.
  *
- * Reported upstream: https://github.com/tursodatabase/turso/issues/2891
+ * **What triggers it, precisely (measured 2026-08-05 — BL-361's own account of
+ * this is wrong):** `connect()` does NOT panic. Neither does `SELECT 1`, a base
+ * table read, a `sqlite_master` read, an `INSERT`, a
+ * `CREATE INDEX IF NOT EXISTS … USING fts`, or `DROP INDEX`. Exactly one
+ * statement aborts the process: **`fts_match` against the orphaned index**. The
+ * adapter reaches it unaided — `TursoAdapterImpl.connect()` →
+ * `runOpenTimeIntegrity` → `probeFtsIndexes` issues a sentinel `fts_match` on
+ * every open — so an ordinary open of such a store still kills its host.
+ *
+ * Reported upstream: https://github.com/tursodatabase/turso/issues/8216
  * (a malformed schema must surface as an error, never a `panic!`).
  *
  * ## Why the store's own unclean-shutdown flag cannot gate this

@@ -114,8 +114,8 @@ No anonymised copy of the live store was needed; the fallback in BL-362 is unuse
   reaches `fts_match` and still dies. Now that §2 shows `DROP INDEX` works on the open connection, a
   cheap unconditional in-process guard is possible (one `sqlite_master` read before the FTS probe
   issues any `fts_match`) — proposed to the owner, not implemented here.
-- **Upstream.** A `panic!` on malformed schema is a driver defect regardless of how well we route
-  around it; the repro is `libs/data/store/store-adapter/src/__tests__/fixtures/bl361-open-child.ts`
+- **Upstream.** Filed as https://github.com/tursodatabase/turso/issues/8216 — a `panic!` on
+  malformed schema is a driver defect regardless of how well we route around it. The repro is `libs/data/store/store-adapter/src/__tests__/fixtures/bl361-open-child.ts`
   plus the damage helper in `preflight-panic.bl361.test.ts`.
 
 ## Citations

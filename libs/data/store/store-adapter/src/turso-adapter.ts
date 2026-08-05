@@ -265,16 +265,20 @@ export class TursoAdapterImpl implements TursoAdapter {
     };
 
     // (BL-361) OUT-OF-PROCESS PRE-FLIGHT. An FTS index row whose Tantivy
-    // backing objects are missing does not fail the open below — it PANICS in
-    // Rust and aborts this process (SIGABRT), so no catch, no probe and no
-    // repair path downstream ever runs. The only defence is to look at
-    // `sqlite_master` through a different engine BEFORE asking Turso to open
-    // the file. See preflight.ts for the mechanism and the measurements.
+    // backing objects are missing does not fail with an error — the first
+    // `fts_match` against it PANICS in Rust and aborts this process (SIGABRT).
+    // The driver open below survives; `runOpenTimeIntegrity` a few lines down
+    // does not, because `probeFtsIndexes` issues exactly that query on every
+    // open. A panic crossing the FFI boundary is not catchable, so no probe
+    // and no repair path downstream ever runs. The only defence is to look at
+    // `sqlite_master` through a different engine BEFORE the store is used.
+    // See preflight.ts for the mechanism and the per-statement measurements,
+    // and upstream https://github.com/tursodatabase/turso/issues/8216.
     //
     // Gated on the out-of-band marker file, NOT on the store's own unclean
     // flag: `consumeUncleanShutdownFlag()` reads `_adapter_meta` through this
-    // adapter, i.e. after `connect()` returned — unreachable on a store that
-    // kills the process inside `connect()`.
+    // adapter, i.e. after `connect()` returned — and this pre-flight has to
+    // decide before that, so the gate must live outside the database.
     if (opts.dbPath && opts.readonly !== true && hasStoreOpenMarker(opts.dbPath)) {
       const preflight = preflightSchemaSanity(opts.dbPath, { repair: true });
       if (preflight.orphaned.length > 0) {
