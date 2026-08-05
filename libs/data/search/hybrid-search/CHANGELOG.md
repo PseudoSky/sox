@@ -1,5 +1,12 @@
 # @adhd/sox-hybrid-search
 
+## 0.3.1
+
+### Patch Changes
+
+- @adhd/sox-graph-store@0.5.1
+- @adhd/sox-vector-store@0.3.1
+
 ## 0.3.0
 
 ### Minor Changes
