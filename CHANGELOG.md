@@ -2,6 +2,55 @@
 
 ---
 
+## [Unreleased] — BL-464: four shipped packets read `OPEN` in the one format the project taught everyone to trust
+
+**`stampPackets` replaced the machine-owned status stamp positionally** — it inspected only the line immediately after a packet heading, optionally past one blank. A second stamp deeper in a body was therefore never rewritten, never validated, and never reported stale, because a duplicate is *stable* rather than drifting: `replaceBlock` + `stampPackets` reproduced the file byte-identically on every run, so it survived regeneration indefinitely. Six packets in `PLAN.md` carried two stamps, and PKT-20/21/23/43 read `OPEN` for shipped work while the authoritative stamp above them read `DONE` — carrying the verbatim `derived by tools/plan-status.mjs, do not hand-edit` suffix, the strongest signal the project has that a line is machine-owned and current.
+
+```console
+$ node tools/plan-status.mjs --check
+plan-status: STALE — docs/reporting/memory/PLAN.md. Run `node tools/plan-status.mjs`.
+
+$ node tools/plan-status.mjs
+plan-status: 31 done / 4 partial / 50 open of 85 packets · already current · updated 1 file(s)
+
+$ node tools/test-bl464-duplicate-status-stamp.mjs
+[PASS] BL-464: every packet block in the real PLAN.md contains exactly one status stamp — 85 packets, all single-stamped
+```
+
+- **The stamp is machine-owned by declaration, so a second one is by definition garbage.** `stampPackets` now claims every `> **status:` line inside a packet block, emits exactly one canonical stamp under the heading, and drops the rest. The four stale stamps were corrected *by the tool*, not by hand.
+- **`main()` is guarded behind an entrypoint check**, so the module can be imported by a test without writing `PLAN.md`/`STATE.md`.
+- **Idempotency is tested the way the tool actually runs** — rebuilding the model between passes, since re-using the first pass's heading line numbers would point at pre-removal offsets and test nothing.
+- Pinned by `tools/test-bl464-duplicate-status-stamp.mjs`, verified RED against the pre-fix module (the fixture keeps both stamps; the real file reports PKT-16/20/21/23/32/43 = 2) and GREEN after.
+
+---
+
+## [Unreleased] — BL-435: the plan guard now sees the hand-written sections it was blind to
+
+**Every rewrite and every `--check` was bounded by the `PLAN-STATUS:BEGIN/END` markers**, so hand-maintained prose sat outside the guard entirely — in the two documents every routing doc sends agents to first. `STATE.md`'s "What to do next" led with **PKT-41 (BL-391)** and **PKT-19 (BL-329)**, both DONE and neither id in `BACKLOG.md`; a session acted on that entry before catching it. `PLAN.md`'s "Wave summary" read **"Total: 56 packets"** against a derived ledger of 72, with two whole waves missing and a tier distribution contradicted by the recount snippet printed three lines below it. Both times `--check` printed `OK — derived blocks match BACKLOG.md`.
+
+```console
+$ node tools/plan-status.mjs --check
+plan-status: STALE PROSE — STATE.md § ## What to do next: names PKT-41 as an actionable
+target ("PKT-41 (BL-391)"), but every BL id it targets is closed — the packet is DONE.
+plan-status: STALE PROSE — PLAN.md § ## Wave summary: states "Total: 56 packets"; the
+derived ledger has 85.
+plan-status: 2 hand-written claim(s) name finished work or restate a derived total.
+These sections are not regenerated — edit the prose.
+
+$ node tools/plan-status.mjs --check
+plan-status: OK — derived blocks match BACKLOG.md, audited prose names only open work.
+```
+
+- **Scanning all prose was measured, then rejected.** `STATE.md`'s prose names 58 BL ids of which **46 are closed**, nearly all legitimate history ("BL-361 shipped"). A guard that fires 46 times is a guard that gets deleted.
+- **Sections opt in with `<!-- PLAN-STATUS:AUDIT -->`, and the required ones cannot opt out.** `REQUIRED_AUDITED_SECTIONS` lists the sections that must carry the marker, so deleting it fails the guard instead of silencing it — otherwise the fix has the same recurrence hole as the defect.
+- **Only *actionable* claims are checked**, which is what keeps the false-positive rate at zero: not blockquotes — the editorial ⚠️ notes recount the original incident **by naming its DONE ids**, and a guard that fired on them would delete the institutional memory of why it exists — not fenced code, and only ids inside a **bold** span, a to-do item's declared target rather than a citation in its prose tail (`(BL-367's lesson)` correctly does not fire).
+- **The totals the tool already computes are compared against the derived model**, not re-read from the file being audited.
+- **The pre-commit trigger was widened from `BACKLOG.md` to `PLAN.md`/`STATE.md` as well.** The old condition assumed "a change elsewhere cannot invalidate the derived blocks" — true of the blocks, false of the audited prose, which goes stale precisely in a commit that never stages `BACKLOG.md`.
+- **`STATE.md`'s live-service block was a day and a deploy behind production** and is corrected against the running server: pid 78765 → 55538, artifact `a0d8bbc1ee31` → `8ae1b0da3c82`, `stages_declared: 0` → **2**, the 86 `tags = '[]'` rows now repaired, and BL-399's requested steady-state re-measure taken (**0** occurrences). Item 1's outstanding deploy and armed checksum drift were both cleared by `61e4ff0`; the ordering of the list was left as the owner set it.
+- Pinned by `tools/test-bl435-unguarded-prose.mjs` — five must-fire arms including the literal 2026-08-04 incident, five must-not-fire arms, and an end-to-end arm running the real tool over the real documents.
+
+---
+
 ## [Unreleased] — BL-456: `nx test` builds other agents' uncommitted source, so a suite result now ships with the tree state it ran against
 
 **`nx test <project>` is not read-only with respect to `dist/`.** `nx.json` sets `targetDefaults.test.dependsOn = ["^build"]`, so every upstream project is rebuilt from whatever source is on disk — committed or not. Observed live during PKT-72: an agent's isolated runs were green, its first full `nx test memory-server --skip-nx-cache` went red on `expected null to be +0`, an assertion neither it nor its packet had touched. The input was a concurrent agent's uncommitted `write-queue.ts`, compiled into `memory-core/dist` by the test run itself. The silent direction is worse — a suite can go **green** against code the running agent has never seen, and be reported as verification.
