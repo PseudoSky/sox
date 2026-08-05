@@ -2,7 +2,39 @@
 
 ---
 
-## [Unreleased] — BL-360: the integrity suppression now names the driver it was measured on
+## [Unreleased] — BL-465: the tool mandated for the hottest files stopped planting a revert bomb on every run
+
+**`commit-mine.mjs` moved the branch and left the shared index holding the pre-commit blob for every path it had just committed**, so `git diff --cached` read as the exact inverse of the commit — a BL-463 revert bomb, manufactured on every successful run, on `BACKLOG.md` / `CHANGELOG.md` / `PLAN.md`. Compliance was the vector: the more faithfully an agent followed `CLAUDE.md`, the more reliably it armed the next pathspec-less `git commit`.
+
+```console
+$ git diff --cached --stat            # verified clean before
+$ node tools/commit-mine.mjs -m "docs: …" -- BACKLOG.md PLAN.md STATE.md
+commit-mine: committed da3c1880a on wip/turso-live-metrics
+$ git diff --cached --stat            # BEFORE the fix — the inverse of the commit just made
+ 3 files changed, 12 insertions(+), 247 deletions(-)
+
+$ node tools/commit-mine.mjs -m "docs: …" -- BACKLOG.md PLAN.md STATE.md
+commit-mine: committed 9f2c41ab7 on wip/turso-live-metrics
+commit-mine: shared index resynced to HEAD for 3 committed path(s) [BL-465].
+$ git diff --cached --stat            # AFTER — empty, no mitigation step required
+```
+
+- **The resync is per-path, and refuses to touch contended entries.** Only a committed path whose shared-index entry still equals the *old* HEAD blob is reset. Where another agent has staged real content, the entry is left byte-identical and named in a warning:
+
+```console
+commit-mine: NOT resynced — 1 committed path(s) hold someone else's staged content in the shared
+index and were left byte-identical: BACKLOG.md. Their index entries are now behind HEAD; do not run
+a pathspec-less commit until the owner commits or clears them (BL-465).
+```
+
+- **A blanket `git read-tree HEAD` was rejected outright**, and the rejection is pinned by a test arm: it would reset every *other* agent's staged path too, converting a revert bomb into immediate data loss. The bystander arm stages an unrelated path and asserts its index entry is byte-identical afterwards.
+- **Intent-to-add placeholders are resynced, not warned about.** `git add -N` — the flow this tool's own docs mandate for a new file — leaves an empty-blob entry; once real content lands in HEAD that entry is a bomb of its own (a bare commit would re-empty the file). `git status --porcelain` distinguishes intent-to-add (`" A"`) from a genuinely staged add (`"A "`), read while HEAD is still the old commit.
+- **The decision is made before the ref moves; the write happens after.** Classification reads the old HEAD, and the resync re-reads HEAD and skips entirely (with the recovery command printed) if another agent's commit landed in the window — the same refuse-rather-than-race stance the tool already took at `update-ref`.
+- **The working tree is never read or written** — `git restore --staged` rewrites index entries only. Every arm of the test asserts a byte-identical worktree snapshot.
+- **The interim mitigation is retired.** `git restore --staged <paths>` after every invocation is no longer required.
+- Pinned by `tools/test-bl465-commit-mine-index-resync.mjs` (four arms; 3 of 9 assertions red before the fix).
+
+---
 
 **A filter that hides a driver's bug is a claim about one version of that driver, and nothing recorded which one.** `isKnownFalsePositive()` swallows Turso's `wrong # of entries in index __turso_internal_fts_dir_*_key` — emitted by `PRAGMA integrity_check` on a *freshly created, fully working* FTS store, so without the filter every Turso store carrying an FTS index reports damage forever. Both manifests declare `^0.7.1`, which means an ordinary caret bump could move the store onto a driver nobody had measured, with no file in this repo changing, while the filter went on quietly swallowing whatever the new version emits — including a **real** `wrong # of entries` report.
 

@@ -28,8 +28,22 @@
  * --------------
  * It builds a PRIVATE index file (via GIT_INDEX_FILE), seeds it from HEAD, applies only the
  * changes you selected, writes a tree, and moves the branch with commit-tree/update-ref. The
- * shared `.git/index` is never read for content and never written. The working tree is never
- * modified — another agent's uncommitted edits survive untouched, still uncommitted.
+ * shared `.git/index` is never read for content, and is written only by the narrow post-commit
+ * resync described next. The working tree is never modified — another agent's uncommitted edits
+ * survive untouched, still uncommitted.
+ *
+ * THE POST-COMMIT RESYNC [BL-465] — why the shared index is touched at all
+ * -----------------------------------------------------------------------
+ * `update-ref` moves the branch out from under the shared index, which still holds the OLD HEAD
+ * blob for every path just committed. `git diff --cached` then reads as the exact INVERSE of the
+ * commit, and the next pathspec-less `git commit` (or `git commit --amend`, BL-457) reverts it —
+ * a BL-463 revert bomb, manufactured on every run, on the hottest files in the repo. So after the
+ * ref moves, each committed path whose shared-index entry still equals the old HEAD blob (plus
+ * intent-to-add placeholders, which hold no content) is reset to HEAD with `git restore --staged`.
+ *
+ * A path where someone else has staged real content is NEVER reset — it is left byte-identical and
+ * named in a warning. A blanket `git read-tree HEAD` would be catastrophic here: it converts this
+ * revert bomb into immediate loss of every other agent's staged work.
  *
  * USAGE
  *   node tools/commit-mine.mjs -m "msg" -- BACKLOG.md docs/foo.md
@@ -147,6 +161,40 @@ try {
   const head = git(['rev-parse', 'HEAD']).trim();
   const commit = git(['commit-tree', tree, '-p', head, '-m', message]).trim();
 
+  // [BL-465] Decide the shared-index resync BEFORE the ref moves, while HEAD is still the old
+  // commit — see the resync block after `update-ref` for why this must happen and why it must be
+  // per-path. Paths are read from the private index so they are exactly what this commit touches
+  // (a directory argument or a `--hunks` filter means `paths` is not that list).
+  const committedPaths = git(['diff-index', '--cached', '--name-only', head], { env })
+    .split('\n')
+    .filter(Boolean);
+
+  // An intent-to-add entry (`git add -N`, which this tool's own docs mandate for a new file) holds
+  // the empty blob and no content of anyone's. `git status --porcelain` is the only reliable
+  // discriminator: intent-to-add is " A", a genuinely staged add is "A ". Read it while HEAD is
+  // still old, because our own commit changes the reported status.
+  const intentToAdd = new Set(
+    git(['status', '--porcelain', '-z', '--', ...committedPaths])
+      .split('\0')
+      .filter((rec) => rec.startsWith(' A '))
+      .map((rec) => rec.slice(3)),
+  );
+
+  // Safe to resync == the shared-index entry still matches the OLD HEAD blob, i.e. nobody staged
+  // real content there. Anything else is another agent's work and is left strictly alone.
+  const resyncable = [];
+  const contended = [];
+  for (const p of committedPaths) {
+    let matchesOldHead;
+    try {
+      git(['diff-index', '--cached', '--quiet', head, '--', p]);
+      matchesOldHead = true;
+    } catch {
+      matchesOldHead = false;
+    }
+    (matchesOldHead || intentToAdd.has(p) ? resyncable : contended).push(p);
+  }
+
   const branch = git(['rev-parse', '--abbrev-ref', 'HEAD']).trim();
   if (branch === 'HEAD') die('detached HEAD — refusing to move a ref you may not own.');
 
@@ -162,6 +210,36 @@ try {
     `commit-mine: committed ${commit.slice(0, 9)} on ${branch}` +
       (hunkRe ? ` — ${skipped} hunk(s) deliberately left uncommitted in the worktree.` : '.'),
   );
+
+  // ---- [BL-465] resync the SHARED index for the paths we just committed ------------------------
+  // The branch has moved but the shared index still holds the OLD HEAD blob for every committed
+  // path, so `git diff --cached` now reads as the exact INVERSE of this commit and the next
+  // pathspec-less `git commit` (or `git commit --amend`, BL-457) would revert it. That is a
+  // BL-463 revert bomb manufactured by the very tool mandated for the hottest files.
+  //
+  // This is deliberately NOT `git read-tree HEAD`: a blanket reseed would erase every other
+  // agent's legitimately staged work, converting a revert bomb into immediate data loss. Only the
+  // paths classified `resyncable` above — entry still equal to the old HEAD blob, or an
+  // intent-to-add placeholder — are touched. `git restore --staged` rewrites index entries only;
+  // the working tree is never read or written.
+  if (git(['rev-parse', 'HEAD']).trim() !== commit) {
+    console.error(
+      'commit-mine: WARNING — HEAD moved again immediately after this commit; skipping the ' +
+        'shared-index resync rather than acting on a ref state we no longer own. Run ' +
+        `\`git restore --staged -- ${committedPaths.join(' ')}\` once the tree settles (BL-465).`,
+    );
+  } else if (resyncable.length) {
+    git(['restore', '--staged', '--', ...resyncable]);
+    console.error(`commit-mine: shared index resynced to HEAD for ${resyncable.length} committed path(s) [BL-465].`);
+  }
+  if (contended.length) {
+    console.error(
+      `commit-mine: NOT resynced — ${contended.length} committed path(s) hold someone else's staged ` +
+        `content in the shared index and were left byte-identical: ${contended.join(', ')}. ` +
+        'Their index entries are now behind HEAD; do not run a pathspec-less commit until the ' +
+        'owner commits or clears them (BL-465).',
+    );
+  }
   console.error('commit-mine: hooks did NOT run. Verify with the repo guards if you have not already.');
 } finally {
   try { unlinkSync(patchFile); } catch { /* scratch dir is disposable */ }
