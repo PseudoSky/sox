@@ -2074,41 +2074,6 @@ Citations: [wip/turso-live-metrics, team-lead, claude, turso-go-live, 1: libs/me
 
 ---
 
-### BL-445 — the entire `write_queue` metrics block is structurally inert on the Turso bypass path — 8 of 12 fields are unreachable zeros, and the estimator ring is never fed — **Open (HIGH)** (2026-08-05)
-
-**⛔ NOT a licence to serialize Turso writes.** Same warning as BL-394, for the same reason: this item lives in `write-queue.ts` and four agents have now misread that file as an invitation to flip `needsWriteSerialization` / `concurrentTransactions`. **Do not.** Nothing below changes which path executes a write; it changes what that path *records*.
-
-**Found while:** architecting BL-394. BL-394 correctly identified that the `_noop` bypass skips two admission checks. Reading the file to plan that fix showed the loss is far wider than two checks, and — separately — that BL-394's one open question is already answered by the source.
-
-**Every metric field is fed from the queued path only.** `getMetrics()` (`write-queue.ts:935-973`) reads instance state that is written in exactly three places, all of them on the FIFO path:[1]
-
-| field(s) in `getMetrics()` | fed by | reached on bypass? |
-|---|---|---|
-| `queue_depth` :946, `queue_high_watermark` :949 | `this.queue.push` / :852-853, in `_enqueueQueued` | **no** — nothing is ever pushed |
-| `in_flight` :947 | `this._processing = true` :857, in `_enqueueQueued` | **no** — always `0` |
-| `saturated` :950 | `_checkSaturation()` :1006-1023, called from `_enqueueQueued`/`_processNext` | **no** — always `false` |
-| `write_latency_ms` / `apply_latency_ms` :953-964 | `_recordLatencySample` :900-902, called only at :1069 | **no** — all p50/p99/mean/max are `0` |
-| `recent_avg_task_latency_ms` :966 | same ring (`_latencies`) | **no** — always `0` |
-| `counters.*` :971 (all six) | `:1070-1073` (`tasks_completed`, `write_/apply_tasks_completed`), `:1078` (`slow_tasks`), `:768`/`:799` (`rejections_busy_*`) | **no** — all `0` |
-| `throughput_writes_per_sec` :969-970 | `_trackCompletion()` :992-998 → `_completionTimes` | **yes** — the bypass calls it at :716/:735 |
-| `queue_max_size` :948, `deadline_budget_ms` :967, `deadline_guard_enabled` :968 | constructor config | n/a — config echoes, not measurements |
-
-So on the production backend **8 of 12 top-level fields are structurally unreachable zeros, 3 are configuration echoes, and exactly one — `throughput_writes_per_sec` — is a live measurement.** Turso sets `needsWriteSerialization: false` (`turso-adapter.ts:315`), `_create` reads that and sets `_noop = true` (`write-queue.ts:509-511`), and `enqueue` returns through `_runBypass` at :657-680 without ever touching the queue.[2]
-
-**This resolves BL-394's open question — there is no second `WriteQueue` instance.** BL-394 recorded, as unexplained and potentially "a larger problem than this item", that live `counters` read `0` while `throughput_writes_per_sec` was non-zero, and instructed that the instance-identity question be settled before any fix. It is settled by reading the code, and the live observation is itself the proof: both numbers are returned by a **single** `getMetrics()` call on a **single** instance (`memory_ping` → `WriteQueue.metricsForPath(resolvedPath)`, `memory-server/src/index.ts:1055` → `instances.get(dbPath)`, `write-queue.ts:980-983`).[3] A non-zero `throughput` means that instance *did* observe the writes, because only `_trackCompletion()` populates it and only the write path calls it. Had `memory_ping` been reading a different instance, `throughput` would have read `0` too. The counters are zero because `_trackCompletion()` (:992-998) pushes a timestamp and **does not increment any counter** — `tasks_completed++` lives at :1070, in `_processNext`, on the other side of the early return. **Do not re-litigate the instance question; it is answered. Fix the counters.**
-
-**Why this outranks the cosmetic reading.** `recent_avg_task_latency_ms` is not merely a display field — it is the deadline guard's only input (`avgMs = this._latencies.recentMean(...)`, :790, gated by `if (avgMs > 0)`, :791). On the bypass path that ring is never fed, so **even if BL-394's admission checks are hoisted above the early return exactly as its fix sketch describes, the deadline guard remains permanently disabled**: `avgMs` is `0`, the `if` never enters. This item is therefore a hard prerequisite for BL-394's fix being anything other than a no-op diff, not a follow-on polish pass.
-
-**Fix sketch:** feed the same three signals from `_runBypass` that `_processNext` feeds — `_recordLatencySample(latencyMs, kind)`, `_counters.tasks_completed++` / `write_|apply_tasks_completed++`, and the slow-task check — at the two settle points (:716 async, :735 sync) and, for latency, on the error paths too (`_processNext` deliberately counts failed tasks: they occupied service time, :1066-1068 — match that). Then decide, per field, whether the structural zeros are *reported* or *suppressed*: `queue_depth`, `in_flight`, `queue_high_watermark` and `saturated` describe a queue that does not exist on this path, so printing `0`/`false` is BL-334's exact failure — prefer `null`, or an explicit `mode: "bypass"` discriminator on the block so a reader can tell "no queue" from "empty queue". A regression test must assert that after N writes on a Turso-backed queue, `tasks_completed === N` and `recent_avg_task_latency_ms > 0` — the second assertion is the one that pins this to BL-394, because it is the guard's input.
-
-**Severity:** HIGH — not because a write is lost (none is), but because this is the measurement substrate the whole turso-live-metrics effort is built on, and on the production backend it reports eight healthy-looking zeros that no code can ever change. It also silently defeats BL-394's fix. Related: BL-394 (the admission-control half, blocked on this), BL-334 (a surface reporting configuration rather than reality), BL-401 (which instrumented the bypass path for wait-vs-work at :674-679 precisely so a stage would not "read zero in production while passing every test" — that reasoning applies to this block and was not extended to it), BL-405 (the same early-return shape previously stranded the idle checkpoint).
-
-Citations: [wip/turso-live-metrics, architect-reviewer, claude, BL-394/BL-274 architecture, 1: libs/memory-core/src/write-queue.ts:935-973 (getMetrics) with feeds at :852-853, :857, :900-902, :1006-1023, :1069-1073, :1078, :768, :799, 2: libs/memory-core/src/write-queue.ts:509-511 and :657-680 and :700-752, libs/data/store/store-adapter/src/turso-adapter.ts:315, 3: extensions/bundles/sox-memory-bundle/members/memory-server/src/index.ts:1055, libs/memory-core/src/write-queue.ts:980-983 and :478-501 and :992-998]
-
----
-
----
-
 ### BL-396 — `memory-server/src/index.ts` statically imports the ESM store-adapter from a CommonJS module, against the convention `memory-core` documents and follows — **Open (MEDIUM)** (2026-08-01)
 
 **Found while:** getting the whole-repo gate green after the BL-325/BL-340 work. `npx tsc --noEmit` (the root `sox-ecosystem:typecheck`) reports two errors, both in production source:[1]
