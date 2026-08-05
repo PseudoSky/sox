@@ -1,9 +1,23 @@
 # FJ Mode Design — Fork-Join Proxy Mode (v0.1, DESIGN)
 
-> **Status:** v1 IMPLEMENTED (2026-08-05) — routing + preset-set endpoint +
-> per-turn fork via the CF rewrite + seed-then-warm execute + concat join +
-> per-fork cache metrics. Judge join = STUBBED switch (wired, falls back to
-> concat). See "v1 implementation" note in §3.4 and §3.3.
+> **Status:** ⛔ **BROKEN (2026-08-05)** — fork output is main-agent narration
+> mislabeled as perspectives. v1 plumbing is implemented (routing + preset-set
+> endpoint + per-turn fork via the CF rewrite + full-parallel execute + concat
+> join + per-fork cache metrics), but the fork OUTPUT is not analysis: each fork
+> returns setup narration ("Fork preset stored…", "Fork armed…", "Fork set…
+> will analyze next turn") with `finish_reason: tool_calls`, zero task analysis.
+> Evidence: `proxy/proxy-ses_02fc0464affeMZ10Pf4C9s3poH.jsonl` — preset
+> `[architect, backend, typescript]`, all three forks returned narration.
+> **Root cause (identified, not yet fixed): fork INPUT construction.** Each fork
+> is built by reusing the main agent's ENTIRE conversation — the 72K-char
+> opencode system prompt + the main agent's working transcript (10 msgs:
+> task, tool calls, reasoning) — with the persona appended as a tail suffix.
+> The persona cannot establish identity against 72K chars of main-agent
+> instructions; the model continues as the main agent and narrates the setup
+> instead of analyzing. Fix (designed, not implemented): forks need a
+> **persona-first context** built around the persona + the task/artifact —
+> NOT a reuse of the main conversation. Judge join = STUBBED switch (wired,
+> falls back to concat). See "v1 implementation" note in §3.4 and §3.3.
 > **Parent:** `docs/research/content-first/RESUME.md` (content-first research)
 > **Builds on:** `fork-join-cost-model.md`, `fork-join-round-model.md`,
 > `fork-join-sequence-model.md`, `cache-performance-model.md`,
