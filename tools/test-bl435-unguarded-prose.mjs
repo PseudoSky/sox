@@ -192,14 +192,26 @@ report(
 
 // End-to-end: the real tool, the real documents, the real model built from BACKLOG.md. This is the
 // arm that proves the guard is wired into `--check` rather than merely exported.
+//
+// It asserts on STALE PROSE lines specifically, NOT on the exit code. In a shared checkout another
+// agent's uncommitted BACKLOG.md edit makes the derived blocks legitimately stale, and `--check`
+// exits 1 for that reason alone — which says nothing about BL-435 and would make this arm report a
+// failure it did not find (BL-456: a suite result belongs to the tree state it ran against). Derived
+// -block staleness is BL-224's guard and is covered by its own path.
 const check = spawnSync(process.execPath, [resolve(ROOT, 'tools/plan-status.mjs'), '--check'], {
   cwd: ROOT,
   encoding: 'utf8',
 });
+const proseViolations = (check.stderr || '')
+  .split('\n')
+  .filter((l) => l.includes('STALE PROSE'));
 report(
-  'BL-435: the real PLAN.md and STATE.md pass --check with the prose audit live',
-  check.status === 0,
-  (check.stderr || '').trim().split('\n').slice(0, 4).join(' | '),
+  'BL-435: the real PLAN.md and STATE.md carry no stale hand-written claims',
+  proseViolations.length === 0,
+  proseViolations.join(' | ') ||
+    (check.status === 0
+      ? 'audited prose names only open work'
+      : 'audited prose clean (derived blocks stale for an unrelated reason — not this item)'),
 );
 
 console.log(`\ntest-bl435: ${failed} failure(s).`);
