@@ -21,7 +21,16 @@
  *    detected and repaired with **no repair DDL anywhere in the test**.
  */
 import { describe, it, expect, beforeAll, afterEach } from 'vitest';
-import { mkdtempSync, statSync, unlinkSync, existsSync, copyFileSync, writeFileSync, readdirSync } from 'node:fs';
+import {
+  mkdtempSync,
+  statSync,
+  unlinkSync,
+  existsSync,
+  copyFileSync,
+  writeFileSync,
+  readdirSync,
+  readFileSync,
+} from 'node:fs';
 import { join, dirname, basename } from 'node:path';
 import { tmpdir } from 'node:os';
 import type { Database as BetterSqlite3Database } from 'better-sqlite3';
@@ -36,6 +45,7 @@ import {
   pickSentinelToken,
   pickSentinelTokens,
   isKnownFalsePositive,
+  SUPPRESSION_VALID_FOR,
   captureWalIdentity,
   isStaleWalIndexError,
   recoverStaleWalIndex,
@@ -54,6 +64,32 @@ const hasTurso = (() => {
   }
 })();
 const tursoDescribe = hasTurso ? describe : describe.skip;
+
+/**
+ * BL-360 / PKT-68 — the version of `@tursodatabase/database` this process
+ * actually loaded, read from the resolved module's own `package.json`.
+ *
+ * Not `require('@tursodatabase/database/package.json')`: the package's
+ * `exports` map publishes only `.` and `./compat`, so that subpath is blocked.
+ * Resolving the entry point and walking up to the nearest `package.json` reads
+ * the manifest of the copy that is genuinely on disk under this resolution,
+ * which is the whole point — a caret bump that swaps the installed driver must
+ * be visible here even though nothing in any manifest changed.
+ */
+function installedTursoVersion(): string {
+  let dir = dirname(require.resolve('@tursodatabase/database'));
+  for (let i = 0; i < 10; i++) {
+    const candidate = join(dir, 'package.json');
+    if (existsSync(candidate)) {
+      const pkg = JSON.parse(readFileSync(candidate, 'utf8')) as { name?: string; version?: string };
+      if (pkg.name === '@tursodatabase/database' && typeof pkg.version === 'string') return pkg.version;
+    }
+    const parent = dirname(dir);
+    if (parent === dir) break;
+    dir = parent;
+  }
+  throw new Error('could not locate the installed @tursodatabase/database package.json');
+}
 
 let tmpDir: string;
 beforeAll(() => {
@@ -596,6 +632,25 @@ tursoDescribe('BL-352 — Turso probe soundness', () => {
     expect(finding!.probeValidated).toBe(true);
   });
 
+  // ── BL-360 / PKT-68 ────────────────────────────────────────────────────────
+  // The two facts this suppression rests on are asserted as ONE unit, in one
+  // test, on purpose:
+  //
+  //   (a) Turso still emits the message on a healthy store, and
+  //   (b) the driver that emits it is still the version we measured.
+  //
+  // Split across two tests they drift: (a) keeps passing on a driver nobody
+  // measured, which is exactly the silent state the constant exists to
+  // prevent. Failing together means an upgrade cannot quietly inherit the
+  // filter — a bump makes this test red, and the response is to re-run the
+  // reproduction and either delete `isKnownFalsePositive` (BL-360's stated
+  // acceptance) or re-measure and bump `SUPPRESSION_VALID_FOR`.
+  //
+  // Note what this test does NOT do: it does not change any verdict. A driver
+  // this was not measured on still gets the filter at runtime. Making the
+  // suppression conditional on the version would turn every future upgrade
+  // into a store that reports permanently damaged, which is the non-convergence
+  // BL-360 is about. The signal belongs in CI, not in the health verdict.
   it('deep verification filters the Tantivy false positive and stays green on a healthy store', async () => {
     const dbPath = tempPath('turso-deep');
     const a = track(await TursoAdapterImpl.connect({ dbPath }));
@@ -618,6 +673,21 @@ tursoDescribe('BL-352 — Turso probe soundness', () => {
       messages.some((m) => isKnownFalsePositive(m)),
       'the false positive is expected here — if Turso stops emitting it, drop the filter',
     ).toBe(true);
+
+    // BL-360: the suppression is a claim about ONE driver version. The
+    // manifests declare `^0.7.1`, so a caret bump can move the installed driver
+    // without any file in this repo changing. Read what is actually loaded.
+    expect(
+      installedTursoVersion(),
+      `BL-360: isKnownFalsePositive() is a suppression measured against @tursodatabase/database ` +
+        `${SUPPRESSION_VALID_FOR}, and the installed driver has moved off it. Re-run the ` +
+        `reproduction on the new version: if the false positive is gone, DELETE ` +
+        `isKnownFalsePositive() and its call sites (that deletion is BL-360's acceptance); if it ` +
+        `still reproduces, bump SUPPRESSION_VALID_FOR and record the new measurement date. ` +
+        `Do not silence this by widening the comparison — an unmeasured driver is the state ` +
+        `this assertion exists to make loud. Upstream: ` +
+        `https://github.com/tursodatabase/turso/issues/7611`,
+    ).toBe(SUPPRESSION_VALID_FOR);
 
     const report = await verifyStoreIntegrity(a, { depth: 'deep', only: ['pragma_integrity_check'] });
     expect(report.damaged, JSON.stringify(report.findings)).toEqual([]);

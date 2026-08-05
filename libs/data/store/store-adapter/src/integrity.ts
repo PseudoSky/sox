@@ -1551,15 +1551,6 @@ async function repairEmptyArrayColumn(adapter: StoreAdapter, object: string): Pr
 // ── Probe: PRAGMA integrity_check (deep, BL-341) ─────────────────────────────
 
 /**
- * `wrong # of entries in index __turso_internal_fts_dir_<idx>_key` is emitted
- * by Turso's `integrity_check` on a **freshly created, fully working** FTS
- * index — measured 2026-07-31 on a clean store whose `fts_match` returned
- * 200/200. It is an unconditional false positive: treating integrity_check as
- * pass/fail on any Turso store carrying an FTS index reports damage forever.
- * Filtering it here is why {@link probeFtsIndexes} has to exist as the real
- * FTS check.
- */
-/**
  * SQLite's (and Turso's) documented hard cap on `PRAGMA integrity_check`
  * output. Counted against the RAW message list, BEFORE any filtering —
  * truncation is a property of the pragma's output, not of the damage set.
@@ -1569,6 +1560,49 @@ async function repairEmptyArrayColumn(adapter: StoreAdapter, object: string): Pr
  */
 export const INTEGRITY_CHECK_MESSAGE_CAP = 100;
 
+/**
+ * The `@tursodatabase/database` version {@link isKnownFalsePositive}'s
+ * suppression was **measured** against — not a dependency pin (BL-360, PKT-68).
+ *
+ * A suppression is a claim about one driver's behaviour, and that claim has an
+ * expiry we cannot observe: both manifests declare `^0.7.1` (root
+ * `package.json`, `store-adapter/package.json`), so an ordinary caret bump can
+ * move the store onto a driver this was never measured on while the filter goes
+ * on silently swallowing whatever the new version emits. Editing the manifests
+ * to an exact version would not fix that — it is a supply-chain decision with
+ * blast radius far outside this filter, and it still would not make the
+ * *suppression* honest. What makes it honest is this constant plus the guard
+ * test in `integrity-selfheal.test.ts`, which reads the version actually
+ * installed and fails when it moves off this one.
+ *
+ * On upgrade: re-run the reproduction. If the false positive is gone, delete
+ * {@link isKnownFalsePositive} and its call sites rather than bumping this
+ * string — that deletion is BL-360's stated acceptance. If it still reproduces,
+ * bump this and record the new measurement date.
+ *
+ * Measured 2026-08-04 (re-measured 2026-08-05 for this constant).
+ */
+export const SUPPRESSION_VALID_FOR = '0.7.1';
+
+/**
+ * `wrong # of entries in index __turso_internal_fts_dir_<idx>_key` is emitted
+ * by Turso's `integrity_check` on a **freshly created, fully working** FTS
+ * index — measured 2026-07-31 on a clean store whose `fts_match` returned
+ * 200/200. It is an unconditional false positive: treating integrity_check as
+ * pass/fail on any Turso store carrying an FTS index reports damage forever.
+ * Filtering it here is why {@link probeFtsIndexes} has to exist as the real
+ * FTS check.
+ *
+ * Reported upstream: https://github.com/tursodatabase/turso/issues/7611 —
+ * open, filed 2026-06-24 against 0.7.0-pre.10. Our confirmation that it still
+ * reproduces on the released 0.7.1 (Node driver, darwin/arm64, 200/200
+ * `fts_match` on the same store the pragma calls damaged, surviving a
+ * close/reopen):
+ * https://github.com/tursodatabase/turso/issues/7611#issuecomment-5195105275
+ *
+ * That issue closing on a version we have re-measured is the only event that
+ * retires this function.
+ */
 export function isKnownFalsePositive(message: string): boolean {
   return /wrong # of entries in index __turso_internal_fts_dir_.*_key/i.test(message);
 }
