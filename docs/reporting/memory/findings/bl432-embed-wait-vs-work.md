@@ -1,7 +1,8 @@
 # BL-432 — the embed `wait` ≈ `work` lead does not survive a real sample
 
 > **Verdict: retracted, and replaced by a sharper structural finding.**
-> Warm steady-state `wait_ms` is **0 ms** (max 4 ms over n = 360), not 890 ms. The 890 ms was cold
+> Warm steady-state `wait_ms` is **0 ms** (max 4 ms over n = 570, across three runs including
+> one on a quiet machine), not 890 ms. The 890 ms was cold
 > model load. More importantly: **`wait_ms` cannot answer BL-331's head-of-line-blocking question
 > at all** — the queueing it was built to measure happens on the other side of the split, inside
 > `work_ms`. A retracted lead is the outcome here, and the structural reason it was never
@@ -112,22 +113,41 @@ wall-clock and accrues during system sleep (BL-369).
 | 8 | 80 | 0 | **4** | 8 / 80 | 1506 |
 | **all** | **150** | **0** | **4** | **11 / 150** | 966 |
 
-Cold start, excluded from both tables and reported separately: `warmupEmbed()` 828–1016 ms, first
-post-warmup embed 335–360 ms.
+**Run C — n = 210, on a QUIET machine** — the conditions runs A and B could not get. Load average
+**4.90** at start (vs 8.62 and 16.67) and **exactly one** `fastembedProcessHost` on the box: the live
+service's own, i.e. **zero competing hosts** beyond the harness's:
 
-**Across n = 360 warm embeds and an 8× concurrency sweep, `wait_ms` never exceeded 4 ms** — while
-`work_ms` rose 5.0× (304 → 1521 ms) over the same sweep. If the `wait` half measured contention for
-the shared child, this is precisely the sweep that would move it. It does not move.
+| concurrency | n | `wait_ms` median | `wait_ms` **max** | `wait_ms` > 0 | `work_ms` median |
+|---|---:|---:|---:|---:|---:|
+| 1 | 14 | 0 | **0** | 0 / 14 | 306 |
+| 2 | 28 | 0 | **0** | 0 / 28 | 469 |
+| 4 | 56 | 0 | **2** | 2 / 56 | 813 |
+| 8 | 112 | 0 | **0** | 0 / 112 | 1493 |
+| **all** | **210** | **0** | **2** | **2 / 210** | 898 |
 
-> ⚠️ **The absolute `work_ms` numbers are not a baseline.** Load average ran 8.6 → 21.5 (10 CPUs)
-> with **3–4 concurrent `fastembedProcessHost` processes** on the machine — one belonging to the
-> live service, one to another agent's vitest run measured at 455 % CPU. Cross-process onnxruntime
+Cold start, excluded from all three tables and reported separately: `warmupEmbed()` 828–1016 ms,
+first post-warmup embed 335–503 ms.
+
+**Across n = 570 warm embeds, three independent runs, and an 8× concurrency sweep, `wait_ms` never
+exceeded 4 ms and was 0 in 559 of 570 samples** — while `work_ms` rose ~4.9× over the same sweep. If
+the `wait` half measured contention for the shared child, this is precisely the sweep that would move
+it. It does not move.
+
+**Run C also retires the load caveat.** The contended and quiet runs agree on `work_ms` to within
+noise at every concurrency — 304/593/875/1521 (contended) vs 306/469/813/1493 (quiet) — so the
+concurrency response is a property of the shared child, not of the machine's background load. The
+`work_ms` column is still not a formal baseline (single machine, wall-clock, medians), but the
+finding no longer rests on the load caveat in either direction.
+
+> ⚠️ **Load conditions, stated per run, because an unlabelled measurement here is worse than none.**
+> Runs A and B were taken under heavy contention — load average 8.6 → 21.5 on 10 CPUs, up to 8
+> concurrent agents, and **3–4 concurrent `fastembedProcessHost` processes** (one the live
+> service's, one another agent's vitest run measured at 455 % CPU). Cross-process onnxruntime
 > CoreML/ANE execution is itself a known 25–50× latency hazard, which the host warns about on
-> startup. Read the `work_ms` column only as *"rises with concurrency"*, nothing finer.
-> **The `wait_ms` column is the result**, and it is robust to exactly this contamination: load
-> inflates work, and no amount of load makes an already-resolved promise take longer than 4 ms.
-> The machine did not become quiet at any point during this session (8 agents active); rather than
-> withhold the result, the conclusion is stated in the form load cannot affect.
+> startup. **Run C was taken once the machine went quiet** (load 4.90, zero competing hosts) and
+> reproduces A and B on both columns. **The `wait_ms` column is the result** and was never
+> load-sensitive in the first place: load inflates work, and no amount of load makes an
+> already-resolved promise slow.
 
 ---
 
