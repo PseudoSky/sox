@@ -9,9 +9,10 @@ import {
   captureWalIdentity,
   emitIntegrityReport,
   runOpenTimeIntegrity,
+  summarizeBackupIntegrity,
   verifyStoreIntegrity,
 } from './integrity.js';
-import type { WalIdentity } from './integrity.js';
+import type { BackupIntegrityReport, WalIdentity } from './integrity.js';
 import type {
   SqliteAdapter,
   AdapterTransaction,
@@ -218,22 +219,31 @@ export class SqliteAdapterImpl implements SqliteAdapter {
     this.db.exec(`VACUUM INTO '${destPath.replace(/'/g, "''")}'`);
 
     let integrityCheck = 'ok';
+    let integrityReport: BackupIntegrityReport | undefined;
     if (!opts.skipIntegrityCheck) {
       const backupAdapter = new SqliteAdapterImpl(destPath, { readonly: true });
       try {
         sqliteVec.load(backupAdapter.unwrap());
-        const report = await verifyStoreIntegrity(backupAdapter, {
-          depth: 'deep',
-          only: ['pragma_integrity_check'],
-        });
-        integrityCheck = report.ok
-          ? 'ok'
-          : report.damaged.map((f) => `${f.object}: ${f.detail}`).join('; ');
+        // (BL-449) NO `only:` narrowing. The previous `only:
+        // ['pragma_integrity_check']` was written before the other probes
+        // existed and silently excluded every one of them — including
+        // `fts_index_live`, so a copy of a store with a dead FTS index was
+        // certified 'ok' by a pragma structurally incapable of reading a
+        // Tantivy/FTS5 index. The backup copy is a throwaway read-only
+        // connection, so probe cost is not on any hot path. If a probe ever
+        // must come out, use `skip` — it is recorded as `unknown` in the
+        // report (BL-431), where `only` left no trace at all.
+        const report = await verifyStoreIntegrity(backupAdapter, { depth: 'deep' });
+        const summary = summarizeBackupIntegrity(report);
+        integrityCheck = summary.legacyString;
+        integrityReport = summary.verdict;
       } finally {
         await backupAdapter.close();
       }
     }
-    return { destPath, integrityCheck };
+    return integrityReport === undefined
+      ? { destPath, integrityCheck }
+      : { destPath, integrityCheck, integrityReport };
   }
 
   async executeGet<T = Record<string, unknown>>(sql: string, args?: unknown[]): Promise<T | null> {

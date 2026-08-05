@@ -1,3 +1,7 @@
+// Type-only import: erased at emit, so this does NOT create a runtime cycle
+// with `integrity.ts` (which imports `StoreAdapter` from here, also as a type).
+import type { BackupIntegrityReport } from './integrity.js';
+
 // ── Adapter meta (adapter-type stamping) ────────────────────────────────────
 
 export interface AdapterMeta {
@@ -185,10 +189,23 @@ export interface AdapterBackupOptions {
 export interface AdapterBackupResult {
   /** Absolute destination path written. */
   destPath: string;
-  /** Result of the post-backup integrity check: 'ok' on success, otherwise a
-   *  semicolon-joined description of the finding(s). 'ok' (unverified) when
-   *  `skipIntegrityCheck` was set. */
+  /**
+   * Result of the post-backup integrity check: 'ok' on success, otherwise a
+   * semicolon-joined description of the finding(s). 'ok' (unverified) when
+   * `skipIntegrityCheck` was set.
+   *
+   * **Prefer {@link integrityReport}.** This string cannot distinguish
+   * "verified clean" from "not verified at all" (BL-449), and it is kept
+   * populated only so existing callers keep compiling and behaving.
+   */
   integrityCheck: string;
+  /**
+   * (BL-341, BL-449) The structured verdict: what was actually checked, what
+   * could not be, and whether the backend truncated its own output. Absent
+   * only when `skipIntegrityCheck` was set — in which case nothing was
+   * checked and there is no verdict to report.
+   */
+  integrityReport?: BackupIntegrityReport;
 }
 
 // ── Config ──────────────────────────────────────────────────────────────────
