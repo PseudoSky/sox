@@ -1,6 +1,6 @@
 {
   "name": "@adhd/sox-analysis",
-  "version": "0.1.1",
+  "version": "0.1.3",
   "description": "Batch derivation over a corpus — clustering (density-clustering, in-process JS), near-dup detection, importance + link scoring, and a suite of pure graph algorithms (topoSort, criticalPath, detectCycles, packBatches). No CorpusBackend wrapper: DB-integrated functions take VectorBackend + GraphBackend directly.",
   "license": "MIT",
   "private": false,
