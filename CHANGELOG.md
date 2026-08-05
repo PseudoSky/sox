@@ -2,6 +2,53 @@
 
 ---
 
+## [Unreleased] — BL-341 / BL-449: the backup verdict says what it actually checked
+
+**`backupStore()` returned `integrityCheck: 'ok'` for three situations it could not tell apart** — a copy verified clean, a copy verified only against a pragma that is structurally incapable of reading an FTS index, and a copy not verified at all. It is the pre-restart auto-backup, i.e. the artifact you reach for after a crash.
+
+```console
+$ # before — one probe ran, and 'ok' meant whatever you hoped it meant
+$ jq '{integrityCheck}' < backup-result.json
+{ "integrityCheck": "ok" }
+
+$ # after — the verdict names its own epistemic state and what produced it
+$ jq '.integrityReport | {status, capped, unknownCount, damagedCount, probesRun}' < backup-result.json
+{ "status": "verified", "capped": false, "unknownCount": 0, "damagedCount": 0,
+  "probesRun": [ "adapter_meta_unique", "btree_index_populated", "fts_index_live",
+                 "json_column_valid", "json_empty_array_null", "pragma_integrity_check" ] }
+```
+
+**A backup of a store with a dead FTS index was certified `'ok'` (BL-449).** Both adapters reverified the copy with `only: ['pragma_integrity_check']` — a list written before the other probes existed, which then silently excluded every one of them. `PRAGMA integrity_check` cannot read a Tantivy/FTS5 index, and the only remark it ever makes about one is BL-360's unconditional false positive, which `isKnownFalsePositive()` filters away. So the copy was certified healthy for precisely the artifact whose silent death (BL-347) cost this migration the most. The narrowing is gone; the copy is a throwaway read-only connection, so probe cost is off every hot path.
+
+**A probe that could not run was read as a pass (BL-449).** The verdict was `report.ok`, which is `damaged.length === 0` and deliberately excludes `unknown` — the type's own doc-comment warns callers that *"a probe that could not be validated is an absence of evidence, not a clean bill of health."* The backup path did not read it, so an `integrity_check` that threw outright reported success having verified nothing.
+
+**A truncated `integrity_check` reported a clean bill of health over output that says nothing (BL-341).** The `capped` flag (≥100 raw messages) was already computed and was never read on the `ok` path. On the live store's shape — 45 leaked free pages plus the Turso FTS false positive — a run whose visible messages are all filterable, and whose remaining messages were never emitted, said `ok`. It now says `unknown`.
+
+- **`status: 'verified' | 'damaged' | 'unverified'`** — three epistemic states, not a severity ladder. `unverified` is the absence of a check and is never reported as healthy.
+- **Truncation is structural, not prose.** `IntegrityFinding.truncated` carries it, so no caller parses a `detail` string to learn the output was capped — the failure class this repo keeps filing.
+- **`integrityCheck: string` keeps its exact prior semantics** and stays populated. Every new distinction lives in the additive `integrityReport` field on `AdapterBackupResult` and `BackupStoreResult`.
+- **`skipIntegrityCheck` now reports NO verdict** rather than a passing one. `integrityCheck: 'ok'` there was always a lie of convenience.
+- **Turso's backup connection opens with `allowFtsInReadonly`** (BL-391) — without it the FTS probe cannot run at all on a read-only copy, and "could not run" is the state this change exists to stop reporting as healthy.
+
+**The reject rule is deliberately unchanged: a backup is deleted only when a probe found the copy DAMAGED.** `unverified` keeps the backup and logs a warning. This change's own negative control found why — a store with too few rows to yield an FTS sentinel token cannot be verified, and failing there would leave a brand-new store with no backup at all, the non-convergence trap BL-360 documents.
+
+```console
+$ # measured on a copy of the live 108 MB store — no writes to ~/.memory
+$ verdict: "verified" · 6 probes instead of 1 · verification 0.6s -> 1.1-2.1s · total backup 2.1-3.2s
+
+$ npx nx run-many -t typecheck,lint,test --projects=store-adapter,memory-core --skip-nx-cache
+ Tests  324 passed (324)          # store-adapter
+ Tests  549 passed | 8 skipped    # memory-core
+```
+
+Each mechanism was watched red independently: restoring the `only:` narrowing turns `BL-449: backupTo() on a store with a DEAD FTS index does not certify the copy 'ok'` red with `expected 'verified' to be 'damaged'`; disabling the capped branch turns `BL-341: 100+ messages with ZERO real damage is 'unverified', never 'verified'` red; dropping the `truncated` signal turns `BL-341: >100 real violations are flagged capped` red.
+
+Fixed:
+
+- `store-adapter`'s `adapter-meta` tests asserted a hardcoded `'0.1.0'` against a version `stampAdapterMeta` reads from `package.json`, so the release bump to `0.1.2` turned them red for no reason other than the bump.
+
+---
+
 ## [Unreleased] — BL-445: the production write path measured almost nothing, including the one number a safety guard reads
 
 **On the backend production actually runs, `memory_ping.store.write_queue` was 8 structurally-unreachable zeros, 3 configuration echoes, and exactly one live measurement.** Turso reports `needsWriteSerialization: false`, which sets `WriteQueue._noop`, which routes every write through `_runBypass` — a path that called `_trackCompletion()` and nothing else. Every other signal was recorded in `_processNext`, on the FIFO path, which Turso never takes.
