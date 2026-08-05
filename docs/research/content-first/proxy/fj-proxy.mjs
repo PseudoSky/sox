@@ -186,13 +186,19 @@ async function handleFJInner(req, res, ctx) {
     if (lastMsg && personaBody && !String(lastMsg.content || '').includes(MARKERS.agentEnd)) {
       lastMsg.content = String(lastMsg.content || '') + buildPersonaSuffix(activeAgent || '', personaBody, null);
     }
-    const { sessionId: _s, session_id: _s2, ...rest } = reqData;  // NEVER send a sessionId → no CF injection
     res.writeHead(200, {
       'Content-Type': 'text/event-stream',
       'Cache-Control': 'no-cache',
       'Connection': 'keep-alive',
     });
-    const body = { ...rest, model: 'cf', messages: mainMessages, stream: true };
+    // The main turn CARRIES the main sessionId so the CF path runs its FULL
+    // position-0 handling. cf_instructions:false skips only the CF-instruction
+    // INJECTION (the block would carry the session id); the agent-body
+    // EXTRACTION still runs — position 0 keeps the shared boilerplate, no
+    // persona. The persona+FJ tail is pre-appended (CF skips it via the
+    // agentEnd marker). Result: position 0 identical across main turns AND
+    // forks → the shared cache prefix survives.
+    const body = { ...reqData, model: 'cf', sessionId, cf_instructions: false, messages: mainMessages, stream: true };
     const result = await selfCallChat(body, res, ctx, { logSessionId: sessionId });
     logCall({
       event: 'fj_turn', agent: '(passthrough)', join_mode: session?.joinMode || 'concat',
@@ -218,13 +224,17 @@ async function handleFJInner(req, res, ctx) {
   // sub.pendingInput (the same handoff mechanism CF uses for persona switches,
   // which is what makes a new persona ACT instead of narrating).
   //
-  // [fj:trim-trigger-tail] (2026-08-05) The fork's context is CUT at the
-  // fork-trigger boundary: everything from the first tool message carrying the
-  // preset response (`"presetSet"`) onward is the main agent's fork-MECHANISM
-  // narration ("Fork registered…") — echoing that is what produced narration
-  // instead of analysis. The persona+Task suffix then continues from the main
-  // agent's real work. Cache-safe: the trimmed prefix is still a prefix of the
-  // main session's turns.
+  // [fj:end-at-fork-trigger] (2026-08-05, "do what cf does") The fork's context
+  // ENDS AT the preset response — the COMPLETED fork-trigger tool message —
+  // exactly like a CF handoff, where the persona lands on the completed
+  // `set_session_agent` tool result and the model reads "the handoff happened +
+  // you are the new persona". Ending BEFORE the preset response (the earlier
+  // [fj:trim-trigger-tail]) stranded the fork mid-tool-loop — right after the
+  // main agent's read tool call — so the continuation model continued the tool
+  // loop (calling `skill`) instead of analyzing. Ending AT it excludes the
+  // main agent's post-fork narration ("Fork registered…", which follows the
+  // preset response) while positioning the fork at a clean, completed boundary.
+  // Cache-safe: the context is still a prefix of the main session's turns.
   //
   // MEASURE THIS: because the self-call carries sessionId=subId, the CF path
   // injects CF instructions rendered with subId at position 0 — a different
@@ -247,32 +257,40 @@ async function handleFJInner(req, res, ctx) {
     sub.opencodeAgent = resolveAgent(opencodeSP, AGENTS)?.name ?? null;
     sub.opencodeSP = opencodeSP || null;
     sub.pendingInput = `Provide your ${agent.name} specialist reading of the task in the shared context above — as the ${agent.name} perspective, directly.`;
-    const triggerIdx = messages.findIndex(m => m.role === 'tool' && String(m.content || '').includes('"presetSet"'));
-    let forkBase = triggerIdx !== -1 ? messages.slice(0, triggerIdx) : messages;
-    // [fj:no-dangling-toolcalls] The trigger cut can leave a trailing
-    // assistant message whose tool_calls have no following tool response —
-    // DeepSeek rejects that with 400 ("An assistant message with 'tool_calls'
-    // must be followed by tool messages responding to each 'tool_call_id'").
-    // Drop trailing assistant tool-call messages so the fork base ends on a
-    // complete turn (tool result / user text).
-    while (forkBase.length > 0) {
-      const last = forkBase[forkBase.length - 1];
-      const tcs = last.tool_calls;
-      if (last.role === 'assistant' && Array.isArray(tcs) && tcs.length > 0) {
-        forkBase = forkBase.slice(0, -1);
-      } else {
-        break;
-      }
-    }
+    // [fj:task-brief-context] (2026-08-05) — the fork context IS the TASK, not
+    // the main agent's handoff state. Every prior shape (trim, end-at-preset,
+    // persona placement) left the handoff narrative in the context and the fork
+    // continued it ("Fork armed…", "Handed off to 4 relevant agents…"). The
+    // fork gets a synthetic 2-message context: the main session's SYSTEM
+    // message (the CF path frames it via cf_shared_session and extracts any
+    // agent body) + a USER message carrying the TASK DATA (the first
+    // substantive, non-JSON tool result — the backlog read). The CF path
+    // appends the persona+Task to that user message (persona from
+    // sub.activeAgent, Task from sub.pendingInput). No handoff instruction, no
+    // preset call/response, no tool loop — there is nothing left to narrate.
+    const sysMsg = messages.find(m => m.role === 'system');
+    const taskData = messages.find(m =>
+      m.role === 'tool'
+      && String(m.content || '').length > 500
+      && !String(m.content || '').trim().startsWith('{')   // skip JSON (preset/session pokes)
+    );
+    const forkMessages = [
+      { role: 'system', content: sysMsg ? String(sysMsg.content) : '' },
+      { role: 'user', content: `TASK:\n\n${taskData ? String(taskData.content) : '(no task data found in the conversation)'}` },
+    ];
     return {
       subId,
       agent: agent.name,
       // The self-call CARRIES the suffixed sub-session id (real isolated
       // session: persona from activeAgent, Task from pendingInput, logs under
-      // subId) AND disables CF-instruction injection so position 0 stays the
-      // RAW opencode SP — byte-identical across forks → the cross-fork shared
-      // cache prefix survives (measured: 70% with the disable, 0% without).
-      body: { ...reqData, model: 'cf', sessionId: subId, cf_instructions: false, messages: forkBase, stream: true },
+      // subId). [0]-FRAMING (2026-08-05): a real cf request opens position 0
+      // with the CF-instructions block (process orientation) — the fork must
+      // match, or "You are opencode…" leads and the fork adopts the main
+      // identity. cf_shared_session = the MAIN session id renders the
+      // instructions byte-identical across forks AND the main turns (shared
+      // cache prefix); the session itself stays the suffixed subId. The
+      // agent-body EXTRACTION still runs — no main persona at position 0.
+      body: { ...reqData, model: 'cf', sessionId: subId, cf_shared_session: sessionId, messages: forkMessages, stream: true },
     };
   });
 

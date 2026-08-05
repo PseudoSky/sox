@@ -84,34 +84,15 @@ export function buildCFInstructions(sessionId, port) {
  * loop — the model controls the active perspectives itself. */
 export function buildFJInstructions(sessionId, port) {
   return [
-    '--- Fork-Join Session Instructions ---',
-    `Your session id is: ${sessionId || '(unset)'}.`,
-    'You are running through a fork-join proxy (proxy/fj). Each turn you can',
-    'either work normally (single-agent, tools available) OR request multiple',
-    'perspectives on the current task. To fork, call the session-agent endpoint',
-    'with a list of perspective agents:',
+    'To hand off the current task to a set of specialist agents for their',
+    'perspectives, call the session-agent endpoint with the agents list:',
     '',
     `  curl -s -X POST http://localhost:${port}/v1/session/agent \\`,
     `    -H 'Content-Type: application/json' \\`,
     `    -d '{"sessionId":"${sessionId}","agents":["<name1>","<name2>"]}'`,
     '',
-    'The NEXT turn then forks those agents: each runs on the shared context with',
-    'its own persona, and their outputs are concatenated back into your context',
-    'as a joint response. Use this when the task would benefit from multiple',
-    'specialist readings (e.g. correctness + security + performance) before you',
-    'act. The fork is ONE-SHOT: it runs on the next turn, then the preset',
-    'auto-resets and you are back to standard single-agent turns — re-trigger',
-    'with this endpoint whenever you want another round of perspectives.',
-    'To clear early (or if the auto-reset did not fire), clear the set:',
-    '',
-    `  curl -s -X POST http://localhost:${port}/v1/session/agent \\`,
-    `    -H 'Content-Type: application/json' \\`,
-    `    -d '{"sessionId":"${sessionId}","agents":[]}'`,
-    '',
     'Available agents:',
     'cf, rf, product, architect, typescript, review, researcher, backend, security',
-    'The join is concat: all perspectives come back concatenated, and YOU',
-    'synthesize them into the next action.',
   ].join('\n');
 }
 
@@ -207,33 +188,45 @@ export function rewriteToContentFirst(messages, opts = {}) {
   } = opts;
   const result = messages.map(m => ({ ...m, content: typeof m.content === 'string' ? m.content : (m.content == null ? '' : JSON.stringify(m.content)) }));
 
-  // [inv:position0-anchor] — position 0 = CF instructions REPLACING the agent
-  // body, keeping the opencode shared boilerplate. The agent body is ALREADY
-  // extracted every turn (resolveAgent + splitSystemPrompt for attribution);
-  // replacing it with CF is free and eliminates persona duplication — the
-  // agent body lives ONLY at the tail as the persona anchor, never twice.
+  // [inv:position0-anchor] — position 0 = the opencode shared boilerplate with
+  // the agent body EXTRACTED; the persona lives ONLY at the tail, never twice.
+  //   [agent_body][boilerplate]  →  [boilerplate]            (extraction)
+  //   [boilerplate]              →  [CF instructions][boilerplate]  (injection)
   //
-  //   [agent_body][boilerplate]  →  [CF instructions][boilerplate]
+  // EXTRACTION and INJECTION are DECOUPLED (2026-08-05 fix): `cf_instructions:
+  // false` was intended to skip only the INJECTION (the CF-instruction block
+  // carries the session id — a per-fork sub-session id baked in would differ
+  // per fork and blow the shared cache prefix). It was incorrectly implemented
+  // to skip the ENTIRE block, leaving the main agent's persona body at position
+  // 0 of fork requests — so forks believed they WERE the main agent. The
+  // extraction must always run: position 0 must never carry a persona body,
+  // injected instructions or not. The injection is gated on cfPrompt.
   //
-  // CF is session-wide behavior (same bytes every turn) so position 0 is the
-  // byte-identical cache anchor. Idempotent: skip if CF marker already there.
-  if (cfPrompt) {
-    const sysIdx = result.findIndex(m => m.role === 'system');
-    if (sysIdx !== -1) {
-      const rawSystem = result[sysIdx].content;
-      if (!rawSystem.includes(MARKERS.instructions)) {
-        const { shared } = splitSystemPrompt(rawSystem, AGENTS);
+  // Idempotent: skip both if the CF marker is already present (a previously
+  // rewritten system message being re-posted).
+  const sysIdx = result.findIndex(m => m.role === 'system');
+  if (sysIdx !== -1) {
+    const rawSystem = result[sysIdx].content;
+    if (!rawSystem.includes(MARKERS.instructions)) {
+      // ── EXTRACTION (always): remove the agent body if it prefixes the SP ──
+      const { shared } = splitSystemPrompt(rawSystem, AGENTS);
+      if (shared) {
+        result[sysIdx] = { ...result[sysIdx], content: shared };
+      } else if (rawSystem.length > 200) {
         // shared='' (bare opencode SP, no agent-body prefix) → keep the FULL SP
         // so position 0 is never emptied (regression: 96185ef empty-shared bug).
         // WARNING: if the agent body is NOT a prefix (non-standard SP composition),
         // the full SP (including agent body) stays at position 0 — NOT byte-stable
         // across handoffs, breaking cross-agent cache reuse. Log so it surfaces.
-        const base = shared || rawSystem;
-        if (!shared && rawSystem.length > 200) {
-          console.error(`[cf-rewrite] ⚠ position-0 anchor: agent body not a prefix of opencode SP — full SP retained (${rawSystem.length} chars); cross-agent reuse may break.`);
-        }
-        result[sysIdx] = { ...result[sysIdx], content: `${MARKERS.instructions}\n${cfPrompt}\n${MARKERS.instructionsEnd}\n\n${base}` };
+        console.error(`[cf-rewrite] ⚠ position-0 anchor: agent body not a prefix of opencode SP — full SP retained (${rawSystem.length} chars); cross-agent reuse may break.`);
       }
+    }
+  }
+  // ── INJECTION (only when cfPrompt is set) ──
+  if (cfPrompt) {
+    const injIdx = result.findIndex(m => m.role === 'system');
+    if (injIdx !== -1 && !result[injIdx].content.includes(MARKERS.instructions)) {
+      result[injIdx] = { ...result[injIdx], content: `${MARKERS.instructions}\n${cfPrompt}\n${MARKERS.instructionsEnd}\n\n${result[injIdx].content}` };
     }
   }
 

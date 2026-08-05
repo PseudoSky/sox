@@ -973,8 +973,31 @@ const server = http.createServer(async (req, res) => {
       // turns, so the shared provider cache prefix survives (a per-fork
       // session id baked into the instructions would break it). Persona-at-tail
       // handling is unaffected — only the position-0 block is skipped.
-      const cfPrompt = (sessionId && reqData.cf_instructions !== false) ? renderCFInstructions(sessionId) : null;
+      const cfPrompt = (sessionId && reqData.cf_instructions !== false)
+        ? renderCFInstructions(reqData.cf_shared_session || sessionId)
+        : null;
             const cf = rewriteToContentFirst(messages, personaSP, opencodeSP, cfPrompt, handoffTask, activeAgent || '');
+      // ── FORWARD_REQUEST (2026-08-05) — the ACTUAL request sent to the
+      // provider, post-rewrite. The raw_request events capture the INCOMING
+      // body; the provider receives cf.messages (position-0 extraction +
+      // persona tail applied). Logging the forwarded payload makes the
+      // incoming→forwarded diff auditable (identity extraction, persona tail,
+      // instruction injection) and is what a replay of the provider's exact
+      // input needs. Logging-only — no behavior change.
+      if (RAW_CAPTURE) {
+        logCall({
+          _ts: new Date().toISOString(),
+          event: 'forward_request',
+          sessionId,
+          model: TARGET_MODEL,
+          cf_instructions_disabled: reqData.cf_instructions === false,
+          persona_applied: Boolean(personaSP),
+          position0_chars: cf.messages[0]?.content?.length ?? 0,
+          position0_head: String(cf.messages[0]?.content || '').slice(0, 120),
+          messages: cf.messages,      // VERBATIM — exactly what the provider received
+          tools_count: Array.isArray(reqData.tools) ? reqData.tools.length : null,
+        }, sessionId);
+      }
       // ── In-flight cache-blow predictor (v4) ──
       // Compare the previous forwarded prefix vs the current one. The provider
       // prefix cache hits on the longest common prefix; if the persona moved
