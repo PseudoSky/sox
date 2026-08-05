@@ -10,6 +10,13 @@
 
 set -e
 
+# BL-457 — refuse a pathspec-less `git commit --amend` while the shared index diverges from HEAD.
+# `--amend` reads as a message-only operation but commits the SHARED INDEX; one live incident turned
+# a reviewed 2-file/+282 commit into 8 files/+727/-2567, hidden behind an already-approved subject.
+# git gives hooks no signal for --amend (the environment is byte-identical to a normal commit,
+# measured on git 2.51), so the parent command line is passed in explicitly.
+SOX_GIT_PARENT_CMD="$(ps -o args= -p $PPID 2>/dev/null)" node tools/check-amend-shared-index.mjs
+
 # BL-359 — reject BL-<n> id collisions before they reach BACKLOG.md/CHANGELOG.md.
 node tools/check-bl-id-integrity.mjs
 

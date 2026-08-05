@@ -2,6 +2,41 @@
 
 ---
 
+## [Unreleased] — BL-457: `git commit --amend` can no longer swallow the shared index behind an approved subject line
+
+**`--amend` reads as a message-only operation and commits the entire shared index.** A live incident ran `git commit --amend -F msg.txt` to correct a *subject line* and turned a reviewed 2-file / +282 commit into 8 files / +727 / −2567, swallowing and partially reverting four other agents' staged files — behind a subject that had already been read and approved.
+
+```console
+$ git commit --amend -m "feat: the reviewed commit (subject corrected)"
+
+check-amend-shared-index: REFUSING a pathspec-less `git commit --amend` [BL-457].
+
+  The shared index diverges from HEAD (a1b2c3d) on 1 path(s):
+    BACKLOG.md
+
+  If you only meant to fix the message:
+    node tools/commit-mine.mjs --amend-message -m "corrected subject"
+
+  If an amend has ALREADY swallowed work, the recovery is:
+    git reset --soft <good-sha>
+```
+
+- **`commit-mine.mjs --amend-message` is the safe form of what the incident meant to do.** It reuses HEAD's tree and parents verbatim through `commit-tree`, so the replacement commit is byte-identical in content, authorship is preserved, and the shared index is neither read nor written:
+
+```console
+$ node tools/commit-mine.mjs --amend-message -m "fix(tools): corrected subject"
+commit-mine: rewrote the message of ea8622b49 as 4bd7cbda7 on wip/turso-live-metrics [BL-457].
+commit-mine: tree unchanged (8f31c0a2b) — the shared index was neither read nor written.
+```
+
+- **git gives hooks no signal for `--amend` — measured, not assumed.** On git 2.51 the hook environment is *byte-identical* between a normal commit and an amend (`env | sort`, empty diff), and `prepare-commit-msg`'s source argument is `message`, not `commit`, whenever `-m`/`-F` is used — which is exactly how the incident was invoked. The parent command line is the only available detector, so `.husky/pre-commit` passes it in as `SOX_GIT_PARENT_CMD`.
+- **Pathspec detection, by contrast, is reliable and is what keeps the guard narrow.** git points `GIT_INDEX_FILE` at a temporary `.git/next-index-<pid>.lock` when a pathspec was given. So `git commit --amend <paths>`, an amend against a clean index, and every ordinary commit pass straight through; only the pathspec-less amend over a divergent index is refused. `commit -a` uses `index.lock`, not `next-index-*`, and is deliberately still covered.
+- **`SOX_ALLOW_DIRTY_AMEND=1`** overrides the guard for the case where the detection is wrong rather than the operator, and announces itself on stderr.
+- **The recovery is executed, not asserted in prose.** A test arm performs the incident and then `git reset --soft <good-sha>`, asserting HEAD, the index and every working-tree file are byte-identical to their pre-amend state.
+- Pinned by `tools/test-bl457-amend-shared-index.mjs` (5 arms, 12 assertions; watched red with amend-detection disabled → the three guard assertions fail, and with the pre-BL-457 `commit-mine` → `--amend-message` fails).
+
+---
+
 ## [Unreleased] — BL-465: the tool mandated for the hottest files stopped planting a revert bomb on every run
 
 **`commit-mine.mjs` moved the branch and left the shared index holding the pre-commit blob for every path it had just committed**, so `git diff --cached` read as the exact inverse of the commit — a BL-463 revert bomb, manufactured on every successful run, on `BACKLOG.md` / `CHANGELOG.md` / `PLAN.md`. Compliance was the vector: the more faithfully an agent followed `CLAUDE.md`, the more reliably it armed the next pathspec-less `git commit`.
