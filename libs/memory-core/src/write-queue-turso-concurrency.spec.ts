@@ -130,4 +130,146 @@ describe('WriteQueue — Turso concurrent transactional writes (BL-321)', () => 
       }
     });
   });
+
+  // ── BL-445 ────────────────────────────────────────────────────────────────
+  //
+  // The bypass path (`_runBypass`) executes the operation and returns without
+  // touching ANY of the state `getMetrics()` reads except `_completionTimes`.
+  // Result on the production backend: 8 of 12 top-level fields are structurally
+  // unreachable zeros. The one that matters is `recent_avg_task_latency_ms` —
+  // it is the deadline guard's ONLY input (`_latencies.recentMean(...)`, gated
+  // by `if (avgMs > 0)`), so an empty ring keeps that guard permanently
+  // disabled no matter where the guard itself sits (this is why BL-394's
+  // "hoist the two checks" sketch is a no-op).
+  //
+  // These specs are about what the bypass path RECORDS. Nothing here changes
+  // which path executes a write: `_noop` stays true, serialization stays off.
+  tursoDescribe('BL-445 — the bypass path must record the work it does', () => {
+    async function seedTable(queue: WriteQueue): Promise<StoreAdapter> {
+      const adapter = (queue as unknown as { adapter: StoreAdapter }).adapter;
+      await adapter.exec('CREATE TABLE IF NOT EXISTS wq_t (id INTEGER PRIMARY KEY, val TEXT)');
+      return adapter;
+    }
+
+    it('BL-445: after N bypass writes, tasks_completed === N and the deadline guard\'s latency ring is fed', async () => {
+      const queue = await WriteQueue.forPath(dbPath);
+      expect((queue as unknown as { _noop: boolean })._noop).toBe(true);
+      await seedTable(queue);
+
+      const N = 5;
+      for (let i = 0; i < N; i++) {
+        await queue.enqueue(`bl445-${i}`, async (a) => {
+          await a.executeRun('INSERT INTO wq_t (id, val) VALUES (?, ?)', [i, `v${i}`]);
+        });
+      }
+
+      const m = queue.getMetrics();
+      expect(m.counters.tasks_completed, 'completions on the bypass path are counted').toBe(N);
+      expect(m.counters.write_tasks_completed).toBe(N);
+      expect(m.counters.apply_tasks_completed).toBe(0);
+      // THE assertion that pins this to BL-394: the guard's input.
+      expect(
+        m.recent_avg_task_latency_ms,
+        'the admission estimator ring must be fed on the path production takes',
+      ).toBeGreaterThan(0);
+      expect(m.write_latency_ms.max).toBeGreaterThan(0);
+      expect(m.write_latency_ms.p50).toBeGreaterThan(0);
+    });
+
+    it('BL-445: apply-kind bypass tasks are segregated exactly as on the FIFO path', async () => {
+      const queue = await WriteQueue.forPath(dbPath);
+      await seedTable(queue);
+
+      await queue.enqueue('bl445-w', async (a) => {
+        await a.executeRun('INSERT INTO wq_t (id, val) VALUES (?, ?)', [1, 'w']);
+      });
+      await queue.enqueue('bl445-a', async (a) => {
+        await a.executeRun('INSERT INTO wq_t (id, val) VALUES (?, ?)', [2, 'a']);
+      }, 'apply');
+
+      const m = queue.getMetrics();
+      expect(m.counters.tasks_completed).toBe(2);
+      expect(m.counters.write_tasks_completed).toBe(1);
+      expect(m.counters.apply_tasks_completed).toBe(1);
+      expect(m.apply_latency_ms.max).toBeGreaterThan(0);
+    });
+
+    it('BL-445: a FAILED bypass task still records its service time (matches _processNext)', async () => {
+      const queue = await WriteQueue.forPath(dbPath);
+      await seedTable(queue);
+
+      await expect(
+        queue.enqueue('bl445-boom', async () => {
+          await new Promise((r) => setTimeout(r, 2));
+          throw new Error('boom');
+        }),
+      ).rejects.toThrow('boom');
+
+      const m = queue.getMetrics();
+      // _processNext:1066-1068 counts failed tasks deliberately — "they occupied
+      // the slot, so their duration is service time for the wait estimator
+      // either way". The bypass path must not silently under-count exactly when
+      // the store is unhealthy.
+      expect(m.counters.tasks_completed, 'a failed bypass task occupied service time').toBe(1);
+      expect(m.recent_avg_task_latency_ms).toBeGreaterThan(0);
+    });
+
+    it('BL-445: a SYNCHRONOUSLY-thrown bypass task also records its service time', async () => {
+      const queue = await WriteQueue.forPath(dbPath);
+      await seedTable(queue);
+
+      await expect(
+        queue.enqueue('bl445-sync-boom', () => {
+          throw new Error('sync boom');
+        }),
+      ).rejects.toThrow('sync boom');
+
+      expect(queue.getMetrics().counters.tasks_completed).toBe(1);
+    });
+
+    it('BL-445: queue-shaped fields report null on bypass — "no queue" is not "empty queue"', async () => {
+      const queue = await WriteQueue.forPath(dbPath);
+      await seedTable(queue);
+      await queue.enqueue('bl445-touch', async (a) => {
+        await a.executeRun('INSERT INTO wq_t (id, val) VALUES (?, ?)', [9, 'touch']);
+      });
+
+      const m = queue.getMetrics();
+      expect(m.mode, 'the block must say which path produced it').toBe('bypass');
+      // BL-334's exact failure mode: 0/false here is indistinguishable from a
+      // healthy idle queue, and no code can ever change it.
+      expect(m.queue_depth).toBeNull();
+      expect(m.queue_high_watermark).toBeNull();
+      expect(m.saturated).toBeNull();
+    });
+
+    it('BL-445: in_flight is a REAL concurrent-operation count on the bypass path', async () => {
+      const queue = await WriteQueue.forPath(dbPath);
+      await seedTable(queue);
+
+      const N = 6;
+      let release!: () => void;
+      const gate = new Promise<void>((r) => { release = r; });
+      let peak = 0;
+
+      const held = Array.from({ length: N }, (_, i) =>
+        queue.enqueue(`bl445-hold-${i}`, async () => {
+          peak = Math.max(peak, queue.getMetrics().in_flight);
+          await gate;
+          return i;
+        }),
+      );
+
+      // Let every operation reach its await before releasing them.
+      await new Promise((r) => setTimeout(r, 20));
+      const observed = queue.getMetrics().in_flight;
+      release();
+      await Promise.all(held);
+
+      expect(observed, `expected ${N} operations in flight simultaneously`).toBe(N);
+      expect(peak).toBeGreaterThan(1);
+      // …and it drains back to zero once they settle.
+      expect(queue.getMetrics().in_flight).toBe(0);
+    });
+  });
 });
