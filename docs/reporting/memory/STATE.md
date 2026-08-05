@@ -28,14 +28,14 @@ in [`PLAN.md`](./PLAN.md); this is the summary.
 
 | | |
 |---|---|
-| Packets complete | **25 / 74** |
+| Packets complete | **29 / 74** |
 | Packets partial | 4 |
-| Packets not started | 45 |
-| Open backlog items, in scope | **66** |
+| Packets not started | 41 |
+| Open backlog items, in scope | **67** |
 | Open backlog items, out of scope | 28 |
-| In-scope items with no packet | 16 (BL-416, BL-424, BL-426, BL-432, BL-435, BL-436, BL-437, BL-446, BL-450, BL-451, BL-452, BL-453, BL-454, BL-455, BL-456, BL-457) |
+| In-scope items with no packet | 19 (BL-416, BL-424, BL-426, BL-432, BL-435, BL-436, BL-437, BL-446, BL-450, BL-451, BL-452, BL-453, BL-454, BL-455, BL-456, BL-457, BL-458, BL-459, BL-460) |
 
-**Done:** PKT-01 PKT-04 PKT-05 PKT-06 PKT-08 PKT-10 PKT-14 PKT-15 PKT-17 PKT-19 PKT-23 PKT-36 PKT-40 PKT-41 PKT-46 PKT-48 PKT-49 PKT-50 PKT-52 PKT-53 PKT-64 PKT-65 PKT-67 PKT-71 PKT-72
+**Done:** PKT-01 PKT-04 PKT-05 PKT-06 PKT-08 PKT-10 PKT-14 PKT-15 PKT-17 PKT-19 PKT-21 PKT-23 PKT-36 PKT-40 PKT-41 PKT-43 PKT-46 PKT-48 PKT-49 PKT-50 PKT-52 PKT-53 PKT-64 PKT-65 PKT-67 PKT-69 PKT-70 PKT-71 PKT-72
 
 **Partial:** PKT-03 PKT-28 PKT-32 PKT-37
 

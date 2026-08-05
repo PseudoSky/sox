@@ -21,12 +21,12 @@ A packet is **DONE** only when every BL id it targets is closed — code landing
 (BL-225). Several packets below have merged code and still read OPEN; that is correct, and the
 remedy is to close the backlog item with a red→green test, not to edit this table.
 
-**25 done · 4 partial · 45 open** of 74 packets.
+**29 done · 4 partial · 41 open** of 74 packets.
 
-- Open backlog items in this program's scope: **66**, of which **16** have no packet.
+- Open backlog items in this program's scope: **67**, of which **19** have no packet.
 - Open items deliberately out of scope: **28** — BL-99, BL-103, BL-104, BL-105, BL-163, BL-225, BL-228, BL-258, BL-261, BL-282, BL-283, BL-284, BL-285, BL-288, BL-291, BL-292, BL-296, BL-298, BL-305, BL-306, BL-307, BL-308, BL-309, BL-314, BL-315, BL-333, BL-355, BL-408
-- Unscheduled in-scope items (need a packet): BL-416, BL-424, BL-426, BL-432, BL-435, BL-436, BL-437, BL-446, BL-450, BL-451, BL-452, BL-453, BL-454, BL-455, BL-456, BL-457
-- Packet targets already closed (27) — historical context only, no work remains: BL-259, BL-329, BL-341, BL-343, BL-348, BL-350, BL-359, BL-364, BL-376, BL-379, BL-380, BL-383, BL-388, BL-390, BL-391, BL-394, BL-397, BL-399, BL-402, BL-405, BL-406, BL-407, BL-410, BL-412, BL-425, BL-445, BL-449
+- Unscheduled in-scope items (need a packet): BL-416, BL-424, BL-426, BL-432, BL-435, BL-436, BL-437, BL-446, BL-450, BL-451, BL-452, BL-453, BL-454, BL-455, BL-456, BL-457, BL-458, BL-459, BL-460
+- Packet targets already closed (29) — historical context only, no work remains: BL-259, BL-329, BL-341, BL-343, BL-348, BL-350, BL-359, BL-361, BL-362, BL-364, BL-376, BL-379, BL-380, BL-383, BL-388, BL-390, BL-391, BL-394, BL-397, BL-399, BL-402, BL-405, BL-406, BL-407, BL-410, BL-412, BL-425, BL-445, BL-449
 
 | Packet | Status | Targets | Still open |
 |---|---|---|---|
@@ -50,7 +50,7 @@ remedy is to close the backlog item with a red→green test, not to edit this ta
 | PKT-18 | **OPEN** | BL-215 | BL-215 |
 | PKT-19 | **DONE** | BL-329 | — |
 | PKT-20 | **OPEN** | BL-360 | BL-360 |
-| PKT-21 | **OPEN** | BL-361 | BL-361 |
+| PKT-21 | **DONE** | BL-361 | — |
 | PKT-22 | **OPEN** | BL-392 | BL-392 |
 | PKT-23 | **DONE** | BL-379 | — |
 | PKT-24 | **OPEN** | BL-319, BL-358 | BL-319, BL-358 |
@@ -72,7 +72,7 @@ remedy is to close the backlog item with a red→green test, not to edit this ta
 | PKT-40 | **DONE** | BL-394 | — |
 | PKT-41 | **DONE** | BL-391 | — |
 | PKT-42 | **OPEN** | BL-317, BL-318 | BL-317, BL-318 |
-| PKT-43 | **OPEN** | BL-362 | BL-362 |
+| PKT-43 | **DONE** | BL-362 | — |
 | PKT-44 | **OPEN** | BL-312 | BL-312 |
 | PKT-45 | **OPEN** | BL-351, BL-401 | BL-351, BL-401 |
 | PKT-46 | **DONE** | BL-402 | — |
@@ -98,8 +98,8 @@ remedy is to close the backlog item with a red→green test, not to edit this ta
 | PKT-66 | **OPEN** | BL-274 | BL-274 |
 | PKT-67 | **DONE** | BL-341, BL-449 | — |
 | PKT-68 | **OPEN** | BL-360 | BL-360 |
-| PKT-69 | **OPEN** | BL-361 | BL-361 |
-| PKT-70 | **OPEN** | BL-362 | BL-362 |
+| PKT-69 | **DONE** | BL-361 | — |
+| PKT-70 | **DONE** | BL-362 | — |
 | PKT-71 | **DONE** | BL-379 | — |
 | PKT-72 | **DONE** | BL-425 | — |
 | PKT-73 | **OPEN** | BL-447 | BL-447 |
@@ -914,7 +914,7 @@ rewritten, only unblocked.
 
 ### PKT-43 — BL-362: no committable Turso FTS damage fixture — ⛔ **SUPERSEDED by PKT-70, do not dispatch**
 
-> **status: OPEN** — still open: BL-362 · derived by `tools/plan-status.mjs`, do not hand-edit
+> **status: DONE** — all targets closed (BL-362) · derived by `tools/plan-status.mjs`, do not hand-edit
 
 > **superseded-by:** PKT-70 (2026-08-04). Its BL-361 warning is correct and is carried forward. What
 > it lacks is an exit condition: four damage recipes have already failed, so "build a committable
@@ -1512,7 +1512,7 @@ completion, don't just assume no build ran.
 
 ### PKT-21 — BL-361: Turso panics and kills the process on a malformed FTS index row — needs an out-of-process pre-flight — ⛔ **SUPERSEDED by PKT-69, do not dispatch**
 
-> **status: OPEN** — still open: BL-361 · derived by `tools/plan-status.mjs`, do not hand-edit
+> **status: DONE** — all targets closed (BL-361) · derived by `tools/plan-status.mjs`, do not hand-edit
 
 > **superseded-by:** PKT-69 (2026-08-04). This packet's gate — "a store flagged unclean" — inherits
 > BL-361's fix sketch, and **that flag is unreachable at the moment it is needed**:
@@ -2150,7 +2150,7 @@ green. The upstream issue URL is present in the source comment.
 
 ### PKT-69 — BL-361: an out-of-process pre-flight, gated on a marker the panic cannot destroy
 
-> **status: OPEN** — still open: BL-361 · derived by `tools/plan-status.mjs`, do not hand-edit
+> **status: DONE** — all targets closed (BL-361) · derived by `tools/plan-status.mjs`, do not hand-edit
 
 >
 > **Supersedes PKT-21** — same item, but PKT-21 inherits BL-361's "pre-flight before the first
@@ -2221,7 +2221,7 @@ after the fix. A test that cannot be watched fail does not satisfy BL-225.
 
 ### PKT-70 — BL-362: a committable Turso FTS damage fixture, or a written finding that there is none
 
-> **status: OPEN** — still open: BL-362 · derived by `tools/plan-status.mjs`, do not hand-edit
+> **status: DONE** — all targets closed (BL-362) · derived by `tools/plan-status.mjs`, do not hand-edit
 
 >
 > **Supersedes PKT-43** — same item and the same BL-361 warning, but PKT-43 states the goal as
