@@ -21,18 +21,18 @@ A packet is **DONE** only when every BL id it targets is closed — code landing
 (BL-225). Several packets below have merged code and still read OPEN; that is correct, and the
 remedy is to close the backlog item with a red→green test, not to edit this table.
 
-**31 done · 4 partial · 39 open** of 74 packets.
+**31 done · 4 partial · 50 open** of 85 packets.
 
-- Open backlog items in this program's scope: **69**, of which **22** have no packet.
+- Open backlog items in this program's scope: **70**, of which **2** have no packet.
 - Open items deliberately out of scope: **28** — BL-99, BL-103, BL-104, BL-105, BL-163, BL-225, BL-228, BL-258, BL-261, BL-282, BL-283, BL-284, BL-285, BL-288, BL-291, BL-292, BL-296, BL-298, BL-305, BL-306, BL-307, BL-308, BL-309, BL-314, BL-315, BL-333, BL-355, BL-408
-- Unscheduled in-scope items (need a packet): BL-416, BL-424, BL-426, BL-432, BL-435, BL-436, BL-437, BL-446, BL-450, BL-451, BL-452, BL-453, BL-454, BL-455, BL-456, BL-457, BL-458, BL-459, BL-460, BL-461, BL-462, BL-463
+- Unscheduled in-scope items (need a packet): BL-436, BL-462
 - Packet targets already closed (30) — historical context only, no work remains: BL-259, BL-329, BL-341, BL-343, BL-348, BL-350, BL-359, BL-360, BL-361, BL-362, BL-364, BL-376, BL-379, BL-380, BL-383, BL-388, BL-390, BL-391, BL-394, BL-397, BL-399, BL-402, BL-405, BL-406, BL-407, BL-410, BL-412, BL-425, BL-445, BL-449
 
 | Packet | Status | Targets | Still open |
 |---|---|---|---|
 | PKT-01 | **DONE** | BL-348 | — |
 | PKT-02 | **OPEN** | BL-351 | BL-351 |
-| PKT-03 | **PARTIAL** | BL-342, BL-343, BL-387 | BL-342, BL-387 |
+| PKT-03 | **PARTIAL** | BL-342, BL-343 | BL-342 |
 | PKT-04 | **DONE** | BL-364, BL-380 | — |
 | PKT-05 | **DONE** | BL-380 | — |
 | PKT-06 | **DONE** | BL-388 | — |
@@ -104,6 +104,17 @@ remedy is to close the backlog item with a red→green test, not to edit this ta
 | PKT-72 | **DONE** | BL-425 | — |
 | PKT-73 | **OPEN** | BL-447 | BL-447 |
 | PKT-74 | **OPEN** | BL-448 | BL-448 |
+| PKT-75 | **OPEN** | BL-416, BL-446, BL-454 | BL-416, BL-446, BL-454 |
+| PKT-76 | **OPEN** | BL-456, BL-457, BL-463 | BL-456, BL-457, BL-463 |
+| PKT-77 | **OPEN** | BL-435, BL-464 | BL-435, BL-464 |
+| PKT-78 | **OPEN** | BL-451, BL-453, BL-458, BL-459 | BL-451, BL-453, BL-458, BL-459 |
+| PKT-79 | **OPEN** | BL-452, BL-460 | BL-452, BL-460 |
+| PKT-80 | **OPEN** | BL-450, BL-455 | BL-450, BL-455 |
+| PKT-81 | **OPEN** | BL-424 | BL-424 |
+| PKT-82 | **OPEN** | BL-461 | BL-461 |
+| PKT-83 | **OPEN** | BL-432 | BL-432 |
+| PKT-84 | **OPEN** | BL-426 | BL-426 |
+| PKT-85 | **OPEN** | BL-437 | BL-437 |
 
 <!-- PLAN-STATUS:END -->
 
@@ -1263,10 +1274,12 @@ completion, don't just assume no build ran.
 
 ### PKT-03 — BL-342/BL-343 residual: repair the live malformed `enrich_ver=''` row + migration guard
 
-> **status: PARTIAL** — still open: BL-342, BL-387 · derived by `tools/plan-status.mjs`, do not hand-edit
+> **status: PARTIAL** — still open: BL-342 · derived by `tools/plan-status.mjs`, do not hand-edit
 
 **Goal:** BL-343 made `memory_stats` survive the shape (tested); the actual bad data was never repaired. Ship a migration that finds `enrich_ver = ''` (invalid JSON) and repairs it, plus a probe so restore can't reintroduce it silently.
-**Closes:** BL-342, BL-387's P0.8 duplicate note (do not treat BL-343's green test as coverage — this packet is the repair BL-343 didn't do)
+**Closes:** BL-342 (do not treat BL-343's green test as coverage — this packet is the repair BL-343 didn't do)
+**Not a target — cross-reference only:** P0.8's duplicate note points at the semantic-completeness item, which is owned by **PKT-34**, not by this packet. Its id previously sat on the `Closes:` line, where `plan-status.mjs` parses every `BL-\d+` as a real target — so PKT-03 was reported as blocked on work it does not do. Naming the packet instead of the id keeps the cross-reference without fabricating a dependency.
+**Remaining as of 2026-08-05 — read before dispatching:** the live residual this packet was written to repair is **gone**. `malformed_rows` re-measured `{count: 0, columns: [], sample_rowids: []}`; row 9284 was overwritten as a side effect of a later batch-enrichment pass — nobody repaired it, it aged out — and a sweep of a full store copy across all kinds including invalidated rows and `edge.meta` found zero. The repair path landed anyway (`e248fd1`), so **this packet is now preventive, not remedial**: what remains is only the recurrence guard, and its acceptance must be built on a seeded fixture rather than on the live store, which no longer carries the shape. Note the correction in BL-342's own body: the column that breaks `memory_stats` is `enrich_ver`, not `tags` — repairing only `tags` leaves the tool dead while appearing to fix it.
 **Files:** `libs/memory-core/src/stats.ts`, `libs/data/store/store-adapter/src/integrity.ts` (new probe), new migration file (find existing migration mechanism location — likely `libs/data/store/store-adapter/src/migration.ts`).
 **requires:** none
 **tier:** sonnet, ~35k tokens / ~14 turns
@@ -1640,6 +1653,7 @@ completion, don't just assume no build ran.
 
 **Goal:** BL-356 has already measured that a fixed τ is not calibratable (mean degree grows linearly with N under single-linkage chaining — 0.085 → 0.684 largest-cluster ratio as N goes 200→1616 at τ=0.82). BL-350 asks for the maintenance strategy (split/merge/drift/orphan) this implies. Produce ONE recommendation covering both: either a corpus-size-adaptive τ function, a different algorithm (not single-linkage — e.g. raise `minPts`), or a periodic-reconciliation hybrid — with a measurable drift metric and a maintenance cadence/trigger.
 **Closes:** BL-356, BL-350
+**Remaining as of 2026-08-05 — the research is finished; this packet has no work left in it.** BL-350 closed. BL-356 stays open **by its own explicit instruction**, not because anything is owed here: its 2026-08-01 update chose option (a) target-mean-degree calibration, ruled out option (c) by measurement, and then says *"Not yet RESOLVED — this item's own acceptance requires a code-level red→green test, which is PKT-30's scope … Leaving Open until PKT-30 lands and proves it."* **Do not re-dispatch PKT-28.** BL-356's closure is now gated on **PKT-30** (implement the calibration) and, downstream of it, **PKT-80** (BL-450 — the implemented calibration turns out to be unstable at the live corpus's exact operating point, which is the same question one layer along). ⚠️ τ=0.87 is a **pairwise** number; the pairwise→centroid offset measured +0.086 to +0.127, so applying it to a centroid join lands near 0.78 pairwise-equivalent, well past the degenerate cliff.
 **Files:** none (research item — output is a written recommendation, per the item's own acceptance; may include a small standalone measurement script under `~/.adhd/sox-ecosystem/memory/` per the existing `bl328-*.mjs` convention, not committed to the repo).
 **requires:** none
 **sequencing:** **Blocks PKT-29 and PKT-31.**
@@ -1726,6 +1740,7 @@ calibration undocumented (the guard becomes a pure safety net that should rarely
 
 **Goal:** BL-335/336/347 are already shipped (verify: CHANGELOG.md, do not redo). What remains is BL-337: `REINDEX <table>` is impossible on a table carrying a Tantivy index — enumerate btree indexes and reindex individually, skip the FTS index, rebuild it via its own DDL. *(BL-341's spike is also answered and does not belong here any more: Turso DOES implement `integrity_check` — 299 ms on a copy of the live 43 MB store, with `quick_check` at 79 ms — recorded in BL-341's 2026-07-31 update. Do not re-run that spike.)*
 **Closes:** BL-337 *(BL-341 moved to PKT-67 on 2026-08-04 — see the note under this heading)*
+**Remaining as of 2026-08-05 — genuine, unstarted work; this is the only one of the four partials with real code left.** BL-341 closed via PKT-67. What is left is exactly BL-337 and nothing else: `REINDEX <table>` is impossible on a table carrying a Tantivy FTS index, so the repair helper must enumerate btree indexes and reindex them individually, skip the FTS index, and rebuild it from its own DDL. Two things are now known that were not when this packet was written: `DROP INDEX` **does** succeed on such a store (measured 2026-08-05 in the BL-361/BL-362 anatomy finding), which makes the rebuild arm cheaper than assumed; and the `integrity_check` assertion in its acceptance must filter BL-360's known false positive via `isKnownFalsePositive`, which still stands pending BL-462. ⚠️ **The second `> **status:` stamp inside this packet's body is stale** — it reads `OPEN — still open: BL-337, BL-341` and BL-341 closed. That is BL-464, not a live target list; the authoritative stamp is the one directly under the heading.
 **Files:** `libs/data/store/store-adapter/src/integrity.ts` (repair helper: enumerate + reindex btrees, rebuild FTS via DDL). **`libs/memory-core/src/backup.ts` is NOT this packet's file any more — PKT-67 owns it. Do not edit it here; a concurrent PKT-67 agent is working in it.**
 **requires:** none
 **tier:** sonnet, ~35k tokens / ~14 turns
@@ -1810,6 +1825,7 @@ calibration undocumented (the guard becomes a pure safety net that should rarely
 
 **Goal:** two failure modes on the deploy path, related but distinct. BL-390: `registry:sync-index` blesses a checksum from a dirty tree with no reproducing commit — make it refuse to run dirty (or stamp provenance as provisional) and record the commit sha an artifact was built from. BL-393: a build's `rm -rf dist` prelude can kill the live backend, which the proxy then silently respawns onto the new bundle — nobody chose that deploy. Narrow the actual trigger (a controlled rebuild did NOT reproduce it — pid survived on the old unlinked inode) before proposing a fix; do not guess.
 **Closes:** BL-390, BL-393
+**Remaining as of 2026-08-05 — phase 1 shipped; phase 2's question has MOVED and the packet body below is superseded on causation.** BL-390 closed (`registry:sync-index` refuses a dirty tree / stamps provisional). BL-393 stays open, but **its trigger was identified on 2026-08-02 and it is not the transitive rebuild this packet was written around**: doctor-tick's routine singleton-violation self-heal SIGTERM'd a **duplicate** memory-server backend (pid 56514) 47 seconds before the rotation; the artifact hash was unchanged throughout and no restart appears in the audit log. A direct `nx build memory-server` did **not** bounce the backend in a controlled test — the process survived on the old unlinked inode. **The open question is therefore no longer "which build bounced it" but "what spawned the duplicate backend", which is unidentified.** Re-scope before dispatching: phase 2 is now a singleton/spawn-provenance investigation, not a build-path one. See `docs/reporting/memory/handoff/bl393-respawn-trigger.md`. The "I could not reproduce it, here is what I ruled out" allowance still stands.
 **Files:** `tools/bundle-extension.cjs`, the `registry:sync-index` nx target implementation (locate under `tools/` or a dedicated nx executor), `libs/host-runtime/src/supervisor.ts` (respawn logic — read-only investigation first for BL-393's trigger).
 **requires:** none
 **sequencing:** **This packet must NOT run `nx build` on any shipped extension as part of its own testing** — reproduce the dirty-tree scenario against a disposable scratch package, never the live `memory-server` bundle. Flag to the human orchestrator before any test step that would build a real extension.
@@ -2984,6 +3000,167 @@ a committed `pnpm-lock.yaml` diff and a 0-failure smoke run.
 
 ---
 
+## Wave K — the unscheduled remainder: agent-safety, tooling correctness, doc truth, and four product defects
+
+Drawn 2026-08-05 to give packets to the 22 in-scope items the ledger reported with none. Twenty are
+covered by the eleven packets below; **BL-436 and BL-462 are deliberately left unscheduled pending an
+owner ruling** — see "Recommended for no packet" at the end of this wave. Grouping is by shared file
+set and shared root cause, not by severity: PLAN.md's own Rule 2 (batch packets that share a large
+file) applies hard here, because six of these items edit `CLAUDE.md` or `tools/*.mjs` and would
+otherwise contend.
+
+**Budget convention for this wave.** The six-line budget boilerplate repeated on every Wave A–J packet
+is deliberately *not* repeated here — it is identical every time and PLAN.md's own dispatch analysis
+measures that repetition as a direct cost. It applies unchanged: **turns are the reliable unit, tokens
+are derived**; the ceiling is guidance, not a stop; commit incrementally by explicit path; "the fix
+sketch was wrong, here is what I ruled out" is a success outcome; sub-dispatch only with pre-digested
+context, never by telling a subagent to read this file.
+
+### PKT-75 — BL-416 + BL-446 + BL-454: the backlog tooling writes to the wrong file, on the wrong trigger, and never regenerates what it validates
+
+> **status: OPEN** — still open: BL-416, BL-446, BL-454 · derived by `tools/plan-status.mjs`, do not hand-edit
+
+**Goal:** three defects in one script family, which BL-416's own body says should be fixed together. (a) BL-416: `allocate-bl-id.mjs`, `check-backlog-markers.mjs` and `check-bl-id-integrity.mjs` resolve the repo root via `git rev-parse --git-common-dir` + `..`, which inside any linked worktree resolves to the **main** checkout — so a worktree agent validates and mutates a file it never touched. (b) BL-446: every unrecognised argument, including `--help`, falls through to the allocate-and-write path. (c) BL-454: `check-backlog-markers.mjs` validates the `Total open:` integer but never rewrites the prose beside it, which had accreted to a 21,736-byte line with clauses repeated four times.
+**Closes:** BL-416, BL-446, BL-454
+**Files:** `tools/allocate-bl-id.mjs`, `tools/check-backlog-markers.mjs`, `tools/check-bl-id-integrity.mjs`.
+**requires:** none
+**sequencing:** do (b) first — it is three lines and stops the bleeding while (a) is in progress.
+**tier:** sonnet, ~14 turns
+**Decision needed, do not self-approve:** BL-416 turns on whether `BACKLOG.md` is a **per-worktree** file or a genuinely shared cross-worktree registry. BL-359 built the allocator around a single canonical file precisely to stop concurrent branches colliding on an id, so `--show-toplevel` is not automatically the right answer — it trades an id-collision race for correct file targeting. Both scripts must print the resolved absolute path on every write and every FAIL whichever way it lands. State the recommendation, implement only after a ruling.
+**acceptance:** naming each id. BL-416: a test that runs the allocator from a real `git worktree add` worktree and asserts the placeholder lands in a `BACKLOG.md` the invoking process can read back **and commit** (BL-423's inherited acceptance). BL-446: `--help` prints usage, exits 0, and leaves `BACKLOG.md` byte-identical; an unrecognised argument exits non-zero and writes nothing. BL-454: the annotation is regenerated (or capped) by a tool, with a fixture containing duplicate clauses reduced deterministically and no unique clause dropped.
+
+### PKT-76 — BL-456 + BL-457 + BL-463: the shared checkout's three unguarded blast radii
+
+> **status: OPEN** — still open: BL-456, BL-457, BL-463 · derived by `tools/plan-status.mjs`, do not hand-edit
+
+**Goal:** three distinct doors onto the same hazard — a tool whose blast radius exceeds the agent's mental model of it in a shared, concurrently-edited checkout. (a) BL-457: `git commit --amend` with no pathspec commits the **shared index**; one live incident turned a reviewed 2-file/+282 commit into 8 files/+727/−2567, hiding the swallowed work behind an already-approved subject line. (b) BL-463: staged entries **outlive the agent that created them** — four occurrences on 2026-08-05, each a stale index silently ready to revert committed work; recovery is `git restore --staged`, verified non-destructive every time. (c) BL-456: `nx.json` sets `targetDefaults.test.dependsOn = ["^build"]`, so `nx test <project>` rebuilds upstream `dist/` from whatever source is on disk — including another agent's uncommitted edits — which means a suite can go green *against work its runner has never seen* and be reported as verification.
+**Closes:** BL-456, BL-457, BL-463
+**Files:** `CLAUDE.md` (the pathspec + destructive-build constraint sections), `tools/commit-mine.mjs` (an amend mode that rewrites only the message via `commit-tree`, never touching the index), optionally `tools/install-git-hooks.mjs` + a `pre-commit` guard.
+**requires:** none — but read PKT-51 (BL-409) and PKT-56 (BL-422) first; this is the same family and must not contradict them.
+**tier:** sonnet, ~18 turns
+**Note on the structural fix.** All three items independently converge on **per-agent worktree isolation**, which is already the dispatch default and removes the shared index entirely. This packet is the defence-in-depth for the case where isolation is not in force — it is explicitly *not* a substitute for it, and should say so rather than implying the hazard is closed. Note also that worktree isolation currently inherits neither `node_modules` nor git hooks (STATE.md's known-unverified section), so "just use worktrees" has its own unpaid cost.
+**acceptance:** naming each id. BL-457: a guard that refuses a pathspec-less `--amend` while the shared index diverges from HEAD, red against a seeded stale index; plus `git reset --soft` recorded as the recovery. BL-463: a teardown step that `git restore --staged`s any path an agent staged but never committed, proven on a seeded divergence with every working-tree file asserted byte-identical afterwards. BL-456: documented alongside BL-235 **and** a mechanical check — assert `git status --porcelain` over the dependency set is reported with any suite result a packet offers as evidence.
+
+### PKT-77 — BL-435 + BL-464: hand-maintained plan blocks the guard cannot see — outside the markers, and inside the stamp format
+
+> **status: OPEN** — still open: BL-435, BL-464 · derived by `tools/plan-status.mjs`, do not hand-edit
+
+**Goal:** two halves of one defect in `tools/plan-status.mjs`. (a) BL-435: all rewriting and `--check`ing is bounded by the `PLAN-STATUS:BEGIN/END` markers, so `STATE.md`'s "What to do next" and `PLAN.md`'s "Wave summary" sit outside the guard — the first sent a session at two DONE packets, the second read "Total: 56 packets" against a derived ledger of 72 with two whole waves missing. (b) BL-464: `stampPackets`' replacement is **positional** — it inspects only the line after the heading — so a second stamp deeper in a body is never rewritten and never flagged. Six packets carry one; PKT-20/21/23/43 currently read `OPEN` for shipped work in the verbatim "derived … do not hand-edit" format.
+**Closes:** BL-435, BL-464
+**Files:** `tools/plan-status.mjs` (`stampPackets` :215-243, `--check` :273-280), `docs/reporting/memory/PLAN.md`, `docs/reporting/memory/STATE.md`.
+**requires:** none
+**sequencing:** BL-464 first — it is a ~5-line change to `stampPackets` and its red arm is the *current* `PLAN.md`, so the fixture already exists in the repo.
+**tier:** sonnet, ~16 turns
+**Fix preference, with reasoning.** BL-435's own candidate 2 — have `--check` scan hand-written prose for `BL-\d+`/`PKT-\d+` tokens and fail when one names an id absent from `BACKLOG.md` or DONE in `PLAN.md` — is the smallest change that would have caught **both** recorded incidents, and it keeps the editorial prose that candidate 1 (derive the section) destroys. Extend the same scan to the totals the tool already computes, which is what the wave table needed.
+**acceptance:** naming each id. BL-464: a `PLAN.md` fixture with two stamps in one packet body reduces to exactly one matching the derived status; plus an assertion over the real file that every packet block contains exactly one stamp — red today on six packets. BL-435: a fixture whose unguarded prose names a DONE packet fails `--check`, and passes once corrected; the four stale stamps and the wave-summary totals are corrected in the same commit.
+
+### PKT-78 — BL-451 + BL-453 + BL-458 + BL-459: four published statements that are false
+
+> **status: OPEN** — still open: BL-451, BL-453, BL-458, BL-459 · derived by `tools/plan-status.mjs`, do not hand-edit
+
+**Goal:** four documents/descriptions that authoritatively state something the code or registry contradicts. (a) BL-451: ADR-0009's load-bearing citation `entrypoint/backlog/src/markdown.ts` **does not exist** — verified by an exhaustive repo-wide grep finding the symbol only in the ADR and its own index blob; an ADR is precedent and other agents relay it as settled. (b) BL-453: `memory_curate`'s MCP tool description says a global recluster runs SYNCHRONOUSLY; `curate.ts:381-397` deliberately enqueues and defers to the periodic tick — the code is right, the description is wrong, and it caused a live misdiagnosis. (c) BL-458: a 2026-07-04 handoff doc still publishes the exact `WriteQueueMetrics` shape BL-394 was filed to remove, reading as current reference. (d) BL-459: the publish-readiness assessment still opens "Status: NOT READY" against a blocker that is resolved and a version table three releases behind.
+**Closes:** BL-451, BL-453, BL-458, BL-459
+**Files:** `docs/decisions/0009-backlog-source-of-truth.md`, the `memory_curate` tool description in `libs/memory-core/src/curate.ts` (or wherever the MCP schema is declared), `docs/plan/runtime-productionization/06-hardening-final/WRITEQ_METRICS_INTEGRATION.md`, `docs/reporting/publishing/turso-library-publish-readiness.md`.
+**requires:** none
+**tier:** haiku, ~10 turns — four bounded content corrections, no design work.
+**Standing preference, applied to all four.** Each item's own option list ends at the same place: a hand-written literal beside a moving source is a **standing staleness generator**. Prefer citing the type/registry/code over restating it; where a snapshot must exist, date-stamp it as a point-in-time handoff so it cannot read as current. BL-451 is the exception — it needs a *resolvable* path, or the ~14 lines pasted inline so the argument stands without one. Do **not** dispute BL-451's conclusion; the citation is the defect.
+**acceptance:** each of the four named. Every corrected statement is verified against its source in the same pass — for BL-453, a live `memory_curate {op:'recluster'}` call whose `{enqueued:true, seq}` response matches the corrected description; for BL-459, a registry query rather than a recollection.
+
+### PKT-79 — BL-452 + BL-460: every foundation fix is an N-package release, and nothing links an API change to a changeset
+
+> **status: OPEN** — still open: BL-452, BL-460 · derived by `tools/plan-status.mjs`, do not hand-edit
+
+**Goal:** two coupled release defects. (a) BL-452: pnpm rewrites `workspace:*` to an **exact** version at pack time — verified, `@adhd/sox-memory-core@0.4.1` pins `"@adhd/sox-store-adapter": "0.1.1"` — so publishing a fixed low-level package alone is invisible to every dependent, and one three-line dependency change cost eight npm releases. (b) BL-460: `ls .changeset/*.md` is **empty** while two packages published the same day have had public type changes land since (`WriteQueueMetrics` widened to nullable + `mode`/`admission_control`; `AdapterBackupResult` gained `integrityReport`), so the published tarballs describe a shape the source no longer has. `check-publishable.ts` validates dependency *shape* only and cannot see this.
+**Closes:** BL-452, BL-460
+**Files:** `scripts/check-publishable.ts`, `.github/workflows/release.yml`, `.changeset/`, the publishable packages' `package.json` dependency ranges.
+**requires:** none
+**tier:** sonnet, ~20 turns
+**Decision needed, do not self-approve.** BL-452's option (b) — publish workspace deps with a **caret** range so patches flow without a republish — changes the compatibility contract these packages offer consumers, and is the kind of thing that is very hard to walk back once published. Option (a) accepts the cascade and scripts it; (c) is fewer, coarser packages. Present the trade with the measured cost of each (the eight-release event is the datum) and implement after a ruling. BL-460's gate is implementable independently of that ruling and should not wait on it.
+**acceptance:** naming each id. BL-460: a release gate that fails when a publishable package's `dist/*.d.ts` differs from the last **published** version with no changeset present — red against the current tree, which has exactly that condition on two packages. BL-452: whichever option is ruled, a test proving a patch to `store-adapter` reaches a consumer without hand-editing N manifests, or — if the cascade is accepted — a script that performs it and a test that the script's output republishes exactly the transitive set.
+
+### PKT-80 — BL-450 + BL-455: the calibrated τ is a coin flip at the boundary, and the guard that keeps calibration reachable is an identity function
+
+> **status: OPEN** — still open: BL-450, BL-455 · derived by `tools/plan-status.mjs`, do not hand-edit
+
+**Goal:** (a) BL-450: `calibrateThreshold` estimates `P(cosine ≥ τ)` from a 400-vector subsample (79,800 pairs) and accepts the first grid τ fitting `D_target = 2.0`. At the live corpus the budget is **≤ 32.16 qualifying pairs and the corpus sits at exactly 32** — rotating the sample start offset by 1/2/3/5/8/13 vectors moves τ across 0.87/0.88/0.89 and the partition across 443…506 communities on identical data. This already cost a full diagnostic session, which read the two arms as "calibration is inert in production". (b) BL-455: `resolveClusterThreshold` is `return override;` — an identity function whose entire purpose lives in a comment, and inlining it makes calibration unreachable, which is BL-420's shape one layer up.
+**Closes:** BL-450, BL-455
+**Files:** `libs/memory-core/src/cluster.ts` (`calibrateThreshold` :1310-1383, constants :1196-1228, call site :690-733), `libs/memory-core/src/enrich-batch.ts` (:390-408, call site :269).
+**requires:** PKT-30 (BL-328) should land or be ruled first — this destabilises the mechanism that packet installs.
+**tier:** sonnet, ~20 turns
+**Decision needed, do not self-approve — BL-450 changes default clustering behaviour.** Three candidates: (1) widen the estimator 400 → 1200 (~1.3s, 5% of a 23.4s pass); (2) hysteresis on the *decision* — require 1.1×D_target to step up and 0.9× to step down; (3) persist the last τ and move only on two consecutive disagreeing passes. **(1) alone does not remove the boundary, it only narrows the band in which a resample crosses it** — (2) or (3) is what actually makes consecutive passes agree. Recommend, then implement after a ruling.
+**acceptance:** naming each id. BL-450: calibrate the **same** corpus under ≥5 sample perturbations and assert one identical τ — red today with τ ∈ {0.87, 0.88, 0.89}. BL-455: make the pass-through's purpose executable rather than commented — a test named for BL-455 asserting calibration is still reached from a bare `runBatchEnrich()` **in this file**, so inlining the function goes red here rather than in a distant file that names a different id.
+
+### PKT-81 — BL-424: the incremental cluster join backfills no topic and undercounts its own edges
+
+> **status: OPEN** — still open: BL-424 · derived by `tools/plan-status.mjs`, do not hand-edit
+
+**Goal:** `runBatchEnrich`'s E5 topic-backfill loop and its `member_of_edges` counter both iterate `clusterResult.clusters`, which is **always `[]`** on the incremental path — the join writes `MEMBER_OF` edges directly without producing `ClusterResult` descriptors. So an incrementally-joined episode keeps `topic: NULL` despite belonging to a labelled community until the next full pass touches it, and a caller reading `member_of_edges` sees `0` while real writes land.
+**Closes:** BL-424
+**Files:** `libs/memory-core/src/cluster.ts` (`incrementalJoin()`), `libs/memory-core/src/enrich-batch.ts` (:228-238 E5 loop, :60-96 result fields).
+**requires:** **PKT-29** (BL-349 + BL-326) — this is a fidelity gap *inside* the incremental join that packet builds; it cannot be verified until that path is reachable.
+**tier:** sonnet, ~10 turns
+**Note.** Fetch the community label once per community, not per episode. For the counter, either accumulate `incremental_joined` into `member_of_edges` or document in the field's doc comment that it is full-pass-only and callers must add `incremental_joined` themselves — the current comment says neither, which is the actual defect.
+**acceptance:** a test naming BL-424 that runs an incremental join against a pre-existing **labelled** community and asserts the joined episode's `topic` is backfilled and that the reported edge count reflects the true number of `MEMBER_OF` writes.
+
+### PKT-82 — BL-461: the FTS pre-flight only runs after an unclean session, so a store damaged inside a clean one still aborts the process
+
+> **status: OPEN** — still open: BL-461 · derived by `tools/plan-status.mjs`, do not hand-edit
+
+**Goal:** BL-361's shipped `preflight.ts` is gated on an out-of-band marker written on open and cleared on orderly close, so it runs only when the previous session did not close cleanly — a test arm honestly asserts that with no marker the process still dies with SIGABRT. **The calculus changed:** BL-361 was filed believing the panic is inside `connect()`, which would force an out-of-process check. Measured 2026-08-05 that is wrong — `connect()`, base-table reads, `sqlite_master` reads, `INSERT`, `CREATE INDEX … USING fts` and `DROP INDEX` all succeed; **only `fts_match` panics**. So a cheap unconditional **in-process** guard is now possible, and the "adds a native open to every connect" objection that rejected it does not apply.
+**Closes:** BL-461
+**Files:** `libs/data/store/store-adapter/src/turso-adapter.ts` (between driver open and `runOpenTimeIntegrity`), reusing `preflight.ts`'s orphan-detection predicate.
+**requires:** none (PKT-69 landed the out-of-band half)
+**tier:** sonnet, ~14 turns
+**Constraint — do not put this in `integrity.ts`.** That file is contended and the item says so explicitly. Keep the out-of-band pre-flight as well: it is the only defence if a future driver really does panic inside `connect()`. Also cover the second, narrower risk the item records — the marker is present while another process holds the store open, so a concurrent opener runs the pre-flight's read-only `better-sqlite3` scan against a live Turso store; believed safe, **not covered by a test**, and `better-sqlite3` creates a `-shm` beside a store whose WAL coordination runs through `-tshm`.
+**acceptance:** a child-process test naming BL-461 that damages a store, leaves **no** marker, opens through `TursoAdapterImpl.connect()` and asserts a clean exit — failing with SIGABRT before the guard exists. Plus a concurrent-opener test for the second risk.
+
+### PKT-83 — BL-432: the head-of-line-blocking instrument is on the wrong side of the boundary
+
+> **status: OPEN** — still open: BL-432 · derived by `tools/plan-status.mjs`, do not hand-edit
+
+**Goal:** the `wait ≈ work` lead is retracted — n=570 warm embeds across three runs including one on a quiet machine give `wait_ms` median 0 ms, max 4 ms, exactly 0 in 559 of 570, flat across an 8× concurrency sweep that moves `work_ms` 5×. It can never move: `admit` is a memoised already-resolved promise after the first embed, while the real contention happens one level down inside `embedSingle` → `SharedFastembedProcessClient.request()` and lands in `work_ms`. **BL-331's head-of-line-blocking question is therefore unanswered, not answered negatively** — and the source comment claims the split is "the direct measurement" of it.
+**Closes:** BL-432
+**Files:** `libs/data/embed/embedding-provider/src/sharedFastembedProcess.ts` (`request()` :185-216, the `pending` map :58), `libs/memory-core/src/embed.ts` :228-248 (correct the comment).
+**requires:** PKT-02 / PKT-45 (the `@adhd/sox-telemetry` `instrumentBoundary` seam) — use it; do **not** introduce a second telemetry mechanism.
+**tier:** sonnet, ~16 turns
+**Three signals, in order of value.** (1) `pending.size` at `request()` admission — the direct head-of-line-blocking signal, one field off an existing map. (2) time-in-queue vs time-to-first-response, stamping `request()` entry and the following `child.send()`, so "sat behind three others" is distinguishable from "the child was slow". (3) **competing-host count** — a second `fastembedProcessHost` changes embed latency 25–50×, the host warns about it at startup, and nothing records it; every embed-latency number gathered without it is unlabelled. Medians only, per BL-369 (`duration_ms` is wall-clock and accrues during sleep).
+**acceptance:** a test naming BL-432 that issues concurrent embeds through one shared child and asserts the new queue-depth signal is **non-zero** under contention and zero when serial — the assertion `wait_ms` structurally cannot make. Correct the `embed.ts` comment in the same commit; leave `wait_ms` in place as the cold-start detector it genuinely is (BL-376's warmup budgets consume it).
+
+### PKT-84 — BL-426: an uncaught native `mutex lock failed` on backend SIGTERM teardown
+
+> **status: OPEN** — still open: BL-426 · derived by `tools/plan-status.mjs`, do not hand-edit
+
+**Goal:** `libc++abi: terminating due to uncaught exception of type std::__1::system_error: mutex lock failed: Invalid argument`, emitted immediately after `[memory-server backend] SIGTERM — shutting down`. Native (C++), not JS. Every run that hit it still reported all tests passing, so it is in a child/worker process or a background native call whose failure never reaches vitest's exit code — it is not masking a test failure, but an uncaught native exception during shutdown is exactly the class that graduates to a real crash or a corrupted native handle when timing shifts, and today it is visible only to a human reading raw stderr.
+**Closes:** BL-426
+**Files:** investigation-first — candidates are `terminateEmbedWorkers()`, the fastembed host IPC teardown, and the Turso native `close()` path (including whether `WriteQueue.closeAllForShutdown()` races `closeAllAdapters()` on a shared native handle under real concurrency).
+**requires:** none
+**tier:** sonnet, ~20 turns
+**Reproduction IS the work, and it may fail.** Root cause is **NOT established — do not guess it**; the item says so explicitly. Reproduce in isolation (single test file, not the combined run) to identify which native component throws. **"I could not reproduce it, here is what I ruled out" is an accepted outcome** — the same standing allowance PKT-37 phase 2 carries. Do not ship a fix aimed at a mechanism you have not confirmed.
+**acceptance:** the identified component, plus either a test naming BL-426 that reproduces the teardown crash and asserts a clean exit after the fix, or a written finding recording what was ruled out and what evidence would settle it.
+
+### PKT-85 — BL-437: `topicBoost` is multiplicative on a floor of exactly zero, so it can never lift the last-placed candidate
+
+> **status: OPEN** — still open: BL-437 · derived by `tools/plan-status.mjs`, do not hand-edit
+
+**Goal:** `search()` normalises fused scores then applies the topic boost as `score: f.score * boost`. Under the default `min_max` normaliser the lowest-scoring candidate maps to exactly `(s - min) / range === 0`, and `0 × 2.0 === 0` — so the last-placed candidate is pinned to the floor and **no topic match, however exact, can lift it**. In a two-candidate set the loser *is* always the minimum, so the boost can never reorder a 2-result query at all; the effect is strongest exactly where result sets are small, which is the common case for a scoped recall.
+**Closes:** BL-437
+**Files:** `libs/data/search/hybrid-search/src/index.ts` (:430-435 the boost, :142-146 the normaliser, :328-338 the boost constants), `libs/data/search/hybrid-search/src/hybrid-search.spec.ts`.
+**requires:** none
+**tier:** sonnet, ~14 turns
+**Two cautions.** (1) The fix is **unvalidated — do not treat it as decided**: additive on a normalised scale, or applied to raw channel scores before normalisation, or flooring the min-max output at a small epsilon. Each changes ranking for **every** query, so this needs a measured A/B on real recall output, not a unit-test-only change. (2) **Check BL-166 before starting** — it is the open question of whether this package's surface is consumed at all; if it resolves toward "remove", BL-437 dies with it and this packet should not run.
+**acceptance:** a test naming BL-437 in which an exact topic match on the lowest-scoring candidate reorders it off the floor — the existing `'BL-437: an exact topic match on the LOWEST-scoring candidate cannot be boosted off the floor'` spec is the red arm and already exists. The companion non-floor test must stay green, proving the change fixed the floor case without breaking the case that already worked.
+
+### Recommended for no packet — owner ruling required
+
+Neither of these is an oversight; both are recommendations with reasoning, and **neither has been
+added to `tools/plan-status.mjs`'s `OUT_OF_SCOPE` set**, so the ledger will keep reporting them as
+unscheduled until the owner rules. That mismatch is the intended friction this plan documents.
+
+- **BL-462** (delete `isKnownFalsePositive` when Turso fixes the FTS `integrity_check` false positive) — **recommend: no packet, add to `OUT_OF_SCOPE`.** Its trigger is external: [tursodatabase/turso#7611](https://github.com/tursodatabase/turso/issues/7611) closing. A packet for it can never reach DONE by any work done in this repo, which is **exactly the trap BL-360 was closed to escape** — that item's own acceptance ("the filter is removed") was satisfiable only by upstream and would have pinned a finished packet open forever. Giving BL-462 a packet re-creates it under a new id. The guard test already fails on any move off `SUPPRESSION_VALID_FOR`, so a driver bump is covered without a packet.
+- **BL-436** (registry checksum drift armed) — **recommend: close it, do not schedule it.** It was filed "for traceability, not for someone to pick up", and its close condition looks **already met**: `registry/index.json` was regenerated and committed in `61e4ff0` ("sync checksums to the redeployed memory bundle `8ae1b0da3c82`") and the working tree is clean at that path. The remaining half of its own close condition is a `node scripts/smoke-test.mjs` run reporting `summary.failed === 0` — deliberately not run here, since this pass is planning-only and the smoke test builds. Confirm that at the next merge gate and close.
+
+---
+
 ## Explicitly out of scope / no packet (in addition to the exclusion list already in this plan)
 
 - **BL-202** — memory-core suite flakiness under CPU load (`export.spec.ts`, `concurrency-harness.spec.ts`). Its own marker is explicit: **"NOT REPRODUCIBLE... do not `fix` until it reproduces."** ~30+ runs across serial/parallel/CPU-oversubscription produced zero failures. No packet — filing one would violate the item's own instruction. Leave open, revisit only if it reproduces again with a captured failure.
@@ -3006,6 +3183,7 @@ Verified by diffing every packet's `Closes:` line against `grep -oE '^### BL-[0-
 | H | PKT-64 .. PKT-66 (3) | 2 (PKT-65 hard-gated on PKT-64) | see each packet's `requires:` |
 | I | PKT-67 .. PKT-72 (6) | high — mostly independent | see each packet's `requires:` |
 | J | PKT-57, PKT-73, PKT-59, PKT-58, PKT-74, PKT-60 .. PKT-63 (9) | 2 (PKT-73 is a hard gate; PKT-61/PKT-62 parallel at the tail) | PKT-57 → PKT-73, then serial through the shared `index.ts` |
+| K | PKT-75 .. PKT-85 (11) | high — 9 of 11 are independent | PKT-81 requires PKT-29; PKT-80 follows PKT-30; PKT-83 needs the telemetry seam (PKT-02/PKT-45) |
 
 Wave G collects everything filed after the original A–F waves were drawn (2026-08-01 onward). It is
 not a phase so much as an inbox: the packets in it are individually gated by their own `requires:`
@@ -3014,7 +3192,7 @@ it must precede PKT-29/PKT-30**, because clustering consumes what enrichment pro
 enrichment pass is currently dead. Waves H, I and J were drawn later still (2026-08-05) and are
 likewise gated per packet, not per wave.
 
-**Total: 74 packets.** Tier distribution, derived from the `**tier:**` fields rather than hand-maintained: **sonnet 67**, **haiku 7** (PKT-09, 20, 22, 23, 68, 71, 72), **opus 0**.
+**Total: 85 packets.** Tier distribution, recomputed 2026-08-05 with the snippet below rather than incremented by hand: **sonnet 77**, **haiku 8** (PKT-09, 20, 22, 23, 68, 71, 72, 78), **opus 0**.
 
 > **This table is hand-maintained and lives outside the `PLAN-STATUS` markers, so no guard catches it
 > when it drifts — that is BL-435's defect in this file rather than in `STATE.md`.** It was stale for
