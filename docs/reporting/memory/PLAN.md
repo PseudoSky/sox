@@ -932,8 +932,6 @@ rewritten, only unblocked.
 > fixture" is an open-ended search. PKT-70 names the ruled-out recipes, the two unexplored candidates,
 > and an accepted terminal outcome (anonymised fixture, or a written finding) so the packet can end.
 
-> **status: OPEN** — still open: BL-362 · derived by `tools/plan-status.mjs`, do not hand-edit
-
 **Goal:** BL-347's negative control exists only against the live store, so the single most expensive regression this migration produced cannot be re-tested in CI. Build a committable fixture that reproduces an `idx_fts_node` with an empty Tantivy directory.
 **Closes:** BL-362
 **Files:** `libs/data/store/store-adapter/src/__tests__/` fixtures + test.
@@ -1455,8 +1453,6 @@ completion, don't just assume no build ran.
 > harness runs against — which, read literally, is the user's production corpus. PKT-66 carries the
 > safety constraint, the DRY constraint, and an acceptance that can fail.
 
-> **status: OPEN** — still open: BL-274 · derived by `tools/plan-status.mjs`, do not hand-edit
-
 **Closes:** BL-274
 **Files:** new `tools/stress/proxy-concurrency.mjs`.
 **requires:** none
@@ -1513,8 +1509,6 @@ completion, don't just assume no build ran.
 > the *installed* driver version, not a `package.json` edit — and folds the version assertion into
 > the existing guard test so the two facts cannot drift apart.
 
-> **status: OPEN** — still open: BL-360 · derived by `tools/plan-status.mjs`, do not hand-edit
-
 **Closes:** BL-360
 **Files:** `libs/data/store/store-adapter/src/integrity.ts` (pin the driver version the existing `isKnownFalsePositive()` suppression is valid for), no upstream-report file needed in-repo but note the report was filed (external — do via WebSearch/issue tracker as part of this packet, not a separate step).
 **requires:** none
@@ -1532,8 +1526,6 @@ completion, don't just assume no build ran.
 > `consumeUncleanShutdownFlag()` reads `_adapter_meta` *through the adapter*
 > (`adapter-meta.ts:102-115`) and is called at `turso-adapter.ts:327`, after `connect()` returns —
 > and the panic happens inside `connect()`. PKT-69 gates on an out-of-band marker file instead.
-
-> **status: OPEN** — still open: BL-361 · derived by `tools/plan-status.mjs`, do not hand-edit
 
 **Closes:** BL-361
 **Files:** new pre-flight module (likely in `libs/data/store/store-adapter/src/`) that runs a cheap out-of-process schema sanity check before the first `connect()` on a store flagged unclean; wire into `openDb`'s Turso branch.
@@ -1563,8 +1555,6 @@ completion, don't just assume no build ran.
 > alternatives. They are not: forwarding `walBaseline` is local, while emitting an explicit `unknown`
 > for any unrunnable probe changes what `report.unknown` contains for every reader of it, including
 > the hot open path. PKT-71 orders them and states the enumeration required before the second.
-
-> **status: OPEN** — still open: BL-379 · derived by `tools/plan-status.mjs`, do not hand-edit
 
 **Closes:** BL-379
 **Files:** `libs/data/store/store-adapter/src/integrity.ts` (`repairStoreIntegrity`'s reverify call — forward `walBaseline` through `RepairOptions`, or have `verifyStoreIntegrity` emit an explicit `unknown` finding when a probe can't run).
@@ -1736,11 +1726,9 @@ calibration undocumented (the guard becomes a pure safety net that should rarely
 > owns it, together with the second hole in the same verdict (BL-449).** Everything below about
 > BL-337 stands unchanged.
 
-> **status: OPEN** — still open: BL-337, BL-341 · derived by `tools/plan-status.mjs`, do not hand-edit
-
 **Goal:** BL-335/336/347 are already shipped (verify: CHANGELOG.md, do not redo). What remains is BL-337: `REINDEX <table>` is impossible on a table carrying a Tantivy index — enumerate btree indexes and reindex individually, skip the FTS index, rebuild it via its own DDL. *(BL-341's spike is also answered and does not belong here any more: Turso DOES implement `integrity_check` — 299 ms on a copy of the live 43 MB store, with `quick_check` at 79 ms — recorded in BL-341's 2026-07-31 update. Do not re-run that spike.)*
 **Closes:** BL-337 *(BL-341 moved to PKT-67 on 2026-08-04 — see the note under this heading)*
-**Remaining as of 2026-08-05 — genuine, unstarted work; this is the only one of the four partials with real code left.** BL-341 closed via PKT-67. What is left is exactly BL-337 and nothing else: `REINDEX <table>` is impossible on a table carrying a Tantivy FTS index, so the repair helper must enumerate btree indexes and reindex them individually, skip the FTS index, and rebuild it from its own DDL. Two things are now known that were not when this packet was written: `DROP INDEX` **does** succeed on such a store (measured 2026-08-05 in the BL-361/BL-362 anatomy finding), which makes the rebuild arm cheaper than assumed; and the `integrity_check` assertion in its acceptance must filter BL-360's known false positive via `isKnownFalsePositive`, which still stands pending BL-462. ⚠️ **The second `> **status:` stamp inside this packet's body is stale** — it reads `OPEN — still open: BL-337, BL-341` and BL-341 closed. That is BL-464, not a live target list; the authoritative stamp is the one directly under the heading.
+**Remaining as of 2026-08-05 — genuine, unstarted work; this is the only one of the four partials with real code left.** BL-341 closed via PKT-67. What is left is exactly BL-337 and nothing else: `REINDEX <table>` is impossible on a table carrying a Tantivy FTS index, so the repair helper must enumerate btree indexes and reindex them individually, skip the FTS index, and rebuild it from its own DDL. Two things are now known that were not when this packet was written: `DROP INDEX` **does** succeed on such a store (measured 2026-08-05 in the BL-361/BL-362 anatomy finding), which makes the rebuild arm cheaper than assumed; and the `integrity_check` assertion in its acceptance must filter BL-360's known false positive via `isKnownFalsePositive`, which still stands pending BL-462.
 **Files:** `libs/data/store/store-adapter/src/integrity.ts` (repair helper: enumerate + reindex btrees, rebuild FTS via DDL). **`libs/memory-core/src/backup.ts` is NOT this packet's file any more — PKT-67 owns it. Do not edit it here; a concurrent PKT-67 agent is working in it.**
 **requires:** none
 **tier:** sonnet, ~35k tokens / ~14 turns

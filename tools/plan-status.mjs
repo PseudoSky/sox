@@ -211,33 +211,62 @@ const renderStateBlock = (model) => {
   ].join('\n');
 };
 
-/** Stamp a machine-owned status line directly under each packet heading. */
-const stampPackets = (planSrc, model) => {
+/**
+ * A machine-owned status stamp. The suffix is the strongest "this line is generated and current"
+ * signal the project has, so ANY line matching this inside a packet block is claimed by this tool.
+ */
+export const STAMP_RE = /^> \*\*status:/;
+
+/** A packet block runs from its `### PKT-` heading to the next heading of any level. */
+const isHeading = (line) => /^#{1,4} /.test(line ?? '');
+
+export const renderStamp = (packet) => {
+  const detail =
+    packet.status === 'DONE'
+      ? `all targets closed (${bl(packet.targets)})`
+      : packet.status === 'NO-TARGET'
+        ? 'no BL target parsed from this packet'
+        : `still open: ${bl(packet.open)}`;
+  return `> **status: ${packet.status}** — ${detail} · derived by \`tools/plan-status.mjs\`, do not hand-edit`;
+};
+
+/**
+ * Stamp a machine-owned status line directly under each packet heading, and delete every OTHER
+ * stamp in the same packet block.
+ *
+ * BL-464: this replacement used to be positional — it inspected only the line immediately after the
+ * heading (optionally past one blank), so a second stamp deeper in a body was never rewritten, never
+ * validated, and never reported by `--check`. Six packets carried one and four of them read `OPEN`
+ * for shipped work, in the verbatim "derived … do not hand-edit" format. A duplicate is *stable*
+ * rather than drifting, so it survived every regeneration indefinitely. The stamp is machine-owned
+ * by declaration, so a second one is by definition garbage: drop it.
+ */
+export const stampPackets = (planSrc, model) => {
   const lines = planSrc.split('\n');
   const out = [];
   const byHeading = new Map(model.packets.map((p) => [p.headingLine, p]));
+  let inPacket = false;
   for (let i = 0; i < lines.length; i += 1) {
-    out.push(lines[i]);
     const packet = byHeading.get(i);
-    if (!packet) continue;
-    // Drop an existing stamp (and its blank line) so re-runs replace rather than accumulate.
-    let j = i + 1;
-    if (lines[j] === '') j += 1;
-    if (/^> \*\*status:/.test(lines[j] ?? '')) {
-      i = j; // skip the stale stamp; the blank line after it is re-emitted below
-      if (lines[i + 1] === '') i += 1;
-    } else {
+    if (packet) {
+      inPacket = true;
+      out.push(lines[i]);
+      // Consume the heading's own blank lines and any stamp adjacent to it; the canonical
+      // heading/blank/stamp/blank shape is re-emitted below, which keeps re-runs idempotent.
+      let j = i + 1;
+      while (j < lines.length && (lines[j] === '' || STAMP_RE.test(lines[j]))) j += 1;
       i = j - 1;
+      out.push('', renderStamp(packet), '');
+      continue;
     }
-    const detail =
-      packet.status === 'DONE'
-        ? `all targets closed (${bl(packet.targets)})`
-        : packet.status === 'NO-TARGET'
-          ? 'no BL target parsed from this packet'
-          : `still open: ${bl(packet.open)}`;
-    out.push('');
-    out.push(`> **status: ${packet.status}** — ${detail} · derived by \`tools/plan-status.mjs\`, do not hand-edit`);
-    out.push('');
+    if (isHeading(lines[i])) inPacket = false;
+    if (inPacket && STAMP_RE.test(lines[i])) {
+      // A second stamp deeper in the body. Drop it, and collapse the blank line it leaves behind
+      // so removing it does not itself dirty the file on the next run.
+      if (lines[i + 1] === '' && out[out.length - 1] === '') i += 1;
+      continue;
+    }
+    out.push(lines[i]);
   }
   return out.join('\n');
 };
@@ -290,4 +319,6 @@ const main = () => {
   );
 };
 
-main();
+// Only run when invoked as a script. Importing this module (the BL-464/BL-435 regression tests do)
+// must never execute main(), which writes PLAN.md and STATE.md.
+if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) main();
