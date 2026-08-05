@@ -21,12 +21,12 @@ A packet is **DONE** only when every BL id it targets is closed — code landing
 (BL-225). Several packets below have merged code and still read OPEN; that is correct, and the
 remedy is to close the backlog item with a red→green test, not to edit this table.
 
-**29 done · 4 partial · 41 open** of 74 packets.
+**31 done · 4 partial · 39 open** of 74 packets.
 
-- Open backlog items in this program's scope: **68**, of which **20** have no packet.
+- Open backlog items in this program's scope: **68**, of which **21** have no packet.
 - Open items deliberately out of scope: **28** — BL-99, BL-103, BL-104, BL-105, BL-163, BL-225, BL-228, BL-258, BL-261, BL-282, BL-283, BL-284, BL-285, BL-288, BL-291, BL-292, BL-296, BL-298, BL-305, BL-306, BL-307, BL-308, BL-309, BL-314, BL-315, BL-333, BL-355, BL-408
-- Unscheduled in-scope items (need a packet): BL-416, BL-424, BL-426, BL-432, BL-435, BL-436, BL-437, BL-446, BL-450, BL-451, BL-452, BL-453, BL-454, BL-455, BL-456, BL-457, BL-458, BL-459, BL-460, BL-461
-- Packet targets already closed (29) — historical context only, no work remains: BL-259, BL-329, BL-341, BL-343, BL-348, BL-350, BL-359, BL-361, BL-362, BL-364, BL-376, BL-379, BL-380, BL-383, BL-388, BL-390, BL-391, BL-394, BL-397, BL-399, BL-402, BL-405, BL-406, BL-407, BL-410, BL-412, BL-425, BL-445, BL-449
+- Unscheduled in-scope items (need a packet): BL-416, BL-424, BL-426, BL-432, BL-435, BL-436, BL-437, BL-446, BL-450, BL-451, BL-452, BL-453, BL-454, BL-455, BL-456, BL-457, BL-458, BL-459, BL-460, BL-461, BL-462
+- Packet targets already closed (30) — historical context only, no work remains: BL-259, BL-329, BL-341, BL-343, BL-348, BL-350, BL-359, BL-360, BL-361, BL-362, BL-364, BL-376, BL-379, BL-380, BL-383, BL-388, BL-390, BL-391, BL-394, BL-397, BL-399, BL-402, BL-405, BL-406, BL-407, BL-410, BL-412, BL-425, BL-445, BL-449
 
 | Packet | Status | Targets | Still open |
 |---|---|---|---|
@@ -49,7 +49,7 @@ remedy is to close the backlog item with a red→green test, not to edit this ta
 | PKT-17 | **DONE** | BL-359 | — |
 | PKT-18 | **OPEN** | BL-215 | BL-215 |
 | PKT-19 | **DONE** | BL-329 | — |
-| PKT-20 | **OPEN** | BL-360 | BL-360 |
+| PKT-20 | **DONE** | BL-360 | — |
 | PKT-21 | **DONE** | BL-361 | — |
 | PKT-22 | **OPEN** | BL-392 | BL-392 |
 | PKT-23 | **DONE** | BL-379 | — |
@@ -97,7 +97,7 @@ remedy is to close the backlog item with a red→green test, not to edit this ta
 | PKT-65 | **DONE** | BL-394 | — |
 | PKT-66 | **OPEN** | BL-274 | BL-274 |
 | PKT-67 | **DONE** | BL-341, BL-449 | — |
-| PKT-68 | **OPEN** | BL-360 | BL-360 |
+| PKT-68 | **DONE** | BL-360 | — |
 | PKT-69 | **DONE** | BL-361 | — |
 | PKT-70 | **DONE** | BL-362 | — |
 | PKT-71 | **DONE** | BL-379 | — |
@@ -1493,7 +1493,7 @@ completion, don't just assume no build ran.
 
 ### PKT-20 — BL-360: Turso `integrity_check` false-positive — report upstream, pin driver version — ⛔ **SUPERSEDED by PKT-67-group (PKT-68), do not dispatch**
 
-> **status: OPEN** — still open: BL-360 · derived by `tools/plan-status.mjs`, do not hand-edit
+> **status: DONE** — all targets closed (BL-360) · derived by `tools/plan-status.mjs`, do not hand-edit
 
 > **superseded-by:** PKT-68 (2026-08-04). Left in place because its `Closes:` line is what
 > `tools/plan-status.mjs` reads. PKT-68 corrects what "pin" means here — a constant asserted against
@@ -2103,7 +2103,7 @@ is not `'ok'`; plus force the integrity probe to return `unknown` and assert the
 
 ### PKT-68 — BL-360: pin the driver the false-positive suppression is valid for, and report it upstream
 
-> **status: OPEN** — still open: BL-360 · derived by `tools/plan-status.mjs`, do not hand-edit
+> **status: DONE** — all targets closed (BL-360) · derived by `tools/plan-status.mjs`, do not hand-edit
 
 >
 > **Supersedes PKT-20** — same item, corrected scope. PKT-20 says "pin the driver version" without
