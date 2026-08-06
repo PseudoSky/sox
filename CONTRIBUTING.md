@@ -162,8 +162,52 @@ the rebuild command if an ABI mismatch is detected.  The `postinstall` hook rebu
 
 ### 1.9 Backlog
 
-Write any discovered bugs, deferrals, or limitations to `BACKLOG.md` at discovery time.
-Format: `- [ ] <area>: <description> (discovered <date> during <change>)`
+**[ADR-0011, effective 2026-08-06] New `BL-*` items are filed through the backlog tool, not
+hand-edited into `BACKLOG.md`.** Existing open items already in `BACKLOG.md` keep transitioning
+by hand (claim, note, resolve, move to `CHANGELOG.md`) until Stage 3 of ADR-0011 retires the file
+— only NEW item creation changes in Stage 1. See
+[`docs/decisions/0011-backlog-tool-write-destination.md`](./docs/decisions/0011-backlog-tool-write-destination.md)
+for the full ruling.
+
+Filing procedure for a new `BL-*` item:
+
+```bash
+# 1. Reserve the next id from the repo-local counter — NEVER trust backlog_create_item's own
+#    auto-allocation (computeNextHumanId) for family BL in this repo; it is graph-only and has
+#    already caused a live collision (BL-437). tools/bl-id-counter.mjs is the mitigation (ADR-0011
+#    R5) until BL-476 is fixed upstream.
+node tools/bl-id-counter.mjs --note "short description of what this id is for"
+# -> prints e.g. BL-479
+
+# 2. File the item via the backlog_create_item MCP tool (or `backlog` CLI equivalent), passing
+#    that id explicitly as idOverride. Do NOT omit idOverride and let the tool auto-allocate.
+```
+```
+mcp__backlog__backlog_create_item({
+  data: {
+    input: {
+      family: "BL",
+      title: "<short title>",
+      body: "<full description, citations, files affected>",
+      repo: "sox-ecosystem",
+      idOverride: "BL-479",   // from step 1
+    }
+  }
+})
+```
+
+Status transitions, claims, notes, and citations on a tool-filed item use the corresponding tool
+calls (`backlog_transition_status`, `backlog_claim_item`, `backlog_append_note`,
+`backlog_add_citation`) — never a hand-edited `### BL-<n>` heading in `BACKLOG.md` for that id.
+
+`tools/check-bl-id-integrity.mjs` (run by `.husky/pre-commit` whenever `BACKLOG.md`/`CHANGELOG.md`
+is staged) mechanically enforces this: any newly-staged `### BL-<n>` heading above the Stage-1
+watermark, or matching an id the counter already issued, fails the commit with a message pointing
+back here.
+
+Legacy fallback (pre-ADR-0011 items, or items whose id is at/below the Stage-1 watermark, still
+open in `BACKLOG.md`): write the discovered bug, deferral, or limitation to `BACKLOG.md` at
+discovery time. Format: `- [ ] <area>: <description> (discovered <date> during <change>)`
 
 ---
 

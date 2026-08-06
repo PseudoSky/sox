@@ -32,9 +32,23 @@
  *      is still present, the commit is rejected rather than shipping a
  *      dangling placeholder.
  *
+ *   4. [ADR-0011 R3 / §4 Stage 1 item 3] Watermark guard. Any newly-staged `### BL-<n>` heading
+ *      whose `n` is ABOVE `tools/bl-id-counter.mjs`'s seeded watermark is rejected. Per ADR-0011,
+ *      new `BL-*` items are filed through `backlog_create_item` (with an `idOverride` from
+ *      `bl-id-counter.mjs`) from the watermark forward — a hand-added heading above the watermark
+ *      is exactly the "please use the tool" convention this check makes mechanically enforced
+ *      rather than advisory (the dangerous window named in ADR-0011 §3 R3).
+ *
+ *   5. [ADR-0011 §4 Stage 1 item 4] Issued-id collision guard. Any staged `### BL-<n>` heading
+ *      whose `n` is already present in `bl-id-counter.mjs`'s `issued` list is rejected — a human
+ *      hand-filing an id the tool already issued (still legal syntactically for ids at/below the
+ *      watermark, since those are the pre-ADR-0011 markdown-native range) would otherwise collide
+ *      silently with a tool-issued item the original check 2 (markdown-vs-CHANGELOG) never sees,
+ *      because the tool-filed item lives only in the graph, not in CHANGELOG.md.
+ *
  * Advisory (never fails the commit):
  *
- *   4. Files-overlap warning. `Agent(pkt-17)` was asked to consider a
+ *   6. Files-overlap warning. `Agent(pkt-17)` was asked to consider a
  *      guard for duplicate-CONTENT filing (BL-403's failure mode: a
  *      genuinely new id for an already-filed defect, found by searching
  *      error strings and missing the existing item because it lived under
@@ -74,7 +88,7 @@
  * Exit 0 = clean (warnings may still print). Exit 1 = a blocking violation.
  */
 
-import { readFileSync } from 'node:fs';
+import { readFileSync, existsSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import path from 'node:path';
 
@@ -208,7 +222,61 @@ if (abandonedReservation) {
   );
 }
 
-// ── 4. advisory: newly-added item's Files: line exactly matches an existing one ─
+// ── 4 & 5. ADR-0011 R3/R5: watermark guard + issued-id collision, sourced from bl-id-counter.mjs ─
+//
+// Both guards read `.bl-id-counter.json` (same shared REPO_ROOT as BACKLOG.md/CHANGELOG.md — see
+// the BL-416 header comment above). If the counter file does not exist yet (pre-Stage-0, or a repo
+// that has not adopted ADR-0011), both guards are silently skipped — this script must stay usable
+// before Stage 0 seeds the counter, and the counter's absence is not itself a violation.
+const COUNTER_FILE = path.join(REPO_ROOT, '.bl-id-counter.json');
+let counterState = null;
+if (existsSync(COUNTER_FILE)) {
+  try {
+    counterState = JSON.parse(readFileSync(COUNTER_FILE, 'utf8'));
+  } catch (err) {
+    fail(`.bl-id-counter.json exists but failed to parse: ${err.message}`);
+  }
+}
+
+if (counterState) {
+  const watermark = Number(counterState.watermark);
+  const issuedIds = new Set((counterState.issued || []).map((e) => e.id.replace(/^BL-/, '')));
+
+  for (const id of backlogHeadingIds) {
+    const n = Number(id);
+
+    // Check 4 [ADR-0011 R3] — a `### BL-<n>` heading above the seeded watermark is hand-filing a
+    // NEW item outside the tool, which ADR-0011 §4 Stage 1 forbids from the watermark forward.
+    if (n > watermark) {
+      fail(
+        `BL-${id}: heading id (${n}) is above the ADR-0011 Stage-1 watermark (${watermark}). New ` +
+          `BL-* items are filed through the tool (backlog_create_item with an idOverride from ` +
+          `tools/bl-id-counter.mjs), not by hand-editing BACKLOG.md. See docs/decisions/` +
+          `0011-backlog-tool-write-destination.md §4 Stage 1, and run ` +
+          `'node tools/bl-id-counter.mjs' to reserve the next id through the tool instead.`,
+      );
+    }
+
+    // Check 5 [ADR-0011 §4 Stage 1 item 4] — a `### BL-<n>` heading whose id the counter has
+    // already issued to a tool-filed item collides with that item. This can happen even for ids
+    // AT OR BELOW the watermark (the counter issues ids strictly above the watermark, so in
+    // practice this only fires for ids the counter itself minted, i.e. > watermark — but the
+    // check is written id-set-based, not range-based, so it stays correct even if the watermark
+    // is later raised by --reseed after ids were already issued in the prior range).
+    if (issuedIds.has(id)) {
+      fail(
+        `BL-${id}: heading exists in BACKLOG.md but this id was already issued by ` +
+          `tools/bl-id-counter.mjs to a tool-filed item (ADR-0011). A human hand-filed this id in ` +
+          `markdown while the tool had already claimed it — this is the exact split-brain ` +
+          `collision the ADR-0011 migration exists to end. Pick an unused id below the watermark, ` +
+          `or (if this heading IS the tool-filed item being restated in markdown) do not add a ` +
+          `duplicate '###' heading for it — the tool is now its source of truth.`,
+      );
+    }
+  }
+}
+
+// ── 6. advisory: newly-added item's Files: line exactly matches an existing one ─
 try {
   const diff = execFileSync('git', ['diff', '--cached', '-U0', '--', 'BACKLOG.md'], {
     cwd: INVOKING_ROOT,
