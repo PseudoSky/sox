@@ -339,22 +339,54 @@ describe('search() with mock backend', () => {
     expect(byId.get(2)).toBeCloseTo(0.5, 5);
   });
 
-  // BL-437. Documents a real limitation rather than asserting desired behaviour: the
-  // boost is MULTIPLICATIVE and min_max maps the minimum candidate to exactly 0, so the
-  // last-placed candidate is pinned at 0 and NO boost value can lift it. If this test
-  // ever goes red because the exact-match row now outranks the other, that is the
-  // limitation being fixed — update it, do not restore the 0.
-  it('BL-437: an exact topic match on the LOWEST-scoring candidate cannot be boosted off the floor', async () => {
+  // BL-437 (FIXED). search() now floors the normalised fused score at
+  // TOPIC_BOOST_FLOOR (0.1) before applying the multiplicative topic boost, so a
+  // candidate that min_max maps to exactly 0 is no longer structurally un-boostable.
+  //
+  // A genuine 2-candidate race is still a hard case by construction: the winner
+  // always normalises to exactly 1.0, so overtaking it would require
+  // TOPIC_BOOST_FLOOR > 0.5 — deliberately rejected (see the A/B note on
+  // TOPIC_BOOST_FLOOR in index.ts) as far too aggressive a floor for every query.
+  // This test therefore keeps asserting the order is unchanged for a 2-candidate
+  // set, but proves the underlying defect (score pinned to LITERAL zero, boost
+  // provably inert) is fixed: the floor candidate's score is now nonzero and
+  // reflects the boost actually engaging.
+  it('BL-437: an exact topic match on the LOWEST-scoring candidate is no longer pinned to a literal-zero floor', async () => {
     const backend = new MockSearchBackend([
       { id: 1, textScore: 1.0, fields: { content: 'a', topic: 'unrelated' } },
       { id: 2, textScore: 0.2, fields: { content: 'b', topic: 'python' } },
     ]);
     const results = await search(backend, { text: 'python' });
     const byId = new Map(results.map((r) => [r.id, r.score]));
-    // 0.0 * 2.0 === 0.0 — the 2x exact-topic boost is inert here.
-    expect(byId.get(2)).toBe(0);
-    // ...so the topic-matching row still loses, and in ANY 2-candidate set it always will.
+    // floor(0, 0.1) * 2.0x boost === 0.2 — the boost now actually engages,
+    // where before it was mathematically inert (0 * 2.0 === 0).
+    expect(byId.get(2)).toBeCloseTo(0.2, 5);
+    expect(byId.get(2)).not.toBe(0);
+    // A genuine 2-candidate set still can't flip — the winner is always exactly
+    // 1.0 under min_max with 2 points, a structural property, not the bug.
     expect(results.map((r) => r.id)).toEqual([1, 2]);
+  });
+
+  // BL-437 continued: prove the fix isn't merely cosmetic (score != 0) but
+  // functionally moves rankings in the common multi-candidate case where the floor
+  // candidate's boosted score can clear a close higher-ranked neighbor.
+  it('BL-437: the floor is high enough for an exact topic match to overtake a close neighbor in a larger set', async () => {
+    const backend = new MockSearchBackend([
+      { id: 1, textScore: 1.0, fields: { content: 'a', topic: 'x' } },
+      { id: 2, textScore: 0.9, fields: { content: 'b', topic: 'x' } },
+      { id: 3, textScore: 0.8, fields: { content: 'c', topic: 'x' } },
+      { id: 4, textScore: 0.71, fields: { content: 'd', topic: 'x' } },
+      { id: 5, textScore: 0.70, fields: { content: 'e', topic: 'python' } },
+    ]);
+    const results = await search(backend, { text: 'python' });
+    // id 5 is both the lowest raw scorer AND the exact topic match:
+    // floor(0, 0.1) * 2.0 = 0.2, which clears id 4's norm score of
+    // (0.71 - 0.70) / (1.0 - 0.70) = 0.0333... — a real reorder, not just a
+    // nonzero score.
+    expect(results.map((r) => r.id)).toEqual([1, 2, 3, 5, 4]);
+    const byId = new Map(results.map((r) => [r.id, r.score]));
+    expect(byId.get(5)).toBeCloseTo(0.2, 5);
+    expect(byId.get(4)).toBeCloseTo(0.0333, 3);
   });
 
   it('respects limit option', async () => {
