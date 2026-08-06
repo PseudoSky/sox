@@ -2,6 +2,24 @@
 
 ---
 
+## [Unreleased] — BL-461: an orphaned FTS index no longer kills the process at open
+
+An FTS index whose Tantivy backing objects are gone aborts the process on the first `fts_match` — SIGABRT out of `core/vdbe/execute.rs`, not a catchable error. PKT-69's out-of-band marker gates a pre-flight on an *unclean* session, so a store damaged inside a session that afterwards closed cleanly still reached that statement and still died.
+
+The new guard (`libs/data/store/store-adapter/src/fts-orphan-guard.ts`) is unconditional and runs from inside the already-open connection, above `runOpenTimeIntegrity` — whose `probeFtsIndexes` is the caller that issues the fatal statement. On a healthy store it costs one `sqlite_master` read.
+
+**It builds before it destroys.** Measured on a copy of the live 108 MB / 10,272-node store: a second FTS index can coexist on the same column and builds in **283 ms**, while `ALTER INDEX … RENAME` does not exist in Turso. So the replacement is built under a shadow name and **the index name is resolved from `sqlite_master` instead of hardcoded**, which is what makes the swap gapless. Drop-then-create would have been BL-235's pattern inside the database: destroying the only copy before knowing the replacement builds.
+
+Inline-at-open is permitted because ADR-0007/BL-352 requires the adapter to repair itself with no manual DDL, and restoring a declared index to the state the DDL already declares is not the schema *extension* that D3 puts behind an operator command. Read-only opens detect and report, never write.
+
+**Watched red→green.** With the guard stubbed out, 6 of 16 fail and the child dies `status=null signal=SIGABRT` — the real process-kill, not a proxy for it. Restored: 16/16. Full gate: `store-adapter` 354/354, lint + typecheck clean.
+
+`preflight-panic.bl361.test.ts`'s "THE GATE COSTS SOMETHING" arm asserted the exact hole this closes, so it necessarily went red. It was **inverted rather than deleted** — deleting it would have removed the only coverage of the marker-less path, and a later change reintroducing the gap would then pass silently, which is the failure class BL-449, BL-394 and BL-167 all belong to.
+
+Still uncovered, recorded rather than glossed: the concurrency case where a read-only `better-sqlite3` scan runs against a store another process holds open, creating a `-shm` beside Turso's `-tshm`.
+
+---
+
 ## [Unreleased] — PKT-78 (BL-451, BL-453, BL-458, BL-459): four published statements that were false are now correct, or gone
 
 **Four documents and one MCP tool description authoritatively asserted something their own source contradicted** — an ADR whose load-bearing citation could not be opened, a tool description that promised synchronous work the code deliberately defers, and two hand-written snapshots sitting beside sources that had moved out from under them. Every correction here was verified against the thing it describes, not against another document.
