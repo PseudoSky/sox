@@ -53,7 +53,7 @@
  *     empirically — the same silent-no-op behavior already documented for
  *     vec0 DROPs in db.ts). Residue cleanup MUST go through better-sqlite3.
  */
-import type { FTSDialect } from './types.js';
+import type { FTSDialect, StoreAdapter } from './types.js';
 
 // ── Re-export types ───────────────────────────────────────────────────────────
 
@@ -78,6 +78,57 @@ function tursoFtsIndexName(table: string): string {
 function tursoFtsInternalNames(table: string): string[] {
   const idx = tursoFtsIndexName(table);
   return [idx, `__turso_internal_fts_dir_${idx}`, `__turso_internal_fts_dir_${idx}_key`];
+}
+
+/**
+ * The name this dialect *would* give a fresh Turso FTS index on `table`.
+ *
+ * It is the name `createIndexDDL` emits — but it is NOT the name a given store
+ * necessarily uses. See {@link resolveExistingFtsIndexName}.
+ */
+export function canonicalFtsIndexName(table: string): string {
+  return tursoFtsIndexName(table);
+}
+
+/**
+ * The name of the Turso FTS index actually present on `table`, or `null`.
+ *
+ * **Why this exists (BL-461).** Turso has no `ALTER INDEX … RENAME` — the
+ * statement is a syntax error, verified 2026-08-05. So when the orphan guard
+ * (`fts-orphan-guard.ts`) rebuilds a damaged FTS index, it must build the
+ * replacement under a *different* name and drop the old one; the replacement
+ * can never be moved back onto `idx_fts_<table>`. A creation path that asks
+ * `CREATE INDEX IF NOT EXISTS idx_fts_<table>` is asking whether one particular
+ * **name** is taken, and after such a repair the answer is "no" while the table
+ * already carries a perfectly healthy FTS index. The result is a second full
+ * index: measured to coexist and answer queries correctly, so the only symptom
+ * is permanently doubled write and storage cost — silent.
+ *
+ * Callers therefore condition creation on this lookup rather than on the name.
+ *
+ * Returns `null` for the SQLite FTS5 dialect: an external-content FTS5 index is
+ * a *virtual table* whose name is load-bearing for `fts_node MATCH ?`, it has no
+ * rebuild-under-a-new-name path, and `CREATE VIRTUAL TABLE IF NOT EXISTS` on the
+ * fixed name is already correct there. Never throws — an unreadable schema
+ * degrades to `null`, i.e. "create as usual".
+ */
+export async function resolveExistingFtsIndexName(
+  adapter: StoreAdapter,
+  table: string,
+): Promise<string | null> {
+  if (adapter.config.type !== 'turso') return null;
+  try {
+    const res = await adapter.executeAll<{ name: string; sql: string | null }>(
+      `SELECT name, sql FROM sqlite_master WHERE type = 'index' AND tbl_name = ?`,
+      [table],
+    );
+    for (const row of res.rows) {
+      if (row.sql !== null && /\busing\s+fts\s*\(/i.test(row.sql)) return row.name;
+    }
+    return null;
+  } catch {
+    return null;
+  }
 }
 
 // ── SqliteFTS5Dialect ─────────────────────────────────────────────────────────

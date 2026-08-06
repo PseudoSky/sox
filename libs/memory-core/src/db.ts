@@ -319,7 +319,13 @@ async function _openDbInner(dbPath: string): Promise<StoreAdapter> {
   fs.mkdirSync(dir, { recursive: true });
 
   // Create StoreAdapter (dynamically imported to bridge CJS→ESM).
-  const { createStoreAdapter, createVectorDialect, createFTSDialect } = await import('@adhd/sox-store-adapter');
+  const {
+    createStoreAdapter,
+    createVectorDialect,
+    createFTSDialect,
+    resolveExistingFtsIndexName,
+    canonicalFtsIndexName,
+  } = await import('@adhd/sox-store-adapter');
   let adapter = await createStoreAdapter({ dbPath });
   const vectorDialect = createVectorDialect(adapter.config.type);
 
@@ -584,12 +590,36 @@ async function _openDbInner(dbPath: string): Promise<StoreAdapter> {
     //    dependency (graph-store already depends on store-adapter). Turso
     //    generates its own DDL from columns/weights and ignores the sqlite
     //    DDL argument entirely.
-    const ddlStatements = ftsDialect.createIndexDDL(
-      'node',
-      ['content', 'name', 'summary'],
-      { content: 1.0, name: 1.0, summary: 1.0 },
-      [FTS_DDL, FTS_TRIGGERS],
-    );
+    // (BL-461) Ask whether the TABLE has an FTS index, not whether one
+    // particular NAME is taken. Turso has no `ALTER INDEX … RENAME`, so the
+    // orphan guard's rebuild (store-adapter's fts-orphan-guard.ts) necessarily
+    // leaves the healthy index under a different name — `idx_fts_node__r1`.
+    // `CREATE INDEX IF NOT EXISTS idx_fts_node` would then find its own name
+    // free and build a SECOND full index over the same columns: measured to
+    // coexist and to answer queries correctly, so the only symptom is
+    // permanently doubled write and storage cost, forever, silently.
+    // Returns null on SQLite (fts5's virtual-table name is load-bearing) and on
+    // any unreadable schema, so the default is unchanged: create as usual.
+    const existingFtsIndex = await resolveExistingFtsIndexName(adapter, 'node');
+    const ddlStatements =
+      existingFtsIndex !== null && existingFtsIndex !== canonicalFtsIndexName('node')
+        ? []
+        : ftsDialect.createIndexDDL(
+            'node',
+            ['content', 'name', 'summary'],
+            { content: 1.0, name: 1.0, summary: 1.0 },
+            [FTS_DDL, FTS_TRIGGERS],
+          );
+    if (ddlStatements.length === 0 && existingFtsIndex !== null) {
+      log.info('store.open.fts_index_resolved_by_lookup', {
+        adapter_type: adapter.config.type,
+        index_name: existingFtsIndex,
+        canonical_name: canonicalFtsIndexName('node'),
+        detail:
+          'the FTS index on "node" is present under a non-canonical name (BL-461 orphan rebuild); ' +
+          'creation skipped so a duplicate index is not built',
+      });
+    }
     for (const stmt of ddlStatements) {
       try {
         await adapter.exec(stmt);

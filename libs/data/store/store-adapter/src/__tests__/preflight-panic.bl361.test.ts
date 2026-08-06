@@ -214,7 +214,20 @@ tursoDescribe('BL-361 — panic-on-open pre-flight', () => {
     expect(existsSync(storeOpenMarkerPath(dbPath))).toBe(false);
   }, 120_000);
 
-  it('THE GATE COSTS SOMETHING, and here is what: with no marker the pre-flight does not run and the process still aborts', async () => {
+  // (BL-461) This arm used to assert the gate's COST: with no marker the
+  // out-of-band pre-flight does not run, so a store damaged inside a session
+  // that afterwards closed cleanly still reached `fts_match` and aborted the
+  // process. That hole is now closed from inside the connection by the
+  // in-process guard (`fts-orphan-guard.ts`), which is unconditional and runs
+  // above `runOpenTimeIntegrity`.
+  //
+  // The assertion is INVERTED rather than deleted, deliberately. Deleting it
+  // would remove the only coverage of the marker-less path, and a later change
+  // that reintroduced the gap would then pass silently — which is the failure
+  // class BL-449/BL-394/BL-167 are all instances of. The gate's cost is now
+  // asserted where it still exists: the two repair paths remain distinct and
+  // non-interchangeable, pinned by `fts-orphan-guard.bl461.test.ts`.
+  it('the marker-less path no longer aborts: the in-process guard closes what the gate does not cover (BL-461)', async () => {
     const dbPath = tempPath('bl361-no-marker');
     await seedHealthyFtsStore(dbPath);
     seedOrphanedTursoFtsIndex(dbPath);
@@ -222,10 +235,11 @@ tursoDescribe('BL-361 — panic-on-open pre-flight', () => {
     expect(hasStoreOpenMarker(dbPath)).toBe(false);
 
     const out = openInChild(dbPath, 'adapter');
-    expect(aborted(out), `expected an abort, got status=${out.status} signal=${out.signal}`).toBe(
-      true,
-    );
-    expect(out.stderr).toMatch(/panicked at/);
+    expect(
+      aborted(out),
+      `expected a clean open via the in-process guard; status=${out.status} signal=${out.signal} stderr=${out.stderr}`,
+    ).toBe(false);
+    expect(out.stderr).not.toMatch(/panicked at/);
   }, 120_000);
 
   it('marker lifecycle: connect() writes it, close() removes it, and a read-only open touches neither', async () => {

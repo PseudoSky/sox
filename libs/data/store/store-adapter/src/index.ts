@@ -12,3 +12,4 @@ export * from './integrity.js';
 export * from './integrity-status.js';
 export * from './migration.js';
 export * from './preflight.js';
+export * from './fts-orphan-guard.js';
