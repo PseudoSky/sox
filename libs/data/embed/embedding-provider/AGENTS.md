@@ -25,7 +25,9 @@ memory-refactor plan states.
   (enforced by nx module-boundary lint).
 - Published npm name (`@adhd/sox-embedding-provider`) is decoupled from this folder path —
   never rename the package name on a folder move.
-- Declared deps: `fastembed`.
+- Declared deps: `fastembed`, `@adhd/sox-telemetry` (`area:shared`, so the boundary lint allows it —
+  added 2026-08-06 for BL-432's queue-depth instrument, imported unconditionally by
+  `sharedFastembedProcess.ts` on the production path).
   Do not add undeclared deps without updating package.json + COMPILED_INTERFACES.md.
 
 ## Build / test

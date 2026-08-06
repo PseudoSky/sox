@@ -880,7 +880,7 @@ The embedding-provider additionally exposes `getEmbedHealth()` / `getLastEmbedEr
 programmatic health checks (see BL-89).
 
 ```
-embedding-provider   (no runtime deps — native ONNX runtime is a peer/optional dep)
+embedding-provider   (@adhd/sox-telemetry — native ONNX runtime is a peer/optional dep)
 ingest               (no deps — pure stateless transforms)
 graph-store          (better-sqlite3, drizzle-orm — migration layer)
 vector-store         (better-sqlite3, sqlite-vec)
