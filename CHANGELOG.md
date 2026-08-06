@@ -2,6 +2,93 @@
 
 ---
 
+## [Unreleased] — BL-338: the crash-recovery test that had never existed
+
+The owner's bar, verbatim: *"none of this is manual & none of the crash data
+loss should be possible."* Nothing enforced it.
+
+`crash-recovery.bl338.test.ts` now SIGKILLs a real external writer process
+mid-write under sustained load, restarts on the exact crashed byte state, and
+asserts all three halves of that sentence:
+
+1. **zero lost committed writes** — every id the writer confirmed survives, with
+   no gap.
+2. **auto-repaired to clean** — the damage (a genuine blank string in a JSON
+   column, written by the live writer before it died) is found by
+   `json_column_valid`, repaired, and **re-verified clean** — `reverifyOk` with
+   an empty `reverifyDamaged`, not merely "a repair action was attempted".
+3. **damage and repair both visible without manual investigation** — asserted on
+   *both* surfaces an operator actually has: the structured
+   `store.integrity.damaged` / `store.integrity.repaired` lines on stderr, and
+   the durable `_adapter_meta` record read back through `readIntegrityResult`,
+   the same call a status tool makes, carrying a real wall-clock `runAtMs`.
+
+Two things keep it from being the crash test that never crashes. The kill is
+sent from the *test* process to the writer's pid and asserted on the exit
+event's **`signal`**, never on an exit code — `SIGKILL` cannot be caught, so a
+clean exit would mean the crash never happened. And ARM 2 carries a control:
+the same crashed bytes restarted under `SOX_STORE_REPAIR=off` must still be
+damaged (`verifyOk: false`, `repairRan: false`, blank value intact), proving the
+repaired arm is not passing on state that was fine anyway.
+
+Depends on PKT-32's `repairStoreIntegrity()` being a programmatic entry point —
+which is why that was made a requirement — and on BL-365's crash-durable
+telemetry, without which criterion 3 would assert nothing. `integrity.ts` is
+unchanged. Commit `939c188`.
+
+---
+
+## [Unreleased] — BL-469: a skipped invariant is no longer counted as a passing one
+
+`tools/test-bl266-bundle-invariants.mjs` gated its atomicity, typecheck and
+checksum-stability arms on `--build-cmd`/`--source`/`--rebuild-cmd`. Without
+those flags each arm called `report(name, true, '(skipped — …)')` — reporting
+**`[PASS]`** — and the run printed **"ALL 5 INVARIANTS PASS"** having verified
+two.
+
+This is the BL-167 shape exactly: a guard whose skipped case is counted as a
+verified case, so a coverage audit sees a check named for the invariant and
+believes it.
+
+`report()` now tracks pass/fail/skip as three distinct states, and the summary
+states what was actually verified — `2/5 INVARIANTS VERIFIED PASS, 3/5 SKIPPED
+(not verified)` — with no path that claims all five unless all five were
+observed. The exit-code contract is now written in the header instead of
+implied: any FAIL exits 1, and **any SKIP also exits 1 by default**, because an
+unconfigured run must not read as a clean one. `--allow-skip` opts into exit 0
+when nothing failed, without changing a line of what is printed.
+
+The skipped arms are deliberately **not** made to run by default — several of
+them build, and under BL-235 an unattended build is destructive. The fix is
+honest reporting, not more execution.
+
+Sets the precedent BL-466's eventual guard-harness spec inherits: SKIP is a
+first-class outcome and never folds into PASS. Red→green watched — 7 of 8
+assertions in the new `tools/test-bl469-skip-not-pass.mjs` fail against the
+pre-fix script. Commit `5a246e6`.
+
+---
+
+## [Unreleased] — BL-471: the fastembed advisory lock has one definition again
+
+BL-432's `competing_host_pid` reads the lock file that `fastembedProcessHost.ts`
+writes, but reads it from `sharedFastembedProcess.ts` — which correctly refuses
+to import the host module, since that file registers `process.on('message')` and
+claims the lock at module scope, side effects meant for the forked child.
+
+The cost was that the default path and the `{pid, startedAt}` shape were spelled
+out independently in both files, with the reader duck-typing against a writer it
+never referenced. Nothing failed when they drifted — and a drift pins
+`competing_host_pid` to `null` permanently, which reads as *"no competing host
+was present"*. Since a second host changes embed latency 25–50×, that does not
+merely lose the signal; it produces confidently wrong latency numbers. Same
+shape as BL-379, BL-449, BL-431, BL-469.
+
+Both files now import one side-effect-free `fastembedLock.ts`. The import the
+reader was right to avoid is still avoided. Commit `756e4e1`.
+
+---
+
 ## [Unreleased] — BL-426: fastembed child no longer aborts with a native `mutex lock failed` on shutdown
 
 `libc++abi: terminating due to uncaught exception of type std::__1::system_error: mutex lock
