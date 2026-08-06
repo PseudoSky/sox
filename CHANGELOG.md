@@ -2,6 +2,32 @@
 
 ---
 
+## [Unreleased] — BL-426: fastembed child no longer aborts with a native `mutex lock failed` on shutdown
+
+`libc++abi: terminating due to uncaught exception of type std::__1::system_error: mutex lock
+failed: Invalid argument`, observed immediately after `[memory-server backend] SIGTERM —
+shutting down`. Isolated by forking `fastembedProcessHost.ts` directly — no memory-server, no
+`backend.ts`, no Turso, no `sharedOnnxWorker.ts` — and driving a real `init`/`embed`/`__shutdown`
+sequence: reproduced with `init` alone (zero `embed` calls), and on both the `coreml` and forced
+`cpu` execution providers, so it is neither embed-load-dependent nor CoreML-specific.
+
+Root cause: the `__shutdown` message handler called `process.exit(0)`, which forces an ABRUPT
+process teardown — it skips draining the event loop and runs native atexit/static-destructor
+unwinding immediately. Once an onnxruntime-node `InferenceSession` has been created in that
+process, its own native background thread pool is still alive/tearing down when that forced
+unwind runs, and the two race on a native mutex, aborting the child with `SIGABRT` instead of
+exiting `0`.
+
+Fix: the handler now waits for any in-flight/queued request to settle, then calls
+`process.disconnect()` — closing the IPC channel and letting Node run its normal exit sequence
+once the event loop is otherwise empty, instead of forcing an abrupt native unwind.
+
+Red→green watched directly against the isolated repro: `fastembedProcessHost-bl426-shutdown.spec.ts`'s
+4 tests all fail with the crash text/`SIGABRT` against the pre-fix `process.exit(0)`, and all
+pass (clean `exitCode: 0`, no crash text) with the fix. The original combined repro from the
+BL-426 filing (`bl412-ping-no-live-store.spec.ts` + `backend.spec.ts` run together) no longer
+emits the crash line after `SIGTERM — shutting down`.
+
 ## [Unreleased] — BL-432: the head-of-line-blocking instrument moves to the side of the boundary where the queue actually is
 
 `wait_ms` was never going to answer BL-331. The `admit` half it measures is
