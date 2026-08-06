@@ -327,9 +327,23 @@ and call `applySchema()`. Re-capture identity: **`rootpage` and `sql` text for b
 byte-identical to before construction** — no rebuild fired merely because a permissive policy was
 supplied. Then: write a node using one of today's default kinds through the new backend (proves the
 backend still works normally) — succeeds. Then: attempt to write a node using the novel `'component'`
-kind the custom policy permits — **this must still fail**, with a `ConstraintError` translated from
-SQLite's CHECK (since no DDL changed, the CHECK still enforces the closed six), proving the custom
-policy's permissiveness does not — and structurally cannot — reach the schema.
+kind the custom policy permits — **this must still fail** (since no DDL changed, the CHECK still
+enforces the closed six), proving the custom policy's permissiveness does not — and structurally
+cannot — reach the schema. **Ruling (2026-08-06, correcting the original spec text above): the
+failure on the node side is the raw, untranslated SQLite `CHECK constraint failed` error, not a
+`ConstraintError`.** Verified against source (`git show 37863fee -- libs/data/graph/graph-store/src/index.ts`,
+and the current tree at `writeNode`, index.ts:947-975): `writeNode`'s `INSERT ... RETURNING rowid`
+has no `try`/`catch` around it at all — only `writeEdgeInternal` (index.ts:1160-1180) catches and
+translates `CHECK constraint failed` / `FOREIGN KEY constraint failed` into `ConstraintError`. That
+asymmetry pre-dates this packet (the JS-level `DEFAULT_NODE_KINDS` check `writeNode` used to run was
+a strict superset of the DB CHECK, so the DB CHECK was previously unreachable dead code on
+`writeNode`'s default-policy path — this packet's custom-policy test is the first thing that ever
+reaches it). Re-adding that translation to `writeNode` is explicitly **out of scope** for PKT-59
+(§2.3 lists `writeNode`'s inline-check replacement as the *only* change to that method) — do not
+add a `try`/`catch` to `writeNode` to make this assertion prettier; assert
+`/CHECK constraint failed/i` by message instead. The edge-side sub-case (`'CUSTOM_REL'` against
+`writeEdge`) keeps the original assertion: `writeEdgeInternal`'s existing catch does translate to
+`ConstraintError`, untouched by this packet.
 *Red today:* `{ typePolicy: ... }` does not compile — `createGraphBackend`/`SqliteGraphBackend`
 accept no second argument at all.
 
