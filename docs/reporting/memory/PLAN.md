@@ -21,12 +21,12 @@ A packet is **DONE** only when every BL id it targets is closed — code landing
 (BL-225). Several packets below have merged code and still read OPEN; that is correct, and the
 remedy is to close the backlog item with a red→green test, not to edit this table.
 
-**36 done · 4 partial · 45 open** of 85 packets.
+**38 done · 3 partial · 44 open** of 85 packets.
 
-- Open backlog items in this program's scope: **64**, of which **7** have no packet.
+- Open backlog items in this program's scope: **62**, of which **7** have no packet.
 - Open items deliberately out of scope: **28** — BL-99, BL-103, BL-104, BL-105, BL-163, BL-225, BL-228, BL-258, BL-261, BL-282, BL-283, BL-284, BL-285, BL-288, BL-291, BL-292, BL-296, BL-298, BL-305, BL-306, BL-307, BL-308, BL-309, BL-314, BL-315, BL-333, BL-355, BL-408
 - Unscheduled in-scope items (need a packet): BL-436, BL-462, BL-466, BL-467, BL-468, BL-469, BL-470
-- Packet targets already closed (42) — historical context only, no work remains: BL-259, BL-329, BL-341, BL-343, BL-348, BL-350, BL-359, BL-360, BL-361, BL-362, BL-364, BL-376, BL-379, BL-380, BL-383, BL-388, BL-390, BL-391, BL-394, BL-397, BL-399, BL-402, BL-405, BL-406, BL-407, BL-410, BL-412, BL-425, BL-435, BL-437, BL-445, BL-449, BL-451, BL-453, BL-456, BL-457, BL-458, BL-459, BL-461, BL-463, BL-464, BL-465
+- Packet targets already closed (44) — historical context only, no work remains: BL-259, BL-329, BL-337, BL-341, BL-343, BL-348, BL-350, BL-359, BL-360, BL-361, BL-362, BL-364, BL-376, BL-379, BL-380, BL-383, BL-388, BL-390, BL-391, BL-394, BL-397, BL-399, BL-402, BL-405, BL-406, BL-407, BL-410, BL-412, BL-425, BL-432, BL-435, BL-437, BL-445, BL-449, BL-451, BL-453, BL-456, BL-457, BL-458, BL-459, BL-461, BL-463, BL-464, BL-465
 
 | Packet | Status | Targets | Still open |
 |---|---|---|---|
@@ -61,7 +61,7 @@ remedy is to close the backlog item with a red→green test, not to edit this ta
 | PKT-29 | **OPEN** | BL-326, BL-349 | BL-326, BL-349 |
 | PKT-30 | **OPEN** | BL-328 | BL-328 |
 | PKT-31 | **OPEN** | BL-327 | BL-327 |
-| PKT-32 | **PARTIAL** | BL-337, BL-341 | BL-337 |
+| PKT-32 | **DONE** | BL-337, BL-341 | — |
 | PKT-33 | **OPEN** | BL-338 | BL-338 |
 | PKT-34 | **OPEN** | BL-387 | BL-387 |
 | PKT-35 | **OPEN** | BL-398 | BL-398 |
@@ -112,7 +112,7 @@ remedy is to close the backlog item with a red→green test, not to edit this ta
 | PKT-80 | **OPEN** | BL-450, BL-455 | BL-450, BL-455 |
 | PKT-81 | **OPEN** | BL-424 | BL-424 |
 | PKT-82 | **DONE** | BL-461 | — |
-| PKT-83 | **OPEN** | BL-432 | BL-432 |
+| PKT-83 | **DONE** | BL-432 | — |
 | PKT-84 | **OPEN** | BL-426 | BL-426 |
 | PKT-85 | **DONE** | BL-437 | — |
 
@@ -1716,7 +1716,7 @@ calibration undocumented (the guard becomes a pure safety net that should rarely
 
 ### PKT-32 — BL-337: unified repair helper (REINDEX workaround) — ⚠️ **narrowed 2026-08-04, its BL-341 half moved to PKT-67**
 
-> **status: PARTIAL** — still open: BL-337 · derived by `tools/plan-status.mjs`, do not hand-edit
+> **status: DONE** — all targets closed (BL-337, BL-341) · derived by `tools/plan-status.mjs`, do not hand-edit
 
 > **BL-341 is no longer this packet's business.** The read behind Wave I found that BL-341's cap
 > detection already shipped (`integrity.ts:1589`, reported at `:1631`) and that the remaining defect
@@ -3105,7 +3105,7 @@ context, never by telling a subagent to read this file.
 
 ### PKT-83 — BL-432: the head-of-line-blocking instrument is on the wrong side of the boundary
 
-> **status: OPEN** — still open: BL-432 · derived by `tools/plan-status.mjs`, do not hand-edit
+> **status: DONE** — all targets closed (BL-432) · derived by `tools/plan-status.mjs`, do not hand-edit
 
 **Goal:** the `wait ≈ work` lead is retracted — n=570 warm embeds across three runs including one on a quiet machine give `wait_ms` median 0 ms, max 4 ms, exactly 0 in 559 of 570, flat across an 8× concurrency sweep that moves `work_ms` 5×. It can never move: `admit` is a memoised already-resolved promise after the first embed, while the real contention happens one level down inside `embedSingle` → `SharedFastembedProcessClient.request()` and lands in `work_ms`. **BL-331's head-of-line-blocking question is therefore unanswered, not answered negatively** — and the source comment claims the split is "the direct measurement" of it.
 **Closes:** BL-432

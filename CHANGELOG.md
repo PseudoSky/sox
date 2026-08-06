@@ -2,6 +2,79 @@
 
 ---
 
+## [Unreleased] — BL-432: the head-of-line-blocking instrument moves to the side of the boundary where the queue actually is
+
+`wait_ms` was never going to answer BL-331. The `admit` half it measures is
+`_configCache ??= resolveConfig(); await getOrCreateProvider()`, and
+`getOrCreateProvider` memoises into `_provider` — so after the first embed in a
+process it is an already-resolved promise. The real contention happens one level
+down, inside `embedSingle` → `SharedFastembedProcessClient.request()`, and lands
+in `work_ms`. Measured across n=570 warm embeds in three runs including one on a
+quiet machine: `wait_ms` median 0 ms, max 4 ms, exactly 0 in 559 of 570, flat
+across an 8× concurrency sweep that moves `work_ms` 5×.
+
+The instrument now lives where the queue is. `request()` emits
+`fastembed_process.request.{admitted,finish,error}` through the existing
+`@adhd/sox-telemetry` seam — no second telemetry mechanism — carrying:
+
+- **`queue_depth`** — `pending.size` at admission, the direct head-of-line-blocking
+  signal, one field off a map that already existed.
+- **`response_ms`** — `child.send()` to settle, so "sat behind three others" is
+  distinguishable from "the child was slow".
+- **`competing_host_pid`** — best-effort, read from the BL-331 advisory lock file.
+  A second `fastembedProcessHost` changes embed latency 25–50×, the host warns
+  about it at startup, and nothing recorded it; every embed-latency number
+  gathered without this label was unlabelled data.
+
+**`wait_ms` is deliberately left in place.** Flat-0 warm with a nonzero first
+call is a genuine cold-start detector, and BL-376's warmup budgets consume it.
+What was wrong was the source comment in `embed.ts` calling the wait/work split
+"the direct measurement" of BL-331's question — corrected in the same commit.
+
+Red→green watched: forcing `queue_depth` to a literal `0` fails
+`'queue_depth is NON-ZERO for at least one request when requests are issued
+concurrently through one shared child'` with `expected 0 to be greater than 0`;
+restored, 8/8 pass including a real ONNX inference test.
+
+Commit `631edfb`. Follow-up `6bea1cc` declared the new `@adhd/sox-telemetry`
+dependency in the two documents the package's own AGENTS.md requires — the
+adversarial verifier caught that, not the implementer.
+
+---
+
+## [Unreleased] — BL-337: the REINDEX workaround for Tantivy-bearing tables now has acceptance evidence
+
+`REINDEX <table>` fails on any table carrying a Turso FTS index
+(`REINDEX is not supported for custom index methods without a backing btree`) —
+including `node`, the most important table in the store.
+
+The helper itself already shipped: `repairStoreIntegrity()` enumerates btree
+indexes from `sqlite_master`, skips every custom-method and internal object, and
+issues `REINDEX "<index-name>"` individually, rebuilding the FTS index separately
+via `DROP INDEX` + the dialect's own `createIndexDDL`. What had never existed —
+and what BL-337's own 2026-07-31 note asked for — was a test proving it against a
+real Turso store carrying **both** a genuinely corrupted btree index **and** a
+Tantivy FTS index.
+
+That fixture turned out to be non-obvious in two ways, both now recorded in the
+test header:
+
+- `better-sqlite3` cannot open a database whose `sqlite_master` already contains a
+  `USING fts` index (BL-329 from the other side), so the `writable_schema`
+  rootpage-swap seed has to run **before** the FTS index exists — which is also
+  how the live incident actually unfolded.
+- every `TursoAdapterImpl.connect()` runs a fast-depth `verifyAndRepair` (BL-352),
+  which auto-fixed the damage before the test could observe it. Scoped
+  `SOX_STORE_VERIFY=off` to that one `connect()`, restored immediately after.
+
+Per BL-360's amendment, the `integrity_check` assertion filters that item's known
+unconditional false positive via `isKnownFalsePositive` — a clean unfiltered
+`integrity_check` on such a table is not a reachable state.
+
+`integrity.ts` is unchanged. Commit `53e70a9`.
+
+---
+
 ## [Unreleased] — BL-437: `hybrid-search`'s topic boost can no longer be pinned to a literal-zero floor
 
 `search()`'s multiplicative topic boost (2.0x exact match, 1.5x substring) was applied directly to the min_max-normalised fused score, whose lowest-scoring candidate always maps to exactly 0. `boost * 0 === 0` regardless of boost value, so the last-placed candidate was structurally un-boostable — and in a two-candidate result set the loser is always the minimum, so the boost could never reorder a 2-result query at all.
