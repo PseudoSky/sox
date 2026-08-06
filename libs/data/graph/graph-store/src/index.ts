@@ -512,6 +512,69 @@ export const PUBLIC_EDGE_RELS: readonly EdgeRel[] = [
   'ASSIGNED_TO',
 ];
 
+/**
+ * The rels baked into every store's CHECK (rel IN (...)) clause today — the full ten-member
+ * EdgeRel vocabulary (index.ts:364-374), NOT PUBLIC_EDGE_RELS (which is memory-core's own
+ * 7-member tool-surface subset, unrelated to this constant and untouched by this packet).
+ * This is DEFAULT_TYPE_POLICY's validateRel() vocabulary — see BL-440.
+ */
+export const DEFAULT_EDGE_RELS: readonly EdgeRel[] = [
+  'MENTIONS',
+  'SUPPORTS',
+  'RELATES_TO',
+  'SUPERSEDES',
+  'DERIVED_FROM',
+  'MEMBER_OF',
+  'PART_OF',
+  'SAME_AS',
+  'ASSIGNED_TO',
+  'DEPENDS_ON',
+];
+
+/**
+ * Injected type-vocabulary policy (ADR-0010 D2). graph-store owns no vocabulary of its own —
+ * a TypePolicy is pure in-process validation with NO reference to DDL, rebuildTable, or the
+ * adapter. It is called at the write boundary (writeNode / writeEdgeInternal) and throws
+ * ConstraintError to reject. See BL-440's "no path to DDL" requirement — a TypePolicy
+ * implementation MUST NOT be able to alter the schema under any input.
+ */
+export interface TypePolicy {
+  validateKind(kind: string): void;
+  validateRel(rel: string): void;
+}
+
+/**
+ * The default TypePolicy every SqliteGraphBackend gets when no typePolicy is supplied. This is
+ * deliberately the CLOSED six-kind / ten-rel vocabulary the CHECK constraints enforce today —
+ * NOT the "syntactic-only" default ADR-0010 D2 describes as graph-store's eventual built-in
+ * default. That eventual shift only becomes safe once every memory-core call site injects its
+ * own MemoryOntologyPolicy explicitly (PKT-60) — until then, a caller supplying no typePolicy
+ * (all 8 memory-core call sites, today) MUST see byte-identical behaviour to pre-PKT-59. Do not
+ * widen this default in this packet.
+ */
+export const DEFAULT_TYPE_POLICY: TypePolicy = {
+  validateKind(kind: string): void {
+    if (!DEFAULT_NODE_KINDS.includes(kind as (typeof DEFAULT_NODE_KINDS)[number])) {
+      throw new ConstraintError(
+        `Unknown node kind "${kind}". Allowed kinds: ${DEFAULT_NODE_KINDS.join(', ')}.`,
+      );
+    }
+  },
+  validateRel(rel: string): void {
+    if (!DEFAULT_EDGE_RELS.includes(rel as EdgeRel)) {
+      throw new ConstraintError(
+        `Unknown edge rel "${rel}". Allowed rels: ${DEFAULT_EDGE_RELS.join(', ')}.`,
+      );
+    }
+  },
+};
+
+/** Options accepted by createGraphBackend() / the SqliteGraphBackend constructor. */
+export interface GraphBackendOpts {
+  /** Injected type-vocabulary policy. Defaults to DEFAULT_TYPE_POLICY (today's six kinds, ten rels). */
+  typePolicy?: TypePolicy;
+}
+
 interface DbNodeRow {
   rowid: number;
   uid: string;
@@ -803,9 +866,11 @@ export class SqliteGraphBackend implements GraphBackend {
 
   private adapter: StoreAdapter;
   private schemaApplied = false;
+  private typePolicy: TypePolicy;
 
-  constructor(adapter: StoreAdapter) {
+  constructor(adapter: StoreAdapter, opts?: GraphBackendOpts) {
     this.adapter = adapter;
+    this.typePolicy = opts?.typePolicy ?? DEFAULT_TYPE_POLICY;
   }
 
   async applySchema(): Promise<void> {
@@ -885,13 +950,7 @@ export class SqliteGraphBackend implements GraphBackend {
 
   async writeNode(content: string, meta: NodeMeta): Promise<number> {
     const kind = meta.kind ?? 'episode';
-    if (!DEFAULT_NODE_KINDS.includes(kind as (typeof DEFAULT_NODE_KINDS)[number])) {
-      throw new ConstraintError(
-        `Unknown node kind "${kind}". Allowed kinds: ${DEFAULT_NODE_KINDS.join(', ')}. ` +
-          `Non-memory reuse (e.g. a component registry) should write kind:'generic' and ` +
-          `carry a sub-kind in tags/metadata instead of registering a new kind.`,
-      );
-    }
+    this.typePolicy.validateKind(kind);
 
     const hash = hashContent(content);
     const existing = await this.adapter.executeGet<{ rowid: number }>(
@@ -1100,6 +1159,7 @@ export class SqliteGraphBackend implements GraphBackend {
   }
 
   private async writeEdgeInternal(src: number, dst: number, rel: EdgeRel, meta?: EdgeMeta): Promise<void> {
+    this.typePolicy.validateRel(rel);
     try {
       const now = nowISO();
       const metaJson = meta?.metadata !== undefined ? JSON.stringify(meta.metadata) : null;
@@ -1303,6 +1363,6 @@ export class SqliteGraphBackend implements GraphBackend {
   }
 }
 
-export function createGraphBackend(adapter: StoreAdapter): GraphBackend {
-  return new SqliteGraphBackend(adapter);
+export function createGraphBackend(adapter: StoreAdapter, opts?: GraphBackendOpts): GraphBackend {
+  return new SqliteGraphBackend(adapter, opts);
 }
