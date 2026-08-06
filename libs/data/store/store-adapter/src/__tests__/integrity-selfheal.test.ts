@@ -695,6 +695,185 @@ tursoDescribe('BL-352 — Turso probe soundness', () => {
 });
 
 // ═══════════════════════════════════════════════════════════════════════════
+// BL-337 — the unified repair helper on a table carrying a Tantivy FTS index.
+//
+// `REINDEX <table>` is rejected outright once the table carries a custom
+// index method (Turso's `idx_fts_node`). The repair helper must instead:
+//   1. enumerate the table's BTREE indexes,
+//   2. REINDEX those individually, by name,
+//   3. skip the FTS index entirely, and
+//   4. leave the table at a clean `integrity_check` (filtered for BL-360's
+//      unconditional Tantivy false positive — see `isKnownFalsePositive`).
+//
+// Corruption seeding note: better-sqlite3 cannot even OPEN a database whose
+// `sqlite_master` already contains a `USING fts` index — "malformed database
+// schema … near USING: syntax error" (measured; this is BL-329's "a Turso FTS
+// index permanently blocks all better-sqlite3 fallbacks" from the other
+// side). So the real btree index is corrupted with `seedUnpopulatedIndex`
+// BEFORE the FTS index exists, and `idx_fts_node` is created afterwards, over
+// the now-corrupted table — which is exactly how the live incident unfolded
+// (the FTS index was added to an already-running store).
+// ═══════════════════════════════════════════════════════════════════════════
+
+tursoDescribe('BL-337 — unified repair helper on a table carrying a Tantivy index', () => {
+  it('REINDEX "node" (table-level) is rejected outright once idx_fts_node exists', async () => {
+    const dbPath = tempPath('bl337-table-reindex-fails');
+    const a = track(await TursoAdapterImpl.connect({ dbPath }));
+    await a.exec(
+      `CREATE TABLE node (id INTEGER PRIMARY KEY, content TEXT, name TEXT, summary TEXT, topic TEXT)`,
+    );
+    await a.exec(`CREATE INDEX ix_node_topic ON node (topic)`);
+    for (let i = 0; i < 20; i++) {
+      await a.executeRun(`INSERT INTO node (content, name, summary, topic) VALUES (?,?,?,?)`, [
+        `episode ${i} concerning quarterly hippopotamus logistics`,
+        `name-${i}`,
+        `summary ${i}`,
+        `topic-${i % 3}`,
+      ]);
+    }
+    await a.exec(
+      `CREATE INDEX IF NOT EXISTS idx_fts_node ON "node" USING fts ("content", "name", "summary")`,
+    );
+
+    await expect(a.exec(`REINDEX "node"`)).rejects.toThrow(
+      /REINDEX is not supported for custom index methods/i,
+    );
+  });
+
+  it(
+    'repairs a corrupted btree index by name, skips the FTS index, and returns the table ' +
+      'to a clean integrity_check (BL-337)',
+    async () => {
+      const dbPath = tempPath('bl337-full-repair');
+
+      // ── build the table + real btree index via Turso, no FTS index yet ────
+      const build = track(await TursoAdapterImpl.connect({ dbPath }));
+      await build.exec(
+        `CREATE TABLE node (id INTEGER PRIMARY KEY, content TEXT, name TEXT, summary TEXT, topic TEXT)`,
+      );
+      await build.exec(`CREATE INDEX ix_node_topic ON node (topic)`);
+      for (let i = 0; i < 40; i++) {
+        await build.executeRun(`INSERT INTO node (content, name, summary, topic) VALUES (?,?,?,?)`, [
+          `episode ${i} concerning quarterly hippopotamus logistics and reconciliation`,
+          `name-${i}`,
+          `summary ${i}`,
+          `topic-${i % 4}`,
+        ]);
+      }
+      await build.close();
+      open.pop();
+
+      // ── corrupt the ONE real btree index at the file level (BL-335's
+      //    technique) while the schema is still plain SQLite — no FTS index
+      //    exists yet, so better-sqlite3 can open the file ────────────────────
+      seedUnpopulatedIndex(dbPath, 'ix_node_topic');
+
+      // ── reopen via Turso and add the Tantivy FTS index over the now-
+      //    corrupted table, exactly as the live incident happened. Open-time
+      //    self-heal (BL-352 — every `connect()` runs a fast-depth pass that
+      //    would silently REINDEX `ix_node_topic` via `btree_index_populated`
+      //    before this test ever gets to observe the damage) is disabled for
+      //    just this one connect via `SOX_STORE_VERIFY=off`, restored
+      //    immediately after — everything from here on calls
+      //    verifyStoreIntegrity/repairStoreIntegrity directly, which is not
+      //    gated by that env var. ─────────────────────────────────────────
+      const prevVerify = process.env.SOX_STORE_VERIFY;
+      process.env.SOX_STORE_VERIFY = 'off';
+      let adapter: StoreAdapter;
+      try {
+        adapter = track(await TursoAdapterImpl.connect({ dbPath }));
+      } finally {
+        if (prevVerify === undefined) delete process.env.SOX_STORE_VERIFY;
+        else process.env.SOX_STORE_VERIFY = prevVerify;
+      }
+      await adapter.exec(
+        `CREATE INDEX IF NOT EXISTS idx_fts_node ON "node" USING fts ("content", "name", "summary")`,
+      );
+
+      // ── ground truth: integrity_check reports BOTH the real damage and the
+      //    unconditional Tantivy false positive, side by side ───────────────
+      const rawBefore = await adapter.executeAll<Record<string, unknown>>('PRAGMA integrity_check');
+      const messagesBefore = rawBefore.rows
+        .flatMap((r) => Object.values(r))
+        .filter((v): v is string => typeof v === 'string')
+        .flatMap((v) => v.split('\n'));
+      expect(
+        messagesBefore.some((m) => /index\s+"?ix_node_topic"?/i.test(m)),
+        `expected a real message naming ix_node_topic: ${JSON.stringify(messagesBefore)}`,
+      ).toBe(true);
+      expect(
+        messagesBefore.some((m) => isKnownFalsePositive(m)),
+        'the Tantivy false positive must also be present, proving both coexist on this table',
+      ).toBe(true);
+
+      // Whole-table REINDEX is still rejected — the defect this helper works
+      // around has not gone away just because the store is ALSO damaged.
+      await expect(adapter.exec(`REINDEX "node"`)).rejects.toThrow(
+        /REINDEX is not supported for custom index methods/i,
+      );
+
+      // ── the probe goes red, targeting the btree index BY NAME ──────────────
+      const report = await verifyStoreIntegrity(adapter, {
+        depth: 'deep',
+        only: ['pragma_integrity_check'],
+      });
+      const finding = report.damaged.find((f) => f.object === 'ix_node_topic');
+      expect(finding, JSON.stringify(report.findings, null, 2)).toBeDefined();
+      expect(finding!.repairable).toBe(true);
+      expect(finding!.backlog).toBe('BL-341');
+      // The FTS index — and the table itself — must never surface as a
+      // separate repairable finding: the Tantivy false positive is filtered
+      // before findings are grouped, which is how the FTS index gets skipped.
+      expect(report.damaged.some((f) => f.object === 'idx_fts_node')).toBe(false);
+      expect(report.damaged.some((f) => f.object === 'node')).toBe(false);
+
+      // ── repair: individually-named REINDEX, never REINDEX "node" ───────────
+      const repair = await repairStoreIntegrity(adapter, report, { only: ['pragma_integrity_check'] });
+      const action = repair.actions.find((a) => a.object === 'ix_node_topic');
+      expect(action, JSON.stringify(repair.actions, null, 2)).toBeDefined();
+      expect(action!.ok).toBe(true);
+      expect(action!.action).toMatch(/reindexed "ix_node_topic" individually/);
+      expect(repair.actions.some((a) => a.object === 'node')).toBe(false);
+      expect(repair.actions.some((a) => a.object === 'idx_fts_node')).toBe(false);
+
+      // ── re-verify (through the repair's own re-verification) agrees the
+      //    table is clean ──────────────────────────────────────────────────
+      expect(repair.verified, 'repair must be re-verified, never believed on its own').not.toBeNull();
+      expect(
+        repair.verified!.damaged,
+        'reverify disagreed with a successful repair: ' +
+          JSON.stringify(repair.verified!.damaged, null, 2),
+      ).toEqual([]);
+      expect(repair.ok).toBe(true);
+
+      // ── cross-checked against DIRECT ground truth in this same test, so the
+      //    assertion cannot pass on a summariser that merely agrees with
+      //    itself — this is the packet's literal acceptance line ────────────
+      const rawAfter = await adapter.executeAll<Record<string, unknown>>('PRAGMA integrity_check');
+      const messagesAfter = rawAfter.rows
+        .flatMap((r) => Object.values(r))
+        .filter((v): v is string => typeof v === 'string')
+        .flatMap((v) => v.split('\n'))
+        .map((v) => v.trim())
+        .filter((v) => v.length > 0 && v !== 'ok' && !v.startsWith('*** in database'));
+      const realAfter = messagesAfter.filter(
+        (m) => !isKnownFalsePositive(m) && !/^Page\s+\d+/i.test(m),
+      );
+      expect(
+        realAfter,
+        'integrity_check must be clean (after filtering the known Tantivy false positive and ' +
+          'leaked-page accounting) post-repair: ' + JSON.stringify(messagesAfter),
+      ).toEqual([]);
+
+      // ── the FTS index itself must still be intact and live — the repair
+      //    never touched it because nothing was wrong with it ────────────────
+      const ftsCheck = await verifyStoreIntegrity(adapter, { only: ['fts_index_live'] });
+      expect(ftsCheck.damaged).toEqual([]);
+    },
+  );
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
 // BL-374 — after a repair whose actions all succeed, reverification must AGREE
 // with ground truth. A verdict that cannot return to ok after a correct repair
 // is a permanent false alarm on the one surface built to make silent damage
