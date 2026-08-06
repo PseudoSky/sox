@@ -2408,6 +2408,18 @@ const FILE = path.join(REPO_ROOT, 'BACKLOG.md'); // (+ CHANGELOG.md for allocate
 
 **Related:** BL-359 (the allocator's race-prevention design, sound), BL-409 (same "shared file, concurrent agents" hazard class, different vector), BL-224/BL-225 (the marker-integrity discipline this checker exists to enforce).
 
+**OWNER RULING 2026-08-06, verbatim: "Backlog can be shared."** So this item's own parenthetical is the answer: `BACKLOG.md` **is** a genuinely shared cross-worktree registry, and BL-359's single-canonical-file design is the intended semantics — not a bug to be routed around. The fix is therefore **not** `--show-toplevel`. It is: keep one canonical file, state that intent explicitly in all three scripts' header comments, and **print the resolved absolute path on every write and every FAIL** so a worktree caller is never left assuming it operated on the file visible in its own `cwd`.
+
+**Two findings that change the shape of the remaining work (measured 2026-08-06):**
+
+1. **`--show-toplevel` already landed, and it landed as a drive-by.** All three scripts now read `const REPO_ROOT = execFileSync('git', ['rev-parse', '--show-toplevel'], …)`.[4] It was changed in `747d087` — a commit titled *"fix(memory-core): delete dead memory_scope.meta write — BL-399/BL-383 was one defect"*.[5] A behavioural change to the shared id allocator shipped inside a commit about `autolink.ts`, and BL-416 was left **Open**, so the ledger has been reporting this defect as unfixed while the code was already changed — in the direction the owner has now ruled against.
+
+2. **The lock went with it, which silently re-opened BL-359's race.** `LOCK_DIR = path.join(REPO_ROOT, '.bl-id.lock')`.[6] Under `--git-common-dir` every worktree contended for **one** lock directory, which is the entire mechanism by which "there is no window where two callers can both compute the same next id" was true. Under `--show-toplevel` each worktree takes its **own** lock and scans its **own** file, so two worktrees allocating concurrently cannot see each other at all. That is precisely the failure BL-359 was filed to close (BL-344 filed twice, BL-354 filed four times with three renumbers) — restored, silently, with no item recording it.
+
+**Sequencing for the fix, revised:** restore `--git-common-dir` + `..` in all three scripts **and** confirm `LOCK_DIR` resolves to the shared root with it, since the lock is the load-bearing half and reverting only the file path would leave the race open. Then add the mandatory absolute-path echo. BL-446 (`--help` falls through to the allocate-and-write path) is three lines and unrelated to the ruling — do it first, it stops the bleeding.
+
+Citations: [wip/turso-live-metrics, plan-orchestrator, claude, PKT-75, 4: tools/allocate-bl-id.mjs:71, tools/check-backlog-markers.mjs:34, tools/check-bl-id-integrity.mjs:70, 5: `git log -S'--show-toplevel' -- tools/allocate-bl-id.mjs` → 747d087, whose --stat shows autolink.ts + the BL-399 spec alongside the three tools, 6: tools/allocate-bl-id.mjs:74 (LOCK_DIR derived from REPO_ROOT), :94 (mkdirSync claim)]
+
 Citations: [wip/turso-live-metrics, main, claude, BL-399/BL-383 investigation, 1: tools/allocate-bl-id.mjs:60-66, 2: tools/check-backlog-markers.mjs:29-33, 3: live repro — `git rev-parse --git-common-dir` from `.claude/worktrees/agent-a76934e16138168ab` resolved to `/Users/nix/dev/ai/sox-ecosystem/.git`; `allocate-bl-id.mjs` wrote `### BL-416`/`### BL-417` into `/Users/nix/dev/ai/sox-ecosystem/BACKLOG.md` (confirmed absent from the worktree's own `BACKLOG.md`); `check-backlog-markers.mjs` then reported "markers derive 80" — the main checkout's post-injection heading count]
 
 
