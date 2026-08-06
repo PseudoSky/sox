@@ -291,6 +291,17 @@ databases do not survive closing the connection.
 
 **Setup DDL** (test-local constant, do not import from index.ts — see D-4):
 
+**ARCHITECT AMENDMENT (post-implementation, ruling on implementer's open question #2):** the
+original text below omitted `access_count`, `last_access`, `t_updated` — three columns the real
+`NODE_TABLE_DDL` (`index.ts:284-287`) and `NODE_COLUMNS` (`index.ts:305-311`) both carry. That
+was a spec bug, inconsistent with this section's own stated intent ("this is `NODE_TABLE_DDL`'s
+exact column set … with only the CHECK clause removed"). Confirmed by the implementer running the
+original literal DDL: `rebuildTable`'s `NODE_COLUMNS`-driven `INSERT INTO node (...) SELECT ...
+FROM node_old` crashed with `SqliteError: no such column: access_count` instead of producing the
+clean rootpage-mismatch RED assertion this section describes — i.e. the bug below would have
+under-tested the real defect shape. The DDL is corrected in place below (3 columns added,
+matching `CLOSED_NODE_DDL`, which already had them correct). Ruling: keep the corrected fixture.
+
 ```ts
 const OPEN_SCHEMA_NODE_DDL = `CREATE TABLE node (
   rowid        INTEGER PRIMARY KEY,
@@ -317,7 +328,10 @@ const OPEN_SCHEMA_NODE_DDL = `CREATE TABLE node (
   t_expires    TEXT,
   t_created    TEXT NOT NULL,
   t_valid      TEXT,
-  t_invalid    TEXT
+  t_invalid    TEXT,
+  access_count INTEGER DEFAULT 0,
+  last_access  TEXT,
+  t_updated    TEXT
 )`;
 
 const OPEN_SCHEMA_EDGE_DDL = `CREATE TABLE edge (
@@ -377,13 +391,34 @@ description of what "would" happen.
 
 ### 5.2 Criterion B — a genuine legacy pre-`'generic'` store upgrades to the CLOSED shape, not the open one
 
-**Setup DDL** — same as `NODE_TABLE_DDL`/`EDGE_TABLE_DDL` (`index.ts:259-303` — import these
-constants directly, they are real production values and this scenario is about the CLOSED shape,
-which does not change) but with the CHECK's IN-list built from `DEFAULT_NODE_KINDS.slice(0, -1)`
-(drop the `'generic'`, which is the DEFAULT_NODE_KINDS array's last entry — confirmed at `:257`)
-for node, and `PUBLIC_EDGE_RELS` plus every entry of `EdgeRel` except `'DEPENDS_ON'` for edge
-(construct these lists in the test from the exported constants — do not hand-type the enum, so this
-test cannot silently drift from the real enum the way the substring literal itself could).
+**ARCHITECT AMENDMENT (post-implementation, ruling on implementer's open questions #1 and #3):**
+
+- **#1 — `NODE_TABLE_DDL`/`EDGE_TABLE_DDL` are module-private** (`const`, not `export const`, at
+  `index.ts:259,290` — confirmed via `grep -n "^export "`), so "import these constants directly"
+  below is wrong; it was never satisfiable as written. Do not export them for this ticket (§3.3
+  already forbids expanding the production diff, and exporting them would do exactly that).
+  Instead: define local template functions (`CLOSED_NODE_DDL(kinds)` / `CLOSED_EDGE_DDL(rels)`)
+  copied byte-for-byte from `index.ts:259-303`, CHECK IN-list parameterized, and assert
+  `CLOSED_NODE_DDL(DEFAULT_NODE_KINDS)` / `CLOSED_EDGE_DDL(FULL_EDGE_RELS)` are byte-identical to
+  the real post-rebuild `sqlite_master.sql` text. That assertion is checked against the real
+  rebuild output, so it gives the identical guarantee a direct import would.
+- **#3 — `EdgeRel` (`index.ts:364-374`) is a TS type, erased at runtime, with no value-level
+  export**, and `PUBLIC_EDGE_RELS` (`index.ts:505-513`) exports only 7 of its 10 members (missing
+  `MEMBER_OF`, `PART_OF`, `DEPENDS_ON`). "Construct these lists … from the exported constants — do
+  not hand-type the enum" below is therefore unsatisfiable as written for the 3 missing members. Do
+  **not** add a runtime `EdgeRel` enumeration to production code to satisfy this literally — that
+  is itself a production-surface expansion outside this ticket's scope (§3.3). Instead: hand-type
+  `FULL_EDGE_RELS` (all 10, in production string order, confirmed against `index.ts:294` directly)
+  and self-check it against `PUBLIC_EDGE_RELS` at module load with a throwing guard, so a future
+  edit to `PUBLIC_EDGE_RELS` that isn't mirrored here fails loudly at suite load rather than
+  silently mis-testing — satisfying the anti-drift *intent* without the literal "no hand-typing"
+  instruction, which this codebase cannot satisfy without a scope-creeping production change.
+
+**Setup DDL** — same shape as `NODE_TABLE_DDL`/`EDGE_TABLE_DDL` (`index.ts:259-303` — copied via
+local template functions per the amendment above, not imported; this scenario is about the CLOSED
+shape, which does not change) but with the CHECK's IN-list built from `DEFAULT_NODE_KINDS.slice(0,
+-1)` (drop the `'generic'`, which is the DEFAULT_NODE_KINDS array's last entry — confirmed at
+`:257`) for node, and the hand-typed, self-checked `FULL_EDGE_RELS` minus `'DEPENDS_ON'` for edge.
 
 **Steps:**
 
