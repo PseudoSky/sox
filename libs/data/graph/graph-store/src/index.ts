@@ -59,7 +59,7 @@ function graphDdl(opts: { jsonChecks: boolean }): string {
 CREATE TABLE IF NOT EXISTS node (
   rowid        INTEGER PRIMARY KEY,
   uid          TEXT UNIQUE NOT NULL,
-  kind         TEXT NOT NULL CHECK (kind IN ('episode','entity','claim','community','session','generic')),
+  kind         TEXT NOT NULL,
   content      TEXT,
   name         TEXT,
   summary      TEXT,
@@ -178,7 +178,7 @@ export const INLINE_MIGRATION_DDL = `
 CREATE TABLE IF NOT EXISTS "node" (
   "rowid" integer PRIMARY KEY NOT NULL,
   "uid" text NOT NULL,
-  "kind" text NOT NULL CHECK ("kind" IN ('episode','entity','claim','community','session','generic')),
+  "kind" text NOT NULL,
   "content" text,
   "name" text,
   "summary" text,
