@@ -25,6 +25,15 @@ async function freshBackend(): Promise<{ adapter: StoreAdapter; backend: GraphBa
 afterEach(() => {});
 
 describe('static exports', () => {
+  // PKT-74/BL-448: this assertion is deliberately UNAFFECTED by BL-448/ADR-0010 D4. The CHECK's
+  // vocabulary (still 10 rels — DEFAULT_EDGE_RELS, unchanged by this packet) and PUBLIC_EDGE_RELS
+  // (still 7 rels, unchanged by this packet) were never the same constant — PUBLIC_EDGE_RELS has
+  // always been memory-core's own tool-surface subset, not "the rels this store permits" (see
+  // DEFAULT_EDGE_RELS's own doc comment above its declaration in index.ts, added by PKT-59). This
+  // packet does not move, rename, or resize PUBLIC_EDGE_RELS: which set MemoryOntologyPolicy
+  // carries is PKT-60/BL-441's decision, not this packet's; see ADR-0010's "Architect
+  // recommendations… not owner decisions" section for why the DI wiring shape (and by extension,
+  // PKT-60's exact vocabulary choice) is not ruled here.
   it('PUBLIC_EDGE_RELS contains 7 values', () => {
     expect(PUBLIC_EDGE_RELS).toHaveLength(7);
     expect(PUBLIC_EDGE_RELS).toContain('MENTIONS');
