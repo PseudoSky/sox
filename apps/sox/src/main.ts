@@ -3011,6 +3011,17 @@ async function uninstallOne(
   const ownership = OwnershipIndex.loadFromFile(pathMod.join(dataDir, 'ownership.json'));
   const owned = ownership.get(id, scopeTyped);
 
+  // BL-275/C2 left a gap: when there is no lockfile at all (fresh/lockfile-less
+  // scope), the not-found check above (lines 2980-3005) never runs — it lives
+  // entirely inside the `matchKey === undefined` branch, which is only reached
+  // when `lockfile !== null`. Without this guard, an id that is in neither the
+  // lockfile nor the ownership index silently no-ops "successfully" instead of
+  // failing, and cmdUninstall unconditionally exits 0 afterwards.
+  if (lockfile === null && owned === undefined) {
+    process.stderr.write(`${CLI} uninstall: extension '${id}' not found (no lockfile in scope '${scopeTyped}', and not in ownership index)\n`);
+    process.exit(1);
+  }
+
   // ── #16728 durable fix: reverse the propagated project .mcp.json merges ─────
   if (scopeTyped === 'user' || scopeTyped === 'org') {
     try {
