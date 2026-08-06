@@ -25,6 +25,17 @@
         "cwd": "."
       },
       "cache": false
+    },
+    "test": {
+      "dependsOn": [
+        {
+          "projects": [
+            "sox"
+          ],
+          "target": "build"
+        },
+        "^build"
+      ]
     }
   }
 }
