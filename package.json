@@ -14,6 +14,8 @@
     "build-index": "npx tsx scripts/build-index.ts",
     "build-index:publish": "SOX_REGISTRY_PUBLISH=npm npx tsx scripts/build-index.ts",
     "check-publishable": "npx tsx scripts/check-publishable.ts",
+    "check-changeset-surface": "npx tsx scripts/check-changeset-surface.ts",
+    "cascade-plan": "npx tsx scripts/cascade-plan.ts",
     "install-extensions": "npx tsx scripts/install.ts",
     "routing:build-index": "npx tsx scripts/build-routing-index.ts",
     "routing:check-drift": "npx tsx scripts/check-routing-drift.ts",

@@ -39,14 +39,21 @@ stay external and are declared as real `dependencies`, installed via the `npm-pa
 ```bash
 npx nx run-many -t build,lint,test          # C3 gate
 pnpm run check-publishable                    # structural 404 gate (workspace:*/@adhd-runtime-dep)
+pnpm run check-changeset-surface              # BL-460: dist/*.d.ts vs. last-published, no silent surface drift
 pnpm changeset status                         # review pending bumps
 # NOTE: `changeset publish --dry-run` DOES NOT EXIST (@changesets/cli@2.31.0 supports only
 # --tag/--otp/--no-git-tag). The publish-set proof is the two commands below instead:
 #   1. the `changeset status` output above IS the version-bump set, PLUS
 #   2. changeset publish also sweeps ANY workspace package whose local version differs from
 #      npm — audit that drift before publishing (this is how an unrelated package ships as
-#      a side effect; it happened live with sox-memory-core 0.2.1→0.3.0 on 2026-07-16):
-node -e "const{execSync}=require('child_process');const{globSync}=require('glob');for(const f of globSync('libs/**/package.json',{ignore:'**/node_modules/**'})){const p=require('./'+f);if(!p.name?.startsWith('@adhd/')||p.private)continue;let r;try{r=execSync('npm view '+p.name+' version 2>/dev/null').toString().trim()}catch{r='UNPUBLISHED'};if(r!==p.version)console.log(p.name.padEnd(36)+'local='+p.version+' npm='+r)}"
+#      a side effect; it happened live with sox-memory-core 0.2.1→0.3.0 on 2026-07-16). Don't
+#      re-derive that set by hand — cross-check it against the real dependency graph instead
+#      (BL-452: a human hand-deriving this is exactly how an under/over-scoped publish set
+#      goes out unverified):
+pnpm run cascade-plan -- --package <package-name>   # computes + cross-checks the exact republish set
+#   (the positional arg is the scan ROOT, not the target — see
+#   scripts/cascade-plan.ts's own Usage docstring; `pnpm run` needs `--` before
+#   `--package` or pnpm swallows the flag itself)
 npm pack --dry-run --json                     # per package dir being published: tarball proof
 bash scripts/acceptance/clean-room-smoke.sh   # verdaccio clean room: G1 + G2 (memory_ping)
 ```
