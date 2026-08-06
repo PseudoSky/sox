@@ -432,7 +432,7 @@ import type { LanceDbVectorBackendConfig } from './lancedb.js';
 export { LanceDbVectorBackend, type LanceDbVectorBackendConfig } from './lancedb.js';
 
 export function openLanceDbVectorStore(
-  config: LanceDbVectorBackendConfig & { db: import('better-sqlite3').Database },
+  config: LanceDbVectorBackendConfig & { adapter: StoreAdapter },
 ): LanceDbVectorBackend & VectorBackend {
   return new LanceDbVectorBackend(config);
 }
