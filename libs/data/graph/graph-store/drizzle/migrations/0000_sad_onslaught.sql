@@ -36,7 +36,7 @@ CREATE TABLE IF NOT EXISTS `edge` (
 	`rowid` integer PRIMARY KEY NOT NULL,
 	`src` integer NOT NULL REFERENCES `node`(`rowid`) ON DELETE CASCADE,
 	`dst` integer NOT NULL REFERENCES `node`(`rowid`) ON DELETE CASCADE,
-	`rel` text NOT NULL CHECK (`rel` IN ('MENTIONS','SUPPORTS','RELATES_TO','SUPERSEDES','DERIVED_FROM','MEMBER_OF','PART_OF','SAME_AS','ASSIGNED_TO','DEPENDS_ON')),
+	`rel` text NOT NULL,
 	`weight` real DEFAULT 1.0,
 	`confidence` real,
 	`origin` text CHECK (`origin` IN ('extracted','inferred','user_asserted')),
