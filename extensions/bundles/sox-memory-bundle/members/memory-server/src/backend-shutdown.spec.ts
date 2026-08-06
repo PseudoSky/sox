@@ -30,13 +30,28 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-const { mockCloseAllAdapters, mockTerminateEmbedWorkers, mockAutoBackup, mockWriteQueueCloseAllForShutdown } =
-  vi.hoisted(() => ({
-    mockCloseAllAdapters: vi.fn<() => Promise<void>>(),
-    mockTerminateEmbedWorkers: vi.fn<() => Promise<void>>(),
-    mockAutoBackup: vi.fn<() => Promise<{ path: string; size: number; skipped: boolean }>>(),
-    mockWriteQueueCloseAllForShutdown: vi.fn<() => Promise<void>>(),
-  }));
+const {
+  mockCloseAllAdapters,
+  mockTerminateEmbedWorkers,
+  mockAutoBackup,
+  mockWriteQueueCloseAllForShutdown,
+  // (BL-472) coordinatedShutdown's new step 0 — see bl472-shutdown-drain.spec.ts
+  // for the dedicated suite. Mocked here (resolving immediately) purely so
+  // this file's existing ordering/timing assertions keep working: without
+  // these, backend.ts's real `flushPendingEmbeds()`/`waitForDrainSettled()`
+  // calls would run against this test worker's REAL process-global
+  // embed-pipeline/drain state, which is neither isolated nor the point of
+  // this suite.
+  mockFlushPendingEmbeds,
+  mockWaitForDrainSettled,
+} = vi.hoisted(() => ({
+  mockCloseAllAdapters: vi.fn<() => Promise<void>>(),
+  mockTerminateEmbedWorkers: vi.fn<() => Promise<void>>(),
+  mockAutoBackup: vi.fn<() => Promise<{ path: string; size: number; skipped: boolean }>>(),
+  mockWriteQueueCloseAllForShutdown: vi.fn<() => Promise<void>>(),
+  mockFlushPendingEmbeds: vi.fn<() => Promise<void>>(),
+  mockWaitForDrainSettled: vi.fn<() => Promise<void>>(),
+}));
 
 vi.mock('@adhd/sox-memory-core', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@adhd/sox-memory-core')>();
@@ -58,7 +73,19 @@ vi.mock('@adhd/sox-memory-core', async (importOriginal) => {
     closeAllAdapters: mockCloseAllAdapters,
     terminateEmbedWorkers: mockTerminateEmbedWorkers,
     autoBackup: mockAutoBackup,
+    flushPendingEmbeds: mockFlushPendingEmbeds,
     WriteQueue: WriteQueueProxy,
+  };
+});
+
+// (BL-472) backend.ts also statically imports `waitForDrainSettled` from
+// `./index.js` — mock that module too, forwarding every other export via
+// `importOriginal`, same shape as the memory-core mock above.
+vi.mock('./index.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('./index.js')>();
+  return {
+    ...actual,
+    waitForDrainSettled: mockWaitForDrainSettled,
   };
 });
 
@@ -80,8 +107,18 @@ describe('BL-405 — coordinatedShutdown', () => {
     mockTerminateEmbedWorkers.mockReset();
     mockAutoBackup.mockReset();
     mockWriteQueueCloseAllForShutdown.mockReset();
+    mockFlushPendingEmbeds.mockReset();
+    mockWaitForDrainSettled.mockReset();
     __resetShutdownStateForTest();
 
+    // (BL-472) Resolve immediately, recording an event — the common
+    // no-in-flight-work case every OTHER assertion in this file assumes.
+    mockFlushPendingEmbeds.mockImplementation(async () => {
+      events.push('flushPendingEmbeds');
+    });
+    mockWaitForDrainSettled.mockImplementation(async () => {
+      events.push('waitForDrainSettled');
+    });
     mockTerminateEmbedWorkers.mockImplementation(async () => {
       events.push('terminateEmbedWorkers');
     });
@@ -133,12 +170,17 @@ describe('BL-405 — coordinatedShutdown', () => {
     );
 
     // Let the microtask queue drain so terminateEmbedWorkers has a chance to
-    // run — closeAllAdapters is deliberately stuck.
-    await Promise.resolve();
-    await Promise.resolve();
-    await Promise.resolve();
+    // run — closeAllAdapters is deliberately stuck. (BL-472) Step 0's
+    // `Promise.race([Promise.all([flushPendingEmbeds(), waitForDrainSettled()])
+    // .then(...), timeout])` adds a few extra microtask hops ahead of
+    // terminateEmbedWorkers versus the pre-BL-472 shape, so this flushes more
+    // turns than the bare 3 used to need — bounded, not a real timer, so this
+    // cannot mask a genuine hang (the `expect` below still fails loudly if
+    // terminateEmbedWorkers hasn't run by the time the queue is actually
+    // drained).
+    for (let i = 0; i < 10; i++) await Promise.resolve();
 
-    expect(events).toEqual(['terminateEmbedWorkers']);
+    expect(events).toEqual(['flushPendingEmbeds', 'waitForDrainSettled', 'terminateEmbedWorkers']);
     expect(handleClose).not.toHaveBeenCalled();
     expect(exit).not.toHaveBeenCalled();
 
@@ -146,6 +188,8 @@ describe('BL-405 — coordinatedShutdown', () => {
     await p;
 
     expect(events).toEqual([
+      'flushPendingEmbeds',
+      'waitForDrainSettled',
       'terminateEmbedWorkers',
       'closeAllAdapters',
       'writeQueueCloseAllForShutdown',
