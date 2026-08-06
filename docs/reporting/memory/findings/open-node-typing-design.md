@@ -10,6 +10,10 @@
 
 ## 0. The four decisions, and what each one costs
 
+**Citable record:** `docs/decisions/0010-open-node-and-edge-typing.md` (ADR-0010) is the decision
+record derived from this section. Downstream packets should cite the ADR by section; this section
+remains the fuller working rationale and is not superseded by it.
+
 An earlier revision of this document presented four forks with recommendations. The owner has ruled
 on all four. **This section is the authorisation every downstream packet cites.** The recommendation
 column is retained only where the ruling went against it, because a later reader needs to know the
