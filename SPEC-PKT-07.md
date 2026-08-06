@@ -178,19 +178,26 @@ repeat a mistake this package has already paid for and fixed once.
 
 **D3 — Store `config.adapter` on `this.adapter` even though no current method reads it.**
 Losing alternative: accept-and-discard (`requireStoreAdapterShape(config.adapter);` then never
-assign it to a field). Rejected for two concrete reasons, not aesthetics: (a) an unused constructor
-parameter that TypeScript's `noUnusedLocals`/`noUnusedParameters` (this repo runs both — see
-`libs/memory-core`'s tsconfig conventions and the root house rule "never weaken `strict`,
-`noUnusedLocals`... to silence it") would either flag or silently tolerate depending on parameter-vs-
-destructure form — storing it removes the ambiguity entirely and keeps the property genuinely
-"used." (b) The backlog's own fix sketch names a real future need: *"either accept a StoreAdapter...
-and route queries through executeGet/executeAll, or... make that a named, capability-gated
-StoreAdapter method."* Keeping the reference on the instance is what makes that future work
-possible without a second constructor-signature migration. Do not go further and actually wire any
-query through `executeGet`/`executeAll` in this ticket — LanceDB's worker bridge (`getSyncFn`) is
-the entire, working, on-disk persistence mechanism today (see `lancedb.ts:24-31`'s own comment: "a
-real synchronous call into a real on-disk LanceDB table"); routing through the adapter today would
-be a functional rewrite with no defect behind it. That is out of scope for BL-389, which is a
+assign it to a field). Rejected for two concrete reasons, not aesthetics: (a) a private class field
+that is assigned but never *read* is flagged by this repo's `strict` TypeScript config as TS6133
+(`'adapter' is declared but its value is never read`) — this is a distinct diagnostic from
+`noUnusedLocals`/`noUnusedParameters` (those police locals/parameters, not class fields; the
+original text of this decision named the wrong flag — corrected here after the implementer hit the
+real TS6133 in practice). Storing-without-reading does not "remove the ambiguity"; it *trips* the
+diagnostic. The concrete resolution: add one genuine, non-scope-creep read — the existing
+constructor `console.info` (`lancedb.ts:96-99`) reads `this.adapter.config.type` (`sqlite`/`turso`)
+alongside the existing `path=` log field. `StoreAdapter.config.type` is a real, already-public field
+(`store-adapter/src/types.ts:302`, read the identical way at `fts-dialect.ts:119`,
+`migration.ts:375-376`, `integrity.ts:778`) — this is not a fabricated read to silence the compiler,
+it's a legitimate diagnostic-log improvement that happens to also satisfy TS6133. (b) The backlog's
+own fix sketch names a real future need: *"either accept a StoreAdapter... and route queries through
+executeGet/executeAll, or... make that a named, capability-gated StoreAdapter method."* Keeping the
+reference on the instance is what makes that future work possible without a second
+constructor-signature migration. Do not go further and actually wire any query through
+`executeGet`/`executeAll` in this ticket — LanceDB's worker bridge (`getSyncFn`) is the entire,
+working, on-disk persistence mechanism today (see `lancedb.ts:24-31`'s own comment: "a real
+synchronous call into a real on-disk LanceDB table"); routing through the adapter today would be a
+functional rewrite with no defect behind it. That is out of scope for BL-389, which is a
 *type-boundary* fix, not a data-path fix.
 
 **D4 — No capability gating (`adapter.capabilities.nativeVectors` etc.) on the `adapter` param.**
