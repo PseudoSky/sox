@@ -21,12 +21,12 @@ A packet is **DONE** only when every BL id it targets is closed — code landing
 (BL-225). Several packets below have merged code and still read OPEN; that is correct, and the
 remedy is to close the backlog item with a red→green test, not to edit this table.
 
-**39 done · 3 partial · 43 open** of 85 packets.
+**40 done · 3 partial · 42 open** of 85 packets.
 
-- Open backlog items in this program's scope: **62**, of which **8** have no packet.
+- Open backlog items in this program's scope: **59**, of which **6** have no packet.
 - Open items deliberately out of scope: **28** — BL-99, BL-103, BL-104, BL-105, BL-163, BL-225, BL-228, BL-258, BL-261, BL-282, BL-283, BL-284, BL-285, BL-288, BL-291, BL-292, BL-296, BL-298, BL-305, BL-306, BL-307, BL-308, BL-309, BL-314, BL-315, BL-333, BL-355, BL-408
-- Unscheduled in-scope items (need a packet): BL-436, BL-462, BL-466, BL-467, BL-468, BL-469, BL-470, BL-471
-- Packet targets already closed (45) — historical context only, no work remains: BL-259, BL-329, BL-337, BL-341, BL-343, BL-348, BL-350, BL-359, BL-360, BL-361, BL-362, BL-364, BL-376, BL-379, BL-380, BL-383, BL-388, BL-390, BL-391, BL-394, BL-397, BL-399, BL-402, BL-405, BL-406, BL-407, BL-410, BL-412, BL-425, BL-426, BL-432, BL-435, BL-437, BL-445, BL-449, BL-451, BL-453, BL-456, BL-457, BL-458, BL-459, BL-461, BL-463, BL-464, BL-465
+- Unscheduled in-scope items (need a packet): BL-436, BL-462, BL-466, BL-467, BL-468, BL-470
+- Packet targets already closed (46) — historical context only, no work remains: BL-259, BL-329, BL-337, BL-338, BL-341, BL-343, BL-348, BL-350, BL-359, BL-360, BL-361, BL-362, BL-364, BL-376, BL-379, BL-380, BL-383, BL-388, BL-390, BL-391, BL-394, BL-397, BL-399, BL-402, BL-405, BL-406, BL-407, BL-410, BL-412, BL-425, BL-426, BL-432, BL-435, BL-437, BL-445, BL-449, BL-451, BL-453, BL-456, BL-457, BL-458, BL-459, BL-461, BL-463, BL-464, BL-465
 
 | Packet | Status | Targets | Still open |
 |---|---|---|---|
@@ -62,7 +62,7 @@ remedy is to close the backlog item with a red→green test, not to edit this ta
 | PKT-30 | **OPEN** | BL-328 | BL-328 |
 | PKT-31 | **OPEN** | BL-327 | BL-327 |
 | PKT-32 | **DONE** | BL-337, BL-341 | — |
-| PKT-33 | **OPEN** | BL-338 | BL-338 |
+| PKT-33 | **DONE** | BL-338 | — |
 | PKT-34 | **OPEN** | BL-387 | BL-387 |
 | PKT-35 | **OPEN** | BL-398 | BL-398 |
 | PKT-36 | **DONE** | BL-399 | — |
@@ -1739,7 +1739,7 @@ calibration undocumented (the guard becomes a pure safety net that should rarely
 
 ### PKT-33 — BL-338: crash-recovery test — SIGKILL under sustained write load
 
-> **status: OPEN** — still open: BL-338 · derived by `tools/plan-status.mjs`, do not hand-edit
+> **status: DONE** — all targets closed (BL-338) · derived by `tools/plan-status.mjs`, do not hand-edit
 
 **Goal:** the owner's bar verbatim: "none of this is manual & none of the crash data loss should be possible." Build the test that has never existed: kill -9 the server mid-write, restart, assert zero lost committed writes and auto-repaired integrity, with evidence visible in status/logs without human investigation.
 **Closes:** BL-338
