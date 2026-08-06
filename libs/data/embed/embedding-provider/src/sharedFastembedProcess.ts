@@ -19,7 +19,10 @@
 import { fork, type ChildProcess } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
-import { existsSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { performance } from 'node:perf_hooks';
+import { log } from '@adhd/sox-telemetry';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -42,6 +45,51 @@ function resolveFastembedHostPath(): string {
   // Last resort: return the original candidate so the resulting error names
   // the path that was actually attempted.
   return sibling;
+}
+
+/** True if a process with this pid is alive (best-effort; ESRCH => dead). Not
+ *  imported from `fastembedProcessHost.ts` — see `detectCompetingFastembedHost`. */
+function isPidAlive(pid: number): boolean {
+  if (!Number.isFinite(pid) || pid <= 0) return false;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * BL-432 (signal 3, best-effort): read the BL-331 advisory lock file that
+ * `fastembedProcessHost.ts`'s `checkAndClaimFastembedLock()` writes on every
+ * host startup, and report whether it names a DIFFERENT, still-live pid from
+ * `ownPid` — i.e. a second fastembed host currently exists on this machine. A
+ * second host changes embed latency 25-50x (cross-process CoreML/ANE
+ * contention, BL-331) and nothing previously recorded whether one was
+ * present for any given embed-latency number (BL-432/BL-433's "unlabelled
+ * measurement" class).
+ *
+ * Deliberately does NOT `import` `fastembedProcessHost.ts` — that module
+ * calls `checkAndClaimFastembedLock()` and registers `process.on('message')`
+ * at module scope, both meant for the forked CHILD process, never the
+ * parent that owns this client. This duplicates only the tiny pid-liveness
+ * check and the lock-path convention (`SOX_FASTEMBED_LOCK_PATH`, same
+ * default) rather than pull that whole module (and its fastembed-loading
+ * side effects) into the parent. Advisory only: a missing/unreadable/stale
+ * lock file is silently treated as "no competing host", never thrown — this
+ * must never be able to break or slow a real embed call.
+ */
+function detectCompetingFastembedHost(ownPid: number | undefined): { pid: number; startedAt: string } | null {
+  try {
+    const lockPath = process.env['SOX_FASTEMBED_LOCK_PATH'] ?? join(tmpdir(), 'sox-fastembed-host.lock');
+    if (!existsSync(lockPath)) return null;
+    const raw = JSON.parse(readFileSync(lockPath, 'utf8')) as { pid?: unknown; startedAt?: unknown };
+    const pid = typeof raw.pid === 'number' ? raw.pid : null;
+    if (pid === null || pid === ownPid || !isPidAlive(pid)) return null;
+    return { pid, startedAt: typeof raw.startedAt === 'string' ? raw.startedAt : 'unknown' };
+  } catch {
+    return null;
+  }
 }
 
 interface PendingEntry {
@@ -181,6 +229,26 @@ export class SharedFastembedProcessClient {
    * Send a request to the shared fastembed process and await its correlated
    * response. Assigns a globally-unique `id` — the caller must NOT set its
    * own `id` (any `id` field on `payload` is ignored/overwritten).
+   *
+   * BL-432: this is where BL-331's head-of-line-blocking question actually
+   * lives — NOT in memory-core's `embed.ts` `wait`/`work` split, which was
+   * measured (n=570) to be structurally incapable of observing it, because
+   * `wait` only covers acquiring the already-memoised provider promise.
+   * Every request beyond the first in a process contends here, on this one
+   * shared child. Three signals are emitted with every
+   * `fastembed_process.request.*` record via the `@adhd/sox-telemetry`
+   * substrate (no second telemetry mechanism):
+   *   1. `queue_depth` — `this.pending.size` measured BEFORE this request is
+   *      added, i.e. how many requests are already admitted and awaiting a
+   *      reply ahead of this one. The direct head-of-line-blocking signal.
+   *   2. `response_ms` — elapsed time from immediately after `child.send()`
+   *      to this request's own settle, so "sat behind N others" (visible via
+   *      `queue_depth` > 0 alongside a `response_ms` that scales with it) is
+   *      distinguishable from "the child itself was slow on a solo request"
+   *      (`queue_depth` === 0 with a large `response_ms`).
+   *   3. `competing_host_pid` — present only when a second, still-live
+   *      `fastembedProcessHost` process is detected (BL-331's advisory lock),
+   *      since that changes embed latency 25-50x independent of queueing.
    */
   async request<T = Record<string, unknown>>(
     payload: Record<string, unknown>,
@@ -189,12 +257,30 @@ export class SharedFastembedProcessClient {
     const child = await this.ensureProcess();
     const id = this.nextId++;
 
+    const queueDepth = this.pending.size;
+    const competing = detectCompetingFastembedHost(child.pid);
+    const baseFields: Record<string, unknown> = {
+      queue_depth: queueDepth,
+      ...(competing ? { competing_host_pid: competing.pid } : {}),
+    };
+
     return new Promise<T>((resolve, reject) => {
       let to: NodeJS.Timeout | undefined;
+      // Reassigned synchronously (below, before `child.send()` returns) so
+      // every settle path — including the ones triggered from a totally
+      // different call site (`c.on('error')`/`c.on('exit')` above, iterating
+      // `this.pending.values()`) — closes over the correct value.
+      let sentAt = performance.now();
+
       if (timeoutMs && timeoutMs > 0) {
         to = setTimeout(() => {
           this.pending.delete(id);
           this.unrefIfIdle();
+          log.warn('fastembed_process.request.error', {
+            ...baseFields,
+            response_ms: Math.round(performance.now() - sentAt),
+            error: `timed out after ${timeoutMs}ms`,
+          });
           reject(new Error(`shared fastembed process request timed out after ${timeoutMs}ms`));
         }, timeoutMs);
         if (typeof to.unref === 'function') to.unref();
@@ -203,16 +289,27 @@ export class SharedFastembedProcessClient {
       this.pending.set(id, {
         resolve: (v) => {
           if (to) clearTimeout(to);
+          log.info('fastembed_process.request.finish', {
+            ...baseFields,
+            response_ms: Math.round(performance.now() - sentAt),
+          });
           resolve(v as T);
         },
         reject: (e) => {
           if (to) clearTimeout(to);
+          log.warn('fastembed_process.request.error', {
+            ...baseFields,
+            response_ms: Math.round(performance.now() - sentAt),
+            error: e.message,
+          });
           reject(e);
         },
       });
       // BL-410: keep the parent's event loop ref'd until this request settles.
       this.refForPending();
 
+      log.info('fastembed_process.request.admitted', baseFields);
+      sentAt = performance.now();
       child.send({ ...payload, id });
     });
   }
