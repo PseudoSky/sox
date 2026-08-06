@@ -22,6 +22,14 @@ extensions/**/drizzle/
 .extensions/extensions.local.json
 *.lock
 !pnpm-lock.yaml
+# [ADR-0011 R5] tools/bl-id-counter.mjs's shared-root state file. Lives at the SAME git-common-dir
+# -resolved main-checkout path as BACKLOG.md/CHANGELOG.md/.bl-id.lock (BL-416 precedent), so every
+# worktree and the main checkout see the same counter regardless of which branch each has checked
+# out. Deliberately NOT git-tracked (unlike BACKLOG.md itself): it is operational bookkeeping, not
+# human-readable source of truth, and committing it would force an arbitrary branch to own writes
+# that every worktree needs to make regardless of branch — the same reason `.bl-id.lock` above is
+# untracked. Durability comes from living on the shared filesystem path, not from git history.
+.bl-id-counter.json
 # sox-memory temp test dirs (any .tmp-* scratch dir — never belongs in git)
 .tmp-*/
 # nx machine-local state (never belongs in git)
