@@ -1,5 +1,5 @@
 import { resolve } from 'node:path';
-import { defineConfig } from 'vitest/config';
+import { configDefaults, defineConfig } from 'vitest/config';
 
 export default defineConfig({
   resolve: {
@@ -14,6 +14,32 @@ export default defineConfig({
   },
   test: {
     include: ['extensions/**/*.test.ts', 'scripts/**/*.test.ts'],
+    // D1 (2026-08-06): every *.test.ts file under extensions/** lives inside
+    // memory-server (verified empirically — `find extensions -name '*.test.ts'`
+    // returns zero matches outside this one package). memory-server owns its
+    // OWN project-scoped vitest.config.ts (`nx test memory-server`), which
+    // loads its `vitest.setup.ts` (SOX_SYNC_EMBED=1 + STORE_ADAPTER=sqlite pin,
+    // the BL-412 live-store guard, pool:'forks'/maxWorkers:1 for onnxruntime
+    // native-addon safety) — none of which this root aggregate config provides.
+    // Before this exclude, `npx nx test sox-ecosystem` (and any `nx run-many -t
+    // test` sweep) re-ran these exact files a SECOND time, unconfigured: no
+    // SOX_SYNC_EMBED pin meant every `memory_write` took the async default
+    // Phase-B path, so `turso-clean-room.test.ts`'s and `clustering-e2e.test.ts`'s
+    // synchronous-looking `vec_node` assertions raced the fire-and-forget
+    // embed pipeline and read `vec_node` before Phase B (or even the debounced
+    // wakeDrain-triggered heal pass) had a chance to land a single row — the
+    // observed "0 to be greater than 0" failure. Worse, `WriteQueue.
+    // clearInstances()` (afterAll) closes the adapter unconditionally, without
+    // draining that still-in-flight fire-and-forget work, so when Phase-B/heal
+    // finally did run, it hit "database connection is not open" (E_IO) against
+    // the now-closed adapter — the stderr flood this defect was originally
+    // reported by. The files were never broken; the SECOND, misconfigured
+    // runner was. Excluding them here leaves memory-server's own `nx test
+    // memory-server` as the SOLE (correctly configured) runner.
+    exclude: [
+      ...configDefaults.exclude,
+      'extensions/bundles/sox-memory-bundle/members/memory-server/**',
+    ],
     globals: false,
     // BL-179: redirect SOX_ECOSYSTEM_HOME to a per-run mkdtemp scratch dir before
     // any test runs, so in-process install() calls and spawned soxe processes never
