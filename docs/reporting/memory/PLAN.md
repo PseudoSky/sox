@@ -21,12 +21,12 @@ A packet is **DONE** only when every BL id it targets is closed — code landing
 (BL-225). Several packets below have merged code and still read OPEN; that is correct, and the
 remedy is to close the backlog item with a red→green test, not to edit this table.
 
-**35 done · 4 partial · 46 open** of 85 packets.
+**36 done · 4 partial · 45 open** of 85 packets.
 
-- Open backlog items in this program's scope: **65**, of which **7** have no packet.
+- Open backlog items in this program's scope: **64**, of which **7** have no packet.
 - Open items deliberately out of scope: **28** — BL-99, BL-103, BL-104, BL-105, BL-163, BL-225, BL-228, BL-258, BL-261, BL-282, BL-283, BL-284, BL-285, BL-288, BL-291, BL-292, BL-296, BL-298, BL-305, BL-306, BL-307, BL-308, BL-309, BL-314, BL-315, BL-333, BL-355, BL-408
 - Unscheduled in-scope items (need a packet): BL-436, BL-462, BL-466, BL-467, BL-468, BL-469, BL-470
-- Packet targets already closed (41) — historical context only, no work remains: BL-259, BL-329, BL-341, BL-343, BL-348, BL-350, BL-359, BL-360, BL-361, BL-362, BL-364, BL-376, BL-379, BL-380, BL-383, BL-388, BL-390, BL-391, BL-394, BL-397, BL-399, BL-402, BL-405, BL-406, BL-407, BL-410, BL-412, BL-425, BL-435, BL-445, BL-449, BL-451, BL-453, BL-456, BL-457, BL-458, BL-459, BL-461, BL-463, BL-464, BL-465
+- Packet targets already closed (42) — historical context only, no work remains: BL-259, BL-329, BL-341, BL-343, BL-348, BL-350, BL-359, BL-360, BL-361, BL-362, BL-364, BL-376, BL-379, BL-380, BL-383, BL-388, BL-390, BL-391, BL-394, BL-397, BL-399, BL-402, BL-405, BL-406, BL-407, BL-410, BL-412, BL-425, BL-435, BL-437, BL-445, BL-449, BL-451, BL-453, BL-456, BL-457, BL-458, BL-459, BL-461, BL-463, BL-464, BL-465
 
 | Packet | Status | Targets | Still open |
 |---|---|---|---|
@@ -114,7 +114,7 @@ remedy is to close the backlog item with a red→green test, not to edit this ta
 | PKT-82 | **DONE** | BL-461 | — |
 | PKT-83 | **OPEN** | BL-432 | BL-432 |
 | PKT-84 | **OPEN** | BL-426 | BL-426 |
-| PKT-85 | **OPEN** | BL-437 | BL-437 |
+| PKT-85 | **DONE** | BL-437 | — |
 
 <!-- PLAN-STATUS:END -->
 
@@ -3129,7 +3129,7 @@ context, never by telling a subagent to read this file.
 
 ### PKT-85 — BL-437: `topicBoost` is multiplicative on a floor of exactly zero, so it can never lift the last-placed candidate
 
-> **status: OPEN** — still open: BL-437 · derived by `tools/plan-status.mjs`, do not hand-edit
+> **status: DONE** — all targets closed (BL-437) · derived by `tools/plan-status.mjs`, do not hand-edit
 
 **Goal:** `search()` normalises fused scores then applies the topic boost as `score: f.score * boost`. Under the default `min_max` normaliser the lowest-scoring candidate maps to exactly `(s - min) / range === 0`, and `0 × 2.0 === 0` — so the last-placed candidate is pinned to the floor and **no topic match, however exact, can lift it**. In a two-candidate set the loser *is* always the minimum, so the boost can never reorder a 2-result query at all; the effect is strongest exactly where result sets are small, which is the common case for a scoped recall.
 **Closes:** BL-437
