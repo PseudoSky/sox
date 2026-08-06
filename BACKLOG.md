@@ -3459,6 +3459,21 @@ Citations: [wip/turso-live-metrics, diff-audit + claude, claude, session cleanup
 
 **Related:** BL-361 (the shipped half), BL-362, BL-338, BL-329, upstream https://github.com/tursodatabase/turso/issues/8216.
 
+
+**⚠️ WORK IN PROGRESS, UNCOMMITTED, RESUMABLE — state as of 2026-08-05 19:46Z.** An implementing agent hit its session limit mid-packet. Its work is **in the working tree, not committed**, and the design below is settled — resume it, do not restart it.
+
+**Design ruled by the owner and NOT open for re-litigation:** repair inline at open, **building the replacement before destroying anything**, with the FTS index name **resolved from `sqlite_master` rather than hardcoded**. Rationale: drop-then-create is BL-235's pattern in the database (destroying the only copy before knowing the replacement builds); a second FTS index can coexist on the same column (measured, 283 ms), but `ALTER INDEX … RENAME` does not exist in Turso, so a zero-gap swap requires the reader to follow whichever index exists. Inline-at-open is permitted because ADR-0007/BL-352's self-repair requirement governs *restoring a declared index to its declared state*, which is not the schema **extension** D3 puts behind an operator command — the store already repairs data at open unprompted.
+
+**Files in the working tree:**
+- new: `libs/data/store/store-adapter/src/fts-orphan-guard.ts`
+- new: `libs/data/store/store-adapter/src/__tests__/fts-orphan-guard.bl461.test.ts` (6 tests, **all failing**)
+- new: `libs/data/store/store-adapter/src/__tests__/fixtures/bl461-open-child.ts`
+- modified: `turso-adapter.ts` (wires the guard at `:29`, `:377`), `fts-dialect.ts`, `index.ts`, `libs/memory-core/src/db.ts`, `memory-server/src/index.ts`
+- **scratch, must not ship:** `libs/data/store/store-adapter/tmp-bl461-side.ts`
+
+**The six failing tests are the specification and are well-formed** — they assert exactly the ruled design: survives with FTS restored after a marker-less open; the partial shape (directory table present, backing_btree gone) repaired identically with no residue; **the index name is a LOOKUP so no duplicate is created**; a read-only open detects and reports but never writes; idempotent on a second open; and the out-of-band pre-flight still wins where a marker exists, with the two repair paths not interchangeable. `store-adapter` typechecks; the tests fail on behaviour, not compilation.
+
+**Still uncovered, from this item's second half:** the concurrency case — the marker is present while another process holds the store open, so a concurrent opener runs a read-only `better-sqlite3` scan against a live store, creating a `-shm` beside Turso's `-tshm`.
 Citations: [wip/turso-live-metrics, debugger, claude, PKT-69, 1: libs/data/store/store-adapter/src/preflight.ts:88-140, 2: libs/data/store/store-adapter/src/__tests__/preflight-panic.bl361.test.ts ("THE GATE COSTS SOMETHING" arm), 3: libs/data/store/store-adapter/src/integrity.ts:866-1012 (probeFtsIndexes) and :2463-2487 (runOpenTimeIntegrity), 4: docs/reporting/memory/findings/bl361-bl362-turso-fts-schema-anatomy.md §2, 5: libs/data/store/store-adapter/src/preflight.ts:120-140 + integrity.ts:328-348]
 
 ---
