@@ -148,12 +148,15 @@ describe('AC-1 (BL-440) — a permissive injected TypePolicy has no path to DDL 
     const nodeComponent = await backend.getNode(idComponent);
     expect(nodeComponent!.kind).toBe('component');
 
-    // Same proof on the edge side: 'CUSTOM_REL' passes the permissive policy but the CHECK still
-    // rejects it — and here writeEdgeInternal's existing catch *does* translate it to
-    // ConstraintError (index.ts:1173-1178, untouched by this packet).
-    await expect(backend.writeEdge(n1, n3, 'CUSTOM_REL' as EdgeRel)).rejects.toThrow(
-      ConstraintError,
-    );
+    // Same proof on the edge side, but the opposite outcome from before PKT-74 (BL-448):
+    // 'CUSTOM_REL' passes the permissive policy, and after PKT-74 there is no more SQL CHECK to
+    // reject it either — the write succeeds and round-trips. This assertion was a CHECK-rejection
+    // expectation prior to PKT-74; see SPEC-PKT-74.md §2.5 for why flipping it here, not adding a
+    // new test file, is this packet's own literal RED arm (mirrors SPEC-PKT-58.md Decision 3).
+    await backend.writeEdge(n1, n3, 'CUSTOM_REL');
+    const customEdges = await backend.getEdges({ src: n1, dst: n3, rel: 'CUSTOM_REL' });
+    expect(customEdges).toHaveLength(1);
+    expect(customEdges[0]!.rel).toBe('CUSTOM_REL');
   });
 });
 
