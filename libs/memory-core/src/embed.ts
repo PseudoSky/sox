@@ -227,11 +227,25 @@ function resolveEmbedTimeoutMs(): number {
  */
 export async function embed(text: string, stagePath: EmbedStagePath = 'write'): Promise<Float32Array> {
   // BL-401: `admit` is acquiring the shared fastembed child process, `work` is
-  // the inference. That split is the direct measurement of BL-331's open
-  // question — cold model load and head-of-line blocking behind the single
-  // shared child land in `wait_ms`, inference lands in `work_ms`. Previously
-  // both were fused into one `embed.finish duration_ms` and had to be
-  // separated by correlating adjacent log lines by hand.
+  // the inference. Previously both were fused into one `embed.finish
+  // duration_ms` and had to be separated by correlating adjacent log lines by
+  // hand.
+  //
+  // BL-432 CORRECTION: the comment used to claim this split was "the direct
+  // measurement of BL-331's open [head-of-line-blocking] question". That is
+  // FALSE and was retracted after a proper sample (n=570 warm embeds, three
+  // runs including one on a quiet machine): `wait_ms` measures median 0 ms,
+  // max 4 ms, flat across an 8x concurrency sweep that moves `work_ms` 5x.
+  // It cannot move, because `admit` is just `await getOrCreateProvider()`,
+  // which memoises into `_provider` — an already-resolved promise after the
+  // first embed in a process. The real contention for the single shared
+  // fastembed child happens one level down, inside `work`:
+  // `provider.embedSingle()` -> `SharedFastembedProcessClient.request()`,
+  // which is where BL-432 added the actual queue-depth/response-time/
+  // competing-host instrumentation (`fastembed_process.request.*` telemetry
+  // records in `sharedFastembedProcess.ts`). `wait_ms` remains a genuine
+  // cold-start detector (BL-376's warmup budgets consume it) — just not a
+  // contention signal.
   //
   // `stagePath` defaults to 'write' so no existing caller changes behaviour;
   // the heal and reembed paths pass theirs explicitly. It is a closed union —
