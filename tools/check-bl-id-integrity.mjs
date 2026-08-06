@@ -54,6 +54,22 @@
  * unconditional gate would block unrelated commits on pre-existing noise
  * it did not introduce.
  *
+ * [BL-416] Two roots, deliberately not one. Per the owner ruling (2026-08-06, verbatim: "Backlog
+ * can be shared."), `BACKLOG.md`/`CHANGELOG.md` are read from the ONE canonical location at the
+ * MAIN checkout's path (`REPO_ROOT`, resolved via `--git-common-dir` + '..' — see
+ * `allocate-bl-id.mjs`'s header for the full rationale), never the invoking worktree's own copy.
+ * But the two `git diff --cached` calls below (the staged-files scope check and the advisory
+ * Files-overlap diff) answer a DIFFERENT question — "what is being committed right now, in the
+ * repository this hook is actually running against" — which is a property of the INVOKING
+ * process's own working directory and index, never the main checkout's. Those two calls use
+ * `INVOKING_ROOT` (`--show-toplevel`) as their `cwd`, deliberately staying worktree-local even
+ * though the content reads above them moved to the shared root. Redirecting them to `REPO_ROOT`
+ * would make the scope-check gate answer based on whatever the MAIN checkout's index happens to
+ * hold at that instant — which any other concurrently active agent can change out from under a
+ * worktree's own commit, producing a false positive that blocks or misattributes on totally
+ * unrelated work. Both roots are echoed to stderr on every run (even the early "skipped" exit) so
+ * a caller is never left assuming a single root answers both questions.
+ *
  * Usage: node tools/check-bl-id-integrity.mjs
  * Exit 0 = clean (warnings may still print). Exit 1 = a blocking violation.
  */
@@ -62,14 +78,51 @@ import { readFileSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import path from 'node:path';
 
-// BL-416: `--git-common-dir` + '..' resolves to the MAIN checkout's root
-// even when this script is invoked from a `git worktree add`-created
-// worktree — both the staged-files check below and the BACKLOG/CHANGELOG
-// reads then silently operate on main's index/files, never the invoking
-// worktree's own. `--show-toplevel` returns the invoking worktree's own root.
-const REPO_ROOT = execFileSync('git', ['rev-parse', '--show-toplevel'], { encoding: 'utf8' }).trim();
+const USAGE = `check-bl-id-integrity — pre-commit guard against BL-id collisions
+
+Usage:
+  node tools/check-bl-id-integrity.mjs               # run the guard (this is what the pre-commit hook calls)
+  node tools/check-bl-id-integrity.mjs --help | -h    # print this usage, no git/file I/O at all
+
+Reads the shared BACKLOG.md/CHANGELOG.md at the main checkout's root (git-common-dir based), but
+scopes "what is staged in this commit" to the invoking worktree's own root — see the BL-416
+header comment in this file for why these are deliberately two different roots.`;
+
+// [BL-446] Parse argv BEFORE any git/file I/O — --help must never touch git or the filesystem,
+// and an unrecognized flag must never fall through to running the full check silently.
+const args = process.argv.slice(2);
+const HELP = args.includes('--help') || args.includes('-h');
+const recognized = new Set(['--help', '-h']);
+const unrecognized = args.filter((a) => !recognized.has(a));
+
+if (HELP) {
+  console.log(USAGE);
+  process.exit(0);
+}
+if (unrecognized.length > 0) {
+  for (const a of unrecognized) {
+    console.error(`check-bl-id-integrity: unrecognized argument '${a}'. Run with --help for usage.`);
+  }
+  process.exit(1);
+}
+
+// [BL-416] Canonical registry root — same shared resolution as allocate-bl-id.mjs /
+// check-backlog-markers.mjs. Reverted from `--show-toplevel` back to `--git-common-dir` + '..'
+// per the owner's 2026-08-06 ruling.
+const REPO_ROOT = path.resolve(
+  execFileSync('git', ['rev-parse', '--git-common-dir'], { encoding: 'utf8' }).trim(),
+  '..',
+);
 const BACKLOG = path.join(REPO_ROOT, 'BACKLOG.md');
 const CHANGELOG = path.join(REPO_ROOT, 'CHANGELOG.md');
+
+// The commit actually in progress lives in the INVOKING worktree, not necessarily REPO_ROOT —
+// see the BL-416 header comment above for why these two `git diff --cached` calls stay
+// worktree-local even though the content reads above use the shared root.
+const INVOKING_ROOT = execFileSync('git', ['rev-parse', '--show-toplevel'], { encoding: 'utf8' }).trim();
+
+console.error(`[check-bl-id-integrity] registry root (BACKLOG/CHANGELOG) -> ${REPO_ROOT}`);
+console.error(`[check-bl-id-integrity] invoking worktree root             -> ${INVOKING_ROOT}`);
 
 // Scope: only run when BACKLOG.md and/or CHANGELOG.md are actually part of THIS commit.
 // This is a live-tested requirement, not a hypothetical: this session has several agents
@@ -80,7 +133,7 @@ const CHANGELOG = path.join(REPO_ROOT, 'CHANGELOG.md');
 // background inconsistency it did not introduce. Verified live 2026-08-01: BL-397 was caught in
 // exactly this transient state while this script was being tested.
 const staged = execFileSync('git', ['diff', '--cached', '--name-only'], {
-  cwd: REPO_ROOT,
+  cwd: INVOKING_ROOT,
   encoding: 'utf8',
 })
   .split('\n')
@@ -158,7 +211,7 @@ if (abandonedReservation) {
 // ── 4. advisory: newly-added item's Files: line exactly matches an existing one ─
 try {
   const diff = execFileSync('git', ['diff', '--cached', '-U0', '--', 'BACKLOG.md'], {
-    cwd: REPO_ROOT,
+    cwd: INVOKING_ROOT,
     encoding: 'utf8',
   });
   const addedIds = [...diff.matchAll(/^\+###\s*(BL-\d+)\s*—/gm)].map((m) => m[1]);
