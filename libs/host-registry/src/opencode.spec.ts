@@ -176,38 +176,59 @@ describe('opencode.surfaces', () => {
   it('mcpConfig.value sse returns remote type with default port 3000', () => {
     const s = opencodeHost.surfaces['mcp-server'];
     const val = s.mcpConfig!.value('sse', 'soxe', 'memory-server');
-    expect(val).toEqual({ type: 'remote', url: 'http://localhost:3000/mcp' });
+    expect(val).toEqual({ type: 'remote', url: 'http://localhost:3000/sse' });
   });
 
   it('mcpConfig.value http returns remote type with default port 3000', () => {
     const s = opencodeHost.surfaces['mcp-server'];
     const val = s.mcpConfig!.value('http', 'soxe', 'memory-server');
-    expect(val).toEqual({ type: 'remote', url: 'http://localhost:3000/mcp' });
+    expect(val).toEqual({ type: 'remote', url: 'http://localhost:3000/sse' });
   });
 
   it('mcpConfig.value http uses port parameter (TR-3)', () => {
     const s = opencodeHost.surfaces['mcp-server'];
     const val = s.mcpConfig!.value('http', 'soxe', 'memory-server', 4111);
-    expect(val).toEqual({ type: 'remote', url: 'http://localhost:4111/mcp' });
+    expect(val).toEqual({ type: 'remote', url: 'http://localhost:4111/sse' });
   });
 
   it('mcpConfig.value http uses bindAddress parameter (TR-4)', () => {
     const s = opencodeHost.surfaces['mcp-server'];
     const val = s.mcpConfig!.value('http', 'soxe', 'memory-server', 3099, '0.0.0.0');
-    expect(val).toEqual({ type: 'remote', url: 'http://0.0.0.0:3099/mcp' });
+    expect(val).toEqual({ type: 'remote', url: 'http://0.0.0.0:3099/sse' });
   });
 
   it('mcpConfig.value http displays localhost for 127.0.0.1 bind (TR-4)', () => {
     const s = opencodeHost.surfaces['mcp-server'];
     // 127.0.0.1 should be displayed as localhost for portability
     const val = s.mcpConfig!.value('http', 'soxe', 'memory-server', 3099, '127.0.0.1');
-    expect(val).toEqual({ type: 'remote', url: 'http://localhost:3099/mcp' });
+    expect(val).toEqual({ type: 'remote', url: 'http://localhost:3099/sse' });
   });
 
   it('mcpConfig.value http displays localhost for ::1 bind (TR-4)', () => {
     const s = opencodeHost.surfaces['mcp-server'];
     const val = s.mcpConfig!.value('http', 'soxe', 'memory-server', 3099, '::1');
-    expect(val).toEqual({ type: 'remote', url: 'http://localhost:3099/mcp' });
+    expect(val).toEqual({ type: 'remote', url: 'http://localhost:3099/sse' });
+  });
+
+  // The six expectations above pin a COSMETIC choice, and that is why they went
+  // stale silently: `0453979` deliberately moved the emitted path from `/mcp` to
+  // `/sse` and did not update them, so this suite has been red on `main` for two
+  // weeks. What is NOT cosmetic — and what nothing here asserted — is that `sse`
+  // and `http` must resolve to the SAME endpoint, because OpenCode POSTs
+  // StreamableHTTP JSON-RPC to whatever URL it is given regardless of path, and
+  // the shim accepts both (`libs/service-proxy/src/shim.ts`:546 —
+  // `req.url === '/mcp' || req.url === '/sse'`). Pinning the equivalence rather
+  // than only the literal means a future path change breaks one test with an
+  // obvious cause, instead of six with none.
+  it('mcpConfig.value sse and http resolve to the same endpoint (the choice is cosmetic)', () => {
+    const s = opencodeHost.surfaces['mcp-server'];
+    const sse = s.mcpConfig!.value('sse', 'soxe', 'memory-server', 3099, '127.0.0.1');
+    const http = s.mcpConfig!.value('http', 'soxe', 'memory-server', 3099, '127.0.0.1');
+    expect(sse).toEqual(http);
+    // …and the path is one the shim actually serves. If this list and shim.ts's
+    // POST guard ever diverge, the host config points somewhere nothing answers.
+    const { url } = http as { url: string };
+    expect(['/mcp', '/sse']).toContain(new URL(url).pathname);
   });
 
   it('has service surface with run-service capability', () => {
