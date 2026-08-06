@@ -21,12 +21,12 @@ A packet is **DONE** only when every BL id it targets is closed — code landing
 (BL-225). Several packets below have merged code and still read OPEN; that is correct, and the
 remedy is to close the backlog item with a red→green test, not to edit this table.
 
-**41 done · 3 partial · 41 open** of 85 packets.
+**42 done · 3 partial · 40 open** of 85 packets.
 
-- Open backlog items in this program's scope: **59**, of which **9** have no packet.
+- Open backlog items in this program's scope: **58**, of which **9** have no packet.
 - Open items deliberately out of scope: **28** — BL-99, BL-103, BL-104, BL-105, BL-163, BL-225, BL-228, BL-258, BL-261, BL-282, BL-283, BL-284, BL-285, BL-288, BL-291, BL-292, BL-296, BL-298, BL-305, BL-306, BL-307, BL-308, BL-309, BL-314, BL-315, BL-333, BL-355, BL-408
 - Unscheduled in-scope items (need a packet): BL-436, BL-462, BL-466, BL-467, BL-468, BL-470, BL-473, BL-474, BL-475
-- Packet targets already closed (49) — historical context only, no work remains: BL-259, BL-329, BL-337, BL-338, BL-341, BL-343, BL-348, BL-350, BL-359, BL-360, BL-361, BL-362, BL-364, BL-376, BL-379, BL-380, BL-383, BL-388, BL-390, BL-391, BL-394, BL-397, BL-399, BL-402, BL-405, BL-406, BL-407, BL-410, BL-412, BL-416, BL-425, BL-426, BL-432, BL-435, BL-437, BL-445, BL-446, BL-449, BL-451, BL-453, BL-454, BL-456, BL-457, BL-458, BL-459, BL-461, BL-463, BL-464, BL-465
+- Packet targets already closed (50) — historical context only, no work remains: BL-259, BL-329, BL-337, BL-338, BL-341, BL-343, BL-348, BL-350, BL-359, BL-360, BL-361, BL-362, BL-364, BL-376, BL-379, BL-380, BL-383, BL-388, BL-390, BL-391, BL-394, BL-397, BL-399, BL-402, BL-405, BL-406, BL-407, BL-410, BL-412, BL-416, BL-425, BL-426, BL-432, BL-435, BL-437, BL-445, BL-446, BL-447, BL-449, BL-451, BL-453, BL-454, BL-456, BL-457, BL-458, BL-459, BL-461, BL-463, BL-464, BL-465
 
 | Packet | Status | Targets | Still open |
 |---|---|---|---|
@@ -102,7 +102,7 @@ remedy is to close the backlog item with a red→green test, not to edit this ta
 | PKT-70 | **DONE** | BL-362 | — |
 | PKT-71 | **DONE** | BL-379 | — |
 | PKT-72 | **DONE** | BL-425 | — |
-| PKT-73 | **OPEN** | BL-447 | BL-447 |
+| PKT-73 | **DONE** | BL-447 | — |
 | PKT-74 | **OPEN** | BL-448 | BL-448 |
 | PKT-75 | **DONE** | BL-416, BL-446, BL-454 | — |
 | PKT-76 | **DONE** | BL-456, BL-457, BL-463, BL-465 | — |
@@ -2529,7 +2529,7 @@ inferred from its absence.
 
 ### PKT-73 — BL-447: the on-open rebuild trigger is a substring probe for the literal being deleted — defuse it before anyone edits a DDL constant
 
-> **status: OPEN** — still open: BL-447 · derived by `tools/plan-status.mjs`, do not hand-edit
+> **status: DONE** — all targets closed (BL-447) · derived by `tools/plan-status.mjs`, do not hand-edit
 
 **Goal:** `ensureCheckConstraints()` (`index.ts:811-852`), called unconditionally from
 `applySchema()` (`:806`) on every cold open, decides whether to rebuild the populated `node` and

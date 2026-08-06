@@ -2,6 +2,57 @@
 
 ---
 
+## [Unreleased] — BL-447: the on-open rebuild trigger no longer probes for the literal it is about to delete
+
+`SqliteGraphBackend.ensureCheckConstraints()` runs from `applySchema()` on every cold open, and it
+decided whether to rebuild the populated `node` and `edge` tables by substring-matching the live DDL
+against one literal from each CHECK clause:
+
+```ts
+const nodeNeedsRebuild = !!nodeRow && !nodeRow.sql.includes("'generic'");
+const edgeNeedsRebuild = !!edgeRow && !edgeRow.sql.includes("'DEPENDS_ON'");
+```
+
+`'generic'` appears in `NODE_TABLE_DDL` **only** inside `CHECK (kind IN (…))`; `'DEPENDS_ON'` appears
+in `EDGE_TABLE_DDL` **only** inside `CHECK (rel IN (…))` — the exact two clauses the open-schema
+rulings (BL-438 D1/D4) delete. So a store migrated to the open schema no longer contains either
+literal, both flags read `true` on **every** open, and each one performs a full
+rename→create→copy→drop of both populated tables plus 11 node indexes, 4 edge indexes and the FTS
+triggers. That is the rebuild BL-313 proved cascade-deletes every edge — 40,930 of them on the live
+store — and the same shape BL-295 was reverted for 19 minutes after landing. **No new code was
+required to arm it: editing a DDL constant was sufficient.**
+
+The trigger is now a structural predicate. `hasEnumCheckConstraint(sql, column)` asks whether the
+enum CHECK is *present*, and both rebuild flags are gated behind it, so a store already at the target
+shape reports "no rebuild needed" and reports it stably across repeated opens. The automatic path
+stays pointed at the closed DDL — upgrading a genuinely legacy store is still its job; performing the
+open-schema migration is not, and remains reachable only from the operator command.
+
+```bash
+npx nx test graph-store        # 48 passed (48)
+```
+
+Two tests in `libs/data/graph/graph-store/src/ensure-check-constraints.bl447.spec.ts` name BL-447:
+Criterion A opens an open-schema store twice and asserts **zero** rebuilds, instrumented by table
+identity (`sqlite_master.rootpage` and sql-text) rather than by absence of an exception; Criterion B
+seeds a genuine legacy store and asserts it upgrades to the **closed** shape, not the open one. Both
+run with `foreign_keys = ON` against a populated `edge` table, so a regression surfaces as data loss
+rather than a slow open.
+
+Watched red→green three times by three different agents, most recently by the merging orchestrator
+directly before this entry was written: disabling the `hasEnumCheckConstraint(...)` clause on both
+flags fails Criterion A with `SqliteError: CHECK constraint failed: rel IN ('MENTIONS',…,'DEPENDS_ON')`
+raised from inside `rebuildTable` — a real rebuild firing against an open-schema store — and restoring
+it returns 2 passed. Inverting the gate to `!hasEnumCheckConstraint(...)` breaks 5 tests including the
+pre-existing `migrations > idempotent`, confirming Criterion B's assertions are load-bearing rather
+than vacuous. The spec carries no skip guards.
+
+This unblocks the nine-packet open-typing group (BL-439, BL-440, BL-442, BL-448 and their
+dependents), which was gated on it precisely because editing any DDL constant first would have been a
+live migration of every legacy store rather than a constant edit.
+
+---
+
 ## [Unreleased] — BL-416/BL-446/BL-454: the BACKLOG.md id-allocation and integrity tooling, corrected per the owner's shared-registry ruling
 
 Three defects on `tools/allocate-bl-id.mjs`, `tools/check-backlog-markers.mjs` and
