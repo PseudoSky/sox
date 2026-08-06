@@ -58,9 +58,8 @@
  */
 
 import * as fs from 'node:fs';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
 import type { EmbeddingModel, ExecutionProvider } from 'fastembed';
+import { resolveFastembedLockPath, type FastembedLockInfo } from './fastembedLock.js';
 
 // ── BL-331: cross-process CoreML/ANE contention advisory lock ──────────────
 //
@@ -104,17 +103,10 @@ import type { EmbeddingModel, ExecutionProvider } from 'fastembed';
 // greppable stderr line at model-load time instead of a silent 25-50x
 // slowdown that takes an agent an afternoon of `ps`/`vm_stat` archaeology to
 // diagnose.
-/** Resolved fresh on every call (not a module-level constant) so tests can
- *  point it at an isolated temp path via SOX_FASTEMBED_LOCK_PATH without
- *  needing `vi.resetModules()`. */
-function resolveFastembedLockPath(): string {
-  return process.env['SOX_FASTEMBED_LOCK_PATH'] ?? join(tmpdir(), 'sox-fastembed-host.lock');
-}
-
-interface FastembedLockInfo {
-  pid: number;
-  startedAt: string;
-}
+// BL-471: `resolveFastembedLockPath()` and `FastembedLockInfo` now live in
+// `./fastembedLock.ts` — the single shared definition imported by both this
+// writer and `sharedFastembedProcess.ts`'s reader. See that module's doc
+// comment for why it isn't just this file.
 
 /** True if a process with this pid is alive (best-effort; ESRCH => dead). */
 export function isPidAlive(pid: number): boolean {
