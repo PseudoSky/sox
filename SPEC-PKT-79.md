@@ -233,9 +233,29 @@ is exactly the kind of scope creep the "files" list in the packet is there to pr
 of changesets' own bump algorithm. Reasoning: reimplementing semver-bump-cascade logic in a second
 place is the DRY violation this house explicitly warns against (`CLAUDE.md` "Dry" section) and
 creates exactly the two-sources-of-truth risk BL-452 is about in miniature. The script's job is to
-catch the case where those two sources of truth *disagree* (e.g., a workspace dependency pinned via
-something other than `workspace:*`, which `changeset status` would not know to cascade but the human
-publishing by hand might miss even harder) — it is a cross-check, not a parallel implementation.
+catch the case where those two sources of truth *disagree* — it is a cross-check, not a parallel
+implementation.
+
+**Amended 2026-08-06 (architect, correcting my own earlier text) — edge scope.** My original
+drafting of this decision (and of AC-452-1 below) assumed a non-`workspace:` range (e.g. a
+hand-pinned exact version) is excluded from the changesets cascade. That assumption is **wrong** and
+has been struck. Read directly, `@changesets/get-dependents-graph@2.1.4`'s `getDependencyGraph`
+(`node_modules/.pnpm/@changesets+get-dependents-graph@2.1.4/node_modules/@changesets/get-dependents-graph/dist/changesets-get-dependents-graph.esm.js:55-93`,
+the exact function `changeset status` calls): it scans all four dependency fields (`DEPENDENCY_TYPES
+= ["dependencies", "devDependencies", "peerDependencies", "optionalDependencies"]`, line 6) and, for
+a non-`workspace:` range, calls `getValidRange(depRange)` — a real `semver.Range` parse — and
+cascades (`dependencies.push(depName)`) whenever the range is valid and satisfied by the dependency's
+current version. The **only** case it excludes is when `getValidRange` returns `null` — i.e. the
+range is not a parseable semver range at all, which is what a dist-tag string (`"latest"`, `"next"`)
+looks like. The source's own comment at that line: *"depRange could have been a tag and if a tag has
+been used there might have been a reason for that — we should not count this as a local monorepro
+dependant."* So `cascade-plan.ts`'s static walker correctly follows only `workspace:*` edges (this
+repo has zero non-`workspace:*` internal pins today, confirmed by grep — reproducing the generic
+semver-satisfaction matcher would be speculative DRY-violating scope with no present benefit, and if
+this repo ever adds one, the walker will under-count and the cross-check will correctly fail loud,
+per Decision B's own "disagreement is the safety net" logic) — but the **exclusion boundary named in
+this ruling is dist-tag references, not "non-`workspace:` ranges" generally.** AC-452-1's fixture F
+below is corrected to match.
 
 ### Decision C — BL-460: diff mechanism (byte-level `.d.ts` diff vs. AST/API-extractor-level diff)
 
@@ -347,17 +367,28 @@ Fixture workspace: packages `A` (has a pending fixture changeset), `B` (`workspa
   (the test asserts *both* independently, then asserts they're equal — proving the cross-check logic
   itself, not just one arm of it).
 - **Disagreement RED arm (the one that actually matters for BL-452):** add a second fixture case
-  where a package `E` depends on `A` via a non-`workspace:` range (e.g. a hand-pinned exact version
-  that happens to collide) — `changeset status` will not cascade `E` (it only follows `workspace:*`
-  protocol edges), and the static-graph walker (if implemented naively) might also miss it correctly
-  — assert the script does **not** false-positive here (an exact-pinned non-`workspace:*` dep is a
-  deliberate non-`workspace:*` reference and out of the cascade's scope by definition — the disagreement
-  case that must be caught is the opposite: a `workspace:*` edge the static walker's directory
-  traversal missed, e.g. because it lives under an excluded `roots` entry). Construct that instead:
-  a fixture package under a plausible-but-unswept directory relative to `findPackageJsons()`'s
-  `roots` list (`libs`, `apps`, `extensions`, `packages` — `scripts/check-publishable.ts:83`) and
-  confirm the script's own scan (which must reuse that same roots list per Decision F precedent)
-  either includes it or the test documents why not.
+  where a package `E` depends on `A` from a directory relative to `findPackageJsons()`'s `roots`
+  list (`libs`, `apps`, `extensions`, `packages` — `scripts/check-publishable.ts:83`) that a naive
+  reuse of that exact list would miss but `changeset status` (which resolves workspace membership
+  from `pnpm-workspace.yaml` directly) would still cascade to — confirm the script's own scan either
+  includes it or the test documents why not. **This happened for real, not just as a fixture: `tools/*`
+  is a genuine `pnpm-workspace.yaml` glob (BL-164) that `check-publishable.ts`'s roots list does not
+  cover (correctly, for its own narrower publishable-package scope), and
+  `tools/baseline-capture/package.json` carries a real `workspace:*` `devDependencies` edge onto
+  `@adhd/sox-store-adapter`. `cascade-plan.ts` must add `'tools'` to its own roots list to agree with
+  `changeset status` — this is not a re-litigation of Decision F (which governs the BL-460
+  publishable-package predicate only), it is `cascade-plan.ts`'s own, differently-scoped closure
+  requirement, and it must be reproduced live against this exact repo (pre-fix: disagreement naming
+  `@adhd/sox-baseline-capture`; post-fix: agreement) before AC-452-2 counts as passing.**
+  Also add a **devDependency-only** fixture case (`G`, depends on `A` only via `devDependencies` with
+  `workspace:*`) — not a contrived edge case: `libs/data/analysis/analysis/package.json` reaches
+  `@adhd/sox-store-adapter` only through `devDependencies` in the real tree, and `getAllDependencies`
+  in `@changesets/get-dependents-graph` scans all four dependency fields (`dependencies`,
+  `devDependencies`, `peerDependencies`, `optionalDependencies` — see Decision B's amendment above),
+  not `dependencies` alone. A walker scoped to `dependencies` only would silently drop this consumer.
+  **The exclusion case (fixture F) is a dist-tag reference (e.g. `"latest"`), not an exact-version
+  pin** — per Decision B's amendment, an exact-version pin that matches the dependency's current
+  version DOES cascade in real changesets and must NOT be used as the excluded fixture.
 
 **AC-452-2 (live-tree proof — "a patch to store-adapter reaches a consumer without hand-editing N
 manifests," per the packet's acceptance text, satisfied via the already-working mechanism from §1,
