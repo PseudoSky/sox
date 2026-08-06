@@ -11,6 +11,7 @@
     "typecheck": "tsc --noEmit",
     "validate-manifests": "npx tsx scripts/validate-manifests.ts",
     "check-nx-cache": "node tools/check-nx-cache.cjs",
+    "backlog:stats": "node tools/backlog-stats.mjs --out docs/reporting/memory/FILING-STATS.md",
     "build-index": "npx tsx scripts/build-index.ts",
     "build-index:publish": "SOX_REGISTRY_PUBLISH=npm npx tsx scripts/build-index.ts",
     "check-publishable": "npx tsx scripts/check-publishable.ts",
