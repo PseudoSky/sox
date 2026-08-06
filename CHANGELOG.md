@@ -2,6 +2,33 @@
 
 ---
 
+## [Unreleased] — PKT-78 (BL-451, BL-453, BL-458, BL-459): four published statements that were false are now correct, or gone
+
+**Four documents and one MCP tool description authoritatively asserted something their own source contradicted** — an ADR whose load-bearing citation could not be opened, a tool description that promised synchronous work the code deliberately defers, and two hand-written snapshots sitting beside sources that had moved out from under them. Every correction here was verified against the thing it describes, not against another document.
+
+```console
+$ npm view @adhd/sox-telemetry version && npm view @adhd/sox-store-adapter version
+0.2.0          # BL-459: the "NOT PUBLISHED (404)" blocker B1 the assessment led with
+0.2.0          # BL-459: the table said 0.1.0 / ⛔ BLOCKED
+
+$ ls ~/dev/node/adhd/entrypoint/backlog/src/markdown.ts     # BL-451: it exists — in another repo
+/Users/nix/dev/node/adhd/entrypoint/backlog/src/markdown.ts
+
+$ memory_curate {op:'recluster', dry_run:true}              # BL-453: live, read-only
+{"op":"recluster","enqueued":false,"dry_run":true}
+```
+
+- **BL-451 — ADR-0009's evidence is now openable, and the ADR's conclusion survives intact.** `renderItemsToMarkdown` was cited as `entrypoint/backlog/src/markdown.ts:261-274`, a path that resolves to nothing in this repo; an exhaustive `/usr/bin/grep` found the symbol only in the ADR and in the index blob that had ingested it. The renderer is **not in this workspace** — the `backlog` MCP server is `@adhd/backlog@0.1.3`, sourced from the separate repository [`PseudoSky/adhd`](https://github.com/PseudoSky/adhd) (locally `~/dev/node/adhd`, wired through `~/.claude.json`, exec'ing `entrypoint/backlog/dist/index.js`). Its line numbers were **exactly right**, just against that repo's root. The ADR now names the repo, the package version and the commit (`6f4d2c38`) — and pastes `renderItemBlock` in full, so the "regeneration is mechanically non-viable" argument stands even for a reader with no such checkout. The conclusion was never in question; the citation was the defect.
+- **BL-453 — `memory_curate`'s description no longer promises a synchronous pass the code deliberately never runs.** It said *"Absent [filters]: a global full re-cluster runs SYNCHRONOUSLY in-process (no daemon)"*; `curate.ts` enqueues a full-pass trigger row and returns `{enqueued:true, seq}`, because a synchronous full pass holds the serial WriteQueue slot for its whole duration (fast-failing writes behind it with `E_BUSY`) and can out-wait the MCP client's own timeout. The description now states the deferral, names its cost — `memory_stats` read immediately after **will** still show the old partition — and documents the `dry_run` branch. The code was right and is unchanged.
+- **BL-458 — the `WriteQueueMetrics` literal is deleted rather than updated, and the type is cited instead.** The 2026-07-04 handoff still published `"queue_max_size": 100` and `"deadline_guard_enabled": true` as unconditional — the precise claim BL-394 was filed against and `59ced94` removed — while missing `mode`, `admission_control` and `throughput_writes_per_sec`. A published literal of a shape that keeps moving is a standing staleness generator, so the block is gone; readers are sent to `WriteQueueMetrics` in `write-queue.ts`, with the two discriminators (`mode`, `admission_control`) called out as must-read-first. The file is retitled and banner-marked as an applied historical handoff, since reading as a current reference was half the defect.
+- **BL-459 — the publish-readiness assessment is date-stamped as a point-in-time measurement, and its version table now derives.** Its first and most-quotable line opened *"Status: NOT READY"* against blocker B1 — `@adhd/sox-telemetry` absent from npm — which has since published at `0.2.0`, and its §1 table listed `store-adapter` at `0.1.0 / ⛔ BLOCKED` against a live `0.2.0`. The verdict is preserved as *"as assessed on 2026-08-04"*, B1 is recorded as resolved, and the table is explicitly frozen-and-superseded with a shell snippet that derives the real versions from the registry. **B3 and the rest of §2 are marked NOT re-assessed** rather than quietly implied current — the analysis is what the document is for, and it is kept.
+
+Fourth, fifth, sixth and seventh instances of BL-435's shape (an unguarded hand-written block beside a moving source). Two of the four are fixed by *deleting* the snapshot rather than refreshing it.
+
+> **Known gap, not a defect of this change:** the corrected `memory_curate` description lands in `memory-server/src/index.ts`. The bundled `dist/index.js` and the live server still serve the old text until the next `npx nx build memory-server` + `npx nx run registry:sync-index` + redeploy — all three explicitly out of scope for this packet (no build, no publish, no service restart).
+
+---
+
 ## [Unreleased] — BL-464: four shipped packets read `OPEN` in the one format the project taught everyone to trust
 
 **`stampPackets` replaced the machine-owned status stamp positionally** — it inspected only the line immediately after a packet heading, optionally past one blank. A second stamp deeper in a body was therefore never rewritten, never validated, and never reported stale, because a duplicate is *stable* rather than drifting: `replaceBlock` + `stampPackets` reproduced the file byte-identically on every run, so it survived regeneration indefinitely. Six packets in `PLAN.md` carried two stamps, and PKT-20/21/23/43 read `OPEN` for shipped work while the authoritative stamp above them read `DONE` — carrying the verbatim `derived by tools/plan-status.mjs, do not hand-edit` suffix, the strongest signal the project has that a line is machine-owned and current.
