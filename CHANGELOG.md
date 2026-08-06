@@ -2,6 +2,49 @@
 
 ---
 
+## [Unreleased] — BL-416/BL-446/BL-454: the BACKLOG.md id-allocation and integrity tooling, corrected per the owner's shared-registry ruling
+
+Three defects on `tools/allocate-bl-id.mjs`, `tools/check-backlog-markers.mjs` and
+`tools/check-bl-id-integrity.mjs`, filed across a week of worktree-isolated sessions hitting the
+same tooling from different angles, closed together as PKT-75 once the owner ruled on the design
+question underlying all three: *"Backlog can be shared."*
+
+**BL-416 — registry root resolution.** All three scripts had drifted onto
+`git rev-parse --show-toplevel` (a per-worktree root) as an uncredited side effect of an unrelated
+commit (`747d087`), silently reopening BL-359's id-collision race — under `--show-toplevel` each
+worktree takes its own lock and scans its own file, so two worktrees allocating concurrently can no
+longer see each other. Reverted to `git rev-parse --git-common-dir` + `..`, which is genuinely
+shared across every worktree and the main checkout, confirmed by the owner's ruling to be the
+intended semantics rather than a bug to route around. `check-bl-id-integrity.mjs` is the one
+exception: its two `git diff --cached` scope checks stay worktree-local
+(`--show-toplevel`), because those answer "what is staged in *this* commit", not "where does the
+registry live" — a genuine split between two different roots inside the same file. Every real run
+now echoes the resolved absolute path(s) to stderr, so a worktree caller is never left assuming it
+operated on the file visible in its own `cwd`. Watched red→green with an 8-way concurrent
+cross-worktree allocation producing 8 unique ids.
+
+**BL-446 — `--help` (and every other unrecognized argument) silently allocated an id.**
+`node tools/allocate-bl-id.mjs --help` — run to learn the interface before using it — printed a new
+id and appended a `RESERVED` placeholder heading to the shared `BACKLOG.md`, because the script
+checked only for `--dry-run` and treated anything else as consent to write. All three scripts now
+parse argv and reject unrecognized flags *before any git or file I/O runs*, so `--help`/`-h` print
+usage and exit 0 with zero side effects, and a typo'd flag exits 1 with no write — verified by
+content-hash comparison of `BACKLOG.md` before and after each invocation.
+
+**BL-454 — nothing regenerated the `Total open:` annotation, so it accreted duplicate clauses
+without bound.** `check-backlog-markers.mjs` validated only the leading integer; the trailing prose
+was owned by nothing, and every agent appended to it by hand. Rule 5 adds exact-duplicate-clause
+detection to the checker — advisory (warn-only) by default, with an opt-in `--fix` that rewrites the
+annotation and regenerates the leading count, gated behind Rules 1–3 passing clean so it never
+writes over a structurally broken file. Watched red→green: a fixture carrying one duplicate clause
+is flagged (never auto-written without `--fix`), `--fix` collapses it to exactly one occurrence
+while preserving every distinct clause and the correct count, and `--fix` against a fixture with a
+genuine duplicate heading refuses to write at all.
+
+Commit `cdd78db`. No `dist` artifact ships from `tools/`, so no build/registry-sync was owed.
+
+---
+
 ## [Unreleased] — BL-472: shutdown now drains in-flight Phase-B embeds instead of discarding them
 
 Every graceful restart under write load was throwing away work it had already

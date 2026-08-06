@@ -32,9 +32,38 @@
  *     the next id after it. There is no window where two callers can both
  *     compute the same "next" id.
  *
+ * [BL-416] Registry semantics — SHARED, not per-worktree. Per the owner
+ * ruling (2026-08-06, verbatim: "Backlog can be shared."), this script
+ * always reserves against the ONE canonical `BACKLOG.md`/`CHANGELOG.md`
+ * that live at the MAIN checkout's path — never the invoking worktree's own
+ * copy — regardless of which worktree (or the main checkout itself) this is
+ * run from. The root is resolved via `git rev-parse --git-common-dir` +
+ * `path.resolve(..., '..')`: every worktree shares one `.git/worktrees/...`
+ * gitlink structure whose common dir sits at the main checkout, so this
+ * expression always lands on the same absolute path no matter where it's
+ * invoked from. This also means the id-allocation LOCK (`LOCK_DIR`, derived
+ * from the same root) is genuinely shared across every worktree, which is
+ * load-bearing: two worktrees allocating concurrently must serialize on the
+ * *same* lock directory, or they can independently compute the same "next"
+ * id (this is BL-359's race, reopened by a prior revision of this file that
+ * used `--show-toplevel` instead — see BL-416).
+ *
+ * One structural consequence that follows mechanically and is easy to miss:
+ * a worktree's own on-disk `BACKLOG.md` is a DIFFERENT FILE from the one
+ * this script reads and writes. The reservation placeholder lands in the
+ * main checkout's copy, not the invoking worktree's — a caller working in a
+ * worktree must separately reconcile their own worktree's `BACKLOG.md` when
+ * writing the real item content. The reservation only guarantees the
+ * *number* is unique, not that the placeholder lives where the caller will
+ * actually commit their work. Every write, and every failure that reaches
+ * the point of needing a path, echoes the three resolved paths to stderr
+ * (BACKLOG.md / CHANGELOG.md / lock dir) so no caller is left assuming the
+ * tool operated on the copy checked out in its own `cwd`.
+ *
  * Usage:
  *   node tools/allocate-bl-id.mjs                 # reserve + print the new id
  *   node tools/allocate-bl-id.mjs --dry-run        # compute only, no write, no lock held past the read
+ *   node tools/allocate-bl-id.mjs --help | -h      # print this usage, no git/file I/O at all
  *
  * Output (stdout, single line): BL-<n>
  * A placeholder heading is appended to BACKLOG.md:
@@ -58,22 +87,56 @@ import { readFileSync, appendFileSync, mkdirSync, rmdirSync, existsSync } from '
 import { execFileSync } from 'node:child_process';
 import path from 'node:path';
 
-// BL-416: BACKLOG.md/CHANGELOG.md are per-worktree working-tree content, NOT
-// a shared install root like node_modules (see verify-native-abi.mjs's
-// deliberate, documented use of `--git-common-dir` for THAT case). Resolving
-// via `--git-common-dir` + '..' silently reads/writes the MAIN checkout's
-// BACKLOG.md/CHANGELOG.md when this script is run from inside a `git
-// worktree add`-created worktree, regardless of `cwd` — the worktree's own
-// edits are invisible to it, and its RESERVED placeholder writes land in a
-// file the invoking worktree does not own. `--show-toplevel` returns the
-// CURRENT worktree's own root (or the main checkout's root, when run there),
-// which is what "the repo root I was invoked from" actually means here.
-const REPO_ROOT = execFileSync('git', ['rev-parse', '--show-toplevel'], { encoding: 'utf8' }).trim();
+const USAGE = `allocate-bl-id — reserve the next BL-<n> in the shared BACKLOG.md/CHANGELOG.md
+
+Usage:
+  node tools/allocate-bl-id.mjs                 # reserve + print the new id
+  node tools/allocate-bl-id.mjs --dry-run        # compute only, no write, no lock held past the read
+  node tools/allocate-bl-id.mjs --help | -h      # print this usage, no git/file I/O at all
+
+Always targets the MAIN checkout's BACKLOG.md/CHANGELOG.md (git-common-dir
+based), never the invoking worktree's own copy — see the BL-416 header
+comment in this file for why. Output (stdout, single line, on a real or
+--dry-run reservation): BL-<n>.`;
+
+// [BL-446] Parse argv BEFORE any git/file I/O — --help must never touch git
+// or the filesystem, and an unrecognized flag must never fall through to
+// the mutating write path (the pre-fix bug: any typo'd flag silently
+// reserved an id and appended a placeholder).
+const args = process.argv.slice(2);
+const HELP = args.includes('--help') || args.includes('-h');
+const DRY_RUN = args.includes('--dry-run');
+const recognized = new Set(['--help', '-h', '--dry-run']);
+const unrecognized = args.filter((a) => !recognized.has(a));
+
+if (HELP) {
+  console.log(USAGE);
+  process.exit(0);
+}
+if (unrecognized.length > 0) {
+  for (const a of unrecognized) {
+    console.error(`allocate-bl-id: unrecognized argument '${a}'. Run with --help for usage.`);
+  }
+  process.exit(1);
+}
+
+// [BL-416] SHARED registry root — see header comment. Reverted from
+// `--show-toplevel` (per-worktree, reopens BL-359) back to
+// `--git-common-dir` + '..' (shared across every worktree and the main
+// checkout), per the owner's 2026-08-06 ruling.
+const REPO_ROOT = path.resolve(
+  execFileSync('git', ['rev-parse', '--git-common-dir'], { encoding: 'utf8' }).trim(),
+  '..',
+);
 const BACKLOG = path.join(REPO_ROOT, 'BACKLOG.md');
 const CHANGELOG = path.join(REPO_ROOT, 'CHANGELOG.md');
 const LOCK_DIR = path.join(REPO_ROOT, '.bl-id.lock');
 
-const DRY_RUN = process.argv.includes('--dry-run');
+function echoResolvedPaths() {
+  console.error(`[allocate-bl-id] BACKLOG.md  -> ${BACKLOG}`);
+  console.error(`[allocate-bl-id] CHANGELOG.md -> ${CHANGELOG}`);
+  console.error(`[allocate-bl-id] lock dir    -> ${LOCK_DIR}`);
+}
 
 function maxBlId() {
   let max = 0;
@@ -96,6 +159,7 @@ function acquireLock({ timeoutMs = 10_000, pollMs = 50 } = {}) {
     } catch (err) {
       if (err.code !== 'EEXIST') throw err;
       if (Date.now() > deadline) {
+        echoResolvedPaths();
         throw new Error(
           `allocate-bl-id: could not acquire lock at ${LOCK_DIR} within ${timeoutMs}ms — ` +
             `another allocation is in progress (or a prior run crashed and left the lock behind; ` +
@@ -114,11 +178,13 @@ function releaseLock() {
 
 function main() {
   if (DRY_RUN) {
+    echoResolvedPaths();
     const next = maxBlId() + 1;
     console.log(`BL-${next}`);
     return;
   }
 
+  echoResolvedPaths();
   acquireLock();
   try {
     const next = maxBlId() + 1;
