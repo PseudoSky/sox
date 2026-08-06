@@ -3464,35 +3464,64 @@ Citations: [wip/turso-live-metrics, debugger, claude, PKT-68, 1: libs/data/store
 
 ### BL-466 — the BL-named regression guards under `tools/test-bl*.mjs` are wired to no runner, so nothing re-runs them after the session that wrote them — **Open (MEDIUM)** (2026-08-05)
 
-**Driver.** Eleven standalone guard scripts now live in `tools/` — `test-bl214`, `test-bl222`,
-`test-bl231`, `test-bl266`, `test-bl313`, `test-bl407`, `test-bl409`, `test-bl456`, `test-bl457`,
-`test-bl463`, `test-bl465`.[1] An exhaustive grep for `tools/test-bl` across `package.json`,
-`scripts/*`, `.github/workflows/*` and `.husky/*` returns **nothing**.[2] They are red→green at
-authoring time and then never execute again: no nx target, no npm script, no CI job, no hook.
+**Owner ruling 2026-08-05: the harness itself is deferred to a dedicated test-automation spec,
+outside the current plan.** Form (runner vs. vitest port) and wiring points (nx target / CI / hook)
+are that spec's to decide and are NOT settled here. What this item now carries is the survey that
+spec needs: a measured status for all thirteen guards and a corrected hazard model.
 
-**Why it matters.** These are precisely the guards for the defects this repo keeps re-suffering —
-the shared index (BL-409/BL-457/BL-463/BL-465), the CJS boundary (BL-231), bundle invariants
-(BL-266), the graph-store migrations asset (BL-313). BL-225 exists because a status marker recorded
-an intention rather than a verified outcome; an unwired test is that same failure one step along —
-verified once, with the marker now standing in for a check nobody runs. A refactor that broke
-`commit-mine`'s index resync would ship green.
+**Driver.** Thirteen standalone guard scripts live in `tools/test-bl*.mjs`.[1] An exhaustive grep for
+`tools/test-bl` across `package.json`, `scripts/*`, `.github/workflows/*` and `.husky/*` returns
+**nothing**.[2] They are red→green at authoring time and then never execute again: no nx target, no
+npm script, no CI job, no hook.
 
-**Not filed as a fix, because wiring them is a repo-wide default-behaviour change and needs a
-ruling.** Options, none chosen: (a) a `tools/run-guard-tests.mjs` discovering `tools/test-bl*.mjs`,
-plus a root nx target, run in the pre-merge gate; (b) the same runner in CI only, keeping local
-commits fast; (c) convert each to a vitest spec under an existing project so `nx affected` picks
-them up — most idiomatic, but several shell out to `git init` scratch repos, and at least
-`test-bl222-verify-native-abi` / `test-bl214-bundle-extension-tsconfig` may build, which under
-BL-235 makes an unattended run destructive. **Before (a) or (b), someone must establish which of
-the eleven currently pass** — this item does not claim they do, and deliberately did not run them,
-for that reason. Measured here: the five index-family guards pass (BL-409 3, BL-456 8, BL-457 12,
-BL-463 10, BL-465 9 assertions).[3]
+**Why it matters — now demonstrated rather than predicted.** This item originally argued from analogy
+that an unwired guard would rot. It has: **`test-bl313` was dead for seven days and nothing noticed.**
+Two independent drifts from the store-adapter/Turso migration broke it — `@tursodatabase/database`
+joined the real build's externals on 2026-07-29 (`65171ad`) while the guard kept four hardcoded, and
+`adapter-meta` began reading `require('../package.json')` on 2026-07-31 (`fa786a2`), which resolves
+against the emitted bundle and so failed in a bare scratch dir.[3] Its bundle died at `require()` time,
+its BL-313 assertion passed **vacuously** because the process died before reaching the code path, and
+its own non-vacuity control was red. Both drifts are repaired (see CHANGELOG); the guard now derives
+its externals from `project.json` so that class of drift is structurally impossible.
 
-**Related:** BL-225 (a marker is not evidence), BL-235 (a diagnostic build is destructive — the
-reason these cannot simply be wired up unattended), BL-456 (a suite result is evidence only when
-the tree state it ran against is stated with it).
+**Measured status of all thirteen (2026-08-05).** Twelve pass, one fails for a real reason:
 
-Citations: [wip/turso-live-metrics, debugger, claude, PKT-76, 1: `ls tools/test-bl*.mjs` — 11 scripts at 2026-08-05, four of them added by PKT-76, 2: `/usr/bin/grep -rn "tools/test-bl" package.json scripts/*.mjs scripts/*.ts .github/workflows/*.yml` → no matches 2026-08-05, 3: measured 2026-08-05, the five index-family scripts run to exit 0, 4: tools/test-bl409-pathspec-commit.mjs:112-113 (the convention they all follow — `process.exit(failed === 0 ? 0 : 1)`, invoked by hand)]
+- **Pass, hermetic** (scratch `git init` repos in `os.tmpdir()`, no build, no repo state touched) —
+  `test-bl407`, `test-bl409`, `test-bl435`, `test-bl456`, `test-bl457`, `test-bl463`, `test-bl464`,
+  `test-bl465`, `test-bl222`.
+- **Pass, read-only** — `test-bl231` **spawns zero child processes**; it `require()`s four prebuilt
+  artifacts and FATALs if they are missing (5/5, exit 0).[4]
+- **Pass, parameterized** — `test-bl266` is not standalone: it exits 2 with usage unless given
+  `--outdir`, and builds only if additionally given `--build-cmd`/`--source`. Read-only against the
+  real memory-server dist: exit 0 — but see **BL-469**, its skipped arms report `[PASS]`.
+- **Pass, esbuild-into-tmpdir** — `test-bl214` (all assertions; self-cleans a probe dir under
+  `tools/`).
+- **FAIL** — `test-bl313`, arms [1] and [2] green after the repairs above, arm [3] the negative
+  control genuinely red. Tracked as **BL-468**; deliberately not forced green.
+
+**The "unsafe to run unattended" classification was wrong, and the spec must not inherit it.**
+**None of these thirteen invokes `nx build`.** BL-235's hazard is specific to an nx build target that
+`rm -rf`s `dist/` before knowing the rebuild succeeds. `test-bl214` and `test-bl313` call
+`tools/bundle-extension.cjs` directly with `--outdir` set to a fresh `fs.mkdtempSync`, and
+`bundle-extension.cjs` stages into `<outdir>.staging-<pid>` and swaps by rename, explicitly leaving
+`<outdir>` intact on failure — that atomic staging *is* BL-235's own fix.[5] No repo `dist/` is in the
+blast radius by construction; verified empirically (memory-server `dist/index.js` mtime unchanged
+across both runs, `git status --porcelain tools/` clean after). `test-bl231` was misfiled as
+build-invoking on the strength of the word "build" in its comments and error strings.
+
+The axis that actually matters for a harness is therefore not destructive/safe but **hermetic** vs.
+**needs-prebuilt-artifacts** (`test-bl231`, `test-bl266`) vs. **needs-arguments** (`test-bl266`) vs.
+**esbuild-into-tmpdir, slow** (`test-bl214`, `test-bl313`) — metadata that exists nowhere today, which
+is why nobody has dared wire them.
+
+**Acceptance.** A guard on disk that the harness does not execute must fail the run — otherwise the
+next guard rots exactly as `test-bl313` did, and the harness reports green while doing it.
+
+**Related:** BL-468 (the one real failure), BL-469 (`test-bl266` overstates its own coverage),
+BL-225 (a marker is not evidence), BL-235 (correctly scoped: nx build targets, not these scripts),
+BL-456 (a suite result is evidence only with its tree state).
+
+Citations: [wip/turso-live-metrics, test-automator, claude, BL-466, 1: `ls tools/test-bl*.mjs` → 13 scripts 2026-08-05, 2: `/usr/bin/grep -rn "tools/test-bl" package.json scripts/*.mjs scripts/*.ts .github/workflows/*.yml .husky/*` → no matches 2026-08-05, 3: `git log -S'@tursodatabase/database' -- extensions/bundles/sox-memory-bundle/members/memory-server/project.json` → 65171ad 2026-07-29; `git log -- libs/data/store/store-adapter/src/adapter-meta.ts` → fa786a2 2026-07-31; `libs/data/store/store-adapter/dist/adapter-meta.js`:13, 4: `/usr/bin/grep -c "spawnSync\|execSync" tools/test-bl231-cjs-boundary.mjs` → 0; run 2026-08-05 exit 0, 5: `tools/bundle-extension.cjs`:359-367 (staging dir), 503-512 (failure leaves outdir intact), 517-533 (rename swap), 6: all runs measured 2026-08-05 on wip/turso-live-metrics]
 
 ---
 
