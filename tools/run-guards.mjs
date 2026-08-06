@@ -78,7 +78,6 @@ delete SAFE_GIT_ENV.GIT_COMMON_DIR;
 
 const args = parseArgs(process.argv.slice(2));
 const REPO_ROOT = args.cwd ? path.resolve(args.cwd) : DEFAULT_REPO_ROOT;
-const REPO_TOOLS_DIR = path.join(REPO_ROOT, 'tools');
 
 if (!args.tier1 && !args.tier2) {
   console.error('usage: node tools/run-guards.mjs (--tier1 | --tier2) [--all] [--isolate-worktree] [--keep] [--allow-skip] [--base <ref> --head <ref>] [--manifest <path>] [--cwd <dir>]');
@@ -96,8 +95,15 @@ async function loadManifest() {
   return mod.GUARDS;
 }
 
-function resolveScript(guard) {
-  return path.isAbsolute(guard.script) ? guard.script : path.join(REPO_TOOLS_DIR, guard.script);
+function resolveScript(guard, root = REPO_ROOT) {
+  // BL-466 bug fix: a Tier 2 guard run inside an isolated worktree must be invoked from THAT
+  // worktree's own copy of the script — the script's internal root-resolution (e.g.
+  // `path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')` in bl214/bl313) is
+  // derived from the script FILE's own location, not from `cwd`. Resolving against REPO_ROOT
+  // unconditionally (the invoking checkout) made a Tier 2 guard run in an isolated worktree look
+  // for prebuilt dist/ in the wrong checkout — the one that was never built — and fail for a
+  // reason that had nothing to do with the guard's own assertions.
+  return path.isAbsolute(guard.script) ? guard.script : path.join(root, 'tools', guard.script);
 }
 
 // --------------------------------------------------------------------------------------------
@@ -141,7 +147,7 @@ function matchesDiff(guard, changedFiles) {
 // Guard execution
 // --------------------------------------------------------------------------------------------
 function runGuardProcess(guard, { cwd, extraArgs = [] } = {}) {
-  const script = resolveScript(guard);
+  const script = resolveScript(guard, cwd || REPO_ROOT);
   const t0 = Date.now();
   const res = spawnSync(process.execPath, [script, ...extraArgs], {
     cwd: cwd || REPO_ROOT,
