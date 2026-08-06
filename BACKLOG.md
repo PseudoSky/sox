@@ -3274,6 +3274,19 @@ succeeds immediately after an allocation from a worktree, since that is the fail
 
 Citations: [main @ 2e04b93c, plan-orchestrator, claude, PKT-75 close-out / Wave M merge, 1: tools/allocate-bl-id.mjs (shared-root resolution + RESERVED stub write), 2: BACKLOG.md:10-14 (the derived-status-block rule the stub violates), 3: observed `git status` + `check-backlog-markers.mjs` exit 1 in the main checkout after an allocation from `.worktrees/pkt75-backlog-tooling`, 4: aborted `git merge feat/pkt75-backlog-tooling` — "Your local changes to the following files would be overwritten by merge: BACKLOG.md"]
 
+**Related hygiene note: the collision scan is whole-file, not heading-scoped.** `allocate-bl-id.mjs`
+finds the next free id by regex-matching `BL-\d+` anywhere in the file's text, not just in `###`
+headings — so an id merely *mentioned in prose* reads as taken. Observed live 2026-08-06: `BL-476`'s
+own body predicted "`computeNextHumanId` will correctly issue `BL-477` next," and that sentence
+caused the very next allocation to skip `477` and issue `478` — `BL-477` does not exist anywhere in
+`BACKLOG.md` or `CHANGELOG.md` as a real heading, only as that one predictive clause. This errs toward
+*skipping* an id rather than colliding two items onto it, so it is safe, but silently lossy: the
+sequence now has a permanent, otherwise-unexplained hole. Recorded here rather than filed as its own
+item because it is the same "whole-file scan, not heading-scoped" shape as the rest of this entry, just
+observed from the mention side instead of the reservation side.
+
+Citations: [main @ 0c8519ee, devops-engineer (this session), claude, backlog-migration-lightweight-backfill, 5: BACKLOG.md — `BL-477` absent as a heading; grep confirms it appears nowhere as `### BL-477`, 6: this item's own prior revision (predecessor of `BL-476`'s entry) — the sentence "will correctly issue BL-477 next" that consumed the id]
+
 ---
 
 ### BL-476 — `@adhd/backlog`'s `computeNextHumanId` scans only the graph's own nodes, never markdown/CHANGELOG history — mints ids that collide with committed backlog history — **Open (HIGH)** (2026-08-06)
