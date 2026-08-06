@@ -79,6 +79,15 @@ jobs:
       - name: Born-publishable shape gate
         run: pnpm run check-publishable
 
+      # BL-460: fails when a publishable package's dist/*.d.ts differs from what
+      # is actually live on npm and no .changeset/*.md in this tree names it —
+      # the missing link that let WriteQueueMetrics ship a required `mode`
+      # discriminator with zero changeset recording it. `--ci` turns "no local
+      # dist/" into a hard fail (this job always builds first, above), instead
+      # of the dev-machine WARN+skip default.
+      - name: Changeset surface gate
+        run: npx tsx scripts/check-changeset-surface.ts --ci
+
       - name: Create release PR or publish
         id: changesets
         uses: changesets/action@v1
