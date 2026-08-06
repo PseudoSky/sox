@@ -337,6 +337,35 @@ function topicBoost(
   return 1.0;
 }
 
+// BL-437: topicBoost() is applied multiplicatively (per this package's invariant —
+// field boosting is never additive/scale-blind). Under min_max normalisation the
+// lowest-scoring candidate in ANY result set maps to exactly 0, and boost * 0 === 0
+// regardless of boost — so the last-placed candidate was structurally un-boostable,
+// and in a 2-candidate set the loser (always the min) could never be reordered at
+// all. Fixed by flooring the normalised fused score at TOPIC_BOOST_FLOOR before the
+// multiplicative boost is applied, so a literal-zero floor no longer defeats every
+// multiplicative modifier applied downstream of fusion.
+//
+// TOPIC_BOOST_FLOOR = 0.1 chosen from a synthetic A/B across representative
+// candidate-count / score-distribution shapes (linear-5/10, clustered-top, near-
+// uniform, close/far 2-candidate) measuring, for each epsilon in
+// {0, 0.01, 0.02, 0.05, 0.1, 0.15, 0.2}, whether a 2.0x exact-topic-match boost on
+// the floor candidate overtakes its immediate higher-ranked neighbor:
+//   - eps <= 0.02: never overtakes any scenario tested — too small to matter, the
+//     defect would remain effectively unfixed.
+//   - eps = 0.1: overtakes in multi-candidate sets (5-10+) where the neighbor's
+//     margin above the floor is small (the common "long tail" shape), while leaving
+//     every non-floor score untouched (only candidates AT the exact 0 floor are
+//     affected) and never letting a boosted floor candidate overtake a genuine
+//     2-candidate winner (which always normalises to exactly 1.0 — would need
+//     eps > 0.5 to flip, which was deliberately rejected as too aggressive).
+//   - eps >= 0.15: starts overtaking in wider-margin scenarios too, growing the
+//     blast radius of the change without a clear additional benefit measured here.
+// This is a synthetic measurement (representative score-distribution shapes), not
+// a live-traffic A/B — no production recall query log was available in this
+// environment. If real recall telemetry becomes available, re-validate against it.
+const TOPIC_BOOST_FLOOR = 0.1;
+
 export async function search(
   backend: SearchBackend,
   query: SearchQuery,
@@ -432,7 +461,14 @@ export async function search(
     .map((f) => {
       const fields = fieldMap.get(f.id) ?? {};
       const boost = topicBoost(query.text, fields);
-      return { ...f, score: f.score * boost };
+      // BL-437: floor before boosting — see TOPIC_BOOST_FLOOR above. Only the
+      // candidate(s) sitting at the EXACT min_max floor (score === 0) are affected —
+      // this is `=== 0`, not `Math.max`, deliberately: a near-zero-but-nonzero score
+      // (e.g. 0.0333) already carries real signal from normalisation and must not be
+      // clamped up to TOPIC_BOOST_FLOOR, only the literal-zero case that the boost
+      // math can never escape from is corrected.
+      const flooredScore = f.score === 0 ? TOPIC_BOOST_FLOOR : f.score;
+      return { ...f, score: flooredScore * boost };
     });
 
   boosted.sort((a, b) => b.score - a.score);
