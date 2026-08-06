@@ -21,12 +21,12 @@ A packet is **DONE** only when every BL id it targets is closed — code landing
 (BL-225). Several packets below have merged code and still read OPEN; that is correct, and the
 remedy is to close the backlog item with a red→green test, not to edit this table.
 
-**33 done · 4 partial · 48 open** of 85 packets.
+**34 done · 4 partial · 47 open** of 85 packets.
 
-- Open backlog items in this program's scope: **66**, of which **3** have no packet.
+- Open backlog items in this program's scope: **66**, of which **7** have no packet.
 - Open items deliberately out of scope: **28** — BL-99, BL-103, BL-104, BL-105, BL-163, BL-225, BL-228, BL-258, BL-261, BL-282, BL-283, BL-284, BL-285, BL-288, BL-291, BL-292, BL-296, BL-298, BL-305, BL-306, BL-307, BL-308, BL-309, BL-314, BL-315, BL-333, BL-355, BL-408
-- Unscheduled in-scope items (need a packet): BL-436, BL-462, BL-466
-- Packet targets already closed (36) — historical context only, no work remains: BL-259, BL-329, BL-341, BL-343, BL-348, BL-350, BL-359, BL-360, BL-361, BL-362, BL-364, BL-376, BL-379, BL-380, BL-383, BL-388, BL-390, BL-391, BL-394, BL-397, BL-399, BL-402, BL-405, BL-406, BL-407, BL-410, BL-412, BL-425, BL-435, BL-445, BL-449, BL-456, BL-457, BL-463, BL-464, BL-465
+- Unscheduled in-scope items (need a packet): BL-436, BL-462, BL-466, BL-467, BL-468, BL-469, BL-470
+- Packet targets already closed (40) — historical context only, no work remains: BL-259, BL-329, BL-341, BL-343, BL-348, BL-350, BL-359, BL-360, BL-361, BL-362, BL-364, BL-376, BL-379, BL-380, BL-383, BL-388, BL-390, BL-391, BL-394, BL-397, BL-399, BL-402, BL-405, BL-406, BL-407, BL-410, BL-412, BL-425, BL-435, BL-445, BL-449, BL-451, BL-453, BL-456, BL-457, BL-458, BL-459, BL-463, BL-464, BL-465
 
 | Packet | Status | Targets | Still open |
 |---|---|---|---|
@@ -107,7 +107,7 @@ remedy is to close the backlog item with a red→green test, not to edit this ta
 | PKT-75 | **OPEN** | BL-416, BL-446, BL-454 | BL-416, BL-446, BL-454 |
 | PKT-76 | **DONE** | BL-456, BL-457, BL-463, BL-465 | — |
 | PKT-77 | **DONE** | BL-435, BL-464 | — |
-| PKT-78 | **OPEN** | BL-451, BL-453, BL-458, BL-459 | BL-451, BL-453, BL-458, BL-459 |
+| PKT-78 | **DONE** | BL-451, BL-453, BL-458, BL-459 | — |
 | PKT-79 | **OPEN** | BL-452, BL-460 | BL-452, BL-460 |
 | PKT-80 | **OPEN** | BL-450, BL-455 | BL-450, BL-455 |
 | PKT-81 | **OPEN** | BL-424 | BL-424 |
@@ -3045,7 +3045,7 @@ context, never by telling a subagent to read this file.
 
 ### PKT-78 — BL-451 + BL-453 + BL-458 + BL-459: four published statements that are false
 
-> **status: OPEN** — still open: BL-451, BL-453, BL-458, BL-459 · derived by `tools/plan-status.mjs`, do not hand-edit
+> **status: DONE** — all targets closed (BL-451, BL-453, BL-458, BL-459) · derived by `tools/plan-status.mjs`, do not hand-edit
 
 **Goal:** four documents/descriptions that authoritatively state something the code or registry contradicts. (a) BL-451: ADR-0009's load-bearing citation `entrypoint/backlog/src/markdown.ts` **does not exist** — verified by an exhaustive repo-wide grep finding the symbol only in the ADR and its own index blob; an ADR is precedent and other agents relay it as settled. (b) BL-453: `memory_curate`'s MCP tool description says a global recluster runs SYNCHRONOUSLY; `curate.ts:381-397` deliberately enqueues and defers to the periodic tick — the code is right, the description is wrong, and it caused a live misdiagnosis. (c) BL-458: a 2026-07-04 handoff doc still publishes the exact `WriteQueueMetrics` shape BL-394 was filed to remove, reading as current reference. (d) BL-459: the publish-readiness assessment still opens "Status: NOT READY" against a blocker that is resolved and a version table three releases behind.
 **Closes:** BL-451, BL-453, BL-458, BL-459
