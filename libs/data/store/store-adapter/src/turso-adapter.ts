@@ -22,6 +22,11 @@ import {
   markStoreOpen,
   preflightSchemaSanity,
 } from './preflight.js';
+import {
+  describeFtsOrphanGuard,
+  guardOrphanedFtsIndexes,
+  guardSucceeded,
+} from './fts-orphan-guard.js';
 import type {
   TursoAdapter,
   AdapterTransaction,
@@ -357,6 +362,30 @@ export class TursoAdapterImpl implements TursoAdapter {
     // `close()` clears it. It lives outside the database on purpose: the state
     // it guards against is one where the database cannot be read at all.
     if (opts.readonly !== true) markStoreOpen(opts.dbPath);
+
+    // (BL-461) IN-PROCESS FTS ORPHAN GUARD. The pre-flight above is gated on
+    // the marker, so it never runs for a store damaged inside a session that
+    // afterwards closed cleanly — and that store still reaches `fts_match` and
+    // aborts this process. This guard is unconditional and closes that hole
+    // from inside the connection that is already open: `sqlite_master` reads,
+    // `CREATE INDEX … USING fts` and `DROP INDEX` are all measured safe on a
+    // store in this state; only `fts_match` panics, and nothing has issued one
+    // yet at this line. It MUST stay above `runOpenTimeIntegrity` —
+    // `probeFtsIndexes` is the caller that issues that statement.
+    //
+    // Repair builds the replacement BEFORE destroying the orphan (see
+    // fts-orphan-guard.ts for the measurements and for why a failed build still
+    // drops). Read-only opens detect and report but never write.
+    {
+      const guard = await guardOrphanedFtsIndexes(instance, { repair: opts.readonly !== true });
+      if (guard.orphaned.length > 0) {
+        emitIntegrityReport(
+          opts.dbPath ?? opts.url,
+          opts.readonly === true ? 'damaged' : guardSucceeded(guard) ? 'repaired' : 'repair_failed',
+          describeFtsOrphanGuard(guard),
+        );
+      }
+    }
 
     // Stamp adapter metadata (non-fatal)
     if (!opts.readonly) {
