@@ -305,7 +305,7 @@ different kind of "I cannot check this" condition (missing local artifact vs. mi
 
 **RULING:** every package `check-publishable.ts` already treats as publishable — i.e., reuse its
 exact selection predicate (`pkg.private !== true && pkg.name.startsWith('@adhd/sox-')`,
-`scripts/check-publishable.ts:225-227`) rather than inventing a second definition of "publishable"
+`scripts/check-publishable.ts:232-233`) rather than inventing a second definition of "publishable"
 that can drift from the first. Import/re-implement that one predicate as a small shared helper if
 convenient, but do not derive a different package set for this gate than the one the dependency-shape
 gate already uses — a scope mismatch between the two gates (one seeing 30 packages, the other 28)

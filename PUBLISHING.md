@@ -50,7 +50,10 @@ pnpm changeset status                         # review pending bumps
 #      re-derive that set by hand — cross-check it against the real dependency graph instead
 #      (BL-452: a human hand-deriving this is exactly how an under/over-scoped publish set
 #      goes out unverified):
-pnpm run cascade-plan <package-name>          # computes + cross-checks the exact republish set
+pnpm run cascade-plan -- --package <package-name>   # computes + cross-checks the exact republish set
+#   (the positional arg is the scan ROOT, not the target — see
+#   scripts/cascade-plan.ts's own Usage docstring; `pnpm run` needs `--` before
+#   `--package` or pnpm swallows the flag itself)
 npm pack --dry-run --json                     # per package dir being published: tarball proof
 bash scripts/acceptance/clean-room-smoke.sh   # verdaccio clean room: G1 + G2 (memory_ping)
 ```
