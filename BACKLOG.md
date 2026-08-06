@@ -1698,7 +1698,7 @@ Citations: [wip/turso-live-metrics, team-lead, claude, turso-go-live, 1: libs/da
 
 ---
 
-### BL-392 — vec-arm KNN tie-breaking has no cross-backend-guaranteed order; `vec_node` never declares an explicit `distance_metric` — **Open (LOW)** (2026-08-01)
+### BL-392 — vec-arm KNN tie-breaking has no cross-backend-guaranteed order — **Open (LOW)** (2026-08-01, narrowed 2026-08-06)
 
 **Found while attributing BL-367** (sqlite↔turso recall-parity divergence). Per-arm isolation
 (`recall-parity-arm-attribution.test.ts`) showed the vec-KNN arm at 0.52 avg content-overlap between
@@ -1707,61 +1707,56 @@ BL-367 fixed. Root-caused, NOT fixed, because the composite recall-parity test n
 unmodified 0.80 bar without it (the FTS fix + an already-landed JS-side tiebreak were sufficient) —
 this is real residual fragility, not required for BL-367's acceptance bar.
 
-**Two related, independently-real findings:**
+**Originally two findings; finding 1 is fixed (PKT-22, 2026-08-06).** `SqliteVecDialect.createTableDDL`
+now declares `distance_metric=cosine` explicitly on the `vec0` column DDL[1], and `topKQuery` throws
+if called with any `metric` other than `'cosine'` instead of silently ignoring it — see
+`libs/data/store/store-adapter/src/vector-dialect.ts:116-119,149-156` (commit `3a7840f2`). Verified
+red→green: `vector-dialect-distance-metric.bl392.test.ts:66-134` builds one `vec0` table via the
+pre-fix DDL literal and one via the fixed `createTableDDL`, inserts non-normalised vectors, and
+asserts on the raw distance *value* (`toBeCloseTo(EXPECTED_COSINE, 4)` vs `toBeCloseTo(EXPECTED_L2, 4)`,
+plus a >1.0 divergence assertion) — the two tables now provably diverge in the direction the fix
+predicts. `npx nx test store-adapter` — 361/361 passed. Remaining open scope is finding 2 only.
 
-1. **`SqliteVecDialect.createTableDDL` never declares `distance_metric=cosine`**[1] — sqlite-vec's
-   `vec0` defaults to L2 (Euclidean) when unspecified, while `TursoVectorDialect.distanceExpr` always
-   computes `vector_distance_cos` explicitly.[2] For the parity corpus's L2-normalised test vectors
-   this does NOT change relative rank order (`d_L2² = 2 - 2·cos_sim` is monotonic), verified
-   empirically: the corpus's one non-degenerate (non-tied) pair produces `d_L2=1.2364` on sqlite and
-   `d_cos=0.7643` on turso, and `1.2364² = 2 - 2×0.7643`'s complement holds exactly — both backends
-   are internally consistent. But `metric='cosine'` is passed to `SqliteVecDialect.topKQuery` at every
-   call site[3] and is **silently ignored** for anything except `ASC`/`DESC` sort direction — the
-   actual distance computed is whatever the column DDL says, which is never `cosine`. This is
-   misleading (the code claims cosine, the engine computes L2) even though it is currently harmless
-   for normalised vectors. Real (non-test) embeddings are also near-unit-norm (BGE), so this is
-   unlikely to bite in production, but it is a landmine for any future embedding model that is NOT
-   normalised, or any other `vec0` consumer that assumes the requested metric is what's computed.
+**Remaining finding — no cross-backend-guaranteed tiebreak:**
 
-2. **Neither dialect's `topKQuery` declares a deterministic tiebreak, and `vec0` structurally
-   cannot accept one in SQL.** Exactly-tied distances are common, not an edge case — orthogonal
-   candidates against a query vector routinely tie exactly, and the parity corpus's 5-unrelated-topic,
-   10-episode shape produces many such ties under the feature-hash test embedding (9/10 rows tied at
-   `d=1.4142`/`d=1.0000` for one test query).[4] `vec0` KNN queries reject a compound
-   `ORDER BY distance, <col>` (`SqliteError: Only a single 'ORDER BY distance' clause is allowed on
-   vec0 KNN queries`, verified empirically), so BL-367 pushed the tiebreak into `recall.ts` as a
-   stable JS-side sort on `node_id` after fetching, applied uniformly to both dialects' results.[5]
-   That JS tiebreak makes ordering **deterministic and reproducible within one store**, but does
-   **not** guarantee cross-backend agreement — `node_id` (rowid) assignment is a property of each
-   store's own internal schema/insert history, and two independently-created stores are not
-   guaranteed to assign the same rowid to the same content (confirmed: vec-arm overlap stayed at 0.52
-   even after the tiebreak landed). Real production embeddings essentially never produce exact ties
-   (continuous-valued cosine similarity over 768 dims), so this is a test-corpus-shaped risk more than
-   a live one — but it is a genuine, unresolved gap: **there is no documented, guaranteed tie order
-   for real near-duplicate-similarity content either**, which is exactly the shape where reproducible
-   ranking matters most for a user (e.g. two near-identical episodes should rank consistently across
-   backends, not by accident of insertion order).
+Neither dialect's `topKQuery` declares a deterministic tiebreak, and `vec0` structurally
+cannot accept one in SQL. Exactly-tied distances are common, not an edge case — orthogonal
+candidates against a query vector routinely tie exactly, and the parity corpus's 5-unrelated-topic,
+10-episode shape produces many such ties under the feature-hash test embedding (9/10 rows tied at
+`d=1.4142`/`d=1.0000` for one test query).[3] `vec0` KNN queries reject a compound
+`ORDER BY distance, <col>` (`SqliteError: Only a single 'ORDER BY distance' clause is allowed on
+vec0 KNN queries`, verified empirically), so BL-367 pushed the tiebreak into `recall.ts` as a
+stable JS-side sort on `node_id` after fetching, applied uniformly to both dialects' results.[4]
+That JS tiebreak makes ordering **deterministic and reproducible within one store**, but does
+**not** guarantee cross-backend agreement — `node_id` (rowid) assignment is a property of each
+store's own internal schema/insert history, and two independently-created stores are not
+guaranteed to assign the same rowid to the same content (confirmed: vec-arm overlap stayed at 0.52
+even after the tiebreak landed). Real production embeddings essentially never produce exact ties
+(continuous-valued cosine similarity over 768 dims), so this is a test-corpus-shaped risk more than
+a live one — but it is a genuine, unresolved gap: **there is no documented, guaranteed tie order
+for real near-duplicate-similarity content either**, which is exactly the shape where reproducible
+ranking matters most for a user (e.g. two near-identical episodes should rank consistently across
+backends, not by accident of insertion order).
 
 **Not required for BL-367:** the composite `recall-parity.test.ts` passes at the unmodified 0.80
 threshold without further work here (FTS fix + existing JS tiebreak were sufficient on this corpus).
-Filed as a follow-up because both findings are real defects in their own right, not because BL-367 is
-blocked on them.
+Filed as a follow-up because this is a real defect in its own right, not because BL-367 is blocked
+on it.
 
-**Fix sketch (not yet designed in detail):** (a) declare `distance_metric=cosine` explicitly in
-`SqliteVecDialect.createTableDDL`'s DDL (a `vec0` column-option, e.g.
-`embedding FLOAT[768] distance_metric=cosine`) so the code's claim and the engine's computation
-agree, independent of whether current vectors happen to be normalised; (b) decide whether a
-cross-backend-portable tiebreak is achievable at all (e.g. tiebreak on `content_hash` instead of
-`node_id`, which — unlike rowid — is a content-derived value with a documented cross-store meaning)
-or whether the honest answer is "tie order is backend-defined, do not rely on it" — a judgement call
-for the owner, not something to guess at here.
+**Fix sketch (not yet designed in detail):** decide whether a cross-backend-portable tiebreak is
+achievable at all (e.g. tiebreak on `content_hash` instead of `node_id`, which — unlike rowid — is a
+content-derived value with a documented cross-store meaning) or whether the honest answer is "tie
+order is backend-defined, do not rely on it" — a judgement call for the owner, not something to
+guess at here.
 
 **Severity:** LOW — real, but no reproduction shows user-visible impact on real (non-hash, non-tied)
 embeddings, and the composite parity contract this session exists to protect already passes without it.
 
 **Related:** BL-367 (the divergence this was found while attributing; fixed independently of this item).
+PKT-22 (fixed finding 1: `libs/data/store/store-adapter/src/vector-dialect.ts:116-119,149-156`,
+commit `3a7840f2`).
 
-Citations: [wip/turso-live-metrics, main, claude, BL-367 attribution, 1: libs/data/store/store-adapter/src/vector-dialect.ts (SqliteVecDialect.createTableDDL — vectorColumnType(dim) returns `FLOAT[${dim}]`, no distance_metric clause), 2: libs/data/store/store-adapter/src/vector-dialect.ts (TursoVectorDialect.distanceExpr — `vector_distance_cos(...)`), 3: libs/memory-core/src/recall.ts (memoryRecall §2a — `vectorDialect.topKQuery('vec_node', 'embedding', queryVec, knnLimit, 'cosine')`), 4: extensions/bundles/sox-memory-bundle/members/memory-server/recall-parity-arm-attribution.test.ts (debug dump captured during BL-367 attribution, 2026-08-01 — 9/10 sqlite rows tied at d=1.4142, 9/10 turso rows tied at d=1.0000, for query "fox riverbank wildlife outdoors"), 5: libs/memory-core/src/recall.ts (memoryRecall §2a — `vecRows = [...vecRows].sort((a, b) => a.distance - b.distance || a.node_id - b.node_id)`), 6: `npx nx test memory-server --skip-nx-cache` 2026-08-01 — 184/184 passed, recall-parity.test.ts green at unmodified 0.80 threshold, per-arm attribution: vec=0.52 fts=1.00 temporal=1.00]
+Citations: [wip/turso-live-metrics, main, claude, BL-367 attribution + PKT-22, 1: libs/data/store/store-adapter/src/vector-dialect.ts:116-119 (SqliteVecDialect.createTableDDL — now emits `distance_metric=cosine` on the vec0 column DDL, PKT-22/commit 3a7840f2), 2: libs/data/store/store-adapter/src/vector-dialect.ts (TursoVectorDialect.distanceExpr — `vector_distance_cos(...)`), 3: extensions/bundles/sox-memory-bundle/members/memory-server/recall-parity-arm-attribution.test.ts (debug dump captured during BL-367 attribution, 2026-08-01 — 9/10 sqlite rows tied at d=1.4142, 9/10 turso rows tied at d=1.0000, for query "fox riverbank wildlife outdoors"), 4: libs/memory-core/src/recall.ts (memoryRecall §2a — `vecRows = [...vecRows].sort((a, b) => a.distance - b.distance || a.node_id - b.node_id)`), 5: `npx nx test memory-server --skip-nx-cache` 2026-08-01 — 184/184 passed, recall-parity.test.ts green at unmodified 0.80 threshold, per-arm attribution: vec=0.52 fts=1.00 temporal=1.00, 6: libs/data/store/store-adapter/src/__tests__/vector-dialect-distance-metric.bl392.test.ts:66-134 (AC-2 red→green value-based proof, PKT-22), 7: `npx nx test store-adapter` 2026-08-06 — 361/361 passed]
 
 ---
 
