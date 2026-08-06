@@ -2,6 +2,22 @@
 
 ---
 
+## [Unreleased] — BL-437: `hybrid-search`'s topic boost can no longer be pinned to a literal-zero floor
+
+`search()`'s multiplicative topic boost (2.0x exact match, 1.5x substring) was applied directly to the min_max-normalised fused score, whose lowest-scoring candidate always maps to exactly 0. `boost * 0 === 0` regardless of boost value, so the last-placed candidate was structurally un-boostable — and in a two-candidate result set the loser is always the minimum, so the boost could never reorder a 2-result query at all.
+
+```console
+$ npx nx test hybrid-search --skip-nx-cache
+ Test Files  3 passed (3)
+      Tests  86 passed (86)
+```
+
+The fix floors the fused score at `TOPIC_BOOST_FLOOR` (0.1) only when it is exactly 0 — a near-zero-but-nonzero score already carries real normalisation signal and is left untouched — before the multiplicative boost is applied, preserving this package's "field boosting is multiplicative, never additive" invariant. `TOPIC_BOOST_FLOOR`'s value was chosen from a synthetic A/B across representative candidate-count / score-distribution shapes (documented inline in `libs/data/search/hybrid-search/src/index.ts`); no production recall traffic was available in-session to validate against live queries, so this should be re-checked against real recall telemetry if it becomes available.
+
+Two new regression tests in `hybrid-search.spec.ts` name BL-437: one proves the floor candidate's score is no longer pinned to literal zero (a genuine 2-candidate race still can't flip order — the winner always normalises to exactly 1.0 under min_max with only 2 points, a structural property, not the bug), and one proves the fix functionally reorders a close race in a larger candidate set. Watched red (both new tests fail with the floor disabled) → green (restored, 86/86 passing) before landing.
+
+---
+
 ## [Unreleased] — BL-461: an orphaned FTS index no longer kills the process at open
 
 An FTS index whose Tantivy backing objects are gone aborts the process on the first `fts_match` — SIGABRT out of `core/vdbe/execute.rs`, not a catchable error. PKT-69's out-of-band marker gates a pre-flight on an *unclean* session, so a store damaged inside a session that afterwards closed cleanly still reached that statement and still died.
