@@ -356,9 +356,41 @@ async function handleRequest(msg: InitRequest | EmbedRequest | EmbedBatchRequest
   }
 }
 
+/**
+ * (BL-426) On `__shutdown`, let any in-flight/queued request settle and then
+ * `process.disconnect()` instead of calling `process.exit(0)`.
+ *
+ * `process.exit()` forces an ABRUPT teardown: it skips draining the event
+ * loop and runs native `atexit`/static-destructor unwinding immediately,
+ * regardless of what else is still alive in the process. Once an
+ * onnxruntime-node `InferenceSession` has been created in this process
+ * (`loadModel()` above — even a bare `init` with no `embed` call is
+ * sufficient), onnxruntime's own native background thread pool is still
+ * alive/tearing down when that abrupt unwind runs, and the two race on a
+ * native mutex. Reproduced in total isolation (no memory-server, no
+ * backend.ts, no Turso, no ONNX rerank worker — this file forked directly
+ * and driven with a real `init`/`embed`/`__shutdown` sequence), on BOTH the
+ * `coreml` and `cpu` execution providers, and even with `init` alone (no
+ * `embed` call ever made):
+ *
+ *   libc++abi: terminating due to uncaught exception of type
+ *   std::__1::system_error: mutex lock failed: Invalid argument
+ *   (child exits via SIGABRT, not code 0)
+ *
+ * `process.disconnect()` closes the IPC channel and lets Node run its
+ * NORMAL exit sequence once the event loop is otherwise empty — no forced
+ * unwind mid-native-teardown. Verified the same isolated repro exits code 0
+ * with no crash text once `process.exit(0)` is replaced with this. See
+ * BL-426 in BACKLOG.md / `fastembedProcessHost-bl426-shutdown.spec.ts`.
+ *
+ * Waiting for `_queue` first (rather than disconnecting immediately) avoids
+ * dropping a request that was still in flight when `__shutdown` arrived.
+ */
 process.on('message', (msg: HostRequest) => {
   if ('__shutdown' in msg) {
-    process.exit(0);
+    void _queue.finally(() => {
+      process.disconnect();
+    });
     return;
   }
   enqueue(() => handleRequest(msg));
