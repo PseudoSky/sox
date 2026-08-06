@@ -3,9 +3,27 @@
 > **Goal being assessed (repo owner, verbatim):** *"We need to get the libraries to a stable+published
 > point so I can start migrating other packages to turso."*
 >
-> **Status: NOT READY.** One hard install-breaking blocker (B1), one process blocker that makes the
-> release pipeline a no-op (B2), and one data-safety blocker on the migration on-ramp itself (B3).
-> B1 and B2 are cheap. B3 is not.
+> ## ⚠️ POINT-IN-TIME ASSESSMENT (2026-08-04) — DO NOT QUOTE ITS STATUS OR ITS VERSIONS
+>
+> Every verdict and version below was measured **2026-08-04** at HEAD `643afd5` and has since been
+> overtaken by two release waves. What remains durably useful is the **analysis**: the ranked
+> defects B1–B10 (§2), the claims that did not reproduce (§3), and the sequencing (§4). The status
+> snapshot is not maintained and is not a live status page (BL-459).
+>
+> **Verdict as assessed on 2026-08-04:** NOT READY — one hard install-breaking blocker (B1), one
+> process blocker that made the release pipeline a no-op (B2), and one data-safety blocker on the
+> migration on-ramp itself (B3). B1 and B2 were cheap. B3 was not.
+>
+> **B1 is resolved.** It was `@adhd/sox-telemetry` being absent from npm. It published, and the
+> registry answers `200` — the install-breaking 404 that gated every other package is gone, and
+> nine packages shipped on 2026-08-05. **Nothing else in §2 has been re-assessed since**; B3
+> (`migrateStore()` safety), B5, B6 and the rest stand as written until someone re-measures them.
+>
+> **For published state, query the registry — never this file:**
+>
+> ```
+> npm view @adhd/sox-store-adapter version    # …or any other @adhd/sox-* package
+> ```
 >
 > **Scope:** assessment only. Nothing was published, versioned, tagged, released, rebuilt, or
 > registry-synced in producing this document. No service was touched. No backlog item was created or
@@ -17,7 +35,7 @@
 
 ---
 
-## §0 The one-paragraph answer
+## §0 The one-paragraph answer *(as of 2026-08-04 — B1 has since been cleared; see the banner above)*
 
 The libraries are **already published** — `@adhd/sox-store-adapter@0.1.0`, `@adhd/sox-graph-store@0.5.0`,
 `@adhd/sox-memory-core@0.4.0` and six others went to npm on **2026-07-27**. The problem is not
@@ -38,15 +56,28 @@ Surface scoped from `libs/data/CLAUDE.md` §"Package listing" plus an executor/m
 `libs/`, `packages/`, `apps/`, `extensions/`. **28 `@adhd/sox-*` packages are publishable**
 (`check-publishable` output, §5.1).
 
-| Package | npm today | Source drift since publish | Verdict |
+**Every version and verdict in this table is frozen at 2026-08-04 and every one of them has since
+moved.** They are kept only because the drift column is measured *against* them. To see what is on
+npm, run the command below the table — do not read it off the table (BL-459).
+
+| Package | npm **as of 2026-08-04** (superseded) | Source drift at that date | Verdict **at that date** |
 |---|---|---|---|
 | `@adhd/sox-store-adapter` | `0.1.0` (2026-07-27) | **19 src commits** | ⛔ **BLOCKED** — B1, B3, B6, B7, B8 |
 | `@adhd/sox-graph-store` | `0.5.0` (2026-07-27) | 1 src commit | ⚠️ **SHIPPABLE BUT NOT STABLE** — B5 is a known one-way door |
 | `@adhd/sox-memory-core` | `0.4.0` (2026-07-27) | **64 src commits** | ⛔ **BLOCKED** — B1, plus mid-incident churn |
-| `@adhd/sox-telemetry` | **NOT PUBLISHED (404)** | 3 src commits | ⛔ **BLOCKING EVERYTHING ELSE** — B1 |
+| `@adhd/sox-telemetry` | **NOT PUBLISHED (404)** — *since resolved, B1* | 3 src commits | ⛔ **BLOCKING EVERYTHING ELSE** — B1 |
 | `@adhd/sox-vector-store` | `0.3.0` | 2 src commits | ⚠️ no Turso path at all — B9 |
 | `@adhd/sox-hybrid-search` | `0.3.0` (2026-07-23) | 1 src commit | ✅ not on the adapter seam; unaffected |
 | `@adhd/sox-analysis` / `-ingest` / `-embedding-provider` / `-task-queue` / `-blob-store` / `-claim-verification` | published | low | ✅ / ⚠️ (README gaps, B10) |
+
+**Derive the current table instead of reading the one above:**
+
+```sh
+for p in store-adapter graph-store memory-core telemetry vector-store hybrid-search \
+         analysis ingest embedding-provider task-queue blob-store claim-verification; do
+  printf '%-40s %s\n' "@adhd/sox-$p" "$(npm view "@adhd/sox-$p" version 2>/dev/null || echo 'NOT PUBLISHED')"
+done
+```
 
 **Commands / files behind this table**
 

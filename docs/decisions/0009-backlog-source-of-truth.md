@@ -62,7 +62,38 @@ So the declared source of truth and the enforced source of truth were different 
 
 ## Why regeneration is not viable (measured, not argued)
 
-`renderItemsToMarkdown` (`entrypoint/backlog/src/markdown.ts:261-274`) emits:
+> **Where the renderer lives.** It is **not in this repo.** The backlog MCP server is the
+> external package `@adhd/backlog`, whose source is the separate repository
+> [`PseudoSky/adhd`](https://github.com/PseudoSky/adhd) — checked out locally at
+> `~/dev/node/adhd` and wired in through `~/.claude.json`'s `backlog` server entry, which
+> execs `~/dev/node/adhd/entrypoint/backlog/dist/index.js`. Paths below are relative to
+> **that** repo root, not to `sox-ecosystem`; a `sox-ecosystem`-relative
+> `entrypoint/backlog/src/markdown.ts` resolves to nothing, and an earlier revision of this
+> ADR cited it as if it did (BL-451). Verified 2026-08-05 against `@adhd/backlog@0.1.3`,
+> `PseudoSky/adhd` at `6f4d2c38`. The emitting function is pasted in full below so the
+> argument stands even without that checkout.
+
+`renderItemBlock` — the per-item emitter that `renderItemsToMarkdown` maps over
+(`entrypoint/backlog/src/markdown.ts:261-274` **in `PseudoSky/adhd`**):
+
+```ts
+function renderItemBlock(item: BacklogItem): string {
+  const lines: string[] = [];
+  lines.push(`### ${item.humanId} — ${item.title}`);
+  lines.push('');
+  lines.push(`**Status:** ${toRenderedStatusText(item.status)}`);
+  if (item.priority) lines.push(`**Priority:** ${item.priority}`);
+  if (item.assignee) lines.push(`**Assignee:** ${item.assignee}`);
+  if (item.plan) lines.push(`**Plan:** ${item.plan}`);
+  lines.push('');
+  if (item.body) lines.push(item.body, '');
+  if (item.citations.length > 0) lines.push(renderCitationsLine(item.citations));
+  for (const note of item.notes) lines.push(`- Note (${note.by}, ${note.at}): ${note.text}`);
+  return lines.join('\n').trimEnd();
+}
+```
+
+It emits:
 
 ```
 ### BL-99 — some title
@@ -71,7 +102,8 @@ So the declared source of truth and the enforced source of truth were different 
 **Priority:** HIGH
 ```
 
-The status lands on a **separate line**. But `tools/check-backlog-markers.mjs` rule 1
+The heading line carries **only** `### ${humanId} — ${title}`, with no bold span at all, and
+the status lands on a **separate line**. But `tools/check-backlog-markers.mjs` rule 1
 requires **exactly one `**...**` bold span on the `###` heading line itself**, and rule 2
 requires it to begin with a status word; rule 4 requires a `**Total open: N.**` header line
 that the renderer never emits at all.
