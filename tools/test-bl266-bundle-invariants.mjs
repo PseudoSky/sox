@@ -13,8 +13,21 @@
  *   node tools/test-bl266-bundle-invariants.mjs --outdir <dir> --externals <pkg,pkg,...> [--sidecars <name.js,...>]
  *   node tools/test-bl266-bundle-invariants.mjs --outdir <dir> --externals <...> --build-cmd "<shell command>" --source <file-to-mutate> --rebuild-cmd "<shell command>"
  *
- * Each invariant prints PASS/FAIL with the concrete evidence. Exit 0 iff every
- * requested invariant passed.
+ * Each invariant prints PASS/FAIL/SKIP with the concrete evidence.
+ *
+ * SKIP is a distinct, non-passing outcome (BL-469): invariants (c), (d) and (e) require
+ * --build-cmd/--source/--rebuild-cmd to actually execute a build. Without those flags they
+ * are NOT verified — they are reported as [SKIP], never as [PASS], and the summary line
+ * states exactly how many invariants were verified vs. skipped. "ALL 5 INVARIANTS PASS" is
+ * printed iff all 5 were both requested and observed to pass.
+ *
+ * EXIT CODE CONTRACT (explicit, per BL-466's "a guard the harness does not execute must
+ * fail the run"): any FAIL exits 1. Any SKIP also exits 1 by default — a skipped invariant
+ * is an unconfigured run, not a tolerated one, and this script must never let a caller
+ * mistake "didn't check" for "checked and fine". Pass --allow-skip to opt into exit 0 when
+ * skips are present but nothing actually failed (e.g. deliberately running only the
+ * dist-content checks (a)/(b) against an already-built artifact with no source tree on
+ * hand to mutate). --allow-skip never suppresses a FAIL.
  */
 import { execSync } from 'node:child_process';
 import * as fs from 'node:fs';
@@ -32,16 +45,29 @@ const sidecars = (arg('sidecars', '') || '').split(',').filter(Boolean);
 const buildCmd = arg('build-cmd');
 const rebuildCmd = arg('rebuild-cmd', buildCmd);
 const sourceToMutate = arg('source');
+const allowSkip = process.argv.includes('--allow-skip');
 
 if (!outdir) {
-  console.error('usage: --outdir <dir> --externals <a,b> [--sidecars <x.js,y.js>] [--build-cmd "..."] [--source <file>]');
+  console.error('usage: --outdir <dir> --externals <a,b> [--sidecars <x.js,y.js>] [--build-cmd "..."] [--source <file>] [--rebuild-cmd "..."] [--allow-skip]');
   process.exit(2);
 }
 
+const TOTAL_INVARIANTS = 5;
+let passed = 0;
 let failed = 0;
-function report(name, ok, detail) {
-  console.log(`[${ok ? 'PASS' : 'FAIL'}] ${name}${detail ? ' — ' + detail : ''}`);
-  if (!ok) failed++;
+let skipped = 0;
+
+/**
+ * status: true -> PASS, false -> FAIL, 'skip' -> SKIP (not verified — see BL-469).
+ * A skipped invariant MUST NOT increment `passed` and MUST NOT be printed as PASS —
+ * that is the exact defect this function exists to prevent from recurring.
+ */
+function report(name, status, detail) {
+  const label = status === 'skip' ? 'SKIP' : status ? 'PASS' : 'FAIL';
+  console.log(`[${label}] ${name}${detail ? ' — ' + detail : ''}`);
+  if (status === 'skip') skipped++;
+  else if (status) passed++;
+  else failed++;
 }
 
 // ---------------------------------------------------------------------------
@@ -110,7 +136,7 @@ function checkSidecars() {
 // (c) Atomic never-destroy-working-artifact output (BL-235)
 // ---------------------------------------------------------------------------
 function checkAtomicity() {
-  if (!buildCmd || !sourceToMutate) { report('(c) atomic never-destroy', true, '(skipped — no --build-cmd/--source given)'); return; }
+  if (!buildCmd || !sourceToMutate) { report('(c) atomic never-destroy', 'skip', 'no --build-cmd/--source given — NOT verified'); return; }
   const before = fs.existsSync(outdir) ? fs.readdirSync(outdir).sort() : null;
   if (!before || before.length === 0) { report('(c) atomic never-destroy', false, 'no pre-existing artifact to protect — run a successful build first'); return; }
 
@@ -139,7 +165,7 @@ function checkAtomicity() {
 // (d) Typecheck as a first-class gate (BL-248)
 // ---------------------------------------------------------------------------
 function checkTypecheckGate() {
-  if (!buildCmd || !sourceToMutate) { report('(d) typecheck gate', true, '(skipped — no --build-cmd/--source given)'); return; }
+  if (!buildCmd || !sourceToMutate) { report('(d) typecheck gate', 'skip', 'no --build-cmd/--source given — NOT verified'); return; }
   const backup = fs.readFileSync(sourceToMutate, 'utf8');
   // A real TYPE error (not a syntax error) — valid JS/TS syntax, wrong type.
   fs.writeFileSync(sourceToMutate, backup + '\nconst __bl266TypeErrorProbe: number = "this is a string, not a number";\n');
@@ -169,7 +195,7 @@ function sha256Dir(dir) {
   return hash.digest('hex');
 }
 function checkChecksumStability() {
-  if (!rebuildCmd) { report('(e) checksum stability', true, '(skipped — no --rebuild-cmd given)'); return; }
+  if (!rebuildCmd) { report('(e) checksum stability', 'skip', 'no --rebuild-cmd given — NOT verified'); return; }
   const before = sha256Dir(outdir);
   execSync(rebuildCmd, { stdio: 'pipe' });
   const after = sha256Dir(outdir);
@@ -185,5 +211,19 @@ checkTypecheckGate();
 checkChecksumStability();
 
 console.log('');
-console.log(failed === 0 ? `ALL ${5} INVARIANTS PASS` : `${failed} INVARIANT(S) FAILED`);
-process.exit(failed === 0 ? 0 : 1);
+if (failed > 0) {
+  console.log(`${failed} INVARIANT(S) FAILED (${passed} passed, ${skipped} skipped)`);
+} else if (skipped > 0) {
+  console.log(
+    `${passed}/${TOTAL_INVARIANTS} INVARIANTS VERIFIED PASS, ${skipped}/${TOTAL_INVARIANTS} SKIPPED (not verified) — ` +
+      `NOT all ${TOTAL_INVARIANTS} invariants pass; re-run with --build-cmd/--source/--rebuild-cmd to verify the rest`
+  );
+} else {
+  console.log(`ALL ${TOTAL_INVARIANTS} INVARIANTS PASS`);
+}
+
+// Exit contract (BL-469 / BL-466): FAIL always exits 1. SKIP exits 1 by default — an
+// unconfigured run must not be mistaken for a clean one — unless the caller explicitly
+// opts in via --allow-skip, which never suppresses a genuine FAIL.
+const exitCode = failed > 0 ? 1 : skipped > 0 && !allowSkip ? 1 : 0;
+process.exit(exitCode);
