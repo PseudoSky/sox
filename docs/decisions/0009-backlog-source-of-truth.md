@@ -1,7 +1,12 @@
 # ADR 0009 — Backlog source of truth: `BACKLOG.md` is authoritative for sox-ecosystem, despite the tool reporting phase-3
 
-- **Status:** ACCEPTED (2026-08-04). Supersedes nothing; it *scopes* a global setting that
-  was silently wrong for this repo.
+- **Status:** SUPERSEDED BY [ADR-0011](./0011-backlog-tool-write-destination.md) (2026-08-06).
+  Was: ACCEPTED (2026-08-04). Supersedes nothing; it *scopes* a global setting that
+  was silently wrong for this repo. ADR-0011 records the owner's reversal — new `BL-*` items are
+  now filed through the backlog tool, and `BACKLOG.md`/`CHANGELOG.md` progressively deprecate. This
+  ADR's evidence (the renderer-grammar mismatch, the id-allocator collision risk) remains correct
+  and is still cited by ADR-0011; only the "do not stop hand-writing the file" conclusion is
+  reversed.
 - **Owner:** pseudosky.
 - **Drives:** `DEBT-BACKLOG-TOOL-MARKDOWN-SPLIT-BRAIN-001` (graph, CRITICAL, OPEN).
 
