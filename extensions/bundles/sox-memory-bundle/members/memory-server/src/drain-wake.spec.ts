@@ -60,6 +60,7 @@ import {
   getDrainWakesCoalesced,
   backgroundSlotHolder,
   runPeriodicEnrichPassGuarded,
+  waitForDrainSettled,
 } from './index.js';
 
 /** Provider that blocks inside embedSingle until released, and counts calls. */
@@ -311,5 +312,57 @@ describe('BL-382 / BL-154 — the wake cannot deadlock the write queue', () => {
     for (const holder of seenHolders) {
       expect(holder === null || holder === 'drain' || holder === 'enrich-heal').toBe(true);
     }
+  });
+});
+
+describe('BL-472 — waitForDrainSettled() genuinely awaits runDrainPassGuarded()\'s live promise', () => {
+  // RED ARM (compile-time, per SPEC-BL-472.md criterion 4): on pre-fix code
+  // `waitForDrainSettled` does not exist at all — importing it above would
+  // fail typecheck/build before this test ever ran. Confirmed by attempting
+  // the import against the pre-fix `index.ts` (no `_drainInFlightPromise` /
+  // `waitForDrainSettled` export) and observing the compile failure; restoring
+  // the BL-472 `index.ts` changes (§2 of the spec) makes the import — and this
+  // test — resolve.
+  it('resolves immediately when no pass is in flight, and tracks a real in-flight pass end to end', async () => {
+    // No pass running yet — resolves with no delay.
+    expect(isDrainPassInFlight()).toBe(false);
+    await expect(Promise.race([
+      waitForDrainSettled().then(() => 'resolved'),
+      new Promise((r) => setTimeout(() => r('timeout'), 50)),
+    ])).resolves.toBe('resolved');
+
+    const dbPath = tmpStorePath();
+    await insertOrphanEpisode(dbPath, 'BL-472 waitForDrainSettled orphan');
+    await handleToolCall('memory_ping', { db_path: dbPath });
+
+    const gated = new GatedCountingProvider();
+    _setEmbedProviderForTest(gated);
+
+    const pass = runDrainPassGuarded(); // NOT awaited — the fire-and-forget shape production uses
+    await waitFor(() => gated.calls >= 1, 'runDrainPassGuarded reaches embedSingle');
+    expect(isDrainPassInFlight()).toBe(true);
+
+    // waitForDrainSettled() must NOT resolve while the pass is still gated —
+    // race it against a short timeout to prove it, without hanging the suite
+    // if this regresses (a bug that returns an already-resolved promise
+    // would make this assertion fail instead of the test hanging forever).
+    const raceResult = await Promise.race([
+      waitForDrainSettled().then(() => 'resolved'),
+      new Promise((r) => setTimeout(() => r('timeout'), 50)),
+    ]);
+    expect(raceResult).toBe('timeout');
+    expect(isDrainPassInFlight()).toBe(true); // still in flight — the race above didn't consume the pass
+
+    // Release the gate — NOW waitForDrainSettled() must resolve, and
+    // isDrainPassInFlight() must flip back to false once it does.
+    gated.release();
+    _setEmbedProviderForTest(new DeterministicTestProvider());
+    await expect(Promise.race([
+      waitForDrainSettled().then(() => 'resolved'),
+      new Promise((r) => setTimeout(() => r('timeout'), 2000)),
+    ])).resolves.toBe('resolved');
+    expect(isDrainPassInFlight()).toBe(false);
+
+    await pass; // the original fire-and-forget handle also settles cleanly
   });
 });

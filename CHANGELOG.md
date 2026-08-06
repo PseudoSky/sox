@@ -43,6 +43,46 @@ genuine duplicate heading refuses to write at all.
 
 Commit `cdd78db`. No `dist` artifact ships from `tools/`, so no build/registry-sync was owed.
 
+---
+
+## [Unreleased] — BL-472: shutdown now drains in-flight Phase-B embeds instead of discarding them
+
+Every graceful restart under write load was throwing away work it had already
+paid for. `memory_write`'s async-default path schedules Phase-B embedding
+fire-and-forget (`schedulePhaseBAndWake`), plus a debounced background
+`healMissingVectors`-shaped drain pass. Neither `WriteQueue.closeAllForShutdown()`
+(the production `coordinatedShutdown` path) nor its test-teardown twin
+`clearInstances()` waited for that work before closing the adapter — an
+in-flight embed's retry against the now-closed connection threw
+`E_IO: The database connection is not open`, discarding an embedding whose
+ONNX compute cost was already spent (recovered only on the next process's
+`healMissingVectors()` heal tick).
+
+`coordinatedShutdown` now inserts a bounded step 0, ahead of
+`terminateEmbedWorkers()`, that races `Promise.all([flushPendingEmbeds(),
+waitForDrainSettled()])` against a 750 ms timeout
+(`SHUTDOWN_EMBED_DRAIN_TIMEOUT_MS`) — in-flight Phase-B/heal work gets a real
+chance to land cleanly, and a slow drain still can't blow the existing
+`SHUTDOWN_SAFETY_NET_MS` budget. `runDrainPassGuarded()` was reshaped so
+`waitForDrainSettled()` can expose the in-flight drain promise to shutdown
+without changing its own try/catch/finally body. The step sits inside the
+existing `_shuttingDown` idempotency guard, so repeated shutdown calls don't
+race each other.
+
+Five acceptance criteria, all watched red before the fix and green after:
+ordering (drain precedes `terminateEmbedWorkers()`), boundedness (each
+promise timed out independently, budget sanity-checked), idempotency (step 0
+stays inside the `_shuttingDown` guard), a real drain-pass seam proof
+(`waitForDrainSettled()` observed against the live `index.ts` drain wake
+loop, not a mock), and a genuine end-to-end reproduction
+(`bl472-embed-drain-e2e.spec.ts` closes the adapter mid-embed with no drain
+in between and asserts the exact pre-fix failure shape — `result.failed
+=== 1`, the literal `/database connection is not open/i` message, zero
+vector rows — before restoring the fix). `backend.ts:33-34,167-172,268-303`,
+`index.ts:2679-2745`. Commit `223e583a` (fix), `8ebdf9b2` (tests).
+
+---
+
 ## [Unreleased] — BL-338: the crash-recovery test that had never existed
 
 The owner's bar, verbatim: *"none of this is manual & none of the crash data

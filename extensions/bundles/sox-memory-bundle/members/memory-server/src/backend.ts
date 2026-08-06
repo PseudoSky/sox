@@ -30,8 +30,8 @@ import { serveBackend } from '@adhd/sox-service-proxy';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 
-import { autoBackup, closeAllAdapters, terminateEmbedWorkers, WriteQueue } from '@adhd/sox-memory-core';
-import { getContentAddress, handleToolCall, resolveDbPath, TOOLS } from './index.js';
+import { autoBackup, closeAllAdapters, flushPendingEmbeds, terminateEmbedWorkers, WriteQueue } from '@adhd/sox-memory-core';
+import { getContentAddress, handleToolCall, resolveDbPath, TOOLS, waitForDrainSettled } from './index.js';
 
 /**
  * Build the canonical `tools/list` result — the EXACT shape the MCP `serve()` path
@@ -164,6 +164,14 @@ export const SHUTDOWN_SAFETY_NET_MS = 4000;
 // (not awaited to completion) if it's still running past this bound.
 export const SHUTDOWN_BACKUP_TIMEOUT_MS = 2500;
 
+// (BL-472) Bounded best-effort drain for in-flight Phase-B embed work AND any
+// in-flight background heal/drain pass, before shutdown tears down the
+// shared embed workers / adapter. See Decision D1 for the budget
+// derivation. Deliberately smaller than SHUTDOWN_BACKUP_TIMEOUT_MS: this
+// step runs FIRST, before every other shutdown step, so a generous budget
+// here starves everything after it of the SHUTDOWN_SAFETY_NET_MS envelope.
+export const SHUTDOWN_EMBED_DRAIN_TIMEOUT_MS = 750;
+
 let _shuttingDown = false;
 
 /** Test-only: reset the module-level shutdown guard between specs. */
@@ -191,6 +199,9 @@ export function __resetShutdownStateForTest(): void {
  * competing handler in backend mode (`SOX_PROXY_BACKEND=1`) — this is now the
  * only listener, and its steps are SEQUENCED, not raced:
  *
+ *   0. (BL-472) Bounded best-effort drain of in-flight Phase-B embed work and
+ *      any in-flight background heal/drain pass — see the step's own comment
+ *      below for why this must run before step 1.
  *   1. Terminate the shared fastembed/onnx child processes FIRST.
  *      `closeAllAdapters()`/`handle.close()` used to run while those children
  *      were still alive; when the parent then exited out from under them,
@@ -254,6 +265,40 @@ export async function coordinatedShutdown(
     exit(0);
   }, SHUTDOWN_SAFETY_NET_MS);
   if (typeof safetyNet.unref === 'function') safetyNet.unref();
+
+  // 0. (BL-472) Best-effort, BOUNDED drain of BOTH in-flight fire-and-forget
+  //    seams schedulePhaseBAndWake can leave running: the Phase-B embed pass
+  //    itself (flushPendingEmbeds, embed-pipeline.ts's `inFlight` set) and the
+  //    debounced wakeDrain('write') heal-shaped background pass
+  //    (waitForDrainSettled, index.ts's `_drainInFlightPromise`) — these are
+  //    TWO SEPARATE tracking mechanisms in two separate modules; neither
+  //    covers the other. Must run BEFORE step 1: `schedulePendingEmbeds`'s
+  //    embed() call depends on the shared fastembed/ONNX worker
+  //    terminateEmbedWorkers() is about to kill, and both seams' follow-up
+  //    wq.enqueue() calls depend on the adapter closeAllAdapters()/
+  //    closeAllForShutdown() are about to close. Draining first gives
+  //    in-flight work — already paid for in CPU/ONNX time — a real chance to
+  //    land instead of being discarded as E_IO or a worker-terminated
+  //    rejection. Bounded so a slow/stuck pass cannot itself blow
+  //    SHUTDOWN_SAFETY_NET_MS.
+  try {
+    const timedOut = await Promise.race([
+      Promise.all([flushPendingEmbeds(), waitForDrainSettled()]).then(() => false),
+      new Promise<boolean>((resolve) => {
+        const t = setTimeout(() => resolve(true), SHUTDOWN_EMBED_DRAIN_TIMEOUT_MS);
+        if (typeof t.unref === 'function') t.unref();
+      }),
+    ]);
+    if (timedOut) {
+      process.stderr.write(
+        `[memory-server backend] Phase-B/heal-drain exceeded ${SHUTDOWN_EMBED_DRAIN_TIMEOUT_MS}ms — ` +
+        `proceeding with shutdown; any embedding still in flight is discarded and will be ` +
+        `recovered by the next process's healMissingVectors() pass (BL-472)\n`,
+      );
+    }
+  } catch (err) {
+    process.stderr.write(`[memory-server backend] Phase-B/heal-drain failed: ${err}\n`);
+  }
 
   // 1. Shared child processes first (BL-405) — kill() lets them exit cleanly
   //    instead of crashing on a send() to a channel the parent has already torn down.

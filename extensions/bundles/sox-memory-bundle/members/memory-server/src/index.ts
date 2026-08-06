@@ -2676,50 +2676,71 @@ async function runDrainPass(): Promise<{ backlogRemaining: boolean; healed: numb
   return { backlogRemaining, healed, disabled };
 }
 
+/** (BL-472) The currently in-flight drain pass, or null. Lets shutdown await
+ *  the SAME pass `isDrainPassInFlight()` reports as a boolean, without
+ *  polling. Cleared in the pass's own .finally(), same lifetime as
+ *  `_drainInFlight`. */
+let _drainInFlightPromise: Promise<void> | null = null;
+
+/** (BL-472) Resolve when the currently in-flight drain pass (if any) settles.
+ *  Resolves immediately if none is running. Never throws — mirrors
+ *  runDrainPassGuarded's own never-throws contract. Available to shutdown
+ *  paths; see backend.ts coordinatedShutdown step 0. */
+export function waitForDrainSettled(): Promise<void> {
+  return _drainInFlightPromise ?? Promise.resolve();
+}
+
 /**
  * Reentrancy-guarded drain entrypoint. A concurrent call does NOT queue and is
  * NOT dropped — it sets the dirty flag so the in-flight pass re-arms immediately
  * on completion. Exported so tests can drive it without the timer.
  */
-export async function runDrainPassGuarded(): Promise<void> {
+export function runDrainPassGuarded(): Promise<void> {
   if (_drainInFlight) {
     _drainDirty = true;
     _drainWakesCoalesced++;
-    return;
+    return Promise.resolve();
   }
   _drainInFlight = true;
   const seq = ++_drainSeq;
   const startedAt = Date.now();
-  try {
-    const r = await withBackgroundSlot('drain', () => runDrainPass());
-    if (r.disabled) {
-      _drainDisabled = true;
+  const p = (async () => {
+    try {
+      const r = await withBackgroundSlot('drain', () => runDrainPass());
+      if (r.disabled) {
+        _drainDisabled = true;
+        console.error(
+          '[memory-server] embed drain DISABLED via SOX_DISABLE_EMBED_HEAL=1 ' +
+          '(BL-339 stopgap — the embed backlog will not drain)',
+        );
+        return;
+      }
+      // Forward-progress accounting: backlog with zero healed means this window
+      // is stuck, not merely large.
+      if (r.backlogRemaining && r.healed === 0) _drainNoProgress++;
+      else _drainNoProgress = 0;
+      if (r.healed > 0) {
+        console.error(
+          `[memory-server] drain.finish seq=${seq} healed=${r.healed}` +
+          ` duration_ms=${Date.now() - startedAt} backlog_remaining=${r.backlogRemaining}`,
+        );
+      }
+      _drainBacklogRemaining = r.backlogRemaining;
+    } catch (err) {
       console.error(
-        '[memory-server] embed drain DISABLED via SOX_DISABLE_EMBED_HEAL=1 ' +
-        '(BL-339 stopgap — the embed backlog will not drain)',
+        `[memory-server] drain.error seq=${seq} duration_ms=${Date.now() - startedAt}: ` +
+        `${err instanceof Error ? err.message : String(err)}`,
       );
-      return;
+      _drainNoProgress++;
+    } finally {
+      _drainInFlight = false;
     }
-    // Forward-progress accounting: backlog with zero healed means this window
-    // is stuck, not merely large.
-    if (r.backlogRemaining && r.healed === 0) _drainNoProgress++;
-    else _drainNoProgress = 0;
-    if (r.healed > 0) {
-      console.error(
-        `[memory-server] drain.finish seq=${seq} healed=${r.healed}` +
-        ` duration_ms=${Date.now() - startedAt} backlog_remaining=${r.backlogRemaining}`,
-      );
-    }
-    _drainBacklogRemaining = r.backlogRemaining;
-  } catch (err) {
-    console.error(
-      `[memory-server] drain.error seq=${seq} duration_ms=${Date.now() - startedAt}: ` +
-      `${err instanceof Error ? err.message : String(err)}`,
-    );
-    _drainNoProgress++;
-  } finally {
-    _drainInFlight = false;
-  }
+  })();
+  _drainInFlightPromise = p;
+  void p.finally(() => {
+    if (_drainInFlightPromise === p) _drainInFlightPromise = null;
+  });
+  return p;
 }
 
 /** Delay before the next drain pass: short while there is work, the floor when
