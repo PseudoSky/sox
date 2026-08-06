@@ -2,6 +2,75 @@
 
 ---
 
+## [Unreleased] — BL-466: the 18 `tools/test-bl*.mjs` regression guards are wired to a real runner (pre-commit, nx, CI) instead of running once and rotting
+
+Every `tools/test-bl*.mjs` guard was authored, run once by the agent who wrote it, and never
+touched by any automated trigger again — the exact drift `test-bl313` suffered for seven days
+before anyone noticed (BL-313/BL-468). `SPEC-BL-466.md` surveys all 18 guards on disk (13 → 14
+Tier 1 hermetic once this item's own `test-bl466-runner-tristate.mjs` is counted, 4 Tier 2
+dist-dependent) and wires them:
+
+```bash
+node tools/run-guards.mjs --tier1          # filtered to guards whose watch globs are in the diff
+node tools/run-guards.mjs --tier1 --all    # unfiltered — 14/14 guards ran, 14 passed, 0 failed, ~10s
+node tools/run-guards.mjs --tier2 --isolate-worktree   # builds tokenguard-core/memory-core/ingest/
+                                                        # memory-server in a throwaway worktree,
+                                                        # never the shared checkout's dist/
+```
+
+- `tools/guards-manifest.mjs` — single source of truth: one entry per guard, its tier, its `watch`
+  globs (Tier 1) or `needsBuild` nx projects (Tier 2).
+- `tools/run-guards.mjs` — hand-rolled runner (not a vitest port — porting to vitest would put the
+  guards under the `test` target's `dependsOn: ["^build"]`, reintroducing the exact BL-456
+  shared-checkout build hazard this item exists to keep out of the loop). Tri-state reporting
+  (`PASS`/`FAIL`/`SKIP`/`N/A`) extends BL-469's contract: a filtered-out guard reads `N/A`
+  (non-blocking), never `PASS` or a silent omission.
+- `.husky/pre-commit` — Tier 1, diff-filtered, before the `nx affected --target=lint` step (fail
+  fast). Tier 2 is deliberately never wired to the hook — it needs worktree isolation the hook's
+  synchronous in-checkout context can't give it.
+- `project.json` — `guards-tier1`/`guards-tier2` nx targets, `cache: false` (a cached PASS from
+  stale source is exactly the failure mode this item closes).
+- `.github/workflows/ci.yml` — Tier 1 full-unfiltered (the drift safety net for a dependency that
+  changed outside any single commit's watch-glob diff) + Tier 2 in-place (CI is already a
+  disposable single-job checkout, so worktree isolation there is pure overhead).
+- `bl231` (`test-bl231-cjs-boundary.mjs`) is structurally non-isolable — its `REPO_ROOT` resolves
+  via `git rev-parse --git-common-dir`, which for a linked worktree always points at the main
+  checkout. It is always run in place, reported distinctly as `RAN (shared-checkout, read-only)`,
+  and never routed through `--isolate-worktree` — confirmed by grep on the runner's own output,
+  never silently claiming isolation it cannot provide.
+
+**Two real bugs found and fixed while wiring, both watched red→green:**
+
+- **BL-479** — nine of the seventeen pre-existing guards spawn `git` against their own
+  `fs.mkdtempSync` scratch repos with only `cwd` set, never an explicit `env`. Since `git` prefers
+  `GIT_DIR`/`GIT_INDEX_FILE`/`GIT_WORK_TREE` over `cwd`-based discovery, any process tree where
+  those vars happen to be set (this session hit it directly, reproducing what a real `git commit`
+  runs from a linked worktree, since worktrees share `.git/hooks/` with the main checkout — `git
+  worktree add`'s per-worktree `hooks/` directory is never actually consulted) silently corrupts
+  the invoking checkout's real index instead of the scratch fixture. All nine guards (plus
+  `run-guards.mjs` and `test-bl466-runner-tristate.mjs`) now spawn `git` with an explicit env
+  stripped of those four vars.
+- A `resolveScript()` bug in `run-guards.mjs` itself: a Tier 2 guard run inside an isolated
+  worktree was invoked using the SCRIPT'S OWN internal `import.meta.url`-relative root resolution
+  pointed at the wrong checkout (the invoking one, never built) instead of the isolated worktree
+  (freshly built) — `bl214` read `FAIL` for a reason unrelated to its own assertions until fixed;
+  watched `[FAIL] bl214 — RAN (isolated) — exit 1` before, `[PASS] bl214 — RAN (isolated) — exit 0`
+  after, same isolated worktree, same freshly-built `tokenguard-core`.
+
+Wiring Tier 2 for real also surfaced two genuine, pre-existing findings the guards were built to
+catch but had never been run for real to find: `test-bl313`'s negative control (BL-468, already
+tracked) and `test-bl266`'s arm (d) confirming `bundle-extension.cjs` builds succeed on a real type
+error — expected given BL-248's already-documented build-vs-typecheck separation, but never
+previously verified since arm (d) had never run with real `--build-cmd` args before this item
+(filed as BL-480, not fixed here — the spec's own "do not loosen a guard to get a green wiring
+pass" rule applies).
+
+```bash
+node tools/run-guards.mjs --tier2 --isolate-worktree
+# 4/4 guards ran, 2 passed, 2 failed (bl313/BL-468, bl266/BL-480 — both real, both pre-existing)
+# main checkout dist/ mtimes byte-identical before/after; isolated worktree auto-removed
+```
+
 ## [Unreleased] — BL-447: the on-open rebuild trigger no longer probes for the literal it is about to delete
 
 `SqliteGraphBackend.ensureCheckConstraints()` runs from `applySchema()` on every cold open, and it
