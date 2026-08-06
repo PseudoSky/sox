@@ -227,6 +227,25 @@ tier (promoted to sonnet for the DDL judgement call, not for scope expansion). I
 up, it inherits none of the safety already proven for `topKQuery`, and that's a separate, real
 piece of work for whoever wires it up — not this packet.
 
+**3g. The §2a-B guard narrows `metric` to the `'cosine'` literal type via TS control-flow analysis
+(since `VectorMetric` — `types.ts:78` — is the closed union `'cosine' | 'l2' | 'dot'`), which turns
+the retained-per-3f dead branch at `vector-dialect.ts:164`
+(`metric === 'dot' ? 'DESC' : 'ASC'`) into a genuine `TS2367` "no overlap" compile error under
+`npx nx typecheck store-adapter`. Ratified by the architect post-implementation (2026-08-06),
+verified by reading `vector-dialect.ts:159-164` and `types.ts:78` directly.**
+
+**Ruled:** the implementer's resolution — `(metric as VectorMetric) === 'dot'` — is correct and
+final, no follow-up needed. It is the minimal, behavior-preserving fix: it widens the type for that
+one comparison back to the full union without touching runtime logic (the branch stays genuinely
+unreachable, since `metric` really is always `'cosine'` past the guard), and it satisfies the
+mandatory typecheck gate without weakening `strict` or any other compiler setting. The
+already-ruled-out alternative — hardcoding `'ASC'` with a comment instead of retaining the
+`'dot'`-branch shape — is rejected for the same reason ruling 3f rejected simplifying that branch in
+the first place: not required by any acceptance criterion, and this is a smaller diff than that
+would be. This is a foreseeable, mechanical consequence of §2a-B's own guard, not a new scope
+decision — future implementers of a similarly-narrowing guard should expect the same cast pattern
+and should not treat it as spec-worthy without checking here first.
+
 ---
 
 ## 4. Acceptance criteria, naming BL-392
