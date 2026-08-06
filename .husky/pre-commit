@@ -36,4 +36,8 @@ if git diff --cached --name-only |
   node tools/plan-status.mjs --check
 fi
 
+# BL-466 — Tier 1 regression guards (tools/test-bl*.mjs), filtered to guards whose
+# watched files are in this commit's staged diff. See tools/guards-manifest.mjs.
+node tools/run-guards.mjs --tier1
+
 npx nx affected --target=lint --base=HEAD~1 --head=HEAD
