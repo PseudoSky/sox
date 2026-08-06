@@ -772,6 +772,28 @@ function buildOrderClause(filter: NodeFilter | undefined, tableAlias: string): s
   return `ORDER BY ${col} ${dir}`;
 }
 
+/**
+ * BL-447 — structural presence check, not a literal-value probe.
+ *
+ * True iff the live DDL text declares a CHECK constraint on `column` at all — true for both
+ * quoting styles this file emits: `INLINE_MIGRATION_DDL`'s Drizzle-quoted
+ * `CHECK ("kind" IN (...))` and `NODE_TABLE_DDL`/`EDGE_TABLE_DDL`'s bare `CHECK (kind IN (...))`
+ * (the shape a table has after `rebuildTable` has run against it). False once BL-438 D1/D4 drop
+ * the CHECK from the fresh-creation DDLs (`graphDdl()`, `INLINE_MIGRATION_DDL`) — at that point
+ * every freshly created or already-open-schema store reports `false` here, forever, and
+ * `ensureCheckConstraints` never rebuilds it again.
+ *
+ * This replaces a literal-value search (`sql.includes("'generic'")` /
+ * `sql.includes("'DEPENDS_ON'")`) that could not tell "CHECK absent because this store predates
+ * the enum value" from "CHECK absent because this store is deliberately on the open schema" —
+ * both looked identical to a literal search, which is what armed a rebuild-on-every-open loop the
+ * moment the CHECK was removed from fresh DDL (BL-447). A structural presence check has no such
+ * ambiguity: an open-schema store simply has no CHECK clause on this column.
+ */
+function hasEnumCheckConstraint(sql: string, column: 'kind' | 'rel'): boolean {
+  return new RegExp(`CHECK\\s*\\(\\s*"?${column}"?\\s+IN\\b`).test(sql);
+}
+
 export class SqliteGraphBackend implements GraphBackend {
   readonly capabilities: GraphBackendCapabilities = {
     bitemporal: true,
@@ -817,12 +839,14 @@ export class SqliteGraphBackend implements GraphBackend {
     const nodeRow = await this.adapter.executeGet<{ sql: string }>(
       `SELECT sql FROM sqlite_master WHERE type='table' AND name='node'`,
     );
-    const nodeNeedsRebuild = !!nodeRow && !nodeRow.sql.includes("'generic'");
+    const nodeNeedsRebuild =
+      !!nodeRow && hasEnumCheckConstraint(nodeRow.sql, 'kind') && !nodeRow.sql.includes("'generic'");
 
     const edgeRow = await this.adapter.executeGet<{ sql: string }>(
       `SELECT sql FROM sqlite_master WHERE type='table' AND name='edge'`,
     );
-    const edgeNeedsRebuild = !!edgeRow && !edgeRow.sql.includes("'DEPENDS_ON'");
+    const edgeNeedsRebuild =
+      !!edgeRow && hasEnumCheckConstraint(edgeRow.sql, 'rel') && !edgeRow.sql.includes("'DEPENDS_ON'");
 
     if (nodeNeedsRebuild || edgeNeedsRebuild) {
       await this.adapter.transaction(async (tx) => {
