@@ -4,7 +4,7 @@
 CREATE TABLE IF NOT EXISTS `node` (
 	`rowid` integer PRIMARY KEY NOT NULL,
 	`uid` text NOT NULL,
-	`kind` text NOT NULL CHECK (`kind` IN ('episode','entity','claim','community','session','generic')),
+	`kind` text NOT NULL,
 	`content` text,
 	`name` text,
 	`summary` text,

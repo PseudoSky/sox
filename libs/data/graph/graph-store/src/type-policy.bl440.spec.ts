@@ -134,22 +134,19 @@ describe('AC-1 (BL-440) — a permissive injected TypePolicy has no path to DDL 
     const n3 = await backend.writeNode('normal node', { kind: 'entity' });
     expect(typeof n3).toBe('number');
 
-    // The custom policy's permissiveness for 'component' does NOT reach the schema: the
-    // TypePolicy check passes (the policy allows it) but the underlying SQLite CHECK constraint,
-    // untouched by this packet, still rejects it — proving the write path still funnels through
-    // real DDL enforcement beneath the policy layer. NOTE: unlike writeEdgeInternal,
-    // writeNode's INSERT has no catch/translate of SQLite errors into ConstraintError (a
-    // pre-existing gap unrelated to this packet — confirmed absent in pre-PKT-59 source via
-    // `git show 37863fee -- .../index.ts`; the JS-level check this packet replaces was always a
-    // superset of the DB CHECK, so the DB CHECK was previously unreachable dead code from
-    // writeNode's default-policy path). So the raw error here is whatever the adapter throws for
-    // a CHECK violation, not a ConstraintError — the assertion below checks for that raw SQLite
-    // CHECK failure by message rather than by error class, since re-introducing that translation
-    // is out of this packet's scope (SPEC-PKT-59.md §2.7 lists writeNode's inline check as the
-    // only change to that method).
-    await expect(backend.writeNode('novel kind node', { kind: 'component' })).rejects.toThrow(
-      /CHECK constraint failed/i,
-    );
+    // The custom policy's permissiveness for 'component' now DOES reach the schema: PKT-58
+    // (BL-439) deleted the node-side `CHECK (kind IN (...))` from the fresh-store DDL paths
+    // (`graphDdl()`, `INLINE_MIGRATION_DDL`), so a store built via `applySchema()` on a fresh
+    // file no longer has any SQL-layer kind allowlist for `ensureCheckConstraints()` to leave
+    // in place here — the TypePolicy check passes (the policy allows it) and the INSERT now
+    // succeeds and round-trips, proving `ix_node_kind` is reachable for a consumer kind once
+    // the CHECK is gone. This assertion was the opposite (a CHECK-rejection expectation) prior
+    // to PKT-58; see SPEC-PKT-58.md Decision 3 for why flipping it here, not adding a new test
+    // file, is this packet's own AC-1 RED arm.
+    const idComponent = await backend.writeNode('novel kind node', { kind: 'component' });
+    expect(typeof idComponent).toBe('number');
+    const nodeComponent = await backend.getNode(idComponent);
+    expect(nodeComponent!.kind).toBe('component');
 
     // Same proof on the edge side: 'CUSTOM_REL' passes the permissive policy but the CHECK still
     // rejects it — and here writeEdgeInternal's existing catch *does* translate it to
