@@ -20,9 +20,9 @@ import { fork, type ChildProcess } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import { existsSync, readFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
 import { performance } from 'node:perf_hooks';
 import { log } from '@adhd/sox-telemetry';
+import { resolveFastembedLockPath } from './fastembedLock.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -72,16 +72,17 @@ function isPidAlive(pid: number): boolean {
  * Deliberately does NOT `import` `fastembedProcessHost.ts` — that module
  * calls `checkAndClaimFastembedLock()` and registers `process.on('message')`
  * at module scope, both meant for the forked CHILD process, never the
- * parent that owns this client. This duplicates only the tiny pid-liveness
- * check and the lock-path convention (`SOX_FASTEMBED_LOCK_PATH`, same
- * default) rather than pull that whole module (and its fastembed-loading
- * side effects) into the parent. Advisory only: a missing/unreadable/stale
- * lock file is silently treated as "no competing host", never thrown — this
- * must never be able to break or slow a real embed call.
+ * parent that owns this client. The lock path convention and payload shape
+ * ARE shared with that module, via the side-effect-free `./fastembedLock.js`
+ * (BL-471) — only the tiny pid-liveness check below is duplicated, since it
+ * has nothing to do with the lock file's format. Advisory only: a
+ * missing/unreadable/stale lock file is silently treated as "no competing
+ * host", never thrown — this must never be able to break or slow a real
+ * embed call.
  */
 function detectCompetingFastembedHost(ownPid: number | undefined): { pid: number; startedAt: string } | null {
   try {
-    const lockPath = process.env['SOX_FASTEMBED_LOCK_PATH'] ?? join(tmpdir(), 'sox-fastembed-host.lock');
+    const lockPath = resolveFastembedLockPath();
     if (!existsSync(lockPath)) return null;
     const raw = JSON.parse(readFileSync(lockPath, 'utf8')) as { pid?: unknown; startedAt?: unknown };
     const pid = typeof raw.pid === 'number' ? raw.pid : null;
