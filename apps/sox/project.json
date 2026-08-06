@@ -80,6 +80,10 @@
       "inputs": [
         "default",
         "^production"
+      ],
+      "dependsOn": [
+        "build",
+        "^build"
       ]
     },
     "lint": {
@@ -97,7 +101,10 @@
         "cwd": "."
       },
       "cache": true,
-      "inputs": ["default", "^production"]
+      "inputs": [
+        "default",
+        "^production"
+      ]
     }
   }
 }
