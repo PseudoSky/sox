@@ -21,12 +21,12 @@ A packet is **DONE** only when every BL id it targets is closed — code landing
 (BL-225). Several packets below have merged code and still read OPEN; that is correct, and the
 remedy is to close the backlog item with a red→green test, not to edit this table.
 
-**34 done · 4 partial · 47 open** of 85 packets.
+**35 done · 4 partial · 46 open** of 85 packets.
 
-- Open backlog items in this program's scope: **66**, of which **7** have no packet.
+- Open backlog items in this program's scope: **65**, of which **7** have no packet.
 - Open items deliberately out of scope: **28** — BL-99, BL-103, BL-104, BL-105, BL-163, BL-225, BL-228, BL-258, BL-261, BL-282, BL-283, BL-284, BL-285, BL-288, BL-291, BL-292, BL-296, BL-298, BL-305, BL-306, BL-307, BL-308, BL-309, BL-314, BL-315, BL-333, BL-355, BL-408
 - Unscheduled in-scope items (need a packet): BL-436, BL-462, BL-466, BL-467, BL-468, BL-469, BL-470
-- Packet targets already closed (40) — historical context only, no work remains: BL-259, BL-329, BL-341, BL-343, BL-348, BL-350, BL-359, BL-360, BL-361, BL-362, BL-364, BL-376, BL-379, BL-380, BL-383, BL-388, BL-390, BL-391, BL-394, BL-397, BL-399, BL-402, BL-405, BL-406, BL-407, BL-410, BL-412, BL-425, BL-435, BL-445, BL-449, BL-451, BL-453, BL-456, BL-457, BL-458, BL-459, BL-463, BL-464, BL-465
+- Packet targets already closed (41) — historical context only, no work remains: BL-259, BL-329, BL-341, BL-343, BL-348, BL-350, BL-359, BL-360, BL-361, BL-362, BL-364, BL-376, BL-379, BL-380, BL-383, BL-388, BL-390, BL-391, BL-394, BL-397, BL-399, BL-402, BL-405, BL-406, BL-407, BL-410, BL-412, BL-425, BL-435, BL-445, BL-449, BL-451, BL-453, BL-456, BL-457, BL-458, BL-459, BL-461, BL-463, BL-464, BL-465
 
 | Packet | Status | Targets | Still open |
 |---|---|---|---|
@@ -111,7 +111,7 @@ remedy is to close the backlog item with a red→green test, not to edit this ta
 | PKT-79 | **OPEN** | BL-452, BL-460 | BL-452, BL-460 |
 | PKT-80 | **OPEN** | BL-450, BL-455 | BL-450, BL-455 |
 | PKT-81 | **OPEN** | BL-424 | BL-424 |
-| PKT-82 | **OPEN** | BL-461 | BL-461 |
+| PKT-82 | **DONE** | BL-461 | — |
 | PKT-83 | **OPEN** | BL-432 | BL-432 |
 | PKT-84 | **OPEN** | BL-426 | BL-426 |
 | PKT-85 | **OPEN** | BL-437 | BL-437 |
@@ -3093,7 +3093,7 @@ context, never by telling a subagent to read this file.
 
 ### PKT-82 — BL-461: the FTS pre-flight only runs after an unclean session, so a store damaged inside a clean one still aborts the process
 
-> **status: OPEN** — still open: BL-461 · derived by `tools/plan-status.mjs`, do not hand-edit
+> **status: DONE** — all targets closed (BL-461) · derived by `tools/plan-status.mjs`, do not hand-edit
 
 **Goal:** BL-361's shipped `preflight.ts` is gated on an out-of-band marker written on open and cleared on orderly close, so it runs only when the previous session did not close cleanly — a test arm honestly asserts that with no marker the process still dies with SIGABRT. **The calculus changed:** BL-361 was filed believing the panic is inside `connect()`, which would force an out-of-process check. Measured 2026-08-05 that is wrong — `connect()`, base-table reads, `sqlite_master` reads, `INSERT`, `CREATE INDEX … USING fts` and `DROP INDEX` all succeed; **only `fts_match` panics**. So a cheap unconditional **in-process** guard is now possible, and the "adds a native open to every connect" objection that rejected it does not apply.
 **Closes:** BL-461
