@@ -38,6 +38,15 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import { spawnSync } from 'node:child_process';
 
+// BL-479 — strip inherited GIT_DIR/GIT_INDEX_FILE/GIT_WORK_TREE/GIT_COMMON_DIR so any git
+// command this guard spawns against a scratch fixture can never resolve against the invoking
+// checkout's real index (git prefers these env vars over cwd-based repo discovery).
+const SAFE_GIT_ENV = { ...process.env };
+delete SAFE_GIT_ENV.GIT_DIR;
+delete SAFE_GIT_ENV.GIT_INDEX_FILE;
+delete SAFE_GIT_ENV.GIT_WORK_TREE;
+delete SAFE_GIT_ENV.GIT_COMMON_DIR;
+
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const REAL_SCRIPT = path.join(ROOT, 'tools', 'verify-native-abi.mjs');
 
@@ -48,7 +57,7 @@ const ok = (cond, msg) => {
 };
 
 function sh(cmd, args, cwd) {
-  const res = spawnSync(cmd, args, { cwd, encoding: 'utf8' });
+  const res = spawnSync(cmd, args, { cwd, encoding: 'utf8', env: SAFE_GIT_ENV });
   if (res.status !== 0 && res.error) throw res.error;
   return res;
 }

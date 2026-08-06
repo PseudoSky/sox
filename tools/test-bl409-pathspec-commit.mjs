@@ -26,6 +26,17 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 
+// BL-479 — strip inherited GIT_DIR/GIT_INDEX_FILE/GIT_WORK_TREE/GIT_COMMON_DIR so this scratch
+// repo's git commands can never resolve against the invoking checkout's real index (git prefers
+// these env vars over cwd-based repo discovery). Confirmed root cause of BL-479: this file's
+// scratch fixture is literally named `fileA.txt`/`fileB.txt`, which turned up as corrupted stage-0
+// entries in the real repo's index after a session ran with GIT_INDEX_FILE set ambiently.
+const SAFE_GIT_ENV = { ...process.env };
+delete SAFE_GIT_ENV.GIT_DIR;
+delete SAFE_GIT_ENV.GIT_INDEX_FILE;
+delete SAFE_GIT_ENV.GIT_WORK_TREE;
+delete SAFE_GIT_ENV.GIT_COMMON_DIR;
+
 let failed = 0;
 function report(name, ok, detail) {
   console.log(`[${ok ? 'PASS' : 'FAIL'}] ${name}${detail ? ' — ' + detail : ''}`);
@@ -33,7 +44,7 @@ function report(name, ok, detail) {
 }
 
 function sh(cmd, args, cwd) {
-  return execFileSync(cmd, args, { cwd, encoding: 'utf8' });
+  return execFileSync(cmd, args, { cwd, encoding: 'utf8', env: SAFE_GIT_ENV });
 }
 
 function makeScratchRepo(label) {
