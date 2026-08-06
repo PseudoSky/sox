@@ -1,4 +1,17 @@
-# WriteQueue metrics → memory_ping integration (ready-to-apply)
+# WriteQueue metrics → memory_ping integration (completed handoff, 2026-07-04)
+
+> ## ⚠️ HISTORICAL HANDOFF — APPLIED. NOT A CURRENT REFERENCE.
+>
+> **Written 2026-07-04; its patch landed long ago.** This file is retained as the record of that
+> handoff, not as a description of the surface today. It is *not* "ready-to-apply" and has not
+> been since. Since it was written, `WriteQueueMetrics` changed at least three times (BL-394,
+> BL-445, and the throughput field), and PKT-64/PKT-65 both reshaped this surface without
+> updating this document — which is how it came to publish, as unconditional current fact, the
+> exact claim BL-394 was opened to remove (BL-458).
+>
+> **Source of truth for the metrics shape is the type:**
+> `libs/memory-core/src/write-queue.ts` → `export interface WriteQueueMetrics`.
+> For the live values, call `memory_ping`. Do not quote the shape from this file.
 
 > Produced by the write-path observability worktree agent (2026-07-04 saturation
 > incident). The worktree fence forbade editing
@@ -18,34 +31,29 @@
 - `queue.getMetrics(): WriteQueueMetrics` — instance form.
 - `WriteQueueMetrics` type (exported from `@adhd/sox-memory-core`).
 
-Snapshot shape:
+**Snapshot shape: read it from the type, not from here.** The literal that used to sit in this
+spot is deleted rather than updated (BL-458). It published `"queue_max_size": 100` and
+`"deadline_guard_enabled": true` as unconditional — exactly the claim BL-394 was filed against
+and its fix (`59ced94`) removed — and it predated three further changes to the type. A published
+literal of a shape that keeps moving is a standing staleness generator; the only durable citation
+is the declaration itself:
 
-```jsonc
-{
-  "queue_depth": 0,                 // pending items (excludes in-flight)
-  "in_flight": 0,                   // 1 while a task is executing
-  "queue_max_size": 100,            // hard size cap
-  "queue_high_watermark": 7,        // peak pending depth this process
-  "saturated": false,               // hysteresis latch (warn 75% / clear 40%)
-  "write_latency_ms": { "p50": 42, "p99": 480, "mean": 61.2, "max": 512 },
-                                    // write-kind tasks only (since the embed-pipeline
-                                    // metrics merge; Phase-B applies report separately)
-  "apply_latency_ms": { "p50": 3, "p99": 12, "mean": 4.1, "max": 22 },
-  "recent_avg_task_latency_ms": 55, // admission-control estimator input — ALL kinds
-                                    // blended by design (an apply occupies the slot
-                                    // like a write; filtering would under-estimate wait)
-  "deadline_budget_ms": 20000,      // SOX_WRITEQ_DEADLINE_MS (default 20000)
-  "deadline_guard_enabled": true,   // false when SOX_WRITEQ_NO_DEADLINE=1
-  "counters": {                     // monotonic per-process
-    "tasks_completed": 0,           // all kinds
-    "write_tasks_completed": 0,
-    "apply_tasks_completed": 0,
-    "rejections_busy_size": 0,
-    "rejections_busy_deadline": 0,
-    "slow_tasks": 0
-  }
-}
-```
+**`libs/memory-core/src/write-queue.ts` → `export interface WriteQueueMetrics`.** Every field
+carries a doc comment naming the backlog item that shaped it. Two of them must be read *before*
+any other field is interpreted:
+
+- **`mode: 'fifo' | 'bypass'`** (BL-445) — which execution path produced the snapshot. On
+  `'bypass'` (Turso, or `SOX_DISABLE_WRITE_QUEUE=1`) **there is no queue**, and every
+  queue-shaped field is `null` rather than a zero indistinguishable from a healthy idle queue.
+- **`admission_control: 'active' | 'inactive — adapter handles concurrency natively'`** (BL-394)
+  — whether the size cap and deadline guard can fire *at all*. On the bypass path neither is
+  reachable, so `counters.rejections_busy_*` reading `0` is evidence the incrementing code
+  cannot run, not evidence of a healthy queue.
+
+Consequently `queue_depth`, `queue_max_size`, `queue_high_watermark`, `saturated` and
+`deadline_budget_ms` are all `number | null` / `boolean | null`, and `deadline_guard_enabled` is
+`false` on the bypass path regardless of `SOX_WRITEQ_NO_DEADLINE`. `throughput_writes_per_sec`
+(write tasks completed in the last rolling 60s) also post-dates this document.
 
 ## The patch (memory-server `src/index.ts`, `memory_ping` handler)
 
