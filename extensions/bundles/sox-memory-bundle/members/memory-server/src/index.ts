@@ -88,7 +88,7 @@ import {
   // Replaces the local splitIntoChunks function (deleted below).
   splitIntoChunksSentence,
 } from '@adhd/sox-memory-core';
-import type { PendingEmbed, PhaseAOutcome, WriteError, WriteResult } from '@adhd/sox-memory-core';
+import type { HealResult, PendingEmbed, PhaseAOutcome, WriteError, WriteResult } from '@adhd/sox-memory-core';
 import type { StoreAdapter, VectorDialect } from '@adhd/sox-store-adapter';
 // BL-334: the adapter verifies and repairs its own generated artifacts at open
 // (BL-352). Until this wiring, NOTHING read the retained result — so a store
@@ -2234,6 +2234,7 @@ export async function runEnrichPassOnDb(
   full_pass: boolean;
   healed: number;
   heal_failed: number;
+  heal_skipped: boolean;
   cluster_ok: boolean;
   cluster_error?: string;
 }> {
@@ -2268,10 +2269,38 @@ export async function runEnrichPassOnDb(
   // unconditionally here would make even the deliberately-unguarded raw path
   // slot-exclusive, which defeats that suite's ability to reproduce the race
   // it exists to prove.
+  //
+  // BL-474 (2026-08-07): this used to be a BLOCKING acquire — a write-driven
+  // enrich tick would queue behind whatever hold the drain chain already had
+  // on `_bgSlot`, bounded only by `embedHealTimeBudgetMs()` (240s default),
+  // not by the drain's own 30s re-arm floor; measured live holds up to ~12.5s.
+  // Since both sides run the exact same idempotent scan (`healMissingVectors`
+  // — a row that already has a `vec_node` entry is a no-op `exists`/`gone`
+  // outcome, never a conflict), the exclusion is a duplicate-work guard, not
+  // a data-safety guard, so there is nothing to lose by yielding instead of
+  // waiting: whichever side already holds the slot is actively doing the SAME
+  // work this backstop exists to catch. `withBackgroundSlotOrSkip` tries once
+  // and, if busy, returns `{ acquired: false }` immediately (single-digit ms)
+  // instead of joining the FIFO queue — the drain's own pass (or the next
+  // enrich tick) picks up any remainder.
   const wq = await WriteQueue.forPath(dbPath);
   const acquireHealSlot = opts.acquireHealSlot ?? true;
   const heal = acquireHealSlot
-    ? await withBackgroundSlot('enrich-heal', () => healMissingVectors(adapter, wq, { limit: drainBatchLimit() }))
+    ? await (async (): Promise<HealResult> => {
+        const attempt = await withBackgroundSlotOrSkip('enrich-heal', () =>
+          healMissingVectors(adapter, wq, { limit: drainBatchLimit() }),
+        );
+        if (attempt.acquired) return attempt.result;
+        // BL-474: the drain chain holds the slot — it is actively doing the
+        // SAME heal work this backstop exists to catch, so skipping here
+        // loses nothing (the drain's own pass will finish it) and costs
+        // nothing (this backstop is not this tick's only path to a healed
+        // vector; the next tick, or the drain's own re-arm, retries).
+        return {
+          scanned: 0, healed: 0, exists: 0, gone: 0, failed: 0,
+          disabled: false, time_budget_exceeded: false, skipped: true,
+        };
+      })()
     : await healMissingVectors(adapter, wq, { limit: drainBatchLimit() });
 
   const maxSeq = await maxOpenEnrichTriggerSeq(adapter);
@@ -2326,6 +2355,7 @@ export async function runEnrichPassOnDb(
       backlog_after: backlogAfter,
       backlog_delta: backlogAfter - backlogBefore,
       embed_heal_disabled: heal.disabled,
+      embed_heal_skipped: heal.skipped ?? false,
     });
   } else {
     // BL-348: the entire point — a failed cluster pass is logged and moved
@@ -2336,6 +2366,7 @@ export async function runEnrichPassOnDb(
       db_path: dbPath,
       error: isolated.error,
       embed_healed: heal.healed,
+      embed_heal_skipped: heal.skipped ?? false,
       backlog_before: backlogBefore,
       backlog_after: backlogAfter,
     });
@@ -2390,6 +2421,7 @@ export async function runEnrichPassOnDb(
     full_pass: fullPass,
     healed: heal.healed,
     heal_failed: heal.failed,
+    heal_skipped: heal.skipped ?? false,
     cluster_ok: isolated.ok,
     ...(isolated.ok ? {} : { cluster_error: isolated.error }),
   };
@@ -2589,6 +2621,35 @@ async function withBackgroundSlot<T>(holder: string, fn: () => Promise<T>): Prom
   }
 }
 
+/**
+ * Try to acquire the background slot; if it is already held, return
+ * immediately with `{ acquired: false }` instead of joining the FIFO queue.
+ * (BL-474.) Unlike `withBackgroundSlot`, a busy slot is not an error and is
+ * not waited on — the caller decides what "could not acquire" means for it.
+ *
+ * Correctness note: this only inspects `_bgSlotHolder`, which is non-null
+ * only while `fn` is actually running inside `withBackgroundSlot`. There is
+ * a single-microtask window between a competing `withBackgroundSlot` call
+ * installing its promise as the new `_bgSlot` tail and that call setting
+ * `_bgSlotHolder` (index.ts:2571-2583) during which this function would
+ * still see `null` and proceed to acquire via the normal path below — in
+ * that rare case it degrades to the old blocking behaviour for one hold,
+ * never to an incorrect double-acquire. Both known callers accept this.
+ */
+async function withBackgroundSlotOrSkip<T>(
+  holder: string,
+  fn: () => Promise<T>,
+): Promise<{ acquired: true; result: T } | { acquired: false }> {
+  if (_bgSlotHolder !== null) {
+    return { acquired: false };
+  }
+  const result = await withBackgroundSlot(holder, fn);
+  return { acquired: true, result };
+}
+
+/** Test seam. */
+export { withBackgroundSlotOrSkip as _withBackgroundSlotOrSkipForTest };
+
 /** Test seam: which loop currently holds the background slot, or null. */
 export function backgroundSlotHolder(): string | null {
   return _bgSlotHolder;
@@ -2768,6 +2829,21 @@ function nextDrainDelayMs(): number {
  */
 function scheduleNextDrain(): void {
   if (_drainDisabled) return;
+  // BL-474: gate the FIRST arm on the same brake that already disables heal
+  // work at execution time, so a process that has SOX_DISABLE_EMBED_HEAL=1
+  // set at import time never arms the timer at all — instead of arming it,
+  // running one no-op pass, discovering `heal.disabled`, and only then
+  // setting `_drainDisabled = true` (see runDrainPassGuarded) to stop
+  // rescheduling. Reuses the existing negative-control seam deliberately
+  // (embed-pipeline.ts:628, "never set in prod") rather than a new env var —
+  // this file's own BL-344 comments (:1408) warn against duplicating policy
+  // flags. Same end state either way (`_drainDisabled = true`, chain dead);
+  // this just reaches it without the wasted first pass, closing the
+  // clustering-e2e.test.ts step-3 scheduling race at its root.
+  if (process.env['SOX_DISABLE_EMBED_HEAL'] === '1') {
+    _drainDisabled = true;
+    return;
+  }
   if (_drainNextTimer !== null) clearTimeout(_drainNextTimer);
   const delay = nextDrainDelayMs();
   _drainDirty = false;
