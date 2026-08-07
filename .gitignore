@@ -65,3 +65,7 @@ docs/plan/runtime-productionization/_shared/baselines/*.db-shm
 
 # project/local-scope sox data root (machine-local state, never committed)
 .adhd/
+
+# Build scratch (apigen and friends) — never tracked; blocked registry:sync-index
+# by tripping build-index.ts's dirty-tree refusal (BL-390/BL-484).
+tmp/
