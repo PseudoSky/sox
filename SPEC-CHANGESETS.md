@@ -304,20 +304,63 @@ verification" above). Each `.md` MUST use the frontmatter format:
 
 ## 6. Acceptance criteria (each names the BL, each has a stated RED arm)
 
-**AC-1 (BL-460 primary).** `npx tsx scripts/check-changeset-surface.ts <path-to-main-checkout>`
-exits **0** once all 9 files exist and correctly name their package.
+**AC-1 (BL-460 primary).** The gate's actual logic — package walk, byte-diff, pending-changeset
+read — must exit **0** once all 9 files exist and correctly name their package.
 _RED arm, already captured and reproducible right now:_ run it unmodified before any `.changeset/*.md`
 exists — exit 1, with the exact 9-package FAIL block quoted in the task and reproduced verbatim in
 this worktree's own run (§7 command below). This IS the current state; the implementer's job is to
 turn it green by adding files, not by editing the script.
 
-Note: because this worktree's `dist/` for these 9 packages doesn't exist locally (§5), point the
-script at the MAIN checkout's root as the positional arg so it diffs real, already-built `dist/`
-content: `npx tsx scripts/check-changeset-surface.ts /Users/nix/dev/ai/sox-ecosystem`. Running it
-with no argument (defaulting to `process.cwd()`, the worktree) will report all 9 as `WARN ... no
-local dist/ ... skipping` and pass trivially WITHOUT proving anything — that is a false green, not
-acceptance evidence. The reviewer must re-run pointed at the main checkout's root and quote the `OK`
-line, not a WARN-suppressed pass.
+**CORRECTION to the original AC-1 procedure (this architect's error, caught and fixed by the
+implementer's report):** `scripts/check-changeset-surface.ts` takes exactly ONE `root` positional
+argument, and uses that SAME root for three things: the package walk (`check-changeset-surface.ts:127`),
+the local `dist/*.d.ts` source (`:301`), AND `pendingChangesetPackages()`'s `.changeset/` read
+(`:140`). "Point it at main's root so it diffs real dist" was wrong on its face — main's root has no
+`.changeset/*.md` (they're committed only in the worktree, on a different branch, per §7 step 6), so
+that invocation was ALWAYS going to hit the FAIL branch at `:397-401` regardless of how correct the 9
+files are. There is no flag to split "where dist/ lives" from "where .changeset/ lives." Do not
+re-attempt the single-root-against-main invocation; it cannot pass, by construction, until the
+branch merges.
+
+**Corrected AC-1 procedure — scratch-root verification (real gate logic, zero writes to main
+checkout, nothing built):** `findPackageJsons()` walks `root/{libs,apps,extensions,packages}` via
+`fs.readdirSync(dir, {withFileTypes:true})`, which transparently lists a **directory symlink's**
+real target contents (not the symlink itself) — so a scratch root built from top-level symlinks to
+main's package roots, plus a REAL `.changeset/` directory holding copies of the worktree's 9 files,
+makes the script's actual code path (`isPublishable`, the byte-diff against the npm registry,
+`pendingChangesetPackages()`) run for real:
+
+```bash
+SCRATCH=/private/tmp/claude-502/-Users-nix-dev-ai-sox-ecosystem/1a711339-d48c-4ab9-9448-75f55573747a/scratchpad/bl460-verify
+mkdir -p "$SCRATCH"
+ln -s /Users/nix/dev/ai/sox-ecosystem/libs       "$SCRATCH/libs"
+ln -s /Users/nix/dev/ai/sox-ecosystem/apps       "$SCRATCH/apps"
+ln -s /Users/nix/dev/ai/sox-ecosystem/extensions "$SCRATCH/extensions"
+[ -d /Users/nix/dev/ai/sox-ecosystem/packages ] && ln -s /Users/nix/dev/ai/sox-ecosystem/packages "$SCRATCH/packages"
+mkdir -p "$SCRATCH/.changeset"
+cp /Users/nix/dev/ai/sox-ecosystem/.worktrees/bl460-changeset-backfill/.changeset/bl460-*.md "$SCRATCH/.changeset/"
+npx tsx /Users/nix/dev/ai/sox-ecosystem/.worktrees/bl460-changeset-backfill/scripts/check-changeset-surface.ts "$SCRATCH"
+```
+
+Nothing under `/Users/nix/dev/ai/sox-ecosystem` (main checkout) is written — the symlinks are
+read-only traversal, and the tarball cache (`node_modules/.cache/check-changeset-surface/`) builds
+fresh under `$SCRATCH`, not under main, which is a stricter isolation than the original spec's
+already-granted main-`node_modules/.cache` exception. `$SCRATCH` is never committed and lives
+entirely in scratchpad, so it does not appear in AC-4's `git diff --stat`. This is the real gate,
+run for real, against real `dist/` bytes and the real 9 committed changesets — quote the `OK — N
+publishable package(s)...` line and exit code from this exact invocation as AC-1 evidence.
+
+Running with no argument (defaulting to `process.cwd()`, the worktree) still reports all 9 as `WARN
+... no local dist/ ... skipping` and passes trivially WITHOUT proving anything — that remains a false
+green, not acceptance evidence, for the same reason as before.
+
+**Follow-up (do NOT implement in this packet — script is out of bounds per §5):** file a new backlog
+item via `backlog_create_item` noting `check-changeset-surface.ts`'s single `root` argument conflates
+"where to read built `dist/`" with "where to read `.changeset/`," making a pre-merge dry-run of a
+feature branch impossible without either building locally (banned, BL-235) or the scratch-symlink
+technique above. A `--changeset-root` flag defaulting to `root` would let CI (which always runs
+post-checkout, single-tree) keep working unchanged while unblocking pre-merge dry-runs. Cite
+`check-changeset-surface.ts:89` (the `root` assignment) and `:140` (the conflated read) in the item.
 
 **AC-2 (per-package correctness).** For each of the 9 packages, the `.changeset/*.md` frontmatter
 bump matches §3's ruling exactly:
@@ -371,9 +414,10 @@ the packet back to the implementer rather than trimming it themselves.
 2. Create the 9 `.changeset/*.md` files per §5/§3 (either `pnpm changeset` interactively, answering
    its prompts per §4's bump table, or hand-write the frontmatter — both are acceptable; AC-2/AC-3
    are the actual bar, not the authoring method).
-3. `npx tsx scripts/check-changeset-surface.ts /Users/nix/dev/ai/sox-ecosystem` — must print
-   `check-changeset-surface: OK — ...` and exit 0 (AC-1). Do NOT run it with no argument (see AC-1's
-   false-green note).
+3. Run the scratch-root verification procedure in the corrected AC-1 section (§6) — must print
+   `check-changeset-surface: OK — ...` and exit 0. Do NOT run it against main's root directly (main
+   has no `.changeset/*.md` pre-merge — see AC-1's correction) and do NOT run it with no argument
+   (see AC-1's false-green note).
 4. `node tools/check-backlog-markers.mjs` and `node tools/plan-status.mjs --check` — not because this
    packet touches `BACKLOG.md`/plan files, but because they are the standard pre-commit hygiene gates
    this repo's hooks run; confirm they're clean before committing so `.husky/pre-commit` doesn't block.
