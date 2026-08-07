@@ -91,7 +91,7 @@ CREATE TABLE IF NOT EXISTS edge (
   rowid     INTEGER PRIMARY KEY,
   src       INTEGER NOT NULL REFERENCES node ON DELETE CASCADE,
   dst       INTEGER NOT NULL REFERENCES node ON DELETE CASCADE,
-  rel       TEXT NOT NULL CHECK (rel IN ('MENTIONS','SUPPORTS','RELATES_TO','SUPERSEDES','DERIVED_FROM','MEMBER_OF','PART_OF','SAME_AS','ASSIGNED_TO','DEPENDS_ON')),
+  rel       TEXT NOT NULL,
   weight    REAL DEFAULT 1.0,
   confidence REAL,
   origin    TEXT CHECK (origin IN ('extracted','inferred','user_asserted')),
@@ -210,7 +210,7 @@ CREATE TABLE IF NOT EXISTS "edge" (
   "rowid" integer PRIMARY KEY NOT NULL,
   "src" integer NOT NULL REFERENCES "node" ON DELETE CASCADE,
   "dst" integer NOT NULL REFERENCES "node" ON DELETE CASCADE,
-  "rel" text NOT NULL CHECK ("rel" IN ('MENTIONS','SUPPORTS','RELATES_TO','SUPERSEDES','DERIVED_FROM','MEMBER_OF','PART_OF','SAME_AS','ASSIGNED_TO','DEPENDS_ON')),
+  "rel" text NOT NULL,
   "weight" real DEFAULT 1.0,
   "confidence" real,
   "origin" text CHECK ("origin" IN ('extracted','inferred','user_asserted')),
@@ -361,6 +361,22 @@ export class NodeNotFoundError extends Error {
   }
 }
 
+/**
+ * The branded-string widening pattern (ADR-0010 D4, BL-444, BL-448/PKT-74): the ten known rels
+ * still autocomplete in every parameter position (`writeEdge(src, dst, rel: EdgeRel, ...)`,
+ * `getEdges({ rel })`, etc. — `(string & {})` prevents TypeScript from collapsing the union to
+ * bare `string`), while any other string is still assignable — the SQL `rel` CHECK is gone from
+ * the fresh-store DDL (see `graphDdl()`/`INLINE_MIGRATION_DDL` above) and an injected `TypePolicy`
+ * is the only remaining vocabulary gate (PKT-59/BL-440).
+ *
+ * This is source-breaking in RETURN position, not additive: a consumer that exhaustively
+ * `switch`es on `EdgeRecord.rel` (or otherwise narrows `EdgeRel` to `never` in a default arm)
+ * stops compiling once this widens, because the `default` arm's type is no longer `never` — it is
+ * `string & {}`. No in-repo consumer does this today (confirmed by grep against
+ * `libs/memory-core/src` and this package's own `src`), but `@adhd/sox-graph-store` is published
+ * (`private: false`) and BL-444 records this as a real risk for an external consumer. See
+ * `open-rel-check.bl448.spec.ts`'s AC-Type for a demonstrated (not merely asserted) compile break.
+ */
 export type EdgeRel =
   | 'MENTIONS'
   | 'SUPPORTS'
@@ -371,7 +387,8 @@ export type EdgeRel =
   | 'ASSIGNED_TO'
   | 'MEMBER_OF'
   | 'PART_OF'
-  | 'DEPENDS_ON';
+  | 'DEPENDS_ON'
+  | (string & {});
 
 export type Confidence = 'confirmed' | 'unverified' | 'disputed' | 'deprecated';
 
