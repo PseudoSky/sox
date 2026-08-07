@@ -11,10 +11,12 @@
  */
 
 import type { StoreAdapter, AdapterTransaction } from '@adhd/sox-store-adapter';
+import { ConstraintError } from '@adhd/sox-graph-store';
 import * as crypto from 'node:crypto';
 import { embed, vecToJson, vecToBuffer } from './embed.js';
 import { ftsDialectFor } from './dialect.js';
 import { log as tlog } from './telemetry.js';
+import { MemoryOntologyPolicy, translateStoreVocabularyError } from './ontology.js';
 
 // ── P4: Scope Promotion (design.md §2.5, docs/scope-promotion.md) ─────────────
 
@@ -607,90 +609,105 @@ export async function graphifyImport(
     }),
   );
 
-  await adapter.transaction(async (tx: AdapterTransaction) => {
-    for (let nodeIdx = 0; nodeIdx < nodes.length; nodeIdx++) {
-      const node = nodes[nodeIdx]!;
-      const origId = (shapeName === 'v2' ? node['uid'] : node['id']) as string;
-      const uid = shapeName === 'v2' ? (node['uid'] as string) : `import-${node['id'] as string}`;
-      const kind =
-        shapeName === 'v2'
-          ? (node['kind'] as string)
-          : _mapGraphifyType(node['type'] as string | undefined);
-      const content = node['content'] as string;
-      const name = (node['name'] as string | undefined) ?? null;
-      const summary = (node['summary'] as string | undefined) ?? null;
-      const importance = (node['importance'] as number | undefined) ?? 1.0;
-      const contentHash = crypto
-        .createHash('sha256')
-        .update((content ?? '').trim().toLowerCase())
-        .digest('hex');
+  try {
+    await adapter.transaction(async (tx: AdapterTransaction) => {
+      for (let nodeIdx = 0; nodeIdx < nodes.length; nodeIdx++) {
+        const node = nodes[nodeIdx]!;
+        const origId = (shapeName === 'v2' ? node['uid'] : node['id']) as string;
+        const uid = shapeName === 'v2' ? (node['uid'] as string) : `import-${node['id'] as string}`;
+        const kind =
+          shapeName === 'v2'
+            ? (node['kind'] as string)
+            : _mapGraphifyType(node['type'] as string | undefined);
+        if (shapeName === 'v2') {
+          new MemoryOntologyPolicy().validateKind(kind); // throws ConstraintError on unregistered kind
+        }
+        const content = node['content'] as string;
+        const name = (node['name'] as string | undefined) ?? null;
+        const summary = (node['summary'] as string | undefined) ?? null;
+        const importance = (node['importance'] as number | undefined) ?? 1.0;
+        const contentHash = crypto
+          .createHash('sha256')
+          .update((content ?? '').trim().toLowerCase())
+          .digest('hex');
 
-      const existing = await tx.executeGet<{ rowid: number; uid: string }>(
-        `SELECT rowid, uid FROM node WHERE content_hash = ?`,
-        [contentHash],
-      );
-      if (existing) {
-        uidMap.set(origId, existing.uid);
-        continue;
+        const existing = await tx.executeGet<{ rowid: number; uid: string }>(
+          `SELECT rowid, uid FROM node WHERE content_hash = ?`,
+          [contentHash],
+        );
+        if (existing) {
+          uidMap.set(origId, existing.uid);
+          continue;
+        }
+
+        let row: { rowid: number } | null | undefined;
+        try {
+          row = await tx.executeGet<{ rowid: number }>(
+            `INSERT INTO node (uid, kind, content, name, summary, agent_id, source, importance, content_hash, t_created, t_valid)
+             VALUES (?, ?, ?, ?, ?, ?, 'import', ?, ?, ?, ?)
+             RETURNING rowid`,
+            [uid, kind, content, name, summary, agentId, importance, contentHash, now, now],
+          );
+        } catch (err) {
+          translateStoreVocabularyError(err);
+        }
+
+        if (row) {
+          const serialized = nodeEmbedSerialized[nodeIdx] ?? null;
+          try {
+            await tx.executeRun(
+              'INSERT OR IGNORE INTO vec_node(node_id, embedding) VALUES (CAST(? AS INTEGER), ?)',
+              [row.rowid, serialized],
+            );
+          } catch {
+            /* non-fatal */
+          }
+          uidMap.set(origId, uid);
+          importedNodes++;
+        }
       }
 
-      const row = await tx.executeGet<{ rowid: number }>(
-        `INSERT INTO node (uid, kind, content, name, summary, agent_id, source, importance, content_hash, t_created, t_valid)
-         VALUES (?, ?, ?, ?, ?, ?, 'import', ?, ?, ?, ?)
-         RETURNING rowid`,
-        [uid, kind, content, name, summary, agentId, importance, contentHash, now, now],
-      );
-
-      if (row) {
-        const serialized = nodeEmbedSerialized[nodeIdx] ?? null;
+      for (const edge of edges) {
+        const srcOrigId = edge['src'] as string;
+        const dstOrigId = edge['dst'] as string;
+        const srcUid = uidMap.get(srcOrigId) ?? srcOrigId;
+        const dstUid = uidMap.get(dstOrigId) ?? dstOrigId;
+        const srcRow = await tx.executeGet<{ rowid: number }>(
+          `SELECT rowid FROM node WHERE uid = ?`,
+          [srcUid],
+        );
+        const dstRow = await tx.executeGet<{ rowid: number }>(
+          `SELECT rowid FROM node WHERE uid = ?`,
+          [dstUid],
+        );
+        if (!srcRow || !dstRow) continue;
+        const rel = _mapGraphifyRel(edge['rel'] as string | undefined);
+        if (!rel) continue;
         try {
           await tx.executeRun(
-            'INSERT OR IGNORE INTO vec_node(node_id, embedding) VALUES (CAST(? AS INTEGER), ?)',
-            [row.rowid, serialized],
+            `INSERT OR IGNORE INTO edge (src, dst, rel, weight, confidence, origin, t_created)
+             VALUES (?, ?, ?, ?, ?, 'user_asserted', ?)`,
+            [
+              srcRow.rowid,
+              dstRow.rowid,
+              rel,
+              (edge['weight'] as number | undefined) ?? 1.0,
+              (edge['confidence'] as number | null | undefined) ?? null,
+              now,
+            ],
           );
+          importedEdges++;
         } catch {
-          /* non-fatal */
+          /* skip */
         }
-        uidMap.set(origId, uid);
-        importedNodes++;
       }
+    });
+  } catch (err) {
+    if (err instanceof ConstraintError) {
+      return { ok: false, error: err.message, partial: false };
     }
-
-    for (const edge of edges) {
-      const srcOrigId = edge['src'] as string;
-      const dstOrigId = edge['dst'] as string;
-      const srcUid = uidMap.get(srcOrigId) ?? srcOrigId;
-      const dstUid = uidMap.get(dstOrigId) ?? dstOrigId;
-      const srcRow = await tx.executeGet<{ rowid: number }>(
-        `SELECT rowid FROM node WHERE uid = ?`,
-        [srcUid],
-      );
-      const dstRow = await tx.executeGet<{ rowid: number }>(
-        `SELECT rowid FROM node WHERE uid = ?`,
-        [dstUid],
-      );
-      if (!srcRow || !dstRow) continue;
-      const rel = _mapGraphifyRel(edge['rel'] as string | undefined);
-      if (!rel) continue;
-      try {
-        await tx.executeRun(
-          `INSERT OR IGNORE INTO edge (src, dst, rel, weight, confidence, origin, t_created)
-           VALUES (?, ?, ?, ?, ?, 'user_asserted', ?)`,
-          [
-            srcRow.rowid,
-            dstRow.rowid,
-            rel,
-            (edge['weight'] as number | undefined) ?? 1.0,
-            (edge['confidence'] as number | null | undefined) ?? null,
-            now,
-          ],
-        );
-        importedEdges++;
-      } catch {
-        /* skip */
-      }
-    }
-  });
+    throw err;
+  }
 
   return { ok: true, imported: importedNodes, edges_imported: importedEdges, shape: shapeName };
 }
