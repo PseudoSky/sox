@@ -1,6 +1,6 @@
 {
   "name": "@adhd/sox-claim-verification",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "NLI-based (Natural Language Inference) claim grounding engine. Cross-encoder NLI via worker thread, embedding pre-filter, configurable truncation strategy, LRU result cache. Worker-thread isolated from better-sqlite3 (BL-11).",
   "license": "MIT",
   "private": false,
