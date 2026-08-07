@@ -281,6 +281,20 @@ export type {
   SearchEntitiesResult,
 } from './extensions.js';
 
+// ── Ontology seam (ADR-0010 D2, BL-441) ─────────────────────────────────────────
+export {
+  MemoryOntologyPolicy,
+  MEMORY_NODE_KINDS,
+  MEMORY_EDGE_RELS,
+  translateStoreVocabularyError,
+} from './ontology.js';
+export type { OntologyExtension } from './ontology.js';
+export {
+  getMemoryGraphBackend,
+  registerOntologyExtension,
+  getOntologySnapshot,
+} from './graph-backend.js';
+
 // ── Markdown export mirror ────────────────────────────────────────────────────
 export { exportMarkdown } from './export.js';
 export type { ExportOpts, ExportResult } from './export.js';
