@@ -8,7 +8,7 @@
  */
 
 import type { StoreAdapter } from '@adhd/sox-store-adapter';
-import { createGraphBackend } from '@adhd/sox-graph-store';
+import { getMemoryGraphBackend } from './graph-backend.js';
 import type { EdgeRecord } from '@adhd/sox-graph-store';
 import { parseTags, isSuperseded, supersedesUidForRowid, communityUidForRowid } from './recall.js';
 
@@ -92,7 +92,7 @@ export async function memoryGetRelated(
     return { source_uid: uid, edges: [], code: 'E_NOT_FOUND' };
   }
 
-  const backend = createGraphBackend(adapter);
+  const backend = getMemoryGraphBackend(adapter);
   const srcRowid = sourceRow.rowid;
 
   // Outbound edges
