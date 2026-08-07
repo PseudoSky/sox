@@ -2,6 +2,44 @@
 
 ---
 
+## [Unreleased] — BL-480: `registry:sync-index` run from a worktree no longer corrupts every other extension's `source` field
+
+Found in independent review of PKT-60 (BL-441): commit `a52d39cf`, run from
+`.worktrees/pkt60-memory-ontology-seam`, silently rewrote `registry/index.json`'s `"source"` field
+for all 16 entries — 15 of them (`org-agent`, `test-agent`, `memory-cli`, `memory-flush`,
+`memory-usage`, `di-command`, `tokenguard`, `demo-creator`, `di-codex-skill`, `di-skill`,
+`forbidden-skill`, `sox-ingest`, `tui-design`, `apps/sox`, `sox-memory-bundle`) with zero
+relationship to that branch — to the throwaway worktree path instead of the canonical repo root.
+Once the branch merges and the worktree is deleted (this repo's own convention), those `source`
+entries pointed nowhere: a silent time bomb no checksum check would catch.
+
+```bash
+npx nx run registry:sync-index          # now resolves root via git-common-dir, from ANY worktree
+```
+
+`scripts/build-index.ts` and `scripts/check-registry-sync.ts` (its BL-33-mandated mirror) both
+defaulted their CLI `root` to `process.cwd()`; the `registry:sync-index` nx target's `cwd: "."`
+resolves against whichever checkout invoked it. Both scripts now resolve the default root via `git
+rev-parse --git-common-dir` + `'..'` — the same absolute path from the main checkout or any
+worktree — mirroring the pattern already established for `tools/check-backlog-markers.mjs` and
+`tools/allocate-bl-id.mjs` (BL-416). An explicit `root` CLI argument still overrides the default.
+
+`registry/index.json`'s 15 corrupted `source` fields were corrected back to the canonical repo root
+in the same fix; the legitimate memory-core-driven checksum changes on `memory-cli`, `memory-flush`,
+and `memory-server` (real ripple from PKT-60's `libs/memory-core` changes into bundle members that
+embed it) were left untouched.
+
+```bash
+npx nx test sox-ecosystem -- scripts/build-index-cli-root.bl480.test.ts   # 2 passed (2)
+```
+
+`scripts/build-index-cli-root.bl480.test.ts` spawns the real `build-index.ts` from a scratch git
+worktree with no explicit root argument — the exact shape `registry:sync-index` produces inside
+`.worktrees/**` — and asserts the emitted `source`/registry-file location is rooted in the main
+checkout, never the worktree (GREEN); a second arm runs a pinned pre-fix copy of the script
+(materialized via `git show` against the commit immediately preceding this fix) through the
+identical harness and confirms it DOES write worktree-rooted paths (RED).
+
 ## [Unreleased] — BL-442: an operator command finally exists to open `kind`/`rel` on stores that already have them closed
 
 Every store on disk today — including the live `~/.memory/memory.db` — carries `CHECK (kind IN
