@@ -46,6 +46,7 @@ import {
   getDb,
   getEmbedHealth,
   getEmbedPipelineMetrics,
+  getOntologySnapshot,
   hasPendingFullEnrich,
   healMissingVectors,
   log,
@@ -1954,8 +1955,14 @@ export async function handleToolCall(name: string, args: Record<string, unknown>
         ...withIntegrity,
         telemetry_self_check: telemetrySelfCheckResult,
       };
+      // BL-441: expose the registered ontology vocabulary — the same additive,
+      // best-effort pattern as integrity/telemetry_self_check above.
+      const withOntology = {
+        ...withTelemetry,
+        ontology: getOntologySnapshot(),
+      };
       return {
-        content: [{ type: 'text', text: JSON.stringify(withTelemetry) }],
+        content: [{ type: 'text', text: JSON.stringify(withOntology) }],
       };
     }
 

@@ -10,7 +10,7 @@
  */
 
 import type { StoreAdapter } from '@adhd/sox-store-adapter';
-import { createGraphBackend } from '@adhd/sox-graph-store';
+import { getMemoryGraphBackend } from './graph-backend.js';
 
 // ── Types ──────────────────────────────────────────────────────────────────────
 
@@ -46,7 +46,7 @@ export async function memoryGetSupersessionChain(
   const visited = new Set<string>();
   const edgeReasons = new Map<string, string | null>();
 
-  const backend = createGraphBackend(adapter);
+  const backend = getMemoryGraphBackend(adapter);
 
   while (queue.length > 0) {
     const current = queue.shift()!;

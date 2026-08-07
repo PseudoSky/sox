@@ -8,7 +8,7 @@
  */
 
 import type { StoreAdapter } from '@adhd/sox-store-adapter';
-import { createGraphBackend } from '@adhd/sox-graph-store';
+import { getMemoryGraphBackend } from './graph-backend.js';
 import type { EdgeRecord } from '@adhd/sox-graph-store';
 import { parseTags, isSuperseded, supersedesUidForRowid, communityUidForRowid } from './recall.js';
 
@@ -116,7 +116,7 @@ export async function memoryGetEntityEpisodes(
     };
   }
 
-  const backend = createGraphBackend(adapter);
+  const backend = getMemoryGraphBackend(adapter);
 
   // Get MENTIONS edges where dst = entity
   const edges = await backend.getEdges({ dst: entityRow.rowid, rel: 'MENTIONS' });

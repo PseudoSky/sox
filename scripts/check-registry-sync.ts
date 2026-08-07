@@ -18,11 +18,30 @@
  * which has a top-level write side-effect) but is a faithful read-only mirror.
  */
 
+import { execSync } from 'node:child_process';
 import * as crypto from 'node:crypto';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 
-const root = process.argv[2] ?? process.cwd();
+// BL-480: default root must mirror build-index.ts's git-common-dir resolution
+// (never `process.cwd()`) — this scanner recomputes `source` via the same
+// `file://${extDir}` derivation, so a divergent default here reintroduces
+// exactly the false-drift/worktree-path corruption BL-480 fixed in
+// build-index.ts, breaking the BL-33 mirror invariant this file's header
+// comment commits to.
+function resolveDefaultRoot(): string {
+  try {
+    const gitCommonDir = execSync('git rev-parse --git-common-dir', {
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+    }).trim();
+    return path.resolve(gitCommonDir, '..');
+  } catch {
+    return process.cwd();
+  }
+}
+
+const root = process.argv[2] ?? resolveDefaultRoot();
 
 // Read the current committed registry
 const registryPath = path.join(root, 'registry', 'index.json');
