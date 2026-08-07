@@ -287,25 +287,53 @@ anything anywhere) — the remaining drift source is ordinary concurrent editing
 which a `git pull`/rebase before committing already has to handle for any file in this repo. Do not
 attempt to fix BL-475 itself in this dispatch (explicitly out of scope per the dispatch brief).
 
-### D5 — Rule G2's "known id" baseline is deliberately over-permissive (union, not intersection)
+### D5 — Rule G2's "known id" baseline unions four sources, but (c)/(d) are gated to the
+multi-worktree case only — **amended after implementation; the original unconditional-union
+wording below was a real defect, not just prose, see the correction at the end of this section**
 
 **Ruling:** Rule G2 rejects a newly-added CHANGELOG.md heading (`## [...] — BL-<n>...` or a
 restatement `### BL-<n>`) claiming an id `<n>` **only if `<n>` appears in NONE of**: (a)
 `INVOKING_ROOT`'s own `HEAD` `CHANGELOG.md` claimed ids, (b) `INVOKING_ROOT`'s own `HEAD`
 `BACKLOG.md` heading ids, (c) `REPO_ROOT`'s current on-disk `backlogHeadingIds`
 (`tools/check-bl-id-integrity.mjs:180-182`, already computed), (d) `REPO_ROOT`'s current on-disk
-`changelogClaimedIds` (`tools/check-bl-id-integrity.mjs:194-197`, already computed). This is a union
-across four sources specifically to minimize false positives — an id is rejected only when it is
-recognized by **none** of them, i.e. it was never a `BACKLOG.md` heading anywhere the checker can
-see and never previously claimed in `CHANGELOG.md` anywhere the checker can see. That is exactly
-"this id was invented out of thin air," the actual gap (Hole 3's "any `CHANGELOG.md` edit... still
-unguarded").
+`changelogClaimedIds` (`tools/check-bl-id-integrity.mjs:194-197`, already computed) — **but (c)/(d)
+apply only when `REPO_ROOT !== INVOKING_ROOT`** (see correction below). This is a union across up
+to four sources specifically to minimize false positives — an id is rejected only when it is
+recognized by **none** of the applicable ones, i.e. it was never a `BACKLOG.md` heading anywhere the
+checker can see and never previously claimed in `CHANGELOG.md` anywhere the checker can see. That is
+exactly "this id was invented out of thin air," the actual gap (Hole 3's "any `CHANGELOG.md`
+edit... still unguarded").
 
-**Rejected alternative — only check `INVOKING_ROOT`'s own history (drop (c)/(d)).** Loses because
-the ordinary, encouraged resolve-and-archive flow can legitimately close an item whose `BACKLOG.md`
-heading the committing worktree never itself saw fresh (e.g. it was added to the shared `main`
-after this worktree branched) — reusing the already-computed REPO_ROOT sets (c)/(d), which cost
-nothing extra since checks 1-5 already read them, closes that false-positive path for free.
+**Rejected alternative — only check `INVOKING_ROOT`'s own history (drop (c)/(d) entirely).** Loses
+because the ordinary, encouraged resolve-and-archive flow can legitimately close an item whose
+`BACKLOG.md` heading the committing worktree never itself saw fresh (e.g. it was added to the
+shared `main` after this worktree branched) — reusing the already-computed REPO_ROOT sets (c)/(d),
+which cost nothing extra since checks 1-5 already read them, closes that false-positive path for
+free in the case where `REPO_ROOT` genuinely is a different file (i.e. a worktree).
+
+**Correction (post-implementation) — (c)/(d) must be excluded when `REPO_ROOT === INVOKING_ROOT`.**
+The unconditional-union wording above was wrong as literally specified: `(c)`/`(d)` are computed by
+`readFileSync(BACKLOG/CHANGELOG)` against `REPO_ROOT` at the top of the script
+(`tools/check-bl-id-integrity.mjs:152-156`). In the ordinary single-checkout case — no worktree,
+`REPO_ROOT === INVOKING_ROOT`, confirmed identical via `--git-common-dir`+`..` vs. `--show-toplevel`
+— that read hits the *same working-tree file* the commit under test is staging, since a change must
+be on disk before `git add`/`git diff --cached` can see it at all. A brand-new, fabricated
+CHANGELOG id would therefore already appear in `changelogClaimedIds`, making `(c)`/`(d)`
+self-referentially "recognize" it as already known and **permanently defeating G2 for the exact case
+its own acceptance test (AC-G2, a plain scratch repo with no worktree) exercises**. Verified live:
+without the guard, AC-G2 cannot detect the fabricated id at all.
+
+**Ruling, corrected:** `(c)`/`(d)` are included in `knownIds` **only when `REPO_ROOT !==
+INVOKING_ROOT`** (`tools/check-bl-id-integrity.mjs:421-427`, `repoRootIsInvokingRoot` guard). This
+loses none of the original protection: `(a)`/`(b)` are `git show HEAD:<file>` reads, immune to
+staging by construction, and already fully cover "known before this commit" for the single-checkout
+case — nothing legitimate depended on `(c)`/`(d)` there. `(c)`/`(d)` retain their full value for the
+genuine multi-worktree drift case this rule exists to protect (a worktree's own `HEAD` doesn't yet
+contain a heading landed on `main` after it branched) — that is precisely the case where `REPO_ROOT`
+is a different file from `INVOKING_ROOT`, so the guard fires exactly where the original rationale
+applies and nowhere else. Verified: AC-G2 (illegitimate, single-checkout-shaped) correctly rejects
+with the guard in place; AC-G2-legit (same-commit resolve-and-archive) still passes via the
+`HEAD`-based `(b)` source alone.
 
 ### D6 — Rule G3 (title-lock) compares only the **title segment**, never the body
 
