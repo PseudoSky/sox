@@ -1,6 +1,6 @@
 {
   "name": "@adhd/sox-nx",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Nx plugin for sox — thin generator adapters over libs/authoring",
   "private": true,
   "main": "./dist/index.js",
