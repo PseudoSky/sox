@@ -14,6 +14,18 @@
  * mutating repo-wide git configuration. It is idempotent: safe to re-run
  * after editing a `.husky/*` file to pick up the change.
  *
+ * [Discovered during ADR-0011 Stage 3 / SPEC-DELETE-FILES.md AC-precommit-live verification]
+ * `git rev-parse --git-dir`, run from inside a worktree, returns the WORKTREE-PRIVATE gitdir
+ * (`.git/worktrees/<name>`) — but git's actual hook lookup for `pre-commit`/`commit-msg` always
+ * uses the COMMON gitdir's `hooks/` (the main checkout's `.git/hooks/`), which every worktree
+ * shares. Hooks are not one of the per-worktree files (unlike `HEAD`/`index`). Installing via
+ * `--git-dir` therefore silently wrote into a directory git never reads when run from any
+ * worktree — the hook appeared "installed" (files present, correct content, correct mode) while
+ * the actually-invoked hook stayed whatever was last installed from the main checkout. Fixed to
+ * `--git-common-dir`, the same shared-registry resolution `check-backlog-markers.mjs`/
+ * `allocate-bl-id.mjs` already used for `BACKLOG.md` (BL-416) — hooks are exactly the same kind of
+ * "shared, not per-worktree" resource.
+ *
  * Usage: node tools/install-git-hooks.mjs
  */
 
@@ -24,12 +36,12 @@ import path from 'node:path';
 const REPO_ROOT = path.resolve(
   execFileSync('git', ['rev-parse', '--show-toplevel'], { encoding: 'utf8' }).trim(),
 );
-const GIT_DIR = execFileSync('git', ['rev-parse', '--git-dir'], {
+const GIT_COMMON_DIR = execFileSync('git', ['rev-parse', '--git-common-dir'], {
   encoding: 'utf8',
   cwd: REPO_ROOT,
 }).trim();
 const HOOKS_SRC = path.join(REPO_ROOT, '.husky');
-const HOOKS_DEST = path.isAbsolute(GIT_DIR) ? path.join(GIT_DIR, 'hooks') : path.join(REPO_ROOT, GIT_DIR, 'hooks');
+const HOOKS_DEST = path.isAbsolute(GIT_COMMON_DIR) ? path.join(GIT_COMMON_DIR, 'hooks') : path.join(REPO_ROOT, GIT_COMMON_DIR, 'hooks');
 
 let installed = 0;
 for (const name of readdirSync(HOOKS_SRC)) {
