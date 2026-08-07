@@ -62,6 +62,24 @@
           "libs/data/graph/graph-store/**/*.ts"
         ]
       }
+    },
+    "tarball-conformance": {
+      "executor": "nx:run-commands",
+      "options": {
+        "command": "node tools/graph-store-tarball-conformance.mjs",
+        "cwd": "."
+      },
+      "cache": false,
+      "dependsOn": ["build", "^build"]
+    },
+    "tarball-conformance-vacuity": {
+      "executor": "nx:run-commands",
+      "options": {
+        "command": "node tools/graph-store-tarball-conformance.mjs --vacuity-guard-demo",
+        "cwd": "."
+      },
+      "cache": false,
+      "dependsOn": ["build", "^build"]
     }
   }
 }
