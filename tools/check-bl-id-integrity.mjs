@@ -61,6 +61,32 @@
  *      this commit (via `git diff --cached`), so it costs nothing on
  *      unrelated commits.
  *
+ * [ADR-0011 Stage 2, see SPEC-ADR-0011-S2.md] Checks 7-10 close the three holes Stage 1 left open
+ * (Hole 1: checks 4/5 above are inert without `.bl-id-counter.json`; Hole 2: `allocate-bl-id.mjs`
+ * used to write straight into the shared file, retired separately; Hole 3: only new,
+ * above-watermark headings were guarded — edits, deletions, and CHANGELOG.md additions were not).
+ * All four read `git diff --cached -U0` against the INVOKING worktree's own `HEAD` (never the
+ * counter file, never REPO_ROOT's live on-disk content as a diff baseline) — see D4 in the spec.
+ *
+ *   7. [HARD FAIL] Rule G1 — any `### BL-<n>` heading that is a pure addition in BACKLOG.md (no
+ *      matching removal for the same id) is rejected, unconditionally — with or without
+ *      `.bl-id-counter.json`. This is the load-bearing fix for Hole 1 and also closes Hole 3's
+ *      below-watermark loophole as a deliberate side effect (D1).
+ *
+ *   8. [HARD FAIL] Rule G2 — a newly-added `CHANGELOG.md` release header claiming a `BL-<n>` id
+ *      that was never seen anywhere (not in this commit's own `HEAD` BACKLOG.md/CHANGELOG.md, not
+ *      in REPO_ROOT's current on-disk BACKLOG.md/CHANGELOG.md) is rejected — the id was invented
+ *      out of thin air rather than closing out a real item (D5).
+ *
+ *   9. [WARN] Rule G3 — an existing `### BL-<n>` heading whose TITLE segment changed between the
+ *      `-` and `+` lines of the same commit is flagged (not blocked — D3/D6). Body edits (the
+ *      normal shape of close-out work: citations, root-cause notes) are never compared.
+ *
+ *  10. [WARN] Rule G4 — an existing `### BL-<n>` heading that is deleted (no matching `+` for the
+ *      same id) without a same-commit or already-on-disk `CHANGELOG.md` record for that id is
+ *      flagged (not blocked — D3/D7). The common legitimate case (resolve-and-archive, both edits
+ *      in the same commit) is recognized and does not warn.
+ *
  * Scope: only runs when BACKLOG.md and/or CHANGELOG.md is staged for the
  * current commit (checked via `git diff --cached --name-only`). Otherwise
  * exits 0 immediately. This repo routinely has BACKLOG.md in a transient
@@ -308,6 +334,135 @@ try {
 } catch (err) {
   // advisory only — never let a diff failure (e.g. no staged changes, detached checkout) block the commit.
   warn(`Files-overlap advisory check skipped: ${err.message}`);
+}
+
+// ── 7-10. [ADR-0011 Stage 2] G1 (new heading, FAIL) / G2 (new CHANGELOG id, FAIL) /
+//         G3 (title changed, WARN) / G4 (heading deleted w/o CHANGELOG record, WARN) ──────────
+//
+// All four read from the INVOKING worktree's own `HEAD` via `git diff --cached -U0`, never from
+// REPO_ROOT's live on-disk content as a diff baseline (D4) — the committing worktree's own git
+// history is the only semantically correct basis for "did THIS commit introduce a new heading."
+function diffLines(file) {
+  try {
+    return execFileSync('git', ['diff', '--cached', '-U0', '--', file], {
+      cwd: INVOKING_ROOT,
+      encoding: 'utf8',
+    });
+  } catch {
+    return ''; // no staged changes to this path, or detached checkout — same tolerance as check 6.
+  }
+}
+
+function headIdsFromInvokingRootHead(file, kind) {
+  let text = '';
+  try {
+    text = execFileSync('git', ['show', `HEAD:${file}`], { cwd: INVOKING_ROOT, encoding: 'utf8' });
+  } catch {
+    return new Set(); // path doesn't exist at HEAD yet (e.g. first commit adds the file).
+  }
+  if (kind === 'backlog') {
+    return new Set([...text.matchAll(/^###\s*BL-(\d+)\s*—/gm)].map((m) => m[1]));
+  }
+  const ids = new Set();
+  for (const m of text.matchAll(/^## \[[^\]]*\] — ((?:BL-\d+(?:,\s*)?)+)(?!.*\(partial\))/gm)) {
+    for (const idMatch of m[1].matchAll(/BL-(\d+)/g)) ids.add(idMatch[1]);
+  }
+  return ids;
+}
+
+const backlogDiff = diffLines('BACKLOG.md');
+const changelogDiff = diffLines('CHANGELOG.md');
+
+// Collect per-id added/removed full heading lines from the BACKLOG.md diff, shared by G1/G3/G4.
+const addedHeadings = new Map(); // id -> full '+' heading line
+for (const m of backlogDiff.matchAll(/^\+(###\s*BL-(\d+)\s*—.*)$/gm)) {
+  addedHeadings.set(m[2], m[1]);
+}
+const removedHeadings = new Map(); // id -> full '-' heading line
+for (const m of backlogDiff.matchAll(/^-(###\s*BL-(\d+)\s*—.*)$/gm)) {
+  removedHeadings.set(m[2], m[1]);
+}
+
+// Newly-added CHANGELOG.md release headers, shared by G2/G4.
+const addedChangelogIds = new Set();
+for (const m of changelogDiff.matchAll(
+  /^\+## \[[^\]]*\] — ((?:BL-\d+(?:,\s*)?)+)(?!.*\(partial\))/gm,
+)) {
+  for (const idMatch of m[1].matchAll(/BL-(\d+)/g)) addedChangelogIds.add(idMatch[1]);
+}
+
+// ── 7. Rule G1 [HARD FAIL] — brand-new BACKLOG.md heading, unconditional (D1) ────────────────
+for (const [id, line] of addedHeadings) {
+  if (!removedHeadings.has(id)) {
+    fail(
+      `BL-${id}: brand-new heading in BACKLOG.md ('${line.trim()}'). Post-ADR-0011 Stage 2, there ` +
+        `is no legitimate way to hand-add a new '### BL-<n>' heading, at any id, with or without ` +
+        `.bl-id-counter.json present. File it through the tool: 'node tools/bl-id-counter.mjs' to ` +
+        `reserve the id, then backlog_create_item with an idOverride — see CONTRIBUTING.md §1.9.`,
+    );
+  }
+}
+
+// ── 8. Rule G2 [HARD FAIL] — new CHANGELOG.md id never seen anywhere (D5) ────────────────────
+//
+// D5 unions four sources: (a)/(b) INVOKING_ROOT's own HEAD (immune to staging by construction —
+// `git show HEAD:file` never reflects the index), and (c)/(d) REPO_ROOT's CURRENT on-disk
+// backlogHeadingIds/changelogClaimedIds (already computed by checks 1-5 above, reused per D5's
+// "costs nothing extra" rationale). (c)/(d) are only a genuinely INDEPENDENT signal — as D5
+// intends, to catch a resolve-and-archive whose BACKLOG.md heading this worktree never itself
+// saw fresh — when REPO_ROOT is a DIFFERENT file from what THIS commit is staging. When
+// REPO_ROOT === INVOKING_ROOT (the common single-checkout case: no worktree in play, most
+// ordinary commits), `readFileSync(BACKLOG/CHANGELOG)` at the top of this script reads the exact
+// same working-tree file this commit just staged — so (c)/(d) would trivially "recognize" an id
+// as known for no reason other than this commit having just written it, defeating G2 entirely
+// for the case it exists to guard (verified live: AC-G2 is undetectable without this guard).
+// (a)/(b) already fully cover "known before this commit" for that case, so excluding (c)/(d)
+// there loses no legitimate signal — it only removes a self-referential false-negative.
+const repoRootIsInvokingRoot = path.resolve(REPO_ROOT) === path.resolve(INVOKING_ROOT);
+const knownIds = new Set([
+  ...headIdsFromInvokingRootHead('CHANGELOG.md', 'changelog'),
+  ...headIdsFromInvokingRootHead('BACKLOG.md', 'backlog'),
+  ...(repoRootIsInvokingRoot ? [] : backlogHeadingIds),
+  ...(repoRootIsInvokingRoot ? [] : changelogClaimedIds),
+]);
+for (const id of addedChangelogIds) {
+  if (!knownIds.has(id)) {
+    fail(
+      `BL-${id}: new CHANGELOG.md release header claims this id, but it was never seen anywhere — ` +
+        `not this commit's own prior BACKLOG.md/CHANGELOG.md, not the shared registry's current ` +
+        `BACKLOG.md/CHANGELOG.md. A CHANGELOG.md entry may only close out an id that already existed ` +
+        `somewhere; it may not invent a new one. File new items through the tool — see ` +
+        `CONTRIBUTING.md §1.9.`,
+    );
+  }
+}
+
+// ── 9. Rule G3 [WARN] — existing heading's TITLE segment changed (D6, body not compared) ─────
+const TITLE_RE = /^###\s*BL-\d+\s*—\s*(.*?)\s*—\s*\*\*/;
+for (const [id, addedLine] of addedHeadings) {
+  const removedLine = removedHeadings.get(id);
+  if (removedLine === undefined) continue; // pure addition — G1's concern, not G3's.
+  const addedTitle = addedLine.match(TITLE_RE)?.[1];
+  const removedTitle = removedLine.match(TITLE_RE)?.[1];
+  if (addedTitle !== undefined && removedTitle !== undefined && addedTitle !== removedTitle) {
+    warn(
+      `BL-${id}: heading title/content changed ('${removedTitle}' -> '${addedTitle}'). If this is a ` +
+        `genuine content swap (a different defect reusing this id) rather than a title clarification, ` +
+        `file the new defect as its own item instead of overwriting this one.`,
+    );
+  }
+}
+
+// ── 10. Rule G4 [WARN] — heading deleted with no CHANGELOG record anywhere (D7) ──────────────
+for (const [id] of removedHeadings) {
+  if (addedHeadings.has(id)) continue; // edited in place, not deleted — G3's concern, not G4's.
+  if (addedChangelogIds.has(id) || changelogClaimedIds.has(id)) continue; // resolve-and-archive.
+  warn(
+    `BL-${id}: heading deletion — removed from BACKLOG.md but no CHANGELOG.md archival record for ` +
+      `this id exists in this commit's diff or the shared registry's current CHANGELOG.md. If this ` +
+      `was resolved, add its CHANGELOG.md archival entry in the same commit as the deletion; if it ` +
+      `was discarded silently, reconsider.`,
+  );
 }
 
 if (failures > 0) {
