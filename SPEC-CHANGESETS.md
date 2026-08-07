@@ -330,8 +330,19 @@ main's package roots, plus a REAL `.changeset/` directory holding copies of the 
 makes the script's actual code path (`isPublishable`, the byte-diff against the npm registry,
 `pendingChangesetPackages()`) run for real:
 
+**Trap (found during CHANGESETS-2 review):** `$SCRATCH` MUST be a freshly minted, unique directory
+name every time this procedure is run. `mkdir -p` on an already-existing path is a silent no-op, so
+reusing a `$SCRATCH` name from a prior session — even a differently-timestamped session dir with the
+same tail component (e.g. `bl460-verify`) — makes the script read whatever stale `.changeset/` copy
+was left there instead of erroring. One reviewer's first pass silently inherited a session-old
+snapshot missing 2 of the 9 (then 11) files and got a spurious FAIL that had nothing to do with the
+packet under review. Always suffix `$SCRATCH` with a fresh timestamp (`bl460-verify-$(date +%s)`) or
+`rm -rf "$SCRATCH"` immediately before the `mkdir -p`, and treat a FAIL from this procedure as
+suspect until you've confirmed `ls "$SCRATCH/.changeset"` matches the file count you intended to copy.
+
 ```bash
-SCRATCH=/private/tmp/claude-502/-Users-nix-dev-ai-sox-ecosystem/1a711339-d48c-4ab9-9448-75f55573747a/scratchpad/bl460-verify
+SCRATCH=/private/tmp/claude-502/-Users-nix-dev-ai-sox-ecosystem/1a711339-d48c-4ab9-9448-75f55573747a/scratchpad/bl460-verify-$(date +%s)
+rm -rf "$SCRATCH"
 mkdir -p "$SCRATCH"
 ln -s /Users/nix/dev/ai/sox-ecosystem/libs       "$SCRATCH/libs"
 ln -s /Users/nix/dev/ai/sox-ecosystem/apps       "$SCRATCH/apps"
