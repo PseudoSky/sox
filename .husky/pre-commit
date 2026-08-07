@@ -17,23 +17,15 @@ set -e
 # measured on git 2.51), so the parent command line is passed in explicitly.
 SOX_GIT_PARENT_CMD="$(ps -o args= -p $PPID 2>/dev/null)" node tools/check-amend-shared-index.mjs
 
-# BL-359 — reject BL-<n> id collisions before they reach BACKLOG.md/CHANGELOG.md.
-node tools/check-bl-id-integrity.mjs
-
-# Keep the memory-program plan honest: PLAN.md's packet ledger and STATE.md's progress summary are
-# DERIVED from BACKLOG.md's heading markers. Closing an item without regenerating them leaves two
-# documents that read as authoritative while being wrong — the exact failure this guard exists to
-# stop (PLAN.md once named 39 already-closed ids).
+# [ADR-0011 Stage 3] BL-id collision guards (check-bl-id-integrity.mjs / check-backlog-markers.mjs)
+# are retired — BACKLOG.md/CHANGELOG.md no longer exist, so the split-brain they guarded against
+# (a hand-added heading colliding with a tool-filed id) is now structurally impossible, not merely
+# checked-for. See docs/decisions/0011-backlog-tool-write-destination.md §4 Stage 3 item 3.
 #
-# BL-435 — this must also fire on PLAN.md/STATE.md themselves. The old condition was BACKLOG.md
-# only, on the reasoning that "a change elsewhere cannot invalidate the derived blocks". That is
-# true of the derived blocks and false of the audited hand-written sections the same tool now
-# checks: STATE.md's "What to do next" went stale by someone editing STATE.md, a commit that never
-# stages BACKLOG.md. Guarding only the BACKLOG.md trigger would leave the guard blind to precisely
-# the edit that introduces the defect.
-if git diff --cached --name-only |
-  grep -qxE 'BACKLOG.md|docs/reporting/memory/(PLAN|STATE).md'; then
-  node tools/plan-status.mjs --check
-fi
+# Keep the memory-program plan honest: PLAN.md's packet ledger and STATE.md's progress summary are
+# DERIVED from the live backlog graph. Unlike the retired BACKLOG.md-staged trigger, this now runs
+# UNCONDITIONALLY — the graph can drift stale from a status transition that touches zero files in
+# this repo, so no file-staged condition can reliably catch it (BL-435's failure mode, generalized).
+node tools/plan-status.mjs --check
 
 npx nx affected --target=lint --base=HEAD~1 --head=HEAD

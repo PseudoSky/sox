@@ -46,19 +46,19 @@
  * revert bomb into immediate loss of every other agent's staged work.
  *
  * USAGE
- *   node tools/commit-mine.mjs -m "msg" -- BACKLOG.md docs/foo.md
+ *   node tools/commit-mine.mjs -m "msg" -- CHANGELOG.md docs/foo.md
  *       Commit the full worktree content of those paths, based on HEAD.
  *
- *   node tools/commit-mine.mjs -m "msg" --hunks 'BL-393|TRIGGER IDENTIFIED' -- BACKLOG.md
+ *   node tools/commit-mine.mjs -m "msg" --hunks 'BL-393|TRIGGER IDENTIFIED' -- CHANGELOG.md
  *       Commit ONLY hunks whose text matches the regex. Everything else in the file — including
  *       another agent's half-written section — stays uncommitted in the worktree.
  *
- *   node tools/commit-mine.mjs --dry-run -m "x" --hunks '...' -- BACKLOG.md
+ *   node tools/commit-mine.mjs --dry-run -m "x" --hunks '...' -- CHANGELOG.md
  *       Show which hunks would be taken and which would be left behind. ALWAYS do this first
  *       with --hunks: a regex that matches too much is how you commit someone else's paragraph.
  *
- * This does NOT run hooks (it bypasses `git commit` entirely). Run the guards yourself first:
- *   node tools/check-backlog-markers.mjs && node tools/plan-status.mjs --check
+ * This does NOT run hooks (it bypasses `git commit` entirely). Run the guard yourself first:
+ *   node tools/plan-status.mjs --check
  *
  * TWO GOTCHAS, both hit on first real use:
  *   - `--hunks` applies to EVERY path in the invocation. A regex chosen for one file will silently

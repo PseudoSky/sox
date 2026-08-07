@@ -5,9 +5,10 @@
 > Everything else is reference material you should open only when you need it.
 
 **One path. Do not create a parallel doc tree.** Findings go in `findings/`, program state goes
-in `STATE.md`, work order goes in `PLAN.md`, and defects go in the root `BACKLOG.md` — nowhere
-else. Earlier work scattered these across `docs/ideas/`, `docs/research/` and two levels of
-`docs/reporting/`, and agents read stale copies as a result.
+in `STATE.md`, work order goes in `PLAN.md`, and defects are filed through the backlog tool
+(family `BL`, repo `sox-ecosystem`) — nowhere else. Earlier work scattered these across
+`docs/ideas/`, `docs/research/` and two levels of `docs/reporting/`, and agents read stale copies
+as a result.
 
 ---
 
@@ -17,7 +18,7 @@ else. Earlier work scattered these across `docs/ideas/`, `docs/research/` and tw
 |---|---|---|---|
 | 1 | **[`STATE.md`](./STATE.md)** | **Where are we? What is next?** | **Always. Start here.** |
 | 2 | [`PLAN.md`](./PLAN.md) | What order does the work go in, and why? Which packets remain? | Before starting a packet |
-| 3 | [`../../../BACKLOG.md`](../../../BACKLOG.md) | Every known defect, with citations | Before filing anything |
+| 3 | The backlog graph — `backlog list-items --filter '{"repo":"sox-ecosystem","family":"BL"}'` (or `backlog_recall`/`backlog_list_items`) | Every known defect, with citations | Before filing anything |
 | 4 | [`../../observability/README.md`](../../observability/README.md) | How do I read the telemetry logs? | Before quoting any measurement |
 
 ## Reference — open on demand
@@ -37,7 +38,7 @@ else. Earlier work scattered these across `docs/ideas/`, `docs/research/` and tw
 ## Rules for agents working here
 
 1. **Status is derived — do not hand-write it.** Packet completion in `PLAN.md` and the progress
-   summary in `STATE.md` are generated from `BACKLOG.md` by `tools/plan-status.mjs`. Close the
+   summary in `STATE.md` are generated from the backlog graph by `tools/plan-status.mjs`. Close the
    backlog item, then run the tool; never edit a `status:` line or the block between the
    `PLAN-STATUS` markers. Both files drifted badly while looking authoritative before this was
    mechanical — `PLAN.md` named 39 already-closed ids and `STATE.md` led with a coverage warning
@@ -45,17 +46,16 @@ else. Earlier work scattered these across `docs/ideas/`, `docs/research/` and tw
 2. **Everything else in `STATE.md` is hand-written and must be kept current**, in particular the
    "Live service" table — re-measure it from `memory_ping`/`memory_stats` rather than copying the
    previous values, and update its timestamp when you do.
-2. **File every defect in the root `BACKLOG.md`**, even one you fix in a minute. Allocate the id
-   programmatically as `max(existing)+1` — reading the max by eye caused three collisions in one
-   afternoon (BL-359).
+2. **File every defect through the backlog tool** (`backlog_create_item`/`backlog create-item`,
+   family `BL`, repo `sox-ecosystem`, no `idOverride` — the tool auto-allocates the next id), even
+   one you fix in a minute.
 3. **No claim without a measurement.** Cite the file:line or the command output. `grep` hits are
    not reading.
 4. **Never mark RESOLVED without a red→green you personally watched fail and then pass** (BL-225).
    Four items shipped as RESOLVED while still broken; that rule exists because of them.
 5. **Run the guards before committing:**
    ```
-   node tools/check-backlog-markers.mjs
-   node tools/plan-status.mjs --check     # fails if PLAN.md/STATE.md drifted from BACKLOG.md
+   node tools/plan-status.mjs --check     # fails if PLAN.md/STATE.md drifted from the backlog graph
    node tools/check-no-nul-bytes.mjs
    ```
    Then **commit by pathspec** — `git commit <path> … -m "..."`. Never `git add -A`, `git add .`,

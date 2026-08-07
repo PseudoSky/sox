@@ -162,27 +162,14 @@ the rebuild command if an ABI mismatch is detected.  The `postinstall` hook rebu
 
 ### 1.9 Backlog
 
-**[ADR-0011, effective 2026-08-06] New `BL-*` items are filed through the backlog tool, not
-hand-edited into `BACKLOG.md`.** Existing open items already in `BACKLOG.md` keep transitioning
-by hand (claim, note, resolve, move to `CHANGELOG.md`) until Stage 3 of ADR-0011 retires the file
-— only NEW item creation changes in Stage 1. See
+**[ADR-0011, Stage 3 complete] `BL-*` items live entirely in the backlog graph.** The root
+`BACKLOG.md`/`CHANGELOG.md` files have been deleted — there is no markdown write surface left for
+this family. See
 [`docs/decisions/0011-backlog-tool-write-destination.md`](./docs/decisions/0011-backlog-tool-write-destination.md)
-for the full ruling.
+for the full ruling and migration history.
 
-Filing procedure for a new `BL-*` item:
+Filing procedure for a new `BL-*` item — a single tool call, no id reservation step:
 
-```bash
-# 1. Reserve the next id from the repo-local counter — NEVER trust backlog_create_item's own
-#    auto-allocation (computeNextHumanId) for family BL in this repo; it is graph-only and has
-#    already caused a live collision (BL-437). tools/bl-id-counter.mjs is the mitigation (ADR-0011
-#    R5) until BL-476 is fixed upstream.
-node tools/bl-id-counter.mjs --note "short description of what this id is for"
-# -> prints e.g. BL-<n> (the next unclaimed id — always use the actual value printed, not a
-#    hardcoded example; today's watermark is well past 479)
-
-# 2. File the item via the backlog_create_item MCP tool (or `backlog` CLI equivalent), passing
-#    that id explicitly as idOverride. Do NOT omit idOverride and let the tool auto-allocate.
-```
 ```
 mcp__backlog__backlog_create_item({
   data: {
@@ -191,44 +178,23 @@ mcp__backlog__backlog_create_item({
       title: "<short title>",
       body: "<full description, citations, files affected>",
       repo: "sox-ecosystem",
-      idOverride: "BL-<n>",   // the exact id printed by step 1 — never hardcode a literal id
+      // no idOverride — computeNextHumanId auto-allocates safely now that the graph is the ONLY
+      // place a BL-* id can be minted; there is no second, ungoverned write surface left for an
+      // id to exist on without the graph knowing about it (the historical BL-437 collision class
+      // this counter-reservation step used to guard against is now structurally unreachable).
     }
   }
 })
 ```
 
-Status transitions, claims, notes, and citations on a tool-filed item use the corresponding tool
-calls (`backlog_transition_status`, `backlog_claim_item`, `backlog_append_note`,
-`backlog_add_citation`) — never a hand-edited `### BL-<n>` heading in `BACKLOG.md` for that id.
+Equivalently via the CLI: `backlog create-item --repo sox-ecosystem --family BL --title "..." --body "..."`.
 
-`tools/check-bl-id-integrity.mjs` (run by `.husky/pre-commit` whenever `BACKLOG.md`/`CHANGELOG.md`
-is staged) mechanically enforces this — the current enforcement surface, per rule number
-(see the script's own docstring for full detail):
-
-- **Rule G1 (`BACKLOG.md`, HARD FAIL, unconditional).** Any brand-new `### BL-<n>` heading —
-  at ANY id, above or below the Stage-1 watermark, with or without `.bl-id-counter.json`
-  present — rejects the commit outright. There is no below-watermark exemption.
-- **Rule G2 (`CHANGELOG.md`, HARD FAIL).** A new `CHANGELOG.md` release header claiming a
-  `BL-<n>` id that was never seen anywhere (not this commit's own prior `BACKLOG.md`/
-  `CHANGELOG.md`, not the shared registry's current `BACKLOG.md`/`CHANGELOG.md`) rejects the
-  commit — an id may close out something that already existed, never invent a new one.
-- **Rule G3 (`BACKLOG.md`, WARN).** An existing heading's title/content changed between commits
-  — flagged for review, does not block (a title clarification and a genuine content swap are
-  indistinguishable to a text diff).
-- **Rule G4 (`BACKLOG.md`, WARN).** An existing heading deleted with no matching `CHANGELOG.md`
-  record anywhere — flagged for review, does not block (the common legitimate
-  resolve-and-archive flow already covers most deletions and is recognized automatically).
-- Checks 4/5 (watermark / issued-id, counter-gated) still run in addition to G1 when
-  `.bl-id-counter.json` is present, for a more specific diagnostic — but G1 alone is now the
-  load-bearing, unconditional guard; the counter file's presence is no longer required for
-  enforcement to exist at all.
+Status transitions, claims, notes, and citations use the corresponding tool calls
+(`backlog_transition_status`, `backlog_claim_item`, `backlog_append_note`, `backlog_add_citation`).
 
 **There is no discovery-time exception.** Every newly discovered `BL-*` item, regardless of
-whether it concerns pre- or post-ADR-0011 code, is filed through the tool (step 1-2 above) — Rule
-G1 rejects *any* new `### BL-<n>` heading in `BACKLOG.md`, not only ones above the watermark. To
-add information to an **existing** open item (still markdown-native, id ≤ the Stage-1 watermark),
-edit that heading's body in place — do not create a new heading for it, and do not create a new
-heading to hold an unrelated new finding.
+whether it concerns old or new code, is filed through the tool exactly as above — there is no
+other surface it could be filed on.
 
 ---
 

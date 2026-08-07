@@ -13,21 +13,57 @@
  *   - one packet's `acceptance` label was rewritten for emphasis and stopped parsing.
  *
  * Every check below exists because that specific thing was wrong. This is the same
- * discipline as tools/check-backlog-markers.mjs: the document is a machine input,
- * so a human-readable-only document is a broken one.
+ * discipline plan-status.mjs applies to the derived plan blocks: the document is a
+ * machine input, so a human-readable-only document is a broken one.
+ *
+ * [ADR-0011 Stage 3] Section 4's open-item coverage check used to parse `### BL-<n>` headings out
+ * of root `BACKLOG.md`, which was deleted along with `CHANGELOG.md` when the graph became the sole
+ * source of truth for `BL-*` status. It now shells out to the `backlog` CLI, the same way
+ * `tools/plan-status.mjs`'s `readGraphStatuses()` does (see that file for the fuller rationale) —
+ * paginated, loud-fail on a CLI error, never silently "zero open items".
  *
  * Usage: node tools/check-plan-packets.mjs
  * Exit 0 = conformant. Non-zero = the state machine cannot be trusted.
  */
 import { readFileSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
 
 const PLAN = 'docs/reporting/memory/PLAN.md';
-const BACKLOG = 'BACKLOG.md';
+const BACKLOG_BIN = process.env.PLAN_STATUS_BACKLOG_BIN || 'backlog';
+const PAGE = 200;
 const REQUIRED = ['requires', 'tier', 'Closes', 'Files', 'acceptance', 'budget', 'orientation'];
 
 const plan = readFileSync(PLAN, 'utf8');
-const backlog = readFileSync(BACKLOG, 'utf8');
 const violations = [];
+
+// [ADR-0011 Stage 3] Open-set mirrors tools/plan-status.mjs's OPEN_STATUSES exactly — see that
+// file's D1 doc comment for the full table and reasoning. Kept as an independent literal (not
+// imported) so this script has no runtime dependency on plan-status.mjs's module shape.
+const OPEN_STATUSES = new Set(['OPEN', 'IN_PROGRESS', 'PARTIAL', 'OUTSTANDING', 'DEFERRED', 'BLOCKED', 'MIXED', 'UNKNOWN']);
+
+function readOpenBlIds() {
+  const ids = [];
+  let offset = 0;
+  for (;;) {
+    let out;
+    try {
+      out = execFileSync(
+        BACKLOG_BIN,
+        ['list-items', '--filter', JSON.stringify({ repo: 'sox-ecosystem', family: 'BL', excludeArchived: false, limit: PAGE, offset })],
+        { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] },
+      );
+    } catch (err) {
+      throw new Error(`check-plan-packets: \`${BACKLOG_BIN} list-items\` failed (offset=${offset}) — ${err.status !== undefined ? `exit ${err.status}` : err.message}.`);
+    }
+    const items = JSON.parse(out);
+    for (const item of items) {
+      if (OPEN_STATUSES.has(String(item.status ?? 'UNKNOWN').toUpperCase())) ids.push(item.humanId);
+    }
+    if (items.length < PAGE) break;
+    offset += PAGE;
+  }
+  return ids;
+}
 
 // ── parse packets ────────────────────────────────────────────────────────────
 const blocks = plan.split(/(?=^### PKT-)/m).filter((b) => b.startsWith('### PKT-'));
@@ -127,9 +163,7 @@ for (const id of dependedUpon) {
 // ── 4. every open backlog item is assigned or explicitly excluded ────────────
 // Presence of the id ANYWHERE in the plan is NOT coverage — that mistake was made
 // twice and reported as "FULL COVERAGE" both times.
-const openIds = [...backlog.matchAll(/^### (BL-\d+) .*$/gm)]
-  .filter((m) => /\*\*(Open|REOPENED|BLOCKED)/.test(m[0]))
-  .map((m) => m[1]);
+const openIds = readOpenBlIds();
 const closed = new Set();
 for (const m of plan.matchAll(/\*\*Closes:\*\*([^\n]*)/g)) {
   for (const id of m[1].match(/BL-\d+/g) ?? []) closed.add(id);
@@ -140,7 +174,7 @@ for (const m of plan.matchAll(/(?:OUT OF SCOPE|NO packet)([\s\S]*?)(?=\n## |$)/g
 }
 for (const id of openIds) {
   if (!closed.has(id) && !excluded.has(id)) {
-    violations.push(`${id}: open in BACKLOG.md but on no packet's **Closes:** line and in no exclusion list`);
+    violations.push(`${id}: open in the backlog graph but on no packet's **Closes:** line and in no exclusion list`);
   }
 }
 
