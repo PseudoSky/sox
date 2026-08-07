@@ -2,6 +2,59 @@
 
 ---
 
+## [Unreleased] — BL-389: `LanceDbVectorBackend` routed through `StoreAdapter`, not a raw `better-sqlite3` handle
+
+`LanceDbVectorBackend`'s constructor previously took `{ db: Database.Database }` — a public API typed
+directly against the sqlite driver even though the class never touches the adapter's driver at all
+(`synckit` bridges to a real on-disk LanceDB table in a worker thread). That meant no caller could
+wire this backend up against a Turso-backed store without its own `unwrap()`-shaped workaround, the
+same shape as BL-380's `index.ts` casts in the same package.
+
+The constructor now takes `{ adapter: StoreAdapter }`, guarded at runtime by
+`requireStoreAdapterShape()` — a raw driver handle has no `capabilities` field, so passing one throws
+a named `TypeError` at the boundary instead of failing opaquely three calls later. `index.ts`'s
+`openLanceDbVectorStore` follows suit; `SqliteVectorBackend` (which genuinely cannot function without
+a synchronous `better-sqlite3` connection) is untouched — this fix is deliberately not
+capability-gated, since `LanceDbVectorBackend` is backend-agnostic by construction and gating it here
+would reintroduce the exact Turso-compat blocker the fix exists to remove.
+
+```bash
+npx nx typecheck vector-store   # TS2353 (excess property `adapter`) at the constructor call site → 0 errors
+npx nx test vector-store        # 3 files, 71/71 passed
+```
+
+RED-arm compiler output (constructor signature reverted to `{ db: Database.Database }`, call sites
+already rewritten to pass `adapter`):
+
+```
+libs/data/vectors/vector-store/src/index.ts:437:35 - error TS2379: Argument of type
+'LanceDbVectorBackendConfig & { adapter: StoreAdapter; }' is not assignable to parameter of type
+'LanceDbVectorBackendConfig & { db: Database; }' with 'exactOptionalPropertyTypes: true'. Consider
+adding 'undefined' to the types of the target's properties.
+  Property 'db' is missing in type 'LanceDbVectorBackendConfig & { adapter: StoreAdapter; }' but
+  required in type '{ db: Database; }'.
+
+libs/data/vectors/vector-store/src/lancedb.bl389-adapter-boundary.spec.ts:51:7 - error TS2353:
+Object literal may only specify known properties, and 'adapter' does not exist in type
+'LanceDbVectorBackendConfig & { db: Database; }'.
+
+libs/data/vectors/vector-store/src/lancedb.bl389-adapter-boundary.spec.ts:97:9 - error TS2353:
+Object literal may only specify known properties, and 'adapter' does not exist in type
+'LanceDbVectorBackendConfig & { db: Database; }'.
+
+libs/data/vectors/vector-store/src/lancedb.spec.ts:57:5 - error TS2353: Object literal may only
+specify known properties, and 'adapter' does not exist in type 'LanceDbVectorBackendConfig & { db:
+Database; }'.
+
+Found 4 errors in 3 files.
+```
+
+`libs/data/vectors/vector-store/src/lancedb.bl389-adapter-boundary.spec.ts` carries all three
+acceptance criteria: AC-1 is the compile-time boundary above; AC-2 constructs the backend from a
+`MockAdapter`, upserts 2 vectors into a real on-disk LanceDB table, and asserts a real `knn()` query's
+nearest neighbor matches the closest upserted vector; AC-3 constructs a real `better-sqlite3` handle,
+casts it to `StoreAdapter`, and asserts the constructor throws naming `StoreAdapter` in the message.
+
 ## [Unreleased] — BL-447: the on-open rebuild trigger no longer probes for the literal it is about to delete
 
 `SqliteGraphBackend.ensureCheckConstraints()` runs from `applySchema()` on every cold open, and it
