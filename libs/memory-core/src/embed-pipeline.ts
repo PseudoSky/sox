@@ -146,6 +146,12 @@ export interface HealResult {
    * before processing all SELECTed rows. The next tick picks up the remainder.
    */
   time_budget_exceeded: boolean;
+  /** (BL-474) True when the caller could not acquire `_bgSlot` and skipped the
+   *  scan entirely rather than waiting for it — see index.ts's
+   *  withBackgroundSlotOrSkip. Always false/absent for a result that actually
+   *  ran a scan (including scanned:0 — "ran and found nothing" is distinct
+   *  from "did not run"). */
+  skipped?: boolean;
 }
 
 /**
