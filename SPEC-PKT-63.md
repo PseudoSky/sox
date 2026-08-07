@@ -165,7 +165,7 @@ OK`, no disagreement in either direction on this target set)
 | `@adhd/sox-nx` | — | +patch | patch | cascade (`updateInternalDependencies:"patch"`) |
 | `@adhd/sox-hybrid-search` | 0.3.3 | +patch | patch | cascade (graph-store dependent, BL-444's own list) |
 | `@adhd/sox-claim-verification` | — | +patch | patch | cascade |
-| `@adhd/sox-memory-core` | 0.5.0 | +patch | patch | cascade (graph-store dependent, BL-444's own list) |
+| `@adhd/sox-memory-core` | 0.5.0 | **0.6.0** | minor (amended §9 Q1 — direct changeset for BL-441's own new surface, *in addition to* the graph-store cascade pin) | direct changeset (filed during implementation; see §9) |
 | `@adhd/sox-analysis` | 0.1.4 | +patch | patch | cascade (graph-store dependent, BL-444's own list) |
 | `@adhd/sox-task-queue` | — | +patch | patch | cascade |
 | `@adhd/sox-blob-store` | — | +patch | patch | cascade |
@@ -511,3 +511,59 @@ pnpm run release:prepared
 (= `SOX_REGISTRY_PUBLISH=npm npx tsx scripts/build-index.ts` (portable registry rewrite) →
 `nx build sox` → `changeset publish`, per `package.json:16` and `PUBLISHING.md`'s own documented
 owner-gated publish sequence — this packet stops here, one command short, as instructed.)
+
+---
+
+## 9. Architect ruling on the implementer's open questions (post-hoc, both GRANTED)
+
+**Q1 — the `@adhd/sox-memory-core` changeset the implementer filed (`bl460-sox-memory-core-ontology-ownership.md`, minor, `0.5.0`→`0.6.0`) is CORRECT. §2a is hereby amended: memory-core row changes from `+patch` / "cascade" to `0.6.0` / minor / "direct changeset (BL-441 surface, filed during PKT-63 — see §1c note below)".**
+
+Read `scripts/check-changeset-surface.ts:1-60` myself: the gate's docstring and Decision C are exactly
+as reported — a byte-diff of built `dist/*.d.ts` against the last-published tarball, gated on
+*presence* of a naming changeset, with zero bump-type logic. It does not special-case "this package
+also happens to be covered by an `updateInternalDependencies` cascade" — cascade coverage exists in
+`changeset status`'s internal graph, not in this gate's diff, so a package can legitimately be both
+cascade-patched *and* separately need a direct changeset for its own new surface. That is exactly what
+happened here: BL-441 (`d64175f5`, merged before this packet started, so its absence from my original
+§2a table was my own miss, not a scope violation — I built §2a from `changeset status` output at spec
+time, which only reflects packages with pending changesets, and memory-core's BL-441 surface delta had
+none until the implementer filed one) added `ontology.d.ts`/`graph-backend.d.ts`, re-exported from
+`index.d.ts`, with zero removed or narrowed exports (confirmed via the per-package `libs/memory-core/CHANGELOG.md:1-30`
+entry the implementer wrote, which documents the diff against the published `0.5.0` tarball). An
+additive-only `.d.ts` delta is textbook minor under ordinary semver — independent of and in addition to
+the pre-1.0 "minor is breaking" policy from §1c, which only ever argued for *not* using `major`, never
+against using `minor` for a real addition. `0.6.0` is correct, `minor` is correct, and treating it as
+cascade-only `0.5.1` would have shipped a real new public surface (a whole new module pair) with no
+changeset recording it — precisely the defect class BL-460 exists to catch. No further action needed;
+the implementer's own resolution stands as filed.
+
+**Q2 — proceeding to commit (step 11) and backlog close-out (step 12) without a green
+`clean-room-smoke.sh` run is APPROVED for this packet, with one binding condition added to the gate.**
+
+Read `scripts/build-index.ts:22,79-139,365-376` myself: BL-390's dirty-tree guard is real, correctly
+scoped (it filters to `isChecksumRelevant` files, not a blanket refusal on any dirt — `:139`'s own
+comment says as much), and `git status --porcelain -- tmp/apigen` in the shared main checkout
+(`/Users/nix/dev/ai/sox-ecosystem`, confirmed by running it myself, *not* the worktree) shows
+`?? tmp/apigen/` — untracked, not `.gitignore`d (confirmed: zero hits for `tmp/apigen` or `tmp/` in
+`.gitignore`), sitting in the checkout `build-index.ts` resolves to via `git-common-dir` per BL-480.
+This is genuinely not this packet's dirt: PKT-63's own worktree diff touches only `.changeset/`,
+18 `package.json`s, 18 `CHANGELOG.md`s, `pnpm-lock.yaml`, and root `CHANGELOG.md` — none of which is
+`tmp/apigen/ir-cache`. Per house rules ("Never touch/revert/discard changes you did not author") the
+implementer was right not to delete or gitignore it out from under whatever concurrent session owns it,
+and right not to reach for `--allow-dirty` (that flag exists precisely to produce a `+dirty`-suffixed,
+non-authoritative checksum — using it on a *release* gate would silently downgrade the one proof this
+step exists to produce). **BL-484 is the correct, sufficient response; filing it and moving on is the
+correct call**, for two independent reasons: (a) `clean-room-smoke.sh` is not named by any of
+AC-444-1..5 or the 7 backlog ACs in §5 — nothing in this packet's own acceptance surface required it
+to go green this run; (b) the packet's entire charter is to stop **one command short of
+`npm publish`** (§8 closing note) — `clean-room-smoke.sh` is a pre-publish canary, not a pre-*commit*
+gate for a version-bump-only commit that touches no `src/`.
+
+**Binding condition (new, closes the gap rather than silently deferring it forever):** the actual
+publish command, `pnpm run release:prepared` (§8 closing block), **must not be run by any human or
+agent until `bash scripts/acceptance/clean-room-smoke.sh` has been observed to exit 0 from a clean
+tree** (either after BL-484 lands, or once the concurrent session holding `tmp/apigen/` clears it).
+This is not a new BL item — it is a precondition folded into the existing "one command short" stop
+point this spec already defined in §8, made explicit so it cannot be silently skipped when someone
+eventually runs the publish step. Whoever runs `release:prepared` must re-verify §5's ACs are still
+green against `main` at that point too (this branch may have moved).
