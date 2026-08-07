@@ -89,7 +89,10 @@ through it, so its behaviour must be understood, not guessed.
 3. **`libs/data/graph/graph-store/conformance-fixture/tsconfig.json`** — standalone. Does **not**
    `extends` `tsconfig.base.json` or anything else in this repo (Decision 3). `module: "NodeNext"`,
    `moduleResolution: "NodeNext"`, `strict: true`, `target: "ES2022"`, `outDir: "dist"`,
-   `rootDir: "src"`, `noEmitOnError: true`.
+   `rootDir: "src"`, `noEmitOnError: true`, `"types": ["node"]` (§7 Ruling A — the fixture code
+   genuinely uses `process.stdout`/`process.exitCode`, and under `NodeNext` resolution `tsc` needs
+   this declared explicitly; paired with a `"@types/node"` `devDependencies` entry in the fixture's
+   `package.json`).
 
 4. **`libs/data/graph/graph-store/conformance-fixture/src/positive-kind-and-rel.ts`** — AC-1/AC-2
    (kind) + AC-1/AC-2 (rel), §4. Imports `createGraphBackend`, `DEFAULT_TYPE_POLICY`, and the
@@ -435,3 +438,52 @@ In order, after implementation is complete:
 **Do not proceed to PKT-63 (release train) reporting.** This packet's job ends at a green gate; PKT-63
 is a separate stage that must not start publishing until this one is verified, per PKT-62's own
 "sequencing" line in the plan.
+
+---
+
+## 7. Architect ruling on the implementer's report (post-hoc, both affirmed)
+
+Two items surfaced during implementation that weren't settled by the text above. Both are ruled
+correct as implemented — no code changes required, this section only closes the spec text against
+them so a future reader isn't left wondering whether they were reviewed.
+
+### Ruling A — `tsconfig.json` needed `"types": ["node"]`; Decision 3's "standalone, no repo
+awareness" intent is unaffected
+
+Confirmed by reading: `positive-kind-and-rel.ts:29,130,135` and `negative-closed-ddl.ts:28,115,156,161`
+genuinely call `process.stdout.write`/`process.exitCode` — real Node global usage, not incidental.
+Under `moduleResolution: "NodeNext"` (already specified by Decision 3), `tsc` does not auto-discover
+`@types/node` the way older `node`/`classic` resolution modes sometimes appeared to; a real external
+consumer authoring the identical fixture would hit the same TS2591 and would fix it the same two ways
+the implementer did: add `"@types/node"` to `devDependencies`
+(`conformance-fixture/package.json:8`) and declare `"types": ["node"]` in `compilerOptions`
+(`conformance-fixture/tsconfig.json:12`). This is exactly what Decision 3 asked for — "matching what
+an actual external consumer's `tsconfig.json` looks like: no awareness this repo exists" — not a
+deviation from it. **Affirmed. §2 item 3's `compilerOptions` list is amended in place: add `"types":
+["node"]` to the enumerated options** (it was omitted from the original spec text as an oversight,
+not excluded by design).
+
+### Ruling B — orchestrator gates each AC on crash-detection, not on the fixture process's overall
+exit code
+
+Confirmed by reading `tools/graph-store-tarball-conformance.mjs:323-338`: the original per-AC gate
+used `positiveR.status === 0` for the whole child process, which — since
+`positive-kind-and-rel.ts` sets `process.exitCode = 1` on *any* single check failure
+(`positive-kind-and-rel.ts:130`) — meant one failing check (e.g. AC-3's `EXPLAIN QUERY PLAN`
+assertion) would report AC-1 and AC-2 as FAIL even when their own named NDJSON checks
+(`kind-write-read`, `rel-write-read`, etc.) genuinely passed. That is a real defect in exactly the
+class this packet exists to prevent: a gate that can't distinguish "this specific criterion failed"
+from "something else in the same process failed," which is precisely the ambiguity AC-1 through AC-4
+are individually named to avoid. The implementer's fix — gate on `positiveChecks.length === 0` or an
+explicit `fixture-fatal` NDJSON line (process crashed/emitted nothing), and otherwise read each AC's
+own named check(s) independently by name — is correct and is now how the shipped orchestrator behaves
+(`tools/graph-store-tarball-conformance.mjs:323-338`). This was the implementer's own new code (the
+orchestrator, §2 item 1), not a product-code change, so it was in scope for the implementer to fix
+directly rather than stop and report per the "OUT OF BOUNDS" list in §2 (that list is
+`index.ts`/`*.spec.ts`/`store-adapter`/`sox-telemetry`/`.changeset`/`node_modules`, none of which this
+touches). **Affirmed, no amendment needed to the file list or decisions — §4's AC-1/AC-2 acceptance
+text already describes the correct, per-criterion outcome; the implementer's fix makes the
+orchestrator actually honor it.**
+
+Both rulings close the implementer's report with zero open questions remaining. Proceed to PKT-63
+reporting is still withheld per this file's closing line — that gate is unchanged.
