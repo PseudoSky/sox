@@ -1,9 +1,9 @@
-import Database from 'better-sqlite3';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import * as lancedb from '@lancedb/lancedb';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { MockAdapter } from '@adhd/sox-store-adapter';
 
 import {
   LanceDbVectorBackend,
@@ -48,19 +48,13 @@ function unitVec(dim: number, component: number): Float32Array {
   return vec;
 }
 
-// A dummy sqlite handle to satisfy the pinned `{ db: Database.Database }`
-// constructor shape — the real LanceDB backend does not use it.
-function dummyDb(): Database.Database {
-  return new Database(':memory:');
-}
-
 function makeBackend(dir: string, index?: LanceDbVectorBackendConfig['index']): LanceDbVectorBackend {
   // `index` is an OPTIONAL property, not a `T | undefined` one — under
   // exactOptionalPropertyTypes it must be omitted, never passed as undefined.
   return new LanceDbVectorBackend({
     lancedbPath: dir,
     ...(index === undefined ? {} : { index }),
-    db: dummyDb(),
+    adapter: new MockAdapter(),
   });
 }
 
@@ -350,7 +344,7 @@ describe('openLanceDbVectorStore', () => {
   it('creates a real on-disk backend via the factory', () => {
     const tmp = makeTmpLanceDir();
     try {
-      const store = openLanceDbVectorStore({ lancedbPath: tmp.dir, db: dummyDb() });
+      const store = openLanceDbVectorStore({ lancedbPath: tmp.dir, adapter: new MockAdapter() });
       store.ensureSpace({ modelId: 'factory-model', dim: 4 });
       store.upsert(1, makeVec(4, 1), { modelId: 'factory-model', dim: 4 });
       expect(store.get(1, 'factory-model')).not.toBeNull();

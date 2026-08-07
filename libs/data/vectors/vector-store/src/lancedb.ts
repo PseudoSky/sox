@@ -1,6 +1,6 @@
 import type { VectorBackend, VectorSpace, VecFilter } from './index.js';
 import { SpaceInvariantError } from './index.js';
-import type Database from 'better-sqlite3';
+import type { StoreAdapter } from '@adhd/sox-store-adapter';
 import * as fs from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { createSyncFn } from 'synckit';
@@ -52,14 +52,38 @@ function getSyncFn(): SyncLanceFn {
   return cachedSyncFn;
 }
 
+// A raw driver handle (e.g. `better-sqlite3.Database`) has no `capabilities`
+// field — duck-type on that to catch the mistake at the boundary with a named
+// error, rather than letting it surface as an opaque failure three calls
+// later inside `getSyncFn()`. Mirrors `index.ts`'s `requireSqliteHandle`
+// guard (same package, same BL-364 lesson). A plain `TypeError` is used
+// (not `index.ts`'s `StorageError`) to avoid a circular import — `index.ts`
+// imports `LanceDbVectorBackend` from this file.
+function requireStoreAdapterShape(adapter: unknown): asserts adapter is StoreAdapter {
+  if (
+    adapter === null ||
+    typeof adapter !== 'object' ||
+    (adapter as { capabilities?: unknown }).capabilities === undefined
+  ) {
+    throw new TypeError(
+      'LanceDbVectorBackend requires a StoreAdapter, not a raw driver handle — ' +
+        'construct one via createSqliteAdapter()/createTursoAdapter() (or ' +
+        'createStoreAdapter()) from @adhd/sox-store-adapter and pass it as `adapter`.',
+    );
+  }
+}
+
 // ── LanceDbVectorBackend ────────────────────────────────────────────────────
 
 export class LanceDbVectorBackend implements VectorBackend {
   private readonly lancedbPath: string;
   private readonly indexConfig: LanceDbVectorBackendConfig['index'];
+  private readonly adapter: StoreAdapter;
   private spaces: VectorSpace[];
 
-  constructor(config: LanceDbVectorBackendConfig & { db: Database.Database }) {
+  constructor(config: LanceDbVectorBackendConfig & { adapter: StoreAdapter }) {
+    requireStoreAdapterShape(config.adapter);
+    this.adapter = config.adapter;
     this.lancedbPath = config.lancedbPath;
     this.indexConfig = config.index;
 
@@ -69,7 +93,10 @@ export class LanceDbVectorBackend implements VectorBackend {
     const res = getSyncFn()({ op: 'init', lancedbPath: this.lancedbPath });
     this.spaces = res.spaces ?? [];
 
-    console.info(`[vector-store] LanceDbVectorBackend opened: path=${config.lancedbPath}`);
+    console.info(
+      `[vector-store] LanceDbVectorBackend opened: path=${config.lancedbPath} ` +
+        `adapterType=${this.adapter.config.type}`,
+    );
   }
 
   ensureSpace(space: VectorSpace): void {
