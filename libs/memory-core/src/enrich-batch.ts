@@ -18,7 +18,7 @@
  * have an unwrapped better-sqlite3 Database can pass wrapRawDbAsAdapter(db).
  */
 
-import { createGraphBackend } from '@adhd/sox-graph-store';
+import { getMemoryGraphBackend } from './graph-backend.js';
 import { buildAutoLinks } from './autolink.js';
 import { clusterStore, type ThresholdCalibration } from './cluster.js';
 import { computeImportance } from './importance.js';
@@ -186,7 +186,7 @@ export async function runBatchEnrich(
   opts: BatchEnrichOptions = {},
 ): Promise<BatchEnrichResult> {
   // GraphBackend instance for node/edge CRUD (sibling pattern)
-  createGraphBackend(adapter);
+  getMemoryGraphBackend(adapter);
 
   const {
     clusterThreshold,

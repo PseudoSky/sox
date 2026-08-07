@@ -510,7 +510,29 @@ const isMainModule = import.meta.url === `file://${process.argv[1]}`;
 if (isMainModule) {
   const args = process.argv.slice(2);
   const allowDirty = args.includes('--allow-dirty');
-  const root = args.find((a) => !a.startsWith('--')) ?? process.cwd();
+  // BL-480: default root must resolve to the SHARED repo root (`git
+  // rev-parse --git-common-dir` + '..'), never `process.cwd()`. The
+  // `registry:sync-index` nx target runs with `cwd: "."`, which nx resolves
+  // against whichever checkout the command was invoked from — including a
+  // `.worktrees/**` checkout. `process.cwd()` there produces `file://` source
+  // entries and extension-discovery paths rooted in a directory that is
+  // convention-deleted once the worktree's branch merges (see CLAUDE.md's
+  // git-worktree section), silently corrupting every OTHER extension's
+  // `source` field for entries this invocation happened to also touch.
+  // `tools/check-backlog-markers.mjs` established this exact pattern for the
+  // same reason (BL-416) — mirrored here rather than reinvented.
+  const explicitRoot = args.find((a) => !a.startsWith('--'));
+  let defaultRoot = process.cwd();
+  try {
+    const gitCommonDir = execSync('git rev-parse --git-common-dir', {
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+    }).trim();
+    defaultRoot = path.resolve(gitCommonDir, '..');
+  } catch {
+    // Not a git repo (or git unavailable) — fall back to cwd, same as before.
+  }
+  const root = explicitRoot ?? defaultRoot;
   try {
     buildIndex({ root, allowDirty });
   } catch (e) {

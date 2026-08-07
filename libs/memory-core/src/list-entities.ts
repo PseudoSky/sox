@@ -8,7 +8,7 @@
  */
 
 import type { StoreAdapter } from '@adhd/sox-store-adapter';
-import { createGraphBackend } from '@adhd/sox-graph-store';
+import { getMemoryGraphBackend } from './graph-backend.js';
 
 // ── Types ──────────────────────────────────────────────────────────────────────
 
@@ -60,7 +60,7 @@ export async function memoryListEntities(
     return { entities: [], total: 0 };
   }
 
-  const backend = createGraphBackend(adapter);
+  const backend = getMemoryGraphBackend(adapter);
 
   // For each entity, count MENTIONS edges and compute first/last seen
   const results: Array<{
