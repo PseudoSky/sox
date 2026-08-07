@@ -256,7 +256,7 @@ CREATE UNIQUE INDEX IF NOT EXISTS "ix_edge_unique" ON "edge" ("src", "dst", "rel
 
 export const DEFAULT_NODE_KINDS = ['episode', 'entity', 'claim', 'community', 'session', 'generic'] as const;
 
-const NODE_TABLE_DDL = `CREATE TABLE node (
+export const NODE_TABLE_DDL = `CREATE TABLE node (
   rowid        INTEGER PRIMARY KEY,
   uid          TEXT UNIQUE NOT NULL,
   kind         TEXT NOT NULL CHECK (kind IN ('episode','entity','claim','community','session','generic')),
@@ -287,7 +287,7 @@ const NODE_TABLE_DDL = `CREATE TABLE node (
   t_updated    TEXT
 )`;
 
-const EDGE_TABLE_DDL = `CREATE TABLE edge (
+export const EDGE_TABLE_DDL = `CREATE TABLE edge (
   rowid     INTEGER PRIMARY KEY,
   src       INTEGER NOT NULL REFERENCES node ON DELETE CASCADE,
   dst       INTEGER NOT NULL REFERENCES node ON DELETE CASCADE,
@@ -302,7 +302,69 @@ const EDGE_TABLE_DDL = `CREATE TABLE edge (
   t_invalid TEXT
 )`;
 
-const NODE_COLUMNS = [
+/**
+ * PKT-61 (BL-442) — the operator open-schema migration's target DDL for `node`.
+ *
+ * Byte-identical to {@link NODE_TABLE_DDL} with only the `CHECK (kind IN (...))` clause removed
+ * — `kind` becomes plain `TEXT NOT NULL`, matching {@link INLINE_MIGRATION_DDL}'s shape. Copied
+ * verbatim from `ensure-check-constraints.bl447.spec.ts`'s `OPEN_SCHEMA_NODE_DDL` (proven-correct
+ * 28-column fixture; see SPEC-PKT-61.md §2.1) rather than derived by regex-stripping the CHECK out
+ * of `NODE_TABLE_DDL` — do not "simplify" this into a derivation, per that spec's explicit ruling.
+ */
+export const NODE_TABLE_DDL_OPEN = `CREATE TABLE node (
+  rowid        INTEGER PRIMARY KEY,
+  uid          TEXT UNIQUE NOT NULL,
+  kind         TEXT NOT NULL,
+  content      TEXT,
+  name         TEXT,
+  summary      TEXT,
+  topic        TEXT,
+  tags         TEXT,
+  importance   REAL DEFAULT 1.0,
+  confidence   REAL,
+  content_hash TEXT,
+  namespace    TEXT DEFAULT 'global',
+  meta         TEXT,
+  agent_id     TEXT,
+  session_id   TEXT,
+  source       TEXT CHECK (source IN ('message','tool_output','observation','document','reflection','import')),
+  project_path TEXT,
+  level        INTEGER,
+  resume_state TEXT,
+  is_superseded INTEGER DEFAULT 0,
+  t_occurred   TEXT,
+  t_expires    TEXT,
+  t_created    TEXT NOT NULL,
+  t_valid      TEXT,
+  t_invalid    TEXT,
+  access_count INTEGER DEFAULT 0,
+  last_access  TEXT,
+  t_updated    TEXT
+)`;
+
+/**
+ * PKT-61 (BL-442) — the operator open-schema migration's target DDL for `edge`.
+ *
+ * Byte-identical to {@link EDGE_TABLE_DDL} with only the `CHECK (rel IN (...))` clause removed —
+ * `rel` becomes plain `TEXT NOT NULL`. Copied verbatim from
+ * `ensure-check-constraints.bl447.spec.ts`'s `OPEN_SCHEMA_EDGE_DDL`; see {@link NODE_TABLE_DDL_OPEN}.
+ */
+export const EDGE_TABLE_DDL_OPEN = `CREATE TABLE edge (
+  rowid     INTEGER PRIMARY KEY,
+  src       INTEGER NOT NULL REFERENCES node ON DELETE CASCADE,
+  dst       INTEGER NOT NULL REFERENCES node ON DELETE CASCADE,
+  rel       TEXT NOT NULL,
+  weight    REAL DEFAULT 1.0,
+  confidence REAL,
+  origin    TEXT CHECK (origin IN ('extracted','inferred','user_asserted')),
+  meta      TEXT,
+  t_created TEXT NOT NULL,
+  t_expired TEXT,
+  t_valid   TEXT,
+  t_invalid TEXT
+)`;
+
+export const NODE_COLUMNS = [
   'rowid', 'uid', 'kind', 'content', 'name', 'summary', 'topic', 'tags',
   'importance', 'confidence', 'content_hash', 'namespace', 'meta', 'agent_id',
   'session_id', 'source', 'project_path', 'level', 'resume_state', 't_occurred',
@@ -310,12 +372,12 @@ const NODE_COLUMNS = [
   'access_count', 'last_access', 't_updated',
 ];
 
-const EDGE_COLUMNS = [
+export const EDGE_COLUMNS = [
   'rowid', 'src', 'dst', 'rel', 'weight', 'confidence', 'origin', 'meta',
   't_created', 't_expired', 't_valid', 't_invalid',
 ];
 
-const NODE_INDEX_DDLS = [
+export const NODE_INDEX_DDLS = [
   `CREATE INDEX IF NOT EXISTS ix_node_kind       ON node(kind)`,
   `CREATE INDEX IF NOT EXISTS ix_node_hash       ON node(content_hash)`,
   `CREATE INDEX IF NOT EXISTS ix_node_agent      ON node(agent_id)`,
@@ -329,7 +391,7 @@ const NODE_INDEX_DDLS = [
   `CREATE INDEX IF NOT EXISTS ix_node_expires    ON node(t_expires) WHERE t_expires IS NOT NULL`,
 ];
 
-const EDGE_INDEX_DDLS = [
+export const EDGE_INDEX_DDLS = [
   `CREATE INDEX IF NOT EXISTS ix_edge_src        ON edge(src, rel) WHERE t_expired IS NULL`,
   `CREATE INDEX IF NOT EXISTS ix_edge_dst        ON edge(dst, rel) WHERE t_expired IS NULL`,
   `CREATE INDEX IF NOT EXISTS ix_edge_live       ON edge(t_invalid) WHERE t_invalid IS NULL`,
