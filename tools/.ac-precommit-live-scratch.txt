@@ -1,1 +1,0 @@
-scratch commit for AC-precommit-live verification (delete-markdown-backlog packet) — 2026-08-07T21:28:26Z
