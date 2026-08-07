@@ -102,13 +102,20 @@ export class SqliteVecDialect implements VectorDialect {
    * ```sql
    * CREATE VIRTUAL TABLE IF NOT EXISTS "vec_mymodel" USING vec0(
    *   node_id INTEGER PRIMARY KEY,
-   *   embedding FLOAT[768]
+   *   embedding FLOAT[768] distance_metric=cosine
    * )
    * ```
+   *
+   * BL-392: vec0 defaults an unqualified column to L2 (Euclidean) distance.
+   * Every real call site in this codebase (recall.ts, neardup.ts, db.ts)
+   * requests 'cosine' — declaring `distance_metric=cosine` explicitly here
+   * makes the engine actually compute what the code has always claimed.
+   * This is bound once, at table-creation time; vec0 has no per-query
+   * override (see topKQuery below).
    */
   createTableDDL(table: string, column: string, dim: number): string {
     const colType = this.vectorColumnType(dim);
-    return `CREATE VIRTUAL TABLE IF NOT EXISTS "${table}" USING vec0(node_id INTEGER PRIMARY KEY, ${column} ${colType})`;
+    return `CREATE VIRTUAL TABLE IF NOT EXISTS "${table}" USING vec0(node_id INTEGER PRIMARY KEY, ${column} ${colType} distance_metric=cosine)`;
   }
 
   /**
@@ -132,9 +139,29 @@ export class SqliteVecDialect implements VectorDialect {
     k: number,
     metric: VectorMetric,
   ): { sql: string; args: unknown[] } {
+    // BL-392: vec0's distance metric is bound at CREATE TABLE time
+    // (`distance_metric=cosine`, see createTableDDL) — sqlite-vec has no
+    // query-time override for MATCH/KNN queries. Every vec_node table this
+    // codebase creates now declares cosine, and every call site (recall.ts,
+    // neardup.ts) only ever requests 'cosine'. Silently accepting 'l2'/'dot'
+    // here would compute cosine distance while claiming a different metric
+    // was used — fail loudly instead of lying.
+    if (metric !== 'cosine') {
+      throw new Error(
+        `SqliteVecDialect.topKQuery: metric '${metric}' is not supported. ` +
+        `vec0's distance metric is fixed at table-creation time via ` +
+        `distance_metric=cosine (see createTableDDL) and cannot be ` +
+        `overridden per query — only 'cosine' is valid.`,
+      );
+    }
     const vec = new Float32Array(queryVec);
     const vecJson = vecToJson(vec);
-    const distanceOrder = metric === 'dot' ? 'DESC' : 'ASC';
+    // metric is narrowed to the 'cosine' literal by the guard above, so this
+    // is always 'ASC' now — widen back to VectorMetric so the (now
+    // unreachable but intentionally-retained, see BL-392 spec) 'dot' branch
+    // still typechecks. Left as dead-but-harmless: simplifying this
+    // ASC/DESC selection is out of scope for BL-392.
+    const distanceOrder = (metric as VectorMetric) === 'dot' ? 'DESC' : 'ASC';
     // BL-367: exactly-tied distances (real, not hypothetical — orthogonal
     // candidates against a query vector routinely tie exactly) resolve to
     // vec0's own undocumented KNN iteration order, which was observed to

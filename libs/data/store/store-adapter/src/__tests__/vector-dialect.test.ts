@@ -104,7 +104,7 @@ describe('SqliteVecDialect', () => {
     it('generates vec0 virtual table DDL', () => {
       const ddl = dialect.createTableDDL('foo', 'embedding', 384);
       expect(ddl).toBe(
-        'CREATE VIRTUAL TABLE IF NOT EXISTS "foo" USING vec0(node_id INTEGER PRIMARY KEY, embedding FLOAT[384])',
+        'CREATE VIRTUAL TABLE IF NOT EXISTS "foo" USING vec0(node_id INTEGER PRIMARY KEY, embedding FLOAT[384] distance_metric=cosine)',
       );
     });
 
@@ -116,6 +116,11 @@ describe('SqliteVecDialect', () => {
     it('quotes the table name', () => {
       const ddl = dialect.createTableDDL('custom_table', 'v', 1024);
       expect(ddl).toContain('"custom_table"');
+    });
+
+    it('BL-392: declares distance_metric=cosine explicitly (vec0 defaults to L2 otherwise)', () => {
+      const ddl = dialect.createTableDDL('foo', 'embedding', 384);
+      expect(ddl).toContain('distance_metric=cosine');
     });
   });
 
@@ -158,14 +163,12 @@ describe('SqliteVecDialect', () => {
       expect(result.args[1]).toBe(10);
     });
 
-    it('uses DESC order for dot metric', () => {
-      const dotResult = dialect.topKQuery('t', 'v', [1, 2], 5, 'dot');
-      expect(dotResult.sql).toContain('ORDER BY v.distance DESC');
+    it('BL-392: rejects dot metric instead of silently ignoring it', () => {
+      expect(() => dialect.topKQuery('t', 'v', [1, 2], 5, 'dot')).toThrow();
     });
 
-    it('uses ASC order for l2 metric', () => {
-      const l2Result = dialect.topKQuery('t', 'v', [1, 2], 5, 'l2');
-      expect(l2Result.sql).toContain('ORDER BY v.distance ASC');
+    it('BL-392: rejects l2 metric instead of silently ignoring it', () => {
+      expect(() => dialect.topKQuery('t', 'v', [1, 2], 5, 'l2')).toThrow();
     });
   });
 
