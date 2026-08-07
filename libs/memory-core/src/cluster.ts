@@ -15,7 +15,7 @@
 
 import * as crypto from 'node:crypto';
 import type { StoreAdapter } from '@adhd/sox-store-adapter';
-import { createGraphBackend } from '@adhd/sox-graph-store';
+import { getMemoryGraphBackend } from './graph-backend.js';
 import { cluster as analysisCluster } from '@adhd/sox-analysis';
 import { buildFiltersClause } from './memory-filters.js';
 export type { MemoryFilter } from './memory-filters.js';
@@ -746,7 +746,7 @@ export async function clusterStore(
   opts: ClusterStoreOptions = {},
 ): Promise<ClusterStoreResult> {
   // GraphBackend ensures the canonical DDL (including ix_edge_unique) is applied.
-  createGraphBackend(adapter);
+  getMemoryGraphBackend(adapter);
 
   const episodes = await selectEpisodes(adapter);
   const result = await computeClusters(adapter, episodes, {
@@ -817,7 +817,7 @@ export async function clusterSubset(
   opts: ClusterSubsetOptions = {},
 ): Promise<ClusterSubsetResult> {
   // GraphBackend instance (sibling pattern)
-  createGraphBackend(adapter);
+  getMemoryGraphBackend(adapter);
 
   // Guard: an empty/absent filter with persist:true would write a duplicate of the
   // global partition under a non-global salt — creating a confusing, unreachable
@@ -883,7 +883,7 @@ export async function clusterSubset(
  */
 export async function clusterStats(adapter: StoreAdapter): Promise<ClusterStats> {
   // GraphBackend for node/edge CRUD (sibling pattern)
-  createGraphBackend(adapter);
+  getMemoryGraphBackend(adapter);
 
   // Scope all stats to GLOBAL communities only (kind='global' or legacy NULL scope).
   // Persisted subset lenses must NOT inflate the health/CI-gate numbers reported here.

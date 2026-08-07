@@ -8,7 +8,7 @@
  */
 
 import type { StoreAdapter } from '@adhd/sox-store-adapter';
-import { createGraphBackend } from '@adhd/sox-graph-store';
+import { getMemoryGraphBackend } from './graph-backend.js';
 
 // ── Types ──────────────────────────────────────────────────────────────────────
 
@@ -41,7 +41,7 @@ export async function memoryGetNearDuplicates(
   const limit = Math.min((args['limit'] as number | undefined) ?? 20, 200);
   const offset = (args['offset'] as number | undefined) ?? 0;
 
-  const backend = createGraphBackend(adapter);
+  const backend = getMemoryGraphBackend(adapter);
 
   // Get all SAME_AS edges
   const edges = await backend.getEdges({ rel: 'SAME_AS' });
