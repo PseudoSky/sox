@@ -338,6 +338,35 @@ migration already depends on (`StoreAdapter.transaction()`'s documented `'exclus
 `sqlite-adapter.ts:298-299`) is built for transient contention, not a hard refusal — with the default,
 a momentarily-busy store would silently succeed a few hundred milliseconds later instead of refusing.
 
+**Addendum, ruled post-implementation (architect stage, same packet):** `maxRetries: 0` alone is
+not sufficient to make the refusal immediate. `better-sqlite3`'s `Database` constructor defaults its
+`timeout` option — SQLite's own internal busy-handler sleep loop, entered *inside* the blocking
+`sqlite3_exec`/`better-sqlite3` call itself, invisible to and unaffected by the adapter's own
+retry loop — to 5000ms (confirmed: `SqliteAdapterImpl`'s constructor at
+`libs/data/store/store-adapter/src/sqlite-adapter.ts:121-124` passes no `timeout` option to
+`new DatabaseConstructor(...)`, so better-sqlite3's own default applies; `init()` does not touch
+`busy_timeout` either — the only place this codebase explicitly sets it before this packet was
+`backupTo()`'s `PRAGMA busy_timeout = 3000` at `sqlite-adapter.ts:218`, scoped to that one `VACUUM
+INTO` call). Left at that default, the very first `this.db.exec(beginSQL)` inside `transaction()`
+(`sqlite-adapter.ts:309`) blocks for up to 5s waiting on SQLite's own busy handler *before*
+`maxRetries: 0`'s attempt-loop ever gets a chance to observe a failure and refuse — silently
+defeating AC-5's <200ms bound (measured red: 10838ms) despite `maxRetries: 0` being correctly wired
+exactly as ruled above.
+
+**Ruling:** `migrateToOpenSchema()` must call `await adapter.pragmaSet('busy_timeout', 0)`
+immediately after `createSqliteAdapter({ dbPath })` succeeds (§3, inserted as new step 2b, before
+step 3's `adapter.init()`), for the adapter's entire lifetime — not only around the step-4 lock
+probe. This is not a second, competing mechanism to `maxRetries: 0`; it is the precondition that
+makes `maxRetries: 0` actually mean "refuse immediately" rather than "refuse immediately, after
+waiting up to 5s for the engine's own busy handler to give up first." Both are required together:
+`maxRetries: 0` stops the adapter's *own* retry loop from re-attempting; `busy_timeout = 0` stops
+SQLite's *engine-level* busy handler from blocking before that loop is even reached. Scoping the
+pragma to the whole adapter lifetime (not just the lock probe) is correct and required, not
+incidental generosity — steps 5-8 also acquire `exclusive`/write access against the same adapter,
+and this migration's own precondition (§6 R-1: no code path makes it reachable from a live, writing
+process) means there is never a legitimate reason for *any* of its own operations to wait out a
+contending writer, not only the explicit probe.
+
 ### D-5 — content checksum is an app-level SHA-256 over an ordered projection, not a SQLite built-in
 
 **Ruling:** compute `crypto.createHash('sha256')` over `rowid`-ordered, comma/newline-joined text built
