@@ -60,6 +60,7 @@ import {
   getDrainWakesCoalesced,
   backgroundSlotHolder,
   runPeriodicEnrichPassGuarded,
+  runEnrichPassOnDb,
   waitForDrainSettled,
 } from './index.js';
 
@@ -264,7 +265,23 @@ describe('BL-382 / BL-154 — the wake cannot deadlock the write queue', () => {
   // clustering isolation. So the slot-exclusion property below is now scoped
   // to heal-vs-heal only, and the test explicitly proves clustering does NOT
   // participate in it.
-  it('the background slot excludes the two heal scans (drain vs enrich backstop) — narrowed by BL-348, clustering no longer holds it at all', async () => {
+  //
+  // BL-474 CORRECTED THIS TEST'S SETUP ASSUMPTION — CHANGED DELIBERATELY,
+  // NOT QUIETLY (SPEC-BL-474.md D6). `backgroundSlotHolder()).toBe('drain')`
+  // below is STILL true after BL-474 — the slot holder genuinely is still
+  // 'drain', and heal-vs-heal exclusion (two concurrent scans over the same
+  // window) is still enforced. What changes is the MECHANISM: before BL-474,
+  // the enrich tick's own backstop heal step WAITED for the drain's hold
+  // (via blocking `withBackgroundSlot`), so the pre-fix test could rely on
+  // `enrich` not resolving until `gated.release()` was called — a fact the
+  // old setup ASSUMED but never asserted. After BL-474, the heal step tries
+  // once via `withBackgroundSlotOrSkip`, sees the slot busy, and YIELDS
+  // (skips) almost immediately — `enrich` no longer depends on `gated` at
+  // all. This is exactly the shape BL-225 calls out: the guard the test
+  // exists to protect (no concurrent double-scan) is unchanged and still
+  // proven below; only the wait-vs-skip mechanism moved, so the test is
+  // CORRECTED to assert the new mechanism, not weakened to hide a regression.
+  it('BL-474: heal-vs-heal exclusion still holds, but via YIELD not WAIT — the enrich backstop resolves before the drain releases the slot', async () => {
     const dbPath = tmpStorePath();
     await insertOrphanEpisode(dbPath, 'BL-382 slot-exclusion orphan');
     await handleToolCall('memory_ping', { db_path: dbPath });
@@ -273,22 +290,41 @@ describe('BL-382 / BL-154 — the wake cannot deadlock the write queue', () => {
     _setEmbedProviderForTest(gated);
 
     const drain = runDrainPassGuarded();
+    // Race-window ordering (SPEC-BL-474.md D7): wait for the drain to
+    // PROVABLY hold the slot — closes the single-microtask acquisition race
+    // before the enrich tick's try-acquire below, making it unobservable by
+    // construction, the same idiom this file already uses.
     await waitFor(() => gated.calls >= 1, 'drain holds the slot');
-    expect(backgroundSlotHolder()).toBe('drain');
+    expect(backgroundSlotHolder()).toBe('drain'); // still true post-BL-474 — the drain genuinely holds it
 
-    // The enrich tick fires while the drain holds the slot. Its OWN backstop
-    // heal step must WAIT for the same reason as before (BL-346) — but its
-    // clustering step (now isolated, off-process) is NOT gated by this slot
-    // at all, so the tick as a whole is no longer fully excluded the way it
-    // used to be.
-    const enrich = runPeriodicEnrichPassGuarded();
-    await new Promise<void>((r) => setTimeout(r, 5));
-    expect(backgroundSlotHolder()).toBe('drain'); // still the drain — enrich's heal step is queued behind it
+    // Called directly (not via the void-returning runPeriodicEnrichPassGuarded
+    // wrapper) so the structured result — heal_skipped — is inspectable, per
+    // SPEC-BL-474.md AC-3's own guidance, mirroring bl474-bgslot-priority's
+    // AC-2. Raced against a short timer, the same idiom BL-472's own
+    // waitForDrainSettled test uses (line ~349 below): the load-bearing
+    // assertion is that this resolves WELL BEFORE gated.release() ever fires,
+    // not merely that it eventually resolves.
+    const adapter = await getDb(dbPath);
+    const enrichRace = await Promise.race([
+      runEnrichPassOnDb(adapter, dbPath).then((result) => ({ kind: 'resolved' as const, result })),
+      new Promise<{ kind: 'timeout' }>((r) => setTimeout(() => r({ kind: 'timeout' }), 500)),
+    ]);
+
+    // THE CORRECTED ASSERTION: the enrich tick's heal step did NOT wait for
+    // the drain's hold — it yielded and the tick resolved on its own.
+    expect(enrichRace.kind).toBe('resolved');
+    if (enrichRace.kind === 'resolved') {
+      expect(enrichRace.result.heal_skipped).toBe(true);
+      expect(enrichRace.result.healed).toBe(0);
+    }
+    // THE UNCHANGED ASSERTION (BL-346's actual safety property): the drain
+    // STILL holds the slot — enrich's heal step never touched it, exactly
+    // because it skipped instead of acquiring.
+    expect(backgroundSlotHolder()).toBe('drain');
 
     gated.release();
     _setEmbedProviderForTest(new DeterministicTestProvider());
     await drain;
-    await enrich;
     expect(backgroundSlotHolder()).toBeNull();
   });
 
