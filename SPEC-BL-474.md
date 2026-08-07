@@ -1,8 +1,46 @@
 # SPEC-BL-474 — bound the enrich-heal backstop's wait on `_bgSlot`, and stop scheduling the drain in processes that opt out
 
-Status: ready for implementation.
+Status: implemented and architect-verified. No open questions were raised — every ruling in §3
+(D1–D7) mapped directly onto the shipped code; architect re-read both commits against this spec
+line-by-line and confirms no deviation.
 Worktree: `/Users/nix/dev/ai/sox-ecosystem/.worktrees/bl474-bgslot-contention`, branch `feat/bl474-bgslot-contention`.
-Stage: architect. Next stage: implementer.
+Stage: architect review complete. Commits: `f4832b23` (HealResult.skipped, memory-core),
+`7557b6d2` (withBackgroundSlotOrSkip + call-site + scheduling gate + tests, extensions). Next
+stage: ship (registry sync / merge), owner's call — this task's scope did not ask for a deploy.
+
+## Architect verification note (post-implementation)
+
+Read both commits' diffs in full against this spec (`git show f4832b23`, `git show 7557b6d2`)
+rather than trusting the implementer's report at face value:
+
+- `HealResult.skipped?: boolean` (`libs/memory-core/src/embed-pipeline.ts:149-153`) — additive,
+  exact doc comment as specified in §2.
+- `withBackgroundSlotOrSkip` (`index.ts:2624-2651`) and its `_withBackgroundSlotOrSkipForTest`
+  export — matches §2 verbatim, including the D7 race-window comment.
+- `runEnrichPassOnDb`'s heal step (`index.ts:2286-2304`) — matches §2 verbatim, including the
+  `scanned:0, healed:0, exists:0, gone:0, failed:0, disabled:false, time_budget_exceeded:false,
+  skipped:true` skip-result shape.
+- `heal_skipped` threaded additively through the return type and both log payloads
+  (`index.ts:2358`, `:2369`, `:2424`) — matches §2 item 3.
+- `scheduleNextDrain()`'s `SOX_DISABLE_EMBED_HEAL` gate (`index.ts:2833-2846`) — matches §2 item 4
+  and D4 (reuses the seam, no new env var).
+- `drain-wake.spec.ts`'s corrected test — matches D6 exactly: `backgroundSlotHolder()).toBe('drain')`
+  kept (still true), the wait-vs-skip mechanism re-asserted via `runEnrichPassOnDb`'s
+  `heal_skipped`/`healed` fields called directly (not through the void-returning guarded wrapper),
+  raced against a 500ms timer per D7's ordering discipline (`waitFor(() => gated.calls >= 1, …)`
+  before the try-acquire). One spot-check worth recording: the test calls
+  `const adapter = await getDb(dbPath)` (no `.unwrap()`) and passes `adapter` straight to
+  `runEnrichPassOnDb(adapter, dbPath)` — this is correct, not a bug, because `getDb`
+  (`libs/memory-core/src/db.ts:905`) returns `Promise<StoreAdapter>` directly, and
+  `runEnrichPassOnDb` wants a `StoreAdapter` (`index.ts:2229`); `.unwrap()` (used elsewhere in the
+  same file for raw `Database.Database` access, `libs/data/store/store-adapter/src/types.ts`) is
+  the wrong shape here and rightly wasn't used.
+- `bl474-bgslot-priority.spec.ts` — new file, one-file-per-BL-id convention followed, AC-1/AC-2/AC-4
+  each present with the RED→GREEN procedure documented in its header comment matching the
+  implementer's report.
+
+No ruling in this spec needed to change. The implementer's claim of zero open questions and zero
+gaps stands verified, not merely trusted.
 
 ## 1. Root cause (my own reading, file:line cited)
 
