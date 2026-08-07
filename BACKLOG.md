@@ -3322,3 +3322,52 @@ Citations: [wip/turso-live-metrics, devops-engineer, claude, backlog-markdown-mi
 Citations: [wip/turso-live-metrics, devops-engineer, claude, backlog-markdown-migration follow-up, 1: docs/decisions/0009-backlog-source-of-truth.md, 2: entrypoint/backlog/src/markdown.ts:261-274 in PseudoSky/adhd (renderItemBlock), same file's detectStatus (the matching parser), 3: tools/check-backlog-markers.mjs:106-131 (heading-only inline-marker grammar), 4: CHANGELOG.md's own two heading grammars (### vs ## [Unreleased] —), found during this session's tiered backfill, the same class of finding]
 
 ---
+
+### BL-479 — `extensions.ts`'s `graphifyImport` edge-rel vocabulary (`VALID_RELS`, 8 members) silently rejects `ASSIGNED_TO`/`DEPENDS_ON` relative to graph-store's 10-member canonical set — **Open (LOW)** (2026-08-07)
+
+Found during PKT-60 (BL-441, `SPEC-PKT-60.md` §1c/§3 decision 6) while reading every rel/kind
+vocabulary in `libs/memory-core/`. `libs/memory-core/src/extensions.ts:722-730`'s `VALID_RELS`
+constant — used by `_mapGraphifyRel` (`extensions.ts:733-739`) to validate the `rel` field on
+graphify-imported edges — lists 8 rels: `MENTIONS, SUPPORTS, RELATES_TO, SUPERSEDES, DERIVED_FROM,
+MEMBER_OF, PART_OF, SAME_AS`. It is missing `ASSIGNED_TO` and `DEPENDS_ON`, both of which ARE
+members of graph-store's canonical 10-rel `DEFAULT_EDGE_RELS` (`libs/data/graph/graph-store/src/index.ts:538-549`)
+and of PKT-60's own `MEMORY_EDGE_RELS` (`libs/memory-core/src/ontology.ts`, byte-identical to
+graph-store's set by explicit requirement). There is no comment or commit explaining why this third,
+independently-drifted 8-member set exists rather than reusing either of the other two vocabularies
+already present in the file's own module (`link.ts:15`'s `PUBLIC_EDGE_RELS`, 7 members, a
+*deliberately narrower* tool-surface subset per graph-store's own doc comment — NOT the same kind of
+gap) or graph-store's canonical 10.
+
+**Concrete symptom:** `graphifyImport(adapter, {nodes:[...], edges:[{src:'a', dst:'b',
+rel:'ASSIGNED_TO'}]}, ...)` (v1 or v2 shape) silently drops the edge — `_mapGraphifyRel` returns
+`null` for an unrecognized rel, and the import loop's `if (!rel) continue;`
+(`extensions.ts:685`, no error, no partial-import flag, no log) skips it with zero signal to the
+caller. `edges_imported` in the success response is simply lower than the input edge count, with
+nothing distinguishing "silently dropped, unknown rel" from "silently dropped, dangling
+src/dst reference" (`extensions.ts:683`, same silent-`continue`, pre-existing and out of scope
+here).
+
+**Why PKT-60 does not fix this (ADR-0010 D2 §3 decision 6, explicit ruling):** `link.ts`'s narrower
+7-member set is a deliberate product-surface restriction on `memory_link`'s public contract —
+collapsing it onto the 10-member canonical set would change what `memory_link` accepts today, out of
+bounds for a seam-closing packet. `extensions.ts`'s 8-member set is a genuine unexplained drift with
+no such justification, but fixing `_mapGraphifyRel`'s behavior is a scope change beyond BL-441's
+literal reproduction (the node-`kind` hole), and no acceptance criterion in SPEC-PKT-60.md covers the
+edge-rel path. Filed here instead of folded in silently, per the spec's own §5 disclosure
+instruction.
+
+**Fix shape (not yet implemented):** either (a) import `MEMORY_EDGE_RELS` from `./ontology.js` and
+replace `VALID_RELS` with `new Set(MEMORY_EDGE_RELS)` — collapses graphify's edge-rel validation onto
+the same canonical vocabulary PKT-60 gave the node-`kind` side, or (b) if `VALID_RELS`'s narrower
+8-member scope for graphify specifically is intentional (undocumented anywhere found), add
+`ASSIGNED_TO`/`DEPENDS_ON` explicitly and a comment explaining why graphify's import surface differs
+from `MEMORY_EDGE_RELS`. Either fix should also make the silent-drop loud: return a `partial`/warning
+signal (or at minimum increment a `dropped_edges` counter) instead of the current unconditional
+`continue`.
+
+**Related:** BL-441 (PKT-60, the packet that found this while fixing the node-`kind` sibling gap in
+the same function), BL-440 (`TypePolicy`, PKT-59), BL-448 (open `rel` CHECK, PKT-74).
+
+Citations: [feat/pkt60-memory-ontology-seam, implementer (PKT-60), claude, SPEC-PKT-60.md, 1: libs/memory-core/src/extensions.ts:722-739 (VALID_RELS, _mapGraphifyRel), 2: libs/memory-core/src/extensions.ts:670-693 (silent `continue` on unmapped rel / missing src-dst, no partial-import signal), 3: libs/data/graph/graph-store/src/index.ts:538-549 (DEFAULT_EDGE_RELS, the 10-member canonical set), 4: libs/memory-core/src/link.ts:15 (PUBLIC_EDGE_RELS, the deliberately-narrower 7-member set — not the same defect class), 5: libs/memory-core/src/ontology.ts (MEMORY_EDGE_RELS, this session's byte-identical copy of the canonical 10), 6: SPEC-PKT-60.md §1c, §3 decision 6, §5 (the architect's ruling deferring this fix and requiring its disclosure)]
+
+---
