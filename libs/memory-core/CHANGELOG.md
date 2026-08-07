@@ -1,5 +1,47 @@
 # @adhd/sox-memory-core
 
+## 0.6.0
+
+### Minor Changes
+
+- Additive: memory-core takes ownership of its own ontology through one composition point (BL-441).
+
+  New `ontology.js` module, re-exported from `index.d.ts`: `MemoryOntologyPolicy` (a `TypePolicy`
+  implementation constructed from memory's own six node kinds / ten edge rels, with an optional
+  `OntologyExtension` for consumer-registered kinds/rels), `MEMORY_NODE_KINDS`, `MEMORY_EDGE_RELS`,
+  and `translateStoreVocabularyError` (rewrites a raw SQLite CHECK-constraint failure into an
+  operator-facing message naming the BL-442 migration command). New `graph-backend.js` module,
+  also re-exported: `getMemoryGraphBackend`, `registerOntologyExtension`, `getOntologySnapshot` — the
+  single composition point through which all nine of memory-core's `createGraphBackend` call sites
+  now route (`d64175f5`), replacing nine independent injections with one, so a tenth call site added
+  later cannot silently skip the policy.
+
+  No removed or narrowed export. Every existing export in `index.d.ts` is untouched — this changeset
+  adds three new export lines and nothing else changes shape. Treated as additive/minor per the
+  standard ecosystem convention used elsewhere in this same release train (see
+  `bl460-sox-host-registry-opencode.md`, `bl460-sox-service-proxy-sa3-sa4.md`).
+
+  Filed by PKT-63 (BL-444) after `scripts/check-changeset-surface.ts` (BL-460) correctly FAILed the
+  gate: memory-core's built `dist/*.d.ts` differs from the published `0.5.0` tarball (verified via
+  `npm pack @adhd/sox-memory-core@0.5.0` and a direct diff against `libs/memory-core/dist/index.d.ts`
+  in this worktree — `ontology.d.ts` and `graph-backend.d.ts` do not exist in the published tarball at
+  all) and no `.changeset/*.md` in the tree named this package — this was previously covered only by
+  the `updateInternalDependencies: "patch"` cascade from the `@adhd/sox-graph-store` bump, which is
+  correct for the _dependency_ pin but does not account for memory-core's _own_ new surface. This
+  changeset closes that gap; memory-core now bumps `0.5.0` → `0.6.0` (minor, its own additive surface)
+  rather than `0.5.1` (patch, cascade-only).
+
+### Patch Changes
+
+- Updated dependencies [32275f7]
+- Updated dependencies [7f46e96]
+- Updated dependencies [32275f7]
+  - @adhd/sox-embedding-provider@0.2.0
+  - @adhd/sox-graph-store@0.6.0
+  - @adhd/sox-store-adapter@0.3.0
+  - @adhd/sox-hybrid-search@0.3.4
+  - @adhd/sox-analysis@0.1.5
+
 ## 0.5.0
 
 ### Minor Changes

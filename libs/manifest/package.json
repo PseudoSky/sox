@@ -1,6 +1,6 @@
 {
   "name": "@adhd/sox-manifest",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Extension manifest schema and validate() — single source of truth",
   "license": "MIT",
   "publishConfig": {

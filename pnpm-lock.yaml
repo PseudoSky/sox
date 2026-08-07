@@ -248,6 +248,15 @@ importers:
         specifier: ^0.31.10
         version: 0.31.10
 
+  libs/data/graph/graph-store/conformance-fixture:
+    devDependencies:
+      '@types/node':
+        specifier: 22.19.20
+        version: 22.19.20
+      typescript:
+        specifier: 6.0.3
+        version: 6.0.3
+
   libs/data/ingest/ingest:
     dependencies:
       tree-sitter-wasms:
