@@ -1,0 +1,16 @@
+{
+  "name": "graph-store-conformance-consumer",
+  "version": "0.0.0",
+  "private": true,
+  "description": "PKT-62/BL-443 — scratch consumer project template. Committed for review, never executed in place: the orchestrator (tools/graph-store-tarball-conformance.mjs) copies this into a mkdtemp scratch directory and injects `dependencies` + `pnpm.overrides` pointing at locally-packed tarballs before running `pnpm install` there. See SPEC-PKT-62.md Decision 2.",
+  "type": "module",
+  "devDependencies": {
+    "typescript": "6.0.3",
+    "@types/node": "22.19.20"
+  },
+  "pnpm": {
+    "onlyBuiltDependencies": [
+      "better-sqlite3"
+    ]
+  }
+}
