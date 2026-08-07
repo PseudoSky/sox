@@ -177,7 +177,8 @@ Filing procedure for a new `BL-*` item:
 #    already caused a live collision (BL-437). tools/bl-id-counter.mjs is the mitigation (ADR-0011
 #    R5) until BL-476 is fixed upstream.
 node tools/bl-id-counter.mjs --note "short description of what this id is for"
-# -> prints e.g. BL-479
+# -> prints e.g. BL-<n> (the next unclaimed id — always use the actual value printed, not a
+#    hardcoded example; today's watermark is well past 479)
 
 # 2. File the item via the backlog_create_item MCP tool (or `backlog` CLI equivalent), passing
 #    that id explicitly as idOverride. Do NOT omit idOverride and let the tool auto-allocate.
@@ -190,7 +191,7 @@ mcp__backlog__backlog_create_item({
       title: "<short title>",
       body: "<full description, citations, files affected>",
       repo: "sox-ecosystem",
-      idOverride: "BL-479",   // from step 1
+      idOverride: "BL-<n>",   // the exact id printed by step 1 — never hardcode a literal id
     }
   }
 })
