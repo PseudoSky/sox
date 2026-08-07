@@ -2,6 +2,69 @@
 
 ---
 
+## [Unreleased] — BL-442: an operator command finally exists to open `kind`/`rel` on stores that already have them closed
+
+Every store on disk today — including the live `~/.memory/memory.db` — carries `CHECK (kind IN
+(…))` and `CHECK (rel IN (…))` from before the open-schema rulings (BL-438 D1/D4). `CREATE TABLE IF
+NOT EXISTS` no-ops against an existing table, so BL-440/BL-448's open DDL only ever reaches brand
+new stores; removing the CHECK from an existing one requires the exact rename→create→copy→drop
+rebuild that caused BL-313's live cascade-delete of all 40,930 edges. This was the last mile BL-438
+D1 made mandatory once it deleted the `sub_kind` fallback: the rebuild is now the *only* path by
+which any existing store accepts a consumer kind or rel.
+
+```bash
+node tools/graph-store-migrate-open-schema.mjs --db ~/.memory/memory.db --confirm
+```
+
+`migrateToOpenSchema()` (`libs/data/graph/graph-store/src/open-schema-migration.ts`) is explicit,
+operator-initiated, and offline only — never reachable from `applySchema()`, never triggered by
+opening a connection:
+
+- Takes a verified pre-migration backup, then rebuilds `node` and `edge` in **one transaction**
+  reusing `rebuildTable`'s BL-313-proven `skipDrop` sequencing (copy every FK-related table before
+  dropping any `_old`), recreating all 11 node indexes, 4 edge indexes, and the FTS triggers/content.
+- Verifies node count, edge count, per-relation edge breakdown, and a SHA-256 content checksum
+  (over a `rowid`-ordered, comma/newline-joined text projection) against the pre-migration snapshot,
+  and **automatically restores from backup on any mismatch**, raising `MigrationRolledBackError`.
+- Detects a Turso-backed store (via `SqliteAdapterImpl`'s existing `ETursoNativeStore` probe) and
+  refuses outright rather than risk BL-337's un-`REINDEX`-able FTS index or BL-361's driver PANIC.
+- Is provably unreachable from `applySchema()` — a static grep guard, since a runtime test cannot
+  prove absence.
+- Refuses **immediately** against a store any other connection is touching, rather than silently
+  waiting and succeeding later: `maxRetries: 0` on the lock-probe transaction stops the adapter's own
+  retry loop, and `await adapter.pragmaSet('busy_timeout', 0)` — set once, for the adapter's whole
+  lifetime, immediately after opening — stops `better-sqlite3`'s own 5000ms engine-level busy-handler
+  sleep from blocking *inside* the first `BEGIN EXCLUSIVE` before the retry loop is even reached.
+  Without the pragma, `maxRetries: 0` alone measured 10838ms against a held lock; AC-5 requires
+  <200ms. This was ruled a required completion of D-4's own stated intent, not a design fork — see
+  `SPEC-PKT-61.md`'s D-4 addendum.
+
+```bash
+npx nx test graph-store        # 77 passed (77): 67 pre-existing + 10 new, zero regressions
+npx nx typecheck graph-store   # green
+npx nx lint graph-store        # green
+```
+
+All six acceptance criteria in `open-schema-migration.bl442.spec.ts` watched red→green individually:
+AC-1 (naive-sequential `rebuildTable` without `skipDrop` loses every edge — reproduced BL-313's exact
+mechanism live, `edgeCount === 0` — before the `skipDrop`-interleaved rebuild restores 90/10); AC-4
+(a `// migrateToOpenSchema` string inside `applySchema()` fails the static-grep unreachability guard,
+removing it passes); AC-5 (the busy-timeout fix above, 10838ms → <200ms); AC-3 (short-circuiting the
+post-rebuild verification mismatch check to `if (true)` produces a false success with no
+`MigrationRolledBackError`, restoring the real comparison fires it); AC-2 (reverting the real
+function's `skipDrop: true` back to `false` throws `no such table: node_old` through the real
+entrypoint, with an inline probe confirming the on-disk edge count is still 90 afterward — the
+Layer-1 file protection holds even when the naive path runs for real, not just in the isolated
+AC-1 fixture).
+
+Live end-to-end verification against the built CLI (`tools/graph-store-migrate-open-schema.mjs`),
+run against a scratch fixture only — never `~/.memory/*`: `--db <fixture>` dry-run touched nothing;
+`--confirm` succeeded (`nodeCount=10 edgeCount=90 perRelation={"RELATES_TO":90}`, before === after);
+a raw `sqlite3` read of the migrated file confirmed the `CHECK (kind IN (…))`/`CHECK (rel IN (…))`
+clauses are structurally gone from `sqlite_master` with every row intact.
+
+---
+
 ## [Unreleased] — BL-389: `LanceDbVectorBackend` routed through `StoreAdapter`, not a raw `better-sqlite3` handle
 
 `LanceDbVectorBackend`'s constructor previously took `{ db: Database.Database }` — a public API typed
