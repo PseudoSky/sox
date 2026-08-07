@@ -1,6 +1,6 @@
 {
   "name": "@adhd/sox-install-engine",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Sox install engine — parseArgs, install, cascade, build-index, provider-capabilities",
   "license": "MIT",
   "publishConfig": {
