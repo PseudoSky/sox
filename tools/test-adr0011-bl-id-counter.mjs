@@ -18,9 +18,15 @@
  *   5. `check-bl-id-integrity.mjs` REJECTS a staged `### BL-<n>` heading whose id is already in
  *      the counter's `issued` list (ADR-0011 §4 Stage 1 item 4) — a human hand-filing an id the
  *      tool already issued is exactly the split-brain collision this migration exists to end.
- *   6. `check-bl-id-integrity.mjs` still PASSES a commit that stages neither a markdown heading
- *      above the watermark nor one colliding with `issued` — proving Stage 1 does not regress
- *      the pre-existing checks (arms 1-3 of the original script) for ordinary commits.
+ *   6. `check-bl-id-integrity.mjs` still PASSES a commit that only edits an EXISTING heading's
+ *      status marker (title unchanged, no new heading) — proving Stage 1's watermark/issued-id
+ *      guards do not regress the pre-existing checks (arms 1-3 of the original script) for
+ *      ordinary close-out commits. [ADR-0011 Stage 2, SPEC-ADR-0011-S2.md §2 File 3] This arm
+ *      used to stage a brand-new below-watermark `### BL-102` heading and assert it PASSES —
+ *      that assertion documented Stage 1's intentional below-watermark exemption, which Stage 2's
+ *      Rule G1 (tools/test-adr0011-stage2-write-off.mjs, AC-G1b) deliberately closes. A new
+ *      heading passing is no longer true; this arm was corrected to the case that is still
+ *      actually legitimate — a status-only edit to an existing heading.
  *
  * Arms 4 and 5 were watched RED against the pre-patch `check-bl-id-integrity.mjs` during
  * authoring (it exited 0 — silently allowed the violation through) and GREEN after the ADR-0011
@@ -220,7 +226,7 @@ function stageAndCheck(dir, integrityScript, { headingId }) {
   );
 }
 
-// ── Arm 6: an ordinary commit (no watermark violation, no issued collision) still passes ─
+// ── Arm 6: editing an existing heading's status marker (no new heading, no title change) still PASSES ─
 {
   const scratch = mkScratchRepo();
   writeBacklog(scratch);
@@ -228,10 +234,25 @@ function stageAndCheck(dir, integrityScript, { headingId }) {
   writeCounter(scratch, { watermark: 478, next: 479, issued: [] });
   commitBaseline(scratch);
 
-  const result = stageAndCheck(scratch, INTEGRITY, { headingId: 'BL-102' });
+  // Flip BL-101's status bold-span from **Open** to **Resolved** in place — title text and the
+  // heading itself are unchanged. No new '### BL-<n>' heading is introduced anywhere. Also
+  // decrement the header's derived-open count (check-backlog-markers.mjs Rule 4) since Resolved
+  // no longer counts as open — otherwise this arm would fail on an unrelated header mismatch,
+  // not the guard under test.
+  const content = fs.readFileSync(path.join(scratch, 'BACKLOG.md'), 'utf8');
+  const edited = content
+    .replace(
+      '### BL-101 — Second item — **Open** (2026-01-01)',
+      '### BL-101 — Second item — **Resolved** (2026-08-06)',
+    )
+    .replace('**Total open: 2.**', '**Total open: 1.**');
+  fs.writeFileSync(path.join(scratch, 'BACKLOG.md'), edited);
+  execFileSync('git', ['add', 'BACKLOG.md'], { cwd: scratch });
+  const result = run(process.execPath, [INTEGRITY], { cwd: scratch });
   assertTrue(
     result.code === 0,
-    `arm6: staging BL-102 (below watermark, never issued) PASSES (exit ${result.code}; stderr tail: ${result.stderr.slice(-300)})`,
+    `arm6: editing an existing heading's status marker (no new heading, no title change) still ` +
+      `PASSES (exit ${result.code}; stderr tail: ${result.stderr.slice(-300)})`,
   );
 }
 
