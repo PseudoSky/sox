@@ -3458,6 +3458,7 @@ Options:
   const ROOT2 = process.cwd();
   const jsonMode = flags['json'] !== undefined;
   const fsMod = require('node:fs') as typeof import('node:fs');
+  const pathMod = require('node:path') as typeof import('node:path');
 
   // ── --global mode: reads the global install registry (P9, ADR-0004 §D7) ────
   // Shows every extension ever installed on this machine, across all projects.
@@ -3693,12 +3694,40 @@ Options:
       // C4: validate RUNNING state against the OS process table, not just the bookkeeping record.
       // A stale runtime.json entry (crash, SIGKILL, reboot) must not appear as RUNNING.
       const pidAlive = (p: number): boolean => { try { process.kill(p, 0); return true; } catch { return false; } };
-      const running = rtEntry?.running === true && pid !== null && pidAlive(pid);
+      let running = rtEntry?.running === true && pid !== null && pidAlive(pid);
+      let finalPid = pid;
+
+      // [inv:list-never-lies] fallback (BL-332): runtime.json has no entry at all for an
+      // M4 (OS-unit-adopted) service — `service enable` never writes one. Only attempted
+      // when the runtime.json-derived check above already found the row not-running (§3.4
+      // of SPEC-PKT-39): a live GC-verified supervisor record already IS reality-verified.
+      // Reuses the same identity-based reality primitives cmdService's `status` subcommand
+      // uses (main.ts:4932-4936), resolving the entrypoint inline from data already in this
+      // loop rather than via resolveOsUnitContext (§3.2 — that helper does unrelated,
+      // expensive work: nvm/asdf/volta path probing, ownership-index reads).
+      if (!running && entry?.source !== undefined) {
+        try {
+          const extDir = resolveExtensionDir(entry.source, root);
+          const manifestPath = extDir !== null ? pathMod.join(extDir, 'extension.json') : null;
+          if (extDir !== null && manifestPath !== null && fsMod.existsSync(manifestPath)) {
+            const manifest = JSON.parse(fsMod.readFileSync(manifestPath, 'utf8')) as { entrypoint?: string };
+            if (manifest.entrypoint) {
+              const entrypointAbs = pathMod.resolve(extDir, manifest.entrypoint);
+              const token = identityToken(`file://${entrypointAbs}`);
+              const liveMatches = findOrphansByIdentity(token, { excludePids: [process.pid] });
+              if (liveMatches.length > 0) {
+                running = true;
+                finalPid = Math.min(...liveMatches.map((m) => m.pid));
+              }
+            }
+          }
+        } catch { /* best-effort reality check; on any failure, keep the runtime.json-derived state */ }
+      }
 
       const rawSrc = rtEntry?.source ?? entry?.source ?? '';
       const source = cleanSource(typeof rawSrc === 'string' ? rawSrc : '');
 
-      allRows.push({ id: extId, key: lockKey, version: ver, scope: sc, running, source, pid });
+      allRows.push({ id: extId, key: lockKey, version: ver, scope: sc, running, source, pid: finalPid });
     }
   }
 
