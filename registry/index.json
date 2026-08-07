@@ -5,12 +5,12 @@
     "version": "0.1.0",
     "title": "memory-org",
     "description": "Use this when you need an agent that organises or retrieves memories scoped to a project or organisation.",
-    "source": "file:///Users/nix/dev/ai/sox-ecosystem/.worktrees/pkt60-memory-ontology-seam/extensions/agents/org-agent",
+    "source": "file:///Users/nix/dev/ai/sox-ecosystem/extensions/agents/org-agent",
     "checksum": "sha256:9c64ba282f170b11f3e86c6cfece09aaae11c328d933e16bb240b4759e9a5057",
     "compatibility": {
       "host": ">=1.0.0 <2.0.0"
     },
-    "builtFromCommit": "ba9fd7b438684093f39e59906f9c84f27fea27a3"
+    "builtFromCommit": "8c1b8aadb0352c049f11d3003acd688532cf97e4"
   },
   {
     "id": "test-runner",
@@ -18,12 +18,12 @@
     "version": "0.1.0",
     "title": "test-runner",
     "description": "Use this when you need an agent that runs test suites and reports results.",
-    "source": "file:///Users/nix/dev/ai/sox-ecosystem/.worktrees/pkt60-memory-ontology-seam/extensions/agents/test-agent",
+    "source": "file:///Users/nix/dev/ai/sox-ecosystem/extensions/agents/test-agent",
     "checksum": "sha256:a6c5a2a88d17ed3fec829b244db666de085833d29b73a2583c5d062cabee3741",
     "compatibility": {
       "host": ">=1.0.0 <2.0.0"
     },
-    "builtFromCommit": "ba9fd7b438684093f39e59906f9c84f27fea27a3"
+    "builtFromCommit": "8c1b8aadb0352c049f11d3003acd688532cf97e4"
   },
   {
     "id": "sox-memory-bundle",
@@ -31,7 +31,7 @@
     "version": "0.2.0",
     "title": "sox-memory (graph memory subsystem)",
     "description": "Use this when you want the full sox-memory graph-memory subsystem installed in one command — expands to memory-server (MCP tools, stdio, with in-process deterministic batch enrichment), memory-flush (SessionEnd hook), memory-cli (store lifecycle commands), and memory-usage (how-to skill). Fully deterministic; zero LLM calls; no provider required.",
-    "source": "file:///Users/nix/dev/ai/sox-ecosystem/.worktrees/pkt60-memory-ontology-seam/extensions/bundles/sox-memory-bundle",
+    "source": "file:///Users/nix/dev/ai/sox-ecosystem/extensions/bundles/sox-memory-bundle",
     "checksum": "sha256:363df3357c953713ac0873ed438b4828c387f864582b8e7d9d5a441c9826b5bd",
     "compatibility": {
       "host": ">=1.0.0 <2.0.0"
@@ -50,7 +50,7 @@
         "id": "memory-usage"
       }
     ],
-    "builtFromCommit": "ba9fd7b438684093f39e59906f9c84f27fea27a3"
+    "builtFromCommit": "8c1b8aadb0352c049f11d3003acd688532cf97e4"
   },
   {
     "id": "memory-cli",
@@ -58,14 +58,14 @@
     "version": "0.2.0",
     "title": "Memory CLI",
     "description": "Use this when you need to manage the sox-memory store from the shell — provides memory init|status|list|registry subcommands for store lifecycle, scope selection, and registry inspection. Fully deterministic; zero LLM calls.",
-    "source": "file:///Users/nix/dev/ai/sox-ecosystem/.worktrees/pkt60-memory-ontology-seam/extensions/bundles/sox-memory-bundle/members/memory-cli",
-    "checksum": "sha256:4523be4b3175cab7e1705ff3a9a1161b5007e40edd9fc7299c94d98e61a75be9",
+    "source": "file:///Users/nix/dev/ai/sox-ecosystem/extensions/bundles/sox-memory-bundle/members/memory-cli",
+    "checksum": "sha256:e26e00155b7883d8b0317255a3f679fc8f429a2a60078db65b7294cddf59eeee",
     "compatibility": {
       "host": ">=1.0.0 <2.0.0"
     },
     "visibility": "internal",
     "bundleId": "sox-memory-bundle",
-    "builtFromCommit": "ba9fd7b438684093f39e59906f9c84f27fea27a3"
+    "builtFromCommit": "8c1b8aadb0352c049f11d3003acd688532cf97e4"
   },
   {
     "id": "memory-flush",
@@ -73,14 +73,14 @@
     "version": "0.2.0",
     "title": "Memory Session Flush",
     "description": "Use this when you need session memory durably persisted at conversation end and scope promotions reviewed — binds SessionEnd (persists working memory, enqueues episodes, nudges memoryd) and ScopePromotionProposed (runs promotion approval policy). Deterministic; zero LLM calls.",
-    "source": "file:///Users/nix/dev/ai/sox-ecosystem/.worktrees/pkt60-memory-ontology-seam/extensions/bundles/sox-memory-bundle/members/memory-flush",
-    "checksum": "sha256:225fe9382f49f659a9f77e2c13c844c95f71a4129fdede9f051bcb13177aef7b",
+    "source": "file:///Users/nix/dev/ai/sox-ecosystem/extensions/bundles/sox-memory-bundle/members/memory-flush",
+    "checksum": "sha256:25eaa323e6489097bebde6a7ea53830f927d57517bdcd7f3c45461bcfec54115",
     "compatibility": {
       "host": ">=1.0.0 <2.0.0"
     },
     "visibility": "internal",
     "bundleId": "sox-memory-bundle",
-    "builtFromCommit": "ba9fd7b438684093f39e59906f9c84f27fea27a3"
+    "builtFromCommit": "8c1b8aadb0352c049f11d3003acd688532cf97e4"
   },
   {
     "id": "memory-server",
@@ -88,8 +88,8 @@
     "version": "1.3.0",
     "title": "Agent Memory Server",
     "description": "Use this when an agent needs durable, searchable memory across sessions — exposes 7 memory_* tools over a single-file SQLite graph store with hybrid recall (vec+BM25+temporal, <50ms, zero LLM), write-enqueue, session state, community lookup, and bi-temporal invalidation.",
-    "source": "file:///Users/nix/dev/ai/sox-ecosystem/.worktrees/pkt60-memory-ontology-seam/extensions/bundles/sox-memory-bundle/members/memory-server",
-    "checksum": "sha256:035a04dd30975041217a9e93107744fe58edf8b5fd39d52c3cda035c3acbf885",
+    "source": "file:///Users/nix/dev/ai/sox-ecosystem/extensions/bundles/sox-memory-bundle/members/memory-server",
+    "checksum": "sha256:c39ecb2116beda2892902ac05b2a2b6ff36f17ba6e812f878f626198ba437a93",
     "compatibility": {
       "host": ">=1.0.0 <2.0.0"
     },
@@ -99,7 +99,7 @@
     },
     "visibility": "internal",
     "bundleId": "sox-memory-bundle",
-    "builtFromCommit": "ba9fd7b438684093f39e59906f9c84f27fea27a3"
+    "builtFromCommit": "8c1b8aadb0352c049f11d3003acd688532cf97e4"
   },
   {
     "id": "memory-usage",
@@ -107,14 +107,14 @@
     "version": "0.2.0",
     "title": "Using the soxe memory system",
     "description": "Use when an agent should recall prior knowledge or store durable findings in the soxe graph-memory system via the memory_* MCP tools (memory_recall / memory_write / memory_search_entities / memory_invalidate).",
-    "source": "file:///Users/nix/dev/ai/sox-ecosystem/.worktrees/pkt60-memory-ontology-seam/extensions/bundles/sox-memory-bundle/members/memory-usage",
+    "source": "file:///Users/nix/dev/ai/sox-ecosystem/extensions/bundles/sox-memory-bundle/members/memory-usage",
     "checksum": "sha256:1239e096623c4d97d43f8095853b0cc978610a6c80f508e168af71b617a06a62",
     "compatibility": {
       "host": ">=1.0.0 <2.0.0"
     },
     "visibility": "internal",
     "bundleId": "sox-memory-bundle",
-    "builtFromCommit": "ba9fd7b438684093f39e59906f9c84f27fea27a3"
+    "builtFromCommit": "8c1b8aadb0352c049f11d3003acd688532cf97e4"
   },
   {
     "id": "dep-inject",
@@ -122,12 +122,12 @@
     "version": "0.1.0",
     "title": "dep-inject",
     "description": "Use this when you need a slash command that demonstrates dependency injection patterns.",
-    "source": "file:///Users/nix/dev/ai/sox-ecosystem/.worktrees/pkt60-memory-ontology-seam/extensions/commands/di-command",
+    "source": "file:///Users/nix/dev/ai/sox-ecosystem/extensions/commands/di-command",
     "checksum": "sha256:ec81e4822bb2e5b361781bb697eb4a8ecba8d1dd47789e79a4cdcd387ed7967f",
     "compatibility": {
       "host": ">=1.0.0 <2.0.0"
     },
-    "builtFromCommit": "ba9fd7b438684093f39e59906f9c84f27fea27a3"
+    "builtFromCommit": "8c1b8aadb0352c049f11d3003acd688532cf97e4"
   },
   {
     "id": "tokenguard",
@@ -135,12 +135,12 @@
     "version": "0.1.1",
     "title": "TokenGuard Pseudonymizing Proxy",
     "description": "Generalized pseudonymizing HTTP proxy. Tokenizes PII in outbound API requests and detokenizes inbound responses — provider-agnostic via pluggable adapters. Seeded identifiers are mapped bijectively and never reach the wire.",
-    "source": "file:///Users/nix/dev/ai/sox-ecosystem/.worktrees/pkt60-memory-ontology-seam/extensions/services/tokenguard",
+    "source": "file:///Users/nix/dev/ai/sox-ecosystem/extensions/services/tokenguard",
     "checksum": "sha256:083fe30810da10568f69dcc23d45ae5a7cf040156962e7ad45a668d521386cf8",
     "compatibility": {
       "host": ">=1.0.0 <2.0.0"
     },
-    "builtFromCommit": "ba9fd7b438684093f39e59906f9c84f27fea27a3"
+    "builtFromCommit": "8c1b8aadb0352c049f11d3003acd688532cf97e4"
   },
   {
     "id": "demo-creator",
@@ -148,12 +148,12 @@
     "version": "0.1.0",
     "title": "demo-creator — generate a project's DEMO.md acceptance script",
     "description": "Use this skill to produce a project's demo script / DEMO.md / acceptance walkthrough / QA verification doc that both tells the product story like a live demo AND functions as a rigorous acceptance test. Turns a project spec (or PRD/README/landing copy/code) into a persona-narrated, presentation-grade DEMO.md with exact commands, exact data, binary pass/fail assertions, full happy/edge/recovery coverage, requirement->capability traceability, and a tracked UNRESOLVED.md ledger for any guessed interface.",
-    "source": "file:///Users/nix/dev/ai/sox-ecosystem/.worktrees/pkt60-memory-ontology-seam/extensions/skills/demo-creator",
+    "source": "file:///Users/nix/dev/ai/sox-ecosystem/extensions/skills/demo-creator",
     "checksum": "sha256:2f21145ecce1aa3f1cba9119e9472567cbbd16132e7346c38fe5a4c61f8bf359",
     "compatibility": {
       "host": ">=1.0.0 <2.0.0"
     },
-    "builtFromCommit": "ba9fd7b438684093f39e59906f9c84f27fea27a3"
+    "builtFromCommit": "8c1b8aadb0352c049f11d3003acd688532cf97e4"
   },
   {
     "id": "di-codex",
@@ -161,12 +161,12 @@
     "version": "0.1.0",
     "title": "di-codex",
     "description": "Use this when you need a skill that demonstrates dependency injection for Codex-based workflows.",
-    "source": "file:///Users/nix/dev/ai/sox-ecosystem/.worktrees/pkt60-memory-ontology-seam/extensions/skills/di-codex-skill",
+    "source": "file:///Users/nix/dev/ai/sox-ecosystem/extensions/skills/di-codex-skill",
     "checksum": "sha256:e6942760c07daab1dba21959af95467dd200ee4a1700bbb05ca3ad6ed56d3a99",
     "compatibility": {
       "host": ">=1.0.0 <2.0.0"
     },
-    "builtFromCommit": "ba9fd7b438684093f39e59906f9c84f27fea27a3"
+    "builtFromCommit": "8c1b8aadb0352c049f11d3003acd688532cf97e4"
   },
   {
     "id": "dep-injector",
@@ -174,12 +174,12 @@
     "version": "0.1.0",
     "title": "dep-injector",
     "description": "Use this when you need a skill that demonstrates dependency injection for Claude-based workflows.",
-    "source": "file:///Users/nix/dev/ai/sox-ecosystem/.worktrees/pkt60-memory-ontology-seam/extensions/skills/di-skill",
+    "source": "file:///Users/nix/dev/ai/sox-ecosystem/extensions/skills/di-skill",
     "checksum": "sha256:a2ad71fa3e7f522f105e8c0790698aeaedb0b0d0413dcc85518d94b5d3c995b3",
     "compatibility": {
       "host": ">=1.0.0 <2.0.0"
     },
-    "builtFromCommit": "ba9fd7b438684093f39e59906f9c84f27fea27a3"
+    "builtFromCommit": "8c1b8aadb0352c049f11d3003acd688532cf97e4"
   },
   {
     "id": "forbidden-access",
@@ -187,12 +187,12 @@
     "version": "0.1.0",
     "title": "forbidden-access",
     "description": "Use this when testing permission enforcement — this skill targets a forbidden host path and must be rejected.",
-    "source": "file:///Users/nix/dev/ai/sox-ecosystem/.worktrees/pkt60-memory-ontology-seam/extensions/skills/forbidden-skill",
+    "source": "file:///Users/nix/dev/ai/sox-ecosystem/extensions/skills/forbidden-skill",
     "checksum": "sha256:b6e9239b127ebaf493239063eaaab0f322f115c064e33c04130a24e705fc3ad2",
     "compatibility": {
       "host": ">=1.0.0 <2.0.0"
     },
-    "builtFromCommit": "ba9fd7b438684093f39e59906f9c84f27fea27a3"
+    "builtFromCommit": "8c1b8aadb0352c049f11d3003acd688532cf97e4"
   },
   {
     "id": "sox-ingest",
@@ -200,12 +200,12 @@
     "version": "0.1.0",
     "title": "sox-ingest — Ingest external sources into sox-ecosystem",
     "description": "Use this when you need to port an external repo, file, or directory into sox-ecosystem as born-conformant extensions. Encodes the full ingestion flow: initialize -> generalize+author -> validate -> publish -> install -> enable -> remove-old, delegating per-type and per-operation specifics to references/. An agent told 'ingest <source> into sox' loads this skill and runs the complete flow with no bespoke prompts.",
-    "source": "file:///Users/nix/dev/ai/sox-ecosystem/.worktrees/pkt60-memory-ontology-seam/extensions/skills/sox-ingest",
+    "source": "file:///Users/nix/dev/ai/sox-ecosystem/extensions/skills/sox-ingest",
     "checksum": "sha256:deda1d03c6875a25f58b05c585564c4afa09368af100477472ad5e89620d50f9",
     "compatibility": {
       "host": ">=1.0.0 <2.0.0"
     },
-    "builtFromCommit": "ba9fd7b438684093f39e59906f9c84f27fea27a3"
+    "builtFromCommit": "8c1b8aadb0352c049f11d3003acd688532cf97e4"
   },
   {
     "id": "tui-design",
@@ -213,12 +213,12 @@
     "version": "0.1.0",
     "title": "TUI & CLI Design — design and build professional terminal interfaces",
     "description": "Use this when designing or building clean, professional, minimal terminal UI (TUI) applications and command-line tools. Covers full-screen TUIs (file managers, dashboards, monitors, git/k8s tools, REPLs), interactive CLI prompts, and simple command-line utilities. Includes per-ecosystem deep-dives (Go/Bubble Tea, Rust/Ratatui, Python/Textual, TypeScript/Ink), visual and interaction pattern references, exemplar app analysis, and universal TUI design principles. Harvested from gfargo/skills v1.4.0.",
-    "source": "file:///Users/nix/dev/ai/sox-ecosystem/.worktrees/pkt60-memory-ontology-seam/extensions/skills/tui-design",
+    "source": "file:///Users/nix/dev/ai/sox-ecosystem/extensions/skills/tui-design",
     "checksum": "sha256:530d04e570f53a129a32a91695a80b0ee2dcff70cb73c0d8932e7ff777953828",
     "compatibility": {
       "host": ">=1.0.0 <2.0.0"
     },
-    "builtFromCommit": "ba9fd7b438684093f39e59906f9c84f27fea27a3"
+    "builtFromCommit": "8c1b8aadb0352c049f11d3003acd688532cf97e4"
   },
   {
     "id": "sox",
@@ -226,11 +226,11 @@
     "version": "1.2.0",
     "title": "soxe CLI",
     "description": "LLM extension ecosystem CLI — extension #0 (D1/D2 self-hosting)",
-    "source": "file:///Users/nix/dev/ai/sox-ecosystem/.worktrees/pkt60-memory-ontology-seam/apps/sox",
+    "source": "file:///Users/nix/dev/ai/sox-ecosystem/apps/sox",
     "checksum": "sha256:a212f4c2cd196041ab424ed1a35319e49acfd088aca7621548f47e360d6d3442",
     "compatibility": {
       "host": ">=1.0.0 <2.0.0"
     },
-    "builtFromCommit": "ba9fd7b438684093f39e59906f9c84f27fea27a3"
+    "builtFromCommit": "8c1b8aadb0352c049f11d3003acd688532cf97e4"
   }
 ]
