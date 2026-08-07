@@ -8,7 +8,8 @@
 **Memory-subsystem work → [`docs/reporting/memory/README.md`](./docs/reporting/memory/README.md).**
 That is the single entry point: program state, work order, findings, and the traps that have each
 cost hours. Start at its `STATE.md`. Do not create a parallel doc tree for memory work — findings
-go in `findings/`, state in `STATE.md`, defects in `BACKLOG.md`, nowhere else.
+go in `findings/`, state in `STATE.md`, defects filed through the backlog tool (family `BL`, repo
+`sox-ecosystem`), nowhere else.
 
 
 For codebase navigation, see [`docs/routing/ROUTER.md`](./docs/routing/ROUTER.md) (intent→scope mapping) and
@@ -77,13 +78,15 @@ staged (BL-409). Never let a commit touch `.nx/`, `.DS_Store`, `dist/`, or `*.js
 
 **When a hot file is contended, pathspec is not enough — use `tools/commit-mine.mjs`.**
 `git commit <path>` is all-or-nothing per file, so it cannot help when two agents are editing
-different sections of `BACKLOG.md`, `CHANGELOG.md`, or `PLAN.md` at once. Worse, the shared index can
-hold a copy of a file *behind* HEAD: measured 2026-08-03, `BACKLOG.md` sat staged 21 lines behind
-HEAD, where a bare `git commit` would have silently reverted a fix committed minutes earlier.
+different sections of `CHANGELOG.md` or `PLAN.md` at once (root `BACKLOG.md` was the canonical
+example of this until [ADR-0011] Stage 3 deleted it — the graph has no equivalent hot-file
+contention problem, since each item is its own row). Worse, the shared index can hold a copy of a
+file *behind* HEAD: measured 2026-08-03, `BACKLOG.md` sat staged 21 lines behind HEAD, where a bare
+`git commit` would have silently reverted a fix committed minutes earlier.
 
 ```
-node tools/commit-mine.mjs --dry-run -m "msg" --hunks 'REGEX' -- BACKLOG.md   # always dry-run first
-node tools/commit-mine.mjs -m "msg" --hunks 'REGEX' -- BACKLOG.md
+node tools/commit-mine.mjs --dry-run -m "msg" --hunks 'REGEX' -- CHANGELOG.md   # always dry-run first
+node tools/commit-mine.mjs -m "msg" --hunks 'REGEX' -- CHANGELOG.md
 ```
 
 It seeds a **private** `GIT_INDEX_FILE` from HEAD, applies only the hunks you selected, and moves the
@@ -201,7 +204,8 @@ project's `--worker`/`--external` build flags.
 
 Governed by **BL-225**. A status marker must record a *verified outcome*, never an intention.
 
-Before writing `**RESOLVED**` on any `### BL-<n>` heading:
+Before calling `backlog_transition_status`/`backlog_resolve_item` with status
+`RESOLVED`/`DONE`/`FIXED`/etc on any `BL-<n>` item:
 
 1. A regression test **naming the BL-ID** exists.
 2. You have seen it **fail** with the fix disabled, and **pass** with it restored. Not "it would fail" — run it.
@@ -216,32 +220,21 @@ This rule exists because four separate items shipped as RESOLVED while still bro
 
 Corollary: **the ~125 items already marked CLOSED have never been audited against this rule.** Do not treat a `RESOLVED` marker as evidence. Read the code.
 
-Do not hand-maintain `BACKLOG.md`'s status header — it is derived from heading markers (BL-224). Regenerate it. Every marker must begin with a status word (`Open`, `REOPENED`, `BLOCKED`, `RESOLVED`, `CLOSED`, …); a `[TRIAGE]` prefix breaks the parser and silently drops the item from the count.
-
 ---
 
-## ⛔ AGENT CONSTRAINT — RESOLVED BACKLOG ITEMS MUST BE MOVED TO CHANGELOG AND REMOVED FROM BACKLOG
+## ⛔ AGENT CONSTRAINT — RESOLVED BACKLOG ITEMS: TRANSITION STATUS, ATTACH CITATIONS, NOTHING FURTHER
 
-When you mark a `### BL-<n>` item **RESOLVED**, you are NOT done. You MUST complete the full lifecycle:
+**[ADR-0011, Stage 3 complete]** The backlog graph is the only place a `BL-*` item lives — root
+`BACKLOG.md`/`CHANGELOG.md` were deleted. Resolving an item is a single tool call, not a
+three-document lifecycle:
 
-1. **Move to CHANGELOG.** Write the completed item into `CHANGELOG.md` following the
-   [`changelog-writer`](./.claude/skills/changelog-writer/SKILL.md) skill format:
-   - Killer features with CLI code examples first, supporting features as named bullets,
-     fixes grouped at the end.
-   - Show commands, not prose descriptions.
-   - The version header matches the bumped version (e.g. `## [1.2.0] — YYYY-MM-DD`).
-
-2. **Remove from BACKLOG.** Delete the entire `### BL-<n>` section (heading + body + trailing
-   `---` separator) from `BACKLOG.md`. A resolved item has no business staying in the
-   backlog — it is now a shipped changelog entry.
-
-3. **Update the status table.** After removal, the status header counts (total open/closed,
-   per-priority lists) must reflect the new reality. Regenerate the counts from the remaining
-   heading markers — never hand-edit the numbers.
-
-This is not optional. A backlog full of RESOLVED items is stale documentation that wastes
-every agent's token budget on every read. The backlog is for what remains; the changelog is
-for what shipped.
+1. **Transition status** via `backlog_transition_status`/`backlog_resolve_item`
+   (`RESOLVED`/`DONE`/`FIXED`/`SHIPPED`/`VERIFIED`/etc, per what actually happened).
+2. **Attach citations** via `backlog_add_citation` (or `backlog_append_note` for narrative) —
+   file:line evidence of the fix, same standard as before.
+3. **Nothing further.** There is no second document to keep in sync, no status table to
+   regenerate by hand — `tools/plan-status.mjs` derives `PLAN.md`/`STATE.md`'s summaries straight
+   from the graph on every run, and `--check` fails the commit if they've drifted.
 
 ---
 
