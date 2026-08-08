@@ -28,4 +28,8 @@ SOX_GIT_PARENT_CMD="$(ps -o args= -p $PPID 2>/dev/null)" node tools/check-amend-
 # this repo, so no file-staged condition can reliably catch it (BL-435's failure mode, generalized).
 node tools/plan-status.mjs --check
 
+# BL-466 — Tier 1 regression guards (tools/test-bl*.mjs), filtered to guards whose
+# watched files are in this commit's staged diff. See tools/guards-manifest.mjs.
+node tools/run-guards.mjs --tier1
+
 npx nx affected --target=lint --base=HEAD~1 --head=HEAD

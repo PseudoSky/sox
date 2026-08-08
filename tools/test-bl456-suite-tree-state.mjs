@@ -32,6 +32,15 @@ import { fileURLToPath } from 'node:url';
 
 const TOOLS = path.dirname(fileURLToPath(import.meta.url));
 const REPO = path.resolve(TOOLS, '..');
+
+// BL-479 — strip inherited GIT_DIR/GIT_INDEX_FILE/GIT_WORK_TREE/GIT_COMMON_DIR so this scratch
+// repo's git commands can never resolve against the invoking checkout's real index (git prefers
+// these env vars over cwd-based repo discovery).
+const SAFE_GIT_ENV = { ...process.env };
+delete SAFE_GIT_ENV.GIT_DIR;
+delete SAFE_GIT_ENV.GIT_INDEX_FILE;
+delete SAFE_GIT_ENV.GIT_WORK_TREE;
+delete SAFE_GIT_ENV.GIT_COMMON_DIR;
 const TOOL = path.join(TOOLS, 'check-suite-tree-state.mjs');
 
 let failed = 0;
@@ -98,7 +107,7 @@ const graph = {
 // ---------------------------------------------------------------------------
 {
   const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'bl456-')));
-  const git = (args) => execFileSync('git', args, { cwd: dir, encoding: 'utf8' });
+  const git = (args) => execFileSync('git', args, { cwd: dir, encoding: 'utf8', env: SAFE_GIT_ENV });
   git(['init', '-q']);
   git(['config', 'user.email', 'test@test.com']);
   git(['config', 'user.name', 'test']);

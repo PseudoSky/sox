@@ -43,7 +43,15 @@ function report(name, ok, detail) {
   if (!ok) failed++;
 }
 
-const sh = (args, cwd) => execFileSync('git', args, { cwd, encoding: 'utf8' });
+// BL-479 — strip inherited GIT_DIR/GIT_INDEX_FILE/GIT_WORK_TREE/GIT_COMMON_DIR so this scratch
+// repo's git commands can never resolve against the invoking checkout's real index (git prefers
+// these env vars over cwd-based repo discovery).
+const SAFE_GIT_ENV = { ...process.env };
+delete SAFE_GIT_ENV.GIT_DIR;
+delete SAFE_GIT_ENV.GIT_INDEX_FILE;
+delete SAFE_GIT_ENV.GIT_WORK_TREE;
+delete SAFE_GIT_ENV.GIT_COMMON_DIR;
+const sh = (args, cwd) => execFileSync('git', args, { cwd, encoding: 'utf8', env: SAFE_GIT_ENV });
 
 /** commit-mine reports on stderr; capture both streams without a non-zero exit throwing. */
 function runCommitMine(cwd, args) {

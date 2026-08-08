@@ -36,6 +36,16 @@
         },
         "^build"
       ]
+    },
+    "guards-tier1": {
+      "executor": "nx:run-commands",
+      "options": { "command": "node tools/run-guards.mjs --tier1 --all", "cwd": "." },
+      "cache": false
+    },
+    "guards-tier2": {
+      "executor": "nx:run-commands",
+      "options": { "command": "node tools/run-guards.mjs --tier2", "cwd": "." },
+      "cache": false
     }
   }
 }
