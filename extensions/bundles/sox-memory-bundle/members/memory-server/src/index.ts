@@ -435,6 +435,11 @@ export const TOOLS: Array<Omit<ToolDefinition, 'handler'>> = [
             importance_min: { type: 'number', description: 'Only return episodes with importance >= this value.' },
             t_created_after: { type: 'string', description: 'ISO timestamp; only episodes created after this.' },
             t_created_before: { type: 'string', description: 'ISO timestamp; only episodes created before this.' },
+            kinds: {
+              type: 'array',
+              items: { type: 'string' },
+              description: 'Node kinds to include in results (default: ["episode"]). Entity/community/session/generic nodes carry no readable content and are excluded by default; pass e.g. ["episode","entity"] to opt in.',
+            },
           },
         },
       },
@@ -1564,6 +1569,12 @@ export async function handleToolCall(name: string, args: Record<string, unknown>
         if (ta !== undefined) recallFilters['t_created_after'] = ta;
         const tb = filters['t_created_before'];
         if (tb !== undefined) recallFilters['t_created_before'] = tb;
+        // kinds (BUG-MEMORY-003): opt-in override of the default ['episode']
+        // candidate-kind restriction applied in recall.ts. Easiest place to
+        // silently drop an accepted-looking schema field — this branch is
+        // what makes it actually reach memoryRecall().
+        const ki = filters['kinds'];
+        if (ki !== undefined) recallFilters['kinds'] = ki;
       }
 
       const recallResult = await memoryRecall(adapter, (args['scope'] as string) ?? 'project', {
