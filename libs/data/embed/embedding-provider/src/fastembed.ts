@@ -1,4 +1,4 @@
-import { warmupTimeoutMs, isModelCached } from './index.js';
+import { warmupTimeoutMs, isModelCached, WARMUP_CACHE_HIT_ATTEMPTS } from './index.js';
 import { getSharedFastembedProcess, type SharedFastembedProcessClient } from './sharedFastembedProcess.js';
 import type { EmbeddingHealth, EmbeddingProvider, EmbeddingProviderMetadata, EmbedRole, FastEmbedModelConfig } from './index.js';
 
@@ -265,27 +265,46 @@ export class FastembedProvider implements EmbeddingProvider {
   }
 
   private async initModel(): Promise<void> {
-    try {
-      const hfRepoId = MODEL_CONFIGS[this.model]?.hfRepoId;
-      const cacheHit = hfRepoId ? isModelCached(this.cacheDir, hfRepoId) : false;
-      const res = await this.shared.request<InitOkResponse>(
-        { type: 'init', model: this.model, cacheDir: this.cacheDir },
-        warmupTimeoutMs(cacheHit),
-      );
-      if (res.dim > 0) {
-        this.embedDim = res.dim;
+    const hfRepoId = MODEL_CONFIGS[this.model]?.hfRepoId;
+    const cacheHit = hfRepoId ? isModelCached(this.cacheDir, hfRepoId) : false;
+    // BUG-EMBED-WARMUP-CACHEHIT-ASSUMES-FAST-LOAD-001: a cache-hit warmup gets
+    // WARMUP_CACHE_HIT_ATTEMPTS attempts at the same tight per-attempt budget
+    // (unchanged from BL-376) instead of a single shot. A retry's IPC request
+    // queues behind the still-running first attempt in the shared child's
+    // serialized request queue and resolves once that load finishes, so a
+    // retry is not wasted work — it is the second chance to observe a load
+    // that was already going to succeed, just not within one tight window.
+    // Cache-miss keeps exactly one attempt (unchanged): a stuck download is a
+    // different failure mode, out of scope here.
+    const attempts = cacheHit ? WARMUP_CACHE_HIT_ATTEMPTS : 1;
+    let lastErr: Error = new Error('initModel: no attempt was made');
+    for (let attempt = 1; attempt <= attempts; attempt++) {
+      try {
+        const res = await this.shared.request<InitOkResponse>(
+          { type: 'init', model: this.model, cacheDir: this.cacheDir },
+          warmupTimeoutMs(cacheHit),
+        );
+        if (res.dim > 0) {
+          this.embedDim = res.dim;
+        }
+        this._executionProvider = res.execution_provider || 'cpu';
+        this.ready = true;
+        this._lastError = null;
+        return;
+      } catch (e) {
+        lastErr = e instanceof Error ? e : new Error(String(e));
+        // Intermediate attempt failed — loop and retry (no logging dependency
+        // added here; sharedFastembedProcess.ts already emits
+        // fastembed_process.request.error/.finish telemetry per attempt with
+        // queue_depth visible on each, which is sufficient observability).
       }
-      this._executionProvider = res.execution_provider || 'cpu';
-      this.ready = true;
-      this._lastError = null;
-    } catch (e) {
-      const err = e instanceof Error ? e : new Error(String(e));
-      this._lastError = err.message;
-      // Allow a subsequent call to retry initialisation rather than being
-      // permanently stuck on a failed readyPromise.
-      this.readyPromise = null;
-      throw err;
     }
+    // Final attempt failed: preserve today's behaviour exactly.
+    this._lastError = lastErr.message;
+    // Allow a subsequent call to retry initialisation rather than being
+    // permanently stuck on a failed readyPromise.
+    this.readyPromise = null;
+    throw lastErr;
   }
 
   private async sendBatch(texts: string[]): Promise<number[][]> {
