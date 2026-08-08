@@ -74,7 +74,9 @@ async function createPreBoundSocketAsync(
   });
 
   // 2. Get the underlying fd and dup it (independent reference to the kernel socket).
-  const origFd: number = (server._handle as { fd: number }).fd;
+  const origFd: number = (
+    (server as unknown as { _handle: { fd: number } })._handle
+  ).fd;
   const dup: number = dupFd(origFd);
 
   // 3. Rename the socket file aside so close() cannot unlink it (the close handler
@@ -208,7 +210,7 @@ describe('serveBackend — SA-3 inherited-fd', () => {
 
     // Confirm the file exists (from the pre-bound socket)
     expect(fs.existsSync(sock)).toBe(true);
-    const mtimeBefore = fs.statSync(sock).mtimeMs;
+    const inoBefore = fs.statSync(sock).ino;
 
     const h: BackendHandle = await serveBackend({
       socketPath: sock,
@@ -220,11 +222,8 @@ describe('serveBackend — SA-3 inherited-fd', () => {
 
     // The same file still exists (serveBackend didn't unlink + rebind it)
     expect(fs.existsSync(sock)).toBe(true);
-    const mtimeAfter = fs.statSync(sock).mtimeMs;
-    // mtime should be the same (we didn't recreate the file)
-    // Note: mtime of a socket file behaves differently — this is best-effort
-    // Assertion: file is still at the same inode
-    expect(fs.statSync(sock).ino).toBe(fs.statSync(sock).ino); // no-op check
+    // Assertion: file is still at the same inode (it wasn't unlinked + recreated)
+    expect(fs.statSync(sock).ino).toBe(inoBefore);
 
     await h.close();
     // File survives close

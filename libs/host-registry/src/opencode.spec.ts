@@ -116,96 +116,96 @@ describe('opencode.surfaces', () => {
   });
 
   it('has agent surface with file-drop capability', () => {
-    expect(opencodeHost.surfaces.agent.capability).toBe('file-drop');
+    expect(opencodeHost.surfaces.agent!.capability).toBe('file-drop');
   });
 
   it('agent surface paths point to .opencode/agents', () => {
-    const s = opencodeHost.surfaces.agent;
+    const s = opencodeHost.surfaces.agent!;
     expect(s.paths.project).toBe('.opencode/agents');
     expect(s.paths.user).toBe(path.join(HOME, '.config', 'opencode', 'agents'));
   });
 
   it('has skill surface with file-drop capability', () => {
-    expect(opencodeHost.surfaces.skill.capability).toBe('file-drop');
+    expect(opencodeHost.surfaces.skill!.capability).toBe('file-drop');
   });
 
   it('skill surface paths point to .opencode/skills', () => {
-    const s = opencodeHost.surfaces.skill;
+    const s = opencodeHost.surfaces.skill!;
     expect(s.paths.project).toBe('.opencode/skills');
     expect(s.paths.user).toBe(path.join(HOME, '.config', 'opencode', 'skills'));
   });
 
   it('has command surface with file-drop capability', () => {
-    expect(opencodeHost.surfaces.command.capability).toBe('file-drop');
+    expect(opencodeHost.surfaces.command!.capability).toBe('file-drop');
   });
 
   it('command surface paths point to .opencode/tools', () => {
-    const s = opencodeHost.surfaces.command;
+    const s = opencodeHost.surfaces.command!;
     expect(s.paths.project).toBe('.opencode/tools');
     expect(s.paths.user).toBe(path.join(HOME, '.config', 'opencode', 'tools'));
     expect(s.paths.local).toBe('.opencode/tools');
   });
 
   it('has mcp-server surface with config-merge capability', () => {
-    const s = opencodeHost.surfaces['mcp-server'];
+    const s = opencodeHost.surfaces['mcp-server']!;
     expect(s.capability).toBe('config-merge');
     expect(s.format).toBe('json');
   });
 
   it('mcp-server surface has mcpConfig defined', () => {
-    const s = opencodeHost.surfaces['mcp-server'];
+    const s = opencodeHost.surfaces['mcp-server']!;
     expect(s.mcpConfig).toBeDefined();
   });
 
   it('mcpConfig.keyPath returns mcp.{extId}', () => {
-    const s = opencodeHost.surfaces['mcp-server'];
+    const s = opencodeHost.surfaces['mcp-server']!;
     expect(s.mcpConfig!.keyPath('memory-server')).toBe('mcp.memory-server');
   });
 
   it('mcpConfig.keyPath returns mcp.{extId} for other extensions', () => {
-    const s = opencodeHost.surfaces['mcp-server'];
+    const s = opencodeHost.surfaces['mcp-server']!;
     expect(s.mcpConfig!.keyPath('foo-bar')).toBe('mcp.foo-bar');
   });
 
   it('mcpConfig.value stdio returns local type with command array', () => {
-    const s = opencodeHost.surfaces['mcp-server'];
+    const s = opencodeHost.surfaces['mcp-server']!;
     const val = s.mcpConfig!.value('stdio', 'soxe', 'memory-server');
     expect(val).toEqual({ type: 'local', command: ['soxe', 'serve', 'memory-server'] });
   });
 
   it('mcpConfig.value sse returns remote type with default port 3000', () => {
-    const s = opencodeHost.surfaces['mcp-server'];
+    const s = opencodeHost.surfaces['mcp-server']!;
     const val = s.mcpConfig!.value('sse', 'soxe', 'memory-server');
     expect(val).toEqual({ type: 'remote', url: 'http://localhost:3000/sse' });
   });
 
   it('mcpConfig.value http returns remote type with default port 3000', () => {
-    const s = opencodeHost.surfaces['mcp-server'];
+    const s = opencodeHost.surfaces['mcp-server']!;
     const val = s.mcpConfig!.value('http', 'soxe', 'memory-server');
     expect(val).toEqual({ type: 'remote', url: 'http://localhost:3000/sse' });
   });
 
   it('mcpConfig.value http uses port parameter (TR-3)', () => {
-    const s = opencodeHost.surfaces['mcp-server'];
+    const s = opencodeHost.surfaces['mcp-server']!;
     const val = s.mcpConfig!.value('http', 'soxe', 'memory-server', 4111);
     expect(val).toEqual({ type: 'remote', url: 'http://localhost:4111/sse' });
   });
 
   it('mcpConfig.value http uses bindAddress parameter (TR-4)', () => {
-    const s = opencodeHost.surfaces['mcp-server'];
+    const s = opencodeHost.surfaces['mcp-server']!;
     const val = s.mcpConfig!.value('http', 'soxe', 'memory-server', 3099, '0.0.0.0');
     expect(val).toEqual({ type: 'remote', url: 'http://0.0.0.0:3099/sse' });
   });
 
   it('mcpConfig.value http displays localhost for 127.0.0.1 bind (TR-4)', () => {
-    const s = opencodeHost.surfaces['mcp-server'];
+    const s = opencodeHost.surfaces['mcp-server']!;
     // 127.0.0.1 should be displayed as localhost for portability
     const val = s.mcpConfig!.value('http', 'soxe', 'memory-server', 3099, '127.0.0.1');
     expect(val).toEqual({ type: 'remote', url: 'http://localhost:3099/sse' });
   });
 
   it('mcpConfig.value http displays localhost for ::1 bind (TR-4)', () => {
-    const s = opencodeHost.surfaces['mcp-server'];
+    const s = opencodeHost.surfaces['mcp-server']!;
     const val = s.mcpConfig!.value('http', 'soxe', 'memory-server', 3099, '::1');
     expect(val).toEqual({ type: 'remote', url: 'http://localhost:3099/sse' });
   });
@@ -221,7 +221,7 @@ describe('opencode.surfaces', () => {
   // than only the literal means a future path change breaks one test with an
   // obvious cause, instead of six with none.
   it('mcpConfig.value sse and http resolve to the same endpoint (the choice is cosmetic)', () => {
-    const s = opencodeHost.surfaces['mcp-server'];
+    const s = opencodeHost.surfaces['mcp-server']!;
     const sse = s.mcpConfig!.value('sse', 'soxe', 'memory-server', 3099, '127.0.0.1');
     const http = s.mcpConfig!.value('http', 'soxe', 'memory-server', 3099, '127.0.0.1');
     expect(sse).toEqual(http);
@@ -232,11 +232,11 @@ describe('opencode.surfaces', () => {
   });
 
   it('has service surface with run-service capability', () => {
-    expect(opencodeHost.surfaces.service.capability).toBe('run-service');
+    expect(opencodeHost.surfaces.service!.capability).toBe('run-service');
   });
 
   it('service surface paths point to .sox', () => {
-    const s = opencodeHost.surfaces.service;
+    const s = opencodeHost.surfaces.service!;
     expect(s.paths.project).toBe('.sox');
     expect(s.paths.user).toBe(path.join(HOME, '.sox'));
   });
@@ -268,7 +268,7 @@ describe('opencode.scopePaths() with SOX_SANDBOX_ROOT', () => {
   });
 
   it('surfaces reroot to sandbox', () => {
-    const s = opencodeHost.surfaces.skill;
+    const s = opencodeHost.surfaces.skill!;
     expect(s.paths.user).toBe(path.join('/tmp/sandbox', '.config', 'opencode', 'skills'));
     expect(s.paths.user).not.toContain(HOME);
   });
@@ -279,7 +279,7 @@ describe('opencode.scopePaths() with SOX_SANDBOX_ROOT', () => {
   });
 
   it('mcp-server surface user path reroots to sandbox', () => {
-    const s = opencodeHost.surfaces['mcp-server'];
+    const s = opencodeHost.surfaces['mcp-server']!;
     expect(s.paths.user).toBe(path.join('/tmp/sandbox', '.config', 'opencode', 'opencode.json'));
     expect(s.paths.user).not.toContain(HOME);
   });

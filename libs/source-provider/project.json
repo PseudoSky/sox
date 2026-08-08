@@ -34,6 +34,15 @@
       "options": {
         "lintFilePatterns": ["libs/source-provider/**/*.ts"]
       }
+    },
+    "typecheck": {
+      "executor": "nx:run-commands",
+      "options": {
+        "command": "tsc -p libs/source-provider/tsconfig.json --noEmit",
+        "cwd": "."
+      },
+      "cache": true,
+      "inputs": ["default", "^production"]
     }
   }
 }
