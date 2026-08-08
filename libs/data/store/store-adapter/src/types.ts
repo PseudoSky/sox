@@ -342,4 +342,13 @@ export interface TursoAdapter extends StoreAdapter {
   readonly config: Readonly<AdapterConfig & { type: 'turso' }>;
   /** Escape hatch — returns the raw @tursodatabase/database handle. Calling this breaks portability. */
   unwrap(): import('@tursodatabase/database').Database;
+  /**
+   * (SPEC-CONN-RECYCLE) Live connection health. `'poisoned'` after a fatal
+   * driver fault (see `isFatalConnectionError`) has been detected and a
+   * reconnect has not yet started; `'reconnecting'` while one is in flight;
+   * `'healthy'` otherwise. Additive-only seam for callers (e.g. a health
+   * surface) that want to report connection state without triggering a
+   * query — reading it never itself starts a reconnect.
+   */
+  readonly connectionHealth: 'healthy' | 'poisoned' | 'reconnecting';
 }
