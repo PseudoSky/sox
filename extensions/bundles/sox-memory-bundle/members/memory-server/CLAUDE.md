@@ -467,6 +467,30 @@ were audited; none did.
 
 Bi-temporally invalidate a claim: sets `t_invalid` on the node (never deletes). Optionally records a SUPERSEDES edge to a replacement.
 
+**Breaking (BUG-MEMORY-002, 2026-08-08):** the `claim_uid` lookup no longer collapses "not found" and
+"already invalidated" into a single `E_NOT_FOUND`. Previously the query filtered `t_invalid IS NULL`,
+so a uid that was invalidated by ANY means before the caller's own call — a second manual
+`memory_invalidate`, `memory_curate`'s `merge_duplicates`, or (the dominant real-world case) the
+async near-dup pipeline (`enrich.ts`'s `applyNearDupResult`) auto-invalidating the older of two
+near-duplicate episodes moments after write — was indistinguishable from a uid that never existed at
+all. Now:
+
+- **Not found** — `{ code: 'E_NOT_FOUND', message: 'No node found for uid: <uid>' }`. Unchanged code,
+  corrected message text (the old text claimed "or already invalidated," which is no longer a case
+  this branch reaches).
+- **Already invalid** — `{ ok: true, already_invalid: true, t_invalid: '<original t_invalid>' }`.
+  IDEMPOTENT SUCCESS, not an error — the caller's intent (uid is not live) was already satisfied.
+  `replacement_uid`, if supplied, is **not** processed on this path — no `SUPERSEDES` edge is
+  written even if `replacement_uid` is itself valid, to keep the idempotency guarantee real (repeated
+  calls with different `replacement_uid` values must not produce different side effects). A caller
+  who needs a `SUPERSEDES` edge attached to an already-invalid claim has no tool for that today.
+- **Wrong kind** — `{ code: 'E_WRONG_KIND', message: '...', kind: '<actual kind>' }`. New: the
+  lookup previously had no `kind` predicate at all, so passing a `community_uid`, `entity_uid`, or
+  `session_id` from a different tool's response would silently set `t_invalid` on a structural node
+  this operation was never meant to touch. `claim_uid` must resolve to a live `kind='episode'` or
+  `kind='claim'` node; anything else (`entity`/`community`/`session`) is now rejected with the actual
+  kind named in the error.
+
 ## Error handling
 
 Tools return `{ "isError": true, "content": [{ "type": "text", "text": "..." }] }` on error. Common error codes:
@@ -475,6 +499,7 @@ Tools return `{ "isError": true, "content": [{ "type": "text", "text": "..." }] 
 - `E_AMBIGUOUS` — ambiguous lookup (entity_name matches multiple, or both entity_uid and community_uid supplied)
 - `E_MISSING` / `E_MISSING_INPUT` — required parameter not supplied for the operation
 - `E_UNKNOWN_OP` — unknown `op` value for memory_curate
+- `E_WRONG_KIND` — memory_invalidate: uid resolves to a live node whose kind is not episode/claim
 
 ## Transport
 

@@ -539,6 +539,14 @@ export interface InvalidateParams {
 export interface InvalidateResult {
   ok: boolean;
   supersedes_edge_uid?: string;
+  /** True when the target was ALREADY invalid before this call — the caller's
+   *  intent (uid is not live) was already satisfied. Distinguishes idempotent
+   *  success from a fresh invalidation for callers that care (e.g. audit logging). */
+  already_invalid?: boolean;
+  /** Present only when already_invalid is true — the ORIGINAL t_invalid timestamp,
+   *  so a caller can tell whether it was invalidated moments ago (consistent with
+   *  the async near-dup pipeline racing them) or long ago (a stale uid they reused). */
+  t_invalid?: string;
 }
 
 export type InvalidateError =
@@ -554,7 +562,16 @@ export type InvalidateError =
    * know, so this now fails the whole call (the claim is NOT invalidated
    * either — see the BL-247 write-up above `memoryInvalidate`).
    */
-  | { code: 'E_REPLACEMENT_NOT_FOUND'; message: string };
+  | { code: 'E_REPLACEMENT_NOT_FOUND'; message: string }
+  /**
+   * BUG-MEMORY-002: raised when claim_uid resolves to a LIVE node whose `kind`
+   * is not one this operation is meant to invalidate (episode/claim). The
+   * lookup previously had no `kind` predicate at all, so e.g. a community_uid
+   * or entity uid from another tool's response would silently succeed and
+   * set t_invalid on a structural node it was never meant to touch. Naming the
+   * actual kind lets the caller see they passed the wrong tool's uid.
+   */
+  | { code: 'E_WRONG_KIND'; message: string; kind: string };
 
 // ── Batch write (WP-3, BL-125) ──────────────────────────────────────────────
 
@@ -731,13 +748,35 @@ export async function memoryInvalidate(
   const { claim_uid, reason, t_transition, replacement_uid } = params;
   const tTransition = t_transition ?? new Date().toISOString();
 
-  const claim = await adapter.executeGet<{ rowid: number }>(
-    `SELECT rowid FROM node WHERE uid = ? AND t_invalid IS NULL`,
+  const claim = await adapter.executeGet<{ rowid: number; kind: string; t_invalid: string | null }>(
+    `SELECT rowid, kind, t_invalid FROM node WHERE uid = ?`,
     [claim_uid],
   );
 
   if (!claim) {
-    return { code: 'E_NOT_FOUND', message: `Claim not found or already invalidated: ${claim_uid}` };
+    return { code: 'E_NOT_FOUND', message: `No node found for uid: ${claim_uid}` };
+  }
+
+  // BUG-MEMORY-002: already-invalid is the caller's intent already satisfied —
+  // idempotent success, not an error. This is the dominant real-world case: the
+  // async near-dup pipeline (enrich.ts applyNearDupResult / embed-pipeline.ts's
+  // deferred pass) can auto-invalidate an episode seconds after write, racing a
+  // caller who invalidates it manually moments later.
+  if (claim.t_invalid !== null) {
+    return { ok: true, already_invalid: true, t_invalid: claim.t_invalid };
+  }
+
+  // BUG-MEMORY-002: reject the wrong KIND of uid rather than silently
+  // invalidating a structural node (entity/community/session) this operation
+  // was never meant to touch. memory_write only ever produces kind='episode';
+  // kind='claim' is produced only by the extensions/graphify import path
+  // (extensions.ts _mapGraphifyType) — both are legitimate invalidate targets.
+  if (claim.kind !== 'episode' && claim.kind !== 'claim') {
+    return {
+      code: 'E_WRONG_KIND',
+      message: `uid ${claim_uid} is a live '${claim.kind}' node, not an episode or claim. memory_invalidate only operates on episode/claim uids.`,
+      kind: claim.kind,
+    };
   }
 
   // BL-247: resolve (and validate) replacement_uid BEFORE mutating anything.

@@ -102,8 +102,10 @@ memory_update({
 })
 ```
 
-To correct a *fact* (rather than edit a node), prefer **supersession**: `memory_write`
-the new claim + `memory_invalidate({ claim_uid, reason, replacement_uid })` the old one
+To correct a *fact* (rather than edit a node), prefer **supersession**: `memory_write` the
+replacement episode + `memory_invalidate({ claim_uid: <old episode_uid>, reason,
+replacement_uid: <new episode_uid> })` the old one — `claim_uid` accepts the plain
+`episode_uid` from `memory_write` directly, there is no separate "claim" identity to wait for
 (bi-temporal — the old claim stays visible in `as_of` recall, drops from current recall).
 
 ### Other tools (19 total — see the server `CLAUDE.md` for schemas)
@@ -229,8 +231,11 @@ on a value no node carries returns nothing.
 `project_path`, `importance`, `is_superseded`, `supersedes_uid`, and
 `community_uid`. `memory_write` returns `{ episode_uid, enrichment: { topic,
 project_path, summary, tags, near_dup } }`, or `{ code: "E_DEDUP", existing_uid }`
-(writes are content-hash idempotent). `memory_update` returns
-`{ uid, updated_fields, reembedded }`.
+(writes are content-hash idempotent). `near_dup` is always `null` in this response — near-dup
+detection is asynchronous (see `memory_write`'s own tool description); to check after the fact
+whether a written episode picked up a `SAME_AS` edge, call `memory_near_duplicates` scoped by
+that episode's `project_path`/`topic` and look for its uid in the returned `uid_a`/`uid_b`
+pairs. `memory_update` returns `{ uid, updated_fields, reembedded }`.
 
 ## Caveats
 

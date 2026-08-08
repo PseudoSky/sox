@@ -603,6 +603,114 @@ describe('memory_near_duplicates (C2.10)', () => {
   });
 });
 
+describe('memory_invalidate — already-invalid is idempotent success (BUG-MEMORY-002), MCP seam', () => {
+  const BUGMEM002_DIR = path.join(os.tmpdir(), `sox-bugmem002-spec-${process.pid}`);
+  const BUGMEM002_DB_PATH = path.join(BUGMEM002_DIR, 'test.db');
+
+  beforeAll(() => {
+    fs.mkdirSync(BUGMEM002_DIR, { recursive: true });
+  });
+
+  afterAll(() => {
+    try { fs.rmSync(BUGMEM002_DIR, { recursive: true, force: true }); } catch { /* ignore */ }
+  });
+
+  it('BUG-MEMORY-002 (e): driving the real handleToolCall seam — write, invalidate twice; the SECOND call is NOT isError and reports already_invalid:true', async () => {
+    const writeOut = parseResult(await handleToolCall('memory_write', {
+      db_path: BUGMEM002_DB_PATH,
+      content: 'BUG-MEMORY-002(e): MCP-seam double-invalidate fixture.',
+      project_path: '/test/bugmem002',
+    }));
+    const episodeUid = writeOut['episode_uid'] as string;
+    expect(typeof episodeUid).toBe('string');
+
+    const first = await handleToolCall('memory_invalidate', {
+      db_path: BUGMEM002_DB_PATH,
+      claim_uid: episodeUid,
+      reason: 'first invalidation via MCP seam',
+    });
+    expect(first.isError).toBeFalsy();
+    const firstBody = JSON.parse((first.content[0] as { type: string; text: string }).text) as {
+      ok: boolean;
+      already_invalid?: boolean;
+    };
+    expect(firstBody.ok).toBe(true);
+    expect(firstBody.already_invalid ?? false).toBe(false);
+
+    // RED (pre-fix): this second call routed through the SAME dispatch
+    // handler's generic `if ('code' in result) return {isError:true, ...}`
+    // branch, and memoryInvalidate's un-fixed query returned
+    // {code:'E_NOT_FOUND'} — so isError would be true here.
+    const second = await handleToolCall('memory_invalidate', {
+      db_path: BUGMEM002_DB_PATH,
+      claim_uid: episodeUid,
+      reason: 'second invalidation via MCP seam, same uid',
+    });
+    expect(second.isError).toBeFalsy();
+    const secondBody = JSON.parse((second.content[0] as { type: string; text: string }).text) as {
+      ok: boolean;
+      already_invalid?: boolean;
+      t_invalid?: string;
+    };
+    expect(secondBody.ok).toBe(true);
+    expect(secondBody.already_invalid).toBe(true);
+    expect(typeof secondBody.t_invalid).toBe('string');
+  });
+});
+
+describe('BUG-MEMORY-004 (f): memory_near_duplicates demonstrates it genuinely answers "did my just-written episode near-dup?"', () => {
+  const BUGMEM004_DIR = path.join(os.tmpdir(), `sox-bugmem004-spec-${process.pid}`);
+  const BUGMEM004_DB_PATH = path.join(BUGMEM004_DIR, 'test.db');
+  const PROJECT_PATH = '/test/bugmem004';
+  // Near-identical templated content — this suite runs with SOX_SYNC_EMBED=1
+  // (vitest.setup.ts), so E8 near-dup detection runs INLINE on every write:
+  // the second write's near-dup pass fires synchronously before memory_write
+  // even returns, exactly like the SOX_SYNC_EMBED=1 kill-switch path the tool
+  // description documents.
+  const OLDER_CONTENT = 'CONCURRENCY PROBE (disposable, safe to delete). Reproducing a case for BUG-MEMORY-004.';
+  const NEWER_CONTENT = 'CONCURRENCY PROBE (disposable, safe to delete). Reproducing a case for BUG-MEMORY-004 v2.';
+
+  beforeAll(() => {
+    fs.mkdirSync(BUGMEM004_DIR, { recursive: true });
+  });
+
+  afterAll(() => {
+    try { fs.rmSync(BUGMEM004_DIR, { recursive: true, force: true }); } catch { /* ignore */ }
+  });
+
+  it('BUG-MEMORY-004 (f): after writing two near-duplicate episodes sharing a project_path, memory_near_duplicates({project_path}) returns a pair containing the older uid', async () => {
+    const olderOut = parseResult(await handleToolCall('memory_write', {
+      db_path: BUGMEM004_DB_PATH,
+      content: OLDER_CONTENT,
+      project_path: PROJECT_PATH,
+    }));
+    const olderUid = olderOut['episode_uid'] as string;
+    expect(typeof olderUid).toBe('string');
+
+    const newerOut = parseResult(await handleToolCall('memory_write', {
+      db_path: BUGMEM004_DB_PATH,
+      content: NEWER_CONTENT,
+      project_path: PROJECT_PATH,
+    }));
+    const newerUid = newerOut['episode_uid'] as string;
+    expect(typeof newerUid).toBe('string');
+
+    const out = parseResult(await handleToolCall('memory_near_duplicates', {
+      db_path: BUGMEM004_DB_PATH,
+      project_path: PROJECT_PATH,
+    }));
+    const pairs = out['pairs'] as JsonObj[];
+    expect(pairs.length).toBeGreaterThan(0);
+
+    const found = pairs.some((p) => p['uid_a'] === olderUid || p['uid_b'] === olderUid);
+    // This is a DEMONSTRATION, not a mere assertion: if this fails, it is a
+    // NEW finding (memory_near_duplicates does not do what BUG-MEMORY-004's
+    // spec concluded from reading near-duplicates.ts's source) and must be
+    // reported, not worked around by loosening this check.
+    expect(found).toBe(true);
+  });
+});
+
 describe('memory_get_community v1 (C2.6)', () => {
   it('community_uid direct lookup returns v1 shape', async () => {
     // Fetch a community uid from stats first
