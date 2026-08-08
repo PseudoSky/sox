@@ -693,8 +693,8 @@ export const TOOLS: Array<Omit<ToolDefinition, 'handler'>> = [
         db_path: { type: 'string', description: 'Optional. Path to the SQLite memory store. Defaults to the bundle-configured store (host-injected SOX_CONFIG_DB_PATH, normally ~/.memory/memory.db). Must be within the ~/.memory/** fs allowlist; out-of-allowlist paths are denied by the permission guard with no side effects.' },
         op: {
           type: 'string',
-          enum: ['retag', 'set_topic', 'set_importance', 'merge_duplicates', 'recluster', 'drop_lens', 'drop-episodes', 'list_lenses'],
-          description: 'The curation operation to perform. drop_lens removes a persisted subset lens by provenance_hash. drop-episodes hard-deletes episode node rows and cascading data. list_lenses returns all live subset lenses.',
+          enum: ['retag', 'set_topic', 'set_importance', 'merge_duplicates', 'recluster', 'drop_lens', 'drop-episodes', 'list_lenses', 'reheal_stale'],
+          description: 'The curation operation to perform. drop_lens removes a persisted subset lens by provenance_hash. drop-episodes hard-deletes episode node rows and cascading data. list_lenses returns all live subset lenses. reheal_stale re-embeds live episodes whose vector was stamped by a model that is no longer the active one (BL-88/BL-215) — a bounded, operator-invoked pass; it is never run automatically. Requires SOX_HEAL_STALE_VECTORS=1 on the server process, or it reports disabled:true with an honest remaining count and heals nothing.',
         },
         uid: { type: 'string', description: 'Target episode UID (required for retag, set_topic, set_importance).' },
         uids: { type: 'array', items: { type: 'string' }, description: '(drop-episodes) Array of episode UIDs to hard-delete. Only live nodes (t_invalid IS NULL) are removed; non-existent or already-invalidated UIDs are silently skipped.' },
@@ -706,6 +706,7 @@ export const TOOLS: Array<Omit<ToolDefinition, 'handler'>> = [
         filters: { type: 'object', description: '(recluster) Restrict clustering to the matching subset of episodes. Same filter vocabulary as memory_recall: project_path, topic, tags, tags_match_all, importance_min, t_created_after/before. When present, recluster runs SYNCHRONOUSLY over the subset and returns the resulting communities. Combined with dry_run: dry_run=true returns communities without writing; dry_run=false persists them as a provenance-scoped community slice that leaves the global partition untouched. Absent: a global full re-cluster is ENQUEUED, NOT run inline — the call returns {enqueued:true, seq} as soon as the trigger row commits, and the pass executes on a later in-process periodic enrichment tick (typically minutes away), so memory_stats read immediately after WILL still show the old partition. This deferral is deliberate (BL-186): a synchronous full pass holds the serial WriteQueue slot for its entire duration, fast-failing writes behind it with E_BUSY, and can out-wait the MCP client timeout. With dry_run:true nothing is enqueued and {enqueued:false, dry_run:true} returns.' },
         threshold: { type: 'number', description: '(recluster, filtered) Optional cosine similarity threshold override for the subset pass.' },
         provenance_hash: { type: 'string', description: '(drop_lens) The 16-hex provenance hash of the subset lens to drop (obtain from a prior recluster response).' },
+        limit: { type: 'number', description: '(reheal_stale) Max rows to re-embed this call. Default 50, capped at 2000 — small enough that a single MCP call does not risk the client-side tool-call timeout. Run again while the response\'s remaining > 0.' },
         dry_run: { type: 'boolean', default: false, description: 'If true, return proposed changes without committing them.' },
       },
       required: ['op'],
@@ -1910,6 +1911,27 @@ export async function handleToolCall(name: string, args: Record<string, unknown>
 
     case 'memory_curate': {
       const wq = await WriteQueue.forPath(dbPath);
+      // BL-215: reheal_stale is dispatched OUTSIDE the generic wq.enqueue('memory_curate', ...)
+      // wrapper every other op uses below. Two independent reasons, both load-bearing:
+      //   1. Re-entrancy (BL-154): healStaleVectors calls wq.enqueue() per row internally — the
+      //      exact same shape healMissingVectors uses from the periodic tick, which the codebase
+      //      only ever calls from OUTSIDE a queue task. write-queue.ts has no reentrancy guard;
+      //      nesting a wq.enqueue call inside a task already running on that same queue hangs the
+      //      queue forever, not just this call.
+      //   2. Slot-holding: an embed pass over up to REHEAL_MAX_LIMIT rows can run from milliseconds
+      //      to minutes. Wrapping it in the outer enqueue would hold the WriteQueue's single serial
+      //      slot for that whole duration, fast-failing every other write behind it with E_BUSY —
+      //      the exact anti-pattern the two-phase write design (embed-pipeline.ts header, BL-154)
+      //      exists to prevent. curateRehealStale/healStaleVectors already do their actual mutation
+      //      through short per-row wq 'apply' tasks, so this call only ever blocks the caller, never
+      //      the shared slot.
+      if (args['op'] === 'reheal_stale') {
+        const result = await memoryCurate(adapter, args, wq);
+        if ('code' in result) {
+          return { isError: true, content: [{ type: 'text', text: JSON.stringify(result) }] };
+        }
+        return { content: [{ type: 'text', text: JSON.stringify(result) }] };
+      }
       return wq.enqueue('memory_curate', async (writeDb) => {
         const result = await memoryCurate(writeDb, args);
         if ('code' in result) {

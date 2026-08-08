@@ -16,6 +16,9 @@ import { clusterSubset, dropSubsetLens, listSubsetLenses } from './cluster.js';
 import { gcOrphanedCommunityState } from './community-gc.js';
 import { enqueueEnrichFull } from './outbox-queue.js';
 import type { MemoryFilter } from './memory-filters.js';
+import type { WriteQueue } from './write-queue.js';
+import { healStaleVectors } from './embed-pipeline.js';
+import { getActiveEmbedModel } from './embed.js';
 
 const ulid = monotonicFactory();
 
@@ -116,6 +119,28 @@ export interface CurateListLensesResult {
   lenses: unknown[];
 }
 
+/**
+ * BL-215: operator surface for `healStaleVectors` (BL-88). See §2.1.2 of
+ * SPEC-PKT-18.md for the full field rationale.
+ */
+export interface CurateRehealStaleResult {
+  op: 'reheal_stale';
+  /** Rows the pass examined this call (bounded by `limit`). */
+  scanned: number;
+  /** Rows successfully re-embedded and committed. */
+  healed: number;
+  /** Fresh COUNT of still-stale rows AFTER this pass — run it again while > 0. */
+  remaining: number;
+  /** Rows whose rowid no longer resolved to the scanned uid (benign race). */
+  gone: number;
+  /** Rows whose embed or apply threw. */
+  failed: number;
+  /** True when SOX_HEAL_STALE_VECTORS was not '1' — the pass did not run; `remaining` still reports honestly. */
+  disabled: boolean;
+  /** The active embed model resolved for this call. */
+  active_model: string;
+}
+
 export type CurateResult =
   | CurateRetagResult
   | CurateSetTopicResult
@@ -126,6 +151,7 @@ export type CurateResult =
   | CurateDropLensResult
   | CurateDropEpisodesResult
   | CurateListLensesResult
+  | CurateRehealStaleResult
   | { code: string; message?: string; op?: string };
 
 // ── Main dispatcher ───────────────────────────────────────────────────────────
@@ -133,6 +159,7 @@ export type CurateResult =
 export async function memoryCurate(
   adapter: StoreAdapter,
   args: Record<string, unknown>,
+  wq?: WriteQueue,
 ): Promise<CurateResult> {
   const op = args['op'] as string;
   const dryRun = args['dry_run'] === true;
@@ -162,6 +189,9 @@ export async function memoryCurate(
 
     case 'list_lenses':
       return { op: 'list_lenses', lenses: await listSubsetLenses(adapter) };
+
+    case 'reheal_stale':
+      return await curateRehealStale(adapter, args, wq);
 
     default:
       return { code: 'E_UNKNOWN_OP', op };
@@ -494,5 +524,61 @@ async function curateDropEpisodes(
       vec_node: deletedVec,
       edges: deletedEdges,
     },
+  };
+}
+
+// ── reheal_stale (BL-88/BL-215) ─────────────────────────────────────────────
+
+const REHEAL_DEFAULT_LIMIT = 50;
+const REHEAL_MAX_LIMIT = 2000;
+
+async function curateRehealStale(
+  adapter: StoreAdapter,
+  args: Record<string, unknown>,
+  wq: WriteQueue | undefined,
+): Promise<CurateRehealStaleResult | { code: string; message?: string }> {
+  if (args['dry_run'] === true) {
+    return {
+      code: 'E_UNSUPPORTED',
+      message:
+        'reheal_stale does not support dry_run — it always performs the heal when enabled. ' +
+        'Preview the candidate count via memory_stats.embed_provenance.stale_vector_count first.',
+    };
+  }
+  if (!wq) {
+    return {
+      code: 'E_MISSING',
+      message: 'reheal_stale requires an active WriteQueue (internal wiring error — the ' +
+        'memory_curate MCP handler must pass one; see index.ts case memory_curate).',
+    };
+  }
+
+  const rawLimit = args['limit'];
+  const numericLimit = typeof rawLimit === 'number' && Number.isFinite(rawLimit) ? rawLimit : REHEAL_DEFAULT_LIMIT;
+  const limit = Math.min(REHEAL_MAX_LIMIT, Math.max(1, Math.floor(numericLimit)));
+
+  const pass = await healStaleVectors(adapter, wq, { limit });
+
+  const activeModel = getActiveEmbedModel() ?? 'unknown';
+  const remainingRow = await adapter.executeGet<{ cnt: number }>(
+    `SELECT COUNT(*) AS cnt
+     FROM node n
+     WHERE n.kind = 'episode'
+       AND n.t_invalid IS NULL
+       AND n.embed_model IS NOT NULL
+       AND n.embed_model != ?
+       AND EXISTS (SELECT 1 FROM vec_node v WHERE v.node_id = n.rowid)`,
+    [activeModel],
+  );
+
+  return {
+    op: 'reheal_stale',
+    scanned: pass.scanned,
+    healed: pass.healed,
+    remaining: remainingRow?.cnt ?? 0,
+    gone: pass.gone,
+    failed: pass.failed,
+    disabled: pass.disabled,
+    active_model: activeModel,
   };
 }
