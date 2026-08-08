@@ -246,7 +246,7 @@ export type {
   ClusterAdmissionStats
 } from './cluster.js';
 
-// ── Cluster pipeline metrics (BL-492: time-to-community) ──────────────────────
+// ── Cluster pipeline metrics (BL-496: time-to-community) ──────────────────────
 export {
   getClusterPipelineMetrics, recordClusterPassAdmission, _resetClusterMetricsForTest
 } from './cluster-metrics.js';
