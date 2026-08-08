@@ -21,12 +21,12 @@ A packet is **DONE** only when every BL id it targets is closed — code landing
 (BL-225). Several packets below have merged code and still read OPEN; that is correct, and the
 remedy is to close the backlog item with a red→green test, not to edit this table.
 
-**59 done · 3 partial · 23 open** of 85 packets.
+**61 done · 3 partial · 21 open** of 85 packets.
 
-- Open backlog items in this program's scope: **50**, of which **19** have no packet.
+- Open backlog items in this program's scope: **51**, of which **22** have no packet.
 - Open items deliberately out of scope: **28** — BL-99, BL-103, BL-104, BL-105, BL-163, BL-225, BL-228, BL-258, BL-261, BL-282, BL-283, BL-284, BL-285, BL-288, BL-291, BL-292, BL-296, BL-298, BL-305, BL-306, BL-307, BL-308, BL-309, BL-314, BL-315, BL-333, BL-355, BL-408
-- Unscheduled in-scope items (need a packet): BL-436, BL-462, BL-466, BL-467, BL-468, BL-470, BL-473, BL-474, BL-475, BL-476, BL-478, BL-479, BL-480, BL-481, BL-482, BL-483, BL-484, BL-485, BL-486
-- Packet targets already closed (68) — historical context only, no work remains: BL-259, BL-327, BL-329, BL-332, BL-337, BL-338, BL-341, BL-343, BL-348, BL-350, BL-356, BL-359, BL-360, BL-361, BL-362, BL-364, BL-376, BL-379, BL-380, BL-383, BL-388, BL-389, BL-390, BL-391, BL-392, BL-394, BL-396, BL-397, BL-398, BL-399, BL-402, BL-404, BL-405, BL-406, BL-407, BL-410, BL-412, BL-413, BL-416, BL-425, BL-426, BL-432, BL-435, BL-437, BL-438, BL-439, BL-440, BL-441, BL-442, BL-443, BL-444, BL-445, BL-446, BL-447, BL-448, BL-449, BL-451, BL-453, BL-454, BL-456, BL-457, BL-458, BL-459, BL-460, BL-461, BL-463, BL-464, BL-465
+- Unscheduled in-scope items (need a packet): BL-436, BL-462, BL-466, BL-467, BL-468, BL-470, BL-473, BL-474, BL-475, BL-476, BL-478, BL-479, BL-480, BL-481, BL-482, BL-483, BL-484, BL-485, BL-486, BL-488, BL-489, BL-490
+- Packet targets already closed (70) — historical context only, no work remains: BL-215, BL-259, BL-327, BL-329, BL-332, BL-337, BL-338, BL-341, BL-343, BL-348, BL-350, BL-356, BL-359, BL-360, BL-361, BL-362, BL-364, BL-375, BL-376, BL-379, BL-380, BL-383, BL-388, BL-389, BL-390, BL-391, BL-392, BL-394, BL-396, BL-397, BL-398, BL-399, BL-402, BL-404, BL-405, BL-406, BL-407, BL-410, BL-412, BL-413, BL-416, BL-425, BL-426, BL-432, BL-435, BL-437, BL-438, BL-439, BL-440, BL-441, BL-442, BL-443, BL-444, BL-445, BL-446, BL-447, BL-448, BL-449, BL-451, BL-453, BL-454, BL-456, BL-457, BL-458, BL-459, BL-460, BL-461, BL-463, BL-464, BL-465
 
 | Packet | Status | Targets | Still open |
 |---|---|---|---|
@@ -47,7 +47,7 @@ remedy is to close the backlog item with a red→green test, not to edit this ta
 | PKT-15 | **DONE** | BL-259 | — |
 | PKT-16 | **OPEN** | BL-274 | BL-274 |
 | PKT-17 | **DONE** | BL-359 | — |
-| PKT-18 | **OPEN** | BL-215 | BL-215 |
+| PKT-18 | **DONE** | BL-215 | — |
 | PKT-19 | **DONE** | BL-329 | — |
 | PKT-20 | **DONE** | BL-360 | — |
 | PKT-21 | **DONE** | BL-361 | — |
@@ -67,7 +67,7 @@ remedy is to close the backlog item with a red→green test, not to edit this ta
 | PKT-35 | **DONE** | BL-398 | — |
 | PKT-36 | **DONE** | BL-399 | — |
 | PKT-37 | **PARTIAL** | BL-390, BL-393 | BL-393 |
-| PKT-38 | **OPEN** | BL-375 | BL-375 |
+| PKT-38 | **DONE** | BL-375 | — |
 | PKT-39 | **DONE** | BL-332 | — |
 | PKT-40 | **DONE** | BL-394 | — |
 | PKT-41 | **DONE** | BL-391 | — |
@@ -1477,7 +1477,7 @@ completion, don't just assume no build ran.
 
 ### PKT-18 — BL-215: operator surface for `healStaleVectors`
 
-> **status: OPEN** — still open: BL-215 · derived by `tools/plan-status.mjs`, do not hand-edit
+> **status: DONE** — all targets closed (BL-215) · derived by `tools/plan-status.mjs`, do not hand-edit
 
 **Closes:** BL-215
 **Files:** `libs/memory-core/src/curate.ts` (new `memory_curate` op `reheal_stale`), `extensions/bundles/sox-memory-bundle/members/memory-cli/src/index.ts` (optional `soxe memory reembed` loop — do only if the curate op alone doesn't satisfy the acceptance cleanly).
@@ -1829,7 +1829,7 @@ calibration undocumented (the guard becomes a pure safety net that should rarely
 
 ### PKT-38 — BL-375: `service enable` rebuilds unit env from the invoking shell, silently dropping tunables
 
-> **status: OPEN** — still open: BL-375 · derived by `tools/plan-status.mjs`, do not hand-edit
+> **status: DONE** — all targets closed (BL-375) · derived by `tools/plan-status.mjs`, do not hand-edit
 
 **Closes:** BL-375
 **Files:** `libs/host-runtime/src/os-unit.ts` (or wherever `buildOsUnitEnv` lives — confirm exact path), the `soxe service enable` command in `apps/sox/src/main.ts`.
