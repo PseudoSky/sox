@@ -486,7 +486,10 @@ and the episode is persisted (query it back by uid). Pre-fix (current `_runBypas
 rejects on the first throw and the operation is never retried — assert that failure explicitly before
 implementing §2.3, then re-run green after.
 
-**AC3 (BUG-MEMORY-001 §"Suggested acceptance" #3).** A test drives the real MCP `memory_write` seam
+**AC3 (BUG-MEMORY-001 §"Suggested acceptance" #3) — STATUS: BLOCKED by BUG-001 (nodeId 2043), NOT
+satisfied by this branch. See §8 (architect ruling, 2026-08-08) for why this is independent of defects
+A/B/C and is tracked as a separate follow-on fix rather than folded into this dispatch.** A test drives
+the real MCP `memory_write` seam
 (through `handleToolCall`/`handleBackendRequest`, not by calling `write.ts` functions directly) under
 sustained parallel load against a **populated** store with enrichment active, counting **persisted
 uids**, over many iterations — not absence-of-thrown-errors.
@@ -586,3 +589,95 @@ Do **not** pass `--skip-nx-cache` anywhere in this sequence.
   + `backend.ts`), you have not closed the bug, regardless of what the tests say.
 - If you hit a decision this document doesn't cover, that is this document's failure, not license to
   freelance — stop and report back through the standing escalation path rather than guessing.
+
+---
+
+## 8. ARCHITECT RULING (post-implementation, 2026-08-08) — answers to the implementer's two open questions
+
+Read personally before ruling: `libs/memory-core/src/write-queue.ts:724-838` (the full `enqueue`/
+`_runBypass` diff as implemented — confirmed a plain `for (;;)` retry loop, no recursion, bounded at
+`BYPASS_MAX_ATTEMPTS=3`), `SPEC-BUG-MEMORY-001.md §1-§7` (this file, re-verified against implemented
+`git log --oneline` for this branch: `021852ef`, `1e8388b4`, `83c818c1`, `ec69776b`, `62c72a99`),
+`extensions/bundles/sox-memory-bundle/members/memory-server/src/bug-memory-001-write-loss-ac3.spec.ts`
+(full file), the `BUG-001` backlog item (`nodeId 2043`, filed correctly with citations), and
+`libs/memory-core/src/cluster.ts:504-570` (`incrementalJoin`'s `IN (${…map(()=>'?').join(',')})`
+construction), `libs/data/store/store-adapter/src/turso-adapter.ts:615-640` (`this.db.all(sql,
+...args)` — the args array is spread into the native Turso binding call, not passed as a bound array).
+
+### Q1 — is this dispatch complete with AC3 blocked, or must BUG-001 be chased inside this branch?
+
+**Ruling: this dispatch (defects A/B/C, AC1/AC2/AC4) is complete and mergeable as-is. AC3 is
+correctly marked BLOCKED, not silently downgraded, and BUG-001 is NOT to be freelanced inside this
+branch — it gets its own spec and its own dispatch.** Reasoning, in order:
+
+1. **BUG-001 is independent of this spec's three defects — the evidence already rules out
+   write-queue.ts as the cause, no bisection needed.** AC3b (the no-injected-fault sub-test) reproduces
+   the stack overflow on a SINGLE `handleToolCall('memory_write', …)` call with zero retries taken.
+   `_runBypass`'s retry loop (§2.3, this file) only executes its second iteration when
+   `wrapDbError(err).retryable === true` — a call that never throws in the first place never enters the
+   loop's `catch` branch at all, so a defect that manifests on attempt 1 with no fault injected cannot be
+   caused by code that only runs on attempt 2+. The house rule ("never claim a bug is pre-existing without
+   verification") is satisfied here not by asserting it, but by this direct logical exclusion: the
+   changed code path (the retry loop) is provably not on the execution path that fails. I did not need to
+   check out pre-fix `write-queue.ts` and re-run the (2-3 minute) populated-store seed to prove this —
+   the loop's own gating condition proves it structurally.
+2. **The likely actual site is named, and it is one this spec's own §2.5 explicitly put out of
+   bounds.** `libs/memory-core/src/cluster.ts`'s `incrementalJoin` (:504-570, called from the batch-enrich
+   path `runPeriodicEnrichPass` exercises) and its siblings in `autolink.ts`/`near-duplicates.ts` build
+   `IN (?,?,?,…)` clauses sized to O(corpus candidates) and pass the parameter array through
+   `libs/data/store/store-adapter/src/turso-adapter.ts:626`/`659` (`this.db.all(sql, ...args)`) — a
+   **spread** of that array into the native `@tursodatabase/database` binding call, not a single bound
+   array parameter. `autolink.ts:103-111`'s own `DEBT-MEMORY-ENRICH-001` comment already documents that
+   this exact family of query (pairwise/candidate passes sized to corpus count) needed chunking once
+   before, for a different reason (lock-hold duration) — this is the same shape of problem
+   (an operation whose parameter count scales with corpus size, unguarded) recurring in a sibling
+   file, now large enough (3000 candidates) to hit a native-binding argument-spread limit instead of a
+   lock-duration limit. This is squarely inside `cluster.ts`/`near-duplicates.ts`/`turso-adapter.ts`'s
+   query-construction layer — §2.5 of this spec names `write.ts`'s retry-safety as the only thing
+   verified in the write path proper, and explicitly excludes touching the batch-enrichment/clustering
+   layer at all. A fix belongs there, not in the three files this spec's diff touches.
+3. **This is a materially different class of defect than A/B/C.** A/B/C are error-*handling* defects
+   (a real, transient condition reaches the caller malformed or unretried). BUG-001 is a **correctness**
+   defect in query construction (an unbounded parameter list overflowing a native binding) — it happens
+   to surface *through* `wrapDbError`'s pre-existing, unmodified generic-fallback tier only because that
+   tier's job (catch anything not driver-shaped and hand back `E_IO`) is exactly the same before and
+   after this branch; nothing this branch changed made a `RangeError` route through `wrapDbError` for the
+   first time. Bundling its fix into this branch would violate "Isolate Changes: keep fixes surgical and
+   minimal" (a second, independently-reviewable defect in a different subsystem does not belong in a diff
+   already spanning three packages) and would delay merging three already-verified, already-RED→GREEN
+   fixes behind an open-ended new investigation.
+4. **Do not close AC3 as satisfied, and do not silently drop it from the spec's own bar.** AC3 stays
+   **BLOCKED**, explicitly, in this document (see the updated §4 marker below) — not deferred by
+   omission. `SPEC-BUG-001.md` is the correct vehicle for the fix; it does not exist yet — filing
+   `BUG-001` in the backlog graph (already done, `nodeId 2043`, well-cited) is necessary but not
+   sufficient close-out for a HIGH-priority write-path defect of this shape. I am opening that as a
+   follow-on architect dispatch immediately after this ruling, seeded with the lead in point 2 above so
+   the next implementer does not re-derive it from zero. **BUG-MEMORY-001 the incident is not fully
+   closed until BUG-001 is fixed and AC3a/AC3b both go green** — this branch merging closes defects
+   A/B/C only.
+5. **AC3's status, corrected:** §4's AC3 entry above is amended in place — read as `**AC3 — BLOCKED by
+   BUG-001 (nodeId 2043), tracked in a follow-on spec, not satisfied by this branch.**` The test file
+   (`bug-memory-001-write-loss-ac3.spec.ts`) stays committed, undoctored, and RED — per BL-225, a
+   failing test naming the real defect is the honest state, not a defect to hide.
+
+**What the implementer should NOT do:** do not now pivot to fixing `cluster.ts`/`turso-adapter.ts`
+inside this same branch/commit sequence without a new spec — that is exactly the "hit a decision this
+document doesn't cover, stop and report" case §7 already told you to route back, and you did so
+correctly by filing BUG-001 and asking rather than guessing at a fix for an unscoped defect. Proceed to
+merge this branch's five commits as the closure of BUG-MEMORY-001 defects A/B/C.
+
+### Q2 — registry:sync-index / smoke-test from a worktree (BL-480)
+
+**Ruling: this happens at merge time in the main checkout — there is no worktree-scoped variant, and
+none should be built.** `scripts/build-index.ts` resolving to the shared git-common-dir root is correct,
+existing, by-design behavior (BL-480) — a worktree's `registry/index.json` write would attribute a
+checksum to a branch that isn't merged yet, which is wrong regardless of which worktree triggers it. The
+implementer's handling — ran it once, observed the main-checkout write, reverted with `git -C
+<main-checkout> restore registry/index.json` rather than committing an artifact for an unmerged branch
+from inside a worktree — was the correct call and is now the documented procedure, not an improvised
+workaround. §6 step 9 of this spec is corrected: **run `npx nx build memory-server`, `npx nx run
+registry:sync-index`, and `node scripts/smoke-test.mjs --extension memory-server` in the main checkout,
+after this branch merges to `main` (or is checked out there for verification) — never from inside
+`.worktrees/bug-memory-001-write-loss`.** This is now a pre-close checklist item for whoever performs
+the merge, alongside the standard smoke-test/registry-sync house rule at the top of this repo's
+`CLAUDE.md`.
