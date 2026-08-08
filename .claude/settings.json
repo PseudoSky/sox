@@ -1,0 +1,19 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(npx nx test *)",
+      "Bash(/usr/bin/grep *)",
+      "Bash(npm view *)",
+      "Bash(npm ls *)",
+      "Bash(npm config get *)",
+      "Bash(npm whoami)",
+      "mcp__backlog__backlog_get_item",
+      "mcp__backlog__backlog_export_json",
+      "mcp__backlog__backlog_migration_status",
+      "mcp__backlog__backlog_audit_trail",
+      "mcp__backlog__backlog_dependency_graph",
+      "mcp__agent-mcp__task_list",
+      "mcp__agent-mcp__result"
+    ]
+  }
+}
