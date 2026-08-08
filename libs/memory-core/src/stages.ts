@@ -54,6 +54,34 @@
  * ⚠️ Both durations are wall-clock and accrue during system sleep (BL-369).
  * Medians are fine; do not quote a p99 from them without subtracting
  * `suspended_ms`.
+ *
+ * ## The third stage: `cluster`
+ *
+ * Added because clustering was the last major memory-core subsystem with NO
+ * instrumentation of any kind — no stage, no counter, no event. Grepping every
+ * log file for `cluster_count` / `community` / `communities_invalidated`
+ * returned zero matches, which meant a mass community invalidation would have
+ * left no trace, and time-to-community had to be hand-measured off
+ * `memory_recall`. See `cluster-metrics.ts`'s header for the full motivation
+ * and for the domain counters that accompany this stage.
+ *
+ * - **`cluster`** — `full` (the O(n²) connected-components pass that owns τ
+ *   recalibration and community creation), `incremental` (the O(1)-per-episode
+ *   local-neighborhood join that runs on the periodic tick and can ONLY join
+ *   existing communities, never create one), and `subset` (`clusterSubset`'s
+ *   provenance-scoped synthesis slice). All three are wired at real call sites
+ *   in this same change, per this file's rule.
+ *
+ * `wait` for this stage is candidate/vector selection — the queries that
+ * assemble what the pass will consider — and `work` is the comparison and
+ * persistence. That split matters because the two degrade for different
+ * reasons: `wait` grows with corpus size, `work` grows with candidate count.
+ *
+ * ⚠️ The same BL-369 wall-clock caveat applies to `cluster` durations, and it
+ * bites harder here: clustering runs on a periodic tick, so a pass that spans a
+ * laptop sleep records the sleep. This is also why `cluster-metrics.ts`'s
+ * `time_to_community_ms` is documented as wall-clock rather than presented
+ * alongside `time_to_vector_ms` as though the two were the same kind of number.
  */
 
 import { declareStages } from '@adhd/sox-telemetry';
@@ -61,6 +89,7 @@ import { declareStages } from '@adhd/sox-telemetry';
 export const MEMORY_CORE_STAGES = declareStages('memory-core', {
   write_queue: { paths: ['queued', 'bypass'] },
   embed: { paths: ['write', 'heal', 'reembed'] },
+  cluster: { paths: ['full', 'incremental', 'subset'] },
 } as const);
 
 /** The code path an `embed()` call was entered through. Closed union: a new

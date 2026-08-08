@@ -44,7 +44,7 @@
 
 import type { StoreAdapter } from '@adhd/sox-store-adapter';
 import { CLUSTER_ELIGIBLE_SQL } from './cluster.js';
-import { summarizeLatencies } from './latency-stats.js';
+import { LatencyRing, summarizeLatencies } from './latency-stats.js';
 import type { ClusterAdmissionStats } from './cluster.js';
 
 /**
@@ -385,4 +385,240 @@ export async function getClusterPipelineMetrics(
     },
     last_pass_admission: lastAdmission.get(storeKey) ?? null,
   };
+}
+
+// ── In-memory per-store counters (tracing branch) ────────────────────────────
+//
+// The functions below record cluster activity IN-PROCESS. The DB-based metrics
+// above (`getClusterPipelineMetrics`) are durable and survive process restarts;
+// these are live, lightweight, and reported by `memory_ping`'s in-memory block.
+// Both coexist: the DB path for historical/durable access, the in-memory path
+// for per-process observability and the durable JSONL log (`cluster.pass`).
+
+/** Rolling-window capacity — mirrors `PIPELINE_LATENCY_WINDOW`. */
+const CLUSTER_LATENCY_WINDOW = 256;
+
+/**
+ * Why an episode did or did not join a community on an incremental pass.
+ *
+ * **This taxonomy is deliberately finer than the join loop's two `continue`
+ * statements.** Counting only the `continue`s would answer "was it rejected?"
+ * but not "was it ever eligible?", which is the exact question that separates a
+ * latency problem from an exclusion problem. Three of these five outcomes are
+ * reached BEFORE the similarity comparison happens at all:
+ *
+ * - `joined` — cleared τ and the degenerate guard; a `MEMBER_OF` edge was written.
+ * - `below_threshold` — compared against every live member of every candidate
+ *   community and the best single-link similarity did not clear τ. **This is the
+ *   only outcome that means "considered and rejected."** A high count here is a
+ *   τ-calibration signal.
+ * - `degenerate_guard` — cleared τ, but admitting it would push that community
+ *   past 50% of live episodes, so the join was refused and deferred. Distinct
+ *   from `below_threshold`: the episode IS similar enough; the guard, not the
+ *   similarity, excluded it.
+ * - `no_vector` — the episode has no row in `vec_node`, so it could not be
+ *   compared to anything. **Never considered**, and no amount of τ tuning
+ *   changes it — this is an embedding-pipeline backlog symptom surfacing in
+ *   clustering, and conflating it with `below_threshold` would send an
+ *   investigation to the wrong subsystem.
+ * - `no_target` — the pass found no live community in scope to join to (an
+ *   empty or freshly-wiped partition). Also never considered, but for a reason
+ *   that lives in the community table rather than the vector table.
+ */
+export type JoinOutcome =
+  | 'joined'
+  | 'below_threshold'
+  | 'degenerate_guard'
+  | 'no_vector'
+  | 'no_target';
+
+/** Which entry point a clustering pass was made through. */
+export type ClusterPassPath = 'full' | 'incremental' | 'subset';
+
+interface ClusterCounters {
+  /** Passes completed, by entry point. */
+  passes_full: number;
+  passes_incremental: number;
+  passes_subset: number;
+
+  /** Per-candidate incremental-join outcomes. See {@link JoinOutcome}. */
+  joins_joined: number;
+  joins_below_threshold: number;
+  joins_degenerate_guard: number;
+  joins_no_vector: number;
+  joins_no_target: number;
+
+  /**
+   * Community lifecycle, summed across materialize passes.
+   *
+   * `revived` is NOT a subset of `created`: `materializeClusters` invalidates
+   * every prior community in scope and then re-upserts, so a community whose
+   * member set is unchanged recomputes to the same uid, is found, and is
+   * revived (`t_invalid = NULL`). One whose membership changed recomputes to a
+   * DIFFERENT uid and is created fresh, permanently orphaning the old uid.
+   * Watching `created` climb while `revived` stays flat is precisely the
+   * signature of community-identity churn.
+   */
+  communities_created: number;
+  communities_invalidated: number;
+  communities_revived: number;
+  /** `MEMBER_OF` edges invalidated by a materialize pass's scope reset. */
+  member_edges_invalidated: number;
+}
+
+interface ClusterState {
+  /** WALL-CLOCK (now − node.t_created) at MEMBER_OF insert. See module header. */
+  timeToCommunity: LatencyRing;
+  counters: ClusterCounters;
+  /** Live backlog as of the most recent pass; null until a pass has measured it. */
+  backlog: { unclustered: number; oldest_unclustered_ms: number } | null;
+}
+
+const clusterStates = new Map<string, ClusterState>();
+
+function newState(): ClusterState {
+  return {
+    timeToCommunity: new LatencyRing(CLUSTER_LATENCY_WINDOW),
+    backlog: null,
+    counters: {
+      passes_full: 0,
+      passes_incremental: 0,
+      passes_subset: 0,
+      joins_joined: 0,
+      joins_below_threshold: 0,
+      joins_degenerate_guard: 0,
+      joins_no_vector: 0,
+      joins_no_target: 0,
+      communities_created: 0,
+      communities_invalidated: 0,
+      communities_revived: 0,
+      member_edges_invalidated: 0,
+    },
+  };
+}
+
+function stateFor(storeKey: string): ClusterState {
+  let s = clusterStates.get(storeKey);
+  if (!s) {
+    s = newState();
+    clusterStates.set(storeKey, s);
+  }
+  return s;
+}
+
+// ── Recording surface (called from cluster.ts; never throws) ─────────────────
+
+/** Record one completed clustering pass, by entry point. */
+export function recordClusterPass(storeKey: string, path: ClusterPassPath): void {
+  const c = stateFor(storeKey).counters;
+  if (path === 'full') c.passes_full++;
+  else if (path === 'incremental') c.passes_incremental++;
+  else c.passes_subset++;
+}
+
+/**
+ * Record `n` candidates resolving to one outcome. `n` defaults to 1 so
+ * per-candidate call sites read naturally, while the bulk pre-comparison
+ * exclusions (`no_vector`, `no_target`) can be recorded in one call.
+ */
+export function recordJoinOutcome(storeKey: string, outcome: JoinOutcome, n = 1): void {
+  if (n <= 0) return;
+  const c = stateFor(storeKey).counters;
+  if (outcome === 'joined') c.joins_joined += n;
+  else if (outcome === 'below_threshold') c.joins_below_threshold += n;
+  else if (outcome === 'degenerate_guard') c.joins_degenerate_guard += n;
+  else if (outcome === 'no_vector') c.joins_no_vector += n;
+  else c.joins_no_target += n;
+}
+
+/**
+ * Record an episode becoming community-visible.
+ *
+ * `ageMs` is wall-clock `now − t_created` (see the module header's CLOCK
+ * DECISION). Negative values — possible if the system clock moved backwards
+ * between write and join — are clamped to 0 rather than dropped: dropping them
+ * would silently bias the distribution toward the slow side, which is the
+ * opposite of the honesty this instrument exists for.
+ */
+export function recordTimeToCommunity(storeKey: string, ageMs: number): void {
+  if (!Number.isFinite(ageMs)) return;
+  stateFor(storeKey).timeToCommunity.push(Math.max(0, ageMs));
+}
+
+/** Record one materialize pass's community lifecycle deltas. */
+export function recordCommunityLifecycle(
+  storeKey: string,
+  delta: {
+    created?: number;
+    invalidated?: number;
+    revived?: number;
+    memberEdgesInvalidated?: number;
+  },
+): void {
+  const c = stateFor(storeKey).counters;
+  c.communities_created += delta.created ?? 0;
+  c.communities_invalidated += delta.invalidated ?? 0;
+  c.communities_revived += delta.revived ?? 0;
+  c.member_edges_invalidated += delta.memberEdgesInvalidated ?? 0;
+}
+
+/**
+ * Record the unclustered backlog measured by a pass.
+ *
+ * This is a GAUGE, not a counter — it is overwritten, not accumulated, because
+ * "how many episodes are unclustered right now" is a level, and summing levels
+ * across passes would produce a number that means nothing. `oldestUnclusteredMs`
+ * is what distinguishes a backlog that is draining from one that is stuck: a
+ * steady count with a rising age is a floor, not a queue.
+ */
+export function recordBacklog(
+  storeKey: string,
+  unclustered: number,
+  oldestUnclusteredMs: number,
+): void {
+  stateFor(storeKey).backlog = {
+    unclustered,
+    oldest_unclustered_ms: Math.max(0, oldestUnclusteredMs),
+  };
+}
+
+// ── Read surface ────────────────────────────────────────────────────────────
+
+export interface ClusterMetrics {
+  /**
+   * WALL-CLOCK episode-write → community-visible latency, ms. See the module
+   * header's CLOCK DECISION before quoting a p99: this accrues during system
+   * sleep and is subject to clock adjustment (BL-369).
+   */
+  time_to_community_ms: { p50: number; p99: number; mean: number; max: number };
+  time_to_community_samples: number;
+  /**
+   * Live unclustered backlog as of the most recent pass, or `null` if no pass
+   * has measured it yet. A flat `unclustered` with a climbing
+   * `oldest_unclustered_ms` means episodes are not draining — they are excluded.
+   */
+  backlog: { unclustered: number; oldest_unclustered_ms: number } | null;
+  counters: ClusterCounters;
+}
+
+/**
+ * Pure, read-only snapshot for a store — zero side effects, callable from
+ * `memory_ping`. Returns `null` when no clustering activity has touched this
+ * store in this process, mirroring `getEmbedPipelineMetrics`.
+ */
+export function getClusterMetrics(storeKey: string): ClusterMetrics | null {
+  const s = clusterStates.get(storeKey);
+  if (!s) return null;
+  const t = summarizeLatencies(s.timeToCommunity.values());
+  return {
+    time_to_community_ms: { p50: t.p50, p99: t.p99, mean: t.mean, max: t.max },
+    time_to_community_samples: s.timeToCommunity.count,
+    backlog: s.backlog ? { ...s.backlog } : null,
+    counters: { ...s.counters },
+  };
+}
+
+/** Test seam: drop all per-store cluster metrics state (fresh-process shape). */
+export function _resetClusterMetrics(): void {
+  clusterStates.clear();
 }

@@ -47,6 +47,7 @@ import {
   getEmbedHealth,
   getEmbedPipelineMetrics,
   getClusterPipelineMetrics,
+  getClusterMetrics,
   recordClusterPassAdmission,
   getOntologySnapshot,
   hasPendingFullEnrich,

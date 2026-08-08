@@ -53,6 +53,14 @@ export interface BatchEnrichOptions {
    */
   incrementalCluster?: boolean;
   /**
+   * Metrics bucket for clustering observability — the store's `dbPath`, the
+   * same string `memory_ping` resolves. Threaded through to `clusterStore` so
+   * per-store cluster counters are attributable in a multi-store process. When
+   * omitted, cluster.ts records into its named `(unkeyed)` bucket rather than
+   * merging into an unrelated store's numbers.
+   */
+  storeKey?: string;
+  /**
    * BL-45: Chunk size for the importance update transaction (default 500 episodes per
    * chunk). Breaks the monolithic write transaction into smaller batches so the write
    * lock is yielded between chunks rather than held across the full corpus.
@@ -204,6 +212,7 @@ export async function runBatchEnrich(
     incrementalCluster = false,
     importanceChunkSize = 500,
     autoLinkChunkSize = 500,
+    storeKey,
   } = opts;
 
   const now = new Date().toISOString();
@@ -281,6 +290,11 @@ export async function runBatchEnrich(
       ...(thresholdOverride !== undefined ? { threshold: thresholdOverride } : {}),
       nodeCap: clusterNodeCap,
       incrementalOnly: incrementalCluster,
+      // Metrics bucket. Omitted (not set to undefined) when the caller supplied
+      // none, so cluster.ts's own DEFAULT_STORE_KEY fallback applies rather than
+      // this layer inventing a key — same "omit, don't undefined" discipline as
+      // the threshold override above.
+      ...(storeKey !== undefined ? { storeKey } : {}),
     });
 
     result.incremental_joined = clusterResult.incremental_joined ?? 0;

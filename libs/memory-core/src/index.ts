@@ -130,6 +130,12 @@ export {
   getEmbedPipelineMetrics,
   _resetEmbedPipelineMetricsForTest,
 } from './embed-pipeline.js';
+
+// Clustering observability. `getClusterMetrics` is the READ surface (memory_ping);
+// the `record*` functions are deliberately NOT re-exported — they are written by
+// cluster.ts alone, and a second writer would make the counters unattributable.
+export { getClusterMetrics, _resetClusterMetrics } from './cluster-metrics.js';
+export type { ClusterMetrics, JoinOutcome, ClusterPassPath } from './cluster-metrics.js';
 export type {
   PendingEmbed,
   EmbedApplyResult,
