@@ -1,5 +1,5 @@
 /**
- * BL-492 — time-to-community instrumentation.
+ * BL-496 — time-to-community instrumentation.
  *
  * ## Why this is not an in-process ring like `embed-pipeline.ts`
  *
@@ -28,7 +28,7 @@
  *
  * ## The distinction this exists to make
  *
- * An unclustered episode is in one of four states, and before BL-492 all four
+ * An unclustered episode is in one of four states, and before BL-496 all four
  * were the same observable ("a live episode with no MEMBER_OF edge"):
  *
  * | state | drains on its own? | right response |

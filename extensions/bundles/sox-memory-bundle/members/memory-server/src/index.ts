@@ -990,7 +990,7 @@ export async function handleToolCall(name: string, args: Record<string, unknown>
         // enrichment verdict so a dead Phase-B pipeline reads `stalled`.
         const embedBacklog = await embedBacklogStats(adapter);
 
-        // BL-492: clustering pipeline snapshot. Read-only SELECTs against the
+        // BL-496: clustering pipeline snapshot. Read-only SELECTs against the
         // adapter already open on this path — opens nothing, so BL-412's
         // "never pass db_path to memory_ping" hazard (openDb registering a
         // path for background enrichment + verify-and-repair WRITES) does not
@@ -1101,7 +1101,7 @@ export async function handleToolCall(name: string, args: Record<string, unknown>
             // cannot keep up with the backlog at the current tick interval.
             heal_time_budget_exceeded: getEmbedPipelineMetrics(resolvedPath)?.heal_time_budget_exceeded ?? null,
           },
-          // BL-492: clustering observability, the peer of `embed_pipeline`
+          // BL-496: clustering observability, the peer of `embed_pipeline`
           // above. Answers "how long does an episode take to get a cluster"
           // (`metrics.time_to_community_ms`) AND the question that turned out
           // to matter more — "will it get one at all?"
@@ -2391,7 +2391,7 @@ export async function runEnrichPassOnDb(
     fullPass ? enrichFullTimeoutMs() : enrichIsolationTimeoutMs(),
   );
 
-  // BL-492: lift the child's admission stats into the PARENT's per-store
+  // BL-496: lift the child's admission stats into the PARENT's per-store
   // registry before the child's result goes out of scope. The child exits
   // after every pass, so this hand-off is the only thing that lets
   // memory_ping report why episodes are not clustering.
@@ -2428,7 +2428,7 @@ export async function runEnrichPassOnDb(
       cluster_calibration: result.cluster_calibration ?? null,
       cluster_effective_threshold: result.cluster_effective_threshold ?? null,
       cluster_guard_retries: result.cluster_guard_retries ?? null,
-      // BL-492: the admission decisions of this pass. Same `?? null` reasoning
+      // BL-496: the admission decisions of this pass. Same `?? null` reasoning
       // as cluster_calibration above — absent is indistinguishable from
       // uninstrumented, and this field's whole purpose is to distinguish
       // "considered and rejected" from "not yet considered".

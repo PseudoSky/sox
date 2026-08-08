@@ -73,7 +73,7 @@ export interface ClusterStoreResult {
   /** The τ the partition was actually produced at (post-calibration, post-guard). */
   effective_threshold?: number;
   /**
-   * BL-492: the admission decisions this incremental pass made, which the
+   * BL-496: the admission decisions this incremental pass made, which the
    * pre-fix code computed and then threw away at the `bestSim < threshold`
    * `continue` (previously cluster.ts:596). Without this, a caller could not
    * distinguish an episode that was CONSIDERED AND REJECTED from one that had
@@ -88,7 +88,7 @@ export interface ClusterStoreResult {
 }
 
 /**
- * BL-492: per-pass admission accounting for the incremental join — the
+ * BL-496: per-pass admission accounting for the incremental join — the
  * "considered and rejected" population that had no representation anywhere in
  * the system before this.
  *
@@ -478,7 +478,7 @@ export async function materializeLensMarker(
 /**
  * Minimum content length for an episode to be a clustering candidate at all.
  *
- * BL-492: exported because the time-to-community metric MUST partition the
+ * BL-496: exported because the time-to-community metric MUST partition the
  * unclustered population by the same predicate the clusterer uses. An episode
  * below this length is not "awaiting clustering" — it is structurally ineligible
  * and will never be considered, and reporting it as backlog would make the
@@ -583,7 +583,7 @@ async function incrementalJoin(
   threshold: number,
   salt: string,
 ): Promise<{ joined: number; candidate_count: number; admission: ClusterAdmissionStats }> {
-  // BL-492: every early return below is a DISTINCT reason nothing clustered,
+  // BL-496: every early return below is a DISTINCT reason nothing clustered,
   // and the pre-fix code collapsed all of them into an indistinguishable
   // `{joined: 0}`. `community_targets: 0` in particular is the one that means
   // "no episode can EVER be assigned on this path", not "nothing matched".
@@ -614,7 +614,7 @@ async function incrementalJoin(
     )
   ).rows;
   // No live community in this scope: the join has NO target and cannot create
-  // one. Every candidate is structurally unassignable on this path (BL-492).
+  // one. Every candidate is structurally unassignable on this path (BL-496).
   if (communityRows.length === 0) return { joined: 0, candidate_count: 0, admission: emptyAdmission(0, episodes.length) };
   const communityRowids = communityRows.map((r) => r.community_rowid);
 
@@ -661,7 +661,7 @@ async function incrementalJoin(
   );
   if (candidateVecResult.rows.length === 0) {
     // Candidates exist but none is vectorised yet — genuinely AWAITING, not
-    // rejected. `considered` stays 0 so the two never conflate (BL-492).
+    // rejected. `considered` stays 0 so the two never conflate (BL-496).
     return { joined: 0, candidate_count: candidates.length, admission: emptyAdmission(communityMemberVecs.size, 0) };
   }
 
@@ -680,7 +680,7 @@ async function incrementalJoin(
   const now = new Date().toISOString();
   let joined = 0;
   const joinedThisPass = new Map<number, number>(); // community_rowid -> count joined so far this call
-  // BL-492: admission accounting. `rejectedSims` collects the max-similarity
+  // BL-496: admission accounting. `rejectedSims` collects the max-similarity
   // each rejected candidate actually achieved — the number the pre-fix code
   // computed on every tick and dropped on the floor, leaving "will never
   // cluster" and "has not been looked at yet" indistinguishable.
@@ -702,7 +702,7 @@ async function incrementalJoin(
       }
     }
     if (bestCommunityRowid === null || bestSim < threshold) {
-      // BL-492: THE H2 RECORD. This candidate was fully compared against every
+      // BL-496: THE H2 RECORD. This candidate was fully compared against every
       // live community member and lost. It is not "pending" — the comparison is
       // deterministic over a member set that only grows by joins, so absent new
       // neighbouring content or a full pass it will be re-rejected identically
@@ -724,7 +724,7 @@ async function incrementalJoin(
       // Degenerate-ratio guard (incremental-path equivalent of D5.5): this
       // community would become a majority blob — refuse, defer to the next
       // full/subset pass, which owns re-thresholding and reconciliation.
-      // BL-492: counted SEPARATELY from `rejected_below_threshold` — this
+      // BL-496: counted SEPARATELY from `rejected_below_threshold` — this
       // candidate DID clear τ and is genuinely deferred, not excluded.
       rejectedGuard++;
       continue;
@@ -749,7 +749,7 @@ async function incrementalJoin(
     joined++;
   }
 
-  // BL-492: summarise the rejected population. `sort` is over at most the
+  // BL-496: summarise the rejected population. `sort` is over at most the
   // candidate count (bounded by the unassigned backlog), and only runs on
   // numbers already computed above — no extra similarity work.
   const sortedSims = [...rejectedSims].sort((a, b) => a - b);

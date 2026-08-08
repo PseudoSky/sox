@@ -1,5 +1,5 @@
 /**
- * bl492-time-to-community.spec.ts — BL-492.
+ * bl496-time-to-community.spec.ts — BL-496.
  *
  * The defect: there was no measurement of how long an episode takes to join a
  * community, and — the part that mattered more — no way at all to tell an
@@ -38,7 +38,7 @@ afterEach(() => {
 });
 
 function tmpDir(): { dir: string; cleanup: () => void } {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'bl492-'));
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'bl496-'));
   return { dir, cleanup: () => fs.rmSync(dir, { recursive: true, force: true }) };
 }
 
@@ -71,7 +71,7 @@ const BULK_FIXTURE_COUNT = 120;
 
 async function writeAll(adapter: StoreAdapter, contents: string[]): Promise<void> {
   for (const content of contents) {
-    const r = await memoryWrite(adapter, { content, project_path: '/test/bl492' });
+    const r = await memoryWrite(adapter, { content, project_path: '/test/bl496' });
     if ('code' in r) throw new Error(`memoryWrite failed: ${JSON.stringify(r)}`);
   }
 }
@@ -85,7 +85,7 @@ async function seededStore(dir: string): Promise<StoreAdapter> {
   return adapter;
 }
 
-describe('BL-492 — a rejected episode is distinguishable from an unconsidered one', () => {
+describe('BL-496 — a rejected episode is distinguishable from an unconsidered one', () => {
   it('reports rejected_below_threshold for an episode the join REFUSED (pre-fix: no such field — a rejection wrote nothing anywhere)', async () => {
     const { dir, cleanup } = tmpDir();
     try {
@@ -93,7 +93,7 @@ describe('BL-492 — a rejected episode is distinguishable from an unconsidered 
 
       // An episode with no vocabulary overlap with any seeded community. The
       // join will compare it against every live member and refuse it.
-      const w = await memoryWrite(adapter, { content: FOREIGN, project_path: '/test/bl492' });
+      const w = await memoryWrite(adapter, { content: FOREIGN, project_path: '/test/bl496' });
       if ('code' in w) throw new Error('write failed');
 
       const res = await runBatchEnrich(adapter, { incrementalCluster: true });
@@ -124,7 +124,7 @@ describe('BL-492 — a rejected episode is distinguishable from an unconsidered 
     try {
       const adapter = await seededStore(dir);
 
-      const w = await memoryWrite(adapter, { content: GROUP_A_JOINER, project_path: '/test/bl492' });
+      const w = await memoryWrite(adapter, { content: GROUP_A_JOINER, project_path: '/test/bl496' });
       if ('code' in w) throw new Error('write failed');
 
       const res = await runBatchEnrich(adapter, { incrementalCluster: true });
@@ -161,7 +161,7 @@ describe('BL-492 — a rejected episode is distinguishable from an unconsidered 
   });
 });
 
-describe('BL-492 — time-to-community is measurable', () => {
+describe('BL-496 — time-to-community is measurable', () => {
   it('derives a time_to_community_ms distribution from MEMBER_OF edge timestamps (pre-fix: no such measurement existed anywhere)', async () => {
     const { dir, cleanup } = tmpDir();
     try {
@@ -199,7 +199,7 @@ describe('BL-492 — time-to-community is measurable', () => {
       for (let i = 0; i < BULK_FIXTURE_COUNT; i++) {
         await adapter.executeRun(
           `INSERT INTO node (uid, kind, content, project_path, t_created, t_valid)
-           VALUES (?, 'episode', ?, '/test/bl492', '2020-01-01T00:00:00.000Z', '2020-01-01T00:00:00.000Z')`,
+           VALUES (?, 'episode', ?, '/test/bl496', '2020-01-01T00:00:00.000Z', '2020-01-01T00:00:00.000Z')`,
           [`bulk-${i}`, `Ancient backfilled episode number ${i} with sufficient content length here.`],
         );
         const row = (await adapter.executeGet<{ rowid: number }>(
@@ -239,7 +239,7 @@ describe('BL-492 — time-to-community is measurable', () => {
       // Below CLUSTER_MIN_CONTENT_LENGTH (50): selectEpisodes will never
       // return it, so no pass will ever consider it. Counting it as backlog
       // would make the awaiting number permanently non-draining.
-      const short = await memoryWrite(adapter, { content: 'tiny note', project_path: '/test/bl492' });
+      const short = await memoryWrite(adapter, { content: 'tiny note', project_path: '/test/bl496' });
       if ('code' in short) throw new Error('write failed');
 
       const m = await getClusterPipelineMetrics(adapter, storeKey);
@@ -259,7 +259,7 @@ describe('BL-492 — time-to-community is measurable', () => {
       // Fresh registry: honest null rather than a fabricated zero.
       expect((await getClusterPipelineMetrics(adapter, storeKey)).last_pass_admission).toBeNull();
 
-      const w = await memoryWrite(adapter, { content: FOREIGN, project_path: '/test/bl492' });
+      const w = await memoryWrite(adapter, { content: FOREIGN, project_path: '/test/bl496' });
       if ('code' in w) throw new Error('write failed');
       const res = await runBatchEnrich(adapter, { incrementalCluster: true });
 

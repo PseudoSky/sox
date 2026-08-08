@@ -130,9 +130,9 @@ export interface BatchEnrichResult {
   /** The τ the partition was actually produced at (post-calibration, post-guard). */
   cluster_effective_threshold?: number;
   /**
-   * BL-492: admission accounting from the incremental join — how many
+   * BL-496: admission accounting from the incremental join — how many
    * candidates were considered, joined, and REJECTED BELOW τ. The last of
-   * these had no representation anywhere before BL-492: a rejected episode
+   * these had no representation anywhere before BL-496: a rejected episode
    * writes nothing, so it was indistinguishable from one not yet considered.
    * Absent on a full pass (which re-partitions rather than admitting).
    */
@@ -289,7 +289,7 @@ export async function runBatchEnrich(
     if (clusterResult.effective_threshold !== undefined) {
       result.cluster_effective_threshold = clusterResult.effective_threshold;
     }
-    // BL-492: carry admission stats out of the isolated child so the parent
+    // BL-496: carry admission stats out of the isolated child so the parent
     // can register them for memory_ping. This is the ONLY channel by which
     // "considered and rejected" escapes the child before it exits.
     if (clusterResult.admission) result.cluster_admission = clusterResult.admission;
