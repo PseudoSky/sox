@@ -23,6 +23,7 @@ describe('[generators.5] all active type templates scaffold without error', () =
     hook: 'gen5-audit',
     command: 'gen5-run',
     bundle: 'gen5-pack',
+    service: 'gen5-daemon',
   };
 
   for (const type of ACTIVE_TYPES) {
@@ -176,6 +177,7 @@ describe('[ref:host-keyed-target] no hardcoded host paths in emitted manifests',
     hook: 'hostkey-check',
     command: 'hostkey-check',
     bundle: 'hostkey-check',
+    service: 'hostkey-check',
   };
 
   for (const type of ACTIVE_TYPES) {
@@ -203,6 +205,7 @@ describe('[generators.4] born-conformant: emitted manifests have required fields
     hook: 'born-conformant',
     command: 'born-conformant',
     bundle: 'born-conformant',
+    service: 'born-conformant',
   };
 
   for (const type of ACTIVE_TYPES) {
