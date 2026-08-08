@@ -235,14 +235,24 @@ export type { MemoryFilter } from './memory-filters.js';
 export {
   calibrateThreshold, clusterStats, clusterStore, clusterSubset, dropSubsetLens,
   listSubsetLenses, materializeClusters, resolveDefaultThreshold,
-  CLUSTER_THRESHOLD_CEILING, CLUSTER_THRESHOLD_FLOOR, CLUSTER_TARGET_MEAN_DEGREE
+  CLUSTER_THRESHOLD_CEILING, CLUSTER_THRESHOLD_FLOOR, CLUSTER_TARGET_MEAN_DEGREE,
+  CLUSTER_ELIGIBLE_SQL, CLUSTER_MIN_CONTENT_LENGTH
 } from './cluster.js';
 export type {
   ClusterResult, ClusterStats, ClusterStoreOptions,
   ClusterStoreResult, ClusterSubsetOptions,
   ClusterSubsetResult, DropSubsetLensResult, MaterializeOptions,
-  SubsetLensDescriptor, ThresholdCalibration, ThresholdCalibrationContext
+  SubsetLensDescriptor, ThresholdCalibration, ThresholdCalibrationContext,
+  ClusterAdmissionStats
 } from './cluster.js';
+
+// ── Cluster pipeline metrics (BL-492: time-to-community) ──────────────────────
+export {
+  getClusterPipelineMetrics, recordClusterPassAdmission, _resetClusterMetricsForTest
+} from './cluster-metrics.js';
+export type {
+  ClusterPipelineMetrics, ClusterBacklogBreakdown, LagSummary
+} from './cluster-metrics.js';
 
 // ── Auto-links ────────────────────────────────────────────────────────────────
 export { buildAutoLinks } from './autolink.js';

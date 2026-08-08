@@ -72,6 +72,67 @@ export interface ClusterStoreResult {
   guard_retries?: number;
   /** The τ the partition was actually produced at (post-calibration, post-guard). */
   effective_threshold?: number;
+  /**
+   * BL-492: the admission decisions this incremental pass made, which the
+   * pre-fix code computed and then threw away at the `bestSim < threshold`
+   * `continue` (previously cluster.ts:596). Without this, a caller could not
+   * distinguish an episode that was CONSIDERED AND REJECTED from one that had
+   * not yet been considered — the two states are observationally identical
+   * (both are "live episode with no MEMBER_OF edge") and demand opposite
+   * responses (wait vs. lower τ / schedule a full pass).
+   *
+   * Present only on the incremental path; a full pass re-partitions from
+   * scratch and reports through `clusters`/`calibration` instead.
+   */
+  admission?: ClusterAdmissionStats;
+}
+
+/**
+ * BL-492: per-pass admission accounting for the incremental join — the
+ * "considered and rejected" population that had no representation anywhere in
+ * the system before this.
+ *
+ * Every field is derived from values `incrementalJoin` already computes; this
+ * type only stops discarding them. No schema change, no behaviour change, no
+ * extra similarity computation.
+ */
+export interface ClusterAdmissionStats {
+  /** τ this pass admitted at. */
+  threshold: number;
+  /** Episodes eligible for a join decision (unassigned, vectorised). */
+  considered: number;
+  /** Cleared τ and were written a MEMBER_OF edge. */
+  joined: number;
+  /**
+   * Cleared τ but were refused by the degenerate-ratio guard (would have
+   * pushed a community past the 0.5 majority bound). These are deferred, NOT
+   * permanently excluded — a full/subset pass owns re-thresholding them.
+   */
+  rejected_degenerate_guard: number;
+  /**
+   * **The H2 population.** Compared against every live community member and
+   * fell below τ. These do not "wait" for anything: the comparison is
+   * deterministic over a near-static member set, so absent new neighbouring
+   * content or a full pass, the same episode is re-rejected on every
+   * subsequent tick, forever.
+   */
+  rejected_below_threshold: number;
+  /**
+   * Of `rejected_below_threshold`, how many landed within 0.02 of τ — the
+   * population a small τ change would admit. A large near-miss count with a
+   * small `joined` count is the signature of a mis-set τ rather than of
+   * genuinely unrelated content.
+   */
+  rejected_near_miss: number;
+  /** Best-similarity distribution over rejected candidates (max-to-any-member). */
+  rejected_best_sim: { p50: number; p90: number; max: number };
+  /**
+   * Live communities available as join targets. **Zero means no episode can
+   * be assigned at all** — the incremental path only ever JOINS an existing
+   * community, it can never CREATE one (`computeClusters` returns
+   * `clusters: []` on this branch, so `materializeClusters` never runs).
+   */
+  community_targets: number;
 }
 
 export interface ClusterStats {
@@ -414,6 +475,22 @@ export async function materializeLensMarker(
  * filter vocabulary (tags / topic / project_path / importance_min / time range).
  * `restrict.sql` MUST be an AND-prefixed clause over alias `n` (or empty).
  */
+/**
+ * Minimum content length for an episode to be a clustering candidate at all.
+ *
+ * BL-492: exported because the time-to-community metric MUST partition the
+ * unclustered population by the same predicate the clusterer uses. An episode
+ * below this length is not "awaiting clustering" — it is structurally ineligible
+ * and will never be considered, and reporting it as backlog would make the
+ * awaiting count permanently non-draining for a reason that has nothing to do
+ * with clustering throughput.
+ */
+export const CLUSTER_MIN_CONTENT_LENGTH = 50;
+
+/** SQL predicate (alias `n`) for "this episode is a clustering candidate". Shared with cluster-metrics. */
+export const CLUSTER_ELIGIBLE_SQL =
+  `n.kind = 'episode' AND n.t_invalid IS NULL AND n.content IS NOT NULL AND LENGTH(n.content) >= ${CLUSTER_MIN_CONTENT_LENGTH}`;
+
 async function selectEpisodes(
   adapter: StoreAdapter,
   restrict?: { sql: string; params: unknown[] },
@@ -421,8 +498,7 @@ async function selectEpisodes(
   const result = await adapter.executeAll<EpRow>(
     `SELECT n.rowid AS rowid, n.uid AS uid, n.content AS content, n.topic AS topic, n.name AS name
      FROM node n
-     WHERE n.kind = 'episode' AND n.t_invalid IS NULL
-       AND n.content IS NOT NULL AND LENGTH(n.content) >= 50${restrict?.sql ?? ''}
+     WHERE ${CLUSTER_ELIGIBLE_SQL}${restrict?.sql ?? ''}
      ORDER BY n.rowid ASC`,
     restrict?.params ?? undefined,
   );
@@ -506,8 +582,23 @@ async function incrementalJoin(
   episodes: EpRow[],
   threshold: number,
   salt: string,
-): Promise<{ joined: number; candidate_count: number }> {
-  if (episodes.length === 0) return { joined: 0, candidate_count: 0 };
+): Promise<{ joined: number; candidate_count: number; admission: ClusterAdmissionStats }> {
+  // BL-492: every early return below is a DISTINCT reason nothing clustered,
+  // and the pre-fix code collapsed all of them into an indistinguishable
+  // `{joined: 0}`. `community_targets: 0` in particular is the one that means
+  // "no episode can EVER be assigned on this path", not "nothing matched".
+  const emptyAdmission = (targets: number, considered = 0): ClusterAdmissionStats => ({
+    threshold,
+    considered,
+    joined: 0,
+    rejected_degenerate_guard: 0,
+    rejected_below_threshold: 0,
+    rejected_near_miss: 0,
+    rejected_best_sim: { p50: 0, p90: 0, max: 0 },
+    community_targets: targets,
+  });
+
+  if (episodes.length === 0) return { joined: 0, candidate_count: 0, admission: emptyAdmission(0) };
 
   const scopeClause = communityScopeClause(salt);
   const scopeParams = salt ? [salt] : [];
@@ -522,7 +613,9 @@ async function incrementalJoin(
       scopeParams,
     )
   ).rows;
-  if (communityRows.length === 0) return { joined: 0, candidate_count: 0 };
+  // No live community in this scope: the join has NO target and cannot create
+  // one. Every candidate is structurally unassignable on this path (BL-492).
+  if (communityRows.length === 0) return { joined: 0, candidate_count: 0, admission: emptyAdmission(0, episodes.length) };
   const communityRowids = communityRows.map((r) => r.community_rowid);
 
   // 2. ALL live member vectors per community — the single-link comparison
@@ -547,14 +640,18 @@ async function incrementalJoin(
     communityMemberVecs.set(row.community_rowid, vecs);
     communityLiveMemberCount.set(row.community_rowid, (communityLiveMemberCount.get(row.community_rowid) ?? 0) + 1);
   }
-  if (communityMemberVecs.size === 0) return { joined: 0, candidate_count: 0 };
+  if (communityMemberVecs.size === 0) {
+    return { joined: 0, candidate_count: 0, admission: emptyAdmission(0, episodes.length) };
+  }
 
   // 3. Episodes already MEMBER_OF a live community in this scope — excluded
   //    from candidacy (the `assignedSet` below is exactly the src side of
   //    the query in step 2, reused rather than re-queried).
   const assignedSet = new Set(memberRows.map((r) => r.node_id));
   const candidates = episodes.filter((e) => !assignedSet.has(e.rowid));
-  if (candidates.length === 0) return { joined: 0, candidate_count: 0 };
+  if (candidates.length === 0) {
+    return { joined: 0, candidate_count: 0, admission: emptyAdmission(communityMemberVecs.size, 0) };
+  }
 
   // 4. Vectors for candidates.
   const candidateRowids = candidates.map((e) => e.rowid);
@@ -562,7 +659,11 @@ async function incrementalJoin(
     `SELECT node_id, embedding FROM vec_node WHERE node_id IN (${candidateRowids.map(() => '?').join(',')})`,
     candidateRowids as unknown[],
   );
-  if (candidateVecResult.rows.length === 0) return { joined: 0, candidate_count: candidates.length };
+  if (candidateVecResult.rows.length === 0) {
+    // Candidates exist but none is vectorised yet — genuinely AWAITING, not
+    // rejected. `considered` stays 0 so the two never conflate (BL-492).
+    return { joined: 0, candidate_count: candidates.length, admission: emptyAdmission(communityMemberVecs.size, 0) };
+  }
 
   // 5. Total live episode count — denominator for the degenerate-ratio guard.
   const totalLiveRow = await adapter.executeGet<{ cnt: number }>(
@@ -579,6 +680,13 @@ async function incrementalJoin(
   const now = new Date().toISOString();
   let joined = 0;
   const joinedThisPass = new Map<number, number>(); // community_rowid -> count joined so far this call
+  // BL-492: admission accounting. `rejectedSims` collects the max-similarity
+  // each rejected candidate actually achieved — the number the pre-fix code
+  // computed on every tick and dropped on the floor, leaving "will never
+  // cluster" and "has not been looked at yet" indistinguishable.
+  const rejectedSims: number[] = [];
+  let rejectedGuard = 0;
+  const NEAR_MISS_BAND = 0.02;
 
   for (const vRow of candidateVecResult.rows) {
     const candidateVec = blobToFloat32(vRow.embedding);
@@ -593,7 +701,21 @@ async function incrementalJoin(
         }
       }
     }
-    if (bestCommunityRowid === null || bestSim < threshold) continue;
+    if (bestCommunityRowid === null || bestSim < threshold) {
+      // BL-492: THE H2 RECORD. This candidate was fully compared against every
+      // live community member and lost. It is not "pending" — the comparison is
+      // deterministic over a member set that only grows by joins, so absent new
+      // neighbouring content or a full pass it will be re-rejected identically
+      // on every future tick. Capturing `bestSim` is what makes that visible.
+      //
+      // Gate on `bestCommunityRowid !== null` — "a comparison actually
+      // happened" — NOT on the sign of `bestSim`. Cosine similarity is
+      // legitimately negative for opposed vectors, so a `bestSim >= 0` guard
+      // would silently drop the most-rejected candidates from the rejection
+      // count, which is precisely backwards.
+      if (bestCommunityRowid !== null) rejectedSims.push(bestSim);
+      continue;
+    }
 
     const priorSize = communityLiveMemberCount.get(bestCommunityRowid) ?? 0;
     const alreadyJoinedThisPass = joinedThisPass.get(bestCommunityRowid) ?? 0;
@@ -602,6 +724,9 @@ async function incrementalJoin(
       // Degenerate-ratio guard (incremental-path equivalent of D5.5): this
       // community would become a majority blob — refuse, defer to the next
       // full/subset pass, which owns re-thresholding and reconciliation.
+      // BL-492: counted SEPARATELY from `rejected_below_threshold` — this
+      // candidate DID clear τ and is genuinely deferred, not excluded.
+      rejectedGuard++;
       continue;
     }
 
@@ -624,7 +749,27 @@ async function incrementalJoin(
     joined++;
   }
 
-  return { joined, candidate_count: candidates.length };
+  // BL-492: summarise the rejected population. `sort` is over at most the
+  // candidate count (bounded by the unassigned backlog), and only runs on
+  // numbers already computed above — no extra similarity work.
+  const sortedSims = [...rejectedSims].sort((a, b) => a - b);
+  const at = (p: number): number =>
+    sortedSims.length === 0 ? 0 : sortedSims[Math.min(sortedSims.length - 1, Math.floor((p / 100) * sortedSims.length))]!;
+
+  return {
+    joined,
+    candidate_count: candidates.length,
+    admission: {
+      threshold,
+      considered: candidateVecResult.rows.length,
+      joined,
+      rejected_degenerate_guard: rejectedGuard,
+      rejected_below_threshold: rejectedSims.length,
+      rejected_near_miss: rejectedSims.filter((s) => s >= threshold - NEAR_MISS_BAND).length,
+      rejected_best_sim: { p50: at(50), p90: at(90), max: sortedSims.at(-1) ?? 0 },
+      community_targets: communityMemberVecs.size,
+    },
+  };
 }
 
 /**
@@ -655,12 +800,13 @@ async function computeClusters(
     // local-neighborhood join against existing communities (createGraphBackend
     // has already run in the caller — clusterStore/clusterSubset — before
     // selectEpisodes, so `node`/`edge` are guaranteed to exist here).
-    const { joined, candidate_count } = await incrementalJoin(adapter, episodes, threshold, salt);
+    const { joined, candidate_count, admission } = await incrementalJoin(adapter, episodes, threshold, salt);
     return {
       clusters: [],
       full_pass: false,
       unclustered_count: candidate_count - joined,
       incremental_joined: joined,
+      admission,
     };
   }
 
