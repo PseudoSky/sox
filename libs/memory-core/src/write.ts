@@ -46,7 +46,7 @@
  * permanent data corruption rather than a merely-wrong query result.)
  */
 
-import { enrichOnWrite } from './enrich.js';
+import { computeWriteEnrichment, detectAndApplyNearDup } from './enrich.js';
 import { gcOrphanedCommunityState } from './community-gc.js';
 import { enqueueIngest } from './outbox-queue.js';
 import { applyEmbedding } from './embed-pipeline.js';
@@ -239,20 +239,11 @@ export async function memoryWritePhaseA(
   // Caller-supplied metadata is persisted as JSON (previously silently dropped).
   const metaJson = metadata !== undefined ? JSON.stringify(metadata) : null;
 
-  // (E5) Parse [<topic>] prefix from content if no explicit topic was supplied.
-  // Regex matches `[<topic>]` at the start of content (up to 64 chars, no newlines).
-  let resolvedTopic: string | null = topic ?? null;
-  if (resolvedTopic === null) {
-    const prefixMatch = /^\s*\[([^\]\n]{1,64})\]/.exec(content);
-    if (prefixMatch) resolvedTopic = prefixMatch[1] ?? null;
-  }
-
-  // (E4) Tags JSON column — retain the raw string[] alongside the MENTIONS edges.
-  const tagsJson = tags && tags.length > 0 ? JSON.stringify(tags) : null;
-
-  // (E1) project_path is guaranteed non-empty by the guard above (BL-62) — always
-  // stored as the caller's explicit value, never inferred.
-  const resolvedProjectPath: string = project_path;
+  // (E1/E4/E5) topic-prefix parsing, the tags JSON column and project_path
+  // resolution all now come from `computeWriteEnrichment` below — previously
+  // they were computed here for the INSERT and then recomputed inside
+  // `enrichOnWrite` for its UPDATE, which is precisely the duplication
+  // PERF-MEMORY-003 collapsed. One implementation, one write.
 
   if (!content || !content.trim()) {
     log.warn('write.phaseA.error', { trace_id: traceId, code: 'E_SCOPE_RO', duration_ms: Math.round(performance.now() - phaseAStartMs) });
@@ -327,21 +318,42 @@ export async function memoryWritePhaseA(
     ? (useBinaryFormat ? vecToBuffer(embedding) : vecToJson(embedding))
     : null;
 
-  // Track rowid for post-transaction enrichOnWrite call
+  // Track rowid for the post-transaction E8 near-dup pass.
   let insertedRowid = 0;
 
-  // Atomic transaction: insert node + vec + FTS (via trigger)
+  // PERF-MEMORY-003: resolve every enrichment column BEFORE the insert so its
+  // values can be folded into the INSERT itself. This used to run afterwards as
+  // a second UPDATE over the same row; because `summary` and `tags` are covered
+  // by `idx_fts_node` (a NATIVE Turso FTS index maintained inside the statement
+  // — there are no triggers), that second write redid FTS maintenance the INSERT
+  // had already performed, costing ~134ms of a ~241ms Phase A. The computation
+  // is pure and ~3.7ms, so it reorders freely. `computeWriteEnrichment` is the
+  // single source of truth shared with `enrichOnWrite`, so the two paths cannot
+  // drift.
+  const enrichValues = computeWriteEnrichment({
+    content,
+    summary,
+    tags,
+    topic,
+    project_path,
+    importance, // caller-supplied importance is respected, never overridden
+  });
+  const enrichVerJson = JSON.stringify(enrichValues.enrich_ver);
+
+  // Atomic transaction: insert node (+ vec when pre-computed). `idx_fts_node` is
+  // a native Turso FTS index maintained by the INSERT itself — NOT a trigger.
   const episodeUid: string = await adapter.transaction(async (tx) => {
     const result = await tx.executeGet<{ rowid: number }>(
       `INSERT INTO node (uid, kind, content, name, summary, meta, agent_id, session_id, source,
                          importance, content_hash, t_created, t_occurred, t_valid,
-                         topic, tags, project_path)
-       VALUES (?, 'episode', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                         topic, tags, project_path, enrich_ver, t_updated)
+       VALUES (?, 'episode', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        RETURNING rowid`,
-      [uid, content, name ?? null, summary ?? null, metaJson,
-       agent_id ?? null, session_id ?? null, source, importance,
+      [uid, content, name ?? null, enrichValues.summary, metaJson,
+       agent_id ?? null, session_id ?? null, source, enrichValues.importance,
        contentHash, now, tOccurred, tValid,
-       resolvedTopic, tagsJson, resolvedProjectPath],
+       enrichValues.topic, enrichValues.tagsJson, enrichValues.project_path,
+       enrichVerJson, now],
     );
 
     if (!result) throw new Error('Insert failed: no rowid returned');
@@ -423,26 +435,29 @@ export async function memoryWritePhaseA(
     return uid;
   });
 
-  // P2: run write-path enrichments (E1–E5, E10, E12 — plus E8 near-dup only when
-  // an embedding is available) synchronously after insert.
-  // enrichOnWrite updates node.topic/project_path/summary/tags/importance/enrich_ver.
-  // Runs inside a short adapter transaction to provide AdapterTransaction to enrichOnWrite.
-  const enrichResult = await adapter.transaction(async (tx) =>
-    enrichOnWrite(tx, {
-      uid: episodeUid,
-      rowid: insertedRowid,
-      content,
-      summary,
-      tags,
-      topic,
-      metadata,
-      project_path,
-      derived_from_uid,
-      embedding, // undefined in async Phase A → E8 near-dup deferred to Phase B
-      importance, // pass caller-supplied importance so enrichOnWrite respects it
-      vectorDialect: await vectorDialectFor(adapter),
-    }),
-  );
+  // P2: E1–E5/E7/E10/E12 are already persisted — they were folded into the INSERT
+  // above (PERF-MEMORY-003), eliminating a redundant FTS-index rewrite.
+  //
+  // Only E8 near-dup remains post-insert, because it genuinely requires the row
+  // and its vector to exist. In the async two-phase write `embedding` is
+  // undefined, so this is a pure no-op with ZERO database round trips and the
+  // near-dup pass is deferred to Phase B (embed-pipeline.ts applyEmbedding) —
+  // exactly as before. Only the SOX_SYNC_EMBED composition, which supplies an
+  // embedding, opens a transaction here.
+  const nearDup =
+    embedding === undefined
+      ? null
+      : await adapter.transaction(async (tx) =>
+          detectAndApplyNearDup(tx, insertedRowid, embedding, await vectorDialectFor(adapter)),
+        );
+
+  const enrichResult = {
+    topic: enrichValues.topic,
+    project_path: enrichValues.project_path,
+    summary: enrichValues.summary,
+    tags: enrichValues.tags,
+    near_dup: nearDup,
+  };
 
   // BL-62: see WriteResult.enrichment.project_path_source doc comment above for
   // the full rationale and the BL-221 remediation path.
