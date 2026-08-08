@@ -81,6 +81,23 @@ const TIME_TO_COMMUNITY_WINDOW = 500;
  */
 const BULK_PASS_EDGE_THRESHOLD = 100;
 
+/**
+ * Grace window for `ever_clustered_fraction`: an episode younger than this has
+ * not yet had a fair opportunity to be considered, so counting it as "never
+ * clustered" would understate the fraction and make the censoring rate look
+ * worse than it is.
+ *
+ * Set to 2× the memory-server enrich tick (`PERIODIC_ENRICH_INTERVAL_MS`,
+ * 5 min) so an episode has had at least one full pass at it, with margin for
+ * the embedding to land first (live `time_to_vector_ms` p50 ~3.6s, p99 ~22s).
+ *
+ * Deliberately biases the fraction UPWARD (optimistic). A censoring rate that
+ * errs optimistic can only ever make the latency figure look less trustworthy
+ * than it is, never more — which is the safe direction for a number whose
+ * entire job is to stop someone over-trusting a p50.
+ */
+const EVER_CLUSTERED_GRACE_MS = 10 * 60 * 1000;
+
 /** Distribution summary, same shape as the embed pipeline's. */
 export interface LagSummary {
   p50: number;
@@ -127,6 +144,32 @@ export interface ClusterPipelineMetrics {
    */
   time_to_community_ms: LagSummary;
   time_to_community_samples: number;
+  /**
+   * **THE CENSORING RATE. Read this before `time_to_community_ms`, always.**
+   *
+   * Of episodes written since the last bulk re-partition and old enough to
+   * have had a real opportunity (see `EVER_CLUSTERED_GRACE_MS`), the fraction
+   * that ever acquired a community. `null` when the sample is empty.
+   *
+   * `time_to_community_ms` is computed over survivors ONLY. At a low fraction
+   * here, its percentiles are not merely optimistic — they are **undefined**:
+   * if only 15% of writes ever cluster, the true p50 and p99 are infinite, and
+   * the reported p50 describes the 15% that made it, no matter how bad the
+   * excluded tail gets. Measured 0.146 on the live store 2026-08-08, where the
+   * survivors' p50 read a healthy 9.1 minutes.
+   *
+   * This is deliberately a scalar rather than something a caller derives from
+   * `clustered_episodes / total`, because the whole failure mode is a reader
+   * taking the latency number and skipping the context beside it. A division
+   * is easy to skip; a named fraction is harder.
+   *
+   * Distinct from `coverage`: that is store-wide and dominated by whatever
+   * historical full passes did. This one describes the CURRENT regime — what
+   * happens to a write today.
+   */
+  ever_clustered_fraction: number | null;
+  /** Denominator of `ever_clustered_fraction` — episodes in the current regime past the grace window. */
+  ever_clustered_sample: number;
   /**
    * `MEMBER_OF` edges in the window that were excluded as bulk re-partition
    * output (see `BULK_PASS_EDGE_THRESHOLD`). Surfaced rather than silently
@@ -294,9 +337,40 @@ export async function getClusterPipelineMetrics(
     .filter((v) => Number.isFinite(v) && v >= 0)
     .sort((a, b) => a - b);
 
+  // Censoring rate over the CURRENT regime: episodes written since the last
+  // bulk re-partition (or all episodes, if none) and past the grace window.
+  // One query, both terms, so numerator and denominator cannot drift apart.
+  //
+  // MUST use CLUSTER_ELIGIBLE_SQL, same as the backlog partitioning above
+  // (`ineligible`/`awaitingVector`/`awaitingRows`) — an ineligible episode
+  // (content < 50 chars) never clusters BY DESIGN (see the `ineligible` row
+  // in the backlog-by-cause table in this file's header). Without this
+  // predicate every such episode counts as "never clustered" in the
+  // denominator, pulling the fraction down for a reason that has nothing to
+  // do with the defect this scalar exists to surface — the exact opposite of
+  // the documented "errs optimistic, never pessimistic" guarantee below.
+  const regimeCutoff = lastBulkPassAt;
+  const graceCutoff = new Date(Date.now() - EVER_CLUSTERED_GRACE_MS).toISOString();
+  const regimeRow = await adapter.executeGet<{ total: number; clustered: number }>(
+    `SELECT COUNT(*) AS total,
+            SUM(CASE WHEN EXISTS (
+              SELECT 1 FROM edge e
+               WHERE e.src = n.rowid AND e.rel = 'MEMBER_OF' AND e.t_invalid IS NULL
+            ) THEN 1 ELSE 0 END) AS clustered
+       FROM node n
+      WHERE ${CLUSTER_ELIGIBLE_SQL}
+        AND n.t_created IS NOT NULL
+        AND n.t_created < ?${regimeCutoff ? ' AND n.t_created > ?' : ''}`,
+    regimeCutoff ? [graceCutoff, regimeCutoff] : [graceCutoff],
+  );
+  const regimeTotal = regimeRow?.total ?? 0;
+  const regimeClustered = regimeRow?.clustered ?? 0;
+
   return {
     time_to_community_ms: summarize(lags),
     time_to_community_samples: lags.length,
+    ever_clustered_fraction: regimeTotal > 0 ? regimeClustered / regimeTotal : null,
+    ever_clustered_sample: regimeTotal,
     bulk_pass_edges_excluded: bulkRows.reduce((sum, r) => sum + r.c, 0),
     last_bulk_pass_at: lastBulkPassAt,
     community_count: communityCount,
