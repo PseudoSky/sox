@@ -93,46 +93,105 @@ const CODE_SQLITE_BUSY = 'SQLITE_BUSY';
 const CODE_SQLITE_BUSY_SNAPSHOT = 'SQLITE_BUSY_SNAPSHOT';
 const CODE_SQLITE_CONSTRAINT_UNIQUE = 'SQLITE_CONSTRAINT_UNIQUE';
 const CODE_SQLITE_CONSTRAINT_FOREIGNKEY = 'SQLITE_CONSTRAINT_FOREIGNKEY';
+const CODE_GENERIC_FAILURE = 'GenericFailure';
+
+// ── Turso message-marker helpers (BUG-ERRORS-TS-CODE-HELPERS-NEVER-MATCH-TURSO-001) ──
+//
+// Turso's driver (@tursodatabase/database@0.7.1) emits `code: 'GenericFailure'` on
+// EVERY error it raises — the code-keyed helpers below carry zero discriminating
+// information for this driver (same empirical finding `isFatalConnectionError`'s
+// doc comment already records). These message-marker predicates extend that same,
+// already-proven technique (match driver TEXT, never `err.code`) to busy/lock and
+// constraint detection, following `isFatalConnectionError`'s precedent exactly.
+
+/**
+ * True if the message carries Turso's lock/busy-contention marker. Matches the
+ * literal text observed in the BUG-MEMORY-001 incident report ("database is
+ * locked", no phase prefix) AND the phase-prefixed form other Turso runtime
+ * errors are known to carry (`step failed: Runtime error: …`, per
+ * errors.spec.ts's captured UNIQUE-violation) — deliberately NOT anchored to
+ * a phase prefix, since the incident's own raw text had none.
+ */
+function isBusyOrLockedMessage(message: string): boolean {
+  return /database (is|table is) locked/i.test(message) || /database is busy/i.test(message);
+}
+
+/** True if the message carries Turso's UNIQUE-constraint runtime-error marker. */
+function isTursoUniqueConstraintMessage(message: string): boolean {
+  return /Runtime error:\s*UNIQUE constraint failed/i.test(message);
+}
+
+/** True if the message carries Turso's FOREIGN KEY-constraint runtime-error marker. */
+function isTursoForeignKeyMessage(message: string): boolean {
+  return /Runtime error:\s*FOREIGN KEY constraint failed/i.test(message);
+}
+
+/**
+ * True if the message carries Turso's own phase-prefix convention
+ * (`prepare failed:` / `step failed:` / `reset failed:`) — the driver's own
+ * admission that a failure is driver-originated at all, confirmed real at
+ * `bl399-autolink-scope-meta-swallow.spec.ts:12` and
+ * `stats-bl343-row-resilience.spec.ts:11`.
+ */
+function isTursoPhasePrefixedMessage(message: string): boolean {
+  return /^(prepare|step|reset) failed:/i.test(message);
+}
 
 // ── Public helpers ───────────────────────────────────────────────────────
 
 /**
- * True if the error represents a concurrent conflict (MVCC conflict OR SQLITE_BUSY).
+ * True if the error represents a concurrent conflict (MVCC conflict OR SQLITE_BUSY),
+ * OR a Turso `GenericFailure` whose message carries the driver's lock/busy text
+ * marker (see {@link isBusyOrLockedMessage}). Strict widening over the code-based
+ * check only — every previously-`true` case stays `true`.
  *
  * Matches:
  * - `SQLITE_BUSY` — writer slot contention (both adapters)
  * - `SQLITE_BUSY_SNAPSHOT` — MVCC snapshot conflict (TursoAdapter with BEGIN CONCURRENT)
+ * - Turso `GenericFailure` with a lock/busy message marker
  */
 export function isConcurrentConflict(err: unknown): boolean {
   if (!isErrorWithCode(err)) return false;
-  return err.code === CODE_SQLITE_BUSY || err.code === CODE_SQLITE_BUSY_SNAPSHOT;
+  if (err.code === CODE_SQLITE_BUSY || err.code === CODE_SQLITE_BUSY_SNAPSHOT) return true;
+  return isBusyOrLockedMessage(err.message);
 }
 
 /**
- * True if the error is specifically `SQLITE_BUSY` (writer slot contention).
+ * True if the error is specifically `SQLITE_BUSY` (writer slot contention), OR a
+ * Turso `GenericFailure` whose message carries the driver's lock/busy text marker.
  *
  * Does NOT match `SQLITE_BUSY_SNAPSHOT` — use {@link isConcurrentConflict} for the
- * broader check that includes MVCC conflicts.
+ * broader check that includes MVCC conflicts. The message-based branch does not
+ * carry that distinction either way — Turso's lock message doesn't disambiguate
+ * snapshot vs plain busy at the text level, so it is OR'd into both functions
+ * identically; there is no textual way to tell them apart that the driver gives us.
  */
 export function isBusyError(err: unknown): boolean {
   if (!isErrorWithCode(err)) return false;
-  return err.code === CODE_SQLITE_BUSY;
+  if (err.code === CODE_SQLITE_BUSY) return true;
+  return isBusyOrLockedMessage(err.message);
 }
 
 /**
- * True if the error is a UNIQUE constraint violation (`SQLITE_CONSTRAINT_UNIQUE`).
+ * True if the error is a UNIQUE constraint violation (`SQLITE_CONSTRAINT_UNIQUE`),
+ * OR a Turso `GenericFailure` whose message carries the driver's UNIQUE-constraint
+ * runtime-error marker.
  */
 export function isUniqueConstraintError(err: unknown): boolean {
   if (!isErrorWithCode(err)) return false;
-  return err.code === CODE_SQLITE_CONSTRAINT_UNIQUE;
+  if (err.code === CODE_SQLITE_CONSTRAINT_UNIQUE) return true;
+  return isTursoUniqueConstraintMessage(err.message);
 }
 
 /**
- * True if the error is a FOREIGN KEY constraint violation (`SQLITE_CONSTRAINT_FOREIGNKEY`).
+ * True if the error is a FOREIGN KEY constraint violation (`SQLITE_CONSTRAINT_FOREIGNKEY`),
+ * OR a Turso `GenericFailure` whose message carries the driver's FOREIGN KEY-constraint
+ * runtime-error marker.
  */
 export function isForeignKeyError(err: unknown): boolean {
   if (!isErrorWithCode(err)) return false;
-  return err.code === CODE_SQLITE_CONSTRAINT_FOREIGNKEY;
+  if (err.code === CODE_SQLITE_CONSTRAINT_FOREIGNKEY) return true;
+  return isTursoForeignKeyMessage(err.message);
 }
 
 /**
@@ -148,12 +207,16 @@ export function dbErrorCode(err: unknown): string | undefined {
  * True if `err` is any recognized database error (SqliteError or LibsqlError).
  *
  * Both driver error types expose a `code` property containing an `SQLITE_*` string.
- * This is the most permissive check — it returns `true` for any object shaped like
- * a database error, regardless of the specific error code.
+ * Widened to also match a Turso `GenericFailure` whose message carries the
+ * driver's own phase-prefix convention (`prepare failed:`/`step failed:`/
+ * `reset failed:`) — the honest "is this driver-originated at all" signal, not a
+ * guess. This is the most permissive check — it returns `true` for any object
+ * shaped like a database error, regardless of the specific error code.
  */
 export function isDatabaseError(err: unknown): boolean {
   if (!isErrorWithCode(err)) return false;
-  return err.code.startsWith('SQLITE_');
+  if (err.code.startsWith('SQLITE_')) return true;
+  return err.code === CODE_GENERIC_FAILURE && isTursoPhasePrefixedMessage(err.message);
 }
 
 /**

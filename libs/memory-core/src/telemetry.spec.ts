@@ -353,4 +353,31 @@ describe('telemetry — adapter/transaction SQL-error instrumentation', () => {
     expect(rec['event']).toBe('store.error');
     expect(rec['adapter_type']).toBe('turso');
   });
+
+  it(
+    "BUG-001: instrumentAdapter's transaction wrapper survives a caller monkeypatching " +
+      '.transaction on the returned Proxy after first reading it off (does not recurse)',
+    async () => {
+      const adapter = fakeAdapter();
+      const instrumented = instrumentAdapter(
+        adapter as unknown as { transaction<T>(fn: (tx: typeof adapter) => T | Promise<T>): Promise<T> } & typeof adapter,
+        'turso',
+      );
+      // Mirror bug-memory-001-write-loss-ac3.spec.ts's injectPeriodicLockFault exactly: capture
+      // `.transaction` off the INSTRUMENTED (proxied) adapter, then monkeypatch `.transaction`
+      // on that same proxied reference — the pattern that reproduced BUG-001 in the full AC3 suite.
+      const original = instrumented.transaction.bind(instrumented);
+      let calls = 0;
+      (instrumented as unknown as { transaction: typeof instrumented.transaction }).transaction = ((
+        fn,
+        opts,
+      ) => {
+        calls++;
+        return original(fn, opts); // must NOT recurse back into this same patched function
+      }) as typeof instrumented.transaction;
+
+      await expect(instrumented.transaction(async () => 'ok')).resolves.toBe('ok');
+      expect(calls).toBe(1);
+    },
+  );
 });

@@ -31,6 +31,7 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { WriteQueue } from './write-queue.js';
+import type { StorageError } from './errors.js';
 import type { StoreAdapter } from '@adhd/sox-store-adapter';
 
 const hasTurso = (() => {
@@ -198,12 +199,27 @@ describe('WriteQueue — Turso concurrent transactional writes (BL-321)', () => 
       const queue = await WriteQueue.forPath(dbPath);
       await seedTable(queue);
 
-      await expect(
-        queue.enqueue('bl445-boom', async () => {
+      // (BUG-MEMORY-001 §2.3.1) Post-fix, EVERY bypass-path rejection is a
+      // StorageError object (not a raw Error instance) — the direct, intended
+      // consequence of closing defect (A). A synthetic `Error('boom')` is not
+      // driver-shaped, so `wrapDbError` hits its generic fallback tier:
+      // `{code:'E_IO', retryable:false}` — not retryable, so this fails on the
+      // FIRST attempt with no retry delay.
+      const settled = await queue
+        .enqueue('bl445-boom', async () => {
           await new Promise((r) => setTimeout(r, 2));
           throw new Error('boom');
-        }),
-      ).rejects.toThrow('boom');
+        })
+        .then(
+          (v) => ({ ok: true as const, value: v }),
+          (err) => ({ ok: false as const, error: err as StorageError }),
+        );
+
+      expect(settled.ok).toBe(false);
+      if (settled.ok) throw new Error('expected the boom task to reject');
+      expect(settled.error.code).toBe('E_IO');
+      expect(settled.error.message).toBe('boom');
+      expect(settled.error.retryable).toBe(false);
 
       const m = queue.getMetrics();
       // _processNext:1066-1068 counts failed tasks deliberately — "they occupied
@@ -218,11 +234,22 @@ describe('WriteQueue — Turso concurrent transactional writes (BL-321)', () => 
       const queue = await WriteQueue.forPath(dbPath);
       await seedTable(queue);
 
-      await expect(
-        queue.enqueue('bl445-sync-boom', () => {
+      // (BUG-MEMORY-001 §2.3.1) Same wrapped-shape assertion as the async-boom
+      // test above, for the sync-throw call site.
+      const settled = await queue
+        .enqueue('bl445-sync-boom', () => {
           throw new Error('sync boom');
-        }),
-      ).rejects.toThrow('sync boom');
+        })
+        .then(
+          (v) => ({ ok: true as const, value: v }),
+          (err) => ({ ok: false as const, error: err as StorageError }),
+        );
+
+      expect(settled.ok).toBe(false);
+      if (settled.ok) throw new Error('expected the sync-boom task to reject');
+      expect(settled.error.code).toBe('E_IO');
+      expect(settled.error.message).toBe('sync boom');
+      expect(settled.error.retryable).toBe(false);
 
       expect(queue.getMetrics().counters.tasks_completed).toBe(1);
     });
@@ -386,6 +413,99 @@ describe('WriteQueue — Turso concurrent transactional writes (BL-321)', () => 
       expect(m.admission_control).toBe('inactive — adapter handles concurrency natively');
       expect(m.counters.rejections_busy_size).toBe(0);
       expect(m.counters.rejections_busy_deadline).toBe(0);
+    });
+  });
+
+  // ── BUG-MEMORY-001 ──────────────────────────────────────────────────────
+  //
+  // AC1 + AC2: closes the write-loss/error-surface incident. The bypass path
+  // (`_runBypass`, the one path production actually takes for Turso) used to
+  // rethrow every rejection VERBATIM — a raw driver exception, never wrapped
+  // via `wrapDbError`, and never retried even when the underlying condition
+  // (a Turso lock/busy contention error) was transient. See
+  // SPEC-BUG-MEMORY-001.md §1 for the full three-defect root cause.
+  tursoDescribe('BUG-MEMORY-001 — bypass path wraps AND retries a classified-retryable failure', () => {
+    it('AC1: a Turso-shaped GenericFailure lock error is a structured StorageError at the queue boundary, never a raw object', async () => {
+      const queue = await WriteQueue.forPath(dbPath);
+      expect((queue as unknown as { _noop: boolean })._noop).toBe(true);
+
+      // Always throws the incident's own literal text — every attempt fails,
+      // so this also exercises the exhausted-retry final-rejection path.
+      const settled = await queue
+        .enqueue('ac1-always-locked', async () => {
+          throw { code: 'GenericFailure', message: 'database is locked' };
+        })
+        .then(
+          (v) => ({ ok: true as const, value: v }),
+          (err) => ({ ok: false as const, error: err as Record<string, unknown> }),
+        );
+
+      expect(settled.ok).toBe(false);
+      if (settled.ok) throw new Error('expected the always-locked task to reject');
+      // The structured shape AC1 requires — never a bare Error/raw object with
+      // no .code/.retryable, and never "[object Object]" once it crosses the
+      // MCP boundary (that half is formatToolError's contract, exercised
+      // separately in mcp-runtime's own tests).
+      expect(settled.error['code']).toBe('E_BUSY');
+      expect(settled.error['retryable']).toBe(true);
+      expect(settled.error['retry_after_ms']).toBe(250);
+      expect(typeof settled.error['message']).toBe('string');
+    }, 10_000);
+
+    it('AC2: a fault that succeeds on the SECOND attempt does not lose the write — the episode is persisted', async () => {
+      const queue = await WriteQueue.forPath(dbPath);
+      const adapter = (queue as unknown as { adapter: StoreAdapter }).adapter;
+      await adapter.exec('CREATE TABLE IF NOT EXISTS wq_retry (id INTEGER PRIMARY KEY, val TEXT)');
+
+      let calls = 0;
+      const result = await queue.enqueue('ac2-transient-then-success', async (a) => {
+        calls++;
+        if (calls === 1) {
+          // The FIRST call throws the Turso-shaped lock error — classified
+          // retryable by wrapDbError, so §2.3's retry loop must attempt again
+          // rather than losing the write.
+          throw { code: 'GenericFailure', message: 'database is locked' };
+        }
+        // Retry-from-scratch safety (SPEC-BUG-MEMORY-001.md §2.3's proof): the
+        // whole operation closure re-runs, so this insert only happens once,
+        // on the attempt that actually reaches it.
+        await a.executeRun('INSERT INTO wq_retry (id, val) VALUES (?, ?)', [1, 'persisted']);
+        return 'ok';
+      });
+
+      expect(result).toBe('ok');
+      expect(calls, 'the operation was retried exactly once after the injected failure').toBe(2);
+
+      const row = await adapter.executeGet<{ val: string }>('SELECT val FROM wq_retry WHERE id = ?', [1]);
+      expect(row, 'the episode must be durably persisted, not lost to the first failed attempt').not.toBeNull();
+      expect(row!.val).toBe('persisted');
+
+      // A retried-but-ultimately-successful task still only counts once.
+      const m = queue.getMetrics();
+      expect(m.counters.tasks_completed).toBe(1);
+    }, 10_000);
+
+    it('pre-fix RED-arm regression guard: a NON-retryable classified failure (e.g. a plain Error) still fails on the FIRST attempt with no retry delay', async () => {
+      const queue = await WriteQueue.forPath(dbPath);
+      let calls = 0;
+      const t0 = Date.now();
+      const settled = await queue
+        .enqueue('ac1-non-retryable', async () => {
+          calls++;
+          throw new Error('not a driver error at all');
+        })
+        .then(
+          (v) => ({ ok: true as const, value: v }),
+          (err) => ({ ok: false as const, error: err as Record<string, unknown> }),
+        );
+      const elapsedMs = Date.now() - t0;
+
+      expect(settled.ok).toBe(false);
+      if (settled.ok) throw new Error('expected rejection');
+      expect(settled.error['code']).toBe('E_IO');
+      expect(settled.error['retryable']).toBe(false);
+      expect(calls, 'a non-retryable failure must not be retried').toBe(1);
+      expect(elapsedMs, 'no retry delay should have been incurred').toBeLessThan(200);
     });
   });
 });
