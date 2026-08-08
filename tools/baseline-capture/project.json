@@ -47,6 +47,18 @@
         ]
       }
     },
+    "typecheck": {
+      "executor": "nx:run-commands",
+      "options": {
+        "command": "tsc -p tools/baseline-capture/tsconfig.typecheck.json --noEmit",
+        "cwd": "."
+      },
+      "cache": true,
+      "inputs": [
+        "default",
+        "^production"
+      ]
+    },
     "capture-enrichment-baseline": {
       "executor": "nx:run-commands",
       "options": {
