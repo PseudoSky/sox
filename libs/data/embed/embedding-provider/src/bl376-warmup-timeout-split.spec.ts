@@ -106,9 +106,17 @@ describe('BL-376 — warmup timeout budget splits by cache-hit vs cache-miss', (
     const client = makeDelayedClient(15_000); // injected hang, well past any sane cache-hit budget
     const provider = new FastembedProvider(modelId, 384, cacheDir, client);
 
+    // BUG-EMBED-WARMUP-CACHEHIT-ASSUMES-FAST-LOAD-001: initModel() now retries
+    // WARMUP_CACHE_HIT_ATTEMPTS (2) times at the same tight per-attempt budget
+    // before giving up — a hung load fails fast/bounded (still nowhere near
+    // the old 180s bug this test guards against), just at 2×8000ms=16000ms
+    // instead of the single-attempt 8000ms this test asserted pre-fix. The
+    // invariant this test protects (bounded fail-fast, not an unbounded or
+    // 180s hang) is unchanged; only the bound's magnitude legitimately grew
+    // with the retry count.
     const warmup = provider.embedSingle('warmup');
     const assertion = expect(warmup).rejects.toThrow(/timed out after 8000ms/);
-    await vi.advanceTimersByTimeAsync(8_001);
+    await vi.advanceTimersByTimeAsync(16_001);
     await assertion;
   });
 
