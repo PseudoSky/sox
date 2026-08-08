@@ -191,7 +191,18 @@ describe('BL-496 — time-to-community is measurable', () => {
       // Simulate the live store's shape: one historical full pass that
       // assigned a large number of old episodes at a single instant. Its edge
       // "lag" is each episode's age at sweep time, not any clustering latency.
-      const backfillTs = new Date().toISOString();
+      //
+      // Timestamp is deliberately offset an hour into the past rather than
+      // `new Date()`: passes are identified by their EXACT `t_created` string,
+      // and `seededStore`'s own full pass runs microseconds before this line.
+      // At `new Date()` the two collide in the same millisecond often enough
+      // to matter (~1 run in 3 on a fast machine) — the seeded edges get swept
+      // into the bulk exclusion, nothing survives the filter, and
+      // `time_to_community_samples` is 0. An hour of separation makes the two
+      // passes distinct by construction while keeping the excluded lag (2020 →
+      // an hour ago, ~6.6 years) comfortably above the FIVE_YEARS_MS bound
+      // below, so the assertion stays strong.
+      const backfillTs = new Date(Date.now() - 60 * 60 * 1000).toISOString();
       const community = (await adapter.executeGet<{ rowid: number }>(
         `SELECT rowid FROM node WHERE kind = 'community' AND t_invalid IS NULL LIMIT 1`,
       ))!;
@@ -224,6 +235,95 @@ describe('BL-496 — time-to-community is measurable', () => {
       expect(m.time_to_community_ms.max).toBeLessThan(FIVE_YEARS_MS);
       // And the real, small-pass samples survive the filter.
       expect(m.time_to_community_samples).toBeGreaterThan(0);
+      cleanup();
+    } finally {
+      /* disposable */
+    }
+  });
+
+  it('reports ever_clustered_fraction as a scalar censoring rate, so a survivorship p50 cannot be read alone', async () => {
+    const { dir, cleanup } = tmpDir();
+    try {
+      const adapter = await seededStore(dir);
+      const storeKey = path.join(dir, 't.db');
+
+      // Episodes past the grace window: one that clustered, several that did
+      // not. Backdated so they are older than EVER_CLUSTERED_GRACE_MS (10 min)
+      // — a fresh write is deliberately NOT counted as "never clustered".
+      const old = new Date(Date.now() - 60 * 60 * 1000).toISOString();
+      const community = (await adapter.executeGet<{ rowid: number }>(
+        `SELECT rowid FROM node WHERE kind = 'community' AND t_invalid IS NULL LIMIT 1`,
+      ))!;
+      for (let i = 0; i < 4; i++) {
+        await adapter.executeRun(
+          `INSERT INTO node (uid, kind, content, project_path, t_created, t_valid)
+           VALUES (?, 'episode', ?, '/test/bl496', ?, ?)`,
+          [`cens-${i}`, `Censoring probe episode ${i} with content long enough to be eligible here.`, old, old],
+        );
+      }
+      const first = (await adapter.executeGet<{ rowid: number }>(
+        'SELECT rowid FROM node WHERE uid = ?',
+        ['cens-0'],
+      ))!;
+      await adapter.executeRun(
+        `INSERT INTO edge (src, dst, rel, origin, weight, t_created)
+         VALUES (?, ?, 'MEMBER_OF', 'inferred', 1.0, ?)`,
+        [first.rowid, community.rowid, old],
+      );
+
+      const m = await getClusterPipelineMetrics(adapter, storeKey);
+
+      expect(m.ever_clustered_fraction).not.toBeNull();
+      expect(m.ever_clustered_sample).toBeGreaterThanOrEqual(4);
+      // Strictly below 1 — the three unclustered probes must pull it down, or
+      // the metric is not measuring censoring at all.
+      expect(m.ever_clustered_fraction!).toBeLessThan(1);
+      expect(m.ever_clustered_fraction!).toBeGreaterThan(0);
+
+      // A BRAND-NEW episode must NOT be counted as "never clustered" — it has
+      // not had a tick yet. Counting it would understate the fraction.
+      const sampleBefore = m.ever_clustered_sample;
+      const fresh = await memoryWrite(adapter, {
+        content: 'A freshly written episode that has had no opportunity to cluster yet at all.',
+        project_path: '/test/bl496',
+      });
+      if ('code' in fresh) throw new Error('write failed');
+      const after = await getClusterPipelineMetrics(adapter, storeKey);
+      expect(after.ever_clustered_sample).toBe(sampleBefore);
+
+      cleanup();
+    } finally {
+      /* disposable */
+    }
+  });
+
+  it('BL-496: ever_clustered_fraction excludes ineligible (content < 50 chars) episodes from its denominator', async () => {
+    const { dir, cleanup } = tmpDir();
+    try {
+      const adapter = await seededStore(dir);
+      const storeKey = path.join(dir, 't.db');
+
+      // Backdated past the grace window, like the sibling censoring test —
+      // otherwise the fresh-write exclusion (tested above) would mask this
+      // one and the assertion below would pass for the wrong reason.
+      const old = new Date(Date.now() - 60 * 60 * 1000).toISOString();
+
+      const before = await getClusterPipelineMetrics(adapter, storeKey);
+      const sampleBefore = before.ever_clustered_sample;
+
+      // Ineligible BY DESIGN (< CLUSTER_MIN_CONTENT_LENGTH): no pass will
+      // ever consider it, so it must never enter the censoring denominator —
+      // counting it would depress ever_clustered_fraction for a reason
+      // structurally unrelated to the H2 defect the scalar exists to catch.
+      await adapter.executeRun(
+        `INSERT INTO node (uid, kind, content, project_path, t_created, t_valid)
+         VALUES (?, 'episode', ?, '/test/bl496', ?, ?)`,
+        ['bl496-ineligible-censoring-probe', 'tiny', old, old],
+      );
+
+      const after = await getClusterPipelineMetrics(adapter, storeKey);
+      expect(after.ever_clustered_sample).toBe(sampleBefore);
+
       cleanup();
     } finally {
       /* disposable */
