@@ -1,5 +1,19 @@
 # Changelog
 
+## 1.3.1
+
+### Patch Changes
+
+- `memory_recall` no longer pads results with null-content entity/community/session/generic node
+  rows (BUG-MEMORY-003). Two SQL candidate-admission points in `@adhd/sox-memory-core`'s
+  `memoryRecall()` had no `node.kind` predicate — the temporal channel, and the depth-1
+  graph-expansion neighbor fetch that runs on every default-parameter call (tagged episodes have
+  live `MENTIONS` edges to their own tag-created entity nodes). Results now default to
+  `kind = 'episode'` only. Additive opt-in: `filters.kinds` (e.g.
+  `filters: { kinds: ["episode", "entity"] }`) restores non-episode rows for callers that want
+  them — both the tool schema (`filters.kinds`, array of strings) and `handleToolCall`'s filter-
+  forwarding loop now thread the field through to `memoryRecall()`.
+
 ## 1.3.0
 
 ### Minor Changes
