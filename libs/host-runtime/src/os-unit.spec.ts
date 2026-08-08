@@ -100,7 +100,16 @@ function writeManifest(lifecycle: Record<string, unknown>): string {
   return mp;
 }
 
-function makeSpec(over: Partial<OsUnitSpec> = {}): OsUnitSpec {
+// `over` is spread into deriveOsUnitSpec's OWN opts (id/scope/nodePath/env/...
+// plus SA-1/SA-2 inputs like `activation_posture`/`socketPath`), not into the
+// OsUnitSpec it returns — those are two different shapes (e.g. `socketPath`
+// on the *returned* spec is conditionally derived, only set when
+// `activation_posture === 'on-demand'`; `activation_posture` itself never
+// appears on OsUnitSpec at all). `Partial<OsUnitSpec>` was the wrong type for
+// this parameter — TS accepted it only because none of these call sites had
+// been typechecked (no `typecheck` target existed for host-runtime before
+// this fix; see CLAUDE.md's BL-248 note). Filed as BL-471.
+function makeSpec(over: Partial<Parameters<typeof deriveOsUnitSpec>[0]> = {}): OsUnitSpec {
   const manifestPath = writeManifest({ background: true, singleton: true, stop_timeout_ms: 5000 });
   return deriveOsUnitSpec({
     id: 'memory-daemon',
@@ -573,7 +582,13 @@ describe('SA-2 socket-activation rendering — launchd', () => {
   });
 
   it('always-on posture (no socketPath) omits Sockets dict', () => {
-    const spec = makeSpec({ socketPath: undefined, runAtLoad: true, keepAlive: true });
+    // `runAtLoad`/`keepAlive` are fields of the RETURNED OsUnitSpec, not of
+    // deriveOsUnitSpec's opts — passing them here was always a no-op (opts has
+    // no such fields; deriveOsUnitSpec computes them itself from the manifest
+    // lifecycle block below, which already sets background:true/singleton:true
+    // ⇒ runAtLoad/keepAlive both true, matching what this line redundantly
+    // asked for). See BL-471.
+    const spec = makeSpec({ socketPath: undefined });
     const plist = platform.render(spec);
     expect(plist).not.toContain('Sockets');
     expect(plist).not.toContain('SockPathName');

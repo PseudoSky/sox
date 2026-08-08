@@ -30,11 +30,6 @@ function makeReq(authHeader?: string): IncomingMessage {
   return req;
 }
 
-function makeRes(): ServerResponse {
-  const socket = new Socket();
-  return new ServerResponse(socket);
-}
-
 /**
  * Captured response state — wraps a ServerResponse with interceptors.
  * Access captured.status and captured.body AFTER calling authMiddleware
@@ -57,10 +52,21 @@ interface CapturedResponse {
 function captureRes(): CapturedResponse {
   let statusCode = 200;
   let responseBody = '';
-  const socket = new Socket();
-  const res = new ServerResponse(socket);
+  const res = new ServerResponse(makeReq());
   res.writeHead = (s: number) => { statusCode = s; return res; };
-  res.end = (data: string) => { responseBody = data; return res; };
+  // Overload set mirrors ServerResponse['end'] exactly (Writable#end) so this
+  // stub is assignable without a cast — a single `(data: string) => ...`
+  // signature is not, since it satisfies none of the three real overloads.
+  function endMock(cb?: () => void): ServerResponse;
+  function endMock(chunk: unknown, cb?: () => void): ServerResponse;
+  function endMock(chunk: unknown, encoding: BufferEncoding, cb?: () => void): ServerResponse;
+  function endMock(chunk?: unknown, _encodingOrCb?: unknown, _cb?: () => void): ServerResponse {
+    if (typeof chunk === 'string') {
+      responseBody = chunk;
+    }
+    return res;
+  }
+  res.end = endMock;
   return {
     res,
     get status() { return statusCode; },

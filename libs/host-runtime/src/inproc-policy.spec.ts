@@ -11,74 +11,19 @@
  *            [inproc-policy.4] [inproc-policy.5]
  */
 
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach } from 'vitest';
 import { auditAccess, getAuditLog, clearAuditLog } from './audit-log.js';
-import { activateAgent, activateSkill } from './adapters/agent.js';
-import { activateHook } from './adapters/hook.js';
-import { activateCommand, CommandRegistry } from './adapters/command.js';
-import type { HookLoader } from './hook-loader.js';
 
-// ─── Minimal in-process module stubs ─────────────────────────────────────────
-
-/** An agent module stub with an invoke export. */
-const agentModule = { invoke: async (input: unknown) => ({ result: input }) };
-
-/** A skill module stub with a run export. */
-const skillModule = { run: async (input: unknown) => ({ out: input }) };
-
-/** A hook module stub (event + handler). */
-const hookModule = {
-  event: 'TestEvent',
-  handler: (_ctx: unknown) => undefined,
-};
-
-/** A command module stub with a run export. */
-const commandModule = {
-  run: (_input: unknown) => ({ exitCode: 0 as const }),
-};
-
-// ─── Helpers ──────────────────────────────────────────────────────────────────
-
-/** Create a minimal HookLoader double. */
-function makeHookLoader(): HookLoader {
-  return {
-    register: vi.fn(),
-    dispatch: vi.fn(),
-    fireIsolated: vi.fn(),
-    handlers: [],
-  } as unknown as HookLoader;
-}
-
-/** Create a minimal CommandRegistry. */
-function makeCommandRegistry(): CommandRegistry {
-  return new CommandRegistry();
-}
-
-/** Intercept import() so adapters load our in-memory stubs. */
-function mockImport(stub: Record<string, unknown>) {
-  return vi.spyOn(
-    { import: (p: string) => Promise.resolve(p as unknown as Record<string, unknown>) },
-    'import',
-  );
-}
-
-/**
- * Since adapters use dynamic `import()` internally we need to mock the
- * module resolution.  We patch globalThis with a controlled importer.
- */
-async function withImportMock<T>(
-  stub: Record<string, unknown>,
-  fn: () => Promise<T>,
-): Promise<T> {
-  const original = globalThis[Symbol.for('__vitest_import_mock__') as unknown as string];
-  // Use vi.doMock path; for simplicity, pass a real temp file path approach:
-  // Instead of patching dynamic import (which is hard to intercept in ESM),
-  // we export activateAgent/activateSkill/activateHook/activateCommand with an
-  // injectable import override — but these adapters use real import().
-  //
-  // Strategy: write actual temp module files and pass absolute paths.
-  return fn();
-}
+// NOTE: earlier drafts of this spec scaffolded static imports of
+// activateAgent/activateSkill/activateHook/activateCommand/CommandRegistry
+// plus in-memory module stubs and an import()-mocking harness, intending to
+// exercise the adapters' dynamic `import()` path directly. That approach was
+// abandoned (ESM dynamic import is not interceptable this way in vitest) in
+// favour of testing compilePolicy/makeInprocHandle directly below, but the
+// scaffold was left in place unused — see [inproc-policy.1]'s own doc comment.
+// Removed as dead code (TS6133/TS6192 under `nx typecheck host-runtime`);
+// every assertion in this file already runs via the dynamic imports the
+// individual tests perform.
 
 // ─── [inproc-policy.1] — All in-process handles carry a compiled Policy ──────
 
