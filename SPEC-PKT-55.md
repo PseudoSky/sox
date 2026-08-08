@@ -324,6 +324,14 @@ outcome as a full fix.
    whole-repo and out of this packet's blast radius; scope the gate to `memory-core` as listed above.
 9. Commit by explicit pathspec:
    `git commit libs/memory-core/project.json libs/memory-core/src/bl202-test-target-depends-on-own-build.spec.ts -m "fix(memory-core): test target depends on own build (BL-202)"`
+   If the plain pathspec commit is blocked by a pre-commit hook (`plan-status.mjs --check`) that is
+   `STALE` on files this packet never touched (e.g. contended shared docs another agent owns), do not
+   regenerate or force-touch those files to unblock yourself — use `tools/commit-mine.mjs` to commit
+   this packet's two files directly, after independently confirming `node
+   tools/check-backlog-markers.mjs` and this packet's own gate (step 6) are clean. Observed and
+   ruled correct in the PKT-55 implementation run (2026-08-04): the hook was stale on
+   `docs/reporting/memory/PLAN.md`/`STATE.md`, `commit-mine.mjs` was used, and no shared file was
+   touched or discarded.
 10. Update the `BL-202` backlog node via `backlog_append_note` (or `backlog_transition_status` to a
     partial-resolution status if the tool schema supports one — check `mcp__backlog__backlog_resolve_item`'s
     `status` enum before choosing) with the evidence from Criterion A and B, worded per §5's "What
