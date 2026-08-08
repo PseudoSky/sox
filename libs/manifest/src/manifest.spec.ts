@@ -944,7 +944,7 @@ describe('[schema-delta] install descriptor — new hybrid fields', () => {
         install: { hosts: ['codex'], overrides: { codex: overrides } },
       }));
       expect(result.ok).toBe(false);
-      expect(result.errors.some((e) => e.includes(key))).toBe(true, `Expected rejection for codex key "${key}"`);
+      expect(result.errors.some((e) => e.includes(key)), `Expected rejection for codex key "${key}"`).toBe(true);
     }
   });
 

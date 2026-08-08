@@ -57,7 +57,7 @@ function makeFileDropLedger(
     ext,
     host,
     scope,
-    action: { cap: 'file-drop', file, keyPath: '', appliedHash },
+    action: { cap: 'file-drop', file, keyPath: '', ...(appliedHash !== undefined ? { appliedHash } : {}) },
   });
   ledger.save();
   return ledger;
