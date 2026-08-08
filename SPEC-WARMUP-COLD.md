@@ -475,8 +475,22 @@ Run each with a plain `npx nx <target> <project>` — **no `--skip-nx-cache`** (
 4. `npx nx build embedding-provider` — accept the BL-235 destructive-build risk consciously: this
    project's source is what you just edited, so a failed rebuild here is expected to reflect your own
    in-progress edit, not another agent's; do not run this speculatively "just to see."
-5. `npx nx test embedding-provider -- src/bl376-warmup-timeout-split.spec.ts` — must still be 4/4 green;
-   this is the regression guard that BL-376's split itself is not touched.
+5. `npx nx test embedding-provider -- src/bl376-warmup-timeout-split.spec.ts` — must still be 4/4 green.
+   **Ruling (post-implementation, architect):** "4/4 green" does not mean "byte-identical file." Decision
+   3 (retry loop lives inside `initModel()`, same instance, `WARMUP_CACHE_HIT_ATTEMPTS` attempts at the
+   unchanged per-attempt `warmupTimeoutMs(cacheHit)`) is mutually exclusive with the CACHE-HIT test's
+   original 8001ms fake-timer advance: that test calls `provider.embedSingle('warmup')` directly
+   (`fastembed.ts`'s `ensureReady()` → `initModel()`), bypassing `createFastembedProvider()`'s outer
+   `warmupOuterBudgetMs` wrapper entirely — so once `initModel()` itself retries, a hung load under that
+   test genuinely takes `WARMUP_CACHE_HIT_ATTEMPTS × warmupTimeoutMs(true)` (16s default) to reject, not
+   the old single-attempt 8s. This is the correct, unavoidable consequence of Decision 3, not scope creep.
+   The regression guard this step actually protects — per-attempt budget (`warmupTimeoutMs`) unchanged,
+   cache-miss path unchanged, rejection message still names the per-attempt 8000ms budget — must survive;
+   only the CACHE-HIT test's fake-timer advance magnitude (8001ms → 16001ms, i.e. `WARMUP_CACHE_HIT_ATTEMPTS
+   × warmupTimeoutMs(true) + 1`) may change, watched RED (old magnitude, with fix present) → GREEN (new
+   magnitude) same as every other edit in this item. Do not treat "no edit implied" in the original wording
+   of this step as binding — it was written before Decision 3's own consequence for this specific test was
+   traced through, and is superseded by this ruling.
 6. `npx nx test embedding-provider -- src/<new-spec-file-for-AC-1-and-AC-2>.spec.ts`
 7. `npx nx test memory-core -- src/embed.spec.ts` (existing suite, must stay green) and the new/extended
    spec covering AC-3 (either a new file `libs/memory-core/src/embed-retry-bl-<successor-id>.spec.ts` or
