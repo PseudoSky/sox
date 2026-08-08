@@ -158,6 +158,28 @@ export function getEmbedHealth(): EmbedHealth {
 }
 
 /**
+ * TEST-ONLY seam (BUG-EMBED-WARMUP-CACHEHIT-ASSUMES-FAST-LOAD-001, AC-3):
+ * overrides the `createEmbeddingProvider()` call inside `resolveProvider()`
+ * without touching `_setEmbedProviderForTest`'s bypass-everything semantics
+ * (that hook short-circuits `getOrCreateProvider()` entirely, before
+ * `resolveProvider()` is ever called, so it cannot exercise resolveProvider's
+ * own retry-ability). This lets a test make the underlying resolution reject
+ * once and then succeed — deterministically, without forking a real fastembed
+ * child process — to prove `getOrCreateProvider()` attempts resolution again
+ * on the next call after a prior rejection instead of returning the same
+ * dead promise forever. Mirrors `_setEmbedProviderForTest`'s existing pattern
+ * exactly: null clears the override and restores the real
+ * `createEmbeddingProvider()` call.
+ */
+let _createProviderOverride: (() => Promise<EmbeddingProvider>) | null = null;
+
+export function _setCreateProviderOverrideForTest(
+  fn: (() => Promise<EmbeddingProvider>) | null,
+): void {
+  _createProviderOverride = fn;
+}
+
+/**
  * Resolve and create the embedding provider — always uses the real fastembed backend.
  * Throws on failure for both 'auto' and 'real' modes (no degraded fallback).
  */
@@ -165,11 +187,13 @@ async function resolveProvider(): Promise<EmbeddingProvider> {
   const config = resolveConfig();
 
   try {
-    const p = await createEmbeddingProvider({
-      type: 'fastembed',
-      model: config.model,
-      options: { cacheDir: config.cacheDir },
-    });
+    const p = await (_createProviderOverride
+      ? _createProviderOverride()
+      : createEmbeddingProvider({
+          type: 'fastembed',
+          model: config.model,
+          options: { cacheDir: config.cacheDir },
+        }));
     _resolvedBackend = 'real';
     _activeModel = 'bge-base-en-v1.5';
     _lastEmbedError = null;
@@ -190,11 +214,28 @@ async function getOrCreateProvider(): Promise<EmbeddingProvider> {
   if (_provider) return _provider;
   if (_providerPromise) return _providerPromise;
 
-  _providerPromise = resolveProvider().then((p) => {
-    _provider = p;
-    _providerPromise = null;
-    return p;
-  });
+  // BUG-EMBED-WARMUP-CACHEHIT-ASSUMES-FAST-LOAD-001: the settled-promise cache
+  // must clear on REJECTION too, not just resolution. Previously `.then()`
+  // only ran its fulfillment handler, so a rejected resolveProvider() left
+  // `_providerPromise` pointed at the same dead promise forever — every
+  // subsequent embed()/warmupEmbed() call hit the `if (_providerPromise)
+  // return _providerPromise;` branch above and got back the identical
+  // already-rejected promise, no matter how much time passed or how many
+  // calls were made. This is the sole reason a transient cold-load failure
+  // never lazily recovered. The in-flight dedup behaviour (concurrent callers
+  // awaiting the same PENDING promise) is unchanged — only what happens AFTER
+  // settlement changes.
+  _providerPromise = resolveProvider().then(
+    (p) => {
+      _provider = p;
+      _providerPromise = null;
+      return p;
+    },
+    (err) => {
+      _providerPromise = null;
+      throw err;
+    },
+  );
 
   return _providerPromise;
 }
