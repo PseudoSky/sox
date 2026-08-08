@@ -24,7 +24,7 @@ export type ServesValue = (typeof serves)[number];
 
 // ─── Author API ───────────────────────────────────────────────────────────────
 
-export { defineTool, serve, buildToolDispatch } from './serve.js';
+export { defineTool, serve, buildToolDispatch, formatToolError } from './serve.js';
 export type {
   RegisteredTool,
   ServeOptions, ToolContext, ToolDefinition, ToolResult,

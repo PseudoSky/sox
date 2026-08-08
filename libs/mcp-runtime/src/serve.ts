@@ -108,6 +108,49 @@ export function defineTool<TArgs extends Record<string, unknown> = Record<string
   return { definition: def as unknown as ToolDefinition };
 }
 
+// ─── formatToolError ─────────────────────────────────────────────────────────
+
+/**
+ * (BUG-MEMORY-001 §2.4) Detect a StorageError-shaped object (CONTRACTS §B:
+ * `{code, message, retryable}`, `code` prefixed `E_`) without importing
+ * memory-core's type — mcp-runtime is generic and must not depend on any
+ * single tool consumer's error taxonomy.
+ */
+function looksLikeStorageError(
+  err: unknown,
+): err is { code: string; message: string; retryable: boolean } {
+  if (!err || typeof err !== 'object') return false;
+  const e = err as Record<string, unknown>;
+  return (
+    typeof e['code'] === 'string' &&
+    e['code'].startsWith('E_') &&
+    typeof e['message'] === 'string' &&
+    typeof e['retryable'] === 'boolean'
+  );
+}
+
+/**
+ * (BUG-MEMORY-001 §2.4) Format a caught tool-handler exception into a
+ * `CallToolResult`-shaped error payload, WITHOUT destroying a structured
+ * `StorageError` (defect (C) of BUG-MEMORY-001): the previous
+ * `text: \`Tool error: ${String(err)}\`` pattern collapses any structured
+ * object to the literal string `"[object Object]"` via `String()`, so even a
+ * correctly wrapped, correctly classified `StorageError` reaching this
+ * boundary lost its shape before reaching the MCP caller.
+ *
+ * Shared by both MCP dispatch surfaces that catch a thrown tool exception —
+ * `buildToolDispatch` below (the `serve()` stdio/sse/http path) and
+ * `memory-server/src/backend.ts`'s `handleBackendRequest` (the live UDS
+ * backend dispatcher) — fixed once, in one place, per the architect's ruling,
+ * not as two independent patches. This is a duck-type check (no cross-package
+ * type import), additive-only: anything that is NOT StorageError-shaped keeps
+ * the exact current `Tool error: …` text.
+ */
+export function formatToolError(err: unknown): { isError: true; content: [{ type: 'text'; text: string }] } {
+  const text = looksLikeStorageError(err) ? JSON.stringify(err) : `Tool error: ${String(err)}`;
+  return { isError: true, content: [{ type: 'text', text }] };
+}
+
 // ─── buildToolDispatch ─────────────────────────────────────────────────────────
 
 /**
@@ -156,10 +199,7 @@ export function buildToolDispatch(
           ...(handlerResult.isError !== undefined ? { isError: handlerResult.isError } : {}),
         };
       } catch (err) {
-        return {
-          isError: true,
-          content: [{ type: 'text' as const, text: `Tool error: ${String(err)}` }],
-        };
+        return formatToolError(err);
       }
     },
   };

@@ -25,6 +25,7 @@
  */
 
 import type { ToolDefinition, ToolResult } from '@adhd/sox-mcp-runtime';
+import { formatToolError } from '@adhd/sox-mcp-runtime';
 import type { JsonRpcRequest, JsonRpcResponse } from '@adhd/sox-service-proxy';
 import { serveBackend } from '@adhd/sox-service-proxy';
 import * as fs from 'node:fs';
@@ -130,10 +131,7 @@ export async function handleBackendRequest(
     try {
       result = await handleToolCall(toolName, args);
     } catch (err) {
-      result = {
-        isError: true,
-        content: [{ type: 'text', text: `Tool error: ${String(err)}` }],
-      };
+      result = formatToolError(err);
     }
     // Shape the CallToolResult exactly as serve() does.
     return {
