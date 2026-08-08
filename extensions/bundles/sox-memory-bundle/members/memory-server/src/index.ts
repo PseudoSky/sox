@@ -500,7 +500,13 @@ export const TOOLS: Array<Omit<ToolDefinition, 'handler'>> = [
   },
   {
     name: 'memory_invalidate',
-    description: 'Invalidate a claim (bi-temporal: sets t_invalid, never deletes).',
+    description: 'Bi-temporally invalidate a live episode or claim node (sets t_invalid, never deletes). ' +
+      'claim_uid accepts either kind: memory_write always returns an episode_uid (kind=\'episode\'), which is ' +
+      'valid here directly — there is no separate "claim extraction" step that must run first. ' +
+      'Invalidating an already-invalid uid is IDEMPOTENT SUCCESS: {ok:true, already_invalid:true, t_invalid} ' +
+      '— this commonly happens when the async near-dup pipeline auto-invalidates a near-duplicate episode ' +
+      'moments after write, before you get to it. A uid from a different kind of node (e.g. a community_uid or ' +
+      'entity uid from another tool) returns {code:\'E_WRONG_KIND\', kind}.',
     inputSchema: {
       type: 'object',
       properties: {
