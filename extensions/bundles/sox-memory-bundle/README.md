@@ -19,7 +19,7 @@ The four members together form a complete, end-to-end proven agent memory subsys
 
 | Extension id    | Type        | Role                                                                        |
 | --------------- | ----------- | --------------------------------------------------------------------------- |
-| `memory-server` | mcp-server  | 19 MCP tools over SQLite graph store; hybrid recall; session state; in-process batch enrichment (clustering, importance, auto-links) |
+| `memory-server` | mcp-server  | 20 MCP tools over SQLite graph store; hybrid recall; session state; in-process batch enrichment (clustering, importance, auto-links, stale-vector healing) |
 | `memory-flush`  | hook        | SessionEnd persistence; episode enqueue; ScopePromotionProposed approval    |
 | `memory-cli`    | command     | Shell lifecycle: init, status, list, registry subcommands                   |
 | `memory-usage`  | skill       | How-to guidance for the memory subsystem                                    |
@@ -29,9 +29,9 @@ The four members together form a complete, end-to-end proven agent memory subsys
 ```
 memory-server (mcp-server, stdio)
   ├─ reads/writes ~/.memory/memory.db  (SQLite + sqlite-vec + FTS5)
-  ├─ exposes 19 memory_* MCP tools; write-time enrichment runs synchronously
+  ├─ exposes 20 memory_* MCP tools; write-time enrichment runs synchronously
   └─ runs runBatchEnrich (memory-core) on a periodic in-process loop
-       └─ clustering, importance, auto-links (deterministic, zero LLM, no daemon)
+       └─ clustering, importance, auto-links, stale-vector healing (deterministic, zero LLM, no daemon)
 
 memory-flush (hook, SessionEnd)
   └─ persists working memory → .db
