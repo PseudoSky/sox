@@ -217,7 +217,7 @@ describe('config-merge JSON — [capability-engine.1] [capability-engine.3] [cap
       host: 'claude', scope: 'user', scopeRoot: dir, ext: 'ext@1.0',
       target: { filePath, keyPath },
       payload: { value },
-      ledger,
+      ...(ledger !== undefined ? { ledger } : {}),
     };
   }
 
@@ -410,7 +410,7 @@ describe('array-merge — [capability-engine.1] [capability-engine.3] [capabilit
       host: 'claude', scope: 'project', scopeRoot: dir, ext: 'ext@2.0',
       target: { filePath, keyPath },
       payload: { values },
-      ledger,
+      ...(ledger !== undefined ? { ledger } : {}),
     };
   }
 
