@@ -166,6 +166,127 @@ describe('memoryInvalidate — SUPERSEDES edge (BL-247)', () => {
   });
 });
 
+describe('memoryInvalidate — not-found / already-invalid / wrong-kind (BUG-MEMORY-002)', () => {
+  let cleanupDb: () => void;
+  let db: StoreAdapter;
+
+  beforeEach(async () => {
+    const { dir, cleanup } = tmpDir();
+    cleanupDb = cleanup;
+    db = await openDb(path.join(dir, 't.db'));
+  });
+
+  afterEach(() => {
+    if (db && raw(db).open) db.close();
+    cleanupDb();
+  });
+
+  async function writeEpisode(content: string): Promise<string> {
+    const r = await memoryWrite(db, { content, project_path: '/test/project' });
+    expect('episode_uid' in r).toBe(true);
+    return (r as { episode_uid: string }).episode_uid;
+  }
+
+  it('BUG-MEMORY-002 (a): non-existent uid returns E_NOT_FOUND with the corrected message text', async () => {
+    const result = await memoryInvalidate(db, { claim_uid: 'nonexistent-claim-uid', reason: 'n/a' });
+    expect('code' in result).toBe(true);
+    const err = result as { code: string; message: string };
+    expect(err.code).toBe('E_NOT_FOUND');
+    // BUG-MEMORY-002: the old message text ("...or already invalidated") is now
+    // a lie — "already invalidated" is no longer a case this branch reaches.
+    expect(err.message).toBe('No node found for uid: nonexistent-claim-uid');
+    expect(err.message).not.toContain('already invalidated');
+  });
+
+  it('BUG-MEMORY-002 (b): invalidating the same claim twice — the second call is idempotent success, not E_NOT_FOUND', async () => {
+    const claimUid = await writeEpisode('BUG-MEMORY-002(b): claim invalidated twice.');
+
+    const first = await memoryInvalidate(db, { claim_uid: claimUid, reason: 'first invalidation' });
+    expect('ok' in first && first.ok).toBe(true);
+    const firstOk = first as { ok: true; already_invalid?: boolean };
+    expect(firstOk.already_invalid ?? false).toBe(false);
+
+    const firstRow = (await db.executeGet<{ t_invalid: string }>('SELECT t_invalid FROM node WHERE uid = ?', [claimUid]))!;
+    expect(firstRow.t_invalid).not.toBeNull();
+
+    // RED (pre-fix): this second call hit `SELECT rowid FROM node WHERE uid = ?
+    // AND t_invalid IS NULL` — zero rows (already invalidated), so it returned
+    // the exact same {code:'E_NOT_FOUND'} as a genuinely-nonexistent uid.
+    const second = await memoryInvalidate(db, { claim_uid: claimUid, reason: 'second invalidation, same uid' });
+    expect('ok' in second).toBe(true);
+    const secondOk = second as { ok: true; already_invalid?: boolean; t_invalid?: string };
+    expect(secondOk.ok).toBe(true);
+    expect(secondOk.already_invalid).toBe(true);
+    // The SECOND call must not have touched the row — t_invalid is the
+    // ORIGINAL transition time from the first call, not a fresh timestamp.
+    expect(secondOk.t_invalid).toBe(firstRow.t_invalid);
+
+    const rowAfterSecond = (await db.executeGet<{ t_invalid: string }>('SELECT t_invalid FROM node WHERE uid = ?', [claimUid]))!;
+    expect(rowAfterSecond.t_invalid).toBe(firstRow.t_invalid);
+  });
+
+  it('BUG-MEMORY-002 (c): an episode auto-invalidated by the near-dup pipeline before the caller\'s own memory_invalidate call — the literal repro of the dispatch\'s 3/12 probe failures', async () => {
+    // memoryWrite() (the top-level convenience wrapper this suite's
+    // writeEpisode() calls) ALWAYS finishes its embed synchronously before
+    // returning (write.ts:505-526: awaits embed() + applyEmbedding() inline,
+    // regardless of SOX_SYNC_EMBED — that env only affects a different
+    // composition path) — and applyEmbedding (embed-pipeline.ts:456-487) runs
+    // E8 near-dup detection + applyNearDupResult automatically for every
+    // still-live node. So writing a near-duplicate SECOND episode auto-
+    // invalidates the OLDER one with NO caller action, exactly like the real
+    // Phase-B pipeline and the dispatch's observed 3/12 probe failures — no
+    // manual vec_node/detectNearDup driving needed (a first attempt at that
+    // collided with the vec_node row memoryWrite already inserts).
+    const olderUid = await writeEpisode(
+      'CONCURRENCY PROBE (disposable, safe to delete). Reproducing a case for BUG-MEMORY-002.',
+    );
+    const newerUid = await writeEpisode(
+      'CONCURRENCY PROBE (disposable, safe to delete). Reproducing a case for BUG-MEMORY-002 v2.',
+    );
+    expect(newerUid).not.toBe(olderUid);
+
+    // Confirm via direct SQL that the older uid is already invalid BEFORE the
+    // caller's own memory_invalidate call ever runs — this is the race.
+    const preCheck = (await db.executeGet<{ t_invalid: string | null }>('SELECT t_invalid FROM node WHERE uid = ?', [olderUid]))!;
+    expect(preCheck.t_invalid).not.toBeNull();
+
+    // RED (pre-fix): the caller's manual invalidate on the already-invalid
+    // uid hit the `t_invalid IS NULL` filter, found zero rows, and returned
+    // {code:'E_NOT_FOUND'} — indistinguishable from a uid that never existed.
+    const result = await memoryInvalidate(db, { claim_uid: olderUid, reason: 'caller invalidate, lost the race' });
+    expect('ok' in result).toBe(true);
+    const ok = result as { ok: true; already_invalid?: boolean; t_invalid?: string };
+    expect(ok.ok).toBe(true);
+    expect(ok.already_invalid).toBe(true);
+    expect(ok.t_invalid).toBe(preCheck.t_invalid);
+  });
+
+  it('BUG-MEMORY-002 (d): a wrong-kind (community) uid returns E_WRONG_KIND and does NOT mutate the node', async () => {
+    const now = new Date().toISOString();
+    await db.executeRun(
+      `INSERT INTO node (uid, kind, name, level, t_created, t_valid, meta)
+       VALUES ('comm-wrong-kind-test', 'community', 'Wrong Kind Test Community', 0, ?, ?, ?)`,
+      [now, now, JSON.stringify({ cluster_scope: { kind: 'global' } })],
+    );
+
+    const before = (await db.executeGet<{ t_invalid: string | null }>(`SELECT t_invalid FROM node WHERE uid = 'comm-wrong-kind-test'`))!;
+    expect(before.t_invalid).toBeNull();
+
+    // RED (pre-fix): the lookup query had no `kind` predicate at all — this
+    // call would silently succeed (`ok:true`) and set t_invalid on the
+    // community, with zero signal to the caller that they passed the wrong
+    // tool's uid.
+    const result = await memoryInvalidate(db, { claim_uid: 'comm-wrong-kind-test', reason: 'wrong uid, should be rejected' });
+    expect('code' in result).toBe(true);
+    const err = result as { code: string; kind?: string };
+    expect(err.code).toBe('E_WRONG_KIND');
+    expect(err.kind).toBe('community');
+
+    const after = (await db.executeGet<{ t_invalid: string | null }>(`SELECT t_invalid FROM node WHERE uid = 'comm-wrong-kind-test'`))!;
+    expect(after.t_invalid).toBeNull();
+  });
+});
+
 // BUG-CLUSTER-ORPHANED-COMMUNITIES-NEVER-GC-001: invalidating an episode must
 // ALSO invalidate its live MEMBER_OF edge and any community left with zero live
 // members — otherwise ordinary churn silently decays total_clustered toward 0
