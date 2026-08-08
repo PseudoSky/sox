@@ -36,6 +36,10 @@ Regression guard: a statement-count assertion (`issues exactly ONE node-write st
 
 Ordering decided: BL-496 merges first, guard rebases on top. Neither has landed.
 
+Reconciliation scope: the two branches conflict **specifically because both rewrote `incrementalJoin`'s rejection path** — grafting the five-outcome taxonomy forward is expected to be the whole of the manual work. The rest of `feat/cluster-tracing` (stage declaration, lifecycle counters, backlog-off-`edge`-rows) touches different regions and should apply more easily.
+
+`feat/cluster-tracing` HEAD `453058c7` on `a87cef86`; `git status --porcelain` empty, no orphan staged entries. `memory-server/src/index.ts` is free — no uncommitted edits hold it.
+
 ## Verified facts
 
 - **Double write in Phase-A.** `write.ts:336-345` INSERT writes `summary`/`tags`/`topic`/`project_path`/`importance`; `write.ts:430-444` then runs `enrichOnWrite` in a **second transaction** updating the same columns. `summary`/`tags` are FTS-indexed, so FTS maintenance runs twice. No triggers exist — `idx_fts_node` is a native Turso FTS index. Comment at `write.ts:333` ("via trigger") is wrong. Fix: compute enrichment before the INSERT and fold in. Not implemented.
