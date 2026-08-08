@@ -771,14 +771,29 @@ bundle checksum — `memory_ping` already returns `artifact` for memory-server �
 follow-on for extensions that expose it, but is protocol-specific and out of scope for a verb that
 must work for every `service`/`mcp-server` extension, not just one.)
 
-**`[inv:env-preserved-on-regenerate]` (BL-375).** `soxe service enable` rebuilds the unit's
-`EnvironmentVariables` from the **invoking shell** (`buildOsUnitEnv`). It does not read the previous
-unit, does not diff, and does not warn. Regenerating a unit to change one unrelated key silently
-dropped two live emergency brakes while printing success; it was caught only by diffing the
-regenerated plist against a snapshot. **Until this is fixed: export every variable you intend to
-keep, and diff the plist afterwards** when you actually need `enable` (adding/changing env, not a
-plain code deploy — use `service restart` for that, which never touches the unit file). A success
-message is evidence of nothing.
+**`[inv:env-preserved-on-regenerate]` (BL-375 — FIXED, PKT-38).** `soxe service enable` rebuilds the
+unit's `EnvironmentVariables` from the **invoking shell** (`buildOsUnitEnv`). Regenerating a unit to
+change one unrelated key used to silently drop any shell-sourced tunable the current shell no longer
+exported — it was caught only by diffing the regenerated plist against a snapshot, with `enable`
+printing success the whole time.
+
+`enableOsUnit` (`libs/host-runtime/src/os-unit.ts`) now guards every regeneration that is about to
+overwrite an existing unit: before writing, it parses the prior unit's `EnvironmentVariables`
+(`extractUnitEnv`) and diffs it against the freshly-computed env (`droppedShellEnvKeys`), restricted
+to the shell-forwarded half of the merge (`ENV_BASE_ALLOW` ∪ `NODE_*` ∪ `SOX_*`, minus
+`SOX_CONFIG_*`/`SOX_PERM_*` — those are a legitimate function of the resolved config cascade, not the
+ambient shell, and dropping them via `sox config unset` must never trip this guard). If the diff is
+non-empty, the call **refuses to write** — `action: 'blocked'`, the unit file untouched, non-zero CLI
+exit, and a message naming every dropped key. The operator either re-exports the key(s) in the
+enabling shell, or acknowledges the removal per key with `soxe service enable <ext> --unset
+KEY1,KEY2` — there is no blanket bypass flag by design (a copy-pasted `--force` would silently defeat
+the guard for every future unrelated drop, which is the original bug with extra steps). See
+`libs/host-runtime/src/os-unit.spec.ts`'s `BL-375` describe block for the four acceptance tests
+(silent-drop blocked, `--unset` acknowledgment, `SOX_CONFIG_*` exemption, `extractUnitEnv` round-trip
+both platforms).
+
+`restartOsUnit` (the LKG-rollback/auto-heal rewrite path, distinct from `enableOsUnit`) carries the
+identical exposure and is **not yet fixed** — filed as BL-488, cross-linked to this item.
 
 
 ---

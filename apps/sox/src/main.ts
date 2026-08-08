@@ -4792,6 +4792,10 @@ Options:
   --supervisor <kind>     Force 'launchd' or 'systemd' (default: per-platform)
   --node-path <path>      Override the pinned node binary baked into the unit
   --allow-volatile-node   Proceed even if the pinned node is under nvm/asdf/volta
+  --unset <key>[,<key>]   enable: acknowledge dropping previously-set shell-sourced env
+                          key(s) that this invocation's shell no longer exports
+                          (BL-375 [inv:env-preserved-on-regenerate]) — named keys only,
+                          no blanket bypass
   --wait-ms <ms>          restart: how long to wait for the pid to rotate (default 15000)
   --help                  Show this message
 
@@ -4854,11 +4858,21 @@ OS units are GENERATED from the manifest; hand-editing them is unsupported.
 
     const platform = ctx.platform;
     const unitDir = resolveOsUnitDir(flags, platform);
+    const unsetKeys = (flags['unset'] ?? '').split(',').map((s) => s.trim()).filter((s) => s.length > 0);
     const result = enableOsUnit(ctx.spec, platform, {
       unitDir,
       load: !dryRun,
       log: (m) => process.stdout.write(`sox: ${m}\n`),
+      unsetKeys,
     });
+
+    // BL-375: a BLOCKED regeneration writes NOTHING — the enableOsUnit call
+    // already logged the detailed BLOCKED message (dropped key list, how to
+    // proceed) via the injected `log` callback above. Print nothing further
+    // and exit non-zero; this is not a success path.
+    if (result.action === 'blocked') {
+      process.exit(1);
+    }
 
     // Record the os-unit in the ownership index ([inv:reversible-injection], §9.4)
     // so uninstall/disable can reverse it and `service list`/`doctor` enumerate it.
