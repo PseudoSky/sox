@@ -122,6 +122,12 @@ export interface RecallParams {
   query: string;
   scopes?: string[] | undefined;
   agent_id?: string | undefined;
+  // BUG-MEMORY-003: `filters.kinds` (string[]) restricts which node.kind values
+  // are admitted as recall candidates. Defaults to ['episode'] when omitted —
+  // entity/community/session/generic nodes carry no readable content (they are
+  // never populated in vec_node or the FTS index; see write.ts's entity-creation
+  // path) and are excluded from results unless a caller explicitly opts in via
+  // e.g. `filters: { kinds: ['episode', 'entity'] }`.
   filters?: Record<string, unknown> | undefined;
   as_of?: string | undefined;
   token_budget?: number | undefined;
@@ -380,6 +386,19 @@ export async function memoryRecall(
 
   const beforeCount = getProviderCallCount();
 
+  // BUG-MEMORY-003: computed unconditionally (not gated behind `if (filters)`
+  // below) — the null-content-padding bug reproduces with zero filters
+  // supplied, so kind-exclusion must be the default, always-on behavior.
+  // Defaults to episode-only; entity/community/session/generic nodes are
+  // structurally reachable via the temporal channel (recall.ts:623) and the
+  // depth-1 graph-expansion neighbor fetch (recall.ts:834) but carry no
+  // readable content — see the `filters` doc comment on RecallParams.
+  const kinds = (filters && Array.isArray((filters as Record<string, unknown>)['kinds'])
+    ? (filters as Record<string, unknown>)['kinds'] as string[]
+    : ['episode']);
+  const kindClause = kinds.length > 0 ? ` AND n.kind IN (${kinds.map(() => '?').join(',')})` : '';
+  const kindParams: unknown[] = kinds;
+
   // BL-100: resolve filters into SQL pre-filter clauses. Uses hybrid-search's
   // buildFilterClause for the standard fields (topic, tags, importance_min,
   // project_path, agent_id) and adds time-range + tags_match_all directly.
@@ -406,6 +425,15 @@ export async function memoryRecall(
         }
         case 'tags_match_all':
           // Handled separately below when tags are present
+          break;
+        case 'kinds':
+          // BUG-MEMORY-003: handled unconditionally outside this block (kindClause/
+          // kindParams below) — deliberately NOT routed through buildFilterClause's
+          // NodeFilter (see recall.ts's `kinds` doc comment on RecallParams and
+          // SPEC-BUG-MEMORY-003.md §2/§3 D3). Falling through to `default` here would
+          // hand an unrecognized 'kinds' key to buildFilterClause, which stringifies
+          // unknown keys into `${key} = ?` extraClauses SQL — a broken `kinds = ?`
+          // predicate against a table with no such column.
           break;
         case 't_created_after':
           if (typeof value === 'string') {
@@ -512,10 +540,10 @@ export async function memoryRecall(
     const { sql: dialectSql, args: dialectArgs } = vectorDialect.topKQuery(
       'vec_node', 'embedding', queryVec, knnLimit, 'cosine',
     );
-    // Interpolate __PLACEHOLDER__ with validity + agent + custom filter clauses
-    const filterClauses = [validityPred, agentFilter, filterSql].filter(Boolean).join(' ');
+    // Interpolate __PLACEHOLDER__ with validity + agent + custom filter + kind clauses
+    const filterClauses = [validityPred, agentFilter, filterSql, kindClause].filter(Boolean).join(' ');
     const vecSql = dialectSql.replace('__PLACEHOLDER__', filterClauses) + ' LIMIT ?';
-    const vecParams: unknown[] = [...dialectArgs, ...filterParams, knnLimit];
+    const vecParams: unknown[] = [...dialectArgs, ...filterParams, ...kindParams, knnLimit];
     const vecResult = await adapter.executeAll<{ node_id: number; distance: number }>(vecSql, vecParams);
     vecRows = vecResult.rows;
     // BL-367: stable secondary sort on node_id to break EXACT distance ties
@@ -584,9 +612,10 @@ export async function memoryRecall(
              AND ${validityPred}
              ${agentFilter}
              ${filterSql}
+             ${kindClause}
            ORDER BY rank
            LIMIT ?`,
-          [ftsQuery, ...filterParams, ftsLimit],
+          [ftsQuery, ...filterParams, ...kindParams, ftsLimit],
         );
       } else {
         // Turso Tantivy FTS: the index lives directly on node — no join.
@@ -598,9 +627,10 @@ export async function memoryRecall(
              AND ${validityPred.replace(/\bn\./g, '')}
              ${agentFilter.replace(/\bn\./g, '')}
              ${filterSql.replace(/\bn\./g, '')}
+             ${kindClause.replace(/\bn\./g, '')}
            ORDER BY rank
            LIMIT ?`,
-          [ftsQuery, ftsQuery, ...filterParams, ftsLimit],
+          [ftsQuery, ftsQuery, ...filterParams, ...kindParams, ftsLimit],
         );
       }
       ftsResult.rows.forEach((r, i) => ftsRowids.set(r.rowid, i + 1));
@@ -621,9 +651,9 @@ export async function memoryRecall(
   // 2c. Temporal filter: recently created nodes (recency signal)
   // NOTE: validityPred and agentFilter use the alias "n", so the table must be aliased as n here.
   const temporalSql = `SELECT n.rowid, n.t_created FROM node n
-       WHERE ${validityPred} ${agentFilter} ${filterSql}
+       WHERE ${validityPred} ${agentFilter} ${filterSql} ${kindClause}
        ORDER BY n.t_created DESC LIMIT ?`;
-  const temporalParams: unknown[] = [...filterParams, knnLimit];
+  const temporalParams: unknown[] = [...filterParams, ...kindParams, knnLimit];
   const temporalResult = await adapter.executeAll<{ rowid: number; t_created: string }>(temporalSql, temporalParams);
   const temporalRows = temporalResult.rows;
 
@@ -831,9 +861,15 @@ export async function memoryRecall(
     const nodeValidPred = as_of
       ? `(t_valid IS NULL OR t_valid <= '${as_of.replace(/'/g, "''")}') AND (t_invalid IS NULL OR t_invalid > '${as_of.replace(/'/g, "''")}')`
       : 't_invalid IS NULL';
+    // BUG-MEMORY-003 §1b: no `n` alias on this query (unlike the temporal/vec/FTS
+    // channels above), so the un-aliased kind predicate is inlined directly rather
+    // than reusing kindClause's ` AND n.kind IN (...)` form.
+    const expKindClause = kinds.length > 0 ? ` AND kind IN (${kinds.map(() => '?').join(',')})` : '';
+    const expKindParams: unknown[] = kinds.length > 0 ? kindParams : [];
     const expResult = await adapter.executeAll<NodeRow>(
       `SELECT rowid, uid, content, name, summary, importance, t_created, t_valid, t_invalid, agent_id, content_hash, session_id
-       FROM node WHERE rowid IN (${expandedNew.join(',')}) AND ${nodeValidPred}`,
+       FROM node WHERE rowid IN (${expandedNew.join(',')}) AND ${nodeValidPred} ${expKindClause}`,
+      expKindParams,
     );
     expandedNodes = expResult.rows;
   }
