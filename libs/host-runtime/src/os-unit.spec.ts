@@ -25,7 +25,9 @@ import {
   SystemdPlatform,
   deriveOsUnitSpec,
   disableOsUnit,
+  droppedShellEnvKeys,
   enableOsUnit,
+  extractUnitEnv,
   findNonVolatileNode,
   getOsUnitPlatform,
   isScheduledOsUnit,
@@ -293,6 +295,115 @@ describe('enableOsUnit — content-addressed idempotence', () => {
     const spec = makeSpec();
     enableOsUnit(spec, platform, { unitDir, exec: makeFakeExec().exec, load: false });
     expect(fs.existsSync(path.dirname(spec.stdoutPath))).toBe(true);
+  });
+});
+
+// ─── BL-375 [inv:env-preserved-on-regenerate] — regeneration must never silently
+// drop a previously-baked shell-sourced env key (PKT-38) ─────────────────────────
+
+describe('BL-375 — enableOsUnit refuses to silently drop shell-sourced env on regenerate', () => {
+  const platform = new LaunchdPlatform();
+
+  it('AC1: a second enable that omits a previously-baked SOX_* key is BLOCKED — unit file untouched', () => {
+    const fake1 = makeFakeExec();
+    const first = makeSpec({ env: { SOX_CONFIG_DB_PATH: 'x', SOX_DISABLE_EMBED_HEAL: '1' } });
+    const r1 = enableOsUnit(first, platform, { unitDir, exec: fake1.exec, load: false });
+    expect(r1.action).toBe('created');
+    const bytesAfterFirst = fs.readFileSync(r1.unitPath, 'utf8');
+
+    // Second enable: SOX_DISABLE_EMBED_HEAL is gone (as if regenerated from a
+    // shell that no longer exports it), but an unrelated field changes so
+    // content-hash comparison alone would NOT be a no-op (mirrors the real
+    // incident: a ProcessType/processType edit forced a rewrite).
+    const second = makeSpec({
+      env: { SOX_CONFIG_DB_PATH: 'x' },
+      processType: 'Background',
+    });
+    const fake2 = makeFakeExec();
+    const r2 = enableOsUnit(second, platform, { unitDir, exec: fake2.exec, load: false });
+
+    expect(r2.action).toBe('blocked');
+    expect(r2.droppedEnvKeys).toContain('SOX_DISABLE_EMBED_HEAL');
+    // Nothing was overwritten — byte-identical to what the first call wrote.
+    const bytesAfterSecond = fs.readFileSync(r1.unitPath, 'utf8');
+    expect(bytesAfterSecond).toBe(bytesAfterFirst);
+    // No launchctl call at all — the guard fires before any load/unload.
+    expect(fake2.calls.length).toBe(0);
+  });
+
+  it('AC2: --unset acknowledgment lets the drop proceed, and the key is genuinely gone on disk', () => {
+    const fake1 = makeFakeExec();
+    const first = makeSpec({ env: { SOX_CONFIG_DB_PATH: 'x', SOX_DISABLE_EMBED_HEAL: '1' } });
+    enableOsUnit(first, platform, { unitDir, exec: fake1.exec, load: false });
+
+    const second = makeSpec({ env: { SOX_CONFIG_DB_PATH: 'x' }, processType: 'Background' });
+    const fake2 = makeFakeExec();
+    const r2 = enableOsUnit(second, platform, {
+      unitDir,
+      exec: fake2.exec,
+      load: false,
+      unsetKeys: ['SOX_DISABLE_EMBED_HEAL'],
+    });
+
+    expect(r2.action).not.toBe('blocked');
+    expect(r2.action).toBe('updated');
+    const written = fs.readFileSync(r2.unitPath, 'utf8');
+    const envOnDisk = extractUnitEnv(written, 'launchd');
+    expect(envOnDisk['SOX_DISABLE_EMBED_HEAL']).toBeUndefined();
+  });
+
+  it('AC3 (guards D2): dropping a SOX_CONFIG_* key never blocks — config-cascade keys are exempt', () => {
+    const fake1 = makeFakeExec();
+    const first = makeSpec({ env: { SOX_CONFIG_DB_PATH: 'x', SOX_CONFIG_PORT: '4000' } });
+    enableOsUnit(first, platform, { unitDir, exec: fake1.exec, load: false });
+
+    // A legitimate `sox config unset` between calls — SOX_CONFIG_PORT is gone,
+    // no --unset passed, but an unrelated field still forces a rewrite.
+    const second = makeSpec({ env: { SOX_CONFIG_DB_PATH: 'x' }, processType: 'Background' });
+    const fake2 = makeFakeExec();
+    const r2 = enableOsUnit(second, platform, { unitDir, exec: fake2.exec, load: false });
+
+    expect(r2.action).not.toBe('blocked');
+    expect(r2.action).toBe('updated');
+  });
+
+  it('AC3 mutation guard: droppedShellEnvKeys must exclude SOX_CONFIG_*/SOX_PERM_* keys', () => {
+    // A same-PR regression guard on the pure function directly (D2's losing
+    // alternative is "diff everything, including SOX_CONFIG_*") — if the
+    // prefix exclusion were ever widened away, this must go red.
+    const prior = { SOX_CONFIG_PORT: '4000', SOX_PERM_ENFORCE: '1', SOX_DISABLE_EMBED_HEAL: '1' };
+    const next = { SOX_DISABLE_EMBED_HEAL: '1' }; // both config + perm keys dropped
+    expect(droppedShellEnvKeys(prior, next)).toEqual([]);
+  });
+
+  it('AC4: extractUnitEnv round-trips XML-escaped launchd env values', () => {
+    const spec = makeSpec({ env: { SOX_CONFIG_X: 'a & b < c > d' } });
+    const rendered = platform.render(spec);
+    const parsed = extractUnitEnv(rendered, 'launchd');
+    expect(parsed['SOX_CONFIG_X']).toBe('a & b < c > d');
+  });
+
+  it('AC4: extractUnitEnv round-trips systemd env values, splitting only on the FIRST =', () => {
+    const systemd = new SystemdPlatform();
+    const spec = makeSpec({ env: { SOX_CONFIG_X: 'a=b=c' } });
+    const rendered = systemd.render(spec);
+    const parsed = extractUnitEnv(rendered, 'systemd');
+    expect(parsed['SOX_CONFIG_X']).toBe('a=b=c');
+  });
+
+  it('extractUnitEnv degrades to {} on a malformed/foreign unit rather than throwing (D7)', () => {
+    expect(extractUnitEnv('not a unit file at all', 'launchd')).toEqual({});
+    expect(extractUnitEnv('not a unit file at all', 'systemd')).toEqual({});
+    expect(extractUnitEnv('<plist><dict></dict></plist>', 'launchd')).toEqual({});
+  });
+
+  it('the "unchanged" (content-identical) re-enable path is exempt — nothing could have been dropped', () => {
+    const fake1 = makeFakeExec();
+    const spec = makeSpec({ env: { SOX_CONFIG_DB_PATH: 'x', SOX_DISABLE_EMBED_HEAL: '1' } });
+    enableOsUnit(spec, platform, { unitDir, exec: fake1.exec, load: false });
+    const fake2 = makeFakeExec();
+    const r2 = enableOsUnit(spec, platform, { unitDir, exec: fake2.exec, load: false });
+    expect(r2.action).toBe('unchanged');
   });
 });
 
