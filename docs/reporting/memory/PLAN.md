@@ -21,12 +21,12 @@ A packet is **DONE** only when every BL id it targets is closed — code landing
 (BL-225). Several packets below have merged code and still read OPEN; that is correct, and the
 remedy is to close the backlog item with a red→green test, not to edit this table.
 
-**53 done · 4 partial · 28 open** of 85 packets.
+**59 done · 3 partial · 23 open** of 85 packets.
 
-- Open backlog items in this program's scope: **56**, of which **19** have no packet.
+- Open backlog items in this program's scope: **50**, of which **19** have no packet.
 - Open items deliberately out of scope: **28** — BL-99, BL-103, BL-104, BL-105, BL-163, BL-225, BL-228, BL-258, BL-261, BL-282, BL-283, BL-284, BL-285, BL-288, BL-291, BL-292, BL-296, BL-298, BL-305, BL-306, BL-307, BL-308, BL-309, BL-314, BL-315, BL-333, BL-355, BL-408
 - Unscheduled in-scope items (need a packet): BL-436, BL-462, BL-466, BL-467, BL-468, BL-470, BL-473, BL-474, BL-475, BL-476, BL-478, BL-479, BL-480, BL-481, BL-482, BL-483, BL-484, BL-485, BL-486
-- Packet targets already closed (62) — historical context only, no work remains: BL-259, BL-329, BL-332, BL-337, BL-338, BL-341, BL-343, BL-348, BL-350, BL-359, BL-360, BL-361, BL-362, BL-364, BL-376, BL-379, BL-380, BL-383, BL-388, BL-389, BL-390, BL-391, BL-392, BL-394, BL-397, BL-399, BL-402, BL-405, BL-406, BL-407, BL-410, BL-412, BL-416, BL-425, BL-426, BL-432, BL-435, BL-437, BL-438, BL-439, BL-440, BL-441, BL-442, BL-443, BL-444, BL-445, BL-446, BL-447, BL-448, BL-449, BL-451, BL-453, BL-454, BL-456, BL-457, BL-458, BL-459, BL-460, BL-461, BL-463, BL-464, BL-465
+- Packet targets already closed (68) — historical context only, no work remains: BL-259, BL-327, BL-329, BL-332, BL-337, BL-338, BL-341, BL-343, BL-348, BL-350, BL-356, BL-359, BL-360, BL-361, BL-362, BL-364, BL-376, BL-379, BL-380, BL-383, BL-388, BL-389, BL-390, BL-391, BL-392, BL-394, BL-396, BL-397, BL-398, BL-399, BL-402, BL-404, BL-405, BL-406, BL-407, BL-410, BL-412, BL-413, BL-416, BL-425, BL-426, BL-432, BL-435, BL-437, BL-438, BL-439, BL-440, BL-441, BL-442, BL-443, BL-444, BL-445, BL-446, BL-447, BL-448, BL-449, BL-451, BL-453, BL-454, BL-456, BL-457, BL-458, BL-459, BL-460, BL-461, BL-463, BL-464, BL-465
 
 | Packet | Status | Targets | Still open |
 |---|---|---|---|
@@ -38,7 +38,7 @@ remedy is to close the backlog item with a red→green test, not to edit this ta
 | PKT-06 | **DONE** | BL-388 | — |
 | PKT-07 | **DONE** | BL-389 | — |
 | PKT-08 | **DONE** | BL-397 | — |
-| PKT-09 | **OPEN** | BL-396 | BL-396 |
+| PKT-09 | **DONE** | BL-396 | — |
 | PKT-10 | **DONE** | BL-383 | — |
 | PKT-11 | **OPEN** | BL-400 | BL-400 |
 | PKT-12 | **OPEN** | BL-301, BL-302 | BL-301, BL-302 |
@@ -57,14 +57,14 @@ remedy is to close the backlog item with a red→green test, not to edit this ta
 | PKT-25 | **OPEN** | BL-334 | BL-334 |
 | PKT-26 | **OPEN** | BL-322, BL-345 | BL-322, BL-345 |
 | PKT-27 | **OPEN** | BL-353 | BL-353 |
-| PKT-28 | **PARTIAL** | BL-350, BL-356 | BL-356 |
+| PKT-28 | **DONE** | BL-350, BL-356 | — |
 | PKT-29 | **OPEN** | BL-326, BL-349 | BL-326, BL-349 |
 | PKT-30 | **OPEN** | BL-328 | BL-328 |
-| PKT-31 | **OPEN** | BL-327 | BL-327 |
+| PKT-31 | **DONE** | BL-327 | — |
 | PKT-32 | **DONE** | BL-337, BL-341 | — |
 | PKT-33 | **DONE** | BL-338 | — |
 | PKT-34 | **OPEN** | BL-387 | BL-387 |
-| PKT-35 | **OPEN** | BL-398 | BL-398 |
+| PKT-35 | **DONE** | BL-398 | — |
 | PKT-36 | **DONE** | BL-399 | — |
 | PKT-37 | **PARTIAL** | BL-390, BL-393 | BL-393 |
 | PKT-38 | **OPEN** | BL-375 | BL-375 |
@@ -76,14 +76,14 @@ remedy is to close the backlog item with a red→green test, not to edit this ta
 | PKT-44 | **OPEN** | BL-312 | BL-312 |
 | PKT-45 | **OPEN** | BL-351, BL-401 | BL-351, BL-401 |
 | PKT-46 | **DONE** | BL-402 | — |
-| PKT-47 | **OPEN** | BL-404 | BL-404 |
+| PKT-47 | **DONE** | BL-404 | — |
 | PKT-48 | **DONE** | BL-405 | — |
 | PKT-49 | **DONE** | BL-406 | — |
 | PKT-50 | **DONE** | BL-407 | — |
 | PKT-51 | **OPEN** | BL-409 | BL-409 |
 | PKT-52 | **DONE** | BL-410 | — |
 | PKT-53 | **DONE** | BL-412 | — |
-| PKT-54 | **OPEN** | BL-413 | BL-413 |
+| PKT-54 | **DONE** | BL-413 | — |
 | PKT-55 | **OPEN** | BL-202 | BL-202 |
 | PKT-56 | **OPEN** | BL-422 | BL-422 |
 | PKT-57 | **DONE** | BL-438 | — |
@@ -720,7 +720,7 @@ rewritten, only unblocked.
 
 ### PKT-47 — BL-404: wire the telemetry composition root — production currently writes every record into a null sink
 
-> **status: OPEN** — still open: BL-404 · derived by `tools/plan-status.mjs`, do not hand-edit
+> **status: DONE** — all targets closed (BL-404) · derived by `tools/plan-status.mjs`, do not hand-edit
 
 **Goal:** the live server runs the module-level fallback `{service:'unlabeled', role:'test', logSink:'none', sink:null}` because **nothing outside a spec ever calls `initTelemetry()`**. Every `log.*` emitted by the BL-401 gap 1/2 instrumentation goes to a no-op, and the live population is labelled `role:'test'` — defeating exactly the test/live separation BL-353 built that field for. Found by the reviewed redeploy (BL-401 gap 5), not by any of the four green suites, all of which construct their own sink.
 **Closes:** BL-404
@@ -838,7 +838,7 @@ rewritten, only unblocked.
 
 ### PKT-54 — BL-413: the periodic enrichment pass is dead in production and the server only reports it
 
-> **status: OPEN** — still open: BL-413 · derived by `tools/plan-status.mjs`, do not hand-edit
+> **status: DONE** — all targets closed (BL-413) · derived by `tools/plan-status.mjs`, do not hand-edit
 
 **Goal:** measured live 2026-08-03T19:22Z on pid 85177: `enrichment.state: "stalled"`, `queue_depth: 46`, `queue_last_done_at: 2026-08-02T20:52:22Z` — **22.5 hours with zero items taken**, against a `stall_threshold_ms` of 900000. The watermark still reads `{"pass":"legacy","ts":"2026-07-31T17:27:11Z"}`. The embed pipeline beside it is healthy (`embed_backlog: 0`, `embeds_failed: 0`), so this is one stage dead, not the pipeline — exactly the isolation BL-348 built, working as designed while nothing restarts the half that died.
 **Closes:** BL-413
@@ -1352,7 +1352,7 @@ completion, don't just assume no build ran.
 
 ### PKT-09 — BL-396: static ESM import from CJS in `memory-server/src/index.ts`
 
-> **status: OPEN** — still open: BL-396 · derived by `tools/plan-status.mjs`, do not hand-edit
+> **status: DONE** — all targets closed (BL-396) · derived by `tools/plan-status.mjs`, do not hand-edit
 
 **Closes:** BL-396
 **Files:** `extensions/bundles/sox-memory-bundle/members/memory-server/src/index.ts` (lines 86, 97 only — the two named TS1541/TS1479 sites; convert to the dynamic-import pattern `dialect.ts` already documents and follows).
@@ -1639,7 +1639,7 @@ completion, don't just assume no build ran.
 
 ### PKT-28 — RESEARCH: BL-356 + BL-350 — corpus-size-adaptive clustering strategy
 
-> **status: PARTIAL** — still open: BL-356 · derived by `tools/plan-status.mjs`, do not hand-edit
+> **status: DONE** — all targets closed (BL-350, BL-356) · derived by `tools/plan-status.mjs`, do not hand-edit
 
 **Goal:** BL-356 has already measured that a fixed τ is not calibratable (mean degree grows linearly with N under single-linkage chaining — 0.085 → 0.684 largest-cluster ratio as N goes 200→1616 at τ=0.82). BL-350 asks for the maintenance strategy (split/merge/drift/orphan) this implies. Produce ONE recommendation covering both: either a corpus-size-adaptive τ function, a different algorithm (not single-linkage — e.g. raise `minPts`), or a periodic-reconciliation hybrid — with a measurable drift metric and a maintenance cadence/trigger.
 **Closes:** BL-356, BL-350
@@ -1698,7 +1698,7 @@ calibration undocumented (the guard becomes a pure safety net that should rarely
 
 ### PKT-31 — BL-327: garbage-collect communities orphaned by `memory_invalidate`
 
-> **status: OPEN** — still open: BL-327 · derived by `tools/plan-status.mjs`, do not hand-edit
+> **status: DONE** — all targets closed (BL-327) · derived by `tools/plan-status.mjs`, do not hand-edit
 
 **Goal:** `memory_invalidate` (the everyday bi-temporal path) never touches the community node or its `MEMBER_OF` edges, so ordinary churn decays `total_clustered` toward 0 while `cluster_count` stays fixed. Retire a community when its live member count reaches zero.
 **Closes:** BL-327
@@ -1771,7 +1771,7 @@ calibration undocumented (the guard becomes a pure safety net that should rarely
 
 ### PKT-35 — BL-398: near-duplicate `weight`-as-cosine fabricates `1.0` for manually-merged pairs
 
-> **status: OPEN** — still open: BL-398 · derived by `tools/plan-status.mjs`, do not hand-edit
+> **status: DONE** — all targets closed (BL-398) · derived by `tools/plan-status.mjs`, do not hand-edit
 
 **Goal:** BL-386's fix (read `edge.weight` as cosine) is correct for `applyNearDupResult`-written edges but wrong for `memory_curate merge_duplicates`-written edges, which carry `weight = 1.0` as a column default, not a measurement — so manual merges outrank real 0.96 inferred pairs.
 **Closes:** BL-398
