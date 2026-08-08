@@ -16,11 +16,16 @@
  * `embed_on_hash_fallback` (a hardcoded `false` constant) is also removed —
  * see stats.spec.ts for that half of BL-250.
  */
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, afterEach } from 'vitest';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import { WriteQueue } from '@adhd/sox-memory-core';
+import {
+  WriteQueue,
+  _setEmbedProviderForTest,
+  _resetEmbedSingleton,
+  DeterministicTestProvider,
+} from '@adhd/sox-memory-core';
 import { handleToolCall } from './index.js';
 
 function parseResult(resp: { content: Array<{ text?: string }> }): Record<string, unknown> {
@@ -48,6 +53,42 @@ describe('memory_ping — embed block (BL-250)', () => {
     expect(typeof body['embed_model']).toBe('string');
     expect(typeof body['embed_backend_configured']).toBe('string');
     expect(typeof body['embed_state']).toBe('string');
+  });
+});
+
+describe('memory_ping — status field (BUG-EMBED-WARMUP-CACHEHIT-ASSUMES-FAST-LOAD-001, AC-4)', () => {
+  afterEach(() => {
+    // Restore a healthy real-state provider so subsequent tests/files in this
+    // process aren't left with the uninitialized state this describe block
+    // deliberately forces.
+    _setEmbedProviderForTest(new DeterministicTestProvider());
+    _resetEmbedSingleton();
+  });
+
+  it('status === "degraded" when embed_state !== "real" (vec channel absent)', async () => {
+    // Force the embed subsystem to uninitialized: clear any injected test
+    // provider and reset the singleton so getEmbedState() falls through to
+    // its default 'uninitialized' (embed.ts:128-132 — no provider set).
+    _setEmbedProviderForTest(null);
+    _resetEmbedSingleton();
+
+    const resp = await handleToolCall('memory_ping', {});
+    const body = parseResult(resp);
+    expect(body['embed_state']).toBe('uninitialized');
+    expect(body['status']).toBe('degraded');
+    // Decision 2: `ok` never flips — it stays the RPC-success boolean.
+    expect(body['ok']).toBe(true);
+  });
+
+  it('status === "ok" when embed_state === "real"', async () => {
+    _setEmbedProviderForTest(new DeterministicTestProvider());
+    _resetEmbedSingleton();
+
+    const resp = await handleToolCall('memory_ping', {});
+    const body = parseResult(resp);
+    expect(body['embed_state']).toBe('real');
+    expect(body['status']).toBe('ok');
+    expect(body['ok']).toBe(true);
   });
 });
 

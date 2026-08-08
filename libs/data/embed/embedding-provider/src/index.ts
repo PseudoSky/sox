@@ -216,7 +216,7 @@ async function createFastembedProvider(
     const cacheHit = isModelCached(cacheDir, cfg.hfRepoId);
     await withTimeout(
       provider.embedSingle('warmup'),
-      warmupTimeoutMs(cacheHit),
+      warmupOuterBudgetMs(cacheHit),
       'fastembed warmup',
     );
     return provider;
@@ -282,6 +282,40 @@ export function warmupTimeoutMs(cacheHit: boolean): number {
   }
   const raw = Number(process.env['SOX_EMBED_WARMUP_TIMEOUT_MS']);
   return Number.isFinite(raw) && raw > 0 ? raw : 180_000;
+}
+
+/**
+ * BUG-EMBED-WARMUP-CACHEHIT-ASSUMES-FAST-LOAD-001: the single source of truth
+ * for how many attempts a cache-hit warmup gets. A retry's `{type:'init'}` IPC
+ * request queues behind the still-running first attempt in the shared child's
+ * serialized `_queue` (`fastembedProcessHost.ts`) and resolves once that load
+ * finishes — it does not restart the load from zero. 2 is the minimum that
+ * turns "a single retry would have succeeded" into code; see SPEC-WARMUP-COLD.md
+ * §3 decision 3 for why not more, and why the per-attempt budget stays tight
+ * (not escalating) so a genuinely-hung load still fails fast (BL-376's
+ * guarantee), not just a slow one.
+ *
+ * Cache-miss warmups are NOT retried (1 attempt, unchanged) — a stuck
+ * *download* is a materially different failure mode than a stuck *local
+ * read*, and is out of scope for this item.
+ */
+export const WARMUP_CACHE_HIT_ATTEMPTS = 2;
+
+/**
+ * The OUTER factory-level guard around the whole (possibly-retried) warmup —
+ * must never drift from the inner per-attempt budget × attempt count. BL-376's
+ * own postmortem (SOX-BUG-001 above) is literally about two hand-typed copies
+ * of a timeout budget disagreeing; this is derived from `warmupTimeoutMs` and
+ * `WARMUP_CACHE_HIT_ATTEMPTS` rather than hand-typed for the same reason.
+ *
+ * cacheHit === false: unchanged, one attempt, `warmupTimeoutMs(false)` (180s
+ * default) — a genuine cache-miss download already gets a generous single
+ * budget; see `WARMUP_CACHE_HIT_ATTEMPTS`'s doc comment for why it is not
+ * extended a retry here.
+ */
+export function warmupOuterBudgetMs(cacheHit: boolean): number {
+  const attempts = cacheHit ? WARMUP_CACHE_HIT_ATTEMPTS : 1;
+  return attempts * warmupTimeoutMs(cacheHit);
 }
 
 /**

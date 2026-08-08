@@ -1086,6 +1086,13 @@ export async function handleToolCall(name: string, args: Record<string, unknown>
         type: 'text',
         text: JSON.stringify({
           ok: true,
+          // BUG-EMBED-WARMUP-CACHEHIT-ASSUMES-FAST-LOAD-001: additive verdict
+          // field. `ok` keeps meaning "this MCP call itself succeeded" (this
+          // extension's entire ok/isError RPC-success contract, unchanged for
+          // every other tool) — `status` is the new field an operator/
+          // dashboard reads as the actual embed-subsystem health verdict,
+          // mirroring the existing `integrity.overall` pattern below.
+          status: embedHealth.state === 'real' ? 'ok' : 'degraded',
           id: addr.id,
           artifact: addr.artifact,
           short: addr.short,
