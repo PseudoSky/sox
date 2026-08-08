@@ -108,7 +108,9 @@ function makeClient(opts: Parameters<typeof runFrontShim>[0]): {
         responses.splice(responses.indexOf(existing), 1);
         return Promise.resolve(existing);
       }
-      return new Promise((resolve) => waiters.push({ predicate, resolve }));
+      return new Promise((resolve) =>
+        waiters.push(predicate ? { predicate, resolve } : { resolve }),
+      );
     },
   };
 }
