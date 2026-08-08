@@ -249,6 +249,7 @@ describe('ensureBackend', () => {
     // The critical assertion: the child's stdio streams BOTH close within N seconds.
     // (If the detached backend holds fd 1 or fd 2 open, this never resolves.)
     const PIPE_CLOSE_TIMEOUT_MS = 12_000; // well above the 8s ready-timeout
+    const spawnedAt = Date.now();
     const child = spawn(process.execPath, [spawnerFile, sock, counter], {
       stdio: 'pipe',
       // Deliberately do NOT set detached:true for the spawner — we want to capture
@@ -284,7 +285,7 @@ describe('ensureBackend', () => {
 
     // The pipe closed — assert it closed quickly (within a reasonable margin).
     // The spawner should finish within ~8s (ensureBackend readyTimeoutMs).
-    const _ = pipeClosedAt; // used to prove the await resolved, not timed out
+    expect(pipeClosedAt - spawnedAt).toBeLessThan(PIPE_CLOSE_TIMEOUT_MS);
     // Include stderr in the error message to diagnose spawner crashes.
     expect(stdoutData, `spawner stderr: ${JSON.stringify(stderrData)}`).toMatch(/disposition:/);
     expect(stdoutData).not.toMatch(/disposition:failed/);
