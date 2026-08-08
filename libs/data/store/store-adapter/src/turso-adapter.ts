@@ -27,6 +27,8 @@ import {
   guardOrphanedFtsIndexes,
   guardSucceeded,
 } from './fts-orphan-guard.js';
+import { isFatalConnectionError } from './errors.js';
+import { log } from '@adhd/sox-telemetry';
 import type {
   TursoAdapter,
   AdapterTransaction,
@@ -86,6 +88,27 @@ export class TursoAdapterImpl implements TursoAdapter {
   };
   private closed = false;
 
+  /** (SPEC-CONN-RECYCLE) The exact `opts` argument `connect()` received —
+   *  frozen, captured verbatim (never reconstructed field-by-field from
+   *  `this.config`, which drops `allowFtsInReadonly`). Replayed into a fresh
+   *  `TursoAdapterImpl.connect()` call by `_reconnect()` so a reconnect gets
+   *  the full BL-361/BL-461/BL-352 open-time ceremony for free. */
+  private _connectOpts!: Parameters<typeof TursoAdapterImpl.connect>[0];
+
+  /** (SPEC-CONN-RECYCLE) True once a fatal driver fault (see
+   *  `isFatalConnectionError`) has been observed on `this.db` and no
+   *  reconnect has completed since. Set by `_markIfFatal`, cleared by a
+   *  successful `_reconnect()`. */
+  private _poisoned = false;
+
+  /** (SPEC-CONN-RECYCLE) Single in-flight reconnect shared by every caller
+   *  that observes `_poisoned` — same shape as `_txMutexChain` above
+   *  (BL-321 precedent: one shared promise guarding one shared resource).
+   *  Cleared on both success and failure so the next call after a failed
+   *  reconnect gets a fresh attempt rather than being permanently stuck on
+   *  one rejected promise. */
+  private _reconnectPromise: Promise<void> | null = null;
+
   /** (BL-330) WAL identity as it stood when this connection opened. Compared
    *  again at close: if the `-wal` path has vanished or now resolves to a
    *  different inode, every write since the last checkpoint is about to be
@@ -138,6 +161,99 @@ export class TursoAdapterImpl implements TursoAdapter {
       () => undefined,
     );
     return run;
+  }
+
+  /**
+   * (SPEC-CONN-RECYCLE) `'healthy'` unless a fatal driver fault has poisoned
+   * `this.db` and no reconnect has completed since. Reading this never
+   * itself starts a reconnect — it is a pure observation for callers (e.g.
+   * a health surface) that want state without issuing a query.
+   */
+  get connectionHealth(): 'healthy' | 'poisoned' | 'reconnecting' {
+    if (this._reconnectPromise) return 'reconnecting';
+    return this._poisoned ? 'poisoned' : 'healthy';
+  }
+
+  /**
+   * (SPEC-CONN-RECYCLE) If `err` is a fatal connection-level fault (see
+   * `isFatalConnectionError`), mark this adapter `_poisoned` so the NEXT
+   * call reconnects before issuing its query. Never swallows or transforms
+   * `err` — callers always rethrow the original error unchanged; this only
+   * records the side effect.
+   */
+  private _markIfFatal(err: unknown): void {
+    if (isFatalConnectionError(err)) {
+      this._poisoned = true;
+      log.error('store_adapter.turso.connection.poisoned', {
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
+
+  /**
+   * (SPEC-CONN-RECYCLE) If `_poisoned`, await-or-start a single shared
+   * reconnect before letting the caller proceed. Must be called before
+   * every direct `this.db.*` call site (after `_assertWritable()` where
+   * both apply — a read-only-mode rejection is not a connection question).
+   */
+  private async _ensureHealthy(): Promise<void> {
+    if (!this._poisoned) return;
+    if (!this._reconnectPromise) {
+      this._reconnectPromise = this._reconnect();
+    }
+    await this._reconnectPromise;
+  }
+
+  /**
+   * (SPEC-CONN-RECYCLE) Reconnect via a full re-run of
+   * `TursoAdapterImpl.connect(this._connectOpts)` — the real connect path,
+   * not a bespoke lightweight reopen — so BL-361's out-of-process preflight,
+   * BL-461's in-process FTS orphan guard, and BL-352's open-time integrity
+   * verify-and-repair all run again on the fresh connection. Adopts the
+   * fresh instance's live-connection state (`db`, `_walBaseline`,
+   * `_softReadonly`) onto `this`; `config`/`capabilities`/`_connectOpts`
+   * describe the adapter's identity and stay stable so callers holding a
+   * reference to them never see it change under them.
+   *
+   * The stale, poisoned handle's own `close()` is fired detached and
+   * best-effort AFTER the fresh connection is already live — never awaited
+   * on this recovery critical path. `close()` itself issues queries
+   * (`verifyStoreIntegrity`, `PRAGMA wal_checkpoint`) against the very
+   * connection that just proved it can hang or error on I/O; the incident's
+   * own "only kill -TERM recovered it" symptom is consistent with a
+   * synchronous wait on exactly this kind of call.
+   *
+   * On success, clears `_poisoned` and `_reconnectPromise`. On failure,
+   * leaves `_poisoned = true`, clears `_reconnectPromise` (so the next call
+   * gets a fresh attempt rather than being stuck on one failed promise), and
+   * rethrows — an unreachable store must not fake success.
+   */
+  private async _reconnect(): Promise<void> {
+    const staleDb = this.db;
+    try {
+      const fresh = await TursoAdapterImpl.connect(this._connectOpts);
+      this.db = fresh.db;
+      this._walBaseline = fresh._walBaseline;
+      this._softReadonly = fresh._softReadonly;
+      this._poisoned = false;
+    } catch (err) {
+      log.error('store_adapter.turso.connection.reconnect_failed', {
+        error: err instanceof Error ? err.message : String(err),
+      });
+      throw err;
+    } finally {
+      this._reconnectPromise = null;
+    }
+
+    // Detached, best-effort close of the stale handle — never on the
+    // recovery critical path (see doc comment above).
+    void Promise.resolve()
+      .then(() => staleDb.close())
+      .catch((closeErr: unknown) => {
+        log.error('store_adapter.turso.connection.stale_close_failed', {
+          error: closeErr instanceof Error ? closeErr.message : String(closeErr),
+        });
+      });
   }
 
   private constructor(
@@ -410,6 +526,12 @@ export class TursoAdapterImpl implements TursoAdapter {
       });
     }
 
+    // (SPEC-CONN-RECYCLE) Capture the exact `opts` this connect() call
+    // received — never reconstructed from `config` (which drops
+    // `allowFtsInReadonly`, see the field's doc comment) — so a later
+    // reconnect can replay it verbatim through this same connect() path.
+    instance._connectOpts = Object.freeze({ ...opts });
+
     return instance;
   }
 
@@ -488,21 +610,39 @@ export class TursoAdapterImpl implements TursoAdapter {
   }
 
   async executeGet<T = Record<string, unknown>>(sql: string, args?: unknown[]): Promise<T | null> {
-    const row = args !== undefined ? await this.db.get(sql, ...args) : await this.db.get(sql);
-    return (row as T | null) ?? null;
+    await this._ensureHealthy();
+    try {
+      const row = args !== undefined ? await this.db.get(sql, ...args) : await this.db.get(sql);
+      return (row as T | null) ?? null;
+    } catch (err) {
+      this._markIfFatal(err);
+      throw err;
+    }
   }
 
   async executeAll<T = Record<string, unknown>>(sql: string, args?: unknown[]): Promise<AllResult<T>> {
-    const rows = args !== undefined ? await this.db.all(sql, ...args) : await this.db.all(sql);
-    const rowsArr = rows as T[];
-    const columns = rowsArr.length > 0 ? Object.keys(rowsArr[0] as Record<string, unknown>) : [];
-    return { columns, rows: rowsArr };
+    await this._ensureHealthy();
+    try {
+      const rows = args !== undefined ? await this.db.all(sql, ...args) : await this.db.all(sql);
+      const rowsArr = rows as T[];
+      const columns = rowsArr.length > 0 ? Object.keys(rowsArr[0] as Record<string, unknown>) : [];
+      return { columns, rows: rowsArr };
+    } catch (err) {
+      this._markIfFatal(err);
+      throw err;
+    }
   }
 
   async executeRun(sql: string, args?: unknown[]): Promise<RunResult> {
     this._assertWritable();
-    const info = args !== undefined ? await this.db.run(sql, ...args) : await this.db.run(sql);
-    return { rowsAffected: info.changes as number, lastInsertRowid: info.lastInsertRowid as number };
+    await this._ensureHealthy();
+    try {
+      const info = args !== undefined ? await this.db.run(sql, ...args) : await this.db.run(sql);
+      return { rowsAffected: info.changes as number, lastInsertRowid: info.lastInsertRowid as number };
+    } catch (err) {
+      this._markIfFatal(err);
+      throw err;
+    }
   }
 
   /**
@@ -523,17 +663,43 @@ export class TursoAdapterImpl implements TursoAdapter {
    */
   async exec(sql: string): Promise<void> {
     this._assertWritable();
-    await this.db.exec(sql);
+    await this._ensureHealthy();
+    try {
+      await this.db.exec(sql);
+    } catch (err) {
+      this._markIfFatal(err);
+      throw err;
+    }
   }
 
+  /** (SPEC-CONN-RECYCLE) Wired through `_ensureHealthy`/`_markIfFatal` like
+   *  every other direct `this.db.*` call site — a caller that issues a
+   *  pragma against an already-poisoned handle mid-session (not just at
+   *  connection-open time, which is the only way today's callers use it)
+   *  must get the same reconnect-then-retry-once semantics as
+   *  `exec`/`executeGet`/`executeAll`/`executeRun`, not a silent query
+   *  against a dead connection. */
   async pragmaSet(key: string, value: string | number | boolean): Promise<void> {
+    await this._ensureHealthy();
     const boolVal = typeof value === 'boolean' ? (value ? 1 : 0) : value;
-    await this.db.exec(`PRAGMA ${key} = ${boolVal}`);
+    try {
+      await this.db.exec(`PRAGMA ${key} = ${boolVal}`);
+    } catch (err) {
+      this._markIfFatal(err);
+      throw err;
+    }
   }
 
+  /** (SPEC-CONN-RECYCLE) See `pragmaSet` doc comment — same wiring. */
   async pragmaGet<T = unknown>(key: string): Promise<T> {
-    const rows = await this.db.pragma(key, { simple: true });
-    return rows as T;
+    await this._ensureHealthy();
+    try {
+      const rows = await this.db.pragma(key, { simple: true });
+      return rows as T;
+    } catch (err) {
+      this._markIfFatal(err);
+      throw err;
+    }
   }
 
   async transaction<T>(
@@ -566,6 +732,11 @@ export class TursoAdapterImpl implements TursoAdapter {
     const baseDelayMs = opts?.baseDelayMs ?? 10;
     let lastError: unknown;
 
+    // (SPEC-CONN-RECYCLE) A transaction must never BEGIN against a
+    // known-poisoned handle — check/reconnect once, up front, before the
+    // retry loop.
+    await this._ensureHealthy();
+
     for (let attempt = 0; attempt <= maxRetries; attempt++) {
       if (attempt > 0) {
         const delay = baseDelayMs * Math.pow(2, attempt - 1);
@@ -575,6 +746,11 @@ export class TursoAdapterImpl implements TursoAdapter {
       try {
         await this.db.exec(beginSQL);
       } catch (err) {
+        this._markIfFatal(err);
+        // (SPEC-CONN-RECYCLE) Retrying BEGIN against a connection that just
+        // proved fatal cannot succeed — it only delays the caller. Rethrow
+        // immediately rather than continuing the retry loop.
+        if (isFatalConnectionError(err)) throw err;
         if (attempt < maxRetries) {
           lastError = err;
           continue;
@@ -588,6 +764,7 @@ export class TursoAdapterImpl implements TursoAdapter {
         await this.db.exec('COMMIT');
         return result;
       } catch (err) {
+        this._markIfFatal(err);
         try {
           await this.db.exec('ROLLBACK');
         } catch {
