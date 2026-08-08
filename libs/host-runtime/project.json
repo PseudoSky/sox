@@ -49,6 +49,18 @@
         ]
       }
     },
+    "typecheck": {
+      "executor": "nx:run-commands",
+      "options": {
+        "command": "tsc -p libs/host-runtime/tsconfig.typecheck.json --noEmit",
+        "cwd": "."
+      },
+      "cache": true,
+      "inputs": [
+        "default",
+        "^production"
+      ]
+    },
     "test-e2e": {
       "executor": "nx:run-commands",
       "options": {
