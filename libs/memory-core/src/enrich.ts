@@ -136,10 +136,43 @@ export async function applyNearDupResult(
  * @param p    Write params including pre-computed embedding.
  * @returns    EnrichOnWriteResult describing what was stored.
  */
-export async function enrichOnWrite(
-  tx: AdapterTransaction,
-  p: EnrichOnWriteParams,
-): Promise<EnrichOnWriteResult> {
+/** Every enrichment column the write path stores, resolved with zero DB access. */
+export interface WriteEnrichmentValues {
+  topic: string | null;
+  project_path: string | null;
+  summary: string | null;
+  tags: string[];
+  /** `node.tags` column form — NULL when empty (BL-325), never the literal '[]'. */
+  tagsJson: string | null;
+  importance: number;
+  enrich_ver: EnrichmentProvenance;
+}
+
+/**
+ * Pure (zero-DB) resolution of E1/E2/E4/E5/E7/E10/E12 — everything the write
+ * path persists except the E8 near-dup pass, which genuinely needs the row and
+ * its vector to exist.
+ *
+ * WHY THIS IS SEPARATE (PERF-MEMORY-003): the async Phase-A write used to INSERT
+ * the node and then issue a SECOND UPDATE over the same row to store these
+ * values. `summary` and `tags` are covered by `idx_fts_node` — a NATIVE Turso
+ * FTS index maintained inside each statement, not a trigger — so that second
+ * write redid FTS maintenance the INSERT had already done. Measured at ~134ms,
+ * ~56% of Phase-A, while the computation below is ~3.7ms. Since the computation
+ * is pure it reorders freely, so `memoryWritePhaseA` now folds these values
+ * straight into the INSERT.
+ *
+ * SINGLE SOURCE OF TRUTH: `enrichOnWrite` delegates here too, so the folded
+ * INSERT path and the UPDATE path cannot drift apart.
+ */
+export function computeWriteEnrichment(p: {
+  content: string;
+  summary: string | undefined;
+  tags: string[] | undefined;
+  topic: string | undefined;
+  project_path: string | undefined;
+  importance: number | undefined;
+}): WriteEnrichmentValues {
   // E1: resolve project_path (caller override → git root → cwd)
   const resolvedProjectPath = resolveProjectPath(p.project_path);
 
@@ -152,15 +185,14 @@ export async function enrichOnWrite(
 
   // E2/E10: resolve summary (caller-supplied wins; extractive fallback otherwise)
   const resolvedSummary: string | null =
-    p.summary !== undefined
-      ? p.summary
-      : extractiveSummary(p.content);
+    p.summary !== undefined ? p.summary : extractiveSummary(p.content);
 
-  // E4: resolved tags (already stored as JSON in P1; here we return the array)
+  // E4: resolved tags
   const resolvedTags: string[] = p.tags ?? [];
 
-  // E7: compute initial importance (length + tag score at write time; link/access on batch).
-  // If caller supplied an explicit importance, respect it — do NOT override.
+  // E7: compute initial importance (length + tag score at write time; link/access
+  // on batch). If caller supplied an explicit importance, respect it — do NOT
+  // override (CONTRACTS.md C2.1).
   let initialImportance: number;
   let userOverride = false;
   if (p.importance !== undefined) {
@@ -176,27 +208,6 @@ export async function enrichOnWrite(
     });
   }
 
-  // E8: near-dup detection (KNN-20 from vec_node). Deferred to Phase B when no
-  // embedding is available (async two-phase write — 2026-07-04).
-  const dupThreshold = getNearDupThreshold();
-  let nearDup: NearDupResult | null = null;
-  if (p.embedding !== undefined && p.vectorDialect !== undefined) {
-    try {
-      nearDup = await detectNearDup(tx, p.rowid, p.embedding, dupThreshold, p.vectorDialect);
-    } catch (err) {
-      // BL-381: NOT a silent swallow. A KNN query can legitimately fail on an
-      // empty store, but for over a month this same bare `catch {}` also hid a
-      // permanently-broken query — `no such column: k`, every write, on the
-      // default backend — and "no duplicates found" is indistinguishable from
-      // "near-dup detection is dead" in every surface we expose. Log it.
-      tlog.warn('enrich.neardup.error', {
-        rowid: p.rowid,
-        error: err instanceof Error ? err.message : String(err),
-      });
-      nearDup = null;
-    }
-  }
-
   // E12: enrichment provenance stamp
   const enrichVer: EnrichmentProvenance = {
     pass: ENRICH_VERSION,
@@ -204,47 +215,92 @@ export async function enrichOnWrite(
     ...(userOverride ? { note: 'user_override' } : {}),
   };
 
-  // Update enrichment fields directly via the AdapterTransaction.
-  // Replaces the former createGraphBackend(wrapRawDbAsAdapter(db)).touch() pattern.
-  const touchUpdates: string[] = [];
-  const touchParams: unknown[] = [];
-  const now = new Date().toISOString();
-
-  if (resolvedTopic !== null) { touchUpdates.push('topic = ?'); touchParams.push(resolvedTopic); }
-  if (resolvedSummary !== null) { touchUpdates.push('summary = ?'); touchParams.push(resolvedSummary); }
-  // BL-325: this direct-SQL block replaced GraphBackend.touch() (commit
-  // 65171ad, TursoAdapter go-live) and dropped its
-  // `tags.length > 0 ? JSON.stringify(tags) : null` guard — regressing every
-  // untagged write from NULL to the literal string '[]'. Restore it: an empty
-  // tags array means "no tags", which the schema and every reader
-  // (memory_recall's tags filter, etc.) represent as NULL, not '[]'.
-  touchUpdates.push('tags = ?');
-  touchParams.push(resolvedTags.length > 0 ? JSON.stringify(resolvedTags) : null);
-  touchUpdates.push('importance = ?'); touchParams.push(initialImportance);
-
-  if (touchUpdates.length > 0) {
-    await tx.executeRun(
-      `UPDATE node SET ${touchUpdates.join(', ')}, project_path = ?, enrich_ver = ?, t_updated = ? WHERE rowid = ?`,
-      [...touchParams, resolvedProjectPath, JSON.stringify(enrichVer), now, p.rowid],
-    );
-  } else {
-    await tx.executeRun(
-      `UPDATE node SET project_path = ?, enrich_ver = ?, t_updated = ? WHERE rowid = ?`,
-      [resolvedProjectPath, JSON.stringify(enrichVer), now, p.rowid],
-    );
-  }
-
-  // E8: insert SAME_AS edge (+ optional invalidation) if near-dup found
-  if (nearDup !== null) {
-    await applyNearDupResult(tx, p.rowid, nearDup);
-  }
-
   return {
     topic: resolvedTopic,
     project_path: resolvedProjectPath,
     summary: resolvedSummary,
     tags: resolvedTags,
+    // BL-325: empty tags means "no tags", which the schema and every reader
+    // (memory_recall's tags filter, etc.) represent as NULL, not '[]'.
+    tagsJson: resolvedTags.length > 0 ? JSON.stringify(resolvedTags) : null,
+    importance: initialImportance,
     enrich_ver: enrichVer,
+  };
+}
+
+/**
+ * E8: near-dup detection plus its side effects (SAME_AS edge, optional
+ * invalidation of the older episode). No-ops when no embedding is available —
+ * the async two-phase write defers this to Phase B (embed-pipeline.ts).
+ *
+ * Split out of `enrichOnWrite` so the folded-INSERT path can run the near-dup
+ * pass — which genuinely requires the inserted row — WITHOUT also paying for
+ * the column UPDATE that fold made redundant.
+ */
+export async function detectAndApplyNearDup(
+  tx: AdapterTransaction,
+  rowid: number,
+  embedding: Float32Array | undefined,
+  vectorDialect: VectorDialect | undefined,
+): Promise<NearDupResult | null> {
+  if (embedding === undefined || vectorDialect === undefined) return null;
+
+  let nearDup: NearDupResult | null = null;
+  try {
+    nearDup = await detectNearDup(tx, rowid, embedding, getNearDupThreshold(), vectorDialect);
+  } catch (err) {
+    // BL-381: NOT a silent swallow. A KNN query can legitimately fail on an
+    // empty store, but for over a month this same bare `catch {}` also hid a
+    // permanently-broken query — `no such column: k`, every write, on the
+    // default backend — and "no duplicates found" is indistinguishable from
+    // "near-dup detection is dead" in every surface we expose. Log it.
+    tlog.warn('enrich.neardup.error', {
+      rowid,
+      error: err instanceof Error ? err.message : String(err),
+    });
+    return null;
+  }
+
+  if (nearDup !== null) await applyNearDupResult(tx, rowid, nearDup);
+  return nearDup;
+}
+
+export async function enrichOnWrite(
+  tx: AdapterTransaction,
+  p: EnrichOnWriteParams,
+): Promise<EnrichOnWriteResult> {
+  const v = computeWriteEnrichment(p);
+  const resolvedProjectPath = v.project_path;
+
+  // Update enrichment fields directly via the AdapterTransaction.
+  // Replaces the former createGraphBackend(wrapRawDbAsAdapter(db)).touch() pattern.
+  //
+  // NOTE: `tags` and `importance` are pushed unconditionally below, so the list
+  // is never empty — the former `else` branch here was unreachable and has been
+  // dropped. Column set and values are otherwise unchanged.
+  const touchUpdates: string[] = [];
+  const touchParams: unknown[] = [];
+  const now = new Date().toISOString();
+
+  if (v.topic !== null) { touchUpdates.push('topic = ?'); touchParams.push(v.topic); }
+  if (v.summary !== null) { touchUpdates.push('summary = ?'); touchParams.push(v.summary); }
+  touchUpdates.push('tags = ?'); touchParams.push(v.tagsJson);
+  touchUpdates.push('importance = ?'); touchParams.push(v.importance);
+
+  await tx.executeRun(
+    `UPDATE node SET ${touchUpdates.join(', ')}, project_path = ?, enrich_ver = ?, t_updated = ? WHERE rowid = ?`,
+    [...touchParams, resolvedProjectPath, JSON.stringify(v.enrich_ver), now, p.rowid],
+  );
+
+  // E8: near-dup detection + SAME_AS edge (+ optional invalidation).
+  const nearDup = await detectAndApplyNearDup(tx, p.rowid, p.embedding, p.vectorDialect);
+
+  return {
+    topic: v.topic,
+    project_path: resolvedProjectPath,
+    summary: v.summary,
+    tags: v.tags,
+    enrich_ver: v.enrich_ver,
     near_dup: nearDup,
   };
 }
