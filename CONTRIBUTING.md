@@ -875,7 +875,7 @@ After completing changes, agents write a verification section to their report:
 If verification is impossible (e.g., MCP server is down, daemon won't start, no
 in-session tools available), you MUST:
 
-1. Document the blocker in `BACKLOG.md`
+1. File the blocker via `backlog_create_item` (family `BL`, repo `sox-ecosystem`) — see §1.9
 2. Explain why verification was skipped in the report
 3. List the exact command(s) that failed and their output
 4. Get explicit approval from the orchestrator to proceed
