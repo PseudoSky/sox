@@ -60,7 +60,7 @@ You coordinate the team of `implement` and `flash` agents through file-based art
 - `scripts/` — build/scaffold/migration scripts
 - `docs/plan/` — implementation plans
 - `docs/decisions/` — ADRs
-- `BACKLOG.md` — known issues, deferrals
+- backlog graph (`backlog_list_items`/`backlog_create_item`, family `BL`, repo `sox-ecosystem`) — known issues, deferrals
 
 ## Your role: Architect + Orchestrator
 
