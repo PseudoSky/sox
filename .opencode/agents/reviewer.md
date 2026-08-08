@@ -96,7 +96,7 @@ When dispatched:
 - `apps/sox/` — CLI entry point
 - `docs/plan/` — implementation plans
 - `docs/decisions/` — ADRs
-- `BACKLOG.md` — known issues, deferrals
+- backlog graph (`backlog_list_items`/`backlog_create_item`, family `BL`, repo `sox-ecosystem`) — known issues, deferrals
 
 ## Verification commands
 

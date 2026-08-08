@@ -36,7 +36,7 @@ You are dispatched by the `pro` orchestrator. On start:
 - **Always** `node bin/soxe upgrade --all` after changes that ship a `dist` artifact — this hot-reloads any running proxy backends without session restart
 - **Always** read the file before editing
 - **Always** check `git diff` and `git status` before reporting
-- **Always** add entries to `BACKLOG.md` for bugs/deferrals
+- **Always** file entries via `backlog_create_item` for bugs/deferrals
 - If tests fail: fix immediately. Never claim pre-existing.
 
 ## Technology stack
