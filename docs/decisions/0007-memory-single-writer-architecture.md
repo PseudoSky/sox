@@ -1,6 +1,8 @@
 # ADR 0007 — Memory platform architecture: single writer, reusable subsystems, remote-first (enterprise target)
 
-- **Status:** ACCEPTED (2026-07-04, context-06 closeout) — the architecture is fully
+- **Status:** SUPERSEDED BY [ADR-0012](./0012-turso-multiprocess-write-and-driver-agnostic-error-taxonomy.md)
+  (2026-08-08) for the invariant statement, D2, D5, and D9 only — D1/D3/D4/D6/D7/D8 carry forward
+  unchanged. Was: ACCEPTED (2026-07-04, context-06 closeout) — the architecture is fully
   implemented and live-verified: single-writer backend behind front-shim proxies (HF-5
   forensics PASS), two-phase write/update with off-slot embedding, transactional-outbox
   enrichment heartbeat, time-based write-queue admission control, continuous supervision

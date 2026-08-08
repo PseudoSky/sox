@@ -398,8 +398,25 @@ export function instrumentAdapter<A extends TransactionCapable<Tx>, Tx extends o
   return new Proxy(adapter, {
     get(obj, prop, _receiver): unknown {
       if (prop === 'transaction') {
+        // Snapshot the CURRENT `transaction` implementation at ACCESS time (matching
+        // every other property below, and instrumentQueryMethods's own established
+        // pattern) — never re-read `obj.transaction` from inside the returned closure.
+        // BUG-001: the previous form (`(fn,opts) => obj.transaction(...)`) deferred
+        // that lookup to CALL time, which is safe as long as nothing ever reassigns
+        // `.transaction` on the raw target after this Proxy is constructed — but any
+        // caller that legitimately monkeypatches `.transaction` on the Proxy (which,
+        // by design, forwards the assignment to the raw target — there is no `set`
+        // trap here) creates an own property that shadows the prototype method. A
+        // later call into the OLD reference this branch used to hand out would then
+        // resolve `obj.transaction` to the NEW shadowing property, calling straight
+        // back into it — unbounded mutual recursion,
+        // `RangeError: Maximum call stack size exceeded`, on the very first call,
+        // no data corpus or argument list involved. See BUG-001 / SPEC-BUG-001.md.
+        const currentTransaction = (
+          Reflect.get(obj, 'transaction', obj) as TransactionCapable<Tx>['transaction']
+        ).bind(obj);
         return <T>(fn: (tx: Tx) => T | Promise<T>, opts?: unknown): Promise<T> =>
-          obj.transaction((tx: Tx) => fn(instrumentQueryMethods(tx, adapterType)), opts);
+          currentTransaction((tx: Tx) => fn(instrumentQueryMethods(tx, adapterType)), opts);
       }
       const orig = Reflect.get(obj, prop, obj) as unknown;
       if (typeof orig !== 'function') return orig;
