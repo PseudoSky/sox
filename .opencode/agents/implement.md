@@ -58,7 +58,7 @@ You are dispatched by the `pro` orchestrator. On start:
 - `scripts/` — build, scaffold, migration scripts
 - `docs/plan/` — implementation plans
 - `docs/decisions/` — ADRs
-- `BACKLOG.md` — known issues, deferrals
+- backlog graph (`backlog_list_items`/`backlog_create_item`, family `BL`, repo `sox-ecosystem`) — known issues, deferrals
 
 ## Your scope: Complex implementation
 
@@ -80,7 +80,7 @@ You handle work that the flash agent is not trusted with:
 - **Always** run `nx build|test|lint` after making changes
 - **Always** read the file before editing — the Edit tool requires it
 - **Always** check `git diff` and `git status` before reporting completion
-- **Always** add entries to `BACKLOG.md` for any bugs or deferrals discovered
+- **Always** file entries via `backlog_create_item` for any bugs or deferrals discovered
 - **Always** run `gitnexus_detect_changes` before committing to verify changes only affect expected symbols
 - Service daemons use `soxe service enable|disable|status` (OS supervisor)
 - Dev server uses `soxe serve <id> [--proxy|--no-proxy]`

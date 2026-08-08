@@ -203,7 +203,7 @@ async function captureSnapshot(client: SnapshotQueryClient): Promise<StoreSnapsh
   }>('SELECT rowid, uid, kind, content_hash FROM node ORDER BY rowid');
   const nodeHash = crypto.createHash('sha256');
   for (const row of nodeRows.rows) {
-    nodeHash.update(`${row.rowid} ${row.uid} ${row.kind} ${row.content_hash ?? ''}\n`);
+    nodeHash.update(`${row.rowid}\0${row.uid}\0${row.kind}\0${row.content_hash ?? ''}\n`);
   }
 
   const edgeRows = await client.executeAll<{
@@ -214,7 +214,7 @@ async function captureSnapshot(client: SnapshotQueryClient): Promise<StoreSnapsh
   }>('SELECT rowid, src, dst, rel FROM edge ORDER BY rowid');
   const edgeHash = crypto.createHash('sha256');
   for (const row of edgeRows.rows) {
-    edgeHash.update(`${row.rowid} ${row.src} ${row.dst} ${row.rel}\n`);
+    edgeHash.update(`${row.rowid}\0${row.src}\0${row.dst}\0${row.rel}\n`);
   }
 
   return {

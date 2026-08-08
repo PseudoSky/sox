@@ -11,7 +11,7 @@
 **Last updated:** 2026-08-05 19:12Z · **Branch:** `wip/turso-live-metrics`
 
 > **What is measured vs. what is asserted.** Every number in the "Live service" and "Progress"
-> sections below was read from the running server or derived from `BACKLOG.md` at the timestamp
+> sections below was read from the running server or derived from the backlog graph at the timestamp
 > above. Everything under "History" is a dated record of a past event and is not re-verified — do not
 > quote it as current. This split exists because the previous revision of this file carried a
 > prominent, confidently-worded warning that had been false for two days.
@@ -138,32 +138,50 @@ figures can no longer be re-derived from disk.
 ## What to do next
 
 > ⚠️ **This section is hand-written and goes stale silently — `plan-status.mjs --check` cannot
-> catch it.** Before acting on an item here, confirm it against the derived ledger in `PLAN.md`.
-> As of 2026-08-04 this list led with **PKT-41 (BL-391) + PKT-19 (BL-329)**, both of which had
-> already been **DONE** for some time (BL-391 and BL-329 are not in `BACKLOG.md` at all — if an id
-> is not there, it shipped). A session acted on that entry before catching it.
+> catch it.** Before acting on an item here, confirm it against the derived ledger in `PLAN.md` and
+> the backlog graph directly (`backlog_get_item`/`backlog_list_items`, repo `sox-ecosystem`) — not
+> against this prose. As of 2026-08-04 this list led with **PKT-41 (BL-391) + PKT-19 (BL-329)**, both
+> of which had already been **DONE** for some time. A session acted on that entry before catching it.
 
 1. **Close BL-401 — the deploy it was waiting on has happened.** Gaps 4+6 were committed (`c81c0b7`,
    consumers migrated onto the stage substrate) and shipped to production in `61e4ff0`
    (`8ae1b0da3c82`, pid 55538). Live `stages_declared` is **2** with `stages_with_zero_samples: []`,
    so the `[inv:deploy-verified]` step this item asked for is done and the registry checksum drift it
-   warned about is cleared. BL-401 is still **Open** in `BACKLOG.md`: what remains is closing it
-   against its own acceptance with a red→green test per BL-225, not another deploy.
+   warned about is cleared. BL-401 is **Open** in the backlog graph (re-confirmed 2026-08-06 — the
+   graph briefly read RESOLVED against a stale mirror, corrected back to Open, gaps 4 and 6 still
+   named): what remains is closing it against its own acceptance with a red→green test per BL-225,
+   not another deploy.
 2. **PKT-30 (BL-328)** — target-degree threshold calibration (the interim τ is fixed at 0.87; the
    recluster's 440-community result is the measured baseline to calibrate against). ⚠️ τ=0.87 is a
    **pairwise** number — see `PLAN.md` §P0.5; the pairwise→centroid offset is +0.086 to +0.127.
-3. **Library publish readiness** — `docs/reporting/publishing/turso-library-publish-readiness.md`.
-   The libraries are already on npm (2026-07-27) but are ~91 commits stale, and the next publish
-   ships a broken install: `@adhd/sox-telemetry` is a hard runtime dep of `store-adapter` and
-   `memory-core` yet is **not published** (E404), and `check-publishable.ts` validates against the
-   workspace `private` flag rather than the registry, so it cannot detect this and runs green.
-4. **Split-brain reconciliation** — the `BL-###` corpus lives only in root `BACKLOG.md` while
-   `backlog_migration_status` reports **phase-3 (the graph is authoritative; every BACKLOG.md is a
-   generated projection, never hand-edited)**. Every repo tool — `plan-status.mjs`,
-   `check-backlog-markers.mjs`, `allocate-bl-id.mjs` — reads the markdown. Reconciliation in flight.
-5. **12 dead tests in `analysis:test`** — `analysis.spec.ts:32-35` passes a raw better-sqlite3
-   handle where `vector-store/src/index.ts:104-112` now requires a `StoreAdapter`. Dead tests read
-   as coverage (BL-367's lesson).
+3. **Library publish readiness — the install-breaking blocker is cleared; one release-process
+   decision remains (PKT-79/BL-452).** `@adhd/sox-telemetry` published 2026-08-05
+   (`npm view @adhd/sox-telemetry version` → `0.2.0`, re-verified 2026-08-07) and every dependent
+   resolves it: the 0.6.0 train published 2026-08-07 pins `@adhd/sox-memory-core@0.6.0` →
+   `@adhd/sox-telemetry: "0.2.0"` and `@adhd/sox-store-adapter@0.3.0` → the same, both confirmed
+   live against the registry. `scripts/check-publishable.ts` no longer trusts the workspace `private`
+   flag alone — it now probes the registry directly (rule 2, `scripts/check-publishable.ts:266-280`)
+   and fails on an unresolvable dependency rather than reading green past one.
+   `docs/reporting/publishing/turso-library-publish-readiness.md` carries its own point-in-time
+   banner (2026-08-04) and defers to `npm view` for current versions — do not read its status table
+   as current. **Outstanding: BL-452** — `workspace:*` still rewrites to an exact pinned version at
+   pack time, so a low-level patch (e.g. another `store-adapter` fix) still requires republishing
+   every dependent by hand until a ruling picks one of the three options PKT-79 lays out (accept and
+   script the cascade / caret ranges / fewer coarser packages). BL-460 (public API drift with no
+   changeset) is **resolved** — `scripts/check-changeset-surface.ts` gates it, green across the
+   0.6.0 train.
+4. **The backlog graph is the sole source for `BL-*` items — no reconciliation left to do.**
+   [ADR-0011, Stage 3] deleted root `BACKLOG.md`/`CHANGELOG.md` (2026-08-07); ~320 historical items
+   were migrated and existence-verified per id. `tools/plan-status.mjs` sources packet status from
+   the graph directly (`backlog list-items --filter '{"repo":"sox-ecosystem","family":"BL"}'`), and
+   `tools/check-backlog-markers.mjs`/`tools/check-bl-id-integrity.mjs`/`tools/allocate-bl-id.mjs` are
+   retired — each now refuses to run and points at the graph. There is no markdown write surface left
+   for this family; file everything through `backlog_create_item`.
+5. **`analysis:test`'s DB-integrated block was re-animated, not left dead.** The 12-test failure this
+   item used to describe (`analysis.spec.ts` passing a raw `better-sqlite3` handle where
+   `vector-store` now requires a `StoreAdapter`) is fixed — `analysis.spec.ts:1-36`'s own header
+   documents the migration to `createSqliteAdapter`, and the tautological assertions (`durationMs >=
+   0`) it also flagged were replaced with real invariant checks. No outstanding action here.
 
 ---
 
@@ -171,7 +189,7 @@ figures can no longer be re-derived from disk.
 
 - **BL-409's mitigation covers half the problem.** Pathspec commits stop you sweeping another
   agent's *staged* files; they do nothing about their *uncommitted edits to the same file*, because
-  the working tree is shared. For hot files (`BACKLOG.md`, `PLAN.md`, this file) it buys nothing.
+  the working tree is shared. For hot files (`PLAN.md`, this file) it buys nothing.
   The structural fix is per-agent worktree isolation, which is now the default for dispatch.
 
 ### ⚠️ Worktree dispatch has a gap that has already cost verification
@@ -343,8 +361,11 @@ Absence of an error line alone would have proven nothing, since the old build lo
 
 BL-330, BL-331, BL-339, BL-346, BL-347, BL-348, BL-350, BL-352, BL-364, BL-365, BL-367, BL-369,
 BL-371, BL-372, BL-373, BL-374, BL-376, BL-377, BL-380, BL-381, BL-382, BL-384, BL-385, BL-386,
-BL-388, BL-390, BL-395, BL-397, BL-402, BL-406, BL-407, BL-410 and the rest are in `CHANGELOG.md`.
-`BACKLOG.md` holds only open work; if an id is not there, it shipped.
+BL-388, BL-390, BL-395, BL-397, BL-402, BL-406, BL-407, BL-410 and the rest are resolved in the
+backlog graph — `CHANGELOG.md` now carries only the 0.6.0 release note, not a resolved-item ledger.
+**[ADR-0011, Stage 3]** the graph is the sole source of truth for every `BL-*` item: query
+`backlog_get_item`/`backlog_list_items` (repo `sox-ecosystem`) directly rather than grepping a
+file — if an id resolves with a closed status (`RESOLVED`/`DONE`/`FIXED`/etc), it shipped.
 
 **BL-367 (cross-backend recall parity)** deserves a note because it was for a long time described
 here as "the biggest open unknown in the project": `recall-parity.test.ts` compared `RecallResult.uid`
