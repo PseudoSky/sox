@@ -8,7 +8,6 @@
  */
 
 import { describe, it, expect } from 'vitest';
-import * as os from 'node:os';
 import * as path from 'node:path';
 import { dataRoot, userDataRoot, DATA_SUBDIR } from './data-paths.js';
 

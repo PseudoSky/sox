@@ -85,7 +85,7 @@ const ENFORCED_PERMISSIONS = {
   fs: { read: ['~/.memory/**'], write: ['~/.memory/**'] },
   socket: { paths: ['~/.memory/memoryd.sock'] },
   network: { outbound: [] as string[] },
-} as const;
+};
 
 function makeEnforcedSupervisor(
   entrypointPath = '/ext/dist/index.js',
@@ -96,11 +96,7 @@ function makeEnforcedSupervisor(
     entrypointPath,
     env: extraEnv,
     lifecycle: { background: false },
-    permissions: {
-      fs: { read: ['~/.memory/**'], write: ['~/.memory/**'] },
-      socket: { paths: ['~/.memory/memoryd.sock'] },
-      network: { outbound: [] },
-    },
+    permissions: ENFORCED_PERMISSIONS,
   });
 }
 
