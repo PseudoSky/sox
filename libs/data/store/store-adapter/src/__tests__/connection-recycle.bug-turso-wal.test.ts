@@ -245,6 +245,70 @@ tursoDescribe('TursoAdapterImpl — connection recycling (BUG-TURSO-WAL-SHORTREA
     connectSpy.mockRestore();
   });
 
+  it('AC-5: pragmaSet/pragmaGet are wired into the same health/reconnect machinery as the other direct db.* call sites', async () => {
+    const dbPath = tempPath('ac5');
+    const adapter = await connect(dbPath);
+    await adapter.exec('CREATE TABLE t (id INTEGER PRIMARY KEY, name TEXT)');
+
+    const rawBefore = adapter.unwrap() as unknown as {
+      exec: (...args: unknown[]) => Promise<unknown>;
+      pragma: (...args: unknown[]) => Promise<unknown>;
+    };
+    const realExec = rawBefore.exec.bind(rawBefore);
+    const realPragma = rawBefore.pragma.bind(rawBefore);
+    let execCalls = 0;
+    let pragmaCalls = 0;
+    rawBefore.exec = async (...args: unknown[]) => {
+      execCalls++;
+      // Only fault the PRAGMA-shaped exec call — the CREATE TABLE above and
+      // any driver housekeeping already ran through the real exec.
+      if (execCalls === 1 && typeof args[0] === 'string' && (args[0] as string).startsWith('PRAGMA')) {
+        throw fatalError();
+      }
+      return realExec(...args);
+    };
+    rawBefore.pragma = async (...args: unknown[]) => {
+      pragmaCalls++;
+      if (pragmaCalls === 1) throw fatalError();
+      return realPragma(...args);
+    };
+
+    // pragmaSet: the fatal fault must reject with the original error, poison
+    // the adapter, and a subsequent call must reconnect rather than
+    // silently querying the dead handle.
+    await expect(adapter.pragmaSet('busy_timeout', 3000)).rejects.toMatchObject({
+      message: FATAL_IO_ERROR.message,
+    });
+    expect(adapter.connectionHealth).toBe('poisoned');
+
+    const afterPragmaSetReconnect = await adapter.pragmaGet('busy_timeout');
+    expect(afterPragmaSetReconnect).not.toBeUndefined();
+    expect(adapter.unwrap() !== rawBefore).toBe(true);
+    expect(adapter.connectionHealth).toBe('healthy');
+
+    // pragmaGet on a freshly-healthy handle: fault it directly and confirm
+    // the same reconnect-then-recover path fires from pragmaGet itself.
+    const rawAfterFirstReconnect = adapter.unwrap() as unknown as {
+      pragma: (...args: unknown[]) => Promise<unknown>;
+    };
+    const realPragma2 = rawAfterFirstReconnect.pragma.bind(rawAfterFirstReconnect);
+    let pragmaCalls2 = 0;
+    rawAfterFirstReconnect.pragma = async (...args: unknown[]) => {
+      pragmaCalls2++;
+      if (pragmaCalls2 === 1) throw fatalError();
+      return realPragma2(...args);
+    };
+
+    await expect(adapter.pragmaGet('busy_timeout')).rejects.toMatchObject({
+      message: FATAL_IO_ERROR.message,
+    });
+    expect(adapter.connectionHealth).toBe('poisoned');
+
+    const value = await adapter.pragmaGet('busy_timeout');
+    expect(value).not.toBeUndefined();
+    expect(adapter.connectionHealth).toBe('healthy');
+  });
+
   it('AC-4 sibling: isFatalConnectionError itself matches the incident text and rejects ordinary faults', () => {
     expect(isFatalConnectionError(fatalError())).toBe(true);
     expect(
