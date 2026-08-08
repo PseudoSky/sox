@@ -155,3 +155,39 @@ export function isDatabaseError(err: unknown): boolean {
   if (!isErrorWithCode(err)) return false;
   return err.code.startsWith('SQLITE_');
 }
+
+/**
+ * True if `err` is a Turso driver-level fault that has poisoned the shared
+ * connection and requires reconnecting before the NEXT statement runs — as
+ * opposed to a statement-local failure (bad SQL, constraint violation, type
+ * mismatch) that leaves the connection perfectly usable for the next caller.
+ *
+ * MUST NOT be based on `err.code` — empirically (2026-08-08, against
+ * @tursodatabase/database@0.7.1) EVERY Turso driver error carries
+ * `code: 'GenericFailure'`, including UNIQUE constraint violations. `code`
+ * carries zero discriminating information for this driver; see the BUG-*
+ * item filed against errors.ts's SQLITE_*-prefix helpers (this file's own
+ * `isUniqueConstraintError`/`isForeignKeyError`/`isBusyError`/
+ * `isDatabaseError`, none of which actually match against a live Turso
+ * error) for the same gap.
+ *
+ * MUST NOT match on "WAL"/"short read"/frame-offset specifics — the fix this
+ * guards is required to catch disk pressure, a transient I/O error, or a
+ * future driver bug identically, not just the one incident's shape.
+ *
+ * Turso's own error messages embed a category prefix after the phase verb
+ * (`prepare failed:` / `step failed:` / `reset failed:`) — `Parse error:` for
+ * statement-shape faults, `Runtime error:` for constraint/type faults at
+ * execution, and `I/O error:` for storage/filesystem-layer faults. Matching
+ * that THIRD category, and only that category, is the fatal signal: it is
+ * the driver's own admission that the failure came from below the SQL layer,
+ * not from what was asked of it.
+ *
+ * See SPEC-CONN-RECYCLE.md §3 for the full ruling and the losing
+ * alternatives (code==='GenericFailure', WAL-text matching, SQLITE_*-prefix
+ * reuse, default-fatal-on-unknown) each named with why they lose.
+ */
+export function isFatalConnectionError(err: unknown): boolean {
+  if (!isErrorWithCode(err)) return false;
+  return /\bI\/O error\b/i.test(err.message) || /database disk image is malformed/i.test(err.message);
+}
