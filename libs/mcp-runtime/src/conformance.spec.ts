@@ -235,6 +235,9 @@ describe('@adhd/sox-mcp-runtime conformance', () => {
       });
 
       expect(result.isError).toBe(true);
+      if (!('content' in result) || !Array.isArray(result.content)) {
+        throw new Error('unexpected compatibility result shape (no content array)');
+      }
       const textContent = result.content[0];
       expect(textContent).toBeDefined();
       expect(textContent!.type).toBe('text');
@@ -257,6 +260,9 @@ describe('@adhd/sox-mcp-runtime conformance', () => {
       });
 
       expect(result.isError).toBeFalsy();
+      if (!('content' in result) || !Array.isArray(result.content)) {
+        throw new Error('unexpected compatibility result shape (no content array)');
+      }
       const textContent = result.content[0];
       expect(textContent).toBeDefined();
       if (textContent!.type === 'text') {
@@ -319,6 +325,9 @@ describe('@adhd/sox-mcp-runtime conformance', () => {
       });
 
       expect(result.isError).toBe(true);
+      if (!('content' in result) || !Array.isArray(result.content)) {
+        throw new Error('unexpected compatibility result shape (no content array)');
+      }
       const textContent = result.content[0];
       expect(textContent).toBeDefined();
       if (textContent!.type === 'text') {
@@ -339,6 +348,9 @@ describe('@adhd/sox-mcp-runtime conformance', () => {
       });
 
       expect(result.isError).toBeFalsy();
+      if (!('content' in result) || !Array.isArray(result.content)) {
+        throw new Error('unexpected compatibility result shape (no content array)');
+      }
       const textContent = result.content[0];
       if (textContent!.type === 'text') {
         expect(textContent.text).toContain('echo:');
