@@ -39,6 +39,8 @@ import {
   recordTimeToCommunity,
   recordCommunityLifecycle,
   recordBacklog,
+  recordNeverClustered,
+  recordQuality,
   getClusterMetrics,
   _resetClusterMetrics,
 } from './cluster-metrics.js';
@@ -138,13 +140,89 @@ describe('AC-3 (BUG-MEMORY-010) — join rate survives the member_count fix', ()
   });
 });
 
+describe('censored distribution — the target must stay falsifiable', () => {
+  it('never folds never-clustered episodes into the latency percentiles', () => {
+    // The failure this prevents: a beautiful p50 computed over survivors only.
+    // With ~29% of episodes never joining, that is not a rounding error — it is
+    // the entire population that makes the target hard.
+    recordTimeToCommunity(STORE, 100);
+    recordNeverClustered(STORE, 1532);
+
+    const m = getClusterMetrics(STORE)!;
+    expect(m.time_to_community_samples).toBe(1);
+    expect(m.time_to_community_ms_among_joined.p50).toBe(100);
+    // The censored population is reported, not silently dropped.
+    expect(m.never_clustered).toBe(1532);
+  });
+
+  it('exposes the censored population as the terminal histogram bucket', () => {
+    recordTimeToCommunity(STORE, 50);
+    recordNeverClustered(STORE, 7);
+    const b = getClusterMetrics(STORE)!.time_to_community_buckets;
+    expect(b['<=100ms']).toBe(1);
+    // Without this bucket a reader would take the histogram as the whole
+    // population, which is exactly how a censored metric gets misread.
+    expect(b['never']).toBe(7);
+  });
+
+  it('reports join_rate so a percentile can never be read without its denominator', () => {
+    recordJoinOutcome(STORE, 'joined', 3);
+    recordNeverClustered(STORE, 1);
+    expect(getClusterMetrics(STORE)!.join_rate).toBe(0.75);
+  });
+
+  it('returns a null join_rate rather than a fabricated 1.0 when nothing is censused', () => {
+    // BL-319: "100% joined" with no denominator is a reassurance, not a
+    // measurement.
+    recordClusterPass(STORE, 'incremental');
+    expect(getClusterMetrics(STORE)!.join_rate).toBeNull();
+  });
+
+  it('would show a FALLING join_rate for a change that clusters less — the gaming guard', () => {
+    // A latency "win" achieved by clustering fewer, easier episodes must be
+    // visible as a regression. Same joined count, more censored → rate drops.
+    recordJoinOutcome(STORE, 'joined', 10);
+    recordNeverClustered(STORE, 10);
+    const before = getClusterMetrics(STORE)!.join_rate!;
+    recordNeverClustered(STORE, 90);
+    const after = getClusterMetrics(STORE)!.join_rate!;
+    expect(before).toBe(0.5);
+    expect(after).toBeLessThan(before);
+  });
+});
+
+describe('quality gauges — a latency win that degrades clustering is a regression', () => {
+  it('reports single-member clusters as their own population', () => {
+    // meanIntraSim() returns 1.0 for n<2, so adopting singletons would drag the
+    // store-wide mean toward 1.0 — a quality metric improving because the store
+    // got less informative. This column is what makes that visible.
+    recordQuality(STORE, {
+      coverage: 0.706,
+      mean_intra_sim: 0.91,
+      mean_inter_sim: 0.42,
+      largest_cluster_size: 885,
+      community_count: 443,
+      single_member_clusters: 0,
+    });
+    const q = getClusterMetrics(STORE)!.quality!;
+    expect(q.single_member_clusters).toBe(0);
+    expect(q.coverage).toBeCloseTo(0.706);
+    expect(q.mean_inter_sim).toBeLessThan(q.mean_intra_sim);
+  });
+
+  it('is null until a full pass has measured it, rather than reporting zeroes', () => {
+    recordClusterPass(STORE, 'incremental');
+    expect(getClusterMetrics(STORE)!.quality).toBeNull();
+  });
+});
+
 describe('time-to-community (wall-clock, per the module CLOCK DECISION)', () => {
   it('summarizes samples as a distribution, not just a mean', () => {
     for (const ms of [1000, 2000, 3000, 4000]) recordTimeToCommunity(STORE, ms);
     const m = getClusterMetrics(STORE)!;
     expect(m.time_to_community_samples).toBe(4);
-    expect(m.time_to_community_ms.max).toBe(4000);
-    expect(m.time_to_community_ms.p50).toBeGreaterThan(0);
+    expect(m.time_to_community_ms_among_joined.max).toBe(4000);
+    expect(m.time_to_community_ms_among_joined.p50).toBeGreaterThan(0);
   });
 
   it('clamps a backwards clock to 0 instead of dropping the sample', () => {
@@ -153,7 +231,7 @@ describe('time-to-community (wall-clock, per the module CLOCK DECISION)', () => 
     recordTimeToCommunity(STORE, -500);
     const m = getClusterMetrics(STORE)!;
     expect(m.time_to_community_samples).toBe(1);
-    expect(m.time_to_community_ms.max).toBe(0);
+    expect(m.time_to_community_ms_among_joined.max).toBe(0);
   });
 
   it('ignores non-finite samples rather than poisoning the distribution', () => {

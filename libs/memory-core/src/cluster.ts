@@ -24,6 +24,8 @@ import {
   recordTimeToCommunity,
   recordCommunityLifecycle,
   recordBacklog,
+  recordNeverClustered,
+  recordQuality,
   getClusterMetrics,
   type ClusterPassPath,
 } from './cluster-metrics.js';
@@ -1038,7 +1040,7 @@ export async function clusterStore(
       }
 
       recordClusterPass(storeKey, path);
-      await measureBacklog(adapter, storeKey);
+      await measureBacklog(adapter, storeKey, path);
       emitClusterPassEvent(storeKey, path, result);
       return result;
     },
@@ -1100,8 +1102,29 @@ function emitClusterPassEvent(
           member_edges_invalidated: m.counters.member_edges_invalidated,
           backlog_unclustered: m.backlog?.unclustered ?? null,
           backlog_oldest_ms: m.backlog?.oldest_unclustered_ms ?? null,
-          time_to_community_p50_ms: m.time_to_community_ms.p50,
+          // Latency and its denominator travel TOGETHER in one line, on
+          // purpose. A p50 emitted without `never_clustered` and `join_rate`
+          // beside it can be read as "the system is fast" when it is only
+          // being selective — and a reader grepping the log for latency must
+          // not be able to find one without the other.
+          time_to_community_p50_ms_among_joined: m.time_to_community_ms_among_joined.p50,
+          time_to_community_p99_ms_among_joined: m.time_to_community_ms_among_joined.p99,
           time_to_community_samples: m.time_to_community_samples,
+          never_clustered: m.never_clustered,
+          join_rate: m.join_rate,
+          // Quality alongside latency: a latency win that moves any of these
+          // the wrong way is a regression, and the two must be readable from
+          // the same line rather than correlated across two investigations.
+          ...(m.quality
+            ? {
+                coverage: m.quality.coverage,
+                mean_intra_sim: m.quality.mean_intra_sim,
+                mean_inter_sim: m.quality.mean_inter_sim,
+                largest_cluster_size: m.quality.largest_cluster_size,
+                community_count: m.quality.community_count,
+                single_member_clusters: m.quality.single_member_clusters,
+              }
+            : {}),
         }
       : {}),
   });
@@ -1119,7 +1142,11 @@ function emitClusterPassEvent(
  * Best-effort: a failure here must never fail a clustering pass, since this is
  * an instrument, not a step.
  */
-async function measureBacklog(adapter: StoreAdapter, storeKey: string): Promise<void> {
+async function measureBacklog(
+  adapter: StoreAdapter,
+  storeKey: string,
+  path: ClusterPassPath,
+): Promise<void> {
   try {
     const row = await adapter.executeGet<{ cnt: number; oldest: string | null }>(
       `SELECT COUNT(*) AS cnt, MIN(n.t_created) AS oldest
@@ -1132,11 +1159,47 @@ async function measureBacklog(adapter: StoreAdapter, storeKey: string): Promise<
     );
     if (!row) return;
     const oldestMs = row.oldest ? Date.parse(row.oldest) : NaN;
-    recordBacklog(
-      storeKey,
-      row.cnt,
-      Number.isFinite(oldestMs) ? Date.now() - oldestMs : 0,
+    recordBacklog(storeKey, row.cnt, Number.isFinite(oldestMs) ? Date.now() - oldestMs : 0);
+
+    // The SAME census, recorded as the right-censored population. This is the
+    // number that makes the <600ms target falsifiable: a p50 computed without
+    // it is unfalsifiable in both directions, because the episodes that would
+    // fail the target are exactly the ones missing from the sample.
+    recordNeverClustered(storeKey, row.cnt);
+
+    // Cluster QUALITY is measured only on a full pass, deliberately.
+    //
+    // `clusterStats` computes mean_inter_sim by loading each community's
+    // centroid vector — one query per community (~443 live today). That is
+    // affordable once per full pass, which already loads every vector in the
+    // store, but running it on every incremental tick would add hundreds of
+    // queries to the O(1)-per-episode path this subsystem exists to keep cheap.
+    // Coverage and the censored census above are plain COUNTs and stay on every
+    // pass, so the cheap signals never go stale between full passes.
+    if (path !== 'full') return;
+
+    const stats = await clusterStats(adapter);
+    const singles = await adapter.executeGet<{ cnt: number }>(
+      `SELECT COUNT(*) AS cnt FROM (
+         SELECT e.dst FROM edge e
+         JOIN node c ON c.rowid = e.dst AND c.kind = 'community' AND c.t_invalid IS NULL
+         WHERE e.rel = 'MEMBER_OF' AND e.t_invalid IS NULL
+         GROUP BY e.dst HAVING COUNT(*) = 1
+       )`,
     );
+    recordQuality(storeKey, {
+      coverage: stats.coverage,
+      mean_intra_sim: stats.mean_intra_sim,
+      mean_inter_sim: stats.mean_inter_sim,
+      largest_cluster_size: stats.largest_cluster_size,
+      community_count: stats.cluster_count,
+      // Counted separately because each single-member cluster contributes
+      // mean_intra_sim = 1.0 BY CONSTRUCTION (cluster.ts's meanIntraSim returns
+      // 1.0 for n<2), not by quality. Without this column, adopting singletons
+      // would read as a quality improvement on the very dashboard meant to
+      // catch that.
+      single_member_clusters: singles?.cnt ?? 0,
+    });
   } catch {
     /* instrument must not break the pass */
   }

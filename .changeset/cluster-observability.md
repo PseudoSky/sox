@@ -29,6 +29,24 @@ specific instrument:
   embedding, an embed-backlog symptom τ cannot fix), `no_target` (no live community in scope), and
   `degenerate_guard` (cleared τ, refused by the 50% blob guard).
 
+**The headline metric is deliberately shaped so the <600ms target stays falsifiable.** The
+write→visible distribution is right-censored — ~29% of episodes never join — so a bare percentile
+would be computed over survivors only, and would look BEST exactly when exclusion is worst.
+Percentiles are therefore named `time_to_community_ms_among_joined`, the censored population is
+reported as `never_clustered` and as the terminal `never` bucket of a log-scale histogram, and
+`join_rate` accompanies every percentile. `join_rate` is `null`, never a fabricated `1.0`, when
+nothing has been censused.
+
+Cluster-quality gauges are reported in the same breath as latency, because the measured path to
+the budget runs through a smaller embedding model that produces 49% more edges at the same τ
+(jaccard 0.498 against the current neighbour graph) — a swap that would pass a latency-only test
+while reshaping every community. `quality` carries coverage, `mean_intra_sim`, `mean_inter_sim`,
+`largest_cluster_size`, `community_count`, and `single_member_clusters`. The last exists because
+`meanIntraSim()` returns 1.0 for a single-member cluster, so adopting singletons would drag the
+store-wide mean toward 1.0 — a quality metric improving because the store got less informative.
+Quality is measured on full passes only (it costs one query per community); coverage and the
+censored census are plain COUNTs and run every pass.
+
 Also adds an unclustered-backlog gauge (count + age of the oldest unclustered episode), measured
 off `edge` rows rather than the pass's own return value so a pass that never compared anything
 cannot report an empty backlog.
