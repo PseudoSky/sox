@@ -83,6 +83,19 @@ jobs:
       - name: Test (nx affected)
         run: pnpm exec nx affected -t test --base=origin/main --head=HEAD
 
+      # BL-466 — Tier 1 regression guards, full and unfiltered (the drift safety net for guards
+      # whose watched files didn't change locally but a dependency drifted under them anyway —
+      # the exact bl313 failure shape). Runs after Build so dist/ is fresh for anything it touches.
+      - name: Guards — tier 1 (full, unfiltered)
+        run: pnpm exec nx run sox-ecosystem:guards-tier1
+
+      # BL-466 — Tier 2 (dist-dependent) regression guards. No --isolate-worktree: a GitHub
+      # Actions runner is already a disposable, single-job checkout with no concurrent agents to
+      # protect against (the risk --isolate-worktree exists for is BL-235/BL-456 in a shared dev
+      # checkout, which does not apply here).
+      - name: Guards — tier 2 (dist-dependent)
+        run: node tools/run-guards.mjs --tier2
+
       # Step 5: validate-manifests — full scan (read-only, fast; no filter needed)
       # --strict: DX-conformance advisory rules are errors; every extension must conform.
       - name: Validate extension manifests (strict)
