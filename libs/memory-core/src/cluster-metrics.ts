@@ -399,6 +399,36 @@ export async function getClusterPipelineMetrics(
 const CLUSTER_LATENCY_WINDOW = 256;
 
 /**
+ * Log-scale buckets (ms) for time-to-community, with an explicit terminal
+ * `never` bucket.
+ *
+ * ## Why buckets exist alongside the percentiles
+ *
+ * **A bare percentile over this distribution is a lie, and optimising against
+ * it would make the system worse.** ~29% of episodes never join a community at
+ * all, so the distribution is RIGHT-CENSORED: its true p99 is infinity, and any
+ * p99 computed from joined episodes is silently "p99 *among those that
+ * joined*."
+ *
+ * The failure mode is not subtle. Excluded episodes drop out of the sample
+ * rather than landing in the tail, so **the p99 looks BEST exactly when
+ * exclusion is worst** — a change that clustered fewer, easier episodes would
+ * register as a latency win. That is the precise shape of metric that gets
+ * gamed by accident.
+ *
+ * So this module reports censored observations as data (`never_clustered`)
+ * rather than dropping them, and every percentile it emits is explicitly
+ * labelled `*_among_joined`. Linear buckets are useless across a range spanning
+ * milliseconds to never; these are log-scale.
+ */
+const TTC_BUCKET_BOUNDS_MS = [100, 500, 1_000, 5_000, 30_000, 300_000, 1_800_000, 7_200_000, 86_400_000];
+
+/** Human-readable bucket labels, parallel to {@link TTC_BUCKET_BOUNDS_MS} plus two tails. */
+const TTC_BUCKET_LABELS = [
+  '<=100ms', '<=500ms', '<=1s', '<=5s', '<=30s', '<=5min', '<=30min', '<=2h', '<=24h', '>24h',
+] as const;
+
+/**
  * Why an episode did or did not join a community on an incremental pass.
  *
  * **This taxonomy is deliberately finer than the join loop's two `continue`
@@ -435,6 +465,53 @@ export type JoinOutcome =
 /** Which entry point a clustering pass was made through. */
 export type ClusterPassPath = 'full' | 'incremental' | 'subset';
 
+/**
+ * Cluster-quality gauges, reported in the SAME breath as latency.
+ *
+ * ## Why these are not optional
+ *
+ * The measured path to a sub-600ms write→visible budget runs through replacing
+ * the embedding model (`bge-base` warm p50 618.7ms vs `bge-small` 84.4ms) — the
+ * embed term alone exceeds the entire budget, so no scheduling change can close
+ * it. But at the same τ the smaller model produces **49% more edges**, and the
+ * two τ-thresholded neighbour graphs agree only about half the time (jaccard
+ * 0.498). **That swap would pass a latency-only acceptance test while silently
+ * reshaping every community in the store.**
+ *
+ * So a latency win that moves any of these the wrong way is a REGRESSION, and
+ * the instrument has to be able to say so in the same breath rather than
+ * leaving it to a follow-up investigation.
+ *
+ * ## The singleton trap, called out explicitly
+ *
+ * `meanIntraSim()` returns **1.0** for a single-member cluster
+ * (`cluster.ts:179-181`), and that value feeds the store-wide mean at
+ * `cluster.ts:947-957`. If singletons were ever adopted as the coverage fix,
+ * admitting ~1,500 of them at similarity 1.0 would drag the aggregate toward
+ * 1.0 — **a quality metric improving precisely because the store got less
+ * informative.** `single_member_clusters` is therefore reported as its own
+ * population with its own count, so the aggregate cannot be gamed by that
+ * change, whether or not the singleton decision (D1.6) is ever taken. This is
+ * measurement only: nothing here alters the guard.
+ */
+export interface ClusterQuality {
+  /** Fraction of live episodes that are MEMBER_OF a live community. */
+  coverage: number;
+  /** Mean within-cluster similarity. Read WITH `single_member_clusters`. */
+  mean_intra_sim: number;
+  /** Mean between-centroid similarity. Falling toward intra = clusters merging. */
+  mean_inter_sim: number;
+  /** Largest community's live member count — the degenerate-blob indicator. */
+  largest_cluster_size: number;
+  /** Live community count. */
+  community_count: number;
+  /**
+   * Communities with exactly one live member. Separated because each
+   * contributes `mean_intra_sim = 1.0` by construction, not by quality.
+   */
+  single_member_clusters: number;
+}
+
 interface ClusterCounters {
   /** Passes completed, by entry point. */
   passes_full: number;
@@ -469,6 +546,15 @@ interface ClusterCounters {
 interface ClusterState {
   /** WALL-CLOCK (now − node.t_created) at MEMBER_OF insert. See module header. */
   timeToCommunity: LatencyRing;
+  /** Histogram over {@link TTC_BUCKET_LABELS}; unbounded, unlike the ring. */
+  ttcBuckets: number[];
+  /**
+   * Right-censored observations: live episodes that have NOT become
+   * community-visible, as of the last pass. Never folded into the percentiles.
+   */
+  neverClustered: number;
+  /** Cluster-quality gauges, refreshed per pass. Null until measured. */
+  quality: ClusterQuality | null;
   counters: ClusterCounters;
   /** Live backlog as of the most recent pass; null until a pass has measured it. */
   backlog: { unclustered: number; oldest_unclustered_ms: number } | null;
@@ -479,6 +565,9 @@ const clusterStates = new Map<string, ClusterState>();
 function newState(): ClusterState {
   return {
     timeToCommunity: new LatencyRing(CLUSTER_LATENCY_WINDOW),
+    ttcBuckets: new Array<number>(TTC_BUCKET_LABELS.length).fill(0),
+    neverClustered: 0,
+    quality: null,
     backlog: null,
     counters: {
       passes_full: 0,
@@ -542,7 +631,35 @@ export function recordJoinOutcome(storeKey: string, outcome: JoinOutcome, n = 1)
  */
 export function recordTimeToCommunity(storeKey: string, ageMs: number): void {
   if (!Number.isFinite(ageMs)) return;
-  stateFor(storeKey).timeToCommunity.push(Math.max(0, ageMs));
+  const s = stateFor(storeKey);
+  const clamped = Math.max(0, ageMs);
+  s.timeToCommunity.push(clamped);
+  // Bucket too: the ring is bounded at 256 samples, so on a busy store the
+  // percentiles describe only the recent window. The histogram is unbounded and
+  // is what survives to characterise the whole population.
+  let idx = TTC_BUCKET_BOUNDS_MS.findIndex((b) => clamped <= b);
+  if (idx === -1) idx = TTC_BUCKET_BOUNDS_MS.length; // the '>24h' tail
+  s.ttcBuckets[idx] = (s.ttcBuckets[idx] ?? 0) + 1;
+}
+
+/**
+ * Record the count of live episodes that are NOT yet community-visible — the
+ * right-censored population.
+ *
+ * These are deliberately kept OUT of the latency ring and histogram and
+ * reported as their own number. Folding them in would require inventing a
+ * latency for an event that has not happened; dropping them (the default if
+ * nobody thinks about it) produces a flattering percentile computed over
+ * survivors only. Neither is acceptable, so they are carried separately and
+ * every percentile is labelled `among_joined`.
+ */
+export function recordNeverClustered(storeKey: string, count: number): void {
+  stateFor(storeKey).neverClustered = Math.max(0, count);
+}
+
+/** Record the cluster-quality gauges measured by a pass. See {@link ClusterQuality}. */
+export function recordQuality(storeKey: string, quality: ClusterQuality): void {
+  stateFor(storeKey).quality = { ...quality };
 }
 
 /** Record one materialize pass's community lifecycle deltas. */
@@ -586,12 +703,41 @@ export function recordBacklog(
 
 export interface ClusterMetrics {
   /**
-   * WALL-CLOCK episode-write → community-visible latency, ms. See the module
-   * header's CLOCK DECISION before quoting a p99: this accrues during system
-   * sleep and is subject to clock adjustment (BL-369).
+   * WALL-CLOCK episode-write → MEMBER_OF-insert latency, ms, **among episodes
+   * that actually joined**.
+   *
+   * The field name carries `among_joined` on purpose. This distribution is
+   * right-censored (see {@link TTC_BUCKET_BOUNDS_MS}), so these percentiles are
+   * NOT the answer to "how long does an episode take to become visible" — they
+   * are the answer for the subset that ever did. **Never quote one without
+   * `never_clustered` and `join_rate` beside it**; a reader who sees only this
+   * number will conclude the system is fast when it is merely selective.
+   *
+   * Also wall-clock, so it accrues during system sleep (BL-369).
    */
-  time_to_community_ms: { p50: number; p99: number; mean: number; max: number };
+  time_to_community_ms_among_joined: { p50: number; p99: number; mean: number; max: number };
   time_to_community_samples: number;
+  /**
+   * Full-population histogram, log-scale. Unlike the percentiles above, this is
+   * unbounded (the ring holds only the most recent 256) and includes the
+   * `never_clustered` census as its terminal bucket, so it characterises the
+   * whole population rather than the recent survivors.
+   */
+  time_to_community_buckets: Record<string, number>;
+  /**
+   * Right-censored observations: live episodes not yet community-visible.
+   * **This is the number that makes the target falsifiable.** A p50 without it
+   * is unfalsifiable in both directions.
+   */
+  never_clustered: number;
+  /**
+   * Fraction of live episodes that have joined — the denominator context for
+   * every percentile above. A latency improvement accompanied by a join_rate
+   * decline is a regression, not a win.
+   */
+  join_rate: number | null;
+  /** Cluster-quality gauges. Null until a pass has measured them. */
+  quality: ClusterQuality | null;
   /**
    * Live unclustered backlog as of the most recent pass, or `null` if no pass
    * has measured it yet. A flat `unclustered` with a climbing
@@ -610,9 +756,29 @@ export function getClusterMetrics(storeKey: string): ClusterMetrics | null {
   const s = clusterStates.get(storeKey);
   if (!s) return null;
   const t = summarizeLatencies(s.timeToCommunity.values());
+
+  const buckets: Record<string, number> = {};
+  TTC_BUCKET_LABELS.forEach((label, i) => {
+    buckets[label] = s.ttcBuckets[i] ?? 0;
+  });
+  // The censored population is the terminal bucket. Presenting it inside the
+  // same histogram is what stops a reader from reading the distribution as if
+  // every episode eventually lands somewhere in it.
+  buckets['never'] = s.neverClustered;
+
+  // join_rate is null rather than 1.0 when nothing has been censused: with no
+  // denominator, "100% joined" would be a fabricated reassurance (BL-319).
+  const joined = s.counters.joins_joined;
+  const denominator = joined + s.neverClustered;
+  const joinRate = denominator > 0 ? joined / denominator : null;
+
   return {
-    time_to_community_ms: { p50: t.p50, p99: t.p99, mean: t.mean, max: t.max },
+    time_to_community_ms_among_joined: { p50: t.p50, p99: t.p99, mean: t.mean, max: t.max },
     time_to_community_samples: s.timeToCommunity.count,
+    time_to_community_buckets: buckets,
+    never_clustered: s.neverClustered,
+    join_rate: joinRate,
+    quality: s.quality ? { ...s.quality } : null,
     backlog: s.backlog ? { ...s.backlog } : null,
     counters: { ...s.counters },
   };
