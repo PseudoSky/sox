@@ -672,14 +672,34 @@ export class TursoAdapterImpl implements TursoAdapter {
     }
   }
 
+  /** (SPEC-CONN-RECYCLE) Wired through `_ensureHealthy`/`_markIfFatal` like
+   *  every other direct `this.db.*` call site — a caller that issues a
+   *  pragma against an already-poisoned handle mid-session (not just at
+   *  connection-open time, which is the only way today's callers use it)
+   *  must get the same reconnect-then-retry-once semantics as
+   *  `exec`/`executeGet`/`executeAll`/`executeRun`, not a silent query
+   *  against a dead connection. */
   async pragmaSet(key: string, value: string | number | boolean): Promise<void> {
+    await this._ensureHealthy();
     const boolVal = typeof value === 'boolean' ? (value ? 1 : 0) : value;
-    await this.db.exec(`PRAGMA ${key} = ${boolVal}`);
+    try {
+      await this.db.exec(`PRAGMA ${key} = ${boolVal}`);
+    } catch (err) {
+      this._markIfFatal(err);
+      throw err;
+    }
   }
 
+  /** (SPEC-CONN-RECYCLE) See `pragmaSet` doc comment — same wiring. */
   async pragmaGet<T = unknown>(key: string): Promise<T> {
-    const rows = await this.db.pragma(key, { simple: true });
-    return rows as T;
+    await this._ensureHealthy();
+    try {
+      const rows = await this.db.pragma(key, { simple: true });
+      return rows as T;
+    } catch (err) {
+      this._markIfFatal(err);
+      throw err;
+    }
   }
 
   async transaction<T>(
