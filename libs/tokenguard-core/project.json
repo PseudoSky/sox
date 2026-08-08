@@ -48,6 +48,18 @@
           "libs/tokenguard-core/**/*.ts"
         ]
       }
+    },
+    "typecheck": {
+      "executor": "nx:run-commands",
+      "options": {
+        "command": "tsc -p libs/tokenguard-core/tsconfig.json --noEmit",
+        "cwd": "."
+      },
+      "cache": true,
+      "inputs": [
+        "default",
+        "^production"
+      ]
     }
   }
 }
