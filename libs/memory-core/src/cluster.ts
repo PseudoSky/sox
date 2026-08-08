@@ -18,6 +18,58 @@ import type { StoreAdapter } from '@adhd/sox-store-adapter';
 import { getMemoryGraphBackend } from './graph-backend.js';
 import { cluster as analysisCluster } from '@adhd/sox-analysis';
 import { buildFiltersClause } from './memory-filters.js';
+import {
+  recordClusterPass,
+  recordJoinOutcome,
+  recordTimeToCommunity,
+  recordCommunityLifecycle,
+  recordBacklog,
+  getClusterMetrics,
+  type ClusterPassPath,
+} from './cluster-metrics.js';
+import { log } from './telemetry.js';
+import { MEMORY_CORE_STAGES } from './stages.js';
+
+/**
+ * Metrics bucket used when a caller supplies no `storeKey`.
+ *
+ * Every production entry point (memory-server's periodic tick and `memory_curate`)
+ * has the store's `dbPath` in hand and passes it, exactly as `embed-pipeline.ts`
+ * keys on `WriteQueue.storePath`. This fallback exists for tests and ad-hoc
+ * callers. It is a NAMED bucket rather than a silent merge into the first real
+ * store's numbers, so an unkeyed caller shows up as its own row in
+ * `memory_ping` instead of quietly corrupting a real store's aggregate.
+ */
+const DEFAULT_STORE_KEY = '(unkeyed)';
+
+/**
+ * Minimum content length for an episode to be a clustering candidate at all.
+ *
+ * BL-496: exported because the time-to-community metric MUST partition the
+ * unclustered population by the same predicate the clusterer uses. An episode
+ * below this length is not "awaiting clustering" — it is structurally ineligible
+ * and will never be considered, and reporting it as backlog would make the
+ * awaiting count permanently non-draining for a reason that has nothing to do
+ * with clustering throughput.
+ */
+export const CLUSTER_MIN_CONTENT_LENGTH = 50;
+
+/** SQL predicate (alias `n`) for "this episode is a clustering candidate". Shared with cluster-metrics. */
+export const CLUSTER_ELIGIBLE_SQL =
+  `n.kind = 'episode' AND n.t_invalid IS NULL AND n.content IS NOT NULL AND LENGTH(n.content) >= ${CLUSTER_MIN_CONTENT_LENGTH}`;
+
+/**
+ * The clustering-candidate predicate over alias `n` (D5.1: live episodes with
+ * content ≥ 50 chars).
+ *
+ * Extracted to ONE constant because two call sites must agree exactly:
+ * `selectEpisodes` (which returns the candidates) and `clusterStore`'s
+ * pre-count (which picks the stage's path label from how many there are). If
+ * those two predicates ever diverged, the telemetry would confidently report a
+ * `full` pass that actually ran `incremental`, or vice versa — a mislabel is
+ * worse than no label, because it is believed.
+ */
+const EPISODE_CANDIDATE_PREDICATE = CLUSTER_ELIGIBLE_SQL;
 export type { MemoryFilter } from './memory-filters.js';
 
 // ── Public types ──────────────────────────────────────────────────────────────
@@ -42,6 +94,8 @@ export interface ClusterStoreOptions {
   nodeCap?: number;
   /** If true, only run local neighborhood check for new nodes rather than full re-cluster. */
   incrementalOnly?: boolean;
+  /** Metrics bucket — the store's `dbPath`. See {@link DEFAULT_STORE_KEY}. */
+  storeKey?: string;
 }
 
 export interface ClusterStoreResult {
@@ -155,6 +209,10 @@ interface EpRow {
   content: string | null;
   topic: string | null;
   name: string | null;
+  /** ISO wall-clock write time. Carried ONLY to compute `time_to_community_ms`
+   *  at join (cluster-metrics.ts) — never used as clustering input, so it
+   *  cannot influence which episodes group together. */
+  t_created: string | null;
 }
 
 interface VecRow {
@@ -324,6 +382,8 @@ export interface MaterializeOptions {
   provenanceHash?: string;
   /** Optional: the originating filter, stored on each community node for debugging. */
   filter?: unknown;
+  /** Metrics bucket — the store's `dbPath`. See {@link DEFAULT_STORE_KEY}. */
+  storeKey?: string;
 }
 
 /**
@@ -369,14 +429,24 @@ export async function materializeClusters(
                     OR json_extract(meta, '$.cluster_scope.kind') = 'global')`,
           )).rows.map((r) => r.rowid);
 
+  let edgesInvalidated = 0;
   if (priorIds.length > 0) {
     const ph = priorIds.map(() => '?').join(',');
     await adapter.executeRun(`UPDATE node SET t_invalid = ? WHERE rowid IN (${ph})`, [now, ...priorIds]);
-    await adapter.executeRun(
+    const edgeRes = await adapter.executeRun(
       `UPDATE edge SET t_invalid = ? WHERE rel = 'MEMBER_OF' AND t_invalid IS NULL AND dst IN (${ph})`,
       [now, ...priorIds],
     );
+    edgesInvalidated = edgeRes.rowsAffected;
   }
+  // Recorded BEFORE the upsert loop below, so a pass that throws midway still
+  // leaves evidence that N communities were invalidated. The whole point of
+  // this counter is that a mass invalidation must never be reconstructible only
+  // by noticing rows are missing.
+  recordCommunityLifecycle(opts.storeKey ?? DEFAULT_STORE_KEY, {
+    invalidated: priorIds.length,
+    memberEdgesInvalidated: edgesInvalidated,
+  });
 
   const clusterScope =
     scope === 'subset'
@@ -399,10 +469,15 @@ export async function materializeClusters(
 
     let communityRowid: number;
     if (existingRow) {
+      // REVIVED: this uid recomputed identically, meaning its member set is
+      // unchanged since the last pass. Distinct from `created` — see
+      // cluster-metrics.ts's note on why `created` climbing while `revived`
+      // stays flat is the signature of community-identity churn.
       await adapter.executeRun(
         `UPDATE node SET t_invalid = NULL, name = ?, meta = ?, t_created = ? WHERE uid = ?`,
         [cluster.label, metaJson, now, cluster.community_uid],
       );
+      recordCommunityLifecycle(opts.storeKey ?? DEFAULT_STORE_KEY, { revived: 1 });
       communityRowid = existingRow.rowid;
     } else {
       const insertResult = await adapter.executeGet<{ rowid: number }>(
@@ -411,6 +486,7 @@ export async function materializeClusters(
         [cluster.community_uid, cluster.label, now, now, metaJson],
       );
       if (!insertResult) continue;
+      recordCommunityLifecycle(opts.storeKey ?? DEFAULT_STORE_KEY, { created: 1 });
       communityRowid = insertResult.rowid;
     }
 
@@ -475,30 +551,15 @@ export async function materializeLensMarker(
  * filter vocabulary (tags / topic / project_path / importance_min / time range).
  * `restrict.sql` MUST be an AND-prefixed clause over alias `n` (or empty).
  */
-/**
- * Minimum content length for an episode to be a clustering candidate at all.
- *
- * BL-496: exported because the time-to-community metric MUST partition the
- * unclustered population by the same predicate the clusterer uses. An episode
- * below this length is not "awaiting clustering" — it is structurally ineligible
- * and will never be considered, and reporting it as backlog would make the
- * awaiting count permanently non-draining for a reason that has nothing to do
- * with clustering throughput.
- */
-export const CLUSTER_MIN_CONTENT_LENGTH = 50;
-
-/** SQL predicate (alias `n`) for "this episode is a clustering candidate". Shared with cluster-metrics. */
-export const CLUSTER_ELIGIBLE_SQL =
-  `n.kind = 'episode' AND n.t_invalid IS NULL AND n.content IS NOT NULL AND LENGTH(n.content) >= ${CLUSTER_MIN_CONTENT_LENGTH}`;
-
 async function selectEpisodes(
   adapter: StoreAdapter,
   restrict?: { sql: string; params: unknown[] },
 ): Promise<EpRow[]> {
   const result = await adapter.executeAll<EpRow>(
-    `SELECT n.rowid AS rowid, n.uid AS uid, n.content AS content, n.topic AS topic, n.name AS name
+    `SELECT n.rowid AS rowid, n.uid AS uid, n.content AS content, n.topic AS topic, n.name AS name,
+            n.t_created AS t_created
      FROM node n
-     WHERE ${CLUSTER_ELIGIBLE_SQL}${restrict?.sql ?? ''}
+     WHERE ${EPISODE_CANDIDATE_PREDICATE}${restrict?.sql ?? ''}
      ORDER BY n.rowid ASC`,
     restrict?.params ?? undefined,
   );
@@ -511,6 +572,8 @@ interface ComputeClustersOptions {
   incrementalOnly?: boolean | undefined;
   /** UID salt for the produced communities (subset provenance; '' for global). */
   salt?: string | undefined;
+  /** Metrics bucket — the store's `dbPath`. See {@link DEFAULT_STORE_KEY}. */
+  storeKey?: string | undefined;
 }
 
 /** Scope predicate over a community node's `meta` column (alias `n`), matching `salt`. */
@@ -582,6 +645,7 @@ async function incrementalJoin(
   episodes: EpRow[],
   threshold: number,
   salt: string,
+  storeKey: string,
 ): Promise<{ joined: number; candidate_count: number; admission: ClusterAdmissionStats }> {
   // BL-496: every early return below is a DISTINCT reason nothing clustered,
   // and the pre-fix code collapsed all of them into an indistinguishable
@@ -613,9 +677,14 @@ async function incrementalJoin(
       scopeParams,
     )
   ).rows;
-  // No live community in this scope: the join has NO target and cannot create
-  // one. Every candidate is structurally unassignable on this path (BL-496).
-  if (communityRows.length === 0) return { joined: 0, candidate_count: 0, admission: emptyAdmission(0, episodes.length) };
+  if (communityRows.length === 0) {
+    // No live community in scope to join to. Every episode this pass would have
+    // considered is excluded for a reason that lives in the COMMUNITY table, not
+    // the vector table or τ — recorded distinctly so an empty/freshly-wiped
+    // partition cannot be misread as a threshold problem.
+    recordJoinOutcome(storeKey, 'no_target', episodes.length);
+    return { joined: 0, candidate_count: 0, admission: emptyAdmission(0, episodes.length) };
+  }
   const communityRowids = communityRows.map((r) => r.community_rowid);
 
   // 2. ALL live member vectors per community — the single-link comparison
@@ -641,6 +710,10 @@ async function incrementalJoin(
     communityLiveMemberCount.set(row.community_rowid, (communityLiveMemberCount.get(row.community_rowid) ?? 0) + 1);
   }
   if (communityMemberVecs.size === 0) {
+    // Communities exist but none has a single live member vector, so there is
+    // nothing to compare against — structurally the same exclusion as having no
+    // community at all, and counted the same way.
+    recordJoinOutcome(storeKey, 'no_target', episodes.length);
     return { joined: 0, candidate_count: 0, admission: emptyAdmission(0, episodes.length) };
   }
 
@@ -649,9 +722,11 @@ async function incrementalJoin(
   //    the query in step 2, reused rather than re-queried).
   const assignedSet = new Set(memberRows.map((r) => r.node_id));
   const candidates = episodes.filter((e) => !assignedSet.has(e.rowid));
-  if (candidates.length === 0) {
-    return { joined: 0, candidate_count: 0, admission: emptyAdmission(communityMemberVecs.size, 0) };
-  }
+  /** rowid → t_created, for the time-to-community stamp at join. */
+  const candidateCreatedAt = new Map<number, string | null>(
+    candidates.map((e) => [e.rowid, e.t_created]),
+  );
+  if (candidates.length === 0) return { joined: 0, candidate_count: 0, admission: emptyAdmission(communityMemberVecs.size, 0) };
 
   // 4. Vectors for candidates.
   const candidateRowids = candidates.map((e) => e.rowid);
@@ -659,9 +734,15 @@ async function incrementalJoin(
     `SELECT node_id, embedding FROM vec_node WHERE node_id IN (${candidateRowids.map(() => '?').join(',')})`,
     candidateRowids as unknown[],
   );
+  // Candidates with no `vec_node` row can never be compared to anything. This is
+  // an EMBEDDING-pipeline backlog surfacing inside clustering, and conflating it
+  // with `below_threshold` would point an investigation at τ when the actual
+  // cause is an unembedded episode. Counted here (and not only in the
+  // zero-rows early return) so a PARTIALLY-embedded candidate set is still
+  // attributed correctly.
+  const missingVectors = candidates.length - candidateVecResult.rows.length;
+  recordJoinOutcome(storeKey, 'no_vector', missingVectors);
   if (candidateVecResult.rows.length === 0) {
-    // Candidates exist but none is vectorised yet — genuinely AWAITING, not
-    // rejected. `considered` stays 0 so the two never conflate (BL-496).
     return { joined: 0, candidate_count: candidates.length, admission: emptyAdmission(communityMemberVecs.size, 0) };
   }
 
@@ -702,17 +783,13 @@ async function incrementalJoin(
       }
     }
     if (bestCommunityRowid === null || bestSim < threshold) {
-      // BL-496: THE H2 RECORD. This candidate was fully compared against every
-      // live community member and lost. It is not "pending" — the comparison is
-      // deterministic over a member set that only grows by joins, so absent new
-      // neighbouring content or a full pass it will be re-rejected identically
-      // on every future tick. Capturing `bestSim` is what makes that visible.
-      //
-      // Gate on `bestCommunityRowid !== null` — "a comparison actually
-      // happened" — NOT on the sign of `bestSim`. Cosine similarity is
-      // legitimately negative for opposed vectors, so a `bestSim >= 0` guard
-      // would silently drop the most-rejected candidates from the rejection
-      // count, which is precisely backwards.
+      // The ONLY outcome meaning "considered and rejected on similarity". A
+      // rising count here is a τ-calibration signal; every other exclusion
+      // outcome in this function is reached without a comparison ever happening.
+      recordJoinOutcome(storeKey, 'below_threshold');
+      // BL-496: capture bestSim for the admission distribution — gate on
+      // `bestCommunityRowid !== null` so a genuine no-community-to-compare
+      // case is distinguishable from a sub-threshold result.
       if (bestCommunityRowid !== null) rejectedSims.push(bestSim);
       continue;
     }
@@ -724,8 +801,13 @@ async function incrementalJoin(
       // Degenerate-ratio guard (incremental-path equivalent of D5.5): this
       // community would become a majority blob — refuse, defer to the next
       // full/subset pass, which owns re-thresholding and reconciliation.
-      // BL-496: counted SEPARATELY from `rejected_below_threshold` — this
-      // candidate DID clear τ and is genuinely deferred, not excluded.
+      //
+      // Counted separately from `below_threshold` because the episode DID clear
+      // τ: the guard excluded it, not the similarity. Tuning τ in response to
+      // this count would be the wrong lever.
+      recordJoinOutcome(storeKey, 'degenerate_guard');
+      // BL-496: counted separately from below_threshold — this candidate
+      // DID clear τ and is genuinely deferred, not excluded.
       rejectedGuard++;
       continue;
     }
@@ -737,6 +819,19 @@ async function incrementalJoin(
       [vRow.node_id, bestCommunityRowid, now],
     );
     joinedThisPass.set(bestCommunityRowid, alreadyJoinedThisPass + 1);
+    recordJoinOutcome(storeKey, 'joined');
+    // The MEMBER_OF insert above is the exact moment this episode becomes
+    // visible to memory_get_community, so the clock stops HERE rather than at
+    // end-of-pass. Wall-clock by necessity — the write happened in an earlier
+    // tick, usually an earlier process, so no monotonic start stamp survives.
+    // See cluster-metrics.ts's CLOCK DECISION.
+    const createdAt = candidateCreatedAt.get(vRow.node_id);
+    if (createdAt !== undefined && createdAt !== null) {
+      const createdMs = Date.parse(createdAt);
+      if (Number.isFinite(createdMs)) {
+        recordTimeToCommunity(storeKey, Date.parse(now) - createdMs);
+      }
+    }
     // Deliberately NOT added to `communityMemberVecs` as a comparison target
     // for later candidates in this same pass: doing so would let candidates
     // chain transitively through EACH OTHER within a single tick, which is
@@ -800,7 +895,13 @@ async function computeClusters(
     // local-neighborhood join against existing communities (createGraphBackend
     // has already run in the caller — clusterStore/clusterSubset — before
     // selectEpisodes, so `node`/`edge` are guaranteed to exist here).
-    const { joined, candidate_count, admission } = await incrementalJoin(adapter, episodes, threshold, salt);
+    const { joined, candidate_count, admission } = await incrementalJoin(
+      adapter,
+      episodes,
+      threshold,
+      salt,
+      opts.storeKey ?? DEFAULT_STORE_KEY,
+    );
     return {
       clusters: [],
       full_pass: false,
@@ -894,19 +995,151 @@ export async function clusterStore(
   // GraphBackend ensures the canonical DDL (including ix_edge_unique) is applied.
   getMemoryGraphBackend(adapter);
 
-  const episodes = await selectEpisodes(adapter);
-  const result = await computeClusters(adapter, episodes, {
-    threshold: opts.threshold,
-    nodeCap: opts.nodeCap,
-    incrementalOnly: opts.incrementalOnly,
-  });
+  const storeKey = opts.storeKey ?? DEFAULT_STORE_KEY;
+  const nodeCap = opts.nodeCap ?? 10000;
 
-  if (result.clusters.length > 0) {
-    await adapter.transaction(async () => {
-      await materializeClusters(adapter, result.clusters, { scope: 'global' });
-    });
+  // `withContendedStage` fixes the path label BEFORE `admit` runs, but the
+  // full-vs-incremental branch depends on the candidate COUNT — which
+  // `selectEpisodes` only learns by running. Resolving that with
+  // `opts.incrementalOnly` alone would mislabel the case that matters most: a
+  // full-pass request that silently degraded to incremental because it exceeded
+  // `nodeCap`. So the count is resolved first, from the SAME predicate
+  // `selectEpisodes` uses (`EPISODE_CANDIDATE_PREDICATE` — one constant, so the
+  // two cannot drift), making the stage label provably equal to the branch
+  // taken. One indexed COUNT is negligible beside a pass that loads thousands
+  // of vectors.
+  const countRow = await adapter.executeGet<{ cnt: number }>(
+    `SELECT COUNT(*) AS cnt FROM node n WHERE ${EPISODE_CANDIDATE_PREDICATE}`,
+  );
+  const isFullPass = !opts.incrementalOnly && (countRow?.cnt ?? 0) <= nodeCap;
+  const path: ClusterPassPath = isFullPass ? 'full' : 'incremental';
+
+  let episodes: EpRow[] = [];
+  return MEMORY_CORE_STAGES.withContendedStage(
+    'cluster',
+    path,
+    // `wait` = assembling what the pass will consider; `work` = comparing and
+    // persisting it. See stages.ts for why the split is drawn here.
+    async () => {
+      episodes = await selectEpisodes(adapter);
+    },
+    async () => {
+      const result = await computeClusters(adapter, episodes, {
+        threshold: opts.threshold,
+        nodeCap: opts.nodeCap,
+        incrementalOnly: opts.incrementalOnly,
+        storeKey,
+      });
+
+      if (result.clusters.length > 0) {
+        await adapter.transaction(async () => {
+          await materializeClusters(adapter, result.clusters, { scope: 'global', storeKey });
+        });
+      }
+
+      recordClusterPass(storeKey, path);
+      await measureBacklog(adapter, storeKey);
+      emitClusterPassEvent(storeKey, path, result);
+      return result;
+    },
+  );
+}
+
+/**
+ * Emit this pass's counters to the DURABLE JSONL log.
+ *
+ * ## Why this exists in addition to the in-memory counters
+ *
+ * Production clustering does not run in the server process. The periodic tick
+ * calls `runEnrichIsolated`, which forks a CHILD process (BL-348), so every
+ * counter `cluster-metrics.ts` accumulates lives and dies in that child —
+ * `memory_ping`, running in the parent, would read `null` forever.
+ *
+ * That is precisely the BL-319 defect this repo has already been bitten by
+ * twice: an instrument wired to a path the observed process never executes,
+ * which passes every in-process test while reading zero in production. The
+ * in-memory counters remain correct and useful for the in-process callers
+ * (tests, `memory_curate`, any future in-process pass); this event is what makes
+ * the numbers survive the process boundary, because the JSONL sink is
+ * per-process and the child writes to the same log directory.
+ *
+ * Emitted as ONE line per pass with the pass's own totals rather than one line
+ * per candidate: a full pass considers thousands of episodes, and per-candidate
+ * lines would make the log unreadable and the write cost non-trivial on the
+ * exact path we are trying to measure.
+ */
+function emitClusterPassEvent(
+  storeKey: string,
+  path: ClusterPassPath,
+  result: ClusterStoreResult,
+): void {
+  const m = getClusterMetrics(storeKey);
+  log.info('cluster.pass', {
+    store_key: storeKey,
+    path,
+    full_pass: result.full_pass,
+    clusters: result.clusters.length,
+    unclustered_count: result.unclustered_count,
+    incremental_joined: result.incremental_joined ?? 0,
+    ...(result.effective_threshold !== undefined
+      ? { effective_threshold: result.effective_threshold }
+      : {}),
+    // Cumulative for this process — a reader diffs consecutive lines to get the
+    // per-pass delta. Absolute values are what survive a missed line; deltas
+    // would not.
+    ...(m
+      ? {
+          joins_joined: m.counters.joins_joined,
+          joins_below_threshold: m.counters.joins_below_threshold,
+          joins_degenerate_guard: m.counters.joins_degenerate_guard,
+          joins_no_vector: m.counters.joins_no_vector,
+          joins_no_target: m.counters.joins_no_target,
+          communities_created: m.counters.communities_created,
+          communities_invalidated: m.counters.communities_invalidated,
+          communities_revived: m.counters.communities_revived,
+          member_edges_invalidated: m.counters.member_edges_invalidated,
+          backlog_unclustered: m.backlog?.unclustered ?? null,
+          backlog_oldest_ms: m.backlog?.oldest_unclustered_ms ?? null,
+          time_to_community_p50_ms: m.time_to_community_ms.p50,
+          time_to_community_samples: m.time_to_community_samples,
+        }
+      : {}),
+  });
+}
+
+/**
+ * Measure the live unclustered backlog and its age, and record it as a gauge.
+ *
+ * Deliberately measured AFTER the pass, off `edge` rows rather than off the
+ * pass's own return value: `unclustered_count` in `ClusterStoreResult` counts
+ * only what THIS pass considered, so it reads 0 on a pass that never got to
+ * compare anything — precisely the situation the backlog gauge exists to make
+ * visible. Reading the store directly cannot be fooled that way.
+ *
+ * Best-effort: a failure here must never fail a clustering pass, since this is
+ * an instrument, not a step.
+ */
+async function measureBacklog(adapter: StoreAdapter, storeKey: string): Promise<void> {
+  try {
+    const row = await adapter.executeGet<{ cnt: number; oldest: string | null }>(
+      `SELECT COUNT(*) AS cnt, MIN(n.t_created) AS oldest
+       FROM node n
+       WHERE n.kind = 'episode' AND n.t_invalid IS NULL
+         AND NOT EXISTS (
+           SELECT 1 FROM edge e
+           WHERE e.src = n.rowid AND e.rel = 'MEMBER_OF' AND e.t_invalid IS NULL
+         )`,
+    );
+    if (!row) return;
+    const oldestMs = row.oldest ? Date.parse(row.oldest) : NaN;
+    recordBacklog(
+      storeKey,
+      row.cnt,
+      Number.isFinite(oldestMs) ? Date.now() - oldestMs : 0,
+    );
+  } catch {
+    /* instrument must not break the pass */
   }
-  return result;
 }
 
 export interface ClusterSubsetOptions {
@@ -937,6 +1170,8 @@ export interface ClusterSubsetOptions {
    * Default false: a read-only synthesis query with no side effects.
    */
   persist?: boolean;
+  /** Metrics bucket — the store's `dbPath`. See {@link DEFAULT_STORE_KEY}. */
+  storeKey?: string;
 }
 
 export interface ClusterSubsetResult extends ClusterStoreResult {
@@ -991,13 +1226,24 @@ export async function clusterSubset(
   // Provenance hash keys on the structured filter (preferred) or the raw SQL
   // fragment (legacy). The hash must be stable across calls with the same intent.
   const provenanceHash = filterProvenanceHash(opts.filter ?? opts.restrict?.sql ?? '');
-  const episodes = await selectEpisodes(adapter, restrict);
+  const storeKey = opts.storeKey ?? DEFAULT_STORE_KEY;
 
-  const result = await computeClusters(adapter, episodes, {
-    threshold: opts.threshold,
-    nodeCap: opts.nodeCap,
-    salt: provenanceHash,
-  });
+  let episodes: EpRow[] = [];
+  const result = await MEMORY_CORE_STAGES.withContendedStage(
+    'cluster',
+    'subset',
+    async () => {
+      episodes = await selectEpisodes(adapter, restrict);
+    },
+    async () =>
+      computeClusters(adapter, episodes, {
+        threshold: opts.threshold,
+        nodeCap: opts.nodeCap,
+        salt: provenanceHash,
+        storeKey,
+      }),
+  );
+  recordClusterPass(storeKey, 'subset');
 
   let persisted = false;
   if (opts.persist) {
@@ -1007,6 +1253,7 @@ export async function clusterSubset(
         scope: 'subset',
         provenanceHash,
         filter: filterRepr,
+        storeKey,
       });
       if (result.clusters.length === 0) {
         await materializeLensMarker(adapter, provenanceHash, filterRepr);
