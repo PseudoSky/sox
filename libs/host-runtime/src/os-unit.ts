@@ -40,6 +40,7 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 
+import { ENV_ALLOW_PREFIXES, ENV_BASE_ALLOW, ENV_DENY_PREFIXES } from './env-policy.js';
 import {
   findOrphansByIdentity,
   identityToken,
@@ -834,9 +835,98 @@ export function getOsUnitPlatform(kind: OsSupervisor = detectOsSupervisor()): Os
   return kind === 'launchd' ? new LaunchdPlatform() : new SystemdPlatform();
 }
 
+// ─── BL-375 / [inv:env-preserved-on-regenerate] — diff the shell-forwarded env ────
+
+/**
+ * Reverse {@link xmlEscape}. `xmlEscape` escapes `&` FIRST when writing
+ * (`&` → `&amp;`, then `<` → `&lt;`, then `>` → `&gt;`), so the inverse must
+ * undo `&lt;`/`&gt;` BEFORE `&amp;` — unescaping `&amp;` first would turn a
+ * literal `&lt;` back into `<` a second time.
+ */
+function xmlUnescape(s: string): string {
+  return s.replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&amp;/g, '&');
+}
+
+/**
+ * BL-375: parse the `EnvironmentVariables` this module itself rendered out of
+ * an on-disk unit's text, for both platforms. Self-consuming only —
+ * `[inv:os-unit-generated]` forbids hand-authoring, so no third-party unit
+ * format is ever expected here. Best-effort: a malformed/foreign/absent
+ * `EnvironmentVariables` block returns `{}` rather than throwing (D7) — a
+ * parse failure degrades to "nothing to diff against", the pre-fix behaviour,
+ * never a new failure mode that could block a legitimate `enable`.
+ */
+export function extractUnitEnv(unitText: string, kind: OsSupervisor): Record<string, string> {
+  const env: Record<string, string> = {};
+  try {
+    if (kind === 'launchd') {
+      const marker = '<key>EnvironmentVariables</key>';
+      const start = unitText.indexOf(marker);
+      if (start === -1) return {};
+      // The dict body immediately follows: `<dict> ... </dict>`.
+      const dictStart = unitText.indexOf('<dict>', start);
+      const dictEnd = unitText.indexOf('</dict>', dictStart);
+      if (dictStart === -1 || dictEnd === -1) return {};
+      const body = unitText.slice(dictStart + '<dict>'.length, dictEnd);
+      const pairRe = /<key>([^<]*)<\/key>\s*<string>([^<]*)<\/string>/g;
+      let m: RegExpExecArray | null;
+      while ((m = pairRe.exec(body)) !== null) {
+        const key = xmlUnescape(m[1] ?? '');
+        const value = xmlUnescape(m[2] ?? '');
+        if (key) env[key] = value;
+      }
+      return env;
+    }
+    // systemd: one `Environment=KEY=VALUE` line per key (renderer emits exactly
+    // this shape, one key per line — never multiple `Environment=` assignments
+    // packed onto one line).
+    const lineRe = /^Environment=([^=]+)=(.*)$/gm;
+    let m: RegExpExecArray | null;
+    while ((m = lineRe.exec(unitText)) !== null) {
+      const key = m[1] ?? '';
+      const value = m[2] ?? '';
+      if (key) env[key] = value;
+    }
+    return env;
+  } catch {
+    return {};
+  }
+}
+
+/** True when `key` is exactly the set `scrubEnvReported` forwards from the shell (D2). */
+function isShellSourcedEnvKey(key: string): boolean {
+  if (ENV_DENY_PREFIXES.some((p) => key.startsWith(p))) return false; // SOX_PERM_*/SOX_CONFIG_*
+  if ((ENV_BASE_ALLOW as readonly string[]).includes(key)) return true;
+  return ENV_ALLOW_PREFIXES.some((p) => key.startsWith(p)); // NODE_* / SOX_* (minus denied above)
+}
+
+/**
+ * BL-375: prior shell-sourced env keys that would silently disappear if
+ * `nextEnv` were written over `priorEnv` right now, minus any the operator has
+ * explicitly acknowledged via `unsetKeys` (D3). `SOX_CONFIG_*`/`SOX_PERM_*`
+ * are structurally excluded (D2) — their presence/absence is a legitimate
+ * function of the resolved config cascade, not the ambient shell, so a
+ * `sox config unset` followed by `enable` must never trip this guard.
+ */
+export function droppedShellEnvKeys(
+  priorEnv: Record<string, string>,
+  nextEnv: Record<string, string>,
+  unsetKeys: readonly string[] = [],
+): string[] {
+  const unset = new Set(unsetKeys);
+  const dropped: string[] = [];
+  for (const key of Object.keys(priorEnv)) {
+    if (key in nextEnv) continue;
+    if (!isShellSourcedEnvKey(key)) continue;
+    if (unset.has(key)) continue;
+    dropped.push(key);
+  }
+  return dropped.sort();
+}
+
 // ─── enable / disable (idempotent, content-addressed) ────────────────────────────
 
-export type EnableAction = 'created' | 'updated' | 'unchanged';
+export type EnableAction = 'created' | 'updated' | 'unchanged' | 'blocked';
 
 export interface EnableResult {
   action: EnableAction;
@@ -845,6 +935,11 @@ export interface EnableResult {
   contentHash: string;
   /** Whether the unit was (re)loaded by the OS supervisor this call. */
   loaded: boolean;
+  /**
+   * BL-375: populated only when `action === 'blocked'` — the previously-set
+   * shell-sourced env keys that regenerating would have silently dropped.
+   */
+  droppedEnvKeys?: string[];
 }
 
 export interface EnableOptions {
@@ -859,6 +954,12 @@ export interface EnableOptions {
    */
   load?: boolean;
   log?: (m: string) => void;
+  /**
+   * BL-375 (D3): the operator's explicit, per-key acknowledgment that a
+   * previously-set shell-sourced env key is meant to be dropped by this
+   * regeneration. No blanket bypass — every dropped key must be named.
+   */
+  unsetKeys?: string[];
 }
 
 function ensureDir(p: string): void {
@@ -909,6 +1010,31 @@ export function enableOsUnit(
   if (contentSame && (!wantLoad || currentlyLoaded)) {
     log(`os-unit ${spec.label}: unchanged (content-hash ${newHash})`);
     return { action: 'unchanged', unitPath, label: spec.label, contentHash: newHash, loaded: currentlyLoaded };
+  }
+
+  // BL-375 [inv:env-preserved-on-regenerate]: about to write new content over an
+  // existing unit — refuse if that would silently drop a previously-set
+  // shell-sourced env key the operator hasn't explicitly acknowledged (D1/D2/D3).
+  if (existed) {
+    const priorEnv = extractUnitEnv(fs.readFileSync(unitPath, 'utf8'), platform.kind);
+    const dropped = droppedShellEnvKeys(priorEnv, spec.env, opts.unsetKeys ?? []);
+    if (dropped.length > 0) {
+      log(
+        `os-unit ${spec.label}: BLOCKED — regenerating would silently drop ${dropped.length} ` +
+          `previously-set env key(s): ${dropped.join(', ')} (BL-375 [inv:env-preserved-on-regenerate]). ` +
+          `Export them in this shell before re-running 'service enable', or pass ` +
+          `--unset ${dropped.join(',')} to acknowledge the removal is intentional. ` +
+          `Unit file NOT written.`,
+      );
+      return {
+        action: 'blocked',
+        unitPath,
+        label: spec.label,
+        contentHash: priorHash ?? newHash,
+        loaded: currentlyLoaded,
+        droppedEnvKeys: dropped,
+      };
+    }
   }
 
   // Content changed (or first write, or not loaded yet). If currently loaded with
