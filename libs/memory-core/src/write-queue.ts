@@ -774,10 +774,44 @@ export class WriteQueue {
     return this._enqueueQueued(label, operation, kind, resolvedTraceId, storeKey);
   }
 
+  /** (BUG-MEMORY-001 §2.3) Bounded attempts for a retryable-classified bypass
+   *  failure: 1 initial attempt + 2 retries. Matches
+   *  `TursoAdapterImpl._runTransaction`'s own `maxRetries=3` default
+   *  (turso-adapter.ts) for consistency. Not configurable in this pass — see
+   *  SPEC-BUG-MEMORY-001.md §5. */
+  private static readonly BYPASS_MAX_ATTEMPTS = 3;
+
   /** The `_bypass`/`_noop` execution body, extracted verbatim from `enqueue` so
    *  it can be handed to `withContendedStage` as the `work` half of the pair.
-   *  Behaviour is unchanged; only the wrapper is new. */
-  private _runBypass<T>(
+   *
+   * (BUG-MEMORY-001 §2.3) Previously called `operation(this.adapter)` exactly
+   * once and rethrew any rejection VERBATIM — the raw driver exception, never
+   * wrapped via `wrapDbError` (unlike `_processNext`, the FIFO/SQLite-only
+   * path, which always wraps). This was defect (A) of BUG-MEMORY-001: the one
+   * path production actually takes (Turso, `_noop=true`) was the one path
+   * with zero error-wrapping or retry parity with the FIFO path.
+   *
+   * Now: the operation is retried up to `BYPASS_MAX_ATTEMPTS` times, but ONLY
+   * when `wrapDbError(err).retryable` is true (i.e. a classified transient
+   * contention condition — see errors.ts §2.2). A full replay of the ENTIRE
+   * `operation` closure from scratch is safe by construction for every
+   * memory-core write path (content-hash dedup runs BEFORE the transaction,
+   * inserts happen INSIDE a transaction that rolls back on any thrown error —
+   * see write.ts and SPEC-BUG-MEMORY-001.md §2.3's proof) — there is
+   * deliberately no resumable/checkpointed retry.
+   *
+   * The final rejection is ALWAYS a `StorageError` (never a raw driver
+   * exception) — this is a deliberate, documented behavior change; see
+   * SPEC-BUG-MEMORY-001.md §2.3.1 for the two existing tests this changes.
+   *
+   * Telemetry contract (unchanged): `writequeue.task.start`/
+   * `writequeue.task.finish`/`writequeue.task.error` each fire exactly ONCE
+   * per logical `enqueue()` call (not once per attempt), and `_settleBypass`
+   * (counters, latency ring) is touched exactly once. A NEW,
+   * once-per-RETRY-attempt event, `writequeue.task.retry`, is emitted for
+   * each attempt beyond the first that is about to be retried.
+   */
+  private async _runBypass<T>(
     label: string,
     operation: (adapter: StoreAdapter) => T | Promise<T>,
     kind: TaskKind,
@@ -785,54 +819,46 @@ export class WriteQueue {
     storeKey: string,
     scheduleIdleCheckpoint: () => void,
   ): Promise<T> {
-    {
-      const t0 = performance.now();
-      // (BL-445) Rolling average BEFORE this task — the slow-task baseline,
-      // captured at the same point `_processNext` captures it (:1029).
-      const avgAtStartMs = this._latencies.recentMean(WriteQueue.RECENT_AVG_WINDOW);
-      this._bypassInFlight++;
-      log.info('writequeue.task.start', { trace_id: resolvedTraceId, store: storeKey, label, kind, mode: 'bypass' });
+    const t0 = performance.now();
+    // (BL-445) Rolling average BEFORE this task — the slow-task baseline,
+    // captured at the same point `_processNext` captures it (:1029).
+    const avgAtStartMs = this._latencies.recentMean(WriteQueue.RECENT_AVG_WINDOW);
+    this._bypassInFlight++;
+    log.info('writequeue.task.start', { trace_id: resolvedTraceId, store: storeKey, label, kind, mode: 'bypass' });
+
+    let attempt = 0;
+    for (;;) {
       try {
-        const result = withTrace(resolvedTraceId, () => operation(this.adapter));
-        if (result instanceof Promise) {
-          return result.then(
-            (v) => {
-              this._settleBypass(t0, avgAtStartMs, kind, label);
-              scheduleIdleCheckpoint();
-              log.info('writequeue.task.finish', {
-                trace_id: resolvedTraceId, store: storeKey, label, kind, mode: 'bypass',
-                duration_ms: Math.round(performance.now() - t0),
-              });
-              return v;
-            },
-            (err) => {
-              this._settleBypass(t0, avgAtStartMs, kind, label);
-              scheduleIdleCheckpoint();
-              log.error('writequeue.task.error', {
-                trace_id: resolvedTraceId, store: storeKey, label, kind, mode: 'bypass',
-                duration_ms: Math.round(performance.now() - t0),
-                error: err instanceof Error ? err.message : String(err),
-              });
-              throw err;
-            },
-          );
-        }
+        const result = await withTrace(resolvedTraceId, () => operation(this.adapter));
         this._settleBypass(t0, avgAtStartMs, kind, label);
         scheduleIdleCheckpoint();
         log.info('writequeue.task.finish', {
           trace_id: resolvedTraceId, store: storeKey, label, kind, mode: 'bypass',
           duration_ms: Math.round(performance.now() - t0),
         });
-        return Promise.resolve(result);
+        return result;
       } catch (err) {
-        this._settleBypass(t0, avgAtStartMs, kind, label);
-        scheduleIdleCheckpoint();
-        log.error('writequeue.task.error', {
+        const wrapped = wrapDbError(err);
+        attempt++;
+        if (!wrapped.retryable || attempt >= WriteQueue.BYPASS_MAX_ATTEMPTS) {
+          this._settleBypass(t0, avgAtStartMs, kind, label);
+          scheduleIdleCheckpoint();
+          log.error('writequeue.task.error', {
+            trace_id: resolvedTraceId, store: storeKey, label, kind, mode: 'bypass',
+            duration_ms: Math.round(performance.now() - t0),
+            error: wrapped.message,
+            error_code: wrapped.code,
+            attempts: attempt,
+          });
+          // Final failure — always a StorageError, never a raw driver exception.
+          throw wrapped;
+        }
+        const delayMs = (wrapped.retry_after_ms ?? 250) * attempt; // 250ms, then 500ms
+        log.warn('writequeue.task.retry', {
           trace_id: resolvedTraceId, store: storeKey, label, kind, mode: 'bypass',
-          duration_ms: Math.round(performance.now() - t0),
-          error: err instanceof Error ? err.message : String(err),
+          attempt, max_attempts: WriteQueue.BYPASS_MAX_ATTEMPTS, delay_ms: delayMs, error_code: wrapped.code,
         });
-        return Promise.reject(err);
+        await new Promise((resolve) => setTimeout(resolve, delayMs));
       }
     }
   }
