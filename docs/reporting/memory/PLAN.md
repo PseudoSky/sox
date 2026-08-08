@@ -21,12 +21,12 @@ A packet is **DONE** only when every BL id it targets is closed — code landing
 (BL-225). Several packets below have merged code and still read OPEN; that is correct, and the
 remedy is to close the backlog item with a red→green test, not to edit this table.
 
-**49 done · 3 partial · 33 open** of 85 packets.
+**53 done · 4 partial · 28 open** of 85 packets.
 
-- Open backlog items in this program's scope: **61**, of which **19** have no packet.
+- Open backlog items in this program's scope: **56**, of which **19** have no packet.
 - Open items deliberately out of scope: **28** — BL-99, BL-103, BL-104, BL-105, BL-163, BL-225, BL-228, BL-258, BL-261, BL-282, BL-283, BL-284, BL-285, BL-288, BL-291, BL-292, BL-296, BL-298, BL-305, BL-306, BL-307, BL-308, BL-309, BL-314, BL-315, BL-333, BL-355, BL-408
 - Unscheduled in-scope items (need a packet): BL-436, BL-462, BL-466, BL-467, BL-468, BL-470, BL-473, BL-474, BL-475, BL-476, BL-478, BL-479, BL-480, BL-481, BL-482, BL-483, BL-484, BL-485, BL-486
-- Packet targets already closed (57) — historical context only, no work remains: BL-259, BL-329, BL-337, BL-338, BL-341, BL-343, BL-348, BL-350, BL-359, BL-360, BL-361, BL-362, BL-364, BL-376, BL-379, BL-380, BL-383, BL-388, BL-390, BL-391, BL-394, BL-397, BL-399, BL-402, BL-405, BL-406, BL-407, BL-410, BL-412, BL-416, BL-425, BL-426, BL-432, BL-435, BL-437, BL-438, BL-439, BL-440, BL-441, BL-443, BL-444, BL-445, BL-446, BL-447, BL-448, BL-449, BL-451, BL-453, BL-454, BL-456, BL-457, BL-458, BL-459, BL-461, BL-463, BL-464, BL-465
+- Packet targets already closed (62) — historical context only, no work remains: BL-259, BL-329, BL-332, BL-337, BL-338, BL-341, BL-343, BL-348, BL-350, BL-359, BL-360, BL-361, BL-362, BL-364, BL-376, BL-379, BL-380, BL-383, BL-388, BL-389, BL-390, BL-391, BL-392, BL-394, BL-397, BL-399, BL-402, BL-405, BL-406, BL-407, BL-410, BL-412, BL-416, BL-425, BL-426, BL-432, BL-435, BL-437, BL-438, BL-439, BL-440, BL-441, BL-442, BL-443, BL-444, BL-445, BL-446, BL-447, BL-448, BL-449, BL-451, BL-453, BL-454, BL-456, BL-457, BL-458, BL-459, BL-460, BL-461, BL-463, BL-464, BL-465
 
 | Packet | Status | Targets | Still open |
 |---|---|---|---|
@@ -36,7 +36,7 @@ remedy is to close the backlog item with a red→green test, not to edit this ta
 | PKT-04 | **DONE** | BL-364, BL-380 | — |
 | PKT-05 | **DONE** | BL-380 | — |
 | PKT-06 | **DONE** | BL-388 | — |
-| PKT-07 | **OPEN** | BL-389 | BL-389 |
+| PKT-07 | **DONE** | BL-389 | — |
 | PKT-08 | **DONE** | BL-397 | — |
 | PKT-09 | **OPEN** | BL-396 | BL-396 |
 | PKT-10 | **DONE** | BL-383 | — |
@@ -51,7 +51,7 @@ remedy is to close the backlog item with a red→green test, not to edit this ta
 | PKT-19 | **DONE** | BL-329 | — |
 | PKT-20 | **DONE** | BL-360 | — |
 | PKT-21 | **DONE** | BL-361 | — |
-| PKT-22 | **OPEN** | BL-392 | BL-392 |
+| PKT-22 | **DONE** | BL-392 | — |
 | PKT-23 | **DONE** | BL-379 | — |
 | PKT-24 | **OPEN** | BL-319, BL-358 | BL-319, BL-358 |
 | PKT-25 | **OPEN** | BL-334 | BL-334 |
@@ -68,7 +68,7 @@ remedy is to close the backlog item with a red→green test, not to edit this ta
 | PKT-36 | **DONE** | BL-399 | — |
 | PKT-37 | **PARTIAL** | BL-390, BL-393 | BL-393 |
 | PKT-38 | **OPEN** | BL-375 | BL-375 |
-| PKT-39 | **OPEN** | BL-332 | BL-332 |
+| PKT-39 | **DONE** | BL-332 | — |
 | PKT-40 | **DONE** | BL-394 | — |
 | PKT-41 | **DONE** | BL-391 | — |
 | PKT-42 | **OPEN** | BL-317, BL-318 | BL-317, BL-318 |
@@ -90,7 +90,7 @@ remedy is to close the backlog item with a red→green test, not to edit this ta
 | PKT-58 | **DONE** | BL-439 | — |
 | PKT-59 | **DONE** | BL-440 | — |
 | PKT-60 | **DONE** | BL-441 | — |
-| PKT-61 | **OPEN** | BL-442 | BL-442 |
+| PKT-61 | **DONE** | BL-442 | — |
 | PKT-62 | **DONE** | BL-443 | — |
 | PKT-63 | **DONE** | BL-444 | — |
 | PKT-64 | **DONE** | BL-445 | — |
@@ -108,7 +108,7 @@ remedy is to close the backlog item with a red→green test, not to edit this ta
 | PKT-76 | **DONE** | BL-456, BL-457, BL-463, BL-465 | — |
 | PKT-77 | **DONE** | BL-435, BL-464 | — |
 | PKT-78 | **DONE** | BL-451, BL-453, BL-458, BL-459 | — |
-| PKT-79 | **OPEN** | BL-452, BL-460 | BL-452, BL-460 |
+| PKT-79 | **PARTIAL** | BL-452, BL-460 | BL-452 |
 | PKT-80 | **OPEN** | BL-450, BL-455 | BL-450, BL-455 |
 | PKT-81 | **OPEN** | BL-424 | BL-424 |
 | PKT-82 | **DONE** | BL-461 | — |
@@ -1327,7 +1327,7 @@ completion, don't just assume no build ran.
 
 ### PKT-07 — BL-389: `LanceDbVectorBackend` constructor typed against raw `better-sqlite3`
 
-> **status: OPEN** — still open: BL-389 · derived by `tools/plan-status.mjs`, do not hand-edit
+> **status: DONE** — all targets closed (BL-389) · derived by `tools/plan-status.mjs`, do not hand-edit
 
 **Closes:** BL-389
 **Files:** `libs/data/vectors/vector-store/src/lancedb.ts`.
@@ -1537,7 +1537,7 @@ completion, don't just assume no build ran.
 
 ### PKT-22 — BL-392: vec-arm KNN distance metric never declared on sqlite
 
-> **status: OPEN** — still open: BL-392 · derived by `tools/plan-status.mjs`, do not hand-edit
+> **status: DONE** — all targets closed (BL-392) · derived by `tools/plan-status.mjs`, do not hand-edit
 
 **Closes:** BL-392
 **Files:** `libs/data/store/store-adapter/src/{sqlite-vec-dialect,fts-dialect}.ts` — specifically `SqliteVecDialect.createTableDDL` (add `distance_metric=cosine` to the `vec0` DDL) and the `topKQuery` metric parameter (stop silently ignoring `metric='cosine'`).
@@ -1842,7 +1842,7 @@ calibration undocumented (the guard becomes a pure safety net that should rarely
 
 ### PKT-39 — BL-332: `soxe list` reports a running service as INACTIVE
 
-> **status: OPEN** — still open: BL-332 · derived by `tools/plan-status.mjs`, do not hand-edit
+> **status: DONE** — all targets closed (BL-332) · derived by `tools/plan-status.mjs`, do not hand-edit
 
 **Closes:** BL-332
 **Files:** `apps/sox/src/main.ts` (`cmdList` — route its status column through the same reality-verification `cmdStatus`/`service status` already uses; this is the exact BL-95 shape, fixed once already for a different command).
@@ -2825,7 +2825,7 @@ both silently accepted.
 
 ### PKT-61 — BL-442: the operator migration — no longer optional, and it performs the operation that emptied `edge`
 
-> **status: OPEN** — still open: BL-442 · derived by `tools/plan-status.mjs`, do not hand-edit
+> **status: DONE** — all targets closed (BL-442) · derived by `tools/plan-status.mjs`, do not hand-edit
 
 **Goal:** PKT-58 and PKT-74 open `kind` and `rel` for **new** stores only — `CREATE TABLE IF NOT
 EXISTS` no-ops on existing ones — so every store alive today, including the live ~10,150-node
@@ -3057,7 +3057,7 @@ context, never by telling a subagent to read this file.
 
 ### PKT-79 — BL-452 + BL-460: every foundation fix is an N-package release, and nothing links an API change to a changeset
 
-> **status: OPEN** — still open: BL-452, BL-460 · derived by `tools/plan-status.mjs`, do not hand-edit
+> **status: PARTIAL** — still open: BL-452 · derived by `tools/plan-status.mjs`, do not hand-edit
 
 **Goal:** two coupled release defects. (a) BL-452: pnpm rewrites `workspace:*` to an **exact** version at pack time — verified, `@adhd/sox-memory-core@0.4.1` pins `"@adhd/sox-store-adapter": "0.1.1"` — so publishing a fixed low-level package alone is invisible to every dependent, and one three-line dependency change cost eight npm releases. (b) BL-460: `ls .changeset/*.md` is **empty** while two packages published the same day have had public type changes land since (`WriteQueueMetrics` widened to nullable + `mode`/`admission_control`; `AdapterBackupResult` gained `integrityReport`), so the published tarballs describe a shape the source no longer has. `check-publishable.ts` validates dependency *shape* only and cannot see this.
 **Closes:** BL-452, BL-460
