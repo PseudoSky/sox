@@ -337,6 +337,7 @@ export type {
   CurateDropLensResult,
   CurateDropEpisodesResult,
   CurateListLensesResult,
+  CurateRehealStaleResult,
 } from './curate.js';
 export { memoryGetStats } from './stats.js';
 export type { StatsResult, EmbedProvenanceStats } from './stats.js';
