@@ -22,7 +22,13 @@
 | `feat/cluster-time-to-community` | BL-496 clustering instrument (`cluster-metrics.ts`, `cluster_pipeline` in `memory_ping`) | verified, fork-proven, rebased; **121 uncommitted lines** in worktree adding `ever_clustered_fraction` + `EVER_CLUSTERED_GRACE_MS` (orphaned by `cluster-latency`, BL-463 shape) |
 | `feat/cluster-tracing` | guard's instrument — finer 5-outcome taxonomy, `stages.ts` integration, lifecycle counters, backlog off `edge` rows | green; **conflicts with BL-496 on 7 files**; does not merge mechanically |
 | `feat/bug-memory-006-community-affordance` | Wave HH | review verdict **NOT MERGEABLE**: ships a hard reject where an advisory was ruled; `SPEC-BUG-MEMORY-006.md:316` §1b still factually wrong ("only site" that mints a community uid) |
-| `feat/sub600-cluster` | `tools/profile-phase-a.ts` (`5e01cfe0`), measurement only | not merged |
+| `feat/sub600-cluster` | `tools/profile-phase-a.ts` (`5e01cfe0`), measurement only; Phase-A fold-in (`c9540072`) — `enrich.ts` extracts `computeWriteEnrichment()`/`detectAndApplyNearDup()`, `write.ts` folds enrichment into the INSERT; 4→3 SQL calls, 2→1 transactions | not merged; needs a changeset (two additive exports) |
+
+Fold-in measured on a store copy, same harness, n=12 each: Phase-A wall p50 241.1 → 120.2ms (−50.1%); DB time 236.3 → 110.3ms. Predicted ~134ms saving, actual ~121ms — the enlarged INSERT rises 102.91 → 113.05ms/call. Remaining INSERT is 99.7% of Phase-A DB time. Copy-measured only; live is 919ms p50 (n=11); the ~3.8× gap is unexplained and no concurrent writers were present. Structure defended, absolute number not.
+
+Regression guard: a statement-count assertion (`issues exactly ONE node-write statement per write`) is the only detector — the three behaviour tests pass in both arms by design, so without it a re-added enrichment UPDATE would restore the cost silently. Counter excludes entity-node inserts (`write.ts:395`) and Phase-B's `embed_model` stamp (`embed-pipeline.ts:452`).
+
+`a068ef0e` landed on `main`: a `tools/plan-status.mjs` derived-count resync (4 lines) demanded by the pre-commit hook. Drift originated from BL-495/496/497, not from the perf work; committed separately.
 
 Ordering decided: BL-496 merges first, guard rebases on top. Neither has landed.
 
@@ -44,6 +50,11 @@ No standing instrument exists. Every timing produced this session came from a on
 BUG-MEMORY-008 (CRITICAL, `buildCommunities` unscoped level-0 wipe), BUG-MEMORY-012, BUG-MEMORY-011, BL-495, BUG-MEMORY-007, BUG-MEMORY-010 (fix must not land before BL-496 deploys — `meta.member_count` drift is the only historical join-rate record), BL-497 (`selectEpisodes` `LENGTH(content) < 50` floor), CHORE-MEMORY-001, τ recalibration (τ=0.80 admits 60%, 0.85 → 21%, 0.86 → 12%), `t_expired`/`t_invalid` reconciliation.
 
 BUG-MEMORY-009 marked DUPLICATE of BL-495; its singleton constraint (`meanIntraSim()` returns 1.0 for single-member clusters, feeding store-wide `mean_intra_sim`) and the D8 re-open condition were copied to BL-495 first.
+
+## Filed late in session
+
+- **PERF-MEMORY-003** (HIGH) — the Phase-A fold-in, with the copy-vs-live caveat recorded.
+- **PERF-MEMORY-004** (HIGH) — E7 `computeImportance` is unreachable on the write path. `write.ts:197` destructures `importance = 1.0`, so `p.importance !== undefined` is always true downstream. Every episode without explicit importance stores `1.0` rather than a content-derived score, and is falsely stamped `enrich_ver.note = "user_override"` (~5,155 live episodes). `memory_recall` with no query is documented as importance-ranked and `filters.importance_min` filters that column, so both are near-meaningless if nearly everything is 1.0. Whether the false `user_override` stamp causes the batch enricher to preserve a value the user never chose is **untraced** — first thing to check. Pre-existing; not fixed.
 
 ## Tooling defect, unfiled
 
