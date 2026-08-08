@@ -408,6 +408,18 @@ instruction). Name every test with the BL id in its `it()` string.
 - RED arm: before the fix, this returns `E_NOT_FOUND` — this is the literal repro of the dispatch's 3 failing
   probe uids; run it against the current code first and confirm it fails with `E_NOT_FOUND`, then apply the
   fix and confirm it passes.
+- **[ARCHITECT AMENDMENT, 2026-08-08, ratified post-implementation]** The construction method above
+  (`SOX_SYNC_EMBED=1` / hand-seeded `enrichOnWrite`/`applyNearDupResult` fixture) is **superseded**. The
+  implementer found it collides with a `UNIQUE constraint failed: vec_node.node_id` — `memoryWrite` (the
+  wrapper this suite's own `writeEpisode()` helper already used) always awaits `embed()` +
+  `applyEmbedding()` synchronously before returning (`write.ts:505-526`), regardless of `SOX_SYNC_EMBED`
+  (that env var affects a different composition path), and `applyEmbedding` (`embed-pipeline.ts:456-487`)
+  already inserts the `vec_node` row and runs the real E8 near-dup detection automatically. **Sanctioned
+  construction going forward:** write two near-duplicate episodes back-to-back via `memoryWrite` directly
+  (no manual fixture, no synthetic embedding pair) — this drives the actual production near-dup pipeline
+  end-to-end rather than a synthetic stand-in, and is a strictly stronger test than the one originally
+  specified, not a weaker one. Confirmed implemented exactly this way in
+  `libs/memory-core/src/invalidate.spec.ts` (BUG-MEMORY-002 (c), commit `da9ad478`).
 
 **(d) Wrong-kind uid → `E_WRONG_KIND`, node NOT touched.**
 - Test: seed a `kind='community'` node directly (the existing pattern in `invalidate.spec.ts:207-211` already
