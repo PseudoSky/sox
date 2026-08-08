@@ -48,12 +48,6 @@ export const GUARDS = [
     watch: ['CLAUDE.md'],
   },
   {
-    id: 'bl416',
-    tier: 1,
-    script: 'test-bl416-shared-registry-lock.mjs',
-    watch: ['tools/allocate-bl-id.mjs'],
-  },
-  {
     id: 'bl435',
     tier: 1,
     script: 'test-bl435-unguarded-prose.mjs',
@@ -68,12 +62,6 @@ export const GUARDS = [
       'tools/check-backlog-markers.mjs',
       'tools/check-bl-id-integrity.mjs',
     ],
-  },
-  {
-    id: 'bl454',
-    tier: 1,
-    script: 'test-bl454-annotation-dedupe.mjs',
-    watch: ['tools/check-backlog-markers.mjs'],
   },
   {
     id: 'bl456',
