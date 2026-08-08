@@ -493,3 +493,137 @@ describe('score_breakdown — cross-query comparability (HF-3)', () => {
     }
   });
 });
+
+// ── BUG-MEMORY-003: memory_recall pads results with null-content entity nodes ─
+//
+// Root cause (two independent entry points, both fixed in recall.ts):
+//   1a. Temporal channel (recall.ts ~L623) had no `n.kind` predicate — every
+//       live node (episode/entity/community/session/generic) was a candidate
+//       ordered by recency.
+//   1b. Depth-1 graph-expansion neighbor fetch (recall.ts ~L834, DEFAULT_DEPTH=1)
+//       also had no kind predicate — every tagged episode has a live MENTIONS
+//       edge to its own entity node(s) (write.ts:365-390), so those entities
+//       are the episode's own depth-1 neighbors and got pulled in regardless
+//       of the temporal-channel fix.
+//
+// Fix: `filters.kinds` (default ['episode']) applied at all SQL candidate-
+// admission points (temporal, vec, FTS×2, graph-expansion). See
+// SPEC-BUG-MEMORY-003.md for the full ruling.
+//
+// Every assertion below is `content !== null` for ALL results, never merely
+// "the expected episode is present" — the item is explicit that the weaker
+// assertion is exactly what let this ship (BL-167/BL-319/BL-469 shape).
+describe('BUG-MEMORY-003 — memory_recall excludes non-episode node kinds by default', () => {
+  it('AC1: temporal-channel entry point closed (depth: 0)', async () => {
+    const { db, dir } = await tmpDb();
+    try {
+      // Real memoryWrite() with tags — tags create real entity nodes via the
+      // real write.ts:365-390 path (no hand-inserted kind='entity' rows).
+      await memoryWrite(db, { content: 'widget calibration procedure alpha revision', name: 'widget-alpha', tags: ['widget-alpha-tag'], project_path: '/test/project' });
+      await memoryWrite(db, { content: 'widget calibration procedure beta revision', name: 'widget-beta', tags: ['widget-beta-tag'], project_path: '/test/project' });
+      await memoryWrite(db, { content: 'widget calibration procedure gamma revision', name: 'widget-gamma', tags: ['widget-gamma-tag'], project_path: '/test/project' });
+
+      const response = await memoryRecall(db, 'project', {
+        query: 'widget calibration procedure',
+        depth: 0,
+        limit: 10,
+      });
+
+      expect(response.results.every((r) => r.content !== null)).toBe(true);
+      expect(response.results.length).toBe(3);
+    } finally {
+      cleanup(db, dir);
+    }
+  });
+
+  it('AC2: graph-expansion entry point closed (default depth, i.e. DEFAULT_DEPTH=1)', async () => {
+    const { db, dir } = await tmpDb();
+    try {
+      await memoryWrite(db, { content: 'widget calibration procedure alpha revision', name: 'widget-alpha', tags: ['widget-alpha-tag'], project_path: '/test/project' });
+      await memoryWrite(db, { content: 'widget calibration procedure beta revision', name: 'widget-beta', tags: ['widget-beta-tag'], project_path: '/test/project' });
+      await memoryWrite(db, { content: 'widget calibration procedure gamma revision', name: 'widget-gamma', tags: ['widget-gamma-tag'], project_path: '/test/project' });
+
+      // No depth override — DEFAULT_DEPTH = 1 applies, exercising the graph-
+      // expansion neighbor fetch (§1b) independently of the temporal fix (§1a).
+      const response = await memoryRecall(db, 'project', {
+        query: 'widget calibration procedure',
+        limit: 10,
+      });
+
+      expect(response.results.every((r) => r.content !== null)).toBe(true);
+      expect(response.results.length).toBe(3);
+    } finally {
+      cleanup(db, dir);
+    }
+  });
+
+  it('AC3: opt-in still works via filters.kinds', async () => {
+    const { db, dir } = await tmpDb();
+    try {
+      await memoryWrite(db, { content: 'widget calibration procedure alpha revision', name: 'widget-alpha', tags: ['widget-alpha-tag'], project_path: '/test/project' });
+      await memoryWrite(db, { content: 'widget calibration procedure beta revision', name: 'widget-beta', tags: ['widget-beta-tag'], project_path: '/test/project' });
+      await memoryWrite(db, { content: 'widget calibration procedure gamma revision', name: 'widget-gamma', tags: ['widget-gamma-tag'], project_path: '/test/project' });
+
+      // Confirm the fixed default excludes entities first, in the same run,
+      // to prove the opt-in below is doing the work — not corpus luck.
+      const defaultResponse = await memoryRecall(db, 'project', {
+        query: 'widget calibration procedure',
+        limit: 20,
+      });
+      expect(defaultResponse.results.every((r) => r.content !== null)).toBe(true);
+
+      const optInResponse = await memoryRecall(db, 'project', {
+        query: 'widget calibration procedure',
+        filters: { kinds: ['episode', 'entity'] },
+        limit: 20,
+      });
+      expect(optInResponse.results.some((r) => r.content === null)).toBe(true);
+    } finally {
+      cleanup(db, dir);
+    }
+  });
+
+  it('AC4: token budget is spent on usable (episode) rows, not entity padding', async () => {
+    const { db, dir } = await tmpDb();
+    try {
+      // Size content precisely via estimateTokens' documented Math.ceil(text.length/4)
+      // formula so the token_budget can be set to admit exactly one real
+      // episode's tokens and no more.
+      const content = 'widget calibration procedure delta revision ' + 'x'.repeat(400);
+      await memoryWrite(db, { content, name: 'widget-delta', tags: ['widget-delta-tag'], project_path: '/test/project' });
+
+      // addResult() (recall.ts) estimates tokens from
+      // `[node.content, node.name, node.summary].filter(Boolean).join(' ')` —
+      // node.summary is auto-populated by write-time enrichment (often equal
+      // to the full content for short docs), so the real per-row token cost
+      // is larger than `content` alone. Read the actual persisted row back
+      // to size the budget against the true formula rather than guessing.
+      const episodeRow = await db.executeGet<{ content: string | null; name: string | null; summary: string | null }>(
+        `SELECT content, name, summary FROM node WHERE kind = 'episode' AND content = ?`,
+        [content],
+      );
+      expect(episodeRow).toBeDefined();
+      const episodeText = [episodeRow!.content, episodeRow!.name, episodeRow!.summary]
+        .filter(Boolean)
+        .join(' ');
+      const episodeTokens = Math.ceil(episodeText.length / 4);
+
+      // Budget = exactly the real episode's token cost + a small margin that
+      // comfortably fits the entity's (name-only, content=null) tiny token
+      // footprint — enough for "one real episode, plus room the bug would
+      // spend on an entity row", but nowhere near two full episodes.
+      const tokenBudget = episodeTokens + 40;
+
+      const response = await memoryRecall(db, 'project', {
+        query: 'widget calibration procedure delta',
+        token_budget: tokenBudget,
+        limit: 10,
+      });
+
+      expect(response.results.length).toBe(1);
+      expect(response.results[0]!.content).not.toBeNull();
+    } finally {
+      cleanup(db, dir);
+    }
+  });
+});
