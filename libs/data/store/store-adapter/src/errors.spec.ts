@@ -1,28 +1,76 @@
 import { describe, it, expect } from 'vitest';
-import { isUniqueConstraintError, isFatalConnectionError } from './errors.js';
+import {
+  isUniqueConstraintError,
+  isForeignKeyError,
+  isBusyError,
+  isConcurrentConflict,
+  isDatabaseError,
+  isFatalConnectionError,
+} from './errors.js';
 
 describe('errors.ts — SQLITE_*-code helpers vs the live Turso driver', () => {
   /**
-   * BUG-ERRORS-TS-CODE-HELPERS-NEVER-MATCH-TURSO-001 — documents a
-   * pre-existing, separate defect found while building SPEC-CONN-RECYCLE
-   * (2026-08-08): probing the real `@tursodatabase/database@0.7.1` driver
-   * directly shows every error it raises carries `code: 'GenericFailure'`,
-   * including a genuine UNIQUE constraint violation
-   * (`step failed: Runtime error: UNIQUE constraint failed: t.name (19)`).
-   * `isUniqueConstraintError`/`isForeignKeyError`/`isBusyError`/
-   * `isDatabaseError` are all keyed on an `SQLITE_*`-prefixed `code` — a
-   * shape that is real for `SqliteAdapterImpl`'s better-sqlite3 driver but
-   * NEVER produced by the live Turso driver. This test is deliberately
-   * RED-as-shipped: it documents the gap so the next reader doesn't have to
-   * rediscover it. Do not mark it `it.skip` and do not resolve the filed
-   * backlog item from this assertion alone — see SPEC-CONN-RECYCLE.md §2.
+   * BUG-ERRORS-TS-CODE-HELPERS-NEVER-MATCH-TURSO-001 — resolved by
+   * BUG-MEMORY-001's §2.1 (2026-08-08): `isUniqueConstraintError`,
+   * `isForeignKeyError`, `isBusyError`, `isConcurrentConflict`, and
+   * `isDatabaseError` are now widened to OR a Turso message-marker check
+   * (following `isFatalConnectionError`'s established precedent — match
+   * driver TEXT, never `err.code`, since `@tursodatabase/database@0.7.1`
+   * emits `code: 'GenericFailure'` on every error) alongside the original
+   * SQLite `code`-based check. The widening is strict: nothing that was
+   * `true` on the SQLite/code-based check becomes `false`.
    */
-  it('BUG-ERRORS-TS-CODE-HELPERS-NEVER-MATCH-TURSO-001: isUniqueConstraintError never matches a real Turso UNIQUE violation', () => {
+  it('BUG-ERRORS-TS-CODE-HELPERS-NEVER-MATCH-TURSO-001: isUniqueConstraintError now matches a real Turso UNIQUE violation', () => {
     const realTursoUniqueViolation = {
       code: 'GenericFailure',
       message: 'step failed: Runtime error: UNIQUE constraint failed: t.name (19)',
     };
-    expect(isUniqueConstraintError(realTursoUniqueViolation)).toBe(false);
+    expect(isUniqueConstraintError(realTursoUniqueViolation)).toBe(true);
+  });
+
+  it('isForeignKeyError matches a real Turso FOREIGN KEY violation', () => {
+    const realTursoForeignKeyViolation = {
+      code: 'GenericFailure',
+      message: 'step failed: Runtime error: FOREIGN KEY constraint failed',
+    };
+    expect(isForeignKeyError(realTursoForeignKeyViolation)).toBe(true);
+  });
+
+  it('isBusyError matches the BUG-MEMORY-001 incident text verbatim ("database is locked", no phase prefix)', () => {
+    expect(isBusyError({ code: 'GenericFailure', message: 'database is locked' })).toBe(true);
+  });
+
+  it('isConcurrentConflict matches the BUG-MEMORY-001 incident text verbatim', () => {
+    expect(isConcurrentConflict({ code: 'GenericFailure', message: 'database is locked' })).toBe(true);
+  });
+
+  it('isBusyError matches a phase-prefixed Turso busy message', () => {
+    expect(isBusyError({ code: 'GenericFailure', message: 'step failed: database table is locked' })).toBe(
+      true,
+    );
+  });
+
+  it('isDatabaseError matches any phase-prefixed Turso GenericFailure', () => {
+    expect(
+      isDatabaseError({
+        code: 'GenericFailure',
+        message: 'step failed: Runtime error: UNIQUE constraint failed: t.name (19)',
+      }),
+    ).toBe(true);
+  });
+
+  it('isDatabaseError does NOT match a Turso GenericFailure with no phase-prefix marker', () => {
+    expect(isDatabaseError({ code: 'GenericFailure', message: 'database is locked' })).toBe(false);
+  });
+
+  it('SQLite code-based checks are unchanged (strict widening, not a rewrite)', () => {
+    expect(isUniqueConstraintError({ code: 'SQLITE_CONSTRAINT_UNIQUE', message: 'UNIQUE failed' })).toBe(
+      true,
+    );
+    expect(isForeignKeyError({ code: 'SQLITE_CONSTRAINT_FOREIGNKEY', message: 'FK failed' })).toBe(true);
+    expect(isBusyError({ code: 'SQLITE_BUSY', message: 'database is locked' })).toBe(true);
+    expect(isConcurrentConflict({ code: 'SQLITE_BUSY_SNAPSHOT', message: 'snapshot conflict' })).toBe(true);
+    expect(isDatabaseError({ code: 'SQLITE_IOERR', message: 'disk I/O error' })).toBe(true);
   });
 
   describe('isFatalConnectionError', () => {
