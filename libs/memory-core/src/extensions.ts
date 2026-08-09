@@ -744,6 +744,12 @@ function _mapGraphifyRel(rel: string | undefined): string | null {
 export interface BuildCommunitiesOptions {
   maxIterations?: number;
   minCommunitySize?: number;
+  /**
+   * When live level-0 communities already exist in the store, buildCommunities
+   * refuses to run unless force=true is passed. This guard prevents an accidental
+   * full wipe of the community graph (BUG-MEMORY-008).
+   */
+  force?: boolean;
 }
 
 export interface BuildCommunitiesResult {
@@ -840,19 +846,45 @@ export async function buildCommunities(
   );
   if (validCommunities.length === 0) return { communities: 0, members: 0 };
 
-  // Invalidate old community nodes
   const now = new Date().toISOString();
-  await adapter.transaction(async (tx: AdapterTransaction) => {
-    await tx.executeRun(
-      `UPDATE node SET t_invalid = ? WHERE kind = 'community' AND level = 0 AND t_invalid IS NULL`,
-      [now],
-    );
-  });
 
+  // BUG-MEMORY-008: guard against accidental full wipe of the community graph.
+  // If live level-0 communities already exist and force is not set, refuse.
+  // The modern materializeClusters path (cluster.ts:374-415) handles scoped
+  // invalidation + edge invalidation correctly; buildCommunities is only for
+  // ad-hoc/lab use where intentionally replacing all communities is acceptable.
+  const existingLive = (await adapter.executeAll<{ cnt: number }>(
+    `SELECT COUNT(*) AS cnt FROM node WHERE kind = 'community' AND level = 0 AND t_invalid IS NULL`,
+  )).rows;
+  if ((existingLive[0]?.cnt ?? 0) > 0 && !options?.force) {
+    throw new Error(
+      `buildCommunities: ${existingLive[0]?.cnt} live level-0 community(s) exist and {force:true} was not set. ` +
+      `Refusing to wipe the community graph. Pass {force:true} to proceed intentionally.`,
+    );
+  }
+
+  // Single transaction: invalidate prior communities + their MEMBER_OF edges,
+  // then insert new communities + edges. No crash window between invalidation
+  // and re-insertion (BUG-MEMORY-008).
   let commCreated = 0;
   let memberCount = 0;
 
   await adapter.transaction(async (tx: AdapterTransaction) => {
+    // 1. Identify prior community rowids and invalidate them + their edges.
+    const prior = await tx.executeAll<{ rowid: number }>(
+      `SELECT rowid FROM node WHERE kind = 'community' AND level = 0 AND t_invalid IS NULL`,
+    );
+    const priorIds = prior.rows.map((r) => r.rowid);
+    if (priorIds.length > 0) {
+      const ph = priorIds.map(() => '?').join(',');
+      await tx.executeRun(`UPDATE node SET t_invalid = ? WHERE rowid IN (${ph})`, [now, ...priorIds]);
+      await tx.executeRun(
+        `UPDATE edge SET t_invalid = ? WHERE rel = 'MEMBER_OF' AND t_invalid IS NULL AND dst IN (${ph})`,
+        [now, ...priorIds],
+      );
+    }
+
+    // 2. Insert new communities + MEMBER_OF edges.
     for (const [label, memberUids] of validCommunities) {
       const commUid = `community-${label.substring(0, 8)}-${Date.now()}-${Math.random().toString(36).slice(2)}`;
       const memberNames = [];
@@ -865,7 +897,7 @@ export async function buildCommunities(
       }
       const communityName = `Community: ${memberNames.filter(Boolean).join(', ')}`;
 
-      // Insert community node (label derived from member names — deterministic)
+      // Insert community node (label derived from member names)
       const commRow = await tx.executeGet<{ rowid: number }>(
         `INSERT INTO node (uid, kind, name, level, t_created, t_valid)
          VALUES (?, 'community', ?, 0, ?, ?)
