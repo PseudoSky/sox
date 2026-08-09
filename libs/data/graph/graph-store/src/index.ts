@@ -516,6 +516,8 @@ export interface NodeFilter {
   confidence?: Confidence | Confidence[];
   tCreatedAfter?: string;
   tCreatedBefore?: string;
+  tUpdatedAfter?: string;
+  tUpdatedBefore?: string;
   validAt?: string;
   isStale?: boolean;
   namespace?: string;
@@ -553,9 +555,10 @@ export interface GraphBackend {
   queryNodes(filter?: NodeFilter): Promise<NodeRecord[]>;
   searchNodes(
     query: string,
-    opts?: { limit?: number; filter?: NodeFilter },
+    opts?: { limit?: number; offset?: number; filter?: NodeFilter },
   ): Promise<Array<NodeRecord & { score: number }>>;
   countNodes(filter?: NodeFilter): Promise<number>;
+  countNodesFts(query: string, filter?: NodeFilter): Promise<number>;
   getSupersessionChain(nodeId: number): Promise<NodeRecord[]>;
 
   writeEdge(src: number, dst: number, rel: EdgeRel, meta?: EdgeMeta): Promise<void>;
@@ -851,6 +854,16 @@ export function buildNodeFilterClause(
     if (filter.tCreatedBefore !== undefined) {
       clauses.push(`${alias}t_created <= ?`);
       params.push(filter.tCreatedBefore);
+    }
+
+    if (filter.tUpdatedAfter !== undefined) {
+      clauses.push(`${alias}t_updated >= ?`);
+      params.push(filter.tUpdatedAfter);
+    }
+
+    if (filter.tUpdatedBefore !== undefined) {
+      clauses.push(`${alias}t_updated <= ?`);
+      params.push(filter.tUpdatedBefore);
     }
 
     if (filter.validAt !== undefined) {
@@ -1187,20 +1200,24 @@ export class SqliteGraphBackend implements GraphBackend {
 
   async searchNodes(
     query: string,
-    opts?: { limit?: number; filter?: NodeFilter },
+    opts?: { limit?: number; offset?: number; filter?: NodeFilter },
   ): Promise<Array<NodeRecord & { score: number }>> {
     const ftsQuery = query.replace(/"/g, '""');
     const limit = opts?.limit ?? 50;
+    const offset = opts?.offset;
     const nodeFilter = buildNodeFilterClause(opts?.filter, true, 'n');
     const nodeWhere = nodeFilter.where ? `AND ${nodeFilter.where.replace(/^WHERE /, '')}` : '';
+    let limitClause = 'LIMIT ?';
+    const limitParams: unknown[] = [limit];
+    if (offset !== undefined) { limitClause += ' OFFSET ?'; limitParams.push(offset); }
     const sql = `
       SELECT n.*, -fts_node.rank AS score
       FROM fts_node JOIN node n ON fts_node.rowid = n.rowid
       WHERE fts_node MATCH ? ${nodeWhere}
-      ORDER BY score DESC LIMIT ?
+      ORDER BY score DESC ${limitClause}
     `;
     const { rows } = await this.adapter.executeAll<DbNodeRow & { score: number }>(
-      sql, [ftsQuery, ...nodeFilter.params, limit],
+      sql, [ftsQuery, ...nodeFilter.params, ...limitParams],
     );
     return rows.map((r) => ({ ...rowToNodeRecord(r as unknown as DbNodeRow), score: r.score }));
   }
@@ -1208,6 +1225,20 @@ export class SqliteGraphBackend implements GraphBackend {
   async countNodes(filter?: NodeFilter): Promise<number> {
     const { where, params } = buildNodeFilterClause(filter, true, 'n');
     const row = await this.adapter.executeGet<{ cnt: number }>(`SELECT COUNT(*) as cnt FROM node n ${where}`, params);
+    return row?.cnt ?? 0;
+  }
+
+  async countNodesFts(query: string, filter?: NodeFilter): Promise<number> {
+    if (!this.capabilities.fullTextSearch) return 0;
+    const ftsQuery = query.replace(/"/g, '""');
+    const nodeFilter = buildNodeFilterClause(filter, true, 'n');
+    const nodeWhere = nodeFilter.where ? `AND ${nodeFilter.where.replace(/^WHERE /, '')}` : '';
+    const sql = `
+      SELECT COUNT(*) as cnt
+      FROM fts_node JOIN node n ON fts_node.rowid = n.rowid
+      WHERE fts_node MATCH ? ${nodeWhere}
+    `;
+    const row = await this.adapter.executeGet<{ cnt: number }>(sql, [ftsQuery, ...nodeFilter.params]);
     return row?.cnt ?? 0;
   }
 
