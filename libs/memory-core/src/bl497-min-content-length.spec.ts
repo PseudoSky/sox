@@ -18,8 +18,21 @@
  * 40, because the constant is read once at module config time and baked into
  * `CLUSTER_ELIGIBLE_SQL` — the same reason the D5.1 comment must not drift
  * from the code (one change point, lockstep).
+ *
+ * Review caveat 1: an ambient `SOX_CLUSTER_MIN_CONTENT_LENGTH` exported in the
+ * shell/CI would corrupt that default-floor import the same way, so
+ * `bl497-env.setup.ts` (imported FIRST below, before any module that
+ * transitively loads cluster.js) captures and strips it before the clusterer's
+ * config-time read; the afterAll at module scope restores the captured value so
+ * no other spec file ever observes the strip.
  */
-import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+// FIRST import — must precede every module that (transitively) loads cluster.js,
+// so the ambient floor is captured and stripped BEFORE cluster.ts's config-time
+// read (BL-497 review caveat 1: exported SOX_CLUSTER_MIN_CONTENT_LENGTH would
+// otherwise bake a non-20 floor into the static CLUSTER_ELIGIBLE_SQL import
+// below and break the default-floor assertions).
+import { AMBIENT_SOX_CLUSTER_MIN_CONTENT_LENGTH } from './bl497-env.setup.js';
+import { describe, it, expect, beforeEach, afterEach, afterAll, vi } from 'vitest';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
@@ -42,6 +55,14 @@ afterEach(() => {
   else process.env['STORE_ADAPTER'] = priorAdapterEnv;
   if (priorFloorEnv === undefined) delete process.env['SOX_CLUSTER_MIN_CONTENT_LENGTH'];
   else process.env['SOX_CLUSTER_MIN_CONTENT_LENGTH'] = priorFloorEnv;
+});
+// Restore the ambient floor stripped by bl497-env.setup.ts at collection time,
+// so a shell/CI-exported SOX_CLUSTER_MIN_CONTENT_LENGTH is visible again to any
+// spec file that runs after this one in the same worker.
+afterAll(() => {
+  if (AMBIENT_SOX_CLUSTER_MIN_CONTENT_LENGTH === undefined)
+    delete process.env['SOX_CLUSTER_MIN_CONTENT_LENGTH'];
+  else process.env['SOX_CLUSTER_MIN_CONTENT_LENGTH'] = AMBIENT_SOX_CLUSTER_MIN_CONTENT_LENGTH;
 });
 
 function tmpDir(): { dir: string; cleanup: () => void } {
