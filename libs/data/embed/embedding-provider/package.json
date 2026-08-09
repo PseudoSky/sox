@@ -1,6 +1,6 @@
 {
   "name": "@adhd/sox-embedding-provider",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Pluggable text→vector embedding provider — generic EmbeddingProvider interface, config-driven model resolution, async batch-first API (AsyncIterable). Default: fastembed (local ONNX, >=3 model dims proven). Loud-fail: createEmbeddingProvider() throws ResolutionError if config is invalid or model cannot load — no silent downgrade.",
   "license": "MIT",
   "private": false,

@@ -1,6 +1,6 @@
 {
   "name": "@adhd/sox-hybrid-search",
-  "version": "0.3.4",
+  "version": "0.3.5",
   "description": "Generic hybrid retrieval ranker — fuses vector similarity + text relevance signals (mechanism-agnostic: textScore / vecScore) via normalized RRF/max-score fusion. SearchBackend interface decouples ranking logic from storage. SqliteSearchBackend wires VectorBackend + GraphBackend via DI. Pure fuse() + normalize() functions are exported for callers with any signal source.",
   "license": "MIT",
   "private": false,

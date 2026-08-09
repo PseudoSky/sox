@@ -1,5 +1,46 @@
 # @adhd/sox-memory-core
 
+## 0.7.0
+
+### Minor Changes
+
+- 94929d1: `memoryInvalidate` (`memory_invalidate`) now distinguishes three cases that were previously all collapsed into `E_NOT_FOUND` (BUG-MEMORY-002): a `claim_uid` that never existed still returns `E_NOT_FOUND` (message text corrected: `"No node found for uid: <uid>"`, code unchanged); a `claim_uid` that resolves to an already-invalid node now returns idempotent success (`{ok:true, already_invalid:true, t_invalid}`) instead of an error — the dominant real-world case, since the async near-dup pipeline can auto-invalidate a near-duplicate episode moments after write, racing a caller's own manual invalidate; a `claim_uid` that resolves to a live node of the wrong `kind` (entity/community/session) now returns a new `E_WRONG_KIND` error naming the actual kind, instead of silently mutating a structural node the operation was never meant to touch. `replacement_uid` is intentionally not processed on the already-invalid idempotent path — no `SUPERSEDES` edge is written even if it is itself valid, to keep the idempotency guarantee real. This is additive at the TypeScript level (`InvalidateResult` gains two optional fields, `InvalidateError` gains one new discriminant) but is a runtime behavior change: some previously-error calls now succeed.
+
+### Patch Changes
+
+- d5131db: `memoryRecall()` no longer pads results with null-content entity/community/session/generic nodes
+  (BUG-MEMORY-003).
+
+  Previously two of the four SQL candidate-admission points had no `node.kind` predicate: the temporal
+  channel (`recall.ts` §1a) and the depth-1 graph-expansion neighbor fetch (`recall.ts` §1b, which runs
+  on every default-parameter call since `DEFAULT_DEPTH = 1` and every tagged episode has a live
+  `MENTIONS` edge to its own tag-created entity nodes). Every live node in the store — not just
+  episodes — was therefore eligible to be returned, and entity/community/session/generic nodes carry
+  no readable `content`, so callers silently received `content: null` rows counted against `limit` and
+  `token_budget`.
+
+  `memoryRecall()` now defaults to `kind = 'episode'` at all four candidate-admission SQL statements
+  (temporal, vec KNN, FTS — both SQLite-shadow-table and Turso branches — and the graph-expansion
+  neighbor fetch).
+
+  Additive: `RecallParams.filters` accepts an optional `kinds: string[]` key (e.g.
+  `filters: { kinds: ['episode', 'entity'] }`) for callers who explicitly want non-episode nodes back.
+  Unrecognized kind strings simply match nothing — no validation error, same trust level as `tags`/
+  `topic`. This is a bug fix, not a new capability being widened — the previous unfiltered behavior was
+  defective, and the `filters.kinds` opt-in exists to make the fix non-breaking for the (structurally
+  impossible, since those channels never populated non-episode rows) case of a caller who somehow
+  depended on it.
+
+- Updated dependencies [62c72a9]
+- Updated dependencies [0a588bf]
+- Updated dependencies [d0644be]
+- Updated dependencies
+  - @adhd/sox-store-adapter@0.4.0
+  - @adhd/sox-embedding-provider@0.3.0
+  - @adhd/sox-graph-store@0.7.0
+  - @adhd/sox-analysis@0.1.6
+  - @adhd/sox-hybrid-search@0.3.5
+
 ## 0.6.0
 
 ### Minor Changes
