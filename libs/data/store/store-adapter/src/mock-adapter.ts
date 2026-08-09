@@ -1,8 +1,14 @@
+import { normalizeFtsTokens } from './fts-ops.js';
+import { createFTSDialect } from './fts-dialect.js';
 import type {
   StoreAdapter,
   AdapterTransaction,
   AdapterConfig,
   AdapterCapabilities,
+  FtsCountOptions,
+  FtsEnsureOptions,
+  FtsEnsureResult,
+  FtsSearchOptions,
   RunResult,
   AllResult,
   TransactionOptions,
@@ -174,6 +180,9 @@ export class MockAdapter implements StoreAdapter {
   private lastRowid = 0;
   private closed = false;
   private parser = new SimpleSqlParser();
+  /** (A2) FTS index metadata per table, recorded by ensureFtsIndex. The mock
+   *  keeps no real index — ftsSearch scans the rows directly. */
+  private ftsIndexes = new Map<string, { columns: string[]; weights?: Record<string, number> }>();
 
   constructor() {
     this.config = {
@@ -343,6 +352,140 @@ export class MockAdapter implements StoreAdapter {
       results.push(result);
     }
     return results;
+  }
+
+  // ── Full-text search (A2) — in-memory, no real index ─────────────────────
+
+  /**
+   * In-memory FTS search: case-insensitive token substring match against the
+   * listed columns, score = number of query tokens matched. Honors
+   * `where`/`limit`/`offset`. Capability gate → `[]`; empty token set → `[]`.
+   */
+  async ftsSearch<T = Record<string, unknown>>(
+    table: string,
+    columns: string[],
+    query: string,
+    opts: FtsSearchOptions = {},
+  ): Promise<Array<T & { rowid: number; score: number }>> {
+    this.guardOpen();
+    if (!this.capabilities.fts) return [];
+    const tokens = normalizeFtsTokens(query);
+    if (tokens.length === 0) return [];
+
+    const rows = this.data.get(table) ?? [];
+    const matched: Array<T & { rowid: number; score: number }> = [];
+    for (const row of rows) {
+      const score = this.matchScore(row, columns, tokens);
+      if (score > 0) {
+        const rowid =
+          (row.rowid as number | undefined) ??
+          (row.id as number | undefined) ??
+          0;
+        matched.push({ ...(row as T), rowid, score });
+      }
+    }
+    matched.sort((a, b) => b.score - a.score);
+
+    const filtered = this.applyWhere(matched, opts);
+    const offset = opts.offset ?? 0;
+    const limit = opts.limit ?? 50;
+    return filtered.slice(offset, offset + limit);
+  }
+
+  /** In-memory FTS count — same matching as {@link ftsSearch}, no limit/offset. */
+  async ftsCount(
+    table: string,
+    columns: string[],
+    query: string,
+    opts: FtsCountOptions = {},
+  ): Promise<number> {
+    this.guardOpen();
+    if (!this.capabilities.fts) return 0;
+    const tokens = normalizeFtsTokens(query);
+    if (tokens.length === 0) return 0;
+    const rows = this.data.get(table) ?? [];
+    const matched = rows.filter((r) => this.matchScore(r, columns, tokens) > 0);
+    return this.applyWhere(matched, opts).length;
+  }
+
+  /** Record the FTS index metadata (the mock keeps no real index — the data
+   *  map is searched directly). Residue of the other dialect (mock models the
+   *  sqlite shadow-table shape) is dropped from the data map. */
+  async ensureFtsIndex(
+    table: string,
+    columns: string[],
+    opts: FtsEnsureOptions = {},
+  ): Promise<FtsEnsureResult> {
+    this.guardOpen();
+    const result: FtsEnsureResult = {
+      ensured: false,
+      adoptedExisting: null,
+      indexName: null,
+      backfilled: false,
+      residueDropped: [],
+      residueNeedsOutOfBand: false,
+    };
+    if (!this.capabilities.fts) return result;
+
+    this.ftsIndexes.set(
+      table,
+      opts.weights !== undefined
+        ? { columns: [...columns], weights: opts.weights }
+        : { columns: [...columns] },
+    );
+    result.ensured = true;
+    result.indexName = `fts_${table}`;
+    result.backfilled = opts.backfill !== false;
+
+    if (opts.dropLegacyResidue !== false) {
+      const dialect = createFTSDialect(this.config.type); // mock config.type === 'sqlite'
+      const dropped: string[] = [];
+      for (const name of dialect.legacyResidueNames(table)) {
+        if (this.data.has(name)) {
+          this.data.delete(name);
+          dropped.push(name);
+        }
+      }
+      result.residueDropped = dropped;
+    }
+    return result;
+  }
+
+  /** Number of query tokens found (case-insensitive substring) across the
+   *  listed columns of one row. */
+  private matchScore(
+    row: Record<string, unknown>,
+    columns: string[],
+    tokens: string[],
+  ): number {
+    let score = 0;
+    for (const col of columns) {
+      const value = row[col];
+      if (typeof value !== 'string') continue;
+      const lower = value.toLowerCase();
+      for (const tok of tokens) {
+        if (lower.includes(tok)) score++;
+      }
+    }
+    return score;
+  }
+
+  /** Best-effort `where` fragment evaluation: strips a leading `WHERE`/`AND`
+   *  and any `alias.` qualifier, then parses the simple `col = ?` form the
+   *  mock understands. Unparseable fragments are ignored (test double). */
+  private applyWhere<T>(rows: T[], opts: FtsSearchOptions | FtsCountOptions): T[] {
+    if (!opts.where || opts.where.trim() === '') return rows;
+    const frag = opts.where
+      .trim()
+      .replace(/^\s*(WHERE|AND)\s+/i, '')
+      .replace(/(\w+)\.(\w+)/g, '$2');
+    const parsed = this.parser.extractWhereClause(`SELECT * FROM t WHERE ${frag}`);
+    if (!parsed) return rows;
+    const value = parsed.value !== undefined ? parsed.value : opts.params?.[0];
+    if (value === undefined) return rows;
+    return rows.filter(
+      (r) => (r as Record<string, unknown>)[parsed.column] === value,
+    );
   }
 
   // ── Lifecycle ──────────────────────────────────────────────────────────
