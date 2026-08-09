@@ -33,7 +33,7 @@
  *
  * | state | drains on its own? | right response |
  * |---|---|---|
- * | `ineligible` (content < 50 chars) | never | nothing — by design |
+ * | `ineligible` (content below CLUSTER_MIN_CONTENT_LENGTH, default 20) | never | nothing — by design |
  * | `awaiting_vector` | yes, embed pipeline | watch `embed_backlog` |
  * | `awaiting_pass` | yes, next 5-min tick | wait |
  * | `rejected_below_threshold` | **NO — never** | lower τ / schedule a full pass |
@@ -343,7 +343,8 @@ export async function getClusterPipelineMetrics(
   //
   // MUST use CLUSTER_ELIGIBLE_SQL, same as the backlog partitioning above
   // (`ineligible`/`awaitingVector`/`awaitingRows`) — an ineligible episode
-  // (content < 50 chars) never clusters BY DESIGN (see the `ineligible` row
+  // (content below CLUSTER_MIN_CONTENT_LENGTH, default 20) never clusters BY
+  // DESIGN (see the `ineligible` row
   // in the backlog-by-cause table in this file's header). Without this
   // predicate every such episode counts as "never clustered" in the
   // denominator, pulling the fraction down for a reason that has nothing to

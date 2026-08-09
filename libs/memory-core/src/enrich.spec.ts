@@ -600,12 +600,13 @@ describe('clusterStore', () => {
     } finally { cleanup(); }
   });
 
-  it('excludes episodes with content < 50 chars (D5.1)', async () => {
+  it('excludes episodes with content below CLUSTER_MIN_CONTENT_LENGTH (D5.1)', async () => {
     const { db, adapter, cleanup } = await makeTmpDb();
     try {
       const emb1 = seedEmbedding(1);
       const emb2 = nearDupEmbedding(emb1, 0.001);
-      // Both have content < 50 chars — should not be clustered
+      // Both have content below CLUSTER_MIN_CONTENT_LENGTH (default 20) —
+      // should not be clustered
       insertEpisode(db, 'ep1', 'Short.', emb1);
       insertEpisode(db, 'ep2', 'Also short.', emb2);
       const result = await clusterStore(adapter, { threshold: 0.50 });

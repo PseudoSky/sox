@@ -398,7 +398,9 @@ export interface ClusterStoreResult {
  * - Community UID = sha256(sorted member rowids joined by ','). Same members → same UID.
  * - Label derived from centroid-nearest member (D1.4). Same members → same label.
  * - Singletons suppressed (D1.6): no community node for 1-member clusters.
- * - Episodes with content.length < 50 chars are excluded from clustering (D5.1).
+ * - Episodes with content.length < CLUSTER_MIN_CONTENT_LENGTH (default 20;
+ *   operator-tunable via SOX_CLUSTER_MIN_CONTENT_LENGTH, floor ≥ 1 — BL-497)
+ *   are excluded from clustering (D5.1).
  * - Degenerate guard: if max_cluster_size / total > 0.5, retries with threshold+0.05
  *   up to 3 times, then skips writes and returns clusters=[] (D5.5).
  *
