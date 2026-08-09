@@ -1,5 +1,5 @@
 // @adhd/sox-graph-store — Bi-temporal graph store over StoreAdapter
-import { createFTSDialect } from '@adhd/sox-store-adapter';
+import { createFTSDialect, resolveExistingFtsIndexName, canonicalFtsIndexName } from '@adhd/sox-store-adapter';
 import type { FTSDialect, StoreAdapter } from '@adhd/sox-store-adapter';
 import * as crypto from 'node:crypto';
 import { rebuildTable } from './rebuild-table.js';
@@ -1038,6 +1038,23 @@ export class SqliteGraphBackend implements GraphBackend {
   private async applyFtsSchema(): Promise<void> {
     const dialect = createFTSDialect(this.adapter.config.type);
     if (!dialect.supported || !this.adapter.capabilities.fts) return;
+    // (BL-461, BL-498 review) Ask whether the TABLE already has an FTS index,
+    // not whether one particular NAME is free — the same guard memory-core's
+    // openDb() uses (db.ts:603-622). Turso has no `ALTER INDEX … RENAME`, so
+    // the orphan guard's rebuild (store-adapter's fts-orphan-guard.ts)
+    // necessarily leaves a repaired index under a different name —
+    // `idx_fts_node__r1`. `CREATE INDEX IF NOT EXISTS idx_fts_node` would then
+    // find its own name free and build a SECOND full-text index over the same
+    // columns: measured to coexist and answer queries correctly, so the only
+    // symptom is permanently doubled write and storage cost, silently.
+    // Resolve the actual index; if one exists under a non-canonical name,
+    // ADOPT it (skip creation) so a duplicate is never built. The lookup
+    // returns null on SQLite (fts5's virtual-table name is load-bearing), so
+    // the FTS5 path below is untouched.
+    const existingFtsIndex = await resolveExistingFtsIndexName(this.adapter, 'node');
+    if (existingFtsIndex !== null && existingFtsIndex !== canonicalFtsIndexName('node')) {
+      return; // adopted — the table already carries a healthy FTS index
+    }
     const ftsColumns = ['content', 'name', 'summary'];
     for (const stmt of dialect.createIndexDDL(
       'node',
