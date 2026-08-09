@@ -450,6 +450,54 @@ describe('searchNodes', () => {
     expect(page1[0]!.id).not.toBe(page2[1]!.id);
     await adapter.close();
   });
+
+  // ── Multi-token OR semantics (BL-498 review, CAVEAT 2) ─────────────────────
+  // b5c2c50f made searchNodes/countNodesFts tokenize + lowercase + OR-join the
+  // query (index.ts: searchNodes — tokens.map quoted, joined ' OR ') via
+  // FTSDialect.buildMatchQuery, aligning the sqlite path with BL-367 (the same
+  // OR of quoted tokens recall.ts:583-604 emits). Before these tests the
+  // semantics were UNASSERTED — only single-token queries were covered, so a
+  // revert to implicit FTS5 bareword AND (or to AND-joined tokens) would have
+  // gone green. Each test below pins ONE observable consequence of the OR join:
+  // (1) either token matches; (2) a multi-word query no longer requires both
+  // words; (3) the query is lowercased before MATCH. They assert what the code
+  // does — deliberately not what a hypothetical reviewer guessed it does.
+  it('ORs multi-token queries — a row containing EITHER quoted token matches', async () => {
+    const { backend, adapter } = await freshBackend();
+    await backend.writeNode('apple pie', {});
+    await backend.writeNode('banana split', {});
+    await backend.writeNode('cherry cobbler', {});
+    // 'apple banana' → buildMatchQuery(['apple','banana']) → `"apple" OR "banana"`
+    const hits = await backend.searchNodes('apple banana');
+    const contents = hits.map((r) => r.content);
+    expect(contents).toEqual(expect.arrayContaining(['apple pie', 'banana split']));
+    expect(contents).not.toContain('cherry cobbler');
+    expect(await backend.countNodesFts('apple banana')).toBe(2);
+    await adapter.close();
+  });
+
+  it('multi-word query does NOT require both words — apple-only row matches "apple banana"', async () => {
+    const { backend, adapter } = await freshBackend();
+    await backend.writeNode('apple pie', {});
+    await backend.writeNode('durian', {}); // control: contains neither token
+    const hits = await backend.searchNodes('apple banana');
+    expect(hits.map((r) => r.content)).toContain('apple pie');
+    expect(hits.map((r) => r.content)).not.toContain('durian');
+    expect(await backend.countNodesFts('apple banana')).toBe(1);
+    await adapter.close();
+  });
+
+  it('matching is case-insensitive — mixed-case query matches lowercase content', async () => {
+    const { backend, adapter } = await freshBackend();
+    await backend.writeNode('Apple Pie Dessert', {});
+    // searchNodes lowercases the whole query before tokenizing (index.ts), and
+    // the unicode61 tokenizer lowercases indexed tokens — either way the
+    // observable contract is: 'APPLE' finds 'Apple Pie Dessert'.
+    const hits = await backend.searchNodes('APPLE');
+    expect(hits.map((r) => r.content)).toContain('Apple Pie Dessert');
+    expect(await backend.countNodesFts('APPLE')).toBe(1);
+    await adapter.close();
+  });
 });
 
 describe('countNodes', () => {
