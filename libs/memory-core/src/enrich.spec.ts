@@ -834,6 +834,76 @@ describe('clusterStore — P3 clustering guarantees', () => {
   });
 });
 
+// ── PERF-MEMORY-004: importance default regression ───────────────────────────
+
+describe('PERF-MEMORY-004 — importance default regression', () => {
+  let db: Database.Database;
+  let adapter: StoreAdapter;
+  let cleanup: () => void;
+
+  beforeEach(async () => {
+    const t = await makeTmpDb();
+    db = t.db;
+    adapter = t.adapter;
+    cleanup = t.cleanup;
+    process.env['SOX_EMBED_BACKEND'] = 'auto';
+  });
+
+  afterEach(() => {
+    delete process.env['SOX_EMBED_BACKEND'];
+    cleanup();
+  });
+
+  it('PERF-MEMORY-004: write with no explicit importance computes content-derived score > 1.0 and enrich_ver has NO user_override note', async () => {
+    // Long content (100+ words) yields importance > 1.0 via computeImportance.
+    const content = 'analysis design implementation testing deployment'.repeat(30);
+    const emb = seedEmbedding(42);
+    const rowid = insertEpisode(db, 'ep-nouser', content, emb);
+    const result = await enrichOnWrite(adapter, {
+      uid: 'ep-nouser', rowid, content, summary: undefined,
+      tags: [], topic: undefined, metadata: undefined,
+      project_path: '/p', derived_from_uid: undefined,
+      embedding: emb, importance: undefined,
+      // PERF-MEMORY-004: this test covers the case where importance is
+      // pre-computed by the write path and passed WITHOUT userOverride.
+      // When the fix is in place (write.ts no longer defaults importance=1.0),
+      // enrichOnWrite receives `importance: undefined` and computes it.
+      // RED (current): importance defaults to 1.0, so p.importance=1.0,
+      // userOverride=true, enrich_ver.note='user_override' — test fails.
+    });
+
+    // Enrichment should have computed a content-derived importance > 1.0
+    // (50+ words repeated 30 times → wordCount=240 → lengthScore = min(240/50,1)*4=4.0 → clamped to 1.0..10.0)
+    const row = db.prepare<[number], { importance: number; enrich_ver: string | null }>(
+      'SELECT importance, enrich_ver FROM node WHERE rowid = ?',
+    ).get(rowid)!;
+    expect(row.importance).toBeGreaterThan(1.0);
+    expect(row.enrich_ver).not.toBeNull();
+    const parsed = JSON.parse(row.enrich_ver!) as { pass: string; ts: string; note?: string };
+    expect(parsed.note).toBeUndefined(); // no user_override — computed importance
+  });
+
+  it('PERF-MEMORY-004: write WITH explicit importance keeps the value and stamps enrich_ver.note = "user_override"', async () => {
+    const content = 'Custom importance test content.';
+    const emb = seedEmbedding(43);
+    const rowid = insertEpisode(db, 'ep-user', content, emb);
+    const result = await enrichOnWrite(adapter, {
+      uid: 'ep-user', rowid, content, summary: undefined,
+      tags: [], topic: undefined, metadata: undefined,
+      project_path: '/p', derived_from_uid: undefined,
+      embedding: emb, importance: 7.5,
+      userSuppliedImportance: true,
+    });
+
+    const row = db.prepare<[number], { importance: number; enrich_ver: string | null }>(
+      'SELECT importance, enrich_ver FROM node WHERE rowid = ?',
+    ).get(rowid)!;
+    expect(row.importance).toBe(7.5);
+    const parsed = JSON.parse(row.enrich_ver!) as { pass: string; ts: string; note?: string };
+    expect(parsed.note).toBe('user_override');
+  });
+});
+
 // ── runBatchEnrich ────────────────────────────────────────────────────────────
 
 describe('runBatchEnrich', () => {
@@ -993,6 +1063,55 @@ describe('runBatchEnrich', () => {
       delete process.env['SOX_EMBED_BACKEND'];
       t1.cleanup();
       t2.cleanup();
+    }
+  });
+
+  // PERF-MEMORY-004 / C2.1: batch enricher must skip re-scoring when enrich_ver
+  // contains user_override, preserving the caller-asserted importance and the
+  // user_override note itself (CONTRACTS.md C2.1:781-782).
+  it('PERF-MEMORY-004 C2.1: row with enrich_ver.note="user_override" is skipped by batch pass (importance unchanged, note preserved)', async () => {
+    const { db, adapter, cleanup } = await makeTmpDb();
+    try {
+      process.env['SOX_EMBED_BACKEND'] = 'auto';
+      const now = new Date().toISOString();
+
+      // Insert an episode with user-asserted importance and user_override note
+      const emb = seedEmbedding(91);
+      const rowid = insertEpisode(db, 'ep-user-override', 'User override test content for C2.1 batch skip verification.', emb);
+      db.prepare(
+        `UPDATE node SET importance = 9.5, enrich_ver = ? WHERE rowid = ?`,
+      ).run(JSON.stringify({ pass: '1.0.0', ts: now, note: 'user_override' }), rowid);
+
+      // Insert a normal episode (no user_override) — should be recomputed
+      const emb2 = seedEmbedding(92);
+      const rowid2 = insertEpisode(db, 'ep-normal', 'Normal episode content for batch importance recomputation testing.', emb2);
+      db.prepare(
+        `UPDATE node SET importance = 1.0, enrich_ver = ? WHERE rowid = ?`,
+      ).run(JSON.stringify({ pass: '1.0.0', ts: now }), rowid2);
+
+      const result = await runBatchEnrich(adapter, { incrementalCluster: true });
+
+      // User-override row: importance unchanged (skipped by C2.1 guard)
+      const row1 = db.prepare<[number], { importance: number; enrich_ver: string | null }>(
+        'SELECT importance, enrich_ver FROM node WHERE rowid = ?',
+      ).get(rowid)!;
+      expect(row1.importance).toBe(9.5); // unchanged — skip worked
+      const parsed1 = JSON.parse(row1.enrich_ver!) as { pass: string; ts: string; note?: string };
+      expect(parsed1.note).toBe('user_override'); // note preserved — not stripped
+
+      // Normal row: importance updated by batch
+      const row2 = db.prepare<[number], { importance: number; enrich_ver: string | null }>(
+        'SELECT importance, enrich_ver FROM node WHERE rowid = ?',
+      ).get(rowid2)!;
+      // Importance should be recomputed (content ~14 words, link_degree=0, etc.)
+      // Updated if changed by > 0.001 — with no edges and short content, may or
+      // may not change. The key assertion is that the batch did NOT crash and the
+      // user_override row was correctly skipped.
+      const parsed2 = JSON.parse(row2.enrich_ver!) as { pass: string; ts: string; note?: string };
+      expect(parsed2.note).toBeUndefined(); // normal row — no user_override note after recompute
+    } finally {
+      delete process.env['SOX_EMBED_BACKEND'];
+      cleanup();
     }
   });
 });

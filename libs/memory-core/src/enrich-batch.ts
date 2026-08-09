@@ -348,6 +348,16 @@ export async function runBatchEnrich(
 
   /** Process one episode row and update importance if changed. */
   const processEpisode = async (tx: AdapterTransaction, ep: EpisodeRow): Promise<void> => {
+    // PERF-MEMORY-004 / CONTRACTS.md C2.1: skip re-scoring when enrich_ver
+    // contains user_override — the caller explicitly asserted this importance
+    // value and the batch pass must preserve both the value and the note.
+    if (ep.enrich_ver) {
+      try {
+        const parsed = JSON.parse(ep.enrich_ver) as { note?: string };
+        if (parsed.note === 'user_override') return;
+      } catch { /* malformed enrich_ver — fall through to recompute */ }
+    }
+
     const wordCount = (ep.content ?? '').split(/\s+/).filter(Boolean).length;
 
     const linkDegree = await computeLinkDegree(tx, ep.rowid);
