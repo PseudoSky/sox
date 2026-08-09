@@ -58,7 +58,9 @@ const DEFAULT_STORE_KEY = '(unkeyed)';
  * excluding every episode whose content fell in [20, 50) chars (tag-like notes,
  * command output, terse prose). It is now operator-tunable via
  * `SOX_CLUSTER_MIN_CONTENT_LENGTH` (default 20, floor >= 1 — 0 or negative
- * would admit empty-string episodes as `awaiting_vector` noise). Resolved ONCE
+ * would admit empty-string episodes as `awaiting_vector` noise). Operators who
+ * see short-content admissions bloating communities can RAISE the floor to keep
+ * terse episodes out of clustering entirely. Resolved ONCE
  * at module config time, because `CLUSTER_ELIGIBLE_SQL` below interpolates this
  * value into a baked SQL string: a per-call re-read would let the exported
  * constant and the executed predicate drift apart, recreating the exact
