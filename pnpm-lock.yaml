@@ -308,6 +308,7 @@ importers:
       '@tursodatabase/database':
         specifier: ^0.7.1
         version: 0.7.1
+    optionalDependencies:
       better-sqlite3:
         specifier: ^12.10.0
         version: 12.10.0
