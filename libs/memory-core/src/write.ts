@@ -51,6 +51,7 @@ import { gcOrphanedCommunityState } from './community-gc.js';
 import { enqueueIngest } from './outbox-queue.js';
 import { applyEmbedding } from './embed-pipeline.js';
 import { vectorDialectFor } from './dialect.js';
+import { computeImportance } from './importance.js';
 import type { PendingEmbed } from './embed-pipeline.js';
 // S11 / BL-165: content-hash routed through ingest's hexSha256 (canonical ingestion layer).
 // Normalization (trim + toLowerCase) is applied here before the hash call to preserve
@@ -194,7 +195,7 @@ export async function memoryWritePhaseA(
     t_occurred,
     agent_id,
     source = 'message',
-    importance = 1.0, // default; batch enricher will update on next pass
+    importance, // PERF-MEMORY-004: no silent default; undefined means "compute from content"
     tags,
     metadata,
   } = params;
@@ -302,6 +303,28 @@ export async function memoryWritePhaseA(
     };
   }
 
+  // PERF-MEMORY-004: when the caller did NOT supply an explicit importance,
+  // compute the content-derived score BEFORE the INSERT so the row lands with
+  // a meaningful value from the start (no NULL, no phantom 1.0 default).
+  // The `userSuppliedImportance` flag distinguishes caller-asserted values
+  // from write-path pre-computed ones — only the former triggers the
+  // user_override note in enrich.ts and the C2.1 batch skip in enrich-batch.ts.
+  let effectiveImportance: number;
+  let userSuppliedImportance: boolean;
+  if (importance !== undefined) {
+    effectiveImportance = importance;
+    userSuppliedImportance = true;
+  } else {
+    const wordCount = content.split(/\s+/).filter(Boolean).length;
+    effectiveImportance = computeImportance({
+      word_count: wordCount,
+      link_degree: 0, // no edges yet; batch pass updates with real link/access scores
+      access_count: 0,
+      tag_count: tags ? tags.length : 0,
+    });
+    userSuppliedImportance = false;
+  }
+
   const uid = ulid();
   const now = new Date().toISOString();
   const tValid = now;
@@ -336,7 +359,8 @@ export async function memoryWritePhaseA(
     tags,
     topic,
     project_path,
-    importance, // caller-supplied importance is respected, never overridden
+    importance: effectiveImportance,
+    userSuppliedImportance,
   });
   const enrichVerJson = JSON.stringify(enrichValues.enrich_ver);
 
