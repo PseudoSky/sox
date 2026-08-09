@@ -1,5 +1,17 @@
 # @adhd/sox-graph-store
 
+## 0.7.0
+
+### Minor Changes
+
+- Add `NodeFilter.tUpdatedAfter` / `tUpdatedBefore` range predicates (over the `t_updated` column), `searchNodes` `offset` parameter (pushed into FTS LIMIT/OFFSET), and `countNodesFts(query, filter?)` for counting FTS matches. All additive — existing callers and signatures are unaffected.
+
+### Patch Changes
+
+- Updated dependencies [62c72a9]
+- Updated dependencies [0a588bf]
+  - @adhd/sox-store-adapter@0.4.0
+
 ## 0.6.0
 
 ### Minor Changes

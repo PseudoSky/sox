@@ -397,6 +397,31 @@ describe('queryNodes', () => {
     expect(await backend.queryNodes({ limit: 2, offset: 1 })).toHaveLength(2);
     await adapter.close();
   });
+
+  it('filters by tUpdatedAfter', async () => {
+    const { backend, adapter } = await freshBackend();
+    const id1 = await backend.writeNode('a', {});
+    const id2 = await backend.writeNode('b', {});
+    const beforeTouch = new Date().toISOString();
+    await backend.touch(id1, { name: 'updated' });
+    // id1 has t_updated >= beforeTouch; id2 has null t_updated
+    const results = await backend.queryNodes({ tUpdatedAfter: beforeTouch });
+    expect(results).toHaveLength(1);
+    expect(results[0]!.id).toBe(id1);
+    await adapter.close();
+  });
+
+  it('filters by tUpdatedBefore excludes untouched nodes', async () => {
+    const { backend, adapter } = await freshBackend();
+    const id1 = await backend.writeNode('a', {});
+    const id2 = await backend.writeNode('b', {});
+    await backend.touch(id1, { name: 'updated' });
+    // NULL t_updated rows are excluded by <= predicate
+    const results = await backend.queryNodes({ tUpdatedBefore: '3000-01-01T00:00:00.000Z' });
+    expect(results).toHaveLength(1);
+    expect(results[0]!.id).toBe(id1);
+    await adapter.close();
+  });
 });
 
 describe('searchNodes', () => {
@@ -409,6 +434,22 @@ describe('searchNodes', () => {
     expect(typeof r[0]!.score).toBe('number');
     await adapter.close();
   });
+
+  it('supports offset', async () => {
+    const { backend, adapter } = await freshBackend();
+    await backend.writeNode('apple one', {});
+    await backend.writeNode('apple two', {});
+    await backend.writeNode('apple three', {});
+    await backend.writeNode('apple four', {});
+    await backend.writeNode('apple five', {});
+    const page1 = await backend.searchNodes('apple', { limit: 2, offset: 0 });
+    const page2 = await backend.searchNodes('apple', { limit: 2, offset: 2 });
+    expect(page1).toHaveLength(2);
+    expect(page2).toHaveLength(2);
+    expect(page1[0]!.id).not.toBe(page2[0]!.id);
+    expect(page1[0]!.id).not.toBe(page2[1]!.id);
+    await adapter.close();
+  });
 });
 
 describe('countNodes', () => {
@@ -418,6 +459,18 @@ describe('countNodes', () => {
     const id = await backend.writeNode('b', {});
     await backend.invalidate(id);
     expect(await backend.countNodes()).toBe(1);
+    await adapter.close();
+  });
+});
+
+describe('countNodesFts', () => {
+  it('counts FTS matches', async () => {
+    const { backend, adapter } = await freshBackend();
+    await backend.writeNode('apple banana', {});
+    await backend.writeNode('apple cherry', {});
+    await backend.writeNode('dog cat', {});
+    const count = await backend.countNodesFts('apple');
+    expect(count).toBe(2);
     await adapter.close();
   });
 });
