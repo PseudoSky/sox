@@ -1,5 +1,6 @@
 // @adhd/sox-graph-store — Bi-temporal graph store over StoreAdapter
-import type { StoreAdapter } from '@adhd/sox-store-adapter';
+import { createFTSDialect, resolveExistingFtsIndexName, canonicalFtsIndexName } from '@adhd/sox-store-adapter';
+import type { FTSDialect, StoreAdapter } from '@adhd/sox-store-adapter';
 import * as crypto from 'node:crypto';
 import { rebuildTable } from './rebuild-table.js';
 export { rebuildTable };
@@ -397,6 +398,30 @@ export const EDGE_INDEX_DDLS = [
   `CREATE INDEX IF NOT EXISTS ix_edge_live       ON edge(t_invalid) WHERE t_invalid IS NULL`,
   `CREATE UNIQUE INDEX IF NOT EXISTS ix_edge_unique ON edge(src, dst, rel)`,
 ];
+
+/**
+ * Split a multi-statement DDL string into individual `;`-terminated statements,
+ * stripping Drizzle's `--> statement-breakpoint` marker lines.
+ *
+ * Turso/libSQL validates each index definition against the live schema and
+ * rejects `CREATE INDEX IF NOT EXISTS` on an object that already exists
+ * (unlike SQLite, which no-ops) — so a multi-statement exec() aborts at the
+ * first existing index on a re-opened store. applySchema() runs each
+ * statement separately and treats "already exists" as benign (the same
+ * pattern memory-core's openDb() uses). The DDL here is hand-maintained and
+ * contains no semicolons inside string literals.
+ */
+function splitSqlStatements(ddl: string): string[] {
+  return ddl
+    .split(';')
+    .map((s) => s.trim())
+    .filter((s) => s.length > 0)
+    .map((s) => {
+      const lines = s.split('\n').filter((l) => !/^\s*-->\s*statement-breakpoint\s*$/i.test(l.trim()));
+      return `${lines.join('\n').trim()};`;
+    })
+    .filter((s) => s.trim().length > 1);
+}
 
 export class ConstraintError extends Error {
   constructor(message: string) {
@@ -972,19 +997,111 @@ export class SqliteGraphBackend implements GraphBackend {
       await this.adapter.exec(pragma);
     }
 
-    await this.adapter.exec(INLINE_MIGRATION_DDL);
+    // INLINE_MIGRATION_DDL is a multi-statement string. Turso/libSQL rejects
+    // `CREATE INDEX IF NOT EXISTS` when the index already exists (unlike
+    // SQLite, which treats it as a no-op), so on a re-opened store the whole
+    // batch would abort at the first existing index. Execute statement by
+    // statement and treat an "already exists" on any one as a benign no-op —
+    // the identical pattern memory-core's openDb() uses (db.ts:515-527).
+    for (const stmt of splitSqlStatements(INLINE_MIGRATION_DDL)) {
+      try {
+        await this.adapter.exec(stmt);
+      } catch (err) {
+        if (err instanceof Error && /already exists/i.test(err.message)) continue;
+        throw err;
+      }
+    }
 
-    await this.adapter.exec(FTS_DDL);
-    await this.adapter.exec(FTS_TRIGGERS);
-
-    await this.adapter.exec(
-      `INSERT INTO fts_node(rowid, content, name, summary)
-       SELECT rowid, content, name, summary FROM node`,
-    );
+    await this.applyFtsSchema();
 
     await this.ensureCheckConstraints();
 
     this.schemaApplied = true;
+  }
+
+  /**
+   * FTS schema creation — dialect-driven, NEVER unconditional.
+   *
+   * Before this, applySchema() ran `FTS_DDL` (`CREATE VIRTUAL TABLE … USING
+   * fts5`) + `FTS_TRIGGERS` + a backfill `INSERT INTO fts_node` on EVERY
+   * open, regardless of adapter. A Turso adapter (`capabilities.fts5 ===
+   * false`) rejects fts5 DDL outright (`Parse error: no such module: fts5` —
+   * the reported "graph import is failing because fts5 is missing"), so any
+   * graph-store consumer that opened on Turso crashed at applySchema(). The
+   * store's own dialect (store-adapter's FTSDialect) decides what "create
+   * FTS" means per backend: the fts5 virtual table + triggers on SQLite, a
+   * Tantivy `CREATE INDEX … USING fts` on Turso, nothing on an adapter that
+   * reports no FTS capability. The backfill INSERT only applies to the fts5
+   * shadow table — Turso's Tantivy index is maintained by the engine and has
+   * no row-insert surface.
+   */
+  private async applyFtsSchema(): Promise<void> {
+    const dialect = createFTSDialect(this.adapter.config.type);
+    if (!dialect.supported || !this.adapter.capabilities.fts) return;
+    // (BL-461, BL-498 review) Ask whether the TABLE already has an FTS index,
+    // not whether one particular NAME is free — the same guard memory-core's
+    // openDb() uses (db.ts:603-622). Turso has no `ALTER INDEX … RENAME`, so
+    // the orphan guard's rebuild (store-adapter's fts-orphan-guard.ts)
+    // necessarily leaves a repaired index under a different name —
+    // `idx_fts_node__r1`. `CREATE INDEX IF NOT EXISTS idx_fts_node` would then
+    // find its own name free and build a SECOND full-text index over the same
+    // columns: measured to coexist and answer queries correctly, so the only
+    // symptom is permanently doubled write and storage cost, silently.
+    // Resolve the actual index; if one exists under a non-canonical name,
+    // ADOPT it (skip creation) so a duplicate is never built. The lookup
+    // returns null on SQLite (fts5's virtual-table name is load-bearing), so
+    // the FTS5 path below is untouched.
+    const existingFtsIndex = await resolveExistingFtsIndexName(this.adapter, 'node');
+    if (existingFtsIndex !== null && existingFtsIndex !== canonicalFtsIndexName('node')) {
+      return; // adopted — the table already carries a healthy FTS index
+    }
+    const ftsColumns = ['content', 'name', 'summary'];
+    for (const stmt of dialect.createIndexDDL(
+      'node',
+      ftsColumns,
+      { content: 1.0, name: 1.0, summary: 1.0 },
+      [FTS_DDL, FTS_TRIGGERS],
+    )) {
+      try {
+        await this.adapter.exec(stmt);
+      } catch (err) {
+        if (err instanceof Error && /already exists/i.test(err.message)) continue;
+        throw err;
+      }
+    }
+    if (this.adapter.capabilities.fts5) {
+      await this.adapter.exec(
+        `INSERT INTO fts_node(rowid, content, name, summary)
+         SELECT rowid, content, name, summary FROM node`,
+      );
+    }
+  }
+
+  /** FTS re-sync after a node-table rebuild — same dialect rules as
+   *  {@link applyFtsSchema}, executed against the transaction handle. */
+  private async reapplyFtsInTx(tx: { exec(sql: string): Promise<void> }): Promise<void> {
+    const dialect = createFTSDialect(this.adapter.config.type);
+    if (!dialect.supported || !this.adapter.capabilities.fts) return;
+    const ftsColumns = ['content', 'name', 'summary'];
+    for (const stmt of dialect.createIndexDDL(
+      'node',
+      ftsColumns,
+      { content: 1.0, name: 1.0, summary: 1.0 },
+      [FTS_TRIGGERS],
+    )) {
+      try {
+        await tx.exec(stmt);
+      } catch (err) {
+        if (err instanceof Error && /already exists/i.test(err.message)) continue;
+        throw err;
+      }
+    }
+    if (this.adapter.capabilities.fts5) {
+      await tx.exec(
+        `INSERT INTO fts_node(rowid, content, name, summary)
+         SELECT rowid, content, name, summary FROM node`,
+      );
+    }
   }
 
   private async ensureCheckConstraints(): Promise<void> {
@@ -1019,11 +1136,7 @@ export class SqliteGraphBackend implements GraphBackend {
 
         if (nodeNeedsRebuild) {
           for (const ddl of NODE_INDEX_DDLS) await tx.exec(ddl);
-          await tx.exec(FTS_TRIGGERS);
-          await tx.exec(
-            `INSERT INTO fts_node(rowid, content, name, summary)
-             SELECT rowid, content, name, summary FROM node`,
-          );
+          await this.reapplyFtsInTx(tx);
         }
         if (edgeNeedsRebuild) {
           for (const ddl of EDGE_INDEX_DDLS) await tx.exec(ddl);
@@ -1202,7 +1315,11 @@ export class SqliteGraphBackend implements GraphBackend {
     query: string,
     opts?: { limit?: number; offset?: number; filter?: NodeFilter },
   ): Promise<Array<NodeRecord & { score: number }>> {
-    const ftsQuery = query.replace(/"/g, '""');
+    if (!this.capabilities.fullTextSearch) return [];
+    const dialect = createFTSDialect(this.adapter.config.type);
+    const tokens = query.toLowerCase().split(/\s+/).filter((t) => t.length > 0);
+    if (tokens.length === 0) return [];
+    const ftsQuery = dialect.buildMatchQuery(tokens);
     const limit = opts?.limit ?? 50;
     const offset = opts?.offset;
     const nodeFilter = buildNodeFilterClause(opts?.filter, true, 'n');
@@ -1210,16 +1327,45 @@ export class SqliteGraphBackend implements GraphBackend {
     let limitClause = 'LIMIT ?';
     const limitParams: unknown[] = [limit];
     if (offset !== undefined) { limitClause += ' OFFSET ?'; limitParams.push(offset); }
-    const sql = `
-      SELECT n.*, -fts_node.rank AS score
-      FROM fts_node JOIN node n ON fts_node.rowid = n.rowid
-      WHERE fts_node MATCH ? ${nodeWhere}
-      ORDER BY score DESC ${limitClause}
-    `;
+
+    const { sql, params } = this.buildFtsSearchSql(dialect, ftsQuery, nodeWhere);
     const { rows } = await this.adapter.executeAll<DbNodeRow & { score: number }>(
-      sql, [ftsQuery, ...nodeFilter.params, ...limitParams],
+      `${sql} ${limitClause}`, [...params, ...nodeFilter.params, ...limitParams],
     );
     return rows.map((r) => ({ ...rowToNodeRecord(r as unknown as DbNodeRow), score: r.score }));
+  }
+
+  /**
+   * FTS search SQL — dialect-shaped (the same `supportsShadowTable` split
+   * memory-core's recall.ts uses): SQLite FTS5 keeps a separate `fts_node`
+   * shadow table joined back to `node` (score is the negated `rank` column),
+   * Turso's Tantivy index lives directly on `node` (`fts_match`/`fts_score`,
+   * each binding its own query param). Never branches on `adapter.config.type`.
+   */
+  private buildFtsSearchSql(
+    dialect: FTSDialect,
+    ftsQuery: string,
+    nodeWhere: string,
+  ): { sql: string; params: unknown[] } {
+    const ftsColumns = ['content', 'name', 'summary'];
+    const { sql: matchSql } = dialect.matchClause(ftsColumns, '?');
+    const scoreExpr = dialect.scoreClause(ftsColumns, '?');
+    if (dialect.supportsShadowTable) {
+      return {
+        sql: `SELECT n.*, -${scoreExpr} AS score
+              FROM fts_node JOIN node n ON fts_node.rowid = n.rowid
+              WHERE ${matchSql} ${nodeWhere}
+              ORDER BY score DESC`,
+        params: [ftsQuery],
+      };
+    }
+    return {
+      sql: `SELECT n.*, ${scoreExpr} AS score
+            FROM node n
+            WHERE ${matchSql} ${nodeWhere}
+            ORDER BY score DESC`,
+      params: [ftsQuery, ftsQuery],
+    };
   }
 
   async countNodes(filter?: NodeFilter): Promise<number> {
@@ -1230,14 +1376,20 @@ export class SqliteGraphBackend implements GraphBackend {
 
   async countNodesFts(query: string, filter?: NodeFilter): Promise<number> {
     if (!this.capabilities.fullTextSearch) return 0;
-    const ftsQuery = query.replace(/"/g, '""');
+    const dialect = createFTSDialect(this.adapter.config.type);
+    const tokens = query.toLowerCase().split(/\s+/).filter((t) => t.length > 0);
+    if (tokens.length === 0) return 0;
+    const ftsQuery = dialect.buildMatchQuery(tokens);
     const nodeFilter = buildNodeFilterClause(filter, true, 'n');
     const nodeWhere = nodeFilter.where ? `AND ${nodeFilter.where.replace(/^WHERE /, '')}` : '';
-    const sql = `
-      SELECT COUNT(*) as cnt
-      FROM fts_node JOIN node n ON fts_node.rowid = n.rowid
-      WHERE fts_node MATCH ? ${nodeWhere}
-    `;
+    const ftsColumns = ['content', 'name', 'summary'];
+    const { sql: matchSql } = dialect.matchClause(ftsColumns, '?');
+    if (dialect.supportsShadowTable) {
+      const sql = `SELECT COUNT(*) as cnt FROM fts_node JOIN node n ON fts_node.rowid = n.rowid WHERE ${matchSql} ${nodeWhere}`;
+      const row = await this.adapter.executeGet<{ cnt: number }>(sql, [ftsQuery, ...nodeFilter.params]);
+      return row?.cnt ?? 0;
+    }
+    const sql = `SELECT COUNT(*) as cnt FROM node n WHERE ${matchSql} ${nodeWhere}`;
     const row = await this.adapter.executeGet<{ cnt: number }>(sql, [ftsQuery, ...nodeFilter.params]);
     return row?.cnt ?? 0;
   }

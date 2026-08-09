@@ -1,4 +1,4 @@
-import DatabaseConstructor from 'better-sqlite3';
+import { createRequire } from 'node:module';
 import {
   consumeUncleanShutdownFlag,
   ensureAdapterMetaTable,
@@ -28,6 +28,41 @@ import { ETursoNativeStore, isTursoNativeStoreSchemaError } from './errors.js';
 
 type Sqlite3Database = import('better-sqlite3').Database;
 type Sqlite3Statement = import('better-sqlite3').Statement;
+
+/**
+ * better-sqlite3 is a SOFT dependency (optionalDependencies) — the Turso
+ * adapter is the primary path and must remain usable where better-sqlite3 is
+ * not installed. It is therefore NEVER imported at module scope (that would
+ * make the whole package unimportable without it, ERR_MODULE_NOT_FOUND); the
+ * binding is resolved lazily, only when the sqlite adapter is actually
+ * constructed. Same pattern as preflight.ts's `openSchemaReader`.
+ */
+const requireBetterSqlite3 = createRequire(import.meta.url);
+
+/** Structural constructor type — better-sqlite3 is `export =` CJS; the
+ *  module's default export IS the Database constructor (no `.default` member
+ *  on its namespace type). Same shape as preflight.ts's cast. */
+type BetterSqlite3Constructor = new (
+  p: string,
+  o?: { readonly?: boolean },
+) => Sqlite3Database;
+
+let cachedDatabaseConstructor: BetterSqlite3Constructor | undefined;
+function loadBetterSqlite3(): BetterSqlite3Constructor {
+  if (cachedDatabaseConstructor === undefined) {
+    try {
+      cachedDatabaseConstructor = requireBetterSqlite3('better-sqlite3') as BetterSqlite3Constructor;
+    } catch (err) {
+      throw new Error(
+        'better-sqlite3 is not installed. The sqlite adapter requires it — install it with ' +
+          '"pnpm add better-sqlite3" (or "npm install better-sqlite3"). ' +
+          'The Turso adapter does not need it.',
+        err instanceof Error ? { cause: err } : undefined,
+      );
+    }
+  }
+  return cachedDatabaseConstructor;
+}
 
 // ── Statement cache (LRU, 256 entries) ──────────────────────────────────────
 
@@ -120,7 +155,7 @@ export class SqliteAdapterImpl implements SqliteAdapter {
   constructor(db: Sqlite3Database);
   constructor(dbOrPath: string | Sqlite3Database, opts?: { readonly?: boolean }) {
     if (typeof dbOrPath === 'string') {
-      this.db = new DatabaseConstructor(dbOrPath, {
+      this.db = new (loadBetterSqlite3())(dbOrPath, {
         readonly: opts?.readonly ?? false,
       });
       this.ownDb = true;
