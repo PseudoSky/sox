@@ -53,8 +53,16 @@ export interface EnrichOnWriteParams {
    * Caller-supplied importance (user-asserted). When present, it is respected and
    * the computed importance is NOT written. Batch enricher also will not overwrite it
    * (per CONTRACTS.md C2.1). undefined = compute importance from content.
+   *
+   * PERF-MEMORY-004: when a value is present, `userSuppliedImportance` distinguishes
+   * a real caller-asserted value (true → user_override note, batch skip) from a
+   * write-path pre-computed score (false → no note, batch will re-score when
+   * link/access data is available). Defaults to true for backward compatibility with
+   * callers that don't pass the flag (treating any non-undefined importance as
+   * user-asserted, which was the pre-fix behaviour).
    */
   importance: number | undefined;
+  userSuppliedImportance?: boolean;
   /**
    * BL-381: the adapter's VectorDialect, used to build the E8 KNN query. Only
    * consulted when `embedding` is present (the synchronous write path); the
@@ -161,11 +169,21 @@ export async function enrichOnWrite(
 
   // E7: compute initial importance (length + tag score at write time; link/access on batch).
   // If caller supplied an explicit importance, respect it — do NOT override.
+  // PERF-MEMORY-004: userSuppliedImportance distinguishes caller-asserted values
+  // from write-path pre-computed scores. When the write path pre-computed importance
+  // (userSuppliedImportance === false), use that value but do NOT set userOverride —
+  // the batch enricher should still be allowed to update it with link/access data.
+  // Defaults to true when the flag is absent (backward compatible).
   let initialImportance: number;
   let userOverride = false;
   if (p.importance !== undefined) {
     initialImportance = p.importance;
-    userOverride = true;
+    // Only set userOverride when the caller explicitly asserted this importance value.
+    // A pre-computed write-path score (userSuppliedImportance === false) is NOT a user
+    // override — the batch enricher should update it on the next pass.
+    if (p.userSuppliedImportance !== false) {
+      userOverride = true;
+    }
   } else {
     const wordCount = p.content.split(/\s+/).filter(Boolean).length;
     initialImportance = computeImportance({

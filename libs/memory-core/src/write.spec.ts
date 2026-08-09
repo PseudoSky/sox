@@ -494,6 +494,57 @@ describe('memoryWrite — BL-62 project_path required (resolved)', () => {
   });
 });
 
+// ── PERF-MEMORY-004: importance default regression (end-to-end write path) ──
+
+describe('PERF-MEMORY-004 — importance write-path regression', () => {
+  it('PERF-MEMORY-004: write with no explicit importance stores content-derived score > 1.0 and enrich_ver WITHOUT user_override note', async () => {
+    const { dir, cleanup } = tmpDir();
+    try {
+      const db = await openDb(path.join(dir, 't.db'));
+      // Long content (100+ words) to guarantee computeImportance > 1.0
+      const content = 'analysis design implementation testing deployment review'.repeat(30);
+      const r = await memoryWrite(db, {
+        content,
+        project_path: '/test/project',
+      });
+      expect('episode_uid' in r).toBe(true);
+      const uid = (r as { episode_uid: string }).episode_uid;
+      const row = (await db.executeGet<{ importance: number; enrich_ver: string | null }>(
+        'SELECT importance, enrich_ver FROM node WHERE uid = ?', [uid],
+      ))!;
+      // RED (current): importance = 1.0 (the silent default), enrich_ver.note = 'user_override'
+      // GREEN (fixed): importance > 1.0, enrich_ver.note is absent
+      expect(row.importance).toBeGreaterThan(1.0);
+      expect(row.enrich_ver).not.toBeNull();
+      const parsed = JSON.parse(row.enrich_ver!) as { pass: string; ts: string; note?: string };
+      expect(parsed.note).toBeUndefined();
+      db.close();
+    } finally { cleanup(); }
+  });
+
+  it('PERF-MEMORY-004: write WITH explicit importance preserves caller value and stamps user_override note', async () => {
+    const { dir, cleanup } = tmpDir();
+    try {
+      const db = await openDb(path.join(dir, 't.db'));
+      const r = await memoryWrite(db, {
+        content: 'Custom importance test content.',
+        importance: 7.5,
+        project_path: '/test/project',
+      });
+      expect('episode_uid' in r).toBe(true);
+      const uid = (r as { episode_uid: string }).episode_uid;
+      const row = (await db.executeGet<{ importance: number; enrich_ver: string | null }>(
+        'SELECT importance, enrich_ver FROM node WHERE uid = ?', [uid],
+      ))!;
+      expect(row.importance).toBe(7.5);
+      expect(row.enrich_ver).not.toBeNull();
+      const parsed = JSON.parse(row.enrich_ver!) as { pass: string; ts: string; note?: string };
+      expect(parsed.note).toBe('user_override');
+      db.close();
+    } finally { cleanup(); }
+  });
+});
+
 // ── WP-3: memory_write_batch ───────────────────────────────────────────────────
 
 describe('memoryWriteBatch — WP-3 (BL-125)', () => {
