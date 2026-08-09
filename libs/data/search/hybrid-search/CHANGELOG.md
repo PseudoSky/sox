@@ -1,5 +1,15 @@
 # @adhd/sox-hybrid-search
 
+## 0.3.5
+
+### Patch Changes
+
+- Updated dependencies [d0644be]
+- Updated dependencies
+  - @adhd/sox-embedding-provider@0.3.0
+  - @adhd/sox-graph-store@0.7.0
+  - @adhd/sox-vector-store@0.4.1
+
 ## 0.3.4
 
 ### Patch Changes

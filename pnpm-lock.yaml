@@ -126,6 +126,8 @@ importers:
 
   extensions/agents/org-agent: {}
 
+  extensions/agents/researcher: {}
+
   extensions/agents/test-agent: {}
 
   extensions/bundles/sox-memory-bundle: {}
