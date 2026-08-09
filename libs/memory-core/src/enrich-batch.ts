@@ -20,7 +20,7 @@
 
 import { getMemoryGraphBackend } from './graph-backend.js';
 import { buildAutoLinks } from './autolink.js';
-import { clusterStore, type ThresholdCalibration } from './cluster.js';
+import { clusterStore, type ClusterAdmissionStats, type ThresholdCalibration } from './cluster.js';
 import { computeImportance } from './importance.js';
 import type { ImportanceWeights } from './importance.js';
 import { ENRICH_VERSION } from './enrich-version.js';
@@ -129,6 +129,14 @@ export interface BatchEnrichResult {
   cluster_guard_retries?: number;
   /** The τ the partition was actually produced at (post-calibration, post-guard). */
   cluster_effective_threshold?: number;
+  /**
+   * BL-496: admission accounting from the incremental join — how many
+   * candidates were considered, joined, and REJECTED BELOW τ. The last of
+   * these had no representation anywhere before BL-496: a rejected episode
+   * writes nothing, so it was indistinguishable from one not yet considered.
+   * Absent on a full pass (which re-partitions rather than admitting).
+   */
+  cluster_admission?: ClusterAdmissionStats;
 }
 
 interface EpisodeRow {
@@ -281,6 +289,10 @@ export async function runBatchEnrich(
     if (clusterResult.effective_threshold !== undefined) {
       result.cluster_effective_threshold = clusterResult.effective_threshold;
     }
+    // BL-496: carry admission stats out of the isolated child so the parent
+    // can register them for memory_ping. This is the ONLY channel by which
+    // "considered and rejected" escapes the child before it exits.
+    if (clusterResult.admission) result.cluster_admission = clusterResult.admission;
 
     if (clusterResult.clusters.length === 0 && !clusterResult.full_pass && result.incremental_joined === 0) {
       result.cluster_pass_skipped = true;

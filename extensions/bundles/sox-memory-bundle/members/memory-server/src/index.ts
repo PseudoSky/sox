@@ -46,6 +46,8 @@ import {
   getDb,
   getEmbedHealth,
   getEmbedPipelineMetrics,
+  getClusterPipelineMetrics,
+  recordClusterPassAdmission,
   getOntologySnapshot,
   hasPendingFullEnrich,
   healMissingVectors,
@@ -988,6 +990,19 @@ export async function handleToolCall(name: string, args: Record<string, unknown>
         // enrichment verdict so a dead Phase-B pipeline reads `stalled`.
         const embedBacklog = await embedBacklogStats(adapter);
 
+        // BL-496: clustering pipeline snapshot. Read-only SELECTs against the
+        // adapter already open on this path — opens nothing, so BL-412's
+        // "never pass db_path to memory_ping" hazard (openDb registering a
+        // path for background enrichment + verify-and-repair WRITES) does not
+        // apply. Failure here must not take out the whole store block, which
+        // already reports queue/embed health: degrade to null instead.
+        let clusterPipeline: Awaited<ReturnType<typeof getClusterPipelineMetrics>> | null = null;
+        try {
+          clusterPipeline = await getClusterPipelineMetrics(adapter, resolvedPath);
+        } catch {
+          clusterPipeline = null;
+        }
+
         const enrichmentHealth = computeEnrichmentHealth(
           queueDepth,
           queueOldestPendingAt,
@@ -1086,6 +1101,20 @@ export async function handleToolCall(name: string, args: Record<string, unknown>
             // cannot keep up with the backlog at the current tick interval.
             heal_time_budget_exceeded: getEmbedPipelineMetrics(resolvedPath)?.heal_time_budget_exceeded ?? null,
           },
+          // BL-496: clustering observability, the peer of `embed_pipeline`
+          // above. Answers "how long does an episode take to get a cluster"
+          // (`metrics.time_to_community_ms`) AND the question that turned out
+          // to matter more — "will it get one at all?"
+          //
+          // Read these three together; any one alone misleads:
+          //   metrics.time_to_community_ms      — survivorship: winners only
+          //   backlog.awaiting_or_rejected      — how many have no community
+          //   last_pass_admission.rejected_*    — how many were REFUSED, not queued
+          //
+          // A healthy p50 next to a large `rejected_below_threshold` means
+          // clustering is fast for the episodes it accepts and closed to the
+          // rest — which is the live state as measured on 2026-08-08.
+          cluster_pipeline: clusterPipeline,
         };
       }
     } catch {
@@ -2362,6 +2391,14 @@ export async function runEnrichPassOnDb(
     fullPass ? enrichFullTimeoutMs() : enrichIsolationTimeoutMs(),
   );
 
+  // BL-496: lift the child's admission stats into the PARENT's per-store
+  // registry before the child's result goes out of scope. The child exits
+  // after every pass, so this hand-off is the only thing that lets
+  // memory_ping report why episodes are not clustering.
+  if (isolated.ok && isolated.result.cluster_admission) {
+    recordClusterPassAdmission(dbPath, isolated.result.cluster_admission);
+  }
+
   const queueCompleted = isolated.ok ? await completeEnrichTriggerRows(adapter, maxSeq) : 0;
   const backlogAfter = (await embedBacklogStats(adapter)).count;
 
@@ -2391,6 +2428,11 @@ export async function runEnrichPassOnDb(
       cluster_calibration: result.cluster_calibration ?? null,
       cluster_effective_threshold: result.cluster_effective_threshold ?? null,
       cluster_guard_retries: result.cluster_guard_retries ?? null,
+      // BL-496: the admission decisions of this pass. Same `?? null` reasoning
+      // as cluster_calibration above — absent is indistinguishable from
+      // uninstrumented, and this field's whole purpose is to distinguish
+      // "considered and rejected" from "not yet considered".
+      cluster_admission: result.cluster_admission ?? null,
       importance_updated: result.importance_updated,
       relates_to_edges: result.relates_to_edges,
       queue_completed: queueCompleted,
