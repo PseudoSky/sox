@@ -449,7 +449,8 @@ describe('dropSubsetLens + listSubsetLenses (BL-26)', () => {
 
   it('listSubsetLenses returns one entry per distinct hash even with multiple communities per lens', async () => {
     // Seed 2 groups all tagged skill:X so the subset lens yields 2 communities.
-    // Content must be >= 50 chars to pass the clustering pre-filter (D5.1).
+    // Content must be >= CLUSTER_MIN_CONTENT_LENGTH to pass the clustering
+    // pre-filter (D5.1; default floor 20).
     insertEpisode('lesson x-one about guard ordering and tool resolution chain', groupVec(2, 0.01), ['skill:X']);
     insertEpisode('lesson x-two about guard ordering and tool resolution chain', groupVec(2, 0.02), ['skill:X']);
     insertEpisode('lesson x-three about guard ordering and tool resolution', groupVec(2, 0.03), ['skill:X']);

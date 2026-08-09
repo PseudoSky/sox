@@ -7,7 +7,7 @@
  * - Community UID = sha256(sorted member rowids joined by ',').slice(0,32).
  * - Label from centroid-nearest member (D1.4).
  * - Singletons suppressed (D1.6).
- * - Episodes with content.length < 50 excluded (D5.1).
+ * - Episodes with content.length < CLUSTER_MIN_CONTENT_LENGTH (default 20, tunable via SOX_CLUSTER_MIN_CONTENT_LENGTH) excluded (D5.1).
  * - Degenerate guard: max_cluster/total > 0.5 → threshold+0.05 retry up to 3× (D5.5).
  *
  * No LLM, no network. All output is byte-reproducible for the same DB state.
@@ -53,8 +53,31 @@ const DEFAULT_STORE_KEY = '(unkeyed)';
  * and will never be considered, and reporting it as backlog would make the
  * awaiting count permanently non-draining for a reason that has nothing to do
  * with clustering throughput.
+ *
+ * BL-497: the floor was a hardcoded 50 with no rationale on record, silently
+ * excluding every episode whose content fell in [20, 50) chars (tag-like notes,
+ * command output, terse prose). It is now operator-tunable via
+ * `SOX_CLUSTER_MIN_CONTENT_LENGTH` (default 20, floor >= 1 — 0 or negative
+ * would admit empty-string episodes as `awaiting_vector` noise). Resolved ONCE
+ * at module config time, because `CLUSTER_ELIGIBLE_SQL` below interpolates this
+ * value into a baked SQL string: a per-call re-read would let the exported
+ * constant and the executed predicate drift apart, recreating the exact
+ * two-sources-of-truth defect this module exists to prevent.
  */
-export const CLUSTER_MIN_CONTENT_LENGTH = 50;
+const CLUSTER_MIN_CONTENT_LENGTH_DEFAULT = 20;
+
+function resolveMinContentLength(): number {
+  const raw = process.env['SOX_CLUSTER_MIN_CONTENT_LENGTH'];
+  if (raw === undefined) return CLUSTER_MIN_CONTENT_LENGTH_DEFAULT;
+  const parsed = Number(raw);
+  // Same guard shape as resolveTargetMeanDegree: a non-finite or out-of-range
+  // value falls back to the default rather than disabling the floor. The bound
+  // is >= 1 (not > 0) so 0 — which would admit empty-string episodes — cannot
+  // be configured in.
+  return Number.isFinite(parsed) && parsed >= 1 ? parsed : CLUSTER_MIN_CONTENT_LENGTH_DEFAULT;
+}
+
+export const CLUSTER_MIN_CONTENT_LENGTH = resolveMinContentLength();
 
 /** SQL predicate (alias `n`) for "this episode is a clustering candidate". Shared with cluster-metrics. */
 export const CLUSTER_ELIGIBLE_SQL =
@@ -62,7 +85,7 @@ export const CLUSTER_ELIGIBLE_SQL =
 
 /**
  * The clustering-candidate predicate over alias `n` (D5.1: live episodes with
- * content ≥ 50 chars).
+ * content ≥ CLUSTER_MIN_CONTENT_LENGTH, default 20).
  *
  * Extracted to ONE constant because two call sites must agree exactly:
  * `selectEpisodes` (which returns the candidates) and `clusterStore`'s
@@ -545,8 +568,10 @@ export async function materializeLensMarker(
 // ── Main exported functions ───────────────────────────────────────────────────
 
 /**
- * Select candidate episodes for clustering: live episodes with content ≥ 50 chars
- * (D5.1), optionally narrowed by an additive WHERE clause against alias `n`.
+ * Select candidate episodes for clustering: live episodes with content ≥
+ * CLUSTER_MIN_CONTENT_LENGTH (D5.1, default 20 — tunable via
+ * SOX_CLUSTER_MIN_CONTENT_LENGTH), optionally narrowed by an additive WHERE
+ * clause against alias `n`.
  *
  * `restrict` is consumed verbatim from the same predicate builder the recall path
  * uses (`buildFiltersClause`), so subset selection and recall filtering share one
