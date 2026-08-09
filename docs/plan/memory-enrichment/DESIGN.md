@@ -510,7 +510,9 @@ and cosine similarities are unreliable.
 
 **Mitigation:**
 
-- Do not cluster episodes with `content.length < 50` chars. Leave them as singletons.
+- Do not cluster episodes with `content.length < CLUSTER_MIN_CONTENT_LENGTH` chars
+  (default 20; operator-tunable via `SOX_CLUSTER_MIN_CONTENT_LENGTH`, floor ≥ 1 —
+  BL-497 lowered the original hardcoded 50). Leave them as singletons.
 - Weight the extractive summary (E10) into the clustering text when available: cluster
   on `content + ' ' + summary` rather than `content` alone to improve embedding quality
   for short episodes.

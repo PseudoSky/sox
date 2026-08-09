@@ -297,7 +297,7 @@ describe('BL-496 — time-to-community is measurable', () => {
     }
   });
 
-  it('BL-496: ever_clustered_fraction excludes ineligible (content < 50 chars) episodes from its denominator', async () => {
+  it('BL-496: ever_clustered_fraction excludes ineligible (content below the eligibility floor) episodes from its denominator', async () => {
     const { dir, cleanup } = tmpDir();
     try {
       const adapter = await seededStore(dir);
@@ -336,9 +336,9 @@ describe('BL-496 — time-to-community is measurable', () => {
       const adapter = await seededStore(dir);
       const storeKey = path.join(dir, 't.db');
 
-      // Below CLUSTER_MIN_CONTENT_LENGTH (50): selectEpisodes will never
-      // return it, so no pass will ever consider it. Counting it as backlog
-      // would make the awaiting number permanently non-draining.
+      // Below CLUSTER_MIN_CONTENT_LENGTH (default 20, BL-497): selectEpisodes
+      // will never return it, so no pass will ever consider it. Counting it as
+      // backlog would make the awaiting number permanently non-draining.
       const short = await memoryWrite(adapter, { content: 'tiny note', project_path: '/test/bl496' });
       if ('code' in short) throw new Error('write failed');
 
