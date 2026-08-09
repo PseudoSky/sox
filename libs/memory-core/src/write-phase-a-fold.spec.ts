@@ -78,20 +78,19 @@ describe('PERF-MEMORY-003 — Phase-A enrichment folded into the INSERT', () => 
         )
         .get(uid) as NodeRow;
 
-      // The values the shared pure resolver says should be stored. NOTE the
-      // `importance: 1.0` — `memoryWritePhaseA` destructures `importance = 1.0`
-      // (write.ts:197), so by the time enrichment runs the value is never
-      // `undefined`. This spec asserts what the write path ACTUALLY produces,
-      // pre- and post-fold alike; see PERF-MEMORY-004 for the separate,
-      // pre-existing defect that this default makes E7's computeImportance
-      // unreachable and stamps every write as a user override.
+      // The values the shared pure resolver says should be stored, matching
+      // what memoryWritePhaseA now produces. PERF-MEMORY-004: the silent 1.0
+      // default is gone — when importance is omitted, the write path computes
+      // it from content and passes both the value and userSuppliedImportance:false
+      // to computeWriteEnrichment, so no userOverride note is set.
       const expected = computeWriteEnrichment({
         content,
         summary: undefined,
         tags: undefined,
         topic: undefined,
         project_path: PROJECT,
-        importance: 1.0,
+        importance: undefined,
+        userSuppliedImportance: false,
       });
 
       expect(row.summary).toBe(expected.summary);
