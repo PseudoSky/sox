@@ -401,10 +401,10 @@ describe('queryNodes', () => {
   it('filters by tUpdatedAfter', async () => {
     const { backend, adapter } = await freshBackend();
     const id1 = await backend.writeNode('a', {});
-    const id2 = await backend.writeNode('b', {});
+    await backend.writeNode('b', {}); // control: untouched node with null t_updated
     const beforeTouch = new Date().toISOString();
     await backend.touch(id1, { name: 'updated' });
-    // id1 has t_updated >= beforeTouch; id2 has null t_updated
+    // id1 has t_updated >= beforeTouch; untouched node has null t_updated
     const results = await backend.queryNodes({ tUpdatedAfter: beforeTouch });
     expect(results).toHaveLength(1);
     expect(results[0]!.id).toBe(id1);
@@ -414,7 +414,7 @@ describe('queryNodes', () => {
   it('filters by tUpdatedBefore excludes untouched nodes', async () => {
     const { backend, adapter } = await freshBackend();
     const id1 = await backend.writeNode('a', {});
-    const id2 = await backend.writeNode('b', {});
+    await backend.writeNode('b', {}); // control: untouched node with null t_updated
     await backend.touch(id1, { name: 'updated' });
     // NULL t_updated rows are excluded by <= predicate
     const results = await backend.queryNodes({ tUpdatedBefore: '3000-01-01T00:00:00.000Z' });
