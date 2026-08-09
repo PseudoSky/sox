@@ -23,9 +23,9 @@ remedy is to close the backlog item with a red→green test, not to edit this ta
 
 **62 done · 4 partial · 19 open** of 85 packets.
 
-- Open backlog items in this program's scope: **53**, of which **26** have no packet.
+- Open backlog items in this program's scope: **56**, of which **29** have no packet.
 - Open items deliberately out of scope: **28** — BL-99, BL-103, BL-104, BL-105, BL-163, BL-225, BL-228, BL-258, BL-261, BL-282, BL-283, BL-284, BL-285, BL-288, BL-291, BL-292, BL-296, BL-298, BL-305, BL-306, BL-307, BL-308, BL-309, BL-314, BL-315, BL-333, BL-355, BL-408
-- Unscheduled in-scope items (need a packet): BL-436, BL-462, BL-466, BL-467, BL-468, BL-470, BL-473, BL-474, BL-475, BL-476, BL-478, BL-479, BL-480, BL-481, BL-482, BL-483, BL-485, BL-486, BL-488, BL-489, BL-490, BL-491, BL-492, BL-495, BL-496, BL-497
+- Unscheduled in-scope items (need a packet): BL-436, BL-462, BL-466, BL-467, BL-468, BL-470, BL-473, BL-474, BL-475, BL-476, BL-478, BL-479, BL-480, BL-481, BL-482, BL-483, BL-485, BL-486, BL-488, BL-489, BL-490, BL-491, BL-492, BL-495, BL-497, BL-498, BL-499, BL-500, BL-501
 - Packet targets already closed (72) — historical context only, no work remains: BL-215, BL-259, BL-301, BL-327, BL-329, BL-332, BL-337, BL-338, BL-341, BL-343, BL-348, BL-350, BL-356, BL-359, BL-360, BL-361, BL-362, BL-364, BL-375, BL-376, BL-379, BL-380, BL-383, BL-388, BL-389, BL-390, BL-391, BL-392, BL-394, BL-396, BL-397, BL-398, BL-399, BL-402, BL-404, BL-405, BL-406, BL-407, BL-409, BL-410, BL-412, BL-413, BL-416, BL-425, BL-426, BL-432, BL-435, BL-437, BL-438, BL-439, BL-440, BL-441, BL-442, BL-443, BL-444, BL-445, BL-446, BL-447, BL-448, BL-449, BL-451, BL-453, BL-454, BL-456, BL-457, BL-458, BL-459, BL-460, BL-461, BL-463, BL-464, BL-465
 
 | Packet | Status | Targets | Still open |

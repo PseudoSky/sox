@@ -9,7 +9,7 @@
  *   5. enabled:false is a no-op (no files written).
  *   6. Topic derivation: community > entity > general fallback.
  */
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
 import * as fs from 'node:fs';
 import * as os from 'node:os';
@@ -122,6 +122,19 @@ describe('exportMarkdown — basic', () => {
 // ── 2. INDEX.md files ─────────────────────────────────────────────────────────
 
 describe('exportMarkdown — INDEX.md', () => {
+  // BL-202: freeze the clock so the generation timestamp is deterministic.
+  // The frozen value ("…T19:51:01.012Z") deliberately contains "1.0", the exact
+  // state under which the old whole-file indexOf assertion failed — the row-parse
+  // assertion below must pass under it.
+  beforeEach(() => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime('2026-08-08T19:51:01.012Z');
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
   it('writes root INDEX.md listing topics with node counts', async () => {
     const { dir: dbDir, cleanup: dbCleanup } = makeTempDir();
     const { dir: exportDir, cleanup: exportCleanup } = makeTempDir();
@@ -171,10 +184,21 @@ describe('exportMarkdown — INDEX.md', () => {
 
       const content = fs.readFileSync(topicIndexPath, 'utf8');
       expect(content).toContain('Topic:');
-      // High importance should appear before low importance
-      const highIdx = content.indexOf('9.0');
-      const lowIdx = content.indexOf('1.0');
-      expect(highIdx).toBeLessThan(lowIdx);
+      // High importance should appear before low importance.
+      // BL-202: a whole-file indexOf('1.0') false-matched the generation timestamp
+      // embedded in the header (e.g. "…T19:51:01.012Z" contains "1.0"), so the
+      // assertion failed on ~1% of wall-clock states even though the sort was
+      // correct. Parse the actual table rows and compare row order instead.
+      const tableRows = content
+        .split('\n')
+        .filter((line) => line.startsWith('| '))
+        .map((line) => line.split('|').map((cell) => cell.trim()));
+      const importanceOf = (cells: string[]): string => cells[2] ?? '';
+      const highRowIdx = tableRows.findIndex((cells) => importanceOf(cells) === '9.0');
+      const lowRowIdx = tableRows.findIndex((cells) => importanceOf(cells) === '1.0');
+      expect(highRowIdx, `9.0 row must exist in INDEX.md:\n${content}`).toBeGreaterThanOrEqual(0);
+      expect(lowRowIdx, `1.0 row must exist in INDEX.md:\n${content}`).toBeGreaterThanOrEqual(0);
+      expect(highRowIdx).toBeLessThan(lowRowIdx);
 
       db.close();
     } finally {
