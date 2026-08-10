@@ -1,5 +1,41 @@
 # @adhd/sox-store-adapter
 
+## 0.5.1
+
+### Patch Changes
+
+- Republish of 0.5.0 with the `@adhd/sox-telemetry` dependency resolved to
+  `0.2.0`. 0.5.0 shipped with the literal pnpm `workspace:*` protocol (it was
+  published with `npm publish`, which does not rewrite the protocol the way
+  `pnpm publish` does), making the published tarball uninstallable for any
+  consumer (`Unsupported URL Type "workspace:"`). 0.5.0 is deprecated on npm;
+  `^0.5.0` ranges (including graph-store 0.8.0's) resolve to 0.5.1. No code
+  changes.
+
+## 0.5.0
+
+### Minor Changes
+
+- Add the `recursiveCte` adapter capability — probed once at connect, not guessed.
+
+  Turso Database Rust < 0.8.0 rejects `WITH RECURSIVE` at prepare (`Parse error:
+Recursive CTEs are not yet supported` — proven empirically by
+  `recursive-cte.probe.test.ts`), which breaks graph-store's five recursive-graph
+  methods on every real 0.7.x Turso store. graph-store 0.8.0 reads this flag to
+  switch those methods to iterative BFS fallbacks.
+
+  - `AdapterCapabilities.recursiveCte: boolean` — true when the engine accepts
+    `WITH RECURSIVE` at prepare. `SqliteAdapterImpl` / `MockAdapter`: always
+    `true`. `TursoAdapterImpl.connect()` probes once (a read-only counter CTE in a
+    try/catch, before the capabilities object is built) and caches the result on
+    the instance.
+  - **Source-breaking for external `StoreAdapter` implementors (0.x):** the new
+    field is REQUIRED, so a hand-written adapter whose capabilities literal omits
+    it stops compiling. External adapters that wrap a recursive-capable engine
+    (better-sqlite3, libsql >= 0.8.0) should report `true`. graph-store reads
+    `recursiveCte ?? true` so a runtime adapter that predates the field still
+    defaults to the recursive path.
+
 ## 0.4.0
 
 ### Minor Changes
@@ -78,7 +114,7 @@
   `{ ensured: false, … }`, never a throw. Noted engine deviation: Turso's
   Tantivy FTS scan ignores `OFFSET` on the same query as `fts_match`, so the
   turso builder wraps an offset query in a subquery and applies `LIMIT ?
-  OFFSET ?` to the materialized result (verified 2026-08-08).
+OFFSET ?` to the materialized result (verified 2026-08-08).
 
 ### Patch Changes
 

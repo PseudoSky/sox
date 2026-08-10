@@ -215,6 +215,7 @@ export class SqliteAdapterImpl implements SqliteAdapter {
       fts5: true,
       fts: true,
       needsWriteSerialization: true,
+      recursiveCte: true,
     };
   }
 
