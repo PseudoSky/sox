@@ -1,7 +1,9 @@
 /**
  * fts-query-parity.spec.ts — end-to-end FTS correctness, both backends,
- * exercised through the exact query shape `recall.ts`'s FTS channel builds
- * (createFTSDialect + matchClause/scoreClause + supportsShadowTable branch).
+ * exercised through the exact query shape `recall.ts`'s FTS channel now uses:
+ * `adapter.ftsSearch(...)` — store-adapter's A2 API (DEBT-SOXGRAPH-001), which
+ * internally composes the per-backend dialect SQL (createFTSDialect +
+ * matchClause/scoreClause + supportsShadowTable branch, BL-367 multi-term OR).
  *
  * WHY THIS FILE EXISTS (FTS consolidation, 2026-07-30):
  * db-fts5-residue-turso.spec.ts already proves residue cleanup makes a
@@ -12,13 +14,14 @@
  * red→green gate for that:
  *
  *   1. A fresh SQLite store gets `fts_node` (+ its 4 shadow tables + 3
- *      triggers) on open, and `fts_node MATCH ?` (as recall.ts builds it via
- *      the dialect) returns the right rows, ranked, and excludes non-matches.
+ *      triggers) on open, and `adapter.ftsSearch(...)` (the delegated path —
+ *      `fts_node MATCH ?` underneath) returns the right rows, ranked, and
+ *      excludes non-matches.
  *   2. A fresh Turso store gets `idx_fts_node` on open (requires
  *      TursoAdapterImpl.connect() to pass `experimental: ['index_method']`
  *      — root-caused 2026-07-30, see fts-dialect.ts's module doc), and
- *      `fts_match(...)` — bound-parameter form, as recall.ts now builds it —
- *      returns the right rows via `fts_score` ranking.
+ *      `adapter.ftsSearch(...)` (`fts_match(...)`/`fts_score(...)` underneath)
+ *      returns the right rows via fts_score ranking.
  *   3. A store carrying SQLite FTS5 residue, opened on Turso, is cleaned by
  *      openDb() (db-fts5-residue-turso.spec.ts already covers this in
  *      detail; repeated here narrowly to prove the query ALSO works
@@ -69,34 +72,20 @@ async function insertNodes(adapter: StoreAdapter): Promise<void> {
   }
 }
 
-/** Run the exact FTS query shape recall.ts's federatedRecall builds. */
+/** Run the exact FTS query shape recall.ts's FTS channel now delegates:
+ *  `adapter.ftsSearch('node', ['content','name','summary'], query)` — the
+ *  per-backend dialect SQL is composed inside store-adapter. */
 async function runFtsQuery(
   adapter: StoreAdapter,
   query: string,
 ): Promise<{ uid: string }[]> {
-  const { createFTSDialect } = await import('@adhd/sox-store-adapter');
-  const ftsDialect = createFTSDialect(adapter.config.type);
-  const { sql: matchSql } = ftsDialect.matchClause(['content', 'name', 'summary'], '?');
-  const scoreExpr = ftsDialect.scoreClause(['content', 'name', 'summary'], '?');
-
-  if (ftsDialect.supportsShadowTable) {
-    const result = await adapter.executeAll<{ uid: string }>(
-      `SELECT n.uid
-       FROM fts_node
-       JOIN node n ON n.rowid = fts_node.rowid
-       WHERE ${matchSql}
-       ORDER BY ${scoreExpr}`,
-      [query],
-    );
-    return result.rows;
-  }
-  const result = await adapter.executeAll<{ uid: string }>(
-    `SELECT uid, ${scoreExpr} AS rank FROM node
-     WHERE ${matchSql}
-     ORDER BY rank`,
-    [query, query],
+  const rows = await adapter.ftsSearch<{ uid: string }>(
+    'node',
+    ['content', 'name', 'summary'],
+    query,
+    { limit: 50 },
   );
-  return result.rows;
+  return rows;
 }
 
 describe('FTS query parity — dialect-driven query returns correct results, both backends', () => {

@@ -376,9 +376,11 @@ export async function memoryRecall(
     temporal_weight = TEMPORAL_WEIGHT,
   } = params;
 
-  const { createVectorDialect, createFTSDialect } = await import('@adhd/sox-store-adapter');
+  // DEBT-SOXGRAPH-001: only the vec channel needs a dialect object anymore —
+  // the FTS channel is fully delegated to `adapter.ftsSearch` (store-adapter's
+  // A2 API), which owns all per-backend FTS SQL itself.
+  const { createVectorDialect } = await import('@adhd/sox-store-adapter');
   const vectorDialect = createVectorDialect(adapter.config.type);
-  const ftsDialect = createFTSDialect(adapter.config.type);
 
   // BL-316: scale candidate limits with caller's limit when filters are active
   const knnLimit = filters ? Math.max(DEFAULT_KNN_LIMIT, (limit || 20) * 2) : DEFAULT_KNN_LIMIT;
@@ -566,86 +568,56 @@ export async function memoryRecall(
   const vecRanks = new Map<number, number>();
   vecRows.forEach((r, i) => vecRanks.set(r.node_id, i + 1));
 
-  // 2b. FTS BM25 search (text search)
-  const ftsTokens = query
-    .replace(/['"*\-+]/g, ' ')
-    .trim()
-    .split(/\s+/)
-    .filter((t) => t.length > 1);
-
-  // BL-367: build the bound MATCH-query text via the dialect, NOT a bare
-  // space-join. SQLite FTS5 ANDs bareword tokens (all must be present);
-  // Turso's Tantivy `fts_match` matches on ANY token (effectively OR). A
-  // space-joined query therefore returned zero SQLite hits for most
-  // multi-term queries while Turso returned real matches for the same
-  // corpus — measured as the dominant cause of BL-367's cross-backend
-  // recall-parity failure (FTS-arm content overlap 0.10 avg vs an 0.80
-  // bar). `buildMatchQuery` makes both dialects build the identical
-  // explicit `"tok1" OR "tok2" OR ...` form, verified empirically to
-  // produce IDENTICAL result sets on both backends for the parity corpus
-  // (`recall-parity-arm-attribution.test.ts`). See the doc comment on
-  // `FTSDialect.buildMatchQuery` (store-adapter/src/types.ts).
-  const ftsQuery = ftsDialect.supported ? ftsDialect.buildMatchQuery(ftsTokens) : '';
-
+  // 2b. FTS BM25 search (text search) — DEBT-SOXGRAPH-001: fully delegated to
+  // store-adapter's A2 API. `adapter.ftsSearch` owns ALL per-backend FTS SQL
+  // (the SQLite FTS5 fts_node shadow-table match/rank join vs the Turso
+  // Tantivy fts_match/fts_score functions on node), token normalization
+  // (trim → lowercase → split → drop-empties), the BL-367 multi-term
+  // `"t1" OR "t2"` match-query form, the `n` base-table alias on BOTH
+  // backends (so the n.-prefixed predicates below need no stripping), and the
+  // capability gate (`capabilities.fts === false` → `[]`). memory-core no
+  // longer assembles any FTS SQL above store-adapter — the old
+  // matchClause/scoreClause branch and the `n.`-alias-stripping hacks are
+  // deleted. Rows come back already ordered best-first (score normalized to
+  // higher = better on both engines), which is exactly the order the
+  // hand-assembled arm produced (SQLite: ascending rank ≡ descending score;
+  // Turso: engine ties fall through to the same scan order — verified
+  // empirically for the DEBT-SOXGRAPH-001 parity corpus on both backends).
   const ftsRowids = new Map<number, number>();
-  if (ftsQuery && ftsDialect.supported) {
-    try {
-      // Both branches ask the dialect for match/score SQL and bind the query
-      // text as a normal parameter (`?`) — never inlined as a string literal.
-      // (Turso's `fts_match`/`fts_score` accept bound params identically to
-      // literal args, verified empirically 2026-07-30; the two branches below
-      // differ only in the genuinely different table shape each backend uses
-      // — SQLite FTS5 keeps a separate `fts_node` shadow table joined back to
-      // `node`, Turso's Tantivy index lives directly on `node` — decided via
-      // `ftsDialect.supportsShadowTable`, never `adapter.config.type`.)
-      const { sql: matchSql } = ftsDialect.matchClause(['content', 'name', 'summary'], '?');
-      const scoreExpr = ftsDialect.scoreClause(['content', 'name', 'summary'], '?');
-      let ftsResult;
-      if (ftsDialect.supportsShadowTable) {
-        // SQLite FTS5: match/rank live on the fts_node shadow table.
-        // scoreExpr is the constant `fts_node.rank` (0 placeholders).
-        ftsResult = await adapter.executeAll<{ rowid: number; rank: number }>(
-          `SELECT fts_node.rowid, ${scoreExpr} AS rank
-           FROM fts_node
-           JOIN node n ON n.rowid = fts_node.rowid
-           WHERE ${matchSql}
-             AND ${validityPred}
-             ${agentFilter}
-             ${filterSql}
-             ${kindClause}
-           ORDER BY rank
-           LIMIT ?`,
-          [ftsQuery, ...filterParams, ...kindParams, ftsLimit],
-        );
-      } else {
-        // Turso Tantivy FTS: the index lives directly on node — no join.
-        // scoreExpr binds its own `?` (used once, in the SELECT list); the
-        // ORDER BY references the SELECT alias instead of repeating it.
-        ftsResult = await adapter.executeAll<{ rowid: number; rank: number }>(
-          `SELECT rowid, ${scoreExpr} AS rank FROM node
-           WHERE ${matchSql}
-             AND ${validityPred.replace(/\bn\./g, '')}
-             ${agentFilter.replace(/\bn\./g, '')}
-             ${filterSql.replace(/\bn\./g, '')}
-             ${kindClause.replace(/\bn\./g, '')}
-           ORDER BY rank
-           LIMIT ?`,
-          [ftsQuery, ftsQuery, ...filterParams, ...kindParams, ftsLimit],
-        );
-      }
-      ftsResult.rows.forEach((r, i) => ftsRowids.set(r.rowid, i + 1));
-    } catch (err) {
-      // BL-391: the FTS/BM25 arm can fail for a benign reason (special-char
-      // query syntax) OR because the underlying connection cannot run
-      // fts_match at all (Turso read-only federation connections, before the
-      // allowFtsInReadonly fix — "Resource is read-only"). Either way this
-      // degrades results (BM25 signal silently missing) rather than failing
-      // the whole recall, but the degradation itself must be observable —
-      // record it instead of swallowing it outright.
-      const msg = err instanceof Error ? err.message : String(err);
-      console.error(`[sox-memory] WARNING: FTS/BM25 channel failed in recall, continuing without it: ${msg}`);
-      degradations.push(`fts: ${msg}`);
-    }
+  try {
+    const ftsRows = await adapter.ftsSearch<{ rowid: number }>(
+      'node',
+      ['content', 'name', 'summary'],
+      query,
+      {
+        limit: ftsLimit,
+        // F1 (fix/debt-soxgraph-001): join the predicate fragments with
+        // spaces, exactly like the vec channel does above (recall.ts:546).
+        // The previous tight concatenation produced `n.t_invalid IS NULLAND
+        // n.agent_id = ...` whenever agent_id was set — a syntax error on
+        // BOTH backends, swallowed by the BL-391 catch into degradations,
+        // which silently zeroed the whole FTS/BM25 channel for every
+        // agent-scoped recall. A space-joined array makes it impossible for
+        // any future fragment to reintroduce the bug by omitting its leading
+        // or trailing space. (The as_of form `)AND` was lexically valid; the
+        // bug was specific to the default `IS NULL` predicate + a non-empty
+        // agentFilter.)
+        where: [validityPred, agentFilter, filterSql, kindClause].filter(Boolean).join(' '),
+        params: [...filterParams, ...kindParams],
+      },
+    );
+    ftsRows.forEach((r, i) => ftsRowids.set(r.rowid, i + 1));
+  } catch (err) {
+    // BL-391: the FTS/BM25 arm can fail for a benign reason (special-char
+    // query syntax) OR because the underlying connection cannot run
+    // fts_match at all (Turso read-only federation connections, before the
+    // allowFtsInReadonly fix — "Resource is read-only"). Either way this
+    // degrades results (BM25 signal silently missing) rather than failing
+    // the whole recall, but the degradation itself must be observable —
+    // record it instead of swallowing it outright.
+    const msg = err instanceof Error ? err.message : String(err);
+    console.error(`[sox-memory] WARNING: FTS/BM25 channel failed in recall, continuing without it: ${msg}`);
+    degradations.push(`fts: ${msg}`);
   }
 
   // 2c. Temporal filter: recently created nodes (recency signal)
