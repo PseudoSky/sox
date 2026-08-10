@@ -320,7 +320,13 @@ export class TursoAdapterImpl implements TursoAdapter {
     let tursoModule: any;
     try {
       tursoModule = await import('@tursodatabase/database');
-    } catch {
+    } catch (err) {
+      // The thrown message says "not installed", but the import can fail for
+      // other reasons (native binding, version) — trace the REAL error, which
+      // this throw would otherwise discard.
+      log.error('store_adapter.turso.driver_import_failed', {
+        error: err instanceof Error ? err.message : String(err),
+      });
       throw new Error(
         '@tursodatabase/database is not installed. Install it with: pnpm add @tursodatabase/database',
       );
@@ -478,7 +484,12 @@ export class TursoAdapterImpl implements TursoAdapter {
         `WITH RECURSIVE cnt(x) AS (SELECT 1 UNION ALL SELECT x + 1 FROM cnt WHERE x < 5) SELECT x FROM cnt`,
       );
       recursiveCte = true;
-    } catch {
+    } catch (err) {
+      // Feature probe — a 0.7.x Turso rejects WITH RECURSIVE; that is the
+      // expected false. Any OTHER failure is still worth a trace.
+      log.debug('store_adapter.turso.recursive_cte_probe_failed', {
+        error: err instanceof Error ? err.message : String(err),
+      });
       recursiveCte = false;
     }
 
@@ -541,8 +552,11 @@ export class TursoAdapterImpl implements TursoAdapter {
         await ensureAdapterMetaTable(instance);
         await stampAdapterMeta(instance, 'turso');
         uncleanShutdown = await consumeUncleanShutdownFlag(instance);
-      } catch {
-        // Non-fatal
+      } catch (err) {
+        // Non-fatal — but meta stamping failing on every open is a real signal.
+        log.warn('store_adapter.turso.adapter_meta_failed', {
+          error: err instanceof Error ? err.message : String(err),
+        });
       }
 
       // (BL-352) Verify — and repair — the artifacts this adapter generates.
@@ -798,8 +812,13 @@ export class TursoAdapterImpl implements TursoAdapter {
         this._markIfFatal(err);
         try {
           await this.db.exec('ROLLBACK');
-        } catch {
-          // Ignore rollback errors
+        } catch (rollbackErr) {
+          // Ignore rollback errors — but a failed ROLLBACK leaves transaction
+          // state uncertain, so trace it even though the original error still
+          // propagates below.
+          log.debug('store_adapter.turso.rollback_failed', {
+            error: rollbackErr instanceof Error ? rollbackErr.message : String(rollbackErr),
+          });
         }
         throw err;
       }
@@ -890,8 +909,12 @@ export class TursoAdapterImpl implements TursoAdapter {
           }
         }
         if (report.damaged.length === 0) await markCleanShutdown(this);
-      } catch {
-        // A verification failure must never block a close.
+      } catch (err) {
+        // A verification failure must never block a close — but it is a
+        // data-loss-adjacent signal (BL-330) and must be durable, not silent.
+        log.warn('store_adapter.turso.close_verify_failed', {
+          error: err instanceof Error ? err.message : String(err),
+        });
       }
     }
 

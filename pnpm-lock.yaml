@@ -126,8 +126,6 @@ importers:
 
   extensions/agents/org-agent: {}
 
-  extensions/agents/researcher: {}
-
   extensions/agents/test-agent: {}
 
   extensions/bundles/sox-memory-bundle: {}
@@ -245,6 +243,9 @@ importers:
       '@adhd/sox-store-adapter':
         specifier: ^0.5.0
         version: 0.5.1
+      '@adhd/sox-telemetry':
+        specifier: workspace:*
+        version: link:../../../observability/sox-telemetry
     devDependencies:
       drizzle-kit:
         specifier: ^0.31.10
@@ -368,6 +369,9 @@ importers:
       '@adhd/sox-service-proxy':
         specifier: workspace:*
         version: link:../service-proxy
+      '@adhd/sox-telemetry':
+        specifier: workspace:*
+        version: link:../observability/sox-telemetry
       '@modelcontextprotocol/sdk':
         specifier: ^1.0.0
         version: 1.29.0(zod@4.4.3)

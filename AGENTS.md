@@ -151,6 +151,10 @@ missing an `await`, so it always returned `{}` and could never report an error; 
 If you add a project, give it a `typecheck` target. If a `typecheck` fails, fix the code — never
 weaken `strict`, `noUnusedLocals`, or `exactOptionalPropertyTypes` to silence it.
 
+## ⛔ AGENT CONSTRAINT — NEVER USE EMPTY CATCH STATEMENTS
+
+Never use empty catch statements. Always log traces of errors any time you see an untraced catch, using the appropriate `@adhd/sox-...` tracing package.
+
 ---
 
 ## ⛔ AGENT CONSTRAINT — PNPM WORKSPACE "MISSING PACKAGE" DIAGNOSIS ORDER
