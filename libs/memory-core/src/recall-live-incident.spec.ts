@@ -16,15 +16,20 @@
  *   `SOX_RECALL_EMBED_TIMEOUT_MS`, default 3000ms) so a stalled provider
  *   degrades gracefully to the BM25/temporal channels instead of hanging.
  *
- *   DEFECT 2 (this file, §2) — recall.ts's FTS channel query is dialect-aware
- *   (see recall.ts's `createFTSDialect(adapter.config.type)` branch): SQLite
- *   uses the FTS5 `fts_node MATCH ?` virtual-table path, Turso uses the
- *   native Tantivy `fts_match(...)/fts_score(...)` functions directly on
- *   `node` (no `fts_node` shadow table exists on Turso — TursoFTSDialect,
- *   see libs/data/store/store-adapter/src/fts-dialect.ts). This suite pins
- *   that both branches emit dialect-correct SQL and never regress to a
- *   hardcoded FTS5-only query that would throw "no such table: fts_node" on
- *   a live Turso store.
+ *   DEFECT 2 (this file, §2) — recall.ts's FTS channel query must be
+ *   dialect-aware: SQLite uses the FTS5 `fts_node MATCH ?` virtual-table
+ *   path, Turso uses the native Tantivy `fts_match(...)/fts_score(...)`
+ *   functions directly on `node` (no `fts_node` shadow table exists on Turso
+ *   — see libs/data/store/store-adapter/src/fts-dialect.ts). Since
+ *   DEBT-SOXGRAPH-001 (P5), that dialect awareness lives ENTIRELY in
+ *   store-adapter: recall.ts delegates to `adapter.ftsSearch(...)` and never
+ *   assembles FTS SQL itself (the weave's "no custom SQL above
+ *   store-adapter" rule). This suite pins the DELEGATION CONTRACT — the
+ *   exact table/columns/query/opts memoryRecall passes — and asserts zero
+ *   hand-assembled FTS SQL reaches executeAll on either dialect. The
+ *   per-backend SQL shapes themselves are pinned by store-adapter's own
+ *   fts-ops.spec.ts (buildFtsSearchSql, sqlite shadow join vs turso
+ *   fts_match/fts_score).
  *
  * Gate: npx nx test memory-core --exclude-task-dependencies
  *   (--exclude-task-dependencies is required while libs/data/store/store-adapter's
@@ -36,7 +41,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import type { StoreAdapter, AllResult, RunResult, FtsEnsureResult } from '@adhd/sox-store-adapter';
+import type { StoreAdapter, AllResult, RunResult, FtsEnsureResult, FtsSearchOptions } from '@adhd/sox-store-adapter';
 import type { EmbedRole } from '@adhd/sox-embedding-provider';
 import { openDb } from './db.js';
 import { memoryWrite } from './write.js';
@@ -175,17 +180,23 @@ describe('memoryRecall — Defect 1: query-embed timeout guard (live-incident re
 /**
  * Minimal StoreAdapter test double that records every SQL statement passed
  * to executeAll/executeGet and returns empty result sets. This lets us
- * assert on the EXACT SQL text recall.ts emits for the FTS channel per
- * adapter dialect, without needing a live Turso connection (none is
- * available in this environment — see team coordination notes).
+ * assert that memoryRecall's FTS channel NEVER assembles FTS SQL itself —
+ * it must delegate to `adapter.ftsSearch` (DEBT-SOXGRAPH-001), which this
+ * double also records (table/columns/query/opts), returning empty rows.
  *
  * Returning empty rows from every call is safe: memoryRecall's
  * allRowids.size === 0 early-return path executes cleanly after the FTS
  * (and vec + temporal) queries have already been issued and recorded, so the
- * dialect-selection logic under test runs in full before the function exits.
+ * delegation-under-test runs in full before the function exits.
  */
 class RecordingAdapter implements StoreAdapter {
   readonly calls: { sql: string; args: unknown[] }[] = [];
+  readonly ftsCalls: {
+    table: string;
+    columns: string[];
+    query: string;
+    opts: FtsSearchOptions;
+  }[] = [];
   constructor(readonly config: StoreAdapter['config']) {}
   readonly capabilities: StoreAdapter['capabilities'] = {
     multiprocessWrite: false,
@@ -239,10 +250,16 @@ class RecordingAdapter implements StoreAdapter {
     /* no-op */
   }
 
-  // (A2 — FEAT-SOXGRAPH-001) Required StoreAdapter members. This double only
-  // records SQL issued by memoryRecall's own channels — it never issues FTS
-  // SQL itself, so these return empty results and record nothing.
-  async ftsSearch<T = Record<string, unknown>>(): Promise<Array<T & { rowid: number; score: number }>> {
+  // (A2 — FEAT-SOXGRAPH-001) Required StoreAdapter members. This double
+  // RECORDS the FTS delegation calls memoryRecall issues (DEBT-SOXGRAPH-001)
+  // and returns empty results — it never issues FTS SQL itself.
+  async ftsSearch<T = Record<string, unknown>>(
+    table: string,
+    columns: string[],
+    query: string,
+    opts?: FtsSearchOptions,
+  ): Promise<Array<T & { rowid: number; score: number }>> {
+    this.ftsCalls.push({ table, columns, query, opts: { ...(opts ?? {}) } });
     return [];
   }
 
@@ -266,48 +283,48 @@ class RecordingAdapter implements StoreAdapter {
   }
 }
 
-describe('memoryRecall — Defect 2: FTS channel is dialect-aware (sqlite vs turso)', () => {
+describe('memoryRecall — Defect 2: FTS channel delegates to store-adapter ftsSearch (dialect-aware SQL lives in store-adapter)', () => {
   beforeEach(() => {
     _setEmbedProviderForTest(new DeterministicTestProvider());
   });
 
-  it('emits SQLite FTS5 `fts_node MATCH` syntax on a sqlite-type adapter', async () => {
-    const adapter = new RecordingAdapter({ type: 'sqlite', dbPath: '/tmp/does-not-matter.db' });
+  it('delegates the FTS channel to adapter.ftsSearch with the canonical node shape — no hand-assembled FTS SQL on either dialect', async () => {
+    const configs: StoreAdapter['config'][] = [
+      { type: 'sqlite', dbPath: '/tmp/does-not-matter.db' },
+      { type: 'turso', url: 'libsql://does-not-matter' },
+    ];
+    for (const config of configs) {
+      const adapter = new RecordingAdapter(config);
+      await memoryRecall(adapter, 'project', { query: 'turso adapter', limit: 5 });
 
-    await memoryRecall(adapter, 'project', { query: 'turso adapter', limit: 5 });
+      // DEBT-SOXGRAPH-001 (the weave): memory-core must NOT assemble FTS SQL
+      // above store-adapter. Neither the SQLite fts_node MATCH statement nor
+      // the Turso Tantivy fts_match/fts_score functions may appear in
+      // executeAll traffic. (The vec channel's `embedding MATCH ?` is a
+      // different, sanctioned dialect call — not matched here.)
+      const ftsSql = adapter.calls.filter((c) => /fts_match\(|fts_score\(|fts_node|\.rank\b/i.test(c.sql));
+      expect(ftsSql).toEqual([]);
 
-    const ftsCall = adapter.calls.find((c) => /FROM\s+fts_node/i.test(c.sql));
-    expect(ftsCall).toBeDefined();
-    expect(ftsCall?.sql).toMatch(/fts_node\s+MATCH\s+\?/i);
-    // Must NEVER emit the Turso-only Tantivy function on sqlite.
-    expect(ftsCall?.sql).not.toMatch(/fts_match\(/i);
-    expect(ftsCall?.sql).not.toMatch(/fts_score\(/i);
-  });
-
-  it('emits Turso Tantivy `fts_match`/`fts_score` syntax on a turso-type adapter, never `fts_node`', async () => {
-    const adapter = new RecordingAdapter({ type: 'turso', url: 'libsql://does-not-matter' });
-
-    await memoryRecall(adapter, 'project', { query: 'turso adapter', limit: 5 });
-
-    const ftsCall = adapter.calls.find((c) => /fts_match\(/i.test(c.sql));
-    expect(ftsCall).toBeDefined();
-    expect(ftsCall?.sql).toMatch(/FROM\s+node\b/i);
-    // Query text is bound as a normal parameter (`?`), never inlined as a SQL
-    // string literal — verified empirically (2026-07-30) that Turso's
-    // fts_match/fts_score accept bound params identically to literal args,
-    // so there's no reason to hand-roll quote-escaping and risk injection.
-    expect(ftsCall?.sql).toMatch(/fts_match\(\s*"content",\s*"name",\s*"summary"\s*,\s*\?\s*\)/i);
-    expect(ftsCall?.sql).toMatch(/fts_score\(\s*"content",\s*"name",\s*"summary"\s*,\s*\?\s*\)/i);
-    // BL-367 (post-dates this test's original write): the bound param is the
-    // dialect's tokenized `"tok1" OR "tok2"` match query, not the raw query
-    // string — Turso's Tantivy fts_match matches on ANY token, so recall.ts
-    // builds an explicit OR expression via FTSDialect.buildMatchQuery (see
-    // fts-dialect.ts) for BOTH dialects, verified empirically 2026-07-30. The
-    // raw string is still bound as a normal `?` param (never inlined/escaped
-    // by hand) — just not byte-identical to the caller's query text anymore.
-    expect(ftsCall?.args).toContain('"turso" OR "adapter"');
-    // Must NEVER reference the sqlite-only shadow table on Turso — this is
-    // the exact defect: fts_node does not exist on a live Turso store.
-    expect(ftsCall?.sql).not.toMatch(/fts_node/i);
+      // Exactly one delegation per recall, with the canonical shape: table
+      // `node`, the same three indexed columns on BOTH dialects, the raw
+      // query text, and the recall arm's predicate/params/limit.
+      expect(adapter.ftsCalls.length).toBe(1);
+      const call = adapter.ftsCalls[0]!;
+      expect(call.table).toBe('node');
+      expect(call.columns).toEqual(['content', 'name', 'summary']);
+      // The raw query text is delegated; token normalization (trim → lowercase
+      // → split → drop-empties) and the BL-367 `"t1" OR "t2"` match-query form
+      // are store-adapter's contract now (pinned by store-adapter's
+      // fts-ops.spec.ts), not recall.ts's.
+      expect(call.query).toBe('turso adapter');
+      expect(call.opts.limit).toBe(20); // DEFAULT_FTS_LIMIT (no filters active)
+      // The `n.`-prefixed validity + kind predicates are passed through
+      // verbatim — no alias-stripping, because store-adapter aliases the base
+      // table `n` on BOTH backends.
+      expect(call.opts.where).toContain('n.t_invalid IS NULL');
+      expect(call.opts.where).toContain('n.kind IN (?)');
+      expect(Array.isArray(call.opts.params)).toBe(true);
+      expect(call.opts.params).toEqual(['episode']);
+    }
   });
 });
