@@ -997,7 +997,7 @@ function getFtsOpsModule(): Promise<typeof import('@adhd/sox-store-adapter')> {
 export function wrapRawDbAsAdapter(rawDb: Database.Database): StoreAdapter {
   return {
     config: { type: 'sqlite', dbPath: rawDb.name ?? undefined, readonly: rawDb.memory },
-    capabilities: { multiprocessWrite: false, nativeVectors: false, concurrentTransactions: false, fts5: true, fts: true, needsWriteSerialization: true },
+    capabilities: { multiprocessWrite: false, nativeVectors: false, concurrentTransactions: false, fts5: true, fts: true, needsWriteSerialization: true, recursiveCte: true },
 
     async executeGet<T = Record<string, unknown>>(sql: string, args?: unknown[]): Promise<T | null> {
       const stmt = rawDb.prepare(sql);
