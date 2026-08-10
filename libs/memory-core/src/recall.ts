@@ -591,7 +591,18 @@ export async function memoryRecall(
       query,
       {
         limit: ftsLimit,
-        where: `${validityPred}${agentFilter}${filterSql}${kindClause}`,
+        // F1 (fix/debt-soxgraph-001): join the predicate fragments with
+        // spaces, exactly like the vec channel does above (recall.ts:546).
+        // The previous tight concatenation produced `n.t_invalid IS NULLAND
+        // n.agent_id = ...` whenever agent_id was set — a syntax error on
+        // BOTH backends, swallowed by the BL-391 catch into degradations,
+        // which silently zeroed the whole FTS/BM25 channel for every
+        // agent-scoped recall. A space-joined array makes it impossible for
+        // any future fragment to reintroduce the bug by omitting its leading
+        // or trailing space. (The as_of form `)AND` was lexically valid; the
+        // bug was specific to the default `IS NULL` predicate + a non-empty
+        // agentFilter.)
+        where: [validityPred, agentFilter, filterSql, kindClause].filter(Boolean).join(' '),
         params: [...filterParams, ...kindParams],
       },
     );
