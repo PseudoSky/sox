@@ -19,6 +19,7 @@ import {
   type CallToolResult,
   type Tool,
 } from '@modelcontextprotocol/sdk/types.js';
+import { log } from '@adhd/sox-telemetry';
 import { getPolicy } from './enforce.js';
 import {
   type TransportHandle,
@@ -145,9 +146,31 @@ function looksLikeStorageError(
  * not as two independent patches. This is a duck-type check (no cross-package
  * type import), additive-only: anything that is NOT StorageError-shaped keeps
  * the exact current `Tool error: …` text.
+ *
+ * (BL-500) The non-StorageError fallback previously used `String(err)`, which
+ * collapses ANY plain object to `"[object Object]"` — an un-diagnosable,
+ * untraced blind spot for non-`StorageError` throws. The fallback now reads
+ * the best available text — `message` → `code` → full `JSON.stringify` — and
+ * the complete error is traced through `@adhd/sox-telemetry` (`ctx.tool`, when
+ * supplied, names the failing tool). Returned text keeps the `Tool error: `
+ * prefix promised above; the trace is strictly additive.
  */
-export function formatToolError(err: unknown): { isError: true; content: [{ type: 'text'; text: string }] } {
-  const text = looksLikeStorageError(err) ? JSON.stringify(err) : `Tool error: ${String(err)}`;
+export function formatToolError(
+  err: unknown,
+  ctx?: { tool?: string },
+): { isError: true; content: [{ type: 'text'; text: string }] } {
+  const fallbackText =
+    (err as { message?: unknown } | null)?.message ??
+    (err as { code?: unknown } | null)?.code ??
+    JSON.stringify(err);
+  const text = looksLikeStorageError(err) ? JSON.stringify(err) : `Tool error: ${String(fallbackText)}`;
+  log.error('mcp.tool_call.error', {
+    tool: ctx?.tool ?? undefined,
+    error:
+      err instanceof Error
+        ? `${err.message}${err.stack ? `\n${err.stack}` : ''}`
+        : String(fallbackText),
+  });
   return { isError: true, content: [{ type: 'text', text }] };
 }
 
@@ -199,7 +222,7 @@ export function buildToolDispatch(
           ...(handlerResult.isError !== undefined ? { isError: handlerResult.isError } : {}),
         };
       } catch (err) {
-        return formatToolError(err);
+        return formatToolError(err, { tool: name });
       }
     },
   };

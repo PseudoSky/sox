@@ -331,8 +331,12 @@ export async function applyPromotion(
           'INSERT OR IGNORE INTO vec_node(node_id, embedding) VALUES (CAST(? AS INTEGER), ?)',
           [dstRow.rowid, serialized],
         );
-      } catch {
-        /* non-fatal */
+      } catch (err) {
+        // non-fatal — the promoted node is still correct; only its vector copy failed.
+        tlog.warn('promote.vec_insert_failed', {
+          node_uid: dstUid,
+          error: err instanceof Error ? err.message : String(err),
+        });
       }
     }
 
@@ -357,6 +361,15 @@ export async function applyPromotion(
     await _writePromotionQueueApplied(srcAdapter, nodeUid, fromScope, toScope, dstUid);
     return { ok: true, dst_uid: dstUid };
   } catch (err) {
+    // Promotion failed — the error reaches the caller as a result, but it must
+    // also be durable (BL-320): a result object a caller may not persist is not
+    // a trace.
+    tlog.warn('promote.failed', {
+      node_uid: nodeUid,
+      from_scope: fromScope,
+      to_scope: toScope,
+      error: err instanceof Error ? err.message : String(err),
+    });
     return { ok: false, error: String(err) };
   }
 }
@@ -521,6 +534,9 @@ export async function graphifyImport(
   try {
     graph = typeof graphJson === 'string' ? JSON.parse(graphJson) : graphJson;
   } catch (err) {
+    tlog.warn('graphify.import.invalid_json', {
+      error: (err as Error).message,
+    });
     return {
       ok: false,
       error: `Invalid JSON: ${(err as Error).message}`,
@@ -602,7 +618,12 @@ export async function graphifyImport(
       try {
         const vec = await embed(text);
         return useBinaryFormat ? vecToBuffer(vec) : vecToJson(vec);
-      } catch {
+      } catch (err) {
+        // Embedding failure per node: the node imports without a vector (no
+        // vec recall for it) — deliberate degrade, but trace why.
+        tlog.warn('graphify.import.embed_failed', {
+          error: err instanceof Error ? err.message : String(err),
+        });
         return null;
       }
     }),
@@ -658,8 +679,12 @@ export async function graphifyImport(
               'INSERT OR IGNORE INTO vec_node(node_id, embedding) VALUES (CAST(? AS INTEGER), ?)',
               [row.rowid, serialized],
             );
-          } catch {
-            /* non-fatal */
+          } catch (err) {
+            // non-fatal — the imported node is still valid; only its vector copy failed.
+            tlog.warn('graphify.import.vec_insert_failed', {
+              uid,
+              error: err instanceof Error ? err.message : String(err),
+            });
           }
           uidMap.set(origId, uid);
           importedNodes++;
@@ -696,8 +721,15 @@ export async function graphifyImport(
             ],
           );
           importedEdges++;
-        } catch {
-          /* skip */
+        } catch (err) {
+          // skip — a single bad edge must not abort the whole import, but the
+          // failure is a data-quality signal and must not vanish.
+          tlog.warn('graphify.import.edge_insert_failed', {
+            src: srcUid,
+            dst: dstUid,
+            rel,
+            error: err instanceof Error ? err.message : String(err),
+          });
         }
       }
     });
@@ -917,8 +949,14 @@ export async function buildCommunities(
             [memberRowid, commRow.rowid, now],
           );
           memberCount++;
-        } catch {
-          /* skip */
+        } catch (err) {
+          // skip — a failed membership edge must not abort community creation,
+          // but the omission is a data-quality signal worth tracing.
+          tlog.warn('communities.member_edge_insert_failed', {
+            member_uid: memberUid,
+            community_uid: commUid,
+            error: err instanceof Error ? err.message : String(err),
+          });
         }
       }
     }
@@ -1142,8 +1180,12 @@ export async function memorySearchEntities(
       )).rows;
       entities.push(...nameRows);
       searchMode = 'like';
-    } catch {
-      /* ignore */
+    } catch (err) {
+      // The LIKE fallback itself failed — searchEntities degrades to "no
+      // results" but must not look like a clean zero-hit query.
+      tlog.warn('search_entities.like.error', {
+        error: err instanceof Error ? err.message : String(err),
+      });
     }
   }
 

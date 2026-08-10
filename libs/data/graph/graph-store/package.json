@@ -25,7 +25,8 @@
     "drizzle/migrations"
   ],
   "dependencies": {
-    "@adhd/sox-store-adapter": "^0.5.0"
+    "@adhd/sox-store-adapter": "^0.5.0",
+    "@adhd/sox-telemetry": "workspace:*"
   },
   "devDependencies": {
     "drizzle-kit": "^0.31.10"
