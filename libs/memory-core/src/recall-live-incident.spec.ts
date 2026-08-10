@@ -31,10 +31,11 @@
  *   fts-ops.spec.ts (buildFtsSearchSql, sqlite shadow join vs turso
  *   fts_match/fts_score).
  *
- * Gate: npx nx test memory-core --exclude-task-dependencies
- *   (--exclude-task-dependencies is required while libs/data/store/store-adapter's
- *   build is mid-WIP-breakage by another agent on this branch; it is not
- *   this file's concern — see team coordination notes in BACKLOG.md.)
+ * Gate: npx nx test memory-core --skip-nx-cache (verified green against the
+ *   built store-adapter dependency — the interim
+ *   `--exclude-task-dependencies` note below was removed once store-adapter's
+ *   build recovered on this branch; the suite runs with real dependencies).
+ *   §3 exercises real sqlite + real turso.
  */
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
@@ -43,7 +44,7 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import type { StoreAdapter, AllResult, RunResult, FtsEnsureResult, FtsSearchOptions } from '@adhd/sox-store-adapter';
 import type { EmbedRole } from '@adhd/sox-embedding-provider';
-import { openDb } from './db.js';
+import { openDb, closeAllAdapters } from './db.js';
 import { memoryWrite } from './write.js';
 import { memoryRecall } from './recall.js';
 import { WriteQueue } from './write-queue.js';
@@ -327,4 +328,163 @@ describe('memoryRecall — Defect 2: FTS channel delegates to store-adapter ftsS
       expect(call.opts.params).toEqual(['episode']);
     }
   });
+});
+
+// ── §3: F1 (reviewer finding, fix/debt-soxgraph-001) — the delegated FTS
+// where clause was built by TIGHT concatenation ────────────────────────────────
+//
+// `memoryRecall` with `agent_id` set MUST keep the FTS/BM25 channel alive on
+// BOTH backends. Pre-fix, recall.ts:594 assembled the delegated FTS where as
+// `${validityPred}${agentFilter}${filterSql}${kindClause}`. validityPred ends
+// with `IS NULL` (no trailing space) while agentFilter starts with
+// `AND n.agent_id = ...` (no leading space), producing
+// `n.t_invalid IS NULLAND n.agent_id = '...'` — a syntax error on sqlite AND
+// turso, swallowed by the BL-391 catch into `degradations.push('fts: ...')`,
+// which silently zeroed the entire FTS channel for every agent-scoped recall.
+// memory-server accepts top-level agent_id (index.ts:353,420,1244,1256) and
+// BL-229 documents it as a HARD scope filter on every channel;
+// memory-usage/SKILL.md instructs agents to pass it. No spec exercised
+// agent-scoped FTS, so the suite stayed green.
+//
+// Fix: the FTS arm now joins the fragments with spaces exactly like the vec
+// channel already did (`[validityPred, agentFilter, filterSql, kindClause]
+// .filter(Boolean).join(' ')`, recall.ts:546). The as_of validity form
+// (`)AND`) is lexically valid; the bug is specific to the default `IS NULL`
+// predicate combined with a non-empty agentFilter.
+//
+// The `extensions.ts` entity arm (memory_search_entities) is NOT affected: its
+// `where` is a single literal (`t_invalid IS NULL AND kind = 'entity'`,
+// extensions.ts:1115) — no fragment concatenation.
+//
+// RED→GREEN (BL-225): pre-fix, both backends push `fts: near "n": syntax
+// error` into degradations and every result's bm25 breakdown is 0 (the whole
+// channel is dead). Post-fix, the agent-scoped rows are FTS-matched (bm25 > 0)
+// with zero fts: degradations. Real sqlite + real turso, seeded exactly as
+// debt-soxgraph-001.spec.ts seeds (raw node INSERT → FTS index synced by the
+// table triggers), which is the proven-on-both-backends pattern on this
+// branch.
+
+// ── Turso availability — resolved SYNCHRONOUSLY at module load (same reason
+// as debt-soxgraph-001.spec.ts / fts-query-parity.spec.ts: an async
+// beforeAll + `{ skip }` option is evaluated before the flag is set and
+// always skips).
+const F1_TURSO_DRIVER_PATH = path.resolve(
+  __dirname,
+  '../../../node_modules/@tursodatabase/database/dist/promise.js',
+);
+const F1_HAS_TURSO = (() => {
+  try {
+    return fs.existsSync(F1_TURSO_DRIVER_PATH);
+  } catch {
+    return false;
+  }
+})();
+
+const F1_BACKENDS = ['sqlite', 'turso'] as const;
+
+describe('F1 — agent_id hard filter must not corrupt the FTS where clause (IS NULLAND concatenation)', () => {
+  let dir: string | undefined;
+  const priorAdapterEnv = process.env['STORE_ADAPTER'];
+
+  afterEach(async () => {
+    await closeAllAdapters();
+    if (dir) fs.rmSync(dir, { recursive: true, force: true });
+    dir = undefined;
+    if (priorAdapterEnv === undefined) delete process.env['STORE_ADAPTER'];
+    else process.env['STORE_ADAPTER'] = priorAdapterEnv;
+  });
+
+  /** Raw node INSERT (agent-scoped) — the debt-soxgraph-001.spec.ts seeding
+   *  pattern: the FTS index syncs via the table triggers on BOTH backends,
+   *  and vec_node intentionally stays empty so this test isolates the FTS
+   *  channel (the only arm F1 broke). */
+  const seedAgentEpisode = async (
+    adapter: StoreAdapter,
+    row: { uid: string; content: string; agent_id: string },
+  ): Promise<void> => {
+    await adapter.executeRun(
+      `INSERT INTO node (uid, kind, name, content, summary, content_hash, importance, agent_id, t_created, t_valid)
+       VALUES (?, 'episode', ?, ?, NULL, ?, 1, ?, datetime('now'), datetime('now'))`,
+      [row.uid, `seed-${row.uid}`, row.content, `hash-${row.uid}`, row.agent_id],
+    );
+  };
+
+  const ftsDegradations = (d: string[] | undefined): string[] =>
+    (d ?? []).filter((x) => x.startsWith('fts:'));
+
+  for (const backend of F1_BACKENDS) {
+    const itB = backend === 'turso' ? (F1_HAS_TURSO ? it : it.skip) : it;
+
+    itB('agent-scoped recall returns FTS matches with NO fts: degradation, and agent_id is a hard filter', async () => {
+      dir = fs.mkdtempSync(path.join(os.tmpdir(), `f1-agent-fts-${backend}-`));
+      process.env['STORE_ADAPTER'] = backend;
+      const adapter = await openDb(path.join(dir, 'm.db'));
+      expect(adapter.config.type).toBe(backend);
+
+      // agent-x owns two query-relevant episodes; agent-y owns one carrying
+      // the SAME tokens — the hard agent filter must admit x and exclude y.
+      await seedAgentEpisode(adapter, {
+        uid: 'x1',
+        content: 'widget alpha assembly procedure calibration notes',
+        agent_id: 'agent-x',
+      });
+      await seedAgentEpisode(adapter, {
+        uid: 'x2',
+        content: 'widget beta calibration sequence alpha verified',
+        agent_id: 'agent-x',
+      });
+      await seedAgentEpisode(adapter, {
+        uid: 'y1',
+        content: 'widget alpha assembly calibration procedure second pass',
+        agent_id: 'agent-y',
+      });
+
+      const response = await memoryRecall(adapter, 'project', {
+        query: 'widget alpha',
+        agent_id: 'agent-x',
+        limit: 10,
+        depth: 0,
+      });
+
+      // 1. Non-empty and STRICTLY agent-scoped — the hard filter works, and
+      //    the agent-y row (same tokens) never leaks in.
+      expect(response.results.length).toBeGreaterThan(0);
+      expect(response.results.every((r) => r.agent_id === 'agent-x')).toBe(true);
+      expect(response.results.some((r) => r.uid === 'y1')).toBe(false);
+
+      // 2. BL-391: NO fts: degradation. Pre-fix the syntax error was swallowed
+      //    into degradations here, zeroing the entire FTS channel.
+      expect(ftsDegradations(response.degradations)).toEqual([]);
+
+      // 3. The FTS channel actually CONTRIBUTED: at least the top BM25-ranked
+      //    result carries bm25 > 0 (min-max normalisation makes the channel's
+      //    max candidate 1.0 and its min candidate 0.0, so `some` is the
+      //    channel-alive signal). Pre-fix this is 0 for every result.
+      expect(response.results.some((r) => r.score_breakdown.bm25 > 0)).toBe(true);
+    }, 60_000);
+
+    itB('companion: agent-scoped recall with NO matches returns empty with NO fts: degradation — empty is genuine, not a masked syntax error', async () => {
+      dir = fs.mkdtempSync(path.join(os.tmpdir(), `f1-agent-empty-${backend}-`));
+      process.env['STORE_ADAPTER'] = backend;
+      const adapter = await openDb(path.join(dir, 'm.db'));
+      expect(adapter.config.type).toBe(backend);
+
+      await seedAgentEpisode(adapter, {
+        uid: 'x1',
+        content: 'widget alpha assembly procedure calibration notes',
+        agent_id: 'agent-x',
+      });
+
+      // agent-z owns nothing — every channel filters to zero candidates.
+      const response = await memoryRecall(adapter, 'project', {
+        query: 'widget alpha',
+        agent_id: 'agent-z',
+        limit: 10,
+        depth: 0,
+      });
+
+      expect(response.results).toHaveLength(0);
+      expect(ftsDegradations(response.degradations)).toEqual([]);
+    }, 60_000);
+  }
 });
