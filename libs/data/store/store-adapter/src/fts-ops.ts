@@ -30,6 +30,7 @@ import {
   createFTSDialect,
   resolveExistingFtsIndexName,
 } from './fts-dialect.js';
+import { log } from '@adhd/sox-telemetry';
 import type {
   FTSDialect,
   FtsCountOptions,
@@ -356,7 +357,11 @@ async function tableExists(adapter: StoreAdapter, name: string): Promise<boolean
       [name],
     );
     return (row?.n ?? 0) > 0;
-  } catch {
+  } catch (err) {
+    log.debug('store_adapter.fts.table_exists_failed', {
+      table: name,
+      error: err instanceof Error ? err.message : String(err),
+    });
     return false;
   }
 }
@@ -377,7 +382,11 @@ async function existingObjectNames(
     );
     const found = new Set(rows.map((r) => r.name));
     return names.filter((n) => found.has(n));
-  } catch {
+  } catch (err) {
+    log.debug('store_adapter.fts.existing_objects_failed', {
+      names,
+      error: err instanceof Error ? err.message : String(err),
+    });
     return [];
   }
 }

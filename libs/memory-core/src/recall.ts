@@ -52,6 +52,7 @@ import * as path from 'node:path';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import { embed, vecToJson, getProviderCallCount } from './embed.js';
+import { log as tlog } from './telemetry.js';
 import { openDbReadOnly } from './db.js';
 import { buildFilterClause } from '@adhd/sox-hybrid-search';
 import type { StoreAdapter } from '@adhd/sox-store-adapter';
@@ -1207,14 +1208,30 @@ const REGISTRY_PATH = path.join(process.env['HOME'] ?? '/tmp', '.memory', 'regis
 export function readRegistry(): Record<string, string> {
   try {
     return JSON.parse(fs.readFileSync(REGISTRY_PATH, 'utf8')) as Record<string, string>;
-  } catch {
+  } catch (err) {
+    // ENOENT is the expected first-run state (no registry yet) — not an error.
+    // Any other failure (corrupt JSON, permissions) is a real defect: trace it.
+    if ((err as NodeJS.ErrnoException)?.code !== 'ENOENT') {
+      tlog.warn('registry.read.error', {
+        path: REGISTRY_PATH,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
     return {};
   }
 }
 
 export function writeRegistry(scope: string, dbPath: string): void {
   let registry: Record<string, string> = {};
-  try { registry = JSON.parse(fs.readFileSync(REGISTRY_PATH, 'utf8')) as Record<string, string>; } catch { /* ok */ }
+  try { registry = JSON.parse(fs.readFileSync(REGISTRY_PATH, 'utf8')) as Record<string, string>; } catch (err) {
+    // ENOENT = first write (no registry yet); anything else is corruption worth tracing.
+    if ((err as NodeJS.ErrnoException)?.code !== 'ENOENT') {
+      tlog.warn('registry.read.error', {
+        path: REGISTRY_PATH,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
   registry[scope] = dbPath;
   fs.mkdirSync(path.dirname(REGISTRY_PATH), { recursive: true });
   fs.writeFileSync(REGISTRY_PATH, JSON.stringify(registry, null, 2));
@@ -1255,7 +1272,14 @@ export function discoverStores(requestedScopes?: string[]): StoreDescriptor[] {
           found.set(dbPath, { scope: scopeName, dbPath });
         }
       }
-    } catch { /* permission error */ }
+    } catch (err) {
+      // Permission error on a .memory dir — a genuine environment problem worth
+      // a durable trace; the store is skipped but must not vanish silently.
+      tlog.warn('store.discovery.dir_read_failed', {
+        dir: memDir,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
   }
 
   const registry = readRegistry();
@@ -1291,6 +1315,13 @@ export async function getFederationConnection(dbPath: string): Promise<StoreAdap
       _connErrors.delete(dbPath);
     } catch (err) {
       _connErrors.set(dbPath, err instanceof Error ? err.message : String(err));
+      // Also durable: a store that fails to open in federation is exactly the
+      // silent-degrade class BL-391 exists to surface — the side-channel below
+      // reaches the caller, but only this trace survives a process crash.
+      tlog.warn('federation.connection_open_failed', {
+        db_path: dbPath,
+        error: err instanceof Error ? err.message : String(err),
+      });
       return null;
     }
   }
@@ -1298,8 +1329,13 @@ export async function getFederationConnection(dbPath: string): Promise<StoreAdap
 }
 
 export async function closeFederationConnections(): Promise<void> {
-  for (const [, adapter] of _connCache) {
-    try { await adapter.close(); } catch { /* ignore */ }
+  for (const [dbPath, adapter] of _connCache) {
+    try { await adapter.close(); } catch (err) {
+      tlog.warn('federation.connection_close_failed', {
+        db_path: dbPath,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
   }
   _connCache.clear();
 }
@@ -1327,6 +1363,10 @@ async function recallFromOpenDb(
     return { results: res.results, degradations: res.degradations ?? [] };
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
+    // Keep the BL-391 degradation surface (caller-visible), AND make the total
+    // recall failure durably visible — a store that dies entirely mid-recall is
+    // the highest-signal event this function can produce.
+    tlog.error('federation.recall.store_failed', { scope, error: msg });
     return { results: [], degradations: [`recall failed entirely — ${msg}`] };
   }
 }
@@ -1345,7 +1385,13 @@ async function collectSupersededFromDb(adapter: StoreAdapter, suppressed: Set<st
     for (const r of result.rows) {
       if (r.superseded_uid) suppressed.add(r.superseded_uid);
     }
-  } catch { /* ignore */ }
+  } catch (err) {
+    // Supersession suppression failing silently means superseded content can
+    // surface in results — trace it rather than dropping the signal.
+    tlog.warn('federation.superseded_collect_failed', {
+      error: err instanceof Error ? err.message : String(err),
+    });
+  }
 }
 
 /**
@@ -1571,8 +1617,12 @@ export function parseTags(raw: string | null | undefined): string[] {
   try {
     const parsed: unknown = JSON.parse(raw);
     if (Array.isArray(parsed)) return parsed as string[];
-  } catch {
-    /* malformed */
+  } catch (err) {
+    // Malformed tags JSON in a stored row = data corruption; the row degrades
+    // to untagged but the defect must be visible.
+    tlog.warn('recall.parse_tags_failed', {
+      error: err instanceof Error ? err.message : String(err),
+    });
   }
   return [];
 }

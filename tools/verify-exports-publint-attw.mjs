@@ -61,7 +61,8 @@ function repoRoot() {
   if (argIdx !== -1 && process.argv[argIdx + 1]) return path.resolve(process.argv[argIdx + 1]);
   try {
     return execFileSync('git', ['rev-parse', '--show-toplevel'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim();
-  } catch {
+  } catch (e) {
+    console.error('verify-exports-publint-attw: WARNING — git rev-parse failed, falling back to script-relative root:', (e && e.message) ?? e);
     return path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
   }
 }
@@ -208,8 +209,11 @@ for (const dir of dirsToCheck) {
     try {
       const parsed = JSON.parse(e.stdout || '{}');
       problems = parsed.analysis?.problems || [];
-    } catch {
-      // non-JSON failure (e.g. pack itself failed) — surface raw output
+    } catch (parseErr) {
+      // non-JSON failure (e.g. pack itself failed) — surface raw output below;
+      // trace the parse failure itself so a JSON-shaped-but-invalid stdout is
+      // not silently dropped between the two branches.
+      console.error('verify-exports-publint-attw: WARNING — attw output was not parseable JSON for', pkg.name + ':', (parseErr && parseErr.message) ?? parseErr);
     }
     if (problems.length > 0) {
       const summary = problems.map((p) => `${p.kind} (${p.entrypoint ?? '.'}, ${p.resolutionKind ?? 'n/a'})`).join('; ');

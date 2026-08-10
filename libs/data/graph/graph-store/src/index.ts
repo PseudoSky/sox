@@ -1,6 +1,7 @@
 // @adhd/sox-graph-store — Bi-temporal graph store over StoreAdapter
 import { createFTSDialect } from '@adhd/sox-store-adapter';
 import type { StoreAdapter } from '@adhd/sox-store-adapter';
+import { log } from '@adhd/sox-telemetry';
 import * as crypto from 'node:crypto';
 import { rebuildTable } from './rebuild-table.js';
 export { rebuildTable };
@@ -736,7 +737,12 @@ function parseJson<T>(val: string | null, fallback: T): T {
   if (val === null || val === undefined) return fallback;
   try {
     return JSON.parse(val) as T;
-  } catch {
+  } catch (err) {
+    // A stored row whose JSON column does not parse = data corruption; the row
+    // degrades to the fallback but the defect must be visible.
+    log.warn('graph_store.row.json_parse_failed', {
+      error: err instanceof Error ? err.message : String(err),
+    });
     return fallback;
   }
 }
@@ -745,7 +751,10 @@ function parseJsonOptional(val: string | null): Record<string, unknown> | undefi
   if (val === null || val === undefined) return undefined;
   try {
     return JSON.parse(val) as Record<string, unknown>;
-  } catch {
+  } catch (err) {
+    log.warn('graph_store.row.json_parse_failed', {
+      error: err instanceof Error ? err.message : String(err),
+    });
     return undefined;
   }
 }

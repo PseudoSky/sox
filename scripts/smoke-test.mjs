@@ -109,7 +109,11 @@ async function snapshotFiles(root) {
       const full = path.join(d.parentPath, d.name);
       try { m.set(path.relative(root, full), sha256(await fsp.readFile(full))); } catch { m.set(path.relative(root, full), 'UNREADABLE'); }
     }
-  } catch {}
+  } catch (err) {
+    // A failed snapshot silently yields an empty map, which then diffs as
+    // "everything created" — false isolation evidence. Trace it.
+    console.error(`[smoke] WARNING: snapshot of ${root} failed (${(err && err.message) ?? err}); before/after diff will be unreliable`);
+  }
   return m;
 }
 
@@ -230,10 +234,17 @@ async function scanAllExtensionDirs() {
           const raw = await fsp.readFile(path.join(full, 'extension.json'), 'utf-8');
           const m = JSON.parse(raw);
           if (m.id && m.type) exts.push({ id: m.id, type: m.type, dir: full, manifest: m });
-        } catch {}
-        try { await scan(path.join(full, 'members')); } catch {}
+        } catch (err) {
+          // A malformed extension.json is a real manifest defect, not a skip.
+          console.error(`[smoke] WARNING: unreadable extension.json at ${full} (${(err && err.message) ?? err})`);
+        }
+        try { await scan(path.join(full, 'members')); } catch (err) {
+          console.error(`[smoke] WARNING: scanning members of ${full} failed (${(err && err.message) ?? err})`);
+        }
       }
-    } catch {}
+    } catch (err) {
+      console.error(`[smoke] WARNING: scanning ${baseDir} failed (${(err && err.message) ?? err})`);
+    }
   };
 
   for (const typeDir of ['services', 'bundles']) {
