@@ -764,9 +764,9 @@ async function _openDbInner(dbPath: string): Promise<StoreAdapter> {
   // NOTE: Turso/libSQL's `CREATE INDEX IF NOT EXISTS` validates the index
   // definition and throws "index already exists" even when IF NOT EXISTS is
   // present. Wrap in try/catch — the index already exists, which is correct.
-  try { await adapter.exec(`CREATE INDEX IF NOT EXISTS ix_node_topic      ON node(topic)        WHERE topic IS NOT NULL`); } catch { /* index already exists */ }
-  try { await adapter.exec(`CREATE INDEX IF NOT EXISTS ix_node_project    ON node(project_path) WHERE project_path IS NOT NULL`); } catch { /* index already exists */ }
-  try { await adapter.exec(`CREATE INDEX IF NOT EXISTS ix_node_enrich_ver ON node(enrich_ver)   WHERE enrich_ver IS NOT NULL`); } catch { /* index already exists */ }
+  try { await adapter.exec(`CREATE INDEX IF NOT EXISTS ix_node_topic      ON node(topic)        WHERE topic IS NOT NULL`); } catch (err) { log.debug('store.open.index_already_exists', { adapter_type: adapter.config.type, error: truncateForLog(err instanceof Error ? err.message : String(err)) }); }
+  try { await adapter.exec(`CREATE INDEX IF NOT EXISTS ix_node_project    ON node(project_path) WHERE project_path IS NOT NULL`); } catch (err) { log.debug('store.open.index_already_exists', { adapter_type: adapter.config.type, error: truncateForLog(err instanceof Error ? err.message : String(err)) }); }
+  try { await adapter.exec(`CREATE INDEX IF NOT EXISTS ix_node_enrich_ver ON node(enrich_ver)   WHERE enrich_ver IS NOT NULL`); } catch (err) { log.debug('store.open.index_already_exists', { adapter_type: adapter.config.type, error: truncateForLog(err instanceof Error ? err.message : String(err)) }); }
 
   // WP-4: request_ledger table migration — ensures the table exists on upgraded stores
   // that were created before the request_ledger DDL was added to schema.ts.
@@ -1064,7 +1064,13 @@ export function wrapRawDbAsAdapter(rawDb: Database.Database): StoreAdapter {
         rawDb.exec('COMMIT');
         return result;
       } catch (err) {
-        try { rawDb.exec('ROLLBACK'); } catch { /* ignore */ }
+        try { rawDb.exec('ROLLBACK'); } catch (rollbackErr) {
+          // A failed ROLLBACK leaves transaction state uncertain — trace it even
+          // though the original error still propagates below.
+          log.debug('store.tx.rollback_failed', {
+            error: truncateForLog(rollbackErr instanceof Error ? rollbackErr.message : String(rollbackErr)),
+          });
+        }
         throw err;
       }
     },

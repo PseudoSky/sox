@@ -1,4 +1,5 @@
 import { createRequire } from 'node:module';
+import { log } from '@adhd/sox-telemetry';
 import {
   consumeUncleanShutdownFlag,
   ensureAdapterMetaTable,
@@ -199,8 +200,12 @@ export class SqliteAdapterImpl implements SqliteAdapter {
         const path = this.config.dbPath ?? this.db.name ?? '<unknown path>';
         try {
           this.db.close();
-        } catch {
-          // best-effort — we're already throwing
+        } catch (closeErr) {
+          // best-effort — we're already throwing the schema error below, but
+          // the failed close is itself worth a trace.
+          log.debug('store_adapter.sqlite.close_best_effort_failed', {
+            error: closeErr instanceof Error ? closeErr.message : String(closeErr),
+          });
         }
         throw new ETursoNativeStore(path, err);
       }
@@ -234,8 +239,12 @@ export class SqliteAdapterImpl implements SqliteAdapter {
       await ensureAdapterMetaTable(this);
       await stampAdapterMeta(this, 'sqlite');
       uncleanShutdown = await consumeUncleanShutdownFlag(this);
-    } catch {
-      // Non-fatal — stamping is a convenience marker, not a correctness requirement
+    } catch (err) {
+      // Non-fatal — stamping is a convenience marker, not a correctness
+      // requirement — but meta stamping failing on every open is a real signal.
+      log.warn('store_adapter.sqlite.adapter_meta_failed', {
+        error: err instanceof Error ? err.message : String(err),
+      });
     }
 
     this._walBaseline = captureWalIdentity(this.config.dbPath);
@@ -368,8 +377,13 @@ export class SqliteAdapterImpl implements SqliteAdapter {
       } catch (err) {
         try {
           this.db.exec('ROLLBACK');
-        } catch {
-          // Ignore rollback errors
+        } catch (rollbackErr) {
+          // Ignore rollback errors — but a failed ROLLBACK leaves transaction
+          // state uncertain, so trace it even though the original error still
+          // propagates below.
+          log.debug('store_adapter.sqlite.rollback_failed', {
+            error: rollbackErr instanceof Error ? rollbackErr.message : String(rollbackErr),
+          });
         }
         throw err;
       }
