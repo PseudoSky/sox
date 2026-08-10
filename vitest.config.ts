@@ -13,7 +13,7 @@ export default defineConfig({
     },
   },
   test: {
-    include: ['extensions/**/*.test.ts', 'scripts/**/*.test.ts'],
+    include: ['extensions/**/*.test.ts', 'scripts/**/*.test.{ts,mjs}'],
     // D1 (2026-08-06): every *.test.ts file under extensions/** lives inside
     // memory-server (verified empirically — `find extensions -name '*.test.ts'`
     // returns zero matches outside this one package). memory-server owns its

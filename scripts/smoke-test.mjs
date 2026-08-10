@@ -16,6 +16,11 @@ import * as fs from 'node:fs';
 import * as fsp from 'node:fs/promises';
 import * as path from 'node:path';
 import { execSync } from 'node:child_process';
+// BL-192 gap fix: workspace package discovery + contract-path resolution
+// (shared with tools/verify-exports-publint-attw.mjs) so the Build-first gate
+// below checks EVERY package's main/module/types/bin/exports paths, not just
+// the CLI bundle + extension entrypoints.
+import { workspacePackageDirs, contractArtifactPaths } from '../tools/workspace-package-scan.mjs';
 
 // ──────────────────────────────────────────────────────────────────────────────
 // Configuration
@@ -385,6 +390,18 @@ async function main() {
   const allExtensions = await scanAllExtensionDirs();
   const extensions = await discoverExtensions(allExtensions);
 
+  // ── BL-407 preflight scope — computed BEFORE the BL-192 gate so the gate
+  //    itself is scoped the same way the preflight is: a filtered run only
+  //    requires artifacts for its own BL-407 closure, an unfiltered run walks
+  //    the full workspace package universe. computePreflightOnlyDirs returns
+  //    null (no nx graph, no scoping) when no --extension filter is set.
+  const onlyDirs = computePreflightOnlyDirs(allExtensions);
+  if (EXTENSION_FILTER) {
+    console.error(onlyDirs
+      ? `[smoke] preflight scoped (BL-407) to --extension ${EXTENSION_FILTER}: ${onlyDirs.length} package(s) — ${onlyDirs.map((d) => path.relative(WORKSPACE, d)).join(', ')}`
+      : `[smoke] preflight NOT scoped — running full workspace scope even though --extension ${EXTENSION_FILTER} was passed (see warning above)`);
+  }
+
   // ── BL-192 preflight: refuse to run against an unbuilt workspace ────────────
   // A dist-less checkout (fresh worktree) makes install/enable legs fail with
   // "no entrypoint" — a TRUE statement about the environment that reads like a
@@ -398,11 +415,30 @@ async function main() {
       if (!fs.existsSync(ep)) missingArtifacts.push(ep);
     }
   }
+  // BL-192 gap fix: the BL-266 exports-contract preflight below checks every
+  // workspace package's main/module/types/bin/exports paths. A partial build
+  // (e.g. `nx affected:build`, which structurally skips zero-dependency
+  // packages like @adhd/sox-nx, @adhd/sox-baseline-capture,
+  // @adhd/sox-source-provider) sails past the cliMain/entrypoint checks above
+  // and detonates inside publint with cryptic "file does not exist". Walk the
+  // same contract paths up front so ANY unbuilt package aborts with the clear
+  // Build-first FATAL before the preflight runs. Gate scope = the BL-407
+  // closure for filtered runs, the full workspace universe otherwise.
+  const gateDirs = onlyDirs ?? workspacePackageDirs(WORKSPACE);
+  for (const dir of gateDirs) {
+    let pkg;
+    try { pkg = JSON.parse(fs.readFileSync(path.join(dir, 'package.json'), 'utf-8')); } catch { continue; }
+    if (!pkg.name || pkg.name === 'sox-ecosystem') continue;
+    for (const p of contractArtifactPaths(dir, pkg)) {
+      if (!fs.existsSync(p)) missingArtifacts.push(p);
+    }
+  }
   if (missingArtifacts.length > 0) {
     console.error('[smoke] FATAL: workspace is not built — missing compiled artifacts:');
     for (const p of missingArtifacts) console.error(`[smoke]   - ${p}`);
     console.error('[smoke] Build first (e.g. `npx nx run-many -t build`), then re-run.');
     console.error('[smoke] Running unbuilt produces "no entrypoint" enable/serve failures that masquerade as product bugs (BL-192).');
+    console.error('[smoke] If you already ran a full build and these are still missing, this is a package.json/build-target mismatch — run node tools/verify-exports-publint-attw.mjs for the real contract error.');
     process.exit(2);
   }
 
@@ -422,13 +458,7 @@ async function main() {
   //    computed from the filtered extension + its bundle siblings + its
   //    transitive nx workspace dependencies. Unfiltered runs are UNCHANGED:
   //    still the full, unrestricted `--root WORKSPACE` merge-gate scope.
-  const onlyDirs = computePreflightOnlyDirs(allExtensions);
   const onlyArgs = onlyDirs ? onlyDirs.flatMap((d) => ['--only', d]) : [];
-  if (EXTENSION_FILTER) {
-    console.error(onlyDirs
-      ? `[smoke] preflight scoped (BL-407) to --extension ${EXTENSION_FILTER}: ${onlyDirs.length} package(s) — ${onlyDirs.map((d) => path.relative(WORKSPACE, d)).join(', ')}`
-      : `[smoke] preflight NOT scoped — running full workspace scope even though --extension ${EXTENSION_FILTER} was passed (see warning above)`);
-  }
   try {
     execSync(
       `node ${JSON.stringify(path.join(WORKSPACE, 'tools', 'verify-exports-publint-attw.mjs'))} --root ${JSON.stringify(WORKSPACE)} ${onlyArgs.map((a) => JSON.stringify(a)).join(' ')}`,
