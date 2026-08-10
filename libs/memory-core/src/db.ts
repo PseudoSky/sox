@@ -18,7 +18,14 @@ import { PRAGMAS, DDL_BASE, FTS_DDL, FTS_TRIGGERS } from './schema.js';
 import { EMBED_DIM, getActiveEmbedModel } from './embed.js';
 import { closeDbWithLease } from './lease.js';
 import type Database from 'better-sqlite3';
-import type { StoreAdapter, SqliteAdapter } from '@adhd/sox-store-adapter';
+import type {
+  StoreAdapter,
+  SqliteAdapter,
+  FtsCountOptions,
+  FtsEnsureOptions,
+  FtsEnsureResult,
+  FtsSearchOptions,
+} from '@adhd/sox-store-adapter';
 import { log, instrumentAdapter, truncateForLog } from './telemetry.js';
 import { performance } from 'node:perf_hooks';
 
@@ -965,6 +972,21 @@ export async function closeAllAdapters(): Promise<void> {
 }
 
 /**
+ * Lazy, memoized handle on the store-adapter package — the module boundary
+ * rule forbids a static value import of store-adapter (lazy-loaded in
+ * memory-core; see backup.ts), so A2's fts-ops helpers are pulled via
+ * `import()` on first use and cached. Type-only imports above are erased and
+ * exempt.
+ */
+let ftsOpsModulePromise: Promise<typeof import('@adhd/sox-store-adapter')> | undefined;
+function getFtsOpsModule(): Promise<typeof import('@adhd/sox-store-adapter')> {
+  if (ftsOpsModulePromise === undefined) {
+    ftsOpsModulePromise = import('@adhd/sox-store-adapter');
+  }
+  return ftsOpsModulePromise;
+}
+
+/**
  * Synchronously wrap a raw better-sqlite3 Database handle as a StoreAdapter.
  * Used as a bridge for memory-core functions that still receive Database.Database
  * but need to pass a StoreAdapter to graph-store APIs (which have been migrated).
@@ -1057,6 +1079,41 @@ export function wrapRawDbAsAdapter(rawDb: Database.Database): StoreAdapter {
 
     async close(): Promise<void> {
       // no-op — the raw db lifecycle is managed by the caller
+    },
+
+    // (A2 — FEAT-SOXGRAPH-001) Required StoreAdapter members. This wrapper is a
+    // real sqlite FTS5 adapter (capabilities.fts5 === true) over the raw
+    // better-sqlite3 handle — delegate to the shared fts-ops builders rather
+    // than duplicating the per-backend SQL here. store-adapter is lazy-loaded
+    // in memory-core (module-boundary rule; see backup.ts), so the value
+    // import is dynamic — the module is memoized by getFtsOpsModule().
+    async ftsSearch<T = Record<string, unknown>>(
+      table: string,
+      columns: string[],
+      query: string,
+      opts?: FtsSearchOptions,
+    ): Promise<Array<T & { rowid: number; score: number }>> {
+      const { ftsSearch: ftsSearchOn } = await getFtsOpsModule();
+      return ftsSearchOn(this, table, columns, query, opts ?? {});
+    },
+
+    async ftsCount(
+      table: string,
+      columns: string[],
+      query: string,
+      opts?: FtsCountOptions,
+    ): Promise<number> {
+      const { ftsCount: ftsCountOn } = await getFtsOpsModule();
+      return ftsCountOn(this, table, columns, query, opts ?? {});
+    },
+
+    async ensureFtsIndex(
+      table: string,
+      columns: string[],
+      opts?: FtsEnsureOptions,
+    ): Promise<FtsEnsureResult> {
+      const { ensureFtsIndex: ensureFtsIndexOn } = await getFtsOpsModule();
+      return ensureFtsIndexOn(this, table, columns, opts ?? {});
     },
 
     unwrap(): unknown {

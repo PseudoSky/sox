@@ -29,6 +29,11 @@ import {
 } from './fts-orphan-guard.js';
 import { isFatalConnectionError } from './errors.js';
 import { log } from '@adhd/sox-telemetry';
+import {
+  ensureFtsIndex as ensureFtsIndexOn,
+  ftsCount as ftsCountOn,
+  ftsSearch as ftsSearchOn,
+} from './fts-ops.js';
 import type {
   TursoAdapter,
   AdapterTransaction,
@@ -36,6 +41,10 @@ import type {
   AdapterCapabilities,
   AdapterBackupOptions,
   AdapterBackupResult,
+  FtsCountOptions,
+  FtsEnsureOptions,
+  FtsEnsureResult,
+  FtsSearchOptions,
   RunResult,
   AllResult,
   TransactionOptions,
@@ -784,6 +793,34 @@ export class TursoAdapterImpl implements TursoAdapter {
       results.push(result);
     }
     return results;
+  }
+
+  // ── Full-text search (A2) — per-backend SQL delegated to fts-ops.ts ────────
+
+  async ftsSearch<T = Record<string, unknown>>(
+    table: string,
+    columns: string[],
+    query: string,
+    opts: FtsSearchOptions = {},
+  ): Promise<Array<T & { rowid: number; score: number }>> {
+    return ftsSearchOn(this, table, columns, query, opts);
+  }
+
+  async ftsCount(
+    table: string,
+    columns: string[],
+    query: string,
+    opts: FtsCountOptions = {},
+  ): Promise<number> {
+    return ftsCountOn(this, table, columns, query, opts);
+  }
+
+  async ensureFtsIndex(
+    table: string,
+    columns: string[],
+    opts: FtsEnsureOptions = {},
+  ): Promise<FtsEnsureResult> {
+    return ensureFtsIndexOn(this, table, columns, opts);
   }
 
   /**

@@ -175,6 +175,79 @@ export interface FTSDialect {
   buildMatchQuery(tokens: string[]): string;
 }
 
+// ── FTS operations (A2 — FEAT-SOXGRAPH-001) ──────────────────────────────────
+
+export interface FtsSearchOptions {
+  /** Max rows returned. Default: 50. */
+  limit?: number;
+  /** Row offset. */
+  offset?: number;
+  /** SQL WHERE fragment AND-ed after the FTS match. May reference the base
+   *  table under its alias `n` (e.g. `n.kind = ?`); a leading `WHERE`/`AND`
+   *  is tolerated and normalized away. Bound values go in `params`, in
+   *  placeholder order. */
+  where?: string;
+  /** Bound params for `where`, in placeholder order. */
+  params?: unknown[];
+  /** Accepted for interface symmetry with {@link FtsEnsureOptions.weights} —
+   *  NOT used by the search SQL on either backend (column weights are fixed
+   *  at index-creation time on both FTS5 and Tantivy; there is no per-query
+   *  weight surface). */
+  weights?: Record<string, number>;
+}
+
+export interface FtsCountOptions {
+  /** Same `where` semantics as {@link FtsSearchOptions.where}. */
+  where?: string;
+  /** Bound params for `where`, in placeholder order. */
+  params?: unknown[];
+}
+
+export interface FtsEnsureOptions {
+  /** Column weights — honored on Turso (Tantivy `WITH (weights=...)` clause),
+   *  ignored on SQLite (FTS5 weights are part of the caller-supplied
+   *  `sqliteDDL`). */
+  weights?: Record<string, number>;
+  /** SQLite FTS5 DDL statements, returned verbatim by the dialect in order
+   *  (typically `[FTS_DDL, FTS_TRIGGERS]` from memory-core's schema.ts —
+   *  store-adapter cannot depend on graph-store, so callers pass the DDL).
+   *  Ignored on Turso, which generates its own `CREATE INDEX … USING fts`. */
+  sqliteDDL?: readonly string[];
+  /** Backfill the FTS5 shadow table (`INSERT INTO fts_<table> SELECT FROM
+   *  <table>`). SQLite FTS5 only — Turso's Tantivy index is maintained by the
+   *  engine and has no row-insert surface. Default: true. */
+  backfill?: boolean;
+  /** Detect and clean the OTHER dialect's legacy FTS residue. On SQLite the
+   *  Turso Tantivy index is dropped directly (harmless opaque rows to
+   *  better-sqlite3); on Turso the SQLite FTS5 stack is detected and reported
+   *  as `residueNeedsOutOfBand` — the Turso engine cannot reliably `DROP`
+   *  fts5 objects (silent no-op, see `FTSDialect.dropLegacyDDL`). Default:
+   *  true. */
+  dropLegacyResidue?: boolean;
+}
+
+export interface FtsEnsureResult {
+  /** True when an FTS index exists (created or adopted) after the call. */
+  ensured: boolean;
+  /** Non-null when an existing non-canonical index (e.g. `idx_fts_node__r1`
+   *  after a BL-461 orphan-guard rebuild) was ADOPTED instead of creating a
+   *  duplicate over the same columns. */
+  adoptedExisting: string | null;
+  /** The index object in effect: the FTS5 virtual table `fts_<table>` on
+   *  SQLite, the Tantivy index name on Turso — the adopted name when adopted,
+   *  `null` when not ensured. */
+  indexName: string | null;
+  /** True when a shadow-table backfill `INSERT … SELECT` ran. */
+  backfilled: boolean;
+  /** Names of legacy-residue objects actually dropped by this call. */
+  residueDropped: string[];
+  /** True when the OTHER dialect's FTS residue was detected but could NOT be
+   *  dropped through this connection (Turso cannot drop fts5 objects
+   *  reliably — needs a better-sqlite3 pass against the same file, out of
+   *  band). */
+  residueNeedsOutOfBand: boolean;
+}
+
 // ── Backup (BL-385) ──────────────────────────────────────────────────────────
 
 export interface AdapterBackupOptions {
@@ -282,6 +355,46 @@ export interface StoreAdapter {
 
   // Batch convenience (NON-ATOMIC — runs statements sequentially; first failure does not roll back prior statements. For atomicity, use transaction().)
   executeMany(stmts: { sql: string; args?: unknown[] }[]): Promise<RunResult[]>;
+
+  // Full-text search (A2 — FEAT-SOXGRAPH-001). Per-backend SQL lives in
+  // fts-ops.ts, keyed on FTSDialect.supportsShadowTable — never config.type.
+  /**
+   * Ranked full-text search over `columns` of `table`.
+   *
+   * - Returns rows joined to the FTS match with `rowid` (the base row's
+   *   rowid) and `score` (higher = better on BOTH backends: SQLite FTS5's
+   *   negated `rank` column, Turso's native `fts_score`), ordered score DESC.
+   * - Multi-term queries are normalized to the explicit `"tok1" OR "tok2"`
+   *   form (BL-367) so SQLite and Turso return identical rowid sets.
+   * - `opts.where` is AND-ed after the match and may reference the base table
+   *   alias `n` (e.g. `n.kind = ?`).
+   * - Capability gate: `capabilities.fts === false` → `[]`. Empty/normalized
+   *   query → `[]`. Real DB errors rethrow.
+   */
+  ftsSearch<T = Record<string, unknown>>(
+    table: string,
+    columns: string[],
+    query: string,
+    opts?: FtsSearchOptions,
+  ): Promise<Array<T & { rowid: number; score: number }>>;
+  /** Row count for the same match as {@link ftsSearch} (ignores limit/offset).
+   *  Capability gate → 0; empty query → 0. */
+  ftsCount(
+    table: string,
+    columns: string[],
+    query: string,
+    opts?: FtsCountOptions,
+  ): Promise<number>;
+  /** Idempotently ensure an FTS index over `columns` of `table`. Adopts an
+   *  existing non-canonical index by lookup (BL-461), skips per-statement
+   *  `already exists` races, backfills the FTS5 shadow table when
+   *  `capabilities.fts5`, and cleans the other dialect's legacy residue.
+   *  Capability gate → `{ ensured: false, … }`. */
+  ensureFtsIndex(
+    table: string,
+    columns: string[],
+    opts?: FtsEnsureOptions,
+  ): Promise<FtsEnsureResult>;
 
   // Lifecycle
 

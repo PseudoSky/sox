@@ -36,7 +36,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import type { StoreAdapter, AllResult, RunResult } from '@adhd/sox-store-adapter';
+import type { StoreAdapter, AllResult, RunResult, FtsEnsureResult } from '@adhd/sox-store-adapter';
 import type { EmbedRole } from '@adhd/sox-embedding-provider';
 import { openDb } from './db.js';
 import { memoryWrite } from './write.js';
@@ -236,6 +236,28 @@ class RecordingAdapter implements StoreAdapter {
 
   async close(): Promise<void> {
     /* no-op */
+  }
+
+  // (A2 — FEAT-SOXGRAPH-001) Required StoreAdapter members. This double only
+  // records SQL issued by memoryRecall's own channels — it never issues FTS
+  // SQL itself, so these return empty results and record nothing.
+  async ftsSearch<T = Record<string, unknown>>(): Promise<Array<T & { rowid: number; score: number }>> {
+    return [];
+  }
+
+  async ftsCount(): Promise<number> {
+    return 0;
+  }
+
+  async ensureFtsIndex(): Promise<FtsEnsureResult> {
+    return {
+      ensured: false,
+      adoptedExisting: null,
+      indexName: null,
+      backfilled: false,
+      residueDropped: [],
+      residueNeedsOutOfBand: false,
+    };
   }
 
   unwrap(): unknown {

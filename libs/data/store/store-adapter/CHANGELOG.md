@@ -42,6 +42,44 @@
   `TursoAdapterImpl` is the only current implementer of `TursoAdapter`; this is a seam for callers
   (e.g. a health surface) that want to report connection state without triggering a query.
 
+- 6f2bb72a: Add the A2 full-text search operation surface to every adapter
+  (FEAT-SOXGRAPH-001) — `ftsSearch`, `ftsCount`, and `ensureFtsIndex` on
+  `StoreAdapter`, implemented by `SqliteAdapterImpl`, `TursoAdapterImpl`,
+  `MockAdapter` (and memory-core's `wrapRawDbAsAdapter` bridge).
+
+  - `ftsSearch<T>(table, columns, query, opts?)` — ranked FTS row search
+    returning `Array<T & { rowid, score }>`, ordered `score DESC`. `score` is
+    higher = better on BOTH backends: SQLite FTS5's negated `rank` column,
+    Turso's native `fts_score`. `opts.where` is AND-ed after the match and may
+    reference the base table alias `n`; `limit` defaults to 50; `offset`
+    pages. Multi-term queries are normalized (trim → lowercase →
+    whitespace-split) and rebuilt as an explicit `"tok1" OR "tok2"` match
+    query via `FTSDialect.buildMatchQuery` (BL-367), so both engines return
+    IDENTICAL rowid sets for the same query — SQLite FTS5's bareword default
+    is AND and silently drops rows where not every token co-occurs.
+  - `ftsCount(table, columns, query, opts?)` — row count for the same match
+    (no limit/offset).
+  - `ensureFtsIndex(table, columns, opts?)` — idempotent index
+    creation/adoption. Resolves the index actually present rather than asking
+    whether one canonical NAME is free (BL-461 — a repaired `idx_fts_node__r1`
+    is adopted, never duplicated), skips per-statement `already exists`
+    races, backfills the FTS5 shadow table only when `capabilities.fts5` and
+    only while its segment table is empty (re-backfill would duplicate
+    segments and inflate BM25 scores), and cleans the other dialect's legacy
+    FTS residue — dropped on SQLite via `dialect.dropLegacyDDL`, detected and
+    reported as `residueNeedsOutOfBand` on Turso, whose engine cannot
+    reliably `DROP` fts5 objects.
+
+  New types: `FtsSearchOptions`, `FtsCountOptions`, `FtsEnsureOptions`,
+  `FtsEnsureResult`. New module `fts-ops.ts` (re-exported from the package
+  entry) holds the per-backend SQL builders, keyed on
+  `FTSDialect.supportsShadowTable` — never on `adapter.config.type`.
+  Capability gate: `capabilities.fts === false` → `[]` / `0` /
+  `{ ensured: false, … }`, never a throw. Noted engine deviation: Turso's
+  Tantivy FTS scan ignores `OFFSET` on the same query as `fts_match`, so the
+  turso builder wraps an offset query in a subquery and applies `LIMIT ?
+  OFFSET ?` to the materialized result (verified 2026-08-08).
+
 ### Patch Changes
 
 - 62c72a9: Widen `isBusyError`, `isConcurrentConflict`, `isUniqueConstraintError`, `isForeignKeyError`, and
