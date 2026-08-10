@@ -90,9 +90,14 @@ export async function memoryGetSupersessionChain(
     }
   }
 
-  // Build ordered chain oldest-first (by t_created)
+  // Build ordered chain oldest-first (by t_created). BL-505: ties broken by
+  // rowid (lowest first) — the t_created-only comparator left ties to BFS
+  // discovery order, which is getEdges-row-order-dependent (no ORDER BY) and
+  // diverged sqlite vs turso on which uid becomes canonical_uid.
   const chain = [...allRows.values()].sort(
-    (a, b) => new Date(a.t_created).getTime() - new Date(b.t_created).getTime(),
+    (a, b) =>
+      new Date(a.t_created).getTime() - new Date(b.t_created).getTime() ||
+      a.rowid - b.rowid,
   );
 
   // Canonical = most recent non-invalidated node, or latest by t_created
