@@ -20,11 +20,20 @@ import type {
   AdapterCapabilities,
   AdapterBackupOptions,
   AdapterBackupResult,
+  FtsCountOptions,
+  FtsEnsureOptions,
+  FtsEnsureResult,
+  FtsSearchOptions,
   RunResult,
   AllResult,
   TransactionOptions,
 } from './types.js';
 import { ETursoNativeStore, isTursoNativeStoreSchemaError } from './errors.js';
+import {
+  ensureFtsIndex as ensureFtsIndexOn,
+  ftsCount as ftsCountOn,
+  ftsSearch as ftsSearchOn,
+} from './fts-ops.js';
 
 type Sqlite3Database = import('better-sqlite3').Database;
 type Sqlite3Statement = import('better-sqlite3').Statement;
@@ -375,6 +384,34 @@ export class SqliteAdapterImpl implements SqliteAdapter {
       results.push(result);
     }
     return results;
+  }
+
+  // ── Full-text search (A2) — per-backend SQL delegated to fts-ops.ts ────────
+
+  async ftsSearch<T = Record<string, unknown>>(
+    table: string,
+    columns: string[],
+    query: string,
+    opts: FtsSearchOptions = {},
+  ): Promise<Array<T & { rowid: number; score: number }>> {
+    return ftsSearchOn(this, table, columns, query, opts);
+  }
+
+  async ftsCount(
+    table: string,
+    columns: string[],
+    query: string,
+    opts: FtsCountOptions = {},
+  ): Promise<number> {
+    return ftsCountOn(this, table, columns, query, opts);
+  }
+
+  async ensureFtsIndex(
+    table: string,
+    columns: string[],
+    opts: FtsEnsureOptions = {},
+  ): Promise<FtsEnsureResult> {
+    return ensureFtsIndexOn(this, table, columns, opts);
   }
 
   async close(): Promise<void> {
