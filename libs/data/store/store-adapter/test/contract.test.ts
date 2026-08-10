@@ -545,6 +545,7 @@ export function runContractTests(
       expect(typeof adapter.capabilities.multiprocessWrite).toBe('boolean');
       expect(typeof adapter.capabilities.nativeVectors).toBe('boolean');
       expect(typeof adapter.capabilities.concurrentTransactions).toBe('boolean');
+      expect(typeof adapter.capabilities.recursiveCte).toBe('boolean');
     });
   });
 
@@ -665,6 +666,7 @@ describe('SqliteAdapter capabilities', () => {
     expect(caps.multiprocessWrite).toBe(false);
     expect(caps.nativeVectors).toBe(false);
     expect(caps.concurrentTransactions).toBe(false);
+    expect(caps.recursiveCte).toBe(true); // better-sqlite3 accepts WITH RECURSIVE
     adapter.close();
   });
 });
@@ -717,6 +719,7 @@ describe('MockAdapter capabilities', () => {
     expect(caps.multiprocessWrite).toBe(false);
     expect(caps.nativeVectors).toBe(false);
     expect(caps.concurrentTransactions).toBe(false);
+    expect(caps.recursiveCte).toBe(true);
   });
 });
 

@@ -194,6 +194,7 @@ class RecordingAdapter implements StoreAdapter {
     fts5: true,
     fts: true,
     needsWriteSerialization: false,
+    recursiveCte: true,
   };
 
   async executeGet<T = Record<string, unknown>>(sql: string, args: unknown[] = []): Promise<T | null> {

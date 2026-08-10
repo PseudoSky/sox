@@ -1,13 +1,20 @@
 // @adhd/sox-graph-store — Bi-temporal graph store over StoreAdapter
-import { createFTSDialect, resolveExistingFtsIndexName, canonicalFtsIndexName } from '@adhd/sox-store-adapter';
-import type { FTSDialect, StoreAdapter } from '@adhd/sox-store-adapter';
+import { createFTSDialect } from '@adhd/sox-store-adapter';
+import type { StoreAdapter } from '@adhd/sox-store-adapter';
 import * as crypto from 'node:crypto';
 import { rebuildTable } from './rebuild-table.js';
 export { rebuildTable };
 
+/**
+ * Connection PRAGMAs applied by applySchema(). BUG-SOXGRAPH-002: `busy_timeout`
+ * is deliberately NOT here — the write-contention contract is adapter-owned.
+ * SqliteAdapter sets `PRAGMA busy_timeout = 3000` at connect (sqlite-adapter.ts);
+ * Turso no-ops unknown PRAGMAs and the driver default applies. A second
+ * graph-store-level busy_timeout would clobber the adapter's chosen value on
+ * every applySchema and split the knob between two owners.
+ */
 export const PRAGMAS: string[] = [
   'PRAGMA journal_mode = WAL;',
-  'PRAGMA busy_timeout = 5000;',
   'PRAGMA synchronous = NORMAL;',
   'PRAGMA foreign_keys = ON;',
   'PRAGMA cache_size = -64000;',
@@ -975,19 +982,34 @@ function hasEnumCheckConstraint(sql: string, column: 'kind' | 'rel'): boolean {
 }
 
 export class SqliteGraphBackend implements GraphBackend {
-  readonly capabilities: GraphBackendCapabilities = {
-    bitemporal: true,
-    fullTextSearch: true,
-    metadataFilter: true,
-  };
+  readonly capabilities: GraphBackendCapabilities;
 
   private adapter: StoreAdapter;
   private schemaApplied = false;
   private typePolicy: TypePolicy;
+  /**
+   * Whether the underlying engine accepts `WITH RECURSIVE` at prepare. True on
+   * SQLite and Turso Database Rust >= 0.8.0; FALSE on Turso 0.7.x (probed
+   * once at connect by store-adapter, see `AdapterCapabilities.recursiveCte`).
+   * When false, the five recursive-graph methods below switch to iterative
+   * BFS fallbacks that produce the same results (empirically pinned by the
+   * "recursive-cte fallback parity" tests). External adapters that omit the
+   * capability default to true — only Turso 0.7.x sets it false.
+   */
+  private supportsRecursiveCte: boolean;
 
   constructor(adapter: StoreAdapter, opts?: GraphBackendOpts) {
     this.adapter = adapter;
     this.typePolicy = opts?.typePolicy ?? DEFAULT_TYPE_POLICY;
+    // BUG-SOXGRAPH-001: fullTextSearch DERIVES from the adapter's fts
+    // capability instead of being hardcoded true — an adapter reporting
+    // fts:false must not advertise an FTS surface that would then throw.
+    this.capabilities = {
+      bitemporal: true,
+      fullTextSearch: adapter.capabilities.fts,
+      metadataFilter: true,
+    };
+    this.supportsRecursiveCte = adapter.capabilities.recursiveCte ?? true;
   }
 
   async applySchema(): Promise<void> {
@@ -1020,61 +1042,20 @@ export class SqliteGraphBackend implements GraphBackend {
   }
 
   /**
-   * FTS schema creation — dialect-driven, NEVER unconditional.
-   *
-   * Before this, applySchema() ran `FTS_DDL` (`CREATE VIRTUAL TABLE … USING
-   * fts5`) + `FTS_TRIGGERS` + a backfill `INSERT INTO fts_node` on EVERY
-   * open, regardless of adapter. A Turso adapter (`capabilities.fts5 ===
-   * false`) rejects fts5 DDL outright (`Parse error: no such module: fts5` —
-   * the reported "graph import is failing because fts5 is missing"), so any
-   * graph-store consumer that opened on Turso crashed at applySchema(). The
-   * store's own dialect (store-adapter's FTSDialect) decides what "create
-   * FTS" means per backend: the fts5 virtual table + triggers on SQLite, a
-   * Tantivy `CREATE INDEX … USING fts` on Turso, nothing on an adapter that
-   * reports no FTS capability. The backfill INSERT only applies to the fts5
-   * shadow table — Turso's Tantivy index is maintained by the engine and has
-   * no row-insert surface.
+   * FTS schema creation — A2 (FEAT-SOXGRAPH-001): delegated to the adapter's
+   * `ensureFtsIndex`, which owns the per-backend mechanics (fts5 virtual
+   * table + triggers + backfill on SQLite, Tantivy `CREATE INDEX … USING fts`
+   * on Turso, BL-461 adoption of a non-canonical existing index, legacy
+   * residue cleanup) and gates on `capabilities.fts` itself. graph-store
+   * supplies the schema data (weights + the FTS_DDL/FTS_TRIGGERS constants
+   * that ARE its FTS5 schema) and stays out of the SQL.
    */
   private async applyFtsSchema(): Promise<void> {
-    const dialect = createFTSDialect(this.adapter.config.type);
-    if (!dialect.supported || !this.adapter.capabilities.fts) return;
-    // (BL-461, BL-498 review) Ask whether the TABLE already has an FTS index,
-    // not whether one particular NAME is free — the same guard memory-core's
-    // openDb() uses (db.ts:603-622). Turso has no `ALTER INDEX … RENAME`, so
-    // the orphan guard's rebuild (store-adapter's fts-orphan-guard.ts)
-    // necessarily leaves a repaired index under a different name —
-    // `idx_fts_node__r1`. `CREATE INDEX IF NOT EXISTS idx_fts_node` would then
-    // find its own name free and build a SECOND full-text index over the same
-    // columns: measured to coexist and answer queries correctly, so the only
-    // symptom is permanently doubled write and storage cost, silently.
-    // Resolve the actual index; if one exists under a non-canonical name,
-    // ADOPT it (skip creation) so a duplicate is never built. The lookup
-    // returns null on SQLite (fts5's virtual-table name is load-bearing), so
-    // the FTS5 path below is untouched.
-    const existingFtsIndex = await resolveExistingFtsIndexName(this.adapter, 'node');
-    if (existingFtsIndex !== null && existingFtsIndex !== canonicalFtsIndexName('node')) {
-      return; // adopted — the table already carries a healthy FTS index
-    }
-    const ftsColumns = ['content', 'name', 'summary'];
-    for (const stmt of dialect.createIndexDDL(
-      'node',
-      ftsColumns,
-      { content: 1.0, name: 1.0, summary: 1.0 },
-      [FTS_DDL, FTS_TRIGGERS],
-    )) {
-      try {
-        await this.adapter.exec(stmt);
-      } catch (err) {
-        if (err instanceof Error && /already exists/i.test(err.message)) continue;
-        throw err;
-      }
-    }
-    if (this.adapter.capabilities.fts5) {
-      await this.adapter.exec(
-        `INSERT INTO fts_node(rowid, content, name, summary)
-         SELECT rowid, content, name, summary FROM node`,
-      );
-    }
+    await this.adapter.ensureFtsIndex('node', ['content', 'name', 'summary'], {
+      weights: { content: 1.0, name: 1.0, summary: 1.0 },
+      sqliteDDL: [FTS_DDL, FTS_TRIGGERS],
+      backfill: true,
+    });
   }
 
   /** FTS re-sync after a node-table rebuild — same dialect rules as
@@ -1315,57 +1296,29 @@ export class SqliteGraphBackend implements GraphBackend {
     query: string,
     opts?: { limit?: number; offset?: number; filter?: NodeFilter },
   ): Promise<Array<NodeRecord & { score: number }>> {
+    // BUG-SOXGRAPH-001: capability guard — fts:false → [], never throw. The
+    // value derives from adapter.capabilities.fts (constructor).
     if (!this.capabilities.fullTextSearch) return [];
-    const dialect = createFTSDialect(this.adapter.config.type);
     const tokens = query.toLowerCase().split(/\s+/).filter((t) => t.length > 0);
     if (tokens.length === 0) return [];
-    const ftsQuery = dialect.buildMatchQuery(tokens);
-    const limit = opts?.limit ?? 50;
-    const offset = opts?.offset;
     const nodeFilter = buildNodeFilterClause(opts?.filter, true, 'n');
     const nodeWhere = nodeFilter.where ? `AND ${nodeFilter.where.replace(/^WHERE /, '')}` : '';
-    let limitClause = 'LIMIT ?';
-    const limitParams: unknown[] = [limit];
-    if (offset !== undefined) { limitClause += ' OFFSET ?'; limitParams.push(offset); }
-
-    const { sql, params } = this.buildFtsSearchSql(dialect, ftsQuery, nodeWhere);
-    const { rows } = await this.adapter.executeAll<DbNodeRow & { score: number }>(
-      `${sql} ${limitClause}`, [...params, ...nodeFilter.params, ...limitParams],
+    // A2 (FEAT-SOXGRAPH-001): delegate to the adapter's ftsSearch, which owns
+    // the per-backend SQL (fts5 shadow join vs Tantivy fts_match), the BL-367
+    // `"tok1" OR "tok2"` normalization, and the empty-query guards.
+    const ftsOpts: { limit: number; where: string; params: unknown[]; offset?: number } = {
+      limit: opts?.limit ?? 50,
+      where: nodeWhere,
+      params: nodeFilter.params,
+    };
+    if (opts?.offset !== undefined) ftsOpts.offset = opts.offset;
+    const rows = await this.adapter.ftsSearch<DbNodeRow & { score: number }>(
+      'node',
+      ['content', 'name', 'summary'],
+      query,
+      ftsOpts,
     );
     return rows.map((r) => ({ ...rowToNodeRecord(r as unknown as DbNodeRow), score: r.score }));
-  }
-
-  /**
-   * FTS search SQL — dialect-shaped (the same `supportsShadowTable` split
-   * memory-core's recall.ts uses): SQLite FTS5 keeps a separate `fts_node`
-   * shadow table joined back to `node` (score is the negated `rank` column),
-   * Turso's Tantivy index lives directly on `node` (`fts_match`/`fts_score`,
-   * each binding its own query param). Never branches on `adapter.config.type`.
-   */
-  private buildFtsSearchSql(
-    dialect: FTSDialect,
-    ftsQuery: string,
-    nodeWhere: string,
-  ): { sql: string; params: unknown[] } {
-    const ftsColumns = ['content', 'name', 'summary'];
-    const { sql: matchSql } = dialect.matchClause(ftsColumns, '?');
-    const scoreExpr = dialect.scoreClause(ftsColumns, '?');
-    if (dialect.supportsShadowTable) {
-      return {
-        sql: `SELECT n.*, -${scoreExpr} AS score
-              FROM fts_node JOIN node n ON fts_node.rowid = n.rowid
-              WHERE ${matchSql} ${nodeWhere}
-              ORDER BY score DESC`,
-        params: [ftsQuery],
-      };
-    }
-    return {
-      sql: `SELECT n.*, ${scoreExpr} AS score
-            FROM node n
-            WHERE ${matchSql} ${nodeWhere}
-            ORDER BY score DESC`,
-      params: [ftsQuery, ftsQuery],
-    };
   }
 
   async countNodes(filter?: NodeFilter): Promise<number> {
@@ -1375,26 +1328,21 @@ export class SqliteGraphBackend implements GraphBackend {
   }
 
   async countNodesFts(query: string, filter?: NodeFilter): Promise<number> {
+    // BUG-SOXGRAPH-001: capability guard — fts:false → 0, never throw.
     if (!this.capabilities.fullTextSearch) return 0;
-    const dialect = createFTSDialect(this.adapter.config.type);
     const tokens = query.toLowerCase().split(/\s+/).filter((t) => t.length > 0);
     if (tokens.length === 0) return 0;
-    const ftsQuery = dialect.buildMatchQuery(tokens);
     const nodeFilter = buildNodeFilterClause(filter, true, 'n');
     const nodeWhere = nodeFilter.where ? `AND ${nodeFilter.where.replace(/^WHERE /, '')}` : '';
-    const ftsColumns = ['content', 'name', 'summary'];
-    const { sql: matchSql } = dialect.matchClause(ftsColumns, '?');
-    if (dialect.supportsShadowTable) {
-      const sql = `SELECT COUNT(*) as cnt FROM fts_node JOIN node n ON fts_node.rowid = n.rowid WHERE ${matchSql} ${nodeWhere}`;
-      const row = await this.adapter.executeGet<{ cnt: number }>(sql, [ftsQuery, ...nodeFilter.params]);
-      return row?.cnt ?? 0;
-    }
-    const sql = `SELECT COUNT(*) as cnt FROM node n WHERE ${matchSql} ${nodeWhere}`;
-    const row = await this.adapter.executeGet<{ cnt: number }>(sql, [ftsQuery, ...nodeFilter.params]);
-    return row?.cnt ?? 0;
+    // A2 (FEAT-SOXGRAPH-001): delegate to the adapter's ftsCount.
+    return this.adapter.ftsCount('node', ['content', 'name', 'summary'], query, {
+      where: nodeWhere,
+      params: nodeFilter.params,
+    });
   }
 
   async getSupersessionChain(nodeId: number): Promise<NodeRecord[]> {
+    if (!this.supportsRecursiveCte) return this.getSupersessionChainIterative(nodeId);
     const sql = `
       WITH RECURSIVE
       connected(rowid) AS (
@@ -1414,6 +1362,76 @@ export class SqliteGraphBackend implements GraphBackend {
     `;
     const { rows } = await this.adapter.executeAll<DbNodeRow>(sql, [nodeId]);
     return rows.map(rowToNodeRecord);
+  }
+
+  /**
+   * Iterative fallback for {@link getSupersessionChain} — the same three CTE
+   * phases as the recursive SQL, walked with getEdges: (1) bidirectional
+   * `connected` set from `nodeId`; (2) `head` = lowest-rowid connected node
+   * with no outbound SUPERSEDES; (3) `chain` BFS from head via dst → src with
+   * depth; (4) collect (rowid, depth), sort (depth, rowid), fetch nodes.
+   *
+   * Produces the SAME oldest-first ordering as the recursive SQL on linear
+   * chains (pinned by the parity tests: [v1, v2, v3]). Neither path filters
+   * node liveness — the recursive CTEs never join `node`, so invalidated
+   * chain members are returned by both. Edges are walked via getEdges (live
+   * edges only, `t_invalid IS NULL`) — the recursive SQL also walks only
+   * live edges; no public path invalidates SUPERSEDES edges, so the two
+   * cannot diverge in practice.
+   */
+  private async getSupersessionChainIterative(nodeId: number): Promise<NodeRecord[]> {
+    // (1) connected set — bidirectional reachability over SUPERSEDES edges.
+    const connected = new Set<number>([nodeId]);
+    const frontier = [nodeId];
+    while (frontier.length > 0) {
+      const current = frontier.pop()!;
+      for (const e of await this.getEdges({ src: current, rel: 'SUPERSEDES' })) {
+        if (!connected.has(e.dst)) { connected.add(e.dst); frontier.push(e.dst); }
+      }
+      for (const e of await this.getEdges({ dst: current, rel: 'SUPERSEDES' })) {
+        if (!connected.has(e.src)) { connected.add(e.src); frontier.push(e.src); }
+      }
+    }
+
+    // (2) head — lowest-rowid connected node with no outbound SUPERSEDES.
+    // The recursive `head` CTE is `LIMIT 1` over an unORDERed set; SQLite
+    // scans connected in rowid order, so lowest-rowid is the deterministic
+    // mirror. (A connected node with no outbound edge always exists: the
+    // seed itself has none unless a cycle closes on it — and a cycle is
+    // still handled, the walk just never finds a true head.)
+    let head: number | null = null;
+    for (const id of [...connected].sort((a, b) => a - b)) {
+      const outbound = await this.getEdges({ src: id, rel: 'SUPERSEDES' });
+      if (outbound.length === 0) { head = id; break; }
+    }
+    if (head === null) return [];
+
+    // (3) chain — BFS from head over dst → src children, level-tracked,
+    // visited set for cycle termination (the recursive SQL terminates via
+    // UNION dedup; this is the iterative equivalent).
+    const chain = new Map<number, number>(); // rowid → depth
+    chain.set(head, 0);
+    let level = [head];
+    let depth = 0;
+    while (level.length > 0) {
+      depth += 1;
+      const next: number[] = [];
+      for (const current of level) {
+        for (const e of await this.getEdges({ dst: current, rel: 'SUPERSEDES' })) {
+          if (!chain.has(e.src)) { chain.set(e.src, depth); next.push(e.src); }
+        }
+      }
+      level = next;
+    }
+
+    // (4) collect (rowid, depth), sort (depth, rowid), fetch node rows.
+    const ordered = [...chain.entries()].sort((a, b) => a[1] - b[1] || a[0] - b[0]);
+    const nodes: NodeRecord[] = [];
+    for (const [id] of ordered) {
+      const row = await this.adapter.executeGet<DbNodeRow>('SELECT * FROM node WHERE rowid = ?', [id]);
+      if (row) nodes.push(rowToNodeRecord(row));
+    }
+    return nodes;
   }
 
   async writeEdge(src: number, dst: number, rel: EdgeRel, meta?: EdgeMeta): Promise<void> {
@@ -1483,6 +1501,7 @@ export class SqliteGraphBackend implements GraphBackend {
   }
 
   private async getNeighborsRecursive(nodeId: number, rel: EdgeRel | undefined, depth: number, direction: 'in' | 'out' | 'both'): Promise<NodeRecord[]> {
+    if (!this.supportsRecursiveCte) return this.getNeighborsIterative(nodeId, rel, depth, direction);
     const relFilter = rel ? `AND rel = '${rel.replace(/'/g, "''")}'` : '';
     if (direction === 'both') {
       const out = await this.getNeighborsRecursive(nodeId, rel, depth, 'out');
@@ -1501,6 +1520,73 @@ export class SqliteGraphBackend implements GraphBackend {
       [nodeId, depth * 100],
     );
     return rows.map(rowToNodeRecord).filter((n) => n.id !== nodeId);
+  }
+
+  /**
+   * Iterative fallback for {@link getNeighborsRecursive} — BFS with a visited
+   * set (cycle termination), excluding the seed. Mirrors the recursive path
+   * exactly in the two places that matter:
+   *
+   * - **Budget semantics (empirical, real sqlite, 2026-08-10):** the
+   *   recursive CTE's `LIMIT depth*100` is a TOTAL row budget across the whole
+   *   recursion INCLUDING the seed row — NOT a per-step cap (probe: LIMIT 25
+   *   over a level-1 fanout of 25 returned exactly 25 rows = seed + 24; LIMIT
+   *   30 returned seed + 25 + 4; LIMIT 100000 over a 30-chain returned all 30).
+   *   `depth` bounds the BUDGET, not the walk depth — the recursive walk is
+   *   depth-unbounded and stops only when the budget binds or the graph is
+   *   exhausted. The iterative counter counts total discovered rows (seed
+   *   included), so both paths truncate identically.
+   * - **Liveness:** edges walked live-only (getEdges = `t_invalid IS NULL`,
+   *   same as the CTE's WHERE); the RESULT filters `node.t_invalid IS NULL`
+   *   (same as the outer SELECT) while the walk itself crosses invalidated
+   *   nodes (the CTE never joins node).
+   *
+   * direction 'both' runs out and in as two independent budgeted walks, then
+   * union-dedups — byte-for-byte what the recursive 'both' branch does.
+   */
+  private async getNeighborsIterative(
+    nodeId: number,
+    rel: EdgeRel | undefined,
+    depth: number,
+    direction: 'in' | 'out' | 'both',
+  ): Promise<NodeRecord[]> {
+    if (direction === 'both') {
+      const out = await this.getNeighborsIterative(nodeId, rel, depth, 'out');
+      const inNodes = await this.getNeighborsIterative(nodeId, rel, depth, 'in');
+      const seen = new Set(out.map((n) => n.id));
+      for (const n of inNodes) { if (!seen.has(n.id)) { seen.add(n.id); out.push(n); } }
+      return out;
+    }
+    const budget = depth * 100;
+    const visited = new Set<number>([nodeId]);
+    let frontier = [nodeId];
+    let discovered = 1; // the seed counts against the recursive LIMIT budget
+    while (frontier.length > 0 && discovered < budget) {
+      const next: number[] = [];
+      for (const current of frontier) {
+        const edgeOpts: { src?: number; dst?: number; rel?: EdgeRel } = {};
+        if (rel !== undefined) edgeOpts.rel = rel;
+        if (direction === 'out') edgeOpts.src = current; else edgeOpts.dst = current;
+        const edges = await this.getEdges(edgeOpts);
+        for (const e of edges) {
+          if (discovered >= budget) break;
+          const nid = direction === 'out' ? e.dst : e.src;
+          if (visited.has(nid)) continue;
+          visited.add(nid);
+          next.push(nid);
+          discovered += 1;
+        }
+        if (discovered >= budget) break;
+      }
+      frontier = next;
+    }
+    const ids = [...visited].filter((id) => id !== nodeId);
+    if (ids.length === 0) return [];
+    const { rows } = await this.adapter.executeAll<DbNodeRow>(
+      `SELECT n.* FROM node n WHERE n.rowid IN (${ids.map(() => '?').join(',')}) AND n.t_invalid IS NULL`,
+      ids,
+    );
+    return rows.map(rowToNodeRecord);
   }
 
   async getNeighborsWithEdges(
@@ -1563,6 +1649,31 @@ export class SqliteGraphBackend implements GraphBackend {
 
   async isReachable(src: number, dst: number, opts?: { rel?: EdgeRel; direction?: 'out' | 'in' }): Promise<boolean> {
     const direction = opts?.direction ?? 'out';
+    if (!this.supportsRecursiveCte) {
+      // Iterative BFS from src with early exit on discovering dst — unbounded,
+      // NO node-liveness filter (the recursive `path` CTE never joins node;
+      // only edge liveness applies, which getEdges filters). Cycle-terminating
+      // via the visited set (the recursive SQL terminates via UNION dedup).
+      if (src === dst) return true;
+      const visited = new Set<number>([src]);
+      let frontier = [src];
+      while (frontier.length > 0) {
+        const next: number[] = [];
+        for (const current of frontier) {
+          const edgeOpts: { src?: number; dst?: number; rel?: EdgeRel } = {};
+          if (opts?.rel !== undefined) edgeOpts.rel = opts.rel;
+          if (direction === 'out') edgeOpts.src = current; else edgeOpts.dst = current;
+          const edges = await this.getEdges(edgeOpts);
+          for (const e of edges) {
+            const nid = direction === 'out' ? e.dst : e.src;
+            if (nid === dst) return true;
+            if (!visited.has(nid)) { visited.add(nid); next.push(nid); }
+          }
+        }
+        frontier = next;
+      }
+      return false;
+    }
     const relFilter = opts?.rel ? `AND rel = '${opts.rel.replace(/'/g, "''")}'` : '';
     let sql: string;
     if (direction === 'out') {
@@ -1581,6 +1692,7 @@ export class SqliteGraphBackend implements GraphBackend {
   async getSubgraph(
     rootId: number, opts?: { rel?: EdgeRel; depth?: number; direction?: 'out' | 'in' | 'both' },
   ): Promise<{ nodes: NodeRecord[]; edges: EdgeRecord[] }> {
+    if (!this.supportsRecursiveCte) return this.getSubgraphIterative(rootId, opts);
     const direction = opts?.direction ?? 'both';
     const maxDepth = opts?.depth ?? -1;
     const relFilter = opts?.rel ? `AND e.rel = '${opts.rel.replace(/'/g, "''")}'` : '';
@@ -1616,6 +1728,73 @@ export class SqliteGraphBackend implements GraphBackend {
     const nodes = nodeRows.map(rowToNodeRecord);
     if (nodes.length === 0) return { nodes: [], edges: [] };
     const nodeIds = nodes.map((n) => n.id);
+    const { rows: edgeRows } = await this.adapter.executeAll<DbEdgeRow>(
+      `SELECT * FROM edge WHERE src IN (${nodeIds.map(() => '?').join(',')})
+       AND dst IN (${nodeIds.map(() => '?').join(',')}) AND t_invalid IS NULL`,
+      [...nodeIds, ...nodeIds],
+    );
+    return { nodes, edges: edgeRows.map(rowToEdgeRecord) };
+  }
+
+  /**
+   * Iterative fallback for {@link getSubgraph} — level-by-level BFS from
+   * rootId (level 0 = the root), visited set for cycle termination (the
+   * recursive `sub` CTE terminates via UNION dedup). `maxDepth >= 0` stops at
+   * depth === maxDepth (mirroring the recursive term's `s.depth < maxDepth`);
+   * `-1` walks unbounded. direction 'both' runs out and in and merges by id
+   * / src:dst:rel key — byte-for-byte the recursive 'both' branch.
+   *
+   * Deliberately NO node-liveness filter: the recursive `sub` CTE never joins
+   * `node`, so an invalidated node behind a live edge IS part of the subgraph
+   * — the parity tests pin this quirk on both paths. Edges use the SAME
+   * non-recursive query as the recursive path, verbatim (src IN + dst IN +
+   * t_invalid IS NULL).
+   */
+  private async getSubgraphIterative(
+    rootId: number, opts?: { rel?: EdgeRel; depth?: number; direction?: 'out' | 'in' | 'both' },
+  ): Promise<{ nodes: NodeRecord[]; edges: EdgeRecord[] }> {
+    const direction = opts?.direction ?? 'both';
+    const maxDepth = opts?.depth ?? -1;
+    if (direction === 'both') {
+      const outSub = await this.getSubgraphIterative(rootId, { ...opts, direction: 'out' });
+      const inSub = await this.getSubgraphIterative(rootId, { ...opts, direction: 'in' });
+      const seen = new Set(outSub.nodes.map((n) => n.id));
+      for (const n of inSub.nodes) { if (!seen.has(n.id)) { seen.add(n.id); outSub.nodes.push(n); } }
+      const edgeSeen = new Set(outSub.edges.map((e) => `${e.src}:${e.dst}:${e.rel}`));
+      for (const e of inSub.edges) {
+        const key = `${e.src}:${e.dst}:${e.rel}`;
+        if (!edgeSeen.has(key)) { edgeSeen.add(key); outSub.edges.push(e); }
+      }
+      return { nodes: outSub.nodes, edges: outSub.edges };
+    }
+    const visited = new Set<number>([rootId]);
+    let level = [rootId];
+    let depth = 0;
+    while (level.length > 0 && (maxDepth < 0 || depth < maxDepth)) {
+      depth += 1;
+      const next: number[] = [];
+      for (const current of level) {
+        const edgeOpts: { src?: number; dst?: number; rel?: EdgeRel } = {};
+        if (opts?.rel !== undefined) edgeOpts.rel = opts.rel;
+        if (direction === 'out') edgeOpts.src = current; else edgeOpts.dst = current;
+        const edges = await this.getEdges(edgeOpts);
+        for (const e of edges) {
+          const nid = direction === 'out' ? e.dst : e.src;
+          if (!visited.has(nid)) { visited.add(nid); next.push(nid); }
+        }
+      }
+      level = next;
+    }
+    const nodeIds = [...visited];
+    let nodes: NodeRecord[] = [];
+    if (nodeIds.length > 0) {
+      const { rows: nodeRows } = await this.adapter.executeAll<DbNodeRow>(
+        `SELECT n.* FROM node n WHERE n.rowid IN (${nodeIds.map(() => '?').join(',')})`,
+        nodeIds,
+      );
+      nodes = nodeRows.map(rowToNodeRecord);
+    }
+    if (nodes.length === 0) return { nodes: [], edges: [] };
     const { rows: edgeRows } = await this.adapter.executeAll<DbEdgeRow>(
       `SELECT * FROM edge WHERE src IN (${nodeIds.map(() => '?').join(',')})
        AND dst IN (${nodeIds.map(() => '?').join(',')}) AND t_invalid IS NULL`,

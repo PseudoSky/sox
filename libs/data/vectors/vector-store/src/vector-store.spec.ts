@@ -510,6 +510,7 @@ describe('SqliteVectorBackend — Turso-adapter guard (BL-380)', () => {
         fts5: false,
         fts: true,
         needsWriteSerialization: false,
+        recursiveCte: false,
       },
       executeGet: async () => null,
       executeAll: async () => ({ columns: [], rows: [] }),

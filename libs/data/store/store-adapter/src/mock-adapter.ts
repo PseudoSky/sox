@@ -195,6 +195,7 @@ export class MockAdapter implements StoreAdapter {
       fts5: true,
       fts: true,
       needsWriteSerialization: false,
+      recursiveCte: true,
     };
   }
 

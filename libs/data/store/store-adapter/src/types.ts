@@ -71,6 +71,14 @@ export interface AdapterCapabilities {
    *  (e.g. better-sqlite3). False for async adapters with native concurrent I/O (e.g. Turso).
    *  WriteQueue checks this to decide whether to serialize writes or execute immediately. */
   needsWriteSerialization: boolean;
+  /** True when the engine accepts `WITH RECURSIVE` at prepare time. SQLite
+   *  always; Turso Database Rust >= 0.8.0 always; Turso Database Rust < 0.8.0
+   *  rejects recursive CTEs at prepare (`Parse error`) — the probe that pins
+   *  this is `recursive-cte.probe.test.ts`. Probed ONCE at connect and cached
+   *  in this capabilities object. graph-store reads it to select its
+   *  iterative fallbacks for the five recursive-graph methods
+   *  (getSupersessionChain / getNeighbors / isReachable / getSubgraph). */
+  recursiveCte: boolean;
 }
 
 // ── Vector dialect ──────────────────────────────────────────────────────────
