@@ -1,5 +1,61 @@
 # @adhd/sox-graph-store
 
+## 0.8.0
+
+### Minor Changes
+
+- Iterative fallbacks for the five recursive-graph methods + A2 FTS delegation + two capability bugs.
+
+  ## Recursive-CTE iterative fallback (SOXGRAPH-001)
+
+  `WITH RECURSIVE` is rejected at prepare by Turso Database Rust < 0.8.0, so the
+  five methods that used it now switch per-call to iterative BFS fallbacks when
+  the adapter reports `capabilities.recursiveCte: false` (SQLite and Turso
+  >= 0.8.0 keep the byte-identical recursive SQL):
+
+  - `getSupersessionChain` — connected-set BFS, lowest-rowid no-outbound head,
+    level-tracked chain walk, (depth, rowid) sort. Same oldest-first ordering on
+    linear chains ([v1, v2, v3] pinned by tests).
+  - `getNeighborsRecursive` (depth >= 2) — budgeted BFS. Empirically, the
+    recursive `LIMIT depth*100` is a TOTAL row budget INCLUDING the seed row
+    (not per-step), and the walk is depth-UNBOUNDED — the iterative counter
+    mirrors exactly (verified: budget 200 over a 15×15 fan-out → 199 live
+    neighbors on both paths).
+  - `isReachable` — unbounded BFS with early exit, no node-liveness filter.
+  - `getSubgraph` — level-by-level BFS; `maxDepth >= 0` stops at depth ===
+    maxDepth, `-1` unbounded; edges via the same non-recursive query as the
+    recursive path; no node-liveness filter (invalidated node behind a live edge
+    is part of the subgraph — pinned).
+  - `getNeighborsWithEdges` inherits the fallback through `getNeighbors`.
+
+  ## A2 delegation (FEAT-SOXGRAPH-001)
+
+  - `searchNodes` / `countNodesFts` delegate to `adapter.ftsSearch` /
+    `adapter.ftsCount` — the adapter owns the per-backend SQL, the BL-367
+    `"tok1" OR "tok2"` normalization, and the empty-query guards. The A1
+    `buildFtsSearchSql` shape is deleted (AC-6: zero `MATCH`/`fts_match`/
+    `fts_score`/`.rank` hits remain in graph-store source).
+  - `applyFtsSchema` delegates to `adapter.ensureFtsIndex('node',
+['content','name','summary'], { weights, sqliteDDL: [FTS_DDL, FTS_TRIGGERS],
+backfill: true })` — the adapter owns BL-461 index adoption, per-dialect DDL,
+    and residue cleanup. `reapplyFtsInTx` is unchanged.
+
+  ## Bugs
+
+  - **BUG-SOXGRAPH-001:** `capabilities.fullTextSearch` now derives from
+    `adapter.capabilities.fts` instead of being hardcoded `true` — an fts:false
+    adapter no longer advertises an FTS surface that would throw.
+  - **BUG-SOXGRAPH-002:** `PRAGMA busy_timeout = 5000` removed from graph-store's
+    PRAGMAS. The write-contention contract is adapter-owned: `SqliteAdapter`
+    sets `busy_timeout = 3000` at connect; Turso no-ops unknown PRAGMAs and the
+    driver default applies. A graph-store-level busy_timeout split the knob
+    between two owners and clobbered the adapter's value on every applySchema.
+
+### Patch Changes
+
+- Updated dependencies
+  - @adhd/sox-store-adapter@0.5.0
+
 ## 0.7.0
 
 ### Minor Changes

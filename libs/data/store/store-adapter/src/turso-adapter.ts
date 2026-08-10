@@ -461,6 +461,27 @@ export class TursoAdapterImpl implements TursoAdapter {
       );
     }
 
+    // (SOXGRAPH-001) Probe recursive-CTE support ONCE at connect, before the
+    // capabilities object is built. Turso Database Rust < 0.8.0 rejects
+    // `WITH RECURSIVE` at prepare (`Parse error`) while SQLite and Turso
+    // >= 0.8.0 accept it — proven empirically by
+    // `recursive-cte.probe.test.ts`. graph-store reads
+    // `capabilities.recursiveCte` to pick its iterative fallbacks for the
+    // five recursive-graph methods; a wrong TRUE here would send raw
+    // recursive SQL at a 0.7.x Turso store and every one of those methods
+    // would throw. A single read-only counter CTE in a try/catch settles it;
+    // the result is cached in the capabilities object below (the instance's
+    // only cache — `capabilities` is captured at construction).
+    let recursiveCte = false;
+    try {
+      await db.get(
+        `WITH RECURSIVE cnt(x) AS (SELECT 1 UNION ALL SELECT x + 1 FROM cnt WHERE x < 5) SELECT x FROM cnt`,
+      );
+      recursiveCte = true;
+    } catch {
+      recursiveCte = false;
+    }
+
     const config = { type: 'turso' } as AdapterConfig & { type: 'turso' };
     if (opts.url !== undefined) config.url = opts.url;
     if (opts.dbPath !== undefined) config.dbPath = opts.dbPath;
@@ -477,6 +498,7 @@ export class TursoAdapterImpl implements TursoAdapter {
       fts5: false,
       fts: true,
       needsWriteSerialization: false,
+      recursiveCte,
     };
 
     const instance = new TursoAdapterImpl(db, config, capabilities);

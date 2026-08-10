@@ -1,6 +1,9 @@
 import { describe, it, expect, afterEach } from 'vitest';
-import { SqliteAdapterImpl } from '@adhd/sox-store-adapter';
+import { SqliteAdapterImpl, TursoAdapterImpl } from '@adhd/sox-store-adapter';
 import type { StoreAdapter } from '@adhd/sox-store-adapter';
+import { mkdtempSync } from 'node:fs';
+import { join } from 'node:path';
+import { tmpdir } from 'node:os';
 import {
   SqliteGraphBackend,
   createGraphBackend,
@@ -20,6 +23,25 @@ async function freshBackend(): Promise<{ adapter: StoreAdapter; backend: GraphBa
   const backend = createGraphBackend(adapter);
   await backend.applySchema();
   return { adapter, backend };
+}
+
+/** BUG-SOXGRAPH-001: patch a read-only capabilities field BEFORE the backend
+ *  constructor reads it (TS readonly is compile-time only). */
+function patchCapability<K extends keyof NonNullable<StoreAdapter['capabilities']>>(
+  adapter: StoreAdapter,
+  key: K,
+  value: NonNullable<StoreAdapter['capabilities']>[K],
+): void {
+  (adapter.capabilities as unknown as Record<K, unknown>)[key] = value;
+}
+
+function hasTursoDriver(): boolean {
+  try {
+    require.resolve('@tursodatabase/database');
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 afterEach(() => {});
@@ -582,6 +604,322 @@ describe('getSubgraph', () => {
     expect(sub.nodes).toHaveLength(2);
     expect(sub.edges).toHaveLength(1);
     await adapter.close();
+  });
+});
+
+// ── SOXGRAPH-001 — recursive-CTE iterative fallback ───────────────────────────
+//
+// The same fixtures and assertions run against BOTH real adapters: the sqlite
+// path executes the recursive `WITH RECURSIVE` SQL verbatim; the turso path
+// (Turso Database Rust < 0.8.0 rejects recursive CTEs at prepare — see
+// store-adapter's recursive-cte.probe.test.ts) executes the iterative BFS
+// fallback. Parity is the contract: the fallback must be observationally
+// identical to the recursive SQL on these shapes.
+
+async function seedSupersessionChain(backend: GraphBackend): Promise<{ v1: number; v2: number; v3: number }> {
+  const v1 = await backend.writeNode('v1 content', { name: 'v1' });
+  const v2 = await backend.supersede(v1, 'v2 content', { name: 'v2' });
+  const v3 = await backend.supersede(v2, 'v3 content', { name: 'v3' });
+  return { v1, v2, v3 };
+}
+
+describe('recursive-cte fallback parity (SOXGRAPH-001)', () => {
+  async function openSqliteParity(): Promise<{ adapter: StoreAdapter; backend: GraphBackend }> {
+    const adapter = new SqliteAdapterImpl(':memory:');
+    const backend = createGraphBackend(adapter);
+    await backend.applySchema();
+    return { adapter, backend };
+  }
+
+  async function openTursoParity(): Promise<{ adapter: StoreAdapter; backend: GraphBackend }> {
+    const dir = mkdtempSync(join(tmpdir(), 'graph-store-parity-'));
+    const adapter = await TursoAdapterImpl.connect({ dbPath: join(dir, `parity-${Date.now()}.db`) });
+    const backend = createGraphBackend(adapter);
+    await backend.applySchema();
+    return { adapter, backend };
+  }
+
+  const tursoAvailable = hasTursoDriver();
+
+  const parityArms: Array<
+    [string, () => Promise<{ adapter: StoreAdapter; backend: GraphBackend }>, boolean]
+  > = [
+    ['sqlite — recursive SQL path', openSqliteParity, false],
+    ['turso — iterative fallback path', openTursoParity, !tursoAvailable],
+  ];
+
+  for (const [label, open, skip] of parityArms) {
+    describe(label, () => {
+      it('getSupersessionChain returns oldest-first [v1, v2, v3] by name', { skip, timeout: 20000 }, async () => {
+        const { backend, adapter } = await open();
+        try {
+          const { v2 } = await seedSupersessionChain(backend);
+          const chain = await backend.getSupersessionChain(v2);
+          expect(chain.map((n) => n.name)).toEqual(['v1', 'v2', 'v3']);
+        } finally {
+          await adapter.close();
+        }
+      });
+
+      it('getSupersessionChain terminates on a SUPERSEDES cycle and returns []', { skip, timeout: 20000 }, async () => {
+        const { backend, adapter } = await open();
+        try {
+          const { v1, v2 } = await seedSupersessionChain(backend);
+          // Close the cycle: v1 supersedes v2 as well. Both connected nodes now
+          // have an outbound SUPERSEDES edge → no head exists on either path.
+          await backend.writeEdge(v1, v2, 'SUPERSEDES');
+          expect(await backend.getSupersessionChain(v1)).toEqual([]);
+        } finally {
+          await adapter.close();
+        }
+      });
+
+      it('getNeighbors depth-2 walks depth-unbounded under the total budget — same id-set both paths', { skip, timeout: 20000 }, async () => {
+        const { backend, adapter } = await open();
+        try {
+          const a = await backend.writeNode('a', {});
+          const b = await backend.writeNode('b', {});
+          const c = await backend.writeNode('c', {});
+          const d = await backend.writeNode('d', {});
+          const e = await backend.writeNode('e', {});
+          await backend.writeEdge(a, b, 'RELATES_TO');
+          await backend.writeEdge(b, c, 'RELATES_TO');
+          await backend.writeEdge(c, d, 'RELATES_TO');
+          await backend.writeEdge(a, e, 'RELATES_TO');
+          // depth=2 → budget depth*100=200 rows total (seed included). The walk
+          // is depth-unbounded (verified empirically): b, e at level 1, c at
+          // level 2, d at level 3 — all within budget on this small graph.
+          const ids = new Set((await backend.getNeighbors(a, { depth: 2, direction: 'out' })).map((n) => n.id));
+          expect(ids).toEqual(new Set([b, c, d, e]));
+        } finally {
+          await adapter.close();
+        }
+      });
+
+      it('isReachable walks out/in edges, terminates on cycles, and honors direction', { skip, timeout: 20000 }, async () => {
+        const { backend, adapter } = await open();
+        try {
+          const a = await backend.writeNode('a', {});
+          const b = await backend.writeNode('b', {});
+          const c = await backend.writeNode('c', {});
+          await backend.writeEdge(a, b, 'RELATES_TO');
+          await backend.writeEdge(b, c, 'RELATES_TO');
+          await backend.writeEdge(c, b, 'RELATES_TO'); // cycle c→b→c
+          expect(await backend.isReachable(a, c)).toBe(true);
+          expect(await backend.isReachable(c, a)).toBe(false);
+          expect(await backend.isReachable(c, a, { direction: 'in' })).toBe(true);
+          expect(await backend.isReachable(a, a)).toBe(true); // seed is on its own path
+        } finally {
+          await adapter.close();
+        }
+      });
+
+      it('getSubgraph includes an invalidated node behind a live edge, plus its edges (no liveness filter)', { skip, timeout: 20000 }, async () => {
+        const { backend, adapter } = await open();
+        try {
+          const root = await backend.writeNode('root', {});
+          const mid = await backend.writeNode('mid', {});
+          const leaf = await backend.writeNode('leaf', {});
+          await backend.writeEdge(root, mid, 'RELATES_TO');
+          await backend.writeEdge(mid, leaf, 'RELATES_TO');
+          await backend.invalidate(leaf); // edge mid→leaf stays LIVE
+          const sub = await backend.getSubgraph(root, { direction: 'out' });
+          // The recursive `sub` CTE never joins node, so the invalidated leaf
+          // is part of the subgraph — the iterative fallback must match.
+          expect(new Set(sub.nodes.map((n) => n.id))).toEqual(new Set([root, mid, leaf]));
+          expect(sub.edges.map((e) => `${e.src}:${e.dst}:${e.rel}`).sort()).toEqual(
+            [`${mid}:${leaf}:RELATES_TO`, `${root}:${mid}:RELATES_TO`].sort(),
+          );
+        } finally {
+          await adapter.close();
+        }
+      });
+
+      it('getSubgraph honors maxDepth', { skip, timeout: 20000 }, async () => {
+        const { backend, adapter } = await open();
+        try {
+          const a = await backend.writeNode('a', {});
+          const b = await backend.writeNode('b', {});
+          const c = await backend.writeNode('c', {});
+          await backend.writeEdge(a, b, 'RELATES_TO');
+          await backend.writeEdge(b, c, 'RELATES_TO');
+          const sub = await backend.getSubgraph(a, { direction: 'out', depth: 1 });
+          expect(new Set(sub.nodes.map((n) => n.id))).toEqual(new Set([a, b]));
+          expect(sub.edges.map((e) => `${e.src}:${e.dst}`)).toEqual([`${a}:${b}`]);
+        } finally {
+          await adapter.close();
+        }
+      });
+    });
+  }
+});
+
+// ── Forced fallback on sqlite (BL-225 red→green host) ─────────────────────────
+//
+// The parity arms above exercise the fallback through the REAL turso engine.
+// These force the same iterative code onto REAL sqlite by patching
+// capabilities.recursiveCte to false before the backend constructor reads it —
+// a fast loop (no turso) that isolates the fallback's own logic. Test names
+// carry the SOXGRAPH-001 / BL-225 ids so a regression is attributable.
+
+describe('recursive-cte forced fallback on sqlite, recursiveCte:false (SOXGRAPH-001, BL-225)', () => {
+  async function forcedFallbackBackend(): Promise<{ adapter: StoreAdapter; backend: GraphBackend }> {
+    const adapter = new SqliteAdapterImpl(':memory:');
+    patchCapability(adapter, 'recursiveCte', false);
+    const backend = createGraphBackend(adapter);
+    await backend.applySchema();
+    return { adapter, backend };
+  }
+
+  it('SOXGRAPH-001: getSupersessionChain head phase — lowest-rowid connected node with no outbound SUPERSEDES', async () => {
+    const { backend, adapter } = await forcedFallbackBackend();
+    try {
+      const { v1, v2, v3 } = await seedSupersessionChain(backend);
+      const chain = await backend.getSupersessionChain(v2);
+      expect(chain.map((n) => n.id)).toEqual([v1, v2, v3]);
+      expect(chain.map((n) => n.name)).toEqual(['v1', 'v2', 'v3']);
+    } finally {
+      await adapter.close();
+    }
+  });
+
+  it('SOXGRAPH-001: getSupersessionChain terminates on a cycle (head phase + visited chain)', async () => {
+    const { backend, adapter } = await forcedFallbackBackend();
+    try {
+      const { v1, v2 } = await seedSupersessionChain(backend);
+      await backend.writeEdge(v1, v2, 'SUPERSEDES');
+      expect(await backend.getSupersessionChain(v1)).toEqual([]);
+    } finally {
+      await adapter.close();
+    }
+  });
+
+  it('BL-225: getNeighbors visited set terminates cycles — no hang, no duplicate results', async () => {
+    const { backend, adapter } = await forcedFallbackBackend();
+    try {
+      const a = await backend.writeNode('a', {});
+      const b = await backend.writeNode('b', {});
+      await backend.writeEdge(a, b, 'RELATES_TO');
+      await backend.writeEdge(b, a, 'RELATES_TO');
+      // depth=10000 → budget 1,000,000. With the visited set the 2-node cycle
+      // terminates in a handful of queries; WITHOUT it (deliberate break,
+      // BL-225 red→green demo) the walk spins one getEdges round-trip per
+      // budget unit — ~1M DB calls → vitest timeout → RED.
+      const ids = new Set((await backend.getNeighbors(a, { depth: 10000, direction: 'out' })).map((n) => n.id));
+      expect(ids).toEqual(new Set([b]));
+    } finally {
+      await adapter.close();
+    }
+  }, 3000);
+
+  it('SOXGRAPH-001: getNeighbors budget mirrors the recursive LIMIT — depth*100 TOTAL rows incl. the seed (depth-unbounded walk)', async () => {
+    const { backend, adapter } = await forcedFallbackBackend();
+    try {
+      // Chain a→b→c→d→e. depth=2 → budget 200; the recursive walk is NOT
+      // depth-capped (empirical finding), so all four downstream nodes are
+      // returned — budget 200 never binds on a 5-node chain. (depth=1 would
+      // short-circuit to the dedicated getNeighborsDepth1 hop, so the walk
+      // under test requires depth >= 2.)
+      const a = await backend.writeNode('a', {});
+      const b = await backend.writeNode('b', {});
+      const c = await backend.writeNode('c', {});
+      const d = await backend.writeNode('d', {});
+      const e = await backend.writeNode('e', {});
+      await backend.writeEdge(a, b, 'RELATES_TO');
+      await backend.writeEdge(b, c, 'RELATES_TO');
+      await backend.writeEdge(c, d, 'RELATES_TO');
+      await backend.writeEdge(d, e, 'RELATES_TO');
+      const ids = new Set((await backend.getNeighbors(a, { depth: 2, direction: 'out' })).map((n) => n.id));
+      expect(ids).toEqual(new Set([b, c, d, e]));
+
+      // Budget BIND: fan-out 15×15 = 240 level-2 rows with depth=2 → budget
+      // 200 total (seed + 15 + 184). Both paths must stop at exactly 199
+      // discovered live nodes (200 minus the seed).
+      const root = await backend.writeNode('root', {});
+      const children: number[] = [];
+      for (let i = 0; i < 15; i++) children.push(await backend.writeNode(`child${i}`, {}));
+      for (const ch of children) await backend.writeEdge(root, ch, 'RELATES_TO');
+      for (let i = 0; i < 15; i++) {
+        for (let j = 0; j < 15; j++) {
+          const g = await backend.writeNode(`g${i}-${j}`, {});
+          await backend.writeEdge(children[i]!, g, 'RELATES_TO');
+        }
+      }
+      const bounded = await backend.getNeighbors(root, { depth: 2, direction: 'out' });
+      expect(bounded).toHaveLength(199); // budget 200 − seed
+    } finally {
+      await adapter.close();
+    }
+  }, 20000);
+
+  it('BL-225: isReachable early-exit BFS — discovers dst without walking the whole graph', async () => {
+    const { backend, adapter } = await forcedFallbackBackend();
+    try {
+      const a = await backend.writeNode('a', {});
+      const b = await backend.writeNode('b', {});
+      const c = await backend.writeNode('c', {});
+      await backend.writeEdge(a, b, 'RELATES_TO');
+      await backend.writeEdge(b, c, 'RELATES_TO');
+      expect(await backend.isReachable(a, c)).toBe(true);
+      expect(await backend.isReachable(c, a)).toBe(false);
+    } finally {
+      await adapter.close();
+    }
+  });
+
+  it('SOXGRAPH-001: getSubgraph level-by-level BFS — maxDepth, cycle termination, invalidated quirk, both-direction merge', async () => {
+    const { backend, adapter } = await forcedFallbackBackend();
+    try {
+      // root → mid → leaf (leaf at depth 2), root → ghost (ghost at depth 1),
+      // ghost → root (cycle). ghost is INVALIDATED — but neither path filters
+      // node liveness, so it stays in the subgraph behind its live edge.
+      const root = await backend.writeNode('root', {});
+      const mid = await backend.writeNode('mid', {});
+      const leaf = await backend.writeNode('leaf', {});
+      const ghost = await backend.writeNode('ghost', {});
+      await backend.writeEdge(root, mid, 'RELATES_TO');
+      await backend.writeEdge(mid, leaf, 'RELATES_TO');
+      await backend.writeEdge(root, ghost, 'RELATES_TO');
+      await backend.writeEdge(ghost, root, 'RELATES_TO'); // cycle back to root
+      await backend.invalidate(ghost);
+      const sub = await backend.getSubgraph(root, { direction: 'out', depth: 2 });
+      expect(new Set(sub.nodes.map((n) => n.id))).toEqual(new Set([root, mid, leaf, ghost]));
+      expect(sub.edges.map((e) => `${e.src}:${e.dst}`).sort()).toEqual(
+        [`${root}:${mid}`, `${mid}:${leaf}`, `${root}:${ghost}`, `${ghost}:${root}`].sort(),
+      );
+    } finally {
+      await adapter.close();
+    }
+  }, 20000);
+});
+
+// ── BUG-SOXGRAPH-001: fullTextSearch must derive from the adapter ─────────────
+
+describe('BUG-SOXGRAPH-001: capabilities.fullTextSearch derives from adapter.capabilities.fts', () => {
+  it('an fts:false adapter reports fullTextSearch:false and searchNodes/countNodesFts return empty/0, never throwing', async () => {
+    const adapter = new SqliteAdapterImpl(':memory:');
+    patchCapability(adapter, 'fts', false);
+    const backend = createGraphBackend(adapter);
+    await backend.applySchema(); // FTS schema step must be a no-op, not a throw
+    expect(backend.capabilities.fullTextSearch).toBe(false);
+    expect(backend.capabilities.bitemporal).toBe(true);
+    expect(await backend.searchNodes('apple')).toEqual([]);
+    expect(await backend.countNodesFts('apple')).toBe(0);
+    // the store still functions for non-FTS reads/writes
+    await backend.writeNode('apple pie', {});
+    expect(await backend.queryNodes()).toHaveLength(1);
+    expect(await backend.searchNodes('apple')).toEqual([]);
+    expect(await backend.countNodesFts('apple')).toBe(0);
+    await adapter.close();
+  });
+});
+
+// ── BUG-SOXGRAPH-002: busy_timeout is adapter-owned ───────────────────────────
+
+describe('BUG-SOXGRAPH-002: PRAGMA busy_timeout is adapter-owned, not graph-store-owned', () => {
+  it('PRAGMAS no longer contains busy_timeout (SqliteAdapter owns it at connect: 3000ms)', () => {
+    expect(PRAGMAS.some((p) => p.includes('busy_timeout'))).toBe(false);
+    expect(PRAGMAS).toContain('PRAGMA journal_mode = WAL;');
   });
 });
 

@@ -7,18 +7,27 @@
  * supersession-chain walk — if the claim were TRUE, that query errors on every
  * real Turso store and the fallback design would be required.
  *
- * This probe settles the question empirically against BOTH real adapters — no
- * mocks, no env gates, no describe.skip. If Turso genuinely lacked recursive
- * CTEs, the turso branch below throws and the suite goes RED. If Turso supports
- * them (as SQLite does), the suite goes GREEN and the claim is disproven.
+ * The probe settles the question empirically against BOTH real adapters — no
+ * mocks, no env gates, no describe.skip.
  *
- * Probe 1 — counter CTE: the canonical minimal `WITH RECURSIVE` shape.
- * Probe 2 — graph-shaped recursion: reproduces the EXACT `WITH RECURSIVE` SQL
- *           from getSupersessionChain (three chained CTEs, UNION-dedup for
- *           termination, LIMIT 1 head selection, depth-ordered output) against a
- *           minimal node/edge schema with SUPERSEDES edges. This pins precisely
- *           what the store's supersession-chain walk requires, not just that
- *           "some recursion works".
+ * **SQLite arm (unchanged):** both raw queries execute — SQLite supports
+ * recursive CTEs, so the raw SQL is the ground truth there.
+ *
+ * **Turso arm (CANARY FLIP, SOXGRAPH-001):** the engine (0.7.x) rejects
+ * `WITH RECURSIVE` at prepare, so raw-SQL execution is impossible. The arm now
+ * checks what the PUBLIC surface promises instead:
+ *   - Query 1 becomes a flag-truth check: `capabilities.recursiveCte` must be
+ *     `false` on 0.7.x, and the raw counter CTE must still THROW — the loud
+ *     0.8.x migration signal (when Turso Database Rust >= 0.8.0 lands, this
+ *     test flips red and tells the operator to delete the fallback).
+ *   - Query 2's public-API proof — graph-store's getSupersessionChain returning
+ *     [v1, v2, v3] via the iterative fallback on this same 0.7.x engine —
+ *     lives in graph-store's OWN suite ("recursive-cte fallback parity",
+ *     graph-store.spec.ts, turso arm). It cannot live here: graph-store
+ *     depends on store-adapter, so a store-adapter test importing graph-store
+ *     would close the project-graph cycle and break every `nx build`/`nx test`
+ *     of both packages (verified 2026-08-10). The probe file stays the
+ *     flag-truth canary; the parity suite carries the end-to-end proof.
  *
  * SAFETY: both adapters are constructed against fresh temp dbPath files under
  * the OS tmpdir — never `~/.memory/*`, never the live store.
@@ -149,18 +158,28 @@ describe('recursive CTE probe — better-sqlite3 adapter (INVESTIGATION-SOXGRAPH
 });
 
 describe('recursive CTE probe — Turso adapter (INVESTIGATION-SOXGRAPH-001)', () => {
-  it('counter CTE returns [1, 2, 3, 4, 5]', async () => {
+  it('counter CTE is REJECTED on Turso 0.7.x — recursiveCte:false, raw query throws (0.8.x migration signal)', async () => {
     const adapter = await openTurso('turso-counter');
-    expect(await probeCounterCte(adapter)).toEqual([1, 2, 3, 4, 5]);
+    // Flag-truth: the connect-time probe (turso-adapter.ts connect()) must have
+    // recorded false on the 0.7.x engine.
+    expect(adapter.capabilities.recursiveCte).toBe(false);
+    // Raw recursive SQL still throws `Parse error: Recursive CTEs are not yet
+    // supported`. When Turso Database Rust >= 0.8.0 lands, this expect flips
+    // RED — the migration signal to remove the iterative fallbacks.
+    await expect(probeCounterCte(adapter)).rejects.toThrow();
   });
 
-  it('graph-shaped recursion (getSupersessionChain SQL) walks v1 → v2 → v3', async () => {
-    const adapter = await openTurso('turso-chain');
-    const chain = await probeSupersessionChain(adapter);
-    expect(chain).toEqual([
-      { rowid: 1, name: 'v1' },
-      { rowid: 2, name: 'v2' },
-      { rowid: 3, name: 'v3' },
-    ]);
+  it('canary note — the public-API fallback proof ([v1, v2, v3] via getSupersessionChain) lives in graph-store.spec.ts parity turso arm', async () => {
+    // Deliberately NOT asserted here: asserting it would require importing
+    // graph-store, closing the store-adapter ↔ graph-store project-graph
+    // cycle (see module doc comment). The parity suite in graph-store.spec.ts
+    // ("recursive-cte fallback parity — turso — iterative fallback path")
+    // runs the exact same 0.7.x engine through the public API and pins
+    // ['v1', 'v2', 'v3'] — the shipped 0.8.0 behavior.
+    const adapter = await openTurso('turso-canary-note');
+    // The precondition that makes the fallback load: graph-store's
+    // constructor reads `capabilities.recursiveCte ?? true` and switches to
+    // the iterative walk when it is false — which this engine reports.
+    expect(adapter.capabilities.recursiveCte).toBe(false);
   });
 });
