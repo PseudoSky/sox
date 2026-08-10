@@ -661,6 +661,26 @@ describe('recursive-cte fallback parity (SOXGRAPH-001)', () => {
         }
       });
 
+      it('getSupersessionChain two-root parity — same set AND order on both paths (v9 case)', { skip, timeout: 20000 }, async () => {
+        const { backend, adapter } = await open();
+        try {
+          // v1←v2←v3 chain + writeEdge(v2, v9, 'SUPERSEDES') → TWO roots with
+          // no outbound SUPERSEDES (v1, v9). The recursive path picks the
+          // first no-outbound node in BFS discovery order from the seed v9
+          // (the seed itself) → chain [v9, v2, v3]; the iterative fallback
+          // must pick the same head and produce the same set AND order, not
+          // lowest-rowid (which would be v1 → [v1, v2, v3]).
+          const { v2, v3 } = await seedSupersessionChain(backend);
+          const v9 = await backend.writeNode('v9 content', { name: 'v9' });
+          await backend.writeEdge(v2, v9, 'SUPERSEDES');
+          const chain = await backend.getSupersessionChain(v9);
+          expect(chain.map((n) => n.name)).toEqual(['v9', 'v2', 'v3']);
+          expect(chain.map((n) => n.id)).toEqual([v9, v2, v3]);
+        } finally {
+          await adapter.close();
+        }
+      });
+
       it('getSupersessionChain terminates on a SUPERSEDES cycle and returns []', { skip, timeout: 20000 }, async () => {
         const { backend, adapter } = await open();
         try {
@@ -771,13 +791,35 @@ describe('recursive-cte forced fallback on sqlite, recursiveCte:false (SOXGRAPH-
     return { adapter, backend };
   }
 
-  it('SOXGRAPH-001: getSupersessionChain head phase — lowest-rowid connected node with no outbound SUPERSEDES', async () => {
+  it('SOXGRAPH-001: getSupersessionChain head phase — first no-outbound connected node in BFS discovery order from the seed', async () => {
     const { backend, adapter } = await forcedFallbackBackend();
     try {
       const { v1, v2, v3 } = await seedSupersessionChain(backend);
       const chain = await backend.getSupersessionChain(v2);
       expect(chain.map((n) => n.id)).toEqual([v1, v2, v3]);
       expect(chain.map((n) => n.name)).toEqual(['v1', 'v2', 'v3']);
+    } finally {
+      await adapter.close();
+    }
+  });
+
+  it('SOXGRAPH-001: two-root head parity — first no-outbound in BFS discovery order, not lowest rowid (v9 case)', async () => {
+    const { backend, adapter } = await forcedFallbackBackend();
+    try {
+      // Chain v1←v2←v3 (v2 supersedes v1, v3 supersedes v2) PLUS a second
+      // root: writeEdge(v2, v9, 'SUPERSEDES') makes v9 a no-outbound node.
+      // Both v1 and v9 have no outbound SUPERSEDES; v1 has the LOWER rowid.
+      // The recursive `head` CTE (`LIMIT 1` over the BFS connected scan from
+      // the seed) picks v9 because the seed v9 is discovered first — so the
+      // chain is [v9, v2, v3] (v1 is dropped: it is only reachable as the
+      // dst of v2's outgoing arm, never as a chain src). A lowest-rowid head
+      // selection would pick v1 and return [v1, v2, v3] instead.
+      const { v2, v3 } = await seedSupersessionChain(backend);
+      const v9 = await backend.writeNode('v9 content', { name: 'v9' });
+      await backend.writeEdge(v2, v9, 'SUPERSEDES');
+      const chain = await backend.getSupersessionChain(v9);
+      expect(chain.map((n) => n.name)).toEqual(['v9', 'v2', 'v3']);
+      expect(chain.map((n) => n.id)).toEqual([v9, v2, v3]);
     } finally {
       await adapter.close();
     }

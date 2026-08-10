@@ -1365,42 +1365,58 @@ export class SqliteGraphBackend implements GraphBackend {
   }
 
   /**
-   * Iterative fallback for {@link getSupersessionChain} — the same three CTE
+   * Iterative fallback for {@link getSupersessionChain} — the same CTE
    * phases as the recursive SQL, walked with getEdges: (1) bidirectional
-   * `connected` set from `nodeId`; (2) `head` = lowest-rowid connected node
-   * with no outbound SUPERSEDES; (3) `chain` BFS from head via dst → src with
-   * depth; (4) collect (rowid, depth), sort (depth, rowid), fetch nodes.
+   * `connected` set from `nodeId`, discovered FIFO so the Set's insertion
+   * order IS the recursive CTE's BFS scan order (seed first, then per
+   * dequeued node the incoming arm before the outgoing arm, mirroring the
+   * CTE's two UNION arms); (2) `head` = FIRST connected node in that BFS
+   * discovery order with no outbound SUPERSEDES (the recursive `head` CTE
+   * is `LIMIT 1` over the connected scan — BFS order from the seed, NOT
+   * rowid order, which is what picks the head on multi-root components);
+   * (3) `chain` BFS from head via dst → src with depth; (4) collect
+   * (rowid, depth), sort (depth, rowid), fetch nodes.
    *
    * Produces the SAME oldest-first ordering as the recursive SQL on linear
-   * chains (pinned by the parity tests: [v1, v2, v3]). Neither path filters
-   * node liveness — the recursive CTEs never join `node`, so invalidated
-   * chain members are returned by both. Edges are walked via getEdges (live
-   * edges only, `t_invalid IS NULL`) — the recursive SQL also walks only
-   * live edges; no public path invalidates SUPERSEDES edges, so the two
-   * cannot diverge in practice.
+   * chains (pinned by the parity tests: [v1, v2, v3]) and the SAME set AND
+   * order on multi-root components (pinned by the two-root parity test:
+   * getSupersessionChain(v9) → [v9, v2, v3] on both paths). Neither path
+   * filters node liveness — the recursive CTEs never join `node`, so
+   * invalidated chain members are returned by both. Edges are walked via
+   * getEdges (live edges only, `t_invalid IS NULL`) — the recursive SQL
+   * also walks only live edges; no public path invalidates SUPERSEDES
+   * edges, so the two cannot diverge in practice.
    */
   private async getSupersessionChainIterative(nodeId: number): Promise<NodeRecord[]> {
-    // (1) connected set — bidirectional reachability over SUPERSEDES edges.
+    // (1) connected set — bidirectional reachability over SUPERSEDES edges,
+    //     FIFO queue so discovery order = the recursive `connected` CTE's
+    //     scan order. For each dequeued node the CTE emits the incoming arm
+    //     (`SELECT e.src … ON e.dst = c.rowid`) before the outgoing arm
+    //     (`SELECT e.dst … ON e.src = c.rowid`) — the getEdges calls below
+    //     are in that same arm order.
     const connected = new Set<number>([nodeId]);
     const frontier = [nodeId];
     while (frontier.length > 0) {
-      const current = frontier.pop()!;
-      for (const e of await this.getEdges({ src: current, rel: 'SUPERSEDES' })) {
-        if (!connected.has(e.dst)) { connected.add(e.dst); frontier.push(e.dst); }
-      }
+      const current = frontier.shift()!;
       for (const e of await this.getEdges({ dst: current, rel: 'SUPERSEDES' })) {
         if (!connected.has(e.src)) { connected.add(e.src); frontier.push(e.src); }
       }
+      for (const e of await this.getEdges({ src: current, rel: 'SUPERSEDES' })) {
+        if (!connected.has(e.dst)) { connected.add(e.dst); frontier.push(e.dst); }
+      }
     }
 
-    // (2) head — lowest-rowid connected node with no outbound SUPERSEDES.
-    // The recursive `head` CTE is `LIMIT 1` over an unORDERed set; SQLite
-    // scans connected in rowid order, so lowest-rowid is the deterministic
-    // mirror. (A connected node with no outbound edge always exists: the
-    // seed itself has none unless a cycle closes on it — and a cycle is
-    // still handled, the walk just never finds a true head.)
+    // (2) head — FIRST connected node in BFS discovery order with no
+    // outbound SUPERSEDES. The recursive `head` CTE is `LIMIT 1` over the
+    // `connected` scan, which SQLite produces in BFS order from the seed
+    // (FIFO queue, UNION dedup) — NOT rowid order. Iterating the Set
+    // preserves its insertion order, so both paths pick the same head even
+    // when a component has multiple no-outbound roots. (A connected node
+    // with no outbound edge always exists: the seed itself has none unless
+    // a cycle closes on it — and a cycle is still handled, the walk just
+    // never finds a true head.)
     let head: number | null = null;
-    for (const id of [...connected].sort((a, b) => a - b)) {
+    for (const id of connected) {
       const outbound = await this.getEdges({ src: id, rel: 'SUPERSEDES' });
       if (outbound.length === 0) { head = id; break; }
     }

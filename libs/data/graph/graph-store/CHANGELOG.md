@@ -1,5 +1,22 @@
 # @adhd/sox-graph-store
 
+## 0.8.1
+
+### Patch Changes
+
+- Fix `getSupersessionChain` iterative head-selection divergence on multi-root
+  components. The recursive `head` CTE (`LIMIT 1` over the connected scan)
+  picks the FIRST no-outbound node in BFS discovery order from the seed; the
+  iterative fallback picked the LOWEST-ROWID no-outbound node. On a component
+  with two roots (e.g. chain v1←v2←v3 plus `writeEdge(v2, v9, 'SUPERSEDES')`),
+  `getSupersessionChain(v9)` returned `[v1, v2, v3]` on the iterative path
+  (Turso Database Rust < 0.8.0) versus `[v9, v2, v3]` on the recursive SQL
+  path. The fallback now discovers `connected` FIFO (BFS, incoming arm before
+  outgoing arm — mirroring the CTE's UNION arm order) and selects the head as
+  the first no-outbound node in that discovery order, matching the recursive
+  scan on both linear chains and multi-root components. Pinned by a two-root
+  parity test on both real paths (sqlite + turso) and a forced-fallback test.
+
 ## 0.8.0
 
 ### Minor Changes
