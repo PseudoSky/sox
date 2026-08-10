@@ -55,6 +55,11 @@ import { execFileSync } from 'node:child_process';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
+// BL-192 gap fix: package discovery + contract-path semantics now live in the
+// shared helper (also used by scripts/smoke-test.mjs's Build-first gate, so a
+// partial build aborts BEFORE reaching this preflight instead of detonating
+// inside publint with cryptic "file does not exist").
+import { workspacePackageDirs, hasContractPaths } from './workspace-package-scan.mjs';
 
 function repoRoot() {
   const argIdx = process.argv.indexOf('--root');
@@ -81,43 +86,6 @@ function parseOnlyDirs() {
   return dirs.length > 0 ? dirs : null;
 }
 const ONLY_DIRS = parseOnlyDirs();
-
-/** Identical directory-discovery scope to the script this replaces (tools/verify-package-exports.mjs). */
-function workspacePackageDirs() {
-  const dirs = new Set();
-  const pushIfPkg = (d) => {
-    if (fs.existsSync(path.join(d, 'package.json'))) dirs.add(d);
-  };
-  const scanChildren = (base, depth) => {
-    if (!fs.existsSync(base)) return;
-    for (const e of fs.readdirSync(base, { withFileTypes: true })) {
-      if (!e.isDirectory() || e.name === 'node_modules' || e.name === 'dist') continue;
-      const full = path.join(base, e.name);
-      pushIfPkg(full);
-      if (depth > 1) scanChildren(full, depth - 1);
-    }
-  };
-  scanChildren(path.join(ROOT, 'extensions'), 2);
-  const bundles = path.join(ROOT, 'extensions', 'bundles');
-  if (fs.existsSync(bundles)) {
-    for (const b of fs.readdirSync(bundles, { withFileTypes: true })) {
-      if (!b.isDirectory()) continue;
-      scanChildren(path.join(bundles, b.name, 'members'), 1);
-    }
-  }
-  scanChildren(path.join(ROOT, 'apps'), 3);
-  scanChildren(path.join(ROOT, 'libs'), 3);
-  scanChildren(path.join(ROOT, 'packages'), 2);
-  scanChildren(path.join(ROOT, 'tools'), 1);
-  return [...dirs].sort();
-}
-
-function hasContractPaths(pkg) {
-  if (pkg.main || pkg.module || pkg.types || pkg.exports) return true;
-  if (typeof pkg.bin === 'string') return true;
-  if (pkg.bin && typeof pkg.bin === 'object' && Object.keys(pkg.bin).length > 0) return true;
-  return false;
-}
 
 /** attw is scoped to real importable/typed packages — libs/ and packages/, never
  *  extensions/ or apps/ (those ship as single-file bundles require()'d directly
@@ -152,13 +120,13 @@ let publintChecked = 0;
 let attwChecked = 0;
 let attwSkipped = 0;
 
-let dirsToCheck = workspacePackageDirs();
+let dirsToCheck = workspacePackageDirs(ROOT);
 if (ONLY_DIRS) {
   const onlySet = new Set(ONLY_DIRS);
   const missing = ONLY_DIRS.filter((d) => !dirsToCheck.includes(d));
   dirsToCheck = dirsToCheck.filter((d) => onlySet.has(d));
   console.error(
-    `verify-exports-publint-attw: scoped (--only) to ${dirsToCheck.length} of ${workspacePackageDirs().length} workspace package(s): ` +
+    `verify-exports-publint-attw: scoped (--only) to ${dirsToCheck.length} of ${workspacePackageDirs(ROOT).length} workspace package(s): ` +
     dirsToCheck.map((d) => path.relative(ROOT, d)).join(', '),
   );
   if (missing.length > 0) {
