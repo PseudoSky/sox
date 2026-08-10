@@ -25,7 +25,11 @@ If risk is HIGH or CRITICAL, report the blast radius to the orchestrator before 
 
 ```
 npx nx affected:lint --base=HEAD   # lint every changed project
-npx nx affected:build --base=HEAD  # build every changed project + dependents
+# Build EVERY project — `affected:build` structurally skips zero-dependency
+# packages (e.g. @adhd/sox-nx, @adhd/sox-baseline-capture,
+# @adhd/sox-source-provider, @adhd/sox-extension-di-command) whose dist the
+# smoke gate's Build-first check requires to exist (BL-192).
+npx nx run-many -t build          # build every project + dependents
 ```
 
 If any project fails to build, fix it. Do NOT skip.

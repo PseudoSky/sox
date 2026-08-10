@@ -1,0 +1,51 @@
+{
+  "$schema": "../../../node_modules/nx/schemas/project-schema.json",
+  "name": "di-command",
+  "projectType": "library",
+  "root": "extensions/commands/di-command",
+  "sourceRoot": "extensions/commands/di-command/src",
+  "tags": [
+    "type:lib"
+  ],
+  "targets": {
+    "build": {
+      "executor": "@adhd/sox-nx:atomic-tsc",
+      "outputs": [
+        "{workspaceRoot}/extensions/commands/di-command/dist"
+      ],
+      "options": {
+        "main": "extensions/commands/di-command/src/index.ts",
+        "outputPath": "extensions/commands/di-command/dist",
+        "tsConfig": "extensions/commands/di-command/tsconfig.json",
+        "assets": [],
+        "clean": true,
+        "rootDir": "extensions/commands/di-command/src"
+      },
+      "cache": true,
+      "inputs": [
+        "{projectRoot}/src/**/*.ts",
+        "{projectRoot}/tsconfig.json"
+      ]
+    },
+    "typecheck": {
+      "executor": "nx:run-commands",
+      "options": {
+        "command": "tsc -p extensions/commands/di-command/tsconfig.json --noEmit",
+        "cwd": "."
+      },
+      "cache": true,
+      "inputs": [
+        "default",
+        "^production"
+      ]
+    },
+    "lint": {
+      "executor": "@nx/eslint:lint",
+      "options": {
+        "lintFilePatterns": [
+          "extensions/commands/di-command/**/*.ts"
+        ]
+      }
+    }
+  }
+}
