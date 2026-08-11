@@ -203,6 +203,19 @@ describe('memoryGetNearDuplicates (B2)', () => {
 
 // ── memoryGetSupersessionChain ────────────────────────────────────────────
 
+// Turso availability — resolved SYNCHRONOUSLY at module load (matches
+// fts-query-parity.spec.ts / turso-clean-room.test.ts: an async beforeAll +
+// `{ skip }` is evaluated before the flag is set and always skips).
+function hasTursoDriver(): boolean {
+  try {
+    return fs.existsSync(
+      path.resolve(__dirname, '../../../node_modules/@tursodatabase/database/dist/promise.js'),
+    );
+  } catch {
+    return false;
+  }
+}
+
 describe('memoryGetSupersessionChain (B2)', () => {
   it('returns chain with canonical uid', async () => {
     const { dir, cleanup } = tmpDir();
@@ -217,6 +230,72 @@ describe('memoryGetSupersessionChain (B2)', () => {
       expect(typeof result.is_current).toBe('boolean');
       db.close();
     } finally {
+      cleanup();
+    }
+  });
+
+  it('BL-505: t_created ties are broken by rowid — identical canonical_uid on sqlite and turso', async () => {
+    // Two live nodes with IDENTICAL t_created, linked B→A (src=2, dst=1 — B
+    // supersedes A). Insertion order is identical on both engines, so rowids
+    // are 1 (uid-a) and 2 (uid-b). The t_created-only comparator left the tie
+    // to BFS discovery order (= getEdges row order, which has no ORDER BY and
+    // is engine-dependent); the fix breaks the tie by rowid, so uid-a (lower
+    // rowid) must win canonically on BOTH engines.
+    const priorAdapterEnv = process.env['STORE_ADAPTER'];
+    const { dir, cleanup } = tmpDir();
+    try {
+      const seed = async (db: StoreAdapter): Promise<void> => {
+        await db.executeRun(
+          `INSERT INTO node (uid, kind, content, t_created, t_valid)
+           VALUES ('uid-a', 'episode', 'A', '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z')`,
+        );
+        await db.executeRun(
+          `INSERT INTO node (uid, kind, content, t_created, t_valid)
+           VALUES ('uid-b', 'episode', 'B', '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z')`,
+        );
+        await db.executeRun(
+          `INSERT INTO edge (src, dst, rel, origin, t_created)
+           VALUES (2, 1, 'SUPERSEDES', 'user_asserted', '2026-01-01T00:00:00.000Z')`,
+        );
+      };
+      const assertChain = async (db: StoreAdapter): Promise<void> => {
+        const r1 = await memoryGetSupersessionChain(db, { uid: 'uid-b' });
+        // Lower rowid wins the t_created tie.
+        expect(r1.canonical_uid).toBe('uid-a');
+        expect(r1.chain.map((l) => l.uid)).toEqual(['uid-a', 'uid-b']);
+        // uid-b is superseded — it is NOT the canonical node.
+        expect(r1.is_current).toBe(false);
+        // Idempotent — a second call returns the identical result.
+        const r2 = await memoryGetSupersessionChain(db, { uid: 'uid-b' });
+        expect(r2).toEqual(r1);
+      };
+
+      // SQLite leg — explicit engine selection (createStoreAdapter defaults
+      // to turso when STORE_ADAPTER is unset, factory.ts:24).
+      process.env['STORE_ADAPTER'] = 'sqlite';
+      const sqlite = await createDb(path.join(dir, 't-sqlite.db'));
+      try {
+        await seed(sqlite);
+        await assertChain(sqlite);
+      } finally {
+        sqlite.close();
+      }
+
+      // Turso leg — same seed, same assertions. No skip when the driver is
+      // present (it is in this environment); only absent-driver installs skip.
+      if (hasTursoDriver()) {
+        process.env['STORE_ADAPTER'] = 'turso';
+        const turso = await createDb(path.join(dir, 't-turso.db'));
+        try {
+          await seed(turso);
+          await assertChain(turso);
+        } finally {
+          turso.close();
+        }
+      }
+    } finally {
+      if (priorAdapterEnv === undefined) delete process.env['STORE_ADAPTER'];
+      else process.env['STORE_ADAPTER'] = priorAdapterEnv;
       cleanup();
     }
   });
