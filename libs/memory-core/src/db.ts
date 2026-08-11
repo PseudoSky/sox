@@ -220,6 +220,24 @@ async function dropVec0ViaBetterSqlite3(
   try {
     loadSqliteVec(bsdb);
 
+    // (BL-508) REPAIR intent: this better-sqlite3 open exists only to heal a
+    // store the Turso adapter cannot (drop vec0 VTs + VACUUM) — it proceeds
+    // regardless of the store's engine marker, but records the detected
+    // engine so a repair of a foreign-engine store is visible, never silent.
+    try {
+      const { SOX_APP_ID_TURSO, SOX_APP_ID_SQLITE } = await getFtsOpsModule();
+      const appId = bsdb.pragma('application_id', { simple: true }) as number;
+      const detected = appId === SOX_APP_ID_TURSO ? 'turso' : appId === SOX_APP_ID_SQLITE ? 'sqlite' : null;
+      log.info('store.open.better_sqlite3_repair_engine', {
+        db_path: dbPath,
+        intent: 'repair',
+        detected_engine: detected,
+      });
+    } catch {
+      // Engine recording is best-effort; the repair itself must never be
+      // blocked by it.
+    }
+
     // Phase 1: Drop vec0 virtual tables (cascades to shadow tables)
     // Turso cannot drop these without the vec0 module loaded.
     const vec0Tables = bsdb.prepare(
@@ -267,6 +285,21 @@ async function dropFtsResidueViaBetterSqlite3(dbPath: string, statements: readon
   const { default: Database } = await import('better-sqlite3');
   const bsdb = new Database(dbPath);
   try {
+    // (BL-508) REPAIR intent: proceeds regardless of the store's engine
+    // marker (this is the sanctioned escape hatch for dropping residue the
+    // Turso engine silently no-ops) — but records the detected engine.
+    try {
+      const { SOX_APP_ID_TURSO, SOX_APP_ID_SQLITE } = await getFtsOpsModule();
+      const appId = bsdb.pragma('application_id', { simple: true }) as number;
+      const detected = appId === SOX_APP_ID_TURSO ? 'turso' : appId === SOX_APP_ID_SQLITE ? 'sqlite' : null;
+      log.info('store.open.better_sqlite3_fts_residue_engine', {
+        db_path: dbPath,
+        intent: 'repair',
+        detected_engine: detected,
+      });
+    } catch {
+      // Engine recording is best-effort.
+    }
     for (const stmt of statements) {
       try {
         bsdb.exec(stmt);
@@ -301,9 +334,22 @@ export async function openDb(dbPath: string): Promise<StoreAdapter> {
 
   try {
     const adapter = await _openDbInner(dbPath);
+    // (BL-508) Client/engine version tracking: surface the store's engine
+    // identity (marker row) on the open's store-health telemetry. Read-only,
+    // cheap (one SELECT through the already-open adapter); `null` when the
+    // store predates the marker scheme.
+    let engineIdentity: import('@adhd/sox-store-adapter').EngineIdentity | null = null;
+    try {
+      const mod = await getFtsOpsModule();
+      engineIdentity = await mod.readEngineIdentityViaAdapter(adapter);
+    } catch {
+      engineIdentity = null;
+    }
     log.info('store.open.finish', {
       db_path: dbPath,
       adapter_type: adapter.config.type,
+      engine: engineIdentity?.engine ?? null,
+      engine_identity: engineIdentity,
       duration_ms: Math.round(performance.now() - openStartMs),
     });
     // BL-320: wrap the adapter so every SQL error anywhere downstream (Phase-A
@@ -969,6 +1015,23 @@ export async function closeAllAdapters(): Promise<void> {
     await closeDbWithLease(adapter, dbPath);
   }
   adapterCache.clear();
+}
+
+/**
+ * (BL-508) Read the store's engine identity (the `_sox_engine` marker row)
+ * through an ALREADY-OPEN adapter — the cheap surface health/ping callers use
+ * (the ping store block wires this as `store_engine`). Returns `null` when the
+ * store predates the marker scheme or the row is unreadable. Never throws.
+ *
+ * Wired through the lazy store-adapter import (module-boundary rule, same as
+ * `getFtsOpsModule`) so the bundle never has to reach the adapter package
+ * directly.
+ */
+export async function getStoreEngineIdentity(
+  adapter: StoreAdapter,
+): Promise<import('@adhd/sox-store-adapter').EngineIdentity | null> {
+  const mod = await getFtsOpsModule();
+  return mod.readEngineIdentityViaAdapter(adapter);
 }
 
 /**

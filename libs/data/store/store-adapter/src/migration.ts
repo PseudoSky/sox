@@ -75,8 +75,14 @@ const DEFAULT_EMBED_DIM = 768;
  * by the name === 'vec_node' check in the loop below. Only
  * _adapter_meta is skip-silent (stamped separately in section 6).
  * WARNING: vec_node must NOT be in this set or hasVecNode never fires.
+ *
+ * (BL-508) `_sox_engine` is likewise skip-silent: it is the adapter's own
+ * engine marker (the source's row claims the SOURCE engine — copying it
+ * into a target of the other engine would leave a contradictory two-row
+ * marker table). The target adapter re-stamps its own marker on first open,
+ * exactly like `_adapter_meta`.
  */
-const SKIP_TABLES = new Set(['_adapter_meta']);
+const SKIP_TABLES = new Set(['_adapter_meta', '_sox_engine']);
 
 /** SQLite and Turso internal table prefixes. */
 const SKIP_PREFIXES = ['sqlite_', '__turso_internal_'];

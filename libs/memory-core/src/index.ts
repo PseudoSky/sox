@@ -37,7 +37,7 @@
  */
 
 // ── Database ──────────────────────────────────────────────────────────────────
-export { openDb, openDbReadOnly, initScope, migrateAddColumn, expandDbPath, getDb, stampStoreMeta, verifyStoreMeta, setWriterArtifact, getWriterArtifact, EStoreMismatch, STORE_META_KEYS, STORE_SCHEMA_VERSION, closeAllAdapters, wrapRawDbAsAdapter } from './db.js';
+export { openDb, openDbReadOnly, initScope, migrateAddColumn, expandDbPath, getDb, stampStoreMeta, verifyStoreMeta, setWriterArtifact, getWriterArtifact, EStoreMismatch, STORE_META_KEYS, STORE_SCHEMA_VERSION, closeAllAdapters, wrapRawDbAsAdapter, getStoreEngineIdentity } from './db.js';
 export type { ScopeKind, MemoryScope } from './db.js';
 
 // ── Writer lease (SA-8, BL-128) ───────────────────────────────────────────────
