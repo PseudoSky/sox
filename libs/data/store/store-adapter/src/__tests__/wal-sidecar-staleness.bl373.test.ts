@@ -41,6 +41,7 @@ import {
 } from 'node:fs';
 import { join, basename, dirname } from 'node:path';
 import { tmpdir } from 'node:os';
+import type { Database as BetterSqlite3Database } from 'better-sqlite3';
 import { TursoAdapterImpl } from '../turso-adapter.js';
 import {
   probeWalFrames,
@@ -362,6 +363,104 @@ tursoDescribe('BL-373 — Shape B: a mid-frame truncated WAL is probed, and move
     const adapter = track(await TursoAdapterImpl.connect({ dbPath }));
     const rows = await adapter.executeGet<{ c: number }>('SELECT COUNT(*) AS c FROM t');
     expect(rows!.c, 'checkpointed data must survive').toBeGreaterThan(0);
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// (5) PROACTIVE reconciliation — root-cause prevention, not just healing
+// ═══════════════════════════════════════════════════════════════════════════
+
+tursoDescribe('BL-373 — a mtime-proven stale -tshm is reconciled BEFORE the open (no failed-open path)', () => {
+  it('backdated sidecar + non-empty WAL ⇒ the FIRST open attempt succeeds; the open-time catch never fires', async () => {
+    const dbPath = tempPath('bl373-proactive');
+    await seedStore(dbPath);
+    const tshmPath = dbPath + '-tshm';
+    expect(statSync(dbPath + '-wal').size, 'precondition: non-empty WAL').toBeGreaterThan(0);
+    backdate(tshmPath, WEEK_MS);
+
+    const events: { event: string; detail: string }[] = [];
+    setIntegrityReportSink((event, detail) => events.push({ event, detail }));
+    try {
+      const adapter = track(await TursoAdapterImpl.connect({ dbPath }));
+      const rows = await adapter.executeGet<{ c: number }>('SELECT COUNT(*) AS c FROM t');
+      expect(rows!.c, 'data must survive the proactive reconciliation').toBe(SEED_ROWS);
+    } finally {
+      setIntegrityReportSink(null);
+    }
+
+    // The open-time CATCH emits 'damaged' with "stale WAL-index sidecar
+    // blocked the open" ONLY when the first openOnce() attempt failed — the
+    // exact failed-open path the Aug-1/3/11 recurrences began with. Its
+    // absence proves the proactive reconcile removed the stale sidecar before
+    // the driver ever tried: zero failed opens.
+    expect(
+      events.some((e) => e.event === 'damaged' && /blocked the open/.test(e.detail)),
+      'the first open attempt must succeed — the failed-open path must never be taken: ' +
+        JSON.stringify(events),
+    ).toBe(false);
+    // The proactive move itself is visible in the event stream and on disk.
+    expect(events.some((e) => e.event === 'repaired' && /BEFORE the open/.test(e.detail))).toBe(true);
+    expect(asideFiles(dbPath, '-tshm.stale-').length, 'the stale -tshm must be preserved aside').toBe(1);
+    expect(existsSync(tshmPath), 'the driver must have re-created a fresh -tshm on open').toBe(true);
+  });
+
+  it('ROOT-CAUSE MECHANISM: a better-sqlite3 writer moves the WAL without touching -tshm; the next Turso open reconciles the frozen sidecar proactively and succeeds with all data', async () => {
+    // The confirmed mechanism (scratch repro, 2026-08-11): the -tshm is
+    // maintained only while a Turso connection holds the store. A stock-SQLite
+    // (better-sqlite3) writer maintains the classic -shm and never the -tshm;
+    // its clean close checkpoints and DELETES the WAL, freezing the -tshm
+    // beside a WAL that no longer exists. The next Turso open then dies with
+    // "short read on WAL frame" — the incident, reproduced. The live forensic
+    // smoking gun: memory.db-shm is FRESH at 19:31:29 while the -tshm froze
+    // Aug 4 — Turso under multiprocess WAL never creates -shm; only a
+    // stock-SQLite opener does.
+    const dbPath = tempPath('bl373-root-mechanism');
+    await seedStore(dbPath); // Turso session 1: sidecar maintained, WAL non-empty
+    const tshmPath = dbPath + '-tshm';
+
+    // The live shape: the sidecar is already frozen (7 d old) when the
+    // mixed-engine writer arrives — exactly the Aug-4-frozen / Aug-11-touched
+    // forensic timeline. Baseline captured AFTER the backdate: better-sqlite3
+    // must not advance it.
+    backdate(tshmPath, WEEK_MS);
+    const tshmMtimeBefore = statSync(tshmPath).mtimeMs;
+
+    // Mixed-engine writer: better-sqlite3 opens the SAME store in WAL mode.
+    const Database = require('better-sqlite3') as new (p: string) => BetterSqlite3Database;
+    const bdb = new Database(dbPath);
+    bdb.pragma('journal_mode = WAL');
+    bdb.exec('CREATE TABLE IF NOT EXISTS b (id INTEGER PRIMARY KEY, v TEXT)');
+    const ins = bdb.prepare('INSERT INTO b (v) VALUES (?)');
+    for (let i = 0; i < 200; i++) ins.run('v'.repeat(400) + i);
+    bdb.close();
+
+    // The mechanism, asserted: the WAL was moved (deleted by the clean close)
+    // while the -tshm survived untouched — still frozen at its backdated mtime.
+    expect(existsSync(dbPath + '-wal'), 'better-sqlite3 close checkpoints and removes the WAL').toBe(false);
+    expect(existsSync(tshmPath), 'the -tshm must survive the better-sqlite3 session (never maintained)').toBe(true);
+    expect(
+      statSync(tshmPath).mtimeMs,
+      'the better-sqlite3 writer must NOT have touched the -tshm',
+    ).toBe(tshmMtimeBefore);
+    expect(existsSync(dbPath + '-shm'), 'a stock-SQLite session leaves the classic -shm behind').toBe(false);
+
+    // Without the proactive fix this open is the incident: frozen sidecar
+    // over a deleted WAL → short read. With it, the sidecar is reconciled
+    // before the driver tries and the open succeeds with ALL data.
+    const events: { event: string; detail: string }[] = [];
+    setIntegrityReportSink((event, detail) => events.push({ event, detail }));
+    try {
+      const adapter = track(await TursoAdapterImpl.connect({ dbPath }));
+      const rows = await adapter.executeGet<{ c: number }>('SELECT COUNT(*) AS c FROM t');
+      const extra = await adapter.executeGet<{ c: number }>('SELECT COUNT(*) AS c FROM b');
+      expect(rows!.c, 'Turso-seeded rows must survive').toBe(SEED_ROWS);
+      expect(extra!.c, 'better-sqlite3-written rows must survive (checkpointed into the db)').toBe(200);
+    } finally {
+      setIntegrityReportSink(null);
+    }
+    expect(events.some((e) => e.event === 'damaged' && /blocked the open/.test(e.detail))).toBe(false);
+    expect(events.some((e) => e.event === 'repaired' && /BEFORE the open/.test(e.detail))).toBe(true);
+    expect(asideFiles(dbPath, '-tshm.stale-').length).toBe(1);
   });
 });
 

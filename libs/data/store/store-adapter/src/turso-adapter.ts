@@ -9,6 +9,7 @@ import {
   describeStaleWalIndexFailure,
   emitIntegrityReport,
   isStaleWalIndexError,
+  proactivelyReconcileStaleSidecar,
   probeWalFrames,
   recoverStaleWalIndex,
   recoverTruncatedWal,
@@ -434,6 +435,31 @@ export class TursoAdapterImpl implements TursoAdapter {
     // about to run may be the one that fails with a WAL-frame short read.
     // Two statSync calls, never throws.
     warnIfStaleSidecar(opts.dbPath);
+
+    // (BL-373 family) PROACTIVE — root-cause prevention, not just healing.
+    // The mechanism (confirmed by scratch repro, 2026-08-11): the -tshm is
+    // maintained only while a Turso connection holds the store; any other
+    // writer (better-sqlite3 / stock SQLite, which maintains the classic -shm
+    // and never the -tshm) advances, checkpoints or deletes the WAL without
+    // touching the sidecar, so the next Turso open short-reads against the
+    // frozen sidecar. Moving the mtime-proven stale sidecar HERE — before
+    // `openOnce()` even runs — means the failed-open path is never taken; the
+    // catch below stays as the backstop for races and non-mtime shapes. The
+    // staleness reference is the WAL's mtime (or the db file's when the WAL is
+    // gone — the mixed-engine deleted-WAL variant), and the -shm is NEVER
+    // touched pre-open (self-reconciling; moving it under a concurrent
+    // multiprocess-WAL reader is corruption — that branch stays in the catch).
+    if (opts.dbPath) {
+      const proactive = proactivelyReconcileStaleSidecar(opts.dbPath);
+      if (proactive.moved && proactive.to) {
+        emitIntegrityReport(
+          opts.dbPath,
+          'repaired',
+          `[BL-373] stale -tshm reconciled BEFORE the open: moved aside to ${proactive.to} — ` +
+            `the open proceeds against the existing WAL, no failed-open path`,
+        );
+      }
+    }
 
     let db: any;
     try {

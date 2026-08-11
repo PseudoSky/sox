@@ -731,6 +731,91 @@ export function recoverStaleWalIndex(dbPath: string | undefined): SidecarRecover
   return result;
 }
 
+// ── Proactive sidecar reconciliation (BL-373 family, root-cause prevention) ──
+
+export interface ProactiveSidecarResult {
+  /** True when a mtime-proven stale `-tshm` was moved aside before the open. */
+  moved: boolean;
+  /** The rename target when moved (preserved for forensics). */
+  to?: string;
+  /** Why nothing was moved (not stale / absent / not a local store). */
+  declined?: string;
+}
+
+/**
+ * Reconcile a stale `-tshm` BEFORE the open is attempted — the structural fix
+ * for the Aug-1/Aug-3/Aug-11 recurrence class.
+ *
+ * The mechanism (confirmed by scratch repro, 2026-08-11): the `-tshm` is
+ * maintained ONLY while a Turso driver connection holds the store. Any other
+ * writer — stock SQLite / better-sqlite3 in WAL mode, which maintains the
+ * classic `-shm` and never the `-tshm` — advances or truncates the WAL without
+ * touching the sidecar. The next Turso open then reads frame metadata from the
+ * frozen sidecar and short-reads against the moved WAL: every fresh open
+ * fails, permanently, until the sidecar is moved aside. Detection-and-heal in
+ * the open-time catch (the D6 fix) recovers the store but the failed open has
+ * ALREADY happened — and that failed open is the outage's first symptom.
+ *
+ * Proactive reconciliation moves the mtime-proven stale sidecar BEFORE the
+ * driver even tries, so the failed-open path is never taken. The open-time
+ * catch remains as the backstop for races and non-mtime shapes.
+ *
+ * **Staleness reference epoch**: the `-wal`'s mtime when the WAL exists,
+ * otherwise the main database file's mtime. The db-fallback is what catches
+ * the mixed-engine variant where a stock-SQLite writer's clean close
+ * checkpointed the db and DELETED the WAL while the `-tshm` survived frozen —
+ * the db moved past the sidecar's epoch without the sidecar following. A
+ * store with neither WAL nor db beside the sidecar is left alone (nothing to
+ * compare, nothing proven).
+ *
+ * **NEVER touches the `-shm`.** The classic shm is self-reconciling, and
+ * moving it pre-open under a concurrent multiprocess-WAL reader is a
+ * corruption risk. The empty-WAL branch of `recoverStaleWalIndex` (which moves
+ * `-shm` too) stays exclusively with the open-time catch.
+ */
+export function proactivelyReconcileStaleSidecar(
+  dbPath: string | undefined,
+): ProactiveSidecarResult {
+  if (!dbPath) return { moved: false, declined: 'no local database path' };
+  const tshmPath = dbPath + '-tshm';
+  let tshmMtimeMs: number | null = null;
+  try {
+    tshmMtimeMs = statSync(tshmPath).mtimeMs;
+  } catch {
+    return { moved: false, declined: 'no -tshm sidecar present' };
+  }
+
+  // Reference epoch: WAL mtime when present, else the main db file.
+  let refMtimeMs: number | null = null;
+  try {
+    refMtimeMs = statSync(dbPath + '-wal').mtimeMs;
+  } catch {
+    try {
+      refMtimeMs = statSync(dbPath).mtimeMs;
+    } catch {
+      refMtimeMs = null;
+    }
+  }
+  if (refMtimeMs === null) {
+    return { moved: false, declined: 'no WAL or database file beside the -tshm to compare against' };
+  }
+
+  const threshold = staleSidecarThresholdMs();
+  const ageDiff = refMtimeMs - tshmMtimeMs;
+  if (ageDiff <= threshold) {
+    return { moved: false, declined: `sidecar not provably stale (age diff ${ageDiff} ms ≤ ${threshold} ms)` };
+  }
+
+  const stamp = new Date().toISOString().replace(/[:.]/g, '').replace('T', '-').slice(0, 15);
+  const to = `${tshmPath}.stale-${stamp}`;
+  try {
+    renameSync(tshmPath, to);
+    return { moved: true, to };
+  } catch (err) {
+    return { moved: false, declined: `could not move ${tshmPath} aside: ${err instanceof Error ? err.message : String(err)}` };
+  }
+}
+
 /**
  * Rewrite a failed-open error so it names the artifact that actually has to be
  * dealt with. The driver's own message points at the database and a WAL offset,
