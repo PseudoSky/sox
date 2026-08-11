@@ -133,7 +133,7 @@
  * @module
  */
 
-import { renameSync, statSync } from 'node:fs';
+import { closeSync, openSync, readSync, renameSync, statSync } from 'node:fs';
 import { createFTSDialect } from './fts-dialect.js';
 import type { StoreAdapter } from './types.js';
 
@@ -306,17 +306,345 @@ export interface SidecarRecovery {
   declined: string | null;
 }
 
+// ── Staleness threshold (BL-373 third recurrence) ────────────────────────────
+
+/**
+ * Staleness threshold in milliseconds: a `-tshm` whose mtime is MORE than this
+ * much older than the `-wal` it must describe is **provably stale** — the WAL
+ * has moved past whatever frames the sidecar indexes (or survived a
+ * restart/checkpoint cycle that moved the WAL forward while the sidecar did
+ * not), and that mismatch is exactly what produces the frame short-read on
+ * every open.
+ *
+ * Fixed, not proportional: the comparison is between two WAL artifacts whose
+ * lifetime is wall-clock time, not size. Env-tunable for operators who need a
+ * different margin on a busy store: `SOX_WAL_SIDECAR_STALE_THRESHOLD_MS`.
+ */
+export const DEFAULT_WAL_SIDECAR_STALE_THRESHOLD_MS = 60_000;
+
+export function staleSidecarThresholdMs(): number {
+  const raw = process.env.SOX_WAL_SIDECAR_STALE_THRESHOLD_MS;
+  if (raw === undefined || raw.trim() === '') return DEFAULT_WAL_SIDECAR_STALE_THRESHOLD_MS;
+  const n = Number(raw);
+  return Number.isFinite(n) && n >= 0 ? n : DEFAULT_WAL_SIDECAR_STALE_THRESHOLD_MS;
+}
+
+function isoMtime(ms: number | null): string {
+  return ms === null ? 'unknown' : new Date(ms).toISOString();
+}
+
+// ── WAL frame probe (BL-373 family) ──────────────────────────────────────────
+
+/**
+ * Result of {@link probeWalFrames} — a deterministic, read-only inspection of a
+ * WAL file's header and frame geometry.
+ *
+ * Two shapes must never be conflated (measured on the Aug-11 recurrence):
+ * - **Shape A** — `leftover === 0`: the WAL ends exactly on a frame boundary.
+ *   That is NOT evidence of corruption; it is the healthy shape a stale
+ *   `-tshm` can sit on top of and still make every open fail with a short
+ *   read. Never lets a WAL move happen.
+ * - **Shape B** — `leftover !== 0`: the WAL ends mid-frame (truncated). The
+ *   only shape that may justify moving the WAL aside, and even then only
+ *   with the explicit operator opt-in (see {@link recoverTruncatedWal}).
+ */
+export interface WalFrameProbe {
+  path: string;
+  /** The file could be read and its header validated. `false` means this
+   *  probe is NOT evidence — never act on a non-`readable` probe. */
+  readable: boolean;
+  /** Shape B: the WAL ends mid-frame (`(size − 32) mod (24 + pageSize) ≠ 0`).
+   *  Only meaningful when `readable`. */
+  truncated: boolean;
+  /** WAL format version (u32 @ 4). */
+  version: number | null;
+  /** Page size in bytes (u32 @ 8, big-endian). */
+  pageSize: number | null;
+  /** Checkpoint sequence number (u32 @ 12) — dates the WAL epoch. */
+  checkpointSeq: number | null;
+  /** Salt 1 (u32 @ 16). */
+  salt1: number | null;
+  /** Salt 2 (u32 @ 20). */
+  salt2: number | null;
+  /** Total file size in bytes. */
+  size: number | null;
+  /** `(size − 32) mod (24 + pageSize)` — bytes past the last complete frame. */
+  leftover: number | null;
+  /** Why the probe could not run, when it could not. */
+  error?: string;
+}
+
+/**
+ * Read-only WAL frame probe: header magic/version/page-size/checkpoint-seq/
+ * salts from the first 32 bytes, frame geometry from `stat` size.
+ *
+ * Deterministic fs-only — no driver open, never writes. Cheap: one `stat` +
+ * one 32-byte read.
+ *
+ * Magic is accepted in either endianness (the header is big-endian on disk;
+ * the decision record spells the value as little-endian, and a tolerant read
+ * only ever weakens an `invalid` verdict, never an action). Page size must be
+ * a power of two in 512..65536; anything else is `readable: false`.
+ */
+export function probeWalFrames(walPath: string): WalFrameProbe {
+  const base: WalFrameProbe = {
+    path: walPath,
+    readable: false,
+    truncated: false,
+    version: null,
+    pageSize: null,
+    checkpointSeq: null,
+    salt1: null,
+    salt2: null,
+    size: null,
+    leftover: null,
+  };
+  let size: number;
+  try {
+    size = statSync(walPath).size;
+  } catch (err) {
+    return { ...base, error: err instanceof Error ? err.message : String(err) };
+  }
+  base.size = size;
+
+  if (size < 32) {
+    return {
+      ...base,
+      error: `file is ${size} bytes — smaller than the 32-byte WAL header; not readable`,
+    };
+  }
+
+  const header = Buffer.alloc(32);
+  let fd: number;
+  try {
+    fd = openSync(walPath, 'r');
+  } catch (err) {
+    return { ...base, error: `could not open for read: ${err instanceof Error ? err.message : String(err)}` };
+  }
+  try {
+    readSync(fd, header, 0, 32, 0);
+  } catch (err) {
+    closeSync(fd);
+    return { ...base, error: `could not read header: ${err instanceof Error ? err.message : String(err)}` };
+  }
+  closeSync(fd);
+
+  const magicBe = header.readUInt32BE(0);
+  const magicLe = header.readUInt32LE(0);
+  const magic = (magicBe === 0x377f0682 || magicBe === 0x377f0683)
+    ? magicBe
+    : (magicLe === 0x377f0682 || magicLe === 0x377f0683)
+      ? magicLe
+      : null;
+  if (magic === null) {
+    return {
+      ...base,
+      version: header.readUInt32BE(4),
+      checkpointSeq: header.readUInt32BE(12),
+      salt1: header.readUInt32BE(16),
+      salt2: header.readUInt32BE(20),
+      error:
+        `WAL magic is 0x${magicBe.toString(16).padStart(8, '0')}` +
+        ` — expected 0x377f0682 or 0x377f0683; not a WAL file`,
+    };
+  }
+
+  const pageSize = header.readUInt32BE(8);
+  const pageSizeOk = pageSize >= 512 && pageSize <= 65536 && (pageSize & (pageSize - 1)) === 0;
+  if (!pageSizeOk) {
+    return {
+      ...base,
+      version: header.readUInt32BE(4),
+      pageSize,
+      checkpointSeq: header.readUInt32BE(12),
+      salt1: header.readUInt32BE(16),
+      salt2: header.readUInt32BE(20),
+      error: `page size ${pageSize} is not a power of two in 512..65536; not readable`,
+    };
+  }
+
+  const leftover = (size - 32) % (24 + pageSize);
+  return {
+    path: walPath,
+    readable: true,
+    truncated: leftover !== 0,
+    version: header.readUInt32BE(4),
+    pageSize,
+    checkpointSeq: header.readUInt32BE(12),
+    salt1: header.readUInt32BE(16),
+    salt2: header.readUInt32BE(20),
+    size,
+    leftover,
+  };
+}
+
+/** One-line, evidence-carrying summary of a frame probe for messages/declines. */
+export function describeWalFrameProbe(probe: WalFrameProbe): string {
+  if (!probe.readable) {
+    return `WAL frame probe unreadable: ${probe.error ?? 'unknown reason'}`;
+  }
+  return (
+    `WAL frame probe: ${probe.size} bytes, page size ${probe.pageSize}, ` +
+    `checkpoint sequence ${probe.checkpointSeq}, salts ${probe.salt1}/${probe.salt2}, ` +
+    `leftover ${probe.leftover} bytes — ` +
+    (probe.truncated
+      ? 'TRUNCATED (ends mid-frame, Shape B)'
+      : 'frame-aligned (leftover 0, Shape A — not evidence of corruption)')
+  );
+}
+
+// ── WAL-vs-database staleness (orphan-WAL evidence, BL-373 family) ───────────
+
+/**
+ * True when the main database file has been modified significantly MORE
+ * recently than the `-wal` beside it. A WAL that has stopped being written
+ * while the database moved past it is an **orphan** — the artifact a restart
+ * can leave behind, and the only state in which moving a truncated WAL aside
+ * is safe (the database no longer needs its frames).
+ *
+ * Same fixed threshold as the sidecar heuristic. Never throws — an unreadable
+ * stat is `false` (no evidence), never a crash.
+ */
+export function walIsStaleVsDb(dbPath: string): boolean {
+  try {
+    return statSync(dbPath).mtimeMs - statSync(dbPath + '-wal').mtimeMs > staleSidecarThresholdMs();
+  } catch {
+    return false;
+  }
+}
+
+// ── Truncated-WAL recovery (BL-373 family, Shape B) ──────────────────────────
+
+export interface TruncatedWalRecovery {
+  attempted: boolean;
+  /** WAL moved aside (renamed, preserved), with the target path. */
+  movedAside: { from: string; to: string }[];
+  /** Why the WAL was NOT moved, when it was not. */
+  declined: string | null;
+  /** The frame probe the decision was based on. */
+  probe: WalFrameProbe;
+}
+
+/**
+ * LAST-RESORT recovery for a genuinely truncated WAL (Shape B): rename it
+ * aside so the store can reopen from the last checkpointed state.
+ *
+ * Gated on ALL of:
+ * 1. `probe.truncated` — the WAL ends mid-frame (leftover ≠ 0). A
+ *    frame-aligned WAL (Shape A) is NOT evidence of corruption and never
+ *    triggers a WAL move.
+ * 2. `walIsStaleVsDb` — the WAL is an orphan (database file newer than it).
+ *    A truncated WAL that is actively being written must not be moved.
+ * 3. `SOX_ALLOW_AUTO_WAL_ASIDE=1` — explicit operator opt-in. Without it the
+ *    function declines with the exact manual action named; the store is
+ *    already unopenable, so nothing is lost by waiting for an operator.
+ *
+ * The rename preserves the WAL for forensics (`-wal.corrupt-<stamp>`) — the
+ * same rename-never-delete rule as sidecar recovery. Frames after the last
+ * checkpoint are unreachable either way; callers must disclose that.
+ */
+export function recoverTruncatedWal(
+  dbPath: string,
+  opts?: { probe?: WalFrameProbe | null },
+): TruncatedWalRecovery {
+  const walPath = dbPath + '-wal';
+  const probe = opts?.probe ?? probeWalFrames(walPath);
+  const base: TruncatedWalRecovery = { attempted: false, movedAside: [], declined: null, probe };
+
+  if (!probe.readable) {
+    base.declined =
+      `the WAL at ${walPath} could not be probed (${probe.error ?? 'unreadable'}) — ` +
+      `no evidence of mid-frame truncation, refusing to move it`;
+    return base;
+  }
+  if (!probe.truncated) {
+    base.declined =
+      `the WAL at ${walPath} is frame-aligned (leftover 0 — Shape A, not evidence of corruption); ` +
+      `refusing to move a WAL the probe does not classify as truncated`;
+    return base;
+  }
+  if (!walIsStaleVsDb(dbPath)) {
+    base.declined =
+      `the WAL at ${walPath} is truncated mid-frame but NOT provably stale relative to the ` +
+      `database file (db mtime − wal mtime within the ${staleSidecarThresholdMs()} ms threshold); ` +
+      `a truncated WAL that may still be active goes to the operator, not to an automatic move`;
+    return base;
+  }
+  if (process.env.SOX_ALLOW_AUTO_WAL_ASIDE !== '1') {
+    base.declined =
+      `the WAL at ${walPath} is truncated mid-frame (${probe.leftover} bytes past the last complete ` +
+      `frame) and stale — but auto-WAL-aside is not enabled. Set SOX_ALLOW_AUTO_WAL_ASIDE=1 to allow ` +
+      `automatic recovery, or move it by hand: mv ${walPath} ${walPath}.corrupt-<stamp> and retry. ` +
+      `Frames written after the last checkpoint are unreachable either way.`;
+    return base;
+  }
+
+  const stamp = new Date().toISOString().replace(/[:.]/g, '').replace('T', '-').slice(0, 15);
+  const to = `${walPath}.corrupt-${stamp}`;
+  try {
+    renameSync(walPath, to);
+    return { attempted: true, movedAside: [{ from: walPath, to }], declined: null, probe };
+  } catch (err) {
+    base.declined = `could not move ${walPath} aside: ${err instanceof Error ? err.message : String(err)}`;
+    return base;
+  }
+}
+
+// ── Informational staleness warning (BL-373 family) ──────────────────────────
+
+/**
+ * Emit a `sidecar_stale` integrity event when the `-tshm` is provably older
+ * than the `-wal` it must describe — BEFORE any open attempt, and again after
+ * a SUCCESSFUL open (the masked case: the open survived, but the operator
+ * still needs to know the sidecar is decaying).
+ *
+ * Two `statSync` calls, never throws, purely informational: an absent WAL or
+ * sidecar is simply not stale. The event carries both mtimes, the diff, and
+ * the threshold so an operator can decide whether the margin is comfortable.
+ */
+export function warnIfStaleSidecar(dbPath: string | undefined): void {
+  if (!dbPath) return;
+  try {
+    const walSt = statSync(dbPath + '-wal');
+    const tshmSt = statSync(dbPath + '-tshm');
+    const ageDiff = walSt.mtimeMs - tshmSt.mtimeMs;
+    if (ageDiff > staleSidecarThresholdMs()) {
+      emitIntegrityReport(
+        dbPath,
+        'sidecar_stale',
+        `[BL-373] the -tshm WAL-index sidecar is stale: ${Math.round(ageDiff / 1000)}s ` +
+          `(${ageDiff} ms) older than the ${walSt.size}-byte -wal it must describe ` +
+          `(tshm mtime ${isoMtime(tshmSt.mtimeMs)}, wal mtime ${isoMtime(walSt.mtimeMs)}, ` +
+          `threshold ${staleSidecarThresholdMs()} ms). The next open may fail with a WAL-frame short read; ` +
+          `reconciliation will move only the -tshm aside.`,
+      );
+    }
+  } catch {
+    // Informational only — an absent file or an unreadable stat is not stale.
+  }
+}
+
 /**
  * Reconcile a stale WAL-index sidecar so the store can open.
  *
- * **Only acts when there is nothing to lose**: the `-wal` must be absent or
- * zero bytes. A non-empty WAL may be legitimately described by the sidecar,
- * and discarding it there could turn a recoverable store into a damaged one —
- * so that case is declined and reported rather than guessed at.
+ * **Sidecar-first, mtime-proven** (BL-373 third recurrence): a non-empty WAL
+ * is no longer an automatic decline. The `-tshm`'s mtime is compared against
+ * the `-wal`'s:
  *
- * Sidecars are **renamed, never deleted**. The stale file is the only forensic
- * record of why the store would not open, and this exact artifact is what made
- * BL-373 diagnosable at all.
+ * - **Provably stale** (`wal mtime − tshm mtime > threshold`): the sidecar
+ *   describes WAL content that has moved past it. Move ONLY the `-tshm` aside
+ *   (never the `-shm` — SQLite self-reconciles its shm, and moving it under a
+ *   concurrent reader is a new corruption risk), and let the caller reopen
+ *   against the existing WAL. The WAL is not touched.
+ * - **Ambiguous** (`0 ≤ diff ≤ threshold`, or negative): do NOT move. Run the
+ *   frame probe and decline with an evidence-carrying message (sidecar mtime,
+ *   WAL mtime, diff, threshold, probe result) instead of the old blanket
+ *   "may legitimately describe it" text.
+ *
+ * A `-tshm` absent beside a non-empty WAL is nothing to reconcile — declined,
+ * with that fact stated. The empty-WAL path is unchanged and still moves both
+ * `-tshm` and `-shm`. Sidecars are **renamed, never deleted**: the stale file
+ * is the forensic record of why the store would not open.
  */
 export function recoverStaleWalIndex(dbPath: string | undefined): SidecarRecovery {
   const result: SidecarRecovery = { attempted: false, movedAside: [], declined: null };
@@ -326,16 +654,57 @@ export function recoverStaleWalIndex(dbPath: string | undefined): SidecarRecover
   }
 
   const walPath = dbPath + '-wal';
+  const tshmPath = dbPath + '-tshm';
   let walBytes = -1;
+  let walMtimeMs: number | null = null;
   try {
-    walBytes = statSync(walPath).size;
+    const st = statSync(walPath);
+    walBytes = st.size;
+    walMtimeMs = st.mtimeMs;
   } catch {
     walBytes = 0; // absent — nothing to lose either
   }
+
   if (walBytes > 0) {
+    const threshold = staleSidecarThresholdMs();
+    let tshmMtimeMs: number | null = null;
+    try {
+      tshmMtimeMs = statSync(tshmPath).mtimeMs;
+    } catch {
+      result.declined =
+        `the WAL at ${walPath} holds ${walBytes} bytes and no -tshm sidecar exists beside it — ` +
+        `nothing stale to reconcile; if the open fails it is not a sidecar problem`;
+      return result;
+    }
+    if (walMtimeMs === null) {
+      // Cannot happen (walBytes > 0 implies the stat succeeded) — defensive.
+      result.declined = `the WAL at ${walPath} could not be statted`;
+      return result;
+    }
+    const ageDiff = walMtimeMs - tshmMtimeMs;
+    if (ageDiff > threshold) {
+      // PROVABLY STALE. Move ONLY the -tshm — never the -shm (see the doc
+      // comment above). Reopen is the caller's job, against the WAL as-is.
+      result.attempted = true;
+      const stamp = new Date().toISOString().replace(/[:.]/g, '').replace('T', '-').slice(0, 15);
+      const to = `${tshmPath}.stale-${stamp}`;
+      try {
+        renameSync(tshmPath, to);
+        result.movedAside.push({ from: tshmPath, to });
+      } catch (err) {
+        result.declined = `could not move ${tshmPath} aside: ${err instanceof Error ? err.message : String(err)}`;
+      }
+      return result;
+    }
+    // AMBIGUOUS: the sidecar is as fresh as or fresher than the WAL. Decline
+    // with evidence, carrying the frame probe — a truncated WAL with a fresh
+    // sidecar is genuinely ambiguous and goes to the operator.
+    const probe = probeWalFrames(walPath);
     result.declined =
-      `the WAL at ${walPath} holds ${walBytes} bytes, so the sidecar may legitimately describe it; ` +
-      `refusing to discard WAL-index state that could still be needed`;
+      `the WAL at ${walPath} holds ${walBytes} bytes (mtime ${isoMtime(walMtimeMs)}) and the -tshm ` +
+      `sidecar (mtime ${isoMtime(tshmMtimeMs)}) is not provably stale — age diff ${ageDiff} ms is ` +
+      `within the ${threshold} ms staleness threshold. ${describeWalFrameProbe(probe)}. ` +
+      `Refusing to discard WAL-index state that could still be needed.`;
     return result;
   }
 
@@ -366,11 +735,16 @@ export function recoverStaleWalIndex(dbPath: string | undefined): SidecarRecover
  * Rewrite a failed-open error so it names the artifact that actually has to be
  * dealt with. The driver's own message points at the database and a WAL offset,
  * which sent the first investigation to the wrong file entirely.
+ *
+ * `probe` (when supplied) adds the frame-probe evidence and — when the WAL is
+ * truncated — names the exact operator action for the Shape B case, which the
+ * sidecar-centric text alone cannot.
  */
 export function describeStaleWalIndexFailure(
   dbPath: string,
   recovery: SidecarRecovery,
   original: unknown,
+  probe?: WalFrameProbe | null,
 ): Error {
   const originalMessage = original instanceof Error ? original.message : String(original);
   const detail = recovery.declined
@@ -378,12 +752,20 @@ export function describeStaleWalIndexFailure(
     : `The stale sidecar(s) were moved aside (${recovery.movedAside
         .map((m) => m.to)
         .join(', ')}) and the open was retried, which also failed.`;
+  const probeNote =
+    probe && probe.readable && probe.truncated
+      ? ` The WAL itself is truncated mid-frame (${probe.leftover} bytes past the last complete frame, ` +
+        `checkpoint sequence ${probe.checkpointSeq}). Frames after the last checkpoint are unreachable. ` +
+        `To recover, move it aside and reopen from the last checkpoint: ` +
+        `mv ${dbPath}-wal ${dbPath}-wal.corrupt-<stamp> (or set SOX_ALLOW_AUTO_WAL_ASIDE=1 to allow ` +
+        `automatic recovery on the next open).`
+      : '';
   return new Error(
     `Failed to open ${dbPath}, and the cause is very likely a STALE WAL-INDEX SIDECAR ` +
       `(${dbPath}-tshm), not the database file the driver names. ` +
       `Turso's -tshm holds frame metadata for the WAL; when it survives a restart whose WAL was ` +
-      `truncated, every open fails with a WAL-frame error against an empty WAL (BL-373). ` +
-      `${detail} If this persists, move ${dbPath}-tshm aside by hand and retry — it is derived ` +
+      `truncated, every open fails with a WAL-frame error (BL-373). ` +
+      `${detail}${probeNote} If this persists, move ${dbPath}-tshm aside by hand and retry — it is derived ` +
       `state and Turso rebuilds it. Original driver error: ${originalMessage}`,
   );
 }
@@ -2132,7 +2514,14 @@ export async function verifyAndRepair(
 
 // ── Reporting sink ───────────────────────────────────────────────────────────
 
-export type IntegrityReportEvent = 'damaged' | 'repaired' | 'repair_failed';
+export type IntegrityReportEvent =
+  | 'damaged'
+  | 'repaired'
+  | 'repair_failed'
+  /** (BL-373 family) Informational: a `-tshm` provably older than the `-wal`
+   *  was observed at open time. Never a verdict on its own — see
+   *  {@link warnIfStaleSidecar}. */
+  | 'sidecar_stale';
 export type IntegrityReportSink = (
   event: IntegrityReportEvent,
   detail: string,
