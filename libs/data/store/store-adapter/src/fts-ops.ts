@@ -261,6 +261,22 @@ export async function ensureFtsIndex(
   result.ensured = true;
   result.indexName = dialect.supportsShadowTable ? `fts_${table}` : canonicalFtsIndexName(table);
 
+  // (BL-507) Turso can report a DDL success it did not perform — the same
+  // caveat the orphan guard documents (fts-orphan-guard.ts:264-284). A
+  // Tantivy index is materialised as THREE sqlite_master rows (the index row,
+  // the `__turso_internal_fts_dir_*` directory table, and the `_key`
+  // backing_btree index that holds the segments); if any of them failed to
+  // land, the next `fts_match` against this index PANICS the process (BL-361)
+  // before any open-time guard can run. Verify the materialisation here and
+  // repair it in-session: DROP + CREATE on the open connection removes and
+  // rebuilds all three rows (measured), so a half-created index heals itself
+  // instead of being reported as `ensured`. If the retry still lands
+  // incomplete, THROW — reporting `ensured: true` on a panic-bomb index is
+  // the defect this closes. SQLite FTS5 (`supportsShadowTable`) is untouched.
+  if (!dialect.supportsShadowTable) {
+    await verifyTursoFtsMaterialization(adapter, dialect, table, columns, opts, result.indexName);
+  }
+
   // 3. Backfill the FTS5 shadow table (only when the engine exposes one).
   //    Gated on the segment table `fts_<table>_idx` being EMPTY: on an
   //    external-content FTS5 table, `SELECT COUNT(*) FROM fts_<table>` reads
@@ -346,6 +362,99 @@ function createIndexStmts(
     return dialect.createIndexDDL(table, columns, opts.weights);
   }
   return dialect.createIndexDDL(table, columns, opts.weights, opts.sqliteDDL);
+}
+
+/**
+ * The three `sqlite_master` rows a Turso Tantivy FTS index materialises:
+ * the index row itself, Turso's internal directory table, and the `_key`
+ * backing_btree index that holds the segments. `CREATE INDEX … USING fts`
+ * is only "done" when all three are present — see
+ * {@link verifyTursoFtsMaterialization}.
+ */
+function tursoFtsMaterializationNames(indexName: string): string[] {
+  const dir = `__turso_internal_fts_dir_${indexName}`;
+  return [indexName, dir, `${dir}_key`];
+}
+
+/** Which of the three expected rows are absent from `sqlite_master`. Never
+ *  throws — an unreadable schema degrades to "all absent". */
+async function absentTursoFtsMaterialization(
+  adapter: StoreAdapter,
+  indexName: string,
+): Promise<string[]> {
+  const names = tursoFtsMaterializationNames(indexName);
+  try {
+    const placeholders = names.map(() => '?').join(', ');
+    const { rows } = await adapter.executeAll<{ name: string }>(
+      `SELECT name FROM sqlite_master WHERE name IN (${placeholders})`,
+      names,
+    );
+    const got = new Set(rows.map((r) => r.name));
+    return names.filter((n) => !got.has(n));
+  } catch (err) {
+    log.debug('store_adapter.fts.backing_read_failed', {
+      index: indexName,
+      error: err instanceof Error ? err.message : String(err),
+    });
+    return names;
+  }
+}
+
+/**
+ * (BL-507) Verify — and repair — the Tantivy materialisation of a just-created
+ * (or already-present) Turso FTS index.
+ *
+ * Turso reports a DDL success it did not perform, so `CREATE INDEX … USING
+ * fts` resolving without error proves nothing about the three rows the index
+ * actually needs. When any row is missing, the index is in the exact state
+ * that makes the next `fts_match` panic the host process (BL-361) — a
+ * panic-bomb, never to be reported as `ensured: true`. Repair is
+ * self-contained and measured: `DROP INDEX IF EXISTS "<index>"` on the open
+ * connection removes all three rows, and a fresh `CREATE INDEX` rebuilds all
+ * three. One retry; a still-incomplete materialisation throws a typed error.
+ */
+async function verifyTursoFtsMaterialization(
+  adapter: StoreAdapter,
+  dialect: FTSDialect,
+  table: string,
+  columns: string[],
+  opts: FtsEnsureOptions,
+  indexName: string,
+): Promise<void> {
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const absent = await absentTursoFtsMaterialization(adapter, indexName);
+    if (absent.length === 0) return;
+    if (attempt === 1) {
+      throw new Error(
+        `[BL-507] Turso FTS index "${indexName}" on "${table}" reported created but its Tantivy ` +
+          `backing did not materialise (missing: ${absent.join(', ')}); the next fts_match would ` +
+          `PANIC the process, so the index is NOT ensured. Retried once after DROP+CREATE.`,
+      );
+    }
+    log.warn('store_adapter.fts.backing_incomplete_repair', {
+      table,
+      index: indexName,
+      missing: absent.join(', '),
+      detail: 'reported success it did not perform — dropping and recreating the index in-session',
+    });
+    try {
+      await adapter.exec(`DROP INDEX IF EXISTS "${indexName}"`);
+    } catch (err) {
+      throw new Error(
+        `[BL-507] repair of incompletely-materialised FTS index "${indexName}" failed at DROP: ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+      );
+    }
+    for (const stmt of createIndexStmts(dialect, table, columns, opts)) {
+      try {
+        await adapter.exec(stmt);
+      } catch (err) {
+        if (err instanceof Error && /already exists/i.test(err.message)) continue;
+        throw err;
+      }
+    }
+  }
 }
 
 /** True when `name` exists as a table/view in `sqlite_master`. Never throws —
