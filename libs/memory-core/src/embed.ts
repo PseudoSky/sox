@@ -52,6 +52,19 @@ export interface EmbedConfig {
   backend: EmbedBackend;
   cacheDir: string;
   model: string;
+  /**
+   * Synchronous write-embed mode (`SOX_SYNC_EMBED=1` → `embed.sync = true`,
+   * default false). A GENUINE OPERATIONAL MODE with a documented purpose, not
+   * a workaround toggle (ADR-0013): when true, the write path embeds INSIDE
+   * the queue slot and returns `near_dup` in the response, giving a caller
+   * a fully deterministic, synchronous write-embed — the pre-2026-07-04
+   * two-phase behavior. Default `false` because the async two-phase write is
+   * the shipped behavior (fresh writes are BM25/temporal-recallable
+   * immediately, vec-recallable ~seconds later). Legitimate consumers:
+   * deterministic test/CI suites and an operator who must read `near_dup`
+   * off the write response.
+   */
+  sync: boolean;
 }
 
 /**
@@ -86,7 +99,20 @@ function resolveConfig(): EmbedConfig {
       'sox-memory',
       'models',
     );
-  return { backend, cacheDir, model: 'bge-base-en-v1.5' };
+  return {
+    backend,
+    cacheDir,
+    model: 'bge-base-en-v1.5',
+    // embed.sync — the typed config surface for the synchronous write-embed
+    // mode (see the field's doc comment). Read per-call by
+    // `syncEmbedEnabled()` so it can be flipped without a restart.
+    sync: process.env['SOX_SYNC_EMBED'] === '1',
+  };
+}
+
+/** Public accessor: the typed sync-embed mode flag (config, not a hack). */
+export function getConfiguredSyncEmbed(): boolean {
+  return resolveConfig().sync;
 }
 
 // ── Provider singleton ────────────────────────────────────────────────────────

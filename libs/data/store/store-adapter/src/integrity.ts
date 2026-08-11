@@ -345,8 +345,9 @@ function isoMtime(ms: number | null): string {
  *   `-tshm` can sit on top of and still make every open fail with a short
  *   read. Never lets a WAL move happen.
  * - **Shape B** — `leftover !== 0`: the WAL ends mid-frame (truncated). The
- *   only shape that may justify moving the WAL aside, and even then only
- *   with the explicit operator opt-in (see {@link recoverTruncatedWal}).
+ *   only shape that ever justifies moving the WAL aside — and moving it is a
+ *   HUMAN decision (refusal-only, ADR-0013): the operator gets the typed
+ *   action from {@link describeStaleWalIndexFailure}, never an automatic move.
  */
 export interface WalFrameProbe {
   path: string;
@@ -493,102 +494,20 @@ export function describeWalFrameProbe(probe: WalFrameProbe): string {
   );
 }
 
-// ── WAL-vs-database staleness (orphan-WAL evidence, BL-373 family) ───────────
+// ── Truncated-WAL refusal (BL-373 family, Shape B) ───────────────────────────
 
 /**
- * True when the main database file has been modified significantly MORE
- * recently than the `-wal` beside it. A WAL that has stopped being written
- * while the database moved past it is an **orphan** — the artifact a restart
- * can leave behind, and the only state in which moving a truncated WAL aside
- * is safe (the database no longer needs its frames).
+ * Shape B — a WAL that ends MID-FRAME (`leftover ≠ 0`, genuine truncation) —
+ * is **refusal-only** (ADR-0013, owner directive). No env gate, no automatic
+ * WAL move, ever: the WAL is renamed aside only by a HUMAN, because moving it
+ * discards every frame written after the last checkpoint. A store that cannot
+ * open loses nothing by waiting — data-loss decisions are not made by code.
  *
- * Same fixed threshold as the sidecar heuristic. Never throws — an unreadable
- * stat is `false` (no evidence), never a crash.
+ * The refusal surfaces through {@link describeStaleWalIndexFailure}: the
+ * frame-probe evidence (leftover bytes, checkpoint sequence) rides the thrown
+ * error, which names the exact manual step (`mv <db>-wal <db>-wal.corrupt-<stamp>`,
+ * or restore from backup) with the data-loss disclosure.
  */
-export function walIsStaleVsDb(dbPath: string): boolean {
-  try {
-    return statSync(dbPath).mtimeMs - statSync(dbPath + '-wal').mtimeMs > staleSidecarThresholdMs();
-  } catch {
-    return false;
-  }
-}
-
-// ── Truncated-WAL recovery (BL-373 family, Shape B) ──────────────────────────
-
-export interface TruncatedWalRecovery {
-  attempted: boolean;
-  /** WAL moved aside (renamed, preserved), with the target path. */
-  movedAside: { from: string; to: string }[];
-  /** Why the WAL was NOT moved, when it was not. */
-  declined: string | null;
-  /** The frame probe the decision was based on. */
-  probe: WalFrameProbe;
-}
-
-/**
- * LAST-RESORT recovery for a genuinely truncated WAL (Shape B): rename it
- * aside so the store can reopen from the last checkpointed state.
- *
- * Gated on ALL of:
- * 1. `probe.truncated` — the WAL ends mid-frame (leftover ≠ 0). A
- *    frame-aligned WAL (Shape A) is NOT evidence of corruption and never
- *    triggers a WAL move.
- * 2. `walIsStaleVsDb` — the WAL is an orphan (database file newer than it).
- *    A truncated WAL that is actively being written must not be moved.
- * 3. `SOX_ALLOW_AUTO_WAL_ASIDE=1` — explicit operator opt-in. Without it the
- *    function declines with the exact manual action named; the store is
- *    already unopenable, so nothing is lost by waiting for an operator.
- *
- * The rename preserves the WAL for forensics (`-wal.corrupt-<stamp>`) — the
- * same rename-never-delete rule as sidecar recovery. Frames after the last
- * checkpoint are unreachable either way; callers must disclose that.
- */
-export function recoverTruncatedWal(
-  dbPath: string,
-  opts?: { probe?: WalFrameProbe | null },
-): TruncatedWalRecovery {
-  const walPath = dbPath + '-wal';
-  const probe = opts?.probe ?? probeWalFrames(walPath);
-  const base: TruncatedWalRecovery = { attempted: false, movedAside: [], declined: null, probe };
-
-  if (!probe.readable) {
-    base.declined =
-      `the WAL at ${walPath} could not be probed (${probe.error ?? 'unreadable'}) — ` +
-      `no evidence of mid-frame truncation, refusing to move it`;
-    return base;
-  }
-  if (!probe.truncated) {
-    base.declined =
-      `the WAL at ${walPath} is frame-aligned (leftover 0 — Shape A, not evidence of corruption); ` +
-      `refusing to move a WAL the probe does not classify as truncated`;
-    return base;
-  }
-  if (!walIsStaleVsDb(dbPath)) {
-    base.declined =
-      `the WAL at ${walPath} is truncated mid-frame but NOT provably stale relative to the ` +
-      `database file (db mtime − wal mtime within the ${staleSidecarThresholdMs()} ms threshold); ` +
-      `a truncated WAL that may still be active goes to the operator, not to an automatic move`;
-    return base;
-  }
-  if (process.env.SOX_ALLOW_AUTO_WAL_ASIDE !== '1') {
-    base.declined =
-      `the WAL at ${walPath} is truncated mid-frame (${probe.leftover} bytes past the last complete ` +
-      `frame) and stale — but auto-WAL-aside is not enabled. Set SOX_ALLOW_AUTO_WAL_ASIDE=1 to allow ` +
-      `automatic recovery, or move it by hand: mv ${walPath} ${walPath}.corrupt-<stamp> and retry. ` +
-      `Frames written after the last checkpoint are unreachable either way.`;
-    return base;
-  }
-
-  const stamp = new Date().toISOString().replace(/[:.]/g, '').replace('T', '-').slice(0, 15);
-  const to = `${walPath}.corrupt-${stamp}`;
-  try {
-    renameSync(walPath, to);
-    return { attempted: true, movedAside: [{ from: walPath, to }], declined: null, probe };
-  } catch (err) {
-    base.declined = `could not move ${walPath} aside: ${err instanceof Error ? err.message : String(err)}`;
-    return base;
-  }
-}
 
 // ── Informational staleness warning (BL-373 family) ──────────────────────────
 
@@ -840,10 +759,10 @@ export function describeStaleWalIndexFailure(
   const probeNote =
     probe && probe.readable && probe.truncated
       ? ` The WAL itself is truncated mid-frame (${probe.leftover} bytes past the last complete frame, ` +
-        `checkpoint sequence ${probe.checkpointSeq}). Frames after the last checkpoint are unreachable. ` +
-        `To recover, move it aside and reopen from the last checkpoint: ` +
-        `mv ${dbPath}-wal ${dbPath}-wal.corrupt-<stamp> (or set SOX_ALLOW_AUTO_WAL_ASIDE=1 to allow ` +
-        `automatic recovery on the next open).`
+        `checkpoint sequence ${probe.checkpointSeq}). Frames written after the last checkpoint are ` +
+        `unreachable and moving the WAL aside DISCARDS them — so this is a HUMAN decision, not an ` +
+        `automatic one (ADR-0013). To recover, restore from backup, or move the WAL aside by hand ` +
+        `and reopen from the last checkpoint: mv ${dbPath}-wal ${dbPath}-wal.corrupt-<stamp>`
       : '';
   return new Error(
     `Failed to open ${dbPath}, and the cause is very likely a STALE WAL-INDEX SIDECAR ` +
@@ -2852,14 +2771,23 @@ export function _resetIntegrityRegistryForTest(): void {
 /**
  * Resolve the verification depth for an adapter open.
  *
- * - `SOX_STORE_VERIFY=off|fast|deep` overrides everything (default `fast`).
+ * - `SOX_STORE_VERIFY=fast|deep` tunes the rigor (default `fast`).
  * - `uncleanShutdown` escalates `fast` → `deep`: a store that was not closed
  *   cleanly is the exact population BL-338 is about, and 300 ms of
  *   `integrity_check` is cheap against another silent outage.
+ *
+ * The store ALWAYS validates — `'off'` was an anti-feature (an env var whose
+ * only job was to disable a core function; ADR-0013). A caller that requests
+ * `off` gets a loud refusal: the store must not run unverified.
  */
-export function resolveVerifyDepth(uncleanShutdown: boolean): VerifyDepth | 'off' {
+export function resolveVerifyDepth(uncleanShutdown: boolean): VerifyDepth {
   const raw = (process.env.SOX_STORE_VERIFY ?? '').toLowerCase();
-  if (raw === 'off' || raw === 'none' || raw === '0') return 'off';
+  if (raw === 'off' || raw === 'none' || raw === '0') {
+    throw new Error(
+      `SOX_STORE_VERIFY=${raw} is not a valid value and never was a supported state: the store ` +
+        `ALWAYS validates (BL-373 family / ADR-0013). Use 'fast' or 'deep' to tune rigor.`,
+    );
+  }
   if (raw === 'deep') return 'deep';
   if (raw === 'fast') return uncleanShutdown ? 'deep' : 'fast';
   return uncleanShutdown ? 'deep' : 'fast';
@@ -2918,12 +2846,6 @@ export function resolveSkippedProbes(): IntegrityProbe[] {
   return ALL_PROBES.filter((p) => requested.includes(p));
 }
 
-/** `SOX_STORE_REPAIR=off` disables automatic repair while leaving detection on. */
-export function repairEnabled(): boolean {
-  const raw = (process.env.SOX_STORE_REPAIR ?? '').toLowerCase();
-  return !(raw === 'off' || raw === 'none' || raw === '0');
-}
-
 /**
  * The integrity pass an adapter runs on open.
  *
@@ -2932,7 +2854,10 @@ export function repairEnabled(): boolean {
  * and repairs go to `onReport`, and the result is retained for the status
  * surface via {@link getLastIntegrityResult}.
  *
- * Returns `null` when verification is switched off.
+ * Always runs, always repairs what is repairable: `SOX_STORE_REPAIR=off` and
+ * `SOX_STORE_VERIFY=off` were anti-features and are gone (ADR-0013). The
+ * store always validates (≥ `fast`) and always repairs; only readonly stores
+ * skip repair (they cannot write).
  */
 export async function runOpenTimeIntegrity(
   adapter: StoreAdapter,
@@ -2941,16 +2866,14 @@ export async function runOpenTimeIntegrity(
     walBaseline: WalIdentity | null;
     onReport?: VerifyAndRepairOptions['onReport'];
   },
-): Promise<VerifyAndRepairResult | null> {
+): Promise<VerifyAndRepairResult> {
   const depth = resolveVerifyDepth(opts.uncleanShutdown);
-  if (depth === 'off') return null;
 
   try {
     const skip = resolveSkippedProbes();
     const verifyOpts: VerifyAndRepairOptions = {
       depth,
       walBaseline: opts.walBaseline,
-      verifyOnly: !repairEnabled(),
       ...(skip.length > 0 ? { skip } : {}),
     };
     if (opts.onReport) verifyOpts.onReport = opts.onReport;

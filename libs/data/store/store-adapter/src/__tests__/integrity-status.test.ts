@@ -15,7 +15,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { Database as BetterSqlite3Database } from 'better-sqlite3';
 import { createSqliteAdapter } from '../factory.js';
-import { verifyStoreIntegrity } from '../integrity.js';
+import { verifyStoreIntegrity, persistIntegrityResult } from '../integrity.js';
 import {
   getLastIntegrityResult,
   getLastIntegrityResultForPath,
@@ -132,12 +132,13 @@ describe('BL-334 — unhealthy states never report healthy', () => {
     expect(v.reason).toMatch(/NOT a clean bill of health/i);
   });
 
-  it('verification switched off → unknown, NOT healthy, and distinguishable from never-ran', () => {
-    const off = summarizeIntegrityForStatus(null, null, true);
-    expect(off.overall).toBe('unknown');
-    expect(off.healthy).toBe(false);
-    expect(off.reason).toMatch(/DISABLED/i);
-    expect(off.reason).not.toEqual(summarizeIntegrityForStatus(null, null, false).reason);
+  it('verification is ALWAYS on (BL-373 family / ADR-0013): never-ran is the ONLY unverified state — no disabled branch exists', () => {
+    // SOX_STORE_VERIFY=off was an anti-feature and is gone; `null` now
+    // unambiguously means "never ran", never "we chose not to look".
+    const neverRan = summarizeIntegrityForStatus(null, null);
+    expect(neverRan.overall).toBe('unknown');
+    expect(neverRan.healthy).toBe(false);
+    expect(neverRan.reason).toMatch(/NOT a clean bill of health/i);
   });
 
   it('THE TRAP: an aborted pass (ok:false, EMPTY findings) is unknown, not healthy', () => {
@@ -254,7 +255,7 @@ describe('BL-334 — reported detail is actionable', () => {
 
   it('surfaces depth, duration and staleness', () => {
     const t = Date.now() - 42_000;
-    const v = summarizeIntegrityForStatus(result([finding()]), t, false, Date.now());
+    const v = summarizeIntegrityForStatus(result([finding()]), t, Date.now());
     expect(v.depth).toBe('fast');
     expect(v.duration_ms).toBe(91);
     expect(v.age_seconds).toBe(42);
@@ -423,9 +424,9 @@ describe('BL-334 — integrity verdict round-trips through the store itself', ()
     await adapter.close();
   });
 
-  it('REAL damage persisted with repair disabled reads back as DAMAGED', async () => {
-    // The acceptance an operator cares about: reopen a store whose FTS index is
-    // dead and confirm the status surface says so rather than staying silent.
+  it('REAL damage persisted reads back as DAMAGED', async () => {
+    // The acceptance an operator cares about: a store whose FTS index is dead
+    // must read as DAMAGED on the status surface rather than staying silent.
     const dbPath = join(liveTmp, `durable-damaged-${Date.now()}.db`);
     const build = createSqliteAdapter({ dbPath });
     await build.exec(`
@@ -448,25 +449,26 @@ describe('BL-334 — integrity verdict round-trips through the store itself', ()
     );
     await build.close();
 
-    // Reopen through the normal path with auto-repair OFF, so the persisted
-    // verdict records the damage instead of a repair that already fixed it.
-    const prev = process.env.SOX_STORE_REPAIR;
-    process.env.SOX_STORE_REPAIR = 'off';
-    let view;
-    try {
-      const reopened = createSqliteAdapter({ dbPath });
-      await reopened.init();
-      await reopened.close();
+    // Reopen through the normal path. Repair is ALWAYS on (ADR-0013 — the
+    // "SOX_STORE_REPAIR=off" anti-feature is gone), so the reopen itself heals
+    // the seeded FTS damage; this arm re-seeds the damage on the OPEN adapter
+    // and persists the verdict directly, proving the durable surface records
+    // DAMAGED rather than staying silent.
+    const reopened = createSqliteAdapter({ dbPath });
+    await reopened.init();
+    (reopened.unwrap() as BetterSqlite3Database).exec(
+      `INSERT INTO fts_node(fts_node) VALUES('delete-all')`,
+    );
+    const report = await verifyStoreIntegrity(reopened);
+    expect(report.damaged.some((f) => f.probe === 'fts_index_live')).toBe(true);
+    await persistIntegrityResult(reopened, { verify: report, repair: null });
+    await reopened.close();
 
-      const reader = createSqliteAdapter({ dbPath });
-      const persisted = await readIntegrityResult(reader);
-      expect(persisted).not.toBeNull();
-      view = summarizeIntegrityForStatus(persisted!.result, persisted!.runAtMs);
-      await reader.close();
-    } finally {
-      if (prev === undefined) delete process.env.SOX_STORE_REPAIR;
-      else process.env.SOX_STORE_REPAIR = prev;
-    }
+    const reader = createSqliteAdapter({ dbPath });
+    const persisted = await readIntegrityResult(reader);
+    expect(persisted).not.toBeNull();
+    const view = summarizeIntegrityForStatus(persisted!.result, persisted!.runAtMs);
+    await reader.close();
 
     expect(view!.healthy, JSON.stringify(view, null, 2)).toBe(false);
     expect(view!.overall).toBe('damaged');
