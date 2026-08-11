@@ -280,7 +280,23 @@ Compare `artifact` and `short` fields to the "before" values. One of three outco
 | Hash unchanged, but behavior changed | Server cached; daemon not restarted | Run `soxe service status <ext>`; if loaded, `soxe service enable <ext>` to force reload |
 | Hash unchanged, no behavior change expected | Non-code change (config, schema) | Verify via in-session tool call for the affected behavior |
 
-#### §2.2.5 If behavior was changed
+#### §2.2.5 Error-log health gate (mandatory after deploy)
+
+A service can be "running" (launchd loaded, `memory_ping` ok) while its error log is silently
+dead — doctor-tick ran broken for 5 days (dyld `libada.3.dylib` missing after homebrew ada-url
+3→4, 2026-08-11 incident) with launchd none the wiser. Run the error-log gate and require exit 0:
+
+```
+node tools/check-service-error-logs.mjs --service memory-server
+```
+
+Detects: native/dyld load failures, non-noise error lines (error/fail/exception/short-read/malformed
+schema), stale logs (newest `.err.log` older than `--max-age-min`, default 10m → service dead while
+"loaded"), and crash-loop signatures (same error repeated ≥3× in the tail). Also run it for any
+supervisor unit touched by the deploy (e.g. `--service doctor-tick`). Healthy output:
+`HEALTHY memory-server: <file> (<bytes>B, <age>m old), no error lines in last <n> lines`.
+
+#### §2.2.6 If behavior was changed
 
 Test the new behavior using in-session MCP tools. For example, if you added a new `memory_*`
 tool, call it directly. If you changed recall ranking, query with a known-good phrase and
@@ -358,7 +374,19 @@ node bin/soxe service enable <ext-id> --scope=<scope>
 
 Then verify with `soxe service status`.
 
-#### §2.3.5 Lifecycle tests
+#### §2.3.5 Error-log health gate (mandatory after deploy)
+
+Same gate as §2.2.5 — a background service can be launchd-loaded while its error log is dead or
+crash-looping. Run for the deployed service and any supervisor unit:
+
+```
+node tools/check-service-error-logs.mjs --service <ext-id>
+node tools/check-service-error-logs.mjs --service doctor-tick
+```
+
+Require exit 0 (HEALTHY) before calling the deploy complete.
+
+#### §2.3.6 Lifecycle tests
 
 | Test | Command |
 |------|---------|
