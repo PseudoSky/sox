@@ -25,9 +25,11 @@ describe('BL-344 — operator tunables reach the child', () => {
   it('forwards every SOX_* tunable that the five old allowlists dropped', () => {
     // Each of these is a real, shipped, documented tunable that was silently
     // dropped in production. None appeared in any of the five allowlists.
+    // (SOX_MEMORY_LOG_DISABLE was deleted as an anti-feature, ADR-0013 — the
+    // fixture carries SOX_MEMORY_LOG_MAX_FILES instead, a live rotation cap.)
     const shipped = {
       SOX_MEMORY_LOG_LEVEL: 'debug',
-      SOX_MEMORY_LOG_DISABLE: '1',
+      SOX_MEMORY_LOG_MAX_FILES: '7',
       SOX_MEMORY_LOG_DIR: '/tmp/logs',
       SOX_MEMORY_LOG_MAX_BYTES: '5000000',
       SOX_RECALL_EMBED_TIMEOUT_MS: '2000',
