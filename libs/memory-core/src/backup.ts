@@ -38,6 +38,7 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import type { StorageError } from './errors.js';
 import { expandDbPath } from './db.js';
+import { resolveBackupConfig } from './config.js';
 import type { BackupIntegrityReport, StoreAdapter } from '@adhd/sox-store-adapter';
 
 // ── Public types ──────────────────────────────────────────────────────────────
@@ -318,8 +319,12 @@ export interface AutoBackupResult {
  *
  * ALWAYS ON: `SOX_AUTO_BACKUP_ENABLED` was an anti-feature (an env var whose
  * only job was to disable a core safety function; ADR-0013) and is gone —
- * auto-backup runs on every restart. Only the destination is configurable:
- *   - `SOX_AUTO_BACKUP_DIR` — backup directory (default: `~/.memory/backups/`)
+ * auto-backup runs on every restart, and `BackupConfig.enabled` is the typed
+ * literal `true` (report-only, unrepresentable as false; see config.ts).
+ * Only the destination is configurable, resolved via {@link resolveBackupConfig}:
+ *   - typed `config.backup.dir` seam (future platform config-cascade) →
+ *   - `SOX_AUTO_BACKUP_DIR` (host-injected config, KEPT per ADR-0013 D5) →
+ *   - `~/.memory/backups` (default).
  *
  * Idempotency:
  *   Tracks the source DB's mtime in a hidden marker file
@@ -354,11 +359,8 @@ export async function autoBackup(
     return { path: '', size: 0, skipped: true };
   }
 
-  // 4. Resolve backup directory.
-  const backupDirRaw = process.env.SOX_AUTO_BACKUP_DIR;
-  const backupDir = backupDirRaw
-    ? path.resolve(expandDbPath(backupDirRaw))
-    : path.join(os.homedir(), '.memory', 'backups');
+  // 4. Resolve backup directory through the typed config (ADR-0013 D2/D5).
+  const backupDir = resolveBackupConfig().dir;
 
   // 5. Ensure backup directory exists.
   try {
