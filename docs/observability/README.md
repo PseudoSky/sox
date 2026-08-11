@@ -328,7 +328,6 @@ inferred.
 | `SOX_MEMORY_LOG_DIR` | `~/.adhd/sox-ecosystem/memory/logs` | Override directory entirely |
 | `SOX_MEMORY_LOG_LEVEL` | `info` | `debug\|info\|warn\|error` |
 | `SOX_MEMORY_LOG_COMPONENT` | `memory-core` | Filename prefix |
-| `SOX_MEMORY_LOG_DISABLE` | *(unset)* | `1` disables all writes |
 | `SOX_MEMORY_LOG_MAX_BYTES` | `20000000` | Size rotation cap |
 | `SOX_MEMORY_LOG_MAX_FILES` | `7` | Retained files per component |
 | `SOX_ECOSYSTEM_HOME` | `~/.adhd/sox-ecosystem` | Data root |

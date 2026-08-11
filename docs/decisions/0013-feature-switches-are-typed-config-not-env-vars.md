@@ -82,6 +82,12 @@ waiting. Its compliant sibling `SOX_WAL_SIDECAR_STALE_THRESHOLD_MS` (numeric thr
 
 ### Current state — env-var inventory and dispositions (surveyed 2026-08-11, `rg` across libs/ extensions/ apps/ tools/)
 
+> Survey-coverage note (F4, 2026-08-11): the original inventory scanned `libs/ extensions/ apps/
+> tools/` only — repo-root SPEC files (`SPEC-PKT-18.md`, `SPEC-BL-474.md`, `SPEC-PKT-38.md`) and
+> handoff/observability docs were NOT surveyed and still documented deleted vars as live controls.
+> Those references are annotated superseded/historical on the strip branch; future inventories
+> should include repo-root `SPEC-*.md` and `docs/`.
+
 **Violations — deleted or converted (owner directive #3: DELETE unless a real, documented,
 operational purpose exists; only `SOX_SYNC_EMBED` had one):**
 
