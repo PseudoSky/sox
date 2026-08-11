@@ -642,13 +642,15 @@ describe('recursive-cte fallback parity (SOXGRAPH-001)', () => {
   const tursoAvailable = hasTursoDriver();
 
   const parityArms: Array<
-    [string, () => Promise<{ adapter: StoreAdapter; backend: GraphBackend }>, boolean]
+    [string, () => Promise<{ adapter: StoreAdapter; backend: GraphBackend }>, boolean, boolean]
   > = [
-    ['sqlite — recursive SQL path', openSqliteParity, false],
-    ['turso — iterative fallback path', openTursoParity, !tursoAvailable],
+    // label, open, skip, runsRecursiveSql (true only on the sqlite arm — BL-504
+    // perf gate must not apply to the turso iterative fallback).
+    ['sqlite — recursive SQL path', openSqliteParity, false, true],
+    ['turso — iterative fallback path', openTursoParity, !tursoAvailable, false],
   ];
 
-  for (const [label, open, skip] of parityArms) {
+  for (const [label, open, skip, runsRecursiveSql] of parityArms) {
     describe(label, () => {
       it('getSupersessionChain returns oldest-first [v1, v2, v3] by name', { skip, timeout: 20000 }, async () => {
         const { backend, adapter } = await open();
@@ -711,6 +713,103 @@ describe('recursive-cte fallback parity (SOXGRAPH-001)', () => {
           // level 2, d at level 3 — all within budget on this small graph.
           const ids = new Set((await backend.getNeighbors(a, { depth: 2, direction: 'out' })).map((n) => n.id));
           expect(ids).toEqual(new Set([b, c, d, e]));
+        } finally {
+          await adapter.close();
+        }
+      });
+
+      // BL-504 (HIGH): SQLite query-planner footgun in the recursive getNeighbors
+      // outer join. `SELECT DISTINCT n.* FROM node n JOIN neighbors nb …` let the
+      // planner scan the partial index ix_node_validity (ALL live nodes — grows
+      // with the store) instead of driving from the small CTE via rowid-PK:
+      // 8.1s @ 651 nodes → 98.6s @ ~2.8k (12× time for 4.3× data). The fix —
+      // `FROM node n NOT INDEXED JOIN …` — forces the rowid-PK path and the same
+      // query runs in ~10-50ms. This test seeds a 2501-node graph in ONE atomic
+      // writeGraph call, asserts both arms return the identical budget-truncated
+      // id-set, and gates the sqlite arm's elapsed time under 1000ms (≈100× below
+      // pre-fix, ≈20× above expected post-fix — not flaky on CI). Pre-fix the
+      // ~90s query blows the 20s vitest timeout → loud RED (BL-225).
+      it('BL-504: 2501-node getNeighbors depth-2 — identical budget-truncated id-set both arms; <1000ms on the recursive SQL path', { skip, timeout: 200000 }, async () => {
+        const { backend, adapter } = await open();
+        try {
+          // root + 50 level-1 + 50×49 level-2 = 2501 nodes; 50 + 50×49 = 2500
+          // edges (RELATES_TO) — all in one atomic writeGraph transaction.
+          // NOTE the 200s timeout: the turso arm's writeGraph seeds at ~20ms per
+          // statement (~104s for 2501 nodes — a pre-existing turso adapter write
+          // characteristic, unrelated to BL-504; the turso WALK is ~15ms). The
+          // sqlite arm seeds in ~90ms; its pre-fix WALK is ~73s but blocks the
+          // event loop (sync better-sqlite3), so vitest's timer cannot fire — the
+          // RED surfaces as the assertion failure once the walk completes.
+          const nodes: Array<{ content: string; meta: object }> = [{ content: 'root', meta: {} }];
+          for (let i = 0; i < 50; i++) nodes.push({ content: `l1-${i}`, meta: {} });
+          for (let i = 0; i < 50; i++) for (let j = 0; j < 49; j++) nodes.push({ content: `l2-${i}-${j}`, meta: {} });
+          const edges: Array<{ srcIdx: number; dstIdx: number; rel: EdgeRel }> = [];
+          for (let i = 0; i < 50; i++) edges.push({ srcIdx: 0, dstIdx: 1 + i, rel: 'RELATES_TO' });
+          for (let i = 0; i < 50; i++)
+            for (let j = 0; j < 49; j++)
+              edges.push({ srcIdx: 1 + i, dstIdx: 1 + 50 + i * 49 + j, rel: 'RELATES_TO' });
+          const ids = await backend.writeGraph(nodes, edges);
+          expect(ids).toHaveLength(2501);
+
+          const started = performance.now();
+          const neighborIds = new Set(
+            (await backend.getNeighbors(ids[0]!, { depth: 2, direction: 'out' })).map((n) => n.id),
+          );
+          const elapsed = performance.now() - started;
+
+          // Budget depth*100 = 200 CTE rows incl. the seed → 199 results: all 50
+          // level-1, the full children of level-1 #0..#2 (49 each = 147), and the
+          // first 2 children of level-1 #3 — edge-scan order = rowid order on
+          // both engines (ix_edge_src/dst index order), so the truncated id-set
+          // is identical on the recursive SQL path AND the iterative fallback.
+          const expected = new Set<number>();
+          for (let i = 0; i < 50; i++) expected.add(ids[1 + i]!);
+          for (let i = 0; i < 3; i++) for (let j = 0; j < 49; j++) expected.add(ids[1 + 50 + i * 49 + j]!);
+          expected.add(ids[1 + 50 + 3 * 49]!); // first child of level-1 #3
+          expected.add(ids[1 + 50 + 3 * 49 + 1]!); // second child of level-1 #3
+          expect(neighborIds).toEqual(expected);
+          expect(neighborIds.has(ids[0]!)).toBe(false); // seed excluded
+
+          if (runsRecursiveSql) {
+            // Perf gate — sqlite arm ONLY. Pre-fix: planner scans ix_node_validity
+            // (all 2501 live nodes) → ~90s → vitest timeout (20s) → loud RED.
+            // Post-fix: NOT INDEXED forces the rowid-PK path → ~10-50ms.
+            expect(elapsed).toBeLessThan(1000);
+          }
+        } finally {
+          await adapter.close();
+        }
+      });
+
+      // BL-504 (Segment D): equal-depth tie order. Two depth-1 children (c1, c2)
+      // whose own children have INTERLEAVED rowids: c1's children (d1, d2) get
+      // HIGHER rowids than c2's children (e1, e2) because they are created later.
+      // The recursive chain CTE emits depth-2 in parent-step order (c1's children
+      // first), so a bare ORDER BY ch.depth yields [.., d1, d2, e1, e2] while the
+      // iterative fallback's explicit (depth, rowid) sort yields [.., e1, e2, d1, d2].
+      // ORDER BY ch.depth, n.rowid pins BOTH paths to (depth, rowid) — red→green.
+      it('BL-504: getSupersessionChain equal-depth tie — (depth, rowid) order identical on recursive SQL and iterative fallback', { skip, timeout: 20000 }, async () => {
+        const { backend, adapter } = await open();
+        try {
+          // h(1) ← c1(2), c2(3); c1 ← d1(6), d2(7); c2 ← e1(4), e2(5). SUPERSEDES
+          // edges point child → parent, so h is the head (only no-outbound node).
+          const h = await backend.writeNode('h', { name: 'h' });
+          const c1 = await backend.writeNode('c1', { name: 'c1' });
+          const c2 = await backend.writeNode('c2', { name: 'c2' });
+          const e1 = await backend.writeNode('e1', { name: 'e1' });
+          const e2 = await backend.writeNode('e2', { name: 'e2' });
+          const d1 = await backend.writeNode('d1', { name: 'd1' });
+          const d2 = await backend.writeNode('d2', { name: 'd2' });
+          await backend.writeEdge(c1, h, 'SUPERSEDES');
+          await backend.writeEdge(c2, h, 'SUPERSEDES');
+          await backend.writeEdge(d1, c1, 'SUPERSEDES');
+          await backend.writeEdge(d2, c1, 'SUPERSEDES');
+          await backend.writeEdge(e1, c2, 'SUPERSEDES');
+          await backend.writeEdge(e2, c2, 'SUPERSEDES');
+          const chain = await backend.getSupersessionChain(c1);
+          // (depth, rowid): depth0 h(1), depth1 c1(2) c2(3), depth2 e1(4) e2(5) d1(6) d2(7)
+          expect(chain.map((n) => n.id)).toEqual([h, c1, c2, e1, e2, d1, d2]);
+          expect(chain.map((n) => n.name)).toEqual(['h', 'c1', 'c2', 'e1', 'e2', 'd1', 'd2']);
         } finally {
           await adapter.close();
         }
