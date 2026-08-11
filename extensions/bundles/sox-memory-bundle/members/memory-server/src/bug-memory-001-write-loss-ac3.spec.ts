@@ -75,6 +75,7 @@ import {
   DeterministicTestProvider,
   WriteQueue,
   _setEmbedProviderForTest,
+  vecToJson,
 } from '@adhd/sox-memory-core';
 import type { StoreAdapter } from '@adhd/sox-store-adapter';
 import type * as IndexModule from './index.js';
@@ -313,6 +314,37 @@ describe('BUG-MEMORY-001 AC3 — memory_write under parallel load against a popu
 
     // Populate: several thousand rows so enrichment has genuine work.
     await seedPopulatedStore(adapter, 3000);
+
+    // Steady-state fixture (F2, bisected 2026-08-11): pre-apply the vec rows
+    // for every seeded episode so the store looks like what the ALWAYS-ON
+    // heal (SOX_DISABLE_EMBED_HEAL deleted, ADR-0013) maintains in
+    // production — every live episode has its vector. The raw seeding above
+    // bypasses the write path, so without this step the fixture presents a
+    // 3000-row heal BACKLOG, and the beforeAll enrich pass's Phase-B heal
+    // churns through it. Bisection evidence (scratch worktree at the pre-strip
+    // base 56201baf): base with the original disable envs PASSES; base with
+    // the heal gate removed FAILS with the identical real `Corrupt database:
+    // Invalid page type: 0` — i.e. the corruption is triggered by the
+    // always-on heal churning thousands of vectorless rows during the enrich
+    // pass, not by any strip logic change. Isolated further on HEAD: enrich
+    // skipped → PASS; 3000 rows pre-vectored (heal no-op) → PASS; 200-row
+    // backlog (bounded heal) → PASS; 3000-row backlog → FAIL (scale-dependent;
+    // integrity_check after the churn is clean except the known Turso FTS
+    // false positive). The fixture must therefore present steady state, so
+    // the heal step no-ops and this test measures the write path under fault
+    // injection — not the heal.
+    {
+      const vec = new Float32Array(768).fill(0.1);
+      const rows = await adapter.executeAll<{ rowid: number }>(
+        `SELECT rowid FROM node WHERE project_path = '/test/ac3/populate'`,
+      );
+      for (const r of rows.rows) {
+        await adapter.executeRun(
+          'INSERT INTO vec_node(node_id, embedding) VALUES (CAST(? AS INTEGER), ?)',
+          [r.rowid, vecToJson(vec)],
+        );
+      }
+    }
 
     // Trigger enrichment directly rather than waiting out the (now-disabled)
     // periodic timer (spec's own "your call" — a direct, awaited trigger is
