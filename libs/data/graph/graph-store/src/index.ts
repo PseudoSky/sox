@@ -1,6 +1,7 @@
 // @adhd/sox-graph-store — Bi-temporal graph store over StoreAdapter
 import { createFTSDialect } from '@adhd/sox-store-adapter';
-import type { StoreAdapter } from '@adhd/sox-store-adapter';
+import { assertStoreEngineSync, getEngineIdentitySync } from '@adhd/sox-store-adapter';
+import type { EngineIdentity, StoreAdapter } from '@adhd/sox-store-adapter';
 import { log } from '@adhd/sox-telemetry';
 import * as crypto from 'node:crypto';
 import { rebuildTable } from './rebuild-table.js';
@@ -572,6 +573,17 @@ export interface GraphBackendCapabilities {
 export interface GraphBackend {
   readonly capabilities: GraphBackendCapabilities;
 
+  /**
+   * (BL-508) Engine identity of the backing store — the `_sox_engine` marker
+   * row (`engine`, `sox_version`, `driver_version`, `first_opened_at`,
+   * `last_opened_at`), or `null` when the store is in-memory or predates the
+   * marker scheme. The open result of `createGraphBackend` carries it so a
+   * graph-store consumer can surface client/engine version tracking without
+   * re-probing. Accessing it runs the foreign-engine guard once per adapter
+   * instance (fail-closed on a marker mismatch for turso-owned stores).
+   */
+  readonly engineIdentity?: EngineIdentity | null;
+
   applySchema(): Promise<void>;
 
   writeNode(content: string, meta: NodeMeta): Promise<number>;
@@ -1007,6 +1019,9 @@ export class SqliteGraphBackend implements GraphBackend {
    */
   private supportsRecursiveCte: boolean;
 
+  /** (BL-508) Cached engine identity — see the `engineIdentity` getter. */
+  private _engineIdentity: EngineIdentity | null | undefined;
+
   constructor(adapter: StoreAdapter, opts?: GraphBackendOpts) {
     this.adapter = adapter;
     this.typePolicy = opts?.typePolicy ?? DEFAULT_TYPE_POLICY;
@@ -1019,6 +1034,31 @@ export class SqliteGraphBackend implements GraphBackend {
       metadataFilter: true,
     };
     this.supportsRecursiveCte = adapter.capabilities.recursiveCte ?? true;
+    this._engineIdentity = undefined;
+  }
+
+  /**
+   * (BL-508) The backing store's engine identity (marker row), computed once
+   * per adapter instance and cached. The foreign-engine guard runs on the
+   * FIRST access: a turso-owned store with a SQLite marker FAILS CLOSED here
+   * (typed `ESqliteNativeStore`) — defense-in-depth under the turso adapter's
+   * own connect-time refusal, for direct-adapter consumers. Access cost is
+   * per-connection, never per-op (adapter handles are long-lived — memory-core
+   * caches them in `getDb`).
+   */
+  get engineIdentity(): EngineIdentity | null {
+    if (this._engineIdentity !== undefined) return this._engineIdentity;
+    const dbPath = this.adapter.config.dbPath;
+    if (!dbPath) {
+      this._engineIdentity = null;
+      return null;
+    }
+    if (this.adapter.config.type === 'turso') {
+      // Fail-closed on a marker mismatch (unmarked legacy stays allowed).
+      assertStoreEngineSync(dbPath, 'turso');
+    }
+    this._engineIdentity = getEngineIdentitySync(dbPath);
+    return this._engineIdentity;
   }
 
   async applySchema(): Promise<void> {
@@ -1838,5 +1878,10 @@ export class SqliteGraphBackend implements GraphBackend {
 }
 
 export function createGraphBackend(adapter: StoreAdapter, opts?: GraphBackendOpts): GraphBackend {
-  return new SqliteGraphBackend(adapter, opts);
+  const backend = new SqliteGraphBackend(adapter, opts);
+  // (BL-508) Eager: run the foreign-engine guard + engine-identity read now —
+  // the "open result" carries the identity, and a marker mismatch must refuse
+  // at open, not on the first graph op. Cached on the instance afterwards.
+  void backend.engineIdentity;
+  return backend;
 }

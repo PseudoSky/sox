@@ -43,22 +43,80 @@
 export class ETursoNativeStore extends Error {
   public readonly code = 'E_TURSO_NATIVE_STORE';
 
+  /**
+   * (BL-508) The engine the store's marker claims, when the refusal came from
+   * the engine-identity guard rather than the BL-329 schema probe. Always
+   * `'turso'` for this class (it is the "store is Turso-owned" error) — kept
+   * as a field so callers can report the detected engine verbatim.
+   */
+  public readonly detectedEngine: 'turso' | null;
+
   constructor(
     public readonly dbPath: string,
     /** The raw driver error (the opaque `malformed database schema
      *  (__turso_internal_...)` SqliteError) — deliberately kept OFF this
      *  error's `.message` (BL-329 requires the opaque text not reach the
      *  caller by default) but preserved here for a caller that explicitly
-     *  wants to inspect the underlying driver failure. */
+     *  wants to inspect the underlying driver failure. `null` when the
+     *  refusal came from the (BL-508) engine-marker guard — there is no
+     *  driver error in that case. */
     public readonly cause: unknown,
+    opts?: { detectedEngine?: 'turso'; guidance?: string },
   ) {
+    const detected = opts?.detectedEngine ?? null;
+    const markerNote =
+      detected !== null
+        ? ` The store's engine marker (PRAGMA application_id = 0x534F5854 'SOXT') identifies it as ` +
+          `Turso-owned, so better-sqlite3 refused to open it BEFORE touching the schema or WAL.`
+        : ` better-sqlite3 cannot parse Turso's internal FTS directory objects (__turso_internal_fts_dir_*).`;
+    const guidance =
+      opts?.guidance ??
+      'Open it with createTursoAdapter()/TursoAdapterImpl (or STORE_ADAPTER=turso) — route through the Turso adapter / memory server instead.';
     super(
-      `[BL-329] "${dbPath}" is a Turso-native store (it carries a Tantivy-backed FTS index) ` +
-        `— better-sqlite3 cannot open it. This is not a corrupt store; better-sqlite3 simply ` +
-        `cannot parse Turso's internal FTS directory objects (__turso_internal_fts_dir_*). ` +
-        `Open it with createTursoAdapter()/TursoAdapterImpl (or STORE_ADAPTER=turso) instead.`,
+      `[BL-329/BL-508] "${dbPath}" is a Turso-native store (it carries a Tantivy-backed FTS index). ` +
+        `This is not a corrupt store; better-sqlite3 cannot open it.${markerNote} ${guidance}`,
     );
     this.name = 'ETursoNativeStore';
+    this.detectedEngine = detected;
+  }
+}
+
+/**
+ * (BL-508) Thrown when the Turso adapter opens a store whose engine marker
+ * identifies it as SQLite-owned — the mirror image of {@link ETursoNativeStore}.
+ *
+ * A single foreign-engine client opening a store owned by the other engine is
+ * the exact class of accident that destroys WAL coordination state: Turso and
+ * better-sqlite3 coordinate their shared WAL through different sidecar
+ * conventions (`-tshm` vs `-shm`), so a cross-engine open can leave the store
+ * permanently unopenable. The store's own marker (`PRAGMA application_id =
+ * 0x534F5853 'SOXS'`) makes the mismatch detectable BEFORE any write lands.
+ *
+ * Unmarked legacy stores are NOT refused — they are the pre-marker population
+ * and stay openable (backfilled on next sox open). Only an explicitly
+ * SQLite-owned marker refuses. A deliberate migration can pass
+ * `allowForeignEngine: true` to `TursoAdapterImpl.connect()` (the factory's
+ * `migrateOnAdapterChange` path does exactly that).
+ */
+export class ESqliteNativeStore extends Error {
+  public readonly code = 'E_SQLITE_NATIVE_STORE';
+
+  constructor(
+    public readonly dbPath: string,
+    /** The detected engine of the store — always `'sqlite'` for this class. */
+    public readonly detectedEngine: 'sqlite',
+    opts?: { guidance?: string },
+  ) {
+    const guidance =
+      opts?.guidance ??
+      'The store is SQLite-owned: open it with createSqliteAdapter()/SqliteAdapterImpl (or STORE_ADAPTER=sqlite). ' +
+        'To migrate it to Turso deliberately, use migrateOnAdapterChange or pass allowForeignEngine: true.';
+    super(
+      `[BL-508] "${dbPath}" is a SQLite-owned store (engine marker PRAGMA application_id = 0x534F5853 'SOXS') ` +
+        `— the Turso adapter refused to open it so it cannot destroy the SQLite WAL coordination state. ` +
+        `This is not a corrupt store. ${guidance}`,
+    );
+    this.name = 'ESqliteNativeStore';
   }
 }
 

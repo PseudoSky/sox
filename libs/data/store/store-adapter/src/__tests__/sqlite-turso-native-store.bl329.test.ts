@@ -77,6 +77,27 @@ async function seedTursoNativeStore(dbPath: string): Promise<void> {
   await w.close();
 }
 
+/**
+ * (BL-508) Strip the engine marker (application_id + `_sox_engine` row) so a
+ * seeded store exercises the BL-329 SCHEMA-PROBE refusal path (which carries
+ * the raw driver `cause`) rather than the marker refusal (which fires before
+ * any driver error exists). The marker refusal path is covered separately by
+ * the BL-508 suite (engine-guard.bl508.test.ts).
+ */
+async function wipeEngineMarker(dbPath: string): Promise<void> {
+  const Database = (await import('better-sqlite3')).default;
+  const db = new Database(dbPath);
+  try {
+    db.pragma('application_id = 0'); // reset the fast-path marker (BL-508)
+    db.unsafeMode(true);
+    db.pragma('writable_schema = ON');
+    db.prepare('DELETE FROM _sox_engine').run();
+    db.pragma('writable_schema = RESET');
+  } finally {
+    db.close();
+  }
+}
+
 tursoDescribe('BL-329 — SqliteAdapterImpl vs a Turso-native store', () => {
   it('RAW repro (proves the underlying claim): better-sqlite3 opens the file fine, but the first schema-touching query throws the opaque message', async () => {
     const dbPath = tempPath('raw-repro');
@@ -97,6 +118,7 @@ tursoDescribe('BL-329 — SqliteAdapterImpl vs a Turso-native store', () => {
   it('GREEN: SqliteAdapterImpl(dbPath) throws a typed ETursoNativeStore instead of letting the open silently "succeed" and fail later', async () => {
     const dbPath = tempPath('typed-error');
     await seedTursoNativeStore(dbPath);
+    await wipeEngineMarker(dbPath); // BL-508: unmarked → BL-329 schema-probe path
 
     let caught: unknown;
     try {

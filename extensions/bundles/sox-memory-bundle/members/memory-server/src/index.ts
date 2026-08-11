@@ -47,9 +47,9 @@ import {
   getEmbedHealth,
   getEmbedPipelineMetrics,
   getClusterPipelineMetrics,
-  getClusterMetrics,
   recordClusterPassAdmission,
   getOntologySnapshot,
+  getStoreEngineIdentity,
   hasPendingFullEnrich,
   healMissingVectors,
   log,
@@ -1102,21 +1102,28 @@ export async function handleToolCall(name: string, args: Record<string, unknown>
             // cannot keep up with the backlog at the current tick interval.
             heal_time_budget_exceeded: getEmbedPipelineMetrics(resolvedPath)?.heal_time_budget_exceeded ?? null,
           },
-          // BL-496: clustering observability, the peer of `embed_pipeline`
-          // above. Answers "how long does an episode take to get a cluster"
-          // (`metrics.time_to_community_ms`) AND the question that turned out
-          // to matter more — "will it get one at all?"
-          //
-          // Read these three together; any one alone misleads:
-          //   metrics.time_to_community_ms      — survivorship: winners only
-          //   backlog.awaiting_or_rejected      — how many have no community
-          //   last_pass_admission.rejected_*    — how many were REFUSED, not queued
-          //
-          // A healthy p50 next to a large `rejected_below_threshold` means
-          // clustering is fast for the episodes it accepts and closed to the
-          // rest — which is the live state as measured on 2026-08-08.
-          cluster_pipeline: clusterPipeline,
-        };
+        // BL-496: clustering observability, the peer of `embed_pipeline`
+        // above. Answers "how long does an episode take to get a cluster"
+        // (`metrics.time_to_community_ms`) AND the question that turned out
+        // to matter more — "will it get one at all?"
+        //
+        // Read these three together; any one alone misleads:
+        //   metrics.time_to_community_ms      — survivorship: winners only
+        //   backlog.awaiting_or_rejected      — how many have no community
+        //   last_pass_admission.rejected_*    — how many were REFUSED, not queued
+        //
+        // A healthy p50 next to a large `rejected_below_threshold` means
+        // clustering is fast for the episodes it accepts and closed to the
+        // rest — which is the live state as measured on 2026-08-08.
+        cluster_pipeline: clusterPipeline,
+        // BL-508: client/engine version tracking. The store's engine identity
+        // from the `_sox_engine` marker row (engine, sox_version,
+        // driver_version, first_opened_at, last_opened_at) — DATA, not a
+        // health dimension (HF-3 additive rule; an unreadable/absent marker
+        // reads as `null`, which is a legacy store, not a warning). Read
+        // through the already-open adapter — one cheap SELECT, no re-open.
+        store_engine: await getStoreEngineIdentity(adapter),
+      };
       }
     } catch {
       // Store block omitted on any error (file not found, permission, etc.)
