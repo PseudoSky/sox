@@ -40,6 +40,10 @@
 export { openDb, openDbReadOnly, initScope, migrateAddColumn, expandDbPath, getDb, stampStoreMeta, verifyStoreMeta, setWriterArtifact, getWriterArtifact, EStoreMismatch, STORE_META_KEYS, STORE_SCHEMA_VERSION, closeAllAdapters, wrapRawDbAsAdapter } from './db.js';
 export type { ScopeKind, MemoryScope } from './db.js';
 
+// ── Ping health verdict (BL-373 family — ping honesty) ───────────────────────
+export { computePingHealthVerdict } from './ping-health.js';
+export type { PingHealthInput, PingHealthStatus, PingHealthVerdict } from './ping-health.js';
+
 // ── Writer lease (SA-8, BL-128) ───────────────────────────────────────────────
 export {
   acquireWriteLease,

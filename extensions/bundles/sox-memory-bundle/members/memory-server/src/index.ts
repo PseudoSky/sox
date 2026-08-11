@@ -47,7 +47,6 @@ import {
   getEmbedHealth,
   getEmbedPipelineMetrics,
   getClusterPipelineMetrics,
-  getClusterMetrics,
   recordClusterPassAdmission,
   getOntologySnapshot,
   hasPendingFullEnrich,
@@ -90,6 +89,10 @@ import {
   // S11 / BL-165: canonical chunking re-exported from @adhd/sox-ingest via memory-core.
   // Replaces the local splitIntoChunks function (deleted below).
   splitIntoChunksSentence,
+  // BL-373 family (ping honesty): the pure health verdict — a store that could
+  // not open must never read as a healthy ping. Lives in memory-core so the
+  // semantics are unit-tested without touching this bundle (deploy guard).
+  computePingHealthVerdict,
 } from '@adhd/sox-memory-core';
 import type { HealResult, PendingEmbed, PhaseAOutcome, WriteError, WriteResult } from '@adhd/sox-memory-core';
 import type { StoreAdapter, VectorDialect } from '@adhd/sox-store-adapter';
@@ -322,7 +325,12 @@ export const TOOLS: Array<Omit<ToolDefinition, 'handler'>> = [
   {
     name: 'memory_ping',
     description:
-      'Use this to verify the server is reachable — returns {ok:true} with instance, store, and embed health info.',
+      'Use this to verify the server is reachable. `ok` means this MCP call itself succeeded; the ' +
+      'HEALTH verdict is `status` (`ok` | `degraded` | `unhealthy`), which is never `ok` when the ' +
+      'store write path is down (`store_ok: false` — e.g. the store failed to open, the Aug-11 ' +
+      'stale-WAL-sidecar shape). Read `status`, `store_ok`, `store_error`, and `embed.state` ' +
+      'together; `ok: true` alone is NOT a health guarantee (BL-373 family). Returns instance, ' +
+      'store, and embed health info.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -900,6 +908,11 @@ export async function handleToolCall(name: string, args: Record<string, unknown>
     // production store) purely to answer "are you reachable?". Refuse to
     // resolve at all in that case; report `configured: false` instead.
     let storeBlock: Record<string, unknown> | null = null;
+    // BL-373 family (ping honesty): capture WHY the store is not open, and
+    // whether it ever opened. `store: null` was the incident's false-positive
+    // input — the ping must then read `unhealthy`, never `ok`.
+    let storeOpenError: string | null = null;
+    let storeOpened = false;
     try {
       const storeArg = args['store'];
       const dbPathArg = args['db_path'];
@@ -919,6 +932,9 @@ export async function handleToolCall(name: string, args: Record<string, unknown>
             'refusing to guess a store path merely to answer a liveness check (BL-412). ' +
             'Pass "store" or "db_path" explicitly, or run under a host that injects SOX_CONFIG_DB_PATH.',
         };
+        storeOpenError =
+          'store not configured: no "store"/"db_path" argument and no SOX_CONFIG_DB_PATH ' +
+          '(bare process, BL-412) — this process can serve no writes';
       } else if (storeResult === null) {
         // hasHostConfig is true: the host explicitly configured a store via
         // SOX_CONFIG_DB_PATH — this is real production config, not a guess.
@@ -1048,6 +1064,12 @@ export async function handleToolCall(name: string, args: Record<string, unknown>
         // stall already recovered.
         const enrichStallEscalation = await readEnrichStallEscalation(adapter);
 
+        // The store opened AND the probe queries above succeeded — the write
+        // path is reachable right now (any poisoned-connection failure would
+        // have thrown out of executeGet through the reconnect path, landing in
+        // the catch below and leaving this false).
+        storeOpened = true;
+
         storeBlock = {
           name: storeName,
           path: resolvedPath,
@@ -1117,10 +1139,30 @@ export async function handleToolCall(name: string, args: Record<string, unknown>
           // rest — which is the live state as measured on 2026-08-08.
           cluster_pipeline: clusterPipeline,
         };
+      } else if (resolvedPath) {
+        // Resolved to a path whose file does not exist yet — an unborn store,
+        // not a dead one. Say so explicitly instead of leaving `store: null`
+        // to be misread as an open failure.
+        storeOpenError = `store file does not exist yet at ${resolvedPath} — the first open creates it`;
       }
-    } catch {
-      // Store block omitted on any error (file not found, permission, etc.)
+    } catch (err) {
+      // Store block omitted on any error (file not found, permission, stale
+      // WAL sidecar, poisoned connection…) — and the failure is recorded so
+      // the verdict below reads `unhealthy`, never `ok` (BL-373 family).
+      storeOpenError = err instanceof Error ? err.message : String(err);
     }
+
+    // BL-373 family (ping honesty): the health verdict is computed from the
+    // observed facts, not from embed health alone. `ok` keeps its RPC-success
+    // meaning for all 20 tools; `status`/`store_ok`/`store_error` are what an
+    // operator reads. A store that failed to open ⇒ `unhealthy` (the Aug-11
+    // incident shape: ping said ok while every write failed).
+    const verdict = computePingHealthVerdict({
+      storeOpened,
+      storeError: storeOpenError,
+      embedState: embedHealth.state,
+      embedError: embedHealth.last_error ?? null,
+    });
 
     return {
       content: [{
@@ -1130,10 +1172,13 @@ export async function handleToolCall(name: string, args: Record<string, unknown>
           // BUG-EMBED-WARMUP-CACHEHIT-ASSUMES-FAST-LOAD-001: additive verdict
           // field. `ok` keeps meaning "this MCP call itself succeeded" (this
           // extension's entire ok/isError RPC-success contract, unchanged for
-          // every other tool) — `status` is the new field an operator/
-          // dashboard reads as the actual embed-subsystem health verdict,
-          // mirroring the existing `integrity.overall` pattern below.
-          status: embedHealth.state === 'real' ? 'ok' : 'degraded',
+          // every other tool) — `status` is the health verdict an operator/
+          // dashboard reads, now covering BOTH the store write path and the
+          // embed subsystem (BL-373 family: a dead store is never 'ok').
+          status: verdict.status,
+          status_reason: verdict.status_reason,
+          store_ok: verdict.store_ok,
+          store_error: verdict.store_error,
           id: addr.id,
           artifact: addr.artifact,
           short: addr.short,
