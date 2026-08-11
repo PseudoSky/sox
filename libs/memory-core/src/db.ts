@@ -15,6 +15,7 @@ import * as path from 'node:path';
 import * as fs from 'node:fs';
 import { rebuildTable } from '@adhd/sox-graph-store';
 import { PRAGMAS, DDL_BASE, FTS_DDL, FTS_TRIGGERS } from './schema.js';
+import { ftsDialectFor } from './dialect.js';
 import { EMBED_DIM, getActiveEmbedModel } from './embed.js';
 import { closeDbWithLease } from './lease.js';
 import type Database from 'better-sqlite3';
@@ -251,12 +252,12 @@ async function dropVec0ViaBetterSqlite3(
  *
  * Required whenever the residue was created by a DIFFERENT SQLite engine
  * module than the one about to reopen the store (typically: Turso opening a
- * store that still carries SQLite-era fts5 artifacts). `DROP TABLE`/`DROP
- * TRIGGER` issued directly through Turso against fts5 objects it doesn't
+ * store that still carries SQLite-era FTS5 artifacts). `DROP TABLE`/`DROP
+ * TRIGGER` issued directly through Turso against FTS5 objects it doesn't
  * understand silently "succeeds" while leaving the object in `sqlite_master`
  * untouched (verified empirically — same silent-no-op behavior already
  * documented for vec0 DROPs via `dropVec0ViaBetterSqlite3` above).
- * better-sqlite3 has fts5 compiled in, so it executes these drops for real
+ * better-sqlite3 has FTS5 compiled in, so it executes these drops for real
  * regardless of which dialect produced the statement list — the caller
  * doesn't need to know or care which backend authored the residue.
  *
@@ -329,8 +330,6 @@ async function _openDbInner(dbPath: string): Promise<StoreAdapter> {
   const {
     createStoreAdapter,
     createVectorDialect,
-    createFTSDialect,
-    resolveExistingFtsIndexName,
     canonicalFtsIndexName,
   } = await import('@adhd/sox-store-adapter');
   let adapter = await createStoreAdapter({ dbPath });
@@ -533,22 +532,36 @@ async function _openDbInner(dbPath: string): Promise<StoreAdapter> {
     }
   }
 
-  // FTS setup — fully dialect-driven. This is the ONLY FTS call site in
-  // openDb(): no branching on `adapter.config.type` for what "create" or
-  // "clean up residue" means — the FTSDialect (fts-dialect.ts, the single
-  // place that knows how FTS works per backend) decides. Adding a third
-  // backend means implementing FTSDialect once, not touching this function.
-  const ftsDialect = createFTSDialect(adapter.config.type);
-  if (ftsDialect.supported && adapter.capabilities.fts) {
-    // 1. Legacy-residue cleanup: a store migrated from the OTHER backend may
-    //    carry that backend's now-dead FTS artifacts (SQLite fts5 table +
-    //    shadow tables + triggers on a Turso store; Turso's native index +
-    //    internal directory objects on a SQLite store — asymmetric but both
-    //    handled by the same dialect-driven path). Dead weight at best; on
-    //    Turso, actively fragile — Turso silently never fires fts5 trigger
-    //    bodies on INSERT/UPDATE/DELETE rather than erroring, which is an
-    //    undocumented gap, not a guarantee (see fts-dialect.ts module doc).
-    const residueNames = ftsDialect.legacyResidueNames('node');
+  // FTS setup — delegated to the store-adapter A2 orchestrator (DEBT-SOXGRAPH-002).
+  // This is the ONLY FTS call site in openDb(): a single
+  // `adapter.ensureFtsIndex` call owns every per-backend mechanic — the FTS5
+  // virtual table + content-sync triggers (SQLite), the Tantivy
+  // `CREATE INDEX … USING fts` (Turso), the BL-461 adoption of a non-canonical
+  // existing index, the /already exists/ idempotence, the shadow-table
+  // backfill, and in-band legacy-residue cleanup. No FTS DDL/SQL is assembled
+  // in memory-core anymore: the graph-store-owned FTS_DDL / FTS_TRIGGERS
+  // constants are passed through as DATA (opts.sqliteDDL). Adding a third
+  // backend means implementing FTSDialect once in store-adapter, not touching
+  // this function.
+  //
+  // ORDERING CONSTRAINT (proven empirically 2026-08-11): a store opened on an
+  // engine WITHOUT the fts5 module (capabilities.fts5 === false) that still
+  // carries SQLite FTS5 residue must be cleaned BEFORE ensureFtsIndex creates
+  // the Tantivy index. better-sqlite3 cannot parse `CREATE INDEX … USING fts`
+  // — the moment idx_fts_node exists, every better-sqlite3 statement against
+  // the file fails with "malformed database schema
+  // (__turso_internal_fts_dir_idx_fts_node_key)". ensureFtsIndex reports
+  // `residueNeedsOutOfBand` only AFTER creating the index, at which point the
+  // out-of-band tool (better-sqlite3) can no longer open the file. The
+  // pre-delegation block happened to clean residue FIRST; that ordering is
+  // load-bearing and therefore lives here, next to the connection it owns.
+  // The residue NAMES and DROP statements come from store-adapter's dialect
+  // (legacyResidueNames/dropLegacyDDL) — the query below is a generic
+  // sqlite_master existence check, the same class of metadata query used all
+  // over this file, not FTS DDL assembly.
+  if (!adapter.capabilities.fts5) {
+    const residueDialect = await ftsDialectFor(adapter);
+    const residueNames = residueDialect.legacyResidueNames('node');
     if (residueNames.length > 0) {
       const placeholders = residueNames.map(() => '?').join(',');
       const residue = await adapter.executeGet<{ c: number }>(
@@ -561,101 +574,78 @@ async function _openDbInner(dbPath: string): Promise<StoreAdapter> {
           adapter_type: adapter.config.type,
           residue_count: residue.c,
         });
-        if (ftsDialect.supportsShadowTable) {
-          // Residue belongs to the OTHER (non-shadow-table) dialect — its
-          // objects are opaque index/table rows to this engine and can be
-          // dropped directly through the live adapter connection.
-          for (const stmt of ftsDialect.dropLegacyDDL('node')) {
-            try {
-              await adapter.exec(stmt);
-            } catch (err) {
-              log.debug('store.open.fts_legacy_residue_drop_skip', {
-                adapter_type: adapter.config.type,
-                sql: truncateForLog(stmt),
-                error: truncateForLog(err instanceof Error ? err.message : String(err)),
-              });
-            }
-          }
-        } else {
-          // Residue belongs to a shadow-table dialect (SQLite fts5) this
-          // engine (Turso) cannot reliably manipulate directly — verified
-          // empirically: DROP TABLE/TRIGGER against it reports success but
-          // leaves the object in sqlite_master untouched. Route through
-          // better-sqlite3, then reopen (mirrors the vec0 compatibility
-          // repair pattern above).
-          await adapter.close();
-          await dropFtsResidueViaBetterSqlite3(dbPath, ftsDialect.dropLegacyDDL('node'));
-          adapter = await createStoreAdapter({ dbPath });
-        }
+        // The Turso engine's DROPs against FTS5 objects silently no-op (see
+        // fts-dialect.ts) — route through better-sqlite3, which has FTS5
+        // compiled in, then reopen (mirrors the vec0 compatibility repair
+        // above and the identical dance the pre-delegation block performed).
+        // Errors here PROPAGATE — the pre-delegation block also left its
+        // close/reopen outside the per-statement try/catch: a failure to
+        // clean residue is a real open failure.
+        await adapter.close();
+        await dropFtsResidueViaBetterSqlite3(dbPath, residueDialect.dropLegacyDDL('node'));
+        adapter = await createStoreAdapter({ dbPath });
       }
     }
+  }
 
-    // 2. Create/ensure the FTS index for this backend. SQLite's real DDL is
-    //    schema-owned upstream by graph-store (re-exported here as
-    //    FTS_DDL/FTS_TRIGGERS via schema.ts) and passed through — the
-    //    dialect can't own that SQL itself without a circular package
-    //    dependency (graph-store already depends on store-adapter). Turso
-    //    generates its own DDL from columns/weights and ignores the sqlite
-    //    DDL argument entirely.
-    // (BL-461) Ask whether the TABLE has an FTS index, not whether one
-    // particular NAME is taken. Turso has no `ALTER INDEX … RENAME`, so the
-    // orphan guard's rebuild (store-adapter's fts-orphan-guard.ts) necessarily
-    // leaves the healthy index under a different name — `idx_fts_node__r1`.
-    // `CREATE INDEX IF NOT EXISTS idx_fts_node` would then find its own name
-    // free and build a SECOND full index over the same columns: measured to
-    // coexist and to answer queries correctly, so the only symptom is
-    // permanently doubled write and storage cost, forever, silently.
-    // Returns null on SQLite (fts5's virtual-table name is load-bearing) and on
-    // any unreadable schema, so the default is unchanged: create as usual.
-    const existingFtsIndex = await resolveExistingFtsIndexName(adapter, 'node');
-    const ddlStatements =
-      existingFtsIndex !== null && existingFtsIndex !== canonicalFtsIndexName('node')
-        ? []
-        : ftsDialect.createIndexDDL(
-            'node',
-            ['content', 'name', 'summary'],
-            { content: 1.0, name: 1.0, summary: 1.0 },
-            [FTS_DDL, FTS_TRIGGERS],
-          );
-    if (ddlStatements.length === 0 && existingFtsIndex !== null) {
+  let fts: FtsEnsureResult;
+  try {
+    fts = await adapter.ensureFtsIndex('node', ['content', 'name', 'summary'], {
+      weights: { content: 1.0, name: 1.0, summary: 1.0 },
+      sqliteDDL: [FTS_DDL, FTS_TRIGGERS],
+      backfill: true,
+      dropLegacyResidue: true,
+    });
+
+    // (BL-461) The adoption guard now lives in store-adapter: an existing
+    // non-canonical index (e.g. `idx_fts_node__r1` after an orphan-guard
+    // rebuild) is ADOPTED rather than duplicated over the same columns. Surface
+    // the same diagnostic the old lookup block logged.
+    if (fts.adoptedExisting !== null) {
       log.info('store.open.fts_index_resolved_by_lookup', {
         adapter_type: adapter.config.type,
-        index_name: existingFtsIndex,
+        index_name: fts.adoptedExisting,
         canonical_name: canonicalFtsIndexName('node'),
         detail:
           'the FTS index on "node" is present under a non-canonical name (BL-461 orphan rebuild); ' +
           'creation skipped so a duplicate index is not built',
       });
     }
-    for (const stmt of ddlStatements) {
-      try {
-        await adapter.exec(stmt);
-      } catch (err) {
-        const message = err instanceof Error ? err.message : String(err);
-        if (/already exists/i.test(message)) {
-          // Benign — e.g. Turso rejecting IF NOT EXISTS on an index that's
-          // already there, or a re-applied CREATE TRIGGER IF NOT EXISTS.
-          log.debug('store.open.fts_index_already_exists', {
-            adapter_type: adapter.config.type,
-            error: truncateForLog(message),
-          });
-        } else {
-          // Any OTHER failure means full-text search is dead on this store
-          // and MUST be loud (log.error), never silently downgraded — a
-          // swallowed failure here is exactly how idx_fts_node went missing
-          // in production before this was root-caused (Turso's `CREATE
-          // INDEX ... USING fts` requires the connection to have been
-          // opened with the `index_method` experimental feature — fixed in
-          // TursoAdapterImpl.connect(), turso-adapter.ts).
-          log.error('store.open.fts_index_create_failed', {
-            adapter_type: adapter.config.type,
-            db_path: dbPath,
-            sql: truncateForLog(stmt),
-            error: truncateForLog(message),
-          });
-        }
-      }
+
+    // In-band legacy-residue cleanup (SQLite dropping a Turso-era Tantivy
+    // index — harmless opaque rows to better-sqlite3). The Turso-side
+    // FTS5-residue case is handled by the pre-check above and never reaches
+    // this branch.
+    if (fts.residueDropped.length > 0) {
+      log.warn('store.open.fts_legacy_residue_drop', {
+        db_path: dbPath,
+        adapter_type: adapter.config.type,
+        residue_count: fts.residueDropped.length,
+      });
     }
+  } catch (err) {
+    // Degrade-on-failure path preserved from the pre-delegation block: a
+    // non-"already exists" FTS setup failure is LOUD (log.error) but does NOT
+    // fail the open — a swallowed failure here is exactly how idx_fts_node
+    // went missing in production before this was root-caused (Turso's
+    // `CREATE INDEX … USING fts` requires the connection to have been opened
+    // with the `index_method` experimental feature — fixed in
+    // TursoAdapterImpl.connect()). ensureFtsIndex skips "already exists"
+    // races internally, so only real errors reach this catch; the next open
+    // retries the whole setup.
+    log.error('store.open.fts_index_create_failed', {
+      adapter_type: adapter.config.type,
+      db_path: dbPath,
+      error: truncateForLog(err instanceof Error ? err.message : String(err)),
+    });
+    fts = {
+      ensured: false,
+      adoptedExisting: null,
+      indexName: null,
+      backfilled: false,
+      residueDropped: [],
+      residueNeedsOutOfBand: false,
+    };
   }
 
   // ── Vector table setup ─────────────────────────────────────────────────
