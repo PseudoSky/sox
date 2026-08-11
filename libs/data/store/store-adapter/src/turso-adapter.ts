@@ -9,12 +9,15 @@ import {
   describeStaleWalIndexFailure,
   emitIntegrityReport,
   isStaleWalIndexError,
+  probeWalFrames,
   recoverStaleWalIndex,
+  recoverTruncatedWal,
   runOpenTimeIntegrity,
   summarizeBackupIntegrity,
   verifyStoreIntegrity,
+  warnIfStaleSidecar,
 } from './integrity.js';
-import type { BackupIntegrityReport, WalIdentity } from './integrity.js';
+import type { BackupIntegrityReport, WalFrameProbe, WalIdentity } from './integrity.js';
 import {
   clearStoreOpenMarker,
   describePreflight,
@@ -426,6 +429,12 @@ export class TursoAdapterImpl implements TursoAdapter {
       }
     }
 
+    // (BL-373 family) Informational, BEFORE any open attempt: a `-tshm` that
+    // is provably older than the `-wal` beside it is decaying, and the open
+    // about to run may be the one that fails with a WAL-frame short read.
+    // Two statSync calls, never throws.
+    warnIfStaleSidecar(opts.dbPath);
+
     let db: any;
     try {
       db = await openOnce();
@@ -438,6 +447,15 @@ export class TursoAdapterImpl implements TursoAdapter {
       // reconciling it is safe when the WAL has nothing to lose. This must live
       // here rather than in a post-open probe: `connect()` itself is what
       // fails, so nothing downstream ever runs.
+      //
+      // (BL-373 third recurrence) A non-empty WAL is no longer an automatic
+      // decline: the sidecar-vs-WAL mtime heuristic in `recoverStaleWalIndex`
+      // moves a PROVABLY stale sidecar even over a multi-hundred-KB WAL (the
+      // Aug-1/Aug-3/Aug-11 shape: `-tshm` days old, WAL 206 032 bytes, every
+      // fresh open failing with a short read). The WAL is never touched by
+      // sidecar recovery — reopen against it as-is. Only a reopen that STILL
+      // fails, on a probe-truncated (Shape B) WAL, may move the WAL itself, and
+      // only with `SOX_ALLOW_AUTO_WAL_ASIDE=1` (see `recoverTruncatedWal`).
       if (!isStaleWalIndexError(err) || !opts.dbPath) throw err;
 
       const recovery = recoverStaleWalIndex(opts.dbPath);
@@ -453,18 +471,56 @@ export class TursoAdapterImpl implements TursoAdapter {
             }`,
       );
       if (recovery.movedAside.length === 0) {
-        throw describeStaleWalIndexFailure(opts.dbPath, recovery, err);
+        // Declined with evidence (the decline text carries the frame probe).
+        // Pass the probe onward so the typed operator error also names the
+        // WAL-side action when the WAL is genuinely truncated (Shape B) —
+        // "truncated WAL + fresh sidecar" is exactly the ambiguous case that
+        // goes to the operator.
+        throw describeStaleWalIndexFailure(
+          opts.dbPath,
+          recovery,
+          err,
+          probeWalFrames(opts.dbPath + '-wal'),
+        );
       }
+
+      let walAside: WalFrameProbe | null = null;
       try {
         db = await openOnce();
       } catch (retryErr) {
-        throw describeStaleWalIndexFailure(opts.dbPath, recovery, retryErr);
+        // Sidecar moved aside but the open STILL fails. Ask the frame probe
+        // whether the WAL itself is truncated (Shape B) — and only then, with
+        // the explicit opt-in AND orphan-staleness evidence, move the WAL. A
+        // frame-aligned WAL (Shape A) or a fresh WAL goes to the operator with
+        // a typed error naming the exact action.
+        const probe = probeWalFrames(opts.dbPath + '-wal');
+        const walRecovery = recoverTruncatedWal(opts.dbPath, { probe });
+        if (walRecovery.attempted) {
+          try {
+            db = await openOnce();
+            walAside = probe;
+            emitIntegrityReport(
+              opts.dbPath,
+              'damaged',
+              `[BL-373] the WAL was truncated mid-frame (${probe.leftover} bytes past the last ` +
+                `complete frame) and stale relative to the database; moved aside to ` +
+                `${walRecovery.movedAside[0]?.to ?? '?'} and reopened from the last checkpoint. ` +
+                `DATA-LOSS DISCLOSURE: frames written after the last checkpoint are unreachable.`,
+            );
+          } catch (walAsideErr) {
+            throw describeStaleWalIndexFailure(opts.dbPath, recovery, walAsideErr, probe);
+          }
+        } else {
+          throw describeStaleWalIndexFailure(opts.dbPath, recovery, retryErr, probe);
+        }
       }
-      emitIntegrityReport(
-        opts.dbPath,
-        'repaired',
-        `[BL-373] store opened after reconciling the stale WAL-index sidecar`,
-      );
+      if (walAside === null) {
+        emitIntegrityReport(
+          opts.dbPath,
+          'repaired',
+          `[BL-373] store opened after reconciling the stale WAL-index sidecar`,
+        );
+      }
     }
 
     // (SOXGRAPH-001) Probe recursive-CTE support ONCE at connect, before the
@@ -514,6 +570,11 @@ export class TursoAdapterImpl implements TursoAdapter {
 
     const instance = new TursoAdapterImpl(db, config, capabilities);
     instance._softReadonly = softReadonly;
+
+    // (BL-373 family) The open SUCCEEDED despite a stale sidecar — the masked
+    // case. warnIfStaleSidecar fires only when the mtimes prove staleness, so
+    // a healthy sidecar emits nothing. Informational, never throws.
+    warnIfStaleSidecar(opts.dbPath);
 
     // (BL-361) The store is now open, so this session owns it. The marker is
     // what tells the NEXT open that this session may not have ended cleanly —
