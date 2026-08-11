@@ -17,10 +17,11 @@
  *  2. The 60 s mtime boundary: backdated 30 s → declined untouched; 90 s →
  *     moved.
  *  3. Shape B (mid-frame truncated WAL): `probeWalFrames` reports truncated;
- *     with `SOX_ALLOW_AUTO_WAL_ASIDE=1` the WAL is renamed `.corrupt-<stamp>`
- *     (preserved) and the store reopens from the last checkpoint; without the
- *     opt-in the operator gets a typed action error. A frame-ALIGNED truncated
- *     WAL is NOT classified as corruption — sidecar moves, WAL stays.
+ *     REFUSAL-ONLY (ADR-0013) — the typed operator-action error names the
+ *     manual step (`mv …-wal …-wal.corrupt-<stamp>`, or restore from backup)
+ *     with the data-loss disclosure, and the WAL is never auto-renamed. A
+ *     frame-ALIGNED truncated WAL is NOT classified as corruption — sidecar
+ *     moves, WAL stays.
  *  4. The `sidecar_stale` startup warning fires with mtime evidence — including
  *     on a store whose open SUCCEEDS (the masked case).
  *
@@ -36,7 +37,6 @@ import {
   readdirSync,
   truncateSync,
   utimesSync,
-  renameSync,
   unlinkSync,
 } from 'node:fs';
 import { join, basename, dirname } from 'node:path';
@@ -46,7 +46,7 @@ import { TursoAdapterImpl } from '../turso-adapter.js';
 import {
   probeWalFrames,
   recoverStaleWalIndex,
-  recoverTruncatedWal,
+  describeStaleWalIndexFailure,
   warnIfStaleSidecar,
   setIntegrityReportSink,
   DEFAULT_WAL_SIDECAR_STALE_THRESHOLD_MS,
@@ -247,69 +247,39 @@ tursoDescribe('BL-373 — Shape B: a mid-frame truncated WAL is probed, and move
     expect(probe.leftover).toBe(100);
   });
 
-  it('with SOX_ALLOW_AUTO_WAL_ASIDE=1 the truncated WAL is renamed .corrupt-<stamp> (preserved) and the store reopens from the last checkpoint', async () => {
-    const dbPath = tempPath('bl373-shapeb-aside');
+  it('REFUSAL-ONLY (ADR-0013): a truncated WAL is never auto-moved — the typed operator-action error names the manual step with the data-loss disclosure, and no WAL file is renamed', async () => {
+    const dbPath = tempPath('bl373-shapeb-refusal');
     await seedStore(dbPath);
     const walPath = dbPath + '-wal';
-    const tshmPath = dbPath + '-tshm';
-
-    // Ground truth: what the database alone holds (the checkpointed state) —
-    // read with both WAL and sidecar out of the way first.
-    renameSync(walPath, walPath + '.saved');
-    renameSync(tshmPath, tshmPath + '.saved');
-    const truth = await rawConnect(dbPath);
-    const truthCount = (await truth.all('SELECT COUNT(*) AS c FROM t'))[0]!.c as number;
-    await truth.close();
-    // The truth read re-created a fresh empty sidecar; remove it and restore
-    // the WAL so the fixture is exactly "real WAL, no sidecar".
-    unlinkSync(tshmPath);
-    renameSync(walPath + '.saved', walPath);
-
-    // Shape B: mid-frame truncation, then make the WAL an ORPHAN (older than
-    // the database it no longer serves).
     const probe = probeWalFrames(walPath);
     truncateSync(walPath, 32 + 100 * (24 + probe.pageSize!) + 100);
-    backdate(walPath, WEEK_MS);
-    expect(probeWalFrames(walPath).truncated).toBe(true);
+    const truncatedProbe = probeWalFrames(walPath);
+    expect(truncatedProbe.truncated).toBe(true);
+    const before = statSync(walPath).size;
 
-    const prev = process.env.SOX_ALLOW_AUTO_WAL_ASIDE;
-    try {
-      process.env.SOX_ALLOW_AUTO_WAL_ASIDE = '1';
-      const recovery = recoverTruncatedWal(dbPath);
-      expect(recovery.attempted).toBe(true);
-      expect(recovery.declined).toBeNull();
-      expect(recovery.movedAside.length).toBe(1);
-      expect(recovery.movedAside[0]!.from).toBe(walPath);
-      expect(recovery.movedAside[0]!.to).toMatch(/-wal\.corrupt-\d{4}-\d{2}-\d{2}-\d{4}/);
-      expect(existsSync(recovery.movedAside[0]!.to), 'the WAL must be preserved for forensics').toBe(true);
-      expect(existsSync(walPath), 'the original WAL path must be vacated').toBe(false);
-    } finally {
-      if (prev === undefined) delete process.env.SOX_ALLOW_AUTO_WAL_ASIDE;
-      else process.env.SOX_ALLOW_AUTO_WAL_ASIDE = prev;
-    }
+    // The exact typed error the adapter throws when the reopen still fails on
+    // a probe-truncated WAL: evidence + manual operator step + data-loss
+    // disclosure. Moving the WAL is a HUMAN decision — no env gate exists.
+    const err = describeStaleWalIndexFailure(
+      dbPath,
+      {
+        attempted: true,
+        movedAside: [{ from: dbPath + '-tshm', to: dbPath + '-tshm.stale-2026-08-11-0000' }],
+        declined: null,
+      },
+      new Error('failed to open database /x/memory.db: I/O error: short read on WAL frame at offset 774592'),
+      truncatedProbe,
+    );
+    expect(err.message).toMatch(/truncated mid-frame/);
+    expect(err.message).toMatch(/\.corrupt-<stamp>/);
+    expect(err.message).toMatch(/DISCARDS/);
+    expect(err.message).toMatch(/restore from backup/);
+    expect(err.message).not.toMatch(/SOX_ALLOW_AUTO_WAL_ASIDE/);
 
-    // Reopen: with the WAL gone, the store reads from the last checkpoint.
-    const adapter = track(await TursoAdapterImpl.connect({ dbPath }));
-    const rows = await adapter.executeGet<{ c: number }>('SELECT COUNT(*) AS c FROM t');
-    expect(rows!.c, 'reopen must return exactly the checkpointed state').toBe(truthCount);
-  });
-
-  it('without the opt-in the WAL is NOT moved and the operator gets the typed action', async () => {
-    const dbPath = tempPath('bl373-shapeb-noaside');
-    await seedStore(dbPath);
-    const walPath = dbPath + '-wal';
-    // Remove the sidecar (post-sidecar-move state) and truncate mid-frame.
-    renameSync(dbPath + '-tshm', dbPath + '-tshm.gone');
-    const probe = probeWalFrames(walPath);
-    truncateSync(walPath, 32 + 100 * (24 + probe.pageSize!) + 100);
-    backdate(walPath, WEEK_MS);
-
-    const recovery = recoverTruncatedWal(dbPath);
-    expect(recovery.attempted).toBe(false);
-    expect(recovery.movedAside).toEqual([]);
-    expect(recovery.declined).toMatch(/SOX_ALLOW_AUTO_WAL_ASIDE/);
-    expect(recovery.declined).toMatch(/mv .*\.corrupt-<stamp>/);
-    expect(existsSync(walPath), 'the WAL must stay put without the opt-in').toBe(true);
+    // No frames discarded, no WAL renamed — the store waits for the operator.
+    expect(statSync(walPath).size).toBe(before);
+    expect(existsSync(walPath), 'the WAL must never be auto-renamed').toBe(true);
+    expect(asideFiles(dbPath, '-wal.corrupt-').length).toBe(0);
   });
 
   it('a truncated WAL with a FRESH sidecar is genuinely ambiguous → declined, and the adapter error names both the evidence and the operator action', async () => {
@@ -330,9 +300,10 @@ tursoDescribe('BL-373 — Shape B: a mid-frame truncated WAL is probed, and move
     expect(errorMessage).toMatch(/-tshm/);
     expect(errorMessage).toMatch(/not provably stale/);
     expect(errorMessage).toMatch(/TRUNCATED/);
-    expect(errorMessage).toMatch(/SOX_ALLOW_AUTO_WAL_ASIDE/);
     expect(errorMessage).toMatch(/\.corrupt-<stamp>/);
-    expect(existsSync(walPath), 'the WAL must not be moved without the opt-in').toBe(true);
+    expect(errorMessage).toMatch(/restore from backup/);
+    expect(errorMessage).not.toMatch(/SOX_ALLOW_AUTO_WAL_ASIDE/);
+    expect(existsSync(walPath), 'the WAL must not be auto-moved (refusal-only)').toBe(true);
     expect(existsSync(dbPath + '-tshm'), 'a fresh sidecar must not be moved either').toBe(true);
   });
 

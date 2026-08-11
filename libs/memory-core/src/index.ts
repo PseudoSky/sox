@@ -126,7 +126,7 @@ export {
   schedulePendingEmbeds,
   flushPendingEmbeds,
   healMissingVectors,
-  // BL-88: stale-vector heal (DEFAULT-OFF — SOX_HEAL_STALE_VECTORS=1 required).
+  // BL-88: stale-vector heal — always runs when invoked (SOX_HEAL_STALE_VECTORS was an anti-feature, ADR-0013); the operator surface `memory_curate reheal_stale` drives it.
   // Integrator decides tick wiring at merge — NOT wired in memory-server yet.
   healStaleVectors,
   embedBacklogStats,

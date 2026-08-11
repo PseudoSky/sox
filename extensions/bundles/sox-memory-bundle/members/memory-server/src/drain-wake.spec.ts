@@ -128,7 +128,6 @@ async function waitFor(cond: () => boolean | Promise<boolean>, label: string, ma
 
 beforeEach(() => {
   delete process.env['SOX_SYNC_EMBED']; // exercise the async default pipeline
-  delete process.env['SOX_DISABLE_EMBED_HEAL'];
   // Keep the debounce short so the suite does not wait on production timings;
   // the COALESCING property under test is independent of the window's length.
   process.env['SOX_EMBED_DRAIN_WAKE_DEBOUNCE_MS'] = '5';

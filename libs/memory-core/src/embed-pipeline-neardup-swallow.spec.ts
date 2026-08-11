@@ -112,7 +112,6 @@ beforeEach(async () => {
   ctx = await tmpDb();
   process.env['SOX_MEMORY_LOG_DIR'] = ctx.logDir;
   process.env['SOX_MEMORY_LOG_COMPONENT'] = 'neardup-swallow-test';
-  delete process.env['SOX_MEMORY_LOG_DISABLE'];
   delete process.env['SOX_MEMORY_LOG_LEVEL'];
   _resetTelemetryForTest();
   _setEmbedProviderForTest(new DeterministicTestProvider());

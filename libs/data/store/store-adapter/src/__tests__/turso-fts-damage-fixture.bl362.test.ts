@@ -157,18 +157,23 @@ function seedEmptyTursoFtsIndex(dbPath: string, indexName: string): void {
 }
 
 /**
- * Open without the open-time integrity pass, so the RED arms can observe the
- * damage before the adapter heals it. `SOX_STORE_VERIFY=off` is the real,
- * shipped lever (`resolveVerifyDepth`) — not a test-only back door.
+ * Open without the open-time FTS probe repairing the damage, so the RED arms
+ * can observe it before the adapter heals it. `SOX_STORE_VERIFY=off` was an
+ * anti-feature and is gone (ADR-0013 — the store always validates); the
+ * documented short-lived-caller lever `SOX_STORE_VERIFY_SKIP=fts_index_live`
+ * (BL-431) is the faithful replacement: the open-time pass skips exactly the
+ * probe under test, so the damage survives the open and the RED arms verify
+ * it directly. The skipped probe's finding reports "skipped by the caller …
+ * NOT verified against it" — visible, not silent.
  */
 async function connectWithoutOpenTimeIntegrity(dbPath: string): Promise<TursoAdapterImpl> {
-  const previous = process.env.SOX_STORE_VERIFY;
-  process.env.SOX_STORE_VERIFY = 'off';
+  const previous = process.env.SOX_STORE_VERIFY_SKIP;
+  process.env.SOX_STORE_VERIFY_SKIP = 'fts_index_live';
   try {
     return await TursoAdapterImpl.connect({ dbPath });
   } finally {
-    if (previous === undefined) delete process.env.SOX_STORE_VERIFY;
-    else process.env.SOX_STORE_VERIFY = previous;
+    if (previous === undefined) delete process.env.SOX_STORE_VERIFY_SKIP;
+    else process.env.SOX_STORE_VERIFY_SKIP = previous;
   }
 }
 

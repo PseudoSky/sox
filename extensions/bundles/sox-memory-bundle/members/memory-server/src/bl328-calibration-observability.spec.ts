@@ -49,7 +49,6 @@ const LOG_ENV = [
   'SOX_MEMORY_LOG_DIR',
   'SOX_MEMORY_LOG_COMPONENT',
   'SOX_MEMORY_LOG_LEVEL',
-  'SOX_MEMORY_LOG_DISABLE',
 ] as const;
 
 const cleanups: Array<() => void> = [];
@@ -122,9 +121,7 @@ beforeEach(() => {
   process.env['SOX_MEMORY_LOG_DIR'] = logDir;
   process.env['SOX_MEMORY_LOG_COMPONENT'] = 'bl328';
   process.env['SOX_MEMORY_LOG_LEVEL'] = 'info';
-  delete process.env['SOX_MEMORY_LOG_DISABLE'];
   delete process.env['SOX_SYNC_EMBED'];
-  delete process.env['SOX_DISABLE_EMBED_HEAL'];
   _setEmbedProviderForTest(new DeterministicTestProvider());
 });
 

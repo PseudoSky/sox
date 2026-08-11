@@ -135,8 +135,6 @@ export interface CurateRehealStaleResult {
   gone: number;
   /** Rows whose embed or apply threw. */
   failed: number;
-  /** True when SOX_HEAL_STALE_VECTORS was not '1' — the pass did not run; `remaining` still reports honestly. */
-  disabled: boolean;
   /** The active embed model resolved for this call. */
   active_model: string;
 }
@@ -541,7 +539,7 @@ async function curateRehealStale(
     return {
       code: 'E_UNSUPPORTED',
       message:
-        'reheal_stale does not support dry_run — it always performs the heal when enabled. ' +
+        'reheal_stale does not support dry_run — it always performs the heal. ' +
         'Preview the candidate count via memory_stats.embed_provenance.stale_vector_count first.',
     };
   }
@@ -578,7 +576,6 @@ async function curateRehealStale(
     remaining: remainingRow?.cnt ?? 0,
     gone: pass.gone,
     failed: pass.failed,
-    disabled: pass.disabled,
     active_model: activeModel,
   };
 }

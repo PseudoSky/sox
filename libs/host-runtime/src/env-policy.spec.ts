@@ -49,15 +49,17 @@ describe('BL-344 — operator tunables reach the child', () => {
     expect(denied).toEqual([]);
   });
 
-  it('still forwards both live emergency brakes', () => {
+  it('forwards live SOX_* tunables under the prefix rule', () => {
+    // The two old emergency brakes (SOX_DISABLE_EMBED_HEAL /
+    // SOX_DISABLE_PERIODIC_ENRICH) were deleted — they were anti-features
+    // (ADR-0013). Any live SOX_* tunable must still forward under the prefix
+    // rule without being hand-listed.
     const { env } = scrubEnv({
-      SOX_DISABLE_EMBED_HEAL: '1',
-      SOX_DISABLE_PERIODIC_ENRICH: '1',
+      SOX_WAL_SIDECAR_STALE_THRESHOLD_MS: '60000',
+      SOX_EMBED_DRAIN_FLOOR_MS: '30000',
     });
-    // These only worked before because someone hand-added them to *some* of
-    // the copies — supervisor.ts had one of the two, runtime-cli.ts neither.
-    expect(env['SOX_DISABLE_EMBED_HEAL']).toBe('1');
-    expect(env['SOX_DISABLE_PERIODIC_ENRICH']).toBe('1');
+    expect(env['SOX_WAL_SIDECAR_STALE_THRESHOLD_MS']).toBe('60000');
+    expect(env['SOX_EMBED_DRAIN_FLOOR_MS']).toBe('30000');
   });
 
   it('preserves the pre-existing allowances: base keys, NODE_*, SOX_EMBED_*', () => {

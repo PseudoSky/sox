@@ -63,7 +63,7 @@
  */
 
 import { performance } from 'node:perf_hooks';
-import { embed, vecToJson, vecToBuffer, getActiveEmbedModel } from './embed.js';
+import { embed, vecToJson, vecToBuffer, getActiveEmbedModel, getConfiguredSyncEmbed } from './embed.js';
 import { detectNearDup } from './neardup.js';
 import { vectorDialectFor } from './dialect.js';
 import type { NearDupResult } from './neardup.js';
@@ -79,12 +79,13 @@ const LOG_PREFIX = '[memory-core embed-pipeline]';
 // ── Kill-switch ───────────────────────────────────────────────────────────────
 
 /**
- * True when SOX_SYNC_EMBED=1: the write path embeds INSIDE the queue slot (the
- * pre-2026-07-04 behaviour). Read per-call so operators can flip it without a
- * restart of anything but the affected request stream.
+ * The synchronous write-embed mode (`config embed.sync` — see EmbedConfig's
+ * `sync` field for the documented purpose; SOX_SYNC_EMBED is its env input,
+ * converted to typed config per ADR-0013). Read per-call so it can be
+ * flipped without a restart.
  */
 export function syncEmbedEnabled(): boolean {
-  return process.env['SOX_SYNC_EMBED'] === '1';
+  return getConfiguredSyncEmbed();
 }
 
 // ── Types ─────────────────────────────────────────────────────────────────────
@@ -139,8 +140,6 @@ export interface HealResult {
   exists: number;
   gone: number;
   failed: number;
-  /** True when SOX_DISABLE_EMBED_HEAL=1 short-circuited the pass (test seam / NC). */
-  disabled: boolean;
   /**
    * True when the heal pass hit its per-tick time budget and stopped early
    * before processing all SELECTed rows. The next tick picks up the remainder.
@@ -156,19 +155,15 @@ export interface HealResult {
 
 /**
  * BL-88: Result of a stale-vector heal pass (healStaleVectors).
- * Only produced when SOX_HEAL_STALE_VECTORS=1 enables the pass.
+ * The pass runs whenever invoked (SOX_HEAL_STALE_VECTORS was an anti-feature
+ * and is gone, ADR-0013) — a model-swap re-embed is driven by the operator
+ * surface (`memory_curate reheal_stale`), never gated by an env var.
  */
 export interface StaleHealResult {
   scanned: number;
   healed: number;
   gone: number;
   failed: number;
-  /**
-   * True when SOX_HEAL_STALE_VECTORS=1 was NOT set (pass default-off).
-   * The integrator decides when to enable this — a model swap re-embedding
-   * an entire store is an explicit operator decision, not a routine tick action.
-   */
-  disabled: boolean;
 }
 
 export interface EmbedBacklogStats {
@@ -631,11 +626,6 @@ export async function embedBacklogStats(adapter: StoreAdapter): Promise<EmbedBac
 
 // ── Periodic heal (the Phase-B crash-recovery path) ───────────────────────────
 
-/** True when SOX_DISABLE_EMBED_HEAL=1 (negative-control seam — never set in prod). */
-function healDisabled(): boolean {
-  return process.env['SOX_DISABLE_EMBED_HEAL'] === '1';
-}
-
 /**
  * Re-embed every live episode missing its vec_node row. Runs on the periodic
  * enrich tick in memory-server, mirroring reembedStore's missing-vector
@@ -653,11 +643,7 @@ export async function healMissingVectors(
   wq: WriteQueue,
   opts?: { limit?: number; logSink?: (line: string) => void },
 ): Promise<HealResult> {
-  const out: HealResult = { scanned: 0, healed: 0, exists: 0, gone: 0, failed: 0, disabled: false, time_budget_exceeded: false };
-  if (healDisabled()) {
-    out.disabled = true;
-    return out;
-  }
+  const out: HealResult = { scanned: 0, healed: 0, exists: 0, gone: 0, failed: 0, time_budget_exceeded: false };
   // BL-434: the heal tick establishes its OWN ambient trace context.
   //
   // Trace ids propagate ambiently through `AsyncLocalStorage`, and
@@ -820,24 +806,15 @@ async function embedWithTimeout(text: string, timeoutMs: number): Promise<Float3
   });
 }
 
-// ── Stale-vector heal (BL-88, DEFAULT-OFF) ────────────────────────────────────
-
-/**
- * True when SOX_HEAL_STALE_VECTORS=1. Default-off by design: re-embedding an
- * entire store after a model swap is an explicit operator decision, not a
- * routine background action. The integrator decides when to wire this into a
- * tick (or a manual invoke) — it is exported but NOT wired in memory-server.
- */
-function staleHealEnabled(): boolean {
-  return process.env['SOX_HEAL_STALE_VECTORS'] === '1';
-}
+// ── Stale-vector heal (BL-88) ────────────────────────────────────────────────
 
 /**
  * Re-embed live episodes whose `embed_model` is non-null and != the active model.
  *
- * DEFAULT-OFF: only runs when SOX_HEAL_STALE_VECTORS=1 is set. Returns
- * `{ disabled: true }` immediately otherwise. The active model is resolved once
- * at the start of each pass via `getActiveEmbedModel()`.
+ * ALWAYS runs when invoked (SOX_HEAL_STALE_VECTORS was an anti-feature,
+ * ADR-0013): the operator surface `memory_curate reheal_stale` is the
+ * interface, not an env gate. The active model is resolved once at the start
+ * of each pass via `getActiveEmbedModel()`.
  *
  * SAFE PATTERN (BL-154): never call this from inside a WriteQueue task. Call it
  * from an interval callback (like healMissingVectors) — OUTSIDE any queue task.
@@ -851,19 +828,16 @@ function staleHealEnabled(): boolean {
  * ("provenance unknown") and must not be treated as stale. Only rows with a
  * non-null embed_model that differs from the current active model are targets.
  *
- * The integrator MUST decide tick wiring at merge. Do NOT wire this into
- * memory-server without an explicit operator opt-in surface.
+ * Wired to the operator surface only (`memory_curate reheal_stale`), never to
+ * an automatic tick: a model-swap re-embed of an entire store is an explicit
+ * operator decision.
  */
 export async function healStaleVectors(
   adapter: StoreAdapter,
   wq: WriteQueue,
   opts?: { limit?: number; logSink?: (line: string) => void },
 ): Promise<StaleHealResult> {
-  const out: StaleHealResult = { scanned: 0, healed: 0, gone: 0, failed: 0, disabled: false };
-  if (!staleHealEnabled()) {
-    out.disabled = true;
-    return out;
-  }
+  const out: StaleHealResult = { scanned: 0, healed: 0, gone: 0, failed: 0 };
 
   // BL-434: same two-level trace context as healMissingVectors — the reembed
   // path is a third sibling of write/heal and had the identical `trace_id: null`

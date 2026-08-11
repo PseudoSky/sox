@@ -16,9 +16,12 @@
 2. **`probeWalFrames(walPath)`** — read-only: magic 0x377f0682/83 (either endianness), page size u32@8
    power-of-two 512..65536 (invalid ⇒ `readable:false`), `leftover = (size−32) mod (24+pageSize)`;
    **truncated ⇔ leftover ≠ 0**. `leftover === 0` (Shape A) is never corruption evidence.
-3. **`recoverTruncatedWal(dbPath)`** — WAL → `-wal.corrupt-<stamp>` (rename, preserved) only when
-   probe-truncated AND orphan-stale (`dbMtime − walMtime > threshold`) AND `SOX_ALLOW_AUTO_WAL_ASIDE=1`;
-   otherwise a typed decline naming the exact operator action.
+3. **Shape B (truncated WAL) is REFUSAL-ONLY (ADR-0013)** — `recoverTruncatedWal` and the
+   `SOX_ALLOW_AUTO_WAL_ASIDE=1` opt-in gate were DELETED (2026-08-11, anti-pattern strip): a
+   probe-truncated WAL (`leftover ≠ 0`) surfaces the typed operator-action error naming the manual
+   step (`mv <db>-wal <db>-wal.corrupt-<stamp>` with the data-loss disclosure, or restore from
+   backup). Moving a WAL discards every frame after the last checkpoint — a human decision; the
+   store loses nothing by waiting.
 4. **`warnIfStaleSidecar` + `'sidecar_stale'` event** — called from `connect()` before the open and
    after a successful open (the masked case); two statSync calls, never throws.
 5. turso-adapter open-time catch: sidecar-first → reopen against the existing WAL → only a still-
@@ -94,9 +97,8 @@ The catch remains as the backstop for races and non-mtime shapes. multiprocess W
   harmless no-op-visible (sidecar preserved aside); a version that fails differently still hits
   the catch → typed operator-action error (D6) → never silently healthy.
 - (v) stale sidecar AND genuinely truncated WAL (Shape B): proactive moves the sidecar; if the
-  reopen still fails, `recoverTruncatedWal` (probe-truncated AND orphan-stale AND
-  `SOX_ALLOW_AUTO_WAL_ASIDE=1`) moves the WAL with a data-loss disclosure; without the opt-in the
-  operator gets the typed action — and memory_ping reports `unhealthy` (Requirement A closes the
+  reopen still fails, the typed operator-action error fires (refusal-only, ADR-0013 — no
+  automatic WAL move exists) — and memory_ping reports `unhealthy` (Requirement A closes the
   loop: an unhandled store is never reported healthy).
 
 **Ping verdict shape (final):** `{ ok, status: 'ok'|'degraded'|'unhealthy', status_reason,
@@ -119,7 +121,8 @@ typecheck+lint clean. Smoke test deferred post-merge (deploy guard).
   **opens fine** — the masked case.
 - A truncated WAL with **no** sidecar opens fine (driver scans to the truncation); the reopen
   after sidecar-move therefore never fails on this driver → the auto-WAL-aside is defensive,
-  tested at the `recoverTruncatedWal` unit level.
+  exercised only at the refusal path (the typed error), since the driver tolerates
+  truncated WALs once the sidecar is gone.
 - The pre-fix decline was confirmed live: the running memory MCP server (bundled pre-fix code)
   refused to open its own store with "the WAL … holds 206032 bytes, so the sidecar may
   legitimately describe it".

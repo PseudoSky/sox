@@ -12,13 +12,12 @@ import {
   proactivelyReconcileStaleSidecar,
   probeWalFrames,
   recoverStaleWalIndex,
-  recoverTruncatedWal,
   runOpenTimeIntegrity,
   summarizeBackupIntegrity,
   verifyStoreIntegrity,
   warnIfStaleSidecar,
 } from './integrity.js';
-import type { BackupIntegrityReport, WalFrameProbe, WalIdentity } from './integrity.js';
+import type { BackupIntegrityReport, WalIdentity } from './integrity.js';
 import {
   clearStoreOpenMarker,
   describePreflight,
@@ -478,10 +477,12 @@ export class TursoAdapterImpl implements TursoAdapter {
       // decline: the sidecar-vs-WAL mtime heuristic in `recoverStaleWalIndex`
       // moves a PROVABLY stale sidecar even over a multi-hundred-KB WAL (the
       // Aug-1/Aug-3/Aug-11 shape: `-tshm` days old, WAL 206 032 bytes, every
-      // fresh open failing with a short read). The WAL is never touched by
-      // sidecar recovery — reopen against it as-is. Only a reopen that STILL
-      // fails, on a probe-truncated (Shape B) WAL, may move the WAL itself, and
-      // only with `SOX_ALLOW_AUTO_WAL_ASIDE=1` (see `recoverTruncatedWal`).
+      // fresh open failing with a short read). The WAL itself is never
+      // touched by sidecar recovery — reopen against it as-is. If the reopen
+      // STILL fails on a probe-truncated WAL (Shape B), that is REFUSAL-ONLY
+      // (ADR-0013, owner directive): the operator gets the typed action
+      // naming the manual step with the data-loss disclosure — moving the WAL
+      // is a human decision, never an automatic one.
       if (!isStaleWalIndexError(err) || !opts.dbPath) throw err;
 
       const recovery = recoverStaleWalIndex(opts.dbPath);
@@ -510,43 +511,27 @@ export class TursoAdapterImpl implements TursoAdapter {
         );
       }
 
-      let walAside: WalFrameProbe | null = null;
       try {
         db = await openOnce();
       } catch (retryErr) {
-        // Sidecar moved aside but the open STILL fails. Ask the frame probe
-        // whether the WAL itself is truncated (Shape B) — and only then, with
-        // the explicit opt-in AND orphan-staleness evidence, move the WAL. A
-        // frame-aligned WAL (Shape A) or a fresh WAL goes to the operator with
-        // a typed error naming the exact action.
-        const probe = probeWalFrames(opts.dbPath + '-wal');
-        const walRecovery = recoverTruncatedWal(opts.dbPath, { probe });
-        if (walRecovery.attempted) {
-          try {
-            db = await openOnce();
-            walAside = probe;
-            emitIntegrityReport(
-              opts.dbPath,
-              'damaged',
-              `[BL-373] the WAL was truncated mid-frame (${probe.leftover} bytes past the last ` +
-                `complete frame) and stale relative to the database; moved aside to ` +
-                `${walRecovery.movedAside[0]?.to ?? '?'} and reopened from the last checkpoint. ` +
-                `DATA-LOSS DISCLOSURE: frames written after the last checkpoint are unreachable.`,
-            );
-          } catch (walAsideErr) {
-            throw describeStaleWalIndexFailure(opts.dbPath, recovery, walAsideErr, probe);
-          }
-        } else {
-          throw describeStaleWalIndexFailure(opts.dbPath, recovery, retryErr, probe);
-        }
-      }
-      if (walAside === null) {
-        emitIntegrityReport(
+        // Sidecar moved aside but the open STILL fails. Shape B is refusal-
+        // only: the frame probe's evidence rides the thrown typed error,
+        // which names the exact manual operator step (`mv …-wal …-wal.corrupt-<stamp>`
+        // or restore from backup) with the data-loss disclosure. Never an
+        // automatic WAL move — a store that cannot open loses nothing by
+        // waiting, and data-loss decisions are human (ADR-0013).
+        throw describeStaleWalIndexFailure(
           opts.dbPath,
-          'repaired',
-          `[BL-373] store opened after reconciling the stale WAL-index sidecar`,
+          recovery,
+          retryErr,
+          probeWalFrames(opts.dbPath + '-wal'),
         );
       }
+      emitIntegrityReport(
+        opts.dbPath,
+        'repaired',
+        `[BL-373] store opened after reconciling the stale WAL-index sidecar`,
+      );
     }
 
     // (SOXGRAPH-001) Probe recursive-CTE support ONCE at connect, before the

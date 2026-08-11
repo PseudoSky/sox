@@ -99,11 +99,10 @@ import type { StoreAdapter, VectorDialect } from '@adhd/sox-store-adapter';
 // BL-334: the adapter verifies and repairs its own generated artifacts at open
 // (BL-352). Until this wiring, NOTHING read the retained result — so a store
 // with a dead FTS index presented as healthy, which is exactly how BL-347 ran
-// for a day unnoticed. `resolveVerifyDepth` is reused rather than re-reading
-// SOX_STORE_VERIFY here, so "disabled" cannot drift between the two.
+// for a day unnoticed. Verification is ALWAYS on (≥ fast, BL-373 family /
+// ADR-0013) — there is no "disabled" state to drift.
 import {
   readIntegrityResult,
-  resolveVerifyDepth,
   summarizeIntegrityForStatus,
   integrityHeadline,
 } from '@adhd/sox-store-adapter';
@@ -716,7 +715,7 @@ export const TOOLS: Array<Omit<ToolDefinition, 'handler'>> = [
         op: {
           type: 'string',
           enum: ['retag', 'set_topic', 'set_importance', 'merge_duplicates', 'recluster', 'drop_lens', 'drop-episodes', 'list_lenses', 'reheal_stale'],
-          description: 'The curation operation to perform. drop_lens removes a persisted subset lens by provenance_hash. drop-episodes hard-deletes episode node rows and cascading data. list_lenses returns all live subset lenses. reheal_stale re-embeds live episodes whose vector was stamped by a model that is no longer the active one (BL-88/BL-215) — a bounded, operator-invoked pass; it is never run automatically. Requires SOX_HEAL_STALE_VECTORS=1 on the server process, or it reports disabled:true with an honest remaining count and heals nothing.',
+          description: 'The curation operation to perform. drop_lens removes a persisted subset lens by provenance_hash. drop-episodes hard-deletes episode node rows and cascading data. list_lenses returns all live subset lenses. reheal_stale re-embeds live episodes whose vector was stamped by a model that is no longer the active one (BL-88/BL-215) — a bounded, operator-invoked pass; it is never run automatically, and it always works when invoked (SOX_HEAL_STALE_VECTORS was an anti-feature and is gone, ADR-0013).',
         },
         uid: { type: 'string', description: 'Target episode UID (required for retag, set_topic, set_importance).' },
         uids: { type: 'array', items: { type: 'string' }, description: '(drop-episodes) Array of episode UIDs to hard-delete. Only live nodes (t_invalid IS NULL) are removed; non-existent or already-invalidated UIDs are silently skipped.' },
@@ -1054,7 +1053,6 @@ export async function handleToolCall(name: string, args: Record<string, unknown>
         const integrityView = summarizeIntegrityForStatus(
           persisted?.result ?? null,
           persisted?.runAtMs ?? null,
-          resolveVerifyDepth(false) === 'off',
         );
 
         // BL-413: the durable corrective-action record a stalled tick writes
@@ -2055,7 +2053,6 @@ export async function handleToolCall(name: string, args: Record<string, unknown>
       const integrityView = summarizeIntegrityForStatus(
         persistedStats?.result ?? null,
         persistedStats?.runAtMs ?? null,
-        resolveVerifyDepth(false) === 'off',
       );
       const withIntegrity = {
         ...result,
@@ -2488,7 +2485,7 @@ export async function runEnrichPassOnDb(
       backlog_before: backlogBefore,
       backlog_after: backlogAfter,
       backlog_delta: backlogAfter - backlogBefore,
-      embed_heal_disabled: heal.disabled,
+
       embed_heal_skipped: heal.skipped ?? false,
     });
   } else {
@@ -2814,10 +2811,8 @@ let _drainNextTimer: ReturnType<typeof setTimeout> | null = null;
  *  rows (e.g. the embed provider is down) would spin at the 250ms idle delay
  *  forever, re-attempting the same rows and burning the machine. */
 let _drainNoProgress = 0;
-/** Latched when a pass reports the SOX_DISABLE_EMBED_HEAL brake: the chain
- *  stops rather than waking every 30s to do nothing. Keyed off the RESULT, not
- *  a second copy of the env check — BL-344's lesson about duplicated policy. */
-let _drainDisabled = false;
+/** Coalesced wakeDrain calls folded into an in-flight or pending pass (the
+ *  drain is always-on — SOX_DISABLE_EMBED_HEAL was an anti-feature, ADR-0013). */
 let _drainWakesCoalesced = 0;
 /** Whether the last completed pass left work behind — drives the re-arm delay. */
 let _drainBacklogRemaining = false;
@@ -2846,19 +2841,14 @@ export function getDrainPassCount(): number {
  * Returns whether any store still has backlog, so the caller can decide the
  * re-arm delay. Never throws.
  */
-async function runDrainPass(): Promise<{ backlogRemaining: boolean; healed: number; disabled: boolean }> {
+async function runDrainPass(): Promise<{ backlogRemaining: boolean; healed: number }> {
   let backlogRemaining = false;
   let healed = 0;
-  let disabled = false;
   for (const dbPath of openedPaths) {
     try {
       const adapter = await getDb(dbPath);
       const wq = await WriteQueue.forPath(dbPath);
       const heal = await healMissingVectors(adapter, wq, { limit: drainBatchLimit() });
-      if (heal.disabled) {
-        disabled = true;
-        continue;
-      }
       healed += heal.healed;
       const after = await embedBacklogStats(adapter);
       if (after.count > 0) backlogRemaining = true;
@@ -2875,7 +2865,7 @@ async function runDrainPass(): Promise<{ backlogRemaining: boolean; healed: numb
       console.error(`[memory-server] drain error (${dbPath}):`, err);
     }
   }
-  return { backlogRemaining, healed, disabled };
+  return { backlogRemaining, healed };
 }
 
 /** (BL-472) The currently in-flight drain pass, or null. Lets shutdown await
@@ -2909,14 +2899,6 @@ export function runDrainPassGuarded(): Promise<void> {
   const p = (async () => {
     try {
       const r = await withBackgroundSlot('drain', () => runDrainPass());
-      if (r.disabled) {
-        _drainDisabled = true;
-        console.error(
-          '[memory-server] embed drain DISABLED via SOX_DISABLE_EMBED_HEAL=1 ' +
-          '(BL-339 stopgap — the embed backlog will not drain)',
-        );
-        return;
-      }
       // Forward-progress accounting: backlog with zero healed means this window
       // is stuck, not merely large.
       if (r.backlogRemaining && r.healed === 0) _drainNoProgress++;
@@ -2962,22 +2944,9 @@ function nextDrainDelayMs(): number {
  * two passes can never stack.
  */
 function scheduleNextDrain(): void {
-  if (_drainDisabled) return;
-  // BL-474: gate the FIRST arm on the same brake that already disables heal
-  // work at execution time, so a process that has SOX_DISABLE_EMBED_HEAL=1
-  // set at import time never arms the timer at all — instead of arming it,
-  // running one no-op pass, discovering `heal.disabled`, and only then
-  // setting `_drainDisabled = true` (see runDrainPassGuarded) to stop
-  // rescheduling. Reuses the existing negative-control seam deliberately
-  // (embed-pipeline.ts:628, "never set in prod") rather than a new env var —
-  // this file's own BL-344 comments (:1408) warn against duplicating policy
-  // flags. Same end state either way (`_drainDisabled = true`, chain dead);
-  // this just reaches it without the wasted first pass, closing the
-  // clustering-e2e.test.ts step-3 scheduling race at its root.
-  if (process.env['SOX_DISABLE_EMBED_HEAL'] === '1') {
-    _drainDisabled = true;
-    return;
-  }
+  // The drain chain ALWAYS arms: embed heal is always on (SOX_DISABLE_EMBED_HEAL
+  // was an anti-feature, ADR-0013 — "Disable heal???"), so there is no brake to
+  // gate the first arm on.
   if (_drainNextTimer !== null) clearTimeout(_drainNextTimer);
   const delay = nextDrainDelayMs();
   _drainDirty = false;
@@ -3015,7 +2984,6 @@ function scheduleNextDrain(): void {
  * own applies — see the `backlogRemaining` rule that stops that loop.
  */
 export function wakeDrain(reason: string): void {
-  if (_drainDisabled) return;
   if (_drainInFlight) {
     // Fold into the running pass's tail rather than arming a redundant timer.
     _drainDirty = true;
@@ -3085,28 +3053,17 @@ function schedulePhaseBAndWake(
  * this tick was. Disabling one background job simply handed the starvation to
  * the next one.
  *
- * The real defect is that ANY in-process background work starves every
- * foreground read: there is no concurrency model, no yield point, and no
- * admission control (see BL-331/BL-334/BL-339/BL-345 and the Gap-2 resource-governance
- * design in docs/ideas/themes-2-4-architecture.md). Adding a per-job disable
- * flag is whack-a-mole across every background job that exists or ever will —
- * it is here only so the service can stay READABLE until governance lands.
- *
- * Setting this to '1' means enrichment/clustering never runs: no communities,
- * no importance updates, no relates_to edges. Availability over completeness.
- */
-function periodicEnrichDisabled(): boolean {
-  return process.env['SOX_DISABLE_PERIODIC_ENRICH'] === '1';
-}
-
+  * The real defect is that ANY in-process background work starves every
+  * foreground read: there is no concurrency model, no yield point, and no
+  * admission control (see BL-331/BL-334/BL-339/BL-345 and the Gap-2 resource-governance
+  * design in docs/ideas/themes-2-4-architecture.md). The old per-job disable
+  * env (`SOX_DISABLE_PERIODIC_ENRICH`, a BL-346 stopgap) was deleted — it was
+  * an anti-feature (an env var whose only job was to disable a core function;
+  * ADR-0013). The in-process periodic tick (ADR-0007 — no separate daemon) is
+  * ALWAYS on. A maintenance-mode pause, if ever needed, is a typed operator
+  * action, not an env var.
+  */
 function scheduleNextEnrichTick(): void {
-  if (periodicEnrichDisabled()) {
-    process.stderr.write(
-      '[memory-server] periodic enrich DISABLED via SOX_DISABLE_PERIODIC_ENRICH=1 ' +
-      '(BL-346 stopgap — enrichment/clustering will not run)\n',
-    );
-    return;
-  }
   const timer = setTimeout(() => {
     void runPeriodicEnrichPassGuarded().finally(scheduleNextEnrichTick);
   }, PERIODIC_ENRICH_INTERVAL_MS);

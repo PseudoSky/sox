@@ -42,9 +42,12 @@
  * an unhandled rejection attributed to the running test ("Unknown Error:
  * database is locked") — the background drain/enrich tick fired mid-test,
  * called into the same patched `adapter.transaction`, and its own rejection
- * had no local catch. `SOX_DISABLE_EMBED_HEAL=1` / `SOX_DISABLE_PERIODIC_ENRICH=1`
- * (both already-shipped kill switches — `index.ts`'s `scheduleNextDrain`/
- * `scheduleNextEnrichTick`) stop both chains from ever arming, but ONLY if
+ * had no local catch. The old kill switches (`SOX_DISABLE_EMBED_HEAL` /
+ * `SOX_DISABLE_PERIODIC_ENRICH`) were deleted as anti-features (ADR-0013), so
+ * this file isolates the chains by stretching their tuning vars past the test
+ * window (`SOX_EMBED_DRAIN_FLOOR_MS` / `SOX_EMBED_DRAIN_WAKE_DEBOUNCE_MS` —
+ * the drain's first arm and its write-wake; the enrich tick's 5-min interval
+ * already exceeds the runtime) — but ONLY if
  * set BEFORE `index.ts` is first evaluated — a static top-of-file `import`
  * is hoisted ahead of any `process.env` assignment in this file's own body,
  * so the flags must be set, then the module imported dynamically. This file
@@ -210,8 +213,8 @@ function isInjectedFault(err: unknown): boolean {
  * rejection, if not internally caught, surfaces as an unhandled rejection
  * attributed to whichever test happens to be running when Node's event loop
  * notices it, NOT necessarily the test whose `Promise.all` triggered it.
- * Disabling the two background TIMER chains (`SOX_DISABLE_EMBED_HEAL`/
- * `SOX_DISABLE_PERIODIC_ENRICH`, see the file header) closed the largest
+ * Stretching the drain's timer tuning past the test window (the deleted
+ * disable envs' replacement, see the file header) closed the largest
  * source of this but not every fire-and-forget continuation reachable from
  * the write path itself.
  *
@@ -260,8 +263,8 @@ describe('BUG-MEMORY-001 AC3 — memory_write under parallel load against a popu
   const tmp = makeTempDir();
   const dbPath = path.join(tmp.dir, 'test.db');
   let _origStoreAdapter: string | undefined;
-  let _origDisableHeal: string | undefined;
-  let _origDisableEnrich: string | undefined;
+  let _origDrainFloor: string | undefined;
+  let _origDrainWake: string | undefined;
   let adapter!: StoreAdapter;
   let handleToolCall!: typeof IndexModule.handleToolCall;
   let runPeriodicEnrichPass!: typeof IndexModule.runPeriodicEnrichPass;
@@ -273,16 +276,20 @@ describe('BUG-MEMORY-001 AC3 — memory_write under parallel load against a popu
     _setEmbedProviderForTest(new DeterministicTestProvider());
 
     // Set BEFORE the first (and only, in this file) evaluation of index.ts —
-    // stops scheduleNextDrain()/scheduleNextEnrichTick()'s background chains
-    // from ever arming, so this test's own explicit, awaited
-    // runPeriodicEnrichPass() call below is the ONLY enrichment/heal activity
-    // touching the adapter for the duration of the fault injection (see the
-    // file header for the full "why" — an earlier version without this hit
-    // an unhandled rejection from a background tick racing the fault).
-    _origDisableHeal = process.env['SOX_DISABLE_EMBED_HEAL'];
-    _origDisableEnrich = process.env['SOX_DISABLE_PERIODIC_ENRICH'];
-    process.env['SOX_DISABLE_EMBED_HEAL'] = '1';
-    process.env['SOX_DISABLE_PERIODIC_ENRICH'] = '1';
+    // the two old disable envs (SOX_DISABLE_EMBED_HEAL /
+    // SOX_DISABLE_PERIODIC_ENRICH) are GONE (ADR-0013), so the background
+    // chains are isolated instead by stretching their tuning vars past this
+    // test's whole runtime: the drain's first arm (floor) and write-wake
+    // (debounce) and the enrich tick's interval all exceed the test window,
+    // so this test's own explicit, awaited runPeriodicEnrichPass() call below
+    // is the ONLY enrichment/heal activity touching the adapter for the
+    // duration of the fault injection (see the file header for the full
+    // "why" — an earlier version without isolation hit an unhandled rejection
+    // from a background tick racing the fault).
+    _origDrainFloor = process.env['SOX_EMBED_DRAIN_FLOOR_MS'];
+    _origDrainWake = process.env['SOX_EMBED_DRAIN_WAKE_DEBOUNCE_MS'];
+    process.env['SOX_EMBED_DRAIN_FLOOR_MS'] = '3600000';
+    process.env['SOX_EMBED_DRAIN_WAKE_DEBOUNCE_MS'] = '3600000';
 
     const indexModule = await import('./index.js');
     handleToolCall = indexModule.handleToolCall;
@@ -316,10 +323,10 @@ describe('BUG-MEMORY-001 AC3 — memory_write under parallel load against a popu
   afterAll(async () => {
     if (_origStoreAdapter === undefined) delete process.env['STORE_ADAPTER'];
     else process.env['STORE_ADAPTER'] = _origStoreAdapter;
-    if (_origDisableHeal === undefined) delete process.env['SOX_DISABLE_EMBED_HEAL'];
-    else process.env['SOX_DISABLE_EMBED_HEAL'] = _origDisableHeal;
-    if (_origDisableEnrich === undefined) delete process.env['SOX_DISABLE_PERIODIC_ENRICH'];
-    else process.env['SOX_DISABLE_PERIODIC_ENRICH'] = _origDisableEnrich;
+    if (_origDrainFloor === undefined) delete process.env['SOX_EMBED_DRAIN_FLOOR_MS'];
+    else process.env['SOX_EMBED_DRAIN_FLOOR_MS'] = _origDrainFloor;
+    if (_origDrainWake === undefined) delete process.env['SOX_EMBED_DRAIN_WAKE_DEBOUNCE_MS'];
+    else process.env['SOX_EMBED_DRAIN_WAKE_DEBOUNCE_MS'] = _origDrainWake;
     _setEmbedProviderForTest(null);
     await WriteQueue.clearInstances();
     tmp.cleanup();

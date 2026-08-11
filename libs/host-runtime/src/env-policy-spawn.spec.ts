@@ -87,8 +87,8 @@ describe('BL-344 — acceptance on a real spawned process', () => {
       SOX_MEMORY_LOG_LEVEL: 'debug',
       SOX_MEMORY_LOG_MAX_BYTES: '5000000',
       SOX_RECALL_EMBED_TIMEOUT_MS: '2000',
-      SOX_DISABLE_EMBED_HEAL: '1',
-      SOX_DISABLE_PERIODIC_ENRICH: '1',
+      SOX_EMBED_DRAIN_FLOOR_MS: '30000',
+      SOX_EMBED_DRAIN_IDLE_MS: '250',
     };
     const prev: Record<string, string | undefined> = {};
     for (const [k, v] of Object.entries(vars)) {
