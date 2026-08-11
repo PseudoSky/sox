@@ -2416,7 +2416,7 @@ export async function runEnrichPassOnDb(
         // vector; the next tick, or the drain's own re-arm, retries).
         return {
           scanned: 0, healed: 0, exists: 0, gone: 0, failed: 0,
-          disabled: false, time_budget_exceeded: false, skipped: true,
+          time_budget_exceeded: false, skipped: true,
         };
       })()
     : await healMissingVectors(adapter, wq, { limit: drainBatchLimit() });
