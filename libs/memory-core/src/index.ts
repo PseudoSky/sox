@@ -44,6 +44,10 @@ export type { ScopeKind, MemoryScope } from './db.js';
 export { computePingHealthVerdict } from './ping-health.js';
 export type { PingHealthInput, PingHealthStatus, PingHealthVerdict } from './ping-health.js';
 
+// ── Typed config surface (ADR-0013 D2/D3) ────────────────────────────────────
+export { resolveBackupConfig, DEFAULT_BACKUP_CONFIG } from './config.js';
+export type { BackupConfig } from './config.js';
+
 // ── Writer lease (SA-8, BL-128) ───────────────────────────────────────────────
 export {
   acquireWriteLease,
