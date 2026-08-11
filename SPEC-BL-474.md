@@ -22,8 +22,16 @@ rather than trusting the implementer's report at face value:
   skipped:true` skip-result shape.
 - `heal_skipped` threaded additively through the return type and both log payloads
   (`index.ts:2358`, `:2369`, `:2424`) — matches §2 item 3.
-- `scheduleNextDrain()`'s `SOX_DISABLE_EMBED_HEAL` gate (`index.ts:2833-2846`) — matches §2 item 4
-  and D4 (reuses the seam, no new env var).
+> **SUPERSEDED-ANNOTATION (2026-08-11, strip branch `fix/bl373-sidecar-staleness`):**
+> the `SOX_DISABLE_EMBED_HEAL` env var this spec's item-4/D4/AC-4 revolve around is DELETED (an
+> anti-feature per ADR-0013 + owner directive: "Disable heal???"). The drain chain ALWAYS arms, the
+> `_drainDisabled` latch and `scheduleNextDrain` first-arm gate are gone, and
+> `HealResult.disabled` no longer exists. The implemented AC-4 now asserts the drain ALWAYS arms
+> (`getDrainPassCount() > 0` in the shortened floor window). Treat every `SOX_DISABLE_EMBED_HEAL`
+> reference below as historical.
+
+- `scheduleNextDrain()`'s first-arm gate (`index.ts:2833-2846`, env var since DELETED) — matches §2
+  item 4 and D4 at the time of writing (reuses the seam, no new env var).
 - `drain-wake.spec.ts`'s corrected test — matches D6 exactly: `backgroundSlotHolder()).toBe('drain')`
   kept (still true), the wait-vs-skip mechanism re-asserted via `runEnrichPassOnDb`'s
   `heal_skipped`/`healed` fields called directly (not through the void-returning guarded wrapper),
@@ -168,7 +176,11 @@ alternative but to wait**.
    `:2311` and the memory-server `CLAUDE.md`'s `memory_stats`/`memory_write` sections) — no existing
    field changes shape or meaning.
 
-4. **`scheduleNextDrain()` (`:2769-2779`)** — gate the *first* arm on the same env var that already
+4. **`scheduleNextDrain()` (`:2769-2779`)** — SUPERSEDED (ADR-0013, 2026-08-11): the env-gated
+   first-arm mechanism was DELETED along with `SOX_DISABLE_EMBED_HEAL`; the drain chain now arms
+   unconditionally (heal is always on). Historical text follows:
+
+   gate the *first* arm on the same env var that already
    disables heal work at execution time, so a process that has `SOX_DISABLE_EMBED_HEAL=1` set at
    import time never arms the timer at all, instead of arming it, running one no-op pass, discovering
    `heal.disabled`, and only then setting `_drainDisabled = true` (`:2717-2718`) to stop rescheduling.
@@ -296,7 +308,10 @@ change to the drain side.** BL-474's measured defect and acceptance criteria are
 Making it skip in favor of the backstop would invert the priority the rest of this file already
 documents (`:2247-2249`) and is not asked for by the item.
 
-**D4 — New env var for the scheduling opt-out, or reuse `SOX_DISABLE_EMBED_HEAL`?** Ruling: **reuse.**
+> SUPERSEDED (ADR-0013, 2026-08-11): there is no scheduling opt-out anymore — heal is always on and
+> the drain always arms; the D4 question is moot.
+
+**D4 — New env var for the scheduling opt-out, or reuse `SOX_DISABLE_EMBED_HEAL`?** Ruling (historical): **reuse.**
 Argued in §2.4 above; a new var repeats the exact duplicated-policy pattern this file's own comments
 warn about (`:1408`, citing BL-344).
 
@@ -378,6 +393,10 @@ yield, not wait.
 *RED arm:* run this rewritten test against the reverted (pre-fix) heal step — it fails because
 `enrich` does not resolve before the gate opens (deadlocked on `gated.release()`, same shape as
 today's passing behavior, but now asserted as a failure).
+
+> **SUPERSEDED (ADR-0013, 2026-08-11):** the env var is gone; the implemented AC-4 now asserts the
+> OPPOSITE — with a shortened `SOX_EMBED_DRAIN_FLOOR_MS`, the freshly-imported module's
+> `getDrainPassCount()` reads >= 1 inside the window (the drain ALWAYS arms). Historical text follows.
 
 **AC-4 (companion, scheduling opt-out).** With `process.env.SOX_DISABLE_EMBED_HEAL = '1'` set before
 `index.ts` is imported (module-load-order-sensitive — use `vi.resetModules()` + dynamic `import()` in
