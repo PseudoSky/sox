@@ -1352,6 +1352,10 @@ export class SqliteGraphBackend implements GraphBackend {
 
   async getSupersessionChain(nodeId: number): Promise<NodeRecord[]> {
     if (!this.supportsRecursiveCte) return this.getSupersessionChainIterative(nodeId);
+    // BL-504 (Segment D): ORDER BY ch.depth, n.rowid — the recursive SQL must
+    // match the iterative fallback's (depth, rowid) sort exactly. Equal-depth
+    // ties were engine-order dependent before; n.rowid is the deterministic
+    // tiebreaker both paths share.
     const sql = `
       WITH RECURSIVE
       connected(rowid) AS (
@@ -1367,7 +1371,7 @@ export class SqliteGraphBackend implements GraphBackend {
         SELECT h.rowid, 0 FROM head h
         UNION SELECT e.src, ch.depth + 1 FROM edge e JOIN chain ch ON e.dst = ch.rowid WHERE e.rel = 'SUPERSEDES'
       )
-      SELECT n.* FROM node n JOIN chain ch ON n.rowid = ch.rowid ORDER BY ch.depth
+      SELECT n.* FROM node n JOIN chain ch ON n.rowid = ch.rowid ORDER BY ch.depth, n.rowid
     `;
     const { rows } = await this.adapter.executeAll<DbNodeRow>(sql, [nodeId]);
     return rows.map(rowToNodeRecord);
@@ -1536,12 +1540,16 @@ export class SqliteGraphBackend implements GraphBackend {
       return out;
     }
     const joinCol = direction === 'out' ? 'e.dst' : 'e.src';
+    // BL-504: `NOT INDEXED` forces the rowid-PK path — without it the planner
+    // scans the partial index ix_node_validity (all live nodes) and the join
+    // goes super-linear (98.6s @ 2.8k nodes). Revisit if this query ever gains
+    // an ORDER BY on a node column.
     const { rows } = await this.adapter.executeAll<DbNodeRow>(
       `WITH RECURSIVE neighbors(rowid) AS (
         SELECT ? UNION SELECT ${joinCol} FROM edge e JOIN neighbors n ON e.${direction === 'out' ? 'src' : 'dst'} = n.rowid
         WHERE e.t_invalid IS NULL ${relFilter} LIMIT ?
       )
-      SELECT DISTINCT n.* FROM node n JOIN neighbors nb ON n.rowid = nb.rowid WHERE n.t_invalid IS NULL`,
+      SELECT DISTINCT n.* FROM node n NOT INDEXED JOIN neighbors nb ON n.rowid = nb.rowid WHERE n.t_invalid IS NULL`,
       [nodeId, depth * 100],
     );
     return rows.map(rowToNodeRecord).filter((n) => n.id !== nodeId);
