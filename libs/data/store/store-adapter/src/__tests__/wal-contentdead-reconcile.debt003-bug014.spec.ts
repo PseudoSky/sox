@@ -251,16 +251,34 @@ tursoDescribe('DEBT-003/BUG-014 — content-dead -tshm reconcile under a live pe
         ).toBe(1);
 
         // Probe D — the peer child STILL answers queries through its own
-        // connection after the reconcile (the MCP-server incident signature:
-        // a connection opened BEFORE the poison is unaffected by the sidecar
-        // rename). This is the SPEC pre-ship gate, real two-process. The
-        // child's own view: 3 checkpointed seed rows + its 50 WAL frames.
+        // connection after the heal (the MCP-server incident signature: a
+        // connection opened BEFORE the poison keeps serving; it does not crash,
+        // error, or lose its checkpointed data). The child's own view here is
+        // the 3 CHECKPOINTED seed rows — NOT 53.
+        //
+        // (BUG-021, SPEC §T3) The original spec pinned 53 (seed + the child's
+        // 50 WAL frames), but that figure was a stale session-local artifact:
+        // the 50 frames were physically destroyed by the out-of-band WAL zero,
+        // and whether the child's view briefly retains them depends on which
+        // session created the `-tshm`. With the content-deadness trigger, the
+        // CHILD's own connect now reconciles the preseed's TRUNCATE-residue
+        // `-tshm` (a content-proven-dead 86016-byte index over the 0-byte WAL —
+        // the poison shape, INV-3), so the child opens against a REBUILT index
+        // and the parent's first fresh open heals via the driver's own sidecar
+        // rebuild instead of failing into the adapter catch — syncing the shared
+        // wal-index to the truncated-WAL reality. The child then correctly sees
+        // 3; the peer-keeps-serving property that Probe D actually guards (no
+        // error, data intact) is unchanged.
         const probe = await childCount(child);
         expect(
           probe.error,
           `BUG-014 Probe D: the peer must keep serving — child error: ${probe.error}`,
         ).toBeNull();
-        expect(probe.count, 'Probe D: the child still sees its rows (3 seed + 50 written)').toBe(53);
+        expect(
+          probe.count,
+          'BUG-014 Probe D: the peer still sees its checkpointed seed rows (3 — the uncheckpointed ' +
+            'WAL frames were destroyed by the out-of-band zero; see BUG-021 note)',
+        ).toBe(3);
       } finally {
         child.kill('SIGKILL');
         await waitForExit(child);
