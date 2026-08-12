@@ -12,17 +12,27 @@ better-sqlite3 12.10.0, the real pre-repair backup of the live backlog store.
 The live-store forensics (memory 01KZSV4NMH7VTV2D55KPBRBK74) were correct, but a minimal
 repro with ONLY node + edge + residue does **not** exhibit the catalog abort — the driver
 registers every object, residue or not. The abort only bites when objects exist **after**
-the first unparseable row: on the real store, rows 1-20 (drizzle, node, node indexes)
-register; rows 21-28 (fts5 residue) stop the catalog build; everything after (29-40:
-`_adapter_meta`, Tantivy rows, `_sox_engine`, the rebuilt `edge`, all edge indexes) never
-registers — `no such table: edge` with NO open-time error. The earlier fixtures (and the
-shipped step-17 acceptance) missed the defect because they had nothing after the residue.
+the first unparseable row: on the real store, rows 1-20 (`__drizzle_migrations`, node,
+node indexes) register; rows 21-28 (fts5 residue) stop the catalog build; everything after
+(29-40: `_adapter_meta`, Tantivy rows, `_sox_engine`, the rebuilt `edge`, all edge indexes)
+never registers — `no such table: edge` with NO open-time error. The earlier fixtures (and
+the shipped step-17 acceptance) missed the defect because they had nothing after the residue.
+
+**Terminology (corrected framing):** the defect shape is **legacy library-domain schema
+authored by a Drizzle migration that no longer exists in this repo** — the 2026-07-11
+`0000_sad_onslaught.sql`, which created the explicit-rowid FK on `edge` and the fts5
+residue. "Drizzle-era store" is the WRONG label: Drizzle is a live dependency in this
+ecosystem (8+ adhd packages, actively imported) and owns the app tables; `node`/`edge`
+and their FTS objects are LIBRARY-domain schema, so removing the residue and rebuilding
+`edge` stays within the library's ownership and touches nothing Drizzle owns. The
+coexistence rule is unchanged: the library owns domain DDL, Drizzle owns app tables.
 
 ## 2. The fix
 
 `ensureCheckConstraints` now calls `dropFts5ResidueBeforeRebuild()` before the rebuild
 transaction. On a turso store carrying any of the 8 dead fts5 objects (`fts_node` VT + 4
-shadow tables + 3 triggers, via `FTSDialect.legacyResidueNames`), it deletes those
+shadow tables + 3 triggers, via `FTSDialect.legacyResidueNames` — all library-domain FTS
+objects; no Drizzle-owned table is ever named by the delete), it deletes those
 `sqlite_master` rows via the sanctioned escape hatch — better-sqlite3 + `unsafeMode` +
 `PRAGMA writable_schema=ON` + `DELETE FROM sqlite_master` — inside a
 **same-instance close → drop → reopen** (`withConnectionClosedForRepair` on
@@ -46,8 +56,9 @@ Two load-bearing details discovered during implementation:
 
 ## 3. Acceptance that catches it (BL-508)
 
-`fk-heal-fts-residue.bl506.spec.ts` builds a Drizzle-era fixture (node + explicit-rowid-FK
-edge + node indexes + fts5 residue + a table AFTER the residue), runs the heal through the
+`fk-heal-fts-residue.bl506.spec.ts` builds the legacy fixture (node + explicit-rowid-FK
+edge + node indexes + fts5 residue + a table AFTER the residue — the shape left by the
+removed `0000_sad_onslaught.sql`, not a Drizzle dependency), runs the heal through the
 real turso adapter, then **reopens with the raw TURSO driver** and asserts:
 `PRAGMA table_list` contains `edge`; `SELECT COUNT(*) FROM edge` returns the seeded row; all
 16 graph indexes register; zero `fts_node%` objects remain; edge DDL is the implicit FK
