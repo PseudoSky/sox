@@ -251,6 +251,37 @@ three-document lifecycle:
 
 ---
 
+## ⛔ AGENT CONSTRAINT — A REVERT IS NOT FINISHED UNTIL YOU REBUILD
+
+**`git revert` restores source. It does NOT restore `dist/`.** Every running service keeps
+executing the OLD artifact — code that now exists in no commit — until someone rebuilds. Reading
+the source proves nothing about what is running.
+
+Services run **directly out of this worktree**: a `file://` install is a reference, not a copy
+(`resolveExtensionDir` ignores the install root for `file://` sources —
+`libs/host-runtime/src/loader.ts:491`), so the launchd unit's entrypoint is
+`extensions/.../<member>/dist/index.js` in *this* repo. Reverting or rebuilding here changes
+production immediately.
+
+After reverting (or `reset --soft`-ing) anything that feeds a bundled artifact — including any
+`libs/data/*` package a bundle inlines:
+
+1. `npx nx build <project>` — restore artifact↔source parity.
+2. `npx nx run registry:sync-index` — the checksum moved; the smoke gate fails with
+   `CHECKSUM MISMATCH` until you commit the regenerated `registry/index.json`.
+3. Restart every service that loads it (`soxe service disable <id>` → `enable <id> --node-path=<stable node>`).
+4. **Verify the live process adopted the new artifact** — compare the running server's reported
+   artifact hash to the rebuilt file. Process liveness is not verification.
+
+Diagnostic: when a service misbehaves after a revert, `rg` the reverted symbol in `dist/` BEFORE
+debugging source. A non-zero count means you are debugging code the process is not running.
+
+Incident **BUG-028** (2026-08-12): a reverted store-adapter change stayed live in
+`memory-server/dist/` for ~2 h, poisoned `~/.memory/memory.db`, and took all recall down. Source
+read clean the entire time; the reverted symbols appeared in `dist/index.js` 9 times.
+
+---
+
 ## ⛔ AGENT CONSTRAINT — A DIAGNOSTIC `nx build` IS A DESTRUCTIVE OPERATION
 
 Governed by **BL-235**. Several `build` targets begin with `rm -rf .../dist`. They delete the existing
