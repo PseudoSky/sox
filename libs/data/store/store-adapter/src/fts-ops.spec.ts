@@ -23,7 +23,8 @@ import { tmpdir } from 'node:os';
 import { SqliteAdapterImpl } from './sqlite-adapter.js';
 import { TursoAdapterImpl } from './turso-adapter.js';
 import { MockAdapter } from './mock-adapter.js';
-import { ensureFtsIndex, ftsCount, ftsSearch } from './fts-ops.js';
+import { buildFtsSearchSql, ensureFtsIndex, ftsCount, ftsSearch } from './fts-ops.js';
+import { createFTSDialect } from './fts-dialect.js';
 import type { StoreAdapter } from './types.js';
 
 const hasTurso = (() => {
@@ -173,6 +174,126 @@ describe('A2 ftsSearch — sqlite vs turso parity (BL-367)', () => {
     // Mixed-case term inside a column value (summary 'MOONLIGHT moves')
     expect(rowids(await sqlite.ftsSearch('node', FTS_COLUMNS, 'moonlight'))).toEqual([6]);
     expect(rowids(await turso.ftsSearch('node', FTS_COLUMNS, 'moonlight'))).toEqual([6]);
+  });
+});
+
+// ── BUG-013: turso positional-bind fts_score returns 0 (score>0 gate) ───────
+// turso drivers 0.7.1 AND 0.7.2 return score=0 for EVERY row when fts_score's
+// query arrives via a POSITIONAL `?` bind; NAMED params and INLINE literals
+// return real BM25 (debug-triage probe, 2026-08-12 — reproduced on both driver
+// versions). fts-ops buildFtsSearchSql used to bind fts_match/fts_score
+// positionally, so every adapter-mediated turso ftsSearch scored 0 (recall
+// unaffected — RRF ranks on position, not score; hybrid-search textScore
+// degraded). The fix inlines the match query as an escaped SQL literal; this
+// test is the RED→GREEN gate that makes score=0 VISIBLE — the existing parity
+// tests only compare rowids and cannot catch it. It also gates the eventual
+// revert to parameterized binds (see the debt note in fts-ops.ts).
+
+tursoDescribe('A2 ftsSearch — turso scores real BM25, not 0 (BUG-013)', () => {
+  it('returns score > 0 for a known match through adapter.ftsSearch, ranked both-term above single-term', async () => {
+    const turso = await openTurso();
+    await seedNodeTable(turso);
+    await seedFtsIndex(turso);
+
+    const hits = await turso.ftsSearch('node', FTS_COLUMNS, 'fox riverbank');
+    expect(hits).toHaveLength(4);
+    for (const h of hits) {
+      expect(Number.isFinite(h.score)).toBe(true);
+      expect(h.score).toBeGreaterThan(0);
+    }
+    // BM25 sanity: rows 1 and 4 carry BOTH terms → strictly above single-term
+    // rows 2 and 3. A driver regression to degenerate scoring would flatten
+    // this ordering even when every score is technically positive.
+    const byId = new Map(hits.map((h) => [h.rowid, h.score]));
+    const bothTerms = Math.min(byId.get(1)!, byId.get(4)!);
+    const singleTerm = Math.max(byId.get(2)!, byId.get(3)!);
+    expect(bothTerms).toBeGreaterThan(singleTerm);
+  });
+
+  it('a single-quote-bearing query token parses through the inlined literal (escaping guard)', async () => {
+    const turso = await openTurso();
+    await seedNodeTable(turso);
+    await seedFtsIndex(turso);
+    // `zzz'qq` matches nothing in the corpus — the assertion is that the
+    // escaped literal parses. A regression that interpolates buildMatchQuery
+    // output raw (no `'`-doubling) would throw a SQL syntax error here.
+    const hits = await turso.ftsSearch('node', FTS_COLUMNS, "zzz'qq");
+    expect(hits).toEqual([]);
+  });
+});
+
+// ── buildFtsSearchSql — BUG-013 inline-literal shape ────────────────────────
+
+describe('A2 buildFtsSearchSql — inlines the match query as an escaped literal (BUG-013)', () => {
+  const tursoDialect = createFTSDialect('turso');
+  const sqliteDialect = createFTSDialect('sqlite');
+
+  it('turso: both fts_match and fts_score receive the quoted literal; query dropped from params', () => {
+    const { sql, params } = buildFtsSearchSql(
+      tursoDialect,
+      'node',
+      FTS_COLUMNS,
+      '"fox" OR "riverbank"',
+      {},
+    );
+    expect(sql).toContain(`fts_match("content", "name", "summary", '"fox" OR "riverbank"')`);
+    expect(sql).toContain(`fts_score("content", "name", "summary", '"fox" OR "riverbank"')`);
+    expect(params).not.toContain('"fox" OR "riverbank"');
+    expect(params).toEqual([50]); // default limit only — no query binds
+  });
+
+  it('sqlite: fts_node MATCH receives the quoted literal; query dropped from params', () => {
+    const { sql, params } = buildFtsSearchSql(
+      sqliteDialect,
+      'node',
+      FTS_COLUMNS,
+      '"fox" OR "riverbank"',
+      {},
+    );
+    expect(sql).toContain(`fts_node MATCH '"fox" OR "riverbank"'`);
+    expect(params).not.toContain('"fox" OR "riverbank"');
+    expect(params).toEqual([50]);
+  });
+
+  it('doubles single quotes inside tokens — buildMatchQuery output is NOT SQL-safe raw', () => {
+    const ftsQuery = `"don't" OR "stop"`;
+    const { sql } = buildFtsSearchSql(tursoDialect, 'node', FTS_COLUMNS, ftsQuery, {});
+    expect(sql).toContain(`fts_match("content", "name", "summary", '"don''t" OR "stop"')`);
+    expect(sql).not.toContain(`'"don't" OR "stop"'`); // raw quote must never reach the SQL
+    const { sql: sqliteSql } = buildFtsSearchSql(sqliteDialect, 'node', FTS_COLUMNS, ftsQuery, {});
+    expect(sqliteSql).toContain(`fts_node MATCH '"don''t" OR "stop"'`);
+  });
+
+  it('keeps where/limit/offset binds positional while only the query is inlined', () => {
+    const { sql, params } = buildFtsSearchSql(
+      tursoDialect,
+      'node',
+      FTS_COLUMNS,
+      '"fox" OR "riverbank"',
+      { where: 'n.rowid >= ?', params: [3], limit: 2, offset: 1 },
+    );
+    expect(sql).toContain(`fts_match("content", "name", "summary", '"fox" OR "riverbank"')`);
+    // subquery shape: inner LIMIT (limit+offset), outer LIMIT/OFFSET
+    expect(params).toEqual([3, 3, 2, 1]);
+  });
+});
+
+// ── sqlite score sanity (BUG-013 parity: sqlite must keep real BM25) ────────
+
+describe('A2 ftsSearch — sqlite score sanity (BUG-013 parity)', () => {
+  it('returns finite scores with both-term rows strictly above single-term rows', async () => {
+    const sqlite = await openSqlite();
+    await seedNodeTable(sqlite);
+    await seedFtsIndex(sqlite);
+    const hits = await sqlite.ftsSearch('node', FTS_COLUMNS, 'fox riverbank');
+    expect(hits).toHaveLength(4);
+    for (const h of hits) {
+      expect(Number.isFinite(h.score)).toBe(true);
+    }
+    const byId = new Map(hits.map((h) => [h.rowid, h.score]));
+    const bothTerms = Math.min(byId.get(1)!, byId.get(4)!);
+    const singleTerm = Math.max(byId.get(2)!, byId.get(3)!);
+    expect(bothTerms).toBeGreaterThan(singleTerm);
   });
 });
 

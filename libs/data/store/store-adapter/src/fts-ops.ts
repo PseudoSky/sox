@@ -16,8 +16,11 @@
  *   joined back to the base table on rowid. Score is the NEGATED `rank`
  *   column (FTS5's rank is 0 = best, so negation makes higher = better).
  * - Turso Tantivy (`supportsShadowTable: false`): the index lives directly on
- *   the base table; `fts_match`/`fts_score` each take the query as their own
- *   bound parameter. `fts_score` is already higher = better.
+ *   the base table; `fts_match`/`fts_score` each take the query. (BUG-013) the
+ *   query is inlined as an escaped SQL string literal — see
+ *   {@link buildFtsSearchSql} — because turso drivers 0.7.1/0.7.2 return
+ *   `fts_score=0` for every row when the query arrives via a positional `?`
+ *   bind. `fts_score` is already higher = better.
  *
  * Multi-term queries are normalized (trim → lowercase → whitespace-split →
  * drop empties) and rebuilt as an explicit `"tok1" OR "tok2"` match query via
@@ -73,10 +76,28 @@ export interface FtsSearchSql {
 }
 
 /**
- * Build the search SQL for the given dialect. Params:
- * - shadow (SQLite): `[ftsQuery, ...whereParams, limit, offset?]`
- * - non-shadow (Turso): `[ftsQuery, ftsQuery, ...whereParams, limit, offset?]`
- *   (fts_match and fts_score each bind their own copy of the query)
+ * Build the search SQL for the given dialect.
+ *
+ * (BUG-013) The normalized match query is delivered to the FTS functions as an
+ * ESCAPED SQL string literal (`sqlStringLiteral`) rather than a bound param:
+ * turso drivers 0.7.1 AND 0.7.2 return `fts_score=0` for every row when the
+ * query reaches `fts_score(..., ?)` through a positional bind (named params
+ * and inline literals return real BM25 — verified empirically on both driver
+ * versions). `fts_match` positional keeps selecting the correct rows, but
+ * inlining BOTH keeps the two functions symmetric and removes the whole
+ * bind-class. Params:
+ * - shadow (SQLite): `[...whereParams, limit, offset?]` — no query bind
+ *   (score is the negated rank column, which takes no query at all; the match
+ *   query is the inlined literal)
+ * - non-shadow (Turso): `[...whereParams, limit, offset?]` — both `fts_match`
+ *   and `fts_score` receive the inlined literal
+ *
+ * DEBT (BUG-013): this is a driver-bug workaround, not a design choice.
+ * REVERT to parameterized binds (`matchClause(columns, '?')` + the query back
+ * in `params`) when the turso driver fixes the positional-bind score bug
+ * upstream. The `A2 ftsSearch — turso scores real BM25, not 0 (BUG-013)` spec
+ * (fts-ops.spec.ts) asserts `score > 0` on the turso path and gates the
+ * revert: it must FAIL with score=0 on a regression to positional binds.
  */
 export function buildFtsSearchSql(
   dialect: FTSDialect,
@@ -86,8 +107,9 @@ export function buildFtsSearchSql(
   opts: FtsSearchOptions,
 ): FtsSearchSql {
   const andWhere = normalizeWhereFragment(opts.where);
-  const { sql: matchSql } = dialect.matchClause(columns, '?');
-  const scoreExpr = dialect.scoreClause(columns, '?');
+  const queryLiteral = sqlStringLiteral(ftsQuery);
+  const { sql: matchSql } = dialect.matchClause(columns, queryLiteral);
+  const scoreExpr = dialect.scoreClause(columns, queryLiteral);
   const limit = opts.limit ?? 50;
   let limitClause = 'LIMIT ?';
   const limitParams: unknown[] = [limit];
@@ -101,7 +123,7 @@ export function buildFtsSearchSql(
         FROM fts_${table} JOIN ${table} n ON fts_${table}.rowid = n.rowid
         WHERE ${matchSql} ${andWhere}
         ORDER BY score DESC ${limitClause}`,
-      params: [ftsQuery, ...(opts.params ?? []), ...limitParams],
+      params: [...(opts.params ?? []), ...limitParams],
     };
   }
   // Non-shadow (Turso): the Tantivy FTS scan IGNORES `OFFSET` on the same
@@ -120,7 +142,7 @@ export function buildFtsSearchSql(
         WHERE ${matchSql} ${andWhere}
         ORDER BY score DESC LIMIT ?
       ) LIMIT ? OFFSET ?`,
-      params: [ftsQuery, ftsQuery, ...(opts.params ?? []), limit + opts.offset, limit, opts.offset],
+      params: [...(opts.params ?? []), limit + opts.offset, limit, opts.offset],
     };
   }
   return {
@@ -128,8 +150,24 @@ export function buildFtsSearchSql(
       FROM ${table} n
       WHERE ${matchSql} ${andWhere}
       ORDER BY score DESC ${limitClause}`,
-    params: [ftsQuery, ftsQuery, ...(opts.params ?? []), ...limitParams],
+    params: [...(opts.params ?? []), ...limitParams],
   };
+}
+
+/**
+ * Wrap `value` in a SQLite-family string literal for inline interpolation
+ * (BUG-013). SQLite/Turso string literals are `'...'` with embedded single
+ * quotes DOUBLED (`'` → `''`); backslashes are literal, never escapes, so no
+ * other character needs handling. The FTS match query built by
+ * `FTSDialect.buildMatchQuery` may legally contain single quotes — a token
+ * like `don't` survives `normalizeFtsTokens` (whitespace-only splitting), and
+ * `buildMatchQuery` escapes double quotes for the FTS query syntax but not
+ * single quotes for the SQL literal — so this doubling is what makes the
+ * inlined literal safe. Run AFTER `buildMatchQuery`: the FTS engine receives
+ * the de-quoted literal value, byte-identical to what a bound param delivered.
+ */
+function sqlStringLiteral(value: string): string {
+  return `'${value.replace(/'/g, "''")}'`;
 }
 
 /**
