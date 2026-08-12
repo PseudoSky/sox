@@ -79,6 +79,55 @@ For each candidate:
    the minimum permission set per type and `references/by-operation.md` §permissions for
    how to declare them. Be minimal and exact.
 
+#### §batch — Batch-migrate agents (any list of paths → born-conformant)
+
+When the source is **a list of markdown agent definitions** (opencode `~/.config/opencode/agents/*.md`,
+Claude `.claude/agents/*.md`, or any paths/globs), do not scaffold one-by-one — run the batch tool:
+
+```bash
+node extensions/skills/sox-ingest/scripts/migrate-agents.mjs <agent-id|path|glob>... [--registry] [--force] [--dry-run]
+```
+
+Examples:
+
+```bash
+# Bare ids + a glob, resolved from the standard agent homes
+node extensions/skills/sox-ingest/scripts/migrate-agents.mjs typescript product architect 'doc-*' agent-manager
+
+# Absolute path to a single agent
+node extensions/skills/sox-ingest/scripts/migrate-agents.mjs ~/.config/opencode/agents/debug.md
+
+# Preview, then rebuild the registry
+node extensions/skills/sox-ingest/scripts/migrate-agents.mjs typescript --dry-run
+node extensions/skills/sox-ingest/scripts/migrate-agents.mjs typescript --registry
+```
+
+This is a **skill script**, not a host custom tool — invoke it via bash from the repo root. (An
+opencode custom-tool wrapper is deliberately NOT shipped: `.opencode/tools/` modules load into
+every session and a malformed tool schema rejects the whole provider tool list — see BL-568.
+If you want the migration as an invocable tool, ship it as a born-conformant `command`-type
+extension instead.)
+
+**What it does per agent** (see `scripts/migrate-agents.mjs`):
+
+1. **Detects the formatter** from the frontmatter and names outputs appropriately:
+   - **opencode formatter** (`mode:`/`permission:` present, no `name:`) — filename is identity,
+     so the entrypoint is `<id>.md` AND `name: <id>` is injected into the frontmatter so the
+     SAME file is discoverable on Claude (frontmatter `name` identity).
+   - **Claude formatter** (`name:` + `tools:`/`model:`) — frontmatter `name` is identity; the
+     entrypoint is `<id>.md` and the definition is carried verbatim.
+   - **generic** — filename identity, `name:` injected.
+2. Scaffolds `extensions/agents/<id>/` with `<id>.md` (entrypoint), `extension.json`
+   (born-conformant, `install.source` pointing at the origin, hosts `[claude, opencode]`),
+   `package.json`, `README.md`, `CHANGELOG.md`.
+3. **Skips** an existing `extensions/agents/<id>/` unless `--force`.
+4. With `--registry`, rebuilds `registry/index.json` (via `scripts/build-index.ts --allow-dirty`;
+   prefer a committed tree per BL-390 — commit the extension files first, then rebuild).
+
+**BL-566 note:** migrated agents install as a single top-level `<id>.md` (the install-engine
+fix), so `soxe install <id> --host opencode --scope user` lands discoverably — never a
+directory that opencode's agents/*.md scan would miss.
+
 Gate: the scaffolded extension matches the reference extension's shape; `validate` exits 0.
 
 ### Step 3 — Validate
