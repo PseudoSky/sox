@@ -103,7 +103,6 @@ process.on('message', async (msg) => {
 
 beforeEach(() => {
   delete process.env['SOX_SYNC_EMBED']; // exercise the async default pipeline
-  delete process.env['SOX_DISABLE_EMBED_HEAL'];
   _setEmbedProviderForTest(new DeterministicTestProvider());
 });
 

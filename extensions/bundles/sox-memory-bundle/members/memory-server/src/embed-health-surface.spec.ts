@@ -16,7 +16,7 @@
  * `embed_on_hash_fallback` (a hardcoded `false` constant) is also removed —
  * see stats.spec.ts for that half of BL-250.
  */
-import { describe, it, expect, afterEach } from 'vitest';
+import { describe, it, expect, beforeAll, afterEach } from 'vitest';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
@@ -57,6 +57,23 @@ describe('memory_ping — embed block (BL-250)', () => {
 });
 
 describe('memory_ping — status field (BUG-EMBED-WARMUP-CACHEHIT-ASSUMES-FAST-LOAD-001, AC-4)', () => {
+  // (BL-373 family, ping honesty) These arms exercise the EMBED dimension of
+  // `status`. A bare `memory_ping {}` with no SOX_CONFIG_DB_PATH would now
+  // read `unhealthy` (store not open, BL-412) and never exercise embed, so
+  // each arm materialises a real scratch store and pings with an explicit
+  // `db_path` — store_ok:true, status purely embed-driven.
+  let dbPath: string;
+  beforeAll(async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'sox-embed-health-surface-'));
+    dbPath = path.join(dir, 'test.db');
+    const resp = await handleToolCall('memory_write', {
+      db_path: dbPath,
+      content: 'AC-4 embed-health-surface fixture episode.',
+      project_path: '/test/embed-health-surface',
+    });
+    expect(resp.isError).toBeFalsy();
+  });
+
   afterEach(() => {
     // Restore a healthy real-state provider so subsequent tests/files in this
     // process aren't left with the uninitialized state this describe block
@@ -65,27 +82,29 @@ describe('memory_ping — status field (BUG-EMBED-WARMUP-CACHEHIT-ASSUMES-FAST-L
     _resetEmbedSingleton();
   });
 
-  it('status === "degraded" when embed_state !== "real" (vec channel absent)', async () => {
+  it('status === "degraded" when embed_state !== "real" (vec channel absent, store open)', async () => {
     // Force the embed subsystem to uninitialized: clear any injected test
     // provider and reset the singleton so getEmbedState() falls through to
     // its default 'uninitialized' (embed.ts:128-132 — no provider set).
     _setEmbedProviderForTest(null);
     _resetEmbedSingleton();
 
-    const resp = await handleToolCall('memory_ping', {});
+    const resp = await handleToolCall('memory_ping', { db_path: dbPath });
     const body = parseResult(resp);
+    expect(body['store_ok']).toBe(true); // the store dimension must not be the reason
     expect(body['embed_state']).toBe('uninitialized');
     expect(body['status']).toBe('degraded');
     // Decision 2: `ok` never flips — it stays the RPC-success boolean.
     expect(body['ok']).toBe(true);
   });
 
-  it('status === "ok" when embed_state === "real"', async () => {
+  it('status === "ok" when embed_state === "real" (store open)', async () => {
     _setEmbedProviderForTest(new DeterministicTestProvider());
     _resetEmbedSingleton();
 
-    const resp = await handleToolCall('memory_ping', {});
+    const resp = await handleToolCall('memory_ping', { db_path: dbPath });
     const body = parseResult(resp);
+    expect(body['store_ok']).toBe(true);
     expect(body['embed_state']).toBe('real');
     expect(body['status']).toBe('ok');
     expect(body['ok']).toBe(true);

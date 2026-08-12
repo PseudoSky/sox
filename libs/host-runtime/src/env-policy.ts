@@ -25,6 +25,11 @@
  * | supervisor.ts          | yes | **NO** |
  * | runtime-cli.ts         | **NO** | **NO** |
  *
+ * (Both emergency-brake vars were deleted 2026-08-11 — they were anti-features,
+ * ADR-0013: "Disable heal???", "why would the store not repair". The table is
+ * retained as the incident record; the drift it documents is why this prefix
+ * policy exists.)
+ *
  * The cost was not theoretical. `SOX_DISABLE_EMBED_HEAL` was set on the live
  * launchd unit to mitigate a read outage and had **zero effect**, because a
  * different copy re-scrubbed it away before the backend was spawned. The var

@@ -536,10 +536,12 @@ function telemetrySelfCheckCore(): TelemetrySelfCheck {
 //                deliberate debugging session. OFF by default: it is the only
 //                option that costs a handle.
 //
-// Option B (piggyback the periodic enrich tick) is deliberately NOT used: that
-// tick is currently held down by the `SOX_DISABLE_PERIODIC_ENRICH` emergency
-// brake, and persistence that silently stops when an unrelated subsystem is
-// braked is worse than no persistence at all.
+// Option B (piggyback the periodic enrich tick) is deliberately NOT used:
+// persistence that silently stops when an unrelated subsystem changes is worse
+// than no persistence at all — and the enrich tick's cadence is not this
+// ledger's to borrow (the old `SOX_DISABLE_PERIODIC_ENRICH` brake is gone,
+// ADR-0013, so the tick is always on, but coupling two subsystems' liveness is
+// still the wrong shape).
 
 const DEFAULT_SNAPSHOT_EVERY_RECORDS = 1000;
 

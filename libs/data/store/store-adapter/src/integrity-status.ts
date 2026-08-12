@@ -126,22 +126,17 @@ function collapseProbe(findings: IntegrityFinding[]): ProbeStatusView {
  *
  * @param result  from `getLastIntegrityResult(adapter)`; `null` = never ran.
  * @param lastRunAtMs from `getLastIntegrityRunAt(dbPath)`.
- * @param verifyDisabled true when `SOX_STORE_VERIFY=off` — reported distinctly
- *        from "never ran", because "we chose not to look" and "we have not
- *        looked yet" are different operational facts, and neither is health.
+ *
+ * Verification is ALWAYS on (≥ `fast`, BL-373 family / ADR-0013): the
+ * `SOX_STORE_VERIFY=off` "we chose not to look" state no longer exists, so
+ * `null` unambiguously means "we have not looked yet" — never "we chose not
+ * to". Neither is health.
  */
 export function summarizeIntegrityForStatus(
   result: VerifyAndRepairResult | null,
   lastRunAtMs: number | null,
-  verifyDisabled = false,
   nowMs: number = Date.now(),
 ): IntegrityStatusView {
-  if (verifyDisabled) {
-    return unverified(
-      'Integrity verification is DISABLED for this process (SOX_STORE_VERIFY=off). ' +
-        'The store is unverified; damage would not be detected.',
-    );
-  }
   if (result === null) return unverified(NEVER_RAN_REASON);
 
   const { verify, repair } = result;

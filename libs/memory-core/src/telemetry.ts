@@ -33,7 +33,6 @@
  *   SOX_MEMORY_LOG_DIR        — override the log directory entirely.
  *   SOX_MEMORY_LOG_LEVEL      — 'debug'|'info'|'warn'|'error' (default 'info').
  *   SOX_MEMORY_LOG_COMPONENT  — file-name prefix (default 'memory-core').
- *   SOX_MEMORY_LOG_DISABLE    — '1' disables all writes (tests / opt-out).
  *   SOX_MEMORY_LOG_MAX_BYTES  — size-based rotation cap (default 20_000_000).
  *   SOX_MEMORY_LOG_MAX_FILES  — retained rotated files per component (default 7).
  *
@@ -74,10 +73,6 @@ const LEVEL_ORDER: Record<LogLevel, number> = { debug: 0, info: 1, warn: 2, erro
 function resolveLevel(): LogLevel {
   const raw = (process.env['SOX_MEMORY_LOG_LEVEL'] ?? 'info').toLowerCase();
   return raw === 'debug' || raw === 'info' || raw === 'warn' || raw === 'error' ? raw : 'info';
-}
-
-function isDisabled(): boolean {
-  return process.env['SOX_MEMORY_LOG_DISABLE'] === '1';
 }
 
 // ── Path resolution (mirrors ADR-0004's data-root, without depending on
@@ -207,9 +202,11 @@ export function _resetTelemetryForTest(): void {
 /**
  * Where memory-core telemetry lands on disk.
  *
- * **`null` means logging is switched off** (`SOX_MEMORY_LOG_DISABLE=1`) — the
- * only meaning it has. A non-null value is the file the next record will be
- * written to, whether or not anything has been written yet.
+ * Always a path once the writer is resolvable: logging is ALWAYS on
+ * (`SOX_MEMORY_LOG_DISABLE` was an anti-feature — an env var whose only job was
+ * to disable diagnostics — and is gone, ADR-0013; rotation caps handle space).
+ * `null` is reserved for the one remaining case: the writer could not be
+ * constructed at all (e.g. an uncreatable log dir), never "we chose not to log".
  *
  * BL-433: this used to return `getWriter().currentPath()`, i.e. `''` for BOTH
  * "disabled" AND "enabled but nothing written yet" — two states with opposite
@@ -218,7 +215,6 @@ export function _resetTelemetryForTest(): void {
  * than in a convention a caller has to remember.
  */
 export function currentLogFilePath(): string | null {
-  if (isDisabled()) return null;
   return getWriter().plannedPath();
 }
 
@@ -269,7 +265,6 @@ function annotateSuspension(fields?: LogFields): LogFields | undefined {
 
 function emit(level: LogLevel, event: string, rawFields?: LogFields): void {
   try {
-    if (isDisabled()) return;
     if (LEVEL_ORDER[level] < LEVEL_ORDER[resolveLevel()]) return;
     // Cheap and idempotent; guarantees the ledger is running wherever telemetry
     // is, without every consumer having to remember to start it. The timer is
