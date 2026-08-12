@@ -10,7 +10,7 @@
     "compatibility": {
       "host": ">=1.0.0 <2.0.0"
     },
-    "builtFromCommit": "cff2eed2c231ee22bde80b66037cfae64921b8b0+dirty",
+    "builtFromCommit": "39730888897f723a3aa698b0a247d7217d82b6e3+dirty",
     "provisional": true
   },
   {
@@ -27,7 +27,7 @@
     "requires": {
       "tool_calling": true
     },
-    "builtFromCommit": "cff2eed2c231ee22bde80b66037cfae64921b8b0+dirty",
+    "builtFromCommit": "39730888897f723a3aa698b0a247d7217d82b6e3+dirty",
     "provisional": true
   },
   {
@@ -41,7 +41,7 @@
     "compatibility": {
       "host": ">=1.0.0 <2.0.0"
     },
-    "builtFromCommit": "cff2eed2c231ee22bde80b66037cfae64921b8b0+dirty",
+    "builtFromCommit": "39730888897f723a3aa698b0a247d7217d82b6e3+dirty",
     "provisional": true
   },
   {
@@ -69,7 +69,7 @@
         "id": "memory-usage"
       }
     ],
-    "builtFromCommit": "cff2eed2c231ee22bde80b66037cfae64921b8b0+dirty",
+    "builtFromCommit": "39730888897f723a3aa698b0a247d7217d82b6e3+dirty",
     "provisional": true
   },
   {
@@ -85,7 +85,7 @@
     },
     "visibility": "internal",
     "bundleId": "sox-memory-bundle",
-    "builtFromCommit": "cff2eed2c231ee22bde80b66037cfae64921b8b0+dirty",
+    "builtFromCommit": "39730888897f723a3aa698b0a247d7217d82b6e3+dirty",
     "provisional": true
   },
   {
@@ -101,7 +101,7 @@
     },
     "visibility": "internal",
     "bundleId": "sox-memory-bundle",
-    "builtFromCommit": "cff2eed2c231ee22bde80b66037cfae64921b8b0+dirty",
+    "builtFromCommit": "39730888897f723a3aa698b0a247d7217d82b6e3+dirty",
     "provisional": true
   },
   {
@@ -121,7 +121,7 @@
     },
     "visibility": "internal",
     "bundleId": "sox-memory-bundle",
-    "builtFromCommit": "cff2eed2c231ee22bde80b66037cfae64921b8b0+dirty",
+    "builtFromCommit": "39730888897f723a3aa698b0a247d7217d82b6e3+dirty",
     "provisional": true
   },
   {
@@ -137,7 +137,7 @@
     },
     "visibility": "internal",
     "bundleId": "sox-memory-bundle",
-    "builtFromCommit": "cff2eed2c231ee22bde80b66037cfae64921b8b0+dirty",
+    "builtFromCommit": "39730888897f723a3aa698b0a247d7217d82b6e3+dirty",
     "provisional": true
   },
   {
@@ -151,7 +151,7 @@
     "compatibility": {
       "host": ">=1.0.0 <2.0.0"
     },
-    "builtFromCommit": "cff2eed2c231ee22bde80b66037cfae64921b8b0+dirty",
+    "builtFromCommit": "39730888897f723a3aa698b0a247d7217d82b6e3+dirty",
     "provisional": true
   },
   {
@@ -165,7 +165,7 @@
     "compatibility": {
       "host": ">=1.0.0 <2.0.0"
     },
-    "builtFromCommit": "cff2eed2c231ee22bde80b66037cfae64921b8b0+dirty",
+    "builtFromCommit": "39730888897f723a3aa698b0a247d7217d82b6e3+dirty",
     "provisional": true
   },
   {
@@ -179,7 +179,7 @@
     "compatibility": {
       "host": ">=1.0.0 <2.0.0"
     },
-    "builtFromCommit": "cff2eed2c231ee22bde80b66037cfae64921b8b0+dirty",
+    "builtFromCommit": "39730888897f723a3aa698b0a247d7217d82b6e3+dirty",
     "provisional": true
   },
   {
@@ -193,7 +193,7 @@
     "compatibility": {
       "host": ">=1.0.0 <2.0.0"
     },
-    "builtFromCommit": "cff2eed2c231ee22bde80b66037cfae64921b8b0+dirty",
+    "builtFromCommit": "39730888897f723a3aa698b0a247d7217d82b6e3+dirty",
     "provisional": true
   },
   {
@@ -207,7 +207,7 @@
     "compatibility": {
       "host": ">=1.0.0 <2.0.0"
     },
-    "builtFromCommit": "cff2eed2c231ee22bde80b66037cfae64921b8b0+dirty",
+    "builtFromCommit": "39730888897f723a3aa698b0a247d7217d82b6e3+dirty",
     "provisional": true
   },
   {
@@ -221,7 +221,7 @@
     "compatibility": {
       "host": ">=1.0.0 <2.0.0"
     },
-    "builtFromCommit": "cff2eed2c231ee22bde80b66037cfae64921b8b0+dirty",
+    "builtFromCommit": "39730888897f723a3aa698b0a247d7217d82b6e3+dirty",
     "provisional": true
   },
   {
@@ -235,21 +235,21 @@
     "compatibility": {
       "host": ">=1.0.0 <2.0.0"
     },
-    "builtFromCommit": "cff2eed2c231ee22bde80b66037cfae64921b8b0+dirty",
+    "builtFromCommit": "39730888897f723a3aa698b0a247d7217d82b6e3+dirty",
     "provisional": true
   },
   {
     "id": "sox-ingest",
     "type": "skill",
-    "version": "0.1.0",
+    "version": "0.2.0",
     "title": "sox-ingest — Ingest external sources into sox-ecosystem",
     "description": "Use this when you need to port an external repo, file, or directory into sox-ecosystem as born-conformant extensions. Encodes the full ingestion flow: initialize -> generalize+author -> validate -> publish -> install -> enable -> remove-old, delegating per-type and per-operation specifics to references/. An agent told 'ingest <source> into sox' loads this skill and runs the complete flow with no bespoke prompts.",
     "source": "file:///Users/nix/dev/ai/sox-ecosystem/extensions/skills/sox-ingest",
-    "checksum": "sha256:deda1d03c6875a25f58b05c585564c4afa09368af100477472ad5e89620d50f9",
+    "checksum": "sha256:7005720555bc54d9081a4d09ab9c054a9cca4859facd421ab14192d3d1ec9da2",
     "compatibility": {
       "host": ">=1.0.0 <2.0.0"
     },
-    "builtFromCommit": "cff2eed2c231ee22bde80b66037cfae64921b8b0+dirty",
+    "builtFromCommit": "39730888897f723a3aa698b0a247d7217d82b6e3+dirty",
     "provisional": true
   },
   {
@@ -263,7 +263,7 @@
     "compatibility": {
       "host": ">=1.0.0 <2.0.0"
     },
-    "builtFromCommit": "cff2eed2c231ee22bde80b66037cfae64921b8b0+dirty",
+    "builtFromCommit": "39730888897f723a3aa698b0a247d7217d82b6e3+dirty",
     "provisional": true
   },
   {
@@ -277,7 +277,7 @@
     "compatibility": {
       "host": ">=1.0.0 <2.0.0"
     },
-    "builtFromCommit": "cff2eed2c231ee22bde80b66037cfae64921b8b0+dirty",
+    "builtFromCommit": "39730888897f723a3aa698b0a247d7217d82b6e3+dirty",
     "provisional": true
   }
 ]

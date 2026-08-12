@@ -176,35 +176,52 @@ Two install paths depending on extension type:
 Use `--host` to place the extension at the host's discovery path (file-drop):
 
 ```bash
+# 0. REPLACE-IN-PLACE: if an install of this id already exists, uninstall it first.
+#    Install is additive (cpSync force) — it overwrites matching files but leaves stale
+#    orphans behind. Uninstall removes the whole discovery dir; fresh install writes exactly
+#    the extension's files. Never overwrite a live install in place.
+node bin/soxe uninstall <id> --host claude --scope user
+node bin/soxe uninstall <id> --host opencode --scope user
+
 # Sandboxed install into a temp dir (avoids polluting real project config)
 T=$(mktemp -d)
 node bin/soxe install <id> --host claude --scope project --root "$T"
+node bin/soxe install <id> --host opencode --scope project --root "$T"
 
 # Verify the file landed on disk:
 find "$T/.claude" -type f
+find "$T/.opencode" -type f
 
-# Real project install (writes into this workspace's .claude/)
-node bin/soxe install <id> --host claude --scope project
-
-# User-scope install (writes into ~/.claude/)
+# Real user-scope installs (writes into ~/.claude/ and ~/.config/opencode/)
 node bin/soxe install <id> --host claude --scope user
+node bin/soxe install <id> --host opencode --scope user
 ```
+
+**WARNING — `--dry-run` is NOT honored.** `soxe install` ignores the flag and performs a real
+install. Contain test installs with `--root <dir>`, never with `--dry-run`.
 
 **Flags for declarative path (`--host` present):**
 
 | Flag | Meaning |
 |---|---|
 | `<id>` | Positional — extension id (required) |
-| `--host <name>` | Host to install on: `claude`, `codex` |
+| `--host <name>` | Host to install on: `claude`, `codex`, `opencode` |
 | `--scope <scope>` | Install scope: `project` (default), `user` |
 | `--root <dir>` | Override workspace root (for sandboxed testing) |
 | `--profile <name>` | Profile variant to apply (optional) |
 
 **Verification after declarative install:**
 
+- **Byte parity:** every file in the extension dir exists at the target AND is byte-identical
+  (`cmp`/`diff`), and the target has ZERO leftover files beyond the extension's set. Any extra
+  file means a stale install survived — uninstall + reinstall, or document why it stays.
 - File is at the host-discovery target on disk (e.g.
   `$T/.claude/skills/<id>/SKILL.md` for project-scoped skills,
   `~/.claude/agents/<id>.md` for user-scoped agents)
+- **Load test (declarative types):** prove the host actually discovers + loads the artifact in a
+  FRESH process — `opencode run "Use the skill tool to load the skill '<id>' ..."` and
+  `claude -p "Load the skill '<id>' ..."` from a scratch dir. The probe must report the
+  version/frontmatter that matches the extension's entrypoint. File presence alone is not proof.
 - No `soxe list` entry is created — declarative types activate at the host level,
   not via the soxe process registry
 
@@ -265,13 +282,25 @@ Run after any extension source change (add, modify, delete):
 npx tsx scripts/build-index.ts
 ```
 
+(`npx nx run registry:sync-index` runs this same script but triggers a full build sweep and does
+NOT forward extra flags — use the direct script for declarative-only changes.)
+
+**Dirty-tree reality (BL-390):** the script REFUSES to run against a dirty working tree. Commit
+your own extension changes first; use the documented escape hatch
+`npx tsx scripts/build-index.ts --allow-dirty` ONLY when the remaining dirt is provably
+checksum-irrelevant (`docs/`, `.claude/`, `.opencode/`, `.worktrees/`, `.nx/`, root-level
+`*.md`) or the repo is already operating in the provisional convention — it stamps every entry
+`provisional: true` with `builtFromCommit` suffixed `+dirty`.
+
 This rewrites `registry/index.json`. The script:
 
 - Walks all `extensions/<type>/<id>/extension.json` files
-- Validates required fields (aborts on missing `id`, `type`, `version`, `title`, `description`,
-  `compatibility`)
-- Skips `private: true` extensions
-- For extensions with no `src/index.ts` (declarative), checksums `extension.json` itself
+- Validates required fields (aborts on missing `id`, `type`, `title`, `description`,
+  `compatibility`; `version` is display-only, sourced from `package.json` per ADR-0003)
+- Skips `manifest.private: true` extensions (note: `private: true` in `package.json` does NOT
+  exclude an extension — only the manifest flag does)
+- Checksums the declared `entrypoint` first (for a declarative skill that is `SKILL.md`, not
+  `extension.json`); falls back to `dist/index.js` → `prompt.md` → `extension.json`
 - Writes the updated `registry/index.json`
 
 **Verify the new extension is in the registry:**

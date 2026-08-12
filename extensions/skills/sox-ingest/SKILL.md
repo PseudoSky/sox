@@ -109,28 +109,50 @@ Rebuild the registry after any extension source change:
 npx tsx scripts/build-index.ts
 ```
 
+(`npx nx run registry:sync-index` runs the same script but triggers a full build sweep and does
+NOT forward extra flags — use the direct script for a declarative-only change.)
+
+**Dirty-tree reality (BL-390):** `build-index` REFUSES to run against a dirty working tree —
+a checksum computed from uncommitted state is not reproducible from any commit. In a shared
+checkout with other agents' in-flight work, commit your own extension files first, then rebuild;
+only if the remaining dirt is provably checksum-irrelevant (`docs/`, `.claude/`, `.opencode/`,
+`.worktrees/`, `.nx/`, root-level `*.md`) may you use the documented escape hatch
+`npx tsx scripts/build-index.ts --allow-dirty` (stamps every entry `provisional: true`).
+
 `registry/index.json` must be current before install. See `references/by-operation.md` §build
 for type-specific build notes.
 
 Gate: `nx run <project>:build` exits 0; `registry/index.json` includes the new extension.
 
-### Step 5 — Install
+### Step 5 — Install & replace in place
+
+**Replace-in-place rule:** if the target host already has an install of the same id — a previous
+version, a stale copy, a partial migration — **uninstall it FIRST, then install from the registry.**
+Install is additive (`cpSync force`): it overwrites matching files but leaves stale/orphan files
+behind, so an in-place overwrite silently ships a polluted host directory. Uninstall removes the
+whole discovery dir; the fresh install then writes exactly the extension's files.
+
+**WARNING — `--dry-run` is NOT honored:** `soxe install` ignores the flag and installs for real.
+To preview/contain an install, use `--root <dir>` (sandbox) — never assume `--dry-run` semantics.
 
 For declarative types (`skill`, `agent`, `command`), place the extension at the host's
 discovery path using the `--host` flag:
 
 ```
-# Sandboxed install into a temp dir (avoids polluting real project config)
+# 1. If an install of this id already exists at the target host, remove it first:
+node bin/soxe uninstall <id> --host claude --scope user
+node bin/soxe uninstall <id> --host opencode --scope user
+
+# 2. Sandboxed install into a temp dir (validates the path before touching real config)
 T=$(mktemp -d)
 node bin/soxe install <id> --host claude --scope project --root "$T"
+node bin/soxe install <id> --host opencode --scope project --root "$T"
 # Verify the file landed:
 find "$T" -name "SKILL.md"   # or AGENT.md / command file, per type
 
-# Real project install (writes into the current workspace's .claude/)
-node bin/soxe install <id> --host claude --scope project
-
-# User-scope install (writes into ~/.claude/)
+# 3. Real installs (writes into ~/.claude/ and ~/.config/opencode/)
 node bin/soxe install <id> --host claude --scope user
+node bin/soxe install <id> --host opencode --scope user
 ```
 
 For process-managed types (`mcp-server`, `hook`, `command` with side-effects), use the
@@ -140,10 +162,41 @@ config/lockfile resolver path (no `--host`):
 node bin/soxe install <id> -s project
 ```
 
-Confirm the install target is present on disk (declarative types: file at host-discovery path;
-code types: entrypoint accessible). See `references/by-operation.md` §install for details.
+**Verify replace-in-place (declarative types):** compare the installed directory against the
+extension directory — every extension file present and byte-identical, and ZERO leftover files
+at the target (any extra file means a stale install survived; remove it or document why it stays).
+See `references/by-operation.md` §install for details.
 
-Gate: install exits 0; install target verified on disk (use `find` or `ls`).
+Gate: install exits 0; target byte-identical to the extension dir for all extension files;
+no leftover files at the target.
+
+### Step 5.5 — Exercise the install (per-host load test)
+
+File placement is not proof the host can use the skill. For declarative types, prove discovery
+and loading in a FRESH host process — never the session that ran the install:
+
+```
+# opencode (discovers ~/.config/opencode/skills/<id>/SKILL.md)
+cd "$(mktemp -d)"
+opencode run "Use the skill tool to load the skill '<id>'. Report its version line and
+whether scripts/<companion> resolves in its base directory. Do NOT execute it."
+
+# claude (discovers ~/.claude/skills/<id>/SKILL.md)
+cd "$(mktemp -d)"
+claude -p "Load the skill '<id>' installed at user scope. Report its version line and the
+first sentence of its primary section. Do NOT execute it."
+```
+
+Assert: each host's fresh process loads the installed artifact and reports the version /
+frontmatter that matches the extension's `SKILL.md` — i.e. the bytes the host loaded ARE the
+extension bytes. (Claude's sandbox may deny reads outside the project dir; in that case the
+loaded SKILL.md content is the assertion and file presence is confirmed with `ls` directly.)
+If a skill body references its own install path (e.g. a companion script), confirm that path
+resolves on the host it was loaded from — this is where a host-specific absolute path in the
+body shows up as a defect.
+
+Gate: every target host's fresh-process probe loads the installed artifact and reports the
+extension's version.
 
 ### Step 6 — Enable
 
@@ -154,20 +207,28 @@ node bin/soxe start <id>
 ```
 
 Confirm the runtime reports RUNNING (`soxe list` shows the pid/state). For declarative types,
-install IS enablement — no start step needed. See `references/by-type.md` §enable per type.
+install IS enablement — no start step needed; the enablement proof is Step 5.5 (fresh-process
+load test), not file placement. See `references/by-type.md` §enable per type.
 
-Gate: runtime state is RUNNING (process types) or file is at discovery path (declarative types).
+Gate: runtime state is RUNNING (process types) or the host's fresh process loads the artifact
+(declarative types, Step 5.5).
 
-### Step 7 — Remove old / clean up
+### Step 7 — Remove old / clean up (preserve-then-clean)
 
 After validating the new extension:
 
-1. If migrating FROM existing docs/prompts: delete the source files once their content is
-   captured in the extension and references (this step was performed for `docs/ingestion/`).
+1. **Preserve before deleting — never delete the only copy of a file.** Superseded/legacy files
+   (old versions, orphaned siblings in host install dirs, pre-migration artifacts) are copied
+   into a committed archive first — e.g. `docs/research/<id>/` for skill history, or the source
+   repo if it is already versioned — plus a scratch backup (`cp -R <dir> /tmp/<id>-migration-backup`).
+   Only then remove the originals from the live install dirs (via `soxe uninstall` + fresh
+   install, per Step 5 — never ad-hoc `rm` of host dirs).
 2. Verify no regression: `./node_modules/.bin/nx run-many -t build,lint,test` stays green.
 3. Confirm zero orphan processes: `node bin/soxe stop <id>` leaves no lingering pids.
 
-Gate: `nx run-many -t build,lint,test` exits 0; `soxe stop` leaves zero orphans.
+Gate: superseded files exist in a committed archive; live install dirs contain ONLY the
+extension's files (verified in Step 5); `nx run-many -t build,lint,test` exits 0;
+`soxe stop` leaves zero orphans.
 
 ---
 
