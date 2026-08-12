@@ -151,7 +151,12 @@ export interface FTSDialect {
   dropLegacyDDL(table: string): string[];
 
   /** WHERE clause fragment for FTS matching.
-   *  Returns { sql, params } where sql uses the given queryParam placeholder. */
+   *  Returns { sql } where sql interpolates the given queryParam token.
+   *  queryParam is opaque — it may be a placeholder (`?`, `:q`) for callers
+   *  that bind (e.g. integrity.ts's fts_index_live probe) OR a fully
+   *  SQL-quoted string literal `'…'` for callers that inline (fts-ops.ts,
+   *  BUG-013 — see {@link buildMatchQuery} for why the literal is escaped
+   *  before inlining). */
   matchClause(columns: string[], queryParam: string): { sql: string };
   /** ORDER BY clause for BM25 scoring. Returns a SQL expression for ranking. */
   scoreClause(columns: string[], queryParam: string): string;
@@ -179,6 +184,14 @@ export interface FTSDialect {
    * matching. Tokens are individually double-quoted (FTS5 phrase-query
    * syntax, which also disables prefix/column-filter special characters)
    * with embedded quotes escaped by doubling.
+   *
+   * SAFETY (BUG-013): the returned string is FTS QUERY syntax, NOT a safe SQL
+   * literal — a token may contain single quotes (e.g. `don't` survives the
+   * whitespace-only tokenizer), and this method escapes only the double
+   * quotes the FTS grammar needs. When inlining the result into a SQL string
+   * literal (fts-ops.ts's `sqlStringLiteral`, used because turso 0.7.1/0.7.2
+   * return fts_score=0 for positional `?` binds), single quotes MUST be
+   * doubled (`'` → `''`) or the literal breaks out of the SQL string.
    */
   buildMatchQuery(tokens: string[]): string;
 }
