@@ -212,3 +212,28 @@ from './fts-orphan-guard.js'`. No removed or narrowed export in any of the three
 
 - Updated dependencies [1291af4]
   - @adhd/sox-telemetry@0.2.0
+
+## 0.5.4
+
+### Patch Changes
+
+- **WAL always consolidated on writable close + busy-row inspection (BL-512).**
+
+  `close()` now runs `PRAGMA wal_checkpoint(TRUNCATE)` on EVERY writable close —
+  not just on the damaged-`wal_identity` path — with a `PASSIVE` fallback and a
+  never-blocks-close guarantee. Defect: a clean writable close left every frame in
+  the WAL, so short-lived writers (the backlog CLI spawns one process per command)
+  accumulated a forever-growing `-wal` (measured 3.8 MB beside a 19 MB db) and a
+  later connection's stale-`-tshm` reconciliation could discard those uncheckpointed
+  frames — the phantom-write class (`created:true`, row never persisted). TRUNCATE
+  resets the `-wal` to ~0 bytes, so no uncheckpointed window survives the process
+  that wrote it. A second TRUNCATE after the clean-shutdown stamp write leaves the
+  file at literally 0 bytes. `_softReadonly` connections (BL-391, FTS requires a
+  driver-writable handle) checkpoint too; hard `readonly` opens never do.
+
+  The TRUNCATE result is now inspected: when a concurrent reader holds the WAL the
+  pragma returns `busy:1` rather than throwing, and the adapter logs
+  `store_adapter.turso.close_checkpoint_busy` instead of silently recording a
+  flush that did not truncate. Frames are fsynced at COMMIT, so durability is never
+  at risk — only the growth guarantee degrades under concurrency, and the next
+  writable close without a concurrent reader truncates.
