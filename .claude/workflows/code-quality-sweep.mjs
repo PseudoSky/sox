@@ -87,15 +87,28 @@ const MIN_CONCEPT_COUNT = a.minConceptCount || 2
  *   packageSelector — substring/regex matched against a package path to claim it. '*' = fallback.
  * Entries are tried in order; the first whose selector matches claims the package.
  */
+// A lensDescription names WHO is reading, never WHAT to find.
+//
+// These used to enumerate defect categories ("N+1 IO, unbounded accumulation, redundant
+// passes…"). That is a planted concept list wearing a specialty label: it primes the agent to
+// file borderline cases under those headings and reproduces exactly the bias the blind-agent
+// rule exists to prevent — the tags it named were verbatim the ones the previous sweep then
+// "discovered". Worse, it applied unevenly: agents present in this roster were primed while
+// caller-named agents outside it got a neutral lens, so a mixed panel was not comparable.
+//
+// Each entry now states the reviewer's standing expertise and stops there. What counts as a
+// defect through that expertise is the agent's judgement, which is the entire point of
+// choosing a specialist.
+const NEUTRAL_LENS = 'Apply your own professional judgement. Report what YOUR expertise makes you best placed to notice — do not hunt any predetermined category, and do not limit yourself to what you assume was expected of you.'
 const DEFAULT_ROSTER = [
-  { agentType: 'database-administrator', lensDescription: 'transaction correctness, connection/statement lifecycle, migration ordering and safety, index coverage, string-interpolated SQL, dialect divergence, close/cleanup leaks', packageSelector: 'store|db|sql|turso|sqlite|graph-store|blob' },
-  { agentType: 'performance-engineer', lensDescription: 'algorithmic complexity in hot paths, N+1 IO, sequential awaits that should batch, unbounded in-memory accumulation, redundant passes, synchronous fs/crypto on hot paths', packageSelector: 'search|vector|embed|ingest|analysis|cluster|queue' },
-  { agentType: 'security-auditor', lensDescription: 'command injection via exec/spawn with interpolated input, path traversal, TOCTOU on file writes, unvalidated env/manifest input, missing integrity/checksum verification, secrets in logs, unsafe file permissions', packageSelector: 'install|runtime|host|cli|apps/|service|proxy' },
-  { agentType: 'error-detective', lensDescription: 'swallowed or untraced catches, unhandled rejections, lost work on failure, retry/backoff defects, shutdown and lifecycle races, state that can report success while the underlying operation failed', packageSelector: 'supervisor|reaper|task|worker|daemon|queue' },
-  { agentType: 'typescript-pro', lensDescription: 'type-safety erosion: `any` leakage across module boundaries, unsafe assertions and casts, non-exhaustive unions, weak or absent runtime validation at IO boundaries, exactOptionalPropertyTypes violations', packageSelector: 'manifest|schema|types|authoring|registry|source-provider' },
-  { agentType: 'qa-expert', lensDescription: 'test-suite defects: assertions guarded so the failing case is skipped, tests that pass vacuously, missing coverage for the risky branch, fixtures that hide the real failure mode', packageSelector: 'test|spec|e2e|fixtures' },
-  { agentType: 'refactoring-specialist', lensDescription: 'god functions and god modules, duplicated blocks, poor cohesion, missing extraction seams — each cited with concrete line ranges and the cost it imposes', packageSelector: 'refactor' },
-  { agentType: 'code-reviewer', lensDescription: 'general code quality: error handling, validation gaps, duplication, dead code, silent failure paths, missing coverage of risky branches', packageSelector: '*' },
+  { agentType: 'database-administrator', lensDescription: `You are a database and storage-engine specialist reviewing this code. ${NEUTRAL_LENS}`, packageSelector: 'store|db|sql|turso|sqlite|graph-store|blob' },
+  { agentType: 'performance-engineer', lensDescription: `You are a performance engineer reviewing this code. ${NEUTRAL_LENS}`, packageSelector: 'search|vector|embed|ingest|analysis|cluster|queue' },
+  { agentType: 'security-auditor', lensDescription: `You are a security auditor reviewing this code. ${NEUTRAL_LENS}`, packageSelector: 'install|runtime|host|cli|apps/|service|proxy' },
+  { agentType: 'error-detective', lensDescription: `You are a failure-analysis specialist reviewing this code. ${NEUTRAL_LENS}`, packageSelector: 'supervisor|reaper|task|worker|daemon|queue' },
+  { agentType: 'typescript-pro', lensDescription: `You are a TypeScript type-system specialist reviewing this code. ${NEUTRAL_LENS}`, packageSelector: 'manifest|schema|types|authoring|registry|source-provider' },
+  { agentType: 'qa-expert', lensDescription: `You are a test-quality specialist reviewing this code and its tests. ${NEUTRAL_LENS}`, packageSelector: 'test|spec|e2e|fixtures' },
+  { agentType: 'refactoring-specialist', lensDescription: `You are a code-structure and maintainability specialist reviewing this code. ${NEUTRAL_LENS}`, packageSelector: 'refactor' },
+  { agentType: 'code-reviewer', lensDescription: `You are an experienced code reviewer. ${NEUTRAL_LENS}`, packageSelector: '*' },
 ]
 
 // Caller-chosen review panel. `args.agents` is the ergonomic form — a list of agent-type
@@ -415,7 +428,31 @@ function splitBySize(proj, maxLoc) {
 
 let RAW_PACKAGES = a.packages && a.packages.length ? a.packages : []
 
-if (!RAW_PACKAGES.length) {
+// PREFERRED PATH: the caller computed the project inventory itself and passed it in.
+//
+// The workflow runtime sandboxes this script — no filesystem, no child_process — so the script
+// cannot run nx directly. That leaves two options, and they are not equally good:
+//   (a) caller passes `nxProjects`  — deterministic, exact, free, reproducible.
+//   (b) an agent runs nx and reports — an LLM transcribing mechanical data, which can misname
+//       a project, miss one, or invent a dependency edge. Every downstream filter and closure
+//       then rests on that transcription.
+// (a) is strictly better and is what the calling session should do. (b) survives only as a
+// fallback for callers that cannot shell out. Generate (a) with:
+//
+//   npx nx graph --file=/tmp/nx.json    # then reshape into [{id, path, loc, tags, dependsOn, largestFiles}]
+//
+// See code-quality-sweep.md → "Seeding the project inventory" for a ready-made one-liner.
+if (!RAW_PACKAGES.length && Array.isArray(a.nxProjects) && a.nxProjects.length) {
+  phase('Discover')
+  const supplied = a.nxProjects.filter((p) => p && p.path && (p.loc || 0) > 0)
+  supplied.sort((x, y) => (y.loc || 0) - (x.loc || 0))
+  log(`Using ${supplied.length} caller-supplied project(s) — deterministic inventory, no discovery agent spawned.`)
+  const projects = applyProjectFilter(supplied, a.filter, log)
+  RAW_PACKAGES = projects.flatMap((p) => splitBySize(p, MAX_UNIT_LOC))
+  if (RAW_PACKAGES.length > BUDGET) {
+    log(`NOTE: ${RAW_PACKAGES.length} units for a budget of ${BUDGET}; DROPPING: ${RAW_PACKAGES.slice(BUDGET).map((u) => u.id).join(', ')}`)
+  }
+} else if (!RAW_PACKAGES.length) {
   // Self-seed from nx rather than demanding the caller hand-build a roster. The workflow
   // script has no filesystem access of its own, so discovery runs in a cheap agent.
   phase('Discover')
