@@ -47,7 +47,17 @@ async function report(adapter: StoreAdapter, extra: Record<string, unknown>): Pr
       ftsIndexes,
       schemaObjects: master.rows.map((r) => r.name).filter((n) => n.includes('fts')),
       sidecars: readdirSync(dirname(dbPath as string))
-        .filter((f) => f.startsWith(basename(dbPath as string)) && f !== basename(dbPath as string))
+        // The `<db>.sox-lease.d` directory (adapter-race-fix §4 lease registry)
+        // is ADAPTER bookkeeping, not an engine WAL sidecar — excluded so the
+        // sidecar list keeps pinning exactly what BL-461's concurrency arm is
+        // about: the `-shm` the marker-gated pre-flight creates beside the
+        // `-tshm`/`-wal` Turso coordinates through.
+        .filter(
+          (f) =>
+            f.startsWith(basename(dbPath as string)) &&
+            f !== basename(dbPath as string) &&
+            f !== `${basename(dbPath as string)}.sox-lease.d`,
+        )
         .sort(),
       ...extra,
     }) + '\n',

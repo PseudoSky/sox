@@ -19,6 +19,7 @@ import {
   warnIfStaleSidecar,
 } from './integrity.js';
 import type { BackupIntegrityReport, WalIdentity } from './integrity.js';
+import { acquireStoreLease, storeQuiescence, type StoreLease } from './store-lease.js';
 import {
   clearStoreOpenMarker,
   describePreflight,
@@ -165,6 +166,16 @@ export class TursoAdapterImpl implements TursoAdapter {
    *  (required for `fts_match` to work at all), so this adapter enforces
    *  read-only at the application layer instead. See `_assertWritable()`. */
   private _softReadonly = false;
+
+  /** (BUG-007/008/009, adapter-race-fix §4) This connection's cross-process
+   *  lease entry, acquired by `connect()` when `opts.dbPath` is set and
+   *  released LAST in `close()` — after the driver has let go. The lease is
+   *  the quiescence gate for every destructive sidecar operation (proactive
+   *  `-tshm` rename, close()-TRUNCATE): a store with a live peer is never
+   *  reconciled, never truncated. `_reconnect()` deliberately does NOT adopt
+   *  the fresh instance's lease — the original entry stays valid across the
+   *  reconnect (same connection), and adopting a second entry would leak it. */
+  private _lease: StoreLease | null = null;
 
   /**
    * (BL-321) `this.db` is ONE shared connection handle — @tursodatabase/database
@@ -385,403 +396,472 @@ export class TursoAdapterImpl implements TursoAdapter {
       throw new Error('TursoAdapter requires either url or dbPath');
     }
 
-    // (BL-391) Soft-readonly: caller wants read-only semantics but needs
-    // fts_match to keep working, which Turso's native readonly option
-    // categorically blocks (see allowFtsInReadonly doc comment above). Do
-    // NOT forward `readonly` to the native driver in that case — the
-    // connection opens writable at the driver level, and this instance
-    // enforces read-only itself via `_assertWritable()`.
-    const softReadonly = opts.readonly === true && opts.allowFtsInReadonly === true;
-
-    // Build DatabaseOpts
-    const dbOpts: any = {};
-    if (opts.readonly !== undefined && !softReadonly) dbOpts.readonly = opts.readonly;
-    if (opts.defaultQueryTimeout !== undefined) dbOpts.defaultQueryTimeout = opts.defaultQueryTimeout;
-    // (BL-512, concurrent-write follow-on) A bounded busy timeout is ALWAYS
-    // on — not a toggle, matching multiprocess_wal. With the driver's default
-    // busy_timeout=0, a connect or first statement that lands inside another
-    // process's close()-TRUNCATE exclusive-lock window fails instantly with
-    // "database is locked" and the write is lost (measured 2026-08-12: 6
-    // parallel processes × 3 cycles lost 2-4/18 under 0-timeout churn; the
-    // identical workload with `timeout: 5000` persists 18/18, 3/3 runs — the
-    // raw-driver control isolates this from the adapter). The timeout makes
-    // the engine WAIT out the transient lock instead of failing.
-    dbOpts.timeout = DEFAULT_BUSY_TIMEOUT_MS;
-
-    // index_method is ALWAYS on, unconditionally — not a toggle. Turso's FTS
-    // index DDL (`CREATE INDEX ... USING fts (...)`) and every subsequent
-    // fts_match/fts_score query against it require this experimental flag on
-    // the connection that runs them — not just the connection that created
-    // the index. Without it, index creation throws a parse error ("index
-    // method is an experimental feature") that was previously swallowed by a
-    // surrounding try/catch at log.debug in db.ts, so idx_fts_node silently
-    // never existed on any real Turso store and FTS was dead in production.
-    // There is no PRAGMA workaround (Turso silently no-ops unknown PRAGMAs).
-    // FTS is a core feature, so this is unconditional.
-    //
-    // multiprocess_wal is ALSO always on, unconditionally — NOT a toggle
-    // (BL-512 concurrent-write defect). The backlog store is opened by many
-    // short-lived processes at once; multiprocess WAL (.tshm coordination)
-    // is what lets those coexisting opens share the store. An open WITHOUT it
-    // while another process holds multiprocess authority is refused by the
-    // engine ("Database is already open without experimental multiprocess WAL
-    // in another process") and the write is lost — which is exactly what the
-    // pre-connect better-sqlite3 probe used to trigger (engine-guard
-    // `readApplicationId`, now header-first). There is no opt-out: the
-    // `experimental: { multiprocessWal: false }` option was REMOVED from the
-    // adapter API with this fix.
-    const experiments: string[] = ['index_method', 'multiprocess_wal'];
-    if (opts.encryption) {
-      dbOpts.encryption = {
-        cipher: opts.encryption.cipher,
-        hexkey: opts.encryption.hexkey,
-      };
-    }
-    if (experiments.length > 0) {
-      dbOpts.experimental = experiments;
+    let lease: StoreLease | null = null;
+    if (opts.dbPath) {
+      lease = await acquireStoreLease(opts.dbPath);
     }
 
-    // Turso adapter supports both local file: and remote libsql:// URLs
-    // When authToken is present, it's a remote connection
-    const driverOpen = async (): Promise<any> => {
-      if (opts.authToken && !url.startsWith('file:')) {
-        // Remote connection via libsql:// — use connect()
+    try {
+      // (BL-391) Soft-readonly: caller wants read-only semantics but needs
+      // fts_match to keep working, which Turso's native readonly option
+      // categorically blocks (see allowFtsInReadonly doc comment above). Do
+      // NOT forward `readonly` to the native driver in that case — the
+      // connection opens writable at the driver level, and this instance
+      // enforces read-only itself via `_assertWritable()`.
+      const softReadonly = opts.readonly === true && opts.allowFtsInReadonly === true;
+
+      // Build DatabaseOpts
+      const dbOpts: any = {};
+      if (opts.readonly !== undefined && !softReadonly) dbOpts.readonly = opts.readonly;
+      if (opts.defaultQueryTimeout !== undefined) dbOpts.defaultQueryTimeout = opts.defaultQueryTimeout;
+      // (BL-512, concurrent-write follow-on) A bounded busy timeout is ALWAYS
+      // on — not a toggle, matching multiprocess_wal. With the driver's default
+      // busy_timeout=0, a connect or first statement that lands inside another
+      // process's close()-TRUNCATE exclusive-lock window fails instantly with
+      // "database is locked" and the write is lost (measured 2026-08-12: 6
+      // parallel processes × 3 cycles lost 2-4/18 under 0-timeout churn; the
+      // identical workload with `timeout: 5000` persists 18/18, 3/3 runs — the
+      // raw-driver control isolates this from the adapter). The timeout makes
+      // the engine WAIT out the transient lock instead of failing.
+      dbOpts.timeout = DEFAULT_BUSY_TIMEOUT_MS;
+
+      // index_method is ALWAYS on, unconditionally — not a toggle. Turso's FTS
+      // index DDL (`CREATE INDEX ... USING fts (...)`) and every subsequent
+      // fts_match/fts_score query against it require this experimental flag on
+      // the connection that runs them — not just the connection that created
+      // the index. Without it, index creation throws a parse error ("index
+      // method is an experimental feature") that was previously swallowed by a
+      // surrounding try/catch at log.debug in db.ts, so idx_fts_node silently
+      // never existed on any real Turso store and FTS was dead in production.
+      // There is no PRAGMA workaround (Turso silently no-ops unknown PRAGMAs).
+      // FTS is a core feature, so this is unconditional.
+      //
+      // multiprocess_wal is ALSO always on, unconditionally — NOT a toggle
+      // (BL-512 concurrent-write defect). The backlog store is opened by many
+      // short-lived processes at once; multiprocess WAL (.tshm coordination)
+      // is what lets those coexisting opens share the store. An open WITHOUT it
+      // while another process holds multiprocess authority is refused by the
+      // engine ("Database is already open without experimental multiprocess WAL
+      // in another process") and the write is lost — which is exactly what the
+      // pre-connect better-sqlite3 probe used to trigger (engine-guard
+      // `readApplicationId`, now header-first). There is no opt-out: the
+      // `experimental: { multiprocessWal: false }` option was REMOVED from the
+      // adapter API with this fix.
+      const experiments: string[] = ['index_method', 'multiprocess_wal'];
+      if (opts.encryption) {
+        dbOpts.encryption = {
+          cipher: opts.encryption.cipher,
+          hexkey: opts.encryption.hexkey,
+        };
+      }
+      if (experiments.length > 0) {
+        dbOpts.experimental = experiments;
+      }
+
+      // Turso adapter supports both local file: and remote libsql:// URLs
+      // When authToken is present, it's a remote connection
+      const driverOpen = async (): Promise<any> => {
+        if (opts.authToken && !url.startsWith('file:')) {
+          // Remote connection via libsql:// — use connect()
+          return connect(url, { authToken: opts.authToken, ...dbOpts });
+        }
+        if (url.startsWith('file:') || !opts.authToken) {
+          // Local connection — use connect() for async
+          return connect(url, dbOpts);
+        }
         return connect(url, { authToken: opts.authToken, ...dbOpts });
-      }
-      if (url.startsWith('file:') || !opts.authToken) {
-        // Local connection — use connect() for async
-        return connect(url, dbOpts);
-      }
-      return connect(url, { authToken: opts.authToken, ...dbOpts });
-    };
+      };
 
-    // (BL-512 follow-on) BOUNDED CONNECT-LEVEL RETRY for the driver's own
-    // open-handshake race ("Database is already open without experimental
-    // multiprocess WAL in another process"). Measured 2026-08-12 under
-    // barrier-synced maximal simultaneous opens, this is the driver's
-    // transient classification of an in-progress sibling open as a legacy
-    // opener — a raw-driver control (no adapter, no better-sqlite3) fails
-    // 1-14/20 at varying rates WITH the barrier sync and 20/20 every run
-    // without it, so the adapter cannot remove it and the driver's busy
-    // timeout cannot absorb it (hard error, not busy). This loop is the only
-    // remaining lever. It is a SCALPEL: retried ONLY when the thrown open
-    // error matches `isAlreadyOpenWithoutMultiprocessWal` — any other open
-    // failure (wrong mode, permission, corrupt file, stale-WAL sidecar…)
-    // propagates immediately.
-    //
-    // Bound: OPEN_RETRY_MAX_ATTEMPTS total (1 initial + 2 retries) — ADR-0012
-    // §4's ceiling, the same 3 the transaction and write-queue loops use.
-    // Backoff: linear 100ms → 200ms (constants above — no I/O involved, the
-    // other opener releases within a few scheduler quanta). Exhaustion: the
-    // ORIGINAL driver error is rethrown with `retryable: true` attached so the
-    // CALLER decides beyond this bound — never silently dropped (§4). No
-    // config toggle: unconditional fixed behavior (ADR-0013).
-    const openOnce = async (): Promise<any> => {
-      let lastError: unknown;
-      for (let attempt = 0; attempt < OPEN_RETRY_MAX_ATTEMPTS; attempt++) {
-        try {
-          return await driverOpen();
-        } catch (err) {
-          if (!isAlreadyOpenWithoutMultiprocessWal(err)) throw err;
+      // (BL-512 follow-on) BOUNDED CONNECT-LEVEL RETRY for the driver's own
+      // open-handshake race ("Database is already open without experimental
+      // multiprocess WAL in another process"). Measured 2026-08-12 under
+      // barrier-synced maximal simultaneous opens, this is the driver's
+      // transient classification of an in-progress sibling open as a legacy
+      // opener — a raw-driver control (no adapter, no better-sqlite3) fails
+      // 1-14/20 at varying rates WITH the barrier sync and 20/20 every run
+      // without it, so the adapter cannot remove it and the driver's busy
+      // timeout cannot absorb it (hard error, not busy). This loop is the only
+      // remaining lever. It is a SCALPEL: retried ONLY when the thrown open
+      // error matches `isAlreadyOpenWithoutMultiprocessWal` — any other open
+      // failure (wrong mode, permission, corrupt file, stale-WAL sidecar…)
+      // propagates immediately.
+      //
+      // Bound: OPEN_RETRY_MAX_ATTEMPTS total (1 initial + 2 retries) — ADR-0012
+      // §4's ceiling, the same 3 the transaction and write-queue loops use.
+      // Backoff: linear 100ms → 200ms (constants above — no I/O involved, the
+      // other opener releases within a few scheduler quanta). Exhaustion: the
+      // ORIGINAL driver error is rethrown with `retryable: true` attached so the
+      // CALLER decides beyond this bound — never silently dropped (§4). No
+      // config toggle: unconditional fixed behavior (ADR-0013).
+      const openOnce = async (): Promise<any> => {
+        let lastError: unknown;
+        for (let attempt = 0; attempt < OPEN_RETRY_MAX_ATTEMPTS; attempt++) {
+          try {
+            return await driverOpen();
+          } catch (err) {
+            if (!isAlreadyOpenWithoutMultiprocessWal(err)) throw err;
 
-          if (attempt >= OPEN_RETRY_MAX_ATTEMPTS - 1) {
-            // Exhausted — surface the ORIGINAL driver error, marked
-            // retryable so the caller knows this is the transient race and
-            // may retry beyond the adapter's bound (ADR-0012 §4).
-            if (err !== null && typeof err === 'object') {
-              (err as { retryable?: boolean }).retryable = true;
+            if (attempt >= OPEN_RETRY_MAX_ATTEMPTS - 1) {
+              // Exhausted — surface the ORIGINAL driver error, marked
+              // retryable so the caller knows this is the transient race and
+              // may retry beyond the adapter's bound (ADR-0012 §4).
+              if (err !== null && typeof err === 'object') {
+                (err as { retryable?: boolean }).retryable = true;
+              }
+              throw err;
             }
-            throw err;
-          }
 
-          const delay = OPEN_RETRY_BACKOFF_START_MS + attempt * OPEN_RETRY_BACKOFF_STEP_MS;
-          log.warn('store_adapter.turso.open_multiprocess_wal_retry', {
-            attempt: attempt + 1,
-            max_attempts: OPEN_RETRY_MAX_ATTEMPTS,
-            delay_ms: delay,
-            error: (err instanceof Error ? err.message : String(err)).slice(0, 300),
-          });
-          lastError = err;
-          await new Promise((resolve) => setTimeout(resolve, delay));
+            const delay = OPEN_RETRY_BACKOFF_START_MS + attempt * OPEN_RETRY_BACKOFF_STEP_MS;
+            log.warn('store_adapter.turso.open_multiprocess_wal_retry', {
+              attempt: attempt + 1,
+              max_attempts: OPEN_RETRY_MAX_ATTEMPTS,
+              delay_ms: delay,
+              error: (err instanceof Error ? err.message : String(err)).slice(0, 300),
+            });
+            lastError = err;
+            await new Promise((resolve) => setTimeout(resolve, delay));
+          }
+        }
+        // Unreachable in practice (every path above returns or throws), but
+        // satisfies the type system — same shape as retry.ts `withRetry`.
+        throw lastError;
+      };
+
+      // (BL-361) OUT-OF-PROCESS PRE-FLIGHT. An FTS index row whose Tantivy
+      // backing objects are missing does not fail with an error — the first
+      // `fts_match` against it PANICS in Rust and aborts this process (SIGABRT).
+      // The driver open below survives; `runOpenTimeIntegrity` a few lines down
+      // does not, because `probeFtsIndexes` issues exactly that query on every
+      // open. A panic crossing the FFI boundary is not catchable, so no probe
+      // and no repair path downstream ever runs. The only defence is to look at
+      // `sqlite_master` through a different engine BEFORE the store is used.
+      // See preflight.ts for the mechanism and the per-statement measurements,
+      // and upstream https://github.com/tursodatabase/turso/issues/8216.
+      //
+      // Gated on the out-of-band marker file, NOT on the store's own unclean
+      // flag: `consumeUncleanShutdownFlag()` reads `_adapter_meta` through this
+      // adapter, i.e. after `connect()` returned — and this pre-flight has to
+      // decide before that, so the gate must live outside the database.
+      if (opts.dbPath && opts.readonly !== true && hasStoreOpenMarker(opts.dbPath)) {
+        const preflight = preflightSchemaSanity(opts.dbPath, { repair: true });
+        if (preflight.orphaned.length > 0) {
+          emitIntegrityReport(
+            opts.dbPath,
+            preflight.failed !== null ? 'repair_failed' : 'repaired',
+            describePreflight(preflight),
+          );
         }
       }
-      // Unreachable in practice (every path above returns or throws), but
-      // satisfies the type system — same shape as retry.ts `withRetry`.
-      throw lastError;
-    };
 
-    // (BL-361) OUT-OF-PROCESS PRE-FLIGHT. An FTS index row whose Tantivy
-    // backing objects are missing does not fail with an error — the first
-    // `fts_match` against it PANICS in Rust and aborts this process (SIGABRT).
-    // The driver open below survives; `runOpenTimeIntegrity` a few lines down
-    // does not, because `probeFtsIndexes` issues exactly that query on every
-    // open. A panic crossing the FFI boundary is not catchable, so no probe
-    // and no repair path downstream ever runs. The only defence is to look at
-    // `sqlite_master` through a different engine BEFORE the store is used.
-    // See preflight.ts for the mechanism and the per-statement measurements,
-    // and upstream https://github.com/tursodatabase/turso/issues/8216.
-    //
-    // Gated on the out-of-band marker file, NOT on the store's own unclean
-    // flag: `consumeUncleanShutdownFlag()` reads `_adapter_meta` through this
-    // adapter, i.e. after `connect()` returned — and this pre-flight has to
-    // decide before that, so the gate must live outside the database.
-    if (opts.dbPath && opts.readonly !== true && hasStoreOpenMarker(opts.dbPath)) {
-      const preflight = preflightSchemaSanity(opts.dbPath, { repair: true });
-      if (preflight.orphaned.length > 0) {
-        emitIntegrityReport(
-          opts.dbPath,
-          preflight.failed !== null ? 'repair_failed' : 'repaired',
-          describePreflight(preflight),
-        );
-      }
-    }
+      // (BL-373 family) Informational, BEFORE any open attempt: a `-tshm` that
+      // is provably older than the `-wal` beside it is decaying, and the open
+      // about to run may be the one that fails with a WAL-frame short read.
+      // Two statSync calls, never throws.
+      warnIfStaleSidecar(opts.dbPath);
 
-    // (BL-373 family) Informational, BEFORE any open attempt: a `-tshm` that
-    // is provably older than the `-wal` beside it is decaying, and the open
-    // about to run may be the one that fails with a WAL-frame short read.
-    // Two statSync calls, never throws.
-    warnIfStaleSidecar(opts.dbPath);
-
-    // (BL-373 family) PROACTIVE — root-cause prevention, not just healing.
-    // The mechanism (confirmed by scratch repro, 2026-08-11): the -tshm is
-    // maintained only while a Turso connection holds the store; any other
-    // writer (better-sqlite3 / stock SQLite, which maintains the classic -shm
-    // and never the -tshm) advances, checkpoints or deletes the WAL without
-    // touching the sidecar, so the next Turso open short-reads against the
-    // frozen sidecar. Moving the mtime-proven stale sidecar HERE — before
-    // `openOnce()` even runs — means the failed-open path is never taken; the
-    // catch below stays as the backstop for races and non-mtime shapes. The
-    // staleness reference is the WAL's mtime (or the db file's when the WAL is
-    // gone — the mixed-engine deleted-WAL variant), and the -shm is NEVER
-    // touched pre-open (self-reconciling; moving it under a concurrent
-    // multiprocess-WAL reader is corruption — that branch stays in the catch).
-    if (opts.dbPath) {
-      const proactive = proactivelyReconcileStaleSidecar(opts.dbPath);
-      if (proactive.moved && proactive.to) {
-        emitIntegrityReport(
-          opts.dbPath,
-          'repaired',
-          `[BL-373] stale -tshm reconciled BEFORE the open: moved aside to ${proactive.to} — ` +
-            `the open proceeds against the existing WAL, no failed-open path`,
-        );
-      }
-    }
-
-    // (BL-508) Was the db file already there before this open? `ensureEngineMarker`
-    // needs to know whether the store is FRESH (created by this very open → this
-    // engine owns it) or LEGACY (unmarked → infer the owning engine before stamping).
-    const fileExisted = opts.dbPath !== undefined && existsSync(opts.dbPath);
-
-    let db: any;
-    try {
-      db = await openOnce();
-    } catch (err) {
-      // (BL-373) A stale `-tshm` — Turso's own WAL-index sidecar — makes the
-      // store PERMANENTLY unopenable after an ordinary restart, with a
-      // diagnostic that names the database and a WAL frame offset while the WAL
-      // is 0 bytes. The backend crash-loops and nothing recovers it. The
-      // sidecar is derived state that Turso rebuilds from scratch, so
-      // reconciling it is safe when the WAL has nothing to lose. This must live
-      // here rather than in a post-open probe: `connect()` itself is what
-      // fails, so nothing downstream ever runs.
+      // (BL-373 family) PROACTIVE — root-cause prevention, not just healing.
+      // The mechanism (confirmed by scratch repro, 2026-08-11): the -tshm is
+      // maintained only while a Turso connection holds the store; any other
+      // writer (better-sqlite3 / stock SQLite, which maintains the classic -shm
+      // and never the -tshm) advances, checkpoints or deletes the WAL without
+      // touching the sidecar, so the next Turso open short-reads against the
+      // frozen sidecar. Moving the mtime-proven stale sidecar HERE — before
+      // `openOnce()` even runs — means the failed-open path is never taken; the
+      // catch below stays as the backstop for races and non-mtime shapes. The
+      // staleness reference is the WAL's mtime (or the db file's when the WAL is
+      // gone — the mixed-engine deleted-WAL variant), and the -shm is NEVER
+      // touched pre-open (self-reconciling; moving it under a concurrent
+      // multiprocess-WAL reader is corruption — that branch stays in the catch).
       //
-      // (BL-373 third recurrence) A non-empty WAL is no longer an automatic
-      // decline: the sidecar-vs-WAL mtime heuristic in `recoverStaleWalIndex`
-      // moves a PROVABLY stale sidecar even over a multi-hundred-KB WAL (the
-      // Aug-1/Aug-3/Aug-11 shape: `-tshm` days old, WAL 206 032 bytes, every
-      // fresh open failing with a short read). The WAL itself is never
-      // touched by sidecar recovery — reopen against it as-is. If the reopen
-      // STILL fails on a probe-truncated WAL (Shape B), that is REFUSAL-ONLY
-      // (ADR-0013, owner directive): the operator gets the typed action
-      // naming the manual step with the data-loss disclosure — moving the WAL
-      // is a human decision, never an automatic one.
-      if (!isStaleWalIndexError(err) || !opts.dbPath) throw err;
-
-      const recovery = recoverStaleWalIndex(opts.dbPath);
-      emitIntegrityReport(
-        opts.dbPath,
-        recovery.movedAside.length > 0 ? 'damaged' : 'repair_failed',
-        recovery.movedAside.length > 0
-          ? `[BL-373] stale WAL-index sidecar blocked the open; moved aside: ${recovery.movedAside
-              .map((m) => m.to)
-              .join(', ')}`
-          : `[BL-373] open failed with a WAL-frame error and the sidecar could NOT be reconciled: ${
-              recovery.declined ?? 'unknown reason'
-            }`,
-      );
-      if (recovery.movedAside.length === 0) {
-        // Declined with evidence (the decline text carries the frame probe).
-        // Pass the probe onward so the typed operator error also names the
-        // WAL-side action when the WAL is genuinely truncated (Shape B) —
-        // "truncated WAL + fresh sidecar" is exactly the ambiguous case that
-        // goes to the operator.
-        throw describeStaleWalIndexFailure(
-          opts.dbPath,
-          recovery,
-          err,
-          probeWalFrames(opts.dbPath + '-wal'),
-        );
+      // (BUG-007, adapter-race-fix §6c) The reconcile is QUiescence-gated: under
+      // concurrency the first opener's rename of a LIVE store's coordination
+      // sidecar is exactly what makes every sibling open short-read (or fail
+      // outright). With a live peer the rename is a `log.debug`-only SKIP — not
+      // damage, not repair, no integrity report. Only a quiescent store is
+      // reconciled proactively.
+      if (opts.dbPath && lease) {
+        const quiescence = storeQuiescence(opts.dbPath, lease.token);
+        const proactive = proactivelyReconcileStaleSidecar(opts.dbPath, {
+          storeInUse: !quiescence.quiescent,
+        });
+        if (proactive.moved && proactive.to) {
+          emitIntegrityReport(
+            opts.dbPath,
+            'repaired',
+            `[BL-373] stale -tshm reconciled BEFORE the open: moved aside to ${proactive.to} — ` +
+              `the open proceeds against the existing WAL, no failed-open path`,
+          );
+        } else if (quiescence.livePeers.length > 0) {
+          log.debug('store_adapter.turso.sidecar_reconcile_deferred', {
+            detail: `-tshm reconcile skipped: ${quiescence.livePeers.length} live connection(s) hold the store`,
+          });
+        }
       }
 
+      // (BL-508) Was the db file already there before this open? `ensureEngineMarker`
+      // needs to know whether the store is FRESH (created by this very open → this
+      // engine owns it) or LEGACY (unmarked → infer the owning engine before stamping).
+      const fileExisted = opts.dbPath !== undefined && existsSync(opts.dbPath);
+
+      let db: any;
       try {
         db = await openOnce();
-      } catch (retryErr) {
-        // Sidecar moved aside but the open STILL fails. Shape B is refusal-
-        // only: the frame probe's evidence rides the thrown typed error,
-        // which names the exact manual operator step (`mv …-wal …-wal.corrupt-<stamp>`
-        // or restore from backup) with the data-loss disclosure. Never an
-        // automatic WAL move — a store that cannot open loses nothing by
-        // waiting, and data-loss decisions are human (ADR-0013).
-        throw describeStaleWalIndexFailure(
-          opts.dbPath,
-          recovery,
-          retryErr,
-          probeWalFrames(opts.dbPath + '-wal'),
-        );
-      }
-      emitIntegrityReport(
-        opts.dbPath,
-        'repaired',
-        `[BL-373] store opened after reconciling the stale WAL-index sidecar`,
-      );
-    }
-
-    // (BL-508) FOREIGN-ENGINE REFUSAL, BEFORE the driver even opens the file: a
-    // store whose marker claims SQLite ownership must not be opened by the Turso
-    // adapter — cross-engine WAL coordination is exactly what destroyed stores in
-    // the incident this guard exists for. The probe is a pure header read of
-    // `application_id` (fs-level, no schema touch, no driver, no sidecars).
-    // Unmarked legacy stores are NOT refused (backfill on next sox open), and
-    // the deliberate-migration escape hatch (`allowForeignEngine: true` — the
-    // factory's `migrateOnAdapterChange` path) proceeds.
-    if (opts.dbPath && opts.readonly !== true && opts.allowForeignEngine !== true) {
-      const appId = readApplicationId(opts.dbPath);
-      if (appId === SOX_APP_ID_SQLITE) {
-        throw new ESqliteNativeStore(opts.dbPath, 'sqlite');
-      }
-    }
-
-    // (SOXGRAPH-001) Probe recursive-CTE support ONCE at connect, before the
-    // capabilities object is built. Turso Database Rust < 0.8.0 rejects
-    // `WITH RECURSIVE` at prepare (`Parse error`) while SQLite and Turso
-    // >= 0.8.0 accept it — proven empirically by
-    // `recursive-cte.probe.test.ts`. graph-store reads
-    // `capabilities.recursiveCte` to pick its iterative fallbacks for the
-    // five recursive-graph methods; a wrong TRUE here would send raw
-    // recursive SQL at a 0.7.x Turso store and every one of those methods
-    // would throw. A single read-only counter CTE in a try/catch settles it;
-    // the result is cached in the capabilities object below (the instance's
-    // only cache — `capabilities` is captured at construction).
-    let recursiveCte = false;
-    try {
-      await db.get(
-        `WITH RECURSIVE cnt(x) AS (SELECT 1 UNION ALL SELECT x + 1 FROM cnt WHERE x < 5) SELECT x FROM cnt`,
-      );
-      recursiveCte = true;
-    } catch (err) {
-      // Feature probe — a 0.7.x Turso rejects WITH RECURSIVE; that is the
-      // expected false. Any OTHER failure is still worth a trace.
-      log.debug('store_adapter.turso.recursive_cte_probe_failed', {
-        error: err instanceof Error ? err.message : String(err),
-      });
-      recursiveCte = false;
-    }
-
-    const config = { type: 'turso' } as AdapterConfig & { type: 'turso' };
-    if (opts.url !== undefined) config.url = opts.url;
-    if (opts.dbPath !== undefined) config.dbPath = opts.dbPath;
-    if (opts.authToken !== undefined) config.authToken = opts.authToken;
-    if (opts.readonly !== undefined) config.readonly = opts.readonly;
-    if (opts.encryption !== undefined) config.encryption = opts.encryption;
-    if (opts.defaultQueryTimeout !== undefined) config.defaultQueryTimeout = opts.defaultQueryTimeout;
-
-    const capabilities: AdapterCapabilities = {
-      multiprocessWrite: true, // unconditional — see the experiments block above (BL-512)
-      nativeVectors: true,
-      concurrentTransactions: true,
-      fts5: false,
-      fts: true,
-      needsWriteSerialization: false,
-      recursiveCte,
-    };
-
-    const instance = new TursoAdapterImpl(db, config, capabilities);
-    instance._softReadonly = softReadonly;
-
-    // (BL-373 family) The open SUCCEEDED despite a stale sidecar — the masked
-    // case. warnIfStaleSidecar fires only when the mtimes prove staleness, so
-    // a healthy sidecar emits nothing. Informational, never throws.
-    warnIfStaleSidecar(opts.dbPath);
-
-    // (BL-508) Engine marker on first open (idempotent; fresh turso stores
-    // and legacy unmarked stores inferred turso get stamped here).
-    if (opts.dbPath && opts.readonly !== true) {
-      await ensureEngineMarker(instance, 'turso', opts.dbPath, { fresh: !fileExisted });
-    }
-
-    // (BL-361) The store is now open, so this session owns it. The marker is
-    // what tells the NEXT open that this session may not have ended cleanly —
-    // `close()` clears it. It lives outside the database on purpose: the state
-    // it guards against is one where the database cannot be read at all.
-    if (opts.readonly !== true) markStoreOpen(opts.dbPath);
-
-    // (BL-461) IN-PROCESS FTS ORPHAN GUARD. The pre-flight above is gated on
-    // the marker, so it never runs for a store damaged inside a session that
-    // afterwards closed cleanly — and that store still reaches `fts_match` and
-    // aborts this process. This guard is unconditional and closes that hole
-    // from inside the connection that is already open: `sqlite_master` reads,
-    // `CREATE INDEX … USING fts` and `DROP INDEX` are all measured safe on a
-    // store in this state; only `fts_match` panics, and nothing has issued one
-    // yet at this line. It MUST stay above `runOpenTimeIntegrity` —
-    // `probeFtsIndexes` is the caller that issues that statement.
-    //
-    // Repair builds the replacement BEFORE destroying the orphan (see
-    // fts-orphan-guard.ts for the measurements and for why a failed build still
-    // drops). Read-only opens detect and report but never write.
-    {
-      const guard = await guardOrphanedFtsIndexes(instance, { repair: opts.readonly !== true });
-      if (guard.orphaned.length > 0) {
-        emitIntegrityReport(
-          opts.dbPath ?? opts.url,
-          opts.readonly === true ? 'damaged' : guardSucceeded(guard) ? 'repaired' : 'repair_failed',
-          describeFtsOrphanGuard(guard),
-        );
-      }
-    }
-
-    // Stamp adapter metadata (non-fatal)
-    if (!opts.readonly) {
-      let uncleanShutdown = false;
-      try {
-        await ensureAdapterMetaTable(instance);
-        await stampAdapterMeta(instance, 'turso');
-        uncleanShutdown = await consumeUncleanShutdownFlag(instance);
       } catch (err) {
-        // Non-fatal — but meta stamping failing on every open is a real signal.
-        log.warn('store_adapter.turso.adapter_meta_failed', {
+        // (BL-373) A stale `-tshm` — Turso's own WAL-index sidecar — makes the
+        // store PERMANENTLY unopenable after an ordinary restart, with a
+        // diagnostic that names the database and a WAL frame offset while the WAL
+        // is 0 bytes. The backend crash-loops and nothing recovers it. The
+        // sidecar is derived state that Turso rebuilds from scratch, so
+        // reconciling it is safe when the WAL has nothing to lose. This must live
+        // here rather than in a post-open probe: `connect()` itself is what
+        // fails, so nothing downstream ever runs.
+        //
+        // (BL-373 third recurrence) A non-empty WAL is no longer an automatic
+        // decline: the sidecar-vs-WAL mtime heuristic in `recoverStaleWalIndex`
+        // moves a PROVABLY stale sidecar even over a multi-hundred-KB WAL (the
+        // Aug-1/Aug-3/Aug-11 shape: `-tshm` days old, WAL 206 032 bytes, every
+        // fresh open failing with a short read). The WAL itself is never
+        // touched by sidecar recovery — reopen against it as-is. If the reopen
+        // STILL fails on a probe-truncated WAL (Shape B), that is REFUSAL-ONLY
+        // (ADR-0013, owner directive): the operator gets the typed action
+        // naming the manual step with the data-loss disclosure — moving the WAL
+        // is a human decision, never an automatic one.
+        if (!isStaleWalIndexError(err) || !opts.dbPath) throw err;
+
+        // (BUG-009, adapter-race-fix §6d) The catch is now quiescence-gated.
+        // A store with a live peer is NOT stale/corrupt — the frame short-read
+        // is the transient close()-TRUNCATE race (a sibling's TRUNCATE zeroes
+        // the -wal mid-pread). Never recover, never classify as corruption,
+        // never rename -tshm/-shm, never wrap in describeStaleWalIndexFailure:
+        // retry the open with the same bounded budget the handshake race uses.
+        // Exhaustion surfaces the ORIGINAL driver error marked retryable
+        // (ADR-0012 §4 — the caller decides beyond this bound).
+        const quiescence = storeQuiescence(opts.dbPath, lease?.token);
+
+        if (!quiescence.quiescent) {
+          let lastError: unknown = err;
+          for (let attempt = 0; attempt < OPEN_RETRY_MAX_ATTEMPTS - 1; attempt++) {
+            const delay = OPEN_RETRY_BACKOFF_START_MS + attempt * OPEN_RETRY_BACKOFF_STEP_MS;
+            log.warn('store_adapter.turso.open_shortread_transient_retry', {
+              attempt: attempt + 1,
+              max_attempts: OPEN_RETRY_MAX_ATTEMPTS,
+              delay_ms: delay,
+              error: (err instanceof Error ? err.message : String(err)).slice(0, 300),
+            });
+            await new Promise((resolve) => setTimeout(resolve, delay));
+            try {
+              db = await openOnce();
+              lastError = null;
+              break;
+            } catch (retryErr) {
+              lastError = retryErr;
+              if (!isStaleWalIndexError(retryErr)) break; // different class — propagate below
+            }
+          }
+          if (lastError !== null) {
+            if (lastError !== null && typeof lastError === 'object') {
+              (lastError as { retryable?: boolean }).retryable = true;
+            }
+            throw lastError;
+          }
+          // else: retried open succeeded — fall through to the post-catch
+          // ceremony below with `db` assigned.
+        } else {
+          // Quiescent — the genuinely-stale case (or genuine corruption).
+          // Existing recovery logic runs UNCHANGED (the store is quiescent, so
+          // reconciling its sidecar cannot race a live peer).
+          const recovery = recoverStaleWalIndex(opts.dbPath, { storeInUse: false });
+          emitIntegrityReport(
+            opts.dbPath,
+            recovery.movedAside.length > 0 ? 'damaged' : 'repair_failed',
+            recovery.movedAside.length > 0
+              ? `[BL-373] stale WAL-index sidecar blocked the open; moved aside: ${recovery.movedAside
+                  .map((m) => m.to)
+                  .join(', ')}`
+              : `[BL-373] open failed with a WAL-frame error and the sidecar could NOT be reconciled: ${
+                  recovery.declined ?? 'unknown reason'
+                }`,
+          );
+          if (recovery.movedAside.length === 0) {
+            // Declined with evidence (the decline text carries the frame probe).
+            // Pass the probe onward so the typed operator error also names the
+            // WAL-side action when the WAL is genuinely truncated (Shape B) —
+            // "truncated WAL + fresh sidecar" is exactly the ambiguous case that
+            // goes to the operator.
+            throw describeStaleWalIndexFailure(
+              opts.dbPath,
+              recovery,
+              err,
+              probeWalFrames(opts.dbPath + '-wal'),
+            );
+          }
+
+          try {
+            db = await openOnce();
+          } catch (retryErr) {
+            // Sidecar moved aside but the open STILL fails. Shape B is refusal-
+            // only: the frame probe's evidence rides the thrown typed error,
+            // which names the exact manual operator step (`mv …-wal …-wal.corrupt-<stamp>`
+            // or restore from backup) with the data-loss disclosure. Never an
+            // automatic WAL move — a store that cannot open loses nothing by
+            // waiting, and data-loss decisions are human (ADR-0013).
+            throw describeStaleWalIndexFailure(
+              opts.dbPath,
+              recovery,
+              retryErr,
+              probeWalFrames(opts.dbPath + '-wal'),
+            );
+          }
+          emitIntegrityReport(
+            opts.dbPath,
+            'repaired',
+            `[BL-373] store opened after reconciling the stale WAL-index sidecar`,
+          );
+        }
+      }
+
+      // (BL-508) FOREIGN-ENGINE REFUSAL, BEFORE the driver even opens the file: a
+      // store whose marker claims SQLite ownership must not be opened by the Turso
+      // adapter — cross-engine WAL coordination is exactly what destroyed stores in
+      // the incident this guard exists for. The probe is a pure header read of
+      // `application_id` (fs-level, no schema touch, no driver, no sidecars).
+      // Unmarked legacy stores are NOT refused (backfill on next sox open), and
+      // the deliberate-migration escape hatch (`allowForeignEngine: true` — the
+      // factory's `migrateOnAdapterChange` path) proceeds.
+      if (opts.dbPath && opts.readonly !== true && opts.allowForeignEngine !== true) {
+        const appId = readApplicationId(opts.dbPath);
+        if (appId === SOX_APP_ID_SQLITE) {
+          throw new ESqliteNativeStore(opts.dbPath, 'sqlite');
+        }
+      }
+
+      // (SOXGRAPH-001) Probe recursive-CTE support ONCE at connect, before the
+      // capabilities object is built. Turso Database Rust < 0.8.0 rejects
+      // `WITH RECURSIVE` at prepare (`Parse error`) while SQLite and Turso
+      // >= 0.8.0 accept it — proven empirically by
+      // `recursive-cte.probe.test.ts`. graph-store reads
+      // `capabilities.recursiveCte` to pick its iterative fallbacks for the
+      // five recursive-graph methods; a wrong TRUE here would send raw
+      // recursive SQL at a 0.7.x Turso store and every one of those methods
+      // would throw. A single read-only counter CTE in a try/catch settles it;
+      // the result is cached in the capabilities object below (the instance's
+      // only cache — `capabilities` is captured at construction).
+      let recursiveCte = false;
+      try {
+        await db.get(
+          `WITH RECURSIVE cnt(x) AS (SELECT 1 UNION ALL SELECT x + 1 FROM cnt WHERE x < 5) SELECT x FROM cnt`,
+        );
+        recursiveCte = true;
+      } catch (err) {
+        // Feature probe — a 0.7.x Turso rejects WITH RECURSIVE; that is the
+        // expected false. Any OTHER failure is still worth a trace.
+        log.debug('store_adapter.turso.recursive_cte_probe_failed', {
           error: err instanceof Error ? err.message : String(err),
+        });
+        recursiveCte = false;
+      }
+
+      const config = { type: 'turso' } as AdapterConfig & { type: 'turso' };
+      if (opts.url !== undefined) config.url = opts.url;
+      if (opts.dbPath !== undefined) config.dbPath = opts.dbPath;
+      if (opts.authToken !== undefined) config.authToken = opts.authToken;
+      if (opts.readonly !== undefined) config.readonly = opts.readonly;
+      if (opts.encryption !== undefined) config.encryption = opts.encryption;
+      if (opts.defaultQueryTimeout !== undefined) config.defaultQueryTimeout = opts.defaultQueryTimeout;
+
+      const capabilities: AdapterCapabilities = {
+        multiprocessWrite: true, // unconditional — see the experiments block above (BL-512)
+        nativeVectors: true,
+        concurrentTransactions: true,
+        fts5: false,
+        fts: true,
+        needsWriteSerialization: false,
+        recursiveCte,
+      };
+
+      const instance = new TursoAdapterImpl(db, config, capabilities);
+      instance._softReadonly = softReadonly;
+
+      // (BL-373 family) The open SUCCEEDED despite a stale sidecar — the masked
+      // case. warnIfStaleSidecar fires only when the mtimes prove staleness, so
+      // a healthy sidecar emits nothing. Informational, never throws.
+      warnIfStaleSidecar(opts.dbPath);
+
+      // (BL-508) Engine marker on first open (idempotent; fresh turso stores
+      // and legacy unmarked stores inferred turso get stamped here).
+      if (opts.dbPath && opts.readonly !== true) {
+        await ensureEngineMarker(instance, 'turso', opts.dbPath, { fresh: !fileExisted });
+      }
+
+      // (BL-361) The store is now open, so this session owns it. The marker is
+      // what tells the NEXT open that this session may not have ended cleanly —
+      // `close()` clears it. It lives outside the database on purpose: the state
+      // it guards against is one where the database cannot be read at all.
+      if (opts.readonly !== true) markStoreOpen(opts.dbPath);
+
+      // (BL-461) IN-PROCESS FTS ORPHAN GUARD. The pre-flight above is gated on
+      // the marker, so it never runs for a store damaged inside a session that
+      // afterwards closed cleanly — and that store still reaches `fts_match` and
+      // aborts this process. This guard is unconditional and closes that hole
+      // from inside the connection that is already open: `sqlite_master` reads,
+      // `CREATE INDEX … USING fts` and `DROP INDEX` are all measured safe on a
+      // store in this state; only `fts_match` panics, and nothing has issued one
+      // yet at this line. It MUST stay above `runOpenTimeIntegrity` —
+      // `probeFtsIndexes` is the caller that issues that statement.
+      //
+      // Repair builds the replacement BEFORE destroying the orphan (see
+      // fts-orphan-guard.ts for the measurements and for why a failed build still
+      // drops). Read-only opens detect and report but never write.
+      {
+        const guard = await guardOrphanedFtsIndexes(instance, { repair: opts.readonly !== true });
+        if (guard.orphaned.length > 0) {
+          emitIntegrityReport(
+            opts.dbPath ?? opts.url,
+            opts.readonly === true ? 'damaged' : guardSucceeded(guard) ? 'repaired' : 'repair_failed',
+            describeFtsOrphanGuard(guard),
+          );
+        }
+      }
+
+      // Stamp adapter metadata (non-fatal)
+      if (!opts.readonly) {
+        let uncleanShutdown = false;
+        try {
+          await ensureAdapterMetaTable(instance);
+          await stampAdapterMeta(instance, 'turso');
+          uncleanShutdown = await consumeUncleanShutdownFlag(instance);
+        } catch (err) {
+          // Non-fatal — but meta stamping failing on every open is a real signal.
+          log.warn('store_adapter.turso.adapter_meta_failed', {
+            error: err instanceof Error ? err.message : String(err),
+          });
+        }
+
+        // (BL-352) Verify — and repair — the artifacts this adapter generates.
+        // `CREATE INDEX IF NOT EXISTS` cannot see a structure that exists but is
+        // empty, so schema reconciliation alone leaves damage permanent and
+        // invisible. See integrity.ts for the probes and their negative controls.
+        instance._walBaseline = captureWalIdentity(config.dbPath ?? config.url);
+        await runOpenTimeIntegrity(instance, {
+          uncleanShutdown,
+          walBaseline: instance._walBaseline,
+          onReport: (event, detail) => emitIntegrityReport(config.dbPath ?? config.url, event, detail),
         });
       }
 
-      // (BL-352) Verify — and repair — the artifacts this adapter generates.
-      // `CREATE INDEX IF NOT EXISTS` cannot see a structure that exists but is
-      // empty, so schema reconciliation alone leaves damage permanent and
-      // invisible. See integrity.ts for the probes and their negative controls.
-      instance._walBaseline = captureWalIdentity(config.dbPath ?? config.url);
-      await runOpenTimeIntegrity(instance, {
-        uncleanShutdown,
-        walBaseline: instance._walBaseline,
-        onReport: (event, detail) => emitIntegrityReport(config.dbPath ?? config.url, event, detail),
-      });
+      // (SPEC-CONN-RECYCLE) Capture the exact `opts` this connect() call
+      // received — never reconstructed from `config` (which drops
+      // `allowFtsInReadonly`, see the field's doc comment) — so a later
+      // reconnect can replay it verbatim through this same connect() path.
+      instance._connectOpts = Object.freeze({ ...opts });
+
+      instance._lease = lease;
+
+      return instance;
+    } catch (err) {
+      if (lease) await lease.release().catch(() => {});
+      throw err;
     }
-
-    // (SPEC-CONN-RECYCLE) Capture the exact `opts` this connect() call
-    // received — never reconstructed from `config` (which drops
-    // `allowFtsInReadonly`, see the field's doc comment) — so a later
-    // reconnect can replay it verbatim through this same connect() path.
-    instance._connectOpts = Object.freeze({ ...opts });
-
-    return instance;
   }
 
   unwrap(): import('@tursodatabase/database').Database {
@@ -1112,43 +1192,100 @@ export class TursoAdapterImpl implements TursoAdapter {
           emitIntegrityReport(this.config.dbPath ?? this.config.url, 'damaged', finding.detail);
         }
 
-        // (BL-512) UNCONDITIONAL TRUNCATE checkpoint — the defect was that a
-        // clean writable close ran NO checkpoint at all. TRUNCATE (not
-        // PASSIVE) resets the `-wal` to ~0 bytes so the next open neither
-        // replays nor re-accumulates. If TRUNCATE throws, fall back to the
-        // BL-330 damage-path PASSIVE checkpoint (which copies the orphaned
-        // WAL's pages into the main database file through the fd we already
-        // hold) and log loudly — a failed checkpoint must never block a close.
-        const checkpoint = async (): Promise<boolean> => {
+        // (BL-330) PASSIVE is the durability backstop and runs ALWAYS: it copies
+        // WAL frames into the main db through the fd we already hold, even when
+        // the WAL was unlinked or a concurrent reader holds it. Never truncates.
+        let passiveOk = false;
+        try {
+          await this.executeAll('PRAGMA wal_checkpoint(PASSIVE)');
+          passiveOk = true;
+        } catch (passiveErr) {
+          emitIntegrityReport(
+            this.config.dbPath ?? this.config.url,
+            'repair_failed',
+            `checkpoint of the WAL failed — data since the last checkpoint is being lost: ${
+              passiveErr instanceof Error ? passiveErr.message : String(passiveErr)
+            }`,
+          );
+        }
+
+        // (BL-330) The orphaned-WAL recovery report rides the PASSIVE result.
+        if (damaged && passiveOk) {
+          emitIntegrityReport(
+            this.config.dbPath ?? this.config.url,
+            'repaired',
+            'checkpointed the orphaned WAL into the main database file before close',
+          );
+        }
+
+        // (BL-512) Clean-shutdown stamp — written BEFORE the TRUNCATE so the
+        // stamp's single frame is flushed by the SAME truncate (this is the
+        // BUG-008 double-truncate fix: exactly one TRUNCATE per close, never two).
+        // Gated on !damaged exactly as before.
+        if (!damaged) {
+          await markCleanShutdown(this);
+        }
+
+        // (BUG-008) The single TRUNCATE — quiescence-gated. TRUNCATE physically
+        // zeroes the -wal (turso wal.rs:5208), which races a concurrent opener's
+        // frame pread. Issue it ONLY when no other live connection holds the
+        // store. Under contention: defer (frames stay durable; the next
+        // quiescent close truncates) — same degradation the busy=1 path already
+        // accepted, now decided BEFORE the truncate instead of reported after.
+        if (this.config.dbPath && this._lease) {
+          const quiescence = storeQuiescence(this.config.dbPath, this._lease.token);
+          if (!quiescence.quiescent) {
+            log.warn('store_adapter.turso.close_checkpoint_busy', {
+              detail:
+                `another connection holds the store; -wal was NOT truncated (frames remain durable; ` +
+                `the next writable close without a concurrent connection truncates)`,
+            });
+          } else {
+            try {
+              const truncate = await this.executeAll<{ busy?: number }>(
+                'PRAGMA wal_checkpoint(TRUNCATE)',
+              );
+              if (truncate.rows[0]?.busy === 1) {
+                log.warn('store_adapter.turso.close_checkpoint_busy', {
+                  detail:
+                    'another connection held the WAL; -wal was NOT truncated (frames remain durable; the next writable close without a concurrent reader truncates)',
+                });
+              }
+            } catch (truncateErr) {
+              log.warn('store_adapter.turso.close_checkpoint_truncate_failed', {
+                error: truncateErr instanceof Error ? truncateErr.message : String(truncateErr),
+              });
+              try {
+                await this.executeAll('PRAGMA wal_checkpoint(PASSIVE)');
+              } catch (passiveErr) {
+                emitIntegrityReport(
+                  this.config.dbPath ?? this.config.url,
+                  'repair_failed',
+                  `checkpoint of the WAL failed — data since the last checkpoint is being lost: ${
+                    passiveErr instanceof Error ? passiveErr.message : String(passiveErr)
+                  }`,
+                );
+              }
+            }
+          }
+        } else {
+          // Remote URL or no lease — truncate as before (single attempt).
           try {
-            const truncate = await this.executeAll<{ busy?: number; log?: number; checkpointed?: number }>(
+            const truncate = await this.executeAll<{ busy?: number }>(
               'PRAGMA wal_checkpoint(TRUNCATE)',
             );
-            // (BL-512, F1) wal_checkpoint(TRUNCATE) does NOT throw when
-            // another connection holds the WAL — it returns a row with
-            // busy=1 and leaves the WAL untruncated. Durability is never at
-            // risk (frames are fsynced at COMMIT; a busy TRUNCATE degrades to
-            // PASSIVE-like and copies unpinned frames), so the close may
-            // proceed — but the "growth stops" guarantee degrades under
-            // concurrency, so log it loudly rather than silently recording
-            // flushed=true against a WAL that was not truncated. Verified
-            // against @tursodatabase/database 0.7.1 (2026-08-12): reader
-            // holding an open read tx → [{busy:1,log:null,checkpointed:null}],
-            // WAL unchanged; after reader release → busy:0, WAL ~0 bytes.
             if (truncate.rows[0]?.busy === 1) {
               log.warn('store_adapter.turso.close_checkpoint_busy', {
                 detail:
                   'another connection held the WAL; -wal was NOT truncated (frames remain durable; the next writable close without a concurrent reader truncates)',
               });
             }
-            return true;
           } catch (truncateErr) {
             log.warn('store_adapter.turso.close_checkpoint_truncate_failed', {
               error: truncateErr instanceof Error ? truncateErr.message : String(truncateErr),
             });
             try {
               await this.executeAll('PRAGMA wal_checkpoint(PASSIVE)');
-              return true;
             } catch (passiveErr) {
               emitIntegrityReport(
                 this.config.dbPath ?? this.config.url,
@@ -1157,29 +1294,8 @@ export class TursoAdapterImpl implements TursoAdapter {
                   passiveErr instanceof Error ? passiveErr.message : String(passiveErr)
                 }`,
               );
-              return false;
             }
           }
-        };
-
-        const flushed = await checkpoint();
-        if (damaged && flushed) {
-          emitIntegrityReport(
-            this.config.dbPath ?? this.config.url,
-            'repaired',
-            'checkpointed the orphaned WAL into the main database file before close',
-          );
-        }
-
-        // (BL-512) A clean-shutdown stamp is only true if the WAL was flushed —
-        // and, as before, only when verification found nothing damaged. The
-        // stamp write itself re-opens the WAL with one frame, so a second
-        // checkpoint flushes it too: close() leaves the `-wal` at literally
-        // ~0 bytes, with no uncheckpointed window of ANY kind surviving the
-        // process that wrote it.
-        if (flushed && !damaged) {
-          await markCleanShutdown(this);
-          await checkpoint();
         }
       } catch (err) {
         // A verification failure must never block a close — but it is a
@@ -1197,6 +1313,12 @@ export class TursoAdapterImpl implements TursoAdapter {
     // the ONLY signal that a session ended without getting here, and that is
     // the population that can carry the panic-on-open schema state.
     if (!this.config.readonly) clearStoreOpenMarker(this.config.dbPath);
+
+    // (BUG-007/008) Release the lease LAST, after the driver has let go.
+    if (this._lease) {
+      await this._lease.release().catch(() => {});
+      this._lease = null;
+    }
   }
 
   /**
@@ -1237,6 +1359,7 @@ export class TursoAdapterImpl implements TursoAdapter {
     } finally {
       const fresh = await TursoAdapterImpl.connect(this._connectOpts);
       this.db = fresh.db;
+      this._lease = fresh._lease;
       this._walBaseline = fresh._walBaseline;
       this._softReadonly = fresh._softReadonly;
       this._poisoned = false;

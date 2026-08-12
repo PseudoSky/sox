@@ -535,7 +535,7 @@ export function warnIfStaleSidecar(dbPath: string | undefined): void {
           `(${ageDiff} ms) older than the ${walSt.size}-byte -wal it must describe ` +
           `(tshm mtime ${isoMtime(tshmSt.mtimeMs)}, wal mtime ${isoMtime(walSt.mtimeMs)}, ` +
           `threshold ${staleSidecarThresholdMs()} ms). The next open may fail with a WAL-frame short read; ` +
-          `reconciliation will move only the -tshm aside.`,
+          `reconciliation (when the store is quiescent) moves only the -tshm aside.`,
       );
     }
   } catch {
@@ -565,11 +565,22 @@ export function warnIfStaleSidecar(dbPath: string | undefined): void {
  * `-tshm` and `-shm`. Sidecars are **renamed, never deleted**: the stale file
  * is the forensic record of why the store would not open.
  */
-export function recoverStaleWalIndex(dbPath: string | undefined): SidecarRecovery {
+export function recoverStaleWalIndex(
+  dbPath: string | undefined,
+  opts?: { storeInUse?: boolean },
+): SidecarRecovery {
   const result: SidecarRecovery = { attempted: false, movedAside: [], declined: null };
   if (!dbPath) {
     result.declined = 'no local database path';
     return result;
+  }
+  if (opts?.storeInUse === true) {
+    return {
+      attempted: false,
+      movedAside: [],
+      declined:
+        'store is in use by another connection — refusing to reconcile live WAL coordination state',
+    };
   }
 
   const walPath = dbPath + '-wal';
@@ -694,8 +705,16 @@ export interface ProactiveSidecarResult {
  */
 export function proactivelyReconcileStaleSidecar(
   dbPath: string | undefined,
+  opts?: { storeInUse?: boolean },
 ): ProactiveSidecarResult {
   if (!dbPath) return { moved: false, declined: 'no local database path' };
+  if (opts?.storeInUse === true) {
+    return {
+      moved: false,
+      declined:
+        'store is in use by another connection — refusing to reconcile live WAL coordination state',
+    };
+  }
   const tshmPath = dbPath + '-tshm';
   let tshmMtimeMs: number | null = null;
   try {
