@@ -13,7 +13,7 @@
     "requires": {
       "tool_calling": true
     },
-    "builtFromCommit": "9248e7994b950b5874ef3da00700a465241361cf+dirty",
+    "builtFromCommit": "92bfc076af95784eff421fccfdb2b432c7dca86e+dirty",
     "provisional": true
   },
   {
@@ -30,7 +30,7 @@
     "requires": {
       "tool_calling": true
     },
-    "builtFromCommit": "9248e7994b950b5874ef3da00700a465241361cf+dirty",
+    "builtFromCommit": "92bfc076af95784eff421fccfdb2b432c7dca86e+dirty",
     "provisional": true
   },
   {
@@ -47,7 +47,7 @@
     "requires": {
       "tool_calling": true
     },
-    "builtFromCommit": "9248e7994b950b5874ef3da00700a465241361cf+dirty",
+    "builtFromCommit": "92bfc076af95784eff421fccfdb2b432c7dca86e+dirty",
     "provisional": true
   },
   {
@@ -64,7 +64,7 @@
     "requires": {
       "tool_calling": true
     },
-    "builtFromCommit": "9248e7994b950b5874ef3da00700a465241361cf+dirty",
+    "builtFromCommit": "92bfc076af95784eff421fccfdb2b432c7dca86e+dirty",
     "provisional": true
   },
   {
@@ -81,7 +81,7 @@
     "requires": {
       "tool_calling": true
     },
-    "builtFromCommit": "9248e7994b950b5874ef3da00700a465241361cf+dirty",
+    "builtFromCommit": "92bfc076af95784eff421fccfdb2b432c7dca86e+dirty",
     "provisional": true
   },
   {
@@ -98,7 +98,7 @@
     "requires": {
       "tool_calling": true
     },
-    "builtFromCommit": "9248e7994b950b5874ef3da00700a465241361cf+dirty",
+    "builtFromCommit": "92bfc076af95784eff421fccfdb2b432c7dca86e+dirty",
     "provisional": true
   },
   {
@@ -115,7 +115,7 @@
     "requires": {
       "tool_calling": true
     },
-    "builtFromCommit": "9248e7994b950b5874ef3da00700a465241361cf+dirty",
+    "builtFromCommit": "92bfc076af95784eff421fccfdb2b432c7dca86e+dirty",
     "provisional": true
   },
   {
@@ -132,7 +132,7 @@
     "requires": {
       "tool_calling": true
     },
-    "builtFromCommit": "9248e7994b950b5874ef3da00700a465241361cf+dirty",
+    "builtFromCommit": "92bfc076af95784eff421fccfdb2b432c7dca86e+dirty",
     "provisional": true
   },
   {
@@ -149,7 +149,7 @@
     "requires": {
       "tool_calling": true
     },
-    "builtFromCommit": "9248e7994b950b5874ef3da00700a465241361cf+dirty",
+    "builtFromCommit": "92bfc076af95784eff421fccfdb2b432c7dca86e+dirty",
     "provisional": true
   },
   {
@@ -163,7 +163,7 @@
     "compatibility": {
       "host": ">=1.0.0 <2.0.0"
     },
-    "builtFromCommit": "9248e7994b950b5874ef3da00700a465241361cf+dirty",
+    "builtFromCommit": "92bfc076af95784eff421fccfdb2b432c7dca86e+dirty",
     "provisional": true
   },
   {
@@ -180,7 +180,24 @@
     "requires": {
       "tool_calling": true
     },
-    "builtFromCommit": "9248e7994b950b5874ef3da00700a465241361cf+dirty",
+    "builtFromCommit": "92bfc076af95784eff421fccfdb2b432c7dca86e+dirty",
+    "provisional": true
+  },
+  {
+    "id": "performance-engineer",
+    "type": "agent",
+    "version": "0.1.0",
+    "title": "performance-engineer",
+    "description": "Use this agent when you need to identify and eliminate performance bottlenecks in applications, databases, or infrastructure systems, and when baseline performance metrics need improvement.",
+    "source": "file:///Users/nix/dev/ai/sox-ecosystem/extensions/agents/performance-engineer",
+    "checksum": "sha256:c8c70ed47442de2224ae50f60f7a84371e9c4a5e5daf2e2c73647237fbf98690",
+    "compatibility": {
+      "host": ">=1.0.0 <2.0.0"
+    },
+    "requires": {
+      "tool_calling": true
+    },
+    "builtFromCommit": "92bfc076af95784eff421fccfdb2b432c7dca86e+dirty",
     "provisional": true
   },
   {
@@ -197,13 +214,13 @@
     "requires": {
       "tool_calling": true
     },
-    "builtFromCommit": "9248e7994b950b5874ef3da00700a465241361cf+dirty",
+    "builtFromCommit": "92bfc076af95784eff421fccfdb2b432c7dca86e+dirty",
     "provisional": true
   },
   {
     "id": "researcher",
     "type": "agent",
-    "version": "0.1.0",
+    "version": "0.1.1",
     "title": "researcher",
     "description": "Use this when you need to discover, grade, and catalog third-party tools/patterns/use cases before building — sweeps registries and the web via the search MCP, grades sources, writes per-finding memory episodes (agent:approved/agent:blocked), and returns a build-vs-integrate verdict.",
     "source": "file:///Users/nix/dev/ai/sox-ecosystem/extensions/agents/researcher",
@@ -214,7 +231,7 @@
     "requires": {
       "tool_calling": true
     },
-    "builtFromCommit": "9248e7994b950b5874ef3da00700a465241361cf+dirty",
+    "builtFromCommit": "92bfc076af95784eff421fccfdb2b432c7dca86e+dirty",
     "provisional": true
   },
   {
@@ -228,7 +245,7 @@
     "compatibility": {
       "host": ">=1.0.0 <2.0.0"
     },
-    "builtFromCommit": "9248e7994b950b5874ef3da00700a465241361cf+dirty",
+    "builtFromCommit": "92bfc076af95784eff421fccfdb2b432c7dca86e+dirty",
     "provisional": true
   },
   {
@@ -245,7 +262,7 @@
     "requires": {
       "tool_calling": true
     },
-    "builtFromCommit": "9248e7994b950b5874ef3da00700a465241361cf+dirty",
+    "builtFromCommit": "92bfc076af95784eff421fccfdb2b432c7dca86e+dirty",
     "provisional": true
   },
   {
@@ -273,7 +290,7 @@
         "id": "memory-usage"
       }
     ],
-    "builtFromCommit": "9248e7994b950b5874ef3da00700a465241361cf+dirty",
+    "builtFromCommit": "92bfc076af95784eff421fccfdb2b432c7dca86e+dirty",
     "provisional": true
   },
   {
@@ -289,7 +306,7 @@
     },
     "visibility": "internal",
     "bundleId": "sox-memory-bundle",
-    "builtFromCommit": "d079fe917c9eaf2b86ce8c4f1e1a4cbbe5e38979+dirty",
+    "builtFromCommit": "92bfc076af95784eff421fccfdb2b432c7dca86e+dirty",
     "provisional": true
   },
   {
@@ -305,7 +322,7 @@
     },
     "visibility": "internal",
     "bundleId": "sox-memory-bundle",
-    "builtFromCommit": "d079fe917c9eaf2b86ce8c4f1e1a4cbbe5e38979+dirty",
+    "builtFromCommit": "92bfc076af95784eff421fccfdb2b432c7dca86e+dirty",
     "provisional": true
   },
   {
@@ -325,7 +342,7 @@
     },
     "visibility": "internal",
     "bundleId": "sox-memory-bundle",
-    "builtFromCommit": "9248e7994b950b5874ef3da00700a465241361cf+dirty",
+    "builtFromCommit": "92bfc076af95784eff421fccfdb2b432c7dca86e+dirty",
     "provisional": true
   },
   {
@@ -341,7 +358,7 @@
     },
     "visibility": "internal",
     "bundleId": "sox-memory-bundle",
-    "builtFromCommit": "9248e7994b950b5874ef3da00700a465241361cf+dirty",
+    "builtFromCommit": "92bfc076af95784eff421fccfdb2b432c7dca86e+dirty",
     "provisional": true
   },
   {
@@ -355,7 +372,7 @@
     "compatibility": {
       "host": ">=1.0.0 <2.0.0"
     },
-    "builtFromCommit": "9248e7994b950b5874ef3da00700a465241361cf+dirty",
+    "builtFromCommit": "92bfc076af95784eff421fccfdb2b432c7dca86e+dirty",
     "provisional": true
   },
   {
@@ -369,7 +386,7 @@
     "compatibility": {
       "host": ">=1.0.0 <2.0.0"
     },
-    "builtFromCommit": "9248e7994b950b5874ef3da00700a465241361cf+dirty",
+    "builtFromCommit": "92bfc076af95784eff421fccfdb2b432c7dca86e+dirty",
     "provisional": true
   },
   {
@@ -383,7 +400,7 @@
     "compatibility": {
       "host": ">=1.0.0 <2.0.0"
     },
-    "builtFromCommit": "9248e7994b950b5874ef3da00700a465241361cf+dirty",
+    "builtFromCommit": "92bfc076af95784eff421fccfdb2b432c7dca86e+dirty",
     "provisional": true
   },
   {
@@ -397,7 +414,7 @@
     "compatibility": {
       "host": ">=1.0.0 <2.0.0"
     },
-    "builtFromCommit": "9248e7994b950b5874ef3da00700a465241361cf+dirty",
+    "builtFromCommit": "92bfc076af95784eff421fccfdb2b432c7dca86e+dirty",
     "provisional": true
   },
   {
@@ -411,7 +428,7 @@
     "compatibility": {
       "host": ">=1.0.0 <2.0.0"
     },
-    "builtFromCommit": "9248e7994b950b5874ef3da00700a465241361cf+dirty",
+    "builtFromCommit": "92bfc076af95784eff421fccfdb2b432c7dca86e+dirty",
     "provisional": true
   },
   {
@@ -425,7 +442,7 @@
     "compatibility": {
       "host": ">=1.0.0 <2.0.0"
     },
-    "builtFromCommit": "9248e7994b950b5874ef3da00700a465241361cf+dirty",
+    "builtFromCommit": "92bfc076af95784eff421fccfdb2b432c7dca86e+dirty",
     "provisional": true
   },
   {
@@ -439,21 +456,21 @@
     "compatibility": {
       "host": ">=1.0.0 <2.0.0"
     },
-    "builtFromCommit": "9248e7994b950b5874ef3da00700a465241361cf+dirty",
+    "builtFromCommit": "92bfc076af95784eff421fccfdb2b432c7dca86e+dirty",
     "provisional": true
   },
   {
     "id": "sox-ingest",
     "type": "skill",
-    "version": "0.2.0",
+    "version": "0.3.0",
     "title": "sox-ingest — Ingest external sources into sox-ecosystem",
     "description": "Use this when you need to port an external repo, file, or directory into sox-ecosystem as born-conformant extensions. Encodes the full ingestion flow: initialize -> generalize+author -> validate -> publish -> install -> enable -> remove-old, delegating per-type and per-operation specifics to references/. An agent told 'ingest <source> into sox' loads this skill and runs the complete flow with no bespoke prompts.",
     "source": "file:///Users/nix/dev/ai/sox-ecosystem/extensions/skills/sox-ingest",
-    "checksum": "sha256:b32325239ddf18ac215c331ed1ac6090a9dca54db04282b88944ead6479c1e8d",
+    "checksum": "sha256:e2c3b7010865af2e42da4ed796bf4fb0befa17a69f412b6542bacfb8c211d774",
     "compatibility": {
       "host": ">=1.0.0 <2.0.0"
     },
-    "builtFromCommit": "9248e7994b950b5874ef3da00700a465241361cf+dirty",
+    "builtFromCommit": "92bfc076af95784eff421fccfdb2b432c7dca86e+dirty",
     "provisional": true
   },
   {
@@ -467,7 +484,7 @@
     "compatibility": {
       "host": ">=1.0.0 <2.0.0"
     },
-    "builtFromCommit": "9248e7994b950b5874ef3da00700a465241361cf+dirty",
+    "builtFromCommit": "92bfc076af95784eff421fccfdb2b432c7dca86e+dirty",
     "provisional": true
   },
   {
@@ -481,7 +498,7 @@
     "compatibility": {
       "host": ">=1.0.0 <2.0.0"
     },
-    "builtFromCommit": "9248e7994b950b5874ef3da00700a465241361cf+dirty",
+    "builtFromCommit": "92bfc076af95784eff421fccfdb2b432c7dca86e+dirty",
     "provisional": true
   }
 ]
