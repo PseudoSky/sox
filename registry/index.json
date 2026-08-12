@@ -1,5 +1,56 @@
 [
   {
+    "id": "agent-manager",
+    "type": "agent",
+    "version": "0.1.0",
+    "title": "agent-manager",
+    "description": "agent-manager agent",
+    "source": "file:///Users/nix/dev/ai/sox-ecosystem/extensions/agents/agent-manager",
+    "checksum": "sha256:c133823efe654ffa568ead7ea1135732adf7254c97fc50061b98a011bf0f9801",
+    "compatibility": {
+      "host": ">=1.0.0 <2.0.0"
+    },
+    "requires": {
+      "tool_calling": true
+    },
+    "builtFromCommit": "9248e7994b950b5874ef3da00700a465241361cf+dirty",
+    "provisional": true
+  },
+  {
+    "id": "architect",
+    "type": "agent",
+    "version": "0.1.0",
+    "title": "architect",
+    "description": "Read-only architecture agent (deepseek-v4-pro). Takes a vague feature description, delegates research to the researcher agent, analyzes the codebase with gitnexus MCP, and produces a full implementation spec with exact file paths, interface and behavioral changes, independent segments with token estimates, execution strategies for weaker agents, test cases, and documentation updates. ALWAYS delegates research — never does its own.",
+    "source": "file:///Users/nix/dev/ai/sox-ecosystem/extensions/agents/architect",
+    "checksum": "sha256:b051f40558c981a257734ee9e7e5a3d8aba35ae1ffae46e1877b428f3700fb3a",
+    "compatibility": {
+      "host": ">=1.0.0 <2.0.0"
+    },
+    "requires": {
+      "tool_calling": true
+    },
+    "builtFromCommit": "9248e7994b950b5874ef3da00700a465241361cf+dirty",
+    "provisional": true
+  },
+  {
+    "id": "debug",
+    "type": "agent",
+    "version": "0.1.0",
+    "title": "debug",
+    "description": "debug agent",
+    "source": "file:///Users/nix/dev/ai/sox-ecosystem/extensions/agents/debug",
+    "checksum": "sha256:dc86ab5a11f4c23c991edbfd7a9b1eb00a1baee895da6b921caacddc1ff53c74",
+    "compatibility": {
+      "host": ">=1.0.0 <2.0.0"
+    },
+    "requires": {
+      "tool_calling": true
+    },
+    "builtFromCommit": "9248e7994b950b5874ef3da00700a465241361cf+dirty",
+    "provisional": true
+  },
+  {
     "id": "dispatcher",
     "type": "agent",
     "version": "0.1.0",
@@ -13,7 +64,92 @@
     "requires": {
       "tool_calling": true
     },
-    "builtFromCommit": "b01c137afddb61787af5951581c95cf2745bb82f+dirty",
+    "builtFromCommit": "9248e7994b950b5874ef3da00700a465241361cf+dirty",
+    "provisional": true
+  },
+  {
+    "id": "doc-cartographer",
+    "type": "agent",
+    "version": "0.1.0",
+    "title": "doc-cartographer",
+    "description": ">-",
+    "source": "file:///Users/nix/dev/ai/sox-ecosystem/extensions/agents/doc-cartographer",
+    "checksum": "sha256:7172a0c4f5d55b088cfc0a926489fb75b5a5e213a2fc93df725b9347701bb09f",
+    "compatibility": {
+      "host": ">=1.0.0 <2.0.0"
+    },
+    "requires": {
+      "tool_calling": true
+    },
+    "builtFromCommit": "9248e7994b950b5874ef3da00700a465241361cf+dirty",
+    "provisional": true
+  },
+  {
+    "id": "doc-consumer",
+    "type": "agent",
+    "version": "0.1.0",
+    "title": "doc-consumer",
+    "description": ">-",
+    "source": "file:///Users/nix/dev/ai/sox-ecosystem/extensions/agents/doc-consumer",
+    "checksum": "sha256:b0e494231b5853b34a22f4a0321c1d4198ddc2619595da9f917990950edf54d0",
+    "compatibility": {
+      "host": ">=1.0.0 <2.0.0"
+    },
+    "requires": {
+      "tool_calling": true
+    },
+    "builtFromCommit": "9248e7994b950b5874ef3da00700a465241361cf+dirty",
+    "provisional": true
+  },
+  {
+    "id": "doc-evangelist",
+    "type": "agent",
+    "version": "0.1.0",
+    "title": "doc-evangelist",
+    "description": ">-",
+    "source": "file:///Users/nix/dev/ai/sox-ecosystem/extensions/agents/doc-evangelist",
+    "checksum": "sha256:1b404abc26b0a80ac81d5952b3554c52769a0ad18f3437782d74eb55e80b6e95",
+    "compatibility": {
+      "host": ">=1.0.0 <2.0.0"
+    },
+    "requires": {
+      "tool_calling": true
+    },
+    "builtFromCommit": "9248e7994b950b5874ef3da00700a465241361cf+dirty",
+    "provisional": true
+  },
+  {
+    "id": "doc-reviewer",
+    "type": "agent",
+    "version": "0.1.0",
+    "title": "doc-reviewer",
+    "description": ">-",
+    "source": "file:///Users/nix/dev/ai/sox-ecosystem/extensions/agents/doc-reviewer",
+    "checksum": "sha256:663bbe54dbb80b6aabf64cdefd7d2d603b2d9b9845a1da7c6bae89983fdd2c03",
+    "compatibility": {
+      "host": ">=1.0.0 <2.0.0"
+    },
+    "requires": {
+      "tool_calling": true
+    },
+    "builtFromCommit": "9248e7994b950b5874ef3da00700a465241361cf+dirty",
+    "provisional": true
+  },
+  {
+    "id": "doc-steward",
+    "type": "agent",
+    "version": "0.1.0",
+    "title": "doc-steward",
+    "description": ">-",
+    "source": "file:///Users/nix/dev/ai/sox-ecosystem/extensions/agents/doc-steward",
+    "checksum": "sha256:4b175ec89319f0e2f45a3061bfaff46a590fbdf6ea00fff49fd74e918f595bdd",
+    "compatibility": {
+      "host": ">=1.0.0 <2.0.0"
+    },
+    "requires": {
+      "tool_calling": true
+    },
+    "builtFromCommit": "9248e7994b950b5874ef3da00700a465241361cf+dirty",
     "provisional": true
   },
   {
@@ -27,7 +163,41 @@
     "compatibility": {
       "host": ">=1.0.0 <2.0.0"
     },
-    "builtFromCommit": "b01c137afddb61787af5951581c95cf2745bb82f+dirty",
+    "builtFromCommit": "9248e7994b950b5874ef3da00700a465241361cf+dirty",
+    "provisional": true
+  },
+  {
+    "id": "performance",
+    "type": "agent",
+    "version": "0.1.0",
+    "title": "performance",
+    "description": "Senior performance engineer (deepseek-v4-flash). Identifies and eliminates bottlenecks in applications, databases, and infrastructure via profiling, load testing, and measured optimization. Delegates broad discovery to `researcher`, uses GitNexus-first blast-radius analysis before touching hot-path code, and requires before/after measurement. Differentiate from `refactor`: this agent optimizes for speed/throughput with numbers; `refactor` optimizes for structure/maintainability.",
+    "source": "file:///Users/nix/dev/ai/sox-ecosystem/extensions/agents/performance",
+    "checksum": "sha256:d3d9fcbf63ab7b041ecbde44b3574148fc5da4b41d7e47f8ace4a8bffe3d55d5",
+    "compatibility": {
+      "host": ">=1.0.0 <2.0.0"
+    },
+    "requires": {
+      "tool_calling": true
+    },
+    "builtFromCommit": "9248e7994b950b5874ef3da00700a465241361cf+dirty",
+    "provisional": true
+  },
+  {
+    "id": "product",
+    "type": "agent",
+    "version": "0.1.0",
+    "title": "product",
+    "description": "Senior product manager (deepseek-v4-flash). Owns product strategy, roadmap, feature prioritization, and new-feature research (competitive analysis, market trends, user need discovery). Delegates broad discovery to `researcher` (never freelances a web search) and uses GitNexus-first codebase awareness. Differentiate from `backend`/`typescript`: this agent decides WHAT and WHY; it does not implement.",
+    "source": "file:///Users/nix/dev/ai/sox-ecosystem/extensions/agents/product",
+    "checksum": "sha256:161674040429e5161901fe95dd28f0f6aae80b54ddc052351e464b4e2d704bea",
+    "compatibility": {
+      "host": ">=1.0.0 <2.0.0"
+    },
+    "requires": {
+      "tool_calling": true
+    },
+    "builtFromCommit": "9248e7994b950b5874ef3da00700a465241361cf+dirty",
     "provisional": true
   },
   {
@@ -44,7 +214,7 @@
     "requires": {
       "tool_calling": true
     },
-    "builtFromCommit": "b01c137afddb61787af5951581c95cf2745bb82f+dirty",
+    "builtFromCommit": "9248e7994b950b5874ef3da00700a465241361cf+dirty",
     "provisional": true
   },
   {
@@ -58,7 +228,24 @@
     "compatibility": {
       "host": ">=1.0.0 <2.0.0"
     },
-    "builtFromCommit": "b01c137afddb61787af5951581c95cf2745bb82f+dirty",
+    "builtFromCommit": "9248e7994b950b5874ef3da00700a465241361cf+dirty",
+    "provisional": true
+  },
+  {
+    "id": "typescript",
+    "type": "agent",
+    "version": "0.1.0",
+    "title": "typescript",
+    "description": "Senior TypeScript developer (deepseek-v4-flash). Advanced type system patterns, complex generics, type-level programming, and end-to-end type safety across full-stack applications (TS 5.0+). Delegates broad discovery to `researcher` and uses GitNexus-first codebase awareness before changing any exported type. Differentiate from `backend`: this agent owns type-system depth and correctness; `backend` owns service/API architecture broadly.",
+    "source": "file:///Users/nix/dev/ai/sox-ecosystem/extensions/agents/typescript",
+    "checksum": "sha256:a24f185ec87d64751f58941ff2d9fde04cb3c4643470f1c05918e4bc75dc0616",
+    "compatibility": {
+      "host": ">=1.0.0 <2.0.0"
+    },
+    "requires": {
+      "tool_calling": true
+    },
+    "builtFromCommit": "9248e7994b950b5874ef3da00700a465241361cf+dirty",
     "provisional": true
   },
   {
@@ -86,7 +273,7 @@
         "id": "memory-usage"
       }
     ],
-    "builtFromCommit": "b01c137afddb61787af5951581c95cf2745bb82f+dirty",
+    "builtFromCommit": "9248e7994b950b5874ef3da00700a465241361cf+dirty",
     "provisional": true
   },
   {
@@ -102,7 +289,7 @@
     },
     "visibility": "internal",
     "bundleId": "sox-memory-bundle",
-    "builtFromCommit": "b01c137afddb61787af5951581c95cf2745bb82f+dirty",
+    "builtFromCommit": "9248e7994b950b5874ef3da00700a465241361cf+dirty",
     "provisional": true
   },
   {
@@ -118,7 +305,7 @@
     },
     "visibility": "internal",
     "bundleId": "sox-memory-bundle",
-    "builtFromCommit": "b01c137afddb61787af5951581c95cf2745bb82f+dirty",
+    "builtFromCommit": "9248e7994b950b5874ef3da00700a465241361cf+dirty",
     "provisional": true
   },
   {
@@ -138,7 +325,7 @@
     },
     "visibility": "internal",
     "bundleId": "sox-memory-bundle",
-    "builtFromCommit": "b01c137afddb61787af5951581c95cf2745bb82f+dirty",
+    "builtFromCommit": "9248e7994b950b5874ef3da00700a465241361cf+dirty",
     "provisional": true
   },
   {
@@ -154,7 +341,7 @@
     },
     "visibility": "internal",
     "bundleId": "sox-memory-bundle",
-    "builtFromCommit": "b01c137afddb61787af5951581c95cf2745bb82f+dirty",
+    "builtFromCommit": "9248e7994b950b5874ef3da00700a465241361cf+dirty",
     "provisional": true
   },
   {
@@ -168,7 +355,7 @@
     "compatibility": {
       "host": ">=1.0.0 <2.0.0"
     },
-    "builtFromCommit": "b01c137afddb61787af5951581c95cf2745bb82f+dirty",
+    "builtFromCommit": "9248e7994b950b5874ef3da00700a465241361cf+dirty",
     "provisional": true
   },
   {
@@ -182,7 +369,7 @@
     "compatibility": {
       "host": ">=1.0.0 <2.0.0"
     },
-    "builtFromCommit": "b01c137afddb61787af5951581c95cf2745bb82f+dirty",
+    "builtFromCommit": "9248e7994b950b5874ef3da00700a465241361cf+dirty",
     "provisional": true
   },
   {
@@ -196,7 +383,7 @@
     "compatibility": {
       "host": ">=1.0.0 <2.0.0"
     },
-    "builtFromCommit": "b01c137afddb61787af5951581c95cf2745bb82f+dirty",
+    "builtFromCommit": "9248e7994b950b5874ef3da00700a465241361cf+dirty",
     "provisional": true
   },
   {
@@ -210,7 +397,7 @@
     "compatibility": {
       "host": ">=1.0.0 <2.0.0"
     },
-    "builtFromCommit": "b01c137afddb61787af5951581c95cf2745bb82f+dirty",
+    "builtFromCommit": "9248e7994b950b5874ef3da00700a465241361cf+dirty",
     "provisional": true
   },
   {
@@ -224,7 +411,7 @@
     "compatibility": {
       "host": ">=1.0.0 <2.0.0"
     },
-    "builtFromCommit": "b01c137afddb61787af5951581c95cf2745bb82f+dirty",
+    "builtFromCommit": "9248e7994b950b5874ef3da00700a465241361cf+dirty",
     "provisional": true
   },
   {
@@ -238,7 +425,7 @@
     "compatibility": {
       "host": ">=1.0.0 <2.0.0"
     },
-    "builtFromCommit": "b01c137afddb61787af5951581c95cf2745bb82f+dirty",
+    "builtFromCommit": "9248e7994b950b5874ef3da00700a465241361cf+dirty",
     "provisional": true
   },
   {
@@ -252,7 +439,7 @@
     "compatibility": {
       "host": ">=1.0.0 <2.0.0"
     },
-    "builtFromCommit": "b01c137afddb61787af5951581c95cf2745bb82f+dirty",
+    "builtFromCommit": "9248e7994b950b5874ef3da00700a465241361cf+dirty",
     "provisional": true
   },
   {
@@ -266,7 +453,7 @@
     "compatibility": {
       "host": ">=1.0.0 <2.0.0"
     },
-    "builtFromCommit": "b01c137afddb61787af5951581c95cf2745bb82f+dirty",
+    "builtFromCommit": "9248e7994b950b5874ef3da00700a465241361cf+dirty",
     "provisional": true
   },
   {
@@ -280,7 +467,7 @@
     "compatibility": {
       "host": ">=1.0.0 <2.0.0"
     },
-    "builtFromCommit": "b01c137afddb61787af5951581c95cf2745bb82f+dirty",
+    "builtFromCommit": "9248e7994b950b5874ef3da00700a465241361cf+dirty",
     "provisional": true
   },
   {
@@ -294,7 +481,7 @@
     "compatibility": {
       "host": ">=1.0.0 <2.0.0"
     },
-    "builtFromCommit": "b01c137afddb61787af5951581c95cf2745bb82f+dirty",
+    "builtFromCommit": "9248e7994b950b5874ef3da00700a465241361cf+dirty",
     "provisional": true
   }
 ]
