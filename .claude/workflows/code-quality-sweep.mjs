@@ -56,6 +56,11 @@ const WORKER_MODEL = a.workerModel || 'haiku'
 const SYNTH_MODEL = a.synthesisModel || undefined // undefined => inherit session model
 const ROOT = a.root || '.'
 const MAX_CONCEPTS = a.maxConcepts || 10
+// Existing backlog items the synthesiser must reconcile against: [{id, title}, ...].
+// Without this the sweep cannot tell a new defect class from one already filed, and a
+// second run re-derives epics that already exist (measured 2026-08-12: 5 of 9 epics were
+// duplicates of a prior sweep's, at ~3.7M tokens).
+const PRIOR_ART = Array.isArray(a.priorArt) ? a.priorArt : []
 const MIN_CONCEPT_COUNT = a.minConceptCount || 2
 
 /**
@@ -144,6 +149,10 @@ const EPIC_SCHEMA = {
         properties: {
           title: { type: 'string' },
           problem_statement: { type: 'string', description: 'crisp, grounded in the aggregated evidence, names the cost' },
+          prior_art_relation: {
+            type: 'string',
+            description: 'NEW when no supplied prior-art item covers this theme; "CORROBORATES <id>" when an existing item covers the same defect class (the caller should append evidence to it, not file a duplicate); "EXTENDS <id>" when it covers part of this theme and this epic adds materially new scope. Never NEW just because the wording differs.',
+          },
           scope_packages: { type: 'array', items: { type: 'string' } },
           severity: { type: 'string', enum: ['critical', 'high', 'medium', 'low'] },
           family: { type: 'string', enum: ['DEBT', 'BUG'], description: 'BUG only when the evidence shows live incorrect behaviour' },
@@ -266,10 +275,43 @@ log(`Stage 1: ${s1ok.length}/${UNITS.length} units returned, ${s1findings.length
 
 const SEV_WEIGHT = { critical: 8, high: 4, medium: 2, low: 1 }
 
+/**
+ * Agents coin near-identical tags for one pattern, and keying on the raw string splits the
+ * cluster so BOTH halves rank lower than the real thing. Measured 2026-08-12: the same defect
+ * arrived as `path-traversal-via-manifest` (13) and `path-traversal-manifest-entrypoint` (2)
+ * and was ranked as two concepts of 13 and 2 rather than one of 15.
+ *
+ * Canonicalise by token set: a tag whose tokens are a subset of an earlier tag's — or which
+ * overlaps it by Jaccard >= 0.5 — folds into that earlier tag. Order-independent within a run
+ * because candidates are considered most-frequent-first.
+ */
+function canonicalTag(raw, canon) {
+  const norm = (raw || 'unclassified').trim().toLowerCase().replace(/_/g, '-')
+  const toks = new Set(norm.split('-').filter((t) => t && !['a', 'the', 'in', 'on', 'of', 'via', 'to'].includes(t)))
+  for (const [existing, exTokens] of canon) {
+    const inter = [...toks].filter((t) => exTokens.has(t)).length
+    if (inter === 0) continue
+    const union = new Set([...toks, ...exTokens]).size
+    const subset = inter === toks.size || inter === exTokens.size
+    if (subset || inter / union >= 0.5) return existing
+  }
+  canon.set(norm, toks)
+  return norm
+}
+
 function rankConcepts(findings) {
   const byConcept = new Map()
+  // Seed canonical tags most-frequent-first so the dominant spelling wins the merge.
+  const freq = new Map()
   for (const f of findings) {
-    const k = (f.concept || 'unclassified').trim().toLowerCase()
+    const n = (f.concept || 'unclassified').trim().toLowerCase().replace(/_/g, '-')
+    freq.set(n, (freq.get(n) || 0) + 1)
+  }
+  const canon = new Map()
+  for (const [n] of [...freq.entries()].sort((x, y) => y[1] - x[1])) canonicalTag(n, canon)
+
+  for (const f of findings) {
+    const k = canonicalTag(f.concept, canon)
     if (!byConcept.has(k)) byConcept.set(k, { concept: k, count: 0, weight: 0, units: new Set(), exemplars: [] })
     const c = byConcept.get(k)
     c.count += 1
@@ -385,6 +427,21 @@ ${finalRanked.map((c) => `- ${c.concept}: ${c.count} occurrences across ${c.unit
 
 ## Findings (${allFindings.length} total, highest severity first)
 ${digest(allFindings, 220)}
+${PRIOR_ART.length === 0 ? `
+## Prior art
+NONE SUPPLIED. The caller did not pass \`args.priorArt\`, so you cannot tell which of these themes
+are already filed. Set \`prior_art_relation\` to "UNKNOWN — no prior art supplied" on every epic so
+the caller knows to dedupe before filing.` : `
+## Prior art — items ALREADY FILED in this repo's backlog
+${PRIOR_ART.map((p) => `- ${p.id}: ${p.title}`).join('\n')}
+
+For EVERY epic you produce, set \`prior_art_relation\`:
+- "CORROBORATES <id>" if an item above already covers this defect class. Independent re-derivation is
+  valuable EVIDENCE, so still produce the epic — but say what it confirms and, critically, what it
+  found that the existing item does NOT name. The caller will append to that item instead of filing a duplicate.
+- "EXTENDS <id>" if an item covers part of this theme and you are adding materially new scope.
+- "NEW" only when no item above covers it. Differing wording is NOT grounds for NEW; the same defect
+  described differently is CORROBORATES.`}
 
 ## What to produce
 A set of EPICS. Each epic is ONE coherent quality theme — not a package, not a grab-bag. For each:
