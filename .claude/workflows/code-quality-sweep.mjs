@@ -74,6 +74,10 @@ const MAX_CONCEPTS = a.maxConcepts || 10
 // second run re-derives epics that already exist (measured 2026-08-12: 5 of 9 epics were
 // duplicates of a prior sweep's, at ~3.7M tokens).
 const PRIOR_ART = Array.isArray(a.priorArt) ? a.priorArt : []
+// Above this many non-test source lines, a project is packed into several review units.
+// One cheap agent handed 19.5k lines samples it; it does not review it. ~4k is about what a
+// worker can actually read with offset/limit chunking inside one context.
+const MAX_UNIT_LOC = a.maxUnitLoc || 4000
 const MIN_CONCEPT_COUNT = a.minConceptCount || 2
 
 /**
@@ -210,7 +214,16 @@ const EPIC_SCHEMA = {
 // Scope construction
 // ---------------------------------------------------------------------------
 
+// When the caller names a panel via `args.agents`, those agents are a DELIBERATE CHOICE and
+// every one of them must actually be used. Selector-matching them is wrong: an agent absent
+// from DEFAULT_ROSTER inherits a '*' selector, claims the first unit it sees, and starves the
+// rest of the panel (observed: naming three agents produced three identical Stage 1 lenses).
+// So a named panel round-robins across units instead; only the built-in roster — whose
+// selectors encode genuine package↔specialty fit — matches by path.
+const ROSTER_IS_NAMED_PANEL = !!(Array.isArray(a.agents) && a.agents.length && !(a.roster && a.roster.length))
+
 function matchRoster(pkgPath, i = 0) {
+  if (ROSTER_IS_NAMED_PANEL) return ROSTER[i % ROSTER.length]
   for (const entry of ROSTER) {
     const sel = entry.packageSelector || '*'
     if (sel === '*') return entry
