@@ -81,7 +81,7 @@ describe('runCompactionPass', () => {
     expect(result.framesCheckpointed).toBeGreaterThanOrEqual(0);
     expect(result.runAt).toMatch(/^\d{4}-/); // ISO timestamp
 
-    db.close();
+    await db.close();
   });
 
   it('skips WAL checkpoint when WriteQueue checkpointed very recently', async () => {
@@ -107,7 +107,7 @@ describe('runCompactionPass', () => {
     expect(result.framesCheckpointed).toBe(-1);
     expect(logs.some((l) => l.includes('skipped'))).toBe(true);
 
-    db.close();
+    await db.close();
   });
 
   it('runs checkpoint when WriteQueue checkpoint was long ago (beyond idle window)', async () => {
@@ -137,7 +137,7 @@ describe('runCompactionPass', () => {
     expect(result.error).toBeNull();
     expect(result.checkpointed).toBe(true);
 
-    db.close();
+    await db.close();
   });
 
   it('sets optimized=false when runOptimize=false', async () => {
@@ -146,13 +146,13 @@ describe('runCompactionPass', () => {
     expect(result.optimized).toBe(false);
     expect(result.analyzed).toBe(true);
     expect(result.error).toBeNull();
-    db.close();
+    await db.close();
   });
 
   it('captures errors in result and never throws', async () => {
     // Pass a closed DB to trigger a "database is closed" error from SQLite.
     const { db } = await freshDb();
-    db.close();
+    await db.close();
 
     // Should not throw — error is captured in result.error.
     const result = await runCompactionPass(db, {});
@@ -192,7 +192,7 @@ describe('startCompactionTick', () => {
     await vi.advanceTimersByTimeAsync(intervalMs * 3);
     expect(logs.length).toBe(logsAfterStop);
 
-    db.close();
+    await db.close();
   });
 
   it('exports DEFAULT_COMPACTION_INTERVAL_MS as 5 minutes', () => {
