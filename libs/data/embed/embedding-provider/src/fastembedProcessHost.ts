@@ -59,6 +59,7 @@
 
 import * as fs from 'node:fs';
 import type { EmbeddingModel, ExecutionProvider } from 'fastembed';
+import { initTelemetry } from '@adhd/sox-telemetry';
 import { resolveFastembedLockPath, type FastembedLockInfo } from './fastembedLock.js';
 
 // ── BL-331: cross-process CoreML/ANE contention advisory lock ──────────────
@@ -387,6 +388,28 @@ process.on('message', (msg: HostRequest) => {
   }
   enqueue(() => handleRequest(msg));
 });
+
+/**
+ * (BL-404 universal-coverage) CHILD composition root. This file is the forked
+ * child PROCESS (the parent's `initTelemetry` never crosses the fork — each
+ * process has its own module-level `_state` in @adhd/sox-telemetry's
+ * runtime.ts), so the child needs its own init or every record it ever emits
+ * hits the logSink:'none' fallback. Today the child emits nothing via
+ * @adhd/sox-telemetry (only console.error), and DurableJsonlSink opens its file
+ * lazily on first write — so this is a zero-side-effect defensive composition
+ * root until the child actually emits. Role 'harness' keeps the OTel SDK off
+ * (otelDefaultFor) and the default logDir lands under SOX_ECOSYSTEM_HOME when a
+ * test sandbox sets it, keeping test runs hermetic.
+ *
+ * Non-fatal by construction: an init failure must never break embedding, so the
+ * call is guarded — telemetry is an observability aid, not a correctness
+ * mechanism.
+ */
+try {
+  initTelemetry({ service: 'embedding-provider', role: 'harness', logSink: 'file' });
+} catch {
+  // Never let a telemetry failure prevent model load or inference.
+}
 
 // Let the parent decide the process lifecycle (it never calls `.ref()`/relies
 // on this process staying alive beyond its own `disconnect`/`kill`); nothing

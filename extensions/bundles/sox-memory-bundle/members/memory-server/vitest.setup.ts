@@ -113,3 +113,21 @@ afterEach(() => {
     );
   }
 });
+
+/**
+ * BL-404 universal-coverage: per-worker telemetry composition root. The real
+ * composition root in index.ts (MEMORY_SERVER_TELEMETRY_INIT_OPTIONS) is gated
+ * behind `require.main === module`, so a vitest worker importing the server
+ * code NEVER runs it — every tool-call record emitted by memory-core during
+ * these tests was silently dropped behind the logSink:'none' fallback (the
+ * one-shot stderr warning was the only tell). `logDir` is deliberately omitted
+ * so the runtime default lands records under the ecosystem home —
+ * `~/.adhd/sox-ecosystem/sox-tests/logs` (honoring the `SOX_ECOSYSTEM_HOME`
+ * override when a sandbox sets it) — matching the memory-server durable-JSONL
+ * pattern; never a bare tmpdir. That path is outside the ~/.memory/** root the
+ * BL-412 guard watches above. Role 'test' keeps the OTel SDK off in every
+ * worker (otelDefaultFor in @adhd/sox-telemetry).
+ */
+import { initTelemetry } from '@adhd/sox-telemetry';
+
+initTelemetry({ service: 'sox-tests', role: 'test', logSink: 'file' });

@@ -10,6 +10,11 @@ export default defineConfig({
       '@adhd/sox-host-runtime': resolve(__dirname, 'libs/host-runtime/dist/index.js'),
       '@adhd/sox-registry': resolve(__dirname, 'libs/registry/dist/index.js'),
       '@adhd/sox-memory-core': resolve(__dirname, 'libs/memory-core/dist/index.js'),
+      // BL-404 universal-coverage: the telemetry setup hook (setupFiles below)
+      // imports @adhd/sox-telemetry; the root package.json does NOT declare it,
+      // so pnpm's isolated linker has no node_modules symlink for it here —
+      // alias it to the built dist exactly like the other @adhd/* aliases.
+      '@adhd/sox-telemetry': resolve(__dirname, 'libs/observability/sox-telemetry/dist/index.js'),
     },
   },
   test: {
@@ -45,6 +50,14 @@ export default defineConfig({
     // any test runs, so in-process install() calls and spawned soxe processes never
     // write to the real ~/.adhd/sox-ecosystem/ user data root.
     globalSetup: ['scripts/test-env-setup.ts'],
+    // BL-404 universal-coverage: per-WORKER telemetry composition root — must live
+    // in setupFiles, not globalSetup, because initTelemetry is per-process state
+    // and globalSetup does not compose the workers that run the tests. The hook
+    // omits logDir, so the runtime default resolves it under the ecosystem home
+    // (SOX_ECOSYSTEM_HOME → the BL-179 scratch home in sandboxed runs, else
+    // ~/.adhd/sox-ecosystem/sox-tests/logs) — captured, never dropped behind
+    // the logSink:'none' fallback, never a bare tmpdir.
+    setupFiles: ['scripts/telemetry-test-setup.ts'],
     // First embed() call loads the fastembed ONNX model (bge-base-en-v1.5) into a
     // worker thread; warmup can take several seconds. This root aggregate config
     // double-covers extensions/**/*.test.ts files (e.g. memory-server's
