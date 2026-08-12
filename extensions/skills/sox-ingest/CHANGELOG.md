@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.3.0
+
+- New **§batch — Batch-migrate agents**: `scripts/migrate-agents.mjs` takes any list of agent
+  paths/globs and turns them into born-conformant `extensions/agents/<id>/` extensions.
+  Formatter-aware naming: detects opencode (`mode:`/`permission:`, filename identity) vs Claude
+  (`name:`/`tools:`, frontmatter identity) from the source frontmatter, names the entrypoint
+  `<id>.md`, and injects `name: <id>` when the source lacks it so the SAME file is discoverable
+  on both hosts. Skips existing dirs (unless `--force`); `--registry` rebuilds the index.
+  Invoked as a skill script via bash — NOT a host custom tool (BL-568: a malformed
+  `.opencode/tools/` schema rejects the whole provider tool list and breaks every session).
+- BL-566 note: migrated agents install as a single top-level `<id>.md` (install-engine fix),
+  never a directory opencode's agents/*.md scan would miss.
+
 ## 0.2.0
 
 - Step 5 rewritten as **Install & replace in place**: uninstall any existing install of the
