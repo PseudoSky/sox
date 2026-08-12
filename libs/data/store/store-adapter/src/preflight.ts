@@ -279,12 +279,63 @@ export function preflightSchemaSanity(
 
   if (result.orphaned.length === 0 || opts.repair !== true) return result;
 
+  // (BL-506) Shared escape-hatch repair — the exact mechanism this module
+  // documented for its own orphaned-Tantivy repair is now also graph-store's
+  // fts5-residue drop; both funnel through the same out-of-band DELETE.
+  const repair = deleteSchemaRowsViaBetterSqlite3(dbPath, doomed);
+  result.dropped = repair.dropped;
+  result.failed = repair.failed;
+  return result;
+}
+
+// ── Shared escape-hatch repair (BL-506) ──────────────────────────────────────
+
+/** Outcome of {@link deleteSchemaRowsViaBetterSqlite3}. */
+export interface SchemaRowDeleteResult {
+  /** `sqlite_master` names actually deleted (DELETE reported ≥1 row changed). */
+  dropped: string[];
+  /** Set when the whole drop failed (open, DELETE, or reset). */
+  failed: string | null;
+}
+
+/**
+ * (BL-506) Delete `sqlite_master` rows out of band — the sanctioned escape
+ * hatch, shared by the pre-flight's own repair and graph-store's FK-heal.
+ *
+ * Why this is the ONLY tool for the job:
+ *
+ * - The Turso driver hard-refuses `sqlite_master` writes on every surface
+ *   (`all`/`exec`/`batch`/`pragma`/`compat`/`native`; `writable_schema` is a
+ *   silent no-op through it — measured on the live store 2026-08-11), and its
+ *   `DROP` statements against objects it cannot parse (fts5 VTs, orphaned
+ *   Tantivy backing) silently "succeed" while leaving the row in place.
+ * - better-sqlite3 executes these deletes for real once BOTH settings are on:
+ *   `unsafeMode(true)` (better-sqlite3 is defensive by default, which no-ops
+ *   the pragma) followed by `PRAGMA writable_schema = ON` (tolerates the very
+ *   schema rows being deleted plus every `USING fts` / `USING backing_btree`
+ *   row a Turso store carries — see {@link openSchemaReader}'s callers for the
+ *   BL-361/BL-362 measurements).
+ *
+ * Deleting by NAME (not by rowid): the caller supplies the object names
+ * (e.g. `FTSDialect.legacyResidueNames('node')` for fts5 residue); any present
+ * row with that name is deleted, whether it is a table, index, trigger, or
+ * view — the uniform repair the live backlog store received in 2026-08-11.
+ *
+ * Never throws: every failure degrades to `{ failed: <message> }` so a repair
+ * that can itself break an open is worse than no repair (same contract as
+ * {@link preflightSchemaSanity}).
+ */
+export function deleteSchemaRowsViaBetterSqlite3(
+  dbPath: string,
+  names: readonly string[],
+): SchemaRowDeleteResult {
+  const result: SchemaRowDeleteResult = { dropped: [], failed: null };
+  if (names.length === 0) return result;
   try {
     const db = openSchemaReader(dbPath, false);
     try {
       const del = db.prepare('DELETE FROM sqlite_master WHERE name = ?');
-      for (const name of doomed) {
-        if (!present.has(name)) continue;
+      for (const name of names) {
         if (del.run(name).changes > 0) result.dropped.push(name);
       }
       db.pragma('writable_schema = RESET');
