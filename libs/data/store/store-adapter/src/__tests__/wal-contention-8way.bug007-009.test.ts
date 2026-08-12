@@ -16,15 +16,10 @@
  *
  *   Leg 2 — 8-way connect+write+close against a fresh aged-tshm fixture:
  *   every write durably persists (count check on a final fresh open), zero
- *   connect failures. Renames happen only while the store is provably
- *   unheld, never per-sibling under contention: (1) the first opener's
- *   quiescent cold-start reconcile of the aged sidecar (the intended BL-373
- *   behavior), plus (2) the FINAL quiescent close's BUG-014 tshm-reset (the
- *   close()-TRUNCATE moves the -tshm it just orphaned). 8 concurrent
- *   connects leave exactly ONE quiescent close window (the last closer), so
- *   the pin is `.stale-* ≤ 2` — anything beyond the cold-start reconcile +
- *   the final close-reset means renames ran under sibling contention (the
- *   BUG-007 damage).
+ *   connect failures. The first opener may legitimately reconcile ONCE while
+ *   quiescent (cold start — that is the intended BL-373 behavior, not the
+ *   BUG-007 defect), so the pin is `.stale-* ≤ 1`: renames happen only while
+ *   the store is provably unheld, never per-sibling under contention.
  *
  *   Leg 3 — BUG-008: a contended close DEFERS the TRUNCATE deterministically.
  *   R closes while W's lease is live → the close logs `close_checkpoint_busy`
@@ -232,16 +227,14 @@ tursoDescribe('BUG-007/008/009 — 8-way WAL contention against the real engine 
 
     expect(failures, `connect/write/close failures: ${failures.join(' | ')}`).toEqual([]);
     // The FIRST opener starts cold (no peer yet) — its quiescent reconcile of
-    // the aged sidecar is the intended BL-373 behavior. The LAST closer is the
-    // only quiescent close (8 concurrent connects leave one quiescent window),
-    // and its BUG-014 close-reset moves the -tshm it just TRUNCATEd. So two
-    // `.stale-*` renames are legal, BOTH quiescence-gated; more than two means
-    // renames ran under sibling contention (the BUG-007 damage, this leg's RED
-    // shape) or per-sibling closes.
+    // the aged sidecar is the intended BL-373 behavior, so exactly one
+    // `.stale-*` rename is legal; more than one means renames ran under
+    // sibling contention (the BUG-007 damage), and a rename of a live store
+    // (this leg's RED shape) shows up as multiple or as failures above.
     expect(
       staleSidecars(dbPath).length,
-      'BUG-007: at most the cold-start reconcile + the final quiescent close-reset may rename a sidecar — never per-sibling under contention',
-    ).toBeLessThanOrEqual(2);
+      'BUG-007: at most the single quiescent-first-opener reconcile may rename a sidecar — never per-sibling under contention',
+    ).toBeLessThanOrEqual(1);
 
     // Durability: a final fresh open sees every one of the 8 writes.
     const v = await connect(dbPath);

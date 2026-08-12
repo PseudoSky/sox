@@ -1,4 +1,4 @@
-import { existsSync, renameSync, statSync } from 'node:fs';
+import { existsSync } from 'node:fs';
 import {
   consumeUncleanShutdownFlag,
   ensureAdapterMetaTable,
@@ -10,7 +10,6 @@ import {
   describeStaleWalIndexFailure,
   emitIntegrityReport,
   isStaleWalIndexError,
-  isTshmContentDead,
   proactivelyReconcileStaleSidecar,
   probeWalFrames,
   recoverStaleWalIndex,
@@ -640,85 +639,33 @@ export class TursoAdapterImpl implements TursoAdapter {
         const quiescence = storeQuiescence(opts.dbPath, lease?.token);
 
         if (!quiescence.quiescent) {
-          // (BUG-014) CONTENT-DEAD RECONCILE UNDER A LIVE PEER — BEFORE the
-          // BUG-009 transient-retry branch. The lease-gate's premise — "a
-          // live peer may be using this -tshm" — is FALSE for a tshm that is
-          // CONTENT-PROVEN DEAD (the -wal is 0 bytes/absent, or the tshm's
-          // own snapshot indexes a frame offset beyond the WAL EOF): no live
-          // connection can be reading frames a WAL of that size cannot
-          // contain (proven safe under a live peer by triage Probe D on the
-          // live-store copies). Without this, a stale tshm surviving a
-          // close()-TRUNCATE deadlocks every fresh open under server leases —
-          // the BUG-009 retry branch is PROVABLY non-transient for this state
-          // (identical short-read on every attempt, budget burned on a
-          // guaranteed failure, live 5/5). Only a tshm that is NOT proven
-          // dead (a genuinely fresh index) keeps the defer-and-retry behavior
-          // below — the BUG-007 guard is intact.
-          const contentDead = isTshmContentDead(opts.dbPath);
-          let reconcileFailed: unknown = null;
-          if (contentDead.dead) {
-            log.warn('store_adapter.turso.open_shortread_contentdead_reconcile', {
-              detail: `-tshm is content-proven dead: ${contentDead.reason}; reconciling even though a live peer holds the store`,
+          let lastError: unknown = err;
+          for (let attempt = 0; attempt < OPEN_RETRY_MAX_ATTEMPTS - 1; attempt++) {
+            const delay = OPEN_RETRY_BACKOFF_START_MS + attempt * OPEN_RETRY_BACKOFF_STEP_MS;
+            log.warn('store_adapter.turso.open_shortread_transient_retry', {
+              attempt: attempt + 1,
+              max_attempts: OPEN_RETRY_MAX_ATTEMPTS,
+              delay_ms: delay,
+              error: (err instanceof Error ? err.message : String(err)).slice(0, 300),
             });
-            // storeInUse: false — the caller has PROVEN the tshm dead; the
-            // gate's refusal reason ("live WAL coordination state") does not
-            // apply to content that cannot be coordinated.
-            const recovery = recoverStaleWalIndex(opts.dbPath, { storeInUse: false });
-            if (recovery.movedAside.length > 0) {
-              emitIntegrityReport(
-                opts.dbPath,
-                'repaired',
-                `[BUG-014] content-proven-dead -tshm reconciled under a live peer: moved aside ` +
-                  `${recovery.movedAside.map((m) => m.to).join(', ')} — ${contentDead.reason}. ` +
-                  `The open retries against the fresh sidecar.`,
-              );
-              try {
-                db = await openOnce();
-              } catch (reopenErr) {
-                // The reconcile did not cure the open (a transient race may
-                // overlap) — the bounded retry loop below takes over with
-                // this error as its baseline.
-                reconcileFailed = reopenErr;
-              }
-            } else {
-              log.debug('store_adapter.turso.open_shortread_contentdead_nothing_to_move', {
-                detail: `content-dead -tshm had nothing to move: ${recovery.declined ?? 'unknown reason'}`,
-              });
+            await new Promise((resolve) => setTimeout(resolve, delay));
+            try {
+              db = await openOnce();
+              lastError = null;
+              break;
+            } catch (retryErr) {
+              lastError = retryErr;
+              if (!isStaleWalIndexError(retryErr)) break; // different class — propagate below
             }
           }
-
-          if (reconcileFailed === null && db !== undefined) {
-            // The content-dead reconcile cured the open — the fresh sidecar
-            // was rebuilt and the reopen landed. Skip the retry loop.
-          } else {
-            let lastError: unknown = reconcileFailed ?? err;
-            for (let attempt = 0; attempt < OPEN_RETRY_MAX_ATTEMPTS - 1; attempt++) {
-              const delay = OPEN_RETRY_BACKOFF_START_MS + attempt * OPEN_RETRY_BACKOFF_STEP_MS;
-              log.warn('store_adapter.turso.open_shortread_transient_retry', {
-                attempt: attempt + 1,
-                max_attempts: OPEN_RETRY_MAX_ATTEMPTS,
-                delay_ms: delay,
-                error: (lastError instanceof Error ? lastError.message : String(lastError)).slice(0, 300),
-              });
-              await new Promise((resolve) => setTimeout(resolve, delay));
-              try {
-                db = await openOnce();
-                lastError = null;
-                break;
-              } catch (retryErr) {
-                lastError = retryErr;
-                if (!isStaleWalIndexError(retryErr)) break; // different class — propagate below
-              }
+          if (lastError !== null) {
+            if (lastError !== null && typeof lastError === 'object') {
+              (lastError as { retryable?: boolean }).retryable = true;
             }
-            if (lastError !== null) {
-              if (lastError !== null && typeof lastError === 'object') {
-                (lastError as { retryable?: boolean }).retryable = true;
-              }
-              throw lastError;
-            }
-            // else: retried open succeeded — fall through to the post-catch
-            // ceremony below with `db` assigned.
+            throw lastError;
           }
+          // else: retried open succeeded — fall through to the post-catch
+          // ceremony below with `db` assigned.
         } else {
           // Quiescent — the genuinely-stale case (or genuine corruption).
           // Existing recovery logic runs UNCHANGED (the store is quiescent, so
@@ -1297,13 +1244,6 @@ export class TursoAdapterImpl implements TursoAdapter {
                   detail:
                     'another connection held the WAL; -wal was NOT truncated (frames remain durable; the next writable close without a concurrent reader truncates)',
                 });
-              } else {
-                // (BUG-014) The TRUNCATE succeeded (busy=0) — the -wal is 0
-                // bytes, so the -tshm this close just orphaned indexes frames
-                // the WAL no longer holds. Reset it so the stale-index state
-                // never persists (the root-cause complement to the open-time
-                // content-dead reconcile).
-                this.resetTshmAfterTruncate();
               }
             } catch (truncateErr) {
               log.warn('store_adapter.turso.close_checkpoint_truncate_failed', {
@@ -1327,11 +1267,6 @@ export class TursoAdapterImpl implements TursoAdapter {
                 detail:
                   'another connection held the WAL; -wal was NOT truncated (frames remain durable; the next writable close without a concurrent reader truncates)',
               });
-            } else {
-              // (BUG-014) Same tshm-reset as the quiescent branch — the
-              // TRUNCATE succeeded, so the -tshm indexes frames the now-empty
-              // -wal cannot contain. No-op for remote URLs (no local dbPath).
-              this.resetTshmAfterTruncate();
             }
           } catch (truncateErr) {
             log.warn('store_adapter.turso.close_checkpoint_truncate_failed', {
@@ -1403,52 +1338,6 @@ export class TursoAdapterImpl implements TursoAdapter {
         ? `checkpoint of the WAL failed — data since the last checkpoint is being lost: ${detail}`
         : `checkpoint of the WAL failed; frames remain durable in the WAL and replay on the next open (checkpoint deferred): ${detail}`,
     );
-  }
-
-  /**
-   * (BUG-014) COMPLEMENT to the BL-512 TRUNCATE-on-close: after a SUCCESSFUL
-   * `wal_checkpoint(TRUNCATE)` zeroed the `-wal`, reset the `-tshm` residue
-   * this close just orphaned.
-   *
-   * The TRUNCATE physically zeroes the `-wal` (turso wal.rs:5208) but leaves
-   * the `-tshm` — Turso's WAL-index coordination file — on disk, still
-   * indexing the frames the empty WAL no longer holds. That frozen residue is
-   * what fed the every-minute `.stale-*` self-healing loop on quiescent
-   * stores AND the BUG-014 deadlock under live peers (a stale tshm surviving
-   * a close()-TRUNCATE makes every fresh open short-read while the 0.5.7
-   * lease-gate forbids the reconcile). Moving it aside here — beside the
-   * TRUNCATE that orphaned it — means the stale-index state never persists:
-   * the next open rebuilds the sidecar from the empty WAL in the normal open
-   * path, and the every-minute cycle has no state left to feed on.
-   *
-   * Called ONLY when the TRUNCATE actually succeeded (busy=0): a deferred
-   * TRUNCATE (busy=1) or a failed one leaves the WAL holding frames, so the
-   * tshm is still describing real content and must not be touched.
-   *
-   * Renamed (`.stale-<stamp>`), never deleted — the stale file is the
-   * forensic record, matching every other sidecar reconciliation in this
-   * package. No-op for remote URLs (no local dbPath) and when no tshm exists.
-   */
-  private resetTshmAfterTruncate(): void {
-    if (!this.config.dbPath) return;
-    const tshmPath = this.config.dbPath + '-tshm';
-    try {
-      statSync(tshmPath);
-    } catch {
-      return; // no residue to reset
-    }
-    const stamp = new Date().toISOString().replace(/[:.]/g, '').replace('T', '-').slice(0, 15);
-    const to = `${tshmPath}.stale-${stamp}`;
-    try {
-      renameSync(tshmPath, to);
-      log.debug('store_adapter.turso.close_tshm_reset', {
-        detail: `-tshm moved aside after the close()-TRUNCATE: ${to} — the next open rebuilds it from the empty -wal`,
-      });
-    } catch (err) {
-      log.warn('store_adapter.turso.close_tshm_reset_failed', {
-        error: err instanceof Error ? err.message : String(err),
-      });
-    }
   }
 
   /**
