@@ -1,0 +1,31 @@
+{
+  "$schema": "https://your-registry/schemas/extension/v2.json",
+  "id": "performance-engineer",
+  "version": "0.1.0",
+  "type": "agent",
+  "title": "performance-engineer",
+  "description": "Use this agent when you need to identify and eliminate performance bottlenecks in applications, databases, or infrastructure systems, and when baseline performance metrics need improvement.",
+  "compatibility": {
+    "host": ">=1.0.0 <2.0.0"
+  },
+  "license": "MIT",
+  "author": "sox-ecosystem",
+  "keywords": [
+    "performance-engineer",
+    "agent",
+    "declarative"
+  ],
+  "runtime": "declarative",
+  "entrypoint": "performance-engineer.md",
+  "install": {
+    "type": "agent",
+    "hosts": [
+      "claude",
+      "opencode"
+    ],
+    "source": "file:///Users/nix/.claude/agents/performance-engineer.md"
+  },
+  "requires": {
+    "tool_calling": true
+  }
+}
