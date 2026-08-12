@@ -1,5 +1,24 @@
 # @adhd/sox-store-adapter
 
+## 0.5.3
+
+### Patch Changes
+
+- **FK-heal escape hatch shared export + same-instance repair reconnect (BL-506/507/508).**
+
+  `deleteSchemaRowsViaBetterSqlite3` — the sanctioned better-sqlite3 + `writable_schema`
+  out-of-band schema-row delete the pre-flight already used for orphaned Tantivy backing —
+  is promoted from preflight-private to a shared export so graph-store's FK-heal can drop
+  fts5 residue with the same mechanism. New `TursoAdapterImpl.withConnectionClosedForRepair(fn)`
+  closes the turso connection, runs an out-of-band repair while no turso connection holds the
+  file, then reopens through the full `connect()` ceremony on the SAME instance (SPEC-CONN-RECYCLE
+  pattern) so callers keep a valid handle. This is what makes the residue-drop safe: cross-engine
+  WAL coordination (turso `-tshm` vs SQLite `-shm`) is exactly what destroyed stores (BL-373/BL-508),
+  so the better-sqlite3 write must never run while a turso connection is open.
+
+  Behavior for existing consumers: unchanged unless they opt into the new methods. The
+  pre-flight's own repair now funnels through the shared helper with identical semantics.
+
 ## 0.5.2
 
 ### Patch Changes
