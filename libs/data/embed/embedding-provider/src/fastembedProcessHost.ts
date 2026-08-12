@@ -61,6 +61,11 @@ import * as fs from 'node:fs';
 import type { EmbeddingModel, ExecutionProvider } from 'fastembed';
 import { initTelemetry } from '@adhd/sox-telemetry';
 import { resolveFastembedLockPath, type FastembedLockInfo } from './fastembedLock.js';
+// BUG-005: MODEL_MAP + resolveModelDim live in the side-effect-free
+// `fastembedModels.js` (see its doc comment — importing them from
+// `./fastembed.js` here would drag parent-side modules into this child
+// bundle via their `import.meta.url` module-scope resolution, BL-155).
+import { MODEL_MAP, resolveModelDim } from './fastembedModels.js';
 
 // ── BL-331: cross-process CoreML/ANE contention advisory lock ──────────────
 //
@@ -194,13 +199,10 @@ interface ErrorResponse { id: number; error: string }
 
 // ── Model management ──────────────────────────────────────────────────────────
 
-const MODEL_MAP: Record<string, string> = {
-  'bge-small-en-v1.5': 'fast-bge-small-en-v1.5',
-  'bge-base-en-v1.5': 'fast-bge-base-en-v1.5',
-  'multilingual-e5-large': 'fast-multilingual-e5-large',
-  'bge-m3': 'BAAI/bge-m3',
-  'codexembed-400m': 'CodeXEmbed-400M',
-};
+// BUG-005: the raw model name → fastembed id map now lives in the shared
+// side-effect-free `fastembedModels.ts` (imported above), so the dim
+// resolution (`resolveModelDim`) uses the SAME source of truth as the
+// parent-side model configs.
 
 interface EmbedderInstance {
   queryEmbed(text: string): Promise<number[]>;
@@ -225,39 +227,50 @@ function resolveExecutionProviders(): ExecutionProvider[] {
 }
 
 async function loadModel(model: string, cacheDir: string): Promise<{ dim: number; execution_provider: string }> {
-  if (_embedder && _currentModel === model && _currentCacheDir === cacheDir) {
-    const models = _embedder.listSupportedModels();
-    const info = models.find((m) => m.model === model);
-    return { dim: info?.dim ?? 0, execution_provider: 'cpu' };
+  let execution_provider = 'cpu';
+  if (!(_embedder && _currentModel === model && _currentCacheDir === cacheDir)) {
+    // BL-331: advisory contention check, once, right before the real (expensive,
+    // ANE-contending) model load — see the lock helpers above for the full
+    // root-cause writeup.
+    checkAndClaimFastembedLock();
+
+    const { FlagEmbedding, EmbeddingModel: EM } = await import('fastembed');
+    const fastModel = MODEL_MAP[model] ?? model;
+    const modelKeys = Object.keys(EM) as Array<keyof typeof EM>;
+    const foundKey = modelKeys.find((k) => EM[k] === fastModel);
+    const modelEnum: EmbeddingModel = foundKey ? EM[foundKey] : fastModel as EmbeddingModel;
+
+    fs.mkdirSync(cacheDir, { recursive: true });
+
+    const executionProviders = resolveExecutionProviders();
+    _embedder = (await FlagEmbedding.init({
+      model: modelEnum as Exclude<EmbeddingModel, EmbeddingModel.CUSTOM>,
+      cacheDir,
+      executionProviders,
+      showDownloadProgress: false,
+    })) as unknown as EmbedderInstance;
+
+    _currentModel = model;
+    _currentCacheDir = cacheDir;
+    execution_provider = executionProviders[0]!;
   }
 
-  // BL-331: advisory contention check, once, right before the real (expensive,
-  // ANE-contending) model load — see the lock helpers above for the full
-  // root-cause writeup.
-  checkAndClaimFastembedLock();
-
-  const { FlagEmbedding, EmbeddingModel: EM } = await import('fastembed');
-  const fastModel = MODEL_MAP[model] ?? model;
-  const modelKeys = Object.keys(EM) as Array<keyof typeof EM>;
-  const foundKey = modelKeys.find((k) => EM[k] === fastModel);
-  const modelEnum: EmbeddingModel = foundKey ? EM[foundKey] : fastModel as EmbeddingModel;
-
-  fs.mkdirSync(cacheDir, { recursive: true });
-
-  const executionProviders = resolveExecutionProviders();
-  _embedder = (await FlagEmbedding.init({
-    model: modelEnum as Exclude<EmbeddingModel, EmbeddingModel.CUSTOM>,
-    cacheDir,
-    executionProviders,
-    showDownloadProgress: false,
-  })) as unknown as EmbedderInstance;
-
-  _currentModel = model;
-  _currentCacheDir = cacheDir;
-
-  const models = _embedder.listSupportedModels();
-  const info = models.find((m) => m.model === model);
-  return { dim: info?.dim ?? 0, execution_provider: executionProviders[0]! };
+  // BUG-005: the pre-fix lookup `listSupportedModels().find((m) => m.model === model)`
+  // compared the RAW configured name ('bge-base-en-v1.5') against fastembed's
+  // enum VALUE ('fast-bge-base-en-v1.5') — it never matched, so the init reply
+  // always carried dim 0. `resolveModelDim` matches against the enum constant
+  // (MODEL_MAP) first, then falls back to the resolved MODEL_CONFIGS entry
+  // (covers custom models like bge-m3 / codexembed-400m that the supported
+  // list never contains). A still-unknown model FAILS LOUD here instead of
+  // replying dim 0: the init reply contract is dim > 0 or an error.
+  const dim = resolveModelDim(model, _embedder.listSupportedModels());
+  if (dim <= 0) {
+    throw new Error(
+      `Cannot report embedding dimension for model "${model}" (fastembed id "${MODEL_MAP[model] ?? model}"): ` +
+        `not in listSupportedModels() and no MODEL_CONFIGS entry — refusing to report dim 0 (BUG-005)`,
+    );
+  }
+  return { dim, execution_provider };
 }
 
 async function collectEmbeddings(embedder: EmbedderInstance, texts: string[]): Promise<number[][]> {

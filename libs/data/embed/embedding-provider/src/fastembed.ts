@@ -1,6 +1,13 @@
 import { warmupTimeoutMs, isModelCached, WARMUP_CACHE_HIT_ATTEMPTS } from './index.js';
 import { getSharedFastembedProcess, type SharedFastembedProcessClient } from './sharedFastembedProcess.js';
-import type { EmbeddingHealth, EmbeddingProvider, EmbeddingProviderMetadata, EmbedRole, FastEmbedModelConfig } from './index.js';
+import type { EmbeddingHealth, EmbeddingProvider, EmbeddingProviderMetadata, EmbedRole } from './index.js';
+// BUG-005: MODEL_CONFIGS lives in the side-effect-free `fastembedModels.js`
+// (shared with the child-process host) — see that module's doc comment for
+// why it cannot be imported from this file by the child. Re-exported below
+// (the bottom `export { ... }` re-exports this imported binding) unchanged,
+// so every existing consumer (`index.js`, `cache.js`, the bl376 /
+// warmup-cachehit specs) keeps working.
+import { MODEL_CONFIGS } from './fastembedModels.js';
 
 interface InitOkResponse {
   initOk: true;
@@ -15,44 +22,6 @@ interface EmbedResponse {
 interface EmbedBatchResponse {
   embeddings: number[][];
 }
-
-const MODEL_CONFIGS: Record<string, FastEmbedModelConfig> = {
-  'bge-small-en-v1.5': {
-    modelId: 'bge-small-en-v1.5',
-    hfRepoId: 'fast-bge-small-en-v1.5',
-    dim: 384,
-    maxTokens: 512,
-    description: 'BGE Small English v1.5 — lightweight 384-dim embedding, ~33M params',
-  },
-  'bge-base-en-v1.5': {
-    modelId: 'bge-base-en-v1.5',
-    hfRepoId: 'fast-bge-base-en-v1.5',
-    dim: 768,
-    maxTokens: 512,
-    description: 'BGE Base English v1.5 — balanced 768-dim embedding, ~110M params',
-  },
-  'multilingual-e5-large': {
-    modelId: 'multilingual-e5-large',
-    hfRepoId: 'fast-multilingual-e5-large',
-    dim: 1024,
-    maxTokens: 512,
-    description: 'Multilingual E5 Large — 1024-dim, 100+ languages, ~335M params',
-  },
-  'bge-m3': {
-    modelId: 'bge-m3',
-    hfRepoId: 'BAAI/bge-m3',
-    dim: 1024,
-    maxTokens: 8192,
-    description: 'BGE-M3 — 570M params, 8192-token context, 100+ languages, ONNX INT8',
-  },
-  'codexembed-400m': {
-    modelId: 'codexembed-400m',
-    hfRepoId: 'microsoft/codexembed-400m',
-    dim: 1024,
-    maxTokens: 8192,
-    description: 'CodeXEmbed-400M — code-only CPU, ~1.6GB RAM, 8192-token context',
-  },
-};
 
 /** @deprecated Use MODEL_CONFIGS[modelId].dim instead. */
 const MODEL_DIMS: Record<string, number> = Object.fromEntries(
