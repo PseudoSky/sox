@@ -1314,10 +1314,28 @@ export class SqliteGraphBackend implements GraphBackend {
     const drop = async (): Promise<void> => {
       const repair = deleteSchemaRowsViaBetterSqlite3(dbPath, residueNames);
       if (repair.failed !== null) {
-        log.error('graph_store.heal.fts5_residue_drop_failed', {
-          db_path: dbPath,
-          error: repair.failed,
-        });
+        // (BUG-017 review fix) A DECLINED drop here is a designed DEFERRAL,
+        // not a repair failure: the outer `withConnectionClosedForRepair`
+        // gate above already proved the store quiescent (excluding this
+        // instance's own lease), so an inner-gate decline means either the
+        // own lease entry lingered after close()'s best-effort release (the
+        // stale entry counts as a live peer) or a new peer landed in the
+        // probe window — both conservative false-declines that leave the
+        // drop skipped, which is safe degradation per SPEC §T1. Label the
+        // decline as such (warn, deferral semantics — INV-5: still logged
+        // loudly, never a silent skip). Only a genuine non-decline failure
+        // keeps the failure event.
+        if (repair.failed.startsWith('declined:')) {
+          log.warn('graph_store.heal.fts5_residue_drop_deferred_inner_quiescence', {
+            db_path: dbPath,
+            error: repair.failed,
+          });
+        } else {
+          log.error('graph_store.heal.fts5_residue_drop_failed', {
+            db_path: dbPath,
+            error: repair.failed,
+          });
+        }
       }
     };
 

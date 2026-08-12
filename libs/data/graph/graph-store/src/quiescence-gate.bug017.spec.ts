@@ -267,6 +267,15 @@ describe('BUG-017/BL-563 — graph-store residue drop quiescence + readonly gate
       // the adapter's readonly layer (that layer is the adapter's own
       // connection, which the repair closes). The typed cast is the test
       // seam to the private method that carries the gate.
+      //
+      // (BUG-017 review follow-up) The seam pins the test to THIS method: it
+      // keeps the gate-removal case red, but it does NOT guard against a
+      // future refactor that re-routes the drop around
+      // `dropFts5ResidueBeforeRebuild` entirely (e.g. the drop moving into
+      // the adapter hook). That structural guard is SPEC §T8's single
+      // classic-engine-access choke point (`classic-engine-access.ts` + the
+      // eslint ban), which is the tracked follow-up; until then this
+      // method-level seam is the best reachable pin on a readonly connection.
       const adapter = await TursoAdapterImpl.connect({ dbPath, readonly: true });
       try {
         const graph = createGraphBackend(adapter);

@@ -1400,6 +1400,15 @@ export class TursoAdapterImpl implements TursoAdapter {
     const ownLeaseToken = this._lease?.token;
     await this.close(); // full clean-close ceremony (checkpoint, driver close, marker clear)
     try {
+      // (BUG-017 review fix) The quiescence probe is LOCAL-FILE-only. A
+      // URL-only connection (`dbPath === undefined`) is exempt: the exp9
+      // poisoner is a WRITABLE classic open against a LOCAL store file whose
+      // WAL/`-tshm` coordination it cannot see — a remote URL has no local
+      // store file to poison, so there is nothing for this gate to protect
+      // (and leases are never acquired for URLs; store-lease.ts:16). No
+      // production caller reaches this branch with a better-sqlite3 drop
+      // anyway — graph-store early-returns on `cfg.dbPath === undefined`
+      // (index.ts:1274) — so INV-1 is not bypassed.
       if (repairDbPath !== undefined) {
         const quiescence = storeQuiescence(repairDbPath, ownLeaseToken);
         if (!quiescence.quiescent) {
