@@ -127,25 +127,24 @@ tursoDescribe('TursoAdapterImpl — FTS index_method always-on (BL-321 follow-up
     expect(moonRows.rows.map((r) => r.id)).toEqual([2]);
   });
 
-  it('does not disturb multiprocess_wal — still on by default, still independently toggle-able', async () => {
+  it('multiprocess_wal is ALWAYS on — not a toggle (BL-512)', async () => {
+    // The `experimental: { multiprocessWal: false }` opt-out was REMOVED from
+    // the adapter API with the BL-512 concurrent-write fix: a store opened by
+    // many short-lived processes at once (the backlog store) must always open
+    // with multiprocess WAL, because an open without it while another process
+    // holds multiprocess authority is refused ("Database is already open
+    // without experimental multiprocess WAL in another process") and the
+    // write is lost. Every connection therefore reports the capability true.
     const onPath = tempPath('mpwal-on');
     const onAdapter = await TursoAdapterImpl.connect({ dbPath: onPath });
     openAdapters.push(onAdapter);
     expect(onAdapter.capabilities.multiprocessWrite).toBe(true);
 
-    const offPath = tempPath('mpwal-off');
-    const offAdapter = await TursoAdapterImpl.connect({
-      dbPath: offPath,
-      experimental: { multiprocessWal: false },
-    });
-    openAdapters.push(offAdapter);
-    expect(offAdapter.capabilities.multiprocessWrite).toBe(false);
-
-    // FTS must still work even with multiprocess_wal explicitly disabled —
-    // index_method is independent and must not be clobbered by that opt-out.
-    await offAdapter.exec('CREATE TABLE node (id INTEGER PRIMARY KEY, content TEXT)');
+    // index_method stays independent and always-on alongside it — FTS DDL and
+    // queries must work on any connection, exactly as the first test proves.
+    await onAdapter.exec('CREATE TABLE node (id INTEGER PRIMARY KEY, content TEXT)');
     await expect(
-      offAdapter.exec('CREATE INDEX IF NOT EXISTS idx_fts_node ON "node" USING fts ("content")'),
+      onAdapter.exec('CREATE INDEX IF NOT EXISTS idx_fts_node ON "node" USING fts ("content")'),
     ).resolves.toBeUndefined();
   });
 });

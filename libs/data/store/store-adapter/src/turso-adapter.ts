@@ -58,6 +58,14 @@ import type {
 
 // ── TursoTransaction (internal) ──────────────────────────────────────────────
 
+/** (BL-512) Bounded busy timeout (ms) applied to EVERY driver connect — maps
+ *  to sqlite3_busy_timeout. Empirically REQUIRED for concurrent multiprocess
+ *  writers: with the driver default (0) a connect/first-statement landing in
+ *  another process's close()-TRUNCATE window fails instantly with "database is
+ *  locked" and the write is lost (measured 2026-08-12, see connect()). Never
+ *  a toggle — a store opened concurrently must wait out transient locks. */
+const DEFAULT_BUSY_TIMEOUT_MS = 5000;
+
 class TursoTransactionImpl implements AdapterTransaction {
   private db: { run: Function; get: Function; all: Function; exec: Function };
 
@@ -319,7 +327,6 @@ export class TursoAdapterImpl implements TursoAdapter {
      */
     allowFtsInReadonly?: boolean;
     encryption?: AdapterConfig['encryption'];
-    experimental?: { multiprocessWal?: boolean };
     defaultQueryTimeout?: number;
     /**
      * (BL-508) Permit opening a store whose engine marker claims the OTHER
@@ -369,6 +376,16 @@ export class TursoAdapterImpl implements TursoAdapter {
     const dbOpts: any = {};
     if (opts.readonly !== undefined && !softReadonly) dbOpts.readonly = opts.readonly;
     if (opts.defaultQueryTimeout !== undefined) dbOpts.defaultQueryTimeout = opts.defaultQueryTimeout;
+    // (BL-512, concurrent-write follow-on) A bounded busy timeout is ALWAYS
+    // on — not a toggle, matching multiprocess_wal. With the driver's default
+    // busy_timeout=0, a connect or first statement that lands inside another
+    // process's close()-TRUNCATE exclusive-lock window fails instantly with
+    // "database is locked" and the write is lost (measured 2026-08-12: 6
+    // parallel processes × 3 cycles lost 2-4/18 under 0-timeout churn; the
+    // identical workload with `timeout: 5000` persists 18/18, 3/3 runs — the
+    // raw-driver control isolates this from the adapter). The timeout makes
+    // the engine WAIT out the transient lock instead of failing.
+    dbOpts.timeout = DEFAULT_BUSY_TIMEOUT_MS;
 
     // index_method is ALWAYS on, unconditionally — not a toggle. Turso's FTS
     // index DDL (`CREATE INDEX ... USING fts (...)`) and every subsequent
@@ -379,16 +396,20 @@ export class TursoAdapterImpl implements TursoAdapter {
     // surrounding try/catch at log.debug in db.ts, so idx_fts_node silently
     // never existed on any real Turso store and FTS was dead in production.
     // There is no PRAGMA workaround (Turso silently no-ops unknown PRAGMAs).
-    // FTS is a core feature, so this is unconditional — merged with, never
-    // overwritten by, the multiprocess_wal toggle below.
-    const experiments: string[] = ['index_method'];
-    // Enable multiprocess_wal by default for concurrent reader/writer support.
-    // Uses .tshm shared memory files for WAL coordination instead of exclusive fcntl locks.
-    // Independently toggle-able via experimental: { multiprocessWal: false } —
-    // must not clobber index_method above when opted out.
-    if (opts.experimental?.multiprocessWal !== false) {
-      experiments.push('multiprocess_wal');
-    }
+    // FTS is a core feature, so this is unconditional.
+    //
+    // multiprocess_wal is ALSO always on, unconditionally — NOT a toggle
+    // (BL-512 concurrent-write defect). The backlog store is opened by many
+    // short-lived processes at once; multiprocess WAL (.tshm coordination)
+    // is what lets those coexisting opens share the store. An open WITHOUT it
+    // while another process holds multiprocess authority is refused by the
+    // engine ("Database is already open without experimental multiprocess WAL
+    // in another process") and the write is lost — which is exactly what the
+    // pre-connect better-sqlite3 probe used to trigger (engine-guard
+    // `readApplicationId`, now header-first). There is no opt-out: the
+    // `experimental: { multiprocessWal: false }` option was REMOVED from the
+    // adapter API with this fix.
+    const experiments: string[] = ['index_method', 'multiprocess_wal'];
     if (opts.encryption) {
       dbOpts.encryption = {
         cipher: opts.encryption.cipher,
@@ -596,11 +617,10 @@ export class TursoAdapterImpl implements TursoAdapter {
     if (opts.authToken !== undefined) config.authToken = opts.authToken;
     if (opts.readonly !== undefined) config.readonly = opts.readonly;
     if (opts.encryption !== undefined) config.encryption = opts.encryption;
-    if (opts.experimental !== undefined) config.experimental = opts.experimental;
     if (opts.defaultQueryTimeout !== undefined) config.defaultQueryTimeout = opts.defaultQueryTimeout;
 
     const capabilities: AdapterCapabilities = {
-      multiprocessWrite: opts.experimental?.multiprocessWal ?? true, // enabled by default
+      multiprocessWrite: true, // unconditional — see the experiments block above (BL-512)
       nativeVectors: true,
       concurrentTransactions: true,
       fts5: false,
@@ -694,9 +714,9 @@ export class TursoAdapterImpl implements TursoAdapter {
 
   /**
    * (BL-385) VACUUM INTO, run directly on this adapter's existing connection
-   * with whatever experimental flags it was opened with (`index_method`,
-   * optionally `multiprocess_wal` — see `connect()` above, the same flags
-   * production already sets). Measured 2026-08-01 against a copy of the live
+   * with its experimental flags (`index_method`, `multiprocess_wal` — both
+   * unconditional since BL-512, see `connect()` above). Measured 2026-08-01
+   * against a copy of the live
    * store: identical nodes/vec_node/edge counts, identical fts_match hit
    * count, and 19 MB reclaimed — with no new flags required.
    *
@@ -727,9 +747,6 @@ export class TursoAdapterImpl implements TursoAdapter {
         readonly: true,
         allowFtsInReadonly: true,
       };
-      if (this.config.experimental !== undefined) {
-        backupConnectOpts.experimental = this.config.experimental;
-      }
       const backupAdapter = await TursoAdapterImpl.connect(backupConnectOpts);
       try {
         // (BL-449) NO `only:` narrowing — see the SqliteAdapter twin for the
