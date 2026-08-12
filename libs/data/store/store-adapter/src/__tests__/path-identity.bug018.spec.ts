@@ -33,7 +33,16 @@
  * basename is preserved so sidecar naming stays aligned with the engines).
  */
 import { describe, it, expect, afterEach } from 'vitest';
-import { mkdtempSync, symlinkSync, rmSync, realpathSync } from 'node:fs';
+import {
+  mkdtempSync,
+  symlinkSync,
+  rmSync,
+  realpathSync,
+  mkdirSync,
+  chmodSync,
+  existsSync,
+  writeFileSync,
+} from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { createRequire } from 'node:module';
@@ -47,6 +56,7 @@ import {
   clearStoreOpenMarker,
 } from '../preflight.js';
 import { canonicalDbPath } from '../path-identity.js';
+import { EPathIdentityUnresolvable } from '../errors.js';
 
 const require = createRequire(import.meta.url);
 
@@ -119,6 +129,101 @@ describe('BUG-018 — canonicalDbPath (path-identity.ts, INV-4)', () => {
     const p = join(realDir, 'store.db');
     expect(canonicalDbPath(p)).toBe(canonicalDbPath(p));
   });
+
+  // ── Review finding 1: the :memory:/file: passthrough guard (fixed the
+  //    59-test regression: canonicalDbPath(':memory:') once materialized the
+  //    in-memory name as a real file beside the caller's cwd) needs a DIRECT
+  //    unit pin — previously only indirectly load-bearing via the full suite.
+  it('passes :memory: through unchanged (never materializes a real file)', () => {
+    expect(canonicalDbPath(':memory:')).toBe(':memory:');
+    // The guard must not resolve `:memory:` against the fs: a broken guard
+    // would return `<cwd>/:memory:` and a connect would silently create a
+    // real file named ':memory:' next to the caller's cwd.
+    expect(canonicalDbPath(':memory:')).not.toMatch(/\//);
+    expect(existsSync(join(process.cwd(), ':memory:'))).toBe(false);
+  });
+
+  it('passes file: URI spellings through unchanged', () => {
+    expect(canonicalDbPath('file:store.db')).toBe('file:store.db');
+    expect(canonicalDbPath('file:/abs/path/store.db?mode=rwc')).toBe(
+      'file:/abs/path/store.db?mode=rwc',
+    );
+  });
+
+  // ── Review finding 2: the missing-parent FALLBACK must not be memoized —
+  //    absence is transient fs-state. If a fallback were cached, a parent
+  //    created after the first call would never be picked up (stale raw
+  //    spelling forever, the same key-identity failure class BUG-018 fixes).
+  it('does not memoize the missing-parent fallback (re-evaluated after parent creation)', () => {
+    const { realDir } = aliasPair();
+    const lateParent = join(realDir, 'late-created');
+    const p = join(lateParent, 'store.db');
+    // First call: parent missing → raw fallback.
+    expect(canonicalDbPath(p)).toBe(p);
+    // Now the parent appears (a symlink is retargeted, a dir is created…).
+    mkdirSync(lateParent);
+    try {
+      // A memoized fallback would keep returning the raw spelling here; the
+      // fix must re-evaluate and pick up the canonical form.
+      expect(canonicalDbPath(p)).toBe(join(realpathSync(lateParent), 'store.db'));
+    } finally {
+      rmSync(lateParent, { recursive: true, force: true });
+    }
+  });
+
+  // ── Review finding 3: the fallback catch is errno-aware (DEBT-003
+  //    precedent — EACCES must not prove "absent"). ENOENT/ENOTDIR are plain
+  //    absence → raw fallback; EACCES/EIO are uncertainty → typed error, no
+  //    silent fallback. Skipped under root: a 0o000 parent does not deny
+  //    root, so the EACCES arm is unprovable there.
+  const isRoot = typeof process.getuid === 'function' && process.getuid() === 0;
+  const errnoDescribe = isRoot ? describe.skip : describe;
+
+  errnoDescribe('BUG-018 — errno-aware fallback (DEBT-003 discipline)', () => {
+    it('falls back on ENOENT but surfaces a typed error on EACCES', () => {
+      const { realDir } = aliasPair();
+
+      // ENOENT → plain absence → raw fallback, never throws.
+      const missing = join(realDir, 'no-such-subdir', 'store.db');
+      expect(canonicalDbPath(missing)).toBe(missing);
+
+      // EACCES → parent exists but is unreadable → typed error, never a
+      // silent raw fallback (a divergent coordination key under a live peer).
+      // The dbPath sits BENEATH the locked dir, so dirname(dbPath) is
+      // `realDir/locked/sub` — realpathSync must traverse INTO `locked`,
+      // which 0o000 denies (a bare realpath of `locked` itself would succeed,
+      // since lstat of a final component only needs execute on ITS parent).
+      const locked = join(realDir, 'locked');
+      mkdirSync(locked);
+      chmodSync(locked, 0o000);
+      const lockedDb = join(locked, 'sub', 'store.db');
+      try {
+        let thrown: unknown;
+        try {
+          canonicalDbPath(lockedDb);
+        } catch (err) {
+          thrown = err;
+        }
+        expect(thrown).toBeInstanceOf(EPathIdentityUnresolvable);
+        const typed = thrown as EPathIdentityUnresolvable;
+        expect(typed.errno).toBe('EACCES');
+        expect(typed.dbPath).toBe(lockedDb);
+      } finally {
+        chmodSync(locked, 0o755);
+        rmSync(locked, { recursive: true, force: true });
+      }
+    });
+
+    it('falls back on ENOTDIR (a path component is a file, not a dir)', () => {
+      const { realDir } = aliasPair();
+      // A dbPath BELOW a regular file: dirname resolves `/…/iamafile/sub`,
+      // whose prefix `iamafile` is a file — realpathSync throws ENOTDIR.
+      const fileAsParent = join(realDir, 'iamafile');
+      writeFileSync(fileAsParent, 'x');
+      const p = join(fileAsParent, 'sub', 'store.db');
+      expect(canonicalDbPath(p)).toBe(p);
+    });
+  });
 });
 
 tursoDescribe('BUG-018 — TursoAdapter.connect canonicalizes once (SPEC §T4)', () => {
@@ -136,7 +241,9 @@ tursoDescribe('BUG-018 — TursoAdapter.connect canonicalizes once (SPEC §T4)',
       // the adapter must store the canonical spelling, not the raw one.
       expect(a.config.dbPath).toBe(canonicalDbPath(realDb));
       expect(b.config.dbPath).toBe(canonicalDbPath(realDb));
-      expect(leaseDirPath(b.config.dbPath)).toBe(leaseDirPath(canonicalDbPath(realDb)));
+      // dbPath is `string | undefined` on AdapterConfig (the turso adapter can
+      // be url-only); the assertion above proves it is defined here.
+      expect(leaseDirPath(b.config.dbPath!)).toBe(leaseDirPath(canonicalDbPath(realDb)));
 
       // INV-4 integration lock: probed through B's own (canonical) key,
       // excluding B's own lease, A's lease is a visible live peer — the

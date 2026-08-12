@@ -26,26 +26,57 @@
  * engine's — the canonical form must stay a path the engine would have
  * produced from the same spelling.
  *
+ * The file-symlink gap is therefore NOT an INV-4 violation this fix could
+ * have produced or must converge: a `link.db` open puts `-wal`/`-tshm`
+ * BESIDE THE LINK (the engines name sidecars from the spelling they are
+ * given), so link-vs-target spellings never shared ONE coordination domain
+ * even before this module existed — they are engine-level incoherent in WAL
+ * mode (the documented SQLite symlink hazard), not a false-quiescence the
+ * canonicalization could cause. `canonicalDbPath` reproduces exactly the
+ * engine's own identity derivation, so INV-4 holds per spelling-class the
+ * engine treats as one store; no reachable INV-4 violation results from
+ * preserving the basename.
+ *
  * Tolerates a not-yet-created db file: only the PARENT directory must exist
  * (a fresh store's first open creates the file, which realpathSync would
- * otherwise choke on). When even the parent is missing or unreadable, the raw
- * spelling is returned unchanged — never throws — and the caller's own open
- * will surface the real error.
+ * otherwise choke on). When the parent is genuinely ABSENT — ENOENT, or a
+ * path component that is not a directory (ENOTDIR), i.e. no fs identity can
+ * exist for this path — the raw spelling is returned unchanged and the
+ * caller's own open will surface the real error.
  *
- * Results are memoized per input spelling: the same spelling always yields
- * the same canonical string without re-stat'ing, and each adapter entry point
- * canonicalizes ONCE (SPEC §T4 single-entry discipline), so repeated calls
- * during a connect are free. The cache is bounded — a long-lived server may
- * churn many temp stores.
+ * An unresolvable parent is NOT silently swallowed (DEBT-003 discipline, the
+ * same errno distinction `isTshmContentDead` applies: EACCES must not prove
+ * "absent"). EACCES/EIO/… mean the parent EXISTS but cannot be read — that is
+ * uncertainty, not absence, and a silent raw fallback there would let two
+ * processes with different permission views compute DIFFERENT coordination
+ * keys for one store (the exact false-quiescence failure BUG-018 fixes). So
+ * non-absence errnos surface the typed {@link EPathIdentityUnresolvable}
+ * instead of falling back.
  *
- * Pure `node:fs` + `node:path` — no native deps, no new package dependencies
- * (bundled inline). Synchronous only, matching store-lease.ts (deterministic,
- * no await interleaving inside the check — minimizes TOCTOU).
+ * Results are memoized per input spelling — but ONLY realpath-normalized
+ * results: the same spelling always yields the same canonical string without
+ * re-stat'ing, and each adapter entry point canonicalizes ONCE (SPEC §T4
+ * single-entry discipline), so repeated calls during a connect are free. The
+ * missing-parent FALLBACK is deliberately NOT memoized: absence is a
+ * transient fs-state, not a property of the spelling — if the parent is
+ * created (or a symlink retargeted) after a fallback, the next call must
+ * re-evaluate and pick up the now-resolvable canonical form instead of
+ * returning the stale raw spelling forever (BUG-018 review finding 2). The
+ * cache is bounded — a long-lived server may churn many temp stores.
+ *
+ * Pure `node:fs` + `node:path` plus same-package `errors.js` and the
+ * package's existing `@adhd/sox-telemetry` logger (for the absence
+ * fallback's errno line) — no native deps, no NEW package dependencies
+ * (bundled inline). Synchronous only, matching store-lease.ts
+ * (deterministic, no await interleaving inside the check — minimizes
+ * TOCTOU).
  *
  * @module
  */
 import { realpathSync } from 'node:fs';
 import { basename, dirname, join } from 'node:path';
+import { log } from '@adhd/sox-telemetry';
+import { EPathIdentityUnresolvable } from './errors.js';
 
 /** Upper bound on memo entries; beyond it the oldest-inserted entry is
  *  evicted. Real deployments hold a handful of stores — this only guards a
@@ -56,37 +87,68 @@ const memo = new Map<string, string>();
 
 /**
  * The canonical spelling of `dbPath` — `realpathSync(dirname)` + `basename`,
- * memoized per input spelling. Never throws (see the module doc for the
- * missing-parent fallback).
+ * memoized per input spelling for realpath-normalized results only.
+ *
+ * Never throws on a missing parent (ENOENT/ENOTDIR — the raw spelling is
+ * returned, and the fallback is NOT memoized, so a later-created parent is
+ * picked up on the next call). Throws {@link EPathIdentityUnresolvable} when
+ * the parent exists but cannot be resolved (EACCES/EIO/…) — see the module
+ * doc for the DEBT-003 errno discipline.
  */
 export function canonicalDbPath(dbPath: string): string {
   const cached = memo.get(dbPath);
   if (cached !== undefined) return cached;
-  const canonical = computeCanonicalDbPath(dbPath);
-  if (memo.size >= CACHE_LIMIT) {
-    const oldest = memo.keys().next().value;
-    if (oldest !== undefined) memo.delete(oldest);
+  const result = computeCanonicalDbPath(dbPath);
+  if (result.kind === 'canonical') {
+    // Only the realpath-NORMALIZED result is memoizable. The fallback must
+    // stay re-evaluated per call: caching it would freeze a transient fs
+    // state (missing parent) as the spelling's permanent identity.
+    if (memo.size >= CACHE_LIMIT) {
+      const oldest = memo.keys().next().value;
+      if (oldest !== undefined) memo.delete(oldest);
+    }
+    memo.set(dbPath, result.path);
   }
-  memo.set(dbPath, canonical);
-  return canonical;
+  return result.path;
 }
 
-function computeCanonicalDbPath(dbPath: string): string {
+type CanonicalResult =
+  | { kind: 'canonical'; path: string }
+  | { kind: 'fallback'; path: string; errno: string };
+
+function computeCanonicalDbPath(dbPath: string): CanonicalResult {
   // Special SQLite names / URI forms have no filesystem identity to
   // canonicalize: `:memory:` (and `file:` URIs) must pass through UNCHANGED,
   // or an in-memory database would silently become a real file beside the
   // caller's cwd and "memory" semantics (fresh schema per connection) would
   // be destroyed.
-  if (dbPath === ':memory:' || dbPath.startsWith('file:')) return dbPath;
+  if (dbPath === ':memory:' || dbPath.startsWith('file:')) {
+    return { kind: 'canonical', path: dbPath };
+  }
   const parent = dirname(dbPath);
   let realParent: string;
   try {
     realParent = realpathSync(parent);
-  } catch {
-    // Parent missing or unreadable — keep the raw spelling. The caller's own
-    // open will surface the real error; canonicalizing a path whose parent
-    // does not exist could only invent a location nobody asked for.
-    return dbPath;
+  } catch (err) {
+    // (DEBT-003 errno discipline) Distinguish PLAIN ABSENCE from uncertainty.
+    // ENOENT/ENOTDIR: no fs identity can exist for this path — keep the raw
+    // spelling, and let the caller's own open surface the real error.
+    // EACCES/EIO/…: the parent EXISTS but cannot be resolved — falling back
+    // silently could diverge from the canonical key a peer computes for the
+    // same store (false quiescence); surface a typed error instead.
+    const errno = (err as { code?: unknown } | null | undefined)?.code;
+    if (errno === 'ENOENT' || errno === 'ENOTDIR') {
+      log.debug('store_adapter.path_identity.parent_absent', {
+        dbPath,
+        errno: String(errno),
+      });
+      return { kind: 'fallback', path: dbPath, errno: String(errno) };
+    }
+    throw new EPathIdentityUnresolvable(
+      dbPath,
+      typeof errno === 'string' && errno.length > 0 ? errno : 'UNKNOWN',
+      err,
+    );
   }
-  return join(realParent, basename(dbPath));
+  return { kind: 'canonical', path: join(realParent, basename(dbPath)) };
 }
