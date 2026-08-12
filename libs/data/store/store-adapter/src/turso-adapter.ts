@@ -591,13 +591,18 @@ export class TursoAdapterImpl implements TursoAdapter {
       // writer (better-sqlite3 / stock SQLite, which maintains the classic -shm
       // and never the -tshm) advances, checkpoints or deletes the WAL without
       // touching the sidecar, so the next Turso open short-reads against the
-      // frozen sidecar. Moving the mtime-proven stale sidecar HERE — before
+      // frozen sidecar. Moving a CONTENT-PROVEN-DEAD sidecar HERE — before
       // `openOnce()` even runs — means the failed-open path is never taken; the
-      // catch below stays as the backstop for races and non-mtime shapes. The
-      // staleness reference is the WAL's mtime (or the db file's when the WAL is
-      // gone — the mixed-engine deleted-WAL variant), and the -shm is NEVER
-      // touched pre-open (self-reconciling; moving it under a concurrent
-      // multiprocess-WAL reader is corruption — that branch stays in the catch).
+      // catch below stays as the backstop for races and non-content shapes.
+      //
+      // (BUG-021) The trigger is content-deadness (`isTshmContentDead`), never
+      // mtime: under multiprocess WAL the tshm mtime freezes at file creation,
+      // so mtime skew is expected on a HEALTHY sidecar and the old mtime
+      // heuristic renamed it during brief quiescent windows (the 2026-08-12
+      // 08:28–08:46 false-positive churn). mtime survives only as a log-only
+      // hint in the decline text. The -shm is NEVER touched pre-open
+      // (self-reconciling; moving it under a concurrent multiprocess-WAL reader
+      // is corruption — that branch stays in the catch).
       //
       // (BUG-007, adapter-race-fix §6c) The reconcile is QUiescence-gated: under
       // concurrency the first opener's rename of a LIVE store's coordination
@@ -643,15 +648,17 @@ export class TursoAdapterImpl implements TursoAdapter {
         // fails, so nothing downstream ever runs.
         //
         // (BL-373 third recurrence) A non-empty WAL is no longer an automatic
-        // decline: the sidecar-vs-WAL mtime heuristic in `recoverStaleWalIndex`
-        // moves a PROVABLY stale sidecar even over a multi-hundred-KB WAL (the
-        // Aug-1/Aug-3/Aug-11 shape: `-tshm` days old, WAL 206 032 bytes, every
-        // fresh open failing with a short read). The WAL itself is never
-        // touched by sidecar recovery — reopen against it as-is. If the reopen
-        // STILL fails on a probe-truncated WAL (Shape B), that is REFUSAL-ONLY
-        // (ADR-0013, owner directive): the operator gets the typed action
-        // naming the manual step with the data-loss disclosure — moving the WAL
-        // is a human decision, never an automatic one.
+        // decline: the content-deadness discriminator in `recoverStaleWalIndex`
+        // moves a CONTENT-PROVEN-DEAD sidecar even over a multi-hundred-KB WAL
+        // (the Aug-1/Aug-3/Aug-11 shape: `-tshm` indexing a frame offset beyond
+        // the WAL EOF, every fresh open failing with a short read). The WAL
+        // itself is never touched by sidecar recovery — reopen against it
+        // as-is. If the reopen STILL fails on a probe-truncated WAL (Shape B),
+        // that is REFUSAL-ONLY (ADR-0013, owner directive): the operator gets
+        // the typed action naming the manual step with the data-loss disclosure
+        // — moving the WAL is a human decision, never an automatic one.
+        // (BUG-018) The guard keys off the CANONICAL identity — a url-only
+        // connect (no local db) has nothing to recover.
         if (!isStaleWalIndexError(err) || canonicalDb === undefined) throw err;
 
         // (BUG-009, adapter-race-fix §6d) The catch is now quiescence-gated.
@@ -906,9 +913,12 @@ export class TursoAdapterImpl implements TursoAdapter {
       const instance = new TursoAdapterImpl(db, config, capabilities);
       instance._softReadonly = softReadonly;
 
-      // (BL-373 family) The open SUCCEEDED despite a stale sidecar — the masked
-      // case. warnIfStaleSidecar fires only when the mtimes prove staleness, so
-      // a healthy sidecar emits nothing. Informational, never throws.
+      // (BL-373 family) The open SUCCEEDED despite a mtime-skewed sidecar — the
+      // masked case. warnIfStaleSidecar fires only on mtime-skew (informational
+      // only, BUG-021 — it never renames anything), so a healthy sidecar emits
+      // nothing. Never throws.
+      // (BUG-018) The probe keys off the CANONICAL identity — a url-only
+      // connect (no local db) has no sidecars to probe.
       warnIfStaleSidecar(canonicalDb);
 
       // (BL-508) Engine marker on first open (idempotent; fresh turso stores

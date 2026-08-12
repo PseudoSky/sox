@@ -310,11 +310,13 @@ export interface SidecarRecovery {
 
 /**
  * Staleness threshold in milliseconds: a `-tshm` whose mtime is MORE than this
- * much older than the `-wal` it must describe is **provably stale** — the WAL
- * has moved past whatever frames the sidecar indexes (or survived a
- * restart/checkpoint cycle that moved the WAL forward while the sidecar did
- * not), and that mismatch is exactly what produces the frame short-read on
- * every open.
+ * much older than the `-wal` it must describe shows observable MTIME-SKEW.
+ *
+ * (BUG-021) This threshold no longer drives ANY rename decision — the tshm
+ * mtime freezes at file creation under multiprocess WAL, so mtime skew is
+ * expected on a healthy sidecar and is not evidence of staleness. It survives
+ * ONLY as the trigger for the log-only `warnIfStaleSidecar` mtime-skew
+ * report, and as a hint inside decline texts.
  *
  * Fixed, not proportional: the comparison is between two WAL artifacts whose
  * lifetime is wall-clock time, not size. Env-tunable for operators who need a
@@ -703,14 +705,21 @@ export function isTshmContentDead(dbPath: string): TshmContentDeadVerdict {
 // ── Informational staleness warning (BL-373 family) ──────────────────────────
 
 /**
- * Emit a `sidecar_stale` integrity event when the `-tshm` is provably older
- * than the `-wal` it must describe — BEFORE any open attempt, and again after
- * a SUCCESSFUL open (the masked case: the open survived, but the operator
- * still needs to know the sidecar is decaying).
+ * Emit a `sidecar_stale` integrity event when the `-tshm`'s mtime lags the
+ * `-wal`'s by more than the staleness threshold — BEFORE any open attempt, and
+ * again after a SUCCESSFUL open (the masked case: the open survived, but the
+ * operator still needs to know the sidecar's mtime is decaying).
  *
- * Two `statSync` calls, never throws, purely informational: an absent WAL or
- * sidecar is simply not stale. The event carries both mtimes, the diff, and
- * the threshold so an operator can decide whether the margin is comfortable.
+ * (BUG-021) INFORMATIONAL ONLY — this observation is an MTIME-SKEW report, not
+ * a staleness verdict. Under multiprocess WAL the `-tshm` mtime FREEZES at
+ * file creation while the `-wal` mtime advances with every peer write, so a
+ * LIVE, healthy index routinely reads as "older than the WAL". This function
+ * never renames anything and must never be mistaken for a reconcile trigger:
+ * the ONLY rename gate is content-deadness (`isTshmContentDead`).
+ *
+ * Two `statSync` calls, never throws: an absent WAL or sidecar is simply not
+ * skewed. The event carries both mtimes, the diff, and the threshold so an
+ * operator can decide whether the margin is comfortable.
  */
 export function warnIfStaleSidecar(dbPath: string | undefined): void {
   if (!dbPath) return;
@@ -722,39 +731,48 @@ export function warnIfStaleSidecar(dbPath: string | undefined): void {
       emitIntegrityReport(
         dbPath,
         'sidecar_stale',
-        `[BL-373] the -tshm WAL-index sidecar is stale: ${Math.round(ageDiff / 1000)}s ` +
-          `(${ageDiff} ms) older than the ${walSt.size}-byte -wal it must describe ` +
+        `[BL-373] the -tshm WAL-index sidecar shows mtime-skew: the tshm mtime is stale: ` +
+          `${Math.round(ageDiff / 1000)}s (${ageDiff} ms) behind the ${walSt.size}-byte -wal mtime ` +
           `(tshm mtime ${isoMtime(tshmSt.mtimeMs)}, wal mtime ${isoMtime(walSt.mtimeMs)}, ` +
-          `threshold ${staleSidecarThresholdMs()} ms). The next open may fail with a WAL-frame short read; ` +
-          `reconciliation (when the store is quiescent) moves only the -tshm aside.`,
+          `threshold ${staleSidecarThresholdMs()} ms). INFORMATIONAL ONLY (BUG-021): under ` +
+          `multiprocess WAL the tshm mtime freezes at file creation, so mtime skew is NOT proof ` +
+          `of staleness and never triggers a reconcile — content-deadness (isTshmContentDead) ` +
+          `is the only rename gate.`,
       );
     }
   } catch {
-    // Informational only — an absent file or an unreadable stat is not stale.
+    // Informational only — an absent file or an unreadable stat is not skewed.
   }
 }
 
 /**
  * Reconcile a stale WAL-index sidecar so the store can open.
  *
- * **Sidecar-first, mtime-proven** (BL-373 third recurrence): a non-empty WAL
- * is no longer an automatic decline. The `-tshm`'s mtime is compared against
- * the `-wal`'s:
+ * **Sidecar-first, CONTENT-proven** (BUG-021): a non-empty WAL is no longer
+ * an automatic decline. The `-tshm` is judged by CONTENT-DEADNESS
+ * (`isTshmContentDead`), never by mtime — the mtime heuristic is unsound
+ * under multiprocess WAL because the tshm mtime freezes at file creation, so
+ * a LIVE index reads as "provably stale" once a peer's writes advance the WAL
+ * mtime past the threshold (the 2026-08-12 false-positive rename churn). The
+ * only rename trigger is a verdict of `dead`:
  *
- * - **Provably stale** (`wal mtime − tshm mtime > threshold`): the sidecar
- *   describes WAL content that has moved past it. Move ONLY the `-tshm` aside
- *   (never the `-shm` — SQLite self-reconciles its shm, and moving it under a
- *   concurrent reader is a new corruption risk), and let the caller reopen
- *   against the existing WAL. The WAL is not touched.
- * - **Ambiguous** (`0 ≤ diff ≤ threshold`, or negative): do NOT move. Run the
- *   frame probe and decline with an evidence-carrying message (sidecar mtime,
- *   WAL mtime, diff, threshold, probe result) instead of the old blanket
- *   "may legitimately describe it" text.
+ * - **Content-dead, WAL absent/0 bytes**: the sidecar indexes frames a WAL of
+ *   this size cannot contain. Move the orphaned `-tshm` — and, on this
+ *   quiescent path only, an orphaned `-shm` too (SQLite self-reconciles its
+ *   shm; moving it under a concurrent reader is a corruption risk, which is
+ *   why the non-quiescent content-dead mode never touches it).
+ * - **Content-dead, index beyond WAL EOF**: the sidecar's own snapshot claims
+ *   a frame extent the WAL does not hold (the Aug-11 shape). Move ONLY the
+ *   `-tshm` aside (never the `-shm`), and let the caller reopen against the
+ *   existing WAL. The WAL is not touched.
+ * - **Not content-proven dead**: do NOT move. Decline with an
+ *   evidence-carrying message — the content verdict, the frame probe, and the
+ *   mtime observation as a log-only hint (sidecar mtime, WAL mtime, diff,
+ *   threshold) — instead of the old mtime-based verdict.
  *
  * A `-tshm` absent beside a non-empty WAL is nothing to reconcile — declined,
- * with that fact stated. The empty-WAL path is unchanged and still moves both
- * `-tshm` and `-shm`. Sidecars are **renamed, never deleted**: the stale file
- * is the forensic record of why the store would not open.
+ * with that fact stated. Sidecars are **renamed, never deleted**: the stale
+ * file is the forensic record of why the store would not open.
  *
  * **Mode `{ allowUnderLivePeers: true, requireContentDead: true }`**
  * (BUG-014/DEBT-003): reconcile under live peers when the `-tshm` is
@@ -844,6 +862,7 @@ export function recoverStaleWalIndex(
     return result;
   }
 
+  // ── Default (quiescent) path — CONTENT-deadness is the trigger (BUG-021) ──
   const walPath = dbPath + '-wal';
   const tshmPath = dbPath + '-tshm';
   let walBytes = -1;
@@ -856,28 +875,28 @@ export function recoverStaleWalIndex(
     walBytes = 0; // absent — nothing to lose either
   }
 
-  if (walBytes > 0) {
-    const threshold = staleSidecarThresholdMs();
-    let tshmMtimeMs: number | null = null;
-    try {
-      tshmMtimeMs = statSync(tshmPath).mtimeMs;
-    } catch {
-      result.declined =
-        `the WAL at ${walPath} holds ${walBytes} bytes and no -tshm sidecar exists beside it — ` +
-        `nothing stale to reconcile; if the open fails it is not a sidecar problem`;
-      return result;
-    }
-    if (walMtimeMs === null) {
-      // Cannot happen (walBytes > 0 implies the stat succeeded) — defensive.
-      result.declined = `the WAL at ${walPath} could not be statted`;
-      return result;
-    }
-    const ageDiff = walMtimeMs - tshmMtimeMs;
-    if (ageDiff > threshold) {
-      // PROVABLY STALE. Move ONLY the -tshm — never the -shm (see the doc
-      // comment above). Reopen is the caller's job, against the WAL as-is.
-      result.attempted = true;
-      const stamp = new Date().toISOString().replace(/[:.]/g, '').replace('T', '-').slice(0, 15);
+  let tshmMtimeMs: number | null = null;
+  try {
+    tshmMtimeMs = statSync(tshmPath).mtimeMs;
+  } catch {
+    result.declined =
+      `the WAL at ${walPath} holds ${walBytes} bytes and no -tshm sidecar exists beside it — ` +
+      `nothing stale to reconcile; if the open fails it is not a sidecar problem`;
+    return result;
+  }
+
+  // (BUG-021) CONTENT is the discriminator — never mtime. The -tshm mtime
+  // freezes at file creation under multiprocess WAL, so mtime skew is EXPECTED
+  // on a healthy sidecar whose peer keeps writing (the false-positive rename
+  // churn of 2026-08-12 was exactly that); a rename therefore requires
+  // isTshmContentDead to PROVE the index describes frames the WAL cannot hold.
+  const verdict = isTshmContentDead(dbPath);
+  if (verdict.dead) {
+    result.attempted = true;
+    const stamp = new Date().toISOString().replace(/[:.]/g, '').replace('T', '-').slice(0, 15);
+    if (walBytes > 0) {
+      // Index-beyond-EOF shape: move ONLY the -tshm — never the -shm (see the
+      // doc comment above). Reopen is the caller's job, against the WAL as-is.
       const to = `${tshmPath}.stale-${stamp}`;
       try {
         renameSync(tshmPath, to);
@@ -885,52 +904,97 @@ export function recoverStaleWalIndex(
       } catch (err) {
         result.declined = `could not move ${tshmPath} aside: ${err instanceof Error ? err.message : String(err)}`;
       }
-      return result;
+    } else {
+      // WAL absent/0 bytes: the orphaned sidecar(s) describe a WAL that no
+      // longer exists. Move both -tshm and -shm (unchanged empty-WAL branch).
+      for (const suffix of ['-tshm', '-shm']) {
+        const from = dbPath + suffix;
+        try {
+          statSync(from);
+        } catch {
+          continue; // not present
+        }
+        const to = `${from}.stale-${stamp}`;
+        try {
+          renameSync(from, to);
+          result.movedAside.push({ from, to });
+        } catch (err) {
+          result.declined = `could not move ${from} aside: ${err instanceof Error ? err.message : String(err)}`;
+        }
+      }
     }
-    // AMBIGUOUS: the sidecar is as fresh as or fresher than the WAL. Decline
-    // with evidence, carrying the frame probe — a truncated WAL with a fresh
-    // sidecar is genuinely ambiguous and goes to the operator.
-    const probe = probeWalFrames(walPath);
-    result.declined =
-      `the WAL at ${walPath} holds ${walBytes} bytes (mtime ${isoMtime(walMtimeMs)}) and the -tshm ` +
-      `sidecar (mtime ${isoMtime(tshmMtimeMs)}) is not provably stale — age diff ${ageDiff} ms is ` +
-      `within the ${threshold} ms staleness threshold. ${describeWalFrameProbe(probe)}. ` +
-      `Refusing to discard WAL-index state that could still be needed.`;
+    if (result.movedAside.length === 0 && result.declined === null) {
+      result.declined = 'no WAL-index sidecar was present to reconcile';
+    }
     return result;
   }
 
-  result.attempted = true;
-  const stamp = new Date().toISOString().replace(/[:.]/g, '').replace('T', '-').slice(0, 15);
-  for (const suffix of ['-tshm', '-shm']) {
-    const from = dbPath + suffix;
-    try {
-      statSync(from);
-    } catch {
-      continue; // not present
-    }
-    const to = `${from}.stale-${stamp}`;
-    try {
-      renameSync(from, to);
-      result.movedAside.push({ from, to });
-    } catch (err) {
-      result.declined = `could not move ${from} aside: ${err instanceof Error ? err.message : String(err)}`;
-    }
-  }
-  if (result.movedAside.length === 0 && result.declined === null) {
-    result.declined = 'no WAL-index sidecar was present to reconcile';
-  }
+  // NOT content-proven dead — decline with evidence: the content verdict, the
+  // frame probe (SPEC §T3: "the decline text carries the frame probe"), and
+  // the mtime observation as a LOG-ONLY hint, never a trigger.
+  const probe = probeWalFrames(walPath);
+  const threshold = staleSidecarThresholdMs();
+  const ageDiff = (walMtimeMs ?? 0) - tshmMtimeMs;
+  result.declined =
+    `the -tshm beside ${dbPath} is NOT content-proven dead — refusing to rename a WAL-index ` +
+    `sidecar that may still be in use (BUG-021: the mtime heuristic is unsound under ` +
+    `multiprocess WAL — the tshm mtime freezes at file creation, so mtime skew is not a ` +
+    `rename trigger; content-deadness is). ${describeWalFrameProbe(probe)}. ` +
+    `mtime hint (informational, never a rename trigger): the -wal holds ${walBytes} bytes ` +
+    `(mtime ${isoMtime(walMtimeMs)}), the -tshm mtime is ${isoMtime(tshmMtimeMs)} — ` +
+    `age diff ${ageDiff} ms within the ${threshold} ms threshold.`;
   return result;
 }
 
 // ── Proactive sidecar reconciliation (BL-373 family, root-cause prevention) ──
 
 export interface ProactiveSidecarResult {
-  /** True when a mtime-proven stale `-tshm` was moved aside before the open. */
+  /** True when a content-proven-dead `-tshm` was moved aside before the open. */
   moved: boolean;
   /** The rename target when moved (preserved for forensics). */
   to?: string;
   /** Why nothing was moved (not stale / absent / not a local store). */
   declined?: string;
+}
+
+/**
+ * (BUG-021) Build the LOG-ONLY mtime observation for a decline/warning text.
+ *
+ * The `-tshm` mtime freezes at file creation under multiprocess WAL, so the
+ * mtime gap to the reference epoch (the `-wal`'s mtime, else the main db
+ * file's) is EXPECTED on a healthy store whose peer keeps writing — it is
+ * diagnostic color, never a rename trigger. Returns '' when the files cannot
+ * be statted (nothing to say).
+ */
+function mtimeSkewHint(dbPath: string, tshmPath: string): string {
+  let tshmMtimeMs: number | null = null;
+  let refMtimeMs: number | null = null;
+  let refLabel = 'the -wal';
+  try {
+    tshmMtimeMs = statSync(tshmPath).mtimeMs;
+  } catch {
+    return '';
+  }
+  try {
+    refMtimeMs = statSync(dbPath + '-wal').mtimeMs;
+  } catch {
+    refLabel = 'the database file';
+    try {
+      refMtimeMs = statSync(dbPath).mtimeMs;
+    } catch {
+      return '';
+    }
+  }
+  const threshold = staleSidecarThresholdMs();
+  const ageDiff = (refMtimeMs ?? 0) - tshmMtimeMs;
+  return (
+    `mtime hint (informational, never a rename trigger): the -tshm mtime is ` +
+    `${isoMtime(tshmMtimeMs)}; the reference epoch (${refLabel}) mtime is ` +
+    `${isoMtime(refMtimeMs)} — age diff ${ageDiff} ms (the ${threshold} ms ` +
+    `staleness threshold exists only for the log-only warnIfStaleSidecar). ` +
+    `Under multiprocess WAL the tshm mtime freezes at file creation, so this ` +
+    `skew is expected on a healthy sidecar and proves nothing.`
+  );
 }
 
 /**
@@ -947,17 +1011,18 @@ export interface ProactiveSidecarResult {
  * the open-time catch (the D6 fix) recovers the store but the failed open has
  * ALREADY happened — and that failed open is the outage's first symptom.
  *
- * Proactive reconciliation moves the mtime-proven stale sidecar BEFORE the
- * driver even tries, so the failed-open path is never taken. The open-time
- * catch remains as the backstop for races and non-mtime shapes.
+ * Proactive reconciliation moves a CONTENT-PROVEN-DEAD stale sidecar BEFORE
+ * the driver even tries, so the failed-open path is never taken. The open-time
+ * catch remains as the backstop for races and non-content shapes.
  *
- * **Staleness reference epoch**: the `-wal`'s mtime when the WAL exists,
- * otherwise the main database file's mtime. The db-fallback is what catches
- * the mixed-engine variant where a stock-SQLite writer's clean close
- * checkpointed the db and DELETED the WAL while the `-tshm` survived frozen —
- * the db moved past the sidecar's epoch without the sidecar following. A
- * store with neither WAL nor db beside the sidecar is left alone (nothing to
- * compare, nothing proven).
+ * **The trigger is content-deadness (BUG-021), never mtime.** The mtime
+ * heuristic is structurally unsound under multiprocess WAL: the `-tshm` mtime
+ * freezes at file creation, so a LIVE, healthy index reads as "provably stale"
+ * once the `-wal` mtime advances past the threshold — the 2026-08-12
+ * false-positive rename churn (08:28–08:46) renamed exactly this healthy
+ * sidecar during brief quiescent windows. `isTshmContentDead` is the ONLY
+ * gate: WAL absent/0 bytes, or the sidecar's own index extent beyond the WAL
+ * EOF. The mtime observation survives as a log-only hint in the decline text.
  *
  * **NEVER touches the `-shm`.** The classic shm is self-reconciling, and
  * moving it pre-open under a concurrent multiprocess-WAL reader is a
@@ -977,32 +1042,28 @@ export function proactivelyReconcileStaleSidecar(
     };
   }
   const tshmPath = dbPath + '-tshm';
-  let tshmMtimeMs: number | null = null;
   try {
-    tshmMtimeMs = statSync(tshmPath).mtimeMs;
+    statSync(tshmPath);
   } catch {
     return { moved: false, declined: 'no -tshm sidecar present' };
   }
 
-  // Reference epoch: WAL mtime when present, else the main db file.
-  let refMtimeMs: number | null = null;
-  try {
-    refMtimeMs = statSync(dbPath + '-wal').mtimeMs;
-  } catch {
-    try {
-      refMtimeMs = statSync(dbPath).mtimeMs;
-    } catch {
-      refMtimeMs = null;
-    }
-  }
-  if (refMtimeMs === null) {
-    return { moved: false, declined: 'no WAL or database file beside the -tshm to compare against' };
-  }
-
-  const threshold = staleSidecarThresholdMs();
-  const ageDiff = refMtimeMs - tshmMtimeMs;
-  if (ageDiff <= threshold) {
-    return { moved: false, declined: `sidecar not provably stale (age diff ${ageDiff} ms ≤ ${threshold} ms)` };
+  // (BUG-021) CONTENT-deadness is the trigger — never mtime (the tshm mtime
+  // freezes at file creation under multiprocess WAL; a healthy index reads as
+  // mtime-"stale" once a peer's writes advance the WAL past the threshold,
+  // which is exactly the false-positive rename churn this replaces). The mtime
+  // observation is gathered ONLY for the log-only hint below.
+  const verdict = isTshmContentDead(dbPath);
+  if (!verdict.dead) {
+    const hint = mtimeSkewHint(dbPath, tshmPath);
+    return {
+      moved: false,
+      declined:
+        `the -tshm beside ${dbPath} is NOT content-proven dead (` +
+        `${verdict.reason ?? 'content-live or unprovable'}) — refusing to rename a WAL-index ` +
+        `sidecar that may still be live (BUG-021: mtime skew is never a rename trigger; ` +
+        `content-deadness is).${hint ? ` ${hint}` : ''}`,
+    };
   }
 
   const stamp = new Date().toISOString().replace(/[:.]/g, '').replace('T', '-').slice(0, 15);
