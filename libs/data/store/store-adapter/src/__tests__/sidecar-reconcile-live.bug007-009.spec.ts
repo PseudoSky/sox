@@ -18,9 +18,12 @@
  * (`OPEN_RETRY_MAX_ATTEMPTS − 1` extra attempts) and, on exhaustion, surfaces
  * the ORIGINAL driver error with `retryable: true` — never the
  * `STALE WAL-INDEX SIDECAR` wrapper. Quiescent ⇒ the sidecar reconcile still
- * runs — since BUG-021 (SPEC §T3) the deleted-WAL/orphaned-sidecar recovery
- * fires in the pre-open proactive site (content-deadness is the trigger, and
- * an absent WAL proves it), before the open-time catch is ever reached.
+ * runs: a PRE-EXISTING deleted-WAL/orphaned-sidecar shape is reconciled by the
+ * pre-open proactive site (content-deadness is the trigger, and an absent WAL
+ * proves it — BUG-021/SPEC §T3); a WAL that empties BETWEEN the proactive
+ * probe and the open (the close()-TRUNCATE / out-of-band-zero race) still
+ * reaches the open-time catch's quiescent empty-WAL branch, which is
+ * exercised end-to-end below.
  *
  * Harness: real fs + mocked driver. The scratch store is SEEDED with the REAL
  * `@tursodatabase/database` driver (`vi.importActual` — the `vi.mock` shim is
@@ -38,7 +41,7 @@
  * (4) the quiescent path must keep working (guard — passes on both sides).
  */
 import { describe, it, expect, vi, beforeEach, afterEach, beforeAll } from 'vitest';
-import { mkdtempSync, readdirSync, utimesSync, unlinkSync, statSync, existsSync } from 'node:fs';
+import { mkdtempSync, readdirSync, utimesSync, unlinkSync, statSync, existsSync, truncateSync } from 'node:fs';
 import { join, basename, dirname } from 'node:path';
 import { tmpdir } from 'node:os';
 import { TursoAdapterImpl } from '../turso-adapter.js';
@@ -245,8 +248,9 @@ tursoDescribe('BUG-009 — open-time catch with a live peer retries and never cl
 });
 
 // ═══════════════════════════════════════════════════════════════════════════
-// Quiescent — the orphaned-sidecar reconcile must not regress (now fires
-// proactively via the BUG-021 content-dead trigger)
+// Quiescent — the orphaned-sidecar reconcile must not regress (pre-existing
+// deleted-WAL shapes now fire proactively via the BUG-021 content-dead trigger;
+// a WAL emptied mid-open still reaches the catch's quiescent empty-WAL branch)
 // ═══════════════════════════════════════════════════════════════════════════
 
 tursoDescribe('BUG-009 — open-time catch with NO peer: the orphaned sidecar is still reconciled', () => {
@@ -271,6 +275,49 @@ tursoDescribe('BUG-009 — open-time catch with NO peer: the orphaned sidecar is
     expect(
       staleSidecars(dbPath),
       'the orphaned sidecar must still be reconciled (proactively, content-dead)',
+    ).toHaveLength(1);
+    expect(adapter).toBeInstanceOf(TursoAdapterImpl);
+  });
+
+  it('quiescent WAL emptied mid-open: the open-time catch empty-WAL branch still recovers the orphaned -tshm (BUG-021 backstop)', async () => {
+    const dbPath = tempPath('bug009-no-peer-catch');
+    await rawSeed(dbPath);
+
+    // The WAL is non-empty and the -tshm CONTENT-LIVE here (rawSeed's real
+    // driver wrote + checkpointed frames), so the pre-open proactive
+    // reconcile (content-deadness gate, BUG-021) sees a live index, DECLINES,
+    // and renames NOTHING — the proactive site cannot fire.
+    expect(statSync(dbPath + '-wal').size, 'precondition: non-empty content-live WAL').toBeGreaterThan(0);
+
+    // The first driver open then fails with the short read AND the WAL is
+    // emptied (0 bytes) in the same instant — the close()-TRUNCATE /
+    // out-of-band-zero race shape. The proactive probe already passed (index
+    // was live), so the open-time catch is the only reconcile site left; it is
+    // quiescent (no peer), so recoverStaleWalIndex's empty-WAL branch moves the
+    // orphaned -tshm aside and the reopen lands. RED pre-T3: the old test
+    // removed the WAL BEFORE the open, so the proactive site — not the catch —
+    // performed the recovery and this branch was no longer exercised
+    // end-to-end.
+    mockDriverConnect
+      .mockImplementationOnce(async (path: string) => {
+        truncateSync(path + '-wal', 0);
+        throw shortReadError();
+      })
+      .mockResolvedValueOnce(makeFakeDb()); // the reopen after recovery
+
+    const adapter = await connect(dbPath);
+
+    expect(
+      mockDriverConnect,
+      'the catch ran: 1 initial failed open + 1 reopen after the recovery (the proactive path would be a single call)',
+    ).toHaveBeenCalledTimes(2);
+    expect(
+      statSync(dbPath + '-wal').size,
+      'the catch saw a 0-byte WAL — the empty-WAL branch, not the beyond-EOF branch',
+    ).toBe(0);
+    expect(
+      staleSidecars(dbPath),
+      'the quiescent catch must still move the orphaned -tshm aside (empty-WAL reconcile preserved)',
     ).toHaveLength(1);
     expect(adapter).toBeInstanceOf(TursoAdapterImpl);
   });
