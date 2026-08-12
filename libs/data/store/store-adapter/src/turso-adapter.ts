@@ -1200,13 +1200,7 @@ export class TursoAdapterImpl implements TursoAdapter {
           await this.executeAll('PRAGMA wal_checkpoint(PASSIVE)');
           passiveOk = true;
         } catch (passiveErr) {
-          emitIntegrityReport(
-            this.config.dbPath ?? this.config.url,
-            'repair_failed',
-            `checkpoint of the WAL failed — data since the last checkpoint is being lost: ${
-              passiveErr instanceof Error ? passiveErr.message : String(passiveErr)
-            }`,
-          );
+          this.reportFailedPassiveCheckpoint(passiveErr, damaged);
         }
 
         // (BL-330) The orphaned-WAL recovery report rides the PASSIVE result.
@@ -1258,13 +1252,7 @@ export class TursoAdapterImpl implements TursoAdapter {
               try {
                 await this.executeAll('PRAGMA wal_checkpoint(PASSIVE)');
               } catch (passiveErr) {
-                emitIntegrityReport(
-                  this.config.dbPath ?? this.config.url,
-                  'repair_failed',
-                  `checkpoint of the WAL failed — data since the last checkpoint is being lost: ${
-                    passiveErr instanceof Error ? passiveErr.message : String(passiveErr)
-                  }`,
-                );
+                this.reportFailedPassiveCheckpoint(passiveErr, damaged);
               }
             }
           }
@@ -1287,13 +1275,7 @@ export class TursoAdapterImpl implements TursoAdapter {
             try {
               await this.executeAll('PRAGMA wal_checkpoint(PASSIVE)');
             } catch (passiveErr) {
-              emitIntegrityReport(
-                this.config.dbPath ?? this.config.url,
-                'repair_failed',
-                `checkpoint of the WAL failed — data since the last checkpoint is being lost: ${
-                  passiveErr instanceof Error ? passiveErr.message : String(passiveErr)
-                }`,
-              );
+              this.reportFailedPassiveCheckpoint(passiveErr, damaged);
             }
           }
         }
@@ -1319,6 +1301,43 @@ export class TursoAdapterImpl implements TursoAdapter {
       await this._lease.release().catch(() => {});
       this._lease = null;
     }
+  }
+
+  /**
+   * (BUG-011) Report a failed PASSIVE checkpoint with an ACCURATE verdict.
+   *
+   * `PRAGMA wal_checkpoint(PASSIVE)` throwing is NOT by itself data loss:
+   * under a contended close (a peer reader pins the WAL, or the closing
+   * connection holds its own open read tx) PASSIVE can fail while every
+   * frame stays durable in the `-wal` and replays on the next open. The
+   * strong "being lost" wording is reserved for the BL-330 orphaned-WAL
+   * case, where the frames are genuinely unreachable:
+   *
+   *  - `walDamaged` — the wal_identity probe (run moments earlier in the
+   *    same close) flagged the WAL unlinked or REPLACED under this
+   *    connection. The replaced case is why existsSync alone is not enough:
+   *    a new `-wal` exists at the path, but this session's frames went to
+   *    the orphaned inode.
+   *  - `!walPresent` — the `-wal` is absent at the catch site (covers the
+   *    no-baseline case where the probe never fired).
+   *
+   * Otherwise the failure is a durable deferral: emit `checkpoint_deferred`
+   * with the "frames remain durable" wording, never `repair_failed`. Remote
+   * URLs (no local `dbPath`) keep the pre-BUG-011 wording — the server-side
+   * WAL cannot be inspected from here, so nothing is reclassified.
+   */
+  private reportFailedPassiveCheckpoint(passiveErr: unknown, walDamaged: boolean): void {
+    const dbPath = this.config.dbPath;
+    const walPresent = dbPath !== undefined && existsSync(dbPath + '-wal');
+    const genuineLoss = walDamaged || !walPresent;
+    const detail = passiveErr instanceof Error ? passiveErr.message : String(passiveErr);
+    emitIntegrityReport(
+      dbPath ?? this.config.url,
+      genuineLoss ? 'repair_failed' : 'checkpoint_deferred',
+      genuineLoss
+        ? `checkpoint of the WAL failed — data since the last checkpoint is being lost: ${detail}`
+        : `checkpoint of the WAL failed; frames remain durable in the WAL and replay on the next open (checkpoint deferred): ${detail}`,
+    );
   }
 
   /**

@@ -2544,7 +2544,14 @@ export type IntegrityReportEvent =
   /** (BL-373 family) Informational: a `-tshm` provably older than the `-wal`
    *  was observed at open time. Never a verdict on its own — see
    *  {@link warnIfStaleSidecar}. */
-  | 'sidecar_stale';
+  | 'sidecar_stale'
+  /** (BUG-011) Informational: a close() PASSIVE checkpoint failed under
+   *  contention (a peer reader pins the WAL, or the closing connection holds
+   *  its own read tx) while the `-wal` survives — the frames remain durable
+   *  in the WAL and replay on the next open. Deliberately NOT `repair_failed`:
+   *  nothing was lost and nothing failed to be repaired; the checkpoint was
+   *  merely deferred. */
+  | 'checkpoint_deferred';
 export type IntegrityReportSink = (
   event: IntegrityReportEvent,
   detail: string,
