@@ -1,0 +1,16 @@
+{
+  "name": "@adhd/sox-extension-researcher",
+  "version": "0.1.1",
+  "description": "Use this when you need to discover, grade, and catalog third-party tools/patterns/use cases before building — sweeps registries and the web via the search MCP, grades sources, writes per-finding memory episodes (agent:approved/agent:blocked), and returns a build-vs-integrate verdict.",
+  "private": true,
+  "license": "MIT",
+  "author": "sox-ecosystem",
+  "keywords": [
+    "research",
+    "tools",
+    "discovery",
+    "memory",
+    "build-vs-integrate",
+    "registry-search"
+  ]
+}
