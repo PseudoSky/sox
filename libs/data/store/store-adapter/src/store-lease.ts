@@ -42,6 +42,39 @@ export function leaseDirPath(dbPath: string): string {
  *  that exposure at a deferred TRUNCATE, never a data loss). */
 const LEASE_MAX_AGE_MS = 24 * 60 * 60 * 1000;
 
+/**
+ * Shared liveness test for one registry entry (a lease entry OR a per-
+ * connection open marker — they share the `pid\nopenedAtIso\n` content shape,
+ * see `acquireStoreLease` and preflight.ts `markStoreOpen`).
+ *
+ * The 24 h age-out is applied FIRST (a recycled pid could make a stale entry
+ * look live once); then `process.kill(pid, 0)` probes the pid. Returns null
+ * when the content cannot be parsed (never counts as live; callers decide
+ * whether to sweep it). Used by {@link storeQuiescence} for lease entries and
+ * by preflight.ts `hasUncleanShutdown`/`sweepDeadOpenMarkers` for open
+ * markers — the BUG-019 requirement to reuse storeQuiescence's liveness logic.
+ */
+export function entryLiveness(
+  content: string,
+  now: number = Date.now(),
+): { live: boolean; pid: number; openedAt: number } | null {
+  const [pidLine, openedAtLine] = content.split('\n');
+  const openedAt = openedAtLine ? Date.parse(openedAtLine) : NaN;
+  if (Number.isFinite(openedAt) && now - openedAt > LEASE_MAX_AGE_MS) {
+    return { live: false, pid: Number(pidLine), openedAt }; // aged out ⇒ dead
+  }
+  const pid = Number(pidLine);
+  if (!Number.isInteger(pid) || pid <= 0) return null; // unparseable
+  let live = false;
+  try {
+    process.kill(pid, 0);
+    live = true;
+  } catch {
+    live = false;
+  }
+  return { live, pid, openedAt };
+}
+
 /** Best-effort unlink of an entry. ENOENT (already released) and any other
  *  fs error are ignored — sweeping is a side effect, never a failure. */
 function sweepEntry(entryPath: string): void {
@@ -108,8 +141,11 @@ export function storeQuiescence(dbPath: string, excludeToken?: string): StoreQui
     const livePeers: { token: string; pid: number }[] = [];
     const now = Date.now();
     for (const name of names) {
-      // Skip dot-names (e.g. `.DS_Store`, temp files) and the caller's own entry.
-      if (name.startsWith('.') || name === excludeToken) continue;
+      // Skip dot-names (e.g. `.DS_Store`, temp files), the caller's own entry,
+      // and (BUG-019) `.openmark` files — those are per-connection OPEN
+      // MARKERS owned by preflight.ts, not lease entries: quiescence must
+      // never count them as peers (or sweep them).
+      if (name.startsWith('.') || name === excludeToken || name.endsWith('.openmark')) continue;
       const entryPath = join(leaseDirPath(dbPath), name);
       let content: string;
       try {
@@ -117,26 +153,12 @@ export function storeQuiescence(dbPath: string, excludeToken?: string): StoreQui
       } catch {
         continue; // ENOENT (concurrent release) or unreadable — not a peer
       }
-      const [pidLine, openedAtLine] = content.split('\n');
-      // Age-out first: older than 24 h ⇒ swept regardless of pid.
-      const openedAt = openedAtLine ? Date.parse(openedAtLine) : NaN;
-      if (Number.isFinite(openedAt) && now - openedAt > LEASE_MAX_AGE_MS) {
-        sweepEntry(entryPath);
-        continue;
-      }
-      const pid = Number(pidLine);
-      if (!Number.isInteger(pid) || pid <= 0) continue; // unparseable — not a peer
-      let live = false;
-      try {
-        process.kill(pid, 0);
-        live = true;
-      } catch {
-        live = false;
-      }
-      if (live) {
-        livePeers.push({ token: name, pid });
+      const info = entryLiveness(content, now);
+      if (info === null) continue; // unparseable — not a peer
+      if (info.live) {
+        livePeers.push({ token: name, pid: info.pid });
       } else {
-        sweepEntry(entryPath); // dead entry — swept as a side effect
+        sweepEntry(entryPath); // dead (or aged-out) entry — swept as a side effect
       }
     }
     return { quiescent: livePeers.length === 0, livePeers };

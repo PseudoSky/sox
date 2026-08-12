@@ -25,9 +25,10 @@ import { canonicalDbPath } from './path-identity.js';
 import {
   clearStoreOpenMarker,
   describePreflight,
-  hasStoreOpenMarker,
+  hasUncleanShutdown,
   markStoreOpen,
   preflightSchemaSanity,
+  sweepDeadOpenMarkers,
 } from './preflight.js';
 import {
   describeFtsOrphanGuard,
@@ -565,7 +566,22 @@ export class TursoAdapterImpl implements TursoAdapter {
       // so `lease?.token` is in scope — the preflight-before-lease ordering
       // trap does not apply here, but any future reordering must keep the
       // lease acquisition above the preflight.
-      if (canonicalDb !== undefined && opts.readonly !== true && hasStoreOpenMarker(canonicalDb)) {
+      //
+      // (BUG-019) The gate is now "a DEAD connection left the store unclean"
+      // (`hasUncleanShutdown`: any `<leaseDir>/<token>.openmark` whose pid is
+      // dead or aged out, plus the legacy one-shot shim), NOT "a marker file
+      // is present". A marker whose pid is LIVE is a CONCURRENT session — the
+      // production shape (4-6 live MCP servers + CLI one-shots) — and must
+      // never trigger the pre-flight against a live multiprocess store (the
+      // BUG-017 writable-repair trigger surface). The marker is per-connection
+      // now, so the FIRST orderly close can no longer erase a peer's crash
+      // evidence: a crashed server's dead marker still gates the next open.
+      if (canonicalDb !== undefined && opts.readonly !== true && hasUncleanShutdown(canonicalDb)) {
+        // (INV-5) The trigger is loud, never silent.
+        log.debug('store_adapter.turso.preflight_triggered_unclean', {
+          db_path: canonicalDb,
+          detail: 'a dead-pid open marker was found; running the out-of-process schema pre-flight',
+        });
         const preflight = preflightSchemaSanity(
           canonicalDb,
           lease !== null ? { repair: true, ownLeaseToken: lease.token } : { repair: true },
@@ -577,6 +593,11 @@ export class TursoAdapterImpl implements TursoAdapter {
             describePreflight(preflight),
           );
         }
+        // (BUG-019) Consume the signal AFTER the pre-flight: dead markers (and
+        // any legacy `${dbPath}-openmark` shim file) are swept so the SAME
+        // crash evidence never re-triggers a second pre-flight on the next
+        // open. Live peers' markers are never touched.
+        sweepDeadOpenMarkers(canonicalDb);
       }
 
       // (BL-373 family) Informational, BEFORE any open attempt: a `-tshm` that
@@ -931,7 +952,10 @@ export class TursoAdapterImpl implements TursoAdapter {
       // what tells the NEXT open that this session may not have ended cleanly —
       // `close()` clears it. It lives outside the database on purpose: the state
       // it guards against is one where the database cannot be read at all.
-      if (opts.readonly !== true) markStoreOpen(canonicalDb);
+      // (BUG-019) PER-CONNECTION: the marker is `<leaseDir>/<token>.openmark`
+      // carrying this pid, so a sibling connection's orderly close can never
+      // erase this session's crash evidence (the shared-marker failure).
+      if (opts.readonly !== true) markStoreOpen(canonicalDb, lease?.token);
 
       // (BL-461) IN-PROCESS FTS ORPHAN GUARD. The pre-flight above is gated on
       // the marker, so it never runs for a store damaged inside a session that
@@ -1437,11 +1461,13 @@ export class TursoAdapterImpl implements TursoAdapter {
 
     await this.db.close();
 
-    // (BL-361) Orderly close — drop the out-of-band marker last, after the
-    // driver has actually let go of the file. Its presence at the next open is
-    // the ONLY signal that a session ended without getting here, and that is
-    // the population that can carry the panic-on-open schema state.
-    if (!this.config.readonly) clearStoreOpenMarker(this.config.dbPath);
+    // (BL-361) Orderly close — drop THIS connection's out-of-band marker last,
+    // after the driver has actually let go of the file. Its presence at the
+    // next open is the ONLY signal that a session ended without getting here,
+    // and that is the population that can carry the panic-on-open schema state.
+    // (BUG-019) Unlink only THIS connection's marker (`<leaseDir>/<token>.openmark`)
+    // — never a sibling's: a peer's crash evidence must survive this close.
+    if (!this.config.readonly) clearStoreOpenMarker(this.config.dbPath, this._lease?.token);
 
     // (BUG-007/008) Release the lease LAST, after the driver has let go.
     if (this._lease) {

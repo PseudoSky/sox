@@ -37,9 +37,13 @@
  * `connect()` has already returned. On a store in this state the process is
  * dead long before that line. Any gate that lives inside the database is
  * unreachable at the moment it is needed, so the gate here is an **out-of-band
- * marker file** written beside the database: {@link markStoreOpen} on open,
- * {@link clearStoreOpenMarker} on an orderly close. Marker present at open time
- * ⇒ the previous session did not close ⇒ pre-flight.
+ * marker** — one file per connection, `<leaseDir>/<token>.openmark`, written
+ * by {@link markStoreOpen} on open and removed by {@link clearStoreOpenMarker}
+ * on that connection's own orderly close (BUG-019: per-connection, so a
+ * sibling's close can never erase a peer's crash evidence). A marker whose
+ * pid is DEAD at open time ⇒ the previous session did not close ⇒ pre-flight
+ * ({@link hasUncleanShutdown}). A marker whose pid is LIVE is a concurrent
+ * session, never an unclean signal.
  *
  * That gate is deliberate: an unconditional pre-flight would add a second
  * native open plus a `sqlite_master` scan to the hot MCP open path. The cost of
@@ -93,11 +97,19 @@
  * @module
  */
 
-import { existsSync, unlinkSync, writeFileSync } from 'node:fs';
+import {
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  readdirSync,
+  unlinkSync,
+  writeFileSync,
+} from 'node:fs';
+import { join } from 'node:path';
 import { createRequire } from 'node:module';
 import type { Database as BetterSqlite3Database } from 'better-sqlite3';
 import { engineForApplicationId } from './engine-guard.js';
-import { storeQuiescence } from './store-lease.js';
+import { entryLiveness, leaseDirPath, storeQuiescence } from './store-lease.js';
 import { log } from '@adhd/sox-telemetry';
 
 const require = createRequire(import.meta.url);
@@ -105,7 +117,13 @@ const require = createRequire(import.meta.url);
 // ── Out-of-band open marker ──────────────────────────────────────────────────
 
 /**
- * Path of the marker file for `dbPath`.
+ * (BUG-019) The LEGACY single-shared marker path (`${dbPath}-openmark`),
+ * written by store-adapter versions before the per-connection marker landed.
+ *
+ * Retained ONLY for the one-shot migration shim: when a legacy marker file
+ * exists, {@link hasUncleanShutdown} treats the store as unclean ONCE and
+ * {@link sweepDeadOpenMarkers} deletes it, so a crash recorded under the old
+ * scheme is honored exactly once and never re-triggers.
  *
  * Deliberately NOT a SQLite sidecar suffix (`-wal`, `-shm`, `-tshm`) — this
  * file must survive anything the engine does to the store, including the
@@ -115,41 +133,181 @@ export function storeOpenMarkerPath(dbPath: string): string {
   return `${dbPath}-openmark`;
 }
 
-/** Record that a session is open against `dbPath`. Never throws. */
-export function markStoreOpen(dbPath: string | undefined): void {
+/**
+ * (BUG-019) Path of ONE connection's open marker: `<leaseDir>/<token>.openmark`.
+ *
+ * The marker now lives INSIDE the per-store lease directory and is keyed per
+ * lease token, so N concurrent connections hold N markers and an orderly close
+ * unlinks only its own (`clearStoreOpenMarker(dbPath, ownToken)`) — the
+ * refcount the single shared `${dbPath}-openmark` file lacked. Callers MUST
+ * pass the CANONICAL dbPath (SPEC §T4, INV-4): every process reaching the same
+ * physical store must scan the SAME directory.
+ */
+export function openMarkerPath(dbPath: string, token: string): string {
+  return join(leaseDirPath(dbPath), `${token}.openmark`);
+}
+
+/**
+ * Record that a session is open against `dbPath`. Never throws.
+ *
+ * (BUG-019) Per-connection: with `token` (the connection's lease token — the
+ * adapter always passes it), writes `<leaseDir>/<token>.openmark` carrying the
+ * CURRENT pid, so a sibling connection's orderly close can never erase this
+ * session's crash evidence (the shared-marker failure BUG-019 fixes).
+ *
+ * Without `token` the LEGACY `${dbPath}-openmark` file is written instead — a
+ * deprecated form kept ONLY for tests that simulate a pre-fix crash session
+ * (a legacy file IS an unclean signal by definition, consumed once by the
+ * migration shim on the next open).
+ */
+export function markStoreOpen(dbPath: string | undefined, token?: string): void {
   if (!dbPath) return;
   try {
-    writeFileSync(storeOpenMarkerPath(dbPath), `${process.pid} ${new Date().toISOString()}\n`);
+    if (token !== undefined) {
+      mkdirSync(leaseDirPath(dbPath), { recursive: true });
+      writeFileSync(
+        openMarkerPath(dbPath, token),
+        `${process.pid}\n${new Date().toISOString()}\n`,
+      );
+    } else {
+      writeFileSync(storeOpenMarkerPath(dbPath), `${process.pid} ${new Date().toISOString()}\n`);
+    }
   } catch {
     // A marker we cannot write only costs the next open its pre-flight.
   }
 }
 
-/** Clear the marker on an orderly close. Never throws. */
-export function clearStoreOpenMarker(dbPath: string | undefined): void {
+/**
+ * Clear THIS session's marker on an orderly close. Never throws.
+ *
+ * (BUG-019) With `token` unlinks only `<leaseDir>/<token>.openmark` — its own
+ * marker — never a sibling connection's. Without `token` (deprecated form)
+ * unlinks the legacy `${dbPath}-openmark` file only.
+ */
+export function clearStoreOpenMarker(dbPath: string | undefined, token?: string): void {
   if (!dbPath) return;
   try {
-    unlinkSync(storeOpenMarkerPath(dbPath));
+    if (token !== undefined) {
+      unlinkSync(openMarkerPath(dbPath, token));
+    } else {
+      unlinkSync(storeOpenMarkerPath(dbPath));
+    }
   } catch {
     // Already gone (or never written) — both fine.
   }
 }
 
 /**
- * True when a previous session left its marker behind.
+ * (BUG-019) True when a previous session left the store unclean.
  *
- * A *concurrently open* session also leaves it present, and that is accepted:
- * detection is a read-only `sqlite_master` scan, and the only state that
- * escalates to a write is one in which no other process could be holding the
- * store open — Turso cannot open it at all.
+ * "Unclean" is now a DEAD connection, not a present file: any `.openmark`
+ * whose pid is dead (or older than 24 h — the SAME liveness logic and age-out
+ * `storeQuiescence` applies to lease entries, via {@link entryLiveness}) means
+ * a session started and did not end orderly, so the pre-flight must run. A
+ * marker whose pid is LIVE is a session that is STILL OPEN — a concurrent
+ * peer, never an unclean signal. The old shared marker could not distinguish
+ * the two, which is what made every fresh open under a long-lived server run
+ * the pre-flight against a live multiprocess store (BUG-019).
+ *
+ * Migration shim: a LEGACY `${dbPath}-openmark` file (pre-BUG-019 versions
+ * wrote one shared file) is treated as unclean ONCE, until
+ * {@link sweepDeadOpenMarkers} removes it.
+ *
+ * Never throws: absent/unreadable lease dir ⇒ false.
  */
-export function hasStoreOpenMarker(dbPath: string | undefined): boolean {
+export function hasUncleanShutdown(dbPath: string | undefined): boolean {
   if (!dbPath) return false;
   try {
-    return existsSync(storeOpenMarkerPath(dbPath));
+    if (existsSync(storeOpenMarkerPath(dbPath))) return true; // legacy shim
   } catch {
     return false;
   }
+  const now = Date.now();
+  try {
+    const dir = leaseDirPath(dbPath);
+    const names = readdirSync(dir);
+    for (const name of names) {
+      if (!name.endsWith('.openmark')) continue;
+      let content: string;
+      try {
+        content = readFileSync(join(dir, name), 'utf8');
+      } catch {
+        continue; // unreadable — cannot judge liveness
+      }
+      // Only a PROVEN-dead pid (or age-out) is an unclean signal; unparseable
+      // content and live pids are not.
+      const info = entryLiveness(content, now);
+      if (info !== null && !info.live) return true;
+    }
+  } catch {
+    return false; // absent/unreadable dir ⇒ clean
+  }
+  return false;
+}
+
+/**
+ * (BUG-019) Remove every dead open marker — the `.openmark` files whose pid
+ * is dead or aged out (plus any legacy `${dbPath}-openmark` shim file) — after
+ * the pre-flight has CONSUMED the unclean signal, so the SAME crash evidence
+ * never re-triggers a second pre-flight ("runs preflight exactly once").
+ * Live markers (concurrent peers) are never touched. Never throws; returns
+ * the number of files removed.
+ */
+export function sweepDeadOpenMarkers(dbPath: string | undefined): number {
+  if (!dbPath) return 0;
+  let swept = 0;
+  try {
+    if (existsSync(storeOpenMarkerPath(dbPath))) {
+      try {
+        unlinkSync(storeOpenMarkerPath(dbPath));
+        swept += 1;
+      } catch {
+        // raced by another sweeper — idempotent
+      }
+    }
+  } catch {
+    return swept;
+  }
+  const now = Date.now();
+  try {
+    const dir = leaseDirPath(dbPath);
+    const names = readdirSync(dir);
+    for (const name of names) {
+      if (!name.endsWith('.openmark')) continue;
+      const markerPath = join(dir, name);
+      let content: string;
+      try {
+        content = readFileSync(markerPath, 'utf8');
+      } catch {
+        continue; // concurrent removal
+      }
+      // Dead, aged-out, or unparseable → swept. A live session's marker is
+      // always parseable (we wrote it), so a live marker can never match here.
+      const info = entryLiveness(content, now);
+      if (info === null || !info.live) {
+        try {
+          unlinkSync(markerPath);
+          swept += 1;
+        } catch {
+          // raced — idempotent
+        }
+      }
+    }
+  } catch {
+    // absent/unreadable dir — nothing to sweep
+  }
+  return swept;
+}
+
+/**
+ * @deprecated (BUG-019) Use {@link hasUncleanShutdown}. The old name claimed
+ * "a marker file is present", which was also true for a CONCURRENT live
+ * session — the predicate that gates the pre-flight is "a session ended
+ * uncleanly", i.e. a marker whose pid is dead. Retained as an alias for
+ * compatibility.
+ */
+export function hasStoreOpenMarker(dbPath: string | undefined): boolean {
+  return hasUncleanShutdown(dbPath);
 }
 
 // ── Schema pre-flight ────────────────────────────────────────────────────────

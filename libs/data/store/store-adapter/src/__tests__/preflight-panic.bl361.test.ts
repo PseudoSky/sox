@@ -31,14 +31,16 @@
  */
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { spawnSync } from 'node:child_process';
-import { mkdtempSync, existsSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, existsSync, rmSync, writeFileSync, readdirSync } from 'node:fs';
 import { join, resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { tmpdir } from 'node:os';
 import type { Database as BetterSqlite3Database } from 'better-sqlite3';
 import { TursoAdapterImpl } from '../turso-adapter.js';
+import { leaseDirPath } from '../store-lease.js';
 import {
   hasStoreOpenMarker,
+  hasUncleanShutdown,
   markStoreOpen,
   clearStoreOpenMarker,
   preflightSchemaSanity,
@@ -68,6 +70,17 @@ afterAll(() => {
 
 function tempPath(label: string): string {
   return join(tmpDir, `${label}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.db`);
+}
+
+/** (BUG-019) The per-connection `.openmark` files currently in the lease dir. */
+function openMarkers(dbPath: string): string[] {
+  try {
+    return readdirSync(leaseDirPath(dbPath))
+      .filter((f) => f.endsWith('.openmark'))
+      .sort();
+  } catch {
+    return [];
+  }
 }
 
 /** Seed a healthy Turso store carrying a real Tantivy-backed FTS index. */
@@ -242,18 +255,25 @@ tursoDescribe('BL-361 — panic-on-open pre-flight', () => {
     expect(out.stderr).not.toMatch(/panicked at/);
   }, 120_000);
 
-  it('marker lifecycle: connect() writes it, close() removes it, and a read-only open touches neither', async () => {
+  it('marker lifecycle: connect() writes ONE per-connection marker, close() removes only its own, and a read-only open touches neither (BUG-019)', async () => {
     const dbPath = tempPath('bl361-marker-lifecycle');
     const adapter = await TursoAdapterImpl.connect({ dbPath });
-    expect(hasStoreOpenMarker(dbPath)).toBe(true);
+    // The session's OWN marker exists in the lease dir — carrying a LIVE pid,
+    // so it is a concurrent session, never an unclean signal. (The old shared
+    // marker could not make that distinction: `hasStoreOpenMarker` answered
+    // true for a live session too — the false-positive BUG-019 removes.)
+    expect(openMarkers(dbPath)).toHaveLength(1);
+    expect(hasUncleanShutdown(dbPath)).toBe(false);
     await adapter.exec('CREATE TABLE node (id INTEGER PRIMARY KEY, content TEXT)');
     await adapter.close();
-    expect(hasStoreOpenMarker(dbPath)).toBe(false);
+    expect(openMarkers(dbPath)).toHaveLength(0);
+    expect(hasUncleanShutdown(dbPath)).toBe(false);
 
     const ro = await TursoAdapterImpl.connect({ dbPath, readonly: true });
-    expect(hasStoreOpenMarker(dbPath)).toBe(false);
+    expect(openMarkers(dbPath)).toHaveLength(0);
+    expect(hasUncleanShutdown(dbPath)).toBe(false);
     await ro.close();
-    expect(hasStoreOpenMarker(dbPath)).toBe(false);
+    expect(openMarkers(dbPath)).toHaveLength(0);
   }, 60_000);
 
   it('NEGATIVE CONTROL: the pre-flight reports a healthy Turso FTS store as clean, and reports nothing at all on a store it cannot read', async () => {
