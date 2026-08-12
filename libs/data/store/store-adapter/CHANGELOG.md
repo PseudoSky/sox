@@ -1,5 +1,25 @@
 # @adhd/sox-store-adapter
 
+## 0.5.6
+
+### Patch Changes
+
+- **Bounded connect-level retry for the driver open-handshake race (BL-512 follow-on).**
+
+  turso 0.7.1 rejects a `multiprocess_wal` open while a sibling opener holds the file —
+  "Database is already open without experimental multiprocess WAL in another process".
+  Under barrier-synced maximal contention this is the driver's own open-handshake race
+  (raw-driver parity proven 2026-08-12: 1-14/20 failures with barrier sync, 0/20 without;
+  a failed open mutates nothing, so retry is safe by construction). `connect()` now retries
+  ONLY that exact error text — new `isAlreadyOpenWithoutMultiprocessWal` predicate in
+  `errors.ts` — bounded to 3 total attempts (ADR-0012 §4 ceiling, same as
+  `_runTransaction`), linear 100→200 ms backoff, WARN per attempt
+  (`store_adapter.turso.open_multiprocess_wal_retry`), exhaustion rethrows the original
+  driver error with `retryable: true` so the caller decides beyond the bound. No config
+  toggle (ADR-0013). The BL-373 sidecar-recovery reopen inherits the retry via `openOnce`.
+
+  18/20 → ~20/20 concurrent writers on the live store; suite 450/450 (11 new tests).
+
 ## 0.5.5
 
 ### Patch Changes
