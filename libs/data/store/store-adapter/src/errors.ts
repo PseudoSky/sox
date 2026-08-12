@@ -312,3 +312,34 @@ export function isFatalConnectionError(err: unknown): boolean {
   if (!isErrorWithCode(err)) return false;
   return /\bI\/O error\b/i.test(err.message) || /database disk image is malformed/i.test(err.message);
 }
+
+/**
+ * (BL-512 follow-on) True if `err` is the Turso driver's open-handshake race
+ * refusal — a sibling process that is mid-open (or holding) the store without
+ * experimental multiprocess WAL while this process opens WITH it:
+ *
+ *   Locking error: Failed opening database '<path>'. Database is already open
+ *   without experimental multiprocess WAL in another process
+ *
+ * Empirically (2026-08-12, @tursodatabase/database 0.7.1, raw-driver control
+ * under barrier-synced maximal contention) this is the driver's OWN transient
+ * open-handshake race, NOT a persistent holder and NOT the adapter: the engine
+ * (`reject_live_legacy_wal_for_multiprocess_open`) transiently classifies an
+ * IN-PROGRESS multiprocess open of the same file as a legacy opener and
+ * refuses the connect. It is a hard error (not busy), so the driver's busy
+ * timeout does NOT absorb it — bounded retry at the connect layer is the only
+ * lever (see `TursoAdapterImpl.connect()`'s `openOnce`).
+ *
+ * This is a SCALPEL, never a net: it matches ONLY this one message marker.
+ * `isBusyError`/`isConcurrentConflict` deliberately do NOT match this class —
+ * the refusal text carries neither "locked" nor "busy" — and a retry loop keyed
+ * on them would not absorb it, which is what this predicate exists to fix.
+ *
+ * Matches by message TEXT, following the `isFatalConnectionError` precedent —
+ * `@tursodatabase/database@0.7.1` emits `code: 'GenericFailure'` on every
+ * error, so `err.code` carries zero discriminating information here.
+ */
+export function isAlreadyOpenWithoutMultiprocessWal(err: unknown): boolean {
+  if (!isErrorWithCode(err)) return false;
+  return /already open without experimental multiprocess WAL/i.test(err.message);
+}

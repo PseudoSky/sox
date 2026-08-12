@@ -31,7 +31,10 @@ import {
   guardOrphanedFtsIndexes,
   guardSucceeded,
 } from './fts-orphan-guard.js';
-import { isFatalConnectionError } from './errors.js';
+import {
+  isAlreadyOpenWithoutMultiprocessWal,
+  isFatalConnectionError,
+} from './errors.js';
 import { ESqliteNativeStore } from './errors.js';
 import { ensureEngineMarker, readApplicationId, SOX_APP_ID_SQLITE } from './engine-guard.js';
 import { log } from '@adhd/sox-telemetry';
@@ -65,6 +68,24 @@ import type {
  *  locked" and the write is lost (measured 2026-08-12, see connect()). Never
  *  a toggle — a store opened concurrently must wait out transient locks. */
 const DEFAULT_BUSY_TIMEOUT_MS = 5000;
+
+/** (BL-512 follow-on) Bounded connect-level retry budget for the driver's own
+ *  open-handshake race. 3 total attempts (1 initial + 2 retries) matches
+ *  ADR-0012 §4's retry ceiling — the same 3 `_runTransaction`'s
+ *  `maxRetries=3` default and the write-queue bypass's
+ *  `BYPASS_MAX_ATTEMPTS=3` use, so every independent retry loop in the write
+ *  path shares one bound. A still-matching failure after this budget is
+ *  surfaced with `retryable: true`; the CALLER decides beyond it (§4). */
+const OPEN_RETRY_MAX_ATTEMPTS = 3;
+
+/** (BL-512 follow-on) Linear backoff between open-handshake retries: 100ms
+ *  after the first failure, 200ms after the second. Seeded from a constant —
+ *  deliberately NOT `retry_after_ms` (the write-queue's E_BUSY hint): no I/O
+ *  is involved in this race, the other opener releases within a few scheduler
+ *  quanta, and a multi-hundred-ms wait between connect attempts would only
+ *  stretch every concurrent writer's open time under maximal contention. */
+const OPEN_RETRY_BACKOFF_START_MS = 100;
+const OPEN_RETRY_BACKOFF_STEP_MS = 100;
 
 class TursoTransactionImpl implements AdapterTransaction {
   private db: { run: Function; get: Function; all: Function; exec: Function };
@@ -422,7 +443,7 @@ export class TursoAdapterImpl implements TursoAdapter {
 
     // Turso adapter supports both local file: and remote libsql:// URLs
     // When authToken is present, it's a remote connection
-    const openOnce = async (): Promise<any> => {
+    const driverOpen = async (): Promise<any> => {
       if (opts.authToken && !url.startsWith('file:')) {
         // Remote connection via libsql:// — use connect()
         return connect(url, { authToken: opts.authToken, ...dbOpts });
@@ -432,6 +453,61 @@ export class TursoAdapterImpl implements TursoAdapter {
         return connect(url, dbOpts);
       }
       return connect(url, { authToken: opts.authToken, ...dbOpts });
+    };
+
+    // (BL-512 follow-on) BOUNDED CONNECT-LEVEL RETRY for the driver's own
+    // open-handshake race ("Database is already open without experimental
+    // multiprocess WAL in another process"). Measured 2026-08-12 under
+    // barrier-synced maximal simultaneous opens, this is the driver's
+    // transient classification of an in-progress sibling open as a legacy
+    // opener — a raw-driver control (no adapter, no better-sqlite3) fails
+    // 1-14/20 at varying rates WITH the barrier sync and 20/20 every run
+    // without it, so the adapter cannot remove it and the driver's busy
+    // timeout cannot absorb it (hard error, not busy). This loop is the only
+    // remaining lever. It is a SCALPEL: retried ONLY when the thrown open
+    // error matches `isAlreadyOpenWithoutMultiprocessWal` — any other open
+    // failure (wrong mode, permission, corrupt file, stale-WAL sidecar…)
+    // propagates immediately.
+    //
+    // Bound: OPEN_RETRY_MAX_ATTEMPTS total (1 initial + 2 retries) — ADR-0012
+    // §4's ceiling, the same 3 the transaction and write-queue loops use.
+    // Backoff: linear 100ms → 200ms (constants above — no I/O involved, the
+    // other opener releases within a few scheduler quanta). Exhaustion: the
+    // ORIGINAL driver error is rethrown with `retryable: true` attached so the
+    // CALLER decides beyond this bound — never silently dropped (§4). No
+    // config toggle: unconditional fixed behavior (ADR-0013).
+    const openOnce = async (): Promise<any> => {
+      let lastError: unknown;
+      for (let attempt = 0; attempt < OPEN_RETRY_MAX_ATTEMPTS; attempt++) {
+        try {
+          return await driverOpen();
+        } catch (err) {
+          if (!isAlreadyOpenWithoutMultiprocessWal(err)) throw err;
+
+          if (attempt >= OPEN_RETRY_MAX_ATTEMPTS - 1) {
+            // Exhausted — surface the ORIGINAL driver error, marked
+            // retryable so the caller knows this is the transient race and
+            // may retry beyond the adapter's bound (ADR-0012 §4).
+            if (err !== null && typeof err === 'object') {
+              (err as { retryable?: boolean }).retryable = true;
+            }
+            throw err;
+          }
+
+          const delay = OPEN_RETRY_BACKOFF_START_MS + attempt * OPEN_RETRY_BACKOFF_STEP_MS;
+          log.warn('store_adapter.turso.open_multiprocess_wal_retry', {
+            attempt: attempt + 1,
+            max_attempts: OPEN_RETRY_MAX_ATTEMPTS,
+            delay_ms: delay,
+            error: (err instanceof Error ? err.message : String(err)).slice(0, 300),
+          });
+          lastError = err;
+          await new Promise((resolve) => setTimeout(resolve, delay));
+        }
+      }
+      // Unreachable in practice (every path above returns or throws), but
+      // satisfies the type system — same shape as retry.ts `withRetry`.
+      throw lastError;
     };
 
     // (BL-361) OUT-OF-PROCESS PRE-FLIGHT. An FTS index row whose Tantivy
