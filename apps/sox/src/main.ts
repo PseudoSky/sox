@@ -1034,6 +1034,7 @@ Options:
    --profile=<p>          MCP transport profile (stdio, sse, http; default: stdio)
    --version=<semver>     Install from npm package at the given version range (e.g. 1.1.0, ^1.0.0)
    --no-restart           Skip daemon restart after install
+   --dry-run              Declarative path: plan only — print would-place targets, write nothing
    --help                 Show this message
 `);
     process.exit(0);
@@ -1046,6 +1047,10 @@ Options:
   // config reads. (The host path uses 'project' as default and validates
   // scope more loosely — declarativeInstall will catch invalid scopes.)
   if (hostRaw === undefined || hostRaw === '') {
+    if (flags['dry-run'] !== undefined) {
+      process.stderr.write(`${CLI} install: --dry-run is only supported on the declarative path (--host=<host> present)\n`);
+      process.exit(1);
+    }
     const scopeRaw = flags['scope'] ?? 'user';
     const validScopes = new Set(['user', 'project', 'local']);
     if (!validScopes.has(scopeRaw)) {
@@ -1071,6 +1076,7 @@ Options:
     const workspaceRoot = require('node:path').resolve(flags['root'] ?? process.cwd()) as string;
     const profile = flags['profile'];
     const versionRange = flags['version'];
+    const dryRun = flags['dry-run'] !== undefined;
 
     // Nudge toward the modern standard: Claude Code's own docs (code.claude.com/docs/en/mcp)
     // mark "sse" deprecated in favor of "http" (Streamable HTTP); the official MCP SDK's
@@ -1184,7 +1190,7 @@ Options:
         scope,
         workspaceRoot,
         scopeRoot,
-        { isProject: scope === 'project' },
+        { isProject: scope === 'project', dryRun },
       );
     } catch (e) {
       if (e instanceof DeclarativeDeniedError) {
@@ -1197,11 +1203,14 @@ Options:
 
     let anyApplied = false;
     let anyDenied = false;
+    const dryRunMode = dryRun && results.length > 0;
 
     for (const r of results) {
       if (r.denied === true) {
         process.stderr.write(`${CLI} install: DENIED  ${r.host}/${r.scope}  ${r.target}  reason=${r.denialReason ?? 'unknown'}\n`);
         anyDenied = true;
+      } else if (r.dryRun === true) {
+        process.stdout.write(`${CLI} install: would place  ${r.host}/${r.scope}  ${r.target}\n`);
       } else if (r.applied) {
         process.stdout.write(`${CLI} install: placed   ${r.host}/${r.scope}  ${r.target}\n`);
         anyApplied = true;
@@ -1214,6 +1223,13 @@ Options:
     if (results.length === 0) {
       process.stderr.write(`${CLI} install: no install surfaces found for host(s)='${extHosts.join(',')}' type='${extType}' scope='${scope}'\n`);
       process.exit(1);
+    }
+
+    // Dry-run exits here: the plan was printed, nothing was written, and no
+    // post-install side effects (MCP propagation, daemon restart) may run.
+    if (dryRunMode) {
+      process.stdout.write(`${CLI} install: dry-run complete — no files written\n`);
+      process.exit(0);
     }
 
     if (anyDenied || !anyApplied) {

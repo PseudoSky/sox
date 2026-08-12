@@ -132,8 +132,10 @@ Install is additive (`cpSync force`): it overwrites matching files but leaves st
 behind, so an in-place overwrite silently ships a polluted host directory. Uninstall removes the
 whole discovery dir; the fresh install then writes exactly the extension's files.
 
-**WARNING — `--dry-run` is NOT honored:** `soxe install` ignores the flag and installs for real.
-To preview/contain an install, use `--root <dir>` (sandbox) — never assume `--dry-run` semantics.
+**`--dry-run` IS honored (declarative host path):** `soxe install <id> --host=<h> --scope=<s> --dry-run`
+prints the would-place targets and writes NOTHING — no files, no ledger, no ownership index, no
+lockfile. Use it to preview a placement (including `SOX_SANDBOX_ROOT` rerooting) before the real
+install. Not supported on the no-host config/lockfile resolver path.
 
 For declarative types (`skill`, `agent`, `command`), place the extension at the host's
 discovery path using the `--host` flag:

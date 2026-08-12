@@ -197,8 +197,10 @@ node bin/soxe install <id> --host claude --scope user
 node bin/soxe install <id> --host opencode --scope user
 ```
 
-**WARNING — `--dry-run` is NOT honored.** `soxe install` ignores the flag and performs a real
-install. Contain test installs with `--root <dir>`, never with `--dry-run`.
+**`--dry-run` IS honored on the declarative host path** (`--host` present): prints the would-place
+targets and writes NOTHING (no files, no ledger, no ownership, no lockfile). Use it to preview a
+placement before the real install; combine with `--root <dir>` / `SOX_SANDBOX_ROOT` to see sandboxed
+paths. Not supported on the no-host config/lockfile resolver path.
 
 **Flags for declarative path (`--host` present):**
 

@@ -4,8 +4,9 @@
 
 - Step 5 rewritten as **Install & replace in place**: uninstall any existing install of the
   same id at the target host BEFORE installing, because install is additive and leaves stale
-  orphans behind; verify byte-parity with the extension dir and zero leftover files. Warns that
-  `--dry-run` is NOT honored by `soxe install` (use `--root` to sandbox).
+  orphans behind; verify byte-parity with the extension dir and zero leftover files. Documents
+  that `soxe install --dry-run` IS honored on the declarative host path (plan-only — prints
+  would-place targets, writes nothing; implemented in the install-engine dry-run fix).
 - New **Step 5.5 — Exercise the install (per-host load test)**: prove each target host actually
   discovers and loads the installed artifact in a FRESH process (`opencode run` / `claude -p`
   one-turn probes asserting the reported version matches the extension entrypoint). File

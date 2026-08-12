@@ -1324,6 +1324,13 @@ export interface DeclarativeInstallResult {
   denied?: boolean;
   denialReason?: string;
   hints?: string[];
+  /**
+   * BL-? / --dry-run: true when this result is a PLAN only — the target was
+   * resolved and reported but NOTHING was written (no file-drop, no config
+   * merge, no ledger/ownership/lockfile mutation). The CLI prints "would
+   * place" for these and skips post-install side effects.
+   */
+  dryRun?: boolean;
 }
 
 /**
@@ -1342,7 +1349,7 @@ export interface DeclarativeInstallResult {
  * @param scope       the installation scope ("project" | "user")
  * @param workspaceRoot  absolute workspace root (for project-scope relative paths)
  * @param scopeRoot   absolute path to the scope root (for the ledger)
- * @param opts        optional: isProject flag, injected ledger for tests
+ * @param opts        optional: isProject flag, injected ledger for tests, dryRun
  * @throws Error if the installation descriptor is invalid
  */
 export async function declarativeInstall(
@@ -1350,7 +1357,7 @@ export async function declarativeInstall(
   scope: RegistryHostScope,
   workspaceRoot: string,
   scopeRoot: string,
-  opts?: { isProject?: boolean; ledger?: Ledger },
+  opts?: { isProject?: boolean; ledger?: Ledger; dryRun?: boolean },
 ): Promise<DeclarativeInstallResult[]> {
   const results: DeclarativeInstallResult[] = [];
   const isProject = opts?.isProject ?? (scope === 'project');
@@ -1372,6 +1379,21 @@ export async function declarativeInstall(
     const { apply: runServiceApply } = await import('./capabilities/run-service.js');
     const storeDir = path.join(scopeRoot, 'ext');
     const storePath = path.join(storeDir, descriptor.ext);
+
+    // --dry-run: plan only — report the materialize target WITHOUT writing
+    // (no bundle copy, no extension.json rewrite, no run-service registration,
+    // no ownership/lockfile mutation).
+    if (opts?.dryRun) {
+      results.push({
+        host: descriptor.hosts[0] ?? 'claude',
+        scope,
+        capability: 'run-service' as DeclarativeInstallResult['capability'],
+        target: storePath,
+        applied: false,
+        dryRun: true,
+      });
+      return results;
+    }
 
     // 1. Materialize bundle: copy <srcPath>/bundle/ → <storePath>/
     //    Fall back to <srcPath>/dist/ if no bundle dir exists yet.
@@ -1524,6 +1546,28 @@ export async function declarativeInstall(
         hostName,
         scope,
       );
+    }
+
+    // --dry-run: plan only — resolve + report the placement WITHOUT writing.
+    // Placed before ledger load / ownership recording so a dry run creates
+    // zero state (no files, no ledger, no ownership entries, no lockfile).
+    if (opts?.dryRun) {
+      let planTarget = absTarget;
+      if (surface.capability === 'file-drop' && descriptor.srcPath) {
+        // Mirror the file-drop destPath logic below so the plan names the
+        // exact directory/file that WOULD be created.
+        const srcBasename = path.basename(descriptor.srcPath);
+        planTarget = path.extname(absTarget) !== '' ? absTarget : path.join(absTarget, srcBasename);
+      }
+      results.push({
+        host: hostName,
+        scope,
+        capability: surface.capability,
+        target: planTarget,
+        applied: false,
+        dryRun: true,
+      });
+      continue;
     }
 
     const ledger = opts?.ledger ?? Ledger.load(scopeRoot, { isProject });
@@ -1839,7 +1883,7 @@ export async function declarativeInstall(
   // Without a lockfile entry, `verifyIntegrity` cannot find the extension, so
   // `soxe upgrade --all` silently skips it ("not in lockfile"). Sync here so
   // that upgrade can detect stale artifacts and restart running services.
-  if (descriptor.srcPath && (descriptor.type === 'mcp-server' || descriptor.type === 'service')) {
+  if (!opts?.dryRun && descriptor.srcPath && (descriptor.type === 'mcp-server' || descriptor.type === 'service')) {
     try {
       // Determine the artifact to hash (mirrors fetchArtifact's file:// logic).
       const extJson = path.join(descriptor.srcPath, 'extension.json');
