@@ -32,6 +32,7 @@ import type {
 } from './types.js';
 import { ETursoNativeStore, isTursoNativeStoreSchemaError } from './errors.js';
 import { ensureEngineMarker, readApplicationId, SOX_APP_ID_TURSO } from './engine-guard.js';
+import { canonicalDbPath } from './path-identity.js';
 import {
   ensureFtsIndex as ensureFtsIndexOn,
   ftsCount as ftsCountOn,
@@ -172,6 +173,14 @@ export class SqliteAdapterImpl implements SqliteAdapter {
   constructor(db: Sqlite3Database);
   constructor(dbOrPath: string | Sqlite3Database, opts?: { readonly?: boolean }) {
     if (typeof dbOrPath === 'string') {
+      // (BUG-018, INV-4) Canonicalize ONCE at open: `config.dbPath` and every
+      // sidecar/integrity path derived from it carry the canonical spelling
+      // (`realpathSync(dirname)` + `basename` — see path-identity.ts), so a
+      // cross-engine peer (turso) keying its lease/marker/sidecars off the
+      // canonical path sees the SAME files and the SAME coordination state a
+      // classic open spelled through a symlink alias or `/tmp`-style parent
+      // alias would otherwise fragment.
+      const canonicalPath = canonicalDbPath(dbOrPath);
       // (BL-508) TOOLING-intent marker probe, BEFORE the writable handle is
       // opened: a pure header read (readApplicationId) that refuses a
       // Turso-owned store with the typed error and zero WAL/schema touch.
@@ -180,18 +189,18 @@ export class SqliteAdapterImpl implements SqliteAdapter {
       // NO Tantivy schema too (a plain turso-created store parses fine in
       // better-sqlite3, which is exactly the silent cross-engine open this
       // guard exists to stop).
-      const appId = readApplicationId(dbOrPath);
+      const appId = readApplicationId(canonicalPath);
       if (appId === SOX_APP_ID_TURSO) {
-        throw new ETursoNativeStore(dbOrPath, null, { detectedEngine: 'turso' });
+        throw new ETursoNativeStore(canonicalPath, null, { detectedEngine: 'turso' });
       }
-      this._fileExisted = existsSync(dbOrPath);
-      this.db = new (loadBetterSqlite3())(dbOrPath, {
+      this._fileExisted = existsSync(canonicalPath);
+      this.db = new (loadBetterSqlite3())(canonicalPath, {
         readonly: opts?.readonly ?? false,
       });
       this.ownDb = true;
       this.config = {
         type: 'sqlite',
-        dbPath: dbOrPath,
+        dbPath: canonicalPath,
         readonly: opts?.readonly ?? false,
       };
     } else {

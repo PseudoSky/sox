@@ -32,6 +32,7 @@ import { TursoAdapterImpl } from '../turso-adapter.js';
 import { SqliteAdapterImpl } from '../sqlite-adapter.js';
 import { ETursoNativeStore, isTursoNativeStoreSchemaError } from '../errors.js';
 import { createSqliteAdapter } from '../factory.js';
+import { canonicalDbPath } from '../path-identity.js';
 
 const hasTurso = (() => {
   try {
@@ -130,8 +131,13 @@ tursoDescribe('BL-329 — SqliteAdapterImpl vs a Turso-native store', () => {
     expect(caught).toBeInstanceOf(ETursoNativeStore);
     const typed = caught as ETursoNativeStore;
     expect(typed.code).toBe('E_TURSO_NATIVE_STORE');
-    expect(typed.dbPath).toBe(dbPath);
-    // The store path IS carried on the error.
+    // (BUG-018, INV-4) The error carries the store's CANONICAL identity
+    // (`realpathSync(dirname)` + `basename` — the tmpdir's `/var` symlink
+    // resolves to `/private/var` on macOS), not the raw caller spelling —
+    // the same string every spelling of this store converges to.
+    expect(typed.dbPath).toBe(canonicalDbPath(dbPath));
+    // The store path IS carried on the error (the raw spelling appears as a
+    // substring of the canonical one).
     expect(typed.message).toContain(dbPath);
     // Explains what's actually wrong, in plain terms.
     expect(typed.message).toMatch(/Turso-native store/i);
