@@ -1,3 +1,4 @@
+import { existsSync } from 'node:fs';
 import {
   consumeUncleanShutdownFlag,
   ensureAdapterMetaTable,
@@ -9,10 +10,13 @@ import {
   describeStaleWalIndexFailure,
   emitIntegrityReport,
   isStaleWalIndexError,
+  proactivelyReconcileStaleSidecar,
+  probeWalFrames,
   recoverStaleWalIndex,
   runOpenTimeIntegrity,
   summarizeBackupIntegrity,
   verifyStoreIntegrity,
+  warnIfStaleSidecar,
 } from './integrity.js';
 import type { BackupIntegrityReport, WalIdentity } from './integrity.js';
 import {
@@ -28,6 +32,8 @@ import {
   guardSucceeded,
 } from './fts-orphan-guard.js';
 import { isFatalConnectionError } from './errors.js';
+import { ESqliteNativeStore } from './errors.js';
+import { ensureEngineMarker, readApplicationId, SOX_APP_ID_SQLITE } from './engine-guard.js';
 import { log } from '@adhd/sox-telemetry';
 import {
   ensureFtsIndex as ensureFtsIndexOn,
@@ -315,6 +321,13 @@ export class TursoAdapterImpl implements TursoAdapter {
     encryption?: AdapterConfig['encryption'];
     experimental?: { multiprocessWal?: boolean };
     defaultQueryTimeout?: number;
+    /**
+     * (BL-508) Permit opening a store whose engine marker claims the OTHER
+     * engine (SQLite-owned) — the deliberate-migration escape hatch. Only the
+     * factory's `migrateOnAdapterChange` path sets this; every other caller
+     * fails closed with `ESqliteNativeStore` before any write/WAL touch.
+     */
+    allowForeignEngine?: boolean;
   }): Promise<TursoAdapterImpl> {
     // Dynamic import so @tursodatabase/database is only loaded when used
     let tursoModule: any;
@@ -426,6 +439,42 @@ export class TursoAdapterImpl implements TursoAdapter {
       }
     }
 
+    // (BL-373 family) Informational, BEFORE any open attempt: a `-tshm` that
+    // is provably older than the `-wal` beside it is decaying, and the open
+    // about to run may be the one that fails with a WAL-frame short read.
+    // Two statSync calls, never throws.
+    warnIfStaleSidecar(opts.dbPath);
+
+    // (BL-373 family) PROACTIVE — root-cause prevention, not just healing.
+    // The mechanism (confirmed by scratch repro, 2026-08-11): the -tshm is
+    // maintained only while a Turso connection holds the store; any other
+    // writer (better-sqlite3 / stock SQLite, which maintains the classic -shm
+    // and never the -tshm) advances, checkpoints or deletes the WAL without
+    // touching the sidecar, so the next Turso open short-reads against the
+    // frozen sidecar. Moving the mtime-proven stale sidecar HERE — before
+    // `openOnce()` even runs — means the failed-open path is never taken; the
+    // catch below stays as the backstop for races and non-mtime shapes. The
+    // staleness reference is the WAL's mtime (or the db file's when the WAL is
+    // gone — the mixed-engine deleted-WAL variant), and the -shm is NEVER
+    // touched pre-open (self-reconciling; moving it under a concurrent
+    // multiprocess-WAL reader is corruption — that branch stays in the catch).
+    if (opts.dbPath) {
+      const proactive = proactivelyReconcileStaleSidecar(opts.dbPath);
+      if (proactive.moved && proactive.to) {
+        emitIntegrityReport(
+          opts.dbPath,
+          'repaired',
+          `[BL-373] stale -tshm reconciled BEFORE the open: moved aside to ${proactive.to} — ` +
+            `the open proceeds against the existing WAL, no failed-open path`,
+        );
+      }
+    }
+
+    // (BL-508) Was the db file already there before this open? `ensureEngineMarker`
+    // needs to know whether the store is FRESH (created by this very open → this
+    // engine owns it) or LEGACY (unmarked → infer the owning engine before stamping).
+    const fileExisted = opts.dbPath !== undefined && existsSync(opts.dbPath);
+
     let db: any;
     try {
       db = await openOnce();
@@ -438,6 +487,17 @@ export class TursoAdapterImpl implements TursoAdapter {
       // reconciling it is safe when the WAL has nothing to lose. This must live
       // here rather than in a post-open probe: `connect()` itself is what
       // fails, so nothing downstream ever runs.
+      //
+      // (BL-373 third recurrence) A non-empty WAL is no longer an automatic
+      // decline: the sidecar-vs-WAL mtime heuristic in `recoverStaleWalIndex`
+      // moves a PROVABLY stale sidecar even over a multi-hundred-KB WAL (the
+      // Aug-1/Aug-3/Aug-11 shape: `-tshm` days old, WAL 206 032 bytes, every
+      // fresh open failing with a short read). The WAL itself is never
+      // touched by sidecar recovery — reopen against it as-is. If the reopen
+      // STILL fails on a probe-truncated WAL (Shape B), that is REFUSAL-ONLY
+      // (ADR-0013, owner directive): the operator gets the typed action
+      // naming the manual step with the data-loss disclosure — moving the WAL
+      // is a human decision, never an automatic one.
       if (!isStaleWalIndexError(err) || !opts.dbPath) throw err;
 
       const recovery = recoverStaleWalIndex(opts.dbPath);
@@ -453,18 +513,55 @@ export class TursoAdapterImpl implements TursoAdapter {
             }`,
       );
       if (recovery.movedAside.length === 0) {
-        throw describeStaleWalIndexFailure(opts.dbPath, recovery, err);
+        // Declined with evidence (the decline text carries the frame probe).
+        // Pass the probe onward so the typed operator error also names the
+        // WAL-side action when the WAL is genuinely truncated (Shape B) —
+        // "truncated WAL + fresh sidecar" is exactly the ambiguous case that
+        // goes to the operator.
+        throw describeStaleWalIndexFailure(
+          opts.dbPath,
+          recovery,
+          err,
+          probeWalFrames(opts.dbPath + '-wal'),
+        );
       }
+
       try {
         db = await openOnce();
       } catch (retryErr) {
-        throw describeStaleWalIndexFailure(opts.dbPath, recovery, retryErr);
+        // Sidecar moved aside but the open STILL fails. Shape B is refusal-
+        // only: the frame probe's evidence rides the thrown typed error,
+        // which names the exact manual operator step (`mv …-wal …-wal.corrupt-<stamp>`
+        // or restore from backup) with the data-loss disclosure. Never an
+        // automatic WAL move — a store that cannot open loses nothing by
+        // waiting, and data-loss decisions are human (ADR-0013).
+        throw describeStaleWalIndexFailure(
+          opts.dbPath,
+          recovery,
+          retryErr,
+          probeWalFrames(opts.dbPath + '-wal'),
+        );
       }
       emitIntegrityReport(
         opts.dbPath,
         'repaired',
         `[BL-373] store opened after reconciling the stale WAL-index sidecar`,
       );
+    }
+
+    // (BL-508) FOREIGN-ENGINE REFUSAL, BEFORE the driver even opens the file: a
+    // store whose marker claims SQLite ownership must not be opened by the Turso
+    // adapter — cross-engine WAL coordination is exactly what destroyed stores in
+    // the incident this guard exists for. The probe is a pure header read of
+    // `application_id` (fs-level, no schema touch, no driver, no sidecars).
+    // Unmarked legacy stores are NOT refused (backfill on next sox open), and
+    // the deliberate-migration escape hatch (`allowForeignEngine: true` — the
+    // factory's `migrateOnAdapterChange` path) proceeds.
+    if (opts.dbPath && opts.readonly !== true && opts.allowForeignEngine !== true) {
+      const appId = readApplicationId(opts.dbPath);
+      if (appId === SOX_APP_ID_SQLITE) {
+        throw new ESqliteNativeStore(opts.dbPath, 'sqlite');
+      }
     }
 
     // (SOXGRAPH-001) Probe recursive-CTE support ONCE at connect, before the
@@ -514,6 +611,17 @@ export class TursoAdapterImpl implements TursoAdapter {
 
     const instance = new TursoAdapterImpl(db, config, capabilities);
     instance._softReadonly = softReadonly;
+
+    // (BL-373 family) The open SUCCEEDED despite a stale sidecar — the masked
+    // case. warnIfStaleSidecar fires only when the mtimes prove staleness, so
+    // a healthy sidecar emits nothing. Informational, never throws.
+    warnIfStaleSidecar(opts.dbPath);
+
+    // (BL-508) Engine marker on first open (idempotent; fresh turso stores
+    // and legacy unmarked stores inferred turso get stamped here).
+    if (opts.dbPath && opts.readonly !== true) {
+      await ensureEngineMarker(instance, 'turso', opts.dbPath, { fresh: !fileExisted });
+    }
 
     // (BL-361) The store is now open, so this session owns it. The marker is
     // what tells the NEXT open that this session may not have ended cleanly —

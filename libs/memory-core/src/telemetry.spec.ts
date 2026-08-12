@@ -53,7 +53,6 @@ describe('telemetry — structured JSONL logging (BL-320)', () => {
       'SOX_MEMORY_LOG_DIR',
       'SOX_MEMORY_LOG_LEVEL',
       'SOX_MEMORY_LOG_COMPONENT',
-      'SOX_MEMORY_LOG_DISABLE',
       'SOX_MEMORY_LOG_MAX_BYTES',
       'SOX_MEMORY_LOG_MAX_FILES',
     ]) {
@@ -61,7 +60,6 @@ describe('telemetry — structured JSONL logging (BL-320)', () => {
     }
     process.env['SOX_MEMORY_LOG_DIR'] = dir;
     process.env['SOX_MEMORY_LOG_COMPONENT'] = 'test-component';
-    delete process.env['SOX_MEMORY_LOG_DISABLE'];
     delete process.env['SOX_MEMORY_LOG_LEVEL'];
     delete process.env['SOX_MEMORY_LOG_MAX_BYTES'];
     delete process.env['SOX_MEMORY_LOG_MAX_FILES'];
@@ -120,16 +118,21 @@ describe('telemetry — structured JSONL logging (BL-320)', () => {
     expect(events).toEqual(['should.appear', 'should.also.appear']);
   });
 
-  it('SOX_MEMORY_LOG_DISABLE=1 suppresses all writes', async () => {
+  it('logging is ALWAYS on (ADR-0013) — SOX_MEMORY_LOG_DISABLE was an anti-feature and is gone; a stale value is ignored', async () => {
     process.env['SOX_MEMORY_LOG_DISABLE'] = '1';
-    log.error('should.not.write', {});
+    log.error('should.write.anyway', {});
     await _flushTelemetryForTest();
-    // BL-433: `null` is now the ONE signal for "logging is off". It used to be
-    // `''`, which a sink that simply had not written yet returned as well.
-    expect(currentLogFilePath()).toBeNull();
+    // The stale env value must NOT suppress the write: the path is always
+    // resolvable and the record landed.
+    const path = currentLogFilePath();
+    expect(path).not.toBeNull();
+    expect(fs.existsSync(path!)).toBe(true);
+    const lines = readLines(path!);
+    expect(lines.some((l) => l['event'] === 'should.write.anyway')).toBe(true);
+    delete process.env['SOX_MEMORY_LOG_DISABLE'];
   });
 
-  it('BL-433: reports the path BEFORE the first write, and null only when disabled', async () => {
+  it('BL-433: reports the path BEFORE the first write — there is no disabled state to null out', async () => {
     // Nothing has been logged in this case yet — the old `currentPath()`-backed
     // accessor returned `''` here, indistinguishable from "logging is off".
     const beforeAnyWrite = currentLogFilePath();
@@ -142,11 +145,6 @@ describe('telemetry — structured JSONL logging (BL-320)', () => {
     // ...and it named the right file all along.
     expect(currentLogFilePath()).toBe(beforeAnyWrite);
     expect(fs.existsSync(beforeAnyWrite!)).toBe(true);
-
-    process.env['SOX_MEMORY_LOG_DISABLE'] = '1';
-    expect(currentLogFilePath()).toBeNull();
-    delete process.env['SOX_MEMORY_LOG_DISABLE'];
-    expect(currentLogFilePath()).toBe(beforeAnyWrite);
   });
 
   it('never throws even when fields contain a circular reference', () => {

@@ -15,7 +15,6 @@
  *   5. Stats — memoryGetStats returns embed_provenance with correct stamped /
  *      unstamped / stale_vector_count counts.
  *   6. healStaleVectors semantics:
- *        a. disabled: true when SOX_HEAL_STALE_VECTORS is unset or '0'.
  *        b. re-embeds only mismatched rows (embed_model != active model).
  *        c. bounded by opts.limit.
  *        d. NULL-model rows are NOT touched.
@@ -116,7 +115,6 @@ async function insertEmbeddedWith(
 }
 
 let ctx: Awaited<ReturnType<typeof tmpDb>>;
-let origStaleEnv: string | undefined;
 
 beforeEach(async () => {
   ctx = await tmpDb();
@@ -124,8 +122,6 @@ beforeEach(async () => {
   WriteQueue.setBypass(false);
   _resetEmbedPipelineMetricsForTest();
   _setEmbedProviderForTest(new DeterministicTestProvider());
-  origStaleEnv = process.env['SOX_HEAL_STALE_VECTORS'];
-  delete process.env['SOX_HEAL_STALE_VECTORS'];
 });
 
 afterEach(async () => {
@@ -134,11 +130,6 @@ afterEach(async () => {
   _resetEmbedPipelineMetricsForTest();
   ctx.cleanup();
   _setEmbedProviderForTest(new DeterministicTestProvider());
-  if (origStaleEnv === undefined) {
-    delete process.env['SOX_HEAL_STALE_VECTORS'];
-  } else {
-    process.env['SOX_HEAL_STALE_VECTORS'] = origStaleEnv;
-  }
 });
 
 // ── 1. Migration idempotency ──────────────────────────────────────────────────
@@ -357,23 +348,7 @@ describe('BL-88 stats — embed_provenance field in memoryGetStats', () => {
 // ── 6. healStaleVectors semantics ────────────────────────────────────────────
 
 describe('healStaleVectors — BL-88 stale-vector re-embed pass', () => {
-  it('returns disabled:true when SOX_HEAL_STALE_VECTORS is not set', async () => {
-    delete process.env['SOX_HEAL_STALE_VECTORS'];
-    const wq = await WriteQueue.forPath(ctx.dbPath);
-    const result = await healStaleVectors(ctx.db, wq);
-    expect(result.disabled).toBe(true);
-    expect(result.scanned).toBe(0);
-  });
-
-  it('returns disabled:true when SOX_HEAL_STALE_VECTORS=0', async () => {
-    process.env['SOX_HEAL_STALE_VECTORS'] = '0';
-    const wq = await WriteQueue.forPath(ctx.dbPath);
-    const result = await healStaleVectors(ctx.db, wq);
-    expect(result.disabled).toBe(true);
-  });
-
-  it('re-embeds rows with embed_model != active model when enabled', async () => {
-    process.env['SOX_HEAL_STALE_VECTORS'] = '1';
+  it('re-embeds rows with embed_model != active model — always runs (SOX_HEAL_STALE_VECTORS was an anti-feature, ADR-0013)', async () => {
     const activeModel = getActiveEmbedModel();
     // Insert a node with a stale model stamp.
     const staleRowid = await insertEmbeddedWith(ctx.db, 'stale-node', 'stale node content for heal', 'old-model-v1');
@@ -384,7 +359,6 @@ describe('healStaleVectors — BL-88 stale-vector re-embed pass', () => {
 
     const wq = await WriteQueue.forPath(ctx.dbPath);
     const result = await healStaleVectors(ctx.db, wq);
-    expect(result.disabled).toBe(false);
     expect(result.scanned).toBe(1); // only the stale node
     expect(result.healed).toBe(1);
     expect(result.gone).toBe(0);
@@ -400,7 +374,6 @@ describe('healStaleVectors — BL-88 stale-vector re-embed pass', () => {
   });
 
   it('does NOT touch NULL-model rows (pre-provenance rows are not stale)', async () => {
-    process.env['SOX_HEAL_STALE_VECTORS'] = '1';
     // Raw orphan — no embed_model, no vec row.
     await insertOrphan(ctx.db, 'null-model-orphan', 'no model stamp');
 
@@ -411,7 +384,6 @@ describe('healStaleVectors — BL-88 stale-vector re-embed pass', () => {
   });
 
   it('is bounded by opts.limit — does not exceed the per-pass cap', async () => {
-    process.env['SOX_HEAL_STALE_VECTORS'] = '1';
     // Insert 5 stale nodes.
     for (let i = 0; i < 5; i++) {
       await insertEmbeddedWith(ctx.db, `stale-bounded-${i}`, `stale content ${i}`, 'old-model-v0');
@@ -428,7 +400,6 @@ describe('healStaleVectors — BL-88 stale-vector re-embed pass', () => {
   });
 
   it('stamps the new model after re-embedding the stale row', async () => {
-    process.env['SOX_HEAL_STALE_VECTORS'] = '1';
     const activeModel = getActiveEmbedModel();
     await insertEmbeddedWith(ctx.db, 'stamp-after-heal', 'verify stamp content', 'stale-model-xyz');
 

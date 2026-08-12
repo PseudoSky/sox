@@ -523,14 +523,12 @@ describe('autoBackup', () => {
   let dbPath: string;
   let backupDir: string;
   // Saved env var origins for restore.
-  const envKeys = ['SOX_AUTO_BACKUP_ENABLED', 'SOX_AUTO_BACKUP_DIR'] as const;
+  const envKeys = ['SOX_AUTO_BACKUP_DIR'] as const;
   const savedEnv: Partial<Record<string, string | undefined>> = {};
 
   beforeEach(async () => {
     // Save current env state.
     for (const k of envKeys) savedEnv[k] = process.env[k];
-    // Unset so defaults apply within tests.
-    delete process.env.SOX_AUTO_BACKUP_ENABLED;
 
     // Create a source DB directly inside ~/.memory/ (allowlist) using
     // better-sqlite3 directly (not openDb which returns StoreAdapter).
@@ -641,27 +639,20 @@ describe('autoBackup', () => {
     }
   });
 
-  it('skips backup when SOX_AUTO_BACKUP_ENABLED=false', async () => {
+  it('auto-backup ALWAYS runs (ADR-0013) — SOX_AUTO_BACKUP_ENABLED was an anti-feature and is gone; a lingering value must be ignored, not honored', async () => {
+    // Even a stale 'false'/'0' left in the environment from before the
+    // deletion must NOT suppress the backup: the toggle no longer exists.
     process.env.SOX_AUTO_BACKUP_ENABLED = 'false';
 
     const result = await autoBackup(dbPath, { log: () => undefined });
 
-    expect(result.skipped).toBe(true);
-    expect(result.path).toBe('');
-    expect(result.size).toBe(0);
+    expect(result.skipped).toBe(false);
+    expect(result.path).not.toBe('');
+    expect(result.size).toBeGreaterThan(0);
 
-    // No .db files should have been created in the backup dir.
+    // A real backup file must have been created.
     const files = fs.readdirSync(backupDir).filter((f) => f.endsWith('.db'));
-    expect(files).toHaveLength(0);
-  });
-
-  it('skips backup when SOX_AUTO_BACKUP_ENABLED=0', async () => {
-    process.env.SOX_AUTO_BACKUP_ENABLED = '0';
-
-    const result = await autoBackup(dbPath, { log: () => undefined });
-
-    expect(result.skipped).toBe(true);
-    expect(result.path).toBe('');
+    expect(files.length).toBeGreaterThan(0);
   });
 
   it('skips backup when source has not changed (idempotent)', async () => {

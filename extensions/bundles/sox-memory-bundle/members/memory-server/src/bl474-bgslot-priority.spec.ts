@@ -1,7 +1,7 @@
 /**
  * bl474-bgslot-priority.spec.ts — BL-474: bound the enrich-heal backstop's
- * wait on `_bgSlot`, and stop scheduling the always-on drain chain in
- * processes that opt out via SOX_DISABLE_EMBED_HEAL.
+ * wait on `_bgSlot`. The drain chain is always-on (SOX_DISABLE_EMBED_HEAL was
+ * an anti-feature and is gone, ADR-0013) — AC-4 asserts it arms unconditionally.
  *
  * Root cause and the full decision record: `SPEC-BL-474.md` (repo root of
  * this worktree). `_bgSlot` (index.ts) was a strict FIFO promise-chain mutex
@@ -27,9 +27,9 @@
  *     contribution to wall-clock time is bounded (baseline + slack, not an
  *     absolute constant — the isolated cluster child's own duration is
  *     legitimately variable and unrelated to this fix).
- *   AC-4 (companion): with SOX_DISABLE_EMBED_HEAL=1 set BEFORE index.ts is
- *     imported, the drain chain never arms at all — `isDrainPassInFlight()`
- *     never becomes true and `getDrainPassCount()` stays 0 across a window
+ *   AC-4 (companion): the drain chain ALWAYS arms — with the floor shortened,
+ *     the first pass fires inside the test window (`getDrainPassCount() > 0`),
+ *     because heal is always on; there is no disable gate to stop it.
  *     at least as long as the (shortened, for test speed) drain floor.
  *
  * RED→GREEN PROCEDURE ACTUALLY PERFORMED (BL-225 — not "would fail"):
@@ -48,10 +48,10 @@
  *   ~2000ms hold (not bounded to baseline + 300ms). Restoring the
  *   `withBackgroundSlotOrSkip` wrapper made both pass.
  *
- *   AC-4: with `scheduleNextDrain()`'s `SOX_DISABLE_EMBED_HEAL` gate
- *   temporarily removed (falling straight through to the unconditional
- *   `setTimeout` arm), the freshly-imported module's `getDrainPassCount()`
- *   read >= 1 within the shortened floor window even though the env var was
+ *   AC-4: the drain chain ALWAYS arms (heal is always on — the
+ *   `SOX_DISABLE_EMBED_HEAL` gate is gone, ADR-0013): a freshly-imported
+ *   module's `getDrainPassCount()` reads >= 1 within the shortened floor
+ *   window, proving there is no disable path left to stop it.
  *   set before import (pre-fix code ignores it entirely for scheduling).
  *   Restoring the gate made the count stay 0 across the same window.
  *
@@ -164,7 +164,6 @@ async function waitFor(cond: () => boolean | Promise<boolean>, label: string, ma
 
 beforeEach(() => {
   delete process.env['SOX_SYNC_EMBED']; // exercise the async default pipeline
-  delete process.env['SOX_DISABLE_EMBED_HEAL'];
   _setEmbedProviderForTest(new DeterministicTestProvider());
 });
 
@@ -270,36 +269,28 @@ describe('BL-474 AC-2 — runEnrichPassOnDb yields its heal step when the drain 
   });
 });
 
-describe('BL-474 AC-4 — SOX_DISABLE_EMBED_HEAL=1 set before import stops the drain chain from ever arming', () => {
+describe('BL-474 AC-4 — the drain chain ALWAYS arms (heal is always on; SOX_DISABLE_EMBED_HEAL was an anti-feature, ADR-0013)', () => {
   const savedFloor = process.env['SOX_EMBED_DRAIN_FLOOR_MS'];
-  const savedDisable = process.env['SOX_DISABLE_EMBED_HEAL'];
 
   afterEach(() => {
     if (savedFloor === undefined) delete process.env['SOX_EMBED_DRAIN_FLOOR_MS'];
     else process.env['SOX_EMBED_DRAIN_FLOOR_MS'] = savedFloor;
-    if (savedDisable === undefined) delete process.env['SOX_DISABLE_EMBED_HEAL'];
-    else process.env['SOX_DISABLE_EMBED_HEAL'] = savedDisable;
     vi.resetModules();
   });
 
-  it('isDrainPassInFlight() never becomes true and getDrainPassCount() stays 0 past the (shortened) floor window', async () => {
-    // Module-load-order-sensitive: the gate in scheduleNextDrain() only helps
-    // if SOX_DISABLE_EMBED_HEAL is set BEFORE index.ts is first evaluated —
-    // vi.resetModules() + a dynamic import() is this file's (and this
-    // repo's) idiom for controlling module-load-time behavior in a test.
+  it('the first drain pass fires within the (shortened) floor window — no disable gate exists', async () => {
     vi.resetModules();
-    // Short floor so a PRE-FIX (gate-less) module would arm its first pass
-    // well inside this test's timeout instead of the real 30s default.
+    // Short floor so the first pass lands well inside this test's timeout
+    // instead of the real 30s default — the OLD pre-fix race this AC guarded
+    // against (a gate-less module arming inside the test window) is now the
+    // ASSERTED behavior: the drain arms unconditionally.
     process.env['SOX_EMBED_DRAIN_FLOOR_MS'] = '50';
-    process.env['SOX_DISABLE_EMBED_HEAL'] = '1';
 
     const fresh = await import('./index.js');
 
-    // Wait past where the old unconditional timer would have fired (floor +
-    // slack), not just immediately after import.
+    // Wait past the floor + slack so the armed timer has fired its first pass.
     await new Promise<void>((r) => setTimeout(r, 300));
 
-    expect(fresh.isDrainPassInFlight()).toBe(false);
-    expect(fresh.getDrainPassCount()).toBe(0);
+    expect(fresh.getDrainPassCount(), 'heal is always on — the first drain pass must have started').toBeGreaterThan(0);
   });
 });

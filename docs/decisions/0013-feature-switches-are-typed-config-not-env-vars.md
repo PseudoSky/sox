@@ -73,27 +73,44 @@ but prefer explicit value semantics; the deny-list is what makes it safe.
 
 ## Consequences
 
-**`SOX_ALLOW_AUTO_WAL_ASIDE` is deleted on merge.** It never shipped (unmerged D6 work); the
-auto-move is removed from the design and the truncated-WAL path emits the typed operator-action
-error — the safe default, since a store that cannot open loses nothing by waiting. Its compliant
-sibling `SOX_WAL_SIDECAR_STALE_THRESHOLD_MS` (numeric threshold) stays.
+**`SOX_ALLOW_AUTO_WAL_ASIDE` is deleted on this branch (bl373-sidecar-staleness).** It shipped in the
+D6 work, was identified as the ADR's trigger case, and is now removed together with the whole
+lossy auto-WAL-aside path: `recoverTruncatedWal` is gone and the truncated-WAL path emits the typed
+operator-action error (the manual `mv …-wal …-wal.corrupt-<stamp>` with the data-loss disclosure,
+or restore from backup) — the safe default, since a store that cannot open loses nothing by
+waiting. Its compliant sibling `SOX_WAL_SIDECAR_STALE_THRESHOLD_MS` (numeric threshold) stays.
 
 ### Current state — env-var inventory and dispositions (surveyed 2026-08-11, `rg` across libs/ extensions/ apps/ tools/)
 
-**Violations — convert to typed config (or delete):**
+> Survey-coverage note (F4, 2026-08-11): the original inventory scanned `libs/ extensions/ apps/
+> tools/` only — repo-root SPEC files (`SPEC-PKT-18.md`, `SPEC-BL-474.md`, `SPEC-PKT-38.md`) and
+> handoff/observability docs were NOT surveyed and still documented deleted vars as live controls.
+> Those references are annotated superseded/historical on the strip branch; future inventories
+> should include repo-root `SPEC-*.md` and `docs/`.
 
-| Variable | Shape | Disposition |
+**Violations — deleted or converted (owner directive #3: DELETE unless a real, documented,
+operational purpose exists; only `SOX_SYNC_EMBED` had one):**
+
+| Variable | Shape | Disposition (actual outcome, bl373 branch) |
 |---|---|---|
-| `SOX_ALLOW_AUTO_WAL_ASIDE` | presence gates auto WAL-aside (unmerged) | DELETE on merge |
-| `SOX_SYNC_EMBED` | `'1'` sync vs async embed (`embed-pipeline.ts:87`) | convert to config `embed.sync` default false; single choke point `syncEmbedEnabled()` |
-| `SOX_HEAL_STALE_VECTORS` | `'1'` enables stale-vector heal pass (`embed-pipeline.ts:832`); also required for the typed operator surface (`memory-server:710`) | DELETE the gate — `memory_curate reheal_stale` is the operator action; an automatic pass, if ever wired, is config default-off + reported |
-| `SOX_DISABLE_EMBED_HEAL` | `'1'` disables embed heal (SPEC-BL-474) | convert to config `embed.heal_enabled` default true |
-| `SOX_DISABLE_PERIODIC_ENRICH` | `'1'` disables periodic enrich (`memory-server:3054`) | convert to config `enrich.periodic.enabled` default true |
-| `SOX_AUTO_BACKUP_ENABLED` | `'false'`/`'0'` disables backup (`backup.ts:342`) | convert to config `backup.enabled` default true |
-| `SOX_STORE_REPAIR` | `'off'` disables auto-repair (`integrity.ts:2449`) — the WAL-aside family | convert to config `verify.repair_enabled` default true, reported; detection always on |
-| `SOX_STORE_VERIFY` | `'off'` disables verification (`integrity.ts:2387`) | remove the `'off'` value — verification always runs ≥ `'fast'`; keep rigor selection |
-| `SOX_STORE_VERIFY_SKIP` | probe-skip list for short-lived callers (`integrity.ts:2441`, BL-431) | border: keep as an explicit, visible operator lever; move to config for long-lived services |
-| `SOX_MEMORY_LOG_DISABLE` | `'1'` suppresses all telemetry writes (`telemetry.ts:80`) | border: disables diagnostics, not a feature; keep as operator lever, prefer config `log.enabled` |
+| `SOX_ALLOW_AUTO_WAL_ASIDE` | presence gates auto WAL-aside (unmerged) | DELETED — the lossy auto-move is gone; Shape B is refusal-only with the typed operator-action error (ADR-0013 consequences, above) |
+| `SOX_SYNC_EMBED` | `'1'` sync vs async embed (`embed-pipeline.ts:87`) | CONVERTED to config `embed.sync` default false (`EmbedConfig.sync`, documented purpose: deterministic synchronous write-embed with `near_dup` in the response for test/CI suites and operators who need it — a genuine operational mode, not a workaround; the async two-phase write stays the shipped default). Single choke point `syncEmbedEnabled()` reads `getConfiguredSyncEmbed()` |
+| `SOX_HEAL_STALE_VECTORS` | `'1'` enables stale-vector heal pass (`embed-pipeline.ts:832`); also gated the typed operator surface | DELETED — `memory_curate reheal_stale` always works when invoked; the `disabled` result field is gone. No automatic tick is wired (re-embedding a whole store after a model swap stays an explicit operator decision) |
+| `SOX_DISABLE_EMBED_HEAL` | `'1'` disables embed heal (SPEC-BL-474) | DELETED — heal is always on ("Disable heal???"); the `_drainDisabled` latch, the `HealResult.disabled` field, and the scheduleNextDrain first-arm gate are gone |
+| `SOX_DISABLE_PERIODIC_ENRICH` | `'1'` disables periodic enrich (`memory-server:3054`) | DELETED — the in-process periodic tick (ADR-0007) is always on; a maintenance-mode pause, if ever needed, is a typed operator action, not an env var |
+| `SOX_AUTO_BACKUP_ENABLED` | `'false'`/`'0'` disables backup (`backup.ts:342`) | DELETED — auto-backup always runs on restart; `SOX_AUTO_BACKUP_DIR` stays (D5 host config); the typed `BackupConfig` skeleton lands on this branch (see below) |
+| `SOX_STORE_REPAIR` | `'off'` disables auto-repair (`integrity.ts:2449`) | DELETED — the store ALWAYS repairs what it finds (readonly stores excepted, which cannot write); `repairEnabled()` is gone, `verifyOnly` remains only as a typed API option for direct callers |
+| `SOX_STORE_VERIFY` | `'off'` disables verification (`integrity.ts:2387`) | `'off'` REMOVED — verification always runs ≥ `'fast'`; a request for `off` now refuses loudly (throws naming the anti-feature). Rigor selection (`fast`/`deep`) kept |
+| `SOX_STORE_VERIFY_SKIP` | probe-skip list for short-lived callers (`integrity.ts:2441`, BL-431) | KEPT as a documented operator lever — it is visible + reported (a skipped probe's finding reads "skipped by the caller … this store is NOT verified against it", status `unknown`, never `ok`), and its rationale is real (a one-shot `memory-cli` need not pay `json_column_valid`'s 262 ms on a 105 MB store). No production caller sets it today; test fixtures use it exactly as a short-lived caller would. Not a core-function disable — the probes it skips are bounded per-caller, and the skip is never silent |
+| `SOX_MEMORY_LOG_DISABLE` | `'1'` suppresses all telemetry writes (`telemetry.ts:80`) | DELETED — logs are always writable; rotation caps (`SOX_MEMORY_LOG_MAX_BYTES`/`_MAX_FILES`) handle space. `currentLogFilePath()` never returns `null` for "we chose not to log" (only for an uncreatable writer) |
+
+**Typed config homes landed on the strip branch (D2):** `libs/memory-core/src/config.ts` carries the
+`BackupConfig` skeleton for the upcoming backup feature — `enabled: true` (typed literal — a
+report-only dimension, unrepresentable as false; no `SOX_BACKUP_*` toggle may ever exist),
+`intervalMs` default 6 h, `retentionCount` default 24, `dir` default `~/.memory/backups` with
+precedence `config.backup.dir` (typed seam) → `SOX_AUTO_BACKUP_DIR` (D5, kept) → default. The
+full backup feature (timer, retention prune, backupOnOpen) lands separately on top of this
+skeleton.
 
 **Border — selection, not toggle (keep):** `STORE_ADAPTER` — closed validated union
 (`'sqlite'|'turso'`), error on unknown (`factory.ts:24`); preferred injection is typed

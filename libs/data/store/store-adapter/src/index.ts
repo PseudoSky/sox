@@ -14,3 +14,4 @@ export * from './integrity-status.js';
 export * from './migration.js';
 export * from './preflight.js';
 export * from './fts-orphan-guard.js';
+export * from './engine-guard.js';
