@@ -1,5 +1,36 @@
 # @adhd/sox-graph-store
 
+## 0.8.3
+
+### Patch Changes
+
+- **FK-heal drops fts5 residue before rebuild — fixes the catalog-abort class (BL-506/507/508).**
+
+  `ensureCheckConstraints`' self-heal rebuilds `edge` via ALTER-RENAME when it detects the
+  legacy explicit-rowid FK form (`REFERENCES node(rowid)`) or a missing `'DEPENDS_ON'` CHECK.
+  On a store carrying Drizzle-era fts5 residue (`fts_node` VIRTUAL TABLE + shadow tables +
+  triggers — the 2026-07-11 `0000_sad_onslaught.sql` shape), the rebuilt `edge` sqlite_master
+  row lands AFTER the residue rows; the Turso engine's catalog build aborts silently at the
+  first unparseable row (no fts5 module), so `edge` + all indexes never register on the next
+  open: `no such table: edge` — the store ends up WORSE than the FK defect it healed (proven
+  on the live backlog store 2026-08-11).
+
+  Fix: before any rebuild, `dropFts5ResidueBeforeRebuild()` detects the dead fts5 stack via
+  `FTSDialect.legacyResidueNames` and deletes the rows through store-adapter's shared
+  `deleteSchemaRowsViaBetterSqlite3` escape hatch under `withConnectionClosedForRepair`
+  (close → drop → reopen on the same instance — cross-engine WAL coordination forbids a
+  concurrent better-sqlite3 write, BL-508). Name-based delete also removes duplicate
+  `fts_node_ai` triggers (BL-507). Turso-only; sqlite stores keep residue (their engine parses
+  it). A failed presence probe skips the drop; a failed drop logs loudly and the reopen still
+  runs — the heal can never be worse than before.
+
+  New specs: `fk-heal-fts-residue.bl506.spec.ts` (RED→GREEN: healed store opens via the Turso
+  driver with edge readable + all 16 indexes registered + zero fts5 residue; sqlite arm pins
+  residue preservation) and `schema-row-delete.bl506.spec.ts`.
+
+- Updated dependencies
+  - @adhd/sox-store-adapter@0.5.3
+
 ## 0.8.2
 
 ### Patch Changes
