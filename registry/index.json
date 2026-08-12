@@ -283,13 +283,13 @@
     "title": "Memory CLI",
     "description": "Use this when you need to manage the sox-memory store from the shell — provides memory init|status|list|registry subcommands for store lifecycle, scope selection, and registry inspection. Fully deterministic; zero LLM calls.",
     "source": "file:///Users/nix/dev/ai/sox-ecosystem/extensions/bundles/sox-memory-bundle/members/memory-cli",
-    "checksum": "sha256:1829729c54c0804fc52eff5b08b43438d789b9d58efb0c3b5dba2e5b603b1585",
+    "checksum": "sha256:8d10a8a7e67a4837ede15f062dd2afa7402871c444dad0c50f0d959576744b7a",
     "compatibility": {
       "host": ">=1.0.0 <2.0.0"
     },
     "visibility": "internal",
     "bundleId": "sox-memory-bundle",
-    "builtFromCommit": "9248e7994b950b5874ef3da00700a465241361cf+dirty",
+    "builtFromCommit": "d079fe917c9eaf2b86ce8c4f1e1a4cbbe5e38979+dirty",
     "provisional": true
   },
   {
@@ -299,13 +299,13 @@
     "title": "Memory Session Flush",
     "description": "Use this when you need session memory durably persisted at conversation end and scope promotions reviewed — binds SessionEnd (persists working memory, enqueues episodes, nudges memoryd) and ScopePromotionProposed (runs promotion approval policy). Deterministic; zero LLM calls.",
     "source": "file:///Users/nix/dev/ai/sox-ecosystem/extensions/bundles/sox-memory-bundle/members/memory-flush",
-    "checksum": "sha256:31f6b430923b0927994b998e25fc9beefa9091f804b1b3579ed3696a9191248e",
+    "checksum": "sha256:5a6bea48551109263e9e2cd749eff97f45c2cd6d3236bc92e5d0707eb61f5023",
     "compatibility": {
       "host": ">=1.0.0 <2.0.0"
     },
     "visibility": "internal",
     "bundleId": "sox-memory-bundle",
-    "builtFromCommit": "9248e7994b950b5874ef3da00700a465241361cf+dirty",
+    "builtFromCommit": "d079fe917c9eaf2b86ce8c4f1e1a4cbbe5e38979+dirty",
     "provisional": true
   },
   {
@@ -315,7 +315,7 @@
     "title": "Agent Memory Server",
     "description": "Use this when an agent needs durable, searchable memory across sessions — exposes 7 memory_* tools over a single-file SQLite graph store with hybrid recall (vec+BM25+temporal, <50ms, zero LLM), write-enqueue, session state, community lookup, and bi-temporal invalidation.",
     "source": "file:///Users/nix/dev/ai/sox-ecosystem/extensions/bundles/sox-memory-bundle/members/memory-server",
-    "checksum": "sha256:8bab38930690b0416bcbb82d948580c70f0777d3f90e92b8abdfd9794f9fd1c1",
+    "checksum": "sha256:5d72f613a39e0bb961866fea3e19f807509bc0eeea7cf0e1b7cc2ebaca47d058",
     "compatibility": {
       "host": ">=1.0.0 <2.0.0"
     },
