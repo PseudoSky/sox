@@ -75,8 +75,8 @@ async function tmpDb(): Promise<{ dir: string; dbPath: string; db: StoreAdapter;
     dir,
     dbPath,
     db,
-    cleanup: () => {
-      try { if (raw(db).open) db.close(); } catch { /* closed */ }
+    cleanup: async () => {
+      try { if (raw(db).open) await db.close(); } catch { /* closed */ }
       fs.rmSync(dir, { recursive: true, force: true });
     },
   };
@@ -116,7 +116,7 @@ beforeEach(async () => {
 afterEach(async () => {
   await flushPendingEmbeds();
   await WriteQueue.clearInstances();
-  ctx.cleanup();
+  await ctx.cleanup();
   // Restore the suite-wide deterministic provider (vitest.setup.ts contract).
   _setEmbedProviderForTest(new DeterministicTestProvider());
   delete process.env['SOX_SYNC_EMBED'];

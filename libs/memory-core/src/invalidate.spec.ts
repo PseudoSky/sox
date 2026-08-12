@@ -49,8 +49,8 @@ describe('memoryInvalidate — SUPERSEDES edge (BL-247)', () => {
     db = await openDb(path.join(dir, 't.db'));
   });
 
-  afterEach(() => {
-    if (db && raw(db).open) db.close();
+  afterEach(async () => {
+    if (db && raw(db).open) await db.close();
     cleanupDb();
   });
 
@@ -176,8 +176,8 @@ describe('memoryInvalidate — not-found / already-invalid / wrong-kind (BUG-MEM
     db = await openDb(path.join(dir, 't.db'));
   });
 
-  afterEach(() => {
-    if (db && raw(db).open) db.close();
+  afterEach(async () => {
+    if (db && raw(db).open) await db.close();
     cleanupDb();
   });
 
@@ -305,8 +305,8 @@ describe('memoryInvalidate — orphaned-community GC (BUG-CLUSTER-ORPHANED-COMMU
     db = await openDb(path.join(dir, 't.db'));
   });
 
-  afterEach(() => {
-    if (db && raw(db).open) db.close();
+  afterEach(async () => {
+    if (db && raw(db).open) await db.close();
     cleanupDb();
   });
 

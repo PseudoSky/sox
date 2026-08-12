@@ -48,8 +48,8 @@ async function tmpDb(): Promise<{ dir: string; dbPath: string; db: StoreAdapter;
     dir,
     dbPath,
     db,
-    cleanup: () => {
-      db.close().catch(() => { /* already closed */ });
+    cleanup: async () => {
+      await db.close().catch(() => { /* already closed */ });
       fs.rmSync(dir, { recursive: true, force: true });
     },
   };
@@ -93,7 +93,7 @@ beforeEach(async () => {
 });
 
 afterEach(async () => {
-  ctx.cleanup();
+  await ctx.cleanup();
   _resetEmbedSingleton();
   _setEmbedProviderForTest(new DeterministicTestProvider());
 });

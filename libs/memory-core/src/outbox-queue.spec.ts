@@ -42,8 +42,8 @@ beforeEach(async () => {
   db = await openDb(path.join(dir, 'test.db'));
 });
 
-afterEach(() => {
-  db.close();
+afterEach(async () => {
+  await db.close();
   fs.rmSync(dir, { recursive: true, force: true });
 });
 

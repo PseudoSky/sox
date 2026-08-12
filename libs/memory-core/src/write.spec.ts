@@ -63,7 +63,7 @@ describe('memoryWrite — summary + metadata (BL-23)', () => {
 
       expect(row.summary).toBe('graph supersession');
       expect(JSON.parse(row.meta!)).toEqual({ url: 'x' });
-      db.close();
+      await db.close();
     } finally {
       cleanup();
     }
@@ -81,7 +81,7 @@ describe('memoryWrite — summary + metadata (BL-23)', () => {
       // P2 extractive summary fills this field (content < 100 chars → returns content as-is)
       expect(row.summary).not.toBeNull();
       expect(row.meta).toBeNull();
-      db.close();
+      await db.close();
     } finally {
       cleanup();
     }
@@ -104,7 +104,7 @@ describe('memoryWrite — P1 enrichment fields (BL-24)', () => {
       const uid = (r as { episode_uid: string }).episode_uid;
       const row = (await db.executeGet<{ topic: string | null }>('SELECT topic FROM node WHERE uid = ?', [uid]))!;
       expect(row.topic).toBe('typescript');
-      db.close();
+      await db.close();
     } finally { cleanup(); }
   });
 
@@ -120,7 +120,7 @@ describe('memoryWrite — P1 enrichment fields (BL-24)', () => {
       const uid = (r as { episode_uid: string }).episode_uid;
       const row = (await db.executeGet<{ topic: string | null }>('SELECT topic FROM node WHERE uid = ?', [uid]))!;
       expect(row.topic).toBe('authentication');
-      db.close();
+      await db.close();
     } finally { cleanup(); }
   });
 
@@ -137,7 +137,7 @@ describe('memoryWrite — P1 enrichment fields (BL-24)', () => {
       const uid = (r as { episode_uid: string }).episode_uid;
       const row = (await db.executeGet<{ topic: string | null }>('SELECT topic FROM node WHERE uid = ?', [uid]))!;
       expect(row.topic).toBe('new-topic');
-      db.close();
+      await db.close();
     } finally { cleanup(); }
   });
 
@@ -163,7 +163,7 @@ describe('memoryWrite — P1 enrichment fields (BL-24)', () => {
            JOIN node dst ON dst.kind = 'entity' AND dst.name IN ('JWT','OAuth')
            WHERE e.src = src.rowid AND e.dst = dst.rowid AND e.rel = 'MENTIONS'`, [uid]))!;
       expect(mentionCount.cnt).toBe(2);
-      db.close();
+      await db.close();
     } finally { cleanup(); }
   });
 
@@ -228,7 +228,7 @@ describe('memoryWrite — P1 enrichment fields (BL-24)', () => {
       expect(Number(populated.tags)).toBeGreaterThan(0);
       expect(Number(populated.meta)).toBeGreaterThan(0);
       expect(Number(populated.ver)).toBeGreaterThan(0);
-      db.close();
+      await db.close();
     } finally { cleanup(); }
   });
 
@@ -271,7 +271,7 @@ describe('memoryWrite — P1 enrichment fields (BL-24)', () => {
       );
       expect(Number(populated?.n)).toBeGreaterThan(0);
 
-      db.close();
+      await db.close();
     } finally { cleanup(); }
   });
 
@@ -287,7 +287,7 @@ describe('memoryWrite — P1 enrichment fields (BL-24)', () => {
       const uid = (r as { episode_uid: string }).episode_uid;
       const row = (await db.executeGet<{ project_path: string | null }>('SELECT project_path FROM node WHERE uid = ?', [uid]))!;
       expect(row.project_path).toBe('/Users/nix/dev/ai/sox-ecosystem');
-      db.close();
+      await db.close();
     } finally { cleanup(); }
   });
 
@@ -305,7 +305,7 @@ describe('memoryWrite — P1 enrichment fields (BL-24)', () => {
       expect(row.tags).toBeNull();
       // project_path is the caller-supplied value
       expect(row.project_path).toBe('/test/project');
-      db.close();
+      await db.close();
     } finally { cleanup(); }
   });
 
@@ -324,7 +324,7 @@ describe('memoryWrite — P1 enrichment fields (BL-24)', () => {
       const found = await db.executeGet<{ uid: string }>(`SELECT n.uid FROM node n, json_each(n.tags) t
            WHERE t.value = ? AND n.uid = ? AND n.t_invalid IS NULL`, ['graph', uid]);
       expect(found?.uid).toBe(uid);
-      db.close();
+      await db.close();
     } finally { cleanup(); }
   });
 
@@ -347,7 +347,7 @@ describe('memoryWrite — P1 enrichment fields (BL-24)', () => {
       expect(result.enrichment.tags).toEqual(['validation', 'security']);
       expect(result.enrichment.summary).toBe('Input validation best practice');
       expect(result.enrichment.near_dup).toBeNull();
-      db.close();
+      await db.close();
     } finally { cleanup(); }
   });
 
@@ -372,7 +372,7 @@ describe('memoryWrite — P1 enrichment fields (BL-24)', () => {
            JOIN node dst ON dst.uid = ?
            WHERE e.src = src.rowid AND e.dst = dst.rowid AND e.rel = 'DERIVED_FROM'`, [childUid, parentUid]);
       expect(edge?.rel).toBe('DERIVED_FROM');
-      db.close();
+      await db.close();
     } finally { cleanup(); }
   });
 });
@@ -433,7 +433,7 @@ describe('memoryWrite — BL-62 project_path required (resolved)', () => {
       const after = (await db.executeGet<{ cnt: number }>("SELECT COUNT(*) as cnt FROM node WHERE kind='episode'"))!;
       expect(after.cnt).toBe(before.cnt);
 
-      db.close();
+      await db.close();
     } finally {
       cleanup();
     }
@@ -462,7 +462,7 @@ describe('memoryWrite — BL-62 project_path required (resolved)', () => {
 
       const row = (await db.executeGet<{ project_path: string | null }>('SELECT project_path FROM node WHERE uid = ?', [result.episode_uid]))!;
       expect(row.project_path).toBe(trueWorkingDir);
-      db.close();
+      await db.close();
     } finally {
       cleanup();
     }
@@ -487,7 +487,7 @@ describe('memoryWrite — BL-62 project_path required (resolved)', () => {
       const after = (await db.executeGet<{ cnt: number }>("SELECT COUNT(*) as cnt FROM node WHERE kind='episode'"))!;
       expect(after.cnt).toBe(before.cnt);
 
-      db.close();
+      await db.close();
     } finally {
       cleanup();
     }
@@ -518,7 +518,7 @@ describe('PERF-MEMORY-004 — importance write-path regression', () => {
       expect(row.enrich_ver).not.toBeNull();
       const parsed = JSON.parse(row.enrich_ver!) as { pass: string; ts: string; note?: string };
       expect(parsed.note).toBeUndefined();
-      db.close();
+      await db.close();
     } finally { cleanup(); }
   });
 
@@ -540,7 +540,7 @@ describe('PERF-MEMORY-004 — importance write-path regression', () => {
       expect(row.enrich_ver).not.toBeNull();
       const parsed = JSON.parse(row.enrich_ver!) as { pass: string; ts: string; note?: string };
       expect(parsed.note).toBe('user_override');
-      db.close();
+      await db.close();
     } finally { cleanup(); }
   });
 });
@@ -564,7 +564,7 @@ describe('memoryWriteBatch — WP-3 (BL-125)', () => {
   });
 
   afterEach(async () => {
-    if (db && raw(db).open) db.close();
+    if (db && raw(db).open) await db.close();
     cleanupDb();
     await WriteQueue.clearInstances();
   });
@@ -729,8 +729,8 @@ describe('memoryWriteBatch — project_path_source parity (BL-233)', () => {
     db = await openDb(path.join(dir, 'batch-pps.db'));
   });
 
-  afterEach(() => {
-    if (db && raw(db).open) db.close();
+  afterEach(async () => {
+    if (db && raw(db).open) await db.close();
     cleanupDb();
   });
 
@@ -956,7 +956,7 @@ describe('openDb — P1 enrichment column migrations (D3.1)', () => {
       // Memory-specific enrichment columns
       expect(cols).toContain('enrich_ver');
       expect(cols).toContain('embed_model');
-      db.close();
+      await db.close();
     } finally { cleanup(); }
   });
 
@@ -990,7 +990,7 @@ describe('openDb — P1 enrichment column migrations (D3.1)', () => {
       const cols = ((await db.executeAll('PRAGMA table_info(node)')).rows as Array<{ name: string }>).map((c) => c.name);
       expect(cols).toContain('enrich_ver');
       expect(cols).toContain('embed_model');
-      db.close();
+      await db.close();
 
       // Idempotent: re-opening does not duplicate or error
       const db2 = await openDb(dbPath);
@@ -998,7 +998,7 @@ describe('openDb — P1 enrichment column migrations (D3.1)', () => {
       for (const col of ['enrich_ver', 'embed_model']) {
         expect(cols2.filter((c) => c === col)).toHaveLength(1);
       }
-      db2.close();
+      await db2.close();
     } finally { cleanup(); }
   });
 
@@ -1031,7 +1031,7 @@ describe('openDb — P1 enrichment column migrations (D3.1)', () => {
       const cols = ((await db.executeAll('PRAGMA table_info(node)')).rows as Array<{ name: string }>).map((c) => c.name);
       expect(cols).toContain('enrich_ver');
       expect(cols).toContain('embed_model');
-      db.close();
+      await db.close();
     } finally { cleanup(); }
   });
 });
@@ -1044,7 +1044,7 @@ describe('openDb — memory-specific column migration', () => {
       const cols = ((await db.executeAll('PRAGMA table_info(node)')).rows as Array<{ name: string }>).map((c) => c.name);
       expect(cols).toContain('embed_model');
       expect(cols).toContain('enrich_ver');
-      db.close();
+      await db.close();
     } finally {
       cleanup();
     }
@@ -1080,13 +1080,13 @@ describe('openDb — memory-specific column migration', () => {
       const cols = ((await db.executeAll('PRAGMA table_info(node)')).rows as Array<{ name: string }>).map((c) => c.name);
       expect(cols).toContain('embed_model');
       expect(cols).toContain('enrich_ver');
-      db.close();
+      await db.close();
 
       // Idempotent: re-opening doesn't error or duplicate.
       const db2 = await openDb(dbPath);
       const cols2 = ((await db2.executeAll('PRAGMA table_info(node)')).rows as Array<{ name: string }>).map((c) => c.name);
       expect(cols2.filter((c) => c === 'embed_model')).toHaveLength(1);
-      db2.close();
+      await db2.close();
     } finally {
       cleanup();
     }

@@ -46,7 +46,7 @@ export async function openLegacyDb(dbPath: string): Promise<StoreAdapter> {
       if (stmt.trim().length > 0) await seedAdapter.exec(stmt);
     }
   } finally {
-    seedAdapter.close();
+    await seedAdapter.close();
   }
 
   const db = await openDb(dbPath);
@@ -54,7 +54,7 @@ export async function openLegacyDb(dbPath: string): Promise<StoreAdapter> {
     `SELECT sql FROM sqlite_master WHERE type='table' AND name='node'`,
   );
   if (schema === null || /json_valid/i.test(schema.sql)) {
-    db.close();
+    await db.close();
     throw new Error(
       `legacy fixture did not survive openDb — node.sql = ${schema?.sql ?? '<missing>'}`,
     );
