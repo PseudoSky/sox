@@ -242,10 +242,16 @@ const DISCOVERY_SCHEMA = {
         additionalProperties: false,
         required: ['id', 'path', 'loc'],
         properties: {
-          id: { type: 'string' },
+          id: { type: 'string', description: 'the nx project NAME, exactly as nx reports it' },
           path: { type: 'string', description: 'repo-relative project root' },
           sourceRoot: { type: 'string' },
           loc: { type: 'integer', description: 'non-test source lines, from wc -l' },
+          tags: { type: 'array', items: { type: 'string' }, description: 'nx project tags, e.g. area:data, type:lib' },
+          dependsOn: {
+            type: 'array',
+            items: { type: 'string' },
+            description: 'names of OTHER IN-REPO projects this project depends on (direct only — the script computes the transitive closure). Exclude external npm packages.',
+          },
           largestFiles: {
             type: 'array',
             description: 'up to 12 biggest non-test source files, largest first, for size-aware splitting',
@@ -260,6 +266,112 @@ const DISCOVERY_SCHEMA = {
       },
     },
   },
+}
+
+/**
+ * Narrow the discovered project set BEFORE fan-out.
+ *
+ * The calling agent translates a human scope request into this shape; the resolution itself is
+ * pure and deterministic here, so "and all its in-repo deps" means the actual nx dependency
+ * closure rather than an agent's guess at one.
+ *
+ *   filter: {
+ *     projects:        ['agent-mcp'],        // exact nx names to seed from
+ *     include:         ['apigen'],           // regex/substring over name OR path
+ *     exclude:         ['-e2e$'],            // regex/substring, applied last
+ *     tags:            ['area:data'],        // nx tags (any-match)
+ *     withDeps:        true,                 // add seeds' transitive in-repo dependencies
+ *     withDependents:  false,                // add projects that transitively depend on seeds
+ *     depDepth:        Infinity,             // cap the walk (1 = direct only)
+ *   }
+ *
+ * Semantics: `projects` + `include` + `tags` union into a seed set (no criteria = everything);
+ * `withDeps`/`withDependents` expand it across the graph; `exclude` prunes last and always wins.
+ */
+function applyProjectFilter(projects, filter, logFn) {
+  if (!filter || typeof filter !== 'object') return projects
+  const byId = new Map(projects.map((p) => [p.id, p]))
+  const matches = (pats, p) =>
+    (pats || []).some((raw) => {
+      const s = String(raw)
+      for (const hay of [p.id || '', p.path || '']) {
+        try {
+          if (new RegExp(s, 'i').test(hay)) return true
+        } catch (e) {
+          if (hay.toLowerCase().includes(s.toLowerCase())) return true
+        }
+      }
+      return false
+    })
+
+  const hasSeedCriteria =
+    (filter.projects && filter.projects.length) ||
+    (filter.include && filter.include.length) ||
+    (filter.tags && filter.tags.length)
+
+  const seeds = new Set()
+  if (!hasSeedCriteria) {
+    for (const p of projects) seeds.add(p.id)
+  } else {
+    for (const p of projects) {
+      const byName = (filter.projects || []).some((n) => String(n) === p.id)
+      const byPattern = filter.include && filter.include.length ? matches(filter.include, p) : false
+      const byTag = filter.tags && filter.tags.length ? (p.tags || []).some((t) => filter.tags.includes(t)) : false
+      if (byName || byPattern || byTag) seeds.add(p.id)
+    }
+    for (const n of filter.projects || []) {
+      if (!byId.has(String(n))) logFn(`WARNING: filter.projects names "${n}", which nx did not report — check the exact project name.`)
+    }
+  }
+
+  // Transitive expansion across the in-repo dependency graph.
+  const depth = Number.isFinite(filter.depDepth) ? filter.depDepth : Infinity
+  const expanded = new Set(seeds)
+  if (filter.withDeps || filter.withDependents) {
+    const forward = new Map(projects.map((p) => [p.id, (p.dependsOn || []).filter((d) => byId.has(d))]))
+    const reverse = new Map(projects.map((p) => [p.id, []]))
+    for (const [id, deps] of forward) for (const d of deps) reverse.get(d).push(id)
+
+    const walk = (edges) => {
+      let frontier = [...seeds]
+      for (let d = 0; d < depth && frontier.length; d++) {
+        const next = []
+        for (const id of frontier) {
+          for (const n of edges.get(id) || []) {
+            if (!expanded.has(n)) {
+              expanded.add(n)
+              next.push(n)
+            }
+          }
+        }
+        frontier = next
+      }
+    }
+    if (filter.withDeps) walk(forward)
+    if (filter.withDependents) walk(reverse)
+  }
+
+  let out = projects.filter((p) => expanded.has(p.id))
+  if (filter.exclude && filter.exclude.length) {
+    const before = out.length
+    out = out.filter((p) => !matches(filter.exclude, p))
+    if (before !== out.length) logFn(`filter.exclude removed ${before - out.length} project(s).`)
+  }
+
+  const pulledIn = [...expanded].filter((id) => !seeds.has(id))
+  logFn(
+    `Project filter: ${projects.length} discovered → ${seeds.size} seed(s)` +
+      (pulledIn.length ? ` + ${pulledIn.length} via graph (${pulledIn.slice(0, 8).join(', ')}${pulledIn.length > 8 ? ', …' : ''})` : '') +
+      ` → ${out.length} in scope: ${out.map((p) => p.id).join(', ')}`,
+  )
+  if (!out.length) {
+    throw new Error(
+      `code-quality-sweep: the project filter matched nothing out of ${projects.length} discovered projects. ` +
+        `Seeds tried: ${JSON.stringify({ projects: filter.projects, include: filter.include, tags: filter.tags })}. ` +
+        `Discovered names: ${projects.map((p) => p.id).slice(0, 40).join(', ')}`,
+    )
+  }
+  return out
 }
 
 /** Split one oversized project into <=N sub-units by packing its largest files. */
@@ -302,13 +414,17 @@ if (!RAW_PACKAGES.length) {
 2. For each project resolve its root directory and its source root.
 3. Size each project: count lines of NON-TEST source only (exclude \`*.spec.*\`, \`*.test.*\`, \`__tests__\`, \`dist/\`, generated files). \`wc -l\` is fine.
 4. For each project also list its up-to-12 LARGEST non-test source files with their line counts, largest first — a later step packs these into evenly-sized review units.
+5. Report each project's nx \`tags\` and its DIRECT in-repo dependencies in \`dependsOn\`, using nx project NAMES (not paths). \`npx nx graph --file=/tmp/nx-graph.json\` then reading that file is the reliable source; \`npx nx show project <name> --json\` also carries tags. Include only workspace projects — drop external npm packages. Direct edges only; do not attempt the transitive closure yourself, the caller computes it.
+
+Accuracy of \`id\` and \`dependsOn\` matters: they are used to resolve dependency closures for scoping, so a name that does not match nx exactly will silently fail to match.
 
 Rules: READ-ONLY. Use \`rg\`/\`ls\`/\`wc\`; never \`grep\`/\`find\`. NEVER run a build/test/lint target — \`nx show projects\` is metadata-only and safe, but \`nx build\`/\`nx test\` are destructive here. Return ONLY the structured output; report every project you find, do not pre-filter by importance.`,
     { schema: DISCOVERY_SCHEMA, model: WORKER_MODEL, label: 'discover:nx', phase: 'Discover' },
   )
-  const projects = ((disc && disc.projects) || []).filter((p) => p && p.path && (p.loc || 0) > 0)
-  projects.sort((x, y) => (y.loc || 0) - (x.loc || 0))
-  log(`Discovered ${projects.length} projects${disc && disc.nxAvailable === false ? ' (nx unavailable — globbed project.json)' : ' via nx'}; largest: ${projects.slice(0, 3).map((p) => `${p.id}(${p.loc})`).join(', ')}`)
+  const discovered = ((disc && disc.projects) || []).filter((p) => p && p.path && (p.loc || 0) > 0)
+  discovered.sort((x, y) => (y.loc || 0) - (x.loc || 0))
+  log(`Discovered ${discovered.length} projects${disc && disc.nxAvailable === false ? ' (nx unavailable — globbed project.json)' : ' via nx'}; largest: ${discovered.slice(0, 3).map((p) => `${p.id}(${p.loc})`).join(', ')}`)
+  const projects = applyProjectFilter(discovered, a.filter, log)
   RAW_PACKAGES = projects.flatMap((p) => splitBySize(p, MAX_UNIT_LOC))
   if (RAW_PACKAGES.length > BUDGET) {
     log(`NOTE: discovery produced ${RAW_PACKAGES.length} units for a budget of ${BUDGET}; keeping the ${BUDGET} largest by LOC and DROPPING: ${RAW_PACKAGES.slice(BUDGET).map((u) => u.id).join(', ')}`)
