@@ -1,6 +1,6 @@
 {
   "name": "@adhd/sox-graph-store",
-  "version": "0.8.3",
+  "version": "0.8.4",
   "description": "Bi-temporal graph store — nodes + edges over SQLite with t_valid/t_invalid correctness, tExpires TTL, content-hash dedup, FTS5 sync, namespace isolation, and supersession chains. Schema migration via Drizzle ORM (ADR-0008). GraphBackendCapabilities flags prevent silent misuse of bitemporal / FTS / metadata-filter features.",
   "license": "MIT",
   "private": false,

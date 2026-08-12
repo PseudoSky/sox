@@ -1,5 +1,21 @@
 # @adhd/sox-graph-store
 
+## 0.8.4
+
+### Patch Changes
+
+- **BUG-017 (call site B) + BL-563: `dropFts5ResidueBeforeRebuild` defers under live peers and
+  never drops on a readonly connection.**
+
+  The FTS5-residue drop opens the store through store-adapter's classic-engine escape hatch — the
+  proven BUG-014 poisoner when a live turso multiprocess peer holds the store (writable
+  better-sqlite3 open+close checkpoints/deletes the WAL the engine needs). Now the drop is
+  deferred (logged `graph_store.heal.fts5_residue_drop_deferred_live_peers`, rebuild proceeds
+  without it — the pre-BL-506 degradation, which is safe) whenever `storeQuiescence` reports live
+  peers, via the adapter's typed `RepairDeclinedLivePeersError`; the unguarded foreign-adapter
+  fallback is deleted. On `readonly: true` connections the drop never runs at all (BL-563).
+  Requires `@adhd/sox-store-adapter@^0.5.8`.
+
 ## 0.8.3
 
 ### Patch Changes
