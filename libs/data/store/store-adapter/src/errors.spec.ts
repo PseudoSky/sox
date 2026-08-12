@@ -6,6 +6,7 @@ import {
   isConcurrentConflict,
   isDatabaseError,
   isFatalConnectionError,
+  isAlreadyOpenWithoutMultiprocessWal,
 } from './errors.js';
 
 describe('errors.ts — SQLITE_*-code helpers vs the live Turso driver', () => {
@@ -117,6 +118,69 @@ describe('errors.ts — SQLITE_*-code helpers vs the live Turso driver', () => {
       expect(isFatalConnectionError(undefined)).toBe(false);
       expect(isFatalConnectionError('plain string')).toBe(false);
       expect(isFatalConnectionError(new Error('no code property'))).toBe(false);
+    });
+  });
+
+  describe('isAlreadyOpenWithoutMultiprocessWal (BL-512 follow-on)', () => {
+    it('matches the live driver refusal text verbatim (open-handshake race)', () => {
+      expect(
+        isAlreadyOpenWithoutMultiprocessWal({
+          code: 'GenericFailure',
+          message:
+            "Locking error: Failed opening database '/tmp/backlog.db'. Database is already open " +
+              'without experimental multiprocess WAL in another process',
+        }),
+      ).toBe(true);
+    });
+
+    it('matches case-insensitively', () => {
+      expect(
+        isAlreadyOpenWithoutMultiprocessWal({
+          code: 'GenericFailure',
+          message: 'Database is ALREADY OPEN WITHOUT EXPERIMENTAL MULTIPROCESS WAL in another process',
+        }),
+      ).toBe(true);
+    });
+
+    it('does NOT match a busy/lock contention message (isBusyError class) — the retry is a scalpel', () => {
+      expect(
+        isAlreadyOpenWithoutMultiprocessWal({ code: 'GenericFailure', message: 'database is locked' }),
+      ).toBe(false);
+      expect(
+        isAlreadyOpenWithoutMultiprocessWal({
+          code: 'GenericFailure',
+          message: 'step failed: database table is locked',
+        }),
+      ).toBe(false);
+    });
+
+    it('does NOT match a better-sqlite3 SqliteError shape — the SQLite adapter never produces this class', () => {
+      expect(
+        isAlreadyOpenWithoutMultiprocessWal({
+          code: 'SQLITE_CANTOPEN',
+          message: 'unable to open database file',
+        }),
+      ).toBe(false);
+      expect(
+        isAlreadyOpenWithoutMultiprocessWal({ code: 'SQLITE_BUSY', message: 'database is locked' }),
+      ).toBe(false);
+    });
+
+    it('does NOT match a stale-WAL-sidecar open failure (BL-373 class stays on its own path)', () => {
+      expect(
+        isAlreadyOpenWithoutMultiprocessWal({
+          code: 'GenericFailure',
+          message:
+            'I/O error: short read on WAL frame at offset 4152: expected 4096 bytes, got 0',
+        }),
+      ).toBe(false);
+    });
+
+    it('returns false for non-error-shaped input', () => {
+      expect(isAlreadyOpenWithoutMultiprocessWal(null)).toBe(false);
+      expect(isAlreadyOpenWithoutMultiprocessWal(undefined)).toBe(false);
+      expect(isAlreadyOpenWithoutMultiprocessWal('plain string')).toBe(false);
+      expect(isAlreadyOpenWithoutMultiprocessWal(new Error('no code property'))).toBe(false);
     });
   });
 });
