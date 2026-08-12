@@ -11,19 +11,22 @@
  *
  * What this file pins (each with a real engine, no mocks, no env gates on the
  * core assertions):
- *  1. A mtime-PROVEN stale sidecar is moved over a NON-EMPTY WAL — and only
- *     the `-tshm` moves, never the `-shm`; the store then opens and the data
- *     survives (the exact incident shape, unblocked).
- *  2. The 60 s mtime boundary: backdated 30 s → declined untouched; 90 s →
- *     moved.
+ *  1. A CONTENT-dead -tshm (index extent beyond the WAL EOF) is moved over a
+ *     NON-EMPTY WAL — and only the `-tshm` moves, never the `-shm`; the store
+ *     then opens and the checkpointed data survives (the exact incident shape,
+ *     unblocked). An mtime-BACKDATED but content-live sidecar is NEVER moved
+ *     (BUG-021 — the mtime heuristic's false positive is gone).
+ *  2. mtime skew is never a rename trigger (BUG-021): backdated 30 s or 90 s →
+ *     declined untouched; the env-tunable threshold drives ONLY the log-only
+ *     `warnIfStaleSidecar` mtime-skew report.
  *  3. Shape B (mid-frame truncated WAL): `probeWalFrames` reports truncated;
  *     REFUSAL-ONLY (ADR-0013) — the typed operator-action error names the
  *     manual step (`mv …-wal …-wal.corrupt-<stamp>`, or restore from backup)
  *     with the data-loss disclosure, and the WAL is never auto-renamed. A
- *     frame-ALIGNED truncated WAL is NOT classified as corruption — sidecar
- *     moves, WAL stays.
- *  4. The `sidecar_stale` startup warning fires with mtime evidence — including
- *     on a store whose open SUCCEEDS (the masked case).
+ *     CONTENT-dead sidecar over a truncated WAL is reconciled (the -tshm
+ *     moves, the WAL stays), and the store opens with checkpointed data.
+ *  4. The `sidecar_stale` startup warning fires with mtime-skew evidence —
+ *     including on a store whose open SUCCEEDS (the masked case).
  *
  * Fixture rule (BL-361): every damage fixture is present-but-damaged, never
  * absent.
@@ -129,11 +132,12 @@ function asideFiles(dbPath: string, pattern: string): string[] {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-// (1) A mtime-PROVEN stale sidecar is reconciled over a NON-EMPTY WAL
+// (1) CONTENT-dead -tshm over a non-empty WAL is reconciled (third-recurrence
+//     shape); an mtime-backdated but content-LIVE sidecar is NOT (BUG-021)
 // ═══════════════════════════════════════════════════════════════════════════
 
-tursoDescribe('BL-373 — mtime-proven stale -tshm over a non-empty WAL is reconciled (third-recurrence shape)', () => {
-  it('moves ONLY the -tshm aside, leaves -shm untouched, and the store opens with data intact', async () => {
+tursoDescribe('BL-373/BUG-021 — the -tshm trigger is CONTENT-deadness, never mtime', () => {
+  it('an mtime-backdated but content-live -tshm is DECLINED untouched (the false positive is gone); making it content-dead moves ONLY the -tshm and the store opens with data intact', async () => {
     const dbPath = tempPath('bl373-nonempty-wal');
     await seedStore(dbPath);
     const walPath = dbPath + '-wal';
@@ -141,12 +145,28 @@ tursoDescribe('BL-373 — mtime-proven stale -tshm over a non-empty WAL is recon
     // Precondition: the fixture really is the incident shape — non-empty WAL.
     expect(statSync(walPath).size, 'precondition: WAL must be non-empty').toBeGreaterThan(0);
     expect(existsSync(tshmPath), 'precondition: -tshm must exist').toBe(true);
+
+    // Backdate the sidecar 7 days — mtime ONLY; the content stays consistent
+    // with the WAL. Pre-fix (BUG-021) this healthy sidecar was renamed by the
+    // mtime heuristic (the 08:28–08:46 false-positive churn); the content
+    // gate must decline.
+    backdate(tshmPath, WEEK_MS);
+    const live = recoverStaleWalIndex(dbPath);
+    expect(live.attempted).toBe(false);
+    expect(live.movedAside).toEqual([]);
+    expect(live.declined).toMatch(/NOT content-proven dead/);
+    expect(existsSync(tshmPath), 'a content-live sidecar must never be renamed').toBe(true);
+
+    // Now make it CONTENT-dead: truncate the WAL below the frames the tshm
+    // indexes (the Aug-11 beyond-EOF shape — the tshm claims a frame offset
+    // past the WAL EOF). The incident shape still moves.
+    const probe = probeWalFrames(walPath);
+    expect(probe.readable).toBe(true);
+    truncateSync(walPath, 32 + 100 * (24 + probe.pageSize!));
     // Turso does not create an ordinary -shm under multiprocess WAL, so the
     // only way to assert "never touches -shm on this path" is an
     // empty-but-present fixture (BL-361).
     writeFileSync(dbPath + '-shm', '');
-    // Backdate the sidecar 7 days — the incident's mtime gap.
-    backdate(tshmPath, WEEK_MS);
 
     const recovery = recoverStaleWalIndex(dbPath);
     expect(recovery.attempted).toBe(true);
@@ -155,10 +175,10 @@ tursoDescribe('BL-373 — mtime-proven stale -tshm over a non-empty WAL is recon
     expect(recovery.movedAside[0]!.to).toMatch(/-tshm\.stale-\d{4}-\d{2}-\d{2}-\d{4}/);
     expect(
       existsSync(tshmPath),
-      'the stale -tshm must be RENAMED (forensics), never deleted — and its original path vacated',
+      'the content-dead -tshm must be RENAMED (forensics), never deleted — and its original path vacated',
     ).toBe(false);
     expect(existsSync(recovery.movedAside[0]!.to)).toBe(true);
-    expect(existsSync(dbPath + '-shm'), 'the -shm must be UNTOUCHED on the mtime path').toBe(true);
+    expect(existsSync(dbPath + '-shm'), 'the -shm must be UNTOUCHED on the content-dead path').toBe(true);
 
     // The fabricated -shm is fixture collateral; remove it before the real
     // open so it cannot artificially perturb the driver.
@@ -167,41 +187,42 @@ tursoDescribe('BL-373 — mtime-proven stale -tshm over a non-empty WAL is recon
     // Full adapter open against the WAL as-is: recovery must have healed it.
     const adapter = track(await TursoAdapterImpl.connect({ dbPath }));
     const rows = await adapter.executeGet<{ c: number }>('SELECT COUNT(*) AS c FROM t');
-    expect(rows!.c, 'every row must survive sidecar reconciliation').toBe(SEED_ROWS);
+    expect(rows!.c, 'every checkpointed row must survive sidecar reconciliation').toBeGreaterThan(0);
   });
 });
 
 // ═══════════════════════════════════════════════════════════════════════════
-// (2) The 60 s mtime boundary
+// (2) mtime skew is NEVER a rename trigger — content-deadness is (BUG-021)
 // ═══════════════════════════════════════════════════════════════════════════
 
-tursoDescribe('BL-373 — sidecar staleness is judged against the fixed 60 s threshold', () => {
-  it('backdated 30 s (< threshold) → declined untouched; 90 s (> threshold) → moved', () => {
+tursoDescribe('BUG-021 — mtime skew alone never moves a sidecar, at any backdate', () => {
+  it('backdated 30 s AND 90 s both decline untouched (content unprovable) — pre-fix the 90 s case moved', () => {
     const dbPath = tempPath('bl373-boundary');
     writeFileSync(dbPath, '');
     writeFileSync(dbPath + '-wal', 'x'.repeat(4096));
     writeFileSync(dbPath + '-tshm', 'y'.repeat(32));
 
-    // 30 s: ambiguous — within the threshold, decline with evidence, no move.
+    // 30 s: content unprovable (garbage WAL header) — decline with evidence.
     backdate(dbPath + '-tshm', 30_000);
     const ambiguous = recoverStaleWalIndex(dbPath);
     expect(ambiguous.attempted).toBe(false);
     expect(ambiguous.movedAside).toEqual([]);
-    expect(ambiguous.declined).toMatch(/not provably stale/);
-    expect(ambiguous.declined).toMatch(/age diff .* ms is within the .* ms staleness threshold/);
+    expect(ambiguous.declined).toMatch(/NOT content-proven dead/);
     expect(ambiguous.declined).toMatch(/WAL frame probe/);
     expect(existsSync(dbPath + '-tshm'), '30 s backdate must leave the sidecar in place').toBe(true);
 
-    // 90 s: provably stale — moved aside.
+    // 90 s: STILL declines — mtime skew beyond the threshold is not evidence
+    // of staleness (the tshm mtime freezes at creation under multiprocess
+    // WAL; BUG-021). Pre-fix the mtime heuristic moved this.
     backdate(dbPath + '-tshm', 90_000);
-    const stale = recoverStaleWalIndex(dbPath);
-    expect(stale.attempted).toBe(true);
-    expect(stale.movedAside.length).toBe(1);
-    expect(stale.movedAside[0]!.from).toBe(dbPath + '-tshm');
-    expect(existsSync(dbPath + '-tshm'), '90 s backdate must move the sidecar').toBe(false);
+    const notStale = recoverStaleWalIndex(dbPath);
+    expect(notStale.attempted).toBe(false);
+    expect(notStale.movedAside).toEqual([]);
+    expect(notStale.declined).toMatch(/NOT content-proven dead/);
+    expect(existsSync(dbPath + '-tshm'), '90 s backdate must ALSO leave the sidecar in place').toBe(true);
   });
 
-  it('the threshold is env-tunable and fixed, not proportional', () => {
+  it('the threshold env drives ONLY the log-only warnIfStaleSidecar report, never a rename', () => {
     const dbPath = tempPath('bl373-threshold-env');
     writeFileSync(dbPath, '');
     writeFileSync(dbPath + '-wal', 'x'.repeat(4096));
@@ -209,11 +230,27 @@ tursoDescribe('BL-373 — sidecar staleness is judged against the fixed 60 s thr
     const prev = process.env.SOX_WAL_SIDECAR_STALE_THRESHOLD_MS;
     try {
       process.env.SOX_WAL_SIDECAR_STALE_THRESHOLD_MS = '10000';
-      // 30 s > a 10 s threshold → stale, moved.
+      // 30 s > a 10 s threshold — the OLD code called this provably stale and
+      // renamed. The content gate refuses regardless of the env.
       backdate(dbPath + '-tshm', 30_000);
-      const moved = recoverStaleWalIndex(dbPath);
-      expect(moved.attempted).toBe(true);
-      expect(moved.movedAside.length).toBe(1);
+      const declined = recoverStaleWalIndex(dbPath);
+      expect(declined.attempted).toBe(false);
+      expect(declined.movedAside).toEqual([]);
+      expect(existsSync(dbPath + '-tshm'), 'the env threshold must not enable a rename').toBe(true);
+
+      // The env still tunes the informational mtime-skew REPORT.
+      let emitted = 0;
+      setIntegrityReportSink(() => emitted++);
+      try {
+        warnIfStaleSidecar(dbPath);
+        expect(emitted, '30 s skew > 10 s threshold → the mtime-skew report fires').toBe(1);
+        process.env.SOX_WAL_SIDECAR_STALE_THRESHOLD_MS = '120000';
+        emitted = 0;
+        warnIfStaleSidecar(dbPath);
+        expect(emitted, '30 s skew < 120 s threshold → no report').toBe(0);
+      } finally {
+        setIntegrityReportSink(null);
+      }
     } finally {
       if (prev === undefined) delete process.env.SOX_WAL_SIDECAR_STALE_THRESHOLD_MS;
       else process.env.SOX_WAL_SIDECAR_STALE_THRESHOLD_MS = prev;
@@ -282,29 +319,28 @@ tursoDescribe('BL-373 — Shape B: a mid-frame truncated WAL is probed, and move
     expect(asideFiles(dbPath, '-wal.corrupt-').length).toBe(0);
   });
 
-  it('a truncated WAL with a FRESH sidecar is genuinely ambiguous → declined, and the adapter error names both the evidence and the operator action', async () => {
+  it('a truncated WAL with a CONTENT-dead sidecar heals: ONLY the -tshm moves, the WAL never does, and the store opens with checkpointed data (BUG-021)', async () => {
     const dbPath = tempPath('bl373-shapeb-ambiguous');
     await seedStore(dbPath);
-    // Fresh sidecar (unchanged mtime) + mid-frame truncated WAL.
+    // Mid-frame truncation (Shape B): the WAL ends 100 bytes into a frame.
+    // The seeded -tshm still indexes frames beyond the truncated EOF ⇒ it is
+    // CONTENT-dead (BUG-021) — the pre-open proactive reconcile moves ONLY
+    // the -tshm. The WAL itself is never auto-moved: ADR-0013's refusal-only
+    // rule governs the WAL, and with a rebuilt index the driver opens the
+    // truncated WAL (the torn tail is not read as a frame).
     const walPath = dbPath + '-wal';
     const probe = probeWalFrames(walPath);
     truncateSync(walPath, 32 + 100 * (24 + probe.pageSize!) + 100);
 
-    let errorMessage = '';
-    try {
-      await TursoAdapterImpl.connect({ dbPath });
-    } catch (err) {
-      errorMessage = err instanceof Error ? err.message : String(err);
-    }
-    expect(errorMessage, 'the ambiguous Shape B must decline to the operator').not.toBe('');
-    expect(errorMessage).toMatch(/-tshm/);
-    expect(errorMessage).toMatch(/not provably stale/);
-    expect(errorMessage).toMatch(/TRUNCATED/);
-    expect(errorMessage).toMatch(/\.corrupt-<stamp>/);
-    expect(errorMessage).toMatch(/restore from backup/);
-    expect(errorMessage).not.toMatch(/SOX_ALLOW_AUTO_WAL_ASIDE/);
-    expect(existsSync(walPath), 'the WAL must not be auto-moved (refusal-only)').toBe(true);
-    expect(existsSync(dbPath + '-tshm'), 'a fresh sidecar must not be moved either').toBe(true);
+    const adapter = track(await TursoAdapterImpl.connect({ dbPath }));
+    const rows = await adapter.executeGet<{ c: number }>('SELECT COUNT(*) AS c FROM t');
+    expect(rows!.c, 'checkpointed data must survive the heal').toBeGreaterThan(0);
+    expect(existsSync(walPath), 'the WAL must never be auto-moved (refusal-only, ADR-0013)').toBe(true);
+    expect(asideFiles(dbPath, '-wal.corrupt-').length).toBe(0);
+    expect(
+      asideFiles(dbPath, '-tshm.stale-').length,
+      'the content-dead -tshm must have been reconciled (moved aside, never deleted)',
+    ).toBe(1);
   });
 
   it('a frame-ALIGNED truncated WAL (leftover 0) is NOT classified as corruption — the sidecar moves, the WAL stays', async () => {
@@ -320,8 +356,10 @@ tursoDescribe('BL-373 — Shape B: a mid-frame truncated WAL is probed, and move
     expect(alignedProbe.truncated, 'frame-aligned truncation must NOT read as truncated').toBe(false);
     expect(alignedProbe.leftover).toBe(0);
 
-    // Backdate the sidecar: recovery must still move ONLY the -tshm and never
-    // touch the frame-aligned WAL (Shape A is not evidence of corruption).
+    // The seeded -tshm still indexes frames beyond the frame-aligned
+    // truncation ⇒ CONTENT-dead (BUG-021): recovery must move ONLY the -tshm
+    // and never touch the frame-aligned WAL (Shape A is not evidence of
+    // corruption).
     backdate(dbPath + '-tshm', WEEK_MS);
     const sidecar = recoverStaleWalIndex(dbPath);
     expect(sidecar.attempted).toBe(true);
@@ -338,15 +376,19 @@ tursoDescribe('BL-373 — Shape B: a mid-frame truncated WAL is probed, and move
 });
 
 // ═══════════════════════════════════════════════════════════════════════════
-// (5) PROACTIVE reconciliation — root-cause prevention, not just healing
+// (5) PROACTIVE reconciliation — content-deadness is the trigger (BUG-021)
 // ═══════════════════════════════════════════════════════════════════════════
 
-tursoDescribe('BL-373 — a mtime-proven stale -tshm is reconciled BEFORE the open (no failed-open path)', () => {
-  it('backdated sidecar + non-empty WAL ⇒ the FIRST open attempt succeeds; the open-time catch never fires', async () => {
+tursoDescribe('BUG-021 — the pre-open proactive reconcile is content-gated', () => {
+  it('an mtime-backdated but CONTENT-LIVE sidecar + non-empty WAL ⇒ NO rename; the FIRST open attempt succeeds (pre-fix renamed it — the false positive)', async () => {
     const dbPath = tempPath('bl373-proactive');
     await seedStore(dbPath);
     const tshmPath = dbPath + '-tshm';
     expect(statSync(dbPath + '-wal').size, 'precondition: non-empty WAL').toBeGreaterThan(0);
+    // Backdate ONLY the mtime — the content stays consistent with the WAL.
+    // This is the healthy-but-skewed state BUG-021 removes: pre-fix the
+    // proactive reconcile renamed the sidecar during the next quiescent open
+    // (the 08:28–08:46 churn).
     backdate(tshmPath, WEEK_MS);
 
     const events: { event: string; detail: string }[] = [];
@@ -354,25 +396,20 @@ tursoDescribe('BL-373 — a mtime-proven stale -tshm is reconciled BEFORE the op
     try {
       const adapter = track(await TursoAdapterImpl.connect({ dbPath }));
       const rows = await adapter.executeGet<{ c: number }>('SELECT COUNT(*) AS c FROM t');
-      expect(rows!.c, 'data must survive the proactive reconciliation').toBe(SEED_ROWS);
+      expect(rows!.c, 'the healthy store must open and answer with all rows').toBe(SEED_ROWS);
     } finally {
       setIntegrityReportSink(null);
     }
 
-    // The open-time CATCH emits 'damaged' with "stale WAL-index sidecar
-    // blocked the open" ONLY when the first openOnce() attempt failed — the
-    // exact failed-open path the Aug-1/3/11 recurrences began with. Its
-    // absence proves the proactive reconcile removed the stale sidecar before
-    // the driver ever tried: zero failed opens.
+    // The false positive is gone: nothing renamed, no repaired-before-open,
+    // no damaged event — the open simply succeeded.
     expect(
-      events.some((e) => e.event === 'damaged' && /blocked the open/.test(e.detail)),
-      'the first open attempt must succeed — the failed-open path must never be taken: ' +
-        JSON.stringify(events),
+      events.some((e) => e.event === 'repaired' && /BEFORE the open/.test(e.detail)),
+      'a healthy content-live sidecar must NOT be reconciled: ' + JSON.stringify(events),
     ).toBe(false);
-    // The proactive move itself is visible in the event stream and on disk.
-    expect(events.some((e) => e.event === 'repaired' && /BEFORE the open/.test(e.detail))).toBe(true);
-    expect(asideFiles(dbPath, '-tshm.stale-').length, 'the stale -tshm must be preserved aside').toBe(1);
-    expect(existsSync(tshmPath), 'the driver must have re-created a fresh -tshm on open').toBe(true);
+    expect(events.some((e) => e.event === 'damaged'), 'the open must not have failed').toBe(false);
+    expect(asideFiles(dbPath, '-tshm.stale-').length, 'no false-positive rename').toBe(0);
+    expect(existsSync(tshmPath), 'the healthy sidecar must survive untouched').toBe(true);
   });
 
   it('ROOT-CAUSE MECHANISM: a better-sqlite3 writer moves the WAL without touching -tshm; the next Turso open reconciles the frozen sidecar proactively and succeeds with all data', async () => {

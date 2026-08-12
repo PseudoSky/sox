@@ -17,8 +17,13 @@
  * the open with the same bounded budget as the handshake race
  * (`OPEN_RETRY_MAX_ATTEMPTS − 1` extra attempts) and, on exhaustion, surfaces
  * the ORIGINAL driver error with `retryable: true` — never the
- * `STALE WAL-INDEX SIDECAR` wrapper. Quiescent ⇒ the existing recovery runs
- * unchanged.
+ * `STALE WAL-INDEX SIDECAR` wrapper. Quiescent ⇒ the sidecar reconcile still
+ * runs: a PRE-EXISTING deleted-WAL/orphaned-sidecar shape is reconciled by the
+ * pre-open proactive site (content-deadness is the trigger, and an absent WAL
+ * proves it — BUG-021/SPEC §T3); a WAL that empties BETWEEN the proactive
+ * probe and the open (the close()-TRUNCATE / out-of-band-zero race) still
+ * reaches the open-time catch's quiescent empty-WAL branch, which is
+ * exercised end-to-end below.
  *
  * Harness: real fs + mocked driver. The scratch store is SEEDED with the REAL
  * `@tursodatabase/database` driver (`vi.importActual` — the `vi.mock` shim is
@@ -36,7 +41,7 @@
  * (4) the quiescent path must keep working (guard — passes on both sides).
  */
 import { describe, it, expect, vi, beforeEach, afterEach, beforeAll } from 'vitest';
-import { mkdtempSync, readdirSync, utimesSync, unlinkSync, statSync, existsSync } from 'node:fs';
+import { mkdtempSync, readdirSync, utimesSync, unlinkSync, statSync, existsSync, truncateSync } from 'node:fs';
 import { join, basename, dirname } from 'node:path';
 import { tmpdir } from 'node:os';
 import { TursoAdapterImpl } from '../turso-adapter.js';
@@ -243,31 +248,76 @@ tursoDescribe('BUG-009 — open-time catch with a live peer retries and never cl
 });
 
 // ═══════════════════════════════════════════════════════════════════════════
-// Quiescent — existing recovery runs unchanged (must not regress)
+// Quiescent — the orphaned-sidecar reconcile must not regress (pre-existing
+// deleted-WAL shapes now fire proactively via the BUG-021 content-dead trigger;
+// a WAL emptied mid-open still reaches the catch's quiescent empty-WAL branch)
 // ═══════════════════════════════════════════════════════════════════════════
 
-tursoDescribe('BUG-009 — open-time catch with NO peer: the existing recovery runs unchanged', () => {
-  it('quiescent short-read: recovery moves the stale -tshm aside and the reopen succeeds', async () => {
+tursoDescribe('BUG-009 — open-time catch with NO peer: the orphaned sidecar is still reconciled', () => {
+  it('quiescent deleted-WAL: the orphaned -tshm is reconciled (now proactively, content-dead — BUG-021) and the open succeeds', async () => {
     const dbPath = tempPath('bug009-no-peer');
     await rawSeed(dbPath);
 
     // Deleted-WAL variant: remove the WAL (the mixed-engine clean-close
-    // shape). The pre-open proactive reconcile compares against the db file's
-    // FRESH mtime and declines (age diff ≤ threshold); the open-time catch's
-    // empty-WAL recovery branch then moves the orphaned -tshm — the exact
-    // path that must run unchanged when the store is quiescent.
+    // shape). With content-deadness as the trigger (BUG-021, SPEC §T3), the
+    // pre-open proactive reconcile sees the WAL absent ⇒ the surviving -tshm
+    // is content-proven dead ⇒ moves it BEFORE the first openOnce — the
+    // deleted-WAL recovery that previously waited for the open-time catch's
+    // empty-WAL branch. The reconcile must still happen (the observable is
+    // the same: one orphaned sidecar moved aside, store opens), only the site
+    // that performs it moved earlier.
     unlinkSync(dbPath + '-wal');
-    backdate(dbPath + '-tshm', 30_000);
 
-    mockDriverConnect
-      .mockRejectedValueOnce(shortReadError())
-      .mockResolvedValueOnce(makeFakeDb());
+    mockDriverConnect.mockResolvedValue(makeFakeDb());
 
     const adapter = await connect(dbPath);
 
     expect(
       staleSidecars(dbPath),
-      'quiescent recovery must still move the orphaned sidecar aside',
+      'the orphaned sidecar must still be reconciled (proactively, content-dead)',
+    ).toHaveLength(1);
+    expect(adapter).toBeInstanceOf(TursoAdapterImpl);
+  });
+
+  it('quiescent WAL emptied mid-open: the open-time catch empty-WAL branch still recovers the orphaned -tshm (BUG-021 backstop)', async () => {
+    const dbPath = tempPath('bug009-no-peer-catch');
+    await rawSeed(dbPath);
+
+    // The WAL is non-empty and the -tshm CONTENT-LIVE here (rawSeed's real
+    // driver wrote + checkpointed frames), so the pre-open proactive
+    // reconcile (content-deadness gate, BUG-021) sees a live index, DECLINES,
+    // and renames NOTHING — the proactive site cannot fire.
+    expect(statSync(dbPath + '-wal').size, 'precondition: non-empty content-live WAL').toBeGreaterThan(0);
+
+    // The first driver open then fails with the short read AND the WAL is
+    // emptied (0 bytes) in the same instant — the close()-TRUNCATE /
+    // out-of-band-zero race shape. The proactive probe already passed (index
+    // was live), so the open-time catch is the only reconcile site left; it is
+    // quiescent (no peer), so recoverStaleWalIndex's empty-WAL branch moves the
+    // orphaned -tshm aside and the reopen lands. RED pre-T3: the old test
+    // removed the WAL BEFORE the open, so the proactive site — not the catch —
+    // performed the recovery and this branch was no longer exercised
+    // end-to-end.
+    mockDriverConnect
+      .mockImplementationOnce(async (path: string) => {
+        truncateSync(path + '-wal', 0);
+        throw shortReadError();
+      })
+      .mockResolvedValueOnce(makeFakeDb()); // the reopen after recovery
+
+    const adapter = await connect(dbPath);
+
+    expect(
+      mockDriverConnect,
+      'the catch ran: 1 initial failed open + 1 reopen after the recovery (the proactive path would be a single call)',
+    ).toHaveBeenCalledTimes(2);
+    expect(
+      statSync(dbPath + '-wal').size,
+      'the catch saw a 0-byte WAL — the empty-WAL branch, not the beyond-EOF branch',
+    ).toBe(0);
+    expect(
+      staleSidecars(dbPath),
+      'the quiescent catch must still move the orphaned -tshm aside (empty-WAL reconcile preserved)',
     ).toHaveLength(1);
     expect(adapter).toBeInstanceOf(TursoAdapterImpl);
   });
