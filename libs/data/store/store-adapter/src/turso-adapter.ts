@@ -1034,4 +1034,49 @@ export class TursoAdapterImpl implements TursoAdapter {
     // the population that can carry the panic-on-open schema state.
     if (!this.config.readonly) clearStoreOpenMarker(this.config.dbPath);
   }
+
+  /**
+   * (BL-506) Close the current connection, run `fn` against the store file
+   * while NO turso connection is open, then reopen through the full
+   * `connect()` ceremony — all on THIS instance, so every caller holding
+   * this adapter keeps a valid handle.
+   *
+   * Why this exists: graph-store's FK-heal must delete fts5-residue rows
+   * from `sqlite_master` via the better-sqlite3 `writable_schema` escape
+   * hatch (the Turso driver hard-refuses `sqlite_master` writes and its
+   * DROPs against fts5 objects silently no-op). A better-sqlite3 write must
+   * never run while a turso connection holds the file — cross-engine WAL
+   * coordination (turso's `-tshm` vs SQLite's `-shm`) is exactly what
+   * destroyed stores (BL-508). So: `close()` (checkpoint + driver close +
+   * marker clear), `fn()` (the out-of-band repair), then a fresh
+   * `connect(this._connectOpts)` whose live state (`db`, `_walBaseline`,
+   * `_softReadonly`) is adopted onto `this` — the SPEC-CONN-RECYCLE
+   * `_reconnect()` pattern. `config`/`capabilities`/`_connectOpts` describe
+   * the adapter's identity and never change, so callers holding references
+   * to them never see them change under them.
+   *
+   * The repair itself is `fn`'s job; this method only guarantees the
+   * connection is closed around it and restored after — a repair that
+   * throws still gets the reopen in the `finally`, so the adapter is never
+   * left dead. If the reopen itself fails, the error propagates (an
+   * unreachable store must not fake success).
+   */
+  async withConnectionClosedForRepair<T>(fn: () => Promise<T>): Promise<T> {
+    if (this.closed) {
+      throw new Error(
+        'withConnectionClosedForRepair: the adapter is already closed and cannot be reopened',
+      );
+    }
+    await this.close(); // full clean-close ceremony (checkpoint, driver close, marker clear)
+    try {
+      return await fn();
+    } finally {
+      const fresh = await TursoAdapterImpl.connect(this._connectOpts);
+      this.db = fresh.db;
+      this._walBaseline = fresh._walBaseline;
+      this._softReadonly = fresh._softReadonly;
+      this._poisoned = false;
+      this.closed = false; // the fresh connection is live; close() set this true
+    }
+  }
 }

@@ -1,0 +1,297 @@
+/**
+ * BL-506 / BL-507 / BL-508 — the FK self-heal must leave a legacy Turso
+ * store (node/edge schema authored by a Drizzle migration that no longer
+ * exists in this repo) TURSO-READABLE, not break it.
+ *
+ * ## The defect (proven on the live backlog store 2026-08-11)
+ *
+ * Legacy stores whose `node`/`edge` schema was authored by a Drizzle
+ * migration that no longer exists in this repo (the 2026-07-11
+ * `0000_sad_onslaught.sql`; the live backlog.db is one) carry BOTH the
+ * explicit-rowid FK form on `edge` (`REFERENCES node(rowid)` — breaks every
+ * write on Turso with foreign_keys=ON, BL-507) AND dead fts5 residue
+ * (`CREATE VIRTUAL TABLE fts_node USING fts5` + 4 shadow tables + 3 triggers)
+ * from the SQLite-era FTS, at sqlite_master rows AFTER `edge`'s row. The
+ * store uses Tantivy FTS, not fts5 — the residue is dead weight.
+ *
+ * `node`/`edge` and their FTS objects are LIBRARY-domain schema: graph-store
+ * owns their DDL. Drizzle is a LIVE dependency in this ecosystem — it owns
+ * only app tables (e.g. `__drizzle_migrations` bookkeeping) — so the heal's
+ * residue drop + `edge` rebuild stay within the library's ownership and
+ * touch nothing Drizzle owns.
+ *
+ * graph-store's self-heal (`ensureCheckConstraints` → `rebuildTable`)
+ * rebuilds `edge` via ALTER-RENAME, which moves `edge`'s sqlite_master row
+ * from BEFORE the residue to AFTER it. The Turso engine's catalog build
+ * parses sqlite_master in rowid order and aborts SILENTLY at the first
+ * unparseable row (`USING fts5` — no fts5 module): every object after that
+ * row never registers — `edge`, `_adapter_meta`, `_sox_engine`, ALL indexes.
+ * Result: `no such table: edge` on the next open — the store is WORSE than
+ * the FK defect it healed (BL-506). The abort is silent, so
+ * DDL-normalization-only acceptance cannot catch it (BL-508).
+ *
+ * ## The fix under test
+ *
+ * The heal must DELETE the fts5-residue rows from sqlite_master FIRST — via
+ * the sanctioned better-sqlite3 escape hatch (`unsafeMode` +
+ * `PRAGMA writable_schema=ON`, the exact mechanism store-adapter's
+ * preflight.ts ships) — so the rebuilt `edge` row lands in a parseable
+ * region. The same drop removes any duplicate `fts_node_ai` trigger a
+ * `CREATE TRIGGER IF NOT EXISTS` replay created (Turso does NOT dedupe it —
+ * BL-507).
+ *
+ * ## RED→GREEN (BL-225)
+ *
+ * RED (current code): the fixture store heals, but a fresh turso open shows
+ * `PRAGMA table_list` WITHOUT `edge`; `SELECT COUNT(*) FROM edge` throws
+ * `no such table: edge`; the edge indexes never register. GREEN (fix): the
+ * residue is dropped before the rebuild; the reopened store registers `edge`,
+ * all 16 indexes, and zero `fts_node%` objects.
+ *
+ * Both arms use real engines — no mocks, no env gates.
+ */
+import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { join } from 'node:path';
+import { tmpdir } from 'node:os';
+import { createRequire } from 'node:module';
+import { SqliteAdapterImpl, TursoAdapterImpl } from '@adhd/sox-store-adapter';
+import { createGraphBackend } from './index.js';
+
+const require = createRequire(import.meta.url);
+
+const hasTurso = (() => {
+  try {
+    require.resolve('@tursodatabase/database');
+    return true;
+  } catch {
+    return false;
+  }
+})();
+const tursoArm = hasTurso ? it : it.skip;
+
+// ── The legacy fixture (row order is the point) ──────────────────────────────
+
+const DRIZZLE_MIGRATIONS_DDL = `CREATE TABLE "__drizzle_migrations" (
+  id SERIAL PRIMARY KEY,
+  hash text NOT NULL,
+  created_at bigint
+)`;
+
+/** The live backlog.db's node DDL (legacy, drizzle-generated style, backtick-quoted, enum CHECKs). */
+const LIVE_NODE_DDL = `CREATE TABLE \`node\` (
+  \`rowid\` integer PRIMARY KEY NOT NULL,
+  \`uid\` text NOT NULL,
+  \`kind\` text NOT NULL CHECK (\`kind\` IN ('episode','entity','claim','community','session','generic')),
+  \`content\` text, \`name\` text, \`summary\` text, \`topic\` text, \`tags\` text,
+  \`importance\` real DEFAULT 1.0, \`confidence\` real, \`content_hash\` text,
+  \`namespace\` text DEFAULT 'global', \`meta\` text, \`agent_id\` text, \`session_id\` text,
+  \`source\` text CHECK (\`source\` IN ('message','tool_output','observation','document','reflection','import')),
+  \`project_path\` text, \`level\` integer, \`resume_state\` text, \`t_occurred\` text, \`t_expires\` text,
+  \`t_created\` text NOT NULL, \`t_valid\` text, \`t_invalid\` text, \`is_superseded\` integer DEFAULT 0,
+  \`access_count\` integer DEFAULT 0, \`last_access\` text, \`t_updated\` text
+)`;
+
+/** The live backlog.db's edge DDL — the explicit-rowid FK form (BL-507). */
+const LIVE_EDGE_DDL = `CREATE TABLE \`edge\` (
+  \`rowid\` integer PRIMARY KEY NOT NULL,
+  \`src\` integer NOT NULL REFERENCES \`node\`(\`rowid\`) ON DELETE CASCADE,
+  \`dst\` integer NOT NULL REFERENCES \`node\`(\`rowid\`) ON DELETE CASCADE,
+  \`rel\` text NOT NULL CHECK (\`rel\` IN ('MENTIONS','SUPPORTS','RELATES_TO','SUPERSEDES','DERIVED_FROM','MEMBER_OF','PART_OF','SAME_AS','ASSIGNED_TO','DEPENDS_ON')),
+  \`weight\` real DEFAULT 1.0, \`confidence\` real,
+  \`origin\` text CHECK (\`origin\` IN ('extracted','inferred','user_asserted')),
+  \`meta\` text, \`t_created\` text NOT NULL, \`t_expired\` text, \`t_valid\` text, \`t_invalid\` text
+)`;
+
+/** The legacy node indexes (drizzle-generated style), byte-identical to the live store's rows 5-16. */
+const DRIZZLE_NODE_INDEX_DDLS = [
+  `CREATE UNIQUE INDEX \`node_uid_unique\` ON \`node\` (\`uid\`)`,
+  `CREATE INDEX \`ix_node_kind\` ON \`node\` (\`kind\`)`,
+  `CREATE INDEX \`ix_node_hash\` ON \`node\` (\`content_hash\`)`,
+  `CREATE INDEX \`ix_node_agent\` ON \`node\` (\`agent_id\`)`,
+  `CREATE INDEX \`ix_node_session\` ON \`node\` (\`session_id\`)`,
+  `CREATE INDEX \`ix_node_validity\` ON \`node\` (\`t_invalid\`) WHERE \`t_invalid\` IS NULL`,
+  `CREATE INDEX \`ix_node_importance\` ON \`node\` (\`importance\`)`,
+  `CREATE INDEX \`ix_node_temporal\` ON \`node\` (\`t_invalid\`, \`t_created\` DESC) WHERE \`t_invalid\` IS NULL`,
+  `CREATE INDEX \`ix_node_topic\` ON \`node\` (\`topic\`) WHERE \`topic\` IS NOT NULL`,
+  `CREATE INDEX \`ix_node_project\` ON \`node\` (\`project_path\`) WHERE \`project_path\` IS NOT NULL`,
+  `CREATE INDEX \`ix_node_namespace\` ON \`node\` (\`namespace\`)`,
+  `CREATE INDEX \`ix_node_expires\` ON \`node\` (\`t_expires\`) WHERE \`t_expires\` IS NOT NULL`,
+];
+
+/** The dead fts5 residue, byte-identical to the live store's rows 21-28. */
+const FTS5_VIRTUAL_TABLE = `CREATE VIRTUAL TABLE fts_node USING fts5(content, name, summary,
+  content='node', content_rowid='rowid', tokenize='unicode61')`;
+const FTS5_TRIGGERS = [
+  `CREATE TRIGGER fts_node_ai AFTER INSERT ON node BEGIN
+INSERT INTO fts_node (rowid, content, name, summary) VALUES (new.rowid, new.content, new.name, new.summary);
+END`,
+  `CREATE TRIGGER fts_node_ad AFTER DELETE ON node BEGIN
+INSERT INTO fts_node (fts_node, rowid, content, name, summary) VALUES ('delete', old.rowid, old.content, old.name, old.summary);
+END`,
+  `CREATE TRIGGER fts_node_au AFTER UPDATE ON node BEGIN
+INSERT INTO fts_node (fts_node, rowid, content, name, summary) VALUES ('delete', old.rowid, old.content, old.name, old.summary);
+INSERT INTO fts_node (rowid, content, name, summary) VALUES (new.rowid, new.content, new.name, new.summary);
+END`,
+];
+
+/**
+ * Build the legacy fixture via better-sqlite3 (which has FTS5 compiled in):
+ * the store shape left by the removed 2026-07-11 `0000_sad_onslaught.sql`
+ * migration — `__drizzle_migrations` bookkeeping + node + explicit-rowid-FK
+ * edge + node indexes, THEN the fts5 residue — so the heal's rebuild of
+ * `edge` lands a sqlite_master row AFTER the residue rows, exactly like the
+ * live store. Drizzle itself is untouched by the heal (library-domain
+ * schema only); this fixture reproduces the legacy SHAPE, not a Drizzle
+ * dependency.
+ */
+function buildLegacyFkHealFixture(dbPath: string): void {
+  const Database = require('better-sqlite3') as new (p: string) => {
+    exec(sql: string): void;
+    prepare(sql: string): { run(...args: unknown[]): void };
+    close(): void;
+  };
+  const db = new Database(dbPath);
+  db.exec(DRIZZLE_MIGRATIONS_DDL); // rowid 1
+  db.exec(LIVE_NODE_DDL); // rowid 2
+  db.exec(LIVE_EDGE_DDL); // rowid 3 — BEFORE the residue
+  for (const ddl of DRIZZLE_NODE_INDEX_DDLS) db.exec(ddl); // rowids 4-15
+  db.exec(FTS5_VIRTUAL_TABLE); // rowid 16 + 4 shadow tables (17-20)
+  for (const t of FTS5_TRIGGERS) db.exec(t); // rowids 21-23
+  const now = new Date().toISOString();
+  db.prepare(
+    `INSERT INTO node (uid, kind, content, name, t_created) VALUES (?, 'episode', ?, ?, ?)`,
+  ).run('n1', 'first node content', 'first', now);
+  db.prepare(
+    `INSERT INTO node (uid, kind, content, name, t_created) VALUES (?, 'episode', ?, ?, ?)`,
+  ).run('n2', 'second node content', 'second', now);
+  db.prepare(`INSERT INTO edge (src, dst, rel, t_created) VALUES (1, 2, 'MENTIONS', ?)`).run(now);
+  db.close();
+}
+
+/** All graph indexes a healed store must register (12 node + 4 edge). */
+const EXPECTED_INDEXES = [
+  'node_uid_unique',
+  'ix_node_kind',
+  'ix_node_hash',
+  'ix_node_agent',
+  'ix_node_session',
+  'ix_node_validity',
+  'ix_node_importance',
+  'ix_node_temporal',
+  'ix_node_topic',
+  'ix_node_project',
+  'ix_node_namespace',
+  'ix_node_expires',
+  'ix_edge_src',
+  'ix_edge_dst',
+  'ix_edge_live',
+  'ix_edge_unique',
+];
+
+/** (BL-508) The acceptance that shipped step-17 did not have: open the healed
+ *  store with the TURSO driver and read the result — the catalog abort is
+ *  silent, so "no error on open" proves nothing. */
+async function tursoCatalog(dbPath: string): Promise<{
+  tables: string[];
+  edgeCount: number | null;
+  indexNames: string[];
+  ftsResidue: string[];
+  edgeSql: string | null;
+}> {
+  const { connect } = await import('@tursodatabase/database');
+  const t = await connect(dbPath, { experimental: ['index_method', 'multiprocess_wal'] });
+  try {
+    const tables = (await t.all('PRAGMA table_list')) as Array<{ name: string }>;
+    let edgeCount: number | null = null;
+    try {
+      const rows = (await t.all('SELECT COUNT(*) AS c FROM edge')) as Array<{ c: number }>;
+      edgeCount = rows[0]?.c ?? null;
+    } catch {
+      edgeCount = null; // "no such table: edge" — the BL-506 symptom
+    }
+    const idx = (await t.all("SELECT name FROM sqlite_master WHERE type='index'")) as Array<{ name: string }>;
+    const residue = (await t.all("SELECT name FROM sqlite_master WHERE name LIKE 'fts_node%'")) as Array<{ name: string }>;
+    const edgeRow = (await t.all("SELECT sql FROM sqlite_master WHERE type='table' AND name='edge'")) as Array<{ sql: string }>;
+    return {
+      tables: tables.map((r) => r.name),
+      edgeCount,
+      indexNames: idx.map((r) => r.name),
+      ftsResidue: residue.map((r) => r.name),
+      edgeSql: edgeRow[0]?.sql ?? null,
+    };
+  } finally {
+    await t.close();
+  }
+}
+
+const EXPLICIT_ROWID_FK = /references\s+`?node`?\s*\(\s*`?rowid`?\s*\)/i;
+
+let tmpDir: string;
+beforeAll(() => {
+  tmpDir = mkdtempSync(join(tmpdir(), 'graph-store-bl506-'));
+});
+afterAll(() => {
+  rmSync(tmpDir, { recursive: true, force: true });
+});
+
+describe('BL-506/507/508 — FK self-heal on a legacy store carrying fts5 residue', () => {
+  tursoArm('turso: after the heal, a FRESH turso open registers edge, reads its row, registers all indexes, and shows zero fts5 residue', async () => {
+    const dbPath = join(tmpDir, `residue-turso-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.db`);
+    buildLegacyFkHealFixture(dbPath);
+
+    const adapter = await TursoAdapterImpl.connect({ dbPath });
+    let graph: ReturnType<typeof createGraphBackend>;
+    try {
+      graph = createGraphBackend(adapter);
+      await graph.applySchema(); // the self-heal — must drop residue BEFORE the rebuild
+      // The heal must have normalized edge's FK form in-session:
+      const edgeRow = await adapter.executeGet<{ sql: string }>(
+        `SELECT sql FROM sqlite_master WHERE type='table' AND name='edge'`,
+      );
+      expect(edgeRow?.sql ?? '').not.toMatch(EXPLICIT_ROWID_FK);
+      // The caller's adapter handle and the backend must remain LIVE after
+      // the heal's internal close → out-of-band drop → reopen (BL-508: the
+      // same-instance reconnect never leaves the caller with a dead handle):
+      const id = await graph.writeNode('post-heal write probe', {});
+      expect(id).toBeGreaterThan(0);
+    } finally {
+      await adapter.close();
+    }
+
+    // (BL-508) THE acceptance: reopen with the TURSO driver and read the
+    // result. RED: `edge` is missing from table_list and COUNT(*) throws
+    // `no such table: edge`; the edge indexes never register. GREEN: all of
+    // the below hold.
+    const catalog = await tursoCatalog(dbPath);
+    expect(catalog.tables).toContain('edge');
+    expect(catalog.edgeCount).toBe(1);
+    for (const idx of EXPECTED_INDEXES) {
+      expect(catalog.indexNames).toContain(idx);
+    }
+    // (BL-507) No fts5 residue and no duplicate `fts_node_ai` trigger.
+    expect(catalog.ftsResidue).toEqual([]);
+    expect(catalog.edgeSql ?? '').not.toMatch(EXPLICIT_ROWID_FK);
+  }, 30000);
+
+  it('sqlite: the heal must NOT drop fts5 residue on a sqlite store — it is the store\'s live FTS', async () => {
+    const dbPath = join(tmpDir, `residue-sqlite-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.db`);
+    buildLegacyFkHealFixture(dbPath);
+
+    const adapter = await new SqliteAdapterImpl(dbPath);
+    try {
+      const graph = createGraphBackend(adapter);
+      await graph.applySchema();
+      // The residue is this store's own FTS5 stack — the heal must leave it:
+      const fts = await adapter.executeAll<{ name: string }>(
+        `SELECT name FROM sqlite_master WHERE name LIKE 'fts_node%'`,
+      );
+      expect(fts.rows.length).toBeGreaterThan(0);
+      // And FTS still works against it:
+      const hits = await graph.searchNodes('first');
+      expect(hits.length).toBeGreaterThan(0);
+    } finally {
+      await adapter.close();
+    }
+  }, 30000);
+});
