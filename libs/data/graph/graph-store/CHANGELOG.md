@@ -1,5 +1,26 @@
 # @adhd/sox-graph-store
 
+## 0.8.2
+
+### Patch Changes
+
+- Fix Turso explicit-rowid FK self-heal (BL-507) + engine-identity guard (BL-508).
+
+  - **FK mismatch (production outage):** live Drizzle-era edge DDL `REFERENCES node(rowid)` fails on Turso with `foreign_keys=ON`. `hasExplicitRowidForeignKey` (index.ts:1012) detects the form; `ensureCheckConstraints` (index.ts:1137-1148) rebuilds the edge constraint gated on turso — stock SQLite resolves the form and stays byte-identical (BL-448 AC-3).
+  - **Engine guard (BL-508):** `engineIdentity` getter (lazy per-adapter); guard fails closed on a sqlite marker for a turso adapter; eager touch in `createGraphBackend` — a mismatched-engine open is refused at construction rather than corrupting the store.
+  - `createGraphBackend` guard inherits the store-adapter engine marker machinery (`application_id` / `_sox_engine`).
+
+- 659a9d7: Fix `getSupersessionChain` iterative head-selection divergence on multi-root components (reviewer finding, 0.8.1 patch).
+
+  The recursive `head` CTE is `LIMIT 1` over the connected scan, which SQLite produces in BFS discovery order from the seed — the FIRST no-outbound node in that order. The iterative fallback selected the LOWEST-ROWID no-outbound node instead. On a component with two roots — chain v1←v2←v3 plus `writeEdge(v2, v9, 'SUPERSEDES')` — `getSupersessionChain(v9)` returned `[v1, v2, v3]` on the iterative path (Turso Database Rust < 0.8.0, `capabilities.recursiveCte: false`) versus `[v9, v2, v3]` on the recursive SQL path.
+
+  - `getSupersessionChainIterative` now discovers `connected` FIFO (BFS), expanding the incoming arm (`e.dst = current`) before the outgoing arm (`e.src = current`) to mirror the CTE's two UNION arms, and selects the head as the first no-outbound node in that discovery order (Set insertion order) instead of rowid-sorting.
+  - New two-root parity test (v9 case) on both real paths (sqlite recursive SQL + turso iterative fallback) and a forced-fallback variant on sqlite — asserting the same set AND order (`[v9, v2, v3]`) on both paths. Red→green proven: both iterative tests failed with `[v1, v2, v3]` before the fix and pass after.
+  - The now-refuted "SQLite scans connected in rowid order" comment (and the stale `lowest-rowid` test name) updated to describe BFS-scan-order semantics.
+
+- Updated dependencies
+  - @adhd/sox-store-adapter@0.5.2
+
 ## 0.8.1
 
 ### Patch Changes
@@ -28,7 +49,8 @@
   `WITH RECURSIVE` is rejected at prepare by Turso Database Rust < 0.8.0, so the
   five methods that used it now switch per-call to iterative BFS fallbacks when
   the adapter reports `capabilities.recursiveCte: false` (SQLite and Turso
-  >= 0.8.0 keep the byte-identical recursive SQL):
+
+  > = 0.8.0 keep the byte-identical recursive SQL):
 
   - `getSupersessionChain` — connected-set BFS, lowest-rowid no-outbound head,
     level-tracked chain walk, (depth, rowid) sort. Same oldest-first ordering on

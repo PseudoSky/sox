@@ -1,6 +1,6 @@
 {
   "name": "@adhd/sox-blob-store",
-  "version": "0.2.5",
+  "version": "0.2.6",
   "description": "Content-addressable blob storage: SHA-256 CAS write, SQLite reference tracking, stream-based API, mark-and-sweep GC with grace periods, FD guard, integrity verification.",
   "license": "MIT",
   "private": false,
