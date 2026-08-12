@@ -535,7 +535,15 @@ tursoDescribe('BL-461 — a concurrent opener while this process holds the store
     // pre-flight opens the live store with better-sqlite3, which creates a
     // `-shm` beside the `-tshm` Turso runs its WAL coordination through. The
     // holder's assertions below are what say whether that mattered.
-    const before = (arriving.json?.sidecars ?? []) as string[];
+    //
+    // (BUG-014) A `.stale-*` file may also be present: since the fix, a
+    // writable close moves the `-tshm` it TRUNCATEd aside (the close-reset),
+    // so the seed's own close left one before the holder opened. That is a
+    // designed artifact — the assertion pins the ENGINE sidecars, so stale
+    // close-reset files are filtered out of the comparison.
+    const before = ((arriving.json?.sidecars ?? []) as string[]).filter(
+      (f) => !f.includes('.stale-'),
+    );
     expect(before, `sidecars observed inside the arriving process: ${before.join(', ')}`).toEqual([
       `${basename(dbPath)}-openmark`,
       `${basename(dbPath)}-shm`,
