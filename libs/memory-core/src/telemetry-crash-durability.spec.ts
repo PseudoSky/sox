@@ -57,7 +57,6 @@ function survivorsAfterSigkill(n: number, logDir: string, sync: boolean | null):
     SOX_MEMORY_LOG_DIR: logDir,
     SOX_MEMORY_LOG_COMPONENT: 'bl365',
   };
-  delete env['SOX_MEMORY_LOG_DISABLE'];
   if (sync !== null) env['SOX_MEMORY_LOG_SYNC'] = sync ? '1' : '0';
 
   try {
@@ -126,7 +125,6 @@ describe('BL-365 — telemetry survives a hard crash', () => {
           SOX_MEMORY_LOG_DIR: logDir,
           SOX_MEMORY_LOG_COMPONENT: 'bl365',
           SOX_MEMORY_LOG_SYNC: sync,
-          SOX_MEMORY_LOG_DISABLE: '',
         },
         stdio: 'ignore',
         timeout: 20_000,

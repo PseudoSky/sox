@@ -78,12 +78,11 @@ describe('BL-401: two different packages emit records that join on one trace-id'
     substrateDir = b.dir;
     cleanupSubstrate = b.cleanup;
 
-    for (const k of ['SOX_MEMORY_LOG_DIR', 'SOX_MEMORY_LOG_COMPONENT', 'SOX_MEMORY_LOG_DISABLE']) {
+    for (const k of ['SOX_MEMORY_LOG_DIR', 'SOX_MEMORY_LOG_COMPONENT']) {
       savedEnv[k] = process.env[k];
     }
     process.env['SOX_MEMORY_LOG_DIR'] = memCoreDir;
     process.env['SOX_MEMORY_LOG_COMPONENT'] = 'bl401-memcore';
-    delete process.env['SOX_MEMORY_LOG_DISABLE'];
     _resetTelemetryForTest();
 
     _resetSubstrateForTest();

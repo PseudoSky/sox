@@ -119,7 +119,6 @@ afterEach(async () => {
   ctx.cleanup();
   // Restore the suite-wide deterministic provider (vitest.setup.ts contract).
   _setEmbedProviderForTest(new DeterministicTestProvider());
-  delete process.env['SOX_DISABLE_EMBED_HEAL'];
   delete process.env['SOX_SYNC_EMBED'];
   if (priorAdapterEnv === undefined) delete process.env['STORE_ADAPTER'];
   else process.env['STORE_ADAPTER'] = priorAdapterEnv;
@@ -423,24 +422,6 @@ describe('Phase-B crash recovery: embedBacklogStats + healMissingVectors', () =>
     expect((await embedBacklogStats(ctx.db)).count).toBe(0); // N→0
   });
 
-  // NC (documented negative control, repo convention): with the heal disabled,
-  // the orphaned no-vec node stays orphaned forever — proving healMissingVectors
-  // is the load-bearing recovery path, not incidentally-redundant machinery.
-  // Skipped per repo NC convention; the body is real and runnable.
-  it.skip('NC: with SOX_DISABLE_EMBED_HEAL=1 the orphan stays orphaned', async () => {
-    const wq = await WriteQueue.forPath(ctx.dbPath);
-    _setEmbedProviderForTest(new FailingProvider());
-    const a = memoryWritePhaseA(ctx.db, { content: 'orphan that nobody heals', project_path: '/test/project' });
-    await schedulePendingEmbeds(wq, [(await a as PhaseAOutcome).pending!], { logSink: () => {}, vectorDialect: await vectorDialectFor(ctx.db) });
-    expect((await embedBacklogStats(ctx.db)).count).toBe(1);
-
-    _setEmbedProviderForTest(new DeterministicTestProvider());
-    process.env['SOX_DISABLE_EMBED_HEAL'] = '1';
-    const heal = await healMissingVectors(ctx.db, wq);
-    expect(heal.disabled).toBe(true);
-    expect(heal.healed).toBe(0);
-    expect((await embedBacklogStats(ctx.db)).count).toBe(1); // still orphaned
-  });
 });
 
 // ── Kill-switch composition ───────────────────────────────────────────────────

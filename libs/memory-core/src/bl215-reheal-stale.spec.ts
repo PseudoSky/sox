@@ -24,16 +24,11 @@ import { _setEmbedProviderForTest, _resetEmbedSingleton, vecToJson } from './emb
 import { DeterministicTestProvider } from './embed-test-provider.js';
 import { _resetTelemetryForTest } from './telemetry.js';
 
-const ENV_KEYS = ['SOX_HEAL_STALE_VECTORS'] as const;
-
 let dir: string;
 let dbPath: string;
 let db: StoreAdapter;
-const saved: Record<string, string | undefined> = {};
 
 beforeEach(async () => {
-  for (const k of ENV_KEYS) saved[k] = process.env[k];
-  delete process.env['SOX_HEAL_STALE_VECTORS'];
   _resetTelemetryForTest();
 
   dir = fs.mkdtempSync(path.join(os.tmpdir(), 'bl215-'));
@@ -50,11 +45,6 @@ afterEach(async () => {
   await WriteQueue.clearInstances();
   await db.close().catch(() => { /* already closed */ });
   fs.rmSync(dir, { recursive: true, force: true });
-  for (const k of ENV_KEYS) {
-    const v = saved[k];
-    if (v === undefined) delete process.env[k];
-    else process.env[k] = v;
-  }
 });
 
 /** An episode row WITH a vec_node row stamped with a foreign model — healStaleVectors' target. */
@@ -101,9 +91,9 @@ describe('BL-215: memory_curate reheal_stale — operator surface for healStaleV
     expect(typeof (result as { remaining: number }).remaining).toBe('number');
   });
 
-  // AC2 — a model-swap-stale row actually gets healed.
-  it('BL-215/AC2: a model-swap-stale row is re-embedded and committed', async () => {
-    process.env['SOX_HEAL_STALE_VECTORS'] = '1';
+  // AC2 — a model-swap-stale row actually gets healed. ALWAYS enabled: the
+  // SOX_HEAL_STALE_VECTORS gate was an anti-feature and is gone (ADR-0013).
+  it('BL-215/AC2: a model-swap-stale row is re-embedded and committed without any env var', async () => {
     await insertStale('bl215-a', 'stale row to reheal');
     const originalEmbedding = await readVecNodeEmbedding('bl215-a');
 
@@ -117,7 +107,6 @@ describe('BL-215: memory_curate reheal_stale — operator surface for healStaleV
       remaining: 0,
       gone: 0,
       failed: 0,
-      disabled: false,
     });
 
     // Do not trust the return value alone — read the DB (BL-167 standard).
@@ -132,7 +121,6 @@ describe('BL-215: memory_curate reheal_stale — operator surface for healStaleV
 
   // AC3 — bounded, and rerunnable ("operator needs to be able to run it twice").
   it('BL-215/AC3: limit bounds each call; remaining decreases monotonically to 0', async () => {
-    process.env['SOX_HEAL_STALE_VECTORS'] = '1';
     await insertStale('bl215-b1', 'stale row one');
     await insertStale('bl215-b2', 'stale row two');
     await insertStale('bl215-b3', 'stale row three');
@@ -156,28 +144,28 @@ describe('BL-215: memory_curate reheal_stale — operator surface for healStaleV
     }
   });
 
-  // AC4 — disabled state is honest, not silent (D5).
-  it('BL-215/AC4: disabled pass still reports an honest non-zero remaining', async () => {
-    // SOX_HEAL_STALE_VECTORS deliberately left unset.
-    await insertStale('bl215-c', 'stale row, heal disabled');
+  // AC4 — there is no disabled state: the gate is gone (ADR-0013), so the
+  // operator action heals with NO env var set, and the result carries no
+  // `disabled` field at all (an honest absent field, not a silent false).
+  it('BL-215/AC4: no env gate — the operator action heals and reports no disabled field', async () => {
+    await insertStale('bl215-c', 'stale row, no gate to trip');
     const wq = await WriteQueue.forPath(dbPath);
 
     const result = await memoryCurate(db, { op: 'reheal_stale' }, wq);
     expect(result).toMatchObject({
       op: 'reheal_stale',
-      scanned: 0,
-      healed: 0,
-      disabled: true,
+      scanned: 1,
+      healed: 1,
+      remaining: 0,
     });
-    expect((result as { remaining: number }).remaining).toBe(1);
+    expect('disabled' in (result as object)).toBe(false);
 
-    // Confirm nothing was healed.
-    expect(await readEmbedModel('bl215-c')).toBe('some-other-model');
+    // Confirm the heal really landed (BL-167 standard).
+    expect(await readEmbedModel('bl215-c')).toBe('test-feature-hash-768');
   });
 
   // AC5 — dry_run: true is rejected, not silently ignored (D4).
   it('BL-215/AC5: dry_run:true is rejected with E_UNSUPPORTED, no mutation happens', async () => {
-    process.env['SOX_HEAL_STALE_VECTORS'] = '1';
     await insertStale('bl215-d', 'stale row, dry run requested');
     const wq = await WriteQueue.forPath(dbPath);
 

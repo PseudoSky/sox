@@ -44,9 +44,6 @@ const LOG_ENV = [
   'SOX_MEMORY_LOG_DIR',
   'SOX_MEMORY_LOG_COMPONENT',
   'SOX_MEMORY_LOG_LEVEL',
-  'SOX_MEMORY_LOG_DISABLE',
-  'SOX_HEAL_STALE_VECTORS',
-  'SOX_DISABLE_EMBED_HEAL',
 ] as const;
 
 function readRecords(filePath: string | null): Record<string, unknown>[] {
@@ -71,9 +68,6 @@ beforeEach(async () => {
   process.env['SOX_MEMORY_LOG_DIR'] = logDir;
   process.env['SOX_MEMORY_LOG_COMPONENT'] = 'bl434';
   process.env['SOX_MEMORY_LOG_LEVEL'] = 'info';
-  delete process.env['SOX_MEMORY_LOG_DISABLE'];
-  delete process.env['SOX_DISABLE_EMBED_HEAL'];
-  delete process.env['SOX_HEAL_STALE_VECTORS'];
   _resetTelemetryForTest();
 
   dbPath = path.join(dir, 'm.db');
@@ -219,12 +213,10 @@ describe('BL-434: heal-path embeds carry a real trace id', () => {
   });
 
   it('BL-434: healStaleVectors (the reembed sibling) carries a trace id on its embeds too', async () => {
-    process.env['SOX_HEAL_STALE_VECTORS'] = '1';
     await insertStale('bl434-f', 'stale vector to re-embed');
     const wq = await WriteQueue.forPath(dbPath);
 
     const out = await healStaleVectors(db, wq, { limit: 10, logSink: () => { /* quiet */ } });
-    expect(out.disabled).toBe(false);
     expect(out.healed).toBe(1);
     await _flushTelemetryForTest();
 
@@ -241,17 +233,18 @@ describe('BL-434: heal-path embeds carry a real trace id', () => {
     }
   });
 
-  it('BL-434: a disabled heal tick mints nothing — no orphan trace context is established', async () => {
-    process.env['SOX_DISABLE_EMBED_HEAL'] = '1';
-    await insertOrphan('bl434-g', 'never healed');
+  it('BL-434: the heal tick ALWAYS runs (no disable gate — ADR-0013) and mints a trace id on its embeds', async () => {
+    await insertOrphan('bl434-g', 'healed unconditionally');
     const wq = await WriteQueue.forPath(dbPath);
 
     const out = await healMissingVectors(db, wq, { limit: 10, logSink: () => { /* quiet */ } });
-    expect(out.disabled).toBe(true);
+    expect(out.healed).toBe(1);
     await _flushTelemetryForTest();
 
     const records = readRecords(currentLogFilePath());
-    expect(records.filter((r) => r['event'] === 'embed_pipeline.heal.row.start')).toHaveLength(0);
-    expect(records.filter((r) => r['event'] === 'embed.start')).toHaveLength(0);
+    expect(records.filter((r) => r['event'] === 'embed_pipeline.heal.row.start').length).toBeGreaterThan(0);
+    const embedStarts = records.filter((r) => r['event'] === 'embed.start');
+    expect(embedStarts.length).toBeGreaterThanOrEqual(1);
+    for (const rec of embedStarts) expect(rec['trace_id']).not.toBeNull();
   });
 });

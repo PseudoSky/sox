@@ -38,6 +38,7 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import type { StorageError } from './errors.js';
 import { expandDbPath } from './db.js';
+import { resolveBackupConfig } from './config.js';
 import type { BackupIntegrityReport, StoreAdapter } from '@adhd/sox-store-adapter';
 
 // ── Public types ──────────────────────────────────────────────────────────────
@@ -316,9 +317,14 @@ export interface AutoBackupResult {
  * Pre-restart auto-backup: create a timestamped VACUUM INTO backup of the
  * memory database when the process is about to restart or shut down.
  *
- * Env control:
- *   - `SOX_AUTO_BACKUP_ENABLED` — set to `'false'` or `'0'` to disable (default: enabled)
- *   - `SOX_AUTO_BACKUP_DIR` — backup directory (default: `~/.memory/backups/`)
+ * ALWAYS ON: `SOX_AUTO_BACKUP_ENABLED` was an anti-feature (an env var whose
+ * only job was to disable a core safety function; ADR-0013) and is gone —
+ * auto-backup runs on every restart, and `BackupConfig.enabled` is the typed
+ * literal `true` (report-only, unrepresentable as false; see config.ts).
+ * Only the destination is configurable, resolved via {@link resolveBackupConfig}:
+ *   - typed `config.backup.dir` seam (future platform config-cascade) →
+ *   - `SOX_AUTO_BACKUP_DIR` (host-injected config, KEPT per ADR-0013 D5) →
+ *   - `~/.memory/backups` (default).
  *
  * Idempotency:
  *   Tracks the source DB's mtime in a hidden marker file
@@ -338,35 +344,25 @@ export async function autoBackup(
 ): Promise<AutoBackupResult> {
   const log = opts?.log ?? (() => undefined);
 
-  // 1. Check SOX_AUTO_BACKUP_ENABLED (default: enabled).
-  const enabledRaw = process.env.SOX_AUTO_BACKUP_ENABLED;
-  if (enabledRaw !== undefined && (enabledRaw === 'false' || enabledRaw === '0' || enabledRaw === '')) {
-    log('[auto-backup] disabled via SOX_AUTO_BACKUP_ENABLED');
-    return { path: '', size: 0, skipped: true };
-  }
-
-  // 2. Resolve source path.
+  // 1. Resolve source path.
   const resolvedSrc = path.resolve(expandDbPath(dbPath ?? '~/.memory/memory.db'));
 
-  // 3. Source must exist.
+  // 2. Source must exist.
   if (!fs.existsSync(resolvedSrc)) {
     log(`[auto-backup] source not found: ${resolvedSrc}`);
     return { path: '', size: 0, skipped: true };
   }
 
-  // 4. Allowlist guard.
+  // 3. Allowlist guard.
   if (!isPathInMemoryAllowlist(resolvedSrc)) {
     log(`[auto-backup] source outside ~/.memory/** allowlist: ${resolvedSrc}`);
     return { path: '', size: 0, skipped: true };
   }
 
-  // 5. Resolve backup directory.
-  const backupDirRaw = process.env.SOX_AUTO_BACKUP_DIR;
-  const backupDir = backupDirRaw
-    ? path.resolve(expandDbPath(backupDirRaw))
-    : path.join(os.homedir(), '.memory', 'backups');
+  // 4. Resolve backup directory through the typed config (ADR-0013 D2/D5).
+  const backupDir = resolveBackupConfig().dir;
 
-  // 6. Ensure backup directory exists.
+  // 5. Ensure backup directory exists.
   try {
     fs.mkdirSync(backupDir, { recursive: true });
   } catch (err) {
@@ -374,7 +370,7 @@ export async function autoBackup(
     return { path: '', size: 0, skipped: true };
   }
 
-  // 7. Idempotency: compare source mtime against the last-backup marker.
+  // 6. Idempotency: compare source mtime against the last-backup marker.
   let srcStat: fs.Stats;
   try {
     srcStat = fs.statSync(resolvedSrc);
