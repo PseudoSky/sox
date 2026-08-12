@@ -32,7 +32,7 @@
  * file survives the first open. They PASS once connect keys the marker off the
  * lease token, gates the pre-flight on dead-pid liveness, and sweeps after.
  */
-import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import { describe, it, expect, vi, beforeAll, afterAll } from 'vitest';
 import { spawn } from 'node:child_process';
 import { once } from 'node:events';
 import {
@@ -40,13 +40,15 @@ import {
   rmSync,
   readdirSync,
   existsSync,
+  readFileSync,
   writeFileSync,
 } from 'node:fs';
 import { join, resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { tmpdir } from 'node:os';
 import { TursoAdapterImpl } from '../turso-adapter.js';
-import { leaseDirPath } from '../store-lease.js';
+import { leaseDirPath, entryLiveness } from '../store-lease.js';
+import * as preflightModule from '../preflight.js';
 import {
   hasUncleanShutdown,
   hasStoreOpenMarker,
@@ -174,6 +176,33 @@ describe('BUG-019 — per-connection open marker mechanics', () => {
     }
   });
 
+  it('a LIVE session older than 24 h is still live — the age-out never overrides liveness (BUG-019 review fix)', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'bug019-live-aged-'));
+    try {
+      const db = join(dir, 'store.db');
+      markStoreOpen(db, 'tok-long-lived');
+      // Probe through the liveness seam (`entryLiveness`'s `now` parameter) at
+      // a simulated +25 h — NOT by backdating the marker content, so the pid
+      // stays this process's REAL live pid throughout. The regression this
+      // pins: the old entryLiveness applied the 24 h age-out BEFORE the pid
+      // probe, so this marker read live:false — hasUncleanShutdown re-fired
+      // the pre-flight against a live store, and sweepDeadOpenMarkers deleted
+      // a LIVE session's marker (its crash evidence), i.e. the BUG-019 failure
+      // modes returning for sessions running >24 h.
+      const content = readFileSync(openMarkerPath(db, 'tok-long-lived'), 'utf8');
+      const info = entryLiveness(content, Date.now() + 25 * 60 * 60 * 1000);
+      expect(info).not.toBeNull();
+      expect(info!.live).toBe(true);
+      // Predicate + sweep level: a live session is never unclean and its
+      // marker is never swept, whatever the entry's age.
+      expect(hasUncleanShutdown(db)).toBe(false);
+      expect(sweepDeadOpenMarkers(db)).toBe(0);
+      expect(existsSync(openMarkerPath(db, 'tok-long-lived'))).toBe(true);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it('clearStoreOpenMarker unlinks ONLY its own marker', () => {
     const dir = mkdtempSync(join(tmpdir(), 'bug019-clear-'));
     try {
@@ -259,6 +288,15 @@ tursoDescribe('BUG-019 — SPEC §T5 (a): two adapters; A closes cleanly, B surv
 
 tursoDescribe('BUG-019 — SPEC §T5 (b): kill -9 crash evidence survives a sibling close', () => {
   it('a dead-pid marker survives a sibling’s orderly close; the next open consumes it exactly once', async () => {
+    // (BUG-019 review fix, finding 3) Make the "runs preflight exactly once"
+    // claim AIRTIGHT by counting invocations of the pre-flight entry point
+    // itself, in addition to the structural marker-consumption assertions
+    // below. Installed before seedStore so the count covers the WHOLE
+    // scenario: seedStore (clean open) and the server open (victim still
+    // live) must never fire it; the first fresh open fires it exactly once;
+    // the second fresh open (signal consumed) never re-fires it.
+    const preflightSpy = vi.spyOn(preflightModule, 'preflightSchemaSanity');
+
     const dbPath = tempPath('bug019-kill9');
     await seedStore(dbPath);
 
@@ -272,6 +310,7 @@ tursoDescribe('BUG-019 — SPEC §T5 (b): kill -9 crash evidence survives a sibl
       // LIVE peer (its marker pid is alive), so nothing is unclean.
       expect(openMarkers(dbPath)).toHaveLength(2);
       expect(hasUncleanShutdown(dbPath)).toBe(false);
+      expect(preflightSpy).toHaveBeenCalledTimes(0);
 
       victim.kill('SIGKILL');
       await once(victim, 'exit');
@@ -294,12 +333,16 @@ tursoDescribe('BUG-019 — SPEC §T5 (b): kill -9 crash evidence survives a sibl
     const fresh = await TursoAdapterImpl.connect({ dbPath });
     expect(openMarkers(dbPath)).toHaveLength(1); // only fresh's own LIVE marker
     expect(hasUncleanShutdown(dbPath)).toBe(false); // crash evidence consumed
+    expect(preflightSpy).toHaveBeenCalledTimes(1); // fired exactly once
     await fresh.close();
     expect(openMarkers(dbPath)).toHaveLength(0);
 
     const fresh2 = await TursoAdapterImpl.connect({ dbPath });
     await fresh2.close();
     expect(hasUncleanShutdown(dbPath)).toBe(false); // never re-triggered
+    // Airtight: the pre-flight ran EXACTLY ONCE across the whole scenario.
+    expect(preflightSpy).toHaveBeenCalledTimes(1);
+    preflightSpy.mockRestore();
   }, 120_000);
 });
 

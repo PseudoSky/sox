@@ -114,6 +114,22 @@ import { log } from '@adhd/sox-telemetry';
 
 const require = createRequire(import.meta.url);
 
+/**
+ * (BUG-019 review fix, finding 2) Best-effort marker-file fs error reporting.
+ * The mark/clear/sweep never-throw contract is load-bearing, so a failed fs
+ * call is logged — never thrown. ENOENT/ENOTDIR are the expected benign races
+ * (concurrent close, a sibling sweeper, a not-yet-created lease dir) and stay
+ * silent-but-commented; any other errno (EACCES, EIO, EPERM, …) is a real
+ * problem a diagnosis wants to see, logged at debug level only (DEBT-003
+ * precedent) so the per-connect `hasUncleanShutdown` gate stays quiet in the
+ * common case.
+ */
+function logMarkerFsError(event: string, err: unknown): void {
+  const errno = (err as { code?: unknown } | null | undefined)?.code;
+  if (errno === 'ENOENT' || errno === 'ENOTDIR') return;
+  log.debug(event, { errno: errno === undefined ? 'UNKNOWN' : String(errno) });
+}
+
 // ── Out-of-band open marker ──────────────────────────────────────────────────
 
 /**
@@ -172,8 +188,9 @@ export function markStoreOpen(dbPath: string | undefined, token?: string): void 
     } else {
       writeFileSync(storeOpenMarkerPath(dbPath), `${process.pid} ${new Date().toISOString()}\n`);
     }
-  } catch {
+  } catch (err) {
     // A marker we cannot write only costs the next open its pre-flight.
+    logMarkerFsError('store_adapter.preflight.mark_open_failed', err);
   }
 }
 
@@ -192,8 +209,9 @@ export function clearStoreOpenMarker(dbPath: string | undefined, token?: string)
     } else {
       unlinkSync(storeOpenMarkerPath(dbPath));
     }
-  } catch {
+  } catch (err) {
     // Already gone (or never written) — both fine.
+    logMarkerFsError('store_adapter.preflight.clear_marker_failed', err);
   }
 }
 
@@ -201,13 +219,16 @@ export function clearStoreOpenMarker(dbPath: string | undefined, token?: string)
  * (BUG-019) True when a previous session left the store unclean.
  *
  * "Unclean" is now a DEAD connection, not a present file: any `.openmark`
- * whose pid is dead (or older than 24 h — the SAME liveness logic and age-out
- * `storeQuiescence` applies to lease entries, via {@link entryLiveness}) means
- * a session started and did not end orderly, so the pre-flight must run. A
- * marker whose pid is LIVE is a session that is STILL OPEN — a concurrent
- * peer, never an unclean signal. The old shared marker could not distinguish
- * the two, which is what made every fresh open under a long-lived server run
- * the pre-flight against a live multiprocess store (BUG-019).
+ * whose pid is dead means a session started and did not end orderly, so the
+ * pre-flight must run. Liveness comes from {@link entryLiveness} — the SAME
+ * logic `storeQuiescence` applies to lease entries: the pid is probed FIRST,
+ * and the 24 h age-out applies only to pids whose liveness cannot be
+ * established, so a marker held by a LIVE session (however long it has run)
+ * is never unclean. A marker whose pid is LIVE is a session that is STILL
+ * OPEN — a concurrent peer, never an unclean signal. The old shared marker
+ * could not distinguish the two, which is what made every fresh open under a
+ * long-lived server run the pre-flight against a live multiprocess store
+ * (BUG-019).
  *
  * Migration shim: a LEGACY `${dbPath}-openmark` file (pre-BUG-019 versions
  * wrote one shared file) is treated as unclean ONCE, until
@@ -219,7 +240,8 @@ export function hasUncleanShutdown(dbPath: string | undefined): boolean {
   if (!dbPath) return false;
   try {
     if (existsSync(storeOpenMarkerPath(dbPath))) return true; // legacy shim
-  } catch {
+  } catch (err) {
+    logMarkerFsError('store_adapter.preflight.legacy_marker_probe_failed', err);
     return false;
   }
   const now = Date.now();
@@ -231,15 +253,28 @@ export function hasUncleanShutdown(dbPath: string | undefined): boolean {
       let content: string;
       try {
         content = readFileSync(join(dir, name), 'utf8');
-      } catch {
+      } catch (err) {
+        logMarkerFsError('store_adapter.preflight.marker_read_failed', err);
         continue; // unreadable — cannot judge liveness
       }
       // Only a PROVEN-dead pid (or age-out) is an unclean signal; unparseable
       // content and live pids are not.
+      //
+      // (BUG-019 review finding 4) An unparseable marker (e.g. a torn/corrupt
+      // write) is deliberately NOT unclean and NOT swept HERE: treating it as
+      // unclean would fire the pre-flight against a store that may be
+      // perfectly healthy (a false positive — the BUG-019 class), and
+      // sweeping it without proof of death risks deleting evidence of a
+      // session whose state we cannot read. It stays conservative — the safe
+      // direction. A partial write whose PID line parses is still detected (a
+      // dead pid → unclean via entryLiveness); a fully corrupt lone marker
+      // lingers harmlessly until the gate fires for a real reason, at which
+      // point sweepDeadOpenMarkers removes it.
       const info = entryLiveness(content, now);
       if (info !== null && !info.live) return true;
     }
-  } catch {
+  } catch (err) {
+    logMarkerFsError('store_adapter.preflight.lease_dir_read_failed', err);
     return false; // absent/unreadable dir ⇒ clean
   }
   return false;
@@ -261,11 +296,13 @@ export function sweepDeadOpenMarkers(dbPath: string | undefined): number {
       try {
         unlinkSync(storeOpenMarkerPath(dbPath));
         swept += 1;
-      } catch {
+      } catch (err) {
         // raced by another sweeper — idempotent
+        logMarkerFsError('store_adapter.preflight.legacy_marker_sweep_failed', err);
       }
     }
-  } catch {
+  } catch (err) {
+    logMarkerFsError('store_adapter.preflight.legacy_marker_probe_failed', err);
     return swept;
   }
   const now = Date.now();
@@ -278,7 +315,8 @@ export function sweepDeadOpenMarkers(dbPath: string | undefined): number {
       let content: string;
       try {
         content = readFileSync(markerPath, 'utf8');
-      } catch {
+      } catch (err) {
+        logMarkerFsError('store_adapter.preflight.marker_read_failed', err);
         continue; // concurrent removal
       }
       // Dead, aged-out, or unparseable → swept. A live session's marker is
@@ -288,12 +326,14 @@ export function sweepDeadOpenMarkers(dbPath: string | undefined): number {
         try {
           unlinkSync(markerPath);
           swept += 1;
-        } catch {
+        } catch (err) {
           // raced — idempotent
+          logMarkerFsError('store_adapter.preflight.marker_sweep_failed', err);
         }
       }
     }
-  } catch {
+  } catch (err) {
+    logMarkerFsError('store_adapter.preflight.lease_dir_read_failed', err);
     // absent/unreadable dir — nothing to sweep
   }
   return swept;
