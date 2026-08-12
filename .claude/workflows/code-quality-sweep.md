@@ -56,6 +56,7 @@ Workflow({ scriptPath: '.claude/workflows/code-quality-sweep.mjs', args: {
 | Arg | Default | Meaning |
 |---|---|---|
 | `packages` | *(auto-discovered)* | Paths or unit objects. Omit to seed from nx |
+| `filter` | — | Narrow the discovered projects before fan-out — see Scoping |
 | `agents` | built-in roster | **Agent-type names** for the review panel, e.g. `['typescript-pro','performance-engineer']`. Unknown names get a generic lens |
 | `roster` | built-in | Full `[{agentType, lensDescription, packageSelector}]` control; takes precedence over `agents` |
 | `priorArt` | `[]` | `[{id, title}]` of already-filed items. Each epic comes back tagged `NEW` / `CORROBORATES <id>` / `EXTENDS <id>` |
@@ -67,6 +68,39 @@ Workflow({ scriptPath: '.claude/workflows/code-quality-sweep.mjs', args: {
 | `verifyBatchSize` | `6` | Findings per verifier agent |
 | `skipVerify` | `false` | Disable Stage 2.5 |
 | `root` | `'.'` | Repo root prefixed onto scope paths |
+
+## Scoping the sweep: `filter`
+
+A human says *"sweep the apigen projects"* or *"sweep agent-mcp and everything it depends on"*.
+The invoking agent translates that into a `filter`; the workflow resolves it **deterministically**,
+so "all its in-repo deps" is the real nx dependency closure rather than an agent's guess.
+
+```js
+filter: {
+  projects:       ['agent-mcp'],   // exact nx project names to seed from
+  include:        ['apigen'],      // regex/substring over project name OR path
+  exclude:        ['-e2e$'],       // applied last, always wins
+  tags:           ['area:data'],   // nx tags, any-match
+  withDeps:       true,            // add the seeds' transitive in-repo dependencies
+  withDependents: false,           // add everything that transitively depends on the seeds
+  depDepth:       Infinity,        // cap the walk; 1 = direct edges only
+}
+```
+
+`projects` + `include` + `tags` union into a **seed set** (no criteria at all = every project);
+`withDeps`/`withDependents` expand it across the graph; `exclude` prunes last.
+
+| The request | The filter |
+|---|---|
+| "projects inside apigen" | `{ include: ['apigen'] }` |
+| "agent-mcp and all its in-repo deps" | `{ projects: ['agent-mcp'], withDeps: true }` |
+| "just x, y and z" | `{ projects: ['x','y','z'] }` |
+| "everything that would break if I change apigen-core" | `{ projects: ['apigen-core'], withDependents: true }` |
+| "the data libs, but not e2e" | `{ tags: ['area:data'], exclude: ['-e2e$'] }` |
+
+Failure modes are loud, not silent: a name in `projects` that nx never reported logs a WARNING
+naming it, and a filter matching **nothing** throws with the seed criteria and the discovered
+project names, rather than quietly sweeping zero projects.
 
 ## Size-aware units
 
