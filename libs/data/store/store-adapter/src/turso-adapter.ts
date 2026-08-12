@@ -751,11 +751,16 @@ export class TursoAdapterImpl implements TursoAdapter {
               if (contentDead.dead) {
                 throw describeStaleWalIndexFailure(
                   opts.dbPath,
-                  contentDeadRecovery ??
-                    recoverStaleWalIndex(opts.dbPath, {
-                      allowUnderLivePeers: true,
-                      requireContentDead: true,
-                    }),
+                  // (DEBT-003 review finding 1) `contentDeadRecovery` is
+                  // assigned unconditionally at the top of the
+                  // `if (contentDead.dead)` block above (line 691), so the
+                  // former `?? recoverStaleWalIndex(...)` fallback was
+                  // unreachable defensive code — a redundant re-probe that
+                  // could never fire. The preserved reconcile result is the
+                  // only one the typed operator error can truthfully
+                  // narrate: a fresh call would report "no -tshm present"
+                  // (it was already moved) and mislead the operator.
+                  contentDeadRecovery!,
                   lastError,
                   probeWalFrames(opts.dbPath + '-wal'),
                 );
