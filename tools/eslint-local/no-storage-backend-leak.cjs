@@ -152,6 +152,19 @@ const DEFAULT_EXCEPTIONS = [
     fn: 'dropFtsResidueViaBetterSqlite3',
     text: 'better-sqlite3',
   },
+  // BL-507: Turso/libSQL (unlike stock SQLite) cannot resolve an FK that
+  // references the parent's `rowid` alias explicitly (`REFERENCES node(rowid)`
+  // — the Drizzle-era edge DDL); with foreign_keys=ON every write dies with
+  // `foreign key mismatch referencing "node"` (measured on a copy of the live
+  // backlog.db, 2026-08-11). The edge rebuild in `ensureCheckConstraints`
+  // must fire on turso only — stock SQLite resolves the form, and its stores
+  // must stay byte-identical (BL-448 AC-3). A driver capability fact, not a
+  // dialect choice.
+  {
+    pathSuffix: 'libs/data/graph/graph-store/src/index.ts',
+    fn: 'ensureCheckConstraints',
+    text: "this.adapter.config.type === 'turso'",
+  },
   // BL-94 startup binding probe: names the driver to fail fast with a clear
   // message instead of mid-session. Diagnostic, not a SQL/dialect decision.
   {
