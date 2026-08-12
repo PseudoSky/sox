@@ -24,6 +24,40 @@ process.env['SOX_SYNC_EMBED'] = '1';
 process.env['STORE_ADAPTER'] = 'sqlite';
 
 /**
+ * BL-567: mock embeddings by DEFAULT.
+ *
+ * Install the deterministic feature-hash provider (`DeterministicTestProvider`,
+ * the BL-161 seam) in this shared setup so EVERY memory-server spec runs
+ * vector-deterministically out of the box: no real fastembed/ONNX model load,
+ * no fastembed child-process fork, no network, no model-cache requirement.
+ * `getOrCreateProvider()` in memory-core's embed.ts short-circuits on the
+ * injected test provider BEFORE `resolveProvider()` is ever called, so the
+ * shared fastembed child process (BL-11 boundary) is never spawned — the mock
+ * fully bypasses the child boundary, it does not flow through it.
+ *
+ * This is why the suite no longer needs heroics to stay green: previously the
+ * REAL bge-base-en-v1.5 backend loaded in every worker that embedded (visible
+ * as repeated CoreML/onnxruntime warnings in the log), forcing
+ * `pool:'forks'`/`maxWorkers:1` serialisation + 30s timeouts (vitest.config.ts).
+ *
+ * NAMED REAL-BACKEND EXCEPTIONS opt out explicitly, per spec file:
+ *   _setEmbedProviderForTest(null);
+ *   process.env['SOX_EMBED_BACKEND'] = 'real';
+ * ...and are gated (skip, not fail) on the ONNX model cache being present —
+ * recall-sqlite.test.ts ('real embedding semantic proof' describe),
+ * turso-clean-room.test.ts ('real embedding throughput' test), and
+ * clustering-e2e.test.ts (whole file). Those files live in the 'real-backend'
+ * vitest project (vitest.config.ts) which keeps the native-addon serialisation
+ * pin exactly where real ONNX loads.
+ *
+ * The test provider survives _resetEmbedSingleton() calls (those clear the
+ * cached fastembed instance but deliberately leave _testProvider intact).
+ */
+import { DeterministicTestProvider, _setEmbedProviderForTest } from '@adhd/sox-memory-core';
+
+_setEmbedProviderForTest(new DeterministicTestProvider());
+
+/**
  * BL-412 whole-suite guard: no test in this project may EVER open a
  * connection (or even probe with existsSync/statSync/mkdirSync) against the
  * REAL, live, production store under `~/.memory/**`. That directory is the

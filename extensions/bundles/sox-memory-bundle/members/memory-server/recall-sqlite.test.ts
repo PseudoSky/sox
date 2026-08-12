@@ -14,7 +14,7 @@
  */
 
 import type { RecallResponse } from '@adhd/sox-memory-core';
-import { _resetEmbedSingleton, _shutdownEmbedWorker, getActiveEmbedModel, memoryRecall, memoryWrite, openDb, runBatchEnrich } from '@adhd/sox-memory-core';
+import { DeterministicTestProvider, _resetEmbedSingleton, _setEmbedProviderForTest, _shutdownEmbedWorker, getActiveEmbedModel, memoryRecall, memoryWrite, openDb, runBatchEnrich } from '@adhd/sox-memory-core';
 import Database from 'better-sqlite3';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
@@ -171,7 +171,27 @@ describe('memoryRecall — real SQLite integration', () => {
 // Proves that the MCP path routes through the real fastembed backend, producing
 // semantically-ranked recall (not just hash-bucket recall).
 
-describe('MCP bundle path — real embedding semantic proof', () => {
+// ── BL-567 real-backend cache gate ──────────────────────────────────────────
+// This describe asserts on REAL bge-base-en-v1.5 model behaviour (active-model
+// identity + semantic ranking), so it opts out of the setup's default
+// DeterministicTestProvider mock and runs the real backend — but ONLY when the
+// model binary is actually on disk. Resolved synchronously at module load (the
+// tursoDescribe pattern — vitest freezes { skip } during collection, before any
+// hook has run). The cache check mirrors embedding-provider's canonical
+// isModelCached() (src/index.ts:327): <cacheDir>/<hfRepoId>/model_optimized.onnx,
+// with memory-core's cacheDir resolution (embed.ts resolveConfig:
+// SOX_EMBED_CACHE_DIR ?? $XDG_CACHE_HOME/sox-memory/models). When the cache is
+// absent the describe SKIPS — a CI box with no model cache must not fail (or
+// download) on this.
+const REAL_MODEL_CACHE_DIR =
+  process.env['SOX_EMBED_CACHE_DIR'] ??
+  path.join(process.env['XDG_CACHE_HOME'] ?? path.join(os.homedir(), '.cache'), 'sox-memory', 'models');
+const REAL_MODEL_CACHED = fs.existsSync(
+  path.join(REAL_MODEL_CACHE_DIR, 'fast-bge-base-en-v1.5', 'model_optimized.onnx'),
+);
+const realEmbeddingDescribe = REAL_MODEL_CACHED ? describe : describe.skip;
+
+realEmbeddingDescribe('MCP bundle path — real embedding semantic proof', () => {
   let dbPath: string;
   let cleanup: () => void;
 
@@ -179,6 +199,12 @@ describe('MCP bundle path — real embedding semantic proof', () => {
     const tmp = makeTempDb();
     dbPath = tmp.dbPath;
     cleanup = tmp.cleanup;
+    // BL-567: opt out of the setup-default mock — this describe must exercise
+    // the REAL fastembed/ONNX backend, not the feature-hash provider. Clear
+    // BEFORE the reset so the singleton lands in the truthful 'uninitialized'
+    // state (embed.ts _resetEmbedSingleton: _activeModel = _testProvider ? ...
+    // : null) until the first real embed resolves it.
+    _setEmbedProviderForTest(null);
     _resetEmbedSingleton();
     process.env['SOX_EMBED_BACKEND'] = 'real';
   });
@@ -188,6 +214,10 @@ describe('MCP bundle path — real embedding semantic proof', () => {
     // test file ends — otherwise vitest's fork pool times out terminating the fork.
     await _shutdownEmbedWorker();
     delete process.env['SOX_EMBED_BACKEND'];
+    // BL-567: restore the default mock so the file's other (mechanics) describes
+    // keep running deterministically.
+    _setEmbedProviderForTest(new DeterministicTestProvider());
+    _resetEmbedSingleton();
     cleanup();
   });
 
