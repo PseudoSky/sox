@@ -356,6 +356,43 @@ export class RepairDeclinedLivePeersError extends Error {
 }
 
 /**
+ * (BUG-018 review finding 3) Thrown by `canonicalDbPath` when the store's
+ * PARENT directory exists but cannot be resolved — `realpathSync` failed with
+ * a non-absence errno (EACCES: unreadable parent, EIO, ELOOP, …).
+ *
+ * This is the DEBT-003 discipline applied to path identity: only a PLAIN
+ * absence (ENOENT, or a path component that is not a directory, ENOTDIR) is a
+ * legitimate raw fallback — the caller's own open will surface the real error,
+ * and no fs identity exists for anyone to diverge on. EACCES/EIO/… are
+ * UNCERTAINTY, not absence: a process that cannot stat an ancestor could still
+ * hold a live open of the store (e.g. execute-but-not-read permission on the
+ * parent), and a silent raw fallback there would let two processes compute
+ * DIFFERENT coordination keys (lease dir / marker / sidecars) for one physical
+ * store — the exact false-quiescence failure BUG-018 fixes. So an unresolvable
+ * parent surfaces this typed, errno-carrying error instead of falling back.
+ */
+export class EPathIdentityUnresolvable extends Error {
+  public readonly code = 'E_PATH_IDENTITY_UNRESOLVABLE';
+
+  constructor(
+    public readonly dbPath: string,
+    /** The realpathSync errno (EACCES, EIO, ELOOP, …) — for operator diagnosis. */
+    public readonly errno: string,
+    cause: unknown,
+  ) {
+    const causeNote = cause instanceof Error ? ` Cause: ${cause.message}` : '';
+    super(
+      `[BUG-018] cannot resolve the canonical identity of "${dbPath}": realpath of its parent ` +
+        `directory failed with ${errno}. The parent is not merely absent — it exists but cannot be ` +
+        `resolved, so falling back to the raw spelling could diverge from the canonical key a peer ` +
+        `computes for the same store (false quiescence). Fix the parent's permissions/fs state and ` +
+        `retry.${causeNote}`,
+    );
+    this.name = 'EPathIdentityUnresolvable';
+  }
+}
+
+/**
  * (BL-512 follow-on) True if `err` is the Turso driver's open-handshake race
  * refusal — a sibling process that is mid-open (or holding) the store without
  * experimental multiprocess WAL while this process opens WITH it:
