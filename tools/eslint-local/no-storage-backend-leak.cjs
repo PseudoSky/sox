@@ -177,6 +177,19 @@ const DEFAULT_EXCEPTIONS = [
     fn: 'engineIdentity',
     text: "this.adapter.config.type === 'turso'",
   },
+  // BL-506: the FK-heal's fts5-residue drop is turso-only. Drizzle-era stores
+  // carry dead fts5 rows (the store's FTS is Tantivy on turso, fts5 on
+  // sqlite — `capabilities.fts5` IS true on sqlite, so a capability gate
+  // cannot express "drop residue only on the engine that cannot parse it");
+  // deleting them goes through better-sqlite3 because the turso driver
+  // hard-refuses sqlite_master writes. A driver capability fact, not a
+  // dialect choice — and the sqlite arm must keep its live FTS5 stack
+  // byte-identical (BL-448 AC-3).
+  {
+    pathSuffix: 'libs/data/graph/graph-store/src/index.ts',
+    fn: 'dropFts5ResidueBeforeRebuild',
+    text: "cfg.type !== 'turso'",
+  },
   // BL-94 startup binding probe: names the driver to fail fast with a clear
   // message instead of mid-session. Diagnostic, not a SQL/dialect decision.
   {

@@ -1,7 +1,7 @@
 // @adhd/sox-graph-store — Bi-temporal graph store over StoreAdapter
-import { createFTSDialect } from '@adhd/sox-store-adapter';
+import { createFTSDialect, createTursoAdapter, deleteSchemaRowsViaBetterSqlite3 } from '@adhd/sox-store-adapter';
 import { assertStoreEngineSync, getEngineIdentitySync } from '@adhd/sox-store-adapter';
-import type { EngineIdentity, StoreAdapter } from '@adhd/sox-store-adapter';
+import type { EngineIdentity, StoreAdapter, TursoAdapter } from '@adhd/sox-store-adapter';
 import { log } from '@adhd/sox-telemetry';
 import * as crypto from 'node:crypto';
 import { rebuildTable } from './rebuild-table.js';
@@ -1188,6 +1188,12 @@ export class SqliteGraphBackend implements GraphBackend {
       (!!edgeRow && this.adapter.config.type === 'turso' && hasExplicitRowidForeignKey(edgeRow.sql));
 
     if (nodeNeedsRebuild || edgeNeedsRebuild) {
+      // (BL-506) The rebuild below ALTER-RENAMEs a NEW `edge` sqlite_master row
+      // to a rowid after every existing row. On a Drizzle-era store the dead
+      // fts5 residue rows sit mid-catalog; a rebuilt row landing after them
+      // would never register (BL-508's silent catalog abort — the live
+      // outage). Drop the residue FIRST.
+      await this.dropFts5ResidueBeforeRebuild();
       await this.adapter.transaction(async (tx) => {
         if (nodeNeedsRebuild) {
           await rebuildTable(this.adapter, 'node', NODE_TABLE_DDL, NODE_COLUMNS, { skipDrop: true, tx });
@@ -1206,6 +1212,110 @@ export class SqliteGraphBackend implements GraphBackend {
         if (edgeNeedsRebuild) {
           for (const ddl of EDGE_INDEX_DDLS) await tx.exec(ddl);
         }
+      });
+    }
+  }
+
+  /**
+   * (BL-506) Before a schema rebuild moves a table's `sqlite_master` row,
+   * delete any dead fts5 residue the store carries — turso stores only.
+   *
+   * Drizzle-era stores (the live backlog.db is one) carry the SQLite-era FTS5
+   * stack (`fts_node` virtual table + 4 shadow tables + 3 content-sync
+   * triggers) at `sqlite_master` rows after `node`/`edge`. graph-store's FTS
+   * is dialect-driven — on turso the FTS is Tantivy — so those fts5 rows are
+   * dead weight. But their presence makes the Turso engine's catalog build
+   * abort SILENTLY at the first unparseable row, so every schema object whose
+   * `sqlite_master` row lands after them never registers on open (BL-508).
+   * A rebuild of `edge` (BL-507's explicit-rowid-FK heal) ALTER-RENAMEs a new
+   * `edge` row to a rowid after the residue — turning a working store into
+   * one that opens with `no such table: edge` (BL-506, proven on the live
+   * store 2026-08-11; this class of break is invisible to DDL-normalization
+   * acceptance because the catalog abort is silent).
+   *
+   * Deleting the residue FIRST keeps the rebuilt row in a parseable region.
+   * The deletion goes through the sanctioned better-sqlite3 escape hatch
+   * (store-adapter's {@link deleteSchemaRowsViaBetterSqlite3} —
+   * `unsafeMode` + `PRAGMA writable_schema=ON` + `DELETE FROM sqlite_master`):
+   * the Turso driver hard-refuses `sqlite_master` writes and its DROPs
+   * against fts5 objects silently no-op. better-sqlite3 writing the file
+   * requires the turso connection CLOSED — cross-engine WAL coordination is
+   * exactly what destroys stores (BL-508) — hence close → drop → reopen,
+   * mirroring memory-core's openDb() (db.ts:630-632). The name-based DELETE
+   * also removes any duplicate `fts_node_ai` trigger a `CREATE TRIGGER IF
+   * NOT EXISTS` replay created (Turso does not dedupe it — BL-507).
+   *
+   * Never makes the heal worse: a failed presence probe skips the drop (the
+   * pre-BL-506 behavior), and a failed drop is logged loudly before the
+   * reopen still runs.
+   */
+  private async dropFts5ResidueBeforeRebuild(): Promise<void> {
+    const cfg = this.adapter.config;
+    if (cfg.type !== 'turso' || cfg.dbPath === undefined) return;
+
+    const residueNames = createFTSDialect('turso').legacyResidueNames('node');
+    if (residueNames.length === 0) return;
+
+    // Presence check through the open adapter — `sqlite_master` SELECTs work
+    // on turso; only writes are refused.
+    let present: number;
+    try {
+      const placeholders = residueNames.map(() => '?').join(', ');
+      const res = await this.adapter.executeGet<{ c: number }>(
+        `SELECT COUNT(*) AS c FROM sqlite_master WHERE name IN (${placeholders})`,
+        residueNames,
+      );
+      present = res?.c ?? 0;
+    } catch (err) {
+      log.warn('graph_store.heal.fts5_residue_probe_failed', {
+        error: err instanceof Error ? err.message : String(err),
+      });
+      return;
+    }
+    if (present === 0) return;
+
+    log.warn('graph_store.heal.fts5_residue_drop', {
+      db_path: cfg.dbPath,
+      residue_count: present,
+    });
+
+    const dbPath = cfg.dbPath;
+    const drop = async (): Promise<void> => {
+      const repair = deleteSchemaRowsViaBetterSqlite3(dbPath, residueNames);
+      if (repair.failed !== null) {
+        log.error('graph_store.heal.fts5_residue_drop_failed', {
+          db_path: dbPath,
+          error: repair.failed,
+        });
+      }
+    };
+
+    // Same-instance reconnect around the out-of-band drop (BL-508: a
+    // better-sqlite3 write must never run while the turso connection holds
+    // the file) — the caller's adapter handle stays valid.
+    const recyclable = this.adapter as TursoAdapter & {
+      withConnectionClosedForRepair?: <T>(fn: () => Promise<T>) => Promise<T>;
+    };
+    if (typeof recyclable.withConnectionClosedForRepair === 'function') {
+      await recyclable.withConnectionClosedForRepair(drop);
+      return;
+    }
+
+    // Fallback for a foreign turso adapter that lacks the same-instance
+    // repair hook: close, drop, and recreate the adapter. The caller's own
+    // handle goes stale only in this synthetic case — every real turso
+    // adapter (`TursoAdapterImpl`) implements the hook.
+    await this.adapter.close();
+    try {
+      await drop();
+    } finally {
+      this.adapter = await createTursoAdapter({
+        ...(cfg.url !== undefined ? { url: cfg.url } : {}),
+        dbPath,
+        ...(cfg.authToken !== undefined ? { authToken: cfg.authToken } : {}),
+        ...(cfg.readonly === true ? { readonly: true } : {}),
+        ...(cfg.allowFtsInReadonly === true ? { allowFtsInReadonly: true } : {}),
+        ...(cfg.experimental !== undefined ? { experimental: cfg.experimental } : {}),
       });
     }
   }
