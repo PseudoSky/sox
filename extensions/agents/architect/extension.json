@@ -1,0 +1,31 @@
+{
+  "$schema": "https://your-registry/schemas/extension/v2.json",
+  "id": "architect",
+  "version": "0.1.0",
+  "type": "agent",
+  "title": "architect",
+  "description": "Read-only architecture agent (deepseek-v4-pro). Takes a vague feature description, delegates research to the researcher agent, analyzes the codebase with gitnexus MCP, and produces a full implementation spec with exact file paths, interface and behavioral changes, independent segments with token estimates, execution strategies for weaker agents, test cases, and documentation updates. ALWAYS delegates research — never does its own.",
+  "compatibility": {
+    "host": ">=1.0.0 <2.0.0"
+  },
+  "license": "MIT",
+  "author": "sox-ecosystem",
+  "keywords": [
+    "architect",
+    "agent",
+    "declarative"
+  ],
+  "runtime": "declarative",
+  "entrypoint": "architect.md",
+  "install": {
+    "type": "agent",
+    "hosts": [
+      "claude",
+      "opencode"
+    ],
+    "source": "file:///Users/nix/.config/opencode/agents/architect.md"
+  },
+  "requires": {
+    "tool_calling": true
+  }
+}

@@ -1,0 +1,13 @@
+{
+  "name": "@adhd/sox-extension-doc-evangelist",
+  "version": "0.1.0",
+  "description": ">-",
+  "private": true,
+  "license": "MIT",
+  "author": "sox-ecosystem",
+  "keywords": [
+    "doc-evangelist",
+    "agent",
+    "declarative"
+  ]
+}
