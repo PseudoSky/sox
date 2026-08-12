@@ -986,37 +986,89 @@ export class TursoAdapterImpl implements TursoAdapter {
    * recovers the data in full (measured: 140/140 vs total loss). So the close
    * path checkpoints first and reports loudly, rather than refusing — refusing
    * would strand the data in an inode nothing can reach.
+   *
+   * (BL-512) Since 2026-08-12 the checkpoint is UNCONDITIONAL on a writable
+   * close — TRUNCATE, not PASSIVE, and not gated on damage. The defect: a
+   * clean writable close only marked clean shutdown and closed, so every
+   * short-lived process (the backlog CLI spawns one per command) left its
+   * writes in the WAL; the WAL grew forever (measured 3.8 MB beside a 19 MB
+   * db) and a later connection's stale-`-tshm` reconciliation could discard
+   * those uncheckpointed frames — the phantom-write class (created:true, row
+   * never persisted; 4+ items lost on the live store). TRUNCATE resets the
+   * `-wal` to ~0 bytes so the next open neither replays nor re-accumulates.
+   * `_softReadonly` adapters hold a driver-writable connection (BL-391 — FTS
+   * requires it), so they checkpoint too; a hard `readonly` open never does.
    */
   async close(): Promise<void> {
     if (this.closed) return;
     this.closed = true;
 
-    if (!this.config.readonly) {
+    // (BL-512) "Writable" for checkpoint purposes means the connection can
+    // write: `!config.readonly` (the historical gate), PLUS soft-readonly
+    // (BL-391 — opened without the native readonly option so `fts_match`
+    // works, enforced read-only only at the application layer).
+    const writableClose = !this.config.readonly || this._softReadonly;
+    if (writableClose) {
       try {
         const report = await verifyStoreIntegrity(this, {
           only: ['wal_identity'],
           walBaseline: this._walBaseline,
         });
+        const damaged = report.damaged.length > 0;
         for (const finding of report.damaged) {
           emitIntegrityReport(this.config.dbPath ?? this.config.url, 'damaged', finding.detail);
-          try {
-            await this.executeAll('PRAGMA wal_checkpoint(PASSIVE)');
-            emitIntegrityReport(
-              this.config.dbPath ?? this.config.url,
-              'repaired',
-              'checkpointed the orphaned WAL into the main database file before close',
-            );
-          } catch (err) {
-            emitIntegrityReport(
-              this.config.dbPath ?? this.config.url,
-              'repair_failed',
-              `checkpoint of the orphaned WAL failed — data since the last checkpoint is being lost: ${
-                err instanceof Error ? err.message : String(err)
-              }`,
-            );
-          }
         }
-        if (report.damaged.length === 0) await markCleanShutdown(this);
+
+        // (BL-512) UNCONDITIONAL TRUNCATE checkpoint — the defect was that a
+        // clean writable close ran NO checkpoint at all. TRUNCATE (not
+        // PASSIVE) resets the `-wal` to ~0 bytes so the next open neither
+        // replays nor re-accumulates. If TRUNCATE throws, fall back to the
+        // BL-330 damage-path PASSIVE checkpoint (which copies the orphaned
+        // WAL's pages into the main database file through the fd we already
+        // hold) and log loudly — a failed checkpoint must never block a close.
+        const checkpoint = async (): Promise<boolean> => {
+          try {
+            await this.executeAll('PRAGMA wal_checkpoint(TRUNCATE)');
+            return true;
+          } catch (truncateErr) {
+            log.warn('store_adapter.turso.close_checkpoint_truncate_failed', {
+              error: truncateErr instanceof Error ? truncateErr.message : String(truncateErr),
+            });
+            try {
+              await this.executeAll('PRAGMA wal_checkpoint(PASSIVE)');
+              return true;
+            } catch (passiveErr) {
+              emitIntegrityReport(
+                this.config.dbPath ?? this.config.url,
+                'repair_failed',
+                `checkpoint of the WAL failed — data since the last checkpoint is being lost: ${
+                  passiveErr instanceof Error ? passiveErr.message : String(passiveErr)
+                }`,
+              );
+              return false;
+            }
+          }
+        };
+
+        const flushed = await checkpoint();
+        if (damaged && flushed) {
+          emitIntegrityReport(
+            this.config.dbPath ?? this.config.url,
+            'repaired',
+            'checkpointed the orphaned WAL into the main database file before close',
+          );
+        }
+
+        // (BL-512) A clean-shutdown stamp is only true if the WAL was flushed —
+        // and, as before, only when verification found nothing damaged. The
+        // stamp write itself re-opens the WAL with one frame, so a second
+        // checkpoint flushes it too: close() leaves the `-wal` at literally
+        // ~0 bytes, with no uncheckpointed window of ANY kind surviving the
+        // process that wrote it.
+        if (flushed && !damaged) {
+          await markCleanShutdown(this);
+          await checkpoint();
+        }
       } catch (err) {
         // A verification failure must never block a close — but it is a
         // data-loss-adjacent signal (BL-330) and must be durable, not silent.
