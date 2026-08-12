@@ -313,6 +313,48 @@ export function isFatalConnectionError(err: unknown): boolean {
   return /\bI\/O error\b/i.test(err.message) || /database disk image is malformed/i.test(err.message);
 }
 
+// ── RepairDeclinedLivePeersError (BUG-017) ─────────────────────────────────
+
+/**
+ * (BUG-017) Thrown by `TursoAdapterImpl.withConnectionClosedForRepair` when a
+ * WRITABLE classic-engine (better-sqlite3) repair was about to run while live
+ * turso multiprocess peers still hold the store.
+ *
+ * The BUG-014 poisoner (deterministic repro, `/tmp/bug014-lab` exp9): a
+ * writable better-sqlite3 open+close — even with ZERO writes — against a store
+ * held by live turso multiprocess peers checkpoints/deletes the WAL at classic
+ * close-time (classic SQLite cannot see `-tshm` clients, believes it is the
+ * last connection). The live peer's next write then leaves the WAL 0 bytes
+ * while `-tshm` advertises frames, and every fresh open fails with
+ * `short read on WAL frame … got 0` (INV-1: no classic WRITABLE open while any
+ * live turso peer holds the store).
+ *
+ * This error is thrown BEFORE the repair function runs — the own connection is
+ * already closed (the repair's precondition), so the quiescence probe sees
+ * only OTHER connections. The caller decides: graph-store logs and skips the
+ * drop (the pre-BL-506 degradation, which is safe); the repair is re-attempted
+ * once the store is quiescent. The `finally` in
+ * `withConnectionClosedForRepair` reopens the connection even when this is
+ * thrown, so the adapter handle stays live.
+ */
+export class RepairDeclinedLivePeersError extends Error {
+  public readonly code = 'E_REPAIR_DECLINED_LIVE_PEERS';
+
+  constructor(
+    public readonly dbPath: string,
+    /** Live peer entries at the moment of the decline (token + pid). */
+    public readonly livePeers: { token: string; pid: number }[],
+  ) {
+    const pids = livePeers.map((p) => p.pid).join(', ');
+    super(
+      `[BUG-017] store repair declined: ${livePeers.length} live peer(s) hold "${dbPath}" ` +
+        `(INV-1 — a writable classic-engine open while a turso multiprocess peer is live destroys ` +
+        `the WAL coordination state). Repair deferred. Live peer pids: ${pids}.`,
+    );
+    this.name = 'RepairDeclinedLivePeersError';
+  }
+}
+
 /**
  * (BL-512 follow-on) True if `err` is the Turso driver's open-handshake race
  * refusal — a sibling process that is mid-open (or holding) the store without

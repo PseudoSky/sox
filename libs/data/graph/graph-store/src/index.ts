@@ -1,5 +1,9 @@
 // @adhd/sox-graph-store — Bi-temporal graph store over StoreAdapter
-import { createFTSDialect, createTursoAdapter, deleteSchemaRowsViaBetterSqlite3 } from '@adhd/sox-store-adapter';
+import {
+  createFTSDialect,
+  deleteSchemaRowsViaBetterSqlite3,
+  RepairDeclinedLivePeersError,
+} from '@adhd/sox-store-adapter';
 import { assertStoreEngineSync, getEngineIdentitySync } from '@adhd/sox-store-adapter';
 import type { EngineIdentity, StoreAdapter, TursoAdapter } from '@adhd/sox-store-adapter';
 import { log } from '@adhd/sox-telemetry';
@@ -1269,6 +1273,17 @@ export class SqliteGraphBackend implements GraphBackend {
     const cfg = this.adapter.config;
     if (cfg.type !== 'turso' || cfg.dbPath === undefined) return;
 
+    // (BL-563) A readonly-open adapter must NEVER mutate the store file. The
+    // drop is a WRITE through better-sqlite3, which opens the file WRITABLE —
+    // bypassing the adapter's own readonly enforcement, which is closed during
+    // the repair (the readonly layer is the adapter's connection, and it is
+    // exactly what `withConnectionClosedForRepair` closes). On a readonly open
+    // of a legacy store the rebuild below throws on readonly, but the residue
+    // drop runs BEFORE that throw — a read-only open silently mutating the
+    // store. Mirror preflight's `opts.readonly !== true` gate (turso-adapter
+    // connect): readonly opens are scans, never repairs.
+    if (cfg.readonly === true) return;
+
     const residueNames = createFTSDialect('turso').legacyResidueNames('node');
     if (residueNames.length === 0) return;
 
@@ -1299,10 +1314,28 @@ export class SqliteGraphBackend implements GraphBackend {
     const drop = async (): Promise<void> => {
       const repair = deleteSchemaRowsViaBetterSqlite3(dbPath, residueNames);
       if (repair.failed !== null) {
-        log.error('graph_store.heal.fts5_residue_drop_failed', {
-          db_path: dbPath,
-          error: repair.failed,
-        });
+        // (BUG-017 review fix) A DECLINED drop here is a designed DEFERRAL,
+        // not a repair failure: the outer `withConnectionClosedForRepair`
+        // gate above already proved the store quiescent (excluding this
+        // instance's own lease), so an inner-gate decline means either the
+        // own lease entry lingered after close()'s best-effort release (the
+        // stale entry counts as a live peer) or a new peer landed in the
+        // probe window — both conservative false-declines that leave the
+        // drop skipped, which is safe degradation per SPEC §T1. Label the
+        // decline as such (warn, deferral semantics — INV-5: still logged
+        // loudly, never a silent skip). Only a genuine non-decline failure
+        // keeps the failure event.
+        if (repair.failed.startsWith('declined:')) {
+          log.warn('graph_store.heal.fts5_residue_drop_deferred_inner_quiescence', {
+            db_path: dbPath,
+            error: repair.failed,
+          });
+        } else {
+          log.error('graph_store.heal.fts5_residue_drop_failed', {
+            db_path: dbPath,
+            error: repair.failed,
+          });
+        }
       }
     };
 
@@ -1313,26 +1346,40 @@ export class SqliteGraphBackend implements GraphBackend {
       withConnectionClosedForRepair?: <T>(fn: () => Promise<T>) => Promise<T>;
     };
     if (typeof recyclable.withConnectionClosedForRepair === 'function') {
-      await recyclable.withConnectionClosedForRepair(drop);
+      try {
+        await recyclable.withConnectionClosedForRepair(drop);
+      } catch (err) {
+        // (BUG-017, INV-1) A WRITABLE classic-engine open while live turso
+        // multiprocess peers hold the store is the exp9 poisoner (classic
+        // SQLite cannot see `-tshm` clients; a writable open+close deletes
+        // the WAL out from under the live peers). The adapter's repair hook
+        // declined with a typed error — log loudly (INV-5) and SKIP the drop:
+        // the rebuild proceeds without it, the pre-BL-506 degradation, which
+        // is safe. The hook's `finally` reopens the connection, so this
+        // adapter handle stays live.
+        if (err instanceof RepairDeclinedLivePeersError) {
+          log.warn('graph_store.heal.fts5_residue_drop_deferred_live_peers', {
+            db_path: dbPath,
+            live_peer_count: err.livePeers.length,
+            live_peer_pids: err.livePeers.map((p) => p.pid).join(','),
+          });
+          return;
+        }
+        throw err;
+      }
       return;
     }
 
-    // Fallback for a foreign turso adapter that lacks the same-instance
-    // repair hook: close, drop, and recreate the adapter. The caller's own
-    // handle goes stale only in this synthetic case — every real turso
-    // adapter (`TursoAdapterImpl`) implements the hook.
-    await this.adapter.close();
-    try {
-      await drop();
-    } finally {
-      this.adapter = await createTursoAdapter({
-        ...(cfg.url !== undefined ? { url: cfg.url } : {}),
-        dbPath,
-        ...(cfg.authToken !== undefined ? { authToken: cfg.authToken } : {}),
-        ...(cfg.readonly === true ? { readonly: true } : {}),
-        ...(cfg.allowFtsInReadonly === true ? { allowFtsInReadonly: true } : {}),
-      });
-    }
+    // (BUG-017) No same-instance repair hook (foreign turso adapter). The
+    // previous close-then-drop fallback was REMOVED: it performed the
+    // better-sqlite3 WRITE with no quiescence gate at all — the exact exp9
+    // poisoner shape, and worse for being reachable outside
+    // `withConnectionClosedForRepair`'s gated path. Skip the drop; the rebuild
+    // proceeds without it (safe degradation). Every real turso adapter
+    // (`TursoAdapterImpl`) implements the hook, so this branch is synthetic.
+    log.warn('graph_store.heal.fts5_residue_drop_skipped_no_repair_hook', {
+      db_path: dbPath,
+    });
   }
 
   private async addColumnIfMissing(table: string, column: string, type: string): Promise<void> {
