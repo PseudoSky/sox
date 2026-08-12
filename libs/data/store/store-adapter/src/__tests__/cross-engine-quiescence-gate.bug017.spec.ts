@@ -23,7 +23,7 @@
  */
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { spawn, type ChildProcess } from 'node:child_process';
-import { existsSync, mkdtempSync, rmSync, statSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
@@ -115,9 +115,13 @@ function waitForExit(child: ChildProcess): Promise<void> {
   return new Promise((done) => child.once('exit', () => done()));
 }
 
-function walSizeBytes(dbPath: string): number {
+/** The WAL file's BYTE CONTENT (null when absent). SPEC §T1 demands the WAL
+ *  survive "byte-identical", and the child peer is idle after READY — no
+ *  legit write can occur between the before/after reads — so a byte-content
+ *  compare is deterministic, not just a size check. */
+function walBytes(dbPath: string): Buffer | null {
   const walPath = `${dbPath}-wal`;
-  return existsSync(walPath) ? statSync(walPath).size : 0;
+  return existsSync(walPath) ? readFileSync(walPath) : null;
 }
 
 let tmpDir: string;
@@ -145,19 +149,24 @@ tursoDescribe('BUG-017 — the writable better-sqlite3 repair is quiescence-gate
       );
       await waitForReady(child);
 
-      const walBefore = walSizeBytes(dbPath);
-      expect(walBefore, 'the peer must have populated the WAL').toBeGreaterThan(0);
+      const walBefore = walBytes(dbPath);
+      expect(
+        walBefore !== null && walBefore.length > 0,
+        'the peer must have populated the WAL',
+      ).toBe(true);
 
       // THE CALL UNDER TEST — on pre-fix code this is the exp9 poisoner.
       const result = deleteSchemaRowsViaBetterSqlite3(dbPath, FTS5_RESIDUE);
 
       // exp9 assertion (the RED diagnostic): an ungated writable classic
       // open+close under a live peer destroys the WAL (0 bytes on disk).
-      const walAfter = walSizeBytes(dbPath);
+      // Byte-for-byte content compare, per SPEC §T1 ("WAL byte-identical") —
+      // the peer is idle so a size-preserving rewrite would also be caught.
+      const walAfter = walBytes(dbPath);
       expect(
-        walAfter,
+        walAfter !== null && walBefore !== null && walAfter.equals(walBefore),
         'BUG-017 (exp9): the WAL must survive the repair byte-for-byte — an ungated writable open destroys it',
-      ).toBe(walBefore);
+      ).toBe(true);
 
       // GREEN contract: typed decline (INV-1), nothing dropped (INV-5 loud).
       expect(
