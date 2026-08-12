@@ -1,0 +1,59 @@
+{
+  "$schema": "https://your-registry/schemas/extension/v2.json",
+  "id": "iterative-research-refinement",
+  "version": "0.1.0",
+  "type": "skill",
+  "title": "Iterative Research Refinement — meta-cognitive research process",
+  "description": "Use this when you need to research a question, produce findings, audit your own process, and iteratively refine the methodology — not just the answer. A meta-cognitive research process (v9) that improves itself through nested feedback loops: Position Declaration, Iteration Manifest with quantified baselines and MANDATORY runtime metrics, Pre-Commitment, Observation Generalization, Loop 1 research, Loop 2 process audit, Loop 3 propose-to-new-file, Loop 3a fresh-subagent real-execution test with runtime measurement, Loop 3b commit, Loop 4 verification.",
+  "compatibility": {
+    "host": ">=1.0.0 <2.0.0"
+  },
+  "license": "MIT",
+  "author": "sox-ecosystem",
+  "keywords": [
+    "research",
+    "meta-cognition",
+    "iterative-refinement",
+    "self-feedback",
+    "source-evaluation",
+    "generalization",
+    "ab-testing",
+    "runtime-metrics"
+  ],
+  "runtime": "declarative",
+  "entrypoint": "SKILL.md",
+  "run_interface": {
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "task": {
+          "type": "string",
+          "description": "The research question or process definition to iterate on"
+        }
+      },
+      "required": [
+        "task"
+      ]
+    },
+    "output_schema": {
+      "type": "object",
+      "properties": {
+        "findings": {
+          "type": "string",
+          "description": "Research findings and audit results"
+        },
+        "deltas": {
+          "type": "object",
+          "description": "Measured improvement deltas (quality AND runtime metrics) from the iteration"
+        }
+      }
+    }
+  },
+  "install": {
+    "type": "skill",
+    "hosts": [
+      "claude",
+      "opencode"
+    ]
+  }
+}

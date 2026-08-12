@@ -10,7 +10,7 @@
     "compatibility": {
       "host": ">=1.0.0 <2.0.0"
     },
-    "builtFromCommit": "dff020e0c71a7217b3ba3cfde60583c483f4d09a+dirty",
+    "builtFromCommit": "cff2eed2c231ee22bde80b66037cfae64921b8b0+dirty",
     "provisional": true
   },
   {
@@ -27,7 +27,7 @@
     "requires": {
       "tool_calling": true
     },
-    "builtFromCommit": "dff020e0c71a7217b3ba3cfde60583c483f4d09a+dirty",
+    "builtFromCommit": "cff2eed2c231ee22bde80b66037cfae64921b8b0+dirty",
     "provisional": true
   },
   {
@@ -41,7 +41,7 @@
     "compatibility": {
       "host": ">=1.0.0 <2.0.0"
     },
-    "builtFromCommit": "dff020e0c71a7217b3ba3cfde60583c483f4d09a+dirty",
+    "builtFromCommit": "cff2eed2c231ee22bde80b66037cfae64921b8b0+dirty",
     "provisional": true
   },
   {
@@ -69,7 +69,7 @@
         "id": "memory-usage"
       }
     ],
-    "builtFromCommit": "dff020e0c71a7217b3ba3cfde60583c483f4d09a+dirty",
+    "builtFromCommit": "cff2eed2c231ee22bde80b66037cfae64921b8b0+dirty",
     "provisional": true
   },
   {
@@ -85,7 +85,7 @@
     },
     "visibility": "internal",
     "bundleId": "sox-memory-bundle",
-    "builtFromCommit": "dff020e0c71a7217b3ba3cfde60583c483f4d09a+dirty",
+    "builtFromCommit": "cff2eed2c231ee22bde80b66037cfae64921b8b0+dirty",
     "provisional": true
   },
   {
@@ -101,7 +101,7 @@
     },
     "visibility": "internal",
     "bundleId": "sox-memory-bundle",
-    "builtFromCommit": "dff020e0c71a7217b3ba3cfde60583c483f4d09a+dirty",
+    "builtFromCommit": "cff2eed2c231ee22bde80b66037cfae64921b8b0+dirty",
     "provisional": true
   },
   {
@@ -121,7 +121,7 @@
     },
     "visibility": "internal",
     "bundleId": "sox-memory-bundle",
-    "builtFromCommit": "dff020e0c71a7217b3ba3cfde60583c483f4d09a+dirty",
+    "builtFromCommit": "cff2eed2c231ee22bde80b66037cfae64921b8b0+dirty",
     "provisional": true
   },
   {
@@ -137,7 +137,7 @@
     },
     "visibility": "internal",
     "bundleId": "sox-memory-bundle",
-    "builtFromCommit": "dff020e0c71a7217b3ba3cfde60583c483f4d09a+dirty",
+    "builtFromCommit": "cff2eed2c231ee22bde80b66037cfae64921b8b0+dirty",
     "provisional": true
   },
   {
@@ -151,7 +151,7 @@
     "compatibility": {
       "host": ">=1.0.0 <2.0.0"
     },
-    "builtFromCommit": "dff020e0c71a7217b3ba3cfde60583c483f4d09a+dirty",
+    "builtFromCommit": "cff2eed2c231ee22bde80b66037cfae64921b8b0+dirty",
     "provisional": true
   },
   {
@@ -165,7 +165,7 @@
     "compatibility": {
       "host": ">=1.0.0 <2.0.0"
     },
-    "builtFromCommit": "dff020e0c71a7217b3ba3cfde60583c483f4d09a+dirty",
+    "builtFromCommit": "cff2eed2c231ee22bde80b66037cfae64921b8b0+dirty",
     "provisional": true
   },
   {
@@ -179,7 +179,7 @@
     "compatibility": {
       "host": ">=1.0.0 <2.0.0"
     },
-    "builtFromCommit": "dff020e0c71a7217b3ba3cfde60583c483f4d09a+dirty",
+    "builtFromCommit": "cff2eed2c231ee22bde80b66037cfae64921b8b0+dirty",
     "provisional": true
   },
   {
@@ -193,7 +193,7 @@
     "compatibility": {
       "host": ">=1.0.0 <2.0.0"
     },
-    "builtFromCommit": "dff020e0c71a7217b3ba3cfde60583c483f4d09a+dirty",
+    "builtFromCommit": "cff2eed2c231ee22bde80b66037cfae64921b8b0+dirty",
     "provisional": true
   },
   {
@@ -207,7 +207,7 @@
     "compatibility": {
       "host": ">=1.0.0 <2.0.0"
     },
-    "builtFromCommit": "dff020e0c71a7217b3ba3cfde60583c483f4d09a+dirty",
+    "builtFromCommit": "cff2eed2c231ee22bde80b66037cfae64921b8b0+dirty",
     "provisional": true
   },
   {
@@ -221,7 +221,21 @@
     "compatibility": {
       "host": ">=1.0.0 <2.0.0"
     },
-    "builtFromCommit": "dff020e0c71a7217b3ba3cfde60583c483f4d09a+dirty",
+    "builtFromCommit": "cff2eed2c231ee22bde80b66037cfae64921b8b0+dirty",
+    "provisional": true
+  },
+  {
+    "id": "iterative-research-refinement",
+    "type": "skill",
+    "version": "0.1.0",
+    "title": "Iterative Research Refinement — meta-cognitive research process",
+    "description": "Use this when you need to research a question, produce findings, audit your own process, and iteratively refine the methodology — not just the answer. A meta-cognitive research process (v9) that improves itself through nested feedback loops: Position Declaration, Iteration Manifest with quantified baselines and MANDATORY runtime metrics, Pre-Commitment, Observation Generalization, Loop 1 research, Loop 2 process audit, Loop 3 propose-to-new-file, Loop 3a fresh-subagent real-execution test with runtime measurement, Loop 3b commit, Loop 4 verification.",
+    "source": "file:///Users/nix/dev/ai/sox-ecosystem/extensions/skills/iterative-research-refinement",
+    "checksum": "sha256:88ea9ee061092fa7aaa46477b53a04fd29dbe44683b5b8aaeb7580c648111dac",
+    "compatibility": {
+      "host": ">=1.0.0 <2.0.0"
+    },
+    "builtFromCommit": "cff2eed2c231ee22bde80b66037cfae64921b8b0+dirty",
     "provisional": true
   },
   {
@@ -235,7 +249,7 @@
     "compatibility": {
       "host": ">=1.0.0 <2.0.0"
     },
-    "builtFromCommit": "dff020e0c71a7217b3ba3cfde60583c483f4d09a+dirty",
+    "builtFromCommit": "cff2eed2c231ee22bde80b66037cfae64921b8b0+dirty",
     "provisional": true
   },
   {
@@ -249,7 +263,7 @@
     "compatibility": {
       "host": ">=1.0.0 <2.0.0"
     },
-    "builtFromCommit": "dff020e0c71a7217b3ba3cfde60583c483f4d09a+dirty",
+    "builtFromCommit": "cff2eed2c231ee22bde80b66037cfae64921b8b0+dirty",
     "provisional": true
   },
   {
@@ -263,7 +277,7 @@
     "compatibility": {
       "host": ">=1.0.0 <2.0.0"
     },
-    "builtFromCommit": "dff020e0c71a7217b3ba3cfde60583c483f4d09a+dirty",
+    "builtFromCommit": "cff2eed2c231ee22bde80b66037cfae64921b8b0+dirty",
     "provisional": true
   }
 ]
