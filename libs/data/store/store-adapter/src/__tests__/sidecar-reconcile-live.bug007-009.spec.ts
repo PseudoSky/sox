@@ -17,8 +17,10 @@
  * the open with the same bounded budget as the handshake race
  * (`OPEN_RETRY_MAX_ATTEMPTS − 1` extra attempts) and, on exhaustion, surfaces
  * the ORIGINAL driver error with `retryable: true` — never the
- * `STALE WAL-INDEX SIDECAR` wrapper. Quiescent ⇒ the existing recovery runs
- * unchanged.
+ * `STALE WAL-INDEX SIDECAR` wrapper. Quiescent ⇒ the sidecar reconcile still
+ * runs — since BUG-021 (SPEC §T3) the deleted-WAL/orphaned-sidecar recovery
+ * fires in the pre-open proactive site (content-deadness is the trigger, and
+ * an absent WAL proves it), before the open-time catch is ever reached.
  *
  * Harness: real fs + mocked driver. The scratch store is SEEDED with the REAL
  * `@tursodatabase/database` driver (`vi.importActual` — the `vi.mock` shim is
@@ -243,31 +245,32 @@ tursoDescribe('BUG-009 — open-time catch with a live peer retries and never cl
 });
 
 // ═══════════════════════════════════════════════════════════════════════════
-// Quiescent — existing recovery runs unchanged (must not regress)
+// Quiescent — the orphaned-sidecar reconcile must not regress (now fires
+// proactively via the BUG-021 content-dead trigger)
 // ═══════════════════════════════════════════════════════════════════════════
 
-tursoDescribe('BUG-009 — open-time catch with NO peer: the existing recovery runs unchanged', () => {
-  it('quiescent short-read: recovery moves the stale -tshm aside and the reopen succeeds', async () => {
+tursoDescribe('BUG-009 — open-time catch with NO peer: the orphaned sidecar is still reconciled', () => {
+  it('quiescent deleted-WAL: the orphaned -tshm is reconciled (now proactively, content-dead — BUG-021) and the open succeeds', async () => {
     const dbPath = tempPath('bug009-no-peer');
     await rawSeed(dbPath);
 
     // Deleted-WAL variant: remove the WAL (the mixed-engine clean-close
-    // shape). The pre-open proactive reconcile compares against the db file's
-    // FRESH mtime and declines (age diff ≤ threshold); the open-time catch's
-    // empty-WAL recovery branch then moves the orphaned -tshm — the exact
-    // path that must run unchanged when the store is quiescent.
+    // shape). With content-deadness as the trigger (BUG-021, SPEC §T3), the
+    // pre-open proactive reconcile sees the WAL absent ⇒ the surviving -tshm
+    // is content-proven dead ⇒ moves it BEFORE the first openOnce — the
+    // deleted-WAL recovery that previously waited for the open-time catch's
+    // empty-WAL branch. The reconcile must still happen (the observable is
+    // the same: one orphaned sidecar moved aside, store opens), only the site
+    // that performs it moved earlier.
     unlinkSync(dbPath + '-wal');
-    backdate(dbPath + '-tshm', 30_000);
 
-    mockDriverConnect
-      .mockRejectedValueOnce(shortReadError())
-      .mockResolvedValueOnce(makeFakeDb());
+    mockDriverConnect.mockResolvedValue(makeFakeDb());
 
     const adapter = await connect(dbPath);
 
     expect(
       staleSidecars(dbPath),
-      'quiescent recovery must still move the orphaned sidecar aside',
+      'the orphaned sidecar must still be reconciled (proactively, content-dead)',
     ).toHaveLength(1);
     expect(adapter).toBeInstanceOf(TursoAdapterImpl);
   });

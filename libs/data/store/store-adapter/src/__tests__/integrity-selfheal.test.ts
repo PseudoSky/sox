@@ -1098,12 +1098,14 @@ tursoDescribe('BL-373 — a stale WAL-index sidecar is reconciled at open, not f
     expect(asideFiles.length, 'the stale -tshm must be renamed, not destroyed').toBeGreaterThan(0);
   });
 
-  it('recovery is declined when the sidecar is not provably stale — with evidence', () => {
-    // (BL-373 third recurrence) A non-empty WAL is no longer an automatic
-    // decline: the -tshm is compared against the -wal by mtime. This fixture
-    // writes all three files within milliseconds of each other, so the sidecar
-    // is NOT provably stale (age diff ≈ 0, within the 60 s threshold) and the
-    // recovery must decline — untouched — carrying the frame-probe evidence.
+  it('recovery is declined when the sidecar is not content-proven dead — with evidence', () => {
+    // (BL-373 third recurrence / BUG-021) A non-empty WAL is no longer an
+    // automatic decline: the -tshm is judged by CONTENT-DEADNESS, never mtime.
+    // This fixture writes all three files within milliseconds of each other
+    // with GARBAGE content (an unreadable WAL header and a sub-header -tshm),
+    // so the sidecar is NOT content-proven dead — the content-dead gate must
+    // decline — untouched — carrying the frame-probe evidence and the mtime
+    // observation as a log-only hint.
     const dbPath = join(tmpDir, `bl373-decline-${Date.now()}.db`);
     writeFileSync(dbPath, '');
     writeFileSync(dbPath + '-wal', 'x'.repeat(4096));
@@ -1113,10 +1115,12 @@ tursoDescribe('BL-373 — a stale WAL-index sidecar is reconciled at open, not f
     expect(recovery.attempted).toBe(false);
     expect(recovery.movedAside).toEqual([]);
     // The decline must still name the WAL size (evidence) AND the new
-    // staleness analysis: the mtime diff, the threshold, and the probe result.
+    // content-deadness analysis: the content verdict, the frame probe, and
+    // the mtime observation as a hint (never a rename trigger).
     expect(recovery.declined).toMatch(/holds 4096 bytes/);
-    expect(recovery.declined).toMatch(/not provably stale/);
-    expect(recovery.declined).toMatch(/age diff .* ms is within the .* ms staleness threshold/);
+    expect(recovery.declined).toMatch(/NOT content-proven dead/);
+    expect(recovery.declined).toMatch(/mtime hint/);
+    expect(recovery.declined).toMatch(/age diff .* ms within the .* ms threshold/);
     expect(recovery.declined).toMatch(/WAL frame probe/);
     expect(existsSync(dbPath + '-tshm'), 'the sidecar must be left untouched').toBe(true);
   });
