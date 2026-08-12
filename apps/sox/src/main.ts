@@ -1077,6 +1077,7 @@ Options:
     const profile = flags['profile'];
     const versionRange = flags['version'];
     const dryRun = flags['dry-run'] !== undefined;
+    const forceInstall = flags['force'] !== undefined;
 
     // Nudge toward the modern standard: Claude Code's own docs (code.claude.com/docs/en/mcp)
     // mark "sse" deprecated in favor of "http" (Streamable HTTP); the official MCP SDK's
@@ -1190,7 +1191,7 @@ Options:
         scope,
         workspaceRoot,
         scopeRoot,
-        { isProject: scope === 'project', dryRun },
+        { isProject: scope === 'project', dryRun, force: forceInstall },
       );
     } catch (e) {
       if (e instanceof DeclarativeDeniedError) {

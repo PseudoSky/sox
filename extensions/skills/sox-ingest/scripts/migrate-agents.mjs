@@ -328,16 +328,44 @@ function scaffoldAgent(filePath) {
 
 // ─── Main ────────────────────────────────────────────────────────────────────
 
+// BL-569: the migration must never mutate its SOURCES. Hash every source file
+// before scaffolding and re-verify after — the originals stay byte-identical.
+import { createHash } from 'node:crypto';
+
+const hashFile = (p) => {
+  const h = createHash('sha256');
+  h.update(readFileSync(p));
+  return h.digest('hex');
+};
+
 const candidates = resolveCandidates(paths);
 if (candidates.length === 0) {
   console.error('migrate-agents: no agent files matched. Check the paths/globs.');
   process.exit(2);
 }
 
+const beforeHashes = new Map(candidates.map((p) => [p, hashFile(p)]));
+
 const results = candidates.map(scaffoldAgent);
 for (const r of results) {
   const note = r.note ? ` — ${r.note}` : '';
   console.log(`[${r.status}] ${r.id} (${r.formatter}) → ${r.target ?? r.reason}${note}`);
+}
+
+// Verify every source is untouched (BL-569 — never overwrite the originals).
+if (!DRY_RUN) {
+  let sourceMismatch = 0;
+  for (const [p, before] of beforeHashes) {
+    const after = hashFile(p);
+    if (after !== before) {
+      sourceMismatch++;
+      console.error(`migrate-agents: SOURCE CHANGED by migration: ${p} (BL-569 violation)`);
+    }
+  }
+  if (sourceMismatch > 0) {
+    console.error(`migrate-agents: ${sourceMismatch} source file(s) were modified — the migration must never write to sources. Aborting registry step.`);
+    process.exit(1);
+  }
 }
 
 if (REGISTRY && !DRY_RUN) {

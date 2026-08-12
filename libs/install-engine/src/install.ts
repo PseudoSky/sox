@@ -14,7 +14,7 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import type { ScopeConfig as CascadeScopeConfig, ResolvedConfigMap } from './cascade.js';
 import { cascade } from './cascade.js';
-import { scopeConfigPaths, storeRootFor } from './data-paths.js';
+import { ownershipPathFor, scopeConfigPaths, storeRootFor } from './data-paths.js';
 import { upsertInstallRecord } from './install-registry.js';
 import { checkProviderCapabilities } from './provider-capabilities.js';
 // verify-integrity imports from this module (install.ts); the cycle is safe
@@ -1357,7 +1357,7 @@ export async function declarativeInstall(
   scope: RegistryHostScope,
   workspaceRoot: string,
   scopeRoot: string,
-  opts?: { isProject?: boolean; ledger?: Ledger; dryRun?: boolean },
+  opts?: { isProject?: boolean; ledger?: Ledger; dryRun?: boolean; force?: boolean },
 ): Promise<DeclarativeInstallResult[]> {
   const results: DeclarativeInstallResult[] = [];
   const isProject = opts?.isProject ?? (scope === 'project');
@@ -1556,8 +1556,12 @@ export async function declarativeInstall(
       if (surface.capability === 'file-drop' && descriptor.srcPath) {
         // Mirror the file-drop destPath logic below so the plan names the
         // exact directory/file that WOULD be created.
-        const srcBasename = path.basename(descriptor.srcPath);
-        planTarget = path.extname(absTarget) !== '' ? absTarget : path.join(absTarget, srcBasename);
+        // BL-566: agent file-drops land as a single top-level <id>.md, not a dir.
+        planTarget = path.extname(absTarget) !== ''
+          ? absTarget
+          : descriptor.type === 'agent'
+            ? path.join(absTarget, `${descriptor.ext}.md`)
+            : path.join(absTarget, path.basename(descriptor.srcPath));
       }
       results.push({
         host: hostName,
@@ -1586,32 +1590,76 @@ export async function declarativeInstall(
       }
 
       // Idempotent: copy only if hash differs.
-      const srcHash = hashPathForInstall(descriptor.srcPath);
+      // BL-566: for agent type the hashed source is the entrypoint file (the
+      // only thing that lands), not the whole extension directory — otherwise
+      // the dir-vs-file hash never matches and every install re-copies.
+      let hashSrcPath = descriptor.srcPath;
+      if (descriptor.type === 'agent' && fs.statSync(descriptor.srcPath).isDirectory()) {
+        hashSrcPath = resolveEntrypointFile(descriptor.srcPath);
+      }
+      const srcHash = hashPathForInstall(hashSrcPath);
 
       // Determine the destination: if absTarget is a directory (or should be),
       // place the file as <dir>/<basename>. If the surface path includes a filename
       // extension (like CLAUDE.md), use absTarget directly.
+      // BL-566: for AGENT type the host discovers only a single top-level
+      // <id>.md file (opencode scans agents/*.md, not nested dirs), so the drop
+      // target is the entrypoint file at <absTarget>/<ext>.md — never a
+      // directory. Skills/commands/hooks keep the directory form (their hosts
+      // walk nested dirs).
       let destPath: string;
-      const srcBasename = path.basename(descriptor.srcPath);
       const targetHasExt = path.extname(absTarget) !== '';
       if (targetHasExt) {
         destPath = absTarget;
+      } else if (descriptor.type === 'agent') {
+        destPath = path.join(absTarget, `${descriptor.ext}.md`);
       } else {
-        destPath = path.join(absTarget, srcBasename);
+        destPath = path.join(absTarget, path.basename(descriptor.srcPath));
       }
 
       const destHash = fs.existsSync(destPath) ? hashPathForInstall(destPath) : '';
       let applied = false;
+      // BL-569 guard: never clobber an existing file this extension does not own.
+      // `soxe install` must not silently overwrite a hand-authored / legacy host
+      // file (incident: researcher.md — a working opencode agent was replaced by a
+      // divergent extension copy and opencode rejected it). If the destination
+      // exists AND is not already owned by THIS extension's record, refuse unless
+      // the caller explicitly passes force=true.
+      if (fs.existsSync(destPath) && !opts?.force) {
+        const ownershipIdx = OwnershipIndex.loadFromFile(ownershipPathFor(scope, workspaceRoot));
+        const ownedByThis = ownershipIdx
+          .get(descriptor.ext, scope)
+          ?.entries?.some((e) => e.kind === 'file-drop' && e.path === destPath);
+        if (!ownedByThis) {
+          throw new Error(
+            `[declarative-install] refusing to overwrite unowned file at ${destPath} (BL-569). ` +
+              `This file exists but is not owned by extension '${descriptor.ext}' in scope '${scope}'. ` +
+              `It may be a hand-authored or legacy host file. Uninstall it first if it is a stale ` +
+              `extension install, or pass force=true to overwrite deliberately.`,
+          );
+        }
+      }
       if (srcHash !== destHash) {
         // src can be a file (single-file agent/rules drop) or a directory
         // (skill/command/hook directory drop). Use cpSync for directory support.
         // fs.cpSync is available in Node 16.7+; it handles both.
         const srcStat = fs.statSync(descriptor.srcPath);
         if (srcStat.isDirectory()) {
-          // For a directory srcPath the destPath IS the directory to create/replace.
-          // cpSync with recursive:true copies the contents into destPath.
-          if (!fs.existsSync(destPath)) fs.mkdirSync(destPath, { recursive: true });
-          fs.cpSync(descriptor.srcPath, destPath, { recursive: true, force: true });
+          if (descriptor.type === 'agent') {
+            // BL-566: copy ONLY the entrypoint file (declared in extension.json
+            // or resolved by the C4 chain) to <absTarget>/<ext>.md. The whole
+            // extension dir would land as <absTarget>/<ext>/ — invisible to
+            // opencode's agent scan.
+            const entryFile = resolveEntrypointFile(descriptor.srcPath);
+            const dir = path.dirname(destPath);
+            if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+            fs.copyFileSync(entryFile, destPath);
+          } else {
+            // For a directory srcPath the destPath IS the directory to create/replace.
+            // cpSync with recursive:true copies the contents into destPath.
+            if (!fs.existsSync(destPath)) fs.mkdirSync(destPath, { recursive: true });
+            fs.cpSync(descriptor.srcPath, destPath, { recursive: true, force: true });
+          }
         } else {
           const dir = path.dirname(destPath);
           if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
