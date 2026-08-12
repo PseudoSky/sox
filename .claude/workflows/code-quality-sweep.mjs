@@ -46,7 +46,11 @@ export const meta = {
 // Arguments & defaults
 // ---------------------------------------------------------------------------
 
-const a = args || {}
+// `args` SHOULD arrive as a real object, but some callers (and some harness
+// paths) deliver it JSON-encoded. Parsing defensively costs nothing and turns a
+// hard "args.packages is required" failure — which looks exactly like a caller
+// forgetting the argument — into a working run.
+const a = (typeof args === 'string' ? JSON.parse(args) : args) || {}
 const BUDGET = a.agentBudgetPerStage || 20
 const WORKER_MODEL = a.workerModel || 'haiku'
 const SYNTH_MODEL = a.synthesisModel || undefined // undefined => inherit session model
