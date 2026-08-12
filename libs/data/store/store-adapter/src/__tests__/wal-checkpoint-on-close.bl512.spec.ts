@@ -25,11 +25,12 @@
  *  2. The row lives in the MAIN db file: a fresh open against the truncated
  *     (empty) WAL still sees it — no WAL replay is carrying the write.
  */
-import { describe, it, expect, beforeAll } from 'vitest';
+import { describe, it, expect, beforeAll, vi } from 'vitest';
 import { mkdtempSync, statSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { TursoAdapterImpl } from '../turso-adapter.js';
+import { log } from '@adhd/sox-telemetry';
 
 const hasTurso = (() => {
   try {
@@ -94,6 +95,52 @@ tursoDescribe('BL-512 — a writable close() always checkpoints the WAL into the
       expect(
         row,
         'the write must survive close() in the main db file, not be carried by the WAL',
+      ).not.toBeNull();
+      expect(row!.v).toBe('persist-me');
+    } finally {
+      await b.close();
+    }
+  });
+
+  it('BL-512: with a concurrent reader holding the WAL, close() logs the busy row and still succeeds — frames stay durable', async () => {
+    const dbPath = tempPath('bl512-busy-on-close');
+    const writer = await TursoAdapterImpl.connect({ dbPath });
+    await writer.exec('CREATE TABLE t (id INTEGER PRIMARY KEY, v TEXT)');
+    await writer.exec('INSERT INTO t (v) VALUES (\'persist-me\')');
+
+    // A second connection holds an OPEN read transaction — the WAL read lock
+    // is held across the writer's close(), so wal_checkpoint(TRUNCATE) must
+    // degrade to busy=1 (returned, not thrown — verified against the live
+    // @tursodatabase/database 0.7.1: [{busy:1,log:null,checkpointed:null}]).
+    const reader = await TursoAdapterImpl.connect({ dbPath });
+    await reader.exec('BEGIN');
+    await reader.executeGet('SELECT count(*) AS c FROM t');
+
+    const warnSpy = vi.spyOn(log, 'warn');
+    try {
+      // close() must NOT throw, hang, or drop the write — busy TRUNCATE is a
+      // durability-safe degradation (frames are fsynced at COMMIT).
+      await writer.close();
+      expect(warnSpy.mock.calls.map((c) => c[0])).toContain(
+        'store_adapter.turso.close_checkpoint_busy',
+      );
+    } finally {
+      warnSpy.mockRestore();
+      await reader.exec('ROLLBACK');
+      await reader.close();
+    }
+
+    // Durability holds: a fresh open still sees the row — even though the
+    // busy TRUNCATE left the WAL untruncated, the frames were never lost.
+    const b = await TursoAdapterImpl.connect({ dbPath });
+    try {
+      const row = await b.executeGet<{ id: number; v: string }>(
+        'SELECT id, v FROM t WHERE v = ?',
+        ['persist-me'],
+      );
+      expect(
+        row,
+        'the write must survive a busy close — frames are durable, only truncation degraded',
       ).not.toBeNull();
       expect(row!.v).toBe('persist-me');
     } finally {

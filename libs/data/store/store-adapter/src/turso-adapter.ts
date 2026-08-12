@@ -1028,7 +1028,26 @@ export class TursoAdapterImpl implements TursoAdapter {
         // hold) and log loudly — a failed checkpoint must never block a close.
         const checkpoint = async (): Promise<boolean> => {
           try {
-            await this.executeAll('PRAGMA wal_checkpoint(TRUNCATE)');
+            const truncate = await this.executeAll<{ busy?: number; log?: number; checkpointed?: number }>(
+              'PRAGMA wal_checkpoint(TRUNCATE)',
+            );
+            // (BL-512, F1) wal_checkpoint(TRUNCATE) does NOT throw when
+            // another connection holds the WAL — it returns a row with
+            // busy=1 and leaves the WAL untruncated. Durability is never at
+            // risk (frames are fsynced at COMMIT; a busy TRUNCATE degrades to
+            // PASSIVE-like and copies unpinned frames), so the close may
+            // proceed — but the "growth stops" guarantee degrades under
+            // concurrency, so log it loudly rather than silently recording
+            // flushed=true against a WAL that was not truncated. Verified
+            // against @tursodatabase/database 0.7.1 (2026-08-12): reader
+            // holding an open read tx → [{busy:1,log:null,checkpointed:null}],
+            // WAL unchanged; after reader release → busy:0, WAL ~0 bytes.
+            if (truncate.rows[0]?.busy === 1) {
+              log.warn('store_adapter.turso.close_checkpoint_busy', {
+                detail:
+                  'another connection held the WAL; -wal was NOT truncated (frames remain durable; the next writable close without a concurrent reader truncates)',
+              });
+            }
             return true;
           } catch (truncateErr) {
             log.warn('store_adapter.turso.close_checkpoint_truncate_failed', {
