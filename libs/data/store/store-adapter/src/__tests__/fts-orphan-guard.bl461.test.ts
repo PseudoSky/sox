@@ -535,13 +535,32 @@ tursoDescribe('BL-461 — a concurrent opener while this process holds the store
     // pre-flight opens the live store with better-sqlite3, which creates a
     // `-shm` beside the `-tshm` Turso runs its WAL coordination through. The
     // holder's assertions below are what say whether that mattered.
+    //
+    // (DEBT-003/BUG-014) The `-tshm.stale-*` entry is now ALSO expected: the
+    // seed's own quiescent close() ran the single quiescence-gated TRUNCATE
+    // (BUG-008) and, per the BUG-014 complement, reset the -tshm beside it —
+    // the TRUNCATE zeroed the -wal, so the -tshm this close orphaned indexes
+    // frames the empty WAL cannot hold, and it is moved aside (renamed, never
+    // deleted) so the stale-index state never persists. It predates the
+    // arriving process; the arriving open sees it as a leftover artifact.
     const before = (arriving.json?.sidecars ?? []) as string[];
-    expect(before, `sidecars observed inside the arriving process: ${before.join(', ')}`).toEqual([
+    // The four BL-461-relevant artifacts plus exactly ONE -tshm.stale-* (the
+    // seed close's BUG-014 tshm-reset — see the comment above). The stamp is
+    // clock-derived, so the stale entry is matched by shape, not by value.
+    const stale = before.filter((f) => f.endsWith('-tshm.stale-') || f.includes('-tshm.stale-'));
+    expect(
+      before.filter((f) => !stale.includes(f)),
+      `sidecars observed inside the arriving process: ${before.join(', ')}`,
+    ).toEqual([
       `${basename(dbPath)}-openmark`,
       `${basename(dbPath)}-shm`,
       `${basename(dbPath)}-tshm`,
       `${basename(dbPath)}-wal`,
     ]);
+    expect(
+      stale,
+      'DEBT-003/BUG-014: exactly one -tshm.stale-* artifact (the seed close reset the orphaned -tshm beside its TRUNCATE)',
+    ).toHaveLength(1);
     expect(sidecarsOf(dbPath), 'the -shm outlives the process that created it').toContain(
       `${basename(dbPath)}-shm`,
     );
