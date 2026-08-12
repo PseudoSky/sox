@@ -21,6 +21,7 @@ import {
 } from './integrity.js';
 import type { BackupIntegrityReport, WalIdentity } from './integrity.js';
 import { acquireStoreLease, storeQuiescence, type StoreLease } from './store-lease.js';
+import { canonicalDbPath } from './path-identity.js';
 import {
   clearStoreOpenMarker,
   describePreflight,
@@ -398,9 +399,21 @@ export class TursoAdapterImpl implements TursoAdapter {
       throw new Error('TursoAdapter requires either url or dbPath');
     }
 
+    // (BUG-018, INV-4) ONE canonical path per physical store. Every
+    // cross-process coordination key below — the lease directory, the
+    // out-of-band open marker, every sidecar probe — must be derived from the
+    // SAME string whatever spelling this caller used (a symlinked directory
+    // alias, `/tmp` vs `/private/tmp`, a relative path vs its absolute form).
+    // Canonicalize ONCE here (`canonicalDbPath`: realpathSync(dirname) +
+    // basename, memoized) and use `canonicalDb` at every coordination call
+    // site below — never `opts.dbPath` again except where the driver open
+    // (`url`) and the `_connectOpts` replay legitimately keep the caller's
+    // original spelling (connect() re-canonicalizes on replay).
+    const canonicalDb = opts.dbPath !== undefined ? canonicalDbPath(opts.dbPath) : undefined;
+
     let lease: StoreLease | null = null;
-    if (opts.dbPath) {
-      lease = await acquireStoreLease(opts.dbPath);
+    if (canonicalDb !== undefined) {
+      lease = await acquireStoreLease(canonicalDb);
     }
 
     try {
@@ -552,14 +565,14 @@ export class TursoAdapterImpl implements TursoAdapter {
       // so `lease?.token` is in scope — the preflight-before-lease ordering
       // trap does not apply here, but any future reordering must keep the
       // lease acquisition above the preflight.
-      if (opts.dbPath && opts.readonly !== true && hasStoreOpenMarker(opts.dbPath)) {
+      if (canonicalDb !== undefined && opts.readonly !== true && hasStoreOpenMarker(canonicalDb)) {
         const preflight = preflightSchemaSanity(
-          opts.dbPath,
+          canonicalDb,
           lease !== null ? { repair: true, ownLeaseToken: lease.token } : { repair: true },
         );
         if (preflight.orphaned.length > 0) {
           emitIntegrityReport(
-            opts.dbPath,
+            canonicalDb,
             preflight.failed !== null ? 'repair_failed' : 'repaired',
             describePreflight(preflight),
           );
@@ -570,7 +583,7 @@ export class TursoAdapterImpl implements TursoAdapter {
       // is provably older than the `-wal` beside it is decaying, and the open
       // about to run may be the one that fails with a WAL-frame short read.
       // Two statSync calls, never throws.
-      warnIfStaleSidecar(opts.dbPath);
+      warnIfStaleSidecar(canonicalDb);
 
       // (BL-373 family) PROACTIVE — root-cause prevention, not just healing.
       // The mechanism (confirmed by scratch repro, 2026-08-11): the -tshm is
@@ -597,14 +610,14 @@ export class TursoAdapterImpl implements TursoAdapter {
       // outright). With a live peer the rename is a `log.debug`-only SKIP — not
       // damage, not repair, no integrity report. Only a quiescent store is
       // reconciled proactively.
-      if (opts.dbPath && lease) {
-        const quiescence = storeQuiescence(opts.dbPath, lease.token);
-        const proactive = proactivelyReconcileStaleSidecar(opts.dbPath, {
+      if (canonicalDb !== undefined && lease) {
+        const quiescence = storeQuiescence(canonicalDb, lease.token);
+        const proactive = proactivelyReconcileStaleSidecar(canonicalDb, {
           storeInUse: !quiescence.quiescent,
         });
         if (proactive.moved && proactive.to) {
           emitIntegrityReport(
-            opts.dbPath,
+            canonicalDb,
             'repaired',
             `[BL-373] stale -tshm reconciled BEFORE the open: moved aside to ${proactive.to} — ` +
               `the open proceeds against the existing WAL, no failed-open path`,
@@ -619,7 +632,7 @@ export class TursoAdapterImpl implements TursoAdapter {
       // (BL-508) Was the db file already there before this open? `ensureEngineMarker`
       // needs to know whether the store is FRESH (created by this very open → this
       // engine owns it) or LEGACY (unmarked → infer the owning engine before stamping).
-      const fileExisted = opts.dbPath !== undefined && existsSync(opts.dbPath);
+      const fileExisted = canonicalDb !== undefined && existsSync(canonicalDb);
 
       let db: any;
       try {
@@ -644,7 +657,9 @@ export class TursoAdapterImpl implements TursoAdapter {
         // that is REFUSAL-ONLY (ADR-0013, owner directive): the operator gets
         // the typed action naming the manual step with the data-loss disclosure
         // — moving the WAL is a human decision, never an automatic one.
-        if (!isStaleWalIndexError(err) || !opts.dbPath) throw err;
+        // (BUG-018) The guard keys off the CANONICAL identity — a url-only
+        // connect (no local db) has nothing to recover.
+        if (!isStaleWalIndexError(err) || canonicalDb === undefined) throw err;
 
         // (BUG-009, adapter-race-fix §6d) The catch is now quiescence-gated.
         // A store with a live peer is NOT stale/corrupt — the frame short-read
@@ -654,7 +669,7 @@ export class TursoAdapterImpl implements TursoAdapter {
         // retry the open with the same bounded budget the handshake race uses.
         // Exhaustion surfaces the ORIGINAL driver error marked retryable
         // (ADR-0012 §4 — the caller decides beyond this bound).
-        const quiescence = storeQuiescence(opts.dbPath, lease?.token);
+        const quiescence = storeQuiescence(canonicalDb, lease?.token);
 
         if (!quiescence.quiescent) {
           // (BUG-014/DEBT-003) CONTENT-DEAD RECONCILE UNDER A LIVE PEER —
@@ -675,7 +690,7 @@ export class TursoAdapterImpl implements TursoAdapter {
           // (SPEC §T2 Change 1) The probe is `isTshmContentDead`: statSync
           // `-wal` size (0 or ENOENT ⇒ dead) else probeWalFrames'
           // first-indexed-offset vs WAL EOF — never the mtime heuristic.
-          const contentDead = isTshmContentDead(opts.dbPath);
+          const contentDead = isTshmContentDead(canonicalDb);
           let reconcileFailed: unknown = null;
           // The reconcile's own result, preserved for the typed operator
           // error on exhaustion (a fresh call would report "no -tshm
@@ -689,14 +704,14 @@ export class TursoAdapterImpl implements TursoAdapter {
             // (SPEC §T2 Change 2) content-deadness is the gate, not
             // quiescence: recoverStaleWalIndex in
             // { allowUnderLivePeers: true, requireContentDead: true } mode.
-            const recovery = recoverStaleWalIndex(opts.dbPath, {
+            const recovery = recoverStaleWalIndex(canonicalDb, {
               allowUnderLivePeers: true,
               requireContentDead: true,
             });
             contentDeadRecovery = recovery;
             if (recovery.movedAside.length > 0) {
               emitIntegrityReport(
-                opts.dbPath,
+                canonicalDb,
                 'repaired',
                 `[BUG-014/DEBT-003] content-proven-dead -tshm reconciled under a live peer: moved aside ` +
                   `${recovery.movedAside.map((m) => m.to).join(', ')} — ${contentDead.reason}. ` +
@@ -755,7 +770,7 @@ export class TursoAdapterImpl implements TursoAdapter {
               // another budget on.
               if (contentDead.dead) {
                 throw describeStaleWalIndexFailure(
-                  opts.dbPath,
+                  canonicalDb,
                   // (DEBT-003 review finding 1) `contentDeadRecovery` is
                   // assigned unconditionally at the top of the
                   // `if (contentDead.dead)` block above (line 691), so the
@@ -767,7 +782,7 @@ export class TursoAdapterImpl implements TursoAdapter {
                   // (it was already moved) and mislead the operator.
                   contentDeadRecovery!,
                   lastError,
-                  probeWalFrames(opts.dbPath + '-wal'),
+                  probeWalFrames(canonicalDb + '-wal'),
                 );
               }
               if (lastError !== null && typeof lastError === 'object') {
@@ -782,9 +797,9 @@ export class TursoAdapterImpl implements TursoAdapter {
           // Quiescent — the genuinely-stale case (or genuine corruption).
           // Existing recovery logic runs UNCHANGED (the store is quiescent, so
           // reconciling its sidecar cannot race a live peer).
-          const recovery = recoverStaleWalIndex(opts.dbPath, { storeInUse: false });
+          const recovery = recoverStaleWalIndex(canonicalDb, { storeInUse: false });
           emitIntegrityReport(
-            opts.dbPath,
+            canonicalDb,
             recovery.movedAside.length > 0 ? 'damaged' : 'repair_failed',
             recovery.movedAside.length > 0
               ? `[BL-373] stale WAL-index sidecar blocked the open; moved aside: ${recovery.movedAside
@@ -801,10 +816,10 @@ export class TursoAdapterImpl implements TursoAdapter {
             // "truncated WAL + fresh sidecar" is exactly the ambiguous case that
             // goes to the operator.
             throw describeStaleWalIndexFailure(
-              opts.dbPath,
+              canonicalDb,
               recovery,
               err,
-              probeWalFrames(opts.dbPath + '-wal'),
+              probeWalFrames(canonicalDb + '-wal'),
             );
           }
 
@@ -818,14 +833,14 @@ export class TursoAdapterImpl implements TursoAdapter {
             // automatic WAL move — a store that cannot open loses nothing by
             // waiting, and data-loss decisions are human (ADR-0013).
             throw describeStaleWalIndexFailure(
-              opts.dbPath,
+              canonicalDb,
               recovery,
               retryErr,
-              probeWalFrames(opts.dbPath + '-wal'),
+              probeWalFrames(canonicalDb + '-wal'),
             );
           }
           emitIntegrityReport(
-            opts.dbPath,
+            canonicalDb,
             'repaired',
             `[BL-373] store opened after reconciling the stale WAL-index sidecar`,
           );
@@ -840,10 +855,10 @@ export class TursoAdapterImpl implements TursoAdapter {
       // Unmarked legacy stores are NOT refused (backfill on next sox open), and
       // the deliberate-migration escape hatch (`allowForeignEngine: true` — the
       // factory's `migrateOnAdapterChange` path) proceeds.
-      if (opts.dbPath && opts.readonly !== true && opts.allowForeignEngine !== true) {
-        const appId = readApplicationId(opts.dbPath);
+      if (canonicalDb !== undefined && opts.readonly !== true && opts.allowForeignEngine !== true) {
+        const appId = readApplicationId(canonicalDb);
         if (appId === SOX_APP_ID_SQLITE) {
-          throw new ESqliteNativeStore(opts.dbPath, 'sqlite');
+          throw new ESqliteNativeStore(canonicalDb, 'sqlite');
         }
       }
 
@@ -875,7 +890,11 @@ export class TursoAdapterImpl implements TursoAdapter {
 
       const config = { type: 'turso' } as AdapterConfig & { type: 'turso' };
       if (opts.url !== undefined) config.url = opts.url;
-      if (opts.dbPath !== undefined) config.dbPath = opts.dbPath;
+      // (BUG-018) `config.dbPath` is the CANONICAL path — the close path
+      // (storeQuiescence, clearStoreOpenMarker, resetTshmAfterTruncate),
+      // withConnectionClosedForRepair, and graph-store's repair path all read
+      // it from here and therefore inherit the canonical identity.
+      if (canonicalDb !== undefined) config.dbPath = canonicalDb;
       if (opts.authToken !== undefined) config.authToken = opts.authToken;
       if (opts.readonly !== undefined) config.readonly = opts.readonly;
       if (opts.encryption !== undefined) config.encryption = opts.encryption;
@@ -898,19 +917,21 @@ export class TursoAdapterImpl implements TursoAdapter {
       // masked case. warnIfStaleSidecar fires only on mtime-skew (informational
       // only, BUG-021 — it never renames anything), so a healthy sidecar emits
       // nothing. Never throws.
-      warnIfStaleSidecar(opts.dbPath);
+      // (BUG-018) The probe keys off the CANONICAL identity — a url-only
+      // connect (no local db) has no sidecars to probe.
+      warnIfStaleSidecar(canonicalDb);
 
       // (BL-508) Engine marker on first open (idempotent; fresh turso stores
       // and legacy unmarked stores inferred turso get stamped here).
-      if (opts.dbPath && opts.readonly !== true) {
-        await ensureEngineMarker(instance, 'turso', opts.dbPath, { fresh: !fileExisted });
+      if (canonicalDb !== undefined && opts.readonly !== true) {
+        await ensureEngineMarker(instance, 'turso', canonicalDb, { fresh: !fileExisted });
       }
 
       // (BL-361) The store is now open, so this session owns it. The marker is
       // what tells the NEXT open that this session may not have ended cleanly —
       // `close()` clears it. It lives outside the database on purpose: the state
       // it guards against is one where the database cannot be read at all.
-      if (opts.readonly !== true) markStoreOpen(opts.dbPath);
+      if (opts.readonly !== true) markStoreOpen(canonicalDb);
 
       // (BL-461) IN-PROCESS FTS ORPHAN GUARD. The pre-flight above is gated on
       // the marker, so it never runs for a store damaged inside a session that
@@ -929,7 +950,7 @@ export class TursoAdapterImpl implements TursoAdapter {
         const guard = await guardOrphanedFtsIndexes(instance, { repair: opts.readonly !== true });
         if (guard.orphaned.length > 0) {
           emitIntegrityReport(
-            opts.dbPath ?? opts.url,
+            canonicalDb ?? opts.url,
             opts.readonly === true ? 'damaged' : guardSucceeded(guard) ? 'repaired' : 'repair_failed',
             describeFtsOrphanGuard(guard),
           );
