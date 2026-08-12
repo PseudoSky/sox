@@ -125,37 +125,54 @@ export interface EngineGuardResult {
 // ── application_id fast-path probe ──────────────────────────────────────────
 
 /**
- * Read the store's `application_id` WITHOUT touching the schema — zero
- * statements beyond the pragma itself, zero WAL writes.
+ * Read the store's `application_id` WITHOUT touching the schema, opening the
+ * store through a driver, or touching the WAL — a pure header read.
  *
- * Primary mechanism: a better-sqlite3 read-only `PRAGMA application_id`.
- * Verified empirically to read correctly on a Tantivy-carrying store copy
- * (the pragma is a header read — SQLite does not parse the schema for it,
- * so it survives the BL-329 malformed-schema state). It is also
- * WAL-aware: in WAL mode the marker write lands in the uncheckpointed
- * `-wal` first, and the pragma merges WAL+header — a raw byte read of
- * header offset 68 would see the stale pre-marker value until the next
- * checkpoint. This is why the pragma, not the bytes, is the probe.
+ * Primary mechanism: a pure header-byte read (fs-level `openSync`/`readSync`
+ * at offset 68) — no driver, no locks, no sidecars. This ordering is
+ * BL-512-mandated: opening the store with better-sqlite3 — a legacy
+ * (stock-SQLite) engine — during a concurrent multiprocess-wal turso connect
+ * makes the turso engine refuse the open with "Database is already open
+ * without experimental multiprocess WAL in another process" and the write is
+ * lost. The adapter previously created exactly that legacy opener on EVERY
+ * writable connect by running this probe pragma-first (6 parallel backlog
+ * `create-item` processes → 4/18 lost, reproduced live 2026-08-12). The
+ * header read identifies any readable SQLite file without ever opening it
+ * through a driver, so a multiprocess connect never crosses engines.
  *
- * Fallback: a direct big-endian read of header bytes 68..71 when
- * better-sqlite3 is not installed or cannot open the file (read-only
- * filesystem, no `-shm` on a read-only WAL mount). The fallback can be
- * stale in the uncheckpointed-WAL window — it is the degraded path, used
- * only where the pragma is unavailable.
+ * Caveat (was the fallback's; now on the primary path): in WAL mode the
+ * marker write lands in the uncheckpointed `-wal` first, and a pragma would
+ * merge WAL+header while a raw byte read of header offset 68 sees the stale
+ * pre-marker value until the next checkpoint. The adapter checkpoints
+ * TRUNCATE on every writable close (BL-512), so a closed store's header is
+ * authoritative; in the mid-session window a stale read degrades to
+ * "unmarked" (0), which every guard treats as allowed — it never invents a
+ * marker that is not in the header.
+ *
+ * Fallback: a better-sqlite3 read-only `PRAGMA application_id` when the
+ * header read cannot identify the file (not a readable SQLite header). The
+ * pragma is WAL-aware, so it can disambiguate files the bytes cannot.
  *
  * Returns `null` when the path is not a readable SQLite file.
  */
 export function readApplicationId(dbPath: string): number | null {
-  const viaPragma = readApplicationIdViaBetterSqlite3(dbPath);
-  if (viaPragma !== null) return viaPragma;
-  return readApplicationIdFromHeaderBytes(dbPath);
+  const viaHeader = readApplicationIdFromHeaderBytes(dbPath);
+  if (viaHeader !== null) return viaHeader;
+  return readApplicationIdViaBetterSqlite3(dbPath);
 }
 
 /**
- * Fallback probe: better-sqlite3 read-only `PRAGMA application_id`. Only used
- * when {@link readApplicationIdFromHeaderBytes} cannot identify the file (e.g.
- * a future header format) but the engine still can. Lazy — better-sqlite3 is
- * a soft dependency.
+ * Fallback probe: better-sqlite3 read-only `PRAGMA application_id`. Used ONLY
+ * when {@link readApplicationIdFromHeaderBytes} cannot identify the file (not
+ * a readable SQLite header) but the engine still can. Lazy — better-sqlite3
+ * is a soft dependency.
+ *
+ * (BL-512) This path must NEVER be the per-connect probe on a store that may
+ * be under a concurrent multiprocess-wal turso connection: a better-sqlite3
+ * open is a legacy (stock-SQLite) opener, and the turso engine refuses a
+ * `multiprocess_wal` open while one is live ("Database is already open
+ * without experimental multiprocess WAL in another process") — the connect
+ * loses the write. Header bytes first, always.
  */
 function readApplicationIdViaBetterSqlite3(dbPath: string): number | null {
   try {
@@ -171,8 +188,11 @@ function readApplicationIdViaBetterSqlite3(dbPath: string): number | null {
   }
 }
 
-/** Direct header-byte read (offset 68, big-endian). See {@link readApplicationId}
- *  for the staleness caveat in WAL mode — this is the degraded fallback. */
+/** PRIMARY probe (BL-512): direct header-byte read (offset 68, big-endian) —
+ *  fs-level `openSync`/`readSync`, no driver, no locks, no sidecars — the only
+ *  probe safe to run on a store a concurrent multiprocess-wal turso connection
+ *  may hold. Returns `null` when the path is not a readable SQLite file; see
+ *  {@link readApplicationId} for the WAL-staleness caveat. */
 function readApplicationIdFromHeaderBytes(dbPath: string): number | null {
   let fd: number | null = null;
   try {
@@ -456,17 +476,39 @@ export function getEngineIdentitySync(dbPath: string): EngineIdentity | null {
 /** Read the `_sox_engine` row from the file through the engine the marker
  *  identifies (async — uses each engine's own driver for the read). Falls back
  *  to {@link getEngineIdentitySync} when the engine driver cannot open.
- *  Returns `null` when the store is unmarked or the row is absent. */
+ *  Returns `null` when the store is unmarked or the row is absent.
+ *
+ *  (BL-512) The header read that decides the engine can be STALE in the
+ *  uncheckpointed-WAL window: the marker write lands in the `-wal` first and
+ *  the header byte at offset 68 keeps the pre-marker value (0) until the next
+ *  checkpoint (the adapter TRUNCATE-checkpoints on every writable close, but
+ *  mid-session the header still says 0). So a `null` engine here must not be
+ *  treated as "unmarked" outright — a live turso connection may hold the
+ *  store with the marker still in its WAL. The identity read already opens
+ *  the file with a driver, so for the null/unmarked case it tries the
+ *  WAL-aware TURSO driver read (the correct engine for a multiprocess store —
+ *  never the legacy better-sqlite3 opener) and only then falls back to the
+ *  better-sqlite3 sync read. */
 export async function getEngineIdentity(dbPath: string): Promise<EngineIdentity | null> {
   const engine = engineForApplicationId(readApplicationId(dbPath));
-  if (engine === null) return null;
-
-  if (engine === 'turso') {
+  if (engine === 'sqlite') return getEngineIdentitySync(dbPath);
+  if (engine === 'turso' || engine === null) {
+    // 'turso': the marker says so. 'null': header unmarked — either genuinely
+    // unmarked (legacy/fresh) or a stale-header turso store mid-session; the
+    // turso driver read disambiguates (WAL-merged), and a genuinely unmarked
+    // store simply has no `_sox_engine` row.
     try {
       const { connect } = await import('@tursodatabase/database');
       const db = await connect(dbPath, {
         readonly: true,
         experimental: ['index_method', 'multiprocess_wal'],
+        // (BL-512) Same bounded busy timeout as the adapter: a read-only open
+        // landing in another process's close()-TRUNCATE window must WAIT out
+        // the transient lock rather than fail — otherwise this falls through
+        // to `getEngineIdentitySync`, which opens the store with the legacy
+        // better-sqlite3 engine (the exact mixed-engine hazard this module
+        // exists to prevent).
+        timeout: 5000,
       });
       try {
         const row = (await db.get(SELECT_IDENTITY_SQL)) as Record<string, unknown> | undefined;
@@ -475,6 +517,9 @@ export async function getEngineIdentity(dbPath: string): Promise<EngineIdentity 
         await db.close();
       }
     } catch {
+      // Turso driver cannot read it (a genuine SQLite-owned store, a
+      // newer-SQLite file, or a transient failure) — the better-sqlite3 sync
+      // read is the legacy engine's own path.
       return getEngineIdentitySync(dbPath);
     }
   }

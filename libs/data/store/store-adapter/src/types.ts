@@ -311,8 +311,6 @@ export interface AdapterConfig {
     cipher: 'aegis256' | 'aes256gcm';
     hexkey: string;
   };
-  /** Experimental feature flags. Currently: multiprocessWal enables multi-process write support. */
-  experimental?: { multiprocessWal?: boolean };
   defaultQueryTimeout?: number;
 }
 
@@ -435,8 +433,9 @@ export interface StoreAdapter {
    *  - `SqliteAdapter`: loads sqlite-vec before vacuuming so vec0 shadow
    *    tables copy correctly.
    *  - `TursoAdapter`: runs directly on the existing connection's
-   *    experimental flags (`index_method`, optionally `multiprocess_wal`) —
-   *    `VACUUM INTO` has no restriction against `multiprocess_wal`, unlike
+   *    experimental flags (`index_method`, `multiprocess_wal` — both
+   *    unconditional since BL-512) — `VACUUM INTO` has no restriction
+   *    against `multiprocess_wal`, unlike
    *    in-place `VACUUM` (`Parse error: VACUUM is incompatible with
    *    experimental multiprocess WAL`).
    * `destPath` must not already exist; implementations must fail rather than

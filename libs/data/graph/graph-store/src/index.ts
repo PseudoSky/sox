@@ -1331,7 +1331,6 @@ export class SqliteGraphBackend implements GraphBackend {
         ...(cfg.authToken !== undefined ? { authToken: cfg.authToken } : {}),
         ...(cfg.readonly === true ? { readonly: true } : {}),
         ...(cfg.allowFtsInReadonly === true ? { allowFtsInReadonly: true } : {}),
-        ...(cfg.experimental !== undefined ? { experimental: cfg.experimental } : {}),
       });
     }
   }
