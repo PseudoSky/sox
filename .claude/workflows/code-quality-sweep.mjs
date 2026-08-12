@@ -44,12 +44,14 @@
 
 export const meta = {
   name: 'code-quality-sweep',
-  description: 'Three-stage multi-agent code-quality sweep: isolated per-package analysis, cross-package concept sweeps, then synthesis into a filed-by-caller epic spec',
-  whenToUse: 'A broad quality/debt audit across many packages, where you want evidence-backed findings clustered into shippable epics rather than a flat list of nits',
+  description: 'Blind multi-agent code-quality sweep: nx-seeded scopes, two independent specialist passes, adversarial verification, then synthesis into a filed-by-caller epic spec',
+  whenToUse: 'A broad quality/debt audit across many packages, where you want evidence-backed, adversarially-verified findings clustered into shippable epics rather than a flat list of nits',
   phases: [
-    { title: 'Isolated', detail: 'one specialist per package scope, structured findings with file:line evidence' },
-    { title: 'Concepts', detail: 'cross-package sweeps for the top-ranked recurring concepts' },
-    { title: 'Synthesize', detail: 'architect turns aggregated evidence into an epic spec' },
+    { title: 'Discover', detail: 'nx-seeded project roster, sized and split into even review units' },
+    { title: 'Isolated', detail: 'one specialist per unit, blind, structured findings with file:line evidence' },
+    { title: 'Second lens', detail: 'every unit re-read by a different specialist, still blind' },
+    { title: 'Verify', detail: 'skeptics attempt to refute each critical/high finding; uncertain means refuted' },
+    { title: 'Synthesize', detail: 'architect turns surviving evidence into an epic spec' },
   ],
 }
 
@@ -495,7 +497,109 @@ const s2findings = s2ok.flatMap((r) => r.findings.map((f) => ({ ...f, unit: r.un
 log(`Stage 2: ${s2ok.length}/${secondPass.length} re-reads returned, ${s2findings.length} findings.${s2dropped ? ` DROPPED (no result): ${s2dropped}.` : ''}`)
 
 // Both stages are blind, so their findings are directly comparable and rank together.
-const allFindings = [...s1findings, ...s2findings]
+const rawFindings = [...s1findings, ...s2findings]
+
+// ---------------------------------------------------------------------------
+// Stage 2.5 — ADVERSARIAL VERIFY
+//
+// Discovery must be blind; verification must NOT be. A verifier is told the claim precisely
+// because its job is to destroy it. This exists because agreement between finders is not
+// proof: in an earlier run TWO independent agents both reported a `__PLACEHOLDER__` token as
+// a critical SQL syntax error when it was a documented caller-substituted seam — a human
+// caught it. Agents share blind spots, so consensus among finders can be confidently wrong.
+//
+// Each verifier is told to REFUTE and to default to refuted when uncertain, which is the
+// asymmetry that makes this useful: a finding survives only by being defensible, not by
+// being unchallenged. Refuted findings are REPORTED, never silently dropped.
+// ---------------------------------------------------------------------------
+
+const VERIFY_SCHEMA = {
+  type: 'object',
+  additionalProperties: false,
+  required: ['verdicts'],
+  properties: {
+    verdicts: {
+      type: 'array',
+      items: {
+        type: 'object',
+        additionalProperties: false,
+        required: ['ref', 'refuted', 'reason'],
+        properties: {
+          ref: { type: 'string', description: 'the exact ref string given to you, e.g. "file.ts:123#2"' },
+          refuted: { type: 'boolean', description: 'true if the finding does NOT hold as stated — including when you cannot confirm it' },
+          reason: { type: 'string', description: 'one sentence, citing what you actually read' },
+          severity_overstated: { type: 'boolean', description: 'true if real but less severe than claimed' },
+        },
+      },
+    },
+  },
+}
+
+const VERIFY_SEVERITIES = a.verifySeverities || ['critical', 'high']
+const VERIFY_BATCH = a.verifyBatchSize || 6
+const refOf = (f, i) => `${f.file}:${f.line}#${i}`
+
+const toVerify = rawFindings
+  .map((f, i) => ({ ...f, ref: refOf(f, i) }))
+  .filter((f) => VERIFY_SEVERITIES.includes(f.severity))
+
+let verdictByRef = new Map()
+if (toVerify.length && a.skipVerify !== true) {
+  phase('Verify')
+  const batches = []
+  for (let i = 0; i < toVerify.length; i += VERIFY_BATCH) batches.push(toVerify.slice(i, i + VERIFY_BATCH))
+  const capped = batches.slice(0, BUDGET)
+  if (batches.length > capped.length) {
+    log(`NOTE: verification capped at budget ${BUDGET}; ${(batches.length - capped.length) * VERIFY_BATCH} findings go to synthesis UNVERIFIED.`)
+  }
+  log(`Stage 2.5: adversarially verifying ${capped.reduce((n, b) => n + b.length, 0)} ${VERIFY_SEVERITIES.join('/')} findings in ${capped.length} batches.`)
+
+  const verifyResults = await parallel(
+    capped.map((batch, bi) => () =>
+      agent(
+        `You are a SKEPTIC. Other agents reviewed this repository at ${ROOT} and produced the claims below. Your job is to REFUTE them, not to confirm them.
+
+## Claims to attack
+${batch.map((f) => `### ref: ${f.ref}\n- file: ${ROOT}/${f.file}, line ${f.line}\n- claimed severity: ${f.severity}\n- claim: ${f.summary}\n- evidence they quoted:\n\`\`\`\n${(f.evidence || '').split('\n').slice(0, 3).join('\n')}\n\`\`\``).join('\n\n')}
+
+## How to attack each claim
+1. OPEN the real file and read the cited line IN CONTEXT — enough surrounding lines to understand it. The quoted evidence may be accurate but misleading out of context.
+2. Ask specifically: is this actually reachable? Is there a guard, an early return, a caller contract, a type constraint, or a documented convention upstream that makes the claimed failure impossible? Is the cited construct a deliberate, documented seam rather than a defect? Does a test already cover it?
+3. Use \`gx context <symbol>\` / \`gx impact <target>\` to check callers before asserting something is unreachable or unguarded — a claim about how a symbol is used cannot be settled from its definition alone.
+
+## Verdict rules — read carefully
+- \`refuted: true\` if the claim does not hold as stated, OR if after genuinely looking you CANNOT CONFIRM it. Uncertainty means refuted. Do not give a claim the benefit of the doubt.
+- \`refuted: false\` ONLY when you have read the code and the defect is real as described.
+- \`severity_overstated: true\` when the defect is real but cannot cost what the claim implies.
+- Judge each claim independently. Several may be about the same file; that is not evidence for or against any of them.
+
+${READONLY_RULES}
+
+Return a verdict for EVERY ref given to you, using the exact ref strings above.`,
+        {
+          agentType: 'code-reviewer',
+          model: WORKER_MODEL,
+          label: `verify:b${bi}`,
+          phase: 'Verify',
+          schema: VERIFY_SCHEMA,
+        },
+      ).then((r) => (r && r.verdicts) || []),
+    ),
+  )
+  for (const v of verifyResults.filter(Boolean).flat()) verdictByRef.set(v.ref, v)
+}
+
+const withVerdicts = rawFindings.map((f, i) => {
+  const ref = refOf(f, i)
+  const v = verdictByRef.get(ref)
+  return { ...f, ref, verified: v ? !v.refuted : null, verifyReason: v ? v.reason : null, severityOverstated: v ? !!v.severity_overstated : false }
+})
+
+const refuted = withVerdicts.filter((f) => f.verified === false)
+const allFindings = withVerdicts.filter((f) => f.verified !== false)
+if (refuted.length) {
+  log(`Stage 2.5: ${refuted.length} finding(s) REFUTED and excluded from synthesis (reported in result.refuted, not discarded).`)
+}
 
 // ---------------------------------------------------------------------------
 // Stage 3 — synthesis into an epic spec
@@ -519,14 +623,39 @@ for (const f of allFindings) {
 }
 const convergent = [...agreement.entries()].filter(([, v]) => v.size > 1).map(([k]) => k)
 
+/**
+ * CRITICAL SINGLETONS ARE NEVER TRUNCATED.
+ *
+ * A severity sort plus a hard cap silently loses the tail, and the tail is where the rare,
+ * severe, single-site defects live — exactly the ones no frequency-based process surfaces.
+ * Observed 2026-08-12: blob-store ordering every mutation backwards (guaranteed data loss)
+ * came from ONE scope and would never have ranked on commonality.
+ *
+ * So: every `critical` finding and every independently-convergent site is emitted in full,
+ * REGARDLESS of cap. The cap then applies only to what remains, and any real truncation is
+ * stated in the prompt rather than being invisible.
+ */
 function digest(findings, cap) {
   const order = { critical: 0, high: 1, medium: 2, low: 3 }
-  return findings
-    .slice()
+  const convergentSet = new Set(convergent)
+  const isProtected = (f) => f.severity === 'critical' || convergentSet.has(`${f.file}:${f.line}`)
+  const line = (f) =>
+    `- [${f.severity}${f.severityOverstated ? ' (severity disputed)' : ''}]${f.verified ? ' [verified]' : ''} (${f.concept}) ${f.file}:${f.line} — ${f.summary}`
+
+  const protectedOnes = findings.filter(isProtected)
+  const rest = findings
+    .filter((f) => !isProtected(f))
     .sort((x, y) => (order[x.severity] ?? 9) - (order[y.severity] ?? 9))
-    .slice(0, cap)
-    .map((f) => `- [${f.severity}] (${f.concept}) ${f.file}:${f.line} — ${f.summary}`)
-    .join('\n')
+  const room = Math.max(0, cap - protectedOnes.length)
+  const shown = rest.slice(0, room)
+  const omitted = rest.length - shown.length
+
+  return (
+    [...protectedOnes, ...shown].map(line).join('\n') +
+    (omitted > 0
+      ? `\n\n(${omitted} further finding(s) of severity medium/low omitted for length. Every critical and every independently-convergent site above is shown in full — nothing severe was truncated.)`
+      : '')
+  )
 }
 
 const epicSpec = await agent(
@@ -589,12 +718,24 @@ return {
   epics,
   concepts: finalRanked,
   findings: allFindings,
-  roster: UNITS.map((u) => ({ id: u.id, agentType: u.agentType })),
+  // Refuted findings are RETURNED, not discarded: a skeptic can be wrong, and the caller
+  // deserves to see what was thrown out and on what grounds.
+  refuted: refuted.map((f) => ({ file: f.file, line: f.line, severity: f.severity, summary: f.summary, reason: f.verifyReason })),
+  convergentSites: convergent,
+  verification: {
+    severitiesVerified: VERIFY_SEVERITIES,
+    attempted: toVerify.length,
+    adjudicated: verdictByRef.size,
+    unverified: Math.max(0, toVerify.length - verdictByRef.size),
+    refuted: refuted.length,
+    skipped: a.skipVerify === true,
+  },
+  roster: UNITS.map((u) => ({ id: u.id, agentType: u.agentType, ...(u.loc ? { loc: u.loc } : {}) })),
   dropped: {
     stage1_units_over_budget: RAW_PACKAGES.length > BUDGET ? RAW_PACKAGES.slice(BUDGET).map((p) => (typeof p === 'object' ? p.id || p.path : p)) : [],
     stage1_no_result: s1dropped,
     stage2_no_result: s2dropped,
-    stage2_capped: assignments.length >= BUDGET,
+    stage2_units_not_rereviewed: UNITS.length > secondPass.length ? UNITS.slice(secondPass.length).map((u) => u.id) : [],
   },
-  note: 'Epics are RETURNED, not filed. The invoking session must dedupe against the backlog graph and file them with backlog_create_item / backlog_link_related / backlog_get_item.',
+  note: 'Epics are RETURNED, not filed. The invoking session must dedupe against the backlog graph (see prior_art_relation on each epic) and file them with backlog_create_item / backlog_link_related / backlog_get_item.',
 }
