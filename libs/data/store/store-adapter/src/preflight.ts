@@ -97,6 +97,8 @@ import { existsSync, unlinkSync, writeFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import type { Database as BetterSqlite3Database } from 'better-sqlite3';
 import { engineForApplicationId } from './engine-guard.js';
+import { storeQuiescence } from './store-lease.js';
+import { log } from '@adhd/sox-telemetry';
 
 const require = createRequire(import.meta.url);
 
@@ -220,7 +222,7 @@ function openSchemaReader(dbPath: string, readonly: boolean): BetterSqlite3Datab
  */
 export function preflightSchemaSanity(
   dbPath: string,
-  opts: { repair?: boolean } = {},
+  opts: { repair?: boolean; ownLeaseToken?: string } = {},
 ): SchemaPreflightResult {
   const result: SchemaPreflightResult = {
     ran: false,
@@ -282,7 +284,11 @@ export function preflightSchemaSanity(
   // (BL-506) Shared escape-hatch repair — the exact mechanism this module
   // documented for its own orphaned-Tantivy repair is now also graph-store's
   // fts5-residue drop; both funnel through the same out-of-band DELETE.
-  const repair = deleteSchemaRowsViaBetterSqlite3(dbPath, doomed);
+  const repair = deleteSchemaRowsViaBetterSqlite3(
+    dbPath,
+    doomed,
+    opts.ownLeaseToken !== undefined ? { ownLeaseToken: opts.ownLeaseToken } : {},
+  );
   result.dropped = repair.dropped;
   result.failed = repair.failed;
   return result;
@@ -324,13 +330,39 @@ export interface SchemaRowDeleteResult {
  * Never throws: every failure degrades to `{ failed: <message> }` so a repair
  * that can itself break an open is worse than no repair (same contract as
  * {@link preflightSchemaSanity}).
+ *
+ * (BUG-017, INV-1) The writable open is QUIESCENCE-GATED: `openSchemaReader(
+ * dbPath, false)` is the proven exp9 poisoner while live turso multiprocess
+ * peers hold the store — classic SQLite cannot see `-tshm` clients, so a
+ * writable open+close checkpoints/deletes the WAL out from under them. When
+ * `storeQuiescence` reports live peers the delete is DECLINED loudly
+ * (`failed: 'declined: …'` + a typed warn log — INV-5, never a silent skip)
+ * and the caller's repair is deferred until the store is quiescent.
  */
 export function deleteSchemaRowsViaBetterSqlite3(
   dbPath: string,
   names: readonly string[],
+  opts: { ownLeaseToken?: string } = {},
 ): SchemaRowDeleteResult {
   const result: SchemaRowDeleteResult = { dropped: [], failed: null };
   if (names.length === 0) return result;
+
+  // (BUG-017) Gate BEFORE any writable classic open. `excludeToken` is the
+  // caller's OWN connection lease (a process's own lease must never count
+  // against itself — same contract as the sidecar-reconcile and close-TRUNCATE
+  // gates). Under live peers: decline with the typed INV-1 contract; the
+  // repair is re-attempted once the store is quiescent.
+  const quiescence = storeQuiescence(dbPath, opts.ownLeaseToken);
+  if (!quiescence.quiescent) {
+    result.failed = `declined: ${quiescence.livePeers.length} live peer(s) hold the store (INV-1); repair deferred`;
+    log.warn('store_adapter.preflight.schema_repair_declined_live_peers', {
+      db_path: dbPath,
+      live_peer_count: quiescence.livePeers.length,
+      live_peer_pids: quiescence.livePeers.map((p) => p.pid).join(','),
+    });
+    return result;
+  }
+
   try {
     const db = openSchemaReader(dbPath, false);
     try {
