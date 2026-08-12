@@ -1,5 +1,19 @@
 # @adhd/sox-store-adapter
 
+## 0.5.2
+
+### Patch Changes
+
+- Fix Turso explicit-rowid FK failure (BL-507) + verify FTS backing materialization + engine-identity guard (BL-508) + lossy-WAL-path removal (ADR-0013) + stale-sidecar proactive reconcile (BL-373).
+
+  - **Defect B (the production outage):** live Drizzle-era edge DDL `REFERENCES node(rowid)` fails on Turso with `foreign_keys=ON` (`foreign key mismatch referencing "node"`). `hasExplicitRowidForeignKey` detects the form; `ensureCheckConstraints` rebuilds the edge constraint on turso only — stock SQLite resolves the form and its stores stay byte-identical (BL-448 AC-3).
+  - **Defect A:** `ensureFtsIndex` returned `ensured:true` without verifying 3-row materialization; `verifyTursoFtsMaterialization` (DROP+recreate once) + materialization verify in fts-ops close the half-materialized-index panic-bomb (BL-361/BL-507).
+  - **Engine-identity guard (BL-508):** `application_id` marker `0x534F5854` 'SOXT' (turso) / `0x534F5853` 'SOXS' (sqlite) + `_sox_engine` row; better-sqlite3 PRAGMA-is-primary probe (WAL-aware); pre-open refusal both sides; `getEngineIdentity`/`ensureEngineMarker`/`warnOnEngineVersionMismatch`; `store_engine` surfaced on ping.
+  - **ADR-0013 (owner directive #3):** `recoverTruncatedWal` and the auto-WAL-aside path deleted — a probe-truncated WAL is refusal-only with a typed operator action (manual `mv` with data-loss disclosure). `SOX_ALLOW_AUTO_WAL_ASIDE` removed. Verify `'off'` removed — the store always validates ≥ `'fast'`; an `off` request throws loudly. Repair always on (`repairEnabled()` gone). `SOX_STORE_VERIFY_SKIP` kept as a documented, visible operator lever.
+  - **BL-373 (owner directive #2):** proactive stale-`-tshm` reconcile before open (`proactivelyReconcileStaleSidecar`, mtime heuristic vs WAL, 60s default threshold) — root-cause prevention, not just catch-side healing; the catch stays as the backstop. `_reconnect()` replays `connect()` so fresh-open and poisoned-cached paths heal in one place. Ping-honesty verdict `computePingHealthVerdict` (status ok/degraded/unhealthy; ok only when store opened).
+  - BackupConfig typed skeleton (`enabled: true` literal, un-disablable) per ADR-0013 D2/D3 — landing pad for the upcoming backup feature; `SOX_AUTO_BACKUP_ENABLED` deleted, `SOX_AUTO_BACKUP_DIR` kept (D5 host config).
+  - graph-store workspace relock: `@adhd/sox-store-adapter` from `^0.5.0` → `workspace:*` (no published-snapshot resolution).
+
 ## 0.5.1
 
 ### Patch Changes
