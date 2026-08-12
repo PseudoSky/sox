@@ -1,0 +1,13 @@
+{
+  "name": "@adhd/sox-extension-dispatcher",
+  "version": "0.1.0",
+  "description": "Pure-dispatch orchestrator for already-authored plan-state-machine plans",
+  "private": true,
+  "license": "MIT",
+  "author": "sox-ecosystem",
+  "keywords": [
+    "dispatch",
+    "orchestrator",
+    "plan-state-machine"
+  ]
+}
