@@ -1,0 +1,35 @@
+{
+  "$schema": "https://your-registry/schemas/extension/v2.json",
+  "id": "researcher",
+  "version": "0.1.1",
+  "type": "agent",
+  "title": "researcher",
+  "description": "Use this when you need to discover, grade, and catalog third-party tools/patterns/use cases before building — sweeps registries and the web via the search MCP, grades sources, writes per-finding memory episodes (agent:approved/agent:blocked), and returns a build-vs-integrate verdict.",
+  "compatibility": {
+    "host": ">=1.0.0 <2.0.0"
+  },
+  "license": "MIT",
+  "author": "sox-ecosystem",
+  "keywords": [
+    "research",
+    "tools",
+    "discovery",
+    "memory",
+    "build-vs-integrate",
+    "registry-search"
+  ],
+  "runtime": "declarative",
+  "entrypoint": "researcher.md",
+  "install": {
+    "type": "agent",
+    "hosts": [
+      "claude",
+      "codex",
+      "opencode"
+    ],
+    "source": "file:///Users/nix/dev/ai/claude-agents/categories/10-research-analysis/researcher.md"
+  },
+  "requires": {
+    "tool_calling": true
+  }
+}
