@@ -1,5 +1,57 @@
 # @adhd/sox-store-adapter
 
+## 0.5.5
+
+### Patch Changes
+
+- **Header-first `application_id` probe + unconditional `multiprocess_wal` (BL-512 concurrent-write race).**
+
+  `connect()` previously ran `readApplicationId()` on EVERY writable connect, opening the same store
+  with better-sqlite3 (a legacy stock-SQLite engine) for `PRAGMA application_id`. Under concurrency that
+  legacy opener made the turso engine refuse a sibling process's `multiprocess_wal` open — "Database is
+  already open without experimental multiprocess WAL in another process" — and the write was lost
+  (measured 2026-08-12: 6 parallel backlog `create-item` processes, 5-9/18 lost; live reproduction with
+  lsof-clean external state).
+
+  - `readApplicationId` is now **header-first** (fs `openSync`/`readSync` at offset 68 — lock-free, no
+    driver, no sidecars); the better-sqlite3 pragma is the fallback for unidentifiable files only.
+  - `multiprocess_wal` is **unconditional** — the `experimental: { multiprocessWal }` option was removed
+    from `AdapterConfig`/`connect()`/`createTursoAdapter()` (zero callers passed it, grep-verified;
+    graph-store's dead `cfg.experimental` forwarding line removed to compile).
+  - **Bounded busy timeout** (`dbOpts.timeout = 5000`, always-on) on both adapters' driver connects and
+    the identity probe — with the driver default `busy_timeout=0`, a connect landing in another
+    process's `close()`-TRUNCATE window failed instantly "database is locked" (2-7/18 measured); with
+    `timeout: 5000` that class is zero.
+
+  RED: 9/18 persisted with the legacy-opener probe. GREEN: 18/18 production-shaped across 11 runs;
+  `wal-multiwriter.bl512.spec.ts` pins cold-child better-sqlite3 load count = 0. Suite 439/439,
+  graph-store 123/123, smoke-test 13/13.
+
+## 0.5.4
+
+### Patch Changes
+
+- **WAL always consolidated on writable close + busy-row inspection (BL-512).**
+
+  `close()` now runs `PRAGMA wal_checkpoint(TRUNCATE)` on EVERY writable close —
+  not just on the damaged-`wal_identity` path — with a `PASSIVE` fallback and a
+  never-blocks-close guarantee. Defect: a clean writable close left every frame in
+  the WAL, so short-lived writers (the backlog CLI spawns one process per command)
+  accumulated a forever-growing `-wal` (measured 3.8 MB beside a 19 MB db) and a
+  later connection's stale-`-tshm` reconciliation could discard those uncheckpointed
+  frames — the phantom-write class (`created:true`, row never persisted). TRUNCATE
+  resets the `-wal` to ~0 bytes, so no uncheckpointed window survives the process
+  that wrote it. A second TRUNCATE after the clean-shutdown stamp write leaves the
+  file at literally 0 bytes. `_softReadonly` connections (BL-391, FTS requires a
+  driver-writable handle) checkpoint too; hard `readonly` opens never do.
+
+  The TRUNCATE result is now inspected: when a concurrent reader holds the WAL the
+  pragma returns `busy:1` rather than throwing, and the adapter logs
+  `store_adapter.turso.close_checkpoint_busy` instead of silently recording a
+  flush that did not truncate. Frames are fsynced at COMMIT, so durability is never
+  at risk — only the growth guarantee degrades under concurrency, and the next
+  writable close without a concurrent reader truncates.
+
 ## 0.5.3
 
 ### Patch Changes
@@ -212,28 +264,3 @@ from './fts-orphan-guard.js'`. No removed or narrowed export in any of the three
 
 - Updated dependencies [1291af4]
   - @adhd/sox-telemetry@0.2.0
-
-## 0.5.4
-
-### Patch Changes
-
-- **WAL always consolidated on writable close + busy-row inspection (BL-512).**
-
-  `close()` now runs `PRAGMA wal_checkpoint(TRUNCATE)` on EVERY writable close —
-  not just on the damaged-`wal_identity` path — with a `PASSIVE` fallback and a
-  never-blocks-close guarantee. Defect: a clean writable close left every frame in
-  the WAL, so short-lived writers (the backlog CLI spawns one process per command)
-  accumulated a forever-growing `-wal` (measured 3.8 MB beside a 19 MB db) and a
-  later connection's stale-`-tshm` reconciliation could discard those uncheckpointed
-  frames — the phantom-write class (`created:true`, row never persisted). TRUNCATE
-  resets the `-wal` to ~0 bytes, so no uncheckpointed window survives the process
-  that wrote it. A second TRUNCATE after the clean-shutdown stamp write leaves the
-  file at literally 0 bytes. `_softReadonly` connections (BL-391, FTS requires a
-  driver-writable handle) checkpoint too; hard `readonly` opens never do.
-
-  The TRUNCATE result is now inspected: when a concurrent reader holds the WAL the
-  pragma returns `busy:1` rather than throwing, and the adapter logs
-  `store_adapter.turso.close_checkpoint_busy` instead of silently recording a
-  flush that did not truncate. Frames are fsynced at COMMIT, so durability is never
-  at risk — only the growth guarantee degrades under concurrency, and the next
-  writable close without a concurrent reader truncates.
