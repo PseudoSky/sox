@@ -629,10 +629,24 @@ export interface TshmContentDeadVerdict {
 export function isTshmContentDead(dbPath: string): TshmContentDeadVerdict {
   // 1. WAL absent or 0 bytes → nothing to coordinate, index can't be live.
   let walSize = -1;
+  let walStatErrno: string | undefined;
   try {
     walSize = statSync(dbPath + '-wal').size;
-  } catch {
-    walSize = 0; // absent — nothing to lose either
+  } catch (err) {
+    // (DEBT-003 review finding 2) A stat failure that is NOT a plain absence
+    // (ENOENT) leaves the WAL's size UNKNOWN — that is uncertainty, NOT proof
+    // of death. Conflating EACCES/EIO/… with "absent" would let the
+    // content-dead gate enable a rename of a -tshm beside a WAL we could not
+    // actually read (a live index is never provably dead from an unreadable
+    // WAL), and the caller's retry budget would be burned surfacing the typed
+    // operator error instead of the real permission diagnostic. Return "not
+    // proven dead": the bounded retry surfaces the driver error as-is, and
+    // the reconcile declines — never a wrong rename.
+    walStatErrno = (err as { code?: string } | null | undefined)?.code;
+    walSize = 0;
+  }
+  if (walStatErrno !== undefined && walStatErrno !== 'ENOENT') {
+    return { dead: false, reason: null };
   }
   if (walSize <= 0) {
     return {
@@ -775,6 +789,25 @@ export function recoverStaleWalIndex(
   // requireContentDead check re-proves the index is dead and moves ONLY the
   // `-tshm` — never the `-shm` (self-reconciling; moving it under a live peer
   // is corruption, same rule as every other path here).
+  //
+  // (DEBT-003 review finding 3 — TOCTOU probe→rename, accepted per triage
+  // Probe D, SPEC INV-3) The re-probe above and the renameSync below are not
+  // atomic: a live peer could write WAL frames in the microseconds between the
+  // content-dead proof and the rename. The window is ACCEPTED because the
+  // gate is content-provable deadness, not a snapshot of the store: at probe
+  // time the index provably describes frames the WAL cannot contain (WAL 0
+  // bytes/absent, or the index's own frame extent beyond the WAL EOF), so no
+  // live connection can be reading it; the rename moves ONLY the derived
+  // `-tshm` aside (never the WAL, never the `-shm`), and Probe D proved a
+  // live peer's mmap survives a sidecar rename (the sidecar is rebuilt from
+  // the WAL on the next open). A CONTENT-LIVE tshm can never be renamed here
+  // — the re-probe would fail and this function declines. Residual risk
+  // exists only under pathological write timing (a peer racing the exact
+  // rename instant); the moved file is RENAMED to a `.stale-*` forensic
+  // record rather than deleted, so even a hypothetical wrong-rename has a
+  // recovery path by construction. No cheaper narrowing exists: the
+  // requireContentDead re-probe IS the narrowing (a second stat between the
+  // probe and the rename would still leave the same non-atomic window).
   if (opts?.requireContentDead === true) {
     const verdict = isTshmContentDead(dbPath);
     if (!verdict.dead) {
