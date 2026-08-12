@@ -1,5 +1,35 @@
 # @adhd/sox-store-adapter
 
+## 0.5.8
+
+### Patch Changes
+
+- **BUG-014 hardening program (T1–T5): the store can no longer be poisoned, and a poisoned store
+  heals on the next fresh open even under live peers (INV-1/2/3/4/5).**
+
+  - **T1/BUG-017 — quiescence-gate the writable classic-engine escape hatch (INV-1):** the proven
+    poisoner (a writable better-sqlite3 open+close under live turso multiprocess peers checkpoints
+    the WAL the engine needs) now declines loudly when `storeQuiescence` reports live peers —
+    `preflightSchemaSanity(repair:true)` returns a typed `failed: 'declined…'` contract, and
+    `withConnectionClosedForRepair` throws `RepairDeclinedLivePeersError` (carrying peer count +
+    pids) instead of opening the store writable.
+  - **T2/DEBT-003 — content-dead `-tshm` reconcile before the non-quiescent retry (INV-2/3):** when
+    an open short-reads and the `-tshm` is provably content-dead (WAL 0 bytes, or its first indexed
+    frame offset lies beyond WAL EOF), the sidecar is reconciled under live peers — the BUG-014
+    lease-gate deadlock is gone; the bounded retry is reserved for genuinely-transient races and
+    now logs the LATEST error on every attempt.
+  - **T3/BUG-021 — content-deadness at ALL three reconcile decision sites (INV-3):** the mtime
+    staleness heuristic (false-positive under multiprocess WAL, where `-tshm` mtime freezes at
+    creation) is demoted to a log-only hint; `isTshmContentDead` is the only rename gate, so a
+    healthy live store is never churned through `*.stale-*` renames.
+  - **T4/BUG-018 — canonical path identity (INV-4):** `dbPath` is canonicalized once at connect
+    (realpath of the parent dir + basename), so leases, quiescence, markers, and sidecars all key
+    off ONE spelling per physical store — symlink/`/tmp`-class aliasing can no longer yield false
+    quiescence.
+  - **T5/BUG-019 — per-connection open marker:** the single shared `-openmark` (any orderly close
+    unlinked it while siblings held the store) is replaced by per-connection `<leaseDir>/<token>.openmark`
+    files with dead-pid unclean detection and a legacy-marker one-shot shim.
+
 ## 0.5.7
 
 ### Patch Changes
