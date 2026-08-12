@@ -49,6 +49,7 @@ import {
   getClusterPipelineMetrics,
   recordClusterPassAdmission,
   getOntologySnapshot,
+  getStoreEngineIdentity,
   hasPendingFullEnrich,
   healMissingVectors,
   log,
@@ -1136,6 +1137,13 @@ export async function handleToolCall(name: string, args: Record<string, unknown>
           // clustering is fast for the episodes it accepts and closed to the
           // rest — which is the live state as measured on 2026-08-08.
           cluster_pipeline: clusterPipeline,
+          // BL-508: client/engine version tracking. The store's engine identity
+          // from the `_sox_engine` marker row (engine, sox_version,
+          // driver_version, first_opened_at, last_opened_at) — DATA, not a
+          // health dimension (HF-3 additive rule; an unreadable/absent marker
+          // reads as `null`, which is a legacy store, not a warning). Read
+          // through the already-open adapter — one cheap SELECT, no re-open.
+          store_engine: await getStoreEngineIdentity(adapter),
         };
       } else if (resolvedPath) {
         // Resolved to a path whose file does not exist yet — an unborn store,

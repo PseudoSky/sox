@@ -1,4 +1,5 @@
 import { createRequire } from 'node:module';
+import { existsSync } from 'node:fs';
 import { log } from '@adhd/sox-telemetry';
 import {
   consumeUncleanShutdownFlag,
@@ -30,6 +31,7 @@ import type {
   TransactionOptions,
 } from './types.js';
 import { ETursoNativeStore, isTursoNativeStoreSchemaError } from './errors.js';
+import { ensureEngineMarker, readApplicationId, SOX_APP_ID_TURSO } from './engine-guard.js';
 import {
   ensureFtsIndex as ensureFtsIndexOn,
   ftsCount as ftsCountOn,
@@ -158,6 +160,11 @@ export class SqliteAdapterImpl implements SqliteAdapter {
   private cache: StatementCache;
   private closed = false;
 
+  /** (BL-508) Did the db file exist before this adapter opened it? Tells
+   *  `init()`'s marker backfill whether the store is fresh (created by this
+   *  very open → this engine owns it) or legacy (unmarked → infer). */
+  private _fileExisted = false;
+
   /** (BL-330) WAL identity captured at `init()`. See TursoAdapterImpl. */
   _walBaseline: WalIdentity | null = null;
 
@@ -165,6 +172,19 @@ export class SqliteAdapterImpl implements SqliteAdapter {
   constructor(db: Sqlite3Database);
   constructor(dbOrPath: string | Sqlite3Database, opts?: { readonly?: boolean }) {
     if (typeof dbOrPath === 'string') {
+      // (BL-508) TOOLING-intent marker probe, BEFORE the writable handle is
+      // opened: a pure header read (readApplicationId) that refuses a
+      // Turso-owned store with the typed error and zero WAL/schema touch.
+      // The existing BL-329 sqlite_master probe below only fires on
+      // unmarked Tantivy stores — the marker catches a Turso store that has
+      // NO Tantivy schema too (a plain turso-created store parses fine in
+      // better-sqlite3, which is exactly the silent cross-engine open this
+      // guard exists to stop).
+      const appId = readApplicationId(dbOrPath);
+      if (appId === SOX_APP_ID_TURSO) {
+        throw new ETursoNativeStore(dbOrPath, null, { detectedEngine: 'turso' });
+      }
+      this._fileExisted = existsSync(dbOrPath);
       this.db = new (loadBetterSqlite3())(dbOrPath, {
         readonly: opts?.readonly ?? false,
       });
@@ -180,6 +200,21 @@ export class SqliteAdapterImpl implements SqliteAdapter {
       this.config = {
         type: 'sqlite',
       };
+      // (BL-508) Best-effort marker probe on a caller-owned handle: the
+      // handle is already open, so read the pragma directly (still a raw
+      // header read, no schema touch).
+      try {
+        const appId = this.db.pragma('application_id', { simple: true }) as number;
+        if (appId === SOX_APP_ID_TURSO) {
+          throw new ETursoNativeStore(this.db.name ?? '<caller-owned handle>', null, {
+            detectedEngine: 'turso',
+          });
+        }
+      } catch (err) {
+        if (err instanceof ETursoNativeStore) throw err;
+        // Unreadable pragma on a caller-owned handle → leave to the
+        // sqlite_master probe below.
+      }
     }
 
     // (BL-329) `new DatabaseConstructor()` above succeeds even against a
@@ -234,6 +269,14 @@ export class SqliteAdapterImpl implements SqliteAdapter {
    */
   async init(): Promise<void> {
     if (this.config.readonly) return;
+    // (BL-508) Engine marker on first open (idempotent; fresh stores and
+    // legacy-unmarked sqlite stores get stamped here). Runs before the meta
+    // stamp so a marker is never missed because stamping failed.
+    if (this.config.dbPath) {
+      await ensureEngineMarker(this, 'sqlite', this.config.dbPath, {
+        fresh: !this._fileExisted,
+      });
+    }
     let uncleanShutdown = false;
     try {
       await ensureAdapterMetaTable(this);
