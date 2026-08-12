@@ -37,9 +37,12 @@ export function leaseDirPath(dbPath: string): string {
   return `${dbPath}.sox-lease.d`;
 }
 
-/** Entries older than 24 h are swept regardless of pid (pid-reuse guard:
- *  a recycled pid could make a stale entry look live once — the age-out caps
- *  that exposure at a deferred TRUNCATE, never a data loss). */
+/** Entries older than 24 h are swept only when the pid probe cannot prove the
+ *  entry live (pid-reuse guard: a recycled pid could make a stale entry look
+ *  live once — the age-out caps that exposure at a deferred TRUNCATE, never a
+ *  data loss). A PROVEN-live pid is NEVER aged out: a session running >24 h is
+ *  a live peer, and sweeping it would destroy its crash evidence (BUG-019) or
+ *  let a destructive reconcile proceed against a store a peer still holds. */
 const LEASE_MAX_AGE_MS = 24 * 60 * 60 * 1000;
 
 /**
@@ -47,12 +50,19 @@ const LEASE_MAX_AGE_MS = 24 * 60 * 60 * 1000;
  * connection open marker — they share the `pid\nopenedAtIso\n` content shape,
  * see `acquireStoreLease` and preflight.ts `markStoreOpen`).
  *
- * The 24 h age-out is applied FIRST (a recycled pid could make a stale entry
- * look live once); then `process.kill(pid, 0)` probes the pid. Returns null
- * when the content cannot be parsed (never counts as live; callers decide
- * whether to sweep it). Used by {@link storeQuiescence} for lease entries and
- * by preflight.ts `hasUncleanShutdown`/`sweepDeadOpenMarkers` for open
- * markers — the BUG-019 requirement to reuse storeQuiescence's liveness logic.
+ * The PID is probed FIRST (`process.kill(pid, 0)`): a live pid is a live
+ * session regardless of age. The 24 h age-out is a pid-reuse guard that must
+ * never override a proven-live pid (BUG-019 review fix): a session running
+ * >24 h would otherwise read as dead, re-firing the pre-flight against a live
+ * multiprocess store and sweeping its marker/lease — destroying the crash
+ * evidence BUG-019 exists to preserve. The age-out applies ONLY to pids that
+ * are dead or whose liveness cannot be established: an undeterminable pid is
+ * treated as live while FRESH (never sweep or flag a possibly-live session)
+ * and as dead once older than LEASE_MAX_AGE_MS. Returns null when the content
+ * cannot be parsed (never counts as live; callers decide whether to sweep
+ * it). Used by {@link storeQuiescence} for lease entries and by preflight.ts
+ * `hasUncleanShutdown`/`sweepDeadOpenMarkers` for open markers — the BUG-019
+ * requirement to reuse storeQuiescence's liveness logic.
  */
 export function entryLiveness(
   content: string,
@@ -60,19 +70,35 @@ export function entryLiveness(
 ): { live: boolean; pid: number; openedAt: number } | null {
   const [pidLine, openedAtLine] = content.split('\n');
   const openedAt = openedAtLine ? Date.parse(openedAtLine) : NaN;
-  if (Number.isFinite(openedAt) && now - openedAt > LEASE_MAX_AGE_MS) {
-    return { live: false, pid: Number(pidLine), openedAt }; // aged out ⇒ dead
-  }
   const pid = Number(pidLine);
-  if (!Number.isInteger(pid) || pid <= 0) return null; // unparseable
-  let live = false;
+  if (!Number.isInteger(pid) || pid <= 0) return null; // unparseable — callers decide
+
+  // Probe liveness FIRST. kill(pid, 0) errno semantics: no throw ⇒ the
+  // process exists; EPERM ⇒ it EXISTS but is not owned by us (kill(2));
+  // ESRCH ⇒ no such process; EINVAL ⇒ pid out of range — no process can hold
+  // it. Only the first two are "live".
+  let probe: 'live' | 'dead' | 'undeterminable';
   try {
     process.kill(pid, 0);
-    live = true;
-  } catch {
-    live = false;
+    probe = 'live';
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException | null | undefined)?.code;
+    probe =
+      code === 'EPERM' ? 'live' : code === 'ESRCH' || code === 'EINVAL' ? 'dead' : 'undeterminable';
   }
-  return { live, pid, openedAt };
+  if (probe === 'live') return { live: true, pid, openedAt }; // live pids are age-out-proof
+
+  // Not proven live — NOW the 24 h age-out applies (pid-reuse guard), and only
+  // to the undeterminable class: a dead pid is dead regardless of age, and a
+  // fresh undeterminable pid is treated as live (conservative — never sweep a
+  // session whose liveness we could not establish).
+  if (
+    probe === 'undeterminable' &&
+    (!Number.isFinite(openedAt) || now - openedAt <= LEASE_MAX_AGE_MS)
+  ) {
+    return { live: true, pid, openedAt };
+  }
+  return { live: false, pid, openedAt };
 }
 
 /** Best-effort unlink of an entry. ENOENT (already released) and any other
@@ -126,9 +152,11 @@ export async function acquireStoreLease(dbPath: string): Promise<StoreLease> {
 /** Quiescence probe: list the lease dir, exclude `excludeToken` (the caller's
  *  own entry — a process's own lease must never count against itself), read
  *  each peer's pid, liveness = `process.kill(pid, 0)` does not throw.
- *  Dead entries are SWEPT (unlinked) as a side effect; entries older than
- *  24 h are swept regardless of pid (pid-reuse guard). Quiescent iff zero
- *  live peers. Never throws: unreadable/absent dir ⇒ quiescent. */
+ *  Dead entries are SWEPT (unlinked) as a side effect. The 24 h age-out is a
+ *  pid-reuse guard applied ONLY to entries whose pid is dead or of
+ *  undeterminable liveness — a PROVEN-live pid (however old the entry) is a
+ *  live peer and is never swept (BUG-019 review fix). Quiescent iff zero live
+ *  peers. Never throws: unreadable/absent dir ⇒ quiescent. */
 export function storeQuiescence(dbPath: string, excludeToken?: string): StoreQuiescence {
   const safe: StoreQuiescence = { quiescent: true, livePeers: [] };
   try {
