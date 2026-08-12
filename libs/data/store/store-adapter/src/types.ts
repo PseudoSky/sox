@@ -472,4 +472,12 @@ export interface TursoAdapter extends StoreAdapter {
    * query — reading it never itself starts a reconnect.
    */
   readonly connectionHealth: 'healthy' | 'poisoned' | 'reconnecting';
+  /**
+   * (BL-506) Close the current connection, run `fn` against the store file
+   * while NO turso connection is open, then reopen through the full
+   * `connect()` ceremony — all on THIS instance, so every caller holding
+   * this adapter keeps a valid handle. See
+   * `TursoAdapterImpl.withConnectionClosedForRepair` for the full contract.
+   */
+  withConnectionClosedForRepair<T>(fn: () => Promise<T>): Promise<T>;
 }
