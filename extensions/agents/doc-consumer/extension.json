@@ -1,0 +1,31 @@
+{
+  "$schema": "https://your-registry/schemas/extension/v2.json",
+  "id": "doc-consumer",
+  "version": "0.1.0",
+  "type": "agent",
+  "title": "doc-consumer",
+  "description": ">-",
+  "compatibility": {
+    "host": ">=1.0.0 <2.0.0"
+  },
+  "license": "MIT",
+  "author": "sox-ecosystem",
+  "keywords": [
+    "doc-consumer",
+    "agent",
+    "declarative"
+  ],
+  "runtime": "declarative",
+  "entrypoint": "doc-consumer.md",
+  "install": {
+    "type": "agent",
+    "hosts": [
+      "claude",
+      "opencode"
+    ],
+    "source": "file:///Users/nix/.config/opencode/agents/doc-consumer.md"
+  },
+  "requires": {
+    "tool_calling": true
+  }
+}

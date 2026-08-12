@@ -1,0 +1,13 @@
+{
+  "name": "@adhd/sox-extension-agent-manager",
+  "version": "0.1.0",
+  "description": "agent-manager agent",
+  "private": true,
+  "license": "MIT",
+  "author": "sox-ecosystem",
+  "keywords": [
+    "agent-manager",
+    "agent",
+    "declarative"
+  ]
+}

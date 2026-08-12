@@ -1,0 +1,13 @@
+{
+  "name": "@adhd/sox-extension-debug",
+  "version": "0.1.0",
+  "description": "debug agent",
+  "private": true,
+  "license": "MIT",
+  "author": "sox-ecosystem",
+  "keywords": [
+    "debug",
+    "agent",
+    "declarative"
+  ]
+}
