@@ -35,6 +35,7 @@ import {
 import {
   isAlreadyOpenWithoutMultiprocessWal,
   isFatalConnectionError,
+  RepairDeclinedLivePeersError,
 } from './errors.js';
 import { ESqliteNativeStore } from './errors.js';
 import { ensureEngineMarker, readApplicationId, SOX_APP_ID_SQLITE } from './engine-guard.js';
@@ -542,8 +543,19 @@ export class TursoAdapterImpl implements TursoAdapter {
       // flag: `consumeUncleanShutdownFlag()` reads `_adapter_meta` through this
       // adapter, i.e. after `connect()` returned — and this pre-flight has to
       // decide before that, so the gate must live outside the database.
+      //
+      // (BUG-017) The repair (a WRITABLE better-sqlite3 open) is quiescence-
+      // gated INSIDE `deleteSchemaRowsViaBetterSqlite3`; the connect-scope
+      // lease token is threaded through so the adapter's OWN lease never
+      // counts against itself. The lease is acquired ABOVE this block (≈400),
+      // so `lease?.token` is in scope — the preflight-before-lease ordering
+      // trap does not apply here, but any future reordering must keep the
+      // lease acquisition above the preflight.
       if (opts.dbPath && opts.readonly !== true && hasStoreOpenMarker(opts.dbPath)) {
-        const preflight = preflightSchemaSanity(opts.dbPath, { repair: true });
+        const preflight = preflightSchemaSanity(
+          opts.dbPath,
+          lease !== null ? { repair: true, ownLeaseToken: lease.token } : { repair: true },
+        );
         if (preflight.orphaned.length > 0) {
           emitIntegrityReport(
             opts.dbPath,
@@ -1365,6 +1377,18 @@ export class TursoAdapterImpl implements TursoAdapter {
    * throws still gets the reopen in the `finally`, so the adapter is never
    * left dead. If the reopen itself fails, the error propagates (an
    * unreachable store must not fake success).
+   *
+   * (BUG-017, INV-1) Before `fn()` runs — after the OWN connection is closed —
+   * the store is checked for quiescence. A WRITABLE classic-engine repair
+   * while live turso multiprocess peers hold the store is the exp9 poisoner
+   * (classic SQLite cannot see `-tshm` clients; a writable open+close
+   * checkpoints/deletes the WAL). Under live peers this throws a typed
+   * {@link RepairDeclinedLivePeersError} carrying the peer count + pids; the
+   * caller decides (graph-store logs and skips the drop — the pre-BL-506
+   * degradation, which is safe). The own lease token is captured BEFORE
+   * `close()` (close releases it and nulls `this._lease`), so the probe
+   * excludes exactly this instance's own entry. The reopen in the `finally`
+   * still runs — the adapter handle stays live.
    */
   async withConnectionClosedForRepair<T>(fn: () => Promise<T>): Promise<T> {
     if (this.closed) {
@@ -1372,8 +1396,25 @@ export class TursoAdapterImpl implements TursoAdapter {
         'withConnectionClosedForRepair: the adapter is already closed and cannot be reopened',
       );
     }
+    const repairDbPath = this.config.dbPath;
+    const ownLeaseToken = this._lease?.token;
     await this.close(); // full clean-close ceremony (checkpoint, driver close, marker clear)
     try {
+      // (BUG-017 review fix) The quiescence probe is LOCAL-FILE-only. A
+      // URL-only connection (`dbPath === undefined`) is exempt: the exp9
+      // poisoner is a WRITABLE classic open against a LOCAL store file whose
+      // WAL/`-tshm` coordination it cannot see — a remote URL has no local
+      // store file to poison, so there is nothing for this gate to protect
+      // (and leases are never acquired for URLs; store-lease.ts:16). No
+      // production caller reaches this branch with a better-sqlite3 drop
+      // anyway — graph-store early-returns on `cfg.dbPath === undefined`
+      // (index.ts:1274) — so INV-1 is not bypassed.
+      if (repairDbPath !== undefined) {
+        const quiescence = storeQuiescence(repairDbPath, ownLeaseToken);
+        if (!quiescence.quiescent) {
+          throw new RepairDeclinedLivePeersError(repairDbPath, quiescence.livePeers);
+        }
+      }
       return await fn();
     } finally {
       const fresh = await TursoAdapterImpl.connect(this._connectOpts);
