@@ -241,8 +241,8 @@ importers:
   libs/data/graph/graph-store:
     dependencies:
       '@adhd/sox-store-adapter':
-        specifier: ^0.5.0
-        version: 0.5.1
+        specifier: workspace:*
+        version: link:../../store/store-adapter
       '@adhd/sox-telemetry':
         specifier: workspace:*
         version: link:../../../observability/sox-telemetry
@@ -470,14 +470,6 @@ importers:
         version: link:../../libs/data/store/store-adapter
 
 packages:
-
-  '@adhd/sox-store-adapter@0.5.1':
-    resolution: {integrity: sha512-s5vDgaQE/ghTTDrXd2+MxGJ46T9B8yvv85+HlECnQQ1lUSCT8TV9NF3rD6mwMdzcUQYrakv1IUS/h8YSljv62Q==}
-    engines: {node: '>=20'}
-
-  '@adhd/sox-telemetry@0.2.0':
-    resolution: {integrity: sha512-r9t4dwqtt4g300hQkeA59mJW7qZF8IUTN9dNa5nVC9ryAs9NHZPcuN68hpDn4uRii0l56CXsVR5cxV0N+Vd2Hw==}
-    engines: {node: '>=20'}
 
   '@andrewbranch/untar.js@1.0.3':
     resolution: {integrity: sha512-Jh15/qVmrLGhkKJBdXlK1+9tY4lZruYjsgkDFj08ZmDiWVBLJcqkok7Z0/R0In+i1rScBpJlSvrTS2Lm41Pbnw==}
@@ -4995,22 +4987,6 @@ packages:
     resolution: {integrity: sha512-ytENFjIJFl2UwYglde2jchW2Hwm4GJFLDiSXWdTrJQBIN9Fcyp7n4DhxJEiWNAJMV1/BqWfW/kkg71UDcHJyTQ==}
 
 snapshots:
-
-  '@adhd/sox-store-adapter@0.5.1':
-    dependencies:
-      '@adhd/sox-telemetry': 0.2.0
-      '@tursodatabase/database': 0.7.1
-    optionalDependencies:
-      better-sqlite3: 12.10.0
-
-  '@adhd/sox-telemetry@0.2.0':
-    dependencies:
-      '@opentelemetry/api': 1.9.1
-      '@opentelemetry/context-async-hooks': 2.10.0(@opentelemetry/api@1.9.1)
-      '@opentelemetry/resources': 2.10.0(@opentelemetry/api@1.9.1)
-      '@opentelemetry/sdk-metrics': 2.10.0(@opentelemetry/api@1.9.1)
-      '@opentelemetry/sdk-trace-base': 2.10.0(@opentelemetry/api@1.9.1)
-      ulid: 2.4.0
 
   '@andrewbranch/untar.js@1.0.3': {}
 

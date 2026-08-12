@@ -41,12 +41,14 @@
  *    otherwise "every id present" could vacuously hold because nothing was
  *    ever really racing the kill.
  * 2. "Damage is auto-repaired to clean" DOES have a real repair path
- *    (`repairStoreIntegrity`), so arm 2 proves it matters: the SAME crashed,
- *    damaged store is restarted twice from two independent copies — once with
- *    repair enabled (the default) and once with `SOX_STORE_REPAIR=off`. If the
- *    "clean" assertion held in both arms, the repair path would be provably
- *    irrelevant to the outcome and this suite would be worthless. It does not:
- *    the off-arm stays damaged.
+ *    (`repairStoreIntegrity`), so arm 2 proves it matters: the raw crashed
+ *    bytes carry a physically-present blank JSON string (proven by a stock-
+ *    SQLite read that cannot repair), and the default open — repair is ALWAYS
+ *    on, `SOX_STORE_REPAIR=off` was an anti-feature and is gone (ADR-0013) —
+ *    normalises it to NULL and records damage + repair durably. If the "clean"
+ *    assertion held with no recorded repair action, the repair path would be
+ *    provably irrelevant and this suite would be worthless. It is not: the
+ *    repair action is recorded and reverification is clean.
  */
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { spawn, spawnSync } from 'node:child_process';
@@ -55,6 +57,7 @@ import { join, resolve, dirname, basename } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { tmpdir } from 'node:os';
 import { createInterface } from 'node:readline';
+import type { Database as BetterSqlite3Database } from 'better-sqlite3';
 
 const hasTurso = (() => {
   try {
@@ -265,9 +268,9 @@ tursoDescribe('BL-338 — crash recovery: SIGKILL under sustained write load', (
   );
 
   it(
-    'ARM 2: the SAME crashed+damaged store — auto-repaired to clean with default repair, ' +
-      'and STILL damaged under SOX_STORE_REPAIR=off (proves the repair path is not vacuous), ' +
-      'with the damage AND the repair both visible via the durable status surface and stderr logs',
+    'ARM 2: the SAME crashed+damaged store — auto-repaired to clean by the default open (repair is ALWAYS on, ADR-0013), ' +
+      'with the byte-level damage proven real by a raw stock-SQLite read BEFORE the repair runs, ' +
+      'and the damage AND the repair both visible via the durable status surface and stderr logs',
     async () => {
       const crashedPath = tempPath('bl338-repair-src');
       const outcome = await runSustainedWriteLoadThenKill(crashedPath, 50);
@@ -278,36 +281,33 @@ tursoDescribe('BL-338 — crash recovery: SIGKILL under sustained write load', (
 
       // Two independent copies of the EXACT crashed byte state (main db file
       // plus whatever WAL frames were never checkpointed, plus the BL-361
-      // open marker) — one for each arm, so neither restart's own repair or
-      // marker-clearing can contaminate the other.
+      // open marker) — one for the raw-damage proof, one for the repair arm,
+      // so neither restart's own repair or marker-clearing can contaminate
+      // the other.
+      const rawProofPath = tempPath('bl338-repair-raw');
       const repairOnPath = tempPath('bl338-repair-on');
-      const repairOffPath = tempPath('bl338-repair-off');
+      cloneStoreFiles(crashedPath, rawProofPath);
       cloneStoreFiles(crashedPath, repairOnPath);
-      cloneStoreFiles(crashedPath, repairOffPath);
+      expect(existsSync(`${rawProofPath}-openmark`)).toBe(true);
       expect(existsSync(`${repairOnPath}-openmark`)).toBe(true);
-      expect(existsSync(`${repairOffPath}-openmark`)).toBe(true);
 
-      // ── Control arm: repair disabled ────────────────────────────────────
-      const off = restartOn(repairOffPath, { SOX_STORE_REPAIR: 'off' });
-      expect(off.status, `off-arm restart failed: ${off.stderr}`).toBe(0);
-      const offJson = off.json!;
-      // The corruption is real store content (a genuine blank string in a
-      // JSON column, written by the live writer before it died) — it must
-      // still be there; nothing in this arm touches it.
-      expect(offJson.metaAtDamagedId).toBe('');
-      expect(offJson.persisted, 'no durable status recorded on restart').not.toBeNull();
-      const offStatus = offJson.persisted!;
-      expect(offStatus.verifyOk).toBe(false);
-      expect(offStatus.damaged.some((f) => f.probe === 'json_column_valid' && f.object === 'crash_node.meta')).toBe(
-        true,
-      );
-      // verifyOnly path — repair must NOT have run at all.
-      expect(offStatus.repairRan).toBe(false);
-      // Visible in logs even with repair off: the damage was reported.
-      expect(off.stderr).toMatch(/store\.integrity\.damaged/);
-      expect(off.stderr).toMatch(/crash_node\.meta/);
+      // ── Control arm: prove the damage is REAL file content ──────────────
+      // `SOX_STORE_REPAIR=off` is gone (ADR-0013 — the store always repairs),
+      // so the non-vacuity proof is a raw stock-SQLite read of the crashed
+      // file BEFORE any adapter open-time pass can touch it: the blank JSON
+      // string must be physically in the file. Nothing in this read repairs.
+      const RawDatabase = require('better-sqlite3') as new (
+        p: string,
+        o?: { readonly?: boolean },
+      ) => BetterSqlite3Database;
+      const raw = new RawDatabase(rawProofPath, { readonly: true });
+      const rawMeta = raw.prepare('SELECT meta FROM crash_node WHERE id = 10').get() as {
+        meta: string | null;
+      };
+      raw.close();
+      expect(rawMeta.meta, 'the blank JSON string must be physically in the crashed file').toBe('');
 
-      // ── Real arm: default repair (the shipped configuration) ───────────
+      // ── Real arm: default repair (always on, the shipped configuration) ──
       const on = restartOn(repairOnPath);
       expect(on.status, `on-arm restart failed: ${on.stderr}`).toBe(0);
       const onJson = on.json!;
@@ -315,8 +315,8 @@ tursoDescribe('BL-338 — crash recovery: SIGKILL under sustained write load', (
       expect(onJson.metaAtDamagedId).toBeNull();
       expect(onJson.persisted, 'no durable status recorded on restart').not.toBeNull();
       const onStatus = onJson.persisted!;
-      // The pass THIS process ran found the same damage the off-arm did —
-      // proves both arms started from identical corrupted state.
+      // The pass THIS process ran found the same damage the raw read did —
+      // proves the repair worked on the identical corrupted state.
       expect(onStatus.damaged.some((f) => f.probe === 'json_column_valid' && f.object === 'crash_node.meta')).toBe(
         true,
       );

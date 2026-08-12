@@ -37,8 +37,16 @@
  */
 
 // ── Database ──────────────────────────────────────────────────────────────────
-export { openDb, openDbReadOnly, initScope, migrateAddColumn, expandDbPath, getDb, stampStoreMeta, verifyStoreMeta, setWriterArtifact, getWriterArtifact, EStoreMismatch, STORE_META_KEYS, STORE_SCHEMA_VERSION, closeAllAdapters, wrapRawDbAsAdapter } from './db.js';
+export { openDb, openDbReadOnly, initScope, migrateAddColumn, expandDbPath, getDb, stampStoreMeta, verifyStoreMeta, setWriterArtifact, getWriterArtifact, EStoreMismatch, STORE_META_KEYS, STORE_SCHEMA_VERSION, closeAllAdapters, wrapRawDbAsAdapter, getStoreEngineIdentity } from './db.js';
 export type { ScopeKind, MemoryScope } from './db.js';
+
+// ── Ping health verdict (BL-373 family — ping honesty) ───────────────────────
+export { computePingHealthVerdict } from './ping-health.js';
+export type { PingHealthInput, PingHealthStatus, PingHealthVerdict } from './ping-health.js';
+
+// ── Typed config surface (ADR-0013 D2/D3) ────────────────────────────────────
+export { resolveBackupConfig, DEFAULT_BACKUP_CONFIG } from './config.js';
+export type { BackupConfig } from './config.js';
 
 // ── Writer lease (SA-8, BL-128) ───────────────────────────────────────────────
 export {
@@ -122,7 +130,7 @@ export {
   schedulePendingEmbeds,
   flushPendingEmbeds,
   healMissingVectors,
-  // BL-88: stale-vector heal (DEFAULT-OFF — SOX_HEAL_STALE_VECTORS=1 required).
+  // BL-88: stale-vector heal — always runs when invoked (SOX_HEAL_STALE_VECTORS was an anti-feature, ADR-0013); the operator surface `memory_curate reheal_stale` drives it.
   // Integrator decides tick wiring at merge — NOT wired in memory-server yet.
   healStaleVectors,
   embedBacklogStats,

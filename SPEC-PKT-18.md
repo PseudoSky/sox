@@ -7,6 +7,15 @@ Worktree: `/Users/nix/dev/ai/sox-ecosystem/.worktrees/pkt18-reheal-stale`, branc
 Verified working before writing this spec: `npx nx test memory-core -- bl434-heal-trace-id.spec.ts`
 → 5 passed (2026-08-07, worktree freshly `pnpm install`ed).
 
+> **SUPERSEDED-ANNOTATION (2026-08-11, strip branch `fix/bl373-sidecar-staleness`):**
+> the `SOX_HEAL_STALE_VECTORS=1` env gate and the `disabled` result field this spec MANDATES are
+> DELETED. ADR-0013 (feature switches are typed config, never env toggles) + the owner directive
+> deleted the gate: `memory_curate reheal_stale` now ALWAYS works when invoked, with no env var and
+> no `disabled` field in the result (the type carries no disabled state at all). An implementer
+> reading this spec must treat every `SOX_HEAL_STALE_VECTORS` / `disabled` reference below as
+> historical — do NOT re-introduce the gate or the field. Sections annotated inline where they
+> would otherwise mislead.
+
 ---
 
 ## 1. Root cause
@@ -118,11 +127,12 @@ async function curateRehealStale(
     remaining: remainingRow?.cnt ?? 0,
     gone: pass.gone,
     failed: pass.failed,
-    disabled: pass.disabled,
     active_model: activeModel,
   };
 }
 ```
+> SUPERSEDED: the `disabled: pass.disabled` field is GONE — the result carries no disabled state
+> (heal always runs; ADR-0013).
 
 The `remaining` query is deliberately the exact same predicate `healStaleVectors` scans against
 (embed-pipeline.ts:892-904) and `stats.ts`'s `stale_vector_count` uses (stats.ts:266-275) — re-run
@@ -145,11 +155,11 @@ export interface CurateRehealStaleResult {
   gone: number;
   /** Rows whose embed or apply threw. */
   failed: number;
-  /** True when SOX_HEAL_STALE_VECTORS was not '1' — the pass did not run; `remaining` still reports honestly. */
-  disabled: boolean;
   /** The active embed model resolved for this call. */
   active_model: string;
 }
+> SUPERSEDED: the `disabled` field is GONE (ADR-0013) — the pass always runs when invoked; there is
+> no env-gated disabled state to report.
 ```
 
 Superset of the `{scanned, healed, remaining}` the acceptance clause names — additive fields never
@@ -213,8 +223,8 @@ argument, unchanged.
   'merge_duplicates', 'recluster', 'drop_lens', 'drop-episodes', 'list_lenses', 'reheal_stale']`.
 - `op.description`: append `" reheal_stale re-embeds live episodes whose vector was stamped by a
   model that is no longer the active one (BL-88/BL-215) — a bounded, operator-invoked pass; it is
-  never run automatically. Requires SOX_HEAL_STALE_VECTORS=1 on the server process, or it reports
-  disabled:true with an honest remaining count and heals nothing."`
+  never run automatically, and it always works when invoked (SOX_HEAL_STALE_VECTORS was an
+  anti-feature and is gone, ADR-0013)."`
 - add a new top-level property: `limit: { type: 'number', description: '(reheal_stale) Max rows to
   re-embed this call. Default 50, capped at 2000 — small enough that a single MCP call does not
   risk the client-side tool-call timeout. Run again while the response\'s remaining > 0.' }`.
@@ -237,8 +247,9 @@ or reordered.
   (`beforeEach`/`afterEach` with `fs.mkdtempSync`) and does not touch PKT-55's files at all. Copy
   that shape.
 - **`libs/memory-core/src/embed-pipeline.ts`** — `healStaleVectors` is reused verbatim, not
-  modified. In particular, do not touch the `SOX_HEAL_STALE_VECTORS` gate inside it (see D5) and do
-  not add a `dry_run` concept to it (see D4) — both stay in `curate.ts` only.
+  modified. SUPERSEDED: there is no `SOX_HEAL_STALE_VECTORS` gate inside it anymore (deleted,
+  ADR-0013) — do not re-add one; and do not add a `dry_run` concept to it (see D4) — it stays in
+  `curate.ts` only.
 - **`libs/memory-core/src/stats.ts`** — the `remaining` query in `curateRehealStale` duplicates
   `stats.ts`'s `staleVecRow` predicate rather than importing/refactoring it. See D6.
 - **`extensions/bundles/sox-memory-bundle/members/memory-cli/`** — per the packet, only touch this
@@ -282,15 +293,19 @@ Ruling: **yes, edit it**, narrowly, as specified in §2.2. Two alternatives cons
   one schema edit in a file not on the original list, which is a smaller and better-understood risk
   than either alternative.
 
+> SUPERSEDED (ADR-0013, 2026-08-11): the gate is DELETED — invoking the op IS the opt-in; there is
+> no env gate to keep or bypass.
+
 **D2 — Does `reheal_stale` need `SOX_HEAL_STALE_VECTORS=1` set, or does invoking the MCP op count as
 the explicit opt-in and bypass the gate?**
-Ruling: **keep the gate, do not bypass it.** `healStaleVectors` stays untouched (§2.4). Two
+Ruling (historical): **keep the gate, do not bypass it.** `healStaleVectors` stays untouched (§2.4). Two
 independent reasons this env gate is not redundant with "op is explicit": (1) it is defense in
 depth — per the packet's own citation of BL-345 (no background work starving foreground reads) and
 BL-413 (the enrichment tick's history of wedging), a second, orthogonal safety check costs nothing
 and catches a future regression where something DOES wire this into a tick without removing the
 `op`-level check; (2) the existing test suite (`embed-provenance.spec.ts:360-376`,
-`bl434-heal-trace-id.spec.ts:222`) already encodes "set `SOX_HEAL_STALE_VECTORS=1` before expecting
+`bl434-heal-trace-id.spec.ts`) already encoded "set `SOX_HEAL_STALE_VECTORS=1` before expecting
+(SUPERSEDED: that env-set line is gone — the spec now asserts the pass runs without any env var)
 a real pass" as the established contract for this function — silently overriding it inside
 `curateRehealStale` would make those tests' documented behavior lie about what the function now
 does when called from curate. The cost is two-step operator activation (env var + MCP call) instead
@@ -321,8 +336,12 @@ respects it) would get real mutations with no warning. An explicit `E_UNSUPPORTE
 fails loud; `memory_stats.embed_provenance.stale_vector_count` is named in the error message as the
 existing read-only preview.
 
+> SUPERSEDED (ADR-0013, 2026-08-11): there is no `disabled` state anymore — the pass always runs
+> when invoked, so `remaining` is simply the honest post-pass count. The `disabled` early-return
+> shape this decision reasoned about no longer exists.
+
 **D5 — What does `remaining` report when the pass is `disabled` (env gate unset)?**
-Ruling: **the real, freshly-queried count of still-stale rows — never 0, never omitted.** An
+Ruling (historical): **the real, freshly-queried count of still-stale rows — never 0, never omitted.** An
 implementation that just forwards `healStaleVectors`'s early-return shape
 (`{scanned:0,healed:0,gone:0,failed:0,disabled:true}`) would report `remaining: 0` by construction
 (there is nothing else to derive it from in that shape), which is a false "nothing to do" signal on

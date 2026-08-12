@@ -275,22 +275,30 @@ exact harness already in that file (`makeFakeExec`, `makeSpec`, sandboxed `unitD
 fixture at `:47-64`) — **do not** invoke the real OS supervisor or write outside `tmpDir`, per the
 file's own stated guarantees (`:1-16`).
 
-1. **AC1 (BL-375 core).** Enable a unit once with `spec.env = { SOX_DISABLE_EMBED_HEAL: '1', ...base
-   }`. Enable it again with a *second* spec whose `env` **omits** `SOX_DISABLE_EMBED_HEAL` (as if
-   regenerated from a shell that no longer has it exported) but changes an unrelated field (mirror
-   the real incident: `ProcessType`/`processType`, or any other spec field that forces
+> **SUPERSEDED-ANNOTATION (2026-08-11, strip branch `fix/bl373-sidecar-staleness`):**
+> `SOX_DISABLE_EMBED_HEAL` was deleted as an anti-feature (ADR-0013). The AC1/AC2 fixtures below
+> used it purely as the EXAMPLE env key for the BL-375 enable/omit drop-detection mechanism; the
+> implemented `os-unit.spec.ts` fixtures now use a live tunable (`SOX_EMBED_DRAIN_FLOOR_MS`) with
+> identical assertion structure. The mechanism the acceptance criteria exercise (dropped-env-key
+> detection, `--unset` acknowledgment) is unchanged — only the example key differs. An implementer
+> re-running these criteria should substitute any live `SOX_*` tunable.
+
+1. **AC1 (BL-375 core).** Enable a unit once with `spec.env = { SOX_EMBED_DRAIN_FLOOR_MS: '30000',
+   ...base }`. Enable it again with a *second* spec whose `env` **omits** `SOX_EMBED_DRAIN_FLOOR_MS`
+   (as if regenerated from a shell that no longer has it exported) but changes an unrelated field
+   (mirror the real incident: `ProcessType`/`processType`, or any other spec field that forces
    `contentSame` to be false). Assert: `result.action === 'blocked'`,
-   `result.droppedEnvKeys` includes `'SOX_DISABLE_EMBED_HEAL'`, and the on-disk unit file's bytes
+   `result.droppedEnvKeys` includes `'SOX_EMBED_DRAIN_FLOOR_MS'`, and the on-disk unit file's bytes
    are **byte-identical** to what was written on the first call (`fs.readFileSync` before/after
    comparison) — i.e. nothing was overwritten.
    **RED arm:** run this exact test against `enableOsUnit` on `main` (pre-fix) — today `result.action
    === 'updated'`, `droppedEnvKeys` doesn't exist on the type, and the unit file on disk changes to
-   the new content with `SOX_DISABLE_EMBED_HEAL` gone. Confirm this fails before writing the fix by
+   the new content with `SOX_EMBED_DRAIN_FLOOR_MS` gone. Confirm this fails before writing the fix by
    running the test against the unmodified worktree first (`git stash` is banned — instead: write
    the test, run it, observe the failure, *then* make the `os-unit.ts` edit, re-run, observe green;
    commit test+fix together once both are witnessed).
 
-2. **AC2 (`--unset` acknowledgment).** Same setup as AC1, but pass `unsetKeys: ['SOX_DISABLE_EMBED_HEAL']`
+2. **AC2 (`--unset` acknowledgment).** Same setup as AC1, but pass `unsetKeys: ['SOX_EMBED_DRAIN_FLOOR_MS']`
    to the second `enableOsUnit` call. Assert `result.action !== 'blocked'` (it proceeds to
    `'updated'`), and the resulting on-disk unit's env genuinely lacks the key (confirm with
    `extractUnitEnv` on the freshly-written file).

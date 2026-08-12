@@ -63,7 +63,7 @@ slower:
 
 `deep` tracks database **size**, not row count — `integrity_check` is O(pages). `fast` runs every
 open; `deep` runs on an unclean shutdown (the `_adapter_meta.clean_shutdown` marker), on request,
-or never otherwise. Controls: `SOX_STORE_VERIFY=off|fast|deep`, `SOX_STORE_REPAIR=off`.
+or never otherwise. Controls: `SOX_STORE_VERIFY=fast|deep` tunes rigor; verification ALWAYS runs and repair is ALWAYS on (`SOX_STORE_VERIFY=off` / `SOX_STORE_REPAIR=off` were deleted as anti-features, ADR-0013 — an `off` request now refuses loudly). `SOX_STORE_VERIFY_SKIP` remains as the bounded short-lived-caller probe-skip lever (visible + reported).
 
 **Durable persistence** — the verdict is written to `_adapter_meta.last_integrity` as versioned
 JSON (`persistIntegrityResult` / `readIntegrityResult`). **Do not replace this with an in-process

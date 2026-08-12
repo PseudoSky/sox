@@ -30,8 +30,8 @@ export interface EmbedProvenanceStats {
   unstamped: number;
   /**
    * Live episodes with a vec_node row and a non-null embed_model that differs
-   * from the currently active model. These are re-embeddable via healStaleVectors
-   * when SOX_HEAL_STALE_VECTORS=1 is set.
+   * from the currently active model. These are re-embeddable via
+   * `memory_curate reheal_stale` (healStaleVectors — always enabled, ADR-0013).
    */
   stale_vector_count: number;
   /**

@@ -315,13 +315,14 @@ describe('BL-375 — enableOsUnit refuses to silently drop shell-sourced env on 
 
   it('AC1: a second enable that omits a previously-baked SOX_* key is BLOCKED — unit file untouched', () => {
     const fake1 = makeFakeExec();
-    const first = makeSpec({ env: { SOX_CONFIG_DB_PATH: 'x', SOX_DISABLE_EMBED_HEAL: '1' } });
+    const first = makeSpec({ env: { SOX_CONFIG_DB_PATH: 'x', SOX_EMBED_DRAIN_FLOOR_MS: '30000' } });
     const r1 = enableOsUnit(first, platform, { unitDir, exec: fake1.exec, load: false });
     expect(r1.action).toBe('created');
     const bytesAfterFirst = fs.readFileSync(r1.unitPath, 'utf8');
 
-    // Second enable: SOX_DISABLE_EMBED_HEAL is gone (as if regenerated from a
-    // shell that no longer exports it), but an unrelated field changes so
+    // Second enable: the SOX_EMBED_DRAIN_FLOOR_MS key is gone (as if
+    // regenerated from a shell that no longer exports it), but an unrelated
+    // field changes so
     // content-hash comparison alone would NOT be a no-op (mirrors the real
     // incident: a ProcessType/processType edit forced a rewrite).
     const second = makeSpec({
@@ -332,7 +333,7 @@ describe('BL-375 — enableOsUnit refuses to silently drop shell-sourced env on 
     const r2 = enableOsUnit(second, platform, { unitDir, exec: fake2.exec, load: false });
 
     expect(r2.action).toBe('blocked');
-    expect(r2.droppedEnvKeys).toContain('SOX_DISABLE_EMBED_HEAL');
+    expect(r2.droppedEnvKeys).toContain('SOX_EMBED_DRAIN_FLOOR_MS');
     // Nothing was overwritten — byte-identical to what the first call wrote.
     const bytesAfterSecond = fs.readFileSync(r1.unitPath, 'utf8');
     expect(bytesAfterSecond).toBe(bytesAfterFirst);
@@ -342,7 +343,7 @@ describe('BL-375 — enableOsUnit refuses to silently drop shell-sourced env on 
 
   it('AC2: --unset acknowledgment lets the drop proceed, and the key is genuinely gone on disk', () => {
     const fake1 = makeFakeExec();
-    const first = makeSpec({ env: { SOX_CONFIG_DB_PATH: 'x', SOX_DISABLE_EMBED_HEAL: '1' } });
+    const first = makeSpec({ env: { SOX_CONFIG_DB_PATH: 'x', SOX_EMBED_DRAIN_FLOOR_MS: '30000' } });
     enableOsUnit(first, platform, { unitDir, exec: fake1.exec, load: false });
 
     const second = makeSpec({ env: { SOX_CONFIG_DB_PATH: 'x' }, processType: 'Background' });
@@ -351,14 +352,14 @@ describe('BL-375 — enableOsUnit refuses to silently drop shell-sourced env on 
       unitDir,
       exec: fake2.exec,
       load: false,
-      unsetKeys: ['SOX_DISABLE_EMBED_HEAL'],
+      unsetKeys: ['SOX_EMBED_DRAIN_FLOOR_MS'],
     });
 
     expect(r2.action).not.toBe('blocked');
     expect(r2.action).toBe('updated');
     const written = fs.readFileSync(r2.unitPath, 'utf8');
     const envOnDisk = extractUnitEnv(written, 'launchd');
-    expect(envOnDisk['SOX_DISABLE_EMBED_HEAL']).toBeUndefined();
+    expect(envOnDisk['SOX_EMBED_DRAIN_FLOOR_MS']).toBeUndefined();
   });
 
   it('AC3 (guards D2): dropping a SOX_CONFIG_* key never blocks — config-cascade keys are exempt', () => {
@@ -380,8 +381,8 @@ describe('BL-375 — enableOsUnit refuses to silently drop shell-sourced env on 
     // A same-PR regression guard on the pure function directly (D2's losing
     // alternative is "diff everything, including SOX_CONFIG_*") — if the
     // prefix exclusion were ever widened away, this must go red.
-    const prior = { SOX_CONFIG_PORT: '4000', SOX_PERM_ENFORCE: '1', SOX_DISABLE_EMBED_HEAL: '1' };
-    const next = { SOX_DISABLE_EMBED_HEAL: '1' }; // both config + perm keys dropped
+    const prior = { SOX_CONFIG_PORT: '4000', SOX_PERM_ENFORCE: '1', SOX_EMBED_DRAIN_FLOOR_MS: '30000' };
+    const next = { SOX_EMBED_DRAIN_FLOOR_MS: '30000' }; // both config + perm keys dropped
     expect(droppedShellEnvKeys(prior, next)).toEqual([]);
   });
 
@@ -408,7 +409,7 @@ describe('BL-375 — enableOsUnit refuses to silently drop shell-sourced env on 
 
   it('the "unchanged" (content-identical) re-enable path is exempt — nothing could have been dropped', () => {
     const fake1 = makeFakeExec();
-    const spec = makeSpec({ env: { SOX_CONFIG_DB_PATH: 'x', SOX_DISABLE_EMBED_HEAL: '1' } });
+    const spec = makeSpec({ env: { SOX_CONFIG_DB_PATH: 'x', SOX_EMBED_DRAIN_FLOOR_MS: '30000' } });
     enableOsUnit(spec, platform, { unitDir, exec: fake1.exec, load: false });
     const fake2 = makeFakeExec();
     const r2 = enableOsUnit(spec, platform, { unitDir, exec: fake2.exec, load: false });

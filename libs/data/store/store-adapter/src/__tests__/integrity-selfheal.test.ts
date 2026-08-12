@@ -489,14 +489,16 @@ describe('BL-352 — probe design guards', () => {
     expect(pickSentinelToken(42)).toBeNull();
   });
 
-  it('escalates verification depth after an unclean shutdown', () => {
+  it('escalates verification depth after an unclean shutdown; refuses SOX_STORE_VERIFY=off loudly', () => {
     const prev = process.env.SOX_STORE_VERIFY;
     delete process.env.SOX_STORE_VERIFY;
     try {
       expect(resolveVerifyDepth(false)).toBe('fast');
       expect(resolveVerifyDepth(true)).toBe('deep');
+      // The store ALWAYS validates (BL-373 family / ADR-0013): 'off' was an
+      // anti-feature and now refuses loudly instead of silently skipping.
       process.env.SOX_STORE_VERIFY = 'off';
-      expect(resolveVerifyDepth(true)).toBe('off');
+      expect(() => resolveVerifyDepth(true)).toThrow(/ALWAYS validates/);
       process.env.SOX_STORE_VERIFY = 'deep';
       expect(resolveVerifyDepth(false)).toBe('deep');
     } finally {
@@ -772,19 +774,22 @@ tursoDescribe('BL-337 — unified repair helper on a table carrying a Tantivy in
       //    corrupted table, exactly as the live incident happened. Open-time
       //    self-heal (BL-352 — every `connect()` runs a fast-depth pass that
       //    would silently REINDEX `ix_node_topic` via `btree_index_populated`
-      //    before this test ever gets to observe the damage) is disabled for
-      //    just this one connect via `SOX_STORE_VERIFY=off`, restored
-      //    immediately after — everything from here on calls
-      //    verifyStoreIntegrity/repairStoreIntegrity directly, which is not
-      //    gated by that env var. ─────────────────────────────────────────
-      const prevVerify = process.env.SOX_STORE_VERIFY;
-      process.env.SOX_STORE_VERIFY = 'off';
+      //    before this test ever gets to observe the damage) is skipped for
+      //    just this one probe via `SOX_STORE_VERIFY_SKIP=btree_index_populated`
+      //    (the documented short-lived-caller lever — the probe's finding then
+      //    reports "skipped by the caller … NOT verified against it" instead of
+      //    a verdict), restored immediately after. `SOX_STORE_VERIFY=off` was
+      //    an anti-feature and is gone (ADR-0013): the store always validates.
+      //    Everything from here on calls verifyStoreIntegrity/
+      //    repairStoreIntegrity directly, which is not gated by that env var. ─
+      const prevSkip = process.env.SOX_STORE_VERIFY_SKIP;
+      process.env.SOX_STORE_VERIFY_SKIP = 'btree_index_populated';
       let adapter: StoreAdapter;
       try {
         adapter = track(await TursoAdapterImpl.connect({ dbPath }));
       } finally {
-        if (prevVerify === undefined) delete process.env.SOX_STORE_VERIFY;
-        else process.env.SOX_STORE_VERIFY = prevVerify;
+        if (prevSkip === undefined) delete process.env.SOX_STORE_VERIFY_SKIP;
+        else process.env.SOX_STORE_VERIFY_SKIP = prevSkip;
       }
       await adapter.exec(
         `CREATE INDEX IF NOT EXISTS idx_fts_node ON "node" USING fts ("content", "name", "summary")`,
@@ -1093,7 +1098,12 @@ tursoDescribe('BL-373 — a stale WAL-index sidecar is reconciled at open, not f
     expect(asideFiles.length, 'the stale -tshm must be renamed, not destroyed').toBeGreaterThan(0);
   });
 
-  it('recovery is DECLINED when the WAL has content — never discard state that may be needed', () => {
+  it('recovery is declined when the sidecar is not provably stale — with evidence', () => {
+    // (BL-373 third recurrence) A non-empty WAL is no longer an automatic
+    // decline: the -tshm is compared against the -wal by mtime. This fixture
+    // writes all three files within milliseconds of each other, so the sidecar
+    // is NOT provably stale (age diff ≈ 0, within the 60 s threshold) and the
+    // recovery must decline — untouched — carrying the frame-probe evidence.
     const dbPath = join(tmpDir, `bl373-decline-${Date.now()}.db`);
     writeFileSync(dbPath, '');
     writeFileSync(dbPath + '-wal', 'x'.repeat(4096));
@@ -1102,7 +1112,12 @@ tursoDescribe('BL-373 — a stale WAL-index sidecar is reconciled at open, not f
     const recovery = recoverStaleWalIndex(dbPath);
     expect(recovery.attempted).toBe(false);
     expect(recovery.movedAside).toEqual([]);
+    // The decline must still name the WAL size (evidence) AND the new
+    // staleness analysis: the mtime diff, the threshold, and the probe result.
     expect(recovery.declined).toMatch(/holds 4096 bytes/);
+    expect(recovery.declined).toMatch(/not provably stale/);
+    expect(recovery.declined).toMatch(/age diff .* ms is within the .* ms staleness threshold/);
+    expect(recovery.declined).toMatch(/WAL frame probe/);
     expect(existsSync(dbPath + '-tshm'), 'the sidecar must be left untouched').toBe(true);
   });
 

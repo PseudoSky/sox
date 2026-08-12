@@ -152,6 +152,31 @@ const DEFAULT_EXCEPTIONS = [
     fn: 'dropFtsResidueViaBetterSqlite3',
     text: 'better-sqlite3',
   },
+  // BL-507: Turso/libSQL (unlike stock SQLite) cannot resolve an FK that
+  // references the parent's `rowid` alias explicitly (`REFERENCES node(rowid)`
+  // — the Drizzle-era edge DDL); with foreign_keys=ON every write dies with
+  // `foreign key mismatch referencing "node"` (measured on a copy of the live
+  // backlog.db, 2026-08-11). The edge rebuild in `ensureCheckConstraints`
+  // must fire on turso only — stock SQLite resolves the form, and its stores
+  // must stay byte-identical (BL-448 AC-3). A driver capability fact, not a
+  // dialect choice.
+  {
+    pathSuffix: 'libs/data/graph/graph-store/src/index.ts',
+    fn: 'ensureCheckConstraints',
+    text: "this.adapter.config.type === 'turso'",
+  },
+  // (BL-508) The engine-identity guard in graph-store's open path: the store's
+  // engine marker is a FILE-STORE fact, not a SQL/dialect choice — no
+  // `adapter.capabilities.*` field expresses "which engine's marker this file
+  // carries". Only a turso ADAPTER is fail-closed against a sqlite marker
+  // (assertStoreEngineSync); sqlite adapters already refused at construction
+  // (SqliteAdapterImpl BL-329/BL-508 probe), so branching on the adapter type
+  // here is the minimal honest discriminator.
+  {
+    pathSuffix: 'libs/data/graph/graph-store/src/index.ts',
+    fn: 'engineIdentity',
+    text: "this.adapter.config.type === 'turso'",
+  },
   // BL-94 startup binding probe: names the driver to fail fast with a clear
   // message instead of mid-session. Diagnostic, not a SQL/dialect decision.
   {

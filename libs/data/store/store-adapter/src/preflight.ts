@@ -96,6 +96,7 @@
 import { existsSync, unlinkSync, writeFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import type { Database as BetterSqlite3Database } from 'better-sqlite3';
+import { engineForApplicationId } from './engine-guard.js';
 
 const require = createRequire(import.meta.url);
 
@@ -173,6 +174,12 @@ export interface SchemaPreflightResult {
   dropped: string[];
   /** Set when a repair was attempted and failed. */
   failed: string | null;
+  /** (BL-508) Engine identified by the store's `application_id` marker when
+   *  readable — `'turso' | 'sqlite'`, else `null` (unmarked/legacy). The
+   *  pre-flight open is REPAIR intent: it proceeds regardless of marker (it
+   *  is the sanctioned escape hatch for hybrid files) but records the engine
+   *  so a repair of a foreign-engine store is visible, never silent. */
+  detected_engine: 'turso' | 'sqlite' | null;
 }
 
 /** `CREATE INDEX … USING fts (…)` — the Tantivy-backed index form. */
@@ -221,6 +228,7 @@ export function preflightSchemaSanity(
     orphaned: [],
     dropped: [],
     failed: null,
+    detected_engine: null,
   };
 
   if (!existsSync(dbPath)) {
@@ -232,6 +240,15 @@ export function preflightSchemaSanity(
   try {
     const db = openSchemaReader(dbPath, true);
     try {
+      // (BL-508) REPAIR intent: record the engine marker if readable. The
+      // open proceeds regardless — this is the sanctioned escape hatch for
+      // hybrid files — but a repair of a foreign-engine store must be visible.
+      try {
+        const appId = db.pragma('application_id', { simple: true }) as number;
+        result.detected_engine = engineForApplicationId(appId);
+      } catch {
+        result.detected_engine = null;
+      }
       rows = db
         .prepare('SELECT type, name, tbl_name, rootpage, sql FROM sqlite_master')
         .all() as MasterRow[];
