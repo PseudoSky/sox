@@ -50,9 +50,8 @@ import { TursoAdapterImpl } from '../turso-adapter.js';
 import { SqliteAdapterImpl } from '../sqlite-adapter.js';
 import { storeQuiescence, leaseDirPath } from '../store-lease.js';
 import {
-  storeOpenMarkerPath,
+  openMarkerPath,
   markStoreOpen,
-  hasStoreOpenMarker,
   clearStoreOpenMarker,
 } from '../preflight.js';
 import { canonicalDbPath } from '../path-identity.js';
@@ -266,25 +265,28 @@ tursoDescribe('BUG-018 — TursoAdapter.connect canonicalizes once (SPEC §T4)',
     expect(storeQuiescence(canonicalDbPath(realDb)).quiescent).toBe(true);
   });
 
-  it('marker written via the alias spelling is visible via the real spelling', async () => {
+  it('the per-connection marker path converges on the canonical identity (BUG-019)', async () => {
     const { realDir, aliasDir } = aliasPair();
     const realDb = join(realDir, 'store.db');
     const aliasDb = join(aliasDir, 'store.db');
+    const token = 'bug018-token';
 
-    // The marker path is derived from the canonical identity — the two
-    // spellings MUST produce the identical marker path string.
-    expect(storeOpenMarkerPath(canonicalDbPath(aliasDb))).toBe(
-      storeOpenMarkerPath(canonicalDbPath(realDb)),
+    // (BUG-019) The marker now lives in the lease dir as
+    // `<leaseDir>/<token>.openmark` — keyed off the CANONICAL identity, so the
+    // two spellings MUST produce the identical marker path string (the marker
+    // path is `leaseDirPath(canonicalDbPath(dbPath))` composed).
+    expect(openMarkerPath(canonicalDbPath(aliasDb), token)).toBe(
+      openMarkerPath(canonicalDbPath(realDb), token),
     );
 
     // Write through the alias spelling, read through the real spelling.
-    markStoreOpen(aliasDb);
+    markStoreOpen(aliasDb, token);
     try {
-      expect(hasStoreOpenMarker(realDb)).toBe(true);
+      expect(existsSync(openMarkerPath(canonicalDbPath(realDb), token))).toBe(true);
     } finally {
-      clearStoreOpenMarker(realDb);
+      clearStoreOpenMarker(realDb, token);
     }
-    expect(hasStoreOpenMarker(realDb)).toBe(false);
+    expect(existsSync(openMarkerPath(canonicalDbPath(realDb), token))).toBe(false);
   });
 });
 

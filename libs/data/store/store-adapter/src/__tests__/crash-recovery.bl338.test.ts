@@ -52,12 +52,13 @@
  */
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { spawn, spawnSync } from 'node:child_process';
-import { mkdtempSync, rmSync, existsSync, readdirSync, copyFileSync } from 'node:fs';
+import { mkdtempSync, rmSync, readdirSync, copyFileSync, cpSync } from 'node:fs';
 import { join, resolve, dirname, basename } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { tmpdir } from 'node:os';
 import { createInterface } from 'node:readline';
 import type { Database as BetterSqlite3Database } from 'better-sqlite3';
+import { leaseDirPath } from '../store-lease.js';
 
 const hasTurso = (() => {
   try {
@@ -84,6 +85,17 @@ afterAll(() => {
 
 function tempPath(label: string): string {
   return join(tmpDir, `${label}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.db`);
+}
+
+/** (BUG-019) The per-connection `.openmark` files currently in the lease dir. */
+function openMarkers(dbPath: string): string[] {
+  try {
+    return readdirSync(leaseDirPath(dbPath))
+      .filter((f) => f.endsWith('.openmark'))
+      .sort();
+  } catch {
+    return [];
+  }
 }
 
 interface WriterKillOutcome {
@@ -203,14 +215,25 @@ function restartOn(dbPath: string, env?: NodeJS.ProcessEnv): RestartOutcome {
 }
 
 /** Copy `dbPath` and every sidecar Turso/the BL-361 marker leaves beside it
- *  (`-wal`, `-shm`, `-tshm`, `-openmark`, …) to `destPath`, preserving exactly
- *  the crashed, on-disk state — including whatever is still only in the WAL,
- *  never checkpointed because the writer never got to close(). */
+ *  (`-wal`, `-shm`, `-tshm`, …) — plus the whole `.sox-lease.d` directory
+ *  (BUG-019: the per-connection open marker and the crashed writer's dead
+ *  lease entry now live INSIDE it) — to `destPath`, preserving exactly the
+ *  crashed, on-disk state: including whatever is still only in the WAL, never
+ *  checkpointed because the writer never got to close(). */
 function cloneStoreFiles(srcPath: string, destPath: string): void {
   const dir = dirname(srcPath);
   const srcBase = basename(srcPath);
   const destBase = basename(destPath);
   for (const f of readdirSync(dir)) {
+    if (f === `${srcBase}.sox-lease.d`) {
+      // (BUG-019) The lease dir carries the crashed session's dead marker —
+      // part of the unclean state this suite is about. Clone it whole so both
+      // arms see the identical unclean signal.
+      cpSync(join(dir, f), join(dirname(destPath), `${destBase}.sox-lease.d`), {
+        recursive: true,
+      });
+      continue;
+    }
     if (f !== srcBase && !f.startsWith(`${srcBase}-`)) continue;
     const suffix = f.slice(srcBase.length);
     copyFileSync(join(dir, f), join(dirname(destPath), `${destBase}${suffix}`));
@@ -237,7 +260,9 @@ tursoDescribe('BL-338 — crash recovery: SIGKILL under sustained write load', (
       // The BL-361 open marker survives a SIGKILL by construction — close()
       // never ran to clear it — which is what escalates the restart's verify
       // depth to `deep` and is the population this whole suite is about.
-      expect(existsSync(`${dbPath}-openmark`)).toBe(true);
+      // (BUG-019) Per-connection: the crashed writer's dead-pid marker lives
+      // in the lease dir as `<leaseDir>/<token>.openmark`.
+      expect(openMarkers(dbPath)).toHaveLength(1);
 
       const restart = restartOn(dbPath);
       expect(
@@ -288,8 +313,10 @@ tursoDescribe('BL-338 — crash recovery: SIGKILL under sustained write load', (
       const repairOnPath = tempPath('bl338-repair-on');
       cloneStoreFiles(crashedPath, rawProofPath);
       cloneStoreFiles(crashedPath, repairOnPath);
-      expect(existsSync(`${rawProofPath}-openmark`)).toBe(true);
-      expect(existsSync(`${repairOnPath}-openmark`)).toBe(true);
+      // (BUG-019) The crashed session's dead-pid marker survived the kill and
+      // the clone — both copies carry the same unclean signal.
+      expect(openMarkers(rawProofPath)).toHaveLength(1);
+      expect(openMarkers(repairOnPath)).toHaveLength(1);
 
       // ── Control arm: prove the damage is REAL file content ──────────────
       // `SOX_STORE_REPAIR=off` is gone (ADR-0013 — the store always repairs),

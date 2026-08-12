@@ -40,7 +40,13 @@ import { fileURLToPath } from 'node:url';
 import { tmpdir } from 'node:os';
 import type { Database as BetterSqlite3Database } from 'better-sqlite3';
 import { TursoAdapterImpl } from '../turso-adapter.js';
-import { clearStoreOpenMarker, hasStoreOpenMarker, markStoreOpen } from '../preflight.js';
+import { leaseDirPath } from '../store-lease.js';
+import {
+  clearStoreOpenMarker,
+  hasStoreOpenMarker,
+  hasUncleanShutdown,
+  markStoreOpen,
+} from '../preflight.js';
 import { canonicalFtsIndexName, resolveExistingFtsIndexName } from '../fts-dialect.js';
 import {
   findOrphanedFtsIndexes,
@@ -93,6 +99,17 @@ function sidecarsOf(dbPath: string): string[] {
   return readdirSync(dirname(dbPath))
     .filter((f) => f.startsWith(basename(dbPath)) && f !== basename(dbPath))
     .sort();
+}
+
+/** (BUG-019) The per-connection `.openmark` files currently in the lease dir. */
+function openMarkers(dbPath: string): string[] {
+  try {
+    return readdirSync(leaseDirPath(dbPath))
+      .filter((f) => f.endsWith('.openmark'))
+      .sort();
+  } catch {
+    return [];
+  }
 }
 
 /** A Turso store with a real Tantivy-backed FTS index over 20 rows. */
@@ -507,18 +524,20 @@ tursoDescribe('BL-461 — a store damaged inside a cleanly-closed session', () =
 // ── The second, narrower risk BL-461 records as untested ─────────────────────
 
 tursoDescribe('BL-461 — a concurrent opener while this process holds the store', () => {
-  it('a second opener arrives on a LIVE store whose marker is present: it opens cleanly and the holder keeps working', async () => {
+  it('a second opener arrives on a LIVE store: the live marker is NOT an unclean signal, the arriving open skips the pre-flight, and the holder’s marker survives (BUG-019)', async () => {
     const dbPath = tempPath('bl461-concurrent');
     await seedHealthyFtsStore(dbPath);
 
-    // The holder. Its `connect()` wrote the marker, so the arriving process
-    // sees "the previous session did not close cleanly" — which is exactly the
-    // ambiguity BL-461 records: the marker cannot distinguish a dead session
-    // from a live one, so the arriving process runs the pre-flight's read-only
-    // better-sqlite3 scan against a store Turso currently has open.
+    // The holder. Its `connect()` wrote ONE per-connection marker carrying a
+    // LIVE pid (this process). Under the old shared marker that was
+    // indistinguishable from a dead session, so the arriving process ran the
+    // pre-flight's read-only better-sqlite3 scan against a store Turso
+    // currently had open — the BUG-019 false-positive. Now a live marker is a
+    // concurrent session, never an unclean signal.
     const holder = await TursoAdapterImpl.connect({ dbPath });
     open.push(holder);
-    expect(hasStoreOpenMarker(dbPath)).toBe(true);
+    expect(openMarkers(dbPath)).toHaveLength(1);
+    expect(hasUncleanShutdown(dbPath)).toBe(false);
 
     const arriving = openInChild(dbPath, 'guarded');
     expect(
@@ -531,50 +550,44 @@ tursoDescribe('BL-461 — a concurrent opener while this process holds the store
     expect(arriving.stderr).not.toMatch(/\[BL-461\]/);
 
     // The sidecar question BL-461 raises, answered with the observed list
-    // rather than a belief. CONFIRMED: the arriving process's marker-gated
-    // pre-flight opens the live store with better-sqlite3, which creates a
-    // `-shm` beside the `-tshm` Turso runs its WAL coordination through. The
-    // holder's assertions below are what say whether that mattered.
+    // rather than a belief. (BUG-019) The marker-gated pre-flight NO LONGER
+    // runs against a live store, so the arriving process opens NO `-shm` via
+    // better-sqlite3 — the sidecar list is just Turso's own coordination set,
+    // and the marker is inside the lease dir (excluded by the fixture).
     //
-    // (DEBT-003/BUG-014) The `-tshm.stale-*` entry is now ALSO expected: the
-    // seed's own quiescent close() ran the single quiescence-gated TRUNCATE
-    // (BUG-008) and, per the BUG-014 complement, reset the -tshm beside it —
-    // the TRUNCATE zeroed the -wal, so the -tshm this close orphaned indexes
-    // frames the empty WAL cannot hold, and it is moved aside (renamed, never
-    // deleted) so the stale-index state never persists. It predates the
-    // arriving process; the arriving open sees it as a leftover artifact.
+    // (DEBT-003/BUG-014) The `-tshm.stale-*` entry is expected: the seed's own
+    // quiescent close() ran the single quiescence-gated TRUNCATE (BUG-008)
+    // and, per the BUG-014 complement, reset the -tshm beside it — the TRUNCATE
+    // zeroed the -wal, so the -tshm this close orphaned indexes frames the
+    // empty WAL cannot hold, and it is moved aside (renamed, never deleted) so
+    // the stale-index state never persists. It predates the arriving process.
     const before = (arriving.json?.sidecars ?? []) as string[];
-    // The four BL-461-relevant artifacts plus exactly ONE -tshm.stale-* (the
-    // seed close's BUG-014 tshm-reset — see the comment above). The stamp is
-    // clock-derived, so the stale entry is matched by shape, not by value.
     const stale = before.filter((f) => f.endsWith('-tshm.stale-') || f.includes('-tshm.stale-'));
     expect(
       before.filter((f) => !stale.includes(f)),
       `sidecars observed inside the arriving process: ${before.join(', ')}`,
-    ).toEqual([
-      `${basename(dbPath)}-openmark`,
-      `${basename(dbPath)}-shm`,
-      `${basename(dbPath)}-tshm`,
-      `${basename(dbPath)}-wal`,
-    ]);
+    ).toEqual([`${basename(dbPath)}-tshm`, `${basename(dbPath)}-wal`]);
     expect(
       stale,
       'DEBT-003/BUG-014: exactly one -tshm.stale-* artifact (the seed close reset the orphaned -tshm beside its TRUNCATE)',
     ).toHaveLength(1);
-    expect(sidecarsOf(dbPath), 'the -shm outlives the process that created it').toContain(
-      `${basename(dbPath)}-shm`,
-    );
+    // (BUG-019) No `-shm` anywhere: the only classic-engine open that created
+    // one was the marker-gated pre-flight, which no longer fires for a live
+    // store. If a `-shm` appears here it is the BUG-019 false-positive
+    // returning.
+    expect(sidecarsOf(dbPath)).not.toContain(`${basename(dbPath)}-shm`);
 
-    // ── A SECOND defect, found by this arm (BL-467-adjacent, filed as BL-468) ──
-    // The marker is a flag, not a refcount. The arriving process's *orderly*
-    // close clears a marker the HOLDER wrote and is still relying on, so from
-    // here the holder's session is invisible to the next open's pre-flight: if
-    // it dies now, the store is damaged with no marker to trigger the
-    // out-of-band scan. That is precisely the hole this in-process guard
-    // closes, which is why the assertion is recorded rather than deferred.
-    expect(hasStoreOpenMarker(dbPath), 'BL-468: the arriving process cleared the holder’s marker').toBe(
-      false,
-    );
+    // ── BL-468, RESOLVED by BUG-019 (was "a second defect, found by this arm") ──
+    // The old marker was a flag, not a refcount: the arriving process's
+    // *orderly* close cleared a marker the HOLDER wrote and was still relying
+    // on, so if the holder died next, its crash would leave no unclean signal.
+    // The marker is now per-connection: the arriving close unlinked ONLY its
+    // own marker, so the HOLDER's crash evidence survives intact.
+    expect(
+      openMarkers(dbPath),
+      'BUG-019/BL-468: the arriving close must leave the holder’s marker intact',
+    ).toHaveLength(1);
+    expect(hasUncleanShutdown(dbPath)).toBe(false); // holder still LIVE — not unclean
 
     // The holder is unharmed: it still reads and still writes.
     const rows = await holder.executeAll<{ id: number }>(
