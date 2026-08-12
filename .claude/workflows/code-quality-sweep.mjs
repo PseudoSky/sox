@@ -2,14 +2,25 @@
  * code-quality-sweep — a reusable 3-stage, multi-agent code-quality sweep.
  *
  * WHAT IT DOES
- *   Stage 1 "Isolated"   — one cheap specialist agent per package scope. Each agent is given an
- *                          EXACT file/dir list it may not read outside of, a lens matched to the
- *                          agent type, and a required structured schema. Findings without
- *                          file:line + verbatim evidence are dropped by instruction.
- *   Stage 2 "Concepts"   — the script clusters Stage 1's `concept` tags, ranks them by
- *                          (frequency x severity weight), and fans specialists back out to sweep
- *                          the OTHER packages for each top concept. Each agent gets one concept
- *                          plus a disjoint package subset, so scopes never overlap.
+ *   Stage 0 "Discover"   — (only when `args.packages` is omitted) seeds the roster from nx
+ *                          project metadata, sizes each project, and packs oversized ones into
+ *                          several evenly-sized review units so a 20k-line package is not handed
+ *                          to a single agent that can only sample it.
+ *   Stage 1 "Isolated"   — one cheap specialist agent per unit. Each agent is given an EXACT
+ *                          file/dir list it may not read outside of and a required structured
+ *                          schema. Findings without file:line + verbatim evidence are dropped.
+ *   Stage 2 "Second lens"— every unit is re-read by a DIFFERENT specialist. Still blind.
+ *
+ * EVERY AGENT IS BLIND. No agent is ever told what to look for, what a previous pass found,
+ * or what vocabulary to use. Concepts are an OUTPUT — coined independently by each agent and
+ * clustered afterwards in post-processing. This is load-bearing, not stylistic:
+ *   - Handing an agent a concept to hunt makes it file borderline cases under that concept,
+ *     so the sweep "discovers" whatever it was sent to find and buries rare, severe defects.
+ *   - It also destroys the independence that makes agreement meaningful. Two passes primed
+ *     with the same tag vocabulary agreeing is one prior counted twice, not corroboration.
+ * Coverage therefore comes from PERSPECTIVE DIVERSITY (a second, different specialist) rather
+ * than from directed hunting, and cross-agent agreement at a file:line is reported to the
+ * synthesiser as a genuine confidence signal.
  *   Stage 3 "Synthesize" — an architect agent turns the aggregated evidence into an EPIC SPEC:
  *                          coherent themes, each with 3-8 independently-shippable child items
  *                          carrying file:line citations, acceptance criteria, and a named
@@ -81,7 +92,33 @@ const DEFAULT_ROSTER = [
   { agentType: 'code-reviewer', lensDescription: 'general code quality: error handling, validation gaps, duplication, dead code, silent failure paths, missing coverage of risky branches', packageSelector: '*' },
 ]
 
-const ROSTER = a.roster && a.roster.length ? a.roster : DEFAULT_ROSTER
+// Caller-chosen review panel. `args.agents` is the ergonomic form — a list of agent-type
+// names, e.g. agents: ['typescript-pro', 'performance-engineer', 'product-manager'] — whose
+// lenses are looked up from DEFAULT_ROSTER when known. `args.roster` remains for fully
+// custom {agentType, lensDescription, packageSelector} entries.
+// This chooses WHO reviews, never WHAT they are told to find: a specialist's expertise is a
+// perspective the agent already has, not a concept planted in its prompt.
+const ROSTER = (() => {
+  if (a.roster && a.roster.length) return a.roster
+  const picked = Array.isArray(a.agents) && a.agents.length ? a.agents : null
+  if (!picked) return DEFAULT_ROSTER
+  const GENERIC = 'whatever defects your own specialty makes you best placed to catch — apply your expertise, do not go looking for any particular predetermined category'
+  const out = picked.map((p) => {
+    const type = typeof p === 'object' && p !== null ? p.agentType : String(p)
+    const base = DEFAULT_ROSTER.find((r) => r.agentType === type)
+    const custom = typeof p === 'object' && p !== null ? p : {}
+    return {
+      agentType: type,
+      lensDescription: custom.lensDescription || (base && base.lensDescription) || GENERIC,
+      packageSelector: custom.packageSelector || (base && base.packageSelector) || '*',
+    }
+  })
+  // Guarantee a catch-all entry so matchRoster always resolves to something.
+  if (!out.some((r) => (r.packageSelector || '*') === '*')) {
+    out[out.length - 1] = { ...out[out.length - 1], packageSelector: '*' }
+  }
+  return out
+})()
 
 // ---------------------------------------------------------------------------
 // Schemas
@@ -91,7 +128,12 @@ const FINDING_PROPS = {
   file: { type: 'string', description: 'repo-relative path' },
   line: { type: 'integer', description: '1-indexed line number' },
   severity: { type: 'string', enum: ['critical', 'high', 'medium', 'low'] },
-  concept: { type: 'string', description: 'short reusable kebab-case tag naming the PATTERN, e.g. error-swallowing, n-plus-one-io, sync-fs-in-hot-path, type-assertion-abuse, missing-test-coverage' },
+  // DELIBERATELY NO EXAMPLE VOCABULARY. Naming candidate tags here primes the agent
+  // to go looking for those categories and to file borderline findings under them,
+  // which manufactures the very cluster the sweep then "discovers". Agents coin tags
+  // blind; `canonicalTag()` merges the spelling variance afterwards, in post-processing,
+  // where it cannot bias what was found.
+  concept: { type: 'string', description: 'short kebab-case tag naming the PATTERN this finding is an instance of, not the instance itself' },
   summary: { type: 'string' },
   evidence: { type: 'string', description: 'verbatim snippet copied from the file, at most 3 lines' },
 }
@@ -114,26 +156,9 @@ const ISOLATED_SCHEMA = {
   },
 }
 
-const CONCEPT_SCHEMA = {
-  type: 'object',
-  additionalProperties: false,
-  required: ['concept', 'findings'],
-  properties: {
-    concept: { type: 'string' },
-    findings: {
-      type: 'array',
-      items: {
-        type: 'object',
-        additionalProperties: false,
-        required: ['file', 'line', 'severity', 'concept', 'summary', 'evidence', 'matches_stage1_pattern'],
-        properties: {
-          ...FINDING_PROPS,
-          matches_stage1_pattern: { type: 'boolean', description: 'true if this is the same underlying defect shape as the exemplars supplied, false if it is a related but distinct variant' },
-        },
-      },
-    },
-  },
-}
+// (A CONCEPT_SCHEMA once lived here, for agents dispatched to hunt a named concept with
+// exemplars. That dispatch shape is deliberately gone — see the Stage 2 comment. Both passes
+// now return ISOLATED_SCHEMA, because both are blind and structurally identical.)
 
 const EPIC_SCHEMA = {
   type: 'object',
@@ -183,7 +208,7 @@ const EPIC_SCHEMA = {
 // Scope construction
 // ---------------------------------------------------------------------------
 
-function matchRoster(pkgPath) {
+function matchRoster(pkgPath, i = 0) {
   for (const entry of ROSTER) {
     const sel = entry.packageSelector || '*'
     if (sel === '*') return entry
@@ -198,22 +223,112 @@ function matchRoster(pkgPath) {
   return ROSTER[ROSTER.length - 1]
 }
 
-// `packages` may be plain paths, or objects giving an explicit file list / agentType / lens.
-const RAW_PACKAGES = a.packages && a.packages.length ? a.packages : []
+// ---------------------------------------------------------------------------
+// Stage 0 — project discovery (nx-seeded) and size-aware unit splitting
+// ---------------------------------------------------------------------------
+
+const DISCOVERY_SCHEMA = {
+  type: 'object',
+  additionalProperties: false,
+  required: ['projects'],
+  properties: {
+    nxAvailable: { type: 'boolean' },
+    projects: {
+      type: 'array',
+      items: {
+        type: 'object',
+        additionalProperties: false,
+        required: ['id', 'path', 'loc'],
+        properties: {
+          id: { type: 'string' },
+          path: { type: 'string', description: 'repo-relative project root' },
+          sourceRoot: { type: 'string' },
+          loc: { type: 'integer', description: 'non-test source lines, from wc -l' },
+          largestFiles: {
+            type: 'array',
+            description: 'up to 12 biggest non-test source files, largest first, for size-aware splitting',
+            items: {
+              type: 'object',
+              additionalProperties: false,
+              required: ['file', 'loc'],
+              properties: { file: { type: 'string' }, loc: { type: 'integer' } },
+            },
+          },
+        },
+      },
+    },
+  },
+}
+
+/** Split one oversized project into <=N sub-units by packing its largest files. */
+function splitBySize(proj, maxLoc) {
+  const files = (proj.largestFiles || []).filter((f) => f && f.file)
+  if (!files.length || proj.loc <= maxLoc) return [{ id: proj.id, files: [proj.path], loc: proj.loc }]
+  const parts = []
+  let cur = { files: [], loc: 0 }
+  for (const f of files) {
+    if (cur.files.length && cur.loc + f.loc > maxLoc) {
+      parts.push(cur)
+      cur = { files: [], loc: 0 }
+    }
+    cur.files.push(f.file)
+    cur.loc += f.loc
+  }
+  if (cur.files.length) parts.push(cur)
+  // Anything not in largestFiles stays with a final catch-all unit scoped to the project root.
+  const covered = parts.reduce((n, p) => n + p.loc, 0)
+  if (proj.loc - covered > maxLoc * 0.25) parts.push({ files: [proj.path], loc: proj.loc - covered, rest: true })
+  return parts.map((p, i) => ({
+    id: parts.length > 1 ? `${proj.id}#${i + 1}` : proj.id,
+    files: p.files,
+    loc: p.loc,
+    ...(p.rest ? { hint: `Everything in this project NOT already covered by sibling units ${proj.id}#1..${parts.length - 1}. Do not re-report findings in those files.` } : {}),
+  }))
+}
+
+let RAW_PACKAGES = a.packages && a.packages.length ? a.packages : []
+
 if (!RAW_PACKAGES.length) {
-  throw new Error('code-quality-sweep: args.packages is required — pass the package paths (or {id, path, files, agentType, lensDescription} objects) discovered by the calling session.')
+  // Self-seed from nx rather than demanding the caller hand-build a roster. The workflow
+  // script has no filesystem access of its own, so discovery runs in a cheap agent.
+  phase('Discover')
+  log('No args.packages supplied — seeding the roster from nx project metadata.')
+  const disc = await agent(
+    `Enumerate this repository's projects so a code-quality sweep can be scoped to them.
+
+1. Run \`npx nx show projects --json\` (fall back to globbing \`**/project.json\`, excluding node_modules/dist/.worktrees, if nx is unavailable — set nxAvailable:false in that case).
+2. For each project resolve its root directory and its source root.
+3. Size each project: count lines of NON-TEST source only (exclude \`*.spec.*\`, \`*.test.*\`, \`__tests__\`, \`dist/\`, generated files). \`wc -l\` is fine.
+4. For each project also list its up-to-12 LARGEST non-test source files with their line counts, largest first — a later step packs these into evenly-sized review units.
+
+Rules: READ-ONLY. Use \`rg\`/\`ls\`/\`wc\`; never \`grep\`/\`find\`. NEVER run a build/test/lint target — \`nx show projects\` is metadata-only and safe, but \`nx build\`/\`nx test\` are destructive here. Return ONLY the structured output; report every project you find, do not pre-filter by importance.`,
+    { schema: DISCOVERY_SCHEMA, model: WORKER_MODEL, label: 'discover:nx', phase: 'Discover' },
+  )
+  const projects = ((disc && disc.projects) || []).filter((p) => p && p.path && (p.loc || 0) > 0)
+  projects.sort((x, y) => (y.loc || 0) - (x.loc || 0))
+  log(`Discovered ${projects.length} projects${disc && disc.nxAvailable === false ? ' (nx unavailable — globbed project.json)' : ' via nx'}; largest: ${projects.slice(0, 3).map((p) => `${p.id}(${p.loc})`).join(', ')}`)
+  RAW_PACKAGES = projects.flatMap((p) => splitBySize(p, MAX_UNIT_LOC))
+  if (RAW_PACKAGES.length > BUDGET) {
+    log(`NOTE: discovery produced ${RAW_PACKAGES.length} units for a budget of ${BUDGET}; keeping the ${BUDGET} largest by LOC and DROPPING: ${RAW_PACKAGES.slice(BUDGET).map((u) => u.id).join(', ')}`)
+  }
+} else {
+  // Caller-supplied packages are still size-split when they carry LOC information.
+  RAW_PACKAGES = RAW_PACKAGES.flatMap((p) =>
+    typeof p === 'object' && p !== null && p.loc && p.loc > MAX_UNIT_LOC ? splitBySize(p, MAX_UNIT_LOC) : [p],
+  )
 }
 
 const UNITS = RAW_PACKAGES.slice(0, BUDGET).map((p, i) => {
   const isObj = typeof p === 'object' && p !== null
   const path = isObj ? p.path || (p.files && p.files[0]) || `unit-${i}` : p
-  const roster = matchRoster(isObj && p.agentType ? p.agentType : path)
+  const roster = matchRoster(isObj && p.agentType ? p.agentType : path, i)
   return {
     id: (isObj && p.id) || path,
     files: isObj && p.files && p.files.length ? p.files : [path],
     agentType: (isObj && p.agentType) || roster.agentType,
     lens: (isObj && p.lensDescription) || roster.lensDescription,
     hint: isObj ? p.hint : undefined,
+    ...(isObj && p.loc ? { loc: p.loc } : {}),
   }
 })
 
@@ -224,11 +339,12 @@ if (RAW_PACKAGES.length > BUDGET) {
 const READONLY_RULES = `## Hard rules
 - READ-ONLY. Never Edit or Write any file.
 - NEVER run a build, test, lint, nx, tsc, vitest, pnpm, or npm command. Several build targets delete dist/ before rebuilding and this may be a live shared checkout — a "just to see the error" build is destructive.
-- Bash is permitted ONLY for read-only inspection: \`rg\`, \`wc -l\`, \`ls\`. Never \`grep\` or \`find\`.
+- Bash is permitted ONLY for read-only inspection. Use \`rg\` for text search and \`wc -l\`/\`ls\` for sizing. **NEVER \`grep\` or \`find\`** — \`rg\` respects ignore files and is the repo standard.
+- To understand code structure — what calls a symbol, what a change would affect, where a flow goes — prefer the **gitnexus** CLI over text search: \`gx query "<concept>"\`, \`gx context <symbol>\`, \`gx impact <target>\`. It is a local pre-built index and answers symbol/flow questions directly. Fall back to \`rg\` only when gitnexus returns nothing useful. (If \`gx\` is unavailable in your environment, say so in your return rather than silently reverting to text search for structural questions.)
 - Read the files in your scope properly — use offset/limit chunking on large files rather than skimming the first screen.
 - Every finding MUST carry a real file path, a real 1-indexed line number, and a VERBATIM evidence snippet (at most 3 lines) copied out of the file. If you cannot produce verbatim evidence, DROP the finding.
 - No speculation, no "consider adding", no formatting or style nits. Only defects with a concrete cost.
-- \`concept\` must be a SHORT, REUSABLE kebab-case tag naming the PATTERN, not this instance. Prefer a generic existing-sounding tag (error-swallowing, n-plus-one-io, unbounded-accumulation, string-interpolated-sql, god-function, toctou-file-write, unhandled-rejection, type-assertion-abuse, missing-test-coverage) over inventing a hyper-specific one — these tags get clustered across packages afterwards.
+- \`concept\`: name the PATTERN this finding instantiates, in short kebab-case, as YOU would describe it. Do not try to match a house vocabulary and do not reach for a familiar-sounding label if it does not fit — a precise tag you invented is better than a common one that approximates. Tag spellings are reconciled after the fact.
 - Return ONLY the structured output.`
 
 // ---------------------------------------------------------------------------
@@ -324,81 +440,61 @@ function rankConcepts(findings) {
     .sort((x, y) => y.score - x.score)
 }
 
-const ranked = rankConcepts(s1findings)
-const overridden = a.conceptsOverride && a.conceptsOverride.length
-const concepts = overridden
-  ? a.conceptsOverride.map((c) => ranked.find((r) => r.concept === c) || { concept: c, count: 0, weight: 0, units: [], exemplars: [], score: 0 })
-  : ranked.filter((c) => c.count >= MIN_CONCEPT_COUNT).slice(0, MAX_CONCEPTS)
+// ---------------------------------------------------------------------------
+// Stage 2 — SECOND BLIND PASS under a different specialist lens
+//
+// This stage deliberately does NOT tell any agent what to look for. An earlier design
+// ranked Stage 1's concept tags and dispatched agents to hunt the top ones across the
+// remaining packages. That is invalid on two counts and both were observed live:
+//   1. It manufactures its own result. An agent told "hunt error-swallowing here" files
+//      borderline cases under that tag, so the sweep then "discovers" that the concepts it
+//      went looking for are the most prevalent — circular, and it crowds out rare-but-severe
+//      defects that no one was sent to find.
+//   2. It destroys independence. Two sweeps primed with the same tag vocabulary converging
+//      on the same clusters is not corroboration; it is the same prior, twice.
+// Coverage now comes from PERSPECTIVE DIVERSITY instead: each unit is re-read by a
+// different specialist than saw it first. The lens is the agent's own expertise, never a
+// planted concept, and the agent is told nothing about what the first pass found.
+// ---------------------------------------------------------------------------
 
-log(`Stage 2 concepts (${concepts.length}): ${concepts.map((c) => `${c.concept}(${c.count})`).join(', ') || 'none — Stage 2 skipped'}`)
+phase('Second lens')
 
-// Assign each concept a DISJOINT subset of the units it has NOT already been found in,
-// keeping total Stage 2 agents within budget.
-function conceptAssignments(cs) {
-  if (!cs.length) return []
-  const perConcept = Math.max(1, Math.floor(BUDGET / cs.length))
-  const out = []
-  for (const c of cs) {
-    const candidates = UNITS.filter((u) => !c.units.includes(u.id))
-    if (!candidates.length) continue
-    const chunk = Math.ceil(candidates.length / perConcept)
-    for (let i = 0; i < candidates.length; i += chunk) {
-      const slice = candidates.slice(i, i + chunk)
-      if (!slice.length) continue
-      out.push({ concept: c, units: slice, part: out.length })
-      if (out.length >= BUDGET) return out
-    }
-  }
-  return out
+/** Pick a lens for `unit` that differs from the one that already reviewed it. */
+function alternateLens(unit, i) {
+  const pool = ROSTER.filter((r) => r.agentType !== unit.agentType)
+  if (!pool.length) return null
+  return pool[i % pool.length]
 }
 
-const assignments = conceptAssignments(concepts)
-if (assignments.length >= BUDGET) log(`NOTE: Stage 2 assignments capped at budget ${BUDGET}; some concept x package pairs were not swept.`)
+const secondPass = UNITS.map((u, i) => ({ unit: u, lens: alternateLens(u, i) }))
+  .filter((x) => x.lens)
+  .slice(0, BUDGET)
 
-phase('Concepts')
-
-function conceptPrompt(asg) {
-  const c = asg.concept
-  const files = asg.units.flatMap((u) => u.files)
-  return `You are sweeping a repository at ${ROOT} for ONE specific recurring defect pattern that was already confirmed elsewhere in this codebase.
-
-## The concept you are hunting
-\`${c.concept}\`
-
-## Confirmed exemplars of this pattern (found in OTHER packages)
-${c.exemplars.map((e) => `- ${e.file}:${e.line} [${e.severity}] ${e.summary}\n  \`\`\`\n  ${(e.evidence || '').split('\n').slice(0, 3).join('\n  ')}\n  \`\`\``).join('\n') || '(none supplied — use your judgement about what this tag means)'}
-
-## Your scope (do NOT read files outside this list)
-${files.map((f) => `- ${ROOT}/${f}`).join('\n')}
-
-## Task
-Find every instance of THIS pattern within your scope. Do not report unrelated defects — a different problem, however real, is out of scope for this sweep. Set \`matches_stage1_pattern\` to true when the instance is the same underlying defect shape as the exemplars, false when it is a related-but-distinct variant worth recording anyway.
-
-${READONLY_RULES}
-
-Set \`concept\` on every finding to exactly "${c.concept}".`
+if (UNITS.length > secondPass.length) {
+  log(`NOTE: second-lens pass capped at budget ${BUDGET}; NOT re-reviewed: ${UNITS.slice(secondPass.length).map((u) => u.id).join(', ')}`)
 }
+log(`Stage 2: ${secondPass.length} units re-read under a different lens (blind — no concepts supplied).`)
 
-const stage2 = assignments.length
+const stage2 = secondPass.length
   ? await parallel(
-      assignments.map((asg) => () => {
-        const roster = matchRoster(asg.units[0].agentType || asg.units[0].id)
-        return agent(conceptPrompt(asg), {
-          agentType: asg.units[0].agentType || roster.agentType,
+      secondPass.map((x) => () =>
+        agent(isolatedPrompt({ ...x.unit, agentType: x.lens.agentType, lens: x.lens.lensDescription }), {
+          agentType: x.lens.agentType,
           model: WORKER_MODEL,
-          label: `${asg.concept.concept}:p${asg.part}`,
-          phase: 'Concepts',
-          schema: CONCEPT_SCHEMA,
-        }).then((r) => ({ concept: asg.concept.concept, units: asg.units.map((u) => u.id), findings: (r && r.findings) || [] }))
-      })
+          label: `${x.unit.id}:${x.lens.agentType}`,
+          phase: 'Second lens',
+          schema: ISOLATED_SCHEMA,
+        }).then((r) => ({ unit: x.unit.id, agentType: x.lens.agentType, findings: (r && r.findings) || [] })),
+      ),
     )
   : []
 
 const s2ok = stage2.filter(Boolean)
-const s2dropped = assignments.length - s2ok.length
-const s2findings = s2ok.flatMap((r) => r.findings.map((f) => ({ ...f, unit: r.units.join('+'), stage: 2 })))
-log(`Stage 2: ${s2ok.length}/${assignments.length} sweeps returned, ${s2findings.length} findings.${s2dropped ? ` DROPPED (no result): ${s2dropped} sweeps.` : ''}`)
+const s2dropped = secondPass.length - s2ok.length
+const s2findings = s2ok.flatMap((r) => r.findings.map((f) => ({ ...f, unit: r.unit, agentType: r.agentType, stage: 2 })))
+log(`Stage 2: ${s2ok.length}/${secondPass.length} re-reads returned, ${s2findings.length} findings.${s2dropped ? ` DROPPED (no result): ${s2dropped}.` : ''}`)
 
+// Both stages are blind, so their findings are directly comparable and rank together.
 const allFindings = [...s1findings, ...s2findings]
 
 // ---------------------------------------------------------------------------
@@ -407,7 +503,21 @@ const allFindings = [...s1findings, ...s2findings]
 
 phase('Synthesize')
 
+// Both passes were blind, so their findings are comparable and rank together. Concepts are
+// discovered here, in post-processing, from tags the agents coined independently — they are
+// an OUTPUT of the sweep, never an input to it.
 const finalRanked = rankConcepts(allFindings)
+
+// Agreement is meaningful precisely BECAUSE neither pass was primed: when two different
+// specialists, each blind to the other, flag the same file:line, that is independent
+// convergence rather than a shared prior. Surfaced to the synthesiser as a confidence signal.
+const agreement = new Map()
+for (const f of allFindings) {
+  const k = `${f.file}:${f.line}`
+  if (!agreement.has(k)) agreement.set(k, new Set())
+  agreement.get(k).add(f.agentType || `stage${f.stage}`)
+}
+const convergent = [...agreement.entries()].filter(([, v]) => v.size > 1).map(([k]) => k)
 
 function digest(findings, cap) {
   const order = { critical: 0, high: 1, medium: 2, low: 3 }
@@ -422,8 +532,17 @@ function digest(findings, cap) {
 const epicSpec = await agent(
   `You are the architect synthesising a multi-agent code-quality sweep of the repository at ${ROOT} into a set of EPICS that will be filed as backlog items.
 
-## Concept ranking across the whole sweep (concept, occurrences, severity-weighted score)
+## Concept ranking (concept, occurrences, scopes, severity-weighted score)
+Every agent in this sweep worked BLIND — none was told what to look for or what anyone else
+found. These tags were coined independently and clustered afterwards, so the ranking reflects
+what is actually in the code, not what anyone was sent to look for. Do not treat a low count
+as unimportant: a single CRITICAL finding in one scope can outrank a common shallow pattern.
 ${finalRanked.map((c) => `- ${c.concept}: ${c.count} occurrences across ${c.units.length} scopes, score ${Math.round(c.score)}`).join('\n')}
+
+## Independently convergent sites (${convergent.length})
+Flagged by MORE THAN ONE blind specialist at the same file:line. Because no agent saw another's
+output, agreement here is genuine independent convergence — weight these highest.
+${convergent.slice(0, 40).map((k) => `- ${k}`).join('\n') || '(none)'}
 
 ## Findings (${allFindings.length} total, highest severity first)
 ${digest(allFindings, 220)}
