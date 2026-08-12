@@ -124,11 +124,37 @@ importers:
         specifier: workspace:*
         version: link:../../libs/service-proxy
 
+  extensions/agents/agent-manager: {}
+
+  extensions/agents/architect: {}
+
+  extensions/agents/debug: {}
+
+  extensions/agents/dispatcher: {}
+
+  extensions/agents/doc-cartographer: {}
+
+  extensions/agents/doc-consumer: {}
+
+  extensions/agents/doc-evangelist: {}
+
+  extensions/agents/doc-reviewer: {}
+
+  extensions/agents/doc-steward: {}
+
   extensions/agents/org-agent: {}
+
+  extensions/agents/performance: {}
+
+  extensions/agents/performance-engineer: {}
+
+  extensions/agents/product: {}
 
   extensions/agents/researcher: {}
 
   extensions/agents/test-agent: {}
+
+  extensions/agents/typescript: {}
 
   extensions/bundles/sox-memory-bundle: {}
 
@@ -205,6 +231,8 @@ importers:
   extensions/skills/di-skill: {}
 
   extensions/skills/forbidden-skill: {}
+
+  extensions/skills/iterative-research-refinement: {}
 
   extensions/skills/sox-ingest: {}
 
