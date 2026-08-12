@@ -60,7 +60,7 @@ describe('memoryGetStats (BL-250)', () => {
 
       expect(Object.prototype.hasOwnProperty.call(result, 'embed_on_hash_fallback')).toBe(false);
       expect(result.embed_backend_configured).toBe('auto');
-      db.close();
+      await db.close();
     } finally {
       cleanup();
     }
@@ -79,7 +79,7 @@ describe('memoryGetStats (BL-250)', () => {
       await expect(memoryGetStats(await db, {}, ['memory_ping'])).rejects.toThrow(
         /Invalid SOX_EMBED_BACKEND.*"hash"/,
       );
-      db.close();
+      await db.close();
     } finally {
       cleanup();
     }

@@ -181,7 +181,7 @@ describe('reembedStore — dry-run', () => {
     // Insert a node so there's something to "migrate".
     await db.executeRun(`INSERT INTO node(uid, kind, content, t_created)
        VALUES ('node-1', 'episode', 'hello world', datetime('now'))`);
-    db.close();
+    await db.close();
 
     const logs: string[] = [];
     const result = await reembedStore(dbPath, {
@@ -221,7 +221,7 @@ describe('reembedStore — dry-run', () => {
 describe('reembedStore — same-model idempotency', () => {
   it('reports alreadyCurrent=true and skips migration when no force', async () => {
     const { db, dbPath } = await freshDbCurrentModel();
-    db.close();
+    await db.close();
 
     const logs: string[] = [];
     const result = await reembedStore(dbPath, {
@@ -245,7 +245,7 @@ describe('reembedStore — force re-embed', () => {
     // Insert a node so there's something to embed.
     await db.executeRun(`INSERT INTO node(uid, kind, content, t_created)
        VALUES ('node-2', 'episode', 'force re-embed test', datetime('now'))`);
-    db.close();
+    await db.close();
 
     const logs: string[] = [];
     const result = await reembedStore(dbPath, {
@@ -270,7 +270,7 @@ describe('reembedStore — force re-embed', () => {
 describe('reembedStore — model resolution', () => {
   it('resolves to the canonical model id bge-base-en-v1.5', async () => {
     const { db, dbPath } = await freshDbCurrentModel();
-    db.close();
+    await db.close();
 
     const result = await reembedStore(dbPath, {
       backup: false,
@@ -294,7 +294,7 @@ describe('reembedStore — BL-92 mixed-model store (per-record embed_model)', ()
     const staleRowid = insertEmbeddedNode(db, 'node-stale', 'stale model content', 'old-model-b', 0.99);
 
     const beforeCurrentVec = Array.from(await readVecNodeEmbedding(db, await currentRowid));
-    db.close();
+    await db.close();
 
     const logs: string[] = [];
     const result = await reembedStore(dbPath, {
@@ -329,7 +329,7 @@ describe('reembedStore — BL-92 mixed-model store (per-record embed_model)', ()
       expect(afterCurrentVec).toEqual(beforeCurrentVec);
       expect(afterCurrentVec[0]).toBeCloseTo(0.42, 5);
     } finally {
-      rawDb.close();
+      await rawDb.close();
     }
   });
 
@@ -337,7 +337,7 @@ describe('reembedStore — BL-92 mixed-model store (per-record embed_model)', ()
     const { db, dbPath } = await freshDb();
     const rowidA = insertEmbeddedNode(db, 'node-a', 'model a content', 'old-model-a', 0.11);
     const rowidB = insertEmbeddedNode(db, 'node-b', 'model b content', 'old-model-b', 0.22);
-    db.close();
+    await db.close();
 
     const result = await reembedStore(dbPath, { force: false, backup: false, log: () => { /* silent */ } });
 
@@ -354,7 +354,7 @@ describe('reembedStore — BL-92 mixed-model store (per-record embed_model)', ()
       expect(await readNodeEmbedModel(rawDb, await rowidA)).toBe(TARGET_MODEL);
       expect(await readNodeEmbedModel(rawDb, await rowidB)).toBe(TARGET_MODEL);
     } finally {
-      rawDb.close();
+      await rawDb.close();
     }
   });
 });
@@ -365,7 +365,7 @@ describe('reembedStore — BL-92 NULL embed_model handling', () => {
   it('migrates a NULL-embed_model row by default (NULL = unknown provenance, must re-embed)', async () => {
     const { db, dbPath } = await freshDb();
     const nullRowid = insertEmbeddedNode(db, 'node-null', 'pre-bl88 legacy content', null, 0.77);
-    db.close();
+    await db.close();
 
     const result = await reembedStore(dbPath, { force: false, backup: false, log: () => { /* silent */ } });
 
@@ -381,7 +381,7 @@ describe('reembedStore — BL-92 NULL embed_model handling', () => {
       const afterVec = Array.from(await readVecNodeEmbedding(rawDb, await nullRowid));
       expect(afterVec).toEqual(Array.from(new Float32Array(TARGET_DIM)));
     } finally {
-      rawDb.close();
+      await rawDb.close();
     }
   });
 
@@ -389,7 +389,7 @@ describe('reembedStore — BL-92 NULL embed_model handling', () => {
     const { db, dbPath } = await freshDb();
     const currentRowid = insertEmbeddedNode(db, 'node-current', 'current content', TARGET_MODEL, 0.5);
     insertEmbeddedNode(db, 'node-null', 'legacy content', null, 0.6);
-    db.close();
+    await db.close();
 
     const result = await reembedStore(dbPath, { force: false, backup: false, log: () => { /* silent */ } });
     expect(result.alreadyCurrent).toBe(false);
@@ -402,7 +402,7 @@ describe('reembedStore — BL-92 NULL embed_model handling', () => {
       // The already-current row is confirmed untouched here too.
       expect(await readNodeEmbedModel(rawDb, await currentRowid)).toBe(TARGET_MODEL);
     } finally {
-      rawDb.close();
+      await rawDb.close();
     }
   });
 
@@ -410,7 +410,7 @@ describe('reembedStore — BL-92 NULL embed_model handling', () => {
     const { db, dbPath } = await freshDb();
     insertEmbeddedNode(db, 'node-current-1', 'current content 1', TARGET_MODEL, 0.5);
     insertEmbeddedNode(db, 'node-current-2', 'current content 2', TARGET_MODEL, 0.6);
-    db.close();
+    await db.close();
 
     const logs: string[] = [];
     const result = await reembedStore(dbPath, {

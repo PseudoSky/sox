@@ -82,7 +82,7 @@ describe('memoryLinkNode (B2)', () => {
 
       expect(result.isError).toBeUndefined();
       expect(typeof result.edge_uid).toBe('string');
-      db.close();
+      await db.close();
     } finally {
       cleanup();
     }
@@ -102,7 +102,7 @@ describe('memoryLinkNode (B2)', () => {
       });
 
       expect(result.isError).toBe(true);
-      db.close();
+      await db.close();
     } finally {
       cleanup();
     }
@@ -125,7 +125,7 @@ describe('memoryGetRelated (B2)', () => {
       expect(result.source_uid).toBe(uidA);
       expect(result.edges.length).toBeGreaterThanOrEqual(1);
       expect(result.edges[0]!.rel).toBe('RELATES_TO');
-      db.close();
+      await db.close();
     } finally {
       cleanup();
     }
@@ -148,7 +148,7 @@ describe('memoryGetEntityEpisodes (B2)', () => {
       expect(result.entity?.uid).toBe(entityUid);
       expect(result.episodes?.length).toBeGreaterThanOrEqual(1);
       expect(result.episodes![0]!.uid).toBe(epUid);
-      db.close();
+      await db.close();
     } finally {
       cleanup();
     }
@@ -171,7 +171,7 @@ describe('memoryListEntities (B2)', () => {
       expect(result.entities.length).toBeGreaterThanOrEqual(1);
       expect(result.entities[0]!.name).toBe('ranked-entity');
       expect(result.entities[0]!.mention_count).toBeGreaterThanOrEqual(1);
-      db.close();
+      await db.close();
     } finally {
       cleanup();
     }
@@ -194,7 +194,7 @@ describe('memoryGetNearDuplicates (B2)', () => {
       expect(result.pairs.length).toBeGreaterThanOrEqual(1);
       expect(result.pairs[0]!.uid_a).toBe(uidA);
       expect(result.pairs[0]!.uid_b).toBe(uidB);
-      db.close();
+      await db.close();
     } finally {
       cleanup();
     }
@@ -228,7 +228,7 @@ describe('memoryGetSupersessionChain (B2)', () => {
       expect(result.canonical_uid).toBe(uidA);
       expect(result.chain.length).toBeGreaterThanOrEqual(1);
       expect(typeof result.is_current).toBe('boolean');
-      db.close();
+      await db.close();
     } finally {
       cleanup();
     }
@@ -278,7 +278,7 @@ describe('memoryGetSupersessionChain (B2)', () => {
         await seed(sqlite);
         await assertChain(sqlite);
       } finally {
-        sqlite.close();
+        await sqlite.close();
       }
 
       // Turso leg — same seed, same assertions. No skip when the driver is
@@ -290,7 +290,7 @@ describe('memoryGetSupersessionChain (B2)', () => {
           await seed(turso);
           await assertChain(turso);
         } finally {
-          turso.close();
+          await turso.close();
         }
       }
     } finally {
@@ -319,7 +319,7 @@ describe('memoryGetSessionState / memorySaveSessionState (B2)', () => {
 
       const getResult = await memoryGetSessionState(await db, { session_id: sessionId });
       expect(getResult.state).toEqual(state);
-      db.close();
+      await db.close();
     } finally {
       cleanup();
     }
@@ -344,7 +344,7 @@ describe('memoryListTopics (B3)', () => {
       expect(alpha?.episode_count).toBe(2);
       const beta = result.topics.find((t) => t.topic === 'beta');
       expect(beta?.episode_count).toBe(1);
-      db.close();
+      await db.close();
     } finally {
       cleanup();
     }
@@ -367,7 +367,7 @@ describe('memoryListProjects (B3)', () => {
       expect(result.total).toBe(2);
       const a = result.projects.find((p) => p.project_path === '/project/a');
       expect(a?.episode_count).toBe(2);
-      db.close();
+      await db.close();
     } finally {
       cleanup();
     }
@@ -391,7 +391,7 @@ describe('memoryCurate retag (B3)', () => {
 
       expect(result.op).toBe('retag');
       expect((result as { tags_added: string[] }).tags_added).toEqual(['new-tag']);
-      db.close();
+      await db.close();
     } finally {
       cleanup();
     }
@@ -414,7 +414,7 @@ describe('memoryCurate set_topic (B3)', () => {
       expect(result.op).toBe('set_topic');
       expect((result as { old_topic: string | null }).old_topic).toBe('old');
       expect((result as { new_topic: string }).new_topic).toBe('new-topic');
-      db.close();
+      await db.close();
     } finally {
       cleanup();
     }
@@ -437,7 +437,7 @@ describe('memoryGetStats (B3)', () => {
       expect(result.with_topic).toBeGreaterThanOrEqual(2);
       expect(Array.isArray(result.tools)).toBe(true);
       expect(result.tools).toContain('memory_ping');
-      db.close();
+      await db.close();
     } finally {
       cleanup();
     }
@@ -468,7 +468,7 @@ describe('memoryCurate drop-episodes (B2)', () => {
       // Verify the node is gone
       const after = await db.executeGet('SELECT COUNT(*) AS c FROM node WHERE uid = ?', [uid]) as { c: number };
       expect(after.c).toBe(0);
-      db.close();
+      await db.close();
     } finally {
       cleanup();
     }
@@ -503,7 +503,7 @@ describe('memoryCurate drop-episodes (B2)', () => {
       expect(nodeA.c).toBe(0);
       const nodeB = await db.executeGet('SELECT COUNT(*) AS c FROM node WHERE uid = ?', [uidB]) as { c: number };
       expect(nodeB.c).toBe(1);
-      db.close();
+      await db.close();
     } finally {
       cleanup();
     }
@@ -537,7 +537,7 @@ describe('memoryCurate drop-episodes (B2)', () => {
       // invalidatedUid still exists (was already t_invalid, not live)
       const invCheck = await db.executeGet('SELECT COUNT(*) AS c FROM node WHERE uid = ?', [invalidatedUid]) as { c: number };
       expect(invCheck.c).toBe(1);
-      db.close();
+      await db.close();
     } finally {
       cleanup();
     }
@@ -558,7 +558,7 @@ describe('memoryCurate drop-episodes (B2)', () => {
       expect(result.deleted).toBe(0);
       expect(result.cascaded.vec_node).toBe(0);
       expect(result.cascaded.edges).toBe(0);
-      db.close();
+      await db.close();
     } finally {
       cleanup();
     }
@@ -572,7 +572,7 @@ describe('memoryCurate drop-episodes (B2)', () => {
       const result = await memoryCurate(await db, { op: 'drop-episodes', uids: [] });
 
       expect(result).toHaveProperty('code', 'E_MISSING');
-      db.close();
+      await db.close();
     } finally {
       cleanup();
     }

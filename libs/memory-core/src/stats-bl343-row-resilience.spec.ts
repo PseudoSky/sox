@@ -98,7 +98,7 @@ describe('BL-343 — memory_stats survives malformed JSON rows', () => {
         expect(result.malformed_rows.count).toBeGreaterThan(0);
         expect(result.malformed_rows.columns).toContain('tags');
       } finally {
-        db.close();
+        await db.close();
       }
     } finally {
       cleanup();
@@ -125,7 +125,7 @@ describe('BL-343 — memory_stats survives malformed JSON rows', () => {
         // precisely because the error named neither row nor column.
         expect(result.malformed_rows.sample_rowids.length).toBeGreaterThan(0);
       } finally {
-        db.close();
+        await db.close();
       }
     } finally {
       cleanup();
@@ -148,7 +148,7 @@ describe('BL-343 — memory_stats survives malformed JSON rows', () => {
         expect(result.malformed_rows.columns).toEqual([]);
         expect(result.malformed_rows.sample_rowids).toEqual([]);
       } finally {
-        db.close();
+        await db.close();
       }
     } finally {
       cleanup();
@@ -181,7 +181,7 @@ describe('BL-430 — a store created today cannot hold the BL-342 shape at all',
         );
         expect(Number(row?.n ?? -1)).toBe(0);
       } finally {
-        db.close();
+        await db.close();
       }
     } finally {
       cleanup();

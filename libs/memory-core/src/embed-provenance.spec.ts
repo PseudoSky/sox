@@ -72,8 +72,8 @@ async function tmpDb(): Promise<{ dir: string; dbPath: string; db: StoreAdapter;
     dir,
     dbPath,
     db,
-    cleanup: () => {
-      db.close().catch(() => { /* already closed */ });
+    cleanup: async () => {
+      await db.close().catch(() => { /* already closed */ });
       fs.rmSync(dir, { recursive: true, force: true });
     },
   };
@@ -128,7 +128,7 @@ afterEach(async () => {
   await flushPendingEmbeds();
   await WriteQueue.clearInstances();
   _resetEmbedPipelineMetricsForTest();
-  ctx.cleanup();
+  await ctx.cleanup();
   _setEmbedProviderForTest(new DeterministicTestProvider());
 });
 

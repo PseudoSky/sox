@@ -22,8 +22,8 @@ async function tmpDb(): Promise<{ db: StoreAdapter; dir: string }> {
   return { db, dir };
 }
 
-function cleanup(db: StoreAdapter, dir: string): void {
-  try { db.close(); } catch { /* ignore */ }
+async function cleanup(db: StoreAdapter, dir: string): Promise<void> {
+  try { await db.close(); } catch { /* ignore */ }
   fs.rmSync(dir, { recursive: true, force: true });
 }
 
@@ -91,7 +91,7 @@ describe('memoryRecall — BL-117 late chunking honesty', () => {
       expect(response.metadata.lateChunkingSkipReason).toBeDefined();
       expect(response.metadata.lateChunkingSkipReason).toMatch(/late_chunking_unsupported/);
     } finally {
-      cleanup(db, dir);
+      await cleanup(db, dir);
     }
   });
 
@@ -112,7 +112,7 @@ describe('memoryRecall — BL-117 late chunking honesty', () => {
       expect(response.metadata.lateChunkingSkipReason).toBeDefined();
       expect(response.metadata.lateChunkingSkipReason).toMatch(/late_chunking_unsupported/);
     } finally {
-      cleanup(db, dir);
+      await cleanup(db, dir);
     }
   });
 
@@ -126,7 +126,7 @@ describe('memoryRecall — BL-117 late chunking honesty', () => {
       expect(response.metadata.lateChunkingApplied).toBe(false);
       expect(response.metadata.lateChunkingSkipReason).toBeUndefined();
     } finally {
-      cleanup(db, dir);
+      await cleanup(db, dir);
     }
   });
 
@@ -143,7 +143,7 @@ describe('memoryRecall — BL-117 late chunking honesty', () => {
       expect(response.metadata.lateChunkingApplied).toBe(false);
       expect(response.metadata.lateChunkingSkipReason).toBeUndefined();
     } finally {
-      cleanup(db, dir);
+      await cleanup(db, dir);
     }
   });
 });
@@ -210,7 +210,7 @@ describe('Parent-context expansion — session_id fallback', () => {
       expect(childResultEntry!.expansionSources[1]!.chunk.uid).toBe(parentUid);
       expect(childResultEntry!.expansionSources[1]!.chunk.content).toContain('machine learning');
     } finally {
-      cleanup(db, dir);
+      await cleanup(db, dir);
     }
   });
 });
@@ -261,7 +261,7 @@ describe('score_breakdown — channel sum invariant (HF-3)', () => {
         expect(Math.abs(channelSum - total)).toBeLessThan(SCORE_TOLERANCE);
       }
     } finally {
-      cleanup(db, dir);
+      await cleanup(db, dir);
     }
   });
 
@@ -297,7 +297,7 @@ describe('score_breakdown — channel sum invariant (HF-3)', () => {
         }
       }
     } finally {
-      cleanup(db, dir);
+      await cleanup(db, dir);
     }
   });
 });
@@ -396,7 +396,7 @@ describe('BL-167 — ScoreBreakdown invariant (normTotal === 0 degenerate case)'
         }
       }
     } finally {
-      cleanup(db, dir);
+      await cleanup(db, dir);
     }
   });
 });
@@ -470,7 +470,7 @@ describe('score_breakdown — cross-query comparability (HF-3)', () => {
         }
       }
     } finally {
-      cleanup(db, dir);
+      await cleanup(db, dir);
     }
   });
 
@@ -489,7 +489,7 @@ describe('score_breakdown — cross-query comparability (HF-3)', () => {
         expect(typeof result.score_breakdown.total).toBe('number');
       }
     } finally {
-      cleanup(db, dir);
+      await cleanup(db, dir);
     }
   });
 });
@@ -532,7 +532,7 @@ describe('BUG-MEMORY-003 — memory_recall excludes non-episode node kinds by de
       expect(response.results.every((r) => r.content !== null)).toBe(true);
       expect(response.results.length).toBe(3);
     } finally {
-      cleanup(db, dir);
+      await cleanup(db, dir);
     }
   });
 
@@ -553,7 +553,7 @@ describe('BUG-MEMORY-003 — memory_recall excludes non-episode node kinds by de
       expect(response.results.every((r) => r.content !== null)).toBe(true);
       expect(response.results.length).toBe(3);
     } finally {
-      cleanup(db, dir);
+      await cleanup(db, dir);
     }
   });
 
@@ -579,7 +579,7 @@ describe('BUG-MEMORY-003 — memory_recall excludes non-episode node kinds by de
       });
       expect(optInResponse.results.some((r) => r.content === null)).toBe(true);
     } finally {
-      cleanup(db, dir);
+      await cleanup(db, dir);
     }
   });
 
@@ -623,7 +623,7 @@ describe('BUG-MEMORY-003 — memory_recall excludes non-episode node kinds by de
       expect(response.results.length).toBe(1);
       expect(response.results[0]!.content).not.toBeNull();
     } finally {
-      cleanup(db, dir);
+      await cleanup(db, dir);
     }
   });
 });

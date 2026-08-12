@@ -81,7 +81,7 @@ describe('openDb — BL-41 no literal ~ dir is created', () => {
 
   it('opening "~/.memory/memory.db" writes under $HOME/.memory and leaves no "~" dir in cwd', async () => {
     const db = await openDb('~/.memory/memory.db');
-    db.close();
+    await db.close();
 
     const expected = path.join(tmpHome, '.memory', 'memory.db');
     expect(fs.existsSync(expected)).toBe(true);
@@ -93,9 +93,9 @@ describe('openDb — BL-41 no literal ~ dir is created', () => {
 
   it('openDbReadOnly also expands ~ (opens the same expanded file)', async () => {
     // Create the file first via openDb, then re-open read-only with the tilde form.
-    (await openDb('~/.memory/ro.db')).close();
+    await (await openDb('~/.memory/ro.db')).close();
     const ro = await openDbReadOnly('~/.memory/ro.db');
-    ro.close();
+    await ro.close();
     expect(fs.existsSync(path.join(tmpHome, '.memory', 'ro.db'))).toBe(true);
     expect(fs.existsSync(path.join(tmpCwd, '~'))).toBe(false);
   });
@@ -118,7 +118,7 @@ describe('stampStoreMeta — SA-5 / BL-121 identity stamp', () => {
     expect(meta.get('embed_dimensions')).toBe(String(EMBED_DIM));
     expect(meta.get('writer_artifact')).toBe('@adhd/sox-memory-core');
 
-    db.close();
+    await db.close();
     fs.rmSync(dir, { recursive: true, force: true });
   });
 
@@ -128,12 +128,12 @@ describe('stampStoreMeta — SA-5 / BL-121 identity stamp', () => {
     const dbPath = path.join(dir, 'idempotent.db');
     const db1 = await openDb(dbPath);
     const rows1 = (await db1.executeAll<{ key: string; value: string }>('SELECT key, value FROM sox_store_meta ORDER BY key')).rows;
-    db1.close();
+    await db1.close();
 
     // Re-open — INSERT OR IGNORE means no overwrite
     const db2 = await openDb(dbPath);
     const rows2 = (await db2.executeAll<{ key: string; value: string }>('SELECT key, value FROM sox_store_meta ORDER BY key')).rows;
-    db2.close();
+    await db2.close();
 
     expect(rows2).toEqual(rows1);
 
@@ -147,7 +147,7 @@ describe('stampStoreMeta — SA-5 / BL-121 identity stamp', () => {
     // verifyStoreMeta is called inside stampStoreMeta inside openDb
     // It should not throw
     await expect(verifyStoreMeta(db)).resolves.not.toThrow();
-    db.close();
+    await db.close();
     fs.rmSync(dir, { recursive: true, force: true });
   });
 
@@ -160,7 +160,7 @@ describe('stampStoreMeta — SA-5 / BL-121 identity stamp', () => {
     await db.executeRun('UPDATE sox_store_meta SET value = ? WHERE key = ?', ['99', STORE_META_KEYS.SCHEMA_VERSION]);
 
     await expect(verifyStoreMeta(db)).rejects.toThrow(EStoreMismatch);
-    db.close();
+    await db.close();
     fs.rmSync(dir, { recursive: true, force: true });
   });
 
@@ -173,7 +173,7 @@ describe('stampStoreMeta — SA-5 / BL-121 identity stamp', () => {
     await db.executeRun('UPDATE sox_store_meta SET value = ? WHERE key = ?', ['999', STORE_META_KEYS.EMBED_DIMENSIONS]);
 
     await expect(verifyStoreMeta(db)).rejects.toThrow(EStoreMismatch);
-    db.close();
+    await db.close();
     fs.rmSync(dir, { recursive: true, force: true });
   });
 
@@ -187,7 +187,7 @@ describe('stampStoreMeta — SA-5 / BL-121 identity stamp', () => {
 
     // This logs a warning but does NOT throw EStoreMismatch
     expect(() => verifyStoreMeta(db)).not.toThrow();
-    db.close();
+    await db.close();
     fs.rmSync(dir, { recursive: true, force: true });
   });
 
@@ -196,12 +196,12 @@ describe('stampStoreMeta — SA-5 / BL-121 identity stamp', () => {
     const dbPath = path.join(dir, 'no-overwrite.db');
     const db1 = await openDb(dbPath);
     const originalRows = (await db1.executeAll<{ key: string; value: string }>('SELECT key, value FROM sox_store_meta ORDER BY key')).rows;
-    db1.close();
+    await db1.close();
 
     // Re-open and ensure rows are unchanged
     const db2 = await openDb(dbPath);
     const newRows = (await db2.executeAll<{ key: string; value: string }>('SELECT key, value FROM sox_store_meta ORDER BY key')).rows;
-    db2.close();
+    await db2.close();
 
     expect(newRows).toEqual(originalRows);
     fs.rmSync(dir, { recursive: true, force: true });
@@ -225,7 +225,7 @@ describe('stampStoreMeta — SA-5 / BL-121 identity stamp', () => {
     // Must NOT be 'bge-base-en-v1.5' (the unfalsifiable default) — should be 'unknown'
     expect(meta.get('embed_model')).toBe('unknown');
 
-    db.close();
+    await db.close();
     fs.rmSync(dir, { recursive: true, force: true });
 
     // Restore the test provider for subsequent tests.

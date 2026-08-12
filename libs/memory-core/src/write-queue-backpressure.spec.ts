@@ -313,7 +313,7 @@ describe('WriteQueue — time-based backpressure + observability', () => {
     const { openDbReadOnly } = await import('./db.js');
     const roDb = await openDbReadOnly(dbPath);
     const rows = (await roDb.executeAll<{ seq_num: number }>('SELECT seq_num FROM bp_commit_test ORDER BY seq_num')).rows;
-    roDb.close();
+    await roDb.close();
 
     const committed = rows.map((r) => r.seq_num);
     // Admitted work committed exactly once; rejected work never committed.

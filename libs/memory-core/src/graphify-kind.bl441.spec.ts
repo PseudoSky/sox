@@ -28,9 +28,9 @@ async function tmpAdapter(): Promise<{ adapter: StoreAdapter; cleanup: () => voi
   const adapter = await openDb(dbPath);
   return {
     adapter,
-    cleanup: () => {
+    cleanup: async () => {
       try {
-        adapter.close();
+        await adapter.close();
       } catch {
         /* already closed */
       }
@@ -39,9 +39,9 @@ async function tmpAdapter(): Promise<{ adapter: StoreAdapter; cleanup: () => voi
   };
 }
 
-const cleanups: Array<() => void> = [];
-afterEach(() => {
-  while (cleanups.length > 0) cleanups.pop()!();
+const cleanups: Array<() => Promise<void>> = [];
+afterEach(async () => {
+  while (cleanups.length > 0) await cleanups.pop()!();
 });
 
 describe('AC-1 (BL-441) — unregistered kind via graphifyImport v2 is rejected', () => {

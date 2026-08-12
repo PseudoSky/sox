@@ -36,8 +36,8 @@ async function tmpDb(): Promise<{ db: StoreAdapter; dir: string }> {
   return { db, dir };
 }
 
-function cleanup(db: StoreAdapter, dir: string): void {
-  try { db.close(); } catch { /* ignore */ }
+async function cleanup(db: StoreAdapter, dir: string): Promise<void> {
+  try { await db.close(); } catch { /* ignore */ }
   fs.rmSync(dir, { recursive: true, force: true });
 }
 
@@ -137,7 +137,7 @@ describe('memoryUpdate — E_NOT_FOUND', () => {
       });
       expect(result).toMatchObject({ code: 'E_NOT_FOUND' });
     } finally {
-      cleanup(db, dir);
+      await cleanup(db, dir);
     }
   });
 
@@ -150,7 +150,7 @@ describe('memoryUpdate — E_NOT_FOUND', () => {
       const result = await memoryUpdate(db, { uid, content: 'should fail' });
       expect(result).toMatchObject({ code: 'E_NOT_FOUND' });
     } finally {
-      cleanup(db, dir);
+      await cleanup(db, dir);
     }
   });
 });
@@ -166,7 +166,7 @@ describe('memoryUpdate — E_NO_FIELDS', () => {
       const result = await memoryUpdate(db, { uid });
       expect(result).toMatchObject({ code: 'E_NO_FIELDS' });
     } finally {
-      cleanup(db, dir);
+      await cleanup(db, dir);
     }
   });
 
@@ -182,7 +182,7 @@ describe('memoryUpdate — E_NO_FIELDS', () => {
       const result = await memoryUpdate(db, { uid, content: 'same content' });
       expect(result).toMatchObject({ code: 'E_NO_FIELDS' });
     } finally {
-      cleanup(db, dir);
+      await cleanup(db, dir);
     }
   });
 });
@@ -212,7 +212,7 @@ describe('memoryUpdate — individual field updates', () => {
       // t_updated is set
       expect(nodeAfter.t_updated).not.toBeNull();
     } finally {
-      cleanup(db, dir);
+      await cleanup(db, dir);
     }
   });
 
@@ -230,7 +230,7 @@ describe('memoryUpdate — individual field updates', () => {
       const node = (await getNode(db, uid))!;
       expect(node.summary).toBe('new summary');
     } finally {
-      cleanup(db, dir);
+      await cleanup(db, dir);
     }
   });
 
@@ -248,7 +248,7 @@ describe('memoryUpdate — individual field updates', () => {
       const node = (await getNode(db, uid))!;
       expect(node.name).toBe('new name');
     } finally {
-      cleanup(db, dir);
+      await cleanup(db, dir);
     }
   });
 
@@ -266,7 +266,7 @@ describe('memoryUpdate — individual field updates', () => {
       const node = (await getNode(db, uid))!;
       expect(node.topic).toBe('javascript');
     } finally {
-      cleanup(db, dir);
+      await cleanup(db, dir);
     }
   });
 
@@ -291,7 +291,7 @@ describe('memoryUpdate — individual field updates', () => {
       const node = (await getNode(db, uid))!;
       expect(node.project_path).toBe('/Users/nix/Documents/professional/qusececure');
     } finally {
-      cleanup(db, dir);
+      await cleanup(db, dir);
     }
   });
 
@@ -309,7 +309,7 @@ describe('memoryUpdate — individual field updates', () => {
       const node = (await getNode(db, uid))!;
       expect(JSON.parse(node.tags!)).toEqual(['c', 'd', 'e']);
     } finally {
-      cleanup(db, dir);
+      await cleanup(db, dir);
     }
   });
 
@@ -327,7 +327,7 @@ describe('memoryUpdate — individual field updates', () => {
       const node = (await getNode(db, uid))!;
       expect(node.importance).toBe(8);
     } finally {
-      cleanup(db, dir);
+      await cleanup(db, dir);
     }
   });
 
@@ -353,7 +353,7 @@ describe('memoryUpdate — individual field updates', () => {
       expect(node.t_occurred).toBe(newOccurred);
       expect(node.t_valid).toBe(newValid);
     } finally {
-      cleanup(db, dir);
+      await cleanup(db, dir);
     }
   });
 });
@@ -409,7 +409,7 @@ describe('memoryUpdate — BL-221: project_path is correctable in place', () => 
       expect(node.project_path).toBe(correctProjectPath);
       expect(node.content).toBe(content); // content untouched — uid/content identity preserved
     } finally {
-      cleanup(db, dir);
+      await cleanup(db, dir);
     }
   });
 
@@ -428,7 +428,7 @@ describe('memoryUpdate — BL-221: project_path is correctable in place', () => 
       });
       expect('code' in result && result.code).toBe('E_NO_FIELDS');
     } finally {
-      cleanup(db, dir);
+      await cleanup(db, dir);
     }
   });
 });
@@ -459,7 +459,7 @@ describe('memoryUpdate — t_created immutable, t_updated set', () => {
       expect(updatedMs).toBeGreaterThanOrEqual(before);
       expect(updatedMs).toBeLessThanOrEqual(after + 50); // small tolerance
     } finally {
-      cleanup(db, dir);
+      await cleanup(db, dir);
     }
   });
 });
@@ -502,7 +502,7 @@ describe('memoryUpdate — metadata merging', () => {
       // Untouched key preserved
       expect(metaAfter['stable']).toBe('keep');
     } finally {
-      cleanup(db, dir);
+      await cleanup(db, dir);
     }
   });
 
@@ -529,7 +529,7 @@ describe('memoryUpdate — metadata merging', () => {
       expect('old_key' in metaAfter).toBe(false);
       expect('nested' in metaAfter).toBe(false);
     } finally {
-      cleanup(db, dir);
+      await cleanup(db, dir);
     }
   });
 
@@ -553,7 +553,7 @@ describe('memoryUpdate — metadata merging', () => {
       // Vector must be unchanged (same blob) for a metadata-only update.
       expect(vecAfter).toBe(vecBefore);
     } finally {
-      cleanup(db, dir);
+      await cleanup(db, dir);
     }
   });
 });
@@ -585,7 +585,7 @@ describe('memoryUpdate — re-embed on content change', () => {
       expect(vecAfter).not.toBeNull();
       expect(vecAfter).not.toBe(vecBefore);
     } finally {
-      cleanup(db, dir);
+      await cleanup(db, dir);
     }
   });
 
@@ -603,7 +603,7 @@ describe('memoryUpdate — re-embed on content change', () => {
       // Vector must be identical for a topic-only update.
       expect(vecAfter).toBe(vecBefore);
     } finally {
-      cleanup(db, dir);
+      await cleanup(db, dir);
     }
   });
 });
@@ -672,7 +672,7 @@ describe('memoryUpdate — FTS reflects content change (fts_node_au trigger)', (
       const ftsRemovedRows = (await db.executeAll<{ rowid: number }>(`SELECT rowid FROM fts_node WHERE fts_node MATCH ?`, ['zorbflux'])).rows;
       expect(ftsRemovedRows.map((r) => r.rowid)).not.toContain(nodeRow.rowid);
     } finally {
-      cleanup(db, dir);
+      await cleanup(db, dir);
     }
   });
 });
@@ -710,7 +710,7 @@ describe('memoryUpdatePhaseA — two-phase update (BL-189)', () => {
       expect('code' in done).toBe(false);
       expect(await getVecHex(db, rowid)).not.toBeNull();
     } finally {
-      cleanup(db, dir);
+      await cleanup(db, dir);
     }
   });
 
@@ -729,7 +729,7 @@ describe('memoryUpdatePhaseA — two-phase update (BL-189)', () => {
       expect(a.result.reembedded).toBe(false);
       expect(await getVecHex(db, rowid)).toBe(before);
     } finally {
-      cleanup(db, dir);
+      await cleanup(db, dir);
     }
   });
 
@@ -745,7 +745,7 @@ describe('memoryUpdatePhaseA — two-phase update (BL-189)', () => {
       expect(a.pending).not.toBeNull();
       expect(a.pending!.text).toBe('content stays');
     } finally {
-      cleanup(db, dir);
+      await cleanup(db, dir);
     }
   });
 });
