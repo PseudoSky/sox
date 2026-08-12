@@ -50,7 +50,11 @@
  * executable; leading wrappers (env/time/sudo/nohup/command), VAR=value assignments, and `cd <dir>`
  * are skipped; paths reduce to basenames; `do`/`then` are skipped so `for ...; do <cmd>` resolves to
  * the loop body's bin; pure display builtins (echo/printf) and construct heads (for/if/case/...)
- * advance to the next segment. `git -C x log && echo y` -> git; `cd x && npm i` -> npm;
+ * advance to the next segment. Quote-aware: quoted sections (single/double/backtick, backslash
+ * escapes respected) are stripped BEFORE segmentation, so separators inside quotes
+ * (`echo "a|b" && git status`) can never fabricate phantom segments; subshell parens and `!`
+ * negation are stripped from tokens; option tokens starting with `-` are skipped.
+ * `git -C x log && echo y` -> git; `cd x && npm i` -> npm; `(cd /x && git log)` -> git;
  * `rm -rf d && node s` -> rm; `npx nx build` -> npx. When nothing real is extractable the name
  * falls back to the literal "bash".
  *
@@ -83,8 +87,11 @@ function parseArgs(argv) {
   const positional = [];
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
-    if (a === '--db') opts.db = resolve(argv[++i]?.replace(/^~/, homedir()));
-    else if (a === '--children' || a === '--self') opts.mode = a.slice(2);
+    if (a === '--db') {
+      const v = argv[++i];
+      if (v === undefined) { opts.missingDbValue = true; continue; }
+      opts.db = resolve(v.replace(/^~/, homedir()));
+    } else if (a === '--children' || a === '--self') opts.mode = a.slice(2);
     else if (a === '--pretty') opts.pretty = true;
     else if (a === '--selftest') opts.selftest = true;
     else if (a === '--help' || a === '-h') opts.help = true;
@@ -107,8 +114,35 @@ const DISPLAY_BUILTINS = new Set(['echo', 'printf', 'true', 'false', 'test', '['
 const CONTROL_HEADS = new Set(['for', 'while', 'until', 'if', 'case', 'select', 'function', 'done', 'fi', 'esac', 'in']);
 const CONTROL_TAILS = new Set(['do', 'then', 'else', 'elif']);
 
+// Drop quoted sections (single/double/backtick, respecting backslash escapes) so that separators
+// INSIDE quotes (`echo "a|b" && git status`) can never fabricate phantom segments or phantom bins.
+// Escaped characters are dropped as a unit — they are literal text, never separators.
+function stripQuoted(text) {
+  const QUOTES = new Set(['"', "'", '`']);
+  let out = '';
+  let i = 0;
+  while (i < text.length) {
+    const ch = text[i];
+    if (ch === '\\') { i += 2; continue; } // escape sequence outside quotes: literal, skip both chars
+    if (QUOTES.has(ch)) {
+      const q = ch;
+      i += 1;
+      while (i < text.length) {
+        const c = text[i];
+        if (c === '\\') { i += 2; continue; } // escaped char inside quotes
+        if (c === q) { i += 1; break; }       // closing quote
+        i += 1;
+      }
+      continue; // quoted region contributes nothing
+    }
+    out += ch;
+    i += 1;
+  }
+  return out;
+}
+
 export function mainBin(command) {
-  const text = String(command ?? '').trim();
+  const text = stripQuoted(String(command ?? '').trim());
   if (!text) return 'bash';
   const segments = text.split(/&&|\|\||;|\n|\|/);
   for (const segRaw of segments) {
@@ -116,8 +150,10 @@ export function mainBin(command) {
     for (let i = 0; i < tokens.length; i++) {
       let t = tokens[i];
       if (/^[A-Za-z_][A-Za-z0-9_]*=/.test(t)) continue; // VAR=value assignment
-      t = t.replace(/^['"`]|['"`]$/g, ''); // strip surrounding quotes
+      t = t.replace(/^['"`]|['"`]$/g, ''); // residual surrounding quotes (quoted sections already stripped)
+      t = t.replace(/^[()!]+|[()]+$/g, ''); // subshell parens ((cd …) -> cd, log) -> log) and `!` negation
       if (!t) continue;
+      if (t.startsWith('-')) continue; // option/flag token (-v, -f, --all) — never a bin name
       if (WRAPPERS.has(t)) continue;
       if (CONTROL_HEADS.has(t)) break; // opens a construct; body is in a later segment
       if (CONTROL_TAILS.has(t)) continue; // `do <cmd>` / `then <cmd>` — skip the keyword
@@ -137,7 +173,10 @@ function openStore(dbPath) {
   try {
     return new DatabaseSync(dbPath, { readOnly: true });
   } catch {
-    return new DatabaseSync(dbPath); // older node / busy store: read-only statements anyway
+    // Fallback read-write open (older node / busy store). On a WAL store this can create
+    // -shm/-wal sidecars if absent; accepted because every statement issued here is a read
+    // (SELECT only) and the readOnly open succeeds on this host (node 24.11.1).
+    return new DatabaseSync(dbPath);
   }
 }
 
@@ -177,7 +216,14 @@ function buildEntry(session, db) {
   })();
 
   const toolParts = db.prepare(TOOL_PARTS_SQL).all(session.id);
-  const toolCount = toolParts.length;
+  // Parse data JSON once, upfront. Malformed parts are excluded from BOTH toolCount and toolStats,
+  // so toolCount always equals the sum of toolStats counts (opencode writes valid JSON, so on real
+  // stores this never drops a part — it only keeps the invariant unconditional).
+  const parsedParts = [];
+  for (const p of toolParts) {
+    try { parsedParts.push({ ...p, data: JSON.parse(p.data) }); } catch { /* malformed part: skipped */ }
+  }
+  const toolCount = parsedParts.length;
 
   // ---- tokens: session aggregate, else summed from per-message records ----
   let tokens = {
@@ -229,9 +275,8 @@ function buildEntry(session, db) {
 
   // ---- tool stats by tool ----
   const stats = new Map();
-  for (const p of toolParts) {
-    let d;
-    try { d = JSON.parse(p.data); } catch { continue; }
+  for (const p of parsedParts) {
+    const d = p.data;
     const rawTool = d.tool || 'unknown';
     const name = rawTool === 'bash' ? mainBin(d.state?.input?.command) : rawTool;
     let st = stats.get(name);
@@ -295,6 +340,17 @@ const SELFTEST_CASES = [
   ['while read -r l; do echo $l; done < f.txt', 'bash'],
   ['pkill -f "node"', 'pkill'],
   ['', 'bash'],
+  // DEBT-031 review: quote-internal separators / ! / -v / ( must never fabricate phantom bins
+  ['echo "a|b" && git status', 'git'],
+  ['echo "a;b" && git status', 'git'],
+  ['echo "a && b" && git status', 'git'],
+  ['echo "a\\"b" && git status', 'git'],
+  ['echo "a\nb" && git status', 'git'],
+  ['! git status', 'git'],
+  ['command -v git && git status', 'git'],
+  ['(cd /x && git log)', 'git'],
+  ['cd "dir with spaces" && git status', 'git'],
+  ['rm -rf "$(git rev-parse --show-toplevel)" && node s.mjs', 'rm'],
 ];
 
 function selftest() {
@@ -321,6 +377,11 @@ Exit codes: 0 ok, 1 session not found, 2 not a parent and not a subagent, 3 stor
 
 export function run(argv) {
   const opts = parseArgs(argv);
+  if (opts.missingDbValue) {
+    console.error('dispatch-telemetry: --db requires a value: --db <path>');
+    usage();
+    return { exitCode: 2, entries: [] };
+  }
   if (opts.selftest) return { exitCode: selftest(), entries: [] };
   if (opts.help || !opts.sessionId || opts.unknown) {
     if (opts.unknown) console.error(`unknown flag: ${opts.unknown}`);
