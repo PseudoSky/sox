@@ -57,6 +57,7 @@
  */
 
 import {
+  DeterministicTestProvider,
   WriteQueue,
   _resetEmbedSingleton,
   _setEmbedProviderForTest,
@@ -84,6 +85,23 @@ const HAS_TURSO = (() => {
     return false;
   }
 })();
+
+// ── BL-567 real-backend cache gate ─────────────────────────────────────────
+// Section 5 below measures REAL embedding throughput, so it opts out of the
+// setup's default DeterministicTestProvider mock — but only runs when the
+// ONNX model binary is actually on disk. Resolved synchronously at module
+// load (same reasoning as HAS_TURSO above — vitest freezes `{ skip }` during
+// collection). The cache check mirrors embedding-provider's canonical
+// isModelCached() (src/index.ts:327): <cacheDir>/<hfRepoId>/model_optimized.onnx,
+// with memory-core's cacheDir resolution (embed.ts resolveConfig:
+// SOX_EMBED_CACHE_DIR ?? $XDG_CACHE_HOME/sox-memory/models). Cache absent →
+// the test SKIPS, never fails or downloads.
+const REAL_MODEL_CACHE_DIR =
+  process.env['SOX_EMBED_CACHE_DIR'] ??
+  path.join(process.env['XDG_CACHE_HOME'] ?? path.join(os.homedir(), '.cache'), 'sox-memory', 'models');
+const REAL_MODEL_CACHED = fs.existsSync(
+  path.join(REAL_MODEL_CACHE_DIR, 'fast-bge-base-en-v1.5', 'model_optimized.onnx'),
+);
 
 // ── Helpers ──────────────────────────────────────────────────────────────
 
@@ -493,34 +511,47 @@ function runForAdapter(adapterType: 'sqlite' | 'turso') {
 
     it(
       'measures real embedding throughput (real ONNX/fastembed provider)',
-      { timeout: 120_000 },
+      // BL-567: skip (not fail) when the ONNX model cache is absent.
+      { timeout: 120_000, skip: !REAL_MODEL_CACHED },
       async () => {
-        // vitest.setup.ts sets SOX_SYNC_EMBED=1 globally, so each memory_write
-        // above already blocked on a real embed() call — this test isolates
-        // and times N MORE real writes to get a clean embeds/sec number, and
-        // reads the actual execution provider (CoreML on macOS) via
-        // warmupEmbed() rather than assuming it.
-        const health = await warmupEmbed(30_000);
-        row.execution_provider = health.execution_provider ?? null;
-        console.log(`[${adapterType}] embed health: ${JSON.stringify(health)}`);
+        // BL-567: this test measures the REAL provider — opt out of the
+        // setup-default mock for its duration. vitest.setup.ts installs
+        // DeterministicTestProvider by default (BL-567), so without this the
+        // "throughput" number would measure feature-hashing, not ONNX/CoreML.
+        _setEmbedProviderForTest(null);
+        try {
+          // vitest.setup.ts sets SOX_SYNC_EMBED=1 globally, so each memory_write
+          // above already blocked on a real embed() call — this test isolates
+          // and times N MORE real writes to get a clean embeds/sec number, and
+          // reads the actual execution provider (CoreML on macOS) via
+          // warmupEmbed() rather than assuming it.
+          const health = await warmupEmbed(30_000);
+          row.execution_provider = health.execution_provider ?? null;
+          console.log(`[${adapterType}] embed health: ${JSON.stringify(health)}`);
 
-        const N = 8;
-        const start = performance.now();
-        for (let i = 0; i < N; i++) {
-          const result = (await handleToolCall('memory_write', {
-            db_path: dbPath,
-            content: `Throughput probe ${adapterType} ${Date.now()}-${i}: measuring real embed latency end to end through the MCP tool surface.`,
-            project_path: '/test/turso-clean-room-throughput',
-          })) as ToolResultLike;
-          expect(result.isError).toBeFalsy();
+          const N = 8;
+          const start = performance.now();
+          for (let i = 0; i < N; i++) {
+            const result = (await handleToolCall('memory_write', {
+              db_path: dbPath,
+              content: `Throughput probe ${adapterType} ${Date.now()}-${i}: measuring real embed latency end to end through the MCP tool surface.`,
+              project_path: '/test/turso-clean-room-throughput',
+            })) as ToolResultLike;
+            expect(result.isError).toBeFalsy();
+          }
+          const elapsedSec = (performance.now() - start) / 1000;
+          const perSec = N / elapsedSec;
+          row.embeds_per_sec = perSec;
+          console.log(
+            `[${adapterType}] ${N} real-embed writes in ${elapsedSec.toFixed(2)}s = ${perSec.toFixed(3)} embeds/sec (provider: ${row.execution_provider})`,
+          );
+          expect(Number.isFinite(perSec)).toBe(true);
+        } finally {
+          // Restore the default mock so the turso run's later describes (and
+          // the next runForAdapter block) stay deterministic.
+          _setEmbedProviderForTest(new DeterministicTestProvider());
+          _resetEmbedSingleton();
         }
-        const elapsedSec = (performance.now() - start) / 1000;
-        const perSec = N / elapsedSec;
-        row.embeds_per_sec = perSec;
-        console.log(
-          `[${adapterType}] ${N} real-embed writes in ${elapsedSec.toFixed(2)}s = ${perSec.toFixed(3)} embeds/sec (provider: ${row.execution_provider})`,
-        );
-        expect(Number.isFinite(perSec)).toBe(true);
       },
     );
   });

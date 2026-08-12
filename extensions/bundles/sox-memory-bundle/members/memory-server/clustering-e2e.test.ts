@@ -58,7 +58,10 @@
  */
 
 import {
+  DeterministicTestProvider,
   WriteQueue,
+  _resetEmbedSingleton,
+  _setEmbedProviderForTest,
   clusterStats,
   clusterStore,
 } from '@adhd/sox-memory-core';
@@ -82,6 +85,27 @@ const HAS_TURSO = (() => {
     return false;
   }
 })();
+
+// ── BL-567 real-backend cache gate ─────────────────────────────────────────
+// This file proves clustering on REAL bge-base-en-v1.5 embeddings —
+// CLUSTER_THRESHOLD below was MEASURED against real BGE geometry, and the
+// feature-hash mock gives "meaningless similarity geometry" (this file's own
+// words, header lines 16-20). It therefore opts out of the setup's default
+// DeterministicTestProvider mock entirely (see runSuite's beforeAll), and is
+// gated so it SKIPS (never fails, never downloads) when the ONNX model binary
+// is not on disk. Resolved synchronously at module load (the tursoDescribe
+// pattern — vitest freezes { skip } during collection). The cache check
+// mirrors embedding-provider's canonical isModelCached() (src/index.ts:327):
+// <cacheDir>/<hfRepoId>/model_optimized.onnx, with memory-core's cacheDir
+// resolution (embed.ts resolveConfig: SOX_EMBED_CACHE_DIR ??
+// $XDG_CACHE_HOME/sox-memory/models).
+const REAL_MODEL_CACHE_DIR =
+  process.env['SOX_EMBED_CACHE_DIR'] ??
+  path.join(process.env['XDG_CACHE_HOME'] ?? path.join(os.homedir(), '.cache'), 'sox-memory', 'models');
+const REAL_MODEL_CACHED = fs.existsSync(
+  path.join(REAL_MODEL_CACHE_DIR, 'fast-bge-base-en-v1.5', 'model_optimized.onnx'),
+);
+const realEmbeddingDescribe = REAL_MODEL_CACHED ? describe : describe.skip;
 
 // ── Fixture corpus: 3 semantically distinct groups, 8 episodes each ────────
 // Real, hand-written content (not random strings, not templated filler) so
@@ -240,10 +264,19 @@ const matrix: MatrixEntry[] = [];
 
 function runSuite(backend: 'sqlite' | 'turso'): void {
   const skipTurso = backend === 'turso' && !HAS_TURSO;
+  const skipRealEmbed = !REAL_MODEL_CACHED;
 
-  describe(`clustering e2e — ${backend}${skipTurso ? ' (SKIPPED: turso driver unavailable)' : ''}`, () => {
+  realEmbeddingDescribe(
+    `clustering e2e — ${backend}${skipTurso ? ' (SKIPPED: turso driver unavailable)' : ''}${skipRealEmbed ? ' (SKIPPED: ONNX model cache absent — real-embedding proof requires bge-base-en-v1.5 on disk)' : ''}`,
+    () => {
     if (skipTurso) {
       it.skip('turso driver not available in node_modules — cannot exercise this backend', () => {
+        /* intentionally empty */
+      });
+      return;
+    }
+    if (skipRealEmbed) {
+      it.skip('ONNX model cache absent — real-embedding clustering proof skipped (BL-567 gate)', () => {
         /* intentionally empty */
       });
       return;
@@ -259,6 +292,11 @@ function runSuite(backend: 'sqlite' | 'turso'): void {
     beforeAll(async () => {
       origStoreAdapter = process.env['STORE_ADAPTER'];
       process.env['STORE_ADAPTER'] = backend;
+      // BL-567: opt out of the setup-default mock — this file measures REAL
+      // BGE similarity geometry; the feature-hash provider cannot cluster
+      // semantically. Cache-absent runs never reach here (skip gate above).
+      _setEmbedProviderForTest(null);
+      _resetEmbedSingleton();
       uidsByGroup = await writeGroupedCorpus(dbPath);
       // Reuse the SAME already-open StoreAdapter that powered the writes above
       // (WriteQueue.forPath is a per-dbPath cached singleton) instead of a
@@ -289,6 +327,11 @@ function runSuite(backend: 'sqlite' | 'turso'): void {
       } else {
         process.env['STORE_ADAPTER'] = origStoreAdapter;
       }
+      // BL-567: restore the default mock so the second runSuite(backend)
+      // block (and any later file in the real-backend worker) starts from the
+      // deterministic default, not a lingering real provider.
+      _setEmbedProviderForTest(new DeterministicTestProvider());
+      _resetEmbedSingleton();
       await WriteQueue.clearInstances();
       tmp.cleanup();
     });
