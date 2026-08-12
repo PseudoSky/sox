@@ -1,3 +1,4 @@
+import { existsSync } from 'node:fs';
 import {
   consumeUncleanShutdownFlag,
   ensureAdapterMetaTable,
@@ -31,6 +32,8 @@ import {
   guardSucceeded,
 } from './fts-orphan-guard.js';
 import { isFatalConnectionError } from './errors.js';
+import { ESqliteNativeStore } from './errors.js';
+import { ensureEngineMarker, readApplicationId, SOX_APP_ID_SQLITE } from './engine-guard.js';
 import { log } from '@adhd/sox-telemetry';
 import {
   ensureFtsIndex as ensureFtsIndexOn,
@@ -318,6 +321,13 @@ export class TursoAdapterImpl implements TursoAdapter {
     encryption?: AdapterConfig['encryption'];
     experimental?: { multiprocessWal?: boolean };
     defaultQueryTimeout?: number;
+    /**
+     * (BL-508) Permit opening a store whose engine marker claims the OTHER
+     * engine (SQLite-owned) — the deliberate-migration escape hatch. Only the
+     * factory's `migrateOnAdapterChange` path sets this; every other caller
+     * fails closed with `ESqliteNativeStore` before any write/WAL touch.
+     */
+    allowForeignEngine?: boolean;
   }): Promise<TursoAdapterImpl> {
     // Dynamic import so @tursodatabase/database is only loaded when used
     let tursoModule: any;
@@ -460,6 +470,11 @@ export class TursoAdapterImpl implements TursoAdapter {
       }
     }
 
+    // (BL-508) Was the db file already there before this open? `ensureEngineMarker`
+    // needs to know whether the store is FRESH (created by this very open → this
+    // engine owns it) or LEGACY (unmarked → infer the owning engine before stamping).
+    const fileExisted = opts.dbPath !== undefined && existsSync(opts.dbPath);
+
     let db: any;
     try {
       db = await openOnce();
@@ -534,6 +549,21 @@ export class TursoAdapterImpl implements TursoAdapter {
       );
     }
 
+    // (BL-508) FOREIGN-ENGINE REFUSAL, BEFORE the driver even opens the file: a
+    // store whose marker claims SQLite ownership must not be opened by the Turso
+    // adapter — cross-engine WAL coordination is exactly what destroyed stores in
+    // the incident this guard exists for. The probe is a pure header read of
+    // `application_id` (fs-level, no schema touch, no driver, no sidecars).
+    // Unmarked legacy stores are NOT refused (backfill on next sox open), and
+    // the deliberate-migration escape hatch (`allowForeignEngine: true` — the
+    // factory's `migrateOnAdapterChange` path) proceeds.
+    if (opts.dbPath && opts.readonly !== true && opts.allowForeignEngine !== true) {
+      const appId = readApplicationId(opts.dbPath);
+      if (appId === SOX_APP_ID_SQLITE) {
+        throw new ESqliteNativeStore(opts.dbPath, 'sqlite');
+      }
+    }
+
     // (SOXGRAPH-001) Probe recursive-CTE support ONCE at connect, before the
     // capabilities object is built. Turso Database Rust < 0.8.0 rejects
     // `WITH RECURSIVE` at prepare (`Parse error`) while SQLite and Turso
@@ -586,6 +616,12 @@ export class TursoAdapterImpl implements TursoAdapter {
     // case. warnIfStaleSidecar fires only when the mtimes prove staleness, so
     // a healthy sidecar emits nothing. Informational, never throws.
     warnIfStaleSidecar(opts.dbPath);
+
+    // (BL-508) Engine marker on first open (idempotent; fresh turso stores
+    // and legacy unmarked stores inferred turso get stamped here).
+    if (opts.dbPath && opts.readonly !== true) {
+      await ensureEngineMarker(instance, 'turso', opts.dbPath, { fresh: !fileExisted });
+    }
 
     // (BL-361) The store is now open, so this session owns it. The marker is
     // what tells the NEXT open that this session may not have ended cleanly —

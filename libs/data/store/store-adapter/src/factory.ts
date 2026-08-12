@@ -45,6 +45,10 @@ export async function createStoreAdapter(
     if (config?.readonly !== undefined) tursoOpts.readonly = config.readonly;
     if (config?.allowFtsInReadonly !== undefined) tursoOpts.allowFtsInReadonly = config.allowFtsInReadonly;
     if (config?.experimental !== undefined) tursoOpts.experimental = config.experimental;
+    // (BL-508) The deliberate-migration path opens the store with the WRONG
+    // adapter on purpose (source read for migrateStore) — the foreign-engine
+    // refusal must not block it.
+    if (options?.migrateOnAdapterChange) tursoOpts.allowForeignEngine = true;
     adapter = await createTursoAdapter(tursoOpts);
   } else {
     throw new Error(
@@ -123,6 +127,7 @@ export async function createTursoAdapter(
     readonly?: boolean;
     allowFtsInReadonly?: boolean;
     experimental?: { multiprocessWal?: boolean };
+    allowForeignEngine?: boolean;
   },
 ): Promise<TursoAdapter> {
   return TursoAdapterImpl.connect(opts);
