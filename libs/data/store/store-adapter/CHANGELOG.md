@@ -1,5 +1,39 @@
 # @adhd/sox-store-adapter
 
+## 0.5.7
+
+### Patch Changes
+
+- **Lease-gate sidecar reconcile + TRUNCATE; transient-retry catch (BUG-007/008/009).**
+
+  The adapter previously destroyed live multiprocess-WAL coordination state in three ways, all
+  exposed by the 2026-08-12 live 20-way proof (15/20 WAL short-reads + 3 native panics):
+  (1) the pre-open mtime heuristic renamed a live `-tshm` (its mtime freezes at creation under
+  mmap-shared coordination, so active stores read as "provably stale"); (2) `close()` TRUNCATE-
+  checkpointed TWICE per writable close, physically zeroing `-wal` while siblings were mid-frame-
+  pread; (3) the open-time catch treated a transient race as permanent BL-373 corruption and
+  renamed `-tshm` + `-shm` while siblings were live.
+
+  Fix — one primitive: a per-store, pure-JS, cross-process **lease registry**
+  (`<dbPath>.sox-lease.d/`, pid-liveness + 24h age-out sweep) answers "are any other live
+  connections holding this store?", and every destructive sidecar operation is gated on it:
+  **a live store is never reconciled, never truncated, and a failed open against a live store is
+  retried as transient, never classified as corruption.**
+
+  - `proactivelyReconcileStaleSidecar` / `recoverStaleWalIndex` take `{ storeInUse }` and decline
+    (rename nothing) when a live peer holds the store.
+  - `connect()` acquires a lease; the open-time catch checks quiescence first — live peer ⇒ bounded
+    transient retry (`open_shortread_transient_retry`, reusing the ADR-0012 3-attempt ceiling),
+    exhaustion rethrows the original error `retryable: true`, never the `STALE WAL-INDEX SIDECAR`
+    wrapper; quiescent ⇒ the existing recovery runs unchanged.
+  - `close()`: PASSIVE always (durability backstop), clean-shutdown stamp before the checkpoint,
+    exactly ONE quiescence-gated TRUNCATE (contended close defers with the preserved
+    `close_checkpoint_busy` event), lease released after the driver close.
+
+  RED→GREEN: both race arms reproduced in isolation (8-way aged-tshm scratch store — the live
+  `-tshm` renamed and a contended close truncating a live WAL), both green with the gates.
+  Suite 465/465 (incl. the 3-leg `wal-contention-8way.bug007-009.test.ts` integration); smoke 13/13.
+
 ## 0.5.6
 
 ### Patch Changes
