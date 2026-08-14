@@ -78,6 +78,15 @@ const PRIOR_ART = Array.isArray(a.priorArt) ? a.priorArt : []
 // One cheap agent handed 19.5k lines samples it; it does not review it. ~4k is about what a
 // worker can actually read with offset/limit chunking inside one context.
 const MAX_UNIT_LOC = a.maxUnitLoc || 4000
+
+// Every dispatch is recorded so the run can report what it actually spent, by tier and by
+// phase, instead of the caller inferring it from the transcript directory afterwards.
+const dispatchLog = []
+const _rawAgent = agent
+const agentTracked = (prompt, opts = {}) => {
+  dispatchLog.push({ phase: opts.phase || 'unphased', agentType: opts.agentType || null, model: opts.model || null, label: opts.label || null })
+  return _rawAgent(prompt, opts)
+}
 const MIN_CONCEPT_COUNT = a.minConceptCount || 2
 
 /**
@@ -415,9 +424,14 @@ function splitBySize(proj, maxLoc) {
     cur.loc += f.loc
   }
   if (cur.files.length) parts.push(cur)
-  // Anything not in largestFiles stays with a final catch-all unit scoped to the project root.
+  // COVERAGE IS UNCONDITIONAL. `largestFiles` is a capped list (top N), so everything outside it
+  // — potentially most of a project's files — lands in the remainder. An earlier version only
+  // emitted the catch-all when the remainder exceeded 25% of maxLoc, which silently left small
+  // remainders UNREVIEWED while the sweep reported the project as swept. Any remainder at all
+  // now gets a unit; a sweep that quietly skips code is worse than one that admits its budget.
   const covered = parts.reduce((n, p) => n + p.loc, 0)
-  if (proj.loc - covered > maxLoc * 0.25) parts.push({ files: [proj.path], loc: proj.loc - covered, rest: true })
+  const remainder = Math.max(0, proj.loc - covered)
+  if (remainder > 0) parts.push({ files: [proj.path], loc: remainder, rest: true })
   return parts.map((p, i) => ({
     id: parts.length > 1 ? `${proj.id}#${i + 1}` : proj.id,
     files: p.files,
@@ -457,7 +471,7 @@ if (!RAW_PACKAGES.length && Array.isArray(a.nxProjects) && a.nxProjects.length) 
   // script has no filesystem access of its own, so discovery runs in a cheap agent.
   phase('Discover')
   log('No args.packages supplied — seeding the roster from nx project metadata.')
-  const disc = await agent(
+  const disc = await agentTracked(
     `Enumerate this repository's projects so a code-quality sweep can be scoped to them.
 
 1. Run \`npx nx show projects --json\` (fall back to globbing \`**/project.json\`, excluding node_modules/dist/.worktrees, if nx is unavailable — set nxAvailable:false in that case).
@@ -485,6 +499,32 @@ Rules: READ-ONLY. Use \`rg\`/\`ls\`/\`wc\`; never \`grep\`/\`find\`. NEVER run a
     typeof p === 'object' && p !== null && p.loc && p.loc > MAX_UNIT_LOC ? splitBySize(p, MAX_UNIT_LOC) : [p],
   )
 }
+
+// Coverage accounting — what the sweep will and will NOT read, in LINES, stated up front.
+// A budget cap is a coverage decision, not a scheduling detail: units past the cap are code
+// nobody reviews, and that deserves a number the caller sees, not just a name in a dropped list.
+const COVERAGE = (() => {
+  const locOf = (p) => (typeof p === 'object' && p && p.loc) || 0
+  const totalLoc = RAW_PACKAGES.reduce((n, p) => n + locOf(p), 0)
+  const kept = RAW_PACKAGES.slice(0, BUDGET)
+  const keptLoc = kept.reduce((n, p) => n + locOf(p), 0)
+  const dropped = RAW_PACKAGES.slice(BUDGET)
+  return {
+    unitsTotal: RAW_PACKAGES.length,
+    unitsSwept: kept.length,
+    unitsDropped: dropped.length,
+    locTotal: totalLoc,
+    locSwept: keptLoc,
+    locUnreviewed: Math.max(0, totalLoc - keptLoc),
+    pctSwept: totalLoc ? Math.round((keptLoc / totalLoc) * 100) : 100,
+    droppedUnits: dropped.map((p) => (typeof p === 'object' ? p.id || p.path : p)),
+  }
+})()
+log(
+  COVERAGE.locUnreviewed > 0
+    ? `COVERAGE: ${COVERAGE.pctSwept}% of discovered source will be read (${COVERAGE.locSwept}/${COVERAGE.locTotal} lines). ${COVERAGE.locUnreviewed} lines in ${COVERAGE.unitsDropped} unit(s) are NOT reviewed: ${COVERAGE.droppedUnits.join(', ')}`
+    : `COVERAGE: 100% of discovered source in scope (${COVERAGE.locTotal} lines across ${COVERAGE.unitsSwept} unit(s)).`,
+)
 
 const UNITS = RAW_PACKAGES.slice(0, BUDGET).map((p, i) => {
   const isObj = typeof p === 'object' && p !== null
@@ -538,7 +578,7 @@ Aim for 5-15 high-signal findings. Quality over volume. Set \`scope\` to "${u.id
 
 const stage1 = await parallel(
   UNITS.map((u) => () =>
-    agent(isolatedPrompt(u), {
+    agentTracked(isolatedPrompt(u), {
       agentType: u.agentType,
       model: WORKER_MODEL,
       label: `${u.id}:${u.agentType}`,
@@ -550,7 +590,10 @@ const stage1 = await parallel(
 
 const s1ok = stage1.filter(Boolean).filter((r) => r.findings)
 const s1dropped = UNITS.map((u) => u.id).filter((id) => !s1ok.some((r) => r.unit === id))
-const s1findings = s1ok.flatMap((r) => r.findings.map((f) => ({ ...f, unit: r.unit, stage: 1 })))
+// `agentType` is carried on stage-1 findings too. It was omitted originally, which made every
+// stage-1 finding unattributable to a lens and left per-lens contribution unanswerable for the
+// larger of the two passes — the exact question a mixed panel exists to answer.
+const s1findings = s1ok.flatMap((r) => r.findings.map((f) => ({ ...f, unit: r.unit, agentType: r.agentType, stage: 1 })))
 log(`Stage 1: ${s1ok.length}/${UNITS.length} units returned, ${s1findings.length} findings.${s1dropped.length ? ` DROPPED (no result): ${s1dropped.join(', ')}` : ''}`)
 
 // ---------------------------------------------------------------------------
@@ -646,7 +689,7 @@ log(`Stage 2: ${secondPass.length} units re-read under a different lens (blind �
 const stage2 = secondPass.length
   ? await parallel(
       secondPass.map((x) => () =>
-        agent(isolatedPrompt({ ...x.unit, agentType: x.lens.agentType, lens: x.lens.lensDescription }), {
+        agentTracked(isolatedPrompt({ ...x.unit, agentType: x.lens.agentType, lens: x.lens.lensDescription }), {
           agentType: x.lens.agentType,
           model: WORKER_MODEL,
           label: `${x.unit.id}:${x.lens.agentType}`,
@@ -695,6 +738,18 @@ const VERIFY_SCHEMA = {
           refuted: { type: 'boolean', description: 'true if the finding does NOT hold as stated — including when you cannot confirm it' },
           reason: { type: 'string', description: 'one sentence, citing what you actually read' },
           severity_overstated: { type: 'boolean', description: 'true if real but less severe than claimed' },
+          // ENRICHMENT — you already read the code closely to judge the claim; that reading is
+          // the most expensive thing this stage produces and it would otherwise be thrown away.
+          corrected_line: { type: 'integer', description: 'the TRUE 1-indexed line if the claim cited the wrong one; omit when the cited line is right' },
+          precise_summary: { type: 'string', description: 'a sharper one-sentence statement of the defect as you now understand it, for a CONFIRMED finding — omit if the original is already precise' },
+          better_evidence: { type: 'string', description: 'the most probative verbatim snippet (<=3 lines) you saw, if it is better than the one quoted to you' },
+          related_sites: {
+            type: 'array',
+            description: 'other file:line locations you noticed carrying the SAME defect while checking this one. Only what you actually read — never a guess.',
+            items: { type: 'string' },
+          },
+          mechanism: { type: 'string', description: 'for a CONFIRMED finding: how it actually fails — the guard that is missing, the caller that reaches it, the state that results' },
+          suggested_fix: { type: 'string', description: 'for a CONFIRMED finding: the minimal correct change, one sentence' },
         },
       },
     },
@@ -722,7 +777,7 @@ if (toVerify.length && a.skipVerify !== true) {
 
   const verifyResults = await parallel(
     capped.map((batch, bi) => () =>
-      agent(
+      agentTracked(
         `You are a SKEPTIC. Other agents reviewed this repository at ${ROOT} and produced the claims below. Your job is to REFUTE them, not to confirm them.
 
 ## Claims to attack
@@ -738,6 +793,19 @@ ${batch.map((f) => `### ref: ${f.ref}\n- file: ${ROOT}/${f.file}, line ${f.line}
 - \`refuted: false\` ONLY when you have read the code and the defect is real as described.
 - \`severity_overstated: true\` when the defect is real but cannot cost what the claim implies.
 - Judge each claim independently. Several may be about the same file; that is not evidence for or against any of them.
+
+## When you CONFIRM a claim, make it shippable
+You have just read this code more carefully than anyone else in the pipeline will. That reading is
+expensive and is otherwise discarded, so harvest it — a confirmed finding becomes a backlog item
+verbatim, and its quality is decided here:
+- \`corrected_line\` if the cited line is off (finders cite from memory and drift by a few lines).
+- \`better_evidence\` if you saw a more probative snippet than the one quoted at you.
+- \`precise_summary\` when you can state the defect more exactly than the original.
+- \`mechanism\`: HOW it fails — the missing guard, the caller that reaches it, the resulting state.
+- \`suggested_fix\`: the minimal correct change, one sentence.
+- \`related_sites\`: other file:line locations you ACTUALLY SAW carrying the same defect. Never guess
+  one; an invented citation is worse than a missing one because it will be filed and trusted.
+Leave a field out rather than filling it with something weak.
 
 ${READONLY_RULES}
 
@@ -755,10 +823,30 @@ Return a verdict for EVERY ref given to you, using the exact ref strings above.`
   for (const v of verifyResults.filter(Boolean).flat()) verdictByRef.set(v.ref, v)
 }
 
+// Fold the skeptic's reading back into the finding itself, so everything downstream — the
+// synthesiser's digest and the backlog item the caller eventually files — carries the CORRECTED
+// line, the better evidence and the mechanism, not the finder's first approximation.
+let enrichedCount = 0
+let correctedLines = 0
 const withVerdicts = rawFindings.map((f, i) => {
   const ref = refOf(f, i)
   const v = verdictByRef.get(ref)
-  return { ...f, ref, verified: v ? !v.refuted : null, verifyReason: v ? v.reason : null, severityOverstated: v ? !!v.severity_overstated : false }
+  if (!v) return { ...f, ref, verified: null, verifyReason: null, severityOverstated: false }
+  const enriched = { ...f, ref, verified: !v.refuted, verifyReason: v.reason, severityOverstated: !!v.severity_overstated }
+  if (!v.refuted) {
+    if (Number.isInteger(v.corrected_line) && v.corrected_line !== f.line) {
+      enriched.originalLine = f.line
+      enriched.line = v.corrected_line
+      correctedLines += 1
+    }
+    if (v.precise_summary) enriched.summary = v.precise_summary
+    if (v.better_evidence) enriched.evidence = v.better_evidence
+    if (v.mechanism) enriched.mechanism = v.mechanism
+    if (v.suggested_fix) enriched.suggestedFix = v.suggested_fix
+    if (Array.isArray(v.related_sites) && v.related_sites.length) enriched.relatedSites = v.related_sites
+    if (v.precise_summary || v.better_evidence || v.mechanism || v.suggested_fix || (v.related_sites || []).length) enrichedCount += 1
+  }
+  return enriched
 })
 
 const refuted = withVerdicts.filter((f) => f.verified === false)
@@ -776,7 +864,81 @@ phase('Synthesize')
 // Both passes were blind, so their findings are comparable and rank together. Concepts are
 // discovered here, in post-processing, from tags the agents coined independently — they are
 // an OUTPUT of the sweep, never an input to it.
-const finalRanked = rankConcepts(allFindings)
+let finalRanked = rankConcepts(allFindings)
+
+// POST-HOC SEMANTIC CLUSTERING.
+//
+// Blind agents coin precise but idiosyncratic tags — `column-metadata-eager-evaluation`,
+// `redundant-type-assertion-nulling`, `capability-gate-post-factory`. Each is a good name for
+// ONE finding and useless as a category: token-overlap canonicalisation cannot merge
+// `incorrect-process-liveness-check` with `unhandled-reconnect-failure-state-inconsistency`
+// even when both are "a failure path resolves ambiguity unsafely", so a real theme arrives as
+// a scatter of singletons and looks like noise.
+//
+// The fix is NOT to hand agents a vocabulary — that biases discovery, which is the whole point
+// of the blind rule. It is to cluster AFTERWARDS, from outputs only. This agent sees tags and
+// one-line summaries; it never sees the repository, so it cannot influence what was found. It
+// runs only when there is enough scatter to be worth it.
+const SCATTER = finalRanked.length >= 8 && finalRanked.filter((c) => c.count === 1).length / finalRanked.length > 0.5
+if (SCATTER && a.skipClustering !== true) {
+  const CLUSTER_SCHEMA = {
+    type: 'object',
+    additionalProperties: false,
+    required: ['clusters'],
+    properties: {
+      clusters: {
+        type: 'array',
+        items: {
+          type: 'object',
+          additionalProperties: false,
+          required: ['name', 'members'],
+          properties: {
+            name: { type: 'string', description: 'short kebab-case name for the shared underlying pattern' },
+            rationale: { type: 'string', description: 'one sentence: what these actually have in common mechanically' },
+            members: { type: 'array', items: { type: 'string' }, description: 'the exact original tag strings that belong to this cluster' },
+          },
+        },
+      },
+    },
+  }
+  const clustering = await agentTracked(
+    `Below are defect tags coined INDEPENDENTLY by different reviewers who could not see each other's work, each with example findings. Group tags that describe the SAME UNDERLYING PATTERN.
+
+## Tags
+${finalRanked.map((c) => `- \`${c.concept}\` (${c.count}×): ${(c.exemplars || []).slice(0, 2).map((e) => e.summary).join(' | ')}`).join('\n')}
+
+## Rules
+- Group on MECHANISM, not on wording. "a failure path resolves ambiguity in the unsafe direction" is one pattern whether a reviewer called it \`incorrect-process-liveness-check\` or \`unhandled-reconnect-failure-state-inconsistency\`.
+- A tag that genuinely stands alone stays alone — a singleton cluster is a valid answer and is far better than forcing an unrelated tag into a group to tidy the list.
+- Do NOT invent a tidy taxonomy. Only merge what the summaries show is mechanically the same.
+- Every member string must be copied EXACTLY from the list above. Do not rename or normalise them.
+- You are looking at labels and one-line summaries only. You have no access to the repository and must not speculate about code you cannot see.
+
+Return only the structured output.`,
+    { schema: CLUSTER_SCHEMA, model: WORKER_MODEL, label: 'cluster:tags', phase: 'Synthesize' },
+  )
+  const clusters = (clustering && clustering.clusters) || []
+  if (clusters.length) {
+    const parentOf = new Map()
+    for (const cl of clusters) for (const m of cl.members || []) parentOf.set(m, cl.name)
+    const merged = new Map()
+    for (const c of finalRanked) {
+      const key = parentOf.get(c.concept) || c.concept
+      if (!merged.has(key)) merged.set(key, { concept: key, count: 0, weight: 0, units: new Set(), exemplars: [], mergedFrom: [] })
+      const t = merged.get(key)
+      t.count += c.count
+      t.weight += c.weight
+      for (const u of c.units) t.units.add(u)
+      if (t.exemplars.length < 3) t.exemplars.push(...(c.exemplars || []).slice(0, 3 - t.exemplars.length))
+      if (key !== c.concept) t.mergedFrom.push(c.concept)
+    }
+    const before = finalRanked.length
+    finalRanked = [...merged.values()]
+      .map((c) => ({ ...c, units: [...c.units], score: c.count * (c.weight / c.count) }))
+      .sort((x, y) => y.score - x.score)
+    log(`Post-hoc clustering: ${before} coined tags → ${finalRanked.length} patterns (semantic merge on outputs only; discovery was unaffected).`)
+  }
+}
 
 // Agreement is meaningful precisely BECAUSE neither pass was primed: when two different
 // specialists, each blind to the other, flag the same file:line, that is independent
@@ -806,7 +968,10 @@ function digest(findings, cap) {
   const convergentSet = new Set(convergent)
   const isProtected = (f) => f.severity === 'critical' || convergentSet.has(`${f.file}:${f.line}`)
   const line = (f) =>
-    `- [${f.severity}${f.severityOverstated ? ' (severity disputed)' : ''}]${f.verified ? ' [verified]' : ''} (${f.concept}) ${f.file}:${f.line} — ${f.summary}`
+    `- [${f.severity}${f.severityOverstated ? ' (severity disputed)' : ''}]${f.verified ? ' [verified]' : ''} (${f.concept}) ${f.file}:${f.line} — ${f.summary}` +
+    (f.mechanism ? `\n    mechanism: ${f.mechanism}` : '') +
+    (f.suggestedFix ? `\n    fix: ${f.suggestedFix}` : '') +
+    (f.relatedSites && f.relatedSites.length ? `\n    also at: ${f.relatedSites.join(', ')}` : '')
 
   const protectedOnes = findings.filter(isProtected)
   const rest = findings
@@ -824,7 +989,7 @@ function digest(findings, cap) {
   )
 }
 
-const epicSpec = await agent(
+const epicSpec = await agentTracked(
   `You are the architect synthesising a multi-agent code-quality sweep of the repository at ${ROOT} into a set of EPICS that will be filed as backlog items.
 
 ## Concept ranking (concept, occurrences, scopes, severity-weighted score)
@@ -880,8 +1045,67 @@ Rules: prefer fewer, sharper epics over many thin ones. Do not create an epic fo
 const epics = (epicSpec && epicSpec.epics) || []
 log(`Stage 3: ${epics.length} epics, ${epics.reduce((n, e) => n + (e.children || []).length, 0)} child items.`)
 
+// ---------------------------------------------------------------------------
+// Metrics — what this run cost and what it bought.
+//
+// Token attribution note, stated rather than fudged: the runtime exposes `budget.spent()` as a
+// SINGLE session-wide output-token total, not a per-agent figure, so a true per-tier split is
+// not derivable in-script. What IS exact is the agent COUNT per model tier, which is reported
+// here alongside the one real token number. Do not present the per-tier counts as token shares.
+// ---------------------------------------------------------------------------
+const tally = (arr, key) => arr.reduce((m, x) => ((m[x[key] || 'unknown'] = (m[x[key] || 'unknown'] || 0) + 1), m), {})
+const agentsByTier = dispatchLog.reduce((m, d) => ((m[d.model || 'inherit'] = (m[d.model || 'inherit'] || 0) + 1), m), {})
+const agentsByPhase = tally(dispatchLog, 'phase')
+const relationCounts = epics.reduce((m, e) => {
+  const rel = String(e.prior_art_relation || 'UNSPECIFIED').split(' ')[0]
+  m[rel] = (m[rel] || 0) + 1
+  return m
+}, {})
+
+const metrics = {
+  tokens: {
+    sessionOutputTokensSpent: (() => {
+      try {
+        return budget && typeof budget.spent === 'function' ? budget.spent() : null
+      } catch (e) {
+        return null
+      }
+    })(),
+    note: 'Session-wide output tokens from budget.spent(); the runtime does not expose per-agent usage, so this is NOT split by tier. Agent COUNTS per tier are exact and given below.',
+  },
+  agents: { total: dispatchLog.length, byTier: agentsByTier, byPhase: agentsByPhase, workerModel: WORKER_MODEL, synthesisModel: SYNTH_MODEL || 'inherited' },
+  findings: {
+    rawBySeverity: tally(rawFindings, 'severity'),
+    survivingBySeverity: tally(allFindings, 'severity'),
+    refutedBySeverity: tally(refuted, 'severity'),
+    byLens: dispatchLog
+      .filter((d) => d.phase === 'Isolated' || d.phase === 'Second lens')
+      .reduce((m, d) => {
+        const own = allFindings.filter((f) => f.agentType === d.agentType)
+        m[d.agentType] = { findings: own.length, bySeverity: tally(own, 'severity') }
+        return m
+      }, {}),
+    total: allFindings.length,
+    refuted: refuted.length,
+    refutationRate: rawFindings.length ? `${Math.round((refuted.length / Math.max(1, toVerify.length)) * 100)}% of verified` : '0%',
+    convergentSites: convergent.length,
+  },
+  enrichment: { findingsEnrichedByVerifier: enrichedCount, citationLinesCorrected: correctedLines },
+  duplicates: { epicsByPriorArtRelation: relationCounts, priorArtSupplied: PRIOR_ART.length },
+  coverage: COVERAGE,
+  concepts: { distinctTagsCoined: new Set(rawFindings.map((f) => f.concept)).size, afterCanonicalisation: finalRanked.length },
+}
+log(
+  `METRICS: ${metrics.agents.total} agents (${Object.entries(agentsByTier).map(([k, v]) => `${v}×${k}`).join(', ')}) | ` +
+    `${allFindings.length} findings kept, ${refuted.length} refuted (${metrics.findings.refutationRate}) | ` +
+    `${enrichedCount} enriched, ${correctedLines} citation line(s) corrected | ` +
+    `coverage ${COVERAGE.pctSwept}% (${COVERAGE.locUnreviewed} lines unreviewed) | ` +
+    `epics ${Object.entries(relationCounts).map(([k, v]) => `${v} ${k}`).join(', ') || 'none'}`,
+)
+
 return {
   epics,
+  metrics,
   concepts: finalRanked,
   findings: allFindings,
   // Refuted findings are RETURNED, not discarded: a skeptic can be wrong, and the caller
