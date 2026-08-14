@@ -182,6 +182,43 @@ export class TursoAdapterImpl implements TursoAdapter {
   private _lease: StoreLease | null = null;
 
   /**
+   * (BUG-STOREADAPTER-COORDINATION-PATH-ASYMMETRY) The CANONICAL store identity,
+   * computed once by `connect()` and the ONLY path any coordination site may use.
+   *
+   * `this.config.dbPath` holds the caller's ORIGINAL spelling and must keep it —
+   * the driver `url` and the `_connectOpts` replay legitimately depend on it. But
+   * the lease directory is derived from the path (`<dbPath>.sox-lease.d/`), so a
+   * caller-supplied spelling that is not already canonical (a relative path, a
+   * symlinked parent, a `..` segment, a doubled separator) makes the raw and
+   * canonical forms address DIFFERENT DIRECTORIES.
+   *
+   * That is not cosmetic. `connect()` takes the lease under the CANONICAL path;
+   * before this field existed, `close()` read quiescence under the RAW one, found
+   * an empty directory, concluded the store was quiescent, and issued
+   * `PRAGMA wal_checkpoint(TRUNCATE)` while a live peer held the store — the
+   * turso #7833 trigger, reachable with no race at all, only a path spelling.
+   * The same asymmetry left every `.openmark` uncleared (written canonical at
+   * `markStoreOpen`, cleared raw at `close()`), which pins `hasUncleanShutdown`
+   * true forever and re-runs the panic-adjacent pre-flight probe on every open.
+   *
+   * Read it through {@link coordPath}, never directly, so a hand-constructed
+   * instance still resolves correctly.
+   */
+  private _canonicalDb: string | undefined = undefined;
+
+  /**
+   * The path every lease / quiescence / sidecar / marker call site MUST use.
+   *
+   * Falls back to canonicalizing `config.dbPath` on demand so an instance built
+   * outside `connect()` (tests, future factories) cannot silently regress to the
+   * raw spelling. `canonicalDbPath` is memoized, so the fallback is cheap.
+   */
+  private get coordPath(): string | undefined {
+    if (this._canonicalDb !== undefined) return this._canonicalDb;
+    return this.config.dbPath !== undefined ? canonicalDbPath(this.config.dbPath) : undefined;
+  }
+
+  /**
    * (BL-321) `this.db` is ONE shared connection handle — @tursodatabase/database
    * local mode has no per-transaction connection or session isolation. Two
    * concurrent JS callers each running the `transaction()` retry loop below
@@ -1015,6 +1052,11 @@ export class TursoAdapterImpl implements TursoAdapter {
 
       instance._lease = lease;
 
+      // (BUG-STOREADAPTER-COORDINATION-PATH-ASYMMETRY) Pin the canonical identity
+      // onto the instance. `config.dbPath` keeps the caller's spelling for the
+      // driver/replay; every coordination site reads `coordPath` instead.
+      instance._canonicalDb = canonicalDb;
+
       return instance;
     } catch (err) {
       if (lease) await lease.release().catch(() => {});
@@ -1347,7 +1389,10 @@ export class TursoAdapterImpl implements TursoAdapter {
         });
         const damaged = report.damaged.length > 0;
         for (const finding of report.damaged) {
-          emitIntegrityReport(this.config.dbPath ?? this.config.url, 'damaged', finding.detail);
+          // (BUG-STOREADAPTER-COORDINATION-PATH-ASYMMETRY) Canonical: integrity
+          // reports are keyed by this string, so two spellings of one store would
+          // fragment its history into two unrelated-looking timelines.
+          emitIntegrityReport(this.coordPath ?? this.config.url, 'damaged', finding.detail);
         }
 
         // (BL-330) PASSIVE is the durability backstop and runs ALWAYS: it copies
@@ -1364,7 +1409,7 @@ export class TursoAdapterImpl implements TursoAdapter {
         // (BL-330) The orphaned-WAL recovery report rides the PASSIVE result.
         if (damaged && passiveOk) {
           emitIntegrityReport(
-            this.config.dbPath ?? this.config.url,
+            this.coordPath ?? this.config.url,
             'repaired',
             'checkpointed the orphaned WAL into the main database file before close',
           );
@@ -1384,8 +1429,13 @@ export class TursoAdapterImpl implements TursoAdapter {
         // store. Under contention: defer (frames stay durable; the next
         // quiescent close truncates) — same degradation the busy=1 path already
         // accepted, now decided BEFORE the truncate instead of reported after.
-        if (this.config.dbPath && this._lease) {
-          const quiescence = storeQuiescence(this.config.dbPath, this._lease.token);
+        // (BUG-STOREADAPTER-COORDINATION-PATH-ASYMMETRY) MUST be the canonical
+        // identity: the lease this gate looks for was taken under it. Reading the
+        // raw spelling here found an empty lease dir and truncated the WAL under
+        // live peers — the #7833 trigger, with no race required.
+        const coordDb = this.coordPath;
+        if (coordDb && this._lease) {
+          const quiescence = storeQuiescence(coordDb, this._lease.token);
           if (!quiescence.quiescent) {
             log.warn('store_adapter.turso.close_checkpoint_busy', {
               detail:
@@ -1459,20 +1509,52 @@ export class TursoAdapterImpl implements TursoAdapter {
       }
     }
 
-    await this.db.close();
+    // (BUG-STOREADAPTER-CLOSE-THROW-STRANDS-MARKER-AND-LEASE) The driver close
+    // sits in a `try` whose `finally` ALWAYS runs the cleanup below. Previously
+    // `await this.db.close()` was unguarded, so a throwing close skipped both
+    // the marker unlink and the lease release: the process exited still holding
+    // a store-open marker and a live lease, and the strand was invisible because
+    // the error surfaced as an ordinary close failure and the orphan was only
+    // noticed at the NEXT open.
+    //
+    // The ordering rationale below is unchanged and still correct — marker and
+    // lease must drop AFTER the driver has let go. `finally` preserves that: the
+    // close has been awaited (successfully or not) before either line runs.
+    //
+    // The close error still propagates. This is deliberately NOT a swallow: the
+    // point is that cleanup becomes unconditional, not that failure becomes
+    // silent.
+    try {
+      await this.db.close();
+    } finally {
+      try {
+        // (BL-361) Orderly close — drop THIS connection's out-of-band marker last,
+        // after the driver has actually let go of the file. Its presence at the
+        // next open is the ONLY signal that a session ended without getting here,
+        // and that is the population that can carry the panic-on-open schema state.
+        // (BUG-019) Unlink only THIS connection's marker (`<leaseDir>/<token>.openmark`)
+        // — never a sibling's: a peer's crash evidence must survive this close.
+        // (BUG-STOREADAPTER-COORDINATION-PATH-ASYMMETRY) Clear under the CANONICAL
+        // path — `markStoreOpen` wrote it there. Clearing the raw spelling left the
+        // marker in place on every orderly close.
+        if (!this.config.readonly) clearStoreOpenMarker(this.coordPath, this._lease?.token);
+      } catch (markerErr) {
+        // Cleanup failure must never mask the original close error (which, if
+        // there is one, is propagating through this same `finally`).
+        log.warn('store_adapter.turso.close_marker_clear_failed', {
+          error: markerErr instanceof Error ? markerErr.message : String(markerErr),
+        });
+      }
 
-    // (BL-361) Orderly close — drop THIS connection's out-of-band marker last,
-    // after the driver has actually let go of the file. Its presence at the
-    // next open is the ONLY signal that a session ended without getting here,
-    // and that is the population that can carry the panic-on-open schema state.
-    // (BUG-019) Unlink only THIS connection's marker (`<leaseDir>/<token>.openmark`)
-    // — never a sibling's: a peer's crash evidence must survive this close.
-    if (!this.config.readonly) clearStoreOpenMarker(this.config.dbPath, this._lease?.token);
-
-    // (BUG-007/008) Release the lease LAST, after the driver has let go.
-    if (this._lease) {
-      await this._lease.release().catch(() => {});
-      this._lease = null;
+      // (BUG-007/008) Release the lease LAST, after the driver has let go.
+      if (this._lease) {
+        await this._lease.release().catch((leaseErr: unknown) => {
+          log.warn('store_adapter.turso.close_lease_release_failed', {
+            error: leaseErr instanceof Error ? leaseErr.message : String(leaseErr),
+          });
+        });
+        this._lease = null;
+      }
     }
   }
 
@@ -1500,7 +1582,11 @@ export class TursoAdapterImpl implements TursoAdapter {
    * WAL cannot be inspected from here, so nothing is reclassified.
    */
   private reportFailedPassiveCheckpoint(passiveErr: unknown, walDamaged: boolean): void {
-    const dbPath = this.config.dbPath;
+    // (BUG-STOREADAPTER-COORDINATION-PATH-ASYMMETRY) Canonical: this probes the
+    // real `-wal` on disk and the verdict it produces (`repair_failed` vs
+    // `checkpoint_deferred`) is a data-loss signal. A raw spelling that missed
+    // the sidecar would report genuine loss on a perfectly healthy store.
+    const dbPath = this.coordPath;
     const walPresent = dbPath !== undefined && existsSync(dbPath + '-wal');
     const genuineLoss = walDamaged || !walPresent;
     const detail = passiveErr instanceof Error ? passiveErr.message : String(passiveErr);
@@ -1538,8 +1624,12 @@ export class TursoAdapterImpl implements TursoAdapter {
    * package. No-op for remote URLs (no local dbPath) and when no tshm exists.
    */
   private resetTshmAfterTruncate(): void {
-    if (!this.config.dbPath) return;
-    const tshmPath = this.config.dbPath + '-tshm';
+    // (BUG-STOREADAPTER-COORDINATION-PATH-ASYMMETRY) Sidecars sit beside the REAL
+    // file. Deriving `-tshm` from the caller's spelling can name a path that does
+    // not exist (or, through a symlinked parent, a different store's sidecar).
+    const coordDb = this.coordPath;
+    if (!coordDb) return;
+    const tshmPath = coordDb + '-tshm';
     try {
       statSync(tshmPath);
     } catch {
@@ -1603,7 +1693,11 @@ export class TursoAdapterImpl implements TursoAdapter {
         'withConnectionClosedForRepair: the adapter is already closed and cannot be reopened',
       );
     }
-    const repairDbPath = this.config.dbPath;
+    // (BUG-STOREADAPTER-COORDINATION-PATH-ASYMMETRY) Canonical: this value feeds
+    // the `storeQuiescence` gate below that authorizes a WRITABLE classic-engine
+    // repair. Reading the raw spelling would let that gate consult a lease
+    // directory no peer ever wrote to — the worst possible place for this bug.
+    const repairDbPath = this.coordPath;
     const ownLeaseToken = this._lease?.token;
     await this.close(); // full clean-close ceremony (checkpoint, driver close, marker clear)
     try {
@@ -1627,6 +1721,11 @@ export class TursoAdapterImpl implements TursoAdapter {
       const fresh = await TursoAdapterImpl.connect(this._connectOpts);
       this.db = fresh.db;
       this._lease = fresh._lease;
+      // (BUG-STOREADAPTER-COORDINATION-PATH-ASYMMETRY) Adopt the fresh instance's
+      // canonical identity alongside its lease. The two are a pair: `_lease` was
+      // taken under `_canonicalDb`, so carrying one without the other would point
+      // this connection's coordination at a directory its own lease is not in.
+      this._canonicalDb = fresh._canonicalDb;
       this._walBaseline = fresh._walBaseline;
       this._softReadonly = fresh._softReadonly;
       this._poisoned = false;
