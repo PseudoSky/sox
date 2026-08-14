@@ -594,7 +594,32 @@ export class MockAdapter implements StoreAdapter {
       return { rowsAffected: affected, lastInsertRowid: this.lastRowid };
     }
 
-    // No WHERE — update all rows
+    // (BUG-STOREADAPTER-MOCK-FAILS-OPEN-WHERE) A WHERE clause that is PRESENT but
+    // whose value we cannot resolve must FAIL CLOSED. Previously this fell through
+    // to the update-all branch below, so `UPDATE t SET x = ? WHERE id = ?` with an
+    // unresolvable binding silently rewrote EVERY ROW in the table.
+    //
+    // That inverts the meaning of a passing test: a scoped update written against
+    // the mock goes green in CI while the production adapter touches a different —
+    // and here, unbounded — row set. `handleDelete` below already gets this right
+    // (unresolvable WHERE -> affect nothing); this brings UPDATE in line with it.
+    //
+    // Note the two cases are genuinely different and only ONE is an error:
+    //   - `where` present, value unresolvable -> THROW (the caller asked to scope
+    //     the update and we cannot honour it; silently widening is data loss)
+    //   - `where` absent entirely            -> update all rows (valid SQL:
+    //     `UPDATE t SET x = 1` legitimately means every row)
+    if (where && whereValue === undefined) {
+      throw new Error(
+        `MockAdapter: UPDATE has a WHERE clause on column ${JSON.stringify(where.column)} ` +
+          `whose value could not be resolved from the SQL or the bound args ` +
+          `(${args.length} arg(s) supplied). Refusing to update all ${rows.length} row(s) in ` +
+          `${JSON.stringify(tableName)} — a scoped UPDATE must never silently become unscoped. ` +
+          `SQL: ${sql}`,
+      );
+    }
+
+    // No WHERE at all — update all rows (valid SQL semantics).
     for (const r of rows) {
       r[setColumn] = setValue;
     }
