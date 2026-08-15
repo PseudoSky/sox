@@ -1,45 +1,78 @@
 # Offline VACUUM runbook — clearing the integrity_check page-noise cap
 
-**Status:** RUNBOOK PREPARED, NOT EXECUTED against the live store. Rehearsed twice against
-disposable copies (2026-08-14/15). The destructive step (replacing `~/.memory/memory.db`) requires
+**Status:** RUNBOOK PREPARED, NOT EXECUTED against the live store. Rehearsed against disposable
+copies (2026-08-14/15, revised 2026-08-15 with a corrected before/after methodology — see
+"Methodology correction" below). The destructive step (replacing `~/.memory/memory.db`) requires
 explicit owner approval per the team-lead's constraint — this document stops one step short of it.
 
 **Addresses:** `BUG-INTEGRITY-CHECK-BLINDED-BY-PAGE-NOISE-001` (CRITICAL) — the live store's
 `pragma_integrity_check` probe hits its 100-message cap on benign page-accounting noise (100
 allocated-but-unreachable pages), so `integrity.overall` reports `unknown`, not `ok`, and any real
-damage past message #100 would never surface.
+damage past message #100 would never surface. Also tests the team lead's page-leak hypothesis
+(measured across snapshots: 2.7MB/episode growth, `freelist_count` 0-2, ~71% file overhead).
 
 **Prerequisite discharged:** `BUG-MEMORY-SNAPSHOT-NO-RESTORE-PATH-001`'s restore claim is now
 proven, not aspirational — see `docs/decisions/0014-memory-snapshot-retention-policy.md` D5 and the
 "Restore proof" section below.
 
-## Rehearsal evidence (the decisive part — answers "is there damage hiding past the cap?")
+## Leak-hypothesis verdict — lead number first
 
-Ran `node --import tsx tools/rehearse-live-vacuum.mjs` twice (2026-08-14 23:46 and 23:47 local).
-Full JSON output of the second, clean run is reproduced at the bottom of this document. Summary:
+**`page_count` before: 34,440. After a single VACUUM INTO pass: 24,905. Delta: 9,535 pages
+(27.7%), 37.2MB reclaimed out of a 134.5MB live file.** Payload (column-sum total across all user
+tables) is unchanged at 36.8MB before and after — VACUUM changed only physical layout, not content.
+**Verdict: CONFIRMED — the space is leaked (allocated, orphaned, never reused) and is reclaimable by
+an offline VACUUM.** This is not marginal: `freelist_count` was 1 both before and after (matching
+the team lead's 0-2 observation across snapshots — these pages are *not* on the freelist, i.e. not
+even nominally available for reuse), and 27.7% of the file's total page count came back the moment a
+compaction pass ran. Full before/after table below.
 
-| Step | What it does | Result |
-|---|---|---|
-| 0 | Read-only `verifyStoreIntegrity(depth:'deep')` directly against **live** `~/.memory/memory.db` (no copy, no write, no stop) | `hit_cap: true` — independently reproduces the CRITICAL finding. `damaged: []`. |
-| 1 | `backupStore()` (`libs/memory-core/src/backup.ts:127`, `VACUUM INTO`) of **live** `memory.db` → `baseline.db`, a live-consistent copy, single VACUUM INTO pass | `integrity_report: "verified"` |
-| 2 | `verifyStoreIntegrity(deep)` on `baseline.db` | `hit_cap: false`, `integrity_check_probe.status: "ok"`, `damaged: []` — **the cap clears in one pass** |
-| 3 | Second VACUUM INTO pass, `baseline.db` → `vacuumed.db` (idempotency check) | `integrity_report: "verified"` |
-| 4 | `verifyStoreIntegrity(deep)` on `vacuumed.db` | `hit_cap: false`, `damaged: []` — stable, no regression on a second pass |
-| 5 | Row counts: `baseline.db` vs `vacuumed.db` | `nodes: 11782`, `edges: 61722`, `episodes: 5879`, `vectors: 6029` — **identical**, VACUUM changed physical layout only |
+## Methodology correction (read this before trusting the earlier same-day numbers)
 
-**Conclusion: no hidden damage was found.** The 100 pages that saturated the cap were exactly what
-the probe's own message said — reclaimable free space from allocated-but-unreachable pages — not a
-mask for corruption. Once VACUUM INTO removes them, `pragma_integrity_check` completes cleanly
-under the cap on the first pass, and a second pass changes nothing. Per the item's own instruction
-("if damage appears once the cap clears... treat it as newly VISIBLE, not newly caused by the
-VACUUM"): the converse also holds — **no damage appearing once the cap clears is real evidence of
-health, not an artifact of the rehearsal.**
+An earlier run of this rehearsal (2026-08-14 23:46/23:47, superseded) measured "before" as a VACUUM
+INTO copy of live and "after" as a second VACUUM INTO pass on that copy — i.e. it compared an
+*already-compacted* file to itself again, which can only ever show "stable" and cannot answer the
+leak question at all. That run's conclusion ("no hidden damage") is not wrong on its own narrow
+terms (integrity, not size) but the comparison it ran was not a true before/after and is superseded
+by the measurement below. **Revision 2** (`tools/rehearse-live-vacuum.mjs`, current version) fixes
+this: the BEFORE state is measured with a **read-only connection directly against the live file**
+(pure `PRAGMA`/`SELECT` reads, zero mutation — the same class of read `memory_stats`' own deep probe
+already performs), and only the AFTER state is a VACUUM INTO copy.
 
-This does **not** by itself prove the *live* file is undamaged — it proves a live-consistent copy
-of it, taken seconds ago via the proven read-only VACUUM INTO path, is undamaged. The gap between
-"a copy taken via VACUUM INTO is clean" and "the live file itself is clean" is exactly the
-distinction `pragma_integrity_check`'s `unknown` verdict exists to flag, and closing it fully
-requires the production step below.
+## Rehearsal evidence — before/after, single VACUUM INTO pass
+
+Ran `node --import tsx tools/rehearse-live-vacuum.mjs` (2026-08-15, revised version). Full JSON is
+at the bottom of this document.
+
+| Metric | Before (live, read-only) | After (1 VACUUM INTO pass) | After (2nd pass, idempotency) |
+|---|---|---|---|
+| `page_count` | 34,440 | 24,905 | 24,905 |
+| `page_size` | 4096 | 4096 | 4096 |
+| `freelist_count` | 1 | 1 | 1 |
+| file size | 134.5 MB | 97.3 MB | 97.3 MB |
+| payload (column-sum) | 36.8 MB | 36.8 MB | 36.8 MB |
+| overhead | 97.7 MB (72.6%) | 60.5 MB (62.2%) | 60.5 MB (62.2%) |
+| `integrity_check` raw messages | 101 (100 leaked-page + 1 known FTS FP) | 1 (the known FTS FP only) | 1 |
+| `integrity_check` hits 100-cap | **yes** | **no** | no |
+| new/unexplained messages once cap cleared | n/a | **none** — `other_messages: []` | none |
+| row counts (nodes/edges/episodes/vectors) | 11782/61722/5879/6029 | 11782/61722/5879/6029 | 11782/61722/5879/6029 |
+
+Per-table payload breakdown (both before and after — unchanged, confirming VACUUM touched layout
+only): `node` 14.67MB, `vec_node` 17.69MB, `edge` 3.64MB, `organizer_queue` 0.80MB, `_adapter_meta`
+0.01MB, all other tables ~0. This roughly matches the team lead's own per-table breakdown on the Aug
+8 snapshot (node 12.3MB/vec_node 15.4MB/edge 3.2MB at a smaller row count) — consistent growth.
+
+**Conclusion, stated plainly per the instruction not to hedge: the leak hypothesis is CONFIRMED, and
+no hidden damage was found once the cap cleared.** `other_messages` (the bucket for anything that
+isn't a page-accounting message or the known Turso FTS false positive) is empty both before and
+after — nothing was masked by the cap; the 100 messages consuming it were exactly what they claimed
+to be. Per the item's own instruction ("if damage appears once the cap clears... treat it as newly
+VISIBLE, not newly caused by the VACUUM"): the converse holds here too — **no damage appearing is
+real evidence of health, not an artifact of the rehearsal.**
+
+This does **not** by itself prove the *live* file is undamaged in the fullest sense — the AFTER
+measurement is on a copy, not live itself, and the swap step is still gated on owner approval. But
+the BEFORE measurement (page_count, freelist_count, payload, raw integrity_check) in this revision
+**was taken directly against the live file, read-only** — that half of the evidence is not a proxy.
 
 ## Restore proof (discharges the D5 blocker)
 
@@ -120,62 +153,72 @@ system tmpdir.
 
 ## Artifacts left on disk for review
 
+- `~/.memory/backups/vacuum-rehearsal-2026-08-15T04-53-20-099Z/{vacuumed.db,vacuumed-pass2.db}` —
+  the Revision 2 rehearsal copies (the ones the table above is measured from). Not cleaned up
+  (script supports `--clean`; not passed) so they can be inspected directly.
 - `~/.memory/backups/vacuum-rehearsal-2026-08-15T04-47-21-190Z/{baseline.db,vacuumed.db}` — the
-  rehearsal copies from the clean run below. Not cleaned up (script supports `--clean`; not passed)
-  so they can be inspected directly, e.g. re-run `verifyStoreIntegrity` a third time independently.
-- `tools/rehearse-live-vacuum.mjs` — repeatable; safe to re-run any number of times (every step is
-  either read-only against live or writes to a fresh timestamped directory).
+  superseded Revision 1 rehearsal copies (see "Methodology correction"). Left in place, not deleted.
+- `tools/rehearse-live-vacuum.mjs` — repeatable; safe to re-run any number of times (BEFORE
+  measurement is read-only against live, AFTER measurements write to fresh timestamped directories).
 - `tools/prove-snapshot-restore.mjs` — repeatable against any `<class>-<ts>/` snapshot directory.
 
-## Full JSON — second rehearsal run (2026-08-15T04:47Z)
+## Full JSON — Revision 2 rehearsal run (2026-08-15T04:53Z)
 
 ```json
 {
-  "rehearsal_dir": "/Users/nix/.memory/backups/vacuum-rehearsal-2026-08-15T04-47-21-190Z",
+  "rehearsal_dir": "/Users/nix/.memory/backups/vacuum-rehearsal-2026-08-15T04-53-20-099Z",
   "steps": {
-    "live_integrity_before_any_action": {
-      "ok": true,
-      "probes_run": 32,
-      "damaged": [],
-      "integrity_check_probe": {
-        "status": "unknown",
-        "detail": "integrity_check output hit the 100-message cap (101 message(s) seen) and no un-filtered damage remained after discarding 1 known Turso FTS false positive(s) and 100 page-accounting message(s). Truncated output cannot show the store is clean — the messages past the cap were never emitted. Re-run after an offline VACUUM to clear the noise that filled the cap. 100 allocated-but-unreachable page(s) were seen and are NOT counted as damage — that is reclaimable free space, recovered by an offline VACUUM."
+    "before_live": {
+      "page_count": 34440, "page_size": 4096, "freelist_count": 1,
+      "file_bytes": 141066240, "file_mb": 134.5,
+      "payload_bytes": 38588048, "payload_mb": 36.8,
+      "overhead_mb": 97.7, "overhead_pct": 72.6,
+      "payload_per_table_mb": {
+        "edge": 3.64, "node": 14.67, "organizer_queue": 0.8, "vec_node": 17.69,
+        "_adapter_meta": 0.01, "__drizzle_migrations": 0, "memory_scope": 0,
+        "sox_store_meta": 0, "request_ledger": 0, "promotion_queue": 0, "_sox_engine": 0
       },
-      "hit_cap": true
-    },
-    "baseline_backup": { "ok": true, "integrity_report": "verified" },
-    "baseline_integrity": {
-      "ok": true,
-      "probes_run": 32,
-      "damaged": [],
-      "integrity_check_probe": {
-        "status": "ok",
-        "detail": "integrity_check clean after filtering 1 known Turso FTS false positive(s)."
+      "payload_skipped_tables": [],
+      "integrity_check": {
+        "total_messages": 101, "hit_cap": true,
+        "leaked_page_messages": 100, "known_fts_false_positives": 1, "other_messages": []
       },
-      "hit_cap": false
+      "counts": { "nodes": 11782, "edges": 61722, "episodes": 5879, "vectors": 6029 }
     },
-    "baseline_counts": { "nodes": 11782, "edges": 61722, "episodes": 5879, "vectors": 6029 },
-    "vacuum_pass": { "ok": true, "integrity_report": "verified" },
-    "vacuumed_integrity": {
-      "ok": true,
-      "probes_run": 32,
-      "damaged": [],
-      "integrity_check_probe": {
-        "status": "ok",
-        "detail": "integrity_check clean after filtering 1 known Turso FTS false positive(s)."
+    "vacuum_into_result": { "integrity_report": "verified" },
+    "after_vacuum_pass1": {
+      "page_count": 24905, "page_size": 4096, "freelist_count": 1,
+      "file_bytes": 102010880, "file_mb": 97.3,
+      "payload_bytes": 38588330, "payload_mb": 36.8,
+      "overhead_mb": 60.5, "overhead_pct": 62.2,
+      "integrity_check": {
+        "total_messages": 1, "hit_cap": false,
+        "leaked_page_messages": 0, "known_fts_false_positives": 1, "other_messages": []
       },
-      "hit_cap": false
+      "counts": { "nodes": 11782, "edges": 61722, "episodes": 5879, "vectors": 6029 }
     },
-    "vacuumed_counts": { "nodes": 11782, "edges": 61722, "episodes": 5879, "vectors": 6029 },
-    "counts_preserved": true
+    "after_vacuum_pass2": {
+      "page_count": 24905, "page_size": 4096, "freelist_count": 1,
+      "file_bytes": 102010880, "file_mb": 97.3,
+      "payload_bytes": 38588106, "payload_mb": 36.8,
+      "integrity_check": { "total_messages": 1, "hit_cap": false, "leaked_page_messages": 0, "other_messages": [] },
+      "counts": { "nodes": 11782, "edges": 61722, "episodes": 5879, "vectors": 6029 }
+    },
+    "counts_preserved_before_vs_after": true
   },
   "pass": true,
-  "summary": {
-    "live_hit_cap_before_any_vacuum": true,
-    "single_vacuum_into_pass_cleared_cap": true,
-    "second_pass_stable": true,
-    "new_damage_after_vacuum": false,
-    "counts_preserved": true
+  "verdict": {
+    "page_count_before": 34440, "page_count_after": 24905,
+    "page_count_delta": 9535, "page_count_delta_pct": 27.7,
+    "file_mb_before": 134.5, "file_mb_after": 97.3, "file_mb_reclaimed": 37.2,
+    "payload_mb_before": 36.8, "payload_mb_after": 36.8, "payload_stable_across_vacuum": true,
+    "leaked_page_messages_before": 100, "leaked_page_messages_after": 0,
+    "integrity_check_hit_cap_before": true, "integrity_check_hit_cap_after": false,
+    "integrity_check_now_completes": true,
+    "new_messages_revealed_once_cap_cleared": [],
+    "counts_preserved": true,
+    "second_pass_page_count": 24905, "stable_on_second_pass": true,
+    "leak_hypothesis": "CONFIRMED: VACUUM reclaimed a large fraction of page_count — the space was leaked (allocated, orphaned, never reused) and IS reclaimable by an offline VACUUM."
   }
 }
 ```
