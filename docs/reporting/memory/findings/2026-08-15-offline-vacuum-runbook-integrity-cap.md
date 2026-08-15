@@ -26,6 +26,28 @@ the team lead's 0-2 observation across snapshots — these pages are *not* on th
 even nominally available for reuse), and 27.7% of the file's total page count came back the moment a
 compaction pass ran. Full before/after table below.
 
+**Important scope correction, made explicit so it is not conflated with the `pragma_integrity_check`
+message count:** the 100 `Page N: never used` messages that saturate the cap are **100 pages ≈
+0.4MB** — that number explains only why the cap saturates, nothing about file size. The actual
+leaked space, **9,535 pages ≈ 37.2MB**, is measured independently via `page_count` before/after a
+VACUUM INTO pass, not by counting `integrity_check` messages (which truncate at 100 and could never
+report 9,535 anything). These are two different findings that happen to come out of the same probe
+run and must not be described as the same number.
+
+**The leak does not account for all of the overhead, and that remainder is real, not further leak.**
+Total overhead before VACUUM was 97.7MB (file 134.5MB − payload 36.8MB); after, 60.5MB. VACUUM
+reclaimed 37.2MB of that 97.7MB — the leak — and left 60.5MB standing, **unchanged by a second VACUUM
+INTO pass** (idempotent: `page_count` 24,905 → 24,905). Because a genuine leak would also be cleared
+by a repeat VACUUM and this remainder was not, the 60.5MB is legitimate structural overhead — b-tree
+index pages (14 indexes on `node` alone, plus `idx_fts_node`, `idx_vec_node_embedding`), FTS5 shadow
+tables, and the `vec0` vector index over 6,029 vectors — not a second hidden leak. So: **partial
+confirmation of the team lead's two-outcome framing, split cleanly rather than picked one side** —
+some of the size (37.2MB) is leaked and reclaimable, and the majority of the remaining overhead
+(60.5MB) is genuine index/structural cost the store legitimately pays. The `+35MB` growth for only
+`+13` episodes between the Aug-8 snapshot and the current live file is **not fully explained by
+this measurement** — this rehearsal proves *some* of that growth is reclaimable leak, not that *all*
+of it is; the residual is still open.
+
 ## Methodology correction (read this before trusting the earlier same-day numbers)
 
 An earlier run of this rehearsal (2026-08-14 23:46/23:47, superseded) measured "before" as a VACUUM
