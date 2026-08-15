@@ -69,7 +69,9 @@ function backlogScore() {
   };
 
   try {
+    const t0 = Date.now();
     const v = lastJson(sh('backlog', ['version']), (j) => j.version);
+    r.timings.open_ms = Date.now() - t0;
     r.version = v ? `${v.name}@${v.version}` : null;
     r.reachable = !!v;
   } catch (e) {
@@ -78,9 +80,11 @@ function backlogScore() {
 
   // READ against PRODUCTION (read-only, safe).
   try {
+    const t0 = Date.now();
     const s = lastJson(sh('backlog', ['stats', '--scope', '{"repo":"sox-ecosystem"}']), (j) =>
       Number.isInteger(j.total),
     );
+    r.timings.stats_ms = Date.now() - t0;
     if (s) {
       r.read_ok = true;
       r.prod_items = { total: s.total, open: s.open, closed: s.closed };
@@ -95,6 +99,7 @@ function backlogScore() {
   cleanups.push(() => rmSync(dir, { recursive: true, force: true }));
   const env = { ADHD_BACKLOG_DATABASE_PATH: join(dir, 'probe.db') };
   try {
+    const tCreate = Date.now();
     const created = lastJson(
       sh(
         'backlog',
@@ -114,17 +119,27 @@ function backlogScore() {
       ),
       (j) => j.item?.humanId,
     );
+    r.timings.write_ms = Date.now() - tCreate;
     if (created?.item?.humanId) {
       r.write_ok = true;
+      const tRead = Date.now();
       const got = lastJson(
         sh('backlog', ['get-item', '--repo', 'scorecard', '--human-id', created.item.humanId], {
           env,
         }),
         (j) => j.humanId,
       );
+      r.timings.read_ms = Date.now() - tRead;
       // A read-back that loses citations is a HALF success — report it as an error.
       if (got && (got.citations ?? []).length !== 1) {
         r.errors.push('citations dropped on create (regression of the 0.1.7 fix)');
+      }
+      try {
+        const tSearch = Date.now();
+        sh('backlog', ['list-items', '--filter', JSON.stringify({ repo: 'scorecard', grep: 'scorecard', limit: 5 })], { env });
+        r.timings.search_ms = Date.now() - tSearch;
+      } catch (e) {
+        r.errors.push(`search: ${String(e.message).slice(0, 120)}`);
       }
       r.search_ok = !!got;
       // DELETE probe — soft-delete the item we just created, then confirm it is
