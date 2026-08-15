@@ -21,6 +21,7 @@
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
+import { assertWithinBase } from './path-safety.js';
 
 // ─── Scopes ──────────────────────────────────────────────────────────────────
 
@@ -148,7 +149,13 @@ export function expandHome(p: string): string {
   // Written as a char-level check so no literal tilde-slash appears in source
   // ([host-targets.5] structural gate: no bare path literals outside host-registry).
   if (p[0] === '~' && (p.length === 1 || p[1] === '/')) {
-    return path.join(base, p.slice(1));
+    // BUG-EPIC-MANIFEST-PATH-ESCAPE-001: every current caller passes a
+    // hardcoded host-module surface literal (e.g. "~/.claude/agents"), never
+    // manifest/CLI input, so this is defense-in-depth rather than a fix for a
+    // reachable escape today — but expandHome is a public export any future
+    // caller could feed an untrusted "~/../../etc/..." string into, and the
+    // fix belongs at the boundary, not at each call site.
+    return assertWithinBase(base, path.join(base, p.slice(1)));
   }
   return p;
 }
@@ -158,6 +165,10 @@ export function expandHome(p: string): string {
  * Used by detect() implementations.
  */
 export function existsIn(workspaceRoot: string, rel: string): boolean {
-  const full = path.isAbsolute(rel) ? rel : path.join(workspaceRoot, rel);
+  if (path.isAbsolute(rel)) return fs.existsSync(rel);
+  // BUG-EPIC-MANIFEST-PATH-ESCAPE-001: every current caller passes a
+  // hardcoded literal (e.g. '.claude', 'CLAUDE.md'), never manifest/CLI
+  // input — defense-in-depth against a future caller passing untrusted `rel`.
+  const full = assertWithinBase(workspaceRoot, path.join(workspaceRoot, rel));
   return fs.existsSync(full);
 }
