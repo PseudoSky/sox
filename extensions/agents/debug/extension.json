@@ -4,7 +4,7 @@
   "version": "0.1.0",
   "type": "agent",
   "title": "debug",
-  "description": "debug agent",
+  "description": "Use this when you need a senior debugging specialist (deepseek-v4-flash) to diagnose complex software issues, analyze system behavior, and identify root causes from error logs and stack traces. Delegates broad discovery to `researcher` and uses GitNexus-first root-cause tracing instead of blind grepping. Differentiate from `review`: this agent chases a specific reported failure to its root cause; `review` audits code that isn't (yet) known to be broken.",
   "compatibility": {
     "host": ">=1.0.0 <2.0.0"
   },
@@ -17,6 +17,11 @@
   ],
   "runtime": "declarative",
   "entrypoint": "debug.md",
+  "invocation": {
+    "protocol": "function-export",
+    "handler": "run",
+    "description": "Declarative agent — host reads the .md definition file directly."
+  },
   "install": {
     "type": "agent",
     "hosts": [

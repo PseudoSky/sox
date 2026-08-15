@@ -4,7 +4,7 @@
   "version": "0.1.0",
   "type": "agent",
   "title": "doc-consumer",
-  "description": ">-",
+  "description": "Use this when you need a fresh-eyes consumer for the doc-reviewer's usability lens. Given a scope's documentation and a small set of canonical tasks, it attempts each task using ONLY the docs — no source code — and reports, per task, whether the docs were sufficient, where it had to guess, and every point at which it wanted to open source (the reader-search signal). Read-only; never edits. Dispatched by doc-reviewer.",
   "compatibility": {
     "host": ">=1.0.0 <2.0.0"
   },
@@ -17,6 +17,11 @@
   ],
   "runtime": "declarative",
   "entrypoint": "doc-consumer.md",
+  "invocation": {
+    "protocol": "function-export",
+    "handler": "run",
+    "description": "Declarative agent — host reads the .md definition file directly."
+  },
   "install": {
     "type": "agent",
     "hosts": [

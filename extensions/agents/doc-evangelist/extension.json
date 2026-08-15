@@ -4,7 +4,7 @@
   "version": "0.1.0",
   "type": "agent",
   "title": "doc-evangelist",
-  "description": ">-",
+  "description": "Use this when you need the GTM / project-evangelism layer of the documentation trio. Consumes the cartographer's verified capability inventory, researches distribution channels + competitors via search CLIs, and produces compelling, channel-tuned launch content — distribution STRATEGY, positioning, README hero copy (for the steward to integrate), competitor comparison, launch posts, and social threads. Maintains persistent competitor + future-feature catalogs so it never re-crawls or blurs shipped vs future. Sells the future honestly (a dedicated future catalog is the source of truth). Writes only to docs/marketing/ (never the real README directly).",
   "compatibility": {
     "host": ">=1.0.0 <2.0.0"
   },
@@ -17,6 +17,11 @@
   ],
   "runtime": "declarative",
   "entrypoint": "doc-evangelist.md",
+  "invocation": {
+    "protocol": "function-export",
+    "handler": "run",
+    "description": "Declarative agent — host reads the .md definition file directly."
+  },
   "install": {
     "type": "agent",
     "hosts": [
