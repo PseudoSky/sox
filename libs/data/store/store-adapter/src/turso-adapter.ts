@@ -1447,6 +1447,49 @@ export class TursoAdapterImpl implements TursoAdapter {
               const truncate = await this.executeAll<{ busy?: number }>(
                 'PRAGMA wal_checkpoint(TRUNCATE)',
               );
+
+              // (BUG-STOREADAPTER-QUIESCENCE-TOCTOU) DETECTION, not prevention.
+              //
+              // `storeQuiescence` above is a point-in-time readdirSync and no
+              // lock spans the gap to the TRUNCATE that just ran, so a peer
+              // whose connect() reached `acquireStoreLease` inside that window
+              // was invisible to the decision. The gap is structurally real:
+              // with the seam deliberately widened, the truncate reaches the
+              // driver with peer leases present.
+              //
+              // It is NOT known to be reachable naturally. Measured 2026-08-14:
+              // 40/40 barrier-synchronized two-process rounds (child pre-warmed,
+              // released in the same tick as the close) and 25/25 in-process
+              // rounds completed with zero silent loss and zero panics. The
+              // window is narrow because `acquireStoreLease` runs very early in
+              // connect, long before the peer depends on WAL contents.
+              //
+              // A lock spanning check->act was deliberately NOT added. It would
+              // introduce a stale-lock failure mode after a crash — and on this
+              // system native turso panics are a demonstrated event class, so a
+              // lock left behind by one could block every subsequent open. That
+              // is a worse, and provably reachable, failure than the theoretical
+              // one it would prevent.
+              //
+              // So: observe instead. If a peer appeared across the truncate,
+              // say so loudly. If this ever fires in production it is the
+              // evidence that would justify the lock; until then, silence here
+              // is itself the measurement.
+              const post = storeQuiescence(coordDb, this._lease.token);
+              if (!post.quiescent) {
+                log.warn('store_adapter.turso.close_truncate_toctou_window_observed', {
+                  db_path: coordDb,
+                  peer_count: post.livePeers.length,
+                  peer_pids: post.livePeers.map((p) => p.pid).join(','),
+                  detail:
+                    `a peer registered a lease BETWEEN the pre-TRUNCATE quiescence check and the ` +
+                    `completed wal_checkpoint(TRUNCATE) — the check-then-act window was hit. The ` +
+                    `WAL was truncated while this peer was opening. If you are seeing this, ` +
+                    `BUG-STOREADAPTER-QUIESCENCE-TOCTOU is reachable in practice and the gate ` +
+                    `needs a lock spanning check->act, not just this detector.`,
+                });
+              }
+
               if (truncate.rows[0]?.busy === 1) {
                 log.warn('store_adapter.turso.close_checkpoint_busy', {
                   detail:
