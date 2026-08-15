@@ -20,6 +20,11 @@
   ],
   "runtime": "declarative",
   "entrypoint": "researcher.md",
+  "invocation": {
+    "protocol": "function-export",
+    "handler": "run",
+    "description": "Declarative agent — host reads the .md definition file directly."
+  },
   "install": {
     "type": "agent",
     "hosts": [

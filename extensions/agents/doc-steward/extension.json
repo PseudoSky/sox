@@ -4,7 +4,7 @@
   "version": "0.1.0",
   "type": "agent",
   "title": "doc-steward",
-  "description": ">-",
+  "description": "Use this when you need a one-shot, background-trustable owner of a project's documentation surface. Dispatches doc-cartographer for ground-truth facts, recalls best-in-class doc frameworks from memory, then makes the public docs (README, CHANGELOG, docs/, community-health files) correct + usable + exciting and the LLM-guiding docs (AGENTS.md, llms.txt) strictly factual — consolidating to the right home, removing wrong/irrelevant content, and organizing entry points consumer-first. Scope-aware and recursive across monorepos. Every add/rewrite/move/delete is logged recoverably. Runs autonomously; when it finishes, the documentation is trustworthy.",
   "compatibility": {
     "host": ">=1.0.0 <2.0.0"
   },
@@ -17,6 +17,11 @@
   ],
   "runtime": "declarative",
   "entrypoint": "doc-steward.md",
+  "invocation": {
+    "protocol": "function-export",
+    "handler": "run",
+    "description": "Declarative agent — host reads the .md definition file directly."
+  },
   "install": {
     "type": "agent",
     "hosts": [

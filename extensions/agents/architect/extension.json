@@ -4,7 +4,7 @@
   "version": "0.1.0",
   "type": "agent",
   "title": "architect",
-  "description": "Read-only architecture agent (deepseek-v4-pro). Takes a vague feature description, delegates research to the researcher agent, analyzes the codebase with gitnexus MCP, and produces a full implementation spec with exact file paths, interface and behavioral changes, independent segments with token estimates, execution strategies for weaker agents, test cases, and documentation updates. ALWAYS delegates research — never does its own.",
+  "description": "Use this when you need a read-only architecture agent (deepseek-v4-pro): takes a vague feature description, delegates research to the researcher agent, analyzes the codebase with gitnexus MCP, and produces a full implementation spec with exact file paths, interface and behavioral changes, independent segments with token estimates, execution strategies for weaker agents, test cases, and documentation updates. ALWAYS delegates research — never does its own.",
   "compatibility": {
     "host": ">=1.0.0 <2.0.0"
   },
@@ -17,6 +17,11 @@
   ],
   "runtime": "declarative",
   "entrypoint": "architect.md",
+  "invocation": {
+    "protocol": "function-export",
+    "handler": "run",
+    "description": "Declarative agent — host reads the .md definition file directly."
+  },
   "install": {
     "type": "agent",
     "hosts": [

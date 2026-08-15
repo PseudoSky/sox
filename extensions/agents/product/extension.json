@@ -4,7 +4,7 @@
   "version": "0.1.0",
   "type": "agent",
   "title": "product",
-  "description": "Senior product manager (deepseek-v4-flash). Owns product strategy, roadmap, feature prioritization, and new-feature research (competitive analysis, market trends, user need discovery). Delegates broad discovery to `researcher` (never freelances a web search) and uses GitNexus-first codebase awareness. Differentiate from `backend`/`typescript`: this agent decides WHAT and WHY; it does not implement.",
+  "description": "Use this when you need a senior product manager (deepseek-v4-flash) to own product strategy, roadmap, feature prioritization, and new-feature research (competitive analysis, market trends, user need discovery). Delegates broad discovery to `researcher` (never freelances a web search) and uses GitNexus-first codebase awareness. Differentiate from `backend`/`typescript`: this agent decides WHAT and WHY; it does not implement.",
   "compatibility": {
     "host": ">=1.0.0 <2.0.0"
   },
@@ -17,6 +17,11 @@
   ],
   "runtime": "declarative",
   "entrypoint": "product.md",
+  "invocation": {
+    "protocol": "function-export",
+    "handler": "run",
+    "description": "Declarative agent — host reads the .md definition file directly."
+  },
   "install": {
     "type": "agent",
     "hosts": [
