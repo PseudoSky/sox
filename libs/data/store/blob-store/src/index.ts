@@ -28,4 +28,6 @@ export type {
   ExportStats,
   BlobStoreMetrics,
   VerificationResult,
+  ConsistencyReport,
+  RepairResult,
 } from './store.js';
