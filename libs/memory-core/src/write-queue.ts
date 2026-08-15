@@ -93,6 +93,7 @@
  * running task, and no async hops were added inside task execution.
  */
 
+import { canonicalDbPath } from '@adhd/sox-store-adapter';
 import * as fs from 'node:fs';
 import { performance } from 'node:perf_hooks';
 import type { StoreAdapter } from '@adhd/sox-store-adapter';
@@ -513,7 +514,8 @@ export class WriteQueue {
         );
         const now = Date.now();
         q._lastCheckpointAt = now;
-        WriteQueue._lastCheckpointByPath.set(dbPath, now);
+        // Canonical key — see lastCheckpointAtForPath for why this matters.
+        WriteQueue._lastCheckpointByPath.set(canonicalDbPath(dbPath), now);
         log.info('writequeue.shutdown.checkpoint', {
           store: dbPath,
           frames_checkpointed: row?.frames_checkpointed ?? null,
@@ -555,7 +557,12 @@ export class WriteQueue {
    * `await` happens, so every concurrent caller for that path — including the
    * first one itself — awaits the exact same promise.
    */
-  static forPath(dbPath: string, maxSize?: number): Promise<WriteQueue> {
+  static forPath(rawDbPath: string, maxSize?: number): Promise<WriteQueue> {
+    // Key on the CANONICAL identity, not the caller's spelling. A Map key gets
+    // no symlink resolution from the OS, so `/var/folders/x` and
+    // `/private/var/folders/x` were two different queues for one store — see
+    // `lastCheckpointAtForPath` for what that cost.
+    const dbPath = canonicalDbPath(rawDbPath);
     if (WriteQueue._bypass) {
       return WriteQueue._create(dbPath, maxSize);
     }
@@ -631,8 +638,16 @@ export class WriteQueue {
    * checkpoint this call is asking about — see `closeAllForShutdown()`), and
    * "no instance" must never be conflated with "never checkpointed".
    */
-  static lastCheckpointAtForPath(dbPath: string): number {
-    return WriteQueue._lastCheckpointByPath.get(dbPath) ?? 0;
+  static lastCheckpointAtForPath(rawDbPath: string): number {
+    // MUST canonicalize: this ledger is written under `forPath`'s canonical key,
+    // and callers reach it with whatever spelling they happen to hold.
+    // compaction.ts passes `adapter.config.dbPath` (already canonicalized by
+    // openDb) while the writer passed the raw caller path — on macOS that is
+    // `/private/var/...` vs `/var/...`, so this returned 0 every time, the
+    // double-checkpoint guard never fired, and compaction issued a redundant
+    // wal_checkpoint(TRUNCATE) immediately after the queue had run one.
+    // Redundant TRUNCATE checkpoints are the turso #7833 corruption trigger.
+    return WriteQueue._lastCheckpointByPath.get(canonicalDbPath(rawDbPath)) ?? 0;
   }
 
   /** (WP-5) Read the WAL file size in bytes from the filesystem. Returns 0 if unavailable. */
@@ -659,7 +674,8 @@ export class WriteQueue {
       );
       const now = Date.now();
       this._lastCheckpointAt = now;
-      WriteQueue._lastCheckpointByPath.set(this._storePath, now);
+      // Canonical key — see lastCheckpointAtForPath for why this matters.
+      WriteQueue._lastCheckpointByPath.set(canonicalDbPath(this._storePath), now);
       return row?.frames_checkpointed ?? -1;
     } catch (err) {
       // BL-405 / BL-399 pattern: this used to be a bare `catch { return -1; }`
@@ -1165,7 +1181,11 @@ export class WriteQueue {
    * queue instance exists for that path (nothing has written through it yet).
    * Intended integration point for memory_ping's store block.
    */
-  static metricsForPath(dbPath: string): WriteQueueMetrics | null {
+  static metricsForPath(rawDbPath: string): WriteQueueMetrics | null {
+    // Canonical key: `instances` is keyed by canonical store identity (see
+    // `forPath`). Looking up the caller's raw spelling returned null for a
+    // store that very much exists.
+    const dbPath = canonicalDbPath(rawDbPath);
     const q = WriteQueue.instances.get(dbPath);
     return q ? q.getMetrics() : null;
   }
