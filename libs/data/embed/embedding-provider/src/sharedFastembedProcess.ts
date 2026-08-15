@@ -79,16 +79,62 @@ function isPidAlive(pid: number): boolean {
  * missing/unreadable/stale lock file is silently treated as "no competing
  * host", never thrown — this must never be able to break or slow a real
  * embed call.
+ *
+ * (DEBT-EPIC-HOTPATH-REDUNDANT-IO-001) This used to be an UNCONDITIONAL
+ * `existsSync` + `readFileSync` pair on EVERY call to `request()` below — i.e.
+ * on every single embed, since `embedSingle`/`embedBatch` route through it.
+ * Measured (Node 20, warm fs cache, 5000 iterations against a real lock
+ * file): ~9.6us/call synchronously blocking the event loop each time — small
+ * relative to a ~619ms warm bge-base embed, but it is a real, avoidable
+ * per-call syscall pair on the single hottest path in the write pipeline, and
+ * a sync fs call blocks OTHER concurrent work in the same process regardless
+ * of its own cost (the mechanism argument the epic calls out). The value this
+ * reads — whether a second fastembed host process is alive — cannot change on
+ * a sub-second cadence (it only flips at process start/exit), so a short TTL
+ * cache removes the per-call I/O without weakening the signal: a genuinely
+ * competing host is still detected and logged, just at worst
+ * `COMPETING_HOST_CACHE_TTL_MS` later than before.
  */
-function detectCompetingFastembedHost(ownPid: number | undefined): { pid: number; startedAt: string } | null {
+const COMPETING_HOST_CACHE_TTL_MS = 3000;
+let _competingHostCache: { pid: number; startedAt: string } | null = null;
+let _competingHostCacheOwnPid: number | undefined;
+let _competingHostCacheAt = -Infinity;
+
+/** TEST-ONLY: clear the TTL cache so a test can force a fresh fs read. */
+export function __resetCompetingHostCacheForTests(): void {
+  _competingHostCache = null;
+  _competingHostCacheOwnPid = undefined;
+  _competingHostCacheAt = -Infinity;
+}
+
+/** Exported for direct unit testing (DEBT-EPIC-HOTPATH-REDUNDANT-IO-001) — see the
+ *  TTL-cache doc comment above for why this used to be a per-call sync fs read. */
+export function detectCompetingFastembedHost(ownPid: number | undefined): { pid: number; startedAt: string } | null {
+  const now = performance.now();
+  if (
+    now - _competingHostCacheAt < COMPETING_HOST_CACHE_TTL_MS &&
+    _competingHostCacheOwnPid === ownPid
+  ) {
+    return _competingHostCache;
+  }
+  _competingHostCacheAt = now;
+  _competingHostCacheOwnPid = ownPid;
   try {
     const lockPath = resolveFastembedLockPath();
-    if (!existsSync(lockPath)) return null;
+    if (!existsSync(lockPath)) {
+      _competingHostCache = null;
+      return null;
+    }
     const raw = JSON.parse(readFileSync(lockPath, 'utf8')) as { pid?: unknown; startedAt?: unknown };
     const pid = typeof raw.pid === 'number' ? raw.pid : null;
-    if (pid === null || pid === ownPid || !isPidAlive(pid)) return null;
-    return { pid, startedAt: typeof raw.startedAt === 'string' ? raw.startedAt : 'unknown' };
+    if (pid === null || pid === ownPid || !isPidAlive(pid)) {
+      _competingHostCache = null;
+      return null;
+    }
+    _competingHostCache = { pid, startedAt: typeof raw.startedAt === 'string' ? raw.startedAt : 'unknown' };
+    return _competingHostCache;
   } catch {
+    _competingHostCache = null;
     return null;
   }
 }

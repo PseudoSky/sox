@@ -157,6 +157,21 @@ CREATE INDEX IF NOT EXISTS ix_edge_live       ON edge(t_invalid) WHERE t_invalid
 CREATE INDEX IF NOT EXISTS ix_edge_src_live   ON edge(src, rel) WHERE t_invalid IS NULL;
 CREATE INDEX IF NOT EXISTS ix_edge_dst_live   ON edge(dst, rel) WHERE t_invalid IS NULL;
 CREATE UNIQUE INDEX IF NOT EXISTS ix_edge_unique ON edge(src, dst, rel);
+-- (PERF-MEMORY-005) ix_node_kind above is a plain (non-partial) index on
+-- kind alone, and ix_node_validity is a plain (non-partial) index scoped to
+-- t_invalid alone -- neither covers the extremely common
+-- "kind = ? AND t_invalid IS NULL" shape used throughout memory-core
+-- (stats.ts, autolink.ts, cluster.ts, cluster-metrics.ts, list-entities.ts,
+-- entity-episodes.ts, topics.ts, enrich-batch.ts, community-gc.ts -- dozens
+-- of call sites). Measured on the production store (11,757 nodes),
+-- 2026-08-14: SELECT COUNT(*) FROM node WHERE kind='episode' AND
+-- t_invalid IS NULL planned as SCAN node USING INDEX ix_node_validity
+-- (row-by-row kind filter over all ~11,613 live nodes, ~186ms) instead of a
+-- direct SEARCH. A partial index whose predicate matches the query's
+-- t_invalid IS NULL clause turns that into SEARCH node USING INDEX
+-- ix_node_kind_live (kind=?): 186ms -> 0.6ms measured, ~300x. Additive
+-- only; nothing above is dropped.
+CREATE INDEX IF NOT EXISTS ix_node_kind_live  ON node(kind) WHERE t_invalid IS NULL;
 `;
 }
 
@@ -296,6 +311,8 @@ CREATE INDEX IF NOT EXISTS "ix_edge_src_live" ON "edge" ("src", "rel") WHERE "t_
 CREATE INDEX IF NOT EXISTS "ix_edge_dst_live" ON "edge" ("dst", "rel") WHERE "t_invalid" IS NULL;
 --> statement-breakpoint
 CREATE UNIQUE INDEX IF NOT EXISTS "ix_edge_unique" ON "edge" ("src", "dst", "rel");
+--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "ix_node_kind_live" ON "node" ("kind") WHERE "t_invalid" IS NULL;
 `;
 
 export const DEFAULT_NODE_KINDS = ['episode', 'entity', 'claim', 'community', 'session', 'generic'] as const;
@@ -433,12 +450,30 @@ export const NODE_INDEX_DDLS = [
   `CREATE INDEX IF NOT EXISTS ix_node_project    ON node(project_path) WHERE project_path IS NOT NULL`,
   `CREATE INDEX IF NOT EXISTS ix_node_namespace  ON node(namespace)`,
   `CREATE INDEX IF NOT EXISTS ix_node_expires    ON node(t_expires) WHERE t_expires IS NOT NULL`,
+  // (PERF-MEMORY-005) Partial index matching the extremely common
+  // "kind = ? AND t_invalid IS NULL" shape -- see the matching comment next
+  // to CREATE INDEX ix_node_kind_live in graphDdl() for the measured
+  // before/after (SCAN ix_node_validity, ~186ms -> SEARCH ix_node_kind_live,
+  // ~0.6ms on the production store). Additive only.
+  `CREATE INDEX IF NOT EXISTS ix_node_kind_live  ON node(kind) WHERE t_invalid IS NULL`,
 ];
 
 export const EDGE_INDEX_DDLS = [
   `CREATE INDEX IF NOT EXISTS ix_edge_src        ON edge(src, rel) WHERE t_expired IS NULL`,
   `CREATE INDEX IF NOT EXISTS ix_edge_dst        ON edge(dst, rel) WHERE t_expired IS NULL`,
   `CREATE INDEX IF NOT EXISTS ix_edge_live       ON edge(t_invalid) WHERE t_invalid IS NULL`,
+  // (PERF-MEMORY-002 follow-up) This array is the one actually re-applied by
+  // this class's own ensureCheckConstraints() self-heal rebuild (BL-507/
+  // BL-508) AND by the sibling operator-invoked CHECK-removal migration
+  // module -- i.e. every legacy/turso store that rebuilds its edge table at
+  // open. graphDdl()'s inline template literal got the ix_edge_src_live/
+  // ix_edge_dst_live fix (see the comment above CREATE INDEX ix_edge_src_live
+  // in graphDdl()); this standalone array did not, so any store that
+  // rebuilds edge via one of THOSE paths -- which BL-507's own comment says
+  // the live backlog.db does -- would silently regress back to the 11.9s
+  // SCAN this pair fixes. Additive only; nothing above is dropped.
+  `CREATE INDEX IF NOT EXISTS ix_edge_src_live   ON edge(src, rel) WHERE t_invalid IS NULL`,
+  `CREATE INDEX IF NOT EXISTS ix_edge_dst_live   ON edge(dst, rel) WHERE t_invalid IS NULL`,
   `CREATE UNIQUE INDEX IF NOT EXISTS ix_edge_unique ON edge(src, dst, rel)`,
 ];
 
