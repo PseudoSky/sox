@@ -18,6 +18,7 @@
     "@adhd/sox-memory-core": "workspace:*"
   },
   "dependencies": {
+    "@adhd/sox-telemetry": "workspace:*",
     "@tursodatabase/database": "^0.7.1",
     "better-sqlite3": "^12.10.0",
     "sqlite-vec": "^0.1.9"

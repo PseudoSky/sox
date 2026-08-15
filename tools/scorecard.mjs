@@ -50,6 +50,70 @@ function lastJson(out, pick) {
   return found;
 }
 
+
+// ── production percentiles from real telemetry ─────────────────────────────
+/**
+ * Read the REAL latency distribution from the live service's own telemetry.
+ *
+ * WHY THIS EXISTS — it is the correction to this file's original sin. Every
+ * other probe here fires ONE operation against an idle system and reports the
+ * result as health. That is the best case, not the distribution, and it lied:
+ * the scorecard reported memory-server `ok` with write_embed≈1.4s while the
+ * production p99 for the same operation was 40.5 SECONDS and the max was 109s.
+ * A single sample at queue-depth 0 cannot see a queueing tail by construction.
+ *
+ * So: single probes prove the path WORKS (liveness); percentiles prove it works
+ * WELL (health). Reporting the first as the second is how a green board sits on
+ * top of a 40-second p99.
+ */
+function embedPercentiles() {
+  const out = { n: 0, p50: null, p90: null, p99: null, max: null, source: null };
+  try {
+    const dir = join(process.env['HOME'] ?? '', '.adhd/sox-ecosystem/memory-server/logs');
+    if (!existsSync(dir)) return out;
+    const samples = [];
+    for (const f of readdirSync(dir).filter((n) => n.endsWith('.jsonl'))) {
+      let text;
+      try {
+        text = readFileSync(join(dir, f), 'utf8');
+      } catch {
+        continue; // unreadable file is not fatal to the whole reading
+      }
+      for (const line of text.split('\n')) {
+        if (!line.includes('fastembed_process.request.finish')) continue;
+        try {
+          const j = JSON.parse(line);
+          const ms = deepFind(j, 'response_ms');
+          if (typeof ms === 'number') samples.push(ms);
+        } catch {
+          // a truncated trailing line is normal on a live-appended jsonl
+        }
+      }
+    }
+    if (!samples.length) return out;
+    samples.sort((a, b) => a - b);
+    const at = (q) => Math.round(samples[Math.min(samples.length - 1, Math.floor(samples.length * q))]);
+    out.n = samples.length;
+    out.p50 = at(0.5); out.p90 = at(0.9); out.p99 = at(0.99);
+    out.max = Math.round(samples[samples.length - 1]);
+    out.source = 'memory-server telemetry';
+  } catch (e) {
+    out.source = `unavailable: ${String(e.message).slice(0, 80)}`;
+  }
+  return out;
+}
+
+function deepFind(o, key) {
+  if (o && typeof o === 'object') {
+    if (key in o) return o[key];
+    for (const v of Object.values(o)) {
+      const g = deepFind(v, key);
+      if (g !== undefined) return g;
+    }
+  }
+  return undefined;
+}
+
 // ── backlog ────────────────────────────────────────────────────────────────
 function backlogScore() {
   const r = {
@@ -405,6 +469,25 @@ function main() {
   };
   tl('memory', mem.timings);
   tl('backlog', bl.timings);
+
+  const pc = embedPercentiles();
+  console.log('');
+  console.log('EMBED DISTRIBUTION (production telemetry — NOT a single probe)');
+  if (pc.n) {
+    console.log(
+      `  n=${pc.n}  p50=${pc.p50}ms  p90=${pc.p90}ms  p99=${pc.p99}ms  max=${pc.max}ms`,
+    );
+    // A single idle probe cannot see this. Say so loudly when the tail is bad,
+    // because "W/R/D all PASS" next to a 40s p99 is a misleading board.
+    if (pc.p99 !== null && pc.p99 > 10_000) {
+      console.log(
+        `  ⚠ TAIL ALERT: p99 ${(pc.p99 / 1000).toFixed(1)}s — the single-probe columns above are ` +
+          `the QUEUE-DEPTH-0 best case and do NOT reflect this. See BUG-MEMORY-EMBED-HEAD-OF-LINE-BLOCKING-001.`,
+      );
+    }
+  } else {
+    console.log(`  (no samples — ${pc.source ?? 'telemetry not found'})`);
+  }
 
   console.log('');
   console.log('ITEMS BY PRIORITY  (done / open)');
