@@ -18,6 +18,13 @@ import { execFileSync } from 'node:child_process';
 import { mkdtempSync, rmSync, existsSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
+// DEBT-HOOK-PLANSTATUS-GATES-EVERY-COMMIT-001 (Task 2): reuse the SAME "store is broken, not
+// empty" error type plan-status.mjs already defines, rather than inventing a second, divergent
+// definition of "store unavailable" in this repo (team-lead's explicit instruction). completionScore()
+// below throws this whenever `backlog list-items` fails outright (non-zero exit, timeout, ENOENT) OR
+// exits 0 but never prints a parseable JSON array line at all — both are "could not determine",
+// never silently "zero items".
+import { StoreUnavailableError } from './plan-status.mjs';
 
 const JSON_OUT = process.argv.includes('--json');
 const PROD_BACKLOG = '/Users/nix/.adhd/backlog/production/data/backlog.db';
@@ -398,11 +405,43 @@ function pkgOf(item) {
   return p;
 }
 
+/**
+ * DEBT-HOOK-PLANSTATUS-GATES-EVERY-COMMIT-001 (Task 2, devops-engineer): this used to `continue`
+ * on ANY failure from `sh('backlog', ...)` — a bare `catch { continue }` that silently dropped the
+ * whole repo from the completion table with zero signal to the reader. That is a real, independently
+ * verifiable defect (see the maxBuffer incident already documented on `sh()`'s own doc comment
+ * above — the exact same swallow, just a different trigger). `[]` (a genuinely empty result) and "the
+ * `backlog` call itself failed" must never render the same way: the first is real information, the
+ * second is the ABSENCE of information, and rendering it as "0 open items, all done" is a false
+ * "everything is healthy" reading for a health surface — the worst possible failure mode for a
+ * scorecard, since it suppresses investigation exactly when the store is most likely broken.
+ *
+ * HONEST LIMIT, stated explicitly per the task instruction — do not read this fix as closing the
+ * hole completely: a store that fails OPEN and then, for whatever reason, prints a legitimate `[]`
+ * (exit 0, one parseable empty-array line) is STILL indistinguishable from a genuinely empty
+ * backlog — no client-side code can tell those apart, because the wire contract for both is
+ * identical. Extensive live testing while investigating this task (20/20 clean runs against a
+ * broken store, both `--filter '{}'` and a real scoped filter) did NOT reproduce that shape — the
+ * live `backlog` CLI correctly exits non-zero with the failure on stderr in every case exercised —
+ * so this fix targets the failure modes that ARE real and observed: non-zero exit, a thrown timeout,
+ * ENOENT, or the CLI printing nothing array-shaped at all despite exiting 0 (which would itself be
+ * anomalous output, not a documented "empty" contract). If a store-open failure that emits a clean
+ * `[]` on the SCOPED filter path is ever demonstrated live (not simulated with a stale test path —
+ * see BUG-BACKLOG-CLI-SILENT-EMPTY-ON-STORE-OPEN-FAILURE-001's retraction note for how easy that is
+ * to get wrong), the only remaining client-side option is a POSITIVE liveness probe: run one cheap
+ * query with a known-nonzero expected result (e.g. `backlog get-item` for a permanent, never-closed
+ * sentinel item, or `backlog stats` and assert `total > 0` before trusting a `list-items` `[]`) and
+ * treat a real query returning nothing where the sentinel proves the store is alive as the genuine
+ * "reachable and empty" case. That is proposed here, not implemented — it needs a durable sentinel
+ * item/convention this file cannot unilaterally invent.
+ */
 function completionScore() {
   const byPkg = {};
   const totals = { open: {}, done: {} };
+  const unreachable = [];
   for (const repo of ['sox-ecosystem', 'adhd']) {
     let items = [];
+    let sawArrayLine = false;
     try {
       const out = sh('backlog', ['list-items', '--filter', JSON.stringify({ repo, limit: 900 })], {
         timeout: 120_000,
@@ -410,12 +449,25 @@ function completionScore() {
       for (const line of out.split('\n')) {
         try {
           const j = JSON.parse(line);
-          if (Array.isArray(j)) items = j;
+          if (Array.isArray(j)) {
+            items = j;
+            sawArrayLine = true;
+          }
         } catch {
           /* pino line */
         }
       }
-    } catch {
+      if (!sawArrayLine) {
+        throw new StoreUnavailableError(
+          `scorecard: \`backlog list-items --filter {repo:${repo}}\` exited 0 but printed no parseable ` +
+            `JSON array line — cannot tell "genuinely empty" from "malformed/truncated output".`,
+        );
+      }
+    } catch (err) {
+      unreachable.push({
+        repo,
+        reason: err instanceof StoreUnavailableError ? err.message : err instanceof Error ? err.message : String(err),
+      });
       continue;
     }
     for (const it of items) {
@@ -428,7 +480,7 @@ function completionScore() {
       totals[done ? 'done' : 'open'][prio] = (totals[done ? 'done' : 'open'][prio] ?? 0) + 1;
     }
   }
-  return { byPkg, totals };
+  return { byPkg, totals, unreachable };
 }
 
 // ── render ─────────────────────────────────────────────────────────────────
@@ -504,6 +556,19 @@ function main() {
   console.log(
     `${pad('TOTAL', 44)}${PRIOS.map((p) => pad(`${comp.totals.done[p] ?? 0}/${comp.totals.open[p] ?? 0}`, 12)).join('')}`,
   );
+  // DEBT-HOOK-PLANSTATUS-GATES-EVERY-COMMIT-001 (Task 2): a repo that could not be queried must
+  // NEVER read as "0 open, all done" — it must read as UNKNOWN, loudly, with the reason. This is
+  // the single most important line on the whole scorecard when it fires: it means the numbers
+  // above are INCOMPLETE, not that the missing repo is healthy.
+  if (comp.unreachable.length) {
+    console.log('');
+    for (const { repo, reason } of comp.unreachable) {
+      console.log(`  ⚠ UNKNOWN — ${repo}: completion NOT determined (backlog query failed) — ${reason}`);
+    }
+    console.log(
+      `  ⚠ TOTAL above EXCLUDES ${comp.unreachable.length} repo(s) — do not read the totals as "everything else is done".`,
+    );
+  }
 }
 
 try {
