@@ -17,5 +17,8 @@
   "devDependencies": {
     "@adhd/sox-memory-core": "workspace:*",
     "@adhd/sox-store-adapter": "workspace:*"
+  },
+  "dependencies": {
+    "@tursodatabase/database": "^0.7.1"
   }
 }
