@@ -133,14 +133,25 @@ export function isPidAlive(pid: number): boolean {
  */
 export function checkAndClaimFastembedLock(): void {
   const lockPath = resolveFastembedLockPath();
+  // (BUG-MEMORY-EMBED-HEAD-OF-LINE-BLOCKING-001) Set by `SharedFastembedProcessClient
+  // .ensureProcess()` only when this child was forked as one member of a
+  // `FastembedProcessPool` — undefined for a lone (non-pooled) client, which
+  // preserves today's exact behaviour there. See `fastembedLock.ts`'s
+  // `poolGroup` doc comment for why this must be checked before warning.
+  const ownPoolGroup = process.env['SOX_FASTEMBED_POOL_GROUP'];
   try {
     if (fs.existsSync(lockPath)) {
       const raw = fs.readFileSync(lockPath, 'utf8');
       const prev = JSON.parse(raw) as Partial<FastembedLockInfo>;
+      const isKnownPoolSibling =
+        typeof prev.poolGroup === 'string' &&
+        ownPoolGroup !== undefined &&
+        prev.poolGroup === ownPoolGroup;
       if (
         typeof prev.pid === 'number' &&
         prev.pid !== process.pid &&
-        isPidAlive(prev.pid)
+        isPidAlive(prev.pid) &&
+        !isKnownPoolSibling
       ) {
         const msg = `another fastembed host process (pid ${prev.pid}, ` +
             `started ${prev.startedAt ?? 'unknown'}) is ALREADY RUNNING on this machine. ` +
@@ -168,7 +179,11 @@ export function checkAndClaimFastembedLock(): void {
   }
 
   try {
-    const info: FastembedLockInfo = { pid: process.pid, startedAt: new Date().toISOString() };
+    const info: FastembedLockInfo = {
+      pid: process.pid,
+      startedAt: new Date().toISOString(),
+      ...(ownPoolGroup !== undefined ? { poolGroup: ownPoolGroup } : {}),
+    };
     fs.writeFileSync(lockPath, JSON.stringify(info));
   } catch {
     // Non-fatal: if /tmp isn't writable for some reason, just skip claiming.
