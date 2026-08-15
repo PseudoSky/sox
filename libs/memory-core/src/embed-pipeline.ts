@@ -62,7 +62,7 @@
  * ~seconds later).
  */
 
-import { canonicalDbPath } from '@adhd/sox-store-adapter';
+import { canonicalStorePath } from './store-path.js';
 import { performance } from 'node:perf_hooks';
 import { embed, vecToJson, vecToBuffer, getActiveEmbedModel, getConfiguredSyncEmbed } from './embed.js';
 import { detectNearDup } from './neardup.js';
@@ -302,7 +302,7 @@ export interface EmbedPipelineMetrics {
 const pipelineStates = new Map<string, EmbedPipelineState>();
 
 function stateFor(storeKey: string): EmbedPipelineState {
-  let s = pipelineStates.get(canonicalDbPath(storeKey));
+  let s = pipelineStates.get(canonicalStorePath(storeKey));
   if (!s) {
     s = {
       timeToVector: new LatencyRing(PIPELINE_LATENCY_WINDOW),
@@ -320,7 +320,7 @@ function stateFor(storeKey: string): EmbedPipelineState {
         heals_failed: 0,
       },
     };
-    pipelineStates.set(canonicalDbPath(storeKey), s);
+    pipelineStates.set(canonicalStorePath(storeKey), s);
   }
   return s;
 }
@@ -378,7 +378,7 @@ function summaryOf(ring: LatencyRing): { p50: number; p99: number; mean: number;
  * handler's `resolvedPath`).
  */
 export function getEmbedPipelineMetrics(storeKey: string): EmbedPipelineMetrics | null {
-  const s = pipelineStates.get(canonicalDbPath(storeKey));
+  const s = pipelineStates.get(canonicalStorePath(storeKey));
   if (!s) return null;
   return {
     time_to_vector_ms: summaryOf(s.timeToVector),

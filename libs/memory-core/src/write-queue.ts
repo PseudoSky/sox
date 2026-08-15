@@ -93,7 +93,7 @@
  * running task, and no async hops were added inside task execution.
  */
 
-import { canonicalDbPath } from '@adhd/sox-store-adapter';
+import { canonicalStorePath } from './store-path.js';
 import * as fs from 'node:fs';
 import { performance } from 'node:perf_hooks';
 import type { StoreAdapter } from '@adhd/sox-store-adapter';
@@ -515,7 +515,7 @@ export class WriteQueue {
         const now = Date.now();
         q._lastCheckpointAt = now;
         // Canonical key — see lastCheckpointAtForPath for why this matters.
-        WriteQueue._lastCheckpointByPath.set(canonicalDbPath(dbPath), now);
+        WriteQueue._lastCheckpointByPath.set(canonicalStorePath(dbPath), now);
         log.info('writequeue.shutdown.checkpoint', {
           store: dbPath,
           frames_checkpointed: row?.frames_checkpointed ?? null,
@@ -562,7 +562,7 @@ export class WriteQueue {
     // no symlink resolution from the OS, so `/var/folders/x` and
     // `/private/var/folders/x` were two different queues for one store — see
     // `lastCheckpointAtForPath` for what that cost.
-    const dbPath = canonicalDbPath(rawDbPath);
+    const dbPath = canonicalStorePath(rawDbPath);
     if (WriteQueue._bypass) {
       return WriteQueue._create(dbPath, maxSize);
     }
@@ -647,7 +647,7 @@ export class WriteQueue {
     // double-checkpoint guard never fired, and compaction issued a redundant
     // wal_checkpoint(TRUNCATE) immediately after the queue had run one.
     // Redundant TRUNCATE checkpoints are the turso #7833 corruption trigger.
-    return WriteQueue._lastCheckpointByPath.get(canonicalDbPath(rawDbPath)) ?? 0;
+    return WriteQueue._lastCheckpointByPath.get(canonicalStorePath(rawDbPath)) ?? 0;
   }
 
   /** (WP-5) Read the WAL file size in bytes from the filesystem. Returns 0 if unavailable. */
@@ -675,7 +675,7 @@ export class WriteQueue {
       const now = Date.now();
       this._lastCheckpointAt = now;
       // Canonical key — see lastCheckpointAtForPath for why this matters.
-      WriteQueue._lastCheckpointByPath.set(canonicalDbPath(this._storePath), now);
+      WriteQueue._lastCheckpointByPath.set(canonicalStorePath(this._storePath), now);
       return row?.frames_checkpointed ?? -1;
     } catch (err) {
       // BL-405 / BL-399 pattern: this used to be a bare `catch { return -1; }`
@@ -1185,7 +1185,7 @@ export class WriteQueue {
     // Canonical key: `instances` is keyed by canonical store identity (see
     // `forPath`). Looking up the caller's raw spelling returned null for a
     // store that very much exists.
-    const dbPath = canonicalDbPath(rawDbPath);
+    const dbPath = canonicalStorePath(rawDbPath);
     const q = WriteQueue.instances.get(dbPath);
     return q ? q.getMetrics() : null;
   }
