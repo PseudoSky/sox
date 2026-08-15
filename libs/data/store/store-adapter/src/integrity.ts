@@ -134,6 +134,7 @@
  */
 
 import { closeSync, openSync, readSync, renameSync, statSync } from 'node:fs';
+import { log } from '@adhd/sox-telemetry';
 import { createFTSDialect } from './fts-dialect.js';
 import type { StoreAdapter } from './types.js';
 
@@ -2904,12 +2905,22 @@ export function emitIntegrityReport(
     reportSink(event, detail, { dbPath });
     return;
   }
+  // Emit via structured telemetry for observability + capture in logs
+  try {
+    log.info(`store_adapter.integrity.${event}`, {
+      db_path: dbPath,
+      detail,
+    });
+  } catch {
+    // A telemetry logging failure must never take down an open.
+  }
+  // ALSO write to stderr for operator visibility (e.g., CLI, systemd journal capture)
   try {
     process.stderr.write(
       JSON.stringify({ evt: `store.integrity.${event}`, db_path: dbPath, detail }) + '\n',
     );
   } catch {
-    // A logging failure must never take down an open.
+    // A stderr write failure must never take down an open.
   }
 }
 

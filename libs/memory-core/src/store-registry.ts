@@ -17,6 +17,7 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { expandDbPath } from './db.js';
+import { log } from './telemetry.js';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -136,7 +137,7 @@ export function resolveStoreName(
  *
  * Precedence:
  *   1. `store` param → resolveStoreName (registry lookup).
- *   2. `db_path` param → accept with deprecation warning (console.warn).
+ *   2. `db_path` param → accept with deprecation warning (log.warn).
  *   3. Neither → returns null for caller to use default.
  *
  * When `store` is given AND `db_path` is also given, `store` wins (registry
@@ -149,9 +150,7 @@ export function resolveStoreOrDbPath(
   // `store` param takes precedence
   if (typeof store === 'string' && store.trim()) {
     if (typeof dbPath === 'string' && dbPath.trim()) {
-      console.warn(
-        `[sox-memory] Both "store" and "db_path" provided. "store" takes precedence (registry is authoritative).`,
-      );
+      log.warn('store_registry.ambiguous_params', { store, dbPath });
     }
     return resolveStoreName(store);
   }
@@ -159,11 +158,7 @@ export function resolveStoreOrDbPath(
   // `db_path` param — accept with deprecation warning
   if (typeof dbPath === 'string' && dbPath.trim()) {
     const resolvedPath = path.resolve(expandDbPath(dbPath));
-    console.warn(
-      `[sox-memory] DEPRECATED: raw "db_path" parameter "${dbPath}" resolved to "${resolvedPath}". ` +
-        `Use "store" instead (e.g., store:"default") to avoid path-guessing. ` +
-        `This path will be removed in the next minor version.`,
-    );
+    log.warn('store_registry.db_path_deprecated', { db_path: dbPath, resolved_path: resolvedPath });
     return {
       name: '(raw db_path)',
       path: resolvedPath,

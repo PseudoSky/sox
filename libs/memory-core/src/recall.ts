@@ -522,7 +522,7 @@ export async function memoryRecall(
     queryVecJson = vecToJson(queryVec);
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
-    console.error(`[sox-memory] WARNING: embed() failed or timed out in recall, skipping vec channel: ${msg}`);
+    tlog.warn('recall.embed_failed', { error: msg, channel: 'vec' });
     embedVecFailed = true;
     degradations.push(`vec: ${msg}`);
   }
@@ -617,7 +617,7 @@ export async function memoryRecall(
     // the whole recall, but the degradation itself must be observable —
     // record it instead of swallowing it outright.
     const msg = err instanceof Error ? err.message : String(err);
-    console.error(`[sox-memory] WARNING: FTS/BM25 channel failed in recall, continuing without it: ${msg}`);
+    tlog.warn('recall.fts_failed', { error: msg, channel: 'fts' });
     degradations.push(`fts: ${msg}`);
   }
 

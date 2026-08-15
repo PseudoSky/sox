@@ -391,8 +391,13 @@ export class SharedFastembedProcessClient {
     });
     try {
       if (c.connected) c.send({ __shutdown: true });
-    } catch {
-      // IPC already gone — kill() below is the only path left.
+    } catch (err) {
+      // IPC already gone — kill() below is the only path left. Deliberately silent:
+      // process.send() throws EPIPE if the IPC channel is gone; this is the
+      // expected path when the child exits without a graceful __shutdown message.
+      log.debug('embedding_provider.fastembed.terminate.send_failed', {
+        reason: err instanceof Error ? err.message : 'IPC channel unavailable',
+      });
     }
     const timedOut = await Promise.race([
       exited.then(() => false),

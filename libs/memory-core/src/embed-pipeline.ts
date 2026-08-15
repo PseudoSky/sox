@@ -534,7 +534,7 @@ export async function schedulePendingEmbeds(
     vectorDialect: VectorDialect;
   },
 ): Promise<SchedulePendingResult> {
-  const log = opts.logSink ?? ((line: string) => console.error(line));
+  const log = opts.logSink ?? ((line: string) => tlog.debug('embed_pipeline.schedule_pending', { message: line }));
   const useBinaryFormat = opts.useBinaryFormat ?? false;
   const vectorDialect = opts.vectorDialect;
   const out: SchedulePendingResult = { applied: 0, exists: 0, gone: 0, failed: 0 };
@@ -673,7 +673,7 @@ async function _healMissingVectorsPass(
   tickTraceId: string,
 ): Promise<HealResult> {
   const limit = opts?.limit ?? 500;
-  const log = opts?.logSink ?? ((line: string) => console.error(line));
+  const log = opts?.logSink ?? ((line: string) => tlog.debug('embed_pipeline.heal', { message: line }));
   const metrics = stateFor(wq.storePath);
 
   // Reset the time-budget flag at the start of each heal pass.
@@ -856,7 +856,7 @@ async function _healStaleVectorsPass(
 ): Promise<StaleHealResult> {
   const activeModel = getActiveEmbedModel() ?? 'unknown';
   const limit = opts?.limit ?? 500;
-  const log = opts?.logSink ?? ((line: string) => console.error(line));
+  const log = opts?.logSink ?? ((line: string) => tlog.debug('embed_pipeline.heal_stale_vectors', { message: line }));
   const metrics = stateFor(wq.storePath);
   const useBinaryFormat = adapter.capabilities.nativeVectors;
   const vectorDialect = await vectorDialectFor(adapter);

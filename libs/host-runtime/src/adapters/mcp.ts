@@ -5,6 +5,7 @@
 
 import { ProcessSupervisor, type LifecycleBlock, type PermissionsBlock } from '../supervisor.js';
 import type { LogManager } from '../log-manager.js';
+import type { RuntimeLogger } from '../logger-types.js';
 
 export interface McpAdapterOptions {
   key: string;
@@ -16,6 +17,8 @@ export interface McpAdapterOptions {
   onRestart?: ((n: number) => void) | undefined;
   /** R4: when set, stdout/stderr from the spawned child are routed to this manager. */
   logManager?: LogManager | undefined;
+  /** ADR-0006: injected logger for diagnostic events. */
+  logger?: RuntimeLogger | undefined;
 }
 
 export interface McpAdapterHandle {
@@ -47,6 +50,7 @@ export async function activateMcp(opts: McpAdapterOptions): Promise<McpAdapterHa
       permissions: opts.permissions,
       onRestart: opts.onRestart,
       logManager: opts.logManager,
+      logger: opts.logger,
     });
 
     await supervisor.start();

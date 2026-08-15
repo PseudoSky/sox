@@ -13,6 +13,8 @@ import type { McpAdapterHandle } from './adapters/mcp.js';
 import { logDirFor, scopeConfigPaths, socketDir, type DataScope } from './data-paths.js';
 import { loadFromLockfile, type LoaderResult } from './loader.js';
 import { acquireStartLock, computeSupervisorId } from './lock.js';
+import type { RuntimeLogger } from './logger-types.js';
+import { createDefaultLogger } from './logger-types.js';
 import { identityToken, killAndVerify, reapByIdentity, reapBySource, type KillOutcome } from './reaper.js';
 import { McpRegistrar } from './registrar.js';
 import { deregisterSupervisor, readSupervisorsFile, registerSupervisor } from './registry.js';
@@ -57,6 +59,12 @@ export interface StartRuntimeOptions {
    * All other lockfile entries are skipped. Used by `soxe start --id=<ext>`.
    */
   filterIds?: string[] | undefined;
+  /**
+   * logger — ADR-0006 injected logger for diagnostic events.
+   * When provided, diagnostic events are emitted to this logger.
+   * When not provided, a default logger preserves existing console output for warn/error.
+   */
+  logger?: RuntimeLogger | undefined;
 }
 
 export interface StopRuntimeOptions {
@@ -73,9 +81,11 @@ const _activeRuntimes = new Map<string, {
 }>();
 
 export async function startRuntime(opts: StartRuntimeOptions): Promise<RuntimeRecord> {
+  const logger = opts.logger ?? createDefaultLogger();
   const existing = _activeRuntimes.get(opts.runtimeFilePath);
   if (existing) {
     console.log(`[runtime] Already started for ${opts.scope} (idempotent — returning existing runtime)`);
+    logger.info('runtime.already_started_idempotent', { scope: opts.scope });
     return readRuntimeRecord(opts.runtimeFilePath) ?? buildEmptyRecord(opts.scope);
   }
 
@@ -87,7 +97,7 @@ export async function startRuntime(opts: StartRuntimeOptions): Promise<RuntimeRe
   const lock = acquireStartLock(supervisorId);
 
   try {
-    return await _startRuntimeLocked(opts, supervisorId, lock);
+    return await _startRuntimeLocked(opts, supervisorId, lock, logger);
   } catch (e) {
     lock.release();
     throw e;
@@ -98,6 +108,7 @@ async function _startRuntimeLocked(
   opts: StartRuntimeOptions,
   supervisorId: string,
   lock: { release: () => void },
+  logger: RuntimeLogger,
 ): Promise<RuntimeRecord> {
   const enabledOverrides = readEnabledOverrides(opts.configPath);
   const sourceMap = readLockfileSourceMap(opts.lockfilePath);
@@ -116,6 +127,7 @@ async function _startRuntimeLocked(
     // can pass overrideHealthToStdioPing: true explicitly.
     overrideMcpHealthToStdioPing: opts.overrideHealthToStdioPing ?? false,
     logDir,
+    logger,
     ...(opts.filterIds !== undefined ? { filterIds: opts.filterIds } : {}),
   });
 
@@ -123,6 +135,11 @@ async function _startRuntimeLocked(
     `[runtime] Activated ${loaderResult.activated.length} extension(s), ` +
     `skipped ${loaderResult.skipped.length}, errors ${loaderResult.errors.length}`,
   );
+  logger.info('runtime.extensions_loaded', {
+    activated: loaderResult.activated.length,
+    skipped: loaderResult.skipped.length,
+    errors: loaderResult.errors.length,
+  });
 
   const registrar = new McpRegistrar();
 
@@ -138,6 +155,7 @@ async function _startRuntimeLocked(
           }
         } catch (e) {
           console.warn(`[runtime] Failed to register ${mcpHandle.key} with MCP registrar: ${String(e)}`);
+          logger.warn('runtime.mcp_registrar_error', { key: mcpHandle.key, error: String(e) });
         }
       }
     }
@@ -220,6 +238,7 @@ async function _startRuntimeLocked(
           `[runtime] exec socket client exceeded ${MAX_EXEC_LINE_BYTES} bytes without a ` +
           `newline — closing connection (BUG-EPIC-WIRE-INPUTS-UNBOUNDED-001)`,
         );
+        logger.error('runtime.exec_socket_buffer_exceeded', { maxBytes: MAX_EXEC_LINE_BYTES });
         socket.destroy();
         return;
       }
@@ -322,11 +341,13 @@ async function _startRuntimeLocked(
 
     socket.on('error', (e) => {
       console.warn(`[runtime] exec socket client error: ${String(e)}`);
+      logger.warn('runtime.exec_socket_client_error', { error: String(e) });
     });
   });
 
   execServer.on('error', (e) => {
     console.warn(`[runtime] exec socket server error (exec will fall back to spawn): ${String(e)}`);
+    logger.warn('runtime.exec_socket_server_error', { error: String(e) });
   });
 
   // Await the listen so execSocketPath is in runtime.json before startRuntime() returns.
