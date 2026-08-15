@@ -24,6 +24,7 @@ import type { McpAdapterHandle } from './adapters/mcp.js';
 import { activateMcp } from './adapters/mcp.js';
 import { HookLoader } from './hook-loader.js';
 import { LogManager } from './log-manager.js';
+import { assertWithinBase, PathEscapeError } from './path-safety.js';
 import { ProcessSupervisor } from './supervisor.js';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -272,7 +273,22 @@ async function processEntry(
     return { type: 'skipped', reason: 'manifest has no entrypoint declared' };
   }
 
+  // BUG-EPIC-MANIFEST-PATH-ESCAPE-001: manifest.entrypoint is untrusted — a
+  // manifest declaring "../../../../.ssh/authorized_keys" (or any path outside
+  // extDir) must never reach the spawn/activation below. Skip (not throw) so
+  // one malicious/corrupt lockfile entry doesn't crash the whole host loader
+  // for every other extension — the security property that matters is that
+  // the escaped path is NEVER activated, which "skipped" guarantees exactly
+  // as well as a thrown error would.
   const entrypointPath = path.resolve(extDir, manifest.entrypoint);
+  try {
+    assertWithinBase(extDir, entrypointPath);
+  } catch (e) {
+    if (e instanceof PathEscapeError) {
+      return { type: 'skipped', reason: `manifest entrypoint escapes extension dir: ${e.message}` };
+    }
+    throw e;
+  }
 
   if (!fs.existsSync(entrypointPath)) {
     return {

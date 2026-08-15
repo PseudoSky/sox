@@ -128,6 +128,7 @@ import {
   verifyIntegrity,
 } from '@adhd/sox-install-engine';
 import { registerBundleMember, resolveBundleDir } from './bundle-init.js';
+import { assertWithinBase, PathEscapeError } from './path-safety.js';
 // @adhd/sox-host-registry is also lazy-required via install-engine; import it lazily here too
 // to avoid the NX "static import of lazy-loaded library" lint error.
 // [inv:host-registry-lazy]: getHost() used only in cmdInstall; require() at call site.
@@ -311,6 +312,41 @@ async function main(): Promise<void> {
  * runs — lands `__dirname` at `dist/apps/sox`, which has no embedded copy of its
  * own. Try both rather than assuming one.
  */
+/**
+ * BUG-EPIC-MANIFEST-PATH-ESCAPE-001: resolve a manifest-declared relative path
+ * (entrypoint, lifecycle.schema_path, …) against the extension directory and
+ * refuse it if it escapes. Manifests are untrusted — extensions install from
+ * a registry and from `file://` sources, and every one of the ~12 call sites
+ * that resolve `manifest.entrypoint`/`manifest.lifecycle.schema_path` in this
+ * file used to do `pathMod.resolve(extDir, manifest.entrypoint)` with no
+ * containment check, then hand the result straight to `spawn`/`readFileSync`.
+ * This is the single choke point they all route through now.
+ *
+ * Throws {@link PathEscapeError} — callers that need a graceful skip instead
+ * of a hard failure (e.g. best-effort reaper/doctor scans over many installed
+ * extensions) should catch it explicitly rather than let it propagate.
+ */
+function resolveManifestPath(extDir: string, relPath: string): string {
+  const pathModHelper = require('node:path') as typeof import('node:path');
+  const resolved = pathModHelper.resolve(extDir, relPath);
+  assertWithinBase(extDir, resolved);
+  return resolved;
+}
+
+/**
+ * Same as {@link resolveManifestPath} but returns null on escape instead of
+ * throwing — for the best-effort reaper/doctor/health scans that already
+ * treat "entrypoint unresolvable" as a valid, non-fatal outcome.
+ */
+function safeResolveManifestPath(extDir: string, relPath: string): string | null {
+  try {
+    return resolveManifestPath(extDir, relPath);
+  } catch (e) {
+    if (e instanceof PathEscapeError) return null;
+    throw e;
+  }
+}
+
 function loadRegistryResolved(cwdRoot: string): ReturnType<typeof loadRegistryIndex> {
   try {
     const fromCwd = loadRegistryIndex(cwdRoot);
@@ -889,7 +925,11 @@ Exit codes:
       const extDir = path.dirname(absPath!);
       // Check the src/ counterpart first (most readable), then the built entrypoint.
       const candidateSrc = path.join(extDir, 'src', 'index.ts');
-      const candidateBuilt = entrypoint ? path.join(extDir, entrypoint) : null;
+      // BUG-EPIC-MANIFEST-PATH-ESCAPE-001: manifest.entrypoint is untrusted —
+      // an escape must not be read (it would leak a file-existence + "does it
+      // contain the string SIGTERM" oracle for an arbitrary path). Treated the
+      // same as "no built entrypoint declared" (this check is advisory-only).
+      const candidateBuilt = entrypoint ? safeResolveManifestPath(extDir, entrypoint) : null;
       const checkPaths = [candidateSrc, ...(candidateBuilt ? [candidateBuilt] : [])];
       let hasSigterm = false;
       for (const p of checkPaths) {
@@ -1865,7 +1905,12 @@ async function cmdBuild(_flags: Record<string, string>): Promise<void> {
 
   // If the entrypoint already exists on disk (e.g. pre-compiled stub from template),
   // the extension is already built — nothing to do.
-  if (entrypoint !== undefined && fsMod.existsSync(pathMod.join(extDir, entrypoint))) {
+  // BUG-EPIC-MANIFEST-PATH-ESCAPE-001: manifest.entrypoint is untrusted — an
+  // escape would otherwise leak a file-existence oracle for an arbitrary path
+  // via this early-exit's stdout/exit-code. Treated as "not present" (safe
+  // default: proceed to the real build below rather than trust the escape).
+  const builtEntrypointPath = entrypoint !== undefined ? safeResolveManifestPath(extDir, entrypoint) : null;
+  if (builtEntrypointPath !== null && fsMod.existsSync(builtEntrypointPath)) {
     process.stdout.write(`${CLI} build: ${id} — entrypoint present, nothing to rebuild\n`);
     process.exit(0);
   }
@@ -2291,7 +2336,16 @@ async function restartProxyBackend(
   }
   const pathM = require('node:path') as typeof import('node:path');
   const fsM = require('node:fs') as typeof import('node:fs');
-  const entrypointPath = pathM.resolve(resolved.extDir, resolved.manifest.entrypoint);
+  // BUG-EPIC-MANIFEST-PATH-ESCAPE-001: manifest.entrypoint is untrusted.
+  let entrypointPath: string;
+  try {
+    entrypointPath = resolveManifestPath(resolved.extDir, resolved.manifest.entrypoint);
+  } catch (e) {
+    if (e instanceof PathEscapeError) {
+      return { disposition: 'reconnect-needed', detail: `refused: ${e.message}` };
+    }
+    throw e;
+  }
 
   // Derive the backend socket + singleton key exactly as cmdServe does.
   const configEnv = buildExtConfigEnv(extId, root);
@@ -2341,8 +2395,14 @@ async function restartProxyBackend(
   // backend env mirroring cmdServe (SOX_CONFIG_* + the backend-mode signal + socket).
   let backendSchemaPath: string | undefined;
   if (resolved.manifest.lifecycle?.schema_path) {
-    const sp = pathM.resolve(resolved.extDir, resolved.manifest.lifecycle.schema_path);
-    if (fsM.existsSync(sp)) backendSchemaPath = sp;
+    // BUG-EPIC-MANIFEST-PATH-ESCAPE-001: manifest.lifecycle.schema_path is untrusted too.
+    try {
+      const sp = resolveManifestPath(resolved.extDir, resolved.manifest.lifecycle.schema_path);
+      if (fsM.existsSync(sp)) backendSchemaPath = sp;
+    } catch (e) {
+      if (!(e instanceof PathEscapeError)) throw e;
+      log(`refused: manifest lifecycle.schema_path escapes extension dir for ${extId}: ${e.message}`);
+    }
   }
   const backendEnv: NodeJS.ProcessEnv = {
     ...process.env,
@@ -3729,7 +3789,9 @@ Options:
           if (extDir !== null && manifestPath !== null && fsMod.existsSync(manifestPath)) {
             const manifest = JSON.parse(fsMod.readFileSync(manifestPath, 'utf8')) as { entrypoint?: string };
             if (manifest.entrypoint) {
-              const entrypointAbs = pathMod.resolve(extDir, manifest.entrypoint);
+              // BUG-EPIC-MANIFEST-PATH-ESCAPE-001: manifest.entrypoint is untrusted;
+              // an escape throws PathEscapeError, caught by the best-effort catch below.
+              const entrypointAbs = resolveManifestPath(extDir, manifest.entrypoint);
               const token = identityToken(`file://${entrypointAbs}`);
               const liveMatches = findOrphansByIdentity(token, { excludePids: [process.pid] });
               if (liveMatches.length > 0) {
@@ -4727,7 +4789,16 @@ function resolveOsUnitContext(
   const fsM = require('node:fs') as typeof import('node:fs');
   const resolved = resolveServeManifest(extId, scope, root);
   if (!resolved || !resolved.manifest.entrypoint) return null;
-  const entrypoint = pathM.resolve(resolved.extDir, resolved.manifest.entrypoint);
+  // BUG-EPIC-MANIFEST-PATH-ESCAPE-001: manifest.entrypoint is untrusted — an
+  // escape is treated the same as "no entrypoint" (refuse to render/enable
+  // the OS unit) rather than silently pointing the unit at the escaped path.
+  let entrypoint: string;
+  try {
+    entrypoint = resolveManifestPath(resolved.extDir, resolved.manifest.entrypoint);
+  } catch (e) {
+    if (e instanceof PathEscapeError) return null;
+    throw e;
+  }
 
   const platform = getOsUnitPlatform(
     (flags['supervisor'] as OsSupervisor | undefined) ?? detectOsSupervisor(),
@@ -5550,7 +5621,15 @@ async function doctorReconcile(flags: Record<string, string>): Promise<void> {
     } catch { continue; }
     if (manifest.type !== 'service' && manifest.type !== 'mcp-server') continue;
     if (!manifest.entrypoint) continue;
-    const entrypointPath = pathMod.resolve(extDir, manifest.entrypoint);
+    // BUG-EPIC-MANIFEST-PATH-ESCAPE-001: manifest.entrypoint is untrusted; an
+    // escaping entry is skipped (never scanned/matched) rather than resolved.
+    let entrypointPath: string;
+    try {
+      entrypointPath = resolveManifestPath(extDir, manifest.entrypoint);
+    } catch (e) {
+      if (e instanceof PathEscapeError) continue;
+      throw e;
+    }
     const token = identityToken(`file://${entrypointPath}`);
 
     const matches: ReconcileMatch[] = findOrphansByServiceId(inst.extId, token, {
@@ -5968,7 +6047,15 @@ async function cmdDoctor(flags: Record<string, string>): Promise<void> {
       continue;
     }
     if (!manifest.entrypoint) continue;
-    const entrypointPath = pathMod.resolve(extDir, manifest.entrypoint);
+    // BUG-EPIC-MANIFEST-PATH-ESCAPE-001: manifest.entrypoint is untrusted; an
+    // escaping entry is skipped rather than resolved.
+    let entrypointPath: string;
+    try {
+      entrypointPath = resolveManifestPath(extDir, manifest.entrypoint);
+    } catch (e) {
+      if (e instanceof PathEscapeError) continue;
+      throw e;
+    }
 
     // Match by service identity env var (SOX_SERVICE_ID).
     let matches: Array<{ pid: number; ppid: number; orphaned: boolean }>;
@@ -7075,8 +7162,10 @@ async function cmdStatus(flags: Record<string, string>): Promise<void> {
       if (manifest.type !== 'service' && manifest.type !== 'mcp-server') continue;
 
       // Check for orphan processes still running.
+      // BUG-EPIC-MANIFEST-PATH-ESCAPE-001: manifest.entrypoint is untrusted;
+      // an escape is treated as unresolvable (null), same as "no entrypoint".
       const entrypointPath = manifest.entrypoint
-        ? pathMod.resolve(extDir, manifest.entrypoint)
+        ? safeResolveManifestPath(extDir, manifest.entrypoint)
         : null;
       let orphanPids: number[] = [];
       if (entrypointPath) {
@@ -7136,8 +7225,10 @@ async function cmdStatus(flags: Record<string, string>): Promise<void> {
       } catch { continue; }
       if (!manifest.type || (manifest.type !== 'service' && manifest.type !== 'mcp-server')) continue;
 
+      // BUG-EPIC-MANIFEST-PATH-ESCAPE-001: manifest.entrypoint is untrusted;
+      // an escape is treated as unresolvable (null), same as "no entrypoint".
       const entrypointPath = manifest.entrypoint
-        ? pathMod.resolve(extDir, manifest.entrypoint)
+        ? safeResolveManifestPath(extDir, manifest.entrypoint)
         : null;
       const token = entrypointPath ? identityToken(`file://${entrypointPath}`) : '';
 
@@ -8300,7 +8391,18 @@ Flags:
     process.exit(1);
   }
 
-  const entrypointPath2 = pathMod2.resolve(extDir2, manifest2.entrypoint);
+  // BUG-EPIC-MANIFEST-PATH-ESCAPE-001: manifest.entrypoint is untrusted — refuse
+  // before it can steer the spawned process outside its own extension dir.
+  let entrypointPath2: string;
+  try {
+    entrypointPath2 = resolveManifestPath(extDir2, manifest2.entrypoint);
+  } catch (e) {
+    if (e instanceof PathEscapeError) {
+      process.stderr.write(`${CLI} serve: REFUSED — ${e.message}\n`);
+      process.exit(1);
+    }
+    throw e;
+  }
   if (!fsMod2.existsSync(entrypointPath2)) {
     process.stderr.write(`${CLI} serve: entrypoint not found at ${entrypointPath2}\n`);
     process.exit(1);
@@ -8421,9 +8523,14 @@ Flags:
     let schemaCachePath: string | undefined;
     let backendSchemaPath: string | undefined;
     if (manifest2.lifecycle?.schema_path) {
-      const sp = pathMod2.resolve(extDir2, manifest2.lifecycle.schema_path);
-      backendSchemaPath = sp;
-      if (fsMod2.existsSync(sp)) schemaCachePath = sp;
+      // BUG-EPIC-MANIFEST-PATH-ESCAPE-001: schema_path is untrusted and
+      // optional — an escape is treated as "no schema_path declared" rather
+      // than a hard failure of serve.
+      const sp = safeResolveManifestPath(extDir2, manifest2.lifecycle.schema_path);
+      if (sp !== null) {
+        backendSchemaPath = sp;
+        if (fsMod2.existsSync(sp)) schemaCachePath = sp;
+      }
     }
 
     // The backend is spawned in BACKEND mode with the SAME entrypoint + policy-env +
@@ -8707,8 +8814,10 @@ Examples:
         try { manifest2 = JSON.parse(fsMod.readFileSync(manifestPath2, 'utf8')) as typeof manifest2; }
         catch { continue; }
         if (!manifest2.entrypoint) continue;
-        const entrypointPath2 = pathMod2.resolve(extDir2, manifest2.entrypoint);
-        if (!fsMod.existsSync(entrypointPath2)) continue;
+        // BUG-EPIC-MANIFEST-PATH-ESCAPE-001: manifest.entrypoint is untrusted
+        // and about to be spawned directly — an escaping entry is skipped.
+        const entrypointPath2 = safeResolveManifestPath(extDir2, manifest2.entrypoint);
+        if (entrypointPath2 === null || !fsMod.existsSync(entrypointPath2)) continue;
         const child2 = spawnMcp(process.execPath, ['--enable-source-maps', entrypointPath2], {
           stdio: ['pipe', 'pipe', 'ignore'],
           env: { ...process.env },
@@ -8975,7 +9084,18 @@ Examples:
     execEnv = { ...process.env, ...extConfigEnv };
   }
 
-  const entrypointPath = pathMod.resolve(extDir, manifest.entrypoint);
+  // BUG-EPIC-MANIFEST-PATH-ESCAPE-001: manifest.entrypoint is untrusted —
+  // refuse before it can steer the spawned process outside its extension dir.
+  let entrypointPath: string;
+  try {
+    entrypointPath = resolveManifestPath(extDir, manifest.entrypoint);
+  } catch (e) {
+    if (e instanceof PathEscapeError) {
+      process.stderr.write(`${CLI} exec: REFUSED — ${e.message}\n`);
+      process.exit(1);
+    }
+    throw e;
+  }
   if (!fsMod.existsSync(entrypointPath)) {
     process.stderr.write(`${CLI} exec: entrypoint not found at ${entrypointPath}\n`);
     process.exit(1);

@@ -16,6 +16,7 @@ import type { ScopeConfig as CascadeScopeConfig, ResolvedConfigMap } from './cas
 import { cascade } from './cascade.js';
 import { ownershipPathFor, scopeConfigPaths, storeRootFor } from './data-paths.js';
 import { upsertInstallRecord } from './install-registry.js';
+import { assertWithinBase } from './path-safety.js';
 import { checkProviderCapabilities } from './provider-capabilities.js';
 // verify-integrity imports from this module (install.ts); the cycle is safe
 // because verifyIntegrity is only invoked at runtime, never at module-eval time.
@@ -270,13 +271,20 @@ export function resolveFromRegistry(
 function resolveEntrypointFile(dir: string): string {
   const extJson = path.join(dir, 'extension.json');
   if (fs.existsSync(extJson)) {
+    let manifest: { entrypoint?: string } | undefined;
     try {
-      const manifest = JSON.parse(fs.readFileSync(extJson, 'utf8')) as { entrypoint?: string };
-      if (typeof manifest.entrypoint === 'string' && manifest.entrypoint.trim() !== '') {
-        const declared = path.join(dir, manifest.entrypoint);
-        if (fs.existsSync(declared)) return declared;
-      }
-    } catch { /* fall through */ }
+      manifest = JSON.parse(fs.readFileSync(extJson, 'utf8')) as { entrypoint?: string };
+    } catch { /* unparseable extension.json — fall through to the artifact chain */ }
+    if (manifest !== undefined && typeof manifest.entrypoint === 'string' && manifest.entrypoint.trim() !== '') {
+      // BUG-EPIC-MANIFEST-PATH-ESCAPE-001: manifest.entrypoint is untrusted —
+      // refuse anything that resolves outside the extension dir before ever
+      // touching the filesystem with it. Deliberately NOT caught by the
+      // parse try/catch above: an escape attempt must hard-fail the install,
+      // not silently fall through to a default entrypoint.
+      const declared = path.join(dir, manifest.entrypoint);
+      assertWithinBase(dir, declared);
+      if (fs.existsSync(declared)) return declared;
+    }
   }
   const distJs = path.join(dir, 'dist', 'index.js');
   if (fs.existsSync(distJs)) return distJs;
@@ -360,13 +368,19 @@ export async function fetchArtifact(
         //  3. prompt.md (declarative prompt types)
         //  4. extension.json (final fallback for bundles / bare manifests)
         if (fs.existsSync(extJson)) {
+          let manifest: { entrypoint?: string } | undefined;
           try {
-            const manifest = JSON.parse(fs.readFileSync(extJson, 'utf8')) as { entrypoint?: string };
-            if (typeof manifest.entrypoint === 'string' && manifest.entrypoint.trim() !== '') {
-              const declared = path.join(filePath, manifest.entrypoint);
-              if (fs.existsSync(declared)) contentPath = declared;
-            }
+            manifest = JSON.parse(fs.readFileSync(extJson, 'utf8')) as { entrypoint?: string };
           } catch { /* unparseable extension.json — fall through */ }
+          if (manifest !== undefined && typeof manifest.entrypoint === 'string' && manifest.entrypoint.trim() !== '') {
+            // BUG-EPIC-MANIFEST-PATH-ESCAPE-001: manifest.entrypoint is untrusted.
+            // Deliberately NOT caught by the parse try/catch above — an escape
+            // attempt must hard-fail fetchArtifact, not silently read some other
+            // file's bytes as this extension's checksum content.
+            const declared = path.join(filePath, manifest.entrypoint);
+            assertWithinBase(filePath, declared);
+            if (fs.existsSync(declared)) contentPath = declared;
+          }
         }
 
         if (contentPath === extJson) {
@@ -1378,7 +1392,12 @@ export async function declarativeInstall(
   if (isServiceInstall) {
     const { apply: runServiceApply } = await import('./capabilities/run-service.js');
     const storeDir = path.join(scopeRoot, 'ext');
+    // BUG-EPIC-MANIFEST-PATH-ESCAPE-001: descriptor.ext is the CLI-supplied
+    // extension id (apps/sox/src/main.ts passes the raw positional argument
+    // through unvalidated) — refuse an id like "../../etc" before it can steer
+    // the materialized store path outside storeDir.
     const storePath = path.join(storeDir, descriptor.ext);
+    assertWithinBase(storeDir, storePath);
 
     // --dry-run: plan only — report the materialize target WITHOUT writing
     // (no bundle copy, no extension.json rewrite, no run-service registration,
@@ -1559,8 +1578,11 @@ export async function declarativeInstall(
         // BL-566: agent file-drops land as a single top-level <id>.md, not a dir.
         planTarget = path.extname(absTarget) !== ''
           ? absTarget
+          // BUG-EPIC-MANIFEST-PATH-ESCAPE-001: descriptor.ext is the CLI-supplied
+          // extension id — assertWithinBase refuses an id like "../../etc" before
+          // it can steer the reported plan target outside absTarget.
           : descriptor.type === 'agent'
-            ? path.join(absTarget, `${descriptor.ext}.md`)
+            ? assertWithinBase(absTarget, path.join(absTarget, `${descriptor.ext}.md`))
             : path.join(absTarget, path.basename(descriptor.srcPath));
       }
       results.push({
@@ -1612,7 +1634,10 @@ export async function declarativeInstall(
       if (targetHasExt) {
         destPath = absTarget;
       } else if (descriptor.type === 'agent') {
-        destPath = path.join(absTarget, `${descriptor.ext}.md`);
+        // BUG-EPIC-MANIFEST-PATH-ESCAPE-001: descriptor.ext is the CLI-supplied
+        // extension id — refuse before it can steer the real write target
+        // outside absTarget.
+        destPath = assertWithinBase(absTarget, path.join(absTarget, `${descriptor.ext}.md`));
       } else {
         destPath = path.join(absTarget, path.basename(descriptor.srcPath));
       }
@@ -1937,13 +1962,19 @@ export async function declarativeInstall(
       const extJson = path.join(descriptor.srcPath, 'extension.json');
       let artifactPath: string | undefined;
       if (fs.existsSync(extJson)) {
+        let manifest: { entrypoint?: string } | undefined;
         try {
-          const manifest = JSON.parse(fs.readFileSync(extJson, 'utf8')) as { entrypoint?: string };
-          if (typeof manifest.entrypoint === 'string' && manifest.entrypoint.trim() !== '') {
-            const declared = path.join(descriptor.srcPath, manifest.entrypoint);
-            if (fs.existsSync(declared)) artifactPath = declared;
-          }
-        } catch { /* fall through */ }
+          manifest = JSON.parse(fs.readFileSync(extJson, 'utf8')) as { entrypoint?: string };
+        } catch { /* unparseable extension.json — fall through */ }
+        if (manifest !== undefined && typeof manifest.entrypoint === 'string' && manifest.entrypoint.trim() !== '') {
+          // BUG-EPIC-MANIFEST-PATH-ESCAPE-001: manifest.entrypoint is untrusted.
+          // Deliberately NOT caught here — propagates to the outer try/catch
+          // below, which warns and skips the lockfile sync rather than hashing
+          // an attacker-chosen file outside the extension dir into the lockfile.
+          const declared = path.join(descriptor.srcPath, manifest.entrypoint);
+          assertWithinBase(descriptor.srcPath, declared);
+          if (fs.existsSync(declared)) artifactPath = declared;
+        }
       }
       if (!artifactPath) {
         const distJs = path.join(descriptor.srcPath, 'dist', 'index.js');
