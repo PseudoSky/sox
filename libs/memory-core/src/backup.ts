@@ -40,6 +40,7 @@ import type { StorageError } from './errors.js';
 import { expandDbPath } from './db.js';
 import { resolveBackupConfig } from './config.js';
 import type { BackupIntegrityReport, StoreAdapter } from '@adhd/sox-store-adapter';
+import { log as tlog } from './telemetry.js';
 
 // ── Public types ──────────────────────────────────────────────────────────────
 
@@ -229,7 +230,9 @@ export async function backupStore(
       // Integrity failed — delete the corrupt backup and return E_IO, naming
       // the backend so an operator does not chase corruption on a healthy
       // store just because a different driver misread it (BL-385).
-      try { fs.unlinkSync(resolvedDst); } catch { /* ignore */ }
+      try { fs.unlinkSync(resolvedDst); } catch (err) {
+        tlog.debug('backup.cleanup_corrupt_file_failed', { path: resolvedDst, error: err instanceof Error ? err.message : String(err) });
+      }
       return {
         code: 'E_IO',
         message: `Backup integrity check failed on ${backend} backend: ${result.integrityCheck}. Backup file deleted.`,
@@ -282,14 +285,18 @@ export async function backupStore(
     return out;
   } catch (err) {
     // Clean up a partial dest file if it was created.
-    try { if (fs.existsSync(resolvedDst)) fs.unlinkSync(resolvedDst); } catch { /* ignore */ }
+    try { if (fs.existsSync(resolvedDst)) fs.unlinkSync(resolvedDst); } catch (cleanupErr) {
+      tlog.debug('backup.cleanup_partial_file_failed', { path: resolvedDst, error: cleanupErr instanceof Error ? cleanupErr.message : String(cleanupErr) });
+    }
     return {
       code: 'E_IO',
       message: `Backup failed on ${backend} backend: ${err instanceof Error ? err.message : String(err)}`,
       retryable: false,
     };
   } finally {
-    try { await srcAdapter?.close(); } catch { /* ignore */ }
+    try { await srcAdapter?.close(); } catch (err) {
+      tlog.debug('backup.adapter_close_failed', { error: err instanceof Error ? err.message : String(err) });
+    }
   }
 }
 

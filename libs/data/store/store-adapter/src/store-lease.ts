@@ -18,6 +18,7 @@
 import { mkdirSync, writeFileSync, readFileSync, readdirSync, unlinkSync } from 'node:fs';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
+import { log } from '@adhd/sox-telemetry';
 
 export interface StoreLease {
   token: string;
@@ -106,8 +107,12 @@ export function entryLiveness(
 function sweepEntry(entryPath: string): void {
   try {
     unlinkSync(entryPath);
-  } catch {
+  } catch (err) {
     // ENOENT or transient fs error — the sweep is idempotent.
+    log.debug('store_adapter.lease.sweep_entry_failed', {
+      path: entryPath,
+      reason: 'ENOENT or transient fs error; sweep is idempotent',
+    });
   }
 }
 
@@ -163,8 +168,13 @@ export function storeQuiescence(dbPath: string, excludeToken?: string): StoreQui
     let names: string[];
     try {
       names = readdirSync(leaseDirPath(dbPath));
-    } catch {
-      return safe; // absent/unreadable dir ⇒ quiescent, never throws
+    } catch (err) {
+      // absent/unreadable dir ⇒ quiescent, never throws
+      log.debug('store_adapter.lease.readdir_failed', {
+        db_path: dbPath,
+        reason: 'absent or unreadable lease dir; treating as quiescent',
+      });
+      return safe;
     }
     const livePeers: { token: string; pid: number }[] = [];
     const now = Date.now();
@@ -178,8 +188,13 @@ export function storeQuiescence(dbPath: string, excludeToken?: string): StoreQui
       let content: string;
       try {
         content = readFileSync(entryPath, 'utf8');
-      } catch {
-        continue; // ENOENT (concurrent release) or unreadable — not a peer
+      } catch (err) {
+        // ENOENT (concurrent release) or unreadable — not a peer
+        log.debug('store_adapter.lease.read_entry_failed', {
+          entry: name,
+          reason: 'ENOENT or unreadable entry; treating as not a peer',
+        });
+        continue;
       }
       const info = entryLiveness(content, now);
       if (info === null) continue; // unparseable — not a peer
@@ -190,7 +205,12 @@ export function storeQuiescence(dbPath: string, excludeToken?: string): StoreQui
       }
     }
     return { quiescent: livePeers.length === 0, livePeers };
-  } catch {
-    return safe; // NEVER throws — any fs error ⇒ quiescent
+  } catch (err) {
+    // NEVER throws — any fs error ⇒ quiescent
+    log.debug('store_adapter.lease.quiescence_check_failed', {
+      db_path: dbPath,
+      reason: 'any fs error; treating as quiescent',
+    });
+    return safe;
   }
 }

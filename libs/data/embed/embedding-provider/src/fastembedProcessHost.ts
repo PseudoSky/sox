@@ -59,7 +59,7 @@
 
 import * as fs from 'node:fs';
 import type { EmbeddingModel, ExecutionProvider } from 'fastembed';
-import { initTelemetry } from '@adhd/sox-telemetry';
+import { initTelemetry, log } from '@adhd/sox-telemetry';
 import { resolveFastembedLockPath, type FastembedLockInfo } from './fastembedLock.js';
 // BUG-005: MODEL_MAP + resolveModelDim live in the side-effect-free
 // `fastembedModels.js` (see its doc comment — importing them from
@@ -142,23 +142,29 @@ export function checkAndClaimFastembedLock(): void {
         prev.pid !== process.pid &&
         isPidAlive(prev.pid)
       ) {
-        console.error(
-          `[fastembed] WARNING (BL-331): another fastembed host process (pid ${prev.pid}, ` +
+        const msg = `another fastembed host process (pid ${prev.pid}, ` +
             `started ${prev.startedAt ?? 'unknown'}) is ALREADY RUNNING on this machine. ` +
             `Concurrent onnxruntime-node CoreML/ANE execution across separate OS processes has ` +
             `been observed to cause severe (25-50x) embed latency due to Neural Engine/hardware ` +
             `queue contention, even though each process's own CPU usage looks low (it is waiting, ` +
             `not computing). If pid ${prev.pid} is a leaked/orphaned process (check with ` +
-            `\`ps -p ${prev.pid}\`), terminate it. Lock file: ${lockPath}`,
-        );
+            `\`ps -p ${prev.pid}\`), terminate it. Lock file: ${lockPath}`;
+        console.error(`[fastembed] WARNING (BL-331): ${msg}`);
+        log.warn('embedding_provider.fastembed.competing_host_detected', {
+          competing_pid: prev.pid,
+          competing_started_at: prev.startedAt ?? 'unknown',
+          lock_file: lockPath,
+        });
       }
     }
   } catch (err) {
     // Never let a malformed/unreadable lock file block real startup — this
     // is a pure observability aid, not a correctness mechanism.
-    console.error(
-      `[fastembed] BL-331 lock check failed (non-fatal): ${err instanceof Error ? err.message : String(err)}`,
-    );
+    const errMsg = err instanceof Error ? err.message : String(err);
+    console.error(`[fastembed] BL-331 lock check failed (non-fatal): ${errMsg}`);
+    log.warn('embedding_provider.fastembed.lock_check_failed', {
+      error: errMsg,
+    });
   }
 
   try {
@@ -218,6 +224,9 @@ function resolveExecutionProviders(): ExecutionProvider[] {
   const forced = process.env.SOX_EMBED_EXECUTION_PROVIDER;
   if (forced) {
     console.error(`[fastembed] Using forced execution provider: ${forced}`);
+    log.info('embedding_provider.fastembed.execution_provider_forced', {
+      provider: forced,
+    });
     return [forced as ExecutionProvider, 'cpu' as ExecutionProvider];
   }
   if (process.platform === 'darwin') return ['coreml' as ExecutionProvider, 'cpu' as ExecutionProvider];

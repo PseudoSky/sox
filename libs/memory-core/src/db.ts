@@ -159,12 +159,10 @@ export async function verifyStoreMeta(adapter: StoreAdapter): Promise<void> {
   const storedModel = meta.get(STORE_META_KEYS.EMBED_MODEL);
   const runtimeModel = getActiveEmbedModel();
   if (storedModel !== undefined && storedModel !== 'unknown' && runtimeModel !== null && storedModel !== runtimeModel) {
-    console.error(
-      `[sox-memory] WARNING: store was stamped with embed_model "${storedModel}" ` +
-        `but the current runtime has "${runtimeModel}". ` +
-        `Vectors may be in a different embedding space. ` +
-        `Run "memory reembed --force" to re-embed in the current model.`,
-    );
+    log.warn('db.embed_model_mismatch', {
+      stored_model: storedModel,
+      runtime_model: runtimeModel,
+    });
   }
 }
 

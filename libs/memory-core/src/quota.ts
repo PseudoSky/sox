@@ -20,6 +20,7 @@
 import type { StoreAdapter } from '@adhd/sox-store-adapter';
 import * as fs from 'node:fs';
 import type { StorageError } from './errors.js';
+import { log } from './telemetry.js';
 
 // ── Public types ──────────────────────────────────────────────────────────────
 
@@ -38,7 +39,7 @@ export interface QuotaConfig {
   hardBytes?: number;
   /**
    * Warning callback. Called when current_bytes > softBytes.
-   * Default: console.warn.
+   * Default: log.warn.
    */
   warn?: (msg: string, details: QuotaWarningDetails) => void;
 }
@@ -78,7 +79,7 @@ export const DEFAULT_HARD_BYTES = 1024 * 1024 * 1024;
  * Check the current store size against soft and hard quotas.
  *
  * - If current > hard → returns E_IO structured refusal (caller must not write).
- * - If current > soft → emits warning via config.warn (or console.warn), returns ok.
+ * - If current > soft → emits warning via config.warn (or log.warn), returns ok.
  * - Otherwise          → returns ok.
  *
  * Uses the filesystem stat of the DB file (the main `.db` file; WAL/shm are tracked
@@ -96,7 +97,7 @@ export async function checkStoreQuota(
 ): Promise<QuotaCheckResult> {
   const softBytes = config.softBytes ?? DEFAULT_SOFT_BYTES;
   const hardBytes = config.hardBytes ?? DEFAULT_HARD_BYTES;
-  const warnFn = config.warn ?? ((msg: string, _d: QuotaWarningDetails) => console.warn(msg));
+  const warnFn = config.warn ?? ((msg: string, _d: QuotaWarningDetails) => log.warn('quota.soft_exceeded', { message: msg }));
 
   const dbPath = adapter.config.dbPath ?? '';
 

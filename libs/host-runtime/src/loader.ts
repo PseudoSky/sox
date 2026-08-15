@@ -24,6 +24,8 @@ import type { McpAdapterHandle } from './adapters/mcp.js';
 import { activateMcp } from './adapters/mcp.js';
 import { HookLoader } from './hook-loader.js';
 import { LogManager } from './log-manager.js';
+import type { RuntimeLogger } from './logger-types.js';
+import { createDefaultLogger } from './logger-types.js';
 import { assertWithinBase, PathEscapeError } from './path-safety.js';
 import { ProcessSupervisor } from './supervisor.js';
 
@@ -127,6 +129,12 @@ export interface LoaderOptions {
    * Typically: ~/.sox/logs/<supervisorId>
    */
   logDir?: string | undefined;
+  /**
+   * logger — ADR-0006 injected logger for diagnostic events.
+   * When provided, diagnostic events are emitted to this logger.
+   * When not provided, a default logger preserves existing console output for warn/error.
+   */
+  logger?: RuntimeLogger | undefined;
 }
 
 // ─── Constants ────────────────────────────────────────────────────────────────
@@ -153,6 +161,7 @@ export async function loadFromLockfile(opts: LoaderOptions = {}): Promise<Loader
   const commandRegistry = opts.commandRegistry ?? new CommandRegistry();
   const env = opts.env ?? {};
   const enabledOverrides = opts.enabledOverrides ?? {};
+  const logger = opts.logger ?? createDefaultLogger();
 
   const resolvedConfigMap = opts.resolvedConfigMap ?? {};
   const hasResolvedConfigMap = opts.resolvedConfigMap !== undefined;
@@ -165,6 +174,7 @@ export async function loadFromLockfile(opts: LoaderOptions = {}): Promise<Loader
 
   if (!fs.existsSync(lockfilePath)) {
     console.log(`[loader] No lockfile at ${lockfilePath} — nothing to load`);
+    logger.info('loader.no_lockfile', { lockfilePath });
     return { activated, skipped, errors, hookLoader, commandRegistry };
   }
 
@@ -173,11 +183,13 @@ export async function loadFromLockfile(opts: LoaderOptions = {}): Promise<Loader
     lockfile = JSON.parse(fs.readFileSync(lockfilePath, 'utf8')) as Lockfile;
   } catch (e) {
     console.error(`[loader] Failed to parse lockfile at ${lockfilePath}: ${String(e)}`);
+    logger.error('loader.lockfile_parse_error', { lockfilePath, error: String(e) });
     return { activated, skipped, errors, hookLoader, commandRegistry };
   }
 
   if (!lockfile.resolved || typeof lockfile.resolved !== 'object') {
     console.log(`[loader] Lockfile has no resolved entries`);
+    logger.info('loader.no_resolved_entries', { lockfilePath });
     return { activated, skipped, errors, hookLoader, commandRegistry };
   }
 
@@ -202,6 +214,7 @@ export async function loadFromLockfile(opts: LoaderOptions = {}): Promise<Loader
         hasResolvedConfigMap,
         overrideMcpHealthToStdioPing,
         logDir,
+        logger,
       });
 
       if (result.type === 'activated') {
@@ -209,10 +222,12 @@ export async function loadFromLockfile(opts: LoaderOptions = {}): Promise<Loader
       } else if (result.type === 'skipped') {
         skipped.push({ key, reason: result.reason });
         console.log(`[loader] Skipping "${key}": ${result.reason}`);
+        logger.info('loader.extension_skipped', { key, reason: result.reason });
       }
     } catch (e) {
       errors.push({ key, error: e });
       console.error(`[loader] Error activating "${key}": ${String(e)}`);
+      logger.error('loader.extension_activation_error', { key, error: String(e) });
     }
   }
 
@@ -238,6 +253,7 @@ async function processEntry(
     hasResolvedConfigMap: boolean;
     overrideMcpHealthToStdioPing: boolean;
     logDir?: string | undefined;
+    logger: RuntimeLogger;
   },
 ): Promise<ProcessResult> {
   const baseId = key.includes('@') ? key.slice(0, key.lastIndexOf('@')) : key;
@@ -336,6 +352,7 @@ async function processEntry(
     console.log(
       `[loader] "${key}": injecting ${Object.keys(configEnv).length} config key(s) as SOX_CONFIG_* env vars`,
     );
+    ctx.logger.info('loader.config_injection', { key, configKeyCount: Object.keys(configEnv).length });
   }
 
   if (manifest.permissions) {
@@ -344,16 +361,19 @@ async function processEntry(
       console.log(
         `[loader] "${key}": fs permissions declared — read=${JSON.stringify(perms.fs.read ?? [])}, write=${JSON.stringify(perms.fs.write ?? [])} (enforcement: advisory for in-process, env-gated for spawned)`,
       );
+      ctx.logger.info('loader.fs_permissions_declared', { key, read: perms.fs.read, write: perms.fs.write });
     }
     if (perms.network) {
       console.log(
         `[loader] "${key}": network permissions declared — outbound=${JSON.stringify(perms.network.outbound ?? [])} (enforcement: advisory)`,
       );
+      ctx.logger.info('loader.network_permissions_declared', { key, outbound: perms.network.outbound });
     }
     if (perms.socket) {
       console.log(
         `[loader] "${key}": socket permissions declared — paths=${JSON.stringify(perms.socket.paths ?? [])} (enforcement: advisory)`,
       );
+      ctx.logger.info('loader.socket_permissions_declared', { key, paths: perms.socket.paths });
     }
   }
 
@@ -380,6 +400,7 @@ async function dispatchToAdapter(
     hookLoader: HookLoader;
     commandRegistry: CommandRegistry;
     env: Record<string, string>;
+    logger: RuntimeLogger;
   },
   overrideMcpHealthToStdioPing = false,
   logDir?: string | undefined,
@@ -411,6 +432,7 @@ async function dispatchToAdapter(
         lifecycle: effectiveLifecycle,
         permissions: manifest.permissions,
         logManager,
+        logger: ctx.logger,
       });
     }
 
@@ -476,10 +498,12 @@ async function dispatchToAdapter(
         permissions: manifest.permissions,
         storePath,
         logManager: serviceLogManager,
+        logger: ctx.logger,
       });
 
       await supervisor.start();
       console.log(`[loader] service "${key}" started (pid=${String(supervisor.pid())})`);
+      ctx.logger.info('loader.service_started', { key, pid: supervisor.pid() });
 
       const handle: ServiceAdapterHandle = {
         key,

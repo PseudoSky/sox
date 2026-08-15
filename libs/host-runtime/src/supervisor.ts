@@ -28,6 +28,8 @@ import * as path from 'node:path';
 import { CrashLoopGuard } from './crash-loop.js';
 import { scrubEnvReported } from './env-policy.js';
 import type { LogManager } from './log-manager.js';
+import type { RuntimeLogger } from './logger-types.js';
+import { createDefaultLogger } from './logger-types.js';
 import { compilePolicy, type Policy } from './policy.js';
 
 export interface LifecycleHealth {
@@ -71,6 +73,12 @@ export interface SupervisorOptions {
    * logManager.write(). The manager owns the write stream and handles rotation.
    */
   logManager?: LogManager | undefined;
+  /**
+   * logger — ADR-0006 injected logger for diagnostic events.
+   * When provided, diagnostic events are emitted to this logger.
+   * When not provided, a default logger preserves existing console output for warn/error.
+   */
+  logger?: RuntimeLogger | undefined;
   /**
    * crashLoop — [inv:crash-loop-cap] (spec §11.3, Slice 3).
    * Bounds the unexpected-exit restart loop: after `maxFailures` unexpected exits
@@ -120,6 +128,7 @@ export class ProcessSupervisor {
   private readonly _policy: Policy;
   private readonly _storePath: string | undefined;
   private readonly _logManager: LogManager | undefined;
+  private readonly _logger: RuntimeLogger;
 
   private _proc: ChildProcess | null = null;
   private _healthy = false;
@@ -141,6 +150,8 @@ export class ProcessSupervisor {
     this._onRestart = opts.onRestart;
     this._storePath = opts.storePath;
     this._logManager = opts.logManager;
+    // ADR-0006: use injected logger or default
+    this._logger = opts.logger ?? createDefaultLogger();
     // [process-boundary] Compile policy once at construction.
     // compilePolicy(undefined) → enforced=false (legacy compat, [inv:no-regress]).
     // compilePolicy(perms)     → enforced=true  ([def:enforcement-opt-in]).
@@ -385,6 +396,7 @@ export class ProcessSupervisor {
           this._healthy = false;
           const line = this._crashLoop.giveUpLine();
           console.error(`[supervisor] ${line}`);
+          this._logger.error('supervisor.crash_loop_capped', { key: this._key, line });
           if (this._logManager) this._logManager.write(Buffer.from(`${line}\n`));
           return; // give up — NO respawn scheduled
         }
@@ -395,6 +407,13 @@ export class ProcessSupervisor {
           `[supervisor] "${this._key}" exited (code=${String(code)}, signal=${String(signal)}), ` +
           `restarting in ${backoffMs}ms (attempt ${this._restartCount})`,
         );
+        this._logger.info('supervisor.process_exited_restarting', {
+          key: this._key,
+          exitCode: code,
+          signal,
+          backoffMs,
+          restartAttempt: this._restartCount,
+        });
         setTimeout(() => {
           void this._respawn();
         }, backoffMs);

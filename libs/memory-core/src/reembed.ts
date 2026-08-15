@@ -69,6 +69,7 @@ import { createEmbeddingProvider } from '@adhd/sox-embedding-provider';
 import { EMBED_DIM, vecToJson, vecToBuffer } from './embed.js';
 import { openDb, expandDbPath } from './db.js';
 import type { StoreAdapter } from '@adhd/sox-store-adapter';
+import { log as tlog } from './telemetry.js';
 
 // ── Public types ──────────────────────────────────────────────────────────────
 
@@ -83,7 +84,7 @@ export interface ReembedStoreOptions {
   backend?: string;
   /** Maximum nodes to re-embed (0 = no limit). Default: 0. */
   limit?: number;
-  /** Structured logger. Defaults to console.log. */
+  /** Structured logger. Defaults to log.debug. */
   log?: (...args: unknown[]) => void;
 }
 
@@ -182,7 +183,7 @@ export async function reembedStore(
     backup = true,
     backend: backendEnv = 'real',
     limit = 0,
-    log = (...args: unknown[]) => console.log(...args),
+    log = (...args: unknown[]) => tlog.debug('reembed', { message: args.join(' ') }),
   } = opts;
 
   // Resolve and verify the DB path.

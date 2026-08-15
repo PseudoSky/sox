@@ -10,6 +10,7 @@
  */
 
 import { createRequire } from 'node:module';
+import { log } from '@adhd/sox-telemetry';
 import type { StoreAdapter, AdapterMeta } from './types.js';
 
 const require = createRequire(import.meta.url);
@@ -109,7 +110,11 @@ export async function consumeUncleanShutdownFlag(adapter: StoreAdapter): Promise
     const unclean = row !== null && row.value !== '1';
     await adapter.executeRun(STAMP_SQL, [CLEAN_SHUTDOWN_KEY, '0']);
     return unclean;
-  } catch {
+  } catch (err) {
+    log.debug('store_adapter.meta.consume_unclean_failed', {
+      db_path: adapter.config.dbPath,
+      reason: 'table missing or transient error; assuming clean shutdown',
+    });
     return false;
   }
 }
@@ -119,8 +124,12 @@ export async function markCleanShutdown(adapter: StoreAdapter): Promise<void> {
   if (adapter.config.readonly === true) return;
   try {
     await adapter.executeRun(STAMP_SQL, [CLEAN_SHUTDOWN_KEY, '1']);
-  } catch {
+  } catch (err) {
     // Non-fatal — a missing marker only escalates the next open's verify depth.
+    log.debug('store_adapter.meta.mark_clean_shutdown_failed', {
+      db_path: adapter.config.dbPath,
+      reason: 'table missing or transient error; non-fatal, escalates next open verify depth',
+    });
   }
 }
 
@@ -138,8 +147,12 @@ export async function readAdapterMeta(adapter: StoreAdapter): Promise<AdapterMet
   try {
     const result = await adapter.executeAll<{ key: string; value: string }>(SELECT_ALL_META);
     rows = result.rows;
-  } catch {
+  } catch (err) {
     // Table doesn't exist (or any transient I/O error) → all-null meta
+    log.debug('store_adapter.meta.read_failed', {
+      db_path: adapter.config.dbPath,
+      reason: 'table missing or transient error; returning all-null meta',
+    });
     return { adapter_type: null, adapter_version: null, created_at: null };
   }
 

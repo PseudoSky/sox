@@ -406,7 +406,7 @@ export class WriteQueue {
   /** Timestamps (ms epoch) of completed write tasks within the rolling throughput window. */
   private _completionTimes: number[] = [];
   /** Stderr log sink — injectable for tests. NEVER stdout ([inv:no-stdout-diagnostics]). */
-  private _logSink: (line: string) => void = (line) => console.error(line);
+  private _logSink: (line: string) => void = (line) => log.debug('write_queue.diagnostic', { message: line });
   /** Slow-task floor (ms) — test-overridable to avoid real 1s sleeps in specs. */
   private _slowTaskMinMs = WriteQueue.SLOW_TASK_MIN_MS;
   /** The exact store key this queue was created with (the `forPath` argument —
