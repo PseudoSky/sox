@@ -57,6 +57,7 @@ import * as os from 'os';
 import * as path from 'path';
 import type { HostModule, HostScope, ScopePathMap, SurfaceMap, McpConfig } from './internal.js';
 import { existsIn } from './internal.js';
+import { formatAuthority, unbracket, validatePort } from './wire-endpoint.js';
 
 // ---------------------------------------------------------------------------
 // MCP config builder
@@ -116,11 +117,18 @@ const mcpConfig: McpConfig = {
   },
   value(profile: string, cliBin: string, extId: string, port?: number, bindAddress?: string): unknown {
     if (profile === 'sse' || profile === 'http') {
-      const p = port ?? 3099;
-      const host = bindAddress ?? '127.0.0.1';
-      const displayHost = host === '127.0.0.1' || host === '::1' ? 'localhost' : host;
+      // BUG-EPIC-WIRE-INPUTS-UNBOUNDED-001 (class B): validate at the parse
+      // site — `port` arrives typed but unchecked (see wire-endpoint.ts).
+      const p = validatePort(port ?? 3099, 'http_port');
+      const rawHost = bindAddress ?? '127.0.0.1';
+      const bareHost = unbracket(rawHost);
+      const displayHost = bareHost === '127.0.0.1' || bareHost === '::1' ? 'localhost' : rawHost;
+      // formatAuthority brackets any non-loopback IPv6 literal (the pre-fix
+      // code only special-cased the literal string '::1' and left every
+      // other IPv6 address unbracketed and broken).
+      const authority = displayHost === 'localhost' ? `localhost:${p}` : formatAuthority(displayHost, p);
       const endpoint = profile === 'sse' ? 'sse' : 'mcp';
-      return { type: profile, url: `http://${displayHost}:${p}/${endpoint}` };
+      return { type: profile, url: `http://${authority}/${endpoint}` };
     }
     return { type: 'stdio', command: cliBin, args: ['serve', extId] };
   },

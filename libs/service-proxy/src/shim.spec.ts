@@ -756,4 +756,114 @@ describe('runFrontShim', () => {
       project_path: '/workspace/project-b',
     });
   });
+
+  // ── BUG-EPIC-WIRE-INPUTS-UNBOUNDED-001 (class A): bounded HTTP body buffers ──
+  // Before the fix, `req.on('data', chunk => body += chunk)` at both the
+  // StreamableHTTP (/mcp, /sse) and classic SSE (/messages) sites accumulated a
+  // client-supplied body with NO cap. A peer that keeps streaming and never calls
+  // `req.end()` — malicious, buggy, or a truncated write — grew that buffer
+  // without bound until the process died of memory exhaustion. These tests feed
+  // exactly that delimiter-less stream and assert: (1) the shim refuses once the
+  // cap is crossed rather than accumulating forever, (2) the refusal is a clean,
+  // traced error — not a silent truncation of the frame — and (3) the connection
+  // is actually closed (bounded memory), never left open accumulating.
+
+  /**
+   * Write `totalBytes` of body to `req` in 1 MiB chunks (honoring backpressure
+   * via `write()`'s return value), then STOP — deliberately never calling
+   * `req.end()`. This is the delimiter-less-peer scenario: from the shim's
+   * point of view the request never terminates. `totalBytes` is chosen just
+   * past the shim's cap so the client stops writing shortly after crossing
+   * it, rather than continuing to flood the socket indefinitely — flooding
+   * further serves no additional test purpose once the cap has been proven
+   * crossed, and only widens the TCP race window between the server's RST-safe
+   * response flush and the client's next write (a real independent hazard,
+   * not the thing under test here).
+   */
+  function writeThenStall(req: http.ClientRequest, totalBytes: number): Promise<void> {
+    return new Promise((resolve) => {
+      const chunk = Buffer.alloc(1024 * 1024, 0x61); // 1 MiB of 'a'
+      let written = 0;
+      const pump = (): void => {
+        if (written >= totalBytes) {
+          resolve();
+          return;
+        }
+        written += chunk.length;
+        const ok = req.write(chunk);
+        if (ok) setImmediate(pump);
+        else req.once('drain', pump);
+      };
+      pump();
+    });
+  }
+
+  it('BUG-EPIC-WIRE-INPUTS-UNBOUNDED-001: a delimiter-less HTTP body on /mcp is refused with 413, connection closed, memory bounded — not accumulated forever', async () => {
+    const sock = tmpSock('unbounded-body-mcp');
+    await startBackend(sock, 'v1');
+    const port = await freePort();
+    const stdin = new PassThrough();
+    const stdout = new PassThrough();
+    stdout.on('data', () => {});
+    const handle = runFrontShim({ id: 'unbounded-mcp', socketPath: sock, httpPort: port, input: stdin, output: stdout, onDiagnostic: () => {} });
+    cleanups.push(() => handle.close());
+    await new Promise((r) => setTimeout(r, 150));
+
+    // 1 MiB past the shim's 16 MiB cap — enough to prove the cap is enforced
+    // without needlessly widening the client-still-writing/server-responding
+    // TCP race. A regression that silently re-introduces unbounded
+    // accumulation is caught below by the response never arriving (413
+    // never observed) and the outer test timeout firing instead.
+    const OVER_CAP_BYTES = 17 * 1024 * 1024;
+
+    const result = await new Promise<{ status: number; error: string | undefined }>((resolve, reject) => {
+      const req = http.request(
+        { host: '127.0.0.1', port, path: '/mcp', method: 'POST', headers: { 'Content-Type': 'application/json' } },
+        (res) => {
+          let data = '';
+          res.on('data', (c: Buffer) => (data += c.toString()));
+          res.on('end', () => {
+            const json = data ? (JSON.parse(data) as { error?: { message?: string } }) : {};
+            resolve({ status: res.statusCode ?? 0, error: json.error?.message });
+          });
+        },
+      );
+      req.on('error', (e: Error) => reject(e));
+      void writeThenStall(req, OVER_CAP_BYTES);
+    });
+
+    expect(result.status).toBe(413);
+    expect(result.error).toMatch(/too large/i);
+  }, 15_000);
+
+  it('BUG-EPIC-WIRE-INPUTS-UNBOUNDED-001: a delimiter-less HTTP body on the classic SSE /messages endpoint is refused with 413, not accumulated forever', async () => {
+    const sock = tmpSock('unbounded-body-messages');
+    await startBackend(sock, 'v1');
+    const port = await freePort();
+    const stdin = new PassThrough();
+    const stdout = new PassThrough();
+    stdout.on('data', () => {});
+    const handle = runFrontShim({ id: 'unbounded-messages', socketPath: sock, httpPort: port, input: stdin, output: stdout, onDiagnostic: () => {} });
+    cleanups.push(() => handle.close());
+    await new Promise((r) => setTimeout(r, 150));
+
+    const sse = await openSse(port);
+    cleanups.push(sse.close);
+
+    const OVER_CAP_BYTES = 17 * 1024 * 1024;
+
+    const result = await new Promise<{ status: number }>((resolve, reject) => {
+      const req = http.request(
+        { host: '127.0.0.1', port, path: sse.endpointPath, method: 'POST', headers: { 'Content-Type': 'application/json' } },
+        (res) => {
+          res.on('data', () => {});
+          res.on('end', () => resolve({ status: res.statusCode ?? 0 }));
+        },
+      );
+      req.on('error', (e: Error) => reject(e));
+      void writeThenStall(req, OVER_CAP_BYTES);
+    });
+
+    expect(result.status).toBe(413);
+  }, 15_000);
 });

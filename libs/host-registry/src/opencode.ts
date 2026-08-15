@@ -21,6 +21,7 @@ import * as os from 'os';
 import * as path from 'path';
 import type { HostModule, HostScope, ScopePathMap, SurfaceMap, McpConfig } from './internal.js';
 import { existsIn } from './internal.js';
+import { formatAuthority, unbracket, validatePort } from './wire-endpoint.js';
 
 // ─── Detection ──────────────────────────────────────────────────────────────
 
@@ -94,15 +95,23 @@ const mcpConfig: McpConfig = {
     return `mcp.${extId}`;
   },
   value(profile: string, cliBin: string, extId: string, port?: number, bindAddress?: string): unknown {
-    const p = port ?? 3000;
-    const host = bindAddress ?? '127.0.0.1';
-    // Use localhost for loopback addresses (more portable in host configs)
-    const displayHost = host === '127.0.0.1' || host === '::1' ? 'localhost' : host;
-
     if (profile === 'sse' || profile === 'http') {
+      // BUG-EPIC-WIRE-INPUTS-UNBOUNDED-001 (class B): validate at the parse
+      // site — `port` arrives typed but unchecked (see wire-endpoint.ts).
+      // Validation is scoped to the remote branch (matches claude.ts/codex.ts)
+      // so a stdio-profile install with a garbage http_port never fails.
+      const p = validatePort(port ?? 3000, 'http_port');
+      const rawHost = bindAddress ?? '127.0.0.1';
+      const bareHost = unbracket(rawHost);
+      // Use localhost for loopback addresses (more portable in host configs)
+      const displayHost = bareHost === '127.0.0.1' || bareHost === '::1' ? 'localhost' : rawHost;
+      // formatAuthority brackets any non-loopback IPv6 literal (the pre-fix
+      // code only special-cased the literal string '::1' and left every
+      // other IPv6 address unbracketed and broken).
+      const authority = displayHost === 'localhost' ? `localhost:${p}` : formatAuthority(displayHost, p);
       // Endpoint choice is cosmetic (see docblock above) — the server treats
       // /sse and /mcp identically for a POST. Kept as /sse for readability.
-      return { type: 'remote', url: `http://${displayHost}:${p}/sse` };
+      return { type: 'remote', url: `http://${authority}/sse` };
     }
     // stdio (default)
     return { type: 'local', command: [cliBin, 'serve', extId] };
