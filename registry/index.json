@@ -13,7 +13,7 @@
     "requires": {
       "tool_calling": true
     },
-    "builtFromCommit": "720afab4de2e3f8aec89b40a1184c9f91e073035"
+    "builtFromCommit": "07f5b4c67e17e1ea67843271c5941db87daae4bd"
   },
   {
     "id": "architect",
@@ -29,7 +29,7 @@
     "requires": {
       "tool_calling": true
     },
-    "builtFromCommit": "720afab4de2e3f8aec89b40a1184c9f91e073035"
+    "builtFromCommit": "07f5b4c67e17e1ea67843271c5941db87daae4bd"
   },
   {
     "id": "debug",
@@ -45,7 +45,7 @@
     "requires": {
       "tool_calling": true
     },
-    "builtFromCommit": "720afab4de2e3f8aec89b40a1184c9f91e073035"
+    "builtFromCommit": "07f5b4c67e17e1ea67843271c5941db87daae4bd"
   },
   {
     "id": "dispatcher",
@@ -61,7 +61,7 @@
     "requires": {
       "tool_calling": true
     },
-    "builtFromCommit": "720afab4de2e3f8aec89b40a1184c9f91e073035"
+    "builtFromCommit": "07f5b4c67e17e1ea67843271c5941db87daae4bd"
   },
   {
     "id": "doc-cartographer",
@@ -77,7 +77,7 @@
     "requires": {
       "tool_calling": true
     },
-    "builtFromCommit": "720afab4de2e3f8aec89b40a1184c9f91e073035"
+    "builtFromCommit": "07f5b4c67e17e1ea67843271c5941db87daae4bd"
   },
   {
     "id": "doc-consumer",
@@ -93,7 +93,7 @@
     "requires": {
       "tool_calling": true
     },
-    "builtFromCommit": "720afab4de2e3f8aec89b40a1184c9f91e073035"
+    "builtFromCommit": "07f5b4c67e17e1ea67843271c5941db87daae4bd"
   },
   {
     "id": "doc-evangelist",
@@ -109,7 +109,7 @@
     "requires": {
       "tool_calling": true
     },
-    "builtFromCommit": "720afab4de2e3f8aec89b40a1184c9f91e073035"
+    "builtFromCommit": "07f5b4c67e17e1ea67843271c5941db87daae4bd"
   },
   {
     "id": "doc-reviewer",
@@ -125,7 +125,7 @@
     "requires": {
       "tool_calling": true
     },
-    "builtFromCommit": "720afab4de2e3f8aec89b40a1184c9f91e073035"
+    "builtFromCommit": "07f5b4c67e17e1ea67843271c5941db87daae4bd"
   },
   {
     "id": "doc-steward",
@@ -141,7 +141,7 @@
     "requires": {
       "tool_calling": true
     },
-    "builtFromCommit": "720afab4de2e3f8aec89b40a1184c9f91e073035"
+    "builtFromCommit": "07f5b4c67e17e1ea67843271c5941db87daae4bd"
   },
   {
     "id": "memory-org",
@@ -154,7 +154,7 @@
     "compatibility": {
       "host": ">=1.0.0 <2.0.0"
     },
-    "builtFromCommit": "720afab4de2e3f8aec89b40a1184c9f91e073035"
+    "builtFromCommit": "07f5b4c67e17e1ea67843271c5941db87daae4bd"
   },
   {
     "id": "performance",
@@ -170,7 +170,7 @@
     "requires": {
       "tool_calling": true
     },
-    "builtFromCommit": "720afab4de2e3f8aec89b40a1184c9f91e073035"
+    "builtFromCommit": "07f5b4c67e17e1ea67843271c5941db87daae4bd"
   },
   {
     "id": "performance-engineer",
@@ -186,7 +186,7 @@
     "requires": {
       "tool_calling": true
     },
-    "builtFromCommit": "720afab4de2e3f8aec89b40a1184c9f91e073035"
+    "builtFromCommit": "07f5b4c67e17e1ea67843271c5941db87daae4bd"
   },
   {
     "id": "product",
@@ -202,7 +202,7 @@
     "requires": {
       "tool_calling": true
     },
-    "builtFromCommit": "720afab4de2e3f8aec89b40a1184c9f91e073035"
+    "builtFromCommit": "07f5b4c67e17e1ea67843271c5941db87daae4bd"
   },
   {
     "id": "researcher",
@@ -218,7 +218,7 @@
     "requires": {
       "tool_calling": true
     },
-    "builtFromCommit": "720afab4de2e3f8aec89b40a1184c9f91e073035"
+    "builtFromCommit": "07f5b4c67e17e1ea67843271c5941db87daae4bd"
   },
   {
     "id": "test-runner",
@@ -231,7 +231,7 @@
     "compatibility": {
       "host": ">=1.0.0 <2.0.0"
     },
-    "builtFromCommit": "720afab4de2e3f8aec89b40a1184c9f91e073035"
+    "builtFromCommit": "07f5b4c67e17e1ea67843271c5941db87daae4bd"
   },
   {
     "id": "typescript",
@@ -247,7 +247,7 @@
     "requires": {
       "tool_calling": true
     },
-    "builtFromCommit": "720afab4de2e3f8aec89b40a1184c9f91e073035"
+    "builtFromCommit": "07f5b4c67e17e1ea67843271c5941db87daae4bd"
   },
   {
     "id": "sox-memory-bundle",
@@ -274,7 +274,7 @@
         "id": "memory-usage"
       }
     ],
-    "builtFromCommit": "720afab4de2e3f8aec89b40a1184c9f91e073035"
+    "builtFromCommit": "07f5b4c67e17e1ea67843271c5941db87daae4bd"
   },
   {
     "id": "memory-cli",
@@ -289,7 +289,7 @@
     },
     "visibility": "internal",
     "bundleId": "sox-memory-bundle",
-    "builtFromCommit": "720afab4de2e3f8aec89b40a1184c9f91e073035"
+    "builtFromCommit": "07f5b4c67e17e1ea67843271c5941db87daae4bd"
   },
   {
     "id": "memory-flush",
@@ -304,7 +304,7 @@
     },
     "visibility": "internal",
     "bundleId": "sox-memory-bundle",
-    "builtFromCommit": "720afab4de2e3f8aec89b40a1184c9f91e073035"
+    "builtFromCommit": "07f5b4c67e17e1ea67843271c5941db87daae4bd"
   },
   {
     "id": "memory-server",
@@ -313,7 +313,7 @@
     "title": "Agent Memory Server",
     "description": "Use this when an agent needs durable, searchable memory across sessions — exposes 7 memory_* tools over a single-file SQLite graph store with hybrid recall (vec+BM25+temporal, <50ms, zero LLM), write-enqueue, session state, community lookup, and bi-temporal invalidation.",
     "source": "file:///Users/nix/dev/ai/sox-ecosystem/extensions/bundles/sox-memory-bundle/members/memory-server",
-    "checksum": "sha256:41125438fddc27bbbd4bde32392b33a5f3b734527950a9396edc9b87c774441b",
+    "checksum": "sha256:e3bc2d8955cba4ceb4a2c92baec2b23989d05480e68c612da767a87cbf4ac64e",
     "compatibility": {
       "host": ">=1.0.0 <2.0.0"
     },
@@ -323,7 +323,7 @@
     },
     "visibility": "internal",
     "bundleId": "sox-memory-bundle",
-    "builtFromCommit": "720afab4de2e3f8aec89b40a1184c9f91e073035"
+    "builtFromCommit": "07f5b4c67e17e1ea67843271c5941db87daae4bd"
   },
   {
     "id": "memory-usage",
@@ -338,7 +338,7 @@
     },
     "visibility": "internal",
     "bundleId": "sox-memory-bundle",
-    "builtFromCommit": "720afab4de2e3f8aec89b40a1184c9f91e073035"
+    "builtFromCommit": "07f5b4c67e17e1ea67843271c5941db87daae4bd"
   },
   {
     "id": "dep-inject",
@@ -351,7 +351,7 @@
     "compatibility": {
       "host": ">=1.0.0 <2.0.0"
     },
-    "builtFromCommit": "720afab4de2e3f8aec89b40a1184c9f91e073035"
+    "builtFromCommit": "07f5b4c67e17e1ea67843271c5941db87daae4bd"
   },
   {
     "id": "tokenguard",
@@ -364,7 +364,7 @@
     "compatibility": {
       "host": ">=1.0.0 <2.0.0"
     },
-    "builtFromCommit": "720afab4de2e3f8aec89b40a1184c9f91e073035"
+    "builtFromCommit": "07f5b4c67e17e1ea67843271c5941db87daae4bd"
   },
   {
     "id": "demo-creator",
@@ -377,7 +377,7 @@
     "compatibility": {
       "host": ">=1.0.0 <2.0.0"
     },
-    "builtFromCommit": "720afab4de2e3f8aec89b40a1184c9f91e073035"
+    "builtFromCommit": "07f5b4c67e17e1ea67843271c5941db87daae4bd"
   },
   {
     "id": "di-codex",
@@ -390,7 +390,7 @@
     "compatibility": {
       "host": ">=1.0.0 <2.0.0"
     },
-    "builtFromCommit": "720afab4de2e3f8aec89b40a1184c9f91e073035"
+    "builtFromCommit": "07f5b4c67e17e1ea67843271c5941db87daae4bd"
   },
   {
     "id": "dep-injector",
@@ -403,7 +403,7 @@
     "compatibility": {
       "host": ">=1.0.0 <2.0.0"
     },
-    "builtFromCommit": "720afab4de2e3f8aec89b40a1184c9f91e073035"
+    "builtFromCommit": "07f5b4c67e17e1ea67843271c5941db87daae4bd"
   },
   {
     "id": "forbidden-access",
@@ -416,7 +416,7 @@
     "compatibility": {
       "host": ">=1.0.0 <2.0.0"
     },
-    "builtFromCommit": "720afab4de2e3f8aec89b40a1184c9f91e073035"
+    "builtFromCommit": "07f5b4c67e17e1ea67843271c5941db87daae4bd"
   },
   {
     "id": "iterative-research-refinement",
@@ -429,7 +429,7 @@
     "compatibility": {
       "host": ">=1.0.0 <2.0.0"
     },
-    "builtFromCommit": "720afab4de2e3f8aec89b40a1184c9f91e073035"
+    "builtFromCommit": "07f5b4c67e17e1ea67843271c5941db87daae4bd"
   },
   {
     "id": "sox-ingest",
@@ -442,7 +442,7 @@
     "compatibility": {
       "host": ">=1.0.0 <2.0.0"
     },
-    "builtFromCommit": "720afab4de2e3f8aec89b40a1184c9f91e073035"
+    "builtFromCommit": "07f5b4c67e17e1ea67843271c5941db87daae4bd"
   },
   {
     "id": "tui-design",
@@ -455,7 +455,7 @@
     "compatibility": {
       "host": ">=1.0.0 <2.0.0"
     },
-    "builtFromCommit": "720afab4de2e3f8aec89b40a1184c9f91e073035"
+    "builtFromCommit": "07f5b4c67e17e1ea67843271c5941db87daae4bd"
   },
   {
     "id": "sox",
@@ -468,6 +468,6 @@
     "compatibility": {
       "host": ">=1.0.0 <2.0.0"
     },
-    "builtFromCommit": "720afab4de2e3f8aec89b40a1184c9f91e073035"
+    "builtFromCommit": "07f5b4c67e17e1ea67843271c5941db87daae4bd"
   }
 ]
