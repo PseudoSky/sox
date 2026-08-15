@@ -160,6 +160,9 @@ importers:
 
   extensions/bundles/sox-memory-bundle/members/memory-cli:
     dependencies:
+      '@tursodatabase/database':
+        specifier: ^0.7.1
+        version: 0.7.1
       better-sqlite3:
         specifier: ^12.10.0
         version: 12.10.0
@@ -172,6 +175,10 @@ importers:
         version: link:../../../../../libs/memory-core
 
   extensions/bundles/sox-memory-bundle/members/memory-flush:
+    dependencies:
+      '@tursodatabase/database':
+        specifier: ^0.7.1
+        version: 0.7.1
     devDependencies:
       '@adhd/sox-memory-core':
         specifier: workspace:*

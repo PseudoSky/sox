@@ -16,7 +16,7 @@
       ],
       "options": {
         "commands": [
-          "node tools/bundle-extension.cjs --entry extensions/bundles/sox-memory-bundle/members/memory-flush/src/index.ts --outdir extensions/bundles/sox-memory-bundle/members/memory-flush/dist --tsconfig extensions/bundles/sox-memory-bundle/members/memory-flush/tsconfig.json --external better-sqlite3 --external sqlite-vec --external fastembed --external onnxruntime-node"
+          "node tools/bundle-extension.cjs --entry extensions/bundles/sox-memory-bundle/members/memory-flush/src/index.ts --outdir extensions/bundles/sox-memory-bundle/members/memory-flush/dist --tsconfig extensions/bundles/sox-memory-bundle/members/memory-flush/tsconfig.json --external better-sqlite3 --external sqlite-vec --external fastembed --external onnxruntime-node --external @tursodatabase/database"
         ],
         "parallel": false,
         "cwd": "."

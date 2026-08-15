@@ -39,9 +39,45 @@ import { fork, type ChildProcess } from 'node:child_process';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
+import { isModelCached } from './index.js';
 
 const HOST_PATH = path.resolve(__dirname, 'fastembedProcessHost.ts');
-const CACHE_DIR = path.join(os.tmpdir(), 'sox-fastembed-bl426-cache');
+
+// The package's OWN default cache dir (mirrors `joinDefaultCacheDir()` in
+// index.ts: $XDG_CACHE_HOME/sox/models, else ~/.cache/sox/models) — the same
+// resolution `fastembedProcessHost-bug005-dim.spec.ts` uses.
+//
+// This used to point at `os.tmpdir()/sox-fastembed-bl426-cache`, a DEDICATED
+// directory nothing ever populates. The child therefore always answered
+// `{ error: 'Tokenizer file not found at …/fast-bge-small-en-v1.5/tokenizer.json' }`,
+// and because the harness resolves on any message carrying the request id, that
+// error satisfied `send()` and the assertion read `initOk` as `undefined`. All
+// three arms failed for a missing model rather than for the native shutdown
+// crash they exist to detect — i.e. the suite could not have caught a BL-426
+// regression on any machine, and its red told you nothing.
+const CACHE_DIR = path.join(
+  process.env['XDG_CACHE_HOME'] ?? path.join(os.homedir(), '.cache'),
+  'sox',
+  'models',
+);
+
+// bge-small-en-v1.5's on-disk repo id under the cache root.
+const HF_REPO_ID = 'fast-bge-small-en-v1.5';
+
+// Skip-not-fail when the model was never downloaded, matching the convention
+// memory-server's `real-backend` project already uses for its real-ONNX files.
+// This is a deliberate exception to the usual "a skipping test proves nothing"
+// rule (BL-167): the scenario under test is a NATIVE onnxruntime teardown, so
+// with no model there is no native session to tear down and nothing to assert.
+// The skip is loud — it names the exact path that would make it run.
+const MODEL_PRESENT = isModelCached(CACHE_DIR, HF_REPO_ID);
+if (!MODEL_PRESENT) {
+  console.warn(
+    `[BL-426] SKIPPING native-shutdown suite: no model at ${path.join(CACHE_DIR, HF_REPO_ID)}. ` +
+      `These arms assert that tearing down a REAL onnxruntime session does not abort the ` +
+      `process; without the model there is no session. Populate the cache to run them.`,
+  );
+}
 const MUTEX_CRASH_RE = /mutex lock failed|libc\+\+abi: terminating/;
 
 let child: ChildProcess | undefined;
@@ -125,7 +161,9 @@ function runShutdownScenario(
   });
 }
 
-describe('BL-426 — fastembedProcessHost shutdown must not crash the native onnxruntime session', () => {
+describe.skipIf(!MODEL_PRESENT)(
+  'BL-426 — fastembedProcessHost shutdown must not crash the native onnxruntime session',
+  () => {
   it(
     'init + embed, then __shutdown: no libc++abi/mutex crash, exits code 0 (not SIGABRT)',
     async () => {
