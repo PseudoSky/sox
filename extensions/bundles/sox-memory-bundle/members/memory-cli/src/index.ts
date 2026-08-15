@@ -37,6 +37,7 @@ import * as crypto from 'node:crypto';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
+import { initTelemetry, type InitTelemetryOptions } from '@adhd/sox-telemetry';
 
 export type ScopeKind = 'project' | 'user' | 'org' | 'local';
 
@@ -618,7 +619,28 @@ Commands:
 }
 
 // When invoked directly (not required as a library), run the CLI.
+// (BL-568) COMPOSITION ROOT. Without this, `@adhd/sox-telemetry`'s gated
+// substrate stays uninitialised for the whole process and every store-adapter
+// emission — retry, preflight, engine-marker — is SILENTLY DROPPED with
+// `logSink:'none'`. Reproduced directly against the shipped binary: it printed
+// "emitting with no initTelemetry() call in this process (role:'harness',
+// logSink:'none' — records are being silently dropped)".
+//
+// BL-404 fixed exactly this for memory-server but only at ITS composition root;
+// memory-cli was never given one. That matters here specifically because the CLI
+// owns `backup` and `reembed` — the operations whose failures you most need a
+// durable record of.
+//
+// role:'cli' (not 'live-service') because this is a short-lived one-shot; the
+// backlog tool uses the same role for the same reason.
+const MEMORY_CLI_TELEMETRY_INIT_OPTIONS: InitTelemetryOptions = {
+  service: 'memory-cli',
+  role: 'cli',
+  logSink: 'file',
+};
+
 if (require.main === module) {
+  initTelemetry(MEMORY_CLI_TELEMETRY_INIT_OPTIONS);
   void runCli(process.argv.slice(2));
 }
 
