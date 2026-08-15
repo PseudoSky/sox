@@ -131,7 +131,23 @@ export const readGraphStatuses = () => {
           '--filter',
           JSON.stringify({ repo: 'sox-ecosystem', family: 'BL', excludeArchived: false, limit: PAGE, offset }),
         ],
-        { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] },
+        {
+          encoding: 'utf8',
+          stdio: ['ignore', 'pipe', 'ignore'],
+          // execFileSync's default maxBuffer is 1 MB. The sox-ecosystem item
+          // list crossed that this session (measured 1,801,669 bytes on ONE
+          // line), so stdout was TRUNCATED MID-JSON and JSON.parse threw
+          // "Unexpected end of JSON input". Because plan-status runs in the
+          // pre-commit hook, that silently blocked commits REPO-WIDE — and the
+          // failure looked like a backlog-store problem rather than a buffer
+          // limit, which is the worst possible misdirection.
+          //
+          // This is a growth-triggered failure: it worked until the graph got
+          // big enough. Sized well above the current list so it does not
+          // re-trigger on the next few thousand items; the paging below (PAGE)
+          // bounds it further.
+          maxBuffer: 64 * 1024 * 1024,
+        },
       );
     } catch (err) {
       throw new Error(
