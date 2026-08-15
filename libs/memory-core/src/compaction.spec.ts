@@ -14,7 +14,7 @@
  *     would prevent the maintenance from running — verified by the error-capture test.
  */
 
-import { canonicalDbPath } from '@adhd/sox-store-adapter';
+import { canonicalStorePath } from './store-path.js';
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import type { StoreAdapter } from '@adhd/sox-store-adapter';
 import * as fs from 'node:fs';
@@ -138,7 +138,7 @@ describe('runCompactionPass', () => {
     // checkpoint above wrote a RECENT entry under the canonical key, so the
     // skip fired and this test's "long ago" setup was ignored. On macOS the two
     // differ as /var/... vs /private/var/....
-    )._lastCheckpointByPath.set(canonicalDbPath(dbPath), backdated);
+    )._lastCheckpointByPath.set(canonicalStorePath(dbPath), backdated);
 
     const result = await runCompactionPass(db, {});
     expect(result.error).toBeNull();
