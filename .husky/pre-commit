@@ -22,11 +22,45 @@ SOX_GIT_PARENT_CMD="$(ps -o args= -p $PPID 2>/dev/null)" node tools/check-amend-
 # (a hand-added heading colliding with a tool-filed id) is now structurally impossible, not merely
 # checked-for. See docs/decisions/0011-backlog-tool-write-destination.md §4 Stage 3 item 3.
 #
-# Keep the memory-program plan honest: PLAN.md's packet ledger and STATE.md's progress summary are
-# DERIVED from the live backlog graph. Unlike the retired BACKLOG.md-staged trigger, this now runs
-# UNCONDITIONALLY — the graph can drift stale from a status transition that touches zero files in
-# this repo, so no file-staged condition can reliably catch it (BL-435's failure mode, generalized).
-node tools/plan-status.mjs --check
+# DEBT-HOOK-PLANSTATUS-GATES-EVERY-COMMIT-001 — plan-status used to run here BLOCKING and
+# UNCONDITIONALLY. That coupled every commit in this repo to the availability, size, and current
+# response time of an external mutable service (the backlog store): a corrupted store became a
+# total repo-wide commit stoppage, an execFileSync maxBuffer ceiling silently blocked every commit
+# once the graph grew past it, and both failures read as a docs problem when the store was the
+# fault. See the item body for the full incident (2026-08-14) — three commits were lost reading the
+# wrong stack trace before anyone found the real cause.
+#
+# The invariant this exists to protect is real (PLAN.md's packet ledger / STATE.md's progress
+# summary are DERIVED from the live backlog graph and CAN drift stale from a status transition that
+# touches zero files here — BL-435's failure mode, generalized) — but pre-commit, run on every
+# commit by every agent, is the wrong place to make that invariant load-bearing when the thing it
+# depends on lives outside git and outside this repo's control. Split it in two:
+#
+#   1. ADVISORY, unconditional — still runs on every commit, still surfaces drift to whoever is
+#      committing, but NEVER blocks and NEVER hangs (10s internal timeout in plan-status.mjs). A
+#      store-unavailable condition is reported with a DISTINCT message from genuine drift (exit 2
+#      vs exit 1 internally; here both are downgraded to exit 0 by --advisory) — see
+#      tools/plan-status.mjs's EXIT CODES doc comment.
+node tools/plan-status.mjs --check --advisory || true
+
+#   2. BLOCKING, but TARGETED — only when this commit is itself staging PLAN.md and/or STATE.md, so
+#      a committer deliberately hand-editing the derived docs still gets a real gate. Even here, a
+#      store-unavailable result does NOT block (exit 2 is treated as "warn and continue", not
+#      "fail") — availability of the store must never be what blocks a commit, full stop. Genuine
+#      drift (exit 1) still fails the commit.
+if git diff --cached --name-only -- docs/reporting/memory/PLAN.md docs/reporting/memory/STATE.md | rg -q .; then
+  set +e
+  node tools/plan-status.mjs --check
+  PLAN_STATUS_EXIT=$?
+  set -e
+  if [ "$PLAN_STATUS_EXIT" -eq 2 ]; then
+    echo "pre-commit: backlog store unreachable — cannot verify the PLAN.md/STATE.md you just staged," >&2
+    echo "pre-commit: NOT blocking on that (store availability must never gate a commit). Re-run" >&2
+    echo "pre-commit: 'node tools/plan-status.mjs --check' by hand once the store is back." >&2
+  elif [ "$PLAN_STATUS_EXIT" -ne 0 ]; then
+    exit "$PLAN_STATUS_EXIT"
+  fi
+fi
 
 # BL-466 — Tier 1 regression guards (tools/test-bl*.mjs), filtered to guards whose
 # watched files are in this commit's staged diff. See tools/guards-manifest.mjs.

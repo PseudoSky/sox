@@ -28,9 +28,31 @@
  * If you think a packet is done, close its BL item with a red->green test; do not edit this output.
  *
  * USAGE
- *   node tools/plan-status.mjs            # rewrite the derived blocks in PLAN.md and STATE.md
- *   node tools/plan-status.mjs --check    # exit 1 if either file is stale (for a pre-commit guard)
- *   node tools/plan-status.mjs --json     # emit the computed model, write nothing
+ *   node tools/plan-status.mjs              # rewrite the derived blocks in PLAN.md and STATE.md
+ *   node tools/plan-status.mjs --check      # exit 1 on genuine drift, exit 2 if the backlog store
+ *                                           # could not be reached (never exit 0 in either case)
+ *   node tools/plan-status.mjs --check --advisory
+ *                                           # same checks, but ALWAYS exit 0 — warns loudly to
+ *                                           # stderr instead of failing. This is what pre-commit
+ *                                           # runs (DEBT-HOOK-PLANSTATUS-GATES-EVERY-COMMIT-001):
+ *                                           # a normal source-code commit must never be blocked by
+ *                                           # the availability, size, or freshness of the backlog
+ *                                           # store, an external mutable service. The BLOCKING form
+ *                                           # (`--check` with no `--advisory`) still runs — for a
+ *                                           # human/agent verifying deliberately, and as a targeted
+ *                                           # pre-commit gate specifically when PLAN.md/STATE.md
+ *                                           # themselves are staged (see .husky/pre-commit).
+ *   node tools/plan-status.mjs --json       # emit the computed model, write nothing
+ *
+ * EXIT CODES for --check (advisory or not, --advisory just downgrades all of the below to 0):
+ *   0  everything matches the graph, no stale prose
+ *   1  genuine drift — a derived block is stale, or an audited claim names finished work
+ *   2  the backlog store could not be reached/read (CLI missing, non-zero exit, malformed JSON,
+ *      or the query timed out) — DISTINCT from 1 on purpose: this is an infra fault, not drift,
+ *      and callers (the pre-commit hook, a human, CI) must be able to tell the two apart instead
+ *      of treating "the store is down" as "the docs are wrong" (they were indistinguishable
+ *      before DEBT-HOOK-PLANSTATUS-GATES-EVERY-COMMIT-001, and that made a corrupted store a
+ *      repo-wide commit stoppage that read as a docs failure).
  */
 
 import { readFileSync, writeFileSync } from 'node:fs';
@@ -109,6 +131,29 @@ const OUT_OF_SCOPE = new Set([
 ]);
 
 /**
+ * DEBT-HOOK-PLANSTATUS-GATES-EVERY-COMMIT-001 — a dedicated error type for "the store could not be
+ * reached/read", distinct from every other Error this module throws (a genuinely stale derived
+ * block, a bad AUDIT_MARKER, etc). Before this, an unreachable store and real drift both surfaced
+ * as an undifferentiated non-zero exit — a corrupted store read exactly like a stale doc, and three
+ * commits were lost before anyone read the stack trace to tell them apart. `main()` catches this
+ * type specifically to print a distinct message and (in `--advisory` mode) exit 0 instead of
+ * blocking a commit that has nothing to do with the backlog.
+ */
+export class StoreUnavailableError extends Error {
+  constructor(message) {
+    super(message);
+    this.name = 'StoreUnavailableError';
+  }
+}
+
+// Bounds how long a single `backlog list-items` call may run. Pre-commit must never hang
+// indefinitely on a slow/wedged store — a timeout turns "hangs forever" into "fails loudly and
+// fast", which readGraphStatuses reports as StoreUnavailableError like any other unreachable-store
+// case. Generous enough not to false-positive on a warm store under normal load (measured well
+// under 1s locally), tight enough that a wedged store cannot stall a commit.
+const GRAPH_QUERY_TIMEOUT_MS = 10_000;
+
+/**
  * [ADR-0011 Stage 3 / D2] Query the live backlog graph via the `backlog` CLI, paginated — 417 known
  * live `BL`-family items already exceeds a naive default page size, and future growth must never
  * silently truncate. `excludeArchived: false` is required: staleRefs (below) needs closed ids too,
@@ -147,20 +192,45 @@ export const readGraphStatuses = () => {
           // re-trigger on the next few thousand items; the paging below (PAGE)
           // bounds it further.
           maxBuffer: 64 * 1024 * 1024,
+          // DEBT-HOOK-PLANSTATUS-GATES-EVERY-COMMIT-001: bound the call so a wedged/slow store
+          // cannot hang a commit indefinitely. execFileSync sends SIGTERM and sets err.killed/
+          // err.signal on the resulting error, not err.code — distinguished explicitly below.
+          timeout: GRAPH_QUERY_TIMEOUT_MS,
         },
       );
     } catch (err) {
-      throw new Error(
-        `plan-status: \`${BACKLOG_BIN} list-items\` failed (offset=${offset}) — ${err.status !== undefined ? `exit ${err.status}` : err.message}. ` +
-          `Is the backlog CLI installed and the store reachable? Try \`backlog version\` / \`backlog list-items --filter '{}'\` by hand. ` +
-          `(plan-status refuses to silently treat this as "zero items" — that would report every backlog id as done.)`,
+      const timedOut = err.killed === true || err.signal != null;
+      throw new StoreUnavailableError(
+        timedOut
+          ? `plan-status: \`${BACKLOG_BIN} list-items\` (offset=${offset}) did not return within ${GRAPH_QUERY_TIMEOUT_MS}ms and was killed (signal=${err.signal}). ` +
+            `The backlog store is likely slow/wedged rather than reachable. Try \`backlog version\` by hand.`
+          : `plan-status: \`${BACKLOG_BIN} list-items\` failed (offset=${offset}) — ${err.status !== undefined ? `exit ${err.status}` : err.message}. ` +
+            `Is the backlog CLI installed and the store reachable? Try \`backlog version\` / \`backlog list-items --filter '{}'\` by hand. ` +
+            `(plan-status refuses to silently treat this as "zero items" — that would report every backlog id as done.)`,
       );
     }
     let items;
     try {
       items = JSON.parse(out);
     } catch (err) {
-      throw new Error(`plan-status: \`${BACKLOG_BIN} list-items\` returned non-JSON output — ${err.message}`);
+      throw new StoreUnavailableError(`plan-status: \`${BACKLOG_BIN} list-items\` returned non-JSON output — ${err.message}`);
+    }
+    // DEBT-HOOK-PLANSTATUS-GATES-EVERY-COMMIT-001 — measured directly against the real `backlog`
+    // CLI: a store that fails to OPEN (e.g. `ADHD_BACKLOG_DATABASE_PATH` pointed at a directory
+    // instead of a file) does not make `list-items --filter ...` exit non-zero or emit bad JSON —
+    // it exits 0 and writes a well-formed JSON *error object* (`{"code":"internal","message":...}`)
+    // to stdout instead of the expected array. That object is valid JSON, so the JSON.parse guard
+    // above does not catch it — and it is exactly the D3 failure mode restated one layer down: an
+    // un-arrayed response would either throw a cryptic "items is not iterable" TypeError (unrelated
+    // to the real cause) or, if `items` merely lacked `.length`, silently page-loop forever. Treat
+    // any non-array response as store-unavailable, surfacing the CLI's own error object if present.
+    if (!Array.isArray(items)) {
+      throw new StoreUnavailableError(
+        `plan-status: \`${BACKLOG_BIN} list-items\` (offset=${offset}) exited 0 but did not return an item array — ` +
+          `got ${JSON.stringify(items).slice(0, 300)}. This is how the backlog CLI reports a store that failed to ` +
+          `open (e.g. a corrupt or misdirected ADHD_BACKLOG_DATABASE_PATH) — treating it as store-unavailable rather ` +
+          `than as "zero items".`,
+      );
     }
     for (const item of items) {
       // The graph's `title` field on migrated items still carries leftover embedded prose from the
@@ -496,7 +566,30 @@ const replaceBlock = (src, block, file) => {
 
 const main = () => {
   const check = process.argv.includes('--check');
-  const model = build();
+  const advisory = process.argv.includes('--advisory');
+
+  let model;
+  try {
+    model = build();
+  } catch (err) {
+    if (!(err instanceof StoreUnavailableError)) throw err;
+    // DEBT-HOOK-PLANSTATUS-GATES-EVERY-COMMIT-001: the store being unreachable is NOT drift, and
+    // must be reported and exited distinctly from it (exit 2, never the drift exit 1) so a caller
+    // can tell "the docs are stale" apart from "I couldn't check". `--advisory` additionally
+    // downgrades this to exit 0 — the store's availability must never gate a normal commit.
+    console.error(`plan-status: STORE UNAVAILABLE — ${err.message}`);
+    if (advisory) {
+      console.error(
+        'plan-status: --advisory mode — NOT blocking this commit. Drift (if any) could not be checked ' +
+          'because the backlog store was unreachable. This is a store-availability problem, not a ' +
+          'plan-drift problem; the two used to be indistinguishable and a corrupted store once blocked ' +
+          'every commit in the repo for that reason. Re-run `node tools/plan-status.mjs --check` once ' +
+          'the store is back, or let CI catch genuine drift.',
+      );
+      process.exit(0);
+    }
+    process.exit(2);
+  }
 
   if (process.argv.includes('--json')) {
     const { statuses, packets, ...rest } = model;
@@ -526,6 +619,16 @@ const main = () => {
           `plan-status: ${violations.length} hand-written claim(s) name finished work or restate a derived total. ` +
             `These sections are not regenerated — edit the prose.`,
         );
+      }
+      // This IS genuine drift (the store was reachable and answered) — never conflate it with the
+      // StoreUnavailableError branch above, which exits 2. Drift is exit 1.
+      if (advisory) {
+        console.error(
+          'plan-status: --advisory mode — NOT blocking this commit, but the drift above is real and ' +
+            'should be fixed (`node tools/plan-status.mjs`) or will be caught by the targeted blocking ' +
+            'check that runs when PLAN.md/STATE.md are staged directly (see .husky/pre-commit).',
+        );
+        process.exit(0);
       }
       process.exit(1);
     }
