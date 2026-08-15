@@ -14,6 +14,7 @@
  *     would prevent the maintenance from running — verified by the error-capture test.
  */
 
+import { canonicalDbPath } from '@adhd/sox-store-adapter';
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import type { StoreAdapter } from '@adhd/sox-store-adapter';
 import * as fs from 'node:fs';
@@ -131,7 +132,13 @@ describe('runCompactionPass', () => {
     // effect on what runCompactionPass actually consults.
     (
       WriteQueue as unknown as { _lastCheckpointByPath: Map<string, number> }
-    )._lastCheckpointByPath.set(dbPath, backdated);
+    // The ledger is keyed by CANONICAL store identity, not the caller's
+    // spelling (see write-queue.ts `lastCheckpointAtForPath`). Seeding the raw
+    // path here silently did nothing once that keying was fixed: the real
+    // checkpoint above wrote a RECENT entry under the canonical key, so the
+    // skip fired and this test's "long ago" setup was ignored. On macOS the two
+    // differ as /var/... vs /private/var/....
+    )._lastCheckpointByPath.set(canonicalDbPath(dbPath), backdated);
 
     const result = await runCompactionPass(db, {});
     expect(result.error).toBeNull();
