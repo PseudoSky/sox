@@ -130,6 +130,32 @@ CREATE INDEX IF NOT EXISTS ix_node_expires    ON node(t_expires) WHERE t_expires
 CREATE INDEX IF NOT EXISTS ix_edge_src        ON edge(src, rel) WHERE t_expired IS NULL;
 CREATE INDEX IF NOT EXISTS ix_edge_dst        ON edge(dst, rel) WHERE t_expired IS NULL;
 CREATE INDEX IF NOT EXISTS ix_edge_live       ON edge(t_invalid) WHERE t_invalid IS NULL;
+-- (PERF-MEMORY-002) The two indexes above are partial on t_expired IS NULL, but
+-- essentially every hot traversal filters on t_invalid IS NULL -- a DIFFERENT
+-- column. SQLite may only use a partial index when the query's WHERE provably
+-- implies the index predicate, and t_invalid IS NULL does not imply
+-- t_expired IS NULL, so those indexes are UNUSABLE for live-edge queries and
+-- the planner falls back to a scan.
+--
+-- Measured on the production store (61,694 edges), 2026-08-14:
+--   WHERE src=? AND rel=? AND t_invalid IS NULL -> SEARCH USING ix_edge_unique (src=?)  [rel unusable]
+--   WHERE src=? AND rel=? AND t_expired IS NULL -> SEARCH USING ix_edge_src (src=? AND rel=?)
+--   NOT EXISTS (... e.dst=? AND e.t_invalid IS NULL) -> SCAN edge USING ix_edge_live
+-- That SCAN runs once per candidate community row inside community GC, which is
+-- why a single memory_invalidate cost ~11.9s against a ~1.4s write and ~0.5s
+-- recall. After adding the two indexes below: 11,638ms -> 15ms, a 775x drop,
+-- and the plan becomes SEARCH e USING ix_edge_dst_live (dst=? AND rel=?).
+-- enrich-batch.ts:164-170 documents the identical pathology from the other
+-- direction (47,619 rows scanned per call) -- it was fixed at that ONE call
+-- site and never in the schema.
+--
+-- NOTE FOR FUTURE EDITORS: this DDL is inside a JS template literal. Do not use
+-- backticks in these comments -- they terminate the literal and break the file.
+--
+-- Additive and non-destructive: no existing index is dropped, so every planner
+-- choice that was valid before remains available.
+CREATE INDEX IF NOT EXISTS ix_edge_src_live   ON edge(src, rel) WHERE t_invalid IS NULL;
+CREATE INDEX IF NOT EXISTS ix_edge_dst_live   ON edge(dst, rel) WHERE t_invalid IS NULL;
 CREATE UNIQUE INDEX IF NOT EXISTS ix_edge_unique ON edge(src, dst, rel);
 `;
 }
@@ -264,6 +290,10 @@ CREATE INDEX IF NOT EXISTS "ix_edge_src" ON "edge" ("src", "rel") WHERE "t_expir
 CREATE INDEX IF NOT EXISTS "ix_edge_dst" ON "edge" ("dst", "rel") WHERE "t_expired" IS NULL;
 --> statement-breakpoint
 CREATE INDEX IF NOT EXISTS "ix_edge_live" ON "edge" ("t_invalid") WHERE "t_invalid" IS NULL;
+--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "ix_edge_src_live" ON "edge" ("src", "rel") WHERE "t_invalid" IS NULL;
+--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "ix_edge_dst_live" ON "edge" ("dst", "rel") WHERE "t_invalid" IS NULL;
 --> statement-breakpoint
 CREATE UNIQUE INDEX IF NOT EXISTS "ix_edge_unique" ON "edge" ("src", "dst", "rel");
 `;
