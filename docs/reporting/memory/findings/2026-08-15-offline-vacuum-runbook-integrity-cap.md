@@ -244,3 +244,65 @@ system tmpdir.
   }
 }
 ```
+
+---
+
+## EXECUTED — production VACUUM, 2026-08-15
+
+Owner-approved and executed by the team-lead session. Downtime **05:17:38Z → 05:25:42Z (8m04s)**.
+
+| Metric | Before (live) | After (live, post-swap) |
+|---|---|---|
+| page_count | 34,454 | 24,913 |
+| freelist_count | 2 | 1 |
+| file size | 134.59 MB | 97.31 MB |
+| payload (column-sum) | 36.81 MB | 36.81 MB |
+| nodes / edges / episodes / vectors | 11786 / 61726 / 6637 / 6033 | identical |
+
+**Reclaimed 9,541 pages / 37.28 MB (−27.7%)** — matches the rehearsal (9,535 / 37.2MB) to within 6 pages of
+drift accumulated between rehearsal and execution. `backupStore()` integrity report: **verified** across all
+six probes including `pragma_integrity_check`. Post-restart `memory_stats`: `integrity.overall: "ok"`,
+`healthy: true`, `damaged: []`, `unknown: []` — previously `"unknown"` / `healthy: false` with the
+100-message cap saturated. A real `memory_recall` returned correct content with vec+fts provenance.
+
+### Deviations from the runbook as written
+
+1. **Order changed: server stopped BEFORE the backup.** Step 2 (fresh backup while live) is impossible —
+   the running server holds the experimental-multiprocess-WAL lock and a second opener fails with
+   `Database is already open with experimental multiprocess WAL in another process`. Stopping first is
+   also strictly safer (cold copy, zero concurrent writers). **Fix the runbook: step 2 must follow step 3.**
+2. **An orphan survived the unload.** `launchctl bootout` removed the unit but pid 97360 (PPID 1, started
+   23:11:43) kept `memory.db` + `-wal` open — the `[inv:unload-then-reap]` case. Cleared with SIGTERM
+   (exited in 7s; never SIGKILL, a clean close releases the lease). **The runbook must include an explicit
+   post-unload survivor check**, or the VACUUM runs against a store another process still holds.
+3. **`VACUUM INTO` via the raw turso driver FAILS** — `index method is an experimental feature. Enable with
+   --experimental-index-method flag` (the vec0 index). Must go through `backupStore()`, which owns the
+   experimental-flag handling (`backup.ts:7-11`). A raw-driver attempt left a 4KB stub + an 84MB `-wal`
+   which had to be removed. **Runbook should name `backupStore()` explicitly as the only supported path.**
+4. **Used `launchctl bootout`/`bootstrap` on the existing plist rather than `soxe service disable`/`enable`.**
+   `disable` removes the unit and `enable` regenerates it, which risks BL-375 shell-sourced env drop.
+   Unload/reload of the same file keeps env identical by construction. Plist also backed up beforehand.
+5. **Stale sidecars must be moved with the swap.** The old `-wal`/`-shm` would otherwise sit beside the new
+   file under the same basename — a stale WAL index against a different database. Moved to
+   `memory.db.pre-vacuum-orig-<ts>-{wal,shm}`.
+
+### Rollback artifacts — DO NOT DELETE without owner approval
+
+    ~/.memory/memory.db.pre-vacuum-20260815-051940            141,123,584 B  (cold cp, pre-stop)
+    ~/.memory/memory.db.pre-vacuum-orig-20260815-051940       141,123,584 B  (renamed original)
+    ~/.memory/memory.db.pre-vacuum-orig-20260815-051940-{wal,shm}
+
+Two byte-identical copies of the original are retained deliberately.
+
+### LEAK-RATE BASELINE — the reason this measurement exists
+
+`page_count = 24,913` at **2026-08-15T05:23Z**, immediately post-VACUUM, freelist_count 1.
+
+The 9,541 pages reclaimed accumulated over the store's whole lifetime with no denominator, so we cannot
+tell a slow constant bleed from a burst. **Re-measure `page_count` against this baseline in a few days of
+normal operation** — the delta is the leak RATE, and it is the measurement that turns
+BUG-INTEGRITY-CHECK-BLINDED-BY-PAGE-NOISE-001 from a cleanup into a diagnosis. Without it, this VACUUM
+destroyed the only signal we had.
+
+Note the 60.5 MB of structural overhead is unchanged and expected (26 indexes, FTS5 shadow tables, vec0
+over 6,033 vectors) — only the leak was reclaimable.
