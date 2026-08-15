@@ -15,7 +15,7 @@
  * Usage: node tools/scorecard.mjs [--json]
  */
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, rmSync, existsSync, readdirSync, readFileSync } from 'node:fs';
+import { mkdtempSync, rmSync, existsSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 
@@ -62,6 +62,8 @@ function backlogScore() {
     errors: [],
     health: 'unknown',
     prod_items: null,
+    delete_ok: false,
+    timings: {},
     lease_entries: null,
     lease_orphans: null,
   };
@@ -125,6 +127,20 @@ function backlogScore() {
         r.errors.push('citations dropped on create (regression of the 0.1.7 fix)');
       }
       r.search_ok = !!got;
+      // DELETE probe — soft-delete the item we just created, then confirm it is
+      // gone from the default listing. Exercises the full CRUD surface, not just
+      // create+read.
+      try {
+        const t0 = Date.now();
+        sh('backlog',
+          ['soft-delete-item', '--repo', 'scorecard', '--human-id', created.item.humanId,
+           '--reason', 'scorecard probe cleanup'],
+          { env });
+        r.timings.delete_ms = Date.now() - t0;
+        r.delete_ok = true;
+      } catch (e) {
+        r.errors.push(`delete: ${String(e.message).slice(0, 140)}`);
+      }
     }
   } catch (e) {
     r.errors.push(`write: ${String(e.message).slice(0, 160)}`);
@@ -154,7 +170,7 @@ function backlogScore() {
   }
 
   r.health =
-    r.reachable && r.write_ok && r.read_ok && r.errors.length === 0 && !r.lease_orphans
+    r.reachable && r.write_ok && r.read_ok && r.delete_ok && r.errors.length === 0 && !r.lease_orphans
       ? 'ok'
       : r.reachable && r.read_ok
         ? 'degraded'
@@ -169,7 +185,10 @@ function memoryScore() {
     reachable: false,
     artifact: null,
     pid: null,
-    write_ok: null, // null = not probed (writing to prod memory is not free)
+    write_ok: false,
+    delete_ok: false,
+    timings: {},
+    recall_hits: null,
     read_ok: false,
     errors: [],
     health: 'unknown',
@@ -182,40 +201,107 @@ function memoryScore() {
     queue_depth: null,
   };
 
-  // NOT via `memory-cli status`: that path is broken against turso stores
-  // (`TypeError: Database4 is not a constructor`, `@tursodatabase/database is
-  // not installed` — the bundle does not carry the driver). Filed separately.
-  // Open the live store directly through the built adapter and READ, which is
-  // a stronger probe anyway: it proves the store answers queries rather than
-  // that a status field says so.
+  // NOT via `memory-cli status`: that path was broken against turso stores until
+  // 1676583e (missing `--external @tursodatabase/database`). Even fixed, a status
+  // read proves far less than doing the work, so this probe WRITES and RECALLS.
+  //
+  // The write goes to a DISPOSABLE temp store, never production — same rule the
+  // backlog probe follows. An earlier version of this file reported write "n/a"
+  // for memory on the grounds that writing to prod is not free. That was a
+  // cop-out: the disposable-store answer was always available, and an unmeasured
+  // write path is exactly where the last two data-loss incidents lived.
+  // Probe the LIVE store. A disposable-store write proves the CODE PATH works;
+  // it says nothing about whether PRODUCTION accepts writes — and production is
+  // the store that was corrupted twice. Read-after-write against the real store
+  // is the only probe that answers the health question this scorecard exists to
+  // answer.
+  //
+  // The probe episode is small, topic-tagged `scorecard-probe`, and INVALIDATED
+  // immediately after the read-back, so it does not accumulate or pollute recall.
+  // memory_write is an ordinary operation here — agents write to this store
+  // continuously — so this adds no risk class that is not already present.
+  const LIVE_DB = `${process.env['HOME']}/.memory/memory.db`;
   const PROBE = `
-    import { createStoreAdapter } from '@adhd/sox-store-adapter';
-    const a = await createStoreAdapter({ dbPath: process.env.MEM_DB, readonly: true });
-    const n = await a.executeAll('SELECT count(*) AS c FROM node WHERE t_invalid IS NULL');
-    const e = await a.executeAll('SELECT count(*) AS c FROM edge');
-    console.log(JSON.stringify({ probe: true, nodes: n.rows[0]?.c ?? null, edges: e.rows[0]?.c ?? null }));
-    await a.close();
+    import { openDb, memoryWrite, memoryRecall, memoryInvalidate } from '@adhd/sox-memory-core';
+    const t = {};
+    const mark = async (k, fn) => { const s = performance.now(); const r = await fn(); t[k] = +(performance.now() - s).toFixed(1); return r; };
+    const stamp = process.env.PROBE_STAMP;
+
+    const db = await mark('open_ms', () => openDb(process.env.MEM_DB));
+
+    // WRITE against the live store: chunk -> real ONNX embed -> vector applied.
+    const w = await mark('write_embed_ms', () => memoryWrite(db, {
+      content: 'scorecard health probe ' + stamp + ': turso lease quiescence WAL checkpoint readback',
+      topic: 'scorecard-probe',
+      project_path: process.env.PROBE_DIR,
+      agent_id: 'scorecard',
+      scope: 'project',
+      tags: ['scorecard-probe'],
+    }));
+    const wrote = !('code' in w);
+    const uid = wrote ? (w.episode_uid ?? null) : null;
+
+    // READ-AFTER-WRITE on the live store — the decisive assertion.
+    const r = await mark('recall_ms', () => memoryRecall(db, 'project', {
+      query: 'scorecard health probe ' + stamp, limit: 5,
+    }));
+    const found = (r.results ?? []).some((x) => (x.content ?? '').includes(stamp));
+
+    // Warm recall: embed cache primed, so the delta vs the first is the embed cost.
+    const r2 = await mark('recall_warm_ms', () => memoryRecall(db, 'project', {
+      query: 'turso lease quiescence', limit: 5,
+    }));
+
+    // CLEAN UP: invalidate the probe so it never accumulates in the live store.
+    let cleaned = false;
+    if (uid) {
+      const inv = await mark('delete_ms', () =>
+        memoryInvalidate(db, { claim_uid: uid, reason: 'scorecard probe cleanup' }));
+      cleaned = !('code' in inv);
+    }
+
+    const n = await db.executeAll('SELECT count(*) AS c FROM node WHERE t_invalid IS NULL');
+    const e = await db.executeAll('SELECT count(*) AS c FROM edge');
+    await db.close();
+    console.log(JSON.stringify({
+      probe: true, wrote, write_err: wrote ? null : (w.code ?? String(w)),
+      readback: found, recall_hits: r.results?.length ?? 0, warm_hits: r2.results?.length ?? 0,
+      cleaned, nodes: n.rows[0]?.c ?? null, edges: e.rows[0]?.c ?? null, timings: t,
+    }));
   `;
   try {
-    const out = sh('node', ['--import', 'tsx', '--input-type=module', '-e', PROBE], {
-      env: { MEM_DB: process.env['HOME'] + '/.memory/memory.db' },
-      timeout: 120_000,
+    // Written to a FILE, not passed via `-e`: `--input-type=module` is rejected
+    // when tsx's resolver is registered (ERR_INPUT_TYPE_NOT_ALLOWED).
+    const probeDir = mkdtempSync(join(tmpdir(), 'scorecard-probe-'));
+    cleanups.push(() => rmSync(probeDir, { recursive: true, force: true }));
+    const probeFile = join(probeDir, 'probe.mjs');
+    writeFileSync(probeFile, PROBE, 'utf8');
+    const out = sh('node', ['--import', 'tsx', probeFile], {
+      env: { MEM_DB: LIVE_DB, PROBE_DIR: process.cwd(), PROBE_STAMP: `sc-${Date.now()}` },
+      timeout: 300_000,
     });
     const p = lastJson(out, (j) => j.probe);
     if (p) {
       r.reachable = true;
-      r.read_ok = true;
+      r.write_ok = !!p.wrote;
+      r.read_ok = !!p.readback;
+      r.timings = p.timings ?? {};
+      r.recall_hits = p.recall_hits;
       r.nodes = p.nodes;
       r.edges = p.edges;
       r.integrity = 'read-ok';
       r.damaged_probes = 0;
+      if (!p.wrote) r.errors.push(`live write: ${p.write_err}`);
+      if (p.wrote && !p.readback) r.errors.push('READ-AFTER-WRITE FAILED on the live store');
+      r.delete_ok = !!p.cleaned;
+      if (p.wrote && !p.cleaned) r.errors.push('DELETE/invalidate FAILED — probe episode left live');
     }
   } catch (e) {
-    r.errors.push(`store read: ${String(e.message).slice(0, 200)}`);
+    r.errors.push(`live write/recall: ${String(e.message).slice(0, 240)}`);
   }
 
   r.health =
-    r.reachable && r.read_ok && r.damaged_probes === 0 && r.errors.length === 0
+    r.reachable && r.write_ok && r.read_ok && r.damaged_probes === 0 && r.errors.length === 0
       ? 'ok'
       : r.reachable
         ? 'degraded'
@@ -285,17 +371,25 @@ function main() {
   console.log('SERVICE SCORECARD');
   console.log('─'.repeat(78));
   console.log(
-    `${pad('service', 16)}${pad('health', 10)}${pad('write', 7)}${pad('read', 7)}${pad('errors', 8)}detail`,
+    `${pad('service', 15)}${pad('health', 9)}${pad('W', 6)}${pad('R', 6)}${pad('D', 6)}${pad('err', 5)}detail`,
   );
   console.log(
-    `${pad('backlog', 16)}${pad(bl.health, 10)}${pad(mark(bl.write_ok), 7)}${pad(mark(bl.read_ok), 7)}${pad(bl.errors.length, 8)}` +
+    `${pad('backlog', 15)}${pad(bl.health, 9)}${pad(mark(bl.write_ok), 6)}${pad(mark(bl.read_ok), 6)}${pad(mark(bl.delete_ok), 6)}${pad(bl.errors.length, 5)}` +
       `${bl.version ?? '?'} · items ${bl.prod_items?.total ?? '?'} (${bl.prod_items?.open ?? '?'} open) · leases ${bl.lease_entries ?? '?'} (${bl.lease_orphans ?? '?'} orphan)`,
   );
   console.log(
-    `${pad('memory-server', 16)}${pad(mem.health, 10)}${pad(mark(mem.write_ok), 7)}${pad(mark(mem.read_ok), 7)}${pad(mem.errors.length, 8)}` +
+    `${pad('memory-server', 15)}${pad(mem.health, 9)}${pad(mark(mem.write_ok), 6)}${pad(mark(mem.read_ok), 6)}${pad(mark(mem.delete_ok), 6)}${pad(mem.errors.length, 5)}` +
       `nodes ${mem.nodes ?? '?'} · edges ${mem.edges ?? '?'} · store ${mem.integrity ?? '?'} (${mem.damaged_probes ?? '?'} damaged)`,
   );
   for (const e of [...bl.errors, ...mem.errors]) console.log(`  ERROR: ${e}`);
+  console.log('');
+  console.log('LATENCY (ms, live store)');
+  const tl = (label, t) => {
+    const parts = Object.entries(t ?? {}).map(([k, v]) => `${k.replace(/_ms$/, '')}=${v}`);
+    console.log(`  ${pad(label, 14)}${parts.join('  ') || '(none)'}`);
+  };
+  tl('memory', mem.timings);
+  tl('backlog', bl.timings);
 
   console.log('');
   console.log('ITEMS BY PRIORITY  (done / open)');
