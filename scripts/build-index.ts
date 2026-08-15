@@ -157,6 +157,10 @@ const CHECKSUM_IRRELEVANT_PREFIXES = [
   '.opencode/', // dispatch artifacts
   '.worktrees/', // repo convention for experimental worktrees
   '.nx/', // nx cache
+  '.cto/', // CTO-system agent runtime state (heartbeats, approvals) — written
+           // by running agents, never packaged. A live heartbeat file was
+           // blocking registry:sync-index, which blocks the pre-commit hook,
+           // which blocks commits repo-wide (2026-08-15).
 ];
 
 /** Root-level documents that are never part of any extension payload. */
