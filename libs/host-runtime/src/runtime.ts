@@ -201,9 +201,28 @@ async function _startRuntimeLocked(
   // Remove stale socket file from a previous (unclean) shutdown.
   try { if (fs.existsSync(execSocketPath)) fs.unlinkSync(execSocketPath); } catch { /* ignore */ }
 
+  // BUG-EPIC-WIRE-INPUTS-UNBOUNDED-001 (class A): the exec-socket read buffer
+  // used to grow without limit while waiting for a terminating '\n'. A peer
+  // that never sends one — malicious, buggy, or a truncated write — grew
+  // `buf` forever and could exhaust this supervisor process's memory. 8 MiB
+  // is generous for an exec request's `{ ext, tool, args }` JSON line;
+  // anything past it is refused outright (connection closed), never
+  // silently truncated.
+  const MAX_EXEC_LINE_BYTES = 8 * 1024 * 1024;
+
   const execServer = net.createServer((socket) => {
     let buf = '';
+    let bufBytes = 0;
     socket.on('data', (chunk: Buffer) => {
+      bufBytes += chunk.length;
+      if (bufBytes > MAX_EXEC_LINE_BYTES) {
+        console.error(
+          `[runtime] exec socket client exceeded ${MAX_EXEC_LINE_BYTES} bytes without a ` +
+          `newline — closing connection (BUG-EPIC-WIRE-INPUTS-UNBOUNDED-001)`,
+        );
+        socket.destroy();
+        return;
+      }
       buf += chunk.toString('utf8');
       const nl = buf.indexOf('\n');
       if (nl === -1) return; // wait for complete line

@@ -381,6 +381,96 @@ export function runFrontShim(opts: FrontShimOptions): FrontShimHandle {
     // SSE sessions: active SSE response per session ID.
     const sseSessions = new Map<string, http.ServerResponse>();
 
+    // BUG-EPIC-WIRE-INPUTS-UNBOUNDED-001 (class A): both HTTP body-collection
+    // sites below used to accumulate `req` chunks into a string with no cap.
+    // A peer that keeps streaming a request body and never ends it — or a
+    // legitimately huge body — grew this buffer without bound until the
+    // process died of memory exhaustion. 16 MiB is generous for a JSON-RPC
+    // tools/call payload; anything past it is refused outright rather than
+    // silently truncated (truncating a wire frame is corruption, not safety).
+    const MAX_HTTP_BODY_BYTES = 16 * 1024 * 1024;
+
+    // Grace period between rejecting an oversized body and forcibly
+    // destroying the connection. `req` and `res` share one underlying TCP
+    // connection: destroying `req` (the read side) while the kernel still
+    // has unread client bytes queued sends an RST, and an RST can drop the
+    // 413 response we just queued for write — the client would never see
+    // the error, just the connection dying. We keep reading (discarding,
+    // never re-accumulating — `rejected` below stays true) and give the
+    // in-flight write a full CLOSE_GRACE_MS to land as a clean FIN before
+    // forcibly destroying the socket. Bytes stop being accumulated the
+    // INSTANT the cap is crossed regardless of this delay — memory is
+    // already bounded by then; this only bounds how long the socket itself
+    // survives against a peer that keeps streaming past the cap.
+    const CLOSE_GRACE_MS = 500;
+
+    /**
+     * Accumulate an HTTP request body up to {@link MAX_HTTP_BODY_BYTES}. On
+     * overflow: emit a 413 JSON-RPC error, close the connection after
+     * {@link CLOSE_GRACE_MS} (see rationale above), and never call
+     * `onComplete` — the caller's normal completion path simply never runs
+     * for a rejected request. Never silently truncates.
+     */
+    function readBoundedBody(
+      req: http.IncomingMessage,
+      res: http.ServerResponse,
+      onComplete: (body: string) => void,
+    ): void {
+      let body = '';
+      let bytes = 0;
+      let rejected = false;
+
+      req.on('data', (chunk: string) => {
+        if (rejected) {
+          // Already over the cap: keep draining (never re-accumulate into
+          // `body`) so the read side empties out — the close scheduled below
+          // fires exactly once, on a fixed delay from the moment of rejection.
+          return;
+        }
+        bytes += Buffer.byteLength(chunk);
+        if (bytes > MAX_HTTP_BODY_BYTES) {
+          rejected = true;
+          diag(
+            `[service-proxy shim:${opts.id}] request body exceeded ${MAX_HTTP_BODY_BYTES} bytes ` +
+              `— closing connection (BUG-EPIC-WIRE-INPUTS-UNBOUNDED-001)`,
+          );
+          try {
+            // Deliberately NOT setting `Connection: close` here: Node's HTTP
+            // server treats that header as licence to tear the whole socket
+            // down (both directions) the instant the response finishes
+            // writing, racing our own read-side drain above and reliably
+            // dropping this very response out from under the client on a
+            // still-streaming connection (reproduced consistently under
+            // load — see shim.spec.ts's BUG-EPIC-WIRE-INPUTS-UNBOUNDED-001
+            // tests). Leaving it unset lets Node flush the response as a
+            // normal keep-alive-shaped write; OUR explicit, grace-delayed
+            // `req.destroy()` below is the only thing that closes the
+            // connection, on a timeline we control.
+            res.writeHead(413, { 'Content-Type': 'application/json' });
+            res.end(
+              JSON.stringify({
+                jsonrpc: '2.0',
+                error: { code: -32600, message: 'Request body too large' },
+              }),
+            );
+          } catch (e) {
+            diag(`[service-proxy shim:${opts.id}] error writing 413 response: ${(e as Error).message}`);
+          }
+          const closeTimer = setTimeout(() => req.destroy(), CLOSE_GRACE_MS);
+          closeTimer.unref?.();
+          return;
+        }
+        body += chunk;
+      });
+      req.on('end', () => {
+        if (rejected) return;
+        onComplete(body);
+      });
+      req.on('error', (e: Error) => {
+        diag(`[service-proxy shim:${opts.id}] request stream error: ${e.message}`);
+      });
+    }
+
     /**
      * Handle one JSON-RPC request/notification received over HTTP — shared by
      * StreamableHTTP (POST /mcp, and POST to whatever URL a "remote" host config
@@ -453,9 +543,7 @@ export function runFrontShim(opts: FrontShimOptions): FrontShimHandle {
       res.setHeader('Access-Control-Allow-Methods', 'POST');
       res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
 
-      let body = '';
-      req.on('data', (chunk: string) => (body += chunk));
-      req.on('end', () => {
+      readBoundedBody(req, res, (body) => {
         const reqRpc = parseJsonRpcBody(body, res, 400);
         if (!reqRpc) return;
         void handleHttpRpc(reqRpc).then((resp) => {
@@ -501,9 +589,7 @@ export function runFrontShim(opts: FrontShimOptions): FrontShimHandle {
           res.end(JSON.stringify({ jsonrpc: '2.0', error: { code: -32000, message: 'Session not found' } }));
           return;
         }
-        let body = '';
-        req.on('data', (chunk: string) => (body += chunk));
-        req.on('end', () => {
+        readBoundedBody(req, res, (body) => {
           const reqRpc = parseJsonRpcBody(body, res, 200);
           if (!reqRpc) return;
           void handleHttpRpc(reqRpc).then((resp) => {
