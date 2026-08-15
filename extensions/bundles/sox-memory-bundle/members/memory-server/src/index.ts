@@ -120,6 +120,18 @@ import { initTelemetry, telemetrySelfCheck, type InitTelemetryOptions } from '@a
 import * as crypto from 'node:crypto';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
+// BUG-MEMORYSERVER-WEDGES-SILENTLY-NO-SELF-RECOVERY-001: per-operation-class
+// deadlines on store calls (so a blocked call fails fast, typed and traced,
+// instead of hanging the process forever) + a liveness watchdog (so a
+// process that stops completing requests exits for the supervisor to
+// restart it, rather than lingering wedged at 0% CPU). See both modules'
+// doc comments for the full incident context and threshold justification.
+import {
+  withOperationDeadline,
+  StoreOperationTimeoutError,
+  type OperationClass,
+} from './operation-guard.js';
+import { serverLivenessWatchdog, watchdogIntervalMs } from './liveness-watchdog.js';
 // ─── ADR-0003: content-addressed self-identity ───────────────────────────────
 //
 // The server's identity is `id` + the sha256 content address of its RUNNING
@@ -864,7 +876,43 @@ export function resolveDbPath(argDbPath: unknown): string {
   return DEFAULT_DB_PATH;
 }
 
+/**
+ * BUG-MEMORYSERVER-WEDGES-SILENTLY-NO-SELF-RECOVERY-001: the single choke
+ * point every request path funnels through (direct-stdio's `registeredTools`
+ * below, AND backend mode's `handleBackendRequest` in backend.ts) — the
+ * correct place to report liveness (every call, success or failure, proves
+ * the server is alive) and to turn a deadline timeout into a normal typed
+ * error response instead of an uncaught rejection. The real dispatch logic
+ * is unchanged below in `handleToolCallImpl`; this wrapper adds exactly
+ * those two things around it.
+ */
 export async function handleToolCall(name: string, args: Record<string, unknown>): Promise<ToolResult> {
+  const endLiveness = serverLivenessWatchdog.beginRequest(name);
+  try {
+    return await handleToolCallImpl(name, args);
+  } catch (err) {
+    if (err instanceof StoreOperationTimeoutError) {
+      return {
+        isError: true,
+        content: [{
+          type: 'text',
+          text: JSON.stringify({
+            code: err.code,
+            message: err.message,
+            op_class: err.opClass,
+            op_name: err.opName,
+            timeout_ms: err.timeoutMs,
+          }),
+        }],
+      };
+    }
+    throw err;
+  } finally {
+    endLiveness();
+  }
+}
+
+async function handleToolCallImpl(name: string, args: Record<string, unknown>): Promise<ToolResult> {
   // memory_ping: no mandatory db_path — handled before the db_path guard.
   // ADR-0003 Decision 5: report the running server's CONTENT ADDRESS — the
   // drift-proof answer to "what code is this?" — instead of a hand-typed version.
@@ -965,7 +1013,16 @@ export async function handleToolCall(name: string, args: Record<string, unknown>
         // so we must register it here — otherwise the enrich timer fires but
         // runPeriodicEnrichPass returns immediately (openedPaths.size === 0)
         // and the 5k+ embed backlog is never healed or enriched.
-        const adapter = await getDb(resolvedPath);
+        // BUG-MEMORYSERVER-WEDGES-SILENTLY-NO-SELF-RECOVERY-001: this exact
+        // call ("openDb() alone... hung past 120s") was the isolated,
+        // reproduced hang. It is inside the surrounding try/catch (below),
+        // so a timeout here now lands as `storeOpenError` and reads
+        // `unhealthy` — never hangs `memory_ping` itself again.
+        const adapter = await withOperationDeadline(() => getDb(resolvedPath), {
+          opClass: 'connect',
+          opName: 'memory_ping.getDb',
+          dbPath: resolvedPath,
+        });
         openedPaths.add(resolvedPath);
 
         // BUG A fix: these were unconditional raw better-sqlite3 `.prepare()`
@@ -1144,6 +1201,14 @@ export async function handleToolCall(name: string, args: Record<string, unknown>
           // reads as `null`, which is a legacy store, not a warning). Read
           // through the already-open adapter — one cheap SELECT, no re-open.
           store_engine: await getStoreEngineIdentity(adapter),
+          // BUG-MEMORYSERVER-WEDGES-SILENTLY-NO-SELF-RECOVERY-001: the
+          // store-adapter connection-health verdict (Turso only —
+          // 'n/a' on the default better-sqlite3 backend, which has no such
+          // state machine). Previously unread anywhere in memory-server
+          // despite being a public getter on the adapter; a wedge that left
+          // the store 'poisoned' or stuck 'reconnecting' would have been
+          // invisible to `memory_ping` even though the field existed.
+          connection_health: adapterConnectionHealth(adapter),
         };
       } else if (resolvedPath) {
         // Resolved to a path whose file does not exist yet — an unborn store,
@@ -1241,7 +1306,16 @@ export async function handleToolCall(name: string, args: Record<string, unknown>
   const denied = checkDbPathPolicy(dbPath);
   if (denied) return denied;
 
-  const adapter = await getDb(dbPath);
+  // BUG-MEMORYSERVER-WEDGES-SILENTLY-NO-SELF-RECOVERY-001: the exact call
+  // shape the incident isolated as the hang ("openDb() alone... hung past
+  // 120s"). A timeout here now rejects with a typed StoreOperationTimeoutError
+  // that the `handleToolCall` wrapper above turns into a normal error
+  // response instead of an indefinite hang.
+  const adapter = await withOperationDeadline(() => getDb(dbPath), {
+    opClass: 'connect',
+    opName: `${name}.getDb`,
+    dbPath,
+  });
   // BUG A fix: this used to unconditionally unwrap() to a raw better-sqlite3
   // handle for every tool call — broken on Turso, whose unwrap() returns an
   // async `@tursodatabase/database` handle instead. Every call site below now
@@ -1251,6 +1325,89 @@ export async function handleToolCall(name: string, args: Record<string, unknown>
   // (memory_recall listing threw "rows is not iterable" on Turso).
   openedPaths.add(dbPath);
 
+  // BUG-MEMORYSERVER-WEDGES-SILENTLY-NO-SELF-RECOVERY-001: every tool body
+  // below (SQL reads/writes against `adapter`, plus any embed dispatch on
+  // the write-class tools) runs under a per-tool-class deadline. `write`
+  // class tools can legitimately embed synchronously under SOX_SYNC_EMBED=1
+  // and must clear the measured production embed max (109089ms, see
+  // operation-guard.ts) with real margin — see `toolOperationClass` below
+  // for the full classification and DEADLINE_ENV for the overrides.
+  return withOperationDeadline(() => dispatchTool(name, args, dbPath, adapter), {
+    opClass: toolOperationClass(name),
+    opName: name,
+    dbPath,
+    // BUG-MEMORYSERVER-WEDGES-SILENTLY-NO-SELF-RECOVERY-001 finding: read
+    // (never trigger) the adapter's own connection-health verdict on every
+    // timeout/slow log line. store-adapter's 'healthy'|'poisoned'|
+    // 'reconnecting' machine (turso-adapter.ts) transitions ONLY on a
+    // thrown/rejected `isFatalConnectionError` — never on a call that just
+    // never returns, which is exactly this incident's shape — so it did
+    // NOT fail to fire here; there is no timeout-based trigger for it to
+    // fire on. This makes that gap visible in the log instead of requiring
+    // a repeat incident to rediscover it.
+    extraFields: () => ({ connection_health: adapterConnectionHealth(adapter) }),
+  });
+}
+
+/**
+ * Classifies each tool by its worst-case legitimate latency so
+ * `withOperationDeadline` can give it a deadline sized to that class rather
+ * than one blanket number. `write` tools can embed synchronously
+ * (SOX_SYNC_EMBED=1) and must tolerate the measured production embed max;
+ * `mutate` tools touch the store (graph edges, session state) without
+ * embedding; `read` tools are pure SELECTs, nominally <50ms even under
+ * contention. Unknown/new tool names default to `mutate` — the safer
+ * middle ground — rather than `read`'s tighter deadline, so a future tool
+ * added here without an explicit classification fails safe toward "more
+ * generous," not toward "more likely to be killed as a false positive."
+ */
+/**
+ * Read a `TursoAdapter`'s `connectionHealth` getter without importing that
+ * subtype — better-sqlite3-backed `StoreAdapter`s (the default local
+ * backend, `STORE_ADAPTER` unset) have no such concept and no such
+ * property; duck-type it instead of widening this file's dependency on
+ * `@adhd/sox-store-adapter`'s exported surface beyond what it already uses.
+ * Never throws.
+ */
+function adapterConnectionHealth(adapter: StoreAdapter): 'healthy' | 'poisoned' | 'reconnecting' | 'n/a' {
+  const withHealth = adapter as Partial<{ connectionHealth: 'healthy' | 'poisoned' | 'reconnecting' }>;
+  return withHealth.connectionHealth ?? 'n/a';
+}
+
+function toolOperationClass(name: string): OperationClass {
+  switch (name) {
+    case 'memory_write':
+    case 'memory_write_batch':
+    case 'memory_update':
+      return 'write';
+    case 'memory_recall':
+    case 'memory_search_entities':
+    case 'memory_get_session_state':
+    case 'memory_get_community':
+    case 'memory_topics':
+    case 'memory_list_projects':
+    case 'memory_list_entities':
+    case 'memory_entity_episodes':
+    case 'memory_related':
+    case 'memory_supersession_chain':
+    case 'memory_near_duplicates':
+    case 'memory_stats':
+      return 'read';
+    case 'memory_invalidate':
+    case 'memory_link':
+    case 'memory_save_session_state':
+    case 'memory_curate':
+    default:
+      return 'mutate';
+  }
+}
+
+async function dispatchTool(
+  name: string,
+  args: Record<string, unknown>,
+  dbPath: string,
+  adapter: StoreAdapter,
+): Promise<ToolResult> {
   switch (name) {
     case 'memory_write': {
       const wq = await WriteQueue.forPath(dbPath);
@@ -2579,7 +2736,18 @@ export async function runPeriodicEnrichPass(opts: { acquireHealSlot?: boolean } 
 
   for (const dbPath of openedPaths) {
     try {
-      const adapter = await getDb(dbPath);
+      // BUG-MEMORYSERVER-WEDGES-SILENTLY-NO-SELF-RECOVERY-001: only the
+      // connect is deadline-bound here, deliberately NOT `runEnrichPassOnDb`
+      // — that pass legitimately runs long (healMissingVectors rides the
+      // same shared embed child measured up to 109s/call) and already has
+      // its own stall detection (BL-413's checkAndEscalateEnrichStall). A
+      // hard deadline on the pass itself would risk killing real work; the
+      // connect step has no such excuse.
+      const adapter = await withOperationDeadline(() => getDb(dbPath), {
+        opClass: 'connect',
+        opName: 'enrich.pass.getDb',
+        dbPath,
+      });
       await runEnrichPassOnDb(adapter, dbPath, opts);
     } catch (err) {
       // Durable sink — never stdout (JSON-RPC channel). The pre-fix
@@ -2854,7 +3022,14 @@ async function runDrainPass(): Promise<{ backlogRemaining: boolean; healed: numb
   let healed = 0;
   for (const dbPath of openedPaths) {
     try {
-      const adapter = await getDb(dbPath);
+      // BUG-MEMORYSERVER-WEDGES-SILENTLY-NO-SELF-RECOVERY-001: connect only
+      // — see the matching comment in `runPeriodicEnrichPass` for why the
+      // heal itself (also embed-bound) is deliberately left unbounded here.
+      const adapter = await withOperationDeadline(() => getDb(dbPath), {
+        opClass: 'connect',
+        opName: 'drain.pass.getDb',
+        dbPath,
+      });
       const wq = await WriteQueue.forPath(dbPath);
       const heal = await healMissingVectors(adapter, wq, { limit: drainBatchLimit() });
       healed += heal.healed;
@@ -3097,7 +3272,14 @@ function scheduleNextCompactionTick(): void {
     void (async () => {
       for (const dbPath of openedPaths) {
         try {
-          const adapter = await getDb(dbPath);
+          // BUG-MEMORYSERVER-WEDGES-SILENTLY-NO-SELF-RECOVERY-001: connect
+          // only — runCompactionPass (VACUUM/ANALYZE/checkpoint) is left
+          // unbounded on the same reasoning as the enrich/drain passes above.
+          const adapter = await withOperationDeadline(() => getDb(dbPath), {
+            opClass: 'connect',
+            opName: 'compaction.pass.getDb',
+            dbPath,
+          });
           await runCompactionPass(adapter, {
             log: (msg) => log.info('compaction.pass', { db_path: dbPath, detail: msg }),
           });
@@ -3113,6 +3295,14 @@ function scheduleNextCompactionTick(): void {
   if (typeof timer.unref === 'function') timer.unref();
 }
 scheduleNextCompactionTick();
+
+// BUG-MEMORYSERVER-WEDGES-SILENTLY-NO-SELF-RECOVERY-001: start the liveness
+// watchdog unconditionally at module load, mirroring the other background
+// timers above — it is a no-op (`checkOnce` returns false) whenever
+// `pending === 0`, so importing this module from a test (which never routes
+// traffic through `handleToolCall`) never trips it. `unref()`d inside
+// `LivenessWatchdog.start`, so it never keeps a process alive on its own.
+serverLivenessWatchdog.start(watchdogIntervalMs());
 
 // ── Entrypoint dispatch: backend mode vs direct-stdio (spec §9.5) ─────────────
 //
