@@ -27,6 +27,21 @@ import { join } from 'node:path';
 export interface FastembedLockInfo {
   pid: number;
   startedAt: string;
+  /**
+   * (BUG-MEMORY-EMBED-HEAD-OF-LINE-BLOCKING-001) Present when the writer is
+   * one member of a `FastembedProcessPool` — all members of the same pool
+   * share one `poolGroup` id, generated once by the pool and passed to every
+   * forked member via `SOX_FASTEMBED_POOL_GROUP`. This lets both the writer
+   * (`checkAndClaimFastembedLock`) and the reader
+   * (`detectCompetingFastembedHost`) distinguish "another member of MY OWN
+   * pool just wrote this lock" (expected, not a bug — a 4-member pool
+   * legitimately has 4 live fastembed hosts) from "a genuinely unrelated
+   * fastembed host process is running" (the real BL-331 signal this lock
+   * exists to catch). Without this, every pool member would warn about every
+   * OTHER pool member on every model load — the exact false-positive noise
+   * BL-331's own postmortem already warns against over-trusting.
+   */
+  poolGroup?: string;
 }
 
 /**

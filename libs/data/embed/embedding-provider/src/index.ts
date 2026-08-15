@@ -170,6 +170,24 @@ export {
   SharedFastembedProcessClient,
 } from './sharedFastembedProcess.js';
 
+/**
+ * (BUG-MEMORY-EMBED-HEAD-OF-LINE-BLOCKING-001) `getSharedFastembedProcess()`
+ * now returns a pool of `resolveFastembedPoolSize()` independent fastembed
+ * child processes (`FastembedProcessPool`) instead of a single shared child —
+ * see `sharedFastembedProcess.ts` for the full production-measurement writeup
+ * and rationale. `SharedFastembedClient` is the structural interface both the
+ * pool and the single-child `SharedFastembedProcessClient` satisfy;
+ * `FastembedBusyError` is the typed admission-control rejection (opt-in via
+ * `SOX_EMBED_POOL_ADMISSION_LIMIT`).
+ */
+export type { SharedFastembedClient } from './sharedFastembedProcess.js';
+export {
+  FastembedProcessPool,
+  FastembedBusyError,
+  resolveFastembedPoolSize,
+  resolveFastembedAdmissionLimit,
+} from './sharedFastembedProcess.js';
+
 // ── Factory ───────────────────────────────────────────────────────────────────
 
 export async function createEmbeddingProvider(

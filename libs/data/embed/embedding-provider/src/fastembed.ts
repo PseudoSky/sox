@@ -1,5 +1,5 @@
 import { warmupTimeoutMs, isModelCached, WARMUP_CACHE_HIT_ATTEMPTS } from './index.js';
-import { getSharedFastembedProcess, type SharedFastembedProcessClient } from './sharedFastembedProcess.js';
+import { getSharedFastembedProcess, type SharedFastembedClient } from './sharedFastembedProcess.js';
 import type { EmbeddingHealth, EmbeddingProvider, EmbeddingProviderMetadata, EmbedRole } from './index.js';
 // BUG-005: MODEL_CONFIGS lives in the side-effect-free `fastembedModels.js`
 // (shared with the child-process host) — see that module's doc comment for
@@ -53,8 +53,12 @@ export class FastembedProvider implements EmbeddingProvider {
   // BL-238/BL-171 fix: delegate ALL fastembed ONNX inference to the
   // process-wide shared fastembed CHILD PROCESS singleton instead of
   // spawning our own `Worker`/process — see `sharedFastembedProcess.ts` for
-  // the full root-cause writeup.
-  private shared: SharedFastembedProcessClient;
+  // the full root-cause writeup. (BUG-MEMORY-EMBED-HEAD-OF-LINE-BLOCKING-001)
+  // Typed against the `SharedFastembedClient` interface, not the concrete
+  // single-child class, so this transparently accepts either a lone
+  // `SharedFastembedProcessClient` (tests) or the pooled
+  // `FastembedProcessPool` (`getSharedFastembedProcess()`'s real return type).
+  private shared: SharedFastembedClient;
   private ready = false;
   private readyPromise: Promise<void> | null = null;
   private embedDim = 0;
@@ -72,7 +76,7 @@ export class FastembedProvider implements EmbeddingProvider {
     model: string,
     dimensions: number,
     cacheDir: string,
-    sharedClient: SharedFastembedProcessClient = getSharedFastembedProcess(),
+    sharedClient: SharedFastembedClient = getSharedFastembedProcess(),
   ) {
     this.model = model;
     this.cacheDir = cacheDir;
