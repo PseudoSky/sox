@@ -4,7 +4,7 @@
     "type": "agent",
     "version": "0.1.0",
     "title": "agent-manager",
-    "description": "agent-manager agent",
+    "description": "Use this when you need to craft, test, or manage agents, skills, and plugins across opencode and Claude Code — e.g. \"create an agent\", \"build a skill or plugin\", \"A/B test this agent\", \"optimize this prompt\", \"make a Claude plugin\", \"lazy-load my agents\", or any cross-runtime agent-management work.",
     "source": "file:///Users/nix/dev/ai/sox-ecosystem/extensions/agents/agent-manager",
     "checksum": "sha256:c133823efe654ffa568ead7ea1135732adf7254c97fc50061b98a011bf0f9801",
     "compatibility": {
@@ -13,14 +13,14 @@
     "requires": {
       "tool_calling": true
     },
-    "builtFromCommit": "ee9d8dd8f57b3f166dc428fcb4e23705edbb2eeb"
+    "builtFromCommit": "d2c36bd6f797fad5464a0fbcfcdfdded0eb586ac"
   },
   {
     "id": "architect",
     "type": "agent",
     "version": "0.1.0",
     "title": "architect",
-    "description": "Read-only architecture agent (deepseek-v4-pro). Takes a vague feature description, delegates research to the researcher agent, analyzes the codebase with gitnexus MCP, and produces a full implementation spec with exact file paths, interface and behavioral changes, independent segments with token estimates, execution strategies for weaker agents, test cases, and documentation updates. ALWAYS delegates research — never does its own.",
+    "description": "Use this when you need a read-only architecture agent (deepseek-v4-pro): takes a vague feature description, delegates research to the researcher agent, analyzes the codebase with gitnexus MCP, and produces a full implementation spec with exact file paths, interface and behavioral changes, independent segments with token estimates, execution strategies for weaker agents, test cases, and documentation updates. ALWAYS delegates research — never does its own.",
     "source": "file:///Users/nix/dev/ai/sox-ecosystem/extensions/agents/architect",
     "checksum": "sha256:b051f40558c981a257734ee9e7e5a3d8aba35ae1ffae46e1877b428f3700fb3a",
     "compatibility": {
@@ -29,14 +29,14 @@
     "requires": {
       "tool_calling": true
     },
-    "builtFromCommit": "ee9d8dd8f57b3f166dc428fcb4e23705edbb2eeb"
+    "builtFromCommit": "d2c36bd6f797fad5464a0fbcfcdfdded0eb586ac"
   },
   {
     "id": "debug",
     "type": "agent",
     "version": "0.1.0",
     "title": "debug",
-    "description": "debug agent",
+    "description": "Use this when you need a senior debugging specialist (deepseek-v4-flash) to diagnose complex software issues, analyze system behavior, and identify root causes from error logs and stack traces. Delegates broad discovery to `researcher` and uses GitNexus-first root-cause tracing instead of blind grepping. Differentiate from `review`: this agent chases a specific reported failure to its root cause; `review` audits code that isn't (yet) known to be broken.",
     "source": "file:///Users/nix/dev/ai/sox-ecosystem/extensions/agents/debug",
     "checksum": "sha256:dc86ab5a11f4c23c991edbfd7a9b1eb00a1baee895da6b921caacddc1ff53c74",
     "compatibility": {
@@ -45,14 +45,14 @@
     "requires": {
       "tool_calling": true
     },
-    "builtFromCommit": "ee9d8dd8f57b3f166dc428fcb4e23705edbb2eeb"
+    "builtFromCommit": "d2c36bd6f797fad5464a0fbcfcdfdded0eb586ac"
   },
   {
     "id": "dispatcher",
     "type": "agent",
     "version": "0.1.0",
     "title": "dispatcher",
-    "description": "Live orchestrator that lists and drives token-optimized dispatch of already-authored plan-state-machine plans (dag.json/state.json). Two modes — 'list plans' enumerates discoverable plans with their state; 'execute plan <path|slug>' runs states wave-by-wave, routing each to the best-fit available executor at its declared model/effort tier, assembling self-contained inline dispatch prompts (compiled work-order + pre-loaded reserved file contents + token budget hint + wave context pack when wave has ≥2 states with shared context), capturing real token telemetry, verifying from state.json (not subagent reports), and looping advance/retry/escalate/halt via orchestrate-plan.js. Halts on every non-clean gate and proposes a fix. Distinct from plan-builder (which authors plans). Governed by the non-negotiable Operating rules — never triage, never code, never believe a report without evidence, never dispatch un-triaged or un-architected implementation, never merge unreviewed code, backlog status on every transition, decisions routed to debug/architect/product, background parallel dispatch, no orphaned work, live-status and upstream-consumer verification after deployments.",
+    "description": "Use this when you need the live orchestrator that lists and drives token-optimized dispatch of already-authored plan-state-machine plans (dag.json/state.json). Two modes — 'list plans' enumerates discoverable plans with their state; 'execute plan <path|slug>' runs states wave-by-wave, routing each to the best-fit available executor at its declared model/effort tier, assembling self-contained inline dispatch prompts (compiled work-order + pre-loaded reserved file contents + token budget hint + wave context pack when wave has ≥2 states with shared context), capturing real token telemetry, verifying from state.json (not subagent reports), and looping advance/retry/escalate/halt via orchestrate-plan.js. Halts on every non-clean gate and proposes a fix. Distinct from plan-builder (which authors plans). Governed by the non-negotiable Operating rules — never triage, never code, never believe a report without evidence, never dispatch un-triaged or un-architected implementation, never merge unreviewed code, backlog status on every transition, decisions routed to debug/architect/product, background parallel dispatch, no orphaned work, live-status and upstream-consumer verification after deployments.",
     "source": "file:///Users/nix/dev/ai/sox-ecosystem/extensions/agents/dispatcher",
     "checksum": "sha256:819b9bf5bd278f8b1bcebd1281709221f4f02f8c4bcae7acd5ebd9b33b445d27",
     "compatibility": {
@@ -61,14 +61,14 @@
     "requires": {
       "tool_calling": true
     },
-    "builtFromCommit": "ee9d8dd8f57b3f166dc428fcb4e23705edbb2eeb"
+    "builtFromCommit": "d2c36bd6f797fad5464a0fbcfcdfdded0eb586ac"
   },
   {
     "id": "doc-cartographer",
     "type": "agent",
     "version": "0.1.0",
     "title": "doc-cartographer",
-    "description": ">-",
+    "description": "Use this when you need the FACTS subagent for the documentation trio. Given a scope (a directory with a manifest), it classifies the scope type, recalls the best-in-class doc frameworks from memory, drives GitNexus to discover the REAL features (tagged shipped/roadmap/deprecated with runnable receipts), assesses the existing doc surface for junk/redundancy/gaps, records public distribution + freshness, surfaces missing verification tools, and logs three health metrics per run. Writes only to <scope>/docs/marketing/.catalog/. Never writes prose docs, never guesses. Dispatched by doc-steward.",
     "source": "file:///Users/nix/dev/ai/sox-ecosystem/extensions/agents/doc-cartographer",
     "checksum": "sha256:7172a0c4f5d55b088cfc0a926489fb75b5a5e213a2fc93df725b9347701bb09f",
     "compatibility": {
@@ -77,14 +77,14 @@
     "requires": {
       "tool_calling": true
     },
-    "builtFromCommit": "ee9d8dd8f57b3f166dc428fcb4e23705edbb2eeb"
+    "builtFromCommit": "d2c36bd6f797fad5464a0fbcfcdfdded0eb586ac"
   },
   {
     "id": "doc-consumer",
     "type": "agent",
     "version": "0.1.0",
     "title": "doc-consumer",
-    "description": ">-",
+    "description": "Use this when you need a fresh-eyes consumer for the doc-reviewer's usability lens. Given a scope's documentation and a small set of canonical tasks, it attempts each task using ONLY the docs — no source code — and reports, per task, whether the docs were sufficient, where it had to guess, and every point at which it wanted to open source (the reader-search signal). Read-only; never edits. Dispatched by doc-reviewer.",
     "source": "file:///Users/nix/dev/ai/sox-ecosystem/extensions/agents/doc-consumer",
     "checksum": "sha256:b0e494231b5853b34a22f4a0321c1d4198ddc2619595da9f917990950edf54d0",
     "compatibility": {
@@ -93,14 +93,14 @@
     "requires": {
       "tool_calling": true
     },
-    "builtFromCommit": "ee9d8dd8f57b3f166dc428fcb4e23705edbb2eeb"
+    "builtFromCommit": "d2c36bd6f797fad5464a0fbcfcdfdded0eb586ac"
   },
   {
     "id": "doc-evangelist",
     "type": "agent",
     "version": "0.1.0",
     "title": "doc-evangelist",
-    "description": ">-",
+    "description": "Use this when you need the GTM / project-evangelism layer of the documentation trio. Consumes the cartographer's verified capability inventory, researches distribution channels + competitors via search CLIs, and produces compelling, channel-tuned launch content — distribution STRATEGY, positioning, README hero copy (for the steward to integrate), competitor comparison, launch posts, and social threads. Maintains persistent competitor + future-feature catalogs so it never re-crawls or blurs shipped vs future. Sells the future honestly (a dedicated future catalog is the source of truth). Writes only to docs/marketing/ (never the real README directly).",
     "source": "file:///Users/nix/dev/ai/sox-ecosystem/extensions/agents/doc-evangelist",
     "checksum": "sha256:1b404abc26b0a80ac81d5952b3554c52769a0ad18f3437782d74eb55e80b6e95",
     "compatibility": {
@@ -109,14 +109,14 @@
     "requires": {
       "tool_calling": true
     },
-    "builtFromCommit": "ee9d8dd8f57b3f166dc428fcb4e23705edbb2eeb"
+    "builtFromCommit": "d2c36bd6f797fad5464a0fbcfcdfdded0eb586ac"
   },
   {
     "id": "doc-reviewer",
     "type": "agent",
     "version": "0.1.0",
     "title": "doc-reviewer",
-    "description": ">-",
+    "description": "Use this when you need the assessment gate for the documentation trio. After the steward rewrites a scope's doc surface, this agent decides PASS/FAIL on three teeth-having lenses: (1) closed-loop metric — the re-run cartographer catalog must show metric #1 (eliminated reader searches) and undocumented/junk DROP vs the pre-rewrite baseline, with zero capabilities.json contradictions; (2) rubric/template conformance — every doc matches its deterministic skeleton recalled from memory and every README claim resolves to a shipped receipt; (3) fresh-agent consumer test — dispatches doc-consumer to complete canonical tasks using ONLY the docs. Writes a scored verdict to .catalog/review.md. Never edits the docs it judges.",
     "source": "file:///Users/nix/dev/ai/sox-ecosystem/extensions/agents/doc-reviewer",
     "checksum": "sha256:663bbe54dbb80b6aabf64cdefd7d2d603b2d9b9845a1da7c6bae89983fdd2c03",
     "compatibility": {
@@ -125,14 +125,14 @@
     "requires": {
       "tool_calling": true
     },
-    "builtFromCommit": "ee9d8dd8f57b3f166dc428fcb4e23705edbb2eeb"
+    "builtFromCommit": "d2c36bd6f797fad5464a0fbcfcdfdded0eb586ac"
   },
   {
     "id": "doc-steward",
     "type": "agent",
     "version": "0.1.0",
     "title": "doc-steward",
-    "description": ">-",
+    "description": "Use this when you need a one-shot, background-trustable owner of a project's documentation surface. Dispatches doc-cartographer for ground-truth facts, recalls best-in-class doc frameworks from memory, then makes the public docs (README, CHANGELOG, docs/, community-health files) correct + usable + exciting and the LLM-guiding docs (AGENTS.md, llms.txt) strictly factual — consolidating to the right home, removing wrong/irrelevant content, and organizing entry points consumer-first. Scope-aware and recursive across monorepos. Every add/rewrite/move/delete is logged recoverably. Runs autonomously; when it finishes, the documentation is trustworthy.",
     "source": "file:///Users/nix/dev/ai/sox-ecosystem/extensions/agents/doc-steward",
     "checksum": "sha256:4b175ec89319f0e2f45a3061bfaff46a590fbdf6ea00fff49fd74e918f595bdd",
     "compatibility": {
@@ -141,7 +141,7 @@
     "requires": {
       "tool_calling": true
     },
-    "builtFromCommit": "ee9d8dd8f57b3f166dc428fcb4e23705edbb2eeb"
+    "builtFromCommit": "d2c36bd6f797fad5464a0fbcfcdfdded0eb586ac"
   },
   {
     "id": "memory-org",
@@ -154,14 +154,14 @@
     "compatibility": {
       "host": ">=1.0.0 <2.0.0"
     },
-    "builtFromCommit": "ee9d8dd8f57b3f166dc428fcb4e23705edbb2eeb"
+    "builtFromCommit": "d2c36bd6f797fad5464a0fbcfcdfdded0eb586ac"
   },
   {
     "id": "performance",
     "type": "agent",
     "version": "0.1.0",
     "title": "performance",
-    "description": "Senior performance engineer (deepseek-v4-flash). Identifies and eliminates bottlenecks in applications, databases, and infrastructure via profiling, load testing, and measured optimization. Delegates broad discovery to `researcher`, uses GitNexus-first blast-radius analysis before touching hot-path code, and requires before/after measurement. Differentiate from `refactor`: this agent optimizes for speed/throughput with numbers; `refactor` optimizes for structure/maintainability.",
+    "description": "Use this when you need a senior performance engineer (deepseek-v4-flash) to identify and eliminate bottlenecks in applications, databases, and infrastructure via profiling, load testing, and measured optimization. Delegates broad discovery to `researcher`, uses GitNexus-first blast-radius analysis before touching hot-path code, and requires before/after measurement. Differentiate from `refactor`: this agent optimizes for speed/throughput with numbers; `refactor` optimizes for structure/maintainability.",
     "source": "file:///Users/nix/dev/ai/sox-ecosystem/extensions/agents/performance",
     "checksum": "sha256:d3d9fcbf63ab7b041ecbde44b3574148fc5da4b41d7e47f8ace4a8bffe3d55d5",
     "compatibility": {
@@ -170,7 +170,7 @@
     "requires": {
       "tool_calling": true
     },
-    "builtFromCommit": "ee9d8dd8f57b3f166dc428fcb4e23705edbb2eeb"
+    "builtFromCommit": "d2c36bd6f797fad5464a0fbcfcdfdded0eb586ac"
   },
   {
     "id": "performance-engineer",
@@ -186,14 +186,14 @@
     "requires": {
       "tool_calling": true
     },
-    "builtFromCommit": "ee9d8dd8f57b3f166dc428fcb4e23705edbb2eeb"
+    "builtFromCommit": "d2c36bd6f797fad5464a0fbcfcdfdded0eb586ac"
   },
   {
     "id": "product",
     "type": "agent",
     "version": "0.1.0",
     "title": "product",
-    "description": "Senior product manager (deepseek-v4-flash). Owns product strategy, roadmap, feature prioritization, and new-feature research (competitive analysis, market trends, user need discovery). Delegates broad discovery to `researcher` (never freelances a web search) and uses GitNexus-first codebase awareness. Differentiate from `backend`/`typescript`: this agent decides WHAT and WHY; it does not implement.",
+    "description": "Use this when you need a senior product manager (deepseek-v4-flash) to own product strategy, roadmap, feature prioritization, and new-feature research (competitive analysis, market trends, user need discovery). Delegates broad discovery to `researcher` (never freelances a web search) and uses GitNexus-first codebase awareness. Differentiate from `backend`/`typescript`: this agent decides WHAT and WHY; it does not implement.",
     "source": "file:///Users/nix/dev/ai/sox-ecosystem/extensions/agents/product",
     "checksum": "sha256:161674040429e5161901fe95dd28f0f6aae80b54ddc052351e464b4e2d704bea",
     "compatibility": {
@@ -202,7 +202,7 @@
     "requires": {
       "tool_calling": true
     },
-    "builtFromCommit": "ee9d8dd8f57b3f166dc428fcb4e23705edbb2eeb"
+    "builtFromCommit": "d2c36bd6f797fad5464a0fbcfcdfdded0eb586ac"
   },
   {
     "id": "researcher",
@@ -218,7 +218,7 @@
     "requires": {
       "tool_calling": true
     },
-    "builtFromCommit": "ee9d8dd8f57b3f166dc428fcb4e23705edbb2eeb"
+    "builtFromCommit": "d2c36bd6f797fad5464a0fbcfcdfdded0eb586ac"
   },
   {
     "id": "test-runner",
@@ -231,14 +231,14 @@
     "compatibility": {
       "host": ">=1.0.0 <2.0.0"
     },
-    "builtFromCommit": "ee9d8dd8f57b3f166dc428fcb4e23705edbb2eeb"
+    "builtFromCommit": "d2c36bd6f797fad5464a0fbcfcdfdded0eb586ac"
   },
   {
     "id": "typescript",
     "type": "agent",
     "version": "0.1.0",
     "title": "typescript",
-    "description": "Senior TypeScript developer (deepseek-v4-flash). Advanced type system patterns, complex generics, type-level programming, and end-to-end type safety across full-stack applications (TS 5.0+). Delegates broad discovery to `researcher` and uses GitNexus-first codebase awareness before changing any exported type. Differentiate from `backend`: this agent owns type-system depth and correctness; `backend` owns service/API architecture broadly.",
+    "description": "Use this when you need a senior TypeScript developer (deepseek-v4-flash) for advanced type system patterns, complex generics, type-level programming, and end-to-end type safety across full-stack applications (TS 5.0+). Delegates broad discovery to `researcher` and uses GitNexus-first codebase awareness before changing any exported type. Differentiate from `backend`: this agent owns type-system depth and correctness; `backend` owns service/API architecture broadly.",
     "source": "file:///Users/nix/dev/ai/sox-ecosystem/extensions/agents/typescript",
     "checksum": "sha256:a24f185ec87d64751f58941ff2d9fde04cb3c4643470f1c05918e4bc75dc0616",
     "compatibility": {
@@ -247,7 +247,7 @@
     "requires": {
       "tool_calling": true
     },
-    "builtFromCommit": "ee9d8dd8f57b3f166dc428fcb4e23705edbb2eeb"
+    "builtFromCommit": "d2c36bd6f797fad5464a0fbcfcdfdded0eb586ac"
   },
   {
     "id": "sox-memory-bundle",
@@ -274,7 +274,7 @@
         "id": "memory-usage"
       }
     ],
-    "builtFromCommit": "ee9d8dd8f57b3f166dc428fcb4e23705edbb2eeb"
+    "builtFromCommit": "d2c36bd6f797fad5464a0fbcfcdfdded0eb586ac"
   },
   {
     "id": "memory-cli",
@@ -283,13 +283,13 @@
     "title": "Memory CLI",
     "description": "Use this when you need to manage the sox-memory store from the shell — provides memory init|status|list|registry subcommands for store lifecycle, scope selection, and registry inspection. Fully deterministic; zero LLM calls.",
     "source": "file:///Users/nix/dev/ai/sox-ecosystem/extensions/bundles/sox-memory-bundle/members/memory-cli",
-    "checksum": "sha256:2aa56113a9ed924af052d4cbf6768473dfa496b8f61b01ac49ed3581947823f7",
+    "checksum": "sha256:b621956b5bb199512c995a24d66b5ea99db32477745ef98d3e26c706bf0b9d14",
     "compatibility": {
       "host": ">=1.0.0 <2.0.0"
     },
     "visibility": "internal",
     "bundleId": "sox-memory-bundle",
-    "builtFromCommit": "ee9d8dd8f57b3f166dc428fcb4e23705edbb2eeb"
+    "builtFromCommit": "d2c36bd6f797fad5464a0fbcfcdfdded0eb586ac"
   },
   {
     "id": "memory-flush",
@@ -298,13 +298,13 @@
     "title": "Memory Session Flush",
     "description": "Use this when you need session memory durably persisted at conversation end and scope promotions reviewed — binds SessionEnd (persists working memory, enqueues episodes, nudges memoryd) and ScopePromotionProposed (runs promotion approval policy). Deterministic; zero LLM calls.",
     "source": "file:///Users/nix/dev/ai/sox-ecosystem/extensions/bundles/sox-memory-bundle/members/memory-flush",
-    "checksum": "sha256:d6fe09a57e8252f1b319cad02028c34f4db38710cb84aa34d0915b8babfd0a31",
+    "checksum": "sha256:774aba5f4c3bbc8042c5baf33302d80afc8e67ca054d2586085a43ffb76fa175",
     "compatibility": {
       "host": ">=1.0.0 <2.0.0"
     },
     "visibility": "internal",
     "bundleId": "sox-memory-bundle",
-    "builtFromCommit": "ee9d8dd8f57b3f166dc428fcb4e23705edbb2eeb"
+    "builtFromCommit": "d2c36bd6f797fad5464a0fbcfcdfdded0eb586ac"
   },
   {
     "id": "memory-server",
@@ -323,7 +323,7 @@
     },
     "visibility": "internal",
     "bundleId": "sox-memory-bundle",
-    "builtFromCommit": "ee9d8dd8f57b3f166dc428fcb4e23705edbb2eeb"
+    "builtFromCommit": "d2c36bd6f797fad5464a0fbcfcdfdded0eb586ac"
   },
   {
     "id": "memory-usage",
@@ -338,7 +338,7 @@
     },
     "visibility": "internal",
     "bundleId": "sox-memory-bundle",
-    "builtFromCommit": "ee9d8dd8f57b3f166dc428fcb4e23705edbb2eeb"
+    "builtFromCommit": "d2c36bd6f797fad5464a0fbcfcdfdded0eb586ac"
   },
   {
     "id": "dep-inject",
@@ -351,7 +351,7 @@
     "compatibility": {
       "host": ">=1.0.0 <2.0.0"
     },
-    "builtFromCommit": "ee9d8dd8f57b3f166dc428fcb4e23705edbb2eeb"
+    "builtFromCommit": "d2c36bd6f797fad5464a0fbcfcdfdded0eb586ac"
   },
   {
     "id": "tokenguard",
@@ -364,7 +364,7 @@
     "compatibility": {
       "host": ">=1.0.0 <2.0.0"
     },
-    "builtFromCommit": "ee9d8dd8f57b3f166dc428fcb4e23705edbb2eeb"
+    "builtFromCommit": "d2c36bd6f797fad5464a0fbcfcdfdded0eb586ac"
   },
   {
     "id": "demo-creator",
@@ -377,7 +377,7 @@
     "compatibility": {
       "host": ">=1.0.0 <2.0.0"
     },
-    "builtFromCommit": "ee9d8dd8f57b3f166dc428fcb4e23705edbb2eeb"
+    "builtFromCommit": "d2c36bd6f797fad5464a0fbcfcdfdded0eb586ac"
   },
   {
     "id": "di-codex",
@@ -390,7 +390,7 @@
     "compatibility": {
       "host": ">=1.0.0 <2.0.0"
     },
-    "builtFromCommit": "ee9d8dd8f57b3f166dc428fcb4e23705edbb2eeb"
+    "builtFromCommit": "d2c36bd6f797fad5464a0fbcfcdfdded0eb586ac"
   },
   {
     "id": "dep-injector",
@@ -403,7 +403,7 @@
     "compatibility": {
       "host": ">=1.0.0 <2.0.0"
     },
-    "builtFromCommit": "ee9d8dd8f57b3f166dc428fcb4e23705edbb2eeb"
+    "builtFromCommit": "d2c36bd6f797fad5464a0fbcfcdfdded0eb586ac"
   },
   {
     "id": "forbidden-access",
@@ -416,7 +416,7 @@
     "compatibility": {
       "host": ">=1.0.0 <2.0.0"
     },
-    "builtFromCommit": "ee9d8dd8f57b3f166dc428fcb4e23705edbb2eeb"
+    "builtFromCommit": "d2c36bd6f797fad5464a0fbcfcdfdded0eb586ac"
   },
   {
     "id": "iterative-research-refinement",
@@ -429,7 +429,7 @@
     "compatibility": {
       "host": ">=1.0.0 <2.0.0"
     },
-    "builtFromCommit": "ee9d8dd8f57b3f166dc428fcb4e23705edbb2eeb"
+    "builtFromCommit": "d2c36bd6f797fad5464a0fbcfcdfdded0eb586ac"
   },
   {
     "id": "sox-ingest",
@@ -442,7 +442,7 @@
     "compatibility": {
       "host": ">=1.0.0 <2.0.0"
     },
-    "builtFromCommit": "ee9d8dd8f57b3f166dc428fcb4e23705edbb2eeb"
+    "builtFromCommit": "d2c36bd6f797fad5464a0fbcfcdfdded0eb586ac"
   },
   {
     "id": "tui-design",
@@ -455,7 +455,7 @@
     "compatibility": {
       "host": ">=1.0.0 <2.0.0"
     },
-    "builtFromCommit": "ee9d8dd8f57b3f166dc428fcb4e23705edbb2eeb"
+    "builtFromCommit": "d2c36bd6f797fad5464a0fbcfcdfdded0eb586ac"
   },
   {
     "id": "sox",
@@ -464,10 +464,10 @@
     "title": "soxe CLI",
     "description": "LLM extension ecosystem CLI — extension #0 (D1/D2 self-hosting)",
     "source": "file:///Users/nix/dev/ai/sox-ecosystem/apps/sox",
-    "checksum": "sha256:5a932b3bddbb2ae4d278a32b72f360d8538cbd51b1b593090a278691a67de3a6",
+    "checksum": "sha256:046e72ebfded89e9473ebc0190d688d55645c9344c54d38cf12483b9815d46e3",
     "compatibility": {
       "host": ">=1.0.0 <2.0.0"
     },
-    "builtFromCommit": "ee9d8dd8f57b3f166dc428fcb4e23705edbb2eeb"
+    "builtFromCommit": "d2c36bd6f797fad5464a0fbcfcdfdded0eb586ac"
   }
 ]
