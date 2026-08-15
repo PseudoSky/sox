@@ -169,8 +169,17 @@ CREATE UNIQUE INDEX IF NOT EXISTS ix_edge_unique ON edge(src, dst, rel);
 -- (row-by-row kind filter over all ~11,613 live nodes, ~186ms) instead of a
 -- direct SEARCH. A partial index whose predicate matches the query's
 -- t_invalid IS NULL clause turns that into SEARCH node USING INDEX
--- ix_node_kind_live (kind=?): 186ms -> 0.6ms measured, ~300x. Additive
--- only; nothing above is dropped.
+-- ix_node_kind_live (kind=?): 186ms -> 0.6ms measured, ~300x. Additive only.
+-- No existing index is dropped.
+--
+-- WARNING TO FUTURE EDITORS: applySchema splits this template on the statement
+-- separator character, so ANY occurrence of that character inside a SQL comment
+-- here silently becomes a phantom statement. An earlier wording of this comment
+-- ended with "Additive only" followed by that character and the word "nothing",
+-- which split into a fragment starting with "nothing" and made every openDb()
+-- against a fresh store die with 'failed to consume stmt' -- taking 6
+-- memory-core tests down. The replacement warning then repeated the mistake by
+-- quoting the character itself. Keep every comment in this template free of it.
 CREATE INDEX IF NOT EXISTS ix_node_kind_live  ON node(kind) WHERE t_invalid IS NULL;
 `;
 }
