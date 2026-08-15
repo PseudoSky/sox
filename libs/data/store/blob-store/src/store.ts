@@ -60,6 +60,29 @@ export interface VerificationResult {
   tVerified: string;
 }
 
+/**
+ * Result of checkConsistency() — a directory scan cross-referenced against
+ * blob_meta, reporting both failure residues a write-order inversion can
+ * leave behind. See BUG-EPIC-BLOBSTORE-WRITE-ORDER-INVERSION-001.
+ */
+export interface ConsistencyReport {
+  scannedAt: string;
+  orphanCount: number;
+  danglingCount: number;
+  /** File on disk, no blob_meta row. Safe — reclaimable disk space. */
+  orphans: Array<{ hash: string; size: number }>;
+  /** blob_meta row, no file on disk. Dangerous — reads against it fail. */
+  dangling: Array<{ hash: string; size: number }>;
+}
+
+/** Result of repairDangling(). */
+export interface RepairResult {
+  /** Dangling rows with zero refs, safely deleted. */
+  reclaimed: number;
+  /** Dangling rows WITH live refs — real data loss, left for an operator. */
+  unreclaimed: Array<{ hash: string; refCount: number }>;
+}
+
 // ── Constants ────────────────────────────────────────────────────────────────
 
 const DEFAULT_MAX_BLOB_SIZE = 1_073_741_824;
@@ -170,27 +193,52 @@ export class BlobStore {
     await fd.writeFile(data);
     await fd.close();
 
-    const finalPath = this.blobPath(hash);
-    await fsp.mkdir(path.dirname(finalPath), { recursive: true });
-
-    try {
-      await fsp.rename(tempPath, finalPath);
-    } catch {
-      await fsp.unlink(tempPath).catch(() => {});
-      throw new BlobStoreSystemError(`rename failed for ${hash}`);
-    }
-
     if (this.config.verifyOnWrite ?? false) {
-      const result = await this.verifyOnDisk(hash);
+      const result = await this.verifyPath(hash, tempPath);
       if (!result.match) {
-        await fsp.unlink(finalPath).catch(() => {});
+        await fsp.unlink(tempPath).catch(() => {});
         throw new BlobStoreSystemError(
           `write-time integrity mismatch for ${hash}: expected ${hash}, computed ${result.computedHash}`,
         );
       }
     }
 
+    // ── Write-order invariant (BUG-EPIC-BLOBSTORE-WRITE-ORDER-INVERSION-001) ──
+    // The DB record is committed BEFORE the file is placed at its final path.
+    // A crash between the two lines below leaves a dangling blob_meta row (no
+    // file yet) — detectable via checkConsistency() and safely reclaimable via
+    // repairDangling(), since nothing can have added a ref to it yet (addRef()
+    // requires has(hash) === true, i.e. the file to already exist). The
+    // opposite order — file first, DB record second — would instead risk an
+    // undetectable orphan on crash (a file no DB-driven scan could ever find).
     await this.upsertMeta(hash, data.byteLength);
+
+    const finalPath = this.blobPath(hash);
+
+    try {
+      await fsp.mkdir(path.dirname(finalPath), { recursive: true });
+      await fsp.rename(tempPath, finalPath);
+    } catch (err) {
+      await fsp.unlink(tempPath).catch(() => {});
+      // Best-effort rollback of the dangling record we just created — collapses
+      // the transient dangling window back to a fully clean state whenever the
+      // failure is a catchable exception rather than a hard process crash.
+      // Skipped if the blob somehow already exists (a concurrent put() for the
+      // same content completed in the meantime) so we never delete a live row.
+      if (!(await this.has(hash))) {
+        await this.adapter!
+          .executeRun('DELETE FROM blob_meta WHERE hash = ?', [hash])
+          .catch((rollbackErr) => {
+            console.error(
+              '[blob-store] rollback of dangling blob_meta row failed for',
+              hash,
+              rollbackErr,
+            );
+          });
+      }
+      throw new BlobStoreSystemError(`write commit failed for ${hash}`, err as Error);
+    }
+
     return hash;
   }
 
@@ -246,27 +294,40 @@ export class BlobStore {
       return digest;
     }
 
-    const finalPath = this.blobPath(digest);
-    await fsp.mkdir(path.dirname(finalPath), { recursive: true });
-
-    try {
-      await fsp.rename(tempPath, finalPath);
-    } catch {
-      await fsp.unlink(tempPath).catch(() => {});
-      throw new BlobStoreSystemError(`rename failed for ${digest}`);
-    }
-
     if (this.config.verifyOnWrite ?? false) {
-      const result = await this.verifyOnDisk(digest);
+      const result = await this.verifyPath(digest, tempPath);
       if (!result.match) {
-        await fsp.unlink(finalPath).catch(() => {});
+        await fsp.unlink(tempPath).catch(() => {});
         throw new BlobStoreSystemError(
           `write-time integrity mismatch for ${digest}: expected ${digest}, computed ${result.computedHash}`,
         );
       }
     }
 
+    // ── Write-order invariant — see put() for the full rationale. ──────────
     await this.upsertMeta(digest, totalBytes);
+
+    const finalPath = this.blobPath(digest);
+
+    try {
+      await fsp.mkdir(path.dirname(finalPath), { recursive: true });
+      await fsp.rename(tempPath, finalPath);
+    } catch (err) {
+      await fsp.unlink(tempPath).catch(() => {});
+      if (!(await this.has(digest))) {
+        await this.adapter!
+          .executeRun('DELETE FROM blob_meta WHERE hash = ?', [digest])
+          .catch((rollbackErr) => {
+            console.error(
+              '[blob-store] rollback of dangling blob_meta row failed for',
+              digest,
+              rollbackErr,
+            );
+          });
+      }
+      throw new BlobStoreSystemError(`write commit failed for ${digest}`, err as Error);
+    }
+
     return digest;
   }
 
@@ -416,13 +477,26 @@ export class BlobStore {
     if (this.gcInProgress) {
       throw new GCInProgress(this.gcStartedAt!);
     }
+    if (!(await this.has(hash))) return false;
+
     const fp = this.blobPath(hash);
     try {
-      await fsp.unlink(fp);
+      // ── Write-order invariant (BUG-EPIC-BLOBSTORE-WRITE-ORDER-INVERSION-001) ──
+      // The DB record is removed BEFORE the file. A crash between the two lines
+      // below leaves an orphan file (no DB record) — reclaimable by GC / the
+      // consistency-check repair path — rather than a dangling reference (DB
+      // record, no file), which is unrecoverable: every subsequent read would
+      // fail against a record that claims to exist.
       await this.adapter!.executeRun('DELETE FROM blob_meta WHERE hash = ?', [hash]);
+      await fsp.unlink(fp);
       return true;
     } catch (err) {
-      if (isNotFound(err)) return false;
+      if (isNotFound(err)) {
+        // The DB record is already gone (deleted above) and the file is
+        // already gone too (raced with a concurrent delete/GC) — end state is
+        // fully consistent, so this call did accomplish a real deletion.
+        return true;
+      }
       throw new BlobStoreSystemError(
         `delete failed for ${hash}`,
         err as Error,
@@ -688,6 +762,93 @@ export class BlobStore {
     }
   }
 
+  // ── Consistency ─────────────────────────────────────────────────────────
+  // Detects the two failure residues write-order inversions can leave behind
+  // (BUG-EPIC-BLOBSTORE-WRITE-ORDER-INVERSION-001):
+  //   - orphan:   a file on disk with no blob_meta row (safe — reclaimable)
+  //   - dangling: a blob_meta row with no file on disk (dangerous — every
+  //               read against it fails; must never be left unreclaimed)
+  // This is a full directory scan cross-referenced against blob_meta, so it
+  // finds orphans regardless of how they came to exist — unlike getOrphans(),
+  // which is DB-driven and can never see a file with no DB row at all.
+
+  async checkConsistency(): Promise<ConsistencyReport> {
+    this.ensureOpen();
+
+    const onDisk = new Set<string>();
+    for await (const hash of this.listBlobs()) {
+      onDisk.add(hash);
+    }
+
+    const dbRows = await this.adapter!.executeAll<{ hash: string; size: number }>(
+      'SELECT hash, size FROM blob_meta',
+    );
+    const dbSizeByHash = new Map(dbRows.rows.map((r) => [r.hash, r.size]));
+
+    const orphans: Array<{ hash: string; size: number }> = [];
+    for (const hash of onDisk) {
+      if (dbSizeByHash.has(hash)) continue;
+      try {
+        const stat = await fsp.stat(this.blobPath(hash));
+        orphans.push({ hash, size: stat.size });
+      } catch (err) {
+        if (!isNotFound(err)) {
+          console.error('[blob-store] checkConsistency: stat failed for', hash, err);
+        }
+        // File vanished between the directory scan and the stat (raced with a
+        // concurrent delete/GC) — no longer an orphan, skip it.
+      }
+    }
+
+    const dangling: Array<{ hash: string; size: number }> = [];
+    for (const [hash, size] of dbSizeByHash) {
+      if (!onDisk.has(hash)) {
+        dangling.push({ hash, size });
+      }
+    }
+
+    return {
+      scannedAt: new Date().toISOString(),
+      orphanCount: orphans.length,
+      danglingCount: dangling.length,
+      orphans,
+      dangling,
+    };
+  }
+
+  /**
+   * Reclaims dangling blob_meta rows (record, no file) that are safe to
+   * remove: zero refs point at them. addRef() requires has(hash) === true
+   * (the file must already be present) before a ref can ever be created, so
+   * a dangling row with zero refs can only be crash residue from an
+   * interrupted put()/putStream() — never a live reference losing its data.
+   *
+   * Dangling rows WITH refs are never touched here: that shape means a ref
+   * points at a blob that is genuinely gone (e.g. residue from write-order
+   * inversions predating this fix, or manual corruption) and deleting the
+   * record would silently hide real data loss. Those are reported via
+   * `unreclaimed` for an operator to investigate.
+   */
+  async repairDangling(): Promise<RepairResult> {
+    this.ensureOpen();
+    const report = await this.checkConsistency();
+
+    let reclaimed = 0;
+    const unreclaimed: Array<{ hash: string; refCount: number }> = [];
+
+    for (const { hash } of report.dangling) {
+      const refs = await this.refCount(hash);
+      if (refs > 0) {
+        unreclaimed.push({ hash, refCount: refs });
+        continue;
+      }
+      await this.adapter!.executeRun('DELETE FROM blob_meta WHERE hash = ?', [hash]);
+      reclaimed++;
+    }
+
+    return { reclaimed, unreclaimed };
+  }
+
   // ── Reference tracking ──────────────────────────────────────────────────
 
   async addRef(
@@ -907,12 +1068,22 @@ export class BlobStore {
               continue;
             }
 
+            // ── Write-order invariant — see delete() for the full rationale. ──
+            // DB record removed first: a crash mid-sweep leaves an orphan file
+            // (reclaimable by the next GC/consistency-check pass), never a
+            // dangling reference.
             const fp = this.blobPath(c.hash);
-            await fsp.unlink(fp);
             await this.adapter!.executeRun(
               'DELETE FROM blob_meta WHERE hash = ?',
               [c.hash],
             );
+            try {
+              await fsp.unlink(fp);
+            } catch (unlinkErr) {
+              if (!isNotFound(unlinkErr)) throw unlinkErr;
+              // File already gone (raced with a concurrent delete/GC) — the DB
+              // record is already gone too, so the end state is consistent.
+            }
             deleted++;
             bytesFreed += c.size;
           } catch (err) {
@@ -1110,11 +1281,11 @@ export class BlobStore {
     );
   }
 
-  private async verifyOnDisk(
+  private async verifyPath(
     hash: string,
+    filePath: string,
   ): Promise<VerificationResult> {
-    const fp = this.blobPath(hash);
-    const data = await fsp.readFile(fp);
+    const data = await fsp.readFile(filePath);
     const computed = sha256Hex(data);
     return {
       hash,
