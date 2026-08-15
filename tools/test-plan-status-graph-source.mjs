@@ -242,8 +242,8 @@ function makeMissingBacklog(dir) {
 {
   const src = fs.readFileSync(PLAN_STATUS_SCRIPT, 'utf8');
   const swallowSrc = src.replace(
-    /throw new Error\(\s*`plan-status: \\`\$\{BACKLOG_BIN\} list-items\\` failed[\s\S]*?\);\s*\n(\s*)\}/,
-    (whole, indent) => `${indent.slice(0, -2)}return statuses; // [RED-ARM INJECTION] catch-and-swallow, must never ship\n${indent}}`,
+    /\} catch \(err\) \{\s*\n\s*const timedOut[\s\S]*?\);\s*\n(\s*)\}/,
+    (whole, indent) => `} catch (err) {\n${indent}return statuses; // [RED-ARM INJECTION] catch-and-swallow, must never ship\n${indent}}`,
   );
   if (swallowSrc === src) {
     report('AC-D3 RED arm — able to construct a catch-and-swallow variant of the throw site', false, 'regex did not match plan-status.mjs source — script structure changed');
