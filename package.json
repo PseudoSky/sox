@@ -23,9 +23,10 @@
     "test": "vitest run",
     "changeset": "changeset",
     "version-packages": "changeset version",
-    "release": "changeset publish",
-    "release:prepared": "npm run build-index:publish && nx build sox && changeset publish",
-    "verify:publint-attw": "node tools/verify-exports-publint-attw.mjs"
+    "release": "node tools/release-consumers.mjs && changeset publish",
+    "release:prepared": "node tools/release-consumers.mjs && npm run build-index:publish && nx build sox && changeset publish",
+    "verify:publint-attw": "node tools/verify-exports-publint-attw.mjs",
+    "release:consumers": "node tools/release-consumers.mjs"
   },
   "devDependencies": {
     "@arethetypeswrong/cli": "^0.18.5",
