@@ -77,6 +77,7 @@ import {
   _setEmbedProviderForTest,
   vecToJson,
 } from '@adhd/sox-memory-core';
+import { classifyIntegrityMessages } from '@adhd/sox-store-adapter';
 import type { StoreAdapter } from '@adhd/sox-store-adapter';
 import type * as IndexModule from './index.js';
 
@@ -350,6 +351,28 @@ describe('BUG-MEMORY-001 AC3 — memory_write under parallel load against a popu
     // periodic timer (spec's own "your call" — a direct, awaited trigger is
     // simpler, deterministic, AND does not race the fault injection below).
     await runPeriodicEnrichPass();
+
+    // (DEBT-NO-SHARED-TURSO-INTEGRITY-FILTER-001) Enforce the bisection's
+    // finding instead of only writing it down: assert real damage is empty
+    // using the SHARED classifier, not a prose claim nobody can fail on. This
+    // is a third author's hand-written "integrity_check clean except the
+    // known Turso FTS false positive" caveat (see this hook's own comment
+    // above) turned into a running check — before this, nothing in the file
+    // could actually fail if that stopped being true.
+    const rawCheckRows = await adapter.executeAll<Record<string, unknown>>('PRAGMA integrity_check');
+    const rawCheckMessages = rawCheckRows.rows
+      .flatMap((r) => Object.values(r))
+      .filter((v): v is string => typeof v === 'string')
+      .flatMap((v) => v.split('\n'))
+      .map((v) => v.trim())
+      .filter((v) => v.length > 0 && v !== 'ok' && !v.startsWith('*** in database'));
+    const postChurnIntegrity = classifyIntegrityMessages(rawCheckMessages);
+    expect(
+      postChurnIntegrity.damage,
+      `post-churn integrity_check reported real damage — not the known Turso FTS false ` +
+        `positive or page-accounting noise, which are filtered separately: ` +
+        `${JSON.stringify(postChurnIntegrity.damage)}`,
+    ).toEqual([]);
   }, POPULATE_HOOK_TIMEOUT_MS);
 
   afterAll(async () => {

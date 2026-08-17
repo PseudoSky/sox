@@ -41,6 +41,7 @@ import { existsSync, mkdirSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
 import { backupStore, isBackupStoreError, openDb, openDbReadOnly } from '@adhd/sox-memory-core';
+import { classifyIntegrityMessages } from '@adhd/sox-store-adapter';
 
 const HOME = process.env['HOME'] ?? homedir();
 const LIVE_DB = join(HOME, '.memory', 'memory.db');
@@ -97,7 +98,15 @@ async function payloadTotal(adapter) {
   return { total_bytes: total, per_table_bytes: perTable, skipped };
 }
 
-/** Raw, unfiltered PRAGMA integrity_check — same parsing rule integrity.ts's probeIntegrityCheck uses. */
+/**
+ * Raw, unfiltered PRAGMA integrity_check, classified via the shared
+ * classifier (DEBT-NO-SHARED-TURSO-INTEGRITY-FILTER-001) instead of a local
+ * copy of its two regexes — this script used to hand-roll both (the exact
+ * "every caller writes its own regex" gap that item exists to close).
+ * `classifyIntegrityMessages` is called on the RAW message array, before any
+ * other filtering, so `truncated` reflects the pragma's own 100-message cap
+ * honestly.
+ */
 async function rawIntegrityCheck(adapter) {
   const res = await adapter.executeAll('PRAGMA integrity_check');
   const messages = res.rows
@@ -106,15 +115,13 @@ async function rawIntegrityCheck(adapter) {
     .flatMap((v) => v.split('\n'))
     .map((v) => v.trim())
     .filter((v) => v.length > 0 && v !== 'ok' && !v.startsWith('*** in database'));
-  const leakedPages = messages.filter((m) => /^Page\s+\d+/i.test(m));
-  const ftsFalsePositives = messages.filter((m) => /wrong # of entries in index __turso_internal_fts_dir_.*_key/i.test(m));
-  const otherMessages = messages.filter((m) => !/^Page\s+\d+/i.test(m) && !/wrong # of entries in index __turso_internal_fts_dir_.*_key/i.test(m));
+  const classified = classifyIntegrityMessages(messages);
   return {
     total_messages: messages.length,
-    hit_cap: messages.length >= 100,
-    leaked_page_messages: leakedPages.length,
-    known_fts_false_positives: ftsFalsePositives.length,
-    other_messages: otherMessages, // if non-empty, this is the interesting bucket
+    hit_cap: classified.truncated,
+    leaked_page_messages: classified.pageAccounting.length,
+    known_fts_false_positives: classified.knownFalsePositives.length,
+    other_messages: classified.damage, // if non-empty, this is the interesting bucket
   };
 }
 
