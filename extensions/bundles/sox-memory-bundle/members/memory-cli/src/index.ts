@@ -37,7 +37,7 @@ import * as crypto from 'node:crypto';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import { initTelemetry, type InitTelemetryOptions } from '@adhd/sox-telemetry';
+import { initTelemetry, resolveProcessRole, type InitTelemetryOptions } from '@adhd/sox-telemetry';
 
 export type ScopeKind = 'project' | 'user' | 'org' | 'local';
 
@@ -632,10 +632,26 @@ Commands:
 // durable record of.
 //
 // role:'cli' (not 'live-service') because this is a short-lived one-shot; the
-// backlog tool uses the same role for the same reason.
-const MEMORY_CLI_TELEMETRY_INIT_OPTIONS: InitTelemetryOptions = {
+// backlog tool used the SAME hardcoded-literal shape for the same reason and
+// it silently mislabeled its own long-lived `serve` mode as 'cli' for its
+// entire idle lifetime (2.5+ days observed) — see docs/reporting/memory/
+// findings/2026-08-17-store-connection-lifetime-forensics.md §1d. memory-cli
+// has no equivalent `serve` dispatch today, so structurally that specific
+// failure cannot recur here, but the literal was still wrong for a different
+// reason: scripts/smoke-test.mjs execs this exact compiled binary
+// out-of-process, so smoke-test spawns also reported 'cli' — indistinguishable
+// from a real one-shot operator invocation.
+//
+// BL-501: `role` is resolved via `resolveProcessRole('cli')`. Genuine CLI
+// invocations are unaffected (no structural signal present -> unchanged
+// 'cli'); a smoke-test.mjs spawn (SOX_TELEMETRY_HARNESS=1) now reports
+// 'harness' instead.
+// Exported (not an inline literal at the call site, mirroring memory-server's
+// MEMORY_SERVER_TELEMETRY_INIT_OPTIONS) so bl501-cli-role-detection.spec.ts
+// can assert against the SAME object this composition root actually uses.
+export const MEMORY_CLI_TELEMETRY_INIT_OPTIONS: InitTelemetryOptions = {
   service: 'memory-cli',
-  role: 'cli',
+  role: resolveProcessRole('cli'),
   logSink: 'file',
 };
 

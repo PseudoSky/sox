@@ -122,6 +122,66 @@ function defaultRole(): Role {
   return 'harness';
 }
 
+/**
+ * BL-501: resolve the role a composition root should actually pass to
+ * `initTelemetry()`, instead of a hardcoded literal baked in at import time
+ * that survives no matter how the process was really launched.
+ *
+ * `defaultRole()` above only fires for a process that NEVER calls
+ * `initTelemetry()` at all. It does nothing for the far more common failure
+ * shape this fixes: a composition root DOES call `initTelemetry({ role:
+ * 'live-service' })` (or `'cli'`), unconditionally, as a literal — so every
+ * spawn of that exact binary reports the exact same role regardless of who
+ * spawned it or why. Two real populations collapse onto one label:
+ *
+ *   - a genuine production spawn (an MCP client launching memory-server, an
+ *     operator running the CLI for real), vs.
+ *   - a synthetic spawn of the SAME compiled/transpiled binary by an
+ *     integration harness (`scripts/smoke-test.mjs` `execSync`s the real
+ *     `soxe` binary, which execs the real entrypoint out-of-process) or a
+ *     vitest worker importing the module in-process.
+ *
+ * The cross-repo instance of exactly this bug — a `role:'cli'` literal at a
+ * bin-entry composition root that also (same process) dispatches a
+ * long-lived `serve` mode, so 2.5-day-old server processes and true one-shot
+ * CLI invocations were bitwise indistinguishable in the log's `role` field
+ * during a live WAL/checkpoint corruption investigation — is documented in
+ * `docs/reporting/memory/findings/2026-08-17-store-connection-lifetime-
+ * forensics.md` §1d. `role` must derive from something STRUCTURAL (how the
+ * process was actually started), never from a compile-time constant that
+ * cannot see its own runtime context.
+ *
+ * `structuralDefault` is the role this composition root reports when
+ * genuinely running as itself — its own real identity (`'live-service'` for
+ * memory-server, `'cli'` for memory-cli). This function overrides that
+ * default ONLY when a structural signal proves otherwise; absent any such
+ * signal, the caller's own claimed identity is trusted as-is (this function
+ * can only ever correct a mislabel toward `'harness'`, never invent a false
+ * `'cli'` the way the cross-repo bug did):
+ *
+ *   - `SOX_TELEMETRY_HARNESS=1` — set by `scripts/smoke-test.mjs` (and any
+ *     other integration harness that execs the REAL compiled/transpiled
+ *     binary out-of-process to exercise it end-to-end) on every child
+ *     process it launches.                                          -> 'harness'
+ *
+ * DELIBERATELY does NOT check `VITEST_WORKER_ID`/`NODE_ENV==='test'` the way
+ * `defaultRole()` above does. Those env vars are ambient to the WHOLE vitest
+ * worker process, including any `{ ...process.env, ... }` spread a spec file
+ * uses to build a CHILD process's env (e.g. `bl404-telemetry-composition-
+ * root.spec.ts` spawning the real entrypoint via `tsx` to black-box test it)
+ * — so a vitest-inherited `VITEST_WORKER_ID` would leak into that genuinely
+ * out-of-process, real-entrypoint child and mislabel it 'test', which is
+ * wrong (it is not a vitest worker; it is the actual production code path
+ * under black-box test). `SOX_TELEMETRY_HARNESS` has no such ambient-leak
+ * problem: it is set explicitly, only by a harness that means it, and if a
+ * harness-spawned process itself spawns a further child, propagating
+ * `'harness'` down that chain is the CORRECT behaviour, not a bug.
+ */
+export function resolveProcessRole(structuralDefault: Role): Role {
+  if (process.env['SOX_TELEMETRY_HARNESS'] === '1') return 'harness';
+  return structuralDefault;
+}
+
 function ecosystemHome(): string {
   const override = process.env['SOX_ECOSYSTEM_HOME'];
   if (override !== undefined && override !== '') return override;
