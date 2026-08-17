@@ -8,6 +8,16 @@ export * from './factory.js';
 export * from './vector-dialect.js';
 export * from './fts-dialect.js';
 export * from './fts-ops.js';
+// (BUG-017) `storeQuiescence` is the liveness probe every cross-engine repair
+// must consult before a writable CLASSIC open of a Turso-owned store. It is
+// exported because consumers outside this package own such repairs too
+// (memory-core's vec0/FTS-residue drops), and the alternatives are both worse:
+// a private reimplementation of the lease-scan is the very anti-pattern BUG-017
+// closed off, and probing indirectly through `deleteSchemaRowsViaBetterSqlite3`
+// costs a real WRITABLE classic open on the HEALTHY path — doubling the exact
+// operation whose frequency is the confirmed corruption driver. This is a pure
+// filesystem scan: zero opens.
+export * from './store-lease.js';
 export * from './adapter-meta.js';
 export * from './integrity.js';
 export * from './integrity-status.js';
