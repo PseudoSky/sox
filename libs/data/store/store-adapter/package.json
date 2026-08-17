@@ -51,6 +51,14 @@
     ],
     "entrypoints": [
       "dist/index.js"
+    ],
+    "externalConsumers": [
+      {
+        "name": "@adhd/backlog",
+        "repo": "/Users/nix/dev/node/adhd",
+        "path": "entrypoint/backlog",
+        "note": "direct dep; also reached via @adhd/sox-graph-store"
+      }
     ]
   }
 }
