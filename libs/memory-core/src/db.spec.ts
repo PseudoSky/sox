@@ -20,7 +20,17 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import { openDb, openDbReadOnly, expandDbPath, verifyStoreMeta, EStoreMismatch, STORE_META_KEYS } from './db.js';
+import {
+  openDb,
+  openDbReadOnly,
+  expandDbPath,
+  verifyStoreMeta,
+  EStoreMismatch,
+  STORE_META_KEYS,
+  classicEngineSessionDeclined,
+  dropVec0ViaBetterSqlite3,
+  dropFtsResidueViaBetterSqlite3,
+} from './db.js';
 import { _resetEmbedSingleton, _setEmbedProviderForTest, EMBED_DIM, getActiveEmbedModel } from './embed.js';
 import { DeterministicTestProvider } from './embed-test-provider.js';
 
@@ -230,5 +240,133 @@ describe('stampStoreMeta — SA-5 / BL-121 identity stamp', () => {
 
     // Restore the test provider for subsequent tests.
     _setEmbedProviderForTest(prevProvider);
+  });
+});
+
+// ── BUG-017 (nodeId 2404): cross-engine escape hatch is quiescence-gated ──────
+
+describe('BUG-017 — cross-engine (better-sqlite3) escape hatch is quiescence-gated', () => {
+  let dir: string;
+  let dbPath: string;
+  let leaseDir: string;
+
+  beforeEach(() => {
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), 'bug017-'));
+    dbPath = path.join(dir, 'store.db');
+    leaseDir = `${dbPath}.sox-lease.d`;
+  });
+
+  afterEach(() => {
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  /**
+   * Simulates a live peer holding the store: a `<dbPath>.sox-lease.d/<token>`
+   * entry whose content is `<pid>\n<openedAtIso>\n` (the exact format
+   * `store-adapter`'s `acquireStoreLease`/`storeQuiescence` read — see
+   * `libs/data/store/store-adapter/src/store-lease.ts`). Using THIS process's
+   * own pid guarantees the liveness probe (`process.kill(pid, 0)`) reports
+   * live without needing to spawn a second real process.
+   */
+  function simulateLivePeer(): void {
+    fs.mkdirSync(leaseDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(leaseDir, 'simulated-peer-token'),
+      `${process.pid}\n${new Date().toISOString()}\n`,
+    );
+  }
+
+  function clearPeers(): void {
+    fs.rmSync(leaseDir, { recursive: true, force: true });
+  }
+
+  it('classicEngineSessionDeclined: true with a live peer, false with none', async () => {
+    // No store file needs to exist yet — the gate only inspects the lease dir.
+    expect(await classicEngineSessionDeclined(dbPath, 'probe')).toBe(false);
+
+    simulateLivePeer();
+    expect(await classicEngineSessionDeclined(dbPath, 'probe')).toBe(true);
+
+    clearPeers();
+    expect(await classicEngineSessionDeclined(dbPath, 'probe')).toBe(false);
+  });
+
+  it('dropVec0ViaBetterSqlite3: DECLINED under a live peer leaves the store file untouched; proceeds once quiescent', async () => {
+    // Build a real store containing a vec0-shaped shadow table
+    // (`_vector_spaces`) — one of the exact names `dropVec0ViaBetterSqlite3`
+    // targets — via better-sqlite3 directly (mirrors how the store is
+    // legitimately created before this repair ever runs).
+    const { default: BetterSqlite3 } = await import('better-sqlite3');
+    const setup = new BetterSqlite3(dbPath);
+    setup.exec('CREATE TABLE _vector_spaces (id INTEGER PRIMARY KEY, name TEXT)');
+    setup.exec(`INSERT INTO _vector_spaces (name) VALUES ('marker')`);
+    setup.close();
+
+    const tableExists = (): boolean => {
+      const probe = new BetterSqlite3(dbPath, { readonly: true });
+      try {
+        const row = probe
+          .prepare(`SELECT name FROM sqlite_master WHERE type='table' AND name='_vector_spaces'`)
+          .get();
+        return row !== undefined;
+      } finally {
+        probe.close();
+      }
+    };
+
+    expect(tableExists()).toBe(true);
+
+    // ── RED case: live peer present → the drop must be DECLINED and the
+    //    store file must be left byte-for-byte untouched (no writable
+    //    classic-engine open at all — the exp9-poisoner shape).
+    simulateLivePeer();
+    await dropVec0ViaBetterSqlite3(dbPath);
+    expect(tableExists()).toBe(true); // still there — declined, never touched
+
+    // ── GREEN case: no live peers → the repair proceeds for real.
+    clearPeers();
+    await dropVec0ViaBetterSqlite3(dbPath);
+    expect(tableExists()).toBe(false); // actually dropped once quiescent
+  });
+
+  it('dropFtsResidueViaBetterSqlite3: DECLINED under a live peer leaves the store file untouched; proceeds once quiescent', async () => {
+    const { default: BetterSqlite3 } = await import('better-sqlite3');
+    const setup = new BetterSqlite3(dbPath);
+    setup.exec('CREATE TABLE fake_fts5_residue (id INTEGER PRIMARY KEY)');
+    setup.close();
+
+    const tableExists = (): boolean => {
+      const probe = new BetterSqlite3(dbPath, { readonly: true });
+      try {
+        const row = probe
+          .prepare(`SELECT name FROM sqlite_master WHERE type='table' AND name='fake_fts5_residue'`)
+          .get();
+        return row !== undefined;
+      } finally {
+        probe.close();
+      }
+    };
+
+    expect(tableExists()).toBe(true);
+
+    // RED: live peer → declined, store untouched.
+    simulateLivePeer();
+    await dropFtsResidueViaBetterSqlite3(dbPath, ['fake_fts5_residue']);
+    expect(tableExists()).toBe(true);
+
+    // GREEN: quiescent → proceeds for real.
+    clearPeers();
+    await dropFtsResidueViaBetterSqlite3(dbPath, ['fake_fts5_residue']);
+    expect(tableExists()).toBe(false);
+  });
+
+  it("a process's own lease token must not count against itself (documented contract, exercised via the shared probe)", async () => {
+    // classicEngineSessionDeclined's own probe call goes through
+    // deleteSchemaRowsViaBetterSqlite3 with no ownLeaseToken — there is no
+    // live entry for THIS repair attempt itself (the caller in db.ts always
+    // invokes this after the adapter's own connection/lease was already
+    // closed and released), so an empty lease dir must never self-decline.
+    expect(fs.existsSync(leaseDir)).toBe(false);
+    expect(await classicEngineSessionDeclined(dbPath, 'self-check')).toBe(false);
   });
 });
