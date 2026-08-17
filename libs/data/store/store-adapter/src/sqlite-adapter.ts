@@ -1,5 +1,5 @@
 import { createRequire } from 'node:module';
-import { existsSync } from 'node:fs';
+import { existsSync, statSync } from 'node:fs';
 import { log } from '@adhd/sox-telemetry';
 import {
   consumeUncleanShutdownFlag,
@@ -76,6 +76,79 @@ function loadBetterSqlite3(): BetterSqlite3Constructor {
   }
   return cachedDatabaseConstructor;
 }
+
+// ── WAL checkpointing (BL-571) ───────────────────────────────────────────────
+
+/**
+ * (BL-571) `e77fb615` (DEBT-004/005) deleted memory-core's private
+ * `WriteQueue`-level WAL checkpointing so every consumer inherits whatever
+ * checkpoint behaviour the adapter itself provides. `TursoAdapterImpl` grew
+ * that behaviour (idle-flush + wal-cap, `turso-adapter.ts` `DEFAULT_IDLE_FLUSH_MS`
+ * / `DEFAULT_WAL_CAP_BYTES`); `SqliteAdapterImpl` never did, so a long-lived
+ * `STORE_ADAPTER=sqlite` process had ZERO TRUNCATE path — only SQLite's own
+ * ~1000-page PASSIVE auto-checkpoint, which copies frames into the main db
+ * file but never shrinks the `-wal` sidecar. This is that missing half, ported
+ * from `TursoAdapterImpl` with ONE deliberate simplification below.
+ *
+ * Same cadence as the Turso port (and `WriteQueue.CHECKPOINT_IDLE_MS`, its
+ * ancestor) — 2000ms debounce window before an idle connection checkpoints.
+ * Overridable per-instance via `opts.idleFlushMs` (tests only; no production
+ * caller sets this).
+ */
+const DEFAULT_IDLE_FLUSH_MS = 2000;
+
+/**
+ * (BL-571) Forced size-capped flush threshold — same backstop reasoning and
+ * same measured default as `TursoAdapterImpl`'s `DEFAULT_WAL_CAP_BYTES` (see
+ * its doc comment in turso-adapter.ts for the full derivation): idle-triggered
+ * flushing alone has no answer for SUSTAINED write load, where the debounce
+ * timer is cancelled and re-armed forever and never fires. This is checked
+ * synchronously in the write path after every writable op, so it cannot be
+ * starved by continuous traffic. Overridable via `opts.walCapBytes` (tests
+ * only).
+ */
+const DEFAULT_WAL_CAP_BYTES = 262_144;
+
+/*
+ * (BL-571) WHY THIS IS SIMPLER THAN THE TURSO PORT — read before "fixing" it
+ * to look more like `turso-adapter.ts`:
+ *
+ * `TursoAdapterImpl`'s idle-flush is GATED: it must call
+ * `releaseIdleConnection()` and check `storeQuiescence()` before a TRUNCATE,
+ * because Turso's `multiprocess_wal` topology means N separate OS processes
+ * can hold independent connections to the SAME store file concurrently, each
+ * with its own `.tshm`-coordinated lease — TRUNCATE needs the writer-exclusive
+ * lock, and issuing it while a peer process is live and holding the store
+ * risks exactly the upstream #7833/#8348 checkpoint-race class the gating
+ * exists to dodge.
+ *
+ * better-sqlite3 has none of that. It is a single-process, synchronous,
+ * in-process native binding — there is no `.tshm` coordinator, no store
+ * lease, no cross-process quiescence question, because there is no
+ * cross-process anything: only ONE JS process can ever hold this exact
+ * `Sqlite3Database` handle (`this.db`), and JS's single-threaded event loop
+ * guarantees no two calls into it ever interleave. A plain, ungated
+ * `PRAGMA wal_checkpoint(TRUNCATE)` is therefore unconditionally safe here —
+ * pretending otherwise and importing Turso's gated/ungated strategy machinery
+ * would be cargo-culting a solution to a coordination problem this backend
+ * structurally cannot have. (A *different* OS process opening the same file
+ * directly — e.g. the `sqlite3` CLI — is out of scope for the same reason
+ * multiprocess access to a single-process embedded database always is: this
+ * adapter's contract is "one process owns this file".)
+ *
+ * The one thing that DOES carry over unchanged: never TRUNCATE (or run any
+ * checkpoint at all) synchronously in a way that blocks the Node event loop
+ * for longer than necessary. better-sqlite3 calls are synchronous FFI calls —
+ * `db.pragma('wal_checkpoint(TRUNCATE)')` blocks the thread for the duration
+ * of the checkpoint, same as every other better-sqlite3 call in this file.
+ * That is fine for a debounced idle timer (fires once, off the hot path) and
+ * for a per-write cap check (already measured ~0ms per checkpoint on the
+ * Turso PASSIVE path under sequential writes; TRUNCATE here has no writer to
+ * wait on either), but it means the idle timer callback itself must do
+ * nothing beyond the one checkpoint call — no polling loop, no additional
+ * synchronous work — and must be `unref()`'d so a pending 2s timer never by
+ * itself keeps an otherwise-finished process alive.
+ */
 
 // ── Statement cache (LRU, 256 entries) ──────────────────────────────────────
 
@@ -169,9 +242,49 @@ export class SqliteAdapterImpl implements SqliteAdapter {
   /** (BL-330) WAL identity captured at `init()`. See TursoAdapterImpl. */
   _walBaseline: WalIdentity | null = null;
 
-  constructor(dbPath: string, opts?: { readonly?: boolean });
+  // ── BL-571 WAL checkpointing state — see the design note above the class
+  //    for why this is a plain ungated TRUNCATE rather than a port of
+  //    TursoAdapterImpl's gated/ungated strategy machinery. ──────────────────
+
+  /** Count of operations currently executing against this connection —
+   *  mirrors `TursoAdapterImpl._inFlightOps`. Incremented at the top of
+   *  `_trackOp`, decremented in its `finally`; the idle flush only arms once
+   *  this reaches zero, and every new op cancels any pending idle timer. */
+  private _inFlightOps = 0;
+
+  /** True when this instance is eligible to self-arm the idle WAL flush — set
+   *  in the constructor for writable, local-file (`config.dbPath` set)
+   *  connections only. A readonly connection cannot checkpoint (better-sqlite3
+   *  refuses writes on it, including `wal_checkpoint`); a caller-owned handle
+   *  with no known path (the `Sqlite3Database` constructor overload) is left
+   *  disabled too — there is no path to stat for the cap check, and forcing
+   *  asymmetric idle-only-but-not-cap coverage for that one case is not worth
+   *  the complexity for a path with no production caller today. */
+  private _idleFlushEnabled = false;
+
+  /** Debounce window in ms — see `DEFAULT_IDLE_FLUSH_MS`. */
+  private _idleFlushMs: number = DEFAULT_IDLE_FLUSH_MS;
+
+  /** The pending idle-flush timer, or `null` when none is armed. At most one
+   *  is ever live per instance. */
+  private _idleFlushTimer: ReturnType<typeof setTimeout> | null = null;
+
+  /** True when this instance is eligible to run the forced size-capped flush
+   *  — same eligibility as `_idleFlushEnabled`, set alongside it. */
+  private _capFlushEnabled = false;
+
+  /** Byte threshold — see `DEFAULT_WAL_CAP_BYTES`. */
+  private _walCapBytes: number = DEFAULT_WAL_CAP_BYTES;
+
+  constructor(
+    dbPath: string,
+    opts?: { readonly?: boolean; idleFlushMs?: number; walCapBytes?: number },
+  );
   constructor(db: Sqlite3Database);
-  constructor(dbOrPath: string | Sqlite3Database, opts?: { readonly?: boolean }) {
+  constructor(
+    dbOrPath: string | Sqlite3Database,
+    opts?: { readonly?: boolean; idleFlushMs?: number; walCapBytes?: number },
+  ) {
     if (typeof dbOrPath === 'string') {
       // (BUG-018, INV-4) Canonicalize ONCE at open: `config.dbPath` and every
       // sidecar/integrity path derived from it carry the canonical spelling
@@ -266,6 +379,161 @@ export class SqliteAdapterImpl implements SqliteAdapter {
       needsWriteSerialization: true,
       recursiveCte: true,
     };
+
+    // (BL-571) Arm the adapter-owned WAL checkpointing — writable, local-file
+    // connections only (see the eligibility doc comment on `_idleFlushEnabled`
+    // above). Armed here, not just from `_trackOp()`'s finally, because a
+    // freshly opened, never-yet-used instance never runs a `_trackOp()` cycle
+    // on its own — without this it would idle forever unflushed until its
+    // first real operation.
+    if (!this.config.readonly && this.config.dbPath !== undefined) {
+      this._idleFlushEnabled = true;
+      if (opts?.idleFlushMs !== undefined) this._idleFlushMs = opts.idleFlushMs;
+      this._capFlushEnabled = true;
+      if (opts?.walCapBytes !== undefined) this._walCapBytes = opts.walCapBytes;
+      this._armIdleFlush();
+    }
+  }
+
+  // ── BL-571 WAL checkpointing methods ────────────────────────────────────
+
+  /** Cancel a pending idle flush — new work arrived. */
+  private _cancelIdleFlush(): void {
+    if (this._idleFlushTimer !== null) {
+      clearTimeout(this._idleFlushTimer);
+      this._idleFlushTimer = null;
+    }
+  }
+
+  /** Arm the idle flush if eligible, currently idle (`_inFlightOps === 0`),
+   *  not closed, and nothing is already scheduled. Called from `_trackOp()`'s
+   *  `finally` whenever an op completion leaves the connection idle, and once
+   *  at the end of the constructor for a freshly opened instance. */
+  private _armIdleFlush(): void {
+    if (!this._idleFlushEnabled) return;
+    if (this.closed) return;
+    if (this._inFlightOps > 0) return;
+    if (this._idleFlushTimer !== null) return; // already scheduled — coalesced
+    this._idleFlushTimer = setTimeout(() => {
+      this._idleFlushTimer = null;
+      this._performIdleFlush();
+    }, this._idleFlushMs);
+    // (BL-571 design note) A pending idle-flush timer must never by itself
+    // keep an otherwise-finished process alive.
+    this._idleFlushTimer.unref?.();
+  }
+
+  /**
+   * Fires once per idle period — the primary WAL durability assurance, same
+   * role as `TursoAdapterImpl._performIdleFlush()`. Unlike Turso's gated
+   * strategy, this runs a plain, ungated `wal_checkpoint(TRUNCATE)` directly
+   * on the live connection — see the design note above the class for why
+   * single-process better-sqlite3 needs no quiescence gate. Defensively
+   * re-checks `closed`/`_inFlightOps` even though `_armIdleFlush()` already
+   * gated on them at schedule time — the debounce window is real wall-clock
+   * time in which new work (or a close) can land between "armed" and "fires".
+   * Never throws — swallows and logs, same posture as the Turso port.
+   */
+  private _performIdleFlush(): void {
+    if (this.closed || this._inFlightOps > 0) return;
+    try {
+      const rows = this.db.pragma('wal_checkpoint(TRUNCATE)') as
+        | Array<{ busy?: number; log?: number; checkpointed?: number }>
+        | undefined;
+      const row = rows?.[0];
+      if (row?.busy === 1) {
+        // Single-process + no other connection SHOULD make this unreachable
+        // (see design note), but better-sqlite3's own internal checkpoint
+        // lock is opaque from here — log rather than assume it can't happen.
+        // Durable either way: frames stay in the WAL, the next idle cycle (or
+        // the next write's cap check) retries.
+        log.warn('store_adapter.sqlite.idle_flush_busy', {
+          db_path: this.config.dbPath,
+        });
+      } else {
+        log.debug('store_adapter.sqlite.idle_flush', {
+          db_path: this.config.dbPath,
+          frames_checkpointed: row?.checkpointed ?? null,
+        });
+      }
+    } catch (err) {
+      log.error('store_adapter.sqlite.idle_flush_failed', {
+        db_path: this.config.dbPath,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
+
+  /**
+   * Runs synchronously INSIDE the write path — called from `_trackOp(fn,
+   * true)` after a writable operation succeeds. This is the sustained-load
+   * backstop: it cannot be starved by continuous traffic the way the
+   * debounced idle timer can, because it runs after EVERY writable op. Same
+   * ungated `TRUNCATE` as the idle path (see the design note above the class
+   * — no writer-exclusive-lock contention is possible against a single
+   * in-process connection, so there is no reason to prefer PASSIVE here the
+   * way `TursoAdapterImpl` must for its multiprocess topology). Never
+   * throws — a failed forced-flush must not fail the write that already
+   * succeeded.
+   */
+  private _checkWalCapAndFlush(): void {
+    if (!this._capFlushEnabled) return;
+    const dbPath = this.config.dbPath;
+    if (dbPath === undefined) return;
+    let size: number;
+    try {
+      size = statSync(`${dbPath}-wal`).size;
+    } catch {
+      // No -wal file yet (nothing written since the last full checkpoint), or
+      // a transient stat race with a concurrent checkpoint — either way
+      // there is nothing to cap right now.
+      return;
+    }
+    if (size < this._walCapBytes) return;
+    try {
+      const rows = this.db.pragma('wal_checkpoint(TRUNCATE)') as
+        | Array<{ busy?: number; log?: number; checkpointed?: number }>
+        | undefined;
+      const row = rows?.[0];
+      if (row?.busy === 1) {
+        log.warn('store_adapter.sqlite.wal_cap_flush_busy', {
+          db_path: dbPath,
+          wal_bytes_at_trip: size,
+          cap_bytes: this._walCapBytes,
+        });
+      } else {
+        log.debug('store_adapter.sqlite.wal_cap_flush', {
+          db_path: dbPath,
+          wal_bytes_at_trip: size,
+          cap_bytes: this._walCapBytes,
+          frames_checkpointed: row?.checkpointed ?? null,
+        });
+      }
+    } catch (err) {
+      log.error('store_adapter.sqlite.wal_cap_flush_failed', {
+        db_path: dbPath,
+        wal_bytes_at_trip: size,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
+
+  /** Tracks in-flight ops for the idle-flush/cap-flush coordination — mirrors
+   *  `TursoAdapterImpl._trackOp`. Cancels any pending idle timer on entry,
+   *  runs the cap check inline after a successful write (before the op's
+   *  caller gets control back), and re-arms the idle timer once the
+   *  connection returns to idle. */
+  private async _trackOp<T>(fn: () => T | Promise<T>, isWrite = false): Promise<T> {
+    this._cancelIdleFlush();
+    this._inFlightOps++;
+    try {
+      const result = await fn();
+      if (isWrite) this._checkWalCapAndFlush();
+      return result;
+    } finally {
+      this._inFlightOps--;
+      if (this._inFlightOps === 0) this._armIdleFlush();
+    }
   }
 
   /**
@@ -353,39 +621,62 @@ export class SqliteAdapterImpl implements SqliteAdapter {
   }
 
   async executeGet<T = Record<string, unknown>>(sql: string, args?: unknown[]): Promise<T | null> {
-    const stmt = this.cache.get(sql, this.db);
-    const row = args !== undefined ? stmt.get(...args) : stmt.get();
-    return (row as T | null) ?? null;
+    return this._trackOp(() => {
+      const stmt = this.cache.get(sql, this.db);
+      const row = args !== undefined ? stmt.get(...args) : stmt.get();
+      return (row as T | null) ?? null;
+    });
   }
 
   async executeAll<T = Record<string, unknown>>(sql: string, args?: unknown[]): Promise<AllResult<T>> {
-    const stmt = this.cache.get(sql, this.db);
-    const rows = args !== undefined ? stmt.all(...args) : stmt.all();
-    const columns = stmt.columns().map((c) => c.name);
-    return { columns, rows: rows as T[] };
+    return this._trackOp(() => {
+      const stmt = this.cache.get(sql, this.db);
+      const rows = args !== undefined ? stmt.all(...args) : stmt.all();
+      const columns = stmt.columns().map((c) => c.name);
+      return { columns, rows: rows as T[] };
+    });
   }
 
   async executeRun(sql: string, args?: unknown[]): Promise<RunResult> {
-    const stmt = this.cache.get(sql, this.db);
-    const info = args !== undefined ? stmt.run(...args) : stmt.run();
-    return { rowsAffected: info.changes, lastInsertRowid: info.lastInsertRowid };
+    return this._trackOp(() => {
+      const stmt = this.cache.get(sql, this.db);
+      const info = args !== undefined ? stmt.run(...args) : stmt.run();
+      return { rowsAffected: info.changes, lastInsertRowid: info.lastInsertRowid };
+    }, true);
   }
 
   async exec(sql: string): Promise<void> {
-    this.db.exec(sql);
+    return this._trackOp(() => {
+      this.db.exec(sql);
+    }, true);
   }
 
   async pragmaSet(key: string, value: string | number | boolean): Promise<void> {
-    const boolVal = typeof value === 'boolean' ? (value ? 1 : 0) : value;
-    this.db.pragma(`${key} = ${boolVal}`);
+    return this._trackOp(() => {
+      const boolVal = typeof value === 'boolean' ? (value ? 1 : 0) : value;
+      this.db.pragma(`${key} = ${boolVal}`);
+    });
   }
 
   async pragmaGet<T = unknown>(key: string): Promise<T> {
-    const result = this.db.pragma(key, { simple: true });
-    return result as T;
+    return this._trackOp(() => {
+      const result = this.db.pragma(key, { simple: true });
+      return result as T;
+    });
   }
 
   async transaction<T>(
+    fn: (tx: AdapterTransaction) => T | Promise<T>,
+    opts?: TransactionOptions,
+  ): Promise<T> {
+    // (BL-571) The whole BEGIN…COMMIT/ROLLBACK window — including retries —
+    // is one tracked op, mirroring `TursoAdapterImpl.transaction()`: the cap
+    // check must not run mid-transaction, and the idle timer must not arm
+    // until the transaction (successful or not) has fully settled.
+    return this._trackOp(() => this._runTransaction(fn, opts), true);
+  }
+
+  private async _runTransaction<T>(
     fn: (tx: AdapterTransaction) => T | Promise<T>,
     opts?: TransactionOptions,
   ): Promise<T> {
@@ -484,7 +775,26 @@ export class SqliteAdapterImpl implements SqliteAdapter {
   async close(): Promise<void> {
     if (this.closed) return;
     this.closed = true;
+    // (BL-571) Cancel any pending idle-flush timer — the connection is about
+    // to be closed (or handed back to a caller-owned lifecycle), so a timer
+    // firing afterward would checkpoint a closed/foreign handle.
+    this._cancelIdleFlush();
     if (!this.config.readonly && this.ownDb) {
+      // (BL-571) Final checkpoint before teardown — best-effort. The
+      // idle-flush/cap-flush triggers already keep the WAL bounded through
+      // the connection's life; this folds back whatever is left in flight at
+      // close time rather than leaving it in the `-wal` sidecar for the next
+      // open to find. Never throws — a failed final checkpoint must not
+      // prevent the rest of close() (marker stamp, driver close) from
+      // running.
+      try {
+        this.db.pragma('wal_checkpoint(TRUNCATE)');
+      } catch (err) {
+        log.warn('store_adapter.sqlite.close_checkpoint_failed', {
+          db_path: this.config.dbPath,
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
       await markCleanShutdown(this);
     }
     this.cache.clear();
