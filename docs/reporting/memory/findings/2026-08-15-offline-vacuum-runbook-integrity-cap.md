@@ -306,3 +306,38 @@ destroyed the only signal we had.
 
 Note the 60.5 MB of structural overhead is unchanged and expected (26 indexes, FTS5 shadow tables, vec0
 over 6,033 vectors) — only the leak was reclaimable.
+
+---
+
+## Baseline corrected to WRITE-ANCHORED, 2026-08-17
+
+The 2026-08-15 baseline asked for pages-per-HOUR. That was the wrong unit and it produced a
+false-reassuring result on the first read: `page_count` was unchanged (24,913 -> 24,913) over 48.3h,
+which reads as "the leak is gone" but actually measured an idle machine — the owner's laptop was
+closed for those two days. Confirmed by the store's own counters over the same window: episodes
+5,879 -> 5,879, nodes 11,786 -> 11,786, `write_queue` telemetry 0 samples.
+
+**Pages cannot leak when no pages are allocated.** A wall-clock leak rate silently reports "healthy"
+for any quiet period, which is the same failure shape as the other health surfaces catalogued this
+week (see BUG-BACKLOG-CLI-SILENT-EMPTY..., BUG-STOREADAPTER-HEALTH-BLIND-TO-HANGS-001): it fails
+toward reassurance.
+
+### The corrected baseline — anchor on WRITE VOLUME
+
+    page_count      24,913
+    total_episodes   5,879
+    node count      11,786
+    captured        2026-08-17T16:43Z (deep probe, integrity ok)
+
+Re-measure when **episodes have advanced by a meaningful delta** (suggest >= 200 new episodes), and
+report:
+
+    pages_leaked_per_episode = (page_count_now - 24,913) / (episodes_now - 5,879)
+
+Report the denominator alongside the result **always**. If `episodes_now - 5,879` is small, the
+measurement is void and must be labelled void, not reported as a low rate.
+
+Expected shape if the store is behaving: page_count grows roughly in proportion to real payload
+added (~4KB/episode: a ~1.2KB node row + a 3KB vector, plus index cost). A materially super-linear
+ratio is the leak signal, and is what would corroborate BUG-HEAL-CHURN-TRIGGERS-PAGE-CORRUPTION-001
+— which currently stands as UNREPRODUCED, not absent.
