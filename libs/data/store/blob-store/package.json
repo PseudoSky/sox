@@ -24,7 +24,7 @@
     "dist"
   ],
   "dependencies": {
-    "@adhd/sox-store-adapter": "workspace:*"
+    "@adhd/sox-store-adapter": "workspace:^"
   },
   "sox": {
     "area": "data",
