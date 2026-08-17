@@ -118,6 +118,9 @@ describe('canonical store identity', () => {
 
     const peer = await TursoAdapterImpl.connect({ dbPath: aliasPath });
     cleanups.push(() => void peer.close().catch(() => undefined));
+    // (DEBT-003, lazy-connect) `connect()` no longer acquires a lease
+    // eagerly — force the real open before checking quiescence.
+    await peer.executeGet('SELECT 1');
 
     // Both spellings must agree that the store is busy.
     expect(storeQuiescence(realPath).quiescent).toBe(false);
@@ -132,11 +135,15 @@ describe('canonical store identity', () => {
     const { realPath, aliasPath } = makeAliasedStore();
 
     const a = await TursoAdapterImpl.connect({ dbPath: aliasPath });
+    // (DEBT-003, lazy-connect) Force the real open — `connect()` no longer
+    // writes the open marker eagerly.
+    await a.executeGet('SELECT 1');
     expect(markers(canonicalDbPath(realPath)).length).toBe(1);
     await a.close();
     expect(markers(canonicalDbPath(realPath))).toEqual([]);
 
     const b = await TursoAdapterImpl.connect({ dbPath: realPath });
+    await b.executeGet('SELECT 1');
     expect(markers(canonicalDbPath(realPath)).length).toBe(1);
     await b.close();
     expect(markers(canonicalDbPath(realPath))).toEqual([]);
@@ -169,6 +176,10 @@ describe('canonical store identity', () => {
     const viaAlias = await TursoAdapterImpl.connect({ dbPath: aliasPath });
     cleanups.push(() => void viaReal.close().catch(() => undefined));
     cleanups.push(() => void viaAlias.close().catch(() => undefined));
+    // (DEBT-003, lazy-connect) Force both real opens — `connect()` no longer
+    // acquires a lease eagerly.
+    await viaReal.executeGet('SELECT 1');
+    await viaAlias.executeGet('SELECT 1');
 
     const dir = leaseDirPath(canonicalDbPath(realPath));
     expect(readdirSync(dir).filter((n) => !n.endsWith('.openmark')).length).toBe(2);

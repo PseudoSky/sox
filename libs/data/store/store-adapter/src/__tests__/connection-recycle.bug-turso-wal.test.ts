@@ -226,11 +226,22 @@ tursoDescribe('TursoAdapterImpl — connection recycling (BUG-TURSO-WAL-SHORTREA
     });
     expect(adapter.connectionHealth).toBe('poisoned');
 
-    const connectSpy = vi.spyOn(TursoAdapterImpl, 'connect');
+    // (DEBT-003, lazy-connect) `_reconnect()` now calls the private
+    // `_openReal()` directly, not the public `connect()` — `connect()` is
+    // the lazy entry point and replaying it would hand back a second
+    // never-opened shell instead of ever actually reconnecting (see
+    // `_reconnect()`'s doc comment). `_openReal()` is the one real-open
+    // implementation both a genuine reconnect and the public `connect()`'s
+    // eventual first-op deferral route through, so it is the correct spy
+    // target for "how many real reopens happened."
+    const tursoAdapterImplInternal = TursoAdapterImpl as unknown as {
+      _openReal: (...args: unknown[]) => Promise<TursoAdapterImpl>;
+    };
+    const openRealSpy = vi.spyOn(tursoAdapterImplInternal, '_openReal');
 
     // Fire two concurrent calls in the SAME synchronous dispatch — both must
     // observe `_poisoned === true` and race to start a reconnect; only the
-    // first should actually call `connect()`, the second must await the
+    // first should actually call `_openReal()`, the second must await the
     // same in-flight promise.
     const [a, b] = await Promise.all([
       adapter.executeGet<{ x: number }>('SELECT 1 AS x'),
@@ -239,10 +250,10 @@ tursoDescribe('TursoAdapterImpl — connection recycling (BUG-TURSO-WAL-SHORTREA
 
     expect(a).toEqual({ x: 1 });
     expect(b).toEqual({ x: 1 });
-    expect(connectSpy).toHaveBeenCalledTimes(1);
+    expect(openRealSpy).toHaveBeenCalledTimes(1);
     expect(adapter.connectionHealth).toBe('healthy');
 
-    connectSpy.mockRestore();
+    openRealSpy.mockRestore();
   });
 
   it('AC-5: pragmaSet/pragmaGet are wired into the same health/reconnect machinery as the other direct db.* call sites', async () => {
