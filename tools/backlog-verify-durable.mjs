@@ -38,15 +38,37 @@
  *   node tools/backlog-verify-durable.mjs --repo <repo> --human-id <ID> [--json]
  *   node tools/backlog-verify-durable.mjs --repo <repo> --human-id <ID> --wait-ms 2000
  *
- * EXIT CODES  (deliberately three-valued, mirroring plan-status.mjs)
- *   0  DURABLE      — found from a separate process AND not pending in the WAL
- *   1  NOT FOUND    — the item does not exist; a preceding "success" was phantom
- *   2  UNKNOWN      — cannot establish durability (store unreachable, WAL unreadable)
+ * EXIT CODES  (three-valued, mirroring plan-status.mjs)
+ *   0  DURABLE      — found from a separate process, WAL empty: the row is in
+ *                     the main database
+ *   0  COMMITTED    — found from a separate process; frames are in the shared
+ *                     WAL with a healthy sidecar. The write has landed. The WAL
+ *                     file stays non-empty because TRUNCATE is quiescence-gated
+ *                     and defers while peers hold the store — the NORMAL steady
+ *                     state of a busy store, not a fault.
+ *   1  NOT_FOUND    — the item does not exist; a preceding "success" was phantom
+ *   2  AT_RISK      — found, but frames are outstanding while the -tshm sidecar
+ *                     is stale past the store's own threshold: the exact
+ *                     reconciliation window in which acked writes were discarded
+ *   2  UNKNOWN      — cannot establish anything (store unreachable, WAL unreadable)
  *
- * Exit 2 is NOT a pass. Treat it exactly as you would treat exit 1 when deciding
- * whether to trust a write — the whole point is that "could not check" and
- * "verified fine" must never render the same, which is the failure shape that
- * produced this incident and three others catalogued the same week.
+ * A non-zero exit is NOT a pass. "Could not check" and "verified fine" must
+ * never render the same — that equivalence is the failure shape that produced
+ * this incident and three others catalogued the same week.
+ *
+ * But the converse trap is just as real, and this tool fell into it (BL-570):
+ * it originally treated ANY non-empty WAL as "durability not established", so
+ * on a live multi-peer store it reported UNKNOWN forever and told the caller to
+ * "re-run after a checkpoint" — something the caller had no way to cause. A
+ * check that can never pass in normal operation is not conservative, it is
+ * noise, and noise gets ignored. That is exactly how the previously-mandated
+ * verification came to be trusted while being incapable of catching anything.
+ * Under-reporting is the safe direction only while the report stays actionable.
+ *
+ * NOTE: everything here is `stat`-only. This tool never opens the database.
+ * Open frequency is what distinguishes the corrupted backlog store from the
+ * never-corrupted memory store, so a verifier that opened the store to check on
+ * it would be adding the very risk it exists to detect.
  */
 import { execFileSync } from 'node:child_process';
 import { statSync, existsSync } from 'node:fs';
@@ -99,20 +121,67 @@ function readFromSeparateProcess(repo, humanId) {
   }
 }
 
+/** The store's own sidecar-staleness threshold (BL-373/BUG-021). */
+const TSHM_SKEW_THRESHOLD_MS = 60_000;
+
 /**
- * A non-trivial WAL means committed frames may not yet be in the main database.
- * That is exactly the window in which a stale-tshm reconciliation discarded the
- * lost writes. Size alone cannot prove a SPECIFIC row is unflushed, so this is
- * reported as a caveat that downgrades DURABLE to UNKNOWN — never as a pass.
+ * Inspect WAL state WITHOUT OPENING THE STORE.
+ *
+ * Every additional open of this store is another roll of the dice against an
+ * unfixed upstream Turso bug — that open frequency, not any single defect, is
+ * what distinguishes the corrupted backlog store from the never-corrupted
+ * memory store. A verifier that opened the database to check on it would be
+ * adding the very risk it exists to detect, so everything here is `stat` only.
+ *
+ * WHY RAW WAL SIZE IS THE WRONG SIGNAL (BL-570)
+ *
+ * This function used to report `pending: bytes > 4096` and let that downgrade
+ * DURABLE to UNKNOWN. That conflates two different guarantees:
+ *
+ *   - PASSIVE checkpoint copies committed frames into the main database. It
+ *     needs no exclusivity and the adapter now runs it INLINE on every write
+ *     past the WAL cap, so it cannot be starved. This is what makes data
+ *     durable.
+ *   - TRUNCATE reclaims the WAL FILE. It requires quiescence and is gated, so
+ *     with live peers it may legitimately defer forever. This is what makes
+ *     the file small.
+ *
+ * A busy store with several live peers therefore sits at a non-zero WAL
+ * indefinitely while being perfectly durable. Judging durability by file size
+ * made this tool report UNKNOWN forever, with the unactionable advice to
+ * "re-run after a checkpoint" that the caller had no way to cause. A check that
+ * can never pass in normal operation is not conservative — it is noise, and it
+ * gets ignored. That is precisely how the previously-mandated verification came
+ * to be trusted while being structurally incapable of catching the failure it
+ * existed to catch. Under-reporting is only the safe direction while the report
+ * stays actionable.
+ *
+ * THE SIGNAL THAT ACTUALLY MATTERS
+ *
+ * The writes were lost to a stale-`-tshm` reconciliation discarding frames the
+ * shared WAL still held. That condition is directly observable: the WAL-index
+ * sidecar's mtime falling behind the WAL's own. The store itself already emits
+ * it as `store.integrity.sidecar_stale` against a 60s threshold. Skew, not
+ * size, is the danger indicator.
  */
 function walState(storePath) {
   const wal = `${storePath}-wal`;
+  const tshm = `${storePath}-tshm`;
   if (!existsSync(storePath)) return { known: false, reason: `store not found at ${storePath}` };
-  if (!existsSync(wal)) return { known: true, bytes: 0, pending: false };
+  if (!existsSync(wal)) return { known: true, bytes: 0, frames: false, skewMs: 0, stale: false };
   try {
-    const bytes = statSync(wal).size;
-    // A bare WAL header (~32 bytes) carries no frames.
-    return { known: true, bytes, pending: bytes > 4096 };
+    const walStat = statSync(wal);
+    const bytes = walStat.size;
+    // A bare WAL header (~32 bytes, padded) carries no frames.
+    const frames = bytes > 4096;
+
+    // No sidecar means no reconciliation can be mid-flight against a stale one.
+    if (!frames || !existsSync(tshm)) {
+      return { known: true, bytes, frames, skewMs: 0, stale: false };
+    }
+
+    const skewMs = walStat.mtimeMs - statSync(tshm).mtimeMs;
+    return { known: true, bytes, frames, skewMs, stale: skewMs > TSHM_SKEW_THRESHOLD_MS };
   } catch (err) {
     return { known: false, reason: String(err?.message ?? err).slice(0, 160) };
   }
@@ -153,14 +222,32 @@ function main() {
     verdict = 'UNKNOWN';
     exit = 2;
     reason = `item read back, but WAL state unknown (${after.reason}) — cannot rule out an unflushed write`;
-  } else if (after.pending) {
-    verdict = 'UNKNOWN';
+  } else if (after.stale) {
+    // The one genuinely dangerous state: frames outstanding AND the sidecar
+    // lagging past the store's own staleness threshold — the shape of the
+    // reconciliation that discarded the lost writes.
+    verdict = 'AT_RISK';
     exit = 2;
-    reason = `item read back, but the WAL holds ${after.bytes} bytes of possibly-uncheckpointed frames — durability NOT established. Re-run after a checkpoint.`;
+    reason =
+      `item read back, but the WAL holds ${after.bytes} bytes of frames while the -tshm sidecar is ` +
+      `${Math.round(after.skewMs / 1000)}s stale (threshold ${TSHM_SKEW_THRESHOLD_MS / 1000}s) — ` +
+      `this is the stale-sidecar reconciliation window in which acked writes have been discarded. Do NOT trust this write.`;
+  } else if (after.frames) {
+    // Committed, cross-process visible, sidecar healthy. The frames live in the
+    // shared WAL rather than the main database — which is the NORMAL steady
+    // state of a busy store, because TRUNCATE is quiescence-gated and defers
+    // while peers are live. The write has landed.
+    verdict = 'COMMITTED';
+    exit = 0;
+    reason =
+      `read from a separate process; ${after.bytes} bytes of frames are in the shared WAL with a healthy ` +
+      `sidecar (skew ${Math.round(after.skewMs / 1000)}s) — the write is committed and cross-process visible. ` +
+      `The WAL file stays non-empty because TRUNCATE is quiescence-gated and defers while peers hold the store; ` +
+      `that is expected, not a fault.`;
   } else {
     verdict = 'DURABLE';
     exit = 0;
-    reason = `read from a separate process and the WAL is empty (${after.bytes} bytes) — the row is in shared storage`;
+    reason = `read from a separate process and the WAL is empty (${after.bytes} bytes) — the row is in the main database`;
   }
 
   const result = {
