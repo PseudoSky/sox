@@ -158,6 +158,39 @@ describe('closeDbWithLease', () => {
   });
 });
 
+// ── 4b. BL-573: no ungated double-checkpoint on the close path ────────────────
+
+describe('closeDbWithLease — BL-573 no ungated double-checkpoint', () => {
+  it('never issues a raw PRAGMA wal_checkpoint before adapter.close()', async () => {
+    const dbPath = tmpDbPath('bl573.db');
+    const calls: string[] = [];
+    // Minimal fake StoreAdapter — only exec()/close() are exercised by
+    // closeDbWithLease. Any call to exec() proves this function is issuing
+    // its OWN raw SQL again, which is exactly the regression BL-573 covers
+    // (the adapter's real close() ceremony is the ONLY sanctioned place a
+    // checkpoint may run from here on).
+    const fakeAdapter = {
+      exec: async (sql: string) => {
+        calls.push(`exec:${sql}`);
+      },
+      close: async () => {
+        calls.push('close');
+      },
+    } as unknown as import('@adhd/sox-store-adapter').StoreAdapter;
+
+    await closeDbWithLease(fakeAdapter, dbPath);
+
+    // The regression: with the bug, `calls` would be
+    // ['exec:PRAGMA wal_checkpoint(TRUNCATE)', 'close'] — an ungated raw
+    // checkpoint issued directly against the adapter, immediately before
+    // adapter.close() ran its OWN full gated checkpoint ceremony (double
+    // checkpoint, first half ungated).
+    const rawTruncateCalls = calls.filter((c) => c.includes('wal_checkpoint'));
+    expect(rawTruncateCalls).toEqual([]);
+    expect(calls).toEqual(['close']);
+  });
+});
+
 // ── 5. Stale lock recovery ────────────────────────────────────────────────────
 
 describe('stale lock recovery', () => {
