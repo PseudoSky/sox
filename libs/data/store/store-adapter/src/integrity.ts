@@ -2336,6 +2336,79 @@ export function isKnownFalsePositive(message: string): boolean {
 }
 
 /**
+ * `Page N: never used` / `Page N referenced multiple times` — allocated-but-
+ * unreachable pages, i.e. reclaimable free space that a `DROP INDEX`
+ * (including our own FTS repair) routinely leaves behind. NOT integrity
+ * damage; the only remedy is an offline `VACUUM`. See {@link probeIntegrityCheck}
+ * for the incident this classification exists to prevent (BL-341: 45 leaked
+ * pages kept a correctly-repaired store reporting `damaged` forever) and
+ * DEBT-NO-SHARED-TURSO-INTEGRITY-FILTER-001 (100 of these SATURATED the
+ * pragma's 100-message cap and blinded the probe entirely,
+ * BUG-INTEGRITY-CHECK-BLINDED-BY-PAGE-NOISE-001).
+ */
+export function isPageAccountingMessage(message: string): boolean {
+  return /^Page\s+\d+/i.test(message);
+}
+
+/**
+ * (DEBT-NO-SHARED-TURSO-INTEGRITY-FILTER-001) Classify raw `PRAGMA
+ * integrity_check` message lines into damage vs. the two documented-benign
+ * noise classes, so every caller shares ONE definition of "is this actually
+ * damage" instead of re-deriving {@link isKnownFalsePositive}'s regex (or
+ * worse, a wrong approximation of it) by hand. `probeIntegrityCheck` below is
+ * itself just a caller of this function — it is the single source of truth
+ * for the classification, not a second one.
+ *
+ * `messages` must be the RAW list as returned by the pragma — every line,
+ * unfiltered, including `'ok'`/banner lines the caller has not already
+ * stripped is fine (they classify as `damage` and are vanishingly unlikely
+ * to appear alongside real content, but this function does not special-case
+ * them; strip them upstream, as {@link probeIntegrityCheck} does, if you want
+ * a clean `damage` list).
+ *
+ * `truncated` is computed from `messages.length` — the size of what you
+ * passed in — against {@link INTEGRITY_CHECK_MESSAGE_CAP}. This is why
+ * ordering matters: **you must call this BEFORE truncating or sampling the
+ * raw message array for any other reason.** SQLite/Turso itself already caps
+ * `integrity_check`'s own output at 100 rows before it ever reaches this
+ * function — that cap cannot be avoided, only reported honestly — but a
+ * caller that applies a SECOND cap (a display slice, a "first 20" summary,
+ * anything) before classifying would let benign noise consume budget real
+ * damage needed AT THE APPLICATION LAYER too, which is exactly how
+ * BUG-INTEGRITY-CHECK-BLINDED-BY-PAGE-NOISE-001 happened. Pass the full raw
+ * array in, always.
+ *
+ * `truncated: true` means "clean as far as we could see," never "clean" —
+ * see `integrity-status.ts`'s header comment for why conflating those two is
+ * the specific failure mode this whole subsystem exists to avoid.
+ */
+export function classifyIntegrityMessages(messages: string[]): {
+  /** Real, actionable damage — never filtered, never suppressed. */
+  damage: string[];
+  /** Documented-benign driver artifacts (currently: the Tantivy FTS directory
+   *  count mismatch, {@link isKnownFalsePositive}). Not damage. */
+  knownFalsePositives: string[];
+  /** `Page N: …` reclaimable-free-space noise, {@link isPageAccountingMessage}.
+   *  Not damage. */
+  pageAccounting: string[];
+  /** True when `messages.length` hit {@link INTEGRITY_CHECK_MESSAGE_CAP} — the
+   *  source output was truncated and messages past the cap were never seen.
+   *  A `damage: []` alongside `truncated: true` is NOT a clean bill of health. */
+  truncated: boolean;
+} {
+  const truncated = messages.length >= INTEGRITY_CHECK_MESSAGE_CAP;
+  const knownFalsePositives: string[] = [];
+  const pageAccounting: string[] = [];
+  const damage: string[] = [];
+  for (const m of messages) {
+    if (isKnownFalsePositive(m)) knownFalsePositives.push(m);
+    else if (isPageAccountingMessage(m)) pageAccounting.push(m);
+    else damage.push(m);
+  }
+  return { damage, knownFalsePositives, pageAccounting, truncated };
+}
+
+/**
  * `PRAGMA integrity_check` truncates at 100 messages, so "100 issues" means
  * "at least 100" and a repair loop that trusts the count under-repairs and
  * reports success (BL-341). Re-run after each repair round until the result is
@@ -2367,12 +2440,17 @@ export async function probeIntegrityCheck(adapter: StoreAdapter): Promise<Integr
     .map((v) => v.trim())
     .filter((v) => v.length > 0 && v !== 'ok' && !v.startsWith('*** in database'));
 
-  const notFalsePositive = messages.filter((m) => !isKnownFalsePositive(m));
-  // Page-accounting messages (`Page N: never used`, `Page N referenced multiple
-  // times`) are NOT integrity damage: they are allocated-but-unreachable pages,
-  // i.e. reclaimable free space, and a `DROP INDEX` — including the one our own
-  // FTS repair performs — routinely leaves them behind. The only remedy is an
-  // offline `VACUUM`.
+  // Classify with the shared classifier (DEBT-NO-SHARED-TURSO-INTEGRITY-FILTER-001)
+  // — this probe used to hand-roll the same two filters inline; it is now
+  // just the first caller of the reusable function, not a second definition
+  // of "what counts as damage". `truncated` is computed by the classifier
+  // from the RAW `messages` array passed in below, before any filtering —
+  // the ordering {@link classifyIntegrityMessages}'s own doc comment
+  // requires. Page-accounting messages (`Page N: never used`, `Page N
+  // referenced multiple times`) are NOT integrity damage: they are
+  // allocated-but-unreachable pages, i.e. reclaimable free space, and a
+  // `DROP INDEX` — including the one our own FTS repair performs — routinely
+  // leaves them behind. The only remedy is an offline `VACUUM`.
   //
   // They must not enter the damage set. Measured on the live copy: after a
   // SUCCESSFUL repair of both real defects, 45 leaked pages kept the store
@@ -2380,9 +2458,10 @@ export async function probeIntegrityCheck(adapter: StoreAdapter): Promise<Integr
   // forever, because nothing can repair them at open. A health verdict that can
   // never return to ok after a correct repair trains operators to ignore it —
   // the same way BL-360's unconditional Tantivy message would.
-  const leakedPages = notFalsePositive.filter((m) => /^Page\s+\d+/i.test(m));
-  const real = notFalsePositive.filter((m) => !/^Page\s+\d+/i.test(m));
-  const capped = messages.length >= INTEGRITY_CHECK_MESSAGE_CAP;
+  const classified = classifyIntegrityMessages(messages);
+  const leakedPages = classified.pageAccounting;
+  const real = classified.damage;
+  const capped = classified.truncated;
   const pageNote =
     leakedPages.length === 0
       ? ''
