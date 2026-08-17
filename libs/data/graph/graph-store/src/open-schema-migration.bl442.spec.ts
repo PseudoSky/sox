@@ -7,7 +7,7 @@
  * it (a store with FK enforcement off would never exhibit the cascade at all).
  */
 import { describe, it, expect, beforeAll, afterAll, afterEach } from 'vitest';
-import { mkdtempSync, rmSync, readFileSync, existsSync } from 'node:fs';
+import { mkdtempSync, rmSync, readFileSync, existsSync, writeFileSync, readdirSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
@@ -32,6 +32,7 @@ import {
   MigrationPreflightError,
   MigrationRolledBackError,
   StoreOpenElsewhereError,
+  pruneOldMigrationBackups,
 } from './open-schema-migration.js';
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -363,5 +364,95 @@ describe('typed-error surface sanity (BL-442)', () => {
     await expect(migrateToOpenSchema(join(tmpDir, 'does-not-exist.db'))).rejects.toBeInstanceOf(
       MigrationPreflightError,
     );
+  });
+});
+
+// ── Rollback-backup retention (task #16, finding 4) ──────────────────────────
+//
+// Pre-fix: neither the success path nor MigrationRolledBackError's throw path
+// ever deleted `backupPath` — `rg -n "unlinkSync|rmSync" open-schema-migration.ts`
+// found zero calls touching a `.pre-open-schema-migration-*.bak` file after it
+// was used. Every migration run against the same dbPath left a permanent,
+// full-store `.bak` copy. This block is the RED->GREEN proof retention is now
+// bounded.
+
+describe('pruneOldMigrationBackups (task #16)', () => {
+  it('keeps the N most recent siblings, deletes the rest, oldest-first', () => {
+    const dbPath = join(tmpDir, 'prune-unit-target.db');
+    writeFileSync(dbPath, 'x'); // the function only reads the SIBLING dir, dbPath itself need not be a real db
+    const mk = (ts: number) => writeFileSync(`${dbPath}.pre-open-schema-migration-${ts}.bak`, 'x');
+    mk(1000);
+    mk(2000);
+    mk(3000);
+    mk(4000);
+
+    const deleted = pruneOldMigrationBackups(dbPath, 2);
+
+    expect(deleted).toEqual([
+      `${dbPath}.pre-open-schema-migration-1000.bak`,
+      `${dbPath}.pre-open-schema-migration-2000.bak`,
+    ]);
+    const remaining = readdirSync(tmpDir).filter((f) => f.startsWith('prune-unit-target.db.pre-open-schema-migration-'));
+    expect(remaining.sort()).toEqual([
+      'prune-unit-target.db.pre-open-schema-migration-3000.bak',
+      'prune-unit-target.db.pre-open-schema-migration-4000.bak',
+    ]);
+  });
+
+  it('does nothing when the count floor is not exceeded', () => {
+    const dbPath = join(tmpDir, 'prune-unit-floor.db');
+    writeFileSync(dbPath, 'x');
+    writeFileSync(`${dbPath}.pre-open-schema-migration-1000.bak`, 'x');
+    const deleted = pruneOldMigrationBackups(dbPath, 5);
+    expect(deleted).toEqual([]);
+    expect(existsSync(`${dbPath}.pre-open-schema-migration-1000.bak`)).toBe(true);
+  });
+
+  it('never touches a different dbPath\'s backups sharing the same directory', () => {
+    const dbPathA = join(tmpDir, 'prune-unit-a.db');
+    const dbPathB = join(tmpDir, 'prune-unit-b.db');
+    writeFileSync(dbPathA, 'x');
+    writeFileSync(dbPathB, 'x');
+    writeFileSync(`${dbPathA}.pre-open-schema-migration-1000.bak`, 'x');
+    writeFileSync(`${dbPathA}.pre-open-schema-migration-2000.bak`, 'x');
+    writeFileSync(`${dbPathB}.pre-open-schema-migration-1000.bak`, 'x');
+
+    const deleted = pruneOldMigrationBackups(dbPathA, 1);
+
+    expect(deleted).toEqual([`${dbPathA}.pre-open-schema-migration-1000.bak`]);
+    expect(existsSync(`${dbPathB}.pre-open-schema-migration-1000.bak`)).toBe(true);
+  });
+
+  it('never throws when the directory is unreadable/missing', () => {
+    const ghostPath = join(tmpDir, 'does-not-exist-dir', 'ghost.db');
+    expect(() => pruneOldMigrationBackups(ghostPath, 3)).not.toThrow();
+    expect(pruneOldMigrationBackups(ghostPath, 3)).toEqual([]);
+  });
+});
+
+describe('migrateToOpenSchema() bounds its own rollback-backup accumulation (task #16, finding 4)', () => {
+  it('re-running the migration against the same store repeatedly never leaves more than keepBackups .bak siblings', async () => {
+    const dbPath = tempPath('retention-e2e');
+    const seeder = new SqliteAdapterImpl(dbPath);
+    await seedClosedSchemaStore(seeder);
+    await seeder.close();
+
+    const backupNamesFor = () =>
+      readdirSync(tmpDir).filter((f) => f.includes('.pre-open-schema-migration-') && f.startsWith('retention-e2e'));
+
+    // Run the migration 4 times against the SAME store (idempotent — the
+    // second-and-later runs rebuild already-open tables into open tables
+    // again, a functional no-op that still exercises the full backup+prune
+    // path). keepBackups: 2 forces pruning well before the default of 3.
+    for (let i = 0; i < 4; i++) {
+      const result = await migrateToOpenSchema(dbPath, { keepBackups: 2 });
+      expect(result.status).toBe('migrated');
+      expect(existsSync(result.backupPath)).toBe(true);
+      // Never more than the configured floor survives after any single run.
+      expect(backupNamesFor().length).toBeLessThanOrEqual(2);
+    }
+
+    // Across 4 runs, exactly 2 of the 4 backups created must remain.
+    expect(backupNamesFor()).toHaveLength(2);
   });
 });

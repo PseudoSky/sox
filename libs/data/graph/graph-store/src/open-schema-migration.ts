@@ -26,6 +26,7 @@
  */
 import * as crypto from 'node:crypto';
 import * as fs from 'node:fs';
+import * as path from 'node:path';
 import { createSqliteAdapter, ETursoNativeStore } from '@adhd/sox-store-adapter';
 import type { SqliteAdapter, AdapterBackupResult } from '@adhd/sox-store-adapter';
 import {
@@ -48,6 +49,24 @@ export interface MigrateOpenSchemaOptions {
    *  restore-from-backup path to execute for real. This is the only way to prove AC-3 (rollback) without
    *  engineering a genuine torn write. */
   __test_forcePostCommitMismatch?: boolean;
+  /**
+   * (Task #16, finding 4) Every run of this migration leaves a
+   * `<dbPath>.pre-open-schema-migration-<ts>.bak` sibling on disk — pre-fix,
+   * NOTHING ever deleted it, on success or on a handled rollback alike
+   * (verified: neither the success return path nor `MigrationRolledBackError`'s
+   * throw path touched `backupPath` after using it). Since this is an
+   * operator-invoked, rarely-run migration (not a scheduled job), unbounded
+   * growth is slow but real over repeated re-runs against the same store
+   * (retries, re-tests, multiple environments sharing a `dbPath` basename
+   * pattern). Bounds it to the `keepBackups` most recent backups for this
+   * `dbPath`, pruned AFTER the run's own outcome is fully resolved so a
+   * prune can never race the very backup a rollback/error path is reporting
+   * as evidence. Default 3, matching this repo's other retention idiom
+   * (ADR-0014 D2.2's count floor). Set to `Infinity` to disable pruning
+   * entirely (never negative or zero-and-below without explicit intent —
+   * `pruneOldMigrationBackups` treats non-finite/negative as "keep all").
+   */
+  keepBackups?: number;
 }
 
 export interface StoreSnapshot {
@@ -236,6 +255,86 @@ function snapshotsEqual(a: StoreSnapshot, b: StoreSnapshot): boolean {
   );
 }
 
+// ── Rollback-backup retention (task #16, finding 4) ──────────────────────────
+
+function escapeRegExp(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+/**
+ * Anchored on the exact `<basename>.pre-open-schema-migration-<ms>.bak` shape
+ * this module writes (`backupPath` above) — captures the millisecond
+ * timestamp so retention can sort chronologically without relying on
+ * filesystem mtime (which a `cp`/restore step could otherwise disturb).
+ */
+function migrationBackupPattern(dbPath: string): RegExp {
+  return new RegExp(`^${escapeRegExp(path.basename(dbPath))}\\.pre-open-schema-migration-(\\d+)\\.bak$`);
+}
+
+/**
+ * Enforce a bounded retention policy on `<dbPath>.pre-open-schema-migration-*.bak`
+ * siblings: keep the `keepBackups` most recent, delete the rest.
+ *
+ * Pre-fix, NOTHING ever called this — every invocation of `migrateToOpenSchema`
+ * left its backup on disk permanently, on both the success path and the
+ * `MigrationRolledBackError` path (both used `backupPath` and then simply
+ * returned/threw without cleanup). This is an operator-invoked, rarely-run
+ * migration, so the accumulation is slow, but it is exactly the "no
+ * reclamation path" class the rest of this task addresses — a `--confirm`
+ * CLI run against a shared fixture/dev store, repeated across retries or CI
+ * runs, silently grows an unbounded set of full-store `.bak` copies.
+ *
+ * Deliberately never called from the `MigrationRestoreFailedError` path
+ * (`migrateToOpenSchema` step 8's unrecoverable branch): that error's whole
+ * point is "do not trust anything here, a human must look," and its own
+ * message explicitly promises the backup is "still on disk at the path
+ * above" — pruning there would break that promise on the one path where it
+ * matters most.
+ *
+ * Exported and independently testable without running a real migration —
+ * seed matching filenames directly.
+ */
+export function pruneOldMigrationBackups(
+  dbPath: string,
+  keepBackups = 3,
+  log: (...args: unknown[]) => void = () => undefined,
+): string[] {
+  const deleted: string[] = [];
+  if (!Number.isFinite(keepBackups) || keepBackups < 0) return deleted;
+  const dir = path.dirname(dbPath);
+  const re = migrationBackupPattern(dbPath);
+
+  let entries: { name: string; ts: number }[];
+  try {
+    entries = fs
+      .readdirSync(dir)
+      .map((name) => {
+        const m = re.exec(name);
+        return m ? { name, ts: Number(m[1]) } : null;
+      })
+      .filter((e): e is { name: string; ts: number } => e !== null)
+      .sort((a, b) => a.ts - b.ts); // oldest first — embedded ms timestamp, not mtime
+  } catch (err) {
+    log(`[open-schema-migration] prune: cannot read ${dir}: ${err}`);
+    return deleted;
+  }
+
+  while (entries.length > keepBackups) {
+    const oldest = entries.shift();
+    if (!oldest) break;
+    const fullPath = path.join(dir, oldest.name);
+    try {
+      fs.rmSync(fullPath, { force: true });
+      deleted.push(fullPath);
+    } catch (err) {
+      // Best-effort: never let a prune failure turn a successful/handled
+      // migration outcome into a reported failure.
+      log(`[open-schema-migration] prune: failed to delete ${fullPath}: ${err}`);
+    }
+  }
+  return deleted;
+}
+
 // ── The migration ─────────────────────────────────────────────────────────────
 
 export async function migrateToOpenSchema(
@@ -375,6 +474,11 @@ export async function migrateToOpenSchema(
   }
 
   if (snapshotsEqual(after, baseline)) {
+    // (finding 4) Bounded retention: `backupPath` is always the newest
+    // matching sibling by construction (embedded `Date.now()`), so it is
+    // never itself a prune candidate here — no separate protect/exclude
+    // logic is needed for the just-created backup to survive.
+    pruneOldMigrationBackups(dbPath, opts?.keepBackups ?? 3);
     return { status: 'migrated', backupPath, before: baseline, after };
   }
 
@@ -393,6 +497,12 @@ export async function migrateToOpenSchema(
   }
 
   if (snapshotsEqual(restoredSnapshot, baseline)) {
+    // (finding 4) Same reasoning as the success path: `backupPath` is the
+    // newest matching sibling by construction, so pruning older ones here
+    // can never delete the copy this error's own message points at.
+    // Deliberately NOT applied to the `MigrationRestoreFailedError` branch
+    // below — that path is unrecoverable and must not touch anything.
+    pruneOldMigrationBackups(dbPath, opts?.keepBackups ?? 3);
     throw new MigrationRolledBackError({
       mismatch: { baseline, after },
       backupPath,
