@@ -35,6 +35,7 @@ export {
   telemetrySelfCheck,
   otelReady,
   snapshotMetrics,
+  resolveProcessRole,
   _resetTelemetryForTest,
   _snapshotCountForTest,
 } from './runtime.js';
