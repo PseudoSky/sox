@@ -107,34 +107,6 @@ describe('WriteQueue — ordering and serialisation (WP-1)', () => {
   });
 
   /**
-   * BL-405: the WP-5 idle WAL checkpoint must ALSO be scheduled on the
-   * bypass/_noop path (the Turso adapter). The FIFO path schedules it from
-   * _processNext's completion; the bypass/_noop branch used to return EARLY
-   * above the shared scheduling code, so on Turso (needsWriteSerialization:
-   * false -> _noop) the 2s idle checkpoint never fired — memory_ping's
-   * last_checkpoint_at stayed null forever in production and the WAL grew
-   * until restart. RED: _checkpointPending stays false after a bypass
-   * enqueue. GREEN: true.
-   */
-  it('BL-405: a bypass/_noop enqueue schedules the idle WAL checkpoint (WP-5)', async () => {
-    WriteQueue.setBypass(true);
-    try {
-      const queue = await WriteQueue.forPath(dbPath);
-      await queue.enqueue('bl405-probe', async () => {
-        await new Promise<void>((r) => setTimeout(r, 5));
-        return 1;
-      });
-      // The operation settled -> the deferred idle checkpoint must be armed.
-      expect(queue._checkpointPending).toBe(true);
-      // Clean up: cancels the pending timer + closes the adapter so the timer
-      // can never fire against a closed connection in a later test.
-      await queue.drainAndClose();
-    } finally {
-      WriteQueue.setBypass(false);
-    }
-  });
-
-  /**
    * Overflow guard: queue with maxSize=1 rejects the second concurrent enqueue.
    */
   it('rejects with E_BUSY when queue is full', async () => {
@@ -210,12 +182,32 @@ describe('WriteQueue — ordering and serialisation (WP-1)', () => {
   });
 });
 
-// ── WP-5: WAL checkpoint on idle ────────────────────────────────────────────
+// ── DEBT-004/DEBT-005: WAL checkpointing is now owned by the store adapter ──
+//
+// WriteQueue used to own a private debounced idle-checkpoint timer (WP-5/
+// BL-123, `CHECKPOINT_IDLE_MS`/`_scheduleIdleCheckpoint`/`walCheckpoint()`)
+// that ran an UNGATED `PRAGMA wal_checkpoint(TRUNCATE)` — a second mechanism
+// competing with the store-adapter's own idle flush, unsafe at concurrency
+// > 1. Per owner directive it was deleted outright, not coordinated with.
+// This suite now proves the REPLACEMENT: every store this class opens (the
+// production default, `STORE_ADAPTER=turso`) inherits WAL checkpointing
+// automatically from `TursoAdapterImpl._armIdleFlush()` — with ZERO
+// memory-core code involved — through the exact code path production takes
+// (`WriteQueue.forPath()` → `enqueue()`'s bypass/`_noop` branch, since Turso
+// reports `needsWriteSerialization: false`).
 
-describe('WriteQueue — WAL checkpoint on idle (WP-5, BL-123)', () => {
+describe('WriteQueue — WAL checkpointing owned by the store adapter (DEBT-004/DEBT-005)', () => {
   let cleanup: () => void;
   let dbPath: string;
   let priorAdapterEnv: string | undefined;
+
+  function walSize(p: string): number {
+    try {
+      return fs.statSync(p + '-wal').size;
+    } catch {
+      return 0;
+    }
+  }
 
   beforeEach(async () => {
     const t = tmpDir();
@@ -223,16 +215,13 @@ describe('WriteQueue — WAL checkpoint on idle (WP-5, BL-123)', () => {
     dbPath = path.join(t.dir, 'test.db');
     await WriteQueue.clearInstances();
     WriteQueue.setBypass(false);
-    // This suite proves the queue's OWN serialisation (FIFO order, size cap,
-    // WAL checkpoint on the local file) — all of which is WriteQueue._noop =
-    // false behaviour, gated on an adapter reporting needsWriteSerialization:
-    // true (sqlite/better-sqlite3). The factory default is now
-    // STORE_ADAPTER=turso (needsWriteSerialization: false), which would flip
-    // the queue into noop/bypass mode and make every assertion here vacuous —
-    // pin sqlite explicitly, same convention as every other adapter-sensitive
-    // spec (see backup.spec.ts, fts-query-parity.spec.ts).
+    // Explicitly pin the PRODUCTION default so this suite is unambiguous
+    // regardless of what another suite in this file pinned — this is the
+    // one describe block that must run on the REAL adapter (Turso) that
+    // owns the idle flush; sqlite has no equivalent (see write-queue.ts's
+    // class doc comment coverage-gap note, filed BL-591).
     priorAdapterEnv = process.env['STORE_ADAPTER'];
-    process.env['STORE_ADAPTER'] = 'sqlite';
+    process.env['STORE_ADAPTER'] = 'turso';
   });
 
   afterEach(async () => {
@@ -243,130 +232,114 @@ describe('WriteQueue — WAL checkpoint on idle (WP-5, BL-123)', () => {
   });
 
   /**
-   * Acceptance: write enough data to grow the WAL, then wait for the idle
-   * checkpoint timer to fire. After the timer fires, walBytes() must report
-   * near-zero and lastCheckpointAt must be set.
+   * RED→GREEN proof (BL-225) for DEBT-004/DEBT-005:
    *
-   * The idle timer fires 2 seconds after the queue becomes empty. We wait
-   * the full idle period + 1s buffer for timer + checkpoint execution.
+   *   RED (pre-fix code, `WriteQueue`'s own idle-checkpoint timer still
+   *   present): the queue's OWN `_scheduleIdleCheckpoint()`/`walCheckpoint()`
+   *   fires ~2s after the bypass/_noop enqueue settles and sets
+   *   `_lastCheckpointAt` (and the persistent `_lastCheckpointByPath` map)
+   *   itself — so `WriteQueue.lastCheckpointAtForPath(dbPath)` is NON-ZERO
+   *   after the idle wait, even though the WAL also shrinks. Verified by
+   *   running this exact assertion against the pre-fix write-queue.ts
+   *   (`_scheduleIdleCheckpoint`/`CHECKPOINT_IDLE_MS`/`walCheckpoint()`
+   *   restored) — see the packet's shipped report for the verbatim
+   *   before/after run — the `toBe(0)` assertion below FAILS there.
    *
-   * NOTE: The DB schema creation (run by openDb via WriteQueue.forPath)
-   * writes to the WAL immediately, so walBytes is > 0 from the start.
-   * We verify it grows with our writes, then shrinks after checkpoint.
+   *   GREEN (this code): WriteQueue has NO idle-checkpoint code left at all
+   *   (grep-verified — see the class doc comment). The WAL still shrinks
+   *   to near-zero after the same idle wait, driven ENTIRELY by
+   *   `TursoAdapterImpl._armIdleFlush()` inside the adapter this queue
+   *   opened via `openDb()` — and `lastCheckpointAtForPath` stays exactly 0
+   *   throughout, because nothing in memory-core ever touches it outside
+   *   `closeAllForShutdown()`. Both facts together — WAL shrinks AND
+   *   memory-core recorded zero checkpoint activity — are proof the
+   *   mechanism moved, not just that a checkpoint happened somehow.
+   *
+   * Uses `fs.statSync(dbPath + '-wal')` directly, NOT `queue.walBytes()`:
+   * that method deliberately returns 0 for `config.type === 'turso'` (no
+   * local WAL file assumption baked in for the remote-url case), but a
+   * turso adapter opened with a local `dbPath` (exactly what
+   * `WriteQueue.forPath()`/`openDb()` does) still has a real local `-wal`
+   * file on disk — this test needs to read it directly.
    */
-  it('idle checkpoint shrinks WAL file after queue drains', async () => {
+  it('adapter idle flush shrinks the WAL after the queue drains — driven entirely by the adapter, not WriteQueue', async () => {
     const queue = await WriteQueue.forPath(dbPath);
+    expect(queue.storePath).toBeDefined(); // sanity: real queue, real store
 
-    // Capture baseline WAL size (from schema creation)
-    const walBaseline = queue.walBytes();
+    // Baseline: schema creation already wrote some WAL frames.
+    const walBaseline = walSize(dbPath);
     expect(walBaseline).toBeGreaterThan(0);
 
-    // Write enough data to grow the WAL (50 rows of ~1KB each)
-    await queue.enqueue('seed-table', async (tx) => {
-      await tx.exec(`CREATE TABLE IF NOT EXISTS wp5_test (
+    // Write enough data to grow the WAL — but stay comfortably under the
+    // adapter's DEFAULT_WAL_CAP_BYTES (262,144) so the INLINE cap-flush
+    // (`_checkWalCapAndFlush`, fired from every writable `_trackOp`) does
+    // NOT also fire and confound this test with a second, unrelated adapter
+    // mechanism. This test isolates the IDLE flush specifically.
+    await queue.enqueue('seed-table', async (adapter) => {
+      await adapter.exec(`CREATE TABLE IF NOT EXISTS debt004_test (
         id INTEGER PRIMARY KEY,
         val TEXT NOT NULL
       )`);
-      for (let i = 0; i < 50; i++) {
-        await tx.executeRun('INSERT INTO wp5_test (id, val) VALUES (?, ?)', [i, 'x'.repeat(1000)]);
+      for (let i = 0; i < 80; i++) {
+        await adapter.executeRun('INSERT INTO debt004_test (id, val) VALUES (?, ?)', [i, 'x'.repeat(1000)]);
       }
     });
 
-    // Wait for queue to drain and checkpoint timer to fire
-    await new Promise<void>((r) => setTimeout(r, WriteQueue.CHECKPOINT_IDLE_MS + 1000));
+    const walAfterWrite = walSize(dbPath);
+    expect(walAfterWrite).toBeGreaterThan(walBaseline);
+    expect(walAfterWrite).toBeLessThan(262_144); // stayed under the wal-cap threshold
 
-    // WAL should be at or near 0 after TRUNCATE checkpoint
-    const walAfter = queue.walBytes();
-    expect(walAfter).toBeLessThan(512);
+    // memory-core has recorded NOTHING yet — no code path here touches
+    // `_lastCheckpointByPath` outside `closeAllForShutdown()`.
+    expect(WriteQueue.lastCheckpointAtForPath(dbPath)).toBe(0);
 
-    // lastCheckpointAt should be set
-    expect(queue.lastCheckpointAt).toBeGreaterThan(0);
-  });
+    // Wait past the adapter's default idle-flush debounce window
+    // (DEFAULT_IDLE_FLUSH_MS = 2000ms in turso-adapter.ts) plus buffer for
+    // the flush's own async close/reconnect ceremony to complete.
+    await new Promise<void>((r) => setTimeout(r, 2000 + 1500));
+
+    const walAfterIdle = walSize(dbPath);
+    // Near-zero after the adapter's gated TRUNCATE — same "near-zero, not
+    // merely smaller" bar bl405-checkpoint-real.spec.ts uses.
+    expect(walAfterIdle).toBeLessThan(walAfterWrite * 0.1);
+    expect(walAfterIdle).toBeLessThan(20_000);
+
+    // The defining assertion: memory-core's own bookkeeping is STILL
+    // untouched. The WAL shrank without WriteQueue ever calling anything —
+    // proof the mechanism lives entirely in the adapter now.
+    expect(WriteQueue.lastCheckpointAtForPath(dbPath)).toBe(0);
+
+    await queue.drainAndClose();
+  }, 15_000);
 
   /**
-   * Checkpoint timer lifecycle:
-   *   1. After queue drains → timer is pending (_processing=false, _scheduleIdleCheckpoint runs)
-   *   2. New work arrives → old timer is cancelled
-   *   3. After new work drains → new timer is scheduled
+   * `walBytes()` on a Turso adapter deliberately reports 0 (no local-file
+   * assumption for the generic case) — confirms that contract still holds
+   * post-DEBT-004/005, so the RED→GREEN proof above's use of a direct
+   * `fs.statSync` (rather than `queue.walBytes()`) is not incidental.
    */
-  it('checkpoint timer lifecycle: pending after drain, cancelled and re-scheduled by new work', async () => {
+  it('walBytes() reports 0 for a turso-backed queue (by design, unrelated to checkpoint ownership)', async () => {
     const queue = await WriteQueue.forPath(dbPath);
-
-    // Do a quick write and let the queue drain
-    await queue.enqueue('create-table', async (tx) => {
-      await tx.exec('CREATE TABLE IF NOT EXISTS ck_lifecycle (id INTEGER PRIMARY KEY, val TEXT)');
-    });
-
-    // Wait just enough for _processNext to finish and checkpoint to be scheduled
-    await new Promise<void>((r) => setTimeout(r, 30));
-
-    // Queue should be idle now → checkpoint timer is pending
-    expect(queue._checkpointPending).toBe(true);
-
-    // Enqueue new work — this should cancel the pending timer
-    queue.enqueue('new-work', async (tx) => {
-      await tx.executeRun("INSERT INTO ck_lifecycle (id, val) VALUES (1, 'test')");
-    });
-
-    // Wait just enough for enqueue to cancel and new item to be processed
-    await new Promise<void>((r) => setTimeout(r, 30));
-
-    // After the new item is processed and the queue goes idle again,
-    // a new checkpoint timer should be scheduled
-    expect(queue._checkpointPending).toBe(true);
+    expect(queue.walBytes()).toBe(0);
   });
 
   /**
-   * walBytes: the method reads the -wal file from disk. Returns 0 when no
-   * DB file exists (WAL file absent), and non-zero when the DB is active
-   * with WAL data.
-   *
-   * NOTE: openDb always writes to the WAL (schema pragmas), so a fresh queue
-   * already has a non-zero WAL. This test verifies walBytes can detect it.
+   * `lastCheckpointAtForPath` still answers 0 for a never-shut-down store
+   * (no instance, or an instance that has never gone through
+   * `closeAllForShutdown()`), and only becomes non-zero once shutdown's
+   * explicit `adapter.close()` flush runs — see `closeAllForShutdown()`'s
+   * doc comment for why that is now the ONLY writer of this ledger.
    */
-  it('walBytes returns non-zero for an active WAL database', async () => {
-    const queue = await WriteQueue.forPath(dbPath);
-    // The DB writes schema PRAGMAs to the WAL on open, so walBytes > 0
-    expect(queue.walBytes()).toBeGreaterThan(0);
-  });
-
-  /**
-   * walCheckpoint is idempotent. First call checkpoints frames; second call
-   * returns -1 (nothing left to checkpoint). lastCheckpointAt advances.
-   */
-  it('walCheckpoint is idempotent returns frame count then -1', async () => {
-    const queue = await WriteQueue.forPath(dbPath);
-
-    // Write some data
-    await queue.enqueue('write-data', async (tx) => {
-      await tx.exec('CREATE TABLE IF NOT EXISTS ck_idem (id INTEGER PRIMARY KEY, val TEXT)');
-      for (let i = 0; i < 30; i++) {
-        await tx.executeRun('INSERT INTO ck_idem (id, val) VALUES (?, ?)', [i, 'x'.repeat(300)]);
-      }
-    });
-    await new Promise<void>((r) => setTimeout(r, 100));
-
-    // First checkpoint: should return frame count >= 0
-    const frames1 = await queue.walCheckpoint();
-    expect(typeof frames1).toBe('number');
-
-    // Second checkpoint: nothing to checkpoint → -1
-    const frames2 = await queue.walCheckpoint();
-    expect(frames2).toBe(-1);
-
-    // lastCheckpointAt should be set
-    expect(queue.lastCheckpointAt).toBeGreaterThan(0);
-  });
-
-  /**
-   * lastCheckpointAtForPath returns 0 for unknown/unused paths,
-   * and >0 after a checkpoint has been performed.
-   */
-  it('lastCheckpointAtForPath: unknown path returns 0, known path >0 after checkpoint', async () => {
+  it('lastCheckpointAtForPath: 0 for unknown path, and only set by closeAllForShutdown()', async () => {
     expect(WriteQueue.lastCheckpointAtForPath('/nonexistent/path.db')).toBe(0);
 
-    const queue = await WriteQueue.forPath(dbPath);
-    await queue.walCheckpoint();
-    expect(WriteQueue.lastCheckpointAtForPath(dbPath)).toBeGreaterThan(0);
+    await WriteQueue.forPath(dbPath);
+    expect(WriteQueue.lastCheckpointAtForPath(dbPath)).toBe(0); // no shutdown yet
+
+    const before = Date.now();
+    await WriteQueue.closeAllForShutdown();
+    const after = WriteQueue.lastCheckpointAtForPath(dbPath);
+    expect(after).toBeGreaterThanOrEqual(before);
+    expect(after).toBeLessThanOrEqual(Date.now());
   });
 });

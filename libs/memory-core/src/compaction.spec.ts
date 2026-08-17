@@ -2,11 +2,18 @@
  * compaction.spec.ts — HF-4 / BL-133: scheduled compaction/ANALYZE tick.
  *
  * Coverage:
- *   1. runCompactionPass runs optimize + ANALYZE and checkpoints when no recent WQ checkpoint.
- *   2. runCompactionPass skips WAL checkpoint when WriteQueue ran one very recently.
- *   3. runCompactionPass captures errors and returns them in the result (never throws).
- *   4. startCompactionTick fires at the configured interval and can be stopped.
- *   5. Tick fires → runCompactionPass result is emitted via log.
+ *   1. runCompactionPass runs optimize + ANALYZE; checkpoint fields always report the
+ *      DEBT-004/DEBT-005 "not this pass's job any more" sentinel (false/-1).
+ *   2. runCompactionPass captures errors and returns them in the result (never throws).
+ *   3. startCompactionTick fires at the configured interval and can be stopped.
+ *   4. Tick fires → runCompactionPass result is emitted via log.
+ *
+ * (DEBT-004/DEBT-005, 2026-08-17) This suite used to also cover the WriteQueue-vs-
+ * compaction double-checkpoint coordination logic (skip-if-WriteQueue-ran-recently).
+ * That logic — and the WriteQueue-side idle-checkpoint timer it coordinated with —
+ * was deleted (see write-queue.ts's class doc comment and compaction.ts's module doc
+ * comment): WAL checkpointing is now owned exclusively by the store adapter's own
+ * idle flush, so there is nothing left for this module to coordinate with.
  *
  * Negative control (NC):
  *   - The compaction tick runs against a real in-process DB (no mocks) so its SQL
@@ -14,7 +21,6 @@
  *     would prevent the maintenance from running — verified by the error-capture test.
  */
 
-import { canonicalStorePath } from './store-path.js';
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import type { StoreAdapter } from '@adhd/sox-store-adapter';
 import * as fs from 'node:fs';
@@ -64,10 +70,8 @@ async function freshDb(): Promise<{ db: StoreAdapter; dbPath: string }> {
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
 describe('runCompactionPass', () => {
-  it('runs optimize + ANALYZE and checkpoints when no recent WriteQueue checkpoint', async () => {
-    const { db, dbPath } = await freshDb();
-    // Ensure no WriteQueue instance exists (so lastCheckpointAtForPath returns 0).
-    expect(WriteQueue.lastCheckpointAtForPath(dbPath)).toBe(0);
+  it('runs optimize + ANALYZE; checkpoint fields report the DEBT-004/DEBT-005 sentinel', async () => {
+    const { db } = await freshDb();
 
     const logs: string[] = [];
     const result = await runCompactionPass(db, {
@@ -78,71 +82,12 @@ describe('runCompactionPass', () => {
     expect(result.error).toBeNull();
     expect(result.optimized).toBe(true);
     expect(result.analyzed).toBe(true);
-    expect(result.checkpointed).toBe(true);
-    expect(result.framesCheckpointed).toBeGreaterThanOrEqual(0);
-    expect(result.runAt).toMatch(/^\d{4}-/); // ISO timestamp
-
-    await db.close();
-  });
-
-  it('skips WAL checkpoint when WriteQueue checkpointed very recently', async () => {
-    const { db, dbPath } = await freshDb();
-
-    // Simulate a very recent WriteQueue checkpoint by creating a queue instance
-    // and forcing a checkpoint on it.
-    const wq = await WriteQueue.forPath(dbPath);
-    await wq.walCheckpoint(); // This updates lastCheckpointAt.
-
-    // lastCheckpointAt should be very recent (within CHECKPOINT_IDLE_MS).
-    expect(WriteQueue.lastCheckpointAtForPath(dbPath)).toBeGreaterThan(0);
-
-    const logs: string[] = [];
-    const result = await runCompactionPass(db, {
-      log: (...args) => logs.push(args.join(' ')),
-    });
-
-    expect(result.error).toBeNull();
-    expect(result.analyzed).toBe(true);
-    // checkpoint was skipped because WriteQueue ran one recently
+    // (DEBT-004/DEBT-005) This pass no longer checkpoints — the store adapter's
+    // own idle flush owns that exclusively now.
     expect(result.checkpointed).toBe(false);
     expect(result.framesCheckpointed).toBe(-1);
-    expect(logs.some((l) => l.includes('skipped'))).toBe(true);
-
-    await db.close();
-  });
-
-  it('runs checkpoint when WriteQueue checkpoint was long ago (beyond idle window)', async () => {
-    const { db, dbPath } = await freshDb();
-
-    // Create a WQ, do a checkpoint, but backdate its lastCheckpointAt so the
-    // compaction tick treats it as stale.
-    const wq = await WriteQueue.forPath(dbPath);
-    await wq.walCheckpoint();
-    // Monkey-patch _lastCheckpointAt to be old (beyond CHECKPOINT_IDLE_MS).
-    // We use a casting trick since the field is private.
-    const backdated = Date.now() - WriteQueue.CHECKPOINT_IDLE_MS - 1000;
-    (wq as unknown as { _lastCheckpointAt: number })._lastCheckpointAt = backdated;
-    // BL-405: `WriteQueue.lastCheckpointAtForPath()` (what `runCompactionPass`
-    // actually reads) now reads a PERSISTENT static map — keyed by store path,
-    // surviving instance removal — rather than the live instance's own field
-    // (see write-queue.ts's `_lastCheckpointByPath` doc comment: an instance
-    // field alone silently reset the metric to 0 the moment an instance was
-    // removed, e.g. on shutdown, which is exactly backwards for a durability
-    // signal). Backdate that map too, or this test's "long ago" setup has no
-    // effect on what runCompactionPass actually consults.
-    (
-      WriteQueue as unknown as { _lastCheckpointByPath: Map<string, number> }
-    // The ledger is keyed by CANONICAL store identity, not the caller's
-    // spelling (see write-queue.ts `lastCheckpointAtForPath`). Seeding the raw
-    // path here silently did nothing once that keying was fixed: the real
-    // checkpoint above wrote a RECENT entry under the canonical key, so the
-    // skip fired and this test's "long ago" setup was ignored. On macOS the two
-    // differ as /var/... vs /private/var/....
-    )._lastCheckpointByPath.set(canonicalStorePath(dbPath), backdated);
-
-    const result = await runCompactionPass(db, {});
-    expect(result.error).toBeNull();
-    expect(result.checkpointed).toBe(true);
+    expect(result.runAt).toMatch(/^\d{4}-/); // ISO timestamp
+    expect(logs.some((l) => l.toLowerCase().includes('checkpoint'))).toBe(false);
 
     await db.close();
   });
