@@ -294,6 +294,12 @@ describe('BUG-STOREADAPTER-QUIESCENCE-TOCTOU — detector', () => {
     ) => {
       if (/wal_checkpoint\(TRUNCATE\)/i.test(sql)) {
         peer = await TursoAdapterImpl.connect({ dbPath });
+        // (DEBT-003, lazy-connect) `connect()` no longer acquires a lease
+        // eagerly — force the real open here so the peer genuinely holds a
+        // live lease entry by the time the TRUNCATE below resolves and the
+        // post-truncate TOCTOU check runs, same as before this feature (when
+        // `connect()` itself acquired the lease synchronously in this window).
+        await peer.executeGet('SELECT 1');
         return realExecuteAll(sql, args);
       }
       return realExecuteAll(sql, args);

@@ -105,7 +105,13 @@ describe('DEBT-003 — content-LIVE -tshm keeps the BUG-009 retry path (never re
     let thrown: unknown = null;
     try {
       try {
-        await TursoAdapterImpl.connect({ dbPath });
+        // (DEBT-003, lazy-connect) `connect()` itself no longer opens the
+        // driver — it constructs a never-opened shell and always resolves.
+        // The mocked driver rejection this test pins now surfaces on the
+        // first real operation instead, via `_ensureHealthy()` →
+        // `_reconnect()` → `_openReal()`.
+        const adapter = await TursoAdapterImpl.connect({ dbPath });
+        await adapter.executeGet('SELECT 1');
       } catch (err) {
         thrown = err;
       }

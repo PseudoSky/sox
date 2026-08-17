@@ -315,6 +315,11 @@ tursoDescribe('BL-508 guard API — assertStoreEngine (f, g)', () => {
   it('assertStoreEngineSync/assertStoreEngine pass on a matching marker and surface the engine', async () => {
     const dbPath = tempPath('guard-pass');
     const adapter = await TursoAdapterImpl.connect({ dbPath });
+    // (DEBT-003, lazy-connect) `connect()` no longer opens a driver or stamps
+    // the engine marker eagerly — that now happens on the first real
+    // operation. Force it here so the marker this assertion reads has
+    // actually been written before `close()`.
+    await adapter.executeGet('SELECT 1');
     await adapter.close();
 
     const sync = assertStoreEngineSync(dbPath, 'turso');

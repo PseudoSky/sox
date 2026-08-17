@@ -170,7 +170,14 @@ async function connectWithoutOpenTimeIntegrity(dbPath: string): Promise<TursoAda
   const previous = process.env.SOX_STORE_VERIFY_SKIP;
   process.env.SOX_STORE_VERIFY_SKIP = 'fts_index_live';
   try {
-    return await TursoAdapterImpl.connect({ dbPath });
+    const adapter = await TursoAdapterImpl.connect({ dbPath });
+    // (DEBT-003, lazy-connect) `connect()` no longer runs the open-time
+    // integrity pass eagerly — it now runs on the first real operation, via
+    // `_openReal()`. `SOX_STORE_VERIFY_SKIP` must still be set when THAT
+    // actually happens, not merely when `connect()` returns, so force it
+    // here, still inside this function's env-var scope.
+    await adapter.executeGet('SELECT 1');
+    return adapter;
   } finally {
     if (previous === undefined) delete process.env.SOX_STORE_VERIFY_SKIP;
     else process.env.SOX_STORE_VERIFY_SKIP = previous;
@@ -293,6 +300,9 @@ tursoDescribe('BL-362 — committable Turso FTS damage fixture', () => {
 
     // Plain consumer open — open-time integrity does the rest.
     const adapter = track(await TursoAdapterImpl.connect({ dbPath }));
+    // (DEBT-003, lazy-connect) The open-time integrity pass this test pins
+    // now runs on the first real operation, not at `connect()` — force it.
+    await adapter.executeGet('SELECT 1');
 
     // The open must have SEEN the damage, not merely ended up healthy: without
     // this assertion the case passes just as well on an undamaged store, which

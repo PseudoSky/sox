@@ -244,6 +244,11 @@ tursoDescribe('BUG-018 — TursoAdapter.connect canonicalizes once (SPEC §T4)',
       // be url-only); the assertion above proves it is defined here.
       expect(leaseDirPath(b.config.dbPath!)).toBe(leaseDirPath(canonicalDbPath(realDb)));
 
+      // (DEBT-003, lazy-connect) `_lease` is only populated on the first real
+      // open — `connect()` no longer acquires one eagerly. Force both here.
+      await a.executeGet('SELECT 1');
+      await b.executeGet('SELECT 1');
+
       // INV-4 integration lock: probed through B's own (canonical) key,
       // excluding B's own lease, A's lease is a visible live peer — the
       // false-quiescence failure mode BUG-018 exists to prevent.

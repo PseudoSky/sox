@@ -195,11 +195,62 @@ class TursoTransactionImpl implements AdapterTransaction {
   }
 }
 
+/** (DEBT-003, lazy-connect) Placeholder assigned to `TursoAdapterImpl.db`
+ *  for an instance that has never performed a real driver open
+ *  (`_neverOpened === true`). Every direct `this.db.*` call site in
+ *  `TursoAdapterImpl` runs downstream of `_ensureHealthy()` (via `_trackOp`
+ *  or, for `_runTransaction`, an explicit call) — which transparently opens
+ *  the real connection before any of these methods can be reached — EXCEPT
+ *  `close()`, which short-circuits before ever touching `this.db` while
+ *  `_neverOpened` is still true. So these throw only if some future call
+ *  site bypasses `_ensureHealthy()`; the message says so plainly rather than
+ *  surfacing an obscure "x is not a function" from a stub. */
+function createNeverOpenedDb(): {
+  run: Function;
+  get: Function;
+  all: Function;
+  exec: Function;
+  close: Function;
+  pragma: Function;
+} {
+  const fail = (method: string) => (): never => {
+    throw new Error(
+      `[DEBT-003] TursoAdapterImpl.db.${method}() invoked on a never-opened instance without going ` +
+        `through _ensureHealthy() first — this is an adapter bug (a new direct this.db.* call site ` +
+        `that bypasses _trackOp()/_ensureHealthy()), not a caller error.`,
+    );
+  };
+  return {
+    run: fail('run'),
+    get: fail('get'),
+    all: fail('all'),
+    exec: fail('exec'),
+    close: fail('close'),
+    pragma: fail('pragma'),
+  };
+}
+
 // ── TursoAdapterImpl ─────────────────────────────────────────────────────────
 
 export class TursoAdapterImpl implements TursoAdapter {
   readonly config: Readonly<AdapterConfig & { type: 'turso' }>;
-  readonly capabilities: Readonly<AdapterCapabilities>;
+
+  /** (DEBT-003, lazy-connect) Backing field for the public `capabilities`
+   *  getter. A field, not the interface's plain `readonly` property, ONLY
+   *  because `connect()` now returns an instance before `recursiveCte` has
+   *  ever been probed (that probe issues a real query — see `_openReal()` —
+   *  and cannot run until a connection exists). `connect()` seeds this with
+   *  a conservative `recursiveCte: false` guess; `_reconnect()` overwrites it
+   *  with the real probed value the FIRST time this instance actually opens
+   *  (never-opened → real), and is a harmless no-op resync on every
+   *  subsequent poison/release reconnect (the value cannot change for a
+   *  given store). Every other field is a static, unconditional constant
+   *  (see `_openReal()`) and never varies. */
+  private _capabilities: AdapterCapabilities;
+
+  get capabilities(): Readonly<AdapterCapabilities> {
+    return this._capabilities;
+  }
 
   private db: {
     run: Function;
@@ -245,6 +296,27 @@ export class TursoAdapterImpl implements TursoAdapter {
    *  (the 1,409 `close_checkpoint_busy` incident, 2026-08-12..17). See
    *  `_reconnect()` for how the two cases differ in lease handling. */
   private _released = false;
+
+  /** (DEBT-003, lazy-connect, 2026-08-17 — owner directive: "Consumers of
+   *  store adapter should not have to think about connect / disconnect,
+   *  that should be automatic under the hood") True from construction until
+   *  the FIRST real driver open completes; set only by `connect()` and
+   *  cleared only by a successful `_reconnect()`. Distinguished from
+   *  `_released` (this instance HAD a lease and gave it back) and
+   *  `_poisoned` (a live connection died): a never-opened instance never had
+   *  a driver connection, a lease, an idle-flush arm, or a WAL baseline at
+   *  all — there is nothing to recover from, only a first open to perform.
+   *  Deliberately reuses the SAME `_ensureHealthy()`/`_reconnect()` recovery
+   *  path `_released`/`_poisoned` already use (see `_ensureHealthy()` and
+   *  `_reconnect()`) rather than a second reopen branch — the owner's own
+   *  design directive for this feature. `this.db` holds a sentinel object
+   *  (`NEVER_OPENED_DB`) while this is true; every direct `this.db.*` call
+   *  site in this class runs downstream of `_ensureHealthy()`/`_trackOp()`
+   *  EXCEPT `close()`, which short-circuits before ever touching `this.db`
+   *  when this is still true (see `close()`) — closing an adapter that was
+   *  constructed and discarded without ever being used must not pay for an
+   *  open only to immediately tear it down. */
+  private _neverOpened = false;
 
   /** (idle-release) Count of operations currently executing against this
    *  connection — incremented SYNCHRONOUSLY at the top of `_trackOp` (before
@@ -621,6 +693,16 @@ export class TursoAdapterImpl implements TursoAdapter {
    * `this.db` and no reconnect has completed since. Reading this never
    * itself starts a reconnect — it is a pure observation for callers (e.g.
    * a health surface) that want state without issuing a query.
+   *
+   * (DEBT-003, lazy-connect) A never-opened instance (no operation has run
+   * yet) reports `'healthy'`, not a fourth state — nothing has failed, there
+   * is simply nothing open yet, and adding a new state to this union would
+   * be a breaking type change for every existing consumer of this getter
+   * (including the external `@adhd/backlog` dependency). `'reconnecting'`
+   * correctly still applies once the first operation has actually kicked off
+   * the deferred open (`_reconnectPromise` is set by `_ensureHealthy()`
+   * regardless of whether it was triggered by poison, release, or
+   * never-opened).
    */
   get connectionHealth(): 'healthy' | 'poisoned' | 'reconnecting' {
     if (this._reconnectPromise) return 'reconnecting';
@@ -644,13 +726,17 @@ export class TursoAdapterImpl implements TursoAdapter {
   }
 
   /**
-   * (SPEC-CONN-RECYCLE) If `_poisoned`, await-or-start a single shared
-   * reconnect before letting the caller proceed. Must be called before
-   * every direct `this.db.*` call site (after `_assertWritable()` where
-   * both apply — a read-only-mode rejection is not a connection question).
+   * (SPEC-CONN-RECYCLE; DEBT-003 lazy-connect) If `_poisoned`, `_released`,
+   * or `_neverOpened`, await-or-start a single shared reconnect before
+   * letting the caller proceed. Must be called before every direct
+   * `this.db.*` call site (after `_assertWritable()` where both apply — a
+   * read-only-mode rejection is not a connection question). This is the ONE
+   * gate through which a never-opened instance performs its first real
+   * driver open — see `_neverOpened`'s doc comment for why deferred-open is
+   * expressed through this existing recovery path rather than a parallel one.
    */
   private async _ensureHealthy(): Promise<void> {
-    if (!this._poisoned && !this._released) return;
+    if (!this._poisoned && !this._released && !this._neverOpened) return;
     if (!this._reconnectPromise) {
       this._reconnectPromise = this._reconnect();
     }
@@ -703,15 +789,38 @@ export class TursoAdapterImpl implements TursoAdapter {
    *    `releaseIdleConnection()` call silently stops participating in
    *    `storeQuiescence()` (the `coordDb && this._lease` gate at close()'s
    *    TRUNCATE branch would fall through to the "no lease" branch forever).
+   *  - Recovering from `_neverOpened` (DEBT-003, lazy-connect): identical to
+   *    `_released` for lease purposes — this instance has NEVER held a lease
+   *    (`connect()` deliberately does not acquire one for a never-opened
+   *    shell, see `_neverOpened`), so the fresh `_openReal()`'s lease MUST be
+   *    adopted as this instance's first one, same as the `_released` branch.
+   *
+   * (DEBT-003, lazy-connect) Calls `TursoAdapterImpl._openReal()` — the
+   * actual full-ceremony open — NOT the public `TursoAdapterImpl.connect()`.
+   * Since `connect()` itself is now the LAZY entry point (constructs a
+   * never-opened shell, performs no driver open), replaying `connect()` here
+   * would just hand back a second never-opened shell forever instead of ever
+   * actually reconnecting. `_openReal()` is the one place the real open
+   * ceremony lives; both the public `connect()`'s eventual first-op deferral
+   * and every genuine poison/release reconnect go through it.
    */
   private async _reconnect(): Promise<void> {
     const staleDb = this.db;
-    const wasReleased = this._released;
+    const wasNeverOpened = this._neverOpened;
+    const wasReleased = this._released || wasNeverOpened;
     try {
-      const fresh = await TursoAdapterImpl.connect(this._connectOpts);
+      const fresh = await TursoAdapterImpl._openReal(this._connectOpts);
       this.db = fresh.db;
       this._walBaseline = fresh._walBaseline;
       this._softReadonly = fresh._softReadonly;
+      // (DEBT-003, lazy-connect) `recursiveCte` is the one capability that
+      // genuinely requires a live connection to probe (see `_openReal()`) —
+      // `connect()` seeds a conservative `false` guess for a never-opened
+      // shell. Sync the real probed value now. A harmless no-op resync on
+      // every ordinary poison/release reconnect (the value is a fixed
+      // property of the store/driver version and cannot change between
+      // reconnects of the same instance).
+      this._capabilities = fresh._capabilities;
       // (idle-flush, BUG-STOREADAPTER-RECONNECT-ORPHANED-IDLE-TIMER,
       // discovered 2026-08-17 while building this feature) `connect()`
       // self-arms an idle-flush timer on EVERY writable local-file instance
@@ -747,6 +856,7 @@ export class TursoAdapterImpl implements TursoAdapter {
       }
       this._poisoned = false;
       this._released = false;
+      this._neverOpened = false;
     } catch (err) {
       log.error('store_adapter.turso.connection.reconnect_failed', {
         error: err instanceof Error ? err.message : String(err),
@@ -756,6 +866,12 @@ export class TursoAdapterImpl implements TursoAdapter {
     } finally {
       this._reconnectPromise = null;
     }
+
+    // (DEBT-003, lazy-connect) A never-opened instance's "stale" handle is
+    // the `NEVER_OPENED_DB` sentinel, not a real driver connection — there is
+    // nothing to close, and invoking it would only produce a spurious
+    // `stale_close_failed` error log on every single first-use deferred open.
+    if (wasNeverOpened) return;
 
     // Detached, best-effort close of the stale handle — never on the
     // recovery critical path (see doc comment above).
@@ -775,14 +891,31 @@ export class TursoAdapterImpl implements TursoAdapter {
   ) {
     this.db = db;
     this.config = config;
-    this.capabilities = capabilities;
+    this._capabilities = capabilities;
   }
 
   /**
-   * Create a TursoAdapter wrapping an existing connection handle.
-   * Internal use; prefer `TursoAdapterImpl.connect()`.
+   * (DEBT-003, lazy-connect) THE REAL OPEN. Every step here is unchanged
+   * from before this feature existed: acquire the lease, run the BL-361
+   * out-of-process pre-flight, BL-373 sidecar reconcile, open the driver,
+   * the BL-508 foreign-engine refusal, the `WITH RECURSIVE` capability
+   * probe, stamp the engine marker, run the BL-461 FTS orphan guard, stamp
+   * adapter metadata, run BL-352 open-time integrity repair, capture the WAL
+   * baseline, and arm the idle-flush/wal-cap triggers. Called from THREE
+   * places, never directly by external callers:
+   *  - the public `connect()` used to call this same code inline; it is now
+   *    a thin lazy shell (see its doc comment) that defers to this method
+   *    via `_reconnect()` on first use;
+   *  - `_reconnect()`, for every poison/release/never-opened recovery — the
+   *    SAME recovery path this method has always powered;
+   *  - `withConnectionClosedForRepair()`, to reopen after an out-of-band
+   *    classic-engine repair.
+   * Kept `private static` (was `static` / public) — nothing outside this
+   * class may call it directly; going through `connect()` is the only public
+   * surface, exactly as the pre-existing "prefer TursoAdapterImpl.connect()"
+   * guidance already said.
    */
-  static async connect(opts: {
+  private static async _openReal(opts: {
     url?: string;
     dbPath?: string;
     authToken?: string;
@@ -1387,17 +1520,7 @@ export class TursoAdapterImpl implements TursoAdapter {
         recursiveCte = false;
       }
 
-      const config = { type: 'turso' } as AdapterConfig & { type: 'turso' };
-      if (opts.url !== undefined) config.url = opts.url;
-      // (BUG-018) `config.dbPath` is the CANONICAL path — the close path
-      // (storeQuiescence, clearStoreOpenMarker, resetTshmAfterTruncate),
-      // withConnectionClosedForRepair, and graph-store's repair path all read
-      // it from here and therefore inherit the canonical identity.
-      if (canonicalDb !== undefined) config.dbPath = canonicalDb;
-      if (opts.authToken !== undefined) config.authToken = opts.authToken;
-      if (opts.readonly !== undefined) config.readonly = opts.readonly;
-      if (opts.encryption !== undefined) config.encryption = opts.encryption;
-      if (opts.defaultQueryTimeout !== undefined) config.defaultQueryTimeout = opts.defaultQueryTimeout;
+      const config = TursoAdapterImpl._buildConfig(opts, canonicalDb);
 
       const capabilities: AdapterCapabilities = {
         multiprocessWrite: true, // unconditional — see the experiments block above (BL-512)
@@ -1532,7 +1655,167 @@ export class TursoAdapterImpl implements TursoAdapter {
     }
   }
 
+  /** (DEBT-003, lazy-connect) Build `config` from `opts` — shared by the
+   *  eager `connect()` shell and the real `_openReal()` open so the two can
+   *  never diverge. `config.dbPath`, when set, is always the CANONICAL path
+   *  (BUG-018) — every coordination site downstream reads it, never the
+   *  caller's raw spelling. Pure/synchronous — no I/O beyond the
+   *  already-computed `canonicalDb`. */
+  private static _buildConfig(
+    opts: Parameters<typeof TursoAdapterImpl._openReal>[0],
+    canonicalDb: string | undefined,
+  ): AdapterConfig & { type: 'turso' } {
+    const config = { type: 'turso' } as AdapterConfig & { type: 'turso' };
+    if (opts.url !== undefined) config.url = opts.url;
+    // (BUG-018) `config.dbPath` is the CANONICAL path — the close path
+    // (storeQuiescence, clearStoreOpenMarker, resetTshmAfterTruncate),
+    // withConnectionClosedForRepair, and graph-store's repair path all read
+    // it from here and therefore inherit the canonical identity.
+    if (canonicalDb !== undefined) config.dbPath = canonicalDb;
+    if (opts.authToken !== undefined) config.authToken = opts.authToken;
+    if (opts.readonly !== undefined) config.readonly = opts.readonly;
+    if (opts.encryption !== undefined) config.encryption = opts.encryption;
+    if (opts.defaultQueryTimeout !== undefined) config.defaultQueryTimeout = opts.defaultQueryTimeout;
+    return config;
+  }
+
+  /**
+   * (DEBT-003, lazy-connect, 2026-08-17 — owner directive: "Consumers of
+   * store adapter should not have to think about connect / disconnect, that
+   * should be automatic under the hood") THE PUBLIC ENTRY POINT. Returns an
+   * instance that has opened NO driver connection, acquired NO lease, and
+   * run NONE of the real open-time ceremony (BL-361 preflight, BL-373
+   * sidecar reconcile, BL-508 engine-marker stamp, BL-461 FTS orphan guard,
+   * BL-352 open-time integrity repair, idle-flush/wal-cap arming) — every
+   * one of those genuinely requires a connection and now runs exactly once,
+   * on the first real operation this instance performs, via
+   * `_ensureHealthy()` → `_reconnect()` → `_openReal()` (the SAME recovery
+   * path `_poisoned`/`_released` already use — see `_neverOpened`'s doc
+   * comment for why there is deliberately no second reopen branch).
+   *
+   * ONE check stays HERE, eager, before any instance is even constructed:
+   * the BL-508 foreign-engine marker refusal. It is a pure `application_id`
+   * header read (`readApplicationId`, engine-guard.ts) — filesystem only, no
+   * lease, no driver — so it costs nothing to run up front, and "consumers
+   * should not have to think about connect" does not mean "an unopenable
+   * store should silently defer its failure to whatever random first query
+   * happens to run later." `_openReal()` re-checks the SAME marker
+   * unconditionally (unchanged from before this feature) — this eager copy
+   * is a fail-fast convenience for the deferred-open shell, not a
+   * replacement for the real check: the store's marker could in principle
+   * change between this call and the eventual first real open, and only the
+   * real check runs under the lease that makes that check meaningful.
+   *
+   * Every OTHER fail-closed case in `_openReal()` — BL-361's out-of-process
+   * schema pre-flight, BL-373's stale-sidecar reconcile/retry, the
+   * `WITH RECURSIVE` capability probe, BL-461's FTS orphan guard, BL-352's
+   * integrity repair — genuinely requires a live connection (several also
+   * require the lease `_openReal()` acquires, which this method deliberately
+   * does NOT acquire — an unopened instance holding a lease is exactly the
+   * orphaned-lease class this codebase already fights) and therefore moves
+   * to the first real operation, surfacing there instead of at `connect()`.
+   * See `_openReal()`'s own doc comment for the unchanged mechanics of each.
+   *
+   * `unwrap()` is the one caller-visible surface that CANNOT be made to work
+   * before the first real operation — it is synchronous and returns the
+   * live driver handle, which by definition does not exist yet on a
+   * never-opened instance. It throws a clear, typed-message error instead of
+   * returning a dead/fake handle; see `unwrap()`'s doc comment. `config` and
+   * `capabilities` are metadata computed eagerly here (capabilities'
+   * `recursiveCte` field is a conservative guess, corrected transparently on
+   * first real open) and read correctly by any caller at any time.
+   */
+  static async connect(
+    opts: Parameters<typeof TursoAdapterImpl._openReal>[0],
+  ): Promise<TursoAdapterImpl> {
+    // (Cheap, synchronous — no I/O) Same precondition `_openReal()` enforces.
+    const url = opts.url || opts.dbPath;
+    if (!url) {
+      throw new Error('TursoAdapter requires either url or dbPath');
+    }
+
+    // (BUG-018, INV-4) Canonicalize once, exactly as `_openReal()` does —
+    // every coordination key downstream (lease dir, open marker, sidecar
+    // probes, and this eager preflight) must agree on ONE spelling.
+    const canonicalDb = opts.dbPath !== undefined ? canonicalDbPath(opts.dbPath) : undefined;
+
+    // (BL-508) FOREIGN-ENGINE REFUSAL — see this method's doc comment for
+    // why this ONE check runs eagerly instead of deferring to first use.
+    if (canonicalDb !== undefined && opts.readonly !== true && opts.allowForeignEngine !== true) {
+      const appId = readApplicationId(canonicalDb);
+      if (appId === SOX_APP_ID_SQLITE) {
+        throw new ESqliteNativeStore(canonicalDb, 'sqlite');
+      }
+    }
+
+    const config = TursoAdapterImpl._buildConfig(opts, canonicalDb);
+
+    // (DEBT-003) Conservative default — `recursiveCte` is the one capability
+    // that genuinely needs a live probe (a real `WITH RECURSIVE` query, see
+    // `_openReal()`); every other field is a static, unconditional constant
+    // regardless of connection state (see `_openReal()`'s own `capabilities`
+    // construction — this mirrors it exactly for every field but
+    // `recursiveCte`). `_reconnect()` overwrites this with the real probed
+    // value on first open (see `_capabilities`'s doc comment).
+    const capabilities: AdapterCapabilities = {
+      multiprocessWrite: true,
+      nativeVectors: true,
+      concurrentTransactions: true,
+      fts5: false,
+      fts: true,
+      needsWriteSerialization: false,
+      recursiveCte: false,
+    };
+
+    const instance = new TursoAdapterImpl(createNeverOpenedDb(), config, capabilities);
+    instance._softReadonly = opts.readonly === true && opts.allowFtsInReadonly === true;
+    instance._canonicalDb = canonicalDb;
+    // (SPEC-CONN-RECYCLE) Capture the exact `opts` this call received —
+    // frozen verbatim, same as `_openReal()` always has — so `_reconnect()`
+    // can replay it through `_openReal()` on first use.
+    instance._connectOpts = Object.freeze({ ...opts });
+    instance._neverOpened = true;
+
+    // (idle-flush / wal-cap — constraint 4) Eligibility is decided from
+    // `opts` NOW, exactly as `_openReal()` decides it — but NOT armed: there
+    // is nothing to flush on a connection that has never opened. Arming
+    // happens naturally the first time `_trackOp()`'s `finally` observes
+    // this instance idle, i.e. immediately after the first real operation
+    // completes — the same path every ordinary post-open idle period
+    // already uses, so no special-case "arm on first open" step is needed.
+    if (!opts.readonly && canonicalDb !== undefined) {
+      instance._idleFlushEnabled = true;
+      if (opts.idleFlushMs !== undefined) instance._idleFlushMs = opts.idleFlushMs;
+      if (opts.walFlushStrategy !== undefined) instance._walFlushStrategy = opts.walFlushStrategy;
+      instance._capFlushEnabled = true;
+      if (opts.walCapBytes !== undefined) instance._walCapBytes = opts.walCapBytes;
+    }
+
+    return instance;
+  }
+
+  /**
+   * (DEBT-003, lazy-connect) The one caller-visible surface `connect()`'s
+   * doc comment names as unable to "keep working" before the first real
+   * operation: `unwrap()` is synchronous and returns the LIVE driver handle,
+   * which by construction does not exist yet on a never-opened instance —
+   * there is no way to synchronously await the async open this class defers.
+   * Throws a clear, actionable error rather than returning `null`/a dead
+   * stub/the `NEVER_OPENED_DB` sentinel (any of which would fail far later,
+   * at the first real query against it, with a confusing stack). Callers
+   * that need the raw handle must perform (and await) any real operation
+   * first — `executeGet('SELECT 1')` is the cheapest — which transparently
+   * opens the connection via the same `_ensureHealthy()` path every other
+   * method uses.
+   */
   unwrap(): import('@tursodatabase/database').Database {
+    if (this._neverOpened) {
+      throw new Error(
+        '[DEBT-003] TursoAdapterImpl.unwrap() called before any operation has run — this adapter ' +
+          'is lazy-connected and has not opened a driver connection yet. Await a real operation ' +
+          "first (e.g. `await adapter.executeGet('SELECT 1')`), then call unwrap().",
+      );
+    }
     return this.db as import('@tursodatabase/database').Database;
   }
 
@@ -1924,6 +2207,22 @@ export class TursoAdapterImpl implements TursoAdapter {
 
   async close(): Promise<void> {
     if (this.closed) return;
+    // (DEBT-003, lazy-connect) An instance that was constructed via
+    // `connect()` and closed WITHOUT ever performing an operation has no
+    // driver connection, no lease, no marker, and no idle-flush timer to
+    // tear down — `this.db` still holds the `NEVER_OPENED_DB` sentinel.
+    // Every line below this point either directly calls `this.db.*` or
+    // assumes a real `_lease`/`coordPath` from a completed open; running any
+    // of it here would either throw against the sentinel or silently no-op
+    // against state that was never populated. Short-circuit before any of
+    // that — closing a never-used adapter is a legitimate, common shape
+    // (e.g. an error-handling path that connects and immediately closes)
+    // and must cost nothing.
+    if (this._neverOpened) {
+      this.closed = true;
+      this._neverOpened = false;
+      return;
+    }
     this.closed = true;
     // (idle-flush) A direct `close()` call (not the `_performIdleFlush()`
     // path, which has already nulled the timer before invoking
@@ -2332,7 +2631,12 @@ export class TursoAdapterImpl implements TursoAdapter {
         }
         return await fn();
       } finally {
-        const fresh = await TursoAdapterImpl.connect(this._connectOpts);
+        // (DEBT-003, lazy-connect) Must call `_openReal()`, not the public
+        // `connect()` — `connect()` is now the LAZY entry point and would
+        // hand back a never-opened shell instead of an actually-reopened
+        // connection, which is exactly what this `finally` needs (the
+        // caller keeps using `this` immediately after this returns).
+        const fresh = await TursoAdapterImpl._openReal(this._connectOpts);
         this.db = fresh.db;
         this._lease = fresh._lease;
         // (BUG-STOREADAPTER-COORDINATION-PATH-ASYMMETRY) Adopt the fresh instance's
@@ -2342,8 +2646,10 @@ export class TursoAdapterImpl implements TursoAdapter {
         this._canonicalDb = fresh._canonicalDb;
         this._walBaseline = fresh._walBaseline;
         this._softReadonly = fresh._softReadonly;
+        this._capabilities = fresh._capabilities;
         this._poisoned = false;
         this._released = false; // (idle-release) defense-in-depth — should already be false
+        this._neverOpened = false; // (DEBT-003) defense-in-depth — should already be false
         this.closed = false; // the fresh connection is live; close() set this true
       }
     } finally {
