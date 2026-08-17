@@ -231,8 +231,6 @@ export interface MemoryScope {
  * declined-repair contract `graph-store`'s `dropFts5ResidueBeforeRebuild`
  * already follows for the same defect class.
  */
-const CROSS_ENGINE_QUIESCENCE_PROBE_NAME = '__sox_bug017_quiescence_probe__';
-
 // Exported (not just for production callers below) so BUG-017 regression
 // coverage in db.spec.ts can drive the gate directly with a simulated live
 // peer, without needing a full Turso store + a second real process.
@@ -240,13 +238,28 @@ export async function classicEngineSessionDeclined(dbPath: string, op: string): 
   // Lazy import (module-boundary rule: store-adapter is lazy-loaded from
   // memory-core, same as every other runtime use in this file — see
   // `getFtsOpsModule` below).
-  const { deleteSchemaRowsViaBetterSqlite3 } = await getFtsOpsModule();
-  const probe = deleteSchemaRowsViaBetterSqlite3(dbPath, [CROSS_ENGINE_QUIESCENCE_PROBE_NAME]);
-  if (probe.failed !== null && probe.failed.startsWith('declined:')) {
+  //
+  // Calls `storeQuiescence` DIRECTLY. The first cut of this gate probed
+  // indirectly, through `deleteSchemaRowsViaBetterSqlite3` with a name that can
+  // never exist in `sqlite_master`, to avoid reimplementing the lease scan
+  // without editing store-adapter. That reused the right decision but paid the
+  // wrong price: when the store IS quiescent, that helper proceeds to a real
+  // WRITABLE better-sqlite3 open (`openSchemaReader(dbPath, false)`), deletes
+  // nothing, and closes. So the HEALTHY path performed an extra writable
+  // classic open of a Turso-owned store — the precise "exp9 poisoner" operation
+  // this gate exists to prevent, and open frequency is the confirmed driver of
+  // the corruption asymmetry between the backlog and memory stores.
+  //
+  // `storeQuiescence` is a lease-directory scan plus pid-liveness checks. No
+  // driver, no file handle on the store, no open at all.
+  const { storeQuiescence } = await getFtsOpsModule();
+  const q = storeQuiescence(dbPath);
+  if (!q.quiescent) {
     log.warn('store.open.cross_engine_repair_declined_live_peers', {
       db_path: dbPath,
       op,
-      detail: probe.failed,
+      live_peer_count: q.livePeers.length,
+      live_peer_pids: q.livePeers.map((p) => p.pid).join(','),
     });
     return true;
   }
