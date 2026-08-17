@@ -107,7 +107,60 @@ export interface StatsResult {
   cluster_quality: ClusterStats;
   /** (WP-5) Size of the WAL file in bytes. 0 if the file does not exist or is unavailable. */
   wal_bytes: number;
-  /** (WP-5) ISO timestamp of the last successful WAL checkpoint, or null if never checkpointed. */
+  /**
+   * (WP-5, redocumented BL-572) An OBSERVED, approximate signal that WAL
+   * frames have recently been written back into the main database file —
+   * i.e. that a checkpoint (PASSIVE or TRUNCATE) has run recently. NOT a
+   * precise "a checkpoint completed at exactly time T" event log.
+   *
+   * BL-572 root cause: DEBT-004/DEBT-005 (2026-08-17, commit e77fb615)
+   * deleted memory-core's private WAL-checkpoint timer and handed idle-flush
+   * ownership entirely to the store adapter's own internal
+   * `_armIdleFlush()`/`_checkWalCapAndFlush()` machinery
+   * (`turso-adapter.ts`), which exposes NO callback back to memory-core. The
+   * only remaining memory-core-side event this field could report was
+   * `WriteQueue.closeAllForShutdown()` — written once, at process shutdown,
+   * and NEVER during normal operation. A long-lived production process
+   * (the entire steady state) therefore reported `null` — "never
+   * checkpointed" — for its whole life, even while the adapter quietly kept
+   * the WAL bounded and healthy the whole time. That is worse than not
+   * reporting the field at all: an operator reading `null` mid-incident
+   * concludes checkpointing is broken and chases a fault that does not
+   * exist.
+   *
+   * FIX (pull/derive, chosen specifically to avoid touching the contended
+   * `turso-adapter.ts`/`sqlite-adapter.ts` files): derived from a plain
+   * `fs.stat` of the MAIN database file (not `-wal`). In WAL mode, ordinary
+   * writes land in the `-wal` file only — the main db file's mtime advances
+   * ONLY when a checkpoint (of either mode) writes frames back into it. This
+   * is exactly the filesystem-observable proxy for "a checkpoint ran
+   * recently" that requires no adapter-side instrumentation at all, and it
+   * is proven at `stats-bl572-checkpoint-honesty.spec.ts`: (a) it now
+   * reflects checkpoint activity the adapter runs entirely on its own — the
+   * production gap this field exists to close — and (b) it does NOT report
+   * a fresh value for a store that has only taken writes with no checkpoint
+   * of any kind.
+   *
+   * Combined (via `Math.max`) with `WriteQueue.lastCheckpointAtForPath()` —
+   * the explicit shutdown-flush timestamp — so a `closeAllForShutdown()`
+   * call remains reflected even in the (currently untested/theoretical) case
+   * where its own checkpoint somehow does not advance the main file's mtime
+   * on a given filesystem.
+   *
+   * DELIBERATELY NOT "no checkpointing recently" == unhealthy: the gated
+   * checkpoint strategy lets TRUNCATE legitimately DEFER while peers hold
+   * the store (see `turso-adapter.ts`'s `_walFlushStrategy` doc comment), so
+   * a healthy, busy store can hold a non-empty `-wal` file indefinitely
+   * while still reporting a recent `last_checkpoint_at` here (PASSIVE, which
+   * needs no writer-exclusive lock, keeps running via `_checkWalCapAndFlush`
+   * regardless of TRUNCATE contention). This field must never read a healthy
+   * store as unhealthy — that is the exact class of defect BL-572 fixes one
+   * level down.
+   *
+   * `null` when: the store has no local file (pure remote Turso — no
+   * `dbPath`), the main db file does not exist yet, or no shutdown flush has
+   * ever run for this path AND the main file has never been stat-able.
+   */
   last_checkpoint_at: string | null;
   /** (BL-88) Per-record embedding provenance counts. */
   embed_provenance: EmbedProvenanceStats;
@@ -338,7 +391,25 @@ export async function memoryGetStats(
   } catch {
     walBytes = 0;
   }
-  const lastCkptEpoch = WriteQueue.lastCheckpointAtForPath(dbPath);
+  // (BL-572) See StatsResult.last_checkpoint_at's doc comment for the full
+  // rationale. Two independent lower-bound signals, combined via max():
+  //   1. The explicit shutdown-flush event WriteQueue itself still records
+  //      (WriteQueue.closeAllForShutdown() → _lastCheckpointByPath).
+  //   2. The OBSERVED mtime of the main database file — advances only when
+  //      WAL frames are written back to it, i.e. on any checkpoint the
+  //      adapter runs on its own (idle flush, wal-cap flush, or its own
+  //      close() ceremony), none of which call back into memory-core.
+  const shutdownFlushEpoch = WriteQueue.lastCheckpointAtForPath(dbPath);
+  let observedFlushEpoch = 0;
+  if (dbPath) {
+    try {
+      const mainDbStat = fs.statSync(dbPath, { throwIfNoEntry: false });
+      if (mainDbStat) observedFlushEpoch = mainDbStat.mtimeMs;
+    } catch {
+      observedFlushEpoch = 0;
+    }
+  }
+  const lastCkptEpoch = Math.max(shutdownFlushEpoch, observedFlushEpoch);
   const lastCheckpointAt = lastCkptEpoch > 0 ? new Date(lastCkptEpoch).toISOString() : null;
 
   return {
