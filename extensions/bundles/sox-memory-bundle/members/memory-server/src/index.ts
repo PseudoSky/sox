@@ -116,7 +116,12 @@ import {
 // BL-404: initTelemetry is the composition-root call (see the require.main===module
 // block below) that wires this process's role:'live-service' + logSink:'file' state;
 // telemetrySelfCheck reads it back for memory_stats.
-import { initTelemetry, telemetrySelfCheck, type InitTelemetryOptions } from '@adhd/sox-telemetry';
+import {
+  initTelemetry,
+  telemetrySelfCheck,
+  resolveProcessRole,
+  type InitTelemetryOptions,
+} from '@adhd/sox-telemetry';
 import * as crypto from 'node:crypto';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
@@ -3330,9 +3335,18 @@ serverLivenessWatchdog.start(watchdogIntervalMs());
 // a literal 'test' for local debugging and forgets to revert) fails the test
 // against the SAME object the entrypoint actually uses, not a copy-pasted
 // duplicate that could silently drift out of sync.
+//
+// BL-501: `role` is resolved via `resolveProcessRole('live-service')`, not a
+// hardcoded 'live-service' literal — the literal was correct for a real
+// client-spawned MCP server but ALSO reported 'live-service' for the exact
+// same compiled entrypoint when smoke-test.mjs execs it out-of-process to
+// exercise it end-to-end (scripts/smoke-test.mjs sets SOX_TELEMETRY_HARNESS=1
+// on every child it spawns for precisely this). Genuine production spawns are
+// unaffected: absent that env signal, resolveProcessRole returns the
+// structural default unchanged.
 export const MEMORY_SERVER_TELEMETRY_INIT_OPTIONS: InitTelemetryOptions = {
   service: 'memory-server',
-  role: 'live-service',
+  role: resolveProcessRole('live-service'),
   logSink: 'file',
 };
 

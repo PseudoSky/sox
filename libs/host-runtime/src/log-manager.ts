@@ -205,7 +205,20 @@ export class LogManager {
 
   private _rotateDate(): void {
     this.close();
+    // BUG (host-runtime observability defect B, filed as a backlog item):
+    // date-triggered rotation used to close the old file and stop there —
+    // `_pruneOldFiles()` was only ever called from `_rotateSizeExceeded()`.
+    // A log that never hits the 50 MB size cap within a single day (the
+    // overwhelmingly common case for most extensions) rolls to a new
+    // `<extId>-<date>.log` every day FOREVER with zero enforcement of the
+    // documented "Max files per extId prefix: 7" policy at the top of this
+    // file — the retention config existed and was read by the size-rotation
+    // path, but was structurally unreachable from the date-rotation path,
+    // which is the one that actually fires under normal, non-bursty log
+    // volume. Pruning here closes that gap: every date rollover now enforces
+    // the same `maxFiles` bound the size-rotation path always has.
     // _openStream will be called on next stream() call.
+    this._pruneOldFiles();
   }
 
   private _rotateSizeExceeded(): void {

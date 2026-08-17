@@ -94,6 +94,14 @@ function smokeEnv() {
     // BL-173: redirect data root and db path away from the live user installation.
     SOX_ECOSYSTEM_HOME: SMOKE_DATA_ROOT,
     SOX_CONFIG_DB_PATH: SMOKE_DB_PATH,
+    // BL-501: every process this harness execs (memory-server, memory-cli, ...)
+    // is a synthetic spawn of the real compiled binary, not a genuine
+    // production/operator invocation. Without this signal those spawns report
+    // telemetry role:'live-service'/'cli' identically to a real one — see
+    // resolveProcessRole() in @adhd/sox-telemetry and docs/reporting/memory/
+    // findings/2026-08-17-store-connection-lifetime-forensics.md §1d for the
+    // cross-repo incident this class of bug caused.
+    SOX_TELEMETRY_HARNESS: '1',
   };
 }
 
