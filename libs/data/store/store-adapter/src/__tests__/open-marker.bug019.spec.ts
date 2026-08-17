@@ -265,6 +265,11 @@ tursoDescribe('BUG-019 — SPEC §T5 (a): two adapters; A closes cleanly, B surv
 
     const a = await TursoAdapterImpl.connect({ dbPath });
     const b = await TursoAdapterImpl.connect({ dbPath });
+    // (DEBT-003, lazy-connect) `connect()` no longer opens a driver or writes
+    // the per-connection marker eagerly — force both real opens before
+    // asserting on marker state.
+    await a.executeGet('SELECT 1');
+    await b.executeGet('SELECT 1');
     try {
       // Each connection holds its OWN marker — N connections, N markers.
       expect(openMarkers(dbPath)).toHaveLength(2);
@@ -305,6 +310,9 @@ tursoDescribe('BUG-019 — SPEC §T5 (b): kill -9 crash evidence survives a sibl
     const { proc: victim, ready: victimReady } = spawnHolder(dbPath);
     await victimReady;
     const server = await TursoAdapterImpl.connect({ dbPath });
+    // (DEBT-003, lazy-connect) Force the real open before checking markers —
+    // see the note on the previous `it` block.
+    await server.executeGet('SELECT 1');
     try {
       // Both sessions hold their own markers; the server sees the victim as a
       // LIVE peer (its marker pid is alive), so nothing is unclean.
@@ -331,6 +339,9 @@ tursoDescribe('BUG-019 — SPEC §T5 (b): kill -9 crash evidence survives a sibl
     // pre-flight gate fires, the dead marker is swept, and a second open finds
     // nothing to trigger on.
     const fresh = await TursoAdapterImpl.connect({ dbPath });
+    // (DEBT-003, lazy-connect) Force the real open (which runs the BL-361
+    // pre-flight this test is pinning) before asserting on it.
+    await fresh.executeGet('SELECT 1');
     expect(openMarkers(dbPath)).toHaveLength(1); // only fresh's own LIVE marker
     expect(hasUncleanShutdown(dbPath)).toBe(false); // crash evidence consumed
     expect(preflightSpy).toHaveBeenCalledTimes(1); // fired exactly once
@@ -338,6 +349,7 @@ tursoDescribe('BUG-019 — SPEC §T5 (b): kill -9 crash evidence survives a sibl
     expect(openMarkers(dbPath)).toHaveLength(0);
 
     const fresh2 = await TursoAdapterImpl.connect({ dbPath });
+    await fresh2.executeGet('SELECT 1');
     await fresh2.close();
     expect(hasUncleanShutdown(dbPath)).toBe(false); // never re-triggered
     // Airtight: the pre-flight ran EXACTLY ONCE across the whole scenario.
@@ -359,6 +371,9 @@ tursoDescribe('BUG-019 — SPEC §T5 (c): legacy marker honored once', () => {
     expect(hasUncleanShutdown(dbPath)).toBe(true);
 
     const first = await TursoAdapterImpl.connect({ dbPath });
+    // (DEBT-003, lazy-connect) Force the real open (which runs the legacy-
+    // marker consumption this test is pinning) before asserting on it.
+    await first.executeGet('SELECT 1');
     try {
       // The shim consumed it at the first unclean-detecting open: the legacy
       // file is gone (old code cleared it only at close → RED) and replaced by
@@ -371,6 +386,7 @@ tursoDescribe('BUG-019 — SPEC §T5 (c): legacy marker honored once', () => {
     }
 
     const second = await TursoAdapterImpl.connect({ dbPath });
+    await second.executeGet('SELECT 1');
     await second.close();
     expect(hasUncleanShutdown(dbPath)).toBe(false); // honored exactly once
   }, 60_000);

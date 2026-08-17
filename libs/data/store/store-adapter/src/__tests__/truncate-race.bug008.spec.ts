@@ -98,6 +98,12 @@ const openAdapters: TursoAdapterImpl[] = [];
 async function connect(dbPath: string, opts: { readonly?: boolean } = {}): Promise<TursoAdapterImpl> {
   const adapter = await TursoAdapterImpl.connect({ dbPath, ...opts });
   openAdapters.push(adapter);
+  // (DEBT-003, lazy-connect) `TursoAdapterImpl.connect()` no longer opens the
+  // mocked driver eagerly — `lastFakeDb()` below reads `mockDriverConnect`'s
+  // results, which stay empty until a real operation forces the open. Force
+  // it here (a read is safe even for `readonly` opens) so every existing
+  // close()-sequence assertion in this file observes the real fake handle.
+  await adapter.executeGet('SELECT 1');
   return adapter;
 }
 

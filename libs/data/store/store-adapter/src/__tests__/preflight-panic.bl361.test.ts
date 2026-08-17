@@ -258,6 +258,9 @@ tursoDescribe('BL-361 — panic-on-open pre-flight', () => {
   it('marker lifecycle: connect() writes ONE per-connection marker, close() removes only its own, and a read-only open touches neither (BUG-019)', async () => {
     const dbPath = tempPath('bl361-marker-lifecycle');
     const adapter = await TursoAdapterImpl.connect({ dbPath });
+    // (DEBT-003, lazy-connect) `connect()` no longer writes the marker
+    // eagerly — force the real open before checking for it.
+    await adapter.executeGet('SELECT 1');
     // The session's OWN marker exists in the lease dir — carrying a LIVE pid,
     // so it is a concurrent session, never an unclean signal. (The old shared
     // marker could not make that distinction: `hasStoreOpenMarker` answered

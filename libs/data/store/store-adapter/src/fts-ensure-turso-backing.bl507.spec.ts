@@ -148,6 +148,13 @@ tursoDescribe('BL-507 — Turso FTS backing verification in ensureFtsIndex', () 
     //    state — real turso engine throughout, no mocks.
     const readOnly = await TursoAdapterImpl.connect({ dbPath, readonly: true, allowFtsInReadonly: true });
     try {
+      // (DEBT-003, lazy-connect) `connect()` no longer opens a driver
+      // connection or runs the BL-461 orphan guard eagerly — that now
+      // happens on the first real operation. Force it here so the guard has
+      // actually run (detect-but-not-repair, per this test's whole premise)
+      // before `unwrap()` extracts the live handle; `unwrap()` also now
+      // throws on a never-opened instance, so this is required either way.
+      await readOnly.executeGet('SELECT 1');
       const raw = readOnly.unwrap();
       const writable = new (TursoAdapterImpl as unknown as new (
         db: unknown,

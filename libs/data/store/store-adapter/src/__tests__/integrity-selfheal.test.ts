@@ -787,6 +787,11 @@ tursoDescribe('BL-337 — unified repair helper on a table carrying a Tantivy in
       let adapter: StoreAdapter;
       try {
         adapter = track(await TursoAdapterImpl.connect({ dbPath }));
+        // (DEBT-003, lazy-connect) `connect()` no longer runs the open-time
+        // integrity pass eagerly — it now runs on the first real operation.
+        // `SOX_STORE_VERIFY_SKIP` must still be set when THAT actually
+        // happens, so force it here, still inside this env-var scope.
+        await adapter.executeGet('SELECT 1');
       } finally {
         if (prevSkip === undefined) delete process.env.SOX_STORE_VERIFY_SKIP;
         else process.env.SOX_STORE_VERIFY_SKIP = prevSkip;

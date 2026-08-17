@@ -219,6 +219,13 @@ tursoDescribe('idle-flush — adapter-owned WAL durability', () => {
     );
     await adapters[0]!.exec('CREATE TABLE t (id INTEGER PRIMARY KEY, v TEXT)');
     await adapters[0]!.executeRun('INSERT INTO t (v) VALUES (?)', ['shared']);
+    // (DEBT-003, lazy-connect) `connect()` no longer opens the driver or
+    // acquires a lease eagerly, and the idle-flush timer only self-arms
+    // after an adapter's first real operation — force every OTHER adapter
+    // open now (adapters[0] already opened via the exec/executeRun above) so
+    // all N genuinely hold a live lease and an armed idle-flush timer, which
+    // is the whole precondition this arm measures against.
+    await Promise.all(adapters.slice(1).map((a) => a.executeGet('SELECT 1')));
 
     // All N stay live and idle. Precondition: N live lease entries.
     expect(liveLeaseCount(dbPath)).toBe(N);

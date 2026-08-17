@@ -158,6 +158,10 @@ tursoDescribe('wal-cap — forced size-capped flush, the sustained-load backstop
     // path must not care.
     const peer = await TursoAdapterImpl.connect({ dbPath, idleFlushMs: IDLE_MS });
     await a.exec('CREATE TABLE t (id INTEGER PRIMARY KEY, v TEXT)');
+    // (DEBT-003, lazy-connect) `peer` must actually hold a live lease for the
+    // "two live connections" precondition below to mean anything — `connect()`
+    // no longer acquires one eagerly, so force `peer`'s real open here.
+    await peer.executeGet('SELECT 1');
 
     expect(liveLeaseCount(dbPath), 'precondition: two live connections').toBe(2);
 

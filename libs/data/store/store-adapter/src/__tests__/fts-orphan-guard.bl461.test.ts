@@ -536,6 +536,11 @@ tursoDescribe('BL-461 — a concurrent opener while this process holds the store
     // concurrent session, never an unclean signal.
     const holder = await TursoAdapterImpl.connect({ dbPath });
     open.push(holder);
+    // (DEBT-003, lazy-connect) `connect()` no longer writes the per-connection
+    // marker eagerly — force the real open here so the marker is genuinely
+    // on disk (a LIVE-pid marker) before the child process below opens the
+    // same store and before this assertion checks for it.
+    await holder.executeGet('SELECT 1');
     expect(openMarkers(dbPath)).toHaveLength(1);
     expect(hasUncleanShutdown(dbPath)).toBe(false);
 

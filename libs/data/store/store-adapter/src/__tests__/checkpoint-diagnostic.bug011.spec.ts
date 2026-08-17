@@ -97,6 +97,11 @@ const openAdapters: TursoAdapterImpl[] = [];
 async function connect(dbPath: string): Promise<TursoAdapterImpl> {
   const adapter = await TursoAdapterImpl.connect({ dbPath });
   openAdapters.push(adapter);
+  // (DEBT-003, lazy-connect) `TursoAdapterImpl.connect()` no longer opens the
+  // mocked driver (or captures the WAL baseline `close()` reads) eagerly —
+  // force it here so both arms' ordering (baseline captured, THEN the -wal
+  // unlink in the loss arm, THEN close()) is preserved exactly as before.
+  await adapter.executeGet('SELECT 1');
   return adapter;
 }
 

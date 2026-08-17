@@ -100,6 +100,14 @@ const openAdapters: TursoAdapterImpl[] = [];
 async function connect(dbPath: string): Promise<TursoAdapterImpl> {
   const adapter = await TursoAdapterImpl.connect({ dbPath });
   openAdapters.push(adapter);
+  // (DEBT-003, lazy-connect) `TursoAdapterImpl.connect()` no longer opens the
+  // mocked driver eagerly — the open-handshake retry loop this whole file
+  // pins now runs on the first real operation, via `_ensureHealthy()` →
+  // `_reconnect()` → `_openReal()`. Force it here so every existing
+  // `mockDriverConnect` call-count/timing/error assertion still observes the
+  // real open sequence, and a rejection propagates exactly as a rejecting
+  // `connect()` used to.
+  await adapter.executeGet('SELECT 1');
   return adapter;
 }
 
