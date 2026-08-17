@@ -16,7 +16,7 @@
  * `worker_threads.Worker`.
  */
 
-import { fork, type ChildProcess } from 'node:child_process';
+import { fork, execSync, type ChildProcess } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import { existsSync, readFileSync } from 'node:fs';
@@ -217,6 +217,8 @@ export class SharedFastembedProcessClient implements SharedFastembedClient {
   private pending = new Map<number, PendingEntry>();
   private readonly hostPath: string | undefined;
   private readonly poolGroup: string | undefined;
+  private readonly poolSize: number | undefined;
+  private readonly memberIndex: number | undefined;
 
   /**
    * @param hostPathOverride Test-only injection point (BL-410): points the
@@ -232,10 +234,23 @@ export class SharedFastembedProcessClient implements SharedFastembedClient {
    * "a genuinely unrelated fastembed host" — see `fastembedLock.ts`'s
    * `poolGroup` doc comment. `undefined` for a lone (non-pooled) client,
    * which preserves today's exact single-host lock behaviour there.
+   * @param poolSize / @param memberIndex (BUG-EMBED-POOL-SIZE-DARWIN-FREEMEM-001,
+   * observability addendum) Set by `FastembedProcessPool` so every
+   * `fastembed_process.request.*` telemetry record this client emits carries
+   * the pool's actual size and this member's index alongside `queue_depth`/
+   * `response_ms`. Diagnosing THIS incident required an agent to read source
+   * and reconstruct `resolveFastembedPoolSize()`'s arithmetic by hand,
+   * because no telemetry field ever recorded what size the pool actually
+   * resolved to at runtime — `queue_depth` alone cannot distinguish
+   * "contention on an inert 1-member pool" from "genuine over-capacity on a
+   * 4-member pool". `undefined` for a lone (non-pooled) client, which omits
+   * both fields from telemetry exactly as before this addendum.
    */
-  constructor(hostPathOverride?: string, poolGroup?: string) {
+  constructor(hostPathOverride?: string, poolGroup?: string, poolSize?: number, memberIndex?: number) {
     this.hostPath = hostPathOverride;
     this.poolGroup = poolGroup;
+    this.poolSize = poolSize;
+    this.memberIndex = memberIndex;
   }
 
   /** True once the underlying child process has been forked. */
@@ -398,6 +413,11 @@ export class SharedFastembedProcessClient implements SharedFastembedClient {
     const baseFields: Record<string, unknown> = {
       queue_depth: queueDepth,
       ...(competing ? { competing_host_pid: competing.pid } : {}),
+      // (BUG-EMBED-POOL-SIZE-DARWIN-FREEMEM-001) See the constructor's
+      // `poolSize`/`memberIndex` doc comment: makes "was this process even
+      // pooled, and at what size" a directly observable telemetry field
+      // instead of something an agent has to re-derive from source.
+      ...(this.poolSize !== undefined ? { pool_size: this.poolSize, member_index: this.memberIndex } : {}),
     };
 
     return new Promise<T>((resolve, reject) => {
@@ -625,6 +645,73 @@ const DEFAULT_PER_MEMBER_MB = 300;
 const MEMORY_SAFETY_MARGIN_MB = 1024;
 
 /**
+ * (BUG-EMBED-POOL-SIZE-DARWIN-FREEMEM-001) Estimate REAL available memory
+ * (MB), platform-aware — the input `resolveFastembedPoolSize()`'s
+ * memory-cap arithmetic below actually needs, as opposed to what
+ * `os.freemem()` alone reports.
+ *
+ * `os.freemem()` is not a usable proxy for "memory this process could
+ * actually claim" on macOS: it maps to Mach's raw "free" page count only,
+ * which deliberately EXCLUDES "inactive"/"speculative"/"purgeable" pages —
+ * pages the kernel is using as disk cache but will hand back instantly
+ * (zero swap-in cost) under real pressure. Measured via `vm_stat` on the
+ * exact box this defect was diagnosed on (32GB physical, page size 16384):
+ * `os.freemem()` reported ~299MB while `Pages inactive` ALONE was 345,579
+ * pages (~5.4GB) — the overwhelming majority of genuinely-available memory
+ * was invisible to the metric `resolveFastembedPoolSize()` used to
+ * compute `memoryCap`. Because `MEMORY_SAFETY_MARGIN_MB` (1024) routinely
+ * exceeds `os.freemem()`'s ~300MB-ish reading on macOS regardless of real
+ * load, `memoryCap` collapsed to `Math.max(1, negative) === 1` on every
+ * macOS box, unconditionally — the pool was permanently INERT (silently
+ * behaving exactly like the pre-fix single-child topology) unless an
+ * operator manually overrode `SOX_EMBED_POOL_SIZE`. `hol-pool-sizing.spec.ts`
+ * even self-documents "this suite was itself first run on a box with only
+ * ~128MB free" — the sizing design was validated against the very macOS
+ * quirk that made it universally wrong, not a genuinely memory-constrained
+ * machine.
+ *
+ * Fix: compute "available" as free + inactive + speculative + purgeable
+ * pages (the standard macOS "reclaimable without swapping" heuristic —
+ * matches what `htop`-family tools approximate; NOT Apple's undocumented
+ * memory-pressure internals, which have no public API). On Linux,
+ * `/proc/meminfo`'s `MemAvailable` is already the kernel's own equivalent
+ * estimate and is used directly. Any other platform, or any parse/exec
+ * failure, falls back to `os.freemem()` unchanged — this must never throw
+ * or block pool sizing on a shell-out failing; it runs once per process
+ * (at `getSharedFastembedProcess()` construction), never per-request.
+ */
+export function estimateAvailableMemMb(): number {
+  try {
+    if (process.platform === 'darwin') {
+      const out = execSync('vm_stat', { encoding: 'utf8', timeout: 2000 });
+      const pageSizeMatch = /page size of (\d+) bytes/.exec(out);
+      const pageSize = pageSizeMatch ? Number(pageSizeMatch[1]) : 4096;
+      const pages = (label: string): number => {
+        const m = new RegExp(`${label}:\\s+(\\d+)\\.`).exec(out);
+        return m ? Number(m[1]) : 0;
+      };
+      const availablePages =
+        pages('Pages free') + pages('Pages inactive') + pages('Pages speculative') + pages('Pages purgeable');
+      const availableMb = (availablePages * pageSize) / (1024 * 1024);
+      if (Number.isFinite(availableMb) && availableMb > 0) return availableMb;
+    } else if (process.platform === 'linux') {
+      const meminfo = readFileSync('/proc/meminfo', 'utf8');
+      const m = /MemAvailable:\s+(\d+)\s+kB/.exec(meminfo);
+      if (m) {
+        const availableMb = Number(m[1]) / 1024;
+        if (Number.isFinite(availableMb) && availableMb > 0) return availableMb;
+      }
+    }
+  } catch (err) {
+    log.debug('embedding_provider.fastembed.pool_sizing.mem_estimate_failed', {
+      error: err instanceof Error ? err.message : String(err),
+      platform: process.platform,
+    });
+  }
+  return os.freemem() / (1024 * 1024);
+}
+
+/**
  * Number of independent fastembed child processes in the pool.
  *
  * `SOX_EMBED_POOL_SIZE`, when set, is honored EXACTLY — no memory clamp — on
@@ -632,22 +719,30 @@ const MEMORY_SAFETY_MARGIN_MB = 1024;
  * model's real footprint and the box's headroom (`footprint`/`vmmap`/`top`).
  * `SOX_EMBED_POOL_SIZE=1` recovers the exact pre-fix single-child topology.
  *
- * Otherwise, auto-sized from BOTH current free memory (`os.freemem()` against
- * `DEFAULT_PER_MEMBER_MB`, less `MEMORY_SAFETY_MARGIN_MB` headroom — override
- * the per-member budget via `SOX_EMBED_POOL_PER_CHILD_MB` for a non-default
- * model) AND CPU count (half the logical CPUs, cap 4 — fastembed inference is
- * CPU/ANE-bound per request, not embarrassingly parallel across all cores),
- * taking the SMALLER of the two so a memory-constrained box never gets
- * sized past what's actually free. See the module doc comment above for the
+ * Otherwise, auto-sized from BOTH real available memory
+ * (`estimateAvailableMemMb()` — see its doc comment for why this is NOT
+ * simply `os.freemem()`, and BUG-EMBED-POOL-SIZE-DARWIN-FREEMEM-001 for the
+ * incident this fixes — against `DEFAULT_PER_MEMBER_MB`, less
+ * `MEMORY_SAFETY_MARGIN_MB` headroom — override the per-member budget via
+ * `SOX_EMBED_POOL_PER_CHILD_MB` for a non-default model) AND CPU count (half
+ * the logical CPUs, cap 4 — fastembed inference is CPU/ANE-bound per
+ * request, not embarrassingly parallel across all cores), taking the
+ * SMALLER of the two so a memory-constrained box never gets sized past
+ * what's actually free. See the module doc comment above for the
  * measurement (footprint/vmmap on 1 vs 4 real children) that justifies this.
+ *
+ * @param getAvailableMemMb Test-only injection point — production always
+ * uses the default `estimateAvailableMemMb`. Lets tests exercise the sizing
+ * arithmetic against deterministic MB values instead of the real, inherently
+ * machine/moment-dependent OS memory state.
  */
-export function resolveFastembedPoolSize(): number {
+export function resolveFastembedPoolSize(getAvailableMemMb: () => number = estimateAvailableMemMb): number {
   const raw = Number(process.env['SOX_EMBED_POOL_SIZE']);
   if (Number.isFinite(raw) && raw >= 1) return Math.floor(raw);
 
   const perMemberMb = Number(process.env['SOX_EMBED_POOL_PER_CHILD_MB']);
   const memberBudgetMb = Number.isFinite(perMemberMb) && perMemberMb > 0 ? perMemberMb : DEFAULT_PER_MEMBER_MB;
-  const freeMb = os.freemem() / (1024 * 1024);
+  const freeMb = getAvailableMemMb();
   const memoryCap = Math.max(1, Math.floor((freeMb - MEMORY_SAFETY_MARGIN_MB) / memberBudgetMb));
 
   const cpus = os.cpus().length || 1;
@@ -713,7 +808,7 @@ export class FastembedProcessPool implements SharedFastembedClient {
     const poolGroup = `pool-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2)}`;
     this.members = Array.from(
       { length: size },
-      () => new SharedFastembedProcessClient(hostPathOverride, poolGroup),
+      (_, i) => new SharedFastembedProcessClient(hostPathOverride, poolGroup, size, i),
     );
     this.inFlight = new Array(size).fill(0) as number[];
     this.admissionLimit = admissionLimit;
