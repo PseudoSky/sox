@@ -100,6 +100,72 @@ const OPEN_RETRY_BACKOFF_STEP_MS = 100;
  *  `opts.idleFlushMs` (tests only; no production caller sets this). */
 const DEFAULT_IDLE_FLUSH_MS = 2000;
 
+/**
+ * (wal-cap, 2026-08-18 — owner directive: "constraints around the maximum
+ * size / frames of the wal before it interjects between future writes")
+ *
+ * Idle-triggering alone has no answer for SUSTAINED write load: a queue that
+ * never drains cancels-and-rearms the idle timer forever, so the flush never
+ * runs — the WAL grows without bound for exactly the traffic pattern that
+ * grows it fastest. This is a second, independent trigger that FORCES a
+ * flush by checking WAL size after every writable operation
+ * (`executeRun`/`exec`/`transaction`, see `_trackOp(fn, true)`), not on a
+ * timer — so it cannot be starved by continuous work the way a debounced
+ * timer can.
+ *
+ * BYTES, not frames: `fs.statSync(dbPath + '-wal').size` is a single
+ * syscall already used by `WriteQueue.walBytes()`
+ * (libs/memory-core/src/write-queue.ts) — checking frame count would need an
+ * extra pragma round-trip on every write, which defeats the point of a cheap
+ * per-write check.
+ *
+ * Threshold measured, not guessed, against the reference points from the
+ * live incident this traces to:
+ *  - pathological live WAL reached 539,752 bytes before the fix that
+ *    prompted this whole effort.
+ *  - a clean-shutdown stamp frame is ~4,152 bytes (the steady-state noise
+ *    floor — must never trip the cap on its own).
+ *  - observed steady-state after a truncation is 0 bytes.
+ *
+ * 262,144 bytes (256 KiB) sits at ~63x the noise floor (never fires on
+ * routine stamp-only activity) and at ~49% of the pathological figure —
+ * bounding worst-case growth to roughly HALF of what was observed live, with
+ * headroom: because the check runs after EVERY write (not periodically),
+ * the actual worst-case overshoot past the cap before the backstop catches
+ * it is at most one write's own frames, not another whole cap-multiple.
+ *
+ * PASSIVE, not TRUNCATE, and UNGATED (no `storeQuiescence()` check) —
+ * deliberately independent of `_walFlushStrategy`, which governs the IDLE
+ * path only. Under sustained load, peers are BY DEFINITION active, so a
+ * gated TRUNCATE cap would defer exactly when most needed — the same
+ * failure mode the idle path already had to solve, but worse here because
+ * there is no quiet period to eventually catch up in. PASSIVE sidesteps the
+ * question entirely: it copies WAL frames into the main db file without
+ * requiring the writer-exclusive lock TRUNCATE needs (already the basis for
+ * `close()`'s own unconditional-PASSIVE-then-gated-TRUNCATE pairing, see
+ * `close()` below — this generalizes that proven shape into the write path
+ * rather than inventing a new one). Verified empirically (not just from
+ * docs), 2026-08-18: a script issuing `PRAGMA wal_checkpoint(PASSIVE)` from
+ * a second connection while ~300 sequential inserts ran on a first,
+ * interleaved every 50/100 writes, returned `busy:0` and completed in 0ms
+ * every time, with the on-disk `-wal` size measurably bounded/reset rather
+ * than growing monotonically (243,112 -> 486,192 -> 473,832 -> 238,992 bytes
+ * across the run) — PASSIVE achieves real durability+bounding without
+ * exclusivity under multiprocess_wal in this topology.
+ *
+ * The native `PRAGMA wal_autocheckpoint` was checked FIRST, per the
+ * directive to prefer configuring an in-engine backstop over hand-rolling
+ * one — and rejected on direct measurement, not assumption: the current
+ * `@tursodatabase/database` driver does not honor it at all. A probe script
+ * set `wal_autocheckpoint = 10` (10 pages, an aggressive threshold) and
+ * inserted 500 rows; the WAL grew unbounded to 2,401,992 bytes with zero
+ * auto-checkpoints ever firing, and reading the pragma back after setting it
+ * returned `[]` (unset/unrecognized) rather than echoing the value. There is
+ * no native backstop available to configure; this hand-rolled one is
+ * required.
+ */
+const DEFAULT_WAL_CAP_BYTES = 262_144;
+
 class TursoTransactionImpl implements AdapterTransaction {
   private db: { run: Function; get: Function; all: Function; exec: Function };
 
@@ -221,14 +287,37 @@ export class TursoAdapterImpl implements TursoAdapter {
    * - `'ungated'`: issues `PRAGMA wal_checkpoint(TRUNCATE)` directly, with
    *   NO quiescence check and WITHOUT releasing the connection — the exact
    *   shape of `WriteQueue.walCheckpoint()` in memory-core, safe at
-   *   concurrency 1, of UNKNOWN safety at higher concurrency pending the
-   *   owner's 20-concurrent-writer repro (`wal-truncate-safety-experiment`).
+   *   concurrency 1, of UNKNOWN safety at higher concurrency.
    *
-   * BLOCKED: do not flip the default, and do not let any caller select
-   * `'ungated'` in production config, until that experiment reports back.
-   * No production caller sets `opts.walFlushStrategy` today — the field
-   * exists so the decision is a single flag, not a rewrite, once it is
-   * authorised.
+   * (2026-08-18 update) `wal-truncate-safety-experiment` reported back:
+   * 1,180 concurrent-writer trials across 5 configs on 0.7.1/macOS arm64
+   * (plain N=20; barrier-synced with an artificially-aged `-tshm` matching
+   * #8348's documented deterministic precondition; the same plus
+   * overflow-triggering payloads at N=8 matching the issue's own repro;
+   * natural-spawn+overflow at N=20) produced ZERO SIGABRT and zero integrity
+   * damage — but could NOT reproduce #8348's own 3/20 baseline at all, so
+   * the configs that would have actually exercised the race never ran.
+   * #8348's own deterministic repro runs through Turso's internal Rust
+   * `multiprocess_tests` harness — a JS-binding-level harness structurally
+   * cannot reach that timing granularity. This is "the harness cannot see
+   * the failure," NOT "the failure is absent," and must not be read either
+   * way. **GATED IS THEREFORE THE PERMANENT DEFAULT, not a placeholder
+   * pending a result** — absent a reproduction, the conservative behavior
+   * stays until upstream fixes the assert. No caller may select `'ungated'`
+   * outside a test.
+   *
+   * This is NOT a compromise, and NOT "safe but never fires" traded against
+   * "fires but unsafe" — the crux of this whole feature is that these are
+   * not the only two options. The gate itself was never wrong; its
+   * precondition (no concurrent connection holding the store) simply went
+   * unsatisfied for 4 days straight in production because `serve` processes
+   * held their lease for their entire multi-hour/day session. The idle-flush
+   * feature's OTHER half — lazy connect + auto-release (`releaseIdleConnection()`,
+   * `_armIdleFlush()`) — MANUFACTURES that precondition: an idle adapter now
+   * voluntarily drops its lease, so quiescence becomes reachable, and the
+   * SAME gated TRUNCATE that "never fired" fires exactly as designed, with
+   * no change whatsoever to its safety posture. We are not choosing between
+   * two flawed strategies; we are making the already-safe one able to run.
    */
   private _walFlushStrategy: 'gated' | 'ungated' = 'gated';
 
@@ -312,6 +401,89 @@ export class TursoAdapterImpl implements TursoAdapter {
     }
   }
 
+  /** (wal-cap) True when this instance is eligible to run the forced
+   *  size-capped flush — same eligibility as `_idleFlushEnabled` (writable,
+   *  local-file connections only), set alongside it at the end of
+   *  `connect()`. Independent field so the two triggers can be reasoned
+   *  about, tested, and (in principle) disabled separately even though
+   *  today they always travel together. */
+  private _capFlushEnabled = false;
+
+  /** (wal-cap) Byte threshold — see `DEFAULT_WAL_CAP_BYTES` for the
+   *  measurement behind the default. Overridable per-connect via
+   *  `opts.walCapBytes` (tests only; no production caller sets this). */
+  private _walCapBytes: number = DEFAULT_WAL_CAP_BYTES;
+
+  /**
+   * (wal-cap) Runs synchronously INSIDE the write path — called from
+   * `_trackOp(fn, true)` after a writable operation succeeds, before that
+   * operation's caller gets control back. This is what makes it an actual
+   * backstop rather than a second debounced timer with the same starvation
+   * flaw as the idle path: under sustained writes, this check runs after
+   * EVERY one of them, so it cannot be cancelled/starved by continuous
+   * traffic the way `_armIdleFlush()`'s timer can. The cost is real and
+   * intentional — the write that trips the cap pays the PASSIVE
+   * checkpoint's latency inline (measured ~0ms per checkpoint in the
+   * sequential-write probe this threshold was derived from; see
+   * `DEFAULT_WAL_CAP_BYTES`'s doc comment).
+   *
+   * PASSIVE, unconditionally — no `storeQuiescence()` gate, independent of
+   * `_walFlushStrategy` (which governs the idle path only). See
+   * `DEFAULT_WAL_CAP_BYTES` for why: PASSIVE does not need TRUNCATE's
+   * writer-exclusive lock, so it stays safe exactly when peers are most
+   * likely to be active — the opposite of when a gated TRUNCATE would work.
+   *
+   * Never throws — a failed forced-flush must not fail the write that
+   * already succeeded. Swallows and logs internally, same posture as
+   * `_performIdleFlush()`.
+   */
+  private async _checkWalCapAndFlush(): Promise<void> {
+    if (!this._capFlushEnabled) return;
+    const dbPath = this.coordPath;
+    if (dbPath === undefined) return;
+    let size: number;
+    try {
+      size = statSync(dbPath + '-wal').size;
+    } catch {
+      // No -wal file yet (nothing written since the last full checkpoint),
+      // or a transient stat race with a concurrent checkpoint/truncate —
+      // either way there is nothing to cap right now.
+      return;
+    }
+    if (size < this._walCapBytes) return;
+    try {
+      const result = await this.executeAll<{ busy?: number; log?: number; checkpointed?: number }>(
+        'PRAGMA wal_checkpoint(PASSIVE)',
+      );
+      const row = result.rows[0];
+      if (row?.busy === 1) {
+        // Genuinely unusual for PASSIVE (see doc comment — it does not need
+        // the writer-exclusive lock), but PASSIVE can still degrade to busy
+        // if even a passive checkpoint attempt collides with the engine's
+        // own internal checkpoint lock. Durable either way — frames stay in
+        // the WAL and the NEXT write's cap check retries immediately.
+        log.warn('store_adapter.turso.wal_cap_flush_busy', {
+          db_path: dbPath,
+          wal_bytes_at_trip: size,
+          cap_bytes: this._walCapBytes,
+        });
+      } else {
+        log.debug('store_adapter.turso.wal_cap_flush', {
+          db_path: dbPath,
+          wal_bytes_at_trip: size,
+          cap_bytes: this._walCapBytes,
+          frames_checkpointed: row?.checkpointed ?? null,
+        });
+      }
+    } catch (err) {
+      log.error('store_adapter.turso.wal_cap_flush_failed', {
+        db_path: dbPath,
+        wal_bytes_at_trip: size,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
+
   /** (idle-release) Wraps every method that touches `this.db` directly:
    *  increments `_inFlightOps` before `_ensureHealthy()` runs (so a
    *  reconnect itself also counts as "busy"), decrements in `finally`
@@ -321,13 +493,22 @@ export class TursoAdapterImpl implements TursoAdapter {
    *  (idle-flush) Also owns the flush timer's cancel/rearm: new work always
    *  cancels a pending flush FIRST (before `_ensureHealthy()` — a reconnect
    *  triggered by this same op must not race a flush firing underneath it),
-   *  and a completion that leaves the connection idle rearms it. */
-  private async _trackOp<T>(fn: () => Promise<T>): Promise<T> {
+   *  and a completion that leaves the connection idle rearms it.
+   *
+   *  (wal-cap) `isWrite` (default `false`) additionally runs the forced
+   *  size-capped flush check AFTER `fn()` succeeds, still inside the tracked
+   *  window (`_inFlightOps` stays non-zero) — so the idle-flush timer cannot
+   *  arm mid-check, and the two triggers are structurally unable to race
+   *  each other: the cap check only ever runs while `_inFlightOps > 0`, the
+   *  idle flush only ever fires once it observes `_inFlightOps === 0`. */
+  private async _trackOp<T>(fn: () => Promise<T>, isWrite = false): Promise<T> {
     this._cancelIdleFlush();
     this._inFlightOps++;
     try {
       await this._ensureHealthy();
-      return await fn();
+      const result = await fn();
+      if (isWrite) await this._checkWalCapAndFlush();
+      return result;
     } finally {
       this._inFlightOps--;
       if (this._inFlightOps === 0) this._armIdleFlush();
@@ -651,12 +832,23 @@ export class TursoAdapterImpl implements TursoAdapter {
      */
     idleFlushMs?: number;
     /**
-     * (idle-flush) Select the gated-vs-ungated strategy — see
-     * `_walFlushStrategy`'s doc comment for the full decision. Default
-     * `'gated'`. BLOCKED: no caller may pass `'ungated'` outside a test
-     * until `wal-truncate-safety-experiment` reports its result.
+     * (idle-flush) Select the gated-vs-ungated strategy for the IDLE path —
+     * see `_walFlushStrategy`'s doc comment for the full decision. Default
+     * `'gated'`, now PERMANENT (2026-08-18): `wal-truncate-safety-experiment`
+     * came back INCONCLUSIVE (could not reproduce the #8348 baseline at all
+     * via the JS binding, so the 5-config/1,180-trial sweep's clean result
+     * cannot be read either way) — this is not a placeholder pending a
+     * result, it is the settled answer. No caller may pass `'ungated'`
+     * outside a test.
      */
     walFlushStrategy?: 'gated' | 'ungated';
+    /**
+     * (wal-cap, TEST-ONLY) Override the forced-flush byte threshold (default
+     * `DEFAULT_WAL_CAP_BYTES` = 262,144 / 256 KiB). No production caller
+     * sets this — it exists so tests can trip the cap without writing
+     * hundreds of KB of real rows.
+     */
+    walCapBytes?: number;
   }): Promise<TursoAdapterImpl> {
     // Dynamic import so @tursodatabase/database is only loaded when used
     let tursoModule: any;
@@ -1322,6 +1514,15 @@ export class TursoAdapterImpl implements TursoAdapter {
         if (opts.idleFlushMs !== undefined) instance._idleFlushMs = opts.idleFlushMs;
         if (opts.walFlushStrategy !== undefined) instance._walFlushStrategy = opts.walFlushStrategy;
         instance._armIdleFlush();
+
+        // (wal-cap) Same eligibility as the idle flush, same reasoning —
+        // writable local-file connections only. Unlike the idle flush this
+        // needs no "arm at connect time" step: it is checked synchronously
+        // inside `_trackOp(fn, true)` on every writable operation, so it is
+        // live the instant the first write happens; nothing to schedule
+        // ahead of time.
+        instance._capFlushEnabled = true;
+        if (opts.walCapBytes !== undefined) instance._walCapBytes = opts.walCapBytes;
       }
 
       return instance;
@@ -1450,7 +1651,7 @@ export class TursoAdapterImpl implements TursoAdapter {
         this._markIfFatal(err);
         throw err;
       }
-    });
+    }, true);
   }
 
   /**
@@ -1478,7 +1679,7 @@ export class TursoAdapterImpl implements TursoAdapter {
         this._markIfFatal(err);
         throw err;
       }
-    });
+    }, true);
   }
 
   /** (SPEC-CONN-RECYCLE) Wired through `_trackOp` (`_ensureHealthy`/
@@ -1527,7 +1728,7 @@ export class TursoAdapterImpl implements TursoAdapter {
     // non-zero for the entire BEGIN..COMMIT/ROLLBACK window (including the
     // caller's `fn`), or `releaseIdleConnection()` could tear the connection
     // down between two statements of an in-progress transaction.
-    return this._trackOp(() => this._withTxLock(() => this._runTransaction(fn, opts)));
+    return this._trackOp(() => this._withTxLock(() => this._runTransaction(fn, opts)), true);
   }
 
   private async _runTransaction<T>(
