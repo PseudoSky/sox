@@ -318,6 +318,81 @@ export interface AutoBackupResult {
   size: number;
   /** True when the backup was skipped (disabled, no changes, or error). */
   skipped: boolean;
+  /**
+   * (`BackupConfig.retentionCount` enforcement) Absolute paths of rotated
+   * backups deleted by this call's post-backup prune, oldest-first. Empty
+   * when the backup was skipped, pruning failed (best-effort — never fatal),
+   * or the count floor was not yet exceeded.
+   */
+  pruned: string[];
+}
+
+export interface AutoBackupOptions extends BackupStoreOptions {
+  /**
+   * Override `resolveBackupConfig().retentionCount` for this call. Test-only
+   * seam (D3-legal numeric tuning, ADR-0013) — production callers should let
+   * this resolve from typed config.
+   */
+  retentionCount?: number;
+}
+
+// ── Rotated-backup retention (`BackupConfig.retentionCount` enforcement) ────
+
+/**
+ * Anchored on the exact `memory-<ISO date/time, dashed>.db` shape `autoBackup`
+ * generates (see `backupName` below) — never a bare `.db` substring match, so
+ * an unrelated file dropped into the backup dir by a human is never swept.
+ * The `\.\d{3}\.db$` suffix is the millisecond component that guarantees
+ * lexicographic sort order equals chronological order.
+ */
+const ROTATED_BACKUP_RE = /^memory-\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}\.\d{3}\.db$/;
+
+/**
+ * Enforce `BackupConfig.retentionCount`: keep the `retentionCount` most
+ * recent rotated backups in `backupDir`, delete the rest.
+ *
+ * Idiom matched from `sox-telemetry`'s `sink.ts:_pruneOldFiles()` (ADR-0014
+ * Finding 6) — anchored regex, lexicographic sort (ISO timestamps sort
+ * chronologically), count-cap shift-and-unlink loop — invoked synchronously
+ * inline right after a new backup is created, not on a schedule.
+ *
+ * Best-effort and never throws: a single file that fails to delete (already
+ * removed, permission error) is logged and skipped; the loop continues so one
+ * bad entry cannot block reclaiming the rest. Returns the list of paths
+ * actually deleted (oldest-first) so callers can report/verify what happened.
+ */
+export function pruneRotatedBackups(
+  backupDir: string,
+  retentionCount: number,
+  log: (...args: unknown[]) => void = () => undefined,
+): string[] {
+  const deleted: string[] = [];
+  if (!Number.isFinite(retentionCount) || retentionCount < 0) return deleted;
+  let files: string[];
+  try {
+    files = fs
+      .readdirSync(backupDir)
+      .filter((f) => ROTATED_BACKUP_RE.test(f))
+      .sort(); // ISO-timestamped names sort lexicographically == chronologically
+  } catch (err) {
+    log(`[auto-backup] prune: cannot read backup dir ${backupDir}: ${err}`);
+    return deleted;
+  }
+  while (files.length > retentionCount) {
+    const oldestName = files.shift();
+    if (!oldestName) break;
+    const oldestPath = path.join(backupDir, oldestName);
+    try {
+      fs.unlinkSync(oldestPath);
+      deleted.push(oldestPath);
+    } catch (err) {
+      // Best-effort: already removed (ENOENT) or transient fs error. The next
+      // prune run will retry naturally since the stale entry stays in the
+      // directory listing; never fatal to the backup that just succeeded.
+      log(`[auto-backup] prune: failed to delete ${oldestPath}: ${err}`);
+    }
+  }
+  return deleted;
 }
 
 /**
@@ -343,11 +418,12 @@ export interface AutoBackupResult {
  * instead.
  *
  * @param dbPath  Path to the source DB. Defaults to `~/.memory/memory.db`.
- * @param opts    Optional BackupStoreOptions (e.g. `log`, `skipIntegrityCheck`).
+ * @param opts    Optional AutoBackupOptions (e.g. `log`, `skipIntegrityCheck`,
+ *                test-only `retentionCount` override).
  */
 export async function autoBackup(
   dbPath?: string,
-  opts?: BackupStoreOptions,
+  opts?: AutoBackupOptions,
 ): Promise<AutoBackupResult> {
   const log = opts?.log ?? (() => undefined);
 
@@ -357,13 +433,13 @@ export async function autoBackup(
   // 2. Source must exist.
   if (!fs.existsSync(resolvedSrc)) {
     log(`[auto-backup] source not found: ${resolvedSrc}`);
-    return { path: '', size: 0, skipped: true };
+    return { path: '', size: 0, skipped: true, pruned: [] };
   }
 
   // 3. Allowlist guard.
   if (!isPathInMemoryAllowlist(resolvedSrc)) {
     log(`[auto-backup] source outside ~/.memory/** allowlist: ${resolvedSrc}`);
-    return { path: '', size: 0, skipped: true };
+    return { path: '', size: 0, skipped: true, pruned: [] };
   }
 
   // 4. Resolve backup directory through the typed config (ADR-0013 D2/D5).
@@ -374,7 +450,7 @@ export async function autoBackup(
     fs.mkdirSync(backupDir, { recursive: true });
   } catch (err) {
     log(`[auto-backup] cannot create backup directory ${backupDir}: ${err}`);
-    return { path: '', size: 0, skipped: true };
+    return { path: '', size: 0, skipped: true, pruned: [] };
   }
 
   // 6. Idempotency: compare source mtime against the last-backup marker.
@@ -383,7 +459,7 @@ export async function autoBackup(
     srcStat = fs.statSync(resolvedSrc);
   } catch (err) {
     log(`[auto-backup] cannot stat source: ${err}`);
-    return { path: '', size: 0, skipped: true };
+    return { path: '', size: 0, skipped: true, pruned: [] };
   }
   const currentMtime = srcStat.mtimeMs;
 
@@ -400,7 +476,7 @@ export async function autoBackup(
 
   if (lastMtime > 0 && currentMtime <= lastMtime) {
     log('[auto-backup] source unchanged since last backup — skipping');
-    return { path: '', size: 0, skipped: true };
+    return { path: '', size: 0, skipped: true, pruned: [] };
   }
 
   // 8. Generate timestamped filename with millisecond precision so that
@@ -416,7 +492,7 @@ export async function autoBackup(
 
   if (isBackupStoreError(result)) {
     log(`[auto-backup] backupStore failed: ${result.message}`);
-    return { path: '', size: 0, skipped: true };
+    return { path: '', size: 0, skipped: true, pruned: [] };
   }
 
   // 10. Update idempotency marker (non-fatal).
@@ -430,6 +506,16 @@ export async function autoBackup(
     size = fs.statSync(destPath).size;
   } catch { /* non-fatal */ }
 
-  log(`[auto-backup] completed: ${destPath} (${size} bytes)`);
-  return { path: destPath, size, skipped: false };
+  // 12. Enforce BackupConfig.retentionCount — prune rotated backups beyond
+  //     the configured count floor now that the new one is safely on disk.
+  //     Runs AFTER the new backup is written (never before — pruning must
+  //     never race a not-yet-durable backup out of existence) and is
+  //     best-effort: pruneRotatedBackups() never throws, so a prune failure
+  //     cannot turn a successful backup into a reported failure.
+  const retentionCount = opts?.retentionCount ?? resolveBackupConfig().retentionCount;
+  const pruned = pruneRotatedBackups(backupDir, retentionCount, log);
+
+  log(`[auto-backup] completed: ${destPath} (${size} bytes)` +
+    (pruned.length > 0 ? `; pruned ${pruned.length} rotated backup(s)` : ''));
+  return { path: destPath, size, skipped: false, pruned };
 }

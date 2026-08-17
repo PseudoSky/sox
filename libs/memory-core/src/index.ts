@@ -390,8 +390,15 @@ export {
   isBackupStoreError,
   isPathInMemoryAllowlist,
   memoryAllowlistRoot,
+  pruneRotatedBackups,
 } from './backup.js';
-export type { BackupStoreOptions, BackupStoreResult, BackupStoreError, AutoBackupResult } from './backup.js';
+export type {
+  BackupStoreOptions,
+  BackupStoreResult,
+  BackupStoreError,
+  AutoBackupResult,
+  AutoBackupOptions,
+} from './backup.js';
 
 // ── Canonical ingestion primitives (S11 / BL-165 — re-exported from @adhd/sox-ingest) ─
 // Consumers (e.g. memory-server) that need chunking or hashing should import these

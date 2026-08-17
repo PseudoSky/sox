@@ -39,6 +39,7 @@ import {
   backupStore,
   isBackupStoreError,
   isPathInMemoryAllowlist,
+  pruneRotatedBackups,
 } from './backup.js';
 import { _resetEmbedSingleton } from './embed.js';
 
@@ -704,5 +705,118 @@ describe('autoBackup', () => {
     const result = await autoBackup('/nonexistent/path/db.db', { log: () => undefined });
     expect(result.skipped).toBe(true);
     expect(result.path).toBe('');
+  });
+
+  // ── BackupConfig.retentionCount enforcement (task #16, finding 5) ─────────
+  //
+  // Pre-fix, `retentionCount` (config.ts, default 24) was a typed, documented
+  // field that nothing ever read — `rg -n "prune|readdirSync|unlinkSync"
+  // backup.ts` found only single-file cleanup on FAILED backup attempts, never
+  // retention enforcement of successful ones (ADR-0014 Finding 7). This block
+  // is the RED->GREEN proof that rotated backups are now bounded.
+
+  it('retentionCount=2: a 5th successful backup leaves exactly 2 rotated files on disk, the 3 oldest pruned', async () => {
+    let lastResult: Awaited<ReturnType<typeof autoBackup>> | undefined;
+    for (let i = 0; i < 5; i++) {
+      lastResult = await autoBackup(dbPath, { log: () => undefined, retentionCount: 2 });
+      expect(lastResult.skipped).toBe(false);
+      // Force the source's mtime forward so the next iteration's idempotency
+      // check doesn't skip it (mirrors the existing "creates a new backup
+      // when source has changed" test's technique).
+      const content = fs.readFileSync(dbPath);
+      fs.writeFileSync(dbPath, content);
+    }
+
+    const files = fs.readdirSync(backupDir).filter((f) => /^memory-.*\.db$/.test(f));
+    expect(files).toHaveLength(2);
+    // The survivor set must include the just-created (newest) backup — never
+    // itself pruned out in favor of something older.
+    expect(files).toContain(path.basename(lastResult!.path));
+    // Across the whole run, exactly 3 of the 5 created backups must have
+    // been deleted (5 created - 2 kept = 3 pruned, matching retentionCount=2).
+    expect(5 - files.length).toBe(3);
+  });
+
+  it('retentionCount=0 is honored literally (keep zero) and reported, not a silent crash/no-op', async () => {
+    // A `0` config value must not fall through `?? default` to 24 (the
+    // `??` operator only substitutes on null/undefined, never on 0 — this
+    // pins that contract) and must not throw or negative-index.
+    const first = await autoBackup(dbPath, { log: () => undefined, retentionCount: 0 });
+    expect(first.skipped).toBe(false);
+    // The backup that was just created is itself the one entry over a
+    // zero-count floor, so it is pruned immediately after being verified —
+    // reported in `pruned`, never silently vanished.
+    expect(first.pruned).toEqual([first.path]);
+    expect(fs.existsSync(first.path)).toBe(false);
+  });
+
+  it('unrelated files in the backup dir are never touched by retention pruning', async () => {
+    fs.writeFileSync(path.join(backupDir, 'not-a-rotated-backup.txt'), 'keep me');
+    fs.writeFileSync(path.join(backupDir, 'memory-not-a-real-timestamp.db'), 'keep me too');
+
+    for (let i = 0; i < 3; i++) {
+      await autoBackup(dbPath, { log: () => undefined, retentionCount: 1 });
+      const content = fs.readFileSync(dbPath);
+      fs.writeFileSync(dbPath, content);
+    }
+
+    expect(fs.existsSync(path.join(backupDir, 'not-a-rotated-backup.txt'))).toBe(true);
+    expect(fs.existsSync(path.join(backupDir, 'memory-not-a-real-timestamp.db'))).toBe(true);
+  });
+});
+
+describe('pruneRotatedBackups', () => {
+  let dir: string;
+
+  beforeEach(() => {
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), 'sox-prune-test-'));
+    tmpDirs.push(dir);
+  });
+
+  function touchBackup(iso: string): void {
+    const name = `memory-${iso}.db`;
+    fs.writeFileSync(path.join(dir, name), 'x');
+  }
+
+  it('keeps the N most recent, deletes the rest, oldest-first', () => {
+    touchBackup('2026-08-01T00-00-00.000');
+    touchBackup('2026-08-02T00-00-00.000');
+    touchBackup('2026-08-03T00-00-00.000');
+    touchBackup('2026-08-04T00-00-00.000');
+
+    const deleted = pruneRotatedBackups(dir, 2);
+
+    expect(deleted).toEqual([
+      path.join(dir, 'memory-2026-08-01T00-00-00.000.db'),
+      path.join(dir, 'memory-2026-08-02T00-00-00.000.db'),
+    ]);
+    const remaining = fs.readdirSync(dir).sort();
+    expect(remaining).toEqual([
+      'memory-2026-08-03T00-00-00.000.db',
+      'memory-2026-08-04T00-00-00.000.db',
+    ]);
+  });
+
+  it('does nothing when the count floor is not exceeded', () => {
+    touchBackup('2026-08-01T00-00-00.000');
+    touchBackup('2026-08-02T00-00-00.000');
+    const deleted = pruneRotatedBackups(dir, 5);
+    expect(deleted).toEqual([]);
+    expect(fs.readdirSync(dir)).toHaveLength(2);
+  });
+
+  it('ignores files that do not match the anchored rotated-backup name shape', () => {
+    touchBackup('2026-08-01T00-00-00.000');
+    fs.writeFileSync(path.join(dir, 'memory-backup-final-v2.db'), 'x');
+    fs.writeFileSync(path.join(dir, 'README.md'), 'x');
+    const deleted = pruneRotatedBackups(dir, 0);
+    expect(deleted).toEqual([path.join(dir, 'memory-2026-08-01T00-00-00.000.db')]);
+    const remaining = fs.readdirSync(dir).sort();
+    expect(remaining).toEqual(['README.md', 'memory-backup-final-v2.db']);
+  });
+
+  it('never throws on a non-existent directory', () => {
+    expect(() => pruneRotatedBackups(path.join(dir, 'does-not-exist'), 3)).not.toThrow();
+    expect(pruneRotatedBackups(path.join(dir, 'does-not-exist'), 3)).toEqual([]);
   });
 });
