@@ -1,5 +1,8 @@
 # Public API stability tiers (`@adhd/sox-*`)
 
+> Releasing one of these packages: see [release-flow.md](./release-flow.md) — enumerate
+> consumers, bump exact pins, test consumers in isolation, verify running processes.
+
 Companion to [ADR-0005](../decisions/0005-npm-publishing-and-content-address-coexistence.md) and the
 publishing refactor. Per owner decision **Q2**, all 12 `@adhd/sox-*` libs publish publicly, but they
 do **not** carry the same stability promise. This page is the supported-surface contract a third
