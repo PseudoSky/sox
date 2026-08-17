@@ -24,7 +24,7 @@
     "access": "public"
   },
   "dependencies": {
-    "@adhd/sox-telemetry": "workspace:*",
+    "@adhd/sox-telemetry": "workspace:^",
     "@tursodatabase/database": "^0.7.1"
   },
   "optionalDependencies": {

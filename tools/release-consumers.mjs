@@ -47,21 +47,70 @@ function workspacePackages() {
   return pkgs;
 }
 
-/** Reverse edges: package -> [{name, range, exactPin}] that depend on it. */
+/**
+ * Classify a dependency range by WHAT IT BECOMES WHEN PUBLISHED, not by the
+ * string in the source manifest (BL-569).
+ *
+ * `pnpm pack`/`publish` REWRITES the `workspace:` protocol into a real range,
+ * and the form of the protocol decides whether the published edge floats:
+ *
+ *   workspace:*  ->  "1.2.3"    EXACT — frozen at publish time, never floats
+ *   workspace:~  ->  "~1.2.3"   floats within the patch range
+ *   workspace:^  ->  "^1.2.3"   floats within the compatible range
+ *
+ * Verified from scratch (two-package throwaway workspace, `pnpm pack`, tarball
+ * package.json inspected) — not from recall.
+ *
+ * This function previously tested `/^\d/` against the SOURCE string. Every
+ * internal edge in this repo reads `workspace:*`, which does not start with a
+ * digit, so the tool reported ZERO exact pins while 100% of published edges
+ * were exact pins — blind in precisely the dimension it exists to check, and
+ * its clean output was used to plan a release. Classify the published form.
+ */
+function classifyRange(range) {
+  const s = String(range);
+
+  if (s.startsWith('workspace:')) {
+    const proto = s.slice('workspace:'.length);
+    if (proto === '*' || proto === '' || /^\d/.test(proto)) {
+      return {
+        floats: false,
+        note: 'workspace:* PUBLISHES AS AN EXACT PIN — downstream freezes at the version current when this package was last published. Use workspace:^',
+      };
+    }
+    // workspace:^ / workspace:~ — publishes as the corresponding float.
+    return { floats: true, publishes: proto };
+  }
+
+  // A literal range with no floating operator never picks up a new release.
+  if (/^\d/.test(s)) {
+    return { floats: false, note: 'EXACT PIN: will NOT pick up a new release until edited' };
+  }
+
+  // `^0.x.y` only floats within the minor — a 0.x MINOR bump is still a
+  // required follow-up bump downstream, not an optional one. Callers plan
+  // releases off this output, so say it rather than render it as "floats".
+  const caretZero = /^\^0\.(\d+)\./.exec(s);
+  if (caretZero) {
+    return {
+      floats: true,
+      minorBumpBreaksFloat: true,
+      note: `floats within 0.${caretZero[1]}.x only — a 0.x MINOR bump requires editing this range`,
+    };
+  }
+
+  return { floats: true };
+}
+
+/** Reverse edges: package -> [{name, range, ...classification}] that depend on it. */
 function consumerIndex(pkgs) {
   const idx = new Map();
   for (const p of pkgs.values()) {
     for (const [dep, range] of Object.entries(p.deps ?? {})) {
       if (!pkgs.has(dep)) continue;
       if (!idx.has(dep)) idx.set(dep, []);
-      idx.get(dep).push({
-        name: p.name,
-        range,
-        // An exact pin (no ^ or ~) does NOT float. Downstream stays on the old
-        // version until the pin is edited — the most common silent-skip in a
-        // multi-hop release chain.
-        exactPin: /^\d/.test(String(range)),
-      });
+      const cls = classifyRange(range);
+      idx.get(dep).push({ name: p.name, range, ...cls, exactPin: !cls.floats });
     }
   }
   return idx;
@@ -105,7 +154,22 @@ for (const [t, rows] of Object.entries(result)) {
     if (r.kind === 'external') {
       console.log(`${pad}EXTERNAL ${r.name}${r.via ? `  via ${r.via}` : ''}${r.repo ? `  [${r.repo}]` : ''}`);
     } else {
-      console.log(`${pad}${r.name}  ${r.range}${r.exactPin ? '   <-- EXACT PIN: will NOT pick up a new release until edited' : ''}`);
+      const flag = r.note ? `   <-- ${r.note}` : '';
+      console.log(`${pad}${r.name}  ${r.range}${flag}`);
     }
   }
+}
+
+// A frozen edge anywhere in the tree silently invalidates the whole release:
+// downstream keeps executing the old code while every step reports success.
+// Exit non-zero so `pnpm release` (which runs this before `changeset publish`)
+// refuses to proceed rather than shipping a chain that cannot land.
+const frozen = Object.entries(result).flatMap(([t, rows]) =>
+  rows.filter((r) => r.kind === 'internal' && !r.floats).map((r) => `${t} <- ${r.name} (${r.range})`),
+);
+if (frozen.length) {
+  console.error(`\n✗ ${frozen.length} non-floating internal edge(s) — a release here does NOT reach consumers:`);
+  for (const f of frozen) console.error(`    ${f}`);
+  console.error('  Fix the range (workspace:^) or schedule the follow-up bumps explicitly.');
+  process.exit(1);
 }

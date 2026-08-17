@@ -21,13 +21,28 @@ repos and cannot be derived — each package declares its own:
 Keep that list current. An undeclared external consumer is invisible to every check
 below, and will keep running the old code indefinitely.
 
-## 2. Watch for exact pins
+## 2. Watch for edges that do not float
 
-The tool flags dependency ranges with no `^`/`~`. An exact pin does **not** float:
-a new release is invisible downstream until someone edits the pin. The chain appears
-to succeed at every step while consumers keep executing the previous version.
+An edge that does not float makes a release invisible downstream: the chain appears to
+succeed at every step while consumers keep executing the previous version. The tool
+exits non-zero when it finds one, so `pnpm release` refuses to proceed.
 
-Every exact pin in the consumer tree is a required follow-up bump, not an optional one.
+**Judge the published range, not the source string.** `pnpm publish` rewrites the
+`workspace:` protocol, and the form decides whether the edge floats:
+
+| Source | Published as | Floats? |
+|---|---|---|
+| `workspace:*` | `1.2.3` | **no — frozen at publish time** |
+| `workspace:~` | `~1.2.3` | patch only |
+| `workspace:^` | `^1.2.3` | yes |
+
+Use `workspace:^` for internal dependencies. `workspace:*` reads as the most permissive
+form and is the most restrictive one after publish — the whole internal graph was frozen
+this way, invisibly, because the check only looked at the source string (BL-569).
+
+Two remaining cases are still required follow-up bumps, not optional ones: a literal
+exact range, and any `^0.x` edge crossing a **minor** bump (`^0.5.8` covers `0.5.x`
+only, so `0.6.0` does not reach it).
 
 ## 3. Plan the follow-up bumps as part of the release
 

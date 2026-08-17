@@ -24,11 +24,11 @@
     "dist"
   ],
   "dependencies": {
-    "@adhd/sox-embedding-provider": "workspace:*"
+    "@adhd/sox-embedding-provider": "workspace:^"
   },
   "devDependencies": {
-    "@adhd/sox-blob-store": "workspace:*",
-    "@adhd/sox-hybrid-search": "workspace:*"
+    "@adhd/sox-blob-store": "workspace:^",
+    "@adhd/sox-hybrid-search": "workspace:^"
   },
   "sox": {
     "area": "data",

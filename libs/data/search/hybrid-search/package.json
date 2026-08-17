@@ -24,12 +24,12 @@
     "dist"
   ],
   "dependencies": {
-    "@adhd/sox-embedding-provider": "workspace:*",
-    "@adhd/sox-graph-store": "workspace:*",
-    "@adhd/sox-vector-store": "workspace:*"
+    "@adhd/sox-embedding-provider": "workspace:^",
+    "@adhd/sox-graph-store": "workspace:^",
+    "@adhd/sox-vector-store": "workspace:^"
   },
   "devDependencies": {
-    "@adhd/sox-store-adapter": "workspace:*"
+    "@adhd/sox-store-adapter": "workspace:^"
   },
   "sox": {
     "area": "data",
