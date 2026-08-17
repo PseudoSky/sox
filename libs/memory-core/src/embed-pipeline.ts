@@ -636,13 +636,21 @@ export async function embedBacklogStats(adapter: StoreAdapter): Promise<EmbedBac
  * task so the single-writer contract holds. Called from the interval callback
  * — OUTSIDE any queue task (BL-154).
  *
- * Bounded: at most `opts.limit` (default 500) nodes per pass; the next tick
- * picks up the remainder.
+ * Bounded: at most `opts.limit` nodes per pass; the next tick picks up the
+ * remainder. DEBT-EMBED-HEAL-DEAD-DEFAULT-LIMIT-001: `limit` is REQUIRED,
+ * deliberately — every production caller passes an explicit value (the
+ * periodic-tick and drain-pass call sites in
+ * `extensions/bundles/sox-memory-bundle/members/memory-server/src/index.ts`
+ * all pass `{ limit: drainBatchLimit() }`, which resolves to
+ * `DEFAULT_DRAIN_BATCH = 64` — see index.ts's `drainBatchLimit()` for the
+ * real production batch size). A `?? 500` fallback here previously read as
+ * the operating value when it was actually unreachable dead code, which
+ * shaped a mis-framed CRITICAL bug report before anyone traced the callers.
  */
 export async function healMissingVectors(
   adapter: StoreAdapter,
   wq: WriteQueue,
-  opts?: { limit?: number; logSink?: (line: string) => void },
+  opts: { limit: number; logSink?: (line: string) => void },
 ): Promise<HealResult> {
   const out: HealResult = { scanned: 0, healed: 0, exists: 0, gone: 0, failed: 0, time_budget_exceeded: false };
   // BL-434: the heal tick establishes its OWN ambient trace context.
@@ -668,11 +676,11 @@ export async function healMissingVectors(
 async function _healMissingVectorsPass(
   adapter: StoreAdapter,
   wq: WriteQueue,
-  opts: { limit?: number; logSink?: (line: string) => void } | undefined,
+  opts: { limit: number; logSink?: (line: string) => void },
   out: HealResult,
   tickTraceId: string,
 ): Promise<HealResult> {
-  const limit = opts?.limit ?? 500;
+  const limit = opts.limit;
   const log = opts?.logSink ?? ((line: string) => tlog.debug('embed_pipeline.heal', { message: line }));
   const metrics = stateFor(wq.storePath);
 
@@ -822,8 +830,14 @@ async function embedWithTimeout(text: string, timeoutMs: number): Promise<Float3
  * Each apply is enqueued as a SHORT 'apply'-kind task, same slot-safe pattern as
  * healMissingVectors.
  *
- * Bounded: at most `opts.limit` (default 500) nodes per pass. The next tick
- * picks up the remainder.
+ * Bounded: at most `opts.limit` nodes per pass. The next tick picks up the
+ * remainder. DEBT-EMBED-HEAL-DEAD-DEFAULT-LIMIT-001: `limit` is REQUIRED,
+ * deliberately — the only reachable production caller is
+ * `libs/memory-core/src/curate.ts`'s `reheal_stale` handler, which always
+ * resolves and passes an explicit `limit` (clamped to `REHEAL_MAX_LIMIT`,
+ * defaulting to `REHEAL_DEFAULT_LIMIT` when the operator omits it) — a
+ * `?? 500` fallback here was unreachable dead code that misrepresented the
+ * real batch-size story (see the sibling comment on `healMissingVectors`).
  *
  * NOTE: NULL-model rows (pre-BL-88) are deliberately EXCLUDED — NULL is honest
  * ("provenance unknown") and must not be treated as stale. Only rows with a
@@ -836,7 +850,7 @@ async function embedWithTimeout(text: string, timeoutMs: number): Promise<Float3
 export async function healStaleVectors(
   adapter: StoreAdapter,
   wq: WriteQueue,
-  opts?: { limit?: number; logSink?: (line: string) => void },
+  opts: { limit: number; logSink?: (line: string) => void },
 ): Promise<StaleHealResult> {
   const out: StaleHealResult = { scanned: 0, healed: 0, gone: 0, failed: 0 };
 
@@ -850,12 +864,12 @@ export async function healStaleVectors(
 async function _healStaleVectorsPass(
   adapter: StoreAdapter,
   wq: WriteQueue,
-  opts: { limit?: number; logSink?: (line: string) => void } | undefined,
+  opts: { limit: number; logSink?: (line: string) => void },
   out: StaleHealResult,
   tickTraceId: string,
 ): Promise<StaleHealResult> {
   const activeModel = getActiveEmbedModel() ?? 'unknown';
-  const limit = opts?.limit ?? 500;
+  const limit = opts.limit;
   const log = opts?.logSink ?? ((line: string) => tlog.debug('embed_pipeline.heal_stale_vectors', { message: line }));
   const metrics = stateFor(wq.storePath);
   const useBinaryFormat = adapter.capabilities.nativeVectors;

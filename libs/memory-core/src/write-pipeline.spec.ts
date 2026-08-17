@@ -415,7 +415,7 @@ describe('Phase-B crash recovery: embedBacklogStats + healMissingVectors', () =>
 
     // "Process restart": the provider works again; the periodic heal repairs.
     _setEmbedProviderForTest(new DeterministicTestProvider());
-    const heal = await healMissingVectors(ctx.db, wq);
+    const heal = await healMissingVectors(ctx.db, wq, { limit: 1000 });
     expect(heal.scanned).toBe(2);
     expect(heal.healed).toBe(2);
     expect(heal.failed).toBe(0);
