@@ -92,6 +92,14 @@ const OPEN_RETRY_MAX_ATTEMPTS = 3;
 const OPEN_RETRY_BACKOFF_START_MS = 100;
 const OPEN_RETRY_BACKOFF_STEP_MS = 100;
 
+/** (idle-flush, 2026-08-17 — store-adapter-owned WAL durability) Debounce
+ *  window for the adapter's own idle WAL flush. Deliberately equal to
+ *  `WriteQueue.CHECKPOINT_IDLE_MS` (libs/memory-core/src/write-queue.ts) so
+ *  every consumer — queued or talking to the adapter directly — settles on
+ *  one idle cadence, not two competing ones. Overridable per-connect via
+ *  `opts.idleFlushMs` (tests only; no production caller sets this). */
+const DEFAULT_IDLE_FLUSH_MS = 2000;
+
 class TursoTransactionImpl implements AdapterTransaction {
   private db: { run: Function; get: Function; all: Function; exec: Function };
 
@@ -183,18 +191,146 @@ export class TursoAdapterImpl implements TursoAdapter {
    *  tracked op, not just its `BEGIN`). */
   private _inFlightOps = 0;
 
+  /** (idle-flush) True when this instance is eligible to self-arm the idle
+   *  WAL flush — set by `connect()` for writable, local-file (`dbPath`)
+   *  connections only. Remote URLs and readonly/soft-readonly connections
+   *  never arm: a readonly connection cannot checkpoint, and a remote store
+   *  has no local lease/quiescence semantics to gate on. Constant for the
+   *  life of the instance (sourced once from `connect()` opts, same as
+   *  `_idleFlushMs`/`_walFlushStrategy`). */
+  private _idleFlushEnabled = false;
+
+  /** (idle-flush) Debounce window in ms — see `DEFAULT_IDLE_FLUSH_MS`. */
+  private _idleFlushMs: number = DEFAULT_IDLE_FLUSH_MS;
+
+  /**
+   * (idle-flush) ONE decision point for gated-vs-ungated, per owner
+   * directive (2026-08-17): "structure the flush so gated-vs-ungated is one
+   * decision point — a strategy/flag, not a design assumption threaded
+   * through the implementation."
+   *
+   * - `'gated'` (DEFAULT): the idle flush calls `releaseIdleConnection()`,
+   *   which runs the FULL `close()` ceremony — PASSIVE checkpoint always,
+   *   then `wal_checkpoint(TRUNCATE)` gated on `storeQuiescence()` (no other
+   *   live peer holding the store) — and leaves the instance usable; the
+   *   next operation transparently reconnects. Safe under N concurrent
+   *   multiprocess_wal peers because it never truncates while a peer is
+   *   live, at the cost of TRUNCATE frequently deferring under sustained
+   *   multi-process contention (1,409 deferrals/4 days measured live —
+   *   `store_adapter.turso.close_checkpoint_busy`).
+   * - `'ungated'`: issues `PRAGMA wal_checkpoint(TRUNCATE)` directly, with
+   *   NO quiescence check and WITHOUT releasing the connection — the exact
+   *   shape of `WriteQueue.walCheckpoint()` in memory-core, safe at
+   *   concurrency 1, of UNKNOWN safety at higher concurrency pending the
+   *   owner's 20-concurrent-writer repro (`wal-truncate-safety-experiment`).
+   *
+   * BLOCKED: do not flip the default, and do not let any caller select
+   * `'ungated'` in production config, until that experiment reports back.
+   * No production caller sets `opts.walFlushStrategy` today — the field
+   * exists so the decision is a single flag, not a rewrite, once it is
+   * authorised.
+   */
+  private _walFlushStrategy: 'gated' | 'ungated' = 'gated';
+
+  /** (idle-flush) The pending idle-flush timer, or `null` when none is
+   *  armed. At most one is ever live per instance — `_armIdleFlush()`
+   *  refuses to schedule a second one while this is non-null, and every
+   *  `_trackOp()` call cancels it the instant new work arrives. Same
+   *  debounced-coalesced shape as `WriteQueue._checkpointTimer`
+   *  (`_cancelCheckpoint()` on new work / `_scheduleIdleCheckpoint()` on
+   *  drain), pushed down one layer so every consumer — not just
+   *  memory-core's queue — inherits it automatically. */
+  private _idleFlushTimer: ReturnType<typeof setTimeout> | null = null;
+
+  /** (idle-flush) Cancel a pending idle flush — new work arrived. Mirrors
+   *  `WriteQueue._cancelCheckpoint()`. */
+  private _cancelIdleFlush(): void {
+    if (this._idleFlushTimer !== null) {
+      clearTimeout(this._idleFlushTimer);
+      this._idleFlushTimer = null;
+    }
+  }
+
+  /** (idle-flush) Arm the idle flush if this instance is idle-flush-eligible
+   *  and currently idle (`_inFlightOps === 0`), not closed, not released,
+   *  and nothing is already scheduled. Mirrors
+   *  `WriteQueue._scheduleIdleCheckpoint()`. Called from `_trackOp()`'s
+   *  `finally` whenever an operation completion leaves the connection idle,
+   *  and once at the end of `connect()` for a freshly opened, otherwise-idle
+   *  instance (which never runs a `_trackOp()` cycle on its own). */
+  private _armIdleFlush(): void {
+    if (!this._idleFlushEnabled) return;
+    if (this.closed || this._released) return;
+    if (this._inFlightOps > 0) return;
+    if (this._idleFlushTimer !== null) return; // already scheduled — coalesced
+    this._idleFlushTimer = setTimeout(() => {
+      this._idleFlushTimer = null;
+      void this._performIdleFlush();
+    }, this._idleFlushMs);
+  }
+
+  /**
+   * (idle-flush) Fires once per idle period. THIS is the primary WAL
+   * durability assurance (owner directive, 2026-08-17) — not `close()`, not
+   * a caller remembering to call anything. See `_walFlushStrategy` for the
+   * gated/ungated decision point.
+   *
+   * Defensively re-checks `closed`/`released`/`_inFlightOps` even though
+   * `_armIdleFlush()` already gated on them at schedule time — the debounce
+   * window is real wall-clock time in which new work (or a close, or a
+   * release) can land between "timer armed" and "timer fires".
+   */
+  private async _performIdleFlush(): Promise<void> {
+    if (this.closed || this._released || this._inFlightOps > 0) return;
+    try {
+      if (this._walFlushStrategy === 'gated') {
+        // `releaseIdleConnection()` runs the FULL close() ceremony (PASSIVE
+        // checkpoint always, quiescence-gated TRUNCATE, driver close, marker
+        // clear, lease release) and leaves the instance usable — the next
+        // operation transparently reconnects via the same
+        // `_ensureHealthy()`/`_reconnect()` machinery SPEC-CONN-RECYCLE
+        // already uses for poison recovery. Every durability guarantee
+        // `close()` has applies unchanged here; this is deliberate reuse,
+        // not a parallel reimplementation.
+        await this.releaseIdleConnection();
+      } else {
+        // UNGATED — see `_walFlushStrategy` doc comment. No quiescence
+        // check, connection stays open (deliberately does NOT go through
+        // `releaseIdleConnection()`).
+        try {
+          await this.executeGet('PRAGMA wal_checkpoint(TRUNCATE)');
+        } catch (err) {
+          log.warn('store_adapter.turso.idle_flush_ungated_failed', {
+            error: err instanceof Error ? err.message : String(err),
+          });
+        }
+      }
+    } catch (err) {
+      log.error('store_adapter.turso.idle_flush_failed', {
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
+
   /** (idle-release) Wraps every method that touches `this.db` directly:
    *  increments `_inFlightOps` before `_ensureHealthy()` runs (so a
    *  reconnect itself also counts as "busy"), decrements in `finally`
    *  regardless of outcome. Centralizes the `_ensureHealthy()` call so every
-   *  wrapped method gets poison- AND release-recovery for free. */
+   *  wrapped method gets poison- AND release-recovery for free.
+   *
+   *  (idle-flush) Also owns the flush timer's cancel/rearm: new work always
+   *  cancels a pending flush FIRST (before `_ensureHealthy()` — a reconnect
+   *  triggered by this same op must not race a flush firing underneath it),
+   *  and a completion that leaves the connection idle rearms it. */
   private async _trackOp<T>(fn: () => Promise<T>): Promise<T> {
+    this._cancelIdleFlush();
     this._inFlightOps++;
     try {
       await this._ensureHealthy();
       return await fn();
     } finally {
       this._inFlightOps--;
+      if (this._inFlightOps === 0) this._armIdleFlush();
     }
   }
 
@@ -395,6 +531,25 @@ export class TursoAdapterImpl implements TursoAdapter {
       this.db = fresh.db;
       this._walBaseline = fresh._walBaseline;
       this._softReadonly = fresh._softReadonly;
+      // (idle-flush, BUG-STOREADAPTER-RECONNECT-ORPHANED-IDLE-TIMER,
+      // discovered 2026-08-17 while building this feature) `connect()`
+      // self-arms an idle-flush timer on EVERY writable local-file instance
+      // it returns, including this throwaway `fresh` one — and `fresh._idleFlushTimer`
+      // is never adopted onto `this` (`this` keeps running its OWN idle-flush
+      // cycle, set up identically at its own original `connect()`). Left
+      // uncancelled, that orphaned timer stays alive (its closure keeps
+      // `fresh` reachable) bound to `fresh.db`, which is THE SAME live
+      // connection object `this.db` now points at (assigned just above) —
+      // when it eventually fires it runs a second, completely uncoordinated
+      // `releaseIdleConnection()`/`close()` ceremony against that shared
+      // connection, independent of `this`'s own `_inFlightOps`/idle-flush
+      // state. Measured: this raced `this`'s own close(), producing
+      // `store_adapter.turso.close_verify_failed` /
+      // `checkpoint_deferred: The database connection is not open` — a
+      // benign-but-real "deferred, not lost" symptom (BUG-011), not data
+      // loss, but a genuine extra uncoordinated close cycle this line
+      // eliminates at the source.
+      fresh._cancelIdleFlush();
       if (wasReleased) {
         this._lease = fresh._lease;
       } else if (fresh._lease) {
@@ -488,6 +643,20 @@ export class TursoAdapterImpl implements TursoAdapter {
      * fails closed with `ESqliteNativeStore` before any write/WAL touch.
      */
     allowForeignEngine?: boolean;
+    /**
+     * (idle-flush, TEST-ONLY) Override the idle-flush debounce window
+     * (default `DEFAULT_IDLE_FLUSH_MS` = 2000ms). No production caller sets
+     * this — it exists so tests can observe idle-flush behavior without a
+     * real 2s wait.
+     */
+    idleFlushMs?: number;
+    /**
+     * (idle-flush) Select the gated-vs-ungated strategy — see
+     * `_walFlushStrategy`'s doc comment for the full decision. Default
+     * `'gated'`. BLOCKED: no caller may pass `'ungated'` outside a test
+     * until `wal-truncate-safety-experiment` reports its result.
+     */
+    walFlushStrategy?: 'gated' | 'ungated';
   }): Promise<TursoAdapterImpl> {
     // Dynamic import so @tursodatabase/database is only loaded when used
     let tursoModule: any;
@@ -1137,6 +1306,24 @@ export class TursoAdapterImpl implements TursoAdapter {
       // driver/replay; every coordination site reads `coordPath` instead.
       instance._canonicalDb = canonicalDb;
 
+      // (idle-flush) Arm the adapter-owned idle WAL flush — the primary WAL
+      // durability assurance every consumer inherits automatically, no
+      // caller action required. Eligible only for writable (not `readonly`,
+      // not soft-readonly) local-file (`canonicalDb` set — i.e. a `dbPath`
+      // was given, not a bare remote `url`) connections: a readonly
+      // connection cannot checkpoint, and a remote URL has no local
+      // lease/quiescence semantics for the gated strategy to check. Armed
+      // here (not just from `_trackOp()`'s finally) because a freshly
+      // opened, never-yet-used instance never runs a `_trackOp()` cycle on
+      // its own — without this line it would idle forever unflushed until
+      // its first real operation.
+      if (!opts.readonly && canonicalDb !== undefined) {
+        instance._idleFlushEnabled = true;
+        if (opts.idleFlushMs !== undefined) instance._idleFlushMs = opts.idleFlushMs;
+        if (opts.walFlushStrategy !== undefined) instance._walFlushStrategy = opts.walFlushStrategy;
+        instance._armIdleFlush();
+      }
+
       return instance;
     } catch (err) {
       if (lease) await lease.release().catch(() => {});
@@ -1537,6 +1724,14 @@ export class TursoAdapterImpl implements TursoAdapter {
   async close(): Promise<void> {
     if (this.closed) return;
     this.closed = true;
+    // (idle-flush) A direct `close()` call (not the `_performIdleFlush()`
+    // path, which has already nulled the timer before invoking
+    // `releaseIdleConnection()`) may still have a flush armed — cancel it so
+    // a stray fire never runs `releaseIdleConnection()` against an adapter
+    // that is now permanently closed (harmless either way — `_performIdleFlush`
+    // re-checks `this.closed` at fire time — but this avoids the dead timer
+    // lingering at all).
+    this._cancelIdleFlush();
 
     // (BL-512) "Writable" for checkpoint purposes means the connection can
     // write: `!config.readonly` (the historical gate), PLUS soft-readonly
