@@ -21,7 +21,7 @@
  */
 import { afterEach, describe, expect, it } from 'vitest';
 import * as os from 'node:os';
-import { resolveFastembedPoolSize } from './sharedFastembedProcess.js';
+import { resolveFastembedPoolSize, estimateAvailableMemMb } from './sharedFastembedProcess.js';
 
 const ENV_KEYS = ['SOX_EMBED_POOL_SIZE', 'SOX_EMBED_POOL_PER_CHILD_MB'] as const;
 const savedEnv: Record<string, string | undefined> = {};
@@ -91,4 +91,70 @@ describe('BUG-MEMORY-EMBED-HEAD-OF-LINE-BLOCKING-001 — resolveFastembedPoolSiz
       expect(size).toBeGreaterThanOrEqual(1);
     }
   });
+});
+
+describe('BUG-EMBED-POOL-SIZE-DARWIN-FREEMEM-001 — pool auto-sizing uses a real availability estimate, not raw os.freemem() alone', () => {
+  it(
+    'estimateAvailableMemMb() never reports LESS than raw os.freemem() — the ' +
+      'correctness invariant that makes switching resolveFastembedPoolSize() ' +
+      'onto it monotonic-safe on every platform, not just the darwin box this ' +
+      'was diagnosed on (measured there: os.freemem() ~299MB while free+' +
+      'inactive+speculative+purgeable was ~5.4GB+ — see the function doc comment)',
+    () => {
+      const rawFreeMb = os.freemem() / (1024 * 1024);
+      expect(estimateAvailableMemMb()).toBeGreaterThanOrEqual(rawFreeMb);
+    },
+  );
+
+  it(
+    'resolveFastembedPoolSize(getAvailableMemMb) is monotonic non-decreasing ' +
+      'in the injected available-memory reading, at a fixed per-member budget ' +
+      '— reproduces the exact incident numbers: raw os.freemem() (299MB, ' +
+      'measured on the diagnosis box) clamps the pool to 1 (memoryCap = ' +
+      'max(1, floor((299-1024)/300)) = max(1, negative) = 1) even though the ' +
+      'SAME box, SAME moment, had ~5.4GB of real reclaimable memory once ' +
+      'inactive/speculative/purgeable pages are counted — the exact "pool ' +
+      'appears to be operating at size 1" symptom this bug report opened with',
+    () => {
+      setEnv('SOX_EMBED_POOL_SIZE', undefined);
+      setEnv('SOX_EMBED_POOL_PER_CHILD_MB', '300');
+      const sizeAtRawMacosFreemem = resolveFastembedPoolSize(() => 299);
+      const sizeAtRealAvailableEstimate = resolveFastembedPoolSize(() => 5838);
+      expect(sizeAtRawMacosFreemem).toBe(1);
+      expect(sizeAtRealAvailableEstimate).toBeGreaterThan(sizeAtRawMacosFreemem);
+    },
+  );
+
+  it(
+    'production default resolveFastembedPoolSize() (no injection — the exact ' +
+      'call getSharedFastembedProcess() makes) resolves through ' +
+      'estimateAvailableMemMb(), not raw os.freemem() — confirmed by ' +
+      'requiring the production call to agree with the injected-estimate call ' +
+      'and DISAGREE with the injected-raw-freemem call whenever those two ' +
+      'differ enough to cross a cap boundary on THIS machine, at the exact ' +
+      'default budget',
+    () => {
+      setEnv('SOX_EMBED_POOL_SIZE', undefined);
+      setEnv('SOX_EMBED_POOL_PER_CHILD_MB', undefined);
+      const rawFreeMb = os.freemem() / (1024 * 1024);
+      const estimatedMb = estimateAvailableMemMb();
+      const productionSize = resolveFastembedPoolSize();
+      const sizeFromRaw = resolveFastembedPoolSize(() => rawFreeMb);
+      const sizeFromEstimate = resolveFastembedPoolSize(() => estimatedMb);
+      expect(productionSize).toBe(sizeFromEstimate);
+      const cpuCap = Math.max(1, Math.min(4, Math.floor((os.cpus().length || 1) / 2)));
+      if (sizeFromRaw < cpuCap && estimatedMb > rawFreeMb) {
+        // The exact incident shape: raw freemem under-sizes below what CPU
+        // count would otherwise allow, AND the estimate is strictly larger —
+        // production must no longer inherit the raw-freemem clamp.
+        expect(productionSize).toBeGreaterThan(sizeFromRaw);
+      } else {
+        // Structurally impossible for this fix to matter on this exact
+        // machine right now (already CPU-capped, or freemem/estimate happen
+        // to coincide) — still assert the two calls agree, so the branch
+        // never silently runs zero assertions (BL-167).
+        expect(productionSize).toBe(sizeFromRaw);
+      }
+    },
+  );
 });
