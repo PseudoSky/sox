@@ -73,6 +73,10 @@ tursoDescribe('releaseIdleConnection() — idle release produces a real quiescen
 
     await server.exec('CREATE TABLE t (id INTEGER PRIMARY KEY, v TEXT)');
     await server.executeRun('INSERT INTO t (v) VALUES (?)', ['before-release']);
+    // (DEBT-003, lazy-connect) `cli` must actually hold a live lease for the
+    // "two live connections" precondition below — `connect()` no longer
+    // acquires one eagerly, so force `cli`'s real open here.
+    await cli.executeGet('SELECT 1');
 
     const walPath = dbPath + '-wal';
     expect(existsSync(walPath), 'the write must have created the -wal file').toBe(true);
@@ -86,6 +90,11 @@ tursoDescribe('releaseIdleConnection() — idle release produces a real quiescen
     // whole incident is about. Reproduce it as a control before the fix
     // path runs, on a THIRD connection so we don't tear down `server` yet.
     const control = await TursoAdapterImpl.connect({ dbPath });
+    // (DEBT-003, lazy-connect) `control` must actually open (and hold a
+    // lease) before `close()` for this control assertion to exercise the
+    // real quiescence-gated TRUNCATE logic rather than the never-opened
+    // short-circuit.
+    await control.executeGet('SELECT 1');
     await control.close();
     expect(
       statSync(walPath).size,

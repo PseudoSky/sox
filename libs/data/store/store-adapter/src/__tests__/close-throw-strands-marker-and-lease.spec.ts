@@ -100,6 +100,11 @@ describe('BUG-STOREADAPTER-CLOSE-THROW-STRANDS-MARKER-AND-LEASE', () => {
   it('PROPAGATES the original close error rather than swallowing it', async () => {
     const dbPath = makeStore();
     const adapter = await TursoAdapterImpl.connect({ dbPath });
+    // (DEBT-003, lazy-connect) `adapter.db` is a never-opened sentinel until
+    // the first real operation — monkey-patching `.close` before that (and
+    // `close()`'s own never-opened short-circuit) would make this a no-op
+    // test. Force the real open first.
+    await adapter.executeGet('SELECT 1');
 
     const realClose = (adapter as unknown as { db: { close: () => Promise<void> } }).db.close;
     (adapter as unknown as { db: { close: () => Promise<void> } }).db.close = () => {
@@ -116,6 +121,9 @@ describe('BUG-STOREADAPTER-CLOSE-THROW-STRANDS-MARKER-AND-LEASE', () => {
   it('is idempotent: a second close after a failed close does not throw again', async () => {
     const dbPath = makeStore();
     const adapter = await TursoAdapterImpl.connect({ dbPath });
+    // (DEBT-003, lazy-connect) Force the real open first — see the note in
+    // the "PROPAGATES" test above.
+    await adapter.executeGet('SELECT 1');
 
     const realClose = (adapter as unknown as { db: { close: () => Promise<void> } }).db.close;
     (adapter as unknown as { db: { close: () => Promise<void> } }).db.close = () => {
@@ -135,6 +143,9 @@ describe('BUG-STOREADAPTER-CLOSE-THROW-STRANDS-MARKER-AND-LEASE', () => {
   it('leaves no lease behind on a normal close (control)', async () => {
     const dbPath = makeStore();
     const adapter = await TursoAdapterImpl.connect({ dbPath });
+    // (DEBT-003, lazy-connect) `connect()` no longer acquires a lease
+    // eagerly — force the real open before checking for it.
+    await adapter.executeGet('SELECT 1');
     expect(leaseDirContents(dbPath).leases.length).toBe(1);
     await adapter.close();
     expect(leaseDirContents(dbPath).leases).toEqual([]);

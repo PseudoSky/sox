@@ -146,6 +146,15 @@ afterEach(async () => {
 async function connect(dbPath: string): Promise<TursoAdapterImpl> {
   const adapter = await TursoAdapterImpl.connect({ dbPath });
   openAdapters.push(adapter);
+  // (DEBT-003, lazy-connect) `TursoAdapterImpl.connect()` no longer opens the
+  // mocked driver eagerly — every real-open effect this whole file pins
+  // (mockDriverConnect call count, proactive/catch sidecar reconcile,
+  // retry-then-throw on exhaustion) now happens on the first real operation.
+  // This helper is this file's ONLY entry point for "get a live adapter", so
+  // forcing the real open here — and letting a rejection propagate exactly
+  // as a rejecting `connect()` used to — preserves every existing test's
+  // intent without touching its assertions.
+  await adapter.executeGet('SELECT 1');
   return adapter;
 }
 
