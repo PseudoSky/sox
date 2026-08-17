@@ -298,10 +298,31 @@ const LOG_PREFIX = '[memory-core writeq]';
  * serialisation (operations execute immediately, unordered). The queue ordering
  * test goes red under this flag.
  *
- * WP-5 (BL-123): WAL checkpoint on idle — after the queue has been idle for
- * CHECKPOINT_IDLE_MS, a PRAGMA wal_checkpoint(TRUNCATE) runs automatically to
- * keep the WAL file bounded. The checkpoint timer is cancelled when new items
- * arrive, preventing intra-burst checkpoint overhead.
+ * WAL checkpointing (DEBT-004/DEBT-005, 2026-08-17): this class used to own a
+ * private debounced idle-checkpoint timer (WP-5/BL-123) that fired an UNGATED
+ * `PRAGMA wal_checkpoint(TRUNCATE)` — zero `storeQuiescence` coordination,
+ * unsafe under concurrency > 1, and a second mechanism competing with the
+ * store-adapter's own idle flush. Per owner directive, that private
+ * implementation was DELETED, not coordinated with — WAL checkpointing is now
+ * owned exclusively by `TursoAdapterImpl`'s `_armIdleFlush()`/
+ * `_checkWalCapAndFlush()` (`libs/data/store/store-adapter/src/turso-adapter.ts`),
+ * which every store this queue opens (via `openDb()` → `createStoreAdapter()`,
+ * default `STORE_ADAPTER=turso`) inherits automatically and transparently —
+ * no call from this class required. See that file's `_walFlushStrategy` doc
+ * comment for the full gated-close-ceremony contract. `closeAllForShutdown()`
+ * below now routes its explicit end-of-life flush through `adapter.close()`
+ * (the adapter's own public surface) instead of a second raw PRAGMA.
+ *
+ * ⚠️ COVERAGE GAP (reported, not silently assumed away — see BL-591): the
+ * legacy `STORE_ADAPTER=sqlite` opt-in path (`SqliteAdapterImpl`, never the
+ * production default) has NO analogous idle-flush or wal-cap-flush mechanism
+ * of any kind — `sqlite-adapter.ts` contains zero `wal_checkpoint` calls. A
+ * long-lived process on that adapter now relies solely on SQLite's own
+ * built-in ~1000-page PASSIVE auto-checkpoint (never TRUNCATE, so the -wal
+ * file never shrinks back down) with nothing calling TRUNCATE, ever. This
+ * queue cannot fix that without editing `store-adapter` (out of this task's
+ * scope) — flagged here per the task's explicit "report, don't assume away"
+ * requirement.
  */
 export class WriteQueue {
   /** Singleton instances keyed by resolved (tilde-expanded) dbPath. */
@@ -328,9 +349,6 @@ export class WriteQueue {
    * not "does a live in-memory WriteQueue object happen to still exist".
    */
   private static _lastCheckpointByPath = new Map<string, number>();
-
-  /** (WP-5) Milliseconds of idle time after which a WAL checkpoint fires. */
-  static readonly CHECKPOINT_IDLE_MS = 2000;
 
   /** Rolling window size for the latency metrics distribution (p50/p99/mean/max). */
   static readonly LATENCY_WINDOW = 256;
@@ -361,9 +379,17 @@ export class WriteQueue {
   /** (WP-3) Instrumentation: number of items enqueued since last reset. Used in tests
    *  to assert that a batch write creates exactly one queue entry. */
   _enqueueCount = 0;
-  /** (WP-5) Timer handle for the deferred WAL checkpoint. */
-  private _checkpointTimer: ReturnType<typeof setTimeout> | null = null;
-  /** (WP-5) Wall-clock time (ms) of the last successful WAL checkpoint. 0 = never. */
+  /**
+   * (DEBT-004/DEBT-005) Wall-clock time (ms) of the last time THIS process
+   * asked the adapter to flush — i.e. `closeAllForShutdown()`'s `adapter.close()`
+   * call. Never updated during normal operation any more: the adapter's own
+   * idle flush (`_armIdleFlush()`) runs silently inside `TursoAdapterImpl`
+   * with no callback surface back to this class, so `memory_ping.store.
+   * last_checkpoint_at` no longer reflects periodic idle checkpoints, only
+   * this process's own shutdown. See the class doc comment's DEBT-004/005
+   * note and BL-591 (filed) for the observability gap this leaves.
+   * 0 = never (this process has not yet shut down its queue for this store).
+   */
   private _lastCheckpointAt = 0;
 
   // ── Observability + backpressure state ──────────────────────────────────────
@@ -451,7 +477,6 @@ export class WriteQueue {
    */
   static async clearInstances(): Promise<void> {
     for (const [, q] of WriteQueue.instances) {
-      q._cancelCheckpoint();
       await q._pragmaSetPromise;  // ensure async init completes before close
       try { await q.adapter.close(); } catch { /* already closed */ }
     }
@@ -483,55 +508,53 @@ export class WriteQueue {
    * `closeAllAdapters()` had already "finished". This also explains why
    * `memory_ping.store.last_checkpoint_at` stayed `null` even when a
    * checkpoint partially ran: `_lastCheckpointAt` is an instance field set
-   * ONLY by `WriteQueue.walCheckpoint()` (below) — `closeDbWithLease`'s
-   * checkpoint on the unrelated `getDb`-cached connection never touches it.
+   * ONLY here — `closeDbWithLease`'s checkpoint on the unrelated
+   * `getDb`-cached connection never touches it.
    *
-   * Unlike `clearInstances()` (test-only; no checkpoint, no error surfacing —
-   * a fresh-queue reset, not a durability guarantee), this method: (1) cancels
-   * any pending WP-5 idle-checkpoint timer FIRST (otherwise that timer can
-   * fire mid-shutdown or just after, throwing "database connection is not
-   * open" against a connection this same method is about to close — observed
-   * live in production telemetry, 11 occurrences across distinct pids on
-   * 2026-08-03); (2) runs `PRAGMA wal_checkpoint(TRUNCATE)` explicitly and
-   * records success via the same `_lastCheckpointAt` field `memory_ping`
-   * reports; (3) LOGS a checkpoint failure instead of silently swallowing it
-   * (BL-399 pattern — a failure this consequential must not vanish); (4)
-   * closes the connection and clears the instance so a later `getDb`/
-   * `WriteQueue.forPath` call for the same path opens fresh rather than
-   * reusing a handle this method just tore down.
+   * (DEBT-004/DEBT-005, 2026-08-17) Previously this method issued its OWN raw
+   * `PRAGMA wal_checkpoint(TRUNCATE)` directly against `q.adapter` — a second,
+   * ungated checkpoint mechanism, run immediately BEFORE `adapter.close()`
+   * itself also performs a full gated checkpoint ceremony on a writable Turso
+   * adapter (PASSIVE always, then quiescence-gated TRUNCATE — see
+   * `TursoAdapterImpl.close()`). That was a double-checkpoint on every
+   * shutdown, the second one entirely unsafe (no `storeQuiescence` gate) and
+   * exactly the private mechanism the owner directed be eliminated. Fixed:
+   * this method now performs its flush ENTIRELY through `adapter.close()` —
+   * the adapter's own public surface — and records `_lastCheckpointAt` as the
+   * timestamp of that close call. Unlike a manually-run PRAGMA, `close()` on
+   * a `SqliteAdapter` does not itself checkpoint (see the class doc comment's
+   * coverage-gap note) — `_lastCheckpointAt` there records "shutdown ran",
+   * not "a TRUNCATE definitely happened"; this was already an approximation
+   * before (a `busy=1` PRAGMA result was previously still recorded as
+   * success) and is not a new weakening of the contract.
+   *
+   * Unlike `clearInstances()` (test-only; no error surfacing — a fresh-queue
+   * reset, not a durability guarantee), this method LOGS a close failure
+   * instead of silently swallowing it (BL-399 pattern — a failure this
+   * consequential must not vanish), then clears the instance so a later
+   * `getDb`/`WriteQueue.forPath` call for the same path opens fresh rather
+   * than reusing a handle this method just tore down.
    */
   static async closeAllForShutdown(): Promise<void> {
     for (const [dbPath, q] of WriteQueue.instances) {
-      q._cancelCheckpoint();
       try {
         await q._pragmaSetPromise;
       } catch {
         /* best effort — adapter may already be failing */
       }
       try {
-        const row = await q.adapter.executeGet<{ frames_checkpointed?: number }>(
-          'PRAGMA wal_checkpoint(TRUNCATE)',
-        );
+        // (DEBT-004/DEBT-005) adapter.close() IS the flush — see doc comment
+        // above. No separate raw PRAGMA call.
+        await q.adapter.close();
         const now = Date.now();
         q._lastCheckpointAt = now;
         // Canonical key — see lastCheckpointAtForPath for why this matters.
         WriteQueue._lastCheckpointByPath.set(canonicalStorePath(dbPath), now);
-        log.info('writequeue.shutdown.checkpoint', {
-          store: dbPath,
-          frames_checkpointed: row?.frames_checkpointed ?? null,
-        });
+        log.info('writequeue.shutdown.checkpoint', { store: dbPath });
       } catch (err) {
-        // BL-405 / BL-399 pattern: a checkpoint failure here means the WAL
-        // will NOT be truncated by this shutdown — that must be visible, not
-        // a silent no-op indistinguishable from success.
-        log.error('writequeue.shutdown.checkpoint_failed', {
-          store: dbPath,
-          error: err instanceof Error ? err.message : String(err),
-        });
-      }
-      try {
-        await q.adapter.close();
-      } catch (err) {
+        // BL-405 / BL-399 pattern: a close failure here means the WAL may
+        // NOT have been truncated by this shutdown — that must be visible,
+        // not a silent no-op indistinguishable from success.
         log.error('writequeue.shutdown.close_failed', {
           store: dbPath,
           error: err instanceof Error ? err.message : String(err),
@@ -623,14 +646,22 @@ export class WriteQueue {
     return this._storePath;
   }
 
-  /** (WP-5) Wall-clock epoch ms of the last successful WAL checkpoint. 0 = never. */
+  /**
+   * (DEBT-004/DEBT-005) Wall-clock epoch ms of the last time THIS instance
+   * asked the adapter to flush (i.e. went through `closeAllForShutdown()`).
+   * 0 = never. See the class doc comment: this no longer tracks periodic
+   * idle-checkpoint activity, only shutdown.
+   */
   get lastCheckpointAt(): number {
     return this._lastCheckpointAt;
   }
 
   /**
-   * (WP-5) Static accessor: last checkpoint time for a given store path.
-   * Returns 0 if never checkpointed for this path in this process.
+   * (DEBT-004/DEBT-005) Static accessor: last time `closeAllForShutdown()`
+   * flushed a given store path. Returns 0 if that has never happened for
+   * this process (which, post-DEBT-004/005, is the common case for a
+   * long-lived process — the store adapter's own idle flush now runs with
+   * zero visibility back to this class; see the class doc comment).
    *
    * BL-405: reads the persistent `_lastCheckpointByPath` map, NOT the live
    * instance's own field — a live `WriteQueue` instance for `dbPath` may no
@@ -639,14 +670,11 @@ export class WriteQueue {
    * "no instance" must never be conflated with "never checkpointed".
    */
   static lastCheckpointAtForPath(rawDbPath: string): number {
-    // MUST canonicalize: this ledger is written under `forPath`'s canonical key,
-    // and callers reach it with whatever spelling they happen to hold.
-    // compaction.ts passes `adapter.config.dbPath` (already canonicalized by
-    // openDb) while the writer passed the raw caller path — on macOS that is
-    // `/private/var/...` vs `/var/...`, so this returned 0 every time, the
-    // double-checkpoint guard never fired, and compaction issued a redundant
-    // wal_checkpoint(TRUNCATE) immediately after the queue had run one.
-    // Redundant TRUNCATE checkpoints are the turso #7833 corruption trigger.
+    // MUST canonicalize: this ledger is written under `forPath`'s canonical
+    // key, and callers reach it with whatever spelling they happen to hold —
+    // on macOS that is `/private/var/...` vs `/var/...` for the exact same
+    // path (see BL-405's original incident: a raw-vs-canonical spelling
+    // mismatch here silently zeroed this ledger for every caller).
     return WriteQueue._lastCheckpointByPath.get(canonicalStorePath(rawDbPath)) ?? 0;
   }
 
@@ -660,59 +688,6 @@ export class WriteQueue {
     } catch {
       return 0;
     }
-  }
-
-  /**
-   * (WP-5) Run PRAGMA wal_checkpoint(TRUNCATE) to flush WAL to the main DB file
-   * and truncate the WAL. Idempotent — safe to call repeatedly.
-   * Returns the number of checkpointed frames, or -1 on error.
-   */
-  async walCheckpoint(): Promise<number> {
-    try {
-      const row = await this.adapter.executeGet<{ frames_checkpointed: number }>(
-        'PRAGMA wal_checkpoint(TRUNCATE)',
-      );
-      const now = Date.now();
-      this._lastCheckpointAt = now;
-      // Canonical key — see lastCheckpointAtForPath for why this matters.
-      WriteQueue._lastCheckpointByPath.set(canonicalStorePath(this._storePath), now);
-      return row?.frames_checkpointed ?? -1;
-    } catch (err) {
-      // BL-405 / BL-399 pattern: this used to be a bare `catch { return -1; }`
-      // — the WP-5 idle-checkpoint timer's own failure (e.g. "database
-      // connection is not open" when this fires against an already-closed
-      // adapter, observed live in production: 11 occurrences across distinct
-      // pids on 2026-08-03) vanished with zero trace. Still returns -1 (the
-      // documented error sentinel), but now leaves a record.
-      log.error('writequeue.checkpoint_failed', {
-        store: this._storePath,
-        error: err instanceof Error ? err.message : String(err),
-      });
-      return -1;
-    }
-  }
-
-  /** True when the checkpoint timer is pending (queue idle but not yet checkpointed). */
-  get _checkpointPending(): boolean {
-    return this._checkpointTimer !== null;
-  }
-
-  /** Cancel a pending checkpoint (new work arrived). */
-  private _cancelCheckpoint(): void {
-    if (this._checkpointTimer !== null) {
-      clearTimeout(this._checkpointTimer);
-      this._checkpointTimer = null;
-    }
-  }
-
-  /** Schedule a deferred WAL checkpoint if the queue is idle. */
-  private _scheduleIdleCheckpoint(): void {
-    if (this._processing || this.queue.length > 0) return;
-    if (this._checkpointTimer !== null) return; // already scheduled
-    this._checkpointTimer = setTimeout(() => {
-      this._checkpointTimer = null;
-      this.walCheckpoint().catch(() => {}); // fire-and-forget
-    }, WriteQueue.CHECKPOINT_IDLE_MS);
   }
 
   /**
@@ -751,16 +726,11 @@ export class WriteQueue {
     //   1. _bypass (static) — global kill-switch (SOX_DISABLE_WRITE_QUEUE=1)
     //   2. _noop (instance) — per-adapter: Turso et al. handle concurrent I/O natively.
     if (WriteQueue._bypass || this._noop) {
-      // (WP-5 / BL-405) New work arrived — cancel any pending idle checkpoint;
-      // it is re-scheduled once this operation settles (below). The FIFO path
-      // does this via _processNext's completion; the bypass/_noop path returns
-      // EARLY above the shared scheduling code (line ~686), so without this the
-      // 2s idle checkpoint never fires on the Turso adapter — memory_ping's
-      // last_checkpoint_at stayed null forever in production and the WAL grew
-      // until restart (BL-405). Scheduling after the settle reproduces the
-      // WP-5 contract: checkpoint ~2s after the last write.
-      this._cancelCheckpoint();
-      const scheduleIdleCheckpoint = (): void => { this._scheduleIdleCheckpoint(); };
+      // (DEBT-004/DEBT-005) WAL checkpointing is no longer this class's
+      // concern on the bypass path (Turso, the production case): the adapter
+      // itself arms an idle flush from INSIDE `_trackOp()` on every op this
+      // bypass path drives — see the class doc comment. Nothing to
+      // cancel/reschedule here any more.
       // BL-401: the bypass path is the one the LIVE service takes (the Turso
       // adapter sets `_noop`). Instrumenting only the FIFO path below would
       // have produced a stage that reads zero in production while passing every
@@ -771,12 +741,9 @@ export class WriteQueue {
         'write_queue',
         'bypass',
         () => Promise.resolve(),
-        (): Promise<T> => this._runBypass(label, operation, kind, resolvedTraceId, storeKey, scheduleIdleCheckpoint),
+        (): Promise<T> => this._runBypass(label, operation, kind, resolvedTraceId, storeKey),
       );
     }
-
-    // (WP-5) Cancel pending idle checkpoint — new work arrived
-    this._cancelCheckpoint();
 
     this._enqueueCount++;
     log.info('writequeue.enqueue', {
@@ -833,7 +800,6 @@ export class WriteQueue {
     kind: TaskKind,
     resolvedTraceId: string,
     storeKey: string,
-    scheduleIdleCheckpoint: () => void,
   ): Promise<T> {
     const t0 = performance.now();
     // (BL-445) Rolling average BEFORE this task — the slow-task baseline,
@@ -847,7 +813,6 @@ export class WriteQueue {
       try {
         const result = await withTrace(resolvedTraceId, () => operation(this.adapter));
         this._settleBypass(t0, avgAtStartMs, kind, label);
-        scheduleIdleCheckpoint();
         log.info('writequeue.task.finish', {
           trace_id: resolvedTraceId, store: storeKey, label, kind, mode: 'bypass',
           duration_ms: Math.round(performance.now() - t0),
@@ -858,7 +823,6 @@ export class WriteQueue {
         attempt++;
         if (!wrapped.retryable || attempt >= WriteQueue.BYPASS_MAX_ATTEMPTS) {
           this._settleBypass(t0, avgAtStartMs, kind, label);
-          scheduleIdleCheckpoint();
           log.error('writequeue.task.error', {
             trace_id: resolvedTraceId, store: storeKey, label, kind, mode: 'bypass',
             duration_ms: Math.round(performance.now() - t0),
@@ -1063,7 +1027,6 @@ export class WriteQueue {
     while (this._processing || this.queue.length > 0) {
       await new Promise<void>((r) => setImmediate(r));
     }
-    this._cancelCheckpoint();
     await this.adapter.close();
     // Remove from the singleton map
     for (const [key, val] of WriteQueue.instances) {
@@ -1294,11 +1257,11 @@ export class WriteQueue {
       }
       this._checkSaturation(); // falling edge
     }
-    // (WP-5) Queue is now idle — schedule a deferred WAL checkpoint.
-    // New items enqueued before the timer fires will cancel it.
-    // IMPORTANT: set _processing=false BEFORE scheduling the checkpoint,
-    // because _scheduleIdleCheckpoint guards on `if (this._processing) return;`.
+    // (DEBT-004/DEBT-005) No more private idle-checkpoint scheduling here —
+    // the adapter arms its own idle flush from `_trackOp()` on every op this
+    // FIFO path drives, on the SqliteAdapter this path serves too (though see
+    // the class doc comment's coverage-gap note: SqliteAdapterImpl has no
+    // such mechanism to arm).
     this._processing = false;
-    this._scheduleIdleCheckpoint();
   }
 }
