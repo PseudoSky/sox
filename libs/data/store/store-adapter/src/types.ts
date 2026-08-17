@@ -492,4 +492,28 @@ export interface TursoAdapter extends StoreAdapter {
    * `TursoAdapterImpl.withConnectionClosedForRepair` for the full contract.
    */
   withConnectionClosedForRepair<T>(fn: () => Promise<T>): Promise<T>;
+  /**
+   * (idle-release, 2026-08-17 — store-connection-lifetime design) Voluntarily
+   * release the underlying driver connection AND this connection's
+   * cross-process lease entry while KEEPING this adapter instance usable —
+   * `close()` was not called, and the next query/exec/transaction call
+   * transparently reconnects first (paying the full connect() ceremony,
+   * measured ~3-4ms steady-state — see `tools/bench-connect-cost.mjs` in the
+   * sox-ecosystem repo). Runs the SAME durability sequence `close()` runs on
+   * its writable branch (PASSIVE checkpoint always, then a quiescence-gated
+   * `wal_checkpoint(TRUNCATE)`) before dropping the connection.
+   *
+   * Intended for a long-lived caller that holds a connection open for its
+   * whole session (e.g. an MCP `serve` process) but is idle between
+   * requests: releasing during idle periods drops this connection's lease
+   * entry, which is what lets ANOTHER connection's close()-time TRUNCATE
+   * find a genuinely quiescent store instead of deferring indefinitely.
+   *
+   * Returns `false` (no-op — try again later) when a release is not
+   * currently possible: already permanently closed, already released, a
+   * reconnect is in flight, or an operation is currently executing on this
+   * connection (never releases mid-request, including mid-transaction).
+   * Returns `true` once the release has completed.
+   */
+  releaseIdleConnection(): Promise<boolean>;
 }
