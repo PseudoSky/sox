@@ -282,7 +282,7 @@ describe('BL-88 stamp on heal path — healMissingVectors stamps embed_model', (
     expect(await readEmbedModel(ctx.db, uid)).toBeNull();
 
     const wq = await WriteQueue.forPath(ctx.dbPath);
-    const healResult = await healMissingVectors(ctx.db, wq);
+    const healResult = await healMissingVectors(ctx.db, wq, { limit: 1000 });
     expect(healResult.healed).toBe(1);
 
     // After heal — embed_model is stamped.
@@ -358,7 +358,7 @@ describe('healStaleVectors — BL-88 stale-vector re-embed pass', () => {
     await insertEmbeddedWith(ctx.db, 'current-node', 'current node content', activeModel);
 
     const wq = await WriteQueue.forPath(ctx.dbPath);
-    const result = await healStaleVectors(ctx.db, wq);
+    const result = await healStaleVectors(ctx.db, wq, { limit: 1000 });
     expect(result.scanned).toBe(1); // only the stale node
     expect(result.healed).toBe(1);
     expect(result.gone).toBe(0);
@@ -378,7 +378,7 @@ describe('healStaleVectors — BL-88 stale-vector re-embed pass', () => {
     await insertOrphan(ctx.db, 'null-model-orphan', 'no model stamp');
 
     const wq = await WriteQueue.forPath(ctx.dbPath);
-    const result = await healStaleVectors(ctx.db, wq);
+    const result = await healStaleVectors(ctx.db, wq, { limit: 1000 });
     expect(result.scanned).toBe(0); // NULL-model rows excluded from the query
     expect(result.healed).toBe(0);
   });
@@ -404,7 +404,7 @@ describe('healStaleVectors — BL-88 stale-vector re-embed pass', () => {
     await insertEmbeddedWith(ctx.db, 'stamp-after-heal', 'verify stamp content', 'stale-model-xyz');
 
     const wq = await WriteQueue.forPath(ctx.dbPath);
-    const result = await healStaleVectors(ctx.db, wq);
+    const result = await healStaleVectors(ctx.db, wq, { limit: 1000 });
     expect(result.healed).toBe(1);
 
     const stamp = await readEmbedModel(ctx.db, 'stamp-after-heal');

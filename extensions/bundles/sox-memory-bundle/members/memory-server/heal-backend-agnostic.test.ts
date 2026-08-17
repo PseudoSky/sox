@@ -134,7 +134,7 @@ describe('healMissingVectors — backend agnostic', () => {
         const wq = await WriteQueue.forPath(dbPath);
 
         try {
-          const healResult = await healMissingVectors(adapter, wq);
+          const healResult = await healMissingVectors(adapter, wq, { limit: 1000 });
 
           expect(healResult.healed).toBeGreaterThan(0);
 
@@ -204,7 +204,7 @@ describe('healMissingVectors — backend agnostic', () => {
           const wq = await WriteQueue.forPath(dbPath);
 
           try {
-            const healResult = await healMissingVectors(adapter, wq);
+            const healResult = await healMissingVectors(adapter, wq, { limit: 1000 });
 
             expect(healResult.healed).toBeGreaterThan(0);
 

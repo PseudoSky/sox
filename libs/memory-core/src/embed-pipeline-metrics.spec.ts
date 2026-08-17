@@ -199,7 +199,7 @@ describe('heal path — never pollutes time_to_vector; wall-clock heal_lag_ms in
     const old = new Date(Date.now() - 60_000).toISOString();
     await insertOrphanEpisode(ctx.adapter, 'crash orphan with unique zeppelin tokens', old);
 
-    const heal = await healMissingVectors(ctx.adapter, wq);
+    const heal = await healMissingVectors(ctx.adapter, wq, { limit: 1000 });
     expect(heal.healed).toBe(1);
     expect(heal.failed).toBe(0);
 
@@ -244,7 +244,7 @@ describe('monotonic counters — each outcome branch drives exactly its counter'
     const sched = await schedulePendingEmbeds(wq, [a.pending!], { logSink: () => {}, vectorDialect: await vectorDialectFor(ctx.adapter) });
     expect(sched.failed).toBe(1);
 
-    const heal = await healMissingVectors(ctx.adapter, wq, { logSink: () => {} });
+    const heal = await healMissingVectors(ctx.adapter, wq, { limit: 1000, logSink: () => {} });
     expect(heal.failed).toBe(1); // same orphan, embed still failing
 
     const m = getEmbedPipelineMetrics(ctx.dbPath)!;
@@ -337,7 +337,7 @@ describe('embed_throughput_per_sec — rolling 60s window', () => {
   it('heal path also feeds the throughput metric', async () => {
     const wq = await WriteQueue.forPath(ctx.dbPath);
     await insertOrphanEpisode(ctx.adapter, 'heal throughput test item', new Date().toISOString());
-    const heal = await healMissingVectors(ctx.adapter, wq);
+    const heal = await healMissingVectors(ctx.adapter, wq, { limit: 1000 });
     expect(heal.healed).toBe(1);
 
     const m = getEmbedPipelineMetrics(ctx.dbPath)!;
@@ -350,7 +350,7 @@ describe('embed_throughput_per_sec — rolling 60s window', () => {
 describe('heal_time_budget_exceeded — per-tick time budget', () => {
   it('defaults to false on a clean heal pass (no items or items healed fully)', async () => {
     const wq = await WriteQueue.forPath(ctx.dbPath);
-    const heal = await healMissingVectors(ctx.adapter, wq);
+    const heal = await healMissingVectors(ctx.adapter, wq, { limit: 1000 });
     expect(heal.time_budget_exceeded).toBe(false);
 
     const m = getEmbedPipelineMetrics(ctx.dbPath)!;
@@ -360,7 +360,7 @@ describe('heal_time_budget_exceeded — per-tick time budget', () => {
   it('is false after a heal pass that fully heals all scanned items', async () => {
     const wq = await WriteQueue.forPath(ctx.dbPath);
     await insertOrphanEpisode(ctx.adapter, 'single budget-respecting orphan', new Date().toISOString());
-    const heal = await healMissingVectors(ctx.adapter, wq);
+    const heal = await healMissingVectors(ctx.adapter, wq, { limit: 1000 });
     expect(heal.healed).toBe(1);
     expect(heal.time_budget_exceeded).toBe(false);
 
