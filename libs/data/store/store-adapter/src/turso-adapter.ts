@@ -158,6 +158,46 @@ export class TursoAdapterImpl implements TursoAdapter {
    *  one rejected promise. */
   private _reconnectPromise: Promise<void> | null = null;
 
+  /** (idle-release, 2026-08-17 — store-connection-lifetime design) True once
+   *  `releaseIdleConnection()` has voluntarily torn this connection down
+   *  (full `close()` ceremony: checkpoint, quiescence-gated TRUNCATE, driver
+   *  close, marker clear, lease release) WITHOUT setting `closed = true` —
+   *  the adapter instance stays usable and `_ensureHealthy()` transparently
+   *  reconnects it on the next call, same shared-promise machinery as
+   *  `_poisoned`. Distinguished from `_poisoned`: a poisoned connection died
+   *  unexpectedly (a driver fault); a released one was torn down on purpose,
+   *  specifically to drop this connection's lease entry and let ANOTHER
+   *  connection's close()-time TRUNCATE find a genuinely quiescent store
+   *  (the 1,409 `close_checkpoint_busy` incident, 2026-08-12..17). See
+   *  `_reconnect()` for how the two cases differ in lease handling. */
+  private _released = false;
+
+  /** (idle-release) Count of operations currently executing against this
+   *  connection — incremented SYNCHRONOUSLY at the top of `_trackOp` (before
+   *  any `await`), so a burst of calls issued in the same tick is never
+   *  transiently invisible to `releaseIdleConnection()`'s busy check (the
+   *  "pendingCount trap": a counter incremented only after an await reads 0
+   *  for everything issued in the same tick). `releaseIdleConnection()`
+   *  refuses to run while this is non-zero — never releases mid-operation,
+   *  including mid-transaction (the whole `transaction()` call is one
+   *  tracked op, not just its `BEGIN`). */
+  private _inFlightOps = 0;
+
+  /** (idle-release) Wraps every method that touches `this.db` directly:
+   *  increments `_inFlightOps` before `_ensureHealthy()` runs (so a
+   *  reconnect itself also counts as "busy"), decrements in `finally`
+   *  regardless of outcome. Centralizes the `_ensureHealthy()` call so every
+   *  wrapped method gets poison- AND release-recovery for free. */
+  private async _trackOp<T>(fn: () => Promise<T>): Promise<T> {
+    this._inFlightOps++;
+    try {
+      await this._ensureHealthy();
+      return await fn();
+    } finally {
+      this._inFlightOps--;
+    }
+  }
+
   /** (BL-330) WAL identity as it stood when this connection opened. Compared
    *  again at close: if the `-wal` path has vanished or now resolves to a
    *  different inode, every write since the last checkpoint is about to be
@@ -293,7 +333,7 @@ export class TursoAdapterImpl implements TursoAdapter {
    * both apply — a read-only-mode rejection is not a connection question).
    */
   private async _ensureHealthy(): Promise<void> {
-    if (!this._poisoned) return;
+    if (!this._poisoned && !this._released) return;
     if (!this._reconnectPromise) {
       this._reconnectPromise = this._reconnect();
     }
@@ -319,23 +359,63 @@ export class TursoAdapterImpl implements TursoAdapter {
    * own "only kill -TERM recovered it" symptom is consistent with a
    * synchronous wait on exactly this kind of call.
    *
-   * On success, clears `_poisoned` and `_reconnectPromise`. On failure,
-   * leaves `_poisoned = true`, clears `_reconnectPromise` (so the next call
-   * gets a fresh attempt rather than being stuck on one failed promise), and
-   * rethrows — an unreachable store must not fake success.
+   * On success, clears `_poisoned`/`_released` and `_reconnectPromise`. On
+   * failure, leaves `_poisoned = true` (a failed recovery from a release is
+   * ALSO reported as poisoned, not silently re-marked released, so the next
+   * `_ensureHealthy()` call retries via the same well-tested path rather than
+   * a second released-specific branch), clears `_reconnectPromise` (so the
+   * next call gets a fresh attempt rather than being stuck on one failed
+   * promise), and rethrows — an unreachable store must not fake success.
+   *
+   * (idle-release) Lease handling differs by WHY this instance needed
+   * reconnecting:
+   *  - Recovering from `_poisoned`: this instance's OWN lease entry was
+   *    never released (the driver died; the fs lease is independent of driver
+   *    health) — it is still the correct, live token, so `this._lease` is
+   *    left untouched, exactly as before this feature existed. But `connect()`
+   *    ALWAYS acquires a lease for the temporary `fresh` instance regardless
+   *    of purpose, and until now nothing released THAT one — a real, if
+   *    narrow, leak (one orphaned-but-technically-live lease entry per
+   *    poison-reconnect, invisible to `storeQuiescence` sweeping because the
+   *    owning pid stays alive for the process's whole life). Fixed here:
+   *    release `fresh._lease` immediately since this instance never adopts it.
+   *  - Recovering from `_released`: `releaseIdleConnection()`'s `close()` call
+   *    already released this instance's OWN lease entry on purpose — there is
+   *    no existing valid token to keep, so the fresh `connect()`'s lease MUST
+   *    be adopted as this instance's new one, or every future `close()`/
+   *    `releaseIdleConnection()` call silently stops participating in
+   *    `storeQuiescence()` (the `coordDb && this._lease` gate at close()'s
+   *    TRUNCATE branch would fall through to the "no lease" branch forever).
    */
   private async _reconnect(): Promise<void> {
     const staleDb = this.db;
+    const wasReleased = this._released;
     try {
       const fresh = await TursoAdapterImpl.connect(this._connectOpts);
       this.db = fresh.db;
       this._walBaseline = fresh._walBaseline;
       this._softReadonly = fresh._softReadonly;
+      if (wasReleased) {
+        this._lease = fresh._lease;
+      } else if (fresh._lease) {
+        // (BUG-STOREADAPTER-POISON-RECONNECT-LEASE-LEAK, discovered
+        // 2026-08-17 while building idle-release) `this._lease` is still
+        // valid and untouched — the fresh instance's own lease is unused and
+        // would otherwise linger in the lease dir for this process's entire
+        // remaining life.
+        await fresh._lease.release().catch((leaseErr: unknown) => {
+          log.warn('store_adapter.turso.reconnect_stale_lease_release_failed', {
+            error: leaseErr instanceof Error ? leaseErr.message : String(leaseErr),
+          });
+        });
+      }
       this._poisoned = false;
+      this._released = false;
     } catch (err) {
       log.error('store_adapter.turso.connection.reconnect_failed', {
         error: err instanceof Error ? err.message : String(err),
       });
+      this._poisoned = true;
       throw err;
     } finally {
       this._reconnectPromise = null;
@@ -1082,7 +1162,19 @@ export class TursoAdapterImpl implements TursoAdapter {
    * a plain VACUUM.
    */
   async backupTo(destPath: string, opts: AdapterBackupOptions = {}): Promise<AdapterBackupResult> {
-    await this.db.exec(`VACUUM INTO '${destPath.replace(/'/g, "''")}'`);
+    // (idle-release) `_trackOp` both guards against a concurrent
+    // `releaseIdleConnection()` tearing this connection down mid-VACUUM and
+    // — a pre-existing gap this closes as a side effect — gives `backupTo`
+    // poison-reconnect coverage it never had (the previous direct
+    // `this.db.exec` call bypassed `_ensureHealthy`/`_markIfFatal` entirely).
+    await this._trackOp(async () => {
+      try {
+        await this.db.exec(`VACUUM INTO '${destPath.replace(/'/g, "''")}'`);
+      } catch (err) {
+        this._markIfFatal(err);
+        throw err;
+      }
+    });
 
     let integrityCheck = 'ok';
     let integrityReport: BackupIntegrityReport | undefined;
@@ -1136,39 +1228,42 @@ export class TursoAdapterImpl implements TursoAdapter {
   }
 
   async executeGet<T = Record<string, unknown>>(sql: string, args?: unknown[]): Promise<T | null> {
-    await this._ensureHealthy();
-    try {
-      const row = args !== undefined ? await this.db.get(sql, ...args) : await this.db.get(sql);
-      return (row as T | null) ?? null;
-    } catch (err) {
-      this._markIfFatal(err);
-      throw err;
-    }
+    return this._trackOp(async () => {
+      try {
+        const row = args !== undefined ? await this.db.get(sql, ...args) : await this.db.get(sql);
+        return (row as T | null) ?? null;
+      } catch (err) {
+        this._markIfFatal(err);
+        throw err;
+      }
+    });
   }
 
   async executeAll<T = Record<string, unknown>>(sql: string, args?: unknown[]): Promise<AllResult<T>> {
-    await this._ensureHealthy();
-    try {
-      const rows = args !== undefined ? await this.db.all(sql, ...args) : await this.db.all(sql);
-      const rowsArr = rows as T[];
-      const columns = rowsArr.length > 0 ? Object.keys(rowsArr[0] as Record<string, unknown>) : [];
-      return { columns, rows: rowsArr };
-    } catch (err) {
-      this._markIfFatal(err);
-      throw err;
-    }
+    return this._trackOp(async () => {
+      try {
+        const rows = args !== undefined ? await this.db.all(sql, ...args) : await this.db.all(sql);
+        const rowsArr = rows as T[];
+        const columns = rowsArr.length > 0 ? Object.keys(rowsArr[0] as Record<string, unknown>) : [];
+        return { columns, rows: rowsArr };
+      } catch (err) {
+        this._markIfFatal(err);
+        throw err;
+      }
+    });
   }
 
   async executeRun(sql: string, args?: unknown[]): Promise<RunResult> {
     this._assertWritable();
-    await this._ensureHealthy();
-    try {
-      const info = args !== undefined ? await this.db.run(sql, ...args) : await this.db.run(sql);
-      return { rowsAffected: info.changes as number, lastInsertRowid: info.lastInsertRowid as number };
-    } catch (err) {
-      this._markIfFatal(err);
-      throw err;
-    }
+    return this._trackOp(async () => {
+      try {
+        const info = args !== undefined ? await this.db.run(sql, ...args) : await this.db.run(sql);
+        return { rowsAffected: info.changes as number, lastInsertRowid: info.lastInsertRowid as number };
+      } catch (err) {
+        this._markIfFatal(err);
+        throw err;
+      }
+    });
   }
 
   /**
@@ -1189,43 +1284,46 @@ export class TursoAdapterImpl implements TursoAdapter {
    */
   async exec(sql: string): Promise<void> {
     this._assertWritable();
-    await this._ensureHealthy();
-    try {
-      await this.db.exec(sql);
-    } catch (err) {
-      this._markIfFatal(err);
-      throw err;
-    }
+    return this._trackOp(async () => {
+      try {
+        await this.db.exec(sql);
+      } catch (err) {
+        this._markIfFatal(err);
+        throw err;
+      }
+    });
   }
 
-  /** (SPEC-CONN-RECYCLE) Wired through `_ensureHealthy`/`_markIfFatal` like
-   *  every other direct `this.db.*` call site — a caller that issues a
-   *  pragma against an already-poisoned handle mid-session (not just at
-   *  connection-open time, which is the only way today's callers use it)
-   *  must get the same reconnect-then-retry-once semantics as
-   *  `exec`/`executeGet`/`executeAll`/`executeRun`, not a silent query
-   *  against a dead connection. */
+  /** (SPEC-CONN-RECYCLE) Wired through `_trackOp` (`_ensureHealthy`/
+   *  `_markIfFatal`) like every other direct `this.db.*` call site — a
+   *  caller that issues a pragma against an already-poisoned OR released
+   *  handle mid-session (not just at connection-open time, which is the only
+   *  way today's callers use it) must get the same reconnect-then-retry-once
+   *  semantics as `exec`/`executeGet`/`executeAll`/`executeRun`, not a
+   *  silent query against a dead connection. */
   async pragmaSet(key: string, value: string | number | boolean): Promise<void> {
-    await this._ensureHealthy();
-    const boolVal = typeof value === 'boolean' ? (value ? 1 : 0) : value;
-    try {
-      await this.db.exec(`PRAGMA ${key} = ${boolVal}`);
-    } catch (err) {
-      this._markIfFatal(err);
-      throw err;
-    }
+    return this._trackOp(async () => {
+      const boolVal = typeof value === 'boolean' ? (value ? 1 : 0) : value;
+      try {
+        await this.db.exec(`PRAGMA ${key} = ${boolVal}`);
+      } catch (err) {
+        this._markIfFatal(err);
+        throw err;
+      }
+    });
   }
 
   /** (SPEC-CONN-RECYCLE) See `pragmaSet` doc comment — same wiring. */
   async pragmaGet<T = unknown>(key: string): Promise<T> {
-    await this._ensureHealthy();
-    try {
-      const rows = await this.db.pragma(key, { simple: true });
-      return rows as T;
-    } catch (err) {
-      this._markIfFatal(err);
-      throw err;
-    }
+    return this._trackOp(async () => {
+      try {
+        const rows = await this.db.pragma(key, { simple: true });
+        return rows as T;
+      } catch (err) {
+        this._markIfFatal(err);
+        throw err;
+      }
+    });
   }
 
   async transaction<T>(
@@ -1236,7 +1334,13 @@ export class TursoAdapterImpl implements TursoAdapter {
     // (BL-321) Serialize the entire BEGIN…COMMIT/ROLLBACK critical section —
     // including retries — against any other concurrent transaction() call on
     // this adapter instance. See `_withTxLock` doc comment above.
-    return this._withTxLock(() => this._runTransaction(fn, opts));
+    //
+    // (idle-release) The WHOLE transaction — not just its opening
+    // `_ensureHealthy()` check — is one tracked op: `_inFlightOps` must stay
+    // non-zero for the entire BEGIN..COMMIT/ROLLBACK window (including the
+    // caller's `fn`), or `releaseIdleConnection()` could tear the connection
+    // down between two statements of an in-progress transaction.
+    return this._trackOp(() => this._withTxLock(() => this._runTransaction(fn, opts)));
   }
 
   private async _runTransaction<T>(
@@ -1372,6 +1476,64 @@ export class TursoAdapterImpl implements TursoAdapter {
    * `_softReadonly` adapters hold a driver-writable connection (BL-391 — FTS
    * requires it), so they checkpoint too; a hard `readonly` open never does.
    */
+  /**
+   * (idle-release, 2026-08-17 — store-connection-lifetime design) Voluntarily
+   * release the underlying driver connection AND this connection's lease-dir
+   * entry while KEEPING this adapter instance usable: `closed` stays `false`,
+   * and the NEXT call to any query/exec/transaction method transparently
+   * reconnects (paying the full `connect()` ceremony — measured ~3-4ms
+   * steady-state, `tools/bench-connect-cost.mjs` — before proceeding), via
+   * the same `_ensureHealthy()`/`_reconnectPromise` machinery SPEC-CONN-
+   * RECYCLE already uses for poison recovery.
+   *
+   * Runs the FULL `close()` ceremony first — PASSIVE checkpoint always, then
+   * a quiescence-gated `wal_checkpoint(TRUNCATE)`, driver close, marker
+   * clear, lease release — by literally calling `this.close()` and then
+   * un-setting `closed`. This is deliberate reuse, not parallel
+   * reimplementation: every durability guarantee `close()` already has
+   * (BL-330 orphaned-WAL PASSIVE backstop, BUG-008 single-TRUNCATE-per-close,
+   * the BUG-STOREADAPTER-QUIESCENCE-TOCTOU detector) applies unchanged to a
+   * release.
+   *
+   * Intended for a long-lived caller (e.g. a `backlog serve` process) that
+   * holds a connection open for its whole session but is idle between
+   * requests. Releasing during an idle period drops THIS connection's lease
+   * entry — which is what lets ANOTHER connection's close()-time TRUNCATE
+   * find a genuinely quiescent store instead of deferring forever (the 1,409
+   * `store_adapter.turso.close_checkpoint_busy` events, 2026-08-12..17, root-
+   * caused to idle-held `serve` connections never releasing —
+   * `docs/reporting/memory/findings/2026-08-17-store-connection-lifetime-forensics.md`).
+   *
+   * Returns `false` (no-op, nothing changed) rather than throwing when a
+   * release is not currently possible:
+   *  - already permanently closed (`this.closed`) — call `close()` instead;
+   *  - already released (`this._released`) — idempotent, avoids a caller's
+   *    own idle-timer double-firing paying two teardown cycles;
+   *  - a reconnect is already in flight (`this._reconnectPromise`) — don't
+   *    race it, whatever triggered it (poison OR a prior release) owns the
+   *    transition;
+   *  - an operation is currently executing on this connection
+   *    (`this._inFlightOps > 0`) — NEVER releases mid-request, including
+   *    mid-transaction (the whole `transaction()` call is one tracked op).
+   * Returns `true` once the release has completed. A caller with an idle
+   * timer should treat `false` as "try again on the next tick," not as an
+   * error.
+   */
+  async releaseIdleConnection(): Promise<boolean> {
+    if (this.closed || this._released || this._reconnectPromise || this._inFlightOps > 0) {
+      return false;
+    }
+    await this.close();
+    // `close()` sets `closed = true` — undo that so this instance stays
+    // usable. `close()` already nulled `this._lease` as part of its own
+    // teardown; `_reconnect()` (triggered by `_ensureHealthy()` on the next
+    // operation) adopts a fresh one, see its doc comment for why that must
+    // differ from poison recovery's lease handling.
+    this.closed = false;
+    this._released = true;
+    return true;
+  }
+
   async close(): Promise<void> {
     if (this.closed) return;
     this.closed = true;
@@ -1736,43 +1898,60 @@ export class TursoAdapterImpl implements TursoAdapter {
         'withConnectionClosedForRepair: the adapter is already closed and cannot be reopened',
       );
     }
-    // (BUG-STOREADAPTER-COORDINATION-PATH-ASYMMETRY) Canonical: this value feeds
-    // the `storeQuiescence` gate below that authorizes a WRITABLE classic-engine
-    // repair. Reading the raw spelling would let that gate consult a lease
-    // directory no peer ever wrote to — the worst possible place for this bug.
-    const repairDbPath = this.coordPath;
-    const ownLeaseToken = this._lease?.token;
-    await this.close(); // full clean-close ceremony (checkpoint, driver close, marker clear)
+    // (idle-release) Bump `_inFlightOps` for the WHOLE close-repair-reopen
+    // window so a concurrent `releaseIdleConnection()` call cannot interleave
+    // with it — two independent close/reopen cycles racing on the same `db`/
+    // `_lease` fields would corrupt adapter state, not just the store.
+    this._inFlightOps++;
     try {
-      // (BUG-017 review fix) The quiescence probe is LOCAL-FILE-only. A
-      // URL-only connection (`dbPath === undefined`) is exempt: the exp9
-      // poisoner is a WRITABLE classic open against a LOCAL store file whose
-      // WAL/`-tshm` coordination it cannot see — a remote URL has no local
-      // store file to poison, so there is nothing for this gate to protect
-      // (and leases are never acquired for URLs; store-lease.ts:16). No
-      // production caller reaches this branch with a better-sqlite3 drop
-      // anyway — graph-store early-returns on `cfg.dbPath === undefined`
-      // (index.ts:1274) — so INV-1 is not bypassed.
-      if (repairDbPath !== undefined) {
-        const quiescence = storeQuiescence(repairDbPath, ownLeaseToken);
-        if (!quiescence.quiescent) {
-          throw new RepairDeclinedLivePeersError(repairDbPath, quiescence.livePeers);
+      // (idle-release) A prior `releaseIdleConnection()` may have left this
+      // instance disguised as open (`closed === false`, per its own
+      // contract) with a torn-down driver handle underneath. Reconnect
+      // transparently first — the repair's own close()/reopen dance below
+      // assumes a LIVE connection to close, not an already-dead one; calling
+      // `close()` twice against the same driver handle would throw.
+      await this._ensureHealthy();
+      // (BUG-STOREADAPTER-COORDINATION-PATH-ASYMMETRY) Canonical: this value feeds
+      // the `storeQuiescence` gate below that authorizes a WRITABLE classic-engine
+      // repair. Reading the raw spelling would let that gate consult a lease
+      // directory no peer ever wrote to — the worst possible place for this bug.
+      const repairDbPath = this.coordPath;
+      const ownLeaseToken = this._lease?.token;
+      await this.close(); // full clean-close ceremony (checkpoint, driver close, marker clear)
+      try {
+        // (BUG-017 review fix) The quiescence probe is LOCAL-FILE-only. A
+        // URL-only connection (`dbPath === undefined`) is exempt: the exp9
+        // poisoner is a WRITABLE classic open against a LOCAL store file whose
+        // WAL/`-tshm` coordination it cannot see — a remote URL has no local
+        // store file to poison, so there is nothing for this gate to protect
+        // (and leases are never acquired for URLs; store-lease.ts:16). No
+        // production caller reaches this branch with a better-sqlite3 drop
+        // anyway — graph-store early-returns on `cfg.dbPath === undefined`
+        // (index.ts:1274) — so INV-1 is not bypassed.
+        if (repairDbPath !== undefined) {
+          const quiescence = storeQuiescence(repairDbPath, ownLeaseToken);
+          if (!quiescence.quiescent) {
+            throw new RepairDeclinedLivePeersError(repairDbPath, quiescence.livePeers);
+          }
         }
+        return await fn();
+      } finally {
+        const fresh = await TursoAdapterImpl.connect(this._connectOpts);
+        this.db = fresh.db;
+        this._lease = fresh._lease;
+        // (BUG-STOREADAPTER-COORDINATION-PATH-ASYMMETRY) Adopt the fresh instance's
+        // canonical identity alongside its lease. The two are a pair: `_lease` was
+        // taken under `_canonicalDb`, so carrying one without the other would point
+        // this connection's coordination at a directory its own lease is not in.
+        this._canonicalDb = fresh._canonicalDb;
+        this._walBaseline = fresh._walBaseline;
+        this._softReadonly = fresh._softReadonly;
+        this._poisoned = false;
+        this._released = false; // (idle-release) defense-in-depth — should already be false
+        this.closed = false; // the fresh connection is live; close() set this true
       }
-      return await fn();
     } finally {
-      const fresh = await TursoAdapterImpl.connect(this._connectOpts);
-      this.db = fresh.db;
-      this._lease = fresh._lease;
-      // (BUG-STOREADAPTER-COORDINATION-PATH-ASYMMETRY) Adopt the fresh instance's
-      // canonical identity alongside its lease. The two are a pair: `_lease` was
-      // taken under `_canonicalDb`, so carrying one without the other would point
-      // this connection's coordination at a directory its own lease is not in.
-      this._canonicalDb = fresh._canonicalDb;
-      this._walBaseline = fresh._walBaseline;
-      this._softReadonly = fresh._softReadonly;
-      this._poisoned = false;
-      this.closed = false; // the fresh connection is live; close() set this true
+      this._inFlightOps--;
     }
   }
 }
