@@ -6,6 +6,7 @@ you want to change but need to find the right package. For a full project listin
 
 | If you're doing... | Go to |
 |---|---|
+| Publish/release an `@adhd/sox-*` package | [`docs/publishing/release-flow.md`](../publishing/release-flow.md) |
 | Change embedding model / add a new model | `libs/data/embed/embedding-provider/` |
 | Tune recall ranking / scoring / normalization | `libs/data/search/hybrid-search/` |
 | Change node/edge schema, add graph columns | `libs/data/graph/graph-store/` + plan a re-embed (modelId mismatch check) |

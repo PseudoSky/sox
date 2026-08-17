@@ -43,6 +43,21 @@ npx nx affected:test --base=HEAD   # test every changed project
 If any test fails, fix it immediately. Never claim a failure is pre-existing. Run `git diff`
 to trace the exact origin.
 
+### 1.3b Release gate (publishing an `@adhd/sox-*` package)
+
+Publishing is not done when the package is published — it is done when every
+consumer that needs the change is running it.
+
+```bash
+node tools/release-consumers.mjs @adhd/sox-<pkg>   # who breaks if I publish this?
+```
+
+Exact dependency pins (no `^`/`~`) do NOT float: the chain reports success at
+every step while consumers keep running the old version. Each flagged pin is a
+required follow-up bump.
+
+Full flow, including isolation requirements for consumer testing: [`docs/publishing/release-flow.md`](docs/publishing/release-flow.md).
+
 ### 1.4 GitNexus verification
 
 ```
