@@ -197,14 +197,77 @@ export interface MemoryScope {
 }
 
 /**
+ * (BUG-017, nodeId 2404) Quiescence gate for a writable classic-engine
+ * (better-sqlite3) session against a store the Turso engine may still own
+ * under `multiprocess_wal`. Classic SQLite cannot see Turso's `-tshm`
+ * coordinator, so a writable open (or even its own close-time auto
+ * checkpoint) can delete/rewrite the WAL out from under live Turso peers —
+ * the "exp9 poisoner" shape store-adapter's own equivalent hatch was gated
+ * against under BUG-017 (`libs/data/store/store-adapter/src/preflight.ts`
+ * `deleteSchemaRowsViaBetterSqlite3`, commits 29587877/d599ae7a/2ef5b1ac,
+ * merged c4025656). `dropVec0ViaBetterSqlite3`/`dropFtsResidueViaBetterSqlite3`
+ * below reimplemented that same writable-classic-open pattern independently
+ * and never received the gate.
+ *
+ * The real gate primitive (`storeQuiescence()`, `store-lease.ts`) is NOT
+ * part of `@adhd/sox-store-adapter`'s public surface — the package only
+ * re-exports whole modules (`export * from './preflight.js'` etc.) and
+ * `store-lease.ts` is not one of them; this task's scope explicitly forbids
+ * editing anything under `libs/data/store/store-adapter/**` to add that
+ * export. Rather than hand-roll a FOURTH private copy of the liveness-probe
+ * logic (lease-directory scan + pid liveness + age-out) — the exact
+ * anti-pattern this defect exists to close off — this reuses the ALREADY
+ * quiescence-gated, ALREADY exported `deleteSchemaRowsViaBetterSqlite3` as
+ * the gate oracle: it runs `storeQuiescence()` before touching the file and
+ * declines with `failed: 'declined: N live peer(s)…'` under live peers,
+ * never a silent skip (INV-5). Passing a name that can never exist in
+ * `sqlite_master` makes the call a pure no-op (`dropped: []`, `failed: null`)
+ * whenever the store IS quiescent — a real gate decision, not a guess, with
+ * zero reimplementation of the underlying probe.
+ *
+ * A declined session is safe degradation, never a silent skip: the caller
+ * logs loudly and leaves the store file untouched — the repair (or FTS
+ * residue cleanup) is simply deferred to the next open, mirroring the
+ * declined-repair contract `graph-store`'s `dropFts5ResidueBeforeRebuild`
+ * already follows for the same defect class.
+ */
+const CROSS_ENGINE_QUIESCENCE_PROBE_NAME = '__sox_bug017_quiescence_probe__';
+
+// Exported (not just for production callers below) so BUG-017 regression
+// coverage in db.spec.ts can drive the gate directly with a simulated live
+// peer, without needing a full Turso store + a second real process.
+export async function classicEngineSessionDeclined(dbPath: string, op: string): Promise<boolean> {
+  // Lazy import (module-boundary rule: store-adapter is lazy-loaded from
+  // memory-core, same as every other runtime use in this file — see
+  // `getFtsOpsModule` below).
+  const { deleteSchemaRowsViaBetterSqlite3 } = await getFtsOpsModule();
+  const probe = deleteSchemaRowsViaBetterSqlite3(dbPath, [CROSS_ENGINE_QUIESCENCE_PROBE_NAME]);
+  if (probe.failed !== null && probe.failed.startsWith('declined:')) {
+    log.warn('store.open.cross_engine_repair_declined_live_peers', {
+      db_path: dbPath,
+      op,
+      detail: probe.failed,
+    });
+    return true;
+  }
+  return false;
+}
+
+/**
  * Open a database via better-sqlite3 + sqlite-vec to drop vec0 virtual tables
  * and optionally VACUUM. Turso/libSQL cannot drop vec0 VTs (no vec0 module),
  * so this fallback is required when migrating an existing store to Turso.
+ *
+ * (BUG-017) Quiescence-gated: see {@link classicEngineSessionDeclined}. A
+ * declined session returns without opening the writable classic connection
+ * at all — the vec0 residue is left in place and the repair is deferred to
+ * the next open, never a silent poison-the-WAL attempt against a live peer.
  */
-async function dropVec0ViaBetterSqlite3(
+export async function dropVec0ViaBetterSqlite3(
   dbPath: string,
   options?: { runVacuum?: boolean },
 ): Promise<void> {
+  if (await classicEngineSessionDeclined(dbPath, 'drop_vec0')) return;
   // BL-323: sqlite-vec has NO default export (only named `load`/`getLoadablePath`,
   // verified against the installed 0.1.9 package — `m.default` is `undefined`).
   // Destructuring `{ default: sqliteVec }` silently binds `sqliteVec` to `undefined`,
@@ -263,54 +326,51 @@ async function dropVec0ViaBetterSqlite3(
 }
 
 /**
- * Execute FTS legacy-residue DROP statements — as produced by
- * `FTSDialect.dropLegacyDDL()` — through a fresh better-sqlite3 connection.
+ * (BUG-017, nodeId 2404) Drop FTS legacy-residue schema rows — required
+ * whenever the residue was created by a DIFFERENT SQLite engine module than
+ * the one about to reopen the store (typically: Turso opening a store that
+ * still carries SQLite-era FTS5 artifacts). `DROP TABLE`/`DROP TRIGGER`
+ * issued directly through Turso against FTS5 objects it doesn't understand
+ * silently "succeeds" while leaving the object in `sqlite_master` untouched
+ * (verified empirically — same silent-no-op behavior documented for vec0
+ * DROPs via `dropVec0ViaBetterSqlite3` above).
  *
- * Required whenever the residue was created by a DIFFERENT SQLite engine
- * module than the one about to reopen the store (typically: Turso opening a
- * store that still carries SQLite-era FTS5 artifacts). `DROP TABLE`/`DROP
- * TRIGGER` issued directly through Turso against FTS5 objects it doesn't
- * understand silently "succeeds" while leaving the object in `sqlite_master`
- * untouched (verified empirically — same silent-no-op behavior already
- * documented for vec0 DROPs via `dropVec0ViaBetterSqlite3` above).
- * better-sqlite3 has FTS5 compiled in, so it executes these drops for real
- * regardless of which dialect produced the statement list — the caller
- * doesn't need to know or care which backend authored the residue.
- *
- * Each statement is executed independently and best-effort: a partial-residue
- * store (e.g. missing one shadow table) must not abort the whole cleanup.
+ * This used to open its OWN private, UNGATED writable better-sqlite3
+ * connection and run `DROP TABLE`/`DROP TRIGGER` statements through it — the
+ * exact BUG-017 cross-engine poisoner shape (a writable classic-engine open
+ * against a store a live Turso multiprocess peer may still hold), never
+ * quiescence-gated. Fixed by deleting that private reimplementation entirely
+ * in favor of store-adapter's own EXPORTED, ALREADY quiescence-gated
+ * `deleteSchemaRowsViaBetterSqlite3` — its own doc comment names this exact
+ * use case ("`FTSDialect.legacyResidueNames('node')` for fts5 residue") as
+ * the sanctioned call shape: delete `sqlite_master` rows by NAME (works for
+ * a table, index, trigger, or view alike — a superset of the old per-DDL-
+ * statement loop) instead of by hand-assembled DROP DDL, gated on
+ * `storeQuiescence()` before it ever opens the file. A declined drop is
+ * logged loudly (INV-5) and left in place for the next open, never a silent
+ * skip.
  */
-async function dropFtsResidueViaBetterSqlite3(dbPath: string, statements: readonly string[]): Promise<void> {
-  const { default: Database } = await import('better-sqlite3');
-  const bsdb = new Database(dbPath);
-  try {
-    // (BL-508) REPAIR intent: proceeds regardless of the store's engine
-    // marker (this is the sanctioned escape hatch for dropping residue the
-    // Turso engine silently no-ops) — but records the detected engine.
-    try {
-      const { SOX_APP_ID_TURSO, SOX_APP_ID_SQLITE } = await getFtsOpsModule();
-      const appId = bsdb.pragma('application_id', { simple: true }) as number;
-      const detected = appId === SOX_APP_ID_TURSO ? 'turso' : appId === SOX_APP_ID_SQLITE ? 'sqlite' : null;
-      log.info('store.open.better_sqlite3_fts_residue_engine', {
+export async function dropFtsResidueViaBetterSqlite3(
+  dbPath: string,
+  residueNames: readonly string[],
+): Promise<void> {
+  const { deleteSchemaRowsViaBetterSqlite3 } = await getFtsOpsModule();
+  const result = deleteSchemaRowsViaBetterSqlite3(dbPath, residueNames);
+  if (result.failed !== null) {
+    if (result.failed.startsWith('declined:')) {
+      // Already logged loudly inside deleteSchemaRowsViaBetterSqlite3
+      // (store_adapter.preflight.schema_repair_declined_live_peers) — no
+      // duplicate log here, just surface it to the caller's own context.
+      log.warn('store.open.fts_legacy_residue_drop_deferred_live_peers', {
         db_path: dbPath,
-        intent: 'repair',
-        detected_engine: detected,
+        detail: result.failed,
       });
-    } catch {
-      // Engine recording is best-effort.
+    } else {
+      log.debug('store.open.fts_legacy_residue_drop_skip', {
+        db_path: dbPath,
+        error: truncateForLog(result.failed),
+      });
     }
-    for (const stmt of statements) {
-      try {
-        bsdb.exec(stmt);
-      } catch (err) {
-        log.debug('store.open.fts_legacy_residue_drop_skip', {
-          sql: truncateForLog(stmt),
-          error: truncateForLog(err instanceof Error ? err.message : String(err)),
-        });
-      }
-    }
-  } finally {
-    bsdb.close();
   }
 }
 
@@ -619,14 +679,17 @@ async function _openDbInner(dbPath: string): Promise<StoreAdapter> {
           residue_count: residue.c,
         });
         // The Turso engine's DROPs against FTS5 objects silently no-op (see
-        // fts-dialect.ts) — route through better-sqlite3, which has FTS5
+        // fts-dialect.ts) — route through store-adapter's quiescence-gated
+        // `deleteSchemaRowsViaBetterSqlite3` (BUG-017), which has FTS5
         // compiled in, then reopen (mirrors the vec0 compatibility repair
         // above and the identical dance the pre-delegation block performed).
-        // Errors here PROPAGATE — the pre-delegation block also left its
-        // close/reopen outside the per-statement try/catch: a failure to
-        // clean residue is a real open failure.
+        // (BUG-017) A declined drop is NOT propagated as an open failure —
+        // it degrades safely (residue left in place, cleaned on a later
+        // open once the store is quiescent) and is already logged loudly by
+        // `dropFtsResidueViaBetterSqlite3` above; only a genuine crash in
+        // the reopen below would still fail this open.
         await adapter.close();
-        await dropFtsResidueViaBetterSqlite3(dbPath, residueDialect.dropLegacyDDL('node'));
+        await dropFtsResidueViaBetterSqlite3(dbPath, residueNames);
         adapter = await createStoreAdapter({ dbPath });
       }
     }

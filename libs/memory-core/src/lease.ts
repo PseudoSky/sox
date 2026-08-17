@@ -151,27 +151,34 @@ export function releaseWriteLease(dbPath: string): void {
 
 /**
  * Safely close a StoreAdapter and release its write lease:
- *   1. PRAGMA wal_checkpoint(TRUNCATE) to flush WAL
- *   2. adapter.close()
- *   3. releaseWriteLease()
+ *   1. adapter.close()
+ *   2. releaseWriteLease()
+ *
+ * (BL-573, 2026-08-17) This used to issue its OWN raw, UNGATED
+ * `PRAGMA wal_checkpoint(TRUNCATE)` directly against `adapter` immediately
+ * before `adapter.close()` — a double-checkpoint on every shutdown, since a
+ * writable Turso adapter's `close()` ALREADY runs a full gated ceremony
+ * (PASSIVE checkpoint always, then `wal_checkpoint(TRUNCATE)` gated on
+ * `storeQuiescence()` — see `TursoAdapterImpl.close()` in
+ * `libs/data/store/store-adapter/src/turso-adapter.ts`). The raw PRAGMA here
+ * was the UNGATED half of that pair: no quiescence check at all, run while
+ * other processes could still hold the store. This is the exact private
+ * checkpoint-mechanism shape removed from `WriteQueue.closeAllForShutdown()`
+ * and `compaction.ts` in commit e77fb615 (DEBT-004/005) — that fix never
+ * reached this file, and this one survived only because nothing forced a
+ * compile fix (the two functions took different call shapes). Fixed the same
+ * way: the flush is now owned entirely by `adapter.close()`'s own public
+ * surface — this function issues no SQL of its own.
  */
 export async function closeDbWithLease(adapter: StoreAdapter, dbPath: string): Promise<void> {
   try {
-    await adapter.exec('PRAGMA wal_checkpoint(TRUNCATE)');
-  } catch (err) {
-    // BL-405 / BL-399 pattern: this used to be a bare, silent `catch {}` —
-    // an unnoticed checkpoint failure here means the WAL is NOT durable
-    // despite a "shutting down" log line implying a clean exit, and there
-    // was no way to ever discover that after the fact. Log it; still
-    // best-effort (never blocks close/lease-release below).
-    log.error('lease.close.checkpoint_failed', {
-      db_path: dbPath,
-      error: err instanceof Error ? err.message : String(err),
-    });
-  }
-  try {
     await adapter.close();
   } catch (err) {
+    // BL-405 / BL-399 pattern: this used to be a bare, silent `catch {}` —
+    // an unnoticed close/checkpoint failure here means the WAL is NOT
+    // durable despite a "shutting down" log line implying a clean exit, and
+    // there was no way to ever discover that after the fact. Log it; still
+    // best-effort (never blocks lease-release below).
     log.error('lease.close.adapter_close_failed', {
       db_path: dbPath,
       error: err instanceof Error ? err.message : String(err),
