@@ -39,12 +39,32 @@ it as a deliberately-RED, uncorrected test.
 
 Replacing ADR-0007's single-process invariant:
 
-> **Multiple processes may hold concurrent write connections to the same Turso-backed store.** The
-> adapter's own MVCC (`BEGIN CONCURRENT` / optimistic-conflict-and-retry, `turso-adapter.ts`
-> `_runTransaction` :722-778) and the connection-poisoning/recycle machinery
-> (`SPEC-CONN-RECYCLE.md`, `errors.ts` `isFatalConnectionError` :159-193) are what make concurrent
-> writers safe — not a queue. A queue never existed for this to be gated behind: `_noop = true` means
-> `WriteQueue.enqueue()` never enters its FIFO path for a Turso-backed store at all.
+> **Multiple processes may hold concurrent write connections to the same Turso-backed store.**
+> Writers are **serialized**, not concurrent: `multiprocess_wal` extends classic single-writer WAL
+> across process boundaries via a `.tshm` coordinator holding a single-writer slot, so at any instant
+> one process holds the writer slot and the rest block. What makes that survivable is the adapter's
+> always-on busy timeout (`turso-adapter.ts` :70-91 — waits out the block instead of failing),
+> `_runTransaction`'s bounded exponential-backoff retry on BEGIN failures, and the
+> connection-poisoning/recycle machinery (`SPEC-CONN-RECYCLE.md`, `errors.ts`
+> `isFatalConnectionError` :159-193) — not a queue. A queue never existed for this to be gated
+> behind: `_noop = true` means `WriteQueue.enqueue()` never enters its FIFO path for a Turso-backed
+> store at all.
+>
+> **This is NOT MVCC.** MVCC and `multiprocess_wal` are distinct, non-composable mechanisms, and
+> Turso's own documentation says to use one or the other, never both. MVCC requires
+> `PRAGMA journal_mode='mvcc'` **and then** `BEGIN CONCURRENT`; it is single-process only
+> (in-memory `MvStore`, no cross-process coordination) and upstream marks it "not production-ready".
+> Verified against this codebase: `journal_mode` is only ever set to `WAL`; the adapter enables
+> exactly `['index_method', 'multiprocess_wal']`; `BEGIN CONCURRENT` exists as a capability
+> (`db.ts` :1090) but the transaction default is `'deferred'` and **no production caller requests
+> `mode: 'concurrent'`**. Turso's `experimental` flag enum contains no `mvcc` entry at all.
+>
+> The distinction is load-bearing, not pedantic: "optimistic concurrency with automatic conflict
+> retry" is a materially stronger safety story than "writers queue and we wait", and neither one
+> defends against the TRUNCATE-checkpoint races inside `multiprocess_wal` itself
+> (upstream #7833 / #8348, open on every released line) that caused two store corruptions and a
+> silent loss of ~15 records in 2026-08. Do not cite this invariant as evidence that concurrent
+> writers are safe by construction.
 
 What is explicitly **NOT** guaranteed by this invariant, stated so no reader assumes more than is true:
 
@@ -178,7 +198,8 @@ D7 (topology enforcement/observability), D8 (platform lifecycle) are **not super
 none of them made any claim this ADR's investigation touched. Four sections are marked superseded, and
 only for the specific claims this ADR revises:
 
-- **The invariant statement** — replaced per §1 above (single-process → Turso-native-MVCC).
+- **The invariant statement** — replaced per §1 above (single-process → cross-process writers
+  serialized by `multiprocess_wal`'s writer slot, with busy-timeout + retry absorbing the block).
 - **D2** (single-writer hosting), insofar as it asserted single-writer as the concurrency-safety
   MECHANISM for Turso. D2's in-process-hosting-of-the-enrichment-orchestrator claim is untouched.
 - **D5** (write path hardening) — its error-taxonomy sentence (*"Structured storage error taxonomy
@@ -190,5 +211,5 @@ only for the specific claims this ADR revises:
   `synchronous=NORMAL`, `memory_write_batch` transactional array writes, idempotency keys, the
   enrichment watermark) are untouched.
 - **D9** (storage engine exit ramp), insofar as it framed the write-queue/outbox seam as "the
-  storage-agnostic boundary" without naming that Turso's own MVCC is now part of that boundary for the
-  write path specifically.
+  storage-agnostic boundary" without naming that Turso's own cross-process writer-slot serialization
+  is now part of that boundary for the write path specifically.
