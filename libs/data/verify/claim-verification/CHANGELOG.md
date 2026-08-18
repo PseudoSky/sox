@@ -1,5 +1,12 @@
 # @adhd/sox-claim-verification
 
+## 0.1.3
+
+### Patch Changes
+
+- Updated dependencies
+  - @adhd/sox-embedding-provider@0.4.0
+
 ## 0.1.2
 
 ### Patch Changes

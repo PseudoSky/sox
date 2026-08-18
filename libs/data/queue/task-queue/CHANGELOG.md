@@ -1,5 +1,12 @@
 # @adhd/sox-task-queue
 
+## 0.2.8
+
+### Patch Changes
+
+- Updated dependencies
+  - @adhd/sox-store-adapter@0.6.0
+
 ## 0.2.7
 
 ### Patch Changes

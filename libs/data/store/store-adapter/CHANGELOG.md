@@ -1,5 +1,23 @@
 # @adhd/sox-store-adapter
 
+## 0.6.0
+
+### Minor Changes
+
+- The adapter now owns WAL durability end to end, so no consumer has to drive checkpointing.
+
+  - **Idle flush**: an idle adapter self-arms a coalesced flush and releases its connection, then transparently reconnects on the next operation. Consumers no longer think about connect/disconnect after the first cycle.
+  - **WAL size cap**: a 256 KiB backstop issues an ungated PASSIVE checkpoint from the write path, so a store under sustained load stays bounded even when the idle timer provably never fires.
+  - **Lazy connect from birth** (DEBT-003): `connect()` performs zero driver opens — no db file, no `-wal`, no lease entry — until the first real operation. Open-time integrity repair (BL-352) and the FTS orphan guard (BL-461) still run exactly once on that first operation, and an unopenable store still surfaces its error eagerly at `connect()`.
+  - **SqliteAdapterImpl gained its own WAL checkpoint path** (BL-571). It previously had none, so after checkpoint ownership moved to the adapter layer the legacy backend had no TRUNCATE mechanism at all.
+  - **Poison-reconnect no longer leaks a lease** (BUG-015): recovery released the connection but not its lease entry, so every recovery left an orphaned-but-live entry that made `storeQuiescence()` report a peer that did not exist and deferred TRUNCATE indefinitely.
+  - `storeQuiescence` is exported, so callers can probe liveness without paying a writable classic open on the healthy path.
+
+### Patch Changes
+
+- Updated dependencies
+  - @adhd/sox-telemetry@0.2.1
+
 ## 0.5.8
 
 ### Patch Changes

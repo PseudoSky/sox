@@ -1,5 +1,28 @@
 # @adhd/sox-memory-core
 
+## 0.9.0
+
+### Minor Changes
+
+- WAL checkpointing is now owned exclusively by the store adapter (DEBT-004).
+
+  `WriteQueue` previously carried its own debounced idle-checkpoint timer that fired an **ungated** `wal_checkpoint(TRUNCATE)` with no quiescence coordination — a second mechanism competing with the adapter's own flush. That private implementation is deleted rather than coordinated with, so memory and backlog share one underlying flush and only one debounced checkpoint can ever be in flight per store.
+
+  `closeAllForShutdown()` routes its end-of-life flush through `adapter.close()` instead of a second raw PRAGMA.
+
+  `memory_ping.store.last_checkpoint_at` no longer reports null for a server's whole lifetime (BL-572): it is derived from the observed flush via `observedLastCheckpointAt()`, combining the queue's own record with the main db file's mtime.
+
+### Patch Changes
+
+- Updated dependencies
+- Updated dependencies
+- Updated dependencies
+  - @adhd/sox-graph-store@0.8.5
+  - @adhd/sox-embedding-provider@0.4.0
+  - @adhd/sox-telemetry@0.2.1
+  - @adhd/sox-store-adapter@0.6.0
+  - @adhd/sox-hybrid-search@0.3.8
+
 ## 0.8.1
 
 ### Patch Changes
