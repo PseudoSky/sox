@@ -1,0 +1,191 @@
+{
+  "_readme": "Allowlist for tools/check-backlog-citations.mjs. Every key is a (BL|BUG|DEBT)-N id cited somewhere in tracked source that does NOT resolve via `backlog get-item --repo sox-ecosystem --human-id <id>`. Each entry's `reason` records WHY that's expected/acceptable rather than a defect, so this file stays a legible audit trail and not a growing pile of silenced red. Compiled 2026-08-18 remediating DEBT-006. `cause` is one of: PLAN_LOCAL_BUG014 (docs/plan/bug014-store-hardening/SPEC.md T1-T11 own numbering colliding with the graph's BUG/DEBT families), PLAN_LOCAL_RUNTIME_PROD (a SECOND, independently-discovered collision: docs/plan/runtime-productionization/ has its own BL-1xx work-package numbering that collides with the graph's real BL family — NOT part of DEBT-006's original diagnosis, found during this remediation, not yet disambiguated at the source because that plan is outside this packet's scope), MIGRATION_DROPPED (existed as a real heading in BACKLOG.md history pre-2026-08-06 migration, never carried into the graph), STILL_LOST (existed briefly during the 2026-08-14 backlog data-loss incident, explicitly recorded in HANDOFF-20260814.md §C as unrecoverable from any transcript), NOT_A_CITATION (the regex matched prose/example/fixture content that was never intended as a real backlog reference), or SUPERSEDED_BY_NEW_FILING (this remediation filed a real graph item for the underlying work; a residual bare mention of the old placeholder id remains in a historical narrative string).",
+  "BUG-019": {
+    "cause": "PLAN_LOCAL_BUG014",
+    "reason": "docs/plan/bug014-store-hardening/SPEC.md T5 ('refcounted per-connection open marker'). Worst offender by ref count (60+ refs across libs/data/store/store-adapter/, out of remediation scope — actively edited by another agent). Not in HANDOFF-20260814.md's former->graph-id refile table; per STATE.json's own remap notes ('BUG-019 -> BUG-018', 'BUG-019 -> BUG-017') the fix work landed under BUG-018/BUG-017, but no formal id reassignment was ever made, so BUG-019 citations resolve to nothing. Disambiguated at the plan-doc level: SPEC.md now carries a PLAN-LOCAL IDS banner, STATE.json carries planLocalIdWarning."
+  },
+  "BUG-021": {
+    "cause": "PLAN_LOCAL_BUG014",
+    "reason": "docs/plan/bug014-store-hardening/SPEC.md T3 ('content-deadness at ALL THREE reconcile decision sites'), including a dedicated regression spec file named after it. Second-worst offender (54+ refs, store-adapter — out of scope). Not in HANDOFF's refile table; STATE.json remap notes say the fix landed under 'DEBT-003'/'BUG-014' (both real, unrelated-by-title graph items) without a formal id reassignment."
+  },
+  "BUG-018": {
+    "cause": "PLAN_LOCAL_BUG014",
+    "reason": "SPEC.md T4 ('canonical path identity'). Refiled per HANDOFF-20260814.md §C as BUG-STOREADAPTER-DBPATH-NOT-CANONICALIZED-001 (verified present in the graph). The bare numeric form is still cited from store-adapter test filenames (out of scope) and the plan docs (now banner-disambiguated)."
+  },
+  "BUG-020": {
+    "cause": "PLAN_LOCAL_BUG014",
+    "reason": "SPEC.md T6 ('un-flagged opener audit + post-ship watch'). STATE.json remap note: 'BUG-020 -> BUG-017' (folded into the real graph item BUG-017, no separate id assigned)."
+  },
+  "BUG-028": {
+    "cause": "PLAN_LOCAL_BUG014",
+    "reason": "Refiled per HANDOFF-20260814.md §C as BUG-BUILD-REVERT-LEAVES-GHOST-DIST-001 (verified present in the graph). Also cited (as the bare number) from root AGENTS.md 'Incident BUG-028' narrative, which is outside this packet's declared scope (tools/, docs/plan/bug014-store-hardening/, docs/) to edit."
+  },
+  "BUG-033": {
+    "cause": "PLAN_LOCAL_BUG014",
+    "reason": "Refiled per HANDOFF-20260814.md §C as BUG-STOREADAPTER-EPERM-READ-AS-DEAD-PEER-001 (verified present in the graph)."
+  },
+  "BUG-034": {
+    "cause": "PLAN_LOCAL_BUG014",
+    "reason": "Refiled per HANDOFF-20260814.md §C as BUG-STOREADAPTER-RETRY-BUDGET-OFFBYONE-001 (verified present in the graph)."
+  },
+  "BUG-035": {
+    "cause": "PLAN_LOCAL_BUG014",
+    "reason": "Refiled per HANDOFF-20260814.md §C as BUG-STOREADAPTER-MOCK-FAILS-OPEN-WHERE-001 (verified present in the graph)."
+  },
+  "BUG-030": {
+    "cause": "PLAN_LOCAL_BUG014",
+    "reason": "Sweep-epic task, refiled per HANDOFF-20260814.md §C as BUG-EPIC-MANIFEST-PATH-ESCAPE-001 (verified present in the graph)."
+  },
+  "BUG-031": {
+    "cause": "PLAN_LOCAL_BUG014",
+    "reason": "Sweep-epic task, refiled per HANDOFF-20260814.md §C as BUG-EPIC-BLOBSTORE-WRITE-ORDER-INVERSION-001 (verified present in the graph)."
+  },
+  "BUG-032": {
+    "cause": "PLAN_LOCAL_BUG014",
+    "reason": "Sweep-epic task, refiled per HANDOFF-20260814.md §C as BUG-EPIC-WIRE-INPUTS-UNBOUNDED-001 (verified present in the graph)."
+  },
+  "DEBT-028": {
+    "cause": "PLAN_LOCAL_BUG014",
+    "reason": "Sweep-epic task, refiled per HANDOFF-20260814.md §C as DEBT-EPIC-HOTPATH-REDUNDANT-IO-001 (verified present in the graph)."
+  },
+  "BUG-042": {
+    "cause": "NOT_A_CITATION",
+    "reason": "Only appears as the upper bound of the plan's own numbering range ('BUG-018..BUG-042') inside this remediation's own disambiguation banner in SPEC.md and STATE.json's planLocalIdWarning. Never used as a task id anywhere; SPEC.md defines T1-T11 only, which top out at BUG-035/DEBT-007."
+  },
+  "DEBT-032": {
+    "cause": "PLAN_LOCAL_BUG014",
+    "reason": "Pre-existing STATE.json execution-notes references ('DEBT-032 unblock leg', 'DEBT-032 merge + T7 resolution blocked') plus this remediation's own banner text citing it as the range upper bound ('DEBT-006..DEBT-032'). A genuine plan-local sub-item number from the dispatcher's own tracking, never filed in the graph and not covered by HANDOFF's refile table."
+  },
+  "BUG-022": {
+    "cause": "STILL_LOST",
+    "reason": "HANDOFF-20260814.md §C, explicit: 'Still lost, not refilable from session record — these are recovery targets: the first sweep's epics (formerly DEBT-008…014, BUG-022), BUG-029...'. Verified zero matches searching the current graph for any content resembling this item. Do not re-litigate or guess at a replacement id; this is an open recovery target, not a citation bug."
+  },
+  "BUG-029": {
+    "cause": "STILL_LOST",
+    "reason": "HANDOFF-20260814.md §C explicitly lists BUG-029 as lost and not refilable from session record. STATE.json's own narrative ('Filed: BUG-029 (OPEN, HIGH, 4 cross-links)') describes a filing that did not survive the 2026-08-14 data-loss incident — confirmed absent from the current graph by content search (WAL-truncation/launchd-restart incident narrative, pid 36547, 4152B trunc). Recovery target, not a citation bug."
+  },
+  "DEBT-008": {
+    "cause": "STILL_LOST",
+    "reason": "HANDOFF-20260814.md §C: 'the first sweep's epics (formerly DEBT-008…014, BUG-022)' are explicitly listed as lost and not refilable from session record."
+  },
+  "BL-320": {
+    "cause": "MIGRATION_DROPPED",
+    "reason": "Confirmed present and substantively discussed (not just a passing mention) throughout BACKLOG.md at commit e547e93b^ — memory-core's JSONL telemetry sink (libs/memory-core/src/telemetry.ts), described as 'already writes JSONL... live right now'. This is the item DEBT-006's own citation [5] points at. NOT bulk-imported: BL-353 ('Telemetry is written to disk and never read: 75k events, two days, zero analysis') in the CURRENT graph appears to be the direct successor/supersession of this exact concern — re-filing BL-320 fresh would likely duplicate BL-353. Recommend the repo owner decide whether to (a) leave as superseded-by-BL-353 and allowlist permanently, or (b) file a thin BL-320 stub purely so historical citations resolve, cross-linked to BL-353. Left as (a) allowlisted pending that decision — see DEBT-006 remediation notes."
+  },
+  "BL-87": {
+    "cause": "MIGRATION_DROPPED",
+    "reason": "Confirmed as a real '### BL-87' heading in BACKLOG.md history (2 commits touch it) though absent from the final e547e93b^ snapshot — i.e. it was resolved/pruned from the doc before the graph migration, or dropped in an earlier markdown edit. Highest-volume unmapped BL id (40 refs, 21 files). Not bulk-imported: dedup requires reading the historical body text, which this packet's scope (tools/, docs/plan/bug014-store-hardening/, docs/) does not cover doing for every file citing it. Reported to the owner as a recoverable candidate needing a dedicated pass."
+  },
+  "BL-89": {
+    "cause": "MIGRATION_DROPPED",
+    "reason": "Confirmed as a real '### BL-89' heading in BACKLOG.md history (2 commits) though absent from the e547e93b^ snapshot. Recoverable candidate, not bulk-imported — see BL-87 note."
+  },
+  "BL-86": {
+    "cause": "MIGRATION_DROPPED",
+    "reason": "Confirmed as a real '### BL-86' heading in BACKLOG.md history (2 commits) though absent from the e547e93b^ snapshot. Recoverable candidate, not bulk-imported — see BL-87 note."
+  },
+  "BL-275": {
+    "cause": "MIGRATION_DROPPED",
+    "reason": "Confirmed real heading in BACKLOG.md history (commit 14586637: 'feat: BL-275 asp-gateway install capabilities...'), pruned before the final snapshot. Recoverable candidate, not bulk-imported."
+  },
+  "BL-354": {
+    "cause": "MIGRATION_DROPPED",
+    "reason": "Confirmed real heading in BACKLOG.md history (4 commits touch '### BL-354 '), pruned before the final snapshot. Recoverable candidate, not bulk-imported."
+  },
+  "BL-257": {
+    "cause": "MIGRATION_DROPPED",
+    "reason": "Confirmed real heading in BACKLOG.md history (2 commits), pruned before the final snapshot. Recoverable candidate, not bulk-imported."
+  },
+  "BL-266": {
+    "cause": "MIGRATION_DROPPED",
+    "reason": "Confirmed present in BACKLOG.md at e547e93b^ ('verify:publint-attw gate (BL-266)'). Was RESOLVED per commit 220cb1f0 ('resolve BL-293/294/295/303...') sibling commits — verify:publint-attw is a real, shipped gate. Recoverable-as-resolved candidate: if re-filed it should land RESOLVED with the original close evidence, not OPEN."
+  },
+  "BL-265": {
+    "cause": "MIGRATION_DROPPED",
+    "reason": "Co-cited alongside BL-266 in BACKLOG.md at e547e93b^ ('BL-265/266 worker'). Same recoverable-as-resolved candidate as BL-266."
+  },
+  "BL-294": {
+    "cause": "MIGRATION_DROPPED",
+    "reason": "Confirmed real heading in BACKLOG.md history, RESOLVED per commit 220cb1f0 ('docs(backlog): resolve BL-293/294/295/303, sync COMPILED_INTERFACES.md') — originally filed in 7ff75c1f ('BL-276..BL-295 — full specs for adhd/agent-mcp-authoring integration audit findings'). Recoverable-as-resolved candidate, not bulk-imported."
+  },
+  "BL-293": {
+    "cause": "MIGRATION_DROPPED",
+    "reason": "Same commit pair as BL-294 (filed 7ff75c1f, resolved 220cb1f0). Recoverable-as-resolved candidate, not bulk-imported."
+  },
+  "BL-303": {
+    "cause": "MIGRATION_DROPPED",
+    "reason": "Filed in 49ccb2ea ('BL-300..BL-303 — schema duplication/drift, missing migrations, dead drizzle dep'), resolved in 220cb1f0. Recoverable-as-resolved candidate, not bulk-imported."
+  },
+  "BL-304": {
+    "cause": "MIGRATION_DROPPED",
+    "reason": "Filed in 6a16b8ff ('BL-304 — reframe unused/dead/phantom findings as un-wired integration seams'), resolved in 638dc8f6 ('BL-304 — resolve phantom-package audit; all packages verified consumed'). Recoverable-as-resolved candidate, not bulk-imported."
+  },
+  "BL-260": {
+    "cause": "MIGRATION_DROPPED",
+    "reason": "Filed in f7892bac ('BL-262 + BL-263 resolved entries, BL-259 interaction note...' — adjacent-id commit touching this heading), later touched again in 14586637. Recoverable candidate, not bulk-imported; disposition (open vs resolved) needs a direct read of both commits' diffs, out of this packet's time budget."
+  },
+  "BL-118": {
+    "cause": "PLAN_LOCAL_RUNTIME_PROD",
+    "reason": "NEW FINDING (not part of DEBT-006's original diagnosis): docs/plan/runtime-productionization/ (a THIRD plan directory, separate from bug014-store-hardening) defines its own BL-1xx work-package numbering (see docs/plan/runtime-productionization/_shared/{PROTOCOL,RULES,CONTRACTS}.md) that collides with the graph's real BL family exactly like cause (B) in DEBT-006. Never existed as a '### BL-118' heading anywhere in BACKLOG.md history — confirms it is plan-local, not migration-dropped. Also cited from libs/memory-core/ production source (out of scope for this packet). Recommend a follow-up DEBT item to disambiguate that plan the same way this packet disambiguated bug014-store-hardening; not attempted here (out of the declared scope: tools/, docs/plan/bug014-store-hardening/, docs/)."
+  },
+  "BL-321": {
+    "cause": "PLAN_LOCAL_RUNTIME_PROD",
+    "reason": "Same runtime-productionization plan-local family as BL-118. Cited from root-level SPEC-BUG-MEMORY-001.md, SPEC-CONN-RECYCLE.md (both out of scope, repo root) and libs/memory-core/src/write-queue-turso-concurrency.spec.ts (out of scope, another agent's active area). Never a BACKLOG.md heading."
+  },
+  "BL-146": {
+    "cause": "PLAN_LOCAL_RUNTIME_PROD",
+    "reason": "Same runtime-productionization plan-local family as BL-118 (docs/plan/runtime-productionization/04-transport-remote/progress.json, docs/decisions/0007-memory-single-writer-architecture.md). Never a BACKLOG.md heading."
+  },
+  "BL-148": {
+    "cause": "PLAN_LOCAL_RUNTIME_PROD",
+    "reason": "Same runtime-productionization plan-local family (docs/plan/runtime-productionization/_shared/CONTRACTS.md, 04-transport-remote/{progress.json,REPORT.md}). Never a BACKLOG.md heading."
+  },
+  "BL-145": {
+    "cause": "PLAN_LOCAL_RUNTIME_PROD",
+    "reason": "Same runtime-productionization plan-local family. Also cited from libs/memory-core/src/lease.ts / lease.spec.ts (out of scope production source, actively edited by another agent). Never a BACKLOG.md heading."
+  },
+  "BL-128": {
+    "cause": "PLAN_LOCAL_RUNTIME_PROD",
+    "reason": "Same runtime-productionization plan-local family (docs/decisions/0007, docs/plan/runtime-productionization/_shared/CONTRACTS.md §J). Also cited from libs/memory-core/ (out of scope). Never a BACKLOG.md heading."
+  },
+  "BL-124": {
+    "cause": "PLAN_LOCAL_RUNTIME_PROD",
+    "reason": "Same runtime-productionization plan-local family. Also cited from libs/memory-core/src/{index,errors,errors.spec}.ts (out of scope, WP-2 error taxonomy). Never a BACKLOG.md heading."
+  },
+  "BL-132": {
+    "cause": "PLAN_LOCAL_RUNTIME_PROD",
+    "reason": "Same runtime-productionization plan-local family (docs/decisions/0007, docs/plan/runtime-productionization/06-hardening-final/). Never a BACKLOG.md heading."
+  },
+  "BL-144": {
+    "cause": "PLAN_LOCAL_RUNTIME_PROD",
+    "reason": "Same runtime-productionization plan-local family (docs/decisions/0007-memory-single-writer-architecture.md). Never a BACKLOG.md heading."
+  },
+  "BL-133": {
+    "cause": "PLAN_LOCAL_RUNTIME_PROD",
+    "reason": "Same runtime-productionization plan-local family, cited as 'HF-4, BL-133' from libs/memory-core/src/{backup,backup.spec,compaction}.ts (out of scope production source). Never a BACKLOG.md heading."
+  },
+  "BL-135": {
+    "cause": "PLAN_LOCAL_RUNTIME_PROD",
+    "reason": "Same runtime-productionization plan-local family ('Exit triggers (BL-135)' in docs/decisions/0007-memory-single-writer-architecture.md). Never a BACKLOG.md heading."
+  },
+  "DEBT-031": {
+    "cause": "SUPERSEDED_BY_NEW_FILING",
+    "reason": "The real underlying work (tools/dispatch-telemetry.mjs's opencode-SQLite per-subagent telemetry) is now filed as graph item DEBT-007 (created 2026-08-18 during this remediation). tools/dispatch-telemetry.mjs and STATE.json's items[] entry were updated to cite DEBT-007. One residual mention of the bare string 'DEBT-031' remains in STATE.json:244 inside a historical narrative ('VIOLATED on BUG-018/BUG-019/BUG-021/DEBT-031 reviews...') describing a past review-protocol violation by the id that was in use AT THE TIME — left as-is rather than rewritten, since it is a factual record of what happened, not a live citation."
+  },
+  "BL-999": {
+    "cause": "NOT_A_CITATION",
+    "reason": "SPEC-ADR-0011-S2.md (repo root, out of scope) uses 'BL-999' as a deliberately-fake id inside a NEGATIVE-example test spec demonstrating that an invented/fabricated id must be REJECTED ('Stage a new ### BL-999 — heading... GREEN (post-fix): exit 1, stderr matches /brand-new|new heading/i and names BL-999'). It is fixture content describing what SHOULD fail, not a real citation."
+  },
+  "BL-01": {
+    "cause": "NOT_A_CITATION",
+    "reason": "docs/decisions/0009-backlog-source-of-truth.md uses 'BL-01' only as a grep-pattern example ('...must not contain BL-1, BL-01, or BL-001 anywhere in it (grep -nE ...)') documenting an id-format convention, not citing a real item."
+  },
+  "BL-002": {
+    "cause": "NOT_A_CITATION",
+    "reason": "docs/research/content-first/sessions/2026-07-28T01-07-56-681Z-...json is a captured multi-agent research session transcript (raw LLM output logged verbatim) in which a model, roleplaying a product-manager reviewer, invented example backlog entry text ('BL-001 — Namespace creation API...', 'BL-002 — Namespace metadata...'). It is a logged transcript of model output, not an authored citation."
+  },
+  "BL-003": {
+    "cause": "NOT_A_CITATION",
+    "reason": "Same research-session transcript as BL-002 ('BL-003 — Migration tooling: plan for single-tenant to multi-tenant migration path'), logged model output, not an authored citation."
+  }
+}
