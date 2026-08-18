@@ -308,7 +308,26 @@ export function deriveOsUnitSpec(opts: {
     nodeArgs: opts.nodeArgs ?? ['--enable-source-maps'],
     entrypoint: opts.entrypoint,
     ...(opts.execArgs !== undefined ? { execArgs: opts.execArgs } : {}),
-    env: opts.env,
+    // (BL-584) Stamp the service identity into the unit's own environment.
+    //
+    // The in-process supervisor already sets `SOX_SERVICE_ID` on every service
+    // it spawns (`supervisor.ts` `this._env = { ...opts.env, SOX_SERVICE_ID }`),
+    // but an OS unit did not — so the SAME extension saw a different
+    // environment depending on which supervisor started it, and had no
+    // supervisor-authoritative way to know it was running AS A SERVICE at all.
+    //
+    // That is what broke tokenguard: its mode detection inferred "service" from
+    // the ABSENCE of `SOX_CONFIG_PORT`, because there was no positive signal to
+    // key on. Under launchd stdin is never a TTY, so a daemon start was
+    // misclassified as MCP-exec mode, read EOF, and exited 0 — `loaded: yes`,
+    // `live pids: (none)`. Absence is not a safe discriminator; identity is.
+    //
+    // It also closes the reaper's preferred-path gap: `findOrphansByServiceId`
+    // matches `SOX_SERVICE_ID=<id>` in process env and calls that "cross-build
+    // safe", falling back to argv-token matching only when the env probe is
+    // unavailable. OS-unit services previously only ever matched via that
+    // fallback.
+    env: { ...opts.env, SOX_SERVICE_ID: opts.id },
     workingDirectory: opts.workingDirectory,
     runAtLoad,
     keepAlive,

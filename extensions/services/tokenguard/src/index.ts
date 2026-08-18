@@ -302,19 +302,33 @@ async function main(): Promise<void> {
 //    Invoked as: node bundle/index.js seed <real> <type>
 //    Used by demo/live-seed.sh for direct seeding without soxe exec overhead.
 //
-// 2. MCP exec mode: stdin is piped AND no SOX_CONFIG_PORT (spawned by soxe exec).
+// 2. Service mode: a supervisor started us — starts the HTTP proxy.
+//    Detected POSITIVELY via `SOX_SERVICE_ID`, which both supervisors set:
+//    the in-process one in `supervisor.ts`, and the OS-unit generator in
+//    `os-unit.ts` (BL-584).
+//
+// 3. MCP exec mode: stdin is piped and no supervisor claimed us (soxe exec).
 //    Speaks JSON-RPC 2.0 over stdio for the soxe exec tool-call protocol.
 //
-// 3. Service mode: everything else — starts the HTTP proxy.
-//    Invoked by the supervisor with SOX_CONFIG_* env set.
+// (BL-584) Service mode used to be inferred from the ABSENCE of
+// `SOX_CONFIG_PORT`, and that is why tokenguard never ran as a daemon. Under
+// launchd stdin is not a TTY and `SOX_CONFIG_PORT` is only present when a port
+// has been explicitly configured — so an ordinary daemon start matched the
+// MCP-exec branch, read EOF from an empty stdin, and exited 0 within
+// milliseconds. `soxe service status` then reported `loaded: yes` with
+// `live pids: (none)`: launchd had faithfully run a process that immediately
+// quit. Nothing logged, because the MCP branch has nothing to say on EOF.
+//
+// The port is not a mode signal — `config.ts` already defaults it to 9099, so
+// its absence is normal. Identity is the signal, and it is asserted by the
+// component that actually knows: whoever supervises us.
 
 const CLI_SUBCMDS = new Set(['seed', 'map', 'summary', '--help', '-h']);
 const argv2 = process.argv[2];
 
 const isDirectCli = argv2 !== undefined && CLI_SUBCMDS.has(argv2);
-const isMcpExecMode = !isDirectCli
-  && !process.stdin.isTTY
-  && process.env['SOX_CONFIG_PORT'] === undefined;
+const isServiceMode = !isDirectCli && process.env['SOX_SERVICE_ID'] !== undefined;
+const isMcpExecMode = !isDirectCli && !isServiceMode && !process.stdin.isTTY;
 
 if (isDirectCli) {
   // Direct CLI invocation: node bundle/index.js seed <real> <type>
