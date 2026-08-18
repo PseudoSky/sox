@@ -13,7 +13,7 @@
     "requires": {
       "tool_calling": true
     },
-    "builtFromCommit": "6299b51b755bb51e764a9e7b0549f54f78226f29"
+    "builtFromCommit": "bff88bc20fcc9700992bb48253ac004b18583fe1"
   },
   {
     "id": "architect",
@@ -29,7 +29,7 @@
     "requires": {
       "tool_calling": true
     },
-    "builtFromCommit": "6299b51b755bb51e764a9e7b0549f54f78226f29"
+    "builtFromCommit": "bff88bc20fcc9700992bb48253ac004b18583fe1"
   },
   {
     "id": "debug",
@@ -45,7 +45,7 @@
     "requires": {
       "tool_calling": true
     },
-    "builtFromCommit": "6299b51b755bb51e764a9e7b0549f54f78226f29"
+    "builtFromCommit": "bff88bc20fcc9700992bb48253ac004b18583fe1"
   },
   {
     "id": "dispatcher",
@@ -61,7 +61,7 @@
     "requires": {
       "tool_calling": true
     },
-    "builtFromCommit": "6299b51b755bb51e764a9e7b0549f54f78226f29"
+    "builtFromCommit": "bff88bc20fcc9700992bb48253ac004b18583fe1"
   },
   {
     "id": "doc-cartographer",
@@ -77,7 +77,7 @@
     "requires": {
       "tool_calling": true
     },
-    "builtFromCommit": "6299b51b755bb51e764a9e7b0549f54f78226f29"
+    "builtFromCommit": "bff88bc20fcc9700992bb48253ac004b18583fe1"
   },
   {
     "id": "doc-consumer",
@@ -93,7 +93,7 @@
     "requires": {
       "tool_calling": true
     },
-    "builtFromCommit": "6299b51b755bb51e764a9e7b0549f54f78226f29"
+    "builtFromCommit": "bff88bc20fcc9700992bb48253ac004b18583fe1"
   },
   {
     "id": "doc-evangelist",
@@ -109,7 +109,7 @@
     "requires": {
       "tool_calling": true
     },
-    "builtFromCommit": "6299b51b755bb51e764a9e7b0549f54f78226f29"
+    "builtFromCommit": "bff88bc20fcc9700992bb48253ac004b18583fe1"
   },
   {
     "id": "doc-reviewer",
@@ -125,7 +125,7 @@
     "requires": {
       "tool_calling": true
     },
-    "builtFromCommit": "6299b51b755bb51e764a9e7b0549f54f78226f29"
+    "builtFromCommit": "bff88bc20fcc9700992bb48253ac004b18583fe1"
   },
   {
     "id": "doc-steward",
@@ -141,7 +141,7 @@
     "requires": {
       "tool_calling": true
     },
-    "builtFromCommit": "6299b51b755bb51e764a9e7b0549f54f78226f29"
+    "builtFromCommit": "bff88bc20fcc9700992bb48253ac004b18583fe1"
   },
   {
     "id": "memory-org",
@@ -154,7 +154,7 @@
     "compatibility": {
       "host": ">=1.0.0 <2.0.0"
     },
-    "builtFromCommit": "6299b51b755bb51e764a9e7b0549f54f78226f29"
+    "builtFromCommit": "bff88bc20fcc9700992bb48253ac004b18583fe1"
   },
   {
     "id": "performance",
@@ -170,7 +170,7 @@
     "requires": {
       "tool_calling": true
     },
-    "builtFromCommit": "6299b51b755bb51e764a9e7b0549f54f78226f29"
+    "builtFromCommit": "bff88bc20fcc9700992bb48253ac004b18583fe1"
   },
   {
     "id": "performance-engineer",
@@ -186,7 +186,7 @@
     "requires": {
       "tool_calling": true
     },
-    "builtFromCommit": "6299b51b755bb51e764a9e7b0549f54f78226f29"
+    "builtFromCommit": "bff88bc20fcc9700992bb48253ac004b18583fe1"
   },
   {
     "id": "product",
@@ -202,7 +202,7 @@
     "requires": {
       "tool_calling": true
     },
-    "builtFromCommit": "6299b51b755bb51e764a9e7b0549f54f78226f29"
+    "builtFromCommit": "bff88bc20fcc9700992bb48253ac004b18583fe1"
   },
   {
     "id": "researcher",
@@ -211,14 +211,14 @@
     "title": "researcher",
     "description": "Use this when you need to discover, grade, and catalog third-party tools/patterns/use cases before building — sweeps registries and the web via the search MCP, grades sources, writes per-finding memory episodes (agent:approved/agent:blocked), and returns a build-vs-integrate verdict.",
     "source": "file:///Users/nix/dev/ai/sox-ecosystem/extensions/agents/researcher",
-    "checksum": "sha256:42d1f371b3333aec6fe8f8363fd8d0c87c91bb0d2bed2750f9f308f579f9593f",
+    "checksum": "sha256:711bd0a12b9b12933d2ebe4c53e3f6ab47acb4b2ea351ba066404ad2ef8b4896",
     "compatibility": {
       "host": ">=1.0.0 <2.0.0"
     },
     "requires": {
       "tool_calling": true
     },
-    "builtFromCommit": "6299b51b755bb51e764a9e7b0549f54f78226f29"
+    "builtFromCommit": "bff88bc20fcc9700992bb48253ac004b18583fe1"
   },
   {
     "id": "test-runner",
@@ -231,7 +231,7 @@
     "compatibility": {
       "host": ">=1.0.0 <2.0.0"
     },
-    "builtFromCommit": "6299b51b755bb51e764a9e7b0549f54f78226f29"
+    "builtFromCommit": "bff88bc20fcc9700992bb48253ac004b18583fe1"
   },
   {
     "id": "typescript",
@@ -247,7 +247,7 @@
     "requires": {
       "tool_calling": true
     },
-    "builtFromCommit": "6299b51b755bb51e764a9e7b0549f54f78226f29"
+    "builtFromCommit": "bff88bc20fcc9700992bb48253ac004b18583fe1"
   },
   {
     "id": "sox-memory-bundle",
@@ -274,7 +274,7 @@
         "id": "memory-usage"
       }
     ],
-    "builtFromCommit": "6299b51b755bb51e764a9e7b0549f54f78226f29"
+    "builtFromCommit": "bff88bc20fcc9700992bb48253ac004b18583fe1"
   },
   {
     "id": "memory-cli",
@@ -289,7 +289,7 @@
     },
     "visibility": "internal",
     "bundleId": "sox-memory-bundle",
-    "builtFromCommit": "6299b51b755bb51e764a9e7b0549f54f78226f29"
+    "builtFromCommit": "bff88bc20fcc9700992bb48253ac004b18583fe1"
   },
   {
     "id": "memory-flush",
@@ -304,7 +304,7 @@
     },
     "visibility": "internal",
     "bundleId": "sox-memory-bundle",
-    "builtFromCommit": "6299b51b755bb51e764a9e7b0549f54f78226f29"
+    "builtFromCommit": "bff88bc20fcc9700992bb48253ac004b18583fe1"
   },
   {
     "id": "memory-server",
@@ -323,7 +323,7 @@
     },
     "visibility": "internal",
     "bundleId": "sox-memory-bundle",
-    "builtFromCommit": "6299b51b755bb51e764a9e7b0549f54f78226f29"
+    "builtFromCommit": "bff88bc20fcc9700992bb48253ac004b18583fe1"
   },
   {
     "id": "memory-usage",
@@ -338,7 +338,7 @@
     },
     "visibility": "internal",
     "bundleId": "sox-memory-bundle",
-    "builtFromCommit": "6299b51b755bb51e764a9e7b0549f54f78226f29"
+    "builtFromCommit": "bff88bc20fcc9700992bb48253ac004b18583fe1"
   },
   {
     "id": "dep-inject",
@@ -351,7 +351,7 @@
     "compatibility": {
       "host": ">=1.0.0 <2.0.0"
     },
-    "builtFromCommit": "6299b51b755bb51e764a9e7b0549f54f78226f29"
+    "builtFromCommit": "bff88bc20fcc9700992bb48253ac004b18583fe1"
   },
   {
     "id": "tokenguard",
@@ -364,7 +364,7 @@
     "compatibility": {
       "host": ">=1.0.0 <2.0.0"
     },
-    "builtFromCommit": "6299b51b755bb51e764a9e7b0549f54f78226f29"
+    "builtFromCommit": "bff88bc20fcc9700992bb48253ac004b18583fe1"
   },
   {
     "id": "demo-creator",
@@ -377,7 +377,7 @@
     "compatibility": {
       "host": ">=1.0.0 <2.0.0"
     },
-    "builtFromCommit": "6299b51b755bb51e764a9e7b0549f54f78226f29"
+    "builtFromCommit": "bff88bc20fcc9700992bb48253ac004b18583fe1"
   },
   {
     "id": "di-codex",
@@ -390,7 +390,7 @@
     "compatibility": {
       "host": ">=1.0.0 <2.0.0"
     },
-    "builtFromCommit": "6299b51b755bb51e764a9e7b0549f54f78226f29"
+    "builtFromCommit": "bff88bc20fcc9700992bb48253ac004b18583fe1"
   },
   {
     "id": "dep-injector",
@@ -403,7 +403,7 @@
     "compatibility": {
       "host": ">=1.0.0 <2.0.0"
     },
-    "builtFromCommit": "6299b51b755bb51e764a9e7b0549f54f78226f29"
+    "builtFromCommit": "bff88bc20fcc9700992bb48253ac004b18583fe1"
   },
   {
     "id": "forbidden-access",
@@ -416,7 +416,7 @@
     "compatibility": {
       "host": ">=1.0.0 <2.0.0"
     },
-    "builtFromCommit": "6299b51b755bb51e764a9e7b0549f54f78226f29"
+    "builtFromCommit": "bff88bc20fcc9700992bb48253ac004b18583fe1"
   },
   {
     "id": "iterative-research-refinement",
@@ -429,7 +429,7 @@
     "compatibility": {
       "host": ">=1.0.0 <2.0.0"
     },
-    "builtFromCommit": "6299b51b755bb51e764a9e7b0549f54f78226f29"
+    "builtFromCommit": "bff88bc20fcc9700992bb48253ac004b18583fe1"
   },
   {
     "id": "sox-ingest",
@@ -442,7 +442,7 @@
     "compatibility": {
       "host": ">=1.0.0 <2.0.0"
     },
-    "builtFromCommit": "6299b51b755bb51e764a9e7b0549f54f78226f29"
+    "builtFromCommit": "bff88bc20fcc9700992bb48253ac004b18583fe1"
   },
   {
     "id": "tui-design",
@@ -455,7 +455,7 @@
     "compatibility": {
       "host": ">=1.0.0 <2.0.0"
     },
-    "builtFromCommit": "6299b51b755bb51e764a9e7b0549f54f78226f29"
+    "builtFromCommit": "bff88bc20fcc9700992bb48253ac004b18583fe1"
   },
   {
     "id": "sox",
@@ -468,6 +468,6 @@
     "compatibility": {
       "host": ">=1.0.0 <2.0.0"
     },
-    "builtFromCommit": "6299b51b755bb51e764a9e7b0549f54f78226f29"
+    "builtFromCommit": "bff88bc20fcc9700992bb48253ac004b18583fe1"
   }
 ]
