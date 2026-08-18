@@ -443,6 +443,31 @@ export class TursoAdapterImpl implements TursoAdapter {
    */
   private async _performIdleFlush(): Promise<void> {
     if (this.closed || this._released || this._inFlightOps > 0) return;
+    // (BL-589) Observability parity with the wal-cap backstop.
+    //
+    // This method is the PRIMARY durability mechanism, but until now it
+    // emitted ONLY on failure, while `_checkWalCapAndFlush()` — the
+    // last-resort backstop — emitted on success. The result was an inverted
+    // picture in the traces: the only flush anyone could SEE was the
+    // backstop, so a healthy store driven entirely by this debounce looked
+    // like a store being rescued by its size cap. Measured on the backlog
+    // CLI: one `wal_cap_flush` against fourteen writes, with no positive
+    // evidence anywhere that the debounce ran at all.
+    //
+    // Silence is not evidence of absence, and a design cannot be verified
+    // from an absence. Emit the WAL delta so the trace states plainly which
+    // mechanism reclaimed the file.
+    const flushPath = this.coordPath;
+    const walBytes = (): number | null => {
+      if (flushPath === undefined) return null;
+      try {
+        return statSync(flushPath + '-wal').size;
+      } catch {
+        return 0;
+      }
+    };
+    const startedAt = Date.now();
+    const before = walBytes();
     try {
       if (this._walFlushStrategy === 'gated') {
         // `releaseIdleConnection()` runs the FULL close() ceremony (PASSIVE
@@ -466,6 +491,15 @@ export class TursoAdapterImpl implements TursoAdapter {
           });
         }
       }
+      const after = walBytes();
+      log.debug('store_adapter.turso.idle_flush', {
+        db_path: flushPath ?? null,
+        strategy: this._walFlushStrategy,
+        wal_bytes_before: before,
+        wal_bytes_after: after,
+        reclaimed_bytes: before !== null && after !== null ? before - after : null,
+        duration_ms: Date.now() - startedAt,
+      });
     } catch (err) {
       log.error('store_adapter.turso.idle_flush_failed', {
         error: err instanceof Error ? err.message : String(err),
