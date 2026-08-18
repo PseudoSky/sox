@@ -40,7 +40,7 @@ import {
   isFatalConnectionError,
   RepairDeclinedLivePeersError,
 } from './errors.js';
-import { ESqliteNativeStore } from './errors.js';
+import { ESqliteNativeStore, isBusyError } from './errors.js';
 import { ensureEngineMarker, readApplicationId, SOX_APP_ID_SQLITE } from './engine-guard.js';
 import { log } from '@adhd/sox-telemetry';
 import {
@@ -152,6 +152,27 @@ const DEFAULT_IDLE_FLUSH_MS = 2000;
  * than growing monotonically (243,112 -> 486,192 -> 473,832 -> 238,992 bytes
  * across the run) — PASSIVE achieves real durability+bounding without
  * exclusivity under multiprocess_wal in this topology.
+ *
+ * (BUG-019, 2026-08-18) CORRECTION to the paragraph above: "PASSIVE ...
+ * stays safe exactly when peers are most likely to be active" is true for
+ * the writer-exclusive-LOCK half of the claim (PASSIVE genuinely never
+ * blocks another writer the way TRUNCATE would) but was overstated as
+ * "safe" full stop. The sequential-inserts-from-a-second-connection probe
+ * that produced the numbers above never exercised the failure mode that
+ * hit production: under GENUINE sustained concurrent write load, PASSIVE
+ * can still THROW — reproduced live as six consecutive
+ * `error="step failed: Runtime error: database table is locked"` in
+ * ~130ms — instead of degrading to the graceful `busy:1` result row this
+ * file's own busy-branch comment already anticipated ("PASSIVE can still
+ * degrade to busy if even a passive checkpoint attempt collides with the
+ * engine's own internal checkpoint lock", `_checkWalCapAndFlush()` below).
+ * Durability still holds either way (a thrown checkpoint touches nothing;
+ * nothing already in the WAL is lost, and the next write's cap check
+ * retries), so PASSIVE remains the right call over a gated TRUNCATE — but
+ * "stays safe" should be read as "never blocks a peer and never loses a
+ * frame," not "never throws." See `_checkWalCapAndFlush()`'s catch branch
+ * for how the thrown case is now classified using the SAME busy/lock
+ * message marker `isBusyError()` (errors.ts) already recognizes.
  *
  * The native `PRAGMA wal_autocheckpoint` was checked FIRST, per the
  * directive to prefer configuring an in-engine backstop over hand-rolling
@@ -536,12 +557,17 @@ export class TursoAdapterImpl implements TursoAdapter {
    * PASSIVE, unconditionally — no `storeQuiescence()` gate, independent of
    * `_walFlushStrategy` (which governs the idle path only). See
    * `DEFAULT_WAL_CAP_BYTES` for why: PASSIVE does not need TRUNCATE's
-   * writer-exclusive lock, so it stays safe exactly when peers are most
-   * likely to be active — the opposite of when a gated TRUNCATE would work.
+   * writer-exclusive lock, so it never BLOCKS a peer — the opposite of when
+   * a gated TRUNCATE would work. (BUG-019) That is a claim about locking,
+   * not about the checkpoint call never throwing: under genuine sustained
+   * concurrent write load PASSIVE can still raise a busy/lock error instead
+   * of the graceful `busy:1` result row below — see the catch branch.
    *
-   * Never throws — a failed forced-flush must not fail the write that
-   * already succeeded. Swallows and logs internally, same posture as
-   * `_performIdleFlush()`.
+   * Never throws OUT of this method — a failed forced-flush must not fail
+   * the write that already succeeded. Swallows and logs internally, same
+   * posture as `_performIdleFlush()`. (BUG-019) The PASSIVE checkpoint
+   * PRAGMA call itself CAN throw internally (see catch branch); this method
+   * always catches it, classifies it, and returns normally either way.
    */
   private async _checkWalCapAndFlush(): Promise<void> {
     if (!this._capFlushEnabled) return;
@@ -582,11 +608,46 @@ export class TursoAdapterImpl implements TursoAdapter {
         });
       }
     } catch (err) {
-      log.error('store_adapter.turso.wal_cap_flush_failed', {
+      // (BUG-019) `PRAGMA wal_checkpoint(PASSIVE)` can THROW a busy/lock
+      // condition instead of returning the graceful `busy:1` row the
+      // `if (row?.busy === 1)` branch above handles — reproduced live
+      // 2026-08-18 under real sustained concurrent load (6 consecutive trips
+      // in ~130ms, `error="step failed: Runtime error: database table is
+      // locked"`). This is NOT a new failure mode this codebase has never
+      // seen: `isBusyError()` (errors.ts) already recognizes this EXACT
+      // message text — `/database (is|table is) locked/i` — as a
+      // busy/lock-contention condition, not a fault; it is the same
+      // classification `withRetry()` (retry.ts) uses to decide a write is
+      // safe to retry, and `reportFailedPassiveCheckpoint()` (this file,
+      // close()) already applies the analogous "thrown PASSIVE-checkpoint
+      // error is a durable deferral, not data loss" distinction at close
+      // time. Before this fix, THIS call site was the one place in the file
+      // that still logged the raw throw as an unqualified fault
+      // (`wal_cap_flush_failed` at `error` level) regardless of what the
+      // driver's own text said — misclassifying a recognized, retriable
+      // busy condition as an unexpected one.
+      //
+      // Route it into the SAME `wal_cap_flush_busy` signal the graceful
+      // `busy:1` row gets: frames stay durable in the WAL either way (a
+      // thrown checkpoint touches nothing — it either backfills a prefix of
+      // frames before hitting the lock, or backfills none; nothing already
+      // in the WAL is lost), and the NEXT write's cap check retries
+      // immediately, exactly as the `busy:1` comment above already
+      // documents. A genuinely unrecognized driver failure (not a busy/lock
+      // message) still logs at `error` — this narrows the false-fault
+      // signal, it does not silence real ones.
+      const busy = isBusyError(err);
+      const fields = {
         db_path: dbPath,
         wal_bytes_at_trip: size,
+        cap_bytes: this._walCapBytes,
         error: err instanceof Error ? err.message : String(err),
-      });
+      };
+      if (busy) {
+        log.warn('store_adapter.turso.wal_cap_flush_busy', fields);
+      } else {
+        log.error('store_adapter.turso.wal_cap_flush_failed', fields);
+      }
     }
   }
 
