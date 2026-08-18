@@ -20,6 +20,7 @@ import {
   warnIfStaleSidecar,
 } from './integrity.js';
 import type { BackupIntegrityReport, WalIdentity } from './integrity.js';
+import { maybePruneStaleTshmSidecars } from './sidecar-retention.js';
 import { acquireStoreLease, storeQuiescence, type StoreLease } from './store-lease.js';
 import { canonicalDbPath } from './path-identity.js';
 import {
@@ -1348,6 +1349,20 @@ export class TursoAdapterImpl implements TursoAdapter {
             `[BL-373] stale -tshm reconciled BEFORE the open: moved aside to ${proactive.to} — ` +
               `the open proceeds against the existing WAL, no failed-open path`,
           );
+          // (BL-591) A rename just produced a NEW `.stale-*` sidecar debris
+          // file — the moment retention needs re-evaluating. Throttled
+          // internally (default: one real directory scan per 10 minutes per
+          // store) so this adds at most one stat() to the common case despite
+          // firing from the same open path BL-590 debounce can hit once per
+          // write; see sidecar-retention.ts for the full rationale.
+          const sweep = maybePruneStaleTshmSidecars(canonicalDb, {
+            log: (msg) => log.debug('store_adapter.turso.sidecar_sweep', { detail: msg }),
+          });
+          if (sweep && sweep.pruned > 0) {
+            log.info('store_adapter.turso.sidecar_sweep_pruned', {
+              detail: `pruned ${sweep.pruned} stale WAL-index sidecar(s) beyond retention beside ${canonicalDb} (BL-591)`,
+            });
+          }
         } else if (quiescence.livePeers.length > 0) {
           log.debug('store_adapter.turso.sidecar_reconcile_deferred', {
             detail: `-tshm reconcile skipped: ${quiescence.livePeers.length} live connection(s) hold the store`,

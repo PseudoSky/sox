@@ -25,6 +25,7 @@ export * from './migration.js';
 export * from './preflight.js';
 export * from './fts-orphan-guard.js';
 export * from './engine-guard.js';
+export * from './sidecar-retention.js';
 
 /**
  * (PERF/CORRECTNESS) Canonical store identity — the ONE definition of "are these
