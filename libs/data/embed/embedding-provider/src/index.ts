@@ -171,20 +171,29 @@ export {
 } from './sharedFastembedProcess.js';
 
 /**
- * (BUG-MEMORY-EMBED-HEAD-OF-LINE-BLOCKING-001) `getSharedFastembedProcess()`
- * now returns a pool of `resolveFastembedPoolSize()` independent fastembed
- * child processes (`FastembedProcessPool`) instead of a single shared child —
- * see `sharedFastembedProcess.ts` for the full production-measurement writeup
- * and rationale. `SharedFastembedClient` is the structural interface both the
- * pool and the single-child `SharedFastembedProcessClient` satisfy;
- * `FastembedBusyError` is the typed admission-control rejection (opt-in via
- * `SOX_EMBED_POOL_ADMISSION_LIMIT`).
+ * (BUG-MEMORY-EMBED-HEAD-OF-LINE-BLOCKING-001 / BL-575) `getSharedFastembedProcess()`
+ * returns either a FIXED `FastembedProcessPool` (when `SOX_EMBED_POOL_SIZE`
+ * pins an exact size) or, by default, an `AdaptiveFastembedProcessPool` that
+ * grows from `minSize` toward `resolveFastembedPoolCeiling()` only under
+ * sustained demand — see `sharedFastembedProcess.ts` for the full
+ * production-measurement writeup, hysteresis policy, and rationale.
+ * `SharedFastembedClient` is the structural interface every shape (single
+ * client, fixed pool, adaptive pool) satisfies; `FastembedBusyError` is the
+ * typed admission-control rejection (opt-in via
+ * `SOX_EMBED_POOL_ADMISSION_LIMIT`). `resolveFastembedPoolPin`/
+ * `resolveFastembedPoolCeiling` are the split halves of what
+ * `resolveFastembedPoolSize` (kept for backward compatibility) used to
+ * compute as one value — see their doc comments for why the split exists.
  */
 export type { SharedFastembedClient } from './sharedFastembedProcess.js';
 export {
   FastembedProcessPool,
+  AdaptiveFastembedProcessPool,
+  type AdaptiveFastembedPoolOptions,
   FastembedBusyError,
   resolveFastembedPoolSize,
+  resolveFastembedPoolPin,
+  resolveFastembedPoolCeiling,
   resolveFastembedAdmissionLimit,
 } from './sharedFastembedProcess.js';
 
