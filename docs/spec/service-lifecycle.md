@@ -1,13 +1,40 @@
 # Service & Daemon Lifecycle — Canonical Specification
 
-**Spec version:** 1.4.0
-**Status:** Binding. Slice 1 (§14) is IMPLEMENTED on branch `feat/service-lifecycle-slice1`; Slice 1.5 (the front-shim service-proxy, §9.5) is IMPLEMENTED (lib + OPT-IN serve mode); **Slice 1.6 (the M3→M4 DEFAULT FLIP, §9.5) is IMPLEMENTED** on branch `feat/proxy-default-memory-backend`; **Slice 2 (the OS-supervisor control surface, §9.1–§9.4 + `[inv:unload-then-reap]`) is IMPLEMENTED** (`libs/host-runtime/src/os-unit.ts` + `soxe service enable|disable|status|list` in `apps/sox/src/main.ts`) — launchd LaunchAgent generator (systemd seam pluggable), content-addressed idempotent enable, ownership-tracked `os-unit` entry, unload-then-reap teardown in `cmdStop`/`service disable`/`cmdUninstall`, and re-enable-on-upgrade. **Slice 3 (the `[inv:crash-loop-cap]` restart bound, §11.3) and Slice 4 (the universal doctor reconcile + its OS-scheduled tick, §10.2/§14) are IMPLEMENTED** — `libs/host-runtime/src/{crash-loop,reconcile}.ts` + `soxe doctor --reconcile|--install-tick|--remove-tick` and the `soxe status`/`doctor` give-up surfacing (v1.4.0 changelog below).
-**Date:** 2026-07-04
+**Spec version:** 1.5.0
+**Status:** Binding. Slice 1 (§14) is IMPLEMENTED on branch `feat/service-lifecycle-slice1`; Slice 1.5 (the front-shim service-proxy, §9.5) is IMPLEMENTED (lib + OPT-IN serve mode); **Slice 1.6 (the M3→M4 DEFAULT FLIP, §9.5) is IMPLEMENTED** on branch `feat/proxy-default-memory-backend`; **Slice 2 (the OS-supervisor control surface, §9.1–§9.4 + `[inv:unload-then-reap]`) is IMPLEMENTED** (`libs/host-runtime/src/os-unit.ts` + `soxe service enable|disable|status|list` in `apps/sox/src/main.ts`) — launchd LaunchAgent generator (systemd seam pluggable), content-addressed idempotent enable, ownership-tracked `os-unit` entry, unload-then-reap teardown in `cmdStop`/`service disable`/`cmdUninstall`, and re-enable-on-upgrade. **Slice 3 (the `[inv:crash-loop-cap]` restart bound, §11.3) and Slice 4 (the universal doctor reconcile + its OS-scheduled tick, §10.2/§14) are IMPLEMENTED** — `libs/host-runtime/src/{crash-loop,reconcile}.ts` + `soxe doctor --reconcile|--install-tick|--remove-tick` and the `soxe status`/`doctor` give-up surfacing (v1.4.0 changelog below). **§8.1a (grace-margin discipline, BUG-018) and §9.4b (`service update`) are DESIGNED, NOT YET IMPLEMENTED** — see the 1.5.0 changelog entry and the tracking backlog item named there.
+**Date:** 2026-08-18
 **Owner:** platform-engineering
 **Applies to:** every code path that spawns, supervises, stops, reaps, health-checks, or persists a `service`- or `mcp-server`-type extension, across all scopes (`org` / `user` / `project` / `local`, plus the notion of *global*).
 
 ### Changelog
 
+- **1.5.0 (2026-08-18)** — **DESIGN ONLY (triage, not implemented)**, prompted by BUG-018 (measured
+  SIGKILL on every `memory-server` `service disable`) and a routine redeploy that needed a manual
+  disable→enable pair because there is no first-class config/node-path reconcile verb. Added:
+  **§8.1a — grace-margin discipline**, closing three concrete, code-confirmed gaps: (1) the
+  manifest's `lifecycle.stop_timeout_ms` is parsed and asserted by the authoring scaffold but is
+  **never read** by `cmdService`'s `disable`/`restart` `graceMs` resolution
+  (`apps/sox/src/main.ts:4950-4954` reads only `--grace-ms`/`SOX_STOP_GRACE_MS`, default 5000,
+  regardless of what the manifest declares); (2) no shared invariant requires a service's own
+  internal safety-net timeout to sit *strictly inside* its grace window with a defined margin —
+  `memory-server`'s backend does (`SHUTDOWN_SAFETY_NET_MS=4000` vs the assumed 5000ms grace,
+  `extensions/bundles/sox-memory-bundle/members/memory-server/src/backend.ts:156`) but `tokenguard`
+  race-condition-ties its own safety net to the exact same value it assumes the reaper will use
+  (`extensions/services/tokenguard/src/index.ts:284-292`, `extension.json:22`, both `5000`) with **no
+  margin at all**; (3) `coordinatedShutdown`'s own steps are inconsistently bounded — step 0 (embed
+  drain) races a 750ms timeout, step 1 (`terminateEmbedWorkers`) does not, and none of them are
+  individually logged with timestamps, so a real stall cannot be attributed to a step after the
+  fact. Also documents a fourth, independently provable defect found while reading the shutdown path
+  for BUG-018: `cmdServe`'s SIGTERM handler in `--port` mode never calls `handle.close()`
+  (`apps/sox/src/main.ts:8646-8650`) where the non-port branch does (`:8656-8668`) — the front-shim
+  exits without tearing down its backend connection. **§9.4b — `soxe service update`**, a new verb
+  that composes the already-implemented idempotent `service enable` (§9.3, env-drift-safe per
+  `[inv:env-preserved-on-regenerate]`) with the already-implemented verified `service restart`
+  (§9.4a, `[inv:deploy-verified]`) so a config/node-path change to a proxy-mode service is guaranteed
+  to reach the **backend**, not just the front-shim — closing the same class of gap §9.4a closed for
+  code deploys, but for config deploys. Neither section changes the invariants in §13.1; §8.1a adds
+  no new invariant name (it tightens existing ones), §9.4b's guarantee is stated as an extension of
+  `[inv:deploy-verified]`.
 - **1.4.0 (2026-07-04)** — **Implemented Slices 3 + 4** (the continuous-supervision layer;
   motivated by the 2026-07-04 zombie-backend incident, BL-170 — the machinery was verb-triggered
   only, nothing watched between invocations).
@@ -574,6 +601,163 @@ and the future M4 path):
 > and may corrupt state — that is the service's bug, not the framework's. The authoring scaffold MUST
 > generate a compliant SIGTERM handler (R6).
 
+### 8.1a Grace-margin discipline (BUG-018 design, 2026-08-18) — NOT YET IMPLEMENTED
+
+**Trigger.** Measured live 2026-08-18: `soxe service disable memory-server --scope user` produced
+`[unload-then-reap] reap com.sox.user.memory-server: SIGTERM -> pid 85032 (grace 5000ms)` followed
+by `pid 85032 survived SIGTERM after 5000ms -> SIGKILL` (BUG-018 citation 1). The reaper itself did
+exactly what `[inv:unload-then-reap]` specifies — the defect is upstream of it. A SIGKILL skips
+`memory-server`'s adapter close ceremony (PASSIVE checkpoint, quiescence-gated TRUNCATE, lease
+release, marker clear) — after DEBT-004 deleted `memory-core`'s private checkpoint timer, that
+ceremony and the store-adapter's idle-flush debounce (§ the `libs/data/store/store-adapter`
+`DEFAULT_IDLE_FLUSH_MS`, see BL-590) are the only two mechanisms that durably flush the store, so a
+process that never runs it durably-flushes only by luck of idle timing.
+
+**What the current source promises, read end-to-end.** `runBackend()`
+(`extensions/bundles/sox-memory-bundle/members/memory-server/src/backend.ts:389-415`) wires
+`process.on('SIGTERM', …)`/`process.on('SIGINT', …)` **before** the async bind (BL-170), both
+pointing at the single `coordinatedShutdown` function (`backend.ts:232-371`, BL-405/BL-472). That
+function starts a `setTimeout` "safety net" at **4000ms**
+(`SHUTDOWN_SAFETY_NET_MS`, `backend.ts:156`) that force-`exit(0)`s regardless of what the awaited
+steps are doing, with a doc comment stating it is deliberately "strictly inside the reaper's 5000ms
+SIGTERM grace." Reading that code in isolation, the process should always exit at or before 4000ms —
+1000ms of margin inside the observed 5000ms grace. The measured behavior (full 5000ms, then SIGKILL)
+contradicts that promise. Two things independently undermine it, both found by reading the actual
+code paths a `service disable` traverses, neither fully diagnosable from a static read alone (no
+live process was available to inspect at review time — see the Not Determined note below):
+
+1. **The manifest's declared grace is dead data for this call path.** `memory-server`'s
+   `extension.json` `lifecycle` block declares no `stop_timeout_ms` at all, and even if it did,
+   `cmdService`'s `disable`/`restart` `graceMs` resolution (`apps/sox/src/main.ts:4950-4954`) reads
+   **only** `flags['grace-ms']` / `process.env['SOX_STOP_GRACE_MS']`, defaulting to a bare `5000` —
+   it never consults `resolveOsUnitContext`'s resolved manifest at all. §8.1's own prose
+   ("`stop_timeout_ms` (default 5000ms, `memory-daemon`/`tokenguard` both declare 5000)") describes
+   an intent the code does not implement for the `service disable`/`restart` path — only `cmdStop`
+   and `service disable`/`restart` share the same unwired default-or-flag resolver. A service that
+   legitimately needs longer than 5000ms (a large-WAL checkpoint, a slow-to-terminate fastembed
+   child) has no way to declare that; an operator has to remember `--grace-ms` by hand every time.
+2. **No shared invariant enforces "internal safety net < declared/assumed grace, with margin."**
+   `memory-server`'s backend picked 4000 vs an assumed 5000 (1000ms margin, itself just a comment,
+   not derived from anything the reaper actually enforces). `tokenguard`
+   (`extensions/services/tokenguard/src/index.ts:284-292`) sets its own internal
+   `setTimeout(() => process.exit(0), 5000).unref()` as its *own* safety net, identical in magnitude
+   to its declared `lifecycle.stop_timeout_ms: 5000` (`extension.json:22`) — a **race**, not a
+   margin: if the service's own timer and the reaper's poll both resolve at t=5000ms, which wins is
+   scheduler-dependent. This is the same defect FAMILY as BUG-018 (an internal safety net that
+   cannot be trusted to preempt the reaper's SIGKILL), independently confirmed in a second,
+   unrelated service — see "Is this systemic?" below.
+3. **`coordinatedShutdown`'s own steps are unevenly bounded.** Step 0 (`flushPendingEmbeds()` +
+   `waitForDrainSettled()`, `backend.ts:282-299`) races a 750ms timeout
+   (`SHUTDOWN_EMBED_DRAIN_TIMEOUT_MS`). Step 1 (`terminateEmbedWorkers()`, `backend.ts:301-307`,
+   which awaits `Promise.all([getSharedFastembedProcess().terminate(), getSharedOnnxWorker().terminate()])`,
+   `libs/memory-core/src/embed.ts:492-497`) has **no timeout of its own** — it is a bare `await`
+   inside a `try`. The overall 4000ms safety-net `setTimeout` should still fire regardless (Node
+   timers are not blocked by a *pending* promise, only by synchronous CPU-bound work on the same
+   thread), so this alone does not explain a full 5000ms stall under the code as read — but it means
+   that if any future change makes worker `.terminate()` do synchronous work, or if a native binding
+   invoked transitively blocks the thread, there is no per-step backstop to catch it, only the
+   whole-sequence one. No step logs a timestamp on entry/exit, so a real stall today cannot be
+   attributed to a step after the fact — this is the single largest reason the exact 2026-08-18 stall
+   could not be pinned down further in this design pass.
+
+**A fourth, independently provable defect** found while tracing this path (not itself sufficient to
+explain the 5000ms stall, but a real bug in the same subsystem, in the code that runs *before*
+`coordinatedShutdown` ever gets invoked): `cmdServe`'s SIGTERM/SIGHUP handling in proxy mode
+branches on whether `--port` was passed (`apps/sox/src/main.ts:8646-8671`). `memory-server`'s
+os-unit is generated with a port (`SOX_CONFIG_PORT`, resolved via `resolveOsUnitContext`,
+`main.ts:4869-4881`, because it serves `stdio+http+sse` per its `install.serves`), which selects
+the **`httpPort` branch**:
+
+```ts
+if (httpPort !== undefined && !Number.isNaN(httpPort)) {
+  await new Promise<void>((resolve) => {
+    process.on('SIGTERM', () => resolve());
+    process.on('SIGINT', () => resolve());
+  });
+} else {
+  // pure-stdio branch — DOES call handle.close() before resolving (BL-310)
+  ...
+}
+process.exit(0);
+```
+
+The `httpPort` branch resolves and falls through to `process.exit(0)` **without ever calling
+`handle.close()`** — the non-port branch three lines below it does. `FrontShimHandle.close()` is
+documented as "Force-close the shim (tears down the backend connection)"
+(`libs/service-proxy/src/shim.ts:106-115`). This means the front-shim for a port-configured
+proxy-mode mcp-server (currently only `memory-server` — see "Is this systemic?" below) exits on
+SIGTERM without any attempt to tear down its UDS connection to the backend — an asymmetry with no
+justifying comment, and inconsistent with the pure-stdio branch's own BL-310 fix three lines away.
+This does not by itself explain the backend's 5000ms stall (the shim and backend are separate
+processes, and the reap step signals the backend directly by identity token, not through the shim —
+§8.6), but it is a real regression in the shim's own teardown contract and must be fixed regardless
+of what BUG-018's root cause turns out to be.
+
+**Not determined by this design pass.** Whether the specific pid 85032 was running the current
+(BL-405/BL-472-hardened) build of `backend.ts` at all could not be confirmed retroactively — the
+process is gone. `dist/index.js` on disk was rebuilt 2026-08-18 16:34 and *does* contain
+`coordinatedShutdown`/`SHUTDOWN_SAFETY_NET_MS=4000`
+(confirmed: `rg -c coordinatedShutdown extensions/bundles/sox-memory-bundle/members/memory-server/dist/index.js` → 11 hits, `SHUTDOWN_SAFETY_NET_MS = 4e3` present) — but per this repo's own standing
+hazard (CLAUDE.md "A REVERT IS NOT FINISHED UNTIL YOU REBUILD", BUG-028: a reverted change stayed
+live in a running process for ~2h after the *source* was already fixed on disk), a backend process
+that was already running before that rebuild would still be executing whatever it loaded at spawn
+time, unaffected by the disk change. This is the single most likely explanation consistent with
+"the code as written should self-terminate at 4000ms, but observed behavior went the full 5000ms and
+required a SIGKILL" — and it is exactly the kind of gap §14/§7 diagnostics below now close.
+
+**Is this systemic, or memory-server-specific?**
+- The **missing `handle.close()` call** is systemic to *any* proxy-mode `mcp-server` extension
+  installed with `--port` — currently that is only `memory-server` (the only extension in this repo
+  with `"type": "mcp-server"`; confirmed
+  `rg -l '"type": "mcp-server"' extensions/` → only `memory-server`'s `extension.json`). It will
+  recur automatically for the next mcp-server extension that opts into dual transport.
+- The **unwired manifest `stop_timeout_ms`** is systemic to `service disable`/`service restart` —
+  it affects every `service`- and `mcp-server`-type extension identically, confirmed by reading
+  `cmdService`'s single shared `graceMs` resolver (`main.ts:4950-4954`), not per-extension code.
+- The **race-not-margin internal safety net** is confirmed independently in `tokenguard`
+  (`type: "service"`, no proxy/shim involved at all) — proving the *pattern* (ad hoc, undeclared,
+  unmarginated internal safety nets) is not particular to `memory-server`'s proxy architecture; it is
+  a gap in how every service author is expected to pick a shutdown timeout today (there is no
+  scaffold-enforced rule, only §8.1's prose).
+- The **5000ms-stall-then-SIGKILL symptom itself** is confirmed live only for `memory-server`. It
+  has not been reproduced or measured on `tokenguard` or any other extension.
+
+**Design — three changes, independently shippable, together closing the gap:**
+
+1. **Wire the manifest's `lifecycle.stop_timeout_ms` into `cmdService`'s `graceMs` resolution.**
+   Precedence: `--grace-ms` flag (explicit operator override, highest) > `SOX_STOP_GRACE_MS` env >
+   `manifest.lifecycle.stop_timeout_ms` (resolved via the same `resolveOsUnitContext` call
+   `disable`/`restart` already make) > `5000` (unchanged final fallback, preserves today's behavior
+   for a manifest that declares nothing). This makes §8.1's prose true instead of aspirational, with
+   zero change to any extension that does not declare the field.
+2. **Establish a shared, enforced margin between a service's internal safety net and its resolved
+   grace, instead of two independently-chosen numbers that happen to agree today.** Concretely:
+   define `SOX_SHUTDOWN_SAFETY_MARGIN_MS` (a host-runtime-exported constant, suggested 1000ms) and
+   require every service's own internal safety-net timeout to be `stop_timeout_ms - margin`, not a
+   second hand-picked literal. `memory-server`'s `SHUTDOWN_SAFETY_NET_MS` and `tokenguard`'s bare
+   `setTimeout(…, 5000)` both become `resolvedStopTimeoutMs - SOX_SHUTDOWN_SAFETY_MARGIN_MS`, sourced
+   from the same manifest field wired in (1) via an env var the os-unit generator already injects
+   (`SOX_CONFIG_*` pattern) — so the number can never drift out of sync with what the reaper will
+   actually wait for. The authoring scaffold's SIGTERM-handler template (R6, referenced in §8.1)
+   should generate this pattern by default, not a literal.
+3. **Bound and instrument every step of a coordinated-shutdown sequence, not just some of them, and
+   log each step's entry/exit with a monotonic timestamp.** Apply to `memory-server`'s
+   `coordinatedShutdown` first (add a timeout race around step 1 `terminateEmbedWorkers()`,
+   symmetric with step 0's existing 750ms race; log `t+Nms: step <k> <name> started/finished` to
+   stderr, same sink as its existing diagnostics) so the *next* occurrence of this symptom is
+   attributable to an exact step within one incident, not a second multi-day investigation. This is
+   the direct fix for "Not determined by this design pass" above.
+4. **Fix the proven `handle.close()` omission** in `cmdServe`'s `httpPort` SIGTERM/SIGHUP branch
+   (`main.ts:8646-8650`): call `handle.close()` before resolving, matching the non-port branch three
+   lines below and its BL-310 precedent. Independent of (1)–(3); ships regardless of what BUG-018's
+   root cause investigation eventually confirms.
+
+None of these weaken `[inv:unload-then-reap]`'s escalation — a genuinely hung process still gets
+SIGKILLed at the (now correctly-sourced) grace boundary. They only make the boundary the service
+actually races against match the one the operator (or manifest author) declared, give every service
+a mechanically-derived rather than hand-copied safety margin, and make the next stall diagnosable
+without another multi-file archaeology pass.
+
 ### 8.2 Two-phase, process-group teardown (M1)
 
 `supervisor.stop()` (`supervisor.ts:165-217`):
@@ -795,6 +979,107 @@ both platforms).
 `restartOsUnit` (the LKG-rollback/auto-heal rewrite path, distinct from `enableOsUnit`) carries the
 identical exposure and is **not yet fixed** — filed as BL-488, cross-linked to this item.
 
+### 9.4b `soxe service update` — reconciling config/node-path drift (design, 2026-08-18) — NOT YET IMPLEMENTED
+
+**Trigger.** A routine redeploy needed a manual `service disable` → `service enable` pair, and
+getting it right depended on the operator remembering to re-pass `--node-path`. That is worse than
+either existing verb, not a missing feature layered on top of nothing:
+
+- If the intent was a **code** deploy, §9.4a already specifies and implements the correct single
+  verb — `soxe service restart <id>` — with `[inv:deploy-verified]` pid-rotation verification. A
+  manual disable→enable does not verify anything; it only reloads the *unit*, and (per §9.4a's own
+  motivating incident) the front-shim's persistent backend can survive a naive reload untouched,
+  still executing the old bundle as a `PPID 1` orphan.
+- If the intent was a **config/node-path** change, §9.3 already specifies `soxe service enable` as
+  idempotent and content-addressed: re-running it recomputes the unit from the current manifest +
+  config cascade + `--node-path`, and only rewrites/reloads if the content actually changed
+  (`enableOsUnit`, `libs/host-runtime/src/os-unit.ts:1006-1066`), guarded against silently dropping a
+  previously-set env key by `[inv:env-preserved-on-regenerate]` (BL-375). A disable→enable pair does
+  the same rewrite the hard way, minus the idempotence check, plus a window where the unit is fully
+  removed.
+
+So neither existing verb is missing — the operator used the wrong (and strictly worse) pair for
+both intents, because there is no single documented verb for "reconcile this unit to whatever the
+config cascade / node-path resolution says right now, verified." That is the actual gap.
+
+**The gap `service enable` alone does not close, even though it is idempotent.** `enableOsUnit`'s
+reload step (`os-unit.ts:1059-1064`) unloads-then-reloads the unit **if currently loaded with old
+content** — for a proxy-mode mcp-server, the unit's managed process is the **front-shim**
+(`resolveOsUnitContext`, §8.1a above), not the backend. Reloading the shim does not, by itself, force
+the already-running, independently-detached **backend** (§8.6, §9.5) to pick up a changed env var —
+the backend only re-reads its env at its own next (re)spawn, which a shim reload alone does not
+trigger. This is the exact same class of gap §9.4a documents for a *code* change ("the backend
+survives a bare kickstart as a `PPID 1` orphan still executing the OLD bundle") applied to a
+*config* change instead: `enableOsUnit`'s content-hash only covers what the unit *file* renders
+(env, args, node path) — it has no way to know whether a live backend, spawned earlier under
+different env, has actually adopted the new value. A bare `service enable` re-run can therefore
+report `action: 'unchanged'` or a successful reload while the backend a client is actually talking to
+is still running under stale config — exactly the false-positive `[inv:deploy-verified]` was written
+to prevent for code, now needed for config too.
+
+**Design.** `soxe service update <id>` = `service enable` (§9.3, unchanged, reused as-is —
+idempotent, `[inv:env-preserved-on-regenerate]`-guarded) **followed by a verified backend rotation
+check whenever the enable step's content actually changed**, reusing §9.4a's existing
+`restartAndVerify` machinery (`main.ts` `cmdServiceRestart`, `libs/host-runtime/src/os-unit.ts`
+`kickstart`/`mainPid`) rather than inventing a second verification path:
+
+```
+update(id, scope, flags):
+  1. resolve ctx = resolveOsUnitContext(id, scope, root, flags)   # re-reads node-path + config cascade
+  2. result = enableOsUnit(ctx.spec, ctx.platform, { load: true, unsetKeys, ... })  # §9.3, as today
+  3. if result.action == 'blocked':
+       exit 1  # BL-375 dropped-env guard fired — same as `enable` today, no bypass added here either
+  4. if result.action == 'unchanged':
+       report "no change — nothing to reconcile"; exit 0
+  5. if result.action in {'created', 'rewritten'}:
+       # the unit changed — but for a proxy-mode mcp-server, reloading the unit alone does not
+       # guarantee the BACKEND adopted the new env (see gap above). Force + verify it the same way
+       # §9.4a already forces + verifies a code change:
+       snapshot = pids matching identityToken(ctx.entrypoint)   # catches the backend even in proxy mode
+       restartAndVerify({ label, token: identityToken(ctx.entrypoint), platform, waitMs, ... })  # §9.4a, reused verbatim
+       if no new pid appears within waitMs:
+         exit 1  # "unit rewritten but backend did not rotate — config change NOT verified live"
+       report "'<id>' updated — config change verified live (pid rotated [before] -> [after])"; exit 0
+```
+
+For a **direct-mode** service (no front-shim — e.g. `tokenguard`), `identityToken(ctx.entrypoint)` IS
+the managed process itself, so step 5's rotation check degenerates to exactly what a plain `restart`
+already verifies — `update` is then just "`enable`, and if it changed anything, also verify the
+managed process rotated," which is strictly safer than today's `enable` alone (which reloads the
+unit but never confirms the process under it actually restarted) at negligible extra cost.
+
+**Interaction with existing invariants (per BUG-018's checklist ask):**
+- **`[inv:singleton]`** — untouched. `update` reuses `enableOsUnit`'s existing unload-before-rewrite
+  step (only unloads if currently loaded with *old* content) and `restartAndVerify`'s existing
+  identity-token reap, both of which already respect the singleton key; `update` introduces no new
+  spawn path.
+- **`[inv:list-never-lies]`** — untouched, and reinforced: `update` never claims success without the
+  same pid-rotation reality check `[inv:deploy-verified]` already requires for `restart`. A
+  content-changed unit whose backend does not rotate within `waitMs` is a non-zero exit, not a green
+  "updated" line.
+- **`[inv:unload-then-reap]`** — untouched. `update` never calls `disable`; it never removes the unit
+  file or ownership entry, so there is no window where the extension is fully torn down (the actual
+  operational problem the manual disable→enable pair caused). The `restartAndVerify` step it invokes
+  on a real content change already performs its own identity-based reap of any survivor (§9.4a step
+  3), which is a *kickstart-then-reap*, not an unload — no conflict with the disable-path invariant.
+- **Node-path / env drift** — this is the primary case `update` exists for: `ctx =
+  resolveOsUnitContext(...)` in step 1 re-resolves `--node-path` (or `resolveUnitNodePath()`'s
+  pinned default, §9.2/Appendix B item 3) and the full config cascade fresh on every invocation, so
+  drift since the unit was last enabled is exactly what step 2's content-hash comparison will catch
+  and `[inv:env-preserved-on-regenerate]` will guard.
+
+**CLI surface:**
+
+```
+soxe service update <id> [--scope=<scope>] [--node-path=<path>] [--unset KEY1,KEY2]
+                          [--wait-ms=<ms>] [--dry-run]
+```
+
+Flag surface deliberately mirrors `enable` (node-path, unset) and `restart` (wait-ms) — `update` is
+explicitly documented as a composition of both, not a third independent implementation, so its flags
+are exactly their union with no new names to learn. `--dry-run` renders the would-be unit content and
+reports whether a rotation check *would* be triggered, without loading/kickstarting anything (mirrors
+`enable --dry-run`'s existing contract).
 
 ---
 
