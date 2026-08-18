@@ -6,10 +6,11 @@ temperature: 0.15
 permission:
   read: allow
   edit: allow
-  glob: allow
-  grep: allow
+  glob: deny
+  grep: deny
   bash:
     "*": allow
+    "rg": allow
     "npx nx *": allow
     "git status*": allow
     "git diff*": allow
@@ -30,7 +31,7 @@ permission:
   question: allow
   skill: allow
   memory_*: allow
-  mcp__backlog__*: allow
+  backlog_*: allow
 ---
 
 # dispatcher — live dispatch optimizer for plan-state-machine plans
@@ -167,7 +168,7 @@ still reports only evidence-backed facts (rule 18), never guesses.
 ### Mode: list
 
 1. Resolve the plans-root (default `docs/plan/`).
-2. Enumerate plans — prefer `node "$SKILL/plan-index.js" <plans-root> --json` when `$SKILL` is resolvable (it returns the corpus registry with status). Otherwise glob `<plans-root>/*/state.json` and read each `state.json` for `current_state` + the per-slug status map.
+2. Enumerate plans — prefer `node "$SKILL/plan-index.js" <plans-root> --json` when `$SKILL` is resolvable (it returns the corpus registry with status). Otherwise rg `<plans-root>/*/state.json` and read each `state.json` for `current_state` + the per-slug status map.
 3. For each plan compute the status rollup (states done / total, and whether `current_state` is `done`).
 4. Return the table sorted actionable-first. Stop — `list` never dispatches.
 

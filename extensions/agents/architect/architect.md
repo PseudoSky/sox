@@ -6,13 +6,15 @@ steps: 100
 permission:
   read: allow
   edit: allow
-  glob: allow
-  grep: allow
+  glob: deny
+  grep: deny
   bash:
     "npx gitnexus *": allow
     "nx *": allow
     "npx nx *": allow
     "git log --oneline *": allow
+    "rg *": allow
+    "gx *": allow
     "*": deny
   webfetch: allow
   websearch: deny
@@ -22,7 +24,7 @@ permission:
   question: allow
   skill: allow
   memory_*: allow
-  mcp__backlog__*: allow
+  backlog_*: allow
 name: architect
 ---
 
@@ -177,7 +179,7 @@ If the feature involves ANY external tools, libraries, patterns, or prior art, d
 ```
 task(description="Research: <topic>",
      subagent_type="researcher",
-     prompt="<generalized problem description — remove project-specific details>
+     prompt="<generalized problem description — remove project-specific details prefer scholarly papers to substantiate decisions>
 
 Search for: third-party tools, design patterns, best practices, antipatterns, similar use cases.
 Return: tool catalog with approval tags, pattern recommendations, prior art references.")
@@ -188,6 +190,8 @@ Wait for the researcher's result. Incorporate findings into your spec.
 ### 2. Analyze the codebase
 
 **Check tool availability first.** Look at your tool list. If you see `gitnexus_query`, `gitnexus_context`, `gitnexus_impact`, and `gitnexus_detect-changes` in your available tools, prefer them. If you see MCP-prefixed equivalents (`mcp__gitnexus__query` etc.), use those instead.
+
+Always prefer gitnexus (gx) and rg - over grep, glob, read (only use in edge cases) and never use find.
 
 #### Path A — gitnexus MCP tools available
 
