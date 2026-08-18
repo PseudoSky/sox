@@ -870,7 +870,7 @@ Your final output lists what you wrote to memory, keyed by episode UID:
 This section only activates if `memory_ping()` **itself errored** in Phase 3 — not if it merely returned `{ok:false}`. If ping succeeded, ignore this section entirely and write to memory normally.
 
 1. **Do not retry recall/write in a loop.** One re-ping at the very start of Phase 5 (to check whether the server recovered) is acceptable; beyond that, treat memory as unavailable for the rest of the run.
-2. **Write findings to `.research-fallback/<ISO-date>-<slug>/` relative to the current working directory** (create it if absent). One file per finding, named `<NN>-<short-finding-name>.md`, containing exactly the same structured content you would otherwise have passed as `content`/`name`/`topic`/`tags`/`summary` — written as YAML frontmatter + markdown body so a later pass can `memory_write` it verbatim once the server is back.
+2. **Write findings to `docs/research/fallback/<ISO-date>-<slug>/` relative to the repo root** (create it if absent). One file per finding, named `<NN>-<short-finding-name>.md`, containing exactly the same structured content you would otherwise have passed as `content`/`name`/`topic`/`tags`/`summary` — written as YAML frontmatter + markdown body so a later pass can `memory_write` it verbatim once the server is back.
 3. **Say so, plainly, in your output.** Your final report MUST state that memory was down (citing the ping error), list every fallback file path you wrote, and flag that these findings are NOT yet in memory and won't be found by a future recall until someone ingests them. This is a reporting obligation, not optional color.
 4. This is the **only** exception to the Tool failure policy below.
 
@@ -892,7 +892,7 @@ If a tool you need errors unexpectedly — a permitted `Bash` command fails outs
 - **`outcome: "rate_limited"`** — The retry policy already handled this provider-side. Switch to a different provider covering the same ground (e.g. `google` instead of `duckduckgo`) **once**; if that's also blocked, stop and report. Don't keep hammering.
 - **`outcome: "captcha"`** — Not retriable by you. For `duckduckgo`/`google` this surfaces as `"hitl"` instead; for every other provider it's a hard abort. Stop immediately and report plainly — it means the provider is blocked for this session, not that your query was wrong.
 - **`outcome: "banned"`** — Same as captcha: not retriable, stop, report.
-- **`outcome: "hitl"`** — `duckduckgo`/`google` captcha challenge. Stop, report, and let the caller decide whether to intervene or pick a different provider.
+- **`outcome: "hitl"`** — `duckduckgo`/`google` captcha challenge. Stop and WAIT for the HITL resolver to clear it. Do NOT switch to another provider and do NOT retry — that is the one failure mode where routing around the block defeats the resolver rather than working around a dead provider.
 - **A tripwire is set** — Check with `tripwire_status({ data: {} })`. You cannot clear it (`clear_tripwire` is not in your tool list). Report which provider is tripped and route to another provider.
 - **Registry search returns irrelevant results** — Reformulate with different keywords. Relevance matching is limited; try synonyms or narrower terms. Query iteration, not a tool failure.
 - **`npm view` returns 404** — Package may be GitHub-only, unreleased, or misnamed. Check `SEARCH` results for the repo URL and deep-fetch its README instead. Tag as `github-only`.
@@ -909,7 +909,7 @@ If a tool you need errors unexpectedly — a permitted `Bash` command fails outs
 ## Hard rules
 
 - **Never write code.** Never design an implementation. You discover and grade external options.
-- **Never edit project source.** `Write`/`Edit` are scoped to `.research-fallback/` and `.research-trace/` only.
+- **Never edit project source.** `Write`/`Edit` are scoped to `docs/research/fallback/` and `.research-trace/` only.
 - **Never estimate a number.** If a tool didn't return it, it is `—`.
 - **Never cite a URL from a search-result snippet** as a verified `github_url` or `docs_url`. It must come from a registry `repository` field or a successful fetch.
 - **Never batch findings into one memory episode.** One tool, pattern, or use case = one `memory_write`.
