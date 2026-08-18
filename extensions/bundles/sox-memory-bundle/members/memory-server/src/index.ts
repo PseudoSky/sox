@@ -94,6 +94,8 @@ import {
   // not open must never read as a healthy ping. Lives in memory-core so the
   // semantics are unit-tested without touching this bundle (deploy guard).
   computePingHealthVerdict,
+  // (BL-582) The single derivation of last_checkpoint_at — see its doc comment.
+  observedLastCheckpointAt,
 } from '@adhd/sox-memory-core';
 import type { HealResult, PendingEmbed, PhaseAOutcome, WriteError, WriteResult } from '@adhd/sox-memory-core';
 import type { StoreAdapter, VectorDialect } from '@adhd/sox-store-adapter';
@@ -1090,8 +1092,14 @@ async function handleToolCallImpl(name: string, args: Record<string, unknown>): 
           embedBacklog,
         );
 
-        // BL-174: report the real WP-5 checkpoint time (0 = never/no queue → null).
-        const lastCheckpointMs = WriteQueue.lastCheckpointAtForPath(resolvedPath);
+        // (BL-582) Route through memory-core's SINGLE derivation. This used to
+        // read `WriteQueue.lastCheckpointAtForPath()` alone, which since
+        // DEBT-004/005 only ever records the shutdown flush — so a long-lived
+        // server reported `last_checkpoint_at: null` for its entire life while
+        // the adapter was quietly keeping the WAL bounded. `memory_ping` is the
+        // surface an operator actually reads during an incident, so a fix that
+        // stopped at `memoryGetStats()` would not have reached anyone.
+        const lastCheckpointAt = observedLastCheckpointAt(resolvedPath);
 
         // BL-334/BL-352: the adapter's own verify+repair verdict for this store.
         //
@@ -1143,7 +1151,7 @@ async function handleToolCallImpl(name: string, args: Record<string, unknown>): 
           // the verdict is legible without expanding the block.
           integrity: integrityView,
           integrity_headline: integrityHeadline(integrityView),
-          last_checkpoint_at: lastCheckpointMs > 0 ? new Date(lastCheckpointMs).toISOString() : null,
+          last_checkpoint_at: lastCheckpointAt,
           enrichment_watermark: enrichmentWatermark,
           queue_depth: queueDepth,
           // Additive (HF-3 rule): never rename/remove the fields above.
