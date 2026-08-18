@@ -220,6 +220,33 @@ export class SharedFastembedProcessClient implements SharedFastembedClient {
   private readonly poolGroup: string | undefined;
   private poolSize: number | undefined;
   private memberIndex: number | undefined;
+  /**
+   * (BUG-021) The last `{ type: 'init', model, cacheDir }` payload this
+   * member has ever been asked to load — kept independently of any pool
+   * wrapper above it so a LONE (non-pooled) client is self-healing too.
+   * `null` until the first successful `init`.
+   */
+  private lastInitPayload: Record<string, unknown> | null = null;
+  /**
+   * (BUG-021 root cause) True once the CURRENT `this.child` has actually
+   * loaded the model named by `lastInitPayload`. Reset to `false` every time
+   * `ensureProcess()` forks a NEW child — including a transparent respawn
+   * after the previous child died (crash, OOM-kill, the BL-426/std::bad_alloc
+   * native-teardown hazards documented on `fastembedProcessHost.ts`, etc).
+   *
+   * Before this fix, `ensureProcess()`'s `c.on('exit')`/`c.on('error')`
+   * handlers nulled out `this.child`/`this.startingPromise` on an unexpected
+   * death, but nothing told the NEXT `request()` call that the freshly
+   * (re)forked replacement child has an empty `_embedder` — every real
+   * `embed`/`embedBatch` request sent to it failed with "Model not
+   * initialized" forever, because the higher-level `FastembedProvider.ready`
+   * flag was already latched `true` from the original (pre-crash) init and
+   * `ensureReady()` never re-sends `init` once `ready` is true. Live incident
+   * BUG-021: the lock file showed a child forked mere SECONDS before every
+   * request against it failed — exactly this respawn-without-reinit gap, not
+   * a stale/orphaned lock as first suspected.
+   */
+  private childInitialized = false;
 
   /**
    * @param hostPathOverride Test-only injection point (BL-410): points the
@@ -320,6 +347,12 @@ export class SharedFastembedProcessClient implements SharedFastembedClient {
         this.pending.clear();
         this.child = null;
         this.startingPromise = null;
+        // (BUG-021) A dead child never reappears un-loaded — the NEXT
+        // ensureProcess() forks a genuinely new one, which starts this flag
+        // at false again anyway, but clearing it here too closes any window
+        // where a caller reads `childInitialized` between the crash and the
+        // next fork.
+        this.childInitialized = false;
       });
 
       c.on('exit', (code: number | null) => {
@@ -330,6 +363,7 @@ export class SharedFastembedProcessClient implements SharedFastembedClient {
         }
         this.child = null;
         this.startingPromise = null;
+        this.childInitialized = false;
       });
 
       // Same re-unref pattern as `sharedOnnxWorker.ts` — attaching listeners
@@ -441,7 +475,31 @@ export class SharedFastembedProcessClient implements SharedFastembedClient {
         ? signal.reason
         : new Error('shared fastembed process request aborted before it was sent');
     }
-    const child = await this.ensureProcess();
+    const isInitRequest = payload['type'] === 'init';
+    if (isInitRequest) {
+      this.lastInitPayload = payload;
+    }
+    let child = await this.ensureProcess();
+
+    if (!isInitRequest && this.lastInitPayload && !this.childInitialized) {
+      // (BUG-021 fix) `child` was just (re)spawned — by this call's own
+      // `ensureProcess()` above, OR by an earlier request on this member
+      // after the previous child died unexpectedly — and has never loaded a
+      // model. Replay the last known-good `init` payload before letting the
+      // real request through, exactly mirroring what `FastembedProcessPool`/
+      // `AdaptiveFastembedProcessPool` already do for a brand-new member on
+      // grow, but here for the respawn-in-place case those pools never
+      // detect (they only (re)send `init` when THEY create a member; they
+      // have no visibility into this client transparently re-forking its own
+      // dead child). Recurses through this exact method so the replay gets
+      // identical telemetry/timeout/admission treatment to any other init.
+      await this.request(this.lastInitPayload, timeoutMs, signal);
+      // Re-fetch: `ensureProcess()` is idempotent for a live child, but never
+      // trust a reference captured before an `await` against a process that
+      // can die out from under it.
+      child = await this.ensureProcess();
+    }
+
     const id = this.nextId++;
 
     const queueDepth = this.pending.size;
@@ -487,6 +545,13 @@ export class SharedFastembedProcessClient implements SharedFastembedClient {
         resolve: (v) => {
           if (to) clearTimeout(to);
           detachAbort();
+          // (BUG-021) Only a genuinely SUCCESSFUL init reply proves this
+          // child now has a loaded model — flip the flag here, not
+          // optimistically at send time, so a rejected init (model load
+          // error) correctly leaves `childInitialized` false and the next
+          // real request replays init again rather than sailing through
+          // believing a failed load succeeded.
+          if (isInitRequest) this.childInitialized = true;
           log.info('fastembed_process.request.finish', {
             ...baseFields,
             response_ms: Math.round(performance.now() - sentAt),

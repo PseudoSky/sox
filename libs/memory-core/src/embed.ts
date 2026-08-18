@@ -121,6 +121,12 @@ let _provider: EmbeddingProvider | null = null;
 let _providerPromise: Promise<EmbeddingProvider> | null = null;
 let _resolvedBackend: 'real' | null = null;
 let _lastEmbedError: string | null = null;
+/**
+ * (BUG-021) Consecutive `_embedWork()` failures since the last success —
+ * drives `getEmbedState()`'s 'degraded' branch. Reset to 0 by a successful
+ * embed and by `_resetEmbedSingleton()`/test provider injection.
+ */
+let _consecutiveEmbedFailures = 0;
 
 /**
  * TEST-ONLY dependency-injection hook. When set, getOrCreateProvider() returns
@@ -144,16 +150,38 @@ export function _setEmbedProviderForTest(p: EmbeddingProvider | null): void {
     _activeModel = p.metadata.modelId;
     _configCache = null;
     _lastEmbedError = null;
+    _consecutiveEmbedFailures = 0;
   }
 }
 
 /**
  * BL-54: the truthful embed-subsystem state.
+ *
+ * (BUG-021) 'degraded' added: `_resolvedBackend === 'real'` only proves the
+ * provider was successfully CONSTRUCTED once at process start — it says
+ * nothing about whether the most recent actual embed CALL succeeded. Before
+ * this fix, `getEmbedState()`/`getEmbedHealth()` reported `state: 'real'`,
+ * `last_error: null` even while every single embed call was failing (532
+ * `sox.stage.embed.error` records, `embeds_completed: 0`) — a health surface
+ * reading clean during total pipeline failure, the same class of defect as
+ * `[inv:list-never-lies]`. `_consecutiveEmbedFailures` (bumped in
+ * `_embedWork()`'s catch, reset on the next success) now drives 'degraded'
+ * so a caller reading `memory_ping`/`memory_stats` sees the truth without
+ * having to cross-reference `counters.embeds_failed` by hand.
  */
-export type EmbedState = 'real' | 'uninitialized';
+export type EmbedState = 'real' | 'uninitialized' | 'degraded';
 export function getEmbedState(): EmbedState {
-  if (_testProvider !== null) return 'real';
-  if (_activeModel !== null && _resolvedBackend === 'real') return 'real';
+  // (BUG-021) The injected-test-provider path must observe the same
+  // per-call failure signal as production — otherwise a test provider that
+  // deliberately simulates failing embeds (exactly what proves this fix)
+  // would be unable to ever see 'degraded', since this branch used to
+  // return 'real' unconditionally regardless of `_consecutiveEmbedFailures`.
+  if (_testProvider !== null) {
+    return _consecutiveEmbedFailures > 0 ? 'degraded' : 'real';
+  }
+  if (_activeModel !== null && _resolvedBackend === 'real') {
+    return _consecutiveEmbedFailures > 0 ? 'degraded' : 'real';
+  }
   return 'uninitialized';
 }
 
@@ -353,13 +381,30 @@ async function _embedWork(text: string): Promise<Float32Array> {
     providerCallCount++; // BL-254: track actual local embed calls
     const vec = await provider.embedSingle(text);
     log.info('embed.finish', { text_len: textLen, duration_ms: Math.round(performance.now() - t0) });
+    // (BUG-021) A real call succeeded — clear any degraded signal left by a
+    // prior run of failures so the health surface recovers the instant the
+    // pipeline actually does, not only after a process restart.
+    _lastEmbedError = null;
+    _consecutiveEmbedFailures = 0;
     return vec;
   } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
     log.error('embed.error', {
       text_len: textLen,
       duration_ms: Math.round(performance.now() - t0),
-      error: err instanceof Error ? err.message : String(err),
+      error: message,
     });
+    // (BUG-021) Previously this catch only logged and rethrew — neither
+    // `_lastEmbedError` nor any failure counter was touched here, so
+    // `getEmbedHealth()` kept reporting the state/error from whenever the
+    // provider was first (successfully) constructed, no matter how many
+    // subsequent real embed calls failed. `memory_ping`/`memory_stats` read
+    // clean through a total pipeline outage as a result (532
+    // `sox.stage.embed.error` records, `embeds_completed: 0`, yet
+    // `embed.state: "real"`, `last_error: null`). Every per-call failure now
+    // updates both, so the health surface is truthful without a restart.
+    _lastEmbedError = message;
+    _consecutiveEmbedFailures += 1;
     throw err;
   } finally {
     if (timeoutHandle !== undefined) clearTimeout(timeoutHandle);
@@ -454,6 +499,7 @@ export function _resetEmbedSingleton(): void {
   _activeModel = _testProvider ? _testProvider.metadata.modelId : null;
   _configCache = null;
   _lastEmbedError = null;
+  _consecutiveEmbedFailures = 0;
 }
 
 /**
