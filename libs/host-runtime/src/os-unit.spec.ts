@@ -1161,3 +1161,85 @@ describe('BL-584 — OS units carry SOX_SERVICE_ID', () => {
     expect(spec.env['SOX_SERVICE_ID']).toBe(spec.id);
   });
 });
+
+describe('BL-592 (§8.1a part A/B) — deriveOsUnitSpec reads lifecycle.stop_timeout_ms', () => {
+  it('RED (pre-fix behavior would be: spec.stopTimeoutMs is always undefined) — carries a declared stop_timeout_ms onto the returned spec', () => {
+    const manifestPath = writeManifest({ background: true, singleton: true, stop_timeout_ms: 9000 });
+    const spec = deriveOsUnitSpec({
+      id: 'memory-daemon',
+      scope: 'user',
+      manifestPath,
+      nodePath: '/usr/local/bin/node',
+      entrypoint: path.join(tmpDir, 'ext', 'memory-daemon', 'dist', 'index.js'),
+      env: { SOX_CONFIG_DB_PATH: 'x' },
+      workingDirectory: path.join(tmpDir, 'ext', 'memory-daemon'),
+      logDir,
+    });
+    expect(spec.stopTimeoutMs).toBe(9000);
+  });
+
+  it('a manifest declaring nothing leaves spec.stopTimeoutMs undefined (unchanged default preserved)', () => {
+    const manifestPath = writeManifest({ background: true, singleton: true });
+    const spec = deriveOsUnitSpec({
+      id: 'memory-daemon',
+      scope: 'user',
+      manifestPath,
+      nodePath: '/usr/local/bin/node',
+      entrypoint: path.join(tmpDir, 'ext', 'memory-daemon', 'dist', 'index.js'),
+      env: { SOX_CONFIG_DB_PATH: 'x' },
+      workingDirectory: path.join(tmpDir, 'ext', 'memory-daemon'),
+      logDir,
+    });
+    expect(spec.stopTimeoutMs).toBeUndefined();
+  });
+
+  it('an untrusted/invalid stop_timeout_ms (string, 0, negative) is ignored, not coerced', () => {
+    for (const bad of ['9000', 0, -500, null]) {
+      const manifestPath = writeManifest({ background: true, singleton: true, stop_timeout_ms: bad });
+      const spec = deriveOsUnitSpec({
+        id: 'memory-daemon',
+        scope: 'user',
+        manifestPath,
+        nodePath: '/usr/local/bin/node',
+        entrypoint: path.join(tmpDir, 'ext', 'memory-daemon', 'dist', 'index.js'),
+        env: { SOX_CONFIG_DB_PATH: 'x' },
+        workingDirectory: path.join(tmpDir, 'ext', 'memory-daemon'),
+        logDir,
+      });
+      expect(spec.stopTimeoutMs).toBeUndefined();
+    }
+  });
+
+  it('RED (pre-fix: SOX_CONFIG_STOP_TIMEOUT_MS was never injected) — always stamps the resolved value into spec.env as SOX_CONFIG_STOP_TIMEOUT_MS (part B)', () => {
+    const withDeclared = makeSpec({ env: { SOX_CONFIG_DB_PATH: 'x' } }); // makeSpec's manifest declares stop_timeout_ms:5000
+    expect(withDeclared.env['SOX_CONFIG_STOP_TIMEOUT_MS']).toBe('5000');
+
+    const manifestPath = writeManifest({ background: true, singleton: true, stop_timeout_ms: 9000 });
+    const spec = deriveOsUnitSpec({
+      id: 'memory-daemon',
+      scope: 'user',
+      manifestPath,
+      nodePath: '/usr/local/bin/node',
+      entrypoint: path.join(tmpDir, 'ext', 'memory-daemon', 'dist', 'index.js'),
+      env: { SOX_CONFIG_DB_PATH: 'x' },
+      workingDirectory: path.join(tmpDir, 'ext', 'memory-daemon'),
+      logDir,
+    });
+    expect(spec.env['SOX_CONFIG_STOP_TIMEOUT_MS']).toBe('9000');
+  });
+
+  it('a manifest declaring nothing still stamps the 5000ms fallback (a service never has to guess whether the var is set)', () => {
+    const manifestPath = writeManifest({ background: true, singleton: true });
+    const spec = deriveOsUnitSpec({
+      id: 'memory-daemon',
+      scope: 'user',
+      manifestPath,
+      nodePath: '/usr/local/bin/node',
+      entrypoint: path.join(tmpDir, 'ext', 'memory-daemon', 'dist', 'index.js'),
+      env: { SOX_CONFIG_DB_PATH: 'x' },
+      workingDirectory: path.join(tmpDir, 'ext', 'memory-daemon'),
+      logDir,
+    });
+    expect(spec.env['SOX_CONFIG_STOP_TIMEOUT_MS']).toBe('5000');
+  });
+});

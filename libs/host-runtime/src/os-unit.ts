@@ -183,6 +183,14 @@ export interface OsUnitSpec {
   /** Content address of the served artifact (ADR-0003), when known. */
   artifactHash?: string | undefined;
   /**
+   * BL-592 (§8.1a part A): the manifest's declared `lifecycle.stop_timeout_ms`,
+   * when present and a positive finite number — the SIGTERM grace `cmdService`'s
+   * `disable`/`restart` resolver should use for this service (precedence:
+   * `--grace-ms` flag > `SOX_STOP_GRACE_MS` env > this field > 5000 fallback).
+   * `undefined` when the manifest declares nothing, preserving today's default.
+   */
+  stopTimeoutMs?: number | undefined;
+  /**
    * SA-2 / CONTRACTS §I: Socket path for on-demand (socket-activation) posture.
    * When set, the generated OS unit includes a Sockets key (launchd) or a paired
    * .socket unit (systemd) so the OS supervisor creates the listening socket and
@@ -273,6 +281,7 @@ export function deriveOsUnitSpec(opts: {
     background?: boolean;
     singleton?: boolean;
     process_type?: unknown;
+    stop_timeout_ms?: unknown;
   } = {};
   try {
     const parsed = JSON.parse(fs.readFileSync(opts.manifestPath, 'utf8')) as {
@@ -284,6 +293,15 @@ export function deriveOsUnitSpec(opts: {
   }
   const processType =
     opts.processType ?? coerceProcessType(manifestLifecycle.process_type);
+
+  // BL-592 (§8.1a part A/B): narrow the manifest's declared stop_timeout_ms — an
+  // untrusted JSON value — to a positive finite number, or undefined (preserving
+  // today's 5000ms default everywhere this is consumed).
+  const rawStopTimeoutMs = manifestLifecycle.stop_timeout_ms;
+  const stopTimeoutMs =
+    typeof rawStopTimeoutMs === 'number' && Number.isFinite(rawStopTimeoutMs) && rawStopTimeoutMs > 0
+      ? rawStopTimeoutMs
+      : undefined;
 
   // SA-1: activation_posture takes precedence.
   // When absent, fall back to manifest lifecycle (backward compat).
@@ -327,7 +345,17 @@ export function deriveOsUnitSpec(opts: {
     // safe", falling back to argv-token matching only when the env probe is
     // unavailable. OS-unit services previously only ever matched via that
     // fallback.
-    env: { ...opts.env, SOX_SERVICE_ID: opts.id },
+    // BL-592 (§8.1a part B): always stamp the resolved stop-timeout into the
+    // unit's own environment as SOX_CONFIG_STOP_TIMEOUT_MS — the SAME
+    // SOX_CONFIG_* pattern every other resolved config value uses — so a
+    // service's internal shutdown safety net can derive itself from
+    // `resolvedStopTimeoutMs - SOX_SHUTDOWN_SAFETY_MARGIN_MS` instead of a
+    // hand-copied literal that can silently drift from what the reaper (or
+    // cmdService's graceMs resolver, which reads this SAME manifest field)
+    // actually waits for. Present unconditionally (falls back to 5000, matching
+    // cmdService's own default) so a service never has to guess whether the
+    // var is set.
+    env: { ...opts.env, SOX_SERVICE_ID: opts.id, SOX_CONFIG_STOP_TIMEOUT_MS: String(stopTimeoutMs ?? 5000) },
     workingDirectory: opts.workingDirectory,
     runAtLoad,
     keepAlive,
@@ -336,6 +364,7 @@ export function deriveOsUnitSpec(opts: {
     stdoutPath: path.join(opts.logDir, `${opts.id}-os-${logDate}.out.log`),
     stderrPath: path.join(opts.logDir, `${opts.id}-os-${logDate}.err.log`),
     artifactHash: opts.artifactHash,
+    ...(stopTimeoutMs !== undefined ? { stopTimeoutMs } : {}),
     ...(opts.activation_posture === 'on-demand' && opts.socketPath !== undefined
       ? { socketPath: opts.socketPath }
       : {}),
