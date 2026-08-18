@@ -2673,6 +2673,38 @@ export class TursoAdapterImpl implements TursoAdapter {
       log.warn('store_adapter.turso.close_tshm_reset_failed', {
         error: err instanceof Error ? err.message : String(err),
       });
+      return; // nothing new was actually created — no reason to sweep
+    }
+
+    // (BL-591, second fix) THIS is the dominant producer of `.stale-*` debris
+    // in production, not the `_openReal()` pre-open reconcile the sweep was
+    // originally (and then, on the first fix, still only) attached to.
+    // Measured live on memory-server across 2026-08-18: 543
+    // `close_tshm_reset` events here vs 74 `sidecar_reconcile_deferred` in
+    // the pre-open path (most of those 74 declined anyway — a long-lived
+    // server almost always has itself as a live peer at pre-open time) and
+    // ZERO sweeps of any kind. Producer and collector were on genuinely
+    // different code paths; a long-lived server's own opens rarely reach the
+    // pre-open reconcile in a state where hoisting the call there could ever
+    // see a live artefact. This call site fires on the exact event that
+    // creates a new artefact, every time, regardless of connection lifetime
+    // — which the pre-open path structurally cannot promise.
+    //
+    // Kept in ADDITION to the `_openReal()` hook (harmless, and covers a
+    // rename produced by the pre-open path itself), not instead of it — this
+    // is now the primary collector, that one is a backstop.
+    //
+    // Throttled internally (maybePruneStaleTshmSidecars, ≤1 real scan/10min
+    // per store) so this adds at most one stat() to `close()`, which is
+    // already the debounce/wal-cap-sensitive path BL-590 is trying to keep
+    // cheap — never a full directory scan on every TRUNCATE.
+    const sweep = maybePruneStaleTshmSidecars(coordDb, {
+      log: (msg) => log.debug('store_adapter.turso.sidecar_sweep', { detail: msg }),
+    });
+    if (sweep && sweep.pruned > 0) {
+      log.info('store_adapter.turso.sidecar_sweep_pruned', {
+        detail: `pruned ${sweep.pruned} stale WAL-index sidecar(s) beyond retention beside ${coordDb} (BL-591)`,
+      });
     }
   }
 
