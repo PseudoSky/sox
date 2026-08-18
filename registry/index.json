@@ -13,7 +13,7 @@
     "requires": {
       "tool_calling": true
     },
-    "builtFromCommit": "d2c36bd6f797fad5464a0fbcfcdfdded0eb586ac"
+    "builtFromCommit": "6299b51b755bb51e764a9e7b0549f54f78226f29"
   },
   {
     "id": "architect",
@@ -22,14 +22,14 @@
     "title": "architect",
     "description": "Use this when you need a read-only architecture agent (deepseek-v4-pro): takes a vague feature description, delegates research to the researcher agent, analyzes the codebase with gitnexus MCP, and produces a full implementation spec with exact file paths, interface and behavioral changes, independent segments with token estimates, execution strategies for weaker agents, test cases, and documentation updates. ALWAYS delegates research — never does its own.",
     "source": "file:///Users/nix/dev/ai/sox-ecosystem/extensions/agents/architect",
-    "checksum": "sha256:b051f40558c981a257734ee9e7e5a3d8aba35ae1ffae46e1877b428f3700fb3a",
+    "checksum": "sha256:e5c6e167ed45a7b54dee82758939d16b4292fc7a3265794aaa7144db2479587d",
     "compatibility": {
       "host": ">=1.0.0 <2.0.0"
     },
     "requires": {
       "tool_calling": true
     },
-    "builtFromCommit": "d2c36bd6f797fad5464a0fbcfcdfdded0eb586ac"
+    "builtFromCommit": "6299b51b755bb51e764a9e7b0549f54f78226f29"
   },
   {
     "id": "debug",
@@ -45,7 +45,7 @@
     "requires": {
       "tool_calling": true
     },
-    "builtFromCommit": "d2c36bd6f797fad5464a0fbcfcdfdded0eb586ac"
+    "builtFromCommit": "6299b51b755bb51e764a9e7b0549f54f78226f29"
   },
   {
     "id": "dispatcher",
@@ -54,14 +54,14 @@
     "title": "dispatcher",
     "description": "Use this when you need the live orchestrator that lists and drives token-optimized dispatch of already-authored plan-state-machine plans (dag.json/state.json). Two modes — 'list plans' enumerates discoverable plans with their state; 'execute plan <path|slug>' runs states wave-by-wave, routing each to the best-fit available executor at its declared model/effort tier, assembling self-contained inline dispatch prompts (compiled work-order + pre-loaded reserved file contents + token budget hint + wave context pack when wave has ≥2 states with shared context), capturing real token telemetry, verifying from state.json (not subagent reports), and looping advance/retry/escalate/halt via orchestrate-plan.js. Halts on every non-clean gate and proposes a fix. Distinct from plan-builder (which authors plans). Governed by the non-negotiable Operating rules — never triage, never code, never believe a report without evidence, never dispatch un-triaged or un-architected implementation, never merge unreviewed code, backlog status on every transition, decisions routed to debug/architect/product, background parallel dispatch, no orphaned work, live-status and upstream-consumer verification after deployments.",
     "source": "file:///Users/nix/dev/ai/sox-ecosystem/extensions/agents/dispatcher",
-    "checksum": "sha256:819b9bf5bd278f8b1bcebd1281709221f4f02f8c4bcae7acd5ebd9b33b445d27",
+    "checksum": "sha256:7c3cde5b8953fd95cc10b6570118c9621282df6702169d1b909dfed90c3da68d",
     "compatibility": {
       "host": ">=1.0.0 <2.0.0"
     },
     "requires": {
       "tool_calling": true
     },
-    "builtFromCommit": "d2c36bd6f797fad5464a0fbcfcdfdded0eb586ac"
+    "builtFromCommit": "6299b51b755bb51e764a9e7b0549f54f78226f29"
   },
   {
     "id": "doc-cartographer",
@@ -77,7 +77,7 @@
     "requires": {
       "tool_calling": true
     },
-    "builtFromCommit": "d2c36bd6f797fad5464a0fbcfcdfdded0eb586ac"
+    "builtFromCommit": "6299b51b755bb51e764a9e7b0549f54f78226f29"
   },
   {
     "id": "doc-consumer",
@@ -93,7 +93,7 @@
     "requires": {
       "tool_calling": true
     },
-    "builtFromCommit": "d2c36bd6f797fad5464a0fbcfcdfdded0eb586ac"
+    "builtFromCommit": "6299b51b755bb51e764a9e7b0549f54f78226f29"
   },
   {
     "id": "doc-evangelist",
@@ -109,7 +109,7 @@
     "requires": {
       "tool_calling": true
     },
-    "builtFromCommit": "d2c36bd6f797fad5464a0fbcfcdfdded0eb586ac"
+    "builtFromCommit": "6299b51b755bb51e764a9e7b0549f54f78226f29"
   },
   {
     "id": "doc-reviewer",
@@ -125,7 +125,7 @@
     "requires": {
       "tool_calling": true
     },
-    "builtFromCommit": "d2c36bd6f797fad5464a0fbcfcdfdded0eb586ac"
+    "builtFromCommit": "6299b51b755bb51e764a9e7b0549f54f78226f29"
   },
   {
     "id": "doc-steward",
@@ -141,7 +141,7 @@
     "requires": {
       "tool_calling": true
     },
-    "builtFromCommit": "d2c36bd6f797fad5464a0fbcfcdfdded0eb586ac"
+    "builtFromCommit": "6299b51b755bb51e764a9e7b0549f54f78226f29"
   },
   {
     "id": "memory-org",
@@ -154,7 +154,7 @@
     "compatibility": {
       "host": ">=1.0.0 <2.0.0"
     },
-    "builtFromCommit": "d2c36bd6f797fad5464a0fbcfcdfdded0eb586ac"
+    "builtFromCommit": "6299b51b755bb51e764a9e7b0549f54f78226f29"
   },
   {
     "id": "performance",
@@ -163,14 +163,14 @@
     "title": "performance",
     "description": "Use this when you need a senior performance engineer (deepseek-v4-flash) to identify and eliminate bottlenecks in applications, databases, and infrastructure via profiling, load testing, and measured optimization. Delegates broad discovery to `researcher`, uses GitNexus-first blast-radius analysis before touching hot-path code, and requires before/after measurement. Differentiate from `refactor`: this agent optimizes for speed/throughput with numbers; `refactor` optimizes for structure/maintainability.",
     "source": "file:///Users/nix/dev/ai/sox-ecosystem/extensions/agents/performance",
-    "checksum": "sha256:d3d9fcbf63ab7b041ecbde44b3574148fc5da4b41d7e47f8ace4a8bffe3d55d5",
+    "checksum": "sha256:04d378a20364c8fd8e56e8e70a48e4728e1d3cece1f7c183127a2d42570db3a5",
     "compatibility": {
       "host": ">=1.0.0 <2.0.0"
     },
     "requires": {
       "tool_calling": true
     },
-    "builtFromCommit": "d2c36bd6f797fad5464a0fbcfcdfdded0eb586ac"
+    "builtFromCommit": "6299b51b755bb51e764a9e7b0549f54f78226f29"
   },
   {
     "id": "performance-engineer",
@@ -186,7 +186,7 @@
     "requires": {
       "tool_calling": true
     },
-    "builtFromCommit": "d2c36bd6f797fad5464a0fbcfcdfdded0eb586ac"
+    "builtFromCommit": "6299b51b755bb51e764a9e7b0549f54f78226f29"
   },
   {
     "id": "product",
@@ -195,14 +195,14 @@
     "title": "product",
     "description": "Use this when you need a senior product manager (deepseek-v4-flash) to own product strategy, roadmap, feature prioritization, and new-feature research (competitive analysis, market trends, user need discovery). Delegates broad discovery to `researcher` (never freelances a web search) and uses GitNexus-first codebase awareness. Differentiate from `backend`/`typescript`: this agent decides WHAT and WHY; it does not implement.",
     "source": "file:///Users/nix/dev/ai/sox-ecosystem/extensions/agents/product",
-    "checksum": "sha256:161674040429e5161901fe95dd28f0f6aae80b54ddc052351e464b4e2d704bea",
+    "checksum": "sha256:ebbdf8ed0049e8ebdac5f190dfc8969981eb410c178b05831f7ac7eddb3b358d",
     "compatibility": {
       "host": ">=1.0.0 <2.0.0"
     },
     "requires": {
       "tool_calling": true
     },
-    "builtFromCommit": "d2c36bd6f797fad5464a0fbcfcdfdded0eb586ac"
+    "builtFromCommit": "6299b51b755bb51e764a9e7b0549f54f78226f29"
   },
   {
     "id": "researcher",
@@ -211,14 +211,14 @@
     "title": "researcher",
     "description": "Use this when you need to discover, grade, and catalog third-party tools/patterns/use cases before building — sweeps registries and the web via the search MCP, grades sources, writes per-finding memory episodes (agent:approved/agent:blocked), and returns a build-vs-integrate verdict.",
     "source": "file:///Users/nix/dev/ai/sox-ecosystem/extensions/agents/researcher",
-    "checksum": "sha256:e90cd2f6fb28f5a902a6c981e6fd3214a97de5c0ae80f52cab8108aed19ff762",
+    "checksum": "sha256:42d1f371b3333aec6fe8f8363fd8d0c87c91bb0d2bed2750f9f308f579f9593f",
     "compatibility": {
       "host": ">=1.0.0 <2.0.0"
     },
     "requires": {
       "tool_calling": true
     },
-    "builtFromCommit": "d2c36bd6f797fad5464a0fbcfcdfdded0eb586ac"
+    "builtFromCommit": "6299b51b755bb51e764a9e7b0549f54f78226f29"
   },
   {
     "id": "test-runner",
@@ -231,7 +231,7 @@
     "compatibility": {
       "host": ">=1.0.0 <2.0.0"
     },
-    "builtFromCommit": "d2c36bd6f797fad5464a0fbcfcdfdded0eb586ac"
+    "builtFromCommit": "6299b51b755bb51e764a9e7b0549f54f78226f29"
   },
   {
     "id": "typescript",
@@ -247,7 +247,7 @@
     "requires": {
       "tool_calling": true
     },
-    "builtFromCommit": "d2c36bd6f797fad5464a0fbcfcdfdded0eb586ac"
+    "builtFromCommit": "6299b51b755bb51e764a9e7b0549f54f78226f29"
   },
   {
     "id": "sox-memory-bundle",
@@ -274,7 +274,7 @@
         "id": "memory-usage"
       }
     ],
-    "builtFromCommit": "d2c36bd6f797fad5464a0fbcfcdfdded0eb586ac"
+    "builtFromCommit": "6299b51b755bb51e764a9e7b0549f54f78226f29"
   },
   {
     "id": "memory-cli",
@@ -283,13 +283,13 @@
     "title": "Memory CLI",
     "description": "Use this when you need to manage the sox-memory store from the shell — provides memory init|status|list|registry subcommands for store lifecycle, scope selection, and registry inspection. Fully deterministic; zero LLM calls.",
     "source": "file:///Users/nix/dev/ai/sox-ecosystem/extensions/bundles/sox-memory-bundle/members/memory-cli",
-    "checksum": "sha256:b621956b5bb199512c995a24d66b5ea99db32477745ef98d3e26c706bf0b9d14",
+    "checksum": "sha256:a38afce7e570d09e55d3de197c7ee6a13c129a5b64e609285055d5c11cb5e479",
     "compatibility": {
       "host": ">=1.0.0 <2.0.0"
     },
     "visibility": "internal",
     "bundleId": "sox-memory-bundle",
-    "builtFromCommit": "d2c36bd6f797fad5464a0fbcfcdfdded0eb586ac"
+    "builtFromCommit": "6299b51b755bb51e764a9e7b0549f54f78226f29"
   },
   {
     "id": "memory-flush",
@@ -298,13 +298,13 @@
     "title": "Memory Session Flush",
     "description": "Use this when you need session memory durably persisted at conversation end and scope promotions reviewed — binds SessionEnd (persists working memory, enqueues episodes, nudges memoryd) and ScopePromotionProposed (runs promotion approval policy). Deterministic; zero LLM calls.",
     "source": "file:///Users/nix/dev/ai/sox-ecosystem/extensions/bundles/sox-memory-bundle/members/memory-flush",
-    "checksum": "sha256:774aba5f4c3bbc8042c5baf33302d80afc8e67ca054d2586085a43ffb76fa175",
+    "checksum": "sha256:5ed747b9ab4656e8f53b45a8864c945c28c85b1ee239d8b32de54568659ee61e",
     "compatibility": {
       "host": ">=1.0.0 <2.0.0"
     },
     "visibility": "internal",
     "bundleId": "sox-memory-bundle",
-    "builtFromCommit": "d2c36bd6f797fad5464a0fbcfcdfdded0eb586ac"
+    "builtFromCommit": "6299b51b755bb51e764a9e7b0549f54f78226f29"
   },
   {
     "id": "memory-server",
@@ -313,7 +313,7 @@
     "title": "Agent Memory Server",
     "description": "Use this when an agent needs durable, searchable memory across sessions — exposes 7 memory_* tools over a single-file SQLite graph store with hybrid recall (vec+BM25+temporal, <50ms, zero LLM), write-enqueue, session state, community lookup, and bi-temporal invalidation.",
     "source": "file:///Users/nix/dev/ai/sox-ecosystem/extensions/bundles/sox-memory-bundle/members/memory-server",
-    "checksum": "sha256:c95db5aa18de6c98ff7e11b448770e488716309dafdb4f7c0dfd50c15ac7b61c",
+    "checksum": "sha256:e254ff4faa2dc045d7abf68de0f391207fdafc3f3d35b89084373b8426cbbad2",
     "compatibility": {
       "host": ">=1.0.0 <2.0.0"
     },
@@ -323,7 +323,7 @@
     },
     "visibility": "internal",
     "bundleId": "sox-memory-bundle",
-    "builtFromCommit": "d2c36bd6f797fad5464a0fbcfcdfdded0eb586ac"
+    "builtFromCommit": "6299b51b755bb51e764a9e7b0549f54f78226f29"
   },
   {
     "id": "memory-usage",
@@ -338,7 +338,7 @@
     },
     "visibility": "internal",
     "bundleId": "sox-memory-bundle",
-    "builtFromCommit": "d2c36bd6f797fad5464a0fbcfcdfdded0eb586ac"
+    "builtFromCommit": "6299b51b755bb51e764a9e7b0549f54f78226f29"
   },
   {
     "id": "dep-inject",
@@ -351,7 +351,7 @@
     "compatibility": {
       "host": ">=1.0.0 <2.0.0"
     },
-    "builtFromCommit": "d2c36bd6f797fad5464a0fbcfcdfdded0eb586ac"
+    "builtFromCommit": "6299b51b755bb51e764a9e7b0549f54f78226f29"
   },
   {
     "id": "tokenguard",
@@ -364,7 +364,7 @@
     "compatibility": {
       "host": ">=1.0.0 <2.0.0"
     },
-    "builtFromCommit": "d2c36bd6f797fad5464a0fbcfcdfdded0eb586ac"
+    "builtFromCommit": "6299b51b755bb51e764a9e7b0549f54f78226f29"
   },
   {
     "id": "demo-creator",
@@ -377,7 +377,7 @@
     "compatibility": {
       "host": ">=1.0.0 <2.0.0"
     },
-    "builtFromCommit": "d2c36bd6f797fad5464a0fbcfcdfdded0eb586ac"
+    "builtFromCommit": "6299b51b755bb51e764a9e7b0549f54f78226f29"
   },
   {
     "id": "di-codex",
@@ -390,7 +390,7 @@
     "compatibility": {
       "host": ">=1.0.0 <2.0.0"
     },
-    "builtFromCommit": "d2c36bd6f797fad5464a0fbcfcdfdded0eb586ac"
+    "builtFromCommit": "6299b51b755bb51e764a9e7b0549f54f78226f29"
   },
   {
     "id": "dep-injector",
@@ -403,7 +403,7 @@
     "compatibility": {
       "host": ">=1.0.0 <2.0.0"
     },
-    "builtFromCommit": "d2c36bd6f797fad5464a0fbcfcdfdded0eb586ac"
+    "builtFromCommit": "6299b51b755bb51e764a9e7b0549f54f78226f29"
   },
   {
     "id": "forbidden-access",
@@ -416,7 +416,7 @@
     "compatibility": {
       "host": ">=1.0.0 <2.0.0"
     },
-    "builtFromCommit": "d2c36bd6f797fad5464a0fbcfcdfdded0eb586ac"
+    "builtFromCommit": "6299b51b755bb51e764a9e7b0549f54f78226f29"
   },
   {
     "id": "iterative-research-refinement",
@@ -429,7 +429,7 @@
     "compatibility": {
       "host": ">=1.0.0 <2.0.0"
     },
-    "builtFromCommit": "d2c36bd6f797fad5464a0fbcfcdfdded0eb586ac"
+    "builtFromCommit": "6299b51b755bb51e764a9e7b0549f54f78226f29"
   },
   {
     "id": "sox-ingest",
@@ -442,7 +442,7 @@
     "compatibility": {
       "host": ">=1.0.0 <2.0.0"
     },
-    "builtFromCommit": "d2c36bd6f797fad5464a0fbcfcdfdded0eb586ac"
+    "builtFromCommit": "6299b51b755bb51e764a9e7b0549f54f78226f29"
   },
   {
     "id": "tui-design",
@@ -455,7 +455,7 @@
     "compatibility": {
       "host": ">=1.0.0 <2.0.0"
     },
-    "builtFromCommit": "d2c36bd6f797fad5464a0fbcfcdfdded0eb586ac"
+    "builtFromCommit": "6299b51b755bb51e764a9e7b0549f54f78226f29"
   },
   {
     "id": "sox",
@@ -464,10 +464,10 @@
     "title": "soxe CLI",
     "description": "LLM extension ecosystem CLI — extension #0 (D1/D2 self-hosting)",
     "source": "file:///Users/nix/dev/ai/sox-ecosystem/apps/sox",
-    "checksum": "sha256:046e72ebfded89e9473ebc0190d688d55645c9344c54d38cf12483b9815d46e3",
+    "checksum": "sha256:f1cf56bff22d2e1065fa55416dffb7c3b4d5f25bc42575bf1f718dc12b4c5926",
     "compatibility": {
       "host": ">=1.0.0 <2.0.0"
     },
-    "builtFromCommit": "d2c36bd6f797fad5464a0fbcfcdfdded0eb586ac"
+    "builtFromCommit": "6299b51b755bb51e764a9e7b0549f54f78226f29"
   }
 ]
