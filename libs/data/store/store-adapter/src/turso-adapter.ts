@@ -1349,23 +1349,41 @@ export class TursoAdapterImpl implements TursoAdapter {
             `[BL-373] stale -tshm reconciled BEFORE the open: moved aside to ${proactive.to} — ` +
               `the open proceeds against the existing WAL, no failed-open path`,
           );
-          // (BL-591) A rename just produced a NEW `.stale-*` sidecar debris
-          // file — the moment retention needs re-evaluating. Throttled
-          // internally (default: one real directory scan per 10 minutes per
-          // store) so this adds at most one stat() to the common case despite
-          // firing from the same open path BL-590 debounce can hit once per
-          // write; see sidecar-retention.ts for the full rationale.
-          const sweep = maybePruneStaleTshmSidecars(canonicalDb, {
-            log: (msg) => log.debug('store_adapter.turso.sidecar_sweep', { detail: msg }),
-          });
-          if (sweep && sweep.pruned > 0) {
-            log.info('store_adapter.turso.sidecar_sweep_pruned', {
-              detail: `pruned ${sweep.pruned} stale WAL-index sidecar(s) beyond retention beside ${canonicalDb} (BL-591)`,
-            });
-          }
         } else if (quiescence.livePeers.length > 0) {
           log.debug('store_adapter.turso.sidecar_reconcile_deferred', {
             detail: `-tshm reconcile skipped: ${quiescence.livePeers.length} live connection(s) hold the store`,
+          });
+        }
+
+        // (BL-591) Sweep on EVERY open, not only when THIS open happened to
+        // rename something.
+        //
+        // The sweep was originally nested inside the `proactive.moved` branch
+        // above, on the reasoning that a rename is "the moment retention needs
+        // re-evaluating". That made it inert in production, and measurably so:
+        // across 2026-08-18 the live memory-server logged 543
+        // `close_tshm_reset` events (the close/recover path, which is what
+        // actually creates `.stale-*` debris once an idle flush takes the WAL
+        // to 0) and 74 `sidecar_reconcile_deferred` — but ZERO `sidecar_sweep`
+        // of any kind, while the on-disk debris grew past 240 files / 20 MB.
+        //
+        // The producer and the collector were on different paths. A long-lived
+        // server holds the store, so this pre-open reconcile is usually
+        // DEFERRED (`livePeers.length > 0`) and its moved-branch never runs,
+        // while the debris keeps accumulating from close-time. Hoisting the
+        // call out of that branch attaches the collector to something that
+        // actually happens: every open.
+        //
+        // Cost is unchanged in the common case — `maybePruneStaleTshmSidecars`
+        // throttles real directory scans to one per 10 minutes per store, so
+        // this is one extra stat() per open, which is what its own rate-limit
+        // design already assumed it would be paying.
+        const sweep = maybePruneStaleTshmSidecars(canonicalDb, {
+          log: (msg) => log.debug('store_adapter.turso.sidecar_sweep', { detail: msg }),
+        });
+        if (sweep && sweep.pruned > 0) {
+          log.info('store_adapter.turso.sidecar_sweep_pruned', {
+            detail: `pruned ${sweep.pruned} stale WAL-index sidecar(s) beyond retention beside ${canonicalDb} (BL-591)`,
           });
         }
       }
