@@ -18,6 +18,7 @@ import {
   getLastEmbedError,
 } from './embed.js';
 import { WriteQueue } from './write-queue.js';
+import { log } from './telemetry.js';
 
 /**
  * BL-88: per-record embedding provenance counts over live episodes with vectors.
@@ -166,6 +167,49 @@ export interface StatsResult {
   embed_provenance: EmbedProvenanceStats;
   /** (BL-343) Rows excluded from the JSON-dependent aggregates because they do not parse. */
   malformed_rows: MalformedRowStats;
+}
+
+/**
+ * (BL-572/BL-582) The single derivation of `last_checkpoint_at`. Every surface
+ * that reports it MUST call this — `memory_ping` previously computed its own
+ * from `WriteQueue.lastCheckpointAtForPath()` alone and therefore reported
+ * `null` for a long-lived process's entire life, which is the user-facing
+ * surface the fix existed to correct.
+ *
+ * Combines two independent LOWER-BOUND signals via `max()`:
+ *   1. The explicit shutdown-flush event `WriteQueue` still records
+ *      (`closeAllForShutdown()` → `_lastCheckpointByPath`).
+ *   2. The OBSERVED mtime of the MAIN database file. In WAL mode ordinary
+ *      writes land only in `-wal`; the main file's mtime advances only when
+ *      frames are written back into it — i.e. on any checkpoint the adapter
+ *      runs on its own (idle flush, wal-cap flush, its own `close()`
+ *      ceremony), none of which call back into memory-core.
+ *
+ * This is an OBSERVED, APPROXIMATE signal that frames were recently written
+ * back — not a precise "a checkpoint completed at time T" event log. It is
+ * deliberately a lower bound: it may under-report recency, but it never reports
+ * a healthy busy store as unflushed. A store whose TRUNCATE is legitimately
+ * deferred while peers hold it is still checkpointing via PASSIVE, and must not
+ * read as broken — that misreading is the defect this replaced.
+ */
+export function observedLastCheckpointAt(dbPath: string | undefined): string | null {
+  if (!dbPath) return null;
+  const shutdownFlushEpoch = WriteQueue.lastCheckpointAtForPath(dbPath);
+  let observedFlushEpoch = 0;
+  {
+    try {
+      const mainDbStat = fs.statSync(dbPath, { throwIfNoEntry: false });
+      if (mainDbStat) observedFlushEpoch = mainDbStat.mtimeMs;
+    } catch (err) {
+      log.debug('memory_core.stats.main_db_stat_failed', {
+        db_path: dbPath,
+        error: err instanceof Error ? err.message : String(err),
+      });
+      observedFlushEpoch = 0;
+    }
+  }
+  const epoch = Math.max(shutdownFlushEpoch, observedFlushEpoch);
+  return epoch > 0 ? new Date(epoch).toISOString() : null;
 }
 
 export async function memoryGetStats(
@@ -391,26 +435,7 @@ export async function memoryGetStats(
   } catch {
     walBytes = 0;
   }
-  // (BL-572) See StatsResult.last_checkpoint_at's doc comment for the full
-  // rationale. Two independent lower-bound signals, combined via max():
-  //   1. The explicit shutdown-flush event WriteQueue itself still records
-  //      (WriteQueue.closeAllForShutdown() → _lastCheckpointByPath).
-  //   2. The OBSERVED mtime of the main database file — advances only when
-  //      WAL frames are written back to it, i.e. on any checkpoint the
-  //      adapter runs on its own (idle flush, wal-cap flush, or its own
-  //      close() ceremony), none of which call back into memory-core.
-  const shutdownFlushEpoch = WriteQueue.lastCheckpointAtForPath(dbPath);
-  let observedFlushEpoch = 0;
-  if (dbPath) {
-    try {
-      const mainDbStat = fs.statSync(dbPath, { throwIfNoEntry: false });
-      if (mainDbStat) observedFlushEpoch = mainDbStat.mtimeMs;
-    } catch {
-      observedFlushEpoch = 0;
-    }
-  }
-  const lastCkptEpoch = Math.max(shutdownFlushEpoch, observedFlushEpoch);
-  const lastCheckpointAt = lastCkptEpoch > 0 ? new Date(lastCkptEpoch).toISOString() : null;
+  const lastCheckpointAt = observedLastCheckpointAt(dbPath);
 
   return {
     tools: toolNames,

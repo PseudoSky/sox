@@ -363,7 +363,7 @@ export type {
   CurateListLensesResult,
   CurateRehealStaleResult,
 } from './curate.js';
-export { memoryGetStats } from './stats.js';
+export { memoryGetStats, observedLastCheckpointAt } from './stats.js';
 export type { StatsResult, EmbedProvenanceStats } from './stats.js';
 
 // ── Re-embed store (BL-160: promoted from scripts/reembed-memory.mjs) ─────────
