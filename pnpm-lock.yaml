@@ -123,6 +123,9 @@ importers:
       '@adhd/sox-service-proxy':
         specifier: workspace:*
         version: link:../../libs/service-proxy
+      '@adhd/sox-telemetry':
+        specifier: workspace:*
+        version: link:../../libs/observability/sox-telemetry
 
   extensions/agents/agent-manager: {}
 
@@ -189,6 +192,9 @@ importers:
       '@adhd/sox-store-adapter':
         specifier: workspace:*
         version: link:../../../../../libs/data/store/store-adapter
+      '@adhd/sox-telemetry':
+        specifier: workspace:*
+        version: link:../../../../../libs/observability/sox-telemetry
 
   extensions/bundles/sox-memory-bundle/members/memory-server:
     dependencies:

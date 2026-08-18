@@ -26,7 +26,8 @@
     "@adhd/sox-manifest": "workspace:*",
     "@adhd/sox-mcp-runtime": "workspace:*",
     "@adhd/sox-registry": "workspace:*",
-    "@adhd/sox-service-proxy": "workspace:*"
+    "@adhd/sox-service-proxy": "workspace:*",
+    "@adhd/sox-telemetry": "workspace:*"
   },
   "keywords": [
     "sox",

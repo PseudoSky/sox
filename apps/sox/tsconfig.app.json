@@ -17,7 +17,8 @@
       "@adhd/sox-host-runtime": ["libs/host-runtime/dist/index.d.ts"],
       "@adhd/sox-host-registry": ["libs/host-registry/dist/index.d.ts"],
       "@adhd/sox-registry": ["libs/registry/dist/index.d.ts"],
-      "@adhd/sox-service-proxy": ["libs/service-proxy/dist/index.d.ts"]
+      "@adhd/sox-service-proxy": ["libs/service-proxy/dist/index.d.ts"],
+      "@adhd/sox-telemetry": ["libs/observability/sox-telemetry/dist/index.d.ts", "libs/observability/sox-telemetry/dist/index.js"]
     }
   },
   "include": ["src/**/*.ts"],
