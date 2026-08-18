@@ -568,8 +568,15 @@ tursoDescribe('BL-461 — a concurrent opener while this process holds the store
     // the stale-index state never persists. It predates the arriving process.
     const before = (arriving.json?.sidecars ?? []) as string[];
     const stale = before.filter((f) => f.endsWith('-tshm.stale-') || f.includes('-tshm.stale-'));
+    // (BL-591) The sidecar-sweep throttle marker is adapter bookkeeping, not a
+    // store sidecar: `maybePruneStaleTshmSidecars` writes it beside the db to
+    // rate-limit real directory scans to one per 10 minutes per store. It is
+    // expected here and is deliberately NOT part of the coordination-set
+    // assertion below, which is about Turso's own sidecars.
+    const sweepMarkers = before.filter((f) => f.endsWith('.sidecar-sweep-marker'));
+    const ignored = [...stale, ...sweepMarkers];
     expect(
-      before.filter((f) => !stale.includes(f)),
+      before.filter((f) => !ignored.includes(f)),
       `sidecars observed inside the arriving process: ${before.join(', ')}`,
     ).toEqual([`${basename(dbPath)}-tshm`, `${basename(dbPath)}-wal`]);
     expect(
