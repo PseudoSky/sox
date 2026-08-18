@@ -843,11 +843,10 @@ export class TursoAdapterImpl implements TursoAdapter {
       if (wasReleased) {
         this._lease = fresh._lease;
       } else if (fresh._lease) {
-        // (BUG-STOREADAPTER-POISON-RECONNECT-LEASE-LEAK, discovered
-        // 2026-08-17 while building idle-release) `this._lease` is still
-        // valid and untouched — the fresh instance's own lease is unused and
-        // would otherwise linger in the lease dir for this process's entire
-        // remaining life.
+        // (BUG-015, discovered 2026-08-17 while building idle-release)
+        // `this._lease` is still valid and untouched — the fresh instance's
+        // own lease is unused and would otherwise linger in the lease dir
+        // for this process's entire remaining life.
         await fresh._lease.release().catch((leaseErr: unknown) => {
           log.warn('store_adapter.turso.reconnect_stale_lease_release_failed', {
             error: leaseErr instanceof Error ? leaseErr.message : String(leaseErr),
