@@ -313,16 +313,18 @@ const LOG_PREFIX = '[memory-core writeq]';
  * below now routes its explicit end-of-life flush through `adapter.close()`
  * (the adapter's own public surface) instead of a second raw PRAGMA.
  *
- * ⚠️ COVERAGE GAP (reported, not silently assumed away — see BL-591): the
- * legacy `STORE_ADAPTER=sqlite` opt-in path (`SqliteAdapterImpl`, never the
- * production default) has NO analogous idle-flush or wal-cap-flush mechanism
- * of any kind — `sqlite-adapter.ts` contains zero `wal_checkpoint` calls. A
- * long-lived process on that adapter now relies solely on SQLite's own
- * built-in ~1000-page PASSIVE auto-checkpoint (never TRUNCATE, so the -wal
- * file never shrinks back down) with nothing calling TRUNCATE, ever. This
- * queue cannot fix that without editing `store-adapter` (out of this task's
- * scope) — flagged here per the task's explicit "report, don't assume away"
- * requirement.
+ * The legacy `STORE_ADAPTER=sqlite` opt-in path (`SqliteAdapterImpl`, never
+ * the production default) briefly had no analogous mechanism after this
+ * deletion, leaving it with no TRUNCATE path at all. That gap was filed as
+ * BL-571 and has since been CLOSED: `sqlite-adapter.ts` now carries its own
+ * `_idleFlushEnabled`/`_idleFlushTimer` and issues real
+ * `wal_checkpoint(TRUNCATE)` pragmas. Both backends are covered.
+ *
+ * ⚠️ RESIDUAL TEST-COVERAGE GAP (BL-586): the RED→GREEN proof in
+ * `write-queue.spec.ts` pins the TURSO path only — it sets
+ * `STORE_ADAPTER=turso` explicitly. The sqlite idle flush is exercised by
+ * `store-adapter`'s own suite but by nothing at this layer, so a regression
+ * in how THIS class drives the sqlite adapter would not be caught here.
  */
 export class WriteQueue {
   /** Singleton instances keyed by resolved (tilde-expanded) dbPath. */
@@ -386,8 +388,9 @@ export class WriteQueue {
    * idle flush (`_armIdleFlush()`) runs silently inside `TursoAdapterImpl`
    * with no callback surface back to this class, so `memory_ping.store.
    * last_checkpoint_at` no longer reflects periodic idle checkpoints, only
-   * this process's own shutdown. See the class doc comment's DEBT-004/005
-   * note and BL-591 (filed) for the observability gap this leaves.
+   * this process's own shutdown. See the class doc comment's DEBT-004
+   * note; the observability gap it left was BL-572, since resolved by
+   * `observedLastCheckpointAt()` in `stats.ts`.
    * 0 = never (this process has not yet shut down its queue for this store).
    */
   private _lastCheckpointAt = 0;
@@ -659,7 +662,7 @@ export class WriteQueue {
   /**
    * (DEBT-004) Static accessor: last time `closeAllForShutdown()`
    * flushed a given store path. Returns 0 if that has never happened for
-   * this process (which, post-DEBT-004/005, is the common case for a
+   * this process (which, post-DEBT-004, is the common case for a
    * long-lived process — the store adapter's own idle flush now runs with
    * zero visibility back to this class; see the class doc comment).
    *
