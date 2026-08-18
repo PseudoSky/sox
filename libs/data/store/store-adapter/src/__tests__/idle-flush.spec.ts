@@ -211,7 +211,21 @@ tursoDescribe('idle-flush — adapter-owned WAL durability', () => {
 
   it('production-shaped: N adapters open on one store, all idle — under the GATED default, TRUNCATE legitimately may never fire while peers are live, and this is measured honestly rather than tuned to pass', async () => {
     const dbPath = tempPath('n-adapters-idle');
-    const IDLE_MS = 60;
+    // 300ms, not 60ms, and the reason is a measured race — NOT a tuned
+    // assertion (the outcome assertions below are unchanged and still
+    // untuned). Each adapter arms its idle-flush timer on its FIRST
+    // operation, and this arm performs five awaited operations during setup
+    // before checking the precondition. Whenever total setup exceeds
+    // `idleFlushMs`, the earliest adapter has already CORRECTLY completed
+    // `releaseIdleConnection()` and dropped its lease, so the precondition
+    // observes fewer than N live leases and fails — while nothing is
+    // actually wrong. Seen once in a full-suite run (2026-08-18) as
+    // `expected 2 to be 4` under CPU contention from a sibling spec, then
+    // reproduced deterministically by injecting a 120ms delay ahead of the
+    // precondition with IDLE_MS still 60. 300ms puts the whole setup
+    // comfortably inside one debounce window; the release behaviour under
+    // test is unaffected, since the arm below still waits 8 full cycles.
+    const IDLE_MS = 300;
     const N = 4;
 
     const adapters = await Promise.all(
