@@ -1,4 +1,4 @@
-import { describe, it, expect, afterEach } from 'vitest';
+import { describe, it, expect, afterEach, vi } from 'vitest';
 import { SqliteAdapterImpl, TursoAdapterImpl } from '@adhd/sox-store-adapter';
 import type { StoreAdapter } from '@adhd/sox-store-adapter';
 import { mkdtempSync } from 'node:fs';
@@ -1032,6 +1032,63 @@ describe('recursive-cte forced fallback on sqlite, recursiveCte:false (SOXGRAPH-
       await adapter.close();
     }
   }, 20000);
+});
+
+// ── BL-581: supportsRecursiveCte must stay live, not snapshot at construction ─
+//
+// (DEBT-003 lazy-connect) TursoAdapterImpl.connect() seeds
+// capabilities.recursiveCte with a conservative `false` guess on a
+// never-opened adapter and corrects it in place (the `capabilities` getter is
+// live) the first time the adapter performs a real operation.
+// createGraphBackend() constructs GraphBackendImpl eagerly, before any
+// operation has run (the same call-site shape as the BL-508 tests) — so a
+// backend built from a field that SNAPSHOTS `adapter.capabilities.recursiveCte`
+// at construction would freeze the pre-open guess for its entire lifetime and
+// never observe the correction. This test proves the getter is live by
+// patching the capability AFTER construction (the reverse of every other
+// `patchCapability` use in this file, which patches BEFORE construction) and
+// spying on the SQL text `getSupersessionChain` sends to the adapter: the
+// recursive path's query starts with `WITH RECURSIVE`, the iterative
+// fallback's does not (it never issues that statement — see
+// `getSupersessionChainIterative`, which walks via repeated `getEdges` calls
+// instead of a single CTE). Which code path ran is therefore a direct,
+// unambiguous witness independent of the two paths' RESULT parity (the
+// SOXGRAPH-001 fix upstream already made both paths return identical answers
+// on this exact two-root shape, so asserting on the returned rows alone can no
+// longer distinguish them).
+describe('BL-581: supportsRecursiveCte reads adapter.capabilities live, never snapshots at construction', () => {
+  it('a capability flip AFTER backend construction changes which SQL getSupersessionChain issues', async () => {
+    const adapter = new SqliteAdapterImpl(':memory:');
+    // Real sqlite adapter: recursiveCte is true at construction time (not the
+    // turso lazy-connect conservative guess) — the backend below is built
+    // while it is still true.
+    const backend = createGraphBackend(adapter);
+    await backend.applySchema();
+    try {
+      const { v2 } = await seedSupersessionChain(backend);
+      const v9 = await backend.writeNode('v9 content', { name: 'v9' });
+      await backend.writeEdge(v2, v9, 'SUPERSEDES');
+
+      // Patch the capability to false AFTER the backend already exists. Before
+      // the BL-581 fix, `supportsRecursiveCte` was a private field read once in
+      // the constructor — this patch would have no observable effect, and the
+      // backend would keep issuing the `WITH RECURSIVE` query for the rest of
+      // its life. With the fix (a live getter), the very next call re-reads the
+      // (now-patched) capability and switches to the iterative fallback, which
+      // never sends a `WITH RECURSIVE` statement at all.
+      patchCapability(adapter, 'recursiveCte', false);
+
+      const executeAllSpy = vi.spyOn(adapter, 'executeAll');
+      await backend.getSupersessionChain(v9);
+
+      const recursiveCteCalls = executeAllSpy.mock.calls.filter(([sql]) =>
+        typeof sql === 'string' ? sql.includes('WITH RECURSIVE') : false,
+      );
+      expect(recursiveCteCalls).toHaveLength(0);
+    } finally {
+      await adapter.close();
+    }
+  });
 });
 
 // ── BUG-SOXGRAPH-001: fullTextSearch must derive from the adapter ─────────────

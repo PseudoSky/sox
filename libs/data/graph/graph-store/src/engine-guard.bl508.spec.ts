@@ -57,16 +57,42 @@ afterEach(async () => {
 });
 
 tursoDescribe('BL-508 graph-store open path — engine identity + guard (f, d)', () => {
-  it('a fresh turso store surfaces engineIdentity = turso on the backend open result', async () => {
+  it('BL-580: a fresh (never-opened) turso store reads engineIdentity as null and does NOT permanently cache that null — it resolves once the first real operation stamps the marker', async () => {
     const dbPath = tempPath('identity');
+    // (DEBT-003, lazy-connect) connect() opens no driver connection and stamps
+    // NO `_sox_engine` marker — that now happens on the adapter's first real
+    // operation. createGraphBackend() still reads `engineIdentity` eagerly
+    // right after construction (BL-508's fail-at-open contract), so on this
+    // never-opened instance the marker genuinely does not exist yet: `null`
+    // here means "not yet known", not "confirmed unmarked". The original
+    // BL-508 expectation — non-null immediately after connect(), with no
+    // operation ever performed — encoded a guarantee lazy-connect no longer
+    // makes and that BL-508 never actually needed: its real guarantee is
+    // fail-CLOSED on a genuine marker MISMATCH (covered by the next test
+    // below), which is unaffected because that check reads the
+    // `application_id` header eagerly at `connect()` time, independent of
+    // whether `_sox_engine` has been stamped.
     const adapter = await TursoAdapterImpl.connect({ dbPath });
     openAdapters.push(adapter);
 
     const backend = createGraphBackend(adapter);
+    expect(backend.engineIdentity).toBeNull();
+
+    // Before the BL-580 fix, that `null` read above was memoised forever in
+    // `_engineIdentity`, so `engineIdentity` would keep returning `null` even
+    // after the adapter opened for real and stamped the marker. Force the
+    // adapter's first real operation (this is what stamps `_sox_engine`) and
+    // assert the getter recovers instead of staying permanently stuck.
+    await adapter.executeGet('SELECT 1');
+
     expect(backend.engineIdentity).not.toBeNull();
     expect(backend.engineIdentity!.engine).toBe('turso');
     expect(typeof backend.engineIdentity!.sox_version).toBe('string');
     expect(Number.isNaN(Date.parse(backend.engineIdentity!.first_opened_at))).toBe(false);
+
+    // Now that identity is genuinely resolved, it must be cached — a second
+    // read must be the SAME object, not a fresh probe.
+    expect(backend.engineIdentity).toBe(backend.engineIdentity);
   });
 
   it('a sqlite-marked store opened by a turso adapter fails closed at open (E_SQLITE_NATIVE_STORE)', async () => {
