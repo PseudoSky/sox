@@ -129,6 +129,7 @@ import {
 } from '@adhd/sox-install-engine';
 import { registerBundleMember, resolveBundleDir } from './bundle-init.js';
 import { assertWithinBase, PathEscapeError } from './path-safety.js';
+import { waitForServePortSignal } from './serve-shutdown.js';
 import { initTelemetry, log, resolveProcessRole, type InitTelemetryOptions } from '@adhd/sox-telemetry';
 // @adhd/sox-host-registry is also lazy-required via install-engine; import it lazily here too
 // to avoid the NX "static import of lazy-loaded library" lint error.
@@ -4947,10 +4948,16 @@ OS units are GENERATED from the manifest; hand-editing them is unsupported.
 
   const scope = flags['scope'] ?? 'user';
   const root = flags['root'] ?? process.cwd();
-  const graceMs = (() => {
+  // BL-592 (§8.1a part A): the EXPLICIT operator override only — highest
+  // precedence, but resolved without knowing the manifest yet (extId isn't
+  // parsed until below). `undefined` means "no explicit override"; the final
+  // grace (computed per-subcommand, once `ctx` — and therefore the manifest's
+  // `lifecycle.stop_timeout_ms` — is available) falls through to
+  // `ctx.spec.stopTimeoutMs`, then the unchanged `5000` default.
+  const explicitGraceMs = (() => {
     const raw = flags['grace-ms'] ?? process.env['SOX_STOP_GRACE_MS'];
     const n = raw !== undefined ? Number(raw) : NaN;
-    return Number.isFinite(n) && n >= 0 ? n : 5000;
+    return Number.isFinite(n) && n >= 0 ? n : undefined;
   })();
 
   if (sub === 'list') {
@@ -5048,6 +5055,12 @@ OS units are GENERATED from the manifest; hand-editing them is unsupported.
     // Resolve the entrypoint identity token from the ownership/lockfile even if the
     // install is gone — fall back to a best-effort path.
     const entrypoint = ctx?.entrypoint ?? '';
+    // BL-592 (§8.1a part A): precedence --grace-ms > SOX_STOP_GRACE_MS >
+    // manifest lifecycle.stop_timeout_ms (via ctx.spec, resolved by
+    // deriveOsUnitSpec from the SAME manifest this disable already loaded) >
+    // 5000 fallback (unchanged for a manifest declaring nothing, or when the
+    // install/manifest could not be resolved at all).
+    const graceMs = explicitGraceMs ?? ctx?.spec.stopTimeoutMs ?? 5000;
 
     // [inv:unload-then-reap] (§8.5): unload the unit FIRST, THEN reap any survivor.
     let undead = false;
@@ -8644,10 +8657,13 @@ Flags:
     // The shim lives until the client closes the stdio pipe, or until a signal
     // is received (SIGHUP when the MCP host disconnects, or SIGTERM/SIGINT).
     if (httpPort !== undefined && !Number.isNaN(httpPort)) {
-      await new Promise<void>((resolve) => {
-        process.on('SIGTERM', () => resolve());
-        process.on('SIGINT', () => resolve());
-      });
+      // BL-592 (§8.1a part D): call handle.close() before resolving, matching
+      // the non-port branch below (BL-310 precedent). Previously this branch
+      // resolved and fell through to process.exit(0) WITHOUT ever tearing down
+      // the shim's UDS connection to the backend — an unjustified asymmetry
+      // with the pure-stdio branch three lines away, independently provable
+      // regardless of what BUG-018's own root cause turns out to be.
+      await waitForServePortSignal(handle);
     } else {
       // BL-310: In pure-stdio mode, install SIGHUP/SIGTERM handlers so the shim
       // exits when the MCP host disconnects without cleanly closing its stdin pipe

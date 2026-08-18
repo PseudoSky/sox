@@ -33,6 +33,7 @@ import * as path from 'node:path';
 
 import { autoBackup, closeAllAdapters, flushPendingEmbeds, terminateEmbedWorkers, WriteQueue } from '@adhd/sox-memory-core';
 import { getContentAddress, handleToolCall, resolveDbPath, TOOLS, waitForDrainSettled } from './index.js';
+import { computeShutdownSafetyNetMs } from './shutdown-margin.js';
 
 /**
  * Build the canonical `tools/list` result — the EXACT shape the MCP `serve()` path
@@ -148,12 +149,23 @@ export async function handleBackendRequest(
   return { jsonrpc: '2.0', id, result: {} };
 }
 
-// (BL-405) A hard ceiling on the whole coordinated shutdown, strictly inside
-// the reaper's 5000ms SIGTERM grace (`libs/host-runtime`'s reaper escalates to
-// SIGKILL at 5000ms — see BACKLOG.md BL-405). If graceful teardown hangs, this
-// forces the exit anyway: staying inside the reaper's grace is worth more than
-// a clean-but-late checkpoint the reaper will never wait for.
-export const SHUTDOWN_SAFETY_NET_MS = 4000;
+// (BL-405, BL-592 §8.1a part B) A hard ceiling on the whole coordinated
+// shutdown, strictly inside the reaper's SIGTERM grace. If graceful teardown
+// hangs, this forces the exit anyway: staying inside the reaper's grace is
+// worth more than a clean-but-late checkpoint the reaper will never wait for.
+//
+// Previously a hand-picked literal (4000, vs an ASSUMED 5000ms grace — a
+// comment, not anything the reaper actually enforced). Now DERIVED from the
+// resolved `stop_timeout_ms` the OS-unit generator injects
+// (`SOX_CONFIG_STOP_TIMEOUT_MS`) minus the enforced `SOX_SHUTDOWN_SAFETY_MARGIN_MS`
+// margin (`./shutdown-margin.ts`) — see that module's doc comment for why this
+// is a duplicate of `libs/host-runtime/src/shutdown.ts` rather than an import.
+// `computeShutdownSafetyNetMs()` is called FRESH inside `coordinatedShutdown`
+// itself (not memoized here) so it always reflects the live env; this
+// module-load snapshot exists only for callers (tests) that want the default
+// (no `SOX_CONFIG_STOP_TIMEOUT_MS` override) value without invoking the
+// function themselves.
+export const SHUTDOWN_SAFETY_NET_MS = computeShutdownSafetyNetMs();
 // (BL-405) The pre-restart VACUUM INTO backup is best-effort ONLY — it is not
 // required for durability (step 2 below, the WAL checkpoint, already gives
 // that per BL-330) and a full compacting copy of a large store is legitimately
@@ -170,7 +182,33 @@ export const SHUTDOWN_BACKUP_TIMEOUT_MS = 2500;
 // here starves everything after it of the SHUTDOWN_SAFETY_NET_MS envelope.
 export const SHUTDOWN_EMBED_DRAIN_TIMEOUT_MS = 750;
 
+// (BL-592 §8.1a part C) Step 1 (terminateEmbedWorkers()) was previously a bare
+// unbounded `await` — Node timers are not blocked by a *pending* promise, so the
+// overall SHUTDOWN_SAFETY_NET_MS backstop should still catch a stall here, but a
+// future change that makes worker .terminate() do synchronous work (or a native
+// binding that blocks the thread) would have had no PER-STEP backstop, only the
+// whole-sequence one — and no log line to attribute a stall to this step
+// specifically. Bounded symmetrically with step 0's own 750ms race.
+export const SHUTDOWN_EMBED_TERMINATE_TIMEOUT_MS = 750;
+
 let _shuttingDown = false;
+
+/**
+ * (BL-592 §8.1a part C) Log a monotonic timestamp on entry/exit of every
+ * coordinatedShutdown step, to the SAME stderr sink as the function's existing
+ * diagnostics, so a future stall is attributable to an exact step from one
+ * incident's logs alone — the single largest gap the BUG-018 design pass
+ * identified (no step logged a timestamp, so the exact 2026-08-18 stall could
+ * not be pinned down further). `t0` is captured once per shutdown
+ * (`coordinatedShutdown`'s own entry) via `process.hrtime.bigint()` — a
+ * monotonic clock immune to wall-clock adjustments during the sequence.
+ */
+function logShutdownStep(t0: bigint, step: number | string, name: string, phase: 'started' | 'finished'): void {
+  const elapsedMs = Number(process.hrtime.bigint() - t0) / 1e6;
+  process.stderr.write(
+    `[memory-server backend] t+${elapsedMs.toFixed(1)}ms: step ${step} ${name} ${phase}\n`,
+  );
+}
 
 /** Test-only: reset the module-level shutdown guard between specs. */
 export function __resetShutdownStateForTest(): void {
@@ -254,14 +292,19 @@ export async function coordinatedShutdown(
   _shuttingDown = true;
   process.stderr.write(`[memory-server backend] ${sig} — shutting down\n`);
 
+  const t0 = process.hrtime.bigint();
+  // (BL-592 §8.1a part B) Computed FRESH per-shutdown from the resolved
+  // stop-timeout the OS-unit generator injected — see SHUTDOWN_SAFETY_NET_MS's
+  // own doc comment above and ./shutdown-margin.ts.
+  const safetyNetMs = computeShutdownSafetyNetMs();
   const safetyNet = setTimeout(() => {
     process.stderr.write(
-      `[memory-server backend] shutdown exceeded ${SHUTDOWN_SAFETY_NET_MS}ms safety net — ` +
+      `[memory-server backend] shutdown exceeded ${safetyNetMs}ms safety net — ` +
       `force-exiting (BL-405: a teardown step hung; trading a clean finish for staying inside ` +
       `the reaper's grace)\n`,
     );
     exit(0);
-  }, SHUTDOWN_SAFETY_NET_MS);
+  }, safetyNetMs);
   if (typeof safetyNet.unref === 'function') safetyNet.unref();
 
   // 0. (BL-472) Best-effort, BOUNDED drain of BOTH in-flight fire-and-forget
@@ -279,6 +322,7 @@ export async function coordinatedShutdown(
   //    land instead of being discarded as E_IO or a worker-terminated
   //    rejection. Bounded so a slow/stuck pass cannot itself blow
   //    SHUTDOWN_SAFETY_NET_MS.
+  logShutdownStep(t0, 0, 'flushPendingEmbeds+waitForDrainSettled', 'started');
   try {
     const timedOut = await Promise.race([
       Promise.all([flushPendingEmbeds(), waitForDrainSettled()]).then(() => false),
@@ -297,23 +341,45 @@ export async function coordinatedShutdown(
   } catch (err) {
     process.stderr.write(`[memory-server backend] Phase-B/heal-drain failed: ${err}\n`);
   }
+  logShutdownStep(t0, 0, 'flushPendingEmbeds+waitForDrainSettled', 'finished');
 
   // 1. Shared child processes first (BL-405) — kill() lets them exit cleanly
   //    instead of crashing on a send() to a channel the parent has already torn down.
+  //    (BL-592 §8.1a part C) Bounded symmetrically with step 0 — see
+  //    SHUTDOWN_EMBED_TERMINATE_TIMEOUT_MS's doc comment above. The overall
+  //    safety net still governs the whole sequence; this per-step race exists
+  //    so a stall specifically HERE is attributable and does not silently eat
+  //    every other step's share of the safety-net envelope.
+  logShutdownStep(t0, 1, 'terminateEmbedWorkers', 'started');
   try {
-    await terminateEmbedWorkers();
+    const timedOut = await Promise.race([
+      terminateEmbedWorkers().then(() => false),
+      new Promise<boolean>((resolve) => {
+        const t = setTimeout(() => resolve(true), SHUTDOWN_EMBED_TERMINATE_TIMEOUT_MS);
+        if (typeof t.unref === 'function') t.unref();
+      }),
+    ]);
+    if (timedOut) {
+      process.stderr.write(
+        `[memory-server backend] terminateEmbedWorkers exceeded ${SHUTDOWN_EMBED_TERMINATE_TIMEOUT_MS}ms — ` +
+        `proceeding with shutdown; the overall safety net still bounds the whole sequence (BL-592)\n`,
+      );
+    }
   } catch (err) {
     process.stderr.write(`[memory-server backend] shared embed-worker teardown failed: ${err}\n`);
   }
+  logShutdownStep(t0, 1, 'terminateEmbedWorkers', 'finished');
 
   // 2. The real checkpoint — AWAITED (BL-405: previously fire-and-forget).
   //    SA-8 / BL-128: close all DB connections with lease release so the lock
   //    file is cleaned up before process exit.
+  logShutdownStep(t0, 2, 'closeAllAdapters', 'started');
   try {
     await closeAllAdapters();
   } catch (err) {
     process.stderr.write(`[memory-server backend] closeAllAdapters failed: ${err}\n`);
   }
+  logShutdownStep(t0, 2, 'closeAllAdapters', 'finished');
 
   // 2b. (BL-405, second half) The write queue's DEDICATED connection is a
   //     SEPARATE handle from anything `closeAllAdapters()` touches — see this
@@ -321,15 +387,18 @@ export async function coordinatedShutdown(
   //     doc comment for the full reproduction. Without this step the
   //     connection that actually took every write was never checkpointed or
   //     closed by shutdown at all.
+  logShutdownStep(t0, '2b', 'WriteQueue.closeAllForShutdown', 'started');
   try {
     await WriteQueue.closeAllForShutdown();
   } catch (err) {
     process.stderr.write(`[memory-server backend] WriteQueue.closeAllForShutdown failed: ${err}\n`);
   }
+  logShutdownStep(t0, '2b', 'WriteQueue.closeAllForShutdown', 'finished');
 
   // 3. Best-effort pre-restart backup, bounded — never gates exit (BL-405).
   //    Skipped (not guessed) when no explicit SOX_CONFIG_DB_PATH was ever
   //    configured — see the `dbPathForBackup` parameter doc above.
+  logShutdownStep(t0, 3, 'pre-restart backup', 'started');
   if (dbPathForBackup !== null) {
     try {
       await Promise.race([
@@ -355,10 +424,12 @@ export async function coordinatedShutdown(
       process.stderr.write(`[memory-server backend] pre-restart backup failed: ${err}\n`);
     }
   }
+  logShutdownStep(t0, 3, 'pre-restart backup', 'finished');
 
   clearTimeout(safetyNet);
 
   // 4. Close the listener and exit.
+  logShutdownStep(t0, 4, 'handle.close', 'started');
   const handle = getHandle();
   if (handle) {
     try {
@@ -367,6 +438,7 @@ export async function coordinatedShutdown(
       process.stderr.write(`[memory-server backend] handle.close() failed: ${err}\n`);
     }
   }
+  logShutdownStep(t0, 4, 'handle.close', 'finished');
   exit(0);
 }
 

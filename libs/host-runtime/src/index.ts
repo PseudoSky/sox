@@ -42,6 +42,13 @@ export type {
 export { compilePolicy, compilePolicyFromEnv } from './policy.js';
 export type { Policy } from './policy.js';
 
+// ─── Shutdown grace-margin discipline (BL-592, §8.1a) ─────────────────────────
+export {
+  SOX_SHUTDOWN_SAFETY_MARGIN_MS,
+  resolveShutdownSafetyNetMs,
+  resolveStopTimeoutMsFromEnv,
+} from './shutdown.js';
+
 // ─── Env scrub policy (BL-344 — the ONE definition; formerly five copies) ─────
 export {
   scrubEnv,

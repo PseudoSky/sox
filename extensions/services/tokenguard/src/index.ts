@@ -24,6 +24,7 @@ import { CLI_TOOLS, handleCliTool, runCli } from './cli.js';
 import { resolveConfig } from './config.js';
 import { reloadIntoMapper, watchChanges } from './mapstore.js';
 import { startProxy } from './proxy.js';
+import { computeShutdownSafetyNetMs } from './shutdown-margin.js';
 
 // ─── Vendored compilePolicyFromEnv — matches [shape:policy-env] ───────────────
 // Mirrors memory-server/src/index.ts pattern exactly.
@@ -288,8 +289,13 @@ async function main(): Promise<void> {
       } catch { /* ignore */ }
       process.exit(0);
     });
-    // Force exit after stop_timeout_ms if server.close hangs
-    setTimeout(() => process.exit(0), 5000).unref();
+    // (BL-592 §8.1a part B) Force exit if server.close hangs — DERIVED from
+    // the resolved stop_timeout_ms the OS-unit generator injects
+    // (SOX_CONFIG_STOP_TIMEOUT_MS) minus the enforced safety margin, instead of
+    // a bare literal tied to the exact same value as this service's declared
+    // lifecycle.stop_timeout_ms (extension.json) — previously a RACE against
+    // the reaper's own SIGKILL escalation, not a margin. See ./shutdown-margin.ts.
+    setTimeout(() => process.exit(0), computeShutdownSafetyNetMs()).unref();
   }
 
   process.on('SIGTERM', shutdown);
