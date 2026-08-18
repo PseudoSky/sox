@@ -71,6 +71,10 @@ const TEST_ROOT = path.resolve(WORKSPACE, 'dist', 'smoke',
   `run-${new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19)}`);
 const LOG_PATH = path.join(TEST_ROOT, 'log.json');
 
+// (BL-585) Set ONLY on a path that reached a real verdict — see the 'exit' handler
+// at the bottom of this file for why exit 0 alone cannot be trusted.
+let runCompleted = false;
+
 // ── BL-173 Hermetic data-root sandbox ─────────────────────────────────────────
 //
 // The service/serve legs derive the backend UDS socket from the USER data root
@@ -848,10 +852,46 @@ async function main() {
 
   if (isolationFailed) {
     console.error('[smoke] FATAL: live data-root was mutated — BL-173 isolation breach');
+    runCompleted = true;
     process.exit(2);
   }
 
+  runCompleted = true;
   process.exit(summary.failed > 0 ? 1 : 0);
 }
+
+/**
+ * (BL-585) A COMPLETION SENTINEL, because "exit 0" is not proof this harness ran.
+ *
+ * BL-578 made each STEP fail closed. It did not make the RUN fail closed: if the
+ * harness process dies mid-run — killed, OOM, an unhandled rejection, or the
+ * agent-sandbox hazard where terminating a child that owns a detached grandchild
+ * takes the invoking shell with it — the caller can observe a clean exit 0 with
+ * no summary ever written. Measured 2026-08-18: a full run stopped after
+ * `testing memory-server` and the shell reported EXIT=0, with no log.json and no
+ * `[smoke] done` line. A gate whose own death reads as success is the exact
+ * defect BL-578 existed to remove, one level up.
+ *
+ * `main()` calls `process.exit()` on every path, so this handler fires with an
+ * explicit code on any real completion. If `completed` was never set, the run
+ * was truncated: say so loudly and force a non-zero code so no caller can read
+ * a partial run as a pass. A SIGKILL bypasses this entirely — nothing in-process
+ * can cover that — but then the caller sees a signal rather than 0.
+ */
+process.on('exit', (code) => {
+  if (runCompleted) return;
+  // `console.error` is sync on a pipe at exit; `process.exitCode` is the only
+  // mutation still honoured inside an 'exit' handler.
+  console.error(
+    '[smoke] FATAL: run did not complete — no summary was produced. ' +
+      'This is NOT a pass. The harness exited before finishing, so no step verdict is trustworthy.',
+  );
+  if (code === 0) process.exitCode = 2;
+});
+
+process.on('unhandledRejection', (err) => {
+  console.error(`[smoke] FATAL: unhandled rejection — ${err instanceof Error ? err.stack : String(err)}`);
+  process.exit(2);
+});
 
 main();
