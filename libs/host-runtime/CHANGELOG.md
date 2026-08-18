@@ -1,5 +1,17 @@
 # @adhd/sox-host-runtime
 
+## 0.4.0
+
+### Minor Changes
+
+- OS units now stamp `SOX_SERVICE_ID` into their environment (BL-584).
+
+  The in-process supervisor already did this, so the same extension saw a **different environment** depending on which supervisor started it, and an OS-unit service had no supervisor-authoritative way to know it was running as a service. That is what made `tokenguard` infer its mode from the absence of `SOX_CONFIG_PORT` and exit 0 immediately under launchd while reporting `loaded: yes`.
+
+  It also closes a reaper gap: `findOrphansByServiceId` matches `SOX_SERVICE_ID` in process env and treats that path as cross-build safe, falling back to argv-token matching otherwise. OS-unit services previously only ever matched via the fallback.
+
+  Also: log files are pruned on date rollover rather than only on the size cap (BL-579), every manifest/CLI path join is contained against traversal, and incoming wire buffers are bounded with port/IPv6-authority validation.
+
 ## 0.3.0
 
 ### Minor Changes

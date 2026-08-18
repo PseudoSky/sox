@@ -1,6 +1,6 @@
 {
   "name": "@adhd/sox-telemetry",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Shared tracing/metrics substrate (BL-351): OTel API facade, durable JSONL sink, wait/work primitive, stage self-check. The only package permitted to import @opentelemetry/*.",
   "license": "MIT",
   "publishConfig": {
