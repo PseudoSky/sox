@@ -1123,8 +1123,25 @@ export class SqliteGraphBackend implements GraphBackend {
    * BFS fallbacks that produce the same results (empirically pinned by the
    * "recursive-cte fallback parity" tests). External adapters that omit the
    * capability default to true — only Turso 0.7.x sets it false.
+   *
+   * (BL-580, DEBT-003 lazy-connect) This is a LIVE getter, not a
+   * constructor-snapshotted field, deliberately: `TursoAdapterImpl.connect()`
+   * seeds `capabilities.recursiveCte` with a conservative `false` guess on a
+   * never-opened adapter and only corrects it to the real probed value once
+   * the adapter's first real operation completes (`_reconnect()` reassigns
+   * `capabilities` in place — the getter it exposes, `turso-adapter.ts`'s
+   * `get capabilities()`, is itself live). `createGraphBackend()` constructs
+   * this class eagerly, right after `connect()`, before any operation has
+   * run — a constructor-time snapshot (the pre-BL-580 shape) would freeze the
+   * conservative `false` guess for this instance's entire lifetime, forever
+   * forcing the iterative BFS fallback even on a Turso 0.8.x+ store that had
+   * long since corrected `recursiveCte: true`. Reading `adapter.capabilities`
+   * fresh on every access is a plain in-memory field read (no I/O), so there
+   * is no cost to staying live the way there is for `engineIdentity`.
    */
-  private supportsRecursiveCte: boolean;
+  private get supportsRecursiveCte(): boolean {
+    return this.adapter.capabilities.recursiveCte ?? true;
+  }
 
   /** (BL-508) Cached engine identity — see the `engineIdentity` getter. */
   private _engineIdentity: EngineIdentity | null | undefined;
@@ -1140,7 +1157,6 @@ export class SqliteGraphBackend implements GraphBackend {
       fullTextSearch: adapter.capabilities.fts,
       metadataFilter: true,
     };
-    this.supportsRecursiveCte = adapter.capabilities.recursiveCte ?? true;
     this._engineIdentity = undefined;
   }
 
@@ -1152,20 +1168,54 @@ export class SqliteGraphBackend implements GraphBackend {
    * own connect-time refusal, for direct-adapter consumers. Access cost is
    * per-connection, never per-op (adapter handles are long-lived — memory-core
    * caches them in `getDb`).
+   *
+   * (BL-580, DEBT-003 lazy-connect) `TursoAdapterImpl.connect()` is now lazy:
+   * it opens no driver connection and stamps NO `_sox_engine` marker until the
+   * first real operation (see turso-adapter.ts `connect()`'s doc comment).
+   * `createGraphBackend()` reads this getter eagerly, right after
+   * construction — on a never-opened turso adapter the marker file does not
+   * exist yet, so `getEngineIdentitySync` genuinely returns `null`: not
+   * "confirmed unmarked", but "not yet known". That `null` must NOT be
+   * memoised — a permanently-cached pre-open `null` would mean this getter
+   * never recovers even after the adapter's first operation stamps the
+   * marker moments later, for the entire remaining lifetime of this
+   * `GraphBackendImpl` instance. So only a genuine resolution gets cached:
+   * a non-null identity, or a `null` that IS permanent (no `dbPath` at all;
+   * a non-turso adapter, whose marker is stamped synchronously at
+   * construction/`init()` time, so its `null` means a real unmarked legacy
+   * store, not "not yet opened"). A `null` read against a turso adapter is
+   * left uncached so the next access re-probes.
+   *
+   * This does not weaken the fail-closed MISMATCH guard below: unlike the
+   * marker row, `assertStoreEngineSync` reads the `application_id` SQLite
+   * header via `readApplicationId` — a pure filesystem read independent of
+   * whether `_sox_engine` has been stamped — and `TursoAdapterImpl.connect()`
+   * already runs that identical eager header check before ever returning the
+   * lazy shell (turso-adapter.ts, `connect()`, BL-508 foreign-engine
+   * refusal). A genuine mismatch still refuses at construction time, before
+   * this getter is even reached; only "identity resolution" (which requires
+   * the marker row) is provisional pre-open, never "mismatch detection".
    */
   get engineIdentity(): EngineIdentity | null {
-    if (this._engineIdentity !== undefined) return this._engineIdentity;
+    const isTurso = this.adapter.config.type === 'turso';
+    if (this._engineIdentity !== undefined && (this._engineIdentity !== null || !isTurso)) {
+      return this._engineIdentity;
+    }
     const dbPath = this.adapter.config.dbPath;
     if (!dbPath) {
       this._engineIdentity = null;
       return null;
     }
-    if (this.adapter.config.type === 'turso') {
+    if (isTurso) {
       // Fail-closed on a marker mismatch (unmarked legacy stays allowed).
       assertStoreEngineSync(dbPath, 'turso');
     }
-    this._engineIdentity = getEngineIdentitySync(dbPath);
-    return this._engineIdentity;
+    const identity = getEngineIdentitySync(dbPath);
+    // (BL-580) Only cache a settled answer — see doc comment above.
+    if (identity !== null || !isTurso) {
+      this._engineIdentity = identity;
+    }
+    return identity;
   }
 
   async applySchema(): Promise<void> {
