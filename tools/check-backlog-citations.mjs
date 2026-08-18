@@ -114,6 +114,12 @@ function findCitations(trackedSet) {
     const relFile = file.startsWith('./') ? file.slice(2) : file;
     if (!trackedSet.has(relFile)) continue; // untracked/ignored — not in scope
     if (relFile === 'tools/check-backlog-citations.mjs') continue; // this file's own docstring
+    // The allowlist's own `reason` prose cites ids while EXPLAINING them
+    // (e.g. "originally filed in ... BL-276..BL-295"). Scanning it makes the
+    // gate permanently red for a self-inflicted reason — and a check that is
+    // always failing is a check everyone learns to ignore, which is the exact
+    // failure mode this gate exists to prevent.
+    if (relFile === 'tools/backlog-citation-allowlist.json') continue;
     citations.push({ id, file: relFile, line: Number(lineNo) });
   }
   return citations;
