@@ -320,11 +320,13 @@ const LOG_PREFIX = '[memory-core writeq]';
  * `_idleFlushEnabled`/`_idleFlushTimer` and issues real
  * `wal_checkpoint(TRUNCATE)` pragmas. Both backends are covered.
  *
- * ⚠️ RESIDUAL TEST-COVERAGE GAP (BL-586): the RED→GREEN proof in
- * `write-queue.spec.ts` pins the TURSO path only — it sets
- * `STORE_ADAPTER=turso` explicitly. The sqlite idle flush is exercised by
- * `store-adapter`'s own suite but by nothing at this layer, so a regression
- * in how THIS class drives the sqlite adapter would not be caught here.
+ * BL-586 (RESOLVED): the RED→GREEN proof in `write-queue.spec.ts` originally
+ * pinned the TURSO path only (`STORE_ADAPTER=turso`). A second describe
+ * block — "WriteQueue — WAL checkpointing owned by the store adapter,
+ * SQLITE arm (BL-586)" — now repeats the same two-fact proof with
+ * `STORE_ADAPTER=sqlite`, including a negative control that neuters the
+ * adapter's `_idleFlushEnabled`/`_idleFlushTimer` mid-operation to prove the
+ * assertions go red without the adapter's own flush.
  */
 export class WriteQueue {
   /** Singleton instances keyed by resolved (tilde-expanded) dbPath. */

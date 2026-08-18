@@ -343,3 +343,187 @@ describe('WriteQueue — WAL checkpointing owned by the store adapter (DEBT-004)
     expect(after).toBeLessThanOrEqual(Date.now());
   });
 });
+
+// ── BL-586: DEBT-004 checkpoint-ownership proof, SQLITE arm ──
+//
+// The DEBT-004 describe block above proves checkpoint ownership moved to the
+// adapter, but ONLY for `STORE_ADAPTER=turso`. `SqliteAdapterImpl` grew its
+// own equivalent idle-flush mechanism under BL-571
+// (`_idleFlushEnabled`/`_idleFlushTimer`, real `wal_checkpoint(TRUNCATE)`
+// pragmas at `sqlite-adapter.ts:263-273,440,494,791`) — proven inside
+// store-adapter's own suite (`wal-checkpoint.bl571.spec.ts`), but nothing at
+// THIS layer (WriteQueue's open/drain/close path) ever exercised it. This
+// suite closes that gap by pinning `STORE_ADAPTER=sqlite` and repeating the
+// same two-fact proof the turso arm makes: (1) the WAL shrinks after the
+// queue drains and goes idle, and (2) `WriteQueue` itself recorded zero
+// checkpoint activity — the mechanism lives entirely in the adapter,
+// regardless of which adapter backs the queue.
+describe('WriteQueue — WAL checkpointing owned by the store adapter, SQLITE arm (BL-586)', () => {
+  let cleanup: () => void;
+  let dbPath: string;
+  let priorAdapterEnv: string | undefined;
+
+  function walSize(p: string): number {
+    try {
+      return fs.statSync(p + '-wal').size;
+    } catch {
+      return 0;
+    }
+  }
+
+  beforeEach(async () => {
+    const t = tmpDir();
+    cleanup = t.cleanup;
+    dbPath = path.join(t.dir, 'test.db');
+    await WriteQueue.clearInstances();
+    WriteQueue.setBypass(false);
+    priorAdapterEnv = process.env['STORE_ADAPTER'];
+    process.env['STORE_ADAPTER'] = 'sqlite';
+  });
+
+  afterEach(async () => {
+    await WriteQueue.clearInstances();
+    cleanup();
+    if (priorAdapterEnv === undefined) delete process.env['STORE_ADAPTER'];
+    else process.env['STORE_ADAPTER'] = priorAdapterEnv;
+  });
+
+  /**
+   * Shape of a single seed-write-then-idle-wait run, parameterised by whether
+   * the adapter's private idle-flush machinery gets neutered mid-operation.
+   * `neuter` runs INSIDE the seed operation's async body, synchronously
+   * before that operation's promise settles — `SqliteAdapterImpl._trackOp()`
+   * re-arms the idle timer from its own `finally` block on every op
+   * completion (see `_armIdleFlush()`'s doc comment), so flipping
+   * `_idleFlushEnabled` to `false` and clearing any already-armed
+   * `_idleFlushTimer` before that `finally` runs reliably prevents the
+   * adapter from ever scheduling (or re-scheduling) its idle flush for the
+   * remainder of the test — without touching a single line of
+   * `store-adapter` source. This is a same-process, same-instance field
+   * flip on the exact adapter object `WriteQueue` opened, reached through
+   * the `instrumentAdapter()` Proxy (`db.ts`) via its default `get` trap,
+   * which forwards non-query-method property access straight to the raw
+   * target — so this is not a different object than the one `_armIdleFlush`
+   * runs on.
+   */
+  async function runSeedAndIdle(opts: { neuter: boolean }): Promise<{
+    walBaseline: number;
+    walAfterWrite: number;
+    walAfterIdle: number;
+  }> {
+    const queue = await WriteQueue.forPath(dbPath);
+    expect(queue.storePath).toBeDefined(); // sanity: real queue, real store
+
+    const walBaseline = walSize(dbPath);
+    expect(walBaseline).toBeGreaterThan(0);
+
+    await queue.enqueue('seed-table', async (adapter) => {
+      await adapter.exec(`CREATE TABLE IF NOT EXISTS bl586_test (
+        id INTEGER PRIMARY KEY,
+        val TEXT NOT NULL
+      )`);
+      // Stay comfortably under DEFAULT_WAL_CAP_BYTES (262,144, identical
+      // constant to the turso arm) so the adapter's inline cap-flush does
+      // NOT also fire and confound this test — it isolates the IDLE flush.
+      // Unlike the turso arm (whose baseline WAL after schema creation is
+      // negligible), better-sqlite3's WAL after the SAME memory-core schema
+      // migration already sits around ~150-165KB (measured empirically,
+      // deterministic across runs) — each 4KB-page insert below costs
+      // ~4.1KB of WAL regardless of payload size, so 80×1000-byte rows
+      // (the turso arm's count) blows the cap mid-loop and confounds the
+      // very mechanism this test isolates. 15×200-byte rows leaves >35KB of
+      // headroom under the cap (measured: 226,632 of 262,144).
+      for (let i = 0; i < 15; i++) {
+        await adapter.executeRun('INSERT INTO bl586_test (id, val) VALUES (?, ?)', [i, 'x'.repeat(200)]);
+      }
+
+      if (opts.neuter) {
+        // Negative control (BL-225 RED half): kill the adapter's own
+        // idle-flush machinery on the raw instance BEFORE this operation's
+        // `finally` re-arms it. Reached via the same `adapter` reference
+        // WriteQueue itself uses (`this.adapter`, the instrumented Proxy).
+        const raw = adapter as unknown as {
+          _idleFlushEnabled: boolean;
+          _idleFlushTimer: ReturnType<typeof setTimeout> | null;
+        };
+        raw._idleFlushEnabled = false;
+        if (raw._idleFlushTimer !== null) {
+          clearTimeout(raw._idleFlushTimer);
+          raw._idleFlushTimer = null;
+        }
+      }
+    });
+
+    const walAfterWrite = walSize(dbPath);
+    expect(walAfterWrite).toBeGreaterThan(walBaseline);
+    expect(walAfterWrite).toBeLessThan(262_144); // stayed under the wal-cap threshold
+
+    // memory-core has recorded NOTHING yet — no code path here touches
+    // `_lastCheckpointByPath` outside `closeAllForShutdown()`.
+    expect(WriteQueue.lastCheckpointAtForPath(dbPath)).toBe(0);
+
+    // Wait past the adapter's default idle-flush debounce window
+    // (DEFAULT_IDLE_FLUSH_MS = 2000ms in sqlite-adapter.ts) plus a generous
+    // buffer — per the dispatcher's timer-race warning, an adapter arms its
+    // idle timer on its FIRST operation, so a short window risks a spurious
+    // read mid-flush; this mirrors the turso arm's own buffer exactly.
+    await new Promise<void>((r) => setTimeout(r, 2000 + 1500));
+
+    const walAfterIdle = walSize(dbPath);
+
+    await queue.drainAndClose();
+
+    return { walBaseline, walAfterWrite, walAfterIdle };
+  }
+
+  /**
+   * RED→GREEN proof (BL-225) for BL-586, mirroring the turso arm above:
+   *
+   *   GREEN (this code, adapter's idle flush intact): the WAL shrinks to
+   *   near-zero after the idle wait, driven entirely by
+   *   `SqliteAdapterImpl._armIdleFlush()`/`_performIdleFlush()` inside the
+   *   adapter this queue opened via `openDb()` — and
+   *   `lastCheckpointAtForPath` stays exactly 0 throughout, because nothing
+   *   in memory-core ever touches it outside `closeAllForShutdown()`. Both
+   *   facts together are proof the mechanism lives in the adapter, not
+   *   merely that a checkpoint happened somehow.
+   *
+   *   RED (adapter's idle flush neutered — see `runSeedAndIdle`'s doc
+   *   comment): with `_idleFlushEnabled` flipped false and the armed timer
+   *   cleared before it can re-arm, NOTHING checkpoints the WAL — it must
+   *   stay at (or above) its post-write size through the same idle window.
+   *   Run below and quoted verbatim in the delivery report.
+   */
+  it('adapter idle flush shrinks the WAL after the queue drains — driven entirely by the adapter, not WriteQueue', async () => {
+    const { walAfterWrite, walAfterIdle } = await runSeedAndIdle({ neuter: false });
+
+    // Near-zero after the adapter's TRUNCATE — same "near-zero, not merely
+    // smaller" bar the turso arm and bl405-checkpoint-real.spec.ts use.
+    expect(walAfterIdle).toBeLessThan(walAfterWrite * 0.1);
+    expect(walAfterIdle).toBeLessThan(20_000);
+
+    // The defining assertion: memory-core's own bookkeeping is STILL
+    // untouched. The WAL shrank without WriteQueue ever calling anything —
+    // proof the mechanism lives entirely in the adapter now.
+    expect(WriteQueue.lastCheckpointAtForPath(dbPath)).toBe(0);
+  }, 15_000);
+
+  it('NEGATIVE CONTROL (BL-225): with the sqlite idle flush neutered, the WAL does NOT shrink (test goes red without the fix)', async () => {
+    const { walAfterWrite, walAfterIdle } = await runSeedAndIdle({ neuter: true });
+
+    // Nothing checkpointed — the WAL stayed at (or grew past) its
+    // post-write size through the entire idle window.
+    expect(walAfterIdle).toBeGreaterThanOrEqual(walAfterWrite);
+  }, 15_000);
+
+  /**
+   * `walBytes()` deliberately reports a real byte count for a sqlite-backed
+   * queue (unlike the turso arm's by-design `0`) — confirms the local-file
+   * WAL assumption this suite's direct `fs.statSync` reads are built on
+   * still holds for this backend.
+   */
+  it('walBytes() reports a nonzero local WAL size for a sqlite-backed queue', async () => {
+    const queue = await WriteQueue.forPath(dbPath);
+    expect(queue.walBytes()).toBeGreaterThan(0);
+  });
+});
