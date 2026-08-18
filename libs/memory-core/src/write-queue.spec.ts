@@ -182,7 +182,7 @@ describe('WriteQueue — ordering and serialisation (WP-1)', () => {
   });
 });
 
-// ── DEBT-004/DEBT-005: WAL checkpointing is now owned by the store adapter ──
+// ── DEBT-004: WAL checkpointing is now owned by the store adapter ──
 //
 // WriteQueue used to own a private debounced idle-checkpoint timer (WP-5/
 // BL-123, `CHECKPOINT_IDLE_MS`/`_scheduleIdleCheckpoint`/`walCheckpoint()`)
@@ -196,7 +196,7 @@ describe('WriteQueue — ordering and serialisation (WP-1)', () => {
 // (`WriteQueue.forPath()` → `enqueue()`'s bypass/`_noop` branch, since Turso
 // reports `needsWriteSerialization: false`).
 
-describe('WriteQueue — WAL checkpointing owned by the store adapter (DEBT-004/DEBT-005)', () => {
+describe('WriteQueue — WAL checkpointing owned by the store adapter (DEBT-004)', () => {
   let cleanup: () => void;
   let dbPath: string;
   let priorAdapterEnv: string | undefined;
@@ -232,7 +232,7 @@ describe('WriteQueue — WAL checkpointing owned by the store adapter (DEBT-004/
   });
 
   /**
-   * RED→GREEN proof (BL-225) for DEBT-004/DEBT-005:
+   * RED→GREEN proof (BL-225) for DEBT-004:
    *
    *   RED (pre-fix code, `WriteQueue`'s own idle-checkpoint timer still
    *   present): the queue's OWN `_scheduleIdleCheckpoint()`/`walCheckpoint()`

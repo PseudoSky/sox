@@ -3,12 +3,12 @@
  *
  * Coverage:
  *   1. runCompactionPass runs optimize + ANALYZE; checkpoint fields always report the
- *      DEBT-004/DEBT-005 "not this pass's job any more" sentinel (false/-1).
+ *      DEBT-004 "not this pass's job any more" sentinel (false/-1).
  *   2. runCompactionPass captures errors and returns them in the result (never throws).
  *   3. startCompactionTick fires at the configured interval and can be stopped.
  *   4. Tick fires → runCompactionPass result is emitted via log.
  *
- * (DEBT-004/DEBT-005, 2026-08-17) This suite used to also cover the WriteQueue-vs-
+ * (DEBT-004, 2026-08-17) This suite used to also cover the WriteQueue-vs-
  * compaction double-checkpoint coordination logic (skip-if-WriteQueue-ran-recently).
  * That logic — and the WriteQueue-side idle-checkpoint timer it coordinated with —
  * was deleted (see write-queue.ts's class doc comment and compaction.ts's module doc
@@ -70,7 +70,7 @@ async function freshDb(): Promise<{ db: StoreAdapter; dbPath: string }> {
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
 describe('runCompactionPass', () => {
-  it('runs optimize + ANALYZE; checkpoint fields report the DEBT-004/DEBT-005 sentinel', async () => {
+  it('runs optimize + ANALYZE; checkpoint fields report the DEBT-004 sentinel', async () => {
     const { db } = await freshDb();
 
     const logs: string[] = [];
@@ -82,7 +82,7 @@ describe('runCompactionPass', () => {
     expect(result.error).toBeNull();
     expect(result.optimized).toBe(true);
     expect(result.analyzed).toBe(true);
-    // (DEBT-004/DEBT-005) This pass no longer checkpoints — the store adapter's
+    // (DEBT-004) This pass no longer checkpoints — the store adapter's
     // own idle flush owns that exclusively now.
     expect(result.checkpointed).toBe(false);
     expect(result.framesCheckpointed).toBe(-1);

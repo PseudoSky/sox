@@ -298,7 +298,7 @@ const LOG_PREFIX = '[memory-core writeq]';
  * serialisation (operations execute immediately, unordered). The queue ordering
  * test goes red under this flag.
  *
- * WAL checkpointing (DEBT-004/DEBT-005, 2026-08-17): this class used to own a
+ * WAL checkpointing (DEBT-004, 2026-08-17): this class used to own a
  * private debounced idle-checkpoint timer (WP-5/BL-123) that fired an UNGATED
  * `PRAGMA wal_checkpoint(TRUNCATE)` — zero `storeQuiescence` coordination,
  * unsafe under concurrency > 1, and a second mechanism competing with the
@@ -380,7 +380,7 @@ export class WriteQueue {
    *  to assert that a batch write creates exactly one queue entry. */
   _enqueueCount = 0;
   /**
-   * (DEBT-004/DEBT-005) Wall-clock time (ms) of the last time THIS process
+   * (DEBT-004) Wall-clock time (ms) of the last time THIS process
    * asked the adapter to flush — i.e. `closeAllForShutdown()`'s `adapter.close()`
    * call. Never updated during normal operation any more: the adapter's own
    * idle flush (`_armIdleFlush()`) runs silently inside `TursoAdapterImpl`
@@ -511,7 +511,7 @@ export class WriteQueue {
    * ONLY here — `closeDbWithLease`'s checkpoint on the unrelated
    * `getDb`-cached connection never touches it.
    *
-   * (DEBT-004/DEBT-005, 2026-08-17) Previously this method issued its OWN raw
+   * (DEBT-004, 2026-08-17) Previously this method issued its OWN raw
    * `PRAGMA wal_checkpoint(TRUNCATE)` directly against `q.adapter` — a second,
    * ungated checkpoint mechanism, run immediately BEFORE `adapter.close()`
    * itself also performs a full gated checkpoint ceremony on a writable Turso
@@ -543,7 +543,7 @@ export class WriteQueue {
         /* best effort — adapter may already be failing */
       }
       try {
-        // (DEBT-004/DEBT-005) adapter.close() IS the flush — see doc comment
+        // (DEBT-004) adapter.close() IS the flush — see doc comment
         // above. No separate raw PRAGMA call.
         await q.adapter.close();
         const now = Date.now();
@@ -647,7 +647,7 @@ export class WriteQueue {
   }
 
   /**
-   * (DEBT-004/DEBT-005) Wall-clock epoch ms of the last time THIS instance
+   * (DEBT-004) Wall-clock epoch ms of the last time THIS instance
    * asked the adapter to flush (i.e. went through `closeAllForShutdown()`).
    * 0 = never. See the class doc comment: this no longer tracks periodic
    * idle-checkpoint activity, only shutdown.
@@ -657,7 +657,7 @@ export class WriteQueue {
   }
 
   /**
-   * (DEBT-004/DEBT-005) Static accessor: last time `closeAllForShutdown()`
+   * (DEBT-004) Static accessor: last time `closeAllForShutdown()`
    * flushed a given store path. Returns 0 if that has never happened for
    * this process (which, post-DEBT-004/005, is the common case for a
    * long-lived process — the store adapter's own idle flush now runs with
@@ -726,7 +726,7 @@ export class WriteQueue {
     //   1. _bypass (static) — global kill-switch (SOX_DISABLE_WRITE_QUEUE=1)
     //   2. _noop (instance) — per-adapter: Turso et al. handle concurrent I/O natively.
     if (WriteQueue._bypass || this._noop) {
-      // (DEBT-004/DEBT-005) WAL checkpointing is no longer this class's
+      // (DEBT-004) WAL checkpointing is no longer this class's
       // concern on the bypass path (Turso, the production case): the adapter
       // itself arms an idle flush from INSIDE `_trackOp()` on every op this
       // bypass path drives — see the class doc comment. Nothing to
@@ -1257,7 +1257,7 @@ export class WriteQueue {
       }
       this._checkSaturation(); // falling edge
     }
-    // (DEBT-004/DEBT-005) No more private idle-checkpoint scheduling here —
+    // (DEBT-004) No more private idle-checkpoint scheduling here —
     // the adapter arms its own idle flush from `_trackOp()` on every op this
     // FIFO path drives, on the SqliteAdapter this path serves too (though see
     // the class doc comment's coverage-gap note: SqliteAdapterImpl has no

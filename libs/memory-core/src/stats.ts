@@ -114,7 +114,7 @@ export interface StatsResult {
    * i.e. that a checkpoint (PASSIVE or TRUNCATE) has run recently. NOT a
    * precise "a checkpoint completed at exactly time T" event log.
    *
-   * BL-572 root cause: DEBT-004/DEBT-005 (2026-08-17, commit e77fb615)
+   * BL-572 root cause: DEBT-004 (2026-08-17, commit e77fb615)
    * deleted memory-core's private WAL-checkpoint timer and handed idle-flush
    * ownership entirely to the store adapter's own internal
    * `_armIdleFlush()`/`_checkWalCapAndFlush()` machinery
