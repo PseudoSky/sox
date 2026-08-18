@@ -198,6 +198,7 @@ describe('BL-575 — grows under sustained backlog, capped at maxSize, gated by 
         hostPathOverride: writeSerializedStubHost(delayMs),
         growQueueRatioThreshold: 1.5,
         growSustainCount: 3,
+        growSustainWindowMs: 10, // small but nonzero — real elapsed time still required
         growCooldownMs: 0, // no cooldown gate for this test — isolates the sustain-count mechanism
         shrinkIdleMs: 10_000_000, // effectively disabled — isolates growth from shrink interference
         shrinkCheckIntervalMs: 10_000_000,
@@ -240,32 +241,159 @@ describe('BL-575 — grows under sustained backlog, capped at maxSize, gated by 
     expect(pool.size).toBe(1);
   });
 
+  it(
+    'BL-575-HYSTERESIS-BURST-001 (real-inference regression, reported by a peer verification pass): ' +
+      'an INSTANTANEOUS burst of concurrent submissions — e.g. concurrency=8 landing near-simultaneously ' +
+      'against a size-1 pool — does NOT trigger a grow, even though it satisfies the consecutive-count ' +
+      'condition (queue depth ramps past growQueueRatioThreshold for 3+ admissions) within milliseconds. ' +
+      'Uses PRODUCTION DEFAULTS for growSustainCount/growQueueRatioThreshold/growSustainWindowMs (only ' +
+      'growCooldownMs is n/a — no grow happens to cool down from) — this is the exact regression a real ' +
+      'ONNX/CoreML sweep caught: concurrency=8/n=24 grew 1->2 on 2/2 real trials pre-fix, making wall ' +
+      'time and p99 WORSE than the correct size-1 behavior (real fixed-pool=1 baseline p99≈3041ms).',
+    async () => {
+      const delayMs = 200; // long enough that none of the burst drains before it's fully admitted
+      const pool = new AdaptiveFastembedProcessPool({
+        minSize: 1,
+        maxSize: 4,
+        hostPathOverride: writeSerializedStubHost(delayMs),
+        // growQueueRatioThreshold / growSustainCount / growSustainWindowMs
+        // intentionally OMITTED — production defaults (1.5 / 3 / 2000ms).
+      });
+      await pool.request({ type: 'init' });
+
+      // Fire all 8 essentially simultaneously (stagger=0) — the exact shape
+      // that made pendingCount ramp past threshold for 3+ consecutive
+      // admissions within the same millisecond pre-fix.
+      await fireStaggered(pool, 8, 0, (i) => ({ type: 'embed', text: `burst${i}` }));
+
+      // The whole burst settles in ~delayMs (~200ms), far short of the
+      // 2000ms default growSustainWindowMs — the streak never spans long
+      // enough in real time, so no grow should have fired.
+      expect(pool.growCount).toBe(0);
+      expect(pool.size).toBe(1);
+    },
+    15_000,
+  );
+
   it('growCooldownMs prevents a second grow immediately after the first, even under continued sustained backlog', async () => {
-    const delayMs = 30;
+    // BL-575 SWEEP-FLAKE FIX (reported by the coordinator: this exact test
+    // failed under `nx run-many -t test --skip-nx-cache` while passing
+    // standalone). Root cause diagnosed: the ORIGINAL version of this test
+    // depended on real Date.now() for BOTH (a) whether real IPC backlog
+    // built up in time AND (b) whether the window/cooldown arithmetic
+    // crossed its thresholds — under the concurrent system load a full
+    // repo-wide sweep imposes, real scheduling jitter could shift either
+    // side enough to flip the outcome. Fixed by decoupling the two
+    // concerns: a large `delayMs` (100ms) relative to the real dispatch
+    // stagger (2ms) gives backlog buildup a big, load-tolerant margin,
+    // while an INJECTED deterministic clock (`now`) makes the
+    // window/cooldown arithmetic itself independent of real wall-clock
+    // speed entirely — the same clock-injection seam
+    // `AdaptiveFastembedPoolOptions.now` already exists for.
+    const delayMs = 100;
+    let fakeNow = 0;
+    const now = (): number => fakeNow;
     const pool = new AdaptiveFastembedProcessPool({
       minSize: 1,
       maxSize: 4,
       hostPathOverride: writeSerializedStubHost(delayMs),
       growQueueRatioThreshold: 1.2,
       growSustainCount: 2,
-      growCooldownMs: 5_000, // long relative to this test's real duration
+      growSustainWindowMs: 50,
+      growCooldownMs: 5_000,
       shrinkIdleMs: 10_000_000,
       shrinkCheckIntervalMs: 10_000_000,
+      now,
     });
     await pool.request({ type: 'init' });
 
-    await fireStaggered(pool, 6, 4, (i) => ({ type: 'embed', text: `a${i}` }));
+    // Each admission advances the DETERMINISTIC clock by 60ms (independent
+    // of real elapsed time) — after 2 consecutive over-threshold
+    // admissions the streak provably spans >= growSustainWindowMs (50ms)
+    // by construction, not by racing real timing. The real (tiny, 2ms)
+    // stagger between dispatches only needs to keep several requests truly
+    // in flight together before the 100ms host reply lands — a ~8x margin
+    // that tolerates real system load the fake-clock arithmetic no longer
+    // has to.
+    async function burst(prefix: string): Promise<unknown[]> {
+      const inflight: Promise<unknown>[] = [];
+      for (let i = 0; i < 6; i++) {
+        inflight.push(pool.request({ type: 'embed', text: `${prefix}${i}` }));
+        fakeNow += 60;
+        if (i < 5) await new Promise((r) => setTimeout(r, 2));
+      }
+      return Promise.all(inflight);
+    }
+
+    await burst('a');
     const sizeAfterFirstBurst = pool.size;
     const growsAfterFirstBurst = pool.growCount;
     expect(growsAfterFirstBurst).toBeGreaterThanOrEqual(1);
 
-    // Immediately hit it with another sustained burst — cooldown (5000ms,
-    // this test runs in well under a second) must suppress a second grow.
-    await fireStaggered(pool, 6, 4, (i) => ({ type: 'embed', text: `b${i}` }));
+    // Immediately hit it with another sustained burst — the fake clock has
+    // only advanced 360ms total across both bursts (6 * 60ms), far short
+    // of growCooldownMs (5000ms), so the cooldown gate must suppress a
+    // second grow deterministically.
+    await burst('b');
 
     expect(pool.growCount).toBe(growsAfterFirstBurst);
     expect(pool.size).toBe(sizeAfterFirstBurst);
   }, 15_000);
+
+  it(
+    'reaches maxSize (ceiling) under GENUINELY sustained load spanning multiple cooldown windows — the ' +
+      'fix does not simply disable growth. Trajectory 1->2->3->4, mirroring the real-inference finding ' +
+      '(concurrency=24, n=200, wall=84.9s, growCount=3, trajectory [1,2,3,4], p99≈16.5s comparable to ' +
+      "the old fixed pool's steady-state ~15043ms) with a deterministic clock standing in for the real " +
+      '84.9s span so this stays a fast hermetic test.',
+    async () => {
+      const delayMs = 100;
+      let fakeNow = 0;
+      const now = (): number => fakeNow;
+      const pool = new AdaptiveFastembedProcessPool({
+        minSize: 1,
+        maxSize: 4,
+        hostPathOverride: writeSerializedStubHost(delayMs),
+        growQueueRatioThreshold: 1.2,
+        growSustainCount: 2,
+        growSustainWindowMs: 50,
+        growCooldownMs: 5_000, // production-realistic cooldown, honored via the fake clock
+        shrinkIdleMs: 10_000_000,
+        shrinkCheckIntervalMs: 10_000_000,
+        now,
+      });
+      await pool.request({ type: 'init' });
+
+      // Each "wave" issues a burst, then jumps the deterministic clock past
+      // growCooldownMs before the next wave — simulating sustained demand
+      // that spans several real cooldown windows without waiting them out
+      // in real time. Sized generously (10 waves) so 3 grow steps
+      // (1->2->3->4) have ample opportunity regardless of exactly which
+      // wave crosses each threshold.
+      const sizesObserved: number[] = [pool.size];
+      for (let wave = 0; wave < 10 && pool.size < 4; wave++) {
+        const inflight: Promise<unknown>[] = [];
+        for (let i = 0; i < 6; i++) {
+          inflight.push(pool.request({ type: 'embed', text: `w${wave}r${i}` }));
+          fakeNow += 60;
+          if (i < 5) await new Promise((r) => setTimeout(r, 2));
+        }
+        await Promise.all(inflight);
+        sizesObserved.push(pool.size);
+        fakeNow += 5_100; // clear growCooldownMs before the next wave
+      }
+
+      expect(pool.size).toBe(4); // reached the ceiling
+      expect(pool.growCount).toBe(3); // exactly 3 steps: 1->2->3->4
+      // Monotonic non-decreasing trajectory — never jumps past maxSize,
+      // never regresses (no shrink interference — shrinkIdleMs is
+      // effectively disabled in this test).
+      for (let i = 1; i < sizesObserved.length; i++) {
+        expect(sizesObserved[i]!).toBeGreaterThanOrEqual(sizesObserved[i - 1]!);
+      }
+    },
+    15_000,
+  );
 });
 
 describe('BL-575 — shrinks back under sustained idleness, never below minSize', () => {
@@ -277,6 +405,7 @@ describe('BL-575 — shrinks back under sustained idleness, never below minSize'
       hostPathOverride: writeSerializedStubHost(delayMs),
       growQueueRatioThreshold: 1.2,
       growSustainCount: 2,
+      growSustainWindowMs: 10,
       growCooldownMs: 0,
       shrinkIdleMs: 40,
       shrinkCheckIntervalMs: 10,
@@ -319,6 +448,7 @@ describe('BL-575 — shrinks back under sustained idleness, never below minSize'
       hostPathOverride: writeSerializedStubHost(delayMs),
       growQueueRatioThreshold: 1.2,
       growSustainCount: 2,
+      growSustainWindowMs: 10,
       growCooldownMs: 0,
       shrinkIdleMs: 40,
       shrinkCheckIntervalMs: 10,

@@ -1031,17 +1031,26 @@ export class FastembedProcessPool implements SharedFastembedClient {
 //           moment of admission) must be >= `GROW_QUEUE_RATIO_THRESHOLD`
 //           (1.5 — meaningfully oversubscribed, not just "one request
 //           landed while another was in flight") for `GROW_SUSTAIN_COUNT`
-//           (3) CONSECUTIVE admissions — a single burst does not trigger a
-//           grow, filtering out momentary bursts that would resolve on
-//           their own before a new child could even finish loading. Also
-//           gated by `GROW_COOLDOWN_MS` (15000ms) since the last grow
-//           action, so a sustained-high-load period doesn't spawn several
-//           children back to back before the first one is even usable —
-//           grounded in a REAL measured cost: `warmupTimeoutMs(cacheHit)`
-//           (`index.ts`) bounds a cache-HIT model load at 8000ms (the
-//           realistic runtime case — the model is already downloaded), so
-//           15000ms leaves real margin above the typical spin-up latency a
-//           newly grown member needs before it can serve a request.
+//           (3) CONSECUTIVE admissions AND the over-threshold streak must
+//           span >= `GROW_SUSTAIN_WINDOW_MS` (2000ms) of REAL wall-clock
+//           time — a count alone is NOT sufficient (BL-575 post-ship fix,
+//           see `GROW_SUSTAIN_WINDOW_MS`'s own doc comment: instantaneous
+//           concurrency at admission time can satisfy 3 consecutive
+//           over-threshold observations within the same millisecond, which
+//           made a single momentary burst of simultaneous submissions
+//           trigger a grow every time — exactly the case this policy is
+//           supposed to filter out). Requiring both conditions distinguishes
+//           "everyone submitted at once, N in-flight for one round-trip"
+//           from genuine sustained backlog that persists across multiple
+//           seconds because throughput can't keep up. Also gated by
+//           `GROW_COOLDOWN_MS` (15000ms) since the last grow action, so a
+//           sustained-high-load period doesn't spawn several children back
+//           to back before the first one is even usable — grounded in a
+//           REAL measured cost: `warmupTimeoutMs(cacheHit)` (`index.ts`)
+//           bounds a cache-HIT model load at 8000ms (the realistic runtime
+//           case — the model is already downloaded), so 15000ms leaves real
+//           margin above the typical spin-up latency a newly grown member
+//           needs before it can serve a request.
 //   SHRINK: checked periodically (`SHRINK_CHECK_INTERVAL_MS`, 15000ms) —
 //           requires the ENTIRE pool to have been fully idle
 //           (`pendingCount === 0` pool-wide) continuously for
@@ -1076,6 +1085,11 @@ export interface AdaptiveFastembedPoolOptions {
    *  overrides any of these — it relies on the documented defaults. */
   growQueueRatioThreshold?: number;
   growSustainCount?: number;
+  /** (BL-575 hysteresis fix, post-ship) Minimum WALL-CLOCK span the
+   *  over-threshold streak must cover before a grow is allowed to fire —
+   *  see `growSustainWindowMs`'s own doc comment on the field below for why
+   *  `growSustainCount` alone was not sufficient. */
+  growSustainWindowMs?: number;
   growCooldownMs?: number;
   shrinkIdleMs?: number;
   shrinkCheckIntervalMs?: number;
@@ -1083,6 +1097,34 @@ export interface AdaptiveFastembedPoolOptions {
 
 const GROW_QUEUE_RATIO_THRESHOLD = 1.5;
 const GROW_SUSTAIN_COUNT = 3;
+/**
+ * (BL-575 hysteresis fix, post-ship — real-inference sweep by a peer agent,
+ * 2026-08-17) `growSustainCount` alone has NO time dimension:
+ * `avgPendingPerMember` is a function of INSTANTANEOUS concurrency, not
+ * sustained demand. When N callers submit near-simultaneously against a
+ * small pool (e.g. concurrency=8 against size=1), `pendingCount` ramps past
+ * the threshold within MILLISECONDS — "3 consecutive over-threshold
+ * admissions" can all land in the same millisecond, so a single momentary
+ * burst (exactly the case §HYSTERESIS POLICY above says should NOT trigger
+ * a grow) satisfied the count condition every time. Measured: concurrency=8,
+ * n=24 (where the pool should stay at size 1 the whole run per the cited
+ * benchmark) grew 1->2 on 2/2 real trials, making both wall time and p99
+ * WORSE than the correct behavior (wall 7896/6690ms, p99 4749/3959ms vs the
+ * real fixed-pool=1 baseline of ~3041ms). `GROW_COOLDOWN_MS` does not help —
+ * it only gates the SECOND+ grow, not this premature first one.
+ *
+ * Fix: require the over-threshold streak to span at least
+ * `GROW_SUSTAIN_WINDOW_MS` of REAL elapsed time, in addition to the
+ * consecutive-count requirement — a burst of simultaneous submissions that
+ * resolves within milliseconds (the common case at low-moderate concurrency,
+ * where each request completes in low seconds) cannot satisfy both; genuine
+ * sustained backlog (queue depth staying elevated for multiple seconds while
+ * throughput fails to keep up) can. 2000ms is deliberately shorter than a
+ * single solo inference's own typical latency (~2.5-3s measured) — long
+ * enough to rule out "everyone submitted at once", short enough not to blunt
+ * the responsiveness a genuinely overloaded pool needs.
+ */
+const GROW_SUSTAIN_WINDOW_MS = 2_000;
 const GROW_COOLDOWN_MS = 15_000;
 const SHRINK_IDLE_MS = 60_000;
 const SHRINK_CHECK_INTERVAL_MS = 15_000;
@@ -1099,11 +1141,16 @@ export class AdaptiveFastembedProcessPool implements SharedFastembedClient {
   private readonly shrinkTimer: ReturnType<typeof setInterval>;
   private readonly growQueueRatioThreshold: number;
   private readonly growSustainCount: number;
+  private readonly growSustainWindowMs: number;
   private readonly growCooldownMs: number;
   private readonly shrinkIdleMs: number;
 
   private lastInitPayload: Record<string, unknown> | null = null;
   private growConsecutiveOverThreshold = 0;
+  /** Wall-clock timestamp the CURRENT over-threshold streak began — `null`
+   *  when not currently in a streak. See `GROW_SUSTAIN_WINDOW_MS`'s doc
+   *  comment for why a count alone is insufficient. */
+  private growStreakStartedAt: number | null = null;
   private lastGrowAt = -Infinity;
   private idleSinceMs: number | null;
   /** Serializes concurrent grow attempts — `request()` can observe the
@@ -1125,6 +1172,7 @@ export class AdaptiveFastembedProcessPool implements SharedFastembedClient {
     this.clock = opts.now ?? (() => Date.now());
     this.growQueueRatioThreshold = opts.growQueueRatioThreshold ?? GROW_QUEUE_RATIO_THRESHOLD;
     this.growSustainCount = opts.growSustainCount ?? GROW_SUSTAIN_COUNT;
+    this.growSustainWindowMs = opts.growSustainWindowMs ?? GROW_SUSTAIN_WINDOW_MS;
     this.growCooldownMs = opts.growCooldownMs ?? GROW_COOLDOWN_MS;
     this.shrinkIdleMs = opts.shrinkIdleMs ?? SHRINK_IDLE_MS;
     this.poolGroup = `apool-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2)}`;
@@ -1209,6 +1257,7 @@ export class AdaptiveFastembedProcessPool implements SharedFastembedClient {
         this.growCount += 1;
         this.lastGrowAt = this.clock();
         this.growConsecutiveOverThreshold = 0;
+        this.growStreakStartedAt = null;
         log.info('fastembed_process.pool.grew', {
           pool_group: this.poolGroup,
           new_size: this.members.length,
@@ -1292,16 +1341,28 @@ export class AdaptiveFastembedProcessPool implements SharedFastembedClient {
     // the ratio should reflect backlog that existed independent of this
     // admission, matching "sustained queue depth", not "this one request
     // pushed the ratio over the line by itself".
+    //
+    // BL-575 hysteresis fix: a count of consecutive over-threshold
+    // admissions has NO time dimension on its own — see
+    // `GROW_SUSTAIN_WINDOW_MS`'s doc comment for the real-inference trial
+    // that caught this (concurrency=8 grew 1->2 on every run, which the
+    // design explicitly says should never happen). BOTH the count AND a
+    // minimum REAL elapsed span since the streak began are now required.
     const avgPendingPerMember = this.pendingCount / this.members.length;
+    const now = this.clock();
     if (avgPendingPerMember >= this.growQueueRatioThreshold) {
+      if (this.growConsecutiveOverThreshold === 0) this.growStreakStartedAt = now;
       this.growConsecutiveOverThreshold += 1;
     } else {
       this.growConsecutiveOverThreshold = 0;
+      this.growStreakStartedAt = null;
     }
+    const streakSpanMs = this.growStreakStartedAt === null ? 0 : now - this.growStreakStartedAt;
     if (
       this.growConsecutiveOverThreshold >= this.growSustainCount &&
+      streakSpanMs >= this.growSustainWindowMs &&
       this.members.length < this.maxSize &&
-      this.clock() - this.lastGrowAt >= this.growCooldownMs &&
+      now - this.lastGrowAt >= this.growCooldownMs &&
       !this.growInFlight
     ) {
       // Fire-and-forget: growth must not add its own (model-load-scale)
