@@ -1,7 +1,7 @@
 /**
  * stats-bl572-checkpoint-honesty.spec.ts — BL-572 regression coverage.
  *
- * ROOT CAUSE: DEBT-004/DEBT-005 (commit e77fb615) deleted memory-core's
+ * ROOT CAUSE: DEBT-004 (commit e77fb615) deleted memory-core's
  * private WAL checkpointing and handed idle-flush ownership entirely to the
  * store adapter's own `_armIdleFlush()`/`_checkWalCapAndFlush()` — with ZERO
  * callback surface back to memory-core. Pre-fix, `stats.ts` sourced

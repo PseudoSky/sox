@@ -4,7 +4,7 @@
  * Runs `PRAGMA optimize` and `ANALYZE` on an idle cadence (default 5 min) to
  * keep the query planner fresh.
  *
- * WAL checkpoint ownership (DEBT-004/DEBT-005, 2026-08-17): this module used
+ * WAL checkpoint ownership (DEBT-004, 2026-08-17): this module used
  * to ALSO run its own `wal_checkpoint(TRUNCATE)` here, with logic to skip it
  * when `WriteQueue`'s private idle-checkpoint timer (WP-5) had fired
  * recently — i.e. TWO independent, uncoordinated checkpoint mechanisms
@@ -53,13 +53,13 @@ export interface CompactionResult {
   /** True when ANALYZE was executed. */
   analyzed: boolean;
   /**
-   * (DEBT-004/DEBT-005) Always `false` — this pass no longer runs its own
+   * (DEBT-004) Always `false` — this pass no longer runs its own
    * `wal_checkpoint`; checkpointing is owned exclusively by the store
    * adapter's idle flush. Kept for API stability with existing callers.
    */
   checkpointed: boolean;
   /**
-   * (DEBT-004/DEBT-005) Always `-1` — see `checkpointed`. Kept for API
+   * (DEBT-004) Always `-1` — see `checkpointed`. Kept for API
    * stability with existing callers.
    */
   framesCheckpointed: number;
@@ -81,7 +81,7 @@ export const DEFAULT_COMPACTION_INTERVAL_MS = 5 * 60 * 1000;
  *   1. `PRAGMA optimize` (optional, default true) — hints SQLite to build query stats.
  *   2. `ANALYZE`                                  — updates table statistics for query planner.
  *
- * (DEBT-004/DEBT-005) No longer runs a WAL checkpoint — see the module doc
+ * (DEBT-004) No longer runs a WAL checkpoint — see the module doc
  * comment. `result.checkpointed`/`result.framesCheckpointed` are always
  * `false`/`-1`.
  *
@@ -100,7 +100,7 @@ export async function runCompactionPass(
   const runAt = new Date().toISOString();
   let optimized = false;
   let analyzed = false;
-  // (DEBT-004/DEBT-005) Always false/-1 — checkpointing moved to the store
+  // (DEBT-004) Always false/-1 — checkpointing moved to the store
   // adapter's idle flush; this pass no longer performs or observes one.
   const checkpointed = false;
   const framesCheckpointed = -1;
