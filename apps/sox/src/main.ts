@@ -129,6 +129,7 @@ import {
 } from '@adhd/sox-install-engine';
 import { registerBundleMember, resolveBundleDir } from './bundle-init.js';
 import { assertWithinBase, PathEscapeError } from './path-safety.js';
+import { initTelemetry, log, resolveProcessRole, type InitTelemetryOptions } from '@adhd/sox-telemetry';
 // @adhd/sox-host-registry is also lazy-required via install-engine; import it lazily here too
 // to avoid the NX "static import of lazy-loaded library" lint error.
 // [inv:host-registry-lazy]: getHost() used only in cmdInstall; require() at call site.
@@ -144,6 +145,51 @@ const argv = process.argv.slice(2);
 const verb = argv[0];
 // A12: flags after the verb use parseArgs (both --flag=value and --flag value)
 const flags = parseArgs(argv.slice(1));
+
+// BL-511: composition root for the sox CLI harness. Before this, NOTHING in
+// apps/sox ever called `initTelemetry()` — every `store-adapter`/memory-core
+// `log.*` emission reachable from a `soxe` invocation (e.g. `soxe exec` running
+// a memory-core operation in-process) ran on the `@adhd/sox-telemetry` module-level
+// fallback (`service:'unlabeled'`, `logSink:'none'`) and was silently dropped,
+// same root cause as BL-404/BL-568.
+//
+// Placed at MODULE TOP LEVEL, unconditionally — not behind a `require.main ===
+// module` guard. That guard is exactly the fragile pattern BL-404 shipped with:
+// it is trivially true for a bin entrypoint today and silently false the moment
+// anything ever imports this module instead of exec'ing it (that's the literal
+// BL-404 defect this ticket's own brief describes memory-server hitting). This
+// file has exactly one production entry — `void main()` at the bottom of this
+// file, unconditionally invoked on load, never gated — so a call placed here
+// cannot be skipped by how the module happens to be loaded; there is no
+// alternate load path for it to forget.
+//
+// role is derived STRUCTURALLY (BL-577's `resolveProcessRole`, not a hardcoded
+// literal): `soxe serve` is the one verb whose process either becomes a
+// long-lived server in place (`exec()`s a real service entrypoint, which
+// re-initialises its OWN composition root and inherits none of this one) or
+// stays alive itself as the front-shim proxy — every other verb is a genuine
+// one-shot operator/CLI invocation. `SOX_TELEMETRY_HARNESS=1` (set by
+// scripts/smoke-test.mjs on every child it spawns) overrides toward 'harness'
+// regardless of verb, exactly as it does for memory-server/memory-cli, so a
+// smoke-test spawn of `soxe serve ...` is never indistinguishable in the log
+// from a real production MCP-client launch or an operator's real invocation —
+// the identical `role:'cli'`-collapses-everything failure the backlog CLI
+// shipped with (docs/reporting/memory/findings/
+// 2026-08-17-store-connection-lifetime-forensics.md §1d).
+export const SOX_CLI_TELEMETRY_INIT_OPTIONS: InitTelemetryOptions = {
+  service: 'sox',
+  role: resolveProcessRole(verb === 'serve' ? 'live-service' : 'cli'),
+  logSink: 'file',
+};
+initTelemetry(SOX_CLI_TELEMETRY_INIT_OPTIONS);
+// Emit unconditionally, right after init, on every invocation regardless of
+// which verb runs or whether it later fails — a composition root that is
+// merely CORRECT but never actually produces evidence it ran is exactly the
+// "well-formed-looking, silently no-op" shape BL-404 warns about (see
+// runtime.ts's own doc comment on the one-shot uninitialised-emission
+// warning). This durably proves, for every `soxe` invocation, that telemetry
+// really was initialised before any downstream code had a chance to emit.
+log.info('cli_invoked', { verb: verb ?? null });
 
 async function main(): Promise<void> {
   // ADR-0004: SOX_HOME is RETIRED and fully INERT — data placement is governed solely

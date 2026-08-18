@@ -19,6 +19,52 @@
 import { applyPromotion as memCoreApplyPromotion, exportMarkdown as memCoreExportMarkdown, openDb as memCoreOpenDb } from '@adhd/sox-memory-core';
 import type { StoreAdapter } from '@adhd/sox-store-adapter';
 import * as fs from 'node:fs';
+import { currentRuntimeState, initTelemetry, resolveProcessRole, type InitTelemetryOptions } from '@adhd/sox-telemetry';
+
+// (BL-568) COMPOSITION ROOT. Without this, `@adhd/sox-telemetry`'s gated
+// substrate stays uninitialised for this module's whole lifetime and every
+// store-adapter emission reachable from `handleSessionEnd`/
+// `handleScopePromotionProposed` (retry, preflight, engine-marker — via
+// `memCoreOpenDb` -> store-adapter, the identical code path memory-server and
+// memory-cli both go through) is SILENTLY DROPPED with `logSink:'none'`,
+// same root cause as BL-404, inferred (not independently reproduced) at the
+// time BL-568 was filed against this exact gap.
+//
+// UNLIKE memory-server/memory-cli, this module is never `require.main ===
+// module` — the host runtime dynamically `import()`s it IN-PROCESS as a
+// hook module (`libs/host-runtime/src/adapters/hook.ts`), inside whatever
+// process embeds `@adhd/sox-host-runtime` as a library (the host application
+// itself — opencode/Claude Code's own process, not a sox-owned entrypoint).
+// There is no sox-owned composition root upstream of that load to wire this
+// into instead — this module IS the outermost point sox-ecosystem code
+// controls before a `log.*` call can fire. So the call is placed at MODULE
+// TOP LEVEL (this file's only production entry point — its only exports are
+// `handler`/`events`, dynamically imported once per host-process activation)
+// rather than behind a `require.main === module` guard, which would simply
+// never be true here and silently reproduce the exact BL-404 failure shape.
+//
+// Guarded on `currentRuntimeState().service === 'unlabeled'` (never
+// initialised yet) so that if the SAME host process has already loaded
+// another sox extension that called `initTelemetry()` first (module-level
+// state is process-wide, not per-hook — `runtime.ts`'s own doc comment),
+// this does not clobber that extension's `service`/`role` labelling; it
+// only fills the gap when nothing else in this process has claimed it.
+//
+// role:'hook' — a new role distinct from 'live-service'/'cli'/'test'/
+// 'harness' would require widening the `Role` union in sox-telemetry for a
+// single caller; instead this reuses 'cli' (a short-lived, one-shot
+// invocation is the closest existing semantic — a hook handler fires once
+// per host event, not a persistent server) exactly as `resolveProcessRole`
+// already documents for exactly this kind of short-lived non-server caller.
+export const MEMORY_FLUSH_TELEMETRY_INIT_OPTIONS: InitTelemetryOptions = {
+  service: 'memory-flush',
+  role: resolveProcessRole('cli'),
+  logSink: 'file',
+};
+
+if (currentRuntimeState().service === 'unlabeled') {
+  initTelemetry(MEMORY_FLUSH_TELEMETRY_INIT_OPTIONS);
+}
 
 export const events = ['SessionEnd', 'ScopePromotionProposed'];
 
