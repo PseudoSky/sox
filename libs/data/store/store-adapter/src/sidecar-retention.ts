@@ -57,6 +57,21 @@ export const DEFAULT_STALE_SIDECAR_MAX_AGE_MS = 3 * 24 * 60 * 60 * 1000;
  */
 export const DEFAULT_STALE_SIDECAR_SWEEP_THROTTLE_MS = 10 * 60 * 1000;
 
+/**
+ * Env-tunable read of {@link DEFAULT_STALE_SIDECAR_SWEEP_THROTTLE_MS}, same
+ * convention as `staleSidecarThresholdMs()` in integrity.ts
+ * (`SOX_WAL_SIDECAR_STALE_THRESHOLD_MS`). Exists so an integration test can
+ * drive real `close()`/reopen cycles at real wall-clock speed and still
+ * observe more than one real sweep without waiting 10 real minutes between
+ * assertions — production never sets this.
+ */
+export function staleSidecarSweepThrottleMs(): number {
+  const raw = process.env['SOX_SIDECAR_SWEEP_THROTTLE_MS'];
+  if (raw === undefined || raw.trim() === '') return DEFAULT_STALE_SIDECAR_SWEEP_THROTTLE_MS;
+  const n = Number(raw);
+  return Number.isFinite(n) && n >= 0 ? n : DEFAULT_STALE_SIDECAR_SWEEP_THROTTLE_MS;
+}
+
 // ─── Injectable fs seam ───────────────────────────────────────────────────────
 
 /**
@@ -343,7 +358,7 @@ export function maybePruneStaleTshmSidecars(
 ): StaleSidecarPruneResult | null {
   const log = opts.log ?? ((): void => undefined);
   const fsSeal = opts.fsSeal ?? realStaleSidecarFs;
-  const throttleMs = opts.throttleMs ?? DEFAULT_STALE_SIDECAR_SWEEP_THROTTLE_MS;
+  const throttleMs = opts.throttleMs ?? staleSidecarSweepThrottleMs();
   const now = opts.now ?? Date.now();
   const markerPath = `${dbPath}.sidecar-sweep-marker`;
 
