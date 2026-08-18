@@ -1,6 +1,11 @@
 #!/usr/bin/env node
 /**
- * dispatch-telemetry.mjs — [DEBT-031] per-subagent-call telemetry from REAL opencode storage.
+ * dispatch-telemetry.mjs — [DEBT-007] per-subagent-call telemetry from REAL opencode storage.
+ * (DEBT-007 here is the real backlog graph item filed 2026-08-18 — "tools/dispatch-telemetry.mjs
+ * and bug014-store-hardening/STATE.json cite plan-local DEBT-031 which was never filed in the
+ * graph". It is NOT the same as the docs/plan/bug014-store-hardening/SPEC.md T11 plan-local label
+ * also written "DEBT-007" — that collision is exactly what DEBT-006 documents; see
+ * tools/backlog-citation-allowlist.json.)
  *
  * WHY THIS EXISTS
  * ---------------
@@ -11,7 +16,7 @@
  * hunch, not a measurement. This turns one session id into the measured JSON the dispatcher can
  * cite in its notes.
  *
- * DATA SOURCE (discovered 2026-08-12, DEBT-031)
+ * DATA SOURCE (discovered 2026-08-12, DEBT-007)
  * ----------------------------------------------
  * This opencode host has migrated off JSONL storage: `~/.local/share/opencode/storage/` holds only
  * empty `session_diff/*.json` (`[]`) and a `migration` flag (`2`). The authoritative store is
@@ -335,7 +340,7 @@ const SELFTEST_CASES = [
   ['if [ -f x ]; then cat x; fi', 'cat'],
   ['env FOO=bar node tools/x.mjs', 'node'],
   ['node --version', 'node'],
-  ['backlog get-item --repo sox-ecosystem --human-id DEBT-031', 'backlog'],
+  ['backlog get-item --repo sox-ecosystem --human-id DEBT-007', 'backlog'],
   ['sqlite3 ~/.local/share/opencode/opencode.db "SELECT 1"', 'sqlite3'],
   ['while read -r l; do echo $l; done < f.txt', 'bash'],
   ['pkill -f "node"', 'pkill'],
