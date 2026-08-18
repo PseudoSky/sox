@@ -218,8 +218,8 @@ describe('WriteQueue — WAL checkpointing owned by the store adapter (DEBT-004)
     // Explicitly pin the PRODUCTION default so this suite is unambiguous
     // regardless of what another suite in this file pinned — this is the
     // one describe block that must run on the REAL adapter (Turso) that
-    // owns the idle flush; sqlite has no equivalent (see write-queue.ts's
-    // class doc comment coverage-gap note, filed BL-591).
+    // owns the idle flush. SqliteAdapterImpl has its own equivalent since
+    // BL-571, but it is not exercised at THIS layer — see BL-586.
     priorAdapterEnv = process.env['STORE_ADAPTER'];
     process.env['STORE_ADAPTER'] = 'turso';
   });
@@ -315,7 +315,7 @@ describe('WriteQueue — WAL checkpointing owned by the store adapter (DEBT-004)
   /**
    * `walBytes()` on a Turso adapter deliberately reports 0 (no local-file
    * assumption for the generic case) — confirms that contract still holds
-   * post-DEBT-004/005, so the RED→GREEN proof above's use of a direct
+   * post-DEBT-004, so the RED→GREEN proof above's use of a direct
    * `fs.statSync` (rather than `queue.walBytes()`) is not incidental.
    */
   it('walBytes() reports 0 for a turso-backed queue (by design, unrelated to checkpoint ownership)', async () => {

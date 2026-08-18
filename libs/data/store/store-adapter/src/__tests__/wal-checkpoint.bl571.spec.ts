@@ -1,7 +1,7 @@
 /**
  * BL-571 — `SqliteAdapterImpl` had NO WAL-checkpoint mechanism at all.
  *
- * `e77fb615` (DEBT-004/005) deleted memory-core's private `WriteQueue`-level
+ * `e77fb615` (DEBT-004) deleted memory-core's private `WriteQueue`-level
  * WAL checkpointing so every consumer inherits whatever checkpoint behaviour
  * the adapter itself provides. `TursoAdapterImpl` grew that behaviour
  * (`idle-flush.spec.ts`, `wal-cap.spec.ts`); `SqliteAdapterImpl` never did —

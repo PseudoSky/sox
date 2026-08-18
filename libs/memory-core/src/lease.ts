@@ -164,7 +164,7 @@ export function releaseWriteLease(dbPath: string): void {
  * was the UNGATED half of that pair: no quiescence check at all, run while
  * other processes could still hold the store. This is the exact private
  * checkpoint-mechanism shape removed from `WriteQueue.closeAllForShutdown()`
- * and `compaction.ts` in commit e77fb615 (DEBT-004/005) — that fix never
+ * and `compaction.ts` in commit e77fb615 (DEBT-004) — that fix never
  * reached this file, and this one survived only because nothing forced a
  * compile fix (the two functions took different call shapes). Fixed the same
  * way: the flush is now owned entirely by `adapter.close()`'s own public

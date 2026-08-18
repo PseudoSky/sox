@@ -80,7 +80,7 @@ function loadBetterSqlite3(): BetterSqlite3Constructor {
 // ── WAL checkpointing (BL-571) ───────────────────────────────────────────────
 
 /**
- * (BL-571) `e77fb615` (DEBT-004/005) deleted memory-core's private
+ * (BL-571) `e77fb615` (DEBT-004) deleted memory-core's private
  * `WriteQueue`-level WAL checkpointing so every consumer inherits whatever
  * checkpoint behaviour the adapter itself provides. `TursoAdapterImpl` grew
  * that behaviour (idle-flush + wal-cap, `turso-adapter.ts` `DEFAULT_IDLE_FLUSH_MS`
