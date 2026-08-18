@@ -1120,3 +1120,44 @@ describe('restartAndVerify — BL-372 [inv:deploy-verified]', () => {
     expect(result.after).toEqual([999]);
   });
 });
+
+// ─── BL-584: the unit stamps its own service identity ────────────────────────
+//
+// RED→GREEN proof (BL-225): with `env: opts.env` (pre-fix), both assertions
+// below fail — `SOX_SERVICE_ID` is absent from the spec and from the rendered
+// unit on disk. With `env: { ...opts.env, SOX_SERVICE_ID: opts.id }` they pass.
+//
+// Why this matters beyond tidiness: the in-process supervisor already sets
+// `SOX_SERVICE_ID` on every service it spawns, so before this fix the SAME
+// extension saw a DIFFERENT environment depending on which supervisor started
+// it, and an OS-unit service had no supervisor-authoritative way to know it
+// was running as a service. tokenguard consequently inferred its mode from the
+// absence of `SOX_CONFIG_PORT`, matched the MCP-exec branch under launchd
+// (where stdin is never a TTY), read EOF and exited 0 — reported as
+// `loaded: yes` / `live pids: (none)`.
+describe('BL-584 — OS units carry SOX_SERVICE_ID', () => {
+  it('buildUnitSpec puts the service id in the unit environment', () => {
+    const spec = makeSpec({ env: { SOX_CONFIG_DB_PATH: 'x' } });
+    expect(spec.env['SOX_SERVICE_ID']).toBe(spec.id);
+  });
+
+  it('the rendered launchd unit exposes SOX_SERVICE_ID to the spawned process', () => {
+    const spec = makeSpec({ env: { SOX_CONFIG_DB_PATH: 'x' } });
+    const rendered = new LaunchdPlatform().render(spec);
+    const env = extractUnitEnv(rendered, 'launchd');
+    expect(env['SOX_SERVICE_ID']).toBe(spec.id);
+  });
+
+  it('the rendered systemd unit exposes SOX_SERVICE_ID too', () => {
+    const spec = makeSpec({ env: { SOX_CONFIG_DB_PATH: 'x' } });
+    const rendered = new SystemdPlatform().render(spec);
+    expect(rendered).toContain(`Environment=SOX_SERVICE_ID=${spec.id}`);
+  });
+
+  it('does not clobber caller-supplied config env', () => {
+    const spec = makeSpec({ env: { SOX_CONFIG_DB_PATH: 'x', SOX_CONFIG_PORT: '4000' } });
+    expect(spec.env['SOX_CONFIG_DB_PATH']).toBe('x');
+    expect(spec.env['SOX_CONFIG_PORT']).toBe('4000');
+    expect(spec.env['SOX_SERVICE_ID']).toBe(spec.id);
+  });
+});
