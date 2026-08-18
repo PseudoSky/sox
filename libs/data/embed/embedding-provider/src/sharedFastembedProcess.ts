@@ -183,6 +183,7 @@ export interface SharedFastembedClient {
   request<T = Record<string, unknown>>(
     payload: Record<string, unknown>,
     timeoutMs?: number,
+    signal?: AbortSignal,
   ): Promise<T>;
   terminate(): Promise<void>;
   readonly started: boolean;
@@ -217,8 +218,8 @@ export class SharedFastembedProcessClient implements SharedFastembedClient {
   private pending = new Map<number, PendingEntry>();
   private readonly hostPath: string | undefined;
   private readonly poolGroup: string | undefined;
-  private readonly poolSize: number | undefined;
-  private readonly memberIndex: number | undefined;
+  private poolSize: number | undefined;
+  private memberIndex: number | undefined;
 
   /**
    * @param hostPathOverride Test-only injection point (BL-410): points the
@@ -269,6 +270,19 @@ export class SharedFastembedProcessClient implements SharedFastembedClient {
    */
   get pendingCount(): number {
     return this.pending.size;
+  }
+
+  /**
+   * (BL-575) Update the `pool_size`/`member_index` telemetry fields this
+   * client stamps on every `fastembed_process.request.*` record. Package-
+   * private (no `readonly`) specifically so `AdaptiveFastembedProcessPool`
+   * can keep them truthful as the pool grows/shrinks at runtime — a FIXED
+   * `FastembedProcessPool` never calls this (its size is constant for the
+   * member's whole lifetime, set once at construction).
+   */
+  setPoolMeta(poolSize: number, memberIndex: number): void {
+    this.poolSize = poolSize;
+    this.memberIndex = memberIndex;
   }
 
   /** Lazily fork (exactly once) and return the single shared child process. */
@@ -400,11 +414,33 @@ export class SharedFastembedProcessClient implements SharedFastembedClient {
    *   3. `competing_host_pid` — present only when a second, still-live
    *      `fastembedProcessHost` process is detected (BL-331's advisory lock),
    *      since that changes embed latency 25-50x independent of queueing.
+   *
+   * BL-576: `signal`, when supplied, is an external cancellation source —
+   * e.g. `operation-guard.ts`'s `withOperationDeadline` abort controller, so
+   * a deadline that fires while an embed is queued behind an unrelated slow
+   * request stops WAITING on it immediately rather than riding the deadline
+   * out via its own separate mechanism. This does NOT kill the underlying
+   * fastembed child mid-inference (the same "no native cancellation
+   * primitive" constraint `operation-guard.ts` documents applies here too —
+   * the child process is shared across other pending requests, so killing
+   * it on one caller's abort would collaterally fail every other in-flight
+   * request on that member) — it settles the CALLER's promise immediately
+   * with an `AbortError` and removes the pending entry so a late reply from
+   * the child (once the real work finishes) is silently dropped instead of
+   * resolving/rejecting a promise nobody is awaiting anymore. If `signal`
+   * is already aborted when `request()` is called, it rejects immediately
+   * without ever sending to the child.
    */
   async request<T = Record<string, unknown>>(
     payload: Record<string, unknown>,
     timeoutMs?: number,
+    signal?: AbortSignal,
   ): Promise<T> {
+    if (signal?.aborted) {
+      throw signal.reason instanceof Error
+        ? signal.reason
+        : new Error('shared fastembed process request aborted before it was sent');
+    }
     const child = await this.ensureProcess();
     const id = this.nextId++;
 
@@ -442,9 +478,15 @@ export class SharedFastembedProcessClient implements SharedFastembedClient {
         if (typeof to.unref === 'function') to.unref();
       }
 
+      let onAbort: (() => void) | undefined;
+      const detachAbort = (): void => {
+        if (onAbort && signal) signal.removeEventListener('abort', onAbort);
+      };
+
       this.pending.set(id, {
         resolve: (v) => {
           if (to) clearTimeout(to);
+          detachAbort();
           log.info('fastembed_process.request.finish', {
             ...baseFields,
             response_ms: Math.round(performance.now() - sentAt),
@@ -453,6 +495,7 @@ export class SharedFastembedProcessClient implements SharedFastembedClient {
         },
         reject: (e) => {
           if (to) clearTimeout(to);
+          detachAbort();
           log.warn('fastembed_process.request.error', {
             ...baseFields,
             response_ms: Math.round(performance.now() - sentAt),
@@ -461,6 +504,32 @@ export class SharedFastembedProcessClient implements SharedFastembedClient {
           reject(e);
         },
       });
+
+      // BL-576: an external abort (e.g. operation-guard.ts's deadline)
+      // settles the CALLER's promise immediately — via the SAME pending-map
+      // removal + `unrefIfIdle()` path the internal `timeoutMs` timer above
+      // already uses — without waiting for `timeoutMs` (which may be unset,
+      // or longer than the caller's own deadline) and without touching the
+      // child process itself: the real work, if the child is still grinding
+      // on it, keeps running and its late reply (if any) is silently
+      // dropped by the `c.on('message')` handler above (`pending.get(msg.id)`
+      // returns undefined once this entry is deleted).
+      if (signal) {
+        onAbort = () => {
+          if (!this.pending.has(id)) return;
+          this.pending.delete(id);
+          this.unrefIfIdle();
+          if (to) clearTimeout(to);
+          log.warn('fastembed_process.request.aborted', {
+            ...baseFields,
+            response_ms: Math.round(performance.now() - sentAt),
+            reason: signal.reason instanceof Error ? signal.reason.message : String(signal.reason),
+          });
+          reject(signal.reason instanceof Error ? signal.reason : new Error('shared fastembed process request aborted'));
+        };
+        signal.addEventListener('abort', onAbort, { once: true });
+      }
+
       // BL-410: keep the parent's event loop ref'd until this request settles.
       this.refForPending();
 
@@ -712,34 +781,49 @@ export function estimateAvailableMemMb(): number {
 }
 
 /**
- * Number of independent fastembed child processes in the pool.
+ * (BL-575) The explicit `SOX_EMBED_POOL_SIZE` override, if set — a HARD PIN.
+ * Split out of `resolveFastembedPoolSize()` so `getSharedFastembedProcess()`
+ * can tell "operator pinned an exact size" (disables ALL adaptation —
+ * `AdaptiveFastembedProcessPool` is never constructed) apart from "no
+ * override, compute a ceiling for adaptive sizing to grow toward" — the two
+ * cases used to be indistinguishable from the return value of a single
+ * function that already folded the CPU/memory-cap arithmetic into the
+ * "no override" branch.
+ */
+export function resolveFastembedPoolPin(): number | null {
+  const raw = Number(process.env['SOX_EMBED_POOL_SIZE']);
+  if (Number.isFinite(raw) && raw >= 1) return Math.floor(raw);
+  return null;
+}
+
+/**
+ * (BL-575) The maximum pool size the memory/CPU budget allows — i.e. what
+ * `resolveFastembedPoolSize()` used to compute unconditionally in its
+ * "no override" branch. Now used two ways: (a) unchanged, as
+ * `resolveFastembedPoolSize()`'s own fallback when no pin is set, so every
+ * existing caller of that function keeps its exact prior behavior; (b) as
+ * `AdaptiveFastembedProcessPool`'s `maxSize` — the ceiling it is allowed to
+ * grow toward under sustained load, never exceeded regardless of how
+ * sustained the demand is.
  *
- * `SOX_EMBED_POOL_SIZE`, when set, is honored EXACTLY — no memory clamp — on
- * the assumption an operator who sets it has already checked their own
- * model's real footprint and the box's headroom (`footprint`/`vmmap`/`top`).
- * `SOX_EMBED_POOL_SIZE=1` recovers the exact pre-fix single-child topology.
- *
- * Otherwise, auto-sized from BOTH real available memory
- * (`estimateAvailableMemMb()` — see its doc comment for why this is NOT
- * simply `os.freemem()`, and BUG-EMBED-POOL-SIZE-DARWIN-FREEMEM-001 for the
- * incident this fixes — against `DEFAULT_PER_MEMBER_MB`, less
- * `MEMORY_SAFETY_MARGIN_MB` headroom — override the per-member budget via
- * `SOX_EMBED_POOL_PER_CHILD_MB` for a non-default model) AND CPU count (half
- * the logical CPUs, cap 4 — fastembed inference is CPU/ANE-bound per
- * request, not embarrassingly parallel across all cores), taking the
- * SMALLER of the two so a memory-constrained box never gets sized past
- * what's actually free. See the module doc comment above for the
- * measurement (footprint/vmmap on 1 vs 4 real children) that justifies this.
+ * Auto-sized from BOTH real available memory (`estimateAvailableMemMb()` —
+ * see its doc comment for why this is NOT simply `os.freemem()`, and
+ * BUG-EMBED-POOL-SIZE-DARWIN-FREEMEM-001 for the incident this fixes —
+ * against `DEFAULT_PER_MEMBER_MB`, less `MEMORY_SAFETY_MARGIN_MB` headroom —
+ * override the per-member budget via `SOX_EMBED_POOL_PER_CHILD_MB` for a
+ * non-default model) AND CPU count (half the logical CPUs, cap 4 — fastembed
+ * inference is CPU/ANE-bound per request, not embarrassingly parallel across
+ * all cores), taking the SMALLER of the two so a memory-constrained box
+ * never gets sized past what's actually free. See the module doc comment
+ * above for the measurement (footprint/vmmap on 1 vs 4 real children) that
+ * justifies this.
  *
  * @param getAvailableMemMb Test-only injection point — production always
  * uses the default `estimateAvailableMemMb`. Lets tests exercise the sizing
  * arithmetic against deterministic MB values instead of the real, inherently
  * machine/moment-dependent OS memory state.
  */
-export function resolveFastembedPoolSize(getAvailableMemMb: () => number = estimateAvailableMemMb): number {
-  const raw = Number(process.env['SOX_EMBED_POOL_SIZE']);
-  if (Number.isFinite(raw) && raw >= 1) return Math.floor(raw);
-
+export function resolveFastembedPoolCeiling(getAvailableMemMb: () => number = estimateAvailableMemMb): number {
   const perMemberMb = Number(process.env['SOX_EMBED_POOL_PER_CHILD_MB']);
   const memberBudgetMb = Number.isFinite(perMemberMb) && perMemberMb > 0 ? perMemberMb : DEFAULT_PER_MEMBER_MB;
   const freeMb = getAvailableMemMb();
@@ -749,6 +833,22 @@ export function resolveFastembedPoolSize(getAvailableMemMb: () => number = estim
   const cpuCap = Math.max(1, Math.min(4, Math.floor(cpus / 2)));
 
   return Math.max(1, Math.min(cpuCap, memoryCap));
+}
+
+/**
+ * Number of independent fastembed child processes a FIXED (non-adaptive)
+ * pool should use. Preserved unchanged for backward compatibility (existing
+ * callers/tests) — `SOX_EMBED_POOL_SIZE` honored exactly if set
+ * (`resolveFastembedPoolPin()`), else the memory/CPU ceiling
+ * (`resolveFastembedPoolCeiling()`). `getSharedFastembedProcess()` itself no
+ * longer calls this for its default (adaptive) path as of BL-575 — see
+ * `resolveFastembedPoolPin`/`resolveFastembedPoolCeiling`'s doc comments.
+ *
+ * @param getAvailableMemMb Test-only injection point, forwarded to
+ * `resolveFastembedPoolCeiling`.
+ */
+export function resolveFastembedPoolSize(getAvailableMemMb: () => number = estimateAvailableMemMb): number {
+  return resolveFastembedPoolPin() ?? resolveFastembedPoolCeiling(getAvailableMemMb);
 }
 
 /** Per-member in-flight cap above which `FastembedProcessPool.request()` fast-rejects
@@ -891,6 +991,350 @@ export class FastembedProcessPool implements SharedFastembedClient {
   }
 }
 
+// ── AdaptiveFastembedProcessPool (BL-575) ───────────────────────────────────
+//
+// PROBLEM: `FastembedProcessPool` above sizes itself ONCE, at process start,
+// via `resolveFastembedPoolSize()`. A fixed size is the wrong shape across
+// the concurrency range production actually sees — real-inference
+// measurement (cached bge-base-en-v1.5, built dist, 10-core Apple Silicon
+// box, `SOX_EMBED_EXECUTION_PROVIDER` both default/CoreML and forced `cpu`
+// to rule out ANE-specific hardware contention as the sole cause) re-verified
+// 2026-08-17 (see this package's `bl575-adaptive-pool.spec.ts` for the
+// harness and full per-run numbers):
+//
+//   concurrency  8 (n=24): pool=1 p99≈3.0s  wall≈8.6s | pool=4 p99≈4.6s  wall≈10.3s  -> pool WORSE
+//   concurrency 16 (n=48): pool=1 p99≈6.1s  wall≈17.2s| pool=4 p99≈6.3s  wall≈16.1s  -> mixed
+//   concurrency 24 (n=60): pool=1 p99≈24.7s wall≈41.4s| pool=4 p99≈15.0s wall≈28.4s  -> pool BETTER (p99 -39%)
+//
+// Below ~20 concurrency, onnxruntime-node's OWN intra-op thread pool already
+// saturates available CPU/ANE per inference, so extra pool members add
+// process-level SCHEDULING CONTENTION rather than real capacity — a fixed
+// pool sized for the qdepth-11+ production regime that motivated the pool
+// in the first place (BUG-MEMORY-EMBED-HEAD-OF-LINE-BLOCKING-001) makes
+// EVERY LOWER-CONCURRENCY REQUEST WORSE than the pre-fix single-child
+// topology, unconditionally, all the time — not just a missed opportunity.
+//
+// FIX: start small (`minSize`, default 1 — the topology that wins at low
+// concurrency) and grow toward the SAME ceiling `resolveFastembedPoolSize()`
+// used to apply unconditionally (`resolveFastembedPoolCeiling()`) only when
+// SUSTAINED queue depth actually demands it, shrinking back down once
+// demand subsides. `SOX_EMBED_POOL_SIZE` remains a hard pin — when set,
+// `getSharedFastembedProcess()` constructs the FIXED `FastembedProcessPool`
+// above instead of this class at all, so an operator's explicit sizing
+// judgement is never second-guessed by adaptation.
+//
+// HYSTERESIS POLICY (asymmetric by design — grow reasonably responsively,
+// shrink conservatively; a spawned child is expensive, see below, so
+// thrashing is worse than a size that's briefly one member too large):
+//
+//   GROW:   `queue_depth / current_size` (average pending-per-member at the
+//           moment of admission) must be >= `GROW_QUEUE_RATIO_THRESHOLD`
+//           (1.5 — meaningfully oversubscribed, not just "one request
+//           landed while another was in flight") for `GROW_SUSTAIN_COUNT`
+//           (3) CONSECUTIVE admissions — a single burst does not trigger a
+//           grow, filtering out momentary bursts that would resolve on
+//           their own before a new child could even finish loading. Also
+//           gated by `GROW_COOLDOWN_MS` (15000ms) since the last grow
+//           action, so a sustained-high-load period doesn't spawn several
+//           children back to back before the first one is even usable —
+//           grounded in a REAL measured cost: `warmupTimeoutMs(cacheHit)`
+//           (`index.ts`) bounds a cache-HIT model load at 8000ms (the
+//           realistic runtime case — the model is already downloaded), so
+//           15000ms leaves real margin above the typical spin-up latency a
+//           newly grown member needs before it can serve a request.
+//   SHRINK: checked periodically (`SHRINK_CHECK_INTERVAL_MS`, 15000ms) —
+//           requires the ENTIRE pool to have been fully idle
+//           (`pendingCount === 0` pool-wide) continuously for
+//           `SHRINK_IDLE_MS` (60000ms, a full minute) before terminating
+//           exactly ONE idle member and resetting the idle clock — shrinking
+//           one member at a time, not straight back to `minSize`, so a
+//           demand spike that resumes right after a shrink only has to
+//           re-grow by one step, not rebuild the whole pool. Never shrinks
+//           below `minSize`.
+//
+// Spawning is genuinely expensive — a full `onnxruntime-node` model load,
+// not a cheap `fork()` — which is why growth requires SUSTAINED demand
+// (not one burst) and a cooldown, while shrink requires a much longer
+// sustained ABSENCE of demand: the asymmetry is deliberate, not an oversight.
+export interface AdaptiveFastembedPoolOptions {
+  /** Starting (and floor) pool size. Default 1 — the topology real
+   *  measurement shows wins at concurrency <20. */
+  minSize?: number;
+  /** Ceiling the pool may grow to — pass `resolveFastembedPoolCeiling()`'s
+   *  result in production; never exceeded regardless of how sustained
+   *  demand is. */
+  maxSize: number;
+  hostPathOverride?: string;
+  admissionLimit?: number;
+  /** Test-only clock injection — production uses `Date.now`. */
+  now?: () => number;
+  /** Hysteresis knobs — all optional, defaulting to the values documented
+   *  above. Exposed so a test can use tiny thresholds/intervals instead of
+   *  waiting out real minutes-scale windows, and so an operator can tune
+   *  the policy without a rebuild if the defaults prove wrong for their
+   *  traffic shape. Production (`getSharedFastembedProcess()`) never
+   *  overrides any of these — it relies on the documented defaults. */
+  growQueueRatioThreshold?: number;
+  growSustainCount?: number;
+  growCooldownMs?: number;
+  shrinkIdleMs?: number;
+  shrinkCheckIntervalMs?: number;
+}
+
+const GROW_QUEUE_RATIO_THRESHOLD = 1.5;
+const GROW_SUSTAIN_COUNT = 3;
+const GROW_COOLDOWN_MS = 15_000;
+const SHRINK_IDLE_MS = 60_000;
+const SHRINK_CHECK_INTERVAL_MS = 15_000;
+
+export class AdaptiveFastembedProcessPool implements SharedFastembedClient {
+  private members: SharedFastembedProcessClient[];
+  private inFlight: number[];
+  private readonly minSize: number;
+  private readonly maxSize: number;
+  private readonly hostPathOverride: string | undefined;
+  private readonly admissionLimit: number;
+  private readonly poolGroup: string;
+  private readonly clock: () => number;
+  private readonly shrinkTimer: ReturnType<typeof setInterval>;
+  private readonly growQueueRatioThreshold: number;
+  private readonly growSustainCount: number;
+  private readonly growCooldownMs: number;
+  private readonly shrinkIdleMs: number;
+
+  private lastInitPayload: Record<string, unknown> | null = null;
+  private growConsecutiveOverThreshold = 0;
+  private lastGrowAt = -Infinity;
+  private idleSinceMs: number | null;
+  /** Serializes concurrent grow attempts — `request()` can observe the
+   *  over-threshold condition from several concurrent callers in the same
+   *  burst; only one grow should actually happen. */
+  private growInFlight: Promise<void> | null = null;
+  private terminated = false;
+
+  /** Counts of grow/shrink actions taken — exposed for tests/observability,
+   *  not consumed by any routing logic. */
+  growCount = 0;
+  shrinkCount = 0;
+
+  constructor(opts: AdaptiveFastembedPoolOptions) {
+    this.minSize = Math.max(1, Math.floor(opts.minSize ?? 1));
+    this.maxSize = Math.max(this.minSize, Math.floor(opts.maxSize));
+    this.hostPathOverride = opts.hostPathOverride;
+    this.admissionLimit = opts.admissionLimit ?? resolveFastembedAdmissionLimit();
+    this.clock = opts.now ?? (() => Date.now());
+    this.growQueueRatioThreshold = opts.growQueueRatioThreshold ?? GROW_QUEUE_RATIO_THRESHOLD;
+    this.growSustainCount = opts.growSustainCount ?? GROW_SUSTAIN_COUNT;
+    this.growCooldownMs = opts.growCooldownMs ?? GROW_COOLDOWN_MS;
+    this.shrinkIdleMs = opts.shrinkIdleMs ?? SHRINK_IDLE_MS;
+    this.poolGroup = `apool-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+
+    this.members = Array.from(
+      { length: this.minSize },
+      (_, i) => new SharedFastembedProcessClient(this.hostPathOverride, this.poolGroup, this.minSize, i),
+    );
+    this.inFlight = new Array(this.minSize).fill(0) as number[];
+    this.idleSinceMs = this.clock();
+
+    // Unref'd — a periodic shrink-check timer must never keep an otherwise
+    // idle process alive (BL-370's exact failure shape, applied here).
+    this.shrinkTimer = setInterval(() => {
+      this.maybeShrink();
+    }, opts.shrinkCheckIntervalMs ?? SHRINK_CHECK_INTERVAL_MS);
+    if (typeof this.shrinkTimer.unref === 'function') this.shrinkTimer.unref();
+  }
+
+  get started(): boolean {
+    return this.members.some((m) => m.started);
+  }
+
+  get lastInit(): Record<string, unknown> | null {
+    return this.lastInitPayload;
+  }
+
+  get pendingCount(): number {
+    return this.members.reduce((sum, m) => sum + m.pendingCount, 0);
+  }
+
+  /** Current pool size — exposed for tests/observability. */
+  get size(): number {
+    return this.members.length;
+  }
+
+  private leastLoadedIndex(): number {
+    let bestIdx = 0;
+    for (let i = 1; i < this.inFlight.length; i++) {
+      if (this.inFlight[i]! < this.inFlight[bestIdx]!) bestIdx = i;
+    }
+    return bestIdx;
+  }
+
+  /** Renumber every member's `pool_size`/`member_index` telemetry fields to
+   *  match current pool composition — called after every grow/shrink so
+   *  `fastembed_process.request.*` records stay truthful. */
+  private renumberMembers(): void {
+    for (let i = 0; i < this.members.length; i++) {
+      this.members[i]!.setPoolMeta(this.members.length, i);
+    }
+  }
+
+  /**
+   * Attempt to add one member, up to `maxSize`. Best-effort and internally
+   * serialized (`growInFlight`) — safe to call from multiple concurrent
+   * `request()` admissions without double-growing. If a `lastInitPayload`
+   * exists (the pool has already been initialized with a model), the new
+   * member is sent the SAME init payload before being added to routing —
+   * an un-initialized member would fail every real embed request it was
+   * routed to.
+   */
+  private async grow(): Promise<void> {
+    if (this.growInFlight) return this.growInFlight;
+    if (this.members.length >= this.maxSize) return;
+
+    this.growInFlight = (async () => {
+      const newIndex = this.members.length;
+      const member = new SharedFastembedProcessClient(
+        this.hostPathOverride,
+        this.poolGroup,
+        newIndex + 1,
+        newIndex,
+      );
+      try {
+        if (this.lastInitPayload) {
+          await member.request(this.lastInitPayload);
+        }
+        this.members.push(member);
+        this.inFlight.push(0);
+        this.renumberMembers();
+        this.growCount += 1;
+        this.lastGrowAt = this.clock();
+        this.growConsecutiveOverThreshold = 0;
+        log.info('fastembed_process.pool.grew', {
+          pool_group: this.poolGroup,
+          new_size: this.members.length,
+          max_size: this.maxSize,
+        });
+      } catch (err) {
+        // A failed init (model load error, fork failure) must not corrupt
+        // routing state — the member is simply discarded; the pool stays
+        // at its previous size and can retry growing on a later admission.
+        log.warn('fastembed_process.pool.grow_failed', {
+          pool_group: this.poolGroup,
+          attempted_size: newIndex + 1,
+          error: err instanceof Error ? err.message : String(err),
+        });
+        await member.terminate().catch(() => undefined);
+      }
+    })();
+    try {
+      await this.growInFlight;
+    } finally {
+      this.growInFlight = null;
+    }
+  }
+
+  /** Periodic shrink check — terminates exactly ONE idle member if the
+   *  entire pool has been continuously idle for `SHRINK_IDLE_MS`. Never
+   *  shrinks below `minSize`. Resets the idle clock after shrinking so a
+   *  demand spike right after only costs one re-grow step, not a full
+   *  rebuild, and so consecutive shrinks are still spaced `SHRINK_IDLE_MS`
+   *  apart (the same conservative cadence, not a rapid drain to `minSize`). */
+  private maybeShrink(): void {
+    if (this.terminated) return;
+    if (this.members.length <= this.minSize) return;
+    if (this.pendingCount > 0) {
+      this.idleSinceMs = null;
+      return;
+    }
+    if (this.idleSinceMs === null) {
+      this.idleSinceMs = this.clock();
+      return;
+    }
+    if (this.clock() - this.idleSinceMs < this.shrinkIdleMs) return;
+
+    const doomed = this.members.pop()!;
+    this.inFlight.pop();
+    this.renumberMembers();
+    this.shrinkCount += 1;
+    this.idleSinceMs = this.clock();
+    log.info('fastembed_process.pool.shrank', {
+      pool_group: this.poolGroup,
+      new_size: this.members.length,
+      min_size: this.minSize,
+    });
+    void doomed.terminate().catch((err: unknown) => {
+      log.warn('fastembed_process.pool.shrink_terminate_failed', {
+        pool_group: this.poolGroup,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    });
+  }
+
+  async request<T = Record<string, unknown>>(
+    payload: Record<string, unknown>,
+    timeoutMs?: number,
+    signal?: AbortSignal,
+  ): Promise<T> {
+    if (payload['type'] === 'init') {
+      this.lastInitPayload = payload;
+      const results = await Promise.all(
+        this.members.map((m) => m.request<T>(payload, timeoutMs, signal)),
+      );
+      return results[0] as T;
+    }
+
+    // Any real admission means the pool is not idle right now — cancel any
+    // in-progress idle clock so `maybeShrink()` requires a fresh full
+    // `SHRINK_IDLE_MS` window starting from here.
+    this.idleSinceMs = null;
+
+    // Evaluate the grow condition BEFORE reserving this request's own slot —
+    // the ratio should reflect backlog that existed independent of this
+    // admission, matching "sustained queue depth", not "this one request
+    // pushed the ratio over the line by itself".
+    const avgPendingPerMember = this.pendingCount / this.members.length;
+    if (avgPendingPerMember >= this.growQueueRatioThreshold) {
+      this.growConsecutiveOverThreshold += 1;
+    } else {
+      this.growConsecutiveOverThreshold = 0;
+    }
+    if (
+      this.growConsecutiveOverThreshold >= this.growSustainCount &&
+      this.members.length < this.maxSize &&
+      this.clock() - this.lastGrowAt >= this.growCooldownMs &&
+      !this.growInFlight
+    ) {
+      // Fire-and-forget: growth must not add its own (model-load-scale)
+      // latency to THIS request, which should be routed to an existing
+      // member right now, not wait for a brand new one to spin up.
+      void this.grow();
+    }
+
+    const idx = this.leastLoadedIndex();
+    if (this.inFlight[idx]! >= this.admissionLimit) {
+      const retryAfterMs = Math.min(2000, 100 * (this.inFlight[idx]! + 1));
+      throw new FastembedBusyError(
+        `fastembed pool saturated: every one of ${this.members.length} member(s) already has ` +
+          `>= ${this.admissionLimit} requests in flight`,
+        retryAfterMs,
+      );
+    }
+    this.inFlight[idx]! += 1;
+    const target = this.members[idx]!;
+    try {
+      return await target.request<T>(payload, timeoutMs, signal);
+    } finally {
+      this.inFlight[idx]! -= 1;
+    }
+  }
+
+  async terminate(): Promise<void> {
+    this.terminated = true;
+    clearInterval(this.shrinkTimer);
+    await Promise.all(this.members.map((m) => m.terminate()));
+  }
+}
+
 let _singleton: SharedFastembedClient | null = null;
 
 /**
@@ -900,15 +1344,35 @@ let _singleton: SharedFastembedClient | null = null;
  * function instead of constructing its own `worker_threads.Worker` or
  * `child_process`.
  *
- * (BUG-MEMORY-EMBED-HEAD-OF-LINE-BLOCKING-001) Returns a `FastembedProcessPool`
- * of `resolveFastembedPoolSize()` independent child processes rather than a
- * single `SharedFastembedProcessClient` — every existing caller keeps working
- * unchanged because both implement the same `SharedFastembedClient` shape
- * (`request()`/`terminate()`/`started`). Setting `SOX_EMBED_POOL_SIZE=1`
- * recovers the exact pre-fix single-child topology.
+ * (BL-575) Two shapes, chosen by whether `SOX_EMBED_POOL_SIZE` is set:
+ *
+ *   - PINNED (`resolveFastembedPoolPin()` returns non-null): a FIXED
+ *     `FastembedProcessPool` at exactly that size, no adaptation — an
+ *     operator who set this has already judged their model's footprint and
+ *     the box's headroom; adaptive sizing would second-guess that judgement.
+ *   - DEFAULT (no override): an `AdaptiveFastembedProcessPool` starting at
+ *     `minSize: 1` (the topology real measurement shows wins below ~20
+ *     concurrency) and growing toward `resolveFastembedPoolCeiling()` (the
+ *     SAME ceiling `FastembedProcessPool` used to apply unconditionally)
+ *     only under sustained demand — see that class's doc comment for the
+ *     full measurement and hysteresis policy (BUG-MEMORY-EMBED-HEAD-OF-LINE-
+ *     BLOCKING-001's original qdepth-11+ production regime is exactly the
+ *     sustained-demand case this still grows to meet; the difference is it
+ *     no longer pays that pool's cost on every LOWER-concurrency request
+ *     too).
+ *
+ * Every existing caller keeps working unchanged either way — both classes
+ * implement the same `SharedFastembedClient` shape (`request()`/
+ * `terminate()`/`started`). Setting `SOX_EMBED_POOL_SIZE=1` recovers the
+ * exact pre-BL-575 (and pre-pool) single-child topology.
  */
 export function getSharedFastembedProcess(): SharedFastembedClient {
-  if (!_singleton) _singleton = new FastembedProcessPool(resolveFastembedPoolSize());
+  if (_singleton) return _singleton;
+  const pin = resolveFastembedPoolPin();
+  _singleton =
+    pin !== null
+      ? new FastembedProcessPool(pin)
+      : new AdaptiveFastembedProcessPool({ minSize: 1, maxSize: resolveFastembedPoolCeiling() });
   return _singleton;
 }
 
