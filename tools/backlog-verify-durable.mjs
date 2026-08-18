@@ -156,13 +156,42 @@ const TSHM_SKEW_THRESHOLD_MS = 60_000;
  * existed to catch. Under-reporting is only the safe direction while the report
  * stays actionable.
  *
- * THE SIGNAL THAT ACTUALLY MATTERS
+ * WHY -tshm MTIME SKEW IS ALSO THE WRONG SIGNAL (BUG-021)
  *
- * The writes were lost to a stale-`-tshm` reconciliation discarding frames the
- * shared WAL still held. That condition is directly observable: the WAL-index
- * sidecar's mtime falling behind the WAL's own. The store itself already emits
- * it as `store.integrity.sidecar_stale` against a 60s threshold. Skew, not
- * size, is the danger indicator.
+ * This function then judged danger by `-tshm` mtime skew, on the reasoning
+ * that the lost writes died to a stale-sidecar reconciliation and that the
+ * store emits `store.integrity.sidecar_stale` for exactly that. That was
+ * wrong, and wrong in the same shape as the WAL-size signal it replaced.
+ *
+ * Under multiprocess WAL the tshm mtime FREEZES at file creation: a LIVE,
+ * healthy sidecar reads as arbitrarily "stale" the moment a peer's writes
+ * advance the -wal mtime past the threshold. BUG-021 established this and
+ * demoted the skew log line to INFORMATIONAL ONLY inside the adapter, where
+ * content-deadness (`isTshmContentDead`) is now the ONLY rename gate — a
+ * content-live sidecar is NEVER renamed, however large the skew.
+ *
+ * So skew cannot discriminate a healthy busy store from a dangerous one, and
+ * a verifier keyed on it reports AT_RISK ("Do NOT trust this write") for
+ * every long-lived multiprocess store, permanently. Measured 2026-08-18
+ * against the live backlog store: skew 6004s, verdict AT_RISK — while an
+ * independent fresh open of a byte-copy of that store CONTAINED the write in
+ * question, i.e. the write was durable and the verdict was false.
+ *
+ * That is the precise failure this file's own comment above warns about: a
+ * check that can never pass in normal operation is not conservative, it is
+ * noise, and it gets ignored. Skew is therefore reported as CONTEXT, never as
+ * a verdict.
+ *
+ * WHAT THIS TOOL CAN HONESTLY ASSERT
+ *
+ * Without opening the store it can prove the thing that actually matters and
+ * was actually failing: that the row is READABLE FROM A SEPARATE PROCESS.
+ * That is what catches a phantom write — a success response confirmed out of
+ * the writer's own uncheckpointed WAL for a row that will never exist. Frames
+ * sitting in the shared WAL are on disk and replay on the next open; they are
+ * durable, and TRUNCATE deferring under live peers is expected, not a fault.
+ * The reconciliation that discarded frames is prevented at the source by the
+ * BUG-021 content-deadness gate, not by anything this tool can observe.
  */
 function walState(storePath) {
   const wal = `${storePath}-wal`;
@@ -181,7 +210,9 @@ function walState(storePath) {
     }
 
     const skewMs = walStat.mtimeMs - statSync(tshm).mtimeMs;
-    return { known: true, bytes, frames, skewMs, stale: skewMs > TSHM_SKEW_THRESHOLD_MS };
+    // `stale` is deliberately NOT derived from skew — see BUG-021 above.
+    // Skew is carried only so the report can state it as context.
+    return { known: true, bytes, frames, skewMs, stale: false };
   } catch (err) {
     return { known: false, reason: String(err?.message ?? err).slice(0, 160) };
   }
@@ -222,16 +253,6 @@ function main() {
     verdict = 'UNKNOWN';
     exit = 2;
     reason = `item read back, but WAL state unknown (${after.reason}) — cannot rule out an unflushed write`;
-  } else if (after.stale) {
-    // The one genuinely dangerous state: frames outstanding AND the sidecar
-    // lagging past the store's own staleness threshold — the shape of the
-    // reconciliation that discarded the lost writes.
-    verdict = 'AT_RISK';
-    exit = 2;
-    reason =
-      `item read back, but the WAL holds ${after.bytes} bytes of frames while the -tshm sidecar is ` +
-      `${Math.round(after.skewMs / 1000)}s stale (threshold ${TSHM_SKEW_THRESHOLD_MS / 1000}s) — ` +
-      `this is the stale-sidecar reconciliation window in which acked writes have been discarded. Do NOT trust this write.`;
   } else if (after.frames) {
     // Committed, cross-process visible, sidecar healthy. The frames live in the
     // shared WAL rather than the main database — which is the NORMAL steady
@@ -240,8 +261,9 @@ function main() {
     verdict = 'COMMITTED';
     exit = 0;
     reason =
-      `read from a separate process; ${after.bytes} bytes of frames are in the shared WAL with a healthy ` +
-      `sidecar (skew ${Math.round(after.skewMs / 1000)}s) — the write is committed and cross-process visible. ` +
+      `read from a separate process; ${after.bytes} bytes of frames are in the shared WAL ` +
+      `(-tshm mtime skew ${Math.round(after.skewMs / 1000)}s — CONTEXT ONLY, not a fault: the tshm mtime ` +
+      `freezes at creation under multiprocess WAL, see BUG-021) — the write is committed and cross-process visible. ` +
       `The WAL file stays non-empty because TRUNCATE is quiescence-gated and defers while peers hold the store; ` +
       `that is expected, not a fault.`;
   } else {
@@ -263,7 +285,12 @@ function main() {
   if (asJson) {
     console.log(JSON.stringify(result, null, 2));
   } else {
-    const mark = verdict === 'DURABLE' ? '✓' : verdict === 'NOT_FOUND' ? '✗' : '⚠';
+    // COMMITTED is a PASS (exit 0) and must not render with a warning glyph —
+    // a passing verdict that looks like a warning gets read as a problem, and
+    // the reader learns to discount the tool. Only genuinely unresolved states
+    // (UNKNOWN) warn; NOT_FOUND fails.
+    const mark =
+      verdict === 'DURABLE' || verdict === 'COMMITTED' ? '✓' : verdict === 'NOT_FOUND' ? '✗' : '⚠';
     console.log(`${mark} ${verdict} — ${repo}/${humanId}`);
     console.log(`  ${reason}`);
     if (verdict !== 'DURABLE') {
