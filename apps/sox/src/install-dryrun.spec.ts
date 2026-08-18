@@ -91,9 +91,18 @@ describe('soxe install --dry-run (declarative path)', () => {
     expect(r.stdout).toContain(path.join(workspace, '.opencode', 'skills', 'dryrun-skill'));
     expect(r.stdout).toContain('no files written');
 
-    // Nothing was created: no placement, no data-root ledger/ownership.
+    // Nothing INSTALL-related was created: no placement, no data-root
+    // ledger/ownership index. `sox/` is the one expected exception — BL-511's
+    // telemetry composition root durably logs every `soxe` invocation
+    // (including this dry-run) under `<dataHome>/sox/logs/`, unconditionally,
+    // before cmdInstall's dry-run gate is even reached. That is deliberate,
+    // structural behaviour (a composition root that can be silently skipped
+    // by a code path is exactly the BL-404 failure this fix closes) — it is
+    // not a ledger/ownership write and does not indicate `--dry-run` failed
+    // to gate the install itself.
     expect(fs.existsSync(path.join(workspace, '.opencode'))).toBe(false);
-    expect(fs.readdirSync(dataHome)).toEqual([]);
+    expect(fs.readdirSync(dataHome)).toEqual(['sox']);
+    expect(fs.readdirSync(path.join(dataHome, 'sox'))).toEqual(['logs']);
   });
 
   it('the SAME command without --dry-run DOES place the skill (flag is the gate)', () => {

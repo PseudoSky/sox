@@ -16,7 +16,8 @@
   },
   "devDependencies": {
     "@adhd/sox-memory-core": "workspace:*",
-    "@adhd/sox-store-adapter": "workspace:*"
+    "@adhd/sox-store-adapter": "workspace:*",
+    "@adhd/sox-telemetry": "workspace:*"
   },
   "dependencies": {
     "@tursodatabase/database": "^0.7.1"
