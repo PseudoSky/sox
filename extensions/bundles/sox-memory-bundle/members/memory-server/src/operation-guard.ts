@@ -53,20 +53,54 @@ export const DEADLINE_ENV: Record<OperationClass, string> = {
 };
 
 /**
- * Defaults. `connect` and `read`/`mutate` are generous relative to their
- * documented nominal cost (recall is <50ms nominal; `openDb` should be
- * near-instant) while still tolerating real contention — the incident's
- * store sat blocked for 24+ minutes, so even a "generous" 30-45s deadline is
- * a two-orders-of-magnitude improvement over "never".
+ * Defaults. `connect` and `read` are generous relative to their documented
+ * nominal cost (recall is <50ms nominal; `openDb` should be near-instant)
+ * while still tolerating real contention — the incident's store sat blocked
+ * for 24+ minutes, so even a "generous" 30s deadline is a two-orders-of-
+ * magnitude improvement over "never".
  *
- * `write` must clear the measured embed max (109089ms) with real margin:
- * 150000ms (150s) leaves ~41s of headroom above the single worst embed
- * observed in 11 days of production telemetry (n=3769).
+ * `write` must clear the measured embed max with real margin: 150000ms
+ * (150s) leaves ~41s of headroom above the single worst embed observed in
+ * production (109089ms).
+ *
+ * BL-576 (2026-08-17 re-verification): the 109089ms max is corroborated by a
+ * FRESH, larger pull of the same real telemetry source
+ * (`fastembed_process.request.finish`'s `response_ms`, emitted by
+ * `SharedFastembedProcessClient.request()` in `embedding-provider` —
+ * `~/.adhd/sox-ecosystem/memory-server/logs/memory-server.live-service-*.jsonl`,
+ * n=3873 spanning 2026-08-05..2026-08-17): p50=985ms p90=5532ms p95=12350ms
+ * p99=38283ms max=109089ms — max matches exactly. This distribution is
+ * genuine, uncensored production queueing latency (real head-of-line
+ * blocking behind the shared fastembed child process), NOT a `mutate`- or
+ * `write`-deadline artifact: `response_ms` is measured entirely inside
+ * `request()`, which `withOperationDeadline` never cancels, so it keeps
+ * timing the real underlying call to its real completion regardless of
+ * whether the MCP caller was already told the operation timed out. Of 3873
+ * samples, only 1 falls in the [43000,46000]ms band that a right-censoring
+ * artifact at a ~45s ceiling would pile up against — the tail continues
+ * smoothly past it out to 109089ms. See `operation-guard.spec.ts`'s
+ * `describe('BL-576 ...')` block for the full write-up, a controlled
+ * experiment proving the abstract censoring mechanism IS real when a
+ * consumer naively times the guard's own caller-facing promise (which this
+ * file does NOT do for its own `slow_finished`/`timeout` telemetry — see
+ * `censored` below), and the reconciliation applied here.
+ *
+ * `mutate` was 45000ms. No currently-classified `mutate` tool embeds
+ * (`toolOperationClass` in `index.ts` routes every write-capable tool —
+ * `memory_write`, `memory_write_batch`, `memory_update` — to `write`, not
+ * `mutate`; verified unchanged since this file's creation). But `mutate` is
+ * the documented fallback for any FUTURE unclassified tool specifically
+ * "in case it embeds" (see `toolOperationClass`'s doc comment in `index.ts`)
+ * — a fallback that was not actually safe against the real embed tail above
+ * (109089ms > 45000ms). Raised to 120000ms: clears the measured max with
+ * ~11s of real margin while staying meaningfully tighter than `write`'s
+ * 150000ms, preserving the intended distinction between "might occasionally
+ * embed" (mutate) and "routinely embeds synchronously" (write).
  */
 const DEFAULT_DEADLINE_MS: Record<OperationClass, number> = {
   connect: 30_000,
   read: 30_000,
-  mutate: 45_000,
+  mutate: 120_000,
   write: 150_000,
 };
 
@@ -111,12 +145,26 @@ export class StoreOperationTimeoutError extends Error {
   readonly opName: string;
   readonly timeoutMs: number;
   readonly dbPath: string | undefined;
+  /**
+   * BL-576: always `true`. A positive marker (not just "absence of a real
+   * value") that `timeoutMs` — the only duration this error carries — is a
+   * CEILING, not a measurement: the underlying call had not settled when
+   * this rejected, so `timeoutMs` says nothing about how long the real work
+   * actually took. Any caller that logs or aggregates durations off this
+   * error (rather than off a genuine completion) MUST check this flag and
+   * exclude the sample from a percentile — mixing it in silently reproduces
+   * exactly the right-censoring artifact BL-576 investigated. See the
+   * `censored` field on the paired `store.operation.timeout` log line for
+   * the same guarantee at the telemetry layer.
+   */
+  readonly censored = true as const;
 
   constructor(opClass: OperationClass, opName: string, timeoutMs: number, dbPath: string | undefined) {
     super(
       `store operation "${opName}" (class=${opClass}) exceeded its ${timeoutMs}ms deadline — ` +
         'the underlying store call is still outstanding (BUG-MEMORYSERVER-WEDGES-SILENTLY-NO-SELF-RECOVERY-001); ' +
-        'this request failed fast instead of hanging the process.',
+        'this request failed fast instead of hanging the process. timeoutMs is a CEILING, not a ' +
+        'measurement — see the `censored` field.',
     );
     this.name = 'StoreOperationTimeoutError';
     this.opClass = opClass;
@@ -151,12 +199,40 @@ export interface OperationDeadlineOptions {
  * Race `fn()` against a per-class deadline. On timeout: logs LOUDLY
  * (`store.operation.timeout`, level error) and rejects with a
  * `StoreOperationTimeoutError` — the caller gets a typed, traced failure
- * instead of an indefinite hang. `fn()` itself is NOT cancelled (JS/the
- * underlying driver offers no such primitive for a blocked native call) —
- * it keeps running in the background; if it later settles, that is logged
- * too (`store.operation.completed_after_timeout` /
+ * instead of an indefinite hang.
+ *
+ * BL-576 — cancellation and censoring. `fn()` is NOT force-killed (JS/the
+ * underlying native driver offers no such primitive for a call already
+ * blocked in it) — but as of this fix `fn` receives an `AbortSignal`,
+ * aborted the instant the deadline fires, so any callee built on an
+ * abortable primitive (an abortable `fetch`, or `embedding-provider`'s
+ * `SharedFastembedProcessClient.request()`, which now honours an external
+ * signal) genuinely stops waiting and frees its own bookkeeping instead of
+ * riding the timeout out. Every call site in this codebase today still
+ * passes a 0-arg `() => Promise<T>` — that stays valid: TS accepts a
+ * narrower-arity function wherever a signal parameter is expected, so this
+ * is a non-breaking widening, not a rename. If a callee genuinely cannot
+ * honour the signal (most native driver calls today), it keeps running in
+ * the background exactly as before; if it later settles, that is logged too
+ * (`store.operation.completed_after_timeout` /
  * `store.operation.failed_after_timeout`) so a recurrence of this exact
- * incident shape is diagnosable from the log instead of `lsof`+`ps`.
+ * incident shape is diagnosable from the log instead of `lsof`/`ps`.
+ *
+ * Every timeout-path telemetry record and the `StoreOperationTimeoutError`
+ * itself carry `censored: true` — a positive, machine-checkable marker that
+ * `elapsed_ms`/`timeoutMs` on THAT record is a ceiling the caller gave up
+ * at, not a real completion time. A percentile computed by pooling
+ * `store.operation.timeout` samples together with genuine
+ * `store.operation.slow_finished`/completion samples would reproduce
+ * exactly the right-censoring artifact BL-576 set out to find; this flag is
+ * the guard against a future consumer doing that by accident. (BL-576's own
+ * investigation found the codebase's actual embed-latency percentile source
+ * — `fastembed_process.request.finish`'s `response_ms`, read by
+ * `tools/scorecard.mjs` — is measured from inside the un-cancelled `fn()`
+ * itself, decoupled from this deadline entirely, and is therefore NOT
+ * subject to this artifact; see `operation-guard.spec.ts`'s
+ * `describe('BL-576 ...')` for the full mechanism proof and the production
+ * evidence that refutes it as the source of the previously-suspected p99.)
  *
  * Any operation that takes >= the slow-op threshold (default 3s, well under
  * every deadline above) is logged on completion with its duration, whether
@@ -167,7 +243,7 @@ export interface OperationDeadlineOptions {
  * the log before it resolves, not just after.
  */
 export function withOperationDeadline<T>(
-  fn: () => Promise<T>,
+  fn: (signal: AbortSignal) => Promise<T>,
   opts: OperationDeadlineOptions,
 ): Promise<T> {
   const { opClass, opName, dbPath, extraFields } = opts;
@@ -177,6 +253,7 @@ export function withOperationDeadline<T>(
 
   let settled = false;
   let timedOut = false;
+  const abortController = new AbortController();
 
   const baseFields = (): Record<string, unknown> => ({
     op_class: opClass,
@@ -201,15 +278,26 @@ export function withOperationDeadline<T>(
       if (settled) return;
       timedOut = true;
       const elapsedMs = Date.now() - startedAt;
-      log.error('store.operation.timeout', { ...baseFields(), timeout_ms: timeoutMs, elapsed_ms: elapsedMs });
-      reject(new StoreOperationTimeoutError(opClass, opName, timeoutMs, dbPath));
+      // BL-576: `elapsed_ms` here always sits at ~`timeoutMs` by
+      // construction (this timer fired at `timeoutMs`) — `censored: true`
+      // says so explicitly rather than leaving that inferable only from
+      // the event name.
+      log.error('store.operation.timeout', {
+        ...baseFields(),
+        timeout_ms: timeoutMs,
+        elapsed_ms: elapsedMs,
+        censored: true,
+      });
+      const timeoutError = new StoreOperationTimeoutError(opClass, opName, timeoutMs, dbPath);
+      abortController.abort(timeoutError);
+      reject(timeoutError);
     }, timeoutMs);
     if (typeof deadlineTimer.unref === 'function') deadlineTimer.unref();
   });
 
   const work = (async (): Promise<T> => {
     try {
-      const result = await fn();
+      const result = await fn(abortController.signal);
       settled = true;
       clearTimeout(slowStillRunningTimer);
       clearTimeout(deadlineTimer);
@@ -219,6 +307,9 @@ export function withOperationDeadline<T>(
         // itself the exact diagnosability gap the incident report asked for:
         // proof the underlying call eventually returns (or doesn't), landed
         // in the durable log rather than requiring `lsof`/`ps` next time.
+        // This IS a genuine (uncensored) completion time — the work really
+        // did take `elapsed_ms` — it is just arriving after the caller
+        // already moved on; do not tag it `censored`.
         log.warn('store.operation.completed_after_timeout', { ...baseFields(), elapsed_ms: elapsedMs });
       } else if (elapsedMs >= slowThresholdMs) {
         log.warn('store.operation.slow_finished', { ...baseFields(), elapsed_ms: elapsedMs });
