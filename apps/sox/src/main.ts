@@ -64,6 +64,8 @@ import {
   resolveUnitNodePath,
   restartAndVerify,
   restartOsUnit,
+  // BL-593/§9.4b: `soxe service update` — enable + verified rotation check.
+  updateOsUnit,
   singletonKey,
   socketDir,
   socketOwnerPids,
@@ -4917,21 +4919,23 @@ Usage:
   ${CLI} service enable  <ext> [-s <scope>]   Generate + load an OS unit (reboot persistence)
   ${CLI} service disable <ext> [-s <scope>]   Unload + remove the unit; reap any survivor
   ${CLI} service restart <ext> [-s <scope>]   Deploy the on-disk bundle to the RUNNING process
+  ${CLI} service update  <ext> [-s <scope>]   Reconcile config/node-path drift, verified
   ${CLI} service status  <ext> [-s <scope>]   Show the unit state reconciled with sox
   ${CLI} service list                          All sox-owned OS units across scopes
 
 Options:
   -s, --scope <scope>     Scope: org | user | project | local  (default: user)
-  --dry-run               enable: render + write the unit but do NOT load it (no launchctl)
+  --dry-run               enable/update: render + write the unit but do NOT load it
+                          (no launchctl); update: also skips the rotation-verify step
   --unit-dir <dir>        Override the unit directory (also SOX_OS_UNIT_DIR) — for testing
   --supervisor <kind>     Force 'launchd' or 'systemd' (default: per-platform)
   --node-path <path>      Override the pinned node binary baked into the unit
   --allow-volatile-node   Proceed even if the pinned node is under nvm/asdf/volta
-  --unset <key>[,<key>]   enable: acknowledge dropping previously-set shell-sourced env
-                          key(s) that this invocation's shell no longer exports
+  --unset <key>[,<key>]   enable/update: acknowledge dropping previously-set shell-sourced
+                          env key(s) that this invocation's shell no longer exports
                           (BL-375 [inv:env-preserved-on-regenerate]) — named keys only,
                           no blanket bypass
-  --wait-ms <ms>          restart: how long to wait for the pid to rotate (default 15000)
+  --wait-ms <ms>          restart/update: how long to wait for the pid to rotate (default 15000)
   --help                  Show this message
 
 'service restart' is BL-372 / spec §9.4a's [inv:deploy-verified]: it kickstarts the
@@ -4940,6 +4944,13 @@ reaps any survivor by identity so a zero-downtime proxy-mode backend (§9.5) tha
 kickstart alone leaves running the OLD bundle is forced to respawn on the NEW one.
 It exits non-zero if the pid did not actually rotate — a green kickstart exit code is
 NOT evidence of a deploy.
+
+'service update' is BL-593 / spec §9.4b: 'enable' (idempotent, content-addressed)
+followed by a verified rotation check whenever that changed anything — the single
+documented verb for "reconcile this unit to whatever the config cascade / node-path
+resolution says right now, verified." Use 'restart' for a pure code deploy; use
+'update' for a config/node-path change (a manual disable→enable pair is strictly
+worse than both — see §9.4b for why).
 
 OS units are GENERATED from the manifest; hand-editing them is unsupported.
 `);
@@ -5105,6 +5116,11 @@ OS units are GENERATED from the manifest; hand-editing them is unsupported.
     return;
   }
 
+  if (sub === 'update') {
+    await cmdServiceUpdate(extId, scope, root, flags);
+    return;
+  }
+
   if (sub === 'status') {
     const ctx = resolveOsUnitContext(extId, scope, root, flags);
     const platform = ctx?.platform ?? getOsUnitPlatform(
@@ -5149,7 +5165,7 @@ OS units are GENERATED from the manifest; hand-editing them is unsupported.
     process.exit(0);
   }
 
-  process.stderr.write(`${CLI} service: unknown subcommand '${sub}' (enable|disable|restart|status|list)\n`);
+  process.stderr.write(`${CLI} service: unknown subcommand '${sub}' (enable|disable|restart|update|status|list)\n`);
   process.exit(1);
 }
 
@@ -5248,6 +5264,145 @@ async function cmdServiceRestart(
   process.stdout.write(
     `${CLI} service restart: '${label}' deployed — pid(s) rotated ` +
     `([${result.before.join(', ') || '(none)'}] -> [${result.after.join(', ')}])\n`,
+  );
+  process.exit(0);
+}
+
+/**
+ * `soxe service update <ext>` — BL-593 / docs/spec/service-lifecycle.md §9.4b.
+ *
+ * Reconciles a unit to whatever the config cascade / node-path resolution says
+ * RIGHT NOW, verified. `update` = `enable` (§9.3, unchanged, idempotent,
+ * content-addressed, `[inv:env-preserved-on-regenerate]`-guarded) followed by a
+ * verified rotation check whenever the enable step's content actually changed,
+ * reusing the exact `restartAndVerify` machinery `service restart`/§9.4a already
+ * uses — not a second, independently-invented verification path.
+ *
+ * This is the single documented verb for BOTH intents the manual
+ * `disable` → `enable` pair used to serve worse:
+ *   - a **code** deploy: use `service restart` instead — `[inv:deploy-verified]`
+ *     pid-rotation, no unit rewrite.
+ *   - a **config/node-path** change: `update` recomputes the unit fresh (same as
+ *     `enable`) and, if that changed anything, forces + verifies the RUNNING
+ *     process — including a proxy-mode mcp-server's independently detached
+ *     BACKEND, which a bare unit reload does not, by itself, make re-read a
+ *     changed env var — actually rotated. A rewritten unit file is not, by
+ *     itself, evidence of that (the same class of false-positive §9.4a already
+ *     closed for code changes).
+ *
+ * Exits non-zero when: the BL-375 dropped-env guard blocks the regeneration, OR
+ * the unit content changed but no pid rotated within `--wait-ms`.
+ */
+async function cmdServiceUpdate(
+  extId: string,
+  scope: string,
+  root: string,
+  flags: Record<string, string>,
+): Promise<void> {
+  const pathM = require('node:path') as typeof import('node:path');
+
+  const ctx = resolveOsUnitContext(extId, scope, root, flags);
+  if (!ctx) {
+    process.stderr.write(
+      `${CLI} service update: '${extId}' not installed at scope '${scope}', or no entrypoint\n`,
+    );
+    process.exit(1);
+  }
+
+  // §9.2 / Appendix B item 3 — node-path human ack for a VOLATILE node, same
+  // gate `enable` applies (`update` re-resolves the node path fresh every call).
+  if (ctx.nodeRes.volatile) {
+    process.stderr.write(`${CLI} service update: WARNING — ${ctx.nodeRes.volatileReason}\n`);
+    if (ctx.nodeRes.preferredNonVolatile) {
+      process.stderr.write(
+        `  A non-volatile node is available at ${ctx.nodeRes.preferredNonVolatile}; ` +
+        `re-run with --node-path=${ctx.nodeRes.preferredNonVolatile} to pin it.\n`,
+      );
+    }
+    if (flags['allow-volatile-node'] === undefined) {
+      process.stderr.write(
+        `  Refusing to pin a volatile node. Re-run with --allow-volatile-node to proceed anyway, ` +
+        `or --node-path=<stable node>.\n`,
+      );
+      process.exit(1);
+    }
+  }
+
+  const { platform, entrypoint } = ctx;
+  const dryRun = flags['dry-run'] !== undefined;
+  const unitDir = resolveOsUnitDir(flags, platform);
+  const unsetKeys = (flags['unset'] ?? '').split(',').map((s) => s.trim()).filter((s) => s.length > 0);
+
+  const waitMsRaw = flags['wait-ms'] ?? process.env['SOX_SERVICE_RESTART_WAIT_MS'];
+  const waitMsParsed = waitMsRaw !== undefined ? Number(waitMsRaw) : NaN;
+  const waitMs = Number.isFinite(waitMsParsed) && waitMsParsed >= 0 ? waitMsParsed : 15000;
+
+  // Identity token catches the BACKEND even in proxy mode — the backend always
+  // execs `entrypoint` directly regardless of whether the unit itself runs the
+  // front-shim (§8.1a); for a direct-mode service the token IS the managed
+  // process (§9.4b design, "For a direct-mode service...").
+  const token = identityToken(entrypoint);
+
+  const result = await updateOsUnit(ctx.spec, platform, {
+    unitDir,
+    load: !dryRun,
+    log: (m: string) => process.stdout.write(`sox: ${m}\n`),
+    unsetKeys,
+    token,
+    waitMs,
+    excludePids: [process.pid],
+  });
+
+  if (result.action === 'blocked') {
+    // enableFn already logged the detailed dropped-key message via the
+    // injected `log` callback above — nothing further to print.
+    process.exit(1);
+  }
+
+  // Record/refresh the os-unit ownership entry exactly like `enable` does
+  // ([inv:reversible-injection], §9.4) — `update` is `enable` reused as-is for
+  // this half of its contract, dry-run included (matches `enable`'s own
+  // unconditional record-on-any-outcome behavior above).
+  try {
+    const own = OwnershipIndex.loadFromFile(pathM.join(dataRoot(scope as DataScope, root), 'ownership.json'));
+    own.addEntries(extId, scope, [{
+      kind: 'os-unit',
+      label: ctx.spec.label,
+      unitPath: result.enableResult.unitPath,
+      supervisor: platform.kind,
+      appliedHash: result.enableResult.contentHash,
+    }]);
+    own.save();
+  } catch (e) {
+    process.stderr.write(`sox: warning: could not record os-unit ownership: ${String(e)}\n`);
+  }
+
+  if (result.action === 'unchanged') {
+    process.stdout.write(`${CLI} service update: '${ctx.spec.label}' — no change, nothing to reconcile\n`);
+    process.exit(0);
+  }
+
+  if (dryRun) {
+    process.stdout.write(
+      `${CLI} service update: '${ctx.spec.label}' — (--dry-run) content would be ${result.action}\n` +
+      `  unit:       ${result.enableResult.unitPath}\n` +
+      `  content:    ${result.enableResult.contentHash}\n` +
+      `  a live run would verify pid '${token}' rotates within --wait-ms=${waitMs}\n`,
+    );
+    process.exit(0);
+  }
+
+  if (!result.ok || !result.restart) {
+    process.stderr.write(
+      `${CLI} service update: FAILED — unit ${result.action} but the config change could NOT be ` +
+      `verified live (${result.reason ?? 'unknown reason'}). See docs/spec/service-lifecycle.md §9.4b.\n`,
+    );
+    process.exit(1);
+  }
+
+  process.stdout.write(
+    `${CLI} service update: '${ctx.spec.label}' updated — config change verified live ` +
+    `(pid rotated [${result.restart.before.join(', ') || '(none)'}] -> [${result.restart.after.join(', ')}])\n`,
   );
   process.exit(0);
 }

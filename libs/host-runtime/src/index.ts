@@ -240,6 +240,8 @@ export {
   unloadThenReap,
   // BL-372/§9.4a: `[inv:deploy-verified]` — kickstart + verify pid rotation.
   restartAndVerify,
+  // BL-593/§9.4b: `soxe service update` — enable + verified rotation check.
+  updateOsUnit,
   // BL-185: interval-schedule detection for SCHEDULED status rendering.
   isScheduledOsUnitContent,
   isScheduledOsUnit,
@@ -262,6 +264,8 @@ export type {
   RestartMatch,
   RestartAndVerifyOptions,
   RestartAndVerifyResult,
+  UpdateOsUnitOptions,
+  UpdateOsUnitResult,
 } from './os-unit.js';
 
 // ─── Global Supervisor Registry (R1) ─────────────────────────────────────────
