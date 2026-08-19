@@ -166,30 +166,71 @@ export async function handleBackendRequest(
 // (no `SOX_CONFIG_STOP_TIMEOUT_MS` override) value without invoking the
 // function themselves.
 export const SHUTDOWN_SAFETY_NET_MS = computeShutdownSafetyNetMs();
-// (BL-405) The pre-restart VACUUM INTO backup is best-effort ONLY — it is not
-// required for durability (step 2 below, the WAL checkpoint, already gives
-// that per BL-330) and a full compacting copy of a large store is legitimately
-// unbounded I/O. It must never be allowed to consume the shutdown's share of
-// the reaper's grace window, so it races its own timeout and is abandoned
-// (not awaited to completion) if it's still running past this bound.
-export const SHUTDOWN_BACKUP_TIMEOUT_MS = 2500;
+// (BL-405, BUG-018 rebalanced) The pre-restart VACUUM INTO backup is
+// best-effort ONLY — it is not required for durability (step 2 below, the
+// WAL checkpoint, already gives that per BL-330) and a full compacting copy
+// of a large store is legitimately unbounded I/O. It must never be allowed
+// to consume the shutdown's share of the reaper's grace window, so it races
+// its own timeout and is abandoned (not awaited to completion) if it's
+// still running past this bound.
+//
+// (BUG-018) Was 2500. `SPEC-BL-472.md` Decision D1 already did the
+// arithmetic and found `SHUTDOWN_EMBED_DRAIN_TIMEOUT_MS` (750) + the
+// underlying fastembed-process TERMINATE_GRACE_MS (1000, real background
+// cost of step 1's own still-running loser promise) + this constant (2500)
+// summed to 4250 — MORE than `SHUTDOWN_SAFETY_NET_MS` (4000) — and knowingly
+// accepted it, reasoning the safety net would "force-exit that pathological
+// case cleanly." That is wrong: an `exit(0)` fired by the safety net WHILE
+// step 2 (`closeAllAdapters()`'s `PRAGMA wal_checkpoint(TRUNCATE)`) is still
+// in flight skips the exact ceremony BUG-018 exists to protect — it is not
+// "clean" merely because it isn't a crash. Reproduced live with real
+// multi-process fastembed/CoreML contention (BL-331): total
+// `coordinatedShutdown` wall-clock ranged 2.4s-5.4s across five real trials,
+// one of which exceeded the reaper's own 5000ms grace outright. This
+// constant is cut to 900 — still generous for a best-effort, non-durability
+// operation that runs AFTER the real checkpoint has already completed — so
+// the three best-effort budgets combined (see
+// `bug018-shutdown-budget-headroom.spec.ts`) leave real, measured-informed
+// headroom under `SHUTDOWN_SAFETY_NET_MS` for the checkpoint instead of
+// exceeding the whole envelope before it even runs.
+export const SHUTDOWN_BACKUP_TIMEOUT_MS = 900;
 
-// (BL-472) Bounded best-effort drain for in-flight Phase-B embed work AND any
-// in-flight background heal/drain pass, before shutdown tears down the
-// shared embed workers / adapter. See Decision D1 for the budget
-// derivation. Deliberately smaller than SHUTDOWN_BACKUP_TIMEOUT_MS: this
-// step runs FIRST, before every other shutdown step, so a generous budget
-// here starves everything after it of the SHUTDOWN_SAFETY_NET_MS envelope.
-export const SHUTDOWN_EMBED_DRAIN_TIMEOUT_MS = 750;
+// (BL-472, BUG-018 rebalanced) Bounded best-effort drain for in-flight
+// Phase-B embed work AND any in-flight background heal/drain pass, before
+// shutdown tears down the shared embed workers / adapter. See Decision D1
+// for the ORIGINAL budget derivation (750). Deliberately smaller than
+// `SHUTDOWN_BACKUP_TIMEOUT_MS` used to be: this step runs FIRST, before
+// every other shutdown step, so a generous budget here starves everything
+// after it of the `SHUTDOWN_SAFETY_NET_MS` envelope.
+//
+// (BUG-018) Cut from 750 to 500. Every real repro trial (see
+// `bug018-shutdown-budget-headroom.spec.ts`'s doc comment) hit this bound's
+// FULL duration under real write/embed load — it is a guaranteed-eaten cost
+// on every shutdown with any in-flight embed activity, not a rare edge case.
+// The work this step is protecting is explicitly recoverable
+// (`healMissingVectors()` re-embeds anything discarded here on the next
+// process, per BL-472's own design) — durability of the checkpoint (step 2,
+// which this budget was starving) is not. 500ms remains comfortably above
+// ONNX's documented warm-path latency (~50-100ms, `embed-pipeline.ts:5-8`)
+// while giving the checkpoint real headroom.
+export const SHUTDOWN_EMBED_DRAIN_TIMEOUT_MS = 500;
 
-// (BL-592 §8.1a part C) Step 1 (terminateEmbedWorkers()) was previously a bare
-// unbounded `await` — Node timers are not blocked by a *pending* promise, so the
-// overall SHUTDOWN_SAFETY_NET_MS backstop should still catch a stall here, but a
-// future change that makes worker .terminate() do synchronous work (or a native
-// binding that blocks the thread) would have had no PER-STEP backstop, only the
-// whole-sequence one — and no log line to attribute a stall to this step
-// specifically. Bounded symmetrically with step 0's own 750ms race.
-export const SHUTDOWN_EMBED_TERMINATE_TIMEOUT_MS = 750;
+// (BL-592 §8.1a part C, BUG-018 rebalanced) Step 1 (terminateEmbedWorkers())
+// was previously a bare unbounded `await` — Node timers are not blocked by a
+// *pending* promise, so the overall SHUTDOWN_SAFETY_NET_MS backstop should
+// still catch a stall here, but a future change that makes worker
+// .terminate() do synchronous work (or a native binding that blocks the
+// thread) would have had no PER-STEP backstop, only the whole-sequence one —
+// and no log line to attribute a stall to this step specifically.
+//
+// (BUG-018) Cut from 750 to 500, symmetric with step 0's own reduction —
+// same rationale: this step's OWN race gives up at this bound, but the
+// underlying `terminateEmbedWorkers()` promise keeps running as a background
+// loser (Node's `Promise.race` never cancels it), continuing to consume
+// real CPU/IO concurrently with step 2. Shrinking the FOREGROUND wait this
+// step blocks on frees more of `SHUTDOWN_SAFETY_NET_MS` for the checkpoint
+// that follows, without changing that background cost.
+export const SHUTDOWN_EMBED_TERMINATE_TIMEOUT_MS = 500;
 
 let _shuttingDown = false;
 
