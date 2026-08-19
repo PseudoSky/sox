@@ -62,7 +62,10 @@
   },
   "BUG-022": {
     "cause": "STILL_LOST",
-    "reason": "HANDOFF-20260814.md §C, explicit: 'Still lost, not refilable from session record — these are recovery targets: the first sweep's epics (formerly DEBT-008…014, BUG-022), BUG-029...'. Verified zero matches searching the current graph for any content resembling this item. Do not re-litigate or guess at a replacement id; this is an open recovery target, not a citation bug."
+    "reason": "HANDOFF-20260814.md §C, explicit: 'Still lost, not refilable from session record — these are recovery targets: the first sweep's epics (formerly DEBT-008…014, BUG-022), BUG-029...'. Verified zero matches searching the current graph for any content resembling this item. Do not re-litigate or guess at a replacement id; this is an open recovery target, not a citation bug. ID REUSE (2026-08-18): the graph has since allocated BUG-022 to an unrelated new item ('idle-flush ungated strategy self-perpetuates'). The HANDOFF reference is a historical record of what was destroyed and must keep the original string, so it is disambiguated inline there via the id-reuse table rather than rewritten — see disambiguatedRefs.",
+    "disambiguatedRefs": [
+      "docs/plan/bug014-store-hardening/HANDOFF-20260814.md"
+    ]
   },
   "BUG-029": {
     "cause": "STILL_LOST",
@@ -194,5 +197,19 @@
   "BL-003": {
     "cause": "NOT_A_CITATION",
     "reason": "Same research-session transcript as BL-002 ('BL-003 — Migration tooling: plan for single-tenant to multi-tenant migration path'), logged model output, not an authored citation."
+  },
+  "DEBT-009": {
+    "cause": "STILL_LOST",
+    "reason": "HANDOFF-20260814.md §C lists this id among the first sweep's epics destroyed in the 2026-08-14 data-loss incident ('formerly DEBT-008...014, BUG-022'), explicitly recorded there as not refilable from session record. It appears in tracked source ONLY inside that document's id-reuse table, which exists to warn readers that the graph's counter does not know these ids ever existed and will reuse them. Not yet allocated as of 2026-08-18; when the counter reaches it, this entry becomes a collision and the gate will say so.",
+    "disambiguatedRefs": [
+      "docs/plan/bug014-store-hardening/HANDOFF-20260814.md"
+    ]
+  },
+  "DEBT-014": {
+    "cause": "STILL_LOST",
+    "reason": "HANDOFF-20260814.md §C lists this id among the first sweep's epics destroyed in the 2026-08-14 data-loss incident ('formerly DEBT-008...014, BUG-022'), explicitly recorded there as not refilable from session record. It appears in tracked source ONLY inside that document's id-reuse table, which exists to warn readers that the graph's counter does not know these ids ever existed and will reuse them. Not yet allocated as of 2026-08-18; when the counter reaches it, this entry becomes a collision and the gate will say so.",
+    "disambiguatedRefs": [
+      "docs/plan/bug014-store-hardening/HANDOFF-20260814.md"
+    ]
   }
 }
