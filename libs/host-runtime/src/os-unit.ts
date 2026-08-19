@@ -1564,6 +1564,171 @@ export async function restartAndVerify(opts: RestartAndVerifyOptions): Promise<R
   };
 }
 
+// ─── BL-593: `soxe service update` — reconcile config/node-path drift, verified ──
+
+export interface UpdateOsUnitOptions {
+  /** INJECTABLE unit directory. Defaults to the platform default. Tests pass a temp dir. */
+  unitDir?: string;
+  /** INJECTABLE command runner (both the enable-render/load call AND the restart-verify call). Defaults to realOsExec. */
+  exec?: OsExec;
+  /**
+   * When false, the unit is rendered + (if content changed) written to disk but
+   * NEVER loaded/kickstarted, and NO rotation-verify runs — the `service update
+   * --dry-run` contract (mirrors `enable --dry-run`): "renders the would-be unit
+   * content and reports whether a rotation check WOULD be triggered, without
+   * loading/kickstarting anything." When true (the default live path), a
+   * content change is followed by a verified rotation check.
+   */
+  load?: boolean;
+  log?: (m: string) => void;
+  /** BL-375 D3 passthrough — see `EnableOptions.unsetKeys`. */
+  unsetKeys?: string[];
+  /**
+   * Identity token (the entrypoint path) the post-change rotation check matches
+   * survivors/respawns against — for a proxy-mode mcp-server this is the
+   * BACKEND's entrypoint, not the front-shim's `soxe serve` argv, so the check
+   * catches a backend that survives a bare unit reload as a stale `PPID 1`
+   * orphan (§9.4b gap this verb closes).
+   */
+  token: string;
+  /** How long to wait for a rotated pid to appear (ms). Default 15000 — passed through to `restartAndVerify`. */
+  waitMs?: number;
+  /** Poll interval while waiting (ms). Default 300 — passed through to `restartAndVerify`. */
+  pollMs?: number;
+  excludePids?: number[];
+  /** Injectable: find live pids matching `token`. Defaults to `findOrphansByIdentity`. */
+  findMatches?: RestartAndVerifyOptions['findMatches'];
+  /** Injectable: reap survivors matching `token`. Defaults to `reapByIdentity`. */
+  reapFn?: RestartAndVerifyOptions['reapFn'];
+  /** Injectable clock sleep — tests pass a synchronous fake to run instantly. */
+  sleepFn?: RestartAndVerifyOptions['sleepFn'];
+  /** Injectable seam for `enableOsUnit` — tests substitute a stub to drive every `EnableAction` branch without real fs/launchctl I/O. */
+  enableFn?: typeof enableOsUnit;
+  /** Injectable seam for `restartAndVerify` — tests substitute a stub to drive the rotation-verify branch without real fs/launchctl I/O. */
+  restartFn?: typeof restartAndVerify;
+}
+
+export interface UpdateOsUnitResult {
+  action: EnableAction;
+  enableResult: EnableResult;
+  /** Present only when a rotation-verify check actually ran (content changed AND `load:true`). */
+  restart?: RestartAndVerifyResult;
+  /** True in the `--dry-run` path when the content differs and a live `update` WOULD trigger a rotation check. */
+  wouldRotate?: boolean;
+  /**
+   * True only when: the enable step wasn't `blocked`, AND (nothing changed, OR
+   * this was a dry-run, OR a real rotation check ran and `restart.ok` is true).
+   * A content change under `load:true` that never verifies a rotated pid is
+   * `ok:false` — a rewritten unit is NOT evidence the backend adopted it
+   * ([inv:deploy-verified] extended to config drift, §9.4b).
+   */
+  ok: boolean;
+  /** Set when `ok` is false — why the reconcile could not be verified. */
+  reason?: string;
+}
+
+/**
+ * `docs/spec/service-lifecycle.md` §9.4b (BL-593) — `soxe service update <id>`.
+ *
+ * `service update` = `enableOsUnit` (§9.3, unchanged, reused as-is — idempotent,
+ * content-addressed, `[inv:env-preserved-on-regenerate]`-guarded) FOLLOWED BY a
+ * verified rotation check whenever the enable step's content actually changed,
+ * reusing §9.4a's existing `restartAndVerify` machinery rather than inventing a
+ * second verification path.
+ *
+ * Why a bare re-`enable` is not enough for a proxy-mode mcp-server: `enableOsUnit`
+ * only unloads-then-reloads the UNIT — for a proxy-mode mcp-server the unit's
+ * managed process is the front-shim (§8.1a), not the persistent, independently
+ * detached BACKEND (§8.6/§9.5) that actually holds the tool implementation and
+ * its env. Reloading the shim does not, by itself, force that backend to re-read
+ * a changed env var — it only re-reads its env at its own next (re)spawn, which a
+ * shim reload alone does not trigger. A bare `enable` re-run can therefore report
+ * `action: 'unchanged'`-adjacent success (unit written/reloaded) while the
+ * backend a client is actually talking to is still running under STALE config.
+ * This is the exact class of gap §9.4a already closes for a *code* change,
+ * applied to a *config* change: this function closes it by reusing the same
+ * verified-rotation primitive.
+ *
+ * All I/O is injectable (`enableFn`, `restartFn`, and everything `restartFn`
+ * itself accepts) so every branch — blocked / unchanged / dry-run / verified-ok /
+ * verified-stale (the case that proves this function, not just `restartAndVerify`
+ * in isolation, catches a non-rotating backend) — is unit-testable without a real
+ * filesystem write or launchctl/systemctl call.
+ */
+export async function updateOsUnit(
+  spec: OsUnitSpec,
+  platform: OsUnitPlatform,
+  opts: UpdateOsUnitOptions,
+): Promise<UpdateOsUnitResult> {
+  const log = opts.log ?? (() => { /* no-op */ });
+  const enableFn = opts.enableFn ?? enableOsUnit;
+  const restartFn = opts.restartFn ?? restartAndVerify;
+  const enableOptsBase: EnableOptions = { log };
+  if (opts.load !== undefined) enableOptsBase.load = opts.load;
+  if (opts.unitDir !== undefined) enableOptsBase.unitDir = opts.unitDir;
+  if (opts.exec !== undefined) enableOptsBase.exec = opts.exec;
+  if (opts.unsetKeys !== undefined) enableOptsBase.unsetKeys = opts.unsetKeys;
+
+  const enableResult = enableFn(spec, platform, enableOptsBase);
+
+  if (enableResult.action === 'blocked') {
+    // Same BL-375 [inv:env-preserved-on-regenerate] guard `enable` already
+    // enforces — `update` adds no bypass. `enableFn` already logged the
+    // detailed dropped-key message via the injected `log` callback.
+    return {
+      action: enableResult.action,
+      enableResult,
+      ok: false,
+      reason: '[inv:env-preserved-on-regenerate] blocked — regeneration would silently drop a previously-set env key',
+    };
+  }
+
+  if (enableResult.action === 'unchanged') {
+    log(`service update ${spec.label}: no change — nothing to reconcile`);
+    return { action: enableResult.action, enableResult, ok: true };
+  }
+
+  // action is 'created' or 'updated' — the unit content changed.
+  if (opts.load !== true) {
+    // --dry-run contract: report that a rotation check WOULD run, without
+    // loading/kickstarting anything — mirrors `enable --dry-run`.
+    log(
+      `service update ${spec.label}: (--dry-run) content would ${enableResult.action === 'created' ? 'create' : 'change'} ` +
+        `the unit — a live run would verify the managed process rotated`,
+    );
+    return { action: enableResult.action, enableResult, ok: true, wouldRotate: true };
+  }
+
+  // Content changed AND this is a live (loaded) run: force + verify a rotation
+  // exactly as §9.4a's `restart` does for a code deploy — a rewritten/created
+  // unit is not, by itself, evidence the backend adopted it.
+  const restartOptsBase: RestartAndVerifyOptions = {
+    label: spec.label,
+    token: opts.token,
+    platform,
+    log,
+  };
+  if (opts.exec !== undefined) restartOptsBase.exec = opts.exec;
+  if (opts.waitMs !== undefined) restartOptsBase.waitMs = opts.waitMs;
+  if (opts.pollMs !== undefined) restartOptsBase.pollMs = opts.pollMs;
+  if (opts.excludePids !== undefined) restartOptsBase.excludePids = opts.excludePids;
+  if (opts.findMatches !== undefined) restartOptsBase.findMatches = opts.findMatches;
+  if (opts.reapFn !== undefined) restartOptsBase.reapFn = opts.reapFn;
+  if (opts.sleepFn !== undefined) restartOptsBase.sleepFn = opts.sleepFn;
+
+  const restart = await restartFn(restartOptsBase);
+
+  return {
+    action: enableResult.action,
+    enableResult,
+    restart,
+    ok: restart.ok,
+    ...(restart.ok ? {} : {
+      reason: `unit ${enableResult.action} but backend did not rotate — config change NOT verified live: ${restart.reason ?? '(unknown)'}`,
+    }),
+  };
+}
+
 // ─── BL-185: Interval-schedule detection ─────────────────────────────────────
 
 /**

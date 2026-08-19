@@ -39,9 +39,12 @@ import {
   restartAndVerify,
   unitContentHash,
   unloadThenReap,
+  updateOsUnit,
+  type EnableResult,
   type OsExec,
   type OsExecResult,
   type OsUnitSpec,
+  type RestartAndVerifyResult,
   type RestartMatch,
 } from './os-unit.js';
 import type { ReapResult } from './reaper.js';
@@ -1118,6 +1121,252 @@ describe('restartAndVerify — BL-372 [inv:deploy-verified]', () => {
 
     expect(result.ok).toBe(true);
     expect(result.after).toEqual([999]);
+  });
+});
+
+// ─── BL-593/§9.4b: `updateOsUnit` — `soxe service update`, enable + verified rotation ──
+//
+// `update` = `enableOsUnit` FOLLOWED BY a verified rotation check whenever the
+// enable step's content actually changed, reusing `restartAndVerify` verbatim.
+// These tests drive `updateOsUnit` entirely through its injectable seams
+// (`enableFn`, `restartFn`) — no real fs write, no real launchctl/systemctl call —
+// and prove every branch of the decision tree the spec's §9.4b pseudocode lays out:
+//
+//   blocked    — BL-375 guard fired: ok:false, restartFn is NEVER called.
+//   unchanged  — nothing to reconcile: ok:true, restartFn is NEVER called.
+//   dry-run    — content WOULD change but load:false: ok:true, wouldRotate:true,
+//                restartFn is NEVER called (mirrors `enable --dry-run`).
+//   RED        — content changed, load:true, but the rotation-verify reports
+//                `ok:false` (the backend never adopted the new config — the exact
+//                false-positive §9.4b exists to close): updateOsUnit must NOT
+//                report success. This is the case a bare re-`enable` could not
+//                catch and BL-593 exists to prevent.
+//   GREEN      — content changed, load:true, rotation-verify reports `ok:true`
+//                (a genuinely new pid appeared): updateOsUnit reports success with
+//                the rotated pid evidence attached.
+describe('updateOsUnit — BL-593 [inv:deploy-verified] extended to config drift (§9.4b)', () => {
+  const platform = new LaunchdPlatform();
+  // A static spec (NOT `makeSpec()` — that helper writes a manifest under the
+  // `beforeEach`-created `tmpDir`, which does not exist at describe-body
+  // evaluation time). Every test here drives `updateOsUnit` purely through its
+  // `enableFn`/`restartFn` seams, so the spec's exact field values are inert —
+  // only `spec.label` is asserted on downstream.
+  const spec: OsUnitSpec = {
+    id: 'test-daemon',
+    scope: 'user',
+    label: 'com.sox.user.test-daemon',
+    nodePath: '/usr/bin/node',
+    nodeArgs: ['--enable-source-maps'],
+    entrypoint: '/store/test/dist/index.js',
+    env: {},
+    workingDirectory: '/store/test',
+    runAtLoad: true,
+    keepAlive: true,
+    throttleIntervalSec: 10,
+    stdoutPath: '/logs/test.out.log',
+    stderrPath: '/logs/test.err.log',
+  };
+
+  function makeEnableResult(action: EnableResult['action'], over: Partial<EnableResult> = {}): EnableResult {
+    return {
+      action,
+      unitPath: '/units/com.sox.user.test.plist',
+      label: spec.label,
+      contentHash: 'deadbeefcafef00d',
+      loaded: action !== 'blocked',
+      ...over,
+    };
+  }
+
+  function makeRestartResult(over: Partial<RestartAndVerifyResult> = {}): RestartAndVerifyResult {
+    return {
+      label: spec.label,
+      token: '/store/test/dist/index.js',
+      kickstart: { code: 0, stdout: '', stderr: '' },
+      before: [111],
+      after: [222],
+      reap: { token: '/store/test/dist/index.js', killed: [] },
+      undead: [],
+      rotated: true,
+      ok: true,
+      ...over,
+    };
+  }
+
+  it('blocked (BL-375 guard fired) — reports ok:false without ever invoking restartFn', async () => {
+    let restartCalled = false;
+    const enableFn = (): EnableResult => makeEnableResult('blocked', {
+      droppedEnvKeys: ['SOX_CONFIG_FOO'],
+    });
+    const restartFn = async (): Promise<RestartAndVerifyResult> => {
+      restartCalled = true;
+      return makeRestartResult();
+    };
+
+    const result = await updateOsUnit(spec, platform, {
+      load: true,
+      token: '/store/test/dist/index.js',
+      enableFn,
+      restartFn,
+    });
+
+    expect(result.action).toBe('blocked');
+    expect(result.ok).toBe(false);
+    expect(result.reason).toMatch(/env-preserved-on-regenerate/);
+    expect(result.restart).toBeUndefined();
+    expect(restartCalled).toBe(false);
+  });
+
+  it('unchanged — nothing to reconcile: ok:true, restartFn is NEVER invoked', async () => {
+    let restartCalled = false;
+    const enableFn = (): EnableResult => makeEnableResult('unchanged');
+    const restartFn = async (): Promise<RestartAndVerifyResult> => {
+      restartCalled = true;
+      return makeRestartResult();
+    };
+
+    const result = await updateOsUnit(spec, platform, {
+      load: true,
+      token: '/store/test/dist/index.js',
+      enableFn,
+      restartFn,
+    });
+
+    expect(result.action).toBe('unchanged');
+    expect(result.ok).toBe(true);
+    expect(result.restart).toBeUndefined();
+    expect(restartCalled).toBe(false);
+  });
+
+  it('dry-run (load:false) — content would change but nothing is loaded/kickstarted: ok:true, wouldRotate:true, restartFn NEVER invoked', async () => {
+    let restartCalled = false;
+    const enableFn = (): EnableResult => makeEnableResult('updated');
+    const restartFn = async (): Promise<RestartAndVerifyResult> => {
+      restartCalled = true;
+      return makeRestartResult();
+    };
+
+    const result = await updateOsUnit(spec, platform, {
+      load: false,
+      token: '/store/test/dist/index.js',
+      enableFn,
+      restartFn,
+    });
+
+    expect(result.action).toBe('updated');
+    expect(result.ok).toBe(true);
+    expect(result.wouldRotate).toBe(true);
+    expect(result.restart).toBeUndefined();
+    expect(restartCalled).toBe(false);
+  });
+
+  it('RED — content changed, unit reloaded, but the backend never rotates (rotation-verify ok:false): updateOsUnit reports ok:false, NOT success', async () => {
+    // This is the exact §9.4b gap: `enableOsUnit` alone would have reported a
+    // successful reload of the FRONT-SHIM unit while the persistent, independently
+    // detached BACKEND (§8.6/§9.5) — which never re-reads its env except at its own
+    // next spawn — is still running under the OLD config. A bare re-`enable` cannot
+    // see this; `updateOsUnit` MUST catch it via the same rotation-verify §9.4a uses.
+    const enableFn = (): EnableResult => makeEnableResult('updated');
+    const restartFn = async (): Promise<RestartAndVerifyResult> => makeRestartResult({
+      ok: false,
+      rotated: false,
+      before: [111],
+      after: [111], // same pid — the backend never rotated onto the new config
+      reason: '[inv:deploy-verified] violated: no pid rotated within 50ms (before=[111] after=[111])',
+    });
+
+    const result = await updateOsUnit(spec, platform, {
+      load: true,
+      token: '/store/test/dist/index.js',
+      waitMs: 50,
+      enableFn,
+      restartFn,
+    });
+
+    expect(result.action).toBe('updated');
+    expect(result.ok).toBe(false);
+    expect(result.restart).toBeDefined();
+    expect(result.restart!.ok).toBe(false);
+    expect(result.reason).toMatch(/did not rotate/);
+    expect(result.reason).toMatch(/\[inv:deploy-verified\] violated/);
+  });
+
+  it('GREEN — content changed, unit reloaded, and the backend rotates to a genuinely new pid: updateOsUnit reports success with the rotation evidence', async () => {
+    const enableFn = (): EnableResult => makeEnableResult('updated');
+    const restartFn = async (): Promise<RestartAndVerifyResult> => makeRestartResult({
+      before: [111],
+      after: [222],
+      rotated: true,
+      ok: true,
+    });
+
+    const result = await updateOsUnit(spec, platform, {
+      load: true,
+      token: '/store/test/dist/index.js',
+      enableFn,
+      restartFn,
+    });
+
+    expect(result.action).toBe('updated');
+    expect(result.ok).toBe(true);
+    expect(result.reason).toBeUndefined();
+    expect(result.restart).toBeDefined();
+    expect(result.restart!.before).toEqual([111]);
+    expect(result.restart!.after).toEqual([222]);
+  });
+
+  it('created (first-ever enable under `update`) is treated identically to `updated` — still verified', async () => {
+    const enableFn = (): EnableResult => makeEnableResult('created');
+    const restartFn = async (): Promise<RestartAndVerifyResult> => makeRestartResult({ ok: true, rotated: true });
+
+    const result = await updateOsUnit(spec, platform, {
+      load: true,
+      token: '/store/test/dist/index.js',
+      enableFn,
+      restartFn,
+    });
+
+    expect(result.action).toBe('created');
+    expect(result.ok).toBe(true);
+    expect(result.restart).toBeDefined();
+  });
+
+  it('passes the token, exec, waitMs, pollMs, excludePids, and identity seams straight through to restartFn', async () => {
+    let seen: Parameters<typeof restartAndVerify>[0] | undefined;
+    const fakeExec: OsExec = () => ({ code: 0, stdout: '', stderr: '' });
+    const findMatches = (): RestartMatch[] => [];
+    const reapFn = async (tok: string): Promise<ReapResult> => ({ token: tok, killed: [] });
+    const sleepFn = async (): Promise<void> => { /* instant */ };
+
+    const enableFn = (): EnableResult => makeEnableResult('updated');
+    const restartFn = async (opts: Parameters<typeof restartAndVerify>[0]): Promise<RestartAndVerifyResult> => {
+      seen = opts;
+      return makeRestartResult();
+    };
+
+    await updateOsUnit(spec, platform, {
+      load: true,
+      token: '/store/test/dist/index.js',
+      exec: fakeExec,
+      waitMs: 1234,
+      pollMs: 56,
+      excludePids: [999],
+      findMatches,
+      reapFn,
+      sleepFn,
+      enableFn,
+      restartFn,
+    });
+
+    expect(seen).toBeDefined();
+    expect(seen!.token).toBe('/store/test/dist/index.js');
+    expect(seen!.exec).toBe(fakeExec);
+    expect(seen!.waitMs).toBe(1234);
+    expect(seen!.pollMs).toBe(56);
+    expect(seen!.excludePids).toEqual([999]);
+    expect(seen!.findMatches).toBe(findMatches);
+    expect(seen!.reapFn).toBe(reapFn);
+    expect(seen!.sleepFn).toBe(sleepFn);
   });
 });
 
