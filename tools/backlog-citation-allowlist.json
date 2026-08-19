@@ -2,19 +2,23 @@
   "_readme": "Allowlist for tools/check-backlog-citations.mjs. Every key is a (BL|BUG|DEBT)-N id cited somewhere in tracked source that does NOT resolve via `backlog get-item --repo sox-ecosystem --human-id <id>`. Each entry's `reason` records WHY that's expected/acceptable rather than a defect, so this file stays a legible audit trail and not a growing pile of silenced red. Compiled 2026-08-18 remediating DEBT-006. `cause` is one of: PLAN_LOCAL_BUG014 (docs/plan/bug014-store-hardening/SPEC.md T1-T11 own numbering colliding with the graph's BUG/DEBT families), PLAN_LOCAL_RUNTIME_PROD (a SECOND, independently-discovered collision: docs/plan/runtime-productionization/ has its own BL-1xx work-package numbering that collides with the graph's real BL family — NOT part of DEBT-006's original diagnosis, found during this remediation, not yet disambiguated at the source because that plan is outside this packet's scope), MIGRATION_DROPPED (existed as a real heading in BACKLOG.md history pre-2026-08-06 migration, never carried into the graph), STILL_LOST (existed briefly during the 2026-08-14 backlog data-loss incident, explicitly recorded in HANDOFF-20260814.md §C as unrecoverable from any transcript), NOT_A_CITATION (the regex matched prose/example/fixture content that was never intended as a real backlog reference), or SUPERSEDED_BY_NEW_FILING (this remediation filed a real graph item for the underlying work; a residual bare mention of the old placeholder id remains in a historical narrative string).",
   "BUG-019": {
     "cause": "PLAN_LOCAL_BUG014",
-    "reason": "docs/plan/bug014-store-hardening/SPEC.md T5 ('refcounted per-connection open marker'). Worst offender by ref count (60+ refs across libs/data/store/store-adapter/, out of remediation scope — actively edited by another agent). Not in HANDOFF-20260814.md's former->graph-id refile table; per STATE.json's own remap notes ('BUG-019 -> BUG-018', 'BUG-019 -> BUG-017') the fix work landed under BUG-018/BUG-017, but no formal id reassignment was ever made, so BUG-019 citations resolve to nothing. Disambiguated at the plan-doc level: SPEC.md now carries a PLAN-LOCAL IDS banner, STATE.json carries planLocalIdWarning."
+    "reason": "docs/plan/bug014-store-hardening/SPEC.md T5 ('refcounted per-connection open marker'). Worst offender by ref count (60+ refs across libs/data/store/store-adapter/, out of remediation scope — actively edited by another agent). Not in HANDOFF-20260814.md's former->graph-id refile table; per STATE.json's own remap notes ('BUG-019 -> BUG-018', 'BUG-019 -> BUG-017') the fix work landed under BUG-018/BUG-017, but no formal id reassignment was ever made, so BUG-019 citations resolve to nothing. Disambiguated at the plan-doc level: SPEC.md now carries a PLAN-LOCAL IDS banner, STATE.json carries planLocalIdWarning.",
+    "planDir": "docs/plan/bug014-store-hardening"
   },
   "BUG-021": {
     "cause": "PLAN_LOCAL_BUG014",
-    "reason": "docs/plan/bug014-store-hardening/SPEC.md T3 ('content-deadness at ALL THREE reconcile decision sites'), including a dedicated regression spec file named after it. Second-worst offender (54+ refs, store-adapter — out of scope). Not in HANDOFF's refile table; STATE.json remap notes say the fix landed under 'DEBT-003'/'BUG-014' (both real, unrelated-by-title graph items) without a formal id reassignment."
+    "reason": "docs/plan/bug014-store-hardening/SPEC.md T3 ('content-deadness at ALL THREE reconcile decision sites'), including a dedicated regression spec file named after it. Second-worst offender (54+ refs, store-adapter — out of scope). Not in HANDOFF's refile table; STATE.json remap notes say the fix landed under 'DEBT-003'/'BUG-014' (both real, unrelated-by-title graph items) without a formal id reassignment.",
+    "planDir": "docs/plan/bug014-store-hardening"
   },
   "BUG-018": {
     "cause": "PLAN_LOCAL_BUG014",
-    "reason": "SPEC.md T4 ('canonical path identity'). Refiled per HANDOFF-20260814.md §C as BUG-STOREADAPTER-DBPATH-NOT-CANONICALIZED-001 (verified present in the graph). The bare numeric form is still cited from store-adapter test filenames (out of scope) and the plan docs (now banner-disambiguated)."
+    "reason": "SPEC.md T4 ('canonical path identity'). Refiled per HANDOFF-20260814.md §C as BUG-STOREADAPTER-DBPATH-NOT-CANONICALIZED-001 (verified present in the graph). The bare numeric form is still cited from store-adapter test filenames (out of scope) and the plan docs (now banner-disambiguated).",
+    "planDir": "docs/plan/bug014-store-hardening"
   },
   "BUG-020": {
     "cause": "PLAN_LOCAL_BUG014",
-    "reason": "SPEC.md T6 ('un-flagged opener audit + post-ship watch'). STATE.json remap note: 'BUG-020 -> BUG-017' (folded into the real graph item BUG-017, no separate id assigned)."
+    "reason": "SPEC.md T6 ('un-flagged opener audit + post-ship watch'). STATE.json remap note: 'BUG-020 -> BUG-017' (folded into the real graph item BUG-017, no separate id assigned).",
+    "planDir": "docs/plan/bug014-store-hardening"
   },
   "BUG-028": {
     "cause": "PLAN_LOCAL_BUG014",
