@@ -601,9 +601,26 @@ export class TursoAdapterImpl implements TursoAdapter {
         // UNGATED — see `_walFlushStrategy` doc comment. No quiescence
         // check, connection stays open (deliberately does NOT go through
         // `releaseIdleConnection()`).
+        //
+        // (BUG-022) Deliberately calls `this.db.get(...)` directly instead of
+        // the public `executeGet()` — `executeGet()` routes through
+        // `_trackOp()`, whose `finally` unconditionally re-arms THIS SAME
+        // idle-flush timer once `_inFlightOps` returns to 0. A checkpoint
+        // issued through the tracked wrapper therefore re-arms its own timer
+        // with zero new caller activity: a self-perpetuating flush loop that
+        // never quiesces. GATED sidesteps the structurally identical hazard
+        // in `close()` by setting `this.closed = true` BEFORE its own
+        // `executeAll('PRAGMA wal_checkpoint...')` call, so `_armIdleFlush()`'s
+        // `this.closed` guard refuses the re-arm; UNGATED deliberately keeps
+        // the connection open (see comment above), so there is no equivalent
+        // guard state to piggyback on here — bypass `_trackOp()` entirely
+        // instead. Checkpoint semantics are unchanged (same PRAGMA, same
+        // connection, same error handling/`_markIfFatal` parity with
+        // `executeGet()`); only the re-arm side effect is removed.
         try {
-          await this.executeGet('PRAGMA wal_checkpoint(TRUNCATE)');
+          await this.db.get('PRAGMA wal_checkpoint(TRUNCATE)');
         } catch (err) {
+          this._markIfFatal(err);
           log.warn('store_adapter.turso.idle_flush_ungated_failed', {
             error: err instanceof Error ? err.message : String(err),
           });
