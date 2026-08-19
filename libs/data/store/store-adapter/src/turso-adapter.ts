@@ -618,7 +618,17 @@ export class TursoAdapterImpl implements TursoAdapter {
         // instead. Checkpoint semantics are unchanged (same PRAGMA, same
         // connection, same error handling/`_markIfFatal` parity with
         // `executeGet()`); only the re-arm side effect is removed.
+        //
+        // (DEBT-STOREADAPTER-UNGATED-FLUSH-LOSES-SELFHEAL) Bypassing
+        // `_trackOp()` also bypasses the `_ensureHealthy()` it calls, which is
+        // what transparently reconnects a `_poisoned`/`_released` connection.
+        // Call it explicitly so a flush firing on a dead connection still
+        // self-heals here rather than waiting for the next real caller op —
+        // `_ensureHealthy()` does not arm the idle timer (only `_trackOp()`'s
+        // `finally` does), so this restores the recovery without restoring the
+        // re-arm loop.
         try {
+          await this._ensureHealthy();
           await this.db.get('PRAGMA wal_checkpoint(TRUNCATE)');
         } catch (err) {
           this._markIfFatal(err);

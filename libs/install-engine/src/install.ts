@@ -286,9 +286,19 @@ function recoverRegistryRootFromLockfile(lock: Lockfile | null): string | null {
   for (const entry of Object.values(lock.resolved)) {
     if (!entry.source.startsWith('file://')) continue;
     const sourcePath = entry.source.slice('file://'.length);
-    const startDir = fs.existsSync(sourcePath) && fs.statSync(sourcePath).isDirectory()
-      ? sourcePath
-      : path.dirname(sourcePath);
+    // (DEBT-INSTALLENGINE-REGISTRY-RECOVERY-TOCTOU) `existsSync` followed by
+    // `statSync` is two syscalls with a window between them: if the path is
+    // removed in that window, `statSync` throws ENOENT and the exception
+    // escapes `install()` entirely, defeating the accurate not-found warning
+    // this whole recovery path exists to reach. Ask once and treat any stat
+    // failure as "not a directory" — the `path.dirname` fallback is already
+    // the correct behaviour for a vanished path.
+    let startDir: string;
+    try {
+      startDir = fs.statSync(sourcePath).isDirectory() ? sourcePath : path.dirname(sourcePath);
+    } catch {
+      startDir = path.dirname(sourcePath);
+    }
     const found = findRegistryRootUpward(startDir);
     if (found) return found;
   }
