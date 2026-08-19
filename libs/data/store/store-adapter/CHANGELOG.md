@@ -1,5 +1,19 @@
 # @adhd/sox-store-adapter
 
+## 0.7.0
+
+### Minor Changes
+
+- Tune the idle-flush debounce and the WAL cap relative to what they actually govern (BL-590, BL-587).
+
+  Minor rather than patch because this adds public API: `captureWalCapBaseline()` on the `SqliteAdapter` and `TursoAdapter` interfaces, and a new `wal-tuning` module export (`effectiveIdleFlushMs`, `effectiveWalCapBytes`, `updateWriteIntervalEwma` and their constants).
+
+  **Idle-flush debounce is now adaptive.** The flat 2000ms window was shorter than the write cadence it existed to coalesce — the dominant writes are async vector writes from the embed pipeline at a measured `time_to_vector` p50 of 4516ms, so each one formed its own isolated burst and paid a full flush (measured coalescing ratio 12 writes / 11 flushes = 1.09). The window is now derived from an EWMA of observed inter-write gaps and clamped to `[2000ms, 30000ms]`, and both the chosen window and the EWMA are emitted on every `idle_flush` telemetry event so the tuning is checkable from logs.
+
+  **The WAL cap is now baseline-relative.** Headroom is inherently relative to a starting point, but the cap was absolute: both adapters shared `DEFAULT_WAL_CAP_BYTES = 262144` despite very different post-schema WAL baselines (identical at 16512 bytes on a trivial schema, but a single FTS5 virtual table takes the sqlite arm to 32992, and memory-core's real schema to ~150-165 KB). The effective cap is now `baseline + HEADROOM_BYTES`, clamped to a 1 MiB ceiling.
+
+  **Behaviour is unchanged until callers opt in.** The WAL baseline defaults to `0`, which reproduces the previous flat-cap behaviour exactly, because store-adapter cannot know when a caller's own schema DDL has finished — call `captureWalCapBaseline()` once your schema is created to get the baseline-relative cap. An explicit `walCapBytes` override still wins unconditionally.
+
 ## 0.6.0
 
 ### Minor Changes

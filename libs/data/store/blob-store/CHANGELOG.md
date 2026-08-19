@@ -1,5 +1,12 @@
 # @adhd/sox-blob-store
 
+## 0.2.9
+
+### Patch Changes
+
+- Updated dependencies
+  - @adhd/sox-store-adapter@0.7.0
+
 ## 0.2.8
 
 ### Patch Changes
