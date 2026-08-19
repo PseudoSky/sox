@@ -243,6 +243,59 @@ export function loadRegistryIndex(root: string): IndexEntry[] {
 }
 
 /**
+ * BUG-024: walk upward from `startDir` looking for a `registry/index.json`.
+ * Used to recover the real registry root for an out-of-repo consumer — see
+ * `recoverRegistryRootFromLockfile` below.
+ */
+function findRegistryRootUpward(startDir: string): string | null {
+  let dir = startDir;
+  for (let i = 0; i < 32; i++) {
+    if (fs.existsSync(path.join(dir, 'registry', 'index.json'))) return dir;
+    const parent = path.dirname(dir);
+    if (parent === dir) return null;
+    dir = parent;
+  }
+  return null;
+}
+
+/**
+ * BUG-024: `loadRegistryIndex(root)` looks for `<root>/registry/index.json`
+ * relative to the CONSUMER's project root. That's correct for in-repo
+ * consumers (root === the sox-ecosystem checkout) but always comes back empty
+ * for a consumer installed OUTSIDE this repo (e.g. a project at
+ * `/Users/nix/dev/security/wop`) — there is no `registry/` under an unrelated
+ * project's root, and there never will be one. Before this fix that emptiness
+ * propagated all the way to a false "not found in registry/index.json"
+ * warning and a hard "resolution yielded zero members" abort, even though the
+ * registry entry genuinely exists — just not reachable from the consumer's
+ * cwd.
+ *
+ * Recovery: every `LockfileEntry.source` written by `install()` is an
+ * ABSOLUTE `file://` URL into the repo/checkout that published the artifact
+ * (see the `resolvedSource` assignment in `fetchArtifact`) — it is never
+ * relative to the consumer root. So the CONSUMER's own prior (possibly stale)
+ * lockfile already records exactly where the real registry lives; walking up
+ * from any entry's source path to the nearest `registry/index.json` finds
+ * that registry with no rediscovery from the consumer's cwd required, and
+ * with no weakening of the "refuse to write an empty lockfile" safety net —
+ * this only ever WIDENS what counts as a successful resolution, it never
+ * changes what happens when resolution genuinely fails.
+ */
+function recoverRegistryRootFromLockfile(lock: Lockfile | null): string | null {
+  if (!lock) return null;
+  for (const entry of Object.values(lock.resolved)) {
+    if (!entry.source.startsWith('file://')) continue;
+    const sourcePath = entry.source.slice('file://'.length);
+    const startDir = fs.existsSync(sourcePath) && fs.statSync(sourcePath).isDirectory()
+      ? sourcePath
+      : path.dirname(sourcePath);
+    const found = findRegistryRootUpward(startDir);
+    if (found) return found;
+  }
+  return null;
+}
+
+/**
  * ADR-0003: resolution is a pure `id` lookup over the single registry build.
  * Per-extension semver is retired — there is exactly one build per id (the
  * invariant the registry already holds), so version-range matching is dead code
@@ -551,11 +604,29 @@ export async function install(opts: InstallOptions): Promise<ResolvedSet> {
     return {};
   }
 
-  const registryIndex =
+  const existingLock = loadLockfile(lockPath);
+
+  let registryIndex =
     opts.registryIndex !== undefined && opts.registryIndex.length > 0
       ? opts.registryIndex
       : loadRegistryIndex(root);
-  const existingLock = loadLockfile(lockPath);
+  // BUG-024: root-relative resolution came back empty — try to recover the
+  // real registry root from the consumer's own (possibly stale) lockfile
+  // provenance before concluding the registry is unreachable. See
+  // `recoverRegistryRootFromLockfile` for why this is sound.
+  let recoveredRegistryRoot: string | null = null;
+  if (registryIndex.length === 0) {
+    recoveredRegistryRoot = recoverRegistryRootFromLockfile(existingLock);
+    if (recoveredRegistryRoot !== null) {
+      registryIndex = loadRegistryIndex(recoveredRegistryRoot);
+      if (registryIndex.length > 0) {
+        console.log(
+          `install: registry not found under root ${root} — recovered it from lockfile ` +
+          `provenance at ${recoveredRegistryRoot} (BUG-024)`,
+        );
+      }
+    }
+  }
 
   const singleScopeOnly = opts.configPath !== undefined;
   const allScopeConfigs = await loadScopeCascade({
@@ -657,11 +728,34 @@ export async function install(opts: InstallOptions): Promise<ResolvedSet> {
         } else {
           // BL-19 resilience: skip + warn on an unresolvable entry instead of aborting the
           // whole install. One bad config line must not block every valid entry.
-          console.warn(
-            `install: WARNING skipping "${entry.id}" — ` +
-            `not found in registry/index.json and not found locally. ` +
-            `Run 'pnpm run build-index' to rebuild the registry, or remove this entry from the config.`,
-          );
+          //
+          // BUG-024: the old message ("not found in registry/index.json") was
+          // FALSE whenever registryIndex was empty because root has no
+          // registry of its own (an out-of-repo consumer) — the entry might be
+          // sitting right there in the real registry, just unreachable from
+          // this root, and "rebuild the registry" cannot fix that. Name the
+          // actual condition instead.
+          if (registryIndex.length === 0) {
+            console.warn(
+              `install: WARNING skipping "${entry.id}" — the registry is not discoverable from ` +
+              `consumer root ${root} (no registry/index.json there)` +
+              (recoveredRegistryRoot !== null
+                ? `, and the registry recovered from lockfile provenance at ${recoveredRegistryRoot} ` +
+                  `does not contain "${entry.id}" either`
+                : `, and no prior lockfile entry with a file:// source was available to recover the ` +
+                  `original registry root from`) +
+              `. This is NOT a "rebuild the index" problem — the publishing repo's registry/index.json ` +
+              `may be entirely correct. Verify the repo/checkout that originally published "${entry.id}" ` +
+              `still exists on disk at the path recorded in its prior lockfile entry, or add an explicit ` +
+              `"source" to this entry in the scope config.`,
+            );
+          } else {
+            console.warn(
+              `install: WARNING skipping "${entry.id}" — ` +
+              `not found in registry/index.json (${registryIndex.length} entries loaded) and not found locally. ` +
+              `Run 'pnpm run build-index' to rebuild the registry, or remove this entry from the config.`,
+            );
+          }
           continue;
         }
       } else {
