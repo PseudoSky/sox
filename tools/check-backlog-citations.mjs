@@ -208,16 +208,37 @@ function main() {
     if (!ID_KEY_PATTERN.test(id)) continue; // e.g. "_readme" — metadata, not an id entry
     const entry = allowlist[id];
     const planDir = entry.planDir ?? null;
-    const isPlanLocal = planDir !== null || String(entry.cause ?? '').startsWith('PLAN_LOCAL');
 
     if (ids.has(id)) {
-      if (isPlanLocal) {
-        const refs = byId.get(id) ?? [];
-        const ambiguous = refs.filter((r) => !(planDir && r.file.startsWith(`${planDir}/`)));
-        collisions.push({ id, planDir, entry, refs, ambiguous });
-      } else {
-        staleAllowlistEntries.push({ id, note: 'now resolves in the graph — remove from allowlist' });
-      }
+      // EVERY allowlisted id that later resolves in the graph is a collision,
+      // whatever its `cause`. An allowlist entry exists precisely to assert
+      // "this citation does NOT mean a graph item" — so the moment the graph
+      // allocates that number, the entry and the graph disagree about what
+      // the string means, and every citation inherits the ambiguity.
+      //
+      // Generalised from an initial plan-local-only check after DEBT-008
+      // demonstrated the same failure from a different cause, live and
+      // within minutes: DEBT-008 was a STILL_LOST id (an epic destroyed in
+      // the 2026-08-14 data-loss incident, cited as lost in
+      // HANDOFF-20260814.md:89) and the graph then handed that number to a
+      // brand-new unrelated item. A reader following that citation now lands
+      // on the wrong item, exactly as with a plan-local collision.
+      //
+      // `planDir` names the directory that legitimately owns the local
+      // meaning, if one does; refs inside it keep that meaning and pass.
+      // With no planDir there is no owning scope, so every ref is ambiguous.
+      //
+      // `disambiguatedRefs` is the escape hatch for a reference that MUST
+      // keep the old string — a historical incident record, where rewriting
+      // the id would falsify what was actually written at the time. Listing
+      // a file there asserts the ambiguity is resolved inline, in prose, at
+      // that site. It is deliberately per-file and not a blanket suppression.
+      const refs = byId.get(id) ?? [];
+      const disambiguated = new Set(entry.disambiguatedRefs ?? []);
+      const ambiguous = refs.filter(
+        (r) => !(planDir && r.file.startsWith(`${planDir}/`)) && !disambiguated.has(r.file),
+      );
+      collisions.push({ id, planDir, entry, refs, ambiguous });
     } else if (!byId.has(id)) {
       staleAllowlistEntries.push({ id, note: 'no longer cited anywhere in tracked source — remove from allowlist' });
     }
@@ -276,15 +297,18 @@ function main() {
     );
     if (collisions.length) {
       console.log('');
-      console.log('PLAN-LOCAL / GRAPH ID COLLISIONS:');
-      console.log('  These ids exist BOTH as a plan-local work item and as an unrelated graph');
-      console.log('  item. A citation outside the owning plan directory is ambiguous: a reader');
-      console.log('  (human or agent) resolves it to the graph item and gets the wrong defect.');
+      console.log('ALLOWLIST / GRAPH ID COLLISIONS:');
+      console.log('  These ids are allowlisted as NOT meaning a graph item, yet the graph has');
+      console.log('  since allocated that same number. A citation outside the owning scope is');
+      console.log('  ambiguous: a reader (human or agent) resolves it to the graph item and');
+      console.log('  gets an unrelated defect.');
       for (const c of collisions) {
         const files = [...new Set(c.ambiguous.map((r) => r.file))];
         console.log('');
-        console.log(`  ${c.id}  — plan-local dir: ${c.planDir ?? '(not recorded — add "planDir")'}`);
-        console.log(`      plan-local meaning : ${String(c.entry.reason ?? '').slice(0, 140)}`);
+        console.log(
+          `  ${c.id}  [${c.entry.cause ?? 'no cause'}] — owning scope: ${c.planDir ?? '(none — every ref is ambiguous)'}`,
+        );
+        console.log(`      allowlisted meaning: ${String(c.entry.reason ?? '').slice(0, 140)}`);
         console.log(`      ambiguous refs     : ${c.ambiguous.length} of ${c.refs.length} total`);
         for (const f of files.slice(0, 8)) console.log(`        - ${f}`);
         if (files.length > 8) console.log(`        ... and ${files.length - 8} more files`);
@@ -319,12 +343,14 @@ function main() {
     if (blockingCollisions.length) {
       console.log('');
       console.log(
-        `FAIL: ${blockingCollisions.length} plan-local id(s) collide with a real graph id and are ` +
-          `cited from ${summary.ambiguousRefCount} place(s) outside their own plan directory.`,
+        `FAIL: ${blockingCollisions.length} allowlisted id(s) collide with a real graph id and are ` +
+          `cited from ${summary.ambiguousRefCount} place(s) outside their own owning scope.`,
       );
       console.log('      Fix by repointing each citation at the id the work ACTUALLY landed under,');
-      console.log('      or by filing a real graph item for it. Deleting the allowlist entry is NOT');
-      console.log('      the fix — that silently blesses the citation as pointing at the wrong item.');
+      console.log('      by filing a real graph item for it, or — for a historical record that must');
+      console.log('      keep the old string — by disambiguating it inline. Deleting the allowlist');
+      console.log('      entry is NOT the fix: that silently blesses the citation as correct when it');
+      console.log('      now points at an unrelated item.');
     }
   }
 

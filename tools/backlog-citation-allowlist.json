@@ -70,7 +70,10 @@
   },
   "DEBT-008": {
     "cause": "STILL_LOST",
-    "reason": "HANDOFF-20260814.md §C: 'the first sweep's epics (formerly DEBT-008…014, BUG-022)' are explicitly listed as lost and not refilable from session record."
+    "reason": "HANDOFF-20260814.md §C: 'the first sweep's epics (formerly DEBT-008…014, BUG-022)' are explicitly listed as lost and not refilable from session record. ID REUSE (2026-08-18): the graph has since allocated DEBT-008 to an unrelated new item ('Plan-local and graph backlog ids share one bare-numeric namespace'). The HANDOFF reference is a historical record of what was destroyed and must keep the original string, so it is disambiguated inline there rather than rewritten — see disambiguatedRefs.",
+    "disambiguatedRefs": [
+      "docs/plan/bug014-store-hardening/HANDOFF-20260814.md"
+    ]
   },
   "BL-320": {
     "cause": "MIGRATION_DROPPED",
