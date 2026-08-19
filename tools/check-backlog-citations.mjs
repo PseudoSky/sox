@@ -120,6 +120,11 @@ function findCitations(trackedSet) {
     // always failing is a check everyone learns to ignore, which is the exact
     // failure mode this gate exists to prevent.
     if (relFile === 'tools/backlog-citation-allowlist.json') continue;
+    // DEBT-008's own regression suite fabricates ids (BUG-777, BUG-19, ...) as
+    // test fixtures and cites real ids (BUG-019, DEBT-008, ...) while
+    // EXPLAINING them in doc comments — same self-inflicted-red trap as the
+    // two exclusions above, not a real citation.
+    if (relFile === 'tools/check-backlog-citations.debt008.test.mjs') continue;
     citations.push({ id, file: relFile, line: Number(lineNo) });
   }
   return citations;
