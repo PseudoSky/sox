@@ -184,15 +184,45 @@ function main() {
     }
   }
 
+  // A PLAN-LOCAL id that LATER gets allocated as a real graph id is the most
+  // dangerous state this gate can encounter, and the naive reading of it is
+  // exactly backwards. Before this check existed, the gate reported such an
+  // entry as "now resolves in the graph — remove from allowlist": deleting
+  // the entry would have made every plan-local citation silently "resolve"
+  // to an unrelated graph item that happens to share the string.
+  //
+  // Concrete case that motivated this (measured 2026-08-18): allowlisted
+  // BUG-019 is docs/plan/bug014-store-hardening/SPEC.md T5, "refcounted
+  // per-connection open marker". The graph then allocated its own BUG-019,
+  // "wal-cap backstop's PASSIVE checkpoint fails under sustained load".
+  // Two unrelated defects, one string, 60+ citations in store-adapter — and
+  // the gate was advising that they be blessed as correct.
+  //
+  // So: a collision is a FAILURE, not a cleanup note. Citations from INSIDE
+  // the owning plan directory keep their plan-local meaning and are fine.
+  // Citations from anywhere else are genuinely ambiguous and must be
+  // repointed at the id the work actually landed under.
+  const collisions = [];
   const ID_KEY_PATTERN = /^[A-Z]+-\d{1,4}$/;
   for (const id of Object.keys(allowlist)) {
     if (!ID_KEY_PATTERN.test(id)) continue; // e.g. "_readme" — metadata, not an id entry
+    const entry = allowlist[id];
+    const planDir = entry.planDir ?? null;
+    const isPlanLocal = planDir !== null || String(entry.cause ?? '').startsWith('PLAN_LOCAL');
+
     if (ids.has(id)) {
-      staleAllowlistEntries.push({ id, note: 'now resolves in the graph — remove from allowlist' });
+      if (isPlanLocal) {
+        const refs = byId.get(id) ?? [];
+        const ambiguous = refs.filter((r) => !(planDir && r.file.startsWith(`${planDir}/`)));
+        collisions.push({ id, planDir, entry, refs, ambiguous });
+      } else {
+        staleAllowlistEntries.push({ id, note: 'now resolves in the graph — remove from allowlist' });
+      }
     } else if (!byId.has(id)) {
       staleAllowlistEntries.push({ id, note: 'no longer cited anywhere in tracked source — remove from allowlist' });
     }
   }
+  const blockingCollisions = collisions.filter((c) => c.ambiguous.length > 0);
 
   unresolved.sort((a, b) => b.refs.length - a.refs.length);
 
@@ -204,6 +234,9 @@ function main() {
     unresolvedCount: unresolved.length,
     unresolvedRefCount: unresolved.reduce((s, u) => s + u.refs.length, 0),
     allowlistedCount: allowlisted.length,
+    collisionCount: collisions.length,
+    blockingCollisionCount: blockingCollisions.length,
+    ambiguousRefCount: blockingCollisions.reduce((s, c) => s + c.ambiguous.length, 0),
     staleAllowlistEntries,
   };
 
@@ -219,6 +252,13 @@ function main() {
             sample: u.refs.slice(0, 5),
           })),
           allowlisted: allowlisted.map((a) => ({ id: a.id, refCount: a.refs.length, reason: a.reason })),
+          collisions: collisions.map((c) => ({
+            id: c.id,
+            planDir: c.planDir,
+            totalRefs: c.refs.length,
+            ambiguousRefCount: c.ambiguous.length,
+            ambiguousFiles: [...new Set(c.ambiguous.map((r) => r.file))],
+          })),
         },
         null,
         2,
@@ -231,6 +271,25 @@ function main() {
     console.log(`  graph ids known           : ${summary.graphIdsKnown}`);
     console.log(`  allowlisted (plan-local)  : ${summary.allowlistedCount}`);
     console.log(`  UNRESOLVED ids            : ${summary.unresolvedCount} (${summary.unresolvedRefCount} refs)`);
+    console.log(
+      `  NAMESPACE COLLISIONS      : ${summary.blockingCollisionCount} (${summary.ambiguousRefCount} ambiguous refs)`,
+    );
+    if (collisions.length) {
+      console.log('');
+      console.log('PLAN-LOCAL / GRAPH ID COLLISIONS:');
+      console.log('  These ids exist BOTH as a plan-local work item and as an unrelated graph');
+      console.log('  item. A citation outside the owning plan directory is ambiguous: a reader');
+      console.log('  (human or agent) resolves it to the graph item and gets the wrong defect.');
+      for (const c of collisions) {
+        const files = [...new Set(c.ambiguous.map((r) => r.file))];
+        console.log('');
+        console.log(`  ${c.id}  — plan-local dir: ${c.planDir ?? '(not recorded — add "planDir")'}`);
+        console.log(`      plan-local meaning : ${String(c.entry.reason ?? '').slice(0, 140)}`);
+        console.log(`      ambiguous refs     : ${c.ambiguous.length} of ${c.refs.length} total`);
+        for (const f of files.slice(0, 8)) console.log(`        - ${f}`);
+        if (files.length > 8) console.log(`        ... and ${files.length - 8} more files`);
+      }
+    }
     if (staleAllowlistEntries.length) {
       console.log('');
       console.log('STALE ALLOWLIST ENTRIES (safe to remove):');
@@ -253,13 +312,23 @@ function main() {
         `      If genuinely plan-local, add to ${path.relative(REPO_ROOT, opts.allowlist)} with a reason.`,
       );
       console.log('      Otherwise: invented id (fix the citation) or migration-dropped (re-file in the graph).');
-    } else {
+    } else if (!blockingCollisions.length) {
       console.log('');
       console.log('PASS: every cited id resolves in the graph or is explicitly allowlisted.');
     }
+    if (blockingCollisions.length) {
+      console.log('');
+      console.log(
+        `FAIL: ${blockingCollisions.length} plan-local id(s) collide with a real graph id and are ` +
+          `cited from ${summary.ambiguousRefCount} place(s) outside their own plan directory.`,
+      );
+      console.log('      Fix by repointing each citation at the id the work ACTUALLY landed under,');
+      console.log('      or by filing a real graph item for it. Deleting the allowlist entry is NOT');
+      console.log('      the fix — that silently blesses the citation as pointing at the wrong item.');
+    }
   }
 
-  process.exit(unresolved.length > 0 ? 1 : 0);
+  process.exit(unresolved.length > 0 || blockingCollisions.length > 0 ? 1 : 0);
 }
 
 main();
