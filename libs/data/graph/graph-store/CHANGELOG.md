@@ -1,5 +1,12 @@
 # @adhd/sox-graph-store
 
+## 0.8.6
+
+### Patch Changes
+
+- Updated dependencies
+  - @adhd/sox-store-adapter@0.7.0
+
 ## 0.8.5
 
 ### Patch Changes

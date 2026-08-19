@@ -1,6 +1,6 @@
 {
   "name": "@adhd/sox-task-queue",
-  "version": "0.2.8",
+  "version": "0.2.9",
   "description": "Durable SQLite-backed task queue — atomic priority-aware FIFO claim/lease, retry with exponential backoff, heartbeat lease management, a worker pool with graceful shutdown, and a croner-backed cron scheduler.",
   "license": "MIT",
   "private": false,
