@@ -43,6 +43,15 @@ import {
 } from './errors.js';
 import { ESqliteNativeStore, isBusyError } from './errors.js';
 import { ensureEngineMarker, readApplicationId, SOX_APP_ID_SQLITE } from './engine-guard.js';
+import {
+  DEFAULT_IDLE_FLUSH_CEILING_MS,
+  DEFAULT_IDLE_FLUSH_FLOOR_MS,
+  DEFAULT_WAL_CAP_CEILING_BYTES,
+  DEFAULT_WAL_CAP_HEADROOM_BYTES,
+  effectiveIdleFlushMs,
+  effectiveWalCapBytes,
+  updateWriteIntervalEwma,
+} from './wal-tuning.js';
 import { log } from '@adhd/sox-telemetry';
 import {
   ensureFtsIndex as ensureFtsIndexOn,
@@ -93,13 +102,33 @@ const OPEN_RETRY_MAX_ATTEMPTS = 3;
 const OPEN_RETRY_BACKOFF_START_MS = 100;
 const OPEN_RETRY_BACKOFF_STEP_MS = 100;
 
-/** (idle-flush, 2026-08-17 — store-adapter-owned WAL durability) Debounce
- *  window for the adapter's own idle WAL flush. Deliberately equal to
- *  `WriteQueue.CHECKPOINT_IDLE_MS` (libs/memory-core/src/write-queue.ts) so
- *  every consumer — queued or talking to the adapter directly — settles on
- *  one idle cadence, not two competing ones. Overridable per-connect via
- *  `opts.idleFlushMs` (tests only; no production caller sets this). */
-const DEFAULT_IDLE_FLUSH_MS = 2000;
+/** (idle-flush, 2026-08-17 — store-adapter-owned WAL durability) FLOOR of the
+ *  debounce window for the adapter's own idle WAL flush. Deliberately equal
+ *  to `WriteQueue.CHECKPOINT_IDLE_MS` (libs/memory-core/src/write-queue.ts)
+ *  so every consumer — queued or talking to the adapter directly — settles
+ *  on one idle-cadence floor, not two competing ones. Overridable
+ *  per-connect via `opts.idleFlushMs` (tests only; no production caller sets
+ *  this) — an explicit `opts.idleFlushMs` is a fixed window, bypassing the
+ *  BL-590 adaptive computation below entirely (same "explicit override wins"
+ *  posture as `opts.walCapBytes`, see `DEFAULT_WAL_CAP_HEADROOM_BYTES`).
+ *
+ * (BL-590, 2026-08-18) THIS CONSTANT ALONE NO LONGER SETS THE ARMED WINDOW.
+ * Measured live: the dominant writers on this store are ASYNC VECTOR WRITES
+ * from the embed pipeline, cadence `time_to_vector_ms` p50 4516ms — against
+ * a flat 2000ms debounce, a write arriving every ~4.5s is NEVER coalesced
+ * with its neighbour (measured coalescing ratio 12 writes / 11 flushes =
+ * 1.09, i.e. one full GATED close+reopen cycle per write). `_armIdleFlush()`
+ * now computes the ACTUAL armed window via `effectiveIdleFlushMs()`
+ * (wal-tuning.ts): an EWMA of observed inter-write gaps
+ * (`updateWriteIntervalEwma()`, recorded once per write in `_trackOp`),
+ * margined up (`IDLE_FLUSH_MARGIN_FACTOR`) so a steady cadence coalesces
+ * instead of each write paying its own flush, clamped between this constant
+ * (the floor — an idle store with no write history still flushes promptly)
+ * and `DEFAULT_IDLE_FLUSH_CEILING_MS` (a pathological cadence cannot defer
+ * flushing forever). The chosen window is logged on every
+ * `store_adapter.turso.idle_flush*` event (`idle_window_ms`) so the tuning
+ * is verifiable from telemetry, not inferred. */
+const DEFAULT_IDLE_FLUSH_MS = DEFAULT_IDLE_FLUSH_FLOOR_MS;
 
 /**
  * (wal-cap, 2026-08-18 — owner directive: "constraints around the maximum
@@ -185,8 +214,28 @@ const DEFAULT_IDLE_FLUSH_MS = 2000;
  * returned `[]` (unset/unrecognized) rather than echoing the value. There is
  * no native backstop available to configure; this hand-rolled one is
  * required.
+ *
+ * (BL-587, 2026-08-18) THIS CONSTANT IS NO LONGER THE EFFECTIVE CAP BY
+ * ITSELF. It was measured to mean something materially different on the two
+ * adapters that share it: `SqliteAdapterImpl`'s post-schema WAL baseline for
+ * memory-core's real schema is ~150-165 KB (FTS5 alone roughly doubles a
+ * trivial-schema baseline, 16,512 -> 32,992 bytes, measured directly), far
+ * above `TursoAdapterImpl`'s baseline for the identical schema — so sqlite
+ * had roughly 100 KB of real headroom against this flat number while turso
+ * had roughly 245 KB, an asymmetry nobody chose. This constant is now the
+ * HEADROOM budget (`DEFAULT_WAL_CAP_HEADROOM_BYTES`, wal-tuning.ts), and the
+ * effective cap `_checkWalCapAndFlush()` actually enforces is
+ * `baseline + headroom` (via `effectiveWalCapBytes()`), clamped to
+ * `DEFAULT_WAL_CAP_CEILING_BYTES`. The baseline defaults to 0 (identical
+ * behaviour to before) until a caller invokes the new
+ * `captureWalCapBaseline()` — ideally right after finishing its own schema
+ * DDL, since the adapter itself has no way to know when a caller's schema
+ * creation is done (data→data-only boundary — this package cannot reach
+ * upward to ask). `opts.walCapBytes` remains a full explicit override for
+ * tests, bypassing baseline-relative computation entirely — see
+ * `effectiveWalCapBytes()`'s doc comment.
  */
-const DEFAULT_WAL_CAP_BYTES = 262_144;
+const DEFAULT_WAL_CAP_BYTES = DEFAULT_WAL_CAP_HEADROOM_BYTES;
 
 class TursoTransactionImpl implements AdapterTransaction {
   private db: { run: Function; get: Function; all: Function; exec: Function };
@@ -360,8 +409,42 @@ export class TursoAdapterImpl implements TursoAdapter {
    *  `_idleFlushMs`/`_walFlushStrategy`). */
   private _idleFlushEnabled = false;
 
-  /** (idle-flush) Debounce window in ms — see `DEFAULT_IDLE_FLUSH_MS`. */
+  /** (idle-flush) FLOOR of the debounce window in ms — see
+   *  `DEFAULT_IDLE_FLUSH_MS`. When `opts.idleFlushMs` was explicitly
+   *  supplied this is a FIXED window (`_idleFlushExplicitMs` non-null);
+   *  otherwise it is the floor `effectiveIdleFlushMs()` (BL-590) clamps
+   *  against. */
   private _idleFlushMs: number = DEFAULT_IDLE_FLUSH_MS;
+
+  /** (BL-590) Ceiling of the adaptive debounce window in ms — see
+   *  `DEFAULT_IDLE_FLUSH_CEILING_MS`. Overridable via
+   *  `opts.idleFlushCeilingMs` (tests only). */
+  private _idleFlushCeilingMs: number = DEFAULT_IDLE_FLUSH_CEILING_MS;
+
+  /** (BL-590) Non-null when `opts.idleFlushMs` was explicitly supplied at
+   *  connect — an explicit window is a FIXED value, bypassing adaptive
+   *  computation entirely (same "explicit override wins" posture as
+   *  `_walCapExplicitBytes`). */
+  private _idleFlushExplicitMs: number | null = null;
+
+  /** (BL-590) EWMA of the observed gap (ms) between successive WRITE ops on
+   *  this connection — the signal `effectiveIdleFlushMs()` adapts the
+   *  debounce window to. `null` until at least one write has completed
+   *  (a freshly opened instance has no cadence to adapt to yet, so the next
+   *  arm uses the floor). Updated once per write in `_trackOp`, via
+   *  `updateWriteIntervalEwma()` (wal-tuning.ts). */
+  private _writeIntervalEwmaMs: number | null = null;
+
+  /** (BL-590) Wall-clock time (`Date.now()`) of the most recently completed
+   *  write op, or `null` before the first one. Paired with
+   *  `_writeIntervalEwmaMs` to compute the gap for the NEXT write. */
+  private _lastWriteAt: number | null = null;
+
+  /** (BL-590) The window actually armed by the most recent `_armIdleFlush()`
+   *  call — surfaced on every `idle_flush*` telemetry event
+   *  (`idle_window_ms`) so the adaptive tuning is verifiable from logs, not
+   *  inferred. `null` before the first arm. */
+  private _lastArmedIdleFlushMs: number | null = null;
 
   /**
    * (idle-flush) ONE decision point for gated-vs-ungated, per owner
@@ -446,10 +529,23 @@ export class TursoAdapterImpl implements TursoAdapter {
     if (this.closed || this._released) return;
     if (this._inFlightOps > 0) return;
     if (this._idleFlushTimer !== null) return; // already scheduled — coalesced
+    // (BL-590) Adaptive window: an explicit `opts.idleFlushMs` is a fixed
+    // value (bypasses adaptation entirely, same posture as the wal-cap
+    // explicit override); otherwise the window tracks the observed
+    // inter-write cadence, clamped [floor, ceiling]. See
+    // `effectiveIdleFlushMs()` (wal-tuning.ts).
+    const windowMs =
+      this._idleFlushExplicitMs ??
+      effectiveIdleFlushMs({
+        floorMs: this._idleFlushMs,
+        ceilingMs: this._idleFlushCeilingMs,
+        writeIntervalEwmaMs: this._writeIntervalEwmaMs,
+      });
+    this._lastArmedIdleFlushMs = windowMs;
     this._idleFlushTimer = setTimeout(() => {
       this._idleFlushTimer = null;
       void this._performIdleFlush();
-    }, this._idleFlushMs);
+    }, windowMs);
   }
 
   /**
@@ -521,10 +617,16 @@ export class TursoAdapterImpl implements TursoAdapter {
         wal_bytes_after: after,
         reclaimed_bytes: before !== null && after !== null ? before - after : null,
         duration_ms: Date.now() - startedAt,
+        // (BL-590) The window this specific flush was armed with — makes the
+        // adaptive debounce verifiable from telemetry rather than inferred.
+        idle_window_ms: this._lastArmedIdleFlushMs,
+        write_interval_ewma_ms:
+          this._writeIntervalEwmaMs !== null ? Math.round(this._writeIntervalEwmaMs) : null,
       });
     } catch (err) {
       log.error('store_adapter.turso.idle_flush_failed', {
         error: err instanceof Error ? err.message : String(err),
+        idle_window_ms: this._lastArmedIdleFlushMs,
       });
     }
   }
@@ -537,10 +639,28 @@ export class TursoAdapterImpl implements TursoAdapter {
    *  today they always travel together. */
   private _capFlushEnabled = false;
 
-  /** (wal-cap) Byte threshold — see `DEFAULT_WAL_CAP_BYTES` for the
-   *  measurement behind the default. Overridable per-connect via
-   *  `opts.walCapBytes` (tests only; no production caller sets this). */
-  private _walCapBytes: number = DEFAULT_WAL_CAP_BYTES;
+  /** (BL-587) Non-null when `opts.walCapBytes` was explicitly supplied at
+   *  connect — a FIXED absolute cap, bypassing baseline-relative computation
+   *  entirely (see `effectiveWalCapBytes()`). Used by
+   *  `wal-cap-concurrency.bug019.spec.ts` and `wal-cap.spec.ts` to trip the
+   *  backstop deterministically under a tiny controlled threshold. */
+  private _walCapExplicitBytes: number | null = null;
+
+  /** (BL-587) HEADROOM budget added on top of the captured baseline — see
+   *  `DEFAULT_WAL_CAP_HEADROOM_BYTES`. Overridable via
+   *  `opts.walCapHeadroomBytes` (tests only). */
+  private _walCapHeadroomBytes: number = DEFAULT_WAL_CAP_BYTES;
+
+  /** (BL-587) Absolute ceiling on the effective cap regardless of baseline —
+   *  see `DEFAULT_WAL_CAP_CEILING_BYTES`. Overridable via
+   *  `opts.walCapCeilingBytes` (tests only). */
+  private _walCapCeilingBytes: number = DEFAULT_WAL_CAP_CEILING_BYTES;
+
+  /** (BL-587) The captured post-schema WAL baseline, bytes. `0` (the
+   *  default) until a caller invokes `captureWalCapBaseline()` — with no
+   *  baseline captured, `effectiveWalCapBytes()` reduces to exactly
+   *  `_walCapHeadroomBytes`, i.e. the pre-BL-587 flat-constant behaviour. */
+  private _walCapBaselineBytes = 0;
 
   /**
    * (wal-cap) Runs synchronously INSIDE the write path — called from
@@ -570,6 +690,53 @@ export class TursoAdapterImpl implements TursoAdapter {
    * PRAGMA call itself CAN throw internally (see catch branch); this method
    * always catches it, classifies it, and returns normally either way.
    */
+  /** (BL-587) The effective wal-cap threshold — see `effectiveWalCapBytes()`
+   *  (wal-tuning.ts) for the precedence (explicit override > baseline +
+   *  headroom, clamped to the ceiling). */
+  private _effectiveWalCapBytes(): number {
+    return effectiveWalCapBytes({
+      explicitOverrideBytes: this._walCapExplicitBytes,
+      baselineBytes: this._walCapBaselineBytes,
+      headroomBytes: this._walCapHeadroomBytes,
+      ceilingBytes: this._walCapCeilingBytes,
+    });
+  }
+
+  /**
+   * (BL-587) Capture the store's CURRENT `-wal` byte size as the wal-cap
+   * baseline. Callers should invoke this once, right after finishing their
+   * own schema DDL (`CREATE TABLE`/`CREATE VIRTUAL TABLE ... USING fts5`/
+   * etc.) — this package cannot know when that is done itself (data→data
+   * boundary; the adapter has no visibility into a caller's schema), so it
+   * is deliberately NOT called automatically anywhere in `connect()`.
+   * Safe to call multiple times (idempotent re-capture — e.g. after a
+   * migration that materially changes the schema's steady-state WAL
+   * footprint); each call replaces the previous baseline. A no-op (baseline
+   * stays `0`, i.e. today's flat-headroom behaviour) for callers that never
+   * invoke it. Returns the captured value (0 if the `-wal` file does not
+   * currently exist, e.g. immediately after a checkpoint) for the caller's
+   * own logging/assertions.
+   */
+  captureWalCapBaseline(): number {
+    const dbPath = this.coordPath;
+    let size = 0;
+    if (dbPath !== undefined) {
+      try {
+        size = statSync(dbPath + '-wal').size;
+      } catch {
+        size = 0;
+      }
+    }
+    this._walCapBaselineBytes = size;
+    log.debug('store_adapter.turso.wal_cap_baseline_captured', {
+      db_path: dbPath ?? null,
+      baseline_bytes: size,
+      headroom_bytes: this._walCapHeadroomBytes,
+      effective_cap_bytes: this._effectiveWalCapBytes(),
+    });
+    return size;
+  }
+
   private async _checkWalCapAndFlush(): Promise<void> {
     if (!this._capFlushEnabled) return;
     const dbPath = this.coordPath;
@@ -583,7 +750,8 @@ export class TursoAdapterImpl implements TursoAdapter {
       // either way there is nothing to cap right now.
       return;
     }
-    if (size < this._walCapBytes) return;
+    const capBytes = this._effectiveWalCapBytes();
+    if (size < capBytes) return;
     try {
       const result = await this.executeAll<{ busy?: number; log?: number; checkpointed?: number }>(
         'PRAGMA wal_checkpoint(PASSIVE)',
@@ -598,13 +766,13 @@ export class TursoAdapterImpl implements TursoAdapter {
         log.warn('store_adapter.turso.wal_cap_flush_busy', {
           db_path: dbPath,
           wal_bytes_at_trip: size,
-          cap_bytes: this._walCapBytes,
+          cap_bytes: capBytes,
         });
       } else {
         log.debug('store_adapter.turso.wal_cap_flush', {
           db_path: dbPath,
           wal_bytes_at_trip: size,
-          cap_bytes: this._walCapBytes,
+          cap_bytes: capBytes,
           frames_checkpointed: row?.checkpointed ?? null,
         });
       }
@@ -641,7 +809,7 @@ export class TursoAdapterImpl implements TursoAdapter {
       const fields = {
         db_path: dbPath,
         wal_bytes_at_trip: size,
-        cap_bytes: this._walCapBytes,
+        cap_bytes: capBytes,
         error: err instanceof Error ? err.message : String(err),
       };
       if (busy) {
@@ -675,7 +843,20 @@ export class TursoAdapterImpl implements TursoAdapter {
     try {
       await this._ensureHealthy();
       const result = await fn();
-      if (isWrite) await this._checkWalCapAndFlush();
+      if (isWrite) {
+        // (BL-590) Feed the observed inter-write gap into the EWMA BEFORE
+        // the cap check — the cap check's own (rare) latency must not itself
+        // count as part of the write cadence being measured.
+        const now = Date.now();
+        if (this._lastWriteAt !== null) {
+          this._writeIntervalEwmaMs = updateWriteIntervalEwma(
+            this._writeIntervalEwmaMs,
+            now - this._lastWriteAt,
+          );
+        }
+        this._lastWriteAt = now;
+        await this._checkWalCapAndFlush();
+      }
       return result;
     } finally {
       this._inFlightOps--;
@@ -1060,6 +1241,23 @@ export class TursoAdapterImpl implements TursoAdapter {
      */
     idleFlushMs?: number;
     /**
+     * (BL-590, TEST-ONLY) Override the idle-flush debounce FLOOR (default
+     * `DEFAULT_IDLE_FLUSH_FLOOR_MS` = 2000ms) WITHOUT fixing the window —
+     * unlike `idleFlushMs`, this does NOT disable adaptive computation.
+     * Exists so tests can exercise the real BL-590 adaptive path (EWMA +
+     * margin, clamped [floor, ceiling]) with a small floor, instead of
+     * either paying a real 2s floor or using `idleFlushMs` (which bypasses
+     * adaptation entirely by design — see its own doc comment).
+     */
+    idleFlushFloorMs?: number;
+    /**
+     * (BL-590, TEST-ONLY) Override the idle-flush debounce CEILING (default
+     * `DEFAULT_IDLE_FLUSH_CEILING_MS` = 30,000ms). No production caller sets
+     * this — lets tests exercise the adaptive window's upper clamp without a
+     * real 30s wait.
+     */
+    idleFlushCeilingMs?: number;
+    /**
      * (idle-flush) Select the gated-vs-ungated strategy for the IDLE path —
      * see `_walFlushStrategy`'s doc comment for the full decision. Default
      * `'gated'`, now PERMANENT (2026-08-18): `wal-truncate-safety-experiment`
@@ -1077,6 +1275,18 @@ export class TursoAdapterImpl implements TursoAdapter {
      * hundreds of KB of real rows.
      */
     walCapBytes?: number;
+    /**
+     * (BL-587, TEST-ONLY) Override the HEADROOM budget added on top of the
+     * captured baseline (default `DEFAULT_WAL_CAP_HEADROOM_BYTES` =
+     * 262,144 / 256 KiB). No production caller sets this.
+     */
+    walCapHeadroomBytes?: number;
+    /**
+     * (BL-587, TEST-ONLY) Override the absolute ceiling on the effective cap
+     * (default `DEFAULT_WAL_CAP_CEILING_BYTES` = 1,048,576 / 1 MiB). No
+     * production caller sets this.
+     */
+    walCapCeilingBytes?: number;
   }): Promise<TursoAdapterImpl> {
     // Dynamic import so @tursodatabase/database is only loaded when used
     let tursoModule: any;
@@ -1761,7 +1971,12 @@ export class TursoAdapterImpl implements TursoAdapter {
       // its first real operation.
       if (!opts.readonly && canonicalDb !== undefined) {
         instance._idleFlushEnabled = true;
-        if (opts.idleFlushMs !== undefined) instance._idleFlushMs = opts.idleFlushMs;
+        if (opts.idleFlushMs !== undefined) {
+          instance._idleFlushMs = opts.idleFlushMs;
+          instance._idleFlushExplicitMs = opts.idleFlushMs;
+        }
+        if (opts.idleFlushFloorMs !== undefined) instance._idleFlushMs = opts.idleFlushFloorMs;
+        if (opts.idleFlushCeilingMs !== undefined) instance._idleFlushCeilingMs = opts.idleFlushCeilingMs;
         if (opts.walFlushStrategy !== undefined) instance._walFlushStrategy = opts.walFlushStrategy;
         instance._armIdleFlush();
 
@@ -1772,7 +1987,11 @@ export class TursoAdapterImpl implements TursoAdapter {
         // live the instant the first write happens; nothing to schedule
         // ahead of time.
         instance._capFlushEnabled = true;
-        if (opts.walCapBytes !== undefined) instance._walCapBytes = opts.walCapBytes;
+        if (opts.walCapBytes !== undefined) {
+          instance._walCapExplicitBytes = opts.walCapBytes;
+        }
+        if (opts.walCapHeadroomBytes !== undefined) instance._walCapHeadroomBytes = opts.walCapHeadroomBytes;
+        if (opts.walCapCeilingBytes !== undefined) instance._walCapCeilingBytes = opts.walCapCeilingBytes;
       }
 
       return instance;
@@ -1912,10 +2131,19 @@ export class TursoAdapterImpl implements TursoAdapter {
     // already uses, so no special-case "arm on first open" step is needed.
     if (!opts.readonly && canonicalDb !== undefined) {
       instance._idleFlushEnabled = true;
-      if (opts.idleFlushMs !== undefined) instance._idleFlushMs = opts.idleFlushMs;
+      if (opts.idleFlushMs !== undefined) {
+        instance._idleFlushMs = opts.idleFlushMs;
+        instance._idleFlushExplicitMs = opts.idleFlushMs;
+      }
+      if (opts.idleFlushFloorMs !== undefined) instance._idleFlushMs = opts.idleFlushFloorMs;
+      if (opts.idleFlushCeilingMs !== undefined) instance._idleFlushCeilingMs = opts.idleFlushCeilingMs;
       if (opts.walFlushStrategy !== undefined) instance._walFlushStrategy = opts.walFlushStrategy;
       instance._capFlushEnabled = true;
-      if (opts.walCapBytes !== undefined) instance._walCapBytes = opts.walCapBytes;
+      if (opts.walCapBytes !== undefined) {
+        instance._walCapExplicitBytes = opts.walCapBytes;
+      }
+      if (opts.walCapHeadroomBytes !== undefined) instance._walCapHeadroomBytes = opts.walCapHeadroomBytes;
+      if (opts.walCapCeilingBytes !== undefined) instance._walCapCeilingBytes = opts.walCapCeilingBytes;
     }
 
     return instance;

@@ -32,6 +32,15 @@ import type {
 } from './types.js';
 import { ETursoNativeStore, isTursoNativeStoreSchemaError } from './errors.js';
 import { ensureEngineMarker, readApplicationId, SOX_APP_ID_TURSO } from './engine-guard.js';
+import {
+  DEFAULT_IDLE_FLUSH_CEILING_MS,
+  DEFAULT_IDLE_FLUSH_FLOOR_MS,
+  DEFAULT_WAL_CAP_CEILING_BYTES,
+  DEFAULT_WAL_CAP_HEADROOM_BYTES,
+  effectiveIdleFlushMs,
+  effectiveWalCapBytes,
+  updateWriteIntervalEwma,
+} from './wal-tuning.js';
 import { canonicalDbPath } from './path-identity.js';
 import {
   ensureFtsIndex as ensureFtsIndexOn,
@@ -90,12 +99,22 @@ function loadBetterSqlite3(): BetterSqlite3Constructor {
  * file but never shrinks the `-wal` sidecar. This is that missing half, ported
  * from `TursoAdapterImpl` with ONE deliberate simplification below.
  *
- * Same cadence as the Turso port (and `WriteQueue.CHECKPOINT_IDLE_MS`, its
+ * Same FLOOR as the Turso port (and `WriteQueue.CHECKPOINT_IDLE_MS`, its
  * ancestor) — 2000ms debounce window before an idle connection checkpoints.
  * Overridable per-instance via `opts.idleFlushMs` (tests only; no production
- * caller sets this).
+ * caller sets this) — an explicit value is a FIXED window, bypassing the
+ * BL-590 adaptive computation below.
+ *
+ * (BL-590, 2026-08-18) See `turso-adapter.ts`'s `DEFAULT_IDLE_FLUSH_MS` doc
+ * comment for the full BL-590 rationale — identical here, shared via
+ * `wal-tuning.ts`'s `effectiveIdleFlushMs()`. This adapter has no
+ * multiprocess embed-pipeline write pattern of its own today
+ * (`STORE_ADAPTER=sqlite` is a legacy single-process opt-in), but the
+ * adaptive computation is shared code, not a Turso-only special case — a
+ * future sqlite consumer with a bursty write cadence gets the same
+ * coalescing benefit for free.
  */
-const DEFAULT_IDLE_FLUSH_MS = 2000;
+const DEFAULT_IDLE_FLUSH_MS = DEFAULT_IDLE_FLUSH_FLOOR_MS;
 
 /**
  * (BL-571) Forced size-capped flush threshold — same backstop reasoning and
@@ -106,8 +125,19 @@ const DEFAULT_IDLE_FLUSH_MS = 2000;
  * synchronously in the write path after every writable op, so it cannot be
  * starved by continuous traffic. Overridable via `opts.walCapBytes` (tests
  * only).
+ *
+ * (BL-587, 2026-08-18) THIS CONSTANT IS NO LONGER THE EFFECTIVE CAP BY
+ * ITSELF — it is now the HEADROOM budget. Measured directly: this backend's
+ * own post-schema WAL baseline for memory-core's real schema is ~150-165 KB
+ * (FTS5 alone roughly doubles a trivial-schema baseline, 16,512 -> 32,992
+ * bytes), materially higher than `TursoAdapterImpl`'s baseline for the
+ * identical schema — so a flat cap gave this backend roughly 100 KB of real
+ * headroom against the same nominal 256 KiB threshold that gave turso
+ * roughly 245 KB. See `turso-adapter.ts`'s `DEFAULT_WAL_CAP_BYTES` doc
+ * comment and `wal-tuning.ts`'s `effectiveWalCapBytes()` for the full
+ * baseline-relative computation this constant now feeds.
  */
-const DEFAULT_WAL_CAP_BYTES = 262_144;
+const DEFAULT_WAL_CAP_BYTES = DEFAULT_WAL_CAP_HEADROOM_BYTES;
 
 /*
  * (BL-571) WHY THIS IS SIMPLER THAN THE TURSO PORT — read before "fixing" it
@@ -262,8 +292,29 @@ export class SqliteAdapterImpl implements SqliteAdapter {
    *  the complexity for a path with no production caller today. */
   private _idleFlushEnabled = false;
 
-  /** Debounce window in ms — see `DEFAULT_IDLE_FLUSH_MS`. */
+  /** Debounce window FLOOR in ms — see `DEFAULT_IDLE_FLUSH_MS`. */
   private _idleFlushMs: number = DEFAULT_IDLE_FLUSH_MS;
+
+  /** (BL-590) Ceiling of the adaptive debounce window in ms — see
+   *  `DEFAULT_IDLE_FLUSH_CEILING_MS`. Overridable via
+   *  `opts.idleFlushCeilingMs` (tests only). */
+  private _idleFlushCeilingMs: number = DEFAULT_IDLE_FLUSH_CEILING_MS;
+
+  /** (BL-590) Non-null when `opts.idleFlushMs` was explicitly supplied — a
+   *  FIXED window, bypassing adaptive computation entirely. */
+  private _idleFlushExplicitMs: number | null = null;
+
+  /** (BL-590) EWMA of the observed gap (ms) between successive WRITE ops —
+   *  see `TursoAdapterImpl._writeIntervalEwmaMs` for the full rationale. */
+  private _writeIntervalEwmaMs: number | null = null;
+
+  /** (BL-590) Wall-clock time of the most recently completed write, or
+   *  `null` before the first one. */
+  private _lastWriteAt: number | null = null;
+
+  /** (BL-590) The window actually armed by the most recent `_armIdleFlush()`
+   *  call — surfaced on `idle_flush*` telemetry events (`idle_window_ms`). */
+  private _lastArmedIdleFlushMs: number | null = null;
 
   /** The pending idle-flush timer, or `null` when none is armed. At most one
    *  is ever live per instance. */
@@ -273,17 +324,48 @@ export class SqliteAdapterImpl implements SqliteAdapter {
    *  — same eligibility as `_idleFlushEnabled`, set alongside it. */
   private _capFlushEnabled = false;
 
-  /** Byte threshold — see `DEFAULT_WAL_CAP_BYTES`. */
-  private _walCapBytes: number = DEFAULT_WAL_CAP_BYTES;
+  /** (BL-587) Non-null when `opts.walCapBytes` was explicitly supplied — a
+   *  FIXED absolute cap, bypassing baseline-relative computation entirely. */
+  private _walCapExplicitBytes: number | null = null;
+
+  /** (BL-587) HEADROOM budget added on top of the captured baseline — see
+   *  `DEFAULT_WAL_CAP_HEADROOM_BYTES`. Overridable via
+   *  `opts.walCapHeadroomBytes` (tests only). */
+  private _walCapHeadroomBytes: number = DEFAULT_WAL_CAP_BYTES;
+
+  /** (BL-587) Absolute ceiling on the effective cap — see
+   *  `DEFAULT_WAL_CAP_CEILING_BYTES`. Overridable via
+   *  `opts.walCapCeilingBytes` (tests only). */
+  private _walCapCeilingBytes: number = DEFAULT_WAL_CAP_CEILING_BYTES;
+
+  /** (BL-587) The captured post-schema WAL baseline, bytes. `0` (the
+   *  default) until a caller invokes `captureWalCapBaseline()`. */
+  private _walCapBaselineBytes = 0;
 
   constructor(
     dbPath: string,
-    opts?: { readonly?: boolean; idleFlushMs?: number; walCapBytes?: number },
+    opts?: {
+      readonly?: boolean;
+      idleFlushMs?: number;
+      idleFlushFloorMs?: number;
+      idleFlushCeilingMs?: number;
+      walCapBytes?: number;
+      walCapHeadroomBytes?: number;
+      walCapCeilingBytes?: number;
+    },
   );
   constructor(db: Sqlite3Database);
   constructor(
     dbOrPath: string | Sqlite3Database,
-    opts?: { readonly?: boolean; idleFlushMs?: number; walCapBytes?: number },
+    opts?: {
+      readonly?: boolean;
+      idleFlushMs?: number;
+      idleFlushFloorMs?: number;
+      idleFlushCeilingMs?: number;
+      walCapBytes?: number;
+      walCapHeadroomBytes?: number;
+      walCapCeilingBytes?: number;
+    },
   ) {
     if (typeof dbOrPath === 'string') {
       // (BUG-018, INV-4) Canonicalize ONCE at open: `config.dbPath` and every
@@ -388,9 +470,18 @@ export class SqliteAdapterImpl implements SqliteAdapter {
     // first real operation.
     if (!this.config.readonly && this.config.dbPath !== undefined) {
       this._idleFlushEnabled = true;
-      if (opts?.idleFlushMs !== undefined) this._idleFlushMs = opts.idleFlushMs;
+      if (opts?.idleFlushMs !== undefined) {
+        this._idleFlushMs = opts.idleFlushMs;
+        this._idleFlushExplicitMs = opts.idleFlushMs;
+      }
+      if (opts?.idleFlushFloorMs !== undefined) this._idleFlushMs = opts.idleFlushFloorMs;
+      if (opts?.idleFlushCeilingMs !== undefined) this._idleFlushCeilingMs = opts.idleFlushCeilingMs;
       this._capFlushEnabled = true;
-      if (opts?.walCapBytes !== undefined) this._walCapBytes = opts.walCapBytes;
+      if (opts?.walCapBytes !== undefined) {
+        this._walCapExplicitBytes = opts.walCapBytes;
+      }
+      if (opts?.walCapHeadroomBytes !== undefined) this._walCapHeadroomBytes = opts.walCapHeadroomBytes;
+      if (opts?.walCapCeilingBytes !== undefined) this._walCapCeilingBytes = opts.walCapCeilingBytes;
       this._armIdleFlush();
     }
   }
@@ -414,10 +505,20 @@ export class SqliteAdapterImpl implements SqliteAdapter {
     if (this.closed) return;
     if (this._inFlightOps > 0) return;
     if (this._idleFlushTimer !== null) return; // already scheduled — coalesced
+    // (BL-590) Adaptive window — see `TursoAdapterImpl._armIdleFlush()` for
+    // the full rationale; identical computation, shared via wal-tuning.ts.
+    const windowMs =
+      this._idleFlushExplicitMs ??
+      effectiveIdleFlushMs({
+        floorMs: this._idleFlushMs,
+        ceilingMs: this._idleFlushCeilingMs,
+        writeIntervalEwmaMs: this._writeIntervalEwmaMs,
+      });
+    this._lastArmedIdleFlushMs = windowMs;
     this._idleFlushTimer = setTimeout(() => {
       this._idleFlushTimer = null;
       this._performIdleFlush();
-    }, this._idleFlushMs);
+    }, windowMs);
     // (BL-571 design note) A pending idle-flush timer must never by itself
     // keep an otherwise-finished process alive.
     this._idleFlushTimer.unref?.();
@@ -454,12 +555,17 @@ export class SqliteAdapterImpl implements SqliteAdapter {
         log.debug('store_adapter.sqlite.idle_flush', {
           db_path: this.config.dbPath,
           frames_checkpointed: row?.checkpointed ?? null,
+          // (BL-590) Verifiable-from-telemetry adaptive window.
+          idle_window_ms: this._lastArmedIdleFlushMs,
+          write_interval_ewma_ms:
+            this._writeIntervalEwmaMs !== null ? Math.round(this._writeIntervalEwmaMs) : null,
         });
       }
     } catch (err) {
       log.error('store_adapter.sqlite.idle_flush_failed', {
         db_path: this.config.dbPath,
         error: err instanceof Error ? err.message : String(err),
+        idle_window_ms: this._lastArmedIdleFlushMs,
       });
     }
   }
@@ -476,6 +582,45 @@ export class SqliteAdapterImpl implements SqliteAdapter {
    * throws — a failed forced-flush must not fail the write that already
    * succeeded.
    */
+  /** (BL-587) The effective wal-cap threshold — see
+   *  `TursoAdapterImpl._effectiveWalCapBytes()` / `effectiveWalCapBytes()`
+   *  (wal-tuning.ts) for the precedence. */
+  private _effectiveWalCapBytes(): number {
+    return effectiveWalCapBytes({
+      explicitOverrideBytes: this._walCapExplicitBytes,
+      baselineBytes: this._walCapBaselineBytes,
+      headroomBytes: this._walCapHeadroomBytes,
+      ceilingBytes: this._walCapCeilingBytes,
+    });
+  }
+
+  /**
+   * (BL-587) Capture the store's CURRENT `-wal` byte size as the wal-cap
+   * baseline. See `TursoAdapter.captureWalCapBaseline()`'s doc comment
+   * (types.ts) for the full rationale — identical on this adapter. Callers
+   * should invoke this once, right after finishing their own schema DDL.
+   * Idempotent; safe to re-call. Returns the captured value.
+   */
+  captureWalCapBaseline(): number {
+    const dbPath = this.config.dbPath;
+    let size = 0;
+    if (dbPath !== undefined) {
+      try {
+        size = statSync(`${dbPath}-wal`).size;
+      } catch {
+        size = 0;
+      }
+    }
+    this._walCapBaselineBytes = size;
+    log.debug('store_adapter.sqlite.wal_cap_baseline_captured', {
+      db_path: dbPath ?? null,
+      baseline_bytes: size,
+      headroom_bytes: this._walCapHeadroomBytes,
+      effective_cap_bytes: this._effectiveWalCapBytes(),
+    });
+    return size;
+  }
+
   private _checkWalCapAndFlush(): void {
     if (!this._capFlushEnabled) return;
     const dbPath = this.config.dbPath;
@@ -489,7 +634,8 @@ export class SqliteAdapterImpl implements SqliteAdapter {
       // there is nothing to cap right now.
       return;
     }
-    if (size < this._walCapBytes) return;
+    const capBytes = this._effectiveWalCapBytes();
+    if (size < capBytes) return;
     try {
       const rows = this.db.pragma('wal_checkpoint(TRUNCATE)') as
         | Array<{ busy?: number; log?: number; checkpointed?: number }>
@@ -499,13 +645,13 @@ export class SqliteAdapterImpl implements SqliteAdapter {
         log.warn('store_adapter.sqlite.wal_cap_flush_busy', {
           db_path: dbPath,
           wal_bytes_at_trip: size,
-          cap_bytes: this._walCapBytes,
+          cap_bytes: capBytes,
         });
       } else {
         log.debug('store_adapter.sqlite.wal_cap_flush', {
           db_path: dbPath,
           wal_bytes_at_trip: size,
-          cap_bytes: this._walCapBytes,
+          cap_bytes: capBytes,
           frames_checkpointed: row?.checkpointed ?? null,
         });
       }
@@ -513,6 +659,7 @@ export class SqliteAdapterImpl implements SqliteAdapter {
       log.error('store_adapter.sqlite.wal_cap_flush_failed', {
         db_path: dbPath,
         wal_bytes_at_trip: size,
+        cap_bytes: capBytes,
         error: err instanceof Error ? err.message : String(err),
       });
     }
@@ -528,7 +675,19 @@ export class SqliteAdapterImpl implements SqliteAdapter {
     this._inFlightOps++;
     try {
       const result = await fn();
-      if (isWrite) this._checkWalCapAndFlush();
+      if (isWrite) {
+        // (BL-590) Feed the observed inter-write gap into the EWMA before
+        // the cap check — see `TursoAdapterImpl._trackOp()` for why.
+        const now = Date.now();
+        if (this._lastWriteAt !== null) {
+          this._writeIntervalEwmaMs = updateWriteIntervalEwma(
+            this._writeIntervalEwmaMs,
+            now - this._lastWriteAt,
+          );
+        }
+        this._lastWriteAt = now;
+        this._checkWalCapAndFlush();
+      }
       return result;
     } finally {
       this._inFlightOps--;

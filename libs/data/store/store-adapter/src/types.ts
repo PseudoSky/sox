@@ -469,12 +469,31 @@ export interface SqliteAdapter extends StoreAdapter {
   init(): Promise<void>;
   /** Escape hatch — returns the raw better-sqlite3.Database handle. Calling this breaks portability. */
   unwrap(): import('better-sqlite3').Database;
+  /**
+   * (BL-587) Capture the store's CURRENT `-wal` byte size as the wal-cap
+   * backstop's baseline — the effective forced-flush threshold becomes
+   * `baseline + headroom`, clamped to an absolute ceiling, instead of a flat
+   * constant that means a materially different headroom budget depending on
+   * this backend's own post-schema WAL footprint (FTS5 alone roughly
+   * doubles a trivial-schema baseline on this adapter). Callers should
+   * invoke this once, right after finishing their own schema DDL — the
+   * adapter has no visibility into when that is done itself. Idempotent; a
+   * no-op for callers that never invoke it (baseline stays 0, i.e. the
+   * pre-BL-587 flat-headroom behaviour). Returns the captured byte value.
+   */
+  captureWalCapBaseline(): number;
 }
 
 export interface TursoAdapter extends StoreAdapter {
   readonly config: Readonly<AdapterConfig & { type: 'turso' }>;
   /** Escape hatch — returns the raw @tursodatabase/database handle. Calling this breaks portability. */
   unwrap(): import('@tursodatabase/database').Database;
+  /**
+   * (BL-587) Capture the store's CURRENT `-wal` byte size as the wal-cap
+   * backstop's baseline — see `SqliteAdapter.captureWalCapBaseline()`'s doc
+   * comment for the full rationale (identical on this adapter).
+   */
+  captureWalCapBaseline(): number;
   /**
    * (SPEC-CONN-RECYCLE) Live connection health. `'poisoned'` after a fatal
    * driver fault (see `isFatalConnectionError`) has been detected and a
