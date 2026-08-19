@@ -267,15 +267,26 @@ describe('BL-472 — coordinatedShutdown step 0: bounded Phase-B/heal drain', ()
     expect(exit).toHaveBeenCalledWith(0);
   });
 
-  it('[BL-472 bounded] budget sanity: SHUTDOWN_EMBED_DRAIN_TIMEOUT_MS stays inside a documented margin of SHUTDOWN_SAFETY_NET_MS', () => {
+  it('[BL-472 bounded, BUG-018 tightened] budget sanity: SHUTDOWN_EMBED_DRAIN_TIMEOUT_MS stays UNDER SHUTDOWN_SAFETY_NET_MS with real headroom for the checkpoint', () => {
     // Mirrors backend-shutdown.spec.ts's own numeric sanity assertions
     // (lines 236-237) — a real behavioral guard, not decoration: fails if a
     // future edit raises SHUTDOWN_EMBED_DRAIN_TIMEOUT_MS without
     // reconsidering the budget against everything that runs after it.
     expect(SHUTDOWN_EMBED_DRAIN_TIMEOUT_MS).toBeLessThan(SHUTDOWN_SAFETY_NET_MS);
     const TERMINATE_GRACE_MS = 1000; // sharedFastembedProcess.ts's own documented grace
+    // (BUG-018) Previously asserted `... < SHUTDOWN_SAFETY_NET_MS + 500` — a
+    // TOLERATED OVERSHOOT (SPEC-BL-472.md D1 measured this worst-case sum at
+    // 4250 against a 4000 safety net and accepted the excess, reasoning the
+    // safety net would "force-exit that pathological case cleanly." It does
+    // not: an exit(0) mid-`closeAllAdapters()` skips the real checkpoint.
+    // BUG-018's full root-cause + live 3-process repro evidence is in
+    // bug018-shutdown-budget-headroom.spec.ts, which this assertion now
+    // matches — the worst-case sum must stay UNDER the safety net, with
+    // real headroom left for the unbounded, durability-critical steps that
+    // run inside that budget too (closeAllAdapters/closeAllForShutdown/
+    // handle.close).
     expect(SHUTDOWN_EMBED_DRAIN_TIMEOUT_MS + TERMINATE_GRACE_MS + SHUTDOWN_BACKUP_TIMEOUT_MS).toBeLessThan(
-      SHUTDOWN_SAFETY_NET_MS + 500, // documented worst-case margin (SPEC-BL-472.md D1: 4250 vs 4000)
+      SHUTDOWN_SAFETY_NET_MS,
     );
   });
 
