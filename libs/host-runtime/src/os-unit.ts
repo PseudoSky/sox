@@ -1729,6 +1729,84 @@ export async function updateOsUnit(
   };
 }
 
+// ─── BUG-023: reload-then-verify a unit unloaded out from under a caller ──────
+
+export interface ReloadAndVerifyOsUnitOptions {
+  /** INJECTABLE unit directory. Defaults to the platform default. Tests pass a temp dir. */
+  unitDir?: string;
+  /** INJECTABLE command runner for the reality probe (`platform.isLoaded`). Defaults to `realOsExec`. */
+  exec?: OsExec;
+  log?: (m: string) => void;
+  /** Injectable seam for `enableOsUnit`. Tests substitute a stub to drive every branch without real fs/launchctl I/O. */
+  enableFn?: typeof enableOsUnit;
+}
+
+export interface ReloadAndVerifyOsUnitResult {
+  /** `enableOsUnit`'s action for this call (created/updated/unchanged/blocked). */
+  action: EnableAction;
+  /** The full `enableOsUnit` result, for callers that need `unitPath`/`contentHash`/`droppedEnvKeys`. */
+  enableResult: EnableResult;
+  /**
+   * BUG-023 [inv:list-never-lies]: whether the OS supervisor reports the unit
+   * loaded RIGHT NOW, independently re-queried via `platform.isLoaded(...)`
+   * AFTER the `enableOsUnit` call — this function does NOT trust
+   * `enableResult.loaded` (what `enableOsUnit` believes it just did) as the
+   * last word. `false` here is the exact silent-failure BUG-023 reports: a
+   * process can be alive (respawned by a service-proxy or a plain restart)
+   * while its supervising OS unit is NOT loaded — no restart-on-crash, will
+   * not survive a reboot — and nothing else re-asks reality to catch it.
+   */
+  verifiedLoaded: boolean;
+}
+
+/**
+ * BUG-023 (`soxe upgrade --all`'s rolling-restart pass unloading an OS unit
+ * before a verified-stop, per `[inv:unload-then-reap]`, and never reloading
+ * it): reload a possibly-unloaded OS unit — via `enableOsUnit`, reused
+ * VERBATIM, content-addressed and idempotent, so this is a safe no-op when
+ * nothing actually unloaded it — and independently RE-VERIFY the OS
+ * supervisor's reality afterward via `platform.isLoaded`, rather than
+ * trusting `enableOsUnit`'s own self-reported `loaded` field.
+ *
+ * `enableOsUnit`'s `loaded` field only reports whether launchd/systemd's
+ * `load`/`bootstrap` call itself returned exit 0 — that is necessary but not
+ * sufficient evidence of `[inv:list-never-lies]`: it says nothing about
+ * whether the unit is ACTUALLY loaded at the moment the caller goes on to
+ * report success. This function closes that gap by re-asking
+ * `platform.isLoaded` as a fresh, independent probe, exactly the way
+ * `soxe service status` itself determines `loaded: yes/no`.
+ *
+ * Callers (the rolling-restart paths in `apps/sox/src/main.ts` for both the
+ * `service` and proxy-mode `mcp-server` dispositions) MUST check
+ * `result.verifiedLoaded` and fail loudly — never silently report a
+ * restarted/backend-restarted success — when it is `false`.
+ */
+export function reloadAndVerifyOsUnit(
+  spec: OsUnitSpec,
+  platform: OsUnitPlatform,
+  opts: ReloadAndVerifyOsUnitOptions = {},
+): ReloadAndVerifyOsUnitResult {
+  const log = opts.log ?? (() => { /* no-op */ });
+  const exec = opts.exec ?? realOsExec;
+  const enableFn = opts.enableFn ?? enableOsUnit;
+  const enableOptsBase: EnableOptions = { log, load: true };
+  if (opts.unitDir !== undefined) enableOptsBase.unitDir = opts.unitDir;
+  if (opts.exec !== undefined) enableOptsBase.exec = opts.exec;
+
+  const enableResult = enableFn(spec, platform, enableOptsBase);
+
+  // The independent reality probe — NOT enableResult.loaded.
+  const verifiedLoaded = platform.isLoaded(spec.label, exec);
+  if (!verifiedLoaded) {
+    log(
+      `⚠ BUG-023 GUARD: os-unit ${spec.label} reports loaded=NO after re-enable (action: ${enableResult.action}) ` +
+        `— the managed process is running UNSUPERVISED: no restart-on-crash, will NOT survive a reboot.`,
+    );
+  }
+
+  return { action: enableResult.action, enableResult, verifiedLoaded };
+}
+
 // ─── BL-185: Interval-schedule detection ─────────────────────────────────────
 
 /**

@@ -37,6 +37,7 @@ import {
   readUnitMeta,
   resolveUnitNodePath,
   restartAndVerify,
+  reloadAndVerifyOsUnit,
   unitContentHash,
   unloadThenReap,
   updateOsUnit,
@@ -1367,6 +1368,135 @@ describe('updateOsUnit — BL-593 [inv:deploy-verified] extended to config drift
     expect(seen!.findMatches).toBe(findMatches);
     expect(seen!.reapFn).toBe(reapFn);
     expect(seen!.sleepFn).toBe(sleepFn);
+  });
+});
+
+// ─── BUG-023: reloadAndVerifyOsUnit — independent post-reload reality probe ───
+//
+// `soxe upgrade --all`'s rolling-restart pass for a proxy-mode mcp-server
+// UNLOADS the OS unit before verified-stopping the old backend
+// ([inv:unload-then-reap]) and never reloaded it — the fresh backend came back
+// only because the service-proxy respawned it, so the process stayed alive
+// while `soxe service status` honestly reported `loaded: no` / `owner: none`:
+// unsupervised, no restart-on-crash, would not survive a reboot. Nothing
+// CHECKED that honest signal. `reloadAndVerifyOsUnit` is the fix: reload via
+// `enableOsUnit` (reused verbatim) THEN independently re-query
+// `platform.isLoaded` — never trust `enableOsUnit`'s own self-reported
+// `loaded` field as the last word.
+describe('reloadAndVerifyOsUnit — BUG-023 [inv:list-never-lies] applied to reload', () => {
+  const platform = new LaunchdPlatform();
+  const spec: OsUnitSpec = {
+    id: 'test-daemon',
+    scope: 'user',
+    label: 'com.sox.user.test-daemon',
+    nodePath: '/usr/bin/node',
+    nodeArgs: ['--enable-source-maps'],
+    entrypoint: '/store/test/dist/index.js',
+    env: {},
+    workingDirectory: '/store/test',
+    runAtLoad: true,
+    keepAlive: true,
+    throttleIntervalSec: 10,
+    stdoutPath: '/logs/test.out.log',
+    stderrPath: '/logs/test.err.log',
+  };
+
+  function makeEnableResult(action: EnableResult['action'], over: Partial<EnableResult> = {}): EnableResult {
+    return {
+      action,
+      unitPath: '/units/com.sox.user.test-daemon.plist',
+      label: spec.label,
+      contentHash: 'deadbeefcafef00d',
+      loaded: action !== 'blocked',
+      ...over,
+    };
+  }
+
+  it('RED (the exact BUG-023 scenario): enableOsUnit self-reports loaded:true, but the independent platform.isLoaded probe says NO — verifiedLoaded is false, not true', () => {
+    // enableFn's self-report says the reload succeeded...
+    const enableFn = (): EnableResult => makeEnableResult('updated', { loaded: true });
+    // ...but the fake `launchctl print` (what platform.isLoaded actually asks)
+    // reports the unit is NOT loaded — modeling the real incident: the OS
+    // supervisor never got the reload it thinks happened.
+    const fakeExec: OsExec = (): OsExecResult => ({ code: 1, stdout: '', stderr: 'No such process' });
+
+    const result = reloadAndVerifyOsUnit(spec, platform, { enableFn, exec: fakeExec });
+
+    expect(result.action).toBe('updated');
+    expect(result.enableResult.loaded).toBe(true); // the self-report BUG-023 wrongly trusted
+    expect(result.verifiedLoaded).toBe(false); // the independent probe — the actual fix
+  });
+
+  it('GREEN: enableOsUnit reloads AND the independent platform.isLoaded probe confirms it — verifiedLoaded is true', () => {
+    const enableFn = (): EnableResult => makeEnableResult('updated', { loaded: true });
+    const fakeExec: OsExec = (): OsExecResult => ({ code: 0, stdout: 'path = /units/com.sox.user.test-daemon.plist\npid = 4242\n', stderr: '' });
+
+    const result = reloadAndVerifyOsUnit(spec, platform, { enableFn, exec: fakeExec });
+
+    expect(result.action).toBe('updated');
+    expect(result.verifiedLoaded).toBe(true);
+  });
+
+  it('always loads (opts.load is not a knob — this function exists specifically to reload)', () => {
+    let seenLoad: boolean | undefined;
+    const enableFn = (_spec2: OsUnitSpec, _platform2: unknown, opts: { load?: boolean }): EnableResult => {
+      seenLoad = opts.load;
+      return makeEnableResult('unchanged');
+    };
+    const fakeExec: OsExec = (): OsExecResult => ({ code: 0, stdout: '', stderr: '' });
+
+    reloadAndVerifyOsUnit(spec, platform, { enableFn: enableFn as typeof enableOsUnit, exec: fakeExec });
+
+    expect(seenLoad).toBe(true);
+  });
+
+  it('propagates unitDir/exec seams straight through to enableFn', () => {
+    let seenUnitDir: string | undefined;
+    let seenExec: OsExec | undefined;
+    const enableFn = (_spec2: OsUnitSpec, _platform2: unknown, opts: { unitDir?: string; exec?: OsExec }): EnableResult => {
+      seenUnitDir = opts.unitDir;
+      seenExec = opts.exec;
+      return makeEnableResult('unchanged');
+    };
+    const fakeExec: OsExec = (): OsExecResult => ({ code: 0, stdout: '', stderr: '' });
+
+    reloadAndVerifyOsUnit(spec, platform, { enableFn: enableFn as typeof enableOsUnit, unitDir: '/scratch/units', exec: fakeExec });
+
+    expect(seenUnitDir).toBe('/scratch/units');
+    expect(seenExec).toBe(fakeExec);
+  });
+
+  it('a blocked (BL-375) enable is still independently reality-checked, not short-circuited', () => {
+    const enableFn = (): EnableResult => makeEnableResult('blocked', { droppedEnvKeys: ['SOX_CONFIG_FOO'] });
+    // The unit was NEVER loaded in the first place — the reality probe should agree.
+    const fakeExec: OsExec = (): OsExecResult => ({ code: 1, stdout: '', stderr: '' });
+
+    const result = reloadAndVerifyOsUnit(spec, platform, { enableFn, exec: fakeExec });
+
+    expect(result.action).toBe('blocked');
+    expect(result.verifiedLoaded).toBe(false);
+  });
+
+  it('with the REAL enableOsUnit (no enableFn stub) end-to-end against a sandboxed unitDir + fake exec: first reload creates+loads, verifiedLoaded reflects the fake exec', () => {
+    const calls: string[][] = [];
+    const fakeExec: OsExec = (cmd, args) => {
+      calls.push([cmd, ...args]);
+      if (args[0] === 'bootstrap') return { code: 0, stdout: '', stderr: '' };
+      if (args[0] === 'print') return { code: 0, stdout: 'path = /whatever\npid = 555\n', stderr: '' };
+      return { code: 0, stdout: '', stderr: '' };
+    };
+    const sandboxedSpec: OsUnitSpec = {
+      ...spec,
+      stdoutPath: path.join(logDir, 'test.out.log'),
+      stderrPath: path.join(logDir, 'test.err.log'),
+    };
+
+    const result = reloadAndVerifyOsUnit(sandboxedSpec, platform, { unitDir, exec: fakeExec });
+
+    expect(result.action).toBe('created');
+    expect(result.verifiedLoaded).toBe(true);
+    expect(calls.some((c) => c[0] === 'launchctl' && c[1] === 'bootstrap')).toBe(true);
+    expect(calls.some((c) => c[0] === 'launchctl' && c[1] === 'print')).toBe(true);
   });
 });
 
