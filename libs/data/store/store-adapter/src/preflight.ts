@@ -39,7 +39,7 @@
  * unreachable at the moment it is needed, so the gate here is an **out-of-band
  * marker** — one file per connection, `<leaseDir>/<token>.openmark`, written
  * by {@link markStoreOpen} on open and removed by {@link clearStoreOpenMarker}
- * on that connection's own orderly close (BUG-019: per-connection, so a
+ * on that connection's own orderly close (BUG014.T5: per-connection, so a
  * sibling's close can never erase a peer's crash evidence). A marker whose
  * pid is DEAD at open time ⇒ the previous session did not close ⇒ pre-flight
  * ({@link hasUncleanShutdown}). A marker whose pid is LIVE is a concurrent
@@ -115,7 +115,7 @@ import { log } from '@adhd/sox-telemetry';
 const require = createRequire(import.meta.url);
 
 /**
- * (BUG-019 review fix, finding 2) Best-effort marker-file fs error reporting.
+ * (BUG014.T5 review fix, finding 2) Best-effort marker-file fs error reporting.
  * The mark/clear/sweep never-throw contract is load-bearing, so a failed fs
  * call is logged — never thrown. ENOENT/ENOTDIR are the expected benign races
  * (concurrent close, a sibling sweeper, a not-yet-created lease dir) and stay
@@ -133,7 +133,7 @@ function logMarkerFsError(event: string, err: unknown): void {
 // ── Out-of-band open marker ──────────────────────────────────────────────────
 
 /**
- * (BUG-019) The LEGACY single-shared marker path (`${dbPath}-openmark`),
+ * (BUG014.T5) The LEGACY single-shared marker path (`${dbPath}-openmark`),
  * written by store-adapter versions before the per-connection marker landed.
  *
  * Retained ONLY for the one-shot migration shim: when a legacy marker file
@@ -150,7 +150,7 @@ export function storeOpenMarkerPath(dbPath: string): string {
 }
 
 /**
- * (BUG-019) Path of ONE connection's open marker: `<leaseDir>/<token>.openmark`.
+ * (BUG014.T5) Path of ONE connection's open marker: `<leaseDir>/<token>.openmark`.
  *
  * The marker now lives INSIDE the per-store lease directory and is keyed per
  * lease token, so N concurrent connections hold N markers and an orderly close
@@ -166,10 +166,10 @@ export function openMarkerPath(dbPath: string, token: string): string {
 /**
  * Record that a session is open against `dbPath`. Never throws.
  *
- * (BUG-019) Per-connection: with `token` (the connection's lease token — the
+ * (BUG014.T5) Per-connection: with `token` (the connection's lease token — the
  * adapter always passes it), writes `<leaseDir>/<token>.openmark` carrying the
  * CURRENT pid, so a sibling connection's orderly close can never erase this
- * session's crash evidence (the shared-marker failure BUG-019 fixes).
+ * session's crash evidence (the shared-marker failure BUG014.T5 fixes).
  *
  * Without `token` the LEGACY `${dbPath}-openmark` file is written instead — a
  * deprecated form kept ONLY for tests that simulate a pre-fix crash session
@@ -197,7 +197,7 @@ export function markStoreOpen(dbPath: string | undefined, token?: string): void 
 /**
  * Clear THIS session's marker on an orderly close. Never throws.
  *
- * (BUG-019) With `token` unlinks only `<leaseDir>/<token>.openmark` — its own
+ * (BUG014.T5) With `token` unlinks only `<leaseDir>/<token>.openmark` — its own
  * marker — never a sibling connection's. Without `token` (deprecated form)
  * unlinks the legacy `${dbPath}-openmark` file only.
  */
@@ -216,7 +216,7 @@ export function clearStoreOpenMarker(dbPath: string | undefined, token?: string)
 }
 
 /**
- * (BUG-019) True when a previous session left the store unclean.
+ * (BUG014.T5) True when a previous session left the store unclean.
  *
  * "Unclean" is now a DEAD connection, not a present file: any `.openmark`
  * whose pid is dead means a session started and did not end orderly, so the
@@ -228,9 +228,9 @@ export function clearStoreOpenMarker(dbPath: string | undefined, token?: string)
  * OPEN — a concurrent peer, never an unclean signal. The old shared marker
  * could not distinguish the two, which is what made every fresh open under a
  * long-lived server run the pre-flight against a live multiprocess store
- * (BUG-019).
+ * (BUG014.T5).
  *
- * Migration shim: a LEGACY `${dbPath}-openmark` file (pre-BUG-019 versions
+ * Migration shim: a LEGACY `${dbPath}-openmark` file (pre-BUG014.T5 versions
  * wrote one shared file) is treated as unclean ONCE, until
  * {@link sweepDeadOpenMarkers} removes it.
  *
@@ -260,10 +260,10 @@ export function hasUncleanShutdown(dbPath: string | undefined): boolean {
       // Only a PROVEN-dead pid (or age-out) is an unclean signal; unparseable
       // content and live pids are not.
       //
-      // (BUG-019 review finding 4) An unparseable marker (e.g. a torn/corrupt
+      // (BUG014.T5 review finding 4) An unparseable marker (e.g. a torn/corrupt
       // write) is deliberately NOT unclean and NOT swept HERE: treating it as
       // unclean would fire the pre-flight against a store that may be
-      // perfectly healthy (a false positive — the BUG-019 class), and
+      // perfectly healthy (a false positive — the BUG014.T5 class), and
       // sweeping it without proof of death risks deleting evidence of a
       // session whose state we cannot read. It stays conservative — the safe
       // direction. A partial write whose PID line parses is still detected (a
@@ -281,7 +281,7 @@ export function hasUncleanShutdown(dbPath: string | undefined): boolean {
 }
 
 /**
- * (BUG-019) Remove every dead open marker — the `.openmark` files whose pid
+ * (BUG014.T5) Remove every dead open marker — the `.openmark` files whose pid
  * is dead or aged out (plus any legacy `${dbPath}-openmark` shim file) — after
  * the pre-flight has CONSUMED the unclean signal, so the SAME crash evidence
  * never re-triggers a second pre-flight ("runs preflight exactly once").
@@ -340,7 +340,7 @@ export function sweepDeadOpenMarkers(dbPath: string | undefined): number {
 }
 
 /**
- * @deprecated (BUG-019) Use {@link hasUncleanShutdown}. The old name claimed
+ * @deprecated (BUG014.T5) Use {@link hasUncleanShutdown}. The old name claimed
  * "a marker file is present", which was also true for a CONCURRENT live
  * session — the predicate that gates the pre-flight is "a session ended
  * uncleanly", i.e. a marker whose pid is dead. Retained as an alias for

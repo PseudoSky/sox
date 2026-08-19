@@ -12,7 +12,9 @@
  * there is no reconnect-bookkeeping noise to isolate from the write-cadence
  * measurement, and no ungated self-rearm risk (`_performIdleFlush()` here
  * calls `this.db.pragma(...)` DIRECTLY, never through the `_trackOp`-wrapped
- * public API — unlike `TursoAdapterImpl`'s ungated branch, see BUG-022).
+ * public API — unlike `TursoAdapterImpl`'s ungated branch, see BUG-022 — the
+ * graph item "idle-flush ungated strategy self-perpetuates", not a
+ * bug014-plan-local number).
  *
  * BL-225: every assertion checks the OUTCOME (the real EWMA field tracked
  * from genuine writes, the real armed window computed from it, the real

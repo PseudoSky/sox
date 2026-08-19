@@ -150,6 +150,81 @@ function loadAllowlist(allowlistPath) {
   }
 }
 
+// --- 5. collision detection (extracted so DEBT-008's regression test can
+// drive it directly with fabricated byId/allowlist/graphIds inputs, with no
+// git/rg/backlog subprocess involved) ---
+//
+// A PLAN-LOCAL id that LATER gets allocated as a real graph id is the most
+// dangerous state this gate can encounter, and the naive reading of it is
+// exactly backwards. Before this check existed, the gate reported such an
+// entry as "now resolves in the graph — remove from allowlist": deleting
+// the entry would have made every plan-local citation silently "resolve"
+// to an unrelated graph item that happens to share the string.
+//
+// Concrete case that motivated this (measured 2026-08-18): allowlisted
+// BUG-019 is docs/plan/bug014-store-hardening/SPEC.md T5, "refcounted
+// per-connection open marker". The graph then allocated its own BUG-019,
+// "wal-cap backstop's PASSIVE checkpoint fails under sustained load".
+// Two unrelated defects, one string, 60+ citations in store-adapter — and
+// the gate was advising that they be blessed as correct.
+//
+// So: a collision is a FAILURE, not a cleanup note. Citations from INSIDE
+// the owning plan directory keep their plan-local meaning and are fine.
+// Citations from anywhere else are genuinely ambiguous and must be
+// repointed at the id the work actually landed under.
+//
+// This is also DEBT-008's own enforcement surface: DEBT-008's actual fix is
+// the new BUG014.T<n>-style syntax (see docs/plan/bug014-store-hardening/
+// SPEC.md's PLAN-LOCAL IDS banner) which never matches ID_PATTERN at all, so
+// a plan-local citation written that way is never even collected into
+// `byId` — there is nothing for this function to flag. This collision
+// detector is the backstop for the population that predates that fix (the
+// allowlisted entries below) and for any future author who reverts to the
+// bare `BUG-0NN` form despite the banner: THAT citation still lands in
+// `byId`, and if its id is later allocated in the graph, this function
+// reports it exactly as it does today.
+const ID_KEY_PATTERN = /^[A-Z]+-\d{1,4}$/;
+
+function computeCollisions({ byId, allowlist, graphIds }) {
+  const collisions = [];
+  const staleAllowlistEntries = [];
+  for (const id of Object.keys(allowlist)) {
+    if (!ID_KEY_PATTERN.test(id)) continue; // e.g. "_readme" — metadata, not an id entry
+    const entry = allowlist[id];
+    const planDir = entry.planDir ?? null;
+
+    if (graphIds.has(id)) {
+      // EVERY allowlisted id that later resolves in the graph is a collision,
+      // whatever its `cause`. An allowlist entry exists precisely to assert
+      // "this citation does NOT mean a graph item" — so the moment the graph
+      // allocates that number, the entry and the graph disagree about what
+      // the string means, and every citation inherits the ambiguity.
+      //
+      // `planDir` names the directory that legitimately owns the local
+      // meaning, if one does; refs inside it keep that meaning and pass.
+      // With no planDir there is no owning scope, so every ref is ambiguous.
+      //
+      // `disambiguatedRefs` is the escape hatch for a reference that MUST
+      // keep the old string — a historical incident record, where rewriting
+      // the id would falsify what was actually written at the time, OR a
+      // site independently VERIFIED (e.g. via `backlog get-item`) to already
+      // mean the current graph item correctly, so no rewrite is needed.
+      // Listing a file there asserts the ambiguity is resolved for that
+      // site. It is deliberately per-file and not a blanket suppression.
+      const refs = byId.get(id) ?? [];
+      const disambiguated = new Set(entry.disambiguatedRefs ?? []);
+      const ambiguous = refs.filter(
+        (r) => !(planDir && r.file.startsWith(`${planDir}/`)) && !disambiguated.has(r.file),
+      );
+      collisions.push({ id, planDir, entry, refs, ambiguous });
+    } else if (!byId.has(id)) {
+      staleAllowlistEntries.push({ id, note: 'no longer cited anywhere in tracked source — remove from allowlist' });
+    }
+  }
+  const blockingCollisions = collisions.filter((c) => c.ambiguous.length > 0);
+  return { collisions, blockingCollisions, staleAllowlistEntries };
+}
+
 function main() {
   const opts = parseArgs(process.argv.slice(2));
 
@@ -173,7 +248,6 @@ function main() {
 
   const unresolved = []; // ids with zero graph match and not allowlisted
   const allowlisted = []; // ids with zero graph match but explicitly allowlisted
-  const staleAllowlistEntries = []; // allowlist entries for ids that now DO resolve (or no longer cited)
 
   for (const [id, refs] of byId) {
     if (ids.has(id)) continue; // resolves fine
@@ -184,66 +258,11 @@ function main() {
     }
   }
 
-  // A PLAN-LOCAL id that LATER gets allocated as a real graph id is the most
-  // dangerous state this gate can encounter, and the naive reading of it is
-  // exactly backwards. Before this check existed, the gate reported such an
-  // entry as "now resolves in the graph — remove from allowlist": deleting
-  // the entry would have made every plan-local citation silently "resolve"
-  // to an unrelated graph item that happens to share the string.
-  //
-  // Concrete case that motivated this (measured 2026-08-18): allowlisted
-  // BUG-019 is docs/plan/bug014-store-hardening/SPEC.md T5, "refcounted
-  // per-connection open marker". The graph then allocated its own BUG-019,
-  // "wal-cap backstop's PASSIVE checkpoint fails under sustained load".
-  // Two unrelated defects, one string, 60+ citations in store-adapter — and
-  // the gate was advising that they be blessed as correct.
-  //
-  // So: a collision is a FAILURE, not a cleanup note. Citations from INSIDE
-  // the owning plan directory keep their plan-local meaning and are fine.
-  // Citations from anywhere else are genuinely ambiguous and must be
-  // repointed at the id the work actually landed under.
-  const collisions = [];
-  const ID_KEY_PATTERN = /^[A-Z]+-\d{1,4}$/;
-  for (const id of Object.keys(allowlist)) {
-    if (!ID_KEY_PATTERN.test(id)) continue; // e.g. "_readme" — metadata, not an id entry
-    const entry = allowlist[id];
-    const planDir = entry.planDir ?? null;
-
-    if (ids.has(id)) {
-      // EVERY allowlisted id that later resolves in the graph is a collision,
-      // whatever its `cause`. An allowlist entry exists precisely to assert
-      // "this citation does NOT mean a graph item" — so the moment the graph
-      // allocates that number, the entry and the graph disagree about what
-      // the string means, and every citation inherits the ambiguity.
-      //
-      // Generalised from an initial plan-local-only check after DEBT-008
-      // demonstrated the same failure from a different cause, live and
-      // within minutes: DEBT-008 was a STILL_LOST id (an epic destroyed in
-      // the 2026-08-14 data-loss incident, cited as lost in
-      // HANDOFF-20260814.md:89) and the graph then handed that number to a
-      // brand-new unrelated item. A reader following that citation now lands
-      // on the wrong item, exactly as with a plan-local collision.
-      //
-      // `planDir` names the directory that legitimately owns the local
-      // meaning, if one does; refs inside it keep that meaning and pass.
-      // With no planDir there is no owning scope, so every ref is ambiguous.
-      //
-      // `disambiguatedRefs` is the escape hatch for a reference that MUST
-      // keep the old string — a historical incident record, where rewriting
-      // the id would falsify what was actually written at the time. Listing
-      // a file there asserts the ambiguity is resolved inline, in prose, at
-      // that site. It is deliberately per-file and not a blanket suppression.
-      const refs = byId.get(id) ?? [];
-      const disambiguated = new Set(entry.disambiguatedRefs ?? []);
-      const ambiguous = refs.filter(
-        (r) => !(planDir && r.file.startsWith(`${planDir}/`)) && !disambiguated.has(r.file),
-      );
-      collisions.push({ id, planDir, entry, refs, ambiguous });
-    } else if (!byId.has(id)) {
-      staleAllowlistEntries.push({ id, note: 'no longer cited anywhere in tracked source — remove from allowlist' });
-    }
-  }
-  const blockingCollisions = collisions.filter((c) => c.ambiguous.length > 0);
+  const { collisions, blockingCollisions, staleAllowlistEntries } = computeCollisions({
+    byId,
+    allowlist,
+    graphIds: ids,
+  });
 
   unresolved.sort((a, b) => b.refs.length - a.refs.length);
 
@@ -357,4 +376,11 @@ function main() {
   process.exit(unresolved.length > 0 || blockingCollisions.length > 0 ? 1 : 0);
 }
 
-main();
+export { ID_PATTERN, computeCollisions };
+
+// Only run as a CLI when executed directly — importing this module (e.g.
+// from tools/check-backlog-citations.debt008.test.mjs) must not shell out to
+// git/rg/backlog or call process.exit().
+if (import.meta.url === `file://${process.argv[1]}`) {
+  main();
+}

@@ -50,15 +50,15 @@
     frame offset lies beyond WAL EOF), the sidecar is reconciled under live peers — the BUG-014
     lease-gate deadlock is gone; the bounded retry is reserved for genuinely-transient races and
     now logs the LATEST error on every attempt.
-  - **T3/BUG-021 — content-deadness at ALL three reconcile decision sites (INV-3):** the mtime
+  - **T3/BUG014.T3 — content-deadness at ALL three reconcile decision sites (INV-3):** the mtime
     staleness heuristic (false-positive under multiprocess WAL, where `-tshm` mtime freezes at
     creation) is demoted to a log-only hint; `isTshmContentDead` is the only rename gate, so a
     healthy live store is never churned through `*.stale-*` renames.
-  - **T4/BUG-018 — canonical path identity (INV-4):** `dbPath` is canonicalized once at connect
+  - **T4/BUG014.T4 — canonical path identity (INV-4):** `dbPath` is canonicalized once at connect
     (realpath of the parent dir + basename), so leases, quiescence, markers, and sidecars all key
     off ONE spelling per physical store — symlink/`/tmp`-class aliasing can no longer yield false
     quiescence.
-  - **T5/BUG-019 — per-connection open marker:** the single shared `-openmark` (any orderly close
+  - **T5/BUG014.T5 — per-connection open marker:** the single shared `-openmark` (any orderly close
     unlinked it while siblings held the store) is replaced by per-connection `<leaseDir>/<token>.openmark`
     files with dead-pid unclean detection and a legacy-marker one-shot shim.
 

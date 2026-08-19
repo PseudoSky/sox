@@ -72,7 +72,7 @@ function tempPath(label: string): string {
   return join(tmpDir, `${label}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.db`);
 }
 
-/** (BUG-019) The per-connection `.openmark` files currently in the lease dir. */
+/** (BUG014.T5) The per-connection `.openmark` files currently in the lease dir. */
 function openMarkers(dbPath: string): string[] {
   try {
     return readdirSync(leaseDirPath(dbPath))
@@ -255,7 +255,7 @@ tursoDescribe('BL-361 — panic-on-open pre-flight', () => {
     expect(out.stderr).not.toMatch(/panicked at/);
   }, 120_000);
 
-  it('marker lifecycle: connect() writes ONE per-connection marker, close() removes only its own, and a read-only open touches neither (BUG-019)', async () => {
+  it('marker lifecycle: connect() writes ONE per-connection marker, close() removes only its own, and a read-only open touches neither (BUG014.T5)', async () => {
     const dbPath = tempPath('bl361-marker-lifecycle');
     const adapter = await TursoAdapterImpl.connect({ dbPath });
     // (DEBT-003, lazy-connect) `connect()` no longer writes the marker
@@ -264,7 +264,7 @@ tursoDescribe('BL-361 — panic-on-open pre-flight', () => {
     // The session's OWN marker exists in the lease dir — carrying a LIVE pid,
     // so it is a concurrent session, never an unclean signal. (The old shared
     // marker could not make that distinction: `hasStoreOpenMarker` answered
-    // true for a live session too — the false-positive BUG-019 removes.)
+    // true for a live session too — the false-positive BUG014.T5 removes.)
     expect(openMarkers(dbPath)).toHaveLength(1);
     expect(hasUncleanShutdown(dbPath)).toBe(false);
     await adapter.exec('CREATE TABLE node (id INTEGER PRIMARY KEY, content TEXT)');

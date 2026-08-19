@@ -1,5 +1,5 @@
 /**
- * (BUG-019) Child-process holder for the kill -9 open-marker arm.
+ * (BUG014.T5) Child-process holder for the kill -9 open-marker arm.
  *
  * Connects to `<dbPath>` through the REAL adapter — which writes the
  * per-connection `<leaseDir>/<token>.openmark` carrying THIS process's pid —

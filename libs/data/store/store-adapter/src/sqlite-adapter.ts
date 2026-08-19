@@ -368,7 +368,7 @@ export class SqliteAdapterImpl implements SqliteAdapter {
     },
   ) {
     if (typeof dbOrPath === 'string') {
-      // (BUG-018, INV-4) Canonicalize ONCE at open: `config.dbPath` and every
+      // (BUG014.T4, INV-4) Canonicalize ONCE at open: `config.dbPath` and every
       // sidecar/integrity path derived from it carry the canonical spelling
       // (`realpathSync(dirname)` + `basename` — see path-identity.ts), so a
       // cross-engine peer (turso) keying its lease/marker/sidecars off the

@@ -258,7 +258,7 @@ tursoDescribe('DEBT-003/BUG-014 — content-dead -tshm reconcile under a live pe
         // error, or lose its checkpointed data). The child's own view here is
         // the 3 CHECKPOINTED seed rows — NOT 53.
         //
-        // (BUG-021, SPEC §T3) The original spec pinned 53 (seed + the child's
+        // (BUG014.T3, SPEC §T3) The original spec pinned 53 (seed + the child's
         // 50 WAL frames), but that figure was a stale session-local artifact:
         // the 50 frames were physically destroyed by the out-of-band WAL zero,
         // and whether the child's view briefly retains them depends on which
@@ -272,7 +272,7 @@ tursoDescribe('DEBT-003/BUG-014 — content-dead -tshm reconcile under a live pe
         // 3; the peer-keeps-serving property that Probe D actually guards (no
         // error, data intact) is unchanged.
         //
-        // (review disposition, BUG-021) The 53→3 delta is BENIGN, verified at
+        // (review disposition, BUG014.T3) The 53→3 delta is BENIGN, verified at
         // review: the pre-fix 53 was a transient session-local view of frames
         // that no longer existed on disk (the test's own out-of-band WAL zero
         // destroyed them); post-T3 the child's view (3) equals the parent's

@@ -1,5 +1,5 @@
 /**
- * BUG-018 — canonical path identity (SPEC §T4, INV-4).
+ * BUG014.T4 — canonical path identity (SPEC §T4, INV-4).
  *
  * One physical store ⇒ ONE lease dir / marker / quiescence view, whatever
  * path spelling each caller used. Before the fix, `acquireStoreLease(dbPath)`
@@ -91,7 +91,7 @@ function aliasPair(): { realDir: string; aliasDir: string } {
   return { realDir, aliasDir };
 }
 
-describe('BUG-018 — canonicalDbPath (path-identity.ts, INV-4)', () => {
+describe('BUG014.T4 — canonicalDbPath (path-identity.ts, INV-4)', () => {
   it('converges a parent-dir symlink alias onto the real parent', () => {
     const { realDir, aliasDir } = aliasPair();
     expect(canonicalDbPath(join(aliasDir, 'store.db'))).toBe(
@@ -152,7 +152,7 @@ describe('BUG-018 — canonicalDbPath (path-identity.ts, INV-4)', () => {
   // ── Review finding 2: the missing-parent FALLBACK must not be memoized —
   //    absence is transient fs-state. If a fallback were cached, a parent
   //    created after the first call would never be picked up (stale raw
-  //    spelling forever, the same key-identity failure class BUG-018 fixes).
+  //    spelling forever, the same key-identity failure class BUG014.T4 fixes).
   it('does not memoize the missing-parent fallback (re-evaluated after parent creation)', () => {
     const { realDir } = aliasPair();
     const lateParent = join(realDir, 'late-created');
@@ -178,7 +178,7 @@ describe('BUG-018 — canonicalDbPath (path-identity.ts, INV-4)', () => {
   const isRoot = typeof process.getuid === 'function' && process.getuid() === 0;
   const errnoDescribe = isRoot ? describe.skip : describe;
 
-  errnoDescribe('BUG-018 — errno-aware fallback (DEBT-003 discipline)', () => {
+  errnoDescribe('BUG014.T4 — errno-aware fallback (DEBT-003 discipline)', () => {
     it('falls back on ENOENT but surfaces a typed error on EACCES', () => {
       const { realDir } = aliasPair();
 
@@ -225,7 +225,7 @@ describe('BUG-018 — canonicalDbPath (path-identity.ts, INV-4)', () => {
   });
 });
 
-tursoDescribe('BUG-018 — TursoAdapter.connect canonicalizes once (SPEC §T4)', () => {
+tursoDescribe('BUG014.T4 — TursoAdapter.connect canonicalizes once (SPEC §T4)', () => {
   it('config.dbPath and every coordination key carry the canonical path', async () => {
     const { realDir, aliasDir } = aliasPair();
     const realDb = join(realDir, 'store.db');
@@ -251,7 +251,7 @@ tursoDescribe('BUG-018 — TursoAdapter.connect canonicalizes once (SPEC §T4)',
 
       // INV-4 integration lock: probed through B's own (canonical) key,
       // excluding B's own lease, A's lease is a visible live peer — the
-      // false-quiescence failure mode BUG-018 exists to prevent.
+      // false-quiescence failure mode BUG014.T4 exists to prevent.
       const aToken = (a as unknown as { _lease: { token: string } | null })._lease?.token;
       const bToken = (b as unknown as { _lease: { token: string } | null })._lease?.token;
       expect(aToken).toBeTruthy();
@@ -270,13 +270,13 @@ tursoDescribe('BUG-018 — TursoAdapter.connect canonicalizes once (SPEC §T4)',
     expect(storeQuiescence(canonicalDbPath(realDb)).quiescent).toBe(true);
   });
 
-  it('the per-connection marker path converges on the canonical identity (BUG-019)', async () => {
+  it('the per-connection marker path converges on the canonical identity (BUG014.T5)', async () => {
     const { realDir, aliasDir } = aliasPair();
     const realDb = join(realDir, 'store.db');
     const aliasDb = join(aliasDir, 'store.db');
     const token = 'bug018-token';
 
-    // (BUG-019) The marker now lives in the lease dir as
+    // (BUG014.T5) The marker now lives in the lease dir as
     // `<leaseDir>/<token>.openmark` — keyed off the CANONICAL identity, so the
     // two spellings MUST produce the identical marker path string (the marker
     // path is `leaseDirPath(canonicalDbPath(dbPath))` composed).
@@ -295,7 +295,7 @@ tursoDescribe('BUG-018 — TursoAdapter.connect canonicalizes once (SPEC §T4)',
   });
 });
 
-describe('BUG-018 — SqliteAdapterImpl canonicalizes at open (SPEC §T4)', () => {
+describe('BUG014.T4 — SqliteAdapterImpl canonicalizes at open (SPEC §T4)', () => {
   it('config.dbPath carries the canonical path for an alias-spelled open', async () => {
     const { realDir, aliasDir } = aliasPair();
     const realSqlite = join(realDir, 'sqlite.db');

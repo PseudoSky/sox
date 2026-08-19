@@ -20,7 +20,7 @@
  * `STALE WAL-INDEX SIDECAR` wrapper. Quiescent ⇒ the sidecar reconcile still
  * runs: a PRE-EXISTING deleted-WAL/orphaned-sidecar shape is reconciled by the
  * pre-open proactive site (content-deadness is the trigger, and an absent WAL
- * proves it — BUG-021/SPEC §T3); a WAL that empties BETWEEN the proactive
+ * proves it — BUG014.T3/SPEC §T3); a WAL that empties BETWEEN the proactive
  * probe and the open (the close()-TRUNCATE / out-of-band-zero race) still
  * reaches the open-time catch's quiescent empty-WAL branch, which is
  * exercised end-to-end below.
@@ -258,17 +258,17 @@ tursoDescribe('BUG-009 — open-time catch with a live peer retries and never cl
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Quiescent — the orphaned-sidecar reconcile must not regress (pre-existing
-// deleted-WAL shapes now fire proactively via the BUG-021 content-dead trigger;
+// deleted-WAL shapes now fire proactively via the BUG014.T3 content-dead trigger;
 // a WAL emptied mid-open still reaches the catch's quiescent empty-WAL branch)
 // ═══════════════════════════════════════════════════════════════════════════
 
 tursoDescribe('BUG-009 — open-time catch with NO peer: the orphaned sidecar is still reconciled', () => {
-  it('quiescent deleted-WAL: the orphaned -tshm is reconciled (now proactively, content-dead — BUG-021) and the open succeeds', async () => {
+  it('quiescent deleted-WAL: the orphaned -tshm is reconciled (now proactively, content-dead — BUG014.T3) and the open succeeds', async () => {
     const dbPath = tempPath('bug009-no-peer');
     await rawSeed(dbPath);
 
     // Deleted-WAL variant: remove the WAL (the mixed-engine clean-close
-    // shape). With content-deadness as the trigger (BUG-021, SPEC §T3), the
+    // shape). With content-deadness as the trigger (BUG014.T3, SPEC §T3), the
     // pre-open proactive reconcile sees the WAL absent ⇒ the surviving -tshm
     // is content-proven dead ⇒ moves it BEFORE the first openOnce — the
     // deleted-WAL recovery that previously waited for the open-time catch's
@@ -288,13 +288,13 @@ tursoDescribe('BUG-009 — open-time catch with NO peer: the orphaned sidecar is
     expect(adapter).toBeInstanceOf(TursoAdapterImpl);
   });
 
-  it('quiescent WAL emptied mid-open: the open-time catch empty-WAL branch still recovers the orphaned -tshm (BUG-021 backstop)', async () => {
+  it('quiescent WAL emptied mid-open: the open-time catch empty-WAL branch still recovers the orphaned -tshm (BUG014.T3 backstop)', async () => {
     const dbPath = tempPath('bug009-no-peer-catch');
     await rawSeed(dbPath);
 
     // The WAL is non-empty and the -tshm CONTENT-LIVE here (rawSeed's real
     // driver wrote + checkpointed frames), so the pre-open proactive
-    // reconcile (content-deadness gate, BUG-021) sees a live index, DECLINES,
+    // reconcile (content-deadness gate, BUG014.T3) sees a live index, DECLINES,
     // and renames NOTHING — the proactive site cannot fire.
     expect(statSync(dbPath + '-wal').size, 'precondition: non-empty content-live WAL').toBeGreaterThan(0);
 

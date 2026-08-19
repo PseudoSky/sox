@@ -131,7 +131,7 @@ tursoDescribe('BL-329 — SqliteAdapterImpl vs a Turso-native store', () => {
     expect(caught).toBeInstanceOf(ETursoNativeStore);
     const typed = caught as ETursoNativeStore;
     expect(typed.code).toBe('E_TURSO_NATIVE_STORE');
-    // (BUG-018, INV-4) The error carries the store's CANONICAL identity
+    // (BUG014.T4, INV-4) The error carries the store's CANONICAL identity
     // (`realpathSync(dirname)` + `basename` — the tmpdir's `/var` symlink
     // resolves to `/private/var` on macOS), not the raw caller spelling —
     // the same string every spelling of this store converges to.

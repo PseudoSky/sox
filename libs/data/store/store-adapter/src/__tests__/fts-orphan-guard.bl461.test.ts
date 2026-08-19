@@ -101,7 +101,7 @@ function sidecarsOf(dbPath: string): string[] {
     .sort();
 }
 
-/** (BUG-019) The per-connection `.openmark` files currently in the lease dir. */
+/** (BUG014.T5) The per-connection `.openmark` files currently in the lease dir. */
 function openMarkers(dbPath: string): string[] {
   try {
     return readdirSync(leaseDirPath(dbPath))
@@ -524,7 +524,7 @@ tursoDescribe('BL-461 — a store damaged inside a cleanly-closed session', () =
 // ── The second, narrower risk BL-461 records as untested ─────────────────────
 
 tursoDescribe('BL-461 — a concurrent opener while this process holds the store', () => {
-  it('a second opener arrives on a LIVE store: the live marker is NOT an unclean signal, the arriving open skips the pre-flight, and the holder’s marker survives (BUG-019)', async () => {
+  it('a second opener arrives on a LIVE store: the live marker is NOT an unclean signal, the arriving open skips the pre-flight, and the holder’s marker survives (BUG014.T5)', async () => {
     const dbPath = tempPath('bl461-concurrent');
     await seedHealthyFtsStore(dbPath);
 
@@ -532,7 +532,7 @@ tursoDescribe('BL-461 — a concurrent opener while this process holds the store
     // LIVE pid (this process). Under the old shared marker that was
     // indistinguishable from a dead session, so the arriving process ran the
     // pre-flight's read-only better-sqlite3 scan against a store Turso
-    // currently had open — the BUG-019 false-positive. Now a live marker is a
+    // currently had open — the BUG014.T5 false-positive. Now a live marker is a
     // concurrent session, never an unclean signal.
     const holder = await TursoAdapterImpl.connect({ dbPath });
     open.push(holder);
@@ -555,7 +555,7 @@ tursoDescribe('BL-461 — a concurrent opener while this process holds the store
     expect(arriving.stderr).not.toMatch(/\[BL-461\]/);
 
     // The sidecar question BL-461 raises, answered with the observed list
-    // rather than a belief. (BUG-019) The marker-gated pre-flight NO LONGER
+    // rather than a belief. (BUG014.T5) The marker-gated pre-flight NO LONGER
     // runs against a live store, so the arriving process opens NO `-shm` via
     // better-sqlite3 — the sidecar list is just Turso's own coordination set,
     // and the marker is inside the lease dir (excluded by the fixture).
@@ -583,13 +583,13 @@ tursoDescribe('BL-461 — a concurrent opener while this process holds the store
       stale,
       'DEBT-003/BUG-014: exactly one -tshm.stale-* artifact (the seed close reset the orphaned -tshm beside its TRUNCATE)',
     ).toHaveLength(1);
-    // (BUG-019) No `-shm` anywhere: the only classic-engine open that created
+    // (BUG014.T5) No `-shm` anywhere: the only classic-engine open that created
     // one was the marker-gated pre-flight, which no longer fires for a live
-    // store. If a `-shm` appears here it is the BUG-019 false-positive
+    // store. If a `-shm` appears here it is the BUG014.T5 false-positive
     // returning.
     expect(sidecarsOf(dbPath)).not.toContain(`${basename(dbPath)}-shm`);
 
-    // ── BL-468, RESOLVED by BUG-019 (was "a second defect, found by this arm") ──
+    // ── BL-468, RESOLVED by BUG014.T5 (was "a second defect, found by this arm") ──
     // The old marker was a flag, not a refcount: the arriving process's
     // *orderly* close cleared a marker the HOLDER wrote and was still relying
     // on, so if the holder died next, its crash would leave no unclean signal.
@@ -597,7 +597,7 @@ tursoDescribe('BL-461 — a concurrent opener while this process holds the store
     // own marker, so the HOLDER's crash evidence survives intact.
     expect(
       openMarkers(dbPath),
-      'BUG-019/BL-468: the arriving close must leave the holder’s marker intact',
+      'BUG014.T5/BL-468: the arriving close must leave the holder’s marker intact',
     ).toHaveLength(1);
     expect(hasUncleanShutdown(dbPath)).toBe(false); // holder still LIVE — not unclean
 

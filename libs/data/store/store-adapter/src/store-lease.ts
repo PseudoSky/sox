@@ -42,7 +42,7 @@ export function leaseDirPath(dbPath: string): string {
  *  entry live (pid-reuse guard: a recycled pid could make a stale entry look
  *  live once — the age-out caps that exposure at a deferred TRUNCATE, never a
  *  data loss). A PROVEN-live pid is NEVER aged out: a session running >24 h is
- *  a live peer, and sweeping it would destroy its crash evidence (BUG-019) or
+ *  a live peer, and sweeping it would destroy its crash evidence (BUG014.T5) or
  *  let a destructive reconcile proceed against a store a peer still holds. */
 const LEASE_MAX_AGE_MS = 24 * 60 * 60 * 1000;
 
@@ -53,16 +53,16 @@ const LEASE_MAX_AGE_MS = 24 * 60 * 60 * 1000;
  *
  * The PID is probed FIRST (`process.kill(pid, 0)`): a live pid is a live
  * session regardless of age. The 24 h age-out is a pid-reuse guard that must
- * never override a proven-live pid (BUG-019 review fix): a session running
+ * never override a proven-live pid (BUG014.T5 review fix): a session running
  * >24 h would otherwise read as dead, re-firing the pre-flight against a live
  * multiprocess store and sweeping its marker/lease — destroying the crash
- * evidence BUG-019 exists to preserve. The age-out applies ONLY to pids that
+ * evidence BUG014.T5 exists to preserve. The age-out applies ONLY to pids that
  * are dead or whose liveness cannot be established: an undeterminable pid is
  * treated as live while FRESH (never sweep or flag a possibly-live session)
  * and as dead once older than LEASE_MAX_AGE_MS. Returns null when the content
  * cannot be parsed (never counts as live; callers decide whether to sweep
  * it). Used by {@link storeQuiescence} for lease entries and by preflight.ts
- * `hasUncleanShutdown`/`sweepDeadOpenMarkers` for open markers — the BUG-019
+ * `hasUncleanShutdown`/`sweepDeadOpenMarkers` for open markers — the BUG014.T5
  * requirement to reuse storeQuiescence's liveness logic.
  */
 export function entryLiveness(
@@ -160,7 +160,7 @@ export async function acquireStoreLease(dbPath: string): Promise<StoreLease> {
  *  Dead entries are SWEPT (unlinked) as a side effect. The 24 h age-out is a
  *  pid-reuse guard applied ONLY to entries whose pid is dead or of
  *  undeterminable liveness — a PROVEN-live pid (however old the entry) is a
- *  live peer and is never swept (BUG-019 review fix). Quiescent iff zero live
+ *  live peer and is never swept (BUG014.T5 review fix). Quiescent iff zero live
  *  peers. Never throws: unreadable/absent dir ⇒ quiescent. */
 export function storeQuiescence(dbPath: string, excludeToken?: string): StoreQuiescence {
   const safe: StoreQuiescence = { quiescent: true, livePeers: [] };
@@ -180,7 +180,7 @@ export function storeQuiescence(dbPath: string, excludeToken?: string): StoreQui
     const now = Date.now();
     for (const name of names) {
       // Skip dot-names (e.g. `.DS_Store`, temp files), the caller's own entry,
-      // and (BUG-019) `.openmark` files — those are per-connection OPEN
+      // and (BUG014.T5) `.openmark` files — those are per-connection OPEN
       // MARKERS owned by preflight.ts, not lease entries: quiescence must
       // never count them as peers (or sweep them).
       if (name.startsWith('.') || name === excludeToken || name.endsWith('.openmark')) continue;

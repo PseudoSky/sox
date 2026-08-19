@@ -602,7 +602,8 @@ export class TursoAdapterImpl implements TursoAdapter {
         // check, connection stays open (deliberately does NOT go through
         // `releaseIdleConnection()`).
         //
-        // (BUG-022) Deliberately calls `this.db.get(...)` directly instead of
+        // (BUG-022, the graph item — "idle-flush ungated strategy self-perpetuates",
+        // not a bug014-plan-local number) Deliberately calls `this.db.get(...)` directly instead of
         // the public `executeGet()` — `executeGet()` routes through
         // `_trackOp()`, whose `finally` unconditionally re-arms THIS SAME
         // idle-flush timer once `_inFlightOps` returns to 0. A checkpoint
@@ -1333,7 +1334,7 @@ export class TursoAdapterImpl implements TursoAdapter {
       throw new Error('TursoAdapter requires either url or dbPath');
     }
 
-    // (BUG-018, INV-4) ONE canonical path per physical store. Every
+    // (BUG014.T4, INV-4) ONE canonical path per physical store. Every
     // cross-process coordination key below — the lease directory, the
     // out-of-band open marker, every sidecar probe — must be derived from the
     // SAME string whatever spelling this caller used (a symlinked directory
@@ -1500,7 +1501,7 @@ export class TursoAdapterImpl implements TursoAdapter {
       // trap does not apply here, but any future reordering must keep the
       // lease acquisition above the preflight.
       //
-      // (BUG-019) The gate is now "a DEAD connection left the store unclean"
+      // (BUG014.T5) The gate is now "a DEAD connection left the store unclean"
       // (`hasUncleanShutdown`: any `<leaseDir>/<token>.openmark` whose pid is
       // dead or aged out, plus the legacy one-shot shim), NOT "a marker file
       // is present". A marker whose pid is LIVE is a CONCURRENT session — the
@@ -1526,7 +1527,7 @@ export class TursoAdapterImpl implements TursoAdapter {
             describePreflight(preflight),
           );
         }
-        // (BUG-019) Consume the signal AFTER the pre-flight: dead markers (and
+        // (BUG014.T5) Consume the signal AFTER the pre-flight: dead markers (and
         // any legacy `${dbPath}-openmark` shim file) are swept so the SAME
         // crash evidence never re-triggers a second pre-flight on the next
         // open. Live peers' markers are never touched.
@@ -1549,7 +1550,7 @@ export class TursoAdapterImpl implements TursoAdapter {
       // `openOnce()` even runs — means the failed-open path is never taken; the
       // catch below stays as the backstop for races and non-content shapes.
       //
-      // (BUG-021) The trigger is content-deadness (`isTshmContentDead`), never
+      // (BUG014.T3) The trigger is content-deadness (`isTshmContentDead`), never
       // mtime: under multiprocess WAL the tshm mtime freezes at file creation,
       // so mtime skew is expected on a HEALTHY sidecar and the old mtime
       // heuristic renamed it during brief quiescent windows (the 2026-08-12
@@ -1643,7 +1644,7 @@ export class TursoAdapterImpl implements TursoAdapter {
         // that is REFUSAL-ONLY (ADR-0013, owner directive): the operator gets
         // the typed action naming the manual step with the data-loss disclosure
         // — moving the WAL is a human decision, never an automatic one.
-        // (BUG-018) The guard keys off the CANONICAL identity — a url-only
+        // (BUG014.T4) The guard keys off the CANONICAL identity — a url-only
         // connect (no local db) has nothing to recover.
         if (!isStaleWalIndexError(err) || canonicalDb === undefined) throw err;
 
@@ -1891,9 +1892,9 @@ export class TursoAdapterImpl implements TursoAdapter {
 
       // (BL-373 family) The open SUCCEEDED despite a mtime-skewed sidecar — the
       // masked case. warnIfStaleSidecar fires only on mtime-skew (informational
-      // only, BUG-021 — it never renames anything), so a healthy sidecar emits
+      // only, BUG014.T3 — it never renames anything), so a healthy sidecar emits
       // nothing. Never throws.
-      // (BUG-018) The probe keys off the CANONICAL identity — a url-only
+      // (BUG014.T4) The probe keys off the CANONICAL identity — a url-only
       // connect (no local db) has no sidecars to probe.
       warnIfStaleSidecar(canonicalDb);
 
@@ -1907,7 +1908,7 @@ export class TursoAdapterImpl implements TursoAdapter {
       // what tells the NEXT open that this session may not have ended cleanly —
       // `close()` clears it. It lives outside the database on purpose: the state
       // it guards against is one where the database cannot be read at all.
-      // (BUG-019) PER-CONNECTION: the marker is `<leaseDir>/<token>.openmark`
+      // (BUG014.T5) PER-CONNECTION: the marker is `<leaseDir>/<token>.openmark`
       // carrying this pid, so a sibling connection's orderly close can never
       // erase this session's crash evidence (the shared-marker failure).
       if (opts.readonly !== true) markStoreOpen(canonicalDb, lease?.token);
@@ -2021,7 +2022,7 @@ export class TursoAdapterImpl implements TursoAdapter {
   /** (DEBT-003, lazy-connect) Build `config` from `opts` — shared by the
    *  eager `connect()` shell and the real `_openReal()` open so the two can
    *  never diverge. `config.dbPath`, when set, is always the CANONICAL path
-   *  (BUG-018) — every coordination site downstream reads it, never the
+   *  (BUG014.T4) — every coordination site downstream reads it, never the
    *  caller's raw spelling. Pure/synchronous — no I/O beyond the
    *  already-computed `canonicalDb`. */
   private static _buildConfig(
@@ -2030,7 +2031,7 @@ export class TursoAdapterImpl implements TursoAdapter {
   ): AdapterConfig & { type: 'turso' } {
     const config = { type: 'turso' } as AdapterConfig & { type: 'turso' };
     if (opts.url !== undefined) config.url = opts.url;
-    // (BUG-018) `config.dbPath` is the CANONICAL path — the close path
+    // (BUG014.T4) `config.dbPath` is the CANONICAL path — the close path
     // (storeQuiescence, clearStoreOpenMarker, resetTshmAfterTruncate),
     // withConnectionClosedForRepair, and graph-store's repair path all read
     // it from here and therefore inherit the canonical identity.
@@ -2097,7 +2098,7 @@ export class TursoAdapterImpl implements TursoAdapter {
       throw new Error('TursoAdapter requires either url or dbPath');
     }
 
-    // (BUG-018, INV-4) Canonicalize once, exactly as `_openReal()` does —
+    // (BUG014.T4, INV-4) Canonicalize once, exactly as `_openReal()` does —
     // every coordination key downstream (lease dir, open marker, sidecar
     // probes, and this eager preflight) must agree on ONE spelling.
     const canonicalDb = opts.dbPath !== undefined ? canonicalDbPath(opts.dbPath) : undefined;
@@ -2804,7 +2805,7 @@ export class TursoAdapterImpl implements TursoAdapter {
         // after the driver has actually let go of the file. Its presence at the
         // next open is the ONLY signal that a session ended without getting here,
         // and that is the population that can carry the panic-on-open schema state.
-        // (BUG-019) Unlink only THIS connection's marker (`<leaseDir>/<token>.openmark`)
+        // (BUG014.T5) Unlink only THIS connection's marker (`<leaseDir>/<token>.openmark`)
         // — never a sibling's: a peer's crash evidence must survive this close.
         // (BUG-STOREADAPTER-COORDINATION-PATH-ASYMMETRY) Clear under the CANONICAL
         // path — `markStoreOpen` wrote it there. Clearing the raw spelling left the
