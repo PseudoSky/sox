@@ -5,20 +5,39 @@
 > repro: `/tmp/bug014-lab` exp1–exp10 (exp9 = poison, exp10 = readonly-safe control), reproducible
 > from the transcripts in this doc's §Appendix.
 >
-> ⚠️ **PLAN-LOCAL IDS — NOT GRAPH ITEMS (DEBT-006).** The task headings below (`T1 — BUG-017`,
-> `T3 — BUG-021`, `T4 — BUG-018`, `T5 — BUG-019`, `T6 — BUG-020`, `T8`–`T11`'s `DEBT-*` labels)
-> are **this plan's own internal numbering**, not backlog graph ids, *except where a task's number
-> happens to already be a real graph item* (e.g. `BUG-017`, `BUG-014`, `DEBT-003` below genuinely
-> exist in the graph and refer to the same work — verified 2026-08-18). `BUG-018`..`BUG-042` and
-> `DEBT-006`..`DEBT-032` are **not** allocated in the graph's numeric families (`BUG` stops at
-> `BUG-017`, `DEBT` at `DEBT-005`) — citing one of those numbers as if it were a graph id is a
-> defect (`DEBT-006`, filed 2026-08-18: 514 refs to 48 ids across 139 files resolved to nothing).
+> ⚠️ **PLAN-LOCAL IDS — NOT GRAPH ITEMS, AND NOW ACTIVELY REUSED (DEBT-006 / DEBT-008).** The task
+> headings below (`T1 — BUG-017`, `T3 — BUG-021`, `T4 — BUG-018`, `T5 — BUG-019`, `T6 — BUG-020`,
+> `T8`–`T11`'s `DEBT-*` labels) are **this plan's own internal numbering**, not backlog graph ids,
+> *except where a task's number happens to already be a real graph item* (e.g. `BUG-017`, `BUG-014`,
+> `DEBT-003` below genuinely exist in the graph and refer to the same work — verified 2026-08-18).
+>
+> **STALE CLAIM CORRECTED 2026-08-19 — the graph's numeric families no longer stop where DEBT-006
+> found them.** This banner previously said "`BUG` stops at `BUG-017`, `DEBT` at `DEBT-005`" — that
+> was true 2026-08-18 and is false now: the graph's own counter has independently allocated **real,
+> unrelated** items at `BUG-018` (memory-server SIGKILL on service disable), `BUG-019` (wal-cap
+> PASSIVE checkpoint failure), `BUG-021` (live embed failure), `BUG-022` (idle-flush self-rearm),
+> and `DEBT-008` (this exact namespace-collision item) — none of which have anything to do with the
+> plan-local task these numbers name below. **DO NOT trust "the graph stops at N" as a standing
+> fact anywhere in this repo; it is a snapshot, not an invariant, and the counter keeps moving.**
+> `tools/check-backlog-citations.mjs` is the only thing that can tell you the CURRENT state — run it.
+>
 > `HANDOFF-20260814.md` §C carries the authoritative former→graph-id map for the tasks that were
 > refiled under descriptive slugs after the 2026-08-14 data-loss incident (`BUG-018`→
 > `BUG-STOREADAPTER-DBPATH-NOT-CANONICALIZED-001`, etc.) — consult it, and
 > `tools/backlog-citation-allowlist.json`, before assuming any `BUG-0NN`/`DEBT-0NN` string in this
-> file resolves as written. Do not allocate new plan-local numbers in this family going forward;
-> use a `T<n>` task reference or the item's real graph id once filed.
+> file resolves as written.
+>
+> **STRUCTURAL FIX (DEBT-008, 2026-08-19): do not cite these plan-local numbers with the bare
+> `BUG-0NN`/`DEBT-0NN` form ANYWHERE outside this plan directory — ever again.** That form is
+> exactly the graph's own citation syntax (`\b(BL|BUG|DEBT)-[0-9]{1,4}\b`), so every such citation is
+> a live ambiguity waiting for the counter to reach it. Outside this plan directory, cite the
+> plan-qualified, non-colliding form instead: **`BUG014.T5`** (dot separator, no hyphen after the
+> letters — deliberately unable to match the graph-id pattern). Every store-adapter source comment
+> that used to say `(BUG-019)`/`(BUG-021)`/`(BUG-018)` for the plan-local meaning now says
+> `(BUG014.T5)`/`(BUG014.T3)`/`(BUG014.T4)` respectively (`T3`→content-deadness, `T4`→canonical path
+> identity, `T5`→per-connection open marker). Inside this plan directory the bare `T<n>` heading form
+> below remains fine, since this directory IS the owning scope the gate exempts — but never
+> copy-paste a bare `BUG-0NN` plan-local reference out of this file into anywhere else.
 >
 > **Global rules for every task**: no `git stash`/`reset --hard`; commit by pathspec only; build/test
 > via nx targets only; a suite result is quotable only with `node tools/check-suite-tree-state.mjs

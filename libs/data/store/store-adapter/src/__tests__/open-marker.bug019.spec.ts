@@ -1,5 +1,5 @@
 /**
- * BUG-019 — per-connection open marker (SPEC §T5).
+ * BUG014.T5 — per-connection open marker (SPEC §T5).
  *
  * Before this fix the open marker was ONE shared file (`${dbPath}-openmark`),
  * overwritten by every open and unlinked by ANY orderly writable close. With N
@@ -130,7 +130,7 @@ function spawnHolder(dbPath: string): { proc: ReturnType<typeof spawn>; ready: P
 
 // ── Pure marker mechanics (no engine needed) ────────────────────────────────
 
-describe('BUG-019 — per-connection open marker mechanics', () => {
+describe('BUG014.T5 — per-connection open marker mechanics', () => {
   it('a LIVE marker (own pid) is NOT unclean — a concurrent session is never a crash signal', () => {
     const dir = mkdtempSync(join(tmpdir(), 'bug019-live-'));
     try {
@@ -140,7 +140,7 @@ describe('BUG-019 — per-connection open marker mechanics', () => {
       expect(existsSync(openMarkerPath(db, 'tok-live'))).toBe(true);
       // …but the pid it carries is THIS process — a live session, not an
       // unclean shutdown. The old shared-marker predicate returned true here,
-      // which is exactly the false-positive BUG-019 removes.
+      // which is exactly the false-positive BUG014.T5 removes.
       expect(hasUncleanShutdown(db)).toBe(false);
     } finally {
       rmSync(dir, { recursive: true, force: true });
@@ -176,7 +176,7 @@ describe('BUG-019 — per-connection open marker mechanics', () => {
     }
   });
 
-  it('a LIVE session older than 24 h is still live — the age-out never overrides liveness (BUG-019 review fix)', () => {
+  it('a LIVE session older than 24 h is still live — the age-out never overrides liveness (BUG014.T5 review fix)', () => {
     const dir = mkdtempSync(join(tmpdir(), 'bug019-live-aged-'));
     try {
       const db = join(dir, 'store.db');
@@ -187,7 +187,7 @@ describe('BUG-019 — per-connection open marker mechanics', () => {
       // pins: the old entryLiveness applied the 24 h age-out BEFORE the pid
       // probe, so this marker read live:false — hasUncleanShutdown re-fired
       // the pre-flight against a live store, and sweepDeadOpenMarkers deleted
-      // a LIVE session's marker (its crash evidence), i.e. the BUG-019 failure
+      // a LIVE session's marker (its crash evidence), i.e. the BUG014.T5 failure
       // modes returning for sessions running >24 h.
       const content = readFileSync(openMarkerPath(db, 'tok-long-lived'), 'utf8');
       const info = entryLiveness(content, Date.now() + 25 * 60 * 60 * 1000);
@@ -258,7 +258,7 @@ describe('BUG-019 — per-connection open marker mechanics', () => {
 
 // ── SPEC §T5 test (a): A closes cleanly → B's marker survives ───────────────
 
-tursoDescribe('BUG-019 — SPEC §T5 (a): two adapters; A closes cleanly, B survives', () => {
+tursoDescribe('BUG014.T5 — SPEC §T5 (a): two adapters; A closes cleanly, B survives', () => {
   it('an orderly close unlinks only the closing connection’s marker (the refcount)', async () => {
     const dbPath = tempPath('bug019-two-adapters');
     await seedStore(dbPath);
@@ -291,9 +291,9 @@ tursoDescribe('BUG-019 — SPEC §T5 (a): two adapters; A closes cleanly, B surv
 
 // ── SPEC §T5 test (b): kill -9 → next open unclean, preflight exactly once ──
 
-tursoDescribe('BUG-019 — SPEC §T5 (b): kill -9 crash evidence survives a sibling close', () => {
+tursoDescribe('BUG014.T5 — SPEC §T5 (b): kill -9 crash evidence survives a sibling close', () => {
   it('a dead-pid marker survives a sibling’s orderly close; the next open consumes it exactly once', async () => {
-    // (BUG-019 review fix, finding 3) Make the "runs preflight exactly once"
+    // (BUG014.T5 review fix, finding 3) Make the "runs preflight exactly once"
     // claim AIRTIGHT by counting invocations of the pre-flight entry point
     // itself, in addition to the structural marker-consumption assertions
     // below. Installed before seedStore so the count covers the WHOLE
@@ -306,7 +306,7 @@ tursoDescribe('BUG-019 — SPEC §T5 (b): kill -9 crash evidence survives a sibl
     await seedStore(dbPath);
 
     // A server session that will DIE by SIGKILL, and a sibling that will close
-    // cleanly — the production shape BUG-019 names.
+    // cleanly — the production shape BUG014.T5 names.
     const { proc: victim, ready: victimReady } = spawnHolder(dbPath);
     await victimReady;
     const server = await TursoAdapterImpl.connect({ dbPath });
@@ -324,7 +324,7 @@ tursoDescribe('BUG-019 — SPEC §T5 (b): kill -9 crash evidence survives a sibl
       await once(victim, 'exit');
     } finally {
       // The sibling closes ORDERLY. Under the old shared marker this unlinked
-      // the victim's crash evidence — the BUG-019 consequence (a).
+      // the victim's crash evidence — the BUG014.T5 consequence (a).
       await server.close();
     }
 
@@ -360,12 +360,12 @@ tursoDescribe('BUG-019 — SPEC §T5 (b): kill -9 crash evidence survives a sibl
 
 // ── SPEC §T5 test (c): legacy marker honored once ───────────────────────────
 
-tursoDescribe('BUG-019 — SPEC §T5 (c): legacy marker honored once', () => {
+tursoDescribe('BUG014.T5 — SPEC §T5 (c): legacy marker honored once', () => {
   it('a pre-fix `${dbPath}-openmark` is unclean on the first open and is deleted there', async () => {
     const dbPath = tempPath('bug019-legacy-shim');
     await seedStore(dbPath);
 
-    // Simulate a crash recorded by a pre-BUG-019 store-adapter version: ONE
+    // Simulate a crash recorded by a pre-BUG014.T5 store-adapter version: ONE
     // shared marker at the legacy path.
     writeFileSync(storeOpenMarkerPath(dbPath), '99999999 2026-01-01T00:00:00.000Z\n');
     expect(hasUncleanShutdown(dbPath)).toBe(true);

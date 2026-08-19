@@ -3,7 +3,7 @@
  *
  * Retention/pruning for the `.stale-*` WAL-index sidecar debris that
  * `recoverStaleWalIndex()` / `proactivelyReconcileStaleSidecar()` (integrity.ts)
- * produce. BUG-021 established that a content-dead `-tshm`/`-shm` is RENAMED
+ * produce. BUG014.T3 established that a content-dead `-tshm`/`-shm` is RENAMED
  * to `<file>.stale-<stamp>`, never deleted — deliberately, as a recoverable
  * forensic artefact an operator can use to reconstruct what a store's
  * WAL-index looked like at the moment a reconcile fired. Nothing ever
@@ -11,7 +11,7 @@
  * close+reopen cycle that lands on a 0-byte WAL produces one — BL-590), not
  * to elapsed time, so it is unbounded under sustained write pressure.
  *
- * This module does NOT change the rename decision (BUG-021's content-deadness
+ * This module does NOT change the rename decision (BUG014.T3's content-deadness
  * gate is untouched) — it only decides, independently and later, which of the
  * already-renamed artefacts still earn their keep.
  *
@@ -144,7 +144,7 @@ function staleSidecarPattern(basename: string): RegExp {
  * mtime. `renameSync` never touches inode mtime (POSIX rename only rewrites
  * the directory entry), so a `.stale-*` sidecar's mtime is whatever the
  * ORIGINAL `-tshm`/`-shm` last had before it froze — which, by the exact
- * mechanism BUG-021 exists to describe, can be arbitrarily old (a `-tshm`
+ * mechanism BUG014.T3 exists to describe, can be arbitrarily old (a `-tshm`
  * frozen for a week is the textbook trigger). Ranking by mtime would prune a
  * sidecar the instant it is created whenever the frozen file predates
  * `maxAgeMs`, which defeats retention entirely — caught by

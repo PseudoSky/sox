@@ -2,18 +2,39 @@
   "_readme": "Allowlist for tools/check-backlog-citations.mjs. Every key is a (BL|BUG|DEBT)-N id cited somewhere in tracked source that does NOT resolve via `backlog get-item --repo sox-ecosystem --human-id <id>`. Each entry's `reason` records WHY that's expected/acceptable rather than a defect, so this file stays a legible audit trail and not a growing pile of silenced red. Compiled 2026-08-18 remediating DEBT-006. `cause` is one of: PLAN_LOCAL_BUG014 (docs/plan/bug014-store-hardening/SPEC.md T1-T11 own numbering colliding with the graph's BUG/DEBT families), PLAN_LOCAL_RUNTIME_PROD (a SECOND, independently-discovered collision: docs/plan/runtime-productionization/ has its own BL-1xx work-package numbering that collides with the graph's real BL family — NOT part of DEBT-006's original diagnosis, found during this remediation, not yet disambiguated at the source because that plan is outside this packet's scope), MIGRATION_DROPPED (existed as a real heading in BACKLOG.md history pre-2026-08-06 migration, never carried into the graph), STILL_LOST (existed briefly during the 2026-08-14 backlog data-loss incident, explicitly recorded in HANDOFF-20260814.md §C as unrecoverable from any transcript), NOT_A_CITATION (the regex matched prose/example/fixture content that was never intended as a real backlog reference), or SUPERSEDED_BY_NEW_FILING (this remediation filed a real graph item for the underlying work; a residual bare mention of the old placeholder id remains in a historical narrative string).",
   "BUG-019": {
     "cause": "PLAN_LOCAL_BUG014",
-    "reason": "docs/plan/bug014-store-hardening/SPEC.md T5 ('refcounted per-connection open marker'). Worst offender by ref count (60+ refs across libs/data/store/store-adapter/, out of remediation scope — actively edited by another agent). Not in HANDOFF-20260814.md's former->graph-id refile table; per STATE.json's own remap notes ('BUG-019 -> BUG-018', 'BUG-019 -> BUG-017') the fix work landed under BUG-018/BUG-017, but no formal id reassignment was ever made, so BUG-019 citations resolve to nothing. Disambiguated at the plan-doc level: SPEC.md now carries a PLAN-LOCAL IDS banner, STATE.json carries planLocalIdWarning.",
-    "planDir": "docs/plan/bug014-store-hardening"
+    "reason": "docs/plan/bug014-store-hardening/SPEC.md T5 ('refcounted per-connection open marker'). Resolved 2026-08-19 (DEBT-008): every store-adapter comment that meant the plan-local T5 concept was repointed to the new non-colliding form 'BUG014.T5' (preflight.ts, store-lease.ts, turso-adapter.ts lines 1503/1529/1910/2807, and the __tests__ files/fixtures named after it). The graph's CURRENT BUG-019 ('wal-cap backstop's PASSIVE checkpoint fails under sustained load', filed 2026-08-18) is an unrelated, later-allocated item; the store-adapter sites that genuinely cite THAT item (turso-adapter.ts lines 186/699/706/797, wal-cap-concurrency.bug019.spec.ts, wal-cap-baseline.bl587.spec.ts) were verified correct via `backlog get-item --human-id BUG-019` and left as-is — see disambiguatedRefs.",
+    "planDir": "docs/plan/bug014-store-hardening",
+    "disambiguatedRefs": [
+      "libs/data/store/store-adapter/src/__tests__/wal-cap-baseline.bl587.spec.ts",
+      "libs/data/store/store-adapter/src/turso-adapter.ts",
+      "libs/data/store/store-adapter/src/__tests__/wal-cap-concurrency.bug019.spec.ts"
+    ]
   },
   "BUG-021": {
     "cause": "PLAN_LOCAL_BUG014",
-    "reason": "docs/plan/bug014-store-hardening/SPEC.md T3 ('content-deadness at ALL THREE reconcile decision sites'), including a dedicated regression spec file named after it. Second-worst offender (54+ refs, store-adapter — out of scope). Not in HANDOFF's refile table; STATE.json remap notes say the fix landed under 'DEBT-003'/'BUG-014' (both real, unrelated-by-title graph items) without a formal id reassignment.",
-    "planDir": "docs/plan/bug014-store-hardening"
+    "reason": "docs/plan/bug014-store-hardening/SPEC.md T3 ('content-deadness at ALL THREE reconcile decision sites'). Resolved 2026-08-19 (DEBT-008): every store-adapter comment/tool that meant the plan-local T3 concept was repointed to 'BUG014.T3' (integrity.ts, sidecar-retention.ts, turso-adapter.ts lines 1552/1894, tools/backlog-verify-durable.mjs, and the __tests__ files/fixtures named after it). The graph's CURRENT BUG-021 ('live memory-server cannot embed: fastembed child answers Model not initialized', filed 2026-08-18) is an unrelated, later-allocated item in a different subsystem (embed, not store-adapter); the sites that genuinely cite THAT item (libs/memory-core/src/embed.ts, libs/memory-core/src/bug021-ping-health-reflects-embed-failures.spec.ts, libs/data/embed/embedding-provider/src/{bug021-respawn-reinit.spec.ts,sharedFastembedProcess.ts}) were verified correct via `backlog get-item --human-id BUG-021` and left as-is — see disambiguatedRefs.",
+    "planDir": "docs/plan/bug014-store-hardening",
+    "disambiguatedRefs": [
+      "libs/memory-core/src/embed.ts",
+      "libs/memory-core/src/bug021-ping-health-reflects-embed-failures.spec.ts",
+      "libs/data/embed/embedding-provider/src/bug021-respawn-reinit.spec.ts",
+      "libs/data/embed/embedding-provider/src/sharedFastembedProcess.ts"
+    ]
   },
   "BUG-018": {
     "cause": "PLAN_LOCAL_BUG014",
-    "reason": "SPEC.md T4 ('canonical path identity'). Refiled per HANDOFF-20260814.md §C as BUG-STOREADAPTER-DBPATH-NOT-CANONICALIZED-001 (verified present in the graph). The bare numeric form is still cited from store-adapter test filenames (out of scope) and the plan docs (now banner-disambiguated).",
-    "planDir": "docs/plan/bug014-store-hardening"
+    "reason": "SPEC.md T4 ('canonical path identity'). Refiled per HANDOFF-20260814.md §C as BUG-STOREADAPTER-DBPATH-NOT-CANONICALIZED-001 (verified present in the graph). Resolved 2026-08-19 (DEBT-008): every store-adapter comment that meant the plan-local T4 concept was repointed to 'BUG014.T4' (sqlite-adapter.ts, path-identity.ts, errors.ts, turso-adapter.ts, and the __tests__ files named after it). The graph's CURRENT BUG-018 ('memory-server survives SIGTERM and is SIGKILLed on every service disable', filed 2026-08-18) is a SECOND, unrelated, later-allocated item about the shutdown/reaper grace-margin path — an entirely different incident that happens to share the reused number. Every remaining bare 'BUG-018' citation was verified (via `backlog get-item --human-id BUG-018`, whose citations list these exact files) to genuinely mean THAT item, not the path-identity one: apps/sox/src/main.ts, libs/host-runtime/src/shutdown.ts, extensions/bundles/sox-memory-bundle/members/memory-server/src/{backend.ts,bl592-shutdown-instrumentation.spec.ts}, extensions/services/tokenguard/src/shutdown-margin.ts, extensions/services/tokenguard/test/bl592-shutdown-margin.spec.ts, docs/spec/service-lifecycle.md, docs/reporting/memory/findings/2026-08-18-bl590-idle-flush-window-recommendation.md. Left as-is (some of these paths — apps/sox/src/main.ts, libs/host-runtime/**, extensions/bundles/sox-memory-bundle/** — are also outside this remediation's declared file-set) — see disambiguatedRefs.",
+    "planDir": "docs/plan/bug014-store-hardening",
+    "disambiguatedRefs": [
+      "apps/sox/src/main.ts",
+      "libs/host-runtime/src/shutdown.ts",
+      "extensions/bundles/sox-memory-bundle/members/memory-server/src/backend.ts",
+      "extensions/bundles/sox-memory-bundle/members/memory-server/src/bl592-shutdown-instrumentation.spec.ts",
+      "extensions/services/tokenguard/src/shutdown-margin.ts",
+      "extensions/services/tokenguard/test/bl592-shutdown-margin.spec.ts",
+      "docs/spec/service-lifecycle.md",
+      "docs/reporting/memory/findings/2026-08-18-bl590-idle-flush-window-recommendation.md"
+    ]
   },
   "BUG-020": {
     "cause": "PLAN_LOCAL_BUG014",
@@ -52,19 +73,15 @@
     "cause": "PLAN_LOCAL_BUG014",
     "reason": "Sweep-epic task, refiled per HANDOFF-20260814.md §C as DEBT-EPIC-HOTPATH-REDUNDANT-IO-001 (verified present in the graph)."
   },
-  "BUG-042": {
-    "cause": "NOT_A_CITATION",
-    "reason": "Only appears as the upper bound of the plan's own numbering range ('BUG-018..BUG-042') inside this remediation's own disambiguation banner in SPEC.md and STATE.json's planLocalIdWarning. Never used as a task id anywhere; SPEC.md defines T1-T11 only, which top out at BUG-035/DEBT-007."
-  },
-  "DEBT-032": {
-    "cause": "PLAN_LOCAL_BUG014",
-    "reason": "Pre-existing STATE.json execution-notes references ('DEBT-032 unblock leg', 'DEBT-032 merge + T7 resolution blocked') plus this remediation's own banner text citing it as the range upper bound ('DEBT-006..DEBT-032'). A genuine plan-local sub-item number from the dispatcher's own tracking, never filed in the graph and not covered by HANDOFF's refile table."
-  },
   "BUG-022": {
     "cause": "STILL_LOST",
-    "reason": "HANDOFF-20260814.md §C, explicit: 'Still lost, not refilable from session record — these are recovery targets: the first sweep's epics (formerly DEBT-008…014, BUG-022), BUG-029...'. Verified zero matches searching the current graph for any content resembling this item. Do not re-litigate or guess at a replacement id; this is an open recovery target, not a citation bug. ID REUSE (2026-08-18): the graph has since allocated BUG-022 to an unrelated new item ('idle-flush ungated strategy self-perpetuates'). The HANDOFF reference is a historical record of what was destroyed and must keep the original string, so it is disambiguated inline there via the id-reuse table rather than rewritten — see disambiguatedRefs.",
+    "reason": "HANDOFF-20260814.md §C, explicit: 'Still lost, not refilable from session record — these are recovery targets: the first sweep's epics (formerly DEBT-008…014, BUG-022), BUG-029...'. Verified zero matches searching the current graph for any content resembling this destroyed item. ID REUSE (2026-08-18): the graph has since allocated BUG-022 to a brand-new, unrelated item ('idle-flush ungated strategy self-perpetuates: _performIdleFlush's executeGet re-arms the timer forever'). The HANDOFF reference is a historical record of what was destroyed and must keep the original string, disambiguated inline there via the id-reuse table. The store-adapter citations (turso-adapter.ts:605, idle-flush-adaptive.bl590.sqlite.spec.ts, idle-flush-ungated-self-rearm.bug022.spec.ts) were verified 2026-08-19 via `backlog get-item --human-id BUG-022` to genuinely mean the NEW item, not the lost epic — they describe the exact same ungated-self-rearm mechanism the graph item's body does, and two of the three now carry inline prose making that explicit. Left as-is — see disambiguatedRefs.",
     "disambiguatedRefs": [
-      "docs/plan/bug014-store-hardening/HANDOFF-20260814.md"
+      "docs/plan/bug014-store-hardening/HANDOFF-20260814.md",
+      "libs/data/store/store-adapter/src/turso-adapter.ts",
+      "libs/data/store/store-adapter/src/__tests__/idle-flush-adaptive.bl590.sqlite.spec.ts",
+      "libs/data/store/store-adapter/src/__tests__/idle-flush-ungated-self-rearm.bug022.spec.ts",
+      "docs/plan/bug014-store-hardening/SPEC.md"
     ]
   },
   "BUG-029": {
@@ -73,9 +90,10 @@
   },
   "DEBT-008": {
     "cause": "STILL_LOST",
-    "reason": "HANDOFF-20260814.md §C: 'the first sweep's epics (formerly DEBT-008…014, BUG-022)' are explicitly listed as lost and not refilable from session record. ID REUSE (2026-08-18): the graph has since allocated DEBT-008 to an unrelated new item ('Plan-local and graph backlog ids share one bare-numeric namespace'). The HANDOFF reference is a historical record of what was destroyed and must keep the original string, so it is disambiguated inline there rather than rewritten — see disambiguatedRefs.",
+    "reason": "HANDOFF-20260814.md §C: 'the first sweep's epics (formerly DEBT-008…014, BUG-022)' are explicitly listed as lost and not refilable from session record. ID REUSE (2026-08-18): the graph has since allocated DEBT-008 to an unrelated new item ('Plan-local and graph backlog ids share one bare-numeric namespace') — this remediation itself. The HANDOFF reference is a historical record of what was destroyed and must keep the original string, so it is disambiguated inline there rather than rewritten. SPEC.md's PLAN-LOCAL IDS banner (rewritten 2026-08-19 for this remediation) also names DEBT-008 explicitly while describing the id-reuse mechanism itself — both are disambiguated inline, not by accident — see disambiguatedRefs.",
     "disambiguatedRefs": [
-      "docs/plan/bug014-store-hardening/HANDOFF-20260814.md"
+      "docs/plan/bug014-store-hardening/HANDOFF-20260814.md",
+      "docs/plan/bug014-store-hardening/SPEC.md"
     ]
   },
   "BL-320": {

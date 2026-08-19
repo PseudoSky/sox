@@ -87,7 +87,7 @@ function tempPath(label: string): string {
   return join(tmpDir, `${label}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.db`);
 }
 
-/** (BUG-019) The per-connection `.openmark` files currently in the lease dir. */
+/** (BUG014.T5) The per-connection `.openmark` files currently in the lease dir. */
 function openMarkers(dbPath: string): string[] {
   try {
     return readdirSync(leaseDirPath(dbPath))
@@ -216,7 +216,7 @@ function restartOn(dbPath: string, env?: NodeJS.ProcessEnv): RestartOutcome {
 
 /** Copy `dbPath` and every sidecar Turso/the BL-361 marker leaves beside it
  *  (`-wal`, `-shm`, `-tshm`, …) — plus the whole `.sox-lease.d` directory
- *  (BUG-019: the per-connection open marker and the crashed writer's dead
+ *  (BUG014.T5: the per-connection open marker and the crashed writer's dead
  *  lease entry now live INSIDE it) — to `destPath`, preserving exactly the
  *  crashed, on-disk state: including whatever is still only in the WAL, never
  *  checkpointed because the writer never got to close(). */
@@ -226,7 +226,7 @@ function cloneStoreFiles(srcPath: string, destPath: string): void {
   const destBase = basename(destPath);
   for (const f of readdirSync(dir)) {
     if (f === `${srcBase}.sox-lease.d`) {
-      // (BUG-019) The lease dir carries the crashed session's dead marker —
+      // (BUG014.T5) The lease dir carries the crashed session's dead marker —
       // part of the unclean state this suite is about. Clone it whole so both
       // arms see the identical unclean signal.
       cpSync(join(dir, f), join(dirname(destPath), `${destBase}.sox-lease.d`), {
@@ -260,7 +260,7 @@ tursoDescribe('BL-338 — crash recovery: SIGKILL under sustained write load', (
       // The BL-361 open marker survives a SIGKILL by construction — close()
       // never ran to clear it — which is what escalates the restart's verify
       // depth to `deep` and is the population this whole suite is about.
-      // (BUG-019) Per-connection: the crashed writer's dead-pid marker lives
+      // (BUG014.T5) Per-connection: the crashed writer's dead-pid marker lives
       // in the lease dir as `<leaseDir>/<token>.openmark`.
       expect(openMarkers(dbPath)).toHaveLength(1);
 
@@ -313,7 +313,7 @@ tursoDescribe('BL-338 — crash recovery: SIGKILL under sustained write load', (
       const repairOnPath = tempPath('bl338-repair-on');
       cloneStoreFiles(crashedPath, rawProofPath);
       cloneStoreFiles(crashedPath, repairOnPath);
-      // (BUG-019) The crashed session's dead-pid marker survived the kill and
+      // (BUG014.T5) The crashed session's dead-pid marker survived the kill and
       // the clone — both copies carry the same unclean signal.
       expect(openMarkers(rawProofPath)).toHaveLength(1);
       expect(openMarkers(repairOnPath)).toHaveLength(1);

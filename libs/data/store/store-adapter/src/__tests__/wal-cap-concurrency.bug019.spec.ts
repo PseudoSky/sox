@@ -164,7 +164,7 @@ tursoDescribe('BUG-019 — wal-cap PASSIVE checkpoint throw under genuine concur
             'this is the assertion that FAILS against pre-fix code, which logs every ' +
             'thrown checkpoint error as wal_cap_flush_failed (error) unconditionally',
         ).toBeGreaterThan(0);
-        // `db_path` is the CANONICALIZED path (BUG-018) — macOS resolves
+        // `db_path` is the CANONICALIZED path (BUG014.T4) — macOS resolves
         // `/tmp` -> `/private/tmp`, so compare on the fields that do not
         // depend on that canonicalization rather than the raw `dbPath`.
         expect(busyWarnings[0]?.[1]).toMatchObject({

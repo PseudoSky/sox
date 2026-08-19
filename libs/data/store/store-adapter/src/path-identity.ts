@@ -1,5 +1,5 @@
 /**
- * path-identity — ONE canonical path per physical store (INV-4, BUG-018).
+ * path-identity — ONE canonical path per physical store (INV-4, BUG014.T4).
  *
  * Every cross-process coordination key — the lease directory
  * (`<dbPath>.sox-lease.d`), the out-of-band open marker (`<dbPath>-openmark`),
@@ -14,7 +14,7 @@
  * peer held the store — letting every quiescence-gated destructive op
  * (close() WAL TRUNCATE, the proactive `-tshm` reconcile,
  * `recoverStaleWalIndex`, and the BUG-017 classic-engine repair gate) run
- * under a live peer (BUG-018).
+ * under a live peer (BUG014.T4).
  *
  * The canonical form is `realpathSync(dirname(dbPath)) + basename(dbPath)`:
  * the PARENT directory is resolved through every symlink / `.` / `..` /
@@ -49,7 +49,7 @@
  * "absent"). EACCES/EIO/… mean the parent EXISTS but cannot be read — that is
  * uncertainty, not absence, and a silent raw fallback there would let two
  * processes with different permission views compute DIFFERENT coordination
- * keys for one store (the exact false-quiescence failure BUG-018 fixes). So
+ * keys for one store (the exact false-quiescence failure BUG014.T4 fixes). So
  * non-absence errnos surface the typed {@link EPathIdentityUnresolvable}
  * instead of falling back.
  *
@@ -61,7 +61,7 @@
  * transient fs-state, not a property of the spelling — if the parent is
  * created (or a symlink retargeted) after a fallback, the next call must
  * re-evaluate and pick up the now-resolvable canonical form instead of
- * returning the stale raw spelling forever (BUG-018 review finding 2). The
+ * returning the stale raw spelling forever (BUG014.T4 review finding 2). The
  * cache is bounded — a long-lived server may churn many temp stores.
  *
  * Pure `node:fs` + `node:path` plus same-package `errors.js` and the

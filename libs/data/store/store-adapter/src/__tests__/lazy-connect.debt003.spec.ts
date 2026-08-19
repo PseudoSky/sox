@@ -128,7 +128,7 @@ tursoDescribe('DEBT-003 — TursoAdapterImpl lazy-connected from birth', () => {
     expect(liveLeaseEntries(dbPath), 'connect() must not acquire a lease').toEqual([]);
 
     // Metadata reads still work correctly before any operation. `config.dbPath`
-    // is always the CANONICAL path (BUG-018), which on macOS resolves
+    // is always the CANONICAL path (BUG014.T4), which on macOS resolves
     // `/tmp` -> `/private/tmp` — compare through the same canonicalizer.
     expect(adapter.config.type).toBe('turso');
     expect(adapter.config.dbPath).toBe(canonicalDbPath(dbPath));

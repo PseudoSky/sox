@@ -1104,7 +1104,7 @@ tursoDescribe('BL-373 — a stale WAL-index sidecar is reconciled at open, not f
   });
 
   it('recovery is declined when the sidecar is not content-proven dead — with evidence', () => {
-    // (BL-373 third recurrence / BUG-021) A non-empty WAL is no longer an
+    // (BL-373 third recurrence / BUG014.T3) A non-empty WAL is no longer an
     // automatic decline: the -tshm is judged by CONTENT-DEADNESS, never mtime.
     // This fixture writes all three files within milliseconds of each other
     // with GARBAGE content (an unreadable WAL header and a sub-header -tshm),

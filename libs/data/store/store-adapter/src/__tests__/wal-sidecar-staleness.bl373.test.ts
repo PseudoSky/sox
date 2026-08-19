@@ -15,8 +15,8 @@
  *     NON-EMPTY WAL — and only the `-tshm` moves, never the `-shm`; the store
  *     then opens and the checkpointed data survives (the exact incident shape,
  *     unblocked). An mtime-BACKDATED but content-live sidecar is NEVER moved
- *     (BUG-021 — the mtime heuristic's false positive is gone).
- *  2. mtime skew is never a rename trigger (BUG-021): backdated 30 s or 90 s →
+ *     (BUG014.T3 — the mtime heuristic's false positive is gone).
+ *  2. mtime skew is never a rename trigger (BUG014.T3): backdated 30 s or 90 s →
  *     declined untouched; the env-tunable threshold drives ONLY the log-only
  *     `warnIfStaleSidecar` mtime-skew report.
  *  3. Shape B (mid-frame truncated WAL): `probeWalFrames` reports truncated;
@@ -133,10 +133,10 @@ function asideFiles(dbPath: string, pattern: string): string[] {
 
 // ═══════════════════════════════════════════════════════════════════════════
 // (1) CONTENT-dead -tshm over a non-empty WAL is reconciled (third-recurrence
-//     shape); an mtime-backdated but content-LIVE sidecar is NOT (BUG-021)
+//     shape); an mtime-backdated but content-LIVE sidecar is NOT (BUG014.T3)
 // ═══════════════════════════════════════════════════════════════════════════
 
-tursoDescribe('BL-373/BUG-021 — the -tshm trigger is CONTENT-deadness, never mtime', () => {
+tursoDescribe('BL-373/BUG014.T3 — the -tshm trigger is CONTENT-deadness, never mtime', () => {
   it('an mtime-backdated but content-live -tshm is DECLINED untouched (the false positive is gone); making it content-dead moves ONLY the -tshm and the store opens with data intact', async () => {
     const dbPath = tempPath('bl373-nonempty-wal');
     await seedStore(dbPath);
@@ -147,7 +147,7 @@ tursoDescribe('BL-373/BUG-021 — the -tshm trigger is CONTENT-deadness, never m
     expect(existsSync(tshmPath), 'precondition: -tshm must exist').toBe(true);
 
     // Backdate the sidecar 7 days — mtime ONLY; the content stays consistent
-    // with the WAL. Pre-fix (BUG-021) this healthy sidecar was renamed by the
+    // with the WAL. Pre-fix (BUG014.T3) this healthy sidecar was renamed by the
     // mtime heuristic (the 08:28–08:46 false-positive churn); the content
     // gate must decline.
     backdate(tshmPath, WEEK_MS);
@@ -192,10 +192,10 @@ tursoDescribe('BL-373/BUG-021 — the -tshm trigger is CONTENT-deadness, never m
 });
 
 // ═══════════════════════════════════════════════════════════════════════════
-// (2) mtime skew is NEVER a rename trigger — content-deadness is (BUG-021)
+// (2) mtime skew is NEVER a rename trigger — content-deadness is (BUG014.T3)
 // ═══════════════════════════════════════════════════════════════════════════
 
-tursoDescribe('BUG-021 — mtime skew alone never moves a sidecar, at any backdate', () => {
+tursoDescribe('BUG014.T3 — mtime skew alone never moves a sidecar, at any backdate', () => {
   it('backdated 30 s AND 90 s both decline untouched (content unprovable) — pre-fix the 90 s case moved', () => {
     const dbPath = tempPath('bl373-boundary');
     writeFileSync(dbPath, '');
@@ -213,7 +213,7 @@ tursoDescribe('BUG-021 — mtime skew alone never moves a sidecar, at any backda
 
     // 90 s: STILL declines — mtime skew beyond the threshold is not evidence
     // of staleness (the tshm mtime freezes at creation under multiprocess
-    // WAL; BUG-021). Pre-fix the mtime heuristic moved this.
+    // WAL; BUG014.T3). Pre-fix the mtime heuristic moved this.
     backdate(dbPath + '-tshm', 90_000);
     const notStale = recoverStaleWalIndex(dbPath);
     expect(notStale.attempted).toBe(false);
@@ -319,12 +319,12 @@ tursoDescribe('BL-373 — Shape B: a mid-frame truncated WAL is probed, and move
     expect(asideFiles(dbPath, '-wal.corrupt-').length).toBe(0);
   });
 
-  it('a truncated WAL with a CONTENT-dead sidecar heals: ONLY the -tshm moves, the WAL never does, and the store opens with checkpointed data (BUG-021)', async () => {
+  it('a truncated WAL with a CONTENT-dead sidecar heals: ONLY the -tshm moves, the WAL never does, and the store opens with checkpointed data (BUG014.T3)', async () => {
     const dbPath = tempPath('bl373-shapeb-ambiguous');
     await seedStore(dbPath);
     // Mid-frame truncation (Shape B): the WAL ends 100 bytes into a frame.
     // The seeded -tshm still indexes frames beyond the truncated EOF ⇒ it is
-    // CONTENT-dead (BUG-021) — the pre-open proactive reconcile moves ONLY
+    // CONTENT-dead (BUG014.T3) — the pre-open proactive reconcile moves ONLY
     // the -tshm. The WAL itself is never auto-moved: ADR-0013's refusal-only
     // rule governs the WAL, and with a rebuilt index the driver opens the
     // truncated WAL (the torn tail is not read as a frame).
@@ -357,7 +357,7 @@ tursoDescribe('BL-373 — Shape B: a mid-frame truncated WAL is probed, and move
     expect(alignedProbe.leftover).toBe(0);
 
     // The seeded -tshm still indexes frames beyond the frame-aligned
-    // truncation ⇒ CONTENT-dead (BUG-021): recovery must move ONLY the -tshm
+    // truncation ⇒ CONTENT-dead (BUG014.T3): recovery must move ONLY the -tshm
     // and never touch the frame-aligned WAL (Shape A is not evidence of
     // corruption).
     backdate(dbPath + '-tshm', WEEK_MS);
@@ -376,17 +376,17 @@ tursoDescribe('BL-373 — Shape B: a mid-frame truncated WAL is probed, and move
 });
 
 // ═══════════════════════════════════════════════════════════════════════════
-// (5) PROACTIVE reconciliation — content-deadness is the trigger (BUG-021)
+// (5) PROACTIVE reconciliation — content-deadness is the trigger (BUG014.T3)
 // ═══════════════════════════════════════════════════════════════════════════
 
-tursoDescribe('BUG-021 — the pre-open proactive reconcile is content-gated', () => {
+tursoDescribe('BUG014.T3 — the pre-open proactive reconcile is content-gated', () => {
   it('an mtime-backdated but CONTENT-LIVE sidecar + non-empty WAL ⇒ NO rename; the FIRST open attempt succeeds (pre-fix renamed it — the false positive)', async () => {
     const dbPath = tempPath('bl373-proactive');
     await seedStore(dbPath);
     const tshmPath = dbPath + '-tshm';
     expect(statSync(dbPath + '-wal').size, 'precondition: non-empty WAL').toBeGreaterThan(0);
     // Backdate ONLY the mtime — the content stays consistent with the WAL.
-    // This is the healthy-but-skewed state BUG-021 removes: pre-fix the
+    // This is the healthy-but-skewed state BUG014.T3 removes: pre-fix the
     // proactive reconcile renamed the sidecar during the next quiescent open
     // (the 08:28–08:46 churn).
     backdate(tshmPath, WEEK_MS);

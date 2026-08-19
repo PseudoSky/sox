@@ -1,15 +1,15 @@
 /**
- * (BUG-021) Child-process turso multiprocess peer for the healthy-store
+ * (BUG014.T3) Child-process turso multiprocess peer for the healthy-store
  * regression fixture (`wal-contentdead-all-sites.bug021.spec.ts`).
  *
  * Connects to `<dbPath>` through the RAW driver (deliberately NOT the
  * adapter: no lease entry in `<dbPath>.sox-lease.d/`, so `storeQuiescence`
  * reports the store quiescent from a fresh opener's perspective — the shape
  * that makes a pre-open proactive reconcile RUN, which is exactly the surface
- * the BUG-021 false positive lived on). It creates a table and writes rows on
+ * the BUG014.T3 false positive lived on). It creates a table and writes rows on
  * a PACE (one row every `WRITE_INTERVAL_MS`), so the `-wal` mtime advances
  * with every insert while the `-tshm` mtime stays frozen at file creation —
- * the BUG-021-documented freeze ("live production tshm mtime already 2 min
+ * the BUG014.T3-documented freeze ("live production tshm mtime already 2 min
  * behind wal during healthy operation"). After `ROWS` rows it prints
  * `READY=<pid>` and idles HOLDING the connection.
  *
@@ -21,7 +21,7 @@
  * The parent then performs a FRESH adapter open against the same TEMP store.
  * The assertion under test: with the sidecar CONTENT-live (its index still
  * describes frames the WAL holds) the fresh open must NOT rename it, however
- * large the accumulated mtime skew — the false positive BUG-021 removes.
+ * large the accumulated mtime skew — the false positive BUG014.T3 removes.
  *
  * Usage: `node --import tsx bug021-healthy-peer-child.ts <dbPath>`
  * Stays alive until killed; the setInterval is the event-loop keep-alive.

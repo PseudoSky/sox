@@ -1,6 +1,6 @@
 /**
  * sidecar-retention.bl591.spec.ts — BL-591: stale `-tshm`/`-shm` sidecar
- * debris (renamed to `.stale-<stamp>` by BUG-021's content-deadness gate,
+ * debris (renamed to `.stale-<stamp>` by BUG014.T3's content-deadness gate,
  * integrity.ts) is never pruned and grows without bound under sustained
  * write volume.
  *

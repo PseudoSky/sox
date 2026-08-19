@@ -1,5 +1,5 @@
 /**
- * BUG-021 — content-deadness at ALL THREE reconcile decision sites (SPEC §T3).
+ * BUG014.T3 — content-deadness at ALL THREE reconcile decision sites (SPEC §T3).
  *
  * The `-tshm` staleness heuristic was mtime-based, but under multiprocess WAL
  * the tshm mtime FREEZES at file creation: a LIVE, healthy WAL-index sidecar
@@ -219,7 +219,7 @@ function tempPath(label: string): string {
 //     NO rename, however large the mtime skew (RED on pre-fix code)
 // ═══════════════════════════════════════════════════════════════════════════
 
-tursoDescribe('BUG-021 — healthy multiprocess store: mtime skew never triggers a rename', () => {
+tursoDescribe('BUG014.T3 — healthy multiprocess store: mtime skew never triggers a rename', () => {
   it(
     'a live peer freezes the -tshm mtime while its writes advance the -wal; the fresh open leaves the healthy sidecar in place and the peer keeps serving',
     async () => {
@@ -237,7 +237,7 @@ tursoDescribe('BUG-021 — healthy multiprocess store: mtime skew never triggers
       try {
         await waitForReady(child);
 
-        // PREMISE (BUG-021's documented freeze): the peer's paced writes
+        // PREMISE (BUG014.T3's documented freeze): the peer's paced writes
         // advanced the -wal mtime far past the frozen -tshm mtime — a
         // "provably stale" reading for the old heuristic. The content is
         // HEALTHY (the sidecar indexes frames the WAL holds). Fail loudly if
@@ -265,7 +265,7 @@ tursoDescribe('BUG-021 — healthy multiprocess store: mtime skew never triggers
 
             expect(
               staleSidecars(dbPath),
-              'BUG-021: a healthy content-live -tshm must NOT be renamed by a fresh open, ' +
+              'BUG014.T3: a healthy content-live -tshm must NOT be renamed by a fresh open, ' +
                 'however large the mtime skew (pre-fix the proactive reconcile renamed it — the false positive)',
             ).toHaveLength(0);
             expect(
@@ -303,13 +303,13 @@ tursoDescribe('BUG-021 — healthy multiprocess store: mtime skew never triggers
 //     is declined untouched; the decline carries the mtime hint + frame probe
 // ═══════════════════════════════════════════════════════════════════════════
 
-tursoDescribe('BUG-021 — recoverStaleWalIndex quiescent path: content-live is declined, content-dead is moved', () => {
+tursoDescribe('BUG014.T3 — recoverStaleWalIndex quiescent path: content-live is declined, content-dead is moved', () => {
   it('an mtime-backdated but content-LIVE -tshm over a non-empty WAL is declined — no rename (RED pre-fix: moved)', async () => {
     const dbPath = tempPath('bug021-quiescent-live');
     await seedStore(dbPath);
     expect(statSync(dbPath + '-wal').size, 'precondition: non-empty WAL').toBeGreaterThan(0);
     // Backdate ONLY the mtime — the content stays consistent with the WAL,
-    // which is exactly the healthy-but-skewed state BUG-021 removes.
+    // which is exactly the healthy-but-skewed state BUG014.T3 removes.
     backdate(dbPath + '-tshm', 120_000);
 
     const recovery = recoverStaleWalIndex(dbPath);
@@ -360,7 +360,7 @@ tursoDescribe('BUG-021 — recoverStaleWalIndex quiescent path: content-live is 
 //     log-only hint
 // ═══════════════════════════════════════════════════════════════════════════
 
-tursoDescribe('BUG-021 — proactivelyReconcileStaleSidecar: content-live is declined, content-dead is moved', () => {
+tursoDescribe('BUG014.T3 — proactivelyReconcileStaleSidecar: content-live is declined, content-dead is moved', () => {
   it('an mtime-backdated but content-LIVE sidecar is declined with the mtime hint (RED pre-fix: moved)', async () => {
     const dbPath = tempPath('bug021-proactive-live');
     await seedStore(dbPath);

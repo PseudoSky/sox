@@ -9,7 +9,7 @@
  *   1. EPERM discipline: `entryLiveness` (store-lease.ts:80-88) already
  *      classifies `kill(pid,0)` errno as EPERM ⇒ live, ESRCH/EINVAL ⇒ dead,
  *      anything else ⇒ undeterminable (fail closed / live-while-fresh). This
- *      was fixed in commit cf90c229 ("address BUG-019 review findings —
+ *      was fixed in commit cf90c229 ("address BUG014.T5 review findings —
  *      live-pid liveness first, errno-aware marker catches", 2026-08-12) and
  *      has not regressed since.
  *

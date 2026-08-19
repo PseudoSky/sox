@@ -121,7 +121,7 @@ function readFromSeparateProcess(repo, humanId) {
   }
 }
 
-/** The store's own sidecar-staleness threshold (BL-373/BUG-021). */
+/** The store's own sidecar-staleness threshold (BL-373/BUG014.T3). */
 const TSHM_SKEW_THRESHOLD_MS = 60_000;
 
 /**
@@ -156,7 +156,7 @@ const TSHM_SKEW_THRESHOLD_MS = 60_000;
  * existed to catch. Under-reporting is only the safe direction while the report
  * stays actionable.
  *
- * WHY -tshm MTIME SKEW IS ALSO THE WRONG SIGNAL (BUG-021)
+ * WHY -tshm MTIME SKEW IS ALSO THE WRONG SIGNAL (BUG014.T3)
  *
  * This function then judged danger by `-tshm` mtime skew, on the reasoning
  * that the lost writes died to a stale-sidecar reconciliation and that the
@@ -165,7 +165,7 @@ const TSHM_SKEW_THRESHOLD_MS = 60_000;
  *
  * Under multiprocess WAL the tshm mtime FREEZES at file creation: a LIVE,
  * healthy sidecar reads as arbitrarily "stale" the moment a peer's writes
- * advance the -wal mtime past the threshold. BUG-021 established this and
+ * advance the -wal mtime past the threshold. BUG014.T3 established this and
  * demoted the skew log line to INFORMATIONAL ONLY inside the adapter, where
  * content-deadness (`isTshmContentDead`) is now the ONLY rename gate — a
  * content-live sidecar is NEVER renamed, however large the skew.
@@ -191,7 +191,7 @@ const TSHM_SKEW_THRESHOLD_MS = 60_000;
  * sitting in the shared WAL are on disk and replay on the next open; they are
  * durable, and TRUNCATE deferring under live peers is expected, not a fault.
  * The reconciliation that discarded frames is prevented at the source by the
- * BUG-021 content-deadness gate, not by anything this tool can observe.
+ * BUG014.T3 content-deadness gate, not by anything this tool can observe.
  */
 function walState(storePath) {
   const wal = `${storePath}-wal`;
@@ -210,7 +210,7 @@ function walState(storePath) {
     }
 
     const skewMs = walStat.mtimeMs - statSync(tshm).mtimeMs;
-    // `stale` is deliberately NOT derived from skew — see BUG-021 above.
+    // `stale` is deliberately NOT derived from skew — see BUG014.T3 above.
     // Skew is carried only so the report can state it as context.
     return { known: true, bytes, frames, skewMs, stale: false };
   } catch (err) {
@@ -263,7 +263,7 @@ function main() {
     reason =
       `read from a separate process; ${after.bytes} bytes of frames are in the shared WAL ` +
       `(-tshm mtime skew ${Math.round(after.skewMs / 1000)}s — CONTEXT ONLY, not a fault: the tshm mtime ` +
-      `freezes at creation under multiprocess WAL, see BUG-021) — the write is committed and cross-process visible. ` +
+      `freezes at creation under multiprocess WAL, see BUG014.T3) — the write is committed and cross-process visible. ` +
       `The WAL file stays non-empty because TRUNCATE is quiescence-gated and defers while peers hold the store; ` +
       `that is expected, not a fault.`;
   } else {

@@ -356,7 +356,7 @@ export class RepairDeclinedLivePeersError extends Error {
 }
 
 /**
- * (BUG-018 review finding 3) Thrown by `canonicalDbPath` when the store's
+ * (BUG014.T4 review finding 3) Thrown by `canonicalDbPath` when the store's
  * PARENT directory exists but cannot be resolved — `realpathSync` failed with
  * a non-absence errno (EACCES: unreadable parent, EIO, ELOOP, …).
  *
@@ -368,7 +368,7 @@ export class RepairDeclinedLivePeersError extends Error {
  * hold a live open of the store (e.g. execute-but-not-read permission on the
  * parent), and a silent raw fallback there would let two processes compute
  * DIFFERENT coordination keys (lease dir / marker / sidecars) for one physical
- * store — the exact false-quiescence failure BUG-018 fixes. So an unresolvable
+ * store — the exact false-quiescence failure BUG014.T4 fixes. So an unresolvable
  * parent surfaces this typed, errno-carrying error instead of falling back.
  */
 export class EPathIdentityUnresolvable extends Error {
@@ -382,7 +382,7 @@ export class EPathIdentityUnresolvable extends Error {
   ) {
     const causeNote = cause instanceof Error ? ` Cause: ${cause.message}` : '';
     super(
-      `[BUG-018] cannot resolve the canonical identity of "${dbPath}": realpath of its parent ` +
+      `[BUG014.T4] cannot resolve the canonical identity of "${dbPath}": realpath of its parent ` +
         `directory failed with ${errno}. The parent is not merely absent — it exists but cannot be ` +
         `resolved, so falling back to the raw spelling could diverge from the canonical key a peer ` +
         `computes for the same store (false quiescence). Fix the parent's permissions/fs state and ` +

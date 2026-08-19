@@ -313,7 +313,7 @@ export interface SidecarRecovery {
  * Staleness threshold in milliseconds: a `-tshm` whose mtime is MORE than this
  * much older than the `-wal` it must describe shows observable MTIME-SKEW.
  *
- * (BUG-021) This threshold no longer drives ANY rename decision — the tshm
+ * (BUG014.T3) This threshold no longer drives ANY rename decision — the tshm
  * mtime freezes at file creation under multiprocess WAL, so mtime skew is
  * expected on a healthy sidecar and is not evidence of staleness. It survives
  * ONLY as the trigger for the log-only `warnIfStaleSidecar` mtime-skew
@@ -711,7 +711,7 @@ export function isTshmContentDead(dbPath: string): TshmContentDeadVerdict {
  * again after a SUCCESSFUL open (the masked case: the open survived, but the
  * operator still needs to know the sidecar's mtime is decaying).
  *
- * (BUG-021) INFORMATIONAL ONLY — this observation is an MTIME-SKEW report, not
+ * (BUG014.T3) INFORMATIONAL ONLY — this observation is an MTIME-SKEW report, not
  * a staleness verdict. Under multiprocess WAL the `-tshm` mtime FREEZES at
  * file creation while the `-wal` mtime advances with every peer write, so a
  * LIVE, healthy index routinely reads as "older than the WAL". This function
@@ -735,7 +735,7 @@ export function warnIfStaleSidecar(dbPath: string | undefined): void {
         `[BL-373] the -tshm WAL-index sidecar shows mtime-skew: the tshm mtime is stale: ` +
           `${Math.round(ageDiff / 1000)}s (${ageDiff} ms) behind the ${walSt.size}-byte -wal mtime ` +
           `(tshm mtime ${isoMtime(tshmSt.mtimeMs)}, wal mtime ${isoMtime(walSt.mtimeMs)}, ` +
-          `threshold ${staleSidecarThresholdMs()} ms). INFORMATIONAL ONLY (BUG-021): under ` +
+          `threshold ${staleSidecarThresholdMs()} ms). INFORMATIONAL ONLY (BUG014.T3): under ` +
           `multiprocess WAL the tshm mtime freezes at file creation, so mtime skew is NOT proof ` +
           `of staleness and never triggers a reconcile — content-deadness (isTshmContentDead) ` +
           `is the only rename gate.`,
@@ -749,7 +749,7 @@ export function warnIfStaleSidecar(dbPath: string | undefined): void {
 /**
  * Reconcile a stale WAL-index sidecar so the store can open.
  *
- * **Sidecar-first, CONTENT-proven** (BUG-021): a non-empty WAL is no longer
+ * **Sidecar-first, CONTENT-proven** (BUG014.T3): a non-empty WAL is no longer
  * an automatic decline. The `-tshm` is judged by CONTENT-DEADNESS
  * (`isTshmContentDead`), never by mtime — the mtime heuristic is unsound
  * under multiprocess WAL because the tshm mtime freezes at file creation, so
@@ -863,7 +863,7 @@ export function recoverStaleWalIndex(
     return result;
   }
 
-  // ── Default (quiescent) path — CONTENT-deadness is the trigger (BUG-021) ──
+  // ── Default (quiescent) path — CONTENT-deadness is the trigger (BUG014.T3) ──
   const walPath = dbPath + '-wal';
   const tshmPath = dbPath + '-tshm';
   let walBytes = -1;
@@ -886,7 +886,7 @@ export function recoverStaleWalIndex(
     return result;
   }
 
-  // (BUG-021) CONTENT is the discriminator — never mtime. The -tshm mtime
+  // (BUG014.T3) CONTENT is the discriminator — never mtime. The -tshm mtime
   // freezes at file creation under multiprocess WAL, so mtime skew is EXPECTED
   // on a healthy sidecar whose peer keeps writing (the false-positive rename
   // churn of 2026-08-12 was exactly that); a rename therefore requires
@@ -938,7 +938,7 @@ export function recoverStaleWalIndex(
   const ageDiff = (walMtimeMs ?? 0) - tshmMtimeMs;
   result.declined =
     `the -tshm beside ${dbPath} is NOT content-proven dead — refusing to rename a WAL-index ` +
-    `sidecar that may still be in use (BUG-021: the mtime heuristic is unsound under ` +
+    `sidecar that may still be in use (BUG014.T3: the mtime heuristic is unsound under ` +
     `multiprocess WAL — the tshm mtime freezes at file creation, so mtime skew is not a ` +
     `rename trigger; content-deadness is). ${describeWalFrameProbe(probe)}. ` +
     `mtime hint (informational, never a rename trigger): the -wal holds ${walBytes} bytes ` +
@@ -959,7 +959,7 @@ export interface ProactiveSidecarResult {
 }
 
 /**
- * (BUG-021) Build the LOG-ONLY mtime observation for a decline/warning text.
+ * (BUG014.T3) Build the LOG-ONLY mtime observation for a decline/warning text.
  *
  * The `-tshm` mtime freezes at file creation under multiprocess WAL, so the
  * mtime gap to the reference epoch (the `-wal`'s mtime, else the main db
@@ -1016,7 +1016,7 @@ function mtimeSkewHint(dbPath: string, tshmPath: string): string {
  * the driver even tries, so the failed-open path is never taken. The open-time
  * catch remains as the backstop for races and non-content shapes.
  *
- * **The trigger is content-deadness (BUG-021), never mtime.** The mtime
+ * **The trigger is content-deadness (BUG014.T3), never mtime.** The mtime
  * heuristic is structurally unsound under multiprocess WAL: the `-tshm` mtime
  * freezes at file creation, so a LIVE, healthy index reads as "provably stale"
  * once the `-wal` mtime advances past the threshold — the 2026-08-12
@@ -1049,7 +1049,7 @@ export function proactivelyReconcileStaleSidecar(
     return { moved: false, declined: 'no -tshm sidecar present' };
   }
 
-  // (BUG-021) CONTENT-deadness is the trigger — never mtime (the tshm mtime
+  // (BUG014.T3) CONTENT-deadness is the trigger — never mtime (the tshm mtime
   // freezes at file creation under multiprocess WAL; a healthy index reads as
   // mtime-"stale" once a peer's writes advance the WAL past the threshold,
   // which is exactly the false-positive rename churn this replaces). The mtime
@@ -1062,7 +1062,7 @@ export function proactivelyReconcileStaleSidecar(
       declined:
         `the -tshm beside ${dbPath} is NOT content-proven dead (` +
         `${verdict.reason ?? 'content-live or unprovable'}) — refusing to rename a WAL-index ` +
-        `sidecar that may still be live (BUG-021: mtime skew is never a rename trigger; ` +
+        `sidecar that may still be live (BUG014.T3: mtime skew is never a rename trigger; ` +
         `content-deadness is).${hint ? ` ${hint}` : ''}`,
     };
   }
