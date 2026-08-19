@@ -242,6 +242,8 @@ export {
   restartAndVerify,
   // BL-593/§9.4b: `soxe service update` — enable + verified rotation check.
   updateOsUnit,
+  // BUG-023: reload-then-verify a unit unloaded out from under a caller.
+  reloadAndVerifyOsUnit,
   // BL-185: interval-schedule detection for SCHEDULED status rendering.
   isScheduledOsUnitContent,
   isScheduledOsUnit,
@@ -266,6 +268,8 @@ export type {
   RestartAndVerifyResult,
   UpdateOsUnitOptions,
   UpdateOsUnitResult,
+  ReloadAndVerifyOsUnitOptions,
+  ReloadAndVerifyOsUnitResult,
 } from './os-unit.js';
 
 // ─── Global Supervisor Registry (R1) ─────────────────────────────────────────

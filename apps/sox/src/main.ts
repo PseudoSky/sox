@@ -27,6 +27,7 @@ import {
   detectOsSupervisor,
   disableOsUnit,
   enableOsUnit,
+  type EnableAction,
   findAllLogStreamsForExt,
   findCrossScopeSharers,
   findOrphansByIdentity,
@@ -66,6 +67,8 @@ import {
   restartOsUnit,
   // BL-593/§9.4b: `soxe service update` — enable + verified rotation check.
   updateOsUnit,
+  // BUG-023: reload-then-verify a unit unloaded out from under a caller.
+  reloadAndVerifyOsUnit,
   singletonKey,
   socketDir,
   socketOwnerPids,
@@ -2188,7 +2191,9 @@ function manifestTypeForSource(source: string): string | null {
 
 export type RestartDisposition =
   | 'restarted'
+  | 'restarted-unsupervised'
   | 'backend-restarted'
+  | 'backend-restarted-unsupervised'
   | 'reconnect-needed'
   | 'placement-only'
   | 'not-running';
@@ -2483,9 +2488,32 @@ async function restartProxyBackend(
     return { disposition: 'reconnect-needed', detail: `proxy backend re-ensure failed: ${r.detail}` };
   }
 
+  // BUG-023: `unloadOwnedOsUnitsBeforeReap` above UNLOADED this extension's OS
+  // unit before the verified-stop so launchd/systemd couldn't resurrect the OLD
+  // backend mid-reap ([inv:unload-then-reap]). Nothing reloaded it afterward —
+  // the fresh backend came back to life only because the service-proxy respawned
+  // it, which is invisible supervision: no restart-on-crash, and it would not
+  // survive a reboot. `soxe service status` honestly reported loaded:no/owner:none
+  // the whole time ([inv:list-never-lies]); this is the missing check that reads
+  // that signal. Re-enable (content-addressed, idempotent — a no-op if nothing
+  // unloaded it) then independently re-query OS-supervisor reality; fail loudly
+  // if the unit did not come back loaded.
+  const reenable = reEnableOwnedOsUnit(extId, scope, root, log);
+  if (reenable.owned && !reenable.verifiedLoaded) {
+    return {
+      disposition: 'backend-restarted-unsupervised',
+      detail:
+        `BACKEND RESTARTED BUT UNSUPERVISED (BUG-023 guard): os-unit '${reenable.label}' ` +
+        `reports loaded=NO after re-enable — the backend is alive but has no restart-on-crash ` +
+        `supervision and will NOT survive a reboot. Run '${CLI} service enable ${extId} --scope ${scope}' ` +
+        `to restore supervision.`,
+    };
+  }
+
   return {
     disposition: 'backend-restarted',
-    detail: 'proxy backend verified-stopped + re-ensured on new code — shims re-dial, NO client reconnect',
+    detail: 'proxy backend verified-stopped + re-ensured on new code — shims re-dial, NO client reconnect' +
+      (reenable.owned ? ` (os-unit '${reenable.label}' reloaded + verified loaded=yes)` : ''),
   };
 }
 
@@ -2597,10 +2625,26 @@ async function rollingRestartConsumer(
 
   // §9.3 [inv:os-unit-content-addressed]: if this service has an owned OS unit,
   // re-enable it so the unit follows the NEW artifact (content-addressed — a no-op
-  // when the rendered unit is unchanged).
-  reEnableOwnedOsUnit(extId, scope, root, log);
+  // when the rendered unit is unchanged). BUG-023: verify it actually came back
+  // loaded — a rewritten/reloaded unit report is not, by itself, evidence the OS
+  // supervisor actually holds it ([inv:list-never-lies]).
+  const reenable = reEnableOwnedOsUnit(extId, scope, root, log);
+  if (reenable.owned && !reenable.verifiedLoaded) {
+    return {
+      disposition: 'restarted-unsupervised',
+      detail:
+        `RESTARTED BUT UNSUPERVISED (BUG-023 guard): os-unit '${reenable.label}' reports ` +
+        `loaded=NO after re-enable — the service is running with no restart-on-crash ` +
+        `supervision and will NOT survive a reboot. Run '${CLI} service enable ${extId} --scope ${scope}' ` +
+        `to restore supervision.`,
+    };
+  }
 
-  return { disposition: 'restarted', detail: 'verified-stop → start on new artifact (no orphan)' };
+  return {
+    disposition: 'restarted',
+    detail: 'verified-stop → start on new artifact (no orphan)' +
+      (reenable.owned ? ` (os-unit '${reenable.label}' reloaded + verified loaded=yes)` : ''),
+  };
 }
 
 /**
@@ -2644,26 +2688,54 @@ async function verifyRunningArtifact(
   return { ok: false, detail: `entrypoint sha256 ${actual.slice(0, 19)}… ≠ expected ${expected.slice(0, 19)}…` };
 }
 
+/** Result of {@link reEnableOwnedOsUnit} — carries the BUG-023 reality verification. */
+interface ReEnableOsUnitResult {
+  /** False when this extId/scope owns no OS unit at all — nothing to (re)load or verify. */
+  owned: boolean;
+  /** enableOsUnit's action (created/updated/unchanged/blocked). Only meaningful when `owned`. */
+  action?: EnableAction;
+  /**
+   * BUG-023 [inv:list-never-lies]: independently re-queried via `platform.isLoaded(...)`
+   * AFTER the enable call — NOT `enableOsUnit`'s own self-reported `loaded` field, which
+   * this function does not trust as the final word. Only meaningful when `owned`.
+   */
+  verifiedLoaded?: boolean;
+  /** The OS-unit label, for error messages. Only meaningful when `owned`. */
+  label?: string;
+}
+
 /**
- * §9.3: re-`enable` an extension's OS unit on upgrade so it tracks the new artifact.
- * No-op when no OS unit is owned for (extId, scope). Content-addressed: enableOsUnit
- * rewrites + reloads only when the generated unit differs. Honors SOX_OS_UNIT_DIR.
+ * §9.3: re-`enable` an extension's OS unit on upgrade so it tracks the new artifact
+ * — content-addressed, `enableOsUnit` rewrites + reloads only when the generated unit
+ * differs. No-op when no OS unit is owned for (extId, scope). Honors SOX_OS_UNIT_DIR.
+ *
+ * BUG-023: also re-queries OS-supervisor reality after the call and reports it in the
+ * return value — a service or proxy backend whose OS unit was unloaded before a
+ * verified-stop (`[inv:unload-then-reap]`) MUST have this called and its `verifiedLoaded`
+ * checked by the caller afterward, or the unload is never undone and the process ends up
+ * alive but unsupervised. Best-effort on ownership-index I/O (never throws); the reality
+ * probe (`platform.isLoaded`) is authoritative and always runs when a unit is owned.
  */
-function reEnableOwnedOsUnit(extId: string, scope: string, root: string, log: (m: string) => void): void {
+function reEnableOwnedOsUnit(extId: string, scope: string, root: string, log: (m: string) => void): ReEnableOsUnitResult {
   const pathM = require('node:path') as typeof import('node:path');
   let owned;
   try {
     const own = OwnershipIndex.loadFromFile(pathM.join(dataRoot(scope as DataScope, root), 'ownership.json'));
     owned = own.get(extId, scope)?.entries.find((e) => e.kind === 'os-unit');
   } catch {
-    return;
+    return { owned: false };
   }
-  if (!owned || owned.kind !== 'os-unit') return;
+  if (!owned || owned.kind !== 'os-unit') return { owned: false };
   const ctx = resolveOsUnitContext(extId, scope, root, {});
-  if (!ctx) return;
+  if (!ctx) return { owned: false };
   const unitDir = process.env['SOX_OS_UNIT_DIR'] ?? pathM.dirname(owned.unitPath);
-  const r = enableOsUnit(ctx.spec, ctx.platform, { unitDir, load: true, log: (m) => log(`os-unit: ${m}`) });
-  if (r.action !== 'unchanged') {
+  // BUG-023: `reloadAndVerifyOsUnit` composes `enableOsUnit` (reused verbatim) with an
+  // independent post-call reality probe — see libs/host-runtime/src/os-unit.ts.
+  const { action, enableResult: r, verifiedLoaded } = reloadAndVerifyOsUnit(ctx.spec, ctx.platform, {
+    unitDir,
+    log: (m) => log(`os-unit: ${m}`),
+  });
+  if (action !== 'unchanged') {
     try {
       const own = OwnershipIndex.loadFromFile(pathM.join(dataRoot(scope as DataScope, root), 'ownership.json'));
       const rec = own.get(extId, scope);
@@ -2675,13 +2747,14 @@ function reEnableOwnedOsUnit(extId: string, scope: string, root: string, log: (m
       }
     } catch { /* best-effort */ }
   }
+  return { owned: true, action, verifiedLoaded, label: ctx.spec.label };
 }
 
 interface ConsumerOutcome {
   extId: string;
   scope: string;
   root: string;
-  state: 'current' | 'upgraded' | 'restarted' | 'restart-mismatch' | 'backend-restarted' | 'backend-restart-mismatch' | 'reconnect-needed' | 'not-installed' | 'unresolvable' | 'failed';
+  state: 'current' | 'upgraded' | 'restarted' | 'restart-mismatch' | 'restarted-unsupervised' | 'backend-restarted' | 'backend-restart-mismatch' | 'backend-restarted-unsupervised' | 'reconnect-needed' | 'not-installed' | 'unresolvable' | 'failed';
   detail: string;
 }
 
@@ -2873,13 +2946,26 @@ async function cmdUpgrade(flags: Record<string, string>): Promise<void> {
           } else {
             oc.detail = res.detail;
           }
+        } else if (res.disposition === 'restarted-unsupervised' || res.disposition === 'backend-restarted-unsupervised') {
+          // BUG-023: the process is alive but its OS unit did not come back
+          // loaded — a real failure of the invariant the upgrade path depends
+          // on, not a soft warning. Fail loudly.
+          oc.state = res.disposition === 'restarted-unsupervised' ? 'restarted-unsupervised' : 'backend-restarted-unsupervised';
+          oc.detail = res.detail;
+          process.stderr.write(`    ⚠ ${res.detail}\n`);
         } else if (res.disposition === 'reconnect-needed') {
           oc.state = 'reconnect-needed';
         } else {
           oc.detail = res.detail;
         }
       }
-      if (res.detail.includes('FAILED')) failed++;
+      if (
+        res.detail.includes('FAILED') ||
+        res.disposition === 'restarted-unsupervised' ||
+        res.disposition === 'backend-restarted-unsupervised'
+      ) {
+        failed++;
+      }
     }
   }
 
