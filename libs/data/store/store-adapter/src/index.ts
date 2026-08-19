@@ -26,6 +26,12 @@ export * from './preflight.js';
 export * from './fts-orphan-guard.js';
 export * from './engine-guard.js';
 export * from './sidecar-retention.js';
+// (BL-587, BL-590) Shared idle-flush/wal-cap tuning constants and pure
+// helpers, consumed identically by both adapters — exported so a caller
+// (e.g. a future memory-core integration deciding when to call
+// `captureWalCapBaseline()`) can read the same defaults this package uses
+// rather than re-guessing them.
+export * from './wal-tuning.js';
 
 /**
  * (PERF/CORRECTNESS) Canonical store identity — the ONE definition of "are these
