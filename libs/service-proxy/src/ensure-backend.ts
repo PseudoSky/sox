@@ -273,7 +273,28 @@ function releaseLock(lockPath: string): void {
   }
 }
 
-const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms).unref?.());
+/**
+ * (BUG-SOX-UPGRADE-DIES-SILENTLY-AT-ENSUREBACKEND) REFERENCED on purpose.
+ *
+ * This timer used to call `.unref()`. That is fatal for any caller that awaits
+ * it as its only pending work: `spawnUnderLock` calls `child.unref()` right
+ * before its readiness loop, so once the spawn's own handles are released the
+ * unref'd sleep left the event loop with ZERO referenced handles. Node then
+ * exits cleanly — status 0 — while suspended at `await sleep(100)`, and every
+ * statement after the await simply never runs.
+ *
+ * Measured 2026-08-20: `soxe upgrade --all` died exactly there, mid-rolling-
+ * restart. It had already unloaded memory-server's OS unit ([inv:unload-then-
+ * reap]) and never reached the re-enable, leaving a live but UNSUPERVISED
+ * process; the other 5 upgraded consumers were never restarted; no summary
+ * printed; exit code 0. The log ends at the spawn line, 504 lines in.
+ *
+ * A sleep that a caller AWAITS must hold the loop for exactly as long as it is
+ * awaited — otherwise "await" silently means "maybe exit here". The wait loops
+ * this serves are all deadline-bounded (`readyTimeoutMs`), so holding the loop
+ * cannot hang: the worst case is the bounded wait actually elapsing.
+ */
+const sleep = (ms: number): Promise<void> => new Promise((r) => { setTimeout(r, ms); });
 
 /**
  * Ensure exactly one backend is live on `socketPath`, spawning it (detached,
