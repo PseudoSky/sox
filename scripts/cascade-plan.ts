@@ -60,26 +60,28 @@
  *     `devDependencies` (unless `link:`/`file:` or `ignoreDevDependencies`),
  *     `peerDependencies`, `optionalDependencies` — not just `dependencies`.
  *     This is not academic: `libs/data/analysis/analysis/package.json` reaches
- *     `@adhd/sox-store-adapter` ONLY via `devDependencies` (`workspace:*`) —
- *     scanning `dependencies` alone silently drops a real, already-published
- *     consumer from the closure. Confirmed via
+ *     `@adhd/sox-store-adapter` ONLY via `devDependencies` — scanning
+ *     `dependencies` alone silently drops a real, already-published consumer
+ *     from the closure. Confirmed via
  *     `grep -rl '"@adhd/sox-' libs apps` across all four fields.
- *   - Changesets ALSO cascades a plain (non-`workspace:`) semver range if it
- *     is valid AND satisfied by the dependency's current version — it is not
- *     `workspace:*`-exclusive. It explicitly does NOT cascade a dist-tag
- *     (`"latest"`, `"next"`, ...) reference, by design (its own source
- *     comment: "the depRange could have been a tag ... we should not count
- *     this as a local monorepo dependant"). Verified empirically: every
- *     `@adhd/sox-*` internal edge in this repo, across all four dependency
- *     fields, already uses `workspace:*` exclusively (zero exceptions found).
+ *   - Cascade range forms differ by what they RESOLVE to (verified against
+ *     `@changesets/assemble-release-plan@6.0.10`'s `getDependencyVersionRanges`,
+ *     the function `changeset status` uses to decide whether a dependent is
+ *     bumped). `workspace:*` resolves to an EXACT pin (the dependency's current
+ *     version), so a patch bump is NOT satisfied and the dependent cascades.
+ *     `workspace:^` / `workspace:~` resolve to a floating range (`^x.y.z` /
+ *     `~x.y.z`) that already satisfies a patch bump, so changesets does NOT
+ *     cascade a patch through them. This repo now uses BOTH forms (~28
+ *     `workspace:^` edges in `libs/*`, ~25 `workspace:*` elsewhere), so this
+ *     walker follows ONLY `workspace:*` edges — not every `workspace:` range.
  *     Reproducing changesets' generic semver-range-satisfaction matcher here
  *     would need a `semver` dependency and duplicate real logic with no
- *     present benefit (Decision B's own DRY warning) — so this walker only
- *     follows `workspace:` edges. If this repo ever adopts a plain-range
- *     internal pin, this script will UNDER-count relative to `changeset
- *     status` and the cross-check below will correctly fail loud (the
- *     dangerous direction is caught; see the disagreement branch), rather
- *     than silently drifting.
+ *     present benefit (Decision B's own DRY warning). Two under-count
+ *     directions are therefore possible and BOTH fail loud via the cross-check
+ *     below rather than silently drifting: (a) a plain non-`workspace:` range a
+ *     release would satisfy (zero such internal edges today), and (b) a
+ *     MINOR/MAJOR bump cascading through a `workspace:^` edge (`^0.x` does not
+ *     satisfy `0.y`) — the dangerous direction, flagged as changeset-only.
  *
  * Usage:
  *   npx tsx scripts/cascade-plan.ts [root] [--package <name>[,<name>...]] [--json]
@@ -236,8 +238,13 @@ function buildGraph(): Graph {
     if (!dependsOn.has(pkg.name)) dependsOn.set(pkg.name, new Set());
     for (const field of DEPENDENCY_FIELDS) {
       for (const [dep, range] of Object.entries(pkg[field] ?? {})) {
-        if (!range.startsWith('workspace:')) continue; // only workspace:* edges cascade — see "Edge scope"
-        if (field === 'devDependencies' && (range.startsWith('link:') || range.startsWith('file:'))) continue;
+        // Only `workspace:*` edges cascade a patch bump: changesets resolves
+        // `workspace:*` to an EXACT pin (the dependency's current version), so
+        // the bumped version is NOT satisfied and the dependent must be
+        // re-pinned. `workspace:^` / `workspace:~` resolve to a floating range
+        // (`^x.y.z` / `~x.y.z`) that already satisfies a patch bump, so
+        // changesets does NOT bump those dependents — see "Edge scope".
+        if (range !== 'workspace:*') continue;
         dependsOn.get(pkg.name)!.add(dep);
         if (!consumers.has(dep)) consumers.set(dep, new Set());
         consumers.get(dep)!.add(pkg.name);
