@@ -214,6 +214,41 @@ export class FastembedBusyError extends Error {
 export class SharedFastembedProcessClient implements SharedFastembedClient {
   private child: ChildProcess | null = null;
   private startingPromise: Promise<ChildProcess> | null = null;
+  /**
+   * (BUG-MEMORYSERVER-SHUTDOWN-LEAKS-FASTEMBED-CHILD-001) True once
+   * `terminate()` has been called on THIS client — permanent, never reset.
+   * Distinct from an unexpected crash (the `c.on('exit')`/`c.on('error')`
+   * handlers below null `this.child` WITHOUT setting this flag, so BUG-021's
+   * transparent-respawn-and-reinit behaviour for a genuinely crashed child is
+   * completely unaffected).
+   *
+   * ROOT CAUSE this closes: `fastembed.ts`'s `initModel()` retries a
+   * cache-hit warmup up to `WARMUP_CACHE_HIT_ATTEMPTS` times, each attempt
+   * calling `this.shared.request({ type: 'init', ... })`. `coordinatedShutdown`
+   * (`memory-server/src/backend.ts`) races step 0 (`flushPendingEmbeds`)
+   * against a short bound and, on timeout, ABANDONS it as a background
+   * "loser" promise that keeps running concurrently with step 1
+   * (`terminateEmbedWorkers`). If that abandoned promise's in-flight
+   * `initModel()` attempt is still on its first attempt when step 1's
+   * `terminate()` below nulls `this.child`/`this.startingPromise` and rejects
+   * every pending request (including that attempt), `initModel()`'s catch
+   * block loops and fires attempt 2 — which, before this fix, called
+   * `ensureProcess()` and found `this.child === null`, so it happily forked a
+   * BRAND NEW, completely untracked child process. That child was never
+   * subject to any further termination step (`coordinatedShutdown` had
+   * already moved past step 1) and was abandoned as a live orphan the instant
+   * `exit(0)` fired — reproduced directly: a real backend forked under
+   * `SOX_PROXY_BACKEND=1`, given one `memory_write` (to start Phase-B's async
+   * embed), then SIGTERM'd immediately — server pid exited cleanly at
+   * t+694ms, but a SECOND `fastembedProcessHost.js` child (forked ~150ms
+   * AFTER the coordinated shutdown's own step 4 already finished) was still
+   * alive seconds later, orphaned under the process's original parent.
+   *
+   * `ensureProcess()` now refuses to fork once this flag is set — any request
+   * racing a real `terminate()` fails fast with a clear error instead of
+   * spawning a child nothing will ever reap.
+   */
+  private terminated = false;
   private nextId = 1;
   private pending = new Map<number, PendingEntry>();
   private readonly hostPath: string | undefined;
@@ -314,6 +349,15 @@ export class SharedFastembedProcessClient implements SharedFastembedClient {
 
   /** Lazily fork (exactly once) and return the single shared child process. */
   private ensureProcess(): Promise<ChildProcess> {
+    // (BUG-MEMORYSERVER-SHUTDOWN-LEAKS-FASTEMBED-CHILD-001) A caller racing a
+    // real `terminate()` must never re-fork a child no one will ever reap —
+    // see `terminated`'s own doc comment for the exact reproduction. Checked
+    // FIRST, before the `this.child`/`this.startingPromise` fast paths, so it
+    // also covers the narrow window where `terminate()` has set this flag but
+    // a stale (about-to-be-killed) `this.child` reference is still non-null.
+    if (this.terminated) {
+      return Promise.reject(new Error('shared fastembed process terminated'));
+    }
     if (this.child) return Promise.resolve(this.child);
     if (this.startingPromise) return this.startingPromise;
 
@@ -620,13 +664,34 @@ export class SharedFastembedProcessClient implements SharedFastembedClient {
    * shutdown sequence waiting on a child that will never exit gracefully.
    */
   async terminate(): Promise<void> {
+    // (BUG-MEMORYSERVER-SHUTDOWN-LEAKS-FASTEMBED-CHILD-001) Set FIRST and
+    // synchronously — before anything else in this method runs — so any
+    // `ensureProcess()` call racing this `terminate()` (including one already
+    // past its own `if (this.child)`/`if (this.startingPromise)` fast-path
+    // checks in the SAME microtask, which cannot happen after this
+    // synchronous write) observes `terminated` and refuses to fork a new,
+    // unreapable child. See `terminated`'s own doc comment for the exact
+    // reproduction this closes.
+    this.terminated = true;
     const c = this.child;
+    // A fork that was ALREADY in flight (started by an `ensureProcess()` call
+    // that ran to completion of its `fork()` before this `terminate()` set
+    // the flag above) has no `this.child` yet — `c` above would miss it
+    // entirely. Capture and await `startingPromise` too so that in-flight
+    // fork is killed once it resolves, instead of completing unobserved and
+    // orphaning exactly like the bug this fixes.
+    const starting = this.startingPromise;
     this.child = null;
     this.startingPromise = null;
     for (const { reject } of this.pending.values()) {
       reject(new Error('shared fastembed process terminated'));
     }
     this.pending.clear();
+    if (c === null && starting) {
+      void starting.then((lateChild) => {
+        lateChild.kill();
+      }).catch(() => undefined);
+    }
     if (!c) return;
 
     const exited = new Promise<void>((resolve) => {
@@ -1301,6 +1366,14 @@ export class AdaptiveFastembedProcessPool implements SharedFastembedClient {
    * routed to.
    */
   private async grow(): Promise<void> {
+    // (BUG-MEMORYSERVER-SHUTDOWN-LEAKS-FASTEMBED-CHILD-001) A `request()`
+    // admission racing a real `terminate()` must not add a brand-new,
+    // never-terminated member to a pool that has already been told to shut
+    // down — defense in depth alongside the per-member `terminated` guard in
+    // `SharedFastembedProcessClient.ensureProcess()`, which is what actually
+    // stops the fork in the reproduced scenario (a single-member pool, the
+    // default topology); this closes the analogous pool-level growth path.
+    if (this.terminated) return;
     if (this.growInFlight) return this.growInFlight;
     if (this.members.length >= this.maxSize) return;
 
