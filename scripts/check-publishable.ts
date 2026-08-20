@@ -145,6 +145,34 @@ function pendingChangesetPackages(): Set<string> {
   return out;
 }
 
+/**
+ * Classify an internal `@adhd/sox-*` dependency range by what it BECOMES WHEN
+ * PUBLISHED — the same semantics `tools/release-consumers.mjs` documents:
+ *
+ *   workspace:^  ->  "^1.2.3"   FLOATS within the compatible range
+ *   workspace:~  ->  "~1.2.3"   floats within the patch range
+ *   workspace:*  ->  "1.2.3"    EXACT — frozen at publish time, never floats
+ *   ^1.2.3 / ~1.2.3             FLOATS
+ *   1.2.3 (bare)                EXACT
+ *
+ * An exact pin on a stateful internal package (sox-telemetry keeps its sink in
+ * module scope; sox-store-adapter carries connection semantics) is how
+ * BUG-BACKLOG-TELEMETRY-001 split: `@adhd/sox-graph-store@0.8.4` published
+ * `@adhd/sox-telemetry` and `@adhd/sox-store-adapter` as exact pins (`workspace:*`
+ * at the time), so when telemetry/store-adapter bumped and the caret-pinned
+ * packages floated forward, the exact-pinned package froze on the old version and
+ * `@adhd/backlog` resolved TWO copies of the stateful telemetry runtime.
+ */
+function classifyInternalRange(range: string): 'floating' | 'exact' {
+  const s = String(range);
+  if (s.startsWith('workspace:')) {
+    const proto = s.slice('workspace:'.length);
+    return proto === '^' || proto === '~' ? 'floating' : 'exact';
+  }
+  if (s.startsWith('^') || s.startsWith('~')) return 'floating';
+  return 'exact';
+}
+
 // ── registry existence probe ────────────────────────────────────────────────
 type ProbeResult = { exists: true } | { exists: false; reason: string } | { error: string };
 
@@ -319,6 +347,41 @@ async function main(): Promise<void> {
   }
 
   if (cacheDirty) writeCache(cache);
+
+  // ── rule (5): single-instance resolution invariant (BUG-BACKLOG-TELEMETRY-001) ──
+  //
+  // No published LIBRARY package (non-extension; extensions are rule (3)'s
+  // concern — they must bundle and ship zero @adhd runtime deps) may carry an
+  // EXACT-pinned runtime `dependencies` edge on another `@adhd/sox-*` package.
+  // Internal stateful packages must float together (`workspace:^`/`workspace:~`)
+  // so that every consumer resolves ONE copy of the stateful runtime — most
+  // importantly `@adhd/sox-telemetry`, whose sink is module-scoped: two resolved
+  // copies mean `initTelemetry()` on one copy never configures the other, and
+  // every record emitted through the other copy is silently dropped (exactly
+  // BUG-BACKLOG-TELEMETRY-001 — @adhd/backlog resolved telemetry 0.2.0 and 0.2.1).
+  for (const pkgPath of allPkgPaths) {
+    let pkg: Pkg;
+    try {
+      pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf8')) as Pkg;
+    } catch {
+      continue;
+    }
+    if (pkg.private === true) continue;
+    if (typeof pkg.name !== 'string' || !pkg.name.startsWith('@adhd/sox-')) continue;
+    if (pkg.name.startsWith('@adhd/sox-extension-')) continue; // rule (3) owns extensions
+    const rel = path.relative(root, pkgPath);
+    for (const [dep, range] of Object.entries(pkg.dependencies ?? {})) {
+      if (!dep.startsWith('@adhd/sox-')) continue;
+      if (classifyInternalRange(range) === 'floating') continue;
+      errors.push(
+        `${rel}: runtime dependency "${dep}":"${range}" is an EXACT pin. ` +
+          `Exact pins on internal @adhd/sox-* packages freeze that package at the version current when it last published, ` +
+          `while caret-pinned packages float forward — so a telemetry/store-adapter bump resolves TWO copies of a stateful ` +
+          `runtime (BUG-BACKLOG-TELEMETRY-001: @adhd/backlog resolved @adhd/sox-telemetry 0.2.0 and 0.2.1, dropping every record ` +
+          `emitted through the un-initialised copy). Use workspace:^ (or a ^/~ range).`,
+      );
+    }
+  }
 
   for (const n of notes) console.log(`check-publishable: NOTE ${n}`);
   for (const w of warnings) console.warn(`check-publishable: WARN ${w}`);
