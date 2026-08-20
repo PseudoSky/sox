@@ -26,9 +26,16 @@ import { join, dirname } from 'node:path';
 const REPO = join(dirname(new URL(import.meta.url).pathname), '..');
 
 function workspacePackages() {
-  const out = execFileSync('rg', ['--files', 'libs', '-g', 'package.json', '--glob', '!node_modules'], {
-    cwd: REPO, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024,
-  });
+  // Scan every workspace root a publishable package can live under — mirrors
+  // pnpm-workspace.yaml's globs (extensions/*/*, extensions/bundles/*/members/*,
+  // apps/**, libs/**, packages/**, tools/*). A consumer under extensions/ (e.g.
+  // @adhd/sox-extension-memory-cli) was previously reported as 'unknown
+  // package' because only libs/ was scanned.
+  const out = execFileSync(
+    'rg',
+    ['--files', 'libs', 'apps', 'extensions', 'packages', 'tools', '-g', 'package.json', '--glob', '!node_modules'],
+    { cwd: REPO, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 },
+  );
   const pkgs = new Map();
   for (const rel of out.split('\n').filter(Boolean)) {
     try {
