@@ -1,5 +1,22 @@
 # @adhd/sox-host-runtime
 
+## 0.4.1
+
+### Patch Changes
+
+- Additive surface: shutdown grace-margin discipline, `soxe service update`, and reload-after-unload verification.
+
+  - New `shutdown.ts` module exporting `SOX_SHUTDOWN_SAFETY_MARGIN_MS`, `resolveShutdownSafetyNetMs`,
+    and `resolveStopTimeoutMsFromEnv` (BL-592/BUG-018 grace-margin shutdown).
+  - New `updateOsUnit` (+ `UpdateOsUnitOptions`/`UpdateOsUnitResult`) for `soxe service update` — a
+    verified restart that proves artifact adoption (BL-593).
+  - New `reloadAndVerifyOsUnit` (+ `ReloadAndVerifyOsUnitOptions`/`ReloadAndVerifyOsUnitResult`) so a
+    rolling-restart unload that leaves an OS unit dead now fails loudly instead of silently reporting
+    success (BUG-023).
+  - `--dry-run` render made truly render-only — it was writing live unit files (fix).
+
+  All additions are additive exports; no existing exported signature was removed or changed.
+
 ## 0.4.0
 
 ### Minor Changes

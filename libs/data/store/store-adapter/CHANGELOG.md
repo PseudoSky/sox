@@ -1,5 +1,25 @@
 # @adhd/sox-store-adapter
 
+## 0.7.1
+
+### Patch Changes
+
+- Fix ungated idle-flush self-re-arm and restore its self-heal (BUG-022).
+
+  - `_performIdleFlush()`'s ungated branch was calling the public, `_trackOp`-wrapped
+    `executeGet()` for its `PRAGMA wal_checkpoint(TRUNCATE)`; `_trackOp`'s `finally` unconditionally
+    re-arms `_armIdleFlush()` once `_inFlightOps` hits 0, so every ungated flush re-armed its own
+    timer with zero new caller activity, looping forever. It now calls `this.db.get()` directly (the
+    same shape `close()` uses for the analogous checkpoint) and adds `_markIfFatal(err)` parity in the
+    catch branch.
+  - Restoring that direct call had silently dropped the `_ensureHealthy()` reconnection that
+    `_trackOp` provided; it is now called explicitly so a flush firing on a dead/poisoned connection
+    still self-heals without restoring the re-arm loop.
+  - Comment-only backlog-ID disambiguation (DEBT-008) also landed on `errors`/`integrity`/`preflight`/
+    `sidecar-retention`/`store-lease`/`turso-adapter` JSDoc with no signature change.
+
+  No exported signature changed; gated (production-default) flush is untouched.
+
 ## 0.7.0
 
 ### Minor Changes

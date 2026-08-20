@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.2.2
+
+### Patch Changes
+
+- Move `@adhd/sox-telemetry` from `dependencies` to `devDependencies`.
+
+  The esbuild bundle already INLINES `sox-telemetry` (its `dist/index.js` carries the
+  observability code inline; no external require), so declaring it as a runtime dep violated
+  ADR-0006 Model A — an extension must ship zero `@adhd/sox-*` runtime deps. This kept
+  `check-publishable` rule (3) red and shipped a published manifest whose `dependencies` still
+  listed `@adhd/sox-telemetry`, making any consumer install pull a runtime dep that the bundle
+  never actually loads. The edge now lives in `devDependencies` (`workspace:*`), matching the
+  sibling `memory-server` / `memory-flush` members of `sox-memory-bundle`.
+
 ## 0.2.1
 
 ### Patch Changes
