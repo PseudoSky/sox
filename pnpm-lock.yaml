@@ -163,9 +163,6 @@ importers:
 
   extensions/bundles/sox-memory-bundle/members/memory-cli:
     dependencies:
-      '@adhd/sox-telemetry':
-        specifier: workspace:*
-        version: link:../../../../../libs/observability/sox-telemetry
       '@tursodatabase/database':
         specifier: ^0.7.1
         version: 0.7.1
@@ -179,6 +176,9 @@ importers:
       '@adhd/sox-memory-core':
         specifier: workspace:*
         version: link:../../../../../libs/memory-core
+      '@adhd/sox-telemetry':
+        specifier: workspace:*
+        version: link:../../../../../libs/observability/sox-telemetry
 
   extensions/bundles/sox-memory-bundle/members/memory-flush:
     dependencies:
