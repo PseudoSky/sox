@@ -135,6 +135,7 @@ import {
 import { registerBundleMember, resolveBundleDir } from './bundle-init.js';
 import { assertWithinBase, PathEscapeError } from './path-safety.js';
 import { waitForServePortSignal } from './serve-shutdown.js';
+import { verifyRunningArtifact } from './verify-artifact.js';
 import { initTelemetry, log, resolveProcessRole, type InitTelemetryOptions } from '@adhd/sox-telemetry';
 // @adhd/sox-host-registry is also lazy-required via install-engine; import it lazily here too
 // to avoid the NX "static import of lazy-loaded library" lint error.
@@ -2645,47 +2646,6 @@ async function rollingRestartConsumer(
     detail: 'verified-stop → start on new artifact (no orphan)' +
       (reenable.owned ? ` (os-unit '${reenable.label}' reloaded + verified loaded=yes)` : ''),
   };
-}
-
-/**
- * Verify that the running process for (extId, scope) loaded the artifact whose
- * sha256 matches the lockfile's expected checksum. Reads the runtime record to
- * find the entrypoint file path, then sha256s the file on disk and compares.
- *
- * Returns { ok: true } on match, { ok: false, detail } on mismatch or error.
- */
-async function verifyRunningArtifact(
-  extId: string, lockfilePath: string,
-): Promise<{ ok: true } | { ok: false; detail: string }> {
-  // 1. Get expected checksum from lockfile.
-  const lock = loadLockfile(lockfilePath);
-  if (!lock) return { ok: false, detail: 'no lockfile' };
-  const lockKey = Object.keys(lock.resolved).find((k) => k === extId || k.startsWith(`${extId}@`));
-  if (!lockKey) return { ok: false, detail: 'not in lockfile' };
-  const expected = lock.resolved[lockKey]!.checksum;
-  if (!expected) return { ok: false, detail: 'no checksum in lockfile' };
-
-  // 2. Find the running process's entrypoint from the runtime record.
-  const runtimeFilePath = getRuntimeFilePath(lockfilePath);
-  const record = getRuntimeRecord(runtimeFilePath);
-  const entry = record?.entries?.find((e) => e.id === extId || e.key === extId);
-  if (!entry) return { ok: false, detail: 'no runtime entry' };
-  const artifactPath = entry.source;
-  if (!artifactPath) return { ok: false, detail: 'no source in runtime entry' };
-
-  // 3. Sha256 the artifact file the process loaded.
-  const fs = require('node:fs') as typeof import('node:fs');
-  const crypto = require('node:crypto') as typeof import('node:crypto');
-  let actual: string;
-  try {
-    const data = fs.readFileSync(artifactPath);
-    actual = crypto.createHash('sha256').update(data).digest('hex');
-  } catch (e) {
-    return { ok: false, detail: `cannot read artifact ${artifactPath}: ${String(e)}` };
-  }
-
-  if (actual === expected) return { ok: true };
-  return { ok: false, detail: `entrypoint sha256 ${actual.slice(0, 19)}… ≠ expected ${expected.slice(0, 19)}…` };
 }
 
 /** Result of {@link reEnableOwnedOsUnit} — carries the BUG-023 reality verification. */
