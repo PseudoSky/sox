@@ -1008,6 +1008,23 @@ export interface EnableOptions {
    * regeneration. No blanket bypass — every dropped key must be named.
    */
   unsetKeys?: string[];
+  /**
+   * (BUG-SOX-DRYRUN-CLAIMS-UNIT-UPDATED) TRUE render-only: compute the
+   * rendered content, the content hash and the resulting `action` exactly as a
+   * real run would, but perform NO write, NO load and NO kickstart.
+   *
+   * `load: false` is NOT this. Despite its doc comment calling itself "the safe
+   * render-only path", `load: false` renders AND WRITES the unit file — it only
+   * suppresses the launchctl load. That is why `--dry-run` silently repointed a
+   * live production unit at a version-manager node that the live path refuses to
+   * pin: measured 2026-08-19 against com.sox.user.memory-server, sha256 and
+   * mtime of the on-disk plist both changed across a `--dry-run` invocation.
+   *
+   * A dry run must be safe to issue against production during an incident, so
+   * the no-write half is the half that matters. Callers previewing a change
+   * MUST pass this, not merely `load: false`.
+   */
+  dryRun?: boolean;
 }
 
 function ensureDir(p: string): void {
@@ -1092,8 +1109,18 @@ export function enableOsUnit(
     platform.unload(unitPath, spec.label, exec);
   }
 
-  writeFileAtomic(unitPath, rendered);
   const action: EnableAction = existed ? 'updated' : 'created';
+
+  // (BUG-SOX-DRYRUN-CLAIMS-UNIT-UPDATED) Render-only: everything above this
+  // point is pure computation (render + hash + action). Return before the
+  // write so a preview cannot mutate a live unit. Past-tense "updated"/"created"
+  // wording is reserved for runs that actually wrote.
+  if (opts.dryRun === true) {
+    log(`os-unit ${spec.label}: (dry-run) would ${action === 'created' ? 'create' : 'update'} ${unitPath} (content-hash ${newHash})`);
+    return { action, unitPath, label: spec.label, contentHash: newHash, loaded: false };
+  }
+
+  writeFileAtomic(unitPath, rendered);
   log(`os-unit ${spec.label}: ${action} ${unitPath} (content-hash ${newHash})`);
 
   let loaded = false;
@@ -1668,6 +1695,11 @@ export async function updateOsUnit(
   if (opts.unitDir !== undefined) enableOptsBase.unitDir = opts.unitDir;
   if (opts.exec !== undefined) enableOptsBase.exec = opts.exec;
   if (opts.unsetKeys !== undefined) enableOptsBase.unsetKeys = opts.unsetKeys;
+  // (BUG-SOX-DRYRUN-CLAIMS-UNIT-UPDATED) `update` has exactly two modes: a live
+  // reconcile (`load: true`) or a preview. Anything that is not the live mode is
+  // the preview, and a preview must not write — `load: false` alone still writes.
+  // sec 9.4b criterion C: render and report, load/kickstart/write nothing.
+  if (opts.load !== true) enableOptsBase.dryRun = true;
 
   const enableResult = enableFn(spec, platform, enableOptsBase);
 
