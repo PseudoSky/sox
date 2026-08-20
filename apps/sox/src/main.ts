@@ -134,6 +134,7 @@ import {
 } from '@adhd/sox-install-engine';
 import { registerBundleMember, resolveBundleDir } from './bundle-init.js';
 import { assertWithinBase, PathEscapeError } from './path-safety.js';
+import { dedupeRestartRows, type RestartIdentity } from './restart-dedup.js';
 import { waitForServePortSignal } from './serve-shutdown.js';
 import { verifyRunningArtifact } from './verify-artifact.js';
 import { initTelemetry, log, resolveProcessRole, type InitTelemetryOptions } from '@adhd/sox-telemetry';
@@ -2519,6 +2520,97 @@ async function restartProxyBackend(
 }
 
 /**
+ * Read-only best-effort check: does (extId, scope) own an os-unit ownership
+ * entry at this root? Mirrors the ownership lookup inside
+ * `reEnableOwnedOsUnit` / `unloadOwnedOsUnitsBeforeReap`, but performs no
+ * enable/reload/unload side effect — used purely to resolve
+ * {@link RestartIdentity.ownsOsUnit} for the dedup pass below.
+ */
+function scopeOwnsOsUnit(extId: string, scope: string, root: string): boolean {
+  const pathM = require('node:path') as typeof import('node:path');
+  try {
+    const own = OwnershipIndex.loadFromFile(pathM.join(dataRoot(scope as DataScope, root), 'ownership.json'));
+    return own.get(extId, scope)?.entries.some((e) => e.kind === 'os-unit') ?? false;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Read-only resolution of the SAME target {@link rollingRestartConsumer} will
+ * actually restart, without performing any destructive action —
+ * BUG-SOX-UPGRADE-RESTARTS-SAME-SERVICE-REPEATEDLY-001. Two consumer rows
+ * (different scope/root, e.g. project vs user) commonly resolve to the SAME
+ * underlying process, because the install registry enumerates rows once per
+ * *consumer*, not once per managed unit:
+ *
+ *   - A proxy-mode `mcp-server`'s identity IS its `[inv:singleton]` key
+ *     `(id, canonical-store-resource)` (service-lifecycle spec §5.1/§9.5) —
+ *     independent of scope. Resolved exactly as `restartProxyBackend` derives
+ *     `singletonKey` (read-only: manifest + config env, no spawn).
+ *   - A running `service`'s identity is its live pid — the strongest possible
+ *     "is this actually the same process" signal, and independent of which
+ *     scope/root's runtime file happens to record it.
+ *   - Anything else (stdio mcp-server, declarative content) has no shared
+ *     process to dedup — each row is kept distinct (a per-row identity that
+ *     can never collide), so dedup can only ever MERGE genuine duplicates,
+ *     never accidentally skip a restart that should happen.
+ *
+ * Used by {@link dedupeRestartRows} to group the rolling-restart worklist so
+ * each distinct target restarts exactly once per pass, not once per row.
+ */
+function resolveRestartTargetIdentity(extId: string, scope: string, root: string): RestartIdentity {
+  const lockfilePath = lockfilePathForRecord(scope, root);
+  const runtimeFilePath = getRuntimeFilePath(lockfilePath);
+  const record = getRuntimeRecord(runtimeFilePath);
+  const liveEntry = record?.entries?.find((e) => e.id === extId || e.key === extId);
+  const lockSource = (() => {
+    const lock = loadLockfile(lockfilePath);
+    if (!lock) return undefined;
+    const key = Object.keys(lock.resolved).find((k) => k === extId || k.startsWith(`${extId}@`));
+    return key ? lock.resolved[key]?.source : undefined;
+  })();
+  const declaredType =
+    (lockSource ? manifestTypeForSource(lockSource) : null) ??
+    (liveEntry?.source ? manifestTypeForSource(liveEntry.source) : null) ??
+    liveEntry?.type ??
+    null;
+
+  const ownsOsUnit = scopeOwnsOsUnit(extId, scope, root);
+
+  if (declaredType === 'mcp-server') {
+    if (mcpServerIsProxyMode(extId, scope, root)) {
+      const resolved = resolveServeManifest(extId, scope, root);
+      if (resolved) {
+        const pathM = require('node:path') as typeof import('node:path');
+        const configEnv = buildExtConfigEnv(extId, root);
+        const manifestPath = pathM.join(resolved.extDir, 'extension.json');
+        const storeResource = resolveStoreResource(manifestPath, configEnv);
+        const key = singletonKey(extId, storeResource);
+        if (key) return { identity: `proxy:${key}`, ownsOsUnit };
+      }
+      // Unresolvable — fall through to a per-row identity so dedup can never
+      // over-merge and silently skip a restart that should have happened.
+      return { identity: `proxy-row:${extId}:${scope}:${root}`, ownsOsUnit };
+    }
+    // direct-mode (reconnect-needed) — no process we restart; per-row identity is fine.
+    return { identity: `direct-row:${extId}:${scope}:${root}`, ownsOsUnit };
+  }
+
+  if (declaredType === 'service') {
+    // The live pid IS the thing that gets stopped — the strongest possible
+    // "is this actually the same running process" signal.
+    if (liveEntry && typeof liveEntry.pid === 'number' && pidAliveRT(liveEntry.pid)) {
+      return { identity: `service-pid:${liveEntry.pid}`, ownsOsUnit };
+    }
+    return { identity: `service-row:${extId}:${scope}:${root}`, ownsOsUnit };
+  }
+
+  // declarative content (skill/hook/command/prompt/agent) — placement-only, no shared process to dedup.
+  return { identity: `other-row:${extId}:${scope}:${root}`, ownsOsUnit };
+}
+
+/**
  * Roll a single just-upgraded consumer onto its new artifact.
  *
  * Classification (ADR-0003 + BL-31):
@@ -2667,7 +2759,7 @@ interface ReEnableOsUnitResult {
 /**
  * §9.3: re-`enable` an extension's OS unit on upgrade so it tracks the new artifact
  * — content-addressed, `enableOsUnit` rewrites + reloads only when the generated unit
- * differs. No-op when no OS unit is owned for (extId, scope). Honors SOX_OS_UNIT_DIR.
+ * differs. No-op when no OS unit is owned for extId at ANY scope. Honors SOX_OS_UNIT_DIR.
  *
  * BUG-023: also re-queries OS-supervisor reality after the call and reports it in the
  * return value — a service or proxy backend whose OS unit was unloaded before a
@@ -2675,18 +2767,42 @@ interface ReEnableOsUnitResult {
  * checked by the caller afterward, or the unload is never undone and the process ends up
  * alive but unsupervised. Best-effort on ownership-index I/O (never throws); the reality
  * probe (`platform.isLoaded`) is authoritative and always runs when a unit is owned.
+ *
+ * BUG-SOX-UPGRADE-RESTARTS-SAME-SERVICE-REPEATEDLY-001 (defect 2): scans ALL FOUR
+ * scopes for the os-unit ownership entry — `scope` first, then the rest — symmetric
+ * with `unloadOwnedOsUnitsBeforeReap`'s scan. The unload that precedes a verified-stop
+ * is scope-agnostic: it unloads a unit owned by ANY scope for this extId, because there
+ * is only one physical OS-supervisor label regardless of which consumer row's restart
+ * pass triggered the stop. Before this fix, re-enable checked ONLY the current row's
+ * scope, so a project-scope row upgrading a service whose os-unit is actually owned by
+ * user-scope would unload the real (shared) unit and then report `owned:false` and
+ * re-enable NOTHING — stranding a live process with no restart-on-crash supervision.
+ * The re-enable now uses whichever scope's ownership index actually holds the entry
+ * (not necessarily the caller's `scope`) to resolve the render context, so it matches
+ * the unit `unloadOwnedOsUnitsBeforeReap` just unloaded.
  */
 function reEnableOwnedOsUnit(extId: string, scope: string, root: string, log: (m: string) => void): ReEnableOsUnitResult {
   const pathM = require('node:path') as typeof import('node:path');
-  let owned;
-  try {
-    const own = OwnershipIndex.loadFromFile(pathM.join(dataRoot(scope as DataScope, root), 'ownership.json'));
-    owned = own.get(extId, scope)?.entries.find((e) => e.kind === 'os-unit');
-  } catch {
-    return { owned: false };
+  const scopesToCheck = Array.from(new Set([scope, 'org', 'user', 'project', 'local']));
+  let owningScope: string | undefined;
+  let owned: Extract<OwnedEntry, { kind: 'os-unit' }> | undefined;
+  for (const sc of scopesToCheck) {
+    try {
+      const own = OwnershipIndex.loadFromFile(pathM.join(dataRoot(sc as DataScope, root), 'ownership.json'));
+      const entry = own.get(extId, sc)?.entries.find(
+        (e): e is Extract<OwnedEntry, { kind: 'os-unit' }> => e.kind === 'os-unit',
+      );
+      if (entry) {
+        owned = entry;
+        owningScope = sc;
+        break;
+      }
+    } catch {
+      continue;
+    }
   }
-  if (!owned || owned.kind !== 'os-unit') return { owned: false };
-  const ctx = resolveOsUnitContext(extId, scope, root, {});
+  if (!owned || !owningScope) return { owned: false };
+  const ctx = resolveOsUnitContext(extId, owningScope, root, {});
   if (!ctx) return { owned: false };
   const unitDir = process.env['SOX_OS_UNIT_DIR'] ?? pathM.dirname(owned.unitPath);
   // BUG-023: `reloadAndVerifyOsUnit` composes `enableOsUnit` (reused verbatim) with an
@@ -2697,12 +2813,12 @@ function reEnableOwnedOsUnit(extId: string, scope: string, root: string, log: (m
   });
   if (action !== 'unchanged') {
     try {
-      const own = OwnershipIndex.loadFromFile(pathM.join(dataRoot(scope as DataScope, root), 'ownership.json'));
-      const rec = own.get(extId, scope);
+      const own = OwnershipIndex.loadFromFile(pathM.join(dataRoot(owningScope as DataScope, root), 'ownership.json'));
+      const rec = own.get(extId, owningScope);
       if (rec) {
         const kept: OwnedEntry[] = rec.entries.filter((e) => e.kind !== 'os-unit');
         kept.push({ kind: 'os-unit', label: ctx.spec.label, unitPath: r.unitPath, supervisor: ctx.platform.kind, appliedHash: r.contentHash });
-        own.record({ extId, scope, entries: kept, ...(rec.host !== undefined ? { host: rec.host } : {}) });
+        own.record({ extId, scope: owningScope, entries: kept, ...(rec.host !== undefined ? { host: rec.host } : {}) });
         own.save();
       }
     } catch { /* best-effort */ }
@@ -2872,59 +2988,97 @@ async function cmdUpgrade(flags: Record<string, string>): Promise<void> {
     toRestart.push({ extId: record.extId, scope: record.scope, root: record.root });
   }
 
-  // 3. Rolling restart pass — SEQUENTIAL, one service at a time.
+  // 3. Rolling restart pass — SEQUENTIAL, one DISTINCT TARGET at a time.
+  //
+  // BUG-SOX-UPGRADE-RESTARTS-SAME-SERVICE-REPEATEDLY-001: multiple consumer
+  // rows (different scope/root) commonly resolve to the SAME underlying
+  // process/backend/os-unit — the install registry enumerates once per
+  // consumer, not once per managed unit. Restarting per-row bounced that one
+  // process once per row (measured: memory-server restarted 5x in a single
+  // pass) and could unload an os-unit a later, non-owning row had no
+  // ownership entry to re-enable, stranding it unsupervised. Group the
+  // worklist by the ACTUAL restart target first (`resolveRestartTargetIdentity`),
+  // restart each distinct target exactly once (preferring an os-unit-owning
+  // row as the representative, so re-enable always has something to
+  // restore), then fan the single real-world outcome back out to every
+  // consumer row that shares it.
   if (toRestart.length > 0) {
-    process.stdout.write(`\n${CLI} upgrade: rolling restart pass (${toRestart.length} upgraded consumer${toRestart.length === 1 ? '' : 's'})\n`);
-    for (const r of toRestart) {
-      process.stdout.write(`  ${r.extId} (scope: ${r.scope})\n`);
+    const restartGroups = dedupeRestartRows(toRestart, (r) => resolveRestartTargetIdentity(r.extId, r.scope, r.root));
+    const dedupNote = restartGroups.length !== toRestart.length
+      ? `, ${restartGroups.length} distinct target${restartGroups.length === 1 ? '' : 's'} after dedup`
+      : '';
+    process.stdout.write(
+      `\n${CLI} upgrade: rolling restart pass (${toRestart.length} upgraded consumer${toRestart.length === 1 ? '' : 's'}${dedupNote})\n`,
+    );
+    for (const group of restartGroups) {
+      const r = group.representative;
+      if (group.rows.length > 1) {
+        const rowLabels = group.rows.map((x) => `${x.scope}:${x.root}`).join(', ');
+        process.stdout.write(
+          `  ${r.extId} (scope: ${r.scope}) — shared target for ${group.rows.length} consumer rows (${rowLabels}); restarting once\n`,
+        );
+      } else {
+        process.stdout.write(`  ${r.extId} (scope: ${r.scope})\n`);
+      }
       const res = await rollingRestartConsumer(
         r.extId, r.scope, r.root,
         (m) => process.stdout.write(`    ${m}\n`),
       );
-      // Reflect the disposition back onto the matching outcome.
-      const oc = outcomes.find((o) => o.extId === r.extId && o.scope === r.scope && o.root === r.root && o.state === 'upgraded');
-      if (oc) {
-        if (res.disposition === 'restarted' && !res.detail.includes('FAILED')) {
-          oc.state = 'restarted';
-          // Verify the running process actually loaded the new artifact.
-          const verified = await verifyRunningArtifact(r.extId, lockfilePathForRecord(r.scope, r.root));
-          if (!verified.ok) {
-            oc.state = 'restart-mismatch';
-            oc.detail = verified.detail;
-            process.stdout.write(`    ⚠ verify: ${verified.detail}\n`);
-          } else {
-            oc.detail = res.detail;
-          }
-        } else if (res.disposition === 'backend-restarted') {
-          oc.state = 'backend-restarted';
-          // Verify proxy backend process artifact.
-          const verified = await verifyRunningArtifact(r.extId, lockfilePathForRecord(r.scope, r.root));
-          if (!verified.ok) {
-            oc.state = 'backend-restart-mismatch';
-            oc.detail = verified.detail;
-            process.stdout.write(`    ⚠ verify: ${verified.detail}\n`);
-          } else {
-            oc.detail = res.detail;
-          }
-        } else if (res.disposition === 'restarted-unsupervised' || res.disposition === 'backend-restarted-unsupervised') {
-          // BUG-023: the process is alive but its OS unit did not come back
-          // loaded — a real failure of the invariant the upgrade path depends
-          // on, not a soft warning. Fail loudly.
-          oc.state = res.disposition === 'restarted-unsupervised' ? 'restarted-unsupervised' : 'backend-restarted-unsupervised';
-          oc.detail = res.detail;
-          process.stderr.write(`    ⚠ ${res.detail}\n`);
-        } else if (res.disposition === 'reconnect-needed') {
-          oc.state = 'reconnect-needed';
-        } else {
-          oc.detail = res.detail;
-        }
+      let verified: { ok: true } | { ok: false; detail: string } | undefined;
+      if (res.disposition === 'restarted' && !res.detail.includes('FAILED')) {
+        // Verify the running process actually loaded the new artifact — once
+        // per distinct target (all rows in the group share the same process).
+        verified = await verifyRunningArtifact(r.extId, lockfilePathForRecord(r.scope, r.root));
+        if (!verified.ok) process.stdout.write(`    ⚠ verify: ${verified.detail}\n`);
+      } else if (res.disposition === 'backend-restarted') {
+        verified = await verifyRunningArtifact(r.extId, lockfilePathForRecord(r.scope, r.root));
+        if (!verified.ok) process.stdout.write(`    ⚠ verify: ${verified.detail}\n`);
+      } else if (res.disposition === 'restarted-unsupervised' || res.disposition === 'backend-restarted-unsupervised') {
+        // BUG-023: the process is alive but its OS unit did not come back
+        // loaded — a real failure of the invariant the upgrade path depends
+        // on, not a soft warning. Fail loudly.
+        process.stderr.write(`    ⚠ ${res.detail}\n`);
       }
-      if (
-        res.detail.includes('FAILED') ||
-        res.disposition === 'restarted-unsupervised' ||
-        res.disposition === 'backend-restarted-unsupervised'
-      ) {
-        failed++;
+
+      // Reflect the ONE real-world disposition back onto EVERY matching
+      // outcome row in the group — dedup means only `r` was physically
+      // restarted, but every row in the group shares that same real target
+      // and therefore the same real-world outcome.
+      for (const row of group.rows) {
+        const oc = outcomes.find((o) => o.extId === row.extId && o.scope === row.scope && o.root === row.root && o.state === 'upgraded');
+        if (oc) {
+          if (res.disposition === 'restarted' && !res.detail.includes('FAILED')) {
+            if (verified && !verified.ok) {
+              oc.state = 'restart-mismatch';
+              oc.detail = verified.detail;
+            } else {
+              oc.state = 'restarted';
+              oc.detail = res.detail;
+            }
+          } else if (res.disposition === 'backend-restarted') {
+            if (verified && !verified.ok) {
+              oc.state = 'backend-restart-mismatch';
+              oc.detail = verified.detail;
+            } else {
+              oc.state = 'backend-restarted';
+              oc.detail = res.detail;
+            }
+          } else if (res.disposition === 'restarted-unsupervised' || res.disposition === 'backend-restarted-unsupervised') {
+            oc.state = res.disposition === 'restarted-unsupervised' ? 'restarted-unsupervised' : 'backend-restarted-unsupervised';
+            oc.detail = res.detail;
+          } else if (res.disposition === 'reconnect-needed') {
+            oc.state = 'reconnect-needed';
+          } else {
+            oc.detail = res.detail;
+          }
+        }
+        if (
+          res.detail.includes('FAILED') ||
+          res.disposition === 'restarted-unsupervised' ||
+          res.disposition === 'backend-restarted-unsupervised'
+        ) {
+          failed++;
+        }
       }
     }
   }
