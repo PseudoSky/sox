@@ -27,13 +27,16 @@
     "planDir": "docs/plan/bug014-store-hardening",
     "disambiguatedRefs": [
       "apps/sox/src/main.ts",
-      "libs/host-runtime/src/shutdown.ts",
+      "apps/sox/src/service-update.bl593.spec.ts",
+      "docs/reporting/memory/findings/2026-08-18-bl590-idle-flush-window-recommendation.md",
+      "docs/spec/service-lifecycle.md",
       "extensions/bundles/sox-memory-bundle/members/memory-server/src/backend.ts",
+      "extensions/bundles/sox-memory-bundle/members/memory-server/src/bl472-shutdown-drain.spec.ts",
       "extensions/bundles/sox-memory-bundle/members/memory-server/src/bl592-shutdown-instrumentation.spec.ts",
+      "extensions/bundles/sox-memory-bundle/members/memory-server/src/bug018-shutdown-budget-headroom.spec.ts",
       "extensions/services/tokenguard/src/shutdown-margin.ts",
       "extensions/services/tokenguard/test/bl592-shutdown-margin.spec.ts",
-      "docs/spec/service-lifecycle.md",
-      "docs/reporting/memory/findings/2026-08-18-bl590-idle-flush-window-recommendation.md"
+      "libs/host-runtime/src/shutdown.ts"
     ]
   },
   "BUG-020": {
