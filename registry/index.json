@@ -13,7 +13,7 @@
     "requires": {
       "tool_calling": true
     },
-    "builtFromCommit": "da3ba919ee970f03930b5219d8c1557ad9c85534"
+    "builtFromCommit": "4548c1956dc91593e053d7ab52a5ec47ed01861a"
   },
   {
     "id": "architect",
@@ -29,7 +29,7 @@
     "requires": {
       "tool_calling": true
     },
-    "builtFromCommit": "da3ba919ee970f03930b5219d8c1557ad9c85534"
+    "builtFromCommit": "4548c1956dc91593e053d7ab52a5ec47ed01861a"
   },
   {
     "id": "debug",
@@ -45,7 +45,7 @@
     "requires": {
       "tool_calling": true
     },
-    "builtFromCommit": "da3ba919ee970f03930b5219d8c1557ad9c85534"
+    "builtFromCommit": "4548c1956dc91593e053d7ab52a5ec47ed01861a"
   },
   {
     "id": "dispatcher",
@@ -61,7 +61,7 @@
     "requires": {
       "tool_calling": true
     },
-    "builtFromCommit": "da3ba919ee970f03930b5219d8c1557ad9c85534"
+    "builtFromCommit": "4548c1956dc91593e053d7ab52a5ec47ed01861a"
   },
   {
     "id": "doc-cartographer",
@@ -77,7 +77,7 @@
     "requires": {
       "tool_calling": true
     },
-    "builtFromCommit": "da3ba919ee970f03930b5219d8c1557ad9c85534"
+    "builtFromCommit": "4548c1956dc91593e053d7ab52a5ec47ed01861a"
   },
   {
     "id": "doc-consumer",
@@ -93,7 +93,7 @@
     "requires": {
       "tool_calling": true
     },
-    "builtFromCommit": "da3ba919ee970f03930b5219d8c1557ad9c85534"
+    "builtFromCommit": "4548c1956dc91593e053d7ab52a5ec47ed01861a"
   },
   {
     "id": "doc-evangelist",
@@ -109,7 +109,7 @@
     "requires": {
       "tool_calling": true
     },
-    "builtFromCommit": "da3ba919ee970f03930b5219d8c1557ad9c85534"
+    "builtFromCommit": "4548c1956dc91593e053d7ab52a5ec47ed01861a"
   },
   {
     "id": "doc-reviewer",
@@ -125,7 +125,7 @@
     "requires": {
       "tool_calling": true
     },
-    "builtFromCommit": "da3ba919ee970f03930b5219d8c1557ad9c85534"
+    "builtFromCommit": "4548c1956dc91593e053d7ab52a5ec47ed01861a"
   },
   {
     "id": "doc-steward",
@@ -141,7 +141,7 @@
     "requires": {
       "tool_calling": true
     },
-    "builtFromCommit": "da3ba919ee970f03930b5219d8c1557ad9c85534"
+    "builtFromCommit": "4548c1956dc91593e053d7ab52a5ec47ed01861a"
   },
   {
     "id": "memory-org",
@@ -154,7 +154,7 @@
     "compatibility": {
       "host": ">=1.0.0 <2.0.0"
     },
-    "builtFromCommit": "da3ba919ee970f03930b5219d8c1557ad9c85534"
+    "builtFromCommit": "4548c1956dc91593e053d7ab52a5ec47ed01861a"
   },
   {
     "id": "performance",
@@ -170,7 +170,7 @@
     "requires": {
       "tool_calling": true
     },
-    "builtFromCommit": "da3ba919ee970f03930b5219d8c1557ad9c85534"
+    "builtFromCommit": "4548c1956dc91593e053d7ab52a5ec47ed01861a"
   },
   {
     "id": "performance-engineer",
@@ -186,7 +186,7 @@
     "requires": {
       "tool_calling": true
     },
-    "builtFromCommit": "da3ba919ee970f03930b5219d8c1557ad9c85534"
+    "builtFromCommit": "4548c1956dc91593e053d7ab52a5ec47ed01861a"
   },
   {
     "id": "product",
@@ -202,7 +202,7 @@
     "requires": {
       "tool_calling": true
     },
-    "builtFromCommit": "da3ba919ee970f03930b5219d8c1557ad9c85534"
+    "builtFromCommit": "4548c1956dc91593e053d7ab52a5ec47ed01861a"
   },
   {
     "id": "researcher",
@@ -218,7 +218,7 @@
     "requires": {
       "tool_calling": true
     },
-    "builtFromCommit": "da3ba919ee970f03930b5219d8c1557ad9c85534"
+    "builtFromCommit": "4548c1956dc91593e053d7ab52a5ec47ed01861a"
   },
   {
     "id": "test-runner",
@@ -231,7 +231,7 @@
     "compatibility": {
       "host": ">=1.0.0 <2.0.0"
     },
-    "builtFromCommit": "da3ba919ee970f03930b5219d8c1557ad9c85534"
+    "builtFromCommit": "4548c1956dc91593e053d7ab52a5ec47ed01861a"
   },
   {
     "id": "typescript",
@@ -247,7 +247,7 @@
     "requires": {
       "tool_calling": true
     },
-    "builtFromCommit": "da3ba919ee970f03930b5219d8c1557ad9c85534"
+    "builtFromCommit": "4548c1956dc91593e053d7ab52a5ec47ed01861a"
   },
   {
     "id": "sox-memory-bundle",
@@ -274,22 +274,22 @@
         "id": "memory-usage"
       }
     ],
-    "builtFromCommit": "da3ba919ee970f03930b5219d8c1557ad9c85534"
+    "builtFromCommit": "4548c1956dc91593e053d7ab52a5ec47ed01861a"
   },
   {
     "id": "memory-cli",
     "type": "command",
-    "version": "0.2.1",
+    "version": "0.2.2",
     "title": "Memory CLI",
     "description": "Use this when you need to manage the sox-memory store from the shell — provides memory init|status|list|registry subcommands for store lifecycle, scope selection, and registry inspection. Fully deterministic; zero LLM calls.",
     "source": "file:///Users/nix/dev/ai/sox-ecosystem/extensions/bundles/sox-memory-bundle/members/memory-cli",
-    "checksum": "sha256:e813995cecf405cc08f178ac09b417cd25ee8b5fe70f00532ffcbc21f7fb348a",
+    "checksum": "sha256:b5db0bc54f2064aef09a7fae62945a93b77e68ea9c48a9cff4f6eaf833ae8485",
     "compatibility": {
       "host": ">=1.0.0 <2.0.0"
     },
     "visibility": "internal",
     "bundleId": "sox-memory-bundle",
-    "builtFromCommit": "da3ba919ee970f03930b5219d8c1557ad9c85534"
+    "builtFromCommit": "4548c1956dc91593e053d7ab52a5ec47ed01861a"
   },
   {
     "id": "memory-flush",
@@ -298,13 +298,13 @@
     "title": "Memory Session Flush",
     "description": "Use this when you need session memory durably persisted at conversation end and scope promotions reviewed — binds SessionEnd (persists working memory, enqueues episodes, nudges memoryd) and ScopePromotionProposed (runs promotion approval policy). Deterministic; zero LLM calls.",
     "source": "file:///Users/nix/dev/ai/sox-ecosystem/extensions/bundles/sox-memory-bundle/members/memory-flush",
-    "checksum": "sha256:855a5d0011185732bdeeae2929342a2451e5c56d3278182a3ce17f811be21793",
+    "checksum": "sha256:4b1c0da6ac43b2331abfb5ac41a2f4486ede8b3cde3b7b86b19fe5c23dc01fd7",
     "compatibility": {
       "host": ">=1.0.0 <2.0.0"
     },
     "visibility": "internal",
     "bundleId": "sox-memory-bundle",
-    "builtFromCommit": "da3ba919ee970f03930b5219d8c1557ad9c85534"
+    "builtFromCommit": "4548c1956dc91593e053d7ab52a5ec47ed01861a"
   },
   {
     "id": "memory-server",
@@ -313,7 +313,7 @@
     "title": "Agent Memory Server",
     "description": "Use this when an agent needs durable, searchable memory across sessions — exposes 7 memory_* tools over a single-file SQLite graph store with hybrid recall (vec+BM25+temporal, <50ms, zero LLM), write-enqueue, session state, community lookup, and bi-temporal invalidation.",
     "source": "file:///Users/nix/dev/ai/sox-ecosystem/extensions/bundles/sox-memory-bundle/members/memory-server",
-    "checksum": "sha256:fef12c97c488d4e34f721741c80c496e149aff611ae20858c7b2544bd78afdb2",
+    "checksum": "sha256:dc288822438d1031b79fb7a19c26f753f5e08abc75e8076171e37094c6bad81c",
     "compatibility": {
       "host": ">=1.0.0 <2.0.0"
     },
@@ -323,7 +323,7 @@
     },
     "visibility": "internal",
     "bundleId": "sox-memory-bundle",
-    "builtFromCommit": "da3ba919ee970f03930b5219d8c1557ad9c85534"
+    "builtFromCommit": "4548c1956dc91593e053d7ab52a5ec47ed01861a"
   },
   {
     "id": "memory-usage",
@@ -338,7 +338,7 @@
     },
     "visibility": "internal",
     "bundleId": "sox-memory-bundle",
-    "builtFromCommit": "da3ba919ee970f03930b5219d8c1557ad9c85534"
+    "builtFromCommit": "4548c1956dc91593e053d7ab52a5ec47ed01861a"
   },
   {
     "id": "dep-inject",
@@ -351,7 +351,7 @@
     "compatibility": {
       "host": ">=1.0.0 <2.0.0"
     },
-    "builtFromCommit": "da3ba919ee970f03930b5219d8c1557ad9c85534"
+    "builtFromCommit": "4548c1956dc91593e053d7ab52a5ec47ed01861a"
   },
   {
     "id": "tokenguard",
@@ -364,7 +364,7 @@
     "compatibility": {
       "host": ">=1.0.0 <2.0.0"
     },
-    "builtFromCommit": "da3ba919ee970f03930b5219d8c1557ad9c85534"
+    "builtFromCommit": "4548c1956dc91593e053d7ab52a5ec47ed01861a"
   },
   {
     "id": "demo-creator",
@@ -377,7 +377,7 @@
     "compatibility": {
       "host": ">=1.0.0 <2.0.0"
     },
-    "builtFromCommit": "da3ba919ee970f03930b5219d8c1557ad9c85534"
+    "builtFromCommit": "4548c1956dc91593e053d7ab52a5ec47ed01861a"
   },
   {
     "id": "di-codex",
@@ -390,7 +390,7 @@
     "compatibility": {
       "host": ">=1.0.0 <2.0.0"
     },
-    "builtFromCommit": "da3ba919ee970f03930b5219d8c1557ad9c85534"
+    "builtFromCommit": "4548c1956dc91593e053d7ab52a5ec47ed01861a"
   },
   {
     "id": "dep-injector",
@@ -403,7 +403,7 @@
     "compatibility": {
       "host": ">=1.0.0 <2.0.0"
     },
-    "builtFromCommit": "da3ba919ee970f03930b5219d8c1557ad9c85534"
+    "builtFromCommit": "4548c1956dc91593e053d7ab52a5ec47ed01861a"
   },
   {
     "id": "forbidden-access",
@@ -416,7 +416,7 @@
     "compatibility": {
       "host": ">=1.0.0 <2.0.0"
     },
-    "builtFromCommit": "da3ba919ee970f03930b5219d8c1557ad9c85534"
+    "builtFromCommit": "4548c1956dc91593e053d7ab52a5ec47ed01861a"
   },
   {
     "id": "iterative-research-refinement",
@@ -429,7 +429,7 @@
     "compatibility": {
       "host": ">=1.0.0 <2.0.0"
     },
-    "builtFromCommit": "da3ba919ee970f03930b5219d8c1557ad9c85534"
+    "builtFromCommit": "4548c1956dc91593e053d7ab52a5ec47ed01861a"
   },
   {
     "id": "sox-ingest",
@@ -442,7 +442,7 @@
     "compatibility": {
       "host": ">=1.0.0 <2.0.0"
     },
-    "builtFromCommit": "da3ba919ee970f03930b5219d8c1557ad9c85534"
+    "builtFromCommit": "4548c1956dc91593e053d7ab52a5ec47ed01861a"
   },
   {
     "id": "tui-design",
@@ -455,7 +455,7 @@
     "compatibility": {
       "host": ">=1.0.0 <2.0.0"
     },
-    "builtFromCommit": "da3ba919ee970f03930b5219d8c1557ad9c85534"
+    "builtFromCommit": "4548c1956dc91593e053d7ab52a5ec47ed01861a"
   },
   {
     "id": "sox",
@@ -464,10 +464,10 @@
     "title": "soxe CLI",
     "description": "LLM extension ecosystem CLI — extension #0 (D1/D2 self-hosting)",
     "source": "file:///Users/nix/dev/ai/sox-ecosystem/apps/sox",
-    "checksum": "sha256:a7b075caedc98a1de55c7bea5ddd506317da08a0b3d8cf9fd070c59c01265e31",
+    "checksum": "sha256:c54c1133ac33f3ee61fb4f6888d7870d1b3a85733e39dc2a036b93ac1df5d8d1",
     "compatibility": {
       "host": ">=1.0.0 <2.0.0"
     },
-    "builtFromCommit": "da3ba919ee970f03930b5219d8c1557ad9c85534"
+    "builtFromCommit": "4548c1956dc91593e053d7ab52a5ec47ed01861a"
   }
 ]
