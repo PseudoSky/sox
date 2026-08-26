@@ -1,5 +1,15 @@
 # @adhd/sox-vector-store
 
+## 0.5.0
+
+### Minor Changes
+
+- Add `TursoVectorBackend` — an async, in-process vector backend for Turso-backed stores.
+
+  The existing `VectorBackend` is synchronous and sqlite-vec-only; `SqliteVectorBackend` throws when handed an adapter with `capabilities.nativeVectors` (i.e. Turso), which is `@adhd/sox-store-adapter`'s default substrate. This adds the missing path without touching the pinned sync interface.
+
+  New exports: `AsyncVectorBackend`, `TursoVectorBackend`, `openTursoVectorStore(adapter, { dim, modelId })`. `NodeFilter` is pushed into the candidate query (before the limit, never a post-filter).
+
 ## 0.4.5
 
 ### Patch Changes

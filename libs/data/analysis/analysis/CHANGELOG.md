@@ -1,5 +1,12 @@
 # @adhd/sox-analysis
 
+## 0.1.9
+
+### Patch Changes
+
+- Updated dependencies
+  - @adhd/sox-vector-store@0.5.0
+
 ## 0.1.8
 
 ### Patch Changes
