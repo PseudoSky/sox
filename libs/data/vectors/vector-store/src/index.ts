@@ -437,6 +437,14 @@ export function openLanceDbVectorStore(
   return new LanceDbVectorBackend(config);
 }
 
+// ── TursoVectorBackend (async, native — additive, see turso.ts) ────────────
+
+export {
+  TursoVectorBackend,
+  openTursoVectorStore,
+  type AsyncVectorBackend,
+} from './turso.js';
+
 // ── reembed — cross-space migration ─────────────────────────────────────────
 
 interface EmbedderLike {
