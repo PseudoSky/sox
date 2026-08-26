@@ -1,5 +1,12 @@
 # @adhd/sox-hybrid-search
 
+## 0.3.9
+
+### Patch Changes
+
+- Updated dependencies
+  - @adhd/sox-vector-store@0.5.0
+
 ## 0.3.8
 
 ### Patch Changes
