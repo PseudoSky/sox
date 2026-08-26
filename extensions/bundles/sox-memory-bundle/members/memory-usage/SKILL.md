@@ -46,7 +46,7 @@ importance-ranked listing). An optional `filters` object narrows the candidate s
 ```jsonc
 memory_recall({
   query: "how should an orchestrator decide a plan state is complete",
-  db_path: "~/.memory/memory.db",   // REQUIRED; must be under ~/.memory/ (allowlist)
+  db_path: "~/.memory/memory.db",   // optional — omit it; defaults to the user store (BL-55)
   token_budget: 50000,               // PASS THIS — see caveat
   limit: 8,
   filters: {                         // all optional
@@ -65,19 +65,24 @@ pass your actual workspace root explicitly, always. There is no cwd/env/git fall
 or empty `project_path` fails the call outright with `{ code: "E_MISSING_PROJECT_PATH" }` before
 anything is written, and a wrong guess would permanently mis-attribute the finding (the dedup key
 ignores `project_path`, so you can't fix it by re-writing — see `memory_update` in the server's
-`CLAUDE.md` for the only in-place remediation path):
+`CLAUDE.md` for the only in-place remediation path). **There is no `scope` parameter on
+`memory_write`** — a write lands in whichever store `db_path`/`store` selects, and the default is the
+user-scope `~/.memory/memory.db` shared by every agent on this machine. (`scope` exists only on
+`memory_recall`, and there it is a cosmetic label.) Do **not** pass `scope` on a write.
 
 ```jsonc
 memory_write({
   content: "<the finding — one focused idea>",
-  db_path: "~/.memory/memory.db",
+  db_path: "~/.memory/memory.db", // optional — omit to use the default user store
   project_path: "/Users/.../repo", // REQUIRED — your actual workspace root, never inferred
   topic: "<topic>",         // first-class — drives organization + filtered recall
   tags: ["<concept>"],      // first-class — also creates linkable entity nodes
+  name: "<title>",          // optional — episode title (node.name)
+  summary: "<1-3 sentences>", // optional — node.summary; extractive fallback if omitted
   source: "document",       // message | tool_output | observation | document | reflection | import
   agent_id: "<your-agent-name>",
-  metadata: { original_path: "<source path if any>" }, // arbitrary structured data (JSON)
-  scope: "user"             // user = this machine, all agents
+  importance: 7,            // optional — user-asserted 1–10
+  metadata: { original_path: "<source path if any>" } // arbitrary structured data (JSON)
 })
 ```
 
@@ -170,7 +175,7 @@ memory_write({
   db_path: "~/.memory/memory.db",
   project_path: "/Users/.../repo",  // REQUIRED
   tags: ["audience:orchestrator", "kind:pattern"],
-  source: "observation", agent_id: "flash-impl", scope: "user"
+  source: "observation", agent_id: "flash-impl"
 })
 
 // recall — pull everything addressed to orchestrators
@@ -263,7 +268,7 @@ pairs. `memory_update` returns `{ uid, updated_fields, reembedded }`.
 ## Examples
 
 - *Recall before researching:* `memory_recall({query:"token cost optimization for multi-agent dispatch", db_path:"~/.memory/memory.db", token_budget:50000, limit:5})` → reuse the top findings by `uid`, research only the gap.
-- *Write a finding:* `memory_write({content:"Thin orchestrator holds only board + state deltas; executors hold working context.", db_path:"~/.memory/memory.db", project_path:"/Users/.../repo", source:"document", agent_id:"workflow-researcher", metadata:{topic:"execution-context-partition"}, scope:"user"})`.
+- *Write a finding:* `memory_write({content:"Thin orchestrator holds only board + state deltas; executors hold working context.", project_path:"/Users/.../repo", source:"document", agent_id:"workflow-researcher", metadata:{topic:"execution-context-partition"}})`.
 
 ## Skill id
 
