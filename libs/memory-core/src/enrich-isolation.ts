@@ -16,15 +16,26 @@
  * exists to eliminate. Do not "simplify" this to throw-on-error.
  */
 
-import { fork, type ChildProcess } from 'node:child_process';
+import type { ChildProcess } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 import type { BatchEnrichOptions, BatchEnrichResult } from './enrich-batch.js';
 import type { EnrichRequest, EnrichResponse } from './enrich-process-host.js';
+import {
+  forkChild,
+  _recordChildTelemetry,
+  type ChildTelemetrySnapshot,
+  type ChildTelemetryRecord,
+} from '@adhd/sox-telemetry';
+import type { InitTelemetryOptions } from '@adhd/sox-telemetry';
 
 export interface EnrichIsolatedOk {
   ok: true;
   result: BatchEnrichResult;
+  /** The child's `telemetry.ready` ack (its own reported telemetry state), or
+   *  `null` if the child settled without ever acking — the BL-618 signal that
+   *  the child's telemetry never initialised. */
+  child_telemetry: ChildTelemetrySnapshot | null;
 }
 export interface EnrichIsolatedErr {
   ok: false;
@@ -100,11 +111,15 @@ let _nextId = 1;
  *   therefore never hold isolation resources indefinitely, and — critically —
  *   never blocks the parent event loop for even a moment, since the parent
  *   is only ever `await`ing a promise, not running the work itself.
+ * @param childTelemetry The telemetry config injected into the child's
+ *   `SOX_TELEMETRY_INIT` env (BL-618) and merged over its own defaults. A
+ *   caller can direct the child's records to a specific `logDir` here.
  */
 export async function runEnrichIsolated(
   dbPath: string,
   opts: BatchEnrichOptions,
   timeoutMs = 120_000,
+  childTelemetry: InitTelemetryOptions = { service: 'memory-core', role: 'harness', logSink: 'file' },
 ): Promise<EnrichIsolatedResult> {
   const { modulePath, execArgv } = _forkResolverOverride
     ? _forkResolverOverride()
@@ -116,23 +131,40 @@ export async function runEnrichIsolated(
   return new Promise<EnrichIsolatedResult>((resolve) => {
     let settled = false;
     let child: ChildProcess;
+    let ackedTelemetry: ChildTelemetrySnapshot | null = null;
+    let spawnRecord: ChildTelemetryRecord | null = null;
     let timeoutTimer: ReturnType<typeof setTimeout> | null = null;
     let killTimer: ReturnType<typeof setTimeout> | null = null;
 
     const settle = (r: EnrichIsolatedResult): void => {
       if (settled) return;
       settled = true;
+      // BL-618: a child that settles successfully without ever acking its
+      // telemetry is the "no-op child" signal — record it as unacked so
+      // telemetrySelfCheck().children surfaces it.
+      if (ackedTelemetry === null && spawnRecord !== null) {
+        _recordChildTelemetry({ ...spawnRecord, unacked: true });
+      }
       if (timeoutTimer) clearTimeout(timeoutTimer);
       if (killTimer) clearTimeout(killTimer);
       resolve(r);
     };
 
     try {
-      child = fork(modulePath, [], {
+      child = forkChild(modulePath, childTelemetry, {
         execArgv: [...execArgv, ...process.execArgv.filter((a) => a.startsWith('--max-old-space-size'))],
         stdio: ['ignore', 'inherit', 'inherit', 'ipc'],
         detached: false,
       });
+      spawnRecord = {
+        service: childTelemetry.service,
+        role: childTelemetry.role,
+        logSink: childTelemetry.logSink ?? 'file',
+        filePath: null,
+        pid: child.pid ?? 0,
+        source: 'enrich',
+      };
+      _recordChildTelemetry(spawnRecord);
     } catch (err) {
       settle({ ok: false, error: `spawn failed: ${err instanceof Error ? err.message : String(err)}` });
       return;
@@ -151,9 +183,18 @@ export async function runEnrichIsolated(
     if (timeoutTimer.unref) timeoutTimer.unref();
 
     child.on('message', (msg: EnrichResponse) => {
+      // BL-618: handle the telemetry.ready ack FIRST, before the id filter —
+      // it must never settle the promise, only record the child's state.
+      if ('type' in msg && msg.type === 'telemetry.ready') {
+        if (msg.id === id) {
+          ackedTelemetry = msg.telemetry;
+          _recordChildTelemetry({ ...msg.telemetry, source: 'enrich', acked: true });
+        }
+        return;
+      }
       if (msg.id !== id) return;
-      if ('result' in msg) settle({ ok: true, result: msg.result });
-      else settle({ ok: false, error: msg.error });
+      if ('result' in msg) settle({ ok: true, result: msg.result, child_telemetry: ackedTelemetry });
+      else if ('error' in msg) settle({ ok: false, error: msg.error });
     });
 
     child.on('error', (err: Error) => {

@@ -139,11 +139,23 @@ export class DurableJsonlSink {
       this._openedFor.dir !== dir ||
       this._openedFor.component !== component ||
       this._openedFor.durable !== durable;
-    if (!this._isOpen() || today !== this._currentDate || drifted) {
+    // BUG-TELEMETRY-DATE-ROLLED-LOGS-NEVER-PRUNED-001: size-triggered rotation
+    // prunes (`_rotateSizeExceeded` → `_pruneOldFiles`), but a DATE rollover
+    // opened a brand-new file without EVER pruning — so a long-lived process
+    // that wrote a little every day accumulated one date-rolled file per day
+    // past `maxFiles`, unbounded. Capture the rollover BEFORE `_reopen` resets
+    // `_currentDate`, then prune on it too, so date-rolled files are
+    // count-capped (`maxFiles`) on rollover, not only on size rotation. The
+    // first-ever write (`_currentDate === ''`) also satisfies this condition,
+    // which is desirable: it caps date files left behind by a prior process.
+    const dateRolled = today !== this._currentDate;
+    if (!this._isOpen() || dateRolled || drifted) {
       this._durableMode = durable;
       this._reopen(today);
     }
     if (!this._isOpen()) return; // open failed — drop silently, never throw
+
+    if (dateRolled) this._pruneOldFiles();
 
     const buf = Buffer.from(line, 'utf8');
     if (this._fd !== null) {

@@ -36,6 +36,7 @@ export {
   otelReady,
   snapshotMetrics,
   resolveProcessRole,
+  _recordChildTelemetry,
   _resetTelemetryForTest,
   _snapshotCountForTest,
 } from './runtime.js';
@@ -48,8 +49,19 @@ export type {
   LogFields,
   TelemetrySelfCheck,
   StageSelfCheck,
+  ChildTelemetryRecord,
+  ChildrenTelemetrySelfCheck,
 } from './runtime.js';
 export type { OtelAttributes, OtelMetricPoint, OtelRuntime, OtelSpanHandle, OtelState } from './otel-types.js';
+
+export {
+  SOX_TELEMETRY_INIT,
+  bootstrapChildTelemetry,
+  childTelemetrySnapshot,
+  forkChild,
+  spawnWorker,
+} from './child-bootstrap.js';
+export type { ChildTelemetrySnapshot } from './child-bootstrap.js';
 
 /**
  * Run `fn` inside a real OpenTelemetry span (BL-401 gap 4).

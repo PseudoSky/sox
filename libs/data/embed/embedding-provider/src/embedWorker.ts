@@ -80,6 +80,7 @@ import type {
   PreTrainedModel,
   Tensor,
 } from '@huggingface/transformers';
+import { bootstrapChildTelemetry, childTelemetrySnapshot } from '@adhd/sox-telemetry';
 
 // ── Type definitions ──────────────────────────────────────────────────────────
 
@@ -325,6 +326,12 @@ function softmax(logits: number[]): number[] {
 if (!parentPort) {
   throw new Error('embedWorker must be run as a worker_thread, not directly');
 }
+
+// BL-618: worker composition root. A worker thread has its own module-level
+// telemetry state (it never inherits the parent's initTelemetry), so bootstrap
+// here and ack the state to the parent over parentPort.
+bootstrapChildTelemetry({ service: 'embedding-provider', role: 'harness', logSink: 'file' });
+parentPort.postMessage({ type: 'telemetry.ready', telemetry: childTelemetrySnapshot() });
 
 let _queue: Promise<void> = Promise.resolve();
 
