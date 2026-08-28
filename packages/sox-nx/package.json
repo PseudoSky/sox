@@ -16,7 +16,7 @@
     "./executors.json": "./executors.json"
   },
   "dependencies": {
-    "@adhd/sox-authoring": "workspace:*"
+    "@adhd/sox-authoring": "workspace:^"
   },
   "peerDependencies": {
     "@nx/devkit": ">=22.0.0",
