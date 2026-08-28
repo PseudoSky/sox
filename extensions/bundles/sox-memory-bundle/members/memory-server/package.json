@@ -30,5 +30,18 @@
     "@adhd/sox-mcp-runtime": "workspace:*",
     "@adhd/sox-service-proxy": "workspace:*",
     "@adhd/sox-telemetry": "workspace:*"
-  }
+  },
+  "keywords": [
+    "mcp",
+    "memory",
+    "server",
+    "sqlite",
+    "graph",
+    "typescript"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/PseudoSky/adhd.git"
+  },
+  "homepage": "https://github.com/PseudoSky/adhd"
 }

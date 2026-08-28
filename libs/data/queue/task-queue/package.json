@@ -53,5 +53,18 @@
     "entrypoints": [
       "dist/index.js"
     ]
-  }
+  },
+  "keywords": [
+    "queue",
+    "task",
+    "sqlite",
+    "scheduler",
+    "worker",
+    "typescript"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/PseudoSky/adhd.git"
+  },
+  "homepage": "https://github.com/PseudoSky/adhd"
 }

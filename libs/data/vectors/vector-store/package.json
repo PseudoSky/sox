@@ -56,5 +56,19 @@
     "entrypoints": [
       "dist/index.js"
     ]
-  }
+  },
+  "keywords": [
+    "vector",
+    "store",
+    "embedding",
+    "sqlite-vec",
+    "lancedb",
+    "database",
+    "typescript"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/PseudoSky/adhd.git"
+  },
+  "homepage": "https://github.com/PseudoSky/adhd"
 }

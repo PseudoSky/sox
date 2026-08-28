@@ -58,5 +58,18 @@
   "dependencies": {
     "tree-sitter-wasms": "0.1.13",
     "web-tree-sitter": "0.25.10"
-  }
+  },
+  "keywords": [
+    "ingest",
+    "data",
+    "transform",
+    "summary",
+    "tags",
+    "typescript"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/PseudoSky/adhd.git"
+  },
+  "homepage": "https://github.com/PseudoSky/adhd"
 }

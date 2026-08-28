@@ -58,5 +58,16 @@
     "entrypoints": [
       "dist/index.js"
     ]
-  }
+  },
+  "keywords": [
+    "embedding",
+    "vector",
+    "onnx",
+    "typescript"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/PseudoSky/adhd.git"
+  },
+  "homepage": "https://github.com/PseudoSky/adhd"
 }

@@ -20,5 +20,17 @@
       "import": "./dist/index.js",
       "require": "./dist/index.js"
     }
-  }
+  },
+  "keywords": [
+    "mcp",
+    "proxy",
+    "stdio",
+    "uds",
+    "typescript"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/PseudoSky/adhd.git"
+  },
+  "homepage": "https://github.com/PseudoSky/adhd"
 }

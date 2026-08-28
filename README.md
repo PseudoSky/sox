@@ -14,6 +14,9 @@ members — including native dependencies — straight from the registry.
 - **Engine:** `scripts/` + `libs/` · **Extensions:** `extensions/` · **Registry:** `registry/index.json`
 - **New here?** Authors start with the [**Authoring Guide**](./docs/guidelines/authoring.md); operators
   start with [**USAGE.md**](./USAGE.md).
+- **Website:** planned — see [docs/plan/website-design/README.md](./docs/plan/website-design/README.md).
+  Packages currently link to `github.com/PseudoSky/adhd` (the shared `@adhd` scope home) as a temporary
+  home until sox-ecosystem gets its own repo/site.
 
 ---
 

@@ -21,5 +21,16 @@
   },
   "dependencies": {
     "@tursodatabase/database": "^0.7.1"
-  }
+  },
+  "keywords": [
+    "memory",
+    "maintenance",
+    "sqlite",
+    "typescript"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/PseudoSky/adhd.git"
+  },
+  "homepage": "https://github.com/PseudoSky/adhd"
 }
