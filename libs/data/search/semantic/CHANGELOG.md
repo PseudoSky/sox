@@ -1,5 +1,11 @@
 # @adhd/sox-semantic
 
+## 0.1.1
+
+### Patch Changes
+
+- Republish 0.1.1 with the final dist (text+vec RRF delegation in semanticSearchNodes). 0.1.0 shipped a stale build.
+
 ## 0.1.0
 
 ### Minor Changes
