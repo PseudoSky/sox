@@ -161,6 +161,7 @@ const CHECKSUM_IRRELEVANT_PREFIXES = [
            // by running agents, never packaged. A live heartbeat file was
            // blocking registry:sync-index, which blocks the pre-commit hook,
            // which blocks commits repo-wide (2026-08-15).
+  '.research-trace/', // dated research notes written by agents — never packaged.
 ];
 
 /** Root-level documents that are never part of any extension payload. */
