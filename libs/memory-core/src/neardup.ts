@@ -62,10 +62,10 @@ export async function detectNearDup(
     KNN_FETCH,
     'cosine',
   );
-  const knnSql = dialectSql.replace('__PLACEHOLDER__', '1=1') + ' LIMIT ?';
+  const knnSql = dialectSql.replace('__PLACEHOLDER__', '1=1');
   const knnIdResult = await tx.executeAll<{ node_id: number }>(
     knnSql,
-    [...dialectArgs, KNN_FETCH],
+    [...dialectArgs],
   );
   const neighborIds = knnIdResult.rows
     .map((r) => r.node_id)

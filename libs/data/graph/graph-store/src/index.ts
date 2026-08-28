@@ -5,7 +5,7 @@ import {
   RepairDeclinedLivePeersError,
 } from '@adhd/sox-store-adapter';
 import { assertStoreEngineSync, getEngineIdentitySync } from '@adhd/sox-store-adapter';
-import type { EngineIdentity, StoreAdapter, TursoAdapter } from '@adhd/sox-store-adapter';
+import type { AdapterTransaction, EngineIdentity, StoreAdapter, TursoAdapter } from '@adhd/sox-store-adapter';
 import { log } from '@adhd/sox-telemetry';
 import * as crypto from 'node:crypto';
 import { rebuildTable } from './rebuild-table.js';
@@ -618,6 +618,42 @@ export interface EdgeRecord {
   metadata?: Record<string, unknown>;
 }
 
+/**
+ * FEAT-014 — the complete metadata filter operator set. A metadata value is an
+ * operator object iff it is a plain object carrying at least one of these keys;
+ * otherwise it is a scalar equality (back-compat). Bounds are compared via
+ * `json_extract`, so ISO-8601 strings sort chronologically and numbers compare
+ * numerically. All present operators on one key AND together.
+ */
+export interface MetadataFilter {
+  eq?: MetadataScalar;                        // = ?            (eq: null → IS NULL)
+  neq?: MetadataScalar;                       // != ?           (neq: null → IS NOT NULL)
+  in?: MetadataScalar[];                      // IN (?, …)
+  gt?: string | number;                       // >
+  gte?: string | number;                      // >=
+  lt?: string | number;                       // <
+  lte?: string | number;                      // <=
+  between?: [string | number, string | number]; // >= a AND <= b
+  /** `exists: true` → IS NOT NULL; `false` → IS NULL. Presence/absence of the key. */
+  exists?: boolean;
+  /** Array membership (or scalar equality) via `json_each(meta, '$.key')`. */
+  contains?: MetadataScalar;
+}
+
+export type MetadataScalar = string | number | boolean | null;
+
+export type MetadataFilterValue = MetadataScalar | MetadataFilter;
+
+/** A sort target: a named node column, or a metadata key resolved via `json_extract`. */
+export type SortField =
+  | 'importance'
+  | 'tCreated'
+  | 'tValid'
+  | 'name'
+  | { metadata: string };
+
+export type SortDirection = 'asc' | 'desc';
+
 export interface NodeFilter {
   ids?: number[];
   kind?: string | string[];
@@ -635,17 +671,40 @@ export interface NodeFilter {
   namespace?: string;
   projectPath?: string;
   agentId?: string;
-  metadata?: Record<string, unknown>;
-  orderBy?: 'importance' | 'tCreated' | 'tValid' | 'name';
-  orderDir?: 'asc' | 'desc';
+  /** FEAT-011 — filter on the `name` column (equality, or `IN` when an array). */
+  name?: string | string[];
+  /** FEAT-010 — include invalidated (soft-deleted) nodes. Default `true`. */
+  liveOnly?: boolean;
+  metadata?: Record<string, MetadataFilterValue>;
+  /** Single sort field, or an array for a multi-key ORDER BY. */
+  orderBy?: SortField | SortField[];
+  /** Per-key direction; an array aligns by index with `orderBy`. Defaults per field. */
+  orderDir?: SortDirection | SortDirection[];
   limit?: number;
   offset?: number;
+  /**
+   * FEAT-024 (C) — keyset cursor. When set, the query compiles to
+   * `WHERE rowid > ? ORDER BY rowid ASC` (ignoring `orderBy`/`offset`) for a
+   * stable, O(1)-per-page scan. `offset` is O(offset) and unstable under
+   * concurrent writes; keyset is the pagination primitive.
+   */
+  after?: number;
 }
 
 export interface GraphBackendCapabilities {
   bitemporal: boolean;
   fullTextSearch: boolean;
   metadataFilter: boolean;
+}
+
+/**
+ * BUG-040 — write options. `skipDedupe` opts a write out of the global
+ * case-insensitive content-hash dedupe (default false, back-compat). Entity
+ * nodes identified by a business key MUST set this; the unique (kind, name)
+ * index (FEAT-012) is the real uniqueness guard.
+ */
+export interface WriteNodeOpts {
+  skipDedupe?: boolean;
 }
 
 export interface GraphBackend {
@@ -664,29 +723,48 @@ export interface GraphBackend {
 
   applySchema(): Promise<void>;
 
-  writeNode(content: string, meta: NodeMeta): Promise<number>;
+  writeNode(content: string, meta: NodeMeta, opts?: WriteNodeOpts): Promise<number>;
+  /** FEAT-011 — idempotent find-or-create by business key (kind, name). */
+  findOrCreateNode(kind: string, name: string, opts?: { content?: string; meta?: NodeMeta }): Promise<number>;
   supersede(oldId: number, newContent: string, meta: NodeMeta): Promise<number>;
   invalidate(nodeId: number, reason?: string): Promise<void>;
   touch(nodeId: number, meta: Partial<NodeMeta>): Promise<void>;
-  writeNodeBatch(nodes: Array<{ content: string; meta: NodeMeta }>): Promise<number[]>;
+  writeNodeBatch(nodes: Array<{ content: string; meta: NodeMeta }>, opts?: WriteNodeOpts): Promise<number[]>;
   writeGraph(
     nodes: Array<{ content: string; meta: NodeMeta }>,
     edges: Array<{ srcIdx: number; dstIdx: number; rel: EdgeRel; meta?: EdgeMeta }>,
+    opts?: WriteNodeOpts,
   ): Promise<number[]>;
 
+  /**
+   * FEAT-024 (A1) — expose atomic multi-operation composition. The v2 "create
+   * issue" is one logical write over existing nodes (writeNode + edges); this
+   * is the mechanism that makes FEAT-023's uniqueness check + multi-op writes
+   * atomic, and it removes the need for a consumer to reach the raw adapter.
+   */
+  transaction<T>(fn: (tx: AdapterTransaction) => Promise<T>): Promise<T>;
+  /** FEAT-024 (A2) — set `edge.t_invalid`. Idempotent; `writeEdge` with the same (src,dst,rel) re-livens it. */
+  invalidateEdge(src: number, dst: number, rel: EdgeRel, reason?: string): Promise<void>;
+  /** FEAT-024 (A3) — bulk edge write between existing nodes in one transaction. */
+  writeEdges(edges: Array<{ src: number; dst: number; rel: EdgeRel; meta?: EdgeMeta }>): Promise<void>;
+
   getNode(id: number): Promise<NodeRecord | null>;
+  /** FEAT-024 (B4) — ordered batch read, one query, in the requested id order (missing/tombstones omitted per `liveOnly`). */
+  getNodesByIds(ids: number[], opts?: { liveOnly?: boolean }): Promise<NodeRecord[]>;
   queryNodes(filter?: NodeFilter): Promise<NodeRecord[]>;
   searchNodes(
     query: string,
     opts?: { limit?: number; offset?: number; filter?: NodeFilter },
   ): Promise<Array<NodeRecord & { score: number }>>;
   countNodes(filter?: NodeFilter): Promise<number>;
+  /** FEAT-024 (B5) — single GROUP BY over a node column instead of N `countNodes` calls. */
+  countBy(field: 'kind' | 'namespace' | 'agentId', filter?: NodeFilter): Promise<Record<string, number>>;
   countNodesFts(query: string, filter?: NodeFilter): Promise<number>;
   getSupersessionChain(nodeId: number): Promise<NodeRecord[]>;
 
   writeEdge(src: number, dst: number, rel: EdgeRel, meta?: EdgeMeta): Promise<void>;
 
-  getEdges(opts: { src?: number; dst?: number; rel?: EdgeRel }): Promise<EdgeRecord[]>;
+  getEdges(opts: { src?: number; dst?: number; rel?: EdgeRel; metadata?: Record<string, MetadataFilterValue> }): Promise<EdgeRecord[]>;
   getNeighbors(
     nodeId: number,
     opts?: { rel?: EdgeRel; depth?: number; direction?: 'in' | 'out' | 'both' },
@@ -746,10 +824,19 @@ export const DEFAULT_EDGE_RELS: readonly EdgeRel[] = [
 export interface TypePolicy {
   validateKind(kind: string): void;
   validateRel(rel: string): void;
+  /**
+   * FEAT-013 — OPTIONAL. Validate an edge with its endpoint kinds resolved.
+   * Called by writeEdgeInternal AFTER resolving src/dst kinds. When absent,
+   * the store falls back to `validateRel(rel)` — preserving the current API
+   * and the DEFAULT_TYPE_POLICY closed-vocabulary behavior byte-for-byte.
+   * Purity contract (BL-440 "no path to DDL") remains in force: this is a
+   * pure predicate over three strings — no adapter, no DDL, no I/O.
+   */
+  validateEdge?(srcKind: string, rel: string, dstKind: string): void;
 }
 
 /**
- * The default TypePolicy every SqliteGraphBackend gets when no typePolicy is supplied. This is
+ * The default TypePolicy every StoreGraphBackend gets when no typePolicy is supplied. This is
  * deliberately the CLOSED six-kind / ten-rel vocabulary the CHECK constraints enforce today —
  * NOT the "syntactic-only" default ADR-0010 D2 describes as graph-store's eventual built-in
  * default. That eventual shift only becomes safe once every memory-core call site injects its
@@ -772,12 +859,63 @@ export const DEFAULT_TYPE_POLICY: TypePolicy = {
       );
     }
   },
+  // FEAT-013 — the default policy has no endpoint-context vocabulary; delegate
+  // to validateRel so the closed six-kind/ten-rel behavior is unchanged for
+  // callers that inject nothing.
+  validateEdge(_srcKind: string, rel: string, _dstKind: string): void {
+    this.validateRel(rel);
+  },
 };
 
-/** Options accepted by createGraphBackend() / the SqliteGraphBackend constructor. */
+/** Options accepted by createGraphBackend() / the StoreGraphBackend constructor. */
+/**
+ * FEAT-021 — dependency-inversion write observer. graph-store DEFINES this
+ * interface and imports nothing for it; a higher-tier composer (the semantic
+ * facade) IMPLEMENTS it to do embed-on-write / delete-on-invalidate. This is the
+ * same DI idiom as TypePolicy — it keeps graph-store base-tier-pure while
+ * letting the embedding lifecycle be owned by the composition layer. Observers
+ * fire AFTER the write commits, and their failures degrade (logged) rather than
+ * corrupt the data write.
+ */
+export interface GraphWriteObserver {
+  onNodeWritten?(node: NodeRecord, meta: NodeMeta): void | Promise<void>;
+  onNodeInvalidated?(nodeId: number): void | Promise<void>;
+  onNodeUpdated?(node: NodeRecord, changed: Partial<NodeMeta>): void | Promise<void>;
+}
+
+/**
+ * FEAT-023 — injectable, transaction-scoped uniqueness seam. Replaces
+ * FEAT-012's global `(kind, name)` unique index, which was wrong on three
+ * counts: (1) too broad — it forced "name is identity" on every kind, and the
+ * analysis package's community nodes collided (BUG-042); (2) wrong layer —
+ * relational uniqueness is edge-scoped (component names unique *within* a
+ * project), inexpressible as a column index; (3) unnecessary — the store is
+ * single-writer (ADR-0007 memory-single-writer, ADR-0015
+ * backlog-single-writer-daemon), so a check-then-INSERT is already atomic with
+ * no DDL index.
+ *
+ * The policy runs inside `writeNode` BEFORE the INSERT, with read access to the
+ * store's read path (the `tx` handle). Under single-writer the check-then-INSERT
+ * is atomic and no transaction wrapper is opened (the Turso adapter refuses
+ * nested transactions). Consumers own the semantics:
+ *   - flat catalog -> `SELECT … WHERE kind = ? AND name = ?`
+ *   - components   -> edge-scoped `SELECT` through the `MEMBER_OF`/`owns_project` edge
+ *
+ * A policy rejects a write by throwing {@link ConstraintError}. This is the
+ * same DI idiom as {@link TypePolicy} and {@link GraphWriteObserver}: graph-store
+ * owns no uniqueness semantics of its own — the consumer declares them.
+ */
+export interface NodeUniquenessPolicy {
+  check(meta: NodeMeta, tx: AdapterTransaction): Promise<void>;
+}
+
 export interface GraphBackendOpts {
   /** Injected type-vocabulary policy. Defaults to DEFAULT_TYPE_POLICY (today's six kinds, ten rels). */
   typePolicy?: TypePolicy;
+  /** FEAT-021 — write observers, fired after-commit. Additive; default empty. */
+  observers?: GraphWriteObserver[];
+  /** FEAT-023 — injectable uniqueness policy, run inside writeNode before the INSERT. Default undefined = the store enforces nothing. */
+  uniquenessPolicy?: NodeUniquenessPolicy;
 }
 
 interface DbNodeRow {
@@ -904,9 +1042,80 @@ function nowISO(): string {
   return new Date().toISOString();
 }
 
+/** FEAT-014 — a metadata filter value is an operator object iff it is a plain
+ *  object carrying at least one operator key. Arrays and null are not operators. */
+function isMetadataFilter(value: unknown): value is MetadataFilter {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return false;
+  const keys = ['eq', 'neq', 'in', 'gt', 'gte', 'lt', 'lte', 'between', 'exists', 'contains'];
+  return keys.some((k) => k in (value as Record<string, unknown>));
+}
+
 export interface FilterClause {
   where: string;
   params: unknown[];
+}
+
+/**
+ * FEAT-014 / FEAT-024 (B6) — shared metadata filter clause builder, reused by
+ * the node filter ({@link buildNodeFilterClause}) and the edge filter
+ * ({@link StoreGraphBackend.getEdges}). The full operator set applies to
+ * `json_extract(<alias>meta, '$.key')`. `alias` is already column-dotted (e.g.
+ * `n.` or `e.`), so this is dialect-free and shared across both tables.
+ */
+function appendMetadataFilterClauses(
+  alias: string,
+  metadata: Record<string, MetadataFilterValue>,
+  clauses: string[],
+  params: unknown[],
+): void {
+  for (const [key, value] of Object.entries(metadata)) {
+    if (isMetadataFilter(value)) {
+      const path = `$.${key}`;
+      if (value.eq !== undefined) {
+        if (value.eq === null) {
+          clauses.push(`json_extract(${alias}meta, ?) IS NULL`);
+          params.push(path);
+        } else {
+          clauses.push(`json_extract(${alias}meta, ?) = ?`);
+          params.push(path, value.eq);
+        }
+      }
+      if (value.neq !== undefined) {
+        if (value.neq === null) {
+          clauses.push(`json_extract(${alias}meta, ?) IS NOT NULL`);
+          params.push(path);
+        } else {
+          clauses.push(`json_extract(${alias}meta, ?) != ?`);
+          params.push(path, value.neq);
+        }
+      }
+      if (value.in !== undefined && value.in.length > 0) {
+        clauses.push(`json_extract(${alias}meta, ?) IN (${value.in.map(() => '?').join(',')})`);
+        params.push(path, ...value.in);
+      }
+      if (value.gt !== undefined) { clauses.push(`json_extract(${alias}meta, ?) > ?`); params.push(path, value.gt); }
+      if (value.gte !== undefined) { clauses.push(`json_extract(${alias}meta, ?) >= ?`); params.push(path, value.gte); }
+      if (value.lt !== undefined) { clauses.push(`json_extract(${alias}meta, ?) < ?`); params.push(path, value.lt); }
+      if (value.lte !== undefined) { clauses.push(`json_extract(${alias}meta, ?) <= ?`); params.push(path, value.lte); }
+      if (value.between !== undefined) {
+        clauses.push(`json_extract(${alias}meta, ?) >= ?`); params.push(path, value.between[0]);
+        clauses.push(`json_extract(${alias}meta, ?) <= ?`); params.push(path, value.between[1]);
+      }
+      if (value.exists !== undefined) {
+        clauses.push(value.exists
+          ? `json_extract(${alias}meta, ?) IS NOT NULL`
+          : `json_extract(${alias}meta, ?) IS NULL`);
+        params.push(path);
+      }
+      if (value.contains !== undefined) {
+        clauses.push(`EXISTS (SELECT 1 FROM json_each(${alias}meta, ?) WHERE value = ?)`);
+        params.push(path, value.contains);
+      }
+    } else {
+      clauses.push(`json_extract(${alias}meta, ?) = ?`);
+      params.push(`$.${key}`, value);
+    }
+  }
 }
 
 export function buildNodeFilterClause(
@@ -1026,11 +1235,18 @@ export function buildNodeFilterClause(
       params.push(filter.agentId);
     }
 
-    if (filter.metadata !== undefined) {
-      for (const [key, value] of Object.entries(filter.metadata)) {
-        clauses.push(`json_extract(${alias}meta, ?) = ?`);
-        params.push(`$.${key}`, value);
+    if (filter.name !== undefined) {
+      if (Array.isArray(filter.name)) {
+        clauses.push(`${alias}name IN (${filter.name.map(() => '?').join(',')})`);
+        params.push(...filter.name);
+      } else {
+        clauses.push(`${alias}name = ?`);
+        params.push(filter.name);
       }
+    }
+
+    if (filter.metadata !== undefined) {
+      appendMetadataFilterClauses(alias, filter.metadata, clauses, params);
     }
   }
 
@@ -1043,19 +1259,33 @@ export function buildNodeFilterClause(
 function buildOrderClause(filter: NodeFilter | undefined, tableAlias: string): string {
   if (!filter?.orderBy) return '';
   const alias = tableAlias ? `${tableAlias}.` : '';
-  const col = (() => {
-    switch (filter.orderBy) {
-      case 'importance': return `${alias}importance`;
-      case 'tCreated': return `${alias}t_created`;
-      case 'tValid': return `${alias}t_valid`;
-      case 'name': return `${alias}name`;
-      default: return '';
+
+  // FEAT-014 — normalize to a list of {expr, defaultDir} sort terms. A metadata
+  // sort key resolves to `json_extract(meta, '$.key')` (unindexed but correct).
+  const fields = Array.isArray(filter.orderBy) ? filter.orderBy : [filter.orderBy];
+  const terms: Array<{ expr: string; defaultDir: 'ASC' | 'DESC' }> = [];
+  for (const field of fields) {
+    if (typeof field === 'string') {
+      switch (field) {
+        case 'importance': terms.push({ expr: `${alias}importance`, defaultDir: 'DESC' }); break;
+        case 'tCreated': terms.push({ expr: `${alias}t_created`, defaultDir: 'DESC' }); break;
+        case 'tValid': terms.push({ expr: `${alias}t_valid`, defaultDir: 'DESC' }); break;
+        case 'name': terms.push({ expr: `${alias}name`, defaultDir: 'ASC' }); break;
+        default: break;
+      }
+    } else {
+      // { metadata: key } — sort by a JSON field.
+      terms.push({ expr: `json_extract(${alias}meta, '$.${field.metadata}')`, defaultDir: 'ASC' });
     }
-  })();
-  if (!col) return '';
-  const dir = filter.orderDir ??
-    (filter.orderBy === 'importance' ? 'DESC' : filter.orderBy === 'name' ? 'ASC' : 'DESC');
-  return `ORDER BY ${col} ${dir}`;
+  }
+  if (terms.length === 0) return '';
+
+  const dirs = Array.isArray(filter.orderDir) ? filter.orderDir : (filter.orderDir ? [filter.orderDir] : []);
+  const ordered = terms.map((t, i) => {
+    const d = dirs[i] ?? t.defaultDir;
+    return `${t.expr} ${d.toUpperCase()}`;
+  });
+  return `ORDER BY ${ordered.join(', ')}`;
 }
 
 /**
@@ -1109,12 +1339,14 @@ function hasExplicitRowidForeignKey(sql: string): boolean {
   );
 }
 
-export class SqliteGraphBackend implements GraphBackend {
+export class StoreGraphBackend implements GraphBackend {
   readonly capabilities: GraphBackendCapabilities;
 
   private adapter: StoreAdapter;
   private schemaApplied = false;
   private typePolicy: TypePolicy;
+  private observers: GraphWriteObserver[];
+  private uniquenessPolicy: NodeUniquenessPolicy | undefined;
   /**
    * Whether the underlying engine accepts `WITH RECURSIVE` at prepare. True on
    * SQLite and Turso Database Rust >= 0.8.0; FALSE on Turso 0.7.x (probed
@@ -1149,6 +1381,8 @@ export class SqliteGraphBackend implements GraphBackend {
   constructor(adapter: StoreAdapter, opts?: GraphBackendOpts) {
     this.adapter = adapter;
     this.typePolicy = opts?.typePolicy ?? DEFAULT_TYPE_POLICY;
+    this.observers = opts?.observers ?? [];
+    this.uniquenessPolicy = opts?.uniquenessPolicy;
     // BUG-SOXGRAPH-001: fullTextSearch DERIVES from the adapter's fts
     // capability instead of being hardcoded true — an adapter reporting
     // fts:false must not advertise an FTS surface that would then throw.
@@ -1158,6 +1392,42 @@ export class SqliteGraphBackend implements GraphBackend {
       metadataFilter: true,
     };
     this._engineIdentity = undefined;
+  }
+
+  /** FEAT-021 — run a write-observer callback across all observers, degrading
+   *  (logged) on failure rather than corrupting the data write. */
+  private async notifyObservers(fn: (o: GraphWriteObserver) => void | Promise<void>): Promise<void> {
+    if (this.observers.length === 0) return;
+    for (const o of this.observers) {
+      try {
+        await fn(o);
+      } catch (err) {
+        log.warn('graph_store.observer_failed', {
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
+    }
+  }
+
+  /** FEAT-021 — build a minimal-but-valid NodeRecord for observer callbacks
+   *  from the write args, without a re-select. */
+  private buildNodeRecord(id: number, kind: string, content: string, meta: NodeMeta, now: string): NodeRecord {
+    const rec: NodeRecord = {
+      id,
+      kind,
+      content,
+      tags: meta.tags ?? [],
+      tCreated: now,
+      tValid: now,
+      isSuperseded: false,
+      isStale: false,
+      namespace: meta.namespace ?? 'global',
+    };
+    if (meta.name !== undefined) rec.name = meta.name;
+    if (meta.summary !== undefined) rec.summary = meta.summary;
+    if (meta.topic !== undefined) rec.topic = meta.topic;
+    if (meta.metadata !== undefined) rec.metadata = meta.metadata;
+    return rec;
   }
 
   /**
@@ -1514,15 +1784,32 @@ export class SqliteGraphBackend implements GraphBackend {
     }
   }
 
-  async writeNode(content: string, meta: NodeMeta): Promise<number> {
+  async writeNode(content: string, meta: NodeMeta, opts?: WriteNodeOpts): Promise<number> {
     const kind = meta.kind ?? 'episode';
     this.typePolicy.validateKind(kind);
 
+    // FEAT-023 — the injectable uniqueness policy runs BEFORE the INSERT, with
+    // read access to the store's read path. Under single-writer (ADR-0007 /
+    // ADR-0015) a check-then-INSERT is atomic without any DDL index, and the
+    // Turso adapter refuses nested transactions, so no transaction wrapper is
+    // opened here. The policy throws ConstraintError to reject a write.
+    if (this.uniquenessPolicy) {
+      await this.uniquenessPolicy.check(meta, this.adapter);
+    }
+
     const hash = hashContent(content);
-    const existing = await this.adapter.executeGet<{ rowid: number }>(
-      'SELECT rowid FROM node WHERE content_hash = ?', [hash],
-    );
-    if (existing) return existing.rowid;
+    // BUG-040 — the content-hash dedupe is the WRONG identity key for entity
+    // nodes: it is global (ignores kind) and case-insensitive, so distinct
+    // (kind, name) entities with identical content collapse. `skipDedupe` opts
+    // out (default false = dedupe on, back-compat); business-key identity goes
+    // through findOrCreateNode (FEAT-011) and — where the consumer declares one
+    // — the NodeUniquenessPolicy (FEAT-023) instead.
+    if (!opts?.skipDedupe) {
+      const existing = await this.adapter.executeGet<{ rowid: number }>(
+        'SELECT rowid FROM node WHERE content_hash = ?', [hash],
+      );
+      if (existing) return existing.rowid;
+    }
 
     const uid = generateUid();
     const now = nowISO();
@@ -1547,7 +1834,32 @@ export class SqliteGraphBackend implements GraphBackend {
     );
 
     if (!result) throw new Error('Insert failed: no rowid returned');
+    // FEAT-021 — after-commit observer (fire-and-forget, degrades on failure).
+    await this.notifyObservers((o) =>
+      o.onNodeWritten?.(this.buildNodeRecord(result.rowid, kind, content, meta, now), meta),
+    );
     return result.rowid;
+  }
+
+  /**
+   * FEAT-011 — the business-key primitive. Return the id of the existing
+   * (kind, name) node, or create it. Idempotent. Under single-writer a plain
+   * SELECT-then-INSERT is race-free WITHOUT the FEAT-012 unique index (reverted
+   * by FEAT-023) — there is no concurrent writer to slip between the two.
+   * Deliberately does NOT route identity through the content-hash dedupe — two
+   * distinct (kind, name) entities with identical content must remain distinct
+   * (BUG-040).
+   */
+  async findOrCreateNode(
+    kind: string,
+    name: string,
+    opts?: { content?: string; meta?: NodeMeta },
+  ): Promise<number> {
+    const existing = await this.adapter.executeGet<{ rowid: number }>(
+      'SELECT rowid FROM node WHERE kind = ? AND name = ? LIMIT 1', [kind, name],
+    );
+    if (existing) return existing.rowid;
+    return this.writeNode(opts?.content ?? name, { ...(opts?.meta ?? {}), kind, name }, { skipDedupe: true });
   }
 
   async supersede(oldId: number, newContent: string, meta: NodeMeta): Promise<number> {
@@ -1591,6 +1903,8 @@ export class SqliteGraphBackend implements GraphBackend {
       `UPDATE node SET t_invalid = ?, meta = ? WHERE rowid = ?`,
       [now, JSON.stringify(metaObj), nodeId],
     );
+    // FEAT-021 — after-commit observer (delete-on-invalidate).
+    await this.notifyObservers((o) => o.onNodeInvalidated?.(nodeId));
   }
 
   async touch(nodeId: number, meta: Partial<NodeMeta>): Promise<void> {
@@ -1619,13 +1933,16 @@ export class SqliteGraphBackend implements GraphBackend {
         `UPDATE node SET ${updates.join(', ')} WHERE rowid = ?`,
         [...params, nodeId],
       );
+      // FEAT-021 — after-commit observer (re-embed on content-bearing field change).
+      const updated = await this.getNode(nodeId);
+      if (updated) await this.notifyObservers((o) => o.onNodeUpdated?.(updated, meta));
     }
   }
 
-  async writeNodeBatch(nodes: Array<{ content: string; meta: NodeMeta }>): Promise<number[]> {
+  async writeNodeBatch(nodes: Array<{ content: string; meta: NodeMeta }>, opts?: WriteNodeOpts): Promise<number[]> {
     return this.adapter.transaction(async (_tx) => {
       const ids: number[] = [];
-      for (const n of nodes) ids.push(await this.writeNode(n.content, n.meta));
+      for (const n of nodes) ids.push(await this.writeNode(n.content, n.meta, opts));
       return ids;
     });
   }
@@ -1633,10 +1950,18 @@ export class SqliteGraphBackend implements GraphBackend {
   async writeGraph(
     nodes: Array<{ content: string; meta: NodeMeta }>,
     edges: Array<{ srcIdx: number; dstIdx: number; rel: EdgeRel; meta?: EdgeMeta }>,
+    opts?: WriteNodeOpts,
   ): Promise<number[]> {
     return this.adapter.transaction(async (_tx) => {
       const nodeIds: number[] = [];
-      for (const n of nodes) nodeIds.push(await this.writeNode(n.content, n.meta));
+      // FEAT-013 fast-path: capture each node's kind during insertion so edge
+      // validation can resolve endpoint kinds without a per-edge SELECT.
+      const kindByRowid = new Map<number, string>();
+      for (const n of nodes) {
+        const id = await this.writeNode(n.content, n.meta, opts);
+        nodeIds.push(id);
+        kindByRowid.set(id, n.meta.kind ?? 'episode');
+      }
       for (const edge of edges) {
         if (edge.srcIdx < 0 || edge.srcIdx >= nodeIds.length)
           throw new ConstraintError(`Invalid srcIdx: ${edge.srcIdx}`);
@@ -1646,7 +1971,7 @@ export class SqliteGraphBackend implements GraphBackend {
         const dstId = nodeIds[edge.dstIdx];
         if (srcId === undefined || dstId === undefined)
           throw new ConstraintError('Node ID resolution failed');
-        await this.writeEdgeInternal(srcId, dstId, edge.rel, edge.meta);
+        await this.writeEdgeInternal(srcId, dstId, edge.rel, edge.meta, kindByRowid);
       }
       return nodeIds;
     });
@@ -1657,18 +1982,80 @@ export class SqliteGraphBackend implements GraphBackend {
     return row ? rowToNodeRecord(row) : null;
   }
 
+  /**
+   * FEAT-024 (A1) — expose the adapter's transaction so consumers can compose
+   * atomic multi-operation writes over *existing* nodes (the v2 "create issue"
+   * = writeNode + edges + transition). This is also what makes FEAT-023's
+   * uniqueness check + a multi-op write atomic. The callback receives the
+   * adapter's AdapterTransaction; throwing from it rolls the whole thing back.
+   */
+  async transaction<T>(fn: (tx: AdapterTransaction) => Promise<T>): Promise<T> {
+    return this.adapter.transaction(fn);
+  }
+
+  /**
+   * FEAT-024 (A3) — bulk edge write between existing nodes in one transaction.
+   * The migration writes thousands of edges; `writeGraph` bundles nodes+edges
+   * and cannot target existing nodes. Endpoint kinds are resolved in a single
+   * query up front (not one per edge) and threaded through `writeEdgeInternal`
+   * for validateEdge.
+   */
+  async writeEdges(edges: Array<{ src: number; dst: number; rel: EdgeRel; meta?: EdgeMeta }>): Promise<void> {
+    if (edges.length === 0) return;
+    return this.adapter.transaction(async () => {
+      const ids = new Set<number>();
+      for (const e of edges) { ids.add(e.src); ids.add(e.dst); }
+      const { rows } = await this.adapter.executeAll<{ rowid: number; kind: string }>(
+        `SELECT rowid, kind FROM node WHERE rowid IN (${[...ids].map(() => '?').join(',')})`, [...ids],
+      );
+      const kindByRowid = new Map<number, string>();
+      for (const row of rows) kindByRowid.set(row.rowid, row.kind);
+      for (const e of edges) {
+        await this.writeEdgeInternal(e.src, e.dst, e.rel, e.meta, kindByRowid);
+      }
+    });
+  }
+
+  /** FEAT-024 (B4) — ordered batch read, one query, in the requested id order. */
+  async getNodesByIds(ids: number[], opts?: { liveOnly?: boolean }): Promise<NodeRecord[]> {
+    if (ids.length === 0) return [];
+    const liveOnly = opts?.liveOnly ?? true;
+    const liveClause = liveOnly ? ' AND t_invalid IS NULL' : '';
+    const { rows } = await this.adapter.executeAll<DbNodeRow>(
+      `SELECT * FROM node WHERE rowid IN (${ids.map(() => '?').join(',')})${liveClause}`, ids,
+    );
+    const byId = new Map<number, NodeRecord>();
+    for (const row of rows) byId.set(row.rowid, rowToNodeRecord(row));
+    return ids.map((id) => byId.get(id)).filter((n): n is NodeRecord => n !== undefined);
+  }
+
   async queryNodes(filter?: NodeFilter): Promise<NodeRecord[]> {
-    const { where, params } = buildNodeFilterClause(filter, true, 'n');
-    const order = buildOrderClause(filter, 'n');
+    const { where, params } = buildNodeFilterClause(filter, filter?.liveOnly ?? true, 'n');
+    const allParams = [...params];
+    let whereClause = where;
+    let order = buildOrderClause(filter, 'n');
+
+    // FEAT-024 (C) — keyset cursor: stable rowid scan. When `after` is set the
+    // query compiles to `WHERE rowid > ? ORDER BY rowid ASC`, ignoring `orderBy`
+    // and `offset` (keyset replaces offset pagination — offset is O(offset) and
+    // unstable under writes).
+    if (filter?.after !== undefined) {
+      whereClause = whereClause ? `${whereClause} AND n.rowid > ?` : 'WHERE n.rowid > ?';
+      allParams.push(filter.after);
+      order = 'ORDER BY n.rowid ASC';
+    }
+
     let limitClause = '';
-    const limitParams: unknown[] = [];
     if (filter?.limit !== undefined) {
       limitClause = 'LIMIT ?';
-      limitParams.push(filter.limit);
-      if (filter.offset !== undefined) { limitClause += ' OFFSET ?'; limitParams.push(filter.offset); }
+      allParams.push(filter.limit);
+      if (filter.offset !== undefined && filter.after === undefined) {
+        limitClause += ' OFFSET ?';
+        allParams.push(filter.offset);
+      }
     }
-    const sql = `SELECT n.* FROM node n ${where} ${order} ${limitClause}`;
-    const { rows } = await this.adapter.executeAll<DbNodeRow>(sql, [...params, ...limitParams]);
+    const sql = `SELECT n.* FROM node n ${whereClause} ${order} ${limitClause}`;
+    const { rows } = await this.adapter.executeAll<DbNodeRow>(sql, allParams);
     return rows.map(rowToNodeRecord);
   }
 
@@ -1681,7 +2068,7 @@ export class SqliteGraphBackend implements GraphBackend {
     if (!this.capabilities.fullTextSearch) return [];
     const tokens = query.toLowerCase().split(/\s+/).filter((t) => t.length > 0);
     if (tokens.length === 0) return [];
-    const nodeFilter = buildNodeFilterClause(opts?.filter, true, 'n');
+    const nodeFilter = buildNodeFilterClause(opts?.filter, opts?.filter?.liveOnly ?? true, 'n');
     const nodeWhere = nodeFilter.where ? `AND ${nodeFilter.where.replace(/^WHERE /, '')}` : '';
     // A2 (FEAT-SOXGRAPH-001): delegate to the adapter's ftsSearch, which owns
     // the per-backend SQL (fts5 shadow join vs Tantivy fts_match), the BL-367
@@ -1702,9 +2089,31 @@ export class SqliteGraphBackend implements GraphBackend {
   }
 
   async countNodes(filter?: NodeFilter): Promise<number> {
-    const { where, params } = buildNodeFilterClause(filter, true, 'n');
+    const { where, params } = buildNodeFilterClause(filter, filter?.liveOnly ?? true, 'n');
     const row = await this.adapter.executeGet<{ cnt: number }>(`SELECT COUNT(*) as cnt FROM node n ${where}`, params);
     return row?.cnt ?? 0;
+  }
+
+  /**
+   * FEAT-024 (B5) — single `GROUP BY` over a node column instead of N
+   * `countNodes` calls. `field` maps to a real node column; `status`/`priority`
+   * counting is deliberately NOT here — in the v2 model those are edge-scoped
+   * (`has_status` / a metadata key), not a node column, and belong to the app
+   * layer. A NULL key (e.g. `agentId` unset) is keyed `'(null)'`.
+   */
+  async countBy(
+    field: 'kind' | 'namespace' | 'agentId',
+    filter?: NodeFilter,
+  ): Promise<Record<string, number>> {
+    const column = field === 'kind' ? 'kind' : field === 'namespace' ? 'namespace' : 'agent_id';
+    const { where, params } = buildNodeFilterClause(filter, filter?.liveOnly ?? true, 'n');
+    const { rows } = await this.adapter.executeAll<{ key: string | null; cnt: number }>(
+      `SELECT ${column} AS key, COUNT(*) AS cnt FROM node n ${where} GROUP BY ${column}`,
+      params,
+    );
+    const out: Record<string, number> = {};
+    for (const r of rows) out[r.key ?? '(null)'] = r.cnt;
+    return out;
   }
 
   async countNodesFts(query: string, filter?: NodeFilter): Promise<number> {
@@ -1712,7 +2121,7 @@ export class SqliteGraphBackend implements GraphBackend {
     if (!this.capabilities.fullTextSearch) return 0;
     const tokens = query.toLowerCase().split(/\s+/).filter((t) => t.length > 0);
     if (tokens.length === 0) return 0;
-    const nodeFilter = buildNodeFilterClause(filter, true, 'n');
+    const nodeFilter = buildNodeFilterClause(filter, filter?.liveOnly ?? true, 'n');
     const nodeWhere = nodeFilter.where ? `AND ${nodeFilter.where.replace(/^WHERE /, '')}` : '';
     // A2 (FEAT-SOXGRAPH-001): delegate to the adapter's ftsCount.
     return this.adapter.ftsCount('node', ['content', 'name', 'summary'], query, {
@@ -1838,8 +2247,69 @@ export class SqliteGraphBackend implements GraphBackend {
     await this.writeEdgeInternal(src, dst, rel, meta);
   }
 
-  private async writeEdgeInternal(src: number, dst: number, rel: EdgeRel, meta?: EdgeMeta): Promise<void> {
-    this.typePolicy.validateRel(rel);
+  /**
+   * FEAT-024 (A2) — set `edge.t_invalid` (soft-delete). Idempotent: an edge
+   * that is already invalidated (or absent) is a no-op. The v2 model re-assigns
+   * status/priority/component by invalidating the old edge + writing the new
+   * one. `writeEdge` with the same (src, dst, rel) re-livens it (`t_invalid =
+   * NULL`) via the existing upsert. `reason`, when present, is merged into the
+   * edge's `meta` alongside `invalidatedAt`.
+   */
+  async invalidateEdge(src: number, dst: number, rel: EdgeRel, reason?: string): Promise<void> {
+    const existing = await this.adapter.executeGet<{ rowid: number; meta: string | null }>(
+      'SELECT rowid, meta FROM edge WHERE src = ? AND dst = ? AND rel = ? AND t_invalid IS NULL',
+      [src, dst, rel],
+    );
+    if (!existing) return; // already invalidated or absent — idempotent
+    const now = nowISO();
+    const metaObj: Record<string, unknown> = {
+      ...parseJson(existing.meta, {}),
+      invalidatedAt: now,
+      ...(reason !== undefined ? { invalidatedReason: reason } : {}),
+    };
+    await this.adapter.executeRun(
+      'UPDATE edge SET t_invalid = ?, meta = ? WHERE rowid = ?',
+      [now, JSON.stringify(metaObj), existing.rowid],
+    );
+  }
+
+  /**
+   * FEAT-013 — resolve endpoint kinds, then validate the edge with endpoint
+   * context when the injected TypePolicy provides `validateEdge`. Falls back to
+   * `validateRel` (byte-identical to the pre-FEAT-013 behavior) when the policy
+   * has no `validateEdge`. `resolvedKinds` is the writeGraph fast-path: kinds
+   * already captured during node insertion, avoiding a per-edge SELECT.
+   */
+  private async writeEdgeInternal(
+    src: number,
+    dst: number,
+    rel: EdgeRel,
+    meta?: EdgeMeta,
+    resolvedKinds?: Map<number, string>,
+  ): Promise<void> {
+    let srcKind: string | undefined;
+    let dstKind: string | undefined;
+    if (resolvedKinds) {
+      srcKind = resolvedKinds.get(src);
+      dstKind = resolvedKinds.get(dst);
+    } else {
+      const { rows } = await this.adapter.executeAll<{ rowid: number; kind: string }>(
+        'SELECT rowid, kind FROM node WHERE rowid IN (?, ?)', [src, dst],
+      );
+      for (const row of rows) {
+        if (row.rowid === src) srcKind = row.kind;
+        if (row.rowid === dst) dstKind = row.kind;
+      }
+    }
+    if (srcKind === undefined) throw new NodeNotFoundError(`Node not found (edge src): ${src}`, src);
+    if (dstKind === undefined) throw new NodeNotFoundError(`Node not found (edge dst): ${dst}`, dst);
+
+    if (this.typePolicy.validateEdge) {
+      this.typePolicy.validateEdge(srcKind, rel, dstKind);
+    } else {
+      this.typePolicy.validateRel(rel);
+    }
+
     try {
       const now = nowISO();
       const metaJson = meta?.metadata !== undefined ? JSON.stringify(meta.metadata) : null;
@@ -1860,12 +2330,18 @@ export class SqliteGraphBackend implements GraphBackend {
     }
   }
 
-  async getEdges(opts: { src?: number; dst?: number; rel?: EdgeRel }): Promise<EdgeRecord[]> {
+  async getEdges(opts: { src?: number; dst?: number; rel?: EdgeRel; metadata?: Record<string, MetadataFilterValue> }): Promise<EdgeRecord[]> {
     const clauses: string[] = ['t_invalid IS NULL'];
     const params: unknown[] = [];
     if (opts.src !== undefined) { clauses.push('src = ?'); params.push(opts.src); }
     if (opts.dst !== undefined) { clauses.push('dst = ?'); params.push(opts.dst); }
     if (opts.rel !== undefined) { clauses.push('rel = ?'); params.push(opts.rel); }
+    // FEAT-024 (B6) — edge metadata filtering (same operator surface as
+    // NodeFilter.metadata, FEAT-014). The v2 transition-edge queries filter by
+    // `sha`/`agent`.
+    if (opts.metadata !== undefined) {
+      appendMetadataFilterClauses('', opts.metadata, clauses, params);
+    }
     const { rows } = await this.adapter.executeAll<DbEdgeRow>(
       `SELECT * FROM edge WHERE ${clauses.join(' AND ')}`, params,
     );
@@ -2209,7 +2685,7 @@ export class SqliteGraphBackend implements GraphBackend {
 }
 
 export function createGraphBackend(adapter: StoreAdapter, opts?: GraphBackendOpts): GraphBackend {
-  const backend = new SqliteGraphBackend(adapter, opts);
+  const backend = new StoreGraphBackend(adapter, opts);
   // (BL-508) Eager: run the foreign-engine guard + engine-identity read now —
   // the "open result" carries the identity, and a marker mismatch must refuse
   // at open, not on the first graph op. Cached on the instance afterwards.

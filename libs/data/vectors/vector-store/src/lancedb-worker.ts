@@ -50,6 +50,7 @@ export type WorkerOp =
   | 'listSpaces'
   | 'upsert'
   | 'delete'
+  | 'deleteMany'
   | 'get'
   | 'knn'
   | 'iter';
@@ -65,6 +66,7 @@ export interface WorkerRequest {
   space?: WorkerVectorSpace | undefined;
   modelId?: string | undefined;
   id?: number | undefined;
+  ids?: number[] | undefined;
   vec?: Float32Array | undefined;
   query?: Float32Array | undefined;
   k?: number | undefined;
@@ -76,6 +78,7 @@ export interface WorkerResponse {
   vec?: number[] | null;
   results?: Array<{ id: number; score: number }>;
   items?: Array<{ id: number; vec: number[] }>;
+  count?: number;
 }
 
 // ── Per-lancedbPath connection state (persists across calls in this worker) ──
@@ -284,6 +287,16 @@ async function del(state: DbState, modelId: string, id: number): Promise<void> {
   await table.delete(`id = ${id}`);
 }
 
+async function deleteMany(state: DbState, modelId: string, ids: number[]): Promise<number> {
+  const space = state.spaces.get(modelId);
+  if (!space) return 0;
+  const key = spaceKey(modelId, space.dim);
+  const table = state.tables.get(key);
+  if (!table) return 0;
+  const res = await table.delete(`id IN (${ids.join(',')})`);
+  return res.numDeletedRows;
+}
+
 async function get(state: DbState, modelId: string, id: number): Promise<number[] | null> {
   const space = state.spaces.get(modelId);
   if (!space) return null;
@@ -370,6 +383,11 @@ runAsWorker(async (req: WorkerRequest): Promise<WorkerResponse> => {
       if (!req.modelId || req.id == null) throw new Error('delete requires modelId, id');
       await del(state, req.modelId, req.id);
       return {};
+    }
+    case 'deleteMany': {
+      if (!req.modelId || !req.ids) throw new Error('deleteMany requires modelId, ids');
+      const count = await deleteMany(state, req.modelId, req.ids);
+      return { count };
     }
     case 'get': {
       if (!req.modelId || req.id == null) throw new Error('get requires modelId, id');

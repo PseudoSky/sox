@@ -10,9 +10,9 @@ interface NodeFilterResult {
   extraClauses: FilterClause;
   /**
    * Filter keys that could not be mapped onto NodeFilter (graph-store's read/search
-   * surface) — these are silently unenforceable by SqliteSearchBackend today
+   * surface) — these are silently unenforceable by StoreSearchBackend today
    * (BL-294). Non-empty means the caller's stated filters do not fully constrain
-   * either the text or vector channel of the search; SqliteSearchBackend surfaces
+   * either the text or vector channel of the search; StoreSearchBackend surfaces
    * this as `degraded.unsupportedFilters` on every result of the affected query.
    */
   unsupportedFilters: string[];
@@ -80,7 +80,7 @@ export function buildFilterClause(filters: Record<string, unknown>): NodeFilterR
       }
       default: {
         // Unrecognized filter key — kept in extraClauses (raw SQL, back-compat) but
-        // SqliteSearchBackend never applies extraClauses to either search channel, so
+        // StoreSearchBackend never applies extraClauses to either search channel, so
         // this is also recorded as unsupported (BL-294) and surfaced as a degrade signal.
         extraClauses.push(`${key} = ?`);
         extraParams.push(value);

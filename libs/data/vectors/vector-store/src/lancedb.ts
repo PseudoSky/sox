@@ -129,8 +129,28 @@ export class LanceDbVectorBackend implements VectorBackend {
     });
   }
 
+  upsertVectors(items: Array<{ id: number; vec: Float32Array }>, space: VectorSpace): void {
+    // LanceDB has no cross-table transaction via the synckit worker; a batch is
+    // a bounded loop of single upserts (correct, not optimized). Turso/sqlite
+    // backends get the transactional fast path.
+    for (const { id, vec } of items) this.upsert(id, vec, space);
+  }
+
   delete(id: number, modelId: string): void {
     getSyncFn()({ op: 'delete', lancedbPath: this.lancedbPath, modelId, id });
+  }
+
+  /**
+   * DEBT-011 (Move 3) — remove exactly the given ids, returning the count
+   * removed. LanceDB vectors live in a separate store (no graph `node` table),
+   * so this is a pure id-scoped delete — which is exactly why the old
+   * `pruneInvalidatedVectors` (node-join) was unsupported here and the
+   * node-specific prune is now facade/host composition.
+   */
+  deleteMany(ids: number[], modelId: string): number {
+    if (ids.length === 0) return 0;
+    const res = getSyncFn()({ op: 'deleteMany', lancedbPath: this.lancedbPath, modelId, ids });
+    return res.count ?? 0;
   }
 
   get(id: number, modelId: string): Float32Array | null {

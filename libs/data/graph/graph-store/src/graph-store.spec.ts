@@ -5,7 +5,7 @@ import { mkdtempSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import {
-  SqliteGraphBackend,
+  StoreGraphBackend,
   createGraphBackend,
   ConstraintError,
   BitemporalConflictError,
@@ -90,10 +90,10 @@ describe('static exports', () => {
     expect(FTS_TRIGGERS.length).toBeGreaterThan(0);
   });
 
-  it('createGraphBackend returns an SqliteGraphBackend', async () => {
+  it('createGraphBackend returns an StoreGraphBackend', async () => {
     const adapter = new SqliteAdapterImpl(':memory:');
     const backend = createGraphBackend(adapter);
-    expect(backend).toBeInstanceOf(SqliteGraphBackend);
+    expect(backend).toBeInstanceOf(StoreGraphBackend);
     await adapter.close();
   });
 });
@@ -1126,7 +1126,7 @@ describe('migrations', () => {
     const adapter = await createV1Store();
     await adapter.executeRun(`INSERT INTO node (uid, kind, content, t_created) VALUES (?, 'episode', ?, ?)`, ['uid-1', 'orig', new Date().toISOString()]);
     await adapter.executeRun(`INSERT INTO edge (src, dst, rel, t_created) VALUES (1, 1, 'MENTIONS', ?)`, [new Date().toISOString()]);
-    const backend = new SqliteGraphBackend(adapter);
+    const backend = new StoreGraphBackend(adapter);
     await backend.applySchema();
     const row = await adapter.executeGet<Record<string, unknown>>(`SELECT * FROM node WHERE rowid = 1`);
     expect(row!.content).toBe('orig');
@@ -1138,7 +1138,7 @@ describe('migrations', () => {
 
   it('accepts generic kind after migration', async () => {
     const adapter = await createV1Store();
-    const backend = new SqliteGraphBackend(adapter);
+    const backend = new StoreGraphBackend(adapter);
     await backend.applySchema();
     await adapter.executeRun(`INSERT INTO node (uid, kind, content, t_created) VALUES (?, 'generic', ?, ?)`, ['generic-1', 'g', new Date().toISOString()]);
     const row = await adapter.executeGet<{ kind: string }>(`SELECT kind FROM node WHERE uid = 'generic-1'`);
@@ -1148,7 +1148,7 @@ describe('migrations', () => {
 
   it('accepts DEPENDS_ON edge after migration', async () => {
     const adapter = await createV1Store();
-    const backend = new SqliteGraphBackend(adapter);
+    const backend = new StoreGraphBackend(adapter);
     await backend.applySchema();
     const now = new Date().toISOString();
     await adapter.executeRun(`INSERT INTO node (uid, kind, content, t_created) VALUES (?, 'episode', ?, ?)`, ['s', 'src', now]);
@@ -1160,7 +1160,7 @@ describe('migrations', () => {
 
   it('idempotent', async () => {
     const adapter = await createV1Store();
-    const backend = new SqliteGraphBackend(adapter);
+    const backend = new StoreGraphBackend(adapter);
     await backend.applySchema();
     await backend.applySchema();
     await adapter.executeRun(`INSERT INTO node (uid, kind, content, t_created) VALUES (?, 'generic', ?, ?)`, ['idem', 'g', new Date().toISOString()]);
@@ -1176,7 +1176,7 @@ describe('migrations', () => {
     for (let i = 1; i <= 10; i++)
       for (let j = 1; j <= 10; j++)
         if (i !== j) { await adapter.executeRun(`INSERT INTO edge (src, dst, rel, t_created) VALUES (?, ?, 'RELATES_TO', ?)`, [i, j, now]); cnt++; }
-    const backend = new SqliteGraphBackend(adapter);
+    const backend = new StoreGraphBackend(adapter);
     await backend.applySchema();
     expect((await adapter.executeGet<{ c: number }>(`SELECT COUNT(*) AS c FROM edge`))!.c).toBe(cnt);
     await adapter.close();
@@ -1206,7 +1206,7 @@ describe('migrations', () => {
       meta TEXT, t_created TEXT NOT NULL, t_expired TEXT, t_valid TEXT, t_invalid TEXT
     )`);
     await adapter.executeRun(`INSERT INTO node (uid, kind, content, t_created) VALUES (?, 'episode', ?, ?)`, ['uid-1', 'pre-existing', new Date().toISOString()]);
-    const backend = new SqliteGraphBackend(adapter);
+    const backend = new StoreGraphBackend(adapter);
     await backend.applySchema();
     expect(await adapter.executeGet(`SELECT * FROM pragma_table_info('node') WHERE name = 'is_superseded'`)).toBeDefined();
     const row = await adapter.executeGet<{ is_superseded: number }>(`SELECT is_superseded FROM node WHERE uid = 'uid-1'`);

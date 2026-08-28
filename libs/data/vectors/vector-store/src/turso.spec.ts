@@ -2,7 +2,6 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { createGraphBackend, type GraphBackend } from '@adhd/sox-graph-store';
 import { createStoreAdapter, createSqliteAdapter, type StoreAdapter } from '@adhd/sox-store-adapter';
 
 import {
@@ -62,19 +61,14 @@ describe('TursoVectorBackend', () => {
   let adapter: StoreAdapter;
   let cleanup: () => Promise<void>;
   let backend: TursoVectorBackend;
-  let graph: GraphBackend;
   const space: VectorSpace = { modelId: 'test-model', dim: 8 };
 
-  // `TursoVectorDialect.topKQuery` unconditionally JOINs the vector table
-  // against a real `node` table (see vector-dialect.ts) — every id used in a
-  // `knn`/`iter` assertion below must correspond to a real node row, exactly
-  // as the existing SqliteVectorBackend nodeFilter suite in
-  // vector-store.spec.ts already establishes for this repo.
-  async function makeNode(namespace: string): Promise<number> {
-    return graph.writeNode(`content ${namespace} ${Math.random()}`, {
-      namespace,
-      kind: 'generic',
-    });
+  // DEBT-011: TursoVectorBackend's knn/iter are pure `{ ids }` — they no longer
+  // join a graph `node` table (the vector store has zero graph-store dependency).
+  // `makeNode` mints a unique synthetic id; no node table is created or needed.
+  let nextId = 1000;
+  function makeNode(_namespace: string): number {
+    return nextId++;
   }
 
   beforeEach(async () => {
@@ -82,8 +76,6 @@ describe('TursoVectorBackend', () => {
     adapter = tmp.adapter;
     cleanup = tmp.cleanup;
     backend = new TursoVectorBackend(adapter);
-    graph = createGraphBackend(adapter);
-    await graph.applySchema();
     await backend.ensureSpace(space);
   });
 
@@ -205,71 +197,15 @@ describe('TursoVectorBackend', () => {
       expect(results.map((r) => r.id)).not.toContain(idTop);
     });
 
-    // ── knn — filtered-KNN pushdown (VecFilter.nodeFilter) ────────────────
-    //
-    // Load-bearing: proves the filter is pushed into SQL, not applied after
-    // the k/LIMIT cutoff. Insert MORE matching rows than k plus a batch of
-    // non-matching (but nearer!) rows, ask for a small k — a post-filter
-    // implementation would fetch k candidates pre-filter (dominated by the
-    // nearer non-matching rows) and could return FEWER than k matching rows.
-    // A real pushdown returns exactly k matching rows every time.
-    describe('nodeFilter pushdown', () => {
-      it('returns exactly k in-scope rows even when more out-of-scope rows are nearer', async () => {
-        const query = unitVec(8, 0);
-        const k = 3;
+    // ── knn — pure `{ ids }` contract (DEBT-011) ───────────────────────────
+    it('WITH { ids }, only the given ids appear (no node table required)', async () => {
+      const idA = 9001;
+      const idB = 9002;
+      await backend.upsert(idA, unitVec(8, 0), space);
+      await backend.upsert(idB, unitVec(8, 0), space);
 
-        // 5 nearer, OUT-of-scope neighbours (would fill every knn slot
-        // pre-filter if the filter were applied after the fact).
-        for (let i = 0; i < 5; i++) {
-          const id = await makeNode('scope-b');
-          const v = unitVec(8, 0);
-          v[0] = 0.99 - i * 0.001; // extremely close to the query
-          await backend.upsert(id, v, space);
-        }
-
-        // 5 farther, IN-scope neighbours — genuinely matching rows that a
-        // correct pushdown must surface instead of the nearer non-matches.
-        const inScopeIds: number[] = [];
-        for (let i = 0; i < 5; i++) {
-          const id = await makeNode('scope-a');
-          inScopeIds.push(id);
-          const v = unitVec(8, 0);
-          v[0] = 0.5 - i * 0.01; // farther from the query than every scope-b row
-          await backend.upsert(id, v, space);
-        }
-
-        const results = await backend.knn(query, space, k, {
-          nodeFilter: { namespace: 'scope-a' },
-        });
-
-        expect(results).toHaveLength(k);
-        for (const r of results) {
-          expect(inScopeIds).toContain(r.id);
-        }
-      });
-
-      it('nodeFilter is ANDed with ids when both are given', async () => {
-        const idA = await makeNode('scope-a');
-        const idB = await makeNode('scope-b');
-        await backend.upsert(idA, unitVec(8, 0), space);
-        await backend.upsert(idB, unitVec(8, 0), space);
-
-        const results = await backend.knn(unitVec(8, 0), space, 10, {
-          ids: [idA, idB],
-          nodeFilter: { namespace: 'scope-a' },
-        });
-        expect(results.map((r) => r.id)).toEqual([idA]);
-      });
-
-      it('nodeFilter matching zero nodes returns zero candidates', async () => {
-        const id = await makeNode('scope-a');
-        await backend.upsert(id, unitVec(8, 0), space);
-
-        const results = await backend.knn(unitVec(8, 0), space, 10, {
-          nodeFilter: { namespace: 'scope-does-not-exist' },
-        });
-        expect(results).toEqual([]);
-      });
+      const results = await backend.knn(unitVec(8, 0), space, 10, { ids: [idA] });
+      expect(results.map((r) => r.id)).toEqual([idA]);
     });
   });
 
@@ -339,14 +275,11 @@ describe('openTursoVectorStore', () => {
   it('constructs and ensures the initial space in one call', async () => {
     const tmp = await makeTmpTursoDb();
     try {
-      const graph = createGraphBackend(tmp.adapter);
-      await graph.applySchema();
-
       const store = await openTursoVectorStore(tmp.adapter, { dim: 4, modelId: 'init-model' });
       const spaces = await store.listSpaces();
       expect(spaces).toContainEqual({ modelId: 'init-model', dim: 4 });
 
-      const id = await graph.writeNode('hello', { namespace: 'ns', kind: 'generic' });
+      const id = 12345;
       await store.upsert(id, unitVec(4, 0), { modelId: 'init-model', dim: 4 });
       const got = await store.get(id, 'init-model');
       expect(got).not.toBeNull();

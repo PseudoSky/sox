@@ -17,9 +17,37 @@ export type { GraphBackend, NodeRecord, NodeFilter } from '@adhd/sox-graph-store
 
 // ── Public interfaces ─────────────────────────────────────────────────────────
 
+/**
+ * FEAT-022 — a RANK signal (fused via reciprocal-rank fusion). `kind` names the
+ * channel; `weight` (default 1.0) scales that channel's RRF contribution as
+ * `Σ w_i / (RRF_K + rank_i)`. Rank signals are the ONLY things RRF fuses —
+ * continuous scores (e.g. recency) are NOT rank signals and never enter the
+ * RRF term (they are a post-fusion rescore, {@link ContinuousSignalSpec}).
+ */
+export interface SignalSpec {
+  kind: 'text' | 'vec';
+  weight?: number;
+}
+
+/**
+ * FEAT-022 — a CONTINUOUS signal, applied as a post-fusion rescore (never a
+ * peer RRF term). `kind: 'temporal'` rescales the fused score by a recency
+ * factor that decays with the candidate's age; `decay` is the decay rate per
+ * hour (higher = older items fall off faster). Monotonic in recency: all else
+ * equal, newer ranks higher.
+ */
+export interface ContinuousSignalSpec {
+  kind: 'temporal';
+  decay?: number;
+}
+
 export interface SearchQuery {
   text?: string;
   vec?: Float32Array;
+  /** FEAT-022 — rank signals to fuse via RRF. Default: [{text}, {vec}] (one per present input). */
+  signals?: SignalSpec[];
+  /** FEAT-022 — continuous signals applied AFTER rank-signal fusion. Default: none. */
+  rescore?: ContinuousSignalSpec[];
   filters?: Record<string, unknown>;
 }
 
@@ -46,7 +74,7 @@ export interface SearchBackend {
   }>>;
 }
 
-export interface SqliteSearchOpts {
+export interface StoreSearchOpts {
   fieldWeights?: Record<string, number>;
 }
 
@@ -323,6 +351,74 @@ export function fuseWithBreakdown(
   return results;
 }
 
+// ── FEAT-022 — N-signal reciprocal-rank fusion + temporal rescore ─────────────
+
+/** RRF smoothing constant (k). Matches memory-core's `RRF_K` so a 3-channel
+ *  cutover produces the same rank magnitudes. */
+export const RRF_K = 60;
+
+/** RRF per-signal contribution for a 1-based rank: `1 / (RRF_K + rank)`. */
+export function rrfScore(rank: number): number {
+  return 1 / (RRF_K + rank);
+}
+
+/**
+ * FEAT-022 — N-signal reciprocal-rank fusion. Each signal contributes an
+ * ordered id list (index 0 = best → rank 1); the fused score is the weighted
+ * sum `Σ w_i / (RRF_K + rank_i)` over the signals that produced that id.
+ * Returns results sorted by fused score descending. This is rank-based, not
+ * score-based — it only ever sees ranks, so a continuous value (recency) can
+ * never be smuggled in as a peer signal.
+ */
+export function rrfFuse(
+  rankedIdsBySignal: Map<string, number[]>,
+  weights: Map<string, number>,
+): Array<{ id: number; score: number }> {
+  const scoreMap = new Map<number, number>();
+  for (const [signal, ids] of rankedIdsBySignal) {
+    const w = weights.get(signal) ?? 1.0;
+    ids.forEach((id, idx) => {
+      const rank = idx + 1; // 1-based
+      scoreMap.set(id, (scoreMap.get(id) ?? 0) + w * rrfScore(rank));
+    });
+  }
+  return [...scoreMap.entries()]
+    .map(([id, score]) => ({ id, score }))
+    .sort((a, b) => b.score - a.score);
+}
+
+/**
+ * FEAT-022 — temporal (recency) rescore, applied AFTER rank-signal fusion.
+ * Multiplies each fused score by `1 + exp(-decay * ageHours)` so a fresh
+ * candidate (age 0) gains up to a +1.0 boost that decays exponentially with
+ * age. Monotonic in recency. Ids with no known creation time are left
+ * unchanged (no fabricated recency).
+ */
+export function temporalRescore(
+  results: Array<{ id: number; score: number }>,
+  recencyMs: Map<number, number>,
+  decay?: number,
+  nowMs?: number,
+): Array<{ id: number; score: number }> {
+  if (decay === undefined || decay === 0) return results;
+  const now = nowMs ?? Date.now();
+  return results.map((r) => {
+    const created = recencyMs.get(r.id);
+    if (created === undefined) return r;
+    const ageHours = Math.max(0, (now - created) / 3_600_000);
+    const recency = Math.exp(-decay * ageHours);
+    return { id: r.id, score: r.score * (1 + recency) };
+  });
+}
+
+/** FEAT-022 — default rank signals: one per present input (text, vec), in that order. */
+function defaultSignals(query: SearchQuery): SignalSpec[] {
+  const signals: SignalSpec[] = [];
+  if (query.text !== undefined && query.text.length > 0) signals.push({ kind: 'text' });
+  if (query.vec !== undefined) signals.push({ kind: 'vec' });
+  return signals;
+}
+
 // ── Top-level search ──────────────────────────────────────────────────────────
 
 function topicBoost(
@@ -492,16 +588,16 @@ export async function search(
   return results;
 }
 
-// ── SqliteSearchBackend ───────────────────────────────────────────────────────
+// ── StoreSearchBackend ───────────────────────────────────────────────────────
 
-export class SqliteSearchBackend implements SearchBackend {
+export class StoreSearchBackend implements SearchBackend {
   private vec: VectorBackend;
   private graph: GraphBackend;
 
   constructor(
     vec: VectorBackend,
     graph: GraphBackend,
-    _opts?: SqliteSearchOpts,
+    _opts?: StoreSearchOpts,
   ) {
     this.vec = vec;
     this.graph = graph;
@@ -562,33 +658,38 @@ export class SqliteSearchBackend implements SearchBackend {
       const spaces = this.vec.listSpaces();
       const matchingSpace = spaces.find((s) => s.dim === query.vec!.length);
       if (matchingSpace) {
-        // BL-294: the vector channel must honor the same NodeFilter (namespace, kind,
-        // topic, project_path, …) as the text channel, or a scoped hybrid query silently
-        // leaks unscoped vector hits into fusion. Pushed directly into knn() via
-        // VecFilter.nodeFilter (filtered-KNN upgrade) — this collapses the previous
-        // two-step `queryNodes(nodeFilter).map(id)` -> `{ids}` workaround (which also
-        // hit SQLITE_LIMIT_VARIABLE_NUMBER for large matched-id sets) onto a single JOIN
-        // pushed down into @adhd/sox-vector-store. A filter that matches zero nodes
-        // naturally yields zero vector candidates via the JOIN — never "no filter
-        // applied" (BL-294's invariant, preserved by construction, not a special case).
-        const vecResults = this.vec.knn(
-          query.vec!,
-          matchingSpace,
-          limit * 2,
-          hasNodeFilter ? { nodeFilter } : undefined,
-        );
+        // DEBT-011: the vector store's filter contract is pure `{ ids }` (it knows
+        // nothing about the graph `node` table). hybrid-search owns the node-join
+        // here — resolve the matching ids from the graph, then knn over that id
+        // set. A filter that matches zero nodes yields zero vector candidates
+        // (BL-294's invariant, preserved by construction, not a special case).
+        let matchingIds: number[] | undefined;
+        let zeroMatches = false;
+        if (hasNodeFilter) {
+          matchingIds = (await this.graph.queryNodes(nodeFilter)).map((n) => n.id);
+          zeroMatches = matchingIds.length === 0;
+        }
 
-        for (const r of vecResults) {
-          const entry = merged.get(r.id);
-          if (entry) {
-            entry.vecScore = r.score;
-          } else {
-            const node = await this.graph.getNode(r.id);
-            if (node) {
-              merged.set(r.id, {
-                vecScore: r.score,
-                fields: this.nodeRecordToFields(node),
-              });
+        if (!zeroMatches) {
+          const vecResults = this.vec.knn(
+            query.vec!,
+            matchingSpace,
+            limit * 2,
+            matchingIds ? { ids: matchingIds } : undefined,
+          );
+
+          for (const r of vecResults) {
+            const entry = merged.get(r.id);
+            if (entry) {
+              entry.vecScore = r.score;
+            } else {
+              const node = await this.graph.getNode(r.id);
+              if (node) {
+                merged.set(r.id, {
+                  vecScore: r.score,
+                  fields: this.nodeRecordToFields(node),
+                });
+              }
             }
           }
         }
@@ -613,6 +714,110 @@ export class SqliteSearchBackend implements SearchBackend {
         return entry;
       })
       .slice(0, limit);
+  }
+
+  /**
+   * FEAT-022 — N-signal ranker. Executes each RANK signal (`graph.searchNodes`
+   * for text, `vec.knn` for vec), fuses their ranked id lists via reciprocal-rank
+   * fusion (`Σ w_i/(RRF_K + rank_i)`), then applies CONTINUOUS signals
+   * (`rescore`) as a post-fusion multiplier. Returns fused {@link SearchResult}s,
+   * best-first. RRF operates on ranks, not continuous scores — so a continuous
+   * signal (temporal recency) is a rescore here, never a peer RRF term.
+   *
+   * Back-compat: the existing 2-signal `search()` (min-max normalisation fusion)
+   * is unchanged; this is the additive N-signal entry point.
+   */
+  async searchRanked(query: SearchQuery, limit: number): Promise<SearchResult[]> {
+    const signals = query.signals ?? defaultSignals(query);
+    const filters = query.filters ?? {};
+    const { nodeFilter, unsupportedFilters } = buildFilterClause(filters);
+    const hasNodeFilter = Object.keys(nodeFilter).length > 0;
+
+    const fetchLimit = Math.max(limit * 2, 20);
+
+    const rankedIdsBySignal = new Map<string, number[]>();
+    const weights = new Map<string, number>();
+    const fieldsById = new Map<number, Record<string, unknown>>();
+    const signalScores = new Map<number, { text?: number; vec?: number }>();
+
+    for (const signal of signals) {
+      weights.set(signal.kind, signal.weight ?? 1.0);
+
+      if (signal.kind === 'text') {
+        if (query.text === undefined || query.text.length === 0) continue;
+        const searchOpts: { limit: number; filter?: NodeFilter } = { limit: fetchLimit };
+        if (hasNodeFilter) searchOpts.filter = nodeFilter;
+        const textResults = await this.graph.searchNodes(query.text, searchOpts);
+        rankedIdsBySignal.set('text', textResults.map((r) => r.id));
+        for (const r of textResults) {
+          fieldsById.set(r.id, this.nodeRecordToFields(r));
+          const s = signalScores.get(r.id) ?? {};
+          s.text = r.score;
+          signalScores.set(r.id, s);
+        }
+      } else {
+        if (query.vec === undefined) continue;
+        const spaces = this.vec.listSpaces();
+        const matchingSpace = spaces.find((s) => s.dim === query.vec!.length);
+        if (!matchingSpace) continue;
+        // DEBT-011 — the vector store is pure `{ ids }`; resolve matching ids
+        // from the graph first (hybrid-search owns the node-join).
+        let matchingIds: number[] | undefined;
+        let zeroMatches = false;
+        if (hasNodeFilter) {
+          matchingIds = (await this.graph.queryNodes(nodeFilter)).map((n) => n.id);
+          zeroMatches = matchingIds.length === 0;
+        }
+        if (zeroMatches) continue;
+        const vecResults = this.vec.knn(
+          query.vec!,
+          matchingSpace,
+          fetchLimit,
+          matchingIds ? { ids: matchingIds } : undefined,
+        );
+        rankedIdsBySignal.set('vec', vecResults.map((r) => r.id));
+        for (const r of vecResults) {
+          if (!fieldsById.has(r.id)) {
+            const node = await this.graph.getNode(r.id);
+            if (node) fieldsById.set(r.id, this.nodeRecordToFields(node));
+          }
+          const s = signalScores.get(r.id) ?? {};
+          s.vec = r.score;
+          signalScores.set(r.id, s);
+        }
+      }
+    }
+
+    let scored = rrfFuse(rankedIdsBySignal, weights);
+
+    // Continuous signals — post-fusion rescore, never a peer RRF term.
+    for (const cs of query.rescore ?? []) {
+      if (cs.kind === 'temporal') {
+        const recencyMs = new Map<number, number>();
+        for (const [id, fields] of fieldsById) {
+          if (typeof fields.tCreated === 'string') {
+            const ms = Date.parse(fields.tCreated);
+            if (!Number.isNaN(ms)) recencyMs.set(id, ms);
+          }
+        }
+        scored = temporalRescore(scored, recencyMs, cs.decay);
+      }
+    }
+    scored.sort((a, b) => b.score - a.score);
+
+    const degraded: SearchDegradeInfo | undefined =
+      unsupportedFilters.length > 0 ? { unsupportedFilters } : undefined;
+
+    return scored.slice(0, limit).map((f) => {
+      const result: SearchResult = {
+        id: f.id,
+        score: f.score,
+        fields: fieldsById.get(f.id) ?? {},
+      };
+      result.signalScores = signalScores.get(f.id);
+      if (degraded) result.degraded = degraded;
+      return result;
+    });
   }
 
   private nodeRecordToFields(node: NodeRecord): Record<string, unknown> {

@@ -65,7 +65,7 @@ import {
 } from './index.js';
 
 import { SqliteVectorBackend } from '@adhd/sox-vector-store';
-import { SqliteGraphBackend } from '@adhd/sox-graph-store';
+import { StoreGraphBackend } from '@adhd/sox-graph-store';
 
 // Adapters + temp dirs opened by the DB-integrated tests, torn down after each.
 const openFixtures: Array<() => void> = [];
@@ -104,8 +104,8 @@ function makeVecBackend(adapter: StoreAdapter): SqliteVectorBackend {
   return vec;
 }
 
-async function makeGraphBackend(adapter: StoreAdapter): Promise<SqliteGraphBackend> {
-  const graph = new SqliteGraphBackend(adapter);
+async function makeGraphBackend(adapter: StoreAdapter): Promise<StoreGraphBackend> {
+  const graph = new StoreGraphBackend(adapter);
   await graph.applySchema();
   return graph;
 }
@@ -556,7 +556,7 @@ const SPACE = { modelId: 'test-model', dim: 4 } as const;
 
 async function seedDb(
   adapter: StoreAdapter,
-): Promise<{ vec: SqliteVectorBackend; graph: SqliteGraphBackend; ids: number[] }> {
+): Promise<{ vec: SqliteVectorBackend; graph: StoreGraphBackend; ids: number[] }> {
   const vec = makeVecBackend(adapter);
   const graph = await makeGraphBackend(adapter);
 

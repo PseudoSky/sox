@@ -134,7 +134,10 @@ describe('AC-6 (BL-440 invariant, re-verified after PKT-60) — TypePolicy still
   // this is a regression tripwire, not a red/green pair. If it is ever red, STOP:
   // this packet or a concurrent one has created a path from a consumer's type
   // declaration to DDL (the BL-295/BL-313 failure mode ADR-0010 D2 forecloses).
-  it('this.typePolicy appears exactly 3 times, none inside applySchema or ensureCheckConstraints', () => {
+  // FEAT-013 added `validateEdge` to the write boundary (writeEdgeInternal) — two
+  // more `this.typePolicy` occurrences, still NOT in applySchema/ensureCheckConstraints,
+  // so the count is 5 and the invariant (no path to DDL) still holds.
+  it('this.typePolicy appears exactly 5 times, none inside applySchema or ensureCheckConstraints', () => {
     const graphStoreIndexPath = join(
       __dirname,
       '..',
@@ -152,7 +155,7 @@ describe('AC-6 (BL-440 invariant, re-verified after PKT-60) — TypePolicy still
     lines.forEach((line, idx) => {
       if (line.includes('this.typePolicy')) typePolicyLines.push(idx + 1); // 1-indexed
     });
-    expect(typePolicyLines).toHaveLength(3);
+    expect(typePolicyLines).toHaveLength(5);
 
     // Locate applySchema / ensureCheckConstraints method bodies by their own
     // brace-matched extent, so this assertion self-heals if the methods move —
