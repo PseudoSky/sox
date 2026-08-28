@@ -16,6 +16,12 @@ The memory-server supports three transport profiles. The profile determines how 
 | **sse** | `soxe install memory-server --profile=sse --host=opencode --scope=user` | `type: "remote"`, `http://localhost:3099/sse` | Persistent — use with `soxe service enable memory-server` |
 | **http** | `soxe install memory-server --profile=http --host=opencode --scope=user` | `type: "remote"`, `http://localhost:3099/mcp` | Persistent — use with `soxe service enable memory-server` |
 
+> **Deploying / restarting / backing up the RUNNING server** — see
+> `docs/ops/memory-server-playbook.md` (the canonical procedure). Summary:
+> deploy = `soxe service restart memory-server` (NOT `kill` + `soxe serve`);
+> backup = `autoBackup()` / `backupStore()` from `@adhd/sox-memory-core`
+> (VACUUM INTO + integrity check, NOT the standard `sqlite3` CLI).
+
 All three transports are served simultaneously when using `soxe serve --port`:
 
 ```bash
