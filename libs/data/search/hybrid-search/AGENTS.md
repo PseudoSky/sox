@@ -16,7 +16,7 @@ memory-refactor plan states.
 - SearchBackend.search() degrades to text-only when query.vec is absent, degrades to vec-only when query.text is absent — never errors on a missing signal
 - scores are normalized BEFORE combining (never raw scale-blind additive merge)
 - textScore / vecScore are mechanism-agnostic names — BM25 / cosine are implementation details inside backends (never surfaced through SearchBackend interface)
-- SchemaAdapter is an internal SQLite concern — NOT exported; MCP handlers pass raw filters via SearchQuery.filters; SqliteSearchBackend resolves them internally
+- SchemaAdapter is an internal SQLite concern — NOT exported; MCP handlers pass raw filters via SearchQuery.filters; StoreSearchBackend resolves them internally
 - fuse() weights must be multiplicative (field boosting), never additive (scale-blind)
 
 ## Boundaries
