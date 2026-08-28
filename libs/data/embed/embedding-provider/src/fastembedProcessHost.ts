@@ -59,7 +59,7 @@
 
 import * as fs from 'node:fs';
 import type { EmbeddingModel, ExecutionProvider } from 'fastembed';
-import { initTelemetry, log } from '@adhd/sox-telemetry';
+import { bootstrapChildTelemetry, childTelemetrySnapshot, log } from '@adhd/sox-telemetry';
 import { resolveFastembedLockPath, type FastembedLockInfo } from './fastembedLock.js';
 // BUG-005: MODEL_MAP + resolveModelDim live in the side-effect-free
 // `fastembedModels.js` (see its doc comment — importing them from
@@ -438,14 +438,28 @@ process.on('message', (msg: HostRequest) => {
  * (otelDefaultFor) and the default logDir lands under SOX_ECOSYSTEM_HOME when a
  * test sandbox sets it, keeping test runs hermetic.
  *
+ * BL-618: this now uses `bootstrapChildTelemetry` (the spawn-time convention)
+ * and ACKS its state to the parent with a `telemetry.ready` message, so the
+ * parent (`sharedFastembedProcess.ts`) can record this child in
+ * `telemetrySelfCheck().children` instead of trusting it silently.
+ *
  * Non-fatal by construction: an init failure must never break embedding, so the
  * call is guarded — telemetry is an observability aid, not a correctness
  * mechanism.
  */
-try {
-  initTelemetry({ service: 'embedding-provider', role: 'harness', logSink: 'file' });
-} catch {
-  // Never let a telemetry failure prevent model load or inference.
+bootstrapChildTelemetry({ service: 'embedding-provider', role: 'harness', logSink: 'file' });
+
+// BL-618: ack the child's telemetry state to the parent. Guarded against the
+// parent already being gone (same BL-405 EPIPE rationale as `send` below).
+if (process.connected) {
+  process.send?.(
+    { type: 'telemetry.ready', telemetry: childTelemetrySnapshot() },
+    (err: Error | null) => {
+      if (err) {
+        process.stderr.write(`[fastembed-host] telemetry.ready send failed (parent likely exited): ${err.message}\n`);
+      }
+    },
+  );
 }
 
 // Let the parent decide the process lifecycle (it never calls `.ref()`/relies

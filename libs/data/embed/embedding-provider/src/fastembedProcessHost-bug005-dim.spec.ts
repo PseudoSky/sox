@@ -78,6 +78,10 @@ function initRealChild(model: string): Promise<Record<string, unknown>> {
       90_000,
     );
     child!.on('message', (msg: { id: number } & Record<string, unknown>) => {
+      // BL-618: the host now acks its telemetry state with a `telemetry.ready`
+      // message (no request `id`) before replying to the init request — skip it
+      // and wait for the actual init reply.
+      if ((msg as { type?: unknown }).type === 'telemetry.ready') return;
       clearTimeout(timeout);
       resolveReply(msg);
     });

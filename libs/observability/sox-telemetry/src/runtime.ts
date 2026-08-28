@@ -473,6 +473,51 @@ function resetSelfCheck(): void {
     stageAggregates.set(key, { paths: new Map(), wait: newDurationStats(), work: newDurationStats() });
     void decl;
   }
+  resetChildTelemetry();
+}
+
+// ── Child telemetry accounting (BL-618) ─────────────────────────────────────
+//
+// In-memory, since-process-start counters + a bounded ring. The PARENT records
+// every child it forks/spawns (`_recordChildTelemetry`), whether or not the
+// child ever acks its own telemetry state — so a child that silently drops its
+// records (the BL-618 defect: no `initTelemetry` in the fork child) shows up as
+// `unacked_with_success` here instead of leaving the parent with no signal at
+// all that it spawned anything.
+
+const CHILD_TELEMETRY_RING_MAX = 20;
+
+const childTelemetryCounters = {
+  spawned: 0,
+  acked_with_sink: 0,
+  acked_without_sink: 0,
+  unacked_with_success: 0,
+};
+const childTelemetryRing: ChildTelemetryRecord[] = [];
+
+/** Record one child telemetry observation (spawned/acked/unacked). Never throws. */
+export function _recordChildTelemetry(rec: ChildTelemetryRecord): void {
+  if (rec.acked === true) {
+    if (rec.logSink === 'file' && typeof rec.filePath === 'string') {
+      childTelemetryCounters.acked_with_sink += 1;
+    } else {
+      childTelemetryCounters.acked_without_sink += 1;
+    }
+  } else if (rec.unacked === true) {
+    childTelemetryCounters.unacked_with_success += 1;
+  } else {
+    childTelemetryCounters.spawned += 1;
+  }
+  childTelemetryRing.push(rec);
+  if (childTelemetryRing.length > CHILD_TELEMETRY_RING_MAX) childTelemetryRing.shift();
+}
+
+function resetChildTelemetry(): void {
+  childTelemetryCounters.spawned = 0;
+  childTelemetryCounters.acked_with_sink = 0;
+  childTelemetryCounters.acked_without_sink = 0;
+  childTelemetryCounters.unacked_with_success = 0;
+  childTelemetryRing.length = 0;
 }
 
 export interface StageSelfCheck {
@@ -486,6 +531,45 @@ export interface StageSelfCheck {
   unaccounted: Record<string, number>;
 }
 
+/**
+ * A single child-process/worker telemetry observation, recorded by the parent
+ * via `_recordChildTelemetry`. A record is one of three kinds, distinguished by
+ * which of the optional flags is set (and by presence in the `recent` ring):
+ *   - `spawned` (neither flag): the parent forked/spawned the child with a
+ *     known intended config.
+ *   - `acked` (`acked: true`): the child's `telemetry.ready` arrived, carrying
+ *     the child's OWN reported `service`/`role`/`logSink`/`filePath`.
+ *   - `unacked` (`unacked: true`): the child settled successfully without ever
+ *     acking — a child whose telemetry never initialised (BL-618's signal).
+ */
+export interface ChildTelemetryRecord {
+  service: string;
+  role: Role;
+  logSink: LogSink;
+  /** Non-null iff `logSink === 'file'` — the file the child's records land in. */
+  filePath: string | null;
+  pid: number;
+  /** Call site that spawned the child (e.g. 'enrich', 'embedding-provider'). */
+  source?: string;
+  /** Present + true on a child's `telemetry.ready` ack. */
+  acked?: boolean;
+  /** Present + true when a child settled successfully without ever acking. */
+  unacked?: boolean;
+}
+
+export interface ChildrenTelemetrySelfCheck {
+  /** Children this process has forked/spawned since process start. */
+  spawned: number;
+  /** Children that acked telemetry AND reported a file sink. */
+  acked_with_sink: number;
+  /** Children that acked telemetry but reported no file sink (stderr/none). */
+  acked_without_sink: number;
+  /** Children that settled successfully without ever acking telemetry. */
+  unacked_with_success: number;
+  /** The most recent {@link CHILD_TELEMETRY_RING_MAX} records, newest last. */
+  recent: ChildTelemetryRecord[];
+}
+
 export interface TelemetrySelfCheck {
   window: 'since process start';
   role: Role;
@@ -493,6 +577,9 @@ export interface TelemetrySelfCheck {
   stages_with_zero_samples: string[];
   paths_with_zero_samples: string[];
   stages: StageSelfCheck[];
+  /** BL-618: spawn-time child telemetry accounting — makes no-op children
+   *  (forked/spawned but never initialised) visible to the parent's self-check. */
+  children: ChildrenTelemetrySelfCheck;
   /** BL-401 gap 4. `state` is `disabled` (never asked for), `pending` (the
    *  dynamic `import()` has not settled), `ready`, or `failed`. Reported rather
    *  than inferred: "no spans" and "SDK never came up" are otherwise the same
@@ -567,6 +654,13 @@ function telemetrySelfCheckCore(): TelemetrySelfCheck {
     stages_with_zero_samples: stagesWithZero,
     paths_with_zero_samples: pathsWithZero,
     stages,
+    children: {
+      spawned: childTelemetryCounters.spawned,
+      acked_with_sink: childTelemetryCounters.acked_with_sink,
+      acked_without_sink: childTelemetryCounters.acked_without_sink,
+      unacked_with_success: childTelemetryCounters.unacked_with_success,
+      recent: childTelemetryRing.slice(),
+    },
     otel: { state: _state.otelState, spans_enabled: _state.otel.enabled },
     metric_persistence: {
       written: _snapshotsWritten,

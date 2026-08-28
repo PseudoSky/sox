@@ -13,7 +13,7 @@
     "requires": {
       "tool_calling": true
     },
-    "builtFromCommit": "e3e6849e07cc1e49738d51cfe4dba44f39fa9f86+dirty",
+    "builtFromCommit": "fe7c19f3441f6bcd47ed44f48a13f0551f1362c9+dirty",
     "provisional": true
   },
   {
@@ -30,7 +30,7 @@
     "requires": {
       "tool_calling": true
     },
-    "builtFromCommit": "e3e6849e07cc1e49738d51cfe4dba44f39fa9f86+dirty",
+    "builtFromCommit": "fe7c19f3441f6bcd47ed44f48a13f0551f1362c9+dirty",
     "provisional": true
   },
   {
@@ -47,7 +47,7 @@
     "requires": {
       "tool_calling": true
     },
-    "builtFromCommit": "e3e6849e07cc1e49738d51cfe4dba44f39fa9f86+dirty",
+    "builtFromCommit": "fe7c19f3441f6bcd47ed44f48a13f0551f1362c9+dirty",
     "provisional": true
   },
   {
@@ -64,7 +64,7 @@
     "requires": {
       "tool_calling": true
     },
-    "builtFromCommit": "e3e6849e07cc1e49738d51cfe4dba44f39fa9f86+dirty",
+    "builtFromCommit": "fe7c19f3441f6bcd47ed44f48a13f0551f1362c9+dirty",
     "provisional": true
   },
   {
@@ -81,7 +81,7 @@
     "requires": {
       "tool_calling": true
     },
-    "builtFromCommit": "e3e6849e07cc1e49738d51cfe4dba44f39fa9f86+dirty",
+    "builtFromCommit": "fe7c19f3441f6bcd47ed44f48a13f0551f1362c9+dirty",
     "provisional": true
   },
   {
@@ -98,7 +98,7 @@
     "requires": {
       "tool_calling": true
     },
-    "builtFromCommit": "e3e6849e07cc1e49738d51cfe4dba44f39fa9f86+dirty",
+    "builtFromCommit": "fe7c19f3441f6bcd47ed44f48a13f0551f1362c9+dirty",
     "provisional": true
   },
   {
@@ -115,7 +115,7 @@
     "requires": {
       "tool_calling": true
     },
-    "builtFromCommit": "e3e6849e07cc1e49738d51cfe4dba44f39fa9f86+dirty",
+    "builtFromCommit": "fe7c19f3441f6bcd47ed44f48a13f0551f1362c9+dirty",
     "provisional": true
   },
   {
@@ -132,7 +132,7 @@
     "requires": {
       "tool_calling": true
     },
-    "builtFromCommit": "e3e6849e07cc1e49738d51cfe4dba44f39fa9f86+dirty",
+    "builtFromCommit": "fe7c19f3441f6bcd47ed44f48a13f0551f1362c9+dirty",
     "provisional": true
   },
   {
@@ -149,7 +149,7 @@
     "requires": {
       "tool_calling": true
     },
-    "builtFromCommit": "e3e6849e07cc1e49738d51cfe4dba44f39fa9f86+dirty",
+    "builtFromCommit": "fe7c19f3441f6bcd47ed44f48a13f0551f1362c9+dirty",
     "provisional": true
   },
   {
@@ -163,7 +163,7 @@
     "compatibility": {
       "host": ">=1.0.0 <2.0.0"
     },
-    "builtFromCommit": "e3e6849e07cc1e49738d51cfe4dba44f39fa9f86+dirty",
+    "builtFromCommit": "fe7c19f3441f6bcd47ed44f48a13f0551f1362c9+dirty",
     "provisional": true
   },
   {
@@ -180,7 +180,7 @@
     "requires": {
       "tool_calling": true
     },
-    "builtFromCommit": "e3e6849e07cc1e49738d51cfe4dba44f39fa9f86+dirty",
+    "builtFromCommit": "fe7c19f3441f6bcd47ed44f48a13f0551f1362c9+dirty",
     "provisional": true
   },
   {
@@ -197,7 +197,7 @@
     "requires": {
       "tool_calling": true
     },
-    "builtFromCommit": "e3e6849e07cc1e49738d51cfe4dba44f39fa9f86+dirty",
+    "builtFromCommit": "fe7c19f3441f6bcd47ed44f48a13f0551f1362c9+dirty",
     "provisional": true
   },
   {
@@ -214,7 +214,7 @@
     "requires": {
       "tool_calling": true
     },
-    "builtFromCommit": "e3e6849e07cc1e49738d51cfe4dba44f39fa9f86+dirty",
+    "builtFromCommit": "fe7c19f3441f6bcd47ed44f48a13f0551f1362c9+dirty",
     "provisional": true
   },
   {
@@ -231,7 +231,7 @@
     "requires": {
       "tool_calling": true
     },
-    "builtFromCommit": "e3e6849e07cc1e49738d51cfe4dba44f39fa9f86+dirty",
+    "builtFromCommit": "fe7c19f3441f6bcd47ed44f48a13f0551f1362c9+dirty",
     "provisional": true
   },
   {
@@ -245,7 +245,7 @@
     "compatibility": {
       "host": ">=1.0.0 <2.0.0"
     },
-    "builtFromCommit": "e3e6849e07cc1e49738d51cfe4dba44f39fa9f86+dirty",
+    "builtFromCommit": "fe7c19f3441f6bcd47ed44f48a13f0551f1362c9+dirty",
     "provisional": true
   },
   {
@@ -262,7 +262,7 @@
     "requires": {
       "tool_calling": true
     },
-    "builtFromCommit": "e3e6849e07cc1e49738d51cfe4dba44f39fa9f86+dirty",
+    "builtFromCommit": "fe7c19f3441f6bcd47ed44f48a13f0551f1362c9+dirty",
     "provisional": true
   },
   {
@@ -290,7 +290,7 @@
         "id": "memory-usage"
       }
     ],
-    "builtFromCommit": "e3e6849e07cc1e49738d51cfe4dba44f39fa9f86+dirty",
+    "builtFromCommit": "fe7c19f3441f6bcd47ed44f48a13f0551f1362c9+dirty",
     "provisional": true
   },
   {
@@ -300,13 +300,13 @@
     "title": "Memory CLI",
     "description": "Use this when you need to manage the sox-memory store from the shell — provides memory init|status|list|registry subcommands for store lifecycle, scope selection, and registry inspection. Fully deterministic; zero LLM calls.",
     "source": "file:///Users/nix/dev/ai/sox-ecosystem/extensions/bundles/sox-memory-bundle/members/memory-cli",
-    "checksum": "sha256:ea3d3797d3855d3b9e36751a18fafa2fe52e0e9831e836c976574c1735b40369",
+    "checksum": "sha256:ac8f98fcec4003434bdc3f9c896c25409faef6ac33e50e7f3c0d4dd176508185",
     "compatibility": {
       "host": ">=1.0.0 <2.0.0"
     },
     "visibility": "internal",
     "bundleId": "sox-memory-bundle",
-    "builtFromCommit": "e3e6849e07cc1e49738d51cfe4dba44f39fa9f86+dirty",
+    "builtFromCommit": "fe7c19f3441f6bcd47ed44f48a13f0551f1362c9+dirty",
     "provisional": true
   },
   {
@@ -316,13 +316,13 @@
     "title": "Memory Session Flush",
     "description": "Use this when you need session memory durably persisted at conversation end and scope promotions reviewed — binds SessionEnd (persists working memory, enqueues episodes, nudges memoryd) and ScopePromotionProposed (runs promotion approval policy). Deterministic; zero LLM calls.",
     "source": "file:///Users/nix/dev/ai/sox-ecosystem/extensions/bundles/sox-memory-bundle/members/memory-flush",
-    "checksum": "sha256:81152188456a1eb637f6f6355b2bff4f75e4b31dd88fc7ee9b0bb5c4c2bdcb9b",
+    "checksum": "sha256:acbbb6a6d0a3e078471e4fa6ddfda8b2aee350a3ba45aec14aacc22d0a440f88",
     "compatibility": {
       "host": ">=1.0.0 <2.0.0"
     },
     "visibility": "internal",
     "bundleId": "sox-memory-bundle",
-    "builtFromCommit": "e3e6849e07cc1e49738d51cfe4dba44f39fa9f86+dirty",
+    "builtFromCommit": "fe7c19f3441f6bcd47ed44f48a13f0551f1362c9+dirty",
     "provisional": true
   },
   {
@@ -332,7 +332,7 @@
     "title": "Agent Memory Server",
     "description": "Use this when an agent needs durable, searchable memory across sessions — exposes 7 memory_* tools over a single-file SQLite graph store with hybrid recall (vec+BM25+temporal, <50ms, zero LLM), write-enqueue, session state, community lookup, and bi-temporal invalidation.",
     "source": "file:///Users/nix/dev/ai/sox-ecosystem/extensions/bundles/sox-memory-bundle/members/memory-server",
-    "checksum": "sha256:308c6802b480bf3966044878d3a95ee14c836ffef2555c46e63bb2b24ca29c85",
+    "checksum": "sha256:b9ec9285d1a0687693d61d7980dd21de2c13a498a2ae782c788703c3c5f236ee",
     "compatibility": {
       "host": ">=1.0.0 <2.0.0"
     },
@@ -342,7 +342,7 @@
     },
     "visibility": "internal",
     "bundleId": "sox-memory-bundle",
-    "builtFromCommit": "e3e6849e07cc1e49738d51cfe4dba44f39fa9f86+dirty",
+    "builtFromCommit": "fe7c19f3441f6bcd47ed44f48a13f0551f1362c9+dirty",
     "provisional": true
   },
   {
@@ -358,7 +358,7 @@
     },
     "visibility": "internal",
     "bundleId": "sox-memory-bundle",
-    "builtFromCommit": "e3e6849e07cc1e49738d51cfe4dba44f39fa9f86+dirty",
+    "builtFromCommit": "fe7c19f3441f6bcd47ed44f48a13f0551f1362c9+dirty",
     "provisional": true
   },
   {
@@ -372,7 +372,7 @@
     "compatibility": {
       "host": ">=1.0.0 <2.0.0"
     },
-    "builtFromCommit": "e3e6849e07cc1e49738d51cfe4dba44f39fa9f86+dirty",
+    "builtFromCommit": "fe7c19f3441f6bcd47ed44f48a13f0551f1362c9+dirty",
     "provisional": true
   },
   {
@@ -386,7 +386,7 @@
     "compatibility": {
       "host": ">=1.0.0 <2.0.0"
     },
-    "builtFromCommit": "e3e6849e07cc1e49738d51cfe4dba44f39fa9f86+dirty",
+    "builtFromCommit": "fe7c19f3441f6bcd47ed44f48a13f0551f1362c9+dirty",
     "provisional": true
   },
   {
@@ -400,7 +400,7 @@
     "compatibility": {
       "host": ">=1.0.0 <2.0.0"
     },
-    "builtFromCommit": "e3e6849e07cc1e49738d51cfe4dba44f39fa9f86+dirty",
+    "builtFromCommit": "fe7c19f3441f6bcd47ed44f48a13f0551f1362c9+dirty",
     "provisional": true
   },
   {
@@ -414,7 +414,7 @@
     "compatibility": {
       "host": ">=1.0.0 <2.0.0"
     },
-    "builtFromCommit": "e3e6849e07cc1e49738d51cfe4dba44f39fa9f86+dirty",
+    "builtFromCommit": "fe7c19f3441f6bcd47ed44f48a13f0551f1362c9+dirty",
     "provisional": true
   },
   {
@@ -428,7 +428,7 @@
     "compatibility": {
       "host": ">=1.0.0 <2.0.0"
     },
-    "builtFromCommit": "e3e6849e07cc1e49738d51cfe4dba44f39fa9f86+dirty",
+    "builtFromCommit": "fe7c19f3441f6bcd47ed44f48a13f0551f1362c9+dirty",
     "provisional": true
   },
   {
@@ -442,7 +442,7 @@
     "compatibility": {
       "host": ">=1.0.0 <2.0.0"
     },
-    "builtFromCommit": "e3e6849e07cc1e49738d51cfe4dba44f39fa9f86+dirty",
+    "builtFromCommit": "fe7c19f3441f6bcd47ed44f48a13f0551f1362c9+dirty",
     "provisional": true
   },
   {
@@ -456,7 +456,7 @@
     "compatibility": {
       "host": ">=1.0.0 <2.0.0"
     },
-    "builtFromCommit": "e3e6849e07cc1e49738d51cfe4dba44f39fa9f86+dirty",
+    "builtFromCommit": "fe7c19f3441f6bcd47ed44f48a13f0551f1362c9+dirty",
     "provisional": true
   },
   {
@@ -470,7 +470,7 @@
     "compatibility": {
       "host": ">=1.0.0 <2.0.0"
     },
-    "builtFromCommit": "e3e6849e07cc1e49738d51cfe4dba44f39fa9f86+dirty",
+    "builtFromCommit": "fe7c19f3441f6bcd47ed44f48a13f0551f1362c9+dirty",
     "provisional": true
   },
   {
@@ -484,7 +484,7 @@
     "compatibility": {
       "host": ">=1.0.0 <2.0.0"
     },
-    "builtFromCommit": "e3e6849e07cc1e49738d51cfe4dba44f39fa9f86+dirty",
+    "builtFromCommit": "fe7c19f3441f6bcd47ed44f48a13f0551f1362c9+dirty",
     "provisional": true
   },
   {
@@ -498,7 +498,7 @@
     "compatibility": {
       "host": ">=1.0.0 <2.0.0"
     },
-    "builtFromCommit": "e3e6849e07cc1e49738d51cfe4dba44f39fa9f86+dirty",
+    "builtFromCommit": "fe7c19f3441f6bcd47ed44f48a13f0551f1362c9+dirty",
     "provisional": true
   }
 ]

@@ -55,6 +55,7 @@
 
 import { openDb } from './db.js';
 import { runBatchEnrich, type BatchEnrichOptions, type BatchEnrichResult } from './enrich-batch.js';
+import { bootstrapChildTelemetry, childTelemetrySnapshot, type ChildTelemetrySnapshot } from '@adhd/sox-telemetry';
 
 interface EnrichRequest {
   id: number;
@@ -63,6 +64,7 @@ interface EnrichRequest {
 }
 
 type EnrichResponse =
+  | { type: 'telemetry.ready'; id: number; telemetry: ChildTelemetrySnapshot }
   | { id: number; result: BatchEnrichResult }
   | { id: number; error: string };
 
@@ -70,6 +72,11 @@ async function handleRequest(req: EnrichRequest): Promise<void> {
   const send = (msg: EnrichResponse): void => {
     if (typeof process.send === 'function') process.send(msg);
   };
+
+  // BL-618: the FIRST IPC message is the telemetry.ready ack, sent before
+  // openDb — so the parent can see this child's telemetry state (and record it
+  // via _recordChildTelemetry) even if openDb / runBatchEnrich hangs forever.
+  send({ type: 'telemetry.ready', id: req.id, telemetry: childTelemetrySnapshot() });
 
   let exitCode = 0;
   try {
@@ -98,6 +105,13 @@ async function handleRequest(req: EnrichRequest): Promise<void> {
 // Only wire up the listener when actually run as a forked child (never on
 // accidental `require`/import from a test or the parent's own module graph).
 if (typeof process.send === 'function' && require.main === module) {
+  // BL-618: child composition root. The parent's initTelemetry never crosses the
+  // fork — each process has its own module-level _state in @adhd/sox-telemetry —
+  // so the child bootstraps its own here. The `require.main === module` guard is
+  // what prevents this from clobbering vitest's own initTelemetry when the
+  // module is imported in-process by a spec. The parent's SOX_TELEMETRY_INIT env
+  // (if any) is merged over these defaults by bootstrapChildTelemetry.
+  bootstrapChildTelemetry({ service: 'memory-core', role: 'harness', logSink: 'file' });
   process.on('message', (msg: EnrichRequest) => {
     void handleRequest(msg);
   });
