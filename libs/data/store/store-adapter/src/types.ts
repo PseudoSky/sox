@@ -333,6 +333,16 @@ export interface AdapterConfig {
     hexkey: string;
   };
   defaultQueryTimeout?: number;
+  /**
+   * (BUG-026) Per-connection WAL-ownership heartbeat interval, ms — the
+   * lifetime check that detects a replaced WAL within one heartbeat rather
+   * than only at close. Clamped to [1000, 60000] (see
+   * `walOwnershipHeartbeatMs()` in wal-ownership.ts); unset falls back to the
+   * `SOX_WAL_OWNERSHIP_HEARTBEAT_MS` env knob, then the 10s default. Typed
+   * tuning, never a toggle — there is no "disable" value. Test-only callers
+   * may set a small value to exercise the heartbeat without a real wait.
+   */
+  walOwnershipHeartbeatMs?: number;
 }
 
 // ── Factory options ──────────────────────────────────────────────────────────

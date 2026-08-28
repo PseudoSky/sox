@@ -262,6 +262,15 @@ export function engineForApplicationId(appId: number | null | undefined): Engine
  * BL-329 without it — measured). Returns `null` when unreadable.
  */
 export function probeLegacyEngineSync(dbPath: string): EngineKind | null {
+  // (BUG-026) A store whose header already claims Turso ownership must never
+  // be opened through better-sqlite3 — that readonly open creates the classic
+  // `-shm` on a turso store on every construction (the 'exp9 poisoner'). The
+  // header read is fs-only; no driver, no sidecars. Unmarked stores keep the
+  // existing better-sqlite3 inference below.
+  if (engineForApplicationId(readApplicationId(dbPath)) === 'turso') {
+    log.warn('store_adapter.engine_guard.better_sqlite3_refused_on_turso', { db_path: dbPath });
+    return 'turso';
+  }
   let db: ProbeDatabase | null = null;
   try {
     const Database = loadBetterSqlite3();
@@ -454,6 +463,16 @@ export async function readEngineIdentityViaAdapter(adapter: StoreAdapter): Promi
  *  schema throws BL-329 without it — measured). Returns `null` when unmarked
  *  or unreadable. Never throws. */
 export function getEngineIdentitySync(dbPath: string): EngineIdentity | null {
+  // (BUG-026) Refuse to open a Turso-owned store with better-sqlite3: that
+  // readonly open creates the classic `-shm` on a turso store on every
+  // construction (the 'exp9 poisoner' cross-engine class). The header read is
+  // fs-only — no driver, no sidecars — so a marked-turso store is answered
+  // `null` WITHOUT the better-sqlite3 open. Unmarked stores keep the existing
+  // read (their identity is genuinely unknown until the marker is stamped).
+  if (engineForApplicationId(readApplicationId(dbPath)) === 'turso') {
+    log.warn('store_adapter.engine_guard.better_sqlite3_refused_on_turso', { db_path: dbPath });
+    return null;
+  }
   let db: ProbeDatabase | null = null;
   try {
     const Database = loadBetterSqlite3();
