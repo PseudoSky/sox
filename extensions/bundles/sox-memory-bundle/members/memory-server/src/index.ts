@@ -149,6 +149,9 @@ import { serverLivenessWatchdog, watchdogIntervalMs } from './liveness-watchdog.
 // bundle = the artifact registry/install pin against). We hash its bytes once and
 // memoize. `host_compat` is read from the sibling extension.json (copied next to
 // the bundle at install time) when present; otherwise a build-time fallback.
+// The semver companion `sox_version` (top-level on memory_ping) is read from the
+// bundle's own package.json — the byte address and the release-train version are
+// deliberately kept as two fields (the store's `_sox_engine` marker is neither).
 
 const EXTENSION_ID = 'memory-server';
 const HOST_COMPAT_FALLBACK = '>=1.0.0 <2.0.0';
@@ -167,18 +170,27 @@ interface ContentAddress {
 
 let _contentAddress: ContentAddress | undefined;
 
-/** Compute (and memoize) the content address of the running entrypoint artifact. */
-export function getContentAddress(): ContentAddress {
-  if (_contentAddress !== undefined) return _contentAddress;
-
-  // The running artifact: prefer the entry script the process was launched with
-  // (process.argv[1], e.g. <storePath>/index.js), falling back to this module's
-  // own file. Both resolve to the pinned entrypoint in practice.
+/**
+ * The running artifact path: prefer the entry script the process was launched
+ * with (process.argv[1], e.g. <storePath>/index.js), falling back to this
+ * module's own file. Both resolve to the pinned entrypoint in practice.
+ * Shared by the content-address and bundle-semver readers so both answer for
+ * the SAME running file.
+ */
+function resolveRunningEntry(): string {
   let entry = typeof __filename === 'string' ? __filename : '';
   const argvEntry = process.argv[1];
   if (typeof argvEntry === 'string' && argvEntry.length > 0 && fs.existsSync(argvEntry)) {
     entry = argvEntry;
   }
+  return entry;
+}
+
+/** Compute (and memoize) the content address of the running entrypoint artifact. */
+export function getContentAddress(): ContentAddress {
+  if (_contentAddress !== undefined) return _contentAddress;
+
+  const entry = resolveRunningEntry();
 
   let digest = '';
   try {
@@ -214,6 +226,75 @@ function readHostCompat(entry: string): string {
     /* fall through to the build-time fallback */
   }
   return HOST_COMPAT_FALLBACK;
+}
+
+// ─── Bundle semver — the RUNNING BUNDLE's version, distinct from the store's ──
+//
+// `store_engine.sox_version` (the `_sox_engine` marker row) records the version
+// of the FIRST process that opened the store — and on a freshly restarted
+// process it reads `null` until the first real operation stamps the marker
+// (BL-580 / DEBT-003 lazy-connect). It is STORE provenance, not a statement
+// about the running bundle. `memory_ping`'s top-level `sox_version` answers
+// "which bundle release is running?" from the running bundle's OWN package.json
+// (the manifest sibling of the entrypoint artifact) — never the store marker.
+// Three distinct questions, three distinct sources:
+//   - `artifact`     — exact byte identity of the running code (sha256)
+//   - `sox_version`  — the running bundle's declared semver (this manifest)
+//   - `store_engine` — which engine first opened this store, and when
+const BUNDLE_VERSION_FALLBACK = '0.0.0';
+
+/**
+ * Resolve the bundle semver by walking up from an entry's directory to the
+ * first `package.json` that carries a `version`.
+ *
+ * Layouts this must cover:
+ *   - live file:// install:  <member>/dist/index.js → dist/package.json
+ *     ({"type":"commonjs"}, no version — skipped) → <member>/package.json
+ *   - published npm install: <pkg>/dist/index.js → <pkg>/package.json
+ *   - vitest (source tree):  <member>/src/index.ts → <member>/package.json
+ *
+ * The extension's own manifest is always within one level of the entry in every
+ * layout, so the first version-bearing manifest is authoritative; the walk is
+ * bounded so a monorepo-root manifest can never leak in.
+ */
+export function resolveBundleSemver(entryDir: string): string {
+  let dir = entryDir;
+  for (let depth = 0; depth < 4 && dir !== path.dirname(dir); depth++, dir = path.dirname(dir)) {
+    try {
+      const pkgPath = path.join(dir, 'package.json');
+      if (!fs.existsSync(pkgPath)) continue;
+      const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf8')) as { version?: string };
+      if (typeof pkg.version === 'string' && pkg.version.length > 0) return pkg.version;
+    } catch {
+      /* unreadable manifest — keep walking */
+    }
+  }
+  return BUNDLE_VERSION_FALLBACK;
+}
+
+let _bundleSemver: string | undefined;
+
+/**
+ * The running bundle's semver, memoized for the lifetime of the process.
+ *
+ * Walks from THIS module's own location (`__filename`), NOT from
+ * `resolveRunningEntry()`: the content-address reader prefers `process.argv[1]`
+ * (the launched script), which is the identical file in the deployed bundle but
+ * is the RUNNER's file under vitest — the manifest walk must start at the
+ * bundle's own file so it finds the bundle's package.json in every context:
+ *   - deployed CJS bundle: `__filename` = <member>/dist/index.js
+ *   - vitest (source):     `__filename` = <member>/src/index.ts
+ * Both walk up to <member>/package.json.
+ */
+export function getBundleSemver(): string {
+  if (_bundleSemver === undefined) {
+    const dir =
+      typeof __filename === 'string' && __filename.length > 0
+        ? path.dirname(__filename)
+        : path.dirname(resolveRunningEntry());
+    _bundleSemver = resolveBundleSemver(dir);
+  }
+  return _bundleSemver;
 }
 
 // ─── Vendored compilePolicyFromEnv — matches [shape:policy-env] ───────────────
@@ -1207,12 +1288,18 @@ async function handleToolCallImpl(name: string, args: Record<string, unknown>): 
           // clustering is fast for the episodes it accepts and closed to the
           // rest — which is the live state as measured on 2026-08-08.
           cluster_pipeline: clusterPipeline,
-          // BL-508: client/engine version tracking. The store's engine identity
-          // from the `_sox_engine` marker row (engine, sox_version,
-          // driver_version, first_opened_at, last_opened_at) — DATA, not a
-          // health dimension (HF-3 additive rule; an unreadable/absent marker
-          // reads as `null`, which is a legacy store, not a warning). Read
-          // through the already-open adapter — one cheap SELECT, no re-open.
+          // BL-508: STORE provenance, not a version statement about this
+          // bundle. The `_sox_engine` marker row (engine, sox_version,
+          // driver_version, first_opened_at, last_opened_at) is stamped ONCE by
+          // the first opener and read lazily — on a freshly restarted process
+          // it is null until the first real operation stamps it (BL-580 /
+          // DEBT-003 lazy-connect), and even once stamped its `sox_version` is
+          // the FIRST opener's, not the current bundle's. The running bundle's
+          // version is the top-level `sox_version` field, derived from the
+          // bundle's own package.json. This block stays pure DATA (HF-3
+          // additive rule; an unreadable/absent marker reads as `null`, which
+          // is a legacy store, not a warning). Read through the already-open
+          // adapter — one cheap SELECT, no re-open.
           store_engine: await getStoreEngineIdentity(adapter),
           // BUG-MEMORYSERVER-WEDGES-SILENTLY-NO-SELF-RECOVERY-001: the
           // store-adapter connection-health verdict (Turso only —
@@ -1267,6 +1354,12 @@ async function handleToolCallImpl(name: string, args: Record<string, unknown>): 
           artifact: addr.artifact,
           short: addr.short,
           host_compat: addr.host_compat,
+          // The RUNNING bundle's semver, from the bundle's own package.json —
+          // never the store's `_sox_engine` marker (`store_engine.sox_version`
+          // records the FIRST opener, and reads null before the first open:
+          // BL-580 lazy-connect). `artifact` is the byte identity; this is the
+          // release-train identity; they answer different questions.
+          sox_version: getBundleSemver(),
           // SA-7 blocks
           instance: instanceBlock,
           store: storeBlock,
