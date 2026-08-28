@@ -1,5 +1,11 @@
 # @adhd/sox-hybrid-search
 
+## 0.4.2
+
+### Patch Changes
+
+- Republish with workspace: deps rewritten to published ranges (0.4.1 shipped raw workspace:^ — npm cannot resolve it).
+
 ## 0.4.1
 
 ### Patch Changes
