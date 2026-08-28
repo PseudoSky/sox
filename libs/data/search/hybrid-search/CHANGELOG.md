@@ -1,5 +1,11 @@
 # @adhd/sox-hybrid-search
 
+## 0.4.1
+
+### Patch Changes
+
+- Republish 0.4.1 with the final dist (deprecated SqliteSearchBackend/SqliteSearchOpts re-exports removed). 0.4.0 shipped a stale build that still carried them.
+
 ## 0.4.0
 
 ### Minor Changes
