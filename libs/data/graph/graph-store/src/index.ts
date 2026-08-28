@@ -1451,19 +1451,19 @@ export class StoreGraphBackend implements GraphBackend {
    * (BL-580, DEBT-003 lazy-connect) `TursoAdapterImpl.connect()` is now lazy:
    * it opens no driver connection and stamps NO `_sox_engine` marker until the
    * first real operation (see turso-adapter.ts `connect()`'s doc comment).
-   * `createGraphBackend()` reads this getter eagerly, right after
-   * construction — on a never-opened turso adapter the marker file does not
-   * exist yet, so `getEngineIdentitySync` genuinely returns `null`: not
-   * "confirmed unmarked", but "not yet known". That `null` must NOT be
-   * memoised — a permanently-cached pre-open `null` would mean this getter
-   * never recovers even after the adapter's first operation stamps the
-   * marker moments later, for the entire remaining lifetime of this
-   * `GraphBackendImpl` instance. So only a genuine resolution gets cached:
-   * a non-null identity, or a `null` that IS permanent (no `dbPath` at all;
-   * a non-turso adapter, whose marker is stamped synchronously at
-   * construction/`init()` time, so its `null` means a real unmarked legacy
-   * store, not "not yet opened"). A `null` read against a turso adapter is
-   * left uncached so the next access re-probes.
+   *
+   * (BUG-026) For a TURSO store this getter never resolves identity through
+   * the sync better-sqlite3 path — that readonly open creates the classic
+   * `-shm` on the turso store on every construction (the 'exp9 poisoner'
+   * cross-engine class, engine-guard.ts), which is exactly how the store
+   * became reachable by a foreign engine in the first place. Turso identity
+   * resolution is async-only via `readEngineIdentityViaAdapter` (wired through
+   * memory-core's `getStoreEngineIdentity`); this sync getter returns the
+   * cached identity or `null` (left uncached, per the BL-580 pattern) so an
+   * async resolver can populate it without a poisoner open here. For a
+   * non-turso adapter the sync `getEngineIdentitySync` read remains — its
+   * marker is stamped synchronously at construction/`init()` time, so a `null`
+   * there means a real unmarked legacy store, not "not yet opened".
    *
    * This does not weaken the fail-closed MISMATCH guard below: unlike the
    * marker row, `assertStoreEngineSync` reads the `application_id` SQLite
@@ -1488,12 +1488,20 @@ export class StoreGraphBackend implements GraphBackend {
     if (isTurso) {
       // Fail-closed on a marker mismatch (unmarked legacy stays allowed).
       assertStoreEngineSync(dbPath, 'turso');
+      // (BUG-026) Do NOT read the identity through the sync better-sqlite3
+      // path for a turso store — that readonly open creates the classic `-shm`
+      // on the turso store on every construction (the 'exp9 poisoner'
+      // cross-engine class, engine-guard.ts). Turso identity resolution is
+      // async-only, through `readEngineIdentityViaAdapter` (already exported,
+      // wired via memory-core `getStoreEngineIdentity`). This sync getter
+      // returns whatever is cached, or leaves a null uncached (BL-580
+      // pattern) so an async resolver can populate it later without a
+      // poisoner open here.
+      return this._engineIdentity ?? null;
     }
     const identity = getEngineIdentitySync(dbPath);
     // (BL-580) Only cache a settled answer — see doc comment above.
-    if (identity !== null || !isTurso) {
-      this._engineIdentity = identity;
-    }
+    this._engineIdentity = identity;
     return identity;
   }
 

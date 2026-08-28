@@ -44,6 +44,15 @@ import {
 import { ESqliteNativeStore, isBusyError } from './errors.js';
 import { ensureEngineMarker, readApplicationId, SOX_APP_ID_SQLITE } from './engine-guard.js';
 import {
+  EForeignSqliteSidecar,
+  describeWalReplaced,
+  logWalReplacedObserved,
+  reconcileForeignSqliteShm,
+  resolveWalOwnershipHeartbeatMs,
+  verifyWalIdentityNow,
+  WAL_OWNERSHIP_HEARTBEAT_DEFAULT_MS,
+} from './wal-ownership.js';
+import {
   DEFAULT_IDLE_FLUSH_CEILING_MS,
   DEFAULT_IDLE_FLUSH_FLOOR_MS,
   DEFAULT_WAL_CAP_CEILING_BYTES,
@@ -508,6 +517,33 @@ export class TursoAdapterImpl implements TursoAdapter {
    *  memory-core's queue — inherits it automatically. */
   private _idleFlushTimer: ReturnType<typeof setTimeout> | null = null;
 
+  /** (BUG-026) True when this instance is eligible to self-arm the
+   *  WAL-ownership heartbeat — set by `connect()`/`_openReal()` for writable,
+   *  local-file connections only (same eligibility as `_idleFlushEnabled`: a
+   *  readonly connection cannot checkpoint, and a remote URL has no local
+   *  sidecar to inspect). Constant for the life of the instance. */
+  private _walOwnershipHeartbeatEnabled = false;
+
+  /** (BUG-026) The heartbeat interval, ms — clamped [1000, 60000]. Resolved at
+   *  connect time from `opts.walOwnershipHeartbeatMs` / the
+   *  `SOX_WAL_OWNERSHIP_HEARTBEAT_MS` env knob (see wal-ownership.ts). Typed
+   *  tuning, never a toggle. */
+  private _walOwnershipHeartbeatMs: number = WAL_OWNERSHIP_HEARTBEAT_DEFAULT_MS;
+
+  /** (BUG-026) The pending WAL-ownership heartbeat timer, or `null` when none
+   *  is armed. Self-re-arming: each fire re-arms for the next period unless
+   *  the instance is closed/released. `unref()`'d so a pending timer never by
+   *  itself keeps an otherwise-finished process alive. */
+  private _walOwnershipHeartbeatTimer: ReturnType<typeof setTimeout> | null = null;
+
+  /** (BUG-026) Cancel a pending WAL-ownership heartbeat. */
+  private _cancelWalOwnershipHeartbeat(): void {
+    if (this._walOwnershipHeartbeatTimer !== null) {
+      clearTimeout(this._walOwnershipHeartbeatTimer);
+      this._walOwnershipHeartbeatTimer = null;
+    }
+  }
+
   /** (idle-flush) Cancel a pending idle flush — new work arrived. Mirrors
    *  `WriteQueue._cancelCheckpoint()`. */
   private _cancelIdleFlush(): void {
@@ -848,6 +884,102 @@ export class TursoAdapterImpl implements TursoAdapter {
     }
   }
 
+  /** (BUG-026) Arm the WAL-ownership heartbeat if eligible and not already
+   *  scheduled — periodic, self-re-arming. Unlike the idle flush (one-shot,
+   *  re-armed by `_trackOp` on drain), this runs on a fixed cadence regardless
+   *  of traffic, so a replaced WAL is detected within one heartbeat even while
+   *  the connection sits idle. */
+  private _armWalOwnershipHeartbeat(): void {
+    if (!this._walOwnershipHeartbeatEnabled) return;
+    if (this.closed || this._released) return;
+    if (this._walOwnershipHeartbeatTimer !== null) return; // already scheduled
+    const ms = this._walOwnershipHeartbeatMs;
+    this._walOwnershipHeartbeatTimer = setTimeout(() => {
+      this._walOwnershipHeartbeatTimer = null;
+      void this._performWalOwnershipHeartbeat();
+    }, ms);
+    this._walOwnershipHeartbeatTimer.unref?.();
+  }
+
+  /**
+   * (BUG-026) Fires once per heartbeat period. Skips when closed, released,
+   * mid-op (`_inFlightOps > 0`), or with no baseline captured yet. On a
+   * replaced WAL runs the same recovery as the write path (fold + recycle);
+   * on an intact WAL runs a PASSIVE checkpoint — never TRUNCATE mid-session
+   * (a TRUNCATE under a concurrent multiprocess peer is the #7833/#8348
+   * checkpoint-race class). Re-arms itself in `finally` so the cadence keeps
+   * running until close.
+   */
+  private async _performWalOwnershipHeartbeat(): Promise<void> {
+    try {
+      if (
+        this.closed ||
+        this._released ||
+        this._poisoned ||
+        this._inFlightOps > 0 ||
+        this._walBaseline === null
+      ) {
+        return;
+      }
+      const status = verifyWalIdentityNow(this._walBaseline);
+      if (status.status === 'replaced') {
+        await this._recoverReplacedWal('heartbeat', status.finding);
+      } else if (status.status === 'intact') {
+        await this.db.get('PRAGMA wal_checkpoint(PASSIVE)');
+      }
+      // no-baseline: nothing to compare against — no-op.
+    } catch (err) {
+      log.warn('store_adapter.turso.wal_ownership_heartbeat_failed', {
+        error: err instanceof Error ? err.message : String(err),
+      });
+    } finally {
+      this._armWalOwnershipHeartbeat();
+    }
+  }
+
+  /**
+   * (BUG-026) Recover from a replaced WAL observed on the write path or the
+   * heartbeat: emit damaged, fold the orphaned frames into the main db file
+   * through the fd this connection already holds (PASSIVE — never TRUNCATE),
+   * emit repaired, then poison the connection DIRECTLY (not `_markIfFatal` —
+   * a distinct, expected recycle cause, so it logs under its own key;
+   * `_ensureHealthy` reconnects on the next op, re-capturing the baseline).
+   */
+  private async _recoverReplacedWal(
+    trigger: 'write' | 'heartbeat',
+    finding: import('./integrity.js').IntegrityFinding | null,
+  ): Promise<void> {
+    const dbPath = this.coordPath ?? this.config.url;
+    emitIntegrityReport(dbPath, 'damaged', describeWalReplaced(finding));
+    let folded = false;
+    try {
+      await this.db.get('PRAGMA wal_checkpoint(PASSIVE)');
+      folded = true;
+    } catch (err) {
+      log.warn('store_adapter.turso.wal_replaced_checkpoint_failed', {
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+    if (folded) {
+      emitIntegrityReport(
+        dbPath,
+        'repaired',
+        'checkpointed the orphaned WAL into the main database file before reconnect',
+      );
+    }
+    this._poisoned = true;
+    logWalReplacedObserved('store_adapter.turso', dbPath, trigger);
+  }
+
+  /** (BUG-026) Write-path WAL-identity check — run inside `_trackOp(fn, true)`
+   *  after the write succeeds, before the wal-cap backstop. No-op on
+   *  `no-baseline`/`intact`. */
+  private async _recoverReplacedWalIfNeeded(): Promise<void> {
+    const status = verifyWalIdentityNow(this._walBaseline);
+    if (status.status !== 'replaced') return;
+    await this._recoverReplacedWal('write', status.finding);
+  }
+
   /** (idle-release) Wraps every method that touches `this.db` directly:
    *  increments `_inFlightOps` before `_ensureHealthy()` runs (so a
    *  reconnect itself also counts as "busy"), decrements in `finally`
@@ -883,6 +1015,10 @@ export class TursoAdapterImpl implements TursoAdapter {
           );
         }
         this._lastWriteAt = now;
+        // (BUG-026) Lifetime WAL-identity check on EVERY write — a replaced
+        // WAL is folded + the connection recycled here, not hours later at
+        // close. Runs before the wal-cap backstop so the two never race.
+        await this._recoverReplacedWalIfNeeded();
         await this._checkWalCapAndFlush();
       }
       return result;
@@ -1145,6 +1281,18 @@ export class TursoAdapterImpl implements TursoAdapter {
       // loss, but a genuine extra uncoordinated close cycle this line
       // eliminates at the source.
       fresh._cancelIdleFlush();
+      // (BUG-026) Same orphaned-timer hazard as the idle flush: `fresh` arms
+      // its OWN WAL-ownership heartbeat on every writable local-file open.
+      // Cancel it (its closure would otherwise keep `fresh` reachable and run
+      // a second uncoordinated heartbeat against the shared `this.db`), and
+      // re-arm `this`'s heartbeat so the lifetime ownership check resumes on
+      // the recycled connection. Unlike the idle flush (re-armed by
+      // `_trackOp` on drain), the heartbeat is periodic and has no other
+      // re-arm source, so it must be re-armed here explicitly.
+      fresh._cancelWalOwnershipHeartbeat();
+      this._walOwnershipHeartbeatEnabled = fresh._walOwnershipHeartbeatEnabled;
+      this._walOwnershipHeartbeatMs = fresh._walOwnershipHeartbeatMs;
+      this._armWalOwnershipHeartbeat();
       if (wasReleased) {
         this._lease = fresh._lease;
       } else if (fresh._lease) {
@@ -1315,6 +1463,14 @@ export class TursoAdapterImpl implements TursoAdapter {
      * production caller sets this.
      */
     walCapCeilingBytes?: number;
+    /**
+     * (BUG-026, TEST-ONLY) Override the WAL-ownership heartbeat interval
+     * (default resolved from `SOX_WAL_OWNERSHIP_HEARTBEAT_MS`, else 10s). No
+     * production caller sets this — it exists so tests can observe the
+     * heartbeat's replaced-WAL detection without a real 10s wait. Clamped to
+     * [1000, 60000].
+     */
+    walOwnershipHeartbeatMs?: number;
   }): Promise<TursoAdapterImpl> {
     // Dynamic import so @tursodatabase/database is only loaded when used
     let tursoModule: any;
@@ -1416,6 +1572,30 @@ export class TursoAdapterImpl implements TursoAdapter {
       }
       if (experiments.length > 0) {
         dbOpts.experimental = experiments;
+      }
+
+      // (BUG-026) FOREIGN -shm RECONCILE, after lease before driver open. A
+      // `-shm` beside a turso store is FOREIGN by construction (turso
+      // coordinates through `-tshm`, never `-shm`) — the 'exp9 poisoner'
+      // residue left by a better-sqlite3 opener (graph-store's former
+      // `engineIdentity` getter, or any raw better-sqlite3 open). Quiescent →
+      // rename aside; live peers → refuse, because reconciling under a live
+      // peer is the cross-engine hazard this guard exists to prevent.
+      if (canonicalDb !== undefined && opts.readonly !== true && opts.allowForeignEngine !== true && lease) {
+        const shmQuiescence = storeQuiescence(canonicalDb, lease.token);
+        const shm = reconcileForeignSqliteShm(canonicalDb, {
+          storeInUse: !shmQuiescence.quiescent,
+        });
+        if (shm.reconciled && shm.renamedTo) {
+          emitIntegrityReport(
+            canonicalDb,
+            'repaired',
+            `[BUG-026] foreign -shm sidecar reconciled BEFORE the open: moved aside to ` +
+              `${shm.renamedTo} — the turso store opens against its own -tshm coordination`,
+          );
+        } else if (shm.declined !== undefined && !shmQuiescence.quiescent) {
+          throw new EForeignSqliteSidecar(canonicalDb, shmQuiescence.livePeers);
+        }
       }
 
       // Turso adapter supports both local file: and remote libsql:// URLs
@@ -2020,6 +2200,18 @@ export class TursoAdapterImpl implements TursoAdapter {
         }
         if (opts.walCapHeadroomBytes !== undefined) instance._walCapHeadroomBytes = opts.walCapHeadroomBytes;
         if (opts.walCapCeilingBytes !== undefined) instance._walCapCeilingBytes = opts.walCapCeilingBytes;
+
+        // (BUG-026) Arm the WAL-ownership heartbeat — the lifetime check that
+        // detects a replaced WAL within one heartbeat, not only at close.
+        // Same eligibility as the idle flush; resolved from the explicit opt /
+        // the env knob, clamped. Armed here (not just from a fire's re-arm)
+        // because a freshly opened instance never runs a `_trackOp()` cycle on
+        // its own and must not idle forever un-heartbeat'd.
+        instance._walOwnershipHeartbeatEnabled = true;
+        instance._walOwnershipHeartbeatMs = resolveWalOwnershipHeartbeatMs(
+          opts.walOwnershipHeartbeatMs ?? config.walOwnershipHeartbeatMs,
+        );
+        instance._armWalOwnershipHeartbeat();
       }
 
       return instance;
@@ -2050,6 +2242,9 @@ export class TursoAdapterImpl implements TursoAdapter {
     if (opts.readonly !== undefined) config.readonly = opts.readonly;
     if (opts.encryption !== undefined) config.encryption = opts.encryption;
     if (opts.defaultQueryTimeout !== undefined) config.defaultQueryTimeout = opts.defaultQueryTimeout;
+    if (opts.walOwnershipHeartbeatMs !== undefined) {
+      config.walOwnershipHeartbeatMs = opts.walOwnershipHeartbeatMs;
+    }
     return config;
   }
 
@@ -2172,6 +2367,12 @@ export class TursoAdapterImpl implements TursoAdapter {
       }
       if (opts.walCapHeadroomBytes !== undefined) instance._walCapHeadroomBytes = opts.walCapHeadroomBytes;
       if (opts.walCapCeilingBytes !== undefined) instance._walCapCeilingBytes = opts.walCapCeilingBytes;
+      // (BUG-026) Heartbeat eligibility + interval resolved eagerly, exactly
+      // as `_openReal()` resolves them — but NOT armed here (nothing to
+      // heartbeat on a never-opened shell; `_reconnect()` arms it on the first
+      // real open).
+      instance._walOwnershipHeartbeatEnabled = true;
+      instance._walOwnershipHeartbeatMs = resolveWalOwnershipHeartbeatMs(opts.walOwnershipHeartbeatMs);
     }
 
     return instance;
@@ -2615,6 +2816,10 @@ export class TursoAdapterImpl implements TursoAdapter {
     // re-checks `this.closed` at fire time — but this avoids the dead timer
     // lingering at all).
     this._cancelIdleFlush();
+    // (BUG-026) Cancel the WAL-ownership heartbeat too — the connection is
+    // about to close, so a heartbeat firing afterward would checkpoint a dead
+    // (or handed-back) handle. `_reconnect()` re-arms it on recycle.
+    this._cancelWalOwnershipHeartbeat();
 
     // (BL-512) "Writable" for checkpoint purposes means the connection can
     // write: `!config.readonly` (the historical gate), PLUS soft-readonly

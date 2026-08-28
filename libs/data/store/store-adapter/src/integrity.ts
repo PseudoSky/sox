@@ -1150,7 +1150,7 @@ export function captureWalIdentity(dbPath: string | undefined): WalIdentity | nu
   }
 }
 
-function probeWalIdentity(baseline: WalIdentity | null): IntegrityFinding | null {
+export function probeWalIdentity(baseline: WalIdentity | null): IntegrityFinding | null {
   if (!baseline || !baseline.present) return null; // nothing to compare against
   const current = captureWalIdentity(baseline.path.replace(/-wal$/, ''));
   if (!current) return null;

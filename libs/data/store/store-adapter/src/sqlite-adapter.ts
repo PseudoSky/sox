@@ -33,6 +33,14 @@ import type {
 import { ETursoNativeStore, isTursoNativeStoreSchemaError } from './errors.js';
 import { ensureEngineMarker, readApplicationId, SOX_APP_ID_TURSO } from './engine-guard.js';
 import {
+  EStoreWalReplaced,
+  describeWalReplaced,
+  logWalReplacedObserved,
+  resolveWalOwnershipHeartbeatMs,
+  verifyWalIdentityNow,
+  WAL_OWNERSHIP_HEARTBEAT_DEFAULT_MS,
+} from './wal-ownership.js';
+import {
   DEFAULT_IDLE_FLUSH_CEILING_MS,
   DEFAULT_IDLE_FLUSH_FLOOR_MS,
   DEFAULT_WAL_CAP_CEILING_BYTES,
@@ -342,6 +350,37 @@ export class SqliteAdapterImpl implements SqliteAdapter {
    *  default) until a caller invokes `captureWalCapBaseline()`. */
   private _walCapBaselineBytes = 0;
 
+  /** (BUG-026) True once the WAL identity was observed replaced on this
+   *  connection. After the first observation the orphaned frames are folded
+   *  (PASSIVE) and every SUBSEQUENT writable op throws {@link EStoreWalReplaced}
+   *  — fail-loud; reads keep working against the already-folded main db file.
+   *  Only a close()+reopen (fresh baseline capture) clears it. */
+  private _walReplaced = false;
+
+  /** (BUG-026) True when this instance is eligible to self-arm the
+   *  WAL-ownership heartbeat — writable, local-file (`config.dbPath` set)
+   *  connections only, same eligibility as `_idleFlushEnabled`. */
+  private _walOwnershipHeartbeatEnabled = false;
+
+  /** (BUG-026) The heartbeat interval, ms — clamped [1000, 60000]. Resolved at
+   *  construction from `opts.walOwnershipHeartbeatMs` / the
+   *  `SOX_WAL_OWNERSHIP_HEARTBEAT_MS` env knob (see wal-ownership.ts). Typed
+   *  tuning, never a toggle. */
+  private _walOwnershipHeartbeatMs: number = WAL_OWNERSHIP_HEARTBEAT_DEFAULT_MS;
+
+  /** (BUG-026) The pending WAL-ownership heartbeat timer, or `null` when none
+   *  is armed. Self-re-arming; `unref()`'d so it never keeps an otherwise-
+   *  finished process alive. */
+  private _walOwnershipHeartbeatTimer: ReturnType<typeof setTimeout> | null = null;
+
+  /** (BUG-026) Cancel a pending WAL-ownership heartbeat. */
+  private _cancelWalOwnershipHeartbeat(): void {
+    if (this._walOwnershipHeartbeatTimer !== null) {
+      clearTimeout(this._walOwnershipHeartbeatTimer);
+      this._walOwnershipHeartbeatTimer = null;
+    }
+  }
+
   constructor(
     dbPath: string,
     opts?: {
@@ -352,6 +391,7 @@ export class SqliteAdapterImpl implements SqliteAdapter {
       walCapBytes?: number;
       walCapHeadroomBytes?: number;
       walCapCeilingBytes?: number;
+      walOwnershipHeartbeatMs?: number;
     },
   );
   constructor(db: Sqlite3Database);
@@ -365,6 +405,7 @@ export class SqliteAdapterImpl implements SqliteAdapter {
       walCapBytes?: number;
       walCapHeadroomBytes?: number;
       walCapCeilingBytes?: number;
+      walOwnershipHeartbeatMs?: number;
     },
   ) {
     if (typeof dbOrPath === 'string') {
@@ -483,6 +524,13 @@ export class SqliteAdapterImpl implements SqliteAdapter {
       if (opts?.walCapHeadroomBytes !== undefined) this._walCapHeadroomBytes = opts.walCapHeadroomBytes;
       if (opts?.walCapCeilingBytes !== undefined) this._walCapCeilingBytes = opts.walCapCeilingBytes;
       this._armIdleFlush();
+      // (BUG-026) Arm the WAL-ownership heartbeat — same eligibility as the
+      // idle flush, same reasoning (a freshly opened instance never runs a
+      // `_trackOp()` cycle on its own). Interval resolved from the explicit
+      // opt / the env knob, clamped.
+      this._walOwnershipHeartbeatEnabled = true;
+      this._walOwnershipHeartbeatMs = resolveWalOwnershipHeartbeatMs(opts?.walOwnershipHeartbeatMs);
+      this._armWalOwnershipHeartbeat();
     }
   }
 
@@ -568,6 +616,83 @@ export class SqliteAdapterImpl implements SqliteAdapter {
         idle_window_ms: this._lastArmedIdleFlushMs,
       });
     }
+  }
+
+  /** (BUG-026) Arm the WAL-ownership heartbeat if eligible and not already
+   *  scheduled — periodic, self-re-arming, same role as the Turso port. */
+  private _armWalOwnershipHeartbeat(): void {
+    if (!this._walOwnershipHeartbeatEnabled) return;
+    if (this.closed) return;
+    if (this._walOwnershipHeartbeatTimer !== null) return;
+    const ms = this._walOwnershipHeartbeatMs;
+    this._walOwnershipHeartbeatTimer = setTimeout(() => {
+      this._walOwnershipHeartbeatTimer = null;
+      this._performWalOwnershipHeartbeat();
+    }, ms);
+    this._walOwnershipHeartbeatTimer.unref?.();
+  }
+
+  /**
+   * (BUG-026) Fires once per heartbeat period. Skips when closed, mid-op, or
+   * with no baseline captured yet. On a replaced WAL runs the same recovery
+   * as the write path (fold + fail-loud); on an intact WAL runs a PASSIVE
+   * checkpoint (never TRUNCATE mid-session — TRUNCATE is the idle-flush/cap
+   * path's job). Re-arms itself in `finally`.
+   */
+  private _performWalOwnershipHeartbeat(): void {
+    try {
+      if (this.closed || this._walReplaced || this._inFlightOps > 0 || this._walBaseline === null) {
+        return;
+      }
+      const status = verifyWalIdentityNow(this._walBaseline);
+      if (status.status === 'replaced') {
+        this._recoverReplacedWal('heartbeat', status.finding);
+      } else if (status.status === 'intact') {
+        this.db.pragma('wal_checkpoint(PASSIVE)');
+      }
+      // no-baseline: nothing to compare against — no-op.
+    } catch (err) {
+      log.warn('store_adapter.sqlite.wal_ownership_heartbeat_failed', {
+        db_path: this.config.dbPath,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    } finally {
+      this._armWalOwnershipHeartbeat();
+    }
+  }
+
+  /**
+   * (BUG-026) Fold the orphaned frames of a replaced WAL into the main db file
+   * through the fd this connection already holds (PASSIVE), emit
+   * damaged/repaired, and set `_walReplaced` so every subsequent writable op
+   * fails loud (`EStoreWalReplaced`) rather than silently writing into an
+   * orphaned inode.
+   */
+  private _recoverReplacedWal(
+    trigger: 'write' | 'heartbeat',
+    finding: import('./integrity.js').IntegrityFinding | null,
+  ): void {
+    const dbPath = this.config.dbPath;
+    emitIntegrityReport(dbPath, 'damaged', describeWalReplaced(finding));
+    let folded = false;
+    try {
+      this.db.pragma('wal_checkpoint(PASSIVE)');
+      folded = true;
+    } catch (err) {
+      log.warn('store_adapter.sqlite.wal_replaced_checkpoint_failed', {
+        db_path: dbPath,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+    if (folded) {
+      emitIntegrityReport(
+        dbPath,
+        'repaired',
+        'checkpointed the orphaned WAL into the main database file',
+      );
+    }
+    this._walReplaced = true;
+    logWalReplacedObserved('store_adapter.sqlite', dbPath, trigger);
   }
 
   /**
@@ -674,6 +799,13 @@ export class SqliteAdapterImpl implements SqliteAdapter {
     this._cancelIdleFlush();
     this._inFlightOps++;
     try {
+      // (BUG-026) Fail loud on the first write AFTER a replaced WAL was
+      // observed — the orphaned frames were folded, but the connection's
+      // baseline is now stale, so writing again risks a second silent-loss
+      // window. Reads keep working.
+      if (isWrite && this._walReplaced) {
+        throw new EStoreWalReplaced(this.config.dbPath);
+      }
       const result = await fn();
       if (isWrite) {
         // (BL-590) Feed the observed inter-write gap into the EWMA before
@@ -686,6 +818,12 @@ export class SqliteAdapterImpl implements SqliteAdapter {
           );
         }
         this._lastWriteAt = now;
+        // (BUG-026) Lifetime WAL-identity check on EVERY write — a replaced
+        // WAL is folded + marked fail-loud here, not only at close.
+        const status = verifyWalIdentityNow(this._walBaseline);
+        if (status.status === 'replaced') {
+          this._recoverReplacedWal('write', status.finding);
+        }
         this._checkWalCapAndFlush();
       }
       return result;
@@ -938,7 +1076,37 @@ export class SqliteAdapterImpl implements SqliteAdapter {
     // to be closed (or handed back to a caller-owned lifecycle), so a timer
     // firing afterward would checkpoint a closed/foreign handle.
     this._cancelIdleFlush();
+    // (BUG-026) Cancel the WAL-ownership heartbeat too.
+    this._cancelWalOwnershipHeartbeat();
     if (!this.config.readonly && this.ownDb) {
+      // (BUG-026) Close-time WAL-identity check + PASSIVE fold — the parity
+      // gap with `TursoAdapterImpl.close()`. A replaced WAL must be folded
+      // (PASSIVE) and reported, never silently discarded. Runs BEFORE the
+      // TRUNCATE below so the orphaned frames land in the main db file first.
+      let damaged = false;
+      const status = verifyWalIdentityNow(this._walBaseline);
+      if (status.status === 'replaced') {
+        damaged = true;
+        emitIntegrityReport(this.config.dbPath, 'damaged', describeWalReplaced(status.finding));
+      }
+      let passiveOk = false;
+      try {
+        this.db.pragma('wal_checkpoint(PASSIVE)');
+        passiveOk = true;
+      } catch (passiveErr) {
+        log.warn('store_adapter.sqlite.close_passive_checkpoint_failed', {
+          db_path: this.config.dbPath,
+          error: passiveErr instanceof Error ? passiveErr.message : String(passiveErr),
+        });
+      }
+      if (damaged && passiveOk) {
+        emitIntegrityReport(
+          this.config.dbPath,
+          'repaired',
+          'checkpointed the orphaned WAL into the main database file before close',
+        );
+      }
+
       // (BL-571) Final checkpoint before teardown — best-effort. The
       // idle-flush/cap-flush triggers already keep the WAL bounded through
       // the connection's life; this folds back whatever is left in flight at
