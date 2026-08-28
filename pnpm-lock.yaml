@@ -343,6 +343,24 @@ importers:
         specifier: workspace:^
         version: link:../../store/store-adapter
 
+  libs/data/search/semantic:
+    dependencies:
+      '@adhd/sox-embedding-provider':
+        specifier: workspace:^
+        version: link:../../embed/embedding-provider
+      '@adhd/sox-graph-store':
+        specifier: workspace:^
+        version: link:../../graph/graph-store
+      '@adhd/sox-hybrid-search':
+        specifier: workspace:^
+        version: link:../hybrid-search
+      '@adhd/sox-store-adapter':
+        specifier: workspace:^
+        version: link:../../store/store-adapter
+      '@adhd/sox-vector-store':
+        specifier: workspace:^
+        version: link:../../vectors/vector-store
+
   libs/data/store/blob-store:
     dependencies:
       '@adhd/sox-store-adapter':
@@ -364,9 +382,6 @@ importers:
 
   libs/data/vectors/vector-store:
     dependencies:
-      '@adhd/sox-graph-store':
-        specifier: workspace:^
-        version: link:../../graph/graph-store
       '@adhd/sox-store-adapter':
         specifier: workspace:^
         version: link:../../store/store-adapter

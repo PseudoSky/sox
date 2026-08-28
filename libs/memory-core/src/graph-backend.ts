@@ -11,7 +11,7 @@ let registeredExtension: OntologyExtension = {};
  * this is a process-wide policy, not a per-call override, so there is exactly one
  * vocabulary in force for the life of the process — call this once, at startup, before
  * the first getMemoryGraphBackend() call. Calling it after backends already exist does
- * NOT retroactively change them (each SqliteGraphBackend captures its TypePolicy at
+ * NOT retroactively change them (each StoreGraphBackend captures its TypePolicy at
  * construction, graph-store/src/index.ts:888-890) — it only affects backends
  * constructed after the call.
  */

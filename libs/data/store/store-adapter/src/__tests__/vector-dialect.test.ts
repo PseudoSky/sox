@@ -253,13 +253,14 @@ describe('TursoVectorDialect', () => {
       const result = dialect.topKQuery('foo', 'embedding', [0.1, 0.2, 0.3], 10, 'cosine');
       expect(result.sql).toContain('vector_distance_cos(');
       expect(result.sql).toContain('ORDER BY distance ASC');
-      expect(result.sql).not.toContain('LIMIT ?');
+      // DEBT-011: the turso dialect owns its LIMIT, inlined as an integer literal.
+      expect(result.sql).toContain('LIMIT 10');
       expect(result.sql).not.toContain('MATCH');
     });
 
-    it('args is empty (LIMIT is added by caller)', () => {
+    it('args is empty (k is inlined into the LIMIT, not a param)', () => {
       const result = dialect.topKQuery('foo', 'embedding', [0.1, 0.2, 0.3], 10, 'cosine');
-      expect(result.args).toHaveLength(0);
+      expect(result.args).toEqual([]);
     });
 
     it('uses vector_distance_l2 for l2 metric with ASC order', () => {

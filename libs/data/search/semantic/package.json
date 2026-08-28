@@ -1,0 +1,54 @@
+{
+  "name": "@adhd/sox-semantic",
+  "version": "0.0.1",
+  "description": "Semantic RAG composition layer — a DI facade that wires @adhd/sox-graph-store + @adhd/sox-vector-store + @adhd/sox-embedding-provider into a single embed/index/search/rank surface (createSemanticBackend), plus the embedding-lifecycle observer (embed-on-write, delete-on-invalidate). Owns the node-join; keeps graph-store and vector-store at their own tiers (ADR-0016).",
+  "license": "MIT",
+  "private": false,
+  "publishConfig": {
+    "access": "public"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "dist"
+  ],
+  "dependencies": {
+    "@adhd/sox-embedding-provider": "workspace:^",
+    "@adhd/sox-graph-store": "workspace:^",
+    "@adhd/sox-hybrid-search": "workspace:^",
+    "@adhd/sox-store-adapter": "workspace:^",
+    "@adhd/sox-vector-store": "workspace:^"
+  },
+  "sox": {
+    "area": "data",
+    "group": "search",
+    "concerns": [
+      "createSemanticBackend — the ADR-0006 composer: DI-wires embedding-provider instance + graph/vector backends over the caller's StoreAdapter",
+      "SemanticBackend — async surface (embedQuery / embedDocuments / upsertVector(s) / deleteVector / semanticSearchNodes / health)",
+      "typed failure taxonomy (not_installed | provider_failed | unsupported_adapter | vector_store_failed), never a bare throw",
+      "semanticSearchNodes — the sole owner of the node-join (embed → knn → graph.queryNodes → ranked { node, score })",
+      "batch-first embeddings (embedDocuments + upsertVectors) — per-item error containment, never a placeholder vector",
+      "embedding-lifecycle observer (GraphWriteObserver impl: embed-on-write, delete-on-invalidate)"
+    ],
+    "invariants": [
+      "createSemanticBackend returns a typed result, never throws for a configurable failure (not_installed/provider_failed/unsupported_adapter/vector_store_failed)",
+      "a failed embed degrades the write, never corrupts it — no placeholder vectors, no rolled-back node write",
+      "score is cosine similarity (higher-is-better) on both turso (1 - vector_distance_cos) and sqlite (cosineSimilarity), stable across backends",
+      "live objects (open DB, provider instance, vector backend) cross into this package via DI over the caller's StoreAdapter — never a duplicated stateful bundle (ADR-0006)"
+    ],
+    "entrypoints": [
+      "dist/index.js"
+    ]
+  }
+}

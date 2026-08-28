@@ -90,6 +90,14 @@ export interface VectorDialect {
   distanceExpr(column: string, queryVec: number[]): string;
   createTableDDL(table: string, column: string, dim: number): string;
   createIndexDDL(table: string, column: string, metric: VectorMetric): string;
+  /**
+   * Build a top-K query over the vector table ONLY. The returned SQL contains
+   * a `__PLACEHOLDER__` token where the caller injects a WHERE-*predicate*
+   * (e.g. `v.node_id IN (SELECT rowid FROM node WHERE …)` or `1=1`). DEBT-011:
+   * the dialect no longer joins the graph `node` table — the store names no
+   * node relation; a caller that wants node filtering re-fuses it via a
+   * subquery in the predicate seam, never a JOIN.
+   */
   topKQuery(table: string, column: string, queryVec: number[], k: number, metric: VectorMetric): { sql: string; args: unknown[] };
 }
 

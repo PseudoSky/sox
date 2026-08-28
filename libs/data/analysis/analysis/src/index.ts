@@ -1122,12 +1122,12 @@ export async function detectNearDup(
   // Write SAME_AS edges for near_dup pairs
   for (const pair of pairs) {
     if (pair.status === 'near_dup') {
-      graph.writeEdge(pair.a, pair.b, 'SAME_AS', {
+      await graph.writeEdge(pair.a, pair.b, 'SAME_AS', {
         weight: pair.cosine,
         metadata: { cosine: pair.cosine, status: pair.status, modelId },
       });
     } else if (pair.status === 'candidate') {
-      graph.writeEdge(pair.a, pair.b, 'SAME_AS', {
+      await graph.writeEdge(pair.a, pair.b, 'SAME_AS', {
         weight: pair.cosine,
         metadata: { cosine: pair.cosine, status: 'candidate', modelId },
       });
@@ -1226,7 +1226,13 @@ export async function buildAutoLinks(
 
     if (linksA < maxLinksPerNode && linksB < maxLinksPerNode) {
       if (!opts?.dryRun) {
-        graph.writeEdge(c.a, c.b, rel, {
+        // Must await: writeEdge's INSERT is deferred a microtask (FEAT-013
+        // endpoint-kind resolution precedes it); an un-awaited call returns
+        // before the edge is persisted, so a caller reading edges back
+        // immediately (e.g. analysis.spec.ts "creates RELATES_TO edges")
+        // deterministically saw zero. Same latent bug as detectNearDup's
+        // SAME_AS writes — both fixed by awaiting.
+        await graph.writeEdge(c.a, c.b, rel, {
           weight: c.sim,
           metadata: { similarity: c.sim, modelId },
         });

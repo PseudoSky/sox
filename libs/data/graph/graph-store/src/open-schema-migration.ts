@@ -21,7 +21,7 @@
  *
  * D-7: `migrateToOpenSchema` owns its own `dbPath` and opens/closes its own adapter(s)
  * internally — it never accepts a caller-supplied, already-open `StoreAdapter`. This is what
- * makes AC-4 (unreachable from `applySchema()`) true by construction: `SqliteGraphBackend`
+ * makes AC-4 (unreachable from `applySchema()`) true by construction: `StoreGraphBackend`
  * only ever has an open connection in scope, never a raw path.
  */
 import * as crypto from 'node:crypto';

@@ -3,7 +3,7 @@ import {
   normalize,
   fuse,
   search,
-  SqliteSearchBackend,
+  StoreSearchBackend,
 } from './index.js';
 import type {
   SearchBackend,
@@ -12,7 +12,7 @@ import type {
 import { buildFilterClause } from './filter-utils.js';
 import Database from 'better-sqlite3';
 import * as sqliteVec from 'sqlite-vec';
-import { SqliteGraphBackend } from '@adhd/sox-graph-store';
+import { StoreGraphBackend } from '@adhd/sox-graph-store';
 import { SqliteVectorBackend } from '@adhd/sox-vector-store';
 import type { VectorBackend } from '@adhd/sox-vector-store';
 import type { GraphBackend } from '@adhd/sox-graph-store';
@@ -299,7 +299,7 @@ describe('search() with mock backend', () => {
 
   // ── topic boost ────────────────────────────────────────────────────────────
   // topicBoost() is applied by THIS function (fusion), never by
-  // SqliteSearchBackend.search(). Until now nothing tested it: the only test bearing
+  // StoreSearchBackend.search(). Until now nothing tested it: the only test bearing
   // its name called the backend, which has no boost code in it at all.
   //
   // Three candidates, not two, on purpose. Under min_max the lowest candidate
@@ -531,12 +531,12 @@ describe('buildFilterClause', () => {
   });
 });
 
-// ── SqliteSearchBackend integration ───────────────────────────────────────────
+// ── StoreSearchBackend integration ───────────────────────────────────────────
 
-describe('SqliteSearchBackend integration', () => {
+describe('StoreSearchBackend integration', () => {
   let vec: VectorBackend;
   let graph: GraphBackend;
-  let backend: SqliteSearchBackend;
+  let backend: StoreSearchBackend;
 
   function createTestDb() {
     const db = new Database(':memory:');
@@ -559,12 +559,12 @@ describe('SqliteSearchBackend integration', () => {
   }
 
   async function createTestGraphStore(db: Database.Database): Promise<GraphBackend> {
-    // Same BL-364/BL-380 shape as createTestVecStore above: SqliteGraphBackend
+    // Same BL-364/BL-380 shape as createTestVecStore above: StoreGraphBackend
     // also takes a StoreAdapter now (`this.adapter.executeAll`/`executeGet`),
     // not a raw better-sqlite3.Database — and applySchema() is async, so it
     // must be awaited before any node write races the DDL.
     const adapter = createSqliteAdapter(db);
-    const store = new SqliteGraphBackend(adapter);
+    const store = new StoreGraphBackend(adapter);
     await store.applySchema();
     return store;
   }
@@ -573,7 +573,7 @@ describe('SqliteSearchBackend integration', () => {
     const db = createTestDb();
     vec = createTestVecStore(db);
     graph = await createTestGraphStore(db);
-    backend = new SqliteSearchBackend(vec, graph);
+    backend = new StoreSearchBackend(vec, graph);
   });
 
   // graph.writeNode() is async (StoreAdapter-backed, BL-364/BL-380) — seedNode
@@ -630,7 +630,7 @@ describe('SqliteSearchBackend integration', () => {
   });
 
   // NB: this deliberately no longer claims to test the topic boost. `topicBoost` is
-  // applied by the fusion `search()` function, NOT by SqliteSearchBackend.search() —
+  // applied by the fusion `search()` function, NOT by StoreSearchBackend.search() —
   // so the previous version of this test, named 'applies topic boost on exact match',
   // called a code path that contains no boost at all and could not have failed for the
   // reason its name gave. The real boost coverage now lives in
@@ -812,16 +812,16 @@ describe('SqliteSearchBackend integration', () => {
   // just a schema-level CHECK pass — using the DEFAULT createGraphBackend(db) with no
   // constructor options at all.
 
-  describe('kind:"generic" end-to-end via SqliteSearchBackend (BL-295 criterion 3)', () => {
+  describe('kind:"generic" end-to-end via StoreSearchBackend (BL-295 criterion 3)', () => {
     it('stores AND retrieves a kind:"generic" (sub-kind:"component") node through real hybrid FTS5(BM25)+vector search', async () => {
       const db = createTestDb();
       const genericVec = createTestVecStore(db);
-      // BL-364/BL-380: SqliteGraphBackend takes a StoreAdapter, not a raw
+      // BL-364/BL-380: StoreGraphBackend takes a StoreAdapter, not a raw
       // Database — wrap the same handle genericVec's adapter shares.
       const genericGraphAdapter = createSqliteAdapter(db);
-      const genericGraph = new SqliteGraphBackend(genericGraphAdapter);
+      const genericGraph = new StoreGraphBackend(genericGraphAdapter);
       await genericGraph.applySchema();
-      const genericBackend = new SqliteSearchBackend(genericVec, genericGraph);
+      const genericBackend = new StoreSearchBackend(genericVec, genericGraph);
 
       const id = await genericGraph.writeNode(
         'A reusable Button component with primary and secondary variants',
@@ -847,7 +847,7 @@ describe('SqliteSearchBackend integration', () => {
       expect(stored!.tags).toContain('component');
       expect(stored!.metadata).toEqual({ subKind: 'component' });
 
-      // (b) real hybrid FTS5(BM25) + vector-kNN search finds it via SqliteSearchBackend,
+      // (b) real hybrid FTS5(BM25) + vector-kNN search finds it via StoreSearchBackend,
       // filterable by kind:'generic' through the public filter surface.
       const results = await genericBackend.search(
         { text: 'Button component', vec: new Float32Array([1.0, 0.0, 0.0, 0.0]), filters: { kind: 'generic' } },

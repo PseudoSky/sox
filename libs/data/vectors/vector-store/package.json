@@ -24,7 +24,6 @@
     "dist"
   ],
   "dependencies": {
-    "@adhd/sox-graph-store": "workspace:^",
     "@adhd/sox-store-adapter": "workspace:^",
     "@lancedb/lancedb": "0.31.0",
     "apache-arrow": "18.1.0",

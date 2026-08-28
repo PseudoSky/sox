@@ -1,6 +1,4 @@
 import * as sqliteVec from 'sqlite-vec';
-import { buildNodeFilterClause } from '@adhd/sox-graph-store';
-import type { NodeFilter } from '@adhd/sox-graph-store';
 import type { StoreAdapter, SqliteAdapter } from '@adhd/sox-store-adapter';
 import { createSqliteAdapter } from '@adhd/sox-store-adapter';
 
@@ -12,22 +10,24 @@ export interface VectorSpace {
   dim: number;
 }
 
+/**
+ * DEBT-011 — the vector store's filter contract is now PURE. A vector store's
+ * real contract is `(opaque id → vector) + kNN`; it knows nothing about the
+ * graph's `node` table. `nodeFilter`/`liveOnly` (the old graph-coupled form)
+ * are retired — the semantic facade / hybrid-search own the node-join and
+ * realize matching ids up front, then pass `{ ids }` here.
+ */
 export interface VecFilter {
   ids?: number[];
-  /** NEW, additive. When present, pushed into the candidate-selection query as
-   *  a JOIN + WHERE against the `node` table (via `@adhd/sox-graph-store`'s
-   *  `buildNodeFilterClause` — the same NodeFilter->SQL translation that
-   *  package's own queryNodes/countNodes/searchNodes use internally, so both
-   *  packages can never silently diverge on a future NodeFilter field).
-   *  ANDed with `ids` when both are given. Absent -> no behavior change from
-   *  before this field existed. */
-  nodeFilter?: NodeFilter;
 }
 
 export interface VectorBackend {
   ensureSpace(space: VectorSpace): void;
   listSpaces(): VectorSpace[];
   upsert(id: number, vec: Float32Array, space: VectorSpace): void;
+  /** FEAT-020 — batch upsert, all items share one space. Enforces the dim
+   *  invariant per item up-front; transactional. */
+  upsertVectors(items: Array<{ id: number; vec: Float32Array }>, space: VectorSpace): void;
   delete(id: number, modelId: string): void;
   get(id: number, modelId: string): Float32Array | null;
   knn(
@@ -40,6 +40,14 @@ export interface VectorBackend {
     modelId: string,
     opts?: { filter?: VecFilter },
   ): Iterable<{ id: number; vec: Float32Array }>;
+  /**
+   * DEBT-011 (Move 3) — remove exactly the given ids from `modelId`'s space,
+   * returning the count removed. Idempotent; tolerant of an absent vector table
+   * (returns 0). The node-specific prune (old `pruneInvalidatedVectors`) is now
+   * facade/host composition: `graphStore.queryNodes({ liveOnly:false })` →
+   * `deleteMany(ids)`.
+   */
+  deleteMany(ids: number[], modelId: string): number;
 }
 
 // ── Error types ─────────────────────────────────────────────────────────────
@@ -156,18 +164,10 @@ function tableExists(db: import('better-sqlite3').Database, name: string): boole
 
 // ── SimilarityBackend (internal seam — NOT exported) ────────────────────────
 //
-// Contract for `filter?.nodeFilter` on any FUTURE non-brute-force
-// SimilarityBackend (e.g. one issuing sqlite-vec's native
-// `WHERE embedding MATCH ? AND k = ?`): ANN traversal picks its `k` nearest
-// BEFORE a joined WHERE on non-partition-key columns is applied, so
-// `MATCH ... AND k=? JOIN node WHERE n.namespace=?` can legitimately return
-// fewer than `k` rows even when plenty of matching-namespace items exist
-// further out in vector space. Any such backend MUST over-fetch
-// (`k' = k * overFetchMultiplier`, widening/retrying, or falling back to
-// brute force) rather than passing the filter straight into `MATCH ... AND
-// k=?` and returning whatever survives. BruteForceBackend below does not have
-// this problem: it scores every SQL-filtered row before truncating to `k`,
-// so its result is always the exact true top-k among filter-matching rows.
+// DEBT-011 — the filter contract is now pure `{ ids }`. A vector store's real
+// contract is `(opaque id → vector) + kNN`; it knows nothing about the graph's
+// `node` table. Node filtering lives in the facade / hybrid-search, which
+// realize matching ids up front and pass `{ ids }` here.
 
 interface SimilarityBackend {
   search(
@@ -193,25 +193,15 @@ class BruteForceBackend implements SimilarityBackend {
     const clauses: string[] = [];
     const params: unknown[] = [];
 
-    if (filter?.nodeFilter) {
-      // Reuse the EXACT predicate builder @adhd/sox-graph-store's own
-      // queryNodes/countNodes/searchNodes already use internally — one
-      // canonical NodeFilter->SQL translation across both packages, not two
-      // that could silently diverge.
-      const { where, params: fParams } = buildNodeFilterClause(filter.nodeFilter, true, 'n');
-      if (where) clauses.push(where.replace(/^WHERE /, ''));
-      params.push(...fParams);
-    }
     if (filter?.ids && filter.ids.length > 0) {
       clauses.push(`v.node_id IN (${filter.ids.map(() => '?').join(',')})`);
       params.push(...filter.ids);
     }
 
     const whereSql = clauses.length > 0 ? `WHERE ${clauses.join(' AND ')}` : '';
-    const joinSql = filter?.nodeFilter ? `JOIN node n ON n.rowid = v.node_id` : '';
     const rows = db
       .prepare<unknown[], { node_id: number; embedding: Buffer }>(
-        `SELECT v.node_id, v.embedding FROM "${tbl}" v ${joinSql} ${whereSql}`,
+        `SELECT v.node_id, v.embedding FROM "${tbl}" v ${whereSql}`,
       )
       .all(...params);
 
@@ -319,6 +309,30 @@ export class SqliteVectorBackend implements VectorBackend {
     }
   }
 
+  upsertVectors(items: Array<{ id: number; vec: Float32Array }>, space: VectorSpace): void {
+    for (const { id, vec } of items) {
+      if (vec.length !== space.dim) throw new SpaceInvariantError(id, space, vec.length);
+    }
+    try {
+      const tbl = tableName(space.modelId);
+      const update = this.db.prepare(`UPDATE "${tbl}" SET embedding = ? WHERE node_id = CAST(? AS INTEGER)`);
+      const insert = this.db.prepare(`INSERT INTO "${tbl}"(node_id, embedding) VALUES(CAST(? AS INTEGER), ?)`);
+      const tx = this.db.transaction((rows: Array<{ id: number; vec: Float32Array }>) => {
+        for (const { id, vec } of rows) {
+          const vecBuf = vecToBuffer(vec);
+          const u = update.run(vecBuf, id);
+          if (u.changes === 0) insert.run(id, vecBuf);
+        }
+      });
+      tx(items);
+    } catch (err) {
+      throw new StorageError(
+        `Failed to batch upsert vectors in space ${space.modelId}`,
+        err instanceof Error ? err : undefined,
+      );
+    }
+  }
+
   delete(id: number, modelId: string): void {
     try {
       const tbl = tableName(modelId);
@@ -330,6 +344,22 @@ export class SqliteVectorBackend implements VectorBackend {
         err instanceof Error ? err : undefined,
       );
     }
+  }
+
+  /**
+   * DEBT-011 (Move 3) — remove exactly the given ids, returning the count
+   * removed. Idempotent; tolerant of a missing vector table (returns 0). The
+   * old FEAT-016 `pruneInvalidatedVectors` (which hard-coded a `node` join) is
+   * retired — node-specific pruning is now facade/host composition.
+   */
+  deleteMany(ids: number[], modelId: string): number {
+    if (ids.length === 0) return 0;
+    const tbl = tableName(modelId);
+    if (!tableExists(this.db, tbl)) return 0;
+    const info = this.db
+      .prepare(`DELETE FROM "${tbl}" WHERE node_id IN (${ids.map(() => '?').join(',')})`)
+      .run(...ids);
+    return info.changes;
   }
 
   get(id: number, modelId: string): Float32Array | null {

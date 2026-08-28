@@ -1,5 +1,5 @@
 /**
- * Regression: SqliteGraphBackend.applySchema() must NEVER unconditionally run
+ * Regression: StoreGraphBackend.applySchema() must NEVER unconditionally run
  * fts5 DDL.
  *
  * The reported failure ("graph import is failing because fts5 is missing") is

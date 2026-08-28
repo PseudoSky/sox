@@ -1,4 +1,3 @@
-import { buildNodeFilterClause } from '@adhd/sox-graph-store';
 import { createVectorDialect, vecToBlob } from '@adhd/sox-store-adapter';
 import type { StoreAdapter } from '@adhd/sox-store-adapter';
 
@@ -30,6 +29,8 @@ export interface AsyncVectorBackend {
   ensureSpace(space: VectorSpace): Promise<void>;
   listSpaces(): Promise<VectorSpace[]>;
   upsert(id: number, vec: Float32Array, space: VectorSpace): Promise<void>;
+  /** FEAT-020 — batch upsert, all items share one space. */
+  upsertVectors(items: Array<{ id: number; vec: Float32Array }>, space: VectorSpace): Promise<void>;
   delete(id: number, modelId: string): Promise<void>;
   get(id: number, modelId: string): Promise<Float32Array | null>;
   knn(
@@ -42,6 +43,8 @@ export interface AsyncVectorBackend {
     modelId: string,
     opts?: { filter?: VecFilter },
   ): AsyncIterable<{ id: number; vec: Float32Array }>;
+  /** DEBT-011 (Move 3) — remove exactly the given ids, returning the count removed. */
+  deleteMany(ids: number[], modelId: string): Promise<number>;
 }
 
 // ── Internal helpers ─────────────────────────────────────────────────────────
@@ -207,6 +210,35 @@ export class TursoVectorBackend implements AsyncVectorBackend {
     }
   }
 
+  async upsertVectors(items: Array<{ id: number; vec: Float32Array }>, space: VectorSpace): Promise<void> {
+    for (const { id, vec } of items) {
+      if (vec.length !== space.dim) throw new SpaceInvariantError(id, space, vec.length);
+    }
+    try {
+      const tbl = tableName(space.modelId);
+      await this.adapter.transaction(async () => {
+        for (const { id, vec } of items) {
+          const vecBuf = vecToBlob(vec);
+          const updated = await this.adapter.executeRun(
+            `UPDATE "${tbl}" SET embedding = ? WHERE node_id = CAST(? AS INTEGER)`,
+            [vecBuf, id],
+          );
+          if (updated.rowsAffected === 0) {
+            await this.adapter.executeRun(
+              `INSERT INTO "${tbl}"(node_id, embedding) VALUES(CAST(? AS INTEGER), ?)`,
+              [id, vecBuf],
+            );
+          }
+        }
+      });
+    } catch (err) {
+      throw new StorageError(
+        `Failed to batch upsert vectors in space ${space.modelId}`,
+        err instanceof Error ? err : undefined,
+      );
+    }
+  }
+
   async delete(id: number, modelId: string): Promise<void> {
     try {
       const tbl = tableName(modelId);
@@ -243,16 +275,36 @@ export class TursoVectorBackend implements AsyncVectorBackend {
   }
 
   /**
+   * DEBT-011 (Move 3) — remove exactly the given ids, returning the count
+   * removed. Idempotent; tolerant of a missing vector table (returns 0). The
+   * old FEAT-016 `pruneInvalidatedVectors` (hard-coded `node` join) is retired.
+   */
+  async deleteMany(ids: number[], modelId: string): Promise<number> {
+    if (ids.length === 0) return 0;
+    const tbl = tableName(modelId);
+    try {
+      const result = await this.adapter.executeRun(
+        `DELETE FROM "${tbl}" WHERE node_id IN (${ids.map(() => '?').join(',')})`,
+        ids,
+      );
+      return result.rowsAffected;
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      if (/no such table/i.test(msg)) return 0;
+      throw new StorageError(
+        `Failed to delete vectors for space ${modelId}`,
+        err instanceof Error ? err : undefined,
+      );
+    }
+  }
+
+  /**
    * k-nearest-neighbour search via `TursoVectorDialect.topKQuery` (native
-   * `vector_distance_cos`, index-accelerated). Both `VecFilter.ids` and
-   * `VecFilter.nodeFilter` are compiled into the SQL that fills the
-   * dialect's `__PLACEHOLDER__` seam — the exact same seam
-   * `libs/memory-core/src/recall.ts` and `neardup.ts` fill — so filtering
-   * happens INSIDE the query, before the `k`/`LIMIT` cutoff is applied.
-   * This is load-bearing: a post-filter (fetch k, then discard non-matching
-   * rows in JS) can return fewer than k matching rows even when plenty
-   * exist further out in vector space; pushing the predicate into the WHERE
-   * clause does not have that failure mode.
+   * `vector_distance_cos`, index-accelerated). DEBT-011: the filter contract is
+   * pure `{ ids }` — the store knows nothing about the graph's `node` table.
+   * `ids` is compiled into the SQL that fills the dialect's `__PLACEHOLDER__`
+   * seam (the same seam `libs/memory-core/src/recall.ts` and `neardup.ts` fill),
+   * so the id filter happens INSIDE the query, before the `k`/`LIMIT` cutoff.
    *
    * `topKQuery`'s `distance` column is `vector_distance_cos` — a genuine
    * DISTANCE (0 = identical, larger = more different), not a similarity.
@@ -280,26 +332,14 @@ export class TursoVectorBackend implements AsyncVectorBackend {
     const clauses: string[] = [];
     const params: unknown[] = [];
 
-    if (filter?.nodeFilter) {
-      // Same predicate builder @adhd/sox-graph-store's own queryNodes /
-      // countNodes / searchNodes use internally, and the same one
-      // SqliteVectorBackend's BruteForceBackend uses for its own
-      // `nodeFilter` support — one canonical NodeFilter->SQL translation
-      // shared by every caller in this ecosystem, never a second one that
-      // could silently diverge (see the `VecFilter.nodeFilter` doc comment
-      // in index.ts).
-      const { where, params: fParams } = buildNodeFilterClause(filter.nodeFilter, true, 'n');
-      if (where) clauses.push(where.replace(/^WHERE /, ''));
-      params.push(...fParams);
-    }
     if (filter?.ids && filter.ids.length > 0) {
       clauses.push(`v.node_id IN (${filter.ids.map(() => '?').join(',')})`);
       params.push(...filter.ids);
     }
 
     const filterClause = clauses.length > 0 ? clauses.join(' AND ') : '1=1';
-    const knnSql = dialectSql.replace('__PLACEHOLDER__', filterClause) + ' LIMIT ?';
-    const knnArgs = [...dialectArgs, ...params, k];
+    const knnSql = dialectSql.replace('__PLACEHOLDER__', filterClause);
+    const knnArgs = [...dialectArgs, ...params];
 
     let rows: Array<{ node_id: number; distance: number }>;
     try {
@@ -326,9 +366,8 @@ export class TursoVectorBackend implements AsyncVectorBackend {
   /**
    * Full (optionally id-filtered) corpus scan of a space's table — the
    * async mirror of `SqliteVectorBackend.iter`, used by `reembed()`-style
-   * migration and clustering callers. `VecFilter.nodeFilter` is honored the
-   * same way `knn` honors it (pushed into the SQL WHERE via
-   * `buildNodeFilterClause`), not applied after the fact.
+   * migration and clustering callers. DEBT-011: the filter contract is pure
+   * `{ ids }` — the store knows nothing about the graph's `node` table.
    */
   async *iter(
     modelId: string,
@@ -339,14 +378,7 @@ export class TursoVectorBackend implements AsyncVectorBackend {
 
     const clauses: string[] = [];
     const params: unknown[] = [];
-    let joinSql = '';
 
-    if (filter?.nodeFilter) {
-      joinSql = `JOIN node n ON n.rowid = v.node_id`;
-      const { where, params: fParams } = buildNodeFilterClause(filter.nodeFilter, true, 'n');
-      if (where) clauses.push(where.replace(/^WHERE /, ''));
-      params.push(...fParams);
-    }
     if (filter?.ids && filter.ids.length > 0) {
       clauses.push(`v.node_id IN (${filter.ids.map(() => '?').join(',')})`);
       params.push(...filter.ids);
@@ -357,7 +389,7 @@ export class TursoVectorBackend implements AsyncVectorBackend {
     let rows: Array<{ node_id: number; embedding: Buffer }>;
     try {
       const result = await this.adapter.executeAll<{ node_id: number; embedding: Buffer }>(
-        `SELECT v.node_id, v.embedding FROM "${tbl}" v ${joinSql} ${whereSql}`,
+        `SELECT v.node_id, v.embedding FROM "${tbl}" v ${whereSql}`,
         params,
       );
       rows = result.rows;

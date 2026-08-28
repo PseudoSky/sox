@@ -172,7 +172,7 @@ export class SqliteVecDialect implements VectorDialect {
     // into this SQL. Callers (recall.ts) apply a stable secondary sort on
     // `node_id` in JS after fetching instead — see its doc comment.
     return {
-      sql: `SELECT v.node_id, v.distance FROM "${table}" v JOIN node n ON n.rowid = v.node_id WHERE v.${column} MATCH ? AND k = ? AND __PLACEHOLDER__ ORDER BY v.distance ${distanceOrder}`,
+      sql: `SELECT v.node_id, v.distance FROM "${table}" v WHERE v.${column} MATCH ? AND k = ? AND __PLACEHOLDER__ ORDER BY v.distance ${distanceOrder}`,
       args: [vecJson, k],
     };
   }
@@ -253,7 +253,7 @@ export class TursoVectorDialect implements VectorDialect {
     table: string,
     column: string,
     queryVec: number[],
-    _k: number,
+    k: number,
     metric: VectorMetric,
   ): { sql: string; args: unknown[] } {
     const vec = new Float32Array(queryVec);
@@ -275,8 +275,15 @@ export class TursoVectorDialect implements VectorDialect {
     // for why sqlite can't do it in SQL), so both dialects get identical
     // tie-break behaviour from one place rather than two different
     // mechanisms that could drift apart.
+    //
+    // DEBT-011: Turso has no `k = ?` self-limit the way vec0 does, so the
+    // dialect OWNS its own LIMIT here. `k` is inlined as an integer literal
+    // (a Number, never caller string input — no injection surface) so the
+    // dialect's `args` stay BEFORE the `__PLACEHOLDER__` seam on both backends,
+    // keeping the caller's arg concatenation order (`...dialectArgs, ...callerArgs`)
+    // uniform. The `__PLACEHOLDER__` seam is a pure WHERE-predicate seam.
     return {
-      sql: `SELECT v.node_id, ${distFn}(v.${column}, ${hexBlob}) AS distance FROM "${table}" v JOIN node n ON n.rowid = v.node_id WHERE __PLACEHOLDER__ ORDER BY distance ${distanceOrder}`,
+      sql: `SELECT v.node_id, ${distFn}(v.${column}, ${hexBlob}) AS distance FROM "${table}" v WHERE __PLACEHOLDER__ ORDER BY distance ${distanceOrder} LIMIT ${k}`,
       args: [],
     };
   }

@@ -543,10 +543,16 @@ export async function memoryRecall(
     const { sql: dialectSql, args: dialectArgs } = vectorDialect.topKQuery(
       'vec_node', 'embedding', queryVec, knnLimit, 'cosine',
     );
-    // Interpolate __PLACEHOLDER__ with validity + agent + custom filter + kind clauses
+    // DEBT-011: the dialect's topKQuery no longer joins the graph `node` table.
+    // The `n.`-aliased predicates below are re-fused via a subquery in the
+    // __PLACEHOLDER__ predicate seam (v.node_id IN (SELECT n.rowid FROM node n
+    // WHERE …)) — the seam is a WHERE-predicate seam, not a relation seam.
     const filterClauses = [validityPred, agentFilter, filterSql, kindClause].filter(Boolean).join(' ');
-    const vecSql = dialectSql.replace('__PLACEHOLDER__', filterClauses) + ' LIMIT ?';
-    const vecParams: unknown[] = [...dialectArgs, ...filterParams, ...kindParams, knnLimit];
+    const vecSql = dialectSql.replace(
+      '__PLACEHOLDER__',
+      `v.node_id IN (SELECT n.rowid FROM node n WHERE ${filterClauses})`,
+    );
+    const vecParams: unknown[] = [...dialectArgs, ...filterParams, ...kindParams];
     const vecResult = await adapter.executeAll<{ node_id: number; distance: number }>(vecSql, vecParams);
     vecRows = vecResult.rows;
     // BL-367: stable secondary sort on node_id to break EXACT distance ties
