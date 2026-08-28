@@ -54,7 +54,7 @@ import * as os from 'node:os';
 import { embed, vecToJson, getProviderCallCount } from './embed.js';
 import { log as tlog } from './telemetry.js';
 import { openDbReadOnly } from './db.js';
-import { buildFilterClause } from '@adhd/sox-hybrid-search';
+import { buildFilterClause, rrfScore } from '@adhd/sox-hybrid-search';
 import type { StoreAdapter } from '@adhd/sox-store-adapter';
 
 // ── Query-embed timeout (read-path guard) ─────────────────────────────────────
@@ -301,7 +301,6 @@ export class ExpansionOverflowError extends Error {
   }
 }
 
-const RRF_K = 60;
 const RECENCY_DECAY_PER_HOUR = 0.995;
 const DEFAULT_TOKEN_BUDGET = 32000; // was 4000 — too small for doc-scale nodes
 const DEFAULT_DEPTH = 1;
@@ -334,12 +333,12 @@ function recencyMultiplier(tCreated: string | null): number {
 }
 
 /**
- * RRF score contribution: 1 / (k + rank)
+ * FEAT-022 — RRF per-rank contribution is the SHARED `rrfScore` primitive from
+ * `@adhd/sox-hybrid-search` (the single canonical definition, ADR-0006/0016).
+ * The 3-channel min-max normalization, recency×importance rerank, and additive
+ * `ScoreBreakdown` remain memory-domain policy on top (they are not part of the
+ * shared ranker).
  */
-function rrfScore(rank: number): number {
-  return 1 / (RRF_K + rank);
-}
-
 interface NodeRow {
   rowid: number;
   uid: string;
