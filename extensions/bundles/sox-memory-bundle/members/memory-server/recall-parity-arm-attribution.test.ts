@@ -131,9 +131,11 @@ async function vecArmRowids(adapter: StoreAdapter, query: string, limit: number)
   const vectorDialect = createVectorDialect(adapter.config.type);
   const queryVec = await embedText(query);
   const { sql, args } = vectorDialect.topKQuery('vec_node', 'embedding', queryVec, limit, 'cosine');
-  const filled = sql.replace('__PLACEHOLDER__', "n.t_invalid IS NULL");
-  const finalSql = filled + ' LIMIT ?';
-  const result = await adapter.executeAll<{ node_id: number; distance: number }>(finalSql, [...args, limit]);
+  // DEBT-011: topKQuery no longer joins the graph `node` table and owns its own
+  // LIMIT — the `__PLACEHOLDER__` is a WHERE-predicate seam, so the validity
+  // filter is re-fused via a subquery (mirroring recall.ts §2a).
+  const filled = sql.replace('__PLACEHOLDER__', 'v.node_id IN (SELECT n.rowid FROM node n WHERE n.t_invalid IS NULL)');
+  const result = await adapter.executeAll<{ node_id: number; distance: number }>(filled, [...args]);
   const rows = [...result.rows].sort((a, b) => a.distance - b.distance || a.node_id - b.node_id);
   return rows.map((r) => r.node_id);
 }

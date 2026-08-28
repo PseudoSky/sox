@@ -172,9 +172,14 @@ export const readGraphStatuses = () => {
       out = execFileSync(
         BACKLOG_BIN,
         [
-          'list-items',
-          '--filter',
-          JSON.stringify({ repo: 'sox-ecosystem', family: 'BL', excludeArchived: false, limit: PAGE, offset }),
+          'query',
+          '--input',
+          JSON.stringify({
+            view: 'list',
+            filter: { repo: 'sox-ecosystem', family: 'BL', excludeArchived: false, status: 'all' },
+            limit: PAGE,
+            offset,
+          }),
         ],
         {
           encoding: 'utf8',
@@ -202,36 +207,38 @@ export const readGraphStatuses = () => {
       const timedOut = err.killed === true || err.signal != null;
       throw new StoreUnavailableError(
         timedOut
-          ? `plan-status: \`${BACKLOG_BIN} list-items\` (offset=${offset}) did not return within ${GRAPH_QUERY_TIMEOUT_MS}ms and was killed (signal=${err.signal}). ` +
+          ? `plan-status: \`${BACKLOG_BIN} query\` (offset=${offset}) did not return within ${GRAPH_QUERY_TIMEOUT_MS}ms and was killed (signal=${err.signal}). ` +
             `The backlog store is likely slow/wedged rather than reachable. Try \`backlog version\` by hand.`
-          : `plan-status: \`${BACKLOG_BIN} list-items\` failed (offset=${offset}) — ${err.status !== undefined ? `exit ${err.status}` : err.message}. ` +
-            `Is the backlog CLI installed and the store reachable? Try \`backlog version\` / \`backlog list-items --filter '{}'\` by hand. ` +
+          : `plan-status: \`${BACKLOG_BIN} query\` failed (offset=${offset}) — ${err.status !== undefined ? `exit ${err.status}` : err.message}. ` +
+            `Is the backlog CLI installed and the store reachable? Try \`backlog version\` / \`backlog query --input '{"view":"list"}' \` by hand. ` +
             `(plan-status refuses to silently treat this as "zero items" — that would report every backlog id as done.)`,
       );
     }
-    let items;
+    let parsed;
     try {
-      items = JSON.parse(out);
+      parsed = JSON.parse(out);
     } catch (err) {
-      throw new StoreUnavailableError(`plan-status: \`${BACKLOG_BIN} list-items\` returned non-JSON output — ${err.message}`);
+      throw new StoreUnavailableError(`plan-status: \`${BACKLOG_BIN} query\` returned non-JSON output — ${err.message}`);
     }
     // DEBT-HOOK-PLANSTATUS-GATES-EVERY-COMMIT-001 — measured directly against the real `backlog`
     // CLI: a store that fails to OPEN (e.g. `ADHD_BACKLOG_DATABASE_PATH` pointed at a directory
-    // instead of a file) does not make `list-items --filter ...` exit non-zero or emit bad JSON —
-    // it exits 0 and writes a well-formed JSON *error object* (`{"code":"internal","message":...}`)
-    // to stdout instead of the expected array. That object is valid JSON, so the JSON.parse guard
-    // above does not catch it — and it is exactly the D3 failure mode restated one layer down: an
-    // un-arrayed response would either throw a cryptic "items is not iterable" TypeError (unrelated
-    // to the real cause) or, if `items` merely lacked `.length`, silently page-loop forever. Treat
-    // any non-array response as store-unavailable, surfacing the CLI's own error object if present.
-    if (!Array.isArray(items)) {
+    // instead of a file) does not make `query` exit non-zero or emit bad JSON — it exits 0 and
+    // writes a well-formed JSON *error object* (`{"code":"internal","message":...}`) to stdout
+    // instead of the expected `{ok,data:{items}}` envelope. That object is valid JSON, so the
+    // JSON.parse guard above does not catch it — and it is exactly the D3 failure mode restated one
+    // layer down: a non-envelope response would either throw a cryptic "items is not iterable"
+    // TypeError (unrelated to the real cause) or, if `items` merely lacked `.length`, silently
+    // page-loop forever. Treat any non-envelope response as store-unavailable, surfacing the CLI's
+    // own error object if present.
+    if (parsed?.ok !== true || !Array.isArray(parsed?.data?.items)) {
       throw new StoreUnavailableError(
-        `plan-status: \`${BACKLOG_BIN} list-items\` (offset=${offset}) exited 0 but did not return an item array — ` +
-          `got ${JSON.stringify(items).slice(0, 300)}. This is how the backlog CLI reports a store that failed to ` +
-          `open (e.g. a corrupt or misdirected ADHD_BACKLOG_DATABASE_PATH) — treating it as store-unavailable rather ` +
-          `than as "zero items".`,
+        `plan-status: \`${BACKLOG_BIN} query\` (offset=${offset}) exited 0 but did not return a ` +
+          `query envelope with data.items — got ${JSON.stringify(parsed).slice(0, 300)}. This is how ` +
+          `the backlog CLI reports a store that failed to open (e.g. a corrupt or misdirected ` +
+          `ADHD_BACKLOG_DATABASE_PATH) — treating it as store-unavailable rather than as "zero items".`,
       );
     }
+    const items = parsed.data.items;
     for (const item of items) {
       // The graph's `title` field on migrated items still carries leftover embedded prose from the
       // original markdown import (e.g. "— **Open (LOW, feature)…**") — that is cosmetic import

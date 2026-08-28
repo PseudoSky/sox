@@ -726,6 +726,11 @@ export class StoreSearchBackend implements SearchBackend {
    *
    * Back-compat: the existing 2-signal `search()` (min-max normalisation fusion)
    * is unchanged; this is the additive N-signal entry point.
+   *
+   * SCALE NOTE: `score` here is on the raw RRF magnitude scale (`Σ w_i/(60+rank_i)`,
+   * ~0.016..0.033 per signal) — NOT the [0,1] min-max scale the existing
+   * `search()` returns. The two entry points are not score-comparable; do not
+   * mix results from both into one sorted set.
    */
   async searchRanked(query: SearchQuery, limit: number): Promise<SearchResult[]> {
     const signals = query.signals ?? defaultSignals(query);
@@ -842,3 +847,16 @@ export class StoreSearchBackend implements SearchBackend {
     return fields;
   }
 }
+
+/**
+ * @deprecated Renamed to {@link StoreSearchBackend} — the backend is backed by a
+ * generic StoreAdapter, not SQLite specifically. Kept as a re-export for one
+ * release so published consumers don't break on upgrade.
+ */
+export { StoreSearchBackend as SqliteSearchBackend };
+
+/**
+ * @deprecated Renamed to {@link StoreSearchOpts}. Kept as a re-export for one
+ * release so published consumers don't break on upgrade.
+ */
+export type { StoreSearchOpts as SqliteSearchOpts };

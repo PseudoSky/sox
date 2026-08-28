@@ -874,8 +874,10 @@ export const DEFAULT_TYPE_POLICY: TypePolicy = {
  * facade) IMPLEMENTS it to do embed-on-write / delete-on-invalidate. This is the
  * same DI idiom as TypePolicy — it keeps graph-store base-tier-pure while
  * letting the embedding lifecycle be owned by the composition layer. Observers
- * fire AFTER the write commits, and their failures degrade (logged) rather than
- * corrupt the data write.
+ * fire inline, right after the write's INSERT/UPDATE (inside the surrounding
+ * transaction for batched writes — a slow observer therefore holds that
+ * transaction open), and their failures degrade (logged) rather than corrupt the
+ * data write.
  */
 export interface GraphWriteObserver {
   onNodeWritten?(node: NodeRecord, meta: NodeMeta): void | Promise<void>;
@@ -1256,12 +1258,18 @@ export function buildNodeFilterClause(
   };
 }
 
-function buildOrderClause(filter: NodeFilter | undefined, tableAlias: string): string {
-  if (!filter?.orderBy) return '';
+function buildOrderClause(
+  filter: NodeFilter | undefined,
+  tableAlias: string,
+): { sql: string; params: unknown[] } {
+  if (!filter?.orderBy) return { sql: '', params: [] };
   const alias = tableAlias ? `${tableAlias}.` : '';
+  const params: unknown[] = [];
 
   // FEAT-014 — normalize to a list of {expr, defaultDir} sort terms. A metadata
-  // sort key resolves to `json_extract(meta, '$.key')` (unindexed but correct).
+  // sort key resolves to `json_extract(meta, ?)` with the `$.key` path BOUND
+  // (review MINOR — parameterized like appendMetadataFilterClauses, never
+  // interpolated, so a quote in the key cannot break the query).
   const fields = Array.isArray(filter.orderBy) ? filter.orderBy : [filter.orderBy];
   const terms: Array<{ expr: string; defaultDir: 'ASC' | 'DESC' }> = [];
   for (const field of fields) {
@@ -1275,17 +1283,18 @@ function buildOrderClause(filter: NodeFilter | undefined, tableAlias: string): s
       }
     } else {
       // { metadata: key } — sort by a JSON field.
-      terms.push({ expr: `json_extract(${alias}meta, '$.${field.metadata}')`, defaultDir: 'ASC' });
+      terms.push({ expr: `json_extract(${alias}meta, ?)`, defaultDir: 'ASC' });
+      params.push(`$.${field.metadata}`);
     }
   }
-  if (terms.length === 0) return '';
+  if (terms.length === 0) return { sql: '', params: [] };
 
   const dirs = Array.isArray(filter.orderDir) ? filter.orderDir : (filter.orderDir ? [filter.orderDir] : []);
   const ordered = terms.map((t, i) => {
     const d = dirs[i] ?? t.defaultDir;
     return `${t.expr} ${d.toUpperCase()}`;
   });
-  return `ORDER BY ${ordered.join(', ')}`;
+  return { sql: `ORDER BY ${ordered.join(', ')}`, params };
 }
 
 /**
@@ -1785,16 +1794,33 @@ export class StoreGraphBackend implements GraphBackend {
   }
 
   async writeNode(content: string, meta: NodeMeta, opts?: WriteNodeOpts): Promise<number> {
+    // Standalone (non-transactional) path. When called inside `transaction()`,
+    // the callers below route through writeNodeInTx with the LIVE transaction
+    // handle so the uniqueness policy + dedupe + INSERT all see the same
+    // in-transaction state — Turso's tx handle is a separate session, so using
+    // `this.adapter` inside a transaction would read committed state and miss
+    // intra-batch/intra-transaction writes (review MAJOR #1).
+    return this.writeNodeInTx(content, meta, opts, this.adapter);
+  }
+
+  private async writeNodeInTx(
+    content: string,
+    meta: NodeMeta,
+    opts: WriteNodeOpts | undefined,
+    db: AdapterTransaction,
+  ): Promise<number> {
     const kind = meta.kind ?? 'episode';
     this.typePolicy.validateKind(kind);
 
     // FEAT-023 — the injectable uniqueness policy runs BEFORE the INSERT, with
-    // read access to the store's read path. Under single-writer (ADR-0007 /
-    // ADR-0015) a check-then-INSERT is atomic without any DDL index, and the
-    // Turso adapter refuses nested transactions, so no transaction wrapper is
-    // opened here. The policy throws ConstraintError to reject a write.
+    // read access to the SAME handle the INSERT goes through (the transaction
+    // handle when writeNodeInTx is called inside transaction(), else the
+    // adapter). Under single-writer (ADR-0007 / ADR-0015) a check-then-INSERT is
+    // atomic without any DDL index, and the Turso adapter refuses nested
+    // transactions, so no transaction wrapper is opened here. The policy throws
+    // ConstraintError to reject a write.
     if (this.uniquenessPolicy) {
-      await this.uniquenessPolicy.check(meta, this.adapter);
+      await this.uniquenessPolicy.check(meta, db);
     }
 
     const hash = hashContent(content);
@@ -1805,7 +1831,7 @@ export class StoreGraphBackend implements GraphBackend {
     // through findOrCreateNode (FEAT-011) and — where the consumer declares one
     // — the NodeUniquenessPolicy (FEAT-023) instead.
     if (!opts?.skipDedupe) {
-      const existing = await this.adapter.executeGet<{ rowid: number }>(
+      const existing = await db.executeGet<{ rowid: number }>(
         'SELECT rowid FROM node WHERE content_hash = ?', [hash],
       );
       if (existing) return existing.rowid;
@@ -1817,7 +1843,7 @@ export class StoreGraphBackend implements GraphBackend {
     const tagsJson = meta.tags && meta.tags.length > 0 ? JSON.stringify(meta.tags) : null;
     const metaJson = meta.metadata !== undefined ? JSON.stringify(meta.metadata) : null;
 
-    const result = await this.adapter.executeGet<{ rowid: number }>(
+    const result = await db.executeGet<{ rowid: number }>(
       `INSERT INTO node (uid, kind, content, name, summary, topic, tags, importance,
         confidence, content_hash, namespace, meta, agent_id, session_id, source,
         project_path, t_occurred, t_expires, t_created, t_valid)
@@ -1871,9 +1897,9 @@ export class StoreGraphBackend implements GraphBackend {
       throw new BitemporalConflictError(`Node ${oldId} is already invalidated`, oldId);
     }
 
-    return this.adapter.transaction(async (_tx) => {
-      const newId = await this.writeNode(newContent, meta);
-      await this.adapter.executeRun(`UPDATE node SET is_superseded = 1 WHERE rowid = ?`, [oldId]);
+    return this.adapter.transaction(async (tx) => {
+      const newId = await this.writeNodeInTx(newContent, meta, undefined, tx);
+      await tx.executeRun(`UPDATE node SET is_superseded = 1 WHERE rowid = ?`, [oldId]);
       await this.writeEdge(newId, oldId, 'SUPERSEDES', {
         metadata: { reason: `superseded by node ${newId}`, supersededAt: nowISO() },
       });
@@ -1940,9 +1966,9 @@ export class StoreGraphBackend implements GraphBackend {
   }
 
   async writeNodeBatch(nodes: Array<{ content: string; meta: NodeMeta }>, opts?: WriteNodeOpts): Promise<number[]> {
-    return this.adapter.transaction(async (_tx) => {
+    return this.adapter.transaction(async (tx) => {
       const ids: number[] = [];
-      for (const n of nodes) ids.push(await this.writeNode(n.content, n.meta, opts));
+      for (const n of nodes) ids.push(await this.writeNodeInTx(n.content, n.meta, opts, tx));
       return ids;
     });
   }
@@ -1952,16 +1978,21 @@ export class StoreGraphBackend implements GraphBackend {
     edges: Array<{ srcIdx: number; dstIdx: number; rel: EdgeRel; meta?: EdgeMeta }>,
     opts?: WriteNodeOpts,
   ): Promise<number[]> {
-    return this.adapter.transaction(async (_tx) => {
+    return this.adapter.transaction(async (tx) => {
       const nodeIds: number[] = [];
-      // FEAT-013 fast-path: capture each node's kind during insertion so edge
-      // validation can resolve endpoint kinds without a per-edge SELECT.
-      const kindByRowid = new Map<number, string>();
       for (const n of nodes) {
-        const id = await this.writeNode(n.content, n.meta, opts);
-        nodeIds.push(id);
-        kindByRowid.set(id, n.meta.kind ?? 'episode');
+        nodeIds.push(await this.writeNodeInTx(n.content, n.meta, opts, tx));
       }
+      // Resolve the ACTUAL endpoint kinds in one query (review MINOR): the old
+      // fast-path recorded the *requested* kind during insertion, which is wrong
+      // when writeNode returned a content-dedupe hit (skipDedupe false) whose
+      // stored kind differs from the requested kind.
+      const { rows } = await this.adapter.executeAll<{ rowid: number; kind: string }>(
+        `SELECT rowid, kind FROM node WHERE rowid IN (${nodeIds.map(() => '?').join(',')})`,
+        nodeIds,
+      );
+      const kindByRowid = new Map<number, string>();
+      for (const row of rows) kindByRowid.set(row.rowid, row.kind);
       for (const edge of edges) {
         if (edge.srcIdx < 0 || edge.srcIdx >= nodeIds.length)
           throw new ConstraintError(`Invalid srcIdx: ${edge.srcIdx}`);
@@ -2033,7 +2064,9 @@ export class StoreGraphBackend implements GraphBackend {
     const { where, params } = buildNodeFilterClause(filter, filter?.liveOnly ?? true, 'n');
     const allParams = [...params];
     let whereClause = where;
-    let order = buildOrderClause(filter, 'n');
+    const orderClause = buildOrderClause(filter, 'n');
+    let order = orderClause.sql;
+    allParams.push(...orderClause.params);
 
     // FEAT-024 (C) — keyset cursor: stable rowid scan. When `after` is set the
     // query compiles to `WHERE rowid > ? ORDER BY rowid ASC`, ignoring `orderBy`
@@ -2692,3 +2725,10 @@ export function createGraphBackend(adapter: StoreAdapter, opts?: GraphBackendOpt
   void backend.engineIdentity;
   return backend;
 }
+
+/**
+ * @deprecated Renamed to {@link StoreGraphBackend} — the backend is backed by a
+ * generic StoreAdapter (sqlite OR turso), not SQLite specifically. Kept as a
+ * re-export for one release so published consumers don't break on upgrade.
+ */
+export { StoreGraphBackend as SqliteGraphBackend };

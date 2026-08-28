@@ -109,7 +109,7 @@ const D1_TABLE = [
 }
 
 // ---------------------------------------------------------------------------------------------
-// Fixture: a fake `backlog` CLI executable understanding only `list-items --filter <json>`.
+// Fixture: a fake `backlog` CLI executable understanding only `query --input <json>`.
 // ---------------------------------------------------------------------------------------------
 function makeFakeBacklog(dir, { page1Count, page2Count, pageSize = 200, page1Status = 'OPEN', page2Status = 'OPEN' }) {
   const script = path.join(dir, 'backlog');
@@ -117,9 +117,9 @@ function makeFakeBacklog(dir, { page1Count, page2Count, pageSize = 200, page1Sta
     script,
     `#!/usr/bin/env node
 const argv = process.argv.slice(2);
-const filterIdx = argv.indexOf('--filter');
-const filter = JSON.parse(argv[filterIdx + 1]);
-const offset = filter.offset ?? 0;
+const inputIdx = argv.indexOf('--input');
+const input = JSON.parse(argv[inputIdx + 1]);
+const offset = input.offset ?? 0;
 const PAGE1 = ${page1Count};
 const PAGE2 = ${page2Count};
 let items = [];
@@ -128,7 +128,7 @@ if (offset === 0) {
 } else if (offset === PAGE1) {
   items = Array.from({ length: PAGE2 }, (_, i) => ({ humanId: 'BL-' + (PAGE1 + i + 1), status: ${JSON.stringify(page2Status)} }));
 }
-process.stdout.write(JSON.stringify(items));
+process.stdout.write(JSON.stringify({ ok: true, data: { view: 'list', items }, meta: { total: items.length } }));
 `,
     { mode: 0o755 },
   );
@@ -197,10 +197,10 @@ function makeMissingBacklog(dir) {
 {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'plan-status-page-naive-'));
   const fake = makeFakeBacklog(dir, { page1Count: 200, page2Count: 17 });
-  const naiveOut = execFileSync(fake, ['list-items', '--filter', JSON.stringify({ repo: 'sox-ecosystem', family: 'BL', excludeArchived: false, limit: 200, offset: 0 })], {
+  const naiveOut = execFileSync(fake, ['query', '--input', JSON.stringify({ view: 'list', filter: { repo: 'sox-ecosystem', family: 'BL', excludeArchived: false, status: 'all' }, limit: 200, offset: 0 })], {
     encoding: 'utf8',
   });
-  const naiveItems = JSON.parse(naiveOut);
+  const naiveItems = JSON.parse(naiveOut).data.items;
   const naiveMap = new Map(naiveItems.map((i) => [Number(i.humanId.replace(/^BL-/, '')), i.status]));
   report(
     'AC-D2 RED arm — a naive single-call implementation is missing the page-2-only item (id 217)',
@@ -223,8 +223,8 @@ function makeMissingBacklog(dir) {
   });
   report('AC-D3 plan-status.mjs --check exits non-zero when the backlog binary is missing', r.status !== 0, `code=${r.status}`);
   report(
-    'AC-D3 stderr names the failing command (mentions "list-items" or the binary path)',
-    r.stderr.includes('list-items') || r.stderr.includes(missing),
+    'AC-D3 stderr names the failing command (mentions "query" or the binary path)',
+    r.stderr.includes('query') || r.stderr.includes(missing),
     `stderr=${JSON.stringify(r.stderr.slice(0, 400))}`,
   );
   report('AC-D3 stderr does NOT print the normal OK line', !/plan-status: OK/.test(r.stderr) && !/plan-status: OK/.test(r.stdout), `stderr=${JSON.stringify(r.stderr.slice(0, 200))}`);
