@@ -1,8 +1,8 @@
-# @adhd/sox-analysis
+# @adhd/sox-semantic
 
-## 0.1.10
+## 0.1.0
 
-### Patch Changes
+### Minor Changes
 
 - d9a5023: Backlog-v2 library layer: decoupling, uniqueness policy, surface completion, N-signal ranker.
 
@@ -21,69 +21,12 @@
   - **memory-core** — `recall` consumes the shared `rrfScore` from hybrid-search (the hand-rolled duplicate is deleted).
   - **analysis** — `await writeEdge` at three call sites (fixes un-awaited writes).
 
+### Patch Changes
+
 - Updated dependencies [d9a5023]
+- Updated dependencies
   - @adhd/sox-graph-store@0.9.0
+  - @adhd/sox-store-adapter@0.8.0
   - @adhd/sox-vector-store@0.6.0
-
-## 0.1.9
-
-### Patch Changes
-
-- Updated dependencies
-  - @adhd/sox-vector-store@0.5.0
-
-## 0.1.8
-
-### Patch Changes
-
-- Updated dependencies
-  - @adhd/sox-graph-store@0.8.3
-  - @adhd/sox-vector-store@0.4.3
-
-## 0.1.7
-
-### Patch Changes
-
-- Updated dependencies
-- Updated dependencies [659a9d7]
-  - @adhd/sox-graph-store@0.8.2
-  - @adhd/sox-vector-store@0.4.2
-
-## 0.1.6
-
-### Patch Changes
-
-- Updated dependencies
-  - @adhd/sox-graph-store@0.7.0
-  - @adhd/sox-vector-store@0.4.1
-
-## 0.1.5
-
-### Patch Changes
-
-- Updated dependencies [7f46e96]
-- Updated dependencies [7f46e96]
-  - @adhd/sox-graph-store@0.6.0
-  - @adhd/sox-vector-store@0.4.0
-
-## 0.1.4
-
-### Patch Changes
-
-- @adhd/sox-graph-store@0.5.3
-- @adhd/sox-vector-store@0.3.3
-
-## 0.1.2
-
-### Patch Changes
-
-- @adhd/sox-graph-store@0.5.1
-- @adhd/sox-vector-store@0.3.1
-
-## 0.1.1
-
-### Patch Changes
-
-- Updated dependencies [0f63dfe]
-  - @adhd/sox-graph-store@0.4.0
-  - @adhd/sox-vector-store@0.2.0
+  - @adhd/sox-hybrid-search@0.4.0
+  - @adhd/sox-embedding-provider@0.4.1
