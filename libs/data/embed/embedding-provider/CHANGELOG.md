@@ -1,5 +1,11 @@
 # @adhd/sox-embedding-provider
 
+## 0.4.1
+
+### Patch Changes
+
+- Stop `terminate()` re-forking a fastembed child process (BUG-MEMORYSERVER-SHUTDOWN-LEAKS-FASTEMBED-CHILD-001). `SharedFastembedProcessClient` now carries a permanent `terminated` flag; `ensureProcess()` refuses to fork once shutdown has begun, so a cache-hit warmup retry racing `coordinatedShutdown` can no longer spawn an untracked orphan `fastembedProcessHost.js` child.
+
 ## 0.4.0
 
 ### Minor Changes
