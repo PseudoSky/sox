@@ -2725,10 +2725,3 @@ export function createGraphBackend(adapter: StoreAdapter, opts?: GraphBackendOpt
   void backend.engineIdentity;
   return backend;
 }
-
-/**
- * @deprecated Renamed to {@link StoreGraphBackend} — the backend is backed by a
- * generic StoreAdapter (sqlite OR turso), not SQLite specifically. Kept as a
- * re-export for one release so published consumers don't break on upgrade.
- */
-export { StoreGraphBackend as SqliteGraphBackend };

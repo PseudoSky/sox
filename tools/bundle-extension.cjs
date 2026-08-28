@@ -237,7 +237,7 @@ function discoverSidecars(metafile) {
  * its own compiled file location (`import.meta.url` / `__dirname`), rather
  * than files esbuild can trace as imports.
  *
- * Concretely: @adhd/sox-graph-store's SqliteGraphBackend.applySchema() calls
+ * Concretely: @adhd/sox-graph-store's StoreGraphBackend.applySchema() calls
  * drizzle-orm's migrate() with `fileURLToPath(new URL('../drizzle/migrations',
  * import.meta.url))` — a path resolved relative to wherever the CURRENTLY
  * EXECUTING file lives. In graph-store's own unbundled dist/index.js, that
@@ -248,7 +248,7 @@ function discoverSidecars(metafile) {
  * relative '../drizzle/migrations' now resolves to a sibling of the
  * consumer's own dist/, which was never populated. drizzle-orm's migrate()
  * then throws "Can't find meta/_journal.json file", live, for every caller
- * that constructs a SqliteGraphBackend — vitest never catches this because it
+ * that constructs a StoreGraphBackend — vitest never catches this because it
  * runs from source (tsx), where import.meta.url is graph-store's own file and
  * the relative path is correct by construction; only the bundled artifact is
  * broken. Same class of bug as the sidecar problem above (BL-87/89/259):

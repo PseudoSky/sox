@@ -2,7 +2,7 @@
 /**
  * tools/test-bl313-graph-store-migrations-asset.mjs — regression test for BL-313.
  *
- * BL-313: @adhd/sox-graph-store's SqliteGraphBackend.applySchema() resolves its
+ * BL-313: @adhd/sox-graph-store's StoreGraphBackend.applySchema() resolves its
  * Drizzle migrations folder via `fileURLToPath(new URL('../drizzle/migrations',
  * import.meta.url))` — relative to wherever the CURRENTLY EXECUTING file lives.
  * That's correct for graph-store's own unbundled dist/index.js (drizzle/migrations
@@ -11,10 +11,10 @@
  * memory-server), import.meta.url at runtime is the CONSUMER's dist/index.js — the
  * same relative path now resolves to a sibling of the CONSUMER's dist/, which was
  * never populated. drizzle-orm's migrate() then throws "Can't find meta/_journal.json
- * file" for every caller that constructs a SqliteGraphBackend inside a bundled
+ * file" for every caller that constructs a StoreGraphBackend inside a bundled
  * artifact. Discovered live 2026-07-18: memory_stats and memory_list_entities failed
  * against the deployed memory-server bundle while memory_write/memory_topics
- * (which don't touch SqliteGraphBackend) worked fine.
+ * (which don't touch StoreGraphBackend) worked fine.
  *
  * vitest never caught this because it runs from source via tsx, where
  * import.meta.url is graph-store's own file and the relative path is correct by
@@ -34,7 +34,7 @@
  *      into a scratch outdir — proves drizzle/migrations lands as a sibling of it.
  *   2. require()ing the built artifact and calling handleToolCall('memory_stats', ...)
  *      and handleToolCall('memory_list_entities', ...) against a scratch DB — both
- *      construct a SqliteGraphBackend internally; proves neither throws
+ *      construct a StoreGraphBackend internally; proves neither throws
  *      "Can't find meta/_journal.json file".
  *   3. Regression check on the fix's own failure mode: temporarily renaming the
  *      committed asset dir away reproduces the original throw (proves the test
