@@ -17,6 +17,7 @@ import {
   // Slice 4 (docs/spec/service-lifecycle.md §10.2/§14): doctor reconcile.
   chooseSurvivor,
   classifyReconcileTargets,
+  descendantOf,
   compilePolicy,
   computeSupervisorId,
   // Slice 3 (docs/spec/service-lifecycle.md §11.3): crash-loop give-up markers.
@@ -76,6 +77,8 @@ import {
   stopRuntime,
   // BL-201: dead-holder proxy spawn-lock debris sweep (reconcile step 6).
   sweepProxyBackendLocks,
+  // BL-621: ancestry-rooted reconcile — pid→ppid snapshot primitive.
+  snapshotProcessTable,
   unloadThenReap,
   // BL-185: interval-schedule detection for SCHEDULED status rendering.
   isScheduledOsUnitContent,
@@ -5346,7 +5349,7 @@ OS units are GENERATED from the manifest; hand-editing them is unsupported.
     // it buried in run/logs/doctor-reconcile/*.log. Not an error by itself (the
     // heal is correct self-healing behavior); it IS a rotation the operator did
     // not initiate and needs to know happened.
-    const healMarker = readSingletonHealMarker(extId, scope);
+    const healMarker = readReconcileHealMarker(extId, scope);
     process.stdout.write(
       `${CLI} service status: ${label} (scope ${scope}, ${platform.kind})\n` +
       `  unit file:  ${fileExists ? unitPath : '(none)'}\n` +
@@ -5355,7 +5358,7 @@ OS units are GENERATED from the manifest; hand-editing them is unsupported.
       `  live pids:  ${livePids.length ? livePids.join(', ') : '(none)'}\n` +
       (ctx ? `  entrypoint: ${ctx.entrypoint}\n` : '') +
       (ctx?.spec.artifactHash ? `  artifact:   ${ctx.spec.artifactHash}\n` : '') +
-      (healMarker
+      (healMarker?.kind === 'singleton-duplicate'
         ? `  ⚠ silent respawn (BL-393): doctor-reconcile SIGTERM'd a duplicate backend ` +
           `at ${healMarker.healedAt} (killed pid ${healMarker.killedPid}, survivor pid ` +
           `${healMarker.survivorPid} → ${healMarker.outcome}) — nobody chose this restart; ` +
@@ -5870,6 +5873,7 @@ interface ReconcileFinding {
   kind:
     | 'zombie-stray'            // token-matched, zero fds on the live writer socket (BL-170)
     | 'stray-skipped'           // report+skip (accounted / socket holder / unattributable / lone)
+    | 'descendant-skip-audit'   // BL-621: token match protected by a live root in its parentage
     | 'singleton-duplicate'     // ≥2 live, no socket — §5.3 heal (oldest survives)
     | 'split-brain-runtime'     // runtime.json running:true with no process reality (F4/F6)
     | 'os-unit-file-missing'    // ownership records a unit whose file is gone
@@ -5918,35 +5922,73 @@ interface ReconcileFinding {
  * `memory_ping` or `service status`. Persist the last heal event per
  * extId+scope so `service status` can surface it loudly instead.
  */
-interface SingletonHealMarker {
-  extId: string;
-  scope: string;
-  healedAt: string;
-  survivorPid: number;
-  killedPid: number;
-  outcome: string;
-}
+/**
+ * BL-393 + BL-621 — a doctor-reconcile heal SIGTERMs a process silently: the
+ * only trace was a line in `run/logs/doctor-reconcile/doctor-reconcile-<date>.log`,
+ * a file no operator checks by default. Persist the last heal event per
+ * extId+scope (`<extId>@<scope>.json`) PLUS an append-only per-day JSONL so
+ * `service status` can surface the most recent event loudly, and forensics can
+ * replay the full day. BL-621 generalizes this from singleton-duplicate heals
+ * to cover EVERY zombie reap and EVERY protected-descendant near-miss — the two
+ * events that prove the ancestry-rooted classifier is (or isn't) doing its job.
+ */
+type ReconcileHealMarker =
+  | {
+      kind: 'singleton-duplicate';
+      extId: string;
+      scope: string;
+      healedAt: string;
+      survivorPid: number;
+      killedPid: number;
+      outcome: string;
+    }
+  | {
+      kind: 'zombie-reap';
+      extId: string;
+      scope: string;
+      healedAt: string;
+      pid: number;
+      outcome: string;
+      detail: string;
+    }
+  | {
+      kind: 'descendant-skip';
+      extId: string;
+      scope: string;
+      healedAt: string;
+      pid: number;
+      protectingPid: number;
+      detail: string;
+    };
 
-function singletonHealMarkerPath(extId: string, scope: string): string {
+function reconcileHealMarkerPath(extId: string, scope: string): string {
   const pathM = require('node:path') as typeof import('node:path');
   return pathM.join(runDir(), 'reconcile-heals', `${extId}@${scope}.json`);
 }
 
-function writeSingletonHealMarker(marker: SingletonHealMarker): void {
+function reconcileHealMarkerJsonlPath(extId: string, scope: string, day: string): string {
+  const pathM = require('node:path') as typeof import('node:path');
+  return pathM.join(runDir(), 'reconcile-heals', `${extId}@${scope}-${day}.jsonl`);
+}
+
+function writeReconcileHealMarker(marker: ReconcileHealMarker): void {
   const fsM = require('node:fs') as typeof import('node:fs');
   const pathM = require('node:path') as typeof import('node:path');
-  const p = singletonHealMarkerPath(marker.extId, marker.scope);
+  const p = reconcileHealMarkerPath(marker.extId, marker.scope);
+  const day = marker.healedAt.slice(0, 10);
+  const jl = reconcileHealMarkerJsonlPath(marker.extId, marker.scope, day);
   try {
     fsM.mkdirSync(pathM.dirname(p), { recursive: true });
     fsM.writeFileSync(p, JSON.stringify(marker, null, 2));
+    fsM.appendFileSync(jl, JSON.stringify(marker) + '\n', 'utf8');
   } catch { /* never fail the reconcile pass on marker bookkeeping */ }
 }
 
 /** Exported for `cmdService`'s `status` subcommand (BL-393 loud surfacing). */
-function readSingletonHealMarker(extId: string, scope: string): SingletonHealMarker | null {
+function readReconcileHealMarker(extId: string, scope: string): ReconcileHealMarker | null {
   const fsM = require('node:fs') as typeof import('node:fs');
   try {
-    return JSON.parse(fsM.readFileSync(singletonHealMarkerPath(extId, scope), 'utf8')) as SingletonHealMarker;
+    return JSON.parse(fsM.readFileSync(reconcileHealMarkerPath(extId, scope), 'utf8')) as ReconcileHealMarker;
   } catch {
     return null;
   }
@@ -5984,6 +6026,12 @@ async function doctorReconcile(flags: Record<string, string>): Promise<void> {
   // ── 0. GC — prunes dead supervisors + heals their runtime.json (gc.ts). ──────
   const liveSupervisors = await readGlobalRegistry();
 
+  // BL-621: ONE pid→ppid snapshot for the whole pass — ancestry-rooted
+  // classification. Taken once so every installed extension classifies against
+  // the same kernel parentage view (the reap loop re-snapshots per candidate
+  // right before the kill to close the PID-reuse race).
+  const processTable = snapshotProcessTable();
+
   // ── 1. Accounted pids ([auth:supervisor-then-os-then-os-reality]): a pid a
   //       live GC-verified supervisor, a runtime record, or a loaded OS unit
   //       claims is NEVER a reap candidate.
@@ -6010,6 +6058,14 @@ async function doctorReconcile(flags: Record<string, string>): Promise<void> {
         if (e.kind !== 'os-unit' || e.supervisor !== 'launchd') continue;
         const platform = getOsUnitPlatform(e.supervisor);
         if (!platform.isLoaded(e.label, realOsExec)) continue;
+        // BL-621: prefer a recorded spawned pid from the ownership entry
+        // (read-only) — falls back to the launchctl probe when absent. A pid
+        // the unit's own bookkeeping recorded is authoritative over a re-parse.
+        const recordedPid = (e as { spawnedPid?: unknown }).spawnedPid;
+        if (typeof recordedPid === 'number' && recordedPid > 0) {
+          accounted.add(recordedPid);
+          continue;
+        }
         const probe = realOsExec('launchctl', ['list', e.label]);
         const pidMatch = probe.code === 0 ? probe.stdout.match(/"PID"\s*=\s*(\d+)/) : null;
         if (pidMatch) accounted.add(parseInt(pidMatch[1]!, 10));
@@ -6072,10 +6128,29 @@ async function doctorReconcile(flags: Record<string, string>): Promise<void> {
       accountedPids: accounted,
       socketLive,
       socketPids,
+      processTable,
     });
 
     for (const s of plan.skip) {
       if (s.reason === 'accounted') continue; // healthy tracked process — not a finding
+      // BL-621: a protected descendant is NOT a stray — it is a legitimate fork
+      // child (enrich / fastembed) whose live root is in its parentage. Report
+      // it as an audit finding + persist a marker; never a stray-skipped.
+      if (s.reason === 'descendant-of-live-instance') {
+        const descDetail = `pid ${s.match.pid} protected by live root ${s.protectingPid}`;
+        findings.push({
+          kind: 'descendant-skip-audit', extId: inst.extId, scope: inst.scope, pid: s.match.pid,
+          detail: descDetail,
+          action: 'skipped',
+        });
+        writeReconcileHealMarker({
+          kind: 'descendant-skip', extId: inst.extId, scope: inst.scope,
+          healedAt: new Date().toISOString(), pid: s.match.pid,
+          protectingPid: s.protectingPid!, detail: descDetail,
+        });
+        log(`[reconcile] ${inst.extId}@${inst.scope}: ${descDetail} (descendant-of-live-instance)`);
+        continue;
+      }
       findings.push({
         kind: 'stray-skipped', extId: inst.extId, scope: inst.scope, pid: s.match.pid,
         detail: `pid ${s.match.pid} skipped (${s.reason})`,
@@ -6093,6 +6168,28 @@ async function doctorReconcile(flags: Record<string, string>): Promise<void> {
         log(`[reconcile] WOULD reap ${desc}`);
         continue;
       }
+      // BL-621: re-verify the candidate against a FRESH table immediately before
+      // the kill. The pid may have exited and been reused since the pass snapshot
+      // (a stale match), or may now descend from a live root (a race with a
+      // respawn). Either way: SKIP — never kill a pid we can no longer positively
+      // attribute as a rootless zombie.
+      const freshTable = snapshotProcessTable();
+      const freshRoots = new Set<number>([
+        ...accounted,
+        ...(socketLive && socketPids ? socketPids : []),
+      ]);
+      const stillMatched = findOrphansByServiceId(inst.extId, token, {
+        excludePids: [process.pid],
+      }).some((m) => m.pid === z.pid);
+      const freshRoot = descendantOf(z.pid, freshRoots, freshTable);
+      if (!stillMatched || freshRoot !== null) {
+        findings.push({
+          kind: 'zombie-stray', extId: inst.extId, scope: inst.scope, pid: z.pid,
+          detail: 'stale-match (PID reuse race)', action: 'skipped',
+        });
+        log(`[reconcile] SKIP reap ${desc} — stale-match (PID reuse race)`);
+        continue;
+      }
       const outcome = await killAndVerify(z.pid, { graceMs, log: (m) => log(`[reconcile] reap ${inst.extId} pid ${z.pid}: ${m}`) });
       if (outcome === 'undead') {
         undead = true;
@@ -6101,6 +6198,11 @@ async function doctorReconcile(flags: Record<string, string>): Promise<void> {
       } else {
         findings.push({ kind: 'zombie-stray', extId: inst.extId, scope: inst.scope, pid: z.pid, detail: `${desc} → ${outcome}`, action: 'healed' });
         log(`[reconcile] reaped ${desc} → ${outcome}`);
+        // BL-621: every reap is an operator-visible rotation — persist it.
+        writeReconcileHealMarker({
+          kind: 'zombie-reap', extId: inst.extId, scope: inst.scope,
+          healedAt: new Date().toISOString(), pid: z.pid, outcome, detail: desc,
+        });
       }
     }
 
@@ -6127,7 +6229,8 @@ async function doctorReconcile(flags: Record<string, string>): Promise<void> {
         // BL-393: this SIGTERM is exactly the kind of silent respawn trigger that
         // produced the 2026-08-02T00:15:29Z incident — persist it so `service
         // status` surfaces the rotation instead of only the reconcile log file.
-        writeSingletonHealMarker({
+        writeReconcileHealMarker({
+          kind: 'singleton-duplicate',
           extId: inst.extId,
           scope: inst.scope,
           healedAt: new Date().toISOString(),

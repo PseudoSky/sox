@@ -25,6 +25,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import {
   classifyReconcileTargets,
+  descendantOf,
   LOCK_DEBRIS_TTL_MS,
   socketOwnerPids,
   sweepProxyBackendLocks,
@@ -88,6 +89,7 @@ describe('classifyReconcileTargets — safe-by-construction rules', () => {
       accountedPids: new Set([100]),
       socketLive: true,
       socketPids: [200],
+      processTable: new Map(),
     });
     expect(plan.reap).toEqual([]);
     expect(plan.skip).toEqual([
@@ -104,6 +106,7 @@ describe('classifyReconcileTargets — safe-by-construction rules', () => {
       accountedPids: new Set(),
       socketLive: true,
       socketPids: [43731],
+      processTable: new Map(),
     });
     expect(plan.skip).toEqual([{ match: m(43731), reason: 'writer-socket-holder' }]);
     expect(plan.reap).toEqual([m(43740)]);
@@ -116,6 +119,7 @@ describe('classifyReconcileTargets — safe-by-construction rules', () => {
       accountedPids: new Set(),
       socketLive: true,
       socketPids: null,
+      processTable: new Map(),
     });
     expect(plan.reap).toEqual([]);
     expect(plan.skip.every((s) => s.reason === 'unattributable-socket-holder')).toBe(true);
@@ -128,6 +132,7 @@ describe('classifyReconcileTargets — safe-by-construction rules', () => {
       accountedPids: new Set(),
       socketLive: true,
       socketPids: [],
+      processTable: new Map(),
     });
     expect(plan.reap).toEqual([]);
     expect(plan.skip).toEqual([{ match: m(1), reason: 'unattributable-socket-holder' }]);
@@ -139,6 +144,7 @@ describe('classifyReconcileTargets — safe-by-construction rules', () => {
       accountedPids: new Set(),
       socketLive: false,
       socketPids: null,
+      processTable: new Map(),
     });
     expect(plan.reap).toEqual([]);
     expect(plan.skip).toEqual([{ match: m(300, 500), reason: 'single-unaccounted-report-only' }]);
@@ -151,6 +157,7 @@ describe('classifyReconcileTargets — safe-by-construction rules', () => {
       accountedPids: new Set([302]),
       socketLive: false,
       socketPids: null,
+      processTable: new Map(),
     });
     expect(plan.reap).toEqual([]); // this module never reaps duplicates itself
     expect(plan.duplicateSetNoSocket).toEqual([m(300), m(301)]);
@@ -163,8 +170,119 @@ describe('classifyReconcileTargets — safe-by-construction rules', () => {
       accountedPids: new Set(),
       socketLive: false,
       socketPids: null,
+      processTable: new Map(),
     });
     expect(plan).toEqual({ reap: [], skip: [], duplicateSetNoSocket: [] });
+  });
+});
+
+// ─── BL-621: ancestry-rooted classification ────────────────────────────────────
+
+describe('descendantOf — parentage-chain walk (BL-621)', () => {
+  it('returns the first root reached walking the ppid chain', () => {
+    const table = new Map([[200, 100], [100, 50], [50, 1]]);
+    expect(descendantOf(200, new Set([50, 100]), table)).toBe(100);
+  });
+
+  it('returns null when the chain reaches a non-root end', () => {
+    const table = new Map([[400, 1], [1, 0]]);
+    expect(descendantOf(400, new Set([100]), table)).toBeNull();
+  });
+
+  it('returns null on an unknown parent (chain ends early)', () => {
+    const table = new Map([[400, 99]]); // 99 not itself in the table
+    expect(descendantOf(400, new Set([50]), table)).toBeNull();
+  });
+
+  it('returns null when the root is deeper than maxDepth (depth cap)', () => {
+    const table = new Map<number, number>();
+    const N = 1000;
+    for (let i = N; i > 1; i--) table.set(i, i - 1);
+    table.set(1, 0);
+    // root 1 is N-1 levels up — unreachable within the default 32-hop cap.
+    expect(descendantOf(N, new Set([1]), table)).toBeNull();
+    // but reachable with a cap at least as deep as the chain.
+    expect(descendantOf(N, new Set([1]), table, N)).toBe(1);
+  });
+});
+
+describe('classifyReconcileTargets — ancestry (BL-621)', () => {
+  it('BL-621: a child of the live writer is skipped as descendant-of-live-instance, never reaped', () => {
+    // child 200 → writer 100 → supervisor 50 → init 1; roots {50 (accounted), 100 (holder)}.
+    const table = new Map([[200, 100], [100, 50], [50, 1]]);
+    const plan = classifyReconcileTargets({
+      matches: [m(200, 100)],
+      accountedPids: new Set([50]),
+      socketLive: true,
+      socketPids: [100],
+      processTable: table,
+    });
+    expect(plan.reap).toEqual([]);
+    expect(plan.skip).toEqual([
+      { match: m(200, 100), reason: 'descendant-of-live-instance', protectingPid: 100 },
+    ]);
+    expect(plan.duplicateSetNoSocket).toEqual([]);
+  });
+
+  it('BL-621: no-socket shape — backend + enrich fork + fastembed pool hosts are all skipped, never a duplicate set', () => {
+    const table = new Map([[300, 50], [301, 300], [302, 300], [50, 1]]);
+    const plan = classifyReconcileTargets({
+      matches: [m(300, 50), m(301, 300), m(302, 300)],
+      accountedPids: new Set([50]),
+      socketLive: false,
+      socketPids: null,
+      processTable: table,
+    });
+    expect(plan.reap).toEqual([]);
+    expect(plan.duplicateSetNoSocket).toEqual([]);
+    expect(plan.skip.length).toBe(3);
+    expect(plan.skip.every((s) => s.reason === 'descendant-of-live-instance')).toBe(true);
+  });
+
+  it('BL-621 regression: a true BL-170 orphan (PPID 1, no live root) is STILL reaped', () => {
+    // orphan 400 → init 1; live writer 100. No live root in 400's parentage.
+    const table = new Map([[400, 1], [100, 50], [50, 1]]);
+    const plan = classifyReconcileTargets({
+      matches: [m(100, 50), m(400, 1)],
+      accountedPids: new Set([50]),
+      socketLive: true,
+      socketPids: [100],
+      processTable: table,
+    });
+    expect(plan.reap).toEqual([m(400, 1)]);
+    expect(plan.skip).toContainEqual({ match: m(100, 50), reason: 'writer-socket-holder' });
+  });
+
+  it('BL-621: cross-scope anchor — a descendant of an OS-unit-anchored pid (another scope) is protected', () => {
+    const table = new Map([[701, 700], [700, 1]]);
+    const plan = classifyReconcileTargets({
+      matches: [m(701, 700)],
+      accountedPids: new Set([700]),
+      socketLive: true,
+      socketPids: [999], // a live, unrelated holder
+      processTable: table,
+    });
+    expect(plan.reap).toEqual([]);
+    expect(plan.skip).toEqual([
+      { match: m(701, 700), reason: 'descendant-of-live-instance', protectingPid: 700 },
+    ]);
+  });
+
+  it('BL-621: depth cap — a root deeper than 32 hops does not protect (match falls through to reap)', () => {
+    const table = new Map<number, number>();
+    const matchPid = 5000;
+    // chain 5000 → 4999 → … → 4968 (32 hops up) → 4967 (root at the 33rd ancestor).
+    for (let i = matchPid; i > 4968; i--) table.set(i, i - 1);
+    table.set(4968, 4967);
+    table.set(4967, 1);
+    const plan = classifyReconcileTargets({
+      matches: [m(matchPid, matchPid - 1)],
+      accountedPids: new Set([4967]),
+      socketLive: true,
+      socketPids: [100],
+      processTable: table,
+    });
+    expect(plan.reap).toEqual([m(matchPid, matchPid - 1)]);
   });
 });
 

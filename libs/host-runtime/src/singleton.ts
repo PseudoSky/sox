@@ -33,6 +33,7 @@ import {
   type KillOutcome,
   type OrphanMatch,
 } from './reaper.js';
+import { descendantOf } from './reconcile.js';
 
 // ─── Store-resource resolution (the singleton-key anchor) ───────────────────────
 
@@ -269,9 +270,16 @@ export interface HealResult {
   found: number[];
   /** The pid kept alive. -1 when nothing was found. */
   survivor: number;
-  /** Per-loser kill outcomes. */
-  killed: Array<{ pid: number; outcome: KillOutcome }>;
+  /** Per-loser kill outcomes ('spared-descendant' = not killed — live child of a root). */
+  killed: Array<{ pid: number; outcome: HealOutcome }>;
 }
+
+/**
+ * BL-621: a singleton heal may spare, not kill. `'spared-descendant'` marks a
+ * loser that is a live descendant of a tracked root (an enrich fork child / a
+ * fastembed pool host) — it was never a duplicate, only a token-matched child.
+ */
+export type HealOutcome = KillOutcome | 'spared-descendant';
 
 /**
  * The §5.3 reconcile heal: given the entrypoint identity token for a singleton
@@ -289,6 +297,16 @@ export async function healSingletonDuplicates(opts: {
   preferredSurvivor?: number | undefined;
   graceMs?: number | undefined;
   log?: ((msg: string) => void) | undefined;
+  /**
+   * BL-621 (optional): a pid→ppid snapshot. When provided together with
+   * `liveRoots`, a loser whose parentage chain reaches a live root is SPARED
+   * (reported `'spared-descendant'`) rather than killed — a token-matched fork
+   * child is never a singleton duplicate. Omitted ⇒ the pre-BL-621 behaviour
+   * (every loser is killed); owner-directed teardown paths stay unguarded.
+   */
+  processTable?: ReadonlyMap<number, number> | undefined;
+  /** BL-621 (optional): live tracked-instance roots (accounted pids ∪ socket holders). */
+  liveRoots?: ReadonlySet<number> | undefined;
 }): Promise<HealResult> {
   const log = opts.log ?? (() => { /* no-op */ });
   const matches: OrphanMatch[] = findOrphansByIdentity(opts.entrypointToken, {
@@ -309,6 +327,14 @@ export async function healSingletonDuplicates(opts: {
 
   const killed: HealResult['killed'] = [];
   for (const pid of losers) {
+    if (opts.processTable && opts.liveRoots) {
+      const root = descendantOf(pid, opts.liveRoots, opts.processTable);
+      if (root !== null) {
+        killed.push({ pid, outcome: 'spared-descendant' });
+        log(`[singleton heal] spared pid ${pid} (descendant of live root ${root})`);
+        continue;
+      }
+    }
     const outcome = await killAndVerify(pid, {
       graceMs: opts.graceMs ?? 5000,
       log: (m) => log(`[singleton heal] ${m}`),

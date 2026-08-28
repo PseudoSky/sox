@@ -35,7 +35,7 @@ import {
   singletonKey,
   type StoreResource,
 } from './singleton.js';
-import { pidAlive } from './reaper.js';
+import { findOrphansByIdentity, pidAlive, snapshotProcessTable } from './reaper.js';
 
 let tmpDir: string;
 const spawned: number[] = [];
@@ -321,5 +321,62 @@ describe('healSingletonDuplicates', () => {
     const aliveCount = [a.pid!, b.pid!].filter((p) => pidAlive(p)).length;
     expect(aliveCount).toBe(1);
     expect(pidAlive(res.survivor)).toBe(true);
+  });
+
+  it('BL-621: spares a loser that is a live descendant of a tracked root; kills the non-descendant', async () => {
+    const markerPath = path.join(tmpDir, 'bl621', 'index.js');
+    fs.mkdirSync(path.dirname(markerPath), { recursive: true });
+    fs.writeFileSync(markerPath, [
+      `const { fork } = require('node:child_process');`,
+      `if (process.env.SOX_BL621_CHILD === '1') {`,
+      `  setTimeout(() => {}, 60000);`,
+      `} else {`,
+      `  const child = fork(__filename, [], { env: { ...process.env, SOX_BL621_CHILD: '1' }, stdio: 'ignore' });`,
+      `  child.unref();`,
+      `  setTimeout(() => {}, 60000);`,
+      `}`,
+    ].join('\n'));
+    // The fork child's argv is its __filename — the REALPATH of the script
+    // (macOS /var → /private/var). Use the realpath so the token matches the
+    // fork child as well as the directly-spawned parents.
+    const marker = fs.realpathSync(markerPath);
+
+    // P: runs the marker in parent mode and forks child C (descendant of P).
+    const P = spawn(process.execPath, [marker], { detached: true, stdio: 'ignore' });
+    // I: an independent process running the marker in child mode (not a descendant of P).
+    const I = spawn(process.execPath, [marker], {
+      detached: true, stdio: 'ignore', env: { ...process.env, SOX_BL621_CHILD: '1' },
+    });
+    P.unref(); I.unref();
+    spawned.push(P.pid!, I.pid!);
+    await new Promise((r) => setTimeout(r, 400));
+
+    // Find the forked child C (the marker match whose ppid is P).
+    const table = snapshotProcessTable();
+    const matches = findOrphansByIdentity(marker, { excludePids: [process.pid] });
+    const C = matches.find((mm) => mm.ppid === P.pid);
+    expect(C).toBeDefined();
+    spawned.push(C!.pid); // ensure cleanup even if a later assertion fails
+
+    const res = await healSingletonDuplicates({
+      key: 'bl621 db:/x',
+      entrypointToken: marker,
+      excludePids: [process.pid],
+      preferredSurvivor: P.pid!,
+      graceMs: 2000,
+      processTable: table,
+      liveRoots: new Set([P.pid!]),
+    });
+
+    expect(res.survivor).toBe(P.pid);
+    const spared = res.killed.find((k) => k.pid === C!.pid);
+    const killed = res.killed.find((k) => k.pid === I.pid);
+    expect(spared).toBeDefined();
+    expect(spared!.outcome).toBe('spared-descendant');
+    expect(killed).toBeDefined();
+    // C was spared (still alive); I was killed.
+    await new Promise((r) => setTimeout(r, 200));
+    expect(pidAlive(C!.pid)).toBe(true);
+    expect(pidAlive(I.pid!)).toBe(false);
   });
 });

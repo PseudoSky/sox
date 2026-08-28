@@ -143,19 +143,53 @@ export type ReconcileSkipReason =
   | 'accounted'                     // rule 1 — a live owner claims this pid
   | 'writer-socket-holder'          // rule 2 — it holds the live store socket
   | 'unattributable-socket-holder'  // rule 3 — live socket, holder unknown ⇒ skip all
+  | 'descendant-of-live-instance'   // rule 3 (BL-621) — a live root in its parentage chain
   | 'single-unaccounted-report-only'; // rule 5 — never guess-kill a lone process
 
 export interface ReconcilePlan {
   /** Positively-attributed zombies safe to verified-stop (rule 4). */
   reap: ReconcileMatch[];
-  /** Everything skipped, with the reason (report surface). */
-  skip: Array<{ match: ReconcileMatch; reason: ReconcileSkipReason }>;
+  /**
+   * Everything skipped, with the reason (report surface). `protectingPid` is
+   * set for `descendant-of-live-instance` — the terminating live root in the
+   * match's kernel parentage chain.
+   */
+  skip: Array<{ match: ReconcileMatch; reason: ReconcileSkipReason; protectingPid?: number }>;
   /**
    * Rule 5: unaccounted matches with NO live socket. The CALLER applies the
    * §5.3 duplicate heal (chooseSurvivor → killAndVerify) when length ≥ 2, and
    * report-only when length == 1 (already emitted into `skip` for that case).
    */
   duplicateSetNoSocket: ReconcileMatch[];
+}
+
+/**
+ * BL-621 — walk a pid's kernel parentage chain (`table`) and return the FIRST
+ * pid that is a member of `roots`, or null when the chain ends (unknown
+ * parent) or exceeds `maxDepth` without reaching a root.
+ *
+ * Pure over its inputs. The ancestry-rooted reconcile primitive: a process is
+ * reapable only if its parentage reaches NO live root. `table` is a
+ * `snapshotProcessTable()` result; `roots` is the union of accounted pids and
+ * live writer-socket holders. A process whose OWN pid is in `roots` is handled
+ * by the caller's rule 1/rule 2 (accounted / socket holder) — this walk starts
+ * at the pid's parent, so it only asks "is this pid a CHILD (any depth) of a
+ * live root?".
+ */
+export function descendantOf(
+  pid: number,
+  roots: ReadonlySet<number>,
+  table: ReadonlyMap<number, number>,
+  maxDepth = 32,
+): number | null {
+  let cur = pid;
+  for (let depth = 0; depth < maxDepth; depth++) {
+    const ppid = table.get(cur);
+    if (ppid === undefined) return null; // chain ended (unknown/init parent)
+    if (roots.has(ppid)) return ppid;
+    cur = ppid;
+  }
+  return null; // depth cap — ancestry too deep to resolve, never assume a root
 }
 
 /**
@@ -172,8 +206,19 @@ export function classifyReconcileTargets(opts: {
   socketLive: boolean;
   /** Socket holders (socketOwnerPids result). Ignored when !socketLive. */
   socketPids: number[] | null;
+  /** pid→ppid snapshot (snapshotProcessTable) for ancestry checks (BL-621). */
+  processTable: ReadonlyMap<number, number>;
 }): ReconcilePlan {
   const plan: ReconcilePlan = { reap: [], skip: [], duplicateSetNoSocket: [] };
+
+  // BL-621: the ancestry "roots" — any live tracked instance (accounted pid) or
+  // live writer-socket holder. A match that descends from ANY root is a
+  // legitimate child (enrich-isolation fork, fastembed pool host), never a
+  // BL-170 zombie. Token matching is a candidate hint, never a kill verdict.
+  const roots = new Set<number>([
+    ...opts.accountedPids,
+    ...(opts.socketLive && opts.socketPids ? opts.socketPids : []),
+  ]);
 
   const unaccounted: ReconcileMatch[] = [];
   for (const m of opts.matches) {
@@ -195,27 +240,51 @@ export function classifyReconcileTargets(opts: {
       return plan;
     }
     const holderSet = new Set(holders);
+    const reapCandidates: ReconcileMatch[] = [];
     for (const m of unaccounted) {
       if (holderSet.has(m.pid)) {
         // Rule 2: the live writer (or a connected endpoint) — never touched.
         plan.skip.push({ match: m, reason: 'writer-socket-holder' });
       } else {
-        // Rule 4: token-matched, zero fds on the live store socket ⇒ the BL-170
-        // spawn-race-loser zombie. Safe to verified-stop.
+        reapCandidates.push(m);
+      }
+    }
+    // Rule 3 (BL-621): a zero-fd candidate whose parentage reaches a live root
+    // is a legitimate fork child, not a zombie — skip, never reap.
+    for (const m of reapCandidates) {
+      const root = descendantOf(m.pid, roots, opts.processTable);
+      if (root !== null) {
+        plan.skip.push({ match: m, reason: 'descendant-of-live-instance', protectingPid: root });
+      } else {
+        // Rule 4: token-matched, zero fds on the live store socket AND no live
+        // root in its parentage ⇒ the BL-170 spawn-race-loser zombie. Safe to
+        // verified-stop.
         plan.reap.push(m);
       }
     }
     return plan;
   }
 
-  // No live socket.
-  if (unaccounted.length === 1) {
+  // No live socket. Rule 3 (BL-621) still applies: a descendant of a live
+  // accounted root is never a duplicate singleton-set member.
+  const survivors: ReconcileMatch[] = [];
+  for (const m of unaccounted) {
+    const root = descendantOf(m.pid, roots, opts.processTable);
+    if (root !== null) {
+      plan.skip.push({ match: m, reason: 'descendant-of-live-instance', protectingPid: root });
+    } else {
+      survivors.push(m);
+    }
+  }
+  if (survivors.length === 0) return plan;
+
+  if (survivors.length === 1) {
     // Rule 5: report-only — could be a starting instance or a pid-less M2 record.
-    plan.skip.push({ match: unaccounted[0]!, reason: 'single-unaccounted-report-only' });
+    plan.skip.push({ match: survivors[0]!, reason: 'single-unaccounted-report-only' });
     return plan;
   }
   // ≥2 ⇒ §5.3 singleton violation; the caller heals with chooseSurvivor.
-  plan.duplicateSetNoSocket = unaccounted;
+  plan.duplicateSetNoSocket = survivors;
   return plan;
 }
 

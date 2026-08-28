@@ -177,6 +177,35 @@ export function snapshotProcesses(): PsProcess[] {
 }
 
 /**
+ * Snapshot the OS process table as a `pid → ppid` map via ONE `ps` scan.
+ *
+ * The ancestry primitive behind BL-621's ancestry-rooted reconcile
+ * classification: a process is reapable only if its kernel parentage chain
+ * reaches NO live tracked-instance root and NO live writer-socket holder.
+ * `descendantOf` (reconcile.ts) walks this map; an EMPTY map on failure makes
+ * every candidate "no ancestry data", which degrades to report-only — never to
+ * a kill. Uses the same `-A -ww` portable flags as snapshotProcesses().
+ */
+export function snapshotProcessTable(): Map<number, number> {
+  const table = new Map<number, number>();
+  let out: string;
+  try {
+    out = execFileSync('ps', ['-A', '-ww', '-o', 'pid=,ppid='], {
+      encoding: 'utf8',
+      maxBuffer: 16 * 1024 * 1024,
+    });
+  } catch {
+    return table;
+  }
+  for (const line of out.split('\n')) {
+    const m = /^(\d+)\s+(\d+)/.exec(line.trimStart());
+    if (!m) continue;
+    table.set(Number(m[1]), Number(m[2]));
+  }
+  return table;
+}
+
+/**
  * Normalize an extension `source` (which may be a `file://` URL or a plain path)
  * into a precise process-table match token.
  *

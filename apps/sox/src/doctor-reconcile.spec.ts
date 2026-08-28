@@ -22,12 +22,12 @@
  *     `soxe status` as DEGRADED ([inv:crash-loop-cap] §11.3, [inv:list-never-lies]).
  */
 
-import { spawnSync } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { osUnitLabelFor } from '@adhd/sox-host-runtime';
+import { osUnitLabelFor, pidAlive, snapshotProcessTable } from '@adhd/sox-host-runtime';
 
 const CLI_MAIN = path.resolve(__dirname, '../../../dist/apps/sox/main.js');
 
@@ -286,5 +286,179 @@ describe('Slice 3 crash-loop give-up surfacing (§11.3)', () => {
     expect(r.code).toBe(1); // findings present
     expect(r.stdout).toContain('CRASH-LOOP');
     expect(r.stdout).toContain('crash-loop give-up');
+  });
+});
+
+describe('soxe doctor --reconcile — BL-621 ancestry-rooted classification (real processes)', () => {
+  const livePids: number[] = [];
+  let sockPath: string;
+
+  function writeBackendFixture(): void {
+    // A socket service: manifest declares a literal health-socket endpoint so
+    // the reconcile probes THIS socket for liveness + holder attribution.
+    sockPath = path.join(home, 'test-daemon.sock');
+    fs.writeFileSync(
+      path.join(storeDir, 'extension.json'),
+      JSON.stringify({
+        id: 'test-daemon',
+        type: 'service',
+        entrypoint: 'dist/index.js',
+        lifecycle: {
+          background: true,
+          singleton: true,
+          stop_timeout_ms: 5000,
+          health: { type: 'socket', endpoint: sockPath },
+        },
+      }),
+    );
+    // The install ledger the reconcile actually walks (install-registry.json,
+    // NOT extensions.lock).
+    fs.writeFileSync(
+      path.join(home, 'install-registry.json'),
+      JSON.stringify({
+        version: 1,
+        installs: [{
+          extId: 'test-daemon', version: '1.0.0', scope: 'user', root: home,
+          installedAt: new Date().toISOString(), updatedAt: new Date().toISOString(),
+          source: `file://${storeDir}`,
+        }],
+      }),
+    );
+    // The child (forked by the backend) — sleeps, zero socket fds, inherits env.
+    fs.writeFileSync(path.join(storeDir, 'child.js'), 'setInterval(() => {}, 60000);\n');
+    // The backend: binds the health socket (the live writer holder), forks a
+    // child (which inherits SOX_SERVICE_ID but holds no socket fd), and stays up.
+    fs.writeFileSync(
+      path.join(storeDir, 'backend.js'),
+      [
+        `const net = require('node:net');`,
+        `const fs = require('node:fs');`,
+        `const { fork } = require('node:child_process');`,
+        `const server = net.createServer(() => {});`,
+        `server.listen(process.env.SOX_TEST_SOCK, () => {`,
+        `  const child = fork(process.env.SOX_TEST_CHILD_SCRIPT, [], { stdio: 'ignore' });`,
+        `  try { fs.writeFileSync(process.env.SOX_TEST_CHILD_PID_FILE, String(child.pid)); } catch {}`,
+        `  child.unref();`,
+        `});`,
+        `setInterval(() => {}, 1000);`,
+      ].join('\n'),
+    );
+  }
+
+  async function waitForFile(p: string, timeoutMs = 8000): Promise<string> {
+    const start = Date.now();
+    while (Date.now() - start < timeoutMs) {
+      try { return fs.readFileSync(p, 'utf8').trim(); } catch { /* not yet */ }
+      await new Promise((r) => setTimeout(r, 50));
+    }
+    throw new Error(`timeout waiting for ${p}`);
+  }
+
+  async function waitForPpid(pid: number, want: number, timeoutMs = 8000): Promise<void> {
+    const start = Date.now();
+    while (Date.now() - start < timeoutMs) {
+      if (snapshotProcessTable().get(pid) === want) return;
+      await new Promise((r) => setTimeout(r, 100));
+    }
+    throw new Error(`pid ${pid} never reached ppid ${want}`);
+  }
+
+  beforeEach(() => {
+    writeBackendFixture();
+  });
+
+  afterEach(() => {
+    for (const pid of livePids.splice(0)) {
+      try { process.kill(pid, 'SIGKILL'); } catch { /* already dead */ }
+    }
+  });
+
+  /** Spawn the socket-holding backend; returns its forked child's pid. */
+  async function startBackend(): Promise<number> {
+    const childPidFile = path.join(storeDir, 'child.pid');
+    const b = spawn(process.execPath, [path.join(storeDir, 'backend.js')], {
+      env: {
+        ...process.env,
+        SOX_SERVICE_ID: 'test-daemon',
+        SOX_TEST_SOCK: sockPath,
+        SOX_TEST_CHILD_SCRIPT: path.join(storeDir, 'child.js'),
+        SOX_TEST_CHILD_PID_FILE: childPidFile,
+      },
+      detached: true,
+      stdio: 'ignore',
+    });
+    b.unref();
+    livePids.push(b.pid!);
+    const childPid = Number(await waitForFile(childPidFile));
+    livePids.push(childPid);
+    return childPid;
+  }
+
+  /** Spawn a grandchild whose parent exits — reparented to init (PPID 1), a true orphan. */
+  async function startOrphan(): Promise<number> {
+    const orphanPidFile = path.join(storeDir, 'orphan.pid');
+    const helper = spawn(process.execPath, ['-e', [
+      `const { spawn } = require('node:child_process');`,
+      `const fs = require('node:fs');`,
+      `const c = spawn(process.execPath, ['-e', 'setInterval(()=>{},60000)'], {`,
+      `  env: { ...process.env, SOX_SERVICE_ID: 'test-daemon' },`,
+      `  detached: true,`,
+      `  stdio: 'ignore',`,
+      `});`,
+      `try { fs.writeFileSync(${JSON.stringify(orphanPidFile)}, String(c.pid)); } catch {}`,
+      `c.unref();`,
+    ].join('\n')], { stdio: 'ignore' });
+    helper.unref();
+    const orphanPid = Number(await waitForFile(orphanPidFile));
+    livePids.push(orphanPid);
+    // The helper has now exited; wait until the grandchild is reparented to init.
+    await waitForPpid(orphanPid, 1);
+    return orphanPid;
+  }
+
+  it('BL-621: forked child with zero socket fds survives; true orphan is reaped; markers written', async () => {
+    const childPid = await startBackend();
+    const orphanPid = await startOrphan();
+
+    const r = runCli(['doctor', '--reconcile', '--json']);
+    expect(r.code).toBe(0);
+    const report = JSON.parse(r.stdout) as {
+      findings: Array<{ kind: string; pid: number; action: string }>;
+    };
+
+    // The fork child (zero fds, descendant of the live backend) survived.
+    expect(pidAlive(childPid)).toBe(true);
+    // The true orphan (reparented to init) was reaped.
+    expect(pidAlive(orphanPid)).toBe(false);
+
+    // The child is reported as a protected descendant, not a stray.
+    expect(report.findings.some((f) => f.kind === 'descendant-skip-audit' && f.pid === childPid)).toBe(true);
+    // The orphan is reported as a healed zombie-stray.
+    expect(report.findings.some((f) => f.kind === 'zombie-stray' && f.pid === orphanPid && f.action === 'healed')).toBe(true);
+
+    // Markers written for both the reap and the descendant-skip.
+    const markerDir = path.join(home, 'run', 'reconcile-heals');
+    const lastJson = JSON.parse(fs.readFileSync(path.join(markerDir, 'test-daemon@user.json'), 'utf8')) as {
+      kind: string; pid: number;
+    };
+    // The reap loop runs after the skip loop, so the LAST marker is the orphan reap.
+    expect(lastJson.kind).toBe('zombie-reap');
+    expect(lastJson.pid).toBe(orphanPid);
+    // The per-day JSONL holds BOTH events (descendant-skip + zombie-reap).
+    const jsonlFiles = fs.readdirSync(markerDir).filter((f) => f.endsWith('.jsonl'));
+    expect(jsonlFiles.length).toBeGreaterThan(0);
+    const jsonl = fs.readFileSync(path.join(markerDir, jsonlFiles[0]!), 'utf8');
+    expect(jsonl).toContain('descendant-skip');
+    expect(jsonl).toContain('zombie-reap');
+  });
+
+  it('BL-621: --dry-run kills nothing (fork child AND orphan both survive)', async () => {
+    const childPid = await startBackend();
+    const orphanPid = await startOrphan();
+
+    const r = runCli(['doctor', '--reconcile', '--dry-run', '--json']);
+    expect(r.code).toBe(0);
+    expect(pidAlive(childPid)).toBe(true);
+    expect(pidAlive(orphanPid)).toBe(true);
   });
 });

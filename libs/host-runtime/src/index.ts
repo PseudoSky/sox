@@ -130,6 +130,7 @@ export {
   readProcessEnv,
   argvContainsToken,
   snapshotProcesses,
+  snapshotProcessTable,
   identityToken,
   storeDirFromSource,
   reapByIdentity,
@@ -167,6 +168,7 @@ export type {
   StoreResourceKind,
   SurvivorChoice,
   HealResult,
+  HealOutcome,
   ScopeResource,
 } from './singleton.js';
 
@@ -192,6 +194,7 @@ export {
   realLsofExec,
   socketOwnerPids,
   classifyReconcileTargets,
+  descendantOf,
   // BL-201: proxy-backend spawn-lock debris sweep
   LOCK_DEBRIS_TTL_MS,
   realPidAlive,
