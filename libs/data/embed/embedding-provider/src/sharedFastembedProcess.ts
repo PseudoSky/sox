@@ -16,13 +16,14 @@
  * `worker_threads.Worker`.
  */
 
-import { fork, execSync, type ChildProcess } from 'node:child_process';
+import { execSync, type ChildProcess } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import { existsSync, readFileSync } from 'node:fs';
 import * as os from 'node:os';
 import { performance } from 'node:perf_hooks';
-import { log } from '@adhd/sox-telemetry';
+import { log, forkChild, _recordChildTelemetry } from '@adhd/sox-telemetry';
+import type { ChildTelemetrySnapshot } from '@adhd/sox-telemetry';
 import { resolveFastembedLockPath } from './fastembedLock.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -363,18 +364,38 @@ export class SharedFastembedProcessClient implements SharedFastembedClient {
 
     this.startingPromise = new Promise<ChildProcess>((resolveStart) => {
       const hostPath = this.hostPath ?? resolveFastembedHostPath();
-      const c = fork(hostPath, [], {
-        stdio: ['ignore', 'inherit', 'inherit', 'ipc'],
-        // Real inference is CPU-bound in native code; no need to keep the
-        // parent process alive on this child's account.
-        detached: false,
-        ...(this.poolGroup !== undefined
-          ? { env: { ...process.env, SOX_FASTEMBED_POOL_GROUP: this.poolGroup } }
-          : {}),
+      const c = forkChild(
+        hostPath,
+        { service: 'embedding-provider', role: 'harness', logSink: 'file' },
+        {
+          stdio: ['ignore', 'inherit', 'inherit', 'ipc'],
+          // Real inference is CPU-bound in native code; no need to keep the
+          // parent process alive on this child's account.
+          detached: false,
+          ...(this.poolGroup !== undefined
+            ? { env: { ...process.env, SOX_FASTEMBED_POOL_GROUP: this.poolGroup } }
+            : {}),
+        },
+      );
+      _recordChildTelemetry({
+        service: 'embedding-provider',
+        role: 'harness',
+        logSink: 'file',
+        filePath: null,
+        pid: c.pid ?? 0,
+        source: 'embedding-provider',
       });
       c.unref();
 
       c.on('message', (msg: HostMessage) => {
+        // BL-618: the child's telemetry.ready ack carries no request `id` — it
+        // must be handled BEFORE the pending lookup, and it never settles a
+        // pending request, only records the child's telemetry state.
+        const ready = msg as unknown as { type?: unknown; telemetry?: ChildTelemetrySnapshot };
+        if (ready.type === 'telemetry.ready' && ready.telemetry && typeof ready.telemetry === 'object') {
+          _recordChildTelemetry({ ...ready.telemetry, source: 'embedding-provider', acked: true });
+          return;
+        }
         const pending = this.pending.get(msg.id);
         if (!pending) return;
         this.pending.delete(msg.id);
