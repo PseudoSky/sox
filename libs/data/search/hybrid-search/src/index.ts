@@ -847,16 +847,3 @@ export class StoreSearchBackend implements SearchBackend {
     return fields;
   }
 }
-
-/**
- * @deprecated Renamed to {@link StoreSearchBackend} — the backend is backed by a
- * generic StoreAdapter, not SQLite specifically. Kept as a re-export for one
- * release so published consumers don't break on upgrade.
- */
-export { StoreSearchBackend as SqliteSearchBackend };
-
-/**
- * @deprecated Renamed to {@link StoreSearchOpts}. Kept as a re-export for one
- * release so published consumers don't break on upgrade.
- */
-export type { StoreSearchOpts as SqliteSearchOpts };
