@@ -90,6 +90,8 @@ import { Worker } from 'node:worker_threads';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import { existsSync } from 'node:fs';
+import { spawnWorker, _recordChildTelemetry } from '@adhd/sox-telemetry';
+import type { ChildTelemetrySnapshot } from '@adhd/sox-telemetry';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -145,10 +147,26 @@ export class SharedOnnxWorkerClient {
 
     this.startingPromise = new Promise<Worker>((resolveStart) => {
       const workerPath = resolveEmbedWorkerPath();
-      const w = new Worker(workerPath);
+      const w = spawnWorker(workerPath, { service: 'embedding-provider', role: 'harness', logSink: 'file' });
+      _recordChildTelemetry({
+        service: 'embedding-provider',
+        role: 'harness',
+        logSink: 'file',
+        filePath: null,
+        pid: w.threadId,
+        source: 'embedding-provider',
+      });
       w.unref();
 
       w.on('message', (msg: WorkerMessage) => {
+        // BL-618: the worker's telemetry.ready ack carries no request `id` — it
+        // must be handled BEFORE the pending lookup, and it never settles a
+        // pending request, only records the worker's telemetry state.
+        const ready = msg as unknown as { type?: unknown; telemetry?: ChildTelemetrySnapshot };
+        if (ready.type === 'telemetry.ready' && ready.telemetry && typeof ready.telemetry === 'object') {
+          _recordChildTelemetry({ ...ready.telemetry, source: 'embedding-provider', acked: true });
+          return;
+        }
         const pending = this.pending.get(msg.id);
         if (!pending) return;
         this.pending.delete(msg.id);
