@@ -36,5 +36,10 @@
     "llm",
     "mcp"
   ],
-  "license": "MIT"
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/PseudoSky/adhd.git"
+  },
+  "homepage": "https://github.com/PseudoSky/adhd"
 }

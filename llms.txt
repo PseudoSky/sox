@@ -1,0 +1,20 @@
+# sox-ecosystem
+
+> LLM extension ecosystem monorepo — agents, skills, MCP servers, prompts, hooks, and commands. A bi-temporal graph memory store with hybrid vector+text recall, embeddable in any host. MIT licensed.
+
+## Key packages
+
+- [memory-server](https://www.npmjs.com/package/@adhd/sox-extension-memory-server): sox-memory MCP server (stdio) — 19 `memory_*` tools over a single-file SQLite graph store with hybrid recall
+- [graph-store](https://www.npmjs.com/package/@adhd/sox-graph-store): Bi-temporal graph store — nodes + edges over SQLite with t_valid/t_invalid correctness and supersession chains
+- [hybrid-search](https://www.npmjs.com/package/@adhd/sox-hybrid-search): Hybrid retrieval ranker — fuses vector similarity + text relevance signals
+- [vector-store](https://www.npmjs.com/package/@adhd/sox-vector-store): Multi-space vector persistence (sqlite-vec + LanceDB backends)
+- [mcp-runtime](https://www.npmjs.com/package/@adhd/sox-mcp-runtime): MCP runtime wrapper — uniform C6 enforcement across stdio + SSE
+- [cli](https://www.npmjs.com/package/@adhd/sox-cli): `soxe` — LLM extension ecosystem command-line interface
+- [store-adapter](https://www.npmjs.com/package/@adhd/sox-store-adapter): Unified store adapter (Turso + SQLite)
+- [embedding-provider](https://www.npmjs.com/package/@adhd/sox-embedding-provider): Pluggable text→vector embedding (fastembed/ONNX)
+
+## Guides
+
+- [README](https://github.com/PseudoSky/adhd): repository overview (linked home until sox-ecosystem gets its own repo)
+- [USAGE](USAGE.md): usage guide
+- [PUBLISHING](PUBLISHING.md): release workflow

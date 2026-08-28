@@ -14,5 +14,16 @@
     "CHANGELOG.md",
     "README.md",
     "SKILL.md"
-  ]
+  ],
+  "keywords": [
+    "memory",
+    "skill",
+    "mcp",
+    "typescript"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/PseudoSky/adhd.git"
+  },
+  "homepage": "https://github.com/PseudoSky/adhd"
 }

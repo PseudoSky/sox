@@ -16,6 +16,22 @@ For codebase navigation, see [`docs/routing/ROUTER.md`](./docs/routing/ROUTER.md
 [`docs/routing/INDEX.md`](./docs/routing/INDEX.md) (project listing). For `data/*` package guidance, see
 [`libs/data/CLAUDE.md`](./libs/data/CLAUDE.md).
 
+## Website & package metadata (discoverability)
+
+The public-facing discoverability layer is governed by these rules:
+
+1. **Manifest is derived, never edited.** The website's package list (once the site exists) is
+   generated from `package.json` at build time — never hand-edit the generated manifest.
+2. **Description == the one-liner.** A package's `package.json.description` is what its site card and
+   npm snippet show — keep it a one-line "what it does + problem solved".
+3. **New publishable package ⇒ keywords + repository + homepage.** Every `private: false` package must
+   carry `keywords`, `repository`, and `homepage`. Until sox-ecosystem gets its own GitHub repo, these
+   point at `github.com/PseudoSky/adhd` (see `docs/plan/website-design/README.md`).
+4. **Root AEO files.** `llms.txt`, `LICENSE`, `SECURITY.md`, and `CODE_OF_CONDUCT.md` live at the repo
+   root and are updated when the package set changes.
+5. **CI sync gate.** A check fails the PR if any publishable package is missing `description`/`keywords`
+   or if the website manifest and the publishable package set diverge.
+
 ## Harvesting external skills into extensions
 
 When asked to harvest an external repo/URL into a sox extension:

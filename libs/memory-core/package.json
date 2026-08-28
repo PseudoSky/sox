@@ -38,5 +38,17 @@
     "sidecars": [
       "src/enrich-process-host.ts"
     ]
-  }
+  },
+  "keywords": [
+    "memory",
+    "database",
+    "sqlite",
+    "embedding",
+    "typescript"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/PseudoSky/adhd.git"
+  },
+  "homepage": "https://github.com/PseudoSky/adhd"
 }

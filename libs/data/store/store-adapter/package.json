@@ -60,5 +60,18 @@
         "note": "direct dep; also reached via @adhd/sox-graph-store"
       }
     ]
-  }
+  },
+  "keywords": [
+    "storage",
+    "adapter",
+    "sqlite",
+    "turso",
+    "database",
+    "typescript"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/PseudoSky/adhd.git"
+  },
+  "homepage": "https://github.com/PseudoSky/adhd"
 }

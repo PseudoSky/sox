@@ -22,5 +22,16 @@
     "@tursodatabase/database": "^0.7.1",
     "better-sqlite3": "^12.10.0",
     "sqlite-vec": "^0.1.9"
-  }
+  },
+  "keywords": [
+    "memory",
+    "cli",
+    "sqlite",
+    "typescript"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/PseudoSky/adhd.git"
+  },
+  "homepage": "https://github.com/PseudoSky/adhd"
 }
