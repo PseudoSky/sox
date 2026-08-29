@@ -283,6 +283,35 @@ describe('writeNode', () => {
   });
 });
 
+describe('getNodeByUid / uid identity', () => {
+  it('surfaces the stable uid on NodeRecord and resolves it back', async () => {
+    const { backend, adapter } = await freshBackend();
+    const id = await backend.writeNode('uuid node', { kind: 'generic' });
+    const node = await backend.getNode(id);
+    expect(node!.uid).toBeTruthy();
+    expect(node!.uid).toMatch(/^[0-9a-f-]{36}$/i); // UUID shape
+    const byUid = await backend.getNodeByUid(node!.uid);
+    expect(byUid!.id).toBe(id);
+    expect(byUid!.content).toBe('uuid node');
+    await adapter.close();
+  });
+
+  it('two writes get distinct uids', async () => {
+    const { backend, adapter } = await freshBackend();
+    const a = await backend.getNode(await backend.writeNode('a', { kind: 'generic' }));
+    const b = await backend.getNode(await backend.writeNode('b', { kind: 'generic' }));
+    expect(a!.uid).not.toBe(b!.uid);
+    await adapter.close();
+  });
+
+  it('returns null for an unknown uid', async () => {
+    const { backend, adapter } = await freshBackend();
+    await backend.writeNode('x', { kind: 'generic' });
+    expect(await backend.getNodeByUid('00000000-0000-0000-0000-000000000000')).toBeNull();
+    await adapter.close();
+  });
+});
+
 describe('supersede', () => {
   it('creates chain', async () => {
     const { backend, adapter } = await freshBackend();
