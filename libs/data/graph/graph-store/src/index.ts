@@ -586,6 +586,8 @@ export interface NodeMeta {
 
 export interface NodeRecord {
   id: number;
+  /** The stable, exportable UUID (`node.uid`) — distinct from `id` (rowid, per-store). */
+  uid: string;
   kind: string;
   content: string;
   name?: string;
@@ -749,6 +751,12 @@ export interface GraphBackend {
   writeEdges(edges: Array<{ src: number; dst: number; rel: EdgeRel; meta?: EdgeMeta }>): Promise<void>;
 
   getNode(id: number): Promise<NodeRecord | null>;
+  /**
+   * Resolve a node by its stable UUID (`node.uid`). `id` (rowid) is per-store and
+   * changes across an export/rebuild; `uid` is the exportable, cross-store stable
+   * identity a consumer can expose. Returns null when no node carries that uid.
+   */
+  getNodeByUid(uid: string): Promise<NodeRecord | null>;
   /** FEAT-024 (B4) — ordered batch read, one query, in the requested id order (missing/tombstones omitted per `liveOnly`). */
   getNodesByIds(ids: number[], opts?: { liveOnly?: boolean }): Promise<NodeRecord[]>;
   queryNodes(filter?: NodeFilter): Promise<NodeRecord[]>;
@@ -997,6 +1005,7 @@ function isStale(tExpires: string | null | undefined): boolean {
 function rowToNodeRecord(row: DbNodeRow): NodeRecord {
   const rec: NodeRecord = {
     id: row.rowid,
+    uid: row.uid,
     kind: row.kind,
     content: row.content ?? '',
     tags: parseJson<string[]>(row.tags, []),
@@ -1420,9 +1429,10 @@ export class StoreGraphBackend implements GraphBackend {
 
   /** FEAT-021 — build a minimal-but-valid NodeRecord for observer callbacks
    *  from the write args, without a re-select. */
-  private buildNodeRecord(id: number, kind: string, content: string, meta: NodeMeta, now: string): NodeRecord {
+  private buildNodeRecord(id: number, uid: string, kind: string, content: string, meta: NodeMeta, now: string): NodeRecord {
     const rec: NodeRecord = {
       id,
+      uid,
       kind,
       content,
       tags: meta.tags ?? [],
@@ -1870,7 +1880,7 @@ export class StoreGraphBackend implements GraphBackend {
     if (!result) throw new Error('Insert failed: no rowid returned');
     // FEAT-021 — after-commit observer (fire-and-forget, degrades on failure).
     await this.notifyObservers((o) =>
-      o.onNodeWritten?.(this.buildNodeRecord(result.rowid, kind, content, meta, now), meta),
+      o.onNodeWritten?.(this.buildNodeRecord(result.rowid, uid, kind, content, meta, now), meta),
     );
     return result.rowid;
   }
@@ -2018,6 +2028,12 @@ export class StoreGraphBackend implements GraphBackend {
 
   async getNode(id: number): Promise<NodeRecord | null> {
     const row = await this.adapter.executeGet<DbNodeRow>('SELECT * FROM node WHERE rowid = ?', [id]);
+    return row ? rowToNodeRecord(row) : null;
+  }
+
+  /** Resolve by stable UUID — see GraphBackend.getNodeByUid. */
+  async getNodeByUid(uid: string): Promise<NodeRecord | null> {
+    const row = await this.adapter.executeGet<DbNodeRow>('SELECT * FROM node WHERE uid = ?', [uid]);
     return row ? rowToNodeRecord(row) : null;
   }
 
