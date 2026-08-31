@@ -63,15 +63,60 @@ export interface OwnershipFile {
   owned: OwnershipRecord[];
 }
 
+// ─── Typed ownership errors (BL-620 — the ownership write is the commit point) ──
+
+/**
+ * The ownership index at `filePath` is unparseable / structurally invalid.
+ * In a STRICT load this must THROW (never read as empty — an empty read is
+ * silently wiped by the next save, which is exactly how the doctor-tick entry
+ * was lost). Non-strict loads (the legacy default) still return empty.
+ */
+export class OwnershipCorruptError extends Error {
+  readonly filePath: string;
+  constructor(filePath: string, detail?: string) {
+    super(
+      `[ownership] corrupt ownership file at ${filePath}` +
+      (detail !== undefined ? `: ${detail}` : '') +
+      ` — refusing to read it as empty (that would silently wipe every entry on the next save)`,
+    );
+    this.name = 'OwnershipCorruptError';
+    this.filePath = filePath;
+  }
+}
+
+/**
+ * The ownership file changed on disk between load and save — an external writer
+ * (another process / another agent) wrote it out from under us. Saving now would
+ * silently drop their update. Refuse rather than perform a lost update.
+ */
+export class OwnershipConflictError extends Error {
+  readonly filePath: string;
+  constructor(filePath: string) {
+    super(
+      `[ownership] ownership file changed on disk since it was loaded (external change detected): ${filePath} ` +
+      `— refusing to overwrite a concurrent update (no silent lost update)`,
+    );
+    this.name = 'OwnershipConflictError';
+    this.filePath = filePath;
+  }
+}
+
 // ─── Read / write (atomic) ──────────────────────────────────────────────────────
 
-export function readOwnership(filePath: string): OwnershipFile {
+export function readOwnership(filePath: string, opts: { strict?: boolean } = {}): OwnershipFile {
   if (!fs.existsSync(filePath)) return { version: 1, owned: [] };
   try {
     const parsed = JSON.parse(fs.readFileSync(filePath, 'utf8')) as OwnershipFile;
-    if (!Array.isArray(parsed.owned)) return { version: 1, owned: [] };
+    if (!Array.isArray(parsed.owned)) {
+      if (opts.strict) throw new OwnershipCorruptError(filePath, '`owned` is not an array');
+      return { version: 1, owned: [] };
+    }
     return parsed;
-  } catch {
+  } catch (e) {
+    if (opts.strict) {
+      if (e instanceof OwnershipCorruptError) throw e;
+      throw new OwnershipCorruptError(filePath, e instanceof Error ? e.message : String(e));
+    }
     return { version: 1, owned: [] };
   }
 }
@@ -94,20 +139,31 @@ export function writeOwnershipAtomic(filePath: string, data: OwnershipFile): voi
 export class OwnershipIndex {
   private readonly filePath: string;
   private data: OwnershipFile;
+  /** Stat of the file at load time (null = absent), for optimistic-concurrency save. */
+  private statAtLoad: { mtimeMs: number; size: number } | null;
 
-  private constructor(filePath: string, data: OwnershipFile) {
+  private constructor(
+    filePath: string,
+    data: OwnershipFile,
+    statAtLoad: { mtimeMs: number; size: number } | null,
+  ) {
     this.filePath = filePath;
     this.data = data;
+    this.statAtLoad = statAtLoad;
   }
 
   /** Load (or create) the ownership index at an explicit ownership.json path. */
-  static loadFromFile(filePath: string): OwnershipIndex {
-    return new OwnershipIndex(filePath, readOwnership(filePath));
+  static loadFromFile(filePath: string, opts: { strict?: boolean } = {}): OwnershipIndex {
+    return new OwnershipIndex(
+      filePath,
+      readOwnership(filePath, opts.strict === true ? { strict: true } : {}),
+      statFile(filePath),
+    );
   }
 
   /** Load the ownership index for a scope via the data-paths resolver. */
-  static load(scope: DataScope, root?: string): OwnershipIndex {
-    return OwnershipIndex.loadFromFile(ownershipPathFor(scope, root));
+  static load(scope: DataScope, root?: string, opts?: { strict?: boolean }): OwnershipIndex {
+    return OwnershipIndex.loadFromFile(ownershipPathFor(scope, root), opts);
   }
 
   get path(): string {
@@ -244,9 +300,105 @@ export class OwnershipIndex {
     );
   }
 
-  /** Persist atomically. */
+  /**
+   * Persist atomically. Optimistic-concurrency guarded (BL-620 / INV-4): before
+   * the rename, re-stat the file and compare against the stat recorded at load.
+   * If the file changed on disk since load (mtime or size), an external writer
+   * updated it out from under us — throw OwnershipConflictError rather than
+   * silently clobbering their update. After a successful write, re-record the
+   * new stat so a subsequent save on this instance does not self-conflict.
+   */
   save(): void {
+    const current = statFile(this.filePath);
+    const loaded = this.statAtLoad;
+    const changed =
+      (loaded === null) !== (current === null) ||
+      (loaded !== null && current !== null &&
+        (loaded.mtimeMs !== current.mtimeMs || loaded.size !== current.size));
+    if (changed) throw new OwnershipConflictError(this.filePath);
     writeOwnershipAtomic(this.filePath, this.data);
+    this.statAtLoad = statFile(this.filePath);
+  }
+
+  /**
+   * BL-620 / INV-1+INV-2+INV-3: record an OS-unit ownership entry as the COMMIT
+   * POINT of an os-unit mutation. Strict-loads (corrupt index ⇒ throw), upserts
+   * the entry, saves (external change ⇒ throw), then RE-READS the file and
+   * asserts the entry actually persisted — THROWS if any step fails. This is the
+   * fail-loud replacement for the old `try { addEntries; save } catch (silent)`
+   * pattern that let a failed write leave a unit orphaned forever.
+   */
+  static upsertOsUnitEntry(
+    filePath: string,
+    opts: {
+      extId: string;
+      scope: string;
+      label: string;
+      unitPath: string;
+      supervisor: 'launchd' | 'systemd';
+      appliedHash: string;
+    },
+  ): void {
+    const idx = OwnershipIndex.loadFromFile(filePath, { strict: true });
+    idx.addEntries(opts.extId, opts.scope, [{
+      kind: 'os-unit',
+      label: opts.label,
+      unitPath: opts.unitPath,
+      supervisor: opts.supervisor,
+      appliedHash: opts.appliedHash,
+    }]);
+    idx.save();
+    const verify = readOwnership(filePath, { strict: true });
+    const rec = verify.owned.find((r) => r.extId === opts.extId && r.scope === opts.scope);
+    const entry = rec?.entries.find(
+      (e) => e.kind === 'os-unit' && e.label === opts.label,
+    );
+    if (entry === undefined || entry.kind !== 'os-unit' || entry.appliedHash !== opts.appliedHash) {
+      throw new Error(
+        `[ownership] os-unit entry '${opts.label}' was not persisted to ${filePath} ` +
+        `— the ownership write is the commit point; refusing to report success`,
+      );
+    }
+  }
+
+  /**
+   * BL-620 / INV-1+INV-3: remove the OS-unit ownership entry for `label` from
+   * (extId, scope), strict-loading and verifying the removal persisted. Returns
+   * `false` on an idempotent no-op (record absent or entry already gone) so a
+   * `remove-tick`/`disable` of a never-recorded unit is not an error. THROWS on
+   * corrupt load, concurrent external change, or a save that does not persist.
+   */
+  static removeOsUnitEntry(
+    filePath: string,
+    opts: { extId: string; scope: string; label: string },
+  ): boolean {
+    const idx = OwnershipIndex.loadFromFile(filePath, { strict: true });
+    const rec = idx.get(opts.extId, opts.scope);
+    if (rec === undefined) return false;
+    const had = rec.entries.some((e) => e.kind === 'os-unit' && e.label === opts.label);
+    if (!had) return false;
+    rec.entries = rec.entries.filter(
+      (e) => !(e.kind === 'os-unit' && e.label === opts.label),
+    );
+    idx.save();
+    const verify = readOwnership(filePath, { strict: true });
+    const vRec = verify.owned.find((r) => r.extId === opts.extId && r.scope === opts.scope);
+    if (vRec?.entries.some((e) => e.kind === 'os-unit' && e.label === opts.label)) {
+      throw new Error(
+        `[ownership] os-unit entry '${opts.label}' still present after remove+save at ${filePath}`,
+      );
+    }
+    return true;
+  }
+}
+
+/** Stat a file (or null if absent) for the optimistic-concurrency save guard. */
+function statFile(filePath: string): { mtimeMs: number; size: number } | null {
+  try {
+    const st = fs.statSync(filePath);
+    return { mtimeMs: st.mtimeMs, size: st.size };
+  } catch {
+    return null;
   }
 }
 
