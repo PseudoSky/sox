@@ -292,7 +292,12 @@ async function runServeProxyAndVerify(args, opts) {
   const evidenceDeadline = Date.now() + waitSec * 1000;
   while (Date.now() < evidenceDeadline && !exited) {
     if (/\[soxe serve\] ensure-backend: /.test(stderr) || /FATAL|EINVAL/.test(stderr)) break;
-    await new Promise(function (r) { const tm = setTimeout(r, 150); if (tm.unref) tm.unref(); });
+    // BL-626: keep this timer REF'd. If the serve child exits early, an unref'd
+    // timer is the only pending handle, so the event loop drains and the harness
+    // dies mid-await — firing the misleading BL-585 "no summary" FATAL instead of
+    // recording the real step failure. A ref'd timer lets the loop observe
+    // `exited` and record a proper `done — N failed` summary.
+    await new Promise(function (r) { setTimeout(r, 150); });
   }
   if (TIMEOUT_BIN !== null) {
     // TIMEOUT_BIN itself owns termination -- just wait for it to actually exit,
