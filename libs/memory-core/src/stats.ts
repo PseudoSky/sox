@@ -7,7 +7,7 @@
  */
 
 import * as fs from 'node:fs';
-import type { StoreAdapter } from '@adhd/sox-store-adapter';
+import type { StoreAdapter, StoreConcurrencyMode } from '@adhd/sox-store-adapter';
 import { ENRICH_VERSION } from './enrich-version.js';
 import { clusterStats } from './cluster.js';
 import type { ClusterStats } from './cluster.js';
@@ -167,6 +167,23 @@ export interface StatsResult {
   embed_provenance: EmbedProvenanceStats;
   /** (BL-343) Rows excluded from the JSON-dependent aggregates because they do not parse. */
   malformed_rows: MalformedRowStats;
+  /**
+   * (BUG-MEMORYCORE-MULTIPROCESS-WAL-NOT-OPTED-IN-001) The resolved store
+   * concurrency mode for the backing adapter — `'multiprocess-wal'` (turso,
+   * ADR-0012, no opt-out) or `'single-writer'` (sqlite). Read from
+   * `adapter.capabilities.walMode`, the ONE source of truth, never re-derived
+   * here. Additive (HF-3): surfaced alongside the existing fields, never
+   * replacing them.
+   */
+  wal_mode: StoreConcurrencyMode;
+  /**
+   * (BUG-MEMORYCORE-MULTIPROCESS-WAL-NOT-OPTED-IN-001) Whether the adapter
+   * VERIFIED its `wal_mode` at open — `true` when verification ran and
+   * succeeded, `null` when not applicable (readonly, remote url-only, a
+   * never-opened lazy shell, or sqlite's intrinsic `single-writer` which
+   * always reports `true`). Read from `adapter.capabilities.walModeVerified`.
+   */
+  wal_mode_verified: boolean | null;
 }
 
 /**
@@ -462,5 +479,7 @@ export async function memoryGetStats(
     last_checkpoint_at: lastCheckpointAt,
     embed_provenance: embedProvenance,
     malformed_rows: malformedRows,
+    wal_mode: adapter.capabilities.walMode,
+    wal_mode_verified: adapter.capabilities.walModeVerified,
   };
 }

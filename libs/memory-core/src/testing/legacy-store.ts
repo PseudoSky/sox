@@ -28,7 +28,7 @@
  */
 import { GRAPH_DDL_PRE_BL430 } from '@adhd/sox-graph-store';
 import type { StoreAdapter } from '@adhd/sox-store-adapter';
-import { openDb } from '../db.js';
+import { openDb, STORE_MODE } from '../db.js';
 
 /**
  * Create the pre-BL-430 `node`/`edge` tables at `dbPath`, then hand back the
@@ -40,7 +40,7 @@ import { openDb } from '../db.js';
  */
 export async function openLegacyDb(dbPath: string): Promise<StoreAdapter> {
   const { createStoreAdapter } = await import('@adhd/sox-store-adapter');
-  const seedAdapter = await createStoreAdapter({ dbPath });
+  const seedAdapter = await createStoreAdapter({ dbPath, concurrencyMode: STORE_MODE() });
   try {
     for (const stmt of GRAPH_DDL_PRE_BL430.split(';')) {
       if (stmt.trim().length > 0) await seedAdapter.exec(stmt);

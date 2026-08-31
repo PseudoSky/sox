@@ -26,6 +26,8 @@ import type {
   FtsEnsureOptions,
   FtsEnsureResult,
   FtsSearchOptions,
+  StoreConcurrencyMode,
+  StoreBackend,
 } from '@adhd/sox-store-adapter';
 import { log, instrumentAdapter, truncateForLog } from './telemetry.js';
 import { performance } from 'node:perf_hooks';
@@ -77,6 +79,48 @@ export function setWriterArtifact(artifact: string): void {
 /** Return the current writer-artifact (or a fallback). */
 export function getWriterArtifact(): string {
   return _writerArtifact ?? '@adhd/sox-memory-core';
+}
+
+/**
+ * (BUG-MEMORYCORE-MULTIPROCESS-WAL-NOT-OPTED-IN-001) The ONE place memory-core
+ * declares which store-concurrency mode to open under — `resolveConcurrencyMode`
+ * over the `STORE_ADAPTER`-selected backend (default `turso`), whose mandated
+ * mode is `multiprocess-wal` (ADR-0012, no opt-out) or `single-writer` (sqlite).
+ *
+ * Every `createStoreAdapter` call in this package (the five sites in this file,
+ * `backup.ts`, and the `testing/legacy-store.ts` fixture) passes this value
+ * explicitly as `concurrencyMode`, so an open is DECLARED rather than left to
+ * the adapter's implicit default — a backend added here cannot silently open
+ * under an unverified mode. This mirrors the factory's own env resolution
+ * (`createStoreAdapter` reads the same `STORE_ADAPTER` env), so the two can
+ * never disagree about which backend — and therefore which mandated mode — is
+ * in force.
+ *
+ * `@adhd/sox-store-adapter` is a lazy-loaded library here (its VALUES reach
+ * native bindings; only its TYPES are imported statically) — the cached lazy
+ * `require` below is the same shape `store-path.ts` uses, so these eager,
+ * synchronous call sites can read the ONE source of truth without tripping the
+ * "static import of lazy-loaded library" lint rule.
+ */
+let _storeModeResolver: ((backend: StoreBackend) => StoreConcurrencyMode) | null = null;
+
+export function STORE_MODE(): StoreConcurrencyMode {
+  if (_storeModeResolver === null) {
+    const mod = require('@adhd/sox-store-adapter') as {
+      resolveConcurrencyMode?: (backend: StoreBackend) => StoreConcurrencyMode;
+    };
+    if (typeof mod.resolveConcurrencyMode !== 'function') {
+      // Fail LOUDLY rather than silently re-deriving the mode — a local copy of
+      // "which mode does this backend mandate" is exactly the drift the
+      // concurrency contract exists to prevent.
+      throw new Error(
+        'store-mode: @adhd/sox-store-adapter did not export resolveConcurrencyMode. ' +
+          'The store-concurrency contract (ADR-0012) cannot be declared without it; refusing to fall back.',
+      );
+    }
+    _storeModeResolver = mod.resolveConcurrencyMode;
+  }
+  return _storeModeResolver((process.env.STORE_ADAPTER || 'turso').toLowerCase() as StoreBackend);
 }
 
 /**
@@ -420,6 +464,7 @@ export async function openDb(dbPath: string): Promise<StoreAdapter> {
     log.info('store.open.finish', {
       db_path: dbPath,
       adapter_type: adapter.config.type,
+      wal_mode: adapter.capabilities.walMode,
       engine: engineIdentity?.engine ?? null,
       engine_identity: engineIdentity,
       duration_ms: Math.round(performance.now() - openStartMs),
@@ -449,7 +494,7 @@ async function _openDbInner(dbPath: string): Promise<StoreAdapter> {
     createVectorDialect,
     canonicalFtsIndexName,
   } = await import('@adhd/sox-store-adapter');
-  let adapter = await createStoreAdapter({ dbPath });
+  let adapter = await createStoreAdapter({ dbPath, concurrencyMode: STORE_MODE() });
   const vectorDialect = createVectorDialect(adapter.config.type);
 
   // ═══════════════════════════════════════════════════════════════════════════
@@ -489,7 +534,7 @@ async function _openDbInner(dbPath: string): Promise<StoreAdapter> {
         log.warn('store.open.turso_vacuum_repair', { db_path: dbPath });
         await adapter.close();
         await dropVec0ViaBetterSqlite3(dbPath, { runVacuum: true });
-        adapter = await createStoreAdapter({ dbPath });
+        adapter = await createStoreAdapter({ dbPath, concurrencyMode: STORE_MODE() });
       }
     }
   }
@@ -726,7 +771,7 @@ async function _openDbInner(dbPath: string): Promise<StoreAdapter> {
         // the reopen below would still fail this open.
         await adapter.close();
         await dropFtsResidueViaBetterSqlite3(dbPath, residueNames);
-        adapter = await createStoreAdapter({ dbPath });
+        adapter = await createStoreAdapter({ dbPath, concurrencyMode: STORE_MODE() });
       }
     }
   }
@@ -835,7 +880,7 @@ async function _openDbInner(dbPath: string): Promise<StoreAdapter> {
     log.warn('store.open.turso_vec0_drop', { db_path: dbPath });
     await adapter.close();
     await dropVec0ViaBetterSqlite3(dbPath);
-    adapter = await createStoreAdapter({ dbPath });
+    adapter = await createStoreAdapter({ dbPath, concurrencyMode: STORE_MODE() });
   }
 
   // 3. Create native vector table and index via dialect
@@ -1065,7 +1110,7 @@ export async function openDbReadOnly(dbPath: string): Promise<StoreAdapter> {
   // flag (that flag is unconditionally on for every Turso connection; see
   // TursoAdapterImpl.connect()). On SqliteAdapter this option is a no-op —
   // SQLite's native readonly already coexists fine with FTS5.
-  const adapter = await createStoreAdapter({ dbPath, readonly: true, allowFtsInReadonly: true });
+  const adapter = await createStoreAdapter({ dbPath, readonly: true, allowFtsInReadonly: true, concurrencyMode: STORE_MODE() });
 
   // Load sqlite-vec extension only for adapters without native vector support.
   // BL-323: named export only — see dropVec0ViaBetterSqlite3() above.
@@ -1147,7 +1192,7 @@ function getFtsOpsModule(): Promise<typeof import('@adhd/sox-store-adapter')> {
 export function wrapRawDbAsAdapter(rawDb: Database.Database): StoreAdapter {
   return {
     config: { type: 'sqlite', dbPath: rawDb.name ?? undefined, readonly: rawDb.memory },
-    capabilities: { multiprocessWrite: false, nativeVectors: false, concurrentTransactions: false, fts5: true, fts: true, needsWriteSerialization: true, recursiveCte: true },
+    capabilities: { walMode: 'single-writer', walModeVerified: true, multiprocessWrite: false, nativeVectors: false, concurrentTransactions: false, fts5: true, fts: true, needsWriteSerialization: true, recursiveCte: true },
 
     async executeGet<T = Record<string, unknown>>(sql: string, args?: unknown[]): Promise<T | null> {
       const stmt = rawDb.prepare(sql);

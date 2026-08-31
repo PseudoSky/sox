@@ -44,6 +44,13 @@ import {
 import { ESqliteNativeStore, isBusyError } from './errors.js';
 import { ensureEngineMarker, readApplicationId, SOX_APP_ID_SQLITE } from './engine-guard.js';
 import {
+  assertValidConcurrencyMode,
+  resolveConcurrencyMode,
+  verifyMultiprocessWalSidecar,
+  EWalModeUnverified,
+} from './concurrency-mode.js';
+import type { StoreConcurrencyMode } from './concurrency-mode.js';
+import {
   EForeignSqliteSidecar,
   describeWalReplaced,
   logWalReplacedObserved,
@@ -1410,6 +1417,16 @@ export class TursoAdapterImpl implements TursoAdapter {
      */
     allowForeignEngine?: boolean;
     /**
+     * (BUG-MEMORYCORE-MULTIPROCESS-WAL-NOT-OPTED-IN-001) The concurrency mode to
+     * open under. Optional — defaults to `resolveConcurrencyMode('turso')` =
+     * `'multiprocess-wal'` (ADR-0012, no opt-out). When set to anything but
+     * `'multiprocess-wal'`, `assertValidConcurrencyMode` throws. The resolved
+     * mode drives the `multiprocess_wal` experiments flag, the
+     * `capabilities.walMode`/`multiprocessWrite` fields, and the post-open
+     * `-tshm` verification — there is no independent hardcode.
+     */
+    concurrencyMode?: StoreConcurrencyMode;
+    /**
      * (idle-flush, TEST-ONLY) Override the idle-flush debounce window
      * (default `DEFAULT_IDLE_FLUSH_MS` = 2000ms). No production caller sets
      * this — it exists so tests can observe idle-flush behavior without a
@@ -1512,6 +1529,12 @@ export class TursoAdapterImpl implements TursoAdapter {
     // original spelling (connect() re-canonicalizes on replay).
     const canonicalDb = opts.dbPath !== undefined ? canonicalDbPath(opts.dbPath) : undefined;
 
+    // (BUG-MEMORYCORE-MULTIPROCESS-WAL-NOT-OPTED-IN-001) Resolve + validate the
+    // concurrency mode up front — turso mandates 'multiprocess-wal' only; a
+    // 'single-writer' declaration throws before any lease/file/WAL is touched.
+    const mode: StoreConcurrencyMode = opts.concurrencyMode ?? resolveConcurrencyMode('turso');
+    assertValidConcurrencyMode('turso', mode);
+
     let lease: StoreLease | null = null;
     if (canonicalDb !== undefined) {
       lease = await acquireStoreLease(canonicalDb);
@@ -1563,7 +1586,14 @@ export class TursoAdapterImpl implements TursoAdapter {
       // `readApplicationId`, now header-first). There is no opt-out: the
       // `experimental: { multiprocessWal: false }` option was REMOVED from the
       // adapter API with this fix.
-      const experiments: string[] = ['index_method', 'multiprocess_wal'];
+      //
+      // (BUG-MEMORYCORE-MULTIPROCESS-WAL-NOT-OPTED-IN-001) The flag is now
+      // DERIVED from the resolved concurrency mode — see
+      // `StoreConcurrencyMode`/`resolveConcurrencyMode` in concurrency-mode.ts.
+      // turso's one valid mode is 'multiprocess-wal', so for every real turso
+      // open the flag is present (BL-512 semantics preserved); there is no
+      // independent `experiments` literal to drift from `capabilities.walMode`.
+      const experiments: string[] = ['index_method', ...(mode === 'multiprocess-wal' ? ['multiprocess_wal'] : [])];
       if (opts.encryption) {
         dbOpts.encryption = {
           cipher: opts.encryption.cipher,
@@ -2065,10 +2095,16 @@ export class TursoAdapterImpl implements TursoAdapter {
         recursiveCte = false;
       }
 
-      const config = TursoAdapterImpl._buildConfig(opts, canonicalDb);
+      const config = TursoAdapterImpl._buildConfig(opts, canonicalDb, mode);
 
       const capabilities: AdapterCapabilities = {
-        multiprocessWrite: true, // unconditional — see the experiments block above (BL-512)
+        // (BUG-MEMORYCORE-MULTIPROCESS-WAL-NOT-OPTED-IN-001) Declared mode +
+        // derived flag. `walModeVerified` is set post-open once the -tshm
+        // coordinator is confirmed (see the verification block before
+        // `return instance`); it reads `null` until then.
+        walMode: mode,
+        walModeVerified: null,
+        multiprocessWrite: mode === 'multiprocess-wal',
         nativeVectors: true,
         concurrentTransactions: true,
         fts5: false,
@@ -2157,7 +2193,10 @@ export class TursoAdapterImpl implements TursoAdapter {
       // received — never reconstructed from `config` (which drops
       // `allowFtsInReadonly`, see the field's doc comment) — so a later
       // reconnect can replay it verbatim through this same connect() path.
-      instance._connectOpts = Object.freeze({ ...opts });
+      // (BUG-MEMORYCORE-MULTIPROCESS-WAL-NOT-OPTED-IN-001) The RESOLVED mode is
+      // stamped in so a replay re-validates the same mode rather than
+      // re-resolving (which could theoretically drift if env changed mid-process).
+      instance._connectOpts = Object.freeze({ ...opts, concurrencyMode: mode });
 
       instance._lease = lease;
 
@@ -2214,6 +2253,26 @@ export class TursoAdapterImpl implements TursoAdapter {
         instance._armWalOwnershipHeartbeat();
       }
 
+      // (BUG-MEMORYCORE-MULTIPROCESS-WAL-NOT-OPTED-IN-001) POST-OPEN VERIFICATION.
+      // The mandate (ADR-0012) is not just declared — it is verified. A writable
+      // local-file turso open under 'multiprocess-wal' must prove the `-tshm`
+      // coordinator sidecar exists (it is created by the first write, which the
+      // stamping/integrity ceremony above has already issued). Absent ⇒ the
+      // driver did not enable the mandated coordination ⇒ refuse. Skipped for
+      // readonly, remote (url-only), and the deliberate-migration escape hatch.
+      if (
+        mode === 'multiprocess-wal' &&
+        canonicalDb !== undefined &&
+        opts.readonly !== true &&
+        opts.allowForeignEngine !== true
+      ) {
+        const verified = await verifyMultiprocessWalSidecar(canonicalDb);
+        if (!verified) {
+          throw new EWalModeUnverified(canonicalDb);
+        }
+        instance._capabilities = { ...instance._capabilities, walModeVerified: true };
+      }
+
       return instance;
     } catch (err) {
       if (lease) await lease.release().catch(() => {});
@@ -2230,9 +2289,14 @@ export class TursoAdapterImpl implements TursoAdapter {
   private static _buildConfig(
     opts: Parameters<typeof TursoAdapterImpl._openReal>[0],
     canonicalDb: string | undefined,
+    mode: StoreConcurrencyMode,
   ): AdapterConfig & { type: 'turso' } {
     const config = { type: 'turso' } as AdapterConfig & { type: 'turso' };
     if (opts.url !== undefined) config.url = opts.url;
+    // (BUG-MEMORYCORE-MULTIPROCESS-WAL-NOT-OPTED-IN-001) Stamp the RESOLVED
+    // mode so a caller reading `config.concurrencyMode` sees exactly what it
+    // got — the declared-or-default value, never the engine's implicit one.
+    config.concurrencyMode = mode;
     // (BUG014.T4) `config.dbPath` is the CANONICAL path — the close path
     // (storeQuiescence, clearStoreOpenMarker, resetTshmAfterTruncate),
     // withConnectionClosedForRepair, and graph-store's repair path all read
@@ -2308,6 +2372,12 @@ export class TursoAdapterImpl implements TursoAdapter {
     // probes, and this eager preflight) must agree on ONE spelling.
     const canonicalDb = opts.dbPath !== undefined ? canonicalDbPath(opts.dbPath) : undefined;
 
+    // (BUG-MEMORYCORE-MULTIPROCESS-WAL-NOT-OPTED-IN-001) Resolve + validate the
+    // concurrency mode eagerly — a mismatched declaration fails at connect(),
+    // before any deferred open, exactly like the foreign-engine check below.
+    const mode: StoreConcurrencyMode = opts.concurrencyMode ?? resolveConcurrencyMode('turso');
+    assertValidConcurrencyMode('turso', mode);
+
     // (BL-508) FOREIGN-ENGINE REFUSAL — see this method's doc comment for
     // why this ONE check runs eagerly instead of deferring to first use.
     if (canonicalDb !== undefined && opts.readonly !== true && opts.allowForeignEngine !== true) {
@@ -2317,7 +2387,7 @@ export class TursoAdapterImpl implements TursoAdapter {
       }
     }
 
-    const config = TursoAdapterImpl._buildConfig(opts, canonicalDb);
+    const config = TursoAdapterImpl._buildConfig(opts, canonicalDb, mode);
 
     // (DEBT-003) Conservative default — `recursiveCte` is the one capability
     // that genuinely needs a live probe (a real `WITH RECURSIVE` query, see
@@ -2326,8 +2396,13 @@ export class TursoAdapterImpl implements TursoAdapter {
     // construction — this mirrors it exactly for every field but
     // `recursiveCte`). `_reconnect()` overwrites this with the real probed
     // value on first open (see `_capabilities`'s doc comment).
+    // (BUG-MEMORYCORE-MULTIPROCESS-WAL-NOT-OPTED-IN-001) `walModeVerified` is
+    // `null` here — the shell has not opened, so the -tshm verification has
+    // not run; `_openReal()` sets it to `true` after the first real open.
     const capabilities: AdapterCapabilities = {
-      multiprocessWrite: true,
+      walMode: mode,
+      walModeVerified: null,
+      multiprocessWrite: mode === 'multiprocess-wal',
       nativeVectors: true,
       concurrentTransactions: true,
       fts5: false,
@@ -2341,8 +2416,9 @@ export class TursoAdapterImpl implements TursoAdapter {
     instance._canonicalDb = canonicalDb;
     // (SPEC-CONN-RECYCLE) Capture the exact `opts` this call received —
     // frozen verbatim, same as `_openReal()` always has — so `_reconnect()`
-    // can replay it through `_openReal()` on first use.
-    instance._connectOpts = Object.freeze({ ...opts });
+    // can replay it through `_openReal()` on first use. The RESOLVED mode is
+    // stamped in so the replay re-validates the same mode.
+    instance._connectOpts = Object.freeze({ ...opts, concurrencyMode: mode });
     instance._neverOpened = true;
 
     // (idle-flush / wal-cap — constraint 4) Eligibility is decided from
