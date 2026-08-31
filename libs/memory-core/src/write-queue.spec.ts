@@ -431,9 +431,22 @@ describe('WriteQueue — WAL checkpointing owned by the store adapter, SQLITE ar
       // deterministic across runs) — each 4KB-page insert below costs
       // ~4.1KB of WAL regardless of payload size, so 80×1000-byte rows
       // (the turso arm's count) blows the cap mid-loop and confounds the
-      // very mechanism this test isolates. 15×200-byte rows leaves >35KB of
-      // headroom under the cap (measured: 226,632 of 262,144).
-      for (let i = 0; i < 15; i++) {
+      // very mechanism this test isolates.
+      //
+      // (BL-625, 2026-08-30) RECALIBRATED from 15 to 8 rows. Later schema
+      // additions (the enrich/embed self-heal health plane and friends) grew
+      // the post-schema WAL baseline to ~189,552 bytes, so 15×~4.1KB pushed
+      // the WAL to ~263,712 — over DEFAULT_WAL_CAP_BYTES — mid-seed, tripping
+      // the adapter's INLINE cap-flush (wal_checkpoint(TRUNCATE), a DIFFERENT
+      // mechanism than the idle flush this test isolates) and zeroing the WAL
+      // before `walAfterWrite` was read. Both this test and its NEGATIVE
+      // CONTROL failed with `walAfterWrite === 0`. 8 rows leaves ~27KB of
+      // headroom (measured: 234,872 of 262,144) and still grows the WAL by
+      // ~45KB — the BL-586 assertions (`walAfterWrite > walBaseline`,
+      // `walAfterIdle < walAfterWrite * 0.1`, `walAfterIdle >= walAfterWrite`
+      // under the neuter) are UNCHANGED; only the seed volume moved back
+      // under the cap.
+      for (let i = 0; i < 8; i++) {
         await adapter.executeRun('INSERT INTO bl586_test (id, val) VALUES (?, ?)', [i, 'x'.repeat(200)]);
       }
 

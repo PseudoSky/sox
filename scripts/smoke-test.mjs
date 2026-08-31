@@ -426,6 +426,55 @@ function verifyDirectServe(args) {
   };
 }
 
+// BUG-MEMORYCORE-MULTIPROCESS-WAL-NOT-OPTED-IN-001: for the memory-server, the
+// serve step follows initialize with a memory_write (to create the store) and a
+// memory_ping, then asserts the store-concurrency contract on the ping surface:
+// `ping.store.wal_mode === 'multiprocess-wal'` (turso default, ADR-0012), plus
+// `wal_mode_verified === true`; presence-only when STORE_ADAPTER=sqlite.
+function verifyMemoryServerPing(args) {
+  const base = verifyDirectServe(args);
+  if (!base.ok) return base;
+
+  const lines = args.stdout.split(String.fromCharCode(10));
+  for (const line of lines) {
+    const t = line.trim();
+    if (!t) continue;
+    let msg;
+    try { msg = JSON.parse(t); } catch { continue; }
+    if (msg && typeof msg === "object" && msg.id === 3 && msg.result) {
+      const text = msg.result.content && msg.result.content[0] && msg.result.content[0].text;
+      if (!text) {
+        return { ok: false, verdict: "ping-no-content", detail: "memory_ping tools/call (id:3) returned no text content" };
+      }
+      let ping;
+      try { ping = JSON.parse(text); } catch {
+        return { ok: false, verdict: "ping-unparseable", detail: "memory_ping text is not JSON: " + text.slice(0, 200) };
+      }
+      const store = ping.store;
+      if (!store || typeof store !== "object") {
+        return { ok: false, verdict: "ping-no-store", detail: "memory_ping store block is null/absent: " + text.slice(0, 200) };
+      }
+      const walMode = store.wal_mode;
+      if (process.env.STORE_ADAPTER === "sqlite") {
+        // Presence-only on the sqlite arm: no -tshm coordinator to verify, so
+        // the field just has to exist (it reads 'single-writer').
+        if (walMode === undefined || walMode === null) {
+          return { ok: false, verdict: "ping-wal-mode-absent", detail: "store.wal_mode absent (STORE_ADAPTER=sqlite)" };
+        }
+        return { ok: true, verdict: "verified", detail: "store.wal_mode=" + walMode + " (presence-only, STORE_ADAPTER=sqlite)" };
+      }
+      if (walMode !== "multiprocess-wal") {
+        return { ok: false, verdict: "ping-wrong-wal-mode", detail: "store.wal_mode=" + walMode + ", expected multiprocess-wal" };
+      }
+      if (store.wal_mode_verified !== true) {
+        return { ok: false, verdict: "ping-wal-unverified", detail: "store.wal_mode_verified=" + store.wal_mode_verified + ", expected true" };
+      }
+      return { ok: true, verdict: "verified", detail: "store.wal_mode=multiprocess-wal, wal_mode_verified=true" };
+    }
+  }
+  return { ok: false, verdict: "ping-no-response", detail: "no memory_ping tools/call (id:3) response observed on stdout" };
+}
+
 function verifyServiceRunning(args) {
   const stdout = args.stdout;
   const loadedYes = /^\s*loaded:\s*yes\s*$/m.test(stdout);
@@ -477,6 +526,13 @@ async function testExtension(ext) {
 
   // ── MCP serve modes ────────────────────────────────────────────
   const initPayload = JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'initialize', params: { protocolVersion: '2024-11-05', capabilities: {}, clientInfo: { name: 'smoke', version: '1' } } }) + '\n';
+  // BUG-MEMORYCORE-MULTIPROCESS-WAL-NOT-OPTED-IN-001: for the memory-server,
+  // follow initialize with a memory_write (creates the scratch store) then a
+  // memory_ping, so the serve step can assert the store-concurrency contract on
+  // the live process's ping surface (ping.store.wal_mode). Other mcp-servers
+  // keep the bare initialize probe.
+  const memoryWritePayload = JSON.stringify({ jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name: 'memory_write', arguments: { content: 'smoke-test store-init probe', project_path: TEST_ROOT } } }) + '\n';
+  const memoryPingPayload = JSON.stringify({ jsonrpc: '2.0', id: 3, method: 'tools/call', params: { name: 'memory_ping', arguments: {} } }) + '\n';
   for (const mode of modes) {
     const args = ['serve', id];
     if (mode === 'no-proxy') args.push('--no-proxy');
@@ -489,7 +545,10 @@ async function testExtension(ext) {
       // spawn+poll+kill helper so the step genuinely waits for evidence.
       await runServeProxyAndVerify(args, { testId: `${id}-serve-${mode}`, extId: id, extType: type });
     } else {
-      await runCmd(args, { timeoutMs: 30_000, testId: `${id}-serve-${mode}`, extId: id, extType: type, stdinInput: initPayload, verify: verifyDirectServe });
+      const isMemoryServer = id === 'memory-server';
+      const stdinInput = isMemoryServer ? initPayload + memoryWritePayload + memoryPingPayload : initPayload;
+      const verify = isMemoryServer ? verifyMemoryServerPing : verifyDirectServe;
+      await runCmd(args, { timeoutMs: 30_000, testId: `${id}-serve-${mode}`, extId: id, extType: type, stdinInput, verify });
     }
   }
 

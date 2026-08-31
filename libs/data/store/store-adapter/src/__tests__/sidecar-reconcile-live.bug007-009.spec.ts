@@ -41,7 +41,7 @@
  * (4) the quiescent path must keep working (guard — passes on both sides).
  */
 import { describe, it, expect, vi, beforeEach, afterEach, beforeAll } from 'vitest';
-import { mkdtempSync, readdirSync, utimesSync, unlinkSync, statSync, existsSync, truncateSync } from 'node:fs';
+import { mkdtempSync, readdirSync, utimesSync, unlinkSync, statSync, existsSync, truncateSync, writeFileSync } from 'node:fs';
 import { join, basename, dirname } from 'node:path';
 import { tmpdir } from 'node:os';
 import { TursoAdapterImpl } from '../turso-adapter.js';
@@ -61,7 +61,19 @@ const tursoDescribe = hasTurso ? describe : describe.skip;
 const mockDriverConnect = vi.fn();
 
 vi.mock('@tursodatabase/database', () => ({
-  connect: (...args: unknown[]) => mockDriverConnect(...args),
+  connect: (...args: unknown[]) => {
+    // (BUG-MEMORYCORE-MULTIPROCESS-WAL-NOT-OPTED-IN-001) Mimic the REAL driver:
+    // a writable local open creates the -tshm coordinator sidecar — the
+    // filesystem proof the multiprocess-WAL mandate is live. The adapter's
+    // post-open verification polls for it; without this the mock falsely
+    // trips E_WAL_MODE_UNVERIFIED. (`-tshm` is distinct from the foreign
+    // `-shm` this suite reconciles, so it never perturbs those assertions.)
+    const url = args[0];
+    if (typeof url === 'string' && !url.includes('://')) {
+      writeFileSync(url + '-tshm', '');
+    }
+    return mockDriverConnect(...args);
+  },
 }));
 
 function makeFakeDb(): any {
