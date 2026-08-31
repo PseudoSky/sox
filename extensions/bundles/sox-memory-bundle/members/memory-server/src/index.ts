@@ -1256,6 +1256,14 @@ async function handleToolCallImpl(name: string, args: Record<string, unknown>): 
           name: storeName,
           path: resolvedPath,
           adapter_type: adapter.config.type,
+          // BUG-MEMORYCORE-MULTIPROCESS-WAL-NOT-OPTED-IN-001: the resolved
+          // store-concurrency mode + its verification verdict, read from the
+          // adapter's OWN capability surface (the ONE source of truth) — a
+          // turso open that could not prove its `-tshm` coordinator reads
+          // `wal_mode_verified: null`, never a silent `true`. HF-3 additive:
+          // these fields only ADD to the store block, never rename/remove.
+          wal_mode: adapter.capabilities.walMode,
+          wal_mode_verified: adapter.capabilities.walModeVerified,
           fingerprint: `sha256:${sha256Fingerprint}`,
           wal_bytes: walBytes,
           // BL-334: store integrity. `integrity.healthy === false` means the

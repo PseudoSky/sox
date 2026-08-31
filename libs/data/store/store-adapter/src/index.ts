@@ -1,4 +1,9 @@
 export * from './types.js';
+// (BUG-MEMORYCORE-MULTIPROCESS-WAL-NOT-OPTED-IN-001) The store-concurrency
+// contract — exported so consumers (memory-core) and tests can read the ONE
+// source of truth (`resolveConcurrencyMode` / `verifyMultiprocessWalSidecar`)
+// rather than re-deriving it.
+export * from './concurrency-mode.js';
 export * from './errors.js';
 export * from './retry.js';
 export * from './sqlite-adapter.js';

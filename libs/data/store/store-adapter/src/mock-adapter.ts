@@ -187,8 +187,16 @@ export class MockAdapter implements StoreAdapter {
   constructor() {
     this.config = {
       type: 'sqlite',
+      concurrencyMode: 'single-writer',
     };
     this.capabilities = {
+      // (BUG-MEMORYCORE-MULTIPROCESS-WAL-NOT-OPTED-IN-001) The mock is a
+      // documented test double with no real store — it reports the intrinsic
+      // sqlite mode and a `true` verification (nothing to verify, nothing
+      // unverified), so a test asserting the `walMode`/`multiprocessWrite`
+      // invariant against a mock still reads consistently.
+      walMode: 'single-writer',
+      walModeVerified: true,
       multiprocessWrite: false,
       nativeVectors: false,
       concurrentTransactions: false,

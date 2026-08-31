@@ -33,6 +33,11 @@ import type {
 import { ETursoNativeStore, isTursoNativeStoreSchemaError } from './errors.js';
 import { ensureEngineMarker, readApplicationId, SOX_APP_ID_TURSO } from './engine-guard.js';
 import {
+  assertValidConcurrencyMode,
+  resolveConcurrencyMode,
+} from './concurrency-mode.js';
+import type { StoreConcurrencyMode } from './concurrency-mode.js';
+import {
   EStoreWalReplaced,
   describeWalReplaced,
   logWalReplacedObserved,
@@ -392,6 +397,7 @@ export class SqliteAdapterImpl implements SqliteAdapter {
       walCapHeadroomBytes?: number;
       walCapCeilingBytes?: number;
       walOwnershipHeartbeatMs?: number;
+      concurrencyMode?: StoreConcurrencyMode;
     },
   );
   constructor(db: Sqlite3Database);
@@ -406,8 +412,14 @@ export class SqliteAdapterImpl implements SqliteAdapter {
       walCapHeadroomBytes?: number;
       walCapCeilingBytes?: number;
       walOwnershipHeartbeatMs?: number;
+      concurrencyMode?: StoreConcurrencyMode;
     },
   ) {
+    // (BUG-MEMORYCORE-MULTIPROCESS-WAL-NOT-OPTED-IN-001) Resolve + validate the
+    // concurrency mode up front — sqlite mandates 'single-writer' only; a
+    // 'multiprocess-wal' declaration throws before any file/WAL is touched.
+    const mode: StoreConcurrencyMode = opts?.concurrencyMode ?? resolveConcurrencyMode('sqlite');
+    assertValidConcurrencyMode('sqlite', mode);
     if (typeof dbOrPath === 'string') {
       // (BUG014.T4, INV-4) Canonicalize ONCE at open: `config.dbPath` and every
       // sidecar/integrity path derived from it carry the canonical spelling
@@ -438,12 +450,14 @@ export class SqliteAdapterImpl implements SqliteAdapter {
         type: 'sqlite',
         dbPath: canonicalPath,
         readonly: opts?.readonly ?? false,
+        concurrencyMode: mode,
       };
     } else {
       this.db = dbOrPath;
       this.ownDb = false;
       this.config = {
         type: 'sqlite',
+        concurrencyMode: mode,
       };
       // (BL-508) Best-effort marker probe on a caller-owned handle: the
       // handle is already open, so read the pragma directly (still a raw
@@ -494,7 +508,12 @@ export class SqliteAdapterImpl implements SqliteAdapter {
 
     this.cache = new StatementCache(256);
     this.capabilities = {
-      multiprocessWrite: false,
+      // (BUG-MEMORYCORE-MULTIPROCESS-WAL-NOT-OPTED-IN-001) sqlite is a single
+      // synchronous in-process connection: 'single-writer' by construction, so
+      // the mode is verified intrinsically — no sidecar to probe.
+      walMode: mode,
+      walModeVerified: true,
+      multiprocessWrite: mode === 'multiprocess-wal',
       nativeVectors: false,
       concurrentTransactions: false,
       fts5: true,

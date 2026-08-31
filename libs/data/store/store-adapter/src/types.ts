@@ -1,6 +1,8 @@
 // Type-only import: erased at emit, so this does NOT create a runtime cycle
 // with `integrity.ts` (which imports `StoreAdapter` from here, also as a type).
 import type { BackupIntegrityReport } from './integrity.js';
+// Type-only import from concurrency-mode.ts — erased at emit, no runtime cycle.
+import type { StoreConcurrencyMode } from './concurrency-mode.js';
 
 // ── Adapter meta (adapter-type stamping) ────────────────────────────────────
 
@@ -60,6 +62,31 @@ export interface RetryOptions {
 // ── Capability flags ────────────────────────────────────────────────────────
 
 export interface AdapterCapabilities {
+  /**
+   * (BUG-MEMORYCORE-MULTIPROCESS-WAL-NOT-OPTED-IN-001) The resolved store
+   * concurrency mode for this adapter — the ONE source of truth (see
+   * `concurrency-mode.ts`). Every `AdapterCapabilities` literal MUST set this
+   * (and {@link walModeVerified}); the field is deliberately non-optional so a
+   * new adapter construction fails to compile until it declares a mode.
+   */
+  walMode: StoreConcurrencyMode;
+  /**
+   * (BUG-MEMORYCORE-MULTIPROCESS-WAL-NOT-OPTED-IN-001) Whether the adapter
+   * VERIFIED its {@link walMode} at open — `true` when verification ran and
+   * succeeded, `null` when verification was not applicable or did not run
+   * (readonly open, remote url-only open, foreign-engine escape hatch, a
+   * never-opened lazy shell, or a mode that needs no sidecar — sqlite's
+   * `single-writer` is intrinsic and always reports `true`). REQUIRED on every
+   * literal — the compile-time tripwire that pairs the declared mode with an
+   * honest verification verdict.
+   */
+  walModeVerified: boolean | null;
+  /**
+   * (BUG-MEMORYCORE-MULTIPROCESS-WAL-NOT-OPTED-IN-001) DERIVED from
+   * {@link walMode} — `true` iff `walMode === 'multiprocess-wal'`. There is no
+   * independent source of truth for this flag; a caller that hardcodes it
+   * separately from `walMode` is exactly the drift this field used to allow.
+   */
   multiprocessWrite: boolean;
   nativeVectors: boolean;
   concurrentTransactions: boolean;
@@ -320,6 +347,15 @@ export interface AdapterConfig {
   url?: string;
   authToken?: string;
   readonly?: boolean;
+  /**
+   * (BUG-MEMORYCORE-MULTIPROCESS-WAL-NOT-OPTED-IN-001) The concurrency mode to
+   * open the store under. Optional — when unset, the adapter resolves its
+   * backend's mandated mode (`resolveConcurrencyMode`). Typed config, never a
+   * `SOX_*` env toggle (ADR-0013). When set, the adapter VALIDATES it against
+   * the backend's valid modes and STAMPS the resolved value onto
+   * `config.concurrencyMode`, so a caller can read back exactly what it got.
+   */
+  concurrencyMode?: StoreConcurrencyMode;
   /** (BL-391) TursoAdapter only: combined with `readonly: true`, keeps
    *  `fts_match`/`fts_score` working — Turso's native readonly connect
    *  option blocks it outright (`Resource is read-only`), a genuine engine

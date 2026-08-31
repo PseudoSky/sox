@@ -37,7 +37,7 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import type { StorageError } from './errors.js';
-import { expandDbPath } from './db.js';
+import { expandDbPath, STORE_MODE } from './db.js';
 import { resolveBackupConfig } from './config.js';
 import type { BackupIntegrityReport, StoreAdapter } from '@adhd/sox-store-adapter';
 import { log as tlog } from './telemetry.js';
@@ -195,7 +195,7 @@ export async function backupStore(
   let backend = (process.env.STORE_ADAPTER || 'turso').toLowerCase();
   try {
     const { createStoreAdapter } = await import('@adhd/sox-store-adapter');
-    srcAdapter = await createStoreAdapter({ dbPath: resolvedSrc, readonly: true });
+    srcAdapter = await createStoreAdapter({ dbPath: resolvedSrc, readonly: true, concurrencyMode: STORE_MODE() });
     backend = srcAdapter.config.type;
 
     if (typeof srcAdapter.backupTo !== 'function') {
