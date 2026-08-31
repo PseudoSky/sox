@@ -162,7 +162,7 @@ describe('FEAT-023 NodeUniquenessPolicy', () => {
     expect(await backend.countNodes({ kind: 'component', name: 'foo' })).toBe(2);
   });
 
-  it('findOrCreateNode is idempotent without the index (SELECT-then-INSERT, single-writer)', async () => {
+  it('findOrCreateNode is idempotent without the index (SELECT-then-INSERT)', async () => {
     const { backend } = await freshBackend();
     const id = await backend.findOrCreateNode('status', 'OPEN');
     expect(await backend.findOrCreateNode('status', 'OPEN')).toBe(id);
