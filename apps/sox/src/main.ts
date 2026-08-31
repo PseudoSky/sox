@@ -82,6 +82,11 @@ import {
   unloadThenReap,
   // BL-185: interval-schedule detection for SCHEDULED status rendering.
   isScheduledOsUnitContent,
+  // BL-620: verify-after-write + F15 orphan attribution/classification + rotation.
+  verifyUnitOnDisk,
+  parseOsUnitLabel,
+  classifyOsUnitOrphan,
+  rotateOsUnitLogs,
   // BL-344: the ONE env-scrub definition. This file previously carried three
   // independent copies of it (~4632, ~8071, ~8728) which had drifted from each
   // other and from host-runtime's two, so a tunable reached some spawn paths
@@ -5231,19 +5236,22 @@ OS units are GENERATED from the manifest; hand-editing them is unsupported.
 
     // Record the os-unit in the ownership index ([inv:reversible-injection], §9.4)
     // so uninstall/disable can reverse it and `service list`/`doctor` enumerate it.
+    // BL-620 / INV-1: this write is the COMMIT POINT — strict-load + save +
+    // re-read-verify, fail-loud. A failed ownership write exits 1 rather than
+    // silently leaving the unit ORPHANED (the exact doctor-tick regression).
     try {
       const pathM = require('node:path') as typeof import('node:path');
-      const own = OwnershipIndex.loadFromFile(pathM.join(dataRoot(scope as DataScope, root), 'ownership.json'));
-      own.addEntries(extId, scope, [{
-        kind: 'os-unit',
+      OwnershipIndex.upsertOsUnitEntry(pathM.join(dataRoot(scope as DataScope, root), 'ownership.json'), {
+        extId,
+        scope,
         label: ctx.spec.label,
         unitPath: result.unitPath,
         supervisor: platform.kind,
         appliedHash: result.contentHash,
-      }]);
-      own.save();
+      });
     } catch (e) {
-      process.stderr.write(`sox: warning: could not record os-unit ownership: ${String(e)}\n`);
+      process.stderr.write(`${CLI} service enable: FAILED — could not record os-unit ownership: ${String(e)}\n`);
+      process.exit(1);
     }
 
     process.stdout.write(
@@ -5256,7 +5264,8 @@ OS units are GENERATED from the manifest; hand-editing them is unsupported.
         ? `  (--dry-run: unit written but NOT loaded — no ${platform.kind === 'launchd' ? 'launchctl' : 'systemctl'} call)\n`
         : `  loaded:     ${result.loaded ? 'yes' : 'NO (load failed — see warnings)'}\n`),
     );
-    process.exit(!dryRun && !result.loaded ? 1 : 0);
+    // BL-620 / INV-2: a live enable whose write could not be verified is a failure.
+    process.exit(!dryRun && (!result.loaded || !result.verified) ? 1 : 0);
   }
 
   if (sub === 'disable') {
@@ -5295,16 +5304,20 @@ OS units are GENERATED from the manifest; hand-editing them is unsupported.
     }
     // Remove the unit FILE + clear the ownership os-unit entry.
     disableOsUnit(label, platform, { unitDir, log: (m) => process.stdout.write(`sox: ${m}\n`) });
+    // BL-620 / INV-1: ownership removal is the commit point of a disable — strict
+    // load + save + verify-gone, fail-loud. A silent best-effort here left the
+    // doctor-tick entry stranded on disk.
     try {
       const pathM = require('node:path') as typeof import('node:path');
-      const own = OwnershipIndex.loadFromFile(pathM.join(dataRoot(scope as DataScope, root), 'ownership.json'));
-      const rec = own.get(extId, scope);
-      if (rec) {
-        const kept = rec.entries.filter((e) => e.kind !== 'os-unit');
-        own.record({ extId, scope, entries: kept, ...(rec.host !== undefined ? { host: rec.host } : {}) });
-        own.save();
-      }
-    } catch { /* best-effort */ }
+      OwnershipIndex.removeOsUnitEntry(pathM.join(dataRoot(scope as DataScope, root), 'ownership.json'), {
+        extId,
+        scope,
+        label,
+      });
+    } catch (e) {
+      process.stderr.write(`${CLI} service disable: FAILED — could not clear os-unit ownership: ${String(e)}\n`);
+      process.exit(1);
+    }
 
     process.stdout.write(
       undead
@@ -5350,6 +5363,8 @@ OS units are GENERATED from the manifest; hand-editing them is unsupported.
     // heal is correct self-healing behavior); it IS a rotation the operator did
     // not initiate and needs to know happened.
     const healMarker = readReconcileHealMarker(extId, scope);
+    // BL-620: surface a doctor-reconcile os-unit ALARM (corrupt/unhealable orphan).
+    const osUnitAlarmMarker = readOsUnitAlarmMarker(label);
     process.stdout.write(
       `${CLI} service status: ${label} (scope ${scope}, ${platform.kind})\n` +
       `  unit file:  ${fileExists ? unitPath : '(none)'}\n` +
@@ -5363,6 +5378,10 @@ OS units are GENERATED from the manifest; hand-editing them is unsupported.
           `at ${healMarker.healedAt} (killed pid ${healMarker.killedPid}, survivor pid ` +
           `${healMarker.survivorPid} → ${healMarker.outcome}) — nobody chose this restart; ` +
           `verify the running artifact still matches what was reviewed.\n`
+        : '') +
+      (osUnitAlarmMarker?.kind === 'os-unit-alarm'
+        ? `  ⚠ os-unit ALARM (BL-620): ${osUnitAlarmMarker.reason} at ${osUnitAlarmMarker.alarmedAt} — ` +
+          `re-render via \`${CLI} service enable ${osUnitAlarmMarker.extId} -s ${osUnitAlarmMarker.scope}\`\n`
         : ''),
     );
     process.exit(0);
@@ -5565,19 +5584,19 @@ async function cmdServiceUpdate(
   // Record/refresh the os-unit ownership entry exactly like `enable` does
   // ([inv:reversible-injection], §9.4) — `update` is `enable` reused as-is for
   // this half of its contract, dry-run included (matches `enable`'s own
-  // unconditional record-on-any-outcome behavior above).
+  // unconditional record-on-any-outcome behavior above). BL-620 / INV-1: fail-loud.
   try {
-    const own = OwnershipIndex.loadFromFile(pathM.join(dataRoot(scope as DataScope, root), 'ownership.json'));
-    own.addEntries(extId, scope, [{
-      kind: 'os-unit',
+    OwnershipIndex.upsertOsUnitEntry(pathM.join(dataRoot(scope as DataScope, root), 'ownership.json'), {
+      extId,
+      scope,
       label: ctx.spec.label,
       unitPath: result.enableResult.unitPath,
       supervisor: platform.kind,
       appliedHash: result.enableResult.contentHash,
-    }]);
-    own.save();
+    });
   } catch (e) {
-    process.stderr.write(`sox: warning: could not record os-unit ownership: ${String(e)}\n`);
+    process.stderr.write(`${CLI} service update: FAILED — could not record os-unit ownership: ${String(e)}\n`);
+    process.exit(1);
   }
 
   if (result.action === 'unchanged') {
@@ -5796,18 +5815,22 @@ async function doctorInstallTick(flags: Record<string, string>): Promise<void> {
 
   // Ownership ([inv:reversible-injection], §9.4): recorded like any os-unit so
   // `service list`/`doctor` enumerate it and disable/remove-tick reverse it.
+  // BL-620 / INV-1: the ownership write is the COMMIT POINT — the silent catch
+  // here was the root cause of the orphaned doctor-tick (install-tick wrote a
+  // unit, its ownership save failed, exited 0, and reconcile reported ORPHANED
+  // forever after). Fail-loud instead.
   try {
-    const own = OwnershipIndex.loadFromFile(pathM.join(dataRoot(scope as DataScope, root), 'ownership.json'));
-    own.addEntries(DOCTOR_TICK_ID, scope, [{
-      kind: 'os-unit',
+    OwnershipIndex.upsertOsUnitEntry(pathM.join(dataRoot(scope as DataScope, root), 'ownership.json'), {
+      extId: DOCTOR_TICK_ID,
+      scope,
       label: spec.label,
       unitPath: result.unitPath,
       supervisor: platform.kind,
       appliedHash: result.contentHash,
-    }]);
-    own.save();
+    });
   } catch (e) {
-    process.stderr.write(`sox: warning: could not record doctor-tick ownership: ${String(e)}\n`);
+    process.stderr.write(`${CLI} doctor --install-tick: FAILED — could not record doctor-tick ownership: ${String(e)}\n`);
+    process.exit(1);
   }
 
   process.stdout.write(
@@ -5822,7 +5845,8 @@ async function doctorInstallTick(flags: Record<string, string>): Promise<void> {
       : `  loaded:    ${result.loaded ? 'yes' : 'NO (load failed — see warnings)'}\n`) +
     `  remove:    ${CLI} doctor --remove-tick   (or: ${CLI} service disable ${DOCTOR_TICK_ID})\n`,
   );
-  process.exit(!dryRun && !result.loaded ? 1 : 0);
+  // BL-620 / INV-2: a live install-tick whose write could not be verified is a failure.
+  process.exit(!dryRun && (!result.loaded || !result.verified) ? 1 : 0);
 }
 
 /**
@@ -5854,15 +5878,17 @@ async function doctorRemoveTick(flags: Record<string, string>): Promise<void> {
   disableOsUnit(label, platform, { unitDir, log: (m) => process.stdout.write(`sox: ${m}\n`) });
 
   // Clear the ownership os-unit entry ([inv:reversible-injection]).
+  // BL-620 / INV-1: the ownership write is the commit point of a remove — fail-loud.
   try {
-    const own = OwnershipIndex.loadFromFile(pathM.join(dataRoot(scope as DataScope, root), 'ownership.json'));
-    const rec = own.get(DOCTOR_TICK_ID, scope);
-    if (rec) {
-      const kept = rec.entries.filter((e) => e.kind !== 'os-unit');
-      own.record({ extId: DOCTOR_TICK_ID, scope, entries: kept, ...(rec.host !== undefined ? { host: rec.host } : {}) });
-      own.save();
-    }
-  } catch { /* best-effort */ }
+    OwnershipIndex.removeOsUnitEntry(pathM.join(dataRoot(scope as DataScope, root), 'ownership.json'), {
+      extId: DOCTOR_TICK_ID,
+      scope,
+      label,
+    });
+  } catch (e) {
+    process.stderr.write(`${CLI} doctor --remove-tick: FAILED — could not clear doctor-tick ownership: ${String(e)}\n`);
+    process.exit(1);
+  }
 
   process.stdout.write(`${CLI} doctor --remove-tick: '${label}' unloaded + removed\n`);
   process.exit(0);
@@ -5994,6 +6020,51 @@ function readReconcileHealMarker(extId: string, scope: string): ReconcileHealMar
   }
 }
 
+// ─── BL-620 / INV-5: os-unit orphan ALARM markers ──────────────────────────────
+// A corrupt / unhealable orphan persists a current-state marker under
+// `run/reconcile-osunit/<label>.json`, surfaced loudly by `service status`.
+// Cleared when a reconcile pass runs clean for that label (not append-only).
+
+interface OsUnitAlarmMarker {
+  kind: 'os-unit-alarm';
+  label: string;
+  extId: string;
+  scope: string;
+  unitPath: string;
+  reason: string;
+  alarmedAt: string;
+}
+
+function osUnitAlarmMarkerDir(): string {
+  const pathM = require('node:path') as typeof import('node:path');
+  return pathM.join(runDir(), 'reconcile-osunit');
+}
+
+function osUnitAlarmMarkerPath(label: string): string {
+  const pathM = require('node:path') as typeof import('node:path');
+  return pathM.join(osUnitAlarmMarkerDir(), `${label}.json`);
+}
+
+function writeOsUnitAlarmMarker(marker: OsUnitAlarmMarker): void {
+  const fsM = require('node:fs') as typeof import('node:fs');
+  const pathM = require('node:path') as typeof import('node:path');
+  const p = osUnitAlarmMarkerPath(marker.label);
+  try {
+    fsM.mkdirSync(pathM.dirname(p), { recursive: true });
+    fsM.writeFileSync(p, JSON.stringify(marker, null, 2));
+  } catch { /* never fail the reconcile pass on marker bookkeeping */ }
+}
+
+/** Exported for `cmdService`'s `status` subcommand (BL-620 loud surfacing). */
+function readOsUnitAlarmMarker(label: string): OsUnitAlarmMarker | null {
+  const fsM = require('node:fs') as typeof import('node:fs');
+  try {
+    return JSON.parse(fsM.readFileSync(osUnitAlarmMarkerPath(label), 'utf8')) as OsUnitAlarmMarker;
+  } catch {
+    return null;
+  }
+}
+
 async function doctorReconcile(flags: Record<string, string>): Promise<void> {
   const fsMod = require('node:fs') as typeof import('node:fs');
   const pathMod = require('node:path') as typeof import('node:path');
@@ -6017,6 +6088,10 @@ async function doctorReconcile(flags: Record<string, string>): Promise<void> {
   try { fsMod.mkdirSync(reconLogDir, { recursive: true }); } catch { /* best-effort */ }
   const findings: ReconcileFinding[] = [];
   let undead = false;
+  // BL-620 / INV-5: any os-unit orphan that could not be healed (corrupt/alarm)
+  // fails the pass — a scheduled tick must NOT flap green over an unmanageable unit.
+  let osUnitAlarm = false;
+  const alarmedLabels = new Set<string>();
   const log = (m: string): void => {
     try { fsMod.appendFileSync(reconLogPath, `${new Date().toISOString()} ${m}\n`, 'utf8'); } catch { /* never fail the pass on logging */ }
     if (!jsonMode) process.stdout.write(`${CLI} doctor: ${m}\n`);
@@ -6298,6 +6373,15 @@ async function doctorReconcile(flags: Record<string, string>): Promise<void> {
         if (filterId !== undefined && rec.extId !== filterId) continue;
         for (const e of rec.entries) {
           if (e.kind !== 'os-unit') continue;
+          // BL-620 / INV-6: rotate this unit's OS logs on every live pass. The
+          // stable `<id>-os.out.log`/`<id>-os.err.log` paths grow unbounded under
+          // launchd/systemd (the doctor-tick out.log measured 3.5MB, never rotated).
+          if (!dryRun) {
+            rotateOsUnitLogs({
+              outPath: pathMod.join(logDirFor(`os-${rec.scope}-${rec.extId}`), `${rec.extId}-os.out.log`),
+              errPath: pathMod.join(logDirFor(`os-${rec.scope}-${rec.extId}`), `${rec.extId}-os.err.log`),
+            });
+          }
           const entryPlatform = getOsUnitPlatform(e.supervisor);
           const unitPath = (flags['unit-dir'] !== undefined || process.env['SOX_OS_UNIT_DIR'])
             ? pathMod.join(unitDir, entryPlatform.unitFileName(e.label))
@@ -6337,21 +6421,126 @@ async function doctorReconcile(flags: Record<string, string>): Promise<void> {
         }
       }
     }
-    // F15: sox-labelled unit files with NO ownership entry anywhere.
+    // F15: sox-labelled unit files with NO ownership entry anywhere. BL-620 /
+    // INV-5: SELF-REPAIR, not report-only. A self-consistent orphan (embedded
+    // header hash == recomputed body hash) is RE-REGISTERED from its on-disk
+    // body hash; a corrupt/self-inconsistent orphan ALARMS (exit 1 + a durable
+    // `run/reconcile-osunit/<label>.json` marker surfaced by `service status`);
+    // an unparseable label is report-only (unattributable). Dry-run reports
+    // `would-heal` and writes nothing.
     try {
       if (fsMod.existsSync(unitDir)) {
         for (const f of fsMod.readdirSync(unitDir)) {
           const isSox = /^com\.sox\..+\.plist$/.test(f) || /^sox-.+\.(service|timer)$/.test(f);
           if (!isSox || ownedUnitFiles.has(f)) continue;
-          findings.push({
-            kind: 'os-unit-orphaned', extId: f, scope: '?', pid: 0,
-            detail: `unit file ${pathMod.join(unitDir, f)} has NO ownership entry (F15 orphaned unit) — remove via \`${CLI} service disable <ext>\``,
-            action: 'report-only',
-          });
-          log(`[reconcile] os-unit ORPHANED: ${f} (no ownership entry)`);
+          const orphanPath = pathMod.join(unitDir, f);
+          const disk = verifyUnitOnDisk(orphanPath);
+          const cls = classifyOsUnitOrphan(f, disk);
+          const parts = parseOsUnitLabel(f);
+          const isTimer = /\.timer$/.test(f);
+
+          if (parts === undefined || isTimer) {
+            // Unparseable label, or a lone .timer (paired unit, not an
+            // ownership-tracked os-unit) — cannot attribute to an ownership entry.
+            findings.push({
+              kind: 'os-unit-orphaned', extId: f, scope: '?', pid: 0,
+              detail: `unit file ${orphanPath} has NO ownership entry and cannot be attributed (F15 unattributable) — remove via \`${CLI} service disable <ext>\``,
+              action: 'report-only',
+            });
+            log(`[reconcile] os-unit UNATTRIBUTABLE orphan: ${f} (unparseable label or lone timer)`);
+            continue;
+          }
+          if (filterScope !== undefined && parts.scope !== filterScope) continue;
+          if (filterId !== undefined && parts.extId !== filterId) continue;
+
+          if (cls === 'alarm') {
+            osUnitAlarm = true;
+            const label = osUnitLabel(parts.scope, parts.extId);
+            alarmedLabels.add(label);
+            const reason = `self-inconsistent content-hash (header ${disk.headerHash ?? '(none)'} ≠ body ${disk.bodyHash ?? '(none)'})`;
+            findings.push({
+              kind: 'os-unit-orphaned', extId: parts.extId, scope: parts.scope, pid: 0,
+              detail: `unit file ${orphanPath} is CORRUPT: ${reason} — re-run \`${CLI} service enable ${parts.extId} -s ${parts.scope}\` (or \`${CLI} doctor --install-tick\`) to re-render a clean unit`,
+              action: 'failed',
+            });
+            log(`[reconcile] os-unit ALARM: ${f} ${reason}`);
+            writeOsUnitAlarmMarker({
+              kind: 'os-unit-alarm',
+              label,
+              extId: parts.extId,
+              scope: parts.scope,
+              unitPath: orphanPath,
+              reason,
+              alarmedAt: new Date().toISOString(),
+            });
+            continue;
+          }
+
+          // cls === 'heal': self-consistent — re-register from the on-disk body hash.
+          const label = osUnitLabel(parts.scope, parts.extId);
+          const supervisor: 'launchd' | 'systemd' = /\.plist$/.test(f) ? 'launchd' : 'systemd';
+          if (dryRun) {
+            findings.push({
+              kind: 'os-unit-orphaned', extId: parts.extId, scope: parts.scope, pid: 0,
+              detail: `would-heal: re-register self-consistent orphan ${orphanPath} (body hash ${disk.bodyHash})`,
+              action: 'would-heal',
+            });
+            log(`[reconcile] os-unit WOULD-HEAL orphan: ${f} (body hash ${disk.bodyHash})`);
+            continue;
+          }
+          try {
+            OwnershipIndex.upsertOsUnitEntry(pathMod.join(dataRoot(parts.scope as DataScope, root), 'ownership.json'), {
+              extId: parts.extId,
+              scope: parts.scope,
+              label,
+              unitPath: orphanPath,
+              supervisor,
+              appliedHash: disk.bodyHash!,
+            });
+            findings.push({
+              kind: 'os-unit-orphaned', extId: parts.extId, scope: parts.scope, pid: 0,
+              detail: `re-registered self-consistent orphan ${orphanPath} (body hash ${disk.bodyHash})`,
+              action: 'healed',
+            });
+            log(`[reconcile] os-unit HEALED orphan: ${f} (body hash ${disk.bodyHash})`);
+          } catch (e) {
+            osUnitAlarm = true;
+            alarmedLabels.add(label);
+            findings.push({
+              kind: 'os-unit-orphaned', extId: parts.extId, scope: parts.scope, pid: 0,
+              detail: `heal FAILED for ${orphanPath}: ${String(e)}`,
+              action: 'failed',
+            });
+            log(`[reconcile] os-unit HEAL FAILED: ${f} — ${String(e)}`);
+            writeOsUnitAlarmMarker({
+              kind: 'os-unit-alarm',
+              label,
+              extId: parts.extId,
+              scope: parts.scope,
+              unitPath: orphanPath,
+              reason: `heal failed: ${String(e)}`,
+              alarmedAt: new Date().toISOString(),
+            });
+          }
         }
       }
     } catch { /* unit dir unreadable — nothing to report */ }
+
+    // BL-620: clear os-unit alarm markers for labels that were NOT alarmed this
+    // pass (a previously-alarmed unit now healed or gone) — the marker is a
+    // current-state signal, not an append-only log.
+    try {
+      const markerDir = osUnitAlarmMarkerDir();
+      if (fsMod.existsSync(markerDir)) {
+        for (const m of fsMod.readdirSync(markerDir)) {
+          if (!m.endsWith('.json')) continue;
+          const labelFromFile = m.slice(0, -'.json'.length);
+          if (!alarmedLabels.has(labelFromFile)) {
+            try { fsMod.unlinkSync(pathMod.join(markerDir, m)); } catch { /* ignore */ }
+          }
+        }
+      }
+    } catch { /* marker dir unreadable — nothing to clear */ }
   }
 
   // ── 5. Crash-loop give-up markers (Slice 3, §11.3). Report-only by design:
@@ -6397,11 +6586,12 @@ async function doctorReconcile(flags: Record<string, string>): Promise<void> {
   );
 
   if (jsonMode) {
-    process.stdout.write(JSON.stringify({ dryRun, undead, findings }, null, 2) + '\n');
+    process.stdout.write(JSON.stringify({ dryRun, undead, osUnitAlarm, findings }, null, 2) + '\n');
   }
-  // A scheduled tick must not flap on report-only findings; only a verification
-  // failure (undead) is a reconcile FAILURE.
-  process.exit(undead ? 1 : 0);
+  // A scheduled tick must not flap on report-only findings; a verification
+  // failure (undead) OR an unhealable os-unit orphan (BL-620 alarm) is a
+  // reconcile FAILURE.
+  process.exit(undead || osUnitAlarm ? 1 : 0);
 }
 
 /**
