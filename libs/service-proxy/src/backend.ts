@@ -18,6 +18,7 @@
 import * as net from 'node:net';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
+import { buildFailureRecord, classifyListenError, emitListenFailure } from '@adhd/sox-listen-guard';
 import { encodeFrame, FrameDecoder } from './framing.js';
 import { probeSocketLive } from './ensure-backend.js';
 import {
@@ -122,7 +123,15 @@ export function serveBackend(opts: ServeBackendOptions): Promise<BackendHandle> 
   });
 
   return new Promise<BackendHandle>((resolve, reject) => {
-    server.on('error', (err) => reject(err));
+    server.on('error', (err) => {
+      // BL-619: emit a durable structured record before rejecting, so a bind
+      // failure at this already-guarded site leaves the same JSONL trace as
+      // every other production listen site (rather than a bare reject).
+      emitListenFailure(
+        buildFailureRecord(err, classifyListenError(err), { socketPath: opts.socketPath }),
+      );
+      reject(err);
+    });
 
     if (!useInheritedFd) {
       try {

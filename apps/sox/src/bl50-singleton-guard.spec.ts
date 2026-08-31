@@ -108,7 +108,10 @@ afterEach(async () => {
 describe('probeUnixSocketLive — BL-50 singleton guard socket probe', () => {
   it('returns true when a Unix socket is listening', async () => {
     server = net.createServer();
-    await new Promise<void>((resolve) => server!.listen(sockPath, resolve));
+    await new Promise<void>((resolve, reject) => {
+      server!.once('error', reject);
+      server!.listen(sockPath, resolve);
+    });
 
     const result = await probeUnixSocketLive(sockPath, 2000);
     expect(result).toBe(true);

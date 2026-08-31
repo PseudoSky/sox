@@ -16,6 +16,9 @@
  * on every port-configured proxy-mode `mcp-server` shutdown (`FrontShimHandle.
  * close()` tears down that connection — `libs/service-proxy/src/shim.ts`).
  */
+
+import type { ListenOutcome } from '@adhd/sox-listen-guard';
+
 export function waitForServePortSignal(handle: { close: () => void }): Promise<void> {
   return new Promise<void>((resolve) => {
     const onSignal = () => {
@@ -25,4 +28,17 @@ export function waitForServePortSignal(handle: { close: () => void }): Promise<v
     process.on('SIGTERM', onSignal);
     process.on('SIGINT', onSignal);
   });
+}
+
+/**
+ * BL-619: translate a guarded-listen outcome to a process exit code.
+ *
+ * A port collision (EADDRINUSE → disposition 'already-running') means another
+ * instance is already serving the port — that is NOT a fault, so exit 0 (the
+ * launchd-held port is left alone and the duplicate shim exits cleanly). Any
+ * other bind error ('other') is a genuine fault — exit 1.
+ */
+export function exitCodeForListenOutcome(outcome: ListenOutcome): 0 | 1 {
+  if (outcome.ok) return 0;
+  return outcome.disposition === 'already-running' ? 0 : 1;
 }

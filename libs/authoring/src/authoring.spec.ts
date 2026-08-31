@@ -36,6 +36,29 @@ describe('[generators.5] all active type templates scaffold without error', () =
   }
 });
 
+// ─── [generators.6] service template emits a guarded listen (BL-619) ─────────
+
+describe('[generators.6] service template emits a guarded listen (BL-619)', () => {
+  it('service src/index.ts attaches server.on("error") BEFORE server.listen()', () => {
+    const fs = scaffold({ type: 'service', id: 'bl619-guarded', description: 'BL-619 guarded listen' });
+    const src = fs['src/index.ts'] ?? '';
+    expect(src).toContain("server.on('error'");
+    expect(src).toContain('server.listen(');
+
+    const onIdx = src.indexOf("server.on('error'");
+    const listenIdx = src.indexOf('server.listen(');
+    expect(onIdx).toBeGreaterThanOrEqual(0);
+    expect(listenIdx).toBeGreaterThanOrEqual(0);
+    expect(onIdx).toBeLessThan(listenIdx);
+  });
+
+  it('service src/index.ts error guard exits 0 on EADDRINUSE, 1 otherwise', () => {
+    const fs = scaffold({ type: 'service', id: 'bl619-exit', description: 'BL-619 exit code' });
+    const src = fs['src/index.ts'] ?? '';
+    expect(src).toContain("process.exit(code === 'EADDRINUSE' ? 0 : 1)");
+  });
+});
+
 // ─── [generators.2] Hybrid install descriptor (serves/profiles/config) ───────
 
 describe('[generators.2] emitted extension.json carries install descriptor', () => {

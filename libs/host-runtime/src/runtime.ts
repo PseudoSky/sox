@@ -9,6 +9,7 @@ import * as fs from 'node:fs';
 import * as net from 'node:net';
 import * as os from 'node:os';
 import * as path from 'node:path';
+import { buildFailureRecord, classifyListenError, emitListenFailure } from '@adhd/sox-listen-guard';
 import type { McpAdapterHandle } from './adapters/mcp.js';
 import { logDirFor, scopeConfigPaths, socketDir, type DataScope } from './data-paths.js';
 import { loadFromLockfile, type LoaderResult } from './loader.js';
@@ -358,7 +359,14 @@ async function _startRuntimeLocked(
   // execSocketPath. At this point the idempotent guard in startRuntime() will fire
   // for any concurrent caller that was spin-waiting.
   await new Promise<void>((resolve, reject) => {
-    execServer.once('error', reject);
+    execServer.once('error', (e) => {
+      // BL-619: emit a durable structured record before rejecting, matching
+      // every other production listen site's JSONL trace.
+      emitListenFailure(
+        buildFailureRecord(e, classifyListenError(e), { socketPath: execSocketPath }),
+      );
+      reject(e);
+    });
     execServer.listen(execSocketPath, () => {
       console.log(`[runtime] Exec socket listening at ${execSocketPath}`);
       record.execSocketPath = execSocketPath;

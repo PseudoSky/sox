@@ -29,6 +29,8 @@ import {
   wireLeaks,
 } from '@adhd/sox-tokenguard-core';
 
+import { buildFailureRecord, classifyListenError, emitListenFailure } from '@adhd/sox-listen-guard';
+
 import type { ProviderAdapter } from './adapters/generic.js';
 import type { TokenGuardConfig } from './config.js';
 
@@ -58,7 +60,14 @@ function auditLog(auditPath: string, entry: AuditEntry): void {
 async function tryBind(port: number): Promise<boolean> {
   return new Promise((resolve) => {
     const server = net.createServer();
-    server.on('error', () => resolve(false));
+    server.on('error', (err) => {
+      // BL-619: emit a durable structured record before treating the probe
+      // failure as "port occupied" (the port-walk keeps its existing logic).
+      emitListenFailure(
+        buildFailureRecord(err, classifyListenError(err), { port, host: '127.0.0.1' }),
+      );
+      resolve(false);
+    });
     server.listen(port, '127.0.0.1', () => {
       server.close(() => resolve(true));
     });
@@ -184,7 +193,13 @@ export async function startProxy(opts: ProxyOptions): Promise<http.Server> {
   });
 
   return new Promise((resolve, reject) => {
-    server.on('error', reject);
+    server.on('error', (err) => {
+      // BL-619: emit a durable structured record before rejecting.
+      emitListenFailure(
+        buildFailureRecord(err, classifyListenError(err), { port, host: '127.0.0.1' }),
+      );
+      reject(err);
+    });
     server.listen(port, '127.0.0.1', () => {
       // Write port.txt ONLY after actually listening [tg-service.8]
       try {

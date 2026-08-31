@@ -20,6 +20,9 @@
     "paths": {
       "@adhd/sox-tokenguard-core": [
         "libs/tokenguard-core/dist/index.d.ts"
+      ],
+      "@adhd/sox-listen-guard": [
+        "libs/listen-guard/dist/index.d.ts"
       ]
     }
   },
