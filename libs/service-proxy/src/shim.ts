@@ -664,7 +664,9 @@ export function runFrontShim(opts: FrontShimOptions): FrontShimHandle {
       httpServer,
       { port: opts.httpPort, host: '127.0.0.1' },
       {
-        recordFile: opts.listenFailureRecordFile,
+        ...(opts.listenFailureRecordFile !== undefined
+          ? { recordFile: opts.listenFailureRecordFile }
+          : {}),
         onDiagnostic: (l) => diag(`[service-proxy shim:${opts.id}] ${l}`),
       },
     ).then((outcome) => {

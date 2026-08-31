@@ -723,3 +723,45 @@ describe('host-registry.5 — P0.6 codex path verification', () => {
     expect(userScope.user).toBe(codexHome);
   });
 });
+
+// ─── [host-registry.6] BL-619 URL-only remote profiles (dial, never spawn) ────
+//
+// The duplicate-shim collision class (launchd-held port + a client-spawned shim
+// binding the same port) is eliminated only if sse/http profiles emit a URL the
+// client DIALS — never a command the client spawns. These pins assert the
+// remote profile config is URL-only (a `url` key, no `command`/`args`) and that
+// the URL's port is exactly the http_port argument, for all three hosts.
+
+describe('host-registry.6 — BL-619 URL-only remote profiles', () => {
+  it('claude sse/http profiles emit URL-only configs (no command/args)', () => {
+    const mcpConfig = claudeHost.surfaces['mcp-server']!.mcpConfig!;
+    for (const profile of ['sse', 'http'] as const) {
+      const v = mcpConfig.value(profile, 'soxe', 'memory-server', 3099) as Record<string, unknown>;
+      expect(v['url']).toBeDefined();
+      expect(v['command']).toBeUndefined();
+      expect(v['args']).toBeUndefined();
+    }
+  });
+
+  it('claude remote URL port matches http_port', () => {
+    const mcpConfig = claudeHost.surfaces['mcp-server']!.mcpConfig!;
+    const v = mcpConfig.value('http', 'soxe', 'memory-server', 4111) as { url: string };
+    expect(new URL(v.url).port).toBe('4111');
+  });
+
+  it('codex sse/http profiles emit URL-only configs (no command/args)', () => {
+    const mcpConfig = codexHost.surfaces['mcp-server']!.mcpConfig!;
+    for (const profile of ['sse', 'http'] as const) {
+      const v = mcpConfig.value(profile, 'soxe', 'memory-server', 3099) as Record<string, unknown>;
+      expect(v['url']).toBeDefined();
+      expect(v['command']).toBeUndefined();
+      expect(v['args']).toBeUndefined();
+    }
+  });
+
+  it('codex remote URL port matches http_port', () => {
+    const mcpConfig = codexHost.surfaces['mcp-server']!.mcpConfig!;
+    const v = mcpConfig.value('http', 'soxe', 'memory-server', 4111) as { url: string };
+    expect(new URL(v.url).port).toBe('4111');
+  });
+});
