@@ -36,6 +36,16 @@ export interface PingHealthInput {
   embedState: string;
   /** Last recorded embed failure message, when one exists. */
   embedError?: string | null;
+  /**
+   * (BUG-MEMORYSERVER-EMBED-HEAL-NOOPERATOR-001) The enrich/embed pipeline
+   * verdict state (`computePipelineHealthVerdict`). When `'stalled'` or
+   * `'regressing'`, the top-level `status` is downgraded from `'ok'` to
+   * `'degraded'` even though both the store and embed subsystem read healthy —
+   * a pipeline that stopped succeeding is a degraded service, never `'ok'`.
+   * `'idle'` (empty backlog) and `'ok'` (and `null`/absent, for callers that do
+   * not compute a pipeline verdict) leave `status` unchanged.
+   */
+  enrichmentState?: 'idle' | 'ok' | 'regressing' | 'stalled' | null;
 }
 
 export type PingHealthStatus = 'ok' | 'degraded' | 'unhealthy';
@@ -43,9 +53,10 @@ export type PingHealthStatus = 'ok' | 'degraded' | 'unhealthy';
 export interface PingHealthVerdict {
   /**
    * Overall verdict. `'ok'` only when the store write path is open AND the
-   * embed subsystem is real. A store that failed to open is `'unhealthy'`
-   * (never `'ok'`, never `'degraded'`). A healthy store with a degraded embed
-   * subsystem is `'degraded'` (the pre-existing embed-derived semantics).
+   * embed subsystem is real AND the pipeline verdict is not regressing/stalled.
+   * A store that failed to open is `'unhealthy'` (never `'ok'`, never
+   * `'degraded'`). A healthy store with a degraded embed subsystem OR a
+   * stalled/regressing pipeline is `'degraded'`.
    */
   status: PingHealthStatus;
   /** Machine-readable reason when `status !== 'ok'`; null otherwise. */
@@ -61,6 +72,20 @@ export function computePingHealthVerdict(input: PingHealthInput): PingHealthVerd
   const embedOk = input.embedState === 'real';
 
   if (storeOk && embedOk) {
+    // Store and embed subsystem both healthy. The pipeline verdict is the final
+    // gate: a stalled/regressing enrich/embed pipeline (stuck backlog, below-
+    // floor success rate) is `degraded`, never `ok` — the exact 2026-08-26
+    // false-positive this guards against (store + embed read clean while the
+    // pipeline had not succeeded in >24h).
+    const enrichment = input.enrichmentState ?? null;
+    if (enrichment === 'stalled' || enrichment === 'regressing') {
+      return {
+        status: 'degraded',
+        status_reason: `enrich/embed pipeline is '${enrichment}' (see store.enrichment.health)`,
+        store_ok: true,
+        store_error: null,
+      };
+    }
     return { status: 'ok', status_reason: null, store_ok: true, store_error: null };
   }
 

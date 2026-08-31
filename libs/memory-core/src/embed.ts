@@ -14,7 +14,13 @@
  *   R2: getActiveEmbedModel() reflects the active backend.
  */
 
-import { createEmbeddingProvider, getSharedFastembedProcess, getSharedOnnxWorker } from '@adhd/sox-embedding-provider';
+import {
+  createEmbeddingProvider,
+  getSharedFastembedProcess,
+  getSharedOnnxWorker,
+  resetSharedFastembedProcess,
+  resetSharedOnnxWorker,
+} from '@adhd/sox-embedding-provider';
 import type { EmbeddingProvider } from '@adhd/sox-embedding-provider';
 import type { StoreAdapter } from '@adhd/sox-store-adapter';
 import { homedir } from 'node:os';
@@ -428,6 +434,66 @@ export async function warmupEmbed(_timeoutMs?: number): Promise<EmbedHealth> {
     const cause = String(err instanceof Error ? err.message : err);
     _lastEmbedError = cause;
     throw new Error(`[sox-memory] Embedding warmup failed: ${cause}`);
+  }
+}
+
+/** Result of a `reinitEmbedProvider()` recovery attempt. */
+export interface ReinitEmbedResult {
+  state: EmbedState;
+  model: string;
+  error: string | null;
+}
+
+/**
+ * (BUG-MEMORYSERVER-EMBED-HEAL-NOOPERATOR-001) Tear down and re-initialise the
+ * embedding provider from scratch — the self-heal recovery path for a wedged
+ * embed subsystem (BUG-021's "Model not initialized" respawn-without-reinit
+ * state, a stuck shared fastembed child, or any per-call failure streak that
+ * has latched `getEmbedState()` to 'degraded').
+ *
+ * Order of operations:
+ *   1. Clear the in-process provider state (`_provider`, `_providerPromise`,
+ *      `_lastEmbedError`, `_consecutiveEmbedFailures`, `_resolvedBackend`).
+ *      The injected test provider (`_testProvider`) is deliberately NOT cleared
+ *      (mirrors `_resetEmbedSingleton`'s contract).
+ *   2. Kill + clear the embedding-provider's shared host singletons
+ *      (`resetSharedFastembedProcess` / `resetSharedOnnxWorker`) so the next
+ *      warmup forks a genuinely fresh child/worker rather than re-attaching to
+ *      a dead one.
+ *   3. Re-run `warmupEmbed()` to re-resolve, re-construct, and verify the
+ *      provider.
+ *
+ * Never throws — returns a `{ state, model, error }` verdict (error non-null on
+ * failure) so the alarm/auto-heal layer can record the outcome without the tick
+ * itself failing.
+ */
+export async function reinitEmbedProvider(): Promise<ReinitEmbedResult> {
+  _provider = null;
+  _providerPromise = null;
+  _resolvedBackend = null;
+  _configCache = null;
+  _lastEmbedError = null;
+  _consecutiveEmbedFailures = 0;
+  _activeModel = _testProvider ? _testProvider.metadata.modelId : null;
+
+  // Kill/clear the shared hosts so the next warmup re-forks fresh. A reset
+  // failure (e.g. the host was never constructed, or is mid-termination) must
+  // not prevent the warmup attempt below.
+  try {
+    await Promise.all([
+      resetSharedFastembedProcess(),
+      resetSharedOnnxWorker(),
+    ]);
+  } catch {
+    /* best-effort — warmup below is the real re-init */
+  }
+
+  try {
+    const health = await warmupEmbed();
+    return { state: health.state, model: health.model, error: null };
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    return { state: getEmbedState(), model: _activeModel ?? 'unknown', error: msg };
   }
 }
 

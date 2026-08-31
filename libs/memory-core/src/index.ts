@@ -45,8 +45,8 @@ export { computePingHealthVerdict } from './ping-health.js';
 export type { PingHealthInput, PingHealthStatus, PingHealthVerdict } from './ping-health.js';
 
 // ── Typed config surface (ADR-0013 D2/D3) ────────────────────────────────────
-export { resolveBackupConfig, DEFAULT_BACKUP_CONFIG } from './config.js';
-export type { BackupConfig } from './config.js';
+export { resolveBackupConfig, DEFAULT_BACKUP_CONFIG, resolveEnrichHealthConfig, DEFAULT_ENRICH_HEALTH_CONFIG } from './config.js';
+export type { BackupConfig, EnrichHealthConfig } from './config.js';
 
 // ── Writer lease (SA-8, BL-128) ───────────────────────────────────────────────
 export {
@@ -92,12 +92,13 @@ export {
   getLastEmbedError,
   getEmbedHealth,
   warmupEmbed,
+  reinitEmbedProvider,
   reembedNodes,
   _resetEmbedSingleton,
   _shutdownEmbedWorker,
   terminateEmbedWorkers,
 } from './embed.js';
-export type { EmbedBackend, EmbedConfig, EmbedState, EmbedHealth } from './embed.js';
+export type { EmbedBackend, EmbedConfig, EmbedState, EmbedHealth, ReinitEmbedResult } from './embed.js';
 
 // ── Write + invalidate + batch + idempotency ───────────────────────────────────
 export {
@@ -134,6 +135,7 @@ export {
   // Integrator decides tick wiring at merge — NOT wired in memory-server yet.
   healStaleVectors,
   embedBacklogStats,
+  drainBacklog,
   syncEmbedEnabled,
   getEmbedPipelineMetrics,
   _resetEmbedPipelineMetricsForTest,
@@ -153,6 +155,8 @@ export type {
   StaleHealResult,
   EmbedBacklogStats,
   EmbedPipelineMetrics,
+  // BUG-MEMORYSERVER-EMBED-HEAL-NOOPERATOR-001: the operator/auto-heal drain.
+  DrainResult,
 } from './embed-pipeline.js';
 
 // ── Deterministic test embedding provider (BL-161 seam; TEST-ONLY) ────────────
@@ -169,15 +173,64 @@ export {
   hasPendingFullEnrich,
 } from './outbox-queue.js';
 
-// ── Enrich-stall escalation (BL-413) ──────────────────────────────────────────
+// ── Enrich-stall escalation (BL-413, DEPRECATED → enrich-alarm.ts) ───────────
 // A stalled periodic-enrich pass gets a durable, recorded corrective action —
 // not just an accurate status string. See enrich-stall.ts for the full story.
+// BUG-MEMORYSERVER-EMBED-HEAL-NOOPERATOR-001: these now delegate to the tiered
+// alarm (enrich-alarm.ts); the read surface is kept for compatibility.
 export {
   checkAndEscalateEnrichStall,
   readEnrichStallEscalation,
   _resetEnrichStallStateForTest,
 } from './enrich-stall.js';
 export type { EnrichStallEscalation, EnrichStallCheckInput } from './enrich-stall.js';
+
+// ── Enrich/embed pipeline health plane (BUG-MEMORYSERVER-EMBED-HEAL-NOOPERATOR-001) ─
+export {
+  computePipelineHealthVerdict,
+  recordPipelineHealthVerdict,
+  readEnrichHealthLedger,
+  recordEnrichPass,
+  resetEnrichHealthLedger,
+  EMPTY_ENRICH_HEALTH_LEDGER,
+} from './enrich-health.js';
+export type {
+  EnrichHealthLedger,
+  EnrichPassRecord,
+  ComputePipelineHealthInput,
+  PipelineHealthVerdict,
+  PipelineHealthState,
+} from './enrich-health.js';
+
+// ── Tiered enrich/embed alarm (BUG-MEMORYSERVER-EMBED-HEAL-NOOPERATOR-001) ────
+export {
+  checkAndEscalateEnrichAlarm,
+  readEnrichAlarm,
+  acknowledgeEnrichAlarm,
+  resumeEnrichAlarm,
+  resetEnrichAlarm,
+  recordAutoHealAction,
+  _resetEnrichAlarmStateForTest,
+} from './enrich-alarm.js';
+export type {
+  EnrichAlarmRecord,
+  EnrichAlarmLevel,
+  EnrichAlarmState,
+  EnrichAutoHealAction,
+  EnrichAlarmCheckInput,
+} from './enrich-alarm.js';
+
+// ── Per-row poison ledger (BUG-MEMORYSERVER-EMBED-HEAL-NOOPERATOR-001) ────────
+export {
+  recordRowFailure,
+  poisonThreshold,
+  unpoisonRow,
+  unpoisonAll,
+  listPoisonedRows,
+  countPoisonedRows,
+  isRowPoisoned,
+} from './enrich-poison.js';
+export type { PoisonedRow } from './enrich-poison.js';
 
 // ── Update (in-place editor; two-phase since BL-189) ──────────────────────────
 export { memoryUpdate, memoryUpdatePhaseA, deepMerge } from './update.js';
@@ -362,6 +415,11 @@ export type {
   CurateDropEpisodesResult,
   CurateListLensesResult,
   CurateRehealStaleResult,
+  CurateDrainResult,
+  CurateResetPipelineResult,
+  CurateResumeResult,
+  CurateUnpoisonResult,
+  CurateAckAlarmResult,
 } from './curate.js';
 export { memoryGetStats, observedLastCheckpointAt } from './stats.js';
 export type { StatsResult, EmbedProvenanceStats } from './stats.js';

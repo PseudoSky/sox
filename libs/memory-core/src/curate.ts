@@ -17,8 +17,18 @@ import { gcOrphanedCommunityState } from './community-gc.js';
 import { enqueueEnrichFull } from './outbox-queue.js';
 import type { MemoryFilter } from './memory-filters.js';
 import type { WriteQueue } from './write-queue.js';
-import { healStaleVectors } from './embed-pipeline.js';
+import { healStaleVectors, drainBacklog, embedBacklogStats } from './embed-pipeline.js';
 import { getActiveEmbedModel } from './embed.js';
+import {
+  resetEnrichHealthLedger,
+} from './enrich-health.js';
+import {
+  acknowledgeEnrichAlarm,
+  resetEnrichAlarm,
+  resumeEnrichAlarm,
+  readEnrichAlarm,
+} from './enrich-alarm.js';
+import { unpoisonRow, unpoisonAll, isRowPoisoned, listPoisonedRows } from './enrich-poison.js';
 
 const ulid = monotonicFactory();
 
@@ -139,6 +149,56 @@ export interface CurateRehealStaleResult {
   active_model: string;
 }
 
+// ── BUG-MEMORYSERVER-EMBED-HEAL-NOOPERATOR-001: lifetime operational control
+//    plane ops (additive result unions; all idempotent). ──────────────────────
+
+export interface CurateDrainResult {
+  op: 'drain';
+  dry_run: boolean;
+  /** True when the embed backlog reached 0 by the end of the drain. */
+  fully_drained: boolean;
+  /** True when the drain completed with zero embed failures. */
+  verified: boolean;
+  /** Fresh backlog count after the drain (0 when fully drained). */
+  remaining: number;
+  healed_total: number;
+  failed_total: number;
+  batches: number;
+}
+
+export interface CurateResetPipelineResult {
+  op: 'reset_pipeline';
+  /** The health ledger (last_successful_pass_at etc) was cleared. */
+  cleared_ledger: boolean;
+  /** The tiered alarm record was cleared. */
+  cleared_alarm: boolean;
+  /** Rows removed from the poison table. */
+  unpoisoned_rows: number;
+}
+
+export interface CurateResumeResult {
+  op: 'resume';
+  /** True — resume is idempotent; the alarm record is cleared so escalation
+   *  re-arms on the next non-ok tick. */
+  resumed: boolean;
+}
+
+export interface CurateUnpoisonResult {
+  op: 'unpoison';
+  /** The single uid unpoisoned, when a uid was supplied. */
+  uid?: string;
+  /** Rows removed from the poison table (1 for a uid, or all when no uid). */
+  removed: number;
+}
+
+export interface CurateAckAlarmResult {
+  op: 'ack_alarm';
+  /** True when an alarm existed to acknowledge; false when none was raised. */
+  acknowledged: boolean;
+  /** The level of the acknowledged alarm, when one existed. */
+  level?: string;
+}
+
 export type CurateResult =
   | CurateRetagResult
   | CurateSetTopicResult
@@ -150,6 +210,11 @@ export type CurateResult =
   | CurateDropEpisodesResult
   | CurateListLensesResult
   | CurateRehealStaleResult
+  | CurateDrainResult
+  | CurateResetPipelineResult
+  | CurateResumeResult
+  | CurateUnpoisonResult
+  | CurateAckAlarmResult
   | { code: string; message?: string; op?: string };
 
 // ── Main dispatcher ───────────────────────────────────────────────────────────
@@ -190,6 +255,21 @@ export async function memoryCurate(
 
     case 'reheal_stale':
       return await curateRehealStale(adapter, args, wq);
+
+    case 'drain':
+      return await curateDrain(adapter, args, wq);
+
+    case 'reset_pipeline':
+      return await curateResetPipeline(adapter);
+
+    case 'resume':
+      return await curateResume(adapter);
+
+    case 'unpoison':
+      return await curateUnpoison(adapter, args, dryRun);
+
+    case 'ack_alarm':
+      return await curateAckAlarm(adapter);
 
     default:
       return { code: 'E_UNKNOWN_OP', op };
@@ -578,4 +658,104 @@ async function curateRehealStale(
     failed: pass.failed,
     active_model: activeModel,
   };
+}
+
+// ── BUG-MEMORYSERVER-EMBED-HEAL-NOOPERATOR-001 ops ─────────────────────────────
+
+const DRAIN_DEFAULT_LIMIT = 64;
+const DRAIN_MAX_LIMIT = 1000;
+
+async function curateDrain(
+  adapter: StoreAdapter,
+  args: Record<string, unknown>,
+  wq: WriteQueue | undefined,
+): Promise<CurateDrainResult | { code: string; message?: string }> {
+  const dryRun = args['dry_run'] === true;
+
+  if (dryRun) {
+    const backlog = await embedBacklogStats(adapter);
+    return {
+      op: 'drain',
+      dry_run: true,
+      fully_drained: backlog.count === 0,
+      verified: false,
+      remaining: backlog.count,
+      healed_total: 0,
+      failed_total: 0,
+      batches: 0,
+    };
+  }
+
+  if (!wq) {
+    return {
+      code: 'E_MISSING',
+      message: 'drain requires an active WriteQueue (internal wiring error — the ' +
+        'memory_curate MCP handler must pass one; see index.ts case memory_curate).',
+    };
+  }
+
+  const rawLimit = args['limit'];
+  const numericLimit = typeof rawLimit === 'number' && Number.isFinite(rawLimit) ? rawLimit : DRAIN_DEFAULT_LIMIT;
+  const limit = Math.min(DRAIN_MAX_LIMIT, Math.max(1, Math.floor(numericLimit)));
+
+  const result = await drainBacklog(adapter, wq, { limit });
+
+  return {
+    op: 'drain',
+    dry_run: false,
+    fully_drained: result.fully_drained,
+    verified: result.verified,
+    remaining: result.remaining,
+    healed_total: result.healed_total,
+    failed_total: result.failed_total,
+    batches: result.batches,
+  };
+}
+
+async function curateResetPipeline(adapter: StoreAdapter): Promise<CurateResetPipelineResult> {
+  await resetEnrichHealthLedger(adapter);
+  await resetEnrichAlarm(adapter);
+  const unpoisoned = await unpoisonAll(adapter);
+  return { op: 'reset_pipeline', cleared_ledger: true, cleared_alarm: true, unpoisoned_rows: unpoisoned };
+}
+
+async function curateResume(adapter: StoreAdapter): Promise<CurateResumeResult> {
+  await resumeEnrichAlarm(adapter);
+  return { op: 'resume', resumed: true };
+}
+
+async function curateUnpoison(
+  adapter: StoreAdapter,
+  args: Record<string, unknown>,
+  dryRun: boolean,
+): Promise<CurateUnpoisonResult | { code: string; message?: string }> {
+  const uid = typeof args['uid'] === 'string' ? args['uid'] : undefined;
+
+  if (dryRun) {
+    if (uid) {
+      return { op: 'unpoison', uid, removed: (await isRowPoisoned(adapter, uid)) ? 1 : 0 };
+    }
+    return { op: 'unpoison', removed: (await listPoisonedRows(adapter)).length };
+  }
+
+  if (uid) {
+    await unpoisonRow(adapter, uid);
+    return { op: 'unpoison', uid, removed: 1 };
+  }
+  const removed = await unpoisonAll(adapter);
+  return { op: 'unpoison', removed };
+}
+
+async function curateAckAlarm(
+  adapter: StoreAdapter,
+): Promise<CurateAckAlarmResult> {
+  const existing = await readEnrichAlarm(adapter);
+  if (!existing) {
+    return { op: 'ack_alarm', acknowledged: false };
+  }
+  const acked = await acknowledgeEnrichAlarm(adapter);
+  if (!acked) {
+    return { op: 'ack_alarm', acknowledged: false };
+  }
+  return { op: 'ack_alarm', acknowledged: true, level: acked.level };
 }

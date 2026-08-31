@@ -639,13 +639,36 @@ async function _openDbInner(dbPath: string): Promise<StoreAdapter> {
     try {
       await adapter.exec(stmt);
     } catch (err) {
-      // Non-fatal — table or index already exists. Turso rejects IF NOT EXISTS
-      // when the object exists (unlike SQLite which treats it as a no-op).
-      log.debug('store.open.ddl_statement_skip', {
+      const msg = err instanceof Error ? err.message : String(err);
+      // Benign — "already exists". Turso rejects `IF NOT EXISTS` when the
+      // object exists (unlike SQLite which treats it as a no-op), so this is
+      // EXPECTED on every re-open. Keep the historical debug-only treatment.
+      if (/already exists/i.test(msg)) {
+        log.debug('store.open.ddl_statement_skip', {
+          adapter_type: adapter.config.type,
+          sql: truncateForLog(stmt),
+          error: truncateForLog(msg),
+        });
+        continue;
+      }
+      // Genuine failure — the object was NOT created. A swallowed failure here
+      // ships a schema gap invisible: every downstream query against the
+      // missing object fails ("no such table"/"no such column"), the exact
+      // 2026-08-30 enrich_poison outage (a split-artifact in DDL_BASE produced
+      // an invalid statement the debug-level catch silently dropped). Surface
+      // these LOUDLY: WARN in general, ERROR for the enrich/embed self-heal
+      // tables this item owns (a failed enrich_poison CREATE is fatal to the
+      // whole heal path).
+      const fields = {
         adapter_type: adapter.config.type,
         sql: truncateForLog(stmt),
-        error: truncateForLog(err instanceof Error ? err.message : String(err)),
-      });
+        error: truncateForLog(msg),
+      };
+      if (/enrich_poison/i.test(stmt)) {
+        log.error('store.open.ddl_statement_failed', fields);
+      } else {
+        log.warn('store.open.ddl_statement_failed', fields);
+      }
     }
   }
 

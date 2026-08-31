@@ -1606,3 +1606,34 @@ export function getSharedFastembedProcess(): SharedFastembedClient {
 export function __resetSharedFastembedProcessForTests(): void {
   _singleton = null;
 }
+
+/**
+ * (BUG-MEMORYSERVER-EMBED-HEAL-NOOPERATOR-001) Kill AND clear the shared
+ * fastembed host singleton, so the next `getSharedFastembedProcess()` forks a
+ * genuinely fresh child process (and re-inits the model). This is the
+ * embedding-provider half of memory-core's `reinitEmbedProvider()` — the
+ * self-heal path that recovers a wedged fastembed child (BUG-021's
+ * "Model not initialized" respawn-without-reinit state) by tearing the whole
+ * shared host down and re-forking from scratch, rather than waiting for the
+ * dead child to be reaped.
+ *
+ * Unlike `__resetSharedFastembedProcessForTests` (test-only, does NOT
+ * terminate), this TERMINATES the existing singleton first — killing the child
+ * process(es) via the normal `terminate()` shutdown sequence (BL-405's clean
+ * `__shutdown` message, `kill()` fallback) — and only then drops the singleton
+ * reference. Safe to call when no singleton has ever been constructed (no-op).
+ * Any in-flight request is rejected with the standard termination error, which
+ * the heal loop surfaces as a row failure — never a hang.
+ */
+export async function resetSharedFastembedProcess(): Promise<void> {
+  const prev = _singleton;
+  _singleton = null;
+  if (prev) {
+    try {
+      await prev.terminate();
+    } catch {
+      // Terminate must never throw into the reset path — the singleton is
+      // already dropped; a best-effort kill is all that remains.
+    }
+  }
+}

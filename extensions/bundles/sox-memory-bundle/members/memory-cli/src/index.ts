@@ -32,7 +32,23 @@ import {
   backupStore,
   isBackupStoreError,
   runCompactionPass,
+  // BUG-MEMORYSERVER-EMBED-HEAL-NOOPERATOR-001: pipeline status/drain/reset/resume.
+  memoryCurate,
+  WriteQueue,
+  readEnrichHealthLedger,
+  computePipelineHealthVerdict,
+  readEnrichAlarm,
+  countPoisonedRows,
+  embedBacklogStats,
 } from '@adhd/sox-memory-core';
+import type {
+  CurateDrainResult,
+  CurateResetPipelineResult,
+  CurateResumeResult,
+} from '@adhd/sox-memory-core';
+
+/** The curate error-variant shape (a failed/unknown op). */
+type CurateOpError = { code: string; message?: string; op?: string };
 import * as crypto from 'node:crypto';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
@@ -598,6 +614,9 @@ export async function runCli(argv: string[]): Promise<void> {
     case 'compact':
       await cmdCompact(dbPathOverride, rest, noOptimize);
       break;
+    case 'pipeline':
+      await cmdPipeline(rest[0], dbPathOverride, dryRun, limit);
+      break;
     case 'help':
     default:
       console.log(`sox-memory CLI (P3: multi-scope)
@@ -614,7 +633,89 @@ Commands:
           [<src> <dst> positional args also work]
   compact [--db <path>] [--no-optimize]                Run PRAGMA optimize+ANALYZE+WAL checkpoint
           [<path> positional arg also works]
+  pipeline <status|drain|reset|resume> [--db <path>]   Enrich/embed pipeline control plane
+          [--dry-run] [--limit N]
 `);
+  }
+}
+
+/**
+ * BUG-MEMORYSERVER-EMBED-HEAL-NOOPERATOR-001: the lifetime operational control
+ * plane verbs — `pipeline status|drain|reset|resume`. Deterministic read/write
+ * of the health ledger, verdict, alarm, and poison table (no LLM).
+ */
+async function cmdPipeline(
+  subcommand: string | undefined,
+  dbPathOverride: string,
+  dryRun: boolean,
+  limit: number,
+): Promise<void> {
+  const home = process.env['HOME'] ?? process.env['USERPROFILE'] ?? os.homedir();
+  const rawDb = dbPathOverride || path.join(home, '.memory', 'memory.db');
+  const resolvedDb = path.resolve(rawDb.replace(/^~(?=\/|$)/, home));
+
+  if (!fs.existsSync(resolvedDb)) {
+    console.error(`[pipeline] db not found: ${resolvedDb}`);
+    process.exit(1);
+  }
+
+  const adapter = await openDb(resolvedDb);
+  try {
+    switch (subcommand) {
+      case 'status': {
+        const ledger = await readEnrichHealthLedger(adapter);
+        const backlog = await embedBacklogStats(adapter);
+        const verdict = computePipelineHealthVerdict({ nowMs: Date.now(), backlog: backlog.count, ledger });
+        const alarm = await readEnrichAlarm(adapter);
+        const poisoned = await countPoisonedRows(adapter);
+        console.log(`pipeline status: ${resolvedDb}`);
+        console.log(`  verdict.state:     ${verdict.state}`);
+        console.log(`  reasons:           ${verdict.reasons.join('; ') || '(none)'}`);
+        console.log(`  embed_backlog:     ${backlog.count}`);
+        console.log(`  poisoned_rows:     ${poisoned}`);
+        console.log(`  last_successful:   ${ledger.last_successful_pass_at ?? 'never'}`);
+        console.log(`  passes ok/failed:  ${ledger.passes_ok}/${ledger.passes_failed}`);
+        console.log(`  net_drained:       ${ledger.net_drained}`);
+        console.log(`  alarm:             ${alarm ? `${alarm.level} (ticks=${alarm.consecutive_non_ok_ticks}, state=${alarm.state})` : 'none'}`);
+        break;
+      }
+      case 'drain': {
+        const wq = await WriteQueue.forPath(resolvedDb);
+        const result = (await memoryCurate(adapter, { op: 'drain', dry_run: dryRun, ...(limit > 0 ? { limit } : {}) }, wq)) as CurateDrainResult | CurateOpError;
+        if ('code' in result) {
+          console.error(`[pipeline drain] ${result.code}: ${result.message ?? ''}`);
+          process.exit(1);
+        }
+        console.log(
+          `[pipeline drain] ${result.dry_run ? 'DRY-RUN' : 'complete'}: ` +
+          `remaining=${result.remaining} healed=${result.healed_total} failed=${result.failed_total} ` +
+          `fully_drained=${result.fully_drained} verified=${result.verified}`,
+        );
+        break;
+      }
+      case 'reset': {
+        const result = (await memoryCurate(adapter, { op: 'reset_pipeline' })) as CurateResetPipelineResult | CurateOpError;
+        if ('code' in result) {
+          console.error(`[pipeline reset] ${result.code}: ${result.message ?? ''}`);
+          process.exit(1);
+        }
+        console.log(`[pipeline reset] ledger=${result.cleared_ledger} alarm=${result.cleared_alarm} unpoisoned=${result.unpoisoned_rows}`);
+        break;
+      }
+      case 'resume': {
+        const result = (await memoryCurate(adapter, { op: 'resume' })) as CurateResumeResult | CurateOpError;
+        if ('code' in result) {
+          console.error(`[pipeline resume] ${result.code}: ${result.message ?? ''}`);
+          process.exit(1);
+        }
+        console.log(`[pipeline resume] ${result.resumed ? 'resumed' : 'not resumed'}`);
+        break;
+      }
+      default:
+        console.log('pipeline: unknown subcommand. Use status|drain|reset|resume.');
+    }
+  } finally {
+    await adapter.close();
   }
 }
 

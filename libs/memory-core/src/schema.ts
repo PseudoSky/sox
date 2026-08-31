@@ -73,7 +73,7 @@ CREATE TABLE IF NOT EXISTS request_ledger (
 );
 CREATE INDEX IF NOT EXISTS ix_request_ledger_created_at ON request_ledger(created_at);
 
--- scope-promotion candidates (internal detail; surfaced via host ScopePromotionProposed event)
+-- scope-promotion candidates (internal detail, surfaced via host ScopePromotionProposed event)
 CREATE TABLE IF NOT EXISTS promotion_queue (
   id            INTEGER PRIMARY KEY AUTOINCREMENT,
   node_uid      TEXT NOT NULL, from_scope TEXT NOT NULL, to_scope TEXT NOT NULL,
@@ -81,6 +81,20 @@ CREATE TABLE IF NOT EXISTS promotion_queue (
   status        TEXT NOT NULL DEFAULT 'pending'
                   CHECK (status IN ('pending','proposed','approved','rejected','applied')),
   decided_by    TEXT, decided_at TEXT
+);
+
+-- enrich_poison (BUG-MEMORYSERVER-EMBED-HEAL-NOOPERATOR-001): rows whose embed/enrich
+-- has failed >= poisonThreshold consecutive times. A poisoned row is EXCLUDED from
+-- the periodic heal scan's retry window (it stays in node, still recallable via
+-- BM25/temporal — the row is NEVER dropped) until an operator unpoisons it or a
+-- successful embed clears it. The failure count is the ONLY gate — nothing here
+-- mutates node content.
+CREATE TABLE IF NOT EXISTS enrich_poison (
+  uid TEXT PRIMARY KEY,
+  failures INTEGER NOT NULL DEFAULT 1,
+  last_error TEXT,
+  first_poisoned_at TEXT NOT NULL,
+  last_failed_at TEXT NOT NULL
 );
 `;
 
