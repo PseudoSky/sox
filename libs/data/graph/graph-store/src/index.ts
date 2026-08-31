@@ -895,21 +895,25 @@ export interface GraphWriteObserver {
 
 /**
  * FEAT-023 — injectable, transaction-scoped uniqueness seam. Replaces
- * FEAT-012's global `(kind, name)` unique index, which was wrong on three
+ * FEAT-012's global `(kind, name)` unique index, which was wrong on two
  * counts: (1) too broad — it forced "name is identity" on every kind, and the
  * analysis package's community nodes collided (BUG-042); (2) wrong layer —
  * relational uniqueness is edge-scoped (component names unique *within* a
- * project), inexpressible as a column index; (3) unnecessary — the store is
- * single-writer (ADR-0007 memory-single-writer, ADR-0015
- * backlog-single-writer-daemon), so a check-then-INSERT is already atomic with
- * no DDL index.
+ * project), inexpressible as a column index.
  *
  * The policy runs inside `writeNode` BEFORE the INSERT, with read access to the
- * store's read path (the `tx` handle). Under single-writer the check-then-INSERT
- * is atomic and no transaction wrapper is opened (the Turso adapter refuses
- * nested transactions). Consumers own the semantics:
+ * store's read path (the `tx` handle). Consumers own the semantics:
  *   - flat catalog -> `SELECT … WHERE kind = ? AND name = ?`
  *   - components   -> edge-scoped `SELECT` through the `MEMBER_OF`/`owns_project` edge
+ *
+ * **Parallel-process note (ADR-0012).** The store is parallel-process enabled:
+ * multiple processes may hold concurrent write connections to the same
+ * Turso-backed store. A check-then-INSERT is therefore NOT atomic across
+ * processes — the `check` SELECT and the later INSERT commit under separate
+ * writer-slot acquisitions, so a concurrent writer can commit the same
+ * (kind, name) between them. This seam declares *what* is unique, not *how* the
+ * race is closed: the consumer must wrap check+INSERT in one write transaction
+ * or back it with a DDL constraint (BUG-GRAPHSTORE-STALE-SINGLE-WRITER-001).
  *
  * A policy rejects a write by throwing {@link ConstraintError}. This is the
  * same DI idiom as {@link TypePolicy} and {@link GraphWriteObserver}: graph-store
@@ -1833,9 +1837,10 @@ export class StoreGraphBackend implements GraphBackend {
     // FEAT-023 — the injectable uniqueness policy runs BEFORE the INSERT, with
     // read access to the SAME handle the INSERT goes through (the transaction
     // handle when writeNodeInTx is called inside transaction(), else the
-    // adapter). Under single-writer (ADR-0007 / ADR-0015) a check-then-INSERT is
-    // atomic without any DDL index, and the Turso adapter refuses nested
-    // transactions, so no transaction wrapper is opened here. The policy throws
+    // adapter). Parallel-process note (ADR-0012): a check-then-INSERT is NOT
+    // atomic across concurrent processes — the caller owns race-safety (wrap
+    // check+INSERT in one transaction, or add a DDL backstop) per
+    // BUG-GRAPHSTORE-STALE-SINGLE-WRITER-001. The policy throws
     // ConstraintError to reject a write.
     if (this.uniquenessPolicy) {
       await this.uniquenessPolicy.check(meta, db);
@@ -1887,9 +1892,14 @@ export class StoreGraphBackend implements GraphBackend {
 
   /**
    * FEAT-011 — the business-key primitive. Return the id of the existing
-   * (kind, name) node, or create it. Idempotent. Under single-writer a plain
-   * SELECT-then-INSERT is race-free WITHOUT the FEAT-012 unique index (reverted
-   * by FEAT-023) — there is no concurrent writer to slip between the two.
+   * (kind, name) node, or create it. Idempotent. Parallel-process note
+   * (ADR-0012): the store is parallel-process enabled, so a plain
+   * SELECT-then-INSERT is NOT race-free across concurrent processes — two
+   * processes can both miss and both INSERT the same (kind, name). The FEAT-012
+   * unique index was reverted for other reasons (FEAT-023: too broad per
+   * BUG-042; edge-scoped uniqueness inexpressible as a column index); under
+   * multi-writer the caller must wrap check+INSERT in one transaction or add a
+   * DDL backstop (BUG-GRAPHSTORE-STALE-SINGLE-WRITER-001).
    * Deliberately does NOT route identity through the content-hash dedupe — two
    * distinct (kind, name) entities with identical content must remain distinct
    * (BUG-040).
