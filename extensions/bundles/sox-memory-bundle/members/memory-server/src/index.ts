@@ -39,7 +39,6 @@ import { defineTool, serve } from '@adhd/sox-mcp-runtime';
 import {
   autoBackup,
   buildFiltersClause,
-  checkAndEscalateEnrichStall,
   communityUidForRowid,
   embedBacklogStats,
   expandTilde,
@@ -87,6 +86,19 @@ import {
   warmupEmbed,
   isSuperseded,
   WriteQueue,
+  // BUG-MEMORYSERVER-EMBED-HEAL-NOOPERATOR-001: the lifetime operational control
+  // plane (honest verdict + tiered alarm + poison ledger + reinit + drain).
+  recordEnrichPass,
+  readEnrichHealthLedger,
+  computePipelineHealthVerdict,
+  checkAndEscalateEnrichAlarm,
+  readEnrichAlarm,
+  recordAutoHealAction,
+  countPoisonedRows,
+  unpoisonAll,
+  drainBacklog,
+  reinitEmbedProvider,
+  resolveEnrichHealthConfig,
   // S11 / BL-165: canonical chunking re-exported from @adhd/sox-ingest via memory-core.
   // Replaces the local splitIntoChunks function (deleted below).
   splitIntoChunksSentence,
@@ -97,7 +109,7 @@ import {
   // (BL-582) The single derivation of last_checkpoint_at — see its doc comment.
   observedLastCheckpointAt,
 } from '@adhd/sox-memory-core';
-import type { HealResult, PendingEmbed, PhaseAOutcome, WriteError, WriteResult } from '@adhd/sox-memory-core';
+import type { HealResult, PendingEmbed, PhaseAOutcome, WriteError, WriteResult, EnrichAlarmRecord } from '@adhd/sox-memory-core';
 import type { StoreAdapter, VectorDialect } from '@adhd/sox-store-adapter';
 // BL-334: the adapter verifies and repairs its own generated artifacts at open
 // (BL-352). Until this wiring, NOTHING read the retained result — so a store
@@ -815,8 +827,8 @@ export const TOOLS: Array<Omit<ToolDefinition, 'handler'>> = [
         db_path: { type: 'string', description: 'Optional. Path to the SQLite memory store. Defaults to the bundle-configured store (host-injected SOX_CONFIG_DB_PATH, normally ~/.memory/memory.db). Must be within the ~/.memory/** fs allowlist; out-of-allowlist paths are denied by the permission guard with no side effects.' },
         op: {
           type: 'string',
-          enum: ['retag', 'set_topic', 'set_importance', 'merge_duplicates', 'recluster', 'drop_lens', 'drop-episodes', 'list_lenses', 'reheal_stale'],
-          description: 'The curation operation to perform. drop_lens removes a persisted subset lens by provenance_hash. drop-episodes hard-deletes episode node rows and cascading data. list_lenses returns all live subset lenses. reheal_stale re-embeds live episodes whose vector was stamped by a model that is no longer the active one (BL-88/BL-215) — a bounded, operator-invoked pass; it is never run automatically, and it always works when invoked (SOX_HEAL_STALE_VECTORS was an anti-feature and is gone, ADR-0013).',
+          enum: ['retag', 'set_topic', 'set_importance', 'merge_duplicates', 'recluster', 'drop_lens', 'drop-episodes', 'list_lenses', 'reheal_stale', 'drain', 'reset_pipeline', 'resume', 'unpoison', 'ack_alarm'],
+          description: 'The curation operation to perform. drop_lens removes a persisted subset lens by provenance_hash. drop-episodes hard-deletes episode node rows and cascading data. list_lenses returns all live subset lenses. reheal_stale re-embeds live episodes whose vector was stamped by a model that is no longer the active one (BL-88/BL-215) — a bounded, operator-invoked pass; it is never run automatically, and it always works when invoked (SOX_HEAL_STALE_VECTORS was an anti-feature and is gone, ADR-0013). drain fully drains the embed backlog (no tick time budget; dry_run previews the remaining count). reset_pipeline clears the enrich/embed health ledger, the alarm, and the poison table. resume re-arms escalation after an ack_alarm. unpoison re-admits a poisoned row (by uid) or all rows to the heal scan. ack_alarm acknowledges the current alarm, pausing re-escalation.',
         },
         uid: { type: 'string', description: 'Target episode UID (required for retag, set_topic, set_importance).' },
         uids: { type: 'array', items: { type: 'string' }, description: '(drop-episodes) Array of episode UIDs to hard-delete. Only live nodes (t_invalid IS NULL) are removed; non-existent or already-invalidated UIDs are silently skipped.' },
@@ -1049,6 +1061,10 @@ async function handleToolCallImpl(name: string, args: Record<string, unknown>): 
     // input — the ping must then read `unhealthy`, never `ok`.
     let storeOpenError: string | null = null;
     let storeOpened = false;
+    // BUG-MEMORYSERVER-EMBED-HEAL-NOOPERATOR-001: the honest pipeline verdict
+    // state, hoisted out of the try so the top-level `status` can fold it in.
+    // null when the store never opened (the verdict is then 'unhealthy' anyway).
+    let pipelineVerdictState: 'idle' | 'ok' | 'regressing' | 'stalled' | null = null;
     try {
       const storeArg = args['store'];
       const dbPathArg = args['db_path'];
@@ -1173,6 +1189,22 @@ async function handleToolCallImpl(name: string, args: Record<string, unknown>): 
           embedBacklog,
         );
 
+        // BUG-MEMORYSERVER-EMBED-HEAL-NOOPERATOR-001: the HONEST pipeline verdict
+        // (computePipelineHealthVerdict) — keyed off last_successful_pass_at,
+        // NOT queue freshness. This is the signal the pre-fix ping lacked: fresh
+        // queue rows read healthy while nothing had SUCCEEDED in >24h. A non-zero
+        // poison count also downgrades the verdict (parked rows are not healing).
+        const healthLedger = await readEnrichHealthLedger(adapter);
+        const poisonedRows = await countPoisonedRows(adapter);
+        const pipelineVerdict = computePipelineHealthVerdict({
+          nowMs: Date.now(),
+          backlog: embedBacklog.count,
+          ledger: healthLedger,
+          poisonedRows,
+        });
+        pipelineVerdictState = pipelineVerdict.state;
+        const enrichAlarm = await readEnrichAlarm(adapter);
+
         // (BL-582) Route through memory-core's SINGLE derivation. This used to
         // read `WriteQueue.lastCheckpointAtForPath()` alone, which since
         // DEBT-004/005 only ever records the shutdown flush — so a long-lived
@@ -1238,7 +1270,25 @@ async function handleToolCallImpl(name: string, args: Record<string, unknown>): 
           // Additive (HF-3 rule): never rename/remove the fields above.
           queue_oldest_pending_at: queueOldestPendingAt,
           queue_last_done_at: queueLastDoneAt,
-          enrichment: enrichmentHealth,
+          enrichment: {
+            // The legacy queue-freshness verdict fields (HF-3 additive — never
+            // removed), spread first so the new sub-blocks below cannot collide.
+            ...enrichmentHealth,
+            // BUG-MEMORYSERVER-EMBED-HEAL-NOOPERATOR-001: the HONEST verdict
+            // (last_successful_pass_at / success-rate / net-drain) + the poison
+            // count. `state` here is the NEW verdict; the spread `state` above
+            // is the legacy queue-freshness verdict — they answer different
+            // questions and must be read together.
+            health: {
+              state: pipelineVerdict.state,
+              reasons: pipelineVerdict.reasons,
+              poisoned_rows: poisonedRows,
+            },
+            // The durable health ledger the tick records into (survives restarts).
+            progress: healthLedger,
+            // The tiered alarm record (null when never raised or recovered).
+            alarm: enrichAlarm,
+          },
           // BL-413: the recorded corrective action for a stalled queue — null
           // means never escalated or already recovered. Distinct from
           // `enrichment.state` (a live computed verdict): this is the
@@ -1333,6 +1383,10 @@ async function handleToolCallImpl(name: string, args: Record<string, unknown>): 
       storeError: storeOpenError,
       embedState: embedHealth.state,
       embedError: embedHealth.last_error ?? null,
+      // BUG-MEMORYSERVER-EMBED-HEAL-NOOPERATOR-001: a stalled/regressing
+      // pipeline downgrades `status` to 'degraded' even with store + embed
+      // healthy — the exact 2026-08-26 false-positive this guards against.
+      enrichmentState: pipelineVerdictState,
     });
 
     return {
@@ -2293,7 +2347,13 @@ async function dispatchTool(
       //      exists to prevent. curateRehealStale/healStaleVectors already do their actual mutation
       //      through short per-row wq 'apply' tasks, so this call only ever blocks the caller, never
       //      the shared slot.
-      if (args['op'] === 'reheal_stale') {
+      // BUG-MEMORYSERVER-EMBED-HEAL-NOOPERATOR-001: the 5 lifetime control-plane ops
+      // (drain/reset_pipeline/resume/unpoison/ack_alarm) route OUTSIDE the wrapper for the
+      // SAME re-entrancy reason — `drain`→drainBacklog→healMissingVectors enqueues per-row
+      // apply tasks internally (nesting hangs the queue); the other four touch only
+      // sox_store_meta/enrich_poison single statements and stay out for symmetry.
+      const outsideOps = new Set(['reheal_stale', 'drain', 'reset_pipeline', 'resume', 'unpoison', 'ack_alarm']);
+      if (typeof args['op'] === 'string' && outsideOps.has(args['op'])) {
         const result = await memoryCurate(adapter, args, wq);
         if ('code' in result) {
           return { isError: true, content: [{ type: 'text', text: JSON.stringify(result) }] };
@@ -2687,6 +2747,7 @@ export async function runEnrichPassOnDb(
         // vector; the next tick, or the drain's own re-arm, retries).
         return {
           scanned: 0, healed: 0, exists: 0, gone: 0, failed: 0,
+          poisoned_skipped: 0,
           time_budget_exceeded: false, skipped: true,
         };
       })()
@@ -2774,48 +2835,57 @@ export async function runEnrichPassOnDb(
     });
   }
 
-  // BL-413: take a DURABLE, RECORDED corrective action when the queue is
-  // actually stalled — not just report the string. `memory_ping`'s
-  // `enrichment.state: "stalled"` verdict was accurate for 90 consecutive
-  // 15-minute windows on the live server (queue_depth 46, queue_last_done_at
-  // 22.5h stale) and NOTHING consumed it: the only trace was the
-  // `console.error` calls above, which are stderr-only and never reach
-  // durable telemetry. This check runs the SAME stall predicate memory_ping
-  // uses (computeEnrichmentHealth) immediately after every tick and, when
-  // stalled, persists an escalation record (sox_store_meta, survives process
-  // restarts) plus a durable `enrich.stall.escalated` telemetry event — see
-  // enrich-stall.ts for the full rationale. Failure here must never fail the
-  // tick itself; it is pure bookkeeping on top of work that already happened.
+  // BUG-MEMORYSERVER-EMBED-HEAL-NOOPERATOR-001: record the pass into the HONEST
+  // health ledger (last_successful_pass_at + window counters), then escalate via
+  // the tiered alarm keyed off the NEW verdict — NOT the queue-freshness verdict
+  // (computeEnrichmentHealth) that read healthy during the 2026-08-26 >24h
+  // outage because fresh queue rows masked a pipeline whose last SUCCESS was
+  // hours stale. At warn/crit, run the rate-limited auto-heal. Bookkeeping
+  // failure here must NEVER fail the tick — it is pure bookkeeping on top of
+  // work that already happened.
   try {
+    const ledger = await recordEnrichPass(adapter, {
+      ok: isolated.ok,
+      embeds_completed: heal.healed,
+      embeds_failed: heal.failed,
+      heals_applied: heal.healed,
+      heals_failed: heal.failed,
+      poisoned_skipped: heal.poisoned_skipped,
+      backlog_before: backlogBefore,
+      backlog_after: backlogAfter,
+    });
+
     const qRow = await adapter.executeGet<{ q: number }>(
       'SELECT COUNT(*) AS q FROM organizer_queue WHERE done_at IS NULL',
     );
-    const oldRow = await adapter.executeGet<{ o: string | null }>(
-      'SELECT MIN(enqueued) AS o FROM organizer_queue WHERE done_at IS NULL',
-    );
-    const doneRow = await adapter.executeGet<{ d: string | null }>(
-      'SELECT MAX(done_at) AS d FROM organizer_queue',
-    );
     const queueDepth = qRow?.q ?? 0;
-    const oldestPendingAt = oldRow?.o ?? null;
-    const lastDoneAt = doneRow?.d ?? null;
-    const health = computeEnrichmentHealth(queueDepth, oldestPendingAt, lastDoneAt, Date.now());
-    const escalation = await checkAndEscalateEnrichStall(adapter, dbPath, {
-      state: health.state,
-      queueDepth,
-      oldestPendingAt,
-      lastDoneAt,
-      lastIsolatedError: isolated.ok ? null : isolated.error,
+    const embedHealth = getEmbedHealth();
+    // Poison count (rows currently quarantined) feeds BOTH the honest verdict
+    // (poisoned > 0 ⇒ never ok) and the alarm (poison escalates to warn/crit).
+    const poisonedRows = await countPoisonedRows(adapter);
+
+    const verdict = computePipelineHealthVerdict({
+      nowMs: Date.now(),
+      backlog: backlogAfter,
+      ledger,
+      poisonedRows,
     });
-    if (escalation) {
-      console.error(
-        `[memory-server] enrich.stall.escalated (${dbPath}): ` +
-        `consecutive_stalled_ticks=${escalation.consecutive_stalled_ticks} ` +
-        `queue_depth=${escalation.queue_depth} last_isolated_error=${escalation.last_isolated_error ?? 'none'}`,
-      );
+
+    const alarm = await checkAndEscalateEnrichAlarm(adapter, dbPath, {
+      verdictState: verdict.state,
+      queueDepth,
+      embedBacklog: backlogAfter,
+      poisonedRows,
+      lastIsolatedError: isolated.ok ? null : isolated.error,
+      lastEmbedError: embedHealth.last_error ?? null,
+      netDrained: ledger.net_drained,
+    });
+
+    if (alarm && (alarm.level === 'warn' || alarm.level === 'crit')) {
+      await runAutoHeal(adapter, dbPath, wq, alarm, heal, embedHealth);
     }
   } catch (err) {
-    console.error(`[memory-server] enrich.stall escalation bookkeeping error (${dbPath}):`, err);
+    console.error(`[memory-server] enrich health/alarm bookkeeping error (${dbPath}):`, err);
   }
 
   return {
@@ -2827,6 +2897,99 @@ export async function runEnrichPassOnDb(
     cluster_ok: isolated.ok,
     ...(isolated.ok ? {} : { cluster_error: isolated.error }),
   };
+}
+
+/**
+ * BUG-MEMORYSERVER-EMBED-HEAL-NOOPERATOR-001: rate-limited auto-heal, run when
+ * the alarm reaches warn/crit. Corrective actions, each recorded against the
+ * alarm's `auto_heal_actions[]` and emitted as a durable `enrich.heal.action`
+ * telemetry event:
+ *   1. reinitEmbedProvider() — when the embed subsystem reads degraded/
+ *      uninitialized OR the last error names "Model not initialized"
+ *      (BUG-021's respawned-child-with-no-model wedge). Tears down and re-forks
+ *      the shared fastembed host, then re-warms.
+ *   2. drainBacklog() — when the heal pass hit its per-tick time budget, i.e.
+ *      the backlog is not keeping up with the tick cadence. Drains without the
+ *      tick budget (per-row embed timeout stays).
+ * Rate-limited to config.autoHeal.maxActionsPerWindow per alarm window. Never
+ * throws — an auto-heal failure is recorded, never allowed to fail the tick.
+ */
+async function runAutoHeal(
+  adapter: StoreAdapter,
+  dbPath: string,
+  wq: WriteQueue,
+  alarm: EnrichAlarmRecord,
+  heal: HealResult,
+  embedHealth: ReturnType<typeof getEmbedHealth>,
+): Promise<void> {
+  const config = resolveEnrichHealthConfig();
+  const actionsTaken = (alarm.auto_heal_actions ?? []).length;
+  if (actionsTaken >= config.autoHeal.maxActionsPerWindow) return;
+
+  const now = new Date().toISOString();
+  const embedDown =
+    embedHealth.state !== 'real' ||
+    /Model not initialized/i.test(embedHealth.last_error ?? '');
+
+  if (embedDown) {
+    try {
+      const r = await reinitEmbedProvider();
+      // Cause-cleared re-entry: a successful re-init means the embed subsystem
+      // (the likely root cause of a "Model not initialized" burst) is healthy
+      // again — clear the poison table so every parked row re-enters the heal
+      // scan immediately rather than waiting out poisonReentryMs.
+      if (r.error === null) {
+        await unpoisonAll(adapter).catch(() => undefined);
+      }
+      await recordAutoHealAction(adapter, {
+        at: now,
+        action: 'reinit_embed',
+        ok: r.error === null,
+        ...(r.error !== null ? { detail: r.error } : {}),
+      });
+      log.warn('enrich.heal.action', {
+        db_path: dbPath,
+        action: 'reinit_embed',
+        ok: r.error === null,
+        state: r.state,
+        error: r.error ?? null,
+      });
+    } catch (err) {
+      log.warn('enrich.heal.action', {
+        db_path: dbPath,
+        action: 'reinit_embed',
+        ok: false,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
+
+  if (heal.time_budget_exceeded) {
+    try {
+      const d = await drainBacklog(adapter, wq, { limit: drainBatchLimit() });
+      await recordAutoHealAction(adapter, {
+        at: now,
+        action: 'drain',
+        ok: d.fully_drained,
+        detail: `remaining=${d.remaining} healed=${d.healed_total} failed=${d.failed_total}`,
+      });
+      log.warn('enrich.heal.action', {
+        db_path: dbPath,
+        action: 'drain',
+        ok: d.fully_drained,
+        remaining: d.remaining,
+        healed: d.healed_total,
+        failed: d.failed_total,
+      });
+    } catch (err) {
+      log.warn('enrich.heal.action', {
+        db_path: dbPath,
+        action: 'drain',
+        ok: false,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
 }
 
 /**

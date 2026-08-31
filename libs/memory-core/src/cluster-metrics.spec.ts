@@ -267,9 +267,13 @@ describe('stage declaration (telemetry_self_check coverage)', () => {
   });
 
   it('raises stages_declared to three', () => {
+    // BUG-MEMORYSERVER-EMBED-HEAL-NOOPERATOR-001 adds the enrich.health /
+    // enrich.alarm stages (the self-heal health plane) to the three originals.
     expect(Object.keys(MEMORY_CORE_STAGES.stages).sort()).toEqual([
       'cluster',
       'embed',
+      'enrich.alarm',
+      'enrich.health',
       'write_queue',
     ]);
   });

@@ -153,7 +153,7 @@ export { FileSystemModelCache } from './cache.js';
  * constructing their own — see `sharedOnnxWorker.ts` for the full
  * root-cause writeup and rationale.
  */
-export { getSharedOnnxWorker, SharedOnnxWorkerClient } from './sharedOnnxWorker.js';
+export { getSharedOnnxWorker, SharedOnnxWorkerClient, resetSharedOnnxWorker } from './sharedOnnxWorker.js';
 
 /**
  * BL-238/BL-171 fix: the single shared fastembed CHILD PROCESS singleton.
@@ -168,6 +168,7 @@ export { getSharedOnnxWorker, SharedOnnxWorkerClient } from './sharedOnnxWorker.
 export {
   getSharedFastembedProcess,
   SharedFastembedProcessClient,
+  resetSharedFastembedProcess,
 } from './sharedFastembedProcess.js';
 
 /**

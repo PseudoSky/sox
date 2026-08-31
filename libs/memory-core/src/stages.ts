@@ -90,6 +90,15 @@ export const MEMORY_CORE_STAGES = declareStages('memory-core', {
   write_queue: { paths: ['queued', 'bypass'] },
   embed: { paths: ['write', 'heal', 'reembed'] },
   cluster: { paths: ['full', 'incremental', 'subset'] },
+  // BUG-MEMORYSERVER-EMBED-HEAL-NOOPERATOR-001: the self-heal health plane is
+  // itself a contended resource worth instrumenting — a health plane that
+  // silently stops running (zero `verdict` samples) is exactly the defect this
+  // item exists to surface, and BL-319's lesson is that an uninstrumented path
+  // is indistinguishable from a broken one. `verdict` (the honest pipeline
+  // health computation) and `escalate` (the tiered alarm escalation) are the
+  // two entry points the tick and ping both route through.
+  'enrich.health': { paths: ['verdict'] },
+  'enrich.alarm': { paths: ['escalate'] },
 } as const);
 
 /** The code path an `embed()` call was entered through. Closed union: a new

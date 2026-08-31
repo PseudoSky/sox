@@ -297,3 +297,29 @@ export function getSharedOnnxWorker(): SharedOnnxWorkerClient {
 export function __resetSharedOnnxWorkerForTests(): void {
   _singleton = null;
 }
+
+/**
+ * (BUG-MEMORYSERVER-EMBED-HEAL-NOOPERATOR-001) Terminate AND clear the shared
+ * ONNX worker singleton, so the next `getSharedOnnxWorker()` constructs a
+ * fresh `worker_threads.Worker`. This is the embedding-provider half of
+ * memory-core's `reinitEmbedProvider()` — the rerank/verify side of the shared
+ * ONNX host is torn down alongside the fastembed child so a full pipeline
+ * re-init leaves no stale worker behind.
+ *
+ * Unlike `__resetSharedOnnxWorkerForTests` (test-only, does NOT terminate),
+ * this TERMINATES the existing singleton first and then drops the reference.
+ * Safe to call when no worker has ever been constructed (no-op). In-flight
+ * requests are rejected with the standard termination error — surfaced by the
+ * heal loop as a row failure, never a hang.
+ */
+export async function resetSharedOnnxWorker(): Promise<void> {
+  const prev = _singleton;
+  _singleton = null;
+  if (prev) {
+    try {
+      await prev.terminate();
+    } catch {
+      // Best-effort — the singleton is already dropped.
+    }
+  }
+}

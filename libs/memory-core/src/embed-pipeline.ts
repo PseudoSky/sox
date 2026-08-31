@@ -69,6 +69,7 @@ import { detectNearDup } from './neardup.js';
 import { vectorDialectFor } from './dialect.js';
 import type { NearDupResult } from './neardup.js';
 import { applyNearDupResult, NEARDUP_THRESHOLD } from './enrich.js';
+import { recordRowFailure, poisonThreshold, unpoisonRow, poisonReentryBoundary } from './enrich-poison.js';
 import type { StoreAdapter, AdapterTransaction, VectorDialect } from '@adhd/sox-store-adapter';
 import { LatencyRing, summarizeLatencies } from './latency-stats.js';
 import type { WriteQueue } from './write-queue.js';
@@ -141,6 +142,14 @@ export interface HealResult {
   exists: number;
   gone: number;
   failed: number;
+  /**
+   * (BUG-MEMORYSERVER-EMBED-HEAL-NOOPERATOR-001) Rows excluded from the scan
+   * because they are currently quarantined (poisoned, within the reentry
+   * cool-down). These rows are NOT healed and NOT failed — they are parked.
+   * The count is surfaced separately so the health ledger/alarm can distinguish
+   * "healed" from "skipped due to poison" (poison is not healing).
+   */
+  poisoned_skipped: number;
   /**
    * True when the heal pass hit its per-tick time budget and stopped early
    * before processing all SELECTed rows. The next tick picks up the remainder.
@@ -650,9 +659,9 @@ export async function embedBacklogStats(adapter: StoreAdapter): Promise<EmbedBac
 export async function healMissingVectors(
   adapter: StoreAdapter,
   wq: WriteQueue,
-  opts: { limit: number; logSink?: (line: string) => void },
+  opts: { limit: number; logSink?: (line: string) => void; disableTimeBudget?: boolean },
 ): Promise<HealResult> {
-  const out: HealResult = { scanned: 0, healed: 0, exists: 0, gone: 0, failed: 0, time_budget_exceeded: false };
+  const out: HealResult = { scanned: 0, healed: 0, exists: 0, gone: 0, failed: 0, poisoned_skipped: 0, time_budget_exceeded: false };
   // BL-434: the heal tick establishes its OWN ambient trace context.
   //
   // Trace ids propagate ambiently through `AsyncLocalStorage`, and
@@ -676,7 +685,7 @@ export async function healMissingVectors(
 async function _healMissingVectorsPass(
   adapter: StoreAdapter,
   wq: WriteQueue,
-  opts: { limit: number; logSink?: (line: string) => void },
+  opts: { limit: number; logSink?: (line: string) => void; disableTimeBudget?: boolean },
   out: HealResult,
   tickTraceId: string,
 ): Promise<HealResult> {
@@ -689,6 +698,19 @@ async function _healMissingVectorsPass(
 
   const useBinaryFormat = adapter.capabilities.nativeVectors;
   const vectorDialect = await vectorDialectFor(adapter);
+  // BUG-MEMORYSERVER-EMBED-HEAL-NOOPERATOR-001: the heal scan EXCLUDES poisoned
+  // rows so a window of permanently-failing rows (BUG-021's "Model not
+  // initialized" child) can no longer consume the whole per-tick budget
+  // re-attempting rows that will keep failing until the root cause is fixed.
+  // BOUNDED QUARANTINE (2026-08-30 correction): the exclusion is TIME-BOUNDED —
+  // a row is skipped only while `failures >= poisonThreshold` AND its
+  // `last_failed_at` is within the `poisonReentryMs` cool-down window. A row
+  // whose failure aged past the window re-enters the scan automatically. The
+  // poison threshold and reentry boundary come from the SAME typed config the
+  // poison ledger uses (enrich-poison.ts), not a second hard constant. The row
+  // itself is untouched: still in `node`, still recallable.
+  const nowMs = Date.now();
+  const reentryBoundary = poisonReentryBoundary(nowMs);
   const result = await adapter.executeAll<{ rowid: number; uid: string; content: string; t_created: string | null }>(
     `SELECT n.rowid, n.uid, n.content, n.t_created
      FROM node n
@@ -696,13 +718,32 @@ async function _healMissingVectorsPass(
        AND n.t_invalid IS NULL
        AND n.content IS NOT NULL AND n.content != ''
        AND NOT EXISTS (SELECT 1 FROM vec_node v WHERE v.node_id = n.rowid)
+       AND NOT EXISTS (SELECT 1 FROM enrich_poison p WHERE p.uid = n.uid AND p.failures >= ? AND p.last_failed_at >= ?)
      ORDER BY n.rowid ASC
      LIMIT ?`,
-    [limit],
+    [poisonThreshold(), reentryBoundary, limit],
   );
   const rows = result.rows;
 
-  const timeBudgetMs = embedHealTimeBudgetMs();
+  // Honest progress: count the rows the scan JUST excluded because they are
+  // currently quarantined — surfaced separately (`poisoned_skipped`) so the
+  // ledger/alarm know poison is "parked, not healing". A row whose reentry
+  // window elapsed is NOT counted (it re-entered and is either in `rows` or has
+  // already healed).
+  const skippedRow = await adapter.executeGet<{ c: number }>(
+    `SELECT COUNT(*) AS c FROM node n
+     WHERE n.kind = 'episode'
+       AND n.t_invalid IS NULL
+       AND n.content IS NOT NULL AND n.content != ''
+       AND NOT EXISTS (SELECT 1 FROM vec_node v WHERE v.node_id = n.rowid)
+       AND EXISTS (SELECT 1 FROM enrich_poison p WHERE p.uid = n.uid AND p.failures >= ? AND p.last_failed_at >= ?)`,
+    [poisonThreshold(), reentryBoundary],
+  );
+  out.poisoned_skipped = skippedRow?.c ?? 0;
+
+  // drainBacklog disables the tick time budget (operator/auto-heal full drain);
+  // the periodic tick keeps its default. The per-row embed timeout is untouched.
+  const timeBudgetMs = opts.disableTimeBudget ? Number.POSITIVE_INFINITY : embedHealTimeBudgetMs();
   const tickTimeoutMs = embedHealTimeoutMs();
   const tickStartedAt = performance.now();
 
@@ -767,6 +808,9 @@ async function _healMissingVectorsPass(
           if (Number.isFinite(createdMs)) {
             metrics.healLag.push(Math.max(0, Date.now() - createdMs));
           }
+          // A successful embed clears any poison this row may have accrued from
+          // earlier failed attempts — it is re-admitted to the healthy path.
+          void unpoisonRow(adapter, pending.uid).catch(() => undefined);
         } else if (applied.status === 'exists') out.exists++;
         else out.gone++;
         logApplyDiscarded(applied.status, pending.uid, pending.rowid);
@@ -780,6 +824,18 @@ async function _healMissingVectorsPass(
           rowid: pending.rowid,
           tick_trace_id: tickTraceId,
           error: msg,
+        });
+        // BUG-MEMORYSERVER-EMBED-HEAL-NOOPERATOR-001: record the failure in the
+        // poison ledger (upsert, increments the row's failure count). The row is
+        // NEVER dropped — it stays in `node`, recallable via BM25/temporal — it
+        // is only excluded from future RETRY once it reaches the poison
+        // threshold. Bookkeeping failure must never fail the tick: the row
+        // failure is already counted and logged above.
+        void recordRowFailure(adapter, pending.uid, msg).catch((poisonErr) => {
+          tlog.warn('embed_pipeline.heal.poison_record_error', {
+            uid: pending.uid,
+            error: poisonErr instanceof Error ? poisonErr.message : String(poisonErr),
+          });
         });
       }
     });
@@ -813,6 +869,95 @@ async function embedWithTimeout(text: string, timeoutMs: number): Promise<Float3
       },
     );
   });
+}
+
+// ── Backlog drain (BUG-MEMORYSERVER-EMBED-HEAL-NOOPERATOR-001) ────────────────
+
+export interface DrainResult {
+  /** True when the embed backlog reached 0 by the end of the drain loop. */
+  fully_drained: boolean;
+  /** True when the drain completed with ZERO embed failures — every applied
+   *  status actually landed (a failed row, even one later retried successfully,
+   *  means the drain was not clean). Always false when not fully_drained. */
+  verified: boolean;
+  /** Fresh backlog count AFTER the drain (0 when fully_drained). */
+  remaining: number;
+  /** Total rows healed across all batches. */
+  healed_total: number;
+  /** Total rows whose embed threw across all batches. */
+  failed_total: number;
+  /** Number of heal batches the loop ran. */
+  batches: number;
+}
+
+/** Default batch size for a drain loop pass (mirrors memory-server's
+ *  DEFAULT_DRAIN_BATCH). */
+const DEFAULT_DRAIN_LIMIT = 64;
+
+/**
+ * (BUG-MEMORYSERVER-EMBED-HEAL-NOOPERATOR-001) Drain the embed backlog to
+ * completion, WITHOUT the per-tick time budget. Loops `healMissingVectors`
+ * batches (each bounded by `limit`; the per-row embed timeout is untouched —
+ * only the tick wall-clock budget is disabled) until the backlog reaches 0 or a
+ * batch makes no forward progress (everything remaining is poisoned, gone, or
+ * failing). This is the recovery path for a stuck backlog the periodic tick
+ * could never clear within one 240s budget — the operator surface
+ * (`memory_curate drain`) and the rate-limited auto-heal both drive it.
+ *
+ * Re-computes `embedBacklogStats` after every batch so `fully_drained` is
+ * verified against the store, never assumed from the batch's own counts. Safe
+ * to call from OUTSIDE a WriteQueue task (BL-154) — it only ever awaits
+ * `healMissingVectors`, which itself enqueues short per-row apply tasks.
+ */
+export async function drainBacklog(
+  adapter: StoreAdapter,
+  wq: WriteQueue,
+  opts: { limit?: number; logSink?: (line: string) => void } = {},
+): Promise<DrainResult> {
+  const limit = Math.max(1, Math.floor(opts.limit ?? DEFAULT_DRAIN_LIMIT));
+  const log = opts.logSink ?? ((line: string) => tlog.debug('embed_pipeline.drain', { message: line }));
+
+  let backlog = await embedBacklogStats(adapter);
+  if (backlog.count === 0) {
+    return { fully_drained: true, verified: true, remaining: 0, healed_total: 0, failed_total: 0, batches: 0 };
+  }
+
+  let healedTotal = 0;
+  let failedTotal = 0;
+  let batches = 0;
+
+  while (true) {
+    const heal = await healMissingVectors(adapter, wq, { limit, disableTimeBudget: true, logSink: log });
+    healedTotal += heal.healed;
+    failedTotal += heal.failed;
+    batches++;
+
+    backlog = await embedBacklogStats(adapter);
+    if (backlog.count === 0) {
+      return {
+        fully_drained: true,
+        verified: failedTotal === 0,
+        remaining: 0,
+        healed_total: healedTotal,
+        failed_total: failedTotal,
+        batches,
+      };
+    }
+
+    // No forward progress this batch: every remaining row is either poisoned
+    // (excluded from the scan), gone, or still failing. Stop and report the
+    // honest remainder rather than spin forever.
+    if (heal.healed === 0) {
+      return {
+        fully_drained: false,
+        verified: false,
+        remaining: backlog.count,
+        healed_total: healedTotal,
+        failed_total: failedTotal,
+        batches,
+      };
+    }
+  }
 }
 
 // ── Stale-vector heal (BL-88) ────────────────────────────────────────────────
