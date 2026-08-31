@@ -1728,6 +1728,28 @@ describe('BL-620 — enable verifies the write and refuses to load an unverified
     expect(verifyUnitOnDisk(r.unitPath).selfConsistent).toBe(false);
   });
 
+  it('BL-620 second-round: a BLOCKED regeneration reports verified:false WITH a verificationError', () => {
+    enableOsUnit(
+      makeSpec({ env: { SOX_CONFIG_DB_PATH: 'x', SOX_EMBED_DRAIN_FLOOR_MS: '30000' } }),
+      platform,
+      { unitDir, exec: makeFakeExec().exec, load: false },
+    );
+    const r2 = enableOsUnit(
+      makeSpec({ env: { SOX_CONFIG_DB_PATH: 'x' }, processType: 'Background' }),
+      platform,
+      { unitDir, exec: makeFakeExec().exec, load: false },
+    );
+    expect(r2.action).toBe('blocked');
+    expect(r2.verified).toBe(false);
+    expect(r2.verificationError).toBeDefined();
+  });
+
+  it('BL-620 second-round: a dry-run reports verified:false with a "dry-run — no write" verificationError', () => {
+    const r = enableOsUnit(makeSpec(), platform, { unitDir, exec: makeFakeExec().exec, dryRun: true });
+    expect(r.verified).toBe(false);
+    expect(r.verificationError).toBe('dry-run — no write');
+  });
+
   it('a stale-header on-disk unit is detected by enable (rewritten, verified true)', () => {
     const spec = makeSpec();
     // First write clean.

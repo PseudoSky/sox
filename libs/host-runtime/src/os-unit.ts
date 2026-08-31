@@ -1236,6 +1236,10 @@ export function enableOsUnit(
         contentHash: priorHash ?? newHash,
         loaded: currentlyLoaded,
         verified: false,
+        // BL-620 (second-round): a consumer reading `verificationError` must not
+        // be left with `undefined` — distinguish this from a write-verification
+        // failure so a `verified:false` always carries its reason.
+        verificationError: 'blocked — no write to verify (regeneration would drop shell-sourced env)',
         droppedEnvKeys: dropped,
       };
     }
@@ -1256,7 +1260,17 @@ export function enableOsUnit(
   // wording is reserved for runs that actually wrote.
   if (opts.dryRun === true) {
     log(`os-unit ${spec.label}: (dry-run) would ${action === 'created' ? 'create' : 'update'} ${unitPath} (content-hash ${newHash})`);
-    return { action, unitPath, label: spec.label, contentHash: newHash, loaded: false, verified: false };
+    return {
+      action,
+      unitPath,
+      label: spec.label,
+      contentHash: newHash,
+      loaded: false,
+      verified: false,
+      // BL-620 (second-round): carry the reason so `verified:false` is never
+      // undiagnosable — a dry run performs no write, so there is nothing to verify.
+      verificationError: 'dry-run — no write',
+    };
   }
 
   writeFileAtomic(unitPath, rendered);
