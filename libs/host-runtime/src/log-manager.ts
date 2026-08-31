@@ -358,21 +358,41 @@ export function findAllLogStreamsForExt(
 /**
  * Find the most recent log file matching a given prefix in a directory.
  * Returns the full path, or null if no matching log file exists.
+ *
+ * BL-632: the ACTIVE os-unit log is the exact stable name `<filePrefix>.log`
+ * (e.g. `doctor-tick-os.out.log`); its rotated archives are
+ * `<filePrefix>.log.<timestamp>` (e.g. `doctor-tick-os.out.log.20260801`).
+ * Both previously matched `startsWith(filePrefix)`, and a lexicographic sort
+ * puts the longer archive name LAST — so `files[files.length - 1]` returned the
+ * ARCHIVE instead of the live active file. Resolve the exact active name first,
+ * and exclude `.log.<digits>` archives from the fallback scan so the finder can
+ * never misreport a rotated archive as the current live log.
  */
 export function findMostRecentLogFile(logDir: string, filePrefix: string): string | null {
-  const fs = require('node:fs') as typeof import('node:fs');
-  const path = require('node:path') as typeof import('node:path');
   if (!fs.existsSync(logDir)) return null;
+  const exact = path.join(logDir, `${filePrefix}.log`);
+  if (fs.existsSync(exact)) return exact;
   let files: string[];
   try {
     files = fs.readdirSync(logDir)
       .filter((f: string) => logStreamFileMatches(f, filePrefix))
+      .filter((f: string) => !isRotatedArchiveName(f, filePrefix))
       .sort();
   } catch {
     return null;
   }
   if (files.length === 0) return null;
   return path.join(logDir, files[files.length - 1] as string);
+}
+
+/**
+ * BL-632: true when `name` is a ROTATED archive of the active `<filePrefix>.log`
+ * file — i.e. `<filePrefix>.log.<digits…>`. These archives must never win the
+ * most-recent determination over the live active file (or, when the active file
+ * is absent, over a legacy dated archive).
+ */
+function isRotatedArchiveName(name: string, filePrefix: string): boolean {
+  return new RegExp(`^${escapeRegex(filePrefix)}\\.log\\.\\d`).test(name);
 }
 
 /**
@@ -412,31 +432,42 @@ function escapeRegex(s: string): string {
 
 /**
  * Rotate ONE OS-unit log stream: copytruncate an over-size active file to
- * `<path>.<YYYYMMDD>` (BL-629 — the active path's inode is preserved so the
- * OS supervisor's open fd keeps writing to the same file), then prune archived
- * files by count and size. See {@link rotateOsUnitLogs}.
+ * `<path>.<YYYYMMDD-HHmmss>` (BL-629 — the active path's inode is preserved so
+ * the OS supervisor's open fd keeps writing to the same file), then prune
+ * archived files by count and size. See {@link rotateOsUnitLogs}.
  */
-function rotateOsUnitLogFile(activePath: string, maxBytes: number, keep: number, date: string): void {
+function rotateOsUnitLogFile(activePath: string, maxBytes: number, keep: number): void {
   const dir = path.dirname(activePath);
   const base = path.basename(activePath); // e.g. doctor-tick-os.out.log
-  const osDotIdx = base.indexOf('-os.');
-  if (osDotIdx === -1) return; // not an os-unit log path — nothing to rotate
-  const id = base.slice(0, osDotIdx); // e.g. doctor-tick
-  const stream = base.slice(osDotIdx + 4).replace(/\.log$/, ''); // "out" | "err"
+
+  // Derive id/stream from the STABLE `<id>-os.<stream>.log` shape, not from
+  // `base.indexOf('-os.')` + slicing: an id that itself contains `-os.` (e.g.
+  // `my-os-tool`) mis-splits under the substring approach (`my` + `tool-os.out`),
+  // and a non-matching path silently no-ops instead of logging. The anchored
+  // regex lets the greedy `.+` capture the FULL id (`my-os-tool`) with the
+  // literal `-os.<stream>.log` tail disambiguating the split.
+  const stableRe = /^(.+)-os\.(out|err)\.log$/;
+  const m = stableRe.exec(base);
+  if (m === null) {
+    console.warn(`[os-unit] rotateOsUnitLogFile: ${activePath} is not a recognized os-unit log path — nothing rotated`);
+    return;
+  }
+  const id = m[1]!;
+  const stream = m[2]!;
 
   // 1. Size-triggered copytruncate of the active file (BL-629): the OS
   // supervisor keeps the active log OPEN via StandardOutPath/StandardErrorPath,
   // so renaming would relabel the still-growing file and post-rename output
-  // would keep landing in the renamed archive. Copy the content to
-  // `<path>.<YYYYMMDD>`, then truncate the active path to 0 — the inode (and
-  // the supervisor's open fd) is preserved, so the service keeps writing to the
-  // (now empty) active file and disk stays bounded while it lives.
+  // would keep landing in the renamed archive. Copy the content to a
+  // collision-free archive path, then truncate the active path to 0 — the inode
+  // (and the supervisor's open fd) is preserved, so the service keeps writing to
+  // the (now empty) active file and disk stays bounded while it lives.
   if (fs.existsSync(activePath)) {
     let size = 0;
     try { size = fs.statSync(activePath).size; } catch { /* ignore */ }
     if (size >= maxBytes) {
       try {
-        const rotated = `${activePath}.${date}`;
+        const rotated = uniqueArchivePath(activePath);
         fs.copyFileSync(activePath, rotated);
         fs.truncateSync(activePath, 0);
       } catch { /* best-effort rotation */ }
@@ -444,11 +475,11 @@ function rotateOsUnitLogFile(activePath: string, maxBytes: number, keep: number,
   }
 
   // 2. Enumerate archives in BOTH forms:
-  //    new    → `<id>-os.<stream>.log.<YYYYMMDD>`
+  //    new    → `<id>-os.<stream>.log.<YYYYMMDD[-HHmmss[.N]]>`
   //    legacy → `<id>-os-<date>.<stream>.log`
   let entries: string[];
   try { entries = fs.readdirSync(dir); } catch { return; }
-  const newRe = new RegExp(`^${escapeRegex(id)}-os\\.${stream}\\.log\\.\\d{8}$`);
+  const newRe = new RegExp(`^${escapeRegex(id)}-os\\.${stream}\\.log\\.\\d{8}(?:-\\d{6}(?:\\.\\d+)?)?$`);
   const legacyRe = new RegExp(`^${escapeRegex(id)}-os-\\d{4}-\\d{2}-\\d{2}\\.${stream}\\.log$`);
   const archives: Array<{ path: string; name: string }> = [];
   for (const name of entries) {
@@ -470,8 +501,12 @@ function rotateOsUnitLogFile(activePath: string, maxBytes: number, keep: number,
     }
   }
 
-  // 4. Count-cap: keep the newest `keep` archives (dates sort lexicographically).
-  survivors.sort((a, b) => a.name.localeCompare(b.name));
+  // 4. Count-cap: keep the newest `keep` archives. Sort by PARSED date — the
+  // legacy `-os-<YYYY-MM-DD>` and new `.YYYYMMDD[-HHmmss]` forms normalize to a
+  // common sortable key — not raw `name.localeCompare`, which misorders the two
+  // forms relative to each other (a legacy `-os-2026-08-02` sorts AFTER a new
+  // `.20260801` even though it is the older archive).
+  survivors.sort((a, b) => archiveSortKey(a.name).localeCompare(archiveSortKey(b.name)));
   while (survivors.length > keep) {
     const oldest = survivors.shift();
     if (oldest) {
@@ -481,24 +516,71 @@ function rotateOsUnitLogFile(activePath: string, maxBytes: number, keep: number,
 }
 
 /**
+ * BL-620 (second-round): a sortable date key for an os-unit log ARCHIVE name,
+ * normalizing every accepted form to a common lexicographic order:
+ *   legacy  `-os-<YYYY-MM-DD>.<out|err>.log`     → `YYYY-MM-DD`
+ *   new     `.log.<YYYYMMDD>`                    → `YYYY-MM-DD`
+ *   new+ts  `.log.<YYYYMMDD>-<HHmmss>`           → `YYYY-MM-DD-HHmmss`
+ *   collided`.log.<YYYYMMDD>-<HHmmss>.<N>`       → `YYYY-MM-DD-HHmmss.NNNN`
+ * Non-archive names fall through to the raw name.
+ */
+function archiveSortKey(name: string): string {
+  const legacy = /-os-(\d{4}-\d{2}-\d{2})\.(out|err)\.log$/.exec(name);
+  if (legacy) return legacy[1]!;
+  const newForm = /\.log\.(\d{8})(?:-(\d{6})(?:\.(\d+))?)?$/.exec(name);
+  if (newForm) {
+    const d = newForm[1]!;
+    const base = `${d.slice(0, 4)}-${d.slice(4, 6)}-${d.slice(6, 8)}`;
+    const t = newForm[2];
+    const n = newForm[3];
+    return `${base}${t !== undefined ? `-${t}` : ''}${n !== undefined ? `.${n.padStart(4, '0')}` : ''}`;
+  }
+  return name;
+}
+
+/** A UTC `YYYYMMDD-HHmmss` stamp for the current instant. */
+function archiveStamp(): string {
+  const d = new Date();
+  const pad = (n: number): string => String(n).padStart(2, '0');
+  const date = `${d.getUTCFullYear()}${pad(d.getUTCMonth() + 1)}${pad(d.getUTCDate())}`;
+  const time = `${pad(d.getUTCHours())}${pad(d.getUTCMinutes())}${pad(d.getUTCSeconds())}`;
+  return `${date}-${time}`;
+}
+
+/**
+ * BL-620 (second-round, same-day archive overwrite): a collision-free archive
+ * path for `activePath`. The base is `<activePath>.<YYYYMMDD-HHmmss>`; when that
+ * name is already taken (a prior rotation within the same UTC second, or a prior
+ * day's archive coinciding), a monotonic `.N` disambiguator is appended. This
+ * replaces the old fixed `.YYYYMMDD` suffix, under which a second rotation within
+ * one UTC day silently overwrote the first archive.
+ */
+function uniqueArchivePath(activePath: string): string {
+  const base = `${activePath}.${archiveStamp()}`;
+  if (!fs.existsSync(base)) return base;
+  let n = 1;
+  for (;;) {
+    const candidate = `${base}.${n}`;
+    if (!fs.existsSync(candidate)) return candidate;
+    n++;
+  }
+}
+
+/**
  * BL-620 / INV-6: rotate OS-unit log streams at reconcile time. The stable
  * active paths (`<id>-os.out.log` / `<id>-os.err.log`) grow unbounded because
  * launchd/systemd append forever and the old dated names were never rotated.
  *
- *   - size-triggered copytruncate of the active file to `<path>.<YYYYMMDD>`
+ *   - size-triggered copytruncate of the active file to `<path>.<YYYYMMDD-HHmmss>`
  *     (BL-629: the active inode/fd is preserved — the supervisor keeps writing
  *     to the same file, now truncated, instead of a renamed archive);
  *   - count-cap prune keeping `keep` archives per stream, matching BOTH the new
- *     `.YYYYMMDD` form and the legacy `-os-<date>.<out|err>.log` form;
+ *     `.YYYYMMDD[-HHmmss]` form and the legacy `-os-<date>.<out|err>.log` form;
  *   - archives larger than `maxBytes * 4` are pruned regardless of count.
  */
 export function rotateOsUnitLogs(opts: RotateOsUnitLogsOptions): void {
   const maxBytes = opts.maxBytes ?? 1_000_000;
   const keep = opts.keep ?? 5;
-  // BL-627: compact 8-digit YYYYMMDD — the prune regex (`\.\d{8}$`) and the
-  // archive-name docstring both expect the compact form, not the dashed
-  // `todayDateString()` shape.
-  const date = todayDateString().replace(/-/g, '');
-  rotateOsUnitLogFile(opts.outPath, maxBytes, keep, date);
-  if (opts.errPath !== undefined) rotateOsUnitLogFile(opts.errPath, maxBytes, keep, date);
+  rotateOsUnitLogFile(opts.outPath, maxBytes, keep);
+  if (opts.errPath !== undefined) rotateOsUnitLogFile(opts.errPath, maxBytes, keep);
 }
