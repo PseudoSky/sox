@@ -8,6 +8,8 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import {
   OwnershipIndex,
+  OwnershipConflictError,
+  OwnershipCorruptError,
   readOwnership,
   supersededEntries,
   type OwnedEntry,
@@ -182,5 +184,88 @@ describe('OwnershipIndex — deduplication (PI-6 / BL-142)', () => {
     ];
     const deduped = OwnershipIndex.dedupeEntries(entries);
     expect(deduped).toHaveLength(7); // one of each kind
+  });
+});
+
+describe('BL-620 — ownership write is the commit point (strict load + save-conflict + os-unit upsert/remove)', () => {
+  it('strict load throws OwnershipCorruptError on unparseable JSON (never reads empty)', () => {
+    fs.writeFileSync(ownPath(), 'not json');
+    expect(() => readOwnership(ownPath(), { strict: true })).toThrow(OwnershipCorruptError);
+  });
+
+  it('strict load throws OwnershipCorruptError when `owned` is not an array', () => {
+    fs.writeFileSync(ownPath(), JSON.stringify({ version: 1, owned: 'nope' }));
+    expect(() => readOwnership(ownPath(), { strict: true })).toThrow(OwnershipCorruptError);
+  });
+
+  it('non-strict load (legacy default) still returns empty on corrupt JSON', () => {
+    fs.writeFileSync(ownPath(), 'not json');
+    expect(readOwnership(ownPath()).owned).toEqual([]);
+  });
+
+  it('save() throws OwnershipConflictError when the file changed on disk since load', () => {
+    const idx = OwnershipIndex.loadFromFile(ownPath());
+    idx.record({ extId: 'ext', scope: 'user', entries: [{ kind: 'file-drop', path: '/a' }] });
+    // External write between this instance's load and save.
+    const external = OwnershipIndex.loadFromFile(ownPath());
+    external.record({ extId: 'other', scope: 'user', entries: [{ kind: 'file-drop', path: '/b' }] });
+    external.save();
+    expect(() => idx.save()).toThrow(OwnershipConflictError);
+  });
+
+  it('save() does NOT conflict when nothing changed on disk (single load→save cycle)', () => {
+    const idx = OwnershipIndex.loadFromFile(ownPath());
+    idx.record({ extId: 'ext', scope: 'user', entries: [{ kind: 'file-drop', path: '/a' }] });
+    idx.save();
+    expect(readOwnership(ownPath()).owned).toHaveLength(1);
+  });
+
+  it('upsertOsUnitEntry persists the entry and re-read-verifies it', () => {
+    OwnershipIndex.upsertOsUnitEntry(ownPath(), {
+      extId: 'doctor-tick', scope: 'user', label: 'com.sox.user.doctor-tick',
+      unitPath: '/units/com.sox.user.doctor-tick.plist', supervisor: 'launchd', appliedHash: '0123456789abcdef',
+    });
+    const rec = readOwnership(ownPath()).owned.find((r) => r.extId === 'doctor-tick' && r.scope === 'user');
+    const entry = rec?.entries.find((e) => e.kind === 'os-unit') as Extract<OwnedEntry, { kind: 'os-unit' }> | undefined;
+    expect(entry?.label).toBe('com.sox.user.doctor-tick');
+    expect(entry?.appliedHash).toBe('0123456789abcdef');
+    expect(entry?.unitPath).toBe('/units/com.sox.user.doctor-tick.plist');
+  });
+
+  it('upsertOsUnitEntry throws on a corrupt index (never silently reads empty then overwrites)', () => {
+    fs.writeFileSync(ownPath(), 'not json');
+    expect(() => OwnershipIndex.upsertOsUnitEntry(ownPath(), {
+      extId: 'doctor-tick', scope: 'user', label: 'com.sox.user.doctor-tick',
+      unitPath: '/u', supervisor: 'launchd', appliedHash: 'h',
+    })).toThrow(OwnershipCorruptError);
+  });
+
+  it('upsertOsUnitEntry is idempotent: re-upsert of the SAME label replaces, never duplicates', () => {
+    const base = { extId: 'doctor-tick', scope: 'user', label: 'com.sox.user.doctor-tick', unitPath: '/u', supervisor: 'launchd' as const };
+    OwnershipIndex.upsertOsUnitEntry(ownPath(), { ...base, appliedHash: 'h1' });
+    OwnershipIndex.upsertOsUnitEntry(ownPath(), { ...base, appliedHash: 'h2' });
+    const rec = readOwnership(ownPath()).owned.find((r) => r.extId === 'doctor-tick');
+    const osUnits = rec!.entries.filter((e) => e.kind === 'os-unit');
+    expect(osUnits).toHaveLength(1);
+    expect((osUnits[0] as Extract<OwnedEntry, { kind: 'os-unit' }>).appliedHash).toBe('h2');
+  });
+
+  it('removeOsUnitEntry removes the entry and verifies it is gone', () => {
+    OwnershipIndex.upsertOsUnitEntry(ownPath(), {
+      extId: 'doctor-tick', scope: 'user', label: 'com.sox.user.doctor-tick',
+      unitPath: '/u', supervisor: 'launchd', appliedHash: 'h',
+    });
+    const removed = OwnershipIndex.removeOsUnitEntry(ownPath(), { extId: 'doctor-tick', scope: 'user', label: 'com.sox.user.doctor-tick' });
+    expect(removed).toBe(true);
+    const rec = readOwnership(ownPath()).owned.find((r) => r.extId === 'doctor-tick');
+    expect(rec?.entries.some((e) => e.kind === 'os-unit')).toBe(false);
+  });
+
+  it('removeOsUnitEntry returns false on idempotent no-op (absent record / different label)', () => {
+    expect(OwnershipIndex.removeOsUnitEntry(ownPath(), { extId: 'nope', scope: 'user', label: 'x' })).toBe(false);
+    OwnershipIndex.upsertOsUnitEntry(ownPath(), {
+      extId: 'ext', scope: 'user', label: 'com.sox.user.ext', unitPath: '/u', supervisor: 'launchd', appliedHash: 'h',
+    });
+    expect(OwnershipIndex.removeOsUnitEntry(ownPath(), { extId: 'ext', scope: 'user', label: 'com.sox.user.other' })).toBe(false);
   });
 });

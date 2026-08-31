@@ -250,6 +250,10 @@ export {
   // BL-185: interval-schedule detection for SCHEDULED status rendering.
   isScheduledOsUnitContent,
   isScheduledOsUnit,
+  // BL-620: verify-after-write + F15 orphan attribution/classification.
+  verifyUnitOnDisk,
+  parseOsUnitLabel,
+  classifyOsUnitOrphan,
 } from './os-unit.js';
 export type {
   OsSupervisor,
@@ -273,6 +277,9 @@ export type {
   UpdateOsUnitResult,
   ReloadAndVerifyOsUnitOptions,
   ReloadAndVerifyOsUnitResult,
+  UnitDiskVerification,
+  OsUnitLabelParts,
+  OsUnitOrphanClass,
 } from './os-unit.js';
 
 // ─── Global Supervisor Registry (R1) ─────────────────────────────────────────
@@ -287,8 +294,8 @@ export {
 export type { SupervisorRegistryEntry, SupervisorsFile } from './registry.js';
 
 // ─── Log Manager (R4) ─────────────────────────────────────────────────────────
-export { LogManager, findAllLogStreamsForExt, findMostRecentLogFile } from './log-manager.js';
-export type { LogManagerOptions, RunRecord, RunHistoryFile, LogStreamDescriptor } from './log-manager.js';
+export { LogManager, findAllLogStreamsForExt, findMostRecentLogFile, rotateOsUnitLogs } from './log-manager.js';
+export type { LogManagerOptions, RunRecord, RunHistoryFile, LogStreamDescriptor, RotateOsUnitLogsOptions } from './log-manager.js';
 
 // ─── Stale state GC (R2) ──────────────────────────────────────────────────────
 export { probeSocket, probeEntryLiveness, readGlobalRegistry } from './gc.js';

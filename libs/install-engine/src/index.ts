@@ -90,6 +90,8 @@ export {
   readOwnership,
   writeOwnershipAtomic,
   supersededEntries,
+  OwnershipCorruptError,
+  OwnershipConflictError,
 } from './ownership.js';
 export type { OwnedEntry, OwnershipRecord, OwnershipFile } from './ownership.js';
 
