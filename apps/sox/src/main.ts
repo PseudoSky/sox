@@ -138,7 +138,7 @@ import {
 import { registerBundleMember, resolveBundleDir } from './bundle-init.js';
 import { assertWithinBase, PathEscapeError } from './path-safety.js';
 import { dedupeRestartRows, type RestartIdentity } from './restart-dedup.js';
-import { waitForServePortSignal } from './serve-shutdown.js';
+import { exitCodeForListenOutcome, waitForServePortSignal } from './serve-shutdown.js';
 import { verifyRunningArtifact } from './verify-artifact.js';
 import { initTelemetry, log, resolveProcessRole, type InitTelemetryOptions } from '@adhd/sox-telemetry';
 // @adhd/sox-host-registry is also lazy-required via install-engine; import it lazily here too
@@ -9079,6 +9079,22 @@ Flags:
       socketPath: backendSock,
       ...(schemaCachePath !== undefined ? { schemaCachePath } : {}),
       ...(httpPort !== undefined && !Number.isNaN(httpPort) ? { httpPort } : {}),
+      // BL-619: on a failed HTTP bind the shim serves nothing on HTTP (stdio
+      // is unaffected) and reports the structured outcome here. A port
+      // collision (EADDRINUSE → already-running) exits 0 — another instance is
+      // already serving; any other bind error exits 1. One stderr JSON line
+      // plus the durable JSONL record file gives the collision a machine-readable
+      // trace instead of a raw node crash stack.
+      onHttpBindResult: (outcome) => {
+        if (!outcome.ok) {
+          process.stderr.write(`${JSON.stringify(outcome.failure)}\n`);
+        }
+        process.exit(exitCodeForListenOutcome(outcome));
+      },
+      listenFailureRecordFile: pathMod2.join(
+        logDirFor(`serve-${extId}`),
+        'listen-failures.jsonl',
+      ),
       // BL-62: per-request project attribution — the shim forwards ITS client's
       // workspace (BL-56 injects SOX_CONFIG_PROJECT_PATH at shim spawn; MCP hosts
       // spawn the shim in the project dir, so cwd is the honest fallback) on every
