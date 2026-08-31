@@ -111,6 +111,9 @@ importers:
       '@adhd/sox-install-engine':
         specifier: workspace:*
         version: link:../../libs/install-engine
+      '@adhd/sox-listen-guard':
+        specifier: workspace:*
+        version: link:../../libs/listen-guard
       '@adhd/sox-manifest':
         specifier: workspace:*
         version: link:../../libs/manifest
@@ -236,8 +239,11 @@ importers:
 
   extensions/services/tokenguard:
     dependencies:
+      '@adhd/sox-listen-guard':
+        specifier: workspace:^
+        version: link:../../../libs/listen-guard
       '@adhd/sox-tokenguard-core':
-        specifier: workspace:*
+        specifier: workspace:^
         version: link:../../../libs/tokenguard-core
 
   extensions/skills/demo-creator: {}
@@ -416,9 +422,15 @@ importers:
 
   libs/host-registry: {}
 
-  libs/host-runtime: {}
+  libs/host-runtime:
+    dependencies:
+      '@adhd/sox-listen-guard':
+        specifier: workspace:*
+        version: link:../listen-guard
 
   libs/install-engine: {}
+
+  libs/listen-guard: {}
 
   libs/manifest: {}
 
@@ -427,6 +439,9 @@ importers:
       '@adhd/sox-host-runtime':
         specifier: workspace:^
         version: link:../host-runtime
+      '@adhd/sox-listen-guard':
+        specifier: workspace:^
+        version: link:../listen-guard
       '@adhd/sox-service-proxy':
         specifier: workspace:^
         version: link:../service-proxy
@@ -493,7 +508,11 @@ importers:
 
   libs/registry: {}
 
-  libs/service-proxy: {}
+  libs/service-proxy:
+    dependencies:
+      '@adhd/sox-listen-guard':
+        specifier: workspace:*
+        version: link:../listen-guard
 
   libs/source-provider:
     dependencies:
@@ -512,7 +531,7 @@ importers:
   packages/sox-nx:
     dependencies:
       '@adhd/sox-authoring':
-        specifier: workspace:*
+        specifier: workspace:^
         version: link:../../libs/authoring
       '@nx/devkit':
         specifier: '>=22.0.0'
