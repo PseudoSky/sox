@@ -372,6 +372,72 @@ describe('runFrontShim', () => {
     expect(handle.backend.isConnected()).toBe(true);
   });
 
+  it('BL-619: two shims on the same port — the second resolves already-running via onHttpBindResult, no crash', async () => {
+    const sock = tmpSock('dup-port');
+    await startBackend(sock, 'v1');
+    const port = await freePort();
+
+    const stdin1 = new PassThrough();
+    const stdout1 = new PassThrough();
+    stdout1.on('data', () => {}); // drain
+    const handle1 = runFrontShim({
+      id: 'dup-a',
+      socketPath: sock,
+      httpPort: port,
+      input: stdin1,
+      output: stdout1,
+      backoff: { initialMs: 20, maxMs: 60 },
+      onDiagnostic: () => {},
+    });
+    cleanups.push(() => handle1.close());
+
+    // Poll until the first shim's HTTP listener is actually bound (the guarded
+    // listen is async), so the second shim's probe deterministically finds it.
+    let firstUp = false;
+    for (let i = 0; i < 50 && !firstUp; i++) {
+      try {
+        const r = await postMcp(port, { jsonrpc: '2.0', id: 1, method: 'initialize', params: { capabilities: {} } });
+        firstUp = r['error'] === undefined;
+      } catch {
+        /* not listening yet */
+      }
+      if (!firstUp) await new Promise((r) => setTimeout(r, 20));
+    }
+    expect(firstUp).toBe(true);
+
+    // Second shim on the SAME port: it must NOT crash the process, and must
+    // surface a structured already-running outcome through onHttpBindResult.
+    let bindResult: unknown = undefined;
+    const stdin2 = new PassThrough();
+    const stdout2 = new PassThrough();
+    stdout2.on('data', () => {}); // drain
+    const handle2 = runFrontShim({
+      id: 'dup-b',
+      socketPath: sock,
+      httpPort: port,
+      input: stdin2,
+      output: stdout2,
+      backoff: { initialMs: 20, maxMs: 60 },
+      onDiagnostic: () => {},
+      onHttpBindResult: (outcome) => {
+        bindResult = outcome;
+      },
+    });
+    cleanups.push(() => handle2.close());
+
+    // Give the second shim's probe + guarded listen a beat to settle.
+    await new Promise((r) => setTimeout(r, 300));
+
+    expect(bindResult).toBeDefined();
+    const o = bindResult as { ok: boolean; disposition: string };
+    expect(o.ok).toBe(false);
+    expect(o.disposition).toBe('already-running');
+
+    // The first shim still owns the port — the duplicate did not steal it.
+    const initResp = await postMcp(port, { jsonrpc: '2.0', id: 2, method: 'initialize', params: { capabilities: {} } });
+    expect(initResp['error']).toBeUndefined();
+  });
+
   /**
    * Opens the classic HTTP+SSE handshake (GET /sse), parses the `endpoint` event,
    * and returns both the messages URL and a way to read the next SSE `data:` frame —

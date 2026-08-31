@@ -1,0 +1,64 @@
+{
+  "$schema": "../../node_modules/nx/schemas/project-schema.json",
+  "name": "listen-guard",
+  "projectType": "library",
+  "root": "libs/listen-guard",
+  "sourceRoot": "libs/listen-guard/src",
+  "tags": [
+    "type:lib",
+    "area:platform"
+  ],
+  "targets": {
+    "build": {
+      "executor": "@adhd/sox-nx:atomic-tsc",
+      "outputs": [
+        "{workspaceRoot}/libs/listen-guard/dist"
+      ],
+      "options": {
+        "main": "libs/listen-guard/src/index.ts",
+        "outputPath": "libs/listen-guard/dist",
+        "tsConfig": "libs/listen-guard/tsconfig.lib.json",
+        "assets": [],
+        "clean": true,
+        "rootDir": "libs/listen-guard/src"
+      },
+      "cache": true,
+      "inputs": [
+        "{projectRoot}/src/**/*.ts",
+        "{projectRoot}/tsconfig.lib.json"
+      ]
+    },
+    "test": {
+      "executor": "nx:run-commands",
+      "options": {
+        "command": "vitest run --config libs/listen-guard/vitest.config.ts",
+        "cwd": "."
+      },
+      "cache": true,
+      "inputs": [
+        "default",
+        "^production"
+      ]
+    },
+    "lint": {
+      "executor": "@nx/eslint:lint",
+      "options": {
+        "lintFilePatterns": [
+          "libs/listen-guard/**/*.ts"
+        ]
+      }
+    },
+    "typecheck": {
+      "executor": "nx:run-commands",
+      "options": {
+        "command": "tsc -p libs/listen-guard/tsconfig.json --noEmit",
+        "cwd": "."
+      },
+      "cache": true,
+      "inputs": [
+        "default",
+        "^production"
+      ]
+    }
+  }
+}

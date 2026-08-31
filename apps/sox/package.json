@@ -23,6 +23,7 @@
     "@adhd/sox-host-registry": "workspace:*",
     "@adhd/sox-host-runtime": "workspace:*",
     "@adhd/sox-install-engine": "workspace:*",
+    "@adhd/sox-listen-guard": "workspace:*",
     "@adhd/sox-manifest": "workspace:*",
     "@adhd/sox-mcp-runtime": "workspace:*",
     "@adhd/sox-registry": "workspace:*",

@@ -193,14 +193,14 @@ const server = net.createServer((conn) => {
   conn.on('error', () => {});
 });
 
-server.listen(socketPath, () => {
-  // Signal readiness by writing a 'ready' file.
-  fs.writeFileSync(pidFile + '.ready', 'ready');
-});
-
 server.on('error', (e) => {
   process.stderr.write('fake-server error: ' + e.message + '\\n');
   process.exit(1);
+});
+
+server.listen(socketPath, () => {
+  // Signal readiness by writing a 'ready' file.
+  fs.writeFileSync(pidFile + '.ready', 'ready');
 });
 
 // Keep alive; parent will kill us.

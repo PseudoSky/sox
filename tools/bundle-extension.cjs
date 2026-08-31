@@ -57,6 +57,7 @@ const SOX_ALIASES = {
   '@adhd/sox-host-registry':  path.join(REPO_ROOT, 'libs/host-registry/dist/index.js'),
   '@adhd/sox-tokenguard-core': path.join(REPO_ROOT, 'libs/tokenguard-core/dist/index.js'),
   '@adhd/sox-service-proxy':  path.join(REPO_ROOT, 'libs/service-proxy/dist/index.js'),
+  '@adhd/sox-listen-guard':  path.join(REPO_ROOT, 'libs/listen-guard/dist/index.js'),
 };
 
 // ---------------------------------------------------------------------------

@@ -21,6 +21,9 @@
       "require": "./dist/index.js"
     }
   },
+  "dependencies": {
+    "@adhd/sox-listen-guard": "workspace:*"
+  },
   "keywords": [
     "mcp",
     "proxy",

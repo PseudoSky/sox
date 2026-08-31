@@ -26,6 +26,7 @@ import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import { serveBackend, type BackendHandler } from '@adhd/sox-service-proxy';
 import type { JsonRpcRequest } from '@adhd/sox-service-proxy';
+import { buildFailureRecord, classifyListenError, emitListenFailure } from '@adhd/sox-listen-guard';
 
 /** Transport mode. "stdio" = spawned by Claude; "uds" = UDS proxy socket; "http" = StreamableHTTP; "sse" = SSE transport. */
 export type TransportMode = 'stdio' | 'uds' | 'http' | 'sse';
@@ -233,7 +234,13 @@ export async function connectStreamableHttp(
   });
 
   return new Promise((resolve, reject) => {
-    httpServer.on('error', reject);
+    httpServer.on('error', (err) => {
+      // BL-619: emit a durable structured record before rejecting.
+      emitListenFailure(
+        buildFailureRecord(err, classifyListenError(err), { port, host }),
+      );
+      reject(err);
+    });
     httpServer.listen(port, host, () => {
       const addr = httpServer.address();
       if (!addr || typeof addr === 'string') {

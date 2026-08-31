@@ -13,6 +13,7 @@ const soxRules = {
   rules: {
     'no-hook-assigned-skip': require('./tools/eslint-local/no-hook-assigned-skip.cjs'),
     'no-storage-backend-leak': require('./tools/eslint-local/no-storage-backend-leak.cjs'),
+    'no-unguarded-listen': require('./tools/eslint-local/no-unguarded-listen.cjs'),
   },
 };
 
@@ -110,6 +111,23 @@ export default [
     plugins: { sox: soxRules },
     rules: {
       'sox/no-storage-backend-leak': 'error',
+    },
+  },
+  // BL-619: repo-wide listen() safety invariant. Every production AND test
+  // `.listen()` must be guarded (an error guard before the call, an ephemeral
+  // literal-0 port, or an allowlisted guarded-listen primitive). Test files are
+  // NOT exempt — an unguarded listen in a test crashes the test runner the same
+  // way it crashes a server. See tools/eslint-local/no-unguarded-listen.cjs.
+  {
+    files: ['**/*.ts', '**/*.tsx'],
+    ignores: ['**/dist/**', '**/node_modules/**'],
+    languageOptions: {
+      parser: tsParser,
+      parserOptions: { ecmaVersion: 2022, sourceType: 'module' },
+    },
+    plugins: { sox: soxRules },
+    rules: {
+      'sox/no-unguarded-listen': 'error',
     },
   },
   {

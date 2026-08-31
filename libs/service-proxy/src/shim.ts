@@ -29,6 +29,7 @@ import * as fs from 'node:fs';
 import * as http from 'node:http';
 import { randomUUID } from 'node:crypto';
 import { dialBackend, type BackendConnection } from './dial.js';
+import { listenGuarded, type ListenOutcome } from '@adhd/sox-listen-guard';
 import {
   type JsonRpcRequest,
   type JsonRpcResponse,
@@ -88,6 +89,20 @@ export interface FrontShimOptions {
    * simultaneously.
    */
   httpPort?: number;
+  /**
+   * BL-619: callback invoked with the guarded-listen outcome when the HTTP bind
+   * fails (e.g. EADDRINUSE — a launchd-held port colliding with a client-spawned
+   * duplicate shim). On a non-ok outcome the shim serves nothing on HTTP (the
+   * stdio path is unaffected) and does NOT crash the process — the caller decides
+   * the exit code via `exitCodeForListenOutcome` (already-running → 0).
+   */
+  onHttpBindResult?: (outcome: ListenOutcome) => void;
+  /**
+   * BL-619: optional JSONL file for a structured listen-failure record. When set,
+   * a failed HTTP bind appends a {@link ListenFailureRecord} here (code/errno/
+   * port/pid/ts) instead of leaving only a raw node crash stack.
+   */
+  listenFailureRecordFile?: string;
   /**
    * BL-62: the workspace root for this shim's client. When set (injected by
    * `cmdServe` from `SOX_CONFIG_PROJECT_PATH` at shim spawn), every `tools/call`
@@ -639,8 +654,25 @@ export function runFrontShim(opts: FrontShimOptions): FrontShimHandle {
       res.end();
     });
 
-    httpServer.listen(opts.httpPort, '127.0.0.1', () => {
-      diag(`[service-proxy shim:${opts.id}] HTTP listener on 127.0.0.1:${opts.httpPort}/mcp`);
+    // BL-619: guard the HTTP bind — probe-before-bind + a pre-attached 'error'
+    // listener, so a port collision (launchd-held port + a client-spawned
+    // duplicate shim) resolves a structured outcome instead of an unhandled
+    // 'error' event killing the process. On a non-ok outcome the shim serves
+    // nothing on HTTP (the stdio path is unaffected); the caller decides the exit
+    // code via `exitCodeForListenOutcome` (already-running → 0).
+    void listenGuarded(
+      httpServer,
+      { port: opts.httpPort, host: '127.0.0.1' },
+      {
+        recordFile: opts.listenFailureRecordFile,
+        onDiagnostic: (l) => diag(`[service-proxy shim:${opts.id}] ${l}`),
+      },
+    ).then((outcome) => {
+      if (outcome.ok) {
+        diag(`[service-proxy shim:${opts.id}] HTTP listener on 127.0.0.1:${opts.httpPort}/mcp`);
+      } else {
+        opts.onHttpBindResult?.(outcome);
+      }
     });
   }
 
