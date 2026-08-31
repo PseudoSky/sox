@@ -23,6 +23,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import {
   LaunchdPlatform,
   SystemdPlatform,
+  classifyOsUnitOrphan,
   deriveOsUnitSpec,
   disableOsUnit,
   droppedShellEnvKeys,
@@ -34,6 +35,7 @@ import {
   isScheduledOsUnitContent,
   osUnitLabel,
   osUnitLabelFor,
+  parseOsUnitLabel,
   readUnitMeta,
   resolveUnitNodePath,
   restartAndVerify,
@@ -41,9 +43,11 @@ import {
   unitContentHash,
   unloadThenReap,
   updateOsUnit,
+  verifyUnitOnDisk,
   type EnableResult,
   type OsExec,
   type OsExecResult,
+  type OsUnitPlatform,
   type OsUnitSpec,
   type RestartAndVerifyResult,
   type RestartMatch,
@@ -418,6 +422,31 @@ describe('BL-375 — enableOsUnit refuses to silently drop shell-sourced env on 
     const fake2 = makeFakeExec();
     const r2 = enableOsUnit(spec, platform, { unitDir, exec: fake2.exec, load: false });
     expect(r2.action).toBe('unchanged');
+  });
+
+  it('BL-620 INV-2: a blocked regeneration on a currently-LOADED unit reports loaded:true + verified:false — the CLI exit gate (!loaded || !verified) yields non-zero', () => {
+    const fake1 = makeFakeExec();
+    const first = makeSpec({ env: { SOX_CONFIG_DB_PATH: 'x', SOX_EMBED_DRAIN_FLOOR_MS: '30000' } });
+    enableOsUnit(first, platform, { unitDir, exec: fake1.exec, load: false });
+
+    // Second enable: the shell no longer exports SOX_EMBED_DRAIN_FLOOR_MS, and an
+    // unrelated field forces a rewrite — but the unit is STILL LOADED, so
+    // `currentlyLoaded` is true and the pre-BL-620 gate (`!loaded`) would have
+    // exited 0 (a silent false success). The INV-2 gate (`!loaded || !verified`)
+    // must instead fail this.
+    const second = makeSpec({ env: { SOX_CONFIG_DB_PATH: 'x' }, processType: 'Background' });
+    const fake2 = makeFakeExec({ loaded: true });
+    const r2 = enableOsUnit(second, platform, { unitDir, exec: fake2.exec, load: true });
+
+    expect(r2.action).toBe('blocked');
+    expect(r2.loaded).toBe(true); // still loaded — but not a success
+    expect(r2.verified).toBe(false);
+    // Mirror the exact CLI gate in `cmdService enable` / `doctor --install-tick`:
+    //   process.exit(!dryRun && (!result.loaded || !result.verified) ? 1 : 0)
+    expect(!r2.loaded || !r2.verified).toBe(true); // → non-zero exit
+    // The guard fires before any load/unload — no launchctl calls at all.
+    expect(fake2.calls.some((c) => c.args.includes('bootstrap'))).toBe(false);
+    expect(fake2.calls.some((c) => c.args.includes('bootout'))).toBe(false);
   });
 });
 
@@ -1175,6 +1204,7 @@ describe('updateOsUnit — BL-593 [inv:deploy-verified] extended to config drift
       label: spec.label,
       contentHash: 'deadbeefcafef00d',
       loaded: action !== 'blocked',
+      verified: true,
       ...over,
     };
   }
@@ -1408,6 +1438,7 @@ describe('reloadAndVerifyOsUnit — BUG-023 [inv:list-never-lies] applied to rel
       label: spec.label,
       contentHash: 'deadbeefcafef00d',
       loaded: action !== 'blocked',
+      verified: true,
       ...over,
     };
   }
@@ -1620,5 +1651,170 @@ describe('BL-592 (§8.1a part A/B) — deriveOsUnitSpec reads lifecycle.stop_tim
       logDir,
     });
     expect(spec.env['SOX_CONFIG_STOP_TIMEOUT_MS']).toBe('5000');
+  });
+});
+
+// ─── BL-620: verify-after-write, stale-header detection, label parse/classify ──
+
+describe('BL-620 — verifyUnitOnDisk (INV-2 verify-after-write probe)', () => {
+  const platform = new LaunchdPlatform();
+
+  it('a freshly-enabled unit verifies self-consistent with bodyHash == contentHash', () => {
+    const spec = makeSpec();
+    const r = enableOsUnit(spec, platform, { unitDir, exec: makeFakeExec().exec, load: false });
+    const disk = verifyUnitOnDisk(r.unitPath);
+    expect(disk.exists).toBe(true);
+    expect(disk.selfConsistent).toBe(true);
+    expect(disk.headerHash).toBe(r.contentHash);
+    expect(disk.bodyHash).toBe(r.contentHash);
+  });
+
+  it('detects a STALE header (body changed but embedded hash not re-rendered)', () => {
+    const spec = makeSpec();
+    const r = enableOsUnit(spec, platform, { unitDir, exec: makeFakeExec().exec, load: false });
+    // Tamper with the BODY only (the ProgramArguments entrypoint) — the embedded
+    // meta hash is left untouched, so header ≠ body exactly like the live
+    // doctor-tick plist (stale content-hash 082dbc3e vs body 1afca7c3).
+    const tampered = fs.readFileSync(r.unitPath, 'utf8').replace(
+      path.join(tmpDir, 'ext', 'memory-daemon', 'dist', 'index.js'),
+      '/tampered/dist/index.js',
+    );
+    fs.writeFileSync(r.unitPath, tampered, 'utf8');
+    const disk = verifyUnitOnDisk(r.unitPath);
+    expect(disk.exists).toBe(true);
+    expect(disk.selfConsistent).toBe(false);
+    expect(disk.headerHash).toBe(r.contentHash);
+    expect(disk.bodyHash).not.toBe(r.contentHash);
+  });
+
+  it('reports exists:false for an absent unit file', () => {
+    expect(verifyUnitOnDisk(path.join(unitDir, 'nope.plist'))).toEqual({ exists: false, selfConsistent: false });
+  });
+});
+
+describe('BL-620 — enable verifies the write and refuses to load an unverified unit (INV-2)', () => {
+  const platform = new LaunchdPlatform();
+
+  it('a clean live enable reports verified:true and loads', () => {
+    const r = enableOsUnit(makeSpec(), platform, { unitDir, exec: makeFakeExec().exec, load: true });
+    expect(r.verified).toBe(true);
+    expect(r.loaded).toBe(true);
+  });
+
+  it('RED→GREEN: a write that cannot be verified is NOT loaded (verified:false, loaded:false, verificationError set)', () => {
+    // A platform whose render() embeds a WRONG header hash — the write lands on
+    // disk, but verifyUnitOnDisk then finds header ≠ body. enableOsUnit must
+    // refuse to LOAD it and report verified:false (INV-2), instead of trusting
+    // a self-reported write.
+    // BL-628: this must be a real SUBCLASS, not `{ ...new LaunchdPlatform(), render() }`
+    // — the object-spread form drops every prototype method (unitFileName, load,
+    // isLoaded, …), so `enableOsUnit` threw a TypeError at setup and the
+    // verify-after-write invariant was never actually exercised.
+    class BrokenPlatform extends LaunchdPlatform {
+      override render(spec: OsUnitSpec): string {
+        return super.render(spec).replace(/content-hash:[0-9a-f]+/, 'content-hash:deadbeefdeadbeef');
+      }
+    }
+    const broken: OsUnitPlatform = new BrokenPlatform();
+    const { exec, calls } = makeFakeExec();
+    const spec = makeSpec();
+    const r = enableOsUnit(spec, broken, { unitDir, exec, load: true });
+    expect(r.verified).toBe(false);
+    expect(r.verificationError).toBeDefined();
+    expect(r.loaded).toBe(false);
+    // NO bootstrap was issued — the unverified unit was never registered.
+    expect(calls.some((c) => c.args.includes('bootstrap'))).toBe(false);
+    // The on-disk unit really is self-inconsistent.
+    expect(verifyUnitOnDisk(r.unitPath).selfConsistent).toBe(false);
+  });
+
+  it('a stale-header on-disk unit is detected by enable (rewritten, verified true)', () => {
+    const spec = makeSpec();
+    // First write clean.
+    enableOsUnit(spec, platform, { unitDir, exec: makeFakeExec().exec, load: false });
+    const unitPath = path.join(unitDir, platform.unitFileName(spec.label));
+    // Forge the BODY while keeping the header: a stale-header unit.
+    const text = fs.readFileSync(unitPath, 'utf8');
+    const forged = text.replace(path.join(tmpDir, 'ext', 'memory-daemon', 'dist', 'index.js'), '/forged.js');
+    fs.writeFileSync(unitPath, forged, 'utf8');
+    const disk = verifyUnitOnDisk(unitPath);
+    expect(disk.selfConsistent).toBe(false);
+
+    // Re-enable: content differs (stale header) → updated, rewrites clean, verifies true.
+    const r = enableOsUnit(spec, platform, { unitDir, exec: makeFakeExec().exec, load: true });
+    expect(r.action).toBe('updated');
+    expect(r.verified).toBe(true);
+    expect(verifyUnitOnDisk(unitPath).selfConsistent).toBe(true);
+  });
+
+  it('BL-631: a body-tampered-but-header-intact unit that is ALREADY LOADED is still rewritten (never reported unchanged:verified:true)', () => {
+    const spec = makeSpec();
+    enableOsUnit(spec, platform, { unitDir, exec: makeFakeExec().exec, load: false });
+    const unitPath = path.join(unitDir, platform.unitFileName(spec.label));
+    // Tamper the BODY only (entrypoint) — the embedded header hash stays intact,
+    // so `contentSame` (header === freshly-rendered hash) is still TRUE. Combined
+    // with a loaded unit this is the exact path the old short-circuit skipped
+    // while reporting verified:true without ever re-reading the file.
+    const forged = fs.readFileSync(unitPath, 'utf8').replace(
+      path.join(tmpDir, 'ext', 'memory-daemon', 'dist', 'index.js'),
+      '/tampered.js',
+    );
+    fs.writeFileSync(unitPath, forged, 'utf8');
+
+    const fake = makeFakeExec({ loaded: true }); // unit reports currently loaded
+    const r = enableOsUnit(spec, platform, { unitDir, exec: fake.exec, load: true });
+
+    expect(r.action).toBe('updated'); // NOT the unchanged short-circuit
+    expect(r.verified).toBe(true);
+    expect(verifyUnitOnDisk(unitPath).selfConsistent).toBe(true);
+    expect(fs.readFileSync(unitPath, 'utf8')).not.toContain('/tampered.js');
+  });
+});
+
+describe('BL-620 — parseOsUnitLabel round-trips', () => {
+  it('launchd: com.sox.<scope>.<extId>.plist', () => {
+    expect(parseOsUnitLabel('com.sox.user.doctor-tick.plist')).toEqual({ scope: 'user', extId: 'doctor-tick' });
+    expect(parseOsUnitLabel('com.sox.project.memory-server.plist')).toEqual({ scope: 'project', extId: 'memory-server' });
+  });
+
+  it('launchd: strips the BL-263 sandbox namespace suffix', () => {
+    expect(parseOsUnitLabel('com.sox.user.memory-server.sbx-1a2b3c4d.plist')).toEqual({ scope: 'user', extId: 'memory-server' });
+  });
+
+  it('systemd: sox-<scope>-<extId>.service / .timer', () => {
+    expect(parseOsUnitLabel('sox-user-doctor-tick.service')).toEqual({ scope: 'user', extId: 'doctor-tick' });
+    expect(parseOsUnitLabel('sox-user-doctor-tick.timer')).toEqual({ scope: 'user', extId: 'doctor-tick' });
+  });
+
+  it('malformed names return undefined', () => {
+    expect(parseOsUnitLabel('com.sox.user.plist')).toBeUndefined();
+    expect(parseOsUnitLabel('not-a-unit.txt')).toBeUndefined();
+    expect(parseOsUnitLabel('sox-user-.service')).toBeUndefined();
+  });
+});
+
+describe('BL-620 — classifyOsUnitOrphan matrix (INV-5)', () => {
+  it('self-consistent orphan → heal', () => {
+    expect(classifyOsUnitOrphan('com.sox.user.doctor-tick.plist', {
+      exists: true, selfConsistent: true, headerHash: 'h', bodyHash: 'h',
+    })).toBe('heal');
+  });
+
+  it('self-INCONSISTENT orphan (stale/forged header) → alarm', () => {
+    expect(classifyOsUnitOrphan('com.sox.user.doctor-tick.plist', {
+      exists: true, selfConsistent: false, headerHash: 'a', bodyHash: 'b',
+    })).toBe('alarm');
+  });
+
+  it('unparseable label → unattributable', () => {
+    expect(classifyOsUnitOrphan('garbage.txt', {
+      exists: true, selfConsistent: true, headerHash: 'h', bodyHash: 'h',
+    })).toBe('unattributable');
+  });
+
+  it('missing file → unattributable (nothing to heal/alarm)', () => {
+    expect(classifyOsUnitOrphan('com.sox.user.doctor-tick.plist', {
+      exists: false, selfConsistent: false,
+    })).toBe('unattributable');
   });
 });

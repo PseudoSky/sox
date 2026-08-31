@@ -19,6 +19,8 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 
+import { logDirFor } from './data-paths.js';
+
 export interface LogManagerOptions {
   /** e.g. ~/.sox/logs/<supervisorId> */
   logDir: string;
@@ -313,7 +315,10 @@ export interface LogStreamDescriptor {
  * Returns descriptors for:
  * 1. The supervisor-managed extension log stream: `<extId>-<date>.log`
  * 2. The proxy-backend log stream: `<extId>-backend-<date>.log` (when present)
- * 3. The OS-unit log streams: `<extId>-os-<date>.out.log` / `<extId>-os-<date>.err.log`
+ * 3. The OS-unit log streams: `<extId>-os.out.log` / `<extId>-os.err.log`
+ *    (BL-620 stable paths; legacy `<extId>-os-<date>.<out|err>.log` archives are
+ *    still discovered via the finder's dated-shape match — see
+ *    {@link findMostRecentLogFile})
  *    (when the extension has an OS unit)
  * 4. The serve log stream: `<extId>-serve-<date>.log` (when `soxe serve --log` is used)
  *
@@ -326,24 +331,25 @@ export function findAllLogStreamsForExt(
   supervisorId: string,
   scope: string,
 ): LogStreamDescriptor[] {
-  const { logDirFor: ldf } = require('./data-paths.js') as typeof import('./data-paths.js') ;
   const streams: LogStreamDescriptor[] = [];
 
   // 1. Supervisor-managed extension log (current behaviour).
-  const extLogDir = ldf(supervisorId);
+  const extLogDir = logDirFor(supervisorId);
   streams.push({ label: 'process', logDir: extLogDir, filePrefix: `${extId}-` });
 
   // 2. Proxy-backend log (auto-spawned by soxe serve, §9.5).
-  const backendLogDir = ldf(`proxy-backend-${extId}`);
+  const backendLogDir = logDirFor(`proxy-backend-${extId}`);
   streams.push({ label: 'backend', logDir: backendLogDir, filePrefix: `${extId}-backend-` });
 
-  // 3. OS-unit log (launchd/systemd stdout/stderr redirects).
-  const osLogDir = ldf(`os-${scope}-${extId}`);
-  streams.push({ label: 'os-out', logDir: osLogDir, filePrefix: `${extId}-os-` });
-  streams.push({ label: 'os-err', logDir: osLogDir, filePrefix: `${extId}-os-` });
+  // 3. OS-unit log (launchd/systemd stdout/stderr redirects). BL-630: distinct
+  // prefixes per stream so `findMostRecentLogFile` can tell stdout apart from
+  // stderr (the old shared `${extId}-os` prefix collapsed both onto one file).
+  const osLogDir = logDirFor(`os-${scope}-${extId}`);
+  streams.push({ label: 'os-out', logDir: osLogDir, filePrefix: `${extId}-os.out` });
+  streams.push({ label: 'os-err', logDir: osLogDir, filePrefix: `${extId}-os.err` });
 
   // 4. Serve log (soxe serve --log or SOX_SERVE_LOG=1).
-  const serveLogDir = ldf(`serve-${extId}`);
+  const serveLogDir = logDirFor(`serve-${extId}`);
   streams.push({ label: 'serve', logDir: serveLogDir, filePrefix: `${extId}-serve-` });
 
   return streams;
@@ -360,11 +366,139 @@ export function findMostRecentLogFile(logDir: string, filePrefix: string): strin
   let files: string[];
   try {
     files = fs.readdirSync(logDir)
-      .filter((f: string) => f.startsWith(filePrefix) && f.endsWith('.log'))
+      .filter((f: string) => logStreamFileMatches(f, filePrefix))
       .sort();
   } catch {
     return null;
   }
   if (files.length === 0) return null;
   return path.join(logDir, files[files.length - 1] as string);
+}
+
+/**
+ * BL-630: match a log file name against a stream. Stable os-unit paths
+ * (`<extId>-os.out.log` / `<extId>-os.err.log`) match by the `${extId}-os.out` /
+ * `${extId}-os.err` prefix. The LEGACY dated forms (`<extId>-os-<date>.<out|err>.log`)
+ * no longer share that prefix, so they are matched by deriving extId + stream back
+ * out of the prefix and testing the dated shape — without this, `soxe logs` /
+ * `follow` could not surface old archives after the prefix split.
+ */
+function logStreamFileMatches(name: string, filePrefix: string): boolean {
+  if (!name.endsWith('.log')) return false;
+  if (name.startsWith(filePrefix)) return true;
+  const osStream = /^(.*)-os\.(out|err)$/.exec(filePrefix);
+  if (!osStream) return false;
+  const extId = osStream[1]!;
+  const stream = osStream[2]!;
+  return new RegExp(`^${escapeRegex(extId)}-os-\\d{4}-\\d{2}-\\d{2}\\.${stream}\\.log$`).test(name);
+}
+
+// ─── BL-620 / INV-6: OS-unit log rotation ──────────────────────────────────────
+
+export interface RotateOsUnitLogsOptions {
+  /** The active stdout log path (e.g. `<logDir>/<id>-os.out.log`). */
+  outPath: string;
+  /** The active stderr log path (e.g. `<logDir>/<id>-os.err.log`). Optional. */
+  errPath?: string;
+  /** Size threshold above which the active log is rotated (copytruncated). Default 1 MB. */
+  maxBytes?: number;
+  /** Max number of rotated archives to keep per stream. Default 5. */
+  keep?: number;
+}
+
+function escapeRegex(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+/**
+ * Rotate ONE OS-unit log stream: copytruncate an over-size active file to
+ * `<path>.<YYYYMMDD>` (BL-629 — the active path's inode is preserved so the
+ * OS supervisor's open fd keeps writing to the same file), then prune archived
+ * files by count and size. See {@link rotateOsUnitLogs}.
+ */
+function rotateOsUnitLogFile(activePath: string, maxBytes: number, keep: number, date: string): void {
+  const dir = path.dirname(activePath);
+  const base = path.basename(activePath); // e.g. doctor-tick-os.out.log
+  const osDotIdx = base.indexOf('-os.');
+  if (osDotIdx === -1) return; // not an os-unit log path — nothing to rotate
+  const id = base.slice(0, osDotIdx); // e.g. doctor-tick
+  const stream = base.slice(osDotIdx + 4).replace(/\.log$/, ''); // "out" | "err"
+
+  // 1. Size-triggered copytruncate of the active file (BL-629): the OS
+  // supervisor keeps the active log OPEN via StandardOutPath/StandardErrorPath,
+  // so renaming would relabel the still-growing file and post-rename output
+  // would keep landing in the renamed archive. Copy the content to
+  // `<path>.<YYYYMMDD>`, then truncate the active path to 0 — the inode (and
+  // the supervisor's open fd) is preserved, so the service keeps writing to the
+  // (now empty) active file and disk stays bounded while it lives.
+  if (fs.existsSync(activePath)) {
+    let size = 0;
+    try { size = fs.statSync(activePath).size; } catch { /* ignore */ }
+    if (size >= maxBytes) {
+      try {
+        const rotated = `${activePath}.${date}`;
+        fs.copyFileSync(activePath, rotated);
+        fs.truncateSync(activePath, 0);
+      } catch { /* best-effort rotation */ }
+    }
+  }
+
+  // 2. Enumerate archives in BOTH forms:
+  //    new    → `<id>-os.<stream>.log.<YYYYMMDD>`
+  //    legacy → `<id>-os-<date>.<stream>.log`
+  let entries: string[];
+  try { entries = fs.readdirSync(dir); } catch { return; }
+  const newRe = new RegExp(`^${escapeRegex(id)}-os\\.${stream}\\.log\\.\\d{8}$`);
+  const legacyRe = new RegExp(`^${escapeRegex(id)}-os-\\d{4}-\\d{2}-\\d{2}\\.${stream}\\.log$`);
+  const archives: Array<{ path: string; name: string }> = [];
+  for (const name of entries) {
+    if (newRe.test(name) || legacyRe.test(name)) {
+      archives.push({ path: path.join(dir, name), name });
+    }
+  }
+
+  // 3. Prune archives over maxBytes*4 regardless of count.
+  const sizeCap = maxBytes * 4;
+  const survivors: Array<{ path: string; name: string }> = [];
+  for (const a of archives) {
+    let size = 0;
+    try { size = fs.statSync(a.path).size; } catch { /* ignore */ }
+    if (size > sizeCap) {
+      try { fs.unlinkSync(a.path); } catch { /* ignore */ }
+    } else {
+      survivors.push(a);
+    }
+  }
+
+  // 4. Count-cap: keep the newest `keep` archives (dates sort lexicographically).
+  survivors.sort((a, b) => a.name.localeCompare(b.name));
+  while (survivors.length > keep) {
+    const oldest = survivors.shift();
+    if (oldest) {
+      try { fs.unlinkSync(oldest.path); } catch { /* ignore */ }
+    }
+  }
+}
+
+/**
+ * BL-620 / INV-6: rotate OS-unit log streams at reconcile time. The stable
+ * active paths (`<id>-os.out.log` / `<id>-os.err.log`) grow unbounded because
+ * launchd/systemd append forever and the old dated names were never rotated.
+ *
+ *   - size-triggered copytruncate of the active file to `<path>.<YYYYMMDD>`
+ *     (BL-629: the active inode/fd is preserved — the supervisor keeps writing
+ *     to the same file, now truncated, instead of a renamed archive);
+ *   - count-cap prune keeping `keep` archives per stream, matching BOTH the new
+ *     `.YYYYMMDD` form and the legacy `-os-<date>.<out|err>.log` form;
+ *   - archives larger than `maxBytes * 4` are pruned regardless of count.
+ */
+export function rotateOsUnitLogs(opts: RotateOsUnitLogsOptions): void {
+  const maxBytes = opts.maxBytes ?? 1_000_000;
+  const keep = opts.keep ?? 5;
+  // BL-627: compact 8-digit YYYYMMDD — the prune regex (`\.\d{8}$`) and the
+  // archive-name docstring both expect the compact form, not the dashed
+  // `todayDateString()` shape.
+  const date = todayDateString().replace(/-/g, '');
+  rotateOsUnitLogFile(opts.outPath, maxBytes, keep, date);
+  if (opts.errPath !== undefined) rotateOsUnitLogFile(opts.errPath, maxBytes, keep, date);
 }

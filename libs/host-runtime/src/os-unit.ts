@@ -246,7 +246,11 @@ export function deriveOsUnitSpec(opts: {
   workingDirectory: string;
   logDir: string;
   artifactHash?: string | undefined;
-  /** Override the YYYY-MM-DD log date (tests). Default: today. */
+  /**
+   * BL-620: DEPRECATED no-op, retained for call-site compatibility. Log paths
+   * are now STABLE (`<id>-os.out.log` / `<id>-os.err.log`) with reconcile-time
+   * rotation, so a date no longer suffixes the path.
+   */
   logDate?: string;
   /**
    * SA-1 / CONTRACTS §I: activation posture for the OS unit.
@@ -271,7 +275,6 @@ export function deriveOsUnitSpec(opts: {
   processType?: OsUnitProcessType | undefined;
 }): OsUnitSpec {
   const label = osUnitLabel(opts.scope, opts.id);
-  const logDate = opts.logDate ?? new Date().toISOString().slice(0, 10);
 
   // BL-331: the manifest may declare a scheduling class. Read it regardless of
   // which activation branch runs below — activation posture and scheduling class
@@ -361,8 +364,11 @@ export function deriveOsUnitSpec(opts: {
     keepAlive,
     // launchd throttles respawns to ~10s; §11.3 maps the crash-loop guard to it.
     throttleIntervalSec: 10,
-    stdoutPath: path.join(opts.logDir, `${opts.id}-os-${logDate}.out.log`),
-    stderrPath: path.join(opts.logDir, `${opts.id}-os-${logDate}.err.log`),
+    // BL-620 / INV-6: STABLE log paths — no install-date suffix. The dated
+    // `<id>-os-<date>.out.log` form grew unbounded (one file per enable date,
+    // never rotated, never pruned); reconcile now rotates these at scan time.
+    stdoutPath: path.join(opts.logDir, `${opts.id}-os.out.log`),
+    stderrPath: path.join(opts.logDir, `${opts.id}-os.err.log`),
     artifactHash: opts.artifactHash,
     ...(stopTimeoutMs !== undefined ? { stopTimeoutMs } : {}),
     ...(opts.activation_posture === 'on-demand' && opts.socketPath !== undefined
@@ -472,6 +478,117 @@ export function readUnitMeta(unitText: string): { contentHash?: string; artifact
     ...(m[1] !== undefined ? { contentHash: m[1] } : {}),
     ...(m[2] !== undefined && m[2] !== 'none' ? { artifactHash: m[2] } : {}),
   };
+}
+
+/**
+ * Extract the content-addressed BODY of an on-disk unit — the exact string
+ * `unitContentHash` was computed over when the unit was rendered:
+ *   launchd → everything from the `<plist` opening tag (after the xml decl +
+ *             meta comment + doctype, which are NOT part of the hashed body).
+ *   systemd → everything from the `[Unit]`/`[Socket]`/`[Timer]` opening section
+ *             (the meta comment is a lone first line, not part of the body).
+ * Returns undefined when the text carries no recognizable body.
+ */
+function extractUnitBody(unitText: string): string | undefined {
+  const plistIdx = unitText.indexOf('<plist');
+  if (plistIdx !== -1) return unitText.slice(plistIdx);
+  for (const marker of ['[Unit]', '[Socket]', '[Timer]']) {
+    const idx = unitText.indexOf(marker);
+    if (idx !== -1) return unitText.slice(idx);
+  }
+  return undefined;
+}
+
+/** Result of {@link verifyUnitOnDisk} — the INV-2 verify-after-write probe. */
+export interface UnitDiskVerification {
+  exists: boolean;
+  /** True iff the embedded header hash equals the recomputed body hash. */
+  selfConsistent: boolean;
+  /** The content-hash embedded in the meta comment, when present. */
+  headerHash?: string;
+  /** The recomputed content hash of the on-disk body, when extractable. */
+  bodyHash?: string;
+}
+
+/**
+ * BL-620 / INV-2: verify an on-disk unit file — strip the sox-os-unit meta
+ * comment, recompute the content hash over the BODY, and compare against the
+ * embedded header. A stale/forged header (body changed but header not re-rendered)
+ * yields `selfConsistent: false`; this is the probe that catches the live
+ * machine's stale-header doctor-tick plist (embedded hash ≠ body hash).
+ */
+export function verifyUnitOnDisk(unitPath: string): UnitDiskVerification {
+  if (!fs.existsSync(unitPath)) return { exists: false, selfConsistent: false };
+  let text: string;
+  try {
+    text = fs.readFileSync(unitPath, 'utf8');
+  } catch {
+    return { exists: true, selfConsistent: false };
+  }
+  const meta = readUnitMeta(text);
+  const headerHash = meta.contentHash;
+  const body = extractUnitBody(text);
+  if (body === undefined) {
+    return {
+      exists: true,
+      selfConsistent: false,
+      ...(headerHash !== undefined ? { headerHash } : {}),
+    };
+  }
+  const bodyHash = unitContentHash(body);
+  return {
+    exists: true,
+    selfConsistent: headerHash !== undefined && headerHash === bodyHash,
+    ...(headerHash !== undefined ? { headerHash } : {}),
+    bodyHash,
+  };
+}
+
+/** The parsed (scope, extId) of an os-unit file name, for F15 attribution. */
+export interface OsUnitLabelParts {
+  scope: string;
+  extId: string;
+}
+
+/**
+ * Parse an os-unit FILE NAME back into { scope, extId }.
+ *   launchd → `com.sox.<scope>.<extId>[.sbx-<tag>].plist`
+ *   systemd → `sox-<scope>-<extId>[-sbx-<tag>].(service|timer)`
+ * The BL-263 sandbox namespace suffix (`.sbx-<8-hex>` / `-sbx-<8-hex>`) is
+ * stripped so a sandboxed unit attributes to its real scope+extId. Malformed
+ * names (not a sox label) return undefined.
+ */
+export function parseOsUnitLabel(fileName: string): OsUnitLabelParts | undefined {
+  const plist = /^com\.sox\.([^.]+)\.(.+)\.plist$/.exec(fileName);
+  if (plist) {
+    return { scope: plist[1]!, extId: plist[2]!.replace(/\.sbx-[0-9a-f]{8}$/, '') };
+  }
+  const svc = /^sox-([^-]+)-(.+)\.(service|timer)$/.exec(fileName);
+  if (svc) {
+    return { scope: svc[1]!, extId: svc[2]!.replace(/-sbx-[0-9a-f]{8}$/, '') };
+  }
+  return undefined;
+}
+
+/** F15 orphan classification: what reconcile may DO with a sox-labelled unit file. */
+export type OsUnitOrphanClass = 'heal' | 'alarm' | 'unattributable';
+
+/**
+ * BL-620 / INV-5: classify an orphaned sox-labelled unit file.
+ *   'heal'           — file is self-consistent (header == body hash), so the
+ *                      ownership entry can be re-registered from the on-disk body.
+ *   'alarm'          — file is present but self-INCONSISTENT (stale/forged header):
+ *                      cannot trust the on-disk hash; alarm (exit 1 + marker).
+ *   'unattributable' — name doesn't parse to (scope, extId), or the file vanished.
+ */
+export function classifyOsUnitOrphan(
+  fileName: string,
+  disk: UnitDiskVerification,
+): OsUnitOrphanClass {
+  if (parseOsUnitLabel(fileName) === undefined) return 'unattributable';
+  if (!disk.exists) return 'unattributable';
+  if (disk.selfConsistent && disk.bodyHash !== undefined) return 'heal';
+  return 'alarm';
 }
 
 // ─── The pluggable platform seam ─────────────────────────────────────────────────
@@ -984,6 +1101,15 @@ export interface EnableResult {
   /** Whether the unit was (re)loaded by the OS supervisor this call. */
   loaded: boolean;
   /**
+   * BL-620 / INV-2: whether the written on-disk unit was RE-READ and its embedded
+   * header hash confirmed to equal its recomputed body hash. `enableOsUnit`
+   * refuses to LOAD a unit that fails this verification; callers MUST fail loudly
+   * (exit 1) on a live (non-dry-run) enable that reports `verified:false`.
+   */
+  verified: boolean;
+  /** Set when `verified` is false — why the write could not be verified. */
+  verificationError?: string;
+  /**
    * BL-375: populated only when `action === 'blocked'` — the previously-set
    * shell-sourced env keys that regenerating would have silently dropped.
    */
@@ -1073,8 +1199,20 @@ export function enableOsUnit(
   const currentlyLoaded = wantLoad ? platform.isLoaded(spec.label, exec) : false;
 
   if (contentSame && (!wantLoad || currentlyLoaded)) {
-    log(`os-unit ${spec.label}: unchanged (content-hash ${newHash})`);
-    return { action: 'unchanged', unitPath, label: spec.label, contentHash: newHash, loaded: currentlyLoaded };
+    // BL-631: `contentSame` only compares the embedded HEADER hash — a body
+    // tampered while the header stayed intact (already loaded) would otherwise
+    // report `verified:true` without ever re-reading the file. Re-verify the
+    // on-disk unit and short-circuit only when its body still backs the header;
+    // a tampered body falls through to the rewrite path below.
+    const disk = verifyUnitOnDisk(unitPath);
+    if (disk.selfConsistent && disk.bodyHash === newHash) {
+      log(`os-unit ${spec.label}: unchanged (content-hash ${newHash})`);
+      return { action: 'unchanged', unitPath, label: spec.label, contentHash: newHash, loaded: currentlyLoaded, verified: true };
+    }
+    log(
+      `os-unit ${spec.label}: header unchanged but body tampered ` +
+        `(header ${disk.headerHash ?? '(none)'}, body ${disk.bodyHash ?? '(none)'}) — rewriting`,
+    );
   }
 
   // BL-375 [inv:env-preserved-on-regenerate]: about to write new content over an
@@ -1097,6 +1235,7 @@ export function enableOsUnit(
         label: spec.label,
         contentHash: priorHash ?? newHash,
         loaded: currentlyLoaded,
+        verified: false,
         droppedEnvKeys: dropped,
       };
     }
@@ -1117,24 +1256,49 @@ export function enableOsUnit(
   // wording is reserved for runs that actually wrote.
   if (opts.dryRun === true) {
     log(`os-unit ${spec.label}: (dry-run) would ${action === 'created' ? 'create' : 'update'} ${unitPath} (content-hash ${newHash})`);
-    return { action, unitPath, label: spec.label, contentHash: newHash, loaded: false };
+    return { action, unitPath, label: spec.label, contentHash: newHash, loaded: false, verified: false };
   }
 
   writeFileAtomic(unitPath, rendered);
   log(`os-unit ${spec.label}: ${action} ${unitPath} (content-hash ${newHash})`);
 
+  // BL-620 / INV-2: verify-after-write. Re-read the on-disk unit and confirm the
+  // embedded header hash equals the recomputed body hash AND matches the rendered
+  // content hash, BEFORE trusting (and before loading) it. A unit whose write
+  // cannot be verified is NOT loaded — loading a tampered/stale plist would
+  // register a hash our own bookkeeping can never reconcile.
+  const disk = verifyUnitOnDisk(unitPath);
+  const verified = disk.selfConsistent && disk.bodyHash === newHash;
+  const verificationError = verified
+    ? undefined
+    : disk.selfConsistent
+      ? `on-disk body hash ${disk.bodyHash} ≠ rendered ${newHash}`
+      : `self-inconsistent (header ${disk.headerHash ?? '(none)'} ≠ body ${disk.bodyHash ?? '(none)'})`;
+
   let loaded = false;
   if (wantLoad) {
-    const r = platform.load(unitPath, spec.label, exec);
-    loaded = r.code === 0;
-    if (!loaded) {
-      log(`os-unit ${spec.label}: load FAILED (code ${r.code}): ${r.stderr.trim() || r.stdout.trim()}`);
+    if (!verified) {
+      log(`os-unit ${spec.label}: NOT loaded — write could not be verified (${verificationError})`);
     } else {
-      log(`os-unit ${spec.label}: loaded`);
+      const r = platform.load(unitPath, spec.label, exec);
+      loaded = r.code === 0;
+      if (!loaded) {
+        log(`os-unit ${spec.label}: load FAILED (code ${r.code}): ${r.stderr.trim() || r.stdout.trim()}`);
+      } else {
+        log(`os-unit ${spec.label}: loaded`);
+      }
     }
   }
 
-  return { action, unitPath, label: spec.label, contentHash: newHash, loaded };
+  return {
+    action,
+    unitPath,
+    label: spec.label,
+    contentHash: newHash,
+    loaded,
+    verified,
+    ...(verificationError !== undefined ? { verificationError } : {}),
+  };
 }
 
 export interface DisableOptions {
