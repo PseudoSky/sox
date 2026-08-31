@@ -37,7 +37,7 @@
  * propagates immediately — raw, unmarked, unre-tried.
  */
 import { describe, it, expect, vi, beforeAll, beforeEach, afterEach } from 'vitest';
-import { mkdtempSync } from 'node:fs';
+import { mkdtempSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { TursoAdapterImpl } from '../turso-adapter.js';
@@ -54,7 +54,18 @@ import { isAlreadyOpenWithoutMultiprocessWal } from '../errors.js';
 const mockDriverConnect = vi.fn();
 
 vi.mock('@tursodatabase/database', () => ({
-  connect: (...args: unknown[]) => mockDriverConnect(...args),
+  connect: (...args: unknown[]) => {
+    // (BUG-MEMORYCORE-MULTIPROCESS-WAL-NOT-OPTED-IN-001) Mimic the REAL driver:
+    // a writable local open creates the -tshm coordinator sidecar — the
+    // filesystem proof the multiprocess-WAL mandate is live. The adapter's
+    // post-open verification polls for it; without this the mock falsely
+    // trips E_WAL_MODE_UNVERIFIED.
+    const url = args[0];
+    if (typeof url === 'string' && !url.includes('://')) {
+      writeFileSync(url + '-tshm', '');
+    }
+    return mockDriverConnect(...args);
+  },
 }));
 
 /** A driver handle shaped like @tursodatabase/database's Database that
