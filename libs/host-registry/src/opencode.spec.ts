@@ -240,6 +240,22 @@ describe('opencode.surfaces', () => {
     expect(s.paths.project).toBe('.sox');
     expect(s.paths.user).toBe(path.join(HOME, '.sox'));
   });
+
+  it('BL-619: sse/http profiles emit URL-only configs (no command/args)', () => {
+    const s = opencodeHost.surfaces['mcp-server']!;
+    for (const profile of ['sse', 'http'] as const) {
+      const val = s.mcpConfig!.value(profile, 'soxe', 'memory-server', 3099) as Record<string, unknown>;
+      expect(val['url']).toBeDefined();
+      expect(val['command']).toBeUndefined();
+      expect(val['args']).toBeUndefined();
+    }
+  });
+
+  it('BL-619: remote URL port matches http_port', () => {
+    const s = opencodeHost.surfaces['mcp-server']!;
+    const val = s.mcpConfig!.value('http', 'soxe', 'memory-server', 4111) as { url: string };
+    expect(new URL(val.url).port).toBe('4111');
+  });
 });
 
 // ─── SOX_SANDBOX_ROOT sandbox isolation — [inv:sandbox-isolation] ─────────────
