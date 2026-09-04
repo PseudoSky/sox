@@ -98,6 +98,63 @@ export interface Surface {
 /** Map from extension type -> surface definition for one host. */
 export type SurfaceMap = Record<string, Surface>;
 
+// ─── Cross-platform agent rendering (docs/spec/cross-platform-install-rendering.md) ───
+
+/** A symbolic tool reference: a built-in name, or an MCP server group. */
+export type AgentToolRef = string | { logical: string; server: string };
+
+/**
+ * [def:agent-ir] Host-agnostic agent IR. Rendered into a per-host header at
+ * install time. The prose body lives in the extension entrypoint file.
+ */
+export interface AgentIr {
+  name?: string;
+  description?: string;
+  model?: string;
+  temperature?: number;
+  mode?: string;
+  tools?: AgentToolRef[];
+  /** opencode agent-frontmatter permission map: action | (pattern -> action). */
+  permission?: Record<string, string | Record<string, string>>;
+}
+
+/**
+ * [def:agent-render-overrides] Per-host override merged over the AgentIr at
+ * install time. `tools` carries concrete (host-prefixed) names; `toolMap` maps a
+ * logical server name to its concrete registration key on this host.
+ */
+export interface AgentOverride {
+  name?: string;
+  description?: string;
+  model?: string;
+  temperature?: number;
+  mode?: string;
+  tools?: string[];
+  permission?: Record<string, string | Record<string, string>>;
+  version?: string;
+  toolMap?: Record<string, string>;
+  fallbackPath?: string;
+}
+
+/** Result of rendering an agent for one host. */
+export type RenderedArtifact =
+  | { kind: 'file-body'; content: string }
+  | { kind: 'config-value'; value: unknown };
+
+/**
+ * [def:agent-renderer] Per-host agent renderer. Composes header + prose +
+ * generated tool-names into the host's concrete artifact. A pure function of
+ * (ir, prose, override, host data) — see the spec §5.2/§5.3.
+ */
+export interface HostRenderer {
+  /** Bare header fields (no fences) for an agent IR. */
+  renderHeader(ir: AgentIr, overrides?: AgentOverride): Record<string, unknown>;
+  /** Generated "resolved tool names" block, or null when the host needs none. */
+  renderToolNames(ir: AgentIr, overrides?: AgentOverride): string | null;
+  /** Compose header + prose + tool-names into the host's concrete artifact. */
+  render(ir: AgentIr, prose: string, overrides?: AgentOverride): RenderedArtifact;
+}
+
 // ─── ScopePathMap ────────────────────────────────────────────────────────────
 
 /**
@@ -129,6 +186,14 @@ export interface HostModule {
    * Drives the capability engine at install time.
    */
   readonly surfaces: SurfaceMap;
+
+  /**
+   * Optional per-host agent renderer. When present and the installed agent
+   * manifest carries an `agent` IR (and/or `render` overrides), the install
+   * engine renders the header instead of copying the entrypoint verbatim
+   * ([def:agent-renderer]). Absent => raw passthrough.
+   */
+  readonly render?: HostRenderer;
 }
 
 // ─── Runtime helpers ─────────────────────────────────────────────────────────

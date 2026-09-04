@@ -52,6 +52,7 @@ import * as path from 'path';
 import type { HostModule, HostScope, ScopePathMap, SurfaceMap, McpConfig } from './internal.js';
 import { existsIn } from './internal.js';
 import { formatAuthority, validatePort } from './wire-endpoint.js';
+import { agentRenderers } from './agent-renderers.js';
 
 // ---------------------------------------------------------------------------
 // Project-forbidden keys [def:project-forbidden-keys] [inv:never-managed]
@@ -353,6 +354,8 @@ export const codexHost: HostModule = {
   host: 'codex',
   detect,
   scopePaths,
+  // [def:agent-renderer]: render agent IR → codex [agents.<name>] TOML config value.
+  render: agentRenderers.codex,
   // [inv:sandbox-isolation]: surfaces is a getter that calls buildSurfaces() each time,
   // so SOX_SANDBOX_ROOT set after import is honoured for all user-scope path lookups.
   get surfaces(): SurfaceMap {

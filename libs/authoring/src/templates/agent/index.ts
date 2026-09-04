@@ -46,8 +46,35 @@ export function agentTemplate(opts: TemplateOpts): FileSet {
     'extension.json': manifestJson(opts, {
       // [flex:runtime-expanded] — declarative: no process, host reads the .md
       runtime: 'declarative',
-      // [flex:entrypoint-optional] — present but points to the .md definition file
+      // [flex:entrypoint-optional] — present but points to the PROSE-ONLY .md
+      // definition file (no frontmatter — the host-specific header is rendered at
+      // install time from `agent` + `render`).
       entrypoint: 'agent.md',
+      // [def:agent-ir] Host-agnostic agent IR. The install engine renders this into
+      // a per-host header (claude/opencode frontmatter, codex TOML) at install time.
+      agent: {
+        name: opts.id,
+        description: opts.description,
+        model: 'sonnet',
+        mode: 'all',
+        tools: ['read', 'bash', 'write', 'edit', 'webfetch', 'websearch'],
+        permission: {
+          read: 'allow',
+          edit: 'allow',
+          bash: { '*': 'allow' },
+        },
+      },
+      // [def:agent-render-overrides] Per-host typed overrides merged over the IR.
+      // Fill these in for hosts that need divergent headers (tools, model, version).
+      render: {
+        claude: {
+          model: 'sonnet',
+          tools: ['Read', 'Bash', 'Write', 'Edit', 'WebFetch', 'WebSearch'],
+        },
+        opencode: {
+          mode: 'all',
+        },
+      },
       // [shape:install-descriptor] — host-agnostic; engine resolves target from
       // libs/host-registry (claude: file-drop at .claude/agents/; codex: config-merge).
       // [ref:host-keyed-target] — NO literal ~/.claude/ path here.
@@ -76,16 +103,12 @@ export function agentTemplate(opts: TemplateOpts): FileSet {
 
     'package.json': agentPkg,
 
-    // The canonical agent definition — YAML frontmatter + markdown body.
-    // Matches the real shape from claude-agents/categories/00-active/agents/*.md
+    // The canonical agent definition — PROSE ONLY (no YAML frontmatter).
+    // The host-specific header (claude `tools`/`model`, opencode
+    // `mode`/`temperature`/`permission`, codex TOML) is rendered at install time
+    // from the `agent` IR + `render` overrides in extension.json
+    // ([def:agent-renderer], docs/spec/cross-platform-install-rendering.md).
     'agent.md': [
-      `---`,
-      `name: ${opts.id}`,
-      `description: ${opts.description}`,
-      `tools: Read, Write, Edit, Bash, Glob, Grep`,
-      `model: sonnet`,
-      `---`,
-      ``,
       `# ${opts.title}`,
       ``,
       `${opts.description}`,
@@ -102,12 +125,11 @@ export function agentTemplate(opts: TemplateOpts): FileSet {
       ``,
       `## Tools`,
       ``,
-      `- \`Read\` — reads file contents`,
-      `- \`Write\` — writes file contents`,
-      `- \`Edit\` — edits file contents`,
-      `- \`Bash\` — runs shell commands`,
-      `- \`Glob\` — finds files by pattern`,
-      `- \`Grep\` — searches file contents`,
+      `- \`read\` — reads file contents`,
+      `- \`write\` — writes file contents`,
+      `- \`edit\` — edits file contents`,
+      `- \`bash\` — runs shell commands`,
+      `- \`webfetch\` — fetches a URL`,
       ``,
       `## Constraints`,
       ``,

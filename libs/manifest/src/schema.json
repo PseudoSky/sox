@@ -1,13 +1,12 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://your-registry/schemas/extension/v2.json",
-  "title": "Extension manifest v2 (libs/manifest \u2014 single source of truth)",
+  "title": "Extension manifest v2 (libs/manifest — single source of truth)",
   "description": "Adds three contract flexes over v1: entrypoint optional/typed, runtime expanded to {node,shell,python,declarative,stdio-any}, install-target for declarative host-placement.",
   "type": "object",
   "additionalProperties": true,
   "required": [
     "id",
-    "version",
     "type",
     "title",
     "description",
@@ -26,7 +25,8 @@
     "version": {
       "type": "string",
       "pattern": "^\\d+\\.\\d+\\.\\d+(?:-[0-9A-Za-z-.]+)?(?:\\+[0-9A-Za-z-.]+)?$",
-      "description": "semver."
+      "deprecated": true,
+      "description": "DEPRECATED (ADR-0003): not an identity input. Identity is id + content checksum. Optional, display-only label; if present must be valid semver. Will be removed."
     },
     "type": {
       "type": "string",
@@ -34,11 +34,11 @@
         "agent",
         "skill",
         "mcp-server",
-        "service",
         "prompt",
         "hook",
         "command",
-        "bundle"
+        "bundle",
+        "service"
       ],
       "description": "Extension type. Closed enum."
     },
@@ -60,7 +60,7 @@
     },
     "entrypoint": {
       "type": "string",
-      "description": "[flex:entrypoint-optional] Resolved at install. Optional \u2014 absent for bundle, prompt, and declarative types. Required for behavioral types (node/shell/python runtimes) by runtime-specific logic, not by schema required[]."
+      "description": "[flex:entrypoint-optional] Optional. Absent for bundle, prompt, and declarative types."
     },
     "runtime": {
       "type": "string",
@@ -71,11 +71,11 @@
         "declarative",
         "stdio-any"
       ],
-      "description": "[flex:runtime-expanded] Author-declared runtime contract. 'node'=TS/Node; 'shell'=shell script; 'python'=Python process; 'declarative'=no process, install-target placement only; 'stdio-any'=language-agnostic stdio. Absent => 'node' (back-compat)."
+      "description": "[flex:runtime-expanded] 'node'|'shell'|'python'|'declarative'|'stdio-any'. Absent => 'node'."
     },
     "install-target": {
       "type": "string",
-      "description": "[flex:install-target] Optional host-placement path for declarative extensions (e.g. '~/.claude/commands/'). Generalised reinjection primitive \u2014 see [def:install-target]. Superseded by install.{type,hosts,profiles,...} for new descriptors but kept for back-compat."
+      "description": "[flex:install-target] Optional host-placement path for declarative extensions."
     },
     "keywords": {
       "type": "array",
@@ -181,16 +181,12 @@
       "type": "array",
       "items": {
         "type": "object",
-        "additionalProperties": false,
+        "additionalProperties": true,
         "required": [
-          "id",
-          "version"
+          "id"
         ],
         "properties": {
           "id": {
-            "type": "string"
-          },
-          "version": {
             "type": "string"
           }
         }
@@ -217,6 +213,7 @@
             "type": {
               "enum": [
                 "stdio-ping",
+                "http-get",
                 "socket",
                 "command"
               ]
@@ -401,8 +398,8 @@
     },
     "install": {
       "type": "object",
-      "description": "[shape:install-descriptor] Hybrid install descriptor (ADR resolved #2). Engine fills per-host target defaults from libs/host-registry at install time.",
-      "additionalProperties": false,
+      "description": "[shape:install-descriptor] Hybrid install descriptor. Engine fills per-host defaults from libs/host-registry.",
+      "additionalProperties": true,
       "properties": {
         "type": {
           "type": "string",
@@ -410,13 +407,12 @@
             "agent",
             "skill",
             "mcp-server",
-            "service",
             "prompt",
             "hook",
             "command",
-            "bundle"
-          ],
-          "description": "Host-agnostic extension type \u2014 same closed enum as top-level type. [inv:host-agnostic-type]"
+            "bundle",
+            "service"
+          ]
         },
         "hosts": {
           "type": "array",
@@ -424,15 +420,25 @@
             "type": "string",
             "enum": [
               "claude",
-              "codex"
+              "codex",
+              "opencode"
             ]
-          },
-          "description": "Chosen host targets. Engine resolves target paths from libs/host-registry."
+          }
         },
         "profiles": {
           "type": "object",
-          "additionalProperties": true,
-          "description": "[def:profile] Install-layer presets over (capability + transport + host-target + config). Keys are profile names (e.g. 'standalone', 'shared'). profiles \u2286 serves is a validate-time invariant."
+          "additionalProperties": true
+        },
+        "serves": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "enum": [
+              "stdio",
+              "sse",
+              "http"
+            ]
+          }
         },
         "transports": {
           "type": "array",
@@ -444,40 +450,96 @@
               "sse",
               "socket"
             ]
-          },
-          "description": "[def:transport] Transports declared by a service extension. Back-compat alias with serves; profiles \u2286 {serves\u222atransports} enforced by validate(). Required (\u22651) for type:service. [inv:never-managed]"
-        },
-        "serves": {
-          "type": "array",
-          "items": {
-            "type": "string",
-            "enum": [
-              "stdio",
-              "sse",
-              "http"
-            ]
-          },
-          "description": "[def:serves] Transports the mcp extension implements. profiles \u2286 serves enforced by validate(). [inv:never-managed]"
+          }
         },
         "source": {
-          "type": "string",
-          "description": "[def:source-provenance] Origin path when --content @path / --from @dir used at init. Enables update to re-pull from origin."
+          "type": "string"
         },
         "overrides": {
           "type": "object",
+          "additionalProperties": true
+        }
+      }
+    },
+    "agent": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "[def:agent-ir] Host-agnostic agent IR. Rendered into a per-host header at install time by libs/host-registry.",
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "description": {
+          "type": "string"
+        },
+        "model": {
+          "type": "string"
+        },
+        "temperature": {
+          "type": "number"
+        },
+        "mode": {
+          "type": "string"
+        },
+        "tools": {
+          "type": "array",
+          "items": {
+            "oneOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "logical",
+                  "server"
+                ],
+                "properties": {
+                  "logical": {
+                    "type": "string"
+                  },
+                  "server": {
+                    "type": "string"
+                  }
+                }
+              }
+            ]
+          }
+        },
+        "permission": {
+          "type": "object",
           "additionalProperties": true,
-          "description": "Per-host surface/key overrides. Keys are host names ('claude', 'codex'). Managed (claude) and project-forbidden (codex) keys are refused by validate(). [inv:never-managed]"
+          "description": "opencode agent-frontmatter permission map: action | (pattern -> action). Shape-checked by validate()."
+        }
+      }
+    },
+    "render": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "[def:agent-render-overrides] Per-host typed overrides merged over the agent IR at install time.",
+      "properties": {
+        "claude": {
+          "type": "object",
+          "additionalProperties": true
+        },
+        "opencode": {
+          "type": "object",
+          "additionalProperties": true
+        },
+        "codex": {
+          "type": "object",
+          "additionalProperties": true
         }
       }
     },
     "config": {
       "type": "object",
-      "additionalProperties": true,
-      "description": "Permissions and environment config carried on the built extension. Consumed by the capability engine at install time."
+      "additionalProperties": true
     },
     "source": {
       "type": "string",
-      "description": "[def:source-provenance] Top-level provenance path (alias; prefer install.source for new descriptors)."
+      "description": "[def:source-provenance] Top-level provenance path."
     }
   }
 }

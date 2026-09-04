@@ -22,6 +22,7 @@ import * as path from 'path';
 import type { HostModule, HostScope, ScopePathMap, SurfaceMap, McpConfig } from './internal.js';
 import { existsIn } from './internal.js';
 import { formatAuthority, unbracket, validatePort } from './wire-endpoint.js';
+import { agentRenderers } from './agent-renderers.js';
 
 // ─── Detection ──────────────────────────────────────────────────────────────
 
@@ -183,6 +184,8 @@ export const opencodeHost: HostModule = {
   host: 'opencode',
   detect,
   scopePaths,
+  // [def:agent-renderer]: render agent IR → opencode frontmatter at install time.
+  render: agentRenderers.opencode,
   get surfaces(): SurfaceMap {
     return buildSurfaces();
   },

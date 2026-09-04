@@ -19,11 +19,89 @@
     "registry-search"
   ],
   "runtime": "declarative",
-  "entrypoint": "researcher.md",
+  "entrypoint": "agent.md",
   "invocation": {
     "protocol": "function-export",
     "handler": "run",
-    "description": "Declarative agent — host reads the .md definition file directly."
+    "description": "Declarative agent — host reads the prose body and renders the host header from agent/render at install time."
+  },
+  "requires": {
+    "tool_calling": true
+  },
+  "agent": {
+    "name": "researcher",
+    "description": "Discovery researcher for third-party tools, patterns, and use cases before you build. Generalizes a problem into research questions, sweeps package registries and the web via the search MCP, grades every source, and writes each finding to memory as a separate episode tagged agent:approved or agent:blocked, ending in a build-vs-integrate verdict. Never writes code. Unlike workflow-researcher (workflow-plugin findings) or research-analyst (trend synthesis), it evaluates shippable dependencies.",
+    "model": "sonnet",
+    "temperature": 0.4,
+    "mode": "all",
+    "tools": [
+      "read",
+      "bash",
+      "write",
+      "edit",
+      "webfetch",
+      "websearch",
+      { "logical": "search", "server": "search" },
+      { "logical": "memory", "server": "memory-server" },
+      { "logical": "backlog", "server": "backlog" }
+    ],
+    "permission": {
+      "read": "allow",
+      "edit": "allow",
+      "bash": {
+        "*": "allow",
+        "npx nx *": "allow",
+        "rg *": "allow",
+        "scratch-agent-search *": "allow",
+        "gx *": "allow",
+        "git status*": "allow",
+        "git diff*": "allow",
+        "git log*": "allow",
+        "git stash*": "deny",
+        "git add -A*": "deny",
+        "git add .*": "deny",
+        "git add --all*": "deny",
+        "git reset --hard*": "deny",
+        "git push --force*": "deny",
+        "git push *--no-verify*": "deny",
+        "git clean *-f*": "deny",
+        "rm -rf *": "deny"
+      },
+      "websearch": "deny",
+      "task": "allow",
+      "todowrite": "allow",
+      "question": "allow",
+      "skill": "allow",
+      "memory_*": "allow",
+      "gitnexus_*": "allow",
+      "search_*": "allow"
+    }
+  },
+  "render": {
+    "claude": {
+      "model": "sonnet",
+      "version": "v1.0.1",
+      "tools": [
+        "Read",
+        "Bash",
+        "Write",
+        "Edit",
+        "WebFetch",
+        "WebSearch",
+        "mcp__search__*",
+        "mcp__memory-server__*",
+        "mcp__backlog__*"
+      ],
+      "toolMap": {
+        "search": "agent_browser_search_mcp_source",
+        "memory-server": "memory-server",
+        "backlog": "backlog"
+      }
+    },
+    "opencode": {
+      "mode": "all",
+      "temperature": 0.4
+    }
   },
   "install": {
     "type": "agent",
@@ -31,10 +109,6 @@
       "claude",
       "codex",
       "opencode"
-    ],
-    "source": "file:///Users/nix/dev/ai/claude-agents/categories/10-research-analysis/researcher.md"
-  },
-  "requires": {
-    "tool_calling": true
+    ]
   }
 }
