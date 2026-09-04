@@ -1,0 +1,176 @@
+{
+  "reportId": "triage-clustering",
+  "agent": "debug",
+  "timestamp": "2026-08-08T23:45:00Z",
+  "scope": "Read-only diagnosis of clustering-behaviour defects BL-495, BUG-MEMORY-010, BL-497 against main HEAD 3e9a40c0. No code edits, no builds, no deploys, no ~/.memory access, no backlog-graph writes.",
+  "items": [
+    {
+      "humanId": "BL-495",
+      "title": "incrementalJoin can only JOIN an existing community, never CREATE one; novel-neighbourhood episodes are permanently excluded",
+      "status": "investigating",
+      "rootCause": {
+        "confirmed": true,
+        "evidence": "Steady-state wiring: the periodic enrich tick resolves fullPass ONLY from a pending memory_curate recluster trigger (`hasPendingFullEnrich`, extensions/bundles/sox-memory-bundle/members/memory-server/src/index.ts:2382-2383) and otherwise always runs `runEnrichIsolated(dbPath, { incrementalCluster: !fullPass }, ...)` (index.ts:2389-2391) — so in steady state EVERY pass is incremental. On that path `clusterStore` → `computeClusters` takes the incremental branch (libs/memory-core/src/cluster.ts:1016 `isFullPass = !opts.incrementalOnly && count <= nodeCap`; :894-914) and calls `incrementalJoin` (cluster.ts:645-870), which (a) returns `joined:0` via the `no_target` early return when no live community exists in scope (cluster.ts:682-689) or none has a member vector (cluster.ts:714-720), and (b) for every candidate whose best single-link similarity to ANY existing member is below tau, `continue`s into `rejected_below_threshold` (cluster.ts:787-797) — candidates are never grouped among themselves. The incremental branch returns `clusters: []` (cluster.ts:907-913), so the materialize guard `if (result.clusters.length > 0)` (cluster.ts:1036) never fires and `materializeClusters` never runs on the incremental path; communities are born ONLY in full/subset passes (computeClusters full branch → runClusters/buildClusterResults, cluster.ts:959-972). This is the current mechanism after the BL-496 merge (ddd3fa08, in main, changed the rejection path from a bare `{joined:0}` to the `emptyAdmission` + `recordJoinOutcome('no_target')` instrumentation at cluster.ts:656-665/682-689/714-720 — re-derived, not inherited). The H2 population is documented as permanent at cluster-metrics.ts:169-175 ('the same episode is re-rejected on every subsequent tick, forever').",
+        "unverified": [
+          "The measured '94 orphans with a ≥τ partner sitting unclustered' figure comes from the findings doc (docs/reporting/memory/findings/2026-08-08-session-state.md:48) — not re-measured against the live store (no ~/.memory access this session).",
+          "Backlog item full text unreadable: the backlog CLI read path (get-item/list-items/export-json) fails in this environment with `Parse error: index \"node_uid_unique\" already exists` (a schema-apply step on an already-migrated DB). Item content derived from the findings doc + task brief + code."
+        ]
+      },
+      "fixSurface": {
+        "files": [
+          "libs/memory-core/src/cluster.ts (primary)",
+          "libs/memory-core/src/enrich-batch.ts (skip-reason string at :311-315, if CREATE changes the skipped-condition shape)",
+          "libs/memory-core/src/cluster-incremental-join.spec.ts (assertions at :125, :146-168 currently lock in the defect)",
+          "libs/memory-core/src/enrich.spec.ts (test at :973-1000 asserts 'no communities written' on incremental mode — a pre-fix oracle for the red→green flip)"
+        ],
+        "functions": [
+          "incrementalJoin (cluster.ts:645) — add a bounded CREATE path: after the join loop, run connected-components over the REMAINING unassigned candidates' vectors at the pass threshold; every group ≥2 becomes a cluster descriptor (mirroring buildClusterResults, cluster.ts:328-372)",
+          "computeClusters (cluster.ts:878) — incremental branch returns the created descriptors in `clusters` instead of `[]` (cluster.ts:907-913)",
+          "clusterStore (cluster.ts:993) — the existing `result.clusters.length > 0` materialize block (:1036) then persists them with zero wiring change; verify scope=salt correctness for subset passes",
+          "communityUid (cluster.ts:265) — CREATE must mint uid = sha256(sorted member rowids).slice(0,32) with the same salt, so the next full pass REVIVES these communities (uid matches) instead of re-minting (this is the 'stable UID minting' fix-surface element)"
+        ],
+        "shape": "CREATE-in-incrementalJoin (recommended) vs fallback-to-full-pass on the periodic tick (heavier: full pass measured ~23.4s at N=4950 vs the 120s tick budget; changes tick economics) vs scheduled-full-pass (feat/cluster-full-pass-schedule branch exists in the worktree list but is stale — empty diff from main — so the alternative was considered but not built). CREATE cost is O(k²) over the unassigned backlog only (bounded by the orphan count), far below the full-pass O(N²). Guard semantics for created communities must mirror the existing incremental degenerate guard (corpus-relative 0.5 ratio, cluster.ts:802) — see openQuestions #2."
+      },
+      "dependencies": {
+        "blocks": ["BUG-MEMORY-010 (same function body + same spec file; BUG-MEMORY-010's meta-update slots into the join loop BL-495 restructures; its uid-stability claim only becomes meaningful once CREATE mints deterministic uids)"],
+        "blockedBy": [],
+        "ordering": "BL-495 first within Packet A; BUG-MEMORY-010 second. BL-497 (Packet B) is behaviorally independent but shares cluster.ts — must be sequenced via depends_on per the dispatch rule (overlapping file sets never parallel)."
+      },
+      "executor": {
+        "agent": "implement",
+        "tier": "pro (multi-file behavioural change to clustering semantics + revision of three spec files that assert the current defect as a feature)"
+      },
+      "testPlan": {
+        "name": "BL-495 regression: incrementalJoin CREATES a community for a mutually-similar novel neighbourhood when no community target exists",
+        "assertion": "Fresh store, write 3 mutually-similar ≥50-char episodes (the existing GROUP_A_CONTENT fixture), NO full pass, then `runBatchEnrich({ incrementalCluster: true })` → `incResult.communities_upserted >= 1`, `(await clusterStats(adapter)).cluster_count >= 1`, `total_clustered >= 2`, and the persisted community uid equals a locally recomputed sha256 of the sorted member rowids (deterministic minting).",
+        "whyCatches": "Pre-fix the no_target early return (cluster.ts:682-689) yields joined:0/communities_upserted:0 for exactly this shape — the orphan-forever defect. Post-fix the ≥τ group is minted. Second companion test ('two novel episodes with a ≥τ partner join each other into a NEW community despite being below τ against every existing community') covers the measured 94-orphan signature: seed one community + full pass, write 2 mutually-similar novel episodes, incremental pass → both end MEMBER_OF one NEW community (community_count +1). Pre-fix both stay rejected_below_threshold (cluster.ts:787-797). REQUIRED same-commit revisions: cluster-incremental-join.spec.ts:125 (`communities_upserted === 0` in incremental mode), :146-168 (empty-community-table deferral test), and enrich.spec.ts:973-1000 ('no communities written') — each asserts the defect as a feature and must be flipped in the same change; the enrich.spec.ts test is itself a ready-made pre-fix oracle."
+      },
+      "packet": {
+        "recommendation": "Packet A with BUG-MEMORY-010 (shared incrementalJoin surface, same spec file, strict ordering required)",
+        "scope": "libs/memory-core only: cluster.ts, enrich-batch.ts, cluster-incremental-join.spec.ts, enrich.spec.ts",
+        "risk": "HIGH blast radius on read surfaces, all additive/positive: memory_get_community resolves previously-permanent E_PENDING_CLUSTER/E_NOT_FOUND cases; memory_recall community_uid and memory_topics has_community become populated for novel neighbourhoods. Behavioural risk: created communities interact with the degenerate guard; bl496 join_rate (joined/(joined+never_clustered)) rises because never_clustered drops — directionally expected, re-baseline the bl496 spec's asserted values."
+      }
+    },
+    {
+      "humanId": "BUG-MEMORY-010",
+      "title": "incremental join never updates meta.member_count (or the member-set-hash community_uid); memory_get_community under-reports members and the next full pass mints a different uid",
+      "status": "investigating",
+      "rootCause": {
+        "confirmed": true,
+        "evidence": "The join loop writes ONLY the MEMBER_OF edge (cluster.ts:817-822 `INSERT INTO edge ... ON CONFLICT ... DO UPDATE SET t_invalid = NULL`) and never touches the community node's meta. meta.member_count is written in exactly one place, materializeClusters (cluster.ts:460-465, `member_count: cluster.member_rowids.length`), which runs only on full/subset passes — so between full passes the stored count is stale by exactly the number of incremental joins. The read side consumes that stale value: memory_get_community parses meta.member_count (index.ts:1759-1761) and the fallback `if (memberCount === 0) memberCount = members.length` (index.ts:1775) only fires when meta says 0, NOT when it is stale-but-nonzero — so a community that grew 2→3 incrementally reports `member_count: 2` beside a 3-row `members` array. The uid consequence: communityUid is a pure hash of the member set (cluster.ts:265-268), so any membership growth re-mints the uid at the next full pass, orphaning the pre-join uid (materializeClusters invalidate-then-insert, cluster.ts:417-443, 467-493; churn visible via the revived/created counters, cluster-metrics.ts:528-538). Constraint status: the 'do not land before BL-496 deploys' constraint is CLEAR — the BL-496 censoring filter reads live edges, not meta (cluster-metrics.ts:354-367 `EXISTS (SELECT 1 FROM edge e ...)` with CLUSTER_ELIGIBLE_SQL), so updating meta.member_count at join time cannot corrupt the historical join-rate record. BL-496 code is merged in main (ddd3fa08; cluster-metrics.ts censoring filter at :361; bl496-time-to-community.spec.ts present).",
+        "unverified": [
+          "The specific live artifact sha 6eff093e3991 is NOT an ancestor of main (BL-496 code reached main via merge ddd3fa08). The artifact-sha identity is a deployment record outside the repo — BL-496 code presence in the tree is confirmed, the exact deployed sha is not.",
+          "Backlog item full text unreadable — same backlog CLI schema-apply failure as BL-495."
+        ]
+      },
+      "fixSurface": {
+        "files": [
+          "libs/memory-core/src/cluster.ts (primary — write-side fix)",
+          "libs/memory-core/src/cluster-incremental-join.spec.ts (new assertion)"
+        ],
+        "functions": [
+          "incrementalJoin (cluster.ts:645) — after the join loop, for each community that gained members this pass, `UPDATE node SET meta = json_set(meta, '$.member_count', <communityLiveMemberCount + joinedThisPass>) WHERE rowid = ?` (one UPDATE per touched community; json_set preserves cluster_scope/mean_intra_sim). Deliberately NOT a read-modify-write of the full blob."
+        ],
+        "shape": "Write-side only. Do NOT touch the memory_get_community read side (index.ts:1755-1775) — that region is being edited by the in-flight feat/bug-memory-006 branch; the write-side fix makes the read side correct with zero index.ts contention. The uid is NOT recomputed at join (re-keying the community node mid-tick would orphan every reference; uid stability between full passes is by design — cluster.ts:257-268 and the revived-vs-created accounting, cluster-metrics.ts:528-538). 'Recompute community_uid' in the defect text resolves to the BL-495 CREATE path's deterministic minting, which is BL-495's surface, not this one."
+      },
+      "dependencies": {
+        "blocks": [],
+        "blockedBy": ["BL-495 (shared incrementalJoin body and shared spec file; the member_count update slots into the same loop BL-495 restructures)"],
+        "ordering": "Second within Packet A, after BL-495 lands. Constraint previously documented at findings doc:60 is now clear — BL-496 (edge-derived censoring filter) is merged and live, and this fix does not touch the edge-derived metric."
+      },
+      "executor": {
+        "agent": "implement",
+        "tier": "flash (single surgical loop addition + one spec assertion; but must ride the same packet/executor as BL-495 for spec-file coherence)"
+      },
+      "testPlan": {
+        "name": "BUG-MEMORY-010 regression: after incrementalJoin adds a member, community meta.member_count equals the live MEMBER_OF edge count",
+        "assertion": "Seed a 2-member community via full pass; write a 3rd mutually-similar episode; `runBatchEnrich({ incrementalCluster: true })`; then read the community node's meta and assert `JSON.parse(meta).member_count === 3 === (SELECT COUNT(*) FROM edge WHERE dst = <community rowid> AND rel='MEMBER_OF' AND t_invalid IS NULL)`. Optionally assert end-to-end: memory_get_community returns `community.member_count === members.length`.",
+        "whyCatches": "Pre-fix the join loop writes the edge (cluster.ts:817-822) and never the meta, so the stored member_count stays 2 — and the read-side fallback (index.ts:1775) only rescues the 0 case, so the response is internally inconsistent (member_count 2, members 3). The assertion pins meta.member_count to the live edge count — exactly the invariant the defect violates. Keeping the assertion in libs/memory-core (meta level) makes the memory-server handler a non-gate for this fix."
+      },
+      "packet": {
+        "recommendation": "Packet A with BL-495 (same incrementalJoin surface; one executor, sequential commits)",
+        "scope": "libs/memory-core: cluster.ts + cluster-incremental-join.spec.ts. index.ts deliberately excluded (in-flight branch contention).",
+        "risk": "LOW. clusterStats reads edges not meta (cluster.ts:1358-1366); ever_clustered_fraction reads edges not meta (cluster-metrics.ts:354-367) — neither shifts. The only consumer of meta.member_count is memory_get_community (index.ts:1761), which the fix makes consistent."
+      }
+    },
+    {
+      "humanId": "BL-497",
+      "title": "selectEpisodes silently excludes episodes with content < 50 chars (undocumented arbitrary floor excludes real content by 3 chars)",
+      "status": "investigating",
+      "rootCause": {
+        "confirmed": true,
+        "evidence": "The floor is the exported constant `CLUSTER_MIN_CONTENT_LENGTH = 50` (cluster.ts:57), embedded in `CLUSTER_ELIGIBLE_SQL` (`LENGTH(n.content) >= ${CLUSTER_MIN_CONTENT_LENGTH}`, cluster.ts:60-61), which is aliased as `EPISODE_CANDIDATE_PREDICATE` (cluster.ts:74) and consumed verbatim by `selectEpisodes` (cluster.ts:556-569) — so any episode with content length 1..49 is structurally excluded from clustering input and from every metrics census that shares the constant: ineligible/awaiting_vector/awaiting_or_rejected (cluster-metrics.ts:317/323/329) and the ever_clustered_fraction regime query (:361). A 47-char episode is excluded 'by 3 chars'. The floor is documented as a spec invariant (D5.1 comment at cluster.ts:10, and cluster-metrics.ts:112 'a permanent, by-design exclusion') but has no recorded rationale beyond being a guard against degenerate short-content clusters; the bl496 spec pins the boundary (bl496-time-to-community.spec.ts:314, :339 construct sub-50 episodes as 'ineligible BY DESIGN').",
+        "unverified": [
+          "Whether the floor exists for anti-percolation (short near-duplicate fragments cluster trivially tightly) or for cost is not recorded anywhere in code or the findings doc — the 'arbitrary' characterization is the task's, consistent with the absence of a rationale citation.",
+          "Backlog item full text unreadable — same backlog CLI schema-apply failure."
+        ]
+      },
+      "fixSurface": {
+        "files": [
+          "libs/memory-core/src/cluster.ts (the constant at :57 — single change point; CLUSTER_ELIGIBLE_SQL, EPISODE_CANDIDATE_PREDICATE and selectEpisodes all follow because they reference the constant, keeping selectEpisodes and the metrics census in lockstep per the invariant documented at cluster.ts:63-73)",
+          "libs/memory-core/src/bl496-time-to-community.spec.ts (boundary fixtures at :314, :339 must be re-based to the new floor)",
+          "docs: DESIGN D5.1 (comment cluster.ts:10; CONTRACTS.md D5.1 if the rationale/value changes)",
+          "optional: read CLUSTER_MIN_CONTENT_LENGTH from env (mirror SOX_CLUSTER_TARGET_DEGREE pattern at cluster.ts:1873-1877) so the floor is operator-tunable without a rebuild"
+        ],
+        "functions": [
+          "No function bodies — the constant `CLUSTER_MIN_CONTENT_LENGTH` (cluster.ts:57) is the single change point; `selectEpisodes` (:556), `EPISODE_CANDIDATE_PREDICATE` (:74), `CLUSTER_ELIGIBLE_SQL` (:60) and all five cluster-metrics call sites follow mechanically."
+        ],
+        "shape": "Minimal fix = lower the constant (e.g. 20) or make it env-configurable with a lower default. Do NOT remove the floor to 0: `LENGTH('') >= 0` admits empty-string episodes (no vector → they land in the metrics' awaiting_vector bucket forever — noise) and the anti-percolation value of SOME floor remains unexamined. Changing the value is the only shape that keeps the selectEpisodes/metrics lockstep invariant intact."
+      },
+      "dependencies": {
+        "blocks": [],
+        "blockedBy": [],
+        "ordering": "Independent of BL-495/BUG-MEMORY-010 behaviorally (different region of cluster.ts: predicate constant vs incrementalJoin body). Shares cluster.ts and the cluster-metrics census — the shared constant change shifts the metrics buckets, so it must not land mid-Packet-A review. Sequence: either before Packet A (small, unblocks the candidate set) or strictly after; declare depends_on either way per the no-parallel-overlapping-files dispatch rule."
+      },
+      "executor": {
+        "agent": "implement",
+        "tier": "flash (constant + spec boundary updates + docs; no function-body work)"
+      },
+      "testPlan": {
+        "name": "BL-497 regression: an episode with content length in [newFloor, 50) is a clustering candidate and joins a community",
+        "assertion": "Write an episode whose content is ~47 chars sharing vocabulary with an existing seeded community; `runBatchEnrich({ incrementalCluster: true })`; assert the episode gains a live MEMBER_OF edge and `clusterStats().total_clustered` increases by 1. Companion assertion: the bl496-time-to-community.spec.ts ineligible-boundary fixtures (:314, :339) are re-based to the new floor so the metrics census stays consistent with the new predicate.",
+        "whyCatches": "The single predicate constant (cluster.ts:60-61) is the ONLY gate between an episode and selectEpisodes (cluster.ts:556-569). Pre-fix, a 47-char episode is invisible to every pass and every census bucket — the test's write is simply never considered, so total_clustered does not move. Post-fix it joins. It also guards the lockstep invariant: if someone later changes the value in only one place, either the clustering input or the metrics census silently diverges, and this test (clustering side) plus the re-based bl496 fixtures (metrics side) catch it."
+      },
+      "packet": {
+        "recommendation": "Separate Packet B (independent predicate surface, different spec files than Packet A, different executor tier)",
+        "scope": "libs/memory-core: cluster.ts constant + bl496-time-to-community.spec.ts + docs (D5.1). No touch to incrementalJoin or enrich-batch.",
+        "risk": "LOW-to-MEDIUM: more candidates → larger full-pass O(n²) input (nodeCap 10000 still caps) and a larger ever_clustered_fraction regime denominator (short episodes cluster less often → the fraction will drop; must be re-baselined in the bl496 spec, which asserts direction, not magnitude). Recall is NOT affected — CLUSTER_ELIGIBLE_SQL is used only by cluster.ts and cluster-metrics.ts (verified by grep), never by the recall path."
+      }
+    }
+  ],
+  "crossItemDependencies": [
+    {
+      "edge": "BL-495 → BUG-MEMORY-010 (blockedBy)",
+      "detail": "Same function body (incrementalJoin), same spec file (cluster-incremental-join.spec.ts), same executor packet. BUG-MEMORY-010's meta-member_count update slots into the join loop BL-495 restructures; its uid-stability element is delivered by BL-495's deterministic communityUid minting for CREATE."
+    },
+    {
+      "edge": "BL-497 ⊥ (BL-495, BUG-MEMORY-010)",
+      "detail": "Behaviorally independent, but shares cluster.ts (predicate constant vs incrementalJoin body) and shifts the shared CLUSTER_ELIGIBLE_SQL census — so it must be sequenced via depends_on, not parallel. Recommended order: BL-497 first (small, widens the candidate set) then Packet A, OR Packet A then BL-497; no hard correctness order. Packet A test fixtures (~60-char content) are above any sane new floor, so no fixture interaction."
+    },
+    {
+      "edge": "All three share CLUSTER_ELIGIBLE_SQL / candidate-set semantics",
+      "detail": "BL-497 changes WHO is a candidate; BL-495 changes what happens to candidates no existing community accepts; BUG-MEMORY-010 changes the persisted record of accepted candidates. The shared-constant lockstep invariant (cluster.ts:63-73) is the discipline that keeps the three coherent."
+    }
+  ],
+  "conflictsWithInFlight": [
+    {
+      "branch": "feat/bug-memory-006-community-affordance",
+      "head": "bed42917 (6 ahead of main, unreviewed since the fix)",
+      "filesTouched": "SPEC-BUG-MEMORY-006.md, docs/reporting/memory/PLAN.md, docs/reporting/memory/STATE.md, extensions/bundles/sox-memory-bundle/members/memory-server/src/index.ts, .../bug-memory-006-community-affordance.spec.ts (verified via git diff main...bed42917 --stat)",
+      "mechanicalConflict": "NONE with the three items — the branch touches no libs/memory-core file. BL-495/BUG-MEMORY-010/BL-497 live entirely in libs/memory-core (cluster.ts, enrich-batch.ts, cluster-metrics.ts, memory-core specs).",
+      "behavioralOverlap": [
+        "The branch edits the memory_get_community handler region index.ts:1695-1800 — which INCLUDES the read-side lines BUG-MEMORY-010's read-side fix would touch (index.ts:1755-1775). Recommendation: keep BUG-MEMORY-010 write-side (cluster.ts) so no index.ts contention arises regardless of merge order.",
+        "The branch's new E_PENDING_CLUSTER error (entity_uid path, index.ts:1750-1757 on the branch) is the read-path counterpart of BL-495's orphan population. After BL-495 lands, genuinely-novel-neighbourhood episodes resolve instead of staying pending forever — the branch's spec seeds a genuinely-unclustered episode and its E_PENDING_CLUSTER pin stays valid (just rarer). If Packet A merges first, the branch's spec must ensure its seeded 'unclustered' episode has no ≥τ partner, or the pin may see the episode become clustered.",
+        "The branch's D8 rule (commit 7a914675 'defer reclustering-superseded community_uid') documents exactly the uid-churn phenomenon BUG-MEMORY-010 observes. BL-495's CREATE must mint uids via the same communityUid(salt) the full pass uses, so D8's deferral semantics stay coherent."
+      ],
+      "mergeOrderRecommendation": "Either order is mechanically safe for the three items; if the branch merges first, no conflict (Packet A stays in libs/memory-core). If Packet A merges first, the branch's E_PENDING_CLUSTER spec author should re-check the 'unclustered episode' fixture as noted."
+    }
+  ],
+  "openQuestions": [
+    "Backlog CLI read path is broken in this environment: backlog get-item/list-items/export-json all fail with `step failed: Parse error: index \"node_uid_unique\" already exists` (a schema-apply step on an already-migrated graph DB, inside the tool's own client, not this repo). Item full texts for BL-495/BUG-MEMORY-010/BL-497 could not be re-read from the graph; this report derives their content from docs/reporting/memory/findings/2026-08-08-session-state.md + the task brief + current code. Needs an owner to fix the CLI's applySchema idempotence (likely in the backlog tool itself, /Users/nix/dev/node/adhd/entrypoint/backlog).",
+    "BL-495 design decision for the owner: CREATE-in-incrementalJoin (recommended; O(k²) over the orphan backlog only, deterministic uids, zero clusterStore wiring change) vs periodic-tick fallback-to-full-pass (heavier; full pass ~23.4s at N=4950 vs 120s tick budget) vs scheduled-full-pass (feat/cluster-full-pass-schedule branch exists but is stale — empty diff from main, i.e. considered but never built). Ratify the degenerate-guard ratio semantics for CREATED communities: corpus-relative 0.5 (current incremental guard, cluster.ts:802) vs candidate-relative (full-pass D5.5, cluster.ts:963) — the choice changes percolation behaviour at large backlog sizes.",
+    "BL-497 owner decision: what is the new floor (suggest 20) or should it be env-configurable (SOX_CLUSTER_MIN_CONTENT_LENGTH mirroring SOX_CLUSTER_TARGET_DEGREE)? Any value change re-baselines the metrics census and ever_clustered_fraction; the bl496 spec's ineligible fixtures must move with it.",
+    "The deployed-artifact sha 6eff093e3991 is not an ancestor of main; BL-496 code reached main via merge ddd3fa08 (the censoring filter through CLUSTER_ELIGIBLE_SQL is live in the tree). The exact live artifact identity is outside repo evidence — flagging so nobody treats the sha as a main commit.",
+    "Memory recall was deliberately NOT queried (memory MCP / ~/.memory store) per this session's explicit 'NO ~/.memory/* access' constraint; docs/reporting/memory/findings/2026-08-08-session-state.md served as the session-memory source of truth."
+  ]
+}

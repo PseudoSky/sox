@@ -1,0 +1,220 @@
+{
+  "reportId": "triage-schema",
+  "agent": "debug-triage",
+  "timestamp": "2026-08-09T01:39:24Z",
+  "items": [
+    {
+      "humanId": "BUG-MEMORY-011",
+      "title": "ADR-0010 D2 enforcement is unreachable on the memory-core write path — vocabulary enforcement nil at both layers",
+      "status": "CONFIRMED (code-verified on main 3e9a40c0; enforcement gap narrowed to one concrete defect + one structural affordance gap)",
+      "rootCause": {
+        "confirmed": true,
+        "evidence": [
+          "memory-core has ZERO non-spec call sites of graph-store writeNode/writeEdgeInternal — only comments reference them (link.ts:5, curate.ts:4, enrich.ts:10,116, ontology.ts:53). All 20 node/edge writes are raw `INSERT INTO` across 9 files: write.ts:371,419,426,452,858; link.ts:54; curate.ts:251,258,364; enrich.ts:118; autolink.ts:133; cluster.ts:486,497,538,818; extensions.ts:299,347,646,902; session.ts:55. (Finding's count of 20 matches exactly.)",
+          "The TypePolicy invocation points DO exist and are live at graph-store: writeNode calls this.typePolicy.validateKind at libs/data/graph/graph-store/src/index.ts:1045, writeEdgeInternal calls validateRel at :1272 (finding's line refs 1032/1241 are an earlier HEAD — drift noted).",
+          "The DI seam constructs the policy: getMemoryGraphBackend (libs/memory-core/src/graph-backend.ts:42-44) passes `typePolicy: new MemoryOntologyPolicy(registeredExtension)` into createGraphBackend. The seam is exercised only by READ-path consumers (list-entities, cluster, related, supersession-chain, entity-episodes, enrich-batch, near-duplicates import getMemoryGraphBackend); the write path (memoryWritePhaseA, write.ts:369-460) operates on the StoreAdapter directly and never constructs or touches a GraphBackend.",
+          "The main write path can never produce an out-of-vocabulary kind: WriteParams (write.ts:82-105) has NO kind field and source is a closed TS union (:98); every kind written is a hardcoded literal ('episode' write.ts:374, 'entity' :419, 'community' cluster.ts:487,539 / extensions.ts:903, 'session' session.ts:55). validateRel has ZERO call sites anywhere in memory-core.",
+          "One partial exception found (refines the finding's 'zero policy invocation'): the graphify import path calls `new MemoryOntologyPolicy().validateKind(kind)` directly at extensions.ts:623 (shape v2 only) and wraps its INSERT in translateStoreVocabularyError at :652. Two defects within it: (a) it instantiates a fresh MemoryOntologyPolicy() WITHOUT the registered extension set — so a consumer extension kind validated by the DI seam is still REJECTED on this path; (b) it validates kind only, never rel.",
+          "Enforcement risk on the live store is LOW: every production kind/rel is a hardcoded in-vocabulary literal, and the one caller-controlled-kind path (graphify, extensions.ts:620-624) already validates. Enforcing now changes zero behavior — the enforcement would be a no-op until consumer kinds actually flow through a memory-core write path, which today is impossible via memory_write (no kind param)."
+        ],
+        "unverified": [
+          "Live-store row contents (would any out-of-vocabulary kind/source values exist in ~10,150 rows that an app-layer enforcement would trip on) — NOT checked; ~/.memory access is out of scope for this session. Read-path impact of enforcement is nil by construction (writes only), so recall breakage is not a plausible failure mode."
+        ]
+      },
+      "fixSurface": {
+        "files": [
+          "libs/memory-core/src/extensions.ts:623 (use the registered policy instance, not `new MemoryOntologyPolicy()`)",
+          "libs/memory-core/src/graph-backend.ts (export the constructed policy / a validateKind|validateRel helper built from registeredExtension, so call sites cannot instantiate a divergent policy)",
+          "libs/memory-core/src/write.ts WriteParams (:82-105) — ONLY if a product ruling decides memory_write must accept consumer kinds"
+        ],
+        "functions": [
+          "extensions.ts graphify shape-v2 branch (:620-624) — swap `new MemoryOntologyPolicy()` for the registered-instance policy",
+          "graph-backend.ts — add `getRegisteredPolicy(): MemoryOntologyPolicy` so extensions.ts:623 and any future call site share ONE vocabulary"
+        ],
+        "shape": "Minimal: one-line policy-instance alignment in the graphify path (fixes the only call-site inconsistency). Structural: either (a) accept the owner ruling (#3 — consumer responsibility) and treat the seam's write-side reachability as 'consumers using graph-store writeNode/writeEdgeInternal directly', where enforcement IS active (:1045,:1272), or (b) wire `kind` through WriteParams + policy validation — a feature/API decision, not a defect fix. There is no DDL- or backend-routing change required; a policy call added to the write path would be a no-op today and exists only to future-proof extension kinds."
+      },
+      "dependencies": {
+        "blocks": [],
+        "blockedBy": [],
+        "ordering": "graphify policy alignment is independent and can land immediately; the WriteParams-kind wiring is gated on a product/API ruling (openQuestions[0])."
+      },
+      "executor": {
+        "agent": "backend",
+        "tier": "flash (one-line policy-instance fix + helper export) — the structural affordance decision goes to product first"
+      },
+      "testPlan": {
+        "name": "BL-441-adjacent ontology-seam consistency: 'graphify validates against the REGISTERED vocabulary, not the base six'",
+        "assertion": "registerOntologyExtension({kinds:['event']}); run graphify shape-v2 import of a node with kind='event' → INSERT succeeds; without registration the same import throws ConstraintError. Plus an inverse assertion: memory_write(WriteParams with any kind-bearing payload) is a compile-time error (documents the affordance boundary).",
+        "whyCatches": "The current code instantiates `new MemoryOntologyPolicy()` (extensions.ts:623), which ignores registeredExtension — the test is red today for any extension kind, green after the fix. It pins the DI-seam contract the ADR-0010 D2 ruling depends on, so the enforcement story can never silently regress to 'base vocabulary only' again."
+      },
+      "packet": {
+        "recommendation": "Ship the graphify policy-instance alignment (small, safe, closes the one call-site inconsistency). Do NOT wire kind through memory_write without a product ruling — the owner ruling #3 ('kind/edge typing is the consumer's responsibility') reads as 'consumers reach enforcement via graph-store's own write boundary, where it is already active'. Re-file the finding's blanket 'enforcement is nil' claim as narrowed: enforcement is nil on the memory-core write path BY DESIGN (fixed vocabulary), and broken in exactly one place (graphify's unregistered policy instance).",
+        "scope": "memory-core only; no graph-store, no DDL, no schema change",
+        "risk": "LOW — no behavior change on the live store; the fix only makes the one caller-controlled-kind path honor the registered vocabulary. Risk of NOT fixing: a consumer registering extension kinds via registerOntologyExtension sees graphify reject them while every other read path accepts them — a silent, confusing inconsistency."
+      }
+    },
+    {
+      "humanId": "BUG-MEMORY-012",
+      "title": "Live store's schema matches NO DDL constant in the repo — source/origin and BL-430 json_valid CHECKs absent; mechanism (Turso conversion) unverified",
+      "status": "CONFIRMED as code-structure contradiction on main; live-store specifics rely on the session-state finding (no ~/.memory access this session); mechanism still UNVERIFIED",
+      "rootCause": {
+        "confirmed": true,
+        "evidence": [
+          "EVERY node/edge DDL variant in libs/data/graph/graph-store/src/index.ts carries source/origin CHECKs: GRAPH_DDL :75(source)/:97(origin); GRAPH_DDL_PRE_BL430 (same template, jsonChecks:false); INLINE_MIGRATION_DDL :194/:216; NODE_TABLE_DDL :275; EDGE_TABLE_DDL :297; NODE_TABLE_DDL_OPEN :330; EDGE_TABLE_DDL_OPEN :359. There is no variant without them — so a live store lacking them matches NO constant. This is a logical proof, not an inference.",
+          "What a FRESH store gets today: applySchema (index.ts:968-975) executes INLINE_MIGRATION_DDL — open kind (:181, no CHECK) and rel (:213, no CHECK) per ADR-0010 D1/D4; json_valid CHECKs on node.tags (:186), node.meta (:191), edge.meta (:217); source CHECK (:194); origin CHECK (:216). GRAPH_DDL = graphDdl({jsonChecks:true}) (:124) is the canonical equivalent.",
+          "(b) BL-430 landed VERIFIED: GRAPH_DDL carries the json_valid CHECKs and applySchema routes fresh stores through INLINE_MIGRATION_DDL which carries them — new stores DO get the CHECKs.",
+          "The BL-447 repair path is safe on a CHECK-less store: ensureCheckConstraints (:990-1033) now uses the structural probe hasEnumCheckConstraint (:949, applied :999-1006) — a store with no kind/rel CHECK is not rebuilt (nodeNeedsRebuild=false). So the BL-447 rebuild loop cannot be the mechanism that removed constraints (as the finding states: BL-447's rebuild targets DDLs carrying MORE constraints). Turso conversion remains the inferred mechanism — unverified.",
+          "Owner ruling analysis (finding lines 3-10, 'owner rulings' #3): 'Kind/edge typing is the consumer's responsibility… Restoring a DDL CHECK is off the table.' This ruling is scoped to kind/rel — it kills the CHECK-restoration option for kind/rel definitively (consistent with ADR-0010 D1/D4 opening those columns). It does NOT literally cover source/origin (provenance enums, not kind/edge typing) or json_valid (JSON shape).",
+          "Risk triage of the missing CHECKs on the live store: (i) json_valid absence = the DESIGNED pre-BL-430 legacy state — BL-430's own comment (index.ts:24-34) says existing stores keep their schema by design and are covered by the detective control json_column_valid (BL-342) in the fast integrity pass on every open → NOT a data-integrity gap, no remediation warranted; (ii) source/origin absence = provenance-drift (free-text columns, nothing in memory-core filters on them as a hard discriminator) → low integrity risk; (iii) kind/rel absence = AUTHORIZED open schema per ADR-0010 D1/D4."
+        ],
+        "unverified": [
+          "The live store's actual sqlite_master DDL (confirmed absent CHECKs only per the session-state finding — I had no ~/.memory access to re-verify; recommend a one-off audit query from a session with access).",
+          "The mechanism that stripped the CHECKs (Turso conversion) — the finding's own 'inferred, unverified' label stands; git history of the store file / Turso CLI logs would be the confirmation path.",
+          "Whether live rows actually contain out-of-enum source/origin values (drift magnitude)."
+        ]
+      },
+      "fixSurface": {
+        "files": [
+          "No code change is authorized for kind/rel (ruling). Source/origin restoration candidates: libs/data/graph/graph-store/src/index.ts NODE_TABLE_DDL_OPEN/EDGE_TABLE_DDL_OPEN (:314,:352) — the D3 operator-migration target DDLs ALREADY carry source (:330) and origin (:359) CHECKs, so running the not-yet-landed PKT-61/BL-442 migration would restore them as a side effect with backup+rollback."
+        ],
+        "functions": [],
+        "shape": "Remediation options left standing: (1) kind/rel — CLOSED by ruling; enforcement belongs to the consumer (see BUG-MEMORY-011). (2) source/origin — either accept as provenance-drift (defensible: nothing filters on them; WriteParams.source is TS-enforced at write.ts:98) or restore ONLY via the sanctioned D3 operator migration (offline, verified backup, rollback — the BL-313-shadow-safe path), never via ensureCheckConstraints or a new rebuild. (3) json_valid — no action; the BL-342/343 detective control is the designed coverage for legacy stores. The 'restore a DDL CHECK' ruling does not cover source/origin, but any restoration still requires the rebuild the ruling's spirit (BL-313 shadow) forbids outside the D3 migration."
+      },
+      "dependencies": {
+        "blocks": [],
+        "blockedBy": [
+          "BL-442 / PKT-61 (D3 operator migration) — not yet landed (ontology.ts:57-59 note still warns the command does not exist)",
+          "A session with ~/.memory access to audit the live sqlite_master and settle the mechanism"
+        ],
+        "ordering": "Audit live store first (confirmation); decide drift-vs-restore with the owner; only then, if restore is chosen, ride the D3 migration rather than a new rebuild."
+      },
+      "executor": {
+        "agent": "debug (audit/confirmation with ~/.memory access) then backend (D3 migration already owned by PKT-61) — no independent fix packet",
+        "tier": "debug (investigation) — the code fix, if any, is the existing BL-442 packet"
+      },
+      "testPlan": {
+        "name": "Fresh-store DDL contract test: 'a new store carries source/origin + json_valid CHECKs and NO kind/rel CHECK'",
+        "assertion": "createGraphBackend(adapter).applySchema(); read node/edge DDL from sqlite_master; assert sql LIKE '%CHECK (source IN (%' AND '%CHECK (origin IN (%' AND '%json_valid(%' AND NOT '%CHECK (kind IN (%' AND NOT '%CHECK (rel IN (%'. Companion one-off diagnostic (not a unit test): PRAGMA on the live store logging the same four booleans to prove/refute the drift on the real store.",
+        "whyCatches": "Pins the intended fresh-store contract so the BUG-MEMORY-012 'matches no constant' state can never silently become the fresh-store default; the live-store audit companion is the only evidence that can confirm the finding's claim without ~/.memory access in CI."
+      },
+      "packet": {
+        "recommendation": "Two-phase: (1) confirmation phase — audit the live store's sqlite_master from a session with ~/.memory access, record the four booleans (kind/rel/source/origin/json_valid CHECKs), and settle the Turso-conversion mechanism from history; (2) decision phase — present the owner with the source/origin drift-vs-restore choice framed against the ruling's BL-313 shadow, defaulting to 'accept as provenance-drift + detective control' (json_valid already covered), with D3-side-effect restoration as the only sanctioned path if restore is chosen.",
+        "scope": "Investigation + decision; no code change this packet",
+        "risk": "LOW for the audit. If restore were attempted outside D3 (a fresh rebuild), it re-enters BL-313 rebuild territory on a live Turso store with an FTS index — that is the reason the ruling exists; do not shortcut it."
+      }
+    },
+    {
+      "humanId": "TRIAGE-TAU-01",
+      "title": "τ target-degree calibration (D_target 2.0) deployed on main but never confirmed in production — live still reads the fixed-τ outcome (443 clusters / 0.70 coverage)",
+      "status": "CONFIRMED deployed-but-unconfirmed; production confirmation is an OPERATION with two hard preconditions, not a code defect",
+      "rootCause": {
+        "confirmed": true,
+        "evidence": [
+          "Calibration is live on main: calibrateThreshold (cluster.ts:1766), default CLUSTER_TARGET_MEAN_DEGREE=2.0 (:1676), env override SOX_CLUSTER_TARGET_DEGREE (:1873-1878), resolveDefaultThreshold (:1857). The full pass calibrates when no threshold is supplied (cluster.ts:945-949: `opts.threshold === undefined ? calibrateThreshold(...)`), and the periodic enricher deliberately omits the threshold so a full pass calibrates its own τ (enrich-batch.ts:288-291, comment at :289).",
+          "Why live is still fixed-τ: write-triggered passes run incrementalCluster:true (enrich-batch.ts:281-284); the only full-pass trigger is the global recluster path which ENQUEUES a runBatchEnrich({incrementalCluster:false}) row (curate.ts:413-414) — i.e. an operator action (memory_curate recluster). Per the finding, full passes are manual-only (BL-495) and incrementalJoin can JOIN but never CREATE (cluster.ts:653-666,:757-762,:525) — so the live cluster structure was minted by an older full pass at the fixed floor, and the copy-predicted τ=0.89/506-clusters/0.606-coverage (doc table cluster.ts:1668,:1756) has never been executed against live.",
+          "What a production confirmation needs: (1) a deliberate global recluster (curate.ts:413-414) with no threshold override; (2) a guard proving it ran — on main, clusterResult.calibration (threshold, reason:'target-degree'|'floor', projected_mean_degree) rides the enrich result (enrich-batch.ts:301) and memory_stats exposes cluster_count + coverage (stats.ts:360-363) — a calibrated pass moves live 443 → ~506 clusters and coverage 0.70 → ~0.606; durable per-pass evidence (τ, degree, never_clustered census) requires the BL-496 instrument (cluster_pipeline in memory_ping) which is IN-FLIGHT on worktree feat/cluster-time-to-community, NOT on main.",
+          "Safety precondition: BUG-MEMORY-008 (CRITICAL, unscoped level-0 wipe in buildCommunities) is OPEN per the finding's open list — a full recluster before it lands re-exposes the wipe. The recluster must not run until BUG-MEMORY-008 is merged.",
+          "Product-ruling surface: calibration is not a pure win — at live scale it trades coverage 0.70 → ~0.606 to buy a 3.7x largest-cluster-ratio reduction (cluster.ts:1671-1673). The finding's open item lists a τ admission ladder (τ=0.80 admits 60%, 0.85→21%, 0.86→12%) that reads as a separate threshold-choice decision the owner must make."
+        ],
+        "unverified": [
+          "Live N and the live similarity distribution (the copy measured N=4950; live numbers 443/0.70 are the finding's, marked directional by its own measurement caveat).",
+          "Whether a periodic full pass was ever attempted in production (no observability on main to distinguish 'never ran' from 'ran and was inert at floor')."
+        ]
+      },
+      "fixSurface": {
+        "files": [
+          "No defect fix — the code path is correct and reachable. If observability is the gap: extensions/bundles/sox-memory-bundle/members/memory-server/src/index.ts (memory_ping cluster block — BL-496, in-flight) and/or libs/memory-core/src/stats.ts (:360-363) to surface cluster_calibration fields."
+        ],
+        "functions": [
+          "curateRecluster (curate.ts:375-414) — the operator trigger, already correct",
+          "memory_ping / memory_stats — the confirmation surface (BL-496 in-flight supplies the durable per-pass record)"
+        ],
+        "shape": "This is an OPERATION + observability-gap item: (a) merge BL-496 instrument first (gives the proof-of-run guard), (b) fix BUG-MEMORY-008 (safety), (c) operator runs memory_curate recluster global, (d) verify via memory_stats: cluster_count 443→~506, coverage 0.70→~0.606, and calibration.reason='target-degree' with threshold≈0.89 on the pass record."
+      },
+      "dependencies": {
+        "blocks": [],
+        "blockedBy": [
+          "BUG-MEMORY-008 (CRITICAL, open) — safety precondition",
+          "BL-496 instrument merge (proof-of-run guard) — in-flight on feat/cluster-time-to-community",
+          "Owner sign-off on the coverage tradeoff (0.70 → 0.606) — product ruling"
+        ],
+        "ordering": "BUG-MEMORY-008 → BL-496 → owner τ decision → operator recluster → verify."
+      },
+      "executor": {
+        "agent": "implement (BL-496 fold-in/merge) + operator action for the recluster; the τ admission choice is product's",
+        "tier": "implement (instrument merge), then manual operator run — no new code needed for the confirmation itself"
+      },
+      "testPlan": {
+        "name": "Calibration-observability E2E (extends bl328-threshold-calibration.spec.ts + bl328-calibration-observability.spec.ts): 'a full pass over a corpus at percolation scale emits a durable calibration record with reason=target-degree and the table-predicted cluster count'",
+        "assertion": "Run clusterStore over a fixture grown to the N where the fixed floor percolates (per the BL-328 spec's corpus); assert the emitted calibration record reaches the stats/ping surface with threshold=0.89-class value, reason='target-degree', and that the persisted cluster_count differs from the fixed-floor pass by the table's margin. Red today because no surface carries the calibration record out of the pass on main.",
+        "whyCatches": "The production confirmation depends entirely on being able to OBSERVE that calibration ran (τ, reason, degree, cluster delta). Without this assertion, a future pass could silently regress to floor-inert behavior (reason='floor') and the 443/0.70 state would look like success. It also encodes the copy-prediction table as a test contract so the live-vs-copy gap is caught when the operation finally runs."
+      },
+      "packet": {
+        "recommendation": "Treat as orchestrated operation, not a fix: gate on BUG-MEMORY-008 then BL-496; get the owner's τ/coverage decision (the 0.80/0.85/0.86 ladder is a separate, product-owned threshold choice); then run the global recluster and verify cluster_count/coverage/calibration.reason against the copy's prediction table. Do not run the recluster today — BUG-MEMORY-008's level-0 wipe is a live hazard.",
+        "scope": "observability (BL-496) + operation; no calibration-code changes",
+        "risk": "MEDIUM — a full recluster rewrites community nodes/edges on the live store (MEMBER_OF invalidation/rebirth, cluster.ts:437-499) and changes user-visible coverage; must run only after BUG-MEMORY-008, on a verified backup, with the BL-496 pass record captured before/after."
+      }
+    },
+    {
+      "humanId": "TRIAGE-TAU-02",
+      "title": "t_expired / t_invalid reconciliation — edge liveness is split across two columns, one of which is write-dead, and most memory-core edge queries filter the dead column",
+      "status": "CONFIRMED with one concrete live leak (extensions.ts:990); the rest is a query-layer contract drift with deferred index-DDL consequence",
+      "rootCause": {
+        "confirmed": true,
+        "evidence": [
+          "Two columns carry the same liveness concept under asymmetric names: node.t_expires (real-world expiry — written by writeNode/touch, graph-store index.ts:1062,:1138; read by graph-store's own filters :876-879 but NEVER read in memory-core recall — grep of recall.ts for t_expires returns zero) vs edge.t_expired (bitemporal window end, declared index.ts:100).",
+          "edge.t_expired is WRITE-DEAD: zero `SET t_expired` or non-NULL assignment sites in the entire repo (grep across libs/memory-core + graph-store: only db.ts:441-445, which merely ADDS the column by migration). The column that is actually maintained is edge.t_invalid — SET by the MEMBER_OF lifecycle (cluster.ts:439,:1608; extensions.ts:882; community-gc.ts:33) and revived via ON CONFLICT t_invalid=NULL (cluster.ts:499,:820; graph-store :1281).",
+          "Filter asymmetry: memory-core edge reads filter `t_expired IS NULL` (a tautology on a never-set column) at ~15 sites — link.ts:56; curate.ts:260,:366; enrich.ts:121; enrich-batch.ts:177-178; recall.ts:850,:980,:1343,:1499,:1516; export.ts:122,:138,:169,:188; autolink.ts:45,:80,:136; extensions.ts:132,:139,:795,:990; write.ts:429 — while filtering edge t_invalid IS NULL in only recall.ts:1539, export.ts:122-188, extensions.ts:1019. graph-store's own getEdges filters `t_invalid IS NULL` (index.ts:1294), so memory-core's raw SQL and the graph-store API DISAGREE about what a live edge is.",
+          "CONCRETE LEAK: extensions.ts:978-994 (community_of lookup) reads MEMBER_OF edges with `e.t_expired IS NULL` (:990) but NOT `e.t_invalid IS NULL` — MEMBER_OF is exactly the rel the lifecycle invalidates (community-gc.ts:33, cluster.ts:439). After gcOrphanedCommunityState invalidates the membership edge on episode invalidation, this lookup still returns the stale edge (the node-side guard n_comm.t_invalid IS NULL at :991 does not cover the edge side), so an episode can appear to belong to a community it left.",
+          "Index misalignment (deferred DDL consequence): the partial indexes ix_edge_src/ix_edge_dst predicate `WHERE t_expired IS NULL` (index.ts:116-117,:395-396) — a never-set column — so they include invalidated edges; the real liveness filter (t_invalid IS NULL) is served only by ix_edge_live (:118). Fixing the indexes on the live store is a rebuild (BL-313 hazard) and must ride a sanctioned migration, not an ad-hoc change.",
+          "Why exposure is currently narrow: the only edge class ever invalidated is MEMBER_OF, and all MEMBER_OF readers except extensions.ts:990 already filter t_invalid (recall.ts:1539; export.ts:121; stats.ts:170; cluster-metrics.ts:255,:266,:290,:310,:358; cluster.ts:700; community-gc.ts:34,:50). MENTIONS/SUPERSEDES/DERIVED_FROM/RELATES_TO/SAME_AS edges are never t_invalid'd today, so their t_expired-only filters are harmless-but-wrong."
+        ],
+        "unverified": [
+          "Live magnitude of the leak (whether any live community_of call has hit a stale membership) — no ~/.memory access.",
+          "Whether t_expired was ever intended to be maintained (git history of db.ts:441-445's column addition) — candidate for a quick history check in a follow-up."
+        ]
+      },
+      "fixSurface": {
+        "files": [
+          "libs/memory-core/src/extensions.ts:990 — add `AND e.t_invalid IS NULL` (kills the one live leak)",
+          "Mechanical sweep (canonical liveness predicate): libs/memory-core/src/{link.ts,curate.ts,enrich.ts,enrich-batch.ts,recall.ts,export.ts,autolink.ts,extensions.ts,write.ts} — replace/append `t_expired IS NULL` with `t_invalid IS NULL` (the maintained marker) or filter BOTH until the column question is settled",
+          "libs/data/graph/graph-store/src/index.ts:116-117,:395-396 (ix_edge_src/ix_edge_dst predicate realignment) — DEFERRED, DDL-on-live = rebuild hazard; ride the D3/BL-442 migration if realignment is wanted"
+        ],
+        "functions": [
+          "community_of lookup (extensions.ts:978-994) — the leak",
+          "Standardize the edge-liveness predicate — decide ONE canonical form; recommend `t_invalid IS NULL` (the maintained column) with `t_expired` either retired or explicitly dual-filtered"
+        ],
+        "shape": "Minimal: one-line fix at extensions.ts:990 + a regression test. Proper: a predicate-standardization sweep across the ~15 sites (mechanical, no behavior change for never-invalidated rels) and a decision on the t_expired column (retire vs dual-maintain vs index realignment via migration). The naming asymmetry (node.t_expires vs edge.t_expired) is documentation-level; a rename is out of scope."
+      },
+      "dependencies": {
+        "blocks": [],
+        "blockedBy": [
+          "Owner ruling on the canonical edge-liveness predicate (t_invalid-only vs t_expired dual) if the sweep should drop t_expired filters entirely",
+          "Index realignment is blocked on a sanctioned migration path (BL-313 shadow)"
+        ],
+        "ordering": "Leak fix (extensions.ts:990) → sweep → (optional, migration-gated) index realignment."
+      },
+      "executor": {
+        "agent": "backend (leak fix + sweep), test (regression test)",
+        "tier": "flash for the one-liner; backend for the sweep decision"
+      },
+      "testPlan": {
+        "name": "Community-membership liveness regression: 'an invalidated MEMBER_OF edge is invisible to community_of'",
+        "assertion": "Insert episode→community MEMBER_OF edge; call the community_of lookup (extensions.ts:978) → returns the community; set edge.t_invalid (simulating gcOrphanedCommunityState, community-gc.ts:33); call again → E_NOT_FOUND. Red today (edge survives via the t_expired-only filter at :990), green after the fix.",
+        "whyCatches": "MEMBER_OF is the only edge class the lifecycle actually invalidates, and this is the only MEMBER_OF reader filtering the dead column — so it is the exact failure mode community-gc.ts exists to prevent, tested at the seam where the bug lives. It also pins the predicate-standardization direction so a future sweep cannot regress it."
+      },
+      "packet": {
+        "recommendation": "Ship the extensions.ts:990 one-liner + regression test immediately. Then run the liveness-predicate sweep (t_invalid IS NULL canonical) as a behavior-preserving mechanical change. Defer index realignment with an explicit backlog note (BL-313-adjacent, needs a migration). Flag the node.t_expires/edge.t_expired naming asymmetry in docs — it is the root cause of the drift (two names for one concept invite exactly this filter confusion).",
+        "scope": "memory-core query layer; graph-store only if the index predicate change is pursued via migration",
+        "risk": "LOW for the leak fix and sweep (never-invalidated rels see no behavior change). The index realignment, if ever done on the live store, is the BL-313 rebuild risk — keep it migration-gated."
+      }
+    }
+  ],
+  "openQuestions": [
+    "BUG-MEMORY-011: Should memory_write's WriteParams gain a `kind` field (making ADR-0010 D2 reachable through the primary write API), or does the owner ruling #3 mean consumers reach enforcement exclusively via graph-store's own write boundary (where it is already active at index.ts:1045/:1272)? This is a product/API ruling, not a code fix.",
+    "BUG-MEMORY-012: (a) Can a session with ~/.memory access audit the live sqlite_master (four booleans: kind/rel/source/origin/json_valid CHECKs) and settle the Turso-conversion mechanism from store history? (b) For source/origin specifically — accept as provenance-drift, or restore via the D3 operator migration (BL-442) when it lands? The existing ruling covers kind/rel only.",
+    "TRIAGE-TAU-01: The τ/coverage tradeoff is a product ruling — is a full recluster to τ≈0.89 (coverage 0.70→0.606, ratio −3.7×) acceptable, and what does the separate τ admission ladder (0.80→60%, 0.85→21%, 0.86→12%) select for? The recluster is additionally gated on BUG-MEMORY-008 and BL-496.",
+    "TRIAGE-TAU-02: Canonical edge-liveness predicate — is edge.t_expired to be retired (dual-filter removed), dual-maintained, or kept as-is with only the leak fixed? And is index realignment (ix_edge_src/dst predicate) worth a sanctioned migration, or is the query-side-only fix sufficient?",
+    "Session-state finding line-drift note: the finding cites typePolicy calls at graph-store index.ts:1032/1241 and write.ts:336-345/430-444; on current main HEAD 3e9a40c0 these read :1045/:1272 and the PERF-MEMORY-003/004 fold-in has landed (write.ts:371 single INSERT). The findings doc predates those merges; evidence in this report cites current main."
+  ]
+}

@@ -1,0 +1,58 @@
+{
+  "$schema": "review-report-v1",
+  "reviewer": "flash-reviewer",
+  "task_id": "debt-soxgraph-001-f1-reverify",
+  "label": "F1 fix re-verification on fix/debt-soxgraph-001 (4b2bf247)",
+  "reviewed_at": "2026-08-10T19:20:26Z",
+  "files_reviewed": [
+    "libs/memory-core/src/recall.ts",
+    "libs/memory-core/src/recall-live-incident.spec.ts",
+    "libs/memory-core/src/extensions.ts",
+    "docs/reporting/memory/PLAN.md",
+    "docs/reporting/memory/STATE.md"
+  ],
+  "verification": {
+    "build": "passed",
+    "test": { "passed": 665, "failed": 0, "skipped": 8 },
+    "lint": "passed",
+    "typecheck": "passed",
+    "tree_state": "CLEAN — 9 project(s) in memory-core dependency set, no uncommitted changes (check-suite-tree-state.mjs); suite result attributable [BL-456]"
+  },
+  "findings": [
+    {
+      "severity": "medium",
+      "category": "test-coverage",
+      "file": "libs/memory-core/src/recall-live-incident.spec.ts",
+      "line": 466,
+      "description": "Companion no-match test is vacuous against the F1 bug class. recall.ts:642-677 builds the empty-path response WITHOUT degradations (they are attached only at recall.ts:1137 on the non-empty path), so when allRowids is empty the fts: syntax-error degradation never surfaces in the response. Empirically proven in the RED re-probe: with the tight concatenation restored, the FTS channel threw 'near \"n\": syntax error' on BOTH backends (visible in stderr), yet the companion assertions (spec:486-487, expect empty + no fts: degradation) PASSED on both backends. The companion cannot distinguish 'genuine empty' from 'masked syntax error' — its stated purpose is not delivered. Only the primary F1 test (spec:418-464) is a real red→green discriminator, and it correctly failed in RED.",
+      "fix_sketch": "Two options: (a) product fix — attach degradations on the empty-path early return (recall.ts:663-674) so a dead channel is observable even with zero candidates (this is a genuine BL-391 observability gap on the empty path); or (b) test fix — restate the companion as a non-empty-path assertion (e.g., seed a row owned by the querying agent but outside the query's token scope and assert FTS degradation absence with results > 0), or drop the companion's 'not a masked syntax error' claim. Non-blocking for F1: the primary test carries the red→green proof."
+    },
+    {
+      "severity": "info",
+      "category": "style",
+      "file": "libs/memory-core/src/recall-live-incident.spec.ts",
+      "line": 385,
+      "description": "The regression test names the finding as 'F1' (spec:385) and references BL-225/BL-391/BL-229 in the §3 docblock, but does not literally contain 'BL-502' (the graph item filed for F1). BL-225 asks for a test naming the BL-ID. The F1 label is stable and BL-502's own title carries '— F1 on fix/debt-soxgraph-001', so traceability holds, but a future grep for 'BL-502' in tests would miss it.",
+      "fix_sketch": "Add 'BL-502' to the describe title or the §3 docblock (e.g. 'F1 / BL-502 — ...') when the file is next touched."
+    },
+    {
+      "severity": "info",
+      "category": "spec-compliance",
+      "file": "docs/reporting/memory/PLAN.md",
+      "line": 26,
+      "description": "Committed PLAN.md/STATE.md regenerations list BL-502 under 'Unscheduled in-scope items (need a packet)' — they were regenerated at commit time while BL-502 was still open. The graph now records BL-502 as RESOLVED (updatedAt 19:03:03Z after the commit's regen). The next plan-status.mjs run will correct the projection; stale docs are expected and non-blocking (graph is source of truth per ADR-0011).",
+      "fix_sketch": "Re-run node tools/plan-status.mjs after merge so PLAN.md/STATE.md reflect BL-502 RESOLVED."
+    }
+  ],
+  "summary": {
+    "critical": 0,
+    "high": 0,
+    "medium": 1,
+    "low": 0,
+    "info": 2
+  },
+  "backlog_entries": [
+    "BL-502 — RESOLVED in graph (verified via backlog get-item), cites 4b2bf247:recall.ts:594-607 and 4b2bf247:recall-live-incident.spec.ts:332-489",
+    "New finding (not yet filed, read-only review): companion no-match F1 test is vacuous on the empty path — degradations never attach to the empty-path response (recall.ts:663-674), so the companion passes even with the F1 bug present (proven in RED probe). Recommend either attaching degradations on the empty path (BL-391 observability gap) or restating the companion."
+  ]
+}

@@ -1,0 +1,77 @@
+{
+  "$schema": "review-report-v1",
+  "reviewer": "flash-reviewer",
+  "task_id": "review-bl497-bl202",
+  "label": "Independent review — BL-497 floor tunable (A) + BL-202 export.spec de-flake (B)",
+  "reviewed_at": "2026-08-08T22:10:00Z",
+  "files_reviewed": [
+    "libs/memory-core/src/cluster.ts",
+    "libs/memory-core/src/cluster-metrics.ts",
+    "libs/memory-core/src/bl497-min-content-length.spec.ts",
+    "libs/memory-core/src/bl496-time-to-community.spec.ts",
+    "libs/memory-core/src/cluster-subset.spec.ts",
+    "libs/memory-core/src/enrich.spec.ts",
+    "docs/plan/memory-enrichment/CONTRACTS.md",
+    "docs/plan/memory-enrichment/DESIGN.md",
+    "docs/reporting/memory/PLAN.md",
+    "docs/reporting/memory/STATE.md",
+    "libs/memory-core/src/export.spec.ts",
+    "libs/memory-core/src/export.ts",
+    "libs/memory-core/src/index.ts",
+    "libs/memory-core/project.json"
+  ],
+  "verification": {
+    "build": "passed",
+    "test": {
+      "A_bl497_full_memory_core": { "passed": 658, "failed": 0, "skipped": 8, "files": 67 },
+      "A_bl497_red_simulation_floor50": { "passed": 0, "failed": 2, "skipped": 0, "note": "SOX_CLUSTER_MIN_CONTENT_LENGTH=50 — proves the regression test is genuinely red under the old floor" },
+      "B_export_spec_x3": { "passed": 22, "failed": 0, "skipped": 0, "runs": 3 },
+      "B_full_memory_core_after_build": { "passed": 656, "failed": 0, "skipped": 8, "files": 66 }
+    },
+    "lint": "passed"
+  },
+  "findings": [
+    {
+      "severity": "info",
+      "category": "test-coverage",
+      "file": "libs/memory-core/src/bl497-min-content-length.spec.ts",
+      "line": 30,
+      "description": "Ambient-env sensitivity: the spec statically imports ./cluster.js at file-load time. If SOX_CLUSTER_MIN_CONTENT_LENGTH is exported in the ambient shell/CI environment, the top-level module evaluation bakes that value into DEFAULT_FLOOR_ELIGIBLE_SQL and the second test's assertion `expect(DEFAULT_FLOOR_ELIGIBLE_SQL).toContain('LENGTH(n.content) >= 20')` (line 160) fails spuriously — beforeEach (line 34-39) cannot isolate module-load-time evaluation. Independently reproduced by running the suite with SOX_CLUSTER_MIN_CONTENT_LENGTH=50: both tests failed, the second on this exact assertion. Realistic trigger: any shell or CI that exports the var (e.g. a dev box running the memory-server with the tunable set, then running tests).",
+      "fix_sketch": "Capture the ambient value at file top (`const ambient = process.env['SOX_CLUSTER_MIN_CONTENT_LENGTH']`) and derive the expected default from it, or assert the baked predicate equals the documented default only when the ambient var is undefined, or run this spec with the env stripped via vitest `env` config."
+    },
+    {
+      "severity": "low",
+      "category": "style",
+      "file": "libs/memory-core/src/cluster.ts",
+      "line": 57,
+      "description": "Percolation risk of lowering 50→20 is only implicitly documented. The diff explains what [20,50) content is now admitted (tag-like notes, command output, terse prose — cluster.ts:57-60) and DESIGN.md:510-516 retains the original rationale (cosine similarity unreliable for short content), but there is no explicit statement of the tradeoff: shorter episodes are noisier and can act as bridges (percolation) that inflate community size or shift centroids. The env var IS the right escape hatch and is documented (CONTRACTS.md:401-402, DESIGN.md:513-514), so the risk is mitigated, not unmanaged.",
+      "fix_sketch": "Add one sentence to the cluster.ts BL-497 comment (or DESIGN.md mitigation block) stating that operators who observe community bloat from short-content admissions can raise SOX_CLUSTER_MIN_CONTENT_LENGTH; the env var is the documented dial."
+    },
+    {
+      "severity": "info",
+      "category": "correctness",
+      "file": "libs/memory-core/src/cluster.ts",
+      "line": 77,
+      "description": "Fractional env values are accepted: Number('20.5') is finite and >= 1, so the floor can be a non-integer (SQLite then effectively rounds LENGTH comparisons up). Not a bug — a fractional floor is a valid operator choice — but the docs call it a 'floor' and the parser does not enforce integer-ness.",
+      "fix_sketch": "Optionally require Number.isInteger(parsed) in resolveMinContentLength, or document that fractional values round up in SQLite comparisons."
+    },
+    {
+      "severity": "info",
+      "category": "spec-compliance",
+      "file": "libs/memory-core/src/cluster-metrics.ts",
+      "line": 317,
+      "description": "Claim-accuracy nit: implementer claimed '5 cluster-metrics census sites' share the lockstep predicate; the code has 4 SQL sites (lines 317, 323, 329, 362) plus doc-comment references (lines 36, 112, 344-347). The lockstep property itself is fully verified — no drift possible. Also '3 docs' in the claim is actually 4 files (CONTRACTS, DESIGN, PLAN, STATE).",
+      "fix_sketch": "None required — record only."
+    }
+  ],
+  "summary": {
+    "critical": 0,
+    "high": 0,
+    "medium": 0,
+    "low": 1,
+    "info": 3
+  },
+  "backlog_entries": [
+    "No new backlog items filed — reviewer is read-only on the backlog graph. Recommend (non-blocking): hardening bl497 spec against ambient env (info finding 1) and an explicit percolation-risk note (low finding 2)."
+  ]
+}

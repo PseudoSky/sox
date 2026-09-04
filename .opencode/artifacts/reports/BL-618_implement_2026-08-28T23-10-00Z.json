@@ -1,0 +1,107 @@
+{
+  "$schema": "agent-report-v1",
+  "agent": "implement",
+  "segment": "BL-618",
+  "label": "BL-618 — spawn-time child telemetry bootstrap convention (fork child never called initTelemetry)",
+  "completed_at": "2026-08-28T23:10:00Z",
+
+  "summary": "Implemented the BL-618 architecture spec end-to-end: a spawn-time telemetry bootstrap convention (forkChild/spawnWorker + bootstrapChildTelemetry + childTelemetrySnapshot ack + _recordChildTelemetry) so forked/spawned children initialise telemetry and no-op children become visible; closed BUG-TELEMETRY-DATE-ROLLED-LOGS-NEVER-PRUNED-001 alongside; added a source-scan guard and RED->GREEN specs; resolved BL-618 in the backlog graph.",
+
+  "changes": [
+    { "file": "libs/observability/sox-telemetry/src/child-bootstrap.ts", "kind": "NEW — SOX_TELEMETRY_INIT, bootstrapChildTelemetry, childTelemetrySnapshot, forkChild, spawnWorker (never-throw, malformed-warn, merge+resolveProcessRole)", "lines": "+203" },
+    { "file": "libs/observability/sox-telemetry/src/runtime.ts", "kind": "_recordChildTelemetry + ChildTelemetryRecord/ChildrenTelemetrySelfCheck + children field on TelemetrySelfCheck (counters + bounded-20 ring)", "lines": "+94" },
+    { "file": "libs/observability/sox-telemetry/src/sink.ts", "kind": "DurableJsonlSink.write() prunes on date rollover (BUG-TELEMETRY-DATE-ROLLED-LOGS-NEVER-PRUNED-001)", "lines": "+14" },
+    { "file": "libs/observability/sox-telemetry/src/index.ts", "kind": "export new helpers + types", "lines": "+12" },
+    { "file": "libs/observability/sox-telemetry/src/bl618-child-bootstrap.spec.ts", "kind": "NEW — env parse/merge/role-correction, forkChild env injection, date-rollover prune (names BL-618 + date-rollover bug)", "lines": "+252" },
+    { "file": "libs/memory-core/src/enrich-process-host.ts", "kind": "bootstrapChildTelemetry in the require.main guard + telemetry.ready as FIRST IPC message", "lines": "+14" },
+    { "file": "libs/memory-core/src/enrich-isolation.ts", "kind": "forkChild instead of raw fork; telemetry.ready-first branch; child_telemetry on EnrichIsolatedOk; unacked recording", "lines": "+49 / -6" },
+    { "file": "libs/memory-core/src/bl618-child-telemetry-bootstrap.spec.ts", "kind": "NEW — RED->GREEN: asserts sox.stage.cluster.* records with pid===child pid + non-null child_telemetry", "lines": "+155" },
+    { "file": "libs/data/embed/embedding-provider/src/fastembedProcessHost.ts", "kind": "bootstrapChildTelemetry + guarded telemetry.ready ack", "lines": "+24 / -8" },
+    { "file": "libs/data/embed/embedding-provider/src/sharedFastembedProcess.ts", "kind": "forkChild + _recordChildTelemetry + telemetry.ready-before-pending-lookup (committed via commit-mine --hunks, other agent's resetSharedFastembedProcess left uncommitted)", "lines": "+41 / -6" },
+    { "file": "libs/data/embed/embedding-provider/src/embedWorker.ts", "kind": "worker entrypoint: bootstrapChildTelemetry + parentPort telemetry.ready", "lines": "+7" },
+    { "file": "libs/data/embed/embedding-provider/src/sharedOnnxWorker.ts", "kind": "spawnWorker + _recordChildTelemetry + telemetry.ready-before-pending-lookup (commit-mine --hunks, other agent's resetSharedOnnxWorker left uncommitted)", "lines": "+20 / -1" },
+    { "file": "libs/data/embed/embedding-provider/src/fastembedProcessHost-bug005-dim.spec.ts", "kind": "skip the new telemetry.ready ack before resolving the init reply", "lines": "+4" },
+    { "file": "tools/check-child-spawn-telemetry.mjs", "kind": "NEW — source-scan guard flagging raw fork/spawn/new Worker with allowlist + comment-justified reasons", "lines": "+194" },
+    { "file": "registry/index.json", "kind": "regenerated checksums for memory-cli/memory-flush/memory-server + builtFromCommit bump (--allow-dirty; provisional state as in prior e3e6849e sync)", "lines": "+34 / -34" }
+  ],
+
+  "tests": {
+    "project": "@adhd/sox-telemetry",
+    "command": "nx test sox-telemetry",
+    "passed": 40,
+    "failed": 0,
+    "skipped": 0,
+    "output_snippet": "Test Files  5 passed (5) / Tests  40 passed (40)",
+    "tree_state": "check-suite-tree-state: DIRTY (sox-telemetry's own 5 BL-618 files — my changes only; 1-project dependency set)"
+  },
+  "tests2": {
+    "project": "@adhd/sox-memory-core",
+    "command": "nx test memory-core (bl618 spec: npx vitest run src/bl618-child-telemetry-bootstrap.spec.ts)",
+    "bl618_spec_passed": 2,
+    "bl618_spec_failed": 0,
+    "full_suite": "13 failed | 686 passed (707) — ALL 13 failures are 'no such table: enrich_poison' from another agent's in-flight enrich-poison/enrich-health work (embed-pipeline.ts _healMissingVectorsPass), NOT BL-618",
+    "tree_state": "check-suite-tree-state: DIRTY — 25 paths in memory-core's dependency set (my 13 BL-618 files + another agent's 12 enrich-*/schema/embed-pipeline/curate/config files)"
+  },
+  "tests3": {
+    "project": "@adhd/sox-embedding-provider",
+    "command": "nx test embedding-provider",
+    "passed": 94,
+    "failed": 0,
+    "skipped": 0,
+    "output_snippet": "Test Files  20 passed (20) / Tests  94 passed (94)"
+  },
+  "smoke_test": {
+    "command": "node scripts/smoke-test.mjs",
+    "passed": 13,
+    "failed": 0,
+    "skipped": 0,
+    "output_snippet": "[smoke] done — 13 passed, 0 failed, 0 skipped; isolation OK — live data-root files byte-identical before/after"
+  },
+
+  "lint": {
+    "sox-telemetry": true,
+    "memory-core": true,
+    "embedding-provider": true
+  },
+
+  "build": {
+    "sox-telemetry": true,
+    "memory-core": true,
+    "embedding-provider": true,
+    "memory-server": true
+  },
+
+  "typecheck": {
+    "sox-telemetry": true,
+    "sox-telemetry-tests": true,
+    "memory-core": true,
+    "embedding-provider": true
+  },
+
+  "registry": {
+    "synced": true,
+    "command": "npx tsx scripts/build-index.ts --allow-dirty (nx target refused on dirty tree)",
+    "note": "provisional:true + builtFromCommit:+dirty on all entries — pre-existing state from the prior e3e6849e --allow-dirty sync; checksums for memory-cli/memory-flush/memory-server updated to match rebuilt artifacts"
+  },
+
+  "commits": [
+    "86d9e79e feat(embedding-provider): BL-618 spawn-time child telemetry bootstrap (forkChild/spawnWorker + telemetry.ready ack)",
+    "f7988c5d feat(telemetry): BL-618 spawn-time child telemetry bootstrap convention"
+  ],
+
+  "issues": [
+    "memory-core full suite: 13 failures (6 spec files) all 'no such table: enrich_poison' — another agent's in-flight enrich-poison/enrich-health work (they added the enrich_poison query to embed-pipeline.ts _healMissingVectorsPass but their schema/DDL for the table is not yet complete). NOT BL-618; left untouched per coordination protocol.",
+    "registry/index.json is provisional/dirty (--allow-dirty) because the shared tree has other agents' uncommitted work; the final clean-tree registry:sync-index after all agents commit will produce the definitive non-provisional checksums."
+  ],
+
+  "handoff_notes": [
+    "The other agent's resetSharedFastembedProcess/resetSharedOnnxWorker additions live in the SAME sharedFastembedProcess.ts/sharedOnnxWorker.ts files; my commits used commit-mine --hunks to commit only my BL-618 hunks, leaving their two reset functions uncommitted in the worktree (verified intact).",
+    "fastembedProcessHost-bug005-dim.spec.ts needed a 4-line fix (skip the new telemetry.ready ack before resolving the init reply) — my protocol change, my fix.",
+    "memory-core bl618 spec requires a rebuilt libs/memory-core/dist (resolveEnrichHostFork prefers the gitignored dist fallback) — npx nx build memory-core refreshes it; this is the BL-235 stale-dist hazard.",
+    "Do not run a bare/pathspec-less git commit: the two mixed files still hold the other agent's uncommitted reset hunks."
+  ],
+
+  "backlog_entries": [
+    { "humanId": "BL-618", "status": "RESOLVED", "citationCount": 7 }
+  ]
+}

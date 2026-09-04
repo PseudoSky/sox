@@ -1,0 +1,68 @@
+{
+  "$schema": "agent-report-v1",
+  "agent": "implement",
+  "segment": "BUG-026",
+  "label": "Lifetime WAL-ownership protocol (turso/sqlite adapters + engine-guard + graph-store)",
+  "completed_at": "2026-08-28T21:10:18Z",
+
+  "summary": "Implemented the BUG-026 lifetime WAL-ownership protocol: per-write + heartbeat WAL-identity verification with PASSIVE fold + connection recycle (turso) / fail-loud EStoreWalReplaced (sqlite) + close-time parity, cross-engine closure (better-sqlite3 refuses turso-marked stores, graph-store resolves turso identity via the async adapter read, foreign -shm reconciled/refused at turso connect).",
+
+  "changes": [
+    { "file": "libs/data/store/store-adapter/src/wal-ownership.ts", "kind": "NEW: verifyWalIdentityNow, clamped heartbeat tuning, EStoreWalReplaced, EForeignSqliteSidecar, reconcileForeignSqliteShm", "lines": "+250" },
+    { "file": "libs/data/store/store-adapter/src/integrity.ts", "kind": "exported probeWalIdentity (was module-private)", "lines": "+1 / -1" },
+    { "file": "libs/data/store/store-adapter/src/engine-guard.ts", "kind": "getEngineIdentitySync/probeLegacyEngineSync refuse better-sqlite3 on turso-marked stores (header read only)", "lines": "+19" },
+    { "file": "libs/data/store/store-adapter/src/turso-adapter.ts", "kind": "write-path + heartbeat WAL-identity check, _recoverReplacedWal, foreign -shm reconcile in _openReal, close/reconnect timer handling", "lines": "+205" },
+    { "file": "libs/data/store/store-adapter/src/sqlite-adapter.ts", "kind": "_walReplaced fail-loud + write-path/heartbeat check + close-time identity fold (parity)", "lines": "+168" },
+    { "file": "libs/data/store/store-adapter/src/types.ts", "kind": "AdapterConfig.walOwnershipHeartbeatMs?: number", "lines": "+10" },
+    { "file": "libs/data/store/store-adapter/src/index.ts", "kind": "export wal-ownership.js", "lines": "+1" },
+    { "file": "libs/data/graph/graph-store/src/index.ts", "kind": "engineIdentity getter drops sync better-sqlite3 read for turso (async readEngineIdentityViaAdapter)", "lines": "+40 / -40" },
+    { "file": "libs/data/graph/graph-store/src/engine-guard.bl508.spec.ts", "kind": "BL-580 test rewritten for async path + new poisoner-closed test", "lines": "+53 / -53" },
+    { "file": "libs/data/store/store-adapter/src/__tests__/wal-ownership.bug026.spec.ts", "kind": "NEW: 11 tests naming BUG-026 (write-path, heartbeat idle/passive, sqlite parity/close-time, -shm reconcile/refusal, probe guard, typed tuning)", "lines": "+364" }
+  ],
+
+  "tests": {
+    "project": "store-adapter",
+    "command": "npx nx test store-adapter --skip-nx-cache",
+    "passed": 617,
+    "failed": 0,
+    "skipped": 0,
+    "output_snippet": "Test Files  65 passed (65) / Tests  617 passed (617)",
+    "tree_state": "check-suite-tree-state.mjs --project store-adapter: DIRTY — 13 uncommitted paths in the dependency set (store-adapter source + sox-telemetry in-flight from another agent). sox-telemetry typechecks; my changes are isolated to store-adapter/graph-store."
+  },
+  "tests2": {
+    "project": "graph-store",
+    "command": "npx nx test graph-store --skip-nx-cache",
+    "passed": 191,
+    "failed": 0,
+    "skipped": 0,
+    "output_snippet": "Test Files  17 passed (17) / Tests  191 passed (191)"
+  },
+
+  "lint": { "passed": true, "note": "store-adapter + graph-store both lint clean" },
+  "typecheck": { "passed": true, "note": "store-adapter + graph-store both typecheck clean" },
+  "build": { "passed": true, "note": "dist rebuilt via nx test ^build (atomic-tsc); dist is gitignored, not committed" },
+
+  "red_green": {
+    "red": "Temporarily removed `await this._recoverReplacedWalIfNeeded()` from turso _trackOp; ran `wal-ownership.bug026.spec.ts -t 'write path'` -> FAILED: 'AssertionError: expected 0 to be greater than or equal to 1' (no damaged event emitted during writes).",
+    "green": "Restored the call; same test -> passed (2 passed, 9 skipped)."
+  },
+
+  "registry": "NOT needed — store-adapter and graph-store are data libs, not registered in registry/index.json (libs/data/CLAUDE.md). Verified: rg 'store-adapter|graph-store' registry/index.json -> no match.",
+
+  "commit": "fe7c19f3 fix(store-adapter): lifetime WAL-ownership protocol (BUG-026) — 10 files, +1071 / -41. Committed by explicit pathspec; index was clean (0 staged entries) so no other agent's work swept.",
+
+  "backlog": "BUG-026 transitioned to RESOLVED (closedAt 2026-08-28T21:09:30Z) with 6 file:line citations. Verified via fresh `backlog get` -> status RESOLVED, citationCount 6.",
+
+  "issues": [
+    "commitlint scope-enum warning: 'store-adapter' is not in the allowed scope enum (nx-migration|manifest|authoring|install-engine|host-runtime|registry|memory-core|sox|extensions|scripts|ci|release). Non-blocking warning; commit landed. No data-lib scope exists in the enum.",
+    "gx detect_changes is polluted by other agents' in-flight work (cf-chain.mjs, sox-telemetry) in the shared tree; my commit is verified isolated to the 10 pathspec'd files via `git show --stat`."
+  ],
+
+  "handoff_notes": [
+    "turso identity is now async-only for the graph-store engineIdentity getter (returns cached/null); consumers needing turso identity must call readEngineIdentityViaAdapter (already wired via memory-core getStoreEngineIdentity).",
+    "The heartbeat interval is clamped [1000, 60000]; tests use walOwnershipHeartbeatMs: 1000 (the floor) with a 1600ms sleep — a sub-floor injection clamps to 1000ms, never a toggle.",
+    "No docs/spec/store-wal-ownership.md was created — the contract lives in the wal-ownership.ts module doc comment."
+  ],
+
+  "backlog_entries": []
+}

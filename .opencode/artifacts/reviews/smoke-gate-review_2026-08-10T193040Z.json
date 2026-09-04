@@ -1,0 +1,48 @@
+{
+  "$schema": "review-report-v1",
+  "reviewer": "flash-reviewer",
+  "task_id": "smoke-gate-review",
+  "label": "fix/smoke-gate code review — BL-192 build-preflight coverage gap + exports preflight refactor",
+  "reviewed_at": "2026-08-10T19:30:40Z",
+  "files_reviewed": [
+    "tools/workspace-package-scan.mjs",
+    "scripts/smoke-test.mjs",
+    "scripts/workspace-package-scan.test.mjs",
+    "tools/verify-exports-publint-attw.mjs",
+    "tools/baseline-capture/project.json",
+    "extensions/commands/di-command/project.json",
+    "CONTRIBUTING.md",
+    "vitest.config.ts"
+  ],
+  "verification": {
+    "build": "passed — npx nx run-many -t build (32 projects + 3 dep tasks, exit 0)",
+    "test": { "passed": 19, "failed": 0, "skipped": 0 },
+    "lint": "passed — eslint on all 5 changed/related .mjs files, 0 errors"
+  },
+  "findings": [
+    {
+      "severity": "low",
+      "category": "correctness",
+      "file": "tools/workspace-package-scan.mjs",
+      "line": 113,
+      "description": "contractArtifactPaths treats any exports value containing '/' as a local filesystem path unless it matches node:/npm:/URL schemes. A future exports value that re-exports an EXTERNAL package (e.g. \"./fp\": \"lodash/fp\" or \"./x\": \"@scope/pkg\") would be resolved as <pkgDir>/lodash/fp, making the smoke gate FATAL on a fully built tree with a misleading 'build first' message. Scanned all 42 workspace packages: ZERO such values exist today, so there is no live false positive. The bare-name skip (!s.includes('/')) only rejects values WITHOUT a slash, which is the inverse of the risky shape.",
+      "fix_sketch": "Reject values that do not start with './', '../', or '/' (relative-path contract) in addition to the existing node:/npm:/URL and bare-name skips; keep exports['./package.json'] working since it starts with './'. Add a unit case for '@scope/pkg' and 'dep/subpath'."
+    },
+    {
+      "severity": "low",
+      "category": "correctness",
+      "file": "tools/verify-exports-publint-attw.mjs",
+      "line": 170,
+      "description": "Concurrent executions of verify-exports (two smoke gates running simultaneously in a shared checkout) race inside attw's --pack path. Observed empirically during review: running old + new verify-exports concurrently (zsh process substitution) produced WRONG, disjoint violation sets (5 vs 4 violations on totally different packages, all spurious); the same two binaries run sequentially are byte-identical, exit 0, publint 30 / attw 23. The gate now runs this preflight on every smoke run, so two concurrent smoke runs can spuriously fail. Pre-existing tooling property (attw/npm pack temp-state collision), not introduced by this commit, but amplified by the gate's mandatory scope.",
+      "fix_sketch": "Do not fix in this change (pre-existing). Mitigation options for later: serialize the preflight with a lock file, or document that concurrent smoke runs in one checkout are unsupported. File a backlog item."
+    }
+  ],
+  "summary": {
+    "critical": 0,
+    "high": 0,
+    "medium": 0,
+    "low": 2,
+    "info": 0
+  },
+  "backlog_entries": []
+}

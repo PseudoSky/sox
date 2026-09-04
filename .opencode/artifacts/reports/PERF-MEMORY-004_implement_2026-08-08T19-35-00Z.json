@@ -1,0 +1,94 @@
+{
+  "$schema": "agent-report-v1",
+  "agent": "implement",
+  "segment": "PERF-MEMORY-004",
+  "label": "PERF-MEMORY-004: remove silent importance=1.0 default + implement C2.1 batch skip",
+  "completed_at": "2026-08-08T19:38:00.000Z",
+
+  "summary": "Fixed two coupled bugs: (1) write path silently defaulted importance to 1.0 causing every episode to be falsely stamped user_override; (2) batch enricher never respected the user_override note, stripping genuinely user-asserted importance on every pass.",
+
+  "changes": [
+    {
+      "file": "libs/memory-core/src/write.ts",
+      "kind": "Removed importance=1.0 default (line 197→198), added computeImportance() call before INSERT (lines 312-333), pass userSuppliedImportance flag to enrichOnWrite (lines 442-443)",
+      "lines": "+36 / -7"
+    },
+    {
+      "file": "libs/memory-core/src/enrich.ts",
+      "kind": "Added userSuppliedImportance?: boolean to EnrichOnWriteParams (line 65), changed userOverride check to respect the flag (lines 169-176)",
+      "lines": "+12 / -1"
+    },
+    {
+      "file": "libs/memory-core/src/enrich-batch.ts",
+      "kind": "Added C2.1 skip guard in processEpisode: parse enrich_ver.note and return early when 'user_override' (lines 325-332)",
+      "lines": "+10"
+    },
+    {
+      "file": "libs/memory-core/src/write.spec.ts",
+      "kind": "Added PERF-MEMORY-004 end-to-end write-path tests: no-explicit-importance computes content-derived score >1.0 without user_override note; explicit importance preserved with note",
+      "lines": "+51"
+    },
+    {
+      "file": "libs/memory-core/src/enrich.spec.ts",
+      "kind": "Added PERF-MEMORY-004 enrichOnWrite unit tests + C2.1 batch skip integration test",
+      "lines": "+119"
+    }
+  ],
+
+  "tests": {
+    "project": "memory-core",
+    "command": "npx nx test memory-core --skip-nx-cache",
+    "passed": 616,
+    "failed": 0,
+    "skipped": 8,
+    "files": 62,
+    "output_snippet": "Tests  616 passed | 8 skipped (624)\nTest Files  62 passed (62)",
+    "tree_state": "DIRTY (5 uncommitted files, all owned by this change):\n  M libs/memory-core/src/enrich-batch.ts\n  M libs/memory-core/src/enrich.spec.ts\n  M libs/memory-core/src/enrich.ts\n  M libs/memory-core/src/write.spec.ts\n  M libs/memory-core/src/write.ts",
+    "red_green": {
+      "write_path": {
+        "test": "write.spec.ts: PERF-MEMORY-004 write with no explicit importance",
+        "red": "importance=1.0 (default) → expected >1.0 → FAIL (AssertionError: expected 1 to be greater than 1)",
+        "green": "importance=4.0 (content-derived), enrich_ver.note undefined → PASS"
+      },
+      "batch_skip": {
+        "test": "enrich.spec.ts: PERF-MEMORY-004 C2.1 batch skip",
+        "red": "importance changed from 9.5 to 1.0 (overwritten) → expected 9.5 → FAIL (AssertionError: expected 1 to be 9.5)",
+        "green": "importance=9.5 preserved, note='user_override' preserved → PASS"
+      }
+    }
+  },
+
+  "lint": {
+    "passed": true,
+    "command": "npx nx lint memory-core"
+  },
+
+  "typecheck": {
+    "passed": true,
+    "command": "npx nx typecheck memory-core"
+  },
+
+  "issues": [],
+
+  "handoff_notes": [
+    "Branch: fix/perf-memory-004-v2, commit: 41f241ef (off main 4ce4d6e4)",
+    "Worktree: .worktrees/perf-memory-004-fix",
+    "NOT merged to main — another agent owns the merge + guard run",
+    "registry/index.json NOT touched — memory-server dist NOT rebuilt",
+    "No embed/vector code touched",
+    "~/.memory/* NOT touched",
+    "Current file:line references (post-fix):",
+    "  write.ts:197-198 — importance destructuring (no default)",
+    "  write.ts:312-333 — computeImportance() before INSERT",
+    "  write.ts:442-443 — userSuppliedImportance passed to enrichOnWrite",
+    "  enrich.ts:65 — userSuppliedImportance?: boolean in EnrichOnWriteParams",
+    "  enrich.ts:169-176 — userOverride check respects userSuppliedImportance",
+    "  enrich-batch.ts:325-332 — C2.1 user_override skip in processEpisode",
+    "  CONTRACTS.md:781-782 — C2.1 documented requirement",
+    "Existing enrichOnWrite test callers with importance but no userSuppliedImportance flag:",
+    "  enrich.spec.ts — all existing enrichOnWrite calls pass importance:undefined → backward compatible (flag absent → treats undefined importance as 'compute')",
+    "  No production callers outside write.ts call enrichOnWrite directly"
+  ],
+
+  "backlog_entries": []
+}
