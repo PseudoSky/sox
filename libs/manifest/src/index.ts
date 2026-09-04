@@ -706,6 +706,83 @@ export function validate(raw: Record<string, unknown>): ValidateResult {
     }
   }
 
+  // ── agent IR (cross-platform rendering) ──────────────────────────────────
+  // [def:agent-ir] Host-agnostic agent block rendered into a per-host header at
+  // install time. Optional; absent => raw passthrough (legacy baked-in header).
+  const agent = raw['agent'];
+  if (agent !== undefined) {
+    if (typeof agent !== 'object' || agent === null || Array.isArray(agent)) {
+      errors.push(`agent must be an object`);
+    } else {
+      const a = agent as Record<string, unknown>;
+      for (const k of ['name', 'description', 'model', 'mode']) {
+        const v = a[k];
+        if (v !== undefined && typeof v !== 'string') {
+          errors.push(`agent.${k} must be a string when present`);
+        }
+      }
+      if (a['temperature'] !== undefined && typeof a['temperature'] !== 'number') {
+        errors.push(`agent.temperature must be a number when present`);
+      }
+      const tools = a['tools'];
+      if (tools !== undefined) {
+        if (!Array.isArray(tools)) {
+          errors.push(`agent.tools must be an array`);
+        } else {
+          for (const t of tools as unknown[]) {
+            if (typeof t === 'string') continue;
+            if (typeof t === 'object' && t !== null && !Array.isArray(t)) {
+              const o = t as Record<string, unknown>;
+              if (typeof o['logical'] !== 'string' || typeof o['server'] !== 'string') {
+                errors.push(`agent.tools symbolic entries require string "logical" and "server"`);
+              }
+            } else {
+              errors.push(`agent.tools entries must be strings or { logical, server } objects`);
+            }
+          }
+        }
+      }
+      const permission = a['permission'];
+      if (permission !== undefined) {
+        if (typeof permission !== 'object' || permission === null || Array.isArray(permission)) {
+          errors.push(`agent.permission must be an object`);
+        } else {
+          for (const [k, v] of Object.entries(permission as Record<string, unknown>)) {
+            if (typeof v === 'string') continue; // scalar action
+            if (typeof v === 'object' && v !== null && !Array.isArray(v)) {
+              for (const [pat, act] of Object.entries(v as Record<string, unknown>)) {
+                if (typeof act !== 'string') {
+                  errors.push(`agent.permission.${k}["${pat}"] must be a string action`);
+                }
+              }
+            } else {
+              errors.push(`agent.permission.${k} must be a string action or a pattern→action object`);
+            }
+          }
+        }
+      }
+    }
+  }
+
+  // ── render overrides (per-host typed config) ─────────────────────────────
+  // [def:agent-render-overrides] Keys are host names; values are per-host header
+  // overrides merged over the IR at install time.
+  const render = raw['render'];
+  if (render !== undefined) {
+    if (typeof render !== 'object' || render === null || Array.isArray(render)) {
+      errors.push(`render must be an object`);
+    } else {
+      for (const [hostKey, hostVal] of Object.entries(render as Record<string, unknown>)) {
+        if (!KNOWN_HOSTS.has(hostKey)) {
+          errors.push(`render key "${hostKey}" must be one of: ${Array.from(KNOWN_HOSTS).join(', ')}`);
+        }
+        if (typeof hostVal !== 'object' || hostVal === null || Array.isArray(hostVal)) {
+          errors.push(`render.${hostKey} must be an object`);
+        }
+      }
+    }
+  }
+
   // ── config_schema meta-validation ────────────────────────────────────────
   // config_schema is optional but strongly recommended for process types.
   // We validate the shape (must be an object) and emit advisory warnings for
@@ -767,7 +844,10 @@ export function validate(raw: Record<string, unknown>): ValidateResult {
  * and works with both `require()` (CJS) and dynamic import (ESM) without needing
  * the JSON asset to be copied as a separate file.
  *
- * Source of truth: libs/manifest/src/schema.json
+ * This inline copy is AUTHORITATIVE at runtime; `libs/manifest/src/schema.json`
+ * is regenerated from it (`npx tsx -e "…JSON.stringify(ManifestSchema)…"`) and the
+ * two are kept identical by `schema-parity.spec.ts` (BL-623). Editing one without
+ * the other fails the parity test.
  */
 export const ManifestSchema: Record<string, unknown> = {
   $schema: 'https://json-schema.org/draft/2020-12/schema',
@@ -1005,6 +1085,56 @@ export const ManifestSchema: Record<string, unknown> = {
         transports: { type: 'array', items: { type: 'string', enum: ['stdio', 'http', 'sse', 'socket'] } },
         source: { type: 'string' },
         overrides: { type: 'object', additionalProperties: true },
+      },
+    },
+    // ── Cross-platform agent rendering (docs/spec/cross-platform-install-rendering.md) ──
+    // `agent` is the host-agnostic IR; `render.<host>` are typed per-host overrides
+    // merged over the IR at install time. The prose body lives in `entrypoint`.
+    agent: {
+      type: 'object',
+      additionalProperties: false,
+      description:
+        '[def:agent-ir] Host-agnostic agent IR. Rendered into a per-host header at install time by libs/host-registry.',
+      properties: {
+        name: { type: 'string' },
+        description: { type: 'string' },
+        model: { type: 'string' },
+        temperature: { type: 'number' },
+        mode: { type: 'string' },
+        tools: {
+          type: 'array',
+          items: {
+            oneOf: [
+              { type: 'string' },
+              {
+                type: 'object',
+                additionalProperties: false,
+                required: ['logical', 'server'],
+                properties: {
+                  logical: { type: 'string' },
+                  server: { type: 'string' },
+                },
+              },
+            ],
+          },
+        },
+        permission: {
+          type: 'object',
+          additionalProperties: true,
+          description:
+            'opencode agent-frontmatter permission map: action | (pattern -> action). Shape-checked by validate().',
+        },
+      },
+    },
+    render: {
+      type: 'object',
+      additionalProperties: false,
+      description:
+        '[def:agent-render-overrides] Per-host typed overrides merged over the agent IR at install time.',
+      properties: {
+        claude: { type: 'object', additionalProperties: true },
+        opencode: { type: 'object', additionalProperties: true },
+        codex: { type: 'object', additionalProperties: true },
       },
     },
     config: { type: 'object', additionalProperties: true },

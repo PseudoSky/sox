@@ -1015,7 +1015,12 @@ Exit codes:
     }
   }
 
-  if (result.ok) {
+  // [def:agent-renderer] render-for-every-host validation (spec §7.1): when the
+  // manifest declares an `agent` IR / `render` overrides, render it for each
+  // declared host and surface any renderer failure.
+  const renderCheck = await validateAgentRendering(rawObj as Record<string, unknown>, absPath!);
+
+  if (result.ok && renderCheck.errors.length === 0) {
     process.stdout.write(`${CLI} validate: OK — ${String(absPath)}\n`);
     for (const w of (result.warnings ?? [])) {
       process.stdout.write(`  warning: ${w}\n`);
@@ -1023,10 +1028,20 @@ Exit codes:
     for (const w of sigTermWarnings) {
       process.stdout.write(`  ${w}\n`);
     }
+    for (const w of renderCheck.warnings) {
+      process.stdout.write(`  warning: ${w}\n`);
+    }
     process.exit(0);
   } else {
-    process.stdout.write(`${CLI} validate: INVALID — ${String(absPath)}\n`);
+    if (!result.ok) {
+      process.stdout.write(`${CLI} validate: INVALID — ${String(absPath)}\n`);
+    } else {
+      process.stdout.write(`${CLI} validate: RENDER INVALID — ${String(absPath)}\n`);
+    }
     for (const err of result.errors) {
+      process.stdout.write(`  - ${err}\n`);
+    }
+    for (const err of renderCheck.errors) {
       process.stdout.write(`  - ${err}\n`);
     }
     for (const w of (result.warnings ?? [])) {
@@ -1037,6 +1052,73 @@ Exit codes:
     }
     process.exit(1);
   }
+}
+
+/**
+ * validateAgentRendering — render an agent manifest for every declared host and
+ * report failures ([def:agent-renderer], spec §7.1). No-op for non-agent
+ * manifests and for agents that declare neither an `agent` IR nor `render`
+ * overrides (raw passthrough).
+ */
+async function validateAgentRendering(
+  manifest: Record<string, unknown>,
+  manifestFile: string,
+): Promise<{ errors: string[]; warnings: string[] }> {
+  const errors: string[] = [];
+  const warnings: string[] = [];
+  if (manifest['type'] !== 'agent') return { errors, warnings };
+
+  const agent = manifest['agent'];
+  const render = manifest['render'];
+  const hasIr = agent !== null && typeof agent === 'object' && !Array.isArray(agent);
+  const hasRender = render !== null && typeof render === 'object' && !Array.isArray(render);
+  if (!hasIr && !hasRender) return { errors, warnings };
+
+  const { getHost } = await import('@adhd/sox-host-registry');
+  const path = await import('node:path');
+  const fs = await import('node:fs');
+  const extDir = path.dirname(manifestFile);
+  const entrypoint = manifest['entrypoint'] as string | undefined;
+  const prosePath = entrypoint !== undefined ? safeResolveManifestPath(extDir, entrypoint) : null;
+  if (prosePath === null || !fs.existsSync(prosePath)) {
+    errors.push(`agent: entrypoint "${entrypoint ?? '(unset)'}" not found — cannot render-validate`);
+    return { errors, warnings };
+  }
+  const prose = fs.readFileSync(prosePath, 'utf8');
+
+  const install = manifest['install'] as Record<string, unknown> | undefined;
+  const hosts = (install?.['hosts'] as string[] | undefined) ?? ['claude', 'codex', 'opencode'];
+  for (const host of hosts) {
+    type RenderCheckHost = {
+      render?: { render(ir: unknown, prose: string, overrides?: unknown): { kind: string; content?: string; value?: unknown } };
+    };
+    let hostMod: RenderCheckHost;
+    try {
+      hostMod = getHost(host) as unknown as RenderCheckHost;
+    } catch {
+      warnings.push(`agent: unknown host "${host}" — skipped render check`);
+      continue;
+    }
+    if (hostMod.render === undefined) {
+      warnings.push(`agent: host "${host}" has no renderer — raw passthrough (header baked into entrypoint)`);
+      continue;
+    }
+    try {
+      const result = hostMod.render.render(
+        hasIr ? agent : {},
+        prose,
+        hasRender ? (render as Record<string, unknown>)[host] : undefined,
+      );
+      if (result.kind === 'file-body' && (typeof result.content !== 'string' || result.content.length === 0)) {
+        errors.push(`agent: host "${host}" rendered an empty file-body`);
+      } else if (result.kind === 'config-value' && (result.value === undefined || result.value === null)) {
+        errors.push(`agent: host "${host}" rendered an empty config-value`);
+      }
+    } catch (e) {
+      errors.push(`agent: host "${host}" render failed: ${String(e)}`);
+    }
+  }
+  return { errors, warnings };
 }
 
 // ─── search ───────────────────────────────────────────────────────────────────

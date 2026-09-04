@@ -40,8 +40,14 @@ export type {
   ScopePathMap,
   HostModule,
   McpConfig,
+  AgentIr,
+  AgentOverride,
+  AgentToolRef,
+  RenderedArtifact,
+  HostRenderer,
 } from './internal.js';
 export { expandHome, existsIn } from './internal.js';
+export { agentRenderers, stripFrontmatter, yamlScalar, yamlStringify } from './agent-renderers.js';
 
 // ─── Registry ────────────────────────────────────────────────────────────────
 

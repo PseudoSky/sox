@@ -1328,12 +1328,18 @@ interface HostSurface {
   paths: Partial<Record<string, string>>;
 }
 
+/** Minimal local shape for a host renderer (mirrors HostRenderer in host-registry). */
+interface AgentRenderLocal {
+  render(ir: unknown, prose: string, overrides?: unknown): { kind: string; content?: string; value?: unknown };
+}
+
 /** Minimal local shape for a host module (mirrors HostModule in host-registry). */
 interface HostModuleLocal {
   host: string;
   detect(workspaceRoot: string): boolean;
   scopePaths(scope: string): Partial<Record<string, string>>;
   readonly surfaces: Record<string, HostSurface>;
+  readonly render?: AgentRenderLocal;
 }
 
 export type RegistryHostScope = 'project' | 'user' | 'local' | 'org';
@@ -1719,11 +1725,18 @@ export async function declarativeInstall(
       // BL-566: for agent type the hashed source is the entrypoint file (the
       // only thing that lands), not the whole extension directory — otherwise
       // the dir-vs-file hash never matches and every install re-copies.
-      let hashSrcPath = descriptor.srcPath;
+      let contentPath = descriptor.srcPath;
       if (descriptor.type === 'agent' && fs.statSync(descriptor.srcPath).isDirectory()) {
-        hashSrcPath = resolveEntrypointFile(descriptor.srcPath);
+        contentPath = resolveEntrypointFile(descriptor.srcPath);
+        // [def:agent-renderer]: render the host-specific header + prose when the
+        // manifest declares an `agent` IR / `render` override and the host has a
+        // renderer. Raw passthrough otherwise.
+        if (hostMod.render !== undefined) {
+          const rendered = renderAgentForHost(descriptor.srcPath, descriptor.ext, hostName, hostMod.render);
+          if (rendered !== null) contentPath = rendered;
+        }
       }
-      const srcHash = hashPathForInstall(hashSrcPath);
+      const srcHash = hashPathForInstall(contentPath);
 
       // Determine the destination: if absTarget is a directory (or should be),
       // place the file as <dir>/<basename>. If the surface path includes a filename
@@ -1748,7 +1761,8 @@ export async function declarativeInstall(
 
       const destHash = fs.existsSync(destPath) ? hashPathForInstall(destPath) : '';
       let applied = false;
-      // BL-569 guard: never clobber an existing file this extension does not own.
+      // Unowned-file guard (BUG-028): never clobber an existing file this
+      // extension does not own.
       // `soxe install` must not silently overwrite a hand-authored / legacy host
       // file (incident: researcher.md — a working opencode agent was replaced by a
       // divergent extension copy and opencode rejected it). If the destination
@@ -1761,7 +1775,7 @@ export async function declarativeInstall(
           ?.entries?.some((e) => e.kind === 'file-drop' && e.path === destPath);
         if (!ownedByThis) {
           throw new Error(
-            `[declarative-install] refusing to overwrite unowned file at ${destPath} (BL-569). ` +
+            `[declarative-install] refusing to overwrite unowned file at ${destPath} (BUG-028). ` +
               `This file exists but is not owned by extension '${descriptor.ext}' in scope '${scope}'. ` +
               `It may be a hand-authored or legacy host file. Uninstall it first if it is a stale ` +
               `extension install, or pass force=true to overwrite deliberately.`,
@@ -1769,30 +1783,23 @@ export async function declarativeInstall(
         }
       }
       if (srcHash !== destHash) {
-        // src can be a file (single-file agent/rules drop) or a directory
-        // (skill/command/hook directory drop). Use cpSync for directory support.
-        // fs.cpSync is available in Node 16.7+; it handles both.
-        const srcStat = fs.statSync(descriptor.srcPath);
-        if (srcStat.isDirectory()) {
-          if (descriptor.type === 'agent') {
-            // BL-566: copy ONLY the entrypoint file (declared in extension.json
-            // or resolved by the C4 chain) to <absTarget>/<ext>.md. The whole
-            // extension dir would land as <absTarget>/<ext>/ — invisible to
-            // opencode's agent scan.
-            const entryFile = resolveEntrypointFile(descriptor.srcPath);
-            const dir = path.dirname(destPath);
-            if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-            fs.copyFileSync(entryFile, destPath);
-          } else {
-            // For a directory srcPath the destPath IS the directory to create/replace.
-            // cpSync with recursive:true copies the contents into destPath.
-            if (!fs.existsSync(destPath)) fs.mkdirSync(destPath, { recursive: true });
-            fs.cpSync(descriptor.srcPath, destPath, { recursive: true, force: true });
-          }
-        } else {
+        if (descriptor.type === 'agent') {
+          // BL-566 + [def:agent-renderer]: copy the (possibly rendered) entrypoint
+          // file to <absTarget>/<ext>.md. contentPath is always a file for agent.
           const dir = path.dirname(destPath);
           if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-          fs.copyFileSync(descriptor.srcPath, destPath);
+          fs.copyFileSync(contentPath, destPath);
+        } else {
+          // Non-agent: src can be a directory (skill/command/hook) or a file.
+          const srcStat = fs.statSync(descriptor.srcPath);
+          if (srcStat.isDirectory()) {
+            if (!fs.existsSync(destPath)) fs.mkdirSync(destPath, { recursive: true });
+            fs.cpSync(descriptor.srcPath, destPath, { recursive: true, force: true });
+          } else {
+            const dir = path.dirname(destPath);
+            if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+            fs.copyFileSync(descriptor.srcPath, destPath);
+          }
         }
         applied = true;
       }
@@ -1880,6 +1887,27 @@ export async function declarativeInstall(
               (process.argv[1] && process.argv[1].length > 0 ? process.argv[1] : undefined) ??
               'soxe';
             resolvedValue = { type: 'stdio', command: cliBin, args: ['serve', descriptor.ext] };
+          }
+        }
+      }
+
+      // [def:agent-renderer]: codex agent — auto-derive the TOML config value
+      // (`agents.<id>`) from the IR + prose when the host has a renderer. Codex
+      // agents are config-merge (TOML), not file-drop, so the render result is a
+      // config value, not a file.
+      if (
+        descriptor.type === 'agent' &&
+        (resolvedKeyPath === undefined || resolvedValue === undefined) &&
+        descriptor.srcPath !== undefined &&
+        hostMod.render !== undefined
+      ) {
+        const inputs = readAgentRenderInputs(descriptor.srcPath, hostName);
+        if (inputs !== null && inputs.renderable) {
+          const prose = readAgentProse(descriptor.srcPath);
+          const result = hostMod.render.render(inputs.ir, prose, inputs.override);
+          if (result.kind === 'config-value') {
+            resolvedKeyPath = `agents.${descriptor.ext}`;
+            resolvedValue = result.value;
           }
         }
       }
@@ -2157,4 +2185,73 @@ function hashDirForInstall(dirPath: string): string {
     }
   }
   return 'sha256:' + h.digest('hex');
+}
+
+// ─── Cross-platform agent rendering (docs/spec/cross-platform-install-rendering.md) ───
+// [def:agent-renderer] support: when an `agent` extension declares an `agent` IR
+// and/or `render.<host>` overrides, the install engine renders the host-specific
+// header instead of copying the entrypoint verbatim. Raw passthrough when the
+// host has no renderer or the manifest declares neither block.
+
+interface AgentRenderInputs {
+  ir: Record<string, unknown>;
+  override: Record<string, unknown> | undefined;
+  renderable: boolean;
+}
+
+/** Read the `agent` IR and `render.<host>` override from an extension's manifest. */
+function readAgentRenderInputs(srcPath: string, hostName: string): AgentRenderInputs | null {
+  const manifestPath = path.join(srcPath, 'extension.json');
+  if (!fs.existsSync(manifestPath)) return null;
+  let manifest: Record<string, unknown>;
+  try {
+    manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8')) as Record<string, unknown>;
+  } catch {
+    return null;
+  }
+  const ir = manifest['agent'];
+  const renders = manifest['render'];
+  const override =
+    renders !== null && typeof renders === 'object' && !Array.isArray(renders)
+      ? ((renders as Record<string, unknown>)[hostName] as Record<string, unknown> | undefined)
+      : undefined;
+  const hasIr = ir !== null && typeof ir === 'object' && !Array.isArray(ir);
+  const hasOverride = override !== undefined && typeof override === 'object' && !Array.isArray(override);
+  return {
+    ir: hasIr ? (ir as Record<string, unknown>) : {},
+    override: hasOverride ? override : undefined,
+    renderable: hasIr || hasOverride,
+  };
+}
+
+/** Read the agent prose body (the entrypoint .md). The renderer strips frontmatter. */
+function readAgentProse(srcPath: string): string {
+  return fs.readFileSync(resolveEntrypointFile(srcPath), 'utf8');
+}
+
+/**
+ * Render an agent IR + prose for a host into a deterministic scratch file, or
+ * return null when the extension is not renderable (raw passthrough). Only
+ * file-body results are handled here (claude/opencode); codex's config-value is
+ * handled in the config-merge branch.
+ */
+function renderAgentForHost(
+  srcPath: string,
+  ext: string,
+  hostName: string,
+  render: AgentRenderLocal,
+): string | null {
+  const inputs = readAgentRenderInputs(srcPath, hostName);
+  if (inputs === null || !inputs.renderable) return null;
+  const prose = readAgentProse(srcPath);
+  const result = render.render(inputs.ir, prose, inputs.override);
+  if (result.kind !== 'file-body' || typeof result.content !== 'string') return null;
+  // Deterministic scratch file: content-hash-named so identical rendered bytes
+  // share one file and re-install hashing is byte-stable ([inv:rendered-deterministic]).
+  const csum = crypto.createHash('sha256').update(result.content).digest('hex').slice(0, 16);
+  const scratchDir = path.join(os.tmpdir(), 'sox-render');
+  fs.mkdirSync(scratchDir, { recursive: true });
+  const scratchPath = path.join(scratchDir, `${ext}-${hostName}-${csum}.md`);
+  fs.writeFileSync(scratchPath, result.content, 'utf8');
+  return scratchPath;
 }
