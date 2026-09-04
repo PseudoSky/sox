@@ -57,18 +57,18 @@ export function sha256(s) {
 }
 
 /** CF instructions block — SESSION-WIDE BEHAVIOR, injected at message 1 BEFORE user text. */
-export function buildCFInstructions(sessionId, port) {
+export function buildCFInstructions(port) {
   return [
     '--- Content-First Session Instructions ---',
-    `Your session id is: ${sessionId || '(unset)'}.`,
     'You are running through a session-aware content-first proxy: the shared',
     'context stays cached across agent persona switches; only the role suffix',
     'changes per turn. When the next stage of work belongs to a different',
     'specialist, hand off to it instead of doing the work yourself:',
     '',
+    '  SESSION_ID=<your session id, from your persona block>',
     `  curl -s -X POST http://localhost:${port}/v1/session/agent \\`,
     `    -H 'Content-Type: application/json' \\`,
-    `    -d '{"sessionId":"${sessionId}","agent":"<agent-name>"}'`,
+    `    -d '{"sessionId":"$SESSION_ID","agent":"<agent-name>"}'`,
     '',
     'The next turn then runs with that agent\'s persona. Available agents:',
     'cf, rf, product, architect, typescript, review, researcher, backend, security',
@@ -82,14 +82,15 @@ export function buildCFInstructions(sessionId, port) {
  * agents and concat their outputs back into the conversation; agents:[] clears
  * back to single-agent standard turns. No judge agent is required in the
  * loop — the model controls the active perspectives itself. */
-export function buildFJInstructions(sessionId, port) {
+export function buildFJInstructions(port) {
   return [
     'To hand off the current task to a set of specialist agents for their',
     'perspectives, call the session-agent endpoint with the agents list:',
     '',
+    '  SESSION_ID=<your session id, from your persona block>',
     `  curl -s -X POST http://localhost:${port}/v1/session/agent \\`,
     `    -H 'Content-Type: application/json' \\`,
-    `    -d '{"sessionId":"${sessionId}","agents":["<name1>","<name2>"]}'`,
+    `    -d '{"sessionId":"$SESSION_ID","agents":["<name1>","<name2>"]}'`,
     '',
     'Available agents:',
     'cf, rf, product, architect, typescript, review, researcher, backend, security',
@@ -184,7 +185,7 @@ export function rewriteToContentFirst(messages, opts = {}) {
   const {
     personaSP = '', cfPrompt = '',
     handoffTask = null, agentName = '',
-    AGENTS = null,
+    AGENTS = null, sessionId = null,
   } = opts;
   const result = messages.map(m => ({ ...m, content: typeof m.content === 'string' ? m.content : (m.content == null ? '' : JSON.stringify(m.content)) }));
 
@@ -243,7 +244,14 @@ export function rewriteToContentFirst(messages, opts = {}) {
   // reasoning-echo contract is satisfied by [inv:reasoning-echo] below, not
   // by persona placement.
   if (personaSP) {
-    const suffix = buildPersonaSuffix(agentName || 'agent', personaSP, handoffTask);
+    // The session id rides the PERSONA TAIL, never position 0 (2026-08-05):
+    // the CF/FJ instructions are session-id-free so position 0 is byte-
+    // identical across ALL sessions and persona transitions — handoff chains
+    // (product → fan out → product → typescript → fan out → typescript) keep
+    // the shared prefix cached. The agent still needs its session id for the
+    // endpoint recipes, so it is prepended to the persona suffix.
+    const sessionPrefix = sessionId ? `SESSION_ID=${sessionId}\n\n` : '';
+    const suffix = buildPersonaSuffix(agentName || 'agent', sessionPrefix + personaSP, handoffTask);
     const lastIdx = result.length - 1;
     const lastMsg = result[lastIdx];
     if (lastMsg && !String(lastMsg.content || '').includes(MARKERS.agentEnd)) {

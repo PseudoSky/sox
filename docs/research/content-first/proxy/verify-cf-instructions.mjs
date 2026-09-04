@@ -69,9 +69,12 @@ const ARCHITECT = AGENTS.get('architect')?.systemPrompt || 'You are the architec
 const USER_CONTENT = 'Review the design doc.';
 
 // ── 1. buildCFInstructions: session-wide behavior, NOT a system prompt ──
-const cf = buildCFInstructions(SESSION, PORT);
-assert(cf.includes(`Your session id is: ${SESSION}.`), 'CF prompt contains session id');
-assert(cf.includes(`"sessionId":"${SESSION}"`), 'CF prompt contains sessionId in the curl recipe');
+const cf = buildCFInstructions(PORT);
+// Session-id-free (2026-08-05): the instructions must be byte-identical across
+// ALL sessions (cross-session cache) — the session id rides the persona tail
+// as SESSION_ID=..., and the curl recipe uses the $SESSION_ID variable.
+assert(!cf.includes(SESSION) && !cf.includes('Your session id is:'), 'CF prompt is session-id-free (no literal session id)');
+assert(cf.includes('$SESSION_ID') && cf.includes('SESSION_ID=<'), 'CF prompt uses SESSION_ID variable syntax');
 assert(cf.includes('/v1/session/agent'), 'CF prompt references the handoff endpoint');
 assert(cf.includes('architect') && cf.includes('review'), 'CF prompt lists available agents');
 assert(!cf.startsWith('You are opencode') && !cf.startsWith('#'), 'CF prompt is NOT a system prompt — it is session-wide behavior');

@@ -1,0 +1,58 @@
+1: {
+2:   "name": "apigen-plugin-batch",
+3:   "$schema": "../../../node_modules/nx/schemas/project-schema.json",
+4:   "sourceRoot": "packages/apigen/apigen-plugin-batch/src",
+5:   "projectType": "library",
+6:   "release": {
+7:     "version": {
+8:       "generatorOptions": {
+9:         "packageRoot": "packages/apigen/apigen-plugin-batch"
+10:       }
+11:     }
+12:   },
+13:   "tags": [
+14:     "domain:apigen",
+15:     "pkg-kind:plugin",
+16:     "pkg-class:optional",
+17:     "layer:logic",
+18:     "platform:node",
+19:     "access:domain"
+20:   ],
+21:   "targets": {
+22:     "build": {
+23:       "executor": "@nx/vite:build",
+24:       "outputs": ["{options.outputPath}"],
+25:       "options": {
+26:         "outputPath": "packages/apigen/apigen-plugin-batch/dist",
+27:         "emptyOutDir": true
+28:       }
+29:     },
+30:     "test": {
+31:       "executor": "@nx/vite:test",
+32:       "outputs": [
+33:         "{workspaceRoot}/coverage/packages/apigen/apigen-plugin-batch"
+34:       ],
+35:       "options": {
+36:         "configFile": "packages/apigen/apigen-plugin-batch/vite.config.ts"
+37:       }
+38:     },
+39:     "nx-release-publish": {
+40:       "dependsOn": [
+41:         "build",
+42:         "test",
+43:         "verify-dist-load",
+44:         "dist-manifest",
+45:         "publish-hygiene"
+46:       ],
+47:       "executor": "@nx/js:release-publish",
+48:       "options": {
+49:         "packageRoot": "{projectRoot}/dist"
+50:       }
+51:     },
+52:     "lint": {
+53:       "executor": "@nx/eslint:lint"
+54:     }
+55:   }
+56: }
+
+(End of file - total 56 lines)

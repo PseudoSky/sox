@@ -1,0 +1,208 @@
+1: {
+2:   "$schema": "./node_modules/nx/schemas/nx-schema.json",
+3:   "defaultBase": "main",
+4:   "namedInputs": {
+5:     "default": [
+6:       "{projectRoot}/**/*",
+7:       "!{projectRoot}/dist/**",
+8:       "sharedGlobals"
+9:     ],
+10:     "production": [
+11:       "default",
+12:       "!{projectRoot}/cypress/**/*",
+13:       "!{projectRoot}/**/*.cy.[jt]s?(x)",
+14:       "!{projectRoot}/cypress.config.[jt]s",
+15:       "!{projectRoot}/.eslintrc.json",
+16:       "!{projectRoot}/eslint.config.js",
+17:       "!{projectRoot}/**/?(*.)+(spec|test).[jt]s?(x)?(.snap)",
+18:       "!{projectRoot}/tsconfig.spec.json",
+19:       "!{projectRoot}/jest.config.[jt]s",
+20:       "!{projectRoot}/src/test-setup.[jt]s",
+21:       "!{projectRoot}/test-setup.[jt]s",
+22:       "!{projectRoot}/**/*.stories.@(js|jsx|ts|tsx|mdx)",
+23:       "!{projectRoot}/.storybook/**/*",
+24:       "!{projectRoot}/tsconfig.storybook.json"
+25:     ],
+26:     "sharedGlobals": [
+27:       "{workspaceRoot}/tools/vite-plugins/externalize.mjs",
+28:       "{workspaceRoot}/tools/vite-plugins/copy-readme.mjs",
+29:       "{workspaceRoot}/tools/nx-plugins/build/**/*",
+30:       "{workspaceRoot}/tools/nx-plugins/lint/**/*",
+31:       "{workspaceRoot}/.eslintignore"
+32:     ]
+33:   },
+34:   "plugins": [
+35:     {
+36:       "plugin": "@nx/next/plugin",
+37:       "options": {
+38:         "startTargetName": "start",
+39:         "buildTargetName": "build",
+40:         "devTargetName": "dev",
+41:         "serveStaticTargetName": "serve-static"
+42:       }
+43:     },
+44:     {
+45:       "plugin": "@nx/cypress/plugin",
+46:       "options": {
+47:         "targetName": "e2e",
+48:         "openTargetName": "open-cypress",
+49:         "componentTestingTargetName": "component-test",
+50:         "ciTargetName": "e2e-ci"
+51:       }
+52:     },
+53:     {
+54:       "plugin": "@nx/jest/plugin",
+55:       "options": {
+56:         "targetName": "test"
+57:       }
+58:     },
+59:     {
+60:       "plugin": "@nx/vite/plugin",
+61:       "options": {
+62:         "buildTargetName": "build",
+63:         "testTargetName": "test",
+64:         "serveTargetName": "serve",
+65:         "previewTargetName": "preview",
+66:         "serveStaticTargetName": "serve-static"
+67:       }
+68:     },
+69:     {
+70:       "plugin": "@nx/storybook/plugin",
+71:       "options": {
+72:         "serveStorybookTargetName": "storybook",
+73:         "buildStorybookTargetName": "build-storybook",
+74:         "testStorybookTargetName": "test-storybook",
+75:         "staticStorybookTargetName": "static-storybook"
+76:       }
+77:     },
+78:     {
+79:       "plugin": "@monodon/rust"
+80:     },
+81:     {
+82:       "plugin": "@nxlv/python"
+83:     },
+84:     {
+85:       "plugin": "./tools/nx-plugins/lint/plugin.js"
+86:     },
+87:     {
+88:       "plugin": "./tools/nx-plugins/build/plugin.js"
+89:     },
+90:     {
+91:       "plugin": "./tools/nx-plugins/assets/plugin.js"
+92:     },
+93:     {
+94:       "plugin": "./tools/nx-plugins/deps/plugin.js"
+95:     },
+96:     {
+97:       "plugin": "./tools/nx-plugins/test/plugin.js"
+98:     }
+99:   ],
+100:   "generators": {
+101:     "@nrwl/react": {
+102:       "application": {
+103:         "style": "none",
+104:         "linter": "eslint",
+105:         "standaloneConfig": true,
+106:         "babel": true
+107:       },
+108:       "component": {
+109:         "style": "none"
+110:       },
+111:       "library": {
+112:         "buildable": true,
+113:         "publishable": true,
+114:         "standaloneConfig": true,
+115:         "linter": "eslint",
+116:         "style": "none"
+117:       }
+118:     },
+119:     "@nrwl/next": {
+120:       "application": {
+121:         "style": "css",
+122:         "linter": "eslint"
+123:       }
+124:     },
+125:     "@nx/react": {
+126:       "library": {
+127:         "unitTestRunner": "vitest"
+128:       }
+129:     }
+130:   },
+131:   "targetDefaults": {
+132:     "@nx/vite:build": {
+133:       "cache": true,
+134:       "dependsOn": ["^build"],
+135:       "inputs": ["production", "^production"]
+136:     },
+137:     "test": {
+138:       "cache": true,
+139:       "dependsOn": ["lint", "^build"],
+140:       "inputs": [
+141:         "default",
+142:         "^production",
+143:         {
+144:           "externalDependencies": ["vitest", "better-sqlite3", "drizzle-orm"]
+145:         }
+146:       ]
+147:     },
+148:     "@nx/js:tsc": {
+149:       "cache": true,
+150:       "dependsOn": ["^build", "lint"],
+151:       "inputs": ["production", "^production"]
+152:     },
+153:     "build": {
+154:       "dependsOn": ["^build", "lint"],
+155:       "inputs": ["production", "^production"]
+156:     },
+157:     "nx-release-publish": {
+158:       "dependsOn": [
+159:         "build",
+160:         "assets",
+161:         "test",
+162:         "dist-manifest",
+163:         "verify-dist-load",
+164:         "publish-hygiene"
+165:       ]
+166:     },
+167:     "lint": {
+168:       "dependsOn": ["sync-deps"]
+169:     }
+170:   },
+171:   "targetDependencies": {
+172:     "build": [
+173:       {
+174:         "target": "build",
+175:         "projects": "dependencies"
+176:       }
+177:     ]
+178:   },
+179:   "release": {
+180:     "projectsRelationship": "independent",
+181:     "releaseTagPattern": "{projectName}@{version}",
+182:     "projects": [
+183:       "*",
+184:       "!@adhd/source",
+185:       "!adhd-e2e",
+186:       "!adhd",
+187:       "!ui-react-base-storybook",
+188:       "!environment-cli"
+189:     ],
+190:     "changelog": {
+191:       "automaticFromRef": true,
+192:       "projectChangelogs": {
+193:         "file": "{projectRoot}/CHANGELOG.md",
+194:         "renderOptions": {
+195:           "authors": true,
+196:           "commitReferences": true,
+197:           "versionTitleDate": true
+198:         }
+199:       },
+200:       "workspaceChangelog": false
+201:     },
+202:     "version": {
+203:       "preVersionCommand": "pnpm dlx nx run-many -t build"
+204:     }
+205:   }
+206: }
+
+(End of file - total 206 lines)

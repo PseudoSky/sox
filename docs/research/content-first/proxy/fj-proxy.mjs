@@ -171,7 +171,7 @@ async function handleFJInner(req, res, ctx) {
   } = ctx;
 
   const preset = session?.presetSet || [];
-  const fjPrompt = sessionId ? buildFJInstructions(sessionId, PORT) : null;
+  const fjPrompt = sessionId ? buildFJInstructions(PORT) : null;
 
   // ── Main turn (no preset): standard single-agent turn via a CF self-call ──
   if (preset.length === 0) {
@@ -180,10 +180,23 @@ async function handleFJInner(req, res, ctx) {
     // here because the self-call sends NO sessionId (which disables CF-
     // instruction injection) and therefore carries no session-derived persona.
     console.error(`[fj-proxy] session ${sessionId} — main turn via CF self-call (FJ instructions on persona tail)`);
-    const personaBody = personaSP ? `${personaSP}\n\n${fjPrompt}` : fjPrompt;
+    // The session id rides the PERSONA TAIL (2026-08-05): the FJ instructions
+    // are session-id-free so position 0 stays byte-identical across sessions
+    // and persona transitions; the agent reads its SESSION_ID from the persona.
+    // When the session has NO named agent, resolveSessionPersona falls back to
+    // the base opencode SP — re-appending it as the persona DUPLICATES the
+    // entire SP (position 0 + tail, ~130K chars) with an empty marker name.
+    // Only carry a real persona body; otherwise just SESSION_ID + FJ.
+    const hasNamedPersona = Boolean(personaSP) && personaSP !== opencodeSP;
+    const personaBody = `${hasNamedPersona ? `${personaSP}\n\n` : ''}SESSION_ID=${sessionId}\n\n${fjPrompt}`;
     const mainMessages = messages.map(m => ({ ...m, content: m.content }));
     const lastMsg = mainMessages[mainMessages.length - 1];
-    if (lastMsg && personaBody && !String(lastMsg.content || '').includes(MARKERS.agentEnd)) {
+    // Idempotency key = the FJ block itself ('SESSION_ID='), NOT the generic
+    // agentEnd marker: a leaked persona suffix on the last message (a prior
+    // rewrite's output re-posted by opencode) would otherwise SKIP this append
+    // and the main agent would get NO FJ instructions / SESSION_ID — observed
+    // on a 53K tool message carrying a leaked '--- /CF-AGENT ---'.
+    if (lastMsg && personaBody && !String(lastMsg.content || '').includes('SESSION_ID=')) {
       lastMsg.content = String(lastMsg.content || '') + buildPersonaSuffix(activeAgent || '', personaBody, null);
     }
     res.writeHead(200, {
@@ -191,13 +204,14 @@ async function handleFJInner(req, res, ctx) {
       'Cache-Control': 'no-cache',
       'Connection': 'keep-alive',
     });
-    // The main turn CARRIES the main sessionId so the CF path runs its FULL
-    // position-0 handling. cf_instructions:false skips only the CF-instruction
-    // INJECTION (the block would carry the session id); the agent-body
-    // EXTRACTION still runs — position 0 keeps the shared boilerplate, no
-    // persona. The persona+FJ tail is pre-appended (CF skips it via the
-    // agentEnd marker). Result: position 0 identical across main turns AND
-    // forks → the shared cache prefix survives.
+    // The main turn CARRIES the main sessionId (persona resolution + logs) and
+    // DISABLES CF-instruction injection (cf_instructions:false): the CF
+    // instructions carry the session id, which pins position 0 to this session
+    // and blocks cross-session cache reuse. With injection off, position 0 =
+    // the extracted boilerplate — byte-identical across main turns, forks, AND
+    // other sessions. The FJ instructions ride the PERSONA tail (pre-appended
+    // below; the CF rewrite skips its own append via the agentEnd marker) — the
+    // fork instructions were never meant for position 0.
     const body = { ...reqData, model: 'cf', sessionId, cf_instructions: false, messages: mainMessages, stream: true };
     const result = await selfCallChat(body, res, ctx, { logSessionId: sessionId });
     logCall({
@@ -283,14 +297,14 @@ async function handleFJInner(req, res, ctx) {
       agent: agent.name,
       // The self-call CARRIES the suffixed sub-session id (real isolated
       // session: persona from activeAgent, Task from pendingInput, logs under
-      // subId). [0]-FRAMING (2026-08-05): a real cf request opens position 0
-      // with the CF-instructions block (process orientation) — the fork must
-      // match, or "You are opencode…" leads and the fork adopts the main
-      // identity. cf_shared_session = the MAIN session id renders the
-      // instructions byte-identical across forks AND the main turns (shared
-      // cache prefix); the session itself stays the suffixed subId. The
-      // agent-body EXTRACTION still runs — no main persona at position 0.
-      body: { ...reqData, model: 'cf', sessionId: subId, cf_shared_session: sessionId, messages: forkMessages, stream: true },
+      // subId). cf_instructions:false — NO CF-instruction injection on the
+      // fork either (the block carries a session id → pins position 0 → blows
+      // cross-session cache). Position 0 = the extracted boilerplate,
+      // byte-identical to the main turns' position 0 → the main turns warm the
+      // exact prefix the forks send. The persona+Task are appended to the
+      // user message by the CF path (persona from activeAgent, Task from
+      // pendingInput) — instructions on the persona, never position 0.
+      body: { ...reqData, model: 'cf', sessionId: subId, cf_instructions: false, messages: forkMessages, stream: true },
     };
   });
 

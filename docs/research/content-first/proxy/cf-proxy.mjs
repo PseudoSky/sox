@@ -40,18 +40,25 @@
  *   DEEPSEEK_API_KEY      Required
  */
 
-import http from 'node:http';
 import fs from 'node:fs';
-import path from 'node:path';
+import http from 'node:http';
 import os from 'node:os';
+import path from 'node:path';
 import { fileURLToPath } from 'url';
-import {
-  MARKERS, buildCFInstructions, resolveAgent,
-  rewriteToContentFirst as rewriteToContentFirstShared, predictCacheHit, serializeForwarded,
+import
+{
+  MARKERS, buildCFInstructions,
+  predictCacheHit,
+  resolveAgent,
+  rewriteToContentFirst as rewriteToContentFirstShared,
+  serializeForwarded,
 } from './cf-rewrite.mjs';
 import { handleFJ } from './fj-proxy.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const LOG_NS = "cf-proxy"
+const LOG_BASE = path.join(__dirname, "logs", LOG_NS);
+const LOG_DEFAULT = process.env.CF_LOG || path.join(LOG_BASE, 'proxy-cf-log.jsonl');
 const PORT = parseInt(process.env.CF_PORT || '3333', 10);
 const TARGET_BASE = process.env.CF_TARGET || 'https://api.deepseek.com/v1';
 const TARGET_MODEL = process.env.CF_MODEL || 'deepseek-v4-flash';
@@ -59,14 +66,14 @@ const VERBOSE = process.env.CF_VERBOSE === '1';
 const PASSTHROUGH = process.env.CF_PASSTHROUGH === '1';
 const RAW_CAPTURE = process.env.CF_RAW !== '0'; // default ON — captures full request bodies; CF_RAW=0 disables
 const INJECT_TOOL = process.env.CF_DISABLE_TOOL !== '1';
-const LOG_BASE = process.env.CF_LOG || path.join(__dirname, 'proxy-cf-log.jsonl');
 const API_KEY = process.env.DEEPSEEK_API_KEY || process.env.ADHD_AGENT_DEEPSEEK_SECRET || process.env.OPENAI_API_KEY || '';
 
 // ──────── Agent registry ────────
 
 const AGENT_DIR = process.env.AGENTS_DIR || path.join(os.homedir(), '.config', 'opencode', 'agents');
 
-function parseFrontmatter(md) {
+function parseFrontmatter(md)
+{
   const m = md.match(/^---\n([\s\S]*?)\n---\n?/);
   if (!m) return null;
   const fm = {};
@@ -81,7 +88,8 @@ function parseFrontmatter(md) {
   return fm;
 }
 
-function loadAgentRegistry() {
+function loadAgentRegistry()
+{
   const registry = new Map();
   try {
     for (const file of fs.readdirSync(AGENT_DIR)) {
@@ -106,7 +114,8 @@ const AGENTS = loadAgentRegistry();
 
 const sessions = new Map();
 
-function getSession(id) {
+function getSession(id)
+{
   if (!sessions.has(id)) {
     sessions.set(id, {
       id,
@@ -116,16 +125,16 @@ function getSession(id) {
       opencodeSP: null,       // last SP opencode sent (for change detection)
       apiOverride: false,     // true when activeAgent was set via /v1/session/agent
       presetSet: [],          // fork-join preset agent set (fj mode) — multiple
-                              // agents run per turn, forked from shared context.
-                              // [] = single-agent mode (default). Set via
-                              // POST /v1/session/agent { agents: [...] }.
+      // agents run per turn, forked from shared context.
+      // [] = single-agent mode (default). Set via
+      // POST /v1/session/agent { agents: [...] }.
       joinMode: 'concat',     // fj join strategy: 'concat' (v1) | 'judge' (stub).
-                              // concat = N outputs concatenated with role markers.
-                              // judge  = FILTER pass (architecture doc) — STUBBED
-                              // in v1; the switch is wired but falls back to concat.
+      // concat = N outputs concatenated with role markers.
+      // judge  = FILTER pass (architecture doc) — STUBBED
+      // in v1; the switch is wired but falls back to concat.
       pendingInput: null,     // handoff task — embedded in persona suffix,
-                              // not injected as a separate user message
-                              // (keeps the conversation prefix monotonic)
+      // not injected as a separate user message
+      // (keeps the conversation prefix monotonic)
       context: [],            // accumulated messages (cache anchor)
       // Per-persona metrics (reset on agent change)
       personaTurns: 0,        // turns since the current persona started
@@ -168,14 +177,15 @@ function getSession(id) {
 // surface instead of polluting every downstream number.
 
 // Kill the server with a loud, searchable reason.
-function corruptionAbort(reason, detail) {
+function corruptionAbort(reason, detail)
+{
   console.error('\n❌❌❌ PROXY CORRUPTION — SHUTTING DOWN ❌❌❌');
   console.error(`  reason: ${reason}`);
   console.error(`  detail: ${detail}`);
   console.error('  See the session log for the full corrupted request.');
   try {
     logCall({ event: 'corruption_abort', reason, detail, _ts: new Date().toISOString() }, null);
-  } catch {}
+  } catch { }
   // Hard exit — never continue with corrupted state.
   process.exit(1);
 }
@@ -183,7 +193,8 @@ function corruptionAbort(reason, detail) {
 // Mid-stage persona change check (called before applying a persona switch).
 // Returns true if the change is legitimate (handoff-authorized or first
 // contact). Otherwise KILLS THE SERVER.
-function corruptionCheck(session, requestedAgent, changeReason) {
+function corruptionCheck(session, requestedAgent, changeReason)
+{
   if (!session) return true;
   const prev = session.activeAgent;
   if (!prev) return true;                   // first contact — nothing to protect
@@ -217,7 +228,8 @@ function corruptionCheck(session, requestedAgent, changeReason) {
 //      tool message or an early user message after the rewrite moved on).
 //   3. The active agent's persona body appearing verbatim on any message
 //      OTHER than the intended suffix target (a leak from a prior rewrite).
-function scanForSPResiduals(messages, activeAgent, targetIdx) {
+function scanForSPResiduals(messages, activeAgent, targetIdx)
+{
   if (!messages || messages.length === 0) return;
   const marker = '--- Role ---';
   const personaBody = activeAgent ? (AGENTS.get(activeAgent)?.systemPrompt || '') : '';
@@ -264,7 +276,8 @@ function scanForSPResiduals(messages, activeAgent, targetIdx) {
   }
 }
 
-function resolveSessionPersona(session, opencodeSP) {
+function resolveSessionPersona(session, opencodeSP)
+{
   const detected = resolveAgent(opencodeSP, AGENTS);
   const opencodeChanged = detected?.name !== session.opencodeAgent;
 
@@ -327,18 +340,20 @@ function resolveSessionPersona(session, opencodeSP) {
   return { personaSP, activeAgent: session.activeAgent, changed: manualChange };
 }
 
-function sessionLogPath(sessionId) {
-  if (!sessionId) return LOG_BASE;
+function sessionLogPath(sessionId)
+{
+  if (!sessionId) return LOG_DEFAULT;
   const safe = sessionId.replace(/[^a-zA-Z0-9_-]/g, '_');
-  return path.join(__dirname, `proxy-${safe}.jsonl`);
+  return path.join(LOG_BASE, `proxy-${safe}.jsonl`);
 }
 
 // ──────── Logger ────────
 
-function logCall(entry, sessionId) {
+function logCall(entry, sessionId)
+{
   entry._ts = new Date().toISOString();
-  const logPath = sessionId ? sessionLogPath(sessionId) : LOG_BASE;
-  try { fs.appendFileSync(logPath, JSON.stringify(entry) + '\n'); } catch {}
+  const logPath = sessionId ? sessionLogPath(sessionId) : LOG_DEFAULT;
+  try { fs.appendFileSync(logPath, JSON.stringify(entry) + '\n'); } catch { }
   if (VERBOSE) {
     console.log('');
     console.log('── CF Proxy ──────────────────────────────────────────');
@@ -350,7 +365,8 @@ function logCall(entry, sessionId) {
 
 // ──────── Cache simulation ────────
 
-class BlockCacheSim {
+class BlockCacheSim
+{
   constructor() { this.blocks = new Map(); this.hits = 0; this.misses = 0; }
   get(hash) { const hit = this.blocks.has(hash); if (hit) this.hits++; else this.misses++; return hit; }
   set(hash, size) { this.blocks.set(hash, size); }
@@ -371,7 +387,8 @@ const cache = new BlockCacheSim();
  *   [2..N-1] history: untouched
  *   [N] tail:  persona anchor appended to the TRUE last message (always tail)
  */
-function rewriteToContentFirst(messages, personaSP, opencodeSP, cfPrompt, handoffTask, agentName, fork = false) {
+function rewriteToContentFirst(messages, personaSP, opencodeSP, cfPrompt, handoffTask, agentName, fork = false, sessionId = null)
+{
   const system = messages.find(m => m.role === 'system')?.content;
   const forwarded = rewriteToContentFirstShared(messages, {
     personaSP: personaSP || '',
@@ -379,6 +396,7 @@ function rewriteToContentFirst(messages, personaSP, opencodeSP, cfPrompt, handof
     handoffTask: handoffTask || null,
     agentName: agentName || '',
     fork,                 // fj forks: persona NOT appended to tool-role messages
+    sessionId,            // rides the persona tail — never position 0
     AGENTS,
   });
   const systemTokens = Math.ceil((system || '').length / 4);
@@ -399,8 +417,12 @@ function rewriteToContentFirst(messages, personaSP, opencodeSP, cfPrompt, handof
  * Render the content-first process instructions with the session id baked in.
  * Delegates to cf-rewrite.mjs (single source of truth).
  */
-function renderCFInstructions(sessionId) {
-  return buildCFInstructions(sessionId, PORT);
+function renderCFInstructions()
+{
+  // Session-id-free (2026-08-05): the CF instructions must be byte-identical
+  // across ALL sessions so position 0 is shared (cross-session + cross-persona
+  // cache). The session id rides the persona tail instead.
+  return buildCFInstructions(PORT);
 }
 
 // ──────── Virtual tool definition ────────
@@ -421,7 +443,8 @@ const SESSION_AGENT_TOOL = {
   },
 };
 
-function injectSessionTool(tools) {
+function injectSessionTool(tools)
+{
   if (!INJECT_TOOL) return tools || [];
   const list = Array.isArray(tools) ? [...tools] : [];
   if (!list.some(t => t?.function?.name === 'set_session_agent')) {
@@ -432,7 +455,8 @@ function injectSessionTool(tools) {
 
 // ──────── Forward with streaming support ────────
 
-async function forwardStream(providerMessages, reqData, res, options = {}) {
+async function forwardStream(providerMessages, reqData, res, options = {})
+{
   const body = {
     ...reqData,
     model: options.model || reqData.model || TARGET_MODEL,
@@ -452,7 +476,7 @@ async function forwardStream(providerMessages, reqData, res, options = {}) {
     if (RAW_CAPTURE) {
       logCall({ event: 'raw_response_error', status: response.status, error: errText.slice(0, 500), _ts: new Date().toISOString() }, sessionId);
     }
-    const errMsg = `data: {"error":"Provider ${response.status}: ${errText.slice(0,200)}"}\n\ndata: [DONE]\n\n`;
+    const errMsg = `data: {"error":"Provider ${response.status}: ${errText.slice(0, 200)}"}\n\ndata: [DONE]\n\n`;
     res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache' });
     res.end(errMsg);
     return { inputTokens: 0, outputTokens: 0, cacheHits: 0, cacheMisses: 0, fullText: '', toolCalls: [] };
@@ -509,7 +533,7 @@ async function forwardStream(providerMessages, reqData, res, options = {}) {
               if (tc.function?.arguments) cur.args += tc.function.arguments;
             }
           }
-        } catch {}
+        } catch { }
       }
     }
   }
@@ -554,7 +578,8 @@ async function forwardStream(providerMessages, reqData, res, options = {}) {
   return { inputTokens, outputTokens, cacheHits, cacheMisses, fullText, toolCalls };
 }
 
-async function forwardBlocking(messages, options = {}) {
+async function forwardBlocking(messages, options = {})
+{
   const body = {
     model: options.model || TARGET_MODEL,
     messages,
@@ -563,8 +588,8 @@ async function forwardBlocking(messages, options = {}) {
     tools: injectSessionTool(options.tools),
   };
   const sessionId = options.sessionId ?? null; // carried from the fj turn so
-                                               // fork calls attribute to the
-                                               // right per-session log
+  // fork calls attribute to the
+  // right per-session log
   const start = Date.now();
   if (RAW_CAPTURE) {
     logCall({
@@ -618,7 +643,8 @@ async function forwardBlocking(messages, options = {}) {
 
 // ──────── HTTP server ────────
 
-function jsonResponse(res, status, data) {
+function jsonResponse(res, status, data)
+{
   res.writeHead(status, { 'Content-Type': 'application/json' });
   res.end(JSON.stringify(data));
 }
@@ -628,7 +654,8 @@ function jsonResponse(res, status, data) {
  * Handles the opencode pattern `<path>/Users/machine/repo/file.ts</path> <type>file</type>`
  * as well as plain JSON path fields.
  */
-function extractFilePath(toolName, args) {
+function extractFilePath(toolName, args)
+{
   if (!args) return null;
   // OpenCode tool result pattern: <path>...</path>
   let m = args.match(/<path>(.+?)<\/path>/);
@@ -638,11 +665,12 @@ function extractFilePath(toolName, args) {
     const j = JSON.parse(args);
     const p = j.filePath || j.path || j.file || j.file_path || j.fileName || '';
     if (p) return p;
-  } catch {}
+  } catch { }
   return null;
 }
 
-const server = http.createServer(async (req, res) => {
+const server = http.createServer(async (req, res) =>
+{
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'POST, GET, OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-CF-Session-Id, X-Session-Id');
@@ -974,9 +1002,9 @@ const server = http.createServer(async (req, res) => {
       // session id baked into the instructions would break it). Persona-at-tail
       // handling is unaffected — only the position-0 block is skipped.
       const cfPrompt = (sessionId && reqData.cf_instructions !== false)
-        ? renderCFInstructions(reqData.cf_shared_session || sessionId)
+        ? renderCFInstructions()
         : null;
-            const cf = rewriteToContentFirst(messages, personaSP, opencodeSP, cfPrompt, handoffTask, activeAgent || '');
+      const cf = rewriteToContentFirst(messages, personaSP, opencodeSP, cfPrompt, handoffTask, activeAgent || '', false, sessionId);
       // ── FORWARD_REQUEST (2026-08-05) — the ACTUAL request sent to the
       // provider, post-rewrite. The raw_request events capture the INCOMING
       // body; the provider receives cf.messages (position-0 extraction +
@@ -1197,7 +1225,8 @@ const server = http.createServer(async (req, res) => {
   }
 });
 
-server.listen(PORT, '127.0.0.1', () => {
+server.listen(PORT, '127.0.0.1', () =>
+{
   console.log(`\n  ╔══════════════════════════════════════════════════════╗`);
   console.log(`  ║  Content-First Proxy (session-aware)                ║`);
   console.log(`  ║  Port: ${PORT}   Sessions: ${sessions.size}  Agents: ${AGENTS.size}       ║`);

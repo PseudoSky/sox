@@ -208,7 +208,7 @@ def run_summary(run, gap_minutes=90):
 
 def main():
     ap = argparse.ArgumentParser(description="Compare RF and CF runs from proxy session logs")
-    ap.add_argument("--log-dir", default=os.path.dirname(os.path.abspath(__file__)))
+    ap.add_argument("--log-dir", default=os.path.join(os.path.dirname(os.path.abspath(__file__),'logs')))
     ap.add_argument("--runs", type=int, default=0, help="limit to the N most recent runs (0 = all)")
     ap.add_argument("--json", action="store_true", help="emit JSON instead of tables")
     args = ap.parse_args()

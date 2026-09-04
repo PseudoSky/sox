@@ -33,23 +33,24 @@
  *   GET  /v1/health
  */
 
-import http from 'node:http';
 import fs from 'node:fs';
-import path from 'node:path';
+import http from 'node:http';
 import os from 'node:os';
+import path from 'node:path';
 import { fileURLToPath } from 'url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PORT = parseInt(process.env.CF_PORT || '3334', 10);
 const TARGET_BASE = process.env.CF_TARGET || 'https://api.deepseek.com/v1';
 const TARGET_MODEL = process.env.CF_MODEL || 'deepseek-v4-flash';
-const LOG_PATH = process.env.CF_LOG || path.join(__dirname, 'proxy-cf-chain-log.jsonl');
+const LOG_PATH = process.env.CF_LOG || path.join(__dirname, "logs", 'proxy-cf-chain-log.jsonl');
 const API_KEY = process.env.DEEPSEEK_API_KEY || process.env.ADHD_AGENT_DEEPSEEK_SECRET || process.env.OPENAI_API_KEY || '';
 const AGENTS_DIR = process.env.AGENTS_DIR || path.join(os.homedir(), '.config', 'opencode', 'agents');
 
 // ──────── Agent registry (name → system prompt) ────────
 
-function parseFrontmatter(md) {
+function parseFrontmatter(md)
+{
   const m = md.match(/^---\n([\s\S]*?)\n---\n?/);
   if (!m) return null;
   const fm = {};
@@ -64,7 +65,8 @@ function parseFrontmatter(md) {
   return fm;
 }
 
-function loadAgentRegistry() {
+function loadAgentRegistry()
+{
   const registry = new Map();
   try {
     const files = fs.readdirSync(AGENTS_DIR).filter(f => f.endsWith('.md'));
@@ -89,7 +91,8 @@ function loadAgentRegistry() {
 
 const AGENTS = loadAgentRegistry();
 
-function resolveAgent(nameOrSP) {
+function resolveAgent(nameOrSP)
+{
   if (!nameOrSP) return null;
   // 1. Exact name match
   if (AGENTS.has(nameOrSP)) return AGENTS.get(nameOrSP);
@@ -112,7 +115,8 @@ function resolveAgent(nameOrSP) {
 
 const sessions = new Map();
 
-function getSession(id) {
+function getSession(id)
+{
   if (!sessions.has(id)) {
     sessions.set(id, {
       id,
@@ -126,7 +130,8 @@ function getSession(id) {
   return sessions.get(id);
 }
 
-function sessionIdFromReq(reqData) {
+function sessionIdFromReq(reqData)
+{
   return reqData.session_id || reqData.sessionId ||
     (reqData.headers?.find?.() || reqData.x_session_id) ||
     null;
@@ -134,15 +139,17 @@ function sessionIdFromReq(reqData) {
 
 // ──────── Logger ────────
 
-function logCall(entry) {
+function logCall(entry)
+{
   entry._ts = new Date().toISOString();
-  try { fs.appendFileSync(LOG_PATH, JSON.stringify(entry) + '\n'); } catch {}
+  try { fs.appendFileSync(LOG_PATH, JSON.stringify(entry) + '\n'); } catch { }
   console.error(`[cf-chain] ${entry.event || entry.endpoint} session=${entry.sessionId || '?'} agent=${entry.agent || '?'} depth=${entry.turns ?? '?'} tokens=${entry.tokens ?? '?'} cached=${entry.cached ?? '?'}`);
 }
 
 // ──────── DeepSeek forward (streaming) ────────
 
-async function forwardStream(messages, model, res) {
+async function forwardStream(messages, model, res)
+{
   const body = {
     model: model || TARGET_MODEL,
     messages,
@@ -159,7 +166,7 @@ async function forwardStream(messages, model, res) {
 
   if (!response.ok) {
     const errText = await response.text();
-    const errMsg = `data: {"error":"Provider ${response.status}: ${errText.slice(0,200)}"}\n\ndata: [DONE]\n\n`;
+    const errMsg = `data: {"error":"Provider ${response.status}: ${errText.slice(0, 200)}"}\n\ndata: [DONE]\n\n`;
     res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache' });
     res.end(errMsg);
     return { inputTokens: 0, outputTokens: 0, cacheHits: 0, fullText: '' };
@@ -192,7 +199,7 @@ async function forwardStream(messages, model, res) {
             cacheHits = data.usage.prompt_cache_hit_tokens || 0;
           }
           if (data.choices?.[0]?.delta?.content) fullText += data.choices[0].delta.content;
-        } catch {}
+        } catch { }
       }
     }
   }
@@ -202,7 +209,8 @@ async function forwardStream(messages, model, res) {
 }
 
 // Non-streaming variant for the session/agent handoff trigger
-async function forwardBlocking(messages, model = TARGET_MODEL, maxTokens = 4000) {
+async function forwardBlocking(messages, model = TARGET_MODEL, maxTokens = 4000)
+{
   const body = {
     model,
     messages,
@@ -240,7 +248,8 @@ async function forwardBlocking(messages, model = TARGET_MODEL, maxTokens = 4000)
  * The persona goes at the END of the LAST user message so the accumulated
  * context stays at position 0 (the cache anchor).
  */
-function buildCFMessages(session, personaSP, input) {
+function buildCFMessages(session, personaSP, input)
+{
   const suffix = personaSP ? `\n\n${personaSP}` : '';
   return [
     ...session.context.map(m => ({ ...m })),
@@ -250,12 +259,14 @@ function buildCFMessages(session, personaSP, input) {
 
 // ──────── HTTP server ────────
 
-function jsonResponse(res, status, data) {
+function jsonResponse(res, status, data)
+{
   res.writeHead(status, { 'Content-Type': 'application/json' });
   res.end(JSON.stringify(data));
 }
 
-const server = http.createServer(async (req, res) => {
+const server = http.createServer(async (req, res) =>
+{
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'POST, GET, OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-CF-Session-Id');
@@ -426,7 +437,8 @@ const server = http.createServer(async (req, res) => {
   }
 });
 
-server.listen(PORT, () => {
+server.listen(PORT, () =>
+{
   console.log(`\n  ╔══════════════════════════════════════════════════════╗`);
   console.log(`  ║  Content-First CHAIN Proxy (session state)          ║`);
   console.log(`  ║  Port: ${PORT}    Agents: ${AGENTS.size}                        ║`);

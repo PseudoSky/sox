@@ -1,0 +1,373 @@
+{
+  "schema": "dispatcher-state/v1",
+  "role": "Dispatcher orchestration tracking artifact — NOT the plan-state-machine runtime state.json (none exists in this plan dir; no dag.json either). Authored by the dispatcher session. Not mutated by plan-state-machine skill scripts. The backlog graph (repo sox-ecosystem) remains the authoritative source of truth for item state.",
+  "planLocalIdWarning": "DEBT-006 (filed 2026-08-18) / DEBT-008 (filed 2026-08-18, RESOLVED 2026-08-19): BUG-018..BUG-042 and DEBT-006..DEBT-032 as used throughout this file (taskMap, items[].id, dependencyEdges) are THIS PLAN'S OWN numbering (see SPEC.md T1-T11), not backlog graph ids, except where a number happens to already be a real graph item (BUG-014, BUG-017, DEBT-003 below ARE real and refer to the same work). STALE CLAIM CORRECTED 2026-08-19: this warning used to say 'the graph's numeric families stop at BUG-017/DEBT-005' — that is no longer true and must never be treated as a standing fact. The graph's counter has since independently allocated real, unrelated items at BUG-018 (memory-server SIGKILL on service disable), BUG-019 (wal-cap PASSIVE checkpoint failure), BUG-021 (live embed failure), BUG-022 (idle-flush self-rearm), and DEBT-008 itself (this exact namespace-collision item). DEBT-008's fix: outside this plan directory, every one of these plan-local concepts is now cited with the non-colliding form BUG014.T<n> (e.g. BUG014.T5 for the per-connection open marker, BUG014.T3 for content-deadness, BUG014.T4 for canonical path identity) instead of the bare BUG-0NN form — see SPEC.md's PLAN-LOCAL IDS banner and tools/backlog-citation-allowlist.json for the full disambiguation and the store-adapter sites that were repointed. Run tools/check-backlog-citations.mjs for the CURRENT state; do not trust any cached 'stops at N' claim, including this one, without re-running it.",
+  "provenance": {
+    "verifiedAt": "2026-08-12 (session)",
+    "sources": [
+      "docs/plan/bug014-store-hardening/SPEC.md (read directly; mtime 2026-08-12T05:56Z, i.e. authored BEFORE the 15:43Z revert-to-engine-trust pushback and the 17:13Z design-halt/revert notes on BUG-014)",
+      "backlog dependency-graph --scope repo=sox-ecosystem plan=bug014-store-hardening (588 nodes; edges cited below)",
+      "backlog get-item for BUG-014/017/018/019/020/021, DEBT-003/004/005/006/007, BL-506, BL-563 (statuses, notes, citations)",
+      "backlog migration-status: phase-3, toolIsAuthoritative=true"
+    ]
+  },
+  "program": {
+    "slug": "bug014-store-hardening",
+    "repo": "sox-ecosystem",
+    "spec": "docs/plan/bug014-store-hardening/SPEC.md",
+    "rootItem": "BUG-014 (OPEN, CRITICAL): fresh backlog CLI opens fail 5/5 against live store while MCP servers hold it",
+    "definitionOfSafe": [
+      "INV-1 engine exclusivity",
+      "INV-2 one-shot liveness",
+      "INV-3 derived-state reconcile (content-dead -tshm only)",
+      "INV-4 canonical path identity",
+      "INV-5 no silent destruction"
+    ],
+    "globalRules": [
+      "no git stash / reset --hard",
+      "commit by pathspec only",
+      "nx targets only for build/test/lint/typecheck",
+      "suite result quotable only with check-suite-tree-state.mjs",
+      "no BL/BUG item RESOLVED without red→green test naming the item id (BL-225)",
+      "never open the live store writable with a classic engine"
+    ]
+  },
+  "taskMap": {
+    "T1": "BUG-017 (quiescence-gate the writable classic-engine escape hatch; also closes BL-563 readonly gate)",
+    "T2": "DEBT-003 (heal: content-dead -tshm reconcile before non-quiescent retry)",
+    "T3": "BUG-021 (content-deadness at ALL three reconcile decision sites)",
+    "T4": "BUG-018 (canonical path identity INV-4)",
+    "T5": "BUG-019 (refcounted per-connection open marker)",
+    "T6": "BUG-020 (un-flagged opener audit + post-ship watch) — step 1 audit parallel anytime; step 2 watch after ship",
+    "T7": "Ship 0.5.8 + fleet runbook (closes BUG-014)",
+    "T8": "DEBT-004 (single classic-engine choke point + lint ban)",
+    "T9": "DEBT-005 (reusable two-process WAL-conformance suite)",
+    "T10": "DEBT-006 (migration playbook + migrateOnAdapterChange hardening)",
+    "T11": "DEBT-007 (memory-server migration readiness)"
+  },
+  "items": [
+    {
+      "id": "BUG-014",
+      "status": "OPEN",
+      "family": "BUG",
+      "priority": "CRITICAL",
+      "plan": null,
+      "notes": 6,
+      "citations": 5,
+      "workOrder": "root item; resolution at SPEC T7 step 7 (commit shas + test names, graph-only transition)"
+    },
+    {
+      "id": "BUG-017",
+      "status": "OPEN",
+      "family": "BUG",
+      "priority": "CRITICAL",
+      "plan": "bug014-store-hardening",
+      "notes": 2,
+      "workOrder": "SPEC §T1; also closes BL-563 (readonly gate)"
+    },
+    {
+      "id": "DEBT-003",
+      "status": "OPEN",
+      "family": "DEBT",
+      "priority": "MEDIUM",
+      "plan": "bug014-store-hardening",
+      "notes": 1,
+      "workOrder": "SPEC §T2; starting point = in-flight diff (fate pending git verification, C3)"
+    },
+    {
+      "id": "BUG-021",
+      "status": "OPEN",
+      "family": "BUG",
+      "priority": "MEDIUM",
+      "plan": "bug014-store-hardening",
+      "notes": 1,
+      "workOrder": "SPEC §T3"
+    },
+    {
+      "id": "BUG-018",
+      "status": "OPEN",
+      "family": "BUG",
+      "priority": "HIGH",
+      "plan": "bug014-store-hardening",
+      "notes": 1,
+      "workOrder": "SPEC §T4"
+    },
+    {
+      "id": "BUG-019",
+      "status": "OPEN",
+      "family": "BUG",
+      "priority": "MEDIUM",
+      "plan": "bug014-store-hardening",
+      "notes": 1,
+      "workOrder": "SPEC §T5"
+    },
+    {
+      "id": "BUG-020",
+      "status": "OPEN",
+      "family": "BUG",
+      "priority": "HIGH",
+      "plan": "bug014-store-hardening",
+      "notes": 3,
+      "workOrder": "SPEC §T6"
+    },
+    {
+      "id": "DEBT-004",
+      "status": "OPEN",
+      "family": "DEBT",
+      "priority": "HIGH",
+      "plan": "bug014-store-hardening",
+      "notes": 0,
+      "workOrder": "SPEC §T8"
+    },
+    {
+      "id": "DEBT-005",
+      "status": "OPEN",
+      "family": "DEBT",
+      "priority": "MEDIUM",
+      "plan": "bug014-store-hardening",
+      "notes": 0,
+      "workOrder": "SPEC §T9"
+    },
+    {
+      "id": "DEBT-006",
+      "status": "OPEN",
+      "family": "DEBT",
+      "priority": "MEDIUM",
+      "plan": "bug014-store-hardening",
+      "notes": 0,
+      "workOrder": "SPEC §T10"
+    },
+    {
+      "id": "DEBT-007",
+      "status": "OPEN",
+      "family": "DEBT",
+      "priority": "MEDIUM",
+      "plan": "bug014-store-hardening",
+      "notes": 0,
+      "workOrder": "SPEC §T11"
+    },
+    {
+      "id": "BL-563",
+      "status": "OPEN",
+      "family": "BL",
+      "priority": "MEDIUM",
+      "plan": null,
+      "workOrder": "closed by BUG-017 (readonly gate)"
+    },
+    {
+      "id": "BL-506",
+      "status": "RESOLVED",
+      "family": "BL",
+      "priority": "HIGH",
+      "plan": null,
+      "workOrder": "context only (pre-BL-506 degradation referenced by T1)"
+    },
+    {
+      "id": "DEBT-007",
+      "status": "OPEN",
+      "family": "DEBT",
+      "priority": "LOW",
+      "plan": null,
+      "workOrder": "dispatcher subdispatch telemetry script (perf engineer)",
+      "note": "formerly cited here as plan-local 'DEBT-031' (never filed); filed as this real graph item 2026-08-18 during DEBT-006 remediation. NOTE: this graph DEBT-007 is unrelated to SPEC.md T11's plan-local 'DEBT-007' label (memory-server migration readiness, refiled as DEBT-MEMORYSERVER-TURSO-MIGRATION-READINESS-001) — same string, two different things; see tools/backlog-citation-allowlist.json."
+    },
+    {
+      "id": "DEBT-003 (PseudoSky/adhd)",
+      "status": "OPEN",
+      "family": "DEBT",
+      "priority": "HIGH",
+      "plan": null,
+      "workOrder": "triage DONE (release scoping already implemented e67c2a84; dirty-main wall real; adhd main currently clean; gaps: CI manifest + PUBLISHING.md); architect planning DISPATCHED"
+    },
+    {
+      "id": "DEBT-004 (PseudoSky/adhd)",
+      "status": "OPEN",
+      "family": "DEBT",
+      "priority": "HIGH",
+      "plan": null,
+      "workOrder": "orphaned nx daemon investigation + reap + triage + memory + solution; DISPATCHED (perf, live-agents context given)"
+    }
+  ],
+  "dependencyEdges": [
+    "BUG-017 -> BL-563",
+    "BUG-017 -> BUG-014",
+    "DEBT-003 -> BUG-017",
+    "DEBT-003 -> BUG-014",
+    "BUG-021 -> DEBT-003",
+    "BUG-021 -> BUG-014",
+    "BUG-018 -> BUG-017",
+    "BUG-019 -> BUG-018",
+    "BUG-019 -> BUG-017",
+    "BUG-020 -> BUG-017",
+    "DEBT-004 -> BUG-017",
+    "DEBT-005 -> DEBT-004",
+    "DEBT-006 -> DEBT-005",
+    "DEBT-007 -> DEBT-006"
+  ],
+  "openQuestions": [
+    {
+      "id": "TRUNCATE-on-close-design",
+      "subject": "Which fix design is authoritative for the heal path (DEBT-003) and content-deadness sites (BUG-021)?",
+      "evidence": [
+        "BUG-014 note dispatcher 15:43Z: user pushback + raw-driver proof — engine correct with intact WAL (40-way 41/41 zero loss); adapter TRUNCATE-on-close is root cause; NEW FIX DIRECTION revert-to-engine-trust: STOP TRUNCATE-on-close, REMOVE proactive mtime sidecar reconcile, drop lease registry from open path",
+        "BUG-014 note typescript 17:11Z: shipped ceca8af1+b48861f7 implementing the SPEC/DEBT-003 design (content-dead tshm reconcile + close() tshm-reset beside quiescent TRUNCATE) — explicitly did NOT follow revert-to-engine-trust",
+        "BUG-014 note dispatcher 17:13Z: WRONG-FIX REVERTED (ba7e8cc1 + d079fe91), BUG-014 restored OPEN; 'Do NOT re-dispatch implementation until the design is validated (architect-decision) and the user confirms the TRUNCATE-on-close question'"
+      ],
+      "gate": "Must be resolved BEFORE DEBT-003/BUG-021 dispatch. BUG-017 (T1) is required under both designs and is NOT gated.",
+      "resolution": "RESOLVED (a) — user confirmed 2026-08-12: SPEC.md is authoritative (user: \"The document is authoritative\"). TRUNCATE-on-close settled: keep quiescence-gated TRUNCATE; DEBT-003/BUG-021 proceed per SPEC §T2/§T3."
+    },
+    {
+      "id": "DEBT-003-starting-diff",
+      "subject": "Fate of the +311/−23 in-flight diff (isTshmContentDead integrity.ts:629-672 + turso-adapter.ts:642-721) that SPEC §T2 says to adopt",
+      "evidence": [
+        "SPEC §T2 precondition: adopt the in-flight uncommitted diff",
+        "BUG-014 note dispatcher 17:13Z: 'store-adapter tree clean' after revert — diff may only survive in reverted commit ceca8af1",
+        "SPEC §T7 step 1: 'Reconcile & commit the in-flight diff merged with T1–T3'"
+      ],
+      "gate": "Before DEBT-003 dispatch; requires git verification (user permission, C3)",
+      "resolution": "RESOLVED 2026-08-12 (debug forensics, verified in DEBT-003 notes): diffFate = in-reverted-commit-ceca8af1 (exactly +311/-23, matches SPEC §T2); storeAdapterTreeClean = true (HEAD d079fe91); no branch/worktree/unreachable-commit carrier — only source is ceca8af1. DEBT-003 will adopt ceca8af1 content per SPEC §T2. Caveat noted: stale gitignored dist artifacts still contain the compiled function (not authoritative; T7 rebuild supersedes)."
+    }
+  ],
+  "protocol": {
+    "dispatcher": "relay only: never codes, never triages, never writes backlog notes, never passes uncited claims; only escalates or transitions tasks",
+    "roster": [
+      "product",
+      "typescript",
+      "code-reviewer (review)",
+      "architect",
+      "architect-decision",
+      "debug",
+      "performance",
+      "doc-steward"
+    ],
+    "loop": "architect (only if task not ref'd in SPEC) -> implement -> review -> architect-decision (only on unknown/scoping questions or >1 critical review finding) -> merge + deploy",
+    "worktrees": "ALL code changes in worktrees under .worktrees/ (repo convention); every dispatch ends merged or returned with named blocker",
+    "notes": "agents append output to the task's backlog notes; dispatcher pulls notes from the task to determine next steps; dispatcher never writes notes",
+    "blindReview": "CORRECTED DEFINITION (user challenge 2026-08-12): review dispatch contains ONLY item identifier + work-order pointer (e.g. SPEC §) + worktree path. Reviewer reads the item BODY and the CODE; explicitly FORBIDDEN from reading the implementer appended notes; dispatcher NEVER relays implementer claims into the review prompt (no special asks, no priming). Deviations/claims judged by the reviewer from the code alone or not at all. VIOLATED on BUG-018/BUG-019/BUG-021/DEBT-031 reviews (implementer claims relayed in prose) — acknowledged, corrected from here.",
+    "reviewRules": "every review note must be fixed; >1 critical issue -> architect-decision reviews scoping (rearchitect vs implement, which agent, how to split)",
+    "backlog": "dispatcher may only escalate or transition tasks; transitions carry citations (required for terminal statuses); item status changes via backlog CLI/MCP only; BL-225 red→green gate on any resolve",
+    "verification": "outcomes verified from state-side evidence (git refs, test output, backlog notes) — never executor prose; live-status + upstream-consumer verification after any deploy",
+    "perItemCycle": "CODE-FIRST TWO-LOOP (user directive 2026-08-12, supersedes test-first): LOOP1 code-until-clean: implement = code only + direct build/lint/typecheck on affected (NO test authoring/runs) -> code review = reviewer reads ONLY code, no test runs -> fix notes -> repeat until clean. LOOP2 tests-after-clean: implement = author tests on clean code + lint/typecheck + targeted test runs (BL-225 red-to-green shown via fix toggle: RED off + GREEN on) -> code review = reviewer reviews tests AND RUNS tests AND diagnoses test-vs-code issues -> fix notes -> repeat until complete. THEN merge + ONE consolidated verification (full affected suites + tree-state quotes + smoke). Applies from DEBT-004 (T8) onward.",
+    "claims": "CLAIM-PER-DISPATCH (user directive 2026-08-12): every dispatched agent CLAIMS the backlog item at dispatch start via backlog claim-item --by <agent>:<instance>, renews on long runs (30-min staleness), releases unconditionally on every exit path. Claim timestamps = measured phase starts (implement start = claim). T1-T5 have ZERO claim events (protocol gap — dispatch times unlogged, est only); applies from remaining T7 legs + T6.2 + T8-T11 onward."
+  },
+  "sequencing": {
+    "status": "RUNNING — Wave 1 (BUG-017) in flight; BUG-020-audit (T6.1) dispatched early (SPEC parallel-anytime); C3 resolved",
+    "notes": [
+      "Waves respect dependency edges AND file-overlap safety (turso-adapter.ts is touched by BUG-017, DEBT-003, BUG-018, DEBT-004 — serialize those; parallel only when file sets are disjoint and both branch from the same merged main).",
+      "BUG-020-audit (T6.1) is read-only (dist grep audit) and parallel-anytime.",
+      "T7 ship gated on T1..T5 + T6.1; BUG-020 resolves after the 48h watch window.",
+      "Design gate (openQuestions.TRUNCATE) sits before DEBT-003/BUG-021 regardless."
+    ],
+    "waves": [
+      {
+        "wave": 0,
+        "gate": "C1 answer: if (b), dispatch architect-decision for the TRUNCATE-on-close verdict before DEBT-003; BUG-017 starts regardless",
+        "items": []
+      },
+      {
+        "wave": 1,
+        "items": [
+          "BUG-017 (T1) — MERGED c4025656 (real 2-parent merge; smoke summary failed=0; nx green tree-clean; registry drift resolved by main merge; memory-bundle dists untouched, flagged T7); BL-563 RESOLVED w/ citations"
+        ],
+        "deps": "first"
+      },
+      {
+        "wave": 2,
+        "items": [
+          "DEBT-003 (T2) — implementation DONE + review APPROVED-WITH-NOTES criticalCount=0 (3 minor + 2 info); fix+merge leg DISPATCHED",
+          "BUG-020-audit (T6.1) — DONE, zero violators"
+        ],
+        "deps": "BUG-017 merged"
+      },
+      {
+        "wave": 3,
+        "items": [
+          "BUG-021 (T3) — review APPROVED-WITH-NOTES criticalCount=0 (2 minor + 2 info; Probe-D 53->3 verified benign); fix+merge leg DISPATCHED",
+          "BUG-018 (T4) — fix+merge leg in flight"
+        ],
+        "deps": "DEBT-003 merged (BUG-021), BUG-017 merged (BUG-018); disjoint files"
+      },
+      {
+        "wave": 4,
+        "items": [
+          "BUG-019 (T5) — review APPROVED-WITH-NOTES criticalCount=0 (2 minor: age-out-vs-liveness, comment-only catches; 2 info); fix+merge leg DISPATCHED"
+        ],
+        "deps": "BUG-018 merged"
+      },
+      {
+        "wave": 5,
+        "items": [
+          "DEBT-004 (T8) — PENDING T7 completion (ship first per SPEC ordering)"
+        ],
+        "deps": "BUG-017 + DEBT-003 merged"
+      },
+      {
+        "wave": 6,
+        "items": [
+          "DEBT-005 (T9)"
+        ],
+        "deps": "DEBT-004 merged"
+      },
+      {
+        "wave": 7,
+        "items": [
+          "DEBT-006 (T10) — playbook doc slice to doc-steward"
+        ],
+        "deps": "DEBT-005 merged"
+      },
+      {
+        "wave": 8,
+        "items": [
+          "DEBT-007 (T11)"
+        ],
+        "deps": "DEBT-006 merged"
+      },
+      {
+        "wave": 9,
+        "items": [
+          "T7 SHIP — DISPATCHED (user-approved; publish 0.5.8 + adhd republish + pnpm -g upgrade + backlog-fleet restart + live 5/5 acceptance + resolution packet to BUG-014; memory-server explicitly out of scope per user)"
+        ],
+        "deps": "T1-T5 merged + T6.1 done"
+      },
+      {
+        "wave": 10,
+        "items": [
+          "BUG-020 watch (T6.2): 48h fs_usage + log grep -> zero occurrences resolves BUG-020"
+        ],
+        "deps": "post-ship"
+      }
+    ],
+    "debt031": "DONE-IMPLEMENTED + REVIEW APPROVED-WITH-NOTES (3 minor: phantom bash bins, --db crash, relock msg; relock verdict CORRECT); fix+merge leg DISPATCHED",
+    "debt032": "DONE-IMPLEMENTED + REVIEW APPROVED (0 findings); merge leg DISPATCHED (doc-only, no smoke gate)",
+    "memorySanityCheck": "DISPATCHED — debug, read-only memory-server log side-effect check; enriches BUG-029 (claim protocol)"
+  },
+  "disclosure": {
+    "note": "BUG-014's latest notes contain a dispatcher-issued hard stop (17:13Z) requiring architect-decision validation + user confirmation of the TRUNCATE-on-close question before re-dispatching implementation. This session surfaced that to the user as clarification C1 before any implementation dispatch. No implementation dispatch has occurred in this session.",
+    "unacknowledged": [
+      "TRUNCATE-on-close design question (OPEN, cited above)",
+      "DEBT-003 starting-diff fate (OPEN, pending git verification)"
+    ],
+    "liveIncident": {
+      "reportedAt": "2026-08-12 (user-relayed live transcript)",
+      "store": "~/.memory/memory.db (MEMORY store — NOT the backlog store this program protects)",
+      "symptom": "memory_recall failed: short read on WAL frame at offset 4152 (expected 4096, got 0) x2; memory_ping = unhealthy WAL I/O",
+      "class": "same failure class as BUG-014 (WAL truncated, tshm indexes missing frame); 4152 = 32B header + 24B frame header + one 4096B page (single-frame WAL)",
+      "programStatus": "NOT yet fixed by this program: T1/T2 target the store-adapter/backlog-store path; memory-core classic opens choke-pointed at T8; memory-server migration is T11+later. No live-store mutation attempted; retries on the failing pipeline will not recover (verified BUG-014 note)",
+      "triage": "RE-DISPATCHED (fresh, combined check+attribution: work-state of bug017/t1 fix+merge leg + whether it touched ~/.memory/memory.db + live store attribution; read-only, dedupe-enrich first)",
+      "scopeCorrected": "2026-08-12 (user): memory store IS in scope — T1/T2/T8 store-adapter changes are consumed by memory-core/memory-server; live memory.db WAL incident within program blast radius",
+      "verdict": "2026-08-12 (debug triage, ses_008a86edfffeW1rgiUQDS9oLQT): dispatcher work did NOT impact memory store — PROVEN (smoke checksum-blocked at install, hermetic SOX_CONFIG_DB_PATH redirect, temp-only nx fixtures, only launchd pid 36547 held store). Store poisoned 13:49 local (WAL 4152B trunc + stale 12:11 tshm, recurring Aug-11 signature); nothing self-healed; healed by 14:12 launchd restart; store_ok:true now. Attribution: LIKELY (not proven) = memory-server own enrich child 87833 under pre-fix bundle. Filed: BUG-029 (OPEN, HIGH, 4 cross-links)."
+    },
+    "postPublishVerification": "T7 step 7 = live acceptance 5/5 (in flight); definitive gate = 48h T6.2 watch (fs_usage + daily grep) -> zero occurrences resolves BUG-020, any occurrence -> new item with captured argv/env; memory store NOT covered (per user scope)",
+    "backlogStoreIncident": {
+      "reportedAt": "2026-08-12 ~23:59Z (DEBT-032 unblock leg)",
+      "symptom": "redb pager.rs:190:29 index-out-of-bounds (len 4096, idx 20546) on EVERY backlog op",
+      "walGrowth": "4152 -> 572712B at 23:57-23:59Z",
+      "tshm": "content-dead, mtime 18:07 local; heal (0.5.7) cannot fire",
+      "impact": "backlog tool down; repo-wide pre-commit plan-status gate blocks ALL commits; DEBT-032 merge + T7 resolution blocked",
+      "triage": "DISPATCHED (read-only, attribution + safe recovery options; reports to dispatcher + memory since store down)"
+    }
+  },
+  "executionNotes": [
+    "REVERT RULE (user directive 2026-08-12): if changes on main are reverted for any reason, REBUILD ALL AFFECTED artifacts afterward — nx build for every affected project (store-adapter, graph-store, and any consumer bundles that embed them, incl. memory-bundle members), then `npx nx run registry:sync-index` + commit the regenerated registry/index.json with sources, then smoke test (`rm -rf dist/smoke && node scripts/smoke-test.mjs` -> summary.failed===0), then verify live consumers (memory-server etc.). A source-only revert leaves stale dists carrying the reverted code — the exact hazard BUG-014/DEBT-003 fight. Reverts themselves: agent-dispatched via git revert/restore of specific paths only (no reset --hard, no stash), never by the dispatcher."
+  ]
+}
