@@ -34,6 +34,6 @@
   },
   "homepage": "https://github.com/PseudoSky/adhd",
   "dependencies": {
-    "@adhd/sox-listen-guard": "workspace:*"
+    "@adhd/sox-listen-guard": "workspace:^"
   }
 }
