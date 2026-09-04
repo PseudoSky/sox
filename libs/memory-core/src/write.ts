@@ -1,8 +1,12 @@
 /**
  * memory_write handler (P2, updated BL-162; two-phase split 2026-07-04).
  *
- * ADR-0007 single-writer architecture: batch enrichment runs in-process inside the
- * memory-server writer backend — there is no separate daemon process to enqueue/nudge.
+ * Batch enrichment runs in-process inside the memory-server writer backend — there is
+ * no separate daemon process to enqueue/nudge. (This is a locality fact, not a
+ * concurrency-model claim: ADR-0012 supersedes ADR-0007's single-writer invariant — the
+ * default Turso backend runs `multiprocess-wal`, where multiple processes hold
+ * concurrent write connections to the same store, serialized through a `-tshm`
+ * coordinator sidecar, not by an in-process daemon.)
  *
  * TWO-PHASE WRITE (2026-07-04 incident — expensive compute must not block writes):
  *   - Phase A — `memoryWritePhaseA()`: FULLY SYNCHRONOUS. Dedup, node insert, FTS
