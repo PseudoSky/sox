@@ -1,5 +1,34 @@
 # Changelog
 
+## 1.3.3
+
+### Patch Changes
+
+- 884e3e7: Rewrite the package README against real, executed behaviour.
+
+  These packages published to npm with READMEs that were missing, wrong, or unusable:
+  no install line, no runnable example, and in several cases relative links pointing
+  outside the package directory — dead for every npm reader, since a tarball carries
+  only the package's own directory plus a force-included README and LICENSE.
+
+  Every README now has an install line and at least one example that was actually run
+  against the built artifact, with real output. Every documented symbol is verified to
+  exist in that package's own declarations.
+
+  Packages built on `@adhd/sox-store-adapter` now state the concurrency properties they
+  inherit from it: the default Turso backend mandates `multiprocess-wal`, so multiple
+  processes hold concurrent write connections to one store file. The claim is scoped
+  per package rather than asserted blanket-wide — packages whose default path is
+  single-writer by construction say so.
+
+  Corrections found by reading and running the code rather than trusting the prose:
+  `sox-graph-store` described itself as a store "over SQLite" when it has no
+  better-sqlite3 dependency and is built on StoreAdapter; `sox-hybrid-search` described
+  itself as an unimplemented skeleton when its implementation is complete;
+  `sox-embedding-provider` advertised a hash provider that exists in no factory branch;
+  and `sox-tokenguard-core` documented `detectFqdn` as returning `<FQDN_1>` when it
+  returns `<HOST_1>`.
+
 ## 1.3.1
 
 ### Patch Changes
@@ -44,16 +73,16 @@
 
 - Two-phase write (2026-07-04 incident fix): `memory_write`/`memory_write_batch` hold the serial
   WriteQueue slot only for a synchronous, embedding-free Phase A; the ONNX embedding + vec insert
-  + near-dup run asynchronously off-slot moments later. Caller-visible: `enrichment.near_dup` is
-  `null` in write responses (SAME_AS edges land async); fresh episodes are keyword/temporal-
-  recallable immediately and vector-recallable once Phase B lands; `memory_ping.store` gains
-  additive `embed_backlog`/`embed_backlog_oldest_at` folded into the `enrichment` verdict
-  (dead Phase-B pipeline reads `stalled`). The periodic enrich tick heals missing vectors
-  (crash-between-phases recovery). Kill-switch: `SOX_SYNC_EMBED=1` restores the fully
-  synchronous pre-split behaviour. BL-186: `memory_curate recluster` (global) now enqueues a
-  full-pass trigger row consumed by the tick — `{enqueued: true, seq}` is honest and the tool
-  call no longer blocks writes for the whole cluster pass. BL-188: `memory_write` now forwards
-  `client_request_id` (WP-4 replay worked only through `memory_write_batch` before).
+  - near-dup run asynchronously off-slot moments later. Caller-visible: `enrichment.near_dup` is
+    `null` in write responses (SAME_AS edges land async); fresh episodes are keyword/temporal-
+    recallable immediately and vector-recallable once Phase B lands; `memory_ping.store` gains
+    additive `embed_backlog`/`embed_backlog_oldest_at` folded into the `enrichment` verdict
+    (dead Phase-B pipeline reads `stalled`). The periodic enrich tick heals missing vectors
+    (crash-between-phases recovery). Kill-switch: `SOX_SYNC_EMBED=1` restores the fully
+    synchronous pre-split behaviour. BL-186: `memory_curate recluster` (global) now enqueues a
+    full-pass trigger row consumed by the tick — `{enqueued: true, seq}` is honest and the tool
+    call no longer blocks writes for the whole cluster pass. BL-188: `memory_write` now forwards
+    `client_request_id` (WP-4 replay worked only through `memory_write_batch` before).
 
 ## 1.2.1
 
