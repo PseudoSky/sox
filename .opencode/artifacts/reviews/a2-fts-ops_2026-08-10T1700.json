@@ -1,0 +1,98 @@
+{
+  "$schema": "review-report-v1",
+  "reviewer": "flash-reviewer",
+  "task_id": "a2-fts-ops-review",
+  "label": "FEAT-SOXGRAPH-001 A2 FTS operations on store-adapter (branch feat/a2-fts-ops, 6f2bb72a + 2e43da30)",
+  "reviewed_at": "2026-08-10T17:00:00Z",
+  "files_reviewed": [
+    "libs/data/store/store-adapter/src/fts-ops.ts",
+    "libs/data/store/store-adapter/src/fts-ops.spec.ts",
+    "libs/data/store/store-adapter/src/types.ts",
+    "libs/data/store/store-adapter/src/fts-dialect.ts",
+    "libs/data/store/store-adapter/src/sqlite-adapter.ts",
+    "libs/data/store/store-adapter/src/turso-adapter.ts",
+    "libs/data/store/store-adapter/src/mock-adapter.ts",
+    "libs/data/store/store-adapter/src/index.ts",
+    "libs/data/store/store-adapter/CHANGELOG.md",
+    "libs/memory-core/src/db.ts",
+    "libs/memory-core/src/recall-live-incident.spec.ts"
+  ],
+  "verification": {
+    "build": "passed",
+    "test": { "passed": 401, "failed": 0, "skipped": 0 },
+    "lint": "passed",
+    "additional": {
+      "store-adapter suite": "25 files / 401 passed (382 base + 19 new A2) — matches claim",
+      "graph-store suite": "8 files / 87 passed — matches claim",
+      "memory-core suite": "67 files / 658 passed / 8 skipped; recall-live-incident 4/4",
+      "fts-ops.spec.ts verbose": "19/19 pass incl. all 4 real-Turso Tantivy tests (NOT skipped; @tursodatabase/database present)",
+      "memory-core build": "atomic-tsc (real tsc typecheck) passed against branch store-adapter",
+      "npm 0.4.0": "deps { @tursodatabase/database ^0.7.1, @adhd/sox-telemetry 0.2.0 }; optionalDeps { better-sqlite3 ^12.10.0 }",
+      "tarball": "contains dist/fts-ops.js + .d.ts (+maps); zero src/ entries; published fts-ops.js byte-identical to branch dist",
+      "graph-store@0.7.0 pin": "@adhd/sox-store-adapter 0.4.0 — exact pin resolves",
+      "publish timeline": "0.4.0 published once 2026-08-09T03:51Z, after branch commits (Aug 8) — A2 shipped in original 0.4.0, no overwrite",
+      "smoke": "dist/smoke/run-2026-08-09T02-59-45 in main checkout: 13 passed / 0 failed — dated after branch, but not provably attributed to this branch"
+    }
+  },
+  "findings": [
+    {
+      "severity": "medium",
+      "category": "spec-compliance",
+      "file": "libs/data/store/store-adapter/src/fts-ops.ts",
+      "line": 99,
+      "description": "SqliteFTS5Dialect.matchClause/scoreClause (fts-dialect.ts:195-211, pre-existing on main, unchanged by this branch) HARDCODE `fts_node` and ignore the `table` parameter, while the new A2 surface (ftsSearch/ftsCount/ensureFtsIndex) documents and accepts a general `table`. On sqlite the composed SQL is `FROM fts_${table} JOIN ${table} n ... WHERE fts_node MATCH ? ... -fts_node.rank AS score` — correct only for table='node'. For table='episode'/'claim': if fts_node does not exist → loud 'no such table'; if fts_node DOES exist (normal memory store) → silently wrong join-filter, no error. Turso honors `table` correctly (index lives on the base table), so the API behaves differently per backend for the same call. No current or planned caller passes a non-node table (memory-core FTS_DDL/graph-store FTS is fts_node only; all 19 tests use 'node'), so there is no live breakage — but the published interface over-promises. Fix options: plumb `table` into matchClause/scoreClause (dialect interface change), or document sqlite-node-only in the FtsSearch/FtsCount/FtsEnsure JSDoc + CHANGELOG. Can ride into the next release; does not warrant a 0.4.1 patch on its own.",
+      "fix_sketch": "Either (a) add `table: string` to FTSDialect.matchClause/scoreClause and emit `fts_${table} MATCH ?` / `fts_${table}.rank` in SqliteFTS5Dialect, or (b) narrow the documented contract: 'SQLite FTS5 path supports the graph-store fts_<table> shape; non-node tables only on Turso' and assert/throw on mismatch."
+    },
+    {
+      "severity": "low",
+      "category": "correctness",
+      "file": "libs/data/store/store-adapter/src/fts-ops.ts",
+      "line": 308,
+      "description": "In finishEnsureFtsIndex the residue-drop loop catches `/already exists/i` on statements from dialect.dropLegacyDDL — but those are DROP statements with IF EXISTS guards (fts-dialect.ts:178-185, 286-291), which never raise 'already exists'. The skip is dead code; a real DROP failure rethrows (correct). Not a bug, but the regex copy-pasted from the CREATE path is misleading. Cosmetic.",
+      "fix_sketch": "Remove the try/catch or narrow it to a comment explaining IF EXISTS makes the skip unnecessary."
+    },
+    {
+      "severity": "low",
+      "category": "correctness",
+      "file": "libs/data/store/store-adapter/src/fts-dialect.ts",
+      "line": 125,
+      "description": "resolveExistingFtsIndexName returns the FIRST sqlite_master row whose sql matches /using\\s+fts/i. If a store somehow carries BOTH the canonical idx_fts_node AND a repaired idx_fts_node__r1 (creation order puts canonical first), the adoption branch in ensureFtsIndex (fts-ops.ts:244) sees the canonical name, does NOT adopt, and the orphan survives → permanently doubled write/storage cost — the exact silent symptom BL-461 exists to prevent. The intended BL-461 repair path (canonical dropped, only _r1 remains) is handled correctly and is tested; this both-exist edge is not. Not reachable through current flows.",
+      "fix_sketch": "If a non-canonical FTS index is found while the canonical also exists, report it (e.g. return the list of FTS indexes and let ensureFtsIndex drop/adopt the orphan) — or document that coexistence requires out-of-band cleanup."
+    },
+    {
+      "severity": "info",
+      "category": "test-coverage",
+      "file": "libs/data/store/store-adapter/src/mock-adapter.ts",
+      "line": 432,
+      "description": "MockAdapter.ensureFtsIndex reports `backfilled: true` whenever `opts.backfill !== false`, but nothing is actually backfilled (the mock keeps no index — by design). A consumer asserting on `backfilled` against the mock gets a semantically different signal than against real backends. Acceptable for a test double; note it in the JSDoc.",
+      "fix_sketch": "Document that mock `backfilled` is a bookkeeping echo, or set it to false."
+    },
+    {
+      "severity": "info",
+      "category": "spec-compliance",
+      "file": "libs/data/store/store-adapter/src/fts-ops.ts",
+      "line": 1,
+      "description": "The FEAT-SOXGRAPH-001 architect spec is not present in the repo (grep across docs/ found no A2 spec; retrieval-infrastructure/SPEC.md does not cover A2). Interface conformance was verified against the code's own JSDoc contract, the CHANGELOG entry, and the 19 tests. The fts-ops.ts header claims 'the architect spec names this file as the exemption' — if the spec lives outside the repo, consider archiving it under docs/plan/ or docs/decisions/ for future reviewers.",
+      "fix_sketch": "Land the A2 spec/decision into the repo (docs/plan/ or a decision record) when convenient."
+    },
+    {
+      "severity": "info",
+      "category": "test-coverage",
+      "file": "scripts/smoke-test.mjs",
+      "line": 1,
+      "description": "Per AGENTS.md, a branch touching a libs/data/ package consumed by bundles must run the smoke test before merging. A passing smoke run exists in the main checkout (dist/smoke/run-2026-08-09T02-59-45, 13 passed / 0 failed, dated after the branch commits) but cannot be attributed to this branch with certainty. Re-run `node scripts/smoke-test.mjs` on the merged tree as the pre-merge gate.",
+      "fix_sketch": "Run the smoke test on the branch/merge commit and record summary.failed === 0."
+    }
+  ],
+  "summary": {
+    "critical": 0,
+    "high": 0,
+    "medium": 1,
+    "low": 2,
+    "info": 3
+  },
+  "backlog_entries": [
+    "BL-suggested — sqlite FTS dialect hardcodes fts_node while A2 surface generalizes `table` (fts-ops.ts:99-101 vs fts-dialect.ts:195-211); document node-only or plumb table through the dialect",
+    "BL-suggested — resolveExistingFtsIndexName first-match wins: canonical+orphan coexistence leaves the orphan unadopted (fts-dialect.ts:125-127)"
+  ]
+}

@@ -1,0 +1,52 @@
+{
+  "$schema": "agent-report-v1",
+  "agent": "implement",
+  "segment": "concurrency-contract-bl625",
+  "label": "Store-concurrency contract (BUG-MEMORYCORE-MULTIPROCESS-WAL-NOT-OPTED-IN-001) + BL-625 idle-flush recalibration",
+  "completed_at": "2026-08-31T03:35:00Z",
+
+  "summary": "Completed the ADR-0012 store-concurrency contract (multiprocess-wal always on) across store-adapter + memory-core + memory-server + smoke-test, and fixed the BL-625 write-queue.spec.ts regression (seed recalibration 15->8) + 4 mocked-driver turso suites.",
+
+  "changes": [
+    { "file": "libs/data/store/store-adapter/src/concurrency-mode.ts", "kind": "NEW — StoreConcurrencyMode/VALID_CONCURRENCY_MODES/resolveConcurrencyMode/assertValidConcurrencyMode/verifyMultiprocessWalSidecar/EInvalidConcurrencyMode/EWalModeUnverified", "lines": "+153" },
+    { "file": "libs/data/store/store-adapter/src/types.ts", "kind": "AdapterCapabilities.walMode + walModeVerified (REQUIRED literal), AdapterConfig.concurrencyMode", "lines": "+36" },
+    { "file": "libs/data/store/store-adapter/src/factory.ts", "kind": "resolve mode + forward into adapter opts", "lines": "+22" },
+    { "file": "libs/data/store/store-adapter/src/turso-adapter.ts", "kind": "validate mode, derive experiments, post-open -tshm verify (throw E_WAL_MODE_UNVERIFIED), stamp config/capabilities", "lines": "+92" },
+    { "file": "libs/data/store/store-adapter/src/sqlite-adapter.ts", "kind": "validate single-writer only, set walMode/walModeVerified/derived multiprocessWrite", "lines": "+21" },
+    { "file": "libs/data/store/store-adapter/src/mock-adapter.ts", "kind": "walMode single-writer + walModeVerified true (test double)", "lines": "+8" },
+    { "file": "libs/memory-core/src/db.ts", "kind": "STORE_MODE() helper (cached lazy require of resolveConcurrencyMode), 5 createStoreAdapter sites + wrapRawDbAsAdapter literal + store.open.finish wal_mode", "lines": "+57" },
+    { "file": "libs/memory-core/src/backup.ts", "kind": "STORE_MODE() wired into createStoreAdapter", "lines": "+4" },
+    { "file": "libs/memory-core/src/stats.ts", "kind": "wal_mode/wal_mode_verified on StatsResult + memoryGetStats", "lines": "+21" },
+    { "file": "libs/memory-core/src/testing/legacy-store.ts", "kind": "STORE_MODE() wired", "lines": "+4" },
+    { "file": "extensions/bundles/sox-memory-bundle/members/memory-server/src/index.ts", "kind": "wal_mode/wal_mode_verified on memory_ping storeBlock", "lines": "+8" },
+    { "file": "libs/memory-core/src/write-queue.spec.ts", "kind": "BL-625 fix — seed 15->8 rows + documented root cause", "lines": "+19" },
+    { "file": "libs/data/store/store-adapter/src/__tests__/{truncate-race,checkpoint-diagnostic,open-handshake-retry,sidecar-reconcile-live}*.spec.ts", "kind": "mock connect() creates -tshm sidecar (faithful to real driver)", "lines": "+13..16 each" },
+    { "file": "libs/data/store/store-adapter/src/{concurrency-mode-contract,wal-mode-verification}.spec.ts", "kind": "NEW contract + verification specs", "lines": "+154 / +93" },
+    { "file": "libs/memory-core/src/{db-concurrency-contract,wal-mode-surface}.spec.ts", "kind": "NEW meta-test + surface specs", "lines": "+78 / +93" },
+    { "file": "scripts/smoke-test.mjs", "kind": "memory-server serve step: memory_write + memory_ping payload + verifyMemoryServerPing asserting ping.store.wal_mode === multiprocess-wal", "lines": "+61" }
+  ],
+
+  "tests": {
+    "store-adapter": { "command": "npx nx test store-adapter", "passed": 628, "failed": 0, "skipped": 0, "tree_state": "DIRTY — 1 uncommitted path (my own wal-mode-verification.spec.ts) [BL-456]" },
+    "memory-core": { "command": "npx nx test memory-core", "passed": 738, "failed": 0, "skipped": 8, "tree_state": "DIRTY — 8 uncommitted paths (all my own in-flight spec files) [BL-456]" },
+    "memory-server": { "command": "npx nx test memory-server", "passed": 278, "failed": 0, "skipped": 0, "tree_state": "DIRTY — 8 uncommitted paths (all my own in-flight spec files) [BL-456]" }
+  },
+
+  "lint": { "store-adapter": true, "memory-core": true, "memory-server": true },
+  "typecheck": { "store-adapter": true, "memory-core": true, "memory-server": true },
+
+  "build": { "passed": true, "note": "nx build store-adapter + memory-core ran (required to compile the contract into dist for tests)" },
+
+  "issues": [
+    "The BL-625 body's diagnosis was partially wrong: the neuter (_idleFlushEnabled=false) still works; the real cause is the grown WAL baseline tripping the inline cap-flush. Corrected in the resolution note.",
+    "The prior attempt's turso -tshm verification (committed in 8212b2db) broke 8 mocked-driver turso tests (E_WAL_MODE_UNVERIFIED false-positive). Fixed by making the 4 mock connect() fixtures create the -tshm sidecar like the real driver."
+  ],
+
+  "handoff_notes": [
+    "The smoke-test.mjs assert (verifyMemoryServerPing) was NOT run — coordinator's serial gate. It sends initialize + memory_write (creates the store) + memory_ping and asserts ping.store.wal_mode === 'multiprocess-wal' (+ wal_mode_verified === true on turso default, presence-only if STORE_ADAPTER=sqlite)."
+  ],
+
+  "backlog_entries": [
+    { "id": "BL-625", "action": "RESOLVED", "status": "RESOLVED", "evidence": "RED (2 failures, 'expected 0 to be greater than 189552') -> GREEN (13/13 write-queue.spec.ts). Citation: libs/memory-core/src/write-queue.spec.ts:436-450." }
+  ]
+}

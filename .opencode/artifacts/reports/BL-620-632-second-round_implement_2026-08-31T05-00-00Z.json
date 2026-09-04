@@ -1,0 +1,52 @@
+{
+  "$schema": "agent-report-v1",
+  "agent": "implement",
+  "segment": "BL-632 second-round + BL-620 remainder land",
+  "label": "host-runtime os-unit ownership/log-rotation second-round fixes + BL-620 remainder commit",
+  "completed_at": "2026-08-31T05:00:00Z",
+
+  "summary": "Fixed the 6 second-round blind-review findings (BL-632 + 5 LOW/INFO) on the BL-620 os-unit ownership/log-rotation work and landed the still-uncommitted BL-620 remainder across 9 files in 3 pathspec commits.",
+
+  "changes": [
+    { "file": "libs/host-runtime/src/log-manager.ts", "kind": "BL-632 finder resolves ACTIVE file + excludes .log.<digits> archives; collision-free .YYYYMMDD-HHmmss[.N] archive suffix; parsed-date count-cap sort; stable-regex id/stream split with warn-on-nonmatch; dropped inner requires", "lines": "+136" },
+    { "file": "libs/host-runtime/src/log-manager.spec.ts", "kind": "red->green coexistence test (BL-632), same-day no-overwrite test, timestamped-suffix count-cap, mixed-form parsed-date sort", "lines": "+69" },
+    { "file": "libs/host-runtime/src/os-unit.ts", "kind": "verificationError on blocked ('blocked — no write to verify') and dry-run ('dry-run — no write') paths", "lines": "+16" },
+    { "file": "libs/host-runtime/src/os-unit.spec.ts", "kind": "red->green tests asserting verificationError present on blocked + dry-run", "lines": "+22" },
+    { "file": "libs/install-engine/src/ownership.ts", "kind": "BL-620 ownership commit-point: strict load, optimistic-concurrency save, upsert/removeOsUnitEntry", "lines": "+170" },
+    { "file": "libs/install-engine/src/ownership.spec.ts", "kind": "BL-620 strict-load/save-conflict/os-unit upsert+remove red->green coverage", "lines": "+85" },
+    { "file": "libs/install-engine/src/index.ts", "kind": "barrel re-export OwnershipCorruptError/OwnershipConflictError", "lines": "+2" },
+    { "file": "libs/host-runtime/src/index.ts", "kind": "barrel re-export verifyUnitOnDisk/parseOsUnitLabel/classifyOsUnitOrphan/rotateOsUnitLogs + types", "lines": "+11" },
+    { "file": "apps/sox/src/main.ts", "kind": "5 fail-loud os-unit ownership call sites + F15 self-repair + alarm marker + service status surfacing + reconcile rotation", "lines": "+238 / -48" }
+  ],
+
+  "tests": {
+    "project": "host-runtime, install-engine, sox",
+    "command": "nx test host-runtime / install-engine / sox --skip-nx-cache",
+    "passed": 698,
+    "failed": 0,
+    "skipped": 0,
+    "output_snippet": "host-runtime 379 passed (20 files) · install-engine 192 passed (13 files) · sox 127 passed (18 files)"
+  },
+
+  "lint": { "passed": true },
+  "build": { "passed": true },
+  "typecheck": { "passed": true },
+
+  "issues": [
+    "install-engine and sox suites ran against a dependency set that still carries other agents' in-flight work (host-registry/*, install.ts agent-renderer, main.ts validateAgentRendering, manifest/*) — quoted via check-suite-tree-state; those files do not intersect my assertions.",
+    "main.ts is contended: the validateAgentRendering work (another agent) was left uncommitted via commit-mine --hunks (3 hunks deliberately excluded)."
+  ],
+
+  "handoff_notes": [
+    "main.ts still has 3 uncommitted validateAgentRendering hunks (another agent's [def:agent-renderer] work) — do NOT commit those.",
+    "libs/install-engine/src/install.ts agent-renderer work is another agent's — left untouched.",
+    "registry/index.json was NOT regenerated and NOT committed; smoke test / registry:sync-index NOT run (per instruction)."
+  ],
+
+  "backlog_entries": [],
+  "commits": [
+    { "sha": "a8fda028", "subject": "fix(host-runtime): resolve BL-632 log-rotation second-round findings" },
+    { "sha": "9a1f87ea", "subject": "feat(install-engine,host-runtime): land BL-620 os-unit ownership commit-point + barrels" },
+    { "sha": "eae4aae3", "subject": "feat(sox): BL-620 fail-loud os-unit ownership + F15 self-repair + alarm surfacing" }
+  ]
+}

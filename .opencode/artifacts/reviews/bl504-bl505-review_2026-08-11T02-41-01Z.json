@@ -1,0 +1,120 @@
+{
+  "$schema": "review-report-v1",
+  "reviewer": "flash-reviewer",
+  "task_id": "bl504-bl505-review",
+  "label": "Independent review: fix/bl504-neighbors-index (d0ee0336) + fix/bl505-chain-determinism (d9f76eb4)",
+  "reviewed_at": "2026-08-11T02:41:01Z",
+  "base_commit": "d369fe5b",
+  "files_reviewed": [
+    ".worktrees/bl504-fix/libs/data/graph/graph-store/src/index.ts",
+    ".worktrees/bl504-fix/libs/data/graph/graph-store/src/graph-store.spec.ts",
+    ".worktrees/bl504-fix/docs/reporting/memory/PLAN.md",
+    ".worktrees/bl504-fix/docs/reporting/memory/STATE.md",
+    ".worktrees/bl505-fix/libs/memory-core/src/supersession-chain.ts",
+    ".worktrees/bl505-fix/libs/memory-core/src/extensions.spec.ts",
+    "extensions/bundles/sox-memory-bundle/members/memory-server/src/index.ts (B caller, unchanged)",
+    "libs/data/store/store-adapter/src/__tests__/recursive-cte.probe.test.ts (A SQL copy, unchanged)"
+  ],
+  "verification": {
+    "build": "passed",
+    "test": {
+      "graph-store": { "passed": 114, "failed": 0, "skipped": 0 },
+      "memory-core": { "passed": 666, "failed": 0, "skipped": 8 }
+    },
+    "lint": "passed (graph-store + memory-core)",
+    "typecheck": "passed (graph-store + memory-core)"
+  },
+  "red_green_proof": {
+    "A_bl504": {
+      "RED_sqlite_arm": "AssertionError: expected 56646.89225 to be less than 1000 (graph-store.spec.ts:777) — 56.6s pre-fix walk vs 1000ms gate",
+      "RED_sqlite_tie": "AssertionError: expected [ 1, 2, 3, 6, 7, 4, 5 ] to deeply equal [ 1, 2, 3, 4, 5, 6, 7 ] (graph-store.spec.ts:811) — recursive emitted d1,d2 before e1,e2",
+      "RED_turso_arm": "passed (iterative fallback unaffected; no perf gate)",
+      "GREEN": "sqlite perf test 128ms (<1000ms gate, ~440x vs 56646ms RED); sqlite tie test 3ms; turso arms 96784ms (seed-dominated) + 42ms — 4/4 passed"
+    },
+    "B_bl505": {
+      "RED": "AssertionError: expected 'uid-b' to be 'uid-a' (extensions.spec.ts:264) — sqlite leg fails first; turso leg engine-independent by construction (BFS order + stable sort identical both engines)",
+      "GREEN": "BL-505 test 215ms both engines — 1/1 passed"
+    }
+  },
+  "tree_state": {
+    "graph-store": "CLEAN — 3 project(s) in graph-store's dependency set, no uncommitted changes. A suite result here is attributable to committed source [BL-456]. exit=0",
+    "memory-core": "CLEAN — 9 project(s) in memory-core's dependency set, no uncommitted changes. A suite result here is attributable to committed source [BL-456]. exit=0"
+  },
+  "findings": [
+    {
+      "severity": "low",
+      "category": "test-coverage",
+      "file": "libs/data/graph/graph-store/src/graph-store.spec.ts",
+      "line": 723,
+      "description": "The BL-504 perf test's turso arm seeds 2501 nodes via writeGraph at ~19ms/statement on the 0.7.1 turso driver — ~96.8s of the suite's 98.3s runtime is the turso seed (measured: turso arm 96784ms, walk ~15ms). The implementer scoped this out as a pre-existing adapter characteristic (test comment at :733-737), which is correct — it is not introduced by this branch — but it makes every graph-store suite run pay ~1.5min and forces a 200s test timeout. A smaller fixture would still prove RED (8.1s walk @ 651 nodes from the test's own comment already exceeds the 1s gate) while cutting the turso seed cost ~4x. Judgment call, not a defect; flagged for CI wall-clock consideration.",
+      "fix_sketch": "Optional: shrink fixture to ~651 nodes (keeps RED power: 8.1s >> 1000ms) or have the turso arm seed via adapter.executeMany batching once that lands (turso-adapter.ts:830 exists but writeGraph doesn't use it)."
+    },
+    {
+      "severity": "info",
+      "category": "correctness",
+      "file": "libs/data/store/store-adapter/src/turso-adapter.ts",
+      "line": 685,
+      "description": "Follow-up candidate (perf): turso executeRun is a per-statement `await this.db.run()` — 5001 statements in writeGraph(2501 nodes, 2500 edges) took 96.8s in this review (~19ms/statement). Confirmed pre-existing (both implementers noted it; the A test comment documents it; not caused by either branch). Worth a PERF backlog item: batch writeGraph's statements via executeMany or the driver's batch API. Driver version confirmed 0.7.1.",
+      "fix_sketch": "File PERF item: bulk-write path for turso adapter (executeMany batching in writeGraph/writeNodeBatch)."
+    },
+    {
+      "severity": "info",
+      "category": "correctness",
+      "file": "libs/memory-core/src/supersession-chain.ts",
+      "line": 100,
+      "description": "`a.rowid - b.rowid` comparator: SQLite rowid is 64-bit; subtraction loses precision above Number.MAX_SAFE_INTEGER (2^53). Not a real risk here — node.rowid is `integer PRIMARY KEY NOT NULL` incremental from 1 (verified DDL), 2^53 rowids is unreachable for this store, and the same `a[0] - b[0]` pattern already exists in graph-store's iterative fallback (index.ts:1457). No change needed; documented for posterity.",
+      "fix_sketch": "None required. If rowid magnitudes ever become a concern, compare via (a.rowid > b.rowid) - (a.rowid < b.rowid)."
+    },
+    {
+      "severity": "info",
+      "category": "spec-compliance",
+      "file": "libs/data/graph/graph-store/src/index.ts",
+      "line": 1544,
+      "description": "Comment figure '98.6s @ 2.8k nodes' is from a larger probe fixture than the test's 2501 (test comment documents 8.1s@651 -> 98.6s@~2.8k, ~12x time for 4.3x data = super-linear n^1.7). Independent RED measured 56.6s @ 2501 — consistent with the super-linear claim and the commit's 57413ms. Comment is accurate; minor variance between probe fixtures and the test fixture is expected.",
+      "fix_sketch": "None required."
+    },
+    {
+      "severity": "info",
+      "category": "style",
+      "file": "libs/data/store/store-adapter/src/__tests__/recursive-cte.probe.test.ts",
+      "line": 123,
+      "description": "The probe test's SUPERSESSION_CHAIN_SQL copy ends `ORDER BY ch.depth` while graph-store's getSupersessionChain now ends `ORDER BY ch.depth, n.rowid`, and the comment at :100-104 claims 'byte-for-byte' — now slightly stale. Probe is self-contained (separate package, not part of either branch) and its linear-chain assertion (distinct rowids per depth) still passes; purely a comment-accuracy nit if anyone reads it as a mirror of graph-store.",
+      "fix_sketch": "Optional future cleanup: append ', n.rowid' to the probe copy for byte-parity."
+    },
+    {
+      "severity": "info",
+      "category": "spec-compliance",
+      "file": "libs/memory-core/src/supersession-chain.ts",
+      "line": 104,
+      "description": "Architect directive 'preserve canonical find-first-live, do NOT fix the comment/behavior mismatch' honored exactly: line 104 `chain.find((n) => n.t_invalid === null) ?? chain[chain.length - 1]!` is byte-identical to pre-fix. The line 103 comment ('most recent non-invalidated') still mismatches the code (find-first-live in oldest-first order = OLDEST live node) — preserved as instructed; do not 'fix' in a follow-up without explicit instruction.",
+      "fix_sketch": "None (intentional preservation)."
+    }
+  ],
+  "summary": {
+    "critical": 0,
+    "high": 0,
+    "medium": 0,
+    "low": 1,
+    "info": 5
+  },
+  "backlog_entries": [
+    "PERF (follow-up, evidence in this review): turso adapter write path ~19ms/statement — writeGraph(2501, 2500) = 96.8s on driver 0.7.1. Pre-existing; not introduced by either branch.",
+    "UNVERIFIED (read-only review, no backlog-graph access): both implementers noted a backlog create-item FK failure — suspected 0.7.x turso driver family. Driver confirmed 0.7.1 in both worktrees; FK-failure attribution not verified here. Planner should confirm."
+  ],
+  "verdicts": {
+    "A_fix_bl504_neighbors_index": {
+      "merge_ready": "YES",
+      "conditions": "None. Optional non-blocking: consider shrinking the turso-arm fixture or batching turso writes to cut suite wall-clock (~98s -> ~20s).",
+      "commit": "d0ee0336",
+      "files": 4,
+      "git_hygiene": "clean — 1 commit, 4 files (index.ts, graph-store.spec.ts, PLAN.md, STATE.md), worktree clean after restore, no unrelated sweep, no registry/lockfile churn (graph-store is a data-layer lib, NOT in registry/index.json)"
+    },
+    "B_fix_bl505_chain_determinism": {
+      "merge_ready": "YES",
+      "conditions": "None.",
+      "commit": "d9f76eb4",
+      "files": 2,
+      "git_hygiene": "clean — 1 commit, 2 files (supersession-chain.ts, extensions.spec.ts), worktree clean after restore, no unrelated sweep"
+    }
+  }
+}

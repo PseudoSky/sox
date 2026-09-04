@@ -1,0 +1,188 @@
+{
+  "reportId": "triage-affordance",
+  "agent": "debug",
+  "timestamp": "2026-08-09T01:36:17Z",
+  "repo": "/Users/nix/dev/ai/sox-ecosystem",
+  "mainHead": "3e9a40c0",
+  "items": [
+    {
+      "humanId": "BUG-MEMORY-007",
+      "title": "memoryGetCommunity: published export with zero callers, divergent inline live handler, sole test that cannot pass",
+      "status": "open — root cause fully confirmed; fix surface requires a product ruling (delete-vs-align) that CHORE-MEMORY-001 already supplies direction on",
+      "rootCause": {
+        "confirmed": true,
+        "evidence": [
+          "(a) Zero-caller on main: CONFIRMED. The export `memoryGetCommunity` (libs/memory-core/src/extensions.ts:956-1039) is referenced ONLY by its own re-export (libs/memory-core/src/index.ts:279), the dead acceptance harness (tools/test-communities.js:19,144,156,165), and a dead plan doc (docs/plan/client-refactor/ARCH.md:74). No *.spec.ts anywhere references it; memory-server has its own inline handler and never imports the export. Grep across libs/, apps/, extensions/, tools/ finds no other caller.",
+          "(b) Divergence, export vs live handler (live handler is authoritative): the export (extensions.ts:956-1039) takes (adapter, entity_uid, level?) and returns {community:{uid,name,summary,level,member_count,members:[{uid,name,content,kind}]}} with members NESTED inside community, a `name` field, NO cluster_scope filter, and NO kind constraint on its node lookup (it resolves ANY live node kind — including entity nodes — via MEMBER_OF, i.e. it is the entity→community resolver). The live handler (extensions/bundles/sox-memory-bundle/members/memory-server/src/index.ts:1702-1801) takes {entity_uid?, community_uid?, level?}, returns {community:{uid,label,member_count,mean_intra_sim,centroid_episode_uid,t_created}, members:[{uid,summary,topic,importance,t_created,project_path,tags}]} with members TOP-LEVEL, a `label` field, filters cluster_scope.kind='global', orders members by importance DESC, and accepts community_uid directly (the export cannot). Errors: export returns a plain {code:'E_NOT_FOUND',message} object; the live handler wraps in MCP isError. The live handler is authoritative: it is the shipped MCP surface documented in the server README/CLAUDE.md/extension.json (v1.1.0, breaking `name`→`label` change recorded). Divergence origin: commit 0ff4d812 (2026-07-02, 'consolidate memory-core, wire handleToolCall to core, delete client/') deleted the client/get-community.ts wrapper that consumed the export (per ARCH.md:74) and reimplemented the handler inline with v1 semantics, orphaning the export.",
+          "(c) Missing await in the sole test — BL-325 shape: tools/test-communities.js:144,156,165 call `memoryGetCommunity(db, uid, 0)` WITHOUT await; line 146 `assert(aliceCommunity.community !== undefined)` then FAILS on the Promise (and line 145 `!('code' in …)` passes vacuously — the false-negative pattern). Independently fatal: line 109 calls `buildCommunities(...)` without await (async per extensions.ts:766) so `buildResult.communities` is undefined and line 112 fails FIRST; lines 189/195/198 call `memorySearchEntities` without await (async per extensions.ts:1080) so line 190 fails too. Independently fatal #2: line 21 imports from '../extensions/mcp-servers/memory-server/dist/lib.js' — that path does not exist on main (`extensions/mcp-servers/` directory is absent; the server lives under extensions/bundles/sox-memory-bundle/members/memory-server), so the test cannot even resolve its imports. The test cannot pass at any of three independent layers.",
+          "(d) Fix surface options: (1) align the live handler onto the export — WRONG direction: the export's contract is obsolete (name vs label, nested members, no mean_intra_sim, no community_uid arg, no cluster_scope filter); aligning would regress the shipped v1.1.0 surface. (2) delete the export — correct under CHORE-MEMORY-001 (see item 2): the export is the only code that actually performs the entity→community resolution being retired, and @adhd/sox-memory-core (v0.7.0) has zero external consumers (all consumers are workspace:* — memory-server, memory-flush, memory-cli, tools/baseline-capture), so deletion is practically risk-free but IS a semver-breaking change to the package's public API and needs a changeset with the breaking marker. (3) fix the test — pointless: the import path is dead and the contract under test is obsolete; the P4 acceptance role it served is now covered by memory-tools.spec.ts (skip-guarded C2.6 block at memory-tools.spec.ts:714) and, once merged, the unconditional bug-memory-006-community-affordance.spec.ts.",
+          "CHORE-MEMORY-001's owner ruling ('do NOT build entity→community resolution; the need is served by memory_entity_episodes; \"the\" community of an entity is not well-defined') bears directly: it answers (d) as DELETE, not align. The export exists only to serve the retired capability."
+        ],
+        "unverified": [
+          "Claim 'PUBLISHED' from the issue: libs/memory-core/package.json has no `\"private\": true` and is versioned 0.7.0, so it is technically publishable; but no external/npm consumer exists (verified workspace-only consumers). Whether any previously-published 0.x tarball is consumed out-of-tree cannot be verified from this repo.",
+          "That memory-tools.spec.ts:714's C2.6 describe block is skip-guarded (per the branch spec file's header comment, lines 9-12) — the guard code itself was read at :719 ('No clusters formed with hash backend at this scale — skip gracefully') and confirms the BL-167 pattern, but I did not run the suite to see the skip fire."
+        ]
+      },
+      "fixSurface": {
+        "files": [
+          "libs/memory-core/src/extensions.ts:931-1039 (GetCommunitySuccess, GetCommunityError, memoryGetCommunity)",
+          "libs/memory-core/src/index.ts:279 (re-export) and :294-295 (type re-exports)",
+          "libs/memory-core/src/index.ts:267-268 (section comment 'Extended functions (… communities …)')",
+          "tools/test-communities.js (delete, or repair import path + awaits if the P4 harness is deemed load-bearing — it is not: superseded by memory-tools.spec.ts and the in-flight bug-memory-006 spec)",
+          "libs/memory-core/package.json (version bump if policy requires — no 'private': true)",
+          ".changeset/<bug-memory-007>.md (breaking marker; @adhd/sox-memory-core is the affected package)"
+        ],
+        "functions": [
+          "memoryGetCommunity (extensions.ts:956) — delete",
+          "GetCommunitySuccess / GetCommunityError (extensions.ts:931-950) — delete",
+          "re-export + type exports (index.ts:279, 294-295) — delete"
+        ],
+        "shape": "DELETE the export and its types; dispose of the dead acceptance harness (or minimally repair it only if a stakeholder wants the P4 narrative preserved); relabel the remaining live tool documentation to episode-only semantics (see item 2). Do NOT touch the live handler's behavior — it is authoritative and already correct (and the in-flight branch improves its error taxonomy)."
+      },
+      "dependencies": {
+        "blocks": [],
+        "blockedBy": [
+          "CHORE-MEMORY-001 product ruling (delete-vs-align is the ruling's subject; the ruling direction 'retire entity→community' selects DELETE)",
+          "feat/bug-memory-006-community-affordance merge (the branch relabels the live tool's entity_uid description to episode-only and adds AC4 — an unconditional conformance test asserting the 'entity' claim is dropped from the schema — which is the doc-side half of this item's retirement surface; merging it first lets this packet land as pure deletion with the conformance guard already in place)"
+        ],
+        "ordering": "Ruling first (product) → branch merge (backend, item 3) → deletion packet (implement) → red→green verification (test). No ordering coupling with the clustering triage packets (BL-495/BUG-010): those touch cluster.ts/cluster-metrics.ts and do not overlap this file set."
+      },
+      "executor": {
+        "agent": "product for the ruling; implement (pro tier) for the mechanical deletion; test for the red→green guard",
+        "tier": "product → implement(pro) → test"
+      },
+      "testPlan": {
+        "name": "memory_get_community surface consolidation (BUG-MEMORY-007)",
+        "assertion": "After deletion: (1) `rg memoryGetCommunity libs apps extensions tools` returns zero hits on the merged tree (compile/lint gate — the export is gone); (2) the live handler remains fully covered by the unconditional bug-memory-006-community-affordance.spec.ts AC1-AC6 (merged from the branch), which asserts E_WRONG_ID_SPACE advisory-on-miss, E_NOT_FOUND for well-formed-absent, E_PENDING_CLUSTER for unclustered episodes, E_WRONG_KIND for entity/community uids — the full post-consolidation contract; (3) memory-tools.spec.ts's skip-guarded C2.6 block is either replaced by the unconditional spec or deleted (BL-167 pattern removal).",
+        "whyCatches": "It proves the deletion did not silently strand the capability (no dangling export), that the consolidated contract (episode-only resolution, distinguishable error codes) is enforced by unconditional assertions rather than the BL-167 skip-guard, and that the dead harness's claims — which could not run — are replaced by a test that does. BL-225-compliant: the red arm is the pre-deletion tree where the dead test fails at tools/test-communities.js:112/:146 and the skip-guarded C2.6 block provides no coverage."
+      },
+      "packet": {
+        "recommendation": "COMBINE with CHORE-MEMORY-001 — same surface, one ruling. One packet: 'retire entity→community affordance' (export deletion + doc relabel + dead-harness disposition), sequenced after the branch merge. Do NOT split into a separate alignment-vs-delete code packet: the alignment option is foreclosed by the ruling, so there is no independent decision left.",
+        "scope": "libs/memory-core (extensions.ts, index.ts, package.json/changeset), memory-server docs (extension.json:122, README.md:35), tools/test-communities.js",
+        "risk": "LOW. Zero production callers; all consumers workspace-local; the live handler is untouched. Only risk: forgetting the semver-breaking changeset for the published (but unconsumed) @adhd/sox-memory-core API, and accidentally deleting the load-bearing episode→community resolution while removing entity→community — the packet must distinguish the two (the branch's E_WRONG_KIND narrowing is the marker that the live path is episode-only and stays)."
+      }
+    },
+    {
+      "humanId": "CHORE-MEMORY-001",
+      "title": "Retire the advertised entity→community capability (product ruling: 'the' community of an entity is not well-defined; need served by memory_entity_episodes)",
+      "status": "open — ruling direction confirmed; concrete retirement surface enumerated; minimal surface is small and partially already in flight on the branch",
+      "rootCause": {
+        "confirmed": true,
+        "evidence": [
+          "What 'retire the advertised capability' concretely means, by surface, on main HEAD 3e9a40c0:",
+          "1. DEAD code that performs entity→community: `memoryGetCommunity` (extensions.ts:956-1039) — its node lookup (line 963-972) has NO kind constraint, so it resolves any live node (including kind='entity') through MEMBER_OF to a community. Zero callers (item 1). This is the only remaining implementation of the retired capability.",
+          "2. ADVERTISED doc claims to retire/relabel: extension.json:122 tool description 'Get community node for an entity.'; README.md:35 'Look up the community cluster for an entity or community node'; extensions.ts:952-953 doc comment 'Returns the community a node belongs to' (any-node implication); index.ts:267 section comment 'Extended functions (promotion, graphify, communities, entity search)'; tools/test-communities.js:7 assertion header '(b) memoryGetCommunity(entity_uid) → resolves entity to its community' (broken harness, item 1).",
+          "3. LOAD-BEARING and KEPT (episode→community, NOT entity→community): the live handler's entity_uid path (index.ts:1702-1801) — on main its TOOLS description still says 'episode/entity UID' (index.ts:502), but the in-flight branch narrows it to kind='episode' (E_WRONG_KIND for entity/community/session uids) and relabels the schema description to drop 'entity'. That narrowing IS the retirement's code-side half and is already authored on the branch.",
+          "4. Replacement already live: `memory_entity_episodes` (entity-episodes.ts, re-exported index.ts:327) returns episodes mentioning an entity — the ruling's designated replacement.",
+          "Minimal retirement surface: delete export + types + re-exports (item 1 file set); rewrite extension.json:122 and README.md:35 to describe episode→community lookup; merge the branch's entity_uid narrowing + AC4 conformance test; delete or repair tools/test-communities.js. The live handler itself is untouched.",
+          "Note: the live tool's `entity_uid` PARAMETER NAME is load-bearing API (documented, schema-exposed, MCP callers pass it); retiring the capability does not mean renaming the parameter — it means the parameter's documented scope narrows to episodes and kind='entity' inputs get E_WRONG_KIND instead of a community."
+        ],
+        "unverified": [
+          "Whether any out-of-tree consumer reads the extension.json:122 'for an entity' wording as a promise (host configs are generated from extension.json but the description is informational — cannot verify external expectation)",
+          "The exact line numbers of README.md:35 and extension.json:122 on the post-merge tree if the branch's description changes collide — they do not overlap, but I verified against main HEAD only"
+        ]
+      },
+      "fixSurface": {
+        "files": [
+          "libs/memory-core/src/extensions.ts (delete memoryGetCommunity + GetCommunitySuccess/GetCommunityError, lines 931-1039)",
+          "libs/memory-core/src/index.ts:279,294-295 (delete re-exports)",
+          "extensions/bundles/sox-memory-bundle/members/memory-server/extension.json:122 (rewrite description: episode→community)",
+          "extensions/bundles/sox-memory-bundle/members/memory-server/README.md:35 (rewrite row)",
+          "extensions/bundles/sox-memory-bundle/members/memory-server/src/index.ts:495-517 (TOOLS schema — already authored on the branch: entity_uid description drops 'entity', names E_PENDING_CLUSTER)",
+          "tools/test-communities.js (delete, or repair if the P4 narrative is wanted)",
+          ".changeset/<chore-memory-001>.md"
+        ],
+        "functions": [
+          "memoryGetCommunity + types (delete)",
+          "TOOLS[memory_get_community].entity_uid description (relabel — on branch)",
+          "handleToolCall memory_get_community entity_uid path (narrow to kind='episode' — on branch)"
+        ],
+        "shape": "One deletion + four doc relabels + the branch's already-authored narrowing. The retirement is a documentation-and-dead-code operation; no live behavior changes beyond what the branch already authored."
+      },
+      "dependencies": {
+        "blocks": [
+          "BUG-MEMORY-007's (d) fix-surface choice (its delete-vs-align question is answered here: delete)"
+        ],
+        "blockedBy": [
+          "feat/bug-memory-006-community-affordance merge — its AC4 test (bug-memory-006-community-affordance.spec.ts:240-251) asserts the 'entity' claim is dropped from the tool schema and the E_WRONG_KIND narrowing is implemented; this packet completes the retirement around that already-authored core"
+        ],
+        "ordering": "Branch merge first (backend), then this packet (product ruling → implement deletion → test verification). Same ordering as item 1 — they are the same packet."
+      },
+      "executor": {
+        "agent": "product (confirms retirement scope and the parameter-name-kept decision), implement (pro) for deletion/relabel, test for the doc-conformance red→green",
+        "tier": "product → implement(pro) → test"
+      },
+      "testPlan": {
+        "name": "entity→community retirement conformance (CHORE-MEMORY-001)",
+        "assertion": "(1) The branch's AC4 test passes: TOOLS[memory_get_community] description and entity_uid property description no longer match /entity/i, community_uid description still mentions 'global and subset'. (2) A new/merged regression asserts kind='entity' entity_uid returns {code:'E_WRONG_KIND', kind:'entity'} and no community (branch's AC6 test, spec:283-311). (3) Post-deletion `rg -l 'GetCommunity|memoryGetCommunity'` over src/ is empty. (4) extension.json:122 and README.md:35 no longer contain 'entity' in the get_community description (doc-conformance assertion — could live in the server's spec suite reading extension.json).",
+        "whyCatches": "Each arm pins a distinct surface of the retirement: the schema advertisement (AC4), the runtime behavior for entity inputs (AC6), the dead-code removal (grep gate), and the extension-manifest advertisement (doc assertion). Together they prevent the exact failure mode the ruling exists for — an 'entity→community' claim surviving anywhere in the advertised surface while the implementation is gone, or vice versa."
+      },
+      "packet": {
+        "recommendation": "COMBINE with BUG-MEMORY-007 into one 'retire entity→community affordance' packet (same surface, one product ruling, one deletion, one doc relabel). The packet ships after the branch merges so AC4/AC6 are the conformance guard it rides on.",
+        "scope": "libs/memory-core export surface + memory-server manifest/README + tools/test-communities.js + changeset",
+        "risk": "LOW-MEDIUM. LOW: pure deletion + relabel, live behavior untouched, zero callers. MEDIUM dimension: the relabel touches the ADVERTISED tool description that MCP clients see in tools/list — an external agent could be relying on the 'entity' wording; that is precisely the advertised-capability the ruling retires, so the risk is intentional and the AC4 test makes it visible, not silent."
+      }
+    },
+    {
+      "humanId": "In-flight branch — feat/bug-memory-006-community-affordance @ bed42917",
+      "title": "Merge-readiness assessment of the in-flight branch (both prior review findings reported closed at bed42917)",
+      "status": "assessed — both closures verified REAL; merge mechanically clean; recommend fast re-review then merge (not parked)",
+      "rootCause": {
+        "confirmed": true,
+        "evidence": [
+          "Closure 1 (community_uid pre-query hard-reject) — VERIFIED on the diff. At bed42917 the `if (communityUidArg)` branch is reduced to `commUid = communityUidArg;` with an explanatory comment; the 32-hex/ULID shape test (COMMUNITY_UID_RE/ULID_RE) was MOVED from the pre-query hard-reject (git show bed42917 removes it from the top of the branch) into the `!commRow` miss path (index.ts:1773-1798 on the branch) where it fires as advisory E_WRONG_ID_SPACE only after the lookup missed. A legacy-shaped community uid that resolves now succeeds. Regression test: bug-memory-006-community-affordance.spec.ts:111-152 (absent-but-32-hex → E_NOT_FOUND, not E_WRONG_ID_SPACE; direct-adapter-written legacy-shaped community node resolves successfully). Commit message records red→green watched per BL-225.",
+          "Closure 2 (SPEC-BUG-MEMORY-006.md §1b/D2/D4) — VERIFIED on the diff. §1b heading now reads '…but the format is NOT the only minting scheme, so a shape check can only ever be advisory' (SPEC-BUG-MEMORY-006.md:56); body names buildCommunities (extensions.ts:843) as the second minting site (line 74-83); D2/D4 rulings revised to 'advisory-only, not a hard reject' (lines 336-368). The false 'only site that ever writes a kind=community uid' claim is gone.",
+          "Merge mechanics — CLEAN. `git merge-tree --write-tree --messages main HEAD` (branch worktree) → exit 0, tree 1bd58c73, single 'Auto-merging extensions/.../memory-server/src/index.ts'. The branch's hunks (TOOLS schema L490-517, handler L1695-1800) do not overlap main's 5 hunks since merge-base 214a91b9 (L46 imports, L988, L1086, L2362, L2391) — semantically safe, not just mechanically clean. PLAN.md/STATE.md changed on both sides but with the SAME derived-count refresh (BL-495/496/497 added by main's a068ef0e and the branch's 8c2c96a1); the merged tree contains the branch's line and carries no conflict markers.",
+          "API compatibility of the branch's tests against main's newer libs: clusterStore(db,{threshold}) still exported from main's cluster.ts:993 with threshold?: number in ClusterStoreOptions (cluster.ts:94); memory_write still returns episode_uid; memory_search_entities still returns entities[].uid — all assertions in the branch spec hold against main's current API.",
+          "Branch changeset (main...HEAD): 5 files only — SPEC-BUG-MEMORY-006.md (new), PLAN.md/STATE.md (derived refresh), bug-memory-006-community-affordance.spec.ts (new, 312 lines), memory-server/src/index.ts (84 lines). Zero overlap with the clustering triage packets' files (cluster.ts, cluster-metrics.ts, enrich.ts, stages.ts, write.ts are untouched by the branch).",
+          "Regression test quality: HIGH. Real MCP seam (drives handleToolCall directly), unconditional assertions, deterministic fixtures (explicit clusterStore passes, deliberate omission for E_PENDING_CLUSTER), explicitly avoids the BL-167 skip-guard pattern (header lines 9-15), covers AC1-AC6 including both review-finding regressions."
+        ],
+        "unverified": [
+          "Test-green claim (memory-server 34 files / 240 tests) is self-reported in the session-state doc and commit message — I am read-only triage and did not run the suite; session state also flags the harness returned 'mergeable: true' for this wave while the reviewer's prose said NOT MERGEABLE (tooling defect).",
+          "Smoke test and registry sync-index have not been run on the branch (required by AGENTS.md before merging any MCP-server extension change) — no build/dist was produced on the branch, so registry checksums are unaffected, but the smoke gate must still be run at merge time.",
+          "No changeset file exists on the branch (main's convention: .changeset/bug-memory-001-*.md, .changeset/conn-recycle-*.md for memory-server fixes)."
+        ]
+      },
+      "fixSurface": {
+        "files": [
+          "No code changes demanded by this assessment. Merge-time additions only: .changeset/bug-memory-006-community-affordance.md (new), post-merge `tools/plan-status.mjs --check` (PLAN/STATE drift), smoke test run."
+        ],
+        "functions": [],
+        "shape": "Merge as-is after: (1) one fast re-review of the two closures (reviewer that ruled NOT MERGEABLE never re-reviewed), (2) adding the changeset, (3) running the suite + smoke gate. Optional cosmetic: stale comment line-ref 'index.ts:1706-1712' in bug-memory-006-community-affordance.spec.ts:85 (the guard moved to the miss path) — update to the new location."
+      },
+      "dependencies": {
+        "blocks": [
+          "BUG-MEMORY-007 / CHORE-MEMORY-001 packets (they ride on this branch's AC4/AC6 conformance tests and entity_uid narrowing)"
+        ],
+        "blockedBy": [],
+        "ordering": "Independent of BL-495/BUG-010 and the clustering triage packets — the branch touches no cluster-pipeline file. The session-state ordering note ('BL-496 merges first, guard rebases on top') applies to feat/cluster-tracing, NOT this branch. E_PENDING_CLUSTER is the diagnosable complement to BUG-MEMORY-010's visibility gap (it names the not-yet-clustered state instead of lying with E_NOT_FOUND), an interaction, not a dependency. Merge now, ahead of the clustering wave if scheduling allows; at minimum not blocked by it."
+      },
+      "executor": {
+        "agent": "backend (merge owner — authored by backend-developer per commit citations); review (fast re-review of the two closures)",
+        "tier": "backend + review"
+      },
+      "testPlan": {
+        "name": "Branch suite + post-merge gates (feat/bug-memory-006-community-affordance)",
+        "assertion": "npx nx test memory-server --skip-nx-cache (with check-suite-tree-state.mjs tree-state quoted) shows 34 files green including the 10 new bug-memory-006 tests; typecheck + lint clean; `node tools/plan-status.mjs --check` passes post-merge; smoke test 0 failures per AGENTS.md (MCP-server extension changed).",
+        "whyCatches": "The BL-456 lesson: a suite result is evidence only with the tree state stated; the 240-green claim is currently unattributable to me. The unconditional (non-skip-guarded) assertions are what make the new spec a real gate rather than a BL-167 shadow."
+      },
+      "packet": {
+        "recommendation": "MERGE NOW after a fast re-review of the two closures + changeset + suite/smoke gates — do NOT park behind BL-495/BUG-010 (zero file overlap, no semantic ordering dependency). If review bandwidth is zero, the closures are verifiable from the diff and the regression tests are BL-225-shaped, so a merge-then-post-review is defensible but not preferred (the tool-surface change adds new error codes E_WRONG_KIND/E_PENDING_CLUSTER to a live MCP tool — that's API surface worth one reviewer's pass).",
+        "scope": "memory-server tool surface (memory_get_community description + error taxonomy) + SPEC-BUG-MEMORY-006.md + regression spec",
+        "risk": "LOW-MEDIUM. LOW: clean merge, strong tests, no cluster-pipeline touch. MEDIUM: new error codes are API additions to a live tool (clients switching on exact codes see new branches — but the codes only REPLACE a bare E_NOT_FOUND on paths that previously mislabeled, so strictly more informative); the 240-green claim is unverified by a second party; harness bug from the session ('mergeable: true' with NOT MERGEABLE prose) means the merge gate itself was unreliable."
+      }
+    }
+  ],
+  "inFlightBranchAssessment": {
+    "mergeReady": true,
+    "evidence": "Both review findings closed at bed42917 verified REAL on the diff: (1) community_uid shape check moved from pre-query hard-reject to the !commRow miss path as advisory E_WRONG_ID_SPACE — `git show bed42917` shows the removal of the pre-query block and its reappearance inside the not-found branch; regression tests at bug-memory-006-community-affordance.spec.ts:111-152 pin absent-32-hex→E_NOT_FOUND and legacy-shaped-resolving→success. (2) SPEC §1b/D2/D4 corrected to name buildCommunities (extensions.ts:843) as the second minting site and revise the format guard to advisory-only (SPEC-BUG-MEMORY-006.md:56,74-83,336-368). Merge mechanics: `git merge-tree --write-tree main HEAD` exit 0, clean 3-way, single auto-merge of memory-server/src/index.ts with non-overlapping hunks; PLAN/STATE changed identically on both sides (derived refresh). API compat of branch tests vs main's newer cluster code verified (clusterStore threshold option stable). Caveats: 240-test-green claim self-reported only (I did not run tests — read-only), no changeset on the branch, smoke gate not run, branch 37 behind main (rebase or merge-commit required), and one stale line-ref comment in the spec (:85).",
+    "recommendation": "Merge after: one fast re-review of the two closures + add .changeset/bug-memory-006-community-affordance.md + run nx test/typecheck/lint + plan-status --check + smoke gate. Do NOT park behind BL-495/BUG-010 — the branch touches zero clustering-pipeline files; its E_PENDING_CLUSTER code is the diagnosable counterpart to BUG-MEMORY-010's visibility gap, not a dependency on it. Land it before the BUG-MEMORY-007/CHORE-MEMORY-001 retirement packet, which rides on its AC4/AC6 conformance tests."
+  },
+  "openQuestions": [
+    "BUG-MEMORY-007 (d): confirm the product ruling is DELETE (not align/fix-test) — CHORE-MEMORY-001's direction implies it, but the ruling should be recorded explicitly with the parameter-name-kept decision (entity_uid parameter name stays; only its documented scope narrows to episodes).",
+    "tools/test-communities.js: delete outright, or repair (fix import path + all awaits) to preserve the P4 acceptance narrative? Recommendation: delete — superseded by memory-tools.spec.ts + the branch spec; it has never run green (dead import path since the bundle move).",
+    "Does @adhd/sox-memory-core need a version bump + breaking changeset for the export deletion even though all consumers are workspace:*? Convention says yes (semver hygiene); external-consumer risk is nil (verified).",
+    "Merge mode for the branch: rebase onto main (37 commits of drift, clean per merge-tree) or merge-commit from the worktree? Merge-tree proves conflict-free either way; rebase keeps history linear and matches the session's pattern for the other in-flight branches.",
+    "Should the harness 'mergeable: true vs NOT MERGEABLE prose' tooling defect (session-state 'Tooling defect, unfiled') be filed? It silently mis-gated a merge decision — filing prevents recurrence. Out of scope for this report's packets but adjacent."
+  ]
+}

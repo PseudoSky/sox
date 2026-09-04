@@ -1,0 +1,106 @@
+{
+  "$schema": "agent-report-v1",
+  "agent": "implement",
+  "segment": "BL-627-631-os-unit-review-fixes",
+  "label": "Fix blind-review defects in uncommitted BL-620 os-unit ownership/log-rotation work",
+  "completed_at": "2026-08-31T04:30:11Z",
+
+  "summary": "Applied all six blind-review findings against the uncommitted BL-620 os-unit ownership/log-rotation work in libs/host-runtime; all host-runtime + sox suites GREEN. Committed 4 files as f60dc93a.",
+
+  "changes": [
+    {
+      "file": "libs/host-runtime/src/log-manager.ts",
+      "kind": "BL-627 compact YYYYMMDD rotation date; BL-629 copytruncate (copyFileSync + truncateSync) instead of rename; BL-630 distinct os-out/os-err filePrefixes + legacy-aware finder; converted require('./data-paths.js') to top-level import for source-testability",
+      "lines": "+154 / -~40"
+    },
+    {
+      "file": "libs/host-runtime/src/log-manager.spec.ts",
+      "kind": "NEW — rotation copytruncate/truncation assertions + BL-630 prefix/finder tests",
+      "lines": "+150"
+    },
+    {
+      "file": "libs/host-runtime/src/os-unit.ts",
+      "kind": "BL-631 unchanged short-circuit now calls verifyUnitOnDisk before reporting verified:true",
+      "lines": "+190 / -~20"
+    },
+    {
+      "file": "libs/host-runtime/src/os-unit.spec.ts",
+      "kind": "BL-628 broken platform subclass fix; BL-631 body-tampered-already-loaded rewrite test; BL-620 INV-2 blocked-while-loaded gate-input test; added OsUnitPlatform type import",
+      "lines": "+196 / -~10"
+    }
+  ],
+
+  "fixes": {
+    "BL-627": {
+      "severity": "HIGH",
+      "status": "RESOLVED",
+      "detail": "rotateOsUnitLogs now computes the archive date via todayDateString().replace(/-/g, '') so the renamed archive is <name>.<YYYYMMDD> (8-digit), matching the prune regex \\.\\d{8}$ and the docstring/spec. log-manager.spec.ts asserts /^doctor-tick-os\\.out\\.log\\.\\d{8}$/."
+    },
+    "BL-628": {
+      "severity": "MEDIUM",
+      "status": "RESOLVED",
+      "detail": "The INV-2 verify test's 'broken' platform was an object spread { ...new LaunchdPlatform(), render(){} } which dropped all prototype methods (unitFileName/load/isLoaded), so enableOsUnit threw TypeError at setup. Replaced with class BrokenPlatform extends LaunchdPlatform { override render() {...} }, so the test genuinely asserts a tampered unit is NOT loaded."
+    },
+    "BL-629": {
+      "severity": "MEDIUM",
+      "status": "RESOLVED",
+      "detail": "rotateOsUnitLogFile now uses copytruncate semantics: fs.copyFileSync(activePath, rotated) then fs.truncateSync(activePath, 0) — the active inode/fd is preserved so the supervisor keeps writing to the (truncated) active file, bounding disk without a restart. Prune regexes unchanged. Spec asserts active path size 0 + archive holds the rotated bytes instead of rename-absence."
+    },
+    "BL-630": {
+      "severity": "MEDIUM",
+      "status": "RESOLVED",
+      "detail": "findAllLogStreamsForExt now emits filePrefix ${extId}-os.out / ${extId}-os.err (distinct), and findMostRecentLogFile gained logStreamFileMatches which matches the stable form by prefix and the legacy <extId>-os-<date>.<out|err>.log form by a derived dated-shape regex. soxe logs/follow can now distinguish stdout from stderr."
+    },
+    "BL-631": {
+      "severity": "LOW",
+      "status": "RESOLVED",
+      "detail": "enableOsUnit's unchanged short-circuit now calls verifyUnitOnDisk(unitPath) and returns unchanged only when selfConsistent && bodyHash === newHash; a body-tampered-but-header-intact already-loaded unit falls through to the rewrite path (verified:true after rewrite)."
+    },
+    "EXIT-CODE-CONFIRMATION": {
+      "severity": "INFO",
+      "status": "CONFIRMED-INTENDED + TEST ADDED",
+      "detail": "The blocked (env-drop-guard) path returns verified:false and loaded:currentlyLoaded, and the enable gates in cmdService enable + doctor --install-tick are `!dryRun && (!result.loaded || !result.verified)`. A blocked-while-loaded enable therefore exits non-zero — this IS the intended semantic (a blocked regeneration must never read as success), and it correctly covers doctor --install-tick which has no explicit blocked short-circuit (unlike cmdService enable/update). Added an os-unit.spec.ts test asserting a blocked-while-loaded enable reports loaded:true + verified:false and that the gate condition (!loaded || !verified) is true. No gate adjustment needed."
+    }
+  },
+
+  "tests": {
+    "host-runtime": {
+      "command": "nx test host-runtime",
+      "passed": 372,
+      "failed": 0,
+      "output_snippet": "Test Files  20 passed (20)  |  Tests  372 passed (372)",
+      "tree_state": "DIRTY — 5 uncommitted path(s) in host-runtime dependency set (index.ts, log-manager.ts, os-unit.spec.ts, os-unit.ts, log-manager.spec.ts) — all part of the BL-620 work + my fixes"
+    },
+    "sox": {
+      "command": "nx test sox",
+      "passed": 127,
+      "failed": 0,
+      "output_snippet": "Test Files  18 passed (18)  |  Tests  127 passed (127)",
+      "tree_state": "DIRTY — 22 uncommitted path(s) in sox dependency set (11 projects) — other agents' in-flight BL-620 / host-registry / install-engine / manifest work"
+    }
+  },
+
+  "typecheck": {
+    "host-runtime": "PASS",
+    "sox": "PASS"
+  },
+
+  "lint": {
+    "host-runtime": "PASS",
+    "sox": "PASS"
+  },
+
+  "commit": "f60dc93a fix(host-runtime): os-unit ownership/log-rotation review defects (BL-627/628/629/630/631)",
+
+  "issues": [
+    "findAllLogStreamsForExt previously used require('./data-paths.js') at the call site, which cannot resolve in vitest's source-level ESM runner (data-paths is .ts, only compiled to .js in dist). This made the BL-630 prefix-distinction untestable at source. Converted to a top-level `import { logDirFor } from './data-paths.js'` (leaf module, no circular-import risk; identical compiled output) — a necessary minimal enabling change, not a redo."
+  ],
+
+  "handoff_notes": [
+    "The exit-gate confirmation (finding #6) required NO change to apps/sox/src/main.ts — the gate `!dryRun && (!result.loaded || !result.verified)` already exits non-zero for a blocked-while-loaded enable. A CLI-level test would require a real launchctl-loaded unit (impossible in the sandboxed test harness), so the regression test lives at the host-runtime level and asserts the exact gate input condition.",
+    "libs/host-runtime/src/index.ts (barrel re-export of verifyUnitOnDisk/parseOsUnitLabel/classifyOsUnitOrphan/rotateOsUnitLogs + new types) was NOT committed — it predates this segment and belongs to the original BL-620 work; it remains uncommitted for the orchestrator / BL-620 owner.",
+    "apps/sox/src/main.ts validateAgentRendering and cmdServe/doctor-service sections were deliberately NOT touched (another agent's in-flight work in the same file)."
+  ],
+
+  "backlog_entries": []
+}

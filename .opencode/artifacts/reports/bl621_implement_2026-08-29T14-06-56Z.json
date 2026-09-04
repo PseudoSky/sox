@@ -1,0 +1,77 @@
+{
+  "$schema": "agent-report-v1",
+  "agent": "implement",
+  "segment": "BL-621",
+  "label": "Ancestry-rooted reconcile classification (BL-621 lifetime fix)",
+  "completed_at": "2026-08-29T14:06:56Z",
+
+  "summary": "Replaced token-based reap verdict in classifyReconcileTargets with ancestry-rooted classification: a process is reapable only if its kernel parentage chain reaches no live tracked-instance root and no live writer-socket holder. memory-server's enrich-isolation/fastembed fork children now survive doctor --reconcile; BL-170 orphans still reap.",
+
+  "changes": [
+    { "file": "libs/host-runtime/src/reaper.ts", "kind": "added + exported snapshotProcessTable() (single ps pid->ppid scan)", "lines": "+29" },
+    { "file": "libs/host-runtime/src/reconcile.ts", "kind": "added descendantOf() + Rule 3 'descendant-of-live-instance'; classifyReconcileTargets requires processTable; ReconcilePlan.skip gains protectingPid?", "lines": "+85" },
+    { "file": "libs/host-runtime/src/singleton.ts", "kind": "healSingletonDuplicates optional processTable+liveRoots; spares descendants ('spared-descendant'); new HealOutcome type", "lines": "+30" },
+    { "file": "libs/host-runtime/src/index.ts", "kind": "export snapshotProcessTable, descendantOf, HealOutcome", "lines": "+3" },
+    { "file": "apps/sox/src/main.ts", "kind": "processTable wiring + fresh re-scan/descendantOf reap guard + ReconcileHealMarker (JSON + per-day JSONL) + descendant-skip-audit finding + os-unit recorded-spawned-pid anchor", "lines": "+135" },
+    { "file": "libs/host-runtime/src/reconcile.spec.ts", "kind": "BL-621 unit tests (descendantOf + 5 classify ancestry cases) + updated existing calls", "lines": "+118" },
+    { "file": "libs/host-runtime/src/singleton.spec.ts", "kind": "BL-621 spare-descendant test", "lines": "+59" },
+    { "file": "apps/sox/src/doctor-reconcile.spec.ts", "kind": "BL-621 real-process integration (fork child survives, orphan reaped, dry-run, markers)", "lines": "+178" },
+    { "file": "registry/index.json", "kind": "regenerated builtFromCommit metadata (sync-index)", "lines": "+31/-31" }
+  ],
+
+  "tests": {
+    "project": "host-runtime",
+    "command": "npx nx test host-runtime",
+    "passed": 345,
+    "failed": 0,
+    "skipped": 0,
+    "output_snippet": "Test Files  19 passed (19) — Tests  345 passed (345)"
+  },
+  "tests_sox": {
+    "project": "sox",
+    "command": "npx nx test sox",
+    "passed": 124,
+    "failed": 0,
+    "skipped": 0,
+    "output_snippet": "Test Files  17 passed (17) — Tests  124 passed (124)"
+  },
+
+  "lint": { "passed": true, "note": "npx nx lint host-runtime + npx nx lint sox both clean" },
+  "typecheck": { "passed": true, "note": "npx nx typecheck host-runtime + npx nx typecheck sox both clean" },
+  "build": { "passed": true },
+
+  "verification": {
+    "smoke_test": {
+      "command": "rm -rf dist/smoke && node scripts/smoke-test.mjs",
+      "result": "PASS",
+      "summary": "13 passed, 0 failed, 0 skipped",
+      "exit_code": 0,
+      "isolation": "live data-root byte-identical before/after (BL-173 isolation OK)"
+    },
+    "red_green": {
+      "red": "BL-621 tests failed against pre-change code: singleton spare test failed on descendant not found (realpath /var vs /private/var token mismatch, fixed by realpathSync on the fixture); sox typecheck failed with 7 errors (missing processTable on classifyReconcileTargets + missing descendantOf/protectingPid exports) until host-runtime was rebuilt.",
+      "green": "After implementation: host-runtime 345 passed, sox 124 passed."
+    },
+    "tree_state": "node tools/check-suite-tree-state.mjs --project host-runtime → DIRTY, 6 paths (all my own host-runtime edits). Dirty set is attributable to this change, not concurrent agents."
+  },
+
+  "issues": [
+    "Smoke test was initially blocked by a stale registry/index.json (6 NPM-portable entries missing local tokenguard/memory-server); fixed upstream by commit e3e6849e before my re-run. Not a defect in this change.",
+    "build-index.ts refuses on a dirty tree (BL-390); used --allow-dirty as instructed since the remaining dirt is other agents' in-flight checksum-relevant source."
+  ],
+
+  "handoff_notes": [
+    "classifyReconcileTargets now REQUIRES a processTable arg — any future caller must pass snapshotProcessTable().",
+    "descendantOf walks the pid's ppid chain (starts at the parent, not the pid itself); the caller's rule 1/2 handle a pid that IS itself a root.",
+    "ReconcileHealMarker is a discriminated union {singleton-duplicate|zombie-reap|descendant-skip}; cmdService status only surfaces the singleton-duplicate variant (BL-393).",
+    "doctor-reconcile.spec.ts integration test drives real processes (backend socket holder + fork child + reparented orphan) — requires a health-socket endpoint in the fixture manifest and an install-registry.json entry (not extensions.lock)."
+  ],
+
+  "backlog_entries": [
+    { "humanId": "BL-621", "action": "RESOLVED", "citations": 7 }
+  ],
+
+  "commits": [
+    { "sha": "0559d13e", "subject": "fix(host-runtime): ancestry-rooted reconcile classification (BL-621)" }
+  ]
+}

@@ -1,0 +1,67 @@
+{
+  "$schema": "agent-report-v1",
+  "agent": "implement",
+  "segment": "BL-619",
+  "label": "Repo-wide listen() safety invariant (lifetime fix for the shim EADDRINUSE crash)",
+  "completed_at": "2026-08-31T03:17:01Z",
+
+  "summary": "Shipped @adhd/sox-listen-guard (probe-before-bind + guarded listen + structured JSONL records), swapped the one unguarded shim.listen for listenGuarded, wired cmdServe's exit-code mapping, retrofitted 5 already-guarded sites to emit records, added the sox/no-unguarded-listen eslint rule, fixed the authoring template, and pinned host-registry URL-only remote profiles.",
+
+  "commits": [
+    "7559ccf7 feat(sox): repo-wide listen safety invariant (BL-619) — 31 files (lib + shim + serve-shutdown + main deps + 5 retrofits + eslint rule + authoring template + dep plumbing)",
+    "46696876 feat(sox): wire guarded HTTP-bind outcome into cmdServe proxy (BL-619) — main.ts (commit-mine, my 2 hunks only; left the other agent's validateAgentRendering hunks uncommitted)",
+    "345b5b36 chore(sox): relock pnpm-lock.yaml for @adhd/sox-listen-guard workspace edges (BL-619)",
+    "bc35dfb5 feat(host-registry): pin URL-only sse/http remote profiles + guard-listen typecheck fix (BL-619) — host-registry.spec.ts, opencode.spec.ts, shim.ts exactOptionalPropertyTypes fix"
+  ],
+
+  "changes": [
+    { "file": "libs/listen-guard/src/*", "kind": "new dependency-free leaf lib: probeTcp, classifyListenError, buildFailureRecord (exported for retrofit), emitListenFailure, listenGuarded + types", "lines": "+~500" },
+    { "file": "libs/service-proxy/src/shim.ts", "kind": "replaced raw httpServer.listen with listenGuarded; FrontShimOptions.onHttpBindResult + listenFailureRecordFile", "lines": "+36/-3" },
+    { "file": "apps/sox/src/serve-shutdown.ts", "kind": "added exitCodeForListenOutcome (already-running->0, other->1, ok->0)", "lines": "+16" },
+    { "file": "apps/sox/src/main.ts", "kind": "cmdServe proxy branch wires onHttpBindResult -> stderr JSON + process.exit; listenFailureRecordFile", "lines": "+17/-1" },
+    { "file": "libs/service-proxy/src/backend.ts", "kind": "retrofit: emitListenFailure before reject", "lines": "+11" },
+    { "file": "libs/host-runtime/src/runtime.ts", "kind": "retrofit: emitListenFailure before reject", "lines": "+10" },
+    { "file": "libs/mcp-runtime/src/transport.ts", "kind": "retrofit: emitListenFailure before reject", "lines": "+9" },
+    { "file": "extensions/services/tokenguard/src/proxy.ts", "kind": "retrofit x2: emitListenFailure before resolve(false)/reject", "lines": "+19" },
+    { "file": "tools/eslint-local/no-unguarded-listen.cjs", "kind": "new eslint rule (3 exemptions: literal-0 port, earlier on/once('error') same receiver, listenGuarded/doListen callee)", "lines": "+169" },
+    { "file": "eslint.config.js", "kind": "registered sox/no-unguarded-listen at error level for all .ts/.tsx", "lines": "+18" },
+    { "file": "libs/authoring/src/templates/service/index.ts", "kind": "template emits server.on('error') (record + exit EADDRINUSE?0:1) before server.listen", "lines": "+8" },
+    { "file": "libs/host-registry/src/host-registry.spec.ts + opencode.spec.ts", "kind": "BL-619 URL-only remote-profile pins (no command/args, url port == http_port)", "lines": "+61" }
+  ],
+
+  "tests": {
+    "projects": "listen-guard, service-proxy, host-runtime, mcp-runtime, sox, authoring, host-registry, tokenguard",
+    "results": [
+      { "project": "listen-guard", "test": "12 passed", "typecheck": "pass", "lint": "pass", "tree": "CLEAN — 1 project(s)" },
+      { "project": "service-proxy", "test": "66 passed (incl. BL-619 two-shim spec)", "typecheck": "pass", "lint": "pass", "tree": "CLEAN — 2 project(s)" },
+      { "project": "host-runtime", "test": "345 passed", "typecheck": "pass", "lint": "pass", "tree": "CLEAN — 2 project(s)" },
+      { "project": "mcp-runtime", "test": "32 passed", "typecheck": "pass", "lint": "pass", "tree": "DIRTY — M libs/service-proxy/src/shim.ts (my own exactOptionalPropertyTypes fix, since committed)" },
+      { "project": "sox", "test": "127 passed (incl. serve-shutdown.spec.ts + bl50/status-rendering)", "typecheck": "pass", "lint": "pass", "tree": "DIRTY — 17 paths (other agents' host-registry/manifest/install-engine/authoring-agent + my host-registry spec pins + my shim.ts fix)" },
+      { "project": "authoring", "test": "40 passed (incl. [generators.6])", "typecheck": "pass", "lint": "pass", "tree": "DIRTY — M libs/authoring/src/templates/agent/index.ts (other agent)" },
+      { "project": "host-registry", "test": "179 passed (incl. host-registry.6 + opencode BL-619 pins)", "typecheck": "pass", "lint": "pass", "tree": "DIRTY — other agents' host-registry source + my spec pins" },
+      { "project": "tokenguard", "test": "13 passed", "typecheck": "pass", "lint": "pass", "tree": "CLEAN — 3 project(s)" }
+    ],
+    "eslint_rule_test": "node tools/eslint-local/no-unguarded-listen.test.cjs — 9/9 passed"
+  },
+
+  "lint": { "passed": true, "projects": "listen-guard, service-proxy, host-runtime, mcp-runtime, sox, authoring, host-registry, tokenguard" },
+
+  "build": {
+    "passed": true,
+    "note": "sox bundle (nx test sox -> sox:build) inlined listen-guard via SOX_ALIASES (verified 14 listenGuarded/emitListenFailure occurrences in apps/sox/dist/index.js). Did NOT run smoke test / registry:sync-index / commit registry/index.json (coordinator serial gate)."
+  },
+
+  "issues": [
+    "exactOptionalPropertyTypes: shim.ts passed recordFile: string|undefined into ListenGuardOptions.recordFile?; fixed with a conditional spread (committed bc35dfb5).",
+    "commitlint subject-case: 'listen()' parens in the first commit subject tripped subject-case; reworded to 'repo-wide listen safety invariant'.",
+    "pnpm install synced two pre-existing stale lockfile specifiers (tokenguard-core and packages/sox-nx @adhd/sox-authoring: workspace:* -> workspace:^) — both are correct corrections of the lockfile catching up to already-committed package.json, not new edges."
+  ],
+
+  "handoff_notes": [
+    "Do NOT run smoke test / registry:sync-index / commit registry/index.json — coordinator's serial gate (shared dist/smoke + hot file).",
+    "apps/sox/src/main.ts is a shared hot file: my 2 hunks are committed (46696876); the other agent's validateAgentRendering hunks remain uncommitted in the worktree — do not commit them.",
+    "libs/listen-guard/dist/ is gitignored (build artifact); nx test rebuilds it on demand."
+  ],
+
+  "backlog_entries": []
+}
