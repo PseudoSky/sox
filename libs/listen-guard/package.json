@@ -1,6 +1,6 @@
 {
   "name": "@adhd/sox-listen-guard",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Repo-wide listen() safety invariant — probe-before-bind + guarded listen + structured JSONL failure records (BL-619). Dependency-free leaf (node builtins only).",
   "license": "MIT",
   "publishConfig": {

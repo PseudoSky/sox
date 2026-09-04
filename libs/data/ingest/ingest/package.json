@@ -1,6 +1,6 @@
 {
   "name": "@adhd/sox-ingest",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Write-path single-item transforms for the memory domain — content-hash (SHA-256), extractive summary (lead-N sentences, zero LLM), deterministic tag extraction, and chunking/normalization. Pure stateless functions; no storage deps.",
   "license": "MIT",
   "private": false,

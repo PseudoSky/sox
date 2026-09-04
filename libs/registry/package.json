@@ -1,6 +1,6 @@
 {
   "name": "@adhd/sox-registry",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Sox registry — drift gate, index, checksum",
   "license": "MIT",
   "publishConfig": {

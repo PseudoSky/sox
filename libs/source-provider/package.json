@@ -1,6 +1,6 @@
 {
   "name": "@adhd/sox-source-provider",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Unified SCM/filesystem abstraction — file tree enumeration and raw content retrieval from GitHub, Bitbucket, and the local filesystem through a single SourceProvider interface, without cloning. Provider registry, SourceRef URL normalization, and a first-class fake provider for integration testing.",
   "license": "MIT",
   "private": false,

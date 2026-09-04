@@ -1,6 +1,6 @@
 {
   "name": "@adhd/sox-mcp-runtime",
-  "version": "0.3.1",
+  "version": "0.3.2",
   "description": "Sox MCP runtime wrapper — uniform C6 enforcement across stdio + sse transports",
   "license": "MIT",
   "publishConfig": {

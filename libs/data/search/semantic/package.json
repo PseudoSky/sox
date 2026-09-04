@@ -1,7 +1,7 @@
 {
   "name": "@adhd/sox-semantic",
-  "version": "0.1.2",
-  "description": "Semantic RAG composition layer \u2014 a DI facade that wires @adhd/sox-graph-store + @adhd/sox-vector-store + @adhd/sox-embedding-provider into a single embed/index/search/rank surface (createSemanticBackend), plus the embedding-lifecycle observer (embed-on-write, delete-on-invalidate). Owns the node-join; keeps graph-store and vector-store at their own tiers (ADR-0016).",
+  "version": "0.1.3",
+  "description": "Semantic RAG composition layer — a DI facade that wires @adhd/sox-graph-store + @adhd/sox-vector-store + @adhd/sox-embedding-provider into a single embed/index/search/rank surface (createSemanticBackend), plus the embedding-lifecycle observer (embed-on-write, delete-on-invalidate). Owns the node-join; keeps graph-store and vector-store at their own tiers (ADR-0016).",
   "license": "MIT",
   "private": false,
   "publishConfig": {
@@ -34,18 +34,18 @@
     "area": "data",
     "group": "search",
     "concerns": [
-      "createSemanticBackend \u2014 the ADR-0006 composer: DI-wires embedding-provider instance + graph/vector backends over the caller's StoreAdapter",
-      "SemanticBackend \u2014 async surface (embedQuery / embedDocuments / upsertVector(s) / deleteVector / semanticSearchNodes / health)",
+      "createSemanticBackend — the ADR-0006 composer: DI-wires embedding-provider instance + graph/vector backends over the caller's StoreAdapter",
+      "SemanticBackend — async surface (embedQuery / embedDocuments / upsertVector(s) / deleteVector / semanticSearchNodes / health)",
       "typed failure taxonomy (not_installed | provider_failed | unsupported_adapter | vector_store_failed), never a bare throw",
-      "semanticSearchNodes \u2014 the sole owner of the node-join (embed \u2192 knn \u2192 graph.queryNodes \u2192 ranked { node, score })",
-      "batch-first embeddings (embedDocuments + upsertVectors) \u2014 per-item error containment, never a placeholder vector",
+      "semanticSearchNodes — the sole owner of the node-join (embed → knn → graph.queryNodes → ranked { node, score })",
+      "batch-first embeddings (embedDocuments + upsertVectors) — per-item error containment, never a placeholder vector",
       "embedding-lifecycle observer (GraphWriteObserver impl: embed-on-write, delete-on-invalidate)"
     ],
     "invariants": [
       "createSemanticBackend returns a typed result, never throws for a configurable failure (not_installed/provider_failed/unsupported_adapter/vector_store_failed)",
-      "a failed embed degrades the write, never corrupts it \u2014 no placeholder vectors, no rolled-back node write",
+      "a failed embed degrades the write, never corrupts it — no placeholder vectors, no rolled-back node write",
       "score is cosine similarity (higher-is-better) on both turso (1 - vector_distance_cos) and sqlite (cosineSimilarity), stable across backends",
-      "live objects (open DB, provider instance, vector backend) cross into this package via DI over the caller's StoreAdapter \u2014 never a duplicated stateful bundle (ADR-0006)"
+      "live objects (open DB, provider instance, vector backend) cross into this package via DI over the caller's StoreAdapter — never a duplicated stateful bundle (ADR-0006)"
     ],
     "entrypoints": [
       "dist/index.js"

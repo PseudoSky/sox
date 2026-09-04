@@ -1,7 +1,7 @@
 {
   "name": "@adhd/sox-hybrid-search",
-  "version": "0.4.2",
-  "description": "Generic hybrid retrieval ranker \u2014 fuses vector similarity + text relevance signals (mechanism-agnostic: textScore / vecScore) via normalized RRF/max-score fusion. SearchBackend interface decouples ranking logic from storage. StoreSearchBackend wires VectorBackend + GraphBackend via DI. Pure fuse() + normalize() functions are exported for callers with any signal source.",
+  "version": "0.4.3",
+  "description": "Generic hybrid retrieval ranker — fuses vector similarity + text relevance signals (mechanism-agnostic: textScore / vecScore) via normalized RRF/max-score fusion. SearchBackend interface decouples ranking logic from storage. StoreSearchBackend wires VectorBackend + GraphBackend via DI. Pure fuse() + normalize() functions are exported for callers with any signal source.",
   "license": "MIT",
   "private": false,
   "publishConfig": {
@@ -36,22 +36,22 @@
     "group": "search",
     "concerns": [
       "SearchBackend interface (mechanism-agnostic: textScore / vecScore, not BM25 / cosine)",
-      "StoreSearchBackend \u2014 DI constructor (VectorBackend, GraphBackend)",
+      "StoreSearchBackend — DI constructor (VectorBackend, GraphBackend)",
       "hybrid fusion: normalize-before-combine (min_max / L2 / z_score)",
       "degrade-to-text when vec signal absent ([def:degrade-to-text-only])",
       "pure fuse() + normalize() exports (no storage dep)",
-      "explain mode (signal-level breakdown only \u2014 not field-level)",
-      "SchemaAdapter is SQLite-internal (NOT exported \u2014 filters wired into StoreSearchBackend)",
-      "vector-channel filter parity (BL-294) \u2014 StoreSearchBackend resolves query.filters through graph.queryNodes() and constrains vec.knn() to the matching id set, so namespace/kind/topic/projectPath/agentId filters scope BOTH channels identically, not just the text channel",
-      "degrade signal (BL-294) \u2014 SearchBackend.search() results carry an additive degraded?: { unsupportedFilters: string[] } field whenever query.filters included a key with no NodeFilter mapping; surfaced unconditionally on SearchResult, not gated behind explain"
+      "explain mode (signal-level breakdown only — not field-level)",
+      "SchemaAdapter is SQLite-internal (NOT exported — filters wired into StoreSearchBackend)",
+      "vector-channel filter parity (BL-294) — StoreSearchBackend resolves query.filters through graph.queryNodes() and constrains vec.knn() to the matching id set, so namespace/kind/topic/projectPath/agentId filters scope BOTH channels identically, not just the text channel",
+      "degrade signal (BL-294) — SearchBackend.search() results carry an additive degraded?: { unsupportedFilters: string[] } field whenever query.filters included a key with no NodeFilter mapping; surfaced unconditionally on SearchResult, not gated behind explain"
     ],
     "invariants": [
-      "SearchBackend.search() degrades to text-only when query.vec is absent, degrades to vec-only when query.text is absent \u2014 never errors on a missing signal",
+      "SearchBackend.search() degrades to text-only when query.vec is absent, degrades to vec-only when query.text is absent — never errors on a missing signal",
       "scores are normalized BEFORE combining (never raw scale-blind additive merge)",
-      "textScore / vecScore are mechanism-agnostic names \u2014 BM25 / cosine are implementation details inside backends (never surfaced through SearchBackend interface)",
-      "SchemaAdapter is an internal SQLite concern \u2014 NOT exported; MCP handlers pass raw filters via SearchQuery.filters; StoreSearchBackend resolves them internally",
+      "textScore / vecScore are mechanism-agnostic names — BM25 / cosine are implementation details inside backends (never surfaced through SearchBackend interface)",
+      "SchemaAdapter is an internal SQLite concern — NOT exported; MCP handlers pass raw filters via SearchQuery.filters; StoreSearchBackend resolves them internally",
       "fuse() weights must be multiplicative (field boosting), never additive (scale-blind)",
-      "a NodeFilter that matches zero nodes yields zero vector candidates \u2014 never an unfiltered knn() fallback (an empty VecFilter.ids means \"no filter\" to the vector backend, not \"match nothing\")"
+      "a NodeFilter that matches zero nodes yields zero vector candidates — never an unfiltered knn() fallback (an empty VecFilter.ids means \"no filter\" to the vector backend, not \"match nothing\")"
     ],
     "entrypoints": [
       "dist/index.js"

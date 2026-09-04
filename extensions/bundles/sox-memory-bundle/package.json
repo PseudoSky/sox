@@ -1,6 +1,6 @@
 {
   "name": "@adhd/sox-extension-sox-memory-bundle",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "SOX Memory Bundle — atomic install of the full SOX memory subsystem",
   "license": "MIT",
   "publishConfig": {
