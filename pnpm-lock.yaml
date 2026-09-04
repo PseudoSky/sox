@@ -112,7 +112,7 @@ importers:
         specifier: workspace:*
         version: link:../../libs/install-engine
       '@adhd/sox-listen-guard':
-        specifier: workspace:*
+        specifier: workspace:^
         version: link:../../libs/listen-guard
       '@adhd/sox-manifest':
         specifier: workspace:*
@@ -425,7 +425,7 @@ importers:
   libs/host-runtime:
     dependencies:
       '@adhd/sox-listen-guard':
-        specifier: workspace:*
+        specifier: workspace:^
         version: link:../listen-guard
 
   libs/install-engine: {}
@@ -511,7 +511,7 @@ importers:
   libs/service-proxy:
     dependencies:
       '@adhd/sox-listen-guard':
-        specifier: workspace:*
+        specifier: workspace:^
         version: link:../listen-guard
 
   libs/source-provider:
