@@ -47,10 +47,7 @@
       "references": [],
       "assumed_baseline": [],
       "depends_on": [],
-      "updated_at": "2026-07-09T03:56:25.772Z",
-      "verified_at": "2026-07-10T20:48:21.711Z",
-      "verified_reality": "content-complete",
-      "verified_note": "BL-258: all 15 states read pending/in_progress and transition_log is empty (state machine never driven), but every deliverable shipped to main via the P1 substrate commits. Extraction phase: the six data libs (@adhd/sox-{embedding-provider,vector-store,graph-store,hybrid-search,ingest,analysis}) all exist under libs/data/ with build targets and are imported+declared-as-deps by libs/memory-core (the w2e-domain-rewire goal). Routing phase (p4): all six libs appear in docs/routing/INDEX.md, docs/routing/data/INDEX.md, and map.json. The derived status stays in-progress because it is computed from state.json by rollupStatus; only state-transition.js may write state.json, and project-status never executes a plan. Recommend the integrator/plan-orchestrator drive a verified per-state fast-forward (state-transition.js --complete, guards already satisfied by reality) to reconcile the machine; do NOT re-dispatch executors to redo shipped work."
+      "updated_at": "2026-08-12T06:34:44.637Z"
     },
     {
       "plan": "tokenguard-service",
@@ -113,13 +110,10 @@
       "references": [],
       "assumed_baseline": [],
       "depends_on": [],
-      "updated_at": "2026-07-09T03:56:25.774Z",
-      "verified_at": "2026-07-10T20:48:21.711Z",
-      "verified_reality": "complete",
-      "verified_note": "Verified done: state.json current_state=done, 13/13 states complete, 16 transition_log entries (state machine was fully driven). Live extension present at extensions/services/tokenguard/ (extension.json, dist/, src/, test/). Derived status=complete is correct."
+      "updated_at": "2026-08-12T06:34:44.638Z"
     }
   ],
-  "updated_at": "2026-07-10T20:48:21.711Z",
+  "updated_at": "2026-08-12T06:34:44.646Z",
   "verified_at": "2026-07-10T20:48:21.711Z",
   "verified_by": "workflow:project-status sweep (BL-258)"
 }

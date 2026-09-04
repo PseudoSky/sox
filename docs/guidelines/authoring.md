@@ -182,7 +182,7 @@ The full per-scope path table is in [USAGE.md](../../USAGE.md#scopes--the-datapl
 
 | Type | `runtime` | `entrypoint` | Builds | Host placement (Claude) |
 |------|-----------|--------------|--------|--------------------------|
-| [agent](#agent) | `declarative` | `agent.md` | no | `.claude/agents/` |
+| [agent](#agent-rendering-cross-platform) | `declarative` | `agent.md` (prose only) | no | `.claude/agents/` (rendered per host) |
 | [skill](#skill) | `declarative` | `SKILL.md` | no | `.claude/skills/<id>/` |
 | [command](#command) | `node` | `dist/index.js` | yes | `.claude/commands/` |
 | [mcp-server](#mcp-server) | `node` | `dist/index.js` | yes | `~/.claude.json` (stdio) / `.mcp.json` (sse/http) |
@@ -199,10 +199,65 @@ The full per-scope path table is in [USAGE.md](../../USAGE.md#scopes--the-datapl
 
 No build. The source file *is* the published artifact and the checksum target:
 
-- `agent` → `agent.md` (YAML frontmatter + body)
+- `agent` → `agent.md` (prose only — the per-host header is rendered at install time from the `agent` IR + `render` overrides in `extension.json`; see [Agent rendering](#agent-rendering-cross-platform))
 - `skill` → `SKILL.md` (YAML frontmatter + body)
 - `hook` → `hook.sh` (bash; or a `.cjs`/`.js` node hook)
 - `bundle` → `extension.json` itself (it has **no entrypoint**)
+
+### Agent rendering (cross-platform)
+
+An `agent` is authored **once** and rendered **per host** at install time. It is the only
+declarative type whose header shape differs across hosts, so the header is never baked into the
+source file. See `docs/spec/cross-platform-install-rendering.md` for the full contract.
+
+Three host shapes, one source:
+
+| Host | Header shape | Rendered from |
+|------|--------------|---------------|
+| claude | YAML frontmatter: `name`, `description`, `tools`, `model`, `version` | `agent` IR + `render.claude` |
+| opencode | YAML frontmatter: `name`, `description`, `mode`, `temperature`, `permission` | `agent` IR + `render.opencode` |
+| codex | TOML `[agents.<name>]` config entry (no file) | `agent` IR + `render.codex` |
+
+**Generate** — `soxe init agent <id>` scaffolds a prose-only `agent.md` (no frontmatter) plus an
+`agent` IR block and `render` overrides in `extension.json`:
+
+```jsonc
+// extension.json — the host-agnostic IR + per-host overrides
+{
+  "type": "agent",
+  "entrypoint": "agent.md",        // prose only — NO YAML frontmatter
+  "agent": {
+    "name": "my-agent",
+    "description": "…",
+    "model": "sonnet",
+    "mode": "all",
+    "tools": ["read", "bash", { "logical": "memory", "server": "memory-server" }],
+    "permission": { "read": "allow", "bash": { "*": "allow", "git stash*": "deny" } }
+  },
+  "render": {
+    "claude":  { "model": "sonnet", "tools": ["Read", "Bash", "mcp__memory-server__*"], "version": "v1.0.0" },
+    "opencode": { "mode": "all" }
+  }
+}
+```
+
+**Author** — write the prose body in `agent.md` referencing tools by **logical name**
+(`SEARCH(...)`, `memory_recall(...)`), never a host-prefixed callable. Put shared metadata in
+`agent`; put host-divergent fields (`tools`, `model`, `version`, `permission`) in `render.<host>`.
+Concrete MCP server keys that a host module can't derive (e.g. claude's
+`agent_browser_search_mcp_source`) go in `render.<host>.toolMap`.
+
+**Validate** — `soxe validate <dir>/extension.json` renders the agent for **every** host in
+`install.hosts` and fails if any renderer throws or produces an empty artifact.
+
+**Install** — `soxe install <id> --host=<host>` renders the host header at install time and places
+the result (claude/opencode: `.md` at `<host>/agents/<id>.md`; codex: `[agents.<id>]` in
+`config.toml`). **Raw passthrough:** an agent with neither an `agent` block nor `render` overrides is
+copied verbatim, exactly as before (legacy baked-in frontmatter keeps working).
+
+**Build/publish** — declarative agents have no `dist/`. To publish, regenerate the registry checksum
+over the entrypoint (`npx nx run registry:sync-index`) and commit `extension.json` + `agent.md` +
+the regenerated `registry/index.json` together.
 
 ### Code (`command`, `mcp-server`, `service`)
 
