@@ -16,10 +16,13 @@ store lives at **`~/.memory/memory.db`** (user scope).
 Every write is **enriched deterministically on the spot** — topic, tags, an
 extractive summary, near-duplicate detection — with **zero LLM calls and no
 provider** (the legacy LLM organizer was removed; clustering/auto-links run as a
-deterministic batch pass in-process inside `memory-server` itself — ADR-0007's
-single-writer architecture, no separate daemon process). `memory-server` exposes
-**20 `memory_*` tools** (v1.1.0). See the server's `CLAUDE.md` for full per-tool
-schemas; this skill covers the everyday recall / write / update path.
+deterministic batch pass in-process inside `memory-server` itself — no separate
+daemon process. This is unrelated to store concurrency: with the default Turso
+backend the store itself runs in `multiprocess_wal` mode, so multiple processes
+may hold concurrent write connections to it; only the `better-sqlite3` fallback
+is single-writer). `memory-server` exposes **20 `memory_*` tools**. See that
+package's own README for full per-tool schemas; this skill covers the everyday
+recall / write / update path.
 
 Interact with it only through the `memory_*` MCP tools. Never open the DB file
 directly.

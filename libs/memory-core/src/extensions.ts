@@ -792,7 +792,9 @@ export interface BuildCommunitiesResult {
  * Deterministic label-propagation community detection (design.md §2.3, P4).
  * Community labels are derived deterministically from centroid member names.
  * Batch clustering runs in-process inside memory-server via memory-core runBatchEnrich
- * (ADR-0007 single-writer architecture — no separate daemon process).
+ * — no separate daemon process. (Locality fact only: ADR-0012 supersedes ADR-0007's
+ * single-writer invariant; the default Turso backend is `multiprocess-wal`, where
+ * multiple processes hold concurrent write connections to the same store.)
  */
 export async function buildCommunities(
   adapter: StoreAdapter,

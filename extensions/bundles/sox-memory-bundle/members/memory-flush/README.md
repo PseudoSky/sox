@@ -1,48 +1,114 @@
 # Memory Session Flush
 
-> Use this when you need session memory durably persisted at conversation end and scope promotions reviewed at policy boundaries.
+> Persist session working memory at conversation end, and gate scope-promotion requests — deterministic, zero LLM calls.
 
 ## Overview
 
-`memory-flush` binds two host lifecycle events and handles each deterministically (zero LLM calls):
+`@adhd/sox-extension-memory-flush` binds two host lifecycle events:
 
-**SessionEnd** — when a conversation closes, the hook:
+**`SessionEnd`** — when a conversation closes:
 
-1. Saves the session's working-memory state (upserts a `session` node in the graph store — invalidates the previous entry, inserts a new one).
-2. Enqueues any pending episode items into `organizer_queue` so `memoryd` can process them asynchronously.
-3. Nudges `memoryd` via its Unix socket doorbell (`~/.memory/memoryd.sock`). If the daemon is not running the nudge is silently discarded — the queue is durable on disk and will be processed at next startup.
+1. Upserts a `session` node with the working-memory state (invalidates the previous entry for that `session_id`, inserts a new one).
+2. Writes any pending episodes into the store (content-hash deduped) and enqueues each into the enrichment queue, so `memory-server`'s in-process batch pass picks them up — there is no separate daemon to notify.
+3. If `export_enabled` + `export_dir` are configured (directly, or via `payload.export_config`), auto-exports the store to a markdown mirror, throttled to at most once per `export_throttle_secs` (default 60s) and fully failure-isolated — a failed export never breaks the flush.
 
-**ScopePromotionProposed** — when a tenant proposes promoting memory items from a narrower scope (e.g. `project`) to a wider one (e.g. `user`), the hook runs the configured promotion-approval policy. If approved, it copies the node to the destination scope's DB with a `SAME_AS` edge and marks the promotion `applied`. If rejected or no approver is configured, the row stays `proposed` in the promotion queue.
+**`ScopePromotionProposed`** — when a caller proposes promoting memory items from a narrower scope (e.g. `project`) to a wider one (e.g. `user`), the hook runs whatever promotion-approval callback has been registered via `setPromotionApprover`. If it approves, the hook copies the node(s) to the destination scope's store with a `SAME_AS` edge and marks the promotion applied. If it rejects, or no approver is registered, the row stays `proposed` and nothing is copied.
 
-`order: 100` — fires near the start of the hook chain (ascending order).
+`order: 100` — ascending; ties broken by extension id.
+
+```bash
+pnpm add @adhd/sox-extension-memory-flush
+```
+
+## Quick start
+
+The entrypoint exports `handler`, `events`, and the config setters — this is exactly how the package's own test suite drives it:
+
+> **No type declarations ship with this package.** It is built as an executable bundle, so
+> `dist/` contains no `.d.ts` and `package.json` declares no `types` field. The examples below
+> are JavaScript. Importing it from TypeScript under `noImplicitAny` raises
+> `TS7016: Could not find a declaration file for module` — add your own ambient declaration, or
+> drive the package through its command line / MCP interface, which is its intended seam.
+
+```js
+import { handler, setExportConfig, _resetExportThrottle } from '@adhd/sox-extension-memory-flush';
+
+// The store file must already exist — SessionEnd silently no-ops without it (see Gotchas).
+// Create it first with `npx memory-cli init --scope project`, or let memory-server create it
+// on its own first write.
+const dbPath = `${process.cwd()}/.memory/project.db`;
+
+// Optional: turn on auto-export for this process (default is off)
+setExportConfig({ export_enabled: true, export_dir: '/path/to/export', export_throttle_secs: 0 });
+
+const result = handler({
+  event: 'SessionEnd',
+  timestamp: new Date().toISOString(),
+  payload: {
+    session_id: 'session-123',
+    db_path: dbPath,
+    working_memory: { openFiles: ['src/index.ts'], lastGoal: 'fix the deadlock' },
+    episodes: [{ content: 'Decided to retry on SQLITE_BUSY.', source: 'observation', importance: 6 }],
+  },
+});
+if (result) await result; // SessionEnd returns a Promise; await it to know the flush completed
+```
+
+`handler` dispatches on `ctx.event` (`events` lists the two it binds) and never throws — a handler failure is caught and logged, never propagated to the host.
+
+### As an installed hook
+
+```bash
+soxe install memory-flush --host=opencode --scope=project
+```
+
+The host fires `SessionEnd`/`ScopePromotionProposed` into `handler` automatically; you don't call it yourself. `memory-flush` requires `memory-server` to already be installed — it writes into the same store schema.
 
 ## When to use
 
-- Install this hook whenever you install `memory-server` and want session continuity — without it, working memory is lost when the conversation ends.
-- Install it when you need scope-promotion approval (e.g. policy-gated promotion from project to org memory).
-
-Do NOT install this hook without `memory-server` — it depends on the graph store schema being present at `db_path`.
+- Install alongside `memory-server` whenever you want session continuity — without this hook, working memory is lost when the conversation ends.
+- Install it when you need scope-promotion approval gating (e.g. policy-gated promotion from project to org memory).
 
 ## Lifecycle events bound
 
-| Event                      | Behaviour                                                   |
-| -------------------------- | ----------------------------------------------------------- |
-| `SessionEnd`               | Persist working memory, enqueue episodes, nudge memoryd     |
-| `ScopePromotionProposed`   | Run promotion approval policy; copy nodes if approved       |
-
-## Execution order
-
-`order: 100` — ascending; ties broken by id.
-
-## Constraints
-
-- Deterministic: zero LLM calls in both handlers.
-- Side effects (DB writes, queue inserts) are scoped to the provided `db_path`.
-- Nudge to memoryd is fire-and-forget (non-blocking, errors silently ignored).
+| Event | Behaviour |
+| --- | --- |
+| `SessionEnd` | Persist working memory, write + enqueue pending episodes, optionally auto-export. |
+| `ScopePromotionProposed` | Run the registered promotion-approval callback; copy nodes on approval. |
 
 ## Configuration
 
-The promotion approver is injected via `setPromotionApprover(fn)` from the host or the `memory-cli promote` flow. Without an approver, `ScopePromotionProposed` is logged and deferred.
+Set the promotion approver programmatically — there is no CLI subcommand for it:
+
+```js
+import { setPromotionApprover } from '@adhd/sox-extension-memory-flush';
+
+setPromotionApprover(async (payload) => {
+  // payload: { extension_id, from_scope, to_scope, items: [{ uid, content? }], proposed_at }
+  return { approved: true, srcDbPath: '/path/project.db', dstDbPath: '/path/user.db', decidedBy: 'policy' };
+});
+```
+
+Without an approver registered, `ScopePromotionProposed` is logged and the proposal stays `proposed` — no action is taken.
+
+Auto-export config keys (set via `setExportConfig`, or per-call via `payload.export_config`):
+
+| Key | Default | Description |
+| --- | --- | --- |
+| `export_enabled` | `false` | Opt-in: run a markdown export after every `SessionEnd` flush. |
+| `export_dir` | — | Required when `export_enabled` is true. |
+| `export_throttle_secs` | `60` | Minimum seconds between auto-exports per process lifetime. |
+
+## Constraints
+
+- Deterministic: zero LLM calls in either handler.
+- Side effects (DB writes, queue inserts, export) are scoped to the `db_path` in the event payload.
+- `SessionEnd` returns a `Promise` (awaits the full flush + export cycle); `ScopePromotionProposed` also returns a `Promise`. Both catch their own errors internally rather than throwing into the host.
+
+## Gotchas
+
+- **`SessionEnd` silently no-ops if `db_path` doesn't already exist.** The session-state upsert and episode writes only run against a store file that's already on disk (`fs.existsSync(db_path)` gates the open); a missing file makes the whole write half of the handler return with **no write, no thrown error, and no log line** — `result` still resolves normally. Create the store first (`memory-cli init`, or let `memory-server` create it on its own first write) before pointing `handler` at it. The auto-export half is more forgiving: it checks existence separately and prints `[memory-flush] auto-export skipped: db_path not found: <path>` when it's missing, so a `SessionEnd` with export enabled can log an export-skip message while the session/episode write silently did nothing at all — those are two independent silent-vs-logged failure paths, not one.
+- A literal `~`-prefixed path (e.g. `'~/.memory/project.db'`) is **not** shell-expanded by this package — pass an already-resolved absolute path (`` `${os.homedir()}/.memory/project.db` `` or similar).
 
 ## Usage
 

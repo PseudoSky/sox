@@ -29,9 +29,13 @@
  *   - extensions/bundles/sox-memory-bundle (bundle manifest)
  *
  * BL-162: the memory-daemon member (a supervised Unix-socket writer daemon) was removed —
- * ADR-0007's single-writer architecture moved batch enrichment in-process into the
- * memory-server writer backend (see enrich-batch.ts runBatchEnrich, invoked directly by
- * memory-server on write and via a periodic in-process loop; no daemon process exists).
+ * batch enrichment moved in-process into the memory-server writer backend (see
+ * enrich-batch.ts runBatchEnrich, invoked directly by memory-server on write and via a
+ * periodic in-process loop; no daemon process exists). This is a locality fact about
+ * where enrichment runs, not a concurrency-model claim: ADR-0012 supersedes ADR-0007's
+ * single-writer invariant — the default Turso backend runs `multiprocess-wal`, where
+ * multiple processes hold concurrent write connections to the same store file,
+ * serialized through a `-tshm` coordinator sidecar. There is no opt-out.
  *
  * Eliminates the cross-extension ../../../dist/ reach-in (C7, ref:no-cross-extension-reachin).
  */

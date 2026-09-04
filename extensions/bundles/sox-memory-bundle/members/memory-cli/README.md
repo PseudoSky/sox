@@ -1,59 +1,84 @@
 # Memory CLI
 
-> Use this when you need to manage the sox-memory store from the shell — initialise scopes, inspect store health, browse recent memories, or view the scope registry.
+> Deterministic shell-style administration for the sox-memory graph store — init, status, list, export, and pipeline health, with zero LLM calls.
 
 ## Overview
 
-`memory-cli` provides a set of deterministic shell subcommands for the sox-memory graph store lifecycle. It makes no LLM calls and produces predictable output suitable for scripting.
+`@adhd/sox-extension-memory-cli` provides the lifecycle and maintenance commands for a sox-memory store: create a scope, inspect health, browse recent memories, export to markdown, re-embed after a model change, back up, compact, and drive the enrichment pipeline's control plane. Every subcommand is deterministic and produces predictable, scriptable output.
 
-All subcommands operate against SQLite `.db` files in `.memory/<scope>.db` under the cwd (for `project`/`local` scopes) or `~/.memory/<scope>.db` (for `user`/`org` scopes). Store paths can be overridden with `--path`.
+All subcommands operate against SQLite-compatible `.db` files in `.memory/<scope>.db` under the cwd (`project`/`local` scopes) or `~/.memory/<scope>.db` (`user`/`org` scopes). Paths can be overridden with `--db`/`--path`.
 
-## When to use
-
-- Run `memory init` once per scope to create the SQLite store, initialise the schema (node/edge/vec tables, FTS5 index, organizer queue), and register the path in `~/.memory/registry.json`.
-- Run `memory status` to see which stores exist, how many nodes they contain, and which embedding model they use.
-- Run `memory list` to browse the 20 most recent non-invalidated nodes in each store under a directory.
-- Run `memory registry` to inspect `~/.memory/registry.json` and check which scope paths exist on disk.
-
-Do NOT use this CLI on the read/write hot path — it opens and closes the database on every invocation, which is fine for administration but too slow for agent loops. Use the `memory_write`/`memory_recall` MCP tools instead.
-
-## Invocation
-
+```bash
+pnpm add @adhd/sox-extension-memory-cli
 ```
-memory <command> [--scope project|user|org|local] [--path DIR]
+
+## Quick start
+
+The package's entrypoint exports `runCli`, an async function that takes the same argv it would parse from a shell — this is exactly how its own test suite drives it:
+
+> **No type declarations ship with this package.** It is built as an executable bundle, so
+> `dist/` contains no `.d.ts` and `package.json` declares no `types` field. The examples below
+> are JavaScript. Importing it from TypeScript under `noImplicitAny` raises
+> `TS7016: Could not find a declaration file for module` — add your own ambient declaration, or
+> drive the package through its command line / MCP interface, which is its intended seam.
+
+```js
+import { runCli } from '@adhd/sox-extension-memory-cli';
+
+await runCli(['init', '--scope', 'project']);   // create .memory/project.db + schema
+await runCli(['status']);                        // print scope, node count, embedding model
+await runCli(['list']);                           // list recent live nodes
 ```
+
+It also runs as a standalone Node script — the same file self-invokes when run directly:
+
+```bash
+node node_modules/@adhd/sox-extension-memory-cli/dist/index.js status
+```
+
+### As a host-installed command extension
+
+```bash
+soxe install memory-cli --host=opencode --scope=project
+```
+
+`memory-cli` is a `type: command` extension: the host activates it and registers `runCli` under the command verb `memory-cli` (the extension's id) inside the host's in-process command registry — it is invoked by the host/agent, not exposed as a new global shell binary by installing the npm package alone. `memory-server` must already be installed; this package's schema/store code comes from `@adhd/sox-memory-core`, which `memory-server` also depends on.
+
+Do not use this CLI on the read/write hot path — it opens and closes the database on every invocation, which is fine for administration but too slow for an agent's recall/write loop. Use the `memory_write`/`memory_recall` MCP tools (`memory-server`) instead.
 
 ## Subcommands
 
-| Command    | Description                                                        |
-| ---------- | ------------------------------------------------------------------ |
-| `init`     | Create `.memory/<scope>.db`, initialise schema, update registry   |
-| `status`   | Print scope, node count, embedding model, and path for all stores |
-| `list`     | List 20 most recent live nodes across all stores in a directory   |
-| `registry` | Show `~/.memory/registry.json` with per-scope existence check     |
-| `help`     | Print usage summary                                                |
-
-## Flags
-
-| Flag              | Default     | Description                                                  |
-| ----------------- | ----------- | ------------------------------------------------------------ |
-| `--scope`         | `project`   | Scope: `project`, `user`, `org`, or `local`                  |
-| `--path DIR`      | (cwd)       | Override base directory for store resolution                  |
+| Command | Flags | Description |
+| --- | --- | --- |
+| `init` | `--scope <s>` `--path <dir>` | Create `.memory/<scope>.db`, initialise schema, update the registry. |
+| `status` | `--path <dir>` | Print scope, node count, embedding model, and path for every discovered store. |
+| `list` | `--path <dir>` | List the 20 most recent live nodes across every store under a directory. |
+| `registry` | — | Show `~/.memory/registry.json` with a per-scope existence check. |
+| `export` | `--scope <s>` `--base-path <p>` `--dir <path>` `--db <path>` | Export live episodes to a markdown mirror. |
+| `reembed` | `--db <path>` `--dry-run` `--force` `--no-backup` `--limit <n>` | Re-embed a store with the current embedding model. |
+| `backup` | `--db <src>` `--dest <dst>` (or positional `<src> <dst>`) | `VACUUM INTO` a backup file; both paths must be inside `~/.memory/**`. |
+| `compact` | `--db <path>` `--no-optimize` (or positional `<path>`) | `PRAGMA optimize` + `ANALYZE` + WAL checkpoint. |
+| `pipeline` | `<status\|drain\|reset\|resume>` `--db <path>` `--dry-run` `--limit <n>` | Read/drive the enrichment + embed pipeline's health ledger, verdict, and poison-row table. |
+| `help` | — | Print the usage summary above (also the default with no command). |
 
 ## Scope → default store path
 
-| Scope     | Default path                         |
-| --------- | ------------------------------------ |
-| `project` | `<cwd>/.memory/project.db`           |
-| `local`   | `<cwd>/.memory/local.db`             |
-| `user`    | `~/.memory/user.db`                  |
-| `org`     | `~/.memory/org.db`                   |
+| Scope | Default path |
+| --- | --- |
+| `project` | `<cwd>/.memory/project.db` |
+| `local` | `<cwd>/.memory/local.db` |
+| `user` | `~/.memory/user.db` |
+| `org` | `~/.memory/org.db` |
 
 ## Constraints
 
-- Deterministic: zero LLM calls.
-- `memory init` is idempotent — safe to run multiple times against an existing store.
-- Depends on `memory-server` for the shared `db.ts` schema module.
+- Deterministic: zero LLM calls in every subcommand.
+- `init` is idempotent — safe to run multiple times against an existing store.
+- Store open, schema init, and embedding come from `@adhd/sox-memory-core` (`openDb`, `initScope`, `reembedStore`) — the same module `memory-server` uses, so both packages read/write an identical schema.
+
+## Gotchas
+
+- **`init --scope <s>` silently overwrites a single global registry slot per scope name.** `~/.memory/registry.json` has exactly one entry per scope name (`project`, `user`, `org`, `local`, or any named `store`) machine-wide — it is *not* keyed by directory. Running `memory-cli init --scope project` in project A, then again later in unrelated project B, overwrites project A's registry entry with project B's path; project A's `.memory/project.db` file itself is untouched, but `registry` / `--store` lookups for `project` now resolve to B. If you work across multiple projects, register each store's real path under its own name (`init --scope local` or a named `store`) rather than relying on the shared `project`/`user`/`org` slots, or always pass `--path`/`--db`/`db_path` explicitly instead of a bare scope/store name.
 
 ## Usage
 
@@ -61,18 +86,15 @@ memory <command> [--scope project|user|org|local] [--path DIR]
 soxe install memory-cli
 # or install the full subsystem:
 soxe install sox-memory-bundle
+```
 
-# Initialise a project-scope store:
-memory init --scope project
+```js
+import { runCli } from '@adhd/sox-extension-memory-cli';
 
-# Check store health:
-memory status
-
-# View recent memories:
-memory list
-
-# Inspect the registry:
-memory registry
+await runCli(['init', '--scope', 'project']);
+await runCli(['status']);
+await runCli(['list']);
+await runCli(['registry']);
 ```
 
 ## License
