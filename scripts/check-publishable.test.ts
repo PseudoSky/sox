@@ -45,7 +45,14 @@ afterEach(async () => {
   for (const d of tempRoots.splice(0)) fs.rmSync(d, { recursive: true, force: true });
 });
 
-/** A workspace with one publishable consumer holding a `workspace:*` runtime dep on DEP. */
+/**
+ * A workspace with one publishable consumer holding a `workspace:^` runtime dep on DEP.
+ *
+ * The range is `workspace:^`, NOT `workspace:*`, because the exact-pin rule rejects
+ * `workspace:*` outright — a fixture using it can never reach an OK verdict, so every
+ * green-path assertion below would be testing the pin rule instead of the registry gate.
+ * The exact-pin rule gets its own dedicated case at the bottom of this file.
+ */
 function makeFixtureWorkspace(): string {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'check-publishable-'));
   tempRoots.push(root);
@@ -59,7 +66,7 @@ function makeFixtureWorkspace(): string {
     version: '1.0.0',
     private: false,
     engines: { node: '>=20' },
-    dependencies: { [DEP]: 'workspace:*' },
+    dependencies: { [DEP]: 'workspace:^' },
   });
   write('libs/dep/package.json', {
     name: DEP,
@@ -112,7 +119,7 @@ async function run(root: string, extraArgs: string[]): Promise<{ code: number; o
 }
 
 describe('check-publishable — registry existence gate (rule 2)', () => {
-  it('FAILS, naming the package, when a workspace:* runtime dep does not exist on the registry', async () => {
+  it('FAILS, naming the package, when an internal runtime dep does not exist on the registry', async () => {
     const root = makeFixtureWorkspace();
     const registry = await startFixtureRegistry({ [DEP]: null });
 
@@ -187,5 +194,44 @@ describe('check-publishable — registry existence gate (rule 2)', () => {
     expect(code).toBe(1);
     expect(out).toContain('UNVERIFIABLE');
     expect(out).toContain('fails closed');
+  }, 60_000);
+});
+
+describe('check-publishable — exact-pin rule', () => {
+  /**
+   * Coverage that the fixture change above would otherwise have dropped. The registry-gate
+   * cases moved off `workspace:*` precisely because this rule rejects it, so the rule needs
+   * its own case or nothing proves it still fires.
+   */
+  it('FAILS on a `workspace:*` runtime dep even when that dep IS published', async () => {
+    const root = makeFixtureWorkspace();
+    // Re-pin to the exact shape the rule exists to reject.
+    const pkg = path.join(root, 'libs/consumer/package.json');
+    const json = JSON.parse(fs.readFileSync(pkg, 'utf8')) as { dependencies: Record<string, string> };
+    json.dependencies[DEP] = 'workspace:*';
+    fs.writeFileSync(pkg, JSON.stringify(json, null, 2));
+
+    // Published, so rule 2 is satisfied and CANNOT be what turns this red.
+    const registry = await startFixtureRegistry({ [DEP]: { versions: { '1.0.0': {} } } });
+
+    const { code, out } = await run(root, ['--registry', registry]);
+
+    expect(out).not.toContain('DOES NOT EXIST');
+    expect(out).toContain('EXACT pin');
+    expect(out).toContain('libs/consumer/package.json');
+    expect(code).toBe(1);
+  }, 60_000);
+
+  it('PASSES on the identical published tree with `workspace:^` (negative control)', async () => {
+    // Same tree, same registry, only the range differs — so a green here proves the failure
+    // above is attributable to the pin shape and nothing else.
+    const root = makeFixtureWorkspace();
+    const registry = await startFixtureRegistry({ [DEP]: { versions: { '1.0.0': {} } } });
+
+    const { code, out } = await run(root, ['--registry', registry]);
+
+    expect(out).not.toContain('EXACT pin');
+    expect(out).toContain('check-publishable: OK');
+    expect(code).toBe(0);
   }, 60_000);
 });
