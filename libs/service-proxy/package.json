@@ -22,7 +22,7 @@
     }
   },
   "dependencies": {
-    "@adhd/sox-listen-guard": "workspace:*"
+    "@adhd/sox-listen-guard": "workspace:^"
   },
   "keywords": [
     "mcp",
