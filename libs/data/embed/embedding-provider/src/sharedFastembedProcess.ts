@@ -25,6 +25,7 @@ import { performance } from 'node:perf_hooks';
 import { log, forkChild, _recordChildTelemetry } from '@adhd/sox-telemetry';
 import type { ChildTelemetrySnapshot } from '@adhd/sox-telemetry';
 import { resolveFastembedLockPath } from './fastembedLock.js';
+import { attachOnnxStderrFilter } from './onnxStderrFilter.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -368,7 +369,17 @@ export class SharedFastembedProcessClient implements SharedFastembedClient {
         hostPath,
         { service: 'embedding-provider', role: 'harness', logSink: 'file' },
         {
-          stdio: ['ignore', 'inherit', 'inherit', 'ipc'],
+          // (BUG-EMBED-ONNX-COREML-STDERR-NOISE-001) stderr is 'pipe', not
+          // 'inherit' — see `onnxStderrFilter.ts`'s doc comment for why: the
+          // native onnxruntime CoreML EP logs a known-benign "CoreML does not
+          // support input dim > 16384" warning on every model load (bge-base's
+          // {30522,768} word_embeddings tensor), and it must be dropped
+          // without touching any other line (the BL-331 competing-host
+          // warning and the forced-execution-provider line above both go
+          // through `console.error` in the SAME child and must reach the
+          // real terminal unmodified). stdout stays 'inherit' — this package
+          // never wanted stdout piped, only stderr filtered.
+          stdio: ['ignore', 'inherit', 'pipe', 'ipc'],
           // Real inference is CPU-bound in native code; no need to keep the
           // parent process alive on this child's account.
           detached: false,
@@ -377,6 +388,7 @@ export class SharedFastembedProcessClient implements SharedFastembedClient {
             : {}),
         },
       );
+      if (c.stderr) attachOnnxStderrFilter(c.stderr);
       _recordChildTelemetry({
         service: 'embedding-provider',
         role: 'harness',
@@ -453,6 +465,19 @@ export class SharedFastembedProcessClient implements SharedFastembedClient {
       // idle at 0% CPU. Cross-process ANE contention remains unproven; the
       // measured cause of the live slowdown was scheduling QoS (BL-331).
       c.channel?.unref();
+
+      // (BUG-EMBED-ONNX-COREML-STDERR-NOISE-001) Same BL-370 lesson applies to
+      // the new 'pipe' stderr handle: attaching the 'data' listener inside
+      // `attachOnnxStderrFilter()` puts the underlying Socket into flowing
+      // mode, which re-refs it — re-assert `unref()` here so a standalone
+      // script with no other outstanding work can still exit promptly instead
+      // of hanging on this pipe forever. `child.stderr` is typed as a plain
+      // `Readable`, but for `stdio: 'pipe'` it is actually a `net.Socket`
+      // (which alone carries `unref()`) — narrowed via a structural check
+      // instead of a blind cast so a future Node stdio-shape change fails
+      // safe (silently skips the unref) rather than throwing.
+      const stderrHandle = c.stderr as unknown as { unref?: () => void } | null;
+      if (typeof stderrHandle?.unref === 'function') stderrHandle.unref();
 
       this.child = c;
       resolveStart(c);
