@@ -38,6 +38,7 @@ import {
 } from './fts-orphan-guard.js';
 import {
   isAlreadyOpenWithoutMultiprocessWal,
+  isTshmCoordinationInitRace,
   isFatalConnectionError,
   RepairDeclinedLivePeersError,
 } from './errors.js';
@@ -1656,20 +1657,61 @@ export class TursoAdapterImpl implements TursoAdapter {
       // failure (wrong mode, permission, corrupt file, stale-WAL sidecar…)
       // propagates immediately.
       //
+      // (BL-TSHM-INIT-RACE) The SAME loop also absorbs a `-tshm`
+      // coordination-file INIT race: two processes opening (and then
+      // writing to, e.g. schema DDL) the same COLD store at once can have
+      // one stat/read the `-tshm` sidecar before the other has finished
+      // writing its 4096-byte header, which `@tursodatabase/database@0.7.2`
+      // reports as:
+      //   "Corrupt database: shared WAL coordination map magic mismatch"
+      //   "Corrupt database: shared WAL coordination file is smaller than
+      //    the coordination header: got 0, minimum 4096"
+      // Despite the wording this is NOT corruption — measured 2026-09-06
+      // (minimal repro: createStoreAdapter + a real write, no other
+      // write-layer code; 40 two-process cold-open races: 0.9.0 failed
+      // 1/10, published 0.7.0 failed 2/10, both variants seen; a suite of
+      // 300 processes/150 races over this exact adapter path failed 5/300
+      // with the retry disabled and 0/300 with it enabled — see
+      // tshm-init-race.spec.ts) retrying the SAME dbPath in a brand-new
+      // process after a failure succeeded 5/5 with 0 sticky failures.
+      //
+      // This is a DISTINCT window from the documented stale-`-tshm`-after-
+      // TRUNCATE case (BUG-STOREADAPTER-ADAPTER-NOT-ENGINE-FIASCO-RECORD-001):
+      // that one is a PRE-EXISTING store whose `-tshm` survives a
+      // close()-TRUNCATE and indexes dead frames on a LATER open; this one
+      // only exists the very first time a store is created, and this fix
+      // does not touch the stale-sidecar-reconcile machinery at all. It is
+      // also distinct from the raw turso engine's own open-handshake race
+      // above ("already open without experimental multiprocess WAL",
+      // "database is locked") — a raw-driver control (no adapter, same
+      // two-process cold-store shape, 20 iterations) reproduced THOSE
+      // signatures 5/20 but never once produced either tshm-coordination
+      // message; the two signatures here are only observed through this
+      // adapter's own open path.
+      //
+      // `isTshmCoordinationInitRace` is a SCALPEL, matching ONLY these two
+      // exact message markers — any other "Corrupt database" text (a
+      // genuinely malformed file, wrong engine, permission error…) is NEVER
+      // retried and propagates immediately, exactly like `E_IO` in the
+      // write-queue layer.
+      //
       // Bound: OPEN_RETRY_MAX_ATTEMPTS total (1 initial + 2 retries) — ADR-0012
       // §4's ceiling, the same 3 the transaction and write-queue loops use.
       // Backoff: linear 100ms → 200ms (constants above — no I/O involved, the
       // other opener releases within a few scheduler quanta). Exhaustion: the
-      // ORIGINAL driver error is rethrown with `retryable: true` attached so the
-      // CALLER decides beyond this bound — never silently dropped (§4). No
-      // config toggle: unconditional fixed behavior (ADR-0013).
+      // ORIGINAL driver error is rethrown UNCHANGED (only marked
+      // `retryable: true`, never wrapped) so the CALLER decides beyond this
+      // bound and the driver's own text is never lost (§4). No config
+      // toggle: unconditional fixed behavior (ADR-0013).
       const openOnce = async (): Promise<any> => {
         let lastError: unknown;
         for (let attempt = 0; attempt < OPEN_RETRY_MAX_ATTEMPTS; attempt++) {
           try {
             return await driverOpen();
           } catch (err) {
-            if (!isAlreadyOpenWithoutMultiprocessWal(err)) throw err;
+            const isMultiprocessWalRace = isAlreadyOpenWithoutMultiprocessWal(err);
+            const isTshmInitRace = isTshmCoordinationInitRace(err);
+            if (!isMultiprocessWalRace && !isTshmInitRace) throw err;
 
             if (attempt >= OPEN_RETRY_MAX_ATTEMPTS - 1) {
               // Exhausted — surface the ORIGINAL driver error, marked
@@ -1682,12 +1724,17 @@ export class TursoAdapterImpl implements TursoAdapter {
             }
 
             const delay = OPEN_RETRY_BACKOFF_START_MS + attempt * OPEN_RETRY_BACKOFF_STEP_MS;
-            log.warn('store_adapter.turso.open_multiprocess_wal_retry', {
-              attempt: attempt + 1,
-              max_attempts: OPEN_RETRY_MAX_ATTEMPTS,
-              delay_ms: delay,
-              error: (err instanceof Error ? err.message : String(err)).slice(0, 300),
-            });
+            log.warn(
+              isTshmInitRace
+                ? 'store_adapter.turso.open_tshm_init_race_retry'
+                : 'store_adapter.turso.open_multiprocess_wal_retry',
+              {
+                attempt: attempt + 1,
+                max_attempts: OPEN_RETRY_MAX_ATTEMPTS,
+                delay_ms: delay,
+                error: (err instanceof Error ? err.message : String(err)).slice(0, 300),
+              },
+            );
             lastError = err;
             await new Promise((resolve) => setTimeout(resolve, delay));
           }

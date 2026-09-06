@@ -7,6 +7,7 @@ import {
   isDatabaseError,
   isFatalConnectionError,
   isAlreadyOpenWithoutMultiprocessWal,
+  isTshmCoordinationInitRace,
 } from './errors.js';
 
 describe('errors.ts — SQLITE_*-code helpers vs the live Turso driver', () => {
@@ -181,6 +182,80 @@ describe('errors.ts — SQLITE_*-code helpers vs the live Turso driver', () => {
       expect(isAlreadyOpenWithoutMultiprocessWal(undefined)).toBe(false);
       expect(isAlreadyOpenWithoutMultiprocessWal('plain string')).toBe(false);
       expect(isAlreadyOpenWithoutMultiprocessWal(new Error('no code property'))).toBe(false);
+    });
+  });
+
+  describe('isTshmCoordinationInitRace (BL-TSHM-INIT-RACE)', () => {
+    it('matches the "magic mismatch" variant verbatim', () => {
+      expect(
+        isTshmCoordinationInitRace({
+          code: 'GenericFailure',
+          message:
+            "failed to open database '/tmp/store.db': Corrupt database: shared WAL " +
+              'coordination map magic mismatch',
+        }),
+      ).toBe(true);
+    });
+
+    it('matches the "smaller than the coordination header" variant verbatim', () => {
+      expect(
+        isTshmCoordinationInitRace({
+          code: 'GenericFailure',
+          message:
+            "failed to open database '/tmp/store.db': Corrupt database: shared WAL " +
+              'coordination file is smaller than the coordination header: got 0, minimum 4096',
+        }),
+      ).toBe(true);
+    });
+
+    it('matches case-insensitively', () => {
+      expect(
+        isTshmCoordinationInitRace({
+          code: 'GenericFailure',
+          message: 'CORRUPT DATABASE: SHARED WAL COORDINATION MAP MAGIC MISMATCH',
+        }),
+      ).toBe(true);
+    });
+
+    it('does NOT match a genuinely different "Corrupt database" message — never a generic retry-any-corruption net', () => {
+      expect(
+        isTshmCoordinationInitRace({
+          code: 'GenericFailure',
+          message: 'Corrupt database: page 42 has an invalid page type: 0',
+        }),
+      ).toBe(false);
+    });
+
+    it('does NOT match the multiprocess-WAL open-handshake race (its own scalpel, own retry path)', () => {
+      expect(
+        isTshmCoordinationInitRace({
+          code: 'GenericFailure',
+          message:
+            'Database is already open without experimental multiprocess WAL in another process',
+        }),
+      ).toBe(false);
+    });
+
+    it('does NOT match a stale-WAL-sidecar-after-TRUNCATE failure (BUG-STOREADAPTER-ADAPTER-NOT-ENGINE-FIASCO-RECORD-001 stays on its own path)', () => {
+      expect(
+        isTshmCoordinationInitRace({
+          code: 'GenericFailure',
+          message: 'I/O error: short read on WAL frame at offset 2101232: expected 4096 bytes, got 0',
+        }),
+      ).toBe(false);
+    });
+
+    it('does NOT match a busy/lock contention message', () => {
+      expect(isTshmCoordinationInitRace({ code: 'GenericFailure', message: 'database is locked' })).toBe(
+        false,
+      );
+    });
+
+    it('returns false for non-error-shaped input', () => {
+      expect(isTshmCoordinationInitRace(null)).toBe(false);
+      expect(isTshmCoordinationInitRace(undefined)).toBe(false);
+      expect(isTshmCoordinationInitRace('plain string')).toBe(false);
+      expect(isTshmCoordinationInitRace(new Error('no code property'))).toBe(false);
     });
   });
 });
