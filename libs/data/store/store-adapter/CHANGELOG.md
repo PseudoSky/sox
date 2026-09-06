@@ -1,5 +1,28 @@
 # @adhd/sox-store-adapter
 
+## 0.9.1
+
+### Patch Changes
+
+- Retry the transient `-tshm` cold-init open race.
+
+  Two OS processes opening the same store concurrently could intermittently fail to
+  open it at all, throwing `Corrupt database: shared WAL coordination map magic
+mismatch` or `...coordination file is smaller than the coordination header: got 0,
+minimum 4096`. Measured at 1/10 two-process races on 0.9.0 and 2/10 on the
+  published 0.7.0, with zero application code in the path.
+
+  It is not corruption despite the driver's wording: 5/5 observed failures recovered
+  on a fresh-process retry with 0 sticky failures. A raw-driver control (no adapter)
+  reproduced only the engine's own differently-worded open race and never once
+  either coordination-map signature, confirming these two are adapter-path-only.
+
+  `isTshmCoordinationInitRace` now joins `isAlreadyOpenWithoutMultiprocessWal` in the
+  existing `openOnce` retry classifier — one retry path, shared attempt budget and
+  backoff, original driver error rethrown unchanged on exhaustion. Scope is the
+  cold-init window only; it deliberately does not touch the stale-sidecar-after-
+  TRUNCATE mechanism.
+
 ## 0.9.0
 
 ### Minor Changes

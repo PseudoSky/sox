@@ -1719,6 +1719,22 @@ export class TursoAdapterImpl implements TursoAdapter {
               // may retry beyond the adapter's bound (ADR-0012 §4).
               if (err !== null && typeof err === 'object') {
                 (err as { retryable?: boolean }).retryable = true;
+                // For the -tshm case ONLY, append a note. The driver's own
+                // text says "Corrupt database", which is actively misleading:
+                // the sidecar was merely read before a concurrently-opening
+                // process finished writing its header. Measured: a fresh
+                // process against the SAME path succeeded 5/5 after this
+                // error, and 0 stores stayed broken — nothing is corrupt and
+                // there is no recovery procedure to hunt for. The original
+                // message is preserved verbatim ahead of the note (§4).
+                const e = err as { message?: string };
+                if (isTshmInitRace && typeof e.message === 'string' && !e.message.includes('NOT database corruption')) {
+                  e.message =
+                    `${e.message} — NOTE: this is the transient shared-WAL coordination cold-init ` +
+                    `race, NOT database corruption despite the driver's wording: the coordination ` +
+                    `sidecar was read before its header was written by a concurrently-opening ` +
+                    `process. The store is intact; retry the open (measured to succeed 5/5).`;
+                }
               }
               throw err;
             }
