@@ -93,19 +93,33 @@ function coldPath(label: string): string {
 
 interface ChildResult {
   code: number | null;
+  signal: NodeJS.Signals | null;
   stdout: string;
+  stderr: string;
 }
 
+/**
+ * stderr and the exit SIGNAL are both captured deliberately. An earlier version
+ * of this harness piped stderr and never read it, and reported only `code`.
+ * A child killed by a native abort therefore surfaced as a bare
+ * `exit=null` with empty output -- diagnosable only by guessing, and a wrong
+ * guess (blaming an upstream driver panic) is exactly what happened and cost
+ * real time. A crash must name itself.
+ */
 function spawnChild(dbPath: string): Promise<ChildResult> {
   return new Promise((resolvePromise) => {
     const proc = spawn(process.execPath, ['--import', 'tsx', CHILD, dbPath], {
       stdio: ['ignore', 'pipe', 'pipe'],
     });
     let out = '';
+    let err = '';
     proc.stdout.on('data', (d) => {
       out += String(d);
     });
-    proc.on('exit', (code) => resolvePromise({ code, stdout: out }));
+    proc.stderr.on('data', (d) => {
+      err += String(d);
+    });
+    proc.on('exit', (code, signal) => resolvePromise({ code, signal, stdout: out, stderr: err }));
   });
 }
 
@@ -127,6 +141,30 @@ tursoDescribe('BL-TSHM-INIT-RACE — concurrent cold-open of a turso store', () 
       let failures = 0;
       const failureDetails: string[] = [];
 
+      // Two DIFFERENT defects can fail a child here, and conflating them sends
+      // the next reader after the wrong one. Classify, never lump:
+      //  - a tshm-coordination signature is THIS fix regressing (the property
+      //    under test): the retry classifier stopped matching, or the attempt
+      //    budget is now too small for the observed window.
+      //  - a signal death (`code === null`, e.g. SIGABRT) is a turso 0.7.2
+      //    Rust panic at shared_wal_coordination.rs:1644:9 ("shared owner slot
+      //    released by non-owner"), BELOW the adapter and uncurable by any
+      //    open-retry policy. WHAT PROVOKES IT IS NOT KNOWN. Do not read a
+      //    cause into this classification -- an earlier version of this file
+      //    asserted the in-process retry was the trigger, and a powered A/B
+      //    (8 runs x 300 processes per arm) refuted it: 0 SIGABRT/2400 WITH
+      //    the retry, 4 SIGABRT/2400 WITHOUT it. The rate is low either way
+      //    (0-0.2% of processes) and the two arms are not distinguishable at
+      //    that sample (Fisher p ~ 0.12). It is named here only so nobody
+      //    debugs the retry classifier for it.
+      const tshmDetails: string[] = [];
+      const crashDetails: string[] = [];
+      // Full, UNTRUNCATED child output for annotation matching. `detail` above
+      // is deliberately sliced for readable failure output, and the annotation
+      // is appended to the END of the driver message -- matching against the
+      // truncated copy silently never matches, which cost a debugging cycle.
+      const tshmRaw: string[] = [];
+
       for (let i = 0; i < RACES; i++) {
         const dbPath = coldPath(`race-${i}`);
         const [ra, rb] = await raceOnce(dbPath);
@@ -137,9 +175,17 @@ tursoDescribe('BL-TSHM-INIT-RACE — concurrent cold-open of a turso store', () 
           totalProcesses++;
           if (r.code !== 0) {
             failures++;
-            failureDetails.push(
-              `race ${i} side ${label}: exit=${r.code} :: ${r.stdout.replace(/\n/g, ' ').slice(0, 300)}`,
-            );
+            const out = r.stdout.replace(/\n/g, ' ').slice(0, 300);
+            const detail =
+              `race ${i} side ${label}: exit=${r.code} signal=${r.signal} :: ${out}` +
+              (r.stderr.trim() ? ` :: STDERR ${r.stderr.replace(/\n/g, ' ').trim().slice(-400)}` : '');
+            failureDetails.push(detail);
+            if (/shared WAL coordination/i.test(out)) {
+              tshmDetails.push(detail);
+              tshmRaw.push(r.stdout);
+            }
+            else if (r.code === null) crashDetails.push(detail);
+            else crashDetails.push(detail);
           }
         }
       }
@@ -147,10 +193,42 @@ tursoDescribe('BL-TSHM-INIT-RACE — concurrent cold-open of a turso store', () 
       console.log(
         `[tshm-init-race] ${totalProcesses - failures}/${totalProcesses} processes opened+wrote successfully across ${RACES} races`,
       );
+
+      // WHAT THIS FIX OWNS: the adapter retries the transient cold-init race
+      // within a bounded budget, so a cold-open race must not surface to the
+      // caller at all; and if it ever does escape that bound, the error must
+      // say plainly that it is transient and not corruption.
+
+      // 1. NO PROCESS MAY FAIL. The retry is expected to absorb the race
+      //    entirely -- it did, across 2400 processes.
       expect(
         failures,
-        `${failures}/${totalProcesses} cold-open processes failed:\n${failureDetails.join('\n')}`,
+        `${failures}/${totalProcesses} cold-open processes failed ` +
+          `(${tshmDetails.length} -tshm coordination, ${crashDetails.length} other/signal ` +
+          `-- see the classification comment above before diagnosing):\n${failureDetails.join('\n')}`,
       ).toBe(0);
+
+      // 2. IF the race ever escapes the retry bound, the error must be
+      //    actionable: the driver's bare "Corrupt database:" text sends
+      //    readers hunting for a recovery procedure that does not exist (a
+      //    fresh process succeeded 5/5 against the same path). Vacuous while
+      //    assertion 1 holds; it is the guard for the day it does not.
+      const unannotated = tshmRaw.filter((raw) => !/NOT database corruption/i.test(raw));
+      expect(
+        unannotated.length,
+        `${unannotated.length}/${tshmRaw.length} -tshm cold-init failures surfaced WITHOUT the ` +
+          `clarifying annotation. Every one must state that it is transient and not corruption, ` +
+          `otherwise the next reader hunts for a nonexistent recovery ` +
+          `procedure.\n${unannotated.join('\n')}`,
+      ).toBe(0);
+
+      // Visibility: the race rate is real and worth seeing on every run, even
+      // green ones. Silence here would hide the defect this file exists to
+      // document.
+      console.log(
+        `[tshm-init-race] cold-init races surfaced as clean errors: ${tshmDetails.length}/${totalProcesses} ` +
+          `(the retry should absorb these; must be 0); other/signal deaths: ${crashDetails.length} (must be 0)`,
+      );
     },
     // 150 races × 2 tsx-cold-start children each, sequential to keep the host
     // from being oversubscribed. Generous but bounded — never an unbounded
