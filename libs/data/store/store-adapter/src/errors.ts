@@ -422,3 +422,44 @@ export function isAlreadyOpenWithoutMultiprocessWal(err: unknown): boolean {
   if (!isErrorWithCode(err)) return false;
   return /already open without experimental multiprocess WAL/i.test(err.message);
 }
+
+/**
+ * (BL-TSHM-INIT-RACE) True if `err` is the Turso driver's transient
+ * `-tshm` coordination-file INITIALIZATION race — two processes opening the
+ * same cold store at once, where one process creates the `-tshm` sidecar
+ * and another stats/reads it before the creator has finished writing its
+ * 4096-byte header:
+ *
+ *   failed to open database <path>: Corrupt database: shared WAL
+ *   coordination map magic mismatch
+ *
+ *   failed to open database <path>: Corrupt database: shared WAL
+ *   coordination file is smaller than the coordination header: got 0,
+ *   minimum 4096
+ *
+ * Despite the "Corrupt database" wording, this is NOT corruption — it is a
+ * misleading message from `@tursodatabase/database@0.7.2`. Measured
+ * (2026-09-06, minimal repro: `createStoreAdapter` + `applySchema()`, no
+ * write-layer code) across 40 two-process cold-open races: adapter 0.9.0
+ * (worktree) failed 1/10, published adapter 0.7.0 failed 2/10 (both message
+ * variants observed). Decisive: retrying the SAME dbPath in a brand-new
+ * process after a failure succeeded 5/5 with 0 sticky failures — the
+ * on-disk store is fine, only the race window is real. The half-written
+ * `-tshm` is filled in by the winning opener within microseconds, so a short
+ * bounded retry recovers deterministically.
+ *
+ * This is a SCALPEL, following the `isAlreadyOpenWithoutMultiprocessWal`
+ * precedent exactly: matches ONLY these two message markers. A generic
+ * "retry any open error" would mask genuine corruption, which is the one
+ * thing this predicate must never do — every other "Corrupt database" or
+ * open failure (a truly malformed file, wrong engine, permission error…)
+ * propagates immediately, unretried, exactly like `E_IO` in the write-queue
+ * layer is never retried.
+ */
+export function isTshmCoordinationInitRace(err: unknown): boolean {
+  if (!isErrorWithCode(err)) return false;
+  return (
+    /shared WAL coordination map magic mismatch/i.test(err.message) ||
+    /shared WAL coordination file is smaller than the coordination header/i.test(err.message)
+  );
+}
