@@ -1606,26 +1606,57 @@ export class TursoAdapterImpl implements TursoAdapter {
       }
 
       // (BUG-026) FOREIGN -shm RECONCILE, after lease before driver open. A
-      // `-shm` beside a turso store is FOREIGN by construction (turso
-      // coordinates through `-tshm`, never `-shm`) — the 'exp9 poisoner'
-      // residue left by a better-sqlite3 opener (graph-store's former
-      // `engineIdentity` getter, or any raw better-sqlite3 open). Quiescent →
-      // rename aside; live peers → refuse, because reconciling under a live
-      // peer is the cross-engine hazard this guard exists to prevent.
+      // `-shm` beside a turso store is written only by a better-sqlite3
+      // opener (turso coordinates through `-tshm` and never creates or reads
+      // the classic `-shm`). It is NOT, however, necessarily abandoned
+      // residue: this package's OWN sanctioned schema hatches open
+      // better-sqlite3 on the store — `preflightSchemaSanity`'s readonly
+      // `openSchemaReader` runs on this very open path, and
+      // `deleteSchemaRowsViaBetterSqlite3` runs during FTS5 repair. SQLite
+      // materialises a `-shm` for the life of such a connection and removes
+      // it again on last close, so a `-shm` seen here may be a LIVE, legitimate
+      // sidecar that disappears within milliseconds (measured: 32768 bytes,
+      // present only while the classic connection is open).
+      //
+      // (BUG-031) Treating that transient window as terminal made a concurrent
+      // cold-open fail outright — reproduced at ~1/300 processes by
+      // `tshm-init-race.spec.ts`. So the refusal is now RETRIED on the same
+      // bounded linear backoff the two other transient open races use
+      // (`isMultiprocessWalRace`, `isTshmInitRace`; ADR-0012 §4): genuine
+      // abandoned residue never clears and still refuses after the bound,
+      // while a live hatch's sidecar clears and the open proceeds.
+      //
+      // The reconcile/rename branch is deliberately UNCHANGED and still fires
+      // only when the store is quiescent — retrying must not widen the window
+      // in which a live sidecar could be renamed out from under its owner.
       if (canonicalDb !== undefined && opts.readonly !== true && opts.allowForeignEngine !== true && lease) {
-        const shmQuiescence = storeQuiescence(canonicalDb, lease.token);
-        const shm = reconcileForeignSqliteShm(canonicalDb, {
-          storeInUse: !shmQuiescence.quiescent,
-        });
-        if (shm.reconciled && shm.renamedTo) {
-          emitIntegrityReport(
-            canonicalDb,
-            'repaired',
-            `[BUG-026] foreign -shm sidecar reconciled BEFORE the open: moved aside to ` +
-              `${shm.renamedTo} — the turso store opens against its own -tshm coordination`,
+        for (let attempt = 0; attempt < OPEN_RETRY_MAX_ATTEMPTS; attempt++) {
+          const shmQuiescence = storeQuiescence(canonicalDb, lease.token);
+          const shm = reconcileForeignSqliteShm(canonicalDb, {
+            storeInUse: !shmQuiescence.quiescent,
+          });
+          if (shm.reconciled && shm.renamedTo) {
+            emitIntegrityReport(
+              canonicalDb,
+              'repaired',
+              `[BUG-026] foreign -shm sidecar reconciled BEFORE the open: moved aside to ` +
+                `${shm.renamedTo} — the turso store opens against its own -tshm coordination`,
+            );
+            break;
+          }
+          if (shm.declined === undefined || shmQuiescence.quiescent) break; // nothing to refuse
+
+          if (attempt >= OPEN_RETRY_MAX_ATTEMPTS - 1) {
+            // Exhausted — this sidecar is not clearing, so it is genuine
+            // residue. Refuse exactly as before, marked `retryable` so the
+            // caller may retry beyond the adapter's bound (ADR-0012 §4).
+            const err = new EForeignSqliteSidecar(canonicalDb, shmQuiescence.livePeers);
+            (err as unknown as { retryable?: boolean }).retryable = true;
+            throw err;
+          }
+          await new Promise((resolve) =>
+            setTimeout(resolve, OPEN_RETRY_BACKOFF_START_MS + attempt * OPEN_RETRY_BACKOFF_STEP_MS),
           );
-        } else if (shm.declined !== undefined && !shmQuiescence.quiescent) {
-          throw new EForeignSqliteSidecar(canonicalDb, shmQuiescence.livePeers);
         }
       }
 
