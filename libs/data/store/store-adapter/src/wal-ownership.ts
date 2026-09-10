@@ -169,12 +169,24 @@ export interface ReconcileForeignSqliteShmResult {
 /**
  * Reconcile a foreign `-shm` sidecar beside a TURSO store.
  *
- * A `-shm` beside a turso store is FOREIGN by construction: turso coordinates
- * its shared WAL through the `-tshm` sidecar and never creates or reads the
- * classic `-shm`. A `-shm` therefore means a better-sqlite3 opener touched the
- * store (the 'exp9 poisoner' class — graph-store's former `engineIdentity`
- * getter, or any raw better-sqlite3 open). Reconcile it so the turso open
- * never contends with a stale classic-sidecar:
+ * A `-shm` beside a turso store was written by a better-sqlite3 opener: turso
+ * coordinates its shared WAL through the `-tshm` sidecar and never creates or
+ * reads the classic `-shm` (verified empirically — a full turso open →
+ * CREATE → concurrent write cycle produces `-tshm`/`-wal` and no `-shm`).
+ *
+ * It does NOT follow that the sidecar is foreign or abandoned. This package's
+ * own sanctioned hatches open better-sqlite3 on the store —
+ * `preflightSchemaSanity`'s readonly `openSchemaReader` (on the open path
+ * itself) and `deleteSchemaRowsViaBetterSqlite3` (FTS5 repair) — and SQLite
+ * materialises a `-shm` for the life of such a connection, removing it again
+ * on last close. So a `-shm` seen here is EITHER abandoned residue (the 'exp9
+ * poisoner' class — graph-store's former `engineIdentity` getter, or any raw
+ * better-sqlite3 open) OR a live, legitimate sidecar that clears within
+ * milliseconds. Callers must not infer "foreign" from its mere presence;
+ * `_openReal` distinguishes the two by retrying the refusal on a bounded
+ * backoff (BUG-031) — residue persists, a live hatch's sidecar does not.
+ *
+ * Reconcile it so the turso open never contends with a stale classic-sidecar:
  *
  * - **Quiescent** (`storeInUse !== true`): rename `<db>-shm` to
  *   `<db>-shm.stale-<stamp>` (never delete — the forensic record).
