@@ -1,4 +1,4 @@
-import type { VectorBackend } from '@adhd/sox-vector-store';
+import type { AsyncVectorBackend, VectorBackend } from '@adhd/sox-vector-store';
 import type { GraphBackend } from '@adhd/sox-graph-store';
 import type { NodeRecord, NodeFilter } from '@adhd/sox-graph-store';
 import { buildFilterClause } from './filter-utils.js';
@@ -591,11 +591,11 @@ export async function search(
 // ── StoreSearchBackend ───────────────────────────────────────────────────────
 
 export class StoreSearchBackend implements SearchBackend {
-  private vec: VectorBackend;
+  private vec: VectorBackend | AsyncVectorBackend;
   private graph: GraphBackend;
 
   constructor(
-    vec: VectorBackend,
+    vec: VectorBackend | AsyncVectorBackend,
     graph: GraphBackend,
     _opts?: StoreSearchOpts,
   ) {
@@ -655,7 +655,7 @@ export class StoreSearchBackend implements SearchBackend {
     }
 
     if (vecPresent) {
-      const spaces = this.vec.listSpaces();
+      const spaces = await this.vec.listSpaces();
       const matchingSpace = spaces.find((s) => s.dim === query.vec!.length);
       if (matchingSpace) {
         // DEBT-011: the vector store's filter contract is pure `{ ids }` (it knows
@@ -671,7 +671,7 @@ export class StoreSearchBackend implements SearchBackend {
         }
 
         if (!zeroMatches) {
-          const vecResults = this.vec.knn(
+          const vecResults = await this.vec.knn(
             query.vec!,
             matchingSpace,
             limit * 2,
@@ -762,7 +762,7 @@ export class StoreSearchBackend implements SearchBackend {
         }
       } else {
         if (query.vec === undefined) continue;
-        const spaces = this.vec.listSpaces();
+        const spaces = await this.vec.listSpaces();
         const matchingSpace = spaces.find((s) => s.dim === query.vec!.length);
         if (!matchingSpace) continue;
         // DEBT-011 — the vector store is pure `{ ids }`; resolve matching ids
@@ -774,7 +774,7 @@ export class StoreSearchBackend implements SearchBackend {
           zeroMatches = matchingIds.length === 0;
         }
         if (zeroMatches) continue;
-        const vecResults = this.vec.knn(
+        const vecResults = await this.vec.knn(
           query.vec!,
           matchingSpace,
           fetchLimit,
