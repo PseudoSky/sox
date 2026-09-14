@@ -51,6 +51,12 @@ they read no longer exists:
 `publish` together. If a release is interrupted between the two, do **not** try to make the gates
 green again — they structurally cannot pass. Use the post-version verification recipe below instead.
 
+**Never hand-edit the `version` field in a `package.json` either.** Changesets owns version +
+changelog together; a hand bump changes the field `changeset publish` sweeps on (see "The sweep
+set" below) without producing a changelog entry, and a later `changeset version` run has no way to
+know the bump already happened — it will bump again on top of your hand edit. If a version needs
+to change, write a changeset (`pnpm changeset add`) and let `changeset version` apply it.
+
 *(Observed live on 2026-09-04: a session ran `changeset version` early, and all three gates read as
 catastrophic failures for a release that was in fact correct and safe.)*
 
@@ -75,13 +81,25 @@ pnpm changeset status                         # review pending bumps
 `--tag`/`--otp`/`--no-git-tag`), so the publish set has to be proven two ways:
 
 ```bash
-pnpm run cascade-plan -- --package <package-name>   # computes + cross-checks the exact republish set
-#   (the positional arg is the scan ROOT, not the target — see
-#   scripts/cascade-plan.ts's own Usage docstring; `pnpm run` needs `--` before
-#   `--package` or pnpm swallows the flag itself)
+pnpm run cascade-plan                         # computes + cross-checks the exact republish set
 npm pack --dry-run --json                     # per package dir being published: tarball proof
 bash scripts/acceptance/clean-room-smoke.sh   # verdaccio clean room: G1 + G2 (memory_ping)
 ```
+
+Run it **with no arguments** as the default. With no `--package`, it auto-detects the target set
+from every package named across pending `.changeset/*.md` frontmatter — the same set `changeset
+status` would bump — and cross-checks the static dependency-graph closure against it.
+
+`--package <name>[,<name>...]` scopes the check to one package's own closure instead
+(`pnpm run cascade-plan -- --package <name>` — `pnpm run` needs `--` before `--package` or pnpm
+swallows the flag itself; the first positional arg is the scan ROOT, not the target — see
+`scripts/cascade-plan.ts`'s own Usage docstring). Use it only when you deliberately want one
+package's closure in isolation. **With more than one pending changeset, scoping to a single
+package will report FAIL by construction** — the changesets-computed closure covers every
+package named across *all* pending changesets, while the static walk from one `--package` target
+only ever covers that target's own closure, so they disagree on every other pending package. That
+disagreement is not a hazard; it is the inevitable result of comparing a one-package view against
+an all-changesets view. Do not investigate it as a defect — rerun with no target.
 
 Don't hand-derive the republish set — BL-452: a human deriving it by hand is exactly how an
 under/over-scoped publish set goes out unverified.
@@ -132,9 +150,26 @@ The two failure modes look identical in the output and have opposite urgency:
 
 Cross-reference every surface FAIL against the sweep-set script above before deciding which it is.
 
+### `dist/package.json` is a stale build artifact — it is not what ships
+
+Publishing happens from the **package root**, not from `dist/`: every package declares
+`"files": ["dist"]`, so `npm`/`pnpm publish` reads the package's own root `package.json` (name,
+version, `main`/`exports`, dependencies) and packs the `dist/` directory as content alongside it.
+The root `package.json` is never copied into `dist/` at publish time — whatever
+`dist/package.json` happens to contain is irrelevant to the tarball.
+
+That matters because the `build` target's Nx `inputs` do not include `package.json` (only
+`src/**/*.ts` and `tsconfig.lib.json`), so a version bump alone does not invalidate the cache entry
+that produced the existing `dist/package.json` — it can sit at an older version than the real
+`package.json` indefinitely, through any number of rebuilds and even `nx reset`. Seeing an old
+version in `dist/package.json` after a bump is expected, not a sign the build is broken and not a
+sign the publish will ship the wrong version. Verify what will actually ship with `npm pack
+--dry-run --json` from the package root (see above) — that reads the tarball manifest, not
+`dist/package.json`.
+
 ---
 
-## Owner-gated publish to PUBLIC npm (the one-way door — do NOT run without the owner)
+## Publish to PUBLIC npm (irreversible — a published version can never be replaced)
 
 Run from a CLEAN checkout of `main` (a worktree bakes absolute paths), after a final
 `npx nx run registry:sync-index` + commit:
@@ -191,6 +226,7 @@ proof the bytes are on the registry. Verify against npm itself.
 |---|---|
 | `changeset status` exits 1 with "no changesets were found" | Expected if `changeset version` already ran — it consumed them. Do not add changesets to silence this; see the gate-ordering section. |
 | `cascade-plan: FAIL — closures disagree` naming the package you just versioned | Same cause. `cascade-plan` cannot run post-`version`; use the sweep-set script instead. |
+| `cascade-plan: FAIL — closures disagree` naming *other* pending packages, run with `--package <one-target>` | Not a hazard — with multiple pending changesets, scoping to one package guarantees disagreement by construction. Rerun with no arguments (`pnpm run cascade-plan`). |
 | `check-changeset-surface` FAIL on a package whose version already matches npm | Not a release blocker — it is unreleased surface drift. File it; do not fabricate a changeset to turn the gate green. |
 | `nx run-many` rejected by a hook | Use `npx nx affected -t <target> --base=<ref>`. Unscoped `run-many` expands to the whole workspace. |
 | Publish reported success but `npm view` shows the old version | Registry read-cache lag. Poll `https://registry.npmjs.org/<url-encoded-name>` directly before concluding it failed. |

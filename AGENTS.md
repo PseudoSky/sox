@@ -229,6 +229,15 @@ project's `--worker`/`--external` build flags.
 
 ---
 
+## ⛔ AGENT CONSTRAINT — RELEASING A PACKAGE TO NPM GOES THROUGH CHANGESETS
+
+Never run `npm publish`/`pnpm publish` by hand, and never hand-bump a `version` field. Releasing
+an `@adhd/sox-*` package to npm is a Changesets-driven flow: **[`PUBLISHING.md`](./PUBLISHING.md)**
+is the full playbook (version-bump gates, cascade-plan, clean-room smoke, the publish
+step). Read it before touching a release, start to finish.
+
+---
+
 ## ⛔ AGENT CONSTRAINT — NEVER MARK A BACKLOG ITEM RESOLVED WITHOUT A RED→GREEN TEST
 
 Governed by **BL-225**. A status marker must record a *verified outcome*, never an intention.
