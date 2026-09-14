@@ -1,6 +1,6 @@
 {
   "name": "@adhd/sox-store-adapter",
-  "version": "0.9.2",
+  "version": "0.9.1",
   "private": false,
   "description": "Unified store adapter — Turso Database (primary) and SQLite (backward-compat) behind a single async interface",
   "license": "MIT",
