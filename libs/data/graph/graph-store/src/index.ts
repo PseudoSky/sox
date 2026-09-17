@@ -677,6 +677,23 @@ export interface NodeFilter {
   name?: string | string[];
   /** FEAT-010 — include invalidated (soft-deleted) nodes. Default `true`. */
   liveOnly?: boolean;
+  /**
+   * Filter on the `is_superseded` column — `false` selects only current
+   * rows, `true` only superseded ones. **Omit it and no clause is emitted,
+   * so superseded rows are returned**: that is the long-standing default and
+   * the behaviour supersession-chain readers depend on. Opt-in, exactly as
+   * {@link NodeFilter.isStale} is.
+   *
+   * `is_superseded` is an axis INDEPENDENT of `t_invalid`/`liveOnly`. A
+   * content edit that supersedes a row sets `is_superseded = 1` and
+   * deliberately leaves `t_invalid` NULL, so a superseded row is still
+   * "live" by `liveOnly` alone. A consumer listing current records must
+   * therefore ask for BOTH — `{ liveOnly: true, isSuperseded: false }`.
+   * Filtering superseded rows out in application code instead is NOT
+   * equivalent: it cannot correct `countNodes`, and it breaks keyset paging,
+   * which slices a `limit + 1` fetch and so would return short pages.
+   */
+  isSuperseded?: boolean;
   metadata?: Record<string, MetadataFilterValue>;
   /** Single sort field, or an array for a multi-key ORDER BY. */
   orderBy?: SortField | SortField[];
@@ -1225,6 +1242,15 @@ export function buildNodeFilterClause(
       clauses.push(`${alias}t_valid <= ?`);
       clauses.push(`(${alias}t_invalid IS NULL OR ${alias}t_invalid > ?)`);
       params.push(filter.validAt, filter.validAt);
+    }
+
+    // `is_superseded` DEFAULTs to 0 but is nullable in the shipped DDL, and a
+    // row written before the column existed carries NULL. `= 0` would drop
+    // those; `IS NOT 1` keeps them — which is what "not superseded" means.
+    if (filter.isSuperseded === true) {
+      clauses.push(`${alias}is_superseded = 1`);
+    } else if (filter.isSuperseded === false) {
+      clauses.push(`${alias}is_superseded IS NOT 1`);
     }
 
     if (filter.isStale === true) {
