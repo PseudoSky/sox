@@ -1,5 +1,12 @@
 # @adhd/sox-analysis
 
+## 0.1.12
+
+### Patch Changes
+
+- Updated dependencies [1bc47e2]
+  - @adhd/sox-graph-store@0.10.0
+
 ## 0.1.11
 
 ### Patch Changes
