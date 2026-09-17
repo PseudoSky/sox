@@ -19,7 +19,7 @@
  *   2. a sidecar that PERSISTS -> the open still refuses (residue is real)
  */
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
-import { mkdtempSync, rmSync, writeFileSync, existsSync, unlinkSync } from 'node:fs';
+import { mkdtempSync, rmSync, existsSync, unlinkSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { spawn, type ChildProcess } from 'node:child_process';
