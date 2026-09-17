@@ -47,9 +47,22 @@ they read no longer exists:
 | `cascade-plan` | **FAIL** — "could not cross-check against changeset status" / "static-graph closure and changesets-computed closure disagree" |
 | `check-changeset-surface` | reports the package you *just versioned* as FAIL, because its changeset is gone |
 
-**Never run `changeset version` by hand as a separate step.** `release:prepared` runs `version` and
-`publish` together. If a release is interrupted between the two, do **not** try to make the gates
-green again — they structurally cannot pass. Use the post-version verification recipe below instead.
+**Never run `changeset version` EARLY** — before every gate above has passed. It is the ordering
+that matters, not the invocation: `version` consumes the evidence the gates read, so running it
+first makes a correct release look catastrophic.
+
+`release:prepared` is the **publish half only** — `release-consumers` → `build-index:publish` →
+`nx build sox` → `changeset publish`. It does **not** version. Where the bump comes from depends on
+the path:
+
+| Path | What versions the packages |
+|---|---|
+| CI (normal) | `@changesets/action` opens a "Version Packages" PR; merging it runs `version`. The follow-up run calls `release:prepared` to publish. |
+| Local manual release | You run `changeset version` yourself, **after** the gates pass and immediately before `release:prepared`. |
+
+So a local release is two deliberate steps, not one. Gates → `version` → publish. Once you have
+versioned, do **not** try to make the gates green again — they structurally cannot pass. Use the
+post-version verification recipe below instead.
 
 **Never hand-edit the `version` field in a `package.json` either.** Changesets owns version +
 changelog together; a hand bump changes the field `changeset publish` sweeps on (see "The sweep
@@ -175,12 +188,24 @@ Run from a CLEAN checkout of `main` (a worktree bakes absolute paths), after a f
 `npx nx run registry:sync-index` + commit:
 
 ```bash
-npm whoami                                    # @adhd scope; automation/OTP ready
-pnpm install                                  # ensure workspace links current
+npm whoami                                     # @adhd scope; automation/OTP ready
+
+# 1. VERSION — only now, with every gate above already green. This is the step
+#    the "Version Packages" PR performs in CI; locally you run it yourself.
+#    It consumes .changeset/*.md, bumps package.json + writes CHANGELOG entries.
+pnpm exec changeset version
+git add -u && git commit -m "chore: version packages"
+
+# 2. PUBLISH — release:prepared is the publish half only; it does NOT version.
+pnpm install                                   # lockfile + workspace links follow the bumps
 pnpm run release:prepared                      # = build-index:publish (portable registry) → nx build sox → changeset publish
 SOX_REGISTRY_PUBLISH=npm pnpm run build-index  # rewrite registry sources → npm-package: (portable, 0 file://)
 git add registry/index.json && git commit -m "chore: portable registry after publish"
 ```
+
+Skipping step 1 does not fail safe: `changeset publish` would run against unbumped versions and
+npm rejects a republish of an existing version ("cannot publish over previously published
+versions"), leaving a partially-released cascade.
 
 If `changeset version` was already run (see the ordering warning above), the remaining half is just
 `pnpm install && pnpm exec changeset publish` — do not re-run `version`, and do not try to
