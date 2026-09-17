@@ -62,7 +62,6 @@
  */
 import { describe, it, expect, beforeAll } from 'vitest';
 import { spawn } from 'node:child_process';
-import { once } from 'node:events';
 import { mkdtempSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
