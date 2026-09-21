@@ -99,6 +99,7 @@
       }
     },
     "opencode": {
+      "model": "deepseek/deepseek-v4-flash",
       "mode": "all",
       "temperature": 0.4
     }

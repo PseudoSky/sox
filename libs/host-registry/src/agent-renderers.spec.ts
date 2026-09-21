@@ -81,10 +81,21 @@ describe('opencode renderer', () => {
     expect(content).toContain('  websearch: deny');
     expect(content).toContain('    \'*\': allow');
     expect(content).toContain("    'git stash*': deny");
-    // opencode frontmatter has no tools/model/version
+    // opencode frontmatter has no tools/version; the IR model is a logical tier
+    // opencode cannot resolve, so it is NOT emitted without a host override
     expect(content).not.toContain('tools:');
     expect(content).not.toContain('model:');
     expect(content).toContain('# researcher');
+  });
+
+  it('pins model from the opencode render override (host model id, never the IR tier)', () => {
+    const r = agentRenderers.opencode.render(researcherIr, prose, { model: 'deepseek/deepseek-v4-flash' });
+    const content = (r as { content: string }).content;
+    expect(content).toContain('model: deepseek/deepseek-v4-flash');
+    expect(content).not.toContain('model: sonnet');
+    // model sits inside the frontmatter block, before the prose
+    const fm = content.slice(0, content.indexOf('\n---', 4));
+    expect(fm).toContain('model: deepseek/deepseek-v4-flash');
   });
 
   it('generates opencode resolved tool-names block', () => {
