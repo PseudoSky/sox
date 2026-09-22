@@ -1,5 +1,11 @@
 # @adhd/sox-host-registry
 
+## 0.5.0
+
+### Minor Changes
+
+- ac8bd94: opencode renderer emits `model:` from the per-host render override (`render.opencode.model`, a host model id such as `deepseek/deepseek-v4-flash`). Previously the opencode header never carried a model, so every rendered agent inherited the parent session's model at `task()` time — running the dispatcher on a pro model silently promoted all flash-tier subagents. The IR's logical tier (`sonnet`) is still never emitted for opencode, since opencode cannot resolve it.
+
 ## 0.4.0
 
 ### Minor Changes
