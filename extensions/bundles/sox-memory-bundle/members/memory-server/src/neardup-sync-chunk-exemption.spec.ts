@@ -21,9 +21,17 @@
  * time the chunk's own near-dup pass scores its pair against the parent.
  *
  * This suite runs under SOX_SYNC_EMBED=1 (vitest.setup.ts, suite-wide default)
- * specifically to exercise the sync branch — the async default path already
- * has separate coverage (neardup-derived-from-exemption.spec.ts, memory-core)
- * proving the exemption works when linkChunksToParent runs before Phase B.
+ * specifically to exercise the sync branch — the async default path has its
+ * own dedicated coverage in neardup-async-chunk-exemption.spec.ts (2026-09-22
+ * second re-review finding C).
+ *
+ * 2026-09-22 second re-review, finding D: this test previously DEPENDED on
+ * SOX_SYNC_EMBED=1 without ever asserting it. If that suite-wide default ever
+ * flips, this test would keep passing for a DIFFERENT reason — the async
+ * path's own protection (now covered separately) — while its title and
+ * comments still claim to cover the sync branch specifically. Assert the
+ * precondition explicitly so a flipped default fails LOUDLY here instead of
+ * silently testing the wrong branch.
  */
 import * as fs from 'node:fs';
 import * as os from 'node:os';
@@ -47,6 +55,11 @@ describe('sync-embed auto-chunk: parent<->own-chunk is never reported as SAME_AS
   });
 
   it('writes DERIVED_FROM edges and zero SAME_AS edges between parent and any of its own chunks', async () => {
+    // 2026-09-22 second re-review finding D: the env precondition this test
+    // actually exercises the sync branch under, asserted explicitly rather
+    // than assumed from vitest.setup.ts's suite-wide default.
+    expect(process.env['SOX_SYNC_EMBED']).toBe('1');
+
     // The DeterministicTestProvider (installed suite-wide) is a bag-of-words
     // feature-hash embedder: cosine tracks shared-token overlap. Each
     // sentence below is a cyclic word-order permutation of the SAME 20-word
