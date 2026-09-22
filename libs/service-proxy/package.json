@@ -1,6 +1,6 @@
 {
   "name": "@adhd/sox-service-proxy",
-  "version": "0.4.0",
+  "version": "0.4.1",
   "description": "Front-shim service-proxy (spec §9.5, Slice 1.5): stdio↔UDS MCP proxy enabling zero-downtime backend upgrades without client reconnects. Dependency-free leaf (node builtins only).",
   "license": "MIT",
   "publishConfig": {
