@@ -1,5 +1,20 @@
 # @adhd/sox-embedding-provider
 
+## 0.5.3
+
+### Patch Changes
+
+- fix(embedding-provider): the funnel host survives an `embedding.reset` and never reaps over in-flight work; the idle bound is typed config.
+
+  `embedHostMain` now resolves `getPrivateFastembedProcess()` at **every** use — a captured reference was terminated by `embedding.reset`, so every later request failed with `shared fastembed process terminated`. The self-reap now gates on the host's own request depth (incremented before the first `await`, decremented in `finally`) instead of the private pool's `pendingCount`, which misses the cold-start fork prefix. `EmbeddingProviderConfig.idleGraceMs` is now the typed surface for the idle bound (default 30 s); the spawner forwards the resolved value to the spawned host via the internal `SOX_EMBED_HOST_IDLE_GRACE_MS` transport.
+
+  `@adhd/sox-service-proxy` guards the optional `onClientCountChange` hook so a throwing observer cannot crash the connection callback.
+
+  Teeth (`embed-funnel.spec.ts`): reset→init+embed (shared + private), mid-work reap survival, a non-default typed grace taking effect, and `terminate()`-is-a-no-op.
+
+- Updated dependencies
+  - @adhd/sox-service-proxy@0.4.2
+
 ## 0.5.2
 
 ### Patch Changes
