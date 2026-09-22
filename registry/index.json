@@ -24,7 +24,7 @@
         "id": "memory-usage"
       }
     ],
-    "builtFromCommit": "856c8d50a745f4655999c13eeea5a72aab721f21"
+    "builtFromCommit": "36dcb18f8ec099a2082eda2d508910b97d7497ba"
   },
   {
     "id": "memory-cli",
@@ -33,13 +33,13 @@
     "title": "Memory CLI",
     "description": "Use this when you need to manage the sox-memory store from the shell — provides memory init|status|list|registry subcommands for store lifecycle, scope selection, and registry inspection. Fully deterministic; zero LLM calls.",
     "source": "npm-package:@adhd/sox-extension-memory-cli@0.2.4",
-    "checksum": "sha256:9cb39b74b1e79bd8f68fafd1589380f4f1170cc646b5d732329d0e15e6af65e0",
+    "checksum": "sha256:c685c53599d817e9432ba5f459b4fd1435be270d50241b9dd582c17f650e4e31",
     "compatibility": {
       "host": ">=1.0.0 <2.0.0"
     },
     "visibility": "internal",
     "bundleId": "sox-memory-bundle",
-    "builtFromCommit": "856c8d50a745f4655999c13eeea5a72aab721f21"
+    "builtFromCommit": "36dcb18f8ec099a2082eda2d508910b97d7497ba"
   },
   {
     "id": "memory-flush",
@@ -48,13 +48,13 @@
     "title": "Memory Session Flush",
     "description": "Use this when you need session memory durably persisted at conversation end and scope promotions reviewed — binds SessionEnd (persists working memory, enqueues episodes, nudges memoryd) and ScopePromotionProposed (runs promotion approval policy). Deterministic; zero LLM calls.",
     "source": "npm-package:@adhd/sox-extension-memory-flush@0.2.2",
-    "checksum": "sha256:c668c7f9f31baa51dcaf90acd0be0409b58d6a239c5aa4a838ab4a55cf1dca85",
+    "checksum": "sha256:d530fcac2eff7ee12cb902b4c79bd84c43905428c20df679fbb40cd431a2b60a",
     "compatibility": {
       "host": ">=1.0.0 <2.0.0"
     },
     "visibility": "internal",
     "bundleId": "sox-memory-bundle",
-    "builtFromCommit": "856c8d50a745f4655999c13eeea5a72aab721f21"
+    "builtFromCommit": "36dcb18f8ec099a2082eda2d508910b97d7497ba"
   },
   {
     "id": "memory-server",
@@ -63,7 +63,7 @@
     "title": "Agent Memory Server",
     "description": "Use this when an agent needs durable, searchable memory across sessions — exposes 7 memory_* tools over a single-file SQLite graph store with hybrid recall (vec+BM25+temporal, <50ms, zero LLM), write-enqueue, session state, community lookup, and bi-temporal invalidation.",
     "source": "npm-package:@adhd/sox-extension-memory-server@1.3.3",
-    "checksum": "sha256:953cb7b81cae51dbe38772fa9692d9944121df4c03c8da4741b8e5f0f426124f",
+    "checksum": "sha256:4ea748572b1e85156ce04b32e28f335625bcf6811ab1c84337d86e5f685a3638",
     "compatibility": {
       "host": ">=1.0.0 <2.0.0"
     },
@@ -73,7 +73,7 @@
     },
     "visibility": "internal",
     "bundleId": "sox-memory-bundle",
-    "builtFromCommit": "856c8d50a745f4655999c13eeea5a72aab721f21"
+    "builtFromCommit": "36dcb18f8ec099a2082eda2d508910b97d7497ba"
   },
   {
     "id": "memory-usage",
@@ -88,7 +88,7 @@
     },
     "visibility": "internal",
     "bundleId": "sox-memory-bundle",
-    "builtFromCommit": "856c8d50a745f4655999c13eeea5a72aab721f21"
+    "builtFromCommit": "36dcb18f8ec099a2082eda2d508910b97d7497ba"
   },
   {
     "id": "sox",
@@ -101,6 +101,6 @@
     "compatibility": {
       "host": ">=1.0.0 <2.0.0"
     },
-    "builtFromCommit": "856c8d50a745f4655999c13eeea5a72aab721f21"
+    "builtFromCommit": "36dcb18f8ec099a2082eda2d508910b97d7497ba"
   }
 ]
