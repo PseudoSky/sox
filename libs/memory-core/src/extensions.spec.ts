@@ -261,13 +261,24 @@ describe('memoryGetSupersessionChain (B2)', () => {
       const assertChain = async (db: StoreAdapter): Promise<void> => {
         const r1 = await memoryGetSupersessionChain(db, { uid: 'uid-b' });
         expect(r1.chain.map((l) => l.uid)).toEqual(['uid-a', 'uid-b']);
-        // The edge runs src=uid-b -> dst=uid-a: uid-b SUPERSEDES uid-a, so
-        // uid-b is the superseder and therefore canonical. The prior
-        // expectation here (canonical_uid === 'uid-a', is_current === false)
-        // pinned a comparator artefact from the old (buggy) `.find` selection
-        // — which returned the OLDEST live node in an oldest-first-sorted
-        // chain — not the intended semantic ("most recent non-invalidated
-        // node"). BL-505's real invariant (rowid tie-break determinism across
+        // NOTE: canonical selection does NOT consult edge direction/topology
+        // at all — memoryGetSupersessionChain picks the LAST live node in
+        // the (t_created, rowid) oldest-first ordering built at
+        // supersession-chain.ts:97-101/109-110, full stop. Here that ordering
+        // is ['uid-a', 'uid-b'] (identical t_created, tie broken by rowid:
+        // uid-a=1, uid-b=2), both live, so uid-b wins as the higher-rowid
+        // tie-break — NOT because of the SUPERSEDES edge direction. Flipping
+        // insertion order (so uid-b got the lower rowid) would make uid-a
+        // canonical here even though uid-b still supersedes it — i.e.
+        // canonical can currently select the SUPERSEDED node when it has the
+        // lower rowid/older t_created. That gap is real and is tracked
+        // separately (see the plan's architect follow-up); it is not
+        // addressed by this change. The prior expectation here
+        // (canonical_uid === 'uid-a', is_current === false) pinned a
+        // different comparator artefact — the old (buggy) `.find` selection,
+        // which returned the OLDEST live node in this oldest-first-sorted
+        // chain rather than the intended "most recent non-invalidated node."
+        // BL-505's real invariant (rowid tie-break determinism across
         // sqlite/turso) is unaffected: the ordering ['uid-a','uid-b'] and the
         // idempotency check below are unchanged.
         expect(r1.canonical_uid).toBe('uid-b');
