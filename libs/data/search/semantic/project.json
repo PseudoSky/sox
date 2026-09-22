@@ -36,6 +36,10 @@
         "cwd": "."
       },
       "cache": true,
+      "dependsOn": [
+        "^build",
+        "build"
+      ],
       "inputs": [
         "default",
         "^production"

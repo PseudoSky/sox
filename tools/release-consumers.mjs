@@ -46,7 +46,12 @@ function workspacePackages() {
         version: json.version,
         dir: rel.replace(/\/package\.json$/, ''),
         private: json.private === true,
-        deps: { ...json.dependencies, ...json.peerDependencies },
+        // optionalDependencies are runtime edges too: npm installs them by
+        // default, and pnpm/changesets rewrite their `workspace:` range at
+        // publish exactly like a mandatory one. Omitting them here made this
+        // tool blind to an optional consumer edge — so a package could freeze
+        // downstream through a range it never reported.
+        deps: { ...json.dependencies, ...json.optionalDependencies, ...json.peerDependencies },
         external: json.sox?.externalConsumers ?? [],
       });
     } catch { /* unreadable manifest — skip, reported by the caller's own gates */ }

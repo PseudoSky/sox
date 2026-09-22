@@ -7,6 +7,17 @@
 // It owns the node-join (semanticSearchNodes) and supplies the embedding-
 // lifecycle observer (createEmbeddingObserver) — keeping graph-store base-tier
 // and vector-store storage-tier pure.
+//
+// OPTIONAL LOADABILITY
+// @adhd/sox-vector-store and @adhd/sox-embedding-provider are OPTIONAL
+// dependencies: each drags a native chain (sqlite-vec / better-sqlite3 /
+// lancedb; onnxruntime / fastembed) that must not be a load-time requirement. A
+// caller that injects BOTH `embeddingProvider` and `vectorBackend` never needs
+// either package, so neither specifier may be resolved on that path. Their value
+// surfaces are therefore reached only through the lazy loaders below, and their
+// types arrive as type-only imports (erased at emit). See the
+// `optional-loadability.spec.ts` resolve-hook guard, which loads the built
+// artifact in a child process and fails if either specifier is requested.
 
 import {
   createGraphBackend,
@@ -16,21 +27,17 @@ import {
   type NodeMeta,
   type NodeRecord,
 } from '@adhd/sox-graph-store';
-import {
-  SqliteVectorBackend,
-  TursoVectorBackend,
-  type AsyncVectorBackend,
-  type VectorBackend,
-  type VectorSpace,
-  type VecFilter,
+import type {
+  AsyncVectorBackend,
+  VectorBackend,
+  VectorSpace,
+  VecFilter,
 } from '@adhd/sox-vector-store';
-import {
-  createEmbeddingProvider,
-  type EmbeddingHealth,
-  type EmbeddingProvider,
-  type EmbeddingProviderConfig,
+import type {
+  EmbeddingHealth,
+  EmbeddingProvider,
+  EmbeddingProviderConfig,
 } from '@adhd/sox-embedding-provider';
-import { rrfFuse } from '@adhd/sox-hybrid-search';
 import type { StoreAdapter } from '@adhd/sox-store-adapter';
 
 // ── Public types ──────────────────────────────────────────────────────────────
@@ -85,6 +92,83 @@ export interface SemanticBackend {
   health(): EmbeddingHealth;
 }
 
+// ── Lazy loading of the optional native-chain packages ────────────────────────
+
+/**
+ * The specifiers are held in VARIABLES, never written as literals at the import
+ * site. A literal `import('@adhd/sox-vector-store')` is statically analysable,
+ * so a bundler (esbuild/rollup) is free to hoist it back into an eager import —
+ * which would silently restore the mandatory native load this package exists
+ * without. A non-literal specifier is opaque to static analysis, so it can only
+ * ever be a genuine runtime `import()`, resolved solely when the branch that
+ * needs it is taken.
+ */
+const VECTOR_STORE_SPECIFIER = '@adhd/sox-vector-store';
+const EMBEDDING_PROVIDER_SPECIFIER = '@adhd/sox-embedding-provider';
+/**
+ * `@adhd/sox-hybrid-search` is a MANDATORY dependency (the node-join's RRF
+ * fusion lives there), but its entrypoint re-exports `cross-encoder.js`, which
+ * statically imports `@adhd/sox-embedding-provider`. A static import here would
+ * therefore resolve the optional package on EVERY path — including the injected
+ * one — defeating the invariant above. It is loaded lazily instead.
+ */
+const HYBRID_SEARCH_SPECIFIER = '@adhd/sox-hybrid-search';
+
+/**
+ * The value surface of the optional packages, expressed as `typeof import(...)`
+ * so the shape stays derived from the real package (one source of truth) rather
+ * than a hand-copied interface that can drift.
+ */
+interface VectorStoreModule {
+  SqliteVectorBackend: typeof import('@adhd/sox-vector-store').SqliteVectorBackend;
+  TursoVectorBackend: typeof import('@adhd/sox-vector-store').TursoVectorBackend;
+}
+interface EmbeddingProviderModule {
+  createEmbeddingProvider: typeof import('@adhd/sox-embedding-provider').createEmbeddingProvider;
+}
+interface HybridSearchModule {
+  rrfFuse: typeof import('@adhd/sox-hybrid-search').rrfFuse;
+}
+
+/**
+ * Resolve an optional dependency at runtime, mapping "the package is not
+ * installed" onto the typed `not_installed` failure instead of letting
+ * `ERR_MODULE_NOT_FOUND` escape as a throw — `createSemanticBackend` never
+ * throws for a configurable failure.
+ */
+async function loadOptional<T>(
+  specifier: string,
+  neededBy: string,
+): Promise<{ ok: true; mod: T } | { ok: false; failure: SemanticFailure }> {
+  try {
+    const mod = (await import(/* @vite-ignore */ specifier)) as T;
+    return { ok: true, mod };
+  } catch (err) {
+    return {
+      ok: false,
+      failure: {
+        reason: 'not_installed',
+        detail:
+          `"${specifier}" could not be loaded (needed by ${neededBy}). ` +
+          `Inject the corresponding live object to avoid the dependency: ${err instanceof Error ? err.message : String(err)}`,
+      },
+    };
+  }
+}
+
+/** Load the mandatory hybrid-search surface, preserving the original cause. */
+async function loadHybridSearch(): Promise<HybridSearchModule> {
+  try {
+    return (await import(/* @vite-ignore */ HYBRID_SEARCH_SPECIFIER)) as HybridSearchModule;
+  } catch (err) {
+    throw new Error(
+      `"${HYBRID_SEARCH_SPECIFIER}" could not be loaded; it is a mandatory dependency of ` +
+        `@adhd/sox-semantic, required by semanticSearchNodes' reciprocal-rank fusion.`,
+      { cause: err },
+    );
+  }
+}
+
 // ── Internal: sync/async vector backend normalization ─────────────────────────
 
 interface VecOps {
@@ -124,13 +208,19 @@ export async function createSemanticBackend(
 ): Promise<SemanticBackendResult> {
   const { adapter } = config;
 
-  // 1. Embedding provider (injected or config-derived).
+  // 1. Embedding provider (injected, or config-derived via the OPTIONAL
+  //    @adhd/sox-embedding-provider — resolved only when nothing was injected).
   let provider: EmbeddingProvider;
   if (config.embeddingProvider) {
     provider = config.embeddingProvider;
   } else {
+    const loaded = await loadOptional<EmbeddingProviderModule>(
+      EMBEDDING_PROVIDER_SPECIFIER,
+      'the config-derived embedding-provider path (inject config.embeddingProvider to avoid it)',
+    );
+    if (!loaded.ok) return loaded;
     try {
-      provider = await createEmbeddingProvider(config.embedding);
+      provider = await loaded.mod.createEmbeddingProvider(config.embedding);
     } catch (err) {
       return {
         ok: false,
@@ -139,23 +229,31 @@ export async function createSemanticBackend(
     }
   }
 
-  // 2. Vector backend (injected or capability-probed). nativeVectors:true → Turso
-  //    (async), false → sqlite (sync), absent → unsupported.
+  // 2. Vector backend (injected, or capability-probed via the OPTIONAL
+  //    @adhd/sox-vector-store — resolved only when nothing was injected).
+  //    nativeVectors:true → Turso (async), false → sqlite (sync), absent → unsupported.
   let vec: VectorBackend | AsyncVectorBackend;
   if (config.vectorBackend) {
     vec = config.vectorBackend;
-  } else if (adapter.capabilities.nativeVectors === true) {
-    vec = new TursoVectorBackend(adapter);
-  } else if (adapter.capabilities.nativeVectors === false) {
-    vec = new SqliteVectorBackend(adapter);
   } else {
-    return {
-      ok: false,
-      failure: {
-        reason: 'unsupported_adapter',
-        detail: 'adapter reports no nativeVectors capability — cannot choose a vector backend',
-      },
-    };
+    const nativeVectors = adapter.capabilities.nativeVectors;
+    if (nativeVectors !== true && nativeVectors !== false) {
+      return {
+        ok: false,
+        failure: {
+          reason: 'unsupported_adapter',
+          detail: 'adapter reports no nativeVectors capability — cannot choose a vector backend',
+        },
+      };
+    }
+    const loaded = await loadOptional<VectorStoreModule>(
+      VECTOR_STORE_SPECIFIER,
+      'the capability-probed vector-backend path (inject config.vectorBackend to avoid it)',
+    );
+    if (!loaded.ok) return loaded;
+    vec = nativeVectors
+      ? new loaded.mod.TursoVectorBackend(adapter)
+      : new loaded.mod.SqliteVectorBackend(adapter);
   }
 
   // 3. Graph backend for the node-join (semanticSearchNodes).
@@ -240,6 +338,11 @@ export async function createSemanticBackend(
         const hits = await ops.knn(qVec, space, fetchLimit, { ids });
         if (hits.length > 0) ranked.set('vec', hits.map((h) => h.id));
       }
+
+      // Lazily loaded — see HYBRID_SEARCH_SPECIFIER. Mandatory dependency, so a
+      // failure here is a broken install, not a configurable failure; the throw
+      // carries the original cause.
+      const { rrfFuse } = await loadHybridSearch();
 
       const weights = new Map<string, number>([['text', 1], ['vec', 1]]);
       const fused = rrfFuse(ranked, weights);

@@ -25,6 +25,11 @@
  *      is fine — the bundler inlines them at build time.)
  *   4. Every published package should declare `engines.node` (warn, not fail).
  *
+ * Rules 1, 2, 3 and 5 all treat `optionalDependencies` as the runtime edges they
+ * are (see `runtimeDeps`): npm installs them by default and changesets rewrites
+ * their `workspace:` range at publish, so an optional dep carries the identical
+ * 404 / exact-pin hazard as a mandatory one.
+ *
  * Scans libs/*, apps/*, and extension/bundle-member package.json files. A package
  * with `"private": true` is skipped (it never publishes).
  *
@@ -79,8 +84,32 @@ interface Pkg {
   name?: string;
   private?: boolean;
   dependencies?: Record<string, string>;
+  optionalDependencies?: Record<string, string>;
   devDependencies?: Record<string, string>;
   engines?: Record<string, string>;
+}
+
+/**
+ * The runtime dependency edges of a manifest, tagged with the field they came
+ * from. `optionalDependencies` are runtime edges: npm installs them by default,
+ * and changesets rewrites their `workspace:` range at publish exactly like a
+ * mandatory one — so they carry the identical fresh-machine-404 and exact-pin
+ * hazards, and must be checked. (They were invisible to every rule here until
+ * `@adhd/sox-semantic` moved its native-chain deps to optionalDependencies.)
+ */
+function runtimeDeps(pkg: Pkg): Array<{ dep: string; range: string; field: 'dependencies' | 'optionalDependencies' }> {
+  return [
+    ...Object.entries(pkg.dependencies ?? {}).map(([dep, range]) => ({
+      dep,
+      range,
+      field: 'dependencies' as const,
+    })),
+    ...Object.entries(pkg.optionalDependencies ?? {}).map(([dep, range]) => ({
+      dep,
+      range,
+      field: 'optionalDependencies' as const,
+    })),
+  ];
 }
 
 function findPackageJsons(): string[] {
@@ -263,25 +292,25 @@ async function main(): Promise<void> {
     const rel = path.relative(root, pkgPath);
     const isExtension = pkg.name.startsWith('@adhd/sox-extension-');
 
-    const deps = pkg.dependencies ?? {};
-    for (const [dep, range] of Object.entries(deps)) {
+    const deps = runtimeDeps(pkg);
+    for (const { dep, range, field } of deps) {
       // (1) workspace:* onto a non-published target → 404 on install.
       if (range.startsWith('workspace:')) {
         if (!publishedNames.has(dep)) {
           errors.push(
-            `${rel}: runtime dependency "${dep}":"${range}" targets a NON-PUBLISHED package — 404s on install. Publish "${dep}", or move it to devDependencies (bundled).`,
+            `${rel}: ${field} entry "${dep}":"${range}" targets a NON-PUBLISHED package — 404s on install. Publish "${dep}", or move it to devDependencies (bundled).`,
           );
         } else {
           // (2) queue a real registry existence probe.
           const list = workspaceDepConsumers.get(dep) ?? [];
-          list.push(`${rel} ("${dep}":"${range}")`);
+          list.push(`${rel} ("${dep}":"${range}", ${field})`);
           workspaceDepConsumers.set(dep, list);
         }
       }
       // (3) extensions must be self-contained: zero @adhd runtime deps.
       if (dep.startsWith('@adhd/sox-') && isExtension) {
         errors.push(
-          `${rel}: extension carries @adhd runtime dependency "${dep}". Extensions must be self-contained bundles (zero @adhd runtime deps) — move to devDependencies.`,
+          `${rel}: extension carries @adhd ${field} entry "${dep}". Extensions must be self-contained bundles (zero @adhd runtime deps) — move to devDependencies.`,
         );
       }
     }
@@ -370,11 +399,11 @@ async function main(): Promise<void> {
     if (typeof pkg.name !== 'string' || !pkg.name.startsWith('@adhd/sox-')) continue;
     if (pkg.name.startsWith('@adhd/sox-extension-')) continue; // rule (3) owns extensions
     const rel = path.relative(root, pkgPath);
-    for (const [dep, range] of Object.entries(pkg.dependencies ?? {})) {
+    for (const { dep, range, field } of runtimeDeps(pkg)) {
       if (!dep.startsWith('@adhd/sox-')) continue;
       if (classifyInternalRange(range) === 'floating') continue;
       errors.push(
-        `${rel}: runtime dependency "${dep}":"${range}" is an EXACT pin. ` +
+        `${rel}: ${field} entry "${dep}":"${range}" is an EXACT pin. ` +
           `Exact pins on internal @adhd/sox-* packages freeze that package at the version current when it last published, ` +
           `while caret-pinned packages float forward — so a telemetry/store-adapter bump resolves TWO copies of a stateful ` +
           `runtime (BUG-BACKLOG-TELEMETRY-001: @adhd/backlog resolved @adhd/sox-telemetry 0.2.0 and 0.2.1, dropping every record ` +
