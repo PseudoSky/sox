@@ -1,6 +1,6 @@
 {
   "name": "@adhd/sox-semantic",
-  "version": "0.1.6",
+  "version": "0.1.7",
   "description": "Semantic RAG composition layer — a DI facade that wires @adhd/sox-graph-store + @adhd/sox-vector-store + @adhd/sox-embedding-provider into a single embed/index/search/rank surface (createSemanticBackend), plus the embedding-lifecycle observer (embed-on-write, delete-on-invalidate). Owns the node-join; keeps graph-store and vector-store at their own tiers (ADR-0016).",
   "license": "MIT",
   "private": false,

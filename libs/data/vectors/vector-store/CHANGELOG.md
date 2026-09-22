@@ -1,5 +1,46 @@
 # @adhd/sox-vector-store
 
+## 0.7.0
+
+### Minor Changes
+
+- feat(vector-store): add a bounded `hasVectors` existence probe
+
+  A "does this space hold any vectors?" readiness check had no cheap surface:
+  `iter()` is a full corpus scan and is not lazy on every backend —
+  `TursoVectorBackend.iter` is backed by the adapter's `executeAll` (`db.all`),
+  which materializes every row _including the full embedding BLOB_ before its
+  first yield. Returning after the first yielded row therefore reads the entire
+  vector table.
+
+  Every backend now exposes `hasVectors(modelId)`:
+
+  - `SqliteVectorBackend` / `LanceDbVectorBackend`: `hasVectors(modelId): boolean`
+  - `TursoVectorBackend`: `hasVectors(modelId): Promise<boolean>`
+
+  It is a bounded `SELECT 1 … LIMIT 1` probe — no `embedding` column is
+  projected (so no blob is read) and the scan stops at the first row, making it
+  O(1) in the size of the space. An absent table (a space never `ensureSpace`d)
+  is `false`, not an error.
+
+  ```ts
+  // sync backends
+  backend.hasVectors("bge-base-en-v1.5"); // boolean
+
+  // async backend (the one a multiprocess store uses)
+  await backend.hasVectors("bge-base-en-v1.5"); // Promise<boolean>
+  ```
+
+  The primitive is exposed on each concrete backend and on two new additive
+  capability interfaces, `VectorExistenceProbe` (sync) and
+  `AsyncVectorExistenceProbe` (async) — deliberately **not** on the pinned
+  `VectorBackend` / `AsyncVectorBackend` contracts, so a caller narrows to it
+  (`typeof backend.hasVectors === 'function'`) rather than every implementor
+  being forced to grow the method.
+
+  Additive and source-compatible: no existing exported type or method signature
+  changes meaning.
+
 ## 0.6.2
 
 ### Patch Changes
