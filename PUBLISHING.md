@@ -23,6 +23,21 @@ Extensions ship as **self-contained esbuild bundles** (Model A): zero `@adhd/sox
 (those are devDependencies, inlined by the bundler); native addons (`better-sqlite3`, `sqlite-vec`)
 stay external and are declared as real `dependencies`, installed via the `npm-package:` install mode.
 
+### Patch-for-additive-API exception (owner-accepted)
+
+A **purely additive** public-API change may ship as a **patch** even though strict semver would call
+it a minor. Rationale: a minor bump on a `workspace:^`-depended package cascades a republish of
+every dependent package (the `cascade-plan` gate flags exactly this), for a change no consumer must
+act on. Shipping it as a patch keeps every dependent range valid and the cascade empty.
+
+"Purely additive" means: no existing call site changes, no existing exported type narrows, and every
+dependent's declared range still resolves. New optional config fields, new optional interface
+members, and new exports qualify. A breaking or behavior-changing change does **not** — that is a
+minor/major as usual. Precedent: the embedding funnel (`ServeBackendOptions.onClientCountChange`,
+`EmbeddingProviderConfig.host`/`idleGraceMs`, `resetSharedFastembedHost`) shipped as
+`@adhd/sox-service-proxy` 0.4.x / `@adhd/sox-embedding-provider` 0.5.x patches (owner accepted
+2026-09-22).
+
 ---
 
 ## Prerequisites
