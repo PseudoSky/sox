@@ -8,7 +8,7 @@
 > Companion docs: [`PLAN.md`](./PLAN.md) (build order + per-packet ledger) · [`sandbox/README.md`](./sandbox/README.md) (sandbox spec)
 > · [`../../observability/README.md`](../../observability/README.md) (how to read the logs) · the backlog graph, family `BL` (all items — `backlog list-items --filter '{"repo":"sox-ecosystem","family":"BL"}'`)
 
-**Last updated:** 2026-08-05 19:12Z · **Branch:** `wip/turso-live-metrics`
+**Last updated:** 2026-09-22 · **Branch:** `main`
 
 > **What is measured vs. what is asserted.** Every number in the "Live service" and "Progress"
 > sections below was read from the running server or derived from the backlog graph at the timestamp
@@ -65,7 +65,7 @@ Server: pid **55538**, artifact **`8ae1b0da3c82`**, up since 2026-08-05T17:54:56
 | Integrity | ✅ `overall: ok` | all 6 `fast` probes clean in 530.5 ms, `damaged: []`, `unknown: []` |
 | Backup | ✅ working | BL-385 resolved 2026-08-01 |
 | Entity search | ✅ working | BL-384 resolved 2026-08-01 |
-| Near-duplicate detection | ✅ live KNN | BL-381/BL-386 resolved; **BL-398 resolved 2026-08-04** — manual-merge pairs now report `cosine_sim: null` (unknown), never a fabricated 1.0 |
+| Near-duplicate detection | ⚠️ **detection live; its auto-invalidation destroyed data for 2.5 months** (2026-09-22) | KNN detection works: BL-381/BL-386 resolved; **BL-398 resolved 2026-08-04** — manual-merge pairs now report `cosine_sim: null` (unknown), never a fabricated 1.0. **But the pass also invalidated the older node of every ≥0.95-cosine pair with no reason and no `SUPERSEDES` edge, from `361c324f` (2026-07-04) onward — ~1.1 MB of content, 3,273 orphaned edges, ~383 of 682 estimated false positives.** Fix merged to source in `5c35a66a`/`e356a0b2`; **deploy state and the artifact-hash check are in [`findings/2026-09-22-neardup-deploy-handoff.md`](./findings/2026-09-22-neardup-deploy-handoff.md) — read it before trusting this row.** Evidence: [`findings/2026-09-22-neardup-algorithm-analysis.md`](./findings/2026-09-22-neardup-algorithm-analysis.md) |
 | Telemetry | ✅ stages live | `role: "live-service"`, durable JSONL for the enrich tick lifecycle (BL-413 follow-on, d016b63), and **`stages_declared: 2`** with `stages_with_zero_samples: []` as of the `8ae1b0da3c82` deploy. `paths_with_zero_samples` holds `write_queue:queued` (by design — Turso always takes the bypass path) and `embed:reembed`. OTel `state: "ready"`, spans enabled |
 | **Enrichment** | ✅ **WORKING** | `state: "idle"`, `queue_depth: 0`, ticks **11.3s** (was 120.056s timeout cap). **BL-413 RESOLVED**: importance link-degree OR-COUNT → indexed two-scalar (`computeLinkDegree`), plus per-pass-type isolation budget (full passes 600s, `SOX_ENRICH_FULL_TIMEOUT_MS`) |
 | **Clustering** | ✅ **WORKING** | `cluster_count: 443`, `total_clustered: 3610`, `coverage: 0.716`, `with_community: 3610`, `with_topic: 4300`, `largest_cluster_size: 879`, `mean_intra_sim: 0.882` vs `mean_inter_sim: 0.629`. Orphan-GC on invalidation live (`community-gc.ts`) |
@@ -134,6 +134,30 @@ figures can no longer be re-derived from disk.
 
 ---
 
+## Near-dup invalidation fix — source/dist parity check (2026-09-22)
+
+Full handoff: **[`findings/2026-09-22-neardup-deploy-handoff.md`](./findings/2026-09-22-neardup-deploy-handoff.md)**.
+
+The near-dup auto-invalidation fix is merged to **source** (`5c35a66a`, `e356a0b2`, on `main` at
+`a1b50621` or later). At the time this was written the built artifact had **not** been replaced, so
+`main` was in a **source/dist parity violation**: reading `main` suggests the fix is live, and it was
+not. A deploy run was in flight; **its outcome is unknown and is not asserted here.**
+
+**Run the check, do not trust the sentence.** Pre-deploy artifact hash (pid 54730) was
+`sha256:4ea748572b1e85156ce04b32e28f335625bcf6811ab1c84337d86e5f685a3638`. **If `memory_ping` still
+reports that hash, the deploy did not take and the invalidation pass may still be firing.**
+
+Remaining steps: `npx nx run-many -t build --projects=memory-core,memory-server,memory-cli,memory-flush`
+→ `npx nx run registry:sync-index` (commit the regenerated `registry/index.json`) →
+`rm -rf dist/smoke && node scripts/smoke-test.mjs` (`summary.failed` must be 0) → `soxe service
+disable`/`enable --node-path=/opt/homebrew/Cellar/node/26.5.1/bin/node` → diff the plist → verify
+artifact adoption → live probe.
+
+**Rollback target is recorded as `c36b3ba0`, and is UNVERIFIED** — `git log` shows that sha as a
+docs-only commit (`docs(notes): refresh stale backlog UIDs …`), whose revert changes no code.
+Confirm the real target against the fix series (`5c35a66a^`) before using it. A real rollback is revert **plus** rebuild **plus**
+`nx run registry:sync-index` **plus** service restart, or the old `dist/` stays live (BUG-028).
+
 <!-- PLAN-STATUS:AUDIT -->
 ## What to do next
 
@@ -142,6 +166,13 @@ figures can no longer be re-derived from disk.
 > the backlog graph directly (`backlog_get_item`/`backlog_list_items`, repo `sox-ecosystem`) — not
 > against this prose. As of 2026-08-04 this list led with **PKT-41 (BL-391) + PKT-19 (BL-329)**, both
 > of which had already been **DONE** for some time. A session acted on that entry before catching it.
+
+**FIRST, ahead of everything below (2026-09-22): complete the near-dup fix deploy and verify it
+live.** Compare the running artifact hash against the pre-deploy hash in the section above; if it is
+unchanged, the fix is not running. Then: recovery of the 685 damaged pairs has **not started** (a
+design is recorded in the handoff finding), and chunk topic/tag inheritance remains unfixed, leaving
+1,709 episodes with no topic and 4,602 with no tags structurally unreachable by filtered recall.
+Details and the full carry-forward list: [`findings/2026-09-22-neardup-deploy-handoff.md`](./findings/2026-09-22-neardup-deploy-handoff.md).
 
 1. **Close BL-401 — the deploy it was waiting on has happened.** Gaps 4+6 were committed (`c81c0b7`,
    consumers migrated onto the stage substrate) and shipped to production in `61e4ff0`
@@ -228,6 +259,12 @@ letting `--no-verify` pass as green.
   dirty-tree refusal.)
 - **`soxe service enable` rebuilds unit env from YOUR SHELL** and silently drops anything absent. It
   dropped both emergency brakes while reporting success. Diff the plist afterwards. (BL-375.)
+  The regenerated `~/Library/LaunchAgents/com.sox.user.memory-server.plist` must still carry
+  `SOX_CONFIG_DB_PATH=/Users/nix/.memory/memory.db`, `SOX_CONFIG_PORT=3099`,
+  `SOX_CONFIG_STOP_TIMEOUT_MS`, `SOX_PROTOCOL_ENABLED=0`,
+  `SOX_HOME`/`SOX_REPO_ROOT=/Users/nix/dev/ai/claude-agents` and `SOX_AGENT_NAME`. **If
+  `SOX_CONFIG_DB_PATH` is dropped the process comes up HEALTHY and every verification probe silently
+  writes to the WRONG STORE.**
 - **`ProcessType` must not be "improved" to `Adaptive`** — Adaptive promotes out of Background on
   XPC activity, which sox services never generate. It would look like a fix and change nothing.
   (BL-331.)
@@ -239,6 +276,27 @@ letting `--no-verify` pass as green.
   deadlocked `memory_write` on any content over 2000 chars. (BL-154.) ⚠️ **This is a re-entrancy
   rule only.** It is *not* a mandate to serialise Turso writes; do not flip the Turso adapter's
   `needsWriteSerialization` / `concurrentTransactions`. Three agents have made that mistake.
+- **`memory_ping`'s `artifact` field is exactly `shasum -a 256 <bundle>/dist/index.js`** — adoption
+  verification is a direct string comparison against the rebuilt file. Process liveness proves
+  nothing. (BUG-028.)
+- **After the near-dup fix, `memory_near_duplicates` total GOES UP, not down.** It was 685. The fix
+  stops *new* invalidation and repairs nothing, and a probe write adds a pair. **A rising number is
+  not a failed deploy** — it is the most likely reason someone declares a good deploy bad.
+- **`check-suite-tree-state` is a snapshot, not a lock.** A suite started against a clean tree
+  silently straddled four commits when another agent committed mid-run; the result was
+  unattributable and had to be discarded and re-run.
+- **Piping `nx test` through `tail` reports `tail`'s exit code.** A red suite was reported as
+  "exit 0". Capture nx's exit status separately.
+- **The stock `sqlite3` CLI cannot open this store** — Turso-internal FTS objects give `malformed
+  database schema ... near USING`. Use `@tursodatabase/database` `connect(path, {readOnly: true})`
+  against a copy.
+- **The near-dup pass is ASYNC** (`time_to_vector_ms` p99 ≈ 61.5 s; no `SOX_SYNC_EMBED` in the
+  plist). Poll for the `SAME_AS` edge rather than asserting right after a probe write, and give two
+  probe episodes different content or the second is rejected `E_DEDUP`.
+- **Untriaged as of 2026-09-22: `E_FOREIGN_SQLITE_SIDECAR` (BUG-026) recurring for other sessions,
+  with FOUR concurrent memory-server processes alive** — pids 21545 (22 days old), 64743 (4 days),
+  87027, 87344. That is a singleton violation and the likely cause of recall failures other agents
+  are reporting. Nothing was killed; do not kill anything without the owner's decision.
 
 ## ⚠ Do not gate on a memory-core failure COUNT
 
