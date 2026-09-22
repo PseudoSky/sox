@@ -22,8 +22,17 @@ export interface ChainLink {
 }
 
 export interface SupersessionChainResult {
+  /**
+   * Optional because the E_NOT_FOUND path has no node to report a canonical
+   * uid for — there is no live chain, so nothing to be canonical over.
+   * Returning `''` there would read as a real (empty-string) uid; leaving it
+   * absent is the honest representation. `chain` and `is_current` stay
+   * required: the E_NOT_FOUND path populates them with an empty chain and
+   * `false` (mirrors related.ts:92's `{ source_uid, edges: [], code }`
+   * pattern), so no call site needs an undefined-check on those two.
+   */
   canonical_uid?: string;
-  chain?: ChainLink[];
+  chain: ChainLink[];
   /**
    * `is_current` reflects the QUERIED node's own validity
    * (`t_invalid === null`) — it does NOT mean "the queried node is
@@ -33,7 +42,7 @@ export interface SupersessionChainResult {
    * supersession-chain.ts) — do not assume `is_current === (canonical_uid
    * === uid)`.
    */
-  is_current?: boolean;
+  is_current: boolean;
   code?: string;
   message?: string;
 }
@@ -110,6 +119,8 @@ export async function memoryGetSupersessionChain(
     return {
       code: 'E_NOT_FOUND',
       message: `No node found for uid: ${uid}`,
+      chain: [],
+      is_current: false,
     };
   }
 

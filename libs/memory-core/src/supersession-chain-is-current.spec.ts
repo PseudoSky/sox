@@ -139,6 +139,17 @@ describe('memoryGetSupersessionChain — is_current / canonical selection (Q2)',
       expect(result.canonical_uid).toBe('uid-b');
       expect(result.is_current).toBe(true);
 
+      // Divergence case, pinning the doc comment on SupersessionChainResult
+      // .is_current: uid-a is live (not invalidated) but is NOT canonical
+      // (uid-b, the newer node, is). Querying uid-a must still report
+      // is_current: true for uid-a's own validity, alongside a DIFFERENT
+      // canonical_uid — this is the exact scenario the doc comment
+      // describes and Case D's uid-b query above does not exercise it,
+      // since uid-b happens to be both live AND canonical there.
+      const resultA = await memoryGetSupersessionChain(db, { uid: 'uid-a' });
+      expect(resultA.canonical_uid).toBe('uid-b');
+      expect(resultA.is_current).toBe(true);
+
       await db.close();
     } finally {
       cleanup();
@@ -160,8 +171,8 @@ describe('memoryGetSupersessionChain — is_current / canonical selection (Q2)',
       expect(result.code).toBe('E_NOT_FOUND');
       expect(result.message).toContain('uid-does-not-exist');
       expect(result.canonical_uid).toBeUndefined();
-      expect(result.chain).toBeUndefined();
-      expect(result.is_current).toBeUndefined();
+      expect(result.chain).toEqual([]);
+      expect(result.is_current).toBe(false);
 
       await db.close();
     } finally {
