@@ -25,7 +25,24 @@ import type { AdapterTransaction, VectorDialect } from '@adhd/sox-store-adapter'
 export interface NearDupResult {
   existing_uid: string;
   cosine_sim: number;
-  should_invalidate: boolean;
+  /**
+   * `'near_dup'` — cosine met NEARDUP_THRESHOLD. `'candidate'` — reserved for a
+   * future weaker tier; not currently produced (detectNearDup only returns a
+   * result when a pair scores 'near_dup' per detectNearDupPairs).
+   *
+   * Q1-B (docs/reporting/memory/findings/2026-09-22-neardup-invalidation-fix-plan.md §2): this field REPLACES the former
+   * `should_invalidate: boolean`. That name was structurally always `true` on
+   * every result this function could ever return (see the `p.status ===
+   * 'near_dup'` filter below) — a boolean that can only ever be `true` is not a
+   * decision, it is a label. Worse, it was actually consumed as if it WERE a
+   * decision: `applyNearDupResult` (enrich.ts) used it to gate an automatic,
+   * anonymous `t_invalid` write with no SUPERSEDES edge and no reason — a
+   * destructive action taken on a retrieval-ranking signal (cosine) that was
+   * never calibrated to factual identity. `status` makes the field honest: a
+   * classification, not a verdict. No code path is now permitted to treat a
+   * `NearDupResult` as sufficient grounds to invalidate anything by itself.
+   */
+  status: 'near_dup' | 'candidate';
 }
 
 interface VecRow {
@@ -51,10 +68,15 @@ export async function detectNearDup(
 ): Promise<NearDupResult | null> {
   // ── KNN via the dialect ───────────────────────────────────────────────────
   // topKQuery emits `__PLACEHOLDER__` where a caller-supplied filter goes (see
-  // recall.ts). Near-dup has no filter of its own — validity is checked below
-  // against the winning neighbour — so it collapses to a true predicate. The
-  // trailing LIMIT is required for the Turso dialect, whose ORDER BY is not
-  // self-limiting the way vec0's `k =` is; it is harmless on sqlite-vec.
+  // recall.ts). Near-dup has no filter of its own — it collapses to a true
+  // predicate; validity of the winning neighbour IS checked, but downstream in
+  // the candidate loop below (`SELECT uid FROM node WHERE rowid = ? AND
+  // t_invalid IS NULL`), not here (2026-09-22 re-review finding 4 — this
+  // comment previously claimed the check happened "below" while nothing in
+  // this function checked validity at all; corrected to point at the actual
+  // check added by that fix). The trailing LIMIT is required for the Turso
+  // dialect, whose ORDER BY is not self-limiting the way vec0's `k =` is; it
+  // is harmless on sqlite-vec.
   const { sql: dialectSql, args: dialectArgs } = vectorDialect.topKQuery(
     'vec_node',
     'embedding',
@@ -100,31 +122,72 @@ export async function detectNearDup(
   };
   const pairs = detectNearDupPairs(vecs, nearDupOpts);
 
-  let bestPair: { a: number; b: number; cosine: number } | null = null;
+  // Candidate near-dup pairs involving `rowid`, best (highest cosine) first.
+  const candidates: Array<{ a: number; b: number; cosine: number }> = [];
   for (const p of pairs) {
     if ((p.a === rowid || p.b === rowid) && p.status === 'near_dup') {
-      if (!bestPair || p.cosine > bestPair.cosine) {
-        bestPair = { a: p.a, b: p.b, cosine: p.cosine };
-      }
+      candidates.push({ a: p.a, b: p.b, cosine: p.cosine });
     }
   }
+  candidates.sort((x, y) => y.cosine - x.cosine);
 
-  if (!bestPair) return null;
+  // Q1-C (docs/reporting/memory/findings/2026-09-22-neardup-invalidation-fix-plan.md §2, structural exemption): a parent
+  // and its own chunk are a whole and its part (DERIVED_FROM), never a
+  // duplicate pair, no matter how high their cosine similarity runs — a chunk
+  // is, by construction, near-identical to material inside its own parent.
+  // Reporting that pair as a near-dup candidate pollutes the
+  // memory_near_duplicates review queue and the Q3 triage set with pairs no
+  // reviewer should ever be asked to adjudicate. This is a STRUCTURAL fact
+  // about the pair (an edge exists), not a score, so it is checked here in the
+  // decision rather than filtered downstream. When the best-scoring candidate
+  // is exempt, fall through to the next-best non-exempt candidate rather than
+  // returning null outright — a real near-dup elsewhere in the KNN set must
+  // still be reported.
+  for (const bestPair of candidates) {
+    const neighborId = bestPair.a === rowid ? bestPair.b : bestPair.a;
 
-  const neighborId = bestPair.a === rowid ? bestPair.b : bestPair.a;
+    const derivedFromEdge = await tx.executeGet<{ rowid: number }>(
+      `SELECT rowid FROM edge
+       WHERE rel = 'DERIVED_FROM'
+         AND ((src = ? AND dst = ?) OR (src = ? AND dst = ?))
+         AND t_expired IS NULL AND t_invalid IS NULL`,
+      [rowid, neighborId, neighborId, rowid],
+    );
+    if (derivedFromEdge) continue;
 
-  // Check node existence via raw SQL — avoids calling createGraphBackend (which
-  // runs PRAGMAs that throw "Safety level may not be changed inside a transaction"
-  // when detectNearDup is called from within applyEmbedding's transaction).
-  const neighborUidRow = await tx.executeGet<{ uid: string }>(
-    'SELECT uid FROM node WHERE rowid = ?',
-    [neighborId],
-  );
-  if (!neighborUidRow) return null;
+    // Check node existence AND liveness via raw SQL — avoids calling
+    // createGraphBackend (which runs PRAGMAs that throw "Safety level may not
+    // be changed inside a transaction" when detectNearDup is called from
+    // within applyEmbedding's transaction).
+    //
+    // 2026-09-22 re-review finding 4: this used to omit `t_invalid IS NULL`,
+    // so a SOFT-invalidated best-scoring candidate (a live row, just with
+    // t_invalid set) still matched here and was returned as the result —
+    // applyNearDupResult's OWN `t_invalid IS NULL` filter (enrich.ts) then
+    // silently no-ops on it, so the SAME_AS edge is never written AND any
+    // genuine live next-best candidate elsewhere in the KNN set is never even
+    // considered, because this function already returned. A hard-deleted
+    // (row entirely absent) candidate was already excluded via `!neighborUidRow`
+    // above; soft-invalidation is the likelier real-world unusable state
+    // (exactly what memoryInvalidate/merge_duplicates produce) and was the
+    // one this loop missed. Filtering it here, in the SAME loop that already
+    // falls through past DERIVED_FROM-exempt candidates, lets a real live
+    // near-dup elsewhere in the KNN set still be found.
+    const neighborUidRow = await tx.executeGet<{ uid: string }>(
+      'SELECT uid FROM node WHERE rowid = ? AND t_invalid IS NULL',
+      [neighborId],
+    );
+    if (!neighborUidRow) continue;
 
-  return {
-    existing_uid: neighborUidRow.uid,
-    cosine_sim: bestPair.cosine,
-    should_invalidate: bestPair.cosine >= threshold,
-  };
+    return {
+      existing_uid: neighborUidRow.uid,
+      cosine_sim: bestPair.cosine,
+      // Every candidate here already passed the `p.status === 'near_dup'`
+      // filter above (cosine ≥ threshold) — 'candidate' is reserved for a
+      // future weaker tier this function does not yet produce.
+      status: 'near_dup',
+    };
+  }
+
+  return null;
 }

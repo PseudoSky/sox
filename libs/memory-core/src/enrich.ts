@@ -21,7 +21,7 @@ import type { NearDupResult } from './neardup.js';
 import type { AdapterTransaction, VectorDialect } from '@adhd/sox-store-adapter';
 import { ENRICH_VERSION } from './enrich-version.js';
 import { log as tlog } from './telemetry.js';
-import { gcOrphanedCommunityState } from './community-gc.js';
+import { getActiveEmbedModel } from './embed.js';
 
 export type { NearDupResult } from './neardup.js';
 
@@ -96,9 +96,25 @@ function getNearDupThreshold(): number {
 
 /**
  * Apply a detected near-dup outcome: insert the SAME_AS edge (guarded — never
- * duplicated) and, when `should_invalidate`, bi-temporally invalidate the OLDER
- * episode. Shared by the synchronous E8 pass (enrichOnWrite, SOX_SYNC_EMBED
- * composition) and the deferred Phase-B pass (embed-pipeline.ts applyEmbedding).
+ * duplicated), carrying the evidence (cosine, embed model, detector, status)
+ * in its `meta`. Shared by the synchronous E8 pass (enrichOnWrite,
+ * SOX_SYNC_EMBED composition) and the deferred Phase-B pass
+ * (embed-pipeline.ts applyEmbedding).
+ *
+ * Q1-A (docs/reporting/memory/findings/2026-09-22-neardup-invalidation-fix-plan.md §2): this function used to also
+ * bi-temporally invalidate the OLDER episode whenever `should_invalidate` was
+ * set — which, per Q1-B, was every result it could ever produce. An automatic
+ * pass has no user intent, and a sentence-embedding cosine is a
+ * retrieval-ranking signal, not a calibrated measure of factual identity (the
+ * live store measured false-positive SAME_AS pairs at cosine 0.9916–0.9985,
+ * above the ceiling any threshold retune could exclude). Destruction now
+ * requires intent: `t_invalid` is reachable only from `memoryInvalidate`
+ * (write.ts) and `memory_curate merge_duplicates` (curate.ts), both of which
+ * already call `gcOrphanedCommunityState` themselves — this function no
+ * longer invalidates anything, so it has nothing to GC. The candidate pair
+ * remains fully reachable via `memory_near_duplicates` and
+ * `memory_curate merge_duplicates` for human/agent review — nothing here
+ * removes the SAME_AS edge those surfaces already read.
  */
 export async function applyNearDupResult(
   tx: AdapterTransaction,
@@ -112,27 +128,25 @@ export async function applyNearDupResult(
   if (!neighborRow) return;
 
   const now = new Date().toISOString();
+  const meta = JSON.stringify({
+    cosine_sim: nearDup.cosine_sim,
+    status: nearDup.status,
+    model: getActiveEmbedModel() ?? 'unknown',
+    detected_at: now,
+    detector: 'auto-neardup',
+  });
   // Insert SAME_AS edge via raw SQL (memory-core schema lacks the UNIQUE index
-  // on (src, dst, rel) that GraphBackend.writeEdge's ON CONFLICT requires)
+  // on (src, dst, rel) that GraphBackend.writeEdge's ON CONFLICT requires).
+  // `weight` stays the primary cosine read (BL-386, near-duplicates.ts:103
+  // reads `e.weight` first); `meta` is additive evidence, not a replacement.
   await tx.executeRun(
     `INSERT INTO edge (src, dst, rel, origin, weight, t_created, meta)
-     SELECT ?, ?, 'SAME_AS', 'inferred', ?, ?, NULL
+     SELECT ?, ?, 'SAME_AS', 'inferred', ?, ?, ?
      WHERE NOT EXISTS (
        SELECT 1 FROM edge WHERE src = ? AND dst = ? AND rel = 'SAME_AS' AND t_expired IS NULL
      )`,
-    [rowid, neighborRow.rowid, nearDup.cosine_sim, now, rowid, neighborRow.rowid],
+    [rowid, neighborRow.rowid, nearDup.cosine_sim, now, meta, rowid, neighborRow.rowid],
   );
-
-  // If should_invalidate: invalidate the older episode (set t_invalid on the neighbour)
-  if (nearDup.should_invalidate) {
-    await tx.executeRun(
-      `UPDATE node SET t_invalid = ? WHERE uid = ? AND t_invalid IS NULL`,
-      [now, nearDup.existing_uid],
-    );
-    // BUG-CLUSTER-ORPHANED-COMMUNITIES-NEVER-GC-001: near-dup supersession
-    // orphans community state exactly like memory_invalidate — GC it here too.
-    await gcOrphanedCommunityState(tx, neighborRow.rowid, now);
-  }
 }
 /**
  * Run write-time enrichments (E1–E5, E8, E10, E12) on an already-inserted node.
@@ -247,9 +261,10 @@ export function computeWriteEnrichment(p: {
 }
 
 /**
- * E8: near-dup detection plus its side effects (SAME_AS edge, optional
- * invalidation of the older episode). No-ops when no embedding is available —
- * the async two-phase write defers this to Phase B (embed-pipeline.ts).
+ * E8: near-dup detection plus its side effect (SAME_AS edge, carrying cosine/
+ * model/detector evidence in meta — never an automatic invalidation, see
+ * `applyNearDupResult`). No-ops when no embedding is available — the async
+ * two-phase write defers this to Phase B (embed-pipeline.ts).
  *
  * Split out of `enrichOnWrite` so the folded-INSERT path can run the near-dup
  * pass — which genuinely requires the inserted row — WITHOUT also paying for

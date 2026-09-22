@@ -313,7 +313,7 @@ describe('memoryWriteBatchPhaseA — one sync queue task, pipelined Phase B', ()
 // ── Deferred near-dup (E8 in Phase B) ────────────────────────────────────────
 
 describe('deferred E8 near-dup runs in Phase B', () => {
-  it('Phase A defers near-dup; Phase B inserts SAME_AS and invalidates the older episode at >= threshold', async () => {
+  it('Phase A defers near-dup; Phase B inserts SAME_AS — Q1-A: never invalidates the older episode', async () => {
     // Full write: the "older" episode with a vector.
     const older = await memoryWrite(ctx.db, {
       content: 'quartz garnet topaz obsidian feldspar mineral catalogue',
@@ -344,8 +344,14 @@ describe('deferred E8 near-dup runs in Phase B', () => {
     const edge = await ctx.db.executeGet<{ rowid: number }>(`SELECT rowid FROM edge WHERE src = ? AND dst = ? AND rel = 'SAME_AS' AND t_expired IS NULL`, [newerRowid, olderRowid]);
     expect(edge).toBeDefined();
 
+    // Q1-A (docs/reporting/memory/findings/2026-09-22-neardup-invalidation-fix-plan.md §2): applyNearDupResult no longer
+    // invalidates the older episode at any cosine — automatic invalidation had
+    // no user intent behind it and cosine is not a calibrated measure of
+    // factual identity. The SAME_AS edge above is the full outcome; the older
+    // episode stays live and reachable, its disposition left to a human/agent
+    // review via memory_near_duplicates / memory_curate merge_duplicates.
     const olderNode = (await ctx.db.executeGet<{ t_invalid: string | null }>('SELECT t_invalid FROM node WHERE uid = ?', [olderUid]))!;
-    expect(olderNode.t_invalid).not.toBeNull(); // cosine >= 0.95 → invalidated
+    expect(olderNode.t_invalid).toBeNull();
   });
 });
 
