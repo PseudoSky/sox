@@ -24,10 +24,12 @@
     "dist"
   ],
   "dependencies": {
-    "@adhd/sox-embedding-provider": "workspace:^",
     "@adhd/sox-graph-store": "workspace:^",
     "@adhd/sox-hybrid-search": "workspace:^",
-    "@adhd/sox-store-adapter": "workspace:^",
+    "@adhd/sox-store-adapter": "workspace:^"
+  },
+  "optionalDependencies": {
+    "@adhd/sox-embedding-provider": "workspace:^",
     "@adhd/sox-vector-store": "workspace:^"
   },
   "sox": {
@@ -39,16 +41,32 @@
       "typed failure taxonomy (not_installed | provider_failed | unsupported_adapter | vector_store_failed), never a bare throw",
       "semanticSearchNodes — the sole owner of the node-join (embed → knn → graph.queryNodes → ranked { node, score })",
       "batch-first embeddings (embedDocuments + upsertVectors) — per-item error containment, never a placeholder vector",
-      "embedding-lifecycle observer (GraphWriteObserver impl: embed-on-write, delete-on-invalidate)"
+      "embedding-lifecycle observer (GraphWriteObserver impl: embed-on-write, delete-on-invalidate)",
+      "optional loadability — @adhd/sox-vector-store and @adhd/sox-embedding-provider are optionalDependencies, resolved only through lazy non-literal dynamic imports on the default capability-probe path"
     ],
     "invariants": [
       "createSemanticBackend returns a typed result, never throws for a configurable failure (not_installed/provider_failed/unsupported_adapter/vector_store_failed)",
       "a failed embed degrades the write, never corrupts it — no placeholder vectors, no rolled-back node write",
       "score is cosine similarity (higher-is-better) on both turso (1 - vector_distance_cos) and sqlite (cosineSimilarity), stable across backends",
-      "live objects (open DB, provider instance, vector backend) cross into this package via DI over the caller's StoreAdapter — never a duplicated stateful bundle (ADR-0006)"
+      "live objects (open DB, provider instance, vector backend) cross into this package via DI over the caller's StoreAdapter — never a duplicated stateful bundle (ADR-0006)",
+      "the DI-injected path (config.embeddingProvider + config.vectorBackend) resolves NEITHER optional native-chain specifier — loading the module with both injected cannot throw ERR_MODULE_NOT_FOUND for @adhd/sox-vector-store or @adhd/sox-embedding-provider"
     ],
     "entrypoints": [
       "dist/index.js"
     ]
-  }
+  },
+  "keywords": [
+    "semantic",
+    "rag",
+    "embeddings",
+    "vector-search",
+    "graph",
+    "retrieval",
+    "typescript"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/PseudoSky/adhd.git"
+  },
+  "homepage": "https://github.com/PseudoSky/adhd"
 }

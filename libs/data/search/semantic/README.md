@@ -22,6 +22,34 @@ documented behavior.)
 pnpm add @adhd/sox-semantic
 ```
 
+## Optional dependencies — the injected path needs no native chain
+
+`@adhd/sox-vector-store` and `@adhd/sox-embedding-provider` are declared as
+**optionalDependencies**, not `dependencies`. Each drags a native toolchain — vector-store pulls
+`sqlite-vec` / `better-sqlite3` / `lancedb`, embedding-provider pulls `onnxruntime` / `fastembed` —
+and none of it is required when you supply your own live objects.
+
+The package resolves those two only through **lazy, non-literal dynamic imports** taken on the
+default capability-probe path. If you inject both `embeddingProvider` and `vectorBackend`, neither
+specifier is ever resolved: importing the package cannot fail with `ERR_MODULE_NOT_FOUND` for them,
+and the native chain can be omitted (`npm i --omit=optional`) or fail to build without taking your
+process down. If a default path needs a package that is genuinely absent, `createSemanticBackend`
+returns the typed `not_installed` failure rather than throwing.
+
+```typescript
+// No native chain required: both live objects are injected.
+const result = await createSemanticBackend({
+  adapter,
+  embedding: { type: 'fastembed', model: 'unused' }, // never consulted — provider injected
+  embeddingProvider: myProvider,
+  vectorBackend: myVectorBackend,
+});
+```
+
+`semanticSearchNodes` additionally needs `@adhd/sox-hybrid-search` (the reciprocal-rank fusion it
+delegates to), which is a **mandatory** dependency. It too is loaded lazily, so it costs nothing
+until you actually search.
+
 ## Quick start
 
 ```typescript
@@ -169,7 +197,11 @@ no-op rather than an error.
 ## Invariants
 
 - `createSemanticBackend` returns a typed result, never throws, for any configurable failure
-  (`provider_failed` / `unsupported_adapter` / `vector_store_failed`).
+  (`not_installed` / `provider_failed` / `unsupported_adapter` / `vector_store_failed`).
+- The DI-injected path resolves **neither** optional native-chain package
+  (`@adhd/sox-vector-store`, `@adhd/sox-embedding-provider`). Loading the module with both injected
+  cannot throw `ERR_MODULE_NOT_FOUND` for either — asserted by a resolve-hook guard against the
+  built artifact in `src/optional-loadability.spec.ts`.
 - A failed embed degrades the write, never corrupts it — no placeholder vectors, no rolled-back
   node write.
 - `score` from `semanticSearchNodes` is a reciprocal-rank-fusion magnitude across the text and
