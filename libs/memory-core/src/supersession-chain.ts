@@ -100,8 +100,14 @@ export async function memoryGetSupersessionChain(
       a.rowid - b.rowid,
   );
 
-  // Canonical = most recent non-invalidated node, or latest by t_created
-  const canonical = chain.find((n) => n.t_invalid === null) ?? chain[chain.length - 1]!;
+  // Canonical = most recent non-invalidated node — i.e. the LAST live node in
+  // the oldest-first ordering above (which already carries the BL-505
+  // rowid tie-break), not the first. `.find` here would return the OLDEST
+  // live node, the exact opposite of "most recent" — filter+last preserves
+  // the existing comparator instead of re-deriving ordering via `reduce`.
+  // Falls back to the most recent node overall when nothing is live.
+  const liveChain = chain.filter((n) => n.t_invalid === null);
+  const canonical = liveChain[liveChain.length - 1] ?? chain[chain.length - 1]!;
 
   // Reason strings collected during BFS from edge metadata
   const chainWithReasons: ChainLink[] = chain.map((n) => ({
@@ -111,9 +117,17 @@ export async function memoryGetSupersessionChain(
     reason: edgeReasons.get(n.uid) ?? null,
   }));
 
+  // is_current reflects the QUERIED node's own validity, never a proxy via
+  // canonical.uid === uid. That equality coincides on well-formed chains but
+  // is wrong in the degenerate single-node case: an invalidated node with no
+  // SUPERSEDES edge has chain = [self], so canonical falls back to itself,
+  // and canonical.uid === uid was `true` for a node that is not current.
+  const queried = allRows.get(uid);
+  const isCurrent = queried ? queried.t_invalid === null : false;
+
   return {
     canonical_uid: canonical.uid,
     chain: chainWithReasons,
-    is_current: canonical.uid === uid,
+    is_current: isCurrent,
   };
 }
