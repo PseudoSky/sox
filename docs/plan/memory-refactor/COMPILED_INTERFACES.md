@@ -802,8 +802,11 @@ class SqliteSearchBackend implements SearchBackend {
   // first resolving the matching node-id set through graph.queryNodes(filter) and
   // passing it as VecFilter.ids to vec.knn() — VecFilter has no native namespace/kind
   // filter, only `ids`. A filter matching zero nodes yields zero vector candidates
-  // (skips the knn() call rather than passing an empty `ids` array, which the vector
-  // backend treats as "no filter", not "match nothing"). (BL-294)
+  // (skips the knn() call rather than passing an empty `ids` array). A PRESENT-BUT-EMPTY
+  // `ids` is itself a zero-candidate scope — it means "match nothing", never "no filter"
+  // — and the ranker short-circuits to zero results rather than delegating that decision
+  // to the graph backend (BUG-032 / ADR-0017; supersedes the old "empty ids = no filter"
+  // wording). (BL-294)
   // buildFilterClause is resolved internally — not exported
 }
 ```

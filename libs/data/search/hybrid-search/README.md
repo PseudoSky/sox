@@ -125,7 +125,9 @@ class StoreSearchBackend implements SearchBackend {
 `query.filters` (e.g. `{ namespace: 'tenant-a' }`) is resolved through `graph.queryNodes()` and used
 to constrain the vector channel's `knn()` call to the matching id set — so a filter scopes *both*
 channels identically, not just the text channel. A filter matching zero nodes yields zero vector
-candidates; it is never treated as "no filter."
+candidates; it is never treated as "no filter." A present-but-empty scope (`ids: []`, `kind: []`, …)
+is itself a zero-candidate scope: the ranker returns zero results directly rather than relying on the
+graph backend to compile the empty scope to a false predicate (BUG-032 / ADR-0017).
 
 ### Pure fusion functions (no storage dependency)
 
@@ -227,6 +229,8 @@ interface CrossEncoder {
   of the backends behind them, never surfaced through the `SearchBackend` interface itself.
 - Field boosting (e.g. an exact topic match) is applied multiplicatively, never additively.
 - A `NodeFilter` that matches zero nodes yields zero vector candidates — never an unfiltered `knn()`
-  fallback.
+  fallback. A **present-but-empty** scope (`ids: []`, `kind: []`, `topic: []`, `tags: []`) is a scope
+  that resolves to zero candidates: it yields zero results here, at the ranker layer, independent of
+  the graph backend's empty-scope handling (BUG-032 / ADR-0017).
 - `rrfFuse` operates purely on ranks, so a continuous value (recency) can never be smuggled in as a
   peer signal — it is applied afterward, via `temporalRescore`.

@@ -323,6 +323,8 @@ async function knn(
 
   const metric = indexConfig?.metric ?? 'cosine';
   let q = table.vectorSearch(query).distanceType(metric).limit(k);
+  // BUG-032 / ADR-0017 — present-but-empty ids ⇒ match nothing.
+  if (filter?.ids !== undefined && filter.ids.length === 0) return [];
   if (filter?.ids && filter.ids.length > 0) {
     q = q.where(`id IN (${filter.ids.join(',')})`);
   }
@@ -347,6 +349,8 @@ async function iter(
   if (!table) return [];
 
   let q = table.query();
+  // BUG-032 / ADR-0017 — present-but-empty ids ⇒ match nothing.
+  if (filter?.ids !== undefined && filter.ids.length === 0) return [];
   if (filter?.ids && filter.ids.length > 0) {
     q = q.where(`id IN (${filter.ids.join(',')})`);
   }

@@ -193,7 +193,11 @@ class BruteForceBackend implements SimilarityBackend {
     const clauses: string[] = [];
     const params: unknown[] = [];
 
-    if (filter?.ids && filter.ids.length > 0) {
+    // BUG-032 / ADR-0017 — a PRESENT-BUT-EMPTY ids is a scope that resolves to
+    // zero candidates, never "no filter". Dropping it would widen the query to
+    // an unfiltered scan.
+    if (filter?.ids !== undefined) {
+      if (filter.ids.length === 0) return [];
       clauses.push(`v.node_id IN (${filter.ids.map(() => '?').join(',')})`);
       params.push(...filter.ids);
     }
@@ -399,6 +403,9 @@ export class SqliteVectorBackend implements VectorBackend {
     let rows: Array<{ node_id: number; embedding: Buffer }> = [];
     try {
       if (!tableExists(this.db, tbl)) {
+        rows = [];
+      } else if (filter?.ids !== undefined && filter.ids.length === 0) {
+        // BUG-032 / ADR-0017 — present-but-empty ids ⇒ match nothing.
         rows = [];
       } else if (filter?.ids && filter.ids.length > 0) {
         const placeholders = filter.ids.map(() => '?').join(',');

@@ -100,3 +100,20 @@ export function buildFilterClause(filters: Record<string, unknown>): NodeFilterR
     unsupportedFilters,
   };
 }
+
+/**
+ * BUG-032 / ADR-0017 — true when a resolved {@link NodeFilter} contains a
+ * PRESENT-BUT-EMPTY scoped membership array (`ids: []`, `kind: []`,
+ * `topic: []`, `tags: []`). Such a scope resolves to zero candidates and must
+ * yield zero results at THIS layer too — never an unfiltered scan — regardless
+ * of whether the injected graph backend compiles the empty scope to a false
+ * predicate. The ranker owns its half of the invariant; it does not delegate it.
+ */
+export function nodeFilterSelectsNothing(filter: NodeFilter): boolean {
+  return (
+    (filter.ids !== undefined && filter.ids.length === 0) ||
+    (Array.isArray(filter.kind) && filter.kind.length === 0) ||
+    (Array.isArray(filter.topic) && filter.topic.length === 0) ||
+    (filter.tags !== undefined && filter.tags.length === 0)
+  );
+}
