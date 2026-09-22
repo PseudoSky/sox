@@ -189,4 +189,71 @@ describe('memoryGetEntityEpisodes count/pagination contract (Q4)', () => {
       cleanup();
     }
   });
+
+  // ── limit/offset coercion (blind-review finding, BL: Q4 follow-up) ────────
+  //
+  // Moving limit/offset from Array.slice into a bound `LIMIT ? OFFSET ?`
+  // dropped slice()'s implicit coercion/clamping. The MCP schema declares
+  // both as plain `number` (no multipleOf/minimum), so these are all
+  // schema-valid inputs a client can send.
+
+  it('Case E: limit:2.5 (non-integer) truncates instead of throwing a SQLite datatype-mismatch error', async () => {
+    const { dir, cleanup } = tmpDir();
+    try {
+      const db = await openDb(path.join(dir, 't.db'));
+      const { entityUid, liveUids } = await seedFixture(db);
+
+      // Pre-fix: adapter.executeAll(...[entityRow.rowid, 2.5, offset]) throws
+      // "step failed: Runtime error: datatype mismatch" — the call rejects
+      // instead of returning a result at all.
+      const result = await memoryGetEntityEpisodes(db, { entity_uid: entityUid, limit: 2.5 });
+
+      expect(result.code).toBeUndefined();
+      expect(result.episodes?.length).toBe(2);
+      expect(result.episodes?.map((e) => e.uid)).toEqual(liveUids.slice(0, 2));
+
+      await db.close();
+    } finally {
+      cleanup();
+    }
+  });
+
+  it('Case F: limit:-1 (negative) is clamped, not passed through as SQLite "no limit"', async () => {
+    const { dir, cleanup } = tmpDir();
+    try {
+      const db = await openDb(path.join(dir, 't.db'));
+      const { entityUid } = await seedFixture(db);
+
+      // Pre-fix: Math.min(-1, 200) === -1 reaches SQL as `LIMIT -1`, which
+      // SQLite treats as "no limit" — all 3 live episodes come back despite
+      // limit:-1, silently defeating the caller's bound (and, at scale,
+      // amplifying the per-row enrichment N+1 into hundreds of round trips).
+      const result = await memoryGetEntityEpisodes(db, { entity_uid: entityUid, limit: -1 });
+
+      expect(result.total).toBe(3); // total is unaffected by limit
+      expect(result.episodes?.length).toBeLessThan(3);
+
+      await db.close();
+    } finally {
+      cleanup();
+    }
+  });
+
+  it('Case G: offset:-3 (negative) clamps to 0 instead of reaching SQL as a negative OFFSET', async () => {
+    const { dir, cleanup } = tmpDir();
+    try {
+      const db = await openDb(path.join(dir, 't.db'));
+      const { entityUid, liveUids } = await seedFixture(db);
+
+      const result = await memoryGetEntityEpisodes(db, { entity_uid: entityUid, offset: -3 });
+
+      expect(result.code).toBeUndefined();
+      expect(result.episodes?.length).toBe(3);
+      expect(result.episodes?.map((e) => e.uid)).toEqual(liveUids);
+
+      await db.close();
+    } finally {
+      cleanup();
+    }
+  });
 });
