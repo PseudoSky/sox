@@ -144,4 +144,28 @@ describe('memoryGetSupersessionChain — is_current / canonical selection (Q2)',
       cleanup();
     }
   });
+
+  it('Case E: a nonexistent uid returns a structured E_NOT_FOUND, not a crash', async () => {
+    const { dir, cleanup } = tmpDir();
+    try {
+      const db = await createDb(path.join(dir, 't.db'));
+
+      const result = await memoryGetSupersessionChain(db, { uid: 'uid-does-not-exist' });
+
+      // Pre-fix: allRows is empty, chain=[], canonical falls back to
+      // chain[chain.length - 1]! (undefined, hidden by the `!`), and
+      // `canonical.uid` on the return statement throws
+      // "Cannot read properties of undefined (reading 'uid')" before this
+      // assertion is ever reached.
+      expect(result.code).toBe('E_NOT_FOUND');
+      expect(result.message).toContain('uid-does-not-exist');
+      expect(result.canonical_uid).toBeUndefined();
+      expect(result.chain).toBeUndefined();
+      expect(result.is_current).toBeUndefined();
+
+      await db.close();
+    } finally {
+      cleanup();
+    }
+  });
 });

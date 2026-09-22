@@ -22,10 +22,20 @@ export interface ChainLink {
 }
 
 export interface SupersessionChainResult {
-  canonical_uid: string;
-  chain: ChainLink[];
-  is_current: boolean;
+  canonical_uid?: string;
+  chain?: ChainLink[];
+  /**
+   * `is_current` reflects the QUERIED node's own validity
+   * (`t_invalid === null`) — it does NOT mean "the queried node is
+   * canonical." Those diverge whenever a live node is superseded but never
+   * invalidated: querying that uid can return `is_current: true` alongside
+   * a different `canonical_uid`. This is intentional (Q2 fix, see
+   * supersession-chain.ts) — do not assume `is_current === (canonical_uid
+   * === uid)`.
+   */
+  is_current?: boolean;
   code?: string;
+  message?: string;
 }
 
 // ── Main ───────────────────────────────────────────────────────────────────────
@@ -88,6 +98,19 @@ export async function memoryGetSupersessionChain(
         edgeReasons.set(current, (e.metadata as { reason?: string } | undefined)?.reason ?? null);
       }
     }
+  }
+
+  // Missing uid: BFS never found a matching node row, so allRows is empty
+  // and there is nothing to build a chain, canonical, or is_current from.
+  // Report a structured error instead of letting `chain[chain.length - 1]!`
+  // (below) resolve to `undefined` and throw on `.uid` access — the MCP
+  // handler (memory-server/src/index.ts:2327) already branches on `code` and
+  // wraps this as isError:true; nothing wired ever set it until now.
+  if (allRows.size === 0) {
+    return {
+      code: 'E_NOT_FOUND',
+      message: `No node found for uid: ${uid}`,
+    };
   }
 
   // Build ordered chain oldest-first (by t_created). BL-505: ties broken by
