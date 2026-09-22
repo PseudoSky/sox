@@ -9,32 +9,30 @@
  * per the tool's documented "ranked by importance" contract
  * (memory-server/src/index.ts).
  *
- * The three reads run inside one `adapter.transaction()` (deferred/read) so
- * they see one consistent snapshot of the edge/node tables — without it, an
- * invalidation from a concurrent writer (e.g. the near-dup pass) landing
- * between the count and the page query reproduces the exact "total N, short
- * page" symptom this function exists to eliminate. Per-episode enrichment
- * (`isSuperseded`/`supersedesUidForRowid`/`communityUidForRowid` below) runs
- * OUTSIDE that transaction, against already-resolved rowids — it is not
- * covered by this consistency guarantee, and is a pre-existing N+1 query
- * pattern (one call per returned row) tracked separately, not fixed here.
- *
- * Two constraints this introduces, worth knowing before calling this from a
- * new site:
- * (a) This function is no longer safe against a soft-readonly adapter.
- *     `TursoAdapterImpl.transaction()` calls `_assertWritable()` first and
- *     throws `[BL-391] TursoAdapter is read-only` on a connection built by
- *     `openDbReadOnly()`. Not reachable today — the MCP tool is always
- *     handed the primary writable adapter — but a future caller passing a
- *     read-only adapter here will get that throw instead of a result.
- * (b) The snapshot guarantee is Turso-specific in HOW it is enforced.
- *     `TursoAdapterImpl.transaction()` runs under `_withTxLock`; the SQLite
- *     adapter's `_runTransaction` BEGINs directly on the shared handle with
- *     a ~70ms retry budget and no equivalent serialization mutex. Adding a
- *     transaction to this read path widens the window in which a concurrent
- *     writer on the SQLite backend could contend for that BEGIN. This is a
- *     flagged risk, not a demonstrated defect — no failing input has been
- *     produced for it.
+ * `total`, `invalidated_count`, and the page are three sequential reads
+ * against that same filtered join — not wrapped in a transaction. This
+ * leaves a narrow, read-side straddling race: an episode invalidation
+ * committed by a concurrent writer between the `total` read and the page
+ * read yields a `total` that is one higher than `episodes.length` for that
+ * one response. The race is rare (it requires a write landing in a
+ * microseconds-wide window between two of this function's own reads),
+ * self-healing (the next call re-reads current state and is correct), and
+ * strictly cheaper than the alternative this function does NOT do: holding
+ * a transaction open across these reads does not produce a real
+ * consistency guarantee here regardless of topology — `isSuperseded`/
+ * `supersedesUidForRowid`/`communityUidForRowid` below already run outside
+ * any such transaction, once per returned row, so the returned object is a
+ * multi-snapshot composite by construction even with the count/page reads
+ * wrapped — while costing a demonstrated correctness regression on the
+ * SQLite backend (a concurrent write shaped like `memory_invalidate`,
+ * fired while a wrapping read transaction is open, hard-throws `cannot
+ * start a transaction within a transaction` instead of succeeding) and
+ * tension with this repo's own invariants that WAL readers do not block
+ * writers and that a raw driver exception should not reach a caller. If
+ * this straddle needs closing, the fix belongs in one query the planner
+ * can make atomic (e.g. a windowed `COUNT(*) FILTER (...) OVER ()` plus
+ * the live-row page in a single statement), not in a transaction wrap —
+ * tracked as a separate, unshipped follow-up.
  *
  * [inv:no-mcp] — returns a plain result object, never an MCP ToolResult.
  */
@@ -190,48 +188,42 @@ export async function memoryGetEntityEpisodes(
   }
 
   // total/invalidated_count/page all read the SAME live-filtered
-  // MENTIONS→episode join shape, inside one transaction — pagination must
-  // never slice a raw edge array (that was the defect: total counted
-  // invalid edges while pages were filtered afterward, so pages came back
-  // short and offsets shifted meaning as invalid rows fell in different
-  // slices). The transaction additionally guarantees these three reads see
-  // one snapshot: without it, a concurrent invalidation landing between the
-  // count and the page query reproduces the same "total N, short page"
-  // symptom via a different mechanism.
-  const { total, invalidatedCount, pageResult } = await adapter.transaction(async (tx) => {
-    const totalRow = await tx.executeGet<{ cnt: number }>(
-      `SELECT COUNT(*) AS cnt
-         FROM edge e JOIN node n ON n.rowid = e.src
-        WHERE e.dst = ? AND e.rel = 'MENTIONS' AND e.t_invalid IS NULL
-          AND n.kind = 'episode' AND n.t_invalid IS NULL`,
-      [entityRow.rowid],
-    );
+  // MENTIONS→episode join shape — pagination must never slice a raw edge
+  // array (that was the Q4 defect: total counted invalid edges while pages
+  // were filtered afterward, so pages came back short and offsets shifted
+  // meaning as invalid rows fell in different slices). These three reads
+  // are sequential, not transactionally wrapped — see the top-of-file
+  // docblock for the narrow straddling race that leaves open and why it is
+  // the better trade here.
+  const totalRow = await adapter.executeGet<{ cnt: number }>(
+    `SELECT COUNT(*) AS cnt
+       FROM edge e JOIN node n ON n.rowid = e.src
+      WHERE e.dst = ? AND e.rel = 'MENTIONS' AND e.t_invalid IS NULL
+        AND n.kind = 'episode' AND n.t_invalid IS NULL`,
+    [entityRow.rowid],
+  );
 
-    const invalidatedRow = await tx.executeGet<{ cnt: number }>(
-      `SELECT COUNT(*) AS cnt
-         FROM edge e JOIN node n ON n.rowid = e.src
-        WHERE e.dst = ? AND e.rel = 'MENTIONS' AND e.t_invalid IS NULL
-          AND n.kind = 'episode' AND n.t_invalid IS NOT NULL`,
-      [entityRow.rowid],
-    );
+  const invalidatedRow = await adapter.executeGet<{ cnt: number }>(
+    `SELECT COUNT(*) AS cnt
+       FROM edge e JOIN node n ON n.rowid = e.src
+      WHERE e.dst = ? AND e.rel = 'MENTIONS' AND e.t_invalid IS NULL
+        AND n.kind = 'episode' AND n.t_invalid IS NOT NULL`,
+    [entityRow.rowid],
+  );
 
-    const page = await tx.executeAll<EpRow>(
-      `SELECT n.rowid, n.uid, n.content, n.summary, n.topic, n.tags, n.project_path,
-              n.importance, n.t_created, n.agent_id
-         FROM edge e JOIN node n ON n.rowid = e.src
-        WHERE e.dst = ? AND e.rel = 'MENTIONS' AND e.t_invalid IS NULL
-          AND n.kind = 'episode' AND n.t_invalid IS NULL
-        ORDER BY n.importance DESC, n.rowid ASC
-        LIMIT ? OFFSET ?`,
-      [entityRow.rowid, limit, offset],
-    );
+  const pageResult = await adapter.executeAll<EpRow>(
+    `SELECT n.rowid, n.uid, n.content, n.summary, n.topic, n.tags, n.project_path,
+            n.importance, n.t_created, n.agent_id
+       FROM edge e JOIN node n ON n.rowid = e.src
+      WHERE e.dst = ? AND e.rel = 'MENTIONS' AND e.t_invalid IS NULL
+        AND n.kind = 'episode' AND n.t_invalid IS NULL
+      ORDER BY n.importance DESC, n.rowid ASC
+      LIMIT ? OFFSET ?`,
+    [entityRow.rowid, limit, offset],
+  );
 
-    return {
-      total: totalRow?.cnt ?? 0,
-      invalidatedCount: invalidatedRow?.cnt ?? 0,
-      pageResult: page,
-    };
-  }, { mode: 'deferred' });
+  const total = totalRow?.cnt ?? 0;
+  const invalidatedCount = invalidatedRow?.cnt ?? 0;
 
   const episodes: EpisodeSummary[] = [];
   for (const r of pageResult.rows) {
