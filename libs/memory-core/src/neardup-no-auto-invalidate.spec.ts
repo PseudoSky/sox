@@ -1,6 +1,6 @@
 /**
  * neardup-no-auto-invalidate.spec.ts — Q1 regression
- * (docs/plan-drafts/neardup-invalidation-fix-plan.md §2).
+ * (docs/reporting/memory/findings/2026-09-22-neardup-invalidation-fix-plan.md §2).
  *
  * `applyNearDupResult` (enrich.ts) used to bi-temporally invalidate the OLDER
  * of a near-dup pair with a bare `UPDATE node SET t_invalid = ? WHERE uid = ?`
@@ -35,7 +35,7 @@
  *
  * Gate: npx nx test memory-core --skip-nx-cache -- neardup-no-auto-invalidate
  */
-import { describe, it, expect, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import * as fsSync from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
@@ -46,7 +46,24 @@ import { applyNearDupResult } from './enrich.js';
 import { applyEmbedding, type PendingEmbed } from './embed-pipeline.js';
 import { memoryGetNearDuplicates } from './near-duplicates.js';
 import { memoryRecall } from './recall.js';
-import { vecToJson, vecToBuffer, EMBED_DIM } from './embed.js';
+import { vecToJson, vecToBuffer, EMBED_DIM, _setEmbedProviderForTest } from './embed.js';
+import { DeterministicTestProvider } from './embed-test-provider.js';
+
+/**
+ * 2026-09-22 re-review finding 2: this file's assertions on `meta['model']`
+ * must observe the REAL active provider's model id, not the `?? 'unknown'`
+ * fallback in enrich.ts's `applyNearDupResult` — a test asserting
+ * `typeof meta['model'] === 'string'` passes on 'unknown' too, which is
+ * exactly the failure mode it exists to catch (BL-167 shape: an assertion
+ * with no failing branch). memory-core's vitest.setup.ts installs
+ * DeterministicTestProvider globally, but that install runs once per forked
+ * worker at worker start — a prior spec file in the SAME worker calling
+ * `_setEmbedProviderForTest(null)` without restoring it (measured by the
+ * blind reviewer) leaves `_activeModel` null for whatever spec runs next.
+ * Install it explicitly here too so this file's assertions do not depend on
+ * suite ordering.
+ */
+const TEST_MODEL_ID = new DeterministicTestProvider().metadata.modelId;
 
 /** L2-normalised 768-dim vector, deterministic per seed. */
 function makeVec(seed: number, jitter = 0): Float32Array {
@@ -64,6 +81,10 @@ function makeVec(seed: number, jitter = 0): Float32Array {
 describe('Q1 — applyNearDupResult never sets t_invalid (SYNC path)', () => {
   let dir: string | undefined;
   const priorAdapterEnv = process.env['STORE_ADAPTER'];
+
+  beforeEach(() => {
+    _setEmbedProviderForTest(new DeterministicTestProvider());
+  });
 
   afterEach(async () => {
     await closeAllAdapters();
@@ -132,7 +153,12 @@ describe('Q1 — applyNearDupResult never sets t_invalid (SYNC path)', () => {
     expect(meta['cosine_sim']).toBeCloseTo(nearDup!.cosine_sim, 5);
     expect(meta['status']).toBe('near_dup');
     expect(meta['detector']).toBe('auto-neardup');
-    expect(typeof meta['model']).toBe('string');
+    // 2026-09-22 re-review finding 2: assert the CONCRETE model id, not
+    // `typeof === 'string'` — 'unknown' (enrich.ts's `?? 'unknown'` fallback
+    // when no provider is active) is also a string, so the old assertion
+    // passed in exactly the failure case it existed to catch.
+    expect(meta['model']).toBe(TEST_MODEL_ID);
+    expect(meta['model']).not.toBe('unknown');
     expect(typeof meta['detected_at']).toBe('string');
 
     // (b) BOTH nodes still live — the assertion that goes red if the deleted
@@ -160,6 +186,10 @@ describe('Q1 — applyNearDupResult never sets t_invalid (SYNC path)', () => {
 describe('Q1 — the async Phase-B path (embed-pipeline applyEmbedding) does not invalidate either', () => {
   let dir: string | undefined;
   const priorAdapterEnv = process.env['STORE_ADAPTER'];
+
+  beforeEach(() => {
+    _setEmbedProviderForTest(new DeterministicTestProvider());
+  });
 
   afterEach(async () => {
     await closeAllAdapters();
@@ -226,6 +256,9 @@ describe('Q1 — the async Phase-B path (embed-pipeline applyEmbedding) does not
     expect(edgeRow).not.toBeNull();
     expect(edgeRow!.weight).toBeGreaterThan(0.95);
     expect(edgeRow!.meta).not.toBeNull();
+    const asyncMeta = JSON.parse(edgeRow!.meta!) as Record<string, unknown>;
+    expect(asyncMeta['model']).toBe(TEST_MODEL_ID);
+    expect(asyncMeta['model']).not.toBe('unknown');
 
     // THE assertion: neither node was invalidated by the async default path.
     const rows = await adapter.executeAll<{ uid: string; t_invalid: string | null }>(
