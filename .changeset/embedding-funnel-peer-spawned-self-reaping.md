@@ -1,6 +1,6 @@
 ---
-'@adhd/sox-embedding-provider': minor
-'@adhd/sox-service-proxy': minor
+'@adhd/sox-embedding-provider': patch
+'@adhd/sox-service-proxy': patch
 ---
 
 feat(embedding-provider): peer-spawned, self-reaping embedding funnel — N consumer processes share ONE
