@@ -12,10 +12,10 @@ binary reaches the same store and is what filed them.
 | # | Backlog UID | Project | Pri | Item |
 |---|---|---|---|---|
 | 1 | `c98f2ba9-243b-4b31-bade-68ad4509e817` | sox-ecosystem | HIGH | backlog MCP `CONNECTION_CLOSED` while the CLI works |
-| 2 | `148601b7-8dbd-46e5-81d2-62abf26e6b9e` | sox-ecosystem | HIGH | near-dup pass silently invalidates the older node of any ≥0.95 pair |
-| 3 | `1f6ed3d6-b4e6-4bba-b534-ee9e4f258897` | sox-ecosystem | MEDIUM | `memory_entity_episodes.total` counts episodes the array omits |
-| 4 | `045a82d3-96c0-4668-ab40-508cbabbf335` | sox-ecosystem | MEDIUM | default `chunk_size` 500 → child chunks with `topic:null, tags:[]` |
-| 5 | `0a9becb4-68cb-4e00-85b8-7927afecc835` | sox-ecosystem | HIGH | `E_BUSY` recurrence at parallelism 3 (recurrence of `030d7736`) |
+| 2 | `c56aea0a` (current; see UID-migration note below) | sox-ecosystem | HIGH | near-dup pass silently invalidates the older node of any ≥0.95 pair |
+| 3 | `866650df` (current; see UID-migration note below) | sox-ecosystem | MEDIUM | `memory_entity_episodes.total` counts episodes the array omits |
+| 4 | `29f3a4d5` (current; see UID-migration note below) | sox-ecosystem | MEDIUM | default `chunk_size` 500 → child chunks with `topic:null, tags:[]` |
+| 5 | `697491ef` (current; see UID-migration note below) | sox-ecosystem | HIGH | `E_BUSY` recurrence at parallelism 3 (recurrence of `030d7736`) |
 | 6 | `24cc0c97-e336-4b14-a0a6-14dca938f462` | claude-agents | MEDIUM | `ml-engineer` vs `machine-learning-engineer` undifferentiated |
 | 7 | `2a90406d-0333-4225-8cd1-f09a5df3071a` | claude-agents | MEDIUM | root README has no per-agent listing; stale agent counts |
 | 8 | — | — | — | CUSUM ARL contract defect — **resolved in spec**, not deferred: the fix is the statistical-test protocol requirement now in `ml-system-architect.md` |
@@ -31,6 +31,14 @@ new UID and returns `conflict` on the old one (which is why row `+`/plan-status 
 `30e85931` and not the `c6cf9770` it was created as). If a UID above 404s, follow the
 `conflict` error — it names the successor — or find the item by title with
 `backlog query --input '{"view":"list","filter":{"project":"sox-ecosystem"}}'`.
+
+**Any UID written into this file is a point-in-time reference, not a stable identifier** —
+this store reassigns an item's UID on every body write, so a UID recorded here goes stale
+the moment that item is next edited; the backlog CLI/graph is always the source of truth,
+never this document. Trails observed this session (each hop verified by the operator that
+performed the write, read back and byte-matched): item #2 `148601b7` → `ce982b89` →
+`1c25eb4f` → `c56aea0a` (four identities in one day); item #3 `1f6ed3d6` → `866650df`;
+item #4 `045a82d3` → `29f3a4d5`; item #5 `0a9becb4` → `697491ef`.
 
 Refinement record with all run evidence: `claude-agents/.research-trace/2026-09-21-ml-agent-trio.md`.
 
@@ -88,6 +96,13 @@ Every invalidation landed 2–15 s after the newer write, i.e. inside the window
 
 **Immediate mitigation in the agent specs (already committed, claude-agents `c69d86c0`):** `chunk_size: 1500/4000` so entries are single nodes (removes the self-duplicate case), `client_request_id` on writes. It does **not** protect divergent verdicts; until fixed, a re-run of the scout on a use case overwrites its prior verdict's existence.
 
+**Related items filed since (same near-dup/supersession surface):**
+- `81cc2211-eab3-4fe0-ab93-7349b3a1015b` — degenerate embedding batches mint near-constant vectors (feeds the false ≥0.95 matches this item reports)
+- `0a4b81b7-0217-454e-8fdb-d4df41dd7262` — `applyNearDupResult` destroys victim metadata and orphans edges
+- `61fbf2e0-2a79-4bce-b224-245a8d0319bd` — bulk re-embed re-runs the destructive pass
+- `9b879ca9-01cf-472f-a5ef-3480779092c6` — `memory_related` slices edges before the liveness filter (the `edges: []` behavior in repro step 4 above)
+- `48d2c16e-affc-41ba-88b3-e52e18bc66c4` — two conflicting definitions of supersession-chain canonical node (the `is_current: true` on a dead node reported above)
+
 ## 3. memory-server — `memory_entity_episodes.total` counts invalidated episodes that the `episodes` list omits
 
 **Repo:** sox-ecosystem · **Severity:** low — pagination/UX inconsistency, but it made an agent believe its write was lost
@@ -102,6 +117,8 @@ Every invalidation landed 2–15 s after the newer write, i.e. inside the window
 1. Produce an invalidated episode that mentions an entity (item 2 steps 1–3, or `memory_invalidate` on any episode tagged with a unique test tag).
 2. `memory_entity_episodes({entity_name: "<that tag>"})`.
 3. Expected: `total` equals `episodes.length` (or the response says how many were filtered). Actual: `total` includes the invalidated node; the list does not.
+
+**Related item filed since:** `53874283-7910-4b58-a949-8b9da9b1e0ad` — `memoryGetEntityEpisodes` N+1 (3 queries per row), same function.
 
 ---
 
@@ -132,6 +149,11 @@ Every invalidation landed 2–15 s after the newer write, i.e. inside the window
 1. Dispatch three subagents that each issue 5–10 `memory_write` calls within the same minute.
 2. Watch for `{"error": {"code": "E_BUSY", "message": "database is locked"}}`.
 3. Expected under `multiprocess-wal`: no `E_BUSY` for writes this small, or server-side retry before surfacing. The agent specs now retry once after 2 s with a `client_request_id`.
+
+**Investigated and REFUTED as a defect (session of 2026-09-22):** the Turso bypass path is
+deliberately unserialized, `memory_ping` honestly reports `admission_control` as inactive, and
+`030d7736`'s fix (commit `ec69776b`) scoped itself to structured retryable errors with no silent
+data loss — which is exactly the behavior observed here. No further investigation needed.
 
 ---
 
