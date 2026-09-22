@@ -159,6 +159,20 @@ that exists in no commit.
 
 ## 4. Traps that cost real time on 2026-09-22
 
+> ⛔ **TRAPS 1 AND 9 BELOW ARE SUPERSEDED ON CAUSATION.** The `-tshm.stale-*` rotation is **not**
+> a split-build symptom and **not** a defect. It is the designed success path —
+> `resetTshmAfterTruncate()` (`libs/data/store/store-adapter/src/turso-adapter.ts:3260-3305`) renames
+> the `-tshm` whenever `wal_checkpoint(TRUNCATE)` SUCCEEDS, driven by the 30s gated idle flush, and
+> bounded by the BL-591 retention sweep to a steady state of 20-26 files (~2 MB). All 17
+> post-restart `close_tshm_reset` events carry one uninterrupted `"pid":99483`, and there are ZERO
+> `E_FOREIGN_SQLITE_SIDECAR` events in the service log. The split build may have caused other
+> symptoms; it did not cause this cadence. **Do not re-walk this.**
+> Full evidence: [`2026-09-22-neardup-rollout-blocked.md`](./2026-09-22-neardup-rollout-blocked.md) §3.
+>
+> ⛔ **THE "Remaining steps" IN §3 ARE UNDER-SPECIFIED.** `registry:sync-index` + commit is **not** a
+> mechanical close-out — it requires a **Changesets release**, because npm's published `1.3.3` holds
+> the PRE-FIX bytes and the fixed artifact was never published. See the same document, §2.
+
 1. **Rebuilding `dist/` underneath a running service SPLITS it.** This session's own deploy did
    exactly that. The parent process keeps the old artifact resident in memory while newly spawned
    children (`enrich-process-host.js`, `fastembedProcessHost.js`) load the **new** one. Mixed
