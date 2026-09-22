@@ -260,11 +260,19 @@ describe('memoryGetSupersessionChain (B2)', () => {
       };
       const assertChain = async (db: StoreAdapter): Promise<void> => {
         const r1 = await memoryGetSupersessionChain(db, { uid: 'uid-b' });
-        // Lower rowid wins the t_created tie.
-        expect(r1.canonical_uid).toBe('uid-a');
         expect(r1.chain.map((l) => l.uid)).toEqual(['uid-a', 'uid-b']);
-        // uid-b is superseded — it is NOT the canonical node.
-        expect(r1.is_current).toBe(false);
+        // The edge runs src=uid-b -> dst=uid-a: uid-b SUPERSEDES uid-a, so
+        // uid-b is the superseder and therefore canonical. The prior
+        // expectation here (canonical_uid === 'uid-a', is_current === false)
+        // pinned a comparator artefact from the old (buggy) `.find` selection
+        // — which returned the OLDEST live node in an oldest-first-sorted
+        // chain — not the intended semantic ("most recent non-invalidated
+        // node"). BL-505's real invariant (rowid tie-break determinism across
+        // sqlite/turso) is unaffected: the ordering ['uid-a','uid-b'] and the
+        // idempotency check below are unchanged.
+        expect(r1.canonical_uid).toBe('uid-b');
+        // uid-b is live and is the canonical node — it is current.
+        expect(r1.is_current).toBe(true);
         // Idempotent — a second call returns the identical result.
         const r2 = await memoryGetSupersessionChain(db, { uid: 'uid-b' });
         expect(r2).toEqual(r1);
