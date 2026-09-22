@@ -53,6 +53,18 @@ export interface ServeBackendOptions {
    * create+bind+chmod path is used unchanged.
    */
   inheritFd?: number | undefined;
+  /**
+   * The embedding-funnel lifecycle hook (SPEC-EMBEDDING-FUNNEL.md §A): called
+   * with the live client-connection count on EVERY connect and disconnect.
+   *
+   * `sockets` (the per-`serveBackend` Set below) is the single source of truth
+   * for "how many clients are attached right now". A self-reaping host uses
+   * this to know when the last cross-process consumer has left, so it can arm
+   * its idle teardown. Purely observational: the hook never affects the
+   * accept/dispatch path, and omitting it (every existing caller) changes
+   * nothing.
+   */
+  onClientCountChange?: (active: number) => void;
 }
 
 /** A running backend listener handle. */
@@ -79,6 +91,15 @@ export function serveBackend(opts: ServeBackendOptions): Promise<BackendHandle> 
 
   const sockets = new Set<net.Socket>();
 
+  /**
+   * Emit the live client-connection count to the optional lifecycle hook.
+   * `sockets` is the source of truth; this is the ONLY place the count is read
+   * for the hook, so connect/disconnect can never disagree about it.
+   */
+  const notifyClientCount = (): void => {
+    opts.onClientCountChange?.(sockets.size);
+  };
+
   async function onFrame(msg: unknown, socket: net.Socket): Promise<void> {
     if (!isJsonRpcRequest(msg)) {
       diag(`[service-proxy backend] dropping non-request frame`);
@@ -104,6 +125,7 @@ export function serveBackend(opts: ServeBackendOptions): Promise<BackendHandle> 
 
   const server = net.createServer((socket) => {
     sockets.add(socket);
+    notifyClientCount();
     const decoder = new FrameDecoder(
       (msg) => { void onFrame(msg, socket); },
       (err) => {
@@ -119,6 +141,7 @@ export function serveBackend(opts: ServeBackendOptions): Promise<BackendHandle> 
     socket.on('close', () => {
       decoder.reset();
       sockets.delete(socket);
+      notifyClientCount();
     });
   });
 
@@ -172,6 +195,7 @@ export function serveBackend(opts: ServeBackendOptions): Promise<BackendHandle> 
             new Promise<void>((res) => {
               for (const s of sockets) s.destroy();
               sockets.clear();
+              notifyClientCount();
               server.close(() => res());
             }),
         });
@@ -204,6 +228,7 @@ function doListen(
         new Promise<void>((res) => {
           for (const s of sockets) s.destroy();
           sockets.clear();
+          opts.onClientCountChange?.(0);
           server.close(() => {
             try {
               if (fs.existsSync(opts.socketPath)) fs.unlinkSync(opts.socketPath);
