@@ -43,7 +43,8 @@
  *
  * `fastembedProcessHost.ts`'s BL-331 lock check intentionally
  * `console.error`s a loud, greppable line when a competing fastembed host is
- * detected (guarding against a silent 25-50x embed-latency regression), and
+ * detected (so an otherwise-unattributable embed-latency regression has a
+ * visible correlate), and
  * `resolveExecutionProviders()` intentionally `console.error`s when
  * `SOX_EMBED_EXECUTION_PROVIDER` forces a non-default provider. A blanket
  * "pipe stderr, discard everything" fix would silently destroy both of those

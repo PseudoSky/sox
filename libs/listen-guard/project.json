@@ -6,7 +6,8 @@
   "sourceRoot": "libs/listen-guard/src",
   "tags": [
     "type:lib",
-    "area:platform"
+    "area:platform",
+    "area:shared"
   ],
   "targets": {
     "build": {

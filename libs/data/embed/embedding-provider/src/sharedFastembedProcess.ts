@@ -26,6 +26,8 @@ import { log, forkChild, _recordChildTelemetry, currentRuntimeState } from '@adh
 import type { ChildTelemetrySnapshot } from '@adhd/sox-telemetry';
 import { resolveFastembedLockPath, resolveFastembedServiceLabel } from './fastembedLock.js';
 import { attachOnnxStderrFilter } from './onnxStderrFilter.js';
+import { resolveEmbedHostConfig } from './embedHostConfig.js';
+import { FunneledFastembedClient, resetSharedFastembedHost } from './funnelClient.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -39,6 +41,12 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
  * `sharedOnnxWorker.ts`.
  */
 function resolveFastembedHostPath(): string {
+  // Test/diagnostic seam (ADR-0013 border: a path injection, never a feature
+  // toggle): the funnel teeth suite points the PRIVATE pool at a stub host so it
+  // can drive the real `embedHostMain` + teardown without loading an ONNX model.
+  const override = process.env['SOX_FASTEMBED_HOST_PATH'];
+  if (override !== undefined && override !== '') return override;
+
   const sibling = join(__dirname, 'fastembedProcessHost.js');
   if (existsSync(sibling)) return sibling;
 
@@ -67,8 +75,9 @@ function isPidAlive(pid: number): boolean {
  * `fastembedProcessHost.ts`'s `checkAndClaimFastembedLock()` writes on every
  * host startup, and report whether it names a DIFFERENT, still-live pid from
  * `ownPid` — i.e. a second fastembed host currently exists on this machine. A
- * second host changes embed latency 25-50x (cross-process CoreML/ANE
- * contention, BL-331) and nothing previously recorded whether one was
+ * second host is associated (by UNPROVEN hypothesis — the measured cause of
+ * the live BL-331 slowdown was scheduling QoS, not ANE contention) with the
+ * 25-50x embed-latency class, and nothing previously recorded whether one was
  * present for any given embed-latency number (BL-432/BL-433's "unlabelled
  * measurement" class).
  *
@@ -565,10 +574,12 @@ export class SharedFastembedProcessClient implements SharedFastembedClient {
    *      (`queue_depth` === 0 with a large `response_ms`).
    *   3. `competing_host_pid` (+ `competing_host_service`, BL-432) — present
    *      only when a second, still-live `fastembedProcessHost` process belonging
-   *      to a DIFFERENT service is detected (BL-331's advisory lock), since
-   *      that changes embed latency 25-50x independent of queueing. A
-   *      same-service lock (the sequential-CLI false positive) is suppressed,
-   *      so this field means genuine cross-service contention.
+   *      to a DIFFERENT service is detected (BL-331's advisory lock). A second
+   *      host is associated (UNPROVEN hypothesis) with a 25-50x latency class
+   *      independent of queueing; this field records its presence, it does not
+   *      assert causation. A same-service lock (the sequential-CLI false
+   *      positive) is suppressed, so this field means genuine cross-service
+   *      co-residence.
    *
    * BL-576: `signal`, when supplied, is an external cancellation source —
    * e.g. `operation-guard.ts`'s `withOperationDeadline` abort controller, so
@@ -1621,6 +1632,60 @@ export class AdaptiveFastembedProcessPool implements SharedFastembedClient {
 }
 
 let _singleton: SharedFastembedClient | null = null;
+let _privateSingleton: PrivateFastembedProcess | null = null;
+
+/**
+ * The concrete shape {@link getPrivateFastembedProcess} returns: a
+ * `SharedFastembedClient` that also exposes `pendingCount`. The extra member is
+ * a SUBTYPE of the public interface (whose shape is deliberately unchanged) —
+ * only the host process, which must know when in-flight work has drained before
+ * it can reap itself, depends on it.
+ */
+export type PrivateFastembedProcess = SharedFastembedClient & { readonly pendingCount: number };
+
+/**
+ * The PRIVATE (un-funneled) pool — the OLD body of `getSharedFastembedProcess()`,
+ * unchanged.
+ *
+ * This is the ONLY place a fastembed child process is forked inside a process
+ * that is NOT the shared host. It is used by:
+ *   - the shared host itself (`embedHostMain.ts`) — which is the funnel's
+ *     compute backend and must never call {@link getSharedFastembedProcess}
+ *     (that would recurse into the funnel);
+ *   - the `'private'` host-selection posture (CI/diagnostics).
+ *
+ * (BL-575) Two shapes, chosen by whether `SOX_EMBED_POOL_SIZE` is set:
+ *   - PINNED (`resolveFastembedPoolPin()` non-null): a FIXED `FastembedProcessPool`.
+ *   - DEFAULT: an `AdaptiveFastembedProcessPool` starting at `minSize: 1` and
+ *     growing toward `resolveFastembedPoolCeiling()` only under sustained demand.
+ */
+export function getPrivateFastembedProcess(): PrivateFastembedProcess {
+  if (_privateSingleton) return _privateSingleton;
+  const pin = resolveFastembedPoolPin();
+  _privateSingleton =
+    pin !== null
+      ? new FastembedProcessPool(pin)
+      : new AdaptiveFastembedProcessPool({ minSize: 1, maxSize: resolveFastembedPoolCeiling() });
+  return _privateSingleton;
+}
+
+/**
+ * Terminate and clear the private pool so the next {@link getPrivateFastembedProcess}
+ * forks a genuinely fresh child. This backs the host's `embedding.reset` method
+ * (used by memory-core's heal via `resetSharedFastembedHost()`), recovering a
+ * wedged private child WITHOUT killing the host process or its socket.
+ */
+export async function resetPrivateFastembedProcess(): Promise<void> {
+  const prev = _privateSingleton;
+  _privateSingleton = null;
+  if (prev) {
+    try {
+      await prev.terminate();
+    } catch {
+      // Best-effort — the reference is already dropped; the next request re-forks.
+    }
+  }
+}
 
 /**
  * Process-wide singleton accessor — the ONLY sanctioned place a fastembed
@@ -1629,36 +1694,19 @@ let _singleton: SharedFastembedClient | null = null;
  * function instead of constructing its own `worker_threads.Worker` or
  * `child_process`.
  *
- * (BL-575) Two shapes, chosen by whether `SOX_EMBED_POOL_SIZE` is set:
- *
- *   - PINNED (`resolveFastembedPoolPin()` returns non-null): a FIXED
- *     `FastembedProcessPool` at exactly that size, no adaptation — an
- *     operator who set this has already judged their model's footprint and
- *     the box's headroom; adaptive sizing would second-guess that judgement.
- *   - DEFAULT (no override): an `AdaptiveFastembedProcessPool` starting at
- *     `minSize: 1` (the topology real measurement shows wins below ~20
- *     concurrency) and growing toward `resolveFastembedPoolCeiling()` (the
- *     SAME ceiling `FastembedProcessPool` used to apply unconditionally)
- *     only under sustained demand — see that class's doc comment for the
- *     full measurement and hysteresis policy (BUG-MEMORY-EMBED-HEAD-OF-LINE-
- *     BLOCKING-001's original qdepth-11+ production regime is exactly the
- *     sustained-demand case this still grows to meet; the difference is it
- *     no longer pays that pool's cost on every LOWER-concurrency request
- *     too).
- *
- * Every existing caller keeps working unchanged either way — both classes
- * implement the same `SharedFastembedClient` shape (`request()`/
- * `terminate()`/`started`). Setting `SOX_EMBED_POOL_SIZE=1` recovers the
- * exact pre-BL-575 (and pre-pool) single-child topology.
+ * (SPEC-EMBEDDING-FUNNEL.md) Host-aware: the funnel lives entirely inside this
+ * package, so consumers need no call-site change.
+ *   - `host: 'shared'` (default): a `FunneledFastembedClient` that lazily dials
+ *     or spawns the one peer-spawned, self-reaping host.
+ *   - `host: 'private'` (typed config, ADR-0013): the pre-funnel per-process
+ *     pool — {@link getPrivateFastembedProcess}.
  */
 export function getSharedFastembedProcess(): SharedFastembedClient {
   if (_singleton) return _singleton;
-  const pin = resolveFastembedPoolPin();
-  _singleton =
-    pin !== null
-      ? new FastembedProcessPool(pin)
-      : new AdaptiveFastembedProcessPool({ minSize: 1, maxSize: resolveFastembedPoolCeiling() });
-  return _singleton;
+  if (resolveEmbedHostConfig().host === 'private') {
+    return (_singleton = getPrivateFastembedProcess());
+  }
+  return (_singleton = new FunneledFastembedClient());
 }
 
 /**
@@ -1666,10 +1714,11 @@ export function getSharedFastembedProcess(): SharedFastembedClient {
  * fresh shared-process lifecycle (e.g. after deliberately crashing/
  * terminating it). Does NOT terminate any existing process itself — call
  * `.terminate()` on the previous instance first if a clean shutdown is
- * needed.
+ * needed. Clears BOTH the public accessor and the private pool reference.
  */
 export function __resetSharedFastembedProcessForTests(): void {
   _singleton = null;
+  _privateSingleton = null;
 }
 
 /**
@@ -1682,18 +1731,36 @@ export function __resetSharedFastembedProcessForTests(): void {
  * shared host down and re-forking from scratch, rather than waiting for the
  * dead child to be reaped.
  *
+ * Funnel-aware: under `host: 'shared'` the singleton is a
+ * `FunneledFastembedClient`, whose `terminate()` is a NO-OP by design (a
+ * consumer must never kill the peer-shared host). Instead we route to
+ * `resetSharedFastembedHost()`, which asks the host to tear down and re-fork
+ * its PRIVATE pool — recovering the same wedged state without killing a host
+ * other consumers are using. Under `host: 'private'` the old terminate path is
+ * unchanged.
+ *
  * Unlike `__resetSharedFastembedProcessForTests` (test-only, does NOT
- * terminate), this TERMINATES the existing singleton first — killing the child
- * process(es) via the normal `terminate()` shutdown sequence (BL-405's clean
- * `__shutdown` message, `kill()` fallback) — and only then drops the singleton
- * reference. Safe to call when no singleton has ever been constructed (no-op).
- * Any in-flight request is rejected with the standard termination error, which
- * the heal loop surfaces as a row failure — never a hang.
+ * terminate), this TERMINATES the existing private singleton first and only then
+ * drops the reference. Safe to call when no singleton has ever been constructed
+ * (no-op). Any in-flight request is rejected with the standard termination
+ * error, which the heal loop surfaces as a row failure — never a hang.
  */
 export async function resetSharedFastembedProcess(): Promise<void> {
   const prev = _singleton;
   _singleton = null;
-  if (prev) {
+  if (prev instanceof FunneledFastembedClient) {
+    try {
+      await resetSharedFastembedHost();
+    } catch {
+      // Heal must never throw into the reset path — the singleton is already
+      // dropped; a best-effort host reset is all that remains.
+    }
+    return;
+  }
+  // 'private' posture (or no singleton): terminate + clear the private pool.
+  const prevPrivate = _privateSingleton;
+  await resetPrivateFastembedProcess();
+  if (prev && prev !== prevPrivate) {
     try {
       await prev.terminate();
     } catch {

@@ -100,15 +100,16 @@ import { MODEL_MAP, resolveModelDim } from './fastembedModels.js';
 //
 // This lock remains useful regardless: nothing in this process logs the
 // existence of sibling fastembed hosts, and that blindness cost an afternoon
-// of `ps`/`vm_stat` archaeology.
+// of `ps`/`vm_stat` archaeology. It is an OBSERVABILITY aid, not a claim about
+// the cause of any slowdown — the 25-50x class it names is associated with a
+// second host by UNPROVEN hypothesis only.
 //
 // This lock is advisory-only — it never blocks or refuses to load the model
 // (a legitimate second store/project running its own memory-server on the
 // same machine is a real, supported scenario, not a bug). It exists purely
-// so a FUTURE occurrence of this contention class is a loud, immediately
-// greppable stderr line at model-load time instead of a silent 25-50x
-// slowdown that takes an agent an afternoon of `ps`/`vm_stat` archaeology to
-// diagnose.
+// so a FUTURE occurrence of a second host is a loud, immediately greppable
+// stderr line at model-load time, instead of a silent slowdown that takes an
+// agent an afternoon of `ps`/`vm_stat` archaeology to diagnose.
 // BL-471: `resolveFastembedLockPath()` and `FastembedLockInfo` now live in
 // `./fastembedLock.ts` — the single shared definition imported by both this
 // writer and `sharedFastembedProcess.ts`'s reader. See that module's doc
@@ -174,11 +175,11 @@ export function checkAndClaimFastembedLock(): void {
         const msg = `another fastembed host process (pid ${prev.pid}, ` +
             `service ${prevService}, ` +
             `started ${prev.startedAt ?? 'unknown'}) is ALREADY RUNNING on this machine. ` +
-            `Concurrent onnxruntime-node CoreML/ANE execution across separate OS processes has ` +
-            `been observed to cause severe (25-50x) embed latency due to Neural Engine/hardware ` +
-            `queue contention, even though each process's own CPU usage looks low (it is waiting, ` +
-            `not computing). If pid ${prev.pid} is a leaked/orphaned process (check with ` +
-            `\`ps -p ${prev.pid}\`), terminate it. Lock file: ${lockPath}`;
+            `A second concurrent onnxruntime-node CoreML/ANE host is the leading, UNPROVEN ` +
+            `hypothesis for the 25-50x embed-latency class this lock exists to make visible — the ` +
+            `measured cause of the live BL-331 slowdown was scheduling QoS, NOT Neural Engine ` +
+            `contention (see this file's header). If pid ${prev.pid} is a leaked/orphaned process ` +
+            `(check with \`ps -p ${prev.pid}\`), terminate it. Lock file: ${lockPath}`;
         console.error(`[fastembed] WARNING (BL-331): ${msg}`);
         log.warn('embedding_provider.fastembed.competing_host_detected', {
           competing_pid: prev.pid,
