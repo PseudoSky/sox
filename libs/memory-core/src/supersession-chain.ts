@@ -22,10 +22,29 @@ export interface ChainLink {
 }
 
 export interface SupersessionChainResult {
-  canonical_uid: string;
+  /**
+   * Optional because the E_NOT_FOUND path has no node to report a canonical
+   * uid for — there is no live chain, so nothing to be canonical over.
+   * Returning `''` there would read as a real (empty-string) uid; leaving it
+   * absent is the honest representation. `chain` and `is_current` stay
+   * required: the E_NOT_FOUND path populates them with an empty chain and
+   * `false` (mirrors related.ts:92's `{ source_uid, edges: [], code }`
+   * pattern), so no call site needs an undefined-check on those two.
+   */
+  canonical_uid?: string;
   chain: ChainLink[];
+  /**
+   * `is_current` reflects the QUERIED node's own validity
+   * (`t_invalid === null`) — it does NOT mean "the queried node is
+   * canonical." Those diverge whenever a live node is superseded but never
+   * invalidated: querying that uid can return `is_current: true` alongside
+   * a different `canonical_uid`. This is intentional (Q2 fix, see
+   * supersession-chain.ts) — do not assume `is_current === (canonical_uid
+   * === uid)`.
+   */
   is_current: boolean;
   code?: string;
+  message?: string;
 }
 
 // ── Main ───────────────────────────────────────────────────────────────────────
@@ -90,6 +109,21 @@ export async function memoryGetSupersessionChain(
     }
   }
 
+  // Missing uid: BFS never found a matching node row, so allRows is empty
+  // and there is nothing to build a chain, canonical, or is_current from.
+  // Report a structured error instead of letting `chain[chain.length - 1]!`
+  // (below) resolve to `undefined` and throw on `.uid` access — the MCP
+  // handler (memory-server/src/index.ts:2327) already branches on `code` and
+  // wraps this as isError:true; nothing wired ever set it until now.
+  if (allRows.size === 0) {
+    return {
+      code: 'E_NOT_FOUND',
+      message: `No node found for uid: ${uid}`,
+      chain: [],
+      is_current: false,
+    };
+  }
+
   // Build ordered chain oldest-first (by t_created). BL-505: ties broken by
   // rowid (lowest first) — the t_created-only comparator left ties to BFS
   // discovery order, which is getEdges-row-order-dependent (no ORDER BY) and
@@ -100,8 +134,14 @@ export async function memoryGetSupersessionChain(
       a.rowid - b.rowid,
   );
 
-  // Canonical = most recent non-invalidated node, or latest by t_created
-  const canonical = chain.find((n) => n.t_invalid === null) ?? chain[chain.length - 1]!;
+  // Canonical = most recent non-invalidated node — i.e. the LAST live node in
+  // the oldest-first ordering above (which already carries the BL-505
+  // rowid tie-break), not the first. `.find` here would return the OLDEST
+  // live node, the exact opposite of "most recent" — filter+last preserves
+  // the existing comparator instead of re-deriving ordering via `reduce`.
+  // Falls back to the most recent node overall when nothing is live.
+  const liveChain = chain.filter((n) => n.t_invalid === null);
+  const canonical = liveChain[liveChain.length - 1] ?? chain[chain.length - 1]!;
 
   // Reason strings collected during BFS from edge metadata
   const chainWithReasons: ChainLink[] = chain.map((n) => ({
@@ -111,9 +151,17 @@ export async function memoryGetSupersessionChain(
     reason: edgeReasons.get(n.uid) ?? null,
   }));
 
+  // is_current reflects the QUERIED node's own validity, never a proxy via
+  // canonical.uid === uid. That equality coincides on well-formed chains but
+  // is wrong in the degenerate single-node case: an invalidated node with no
+  // SUPERSEDES edge has chain = [self], so canonical falls back to itself,
+  // and canonical.uid === uid was `true` for a node that is not current.
+  const queried = allRows.get(uid);
+  const isCurrent = queried ? queried.t_invalid === null : false;
+
   return {
     canonical_uid: canonical.uid,
     chain: chainWithReasons,
-    is_current: canonical.uid === uid,
+    is_current: isCurrent,
   };
 }
