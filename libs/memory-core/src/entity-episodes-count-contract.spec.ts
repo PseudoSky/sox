@@ -256,4 +256,27 @@ describe('memoryGetEntityEpisodes count/pagination contract (Q4)', () => {
       cleanup();
     }
   });
+
+  it('Case H (GENUINE RED-DETECTOR): limit:0 returns an empty page, not a full default page', async () => {
+    const { dir, cleanup } = tmpDir();
+    try {
+      const db = await openDb(path.join(dir, 't.db'));
+      const { entityUid } = await seedFixture(db);
+
+      // Pre-fix (`Math.trunc(rawLimit) || 20`): Math.trunc(0) is 0, and
+      // `0 || 20` evaluates the right-hand side because 0 is falsy — an
+      // explicit limit:0 silently falls through to the default of 20,
+      // returning every live episode instead of zero. limit:-1 (Case F)
+      // takes the OPPOSITE branch of the same `||` and clamps to zero rows,
+      // so the two adjacent non-positive inputs disagreed with each other.
+      const result = await memoryGetEntityEpisodes(db, { entity_uid: entityUid, limit: 0 });
+
+      expect(result.total).toBe(3); // total must still report the true live count
+      expect(result.episodes).toEqual([]);
+
+      await db.close();
+    } finally {
+      cleanup();
+    }
+  });
 });
