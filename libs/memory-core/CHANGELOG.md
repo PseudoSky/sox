@@ -1,5 +1,14 @@
 # @adhd/sox-memory-core
 
+## 0.10.2
+
+### Patch Changes
+
+- Updated dependencies [b730340]
+  - @adhd/sox-graph-store@0.11.0
+  - @adhd/sox-analysis@0.1.13
+  - @adhd/sox-hybrid-search@0.4.7
+
 ## 0.10.1
 
 ### Patch Changes
