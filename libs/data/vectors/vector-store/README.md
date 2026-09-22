@@ -72,6 +72,14 @@ interface VectorBackend {
   deleteMany(ids: number[], modelId: string): number; // returns count removed
 }
 
+// Additive capability interface — NOT part of the pinned VectorBackend contract.
+// Narrow to it (typeof backend.hasVectors === 'function') when you need a cheap
+// "does this space hold any vectors?" answer. Same shape on the async mirror
+// (AsyncVectorExistenceProbe), with Promise<boolean>.
+interface VectorExistenceProbe {
+  hasVectors(modelId: string): boolean;
+}
+
 class SpaceInvariantError extends Error {
   constructor(nodeId: number, space: VectorSpace, actualDim: number);
 }
@@ -83,6 +91,41 @@ class StorageError extends Error {
 `score` from every backend's `knn()` is cosine **similarity** (higher is better, `1` = identical),
 not distance — `TursoVectorBackend` converts its native `vector_distance_cos` distance internally so
 all three backends return directly-comparable scores.
+
+### Existence probe — `hasVectors` (use this, never `iter`, for a readiness check)
+
+`iter()` is a **full corpus scan** and is not lazy on every backend: `TursoVectorBackend.iter` is
+backed by the adapter's `executeAll` (`db.all`), which materializes every row *including the full
+embedding BLOB* before its first yield. A "does this space have anything?" check built on
+`iter`-first-row therefore reads the entire vector table.
+
+All three backends also expose `hasVectors(modelId)`, a bounded `SELECT 1 … LIMIT 1` existence
+probe: it projects no `embedding` column (no blob read) and stops at the first row — O(1) in the
+size of the space. An absent table (a space never `ensureSpace`d) is `false`, not an error.
+
+```typescript
+// Sync backends: SqliteVectorBackend / LanceDbVectorBackend
+backend.hasVectors('text-embedding-3-small'); // boolean
+
+// Async backend: TursoVectorBackend
+await backend.hasVectors('text-embedding-3-small'); // Promise<boolean>
+```
+
+It lives on each concrete backend and on the additive `VectorExistenceProbe` /
+`AsyncVectorExistenceProbe` capability interfaces — deliberately **not** on the pinned
+`VectorBackend` / `AsyncVectorBackend` contracts, so widening is opt-in for a caller rather than
+mandatory for every implementor. A caller holding a `VectorBackend | AsyncVectorBackend` narrows
+first:
+
+```typescript
+import type { AsyncVectorBackend, AsyncVectorExistenceProbe } from '@adhd/sox-vector-store';
+
+const probe = backend as Partial<AsyncVectorExistenceProbe>;
+const populated =
+  typeof probe.hasVectors === 'function'
+    ? await probe.hasVectors(modelId)
+    : false; // older backend without the primitive
+```
 
 ### `SqliteVectorBackend` (default, synchronous)
 
