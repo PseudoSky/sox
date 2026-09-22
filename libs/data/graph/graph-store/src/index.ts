@@ -1966,12 +1966,17 @@ export class StoreGraphBackend implements GraphBackend {
   }
 
   async writeNode(content: string, meta: NodeMeta, opts?: WriteNodeOpts): Promise<number> {
-    // Standalone (non-transactional) path. When called inside `transaction()`,
-    // the callers below route through writeNodeInTx with the LIVE transaction
-    // handle so the uniqueness policy + dedupe + INSERT all see the same
-    // in-transaction state — Turso's tx handle is a separate session, so using
-    // `this.adapter` inside a transaction would read committed state and miss
-    // intra-batch/intra-transaction writes (review MAJOR #1).
+    // Standalone (non-transactional) path: `db` is the bare adapter. Inside a
+    // `transaction()` callback the typed methods route through the LIVE
+    // transaction handle instead (see `buildTxView`), so the uniqueness policy,
+    // dedupe, and INSERT all share whichever handle is in play.
+    //
+    // Do NOT rely on the bare adapter implicitly sharing an open transaction's
+    // connection. The two shipped adapters currently do (one connection per
+    // adapter instance, and `AdapterTransaction` wraps that same handle) — but
+    // that is an adapter implementation detail, not a contract, and a future
+    // per-transaction-connection backend (e.g. remote libSQL, or `BEGIN
+    // CONCURRENT`) would break it silently. Route through the tx handle.
     return this.writeNodeInTx(content, meta, opts, this.adapter);
   }
 
