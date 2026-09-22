@@ -43,6 +43,8 @@ interface EmbeddingProviderConfig {
   type: string;    // 'fastembed' | 'remote'
   model: string;
   options?: Record<string, unknown>;
+  host?: 'shared' | 'private';  // default 'shared' — see "Host posture" below
+  idleGraceMs?: number;         // how long an idle shared host lingers (default 30000)
 }
 ```
 
@@ -107,9 +109,48 @@ Built-in models (`modelId` → dimensions):
 | `bge-m3` | 1024 | 8192 | 100+ languages, long context, ~570M params |
 | `codexembed-400m` | 1024 | 8192 | code-only, ~1.6GB RAM, long context |
 
-fastembed inference is routed through a single process-wide shared child process rather than a
-worker per provider instance, so multiple `FastembedProvider`s constructed in the same Node process
-(even concurrently) never race each other for the same native ONNX runtime.
+fastembed inference is routed through **one machine-wide, peer-spawned, self-reaping host
+process** per `(model, execution-provider, cacheDir)` — not one ONNX host per consumer process.
+The first consumer to need it peer-spawns the host through the service-proxy's `ensureBackend()`
+singleton spawn-lock; every other consumer on the box dials that same host over a Unix domain
+socket. The host is compute-only (it holds no store connection) and it **reaps itself**: a
+debounced, ref-counted teardown retires it `idleGraceMs` after the last client disconnects and its
+last in-flight request drains. There is no supervised service and no daemon.
+
+#### Host posture
+
+`EmbeddingProviderConfig.host` is a typed closed union (default `'shared'`), applied
+process-wide before the accessor is constructed and reported in `health().host`:
+
+- `'shared'` — funnel through the machine-wide host above. `getSharedFastembedProcess()` returns a
+  `FunneledFastembedClient`; its `terminate()` is a **no-op** (a consumer must never kill a host
+  other consumers are using).
+- `'private'` — the pre-funnel per-process fork (CI/diagnostics). `getSharedFastembedProcess()`
+  returns the private pool directly.
+
+`EmbeddingProviderConfig.idleGraceMs` (typed config, default `DEFAULT_EMBED_HOST_IDLE_GRACE_MS` =
+30 s) sets how long a zero-client host lingers before it reaps itself. A host that fails to come up
+throws a typed `TransientEmbeddingError` naming the socket — it never silently falls back to a
+private host.
+
+#### Lifecycle helpers
+
+```typescript
+import {
+  getPrivateFastembedProcess,   // the PRIVATE (un-funneled) per-process pool
+  resetSharedFastembedHost,     // heal: ask the live shared host to re-fork its private pool
+  getSharedFastembedProcess,    // the host-aware accessor (shared by default)
+  FunneledFastembedClient,      // what getSharedFastembedProcess() returns under 'shared'
+} from '@adhd/sox-embedding-provider';
+
+const client = getSharedFastembedProcess();  // FunneledFastembedClient under the default
+const vec = await client.request({ type: 'embed', text: 'hello' });
+console.log(client.started, client.pendingCount, client.hostSocketPath);
+```
+
+`resetSharedFastembedHost()` is the recovery path for a wedged private child: under `'shared'` it
+asks the live host to tear down and re-fork its private ONNX pool (without killing the host other
+consumers share); under `'private'` the accessor's `terminate()` path is unchanged.
 
 ### remote — call an HTTP embedding endpoint
 

@@ -47,11 +47,18 @@ and is responsible for its own retirement.
 ### D2 — Self-reaping, on cross-process demand
 
 The host's teardown is **debounced and ref-counted** over two inputs: live UDS client connections
-(from `serveBackend`'s `onClientCountChange` hook) **and** its own in-flight `pendingCount`. When
-both reach zero it arms an idle grace (`DEFAULT_EMBED_HOST_IDLE_GRACE_MS = 30_000`, ADR-0013 D3
-numeric tuning via `SOX_EMBED_HOST_IDLE_GRACE_MS`); a new client or request cancels it. On expiry it
-terminates its private pool, closes the listener (unlinking the socket), and exits 0. Its ONNX child
-is forked `detached: false`, so it dies with the host — no orphans.
+(from `serveBackend`'s `onClientCountChange` hook) **and** the host's own `inFlight` request depth —
+incremented synchronously before each handler's first `await` and decremented in its `finally`, so it
+covers the cold-start fork prefix the private pool's `pendingCount` misses. When both reach zero it
+arms an idle grace (`DEFAULT_EMBED_HOST_IDLE_GRACE_MS = 30_000`); a new client or request cancels it.
+On expiry it terminates its private pool, closes the listener (unlinking the socket), and exits 0. Its
+ONNX child is forked `detached: false`, so it dies with the host — no orphans.
+
+> **Amended (owner directive, 2026-09-22):** the idle grace is **typed config**, not an ADR-0013 D3
+> env tuning constant. `EmbeddingProviderConfig.idleGraceMs` → `EmbedHostConfig.idleGraceMs` is the
+> public surface; the spawner forwards the resolved value to the spawned host via the internal
+> `SOX_EMBED_HOST_IDLE_GRACE_MS` transport, and the host consumes it. "The time bound should be
+> configurable" — typed config beats an ambient env knob here.
 
 ### D3 — Compute-only; it is NOT a store participant (ADR-0012)
 
@@ -66,8 +73,9 @@ handle).
 `host: 'shared' | 'private'` is a closed union on `EmbeddingProviderConfig`, default `'shared'`,
 applied before the accessor singleton is constructed and reported in `health().host`. `'private'` is
 the explicit pre-funnel per-process fork (CI/diagnostics). There is **no** `SOX_EMBED_HOST=…`
-variable; env reads are limited to ADR-0013 D3/D5 shapes (a numeric grace, the data-root home, and
-path injections for tests).
+variable; env reads are limited to the D5 shapes (the data-root home and path injections for tests),
+plus the internal spawner→host idle-grace transport (see D2's amendment — the grace's public surface
+is typed config).
 
 ### D5 — Honest failure, never a silent private re-fork
 
