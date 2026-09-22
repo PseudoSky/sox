@@ -1,5 +1,12 @@
 # @adhd/sox-hybrid-search
 
+## 0.4.7
+
+### Patch Changes
+
+- Updated dependencies [b730340]
+  - @adhd/sox-graph-store@0.11.0
+
 ## 0.4.6
 
 ### Patch Changes
