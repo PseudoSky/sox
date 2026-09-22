@@ -437,8 +437,8 @@ export interface LogFields {
 
 // BL-404: fires once per process, the first time anything is emitted while
 // `initTelemetry()` has never been called. `service === 'unlabeled'` is the
-// unambiguous signal — it is the literal default in `_state` above and is
-// never a value a real caller would pass to `initTelemetry` (BL-353 requires
+// unambiguous signal — it is the literal default in `defaultState()` above and
+// is never a value a real caller would pass to `initTelemetry` (BL-353 requires
 // a real service name). Deliberately independent of `st.logSink === 'none'`
 // short-circuit below: the whole point is that the uninitialised state is
 // ALSO the silent no-op sink, so this is the one path that must not be
