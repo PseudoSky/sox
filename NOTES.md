@@ -4,7 +4,7 @@ Items observed on 2026-09-21/22 while building and execution-testing the ML agen
 (`ml-research-scout`, `ml-system-architect`, `ml-algorithm-implementer`; claude-agents
 commit `c69d86c0`).
 
-**All of these are now filed in the backlog graph — the graph is the source of truth and
+**All of these, plus two defects found while filing them, are now in the backlog graph — the graph is the source of truth and
 this file is a frozen narrative record with repro steps.** Work the items from the graph,
 not from here. The `backlog` MCP server is still down (item 1), but the `backlog` CLI
 binary reaches the same store and is what filed them.
@@ -23,6 +23,13 @@ binary reaches the same store and is what filed them.
 | 10 | `0331b34a-3969-470c-9cca-78d0a088b0d1` | claude-agents | LOW | scout intake brief has no "data availability" field |
 | 11 | `0a26860e-2264-4dd9-ac4e-af29197a8c3a` | sox-ecosystem | LOW | iterative-research-refinement runtime gate is opencode-only |
 | + | `56865633-22ca-4636-aa8a-c2b88866cfd3` | sox-ecosystem | MEDIUM | the `backlog` skill documents a command surface the binary lacks (found while filing the above) |
+| + | `30e85931-92f4-48a6-bca6-aebecf24a880` | sox-ecosystem | HIGH | `plan-status` pre-commit guard silently disabled by a stale query filter shape, misreported as "STORE UNAVAILABLE" |
+
+**UIDs can migrate.** A `backlog update` that touches `body` supersedes the item under a
+new UID and returns `conflict` on the old one (which is why row `+`/plan-status reads
+`30e85931` and not the `c6cf9770` it was created as). If a UID above 404s, follow the
+`conflict` error — it names the successor — or find the item by title with
+`backlog query --input '{"view":"list","filter":{"project":"sox-ecosystem"}}'`.
 
 Refinement record with all run evidence: `claude-agents/.research-trace/2026-09-21-ml-agent-trio.md`.
 
