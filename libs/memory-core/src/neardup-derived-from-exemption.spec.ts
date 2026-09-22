@@ -1,6 +1,6 @@
 /**
  * neardup-derived-from-exemption.spec.ts — Q1-C regression
- * (docs/plan-drafts/neardup-invalidation-fix-plan.md §2, "structural
+ * (docs/reporting/memory/findings/2026-09-22-neardup-invalidation-fix-plan.md §2, "structural
  * parent↔chunk exemption").
  *
  * A parent episode and its own chunk (linked by a `DERIVED_FROM` edge,

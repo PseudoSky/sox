@@ -230,7 +230,7 @@ describe('memoryInvalidate — not-found / already-invalid / wrong-kind (BUG-MEM
     // near-duplicate second episode) as its race trigger: applyNearDupResult
     // used to invalidate the OLDER of a near-dup pair automatically, with no
     // caller action, giving a realistic "someone else invalidated it first"
-    // race for free. Q1-A (neardup-invalidation-fix-plan.md §2) removed that
+    // race for free. Q1-A (docs/reporting/memory/findings/2026-09-22-neardup-invalidation-fix-plan.md §2) removed that
     // automatic invalidation entirely — near-dup detection now only ever
     // writes a SAME_AS edge, never t_invalid — so it can no longer serve as
     // this test's race trigger.
