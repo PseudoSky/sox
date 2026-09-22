@@ -20,8 +20,9 @@ another when you switch models. Three real, swappable backends implement the sam
   RPC. Reach for this when brute-force cosine over `sqlite-vec` stops scaling and you need a real
   ANN index; LanceDB manages its own on-disk concurrency, independent of `store-adapter`.
 
-Every backend enforces the same invariant: an `upsert()` whose vector length doesn't match the
-space's `dim` throws `SpaceInvariantError` before any I/O happens.
+Every backend enforces the same invariant on both sides of the API: a vector whose length doesn't
+match the space's `dim` throws `SpaceInvariantError` before any I/O happens — `upsert()` on the
+write path, and `knn()` on the query path.
 
 ```bash
 pnpm add @adhd/sox-vector-store
@@ -81,12 +82,18 @@ interface VectorExistenceProbe {
 }
 
 class SpaceInvariantError extends Error {
-  constructor(nodeId: number, space: VectorSpace, actualDim: number);
+  constructor(nodeId: number, space: VectorSpace, actualDim: number, source?: 'upsert' | 'knn');
+  static forQuery(space: VectorSpace, actualDim: number): SpaceInvariantError;
 }
 class StorageError extends Error {
   constructor(message: string, cause?: Error);
 }
 ```
+
+`SpaceInvariantError` is raised by **both** the write path (`upsert`/`upsertVectors`) and the query
+path (`knn`). `source` is `'upsert'` (default) or `'knn'`; on the `'knn'` path `nodeId` is the
+exported `QUERY_VECTOR_NODE_ID` sentinel (`-1`), because a query vector has no owning node. A
+wrong-dimension query is rejected before any driver call — never a raw SQL/LanceDB error.
 
 `score` from every backend's `knn()` is cosine **similarity** (higher is better, `1` = identical),
 not distance — `TursoVectorBackend` converts its native `vector_distance_cos` distance internally so
@@ -291,6 +298,8 @@ console.log(`migrated ${result.migrated}, skipped ${result.skipped}, ${result.er
   idempotent on a space that already exists.
 - `upsert()`/`upsertVectors()` throw `SpaceInvariantError` when a vector's length doesn't match
   `space.dim` — enforced before any write, on every backend.
+- `knn()` throws `SpaceInvariantError` when the query vector's length doesn't match `space.dim` —
+  enforced before any query, on every backend (`source: 'knn'`, `nodeId: QUERY_VECTOR_NODE_ID`).
 - Switching models is a `reembed()` migration, never a hot-swap of vectors into an existing table.
 - `delete(id, modelId)` / `deleteMany(ids, modelId)` are scoped to a single space — they do not touch
   the same `id` in a different model's space.

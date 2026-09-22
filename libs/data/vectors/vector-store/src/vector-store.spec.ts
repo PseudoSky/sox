@@ -10,6 +10,7 @@ import {
   openVectorStore,
   reembed,
   SpaceInvariantError,
+  QUERY_VECTOR_NODE_ID,
   StorageError,
   SqliteVectorBackend,
   type VectorSpace,
@@ -340,6 +341,26 @@ describe('SqliteVectorBackend', () => {
     it('returns empty for empty table', () => {
       const results = backend.knn(makeVec(4, 0), space, 10);
       expect(results).toEqual([]);
+    });
+
+    it('throws SpaceInvariantError on a query dim mismatch — parity with upsert', () => {
+      // A kNN query vector must match the space's dim exactly, the same
+      // invariant `upsert()` already enforces. Without the check, the
+      // brute-force cosine loop reads past the stored vector and returns NaN
+      // scores — a silently wrong answer, never an error.
+      const wrongDim = makeVec(8, 1); // space.dim === 4
+      expect(() => backend.knn(wrongDim, space, 4)).toThrow(SpaceInvariantError);
+      try {
+        backend.knn(wrongDim, space, 4);
+        expect.fail('should have thrown');
+      } catch (err) {
+        expect(err).toBeInstanceOf(SpaceInvariantError);
+        const se = err as SpaceInvariantError;
+        expect(se.source).toBe('knn');
+        expect(se.nodeId).toBe(QUERY_VECTOR_NODE_ID);
+        expect(se.space).toEqual(space);
+        expect(se.actualDim).toBe(8);
+      }
     });
   });
 

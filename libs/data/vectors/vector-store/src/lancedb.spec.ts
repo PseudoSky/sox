@@ -10,6 +10,7 @@ import {
   openLanceDbVectorStore,
   reembed,
   SpaceInvariantError,
+  QUERY_VECTOR_NODE_ID,
   type LanceDbVectorBackendConfig,
   type VectorSpace,
 } from './index.js';
@@ -268,6 +269,25 @@ describe('LanceDbVectorBackend (real on-disk @lancedb/lancedb)', () => {
     it('returns empty for empty table', () => {
       const results = backend.knn(makeVec(4, 0), space, 10);
       expect(results).toEqual([]);
+    });
+
+    it('throws SpaceInvariantError on a query dim mismatch — parity with upsert', () => {
+      // Parity with upsert: the LanceDB worker must never be handed a query
+      // vector whose length ≠ space.dim (it would surface a raw driver error
+      // from the worker RPC, not a typed space-invariant error).
+      const wrongDim = makeVec(8, 1); // space.dim === 4
+      expect(() => backend.knn(wrongDim, space, 4)).toThrow(SpaceInvariantError);
+      try {
+        backend.knn(wrongDim, space, 4);
+        expect.fail('should have thrown');
+      } catch (err) {
+        expect(err).toBeInstanceOf(SpaceInvariantError);
+        const se = err as SpaceInvariantError;
+        expect(se.source).toBe('knn');
+        expect(se.nodeId).toBe(QUERY_VECTOR_NODE_ID);
+        expect(se.space).toEqual(space);
+        expect(se.actualDim).toBe(8);
+      }
     });
   });
 
