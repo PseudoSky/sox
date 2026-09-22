@@ -344,7 +344,7 @@ describe('deferred E8 near-dup runs in Phase B', () => {
     const edge = await ctx.db.executeGet<{ rowid: number }>(`SELECT rowid FROM edge WHERE src = ? AND dst = ? AND rel = 'SAME_AS' AND t_expired IS NULL`, [newerRowid, olderRowid]);
     expect(edge).toBeDefined();
 
-    // Q1-A (neardup-invalidation-fix-plan.md §2): applyNearDupResult no longer
+    // Q1-A (docs/reporting/memory/findings/2026-09-22-neardup-invalidation-fix-plan.md §2): applyNearDupResult no longer
     // invalidates the older episode at any cosine — automatic invalidation had
     // no user intent behind it and cosine is not a calibrated measure of
     // factual identity. The SAME_AS edge above is the full outcome; the older

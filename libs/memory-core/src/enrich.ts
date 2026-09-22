@@ -101,7 +101,7 @@ function getNearDupThreshold(): number {
  * SOX_SYNC_EMBED composition) and the deferred Phase-B pass
  * (embed-pipeline.ts applyEmbedding).
  *
- * Q1-A (neardup-invalidation-fix-plan.md §2): this function used to also
+ * Q1-A (docs/reporting/memory/findings/2026-09-22-neardup-invalidation-fix-plan.md §2): this function used to also
  * bi-temporally invalidate the OLDER episode whenever `should_invalidate` was
  * set — which, per Q1-B, was every result it could ever produce. An automatic
  * pass has no user intent, and a sentence-embedding cosine is a
