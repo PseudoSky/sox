@@ -19,6 +19,23 @@
  * covered by this consistency guarantee, and is a pre-existing N+1 query
  * pattern (one call per returned row) tracked separately, not fixed here.
  *
+ * Two constraints this introduces, worth knowing before calling this from a
+ * new site:
+ * (a) This function is no longer safe against a soft-readonly adapter.
+ *     `TursoAdapterImpl.transaction()` calls `_assertWritable()` first and
+ *     throws `[BL-391] TursoAdapter is read-only` on a connection built by
+ *     `openDbReadOnly()`. Not reachable today — the MCP tool is always
+ *     handed the primary writable adapter — but a future caller passing a
+ *     read-only adapter here will get that throw instead of a result.
+ * (b) The snapshot guarantee is Turso-specific in HOW it is enforced.
+ *     `TursoAdapterImpl.transaction()` runs under `_withTxLock`; the SQLite
+ *     adapter's `_runTransaction` BEGINs directly on the shared handle with
+ *     a ~70ms retry budget and no equivalent serialization mutex. Adding a
+ *     transaction to this read path widens the window in which a concurrent
+ *     writer on the SQLite backend could contend for that BEGIN. This is a
+ *     flagged risk, not a demonstrated defect — no failing input has been
+ *     produced for it.
+ *
  * [inv:no-mcp] — returns a plain result object, never an MCP ToolResult.
  */
 
@@ -70,25 +87,31 @@ export async function memoryGetEntityEpisodes(
   const entityName = args['entity_name'] as string | undefined;
   // Normalize limit/offset ONCE, before either value can reach SQL as a bind
   // param. The MCP schema declares both as plain `number` (no `multipleOf`,
-  // no `minimum`), so non-integer and negative values are schema-valid —
-  // slice() used to silently absorb them; a raw `LIMIT ? OFFSET ?` bind does
-  // not: a non-integer throws "datatype mismatch" (uncaught by dispatchTool,
-  // so it crashes the tool call instead of returning a structured {code}
-  // error), and SQLite reads a negative LIMIT as "no limit", defeating the
-  // upper clamp entirely. Use an explicit `Number.isFinite` check rather
-  // than `Math.trunc(x) || default` — the `||` form treats an explicit
-  // `limit: 0` as falsy and silently substitutes the default, which would
-  // make `limit: 0` return a full page while the adjacent `limit: -1`
-  // clamps to zero rows (opposite directions for two non-positive inputs).
+  // no `minimum`/`maximum`), so non-integer, negative, and huge values are
+  // all schema-valid — slice() used to silently absorb them; a raw
+  // `LIMIT ? OFFSET ?` bind does not: a non-integer, or a magnitude outside
+  // SQLite/Turso's int64 bind range (e.g. 1e20), throws "datatype mismatch"
+  // (uncaught by dispatchTool/handleToolCall, so it crashes the tool call
+  // instead of returning a structured {code} error), and SQLite reads a
+  // negative LIMIT as "no limit", defeating the upper clamp entirely. Use an
+  // explicit `Number.isFinite` check rather than `Math.trunc(x) || default`
+  // — the `||` form treats an explicit `limit: 0`/`offset: 0` as falsy and
+  // silently substitutes the default, which would make `0` return a full
+  // page while the adjacent `-1` clamps to zero rows (opposite directions
+  // for two non-positive inputs). `offset` is capped at
+  // `Number.MAX_SAFE_INTEGER` (~9.007e15) — comfortably inside int64 range
+  // (~9.223e18) and far larger than any real page count, so it never
+  // meaningfully truncates a legitimate offset while still keeping
+  // out-of-range values (1e20, 1e308, ...) off the wire to SQL.
   const rawLimit = args['limit'] as number | undefined;
   const rawOffset = args['offset'] as number | undefined;
   const limit = Math.min(
     Math.max(Number.isFinite(rawLimit as number) ? Math.trunc(rawLimit as number) : 20, 0),
     200,
   );
-  const offset = Math.max(
-    Number.isFinite(rawOffset as number) ? Math.trunc(rawOffset as number) : 0,
-    0,
+  const offset = Math.min(
+    Math.max(Number.isFinite(rawOffset as number) ? Math.trunc(rawOffset as number) : 0, 0),
+    Number.MAX_SAFE_INTEGER,
   );
 
   let resolvedEntityUid = entityUid;
