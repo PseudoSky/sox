@@ -23,9 +23,19 @@
  *
  * RED (fix reverted — drop the `AND t_invalid IS NULL` predicate back to a
  * bare `SELECT uid FROM node WHERE rowid = ?`): Case A fails — the
- * soft-invalidated best-scoring candidate is returned instead of null.
+ * soft-invalidated best-scoring candidate is returned instead of null; Case
+ * B fails — `existing_uid` is the invalidated uid, not the live neighbor.
  * GREEN (as shipped): Case A returns null; Case B proves the exemption falls
  * through to a genuine live next-best candidate rather than bailing out.
+ *
+ * 2026-09-22 second re-review, finding B: Case B originally asserted only
+ * `existing_uid === 'softinv-b-live-neighbor'`, which is ALSO true if the
+ * soft-invalidated node was never actually the best-scoring candidate to
+ * begin with — a characterization test that passes whether or not the
+ * fall-through fires. Case B now asserts, as an independent precondition,
+ * that the invalidated candidate's cosine genuinely outranks the live
+ * neighbor's BEFORE checking `detectNearDup`'s result — making the
+ * fall-through the only possible explanation for the result it asserts.
  *
  * Gate: npx nx test memory-core --skip-nx-cache -- neardup-soft-invalid-fallthrough
  */
@@ -49,6 +59,12 @@ function makeVec(seed: number, jitter = 0): Float32Array {
   norm = Math.sqrt(norm);
   for (let i = 0; i < EMBED_DIM; i++) v[i] = v[i]! / norm;
   return v;
+}
+
+function cosine(a: Float32Array, b: Float32Array): number {
+  let dot = 0;
+  for (let i = 0; i < a.length; i++) dot += a[i]! * b[i]!;
+  return dot;
 }
 
 describe('2026-09-22 re-review finding 4 — detectNearDup falls through a SOFT-invalidated best candidate', () => {
@@ -126,15 +142,34 @@ describe('2026-09-22 re-review finding 4 — detectNearDup falls through a SOFT-
     await seed(adapter, 'softinv-b-invalidated', invalidatedVec, ser, true);
     const liveNeighborRowid = await seed(adapter, 'softinv-b-live-neighbor', liveNeighborVec, ser, false);
 
+    // 2026-09-22 second re-review, finding B: verify the TEST'S OWN PREMISE
+    // — that the soft-invalidated candidate genuinely outranks the live
+    // next-best candidate by cosine — as an assertion, not an assumption.
+    // Without this, the test below is a characterization test that happens
+    // to pass whether or not the fall-through fires: if the vector
+    // construction ever failed to make the invalidated node the BEST
+    // candidate (e.g. floating-point drift, an algorithm change elsewhere),
+    // `liveNeighbor` would already be the top-ranked candidate with no
+    // fall-through required, and the assertion on `existing_uid` below would
+    // pass for the wrong reason. This makes the red mechanically guaranteed
+    // by the test's own math rather than inferred from an external
+    // red-capture run that isn't part of the automated suite.
+    const invalidatedCosine = cosine(liveVec, invalidatedVec);
+    const liveNeighborCosine = cosine(liveVec, liveNeighborVec);
+    expect(invalidatedCosine).toBeGreaterThan(liveNeighborCosine);
+    expect(invalidatedCosine).toBeGreaterThanOrEqual(0.9); // both must clear the threshold below
+    expect(liveNeighborCosine).toBeGreaterThanOrEqual(0.9);
+
     const vectorDialect = await vectorDialectFor(adapter);
     const result = await adapter.transaction(
       async (tx) => detectNearDup(tx, liveRowid, liveVec, 0.9, vectorDialect),
       { mode: 'immediate' },
     );
 
-    // The soft-invalidated node must NOT be returned; the live next-best
-    // candidate must be — proving the fall-through continues the search
-    // rather than returning the dead uid or bailing out to null outright.
+    // The soft-invalidated node — PROVEN above to be the best-scoring
+    // candidate — must NOT be returned; the live next-best candidate must
+    // be — proving the fall-through continues the search rather than
+    // returning the dead uid or bailing out to null outright.
     expect(result).not.toBeNull();
     expect(result!.existing_uid).toBe('softinv-b-live-neighbor');
     expect(liveNeighborRowid).toBeGreaterThan(0);
