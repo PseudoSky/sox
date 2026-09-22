@@ -578,28 +578,45 @@ export async function _shutdownEmbedWorker(): Promise<void> {
 }
 
 /**
- * (BL-405) Terminate the shared fastembed + onnx child processes/workers.
+ * (BL-405) Terminate the shared onnx worker, and — under the `'private'`
+ * posture — the per-process fastembed pool.
  *
  * Both `getSharedFastembedProcess()` and `getSharedOnnxWorker()` are lazy,
  * process-wide singletons that fork a real OS child process (fastembed) or
  * spin up a `worker_threads.Worker` (onnx) the first time embedding/rerank
- * is used, and stay resident for the life of the parent process. Nothing
- * previously called their `.terminate()` on shutdown, so a SIGTERM'd parent
- * simply vanished out from under them: the fastembed child's own in-flight
- * `process.send()` (replying to a request the parent will never read) then
- * threw an uncaught `EPIPE` — an unhandled 'error' event with no listener —
- * fatally crashing the CHILD (`libc++abi: terminating due to uncaught
- * exception`). This reproduced on every SIGTERM observed during BL-405
- * diagnosis, including with zero in-flight embed work at the moment of the
- * signal, not just under load.
+ * is used. Nothing previously called their `.terminate()` on shutdown, so a
+ * SIGTERM'd parent simply vanished out from under them: the fastembed child's
+ * own in-flight `process.send()` (replying to a request the parent will never
+ * read) then threw an uncaught `EPIPE` — an unhandled 'error' event with no
+ * listener — fatally crashing the CHILD (`libc++abi: terminating due to
+ * uncaught exception`). This reproduced on every SIGTERM observed during
+ * BL-405 diagnosis, including with zero in-flight embed work at the moment of
+ * the signal, not just under load.
  *
- * `.terminate()` on each client calls `.kill()` (fastembed) / `.terminate()`
- * (the worker), which tears the child down via a real exit signal instead of
- * yanking the pipe it's mid-write on — the child exits cleanly (or is killed
- * cleanly) instead of crashing. Must be called BEFORE the parent process
- * exits, as part of the coordinated shutdown sequence
- * (memory-server/src/backend.ts's `coordinatedShutdown`) — never left to the
- * OS to reap as an orphan.
+ * ── Shared posture (the default): terminate() is a deliberate NO-OP ──────────
+ *
+ * Under the default `host: 'shared'` (SPEC-EMBEDDING-FUNNEL.md), the accessor
+ * is a `FunneledFastembedClient` and this package does NOT own the fastembed
+ * child at all — the machine-wide host does. A consumer's `.terminate()` is
+ * therefore intentionally inert (a consumer must never kill a host other
+ * consumers are using); the host tears its private child down itself, either
+ * gracefully on `embedding.reset` (the heal path,
+ * `resetSharedFastembedHost()`) or on its own debounced self-reap, using the
+ * child's `{ __shutdown: true }` protocol rather than yanking the pipe it is
+ * mid-write on. So BL-405's EPIPE crash is structurally impossible via the
+ * funnel: a consumer's shutdown never touches the child's IPC channel. Proven
+ * by `embed-funnel.spec.ts`'s "a consumer terminate() is a no-op (BL-405 cannot
+ * recur via the funnel)" test — it asserts the host survives a consumer
+ * `terminate()` and a second consumer reuses the SAME host pid.
+ *
+ * Under `host: 'private'` the pre-funnel behaviour is unchanged: `.terminate()`
+ * tears the per-process child down via the graceful `__shutdown` message (with
+ * a bounded `kill()` fallback), so it exits cleanly instead of crashing.
+ *
+ * The onnx worker is per-process in every posture, so `.terminate()` applies to
+ * it unconditionally. Must be called BEFORE the parent process exits, as part
+ * of the coordinated shutdown sequence (memory-server/src/backend.ts's
+ * `coordinatedShutdown`) — never left to the OS to reap as an orphan.
  */
 export async function terminateEmbedWorkers(): Promise<void> {
   await Promise.all([
