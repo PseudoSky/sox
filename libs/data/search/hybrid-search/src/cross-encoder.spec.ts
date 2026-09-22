@@ -1,6 +1,17 @@
 import { describe, it, expect } from 'vitest';
 import { createCrossEncoder } from './cross-encoder.js';
-import { createEmbeddingProvider } from '@adhd/sox-embedding-provider';
+
+// `@adhd/sox-embedding-provider` is lazy-loaded by this package (ADR-0019), so a
+// STATIC value import here is rejected by @nx/enforce-module-boundaries ("Static
+// imports of lazy-loaded libraries are forbidden") — it would register a static
+// edge that defeats the lazy load. A test file is not part of the shipped
+// dependency graph, so it must not register an edge in it: reach the provider
+// through a non-literal dynamic import, matching the optional-loadability guard
+// fixtures' pattern.
+const EMBEDDING_PROVIDER_SPECIFIER = '@adhd/sox-embedding-provider';
+const { createEmbeddingProvider } = (await import(
+  /* @vite-ignore */ EMBEDDING_PROVIDER_SPECIFIER
+)) as typeof import('@adhd/sox-embedding-provider');
 
 // These tests run REAL ONNX inference (Xenova/ms-marco-MiniLM-L-6-v2, a
 // sequence-classification cross-encoder converted from
