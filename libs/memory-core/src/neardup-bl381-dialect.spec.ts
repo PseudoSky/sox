@@ -100,7 +100,11 @@ describe('BL-381 — near-dup KNN goes through the VectorDialect on both backend
       expect(result).not.toBeNull();
       expect(result!.existing_uid).toBe('bl381-base');
       expect(result!.cosine_sim).toBeGreaterThan(0.95);
-      expect(result!.should_invalidate).toBe(true);
+      // Q1-B (neardup-invalidation-fix-plan.md §2): `should_invalidate` was
+      // replaced by `status` — this is a pure rename of a field the type no
+      // longer has, not a semantic weakening of the BL-381 assertion (which
+      // remains "the dialect-routed KNN finds the pair", unchanged above).
+      expect(result!.status).toBe('near_dup');
       expect(baseRowid).toBeGreaterThan(0);
     }, 60_000);
   }
