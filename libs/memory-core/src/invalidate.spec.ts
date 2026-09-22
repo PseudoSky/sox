@@ -225,18 +225,26 @@ describe('memoryInvalidate — not-found / already-invalid / wrong-kind (BUG-MEM
     expect(rowAfterSecond.t_invalid).toBe(firstRow.t_invalid);
   });
 
-  it('BUG-MEMORY-002 (c): an episode auto-invalidated by the near-dup pipeline before the caller\'s own memory_invalidate call — the literal repro of the dispatch\'s 3/12 probe failures', async () => {
-    // memoryWrite() (the top-level convenience wrapper this suite's
-    // writeEpisode() calls) ALWAYS finishes its embed synchronously before
-    // returning (write.ts:505-526: awaits embed() + applyEmbedding() inline,
-    // regardless of SOX_SYNC_EMBED — that env only affects a different
-    // composition path) — and applyEmbedding (embed-pipeline.ts:456-487) runs
-    // E8 near-dup detection + applyNearDupResult automatically for every
-    // still-live node. So writing a near-duplicate SECOND episode auto-
-    // invalidates the OLDER one with NO caller action, exactly like the real
-    // Phase-B pipeline and the dispatch's observed 3/12 probe failures — no
-    // manual vec_node/detectNearDup driving needed (a first attempt at that
-    // collided with the vec_node row memoryWrite already inserts).
+  it('BUG-MEMORY-002 (c): an episode invalidated by a concurrent actor before the caller\'s own memory_invalidate call — the literal repro of the dispatch\'s 3/12 probe failures', async () => {
+    // This test originally used the E8 near-dup pipeline (writing a
+    // near-duplicate second episode) as its race trigger: applyNearDupResult
+    // used to invalidate the OLDER of a near-dup pair automatically, with no
+    // caller action, giving a realistic "someone else invalidated it first"
+    // race for free. Q1-A (neardup-invalidation-fix-plan.md §2) removed that
+    // automatic invalidation entirely — near-dup detection now only ever
+    // writes a SAME_AS edge, never t_invalid — so it can no longer serve as
+    // this test's race trigger.
+    //
+    // The invariant under test (BUG-MEMORY-002 (c)) is NOT "near-dup can
+    // invalidate" — it is "memoryInvalidate on a uid some OTHER actor already
+    // invalidated is idempotent success, not a false E_NOT_FOUND". That race
+    // can come from any concurrent invalidator (another agent's
+    // memory_invalidate, memory_curate merge_duplicates, a future Q3 restore
+    // path, etc.) — near-dup was never the invariant, just one convenient
+    // repro vehicle among many, and coincidentally the one this test picked.
+    // Simulate the race directly via the same raw-SQL shape `invalidateInTx`
+    // (graph-store) uses, so the precondition is honest about not depending
+    // on any particular invalidator.
     const olderUid = await writeEpisode(
       'CONCURRENCY PROBE (disposable, safe to delete). Reproducing a case for BUG-MEMORY-002.',
     );
@@ -245,8 +253,14 @@ describe('memoryInvalidate — not-found / already-invalid / wrong-kind (BUG-MEM
     );
     expect(newerUid).not.toBe(olderUid);
 
-    // Confirm via direct SQL that the older uid is already invalid BEFORE the
-    // caller's own memory_invalidate call ever runs — this is the race.
+    // A concurrent actor (simulated) wins the race and invalidates the older
+    // uid before the caller's own memory_invalidate call runs.
+    const raceTimestamp = new Date().toISOString();
+    await db.executeRun('UPDATE node SET t_invalid = ? WHERE uid = ? AND t_invalid IS NULL', [
+      raceTimestamp,
+      olderUid,
+    ]);
+
     const preCheck = (await db.executeGet<{ t_invalid: string | null }>('SELECT t_invalid FROM node WHERE uid = ?', [olderUid]))!;
     expect(preCheck.t_invalid).not.toBeNull();
 
