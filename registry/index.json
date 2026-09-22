@@ -24,7 +24,7 @@
         "id": "memory-usage"
       }
     ],
-    "builtFromCommit": "9da91dfaef08758ae270ac1a3e1a7fe6db37b58b"
+    "builtFromCommit": "00b83948537cd23604706a4d108331cd2273bf43"
   },
   {
     "id": "memory-cli",
@@ -39,7 +39,7 @@
     },
     "visibility": "internal",
     "bundleId": "sox-memory-bundle",
-    "builtFromCommit": "9da91dfaef08758ae270ac1a3e1a7fe6db37b58b"
+    "builtFromCommit": "00b83948537cd23604706a4d108331cd2273bf43"
   },
   {
     "id": "memory-flush",
@@ -54,7 +54,7 @@
     },
     "visibility": "internal",
     "bundleId": "sox-memory-bundle",
-    "builtFromCommit": "9da91dfaef08758ae270ac1a3e1a7fe6db37b58b"
+    "builtFromCommit": "00b83948537cd23604706a4d108331cd2273bf43"
   },
   {
     "id": "memory-server",
@@ -73,7 +73,7 @@
     },
     "visibility": "internal",
     "bundleId": "sox-memory-bundle",
-    "builtFromCommit": "9da91dfaef08758ae270ac1a3e1a7fe6db37b58b"
+    "builtFromCommit": "00b83948537cd23604706a4d108331cd2273bf43"
   },
   {
     "id": "memory-usage",
@@ -88,7 +88,7 @@
     },
     "visibility": "internal",
     "bundleId": "sox-memory-bundle",
-    "builtFromCommit": "9da91dfaef08758ae270ac1a3e1a7fe6db37b58b"
+    "builtFromCommit": "00b83948537cd23604706a4d108331cd2273bf43"
   },
   {
     "id": "sox",
@@ -97,10 +97,10 @@
     "title": "soxe CLI",
     "description": "LLM extension ecosystem CLI — extension #0 (D1/D2 self-hosting)",
     "source": "npm-package:@adhd/sox-cli@1.2.1",
-    "checksum": "sha256:b31388ad87e96ecc72abaed48d401e7fd26c3e2ae6ca036ea448e4be8717d08d",
+    "checksum": "sha256:7377e85ecf52188ab7e0e5aea8abd9ee77a869f969a11a2c119cfa91e6f102d4",
     "compatibility": {
       "host": ">=1.0.0 <2.0.0"
     },
-    "builtFromCommit": "9da91dfaef08758ae270ac1a3e1a7fe6db37b58b"
+    "builtFromCommit": "00b83948537cd23604706a4d108331cd2273bf43"
   }
 ]
