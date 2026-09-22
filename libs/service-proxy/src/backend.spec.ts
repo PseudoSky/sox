@@ -263,3 +263,73 @@ describe('serveBackend — SA-3 inherited-fd', () => {
     await h1.close();
   });
 });
+
+/**
+ * SPEC-EMBEDDING-FUNNEL.md §A — the `onClientCountChange` lifecycle hook.
+ *
+ * The self-reaping embedding host keys its idle teardown on the live client
+ * count, so the hook must fire on BOTH edges (connect → +1, disconnect → 0)
+ * and must never be required (every pre-existing caller omits it).
+ */
+describe('serveBackend — onClientCountChange lifecycle hook', () => {
+  /** Poll until `pred()` is true or the deadline elapses (bounded, no fixed sleep). */
+  async function waitFor(pred: () => boolean, timeoutMs = 2_000): Promise<void> {
+    const deadline = Date.now() + timeoutMs;
+    while (!pred() && Date.now() < deadline) {
+      await new Promise((r) => setTimeout(r, 10));
+    }
+    if (!pred()) throw new Error('waitFor: condition not met within deadline');
+  }
+
+  it('fires with the live client count on connect and on disconnect', async () => {
+    const dir = tmpDir();
+    cleanups.push(() => fs.rmSync(dir, { recursive: true, force: true }));
+    const sock = path.join(dir, 'count.sock');
+
+    const counts: number[] = [];
+    const h = await serveBackend({
+      socketPath: sock,
+      handler: (req) => ({ jsonrpc: '2.0', id: req.id ?? null, result: { ok: true } }),
+      onDiagnostic: () => {},
+      onClientCountChange: (n) => counts.push(n),
+    });
+    cleanups.push(() => h.close());
+
+    // No client yet — the hook has not fired.
+    expect(counts).toEqual([]);
+
+    const conn = dialBackend({ socketPath: sock, onDiagnostic: () => {} });
+    // Round-trip so the server has definitely accepted the connection.
+    const resp = await conn.send({ jsonrpc: '2.0', id: 1, method: 'ping' });
+    expect(resp.result).toEqual({ ok: true });
+    await waitFor(() => counts.includes(1));
+    expect(counts[counts.length - 1]).toBe(1);
+
+    // Drop the client — the count must return to 0.
+    conn.close();
+    await waitFor(() => counts[counts.length - 1] === 0);
+    expect(counts[counts.length - 1]).toBe(0);
+
+    await h.close();
+  });
+
+  it('[negative control] omitting the hook changes nothing and never throws', async () => {
+    const dir = tmpDir();
+    cleanups.push(() => fs.rmSync(dir, { recursive: true, force: true }));
+    const sock = path.join(dir, 'nohook.sock');
+
+    const h = await serveBackend({
+      socketPath: sock,
+      handler: (req) => ({ jsonrpc: '2.0', id: req.id ?? null, result: { ok: true } }),
+      onDiagnostic: () => {},
+    });
+    cleanups.push(() => h.close());
+
+    const conn = dialBackend({ socketPath: sock, onDiagnostic: () => {} });
+    cleanups.push(() => conn.close());
+    const resp = await conn.send({ jsonrpc: '2.0', id: 1, method: 'ping' });
+    expect(resp.result).toEqual({ ok: true });
+
+    await h.close();
+  });
+});
