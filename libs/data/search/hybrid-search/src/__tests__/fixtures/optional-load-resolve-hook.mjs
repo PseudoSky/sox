@@ -1,26 +1,20 @@
 /**
  * optional-load-resolve-hook.mjs — the armed guard for the optional-loadability
- * invariant of @adhd/sox-semantic.
+ * invariant of @adhd/sox-hybrid-search.
  *
  * Loaded by `optional-load-guard.mjs` through `module.register()`, so it sees
  * EVERY bare-specifier resolution the module graph performs — including the
  * static imports at the top of `dist/index.js` and anything reached
- * transitively. That reach matters: an earlier draft of this invariant assumed
- * only sox-semantic's own two imports had to be lazy, but `@adhd/sox-hybrid-search`
- * (a mandatory dependency) then re-exports `cross-encoder.js`, which statically
- * imports `@adhd/sox-embedding-provider` — so a static hybrid-search import
- * resolved the optional package on every path. The guard catches that; a guard
- * scoped to sox-semantic's own file would not.
- *
- * (Superseded 2026-09-22: hybrid-search 0.4.9 no longer eagerly imports
- * `@adhd/sox-embedding-provider` — its cross-encoder resolves it lazily on first
- * `createCrossEncoder()` (ADR-0019). This guard still holds: hybrid-search is
- * loaded lazily by sox-semantic, and the guard proves the optional specifiers
- * are never resolved on the injected path.)
+ * transitively. That reach matters: `@adhd/sox-hybrid-search`'s entrypoint
+ * re-exports `cross-encoder.js`, which used to statically import
+ * `@adhd/sox-embedding-provider` — so a plain `import '@adhd/sox-hybrid-search'`
+ * (for the pure `fuse()`, say) resolved the optional native chain. The guard
+ * catches that; a guard scoped to one file would not.
  *
  * It both RECORDS every specifier (the evidence the caller asserts on) and
  * THROWS on the optional heavy two (so a regression cannot pass silently — the
- * import simply fails).
+ * import simply fails, and the caller additionally proves the failure is the
+ * honest, named-specifier degradation and not a bare ERR_MODULE_NOT_FOUND).
  */
 import { appendFileSync } from 'node:fs';
 
@@ -48,7 +42,8 @@ export async function resolve(specifier, context, nextResolve) {
   }
   if (config.heavy.includes(specifier)) {
     throw new Error(
-      `OPTIONAL-LOAD GUARD: "${specifier}" was resolved — it must never be requested on the DI-injected path`,
+      `OPTIONAL-LOAD GUARD: "${specifier}" was resolved — it must never be requested on the pure path ` +
+        `(fuse/normalize/rrfFuse, or StoreSearchBackend over injected backends)`,
     );
   }
   return nextResolve(specifier, context);

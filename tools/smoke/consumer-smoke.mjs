@@ -205,6 +205,12 @@ const TRIVIAL_OPS = {
     // model on a cold cache. Construction + metadata + dispose() is the same
     // network-free contract exercised by this package's own unit test
     // ("createCrossEncoder returns a CrossEncoder instance").
+    //
+    // NOTE (ADR-0019): createCrossEncoder() resolves @adhd/sox-embedding-provider
+    // lazily on first call, so this probe requires embedding-provider to be
+    // INSTALLED (it is an optionalDependency, installed by default). It does not
+    // download a model — the provider module loads, but no inference runs. The
+    // pure `fuse()` surface above needs neither heavy package.
     const encoder = await mod.createCrossEncoder({ modelId: 'MiniCheck' });
     if (!encoder.metadata || encoder.metadata.modelId !== 'MiniCheck') {
       throw new Error('createCrossEncoder() metadata mismatch');

@@ -24,8 +24,10 @@
     "dist"
   ],
   "dependencies": {
+    "@adhd/sox-graph-store": "workspace:^"
+  },
+  "optionalDependencies": {
     "@adhd/sox-embedding-provider": "workspace:^",
-    "@adhd/sox-graph-store": "workspace:^",
     "@adhd/sox-vector-store": "workspace:^"
   },
   "devDependencies": {
@@ -51,10 +53,19 @@
       "textScore / vecScore are mechanism-agnostic names — BM25 / cosine are implementation details inside backends (never surfaced through SearchBackend interface)",
       "SchemaAdapter is an internal SQLite concern — NOT exported; MCP handlers pass raw filters via SearchQuery.filters; StoreSearchBackend resolves them internally",
       "fuse() weights must be multiplicative (field boosting), never additive (scale-blind)",
-      "a NodeFilter that matches zero nodes yields zero vector candidates — never an unfiltered knn() fallback (a PRESENT-BUT-EMPTY VecFilter.ids means \"match nothing\", never \"no filter\": a scope that resolves to zero candidates yields zero results at every layer — BUG-032 / ADR-0017)"
+      "a NodeFilter that matches zero nodes yields zero vector candidates — never an unfiltered knn() fallback (a PRESENT-BUT-EMPTY VecFilter.ids means \"match nothing\", never \"no filter\": a scope that resolves to zero candidates yields zero results at every layer — BUG-032 / ADR-0017)",
+      "the pure surface (fuse/normalize/rrfFuse) and StoreSearchBackend over injected backends resolve NEITHER @adhd/sox-vector-store NOR @adhd/sox-embedding-provider; the cross-encoder is the only path that resolves embedding-provider, and only on first createCrossEncoder() — both are optionalDependencies loaded lazily (ADR-0019)"
     ],
     "entrypoints": [
       "dist/index.js"
+    ],
+    "externalConsumers": [
+      {
+        "name": "@adhd/backlog",
+        "repo": "/Users/nix/dev/node/adhd",
+        "path": "entrypoint/backlog",
+        "note": "hard dep on hybrid-search; lists the heavy two as optionalDependencies"
+      }
     ]
   },
   "keywords": [

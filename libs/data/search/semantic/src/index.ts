@@ -107,10 +107,15 @@ const VECTOR_STORE_SPECIFIER = '@adhd/sox-vector-store';
 const EMBEDDING_PROVIDER_SPECIFIER = '@adhd/sox-embedding-provider';
 /**
  * `@adhd/sox-hybrid-search` is a MANDATORY dependency (the node-join's RRF
- * fusion lives there), but its entrypoint re-exports `cross-encoder.js`, which
- * statically imports `@adhd/sox-embedding-provider`. A static import here would
- * therefore resolve the optional package on EVERY path — including the injected
- * one — defeating the invariant above. It is loaded lazily instead.
+ * fusion lives there). It is still loaded lazily: this keeps hybrid-search's
+ * whole module graph off the DI-injected path until a search actually runs.
+ *
+ * Historical context (kept, superseded): before hybrid-search 0.4.9 its
+ * entrypoint re-exported `cross-encoder.js`, which statically imported
+ * `@adhd/sox-embedding-provider`, so a static hybrid-search import resolved the
+ * optional package on EVERY path. hybrid-search 0.4.9 resolves embedding-provider
+ * lazily on first `createCrossEncoder()` (ADR-0019), so a static import would no
+ * longer resolve it — but the lazy load remains correct and is retained.
  */
 const HYBRID_SEARCH_SPECIFIER = '@adhd/sox-hybrid-search';
 

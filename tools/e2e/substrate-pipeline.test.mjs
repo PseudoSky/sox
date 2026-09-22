@@ -24,9 +24,12 @@
  * its own resolved dependencies (including its sibling `@adhd/sox-*`
  * workspace deps) in its own `node_modules/`, so importing each package's
  * compiled entrypoint in place (without moving/copying files) is sufficient
- * for every internal bare-specifier `import` (e.g. hybrid-search's
- * cross-encoder.js `import ... from '@adhd/sox-embedding-provider'`) to
- * resolve exactly as it would for a real downstream consumer.
+ * for every internal bare-specifier `import` to resolve exactly as it would
+ * for a real downstream consumer. (hybrid-search's cross-encoder.js statically
+ * imports only the TYPES of `@adhd/sox-embedding-provider`; its value runtime
+ * — including `getSharedOnnxWorker()`, used by `createCrossEncoder()` below —
+ * is resolved lazily on first `createCrossEncoder()`, never at module load.
+ * ADR-0019.)
  *
  * PROCESS BOUNDARY (real components on both sides — see child-embed.mjs's
  * header comment for the full root-cause writeup): the embedding-provider

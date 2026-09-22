@@ -335,19 +335,20 @@ importers:
 
   libs/data/search/hybrid-search:
     dependencies:
-      '@adhd/sox-embedding-provider':
-        specifier: workspace:^
-        version: link:../../embed/embedding-provider
       '@adhd/sox-graph-store':
         specifier: workspace:^
         version: link:../../graph/graph-store
-      '@adhd/sox-vector-store':
-        specifier: workspace:^
-        version: link:../../vectors/vector-store
     devDependencies:
       '@adhd/sox-store-adapter':
         specifier: workspace:^
         version: link:../../store/store-adapter
+    optionalDependencies:
+      '@adhd/sox-embedding-provider':
+        specifier: workspace:^
+        version: link:../../embed/embedding-provider
+      '@adhd/sox-vector-store':
+        specifier: workspace:^
+        version: link:../../vectors/vector-store
 
   libs/data/search/semantic:
     dependencies:
