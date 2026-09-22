@@ -27,27 +27,40 @@ Refinement record with all run evidence: `claude-agents/.research-trace/2026-09-
 
 ---
 
-## 2. memory-server — async near-duplicate pass invalidates a fresh parent episode with `reason: null`, leaving orphan chunks
+## 2. memory-server — near-duplicate pass silently invalidates the OLDER of any ≥0.95-cosine pair, including a parent vs its own chunk; `reason: null`, no supersession edge, `is_current: true`
 
-**Repo:** sox-ecosystem (`packages/memory*`) · **Severity:** medium — silent data loss from the caller's point of view
+**Repo:** sox-ecosystem (`packages/memory*`, near-dup / SAME_AS enrichment) · **Severity:** HIGH — silent destruction of divergent findings; the tagged node of a chunked episode is the one that dies
 
-**Observed (verified live 2026-09-22 03:2x UTC):**
+**Verified live 2026-09-22 03:5xZ via MCP only (`memory_supersession_chain`, `memory_related`, `memory_near_duplicates`; the store is Turso, not sqlite — do not use the sqlite3 CLI):**
 
-- `memory_write` returned `01M33GZ0NZTF75PY35PGJP2910` at `03:01:17.632Z`; the episode was invalidated at `03:01:20.208Z` (2.6 s later) with `reason: null`.
-- `memory_supersession_chain({uid: "01M33GZ0NZTF75PY35PGJP2910"})` returns `{"t_invalid": "2026-09-22T03:01:20.208Z", "reason": null, "is_current": true}` — invalidated *and* current, and nothing in the chain supersedes it.
-- Its two child chunks `01M33GZ12J9DP8N6CAT76VVFB1` and `01M33GZ16JN19AP118V370T69W` stayed live (DERIVED_FROM a dead parent).
-- `memory_update({uid: "01M33GZ0NZTF75PY35PGJP2910", …})` then fails `E_NOT_FOUND`, so the documented fix-up path cannot repair it; the caller had to rewrite with a new `client_request_id`.
+Mechanism (7 `already_merged: true` pairs in `memory_near_duplicates({project_path: "/Users/nix/dev/ai/claude-agents", topic: "technique-catalog"})`): for every SAME_AS pair with cosine ≥ ~0.95 the pass sets `t_invalid` on the **older** node and keeps the newer, with `reason: null`, no `supersedes_uid`, and no chain link. The chain API then reports the dead node as `is_current: true`.
 
-**Repro:**
+| Pair (newer keeps, older invalidated) | cosine | What was lost |
+|---|---|---|
+| `01M33GZ12J9DP8N6CAT76VVFB1` (child chunk, created +0.4 s) vs **parent `01M33GZ0NZTF75PY35PGJP2910`** | 0.951 | **Self-duplicate.** The parent was compared with its own `DERIVED_FROM` chunk (the chunk is the parent's first 500 tokens) and lost. The parent carried `topic`, `tags`, `MENTIONS` edges; the surviving chunks (`…VVFB1`, `…T69W`, both `t_invalid: null`) have `topic: null`, `tags: []`, and `memory_related` returns **zero edges** for them. The knowledge is live but unreachable by any filtered recall. |
+| `01M33GSMA9NTK5MZ5ZFE2VAATP` (scout v2 verdict: off-the-shelf rrcf, strict license) vs `01M33FZRMG14QXTW5KEHK85BYP` (scout v1 verdict: compose HST+CUSUM) | 0.951 | **Two different conclusions** for the same use case; the earlier one — which `ml-system-architect` had already consumed as its brief of record — was invalidated at 02:58:23Z. A future recall now shows only the rrcf verdict and no trace that a compose verdict ever existed. |
+| `01M33HK9TA7CG41WZ2EHJ2D7RQ` (v3 HST, blocked evidence-untraceable) vs `01M33GR9JK39B6M8Y6XJ0XP1RA` (v2 HST) | 0.953 | Earlier grading with different evidence notes gone (03:12:45Z) |
+| `01M33GS0E8WM0MTZ0AZYRH0J0H` vs `01M33FY0ESEAHCQA81Q136C924` (NAB benchmark) | 0.954 | v1 benchmark entry gone (02:58:01Z) |
+| `01M33GRDBHJEVF4S4DP8W9JGH6` vs `01M33FX5PW6PQNTGKT450WY1J9` (ADTK) | 0.961 | v1 entry gone (02:57:46Z); note the two disagree on `kind` (model vs algorithm) |
+| `01M33GRBQNND9JSKPSRMES4V6J` vs `01M33GRBFYWTZ4X9RF8WQAQNS2` (Online-IF, same run) | 0.951 | Chunk-vs-parent again, same shape as row 1 |
+| `01M33FXKTAKC53SMXJ2J42G2HT` vs `01M33FXKJPC49NS8FWCB74J1N3` (DBSCAN, E_BUSY retry) | 0.954 | The only pair that is a true duplicate (client retry after `E_BUSY`; both writes had landed). Even here the caller was told the *first* UID and validated against it; the pass killed that one. |
 
-1. `memory_write` an episode >500 tokens (default `chunk_size`) with `topic: "technique-catalog"`, tags `["kind:architecture-pattern", …]`, `project_path` set. Note the returned UID.
-2. Within ~1 s, `memory_write` a second episode with substantially overlapping content (the architect wrote the pattern episode and the design-decision episode back to back; both summarize the same design).
-3. Wait 5 s. Call `memory_supersession_chain` on the first UID → `t_invalid` set, `reason: null`, `is_current: true`.
-4. `memory_recall({filters: {tags: ["kind:architecture-pattern"], t_created_after: <step-1 time>}})` → the parent is gone; child chunks are recallable by content but carry `topic: null, tags: []`.
+Every invalidation landed 2–15 s after the newer write, i.e. inside the window in which the writing agent runs its post-write validation.
 
-**Expected:** either no invalidation (the two episodes are not duplicates — different topic/tags), or an invalidation that names a `reason` and a superseding UID, and that invalidates (or re-parents) the chunks with the parent.
+**Repro (MCP tools, ~1 min):**
 
----
+1. `memory_write` episode A (>500 tokens, default `chunk_size`, `topic: "t-test"`, `tags: ["k:test"]`, `project_path` set). Note UID A.
+2. `memory_related({uid: A, rel: ["DERIVED_FROM"]})` → chunk UIDs C1, C2 (created ~0.4 s after A).
+3. Wait ~5 s. `memory_supersession_chain({uid: A})` → `t_invalid` set, `reason: null`, `is_current: true`. `memory_related({uid: A})` shows `SAME_AS` to C1 with cosine ≈ 0.95.
+4. `memory_supersession_chain({uid: C1})` → `t_invalid: null`; `memory_related({uid: C1})` → `edges: []`; `memory_recall({filters: {tags: ["k:test"]}})` → nothing.
+5. For the divergent-conclusion case: `memory_write` two episodes with the same YAML skeleton and opposite `verdict:` values 10 s apart; the first is invalidated.
+
+**Expected:**
+- The pass never compares a node with its own `DERIVED_FROM` descendants (or chunks inherit topic/tags/edges and the parent is exempt).
+- A merge is a SUPERSEDES/SAME_AS link plus a `reason`, never a bare `t_invalid`; `is_current` must be false on an invalidated node.
+- High cosine on a shared template is not equality: two `selection:verdict` episodes with different `verdict:`/`chosen:` fields must both survive (compare structured fields, or require `content_hash` equality for auto-merge and leave ≥0.95 pairs as SAME_AS suggestions for `memory_curate`).
+
+**Immediate mitigation in the agent specs (already committed, claude-agents `c69d86c0`):** `chunk_size: 1500/4000` so entries are single nodes (removes the self-duplicate case), `client_request_id` on writes. It does **not** protect divergent verdicts; until fixed, a re-run of the scout on a use case overwrites its prior verdict's existence.
 
 ## 3. memory-server — `memory_entity_episodes.total` counts invalidated episodes that the `episodes` list omits
 
