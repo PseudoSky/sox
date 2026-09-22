@@ -26,12 +26,18 @@ import { checkAndClaimFastembedLock, isPidAlive } from './fastembedProcessHost.j
 describe('BL-331 — fastembed host cross-process contention lock', () => {
   let lockPath: string;
   let prevEnv: string | undefined;
+  let prevService: string | undefined;
   let errorSpy: ReturnType<typeof vi.spyOn>;
 
   beforeEach(() => {
     lockPath = join(tmpdir(), `sox-fastembed-host-test-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2)}.lock`);
     prevEnv = process.env['SOX_FASTEMBED_LOCK_PATH'];
     process.env['SOX_FASTEMBED_LOCK_PATH'] = lockPath;
+    // BL-432: save + clear the service label so every pre-existing test in this
+    // file keeps its original "no service identity" behaviour, and only the
+    // BL-432 cases below opt in by setting it.
+    prevService = process.env['SOX_FASTEMBED_SERVICE'];
+    delete process.env['SOX_FASTEMBED_SERVICE'];
     errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
   });
 
@@ -39,6 +45,8 @@ describe('BL-331 — fastembed host cross-process contention lock', () => {
     errorSpy.mockRestore();
     if (prevEnv === undefined) delete process.env['SOX_FASTEMBED_LOCK_PATH'];
     else process.env['SOX_FASTEMBED_LOCK_PATH'] = prevEnv;
+    if (prevService === undefined) delete process.env['SOX_FASTEMBED_SERVICE'];
+    else process.env['SOX_FASTEMBED_SERVICE'] = prevService;
     try {
       fs.unlinkSync(lockPath);
     } catch {
@@ -121,5 +129,80 @@ describe('BL-331 — fastembed host cross-process contention lock', () => {
     // Recovers: the lock file is now valid JSON naming our own pid.
     const written = JSON.parse(fs.readFileSync(lockPath, 'utf8')) as { pid: number };
     expect(written.pid).toBe(process.pid);
+  });
+
+  // ── BL-432: service identity + same-service suppression ──────────────────
+
+  it('BL-432: writes the OWNING service label (from SOX_FASTEMBED_SERVICE) into the lock', () => {
+    process.env['SOX_FASTEMBED_SERVICE'] = 'memory-server';
+    checkAndClaimFastembedLock();
+    const written = JSON.parse(fs.readFileSync(lockPath, 'utf8')) as { service?: string };
+    expect(written.service).toBe('memory-server');
+  });
+
+  it('BL-432: omits the service field entirely when no service identity is threaded (back-compat with pre-BL-432 locks)', () => {
+    checkAndClaimFastembedLock();
+    const written = JSON.parse(fs.readFileSync(lockPath, 'utf8')) as Record<string, unknown>;
+    expect(written).not.toHaveProperty('service');
+  });
+
+  it('BL-432 GREEN→ the sequential-CLI false positive: a SAME-service live host is NOT warned about', () => {
+    const conflictingPid = process.ppid;
+    expect(isPidAlive(conflictingPid)).toBe(true);
+    process.env['SOX_FASTEMBED_SERVICE'] = 'backlog';
+    fs.writeFileSync(
+      lockPath,
+      JSON.stringify({ pid: conflictingPid, startedAt: '2026-09-22T00:00:00.000Z', service: 'backlog' }),
+    );
+
+    checkAndClaimFastembedLock();
+
+    // Same service -> suppressed, exactly like a pool sibling.
+    expect(errorSpy).not.toHaveBeenCalled();
+    // Still claims the lock for ourselves (advisory, never exclusive).
+    const written = JSON.parse(fs.readFileSync(lockPath, 'utf8')) as { pid: number };
+    expect(written.pid).toBe(process.pid);
+  });
+
+  it('BL-432: CROSS-service contention still warns — and now NAMES the competing service', () => {
+    const conflictingPid = process.ppid;
+    process.env['SOX_FASTEMBED_SERVICE'] = 'backlog';
+    fs.writeFileSync(
+      lockPath,
+      JSON.stringify({ pid: conflictingPid, startedAt: '2026-09-22T00:00:00.000Z', service: 'memory-server' }),
+    );
+
+    checkAndClaimFastembedLock();
+
+    expect(errorSpy).toHaveBeenCalledTimes(1);
+    const [message] = errorSpy.mock.calls[0] as [string];
+    expect(message).toContain('BL-331');
+    expect(message).toContain(String(conflictingPid));
+    expect(message).toContain('service memory-server');
+    expect(message).toContain('CoreML');
+  });
+
+  it('BL-432: an UNLABELLED competing lock (no service) still warns when WE have a service — no false suppression', () => {
+    const conflictingPid = process.ppid;
+    process.env['SOX_FASTEMBED_SERVICE'] = 'backlog';
+    fs.writeFileSync(lockPath, JSON.stringify({ pid: conflictingPid, startedAt: '2026-09-22T00:00:00.000Z' }));
+
+    checkAndClaimFastembedLock();
+
+    expect(errorSpy).toHaveBeenCalledTimes(1);
+    expect((errorSpy.mock.calls[0] as [string])[0]).toContain('service unknown');
+  });
+
+  it('BL-432: an uninitialised owner (no service) does NOT suppress a labelled same-owner lock — identity is required on BOTH sides', () => {
+    const conflictingPid = process.ppid;
+    // No SOX_FASTEMBED_SERVICE set (own service is undefined).
+    fs.writeFileSync(
+      lockPath,
+      JSON.stringify({ pid: conflictingPid, startedAt: '2026-09-22T00:00:00.000Z', service: 'backlog' }),
+    );
+
+    checkAndClaimFastembedLock();
+
+    expect(errorSpy).toHaveBeenCalledTimes(1);
   });
 });
