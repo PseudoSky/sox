@@ -2,12 +2,22 @@
  * memoryGetEntityEpisodes — episodes mentioning an entity via MENTIONS edges.
  *
  * Resolves entity by uid or name, then joins live MENTIONS edges to their
- * live episode source nodes in a single SQL query (BL: Q4 of the near-dup
- * invalidation fix plan). `total`, `invalidated_count`, and the paginated
- * page are all derived from the SAME live-filtered join — pagination never
- * slices a raw, unfiltered edge array. Results are ordered
- * `importance DESC, rowid ASC` per the tool's documented "ranked by
- * importance" contract (memory-server/src/index.ts).
+ * live episode source nodes via the same SQL shape for `total`,
+ * `invalidated_count`, and the page (BL: Q4 of the near-dup invalidation fix
+ * plan) — pagination never slices a raw, unfiltered edge array the way the
+ * prior implementation did. Results are ordered `importance DESC, rowid ASC`
+ * per the tool's documented "ranked by importance" contract
+ * (memory-server/src/index.ts).
+ *
+ * The three reads run inside one `adapter.transaction()` (deferred/read) so
+ * they see one consistent snapshot of the edge/node tables — without it, an
+ * invalidation from a concurrent writer (e.g. the near-dup pass) landing
+ * between the count and the page query reproduces the exact "total N, short
+ * page" symptom this function exists to eliminate. Per-episode enrichment
+ * (`isSuperseded`/`supersedesUidForRowid`/`communityUidForRowid` below) runs
+ * OUTSIDE that transaction, against already-resolved rowids — it is not
+ * covered by this consistency guarantee, and is a pre-existing N+1 query
+ * pattern (one call per returned row) tracked separately, not fixed here.
  *
  * [inv:no-mcp] — returns a plain result object, never an MCP ToolResult.
  */
@@ -58,8 +68,18 @@ export async function memoryGetEntityEpisodes(
 ): Promise<EntityEpisodesResult> {
   const entityUid = args['entity_uid'] as string | undefined;
   const entityName = args['entity_name'] as string | undefined;
-  const limit = Math.min((args['limit'] as number | undefined) ?? 20, 200);
-  const offset = (args['offset'] as number | undefined) ?? 0;
+  // Normalize limit/offset ONCE, before either value can reach SQL as a bind
+  // param. The MCP schema declares both as plain `number` (no `multipleOf`,
+  // no `minimum`), so non-integer and negative values are schema-valid —
+  // slice() used to silently absorb them; a raw `LIMIT ? OFFSET ?` bind does
+  // not: a non-integer throws "datatype mismatch" (uncaught by dispatchTool,
+  // so it crashes the tool call instead of returning a structured {code}
+  // error), and SQLite reads a negative LIMIT as "no limit", defeating the
+  // upper clamp entirely.
+  const rawLimit = args['limit'] as number | undefined;
+  const rawOffset = args['offset'] as number | undefined;
+  const limit = Math.min(Math.max(Math.trunc(rawLimit as number) || 20, 0), 200);
+  const offset = Math.max(Math.trunc(rawOffset as number) || 0, 0);
 
   let resolvedEntityUid = entityUid;
   let resolvedEntityName = '';
@@ -123,29 +143,6 @@ export async function memoryGetEntityEpisodes(
     };
   }
 
-  // total/invalidated_count/page all derive from the SAME live-filtered
-  // MENTIONS→episode join — pagination must never slice a raw edge array
-  // (that was the defect: total counted invalid edges while pages were
-  // filtered afterward, so pages came back short and offsets shifted
-  // meaning as invalid rows fell in different slices).
-  const totalRow = await adapter.executeGet<{ cnt: number }>(
-    `SELECT COUNT(*) AS cnt
-       FROM edge e JOIN node n ON n.rowid = e.src
-      WHERE e.dst = ? AND e.rel = 'MENTIONS' AND e.t_invalid IS NULL
-        AND n.kind = 'episode' AND n.t_invalid IS NULL`,
-    [entityRow.rowid],
-  );
-  const total = totalRow?.cnt ?? 0;
-
-  const invalidatedRow = await adapter.executeGet<{ cnt: number }>(
-    `SELECT COUNT(*) AS cnt
-       FROM edge e JOIN node n ON n.rowid = e.src
-      WHERE e.dst = ? AND e.rel = 'MENTIONS' AND e.t_invalid IS NULL
-        AND n.kind = 'episode' AND n.t_invalid IS NOT NULL`,
-    [entityRow.rowid],
-  );
-  const invalidatedCount = invalidatedRow?.cnt ?? 0;
-
   interface EpRow {
     rowid: number;
     uid: string;
@@ -158,16 +155,50 @@ export async function memoryGetEntityEpisodes(
     t_created: string;
     agent_id: string | null;
   }
-  const pageResult = await adapter.executeAll<EpRow>(
-    `SELECT n.rowid, n.uid, n.content, n.summary, n.topic, n.tags, n.project_path,
-            n.importance, n.t_created, n.agent_id
-       FROM edge e JOIN node n ON n.rowid = e.src
-      WHERE e.dst = ? AND e.rel = 'MENTIONS' AND e.t_invalid IS NULL
-        AND n.kind = 'episode' AND n.t_invalid IS NULL
-      ORDER BY n.importance DESC, n.rowid ASC
-      LIMIT ? OFFSET ?`,
-    [entityRow.rowid, limit, offset],
-  );
+
+  // total/invalidated_count/page all read the SAME live-filtered
+  // MENTIONS→episode join shape, inside one transaction — pagination must
+  // never slice a raw edge array (that was the defect: total counted
+  // invalid edges while pages were filtered afterward, so pages came back
+  // short and offsets shifted meaning as invalid rows fell in different
+  // slices). The transaction additionally guarantees these three reads see
+  // one snapshot: without it, a concurrent invalidation landing between the
+  // count and the page query reproduces the same "total N, short page"
+  // symptom via a different mechanism.
+  const { total, invalidatedCount, pageResult } = await adapter.transaction(async (tx) => {
+    const totalRow = await tx.executeGet<{ cnt: number }>(
+      `SELECT COUNT(*) AS cnt
+         FROM edge e JOIN node n ON n.rowid = e.src
+        WHERE e.dst = ? AND e.rel = 'MENTIONS' AND e.t_invalid IS NULL
+          AND n.kind = 'episode' AND n.t_invalid IS NULL`,
+      [entityRow.rowid],
+    );
+
+    const invalidatedRow = await tx.executeGet<{ cnt: number }>(
+      `SELECT COUNT(*) AS cnt
+         FROM edge e JOIN node n ON n.rowid = e.src
+        WHERE e.dst = ? AND e.rel = 'MENTIONS' AND e.t_invalid IS NULL
+          AND n.kind = 'episode' AND n.t_invalid IS NOT NULL`,
+      [entityRow.rowid],
+    );
+
+    const page = await tx.executeAll<EpRow>(
+      `SELECT n.rowid, n.uid, n.content, n.summary, n.topic, n.tags, n.project_path,
+              n.importance, n.t_created, n.agent_id
+         FROM edge e JOIN node n ON n.rowid = e.src
+        WHERE e.dst = ? AND e.rel = 'MENTIONS' AND e.t_invalid IS NULL
+          AND n.kind = 'episode' AND n.t_invalid IS NULL
+        ORDER BY n.importance DESC, n.rowid ASC
+        LIMIT ? OFFSET ?`,
+      [entityRow.rowid, limit, offset],
+    );
+
+    return {
+      total: totalRow?.cnt ?? 0,
+      invalidatedCount: invalidatedRow?.cnt ?? 0,
+      pageResult: page,
+    };
+  }, { mode: 'deferred' });
 
   const episodes: EpisodeSummary[] = [];
   for (const r of pageResult.rows) {
