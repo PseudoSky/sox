@@ -96,3 +96,69 @@ describe('DEBT-EPIC-HOTPATH-REDUNDANT-IO-001 — detectCompetingFastembedHost TT
     expect(deadResult).toBeNull();
   });
 });
+
+/**
+ * BL-432 — the reader half of the fastembed-host lock: surface the competing
+ * host's SERVICE identity, and suppress a same-service lock (the sequential-CLI
+ * false positive) while still reporting genuine cross-service contention.
+ */
+describe('BL-432 — detectCompetingFastembedHost service identity + same-service suppression', () => {
+  beforeEach(() => {
+    __resetCompetingHostCacheForTests();
+    existsSyncMock.mockReset().mockReturnValue(true);
+    readFileSyncMock.mockReset();
+  });
+
+  afterEach(() => {
+    __resetCompetingHostCacheForTests();
+  });
+
+  it('surfaces the competing service, suppresses a same-service lock, and does NOT suppress when the owner has no identity', () => {
+    // process.ppid is alive and != process.pid -> a genuine "other" host.
+    readFileSyncMock.mockReturnValue(
+      JSON.stringify({ pid: process.ppid, startedAt: '2026-09-22T00:00:00.000Z', service: 'memory-server' }),
+    );
+
+    // CROSS-service: our own service is 'backlog' -> detected, service surfaced.
+    const cross = detectCompetingFastembedHost(process.pid, undefined, 'backlog');
+    expect(cross).not.toBeNull();
+    expect(cross?.pid).toBe(process.ppid);
+    expect(cross?.service).toBe('memory-server');
+
+    __resetCompetingHostCacheForTests();
+
+    // SAME service: our own service is 'memory-server' -> suppressed.
+    expect(detectCompetingFastembedHost(process.pid, undefined, 'memory-server')).toBeNull();
+
+    __resetCompetingHostCacheForTests();
+
+    // Owner has NO identity (unlabelled) -> pre-BL-432 behaviour, detected.
+    const noIdentity = detectCompetingFastembedHost(process.pid, undefined, undefined);
+    expect(noIdentity).not.toBeNull();
+    expect(noIdentity?.service).toBe('memory-server');
+  });
+
+  it('returns service:null for a pre-BL-432 lock with no service label — and still detects it', () => {
+    readFileSyncMock.mockReturnValue(JSON.stringify({ pid: process.ppid, startedAt: '2026-08-14T00:00:00.000Z' }));
+    const result = detectCompetingFastembedHost(process.pid, undefined, 'backlog');
+    expect(result).not.toBeNull();
+    expect(result?.service).toBeNull();
+  });
+
+  it('the TTL cache key includes ownService: a different own service forces a fresh fs read', () => {
+    readFileSyncMock.mockReturnValue(
+      JSON.stringify({ pid: process.ppid, startedAt: '2026-09-22T00:00:00.000Z', service: 'memory-server' }),
+    );
+
+    detectCompetingFastembedHost(process.pid, undefined, 'backlog');
+    expect(existsSyncMock).toHaveBeenCalledTimes(1);
+
+    // Same key within TTL -> served from cache.
+    detectCompetingFastembedHost(process.pid, undefined, 'backlog');
+    expect(existsSyncMock).toHaveBeenCalledTimes(1);
+
+    // Different own service -> a different cache key -> a fresh read.
+    detectCompetingFastembedHost(process.pid, undefined, 'other-service');
+    expect(existsSyncMock).toHaveBeenCalledTimes(2);
+  });
+});

@@ -22,9 +22,9 @@ import { dirname, join } from 'node:path';
 import { existsSync, readFileSync } from 'node:fs';
 import * as os from 'node:os';
 import { performance } from 'node:perf_hooks';
-import { log, forkChild, _recordChildTelemetry } from '@adhd/sox-telemetry';
+import { log, forkChild, _recordChildTelemetry, currentRuntimeState } from '@adhd/sox-telemetry';
 import type { ChildTelemetrySnapshot } from '@adhd/sox-telemetry';
-import { resolveFastembedLockPath } from './fastembedLock.js';
+import { resolveFastembedLockPath, resolveFastembedServiceLabel } from './fastembedLock.js';
 import { attachOnnxStderrFilter } from './onnxStderrFilter.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -99,9 +99,10 @@ function isPidAlive(pid: number): boolean {
  * `COMPETING_HOST_CACHE_TTL_MS` later than before.
  */
 const COMPETING_HOST_CACHE_TTL_MS = 3000;
-let _competingHostCache: { pid: number; startedAt: string } | null = null;
+let _competingHostCache: { pid: number; startedAt: string; service: string | null } | null = null;
 let _competingHostCacheOwnPid: number | undefined;
 let _competingHostCacheOwnPoolGroup: string | undefined;
+let _competingHostCacheOwnService: string | undefined;
 let _competingHostCacheAt = -Infinity;
 
 /** TEST-ONLY: clear the TTL cache so a test can force a fresh fs read. */
@@ -109,6 +110,7 @@ export function __resetCompetingHostCacheForTests(): void {
   _competingHostCache = null;
   _competingHostCacheOwnPid = undefined;
   _competingHostCacheOwnPoolGroup = undefined;
+  _competingHostCacheOwnService = undefined;
   _competingHostCacheAt = -Infinity;
 }
 
@@ -123,22 +125,32 @@ export function __resetCompetingHostCacheForTests(): void {
  * `competing_host_pid` telemetry field would read as permanently "contended"
  * for every pooled request, which is exactly the false-positive noise BL-331's
  * own postmortem warns against trusting.
+ *
+ * (BL-432) `ownService`, when supplied, does the same for SERVICE identity: a
+ * lock entry whose `service` equals our own is the sequential-CLI false
+ * positive (our own service's earlier/second host), not cross-service
+ * contention, and is suppressed. Requires BOTH sides to carry a real identity —
+ * `ownService === undefined` or an unlabelled/old lock keeps the original
+ * behaviour. The returned `service` is `null` when the lock carries none.
  */
 export function detectCompetingFastembedHost(
   ownPid: number | undefined,
   ownPoolGroup?: string,
-): { pid: number; startedAt: string } | null {
+  ownService?: string,
+): { pid: number; startedAt: string; service: string | null } | null {
   const now = performance.now();
   if (
     now - _competingHostCacheAt < COMPETING_HOST_CACHE_TTL_MS &&
     _competingHostCacheOwnPid === ownPid &&
-    _competingHostCacheOwnPoolGroup === ownPoolGroup
+    _competingHostCacheOwnPoolGroup === ownPoolGroup &&
+    _competingHostCacheOwnService === ownService
   ) {
     return _competingHostCache;
   }
   _competingHostCacheAt = now;
   _competingHostCacheOwnPid = ownPid;
   _competingHostCacheOwnPoolGroup = ownPoolGroup;
+  _competingHostCacheOwnService = ownService;
   try {
     const lockPath = resolveFastembedLockPath();
     if (!existsSync(lockPath)) {
@@ -149,15 +161,23 @@ export function detectCompetingFastembedHost(
       pid?: unknown;
       startedAt?: unknown;
       poolGroup?: unknown;
+      service?: unknown;
     };
     const pid = typeof raw.pid === 'number' ? raw.pid : null;
     const isKnownPoolSibling =
       typeof raw.poolGroup === 'string' && ownPoolGroup !== undefined && raw.poolGroup === ownPoolGroup;
-    if (pid === null || pid === ownPid || !isPidAlive(pid) || isKnownPoolSibling) {
+    // (BL-432) Same-service suppression — see this function's doc comment.
+    const isSameService =
+      typeof raw.service === 'string' && ownService !== undefined && raw.service === ownService;
+    if (pid === null || pid === ownPid || !isPidAlive(pid) || isKnownPoolSibling || isSameService) {
       _competingHostCache = null;
       return null;
     }
-    _competingHostCache = { pid, startedAt: typeof raw.startedAt === 'string' ? raw.startedAt : 'unknown' };
+    _competingHostCache = {
+      pid,
+      startedAt: typeof raw.startedAt === 'string' ? raw.startedAt : 'unknown',
+      service: typeof raw.service === 'string' ? raw.service : null,
+    };
     return _competingHostCache;
   } catch {
     _competingHostCache = null;
@@ -365,6 +385,12 @@ export class SharedFastembedProcessClient implements SharedFastembedClient {
 
     this.startingPromise = new Promise<ChildProcess>((resolveStart) => {
       const hostPath = this.hostPath ?? resolveFastembedHostPath();
+      // (BL-432) This client's owning-service identity, forwarded to the child
+      // via `SOX_FASTEMBED_SERVICE` so the BL-331 lock it writes names the
+      // SERVICE, and so same-service locks can be suppressed. Resolved from the
+      // parent's own telemetry service (`currentRuntimeState().service`), or a
+      // propagated `SOX_FASTEMBED_SERVICE` if one is already set on us.
+      const childService = resolveFastembedServiceLabel(currentRuntimeState().service);
       const c = forkChild(
         hostPath,
         { service: 'embedding-provider', role: 'harness', logSink: 'file' },
@@ -383,9 +409,11 @@ export class SharedFastembedProcessClient implements SharedFastembedClient {
           // Real inference is CPU-bound in native code; no need to keep the
           // parent process alive on this child's account.
           detached: false,
-          ...(this.poolGroup !== undefined
-            ? { env: { ...process.env, SOX_FASTEMBED_POOL_GROUP: this.poolGroup } }
-            : {}),
+          env: {
+            ...process.env,
+            ...(this.poolGroup !== undefined ? { SOX_FASTEMBED_POOL_GROUP: this.poolGroup } : {}),
+            ...(childService !== undefined ? { SOX_FASTEMBED_SERVICE: childService } : {}),
+          },
         },
       );
       if (c.stderr) attachOnnxStderrFilter(c.stderr);
@@ -535,9 +563,12 @@ export class SharedFastembedProcessClient implements SharedFastembedClient {
    *      `queue_depth` > 0 alongside a `response_ms` that scales with it) is
    *      distinguishable from "the child itself was slow on a solo request"
    *      (`queue_depth` === 0 with a large `response_ms`).
-   *   3. `competing_host_pid` — present only when a second, still-live
-   *      `fastembedProcessHost` process is detected (BL-331's advisory lock),
-   *      since that changes embed latency 25-50x independent of queueing.
+   *   3. `competing_host_pid` (+ `competing_host_service`, BL-432) — present
+   *      only when a second, still-live `fastembedProcessHost` process belonging
+   *      to a DIFFERENT service is detected (BL-331's advisory lock), since
+   *      that changes embed latency 25-50x independent of queueing. A
+   *      same-service lock (the sequential-CLI false positive) is suppressed,
+   *      so this field means genuine cross-service contention.
    *
    * BL-576: `signal`, when supplied, is an external cancellation source —
    * e.g. `operation-guard.ts`'s `withOperationDeadline` abort controller, so
@@ -593,10 +624,19 @@ export class SharedFastembedProcessClient implements SharedFastembedClient {
     const id = this.nextId++;
 
     const queueDepth = this.pending.size;
-    const competing = detectCompetingFastembedHost(child.pid, this.poolGroup);
+    // (BL-432) Our own service identity, so `detectCompetingFastembedHost` can
+    // suppress a same-service lock (the sequential-CLI false positive) while
+    // still reporting genuine cross-service contention with identity.
+    const ownService = resolveFastembedServiceLabel(currentRuntimeState().service);
+    const competing = detectCompetingFastembedHost(child.pid, this.poolGroup, ownService);
     const baseFields: Record<string, unknown> = {
       queue_depth: queueDepth,
-      ...(competing ? { competing_host_pid: competing.pid } : {}),
+      ...(competing
+        ? {
+            competing_host_pid: competing.pid,
+            competing_host_service: competing.service ?? 'unknown',
+          }
+        : {}),
       // (BUG-EMBED-POOL-SIZE-DARWIN-FREEMEM-001) See the constructor's
       // `poolSize`/`memberIndex` doc comment: makes "was this process even
       // pooled, and at what size" a directly observable telemetry field

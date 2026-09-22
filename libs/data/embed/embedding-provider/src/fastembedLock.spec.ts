@@ -193,4 +193,65 @@ describe('BL-471 — SharedFastembedProcessClient.request() surfaces a writer-pr
     expect(admitted).toBeDefined();
     expect(admitted).not.toHaveProperty('competing_host_pid');
   }, 15_000);
+
+  /**
+   * BL-432 — the full writer→reader round trip for the SERVICE identity. The
+   * lock is written by the real `checkAndClaimFastembedLock()` with
+   * `SOX_FASTEMBED_SERVICE` set to a DIFFERENT service than this test's own
+   * telemetry service ('bl471-test'), so the reader must report it as genuine
+   * cross-service contention and surface `competing_host_service`.
+   */
+  it('BL-432: a CROSS-service competing host is surfaced as competing_host_pid + competing_host_service', async () => {
+    const prevService = process.env['SOX_FASTEMBED_SERVICE'];
+    process.env['SOX_FASTEMBED_SERVICE'] = 'other-service';
+    try {
+      checkAndClaimFastembedLock();
+    } finally {
+      if (prevService === undefined) delete process.env['SOX_FASTEMBED_SERVICE'];
+      else process.env['SOX_FASTEMBED_SERVICE'] = prevService;
+    }
+    expect(fs.existsSync(lockPath)).toBe(true);
+
+    const hostPath = writeStubHost();
+    client = new SharedFastembedProcessClient(hostPath);
+    await client.request({ type: 'embed', text: 'bl432-cross' }, 5000);
+    await handle.flush();
+
+    const admitted = readLogLines(handle.currentLogFilePath()).find(
+      (r) => r['event'] === 'fastembed_process.request.admitted',
+    );
+    expect(admitted).toBeDefined();
+    expect(admitted?.['competing_host_pid']).toBe(process.pid);
+    expect(admitted?.['competing_host_service']).toBe('other-service');
+  }, 15_000);
+
+  /**
+   * BL-432 — same-service suppression, end to end: a lock written under THIS
+   * test's own telemetry service ('bl471-test') is the sequential-CLI false
+   * positive and must NOT be reported as a competing host, so neither
+   * `competing_host_pid` nor `competing_host_service` appears.
+   */
+  it('BL-432: a SAME-service competing host is suppressed — no competing_host_* fields', async () => {
+    const prevService = process.env['SOX_FASTEMBED_SERVICE'];
+    process.env['SOX_FASTEMBED_SERVICE'] = 'bl471-test'; // == this test's telemetry service
+    try {
+      checkAndClaimFastembedLock();
+    } finally {
+      if (prevService === undefined) delete process.env['SOX_FASTEMBED_SERVICE'];
+      else process.env['SOX_FASTEMBED_SERVICE'] = prevService;
+    }
+    expect(fs.existsSync(lockPath)).toBe(true);
+
+    const hostPath = writeStubHost();
+    client = new SharedFastembedProcessClient(hostPath);
+    await client.request({ type: 'embed', text: 'bl432-same' }, 5000);
+    await handle.flush();
+
+    const admitted = readLogLines(handle.currentLogFilePath()).find(
+      (r) => r['event'] === 'fastembed_process.request.admitted',
+    );
+    expect(admitted).toBeDefined();
+    expect(admitted).not.toHaveProperty('competing_host_pid');
+    expect(admitted).not.toHaveProperty('competing_host_service');
+  }, 15_000);
 });

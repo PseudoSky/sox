@@ -42,6 +42,26 @@ export interface FastembedLockInfo {
    * BL-331's own postmortem already warns against over-trusting.
    */
   poolGroup?: string;
+  /**
+   * (BL-432) The service label of the process that OWNS this fastembed host
+   * (e.g. `memory-server`, `backlog`), threaded from the parent via
+   * `SOX_FASTEMBED_SERVICE` — the same env-threading shape as `poolGroup`.
+   *
+   * Two jobs:
+   *   1. IDENTITY in the BL-331 warning: "another fastembed host process
+   *      (pid N, service X, started …)" names WHO the competing host belongs
+   *      to, not just a bare pid an agent has to `ps` for.
+   *   2. SAME-SERVICE SUPPRESSION: a lock whose `service` equals our own is the
+   *      sequential-CLI false positive (one service's own host, still named by
+   *      the lock from an earlier run, or a second instance of the SAME
+   *      service) and must NOT warn. Genuine CROSS-service contention still
+   *      does.
+   *
+   * `undefined` when the owner declared no service identity (an
+   * uninitialised/`'unlabeled'` telemetry process), in which case neither
+   * suppression nor identity applies — the pre-BL-432 behaviour, unchanged.
+   */
+  service?: string;
 }
 
 /**
@@ -51,4 +71,41 @@ export interface FastembedLockInfo {
  */
 export function resolveFastembedLockPath(): string {
   return process.env['SOX_FASTEMBED_LOCK_PATH'] ?? join(tmpdir(), 'sox-fastembed-host.lock');
+}
+
+/**
+ * BL-432: the env key a parent writes and a forked host reads to label the
+ * lock with the OWNING service's identity. Mirrors `SOX_FASTEMBED_POOL_GROUP`
+ * (see `poolGroup` above) — set on the child's env by
+ * `SharedFastembedProcessClient.ensureProcess()`, read by the writer
+ * (`checkAndClaimFastembedLock`) and the parent-side reader alike.
+ */
+export const SOX_FASTEMBED_SERVICE = 'SOX_FASTEMBED_SERVICE';
+
+/**
+ * Normalize a candidate service identity. An empty string, or the telemetry
+ * "never configured" sentinel `'unlabeled'`, carries no identity and must
+ * NEVER drive same-service suppression — otherwise every process that never
+ * called `initTelemetry()` would suppress every other, including genuine
+ * cross-service contention. Returns `undefined` for those cases.
+ */
+export function normalizeFastembedService(service: string | undefined): string | undefined {
+  if (service === undefined || service === '' || service === 'unlabeled') return undefined;
+  return service;
+}
+
+/**
+ * THIS process's own service identity for lock purposes.
+ *
+ * A forked host reads the owner's label from `SOX_FASTEMBED_SERVICE` (the
+ * parent set it on this child's env). The PARENT itself has no such env var for
+ * its own process, so it passes its telemetry service explicitly as
+ * `telemetryService` (from `currentRuntimeState().service`). Env wins when both
+ * are present, so a propagated owner label is never overwritten by a child's
+ * own (different) telemetry service.
+ */
+export function resolveFastembedServiceLabel(telemetryService?: string): string | undefined {
+  const fromEnv = process.env[SOX_FASTEMBED_SERVICE];
+  const candidate = fromEnv !== undefined && fromEnv !== '' ? fromEnv : telemetryService;
+  return normalizeFastembedService(candidate);
 }

@@ -60,7 +60,7 @@
 import * as fs from 'node:fs';
 import type { EmbeddingModel, ExecutionProvider } from 'fastembed';
 import { bootstrapChildTelemetry, childTelemetrySnapshot, log } from '@adhd/sox-telemetry';
-import { resolveFastembedLockPath, type FastembedLockInfo } from './fastembedLock.js';
+import { resolveFastembedLockPath, resolveFastembedServiceLabel, type FastembedLockInfo } from './fastembedLock.js';
 // BUG-005: MODEL_MAP + resolveModelDim live in the side-effect-free
 // `fastembedModels.js` (see its doc comment — importing them from
 // `./fastembed.js` here would drag parent-side modules into this child
@@ -139,6 +139,11 @@ export function checkAndClaimFastembedLock(): void {
   // preserves today's exact behaviour there. See `fastembedLock.ts`'s
   // `poolGroup` doc comment for why this must be checked before warning.
   const ownPoolGroup = process.env['SOX_FASTEMBED_POOL_GROUP'];
+  // (BL-432) The OWNING service's identity, threaded from the parent via
+  // `SOX_FASTEMBED_SERVICE` (the same env pattern as `SOX_FASTEMBED_POOL_GROUP`
+  // directly above). `undefined` for a host whose owner never declared a
+  // service — see `fastembedLock.ts`'s `service` doc comment.
+  const ownService = resolveFastembedServiceLabel();
   try {
     if (fs.existsSync(lockPath)) {
       const raw = fs.readFileSync(lockPath, 'utf8');
@@ -147,13 +152,27 @@ export function checkAndClaimFastembedLock(): void {
         typeof prev.poolGroup === 'string' &&
         ownPoolGroup !== undefined &&
         prev.poolGroup === ownPoolGroup;
+      // (BL-432) The sequential-CLI false positive: a lock naming OUR OWN
+      // service (e.g. a previous run of the same CLI, or a second instance of
+      // the same service) is not "a genuinely unrelated fastembed host".
+      // Suppress it exactly as a pool sibling is suppressed. Requires BOTH
+      // sides to carry a real identity — `ownService === undefined` (owner
+      // never declared one) or an unlabelled/old lock keeps the original
+      // warn-on-any-live-pid behaviour.
+      const isSameService =
+        typeof prev.service === 'string' &&
+        ownService !== undefined &&
+        prev.service === ownService;
       if (
         typeof prev.pid === 'number' &&
         prev.pid !== process.pid &&
         isPidAlive(prev.pid) &&
-        !isKnownPoolSibling
+        !isKnownPoolSibling &&
+        !isSameService
       ) {
+        const prevService = typeof prev.service === 'string' ? prev.service : 'unknown';
         const msg = `another fastembed host process (pid ${prev.pid}, ` +
+            `service ${prevService}, ` +
             `started ${prev.startedAt ?? 'unknown'}) is ALREADY RUNNING on this machine. ` +
             `Concurrent onnxruntime-node CoreML/ANE execution across separate OS processes has ` +
             `been observed to cause severe (25-50x) embed latency due to Neural Engine/hardware ` +
@@ -163,6 +182,7 @@ export function checkAndClaimFastembedLock(): void {
         console.error(`[fastembed] WARNING (BL-331): ${msg}`);
         log.warn('embedding_provider.fastembed.competing_host_detected', {
           competing_pid: prev.pid,
+          competing_service: prevService,
           competing_started_at: prev.startedAt ?? 'unknown',
           lock_file: lockPath,
         });
@@ -183,6 +203,7 @@ export function checkAndClaimFastembedLock(): void {
       pid: process.pid,
       startedAt: new Date().toISOString(),
       ...(ownPoolGroup !== undefined ? { poolGroup: ownPoolGroup } : {}),
+      ...(ownService !== undefined ? { service: ownService } : {}),
     };
     fs.writeFileSync(lockPath, JSON.stringify(info));
   } catch {
