@@ -78,16 +78,43 @@ export interface VectorBackend {
 
 // ── Error types ─────────────────────────────────────────────────────────────
 
+/**
+ * Sentinel `nodeId` carried by a {@link SpaceInvariantError} raised from the
+ * query path (`knn`). A query vector has no owning node, so the node-oriented
+ * field is meaningless there; this constant lets a consumer discriminate the
+ * query site from the write site without parsing the message.
+ */
+export const QUERY_VECTOR_NODE_ID = -1;
+
 export class SpaceInvariantError extends Error {
   constructor(
     public readonly nodeId: number,
     public readonly space: VectorSpace,
     public readonly actualDim: number,
+    /**
+     * Which operation detected the mismatch — `'upsert'` (the write path, the
+     * default, preserving the original 3-arg contract) or `'knn'` (the query
+     * path). On the `'knn'` path `nodeId` is {@link QUERY_VECTOR_NODE_ID}.
+     */
+    public readonly source: 'upsert' | 'knn' = 'upsert',
   ) {
     super(
-      `dim mismatch for node ${nodeId}: got ${actualDim}, expected ${space.dim} (${space.modelId})`,
+      source === 'knn'
+        ? `query dim mismatch: got ${actualDim}, expected ${space.dim} (${space.modelId})`
+        : `dim mismatch for node ${nodeId}: got ${actualDim}, expected ${space.dim} (${space.modelId})`,
     );
     this.name = 'SpaceInvariantError';
+  }
+
+  /**
+   * The query-path constructor: a `knn` query vector whose length ≠
+   * `space.dim`. Parity with the `upsert` check — a wrong-dim query is a
+   * space-invariant violation and must reject with this typed error, never a
+   * raw driver/SQL error (ADR-0012: a raw driver exception reaching a caller
+   * is a bug).
+   */
+  static forQuery(space: VectorSpace, actualDim: number): SpaceInvariantError {
+    return new SpaceInvariantError(QUERY_VECTOR_NODE_ID, space, actualDim, 'knn');
   }
 }
 
@@ -414,6 +441,12 @@ export class SqliteVectorBackend implements VectorBackend, VectorExistenceProbe 
     k: number,
     filter?: VecFilter,
   ): Array<{ id: number; score: number }> {
+    // Parity with upsert(): a query vector must match the space's dim. Without
+    // this, the brute-force cosine loop reads past the shorter of the two and
+    // returns NaN/garbage scores — a silently wrong answer, not an error.
+    if (query.length !== space.dim) {
+      throw SpaceInvariantError.forQuery(space, query.length);
+    }
     const tbl = tableName(space.modelId);
     const results = this.similarity.search(query, k, this.adapter, tbl, filter);
     return results.map((r) => ({ id: r.nodeId, score: r.score }));

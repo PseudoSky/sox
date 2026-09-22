@@ -164,6 +164,13 @@ export class LanceDbVectorBackend implements VectorBackend, VectorExistenceProbe
     k: number,
     filter?: VecFilter,
   ): Array<{ id: number; score: number }> {
+    // Parity with upsert(): never hand the LanceDB worker a query vector whose
+    // length ≠ space.dim. Without this the worker RPC surfaces a raw driver
+    // error ("No vector column found to match with the query vector
+    // dimension") instead of the typed space-invariant error — ADR-0012.
+    if (query.length !== space.dim) {
+      throw SpaceInvariantError.forQuery(space, query.length);
+    }
     const res = getSyncFn()({
       op: 'knn',
       lancedbPath: this.lancedbPath,

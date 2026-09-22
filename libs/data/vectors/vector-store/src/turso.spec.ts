@@ -6,6 +6,7 @@ import { createStoreAdapter, createSqliteAdapter, type StoreAdapter } from '@adh
 
 import {
   SpaceInvariantError,
+  QUERY_VECTOR_NODE_ID,
   StorageError,
   TursoVectorBackend,
   openTursoVectorStore,
@@ -247,6 +248,25 @@ describe('TursoVectorBackend', () => {
 
       const results = await backend.knn(unitVec(8, 0), space, 10, { ids: [idA] });
       expect(results.map((r) => r.id)).toEqual([idA]);
+    });
+
+    it('rejects a wrong-dimension query with SpaceInvariantError — not a raw driver error', async () => {
+      // Parity with upsert: a query vector whose length ≠ space.dim must fail
+      // with the typed space-invariant error BEFORE it reaches SQL. Without
+      // the check, `vector_distance_cos` on a mismatched pair leaks a raw
+      // Turso/SQL error (wrapped as StorageError) — an ADR-0012 violation.
+      // A real row is present so the mismatch actually reaches the driver.
+      const id = await makeNode('query-dim');
+      await backend.upsert(id, unitVec(8, 0), space);
+
+      const wrongDim = new Float32Array(4); // space.dim === 8
+      await expect(backend.knn(wrongDim, space, 5)).rejects.toMatchObject({
+        name: 'SpaceInvariantError',
+        source: 'knn',
+        nodeId: QUERY_VECTOR_NODE_ID,
+        actualDim: 4,
+        space,
+      });
     });
   });
 

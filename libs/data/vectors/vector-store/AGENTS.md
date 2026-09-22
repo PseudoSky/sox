@@ -15,6 +15,7 @@ memory-refactor plan states.
 
 - ensureSpace(space) MUST be called before the first upsert on any new (modelId, dim) pair — idempotent on existing spaces
 - upsert() THROWS SpaceInvariantError when vec.length !== space.dim ([def:space-invariant] — all implementations must enforce this)
+- knn() THROWS SpaceInvariantError when query.length !== space.dim ([def:space-invariant] — query path, parity with upsert; `source: 'knn'`, `nodeId: QUERY_VECTOR_NODE_ID`)
 - a model switch is a re-embed migration (explicit reembed() call), never a hot-swap into the same vec0 table
 - reembed() does NOT delete source vectors — caller decides when the old space is safe to drop
 - delete(id, modelId) is scoped to a single space — does not delete the node from other spaces

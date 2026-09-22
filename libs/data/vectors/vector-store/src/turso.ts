@@ -334,6 +334,14 @@ export class TursoVectorBackend implements AsyncVectorBackend, AsyncVectorExiste
     k: number,
     filter?: VecFilter,
   ): Promise<Array<{ id: number; score: number }>> {
+    // Parity with upsert(): reject a query vector whose length ≠ space.dim
+    // BEFORE issuing SQL. Otherwise `vector_distance_cos` on a mismatched pair
+    // leaks a raw Turso/SQL error (wrapped as StorageError) instead of the
+    // typed space-invariant error — an ADR-0012 violation.
+    if (query.length !== space.dim) {
+      throw SpaceInvariantError.forQuery(space, query.length);
+    }
+
     const tbl = tableName(space.modelId);
     const { sql: dialectSql, args: dialectArgs } = this.dialect.topKQuery(
       tbl,
