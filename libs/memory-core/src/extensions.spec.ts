@@ -271,9 +271,14 @@ describe('memoryGetSupersessionChain (B2)', () => {
         // insertion order (so uid-b got the lower rowid) would make uid-a
         // canonical here even though uid-b still supersedes it — i.e.
         // canonical can currently select the SUPERSEDED node when it has the
-        // lower rowid/older t_created. That gap is real and is tracked
-        // separately (see the plan's architect follow-up); it is not
-        // addressed by this change. The prior expectation here
+        // lower rowid/older t_created. That gap is real: memory-core's
+        // (t_created, rowid) canonical selection here diverges from
+        // graph-store's topological getSupersessionChain
+        // (libs/data/graph/graph-store/src/index.ts:2472), which walks the
+        // SUPERSEDES DAG directly and would not have this failure mode —
+        // graph-store's version has zero production callers today. It is
+        // tracked separately and not addressed by this change. The prior
+        // expectation here
         // (canonical_uid === 'uid-a', is_current === false) pinned a
         // different comparator artefact — the old (buggy) `.find` selection,
         // which returned the OLDEST live node in this oldest-first-sorted
