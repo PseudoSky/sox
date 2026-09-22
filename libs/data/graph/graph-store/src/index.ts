@@ -1121,9 +1121,13 @@ function appendMetadataFilterClauses(
           params.push(path, value.neq);
         }
       }
-      if (value.in !== undefined && value.in.length > 0) {
-        clauses.push(`json_extract(${alias}meta, ?) IN (${value.in.map(() => '?').join(',')})`);
-        params.push(path, ...value.in);
+      if (value.in !== undefined) {
+        if (value.in.length === 0) {
+          clauses.push(MATCH_NOTHING);
+        } else {
+          clauses.push(`json_extract(${alias}meta, ?) IN (${value.in.map(() => '?').join(',')})`);
+          params.push(path, ...value.in);
+        }
       }
       if (value.gt !== undefined) { clauses.push(`json_extract(${alias}meta, ?) > ?`); params.push(path, value.gt); }
       if (value.gte !== undefined) { clauses.push(`json_extract(${alias}meta, ?) >= ?`); params.push(path, value.gte); }
@@ -1150,6 +1154,15 @@ function appendMetadataFilterClauses(
   }
 }
 
+/**
+ * A present-but-empty set-membership filter (`ids: []`, `kind: []`,
+ * `tags: []`, metadata `in: []`, …) is a scope that resolves to ZERO
+ * candidates — it is never "no filter". Dropping the clause would silently
+ * widen the read into an unfiltered scan (BUG-032). Every such site emits this
+ * tautologically-false predicate instead. ADR-0017.
+ */
+const MATCH_NOTHING = '0 = 1';
+
 export function buildNodeFilterClause(
   filter: NodeFilter | undefined,
   liveOnly: boolean,
@@ -1164,15 +1177,23 @@ export function buildNodeFilterClause(
   }
 
   if (filter) {
-    if (filter.ids !== undefined && filter.ids.length > 0) {
-      clauses.push(`${alias}rowid IN (${filter.ids.map(() => '?').join(',')})`);
-      params.push(...filter.ids);
+    if (filter.ids !== undefined) {
+      if (filter.ids.length === 0) {
+        clauses.push(MATCH_NOTHING);
+      } else {
+        clauses.push(`${alias}rowid IN (${filter.ids.map(() => '?').join(',')})`);
+        params.push(...filter.ids);
+      }
     }
 
     if (filter.kind !== undefined) {
       if (Array.isArray(filter.kind)) {
-        clauses.push(`${alias}kind IN (${filter.kind.map(() => '?').join(',')})`);
-        params.push(...filter.kind);
+        if (filter.kind.length === 0) {
+          clauses.push(MATCH_NOTHING);
+        } else {
+          clauses.push(`${alias}kind IN (${filter.kind.map(() => '?').join(',')})`);
+          params.push(...filter.kind);
+        }
       } else {
         clauses.push(`${alias}kind = ?`);
         params.push(filter.kind);
@@ -1181,16 +1202,27 @@ export function buildNodeFilterClause(
 
     if (filter.topic !== undefined) {
       if (Array.isArray(filter.topic)) {
-        clauses.push(`${alias}topic IN (${filter.topic.map(() => '?').join(',')})`);
-        params.push(...filter.topic);
+        if (filter.topic.length === 0) {
+          clauses.push(MATCH_NOTHING);
+        } else {
+          clauses.push(`${alias}topic IN (${filter.topic.map(() => '?').join(',')})`);
+          params.push(...filter.topic);
+        }
       } else {
         clauses.push(`${alias}topic = ?`);
         params.push(filter.topic);
       }
     }
 
-    if (filter.tags !== undefined && filter.tags.length > 0) {
-      if (filter.tagsMatchAll) {
+    if (filter.tags !== undefined) {
+      if (filter.tags.length === 0) {
+        // A present-but-empty tag scope selects nothing. This holds for the
+        // any-match form (no candidate tags ⇒ no row has one) and, deliberately,
+        // for `tagsMatchAll` too: "match all of zero tags" is vacuous, and the
+        // invariant is that an explicitly stated scope never widens to a full
+        // scan (BUG-032).
+        clauses.push(MATCH_NOTHING);
+      } else if (filter.tagsMatchAll) {
         clauses.push(
           `(SELECT COUNT(DISTINCT value) FROM json_each(${alias}tags) WHERE value IN (${filter.tags.map(() => '?').join(',')})) = ?`,
         );
@@ -1210,8 +1242,12 @@ export function buildNodeFilterClause(
 
     if (filter.confidence !== undefined) {
       if (Array.isArray(filter.confidence)) {
-        clauses.push(`${alias}confidence IN (${filter.confidence.map(() => '?').join(',')})`);
-        params.push(...filter.confidence);
+        if (filter.confidence.length === 0) {
+          clauses.push(MATCH_NOTHING);
+        } else {
+          clauses.push(`${alias}confidence IN (${filter.confidence.map(() => '?').join(',')})`);
+          params.push(...filter.confidence);
+        }
       } else {
         clauses.push(`${alias}confidence = ?`);
         params.push(filter.confidence);
@@ -1278,8 +1314,12 @@ export function buildNodeFilterClause(
 
     if (filter.name !== undefined) {
       if (Array.isArray(filter.name)) {
-        clauses.push(`${alias}name IN (${filter.name.map(() => '?').join(',')})`);
-        params.push(...filter.name);
+        if (filter.name.length === 0) {
+          clauses.push(MATCH_NOTHING);
+        } else {
+          clauses.push(`${alias}name IN (${filter.name.map(() => '?').join(',')})`);
+          params.push(...filter.name);
+        }
       } else {
         clauses.push(`${alias}name = ?`);
         params.push(filter.name);

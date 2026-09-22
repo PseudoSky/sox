@@ -1,7 +1,7 @@
 import type { AsyncVectorBackend, VectorBackend } from '@adhd/sox-vector-store';
 import type { GraphBackend } from '@adhd/sox-graph-store';
 import type { NodeRecord, NodeFilter } from '@adhd/sox-graph-store';
-import { buildFilterClause } from './filter-utils.js';
+import { buildFilterClause, nodeFilterSelectsNothing } from './filter-utils.js';
 
 export { buildFilterClause } from './filter-utils.js';
 export { createCrossEncoder } from './cross-encoder.js';
@@ -620,6 +620,11 @@ export class StoreSearchBackend implements SearchBackend {
     const { nodeFilter, unsupportedFilters } = buildFilterClause(filters);
     const hasNodeFilter = Object.keys(nodeFilter).length > 0;
 
+    // BUG-032 / ADR-0017 — a present-but-empty scope (`ids: []`, `kind: []`, …)
+    // selects zero nodes. Return zero results here rather than delegating the
+    // decision to the graph backend's handling of the empty scope.
+    if (nodeFilterSelectsNothing(nodeFilter)) return [];
+
     const merged = new Map<
       number,
       {
@@ -737,6 +742,10 @@ export class StoreSearchBackend implements SearchBackend {
     const filters = query.filters ?? {};
     const { nodeFilter, unsupportedFilters } = buildFilterClause(filters);
     const hasNodeFilter = Object.keys(nodeFilter).length > 0;
+
+    // BUG-032 / ADR-0017 — a present-but-empty scope selects zero nodes; return
+    // zero here, independent of the graph backend's empty-scope handling.
+    if (nodeFilterSelectsNothing(nodeFilter)) return [];
 
     const fetchLimit = Math.max(limit * 2, 20);
 

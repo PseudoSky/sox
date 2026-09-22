@@ -332,7 +332,11 @@ export class TursoVectorBackend implements AsyncVectorBackend {
     const clauses: string[] = [];
     const params: unknown[] = [];
 
-    if (filter?.ids && filter.ids.length > 0) {
+    // BUG-032 / ADR-0017 — a PRESENT-BUT-EMPTY ids resolves to zero candidates.
+    // It must short-circuit BEFORE the `1=1` no-filter fallback below, or the
+    // empty scope compiles into a tautology and returns the whole corpus.
+    if (filter?.ids !== undefined) {
+      if (filter.ids.length === 0) return [];
       clauses.push(`v.node_id IN (${filter.ids.map(() => '?').join(',')})`);
       params.push(...filter.ids);
     }
@@ -379,7 +383,9 @@ export class TursoVectorBackend implements AsyncVectorBackend {
     const clauses: string[] = [];
     const params: unknown[] = [];
 
-    if (filter?.ids && filter.ids.length > 0) {
+    // BUG-032 / ADR-0017 — present-but-empty ids ⇒ match nothing (yield no rows).
+    if (filter?.ids !== undefined) {
+      if (filter.ids.length === 0) return;
       clauses.push(`v.node_id IN (${filter.ids.map(() => '?').join(',')})`);
       params.push(...filter.ids);
     }
