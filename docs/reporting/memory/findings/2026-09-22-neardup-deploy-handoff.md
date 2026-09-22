@@ -87,71 +87,89 @@ skipped; memory-server 45/45 files, 280 passed. Both exit 0.
 
 ## 3. Deploy state — read this before anything else
 
-**At the time of writing, the fix is merged to SOURCE and the built artifact had not been replaced.**
-`dist/index.js` carried an mtime of 09:49, predating `5c35a66a`. `main` is therefore in a
-**source/dist parity violation**: reading `main` suggests the fix is live; it is not, and the
-invalidation pass may still be firing. A deploy run was in flight when this was written; **its
-outcome is unknown and is deliberately not asserted here.**
+The fix is merged to **source** (`5c35a66a`, `e356a0b2`) and the bundle has been **rebuilt**: the
+artifact on disk is `sha256:e21b802d6dfb9bc57f89fd7b1d3370f39367eeeb49bec47d61200cc161263eb9`,
+rebuilt 2026-09-22T17:50Z. **The live process had not adopted it**: pid 87027 (started
+2026-09-22T17:45:55Z) still reported the pre-fix
+`sha256:4ea748572b1e85156ce04b32e28f335625bcf6811ab1c84337d86e5f685a3638` — a parent executing an
+artifact that no longer exists on disk, while its freshly spawned children load the new one (see the
+split-service trap, §4.1). A restart to resolve that split was in flight; **its outcome is not known
+and is deliberately not asserted here.**
 
 **Execute this check rather than trusting any status sentence, including this one:**
 
-- Pre-deploy artifact hash (pid 54730):
-  `sha256:4ea748572b1e85156ce04b32e28f335625bcf6811ab1c84337d86e5f685a3638`
-- If `memory_ping` still reports that hash, **the deploy did not take.**
+- `memory_ping` reports `sha256:4ea7485…f685a3638` → the restart did **not** take; the process is
+  still running pre-fix code and the invalidation pass may still be firing.
+- `memory_ping` reports `sha256:e21b802d…61263eb9` → it did.
 
 ### Remaining deploy steps
 
 ```
-npx nx run-many -t build --projects=memory-core,memory-server,memory-cli,memory-flush
+npx nx run-many -t build --projects=memory-core,memory-server,memory-cli,memory-flush   # done 17:50Z
 npx nx run registry:sync-index          # commit the regenerated registry/index.json
 rm -rf dist/smoke && node scripts/smoke-test.mjs      # summary.failed must be 0
 soxe service disable memory-server --host <host> --scope user
 soxe service enable  memory-server --host <host> --scope user \
     --node-path=/opt/homebrew/Cellar/node/26.5.1/bin/node
-# then: diff the plist (§4.2), verify artifact adoption (§4.1), live probe (§4.7)
+# then: diff the plist (§4.3), verify artifact adoption (§4.2), live probe (§4.8)
 ```
 
 ### Rollback
 
-Rollback target is recorded as **`c36b3ba0`** — but `git log` shows that sha as
-`docs(notes): refresh stale backlog UIDs, add cross-refs and E_BUSY refutation`, a **docs-only
-commit** whose revert changes no code and rebuilds nothing. **Treat it as unverified and confirm the
-real target against the fix series (`5c35a66a^`) before using it.** A real rollback is **revert + rebuild + `nx run
-registry:sync-index` + service restart**. Reverting source alone leaves the old `dist/` live
-(BUG-028); the running service keeps executing an artifact that exists in no commit.
+**Rollback target: `c36b3ba0`** — verified as `5c35a66a^`, the last commit before either fix merge
+(`git log -1 --format='%h' 5c35a66a^` → `c36b3ba0`). It is the **state to return to**, not a commit
+to revert: `git revert c36b3ba0` is docs-only and would accomplish nothing. Roll back by
+resetting/checking out to it.
+
+And a real rollback is that **plus** rebuild **plus** `npx nx run registry:sync-index` **plus**
+service restart, or the old `dist/` stays live (BUG-028) and the service keeps executing an artifact
+that exists in no commit.
 
 ---
 
 ## 4. Traps that cost real time on 2026-09-22
 
-1. **`memory_ping`'s `artifact` field is exactly `shasum -a 256 <bundle>/dist/index.js`.** Adoption
+1. **Rebuilding `dist/` underneath a running service SPLITS it.** This session's own deploy did
+   exactly that. The parent process keeps the old artifact resident in memory while newly spawned
+   children (`enrich-process-host.js`, `fastembedProcessHost.js`) load the **new** one. Mixed
+   versions against a single store produced `E_FOREIGN_SQLITE_SIDECAR` for every other client, about
+   one `memory.db-tshm.stale-*` rotation per minute, and enrichment failures — observed
+   `passes_failed: 284`, `last_pass_ok: false`, `embeds_failed: 4`, `heals_failed: 4`. **The store
+   itself stayed healthy throughout** (`store_ok: true`, integrity `ok`, all six probes passing), so
+   this is an availability failure, not data loss.
+   **Rule: never rebuild a bundle whose service is live without restarting it in the same operation,
+   and never leave a build half-deployed.**
+
+2. **`memory_ping`'s `artifact` field is exactly `shasum -a 256 <bundle>/dist/index.js`.** Adoption
    verification is a direct string comparison against the rebuilt file. Process liveness is not
    verification (BUG-028).
-2. **After `soxe service enable`, diff the regenerated plist against a pre-restart backup.**
+3. **After `soxe service enable`, diff the regenerated plist against a pre-restart backup.**
    `~/Library/LaunchAgents/com.sox.user.memory-server.plist` must still carry
    `SOX_CONFIG_DB_PATH=/Users/nix/.memory/memory.db`, `SOX_CONFIG_PORT=3099`,
    `SOX_CONFIG_STOP_TIMEOUT_MS`, `SOX_PROTOCOL_ENABLED=0`,
    `SOX_HOME` / `SOX_REPO_ROOT=/Users/nix/dev/ai/claude-agents`, and `SOX_AGENT_NAME`. This is the
    BL-375 shell-env rebuild trap with a sharper edge: **if `SOX_CONFIG_DB_PATH` is dropped, the
    process comes up HEALTHY and every verification probe silently writes to the WRONG STORE.**
-3. **Post-fix, `memory_near_duplicates` total GOES UP, not down.** It was 685. The fix stops *new*
+4. **Post-fix, `memory_near_duplicates` total GOES UP, not down.** It was 685. The fix stops *new*
    invalidation; it repairs nothing, and a probe write adds a pair. **A rising number is not a failed
    deploy** — it is the most likely reason someone declares a successful deploy failed.
-4. **`check-suite-tree-state` is a snapshot, not a lock.** A full suite started against a clean tree
+5. **`check-suite-tree-state` is a snapshot, not a lock.** A full suite started against a clean tree
    silently straddled four commits when another agent committed mid-run. That result was
    unattributable, was discarded, and had to be re-run.
-5. **Piping `nx test` through `tail` reports `tail`'s exit code.** A red suite was reported as
+6. **Piping `nx test` through `tail` reports `tail`'s exit code.** A red suite was reported as
    "exit 0". Capture nx's exit status separately.
-6. **The stock `sqlite3` CLI cannot open this store** — Turso-internal FTS objects produce
+7. **The stock `sqlite3` CLI cannot open this store** — Turso-internal FTS objects produce
    `malformed database schema ... near USING`. Use `@tursodatabase/database`
    `connect(path, {readOnly: true})` against a **copy**.
-7. **The near-dup pass is asynchronous** (`time_to_vector_ms` p99 ≈ 61.5 s; no `SOX_SYNC_EMBED` in
+8. **The near-dup pass is asynchronous** (`time_to_vector_ms` p99 ≈ 61.5 s; no `SOX_SYNC_EMBED` in
    the plist). Poll for the `SAME_AS` edge; do not assert immediately after a probe write. Two probe
    episodes must differ in content hash or the second is rejected `E_DEDUP`.
-8. **Observed and UNTRIAGED: `E_FOREIGN_SQLITE_SIDECAR` (BUG-026) recurring for other sessions, with
+9. **Observed and UNTRIAGED: `E_FOREIGN_SQLITE_SIDECAR` (BUG-026) recurring for other sessions, with
    FOUR concurrent memory-server processes alive** — pids 21545 (22 days old), 64743 (4 days), 87027,
    87344. That is a singleton violation and is the likely cause of recall failures other agents are
-   reporting. **Nothing was killed and nothing should be killed without the owner's decision.**
+   reporting. The split-service condition in trap 1 is a confirmed producer of the same
+   `E_FOREIGN_SQLITE_SIDECAR` signature, so treat the two together. **Nothing was killed and nothing
+   should be killed without the owner's decision.**
 
 ---
 
@@ -192,6 +210,12 @@ registry:sync-index` + service restart**. Reverting source alone leaves the old 
   `libs/memory-core/README.md:240-245`, `docs/plan/memory-enrichment/CONTRACTS.md:308`,
   `docs/plan/memory-refactor/contracts/analysis.ts:96`. Left untouched deliberately — outside this
   session's write set.
+- **Two other agents were editing this repo concurrently on 2026-09-22** (observed, not inferred):
+  one continuing the BL-404 telemetry singleton work past `a1b50621`, with a new untracked
+  `docs/decisions/0018-sox-telemetry-process-wide-singleton-slot.md`; one doing embedding-provider
+  lock work across six files (`fastembedLock*`, `fastembedProcessHost*`, `sharedFastembedProcess*`).
+  Note that committing **anything** in this repo triggers an 18-project `nx lint` from the
+  pre-commit hook — a live hazard next to BL-235.
 - **`NOTES.md` items 6–11 untriaged.** One unexplained, non-reproducing test failure from the
   straddled run (§4.4).
 
