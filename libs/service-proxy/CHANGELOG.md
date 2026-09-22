@@ -1,5 +1,29 @@
 # @adhd/sox-service-proxy
 
+## 0.4.3
+
+### Patch Changes
+
+- fix(service-proxy): ref-count the backend dial socket so an idle connection no longer pins the event loop
+
+  `dialBackend` created its UDS socket with `net.createConnection()` and never
+  released the reference. A connected socket is a referenced libuv handle, so any
+  short-lived CLI that dialed the backend, got its reply, and then had nothing
+  else to do **hung forever** — under the embedding funnel that is every
+  embedding-bearing CLI completing its query and never exiting (a regression of
+  the BL-370 `unref` posture, which was applied to the fork path but not the dial
+  path).
+
+  The socket is now referenced only while a request needs it — mirroring
+  `SharedFastembedProcessClient.refForPending()`/`unrefIfIdle()`: ref while
+  `pending`/`queue` is non-empty, unref the instant it drains. Unref'ing
+  unconditionally would be equally wrong: a standalone consumer whose only
+  pending work is an in-flight `send()` has nothing else referenced, so Node
+  would tear it down mid-request before the reply arrives (verified empirically —
+  an unref'd socket with a pending read does NOT hold the loop). The re-dial timer
+  follows the same rule: it holds the loop only while a request is waiting on the
+  retry.
+
 ## 0.4.2
 
 ### Patch Changes
