@@ -18,12 +18,17 @@
       "types": "./dist/index.d.ts",
       "default": "./dist/index.js"
     },
+    "./embed-host": {
+      "types": "./dist/embedHostMain.d.ts",
+      "default": "./dist/embedHostMain.js"
+    },
     "./package.json": "./package.json"
   },
   "files": [
     "dist"
   ],
   "dependencies": {
+    "@adhd/sox-service-proxy": "workspace:^",
     "@adhd/sox-telemetry": "workspace:^",
     "@huggingface/transformers": "^4.2.0",
     "fastembed": "^2.1.0"
@@ -34,7 +39,8 @@
     "sidecars": [
       "src/embedWorker.ts",
       "src/fastembedProcessHost.ts",
-      "src/sharedOnnxWorker.ts"
+      "src/sharedOnnxWorker.ts",
+      "src/embedHostMain.ts"
     ],
     "sidecarExternals": [
       "fastembed",

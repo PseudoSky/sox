@@ -280,6 +280,9 @@ importers:
 
   libs/data/embed/embedding-provider:
     dependencies:
+      '@adhd/sox-service-proxy':
+        specifier: workspace:^
+        version: link:../../../service-proxy
       '@adhd/sox-telemetry':
         specifier: workspace:^
         version: link:../../../observability/sox-telemetry

@@ -1,5 +1,6 @@
 import { warmupTimeoutMs, isModelCached, WARMUP_CACHE_HIT_ATTEMPTS } from './index.js';
 import { getSharedFastembedProcess, type SharedFastembedClient } from './sharedFastembedProcess.js';
+import { resolveEmbedHostConfig } from './embedHostConfig.js';
 import type { EmbeddingHealth, EmbeddingProvider, EmbeddingProviderMetadata, EmbedRole } from './index.js';
 // BUG-005: MODEL_CONFIGS lives in the side-effect-free `fastembedModels.js`
 // (shared with the child-process host) — see that module's doc comment for
@@ -110,6 +111,8 @@ export class FastembedProvider implements EmbeddingProvider {
       dimensions: this.embedDim || this.metadata.dimensions,
       last_error: this._lastError,
       execution_provider: this._executionProvider,
+      // ADR-0013 D2: the active host-selection posture is visible from one call.
+      host: resolveEmbedHostConfig().host,
     };
   }
 

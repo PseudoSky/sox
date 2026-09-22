@@ -7,6 +7,7 @@
   "tags": [
     "type:lib",
     "area:platform",
+    "area:shared",
     "group:runtime"
   ],
   "targets": {

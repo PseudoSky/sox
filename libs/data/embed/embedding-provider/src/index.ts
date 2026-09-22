@@ -5,6 +5,11 @@ import { existsSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 
+// Local binding so this module's own throws/type-guards use the SAME classes the
+// barrel re-exports (one home — see `errors.ts`).
+import { ResolutionError } from './errors.js';
+import { configureEmbedHostHost } from './embedHostConfig.js';
+
 // ── Types ─────────────────────────────────────────────────────────────────────
 
 export type EmbedRole = 'document' | 'query';
@@ -25,6 +30,13 @@ export interface EmbeddingHealth {
   dimensions: number | null;
   last_error: string | null;
   execution_provider?: string;
+  /**
+   * The resolved host-selection posture (SPEC-EMBEDDING-FUNNEL.md): `'shared'`
+   * funnels through the peer-spawned host, `'private'` is the pre-funnel
+   * per-process fork. Reported so an operator can see the active mode from one
+   * call (ADR-0013 D2) — never inferred, never a placeholder.
+   */
+  host?: 'shared' | 'private';
 }
 
 export interface EmbeddingProvider {
@@ -43,32 +55,21 @@ export interface EmbeddingProviderConfig {
   type: string;
   model: string;
   options?: Record<string, unknown>;
+  /**
+   * Host-selection posture (SPEC-EMBEDDING-FUNNEL.md; ADR-0013). Defaults to
+   * `'shared'` — funnel through the one peer-spawned, self-reaping host.
+   * `'private'` is the explicit pre-funnel per-process fork (CI/diagnostics);
+   * it is a closed union, never an env toggle, and is reported in `health()`.
+   */
+  host?: 'shared' | 'private';
 }
 
 // ── Error taxonomy — three tiers, no silent degradation ──────────────────────
+// Defined in `errors.ts` so `funnelClient.ts` can throw them without importing
+// this barrel (which re-exports the funnel client) — re-exported here so the
+// public surface and `instanceof` identity are unchanged.
 
-export class TransientEmbeddingError extends Error {
-  readonly retryAfterMs: number | undefined;
-  constructor(message: string, retryAfterMs?: number) {
-    super(message);
-    this.name = 'TransientEmbeddingError';
-    this.retryAfterMs = retryAfterMs;
-  }
-}
-
-export class PermanentEmbeddingError extends Error {
-  constructor(message: string) {
-    super(message);
-    this.name = 'PermanentEmbeddingError';
-  }
-}
-
-export class ResolutionError extends Error {
-  constructor(message: string) {
-    super(message);
-    this.name = 'ResolutionError';
-  }
-}
+export { TransientEmbeddingError, PermanentEmbeddingError, ResolutionError } from './errors.js';
 
 // ── Model config & pool types ──────────────────────────────────────────────────
 
@@ -186,8 +187,9 @@ export {
  * `resolveFastembedPoolSize` (kept for backward compatibility) used to
  * compute as one value — see their doc comments for why the split exists.
  */
-export type { SharedFastembedClient } from './sharedFastembedProcess.js';
+export type { SharedFastembedClient, PrivateFastembedProcess } from './sharedFastembedProcess.js';
 export {
+  getPrivateFastembedProcess,
   FastembedProcessPool,
   AdaptiveFastembedProcessPool,
   type AdaptiveFastembedPoolOptions,
@@ -198,6 +200,30 @@ export {
   resolveFastembedAdmissionLimit,
 } from './sharedFastembedProcess.js';
 
+// ── The embedding funnel (SPEC-EMBEDDING-FUNNEL.md) ────────────────────────────
+
+/**
+ * The host-aware client and its heal entry point. `FunneledFastembedClient` is
+ * what `getSharedFastembedProcess()` returns by default (`host: 'shared'`):
+ * N processes share ONE peer-spawned, self-reaping ONNX host, and a consumer's
+ * `terminate()` is a no-op (it must never kill a shared host).
+ * `resetSharedFastembedHost()` is the heal path — it asks the live host to
+ * re-fork its private pool (memory-core's `reinitEmbedProvider` routes here).
+ */
+export { FunneledFastembedClient, resetSharedFastembedHost } from './funnelClient.js';
+export {
+  resolveEmbedHostConfig,
+  configureEmbedHostHost,
+  resolveEmbedHostSocketDir,
+  embedHostSingletonKey,
+  embedHostSocketPath,
+  resolveEmbedHostMainPath,
+  resolveEmbedHostIdleGraceMs,
+  EMBED_HOST_PROTOCOL_VERSION,
+  type EmbedHostConfig,
+  type EmbedHostMode,
+} from './embedHostConfig.js';
+
 // ── Factory ───────────────────────────────────────────────────────────────────
 
 export async function createEmbeddingProvider(
@@ -205,6 +231,19 @@ export async function createEmbeddingProvider(
 ): Promise<EmbeddingProvider> {
   if (!config.type || typeof config.type !== 'string') {
     throw new ResolutionError(`Invalid provider type: ${String(config.type)}`);
+  }
+
+  // SPEC-EMBEDDING-FUNNEL.md / ADR-0013: apply the typed host-selection posture
+  // BEFORE the accessor singleton is first constructed. Process-wide (the host
+  // is shared by every provider in the process); reported in `health()`.
+  if (config.host !== undefined) {
+    try {
+      configureEmbedHostHost(config.host);
+    } catch (err) {
+      throw new ResolutionError(
+        `Invalid embedding host mode: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
   }
 
   switch (config.type) {
@@ -240,13 +279,19 @@ async function createFastembedProvider(
     joinDefaultCacheDir();
 
   try {
+    // SPEC-EMBEDDING-FUNNEL.md §E: NO eager warmup. Construction is deliberately
+    // INERT — it resolves the model's static metadata but does NOT load the ONNX
+    // model, and therefore does NOT spawn the shared embedding host. A host that
+    // constructs a provider but never embeds (e.g. `backlog query` on a read-only
+    // view) spawns zero hosts. The model loads — and the host spawns — on the
+    // first real `embedSingle`/`embedBatch`, via `FastembedProvider.ensureReady()`.
+    //
+    // Contract note (was: "throws ResolutionError at factory time if the model
+    // cannot load"): CONFIG errors (unknown model/type) still fail here at
+    // factory time. A MODEL-LOAD failure now surfaces on first use — still a
+    // loud, typed throw, never a silent downgrade — which is the cost of not
+    // paying a model load (and a host spawn) for a verb that never embeds.
     const provider = new FastembedProvider(modelId, cfg.dim, cacheDir);
-    const cacheHit = isModelCached(cacheDir, cfg.hfRepoId);
-    await withTimeout(
-      provider.embedSingle('warmup'),
-      warmupOuterBudgetMs(cacheHit),
-      'fastembed warmup',
-    );
     return provider;
   } catch (err) {
     if (err instanceof ResolutionError) throw err;
@@ -354,25 +399,6 @@ export function warmupOuterBudgetMs(cacheHit: boolean): number {
  */
 export function isModelCached(cacheDir: string, hfRepoId: string): boolean {
   return existsSync(join(cacheDir, hfRepoId, 'model_optimized.onnx'));
-}
-
-function withTimeout<T>(p: Promise<T>, ms: number, label: string): Promise<T> {
-  return new Promise<T>((resolve, reject) => {
-    const to = setTimeout(() => {
-      reject(new Error(`${label} timed out after ${ms}ms`));
-    }, ms);
-    if (typeof to.unref === 'function') to.unref();
-    p.then(
-      (v) => {
-        clearTimeout(to);
-        resolve(v);
-      },
-      (e) => {
-        clearTimeout(to);
-        reject(e instanceof Error ? e : new Error(String(e)));
-      },
-    );
-  });
 }
 
 function joinDefaultCacheDir(): string {

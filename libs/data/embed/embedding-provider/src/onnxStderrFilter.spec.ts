@@ -28,9 +28,9 @@ const REAL_ONNX_COREML_WARNING =
 const BL432_COMPETING_HOST_LINE =
   '[fastembed] WARNING (BL-331): another fastembed host process (pid 12345, ' +
   'started 2026-09-05T00:00:00.000Z) is ALREADY RUNNING on this machine. ' +
-  'Concurrent onnxruntime-node CoreML/ANE execution across separate OS processes has ' +
-  'been observed to cause severe (25-50x) embed latency due to Neural Engine/hardware ' +
-  'queue contention. Lock file: /tmp/sox-fastembed-host.lock';
+  'A second concurrent onnxruntime-node CoreML/ANE host is the leading, UNPROVEN ' +
+  'hypothesis for the 25-50x embed-latency class this lock exists to make visible. ' +
+  'Lock file: /tmp/sox-fastembed-host.lock';
 
 const FORCED_PROVIDER_LINE = '[fastembed] Using forced execution provider: cpu';
 

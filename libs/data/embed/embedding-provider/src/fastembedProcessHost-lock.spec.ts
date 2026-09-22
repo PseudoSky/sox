@@ -7,21 +7,25 @@ import { checkAndClaimFastembedLock, isPidAlive } from './fastembedProcessHost.j
 /**
  * BL-331 regression test — advisory cross-process CoreML/ANE contention lock.
  *
- * Root cause of BL-331: two orphaned one-shot debug scripts each forked their
- * own `fastembedProcessHost.js` and never exited, each holding a live ~900MB
- * CoreML `InferenceSession` for hours alongside the real memory-server's own
- * fastembed process. Concurrent onnxruntime-node CoreML execution across
- * SEPARATE OS processes contends for the Apple Neural Engine hardware queue:
- * measured production embed latency was 8-20s per call (at only ~34% CPU —
- * i.e. waiting, not computing) vs. ~0.4s in a clean-room single-process
- * harness on the identical machine/model/execution-provider. This was
- * invisible for hours because nothing logged the existence of sibling
- * fastembed hosts.
+ * Context of BL-331: two orphaned one-shot debug scripts each forked their
+ * own `fastembedProcessHost.js` and never exited, each holding a live CoreML
+ * `InferenceSession` for hours alongside the real memory-server's own
+ * fastembed process. (Measured at kill time: ~32-46MB RSS each, NOT the ~900MB
+ * an earlier revision of this story claimed.) Production embed latency was
+ * 8-20s per call (at only ~34% CPU — i.e. waiting, not computing) vs. ~0.4s in
+ * a clean-room single-process harness on the identical machine/model/EP — but
+ * the clean-room number was taken on a quiet box and the production number
+ * under load average 18-25, so that gap is partly load-confounded. That the
+ * extra hosts CAUSED the slowdown via Neural Engine/hardware-queue contention
+ * is an UNPROVEN hypothesis (the measured cause was scheduling QoS); reaping
+ * both freed memory and did NOT change embed latency. What WAS real: nothing
+ * logged the existence of sibling fastembed hosts, so the correlate was
+ * invisible.
  *
  * `checkAndClaimFastembedLock()` is advisory-only (never blocks/refuses to
- * load) but makes a FUTURE occurrence of this exact contention class an
- * immediately greppable `[fastembed] WARNING (BL-331)` stderr line naming
- * the conflicting pid, instead of a silent 25-50x slowdown.
+ * load) but makes a FUTURE second host an immediately greppable
+ * `[fastembed] WARNING (BL-331)` stderr line naming the conflicting pid — an
+ * observability aid, not a causal claim.
  */
 describe('BL-331 — fastembed host cross-process contention lock', () => {
   let lockPath: string;
