@@ -53,7 +53,8 @@ export type WorkerOp =
   | 'deleteMany'
   | 'get'
   | 'knn'
-  | 'iter';
+  | 'iter'
+  | 'hasVectors';
 
 export interface WorkerRequest {
   op: WorkerOp;
@@ -79,6 +80,7 @@ export interface WorkerResponse {
   results?: Array<{ id: number; score: number }>;
   items?: Array<{ id: number; vec: number[] }>;
   count?: number;
+  exists?: boolean;
 }
 
 // ── Per-lancedbPath connection state (persists across calls in this worker) ──
@@ -363,6 +365,23 @@ function listSpaces(state: DbState): WorkerVectorSpace[] {
   return [...state.spaces.values()];
 }
 
+/**
+ * Bounded existence probe for the worker's LanceDB table — projects only the
+ * `id` column and `LIMIT 1`, so the vector column is never read and the scan
+ * stops at the first row. Mirrors `SqliteVectorBackend`/`TursoVectorBackend`'s
+ * `hasVectors` (an unknown space is "empty", not an error).
+ */
+async function hasVectors(state: DbState, modelId: string): Promise<boolean> {
+  const space = state.spaces.get(modelId);
+  if (!space) return false;
+  const key = spaceKey(modelId, space.dim);
+  const table = state.tables.get(key);
+  if (!table) return false;
+
+  const rows = await table.query().select(['id']).limit(1).toArray();
+  return rows.length > 0;
+}
+
 runAsWorker(async (req: WorkerRequest): Promise<WorkerResponse> => {
   const state = await getDbState(req.lancedbPath);
 
@@ -409,6 +428,11 @@ runAsWorker(async (req: WorkerRequest): Promise<WorkerResponse> => {
       if (!req.modelId) throw new Error('iter requires modelId');
       const items = await iter(state, req.modelId, req.filter);
       return { items };
+    }
+    case 'hasVectors': {
+      if (!req.modelId) throw new Error('hasVectors requires modelId');
+      const exists = await hasVectors(state, req.modelId);
+      return { exists };
     }
     default: {
       const _exhaustive: never = req.op;

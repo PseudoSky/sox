@@ -21,6 +21,32 @@ export interface VecFilter {
   ids?: number[];
 }
 
+/**
+ * A bounded existence probe over one space's vector table.
+ *
+ * Deliberately NOT part of the pinned `VectorBackend` contract
+ * ([iface:vector-backend]) — it is an additive *capability* interface that a
+ * caller narrows to (via `typeof backend.hasVectors === 'function'` or
+ * `'hasVectors' in backend`) when it needs a cheap "does this space hold any
+ * vectors?" answer. Widening `VectorBackend` itself would force every
+ * structural implementor — including the untyped mock backends downstream
+ * packages carry in fixtures — to grow the method, and would silently
+ * un-pin a documented contract; the capability interface gets the same
+ * guarantee without either cost.
+ *
+ * Why this exists: `iter()` is a full corpus scan and is not lazy on every
+ * backend — `TursoVectorBackend.iter` is backed by the adapter's `executeAll`
+ * (`db.all`), which materializes every row *including the full embedding
+ * BLOB* before its first yield. An existence check built on `iter` therefore
+ * reads the entire vector table. `hasVectors` issues a bounded
+ * `SELECT 1 … LIMIT 1` instead: no embedding column is projected, so no blob
+ * is read, and the scan stops at the first row — O(1) in the size of the
+ * space.
+ */
+export interface VectorExistenceProbe {
+  hasVectors(modelId: string): boolean;
+}
+
 export interface VectorBackend {
   ensureSpace(space: VectorSpace): void;
   listSpaces(): VectorSpace[];
@@ -225,7 +251,7 @@ export interface VectorStoreCapabilities {
   vecEnabled: boolean;
 }
 
-export class SqliteVectorBackend implements VectorBackend {
+export class SqliteVectorBackend implements VectorBackend, VectorExistenceProbe {
   private db: import('better-sqlite3').Database;
   private adapter: StoreAdapter;
   private similarity: SimilarityBackend;
@@ -434,6 +460,29 @@ export class SqliteVectorBackend implements VectorBackend {
       },
     };
   }
+
+  /**
+   * Bounded existence probe — `SELECT 1 … LIMIT 1` against the space's table.
+   * Projects no `embedding` column, so no blob is read, and stops at the first
+   * row; unlike `iter` it never materializes the corpus. Returns `false` for a
+   * space whose table was never `ensureSpace`d (an absent table is "empty", not
+   * an error). See {@link VectorExistenceProbe}.
+   */
+  hasVectors(modelId: string): boolean {
+    const tbl = tableName(modelId);
+    if (!tableExists(this.db, tbl)) return false;
+    try {
+      const row = this.db
+        .prepare<[], { one: number }>(`SELECT 1 AS one FROM "${tbl}" LIMIT 1`)
+        .get();
+      return row !== undefined;
+    } catch (err) {
+      throw new StorageError(
+        `Failed to probe space ${modelId} for vectors`,
+        err instanceof Error ? err : undefined,
+      );
+    }
+  }
 }
 
 // ── openVectorStore — convenience factory ───────────────────────────────────
@@ -480,6 +529,7 @@ export {
   TursoVectorBackend,
   openTursoVectorStore,
   type AsyncVectorBackend,
+  type AsyncVectorExistenceProbe,
 } from './turso.js';
 
 // ── reembed — cross-space migration ─────────────────────────────────────────

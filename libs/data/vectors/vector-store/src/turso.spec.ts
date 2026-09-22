@@ -55,6 +55,47 @@ function unitVec(dim: number, component: number): Float32Array {
   return vec;
 }
 
+/**
+ * A pass-through proxy over a real `StoreAdapter` that records every SQL
+ * statement the backend issues through it. Lets a test assert what a backend
+ * *actually sent to the driver* — in particular whether a statement projected
+ * the `embedding` column (i.e. read a vector BLOB) — without mocking the
+ * database. Method calls are forwarded with `this` bound to the real adapter,
+ * so the driver's own connection handling is untouched.
+ */
+interface SqlRecorder {
+  adapter: StoreAdapter;
+  statements: string[];
+  /** Statements that projected the embedding column (a blob read). */
+  blobReads: () => string[];
+  reset: () => void;
+}
+
+function recordSql(real: StoreAdapter): SqlRecorder {
+  const statements: string[] = [];
+  const RECORDED = new Set(['executeGet', 'executeAll', 'executeRun', 'exec']);
+  const adapter = new Proxy(real, {
+    get(target, prop, receiver) {
+      const value = Reflect.get(target, prop, receiver);
+      if (typeof prop === 'string' && RECORDED.has(prop)) {
+        return (...args: unknown[]) => {
+          statements.push(String(args[0]));
+          return (value as (...a: unknown[]) => unknown).apply(target, args);
+        };
+      }
+      return typeof value === 'function' ? value.bind(target) : value;
+    },
+  });
+  return {
+    adapter,
+    statements,
+    blobReads: () => statements.filter((s) => /embedding/i.test(s)),
+    reset: () => {
+      statements.length = 0;
+    },
+  };
+}
+
 // ── Tests ────────────────────────────────────────────────────────────────────
 
 describe('TursoVectorBackend', () => {
@@ -226,6 +267,85 @@ describe('TursoVectorBackend', () => {
         expect(row.vec.length).toBe(8);
       }
       expect(seen.sort()).toEqual([...ids].sort());
+    });
+  });
+
+  // ── hasVectors — bounded existence probe ──────────────────────────────
+
+  describe('hasVectors', () => {
+    it('is false for a space that was never ensured', async () => {
+      expect(await backend.hasVectors('never-ensured-model')).toBe(false);
+    });
+
+    it('is false for an ensured-but-empty space', async () => {
+      expect(await backend.hasVectors(space.modelId)).toBe(false);
+    });
+
+    it('is true after a single upsert', async () => {
+      await backend.upsert(await makeNode('hv-one'), makeVec(8, 1), space);
+      expect(await backend.hasVectors(space.modelId)).toBe(true);
+    });
+
+    it('is false again after the only vector is deleted', async () => {
+      const id = await makeNode('hv-del');
+      await backend.upsert(id, makeVec(8, 2), space);
+      expect(await backend.hasVectors(space.modelId)).toBe(true);
+
+      await backend.delete(id, space.modelId);
+      expect(await backend.hasVectors(space.modelId)).toBe(false);
+    });
+
+    it('reads no embedding blob and its work is O(1) in table size', async () => {
+      const rec = recordSql(adapter);
+      const probe = new TursoVectorBackend(rec.adapter);
+      const smallSpace: VectorSpace = { modelId: 'bounded-small', dim: 8 };
+      const largeSpace: VectorSpace = { modelId: 'bounded-large', dim: 8 };
+      await probe.ensureSpace(smallSpace);
+      await probe.ensureSpace(largeSpace);
+
+      await probe.upsert(1, makeVec(8, 1), smallSpace);
+      await probe.upsertVectors(
+        Array.from({ length: 500 }, (_, i) => ({ id: 1000 + i, vec: makeVec(8, i) })),
+        largeSpace,
+      );
+
+      rec.reset();
+      expect(await probe.hasVectors(smallSpace.modelId)).toBe(true);
+      const smallStatements = rec.statements.length;
+      const smallBlobReads = rec.blobReads().length;
+
+      rec.reset();
+      expect(await probe.hasVectors(largeSpace.modelId)).toBe(true);
+      const largeStatements = rec.statements.length;
+      const largeBlobReads = rec.blobReads().length;
+
+      // Bounded: the same single statement for a 1-row and a 500-row table.
+      expect(smallStatements).toBe(1);
+      expect(largeStatements).toBe(smallStatements);
+      // No blob read in either case — the probe never projects `embedding`.
+      expect(smallBlobReads).toBe(0);
+      expect(largeBlobReads).toBe(0);
+      expect(rec.statements[0]).toMatch(/SELECT 1 AS one/i);
+      expect(rec.statements[0]).toMatch(/LIMIT 1/i);
+    });
+
+    it('NEGATIVE CONTROL: the iter-first-row probe it replaces DOES read the embedding blob', async () => {
+      // Proves the spy above has teeth: the old readiness pattern reads the
+      // full vector column, so a regression back to `iter` would be caught.
+      const rec = recordSql(adapter);
+      const probe = new TursoVectorBackend(rec.adapter);
+      const bigSpace: VectorSpace = { modelId: 'negative-control', dim: 8 };
+      await probe.ensureSpace(bigSpace);
+      await probe.upsertVectors(
+        Array.from({ length: 50 }, (_, i) => ({ id: 2000 + i, vec: makeVec(8, i) })),
+        bigSpace,
+      );
+
+      rec.reset();
+      for await (const _row of probe.iter(bigSpace.modelId)) break;
+
+      expect(rec.blobReads().length).toBeGreaterThan(0);
+      expect(rec.statements[0]).toMatch(/embedding/i);
     });
   });
 

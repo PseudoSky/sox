@@ -1,4 +1,4 @@
-import type { VectorBackend, VectorSpace, VecFilter } from './index.js';
+import type { VectorBackend, VectorSpace, VecFilter, VectorExistenceProbe } from './index.js';
 import { SpaceInvariantError } from './index.js';
 import type { StoreAdapter } from '@adhd/sox-store-adapter';
 import * as fs from 'node:fs';
@@ -75,7 +75,7 @@ function requireStoreAdapterShape(adapter: unknown): asserts adapter is StoreAda
 
 // ── LanceDbVectorBackend ────────────────────────────────────────────────────
 
-export class LanceDbVectorBackend implements VectorBackend {
+export class LanceDbVectorBackend implements VectorBackend, VectorExistenceProbe {
   private readonly lancedbPath: string;
   private readonly indexConfig: LanceDbVectorBackendConfig['index'];
   private readonly adapter: StoreAdapter;
@@ -192,5 +192,16 @@ export class LanceDbVectorBackend implements VectorBackend {
         for (const item of items) yield item;
       },
     };
+  }
+
+  /**
+   * Bounded existence probe — the worker projects only the `id` column with
+   * `LIMIT 1`, so the vector column is never read (unlike `iter`, which
+   * materializes every row's vector). Returns false for a space that was never
+   * `ensureSpace`d. See {@link VectorExistenceProbe}.
+   */
+  hasVectors(modelId: string): boolean {
+    const res = getSyncFn()({ op: 'hasVectors', lancedbPath: this.lancedbPath, modelId });
+    return res.exists === true;
   }
 }

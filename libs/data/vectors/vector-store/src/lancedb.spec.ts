@@ -307,6 +307,37 @@ describe('LanceDbVectorBackend (real on-disk @lancedb/lancedb)', () => {
     });
   });
 
+  // ── hasVectors — bounded existence probe ──────────────────────────────
+
+  describe('hasVectors', () => {
+    const space: VectorSpace = { modelId: 'hv-lance-model', dim: 4 };
+
+    beforeEach(() => {
+      backend.ensureSpace(space);
+    });
+
+    it('is false for a space that was never ensured', () => {
+      expect(backend.hasVectors('never-ensured')).toBe(false);
+    });
+
+    it('is false for an ensured-but-empty space', () => {
+      expect(backend.hasVectors(space.modelId)).toBe(false);
+    });
+
+    it('is true after a single upsert', () => {
+      backend.upsert(1, makeVec(4, 1), space);
+      expect(backend.hasVectors(space.modelId)).toBe(true);
+    });
+
+    it('is false again after the only vector is deleted', () => {
+      backend.upsert(1, makeVec(4, 1), space);
+      expect(backend.hasVectors(space.modelId)).toBe(true);
+
+      backend.delete(1, space.modelId);
+      expect(backend.hasVectors(space.modelId)).toBe(false);
+    });
+  });
+
   // ── multiple spaces ───────────────────────────────────────────────────
 
   describe('multiple spaces', () => {

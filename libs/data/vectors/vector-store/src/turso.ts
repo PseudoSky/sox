@@ -47,6 +47,20 @@ export interface AsyncVectorBackend {
   deleteMany(ids: number[], modelId: string): Promise<number>;
 }
 
+/**
+ * The async mirror of `VectorExistenceProbe` (index.ts) — the additive
+ * capability interface for a bounded existence probe. Same rationale: it is
+ * NOT part of the pinned `AsyncVectorBackend` contract, so a caller narrows to
+ * it rather than every implementor being forced to grow the method.
+ *
+ * The only delta from the sync probe is the return type (`boolean` →
+ * `Promise<boolean>`), preserving the async-mirror invariant that the two
+ * surfaces share a name, parameter, and semantics.
+ */
+export interface AsyncVectorExistenceProbe {
+  hasVectors(modelId: string): Promise<boolean>;
+}
+
 // ── Internal helpers ─────────────────────────────────────────────────────────
 
 // Mirrors index.ts's `sanitizeModelId`/`tableName` exactly (kept private and
@@ -122,7 +136,7 @@ function requireTursoAdapter(adapter: StoreAdapter): StoreAdapter {
  * the (modelId, dim) pairs that have been `ensureSpace`d, so `listSpaces()`
  * doesn't have to introspect `sqlite_master` and guess.
  */
-export class TursoVectorBackend implements AsyncVectorBackend {
+export class TursoVectorBackend implements AsyncVectorBackend, AsyncVectorExistenceProbe {
   private readonly adapter: StoreAdapter;
   private readonly dialect = createVectorDialect('turso');
 
@@ -413,6 +427,34 @@ export class TursoVectorBackend implements AsyncVectorBackend {
 
     for (const row of rows) {
       yield { id: row.node_id, vec: blobToFloat32(row.embedding) };
+    }
+  }
+
+  /**
+   * Bounded existence probe — a single `SELECT 1 AS one … LIMIT 1` through the
+   * caller's adapter. Unlike {@link iter} (whose `db.all`-backed query
+   * materializes every row *and every embedding BLOB* before the first yield),
+   * this projects only a constant, so no blob is read, and `LIMIT 1` stops the
+   * scan at the first row — O(1) in the size of the space. A table that was
+   * never `ensureSpace`d is "empty", not an error (matches `iter`'s tolerance).
+   *
+   * This is the primitive a readiness probe should call instead of
+   * `iter`-first-row. See {@link AsyncVectorExistenceProbe}.
+   */
+  async hasVectors(modelId: string): Promise<boolean> {
+    const tbl = tableName(modelId);
+    try {
+      const row = await this.adapter.executeGet<{ one: number }>(
+        `SELECT 1 AS one FROM "${tbl}" LIMIT 1`,
+      );
+      return row !== null;
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      if (/no such table/i.test(msg)) return false;
+      throw new StorageError(
+        `Failed to probe space ${modelId} for vectors`,
+        err instanceof Error ? err : undefined,
+      );
     }
   }
 }

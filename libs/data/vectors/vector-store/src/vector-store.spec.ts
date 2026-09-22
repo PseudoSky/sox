@@ -53,6 +53,51 @@ function unitVec(dim: number, component: number): Float32Array {
   return vec;
 }
 
+/**
+ * A pass-through proxy over a real `SqliteAdapter` whose `unwrap()` returns a
+ * proxied `better-sqlite3` handle recording every `prepare(sql)`. Lets a test
+ * assert what SQL a backend *actually issued* — in particular whether it
+ * projected the `embedding` column — without mocking the database. All handle
+ * methods are bound to the real handle so the native driver is untouched.
+ */
+interface SqliteSqlRecorder {
+  adapter: StoreAdapter;
+  statements: string[];
+  blobReads: () => string[];
+  reset: () => void;
+}
+
+function recordSqliteSql(adapter: StoreAdapter, db: Database.Database): SqliteSqlRecorder {
+  const statements: string[] = [];
+  const dbProxy = new Proxy(db, {
+    get(target, prop) {
+      if (prop === 'prepare') {
+        return (sql: string, ...rest: unknown[]) => {
+          statements.push(sql);
+          return (target.prepare as (...a: unknown[]) => unknown).apply(target, [sql, ...rest]);
+        };
+      }
+      const value = Reflect.get(target, prop);
+      return typeof value === 'function' ? value.bind(target) : value;
+    },
+  });
+  const adapterProxy = new Proxy(adapter, {
+    get(target, prop) {
+      if (prop === 'unwrap') return () => dbProxy;
+      const value = Reflect.get(target, prop);
+      return typeof value === 'function' ? value.bind(target) : value;
+    },
+  });
+  return {
+    adapter: adapterProxy,
+    statements,
+    blobReads: () => statements.filter((s) => /embedding/i.test(s)),
+    reset: () => {
+      statements.length = 0;
+    },
+  };
+}
+
 // ── Tests ────────────────────────────────────────────────────────────────────
 
 describe('SqliteVectorBackend', () => {
@@ -402,6 +447,82 @@ describe('SqliteVectorBackend', () => {
     it('returns empty when no vectors inserted', () => {
       const items = [...backend.iter(space.modelId)];
       expect(items).toHaveLength(0);
+    });
+  });
+
+  // ── hasVectors — bounded existence probe ──────────────────────────────
+
+  describe('hasVectors', () => {
+    const space: VectorSpace = { modelId: 'hv-model', dim: 4 };
+
+    beforeEach(() => {
+      backend.ensureSpace(space);
+    });
+
+    it('is false for a space that was never ensured', () => {
+      expect(backend.hasVectors('never-ensured')).toBe(false);
+    });
+
+    it('is false for an ensured-but-empty space', () => {
+      expect(backend.hasVectors(space.modelId)).toBe(false);
+    });
+
+    it('is true after a single upsert', () => {
+      backend.upsert(1, makeVec(4, 1), space);
+      expect(backend.hasVectors(space.modelId)).toBe(true);
+    });
+
+    it('is false again after the only vector is deleted', () => {
+      backend.upsert(1, makeVec(4, 1), space);
+      expect(backend.hasVectors(space.modelId)).toBe(true);
+
+      backend.delete(1, space.modelId);
+      expect(backend.hasVectors(space.modelId)).toBe(false);
+    });
+
+    it('reads no embedding blob and its work is O(1) in table size', () => {
+      const rec = recordSqliteSql(adapter, db);
+      const probe = new SqliteVectorBackend(rec.adapter);
+      const small: VectorSpace = { modelId: 'hv-small', dim: 4 };
+      const large: VectorSpace = { modelId: 'hv-large', dim: 4 };
+      probe.ensureSpace(small);
+      probe.ensureSpace(large);
+
+      probe.upsert(1, makeVec(4, 1), small);
+      for (let i = 0; i < 500; i++) probe.upsert(1000 + i, makeVec(4, i), large);
+
+      rec.reset();
+      expect(probe.hasVectors(small.modelId)).toBe(true);
+      const smallCount = rec.statements.length;
+      const smallBlobReads = rec.blobReads().length;
+
+      rec.reset();
+      expect(probe.hasVectors(large.modelId)).toBe(true);
+      const largeCount = rec.statements.length;
+      const largeBlobReads = rec.blobReads().length;
+
+      // Bounded: identical statement count for a 1-row and a 500-row table.
+      expect(smallCount).toBe(largeCount);
+      // No blob read in either case.
+      expect(smallBlobReads).toBe(0);
+      expect(largeBlobReads).toBe(0);
+      expect(
+        rec.statements.some((s) => /SELECT 1 AS one/i.test(s) && /LIMIT 1/i.test(s)),
+      ).toBe(true);
+    });
+
+    it('NEGATIVE CONTROL: iter DOES read the embedding blob', () => {
+      // Proves the recorder has teeth — the probe it replaces hits the blob.
+      const rec = recordSqliteSql(adapter, db);
+      const probe = new SqliteVectorBackend(rec.adapter);
+      const ncSpace: VectorSpace = { modelId: 'hv-negative-control', dim: 4 };
+      probe.ensureSpace(ncSpace);
+      probe.upsert(1, makeVec(4, 1), ncSpace);
+
+      rec.reset();
+      for (const _row of probe.iter(ncSpace.modelId)) break;
+
+      expect(rec.blobReads().length).toBeGreaterThan(0);
     });
   });
 
