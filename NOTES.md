@@ -1,10 +1,28 @@
-# NOTES — unfiled defects and deferrals
+# NOTES — defects and deferrals from the ML agent trio build
 
 Items observed on 2026-09-21/22 while building and execution-testing the ML agent trio
 (`ml-research-scout`, `ml-system-architect`, `ml-algorithm-implementer`; claude-agents
-commit `c69d86c0`). None could be filed to the backlog graph because the `backlog` MCP
-server failed to connect for the whole session (item 1). Each entry carries repro steps;
-file it, then strike it here with the item ID.
+commit `c69d86c0`).
+
+**All of these are now filed in the backlog graph — the graph is the source of truth and
+this file is a frozen narrative record with repro steps.** Work the items from the graph,
+not from here. The `backlog` MCP server is still down (item 1), but the `backlog` CLI
+binary reaches the same store and is what filed them.
+
+| # | Backlog UID | Project | Pri | Item |
+|---|---|---|---|---|
+| 1 | `c98f2ba9-243b-4b31-bade-68ad4509e817` | sox-ecosystem | HIGH | backlog MCP `CONNECTION_CLOSED` while the CLI works |
+| 2 | `148601b7-8dbd-46e5-81d2-62abf26e6b9e` | sox-ecosystem | HIGH | near-dup pass silently invalidates the older node of any ≥0.95 pair |
+| 3 | `1f6ed3d6-b4e6-4bba-b534-ee9e4f258897` | sox-ecosystem | MEDIUM | `memory_entity_episodes.total` counts episodes the array omits |
+| 4 | `045a82d3-96c0-4668-ab40-508cbabbf335` | sox-ecosystem | MEDIUM | default `chunk_size` 500 → child chunks with `topic:null, tags:[]` |
+| 5 | `0a9becb4-68cb-4e00-85b8-7927afecc835` | sox-ecosystem | HIGH | `E_BUSY` recurrence at parallelism 3 (recurrence of `030d7736`) |
+| 6 | `24cc0c97-e336-4b14-a0a6-14dca938f462` | claude-agents | MEDIUM | `ml-engineer` vs `machine-learning-engineer` undifferentiated |
+| 7 | `2a90406d-0333-4225-8cd1-f09a5df3071a` | claude-agents | MEDIUM | root README has no per-agent listing; stale agent counts |
+| 8 | — | — | — | CUSUM ARL contract defect — **resolved in spec**, not deferred: the fix is the statistical-test protocol requirement now in `ml-system-architect.md` |
+| 9 | `e200554d-a4d1-49ab-8d71-206094423f0b` | claude-agents | LOW | two scout watch-list research follow-ups |
+| 10 | `0331b34a-3969-470c-9cca-78d0a088b0d1` | claude-agents | LOW | scout intake brief has no "data availability" field |
+| 11 | `0a26860e-2264-4dd9-ac4e-af29197a8c3a` | sox-ecosystem | LOW | iterative-research-refinement runtime gate is opencode-only |
+| + | `56865633-22ca-4636-aa8a-c2b88866cfd3` | sox-ecosystem | MEDIUM | the `backlog` skill documents a command surface the binary lacks (found while filing the above) |
 
 Refinement record with all run evidence: `claude-agents/.research-trace/2026-09-21-ml-agent-trio.md`.
 
