@@ -1,6 +1,6 @@
 {
   "name": "@adhd/sox-vector-store",
-  "version": "0.6.2",
+  "version": "0.7.0",
   "description": "Multi-space vector persistence with two real, swappable VectorBackend implementations: sqlite-vec (vec0, brute-force kNN, production default) and @lancedb/lancedb (on-disk tables + real HNSW/IVF-PQ ANN indexes, bridged to the synchronous interface via a worker_threads + synckit sync RPC). Enforces the embedding space invariant: one (modelId, dim) pair per table, rejects any upsert whose vec.length ≠ space.dim. Owns per-record modelId provenance. reembed() migrates vectors between spaces (and backends).",
   "license": "MIT",
   "private": false,
