@@ -56,6 +56,7 @@
       "touch() updates mutable metadata (tExpires, confidence, name, tags) without minting a new node or SUPERSEDES edge — THROWS if nodeId is invalidated or missing",
       "writeEdge() is upsert-idempotent on (src, dst, rel) — safe to call on re-projection",
       "writeGraph() / writeNodeBatch() are atomic (single SQLite transaction) — all or nothing",
+      "transaction() hands the callback a GraphTransaction (AdapterTransaction + typed tx-bound writeNode/writeEdge/invalidateEdge/touch/getNodeByUid/...) — every typed call runs on the transaction and delegates to the same typePolicy/uniquenessPolicy-validating internals the bare backend uses, never a raw-SQL bypass; the raw AdapterTransaction surface is preserved so existing callbacks keep working",
       "searchNodes() returns [] (not an error) when capabilities.fullTextSearch === false",
       "NodeFilter.validAt is honored only when capabilities.bitemporal === true, ignored silently otherwise",
       "namespace is a hard isolation field (not a tag/filter convention) — absent → \"global\"",

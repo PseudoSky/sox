@@ -5,7 +5,13 @@ import {
   RepairDeclinedLivePeersError,
 } from '@adhd/sox-store-adapter';
 import { assertStoreEngineSync, getEngineIdentitySync } from '@adhd/sox-store-adapter';
-import type { AdapterTransaction, EngineIdentity, StoreAdapter, TursoAdapter } from '@adhd/sox-store-adapter';
+import type {
+  AdapterTransaction,
+  EngineIdentity,
+  StoreAdapter,
+  TransactionOptions,
+  TursoAdapter,
+} from '@adhd/sox-store-adapter';
 import { log } from '@adhd/sox-telemetry';
 import * as crypto from 'node:crypto';
 import { rebuildTable } from './rebuild-table.js';
@@ -726,6 +732,71 @@ export interface WriteNodeOpts {
   skipDedupe?: boolean;
 }
 
+/**
+ * G1 (FEAT-SOXGRAPH-001) — the transaction-scoped graph handle a
+ * {@link GraphBackend.transaction} callback receives.
+ *
+ * It is a structural SUPERSET of {@link AdapterTransaction}: the raw
+ * `executeGet` / `executeAll` / `executeRun` / `exec` surface is preserved
+ * verbatim (so every existing callback that hand-composes SQL keeps compiling
+ * and behaving identically), and the typed graph primitives below are ADDED,
+ * bound to the SAME live transaction.
+ *
+ * Why this exists: `transaction()` used to hand out only the raw adapter tx,
+ * so a consumer that wanted `writeNode` / `writeEdge` / `touch` inside a
+ * transaction had to either call the bare backend (which routes through
+ * `this.adapter`) or hand-compose the library's own INSERT column lists —
+ * coupling the consumer to the schema. Every typed method here executes on the
+ * transaction, never on the bare adapter, so a check-then-write composed
+ * through `tx` is atomic in ONE `BEGIN IMMEDIATE` (ADR-0012 §1's CAS
+ * primitive).
+ *
+ * Delegation contract (ADR-0010 D2): the write methods delegate to the same
+ * policy-validating internals the bare backend uses (`writeNodeInTx` →
+ * `typePolicy.validateKind` + `uniquenessPolicy.check`; `writeEdgeInTx` →
+ * `typePolicy.validateEdge`/`validateRel`). They never re-derive raw
+ * INSERT/UPDATE — that would bypass the injected policy and reintroduce the
+ * exact column-list coupling this seam removes.
+ *
+ * Not exposed here (deliberately): `searchNodes` / `countNodesFts` are
+ * FTS-backed and have no per-transaction adapter path, so they stay on
+ * {@link GraphBackend} and always read committed state.
+ */
+export interface GraphTransaction extends AdapterTransaction {
+  /** Tx-scoped {@link GraphBackend.writeNode}. */
+  writeNode(content: string, meta: NodeMeta, opts?: WriteNodeOpts): Promise<number>;
+  /** Tx-scoped {@link GraphBackend.findOrCreateNode} — a race-safe check+INSERT when composed here. */
+  findOrCreateNode(kind: string, name: string, opts?: { content?: string; meta?: NodeMeta }): Promise<number>;
+  /** Tx-scoped {@link GraphBackend.supersede}. Does NOT open a nested transaction. */
+  supersede(oldId: number, newContent: string, meta: NodeMeta): Promise<number>;
+  /** Tx-scoped {@link GraphBackend.invalidate}. */
+  invalidate(nodeId: number, reason?: string): Promise<void>;
+  /** Tx-scoped {@link GraphBackend.touch}. */
+  touch(nodeId: number, meta: Partial<NodeMeta>): Promise<void>;
+  /** Tx-scoped {@link GraphBackend.writeEdge}. */
+  writeEdge(src: number, dst: number, rel: EdgeRel, meta?: EdgeMeta): Promise<void>;
+  /** Tx-scoped {@link GraphBackend.invalidateEdge}. */
+  invalidateEdge(src: number, dst: number, rel: EdgeRel, reason?: string): Promise<void>;
+  /** Tx-scoped {@link GraphBackend.writeNodeBatch}. Does NOT open a nested transaction. */
+  writeNodeBatch(nodes: Array<{ content: string; meta: NodeMeta }>, opts?: WriteNodeOpts): Promise<number[]>;
+  /** Tx-scoped {@link GraphBackend.writeGraph}. Does NOT open a nested transaction. */
+  writeGraph(
+    nodes: Array<{ content: string; meta: NodeMeta }>,
+    edges: Array<{ srcIdx: number; dstIdx: number; rel: EdgeRel; meta?: EdgeMeta }>,
+    opts?: WriteNodeOpts,
+  ): Promise<number[]>;
+  /** Tx-scoped {@link GraphBackend.writeEdges}. Does NOT open a nested transaction. */
+  writeEdges(edges: Array<{ src: number; dst: number; rel: EdgeRel; meta?: EdgeMeta }>): Promise<void>;
+  /** Tx-scoped read — sees this transaction's uncommitted writes. */
+  getNode(id: number): Promise<NodeRecord | null>;
+  /** Tx-scoped read — sees this transaction's uncommitted writes. */
+  getNodeByUid(uid: string): Promise<NodeRecord | null>;
+  /** Tx-scoped read — sees this transaction's uncommitted edge writes/invalidations. */
+  getEdges(opts: { src?: number; dst?: number; rel?: EdgeRel; metadata?: Record<string, MetadataFilterValue> }): Promise<EdgeRecord[]>;
+  /** Tx-scoped read — sees this transaction's uncommitted writes. */
+  getNodesByIds(ids: number[], opts?: { liveOnly?: boolean }): Promise<NodeRecord[]>;
+}
+
 export interface GraphBackend {
   readonly capabilities: GraphBackendCapabilities;
 
@@ -760,8 +831,21 @@ export interface GraphBackend {
    * issue" is one logical write over existing nodes (writeNode + edges); this
    * is the mechanism that makes FEAT-023's uniqueness check + multi-op writes
    * atomic, and it removes the need for a consumer to reach the raw adapter.
+   *
+   * G1 (FEAT-SOXGRAPH-001) — the callback now receives a
+   * {@link GraphTransaction}: the raw `AdapterTransaction` surface PLUS typed,
+   * tx-bound graph primitives (`tx.writeNode` / `tx.writeEdge` /
+   * `tx.invalidateEdge` / `tx.touch` / `tx.getNodeByUid` / …). Because
+   * `GraphTransaction` is a structural superset of `AdapterTransaction`,
+   * existing callbacks (`(tx) => tx.executeRun(...)`) keep compiling and
+   * behaving identically.
+   *
+   * `opts` passes straight through to `adapter.transaction(fn, opts)` —
+   * `{ mode: 'immediate' }` is `BEGIN IMMEDIATE` (the ADR-0012 §1 CAS
+   * primitive; see `store-adapter`'s `TransactionOptions`). Default remains
+   * `'deferred'`.
    */
-  transaction<T>(fn: (tx: AdapterTransaction) => Promise<T>): Promise<T>;
+  transaction<T>(fn: (tx: GraphTransaction) => Promise<T>, opts?: TransactionOptions): Promise<T>;
   /** FEAT-024 (A2) — set `edge.t_invalid`. Idempotent; `writeEdge` with the same (src,dst,rel) re-livens it. */
   invalidateEdge(src: number, dst: number, rel: EdgeRel, reason?: string): Promise<void>;
   /** FEAT-024 (A3) — bulk edge write between existing nodes in one transaction. */
@@ -842,7 +926,7 @@ export const DEFAULT_EDGE_RELS: readonly EdgeRel[] = [
 /**
  * Injected type-vocabulary policy (ADR-0010 D2). graph-store owns no vocabulary of its own —
  * a TypePolicy is pure in-process validation with NO reference to DDL, rebuildTable, or the
- * adapter. It is called at the write boundary (writeNode / writeEdgeInternal) and throws
+ * adapter. It is called at the write boundary (writeNode / writeEdgeInTx) and throws
  * ConstraintError to reject. See BL-440's "no path to DDL" requirement — a TypePolicy
  * implementation MUST NOT be able to alter the schema under any input.
  */
@@ -851,7 +935,7 @@ export interface TypePolicy {
   validateRel(rel: string): void;
   /**
    * FEAT-013 — OPTIONAL. Validate an edge with its endpoint kinds resolved.
-   * Called by writeEdgeInternal AFTER resolving src/dst kinds. When absent,
+   * Called by writeEdgeInTx AFTER resolving src/dst kinds. When absent,
    * the store falls back to `validateRel(rel)` — preserving the current API
    * and the DEFAULT_TYPE_POLICY closed-vocabulary behavior byte-for-byte.
    * Purity contract (BL-440 "no path to DDL") remains in force: this is a
@@ -1975,15 +2059,41 @@ export class StoreGraphBackend implements GraphBackend {
     name: string,
     opts?: { content?: string; meta?: NodeMeta },
   ): Promise<number> {
-    const existing = await this.adapter.executeGet<{ rowid: number }>(
+    return this.findOrCreateNodeInTx(kind, name, opts, this.adapter);
+  }
+
+  /** G1 — tx-scoped {@link findOrCreateNode}: the SELECT and the INSERT share one handle. */
+  private async findOrCreateNodeInTx(
+    kind: string,
+    name: string,
+    opts: { content?: string; meta?: NodeMeta } | undefined,
+    db: AdapterTransaction,
+  ): Promise<number> {
+    const existing = await db.executeGet<{ rowid: number }>(
       'SELECT rowid FROM node WHERE kind = ? AND name = ? LIMIT 1', [kind, name],
     );
     if (existing) return existing.rowid;
-    return this.writeNode(opts?.content ?? name, { ...(opts?.meta ?? {}), kind, name }, { skipDedupe: true });
+    return this.writeNodeInTx(
+      opts?.content ?? name,
+      { ...(opts?.meta ?? {}), kind, name },
+      { skipDedupe: true },
+      db,
+    );
   }
 
   async supersede(oldId: number, newContent: string, meta: NodeMeta): Promise<number> {
-    const oldNode = await this.adapter.executeGet<DbNodeRow>('SELECT * FROM node WHERE rowid = ?', [oldId]);
+    return this.adapter.transaction((tx) => this.supersedeInTx(oldId, newContent, meta, tx));
+  }
+
+  /** G1 — tx-scoped {@link supersede}: mints the replacement, flags the old row,
+   *  and writes the SUPERSEDES edge — all on `db`, no nested transaction. */
+  private async supersedeInTx(
+    oldId: number,
+    newContent: string,
+    meta: NodeMeta,
+    db: AdapterTransaction,
+  ): Promise<number> {
+    const oldNode = await db.executeGet<DbNodeRow>('SELECT * FROM node WHERE rowid = ?', [oldId]);
     if (!oldNode) {
       throw new NodeNotFoundError(`Node not found: ${oldId}`, oldId);
     }
@@ -1991,24 +2101,27 @@ export class StoreGraphBackend implements GraphBackend {
       throw new BitemporalConflictError(`Node ${oldId} is already invalidated`, oldId);
     }
 
-    return this.adapter.transaction(async (tx) => {
-      const newId = await this.writeNodeInTx(newContent, meta, undefined, tx);
-      await tx.executeRun(`UPDATE node SET is_superseded = 1 WHERE rowid = ?`, [oldId]);
-      await this.writeEdge(newId, oldId, 'SUPERSEDES', {
-        metadata: { reason: `superseded by node ${newId}`, supersededAt: nowISO() },
-      });
-      return newId;
-    });
+    const newId = await this.writeNodeInTx(newContent, meta, undefined, db);
+    await db.executeRun(`UPDATE node SET is_superseded = 1 WHERE rowid = ?`, [oldId]);
+    await this.writeEdgeInTx(newId, oldId, 'SUPERSEDES', {
+      metadata: { reason: `superseded by node ${newId}`, supersededAt: nowISO() },
+    }, db);
+    return newId;
   }
 
   async invalidate(nodeId: number, reason?: string): Promise<void> {
-    const node = await this.adapter.executeGet<{ rowid: number }>(
+    return this.invalidateInTx(nodeId, reason, this.adapter);
+  }
+
+  /** G1 — tx-scoped {@link invalidate}. */
+  private async invalidateInTx(nodeId: number, reason: string | undefined, db: AdapterTransaction): Promise<void> {
+    const node = await db.executeGet<{ rowid: number }>(
       'SELECT rowid FROM node WHERE rowid = ?', [nodeId],
     );
     if (!node) throw new NodeNotFoundError(`Node not found: ${nodeId}`, nodeId);
 
     const now = nowISO();
-    const existingMeta = await this.adapter.executeGet<{ meta: string | null }>(
+    const existingMeta = await db.executeGet<{ meta: string | null }>(
       'SELECT meta FROM node WHERE rowid = ?', [nodeId],
     );
 
@@ -2019,7 +2132,7 @@ export class StoreGraphBackend implements GraphBackend {
       metaObj = { ...metaObj, invalidatedAt: now };
     }
 
-    await this.adapter.executeRun(
+    await db.executeRun(
       `UPDATE node SET t_invalid = ?, meta = ? WHERE rowid = ?`,
       [now, JSON.stringify(metaObj), nodeId],
     );
@@ -2028,7 +2141,12 @@ export class StoreGraphBackend implements GraphBackend {
   }
 
   async touch(nodeId: number, meta: Partial<NodeMeta>): Promise<void> {
-    const node = await this.adapter.executeGet<DbNodeRow>('SELECT * FROM node WHERE rowid = ?', [nodeId]);
+    return this.touchInTx(nodeId, meta, this.adapter);
+  }
+
+  /** G1 — tx-scoped {@link touch}. */
+  private async touchInTx(nodeId: number, meta: Partial<NodeMeta>, db: AdapterTransaction): Promise<void> {
+    const node = await db.executeGet<DbNodeRow>('SELECT * FROM node WHERE rowid = ?', [nodeId]);
     if (!node || node.t_invalid !== null) {
       throw new NodeNotFoundError(`Node not found or invalidated: ${nodeId}`, nodeId);
     }
@@ -2049,22 +2167,29 @@ export class StoreGraphBackend implements GraphBackend {
     params.push(now);
 
     if (updates.length > 0) {
-      await this.adapter.executeRun(
+      await db.executeRun(
         `UPDATE node SET ${updates.join(', ')} WHERE rowid = ?`,
         [...params, nodeId],
       );
       // FEAT-021 — after-commit observer (re-embed on content-bearing field change).
-      const updated = await this.getNode(nodeId);
+      const updated = await this.getNodeInTx(nodeId, db);
       if (updated) await this.notifyObservers((o) => o.onNodeUpdated?.(updated, meta));
     }
   }
 
   async writeNodeBatch(nodes: Array<{ content: string; meta: NodeMeta }>, opts?: WriteNodeOpts): Promise<number[]> {
-    return this.adapter.transaction(async (tx) => {
-      const ids: number[] = [];
-      for (const n of nodes) ids.push(await this.writeNodeInTx(n.content, n.meta, opts, tx));
-      return ids;
-    });
+    return this.adapter.transaction((tx) => this.writeNodeBatchInTx(nodes, opts, tx));
+  }
+
+  /** G1 — tx-scoped {@link writeNodeBatch}; never opens a nested transaction. */
+  private async writeNodeBatchInTx(
+    nodes: Array<{ content: string; meta: NodeMeta }>,
+    opts: WriteNodeOpts | undefined,
+    db: AdapterTransaction,
+  ): Promise<number[]> {
+    const ids: number[] = [];
+    for (const n of nodes) ids.push(await this.writeNodeInTx(n.content, n.meta, opts, db));
+    return ids;
   }
 
   async writeGraph(
@@ -2072,44 +2197,65 @@ export class StoreGraphBackend implements GraphBackend {
     edges: Array<{ srcIdx: number; dstIdx: number; rel: EdgeRel; meta?: EdgeMeta }>,
     opts?: WriteNodeOpts,
   ): Promise<number[]> {
-    return this.adapter.transaction(async (tx) => {
-      const nodeIds: number[] = [];
-      for (const n of nodes) {
-        nodeIds.push(await this.writeNodeInTx(n.content, n.meta, opts, tx));
-      }
-      // Resolve the ACTUAL endpoint kinds in one query (review MINOR): the old
-      // fast-path recorded the *requested* kind during insertion, which is wrong
-      // when writeNode returned a content-dedupe hit (skipDedupe false) whose
-      // stored kind differs from the requested kind.
-      const { rows } = await this.adapter.executeAll<{ rowid: number; kind: string }>(
-        `SELECT rowid, kind FROM node WHERE rowid IN (${nodeIds.map(() => '?').join(',')})`,
-        nodeIds,
-      );
-      const kindByRowid = new Map<number, string>();
-      for (const row of rows) kindByRowid.set(row.rowid, row.kind);
-      for (const edge of edges) {
-        if (edge.srcIdx < 0 || edge.srcIdx >= nodeIds.length)
-          throw new ConstraintError(`Invalid srcIdx: ${edge.srcIdx}`);
-        if (edge.dstIdx < 0 || edge.dstIdx >= nodeIds.length)
-          throw new ConstraintError(`Invalid dstIdx: ${edge.dstIdx}`);
-        const srcId = nodeIds[edge.srcIdx];
-        const dstId = nodeIds[edge.dstIdx];
-        if (srcId === undefined || dstId === undefined)
-          throw new ConstraintError('Node ID resolution failed');
-        await this.writeEdgeInternal(srcId, dstId, edge.rel, edge.meta, kindByRowid);
-      }
-      return nodeIds;
-    });
+    return this.adapter.transaction((tx) => this.writeGraphInTx(nodes, edges, opts, tx));
+  }
+
+  /** G1 — tx-scoped {@link writeGraph}; never opens a nested transaction.
+   *  Both the node INSERTs and the endpoint-kind lookup now run on `db` (the
+   *  transaction), not `this.adapter` — the write and its kind resolution
+   *  provably share one handle. */
+  private async writeGraphInTx(
+    nodes: Array<{ content: string; meta: NodeMeta }>,
+    edges: Array<{ srcIdx: number; dstIdx: number; rel: EdgeRel; meta?: EdgeMeta }>,
+    opts: WriteNodeOpts | undefined,
+    db: AdapterTransaction,
+  ): Promise<number[]> {
+    const nodeIds: number[] = [];
+    for (const n of nodes) {
+      nodeIds.push(await this.writeNodeInTx(n.content, n.meta, opts, db));
+    }
+    // Resolve the ACTUAL endpoint kinds in one query (review MINOR): the old
+    // fast-path recorded the *requested* kind during insertion, which is wrong
+    // when writeNode returned a content-dedupe hit (skipDedupe false) whose
+    // stored kind differs from the requested kind.
+    const { rows } = await db.executeAll<{ rowid: number; kind: string }>(
+      `SELECT rowid, kind FROM node WHERE rowid IN (${nodeIds.map(() => '?').join(',')})`,
+      nodeIds,
+    );
+    const kindByRowid = new Map<number, string>();
+    for (const row of rows) kindByRowid.set(row.rowid, row.kind);
+    for (const edge of edges) {
+      if (edge.srcIdx < 0 || edge.srcIdx >= nodeIds.length)
+        throw new ConstraintError(`Invalid srcIdx: ${edge.srcIdx}`);
+      if (edge.dstIdx < 0 || edge.dstIdx >= nodeIds.length)
+        throw new ConstraintError(`Invalid dstIdx: ${edge.dstIdx}`);
+      const srcId = nodeIds[edge.srcIdx];
+      const dstId = nodeIds[edge.dstIdx];
+      if (srcId === undefined || dstId === undefined)
+        throw new ConstraintError('Node ID resolution failed');
+      await this.writeEdgeInTx(srcId, dstId, edge.rel, edge.meta, db, kindByRowid);
+    }
+    return nodeIds;
   }
 
   async getNode(id: number): Promise<NodeRecord | null> {
-    const row = await this.adapter.executeGet<DbNodeRow>('SELECT * FROM node WHERE rowid = ?', [id]);
+    return this.getNodeInTx(id, this.adapter);
+  }
+
+  /** G1 — tx-scoped {@link getNode}. */
+  private async getNodeInTx(id: number, db: AdapterTransaction): Promise<NodeRecord | null> {
+    const row = await db.executeGet<DbNodeRow>('SELECT * FROM node WHERE rowid = ?', [id]);
     return row ? rowToNodeRecord(row) : null;
   }
 
   /** Resolve by stable UUID — see GraphBackend.getNodeByUid. */
   async getNodeByUid(uid: string): Promise<NodeRecord | null> {
-    const row = await this.adapter.executeGet<DbNodeRow>('SELECT * FROM node WHERE uid = ?', [uid]);
+    return this.getNodeByUidInTx(uid, this.adapter);
+  }
+
+  /** G1 — tx-scoped {@link getNodeByUid}. */
+  private async getNodeByUidInTx(uid: string, db: AdapterTransaction): Promise<NodeRecord | null> {
+    const row = await db.executeGet<DbNodeRow>('SELECT * FROM node WHERE uid = ?', [uid]);
     return row ? rowToNodeRecord(row) : null;
   }
 
@@ -2117,42 +2263,97 @@ export class StoreGraphBackend implements GraphBackend {
    * FEAT-024 (A1) — expose the adapter's transaction so consumers can compose
    * atomic multi-operation writes over *existing* nodes (the v2 "create issue"
    * = writeNode + edges + transition). This is also what makes FEAT-023's
-   * uniqueness check + a multi-op write atomic. The callback receives the
-   * adapter's AdapterTransaction; throwing from it rolls the whole thing back.
+   * uniqueness check + a multi-op write atomic.
+   *
+   * G1 — the callback receives a {@link GraphTransaction} (raw `AdapterTransaction`
+   * surface PLUS typed, tx-bound graph primitives). Throwing from it rolls the
+   * whole thing back. `opts` passes to `adapter.transaction` — `{ mode:
+   * 'immediate' }` = `BEGIN IMMEDIATE` (ADR-0012 §1).
    */
-  async transaction<T>(fn: (tx: AdapterTransaction) => Promise<T>): Promise<T> {
-    return this.adapter.transaction(fn);
+  async transaction<T>(fn: (tx: GraphTransaction) => Promise<T>, opts?: TransactionOptions): Promise<T> {
+    return this.adapter.transaction((tx) => fn(this.buildTxView(tx)), opts);
+  }
+
+  /**
+   * G1 — wrap a live adapter transaction in the tx-scoped graph view. Every
+   * typed method delegates to the same private `*InTx` internals the bare
+   * backend uses, so the injected `typePolicy`/`uniquenessPolicy` run at the
+   * write boundary exactly as they do outside a transaction (ADR-0010 D2).
+   */
+  private buildTxView(tx: AdapterTransaction): GraphTransaction {
+    return {
+      // Raw AdapterTransaction surface — bound to the live tx.
+      executeGet: <T = Record<string, unknown>>(sql: string, args?: unknown[]) => tx.executeGet<T>(sql, args),
+      executeAll: <T = Record<string, unknown>>(sql: string, args?: unknown[]) => tx.executeAll<T>(sql, args),
+      executeRun: (sql: string, args?: unknown[]) => tx.executeRun(sql, args),
+      exec: (sql: string) => tx.exec(sql),
+      // Typed, tx-bound graph primitives.
+      writeNode: (content, meta, opts) => this.writeNodeInTx(content, meta, opts, tx),
+      findOrCreateNode: (kind, name, opts) => this.findOrCreateNodeInTx(kind, name, opts, tx),
+      supersede: (oldId, newContent, meta) => this.supersedeInTx(oldId, newContent, meta, tx),
+      invalidate: (nodeId, reason) => this.invalidateInTx(nodeId, reason, tx),
+      touch: (nodeId, meta) => this.touchInTx(nodeId, meta, tx),
+      writeEdge: (src, dst, rel, meta) => this.writeEdgeInTx(src, dst, rel, meta, tx),
+      invalidateEdge: (src, dst, rel, reason) => this.invalidateEdgeInTx(src, dst, rel, reason, tx),
+      writeNodeBatch: (nodes, opts) => this.writeNodeBatchInTx(nodes, opts, tx),
+      writeGraph: (nodes, edges, opts) => this.writeGraphInTx(nodes, edges, opts, tx),
+      writeEdges: (edges) => this.writeEdgesInTx(edges, tx),
+      getNode: (id) => this.getNodeInTx(id, tx),
+      getNodeByUid: (uid) => this.getNodeByUidInTx(uid, tx),
+      getEdges: (opts) => this.getEdgesInTx(opts, tx),
+      getNodesByIds: (ids, opts) => this.getNodesByIdsInTx(ids, opts, tx),
+    };
   }
 
   /**
    * FEAT-024 (A3) — bulk edge write between existing nodes in one transaction.
    * The migration writes thousands of edges; `writeGraph` bundles nodes+edges
    * and cannot target existing nodes. Endpoint kinds are resolved in a single
-   * query up front (not one per edge) and threaded through `writeEdgeInternal`
+   * query up front (not one per edge) and threaded through `writeEdgeInTx`
    * for validateEdge.
+   *
+   * G1 — this opens its OWN transaction. Do not call it from inside a
+   * `transaction()` callback (a nested BEGIN throws / deadlocks); use
+   * `tx.writeEdges(...)` there instead.
    */
   async writeEdges(edges: Array<{ src: number; dst: number; rel: EdgeRel; meta?: EdgeMeta }>): Promise<void> {
     if (edges.length === 0) return;
-    return this.adapter.transaction(async () => {
-      const ids = new Set<number>();
-      for (const e of edges) { ids.add(e.src); ids.add(e.dst); }
-      const { rows } = await this.adapter.executeAll<{ rowid: number; kind: string }>(
-        `SELECT rowid, kind FROM node WHERE rowid IN (${[...ids].map(() => '?').join(',')})`, [...ids],
-      );
-      const kindByRowid = new Map<number, string>();
-      for (const row of rows) kindByRowid.set(row.rowid, row.kind);
-      for (const e of edges) {
-        await this.writeEdgeInternal(e.src, e.dst, e.rel, e.meta, kindByRowid);
-      }
-    });
+    return this.adapter.transaction((tx) => this.writeEdgesInTx(edges, tx));
+  }
+
+  /** G1 — tx-scoped {@link writeEdges}; never opens a nested transaction. */
+  private async writeEdgesInTx(
+    edges: Array<{ src: number; dst: number; rel: EdgeRel; meta?: EdgeMeta }>,
+    db: AdapterTransaction,
+  ): Promise<void> {
+    if (edges.length === 0) return;
+    const ids = new Set<number>();
+    for (const e of edges) { ids.add(e.src); ids.add(e.dst); }
+    const { rows } = await db.executeAll<{ rowid: number; kind: string }>(
+      `SELECT rowid, kind FROM node WHERE rowid IN (${[...ids].map(() => '?').join(',')})`, [...ids],
+    );
+    const kindByRowid = new Map<number, string>();
+    for (const row of rows) kindByRowid.set(row.rowid, row.kind);
+    for (const e of edges) {
+      await this.writeEdgeInTx(e.src, e.dst, e.rel, e.meta, db, kindByRowid);
+    }
   }
 
   /** FEAT-024 (B4) — ordered batch read, one query, in the requested id order. */
   async getNodesByIds(ids: number[], opts?: { liveOnly?: boolean }): Promise<NodeRecord[]> {
+    return this.getNodesByIdsInTx(ids, opts, this.adapter);
+  }
+
+  /** G1 — tx-scoped {@link getNodesByIds}. */
+  private async getNodesByIdsInTx(
+    ids: number[],
+    opts: { liveOnly?: boolean } | undefined,
+    db: AdapterTransaction,
+  ): Promise<NodeRecord[]> {
     if (ids.length === 0) return [];
     const liveOnly = opts?.liveOnly ?? true;
     const liveClause = liveOnly ? ' AND t_invalid IS NULL' : '';
-    const { rows } = await this.adapter.executeAll<DbNodeRow>(
+    const { rows } = await db.executeAll<DbNodeRow>(
       `SELECT * FROM node WHERE rowid IN (${ids.map(() => '?').join(',')})${liveClause}`, ids,
     );
     const byId = new Map<number, NodeRecord>();
@@ -2377,7 +2578,7 @@ export class StoreGraphBackend implements GraphBackend {
   }
 
   async writeEdge(src: number, dst: number, rel: EdgeRel, meta?: EdgeMeta): Promise<void> {
-    await this.writeEdgeInternal(src, dst, rel, meta);
+    await this.writeEdgeInTx(src, dst, rel, meta, this.adapter);
   }
 
   /**
@@ -2389,7 +2590,18 @@ export class StoreGraphBackend implements GraphBackend {
    * edge's `meta` alongside `invalidatedAt`.
    */
   async invalidateEdge(src: number, dst: number, rel: EdgeRel, reason?: string): Promise<void> {
-    const existing = await this.adapter.executeGet<{ rowid: number; meta: string | null }>(
+    return this.invalidateEdgeInTx(src, dst, rel, reason, this.adapter);
+  }
+
+  /** G1 — tx-scoped {@link invalidateEdge}. */
+  private async invalidateEdgeInTx(
+    src: number,
+    dst: number,
+    rel: EdgeRel,
+    reason: string | undefined,
+    db: AdapterTransaction,
+  ): Promise<void> {
+    const existing = await db.executeGet<{ rowid: number; meta: string | null }>(
       'SELECT rowid, meta FROM edge WHERE src = ? AND dst = ? AND rel = ? AND t_invalid IS NULL',
       [src, dst, rel],
     );
@@ -2400,7 +2612,7 @@ export class StoreGraphBackend implements GraphBackend {
       invalidatedAt: now,
       ...(reason !== undefined ? { invalidatedReason: reason } : {}),
     };
-    await this.adapter.executeRun(
+    await db.executeRun(
       'UPDATE edge SET t_invalid = ?, meta = ? WHERE rowid = ?',
       [now, JSON.stringify(metaObj), existing.rowid],
     );
@@ -2412,12 +2624,18 @@ export class StoreGraphBackend implements GraphBackend {
    * `validateRel` (byte-identical to the pre-FEAT-013 behavior) when the policy
    * has no `validateEdge`. `resolvedKinds` is the writeGraph fast-path: kinds
    * already captured during node insertion, avoiding a per-edge SELECT.
+   *
+   * G1 — `db` is the handle every statement (kind lookup + INSERT) runs on:
+   * the transaction when reached through {@link transaction}, else the bare
+   * adapter. This is the ADR-0010 D2 write boundary — the injected TypePolicy
+   * validates here regardless of which handle is in play.
    */
-  private async writeEdgeInternal(
+  private async writeEdgeInTx(
     src: number,
     dst: number,
     rel: EdgeRel,
-    meta?: EdgeMeta,
+    meta: EdgeMeta | undefined,
+    db: AdapterTransaction,
     resolvedKinds?: Map<number, string>,
   ): Promise<void> {
     let srcKind: string | undefined;
@@ -2426,7 +2644,7 @@ export class StoreGraphBackend implements GraphBackend {
       srcKind = resolvedKinds.get(src);
       dstKind = resolvedKinds.get(dst);
     } else {
-      const { rows } = await this.adapter.executeAll<{ rowid: number; kind: string }>(
+      const { rows } = await db.executeAll<{ rowid: number; kind: string }>(
         'SELECT rowid, kind FROM node WHERE rowid IN (?, ?)', [src, dst],
       );
       for (const row of rows) {
@@ -2446,7 +2664,7 @@ export class StoreGraphBackend implements GraphBackend {
     try {
       const now = nowISO();
       const metaJson = meta?.metadata !== undefined ? JSON.stringify(meta.metadata) : null;
-      await this.adapter.executeRun(
+      await db.executeRun(
         `INSERT INTO edge (src, dst, rel, weight, origin, meta, t_created, t_valid)
          VALUES (?, ?, ?, ?, 'user_asserted', ?, ?, ?)
          ON CONFLICT(src, dst, rel) DO UPDATE SET
@@ -2464,6 +2682,14 @@ export class StoreGraphBackend implements GraphBackend {
   }
 
   async getEdges(opts: { src?: number; dst?: number; rel?: EdgeRel; metadata?: Record<string, MetadataFilterValue> }): Promise<EdgeRecord[]> {
+    return this.getEdgesInTx(opts, this.adapter);
+  }
+
+  /** G1 — tx-scoped {@link getEdges}; sees this transaction's uncommitted edge writes/invalidations. */
+  private async getEdgesInTx(
+    opts: { src?: number; dst?: number; rel?: EdgeRel; metadata?: Record<string, MetadataFilterValue> },
+    db: AdapterTransaction,
+  ): Promise<EdgeRecord[]> {
     const clauses: string[] = ['t_invalid IS NULL'];
     const params: unknown[] = [];
     if (opts.src !== undefined) { clauses.push('src = ?'); params.push(opts.src); }
@@ -2475,7 +2701,7 @@ export class StoreGraphBackend implements GraphBackend {
     if (opts.metadata !== undefined) {
       appendMetadataFilterClauses('', opts.metadata, clauses, params);
     }
-    const { rows } = await this.adapter.executeAll<DbEdgeRow>(
+    const { rows } = await db.executeAll<DbEdgeRow>(
       `SELECT * FROM edge WHERE ${clauses.join(' AND ')}`, params,
     );
     return rows.map(rowToEdgeRecord);
