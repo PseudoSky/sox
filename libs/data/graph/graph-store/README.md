@@ -77,7 +77,7 @@ interface GraphBackend {
     edges: Array<{ srcIdx: number; dstIdx: number; rel: EdgeRel; meta?: EdgeMeta }>,
     opts?: WriteNodeOpts,
   ): Promise<number[]>;
-  transaction<T>(fn: (tx: AdapterTransaction) => Promise<T>): Promise<T>;
+  transaction<T>(fn: (tx: GraphTransaction) => Promise<T>, opts?: TransactionOptions): Promise<T>;
 
   writeEdge(src: number, dst: number, rel: EdgeRel, meta?: EdgeMeta): Promise<void>;
   writeEdges(edges: Array<{ src: number; dst: number; rel: EdgeRel; meta?: EdgeMeta }>): Promise<void>;
@@ -225,7 +225,9 @@ const { nodes, edges } = await graph.getSubgraph(a, { direction: 'out', depth: 3
 
 ## Atomic batch writes and multi-op transactions
 
-`writeGraph()` / `writeNodeBatch()` run inside one adapter transaction — all nodes (and edges) commit together or none do. `writeEdge()` is upsert-idempotent on `(src, dst, rel)`, so replaying a projection is always safe. `transaction()` exposes the raw `AdapterTransaction` for composing your own atomic multi-step writes:
+`writeGraph()` / `writeNodeBatch()` run inside one adapter transaction — all nodes (and edges) commit together or none do. `writeEdge()` is upsert-idempotent on `(src, dst, rel)`, so replaying a projection is always safe.
+
+`transaction()` composes your own atomic multi-step writes. Its callback receives a **`GraphTransaction`** — the raw `AdapterTransaction` surface (`executeGet` / `executeAll` / `executeRun` / `exec`) **plus** typed, transaction-bound graph primitives (`tx.writeNode`, `tx.writeEdge`, `tx.invalidateEdge`, `tx.touch`, `tx.getNodeByUid`, …). Every typed call executes on the transaction, so a check-then-write composed through `tx` is atomic; the injected `typePolicy` / `uniquenessPolicy` still validate at the write boundary. Pass `{ mode: 'immediate' }` for `BEGIN IMMEDIATE` (the cross-process CAS primitive):
 
 ```typescript
 const ids = await graph.writeGraph(
@@ -236,12 +238,24 @@ const ids = await graph.writeGraph(
   [{ srcIdx: 1, dstIdx: 0, rel: 'DEPENDS_ON' }], // child depends on root
 );
 
-await graph.transaction(async (tx) => {
-  const existing = await tx.executeGet('SELECT rowid FROM node WHERE name = ?', ['root']);
-  if (existing) throw new Error('already exists');
-  // ...additional writes against tx...
-});
+await graph.transaction(
+  async (tx) => {
+    // Typed, tx-scoped writes — no hand-composed SQL, no schema coupling.
+    const existing = await tx.getNodeByUid(uid);
+    if (existing) throw new Error('already exists');
+    const node = await tx.writeNode('content', { kind: 'generic', name: 'n' });
+    await tx.writeEdge(node, ids[0], 'RELATES_TO');
+  },
+  { mode: 'immediate' }, // BEGIN IMMEDIATE: safe under concurrent writers
+);
 ```
+
+The typed primitives mirror the `GraphBackend` methods of the same name; the bulk ones
+(`tx.writeGraph` / `tx.writeEdges` / `tx.writeNodeBatch` / `tx.supersede`) do **not** open a nested
+transaction, so call them through `tx` — not on `graph` — from inside a `transaction()` callback.
+Because `GraphTransaction` is a structural superset of `AdapterTransaction`, existing callbacks that
+hand-compose SQL against the tx handle keep working unchanged.
+
 
 ## Idempotent business-key writes
 
@@ -301,6 +315,7 @@ const graph = createGraphBackend(adapter, { typePolicy: openVocabulary });
 - `touch()` updates mutable metadata without minting a new node or edge — throws if the node is invalidated or missing.
 - `writeEdge()` is upsert-idempotent on `(src, dst, rel)` — safe to call on re-projection.
 - `writeGraph()` / `writeNodeBatch()` are atomic — all or nothing, in one adapter transaction.
+- `transaction()` hands the callback a `GraphTransaction` — a structural superset of `AdapterTransaction` that adds typed, transaction-bound writes. Every typed method runs on the transaction and delegates to the same `typePolicy`/`uniquenessPolicy`-validating internals the bare backend uses; the tx path is never a raw-SQL bypass. Existing `(tx) => tx.executeRun(...)` callbacks keep working.
 - `searchNodes()` returns `[]` (not an error) when `capabilities.fullTextSearch === false`.
 - `NodeFilter.validAt` is honored only when `capabilities.bitemporal === true`; ignored silently otherwise.
 - `namespace` is a hard isolation field (not a tag/filter convention) — absent → `"global"`.
