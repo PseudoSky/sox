@@ -275,10 +275,12 @@ describe('memory_recall — BL-229 agent_id scoping (importance-ranked listing)'
   const BL229_DB_PATH = path.join(BL229_DIR, 'test.db');
   // Deliberately lexically DISSIMILAR content (not a templated "agent A"/"agent B"
   // near-duplicate pair) — this suite runs with SOX_SYNC_EMBED=1 (vitest.setup.ts),
-  // so E8 near-dup detection runs INLINE on every write and would invalidate the
-  // older of two near-identical episodes (neardup.ts: `should_invalidate: cosine >=
-  // threshold`), silently removing it from every listing regardless of agent_id —
-  // a fixture artifact, not the BL-229 behavior under test. Distinct topics avoid it.
+  // so E8 near-dup detection runs INLINE on every write and would land a SAME_AS
+  // edge between two near-identical episodes (neardup.ts / enrich.ts's
+  // applyNearDupResult — 2026-09-22: no longer invalidates either node, see
+  // docs/reporting/memory/findings/2026-09-22-neardup-invalidation-fix-plan.md),
+  // which would pollute the memory_near_duplicates review queue with a fixture
+  // artifact unrelated to the BL-229 behavior under test. Distinct topics avoid it.
   const AGENT_A_CONTENT = 'Quarterly revenue projections rely on the Q3 pipeline forecast.';
   const AGENT_B_CONTENT = 'The kitchen faucet needs a new O-ring washer to stop the drip.';
 
