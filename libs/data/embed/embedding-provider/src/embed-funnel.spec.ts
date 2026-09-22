@@ -187,8 +187,19 @@ function setupEnv(opts: SetupOpts = {}): FunnelEnv {
     [
       `const mod = await import(process.env.FUNNEL_TEST_INDEX);`,
       `const mode = process.env.FUNNEL_TEST_MODE || 'shared';`,
-      `const client = mode === 'private' ? mod.getPrivateFastembedProcess() : mod.getSharedFastembedProcess();`,
       `const cacheDir = process.env.FUNNEL_TEST_CACHE;`,
+      `if (mode === 'construct') {`,
+      `  // Mirrors backlog's bootstrap: construct the provider but never embed.`,
+      `  try {`,
+      `    await mod.createEmbeddingProvider({ type: 'fastembed', model: 'bge-small-en-v1.5', options: { cacheDir } });`,
+      `    process.stderr.write('CONSUMER_OK\\n');`,
+      `    process.exit(0);`,
+      `  } catch (e) {`,
+      `    process.stderr.write('CONSUMER_ERR:' + (e && e.message ? e.message : String(e)) + '\\n');`,
+      `    process.exit(4);`,
+      `  }`,
+      `}`,
+      `const client = mode === 'private' ? mod.getPrivateFastembedProcess() : mod.getSharedFastembedProcess();`,
       `try {`,
       `  await client.request({ type: 'init', model: 'stub', cacheDir }, 25000);`,
       `  const res = await client.request({ type: 'embed', text: 'hello' }, 25000);`,
@@ -230,7 +241,11 @@ interface ConsumerResult {
 }
 
 /** Spawn one consumer process and resolve when it exits. */
-function spawnConsumer(env: FunnelEnv, mode: 'shared' | 'private', holdMs = 0): Promise<ConsumerResult> {
+function spawnConsumer(
+  env: FunnelEnv,
+  mode: 'shared' | 'private' | 'construct',
+  holdMs = 0,
+): Promise<ConsumerResult> {
   return new Promise<ConsumerResult>((resolve) => {
     const child: ChildProcess = spawn(process.execPath, [TSX_CLI, env.consumerPath], {
       cwd: REPO_ROOT,
@@ -250,7 +265,7 @@ function spawnConsumer(env: FunnelEnv, mode: 'shared' | 'private', holdMs = 0): 
 async function runConsumers(
   env: FunnelEnv,
   n: number,
-  mode: 'shared' | 'private',
+  mode: 'shared' | 'private' | 'construct',
   holdMs = 0,
 ): Promise<ConsumerResult[]> {
   return Promise.all(Array.from({ length: n }, () => spawnConsumer(env, mode, holdMs)));
@@ -372,6 +387,31 @@ describe('SPEC-EMBEDDING-FUNNEL — funnel-to-one (headline)', () => {
       }
     },
     90_000,
+  );
+});
+
+describe('SPEC-EMBEDDING-FUNNEL — a read-only verb spawns zero hosts (backlog §E)', () => {
+  it(
+    'constructing a fastembed provider (as backlog bootstrap does) spawns ZERO hosts until the first real embed',
+    async () => {
+      const env = setupEnv({ graceMs: 5_000 });
+      // A consumer that constructs a provider but never embeds — exactly what
+      // `backlog query --input '{"view":"projects"}'` does with RAG enabled.
+      const constructed = await runConsumers(env, 1, 'construct', 0);
+      expect(constructed[0]?.code, constructed[0]?.stderr).toBe(0);
+      expect(constructed[0]?.stderr).toContain('CONSUMER_OK');
+
+      // Any host spawned during construction would be DETACHED and still alive
+      // (5s grace), so no settle-wait is needed — absence is immediate proof.
+      expect(pidsMatching(path.join(env.dir, 'embedHostMain')).length).toBe(0);
+      expect(pidsMatching(path.join(env.dir, 'fastembedProcessHost-stub')).length).toBe(0);
+
+      // Negative control: an actual embed DOES spawn exactly one host.
+      const embedded = await runConsumers(env, 1, 'shared', 200);
+      expect(embedded[0]?.code, embedded[0]?.stderr).toBe(0);
+      expect(pidsMatching(path.join(env.dir, 'embedHostMain')).length).toBe(1);
+    },
+    60_000,
   );
 });
 
