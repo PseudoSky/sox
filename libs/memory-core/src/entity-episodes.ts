@@ -75,11 +75,21 @@ export async function memoryGetEntityEpisodes(
   // not: a non-integer throws "datatype mismatch" (uncaught by dispatchTool,
   // so it crashes the tool call instead of returning a structured {code}
   // error), and SQLite reads a negative LIMIT as "no limit", defeating the
-  // upper clamp entirely.
+  // upper clamp entirely. Use an explicit `Number.isFinite` check rather
+  // than `Math.trunc(x) || default` — the `||` form treats an explicit
+  // `limit: 0` as falsy and silently substitutes the default, which would
+  // make `limit: 0` return a full page while the adjacent `limit: -1`
+  // clamps to zero rows (opposite directions for two non-positive inputs).
   const rawLimit = args['limit'] as number | undefined;
   const rawOffset = args['offset'] as number | undefined;
-  const limit = Math.min(Math.max(Math.trunc(rawLimit as number) || 20, 0), 200);
-  const offset = Math.max(Math.trunc(rawOffset as number) || 0, 0);
+  const limit = Math.min(
+    Math.max(Number.isFinite(rawLimit as number) ? Math.trunc(rawLimit as number) : 20, 0),
+    200,
+  );
+  const offset = Math.max(
+    Number.isFinite(rawOffset as number) ? Math.trunc(rawOffset as number) : 0,
+    0,
+  );
 
   let resolvedEntityUid = entityUid;
   let resolvedEntityName = '';
