@@ -132,6 +132,8 @@ interface SetupOpts {
   graceMs?: number;
   /** Delay (ms) the stub private host waits before replying — lets a test catch a request in flight. */
   stubDelayMs?: number;
+  /** Make the stub private host IGNORE `{__shutdown:true}`, so `terminate()` waits its full grace. */
+  stubIgnoreShutdown?: boolean;
   /** Point `SOX_EMBED_HOST_MAIN` at a nonexistent path (force ensureBackend failure). */
   breakHostMain?: boolean;
 }
@@ -146,6 +148,7 @@ function setupEnv(opts: SetupOpts = {}): FunnelEnv {
 
   const graceMs = opts.graceMs ?? 10_000;
   const stubDelayMs = opts.stubDelayMs ?? 0;
+  const stubIgnoreShutdown = opts.stubIgnoreShutdown ?? false;
 
   // The private stub host: speaks the fastembed-host IPC protocol
   // (`process.on('message')`), replies to ANY request with an embedding. No
@@ -156,7 +159,9 @@ function setupEnv(opts: SetupOpts = {}): FunnelEnv {
     [
       `let q = Promise.resolve();`,
       `process.on('message', (msg) => {`,
-      `  if (msg && msg.__shutdown) { try { process.disconnect(); } catch {} return; }`,
+      ...(stubIgnoreShutdown
+        ? [`  // Deliberately IGNORE __shutdown: terminate() must wait its full grace.`]
+        : [`  if (msg && msg.__shutdown) { try { process.disconnect(); } catch {} return; }`]),
       `  q = q.then(() => new Promise((resolve) => {`,
       `    setTimeout(() => {`,
       `      if (process.connected) process.send({ id: msg.id, embedding: [0, 0, 0] });`,
@@ -188,7 +193,19 @@ function setupEnv(opts: SetupOpts = {}): FunnelEnv {
       `const mod = await import(process.env.FUNNEL_TEST_INDEX);`,
       `const mode = process.env.FUNNEL_TEST_MODE || 'shared';`,
       `const cacheDir = process.env.FUNNEL_TEST_CACHE;`,
-      `if (mode === 'construct') {`,
+      `// Keep the event loop alive across awaits: a standalone consumer has no`,
+      `// other ref'd handle (the private pool's child is unref'd), so a bare`,
+      `// top-level await could otherwise exit 13 ("unsettled top-level await").`,
+      `const keepAlive = setInterval(() => {}, 1000);`,
+      `// Mode may carry a posture suffix ('reset-shared' / 'reset-private').`,
+      `const isPrivate = mode === 'private' || mode.endsWith('-private');`,
+      `const op = mode.replace(/-(shared|private)$/, '');`,
+      `// The idle bound is TYPED config (the public surface): set it the way a`,
+      `// consumer does — via the typed API, NOT the internal transport env.`,
+      `if (process.env.FUNNEL_TEST_GRACE_MS) {`,
+      `  mod.configureEmbedHostIdleGraceMs(Number(process.env.FUNNEL_TEST_GRACE_MS));`,
+      `}`,
+      `if (op === 'construct') {`,
       `  // Mirrors backlog's bootstrap: construct the provider but never embed.`,
       `  try {`,
       `    await mod.createEmbeddingProvider({ type: 'fastembed', model: 'bge-small-en-v1.5', options: { cacheDir } });`,
@@ -199,11 +216,34 @@ function setupEnv(opts: SetupOpts = {}): FunnelEnv {
       `    process.exit(4);`,
       `  }`,
       `}`,
-      `const client = mode === 'private' ? mod.getPrivateFastembedProcess() : mod.getSharedFastembedProcess();`,
+      `const client = isPrivate ? mod.getPrivateFastembedProcess() : mod.getSharedFastembedProcess();`,
+      `const init = { type: 'init', model: 'stub', cacheDir };`,
       `try {`,
-      `  await client.request({ type: 'init', model: 'stub', cacheDir }, 25000);`,
+      `  await client.request(init, 25000);`,
       `  const res = await client.request({ type: 'embed', text: 'hello' }, 25000);`,
       `  if (!res || !Array.isArray(res.embedding)) { process.stderr.write('CONSUMER_BAD\\n'); process.exit(3); }`,
+      `  if (op === 'terminate') {`,
+      `    // A shared consumer's terminate() must be a NO-OP (never kill the host).`,
+      `    await client.terminate();`,
+      `  }`,
+      `  if (op === 'reset') {`,
+      `    // Heal path: reset the shared host / private pool, then re-init+embed on a`,
+      `    // FRESH accessor. Must still succeed — the stale-accessor bug goes red here.`,
+      `    await mod.resetSharedFastembedProcess();`,
+      `    const client2 = isPrivate ? mod.getPrivateFastembedProcess() : mod.getSharedFastembedProcess();`,
+      `    await client2.request(init, 25000);`,
+      `    const res2 = await client2.request({ type: 'embed', text: 'hello again' }, 25000);`,
+      `    if (!res2 || !Array.isArray(res2.embedding)) { process.stderr.write('CONSUMER_BAD\\n'); process.exit(3); }`,
+      `  }`,
+      `  if (op === 'reset-race') {`,
+      `    // Fire the host reset WITHOUT awaiting it, then exit shortly after: the`,
+      `    // host is still mid-reset (terminating its private pool) when the last`,
+      `    // client disconnects. Its request depth must keep it from reaping.`,
+      `    void mod.resetSharedFastembedProcess();`,
+      `    await new Promise((r) => setTimeout(r, 100));`,
+      `    process.stderr.write('CONSUMER_OK\\n');`,
+      `    process.exit(0);`,
+      `  }`,
       `  process.stderr.write('CONSUMER_OK\\n');`,
       `  const holdMs = Number(process.env.FUNNEL_TEST_HOLD_MS || '0');`,
       `  if (holdMs > 0) await new Promise((r) => setTimeout(r, holdMs));`,
@@ -225,7 +265,10 @@ function setupEnv(opts: SetupOpts = {}): FunnelEnv {
     SOX_FASTEMBED_HOST_PATH: privateStubPath,
     SOX_EMBED_HOST_MAIN: hostMain,
     SOX_EMBED_HOST_SRC: EMBED_HOST_TS,
-    SOX_EMBED_HOST_IDLE_GRACE_MS: String(graceMs),
+    // The idle bound is set via the TYPED config in the consumer script, NOT
+    // here — `SOX_EMBED_HOST_IDLE_GRACE_MS` is only the internal spawner→host
+    // transport, which the funnel client writes from `EmbedHostConfig.idleGraceMs`.
+    FUNNEL_TEST_GRACE_MS: String(graceMs),
     SOX_EMBED_EXECUTION_PROVIDER: 'cpu',
     FUNNEL_TEST_INDEX: INDEX_TS,
     FUNNEL_TEST_CACHE: cache,
@@ -240,10 +283,20 @@ interface ConsumerResult {
   stderr: string;
 }
 
+/** The consumer-script modes the harness can drive. */
+type ConsumerMode =
+  | 'shared'
+  | 'private'
+  | 'construct'
+  | 'terminate'
+  | 'reset-shared'
+  | 'reset-private'
+  | 'reset-race';
+
 /** Spawn one consumer process and resolve when it exits. */
 function spawnConsumer(
   env: FunnelEnv,
-  mode: 'shared' | 'private' | 'construct',
+  mode: ConsumerMode,
   holdMs = 0,
 ): Promise<ConsumerResult> {
   return new Promise<ConsumerResult>((resolve) => {
@@ -265,7 +318,7 @@ function spawnConsumer(
 async function runConsumers(
   env: FunnelEnv,
   n: number,
-  mode: 'shared' | 'private' | 'construct',
+  mode: ConsumerMode,
   holdMs = 0,
 ): Promise<ConsumerResult[]> {
   return Promise.all(Array.from({ length: n }, () => spawnConsumer(env, mode, holdMs)));
@@ -570,4 +623,100 @@ describe('SPEC-EMBEDDING-FUNNEL — ADR-0012 teeth (compute-only host)', () => {
 
     killPid(child.pid ?? 0);
   }, 60_000);
+});
+
+describe('SPEC-EMBEDDING-FUNNEL — the host resolves the private accessor at EVERY use (reset does not brick it)', () => {
+  // The HIGH finding: `embedHostMain` used to capture `getPrivateFastembedProcess()`
+  // ONCE, but `embedding.reset` terminates and nulls that singleton. Every later
+  // request then went through the terminated reference and failed with
+  // "shared fastembed process terminated". This test goes RED against that code.
+  for (const [posture, mode] of [
+    ['shared', 'reset-shared'],
+    ['private', 'reset-private'],
+  ] as const) {
+    it(
+      `init+embed → reset → init+embed still succeeds (host:'${posture}')`,
+      async () => {
+        const env = setupEnv({ graceMs: 10_000 });
+        const result = await runConsumers(env, 1, mode, 0);
+        expect(result[0]?.code, result[0]?.stderr).toBe(0);
+        expect(result[0]?.stderr).toContain('CONSUMER_OK');
+      },
+      60_000,
+    );
+  }
+});
+
+describe('SPEC-EMBEDDING-FUNNEL — the reap gate honors in-flight work (not just the pool counter)', () => {
+  it(
+    'a client that disconnects while the host is mid-work does NOT trigger a reap — the host survives',
+    async () => {
+      // grace 300ms << the ~1s `terminate()` the in-flight reset is awaiting
+      // (the stub ignores `__shutdown`, so the graceful teardown runs its full
+      // TERMINATE_GRACE_MS). The consumer fires `embedding.reset` and exits, so
+      // the last client is gone while the host's own request is still in flight.
+      const env = setupEnv({ graceMs: 300, stubIgnoreShutdown: true });
+      const result = await runConsumers(env, 1, 'reset-race', 0);
+      expect(result[0]?.code, result[0]?.stderr).toBe(0);
+      const hosts = pidsMatching(path.join(env.dir, 'embedHostMain'));
+      expect(hosts.length, 'exactly one host').toBe(1);
+      const hostPid = hosts[0]!;
+
+      // At ~650ms after the consumer exits: past the 300ms grace (the OLD gate,
+      // which read `pendingCount === 0` because `terminate()` cleared the pool,
+      // would have reaped the host by now) but still inside the 1s reset
+      // teardown (the NEW gate sees `inFlight === 1` and does not arm).
+      await new Promise((r) => setTimeout(r, 650));
+      expect(
+        pidsMatching(path.join(env.dir, 'embedHostMain')),
+        'the host must survive while its own request is in flight',
+      ).toEqual([hostPid]);
+    },
+    60_000,
+  );
+});
+
+describe('SPEC-EMBEDDING-FUNNEL — the idle bound is typed config', () => {
+  it(
+    'a non-default typed idleGraceMs (2s) takes effect — the host reaps ~2s after the last client, not the 30s default',
+    async () => {
+      const env = setupEnv({ graceMs: 2_000 });
+      const first = await runConsumers(env, 1, 'shared', 200);
+      expect(first[0]?.code, first[0]?.stderr).toBe(0);
+      const hosts = pidsMatching(path.join(env.dir, 'embedHostMain'));
+      expect(hosts.length, 'exactly one host').toBe(1);
+      const hostPid = hosts[0]!;
+
+      // If the typed value did not flow through `EmbedHostConfig.idleGraceMs`
+      // to the host, the host would reap at the 30s DEFAULT and this 10s bound
+      // would time out — so the test is RED without the fix.
+      const t0 = Date.now();
+      await waitForPidGone(hostPid, 10_000);
+      expect(Date.now() - t0, 'reaped well under the 30s default').toBeLessThan(9_000);
+    },
+    60_000,
+  );
+});
+
+describe('SPEC-EMBEDDING-FUNNEL — a consumer terminate() is a no-op (BL-405 cannot recur via the funnel)', () => {
+  it(
+    'terminate() does not kill the peer-shared host; a second consumer reuses the same host pid',
+    async () => {
+      const env = setupEnv({ graceMs: 10_000 });
+      const first = await runConsumers(env, 1, 'terminate', 0);
+      expect(first[0]?.code, first[0]?.stderr).toBe(0);
+      const hosts1 = pidsMatching(path.join(env.dir, 'embedHostMain'));
+      expect(hosts1.length, 'exactly one host').toBe(1);
+      const hostPid = hosts1[0]!;
+
+      // The consumer's `terminate()` is inert, so the host is never killed — a
+      // second consumer reuses the SAME pid. BL-405's EPIPE-on-parent-exit crash
+      // is structurally impossible here: the consumer never owns the child, so
+      // its shutdown path cannot race the child's `process.send()`.
+      const second = await runConsumers(env, 1, 'shared', 0);
+      expect(second[0]?.code, second[0]?.stderr).toBe(0);
+      expect(pidsMatching(path.join(env.dir, 'embedHostMain'))).toEqual([hostPid]);
+    },
+    60_000,
+  );
 });

@@ -31,6 +31,7 @@
 import { dialBackend, ensureBackend, probeSocketLive, type BackendConnection } from '@adhd/sox-service-proxy';
 import { TransientEmbeddingError, PermanentEmbeddingError } from './errors.js';
 import {
+  EMBED_HOST_IDLE_GRACE_ENV,
   embedHostSingletonKey,
   embedHostSocketPath,
   resolveEmbedHostConfig,
@@ -280,7 +281,16 @@ export class FunneledFastembedClient implements SharedFastembedClient {
         singletonKey: key,
         command: process.execPath,
         args: [resolveEmbedHostMainPath()],
-        env: { ...process.env, SOX_EMBED_HOST_SOCKET: socketPath, SOX_EMBED_HOST_KEY: key },
+        env: {
+          ...process.env,
+          SOX_EMBED_HOST_SOCKET: socketPath,
+          // Internal cross-process transport for the typed idle bound: the
+          // spawned host consumes the value the spawner resolved here
+          // (`EmbedHostConfig.idleGraceMs`), which is what makes the resolved
+          // config field the consumed surface rather than a dead declaration.
+          // The public knob is `EmbeddingProviderConfig.idleGraceMs`.
+          [EMBED_HOST_IDLE_GRACE_ENV]: String(cfg.idleGraceMs),
+        },
         stderrLogPath: resolveEmbedHostStderrLogPath(cfg),
         readyTimeoutMs: HOST_READY_TIMEOUT_MS,
       });

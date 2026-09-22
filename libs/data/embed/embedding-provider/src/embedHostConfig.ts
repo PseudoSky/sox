@@ -13,16 +13,27 @@
  *     `backendSocketPath()` (the SAME derivation the service-proxy uses, so
  *     there is never a port-selection problem and never a clash).
  *
- * ── Host selection is typed config, never an env toggle (ADR-0013) ─────────────
+ * ── Host selection AND the idle bound are typed config, never env toggles ──────
  *
  * `host` is a closed union (`'shared' | 'private'`) carried on
- * `EmbeddingProviderConfig.host` and reported in `health()`. There is
- * deliberately NO `SOX_EMBED_HOST=shared|private` variable: a behavior switch
- * must be visible, validated, and auditable, not an ambient string. The only
- * env reads here are ADR-0013 D3/D5 shapes:
+ * `EmbeddingProviderConfig.host` and reported in `health()`. `idleGraceMs` is the
+ * same shape: a typed field on `EmbeddingProviderConfig.idleGraceMs` (applied by
+ * `createEmbeddingProvider()`), reported in the host's `embedding.health`, and
+ * carried on the resolved `EmbedHostConfig` the SPAWNER reads and forwards to the
+ * spawned host. There is deliberately NO `SOX_EMBED_HOST=shared|private`
+ * variable: a behavior switch must be visible, validated, and auditable, not an
+ * ambient string.
  *
- *   - `SOX_EMBED_HOST_IDLE_GRACE_MS` — a numeric tuning constant (D3): how long
- *     the host lingers after its last client leaves. Additive/numeric only.
+ * `SOX_EMBED_HOST_IDLE_GRACE_MS` still exists, but it is the INTERNAL
+ * cross-process transport between the spawner and the spawned host — the spawner
+ * writes the resolved `EmbedHostConfig.idleGraceMs` into the child's env and the
+ * host consumes it. It is not the public configuration surface; set the typed
+ * `idleGraceMs` (or `configureEmbedHostIdleGraceMs()`) instead. (Owner directive:
+ * "the time bound should be configurable" — typed config, not an ADR-0013 D3 env
+ * tuning constant. This supersedes ADR-0020 D2's env-tuning framing.)
+ *
+ * The remaining env reads are ADR-0013 D5 shapes:
+ *
  *   - `SOX_ECOSYSTEM_HOME` — host config (D5): where the socket lives.
  *   - `SOX_EMBED_HOST_MAIN` / `SOX_EMBED_HOST_SOCKET` — host-injected transport
  *     config (D5) / test seams; they select a path, they never enable a feature.
@@ -50,7 +61,13 @@ export interface EmbedHostConfig {
   host: EmbedHostMode;
   /** The directory the host UDS is created under (ADR-0004: `$SOX_ECOSYSTEM_HOME/run`). */
   socketDir: string;
-  /** How long the host lingers with zero clients and zero in-flight work before it reaps itself. */
+  /**
+   * How long the host lingers with zero clients and zero in-flight work before
+   * it reaps itself. Typed config (owner directive: "the time bound should be
+   * configurable"): the SPAWNER reads this resolved value and forwards it to the
+   * spawned host, which consumes it. Set it via
+   * `EmbeddingProviderConfig.idleGraceMs` / `configureEmbedHostIdleGraceMs()`.
+   */
   idleGraceMs: number;
 }
 
@@ -85,6 +102,23 @@ export const DEFAULT_EMBED_HOST_IDLE_GRACE_MS = 30_000;
 let _hostOverride: EmbedHostMode | null = null;
 
 /**
+ * Process-wide idle-grace override. `null` ⇒ resolve from the transport env (or
+ * the default). This is the TYPED public surface for the time bound: the owner
+ * directive is that the bound be configurable as config, not as an ambient
+ * ADR-0013 D3 env constant. Set via `configureEmbedHostIdleGraceMs()` (which
+ * `createEmbeddingProvider()` calls with `EmbeddingProviderConfig.idleGraceMs`)
+ * before the host is spawned.
+ */
+let _idleGraceOverride: number | null = null;
+
+/**
+ * The internal cross-process transport variable the spawner uses to hand the
+ * resolved `EmbedHostConfig.idleGraceMs` to the spawned host. Not a public knob
+ * — set the typed `idleGraceMs` instead.
+ */
+export const EMBED_HOST_IDLE_GRACE_ENV = 'SOX_EMBED_HOST_IDLE_GRACE_MS';
+
+/**
  * Apply the typed `host` field from an `EmbeddingProviderConfig`. Passing
  * `undefined` leaves the current posture unchanged (so a `remote` provider
  * without a `host` field never resets a deliberate `'private'` selection).
@@ -97,14 +131,34 @@ export function configureEmbedHostHost(host: EmbedHostMode | undefined): void {
   _hostOverride = host;
 }
 
-/** TEST-ONLY: clear the process-wide host override back to the `'shared'` default. */
+/**
+ * Apply the typed `idleGraceMs` field from an `EmbeddingProviderConfig`. Passing
+ * `undefined` leaves the current value unchanged (so a provider without the field
+ * never resets a deliberate selection). A non-positive or non-finite value is
+ * rejected loudly — never silently treated as "off".
+ */
+export function configureEmbedHostIdleGraceMs(idleGraceMs: number | undefined): void {
+  if (idleGraceMs === undefined) return;
+  if (!Number.isFinite(idleGraceMs) || idleGraceMs <= 0) {
+    throw new TypeError(
+      `EmbedHostConfig.idleGraceMs must be a positive number, got ${String(idleGraceMs)}`,
+    );
+  }
+  _idleGraceOverride = idleGraceMs;
+}
+
+/** TEST-ONLY: clear the process-wide host + idle-grace overrides back to defaults. */
 export function __resetEmbedHostConfigForTests(): void {
   _hostOverride = null;
+  _idleGraceOverride = null;
 }
 
 /**
  * Resolve the funnel configuration. `host` defaults to `'shared'`; `idleGraceMs`
- * is a numeric tuning constant (ADR-0013 D3) with a hard default.
+ * is typed config (with the transport env / hard default as fallbacks). The
+ * SPAWNER reads the resolved `idleGraceMs` and forwards it to the spawned host —
+ * see `funnelClient.ts`'s `doEnsure()` — which is what makes this field the
+ * consumed surface rather than a dead declaration.
  */
 export function resolveEmbedHostConfig(): EmbedHostConfig {
   return {
@@ -115,16 +169,25 @@ export function resolveEmbedHostConfig(): EmbedHostConfig {
 }
 
 /**
- * ADR-0013 D3 tuning constant: `SOX_EMBED_HOST_IDLE_GRACE_MS`. A non-positive or
- * non-numeric value is rejected loudly (never silently treated as "off").
+ * Resolve the idle grace, in priority order:
+ *
+ *   1. the typed override (`configureEmbedHostIdleGraceMs()` /
+ *      `EmbeddingProviderConfig.idleGraceMs`) — the public surface;
+ *   2. the internal transport env (`SOX_EMBED_HOST_IDLE_GRACE_ENV`) the spawner
+ *      writes for the spawned host;
+ *   3. `DEFAULT_EMBED_HOST_IDLE_GRACE_MS`.
+ *
+ * A non-positive or non-numeric transport value is rejected loudly (never
+ * silently treated as "off").
  */
 export function resolveEmbedHostIdleGraceMs(): number {
-  const raw = process.env['SOX_EMBED_HOST_IDLE_GRACE_MS'];
+  if (_idleGraceOverride !== null) return _idleGraceOverride;
+  const raw = process.env[EMBED_HOST_IDLE_GRACE_ENV];
   if (raw === undefined || raw === '') return DEFAULT_EMBED_HOST_IDLE_GRACE_MS;
   const parsed = Number(raw);
   if (!Number.isFinite(parsed) || parsed <= 0) {
     throw new TypeError(
-      `SOX_EMBED_HOST_IDLE_GRACE_MS must be a positive number, got ${JSON.stringify(raw)}`,
+      `${EMBED_HOST_IDLE_GRACE_ENV} must be a positive number, got ${JSON.stringify(raw)}`,
     );
   }
   return parsed;

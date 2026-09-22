@@ -8,7 +8,7 @@ import { join } from 'node:path';
 // Local binding so this module's own throws/type-guards use the SAME classes the
 // barrel re-exports (one home — see `errors.ts`).
 import { ResolutionError } from './errors.js';
-import { configureEmbedHostHost } from './embedHostConfig.js';
+import { configureEmbedHostHost, configureEmbedHostIdleGraceMs } from './embedHostConfig.js';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -62,6 +62,14 @@ export interface EmbeddingProviderConfig {
    * it is a closed union, never an env toggle, and is reported in `health()`.
    */
   host?: 'shared' | 'private';
+  /**
+   * How long the peer-shared host lingers with zero clients and zero in-flight
+   * work before it reaps itself, in milliseconds. Typed config (owner directive:
+   * "the time bound should be configurable") — applied process-wide before the
+   * host is spawned, and reported in the host's `embedding.health`. Defaults to
+   * `DEFAULT_EMBED_HOST_IDLE_GRACE_MS` (30 s). Must be a positive number.
+   */
+  idleGraceMs?: number;
 }
 
 // ── Error taxonomy — three tiers, no silent degradation ──────────────────────
@@ -214,12 +222,15 @@ export { FunneledFastembedClient, resetSharedFastembedHost } from './funnelClien
 export {
   resolveEmbedHostConfig,
   configureEmbedHostHost,
+  configureEmbedHostIdleGraceMs,
   resolveEmbedHostSocketDir,
   embedHostSingletonKey,
   embedHostSocketPath,
   resolveEmbedHostMainPath,
   resolveEmbedHostIdleGraceMs,
   EMBED_HOST_PROTOCOL_VERSION,
+  DEFAULT_EMBED_HOST_IDLE_GRACE_MS,
+  EMBED_HOST_IDLE_GRACE_ENV,
   type EmbedHostConfig,
   type EmbedHostMode,
 } from './embedHostConfig.js';
@@ -242,6 +253,19 @@ export async function createEmbeddingProvider(
     } catch (err) {
       throw new ResolutionError(
         `Invalid embedding host mode: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+  }
+
+  // Typed idle bound (owner directive: "the time bound should be configurable").
+  // Applied process-wide before the host is spawned; the spawner forwards the
+  // resolved value to the host, which consumes it.
+  if (config.idleGraceMs !== undefined) {
+    try {
+      configureEmbedHostIdleGraceMs(config.idleGraceMs);
+    } catch (err) {
+      throw new ResolutionError(
+        `Invalid embedding idle grace: ${err instanceof Error ? err.message : String(err)}`,
       );
     }
   }

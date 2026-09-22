@@ -28,13 +28,26 @@
  *
  *   - `activeClients` — live UDS client connections, from `serveBackend`'s
  *     `onClientCountChange` hook (the cross-process half);
- *   - `privateClient.pendingCount` — this host's own in-flight requests (the
- *     in-process half).
+ *   - `inFlight` — THIS host's own request depth, incremented synchronously at
+ *     the top of every handler invocation and decremented in its `finally` (the
+ *     in-process half). It is deliberately NOT the private pool's
+ *     `pendingCount`: that counter is incremented only AFTER `ensureProcess()`
+ *     (the fork) resolves, so it reads 0 during a cold-start fork and would arm
+ *     a reap over live work. `inFlight` is the synchronous truth.
  *
- * `activeClients === 0 && pendingCount === 0` arms the grace timer; a new client
+ * `activeClients === 0 && inFlight === 0` arms the grace timer; a new client
  * or request cancels it. On expiry the private pool is terminated, the listener
  * closed (which unlinks the socket), and the process exits 0. The private pool's
  * ONNX child is forked `detached: false`, so it dies with the host — no orphans.
+ *
+ * ── The accessor is resolved at EVERY use, never captured ──────────────────────
+ *
+ * `embedding.reset` terminates AND nulls the private singleton
+ * (`resetPrivateFastembedProcess()`); a host that captured the accessor once
+ * would keep forwarding through the terminated reference and answer every later
+ * request with `shared fastembed process terminated`. Every use
+ * (the request handler, `armIfIdle`, `teardown`, `health`) therefore calls
+ * `getPrivateFastembedProcess()` fresh.
  */
 
 import { fileURLToPath } from 'node:url';
@@ -76,9 +89,15 @@ export async function runEmbedHost(): Promise<void> {
   }
 
   const idleGraceMs = resolveEmbedHostIdleGraceMs();
-  const privateClient = getPrivateFastembedProcess();
 
   let activeClients = 0;
+  /**
+   * This host's own in-flight request depth. Incremented synchronously before
+   * the handler's first `await` and decremented in its `finally`, so it covers a
+   * request's entire synchronous prefix — including the cold-start fork, where
+   * the private pool's `pendingCount` still reads 0.
+   */
+  let inFlight = 0;
   let idleTimer: NodeJS.Timeout | null = null;
   let shuttingDown = false;
   let handle: BackendHandle | null = null;
@@ -95,7 +114,9 @@ export async function runEmbedHost(): Promise<void> {
     shuttingDown = true;
     cancelIdle();
     try {
-      await privateClient.terminate();
+      // Resolve the accessor at teardown time: a preceding `embedding.reset`
+      // may have swapped the private singleton for a fresh one.
+      await getPrivateFastembedProcess().terminate();
     } catch {
       /* best-effort — the ONNX child dies with us regardless (detached:false) */
     }
@@ -109,7 +130,10 @@ export async function runEmbedHost(): Promise<void> {
 
   const armIfIdle = (): void => {
     if (shuttingDown || idleTimer) return;
-    if (activeClients !== 0 || privateClient.pendingCount !== 0) return;
+    if (activeClients !== 0 || inFlight !== 0) return;
+    // Defensive second gate: the private pool's own counter, resolved per use so
+    // a post-reset pool is never the stale terminated reference.
+    if (getPrivateFastembedProcess().pendingCount !== 0) return;
     idleTimer = setTimeout(() => {
       idleTimer = null;
       void teardown();
@@ -119,20 +143,24 @@ export async function runEmbedHost(): Promise<void> {
   };
 
   const handler = async (req: JsonRpcRequest): Promise<JsonRpcResponse> => {
-    // Any inbound request is demand — cancel a pending reap.
+    // Any inbound request is demand — cancel a pending reap, and count this
+    // request as in-flight BEFORE the first await (the synchronous prefix).
     cancelIdle();
+    inFlight++;
     const id = req.id;
     const method = req.method;
 
-    if (!HOST_METHODS.has(method)) {
-      return fail(id, -32601, `method not found: ${method}`);
-    }
-
     try {
+      if (!HOST_METHODS.has(method)) {
+        return fail(id, -32601, `method not found: ${method}`);
+      }
+
       if (method === 'embedding.health') {
+        const pc = getPrivateFastembedProcess();
         return ok(id, {
-          started: privateClient.started,
-          pendingCount: privateClient.pendingCount,
+          started: pc.started,
+          pendingCount: pc.pendingCount,
+          inFlight,
           activeClients,
           idleGraceMs,
         });
@@ -142,13 +170,15 @@ export async function runEmbedHost(): Promise<void> {
         return ok(id, { reset: true });
       }
       // embedding.init | embedding.embed | embedding.embedBatch — forward the
-      // payload 1:1 to the PRIVATE pool (never the funnel accessor).
+      // payload 1:1 to the PRIVATE pool (never the funnel accessor), resolving
+      // it per use so a reset mid-life never leaves us on a terminated pool.
       const params = (req.params ?? {}) as Record<string, unknown>;
-      const result = await privateClient.request(params);
+      const result = await getPrivateFastembedProcess().request(params);
       return ok(id, result);
     } catch (e) {
       return fail(id, -32603, e instanceof Error ? e.message : String(e));
     } finally {
+      inFlight--;
       // A request may have drained the last in-flight work with no clients
       // attached (e.g. a one-shot embed) — re-arm the reap.
       if (activeClients === 0) armIfIdle();
