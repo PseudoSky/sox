@@ -97,7 +97,18 @@ export function serveBackend(opts: ServeBackendOptions): Promise<BackendHandle> 
    * for the hook, so connect/disconnect can never disagree about it.
    */
   const notifyClientCount = (): void => {
-    opts.onClientCountChange?.(sockets.size);
+    if (!opts.onClientCountChange) return;
+    try {
+      opts.onClientCountChange(sockets.size);
+    } catch (err) {
+      // An observer must never break the accept/close path — a throwing
+      // `onClientCountChange` would otherwise crash the connection callback
+      // (and, for the embedding funnel, take the host's teardown bookkeeping
+      // with it). Report and continue.
+      diag(
+        `[service-proxy backend] onClientCountChange threw: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
   };
 
   async function onFrame(msg: unknown, socket: net.Socket): Promise<void> {
