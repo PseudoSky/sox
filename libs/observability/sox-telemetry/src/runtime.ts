@@ -188,32 +188,133 @@ function ecosystemHome(): string {
   return path.join(os.homedir(), '.adhd', 'sox-ecosystem');
 }
 
-let _state: RuntimeState = {
-  service: 'unlabeled',
-  role: defaultRole(),
-  logSink: 'none',
-  sink: null,
-  otel: NOOP_OTEL,
-  otelState: 'disabled',
-};
+// ── Process-wide singleton runtime (BL-404 duplicate-module hazard) ─────────
+//
+// Everything mutable in this module lives in ONE object keyed on `globalThis`
+// rather than in module-level `let` bindings. This is not a style choice — it
+// is the fix for the BL-404 "emitting with no initTelemetry()" warning firing
+// from a DUPLICATE installed copy of this package.
+//
+// The defect: `@adhd/sox-telemetry` can be installed more than once in a single
+// process — a top-level copy (e.g. 0.3.0, whose `initTelemetry` a consumer
+// called) and a nested copy (e.g. 0.2.1 under a dependency's own
+// `node_modules`, through which that dependency's emitted records routed). Two
+// module instances meant two independent state bindings, so the nested copy's
+// first emission saw its OWN `service:'unlabeled'` fallback, printed the BL-404
+// warning, and no amount of initialising the top-level copy could silence it.
+// The two copies were, to each other, strangers.
+//
+// `Symbol.for()` returns the SAME symbol for the same string in every module
+// instance in a realm (it is the global symbol registry), so N copies of this
+// file all resolve `globalThis[TELEMETRY_RUNTIME_SLOT_KEY]` to one shared
+// runtime object. The FIRST copy to run creates it; every later copy reads it.
+// One `initTelemetry` is then visible to all of them and the warning cannot
+// fire from a duplicate-module hazard.
+//
+// SEPARATE REALMS ARE UNAFFECTED, DELIBERATELY: a forked child process or a
+// `worker_threads.Worker` has its own `globalThis` (and its own symbol
+// registry), so it gets its own runtime — which is correct, because it is a
+// genuinely separate process/isolate. Those realms are initialised by
+// `child-bootstrap.ts`'s `SOX_TELEMETRY_INIT` convention, unchanged.
+//
+// ⚠️ THE KEY IS A SEMVER-STABLE CONTRACT. The string inside `Symbol.for(...)`
+// identifies the shared slot across every version of this package that
+// coexists in one process; changing it silently splits the runtime again (two
+// copies, two states, the warning returns). Treat a change to it as a breaking
+// change: bump the `.vN` suffix only when the runtime object's SHAPE changes
+// incompatibly, and never reuse an old suffix for a new shape. See ADR-0018.
+const TELEMETRY_RUNTIME_SLOT_KEY: symbol = Symbol.for('@adhd/sox-telemetry.runtime.v1');
+
+/** Default cadence (in records) between activity-triggered metric snapshots.
+ *  Declared here, above the singleton, because `newRuntime()` seeds it. */
+const DEFAULT_SNAPSHOT_EVERY_RECORDS = 1000;
+
+/** Everything mutable this module owns, in one process-global object. */
+interface TelemetryRuntime {
+  state: RuntimeState;
+  otelReady: Promise<void>;
+  warnedUnlabeled: boolean;
+  stageDeclarations: Map<string, { pkg: string; paths: readonly string[] }>;
+  stageAggregates: Map<string, StageAggregate>;
+  childTelemetryCounters: {
+    spawned: number;
+    acked_with_sink: number;
+    acked_without_sink: number;
+    unacked_with_success: number;
+  };
+  childTelemetryRing: ChildTelemetryRecord[];
+  snapshotSink: DurableJsonlSink | null;
+  snapshotEveryRecords: number;
+  recordsSinceSnapshot: number;
+  snapshotsWritten: number;
+  snapshotInFlight: boolean;
+  snapshotTimer: ReturnType<typeof setInterval> | null;
+}
+
+function defaultState(): RuntimeState {
+  return {
+    service: 'unlabeled',
+    role: defaultRole(),
+    logSink: 'none',
+    sink: null,
+    otel: NOOP_OTEL,
+    otelState: 'disabled',
+  };
+}
+
+function newRuntime(): TelemetryRuntime {
+  return {
+    state: defaultState(),
+    otelReady: Promise.resolve(),
+    warnedUnlabeled: false,
+    stageDeclarations: new Map(),
+    stageAggregates: new Map(),
+    childTelemetryCounters: {
+      spawned: 0,
+      acked_with_sink: 0,
+      acked_without_sink: 0,
+      unacked_with_success: 0,
+    },
+    childTelemetryRing: [],
+    snapshotSink: null,
+    snapshotEveryRecords: DEFAULT_SNAPSHOT_EVERY_RECORDS,
+    recordsSinceSnapshot: 0,
+    snapshotsWritten: 0,
+    snapshotInFlight: false,
+    snapshotTimer: null,
+  };
+}
+
+/**
+ * The ONE process-wide runtime. The first caller in this realm creates it and
+ * installs it on `globalThis[TELEMETRY_RUNTIME_SLOT_KEY]`; every other copy of
+ * this module reads that same object instead of creating its own. See the
+ * slot-key doc comment above for the full BL-404 rationale.
+ */
+function runtime(): TelemetryRuntime {
+  const slot = globalThis as unknown as Record<symbol, TelemetryRuntime | undefined>;
+  const existing = slot[TELEMETRY_RUNTIME_SLOT_KEY];
+  if (existing !== undefined) return existing;
+  const created = newRuntime();
+  slot[TELEMETRY_RUNTIME_SLOT_KEY] = created;
+  return created;
+}
 
 /** Not memoised across calls: honours whatever `initTelemetry` most recently
  *  configured, including in tests that re-init between cases. */
 export function currentRuntimeState(): Readonly<RuntimeState> {
-  return _state;
+  return runtime().state;
 }
 
 /** The active OTel runtime, or the null object. Never null — `stages.ts` has
  *  ONE code path, not an `if (otel)` fork whose branches drift apart. */
 export function _currentOtel(): OtelRuntime {
-  return _state.otel;
+  return runtime().state.otel;
 }
-
-let _otelReady: Promise<void> = Promise.resolve();
 
 /** Resolves once OTel bring-up has settled. Never rejects. */
 export function otelReady(): Promise<void> {
-  return _otelReady;
+  return runtime().otelReady;
 }
 
 /** OTel defaults ON at a real composition root and OFF under test, because the
@@ -223,8 +324,9 @@ function otelDefaultFor(role: Role): boolean {
 }
 
 export function initTelemetry(opts: InitTelemetryOptions): TelemetryHandle {
-  _state.sink?.close();
-  void _state.otel.shutdown();
+  const rt = runtime();
+  rt.state.sink?.close();
+  void rt.state.otel.shutdown();
 
   const logSink = opts.logSink ?? 'file';
   let sink: DurableJsonlSink | null = null;
@@ -249,7 +351,7 @@ export function initTelemetry(opts: InitTelemetryOptions): TelemetryHandle {
   }
 
   const wantOtel = opts.otel ?? otelDefaultFor(opts.role);
-  _state = {
+  rt.state = {
     service: opts.service,
     role: opts.role,
     logSink,
@@ -257,28 +359,28 @@ export function initTelemetry(opts: InitTelemetryOptions): TelemetryHandle {
     otel: NOOP_OTEL,
     otelState: wantOtel ? 'pending' : 'disabled',
   };
-  _snapshotEveryRecords = opts.snapshotEveryRecords ?? resolveSnapshotEveryRecords();
-  _recordsSinceSnapshot = 0;
+  rt.snapshotEveryRecords = opts.snapshotEveryRecords ?? resolveSnapshotEveryRecords();
+  rt.recordsSinceSnapshot = 0;
   resetSelfCheck();
   configureSnapshotSink(opts, logSink);
 
   if (wantOtel) {
-    const generation = _state;
-    _otelReady = import('./otel.js')
+    const generation = rt.state;
+    rt.otelReady = import('./otel.js')
       .then(({ bringUpOtel }) => {
         // A second initTelemetry() may have landed while the SDK was loading;
         // do not resurrect telemetry for a superseded configuration.
-        if (_state !== generation) return;
-        _state.otel = bringUpOtel({
+        if (rt.state !== generation) return;
+        rt.state.otel = bringUpOtel({
           service: opts.service,
           role: opts.role,
           emit: (event, level, fields) => emitRecord(event, level, fields),
         });
-        _state.otelState = 'ready';
+        rt.state.otelState = 'ready';
       })
       .catch((err: unknown) => {
-        if (_state !== generation) return;
-        _state.otelState = 'failed';
+        if (rt.state !== generation) return;
+        rt.state.otelState = 'failed';
         // Loud, once, on stderr — never stdout (MCP JSON-RPC channel). A
         // silently-absent SDK is the BL-404 shape all over again.
         process.stderr.write(
@@ -288,7 +390,7 @@ export function initTelemetry(opts: InitTelemetryOptions): TelemetryHandle {
         );
       });
   } else {
-    _otelReady = Promise.resolve();
+    rt.otelReady = Promise.resolve();
   }
 
   return {
@@ -297,15 +399,15 @@ export function initTelemetry(opts: InitTelemetryOptions): TelemetryHandle {
     // BL-433: `plannedPath()`, not `currentPath()` — the question a caller is
     // asking is "where do I look?", which has an answer before the first write.
     // `null` is reserved for the one state that genuinely has no answer.
-    currentLogFilePath: () => _state.sink?.plannedPath() ?? null,
-    flush: () => _state.sink?.flush() ?? Promise.resolve(),
-    otelReady: () => _otelReady,
+    currentLogFilePath: () => rt.state.sink?.plannedPath() ?? null,
+    flush: () => rt.state.sink?.flush() ?? Promise.resolve(),
+    otelReady: () => rt.otelReady,
     close: () => {
       // §5.8: a snapshot on graceful shutdown, so the final window of
       // non-recomputable state (counters, sink drop counts) is not lost.
       void snapshotMetrics('shutdown').finally(() => {
-        void _state.otel.shutdown();
-        _state.sink?.close();
+        void rt.state.otel.shutdown();
+        rt.state.sink?.close();
         closeSnapshotSink();
       });
     },
@@ -314,22 +416,16 @@ export function initTelemetry(opts: InitTelemetryOptions): TelemetryHandle {
 
 /** Test-only: drop all state back to the uninitialised default. */
 export function _resetTelemetryForTest(): void {
-  _state.sink?.close();
-  void _state.otel.shutdown();
+  const rt = runtime();
+  rt.state.sink?.close();
+  void rt.state.otel.shutdown();
   closeSnapshotSink();
   stopSnapshotTimer();
-  _state = {
-    service: 'unlabeled',
-    role: defaultRole(),
-    logSink: 'none',
-    sink: null,
-    otel: NOOP_OTEL,
-    otelState: 'disabled',
-  };
-  _otelReady = Promise.resolve();
-  _recordsSinceSnapshot = 0;
-  _snapshotsWritten = 0;
-  _warnedUnlabeled = false;
+  rt.state = defaultState();
+  rt.otelReady = Promise.resolve();
+  rt.recordsSinceSnapshot = 0;
+  rt.snapshotsWritten = 0;
+  rt.warnedUnlabeled = false;
   resetSelfCheck();
 }
 
@@ -347,10 +443,10 @@ export interface LogFields {
 // short-circuit below: the whole point is that the uninitialised state is
 // ALSO the silent no-op sink, so this is the one path that must not be
 // silent.
-let _warnedUnlabeled = false;
 function warnIfUnlabeled(st: RuntimeState): void {
-  if (_warnedUnlabeled || st.service !== 'unlabeled') return;
-  _warnedUnlabeled = true;
+  const rt = runtime();
+  if (rt.warnedUnlabeled || st.service !== 'unlabeled') return;
+  rt.warnedUnlabeled = true;
   process.stderr.write(
     '[sox-telemetry] WARNING: emitting with no initTelemetry() call in this process ' +
       `(role:'${st.role}', logSink:'none' — records are being silently dropped). ` +
@@ -361,7 +457,7 @@ function warnIfUnlabeled(st: RuntimeState): void {
 
 function emitRecord(event: string, level: 'debug' | 'info' | 'warn' | 'error', fields?: LogFields): void {
   try {
-    const st = _state;
+    const st = runtime().state;
     warnIfUnlabeled(st);
     if (st.logSink === 'none') return;
     const traceId =
@@ -426,9 +522,6 @@ interface StageAggregate {
   work: DurationStats;
 }
 
-const stageDeclarations = new Map<string, { pkg: string; paths: readonly string[] }>();
-const stageAggregates = new Map<string, StageAggregate>();
-
 function newDurationStats(): DurationStats {
   return { count: 0, sum: 0, min: Infinity, max: -Infinity };
 }
@@ -441,17 +534,19 @@ function recordDuration(stats: DurationStats, ms: number): void {
 }
 
 export function _registerStageDeclaration(key: string, pkg: string, paths: readonly string[]): void {
-  stageDeclarations.set(key, { pkg, paths });
-  if (!stageAggregates.has(key)) {
-    stageAggregates.set(key, { paths: new Map(), wait: newDurationStats(), work: newDurationStats() });
+  const rt = runtime();
+  rt.stageDeclarations.set(key, { pkg, paths });
+  if (!rt.stageAggregates.has(key)) {
+    rt.stageAggregates.set(key, { paths: new Map(), wait: newDurationStats(), work: newDurationStats() });
   }
 }
 
 export function _recordStageOutcome(stageKey: string, pathName: string, outcome: Outcome): void {
-  let agg = stageAggregates.get(stageKey);
+  const rt = runtime();
+  let agg = rt.stageAggregates.get(stageKey);
   if (!agg) {
     agg = { paths: new Map(), wait: newDurationStats(), work: newDurationStats() };
-    stageAggregates.set(stageKey, agg);
+    rt.stageAggregates.set(stageKey, agg);
   }
   let pc = agg.paths.get(pathName);
   if (!pc) {
@@ -462,15 +557,16 @@ export function _recordStageOutcome(stageKey: string, pathName: string, outcome:
 }
 
 export function _recordStageDuration(stageKey: string, phase: 'wait' | 'work', ms: number): void {
-  const agg = stageAggregates.get(stageKey);
+  const agg = runtime().stageAggregates.get(stageKey);
   if (!agg) return;
   recordDuration(phase === 'wait' ? agg.wait : agg.work, ms);
 }
 
 function resetSelfCheck(): void {
-  stageAggregates.clear();
-  for (const [key, decl] of stageDeclarations) {
-    stageAggregates.set(key, { paths: new Map(), wait: newDurationStats(), work: newDurationStats() });
+  const rt = runtime();
+  rt.stageAggregates.clear();
+  for (const [key, decl] of rt.stageDeclarations) {
+    rt.stageAggregates.set(key, { paths: new Map(), wait: newDurationStats(), work: newDurationStats() });
     void decl;
   }
   resetChildTelemetry();
@@ -487,37 +583,31 @@ function resetSelfCheck(): void {
 
 const CHILD_TELEMETRY_RING_MAX = 20;
 
-const childTelemetryCounters = {
-  spawned: 0,
-  acked_with_sink: 0,
-  acked_without_sink: 0,
-  unacked_with_success: 0,
-};
-const childTelemetryRing: ChildTelemetryRecord[] = [];
-
 /** Record one child telemetry observation (spawned/acked/unacked). Never throws. */
 export function _recordChildTelemetry(rec: ChildTelemetryRecord): void {
+  const rt = runtime();
   if (rec.acked === true) {
     if (rec.logSink === 'file' && typeof rec.filePath === 'string') {
-      childTelemetryCounters.acked_with_sink += 1;
+      rt.childTelemetryCounters.acked_with_sink += 1;
     } else {
-      childTelemetryCounters.acked_without_sink += 1;
+      rt.childTelemetryCounters.acked_without_sink += 1;
     }
   } else if (rec.unacked === true) {
-    childTelemetryCounters.unacked_with_success += 1;
+    rt.childTelemetryCounters.unacked_with_success += 1;
   } else {
-    childTelemetryCounters.spawned += 1;
+    rt.childTelemetryCounters.spawned += 1;
   }
-  childTelemetryRing.push(rec);
-  if (childTelemetryRing.length > CHILD_TELEMETRY_RING_MAX) childTelemetryRing.shift();
+  rt.childTelemetryRing.push(rec);
+  if (rt.childTelemetryRing.length > CHILD_TELEMETRY_RING_MAX) rt.childTelemetryRing.shift();
 }
 
 function resetChildTelemetry(): void {
-  childTelemetryCounters.spawned = 0;
-  childTelemetryCounters.acked_with_sink = 0;
-  childTelemetryCounters.acked_without_sink = 0;
-  childTelemetryCounters.unacked_with_success = 0;
-  childTelemetryRing.length = 0;
+  const rt = runtime();
+  rt.childTelemetryCounters.spawned = 0;
+  rt.childTelemetryCounters.acked_with_sink = 0;
+  rt.childTelemetryCounters.acked_without_sink = 0;
+  rt.childTelemetryCounters.unacked_with_success = 0;
+  rt.childTelemetryRing.length = 0;
 }
 
 export interface StageSelfCheck {
@@ -617,12 +707,13 @@ export function telemetrySelfCheck(): TelemetrySelfCheck {
 }
 
 function telemetrySelfCheckCore(): TelemetrySelfCheck {
+  const rt = runtime();
   const stagesWithZero: string[] = [];
   const pathsWithZero: string[] = [];
   const stages: StageSelfCheck[] = [];
 
-  for (const [key, decl] of stageDeclarations) {
-    const agg = stageAggregates.get(key) ?? { paths: new Map(), wait: newDurationStats(), work: newDurationStats() };
+  for (const [key, decl] of rt.stageDeclarations) {
+    const agg = rt.stageAggregates.get(key) ?? { paths: new Map(), wait: newDurationStats(), work: newDurationStats() };
     let stageSampled = false;
     const unaccounted: Record<string, number> = {};
     for (const pathName of decl.paths) {
@@ -649,24 +740,24 @@ function telemetrySelfCheckCore(): TelemetrySelfCheck {
 
   return {
     window: 'since process start',
-    role: _state.role,
-    stages_declared: stageDeclarations.size,
+    role: rt.state.role,
+    stages_declared: rt.stageDeclarations.size,
     stages_with_zero_samples: stagesWithZero,
     paths_with_zero_samples: pathsWithZero,
     stages,
     children: {
-      spawned: childTelemetryCounters.spawned,
-      acked_with_sink: childTelemetryCounters.acked_with_sink,
-      acked_without_sink: childTelemetryCounters.acked_without_sink,
-      unacked_with_success: childTelemetryCounters.unacked_with_success,
-      recent: childTelemetryRing.slice(),
+      spawned: rt.childTelemetryCounters.spawned,
+      acked_with_sink: rt.childTelemetryCounters.acked_with_sink,
+      acked_without_sink: rt.childTelemetryCounters.acked_without_sink,
+      unacked_with_success: rt.childTelemetryCounters.unacked_with_success,
+      recent: rt.childTelemetryRing.slice(),
     },
-    otel: { state: _state.otelState, spans_enabled: _state.otel.enabled },
+    otel: { state: rt.state.otelState, spans_enabled: rt.state.otel.enabled },
     metric_persistence: {
-      written: _snapshotsWritten,
-      records_since: _recordsSinceSnapshot,
-      every_records: _snapshotEveryRecords,
-      file: _snapshotSink?.plannedPath() ?? null,
+      written: rt.snapshotsWritten,
+      records_since: rt.recordsSinceSnapshot,
+      every_records: rt.snapshotEveryRecords,
+      file: rt.snapshotSink?.plannedPath() ?? null,
     },
   };
 }
@@ -697,21 +788,12 @@ function telemetrySelfCheckCore(): TelemetrySelfCheck {
 // ADR-0013, so the tick is always on, but coupling two subsystems' liveness is
 // still the wrong shape).
 
-const DEFAULT_SNAPSHOT_EVERY_RECORDS = 1000;
-
 function resolveSnapshotEveryRecords(): number {
   const raw = process.env['SOX_TRACE_SNAPSHOT_EVERY'];
   if (raw === undefined || raw === '') return DEFAULT_SNAPSHOT_EVERY_RECORDS;
   const n = Number.parseInt(raw, 10);
   return Number.isFinite(n) && n >= 0 ? n : DEFAULT_SNAPSHOT_EVERY_RECORDS;
 }
-
-let _snapshotSink: DurableJsonlSink | null = null;
-let _snapshotEveryRecords = DEFAULT_SNAPSHOT_EVERY_RECORDS;
-let _recordsSinceSnapshot = 0;
-let _snapshotsWritten = 0;
-let _snapshotInFlight = false;
-let _snapshotTimer: ReturnType<typeof setInterval> | null = null;
 
 /**
  * §5.8's first consequence, implemented: the snapshot gets its OWN component,
@@ -724,47 +806,51 @@ let _snapshotTimer: ReturnType<typeof setInterval> | null = null;
  * a pruner anchored on `memory-server-` also matches `memory-server-live-…`).
  */
 function configureSnapshotSink(opts: InitTelemetryOptions, logSink: LogSink): void {
+  const rt = runtime();
   closeSnapshotSink();
   if (logSink !== 'file') return;
   const dir = opts.logDir ?? path.join(ecosystemHome(), opts.service, 'logs');
   const sinkOpts: JsonlSinkOptions = { dir, component: `${opts.service}.${opts.role}.metrics-snapshot` };
   if (opts.maxFiles !== undefined) sinkOpts.maxFiles = opts.maxFiles;
-  _snapshotSink = new DurableJsonlSink(sinkOpts);
+  rt.snapshotSink = new DurableJsonlSink(sinkOpts);
 
   stopSnapshotTimer();
   const everyMs = Number.parseInt(process.env['SOX_TRACE_SNAPSHOT_MS'] ?? '', 10);
   if (Number.isFinite(everyMs) && everyMs > 0) {
-    _snapshotTimer = setInterval(() => {
+    rt.snapshotTimer = setInterval(() => {
       void snapshotMetrics('interval');
     }, everyMs);
     // .unref() keeps `getActiveResourcesInfo()` empty and does not hold the
     // event loop open — measured in §5.9. Without it, opting into option D
     // would make the process immortal.
-    _snapshotTimer.unref();
+    rt.snapshotTimer.unref();
   }
 }
 
 function closeSnapshotSink(): void {
-  _snapshotSink?.close();
-  _snapshotSink = null;
+  const rt = runtime();
+  rt.snapshotSink?.close();
+  rt.snapshotSink = null;
 }
 
 function stopSnapshotTimer(): void {
-  if (_snapshotTimer !== null) {
-    clearInterval(_snapshotTimer);
-    _snapshotTimer = null;
+  const rt = runtime();
+  if (rt.snapshotTimer !== null) {
+    clearInterval(rt.snapshotTimer);
+    rt.snapshotTimer = null;
   }
 }
 
 function noteRecordWritten(): void {
-  _recordsSinceSnapshot += 1;
-  if (_snapshotEveryRecords > 0 && _recordsSinceSnapshot >= _snapshotEveryRecords) {
+  const rt = runtime();
+  rt.recordsSinceSnapshot += 1;
+  if (rt.snapshotEveryRecords > 0 && rt.recordsSinceSnapshot >= rt.snapshotEveryRecords) {
     void snapshotMetrics('activity');
   }
 }
 
 function scheduleOpportunisticSnapshot(): void {
-  if (_recordsSinceSnapshot > 0) void snapshotMetrics('pull');
+  if (runtime().recordsSinceSnapshot > 0) void snapshotMetrics('pull');
 }
 
 /**
@@ -776,19 +862,20 @@ function scheduleOpportunisticSnapshot(): void {
  * aggregate line into the event stream whose retention it must outlive.
  */
 export async function snapshotMetrics(reason: 'activity' | 'pull' | 'shutdown' | 'interval'): Promise<void> {
-  if (_snapshotInFlight) return;
-  const sink = _snapshotSink;
+  const rt = runtime();
+  if (rt.snapshotInFlight) return;
+  const sink = rt.snapshotSink;
   if (!sink) {
-    _recordsSinceSnapshot = 0;
+    rt.recordsSinceSnapshot = 0;
     return;
   }
-  _snapshotInFlight = true;
-  const covered = _recordsSinceSnapshot;
-  _recordsSinceSnapshot = 0;
+  rt.snapshotInFlight = true;
+  const covered = rt.recordsSinceSnapshot;
+  rt.recordsSinceSnapshot = 0;
   try {
     let otelMetrics: OtelMetricPoint[] = [];
     try {
-      otelMetrics = await _state.otel.collect();
+      otelMetrics = await rt.state.otel.collect();
     } catch {
       otelMetrics = [];
     }
@@ -797,8 +884,8 @@ export async function snapshotMetrics(reason: 'activity' | 'pull' | 'shutdown' |
       ts: new Date().toISOString(),
       level: 'info',
       event: 'metrics.snapshot',
-      service: _state.service,
-      role: _state.role,
+      service: rt.state.service,
+      role: rt.state.role,
       pid: process.pid,
       trace_id: null,
       reason,
@@ -806,20 +893,20 @@ export async function snapshotMetrics(reason: 'activity' | 'pull' | 'shutdown' |
       // an unfalsifiable number (the BL-334 pattern). Both windows are stated.
       window: 'since process start',
       records_covered: covered,
-      snapshot_seq: _snapshotsWritten + 1,
+      snapshot_seq: rt.snapshotsWritten + 1,
       self_check: stagesView,
       otel_metrics: otelMetrics,
     };
     sink.write(JSON.stringify(record) + '\n');
-    _snapshotsWritten += 1;
+    rt.snapshotsWritten += 1;
   } catch {
     // A snapshot failure must never break or slow the caller.
   } finally {
-    _snapshotInFlight = false;
+    rt.snapshotInFlight = false;
   }
 }
 
 /** Test seam: number of durable snapshots this process has written. */
 export function _snapshotCountForTest(): number {
-  return _snapshotsWritten;
+  return runtime().snapshotsWritten;
 }
