@@ -14,6 +14,18 @@
  * short pages when an invalid edge falls inside the requested slice. This
  * test must go RED against that half-fix and GREEN only once the edge set
  * itself is filtered BEFORE slicing.
+ *
+ * BACKEND COVERAGE. `openDb` selects its backend from `STORE_ADAPTER` via
+ * `libs/data/store/store-adapter/src/factory.ts` (default: `turso`, :26).
+ * nx's default `nx test memory-core` runs this file against turso only.
+ * Run with `STORE_ADAPTER=sqlite npx nx test memory-core -- entity-
+ * episodes-count-contract.spec.ts` to exercise the sqlite backend — VERIFIED
+ * 2026-09-22: all 9 cases (A-I) also pass under `STORE_ADAPTER=sqlite`. This
+ * file no longer makes any transaction-semantics claim — `memoryGetEntity
+ * Episodes` reads sequentially, not inside a transaction (see the top-of-
+ * file docblock in entity-episodes.ts for the narrow straddling race that
+ * leaves open and why), so there is no cross-backend transaction-contention
+ * behavior left for this file to under- or over-claim.
  */
 import { describe, it, expect } from 'vitest';
 import * as fs from 'node:fs';
@@ -66,84 +78,6 @@ async function rowidForUid(db: StoreAdapter, uid: string): Promise<number> {
 
 async function invalidateNode(db: StoreAdapter, uid: string): Promise<void> {
   await db.executeRun(`UPDATE node SET t_invalid = ? WHERE uid = ?`, [new Date().toISOString(), uid]);
-}
-
-/**
- * Installs a hook that fires exactly once, on the FIRST call whose SQL text
- * matches `sqlMatch` (default: the `total` count query — `SELECT COUNT(*)`
- * joined against `MENTIONS` edges — so it fires on `totalRow`, not on the
- * entity name/rowid lookups that run before it) — via a SEPARATE connection
- * (`db2`) to the same file, invalidates `invalidateUid` and awaits the
- * commit BEFORE returning that call's result to production code. This
- * deterministically places a concurrent writer's invalidation strictly
- * between the function's first and second live-count-shaped reads,
- * regardless of code shape:
- *
- * - if the reads run inside one transaction (current code), the whole
- *   transaction should observe ONE snapshot and never see the concurrent
- *   write, so every read stays mutually consistent;
- * - if the reads are three independent statements (pre-c5ca545e code),
- *   the first (`totalRow`) sees pre-invalidation state and the rest see
- *   post-invalidation state, reproducing "total N, short page" via
- *   straddling.
- *
- * Hooks BOTH `db.transaction` (tx-shaped code, wrapping the handed-out
- * `tx.executeGet`) and `db.executeGet` directly (non-tx-shaped code) so the
- * SAME test exercises whichever shape is actually in `entity-episodes.ts`
- * without the test needing to know which.
- */
-function installConcurrentInvalidationHook(
-  db: StoreAdapter,
-  db2: StoreAdapter,
-  invalidateUid: string,
-  sqlMatch: (sql: string) => boolean = (sql) => sql.includes('COUNT(*)') && sql.includes('MENTIONS'),
-): { restore: () => void } {
-  const mutableDb = db as unknown as {
-    transaction: (fn: (tx: unknown) => unknown, opts?: unknown) => Promise<unknown>;
-    executeGet: (sql: string, ...rest: unknown[]) => Promise<unknown>;
-  };
-  const originalTransaction = db.transaction.bind(db);
-  const originalExecuteGet = db.executeGet.bind(db);
-  let fired = false;
-  const maybeFire = async (sql: unknown): Promise<void> => {
-    if (fired || typeof sql !== 'string' || !sqlMatch(sql)) return;
-    fired = true;
-    await invalidateNode(db2, invalidateUid);
-  };
-
-  mutableDb.transaction = (fn: (tx: unknown) => unknown, opts?: unknown): Promise<unknown> =>
-    originalTransaction((tx) => {
-      const realTx = tx as {
-        executeGet: (sql: string, ...rest: unknown[]) => Promise<unknown>;
-        executeAll: (...a: unknown[]) => Promise<unknown>;
-        executeRun: (...a: unknown[]) => Promise<unknown>;
-        exec: (...a: unknown[]) => Promise<unknown>;
-      };
-      const wrappedTx = {
-        executeGet: async (sql: string, ...rest: unknown[]) => {
-          const r = await realTx.executeGet(sql, ...rest);
-          await maybeFire(sql);
-          return r;
-        },
-        executeAll: (...a: unknown[]) => realTx.executeAll(...a),
-        executeRun: (...a: unknown[]) => realTx.executeRun(...a),
-        exec: (...a: unknown[]) => realTx.exec(...a),
-      };
-      return fn(wrappedTx);
-    }, opts);
-
-  mutableDb.executeGet = async (sql: string, ...rest: unknown[]): Promise<unknown> => {
-    const r = await originalExecuteGet(sql, ...rest);
-    await maybeFire(sql);
-    return r;
-  };
-
-  return {
-    restore: () => {
-      mutableDb.transaction = originalTransaction;
-      mutableDb.executeGet = originalExecuteGet;
-    },
-  };
 }
 
 /**
@@ -317,17 +251,36 @@ describe('memoryGetEntityEpisodes count/pagination contract (Q4)', () => {
     }
   });
 
-  // Case G (offset:-3) was deliberately REMOVED after a second review pass.
-  // It asserted the same three outcomes with and without the offset clamp —
-  // SQLite/Turso already documents that a negative OFFSET behaves as zero,
-  // and the pre-clamp code (`(args['offset'] as number|undefined) ?? 0`,
-  // 2eb54f3f) passed -3 straight through to identical effect. A test with
-  // no failing branch records no verified outcome (BL-225) and is exactly
-  // the shape BL-167 warns about: a coverage audit sees a test named for an
-  // invariant and believes it is protected, when the invariant was never at
-  // risk. Confirmed by re-deriving both code paths rather than taking the
-  // first review's "keep it" call on faith a second time — see Case I below
-  // for the offset input that actually DOES fail without the clamp.
+  it('Case G (CHARACTERIZATION, NOT A RED-DETECTOR): offset:-3 is clamped to 0, matching the engine\'s own negative-OFFSET behavior', async () => {
+    const { dir, cleanup } = tmpDir();
+    try {
+      const db = await openDb(path.join(dir, 't.db'));
+      const { entityUid, liveUids } = await seedFixture(db);
+
+      // This test previously stated it was DELETED after a review pass
+      // reasoned "no failing branch => no verified outcome under BL-225, so
+      // delete it." A later review pushed back, correctly: BL-225 governs
+      // marking backlog items RESOLVED without red->green evidence — it
+      // does not license deleting a green CHARACTERIZATION test. Without
+      // this case, `Math.max(..., 0)` at entity-episodes.ts (the offset
+      // floor) has zero coverage and `offset:-3` is untested. The fact
+      // that SQLite/Turso already treats negative OFFSET as zero is an
+      // argument FOR pinning the combined (engine + explicit clamp)
+      // behavior, not against having a test — a future change to either
+      // layer should have to break this assertion to change the observed
+      // result. Restored, explicitly labelled so nobody mistakes it for
+      // evidence of a defect the way Cases E/F/H/I are.
+      const result = await memoryGetEntityEpisodes(db, { entity_uid: entityUid, offset: -3 });
+
+      expect(result.code).toBeUndefined();
+      expect(result.episodes?.length).toBe(3);
+      expect(result.episodes?.map((e) => e.uid)).toEqual(liveUids);
+
+      await db.close();
+    } finally {
+      cleanup();
+    }
+  });
 
   it('Case H (GENUINE RED-DETECTOR, THIS BRANCH ONLY): limit:0 returns an empty page, not a full default page', async () => {
     const { dir, cleanup } = tmpDir();
@@ -382,44 +335,24 @@ describe('memoryGetEntityEpisodes count/pagination contract (Q4)', () => {
     }
   });
 
-  it('Case J (TRANSACTION SNAPSHOT): total and the page stay mutually consistent despite a concurrent invalidation landing mid-call', async () => {
-    const { dir, cleanup } = tmpDir();
-    try {
-      const dbPath = path.join(dir, 't.db');
-      const db = await openDb(dbPath);
-      const db2 = await openDb(dbPath); // separate connection, same file: the "concurrent writer" (e.g. the near-dup pass)
-
-      const entityUid = await seedEntity(db, 'q4-tx-snapshot-entity');
-      const entityRowid = await rowidForUid(db, entityUid);
-      const uids: string[] = [];
-      for (const importance of [5, 4, 3, 2, 1]) {
-        const uid = await seedEpisode(db, importance);
-        uids.push(uid);
-        await seedEdge(db, await rowidForUid(db, uid), entityRowid);
-      }
-      // All 5 are live at the start of the call under test.
-
-      const hook = installConcurrentInvalidationHook(db, db2, uids[1]!); // invalidate importance-4 mid-flight
-      const result = await memoryGetEntityEpisodes(db, { entity_uid: entityUid, limit: 200 });
-      hook.restore();
-
-      // The property under test: total and the page must always agree with
-      // EACH OTHER — "total N, short/long page" must never happen, whether
-      // the reads land before or after the concurrent invalidation. Without
-      // the transaction, the count and the page straddle the concurrent
-      // write and disagree (verified red below).
-      expect(result.episodes?.length).toBe(result.total);
-
-      // Confirm the invalidation actually took effect (isolated from THIS
-      // in-flight read, not lost) via a fresh call after the fact.
-      const after = await memoryGetEntityEpisodes(db, { entity_uid: entityUid, limit: 200 });
-      expect(after.total).toBe(4);
-      expect(after.episodes?.length).toBe(4);
-
-      await db2.close();
-      await db.close();
-    } finally {
-      cleanup();
-    }
-  });
+  // Case J ("TRANSACTION SNAPSHOT") and Case K ("SAME-ADAPTER") are
+  // deliberately NOT present. Both pinned behavior of the `adapter.
+  // transaction()` wrap that was removed from `memoryGetEntityEpisodes`
+  // after architecture review rejected it (the wrap could not deliver a
+  // real consistency guarantee under ANY topology — per-episode enrichment
+  // already runs outside it, once per row, so the result was a
+  // multi-snapshot composite by construction even with the count/page
+  // reads wrapped — while costing a demonstrated regression on the SQLite
+  // backend: a concurrent write shaped like `memory_invalidate`, fired
+  // while the wrapping read transaction was open, hard-threw instead of
+  // succeeding). Case J in particular invalidated via a SEPARATE
+  // connection to the same file — genuine cross-connection isolation, but
+  // not the topology production runs (one cached adapter shared
+  // in-process by every caller), so it was green for a real reason that
+  // was not the reason production needed: the exact BL-167 shape this
+  // file already removed Case G for once. With the wrap gone, there is
+  // nothing left for either case to pin — the function's current sequential-
+  // reads shape and the narrow straddling race it accepts are documented
+  // in the top-of-file docblock of entity-episodes.ts instead of in a test
+  // named for a guarantee that no longer exists.
 });
