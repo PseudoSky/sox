@@ -1623,7 +1623,7 @@ async function dispatchTool(
         tags: args['tags'] as string[] | undefined,
         client_request_id: args['client_request_id'] as string | undefined,
       };
-      const chunkParams = (chunk: string) => ({
+      const chunkParams = (chunk: string, parentUid?: string) => ({
         content: chunk,
         // BL-62 fix: chunks previously omitted project_path entirely, relying on
         // whatever inference the write path fell back to — now inherits the
@@ -1632,6 +1632,16 @@ async function dispatchTool(
         agent_id: args['agent_id'] as string | undefined,
         source: (args['source'] as 'message' | undefined) ?? ('document' as const),
         metadata: args['metadata'] as Record<string, unknown> | undefined,
+        // Q1-C sync-path fix (2026-09-22 re-review finding 1): only meaningful
+        // on the SYNC branch below, where each chunk's E8 near-dup pass runs
+        // INLINE during this same call (write.ts's E9 DERIVED_FROM write at
+        // :448-461 happens before E8 at :475, within the SAME memoryWrite
+        // invocation) — so the exemption in detectNearDup (neardup.ts) sees the
+        // parent↔chunk edge before it ever scores the pair. Passing this on the
+        // ASYNC branch too is harmless (E8 there is deferred to Phase B, well
+        // after linkChunksToParent already ran) but left unset there to keep
+        // that branch's call sites byte-identical to before this fix.
+        derived_from_uid: parentUid,
       });
       /** DERIVED_FROM auto-chunk edges — identical in both embed modes. */
       const linkChunksToParent = async (
@@ -1682,9 +1692,18 @@ async function dispatchTool(
             // inside this queue task. Re-enqueuing on the SAME serial queue from within
             // a running task would deadlock (BL-154). Direct writes preserve ordering
             // (this loop is serial) and single-writer safety.
+            // Q1-C sync-path fix (2026-09-22 re-review finding 1): pass parentUid
+            // so E9's DERIVED_FROM edge (write.ts:448-461) lands BEFORE this same
+            // call's inline E8 near-dup pass (write.ts:475) scores the pair —
+            // otherwise a parent and its own chunk (near-identical by
+            // construction) reads as a genuine near-dup and gets a SAME_AS edge,
+            // exactly the pair Q1-C's exemption exists to keep out of the
+            // memory_near_duplicates review queue. linkChunksToParent below still
+            // runs afterward for defense-in-depth (its INSERT is a guarded no-op
+            // once E9 already created the edge).
             const chunkUids: string[] = [];
             for (const chunk of chunks) {
-              const r: WriteResult | WriteError = await memoryWrite(writeDb, chunkParams(chunk));
+              const r: WriteResult | WriteError = await memoryWrite(writeDb, chunkParams(chunk, parentUid));
               const chunkUid =
                 'episode_uid' in r ? r.episode_uid : r.code === 'E_DEDUP' ? r.existing_uid : null;
               if (chunkUid) chunkUids.push(chunkUid);
