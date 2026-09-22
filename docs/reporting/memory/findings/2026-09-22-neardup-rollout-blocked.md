@@ -209,10 +209,28 @@ stamps EVERY entry provisional. See also TRAP B (§2.1) — ADR candidate.
 - **Piping `nx` through `tail` reports tail's exit code.** A red suite read as "exit 0".
 - **The stock `sqlite3` CLI CANNOT open this store** (Turso FTS objects → `malformed database schema
   … near USING`). Use `@tursodatabase/database` `connect(path,{readOnly:true})` on a **COPY**.
-- **backlog:** `create` has no citations field (use body prose); `query --text` reports `total` as
-  **CORPUS SIZE**, not match count; the backlog SKILL doc documents a verb surface the binary does
-  not have; and this store **reassigns an item's UID on every body write** — resolve by content
-  before citing a UID.
+- **backlog (`@adhd/backlog@1.0.0`, verified against
+  `/Users/nix/dev/node/adhd/.worktrees/backlog-cutover/entrypoint/backlog/dist/index.js`):**
+  `create` accepts a `citations?: object[]` field — confirmed via `node dist/index.js --help`'s
+  printed `backlog create` input schema, which lists `citations?: object[]` alongside `title`,
+  `body`, `project`. `query --text` reports `total` as **CORPUS SIZE**, not match count. The
+  installed verb surface is exactly 14 verbs — `claim`, `create`, `delete`, `get`, `lookup`,
+  `move`, `query`, `relate`, `rm-location`, `transition`, `update`, `upsert-component`,
+  `upsert-location`, `upsert-project` — plus `batch action`, per the same `--help` output. There is
+  no `admin` verb: `src` commit `9fab4938` ("wipe the superseded layer…") states `cli.ts` "drops
+  the retired phase-admin command and its config knob" as part of consolidating onto this 14-verb
+  surface (2026-09-16). Identity is `uid`-only: `src/query/types.ts:16` — "Identity is the global
+  `uid` (SPEC.md §6.1) — a single scalar, never a composite key" — and no `humanId` field exists
+  anywhere in current `src/` (`rg -n humanId src` returns no matches); `humanId` did exist in this
+  store's history (e.g. `f2c70452`, `2f95adf7`) and was removed in the same consolidation.
+  Filtering uses `filter.project` (bare slug, `src/query/types.ts:153,185`) and `filter.grep`
+  (`src/query/types.ts:196`), not `filter.repo`/`family`/`excludeArchived` — those keys are not
+  **absent by omission**: `repo`, `family`, and `excludeArchived` filters existed in this store's
+  history (`git log -S"filter.repo" src`, `git log -S"excludeArchived"`, `git log -S"family"`
+  in the backlog repo all return hits going back to its earliest commits) and were removed as part
+  of the same breaking `9fab4938` refactor that cut the tool surface to 14 verbs — a rename/removal,
+  not a feature that never existed. And this store **reassigns an item's UID on every body write**
+  — resolve by content before citing a UID.
 
 ---
 
