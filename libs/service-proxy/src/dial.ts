@@ -107,6 +107,34 @@ export function dialBackend(opts: DialOptions): BackendConnection {
   /** FIFO of requests queued while disconnected (preserves send order). */
   const queue: Pending[] = [];
 
+  /** Is there a request that still needs the connection to make progress? */
+  function hasOutstandingWork(): boolean {
+    return pending.size > 0 || queue.length > 0;
+  }
+
+  /**
+   * Keep the backend socket REFERENCED only while a request needs it.
+   *
+   * A connected socket is a referenced libuv handle: left referenced it pins
+   * the event loop open forever, so a short-lived CLI that embeds once and then
+   * has nothing else to do never exits — it hangs after its query completes.
+   * That is the regression this guards (the funnel's UDS dial was never
+   * unref'd).
+   *
+   * Unref'ing unconditionally would be equally wrong: a standalone consumer
+   * whose ONLY pending work is an in-flight `send()` has nothing else
+   * referenced, so Node would tear the process down mid-request before the
+   * reply arrives (the `ensure-backend-await-survives` failure shape — verified
+   * empirically: an unref'd socket with a pending read does NOT hold the loop).
+   * So mirror `SharedFastembedProcessClient.refForPending()`/`unrefIfIdle()`:
+   * ref while work is outstanding, unref the instant it drains.
+   */
+  function updateSocketRef(): void {
+    if (!socket) return;
+    if (hasOutstandingWork()) socket.ref();
+    else socket.unref();
+  }
+
   function connect(): void {
     if (closed || connecting || socket) return;
     connecting = true;
@@ -132,6 +160,8 @@ export function dialBackend(opts: DialOptions): BackendConnection {
         diag(`[service-proxy shim] onConnect threw: ${(e as Error).message}`);
       }
       flushQueue();
+      // A fresh connection with nothing outstanding must not pin the loop open.
+      updateSocketRef();
     });
 
     s.on('data', (chunk: Buffer) => dec.push(chunk));
@@ -170,8 +200,11 @@ export function dialBackend(opts: DialOptions): BackendConnection {
       redialTimer = null;
       connect();
     }, backoffMs);
-    // Don't keep the event loop alive solely for the re-dial timer.
-    redialTimer.unref?.();
+    // A re-dial that a pending request is waiting on MUST hold the loop (else a
+    // standalone consumer is torn down mid-request, before the retry can land);
+    // an idle re-dial must not keep the process alive solely for the timer.
+    if (hasOutstandingWork()) redialTimer.ref?.();
+    else redialTimer.unref?.();
     backoffMs = Math.min(backoffMs * 2, cfg.maxMs);
   }
 
@@ -186,6 +219,7 @@ export function dialBackend(opts: DialOptions): BackendConnection {
     }
     // Preserve original order: unanswered (older) ahead of already-queued.
     queue.unshift(...unanswered);
+    updateSocketRef();
   }
 
   /** Once the give-up bound elapses with no connection, fast-fail everything. */
@@ -206,6 +240,8 @@ export function dialBackend(opts: DialOptions): BackendConnection {
       p.resolve(errorResponse(p.request.id ?? null, ERR_BACKEND_UNAVAILABLE, message));
     }
     pending.clear();
+    // Nothing is outstanding any more — release the loop if we were holding it.
+    updateSocketRef();
   }
 
   function flushQueue(): void {
@@ -225,6 +261,7 @@ export function dialBackend(opts: DialOptions): BackendConnection {
     p.sent = true;
     if (p.request.id !== undefined) pending.set(p.request.id, p);
     socket.write(encodeFrame(p.request));
+    updateSocketRef();
   }
 
   function onBackendMessage(msg: unknown): void {
@@ -242,6 +279,9 @@ export function dialBackend(opts: DialOptions): BackendConnection {
     }
     pending.delete(resp.id);
     p.resolve(resp);
+    // The request that was holding the loop has settled; drop the ref if this
+    // was the last outstanding one.
+    updateSocketRef();
   }
 
   function send(request: JsonRpcRequest): Promise<JsonRpcResponse> {

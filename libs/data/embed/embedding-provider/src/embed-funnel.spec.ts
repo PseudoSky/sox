@@ -193,13 +193,18 @@ function setupEnv(opts: SetupOpts = {}): FunnelEnv {
       `const mod = await import(process.env.FUNNEL_TEST_INDEX);`,
       `const mode = process.env.FUNNEL_TEST_MODE || 'shared';`,
       `const cacheDir = process.env.FUNNEL_TEST_CACHE;`,
-      `// Keep the event loop alive across awaits: a standalone consumer has no`,
-      `// other ref'd handle (the private pool's child is unref'd), so a bare`,
-      `// top-level await could otherwise exit 13 ("unsettled top-level await").`,
-      `const keepAlive = setInterval(() => {}, 1000);`,
       `// Mode may carry a posture suffix ('reset-shared' / 'reset-private').`,
       `const isPrivate = mode === 'private' || mode.endsWith('-private');`,
       `const op = mode.replace(/-(shared|private)$/, '');`,
+      `// Keep the event loop alive across awaits: a standalone consumer has no`,
+      `// other ref'd handle (the private pool's child is unref'd), so a bare`,
+      `// top-level await could otherwise exit 13 ("unsettled top-level await").`,
+      `// EXCEPT for 'exit-natural', which must prove the OPPOSITE: with the dial`,
+      `// socket correctly unref'd, a consumer that embeds once drains its own loop`,
+      `// and exits — no keep-alive, no process.exit.`,
+      `const naturalExit = op === 'exit-natural';`,
+      `const keepAlive = naturalExit ? null : setInterval(() => {}, 1000);`,
+      `void keepAlive;`,
       `// The idle bound is TYPED config (the public surface): set it the way a`,
       `// consumer does — via the typed API, NOT the internal transport env.`,
       `if (process.env.FUNNEL_TEST_GRACE_MS) {`,
@@ -245,9 +250,15 @@ function setupEnv(opts: SetupOpts = {}): FunnelEnv {
       `    process.exit(0);`,
       `  }`,
       `  process.stderr.write('CONSUMER_OK\\n');`,
-      `  const holdMs = Number(process.env.FUNNEL_TEST_HOLD_MS || '0');`,
-      `  if (holdMs > 0) await new Promise((r) => setTimeout(r, holdMs));`,
-      `  process.exit(0);`,
+      `  if (naturalExit) {`,
+      `    // Fall off the end with NO process.exit and NO keep-alive interval: the`,
+      `    // event loop must drain on its own once the embed is done. Without the`,
+      `    // dial-socket unref the ref'd UDS connection pins the loop and hangs.`,
+      `  } else {`,
+      `    const holdMs = Number(process.env.FUNNEL_TEST_HOLD_MS || '0');`,
+      `    if (holdMs > 0) await new Promise((r) => setTimeout(r, holdMs));`,
+      `    process.exit(0);`,
+      `  }`,
       `} catch (e) {`,
       `  process.stderr.write('CONSUMER_ERR:' + (e && e.message ? e.message : String(e)) + '\\n');`,
       `  process.exit(4);`,
@@ -291,7 +302,8 @@ type ConsumerMode =
   | 'terminate'
   | 'reset-shared'
   | 'reset-private'
-  | 'reset-race';
+  | 'reset-race'
+  | 'exit-natural';
 
 /** Spawn one consumer process and resolve when it exits. */
 function spawnConsumer(
@@ -718,5 +730,49 @@ describe('SPEC-EMBEDDING-FUNNEL — a consumer terminate() is a no-op (BL-405 ca
       expect(pidsMatching(path.join(env.dir, 'embedHostMain'))).toEqual([hostPid]);
     },
     60_000,
+  );
+});
+
+describe('SPEC-EMBEDDING-FUNNEL — a consumer that embeds once EXITS on its own (dial socket unref)', () => {
+  // The HIGH regression: `dialBackend` creates the host UDS socket with
+  // `net.createConnection()` and never unref'd it, so every embedding-bearing
+  // CLI completed its query and then hung forever on the referenced libuv
+  // handle. This drives the REAL consumer shape — embed once, then fall off the
+  // end of the script with no `process.exit()` and no keep-alive interval — and
+  // requires it to drain its own event loop and exit within a bounded deadline,
+  // with no external kill. Revert the unref in `dial.ts` and this goes RED
+  // (`-999`, still alive at the deadline).
+  it(
+    'a real consumer process embeds once, then drains its event loop and exits within a bounded deadline with no external kill',
+    async () => {
+      const env = setupEnv({ graceMs: 10_000 });
+      const child: ChildProcess = spawn(process.execPath, [TSX_CLI, env.consumerPath], {
+        cwd: REPO_ROOT,
+        env: { ...env.env, FUNNEL_TEST_MODE: 'exit-natural' },
+        stdio: ['ignore', 'ignore', 'pipe'],
+      });
+      let stderr = '';
+      child.stderr?.on('data', (d: Buffer) => {
+        stderr += d.toString('utf8');
+      });
+
+      const code = await new Promise<number | null>((resolve) => {
+        const deadline = setTimeout(() => resolve(-999), 25_000);
+        child.on('exit', (c) => {
+          clearTimeout(deadline);
+          resolve(c);
+        });
+        child.on('error', () => {
+          clearTimeout(deadline);
+          resolve(-1);
+        });
+      });
+      process.stderr.write(`[exit-natural] consumer exit=${code} stderr=${stderr}\n`);
+
+      expect(code, `consumer must exit on its own (not hang); stderr=${stderr}`).not.toBe(-999);
+      expect(code, stderr).toBe(0);
+      expect(stderr).toContain('CONSUMER_OK');
+    },
+    90_000,
   );
 });
