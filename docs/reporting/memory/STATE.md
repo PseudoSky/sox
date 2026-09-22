@@ -134,29 +134,32 @@ figures can no longer be re-derived from disk.
 
 ---
 
-## Near-dup invalidation fix — source/dist parity check (2026-09-22)
+## Near-dup invalidation fix — artifact adoption check (2026-09-22)
 
 Full handoff: **[`findings/2026-09-22-neardup-deploy-handoff.md`](./findings/2026-09-22-neardup-deploy-handoff.md)**.
 
-The near-dup auto-invalidation fix is merged to **source** (`5c35a66a`, `e356a0b2`, on `main` at
-`a1b50621` or later). At the time this was written the built artifact had **not** been replaced, so
-`main` was in a **source/dist parity violation**: reading `main` suggests the fix is live, and it was
-not. A deploy run was in flight; **its outcome is unknown and is not asserted here.**
+The near-dup auto-invalidation fix is merged to **source** (`5c35a66a`, `e356a0b2`) and the bundle
+has been **rebuilt** — artifact on disk
+`sha256:e21b802d6dfb9bc57f89fd7b1d3370f39367eeeb49bec47d61200cc161263eb9`, rebuilt 17:50Z. **The live
+process had not adopted it**: pid 87027 (started 17:45:55Z) still reported the pre-fix
+`sha256:4ea748572b1e85156ce04b32e28f335625bcf6811ab1c84337d86e5f685a3638`, i.e. a parent executing an
+artifact that no longer exists on disk while its children spawn from the new one. A restart to
+resolve that split was in flight; **its outcome is not asserted here.**
 
-**Run the check, do not trust the sentence.** Pre-deploy artifact hash (pid 54730) was
-`sha256:4ea748572b1e85156ce04b32e28f335625bcf6811ab1c84337d86e5f685a3638`. **If `memory_ping` still
-reports that hash, the deploy did not take and the invalidation pass may still be firing.**
+**Run the check, do not trust the sentence.** `memory_ping` reporting `sha256:4ea7485…f685a3638`
+means the restart did **not** take and the invalidation pass may still be firing; reporting
+`sha256:e21b802d…61263eb9` means it did.
 
-Remaining steps: `npx nx run-many -t build --projects=memory-core,memory-server,memory-cli,memory-flush`
-→ `npx nx run registry:sync-index` (commit the regenerated `registry/index.json`) →
+Remaining steps: `npx nx run registry:sync-index` (commit the regenerated `registry/index.json`) →
 `rm -rf dist/smoke && node scripts/smoke-test.mjs` (`summary.failed` must be 0) → `soxe service
 disable`/`enable --node-path=/opt/homebrew/Cellar/node/26.5.1/bin/node` → diff the plist → verify
 artifact adoption → live probe.
 
-**Rollback target is recorded as `c36b3ba0`, and is UNVERIFIED** — `git log` shows that sha as a
-docs-only commit (`docs(notes): refresh stale backlog UIDs …`), whose revert changes no code.
-Confirm the real target against the fix series (`5c35a66a^`) before using it. A real rollback is revert **plus** rebuild **plus**
-`nx run registry:sync-index` **plus** service restart, or the old `dist/` stays live (BUG-028).
+**Rollback target: `c36b3ba0`** — verified as `5c35a66a^`, the last commit before either fix merge
+(`git log -1 --format='%h' 5c35a66a^` → `c36b3ba0`). It is the **state to return to**, not a commit
+to revert: `git revert c36b3ba0` is docs-only and would accomplish nothing. Roll back by
+resetting/checking out to it — **plus** rebuild **plus** `nx run registry:sync-index` **plus**
+service restart, or the old `dist/` stays live (BUG-028).
 
 <!-- PLAN-STATUS:AUDIT -->
 ## What to do next
@@ -276,6 +279,15 @@ letting `--no-verify` pass as green.
   deadlocked `memory_write` on any content over 2000 chars. (BL-154.) ⚠️ **This is a re-entrancy
   rule only.** It is *not* a mandate to serialise Turso writes; do not flip the Turso adapter's
   `needsWriteSerialization` / `concurrentTransactions`. Three agents have made that mistake.
+- **Rebuilding `dist/` underneath a RUNNING service SPLITS it (2026-09-22, this program's own
+  deploy).** The parent keeps the old artifact resident while newly spawned children
+  (`enrich-process-host.js`, `fastembedProcessHost.js`) load the new one. Mixed versions against one
+  store produced `E_FOREIGN_SQLITE_SIDECAR` for every other client, ~one `memory.db-tshm.stale-*`
+  rotation per minute, and enrichment failures (`passes_failed: 284`, `last_pass_ok: false`,
+  `embeds_failed: 4`, `heals_failed: 4`). The store stayed healthy throughout (`store_ok: true`,
+  integrity `ok`, all six probes passing) — an availability failure, not data loss. **Never rebuild a
+  bundle whose service is live without restarting it in the same operation, and never leave a build
+  half-deployed.**
 - **`memory_ping`'s `artifact` field is exactly `shasum -a 256 <bundle>/dist/index.js`** — adoption
   verification is a direct string comparison against the rebuilt file. Process liveness proves
   nothing. (BUG-028.)
@@ -296,7 +308,8 @@ letting `--no-verify` pass as green.
 - **Untriaged as of 2026-09-22: `E_FOREIGN_SQLITE_SIDECAR` (BUG-026) recurring for other sessions,
   with FOUR concurrent memory-server processes alive** — pids 21545 (22 days old), 64743 (4 days),
   87027, 87344. That is a singleton violation and the likely cause of recall failures other agents
-  are reporting. Nothing was killed; do not kill anything without the owner's decision.
+  are reporting. The split-service condition above is a confirmed producer of the same signature,
+  so triage the two together. Nothing was killed; do not kill anything without the owner's decision.
 
 ## ⚠ Do not gate on a memory-core failure COUNT
 
