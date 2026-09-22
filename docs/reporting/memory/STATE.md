@@ -65,7 +65,7 @@ Server: pid **55538**, artifact **`8ae1b0da3c82`**, up since 2026-08-05T17:54:56
 | Integrity | ✅ `overall: ok` | all 6 `fast` probes clean in 530.5 ms, `damaged: []`, `unknown: []` |
 | Backup | ✅ working | BL-385 resolved 2026-08-01 |
 | Entity search | ✅ working | BL-384 resolved 2026-08-01 |
-| Near-duplicate detection | ⚠️ **detection live; its auto-invalidation destroyed data for 2.5 months** (2026-09-22) | KNN detection works: BL-381/BL-386 resolved; **BL-398 resolved 2026-08-04** — manual-merge pairs now report `cosine_sim: null` (unknown), never a fabricated 1.0. **But the pass also invalidated the older node of every ≥0.95-cosine pair with no reason and no `SUPERSEDES` edge, from `361c324f` (2026-07-04) onward — ~1.1 MB of content, 3,273 orphaned edges, ~383 of 682 estimated false positives.** Fix merged to source in `5c35a66a`/`e356a0b2`; **deploy state and the artifact-hash check are in [`findings/2026-09-22-neardup-deploy-handoff.md`](./findings/2026-09-22-neardup-deploy-handoff.md) — read it before trusting this row.** Evidence: [`findings/2026-09-22-neardup-algorithm-analysis.md`](./findings/2026-09-22-neardup-algorithm-analysis.md) |
+| Near-duplicate detection | ✅ detection live; **its auto-invalidation destroyed data for 2.5 months and was stopped 2026-09-22** | KNN detection works: BL-381/BL-386 resolved; **BL-398 resolved 2026-08-04** — manual-merge pairs now report `cosine_sim: null` (unknown), never a fabricated 1.0. **But the pass also invalidated the older node of every ≥0.95-cosine pair with no reason and no `SUPERSEDES` edge, from `361c324f` (2026-07-04) onward — ~1.1 MB of content, 3,273 orphaned edges, ~383 of 682 estimated false positives.** Fixed in `5c35a66a`/`e356a0b2` and **live in production since 2026-09-22T18:08Z** (artifact `e21b802d…`, hash-verified): the pass now records a `SAME_AS` edge only and invalidates nothing. **The 685 damaged pairs are NOT repaired — recovery has not started.** See [`findings/2026-09-22-neardup-deploy-handoff.md`](./findings/2026-09-22-neardup-deploy-handoff.md). Evidence: [`findings/2026-09-22-neardup-algorithm-analysis.md`](./findings/2026-09-22-neardup-algorithm-analysis.md) |
 | Telemetry | ✅ stages live | `role: "live-service"`, durable JSONL for the enrich tick lifecycle (BL-413 follow-on, d016b63), and **`stages_declared: 2`** with `stages_with_zero_samples: []` as of the `8ae1b0da3c82` deploy. `paths_with_zero_samples` holds `write_queue:queued` (by design — Turso always takes the bypass path) and `embed:reembed`. OTel `state: "ready"`, spans enabled |
 | **Enrichment** | ✅ **WORKING** | `state: "idle"`, `queue_depth: 0`, ticks **11.3s** (was 120.056s timeout cap). **BL-413 RESOLVED**: importance link-degree OR-COUNT → indexed two-scalar (`computeLinkDegree`), plus per-pass-type isolation budget (full passes 600s, `SOX_ENRICH_FULL_TIMEOUT_MS`) |
 | **Clustering** | ✅ **WORKING** | `cluster_count: 443`, `total_clustered: 3610`, `coverage: 0.716`, `with_community: 3610`, `with_topic: 4300`, `largest_cluster_size: 879`, `mean_intra_sim: 0.882` vs `mean_inter_sim: 0.629`. Orphan-GC on invalidation live (`community-gc.ts`) |
@@ -134,26 +134,37 @@ figures can no longer be re-derived from disk.
 
 ---
 
-## Near-dup invalidation fix — artifact adoption check (2026-09-22)
+## Near-dup invalidation fix — LIVE, verified 2026-09-22T18:08Z
 
 Full handoff: **[`findings/2026-09-22-neardup-deploy-handoff.md`](./findings/2026-09-22-neardup-deploy-handoff.md)**.
 
-The near-dup auto-invalidation fix is merged to **source** (`5c35a66a`, `e356a0b2`) and the bundle
-has been **rebuilt** — artifact on disk
-`sha256:e21b802d6dfb9bc57f89fd7b1d3370f39367eeeb49bec47d61200cc161263eb9`, rebuilt 17:50Z. **The live
-process had not adopted it**: pid 87027 (started 17:45:55Z) still reported the pre-fix
-`sha256:4ea748572b1e85156ce04b32e28f335625bcf6811ab1c84337d86e5f685a3638`, i.e. a parent executing an
-artifact that no longer exists on disk while its children spawn from the new one. A restart to
-resolve that split was in flight; **its outcome is not asserted here.**
+**The fix is in production; the automatic near-duplicate invalidation is no longer running.** Merged
+in `5c35a66a`/`e356a0b2`, built, and adopted by the live backend. Verified by **hash comparison, not
+liveness** (a running process proves nothing about which artifact it executes — BUG-028):
+`memory_ping` → `artifact sha256:e21b802d6dfb9bc57f89fd7b1d3370f39367eeeb49bec47d61200cc161263eb9`,
+pid 99483 started 18:08:00.374Z, **matching** `shasum -a 256 …/memory-server/dist/index.js`. The
+superseded pre-fix artifact was `sha256:4ea748572b1e85156ce04b32e28f335625bcf6811ab1c84337d86e5f685a3638`;
+seeing that value again would mean production had regressed off the fix.
 
-**Run the check, do not trust the sentence.** `memory_ping` reporting `sha256:4ea7485…f685a3638`
-means the restart did **not** take and the invalidation pass may still be firing; reporting
-`sha256:e21b802d…61263eb9` means it did.
+Store recovered alongside it: `store_ok: true`, `integrity.overall: ok` (all six fast probes),
+WAL checkpointed 18:07:43Z at `wal_bytes: 0`, `enrichment.state: ok`, `health.state: ok`, no alarm,
+`last_pass_ok` **false → true**, `embed.execution_provider: coreml`. **`passes_failed: 285` is a
+cumulative lifetime counter and is not evidence of a current failure — `last_pass_ok` is the live
+signal.** `memory_near_duplicates(0.95)` total = **685, unchanged**; a flat total is the expected
+success reading, since the fix stops new invalidation and repairs nothing.
 
-Remaining steps: `npx nx run registry:sync-index` (commit the regenerated `registry/index.json`) →
-`rm -rf dist/smoke && node scripts/smoke-test.mjs` (`summary.failed` must be 0) → `soxe service
-disable`/`enable --node-path=/opt/homebrew/Cellar/node/26.5.1/bin/node` → diff the plist → verify
-artifact adoption → live probe.
+**The restart was not clean, and that is a service-lifecycle lead.** `kill -TERM 87027` did not stop
+the process inside its configured `SOX_CONFIG_STOP_TIMEOUT_MS=5000` — still alive and in `R` state
+~15 s later. It did exit eventually, and its wrapper (34888) respawned a fresh backend from the
+current `dist`, giving pid 99483. The WAL was therefore **replayed on restart rather than cleanly
+checkpointed at exit**; integrity is green and `wal_bytes` is 0, so no harm resulted, but the
+graceful-stop window is not sufficient for this service under load.
+
+**Still outstanding:** `npx nx run registry:sync-index` — the rebuilt bundle's checksum no longer
+matches `registry/index.json` and the smoke gate fails with `CHECKSUM MISMATCH` until it is
+regenerated **and committed** — then `rm -rf dist/smoke && node scripts/smoke-test.mjs` with
+`summary.failed === 0`, then the live behaviour probe (two near-identical throwaway episodes: a
+`SAME_AS` edge must land and **neither** node may receive a `t_invalid`).
 
 **Rollback target: `c36b3ba0`** — verified as `5c35a66a^`, the last commit before either fix merge
 (`git log -1 --format='%h' 5c35a66a^` → `c36b3ba0`). It is the **state to return to**, not a commit
@@ -170,9 +181,11 @@ service restart, or the old `dist/` stays live (BUG-028).
 > against this prose. As of 2026-08-04 this list led with **PKT-41 (BL-391) + PKT-19 (BL-329)**, both
 > of which had already been **DONE** for some time. A session acted on that entry before catching it.
 
-**FIRST, ahead of everything below (2026-09-22): complete the near-dup fix deploy and verify it
-live.** Compare the running artifact hash against the pre-deploy hash in the section above; if it is
-unchanged, the fix is not running. Then: recovery of the 685 damaged pairs has **not started** (a
+**FIRST, ahead of everything below (2026-09-22): close out the near-dup fix deploy.** The fix is
+live (artifact `e21b802d…`, pid 99483, hash-verified 18:08Z), but `npx nx run registry:sync-index`
+has not run — the smoke gate fails with `CHECKSUM MISMATCH` until the regenerated
+`registry/index.json` is committed — and neither the smoke test nor the live behaviour probe has
+been done. Then: recovery of the 685 damaged pairs has **not started** (a
 design is recorded in the handoff finding), and chunk topic/tag inheritance remains unfixed, leaving
 1,709 episodes with no topic and 4,602 with no tags structurally unreachable by filtered recall.
 Details and the full carry-forward list: [`findings/2026-09-22-neardup-deploy-handoff.md`](./findings/2026-09-22-neardup-deploy-handoff.md).
@@ -291,9 +304,11 @@ letting `--no-verify` pass as green.
 - **`memory_ping`'s `artifact` field is exactly `shasum -a 256 <bundle>/dist/index.js`** — adoption
   verification is a direct string comparison against the rebuilt file. Process liveness proves
   nothing. (BUG-028.)
-- **After the near-dup fix, `memory_near_duplicates` total GOES UP, not down.** It was 685. The fix
-  stops *new* invalidation and repairs nothing, and a probe write adds a pair. **A rising number is
-  not a failed deploy** — it is the most likely reason someone declares a good deploy bad.
+- **After the near-dup fix, `memory_near_duplicates` total never goes DOWN.** It was 685 before the
+  deploy and 685 after. The fix stops *new* invalidation and repairs nothing, so **flat is the
+  success reading**, and it rises by one per near-duplicate probe write — also success. The failure
+  signal is a total **climbing with no probe writes to explain it**. Reading a non-decreasing number
+  as failure is the most likely way to declare a good deploy bad.
 - **`check-suite-tree-state` is a snapshot, not a lock.** A suite started against a clean tree
   silently straddled four commits when another agent committed mid-run; the result was
   unattributable and had to be discarded and re-run.
@@ -305,11 +320,13 @@ letting `--no-verify` pass as green.
 - **The near-dup pass is ASYNC** (`time_to_vector_ms` p99 ≈ 61.5 s; no `SOX_SYNC_EMBED` in the
   plist). Poll for the `SAME_AS` edge rather than asserting right after a probe write, and give two
   probe episodes different content or the second is rejected `E_DEDUP`.
-- **Untriaged as of 2026-09-22: `E_FOREIGN_SQLITE_SIDECAR` (BUG-026) recurring for other sessions,
-  with FOUR concurrent memory-server processes alive** — pids 21545 (22 days old), 64743 (4 days),
-  87027, 87344. That is a singleton violation and the likely cause of recall failures other agents
-  are reporting. The split-service condition above is a confirmed producer of the same signature,
-  so triage the two together. Nothing was killed; do not kill anything without the owner's decision.
+- **`E_FOREIGN_SQLITE_SIDECAR` (BUG-026) comes from the split build above, not from competing
+  servers.** `lsof ~/.memory/memory.db` returned exactly **two** holders, parent and child in one
+  tree: 85167 (ppid 87027, age 41 s, `enrich-process-host.js` from the **new** dist) and 87027 (ppid
+  34888, the backend still on the **old** artifact). The other `soxe serve memory-server` wrappers —
+  21545 (launchd), 64743, 82450, 34888 — held **no handle on the store**. Several wrappers do exist,
+  which is worth knowing, but it is an **open question with no established link** to the sidecar
+  errors. Nothing was killed; do not kill anything without the owner's decision.
 
 ## ⚠ Do not gate on a memory-core failure COUNT
 

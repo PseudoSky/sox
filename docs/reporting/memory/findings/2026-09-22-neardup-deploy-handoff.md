@@ -85,34 +85,64 @@ skipped; memory-server 45/45 files, 280 passed. Both exit 0.
 
 ---
 
-## 3. Deploy state — read this before anything else
+## 3. Deploy state — LIVE, verified 2026-09-22T18:08Z
 
-The fix is merged to **source** (`5c35a66a`, `e356a0b2`) and the bundle has been **rebuilt**: the
-artifact on disk is `sha256:e21b802d6dfb9bc57f89fd7b1d3370f39367eeeb49bec47d61200cc161263eb9`,
-rebuilt 2026-09-22T17:50Z. **The live process had not adopted it**: pid 87027 (started
-2026-09-22T17:45:55Z) still reported the pre-fix
-`sha256:4ea748572b1e85156ce04b32e28f335625bcf6811ab1c84337d86e5f685a3638` — a parent executing an
-artifact that no longer exists on disk, while its freshly spawned children load the new one (see the
-split-service trap, §4.1). A restart to resolve that split was in flight; **its outcome is not known
-and is deliberately not asserted here.**
+**The fix is in production. The automatic near-duplicate invalidation is no longer running.**
 
-**Execute this check rather than trusting any status sentence, including this one:**
+Verified by **hash comparison, not liveness** — repeat it the same way, because a running process
+proves nothing about which artifact it executes (BUG-028):
 
-- `memory_ping` reports `sha256:4ea7485…f685a3638` → the restart did **not** take; the process is
-  still running pre-fix code and the invalidation pass may still be firing.
-- `memory_ping` reports `sha256:e21b802d…61263eb9` → it did.
+| | |
+|---|---|
+| `memory_ping` → `artifact` | `sha256:e21b802d6dfb9bc57f89fd7b1d3370f39367eeeb49bec47d61200cc161263eb9` |
+| `shasum -a 256 …/memory-server/dist/index.js` | the same value |
+| Live process | pid 99483, started 2026-09-22T18:08:00.374Z |
 
-### Remaining deploy steps
+The two match, so the running backend executes the artifact built from `5c35a66a`/`e356a0b2`. The
+superseded pre-fix artifact was `sha256:4ea748572b1e85156ce04b32e28f335625bcf6811ab1c84337d86e5f685a3638`;
+a `memory_ping` reporting that value again would mean production had regressed off the fix.
+
+### Store state after the deploy — recovered
+
+`store_ok: true`, `integrity.overall: ok` with all six fast probes passing, WAL checkpointed
+2026-09-22T18:07:43Z at `wal_bytes: 0`, `enrichment.state: ok`, `health.state: ok`, no alarm, and
+**`last_pass_ok` flipped `false` → `true`**. `embed.execution_provider` came back as `coreml`.
+
+> **`passes_failed: 285` is a CUMULATIVE LIFETIME COUNTER, not a current failure.** It does not reset
+> and it will never go down. **`last_pass_ok` is the live signal.** Reading the counter as current
+> state is an easy and costly misread.
+
+`memory_near_duplicates(threshold 0.95)` total = **685, unchanged**. **A flat total is the expected
+success reading**: the fix stops new invalidation and repairs nothing, so flat means no further
+destruction. See trap 4 for how to read that number.
+
+### How the restart actually went — a lead for service lifecycle
+
+`kill -TERM 87027` **did not stop the process inside its configured
+`SOX_CONFIG_STOP_TIMEOUT_MS=5000`** — it was still alive and in `R` state roughly 15 s later. It did
+eventually exit, and its wrapper (pid 34888) respawned a fresh backend from the current `dist`,
+producing pid 99483 on the new artifact. **The WAL was therefore replayed on restart rather than
+cleanly checkpointed at exit.** Integrity probes are green and `wal_bytes` is 0 afterwards, so no
+harm resulted — but **the graceful-stop window is not sufficient for this service under load**, which
+is a lead for whoever owns service lifecycle. A SIGKILL escalation was attempted and refused by the
+environment's permission layer; the TERM alone sufficed.
+
+### Remaining steps
+
+Still outstanding after the deploy:
 
 ```
-npx nx run-many -t build --projects=memory-core,memory-server,memory-cli,memory-flush   # done 17:50Z
-npx nx run registry:sync-index          # commit the regenerated registry/index.json
+npx nx run registry:sync-index        # rebuilt bundle's checksum no longer matches registry/index.json;
+                                      # the smoke gate fails with CHECKSUM MISMATCH until it is
+                                      # regenerated AND committed
 rm -rf dist/smoke && node scripts/smoke-test.mjs      # summary.failed must be 0
-soxe service disable memory-server --host <host> --scope user
-soxe service enable  memory-server --host <host> --scope user \
-    --node-path=/opt/homebrew/Cellar/node/26.5.1/bin/node
-# then: diff the plist (§4.3), verify artifact adoption (§4.2), live probe (§4.8)
 ```
+
+Also not yet done: **the live behaviour probe** — write two near-identical episodes with
+clearly-labelled throwaway content and confirm a `SAME_AS` edge lands while **neither node receives a
+`t_invalid`**. Caveats that still apply: the pass is asynchronous, so poll for the edge rather than
+asserting immediately (trap 8); the two episodes must differ in content hash or the second is
+rejected `E_DEDUP`; and the probe exercises only the **async** exemption path.
 
 ### Rollback
 
@@ -150,9 +180,12 @@ that exists in no commit.
    `SOX_HOME` / `SOX_REPO_ROOT=/Users/nix/dev/ai/claude-agents`, and `SOX_AGENT_NAME`. This is the
    BL-375 shell-env rebuild trap with a sharper edge: **if `SOX_CONFIG_DB_PATH` is dropped, the
    process comes up HEALTHY and every verification probe silently writes to the WRONG STORE.**
-4. **Post-fix, `memory_near_duplicates` total GOES UP, not down.** It was 685. The fix stops *new*
-   invalidation; it repairs nothing, and a probe write adds a pair. **A rising number is not a failed
-   deploy** — it is the most likely reason someone declares a successful deploy failed.
+4. **Post-fix, `memory_near_duplicates` total never goes DOWN.** It was 685 before the deploy and
+   685 after. The fix stops *new* invalidation and repairs nothing, so **flat is the success
+   reading**, and it rises by one per near-duplicate probe write — also success. **Neither a flat nor
+   a probe-driven rise is a failed deploy**; reading a non-decreasing number as failure is the most
+   likely way to declare a good deploy bad. The failure signal is a total **climbing with no probe
+   writes to explain it**.
 5. **`check-suite-tree-state` is a snapshot, not a lock.** A full suite started against a clean tree
    silently straddled four commits when another agent committed mid-run. That result was
    unattributable, was discarded, and had to be re-run.
@@ -164,18 +197,26 @@ that exists in no commit.
 8. **The near-dup pass is asynchronous** (`time_to_vector_ms` p99 ≈ 61.5 s; no `SOX_SYNC_EMBED` in
    the plist). Poll for the `SAME_AS` edge; do not assert immediately after a probe write. Two probe
    episodes must differ in content hash or the second is rejected `E_DEDUP`.
-9. **Observed and UNTRIAGED: `E_FOREIGN_SQLITE_SIDECAR` (BUG-026) recurring for other sessions, with
-   FOUR concurrent memory-server processes alive** — pids 21545 (22 days old), 64743 (4 days), 87027,
-   87344. That is a singleton violation and is the likely cause of recall failures other agents are
-   reporting. The split-service condition in trap 1 is a confirmed producer of the same
-   `E_FOREIGN_SQLITE_SIDECAR` signature, so treat the two together. **Nothing was killed and nothing
-   should be killed without the owner's decision.**
+9. **`E_FOREIGN_SQLITE_SIDECAR` (BUG-026) came from the split build, NOT from competing servers.**
+   `lsof /Users/nix/.memory/memory.db` returned exactly **two** holders, and they were parent and
+   child in one process tree: pid 85167 (ppid 87027, age 41 s) running `enrich-process-host.js`
+   spawned from the **new** dist, and pid 87027 (ppid 34888, age 19:57), the backend still executing
+   the **old** pre-rebuild artifact. The other `soxe serve memory-server` wrappers — 21545 (launchd),
+   64743, 82450, 34888 — held **no handle on the store at all**. There was no competition between
+   servers. The mechanism is trap 1: one server whose resident code predates the rebuild kept
+   spawning children from the new dist, and those mismatched children opening the same store produced
+   the foreign-sidecar signature and the per-minute `-tshm` rotation.
+   **Separately and still true: several wrappers do exist.** That is worth knowing and is an **open
+   question with no established link** to the sidecar errors — do not attribute them to it. Nothing
+   was killed and nothing should be killed without the owner's decision.
 
 ---
 
 ## 5. Still open — carry forward
 
-- **Deploy completion and live verification** (§3).
+- **Deploy close-out** (§3): `npx nx run registry:sync-index` + committed `registry/index.json`, the
+  smoke test at `summary.failed === 0`, and the live behaviour probe. The artifact itself is live and
+  hash-verified.
 - **Q4 entity-episodes branch is UNMERGED** — worktree `worktree-agent-af7488fb15a0480d8`, 5 commits,
   green on turso **and** sqlite, 3 blind-review rounds. A transaction wrap was added and then
   **reverted by architecture decision**: it could not deliver a snapshot under any topology, because
