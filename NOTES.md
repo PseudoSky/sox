@@ -24,6 +24,7 @@ binary reaches the same store and is what filed them.
 | 11 | `0a26860e-2264-4dd9-ac4e-af29197a8c3a` | sox-ecosystem | LOW | iterative-research-refinement runtime gate is opencode-only |
 | + | `56865633-22ca-4636-aa8a-c2b88866cfd3` | sox-ecosystem | MEDIUM | the `backlog` skill documents a command surface the binary lacks (found while filing the above) |
 | + | `30e85931-92f4-48a6-bca6-aebecf24a880` | sox-ecosystem | HIGH | `plan-status` pre-commit guard silently disabled by a stale query filter shape, misreported as "STORE UNAVAILABLE" |
+| + | `3c376607-fefe-4a9c-8180-1e0acee292b0` | sox-ecosystem | HIGH | `backlog get` never returns an item body; a `body` update supersedes the item under a new UID |
 
 **UIDs can migrate.** A `backlog update` that touches `body` supersedes the item under a
 new UID and returns `conflict` on the old one (which is why row `+`/plan-status reads
