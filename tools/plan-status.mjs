@@ -176,7 +176,7 @@ export const readGraphStatuses = () => {
           '--input',
           JSON.stringify({
             view: 'list',
-            filter: { repo: 'sox-ecosystem', family: 'BL', excludeArchived: false, status: 'all' },
+            filter: { project: 'sox-ecosystem' },
             limit: PAGE,
             offset,
           }),
