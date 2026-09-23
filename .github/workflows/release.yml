@@ -124,3 +124,22 @@ jobs:
           git push
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # Published-bytes gate (backlog fbde8dda-d6ed-4b6b-9cde-9495351a7c35 /
+      # 3df6f848-c5c4-4cf3-92dc-6490fb043fde). This is where the outage was MANUFACTURED,
+      # so it is where the gate matters most: `build-index:publish` above regenerates
+      # EVERY row's checksum from LOCAL disk bytes, including the rows this run did NOT
+      # publish. For those, npm keeps serving the old bytes while the freshly committed
+      # index pins the new local ones — `fetchArtifact` then rejects every install. That
+      # is memory-server@1.3.3 (4ea74857 vs 6a4168d7) exactly.
+      #
+      # MUST RUN AFTER the commit-back step: it verifies the regenerated file that just
+      # landed on main. The commit carries `[skip ci]`, so ci.yml/validate.yml will never
+      # see that push — without this step the release path has no published-bytes check
+      # at all. For rows this run DID publish it is not a tautology either: npm is queried
+      # for the bytes it now actually serves, not the local bytes we hashed.
+      #
+      # Unconditional on purpose (no `published == 'true'` guard): a release run that
+      # published nothing should still confirm the committed registry matches npm.
+      - name: Registry checksums match published npm bytes
+        run: pnpm run check-published-bytes
