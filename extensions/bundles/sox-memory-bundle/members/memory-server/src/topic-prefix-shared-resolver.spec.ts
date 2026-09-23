@@ -1,12 +1,17 @@
 /**
  * topic-prefix-shared-resolver.spec.ts
  *
- * Pins the E5 `[<topic>]`-prefix resolution used by memory-server's chunked
- * `memory_write` handler to the single shared `resolveTopicFromPrefix` export
- * in `@adhd/sox-memory-core` (also used by `computeWriteEnrichment`), so the
- * two call sites cannot silently diverge. This is a source-level guard, not a
- * behavioural one — the resolver's own behaviour is pinned in
- * `libs/memory-core/src/resolve-topic-from-prefix.spec.ts`.
+ * Duplication guard: the E5 `[<topic>]`-prefix regex used to be hand-rolled
+ * a second time in this file's `index.ts` (chunked `memory_write` handler),
+ * duplicating the copy in `libs/memory-core/src/enrich.ts`. Behavioral
+ * coverage that the resolved topic actually reaches every chunk lives in
+ * `permission-guard.spec.ts` ("long content auto-chunks ... inheriting
+ * topic/tags" for the explicit-topic-arg case, "auto-chunks resolve topic
+ * from a `[prefix]` on content ... backlog 29f3a4d5 blocker 1" for the
+ * prefix case) — the compiler already enforces that `resolveTopicFromPrefix`
+ * is imported correctly. What neither of those catches is someone re-inlining
+ * a second copy of the regex instead of calling the shared export, so that's
+ * the one thing this file checks.
  */
 import { describe, it, expect } from 'vitest';
 import * as fs from 'node:fs';
@@ -21,23 +26,6 @@ const indexSource = fs.readFileSync(path.join(__dirname, 'index.ts'), 'utf8');
 const E5_PREFIX_REGEX_SOURCE = String.raw`/^\s*\[([^\]\n]{1,64})\]/`;
 
 describe('memory-server topic-prefix resolution uses the shared memory-core export', () => {
-  it('imports resolveTopicFromPrefix from @adhd/sox-memory-core', () => {
-    expect(indexSource).toMatch(/resolveTopicFromPrefix/);
-    // The import must come from the package barrel, not a relative path into
-    // memory-core's src (which would re-couple the two packages structurally).
-    // [^}]* (not [\s\S]*?) so this cannot match past the FIRST `}` and latch
-    // onto an unrelated earlier import block that happens to precede this one.
-    const importBlockMatch = /import\s*\{([^}]*)\}\s*from\s*'@adhd\/sox-memory-core';/.exec(
-      indexSource
-    );
-    expect(importBlockMatch).not.toBeNull();
-    expect(importBlockMatch?.[1]).toMatch(/resolveTopicFromPrefix/);
-  });
-
-  it('calls resolveTopicFromPrefix at the chunked-write resolution site', () => {
-    expect(indexSource).toMatch(/resolveTopicFromPrefix\(content\)/);
-  });
-
   it('no longer hand-rolls a second copy of the E5 prefix regex literal', () => {
     // Exactly the literal regex text that used to be duplicated by hand.
     // Its presence in index.ts (outside of this string constant) means
