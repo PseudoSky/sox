@@ -7,7 +7,7 @@
 # Flow (per reference-architecture §6):
 #   1. @changesets/action creates/updates a "Version Packages" PR.
 #   2. On that PR merge (publishing=true), @changesets/action publishes all
-#      changed packages to npm with `pnpm release`.
+#      changed packages to npm with `pnpm release:prepared`.
 #   3. build-index runs after publish to regenerate registry/index.json with
 #      updated npm-CDN source URLs and sha256 checksums.
 #   4. The updated registry/index.json is committed back to main.
