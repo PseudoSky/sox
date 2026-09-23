@@ -149,7 +149,7 @@ files under `src/` — the build outputs to `dist/` only.
 ```
 
 **Registering a new extension in the registry:** see
-[AGENTS.md § registry is release-only](../../../AGENTS.md#registry-is-release-only) and §registry
+[AGENTS.md § registry is release-only](../../../../AGENTS.md#registry-is-release-only) and §registry
 below.
 
 **Build errors:**
@@ -234,7 +234,7 @@ node bin/soxe install <id> -s project
 node bin/soxe install <id> -s user
 ```
 
-**After install — registry.** See [AGENTS.md § registry is release-only](../../../AGENTS.md#registry-is-release-only)
+**After install — registry.** See [AGENTS.md § registry is release-only](../../../../AGENTS.md#registry-is-release-only)
 and §registry below — an unregistered extension still installs fine from its local dir (no
 checksum gate); register it only per that rule.
 
@@ -277,7 +277,7 @@ reality, not tests.
 A new/harvested extension needs **no registry step**. An extension with no `registry/index.json`
 row installs straight from its local dir (`findLocalExtension`, no checksum gate —
 `libs/install-engine/src/install.ts:733-740`). See
-[AGENTS.md § registry is release-only](../../../AGENTS.md#registry-is-release-only) for what may
+[AGENTS.md § registry is release-only](../../../../AGENTS.md#registry-is-release-only) for what may
 write `registry/index.json` and when — a local `dist` rebuild never touches it, and `build-index`/
 `registry:sync-index` are not part of ingesting a new extension.
 
