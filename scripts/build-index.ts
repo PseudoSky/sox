@@ -164,6 +164,16 @@ const CHECKSUM_IRRELEVANT_PREFIXES = [
   '.research-trace/', // dated research notes written by agents — never packaged.
 ];
 
+/**
+ * This generator's OWN output. `registry/index.json` is never an input to any
+ * checksum — no extension packages it — so its modification can no more taint a
+ * blessed checksum than the console output can. Treating it as dirt makes the
+ * gate self-blocking: the release path must generate the index twice (once for
+ * the CLI's embedded sidecar, once to re-hash the CLI artifact that build then
+ * produced), and pass 1 would make pass 2 refuse. Narrow, and only this file.
+ */
+const CHECKSUM_IRRELEVANT_EXACT_FILES = new Set(['registry/index.json']);
+
 /** Root-level documents that are never part of any extension payload. */
 const CHECKSUM_IRRELEVANT_ROOT_FILES = new Set([
   'BACKLOG.md',
@@ -178,6 +188,7 @@ const CHECKSUM_IRRELEVANT_ROOT_FILES = new Set([
 function isChecksumRelevant(file: string): boolean {
   // Rename lines arrive as "old -> new"; judge the destination.
   const p = (file.includes(' -> ') ? file.slice(file.indexOf(' -> ') + 4) : file).trim();
+  if (CHECKSUM_IRRELEVANT_EXACT_FILES.has(p)) return false;
   if (CHECKSUM_IRRELEVANT_ROOT_FILES.has(p)) return false;
   return !CHECKSUM_IRRELEVANT_PREFIXES.some((prefix) => p.startsWith(prefix));
 }
@@ -356,6 +367,66 @@ function resolveChecksum(extDir: string, manifest: ExtensionManifest): string {
   return computeFileChecksum(path.join(extDir, 'extension.json'));
 }
 
+/**
+ * PUBLISHED-BYTES PIN PRESERVATION (backlog 3df6f848-c5c4-4cf3-92dc-6490fb043fde).
+ *
+ * `resolveChecksum` hashes LOCAL disk bytes. For a row whose `source` is a
+ * `npm-package:<name>@<version>` locator, that is the WRONG authority: the
+ * install path (`install.ts fetchArtifact`) npm-installs THAT version and
+ * hashes the entrypoint inside the PUBLISHED tarball. The two agree only while
+ * local `dist/` happens to equal the bytes npm serves — and `dist/` is rewritten
+ * by every rebuild. When they diverge, every fresh install fails closed with
+ * CHECKSUM MISMATCH. That is the outage 304513c4 hand-repaired, and this is the
+ * mechanism that stops the repair from being undone by the next generator run.
+ *
+ * The rule: **an unchanged locator keeps its committed checksum.** If the
+ * generated locator (`name@version`) is byte-identical to the one already in
+ * `registry/index.json`, npm is still serving exactly the bytes that committed
+ * checksum was pinned to, so the committed value is authoritative and local
+ * bytes are irrelevant. If the locator CHANGED — `changeset version` bumped the
+ * package, so this run is about to publish the local bytes under a new version —
+ * the pin cannot apply and the checksum is recomputed from disk. No publication
+ * signal is needed to discriminate: the locator itself carries it.
+ *
+ * Deliberately OFFLINE. `build-index` must never grow a remote-fetch path
+ * (`scripts/lib/npm-published-fetcher.ts`, `scripts/check-registry-sync.ts`
+ * headers: "verification is not generation"). Preservation reaches the same
+ * outcome from the committed file. The network-side assertion that the pin is
+ * actually right lives in `pnpm check-published-bytes`; re-pinning a row whose
+ * locator did NOT change is `tools/repin-registry-entry.mjs`'s job, not this
+ * generator's.
+ */
+function loadCommittedPins(root: string): Map<string, { source: string; checksum: string }> {
+  const pins = new Map<string, { source: string; checksum: string }>();
+  const indexPath = path.join(root, 'registry', 'index.json');
+  if (!fs.existsSync(indexPath)) return pins;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(fs.readFileSync(indexPath, 'utf8'));
+  } catch (e) {
+    // A corrupt committed index must not silently disable pin preservation —
+    // that would look exactly like "no pins to preserve" and re-ship the outage.
+    console.error(
+      `build-index: WARNING — could not parse existing registry/index.json (${String(e)}); ` +
+        `published-bytes pin preservation is INACTIVE for this run.`,
+    );
+    return pins;
+  }
+  if (!Array.isArray(parsed)) return pins;
+  for (const raw of parsed as Array<Partial<IndexEntry>>) {
+    if (
+      typeof raw?.id === 'string' &&
+      typeof raw.source === 'string' &&
+      typeof raw.checksum === 'string' &&
+      raw.source.startsWith('npm-package:') &&
+      /^sha256:[0-9a-f]{64}$/.test(raw.checksum)
+    ) {
+      pins.set(raw.id, { source: raw.source, checksum: raw.checksum });
+    }
+  }
+  return pins;
+}
+
 export function buildIndex(opts: { root: string; allowDirty?: boolean }): IndexEntry[] {
   const { root, allowDirty = false } = opts;
 
@@ -387,6 +458,22 @@ export function buildIndex(opts: { root: string; allowDirty?: boolean }): IndexE
     );
   }
 
+  // The provisional escape hatch and the PUBLICATION signal are mutually
+  // exclusive. `--allow-dirty` exists so a maintainer can inspect an index built
+  // from WIP; it stamps every entry `provisional: true` and `builtFromCommit`
+  // "<sha>+dirty" — i.e. "these bytes correspond to no commit". Shipping that to
+  // npm is what @adhd/sox-cli@1.2.1 did (PROD-BREAK-SOXCLI-121). A release must
+  // never be able to opt out of the BL-390 gate.
+  if (process.env['SOX_REGISTRY_PUBLISH'] && allowDirty && gitState.isGitRepo && gitState.dirty) {
+    throw new DirtyTreeError(
+      `build-index: REFUSING --allow-dirty under the publication signal (SOX_REGISTRY_PUBLISH).\n` +
+        `  A provisional index is stamped "+dirty"/provisional:true — it corresponds to no commit,\n` +
+        `  and @adhd/sox-cli@1.2.1 shipped exactly that (PROD-BREAK-SOXCLI-121).\n` +
+        `  Fix: commit the ${gitState.dirtyFiles.length} pending change(s), then re-run the release.`,
+    );
+  }
+
+  const committedPins = loadCommittedPins(root);
   const dirs = findExtensionDirs(root);
   const entries: IndexEntry[] = [];
 
@@ -432,7 +519,27 @@ export function buildIndex(opts: { root: string; allowDirty?: boolean }): IndexE
       continue;
     }
 
-    const checksum = resolveChecksum(extDir, manifest);
+    let checksum = resolveChecksum(extDir, manifest);
+
+    // Published-bytes pin preservation — see loadCommittedPins above.
+    if (source.startsWith('npm-package:')) {
+      const pin = committedPins.get(manifest.id);
+      if (pin !== undefined && pin.source === source) {
+        if (pin.checksum !== checksum) {
+          console.log(
+            `build-index: preserving published-bytes checksum for "${manifest.id}" ` +
+              `(${source} unchanged) — kept ${pin.checksum.slice(0, 22)}…, ` +
+              `local disk hashes to ${checksum.slice(0, 22)}…. Bump the version to publish new bytes.`,
+          );
+        }
+        checksum = pin.checksum;
+      } else if (pin !== undefined) {
+        console.log(
+          `build-index: locator changed for "${manifest.id}" (${pin.source} -> ${source}) — ` +
+            `re-deriving checksum from local bytes, which this release publishes.`,
+        );
+      }
+    }
 
     const entry: IndexEntry = {
       id: manifest.id,

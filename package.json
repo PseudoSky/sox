@@ -24,8 +24,8 @@
     "test": "vitest run",
     "changeset": "changeset",
     "version-packages": "changeset version",
-    "release": "node tools/release-consumers.mjs && changeset publish",
-    "release:prepared": "node tools/release-consumers.mjs && npm run build-index:publish && SOX_REGISTRY_PUBLISH=npm nx build sox && changeset publish",
+    "release": "echo 'pnpm release is DISABLED: it ran `changeset publish` with no rebuild and no registry regeneration, so it published whatever stale dist/ was on disk — that is how @adhd/sox-cli@1.2.1 shipped a bundled registry of 31 file:// sources stamped +dirty (PROD-BREAK-SOXCLI-121). Use `pnpm release:prepared`, which builds, regenerates, and gates first.' >&2 && exit 1",
+    "release:prepared": "node tools/assert-release-tree-clean.mjs && node tools/release-consumers.mjs && npm run build-index:publish && SOX_REGISTRY_PUBLISH=npm nx build sox && npm run build-index:publish && SOX_REGISTRY_PUBLISH=npm node apps/sox/scripts/embed-registry.cjs && changeset publish",
     "verify:publint-attw": "node tools/verify-exports-publint-attw.mjs",
     "release:consumers": "node tools/release-consumers.mjs"
   },
