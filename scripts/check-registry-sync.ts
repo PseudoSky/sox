@@ -11,6 +11,22 @@
  * When it fails, re-sync with:
  *   npx nx run registry:sync-index
  *
+ * SECOND GATE — PUBLISHED-BYTES ASSERTION (backlog
+ * fbde8dda-d6ed-4b6b-9cde-9495351a7c35 / 3df6f848-c5c4-4cf3-92dc-6490fb043fde):
+ * every `npm-package:` row is also compared against WHAT NPM CURRENTLY SERVES
+ * for the version in its own locator. This catches the outage class the drift
+ * gate structurally cannot: a local rebuild with no version bump keeps the
+ * correct locator while the generator silently re-pins `checksum` to new LOCAL
+ * bytes; npm keeps serving the old bytes and `fetchArtifact` gates the install
+ * on the moved pin (memory-server@1.3.3: 4ea74857 vs 6a4168d7). A
+ * post-publish-only check would be a tautology — in CI, `release:prepared`
+ * hashes the same bytes it then packs and publishes — so this is NOT gated on
+ * any publication signal.
+ *   npx tsx scripts/check-registry-sync.ts --published-bytes-only   # CI gate
+ *   npx tsx scripts/check-registry-sync.ts --no-remote              # offline
+ * Verification is not generation: this is read-only and network-only HERE.
+ * scripts/build-index.ts must remain free of any remote-fetch path.
+ *
  * BL-33: this scanner MUST mirror `scripts/build-index.ts` exactly — same
  * directory walk (INCLUDING recursion into extensions/bundles/<id>/members/),
  * same source/checksum/version/visibility/bundleId derivation. Any divergence
@@ -21,7 +37,11 @@
 import { execSync } from 'node:child_process';
 import * as crypto from 'node:crypto';
 import * as fs from 'node:fs';
+import * as os from 'node:os';
 import * as path from 'node:path';
+
+import { createNpmPublishedFetcher } from './lib/npm-published-fetcher.js';
+import { checkPublishedBytes, selectNpmPackageEntries, type RegistryEntry } from './lib/published-bytes.js';
 
 // BL-480: default root must mirror build-index.ts's git-common-dir resolution
 // (never `process.cwd()`) — this scanner recomputes `source` via the same
@@ -41,7 +61,24 @@ function resolveDefaultRoot(): string {
   }
 }
 
-const root = process.argv[2] ?? resolveDefaultRoot();
+const argv = process.argv.slice(2);
+
+/**
+ * `--published-bytes-only` runs ONLY the published-bytes assertion and skips
+ * the disk-drift comparison. That is the mode CI wires in, deliberately: the
+ * drift comparison is currently structurally unsatisfiable (resolveSource at
+ * :~164 only emits `npm-package:` locators under SOX_REGISTRY_PUBLISH, so the
+ * disk side yields file:// / jsdelivr rows while the committed registry holds
+ * the six published rows — measured 31 disk vs 6 registry). That defect is
+ * owned elsewhere; wiring the combined verdict into CI would mean adopting it.
+ *
+ * `--no-remote` (or SOX_SKIP_PUBLISHED_BYTES=1) is the EXPLICIT offline opt-out.
+ * It is the ONLY thing that makes an un-run published check a pass. A network
+ * failure never silently becomes a skip — see the UNREACHABLE handling below.
+ */
+const publishedBytesOnly = argv.includes('--published-bytes-only');
+const noRemote = argv.includes('--no-remote') || process.env['SOX_SKIP_PUBLISHED_BYTES'] === '1';
+const root = argv.find((a) => !a.startsWith('--')) ?? resolveDefaultRoot();
 
 // Read the current committed registry
 const registryPath = path.join(root, 'registry', 'index.json');
@@ -239,7 +276,12 @@ function buildLiveEntries(): unknown[] {
   return entries;
 }
 
-const liveEntries = buildLiveEntries();
+// Lazily computed: under --published-bytes-only the disk walk is not run at all.
+let liveEntriesCache: unknown[] | undefined;
+function liveEntriesOnce(): unknown[] {
+  if (liveEntriesCache === undefined) liveEntriesCache = buildLiveEntries();
+  return liveEntriesCache;
+}
 
 // BL-390: build-index.ts stamps every entry with `builtFromCommit` (and, for a
 // forced dirty run, `provisional: true`) recording the git state the checksum
@@ -285,12 +327,14 @@ function sortedById(arr: unknown[]): unknown[] {
   });
 }
 
-const committedSorted = JSON.stringify(sortedById(committedEntries), null, 2);
-const liveSorted = JSON.stringify(sortedById(liveEntries), null, 2);
+function runDriftGate(): boolean {
+  const liveEntries = liveEntriesOnce();
+  const committedSorted = JSON.stringify(sortedById(committedEntries), null, 2);
+  const liveSorted = JSON.stringify(sortedById(liveEntries), null, 2);
 
-if (committedSorted === liveSorted) {
+  if (committedSorted === liveSorted) {
   console.log(`check-registry-sync: OK — registry/index.json is in sync (${committedEntries.length} entries)`);
-  process.exit(0);
+  return true;
 } else {
   console.error('check-registry-sync: FAIL — registry/index.json is out of sync with disk.');
   console.error('  Extensions on disk but not in registry, or registry entries no longer on disk.');
@@ -314,5 +358,91 @@ if (committedSorted === liveSorted) {
       console.error(`  ~ content differs for: ${id}`);
     }
   }
-  process.exit(1);
+  return false;
 }
+}
+
+// ─── Published-bytes assertion (fbde8dda-d6ed-4b6b-9cde-9495351a7c35) ────────
+
+async function runPublishedBytesGate(): Promise<boolean> {
+  const targets = selectNpmPackageEntries(committedRawEntries as RegistryEntry[]);
+  if (targets.length === 0) {
+    console.log('check-registry-sync: published-bytes — no npm-package: rows to verify');
+    return true;
+  }
+
+  if (noRemote) {
+    console.warn(
+      `check-registry-sync: published-bytes SKIPPED by explicit --no-remote/SOX_SKIP_PUBLISHED_BYTES ` +
+      `(${targets.length} npm-package row${targets.length === 1 ? '' : 's'} NOT verified against npm).`,
+    );
+    if (process.env['CI'] !== undefined && process.env['CI'] !== '' && process.env['CI'] !== 'false') {
+      console.error('check-registry-sync: FAIL — --no-remote is an interactive/offline escape hatch; CI must verify published bytes.');
+      return false;
+    }
+    return true;
+  }
+
+  const result = await checkPublishedBytes(
+    targets,
+    createNpmPublishedFetcher({ cacheDir: fs.mkdtempSync(path.join(os.tmpdir(), 'sox-pubbytes-')) }),
+  );
+
+  for (const r of result.rows) {
+    const mark = r.verdict === 'MATCH' ? 'MATCH     ' : `${r.verdict.padEnd(10)}`;
+    console.log(
+      `  ${mark} ${r.id} ${r.pkgVersion} ${r.entrypoint ?? '(no entrypoint)'} ` +
+      `expected=${r.expected}${r.actual !== null && r.actual !== r.expected ? ` published=${r.actual}` : ''}` +
+      `${r.detail !== undefined ? ` (${r.detail})` : ''}`,
+    );
+  }
+
+  // Three-state verdict. Conflating "npm says these bytes differ" with "could
+  // not reach npm" is exactly how this gate would become theatre, so they are
+  // reported and exited on separately:
+  //   MISMATCH/ERROR -> exit 1 ALWAYS.
+  //   UNREACHABLE    -> exit 1 ALWAYS (fail closed). The only pass for an
+  //                     unverified registry is the explicit --no-remote flag
+  //                     above, which CI itself refuses.
+  // Discriminator: if ANY row fetched successfully the registry is reachable,
+  // so a per-row failure (incl. 404 "no such version") is a hard ERROR, never
+  // UNREACHABLE. UNREACHABLE requires that NO row reached npm at all.
+  if (result.unreachable) {
+    console.error(
+      `check-registry-sync: FAIL (UNREACHABLE) — could not reach the npm registry for ANY of the ` +
+      `${targets.length} npm-package rows. This is NOT "the bytes differ"; nothing was verified. ` +
+      `Re-run with network, or pass --no-remote to explicitly accept an unverified registry locally.`,
+    );
+    return false;
+  }
+
+  if (result.mismatches > 0 || result.errors > 0) {
+    console.error(
+      `check-registry-sync: FAIL — published-bytes assertion: ${result.mismatches} MISMATCH, ` +
+      `${result.errors} ERROR, ${result.matches} MATCH.`,
+    );
+    console.error(
+      '  A MISMATCH means registry/index.json pins a checksum that npm does NOT serve for the version in its own\n' +
+      '  locator — every install of that row dies with CHECKSUM MISMATCH (fbde8dda-d6ed-4b6b-9cde-9495351a7c35).\n' +
+      '  This is almost always a local rebuild without a version bump: `build-index`/`registry:sync-index`/\n' +
+      '  `release:prepared` re-pin the checksum from LOCAL disk bytes (3df6f848-c5c4-4cf3-92dc-6490fb043fde).\n' +
+      '  Fix by PUBLISHING a new version (see PUBLISHING.md) or by restoring the checksum of the published bytes.\n' +
+      '  Do NOT "fix" it by re-running a generator — that is what broke it.',
+    );
+    return false;
+  }
+
+  console.log(`check-registry-sync: OK — published-bytes: ${result.matches}/${targets.length} rows match npm`);
+  return true;
+}
+
+async function main(): Promise<void> {
+  let ok = true;
+  if (!publishedBytesOnly) {
+    ok = runDriftGate() && ok;
+  }
+  ok = (await runPublishedBytesGate()) && ok;
+  process.exit(ok ? 0 : 1);
+}
+
+void main();
