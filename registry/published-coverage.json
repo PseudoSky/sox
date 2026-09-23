@@ -1,0 +1,22 @@
+{
+  "$comment": [
+    "COVERAGE BASELINE for the published-bytes gate (scripts/check-registry-sync.ts).",
+    "It records the EXACT set of registry rows that must carry an npm-package: locator and be",
+    "verified against the bytes npm currently serves. The gate asserts SET EQUALITY, so it fails",
+    "both when a row silently disappears or loses its locator (the scope-narrowing failure this",
+    "file exists to stop: an all-jsdelivr registry used to be reported as a PASS with zero rows",
+    "verified) and when a row is ADDED without a deliberate edit here — that edit is the review",
+    "signal that a newly published package has entered the gate.",
+    "This is NOT registry/index.json. It holds no checksums and is never machine-regenerated;",
+    "edit it by hand, in the same commit that publishes or retires a package."
+  ],
+  "expectedNpmRows": 6,
+  "ids": [
+    "memory-cli",
+    "memory-flush",
+    "memory-server",
+    "memory-usage",
+    "sox",
+    "sox-memory-bundle"
+  ]
+}

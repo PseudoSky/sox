@@ -136,6 +136,69 @@ export function resolveEntrypointFromPackageDir(dir: string): string {
   return extJson;
 }
 
+/**
+ * COVERAGE BASELINE — the committed `registry/published-coverage.json`.
+ *
+ * `expectedNpmRows` is redundant with `ids.length` ON PURPOSE: a hand-edit that
+ * adds an id without moving the count (or vice versa) is a half-finished edit,
+ * and `checkPublishedCoverage` refuses it rather than picking a winner.
+ */
+export interface CoverageBaseline {
+  expectedNpmRows: number;
+  ids: string[];
+}
+
+export interface CoverageVerdict {
+  ok: boolean;
+  /** Baseline ids with no `npm-package:` row in the registry — scope LOST. */
+  missing: string[];
+  /** `npm-package:` rows absent from the baseline — scope GROWN unreviewed. */
+  unexpected: string[];
+  actual: string[];
+  /** Populated when the baseline itself is internally inconsistent. */
+  baselineError?: string;
+}
+
+/**
+ * Assert the gate's verified-row set against its committed baseline.
+ *
+ * SET EQUALITY, not superset. A superset assertion would let growth through
+ * silently, and growth is exactly the event that needs a human to look: a newly
+ * published package entering the gate should cost one deliberate line in
+ * `registry/published-coverage.json`. Loss is the outage direction — a row that
+ * loses its `npm-package:` locator stops being verified at all, and the gate
+ * used to report that narrowing as a pass.
+ *
+ * Pure: no I/O, no process state.
+ */
+export function checkPublishedCoverage(
+  entries: RegistryEntry[],
+  baseline: CoverageBaseline,
+): CoverageVerdict {
+  const actual = selectNpmPackageEntries(entries).map((e) => e.id).sort();
+  const expected = [...baseline.ids].sort();
+
+  const baselineError =
+    !Array.isArray(baseline.ids) || typeof baseline.expectedNpmRows !== 'number'
+      ? 'coverage baseline is malformed: it must carry `expectedNpmRows` (number) and `ids` (string[])'
+      : baseline.expectedNpmRows !== baseline.ids.length
+        ? `coverage baseline is self-inconsistent: expectedNpmRows=${baseline.expectedNpmRows} but ids has ${baseline.ids.length} entries`
+        : new Set(expected).size !== expected.length
+          ? 'coverage baseline lists a duplicate id'
+          : undefined;
+
+  const missing = expected.filter((id) => !actual.includes(id));
+  const unexpected = actual.filter((id) => !expected.includes(id));
+
+  return {
+    ok: baselineError === undefined && missing.length === 0 && unexpected.length === 0,
+    missing,
+    unexpected,
+    actual,
+    ...(baselineError === undefined ? {} : { baselineError }),
+  };
+}
+
 /** Select the `npm-package:` rows of a committed registry. */
 export function selectNpmPackageEntries(entries: RegistryEntry[]): RegistryEntry[] {
   return entries.filter((e) => typeof e.source === 'string' && e.source.startsWith('npm-package:'));
