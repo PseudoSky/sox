@@ -145,6 +145,54 @@ pass the `06aa9e79` gate silently, since `https://` is accepted as portable.
 Anchoring therefore trades a release-path defect for a broken local dev path. It needs a design
 decision, not a unilateral change.
 
+## The clean-room gate cannot run in a shared checkout (measured 2026-09-22)
+
+With the trap fix in place, the smoke was run. It died at step 3 and the restore guard reported
+`registry/index.json unchanged` — the pin was never written, because `build-index` refused first:
+
+`buildIndex` raises `DirtyTreeError` (`build-index.ts:28`, `:540-546`) when the tree has any
+**checksum-relevant** uncommitted path. At the time of the run those were two untracked files
+belonging to other agents:
+
+```
+  IRRELEVANT: .research-trace/2026-09-20-retrieval-augmented-decision-reassessment.md
+  >>> CHECKSUM-RELEVANT (blocks build-index): SPEC-EMBEDDING-HOST.md
+  IRRELEVANT: docs/plan/store-adapter-batch-0.10.0/SPEC.md
+  >>> CHECKSUM-RELEVANT (blocks build-index): tools/reap-nx-daemons.mjs
+```
+
+Neither is a source change; both are new files at paths outside the `CHECKSUM_IRRELEVANT_PREFIXES`
+allow-list, which **fails closed** by design. So:
+
+**The canonical publish gate is unrunnable whenever any concurrent agent holds an untracked file
+outside `docs/`, `.claude/`, `.opencode/`, `.worktrees/`, `.nx/`, `.cto/`, `.research-trace/`.**
+It also fails *silently*: `clean-room-smoke.sh:73` redirects the command's output to `/dev/null`, so
+`set -e` aborts the script with no diagnostic — the log jumps straight from "regenerating registry"
+to the cleanup line. Anyone running it sees an early exit and no reason.
+
+Forcing it with `--allow-dirty` is not a workaround: that stamps `provisional: true`, which the
+`06aa9e79` gate then correctly refuses. That is the system working — a publishable artifact cannot
+be produced from a dirty tree — but it means the gate must be run from a **clean clone or
+worktree**, never the shared development checkout.
+
+### Side effect: the smoke rebuilt the live memory-server artifact
+
+`clean-room-smoke.sh:69` runs `npx nx run-many -t build` across the whole workspace. Measured across
+the run:
+
+| artifact | before | after |
+|---|---|---|
+| `registry/index.json` | `042973a0…` | `042973a0…` (intact) |
+| `apps/sox/dist/index.js` | `e52db888…` | `e52db888…` (intact) |
+| `memory-server/dist/index.js` | `e37ff9de…` | **`564840c4…`** (rebuilt) |
+
+That is the artifact the live memory MCP service executes directly out of this checkout. No service
+was restarted, so the running process still holds its previously-loaded code — but the next restart
+adopts the new bytes. The rebuild was from committed source (no tracked file was modified), so the
+new artifact is *more* attributable than the one it replaced, not less. Still: the canonical gate
+silently rebuilds a live production artifact as a side effect, which belongs in its header and in
+any clearance to run it.
+
 ## What is already fixed
 
 `06aa9e79` guarantees the *shape* of the registry embedded in the published CLI (no `file://`, no
