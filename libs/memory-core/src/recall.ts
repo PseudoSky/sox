@@ -666,9 +666,22 @@ export async function memoryRecall(
     // a caller who asked for it and got zero results should still learn it
     // was never applied, and why, rather than an empty response masking it.
     const { applied: lcApplied0, skipReason: lcSkip0 } = evaluateLateChunking(params.lateChunking);
+    // INVARIANT (BL-391 follow-up): provider_call_count must equal the actual
+    // attempted-embed-call delta on every return path, never a hardcoded
+    // constant — this path used to hardcode 0 even when the query embed above
+    // (:520) had already been attempted (and possibly timed out), producing a
+    // response where `provider_call_count: 0` sat directly beside
+    // `degradations: ["vec: embed() timed out …"]` — two fields contradicting
+    // each other about whether a provider call happened. `provider_call_count`
+    // counts CALLS ATTEMPTED (incremented in embed.ts before the provider
+    // promise is awaited — see BL-254), not calls that returned a vector;
+    // `degradations` is the field that tells the caller whether the attempt
+    // succeeded. Computing the same `getProviderCallCount() - beforeCount`
+    // delta used by the non-empty path keeps both branches honest and
+    // consistent with each other.
     const response: RecallResponse = {
       results: [],
-      provider_call_count: 0,
+      provider_call_count: getProviderCallCount() - beforeCount,
       metadata: {
         totalChunksRetrieved: 0,
         totalChunksAfterExpansion: 0,
