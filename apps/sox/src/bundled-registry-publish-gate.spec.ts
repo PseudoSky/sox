@@ -22,7 +22,7 @@
  * These tests exec the real scripts as subprocesses (never importing the guard
  * module) so a "red" here is a genuine missing GATE, not a missing import.
  */
-import { execFileSync } from 'node:child_process';
+import { spawnSync } from 'node:child_process';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
@@ -68,19 +68,20 @@ interface RunResult {
   stderr: string;
 }
 
+/**
+ * `spawnSync`, not `execFileSync`: the latter surfaces stderr only on a THROW,
+ * so a success-path assertion about stderr would silently read `''` and pass
+ * no matter what the script actually wrote. Both streams must be captured on
+ * both paths for the stdout-purity assertion below to mean anything.
+ */
 function run(script: string, env: Record<string, string>): RunResult {
-  try {
-    const stdout = execFileSync('node', [script], {
-      cwd: repoRoot,
-      encoding: 'utf8',
-      env: { ...process.env, ...env },
-      stdio: ['ignore', 'pipe', 'pipe'],
-    });
-    return { status: 0, stdout, stderr: '' };
-  } catch (e) {
-    const err = e as { status?: number; stdout?: string; stderr?: string };
-    return { status: err.status ?? 1, stdout: err.stdout ?? '', stderr: err.stderr ?? '' };
-  }
+  const r = spawnSync('node', [script], {
+    cwd: repoRoot,
+    encoding: 'utf8',
+    env: { ...process.env, ...env },
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+  return { status: r.status ?? 1, stdout: r.stdout ?? '', stderr: r.stderr ?? '' };
 }
 
 function writeIndex(entries: unknown[]): string {
@@ -164,8 +165,8 @@ describe('embed-registry.cjs — publish-mode gate', () => {
       SOX_EMBED_REGISTRY_OUT: outFile(),
     });
 
-    expect(r.stderr).toBe('');
     expect(r.status).toBe(0);
+    expect(r.stderr).toBe('');
     expect(JSON.parse(fs.readFileSync(outFile(), 'utf8'))).toEqual([GOOD_ENTRY]);
   });
 
@@ -211,8 +212,20 @@ describe('check-bundled-registry.cjs — publish-time (prepack) gate', () => {
   it('ACCEPTS a publish-shaped embedded registry', () => {
     const r = run(checkScript, { SOX_BUNDLED_REGISTRY_PATH: writeIndex([GOOD_ENTRY]) });
 
-    expect(r.stderr).toBe('');
     expect(r.status).toBe(0);
+    expect(r.stderr).toMatch(/check-bundled-registry: OK/);
+  });
+
+  it('writes NOTHING to stdout, so `npm pack --dry-run --json` stays parseable', () => {
+    // This runs as prepack. PUBLISHING.md's tarball proof is
+    // `npm pack --dry-run --json`, and npm interleaves a lifecycle script's
+    // stdout into that JSON — an informational line on stdout here makes the
+    // documented proof unparseable. Caught live: the first version of this
+    // script logged its OK line to stdout and broke exactly that command.
+    const r = run(checkScript, { SOX_BUNDLED_REGISTRY_PATH: writeIndex([GOOD_ENTRY]) });
+
+    expect(r.status).toBe(0);
+    expect(r.stdout).toBe('');
   });
 
   it('is wired as prepack AND prepublishOnly so no publish path can skip it', () => {
@@ -253,7 +266,7 @@ describe('check-bundled-registry.cjs — publish-time (prepack) gate', () => {
     // apps/sox/dist/, this goes red BEFORE a publish is attempted.
     const r = run(checkScript, {});
 
-    expect(r.stderr).toBe('');
     expect(r.status).toBe(0);
+    expect(r.stdout).toBe('');
   });
 });

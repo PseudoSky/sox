@@ -27,3 +27,10 @@ first. Two gates now enforce it:
 previously set it only for `build-index:publish`, so the build that produces the
 published artifact skipped the build-time gate), and the variable is part of the
 build's nx cache key so a cache hit cannot replay a dev-shaped `dist/`.
+
+**Expected, and not a regression: this build embeds 6 registry entries where
+1.2.1 embedded 31, so `soxe search` lists fewer extensions.** The 25 that
+disappear are private/unpublished extensions that publish-mode `build-index`
+correctly omits — in 1.2.1 they were `file://` entries pointing at a
+maintainer's laptop, so no consumer could ever install them. A shorter list of
+entries that all work is the fix, not a loss.
