@@ -125,6 +125,10 @@ function findCitations(trackedSet) {
     // EXPLAINING them in doc comments — same self-inflicted-red trap as the
     // two exclusions above, not a real citation.
     if (relFile === 'tools/check-backlog-citations.debt008.test.mjs') continue;
+    // scripts/audit-closed-items.test.mjs fabricates ids (BL-999, BL-888, BL-777, BL-9999, BL-1)
+    // as synthetic fixtures for tools/audit-closed-items.mjs's classifier — same self-inflicted-red
+    // trap as the two exclusions above, not a real citation.
+    if (relFile === 'scripts/audit-closed-items.test.mjs') continue;
     citations.push({ id, file: relFile, line: Number(lineNo) });
   }
   return citations;

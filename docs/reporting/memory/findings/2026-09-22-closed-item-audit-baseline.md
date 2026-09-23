@@ -88,30 +88,93 @@ For every closed item (`status: closed` — the store's own meta-status folding
 3. **It cannot see evidence in an untracked or gitignored file** (`git ls-files` is the tracked-file
    universe, matching `tools/check-backlog-citations.mjs`'s own precedent) — by design: a reviewer
    without local scratch-file access could never see it either.
-4. **It cannot disambiguate alias collisions.** Two unrelated items can carry the same self-reported
-   `BL-225`-shaped string (a documented, real hazard —
-   `tools/backlog-citation-allowlist.json`'s own `_readme` records exactly this happening for
-   `BUG-019`). A `CITED` verdict from a shared alias is reported against every item that scraped it;
-   only a human, reading both items, can tell true citation from string collision.
-5. **`NOT-AUDITABLE` is not "clean."** It means the item's own title/body never recorded a `BL-<n>`
-   string and its citations never pointed at a test file — the majority-shape for items filed after
-   the `humanId` field was retired, or filed without a self-reported alias in the first place. It is
-   the single most important number in this report: it says the BL-225 rule, as currently stated,
-   is **not mechanically checkable against a large fraction of the graph's own schema**, which is a
-   defect in the rule/schema pairing, not a gap this tool can close by trying harder.
+4. **It cannot disambiguate alias collisions, and this is not a theoretical concern — it is
+   measured and large.** Of the 430 distinct alias strings scraped across the corpus, **185 (43%)
+   are claimed by more than one item's title/body** (e.g. `BL-235` appears in 3 different items'
+   text, `BL-319` in 7). Item bodies in this graph routinely narrate *other* work ("Filed alongside
+   BUG-STOREADAPTER…", "another agent (embed-stall)…"), so an item's `aliasesFound` is not reliably
+   "my own id" — it is "every id-shaped string this item's text mentions." Concretely: **175 of the
+   329 `CITED` rows (53%) carry ≥2 scraped aliases**, so a `CITED` verdict on those rows may be
+   riding on a *mentioned* id's test, not the item's own. `71f7f0e7` scraping `["BL-001","BL-509"]`
+   is a specific instance worth flagging — `BL-001` almost certainly belongs to
+   `docs/plan/runtime-productionization/`'s own colliding `BL-1xx` numbering
+   (`tools/backlog-citation-allowlist.json`'s `_readme`, cause `PLAN_LOCAL_RUNTIME_PROD`), not to
+   this item. **Read `CITED` as an upper bound, not a confirmed count**, until a human resolves
+   which alias in a multi-alias row actually belongs to that item.
+5. **The `SKIP-MASKED` verdict of 0 items is an aggregation artifact, not a "no skipping exists"
+   finding.** Per-`classification` aggregation requires *every* hit for an item to be skip-masked;
+   one live hit anywhere buries every skip-masked sibling for that item (this happens routinely —
+   the shortlist's `bl36-bl178-bl57.spec.ts` hits alone span 6 lines across which some may be
+   skipped and some live). The **per-hit** data tells the true story: of **7,949** total alias
+   occurrences found in test files, **23 individual hits, across 13 distinct items**, sit inside a
+   statically-detected skip window. Those 13 items are never surfaced by the `classification`
+   column and must be read from `bodyGuardSuspect`-style hit-level filtering of the raw report, not
+   the summary table. **Read "0 SKIP-MASKED" as "0 items are *entirely* skip-masked," not as "no
+   skip-masking was found."**
+6. **`NOT-AUDITABLE` came in far smaller than expected (6.3%, not "a large fraction") — and the
+   reason is the same collision mechanism as #4.** Because item bodies narrate other items so
+   freely, almost every item scrapes *some* alias, whether or not it is genuinely its own — so
+   `NOT-AUDITABLE` (zero aliases AND zero test citations) is a narrow, not dominant, bucket. This
+   does **not** mean BL-225 is broadly checkable: it means the checkable signal is diluted by
+   false-positive aliases (#4) rather than absent outright. The more actionable number is **#4's
+   53%**, not this one.
 
 ## Baseline distribution (496 closed items, live total at run time — see drift note above)
+
+**Read every row below against LIMITS #4–#6 above — CITED is an upper bound (53% of it rides on a
+multi-alias item), and SKIP-MASKED=0 is an item-level aggregation artifact, not a corpus-level
+absence.**
 
 | Verdict | Count | % |
 |---|---:|---:|
 | CITED | 329 | 66.3% |
 | UNEVIDENCED | 136 | 27.4% |
 | NOT-AUDITABLE | 31 | 6.3% |
-| SKIP-MASKED | 0 | 0.0% |
+| SKIP-MASKED (item-level, all-hits-skipped only) | 0 | 0.0% |
+
+Per-hit detail behind that last row: **7,949** alias occurrences were found across all tracked test
+files; **23 of them (0.3%), spanning 13 distinct items**, sit inside a statically-detected skip
+window. None of those 13 items surface as `SKIP-MASKED` because each has at least one other, live
+hit — they are currently folded into `CITED`. Checked by hand: all 13 trace to
+`extensions/bundles/sox-memory-bundle/members/memory-server/src/throughput-golden.spec.ts` and
+`recall-parity-arm-attribution.test.ts`'s `{ skip: !_hasTurso }` gate, and in both files
+`_hasTurso` is resolved **synchronously at module load** (a `fs.existsSync` check against a known
+driver path, with a comment explicitly citing the frozen-hook trap and stating why this file avoids
+it) — this is the *correctly-implemented* form of the pattern BL-167 got wrong, not a recurrence of
+the bug. It is still a real, load-bearing environment gate this instrument cannot resolve for an
+arbitrary reader's checkout — but verified directly in *this* checkout (both
+`node_modules/@tursodatabase/database/dist/promise.js` at repo root, the exact path the gate's
+`existsSync` resolves via six `..` segments from `memory-server/src`, and the nested copy under
+`memory-server/node_modules/`, exist on disk): the driver is present here, so these 13 items' tests
+run live in this checkout, not skipped. In a checkout or CI runner without that driver installed,
+the same 13 items' coverage would not execute at all — a portability note, not a defect finding in
+this environment.
+
+Alias-collision exposure: **430** distinct alias strings were scraped; **185 (43%)** are claimed by
+more than one item's title/body. **175 of the 329 `CITED` rows (53%)** carry ≥2 scraped aliases and
+so cannot be fully attributed to "this item's own id" without a human read.
 
 `bodyGuardSuspect` (lead only, not a verdict): **4** items, all currently classified `CITED` — i.e.
 these look evidenced by the mechanizable signals, but carry a guard-shape near the hit that a human
 should specifically look at before trusting the `CITED` verdict.
+
+**Status breakdown — the denominator matters.** `status:'closed'` folds in `DUPLICATE`/`INVALID`/
+`WONTFIX` rows (10 of 496) that were never fixed and so correctly have no regression test; BL-225
+only meaningfully applies to `RESOLVED`/`FIXED`/`VERIFIED` (486 of 496):
+
+| Status | n | CITED | UNEVIDENCED | NOT-AUDITABLE |
+|---|---:|---:|---:|---:|
+| RESOLVED | 471 | 310 | 134 | 27 |
+| FIXED | 10 | 9 | 0 | 1 |
+| VERIFIED | 5 | 4 | 0 | 1 |
+| *(BL-225-applicable subtotal)* | *486* | *323* | *134* | *29* |
+| DUPLICATE | 6 | 4 | 1 | 1 |
+| INVALID | 3 | 2 | 0 | 1 |
+| WONTFIX | 1 | 0 | 1 | 0 |
+
+Within the BL-225-applicable subset alone: CITED 66.5%, UNEVIDENCED 27.6%, NOT-AUDITABLE 6.0% —
+materially the same as the whole-corpus numbers above (the excluded 10 rows are too few to move the
+percentages), but this is the correct denominator to quote going forward.
 
 Priority is sparse across the whole corpus (most items, including in every verdict bucket, carry no
 `priority` at all — a fact about the graph, not this tool):
