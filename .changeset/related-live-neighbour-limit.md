@@ -25,8 +25,11 @@ Observable contract changes for callers of `memory_related`:
   directions, after the `rel` filter) whose neighbour node has been
   invalidated. Deliberately NOT bounded by `limit` and not a paging denominator
   — this function has no `total` and no `offset` — so it is a neighbourhood
-  diagnostic only. Shipping as a patch under PUBLISHING.md's
-  patch-for-additive-API exception.
+  diagnostic only. Declared OPTIONAL on the exported `RelatedResult`, matching
+  `EntityEpisodesResult`: the type is re-exported from the package root, and a
+  REQUIRED property would break any external site constructing the literal, so
+  it would not qualify for PUBLISHING.md's patch-for-additive-API exception on
+  a patch bump. Always populated in practice, including on `E_NOT_FOUND`.
 - **Ordering** is now explicitly `outbound-then-inbound, edge-creation order`
   rather than whatever an unordered `SELECT * FROM edge` happened to yield. No
   importance ranking is imposed: unlike `memory_entity_episodes`, this tool
