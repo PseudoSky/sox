@@ -31,11 +31,29 @@ export HOME="$WORK/home"; mkdir -p "$HOME"
 export SOX_ECOSYSTEM_HOME="$WORK/sox-home"; mkdir -p "$SOX_ECOSYSTEM_HOME"
 mkdir -p "$VHOME" "$GLOBAL" "$CONSUMER" "$HOME/.memory"
 
+# Step 3 below regenerates the REAL `$REPO/registry/index.json` in place. That file
+# is not a build artifact — it carries checksums deliberately pinned to published
+# npm bytes, and `build-index` recomputes them from LOCAL disk bytes, so an
+# un-restored run silently replaces a curated supply-chain record with whatever
+# the working tree happens to hash to. Snapshot it now and restore unconditionally,
+# including on the `set -e` bail-out and Ctrl-C paths.
+REGISTRY_INDEX="$REPO/registry/index.json"
+REGISTRY_BACKUP="$WORK/registry-index.json.orig"
+[ -f "$REGISTRY_INDEX" ] && cp -p "$REGISTRY_INDEX" "$REGISTRY_BACKUP"
+
 cleanup() {
   [ -n "${VPID:-}" ] && kill "$VPID" 2>/dev/null || true
+  if [ -f "$REGISTRY_BACKUP" ]; then
+    if cmp -s "$REGISTRY_BACKUP" "$REGISTRY_INDEX"; then
+      echo "[smoke] registry/index.json unchanged"
+    else
+      cp -p "$REGISTRY_BACKUP" "$REGISTRY_INDEX"
+      echo "[smoke] registry/index.json RESTORED to its pre-smoke contents"
+    fi
+  fi
   echo "[smoke] workdir: $WORK (left for inspection)"
 }
-trap cleanup EXIT
+trap cleanup EXIT INT TERM
 
 # ── 1. verdaccio config: anonymous publish + public uplink ────────────────────
 cat > "$VHOME/config.yaml" <<EOF
