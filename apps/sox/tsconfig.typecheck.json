@@ -8,11 +8,13 @@
   // tsconfig.app.json (so compilerOptions/paths can't drift out of sync) and
   // overrides only rootDir (widened to cover apps/sox itself, not just
   // src/) and noEmit — mirroring libs/host-runtime/tsconfig.typecheck.json's
-  // split from tsconfig.lib.json.
+  // split from tsconfig.lib.json. rootDir is relative to THIS file's
+  // directory (apps/sox/), so "." means apps/sox itself; ".." would resolve
+  // to apps/ (the parent of every app), which is wrong.
   "extends": "./tsconfig.app.json",
   "compilerOptions": {
     "noEmit": true,
-    "rootDir": ".."
+    "rootDir": "."
   },
   "include": ["src/**/*.ts", "vitest.config.ts"],
   "exclude": ["node_modules"]
