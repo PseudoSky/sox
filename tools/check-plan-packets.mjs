@@ -12,15 +12,13 @@
  *     would have deadlocked on packets that were actually free to start;
  *   - one packet's `acceptance` label was rewritten for emphasis and stopped parsing.
  *
- * Every check below exists because that specific thing was wrong. This is the same
- * discipline plan-status.mjs applies to the derived plan blocks: the document is a
+ * Every check below exists because that specific thing was wrong. The document is a
  * machine input, so a human-readable-only document is a broken one.
  *
  * [ADR-0011 Stage 3] Section 4's open-item coverage check used to parse `### BL-<n>` headings out
  * of root `BACKLOG.md`, which was deleted along with `CHANGELOG.md` when the graph became the sole
- * source of truth for `BL-*` status. It now shells out to the `backlog` CLI, the same way
- * `tools/plan-status.mjs`'s `readGraphStatuses()` does (see that file for the fuller rationale) —
- * paginated, loud-fail on a CLI error, never silently "zero open items".
+ * source of truth for `BL-*` status. It now shells out to the `backlog` CLI directly — paginated,
+ * loud-fail on a CLI error, never silently "zero open items".
  *
  * Usage: node tools/check-plan-packets.mjs
  * Exit 0 = conformant. Non-zero = the state machine cannot be trusted.
@@ -36,9 +34,9 @@ const REQUIRED = ['requires', 'tier', 'Closes', 'Files', 'acceptance', 'budget',
 const plan = readFileSync(PLAN, 'utf8');
 const violations = [];
 
-// [ADR-0011 Stage 3] Open-set mirrors tools/plan-status.mjs's OPEN_STATUSES exactly — see that
-// file's D1 doc comment for the full table and reasoning. Kept as an independent literal (not
-// imported) so this script has no runtime dependency on plan-status.mjs's module shape.
+// [ADR-0011 Stage 3] Open-set of backlog graph statuses this check treats as "still open".
+// Kept as an independent literal (not imported from elsewhere) so this script has no runtime
+// dependency on another module's shape.
 const OPEN_STATUSES = new Set(['OPEN', 'IN_PROGRESS', 'PARTIAL', 'OUTSTANDING', 'DEFERRED', 'BLOCKED', 'MIXED', 'UNKNOWN']);
 
 function readOpenBlIds() {

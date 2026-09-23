@@ -117,8 +117,7 @@ node tools/commit-mine.mjs -m "msg" --hunks 'REGEX' -- CHANGELOG.md
 It seeds a **private** `GIT_INDEX_FILE` from HEAD, applies only the hunks you selected, and moves the
 branch with `commit-tree`/`update-ref`. The working tree is never modified, so another agent's
 uncommitted edits survive untouched. It refuses to move the ref if HEAD changed while the commit was
-being built. It **bypasses hooks** — run `node tools/check-backlog-markers.mjs` and
-`node tools/plan-status.mjs --check` yourself first.
+being built. It **bypasses hooks** — run `node tools/check-backlog-markers.mjs` yourself first.
 
 **`--amend` is not a message-only operation — it commits the SHARED INDEX (BL-457).** The pathspec
 rule above is worded around `git add`, so `--amend` reads as exempt. It is not: one live incident ran

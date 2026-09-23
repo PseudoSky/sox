@@ -37,12 +37,13 @@ as a result.
 
 ## Rules for agents working here
 
-1. **Status is derived — do not hand-write it.** Packet completion in `PLAN.md` and the progress
-   summary in `STATE.md` are generated from the backlog graph by `tools/plan-status.mjs`. Close the
-   backlog item, then run the tool; never edit a `status:` line or the block between the
-   `PLAN-STATUS` markers. Both files drifted badly while looking authoritative before this was
-   mechanical — `PLAN.md` named 39 already-closed ids and `STATE.md` led with a coverage warning
-   that had been false for two days.
+1. **Status of a `BL-*` item lives in the backlog graph — never hand-write it in `PLAN.md`/`STATE.md`.**
+   Query the graph directly (`backlog query` / `backlog get` / the `backlog_query`/`backlog_get`
+   MCP tools) rather than trusting any narrative status stamp in these docs; `PLAN.md` and
+   `STATE.md` carry hand-written narrative only, not a machine-derived ledger. `tools/plan-status.mjs`,
+   which used to generate that ledger, is retired — its status map silently read every closed id as
+   "shipped" because the backlog CLI it shelled out to never returned `humanId`, so nothing it ever
+   produced should be trusted or carried forward.
 2. **Everything else in `STATE.md` is hand-written and must be kept current**, in particular the
    "Live service" table — re-measure it from `memory_ping`/`memory_stats` rather than copying the
    previous values, and update its timestamp when you do.
@@ -55,7 +56,6 @@ as a result.
    Four items shipped as RESOLVED while still broken; that rule exists because of them.
 5. **Run the guards before committing:**
    ```
-   node tools/plan-status.mjs --check     # fails if PLAN.md/STATE.md drifted from the backlog graph
    node tools/check-no-nul-bytes.mjs
    ```
    Then **commit by pathspec** — `git commit <path> … -m "..."`. Never `git add -A`, `git add .`,

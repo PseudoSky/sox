@@ -57,8 +57,8 @@
  *       Show which hunks would be taken and which would be left behind. ALWAYS do this first
  *       with --hunks: a regex that matches too much is how you commit someone else's paragraph.
  *
- * This does NOT run hooks (it bypasses `git commit` entirely). Run the guard yourself first:
- *   node tools/plan-status.mjs --check
+ * This does NOT run hooks (it bypasses `git commit` entirely). Run `node tools/check-backlog-markers.mjs`
+ * yourself first.
  *
  * TWO GOTCHAS, both hit on first real use:
  *   - `--hunks` applies to EVERY path in the invocation. A regex chosen for one file will silently

@@ -22,8 +22,7 @@
  * `BL-*` at all. This file is now, like `check-backlog-markers.mjs`, reachable only by direct
  * manual invocation, and gets the identical retirement treatment.
  *
- * Use `node tools/plan-status.mjs [--check]` and the `backlog` CLI/MCP tools instead. See
- * CONTRIBUTING.md §1.9.
+ * Use the `backlog` CLI/MCP tools directly to query BL-* status. See CONTRIBUTING.md §1.9.
  *
  * Usage:
  *   node tools/check-bl-id-integrity.mjs               # RETIRED — prints a retirement message, exits 1
@@ -39,8 +38,7 @@ Usage:
 BACKLOG.md/CHANGELOG.md no longer exist, and this script is no longer wired into
 .husky/pre-commit (it used to run unconditionally on every commit). The BL-id collision it
 guarded against is now structurally impossible — the graph is the only place a BL-* id can be
-minted. Use \`node tools/plan-status.mjs [--check]\` and the backlog CLI/MCP tools instead. See
-CONTRIBUTING.md §1.9.`;
+minted. Use the backlog CLI/MCP tools directly to query BL-* status. See CONTRIBUTING.md §1.9.`;
 
 const RETIREMENT_MESSAGE = `check-bl-id-integrity: RETIRED (ADR-0011 Stage 3). This tool used to guard against a hand-edited
 BACKLOG.md heading colliding with a tool-filed graph item — both BACKLOG.md and CHANGELOG.md were
@@ -50,8 +48,8 @@ not merely unguarded. This script was also removed from the unconditional .husky
 see that file's history if you expected it to still run on every commit.
 
 Use instead:
-  node tools/plan-status.mjs --check       # derived-plan staleness guard, sourced from the graph
-  backlog create-item / backlog_create_item (no idOverride)   # file a new BL-* item
+  backlog create / backlog_create_item (no idOverride)   # file a new BL-* item
+  backlog query / backlog get                             # query the graph directly
 
 See CONTRIBUTING.md §1.9 for the full procedure. No BACKLOG.md/CHANGELOG.md read occurred.`;
 

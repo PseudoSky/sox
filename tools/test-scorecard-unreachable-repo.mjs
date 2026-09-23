@@ -20,8 +20,7 @@
  * GREEN (current code): the intercepted repo appears in `completion.unreachable` with a reason;
  *   the completion table renders a loud "⚠ UNKNOWN" line naming it; `completion.byPkg` contains
  *   NO entries for that repo (so it can never silently read as "0 open, all done").
- * RED (pre-fix shape, reconstructed via source mutation on a scratch copy — same technique
- *   `tools/test-plan-status-graph-source.mjs` already uses for its own swallow-variant RED arm):
+ * RED (pre-fix shape, reconstructed via source mutation on a scratch copy):
  *   the identical fake-`backlog` failure produces NO `unreachable` entry, NO warning, and
  *   `completion.byPkg`/`totals` simply omit the repo with no signal at all.
  *
@@ -141,8 +140,7 @@ function runScorecardJson(backlogShimDir, scriptPath) {
 }
 
 // ---------------------------------------------------------------------------------------------
-// RED — reconstruct the pre-fix swallow shape via source mutation on a scratch copy, same
-// technique tools/test-plan-status-graph-source.mjs already uses for its own RED arm.
+// RED — reconstruct the pre-fix swallow shape via source mutation on a scratch copy.
 // ---------------------------------------------------------------------------------------------
 {
   const src = fs.readFileSync(SCORECARD_SCRIPT, 'utf8');
@@ -173,9 +171,6 @@ function runScorecardJson(backlogShimDir, scriptPath) {
     const scratchDir = fs.mkdtempSync(path.join(os.tmpdir(), 'scorecard-red-'));
     const scratchScript = path.join(scratchDir, 'scorecard.mjs');
     fs.writeFileSync(scratchScript, redSrc);
-    // The RED copy still imports './plan-status.mjs' relatively — symlink it in alongside so the
-    // scratch copy resolves the same module without dragging the whole tools/ tree along.
-    fs.symlinkSync(path.join(HERE, 'plan-status.mjs'), path.join(scratchDir, 'plan-status.mjs'));
     const shimDir = fs.mkdtempSync(path.join(os.tmpdir(), 'scorecard-shim-red-'));
     makeInterceptingBacklogShim(shimDir);
     try {

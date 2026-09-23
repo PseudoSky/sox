@@ -27,7 +27,7 @@
  */
 
 export const GUARDS = [
-  // ---------------------------------------------------------------- Tier 1 (13) -----------
+  // ---------------------------------------------------------------- Tier 1 (10) -----------
   {
     id: 'bl222',
     tier: 1,
@@ -46,12 +46,6 @@ export const GUARDS = [
     script: 'test-bl409-pathspec-commit.mjs',
     // Pins a documented git procedure (pathspec-limited commits), not a specific tool script.
     watch: ['CLAUDE.md'],
-  },
-  {
-    id: 'bl435',
-    tier: 1,
-    script: 'test-bl435-unguarded-prose.mjs',
-    watch: ['tools/plan-status.mjs'],
   },
   {
     id: 'bl446',
@@ -80,12 +74,6 @@ export const GUARDS = [
     tier: 1,
     script: 'test-bl463-unstage-orphans.mjs',
     watch: ['tools/commit-mine.mjs', 'tools/unstage-orphans.mjs'],
-  },
-  {
-    id: 'bl464',
-    tier: 1,
-    script: 'test-bl464-duplicate-status-stamp.mjs',
-    watch: ['tools/plan-status.mjs'],
   },
   {
     id: 'bl465',
