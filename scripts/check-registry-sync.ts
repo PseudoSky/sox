@@ -124,7 +124,7 @@ function initCliState(): void {
   // Read the current committed registry
   const registryPath = path.join(root, 'registry', 'index.json');
   if (!fs.existsSync(registryPath)) {
-    console.error('check-registry-sync: registry/index.json not found — run npx nx run registry:sync-index first');
+    console.error('check-registry-sync: registry/index.json not found — a local rebuild never writes it; see AGENTS.md § registry is release-only (build it via the release flow, or repin an already-published row with tools/repin-registry-entry.mjs)');
     process.exit(1);
   }
 
@@ -143,7 +143,7 @@ function initCliState(): void {
       `check-registry-sync: WARNING — ${provisionalIds.length} committed entr${provisionalIds.length === 1 ? 'y is' : 'ies are'} ` +
       `provisional (built from a dirty tree via --allow-dirty): ${provisionalIds.join(', ')}`,
     );
-    console.warn('  Re-run `npx nx run registry:sync-index` against a clean tree to replace with a reproducible checksum.');
+    console.warn('  A local rebuild never writes registry/index.json — see AGENTS.md § registry is release-only. Replace a provisional row via the release flow, or repin an already-published row with tools/repin-registry-entry.mjs.');
   }
 
   committedEntries = stripProvenanceFields(committedRawEntries);
@@ -398,7 +398,7 @@ function runDriftGate(): boolean {
 } else {
   console.error('check-registry-sync: FAIL — registry/index.json is out of sync with disk.');
   console.error('  Extensions on disk but not in registry, or registry entries no longer on disk.');
-  console.error('  Fix: npx nx run registry:sync-index && git add registry/index.json');
+  console.error('  A local rebuild never writes registry/index.json — see AGENTS.md § registry is release-only. A missing/drifted row is fixed only by the release flow, or by tools/repin-registry-entry.mjs for a row that is already published.');
   console.error(`  Disk: ${liveEntries.length} entries  Registry: ${committedEntries.length} entries`);
 
   const committedIds = new Set(committedEntries.map((e) => (e as { id: string }).id));

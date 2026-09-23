@@ -1357,8 +1357,8 @@ const claudeMd = (p) => {
     `\n## Build / test\n\n` +
     `- \`npx nx build ${p.name}\` · \`npx nx test ${p.name}\` · \`npx nx lint ${p.name}\`\n` +
     `- Build via nx targets only — bare \`tsc\` emits into \`src/\` and bypasses project graph.\n` +
-    `- This is a data-layer library; it is NOT registered in \`registry/index.json\` —\n` +
-    `  skip \`npx nx run registry:sync-index\` after changes here.\n` +
+    `- This is a data-layer library; it is NOT registered in \`registry/index.json\` — no registry\n` +
+    `  step is needed after changes here.\n` +
     privNote
   );
 };
@@ -1407,5 +1407,5 @@ if (!DRY) {
   console.log('\nnext steps:');
   console.log('  1. pnpm install       — resolve workspace deps (hybrid-search, analysis)');
   console.log('  2. npx nx build <name> — verify each skeleton compiles (no implementation yet)');
-  console.log('  Note: registry:sync-index is NOT needed (data libs are not registry extensions)');
+  console.log('  Note: no registry step is needed (data libs are not registry extensions)');
 }

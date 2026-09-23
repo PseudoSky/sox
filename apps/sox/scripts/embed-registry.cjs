@@ -41,7 +41,7 @@ const out =
 const outDir = path.dirname(out);
 
 if (!fs.existsSync(src)) {
-  console.error(`embed-registry: registry/index.json not found at ${src} — run registry:sync-index first`);
+  console.error(`embed-registry: registry/index.json not found at ${src} — run build-index:publish first`);
   process.exit(1);
 }
 

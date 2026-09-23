@@ -32,8 +32,8 @@ memory-refactor plan states.
 
 - `npx nx build hybrid-search` · `npx nx test hybrid-search` · `npx nx lint hybrid-search`
 - Build via nx targets only — bare `tsc` emits into `src/` and bypasses project graph.
-- This is a data-layer library; it is NOT registered in `registry/index.json` —
-  skip `npx nx run registry:sync-index` after changes here.
+- This is a data-layer library; it is NOT registered in `registry/index.json` — no registry
+  step is needed after changes here.
 
 ## Backlog
 
