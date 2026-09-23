@@ -19,6 +19,13 @@ export default defineConfig({
     setupFiles: [
       resolve(repoRoot, `${SPEC_DIR}/vitest.setup.ts`),
     ],
+    // Run-scoped, once, in the runner process — NOT per worker. It reports whether the two
+    // `resolve.alias` entries above point at a dist/ that is older than its src/. Those aliases
+    // mean this suite executes BUILT ARTIFACTS, and dist/ is gitignored, so neither `git status`
+    // nor `tools/check-suite-tree-state.mjs` could see a stale one; on 2026-09-22 a six-hour-old
+    // memory-core build turned into a reported "main is red and shipped that way" P0 against a
+    // green main. See vitest.global-setup.ts for the full incident.
+    globalSetup: [resolve(repoRoot, `${SPEC_DIR}/vitest.global-setup.ts`)],
     environment: 'node',
     root: repoRoot,
     // BL-567: both projects keep the 30s budgets. The 'real-backend' project

@@ -12,6 +12,15 @@
     "esModuleInterop": true,
     "types": ["node"]
   },
-  "include": ["src/**/*.ts", "*.test.ts", "*.spec.ts", "vitest.setup.ts"],
+  "include": [
+    "src/**/*.ts",
+    "*.test.ts",
+    "*.spec.ts",
+    "vitest.setup.ts",
+    // Run-scoped dist-freshness banner (8412f6a8). Listed explicitly for the same reason
+    // vitest.setup.ts is: it is real, shipped test infrastructure that nothing else would
+    // typecheck, and it imports across the repo root into tools/dist-freshness.mjs.
+    "vitest.global-setup.ts"
+  ],
   "exclude": ["node_modules", "dist"]
 }
