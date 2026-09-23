@@ -45,13 +45,45 @@ import type {
 
 // ── Query normalization ──────────────────────────────────────────────────────
 
-/** trim → lowercase → whitespace-split → drop empty tokens. Shared by every
- *  backend so the token sets fed to `buildMatchQuery` are engine-identical. */
+/** trim → lowercase → whitespace-split → strip double quotes → drop empty
+ *  tokens. Shared by every backend so the token sets fed to
+ *  `buildMatchQuery` are engine-identical.
+ *
+ *  (BUG-STOREADAPTER-TURSO-FTS-QUOTE-ESCAPE-001) The double-quote strip is
+ *  load-bearing, not cosmetic. A caller query that itself contains double
+ *  quotes — e.g. a recall for `"e68be52c" or "cb47fb79" review findings` —
+ *  tokenizes to `['"e68be52c"', 'or', ...]` with the quotes glued to the
+ *  token. `buildMatchQuery` then escapes each embedded `"` by doubling it
+ *  (the SQLite FTS5 convention) and wraps the result, producing a
+ *  triple-quoted token. SQLite FTS5 parses that fine. Turso's Tantivy query
+ *  parser does NOT implement a doubled quote as an escape inside a phrase
+ *  and rejects the whole match query outright:
+ *
+ *    FTS parse error: Syntax Error: """e68be52c""" OR "or" OR ...
+ *
+ *  Measured 2026-09-22 against a live Turso store: the triple-quoted form
+ *  throws, while `"e68be52c" OR "or"` returns rows — the triple-quote form
+ *  is the sole culprit; the bare `"or"` token is NOT implicated. In
+ *  production that error was caught by recall.ts's BL-391 handler and
+ *  downgraded to an `fts:` degradation, so the BM25 arm silently produced
+ *  zero rows for any recall whose query contained a quotation mark
+ *  (observed once on the live store, pid 99483, 2026-09-22T19:57:59Z).
+ *
+ *  The fix lives HERE rather than in `TursoFTSDialect.buildMatchQuery`
+ *  precisely to preserve the engine-identical-token-set invariant this
+ *  function exists to guarantee: per-dialect quote handling would make the
+ *  same caller query mean different things on the two backends. A double
+ *  quote in a free-text recall query is search *syntax*, never searchable
+ *  content, so dropping it is also the semantically correct read — the
+ *  caller wants the term, not a literal-quote phrase. `buildMatchQuery`
+ *  keeps its escaping as defence-in-depth for any non-recall caller that
+ *  builds tokens without going through this function. */
 export function normalizeFtsTokens(query: string): string[] {
   return query
     .trim()
     .toLowerCase()
     .split(/\s+/)
+    .map((t) => t.replace(/"/g, ''))
     .filter((t) => t.length > 0);
 }
 
