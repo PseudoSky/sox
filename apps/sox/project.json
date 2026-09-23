@@ -62,8 +62,12 @@
         "{projectRoot}/scripts/rewrite-paths.cjs",
         "{projectRoot}/scripts/stamp-build.cjs",
         "{projectRoot}/scripts/embed-registry.cjs",
+        "{projectRoot}/scripts/registry-publish-gate.cjs",
         "{workspaceRoot}/tools/bundle-extension.cjs",
-        "{workspaceRoot}/registry/index.json"
+        "{workspaceRoot}/registry/index.json",
+        {
+          "env": "SOX_REGISTRY_PUBLISH"
+        }
       ],
       "dependsOn": [
         "compile",

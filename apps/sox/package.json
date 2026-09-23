@@ -6,6 +6,10 @@
   "publishConfig": {
     "access": "public"
   },
+  "scripts": {
+    "prepack": "node scripts/check-bundled-registry.cjs",
+    "prepublishOnly": "node scripts/check-bundled-registry.cjs"
+  },
   "type": "commonjs",
   "main": "./dist/index.js",
   "bin": {
