@@ -107,9 +107,49 @@ quote** — caught by recall.ts's BL-391 handler and downgraded to an `fts:` deg
 isn't committed. If anyone rebuilds from a clean tree, **the fix silently disappears from
 production.** This needs an owner.
 
+## 7. LIVE OUTAGE discovered at close — memory-server has zero running processes
+
+Not caused by this session: `dist/index.js` is still byte-identical at
+`564840c4…`, and no restart was ever performed.
+
+```
+soxe service status memory-server
+  loaded:     yes
+  owner:      os-unit
+  live pids:  (none)
+  entrypoint: .../memory-server/dist/index.js
+```
+
+`memory_ping` → `backend unavailable`. `ps`/`pgrep` show no node process on the artifact.
+The launchd unit is loaded but nothing is running.
+
+**The plist trap the brief warned about does NOT apply.** I did not re-enable the service, so
+the unit file was never regenerated, and its env block is intact:
+
+```
+SOX_CONFIG_DB_PATH   /Users/nix/.memory/memory.db
+SOX_CONFIG_PORT      3099   ·   SOX_CONFIG_HTTP_PORT 3099
+SOX_CONFIG_STOP_TIMEOUT_MS 5000   ·   SOX_SERVICE_ID memory-server
+```
+
+Recovery is **safe and does not deploy anything new** — the on-disk artifact is the same
+`564840c4` that was blessed and running, so `soxe service restart memory-server` restores
+service without shipping a single unreviewed line. I attempted exactly that and it was
+**blocked by the auto-mode permission classifier as a "Production Deploy"**. I did not work
+around it. This needs a human green-light; it is a one-command fix.
+
+Episode count was NOT captured — the store is only reachable through the server, which is down.
+
+## Backlog filed
+
+- `995b5fe4-167c-4d8a-8db3-ab95e007a2ac` — live artifact contains uncommitted `fts-ops.ts` (§6)
+- `8412f6a8-e861-47b0-93e6-8d170a32f743` — stale `libs/*/dist` degrades bundles to a half-fix (§4)
+
 ## Recommended next step
 
-**Do not rebuild-and-transplant right now.** With the restore off the table, the only payoff is
+**First: get the service back up** (§7) — one `soxe service restart memory-server`, no new code.
+
+**Then: do not rebuild-and-transplant right now.** With the restore off the table, the only payoff is
 `invalidated_count` on one MCP tool, and buying it means a clean-worktree build + `pnpm install`
 + a `dist/` transplant while the release agent holds `package.json`, `PUBLISHING.md`, and
 `scripts/build-index.ts` modified. Bad trade.
