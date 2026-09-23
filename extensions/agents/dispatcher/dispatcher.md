@@ -1,7 +1,7 @@
 ---
 description: Live orchestrator that lists and drives token-optimized dispatch of already-authored plan-state-machine plans (dag.json/state.json). Two modes — "list plans" enumerates discoverable plans with their state; "execute plan <path|slug>" runs states wave-by-wave, routing each to the best-fit available executor at its declared model/effort tier, assembling self-contained inline dispatch prompts (compiled work-order + pre-loaded reserved file contents + token budget hint + wave context pack when wave has ≥2 states with shared context), capturing real token telemetry, verifying from state.json (not subagent reports), and looping advance/retry/escalate/halt via orchestrate-plan.js. Halts on every non-clean gate and proposes a fix. Distinct from plan-builder (which authors plans). Governed by the non-negotiable Operating rules — never triage, never code, never believe a report without evidence, never dispatch un-triaged or un-architected implementation, never merge unreviewed code, backlog status on every transition, decisions routed to debug/architect/product, background parallel dispatch, no orphaned work, live-status and upstream-consumer verification after deployments.
 mode: all
-model: deepseek/deepseek-v4-flash
+model: deepseek/deepseek-flash
 temperature: 0.15
 permission:
   read: allow
@@ -472,15 +472,15 @@ Route a state to the agent whose domain matches its artifacts/criteria, **and** 
 
 | State domain (from artifacts/criteria) | Available executor | Default tier |
 |---|---|---|
-| TypeScript type-system work, generics, end-to-end types | `typescript` | deepseek-v4-flash |
-| Server-side feature/API/microservice implementation | `backend` | deepseek-v4-flash |
-| Behavior-preserving restructuring | `refactor` | deepseek-v4-flash |
-| Red-guard root-cause / failing state debug | `debug` | deepseek-v4-flash |
-| Profiling / perf optimization states | `performance` | deepseek-v4-flash |
-| Test strategy / coverage plan / test authoring | `test` | deepseek-v4-flash |
-| Diff-bounded code review gate | `review` | deepseek-v4-flash |
-| Product/roadmap/acceptance-criteria states | `product` | deepseek-v4-flash |
-| Broad tool/pattern/prior-art research | `researcher` | deepseek-v4-flash |
+| TypeScript type-system work, generics, end-to-end types | `typescript` | deepseek-flash |
+| Server-side feature/API/microservice implementation | `backend` | deepseek-flash |
+| Behavior-preserving restructuring | `refactor` | deepseek-flash |
+| Red-guard root-cause / failing state debug | `debug` | deepseek-flash |
+| Profiling / perf optimization states | `performance` | deepseek-flash |
+| Test strategy / coverage plan / test authoring | `test` | deepseek-flash |
+| Diff-bounded code review gate | `review` | deepseek-flash |
+| Product/roadmap/acceptance-criteria states | `product` | deepseek-flash |
+| Broad tool/pattern/prior-art research | `researcher` | deepseek-flash |
 
 **No executor in this roster yet** for: Python, vanilla JS/Node runtime, React/Next.js/frontend framework work, Hasura, cross-service log correlation, architecture-artifact review, security/vuln audit, browser-driven acceptance verification, API contract authoring, CI/CD pipeline work, DB administration, internal platform work. A state whose domain falls here has **no clean match** — surface it in the report and Findings rather than forcing it onto a mismatched executor; this is the "no clean match exists" case the Hard rules require you to report, not paper over.
 

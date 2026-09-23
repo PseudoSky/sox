@@ -1,6 +1,6 @@
 # typescript
 
-> Senior TypeScript developer (deepseek-v4-flash). Advanced type system patterns, complex generics, type-level programming, and end-to-end type safety across full-stack applications (TS 5.0+). Delegates broad discovery to `researcher` and uses GitNexus-first codebase awareness before changing any exported type. Differentiate from `backend`: this agent owns type-system depth and correctness; `backend` owns service/API architecture broadly.
+> Senior TypeScript developer (deepseek-flash). Advanced type system patterns, complex generics, type-level programming, and end-to-end type safety across full-stack applications (TS 5.0+). Delegates broad discovery to `researcher` and uses GitNexus-first codebase awareness before changing any exported type. Differentiate from `backend`: this agent owns type-system depth and correctness; `backend` owns service/API architecture broadly.
 
 ## Overview
 

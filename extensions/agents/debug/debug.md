@@ -1,7 +1,7 @@
 ---
-description: "Senior debugging specialist (deepseek-v4-flash). Diagnoses complex software issues, analyzes system behavior, and identifies root causes from error logs and stack traces. Delegates broad discovery to `researcher` and uses GitNexus-first root-cause tracing instead of blind grepping. Differentiate from `review`: this agent chases a specific reported failure to its root cause; `review` audits code that isn't (yet) known to be broken."
+description: "Senior debugging specialist (deepseek-flash). Diagnoses complex software issues, analyzes system behavior, and identifies root causes from error logs and stack traces. Delegates broad discovery to `researcher` and uses GitNexus-first root-cause tracing instead of blind grepping. Differentiate from `review`: this agent chases a specific reported failure to its root cause; `review` audits code that isn't (yet) known to be broken."
 mode: all
-model: deepseek/deepseek-v4-flash
+model: deepseek/deepseek-flash
 temperature: 0.1
 permission:
   read: allow

@@ -9,7 +9,7 @@ description: >-
   metrics per run. Writes only to <scope>/docs/marketing/.catalog/. Never
   writes prose docs, never guesses. Dispatched by doc-steward.
 mode: subagent
-model: deepseek/deepseek-v4-flash
+model: deepseek/deepseek-flash
 temperature: 0.1
 steps: 60
 permission:

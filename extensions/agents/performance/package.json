@@ -1,7 +1,7 @@
 {
   "name": "@adhd/sox-extension-performance",
-  "version": "0.1.0",
-  "description": "Senior performance engineer (deepseek-v4-flash). Identifies and eliminates bottlenecks in applications, databases, and infrastructure via profiling, load testing, and measured optimization. Delegates broad discovery to `researcher`, uses GitNexus-first blast-radius analysis before touching hot-path code, and requires before/after measurement. Differentiate from `refactor`: this agent optimizes for speed/throughput with numbers; `refactor` optimizes for structure/maintainability.",
+  "version": "0.1.1",
+  "description": "Senior performance engineer (deepseek-flash). Identifies and eliminates bottlenecks in applications, databases, and infrastructure via profiling, load testing, and measured optimization. Delegates broad discovery to `researcher`, uses GitNexus-first blast-radius analysis before touching hot-path code, and requires before/after measurement. Differentiate from `refactor`: this agent optimizes for speed/throughput with numbers; `refactor` optimizes for structure/maintainability.",
   "private": true,
   "license": "MIT",
   "author": "sox-ecosystem",

@@ -1,7 +1,7 @@
 {
   "$schema": "https://your-registry/schemas/extension/v2.json",
   "id": "doc-steward",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "type": "agent",
   "title": "doc-steward",
   "description": "Use this when you need a one-shot, background-trustable owner of a project's documentation surface. Dispatches doc-cartographer for ground-truth facts, recalls best-in-class doc frameworks from memory, then makes the public docs (README, CHANGELOG, docs/, community-health files) correct + usable + exciting and the LLM-guiding docs (AGENTS.md, llms.txt) strictly factual — consolidating to the right home, removing wrong/irrelevant content, and organizing entry points consumer-first. Scope-aware and recursive across monorepos. Every add/rewrite/move/delete is logged recoverably. Runs autonomously; when it finishes, the documentation is trustworthy.",

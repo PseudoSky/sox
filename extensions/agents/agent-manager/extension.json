@@ -1,7 +1,7 @@
 {
   "$schema": "https://your-registry/schemas/extension/v2.json",
   "id": "agent-manager",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "type": "agent",
   "title": "agent-manager",
   "description": "Use this when you need to craft, test, or manage agents, skills, and plugins across opencode and Claude Code — e.g. \"create an agent\", \"build a skill or plugin\", \"A/B test this agent\", \"optimize this prompt\", \"make a Claude plugin\", \"lazy-load my agents\", or any cross-runtime agent-management work.",

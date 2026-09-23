@@ -1,6 +1,6 @@
 {
   "name": "@adhd/sox-extension-agent-manager",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "agent-manager agent",
   "private": true,
   "license": "MIT",

@@ -11,7 +11,7 @@ description: >-
   canonical tasks using ONLY the docs. Writes a scored verdict to
   .catalog/review.md. Never edits the docs it judges.
 mode: subagent
-model: deepseek/deepseek-v4-flash
+model: deepseek/deepseek-flash
 temperature: 0.1
 steps: 40
 permission:
