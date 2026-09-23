@@ -17,6 +17,33 @@
  * defect (`Invalid page type: 0`), never reproduced on the sqlite adapter.
  * Skips cleanly if the Turso native driver is not present in this checkout.
  *
+ * 4b2bcce9 (this fix): all three `it()` blocks below computed `corrupted` /
+ * `corruptionDetail` from `healMissingVectors()` + an explicit
+ * `PRAGMA integrity_check`, wrote them to a hardcoded scratchpad jsonl, and
+ * `console.log`'d them — but never called `expect()` on `corrupted`. That is
+ * the exact b1500aa3/BL-167 shape: a green run proved nothing, including on a
+ * run where the pass reproduced the CRITICAL open corruption bug (ae763675,
+ * "Invalid page type: 0") these tests are named for. Each `it()` now ends
+ * with `expect(corrupted, ...).toBe(false)`, naming ae763675/4b2bcce9. The
+ * hardcoded `RESULTS_LOG` scratchpad path (another agent session's temp dir,
+ * not a durable artifact location) is removed — the assertion is now the
+ * test's actual outcome, not a side channel nobody reads.
+ *
+ * 4b2bcce9 red→green also surfaced a SECOND pre-existing defect in
+ * `checkIntegrity()` below: this probe's `PRAGMA integrity_check` reliably
+ * hits the documented-benign Turso FTS directory-index count mismatch
+ * (`wrong # of entries in index __turso_internal_fts_dir_idx_fts_node_key`)
+ * on every one of these three tests — a real Turso storage-layer artifact,
+ * but NOT the CRITICAL ae763675 corruption ("Invalid page type: 0") these
+ * tests exist to catch. See `libs/data/store/store-adapter/src/integrity.ts`'s
+ * `classifyIntegrityMessages`/`isKnownFalsePositive`, the shared single
+ * source of truth every other integrity caller in this repo already uses for
+ * this exact distinction. `checkIntegrity()` now routes through it instead of
+ * treating any non-'ok' row as damage — before this fix, asserting `corrupted`
+ * at all (this item's own remediation) would have made all three tests
+ * permanently, falsely RED on a benign artifact, which is likely WHY the
+ * original author never added the assertion in the first place.
+ *
  * Gate: npx nx test memory-core --skip-nx-cache
  */
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
@@ -41,14 +68,6 @@ try {
 }
 
 const HOOK_TIMEOUT_MS = 300_000;
-
-// vitest's default reporter swallows console.log from passing tests under
-// this nx run-commands pipe — write results directly to a file so they
-// survive regardless of reporter/stdout buffering behavior.
-const RESULTS_LOG = '/private/tmp/claude-502/-Users-nix-dev-ai-sox-ecosystem/c899d6b8-aeb3-43e4-875c-846f92d311a5/scratchpad/heal-churn-results.jsonl';
-function recordResult(entry: Record<string, unknown>): void {
-  fs.appendFileSync(RESULTS_LOG, JSON.stringify({ t: new Date().toISOString(), ...entry }) + '\n');
-}
 
 interface TestContext {
   dir: string;
@@ -106,8 +125,22 @@ interface IntegrityVerdict {
 async function checkIntegrity(adapter: StoreAdapter): Promise<IntegrityVerdict> {
   try {
     const result = await adapter.executeAll<Record<string, string>>('PRAGMA integrity_check');
-    const rows = result.rows.map((r) => Object.values(r)[0] ?? '');
-    return { ok: rows.length === 1 && rows[0] === 'ok', rows };
+    const rawRows = result.rows.map((r) => Object.values(r)[0] ?? '');
+    // Strip the clean-bill-of-health 'ok' banner before classifying — it is
+    // not a message and classifyIntegrityMessages does not special-case it
+    // (see its own doc comment: callers are expected to strip it upstream).
+    const messages = rawRows.filter((r) => r !== 'ok');
+    // `@adhd/sox-store-adapter` is lazy-loaded throughout memory-core (see
+    // dialect.ts/store-path.ts) — dynamic import here matches that pattern
+    // and keeps this test file from tripping the enforce-module-boundaries
+    // static-import-of-lazy-library rule.
+    const { classifyIntegrityMessages } = await import('@adhd/sox-store-adapter');
+    const classified = classifyIntegrityMessages(messages);
+    // Only `damage` (real, unclassified rows) counts as corruption for this
+    // probe. `knownFalsePositives` (the Turso FTS dir-index count artifact —
+    // see file header, 4b2bcce9) and `pageAccounting` (reclaimable-free-space
+    // noise) are documented-benign and are NOT ae763675.
+    return { ok: classified.damage.length === 0, rows: rawRows };
   } catch (err) {
     // A thrown "Corrupt database: Invalid page type: 0" from the integrity
     // check itself IS the corruption signal — the whole point of this probe.
@@ -129,9 +162,10 @@ describe('BUG-HEAL-CHURN-TRIGGERS-PAGE-CORRUPTION-001 — per-pass vs cumulative
   });
 
   it(
-    'BASELINE (reproduction check): single healMissingVectors call over the FULL 3000-row backlog ' +
-    '(limit=3000, one pass, one call) — must reproduce the documented corruption or this whole ' +
-    'investigation is standing on a stale/environment-dependent bisection',
+    'BASELINE (bounded canary, NOT a reproduction requirement — ae763675 is itself UNREPRODUCED, ' +
+    'so a green run here is not proof the bug is absent): single healMissingVectors call over the ' +
+    'FULL 3000-row backlog (limit=3000, one pass, one call) must not corrupt the store, must not ' +
+    'exceed its time budget, and must heal every row in that single pass',
     { skip: !_hasTurso, timeout: HOOK_TIMEOUT_MS },
     async () => {
       const ctx = await tmpTursoDb();
@@ -139,8 +173,14 @@ describe('BUG-HEAL-CHURN-TRIGGERS-PAGE-CORRUPTION-001 — per-pass vs cumulative
         await seedVectorlessBacklog(ctx.adapter, 3000);
         let corrupted = false;
         let corruptionDetail = '';
+        let healed = -1;
+        let failed = -1;
+        let timeBudgetExceeded = true;
         try {
           const result = await healMissingVectors(ctx.adapter, ctx.wq, { limit: 3000, logSink: () => { /* quiet */ } });
+          healed = result.healed;
+          failed = result.failed;
+          timeBudgetExceeded = result.time_budget_exceeded;
           const verdict = await checkIntegrity(ctx.adapter);
           corrupted = !verdict.ok;
           corruptionDetail = verdict.rows.join('; ');
@@ -154,7 +194,21 @@ describe('BUG-HEAL-CHURN-TRIGGERS-PAGE-CORRUPTION-001 — per-pass vs cumulative
           console.log(`BASELINE single-pass-3000: healMissingVectors THREW: ${corruptionDetail}`);
         }
         console.log(`BASELINE RESULT: corrupted=${corrupted} detail=${corruptionDetail}`);
-        recordResult({ case: 'BASELINE-single-3000', corrupted, detail: corruptionDetail });
+        expect(
+          corrupted,
+          `BASELINE single-pass-3000 healMissingVectors() left the store failing PRAGMA ` +
+          `integrity_check (or threw) — this reproduces the CRITICAL open corruption bug ` +
+          `ae763675 ("Invalid page type: 0"). Do not weaken this assertion to force green; ` +
+          `escalate ae763675 instead (4b2bcce9). Detail: ${corruptionDetail.slice(0, 500)}`,
+        ).toBe(false);
+        expect(
+          timeBudgetExceeded,
+          'BASELINE must complete the full 3000-row backlog inside one pass’s time budget ' +
+          '(DEFAULT_EMBED_HEAL_TIME_BUDGET_MS) for the "one pass, one call" premise to hold — a ' +
+          'budget-truncated pass is EXPERIMENT A in disguise, not the baseline (4b2bcce9).',
+        ).toBe(false);
+        expect(failed, 'BASELINE must not fail to heal any row over a clean vectorless backlog (4b2bcce9).').toBe(0);
+        expect(healed, 'BASELINE (limit=3000 over a 3000-row backlog) must heal every row in the single pass (4b2bcce9).').toBe(3000);
       } finally {
         ctx.cleanup();
       }
@@ -171,8 +225,12 @@ describe('BUG-HEAL-CHURN-TRIGGERS-PAGE-CORRUPTION-001 — per-pass vs cumulative
         await seedVectorlessBacklog(ctx.adapter, 3000);
         let corrupted = false;
         let corruptionDetail = '';
+        let healed = -1;
+        let failed = -1;
         try {
           const result = await healMissingVectors(ctx.adapter, ctx.wq, { limit: 500, logSink: () => { /* quiet */ } });
+          healed = result.healed;
+          failed = result.failed;
           const verdict = await checkIntegrity(ctx.adapter);
           corrupted = !verdict.ok;
           corruptionDetail = verdict.rows.join('; ');
@@ -186,7 +244,15 @@ describe('BUG-HEAL-CHURN-TRIGGERS-PAGE-CORRUPTION-001 — per-pass vs cumulative
           console.log(`EXPERIMENT A single-pass-500: healMissingVectors THREW: ${corruptionDetail}`);
         }
         console.log(`EXPERIMENT A RESULT: corrupted=${corrupted} detail=${corruptionDetail}`);
-        recordResult({ case: 'EXPERIMENT-A-single-500', corrupted, detail: corruptionDetail });
+        expect(
+          corrupted,
+          `EXPERIMENT A single-pass-500 healMissingVectors() left the store failing PRAGMA ` +
+          `integrity_check (or threw) — this reproduces the CRITICAL open corruption bug ` +
+          `ae763675 ("Invalid page type: 0"). Do not weaken this assertion to force green; ` +
+          `escalate ae763675 instead (4b2bcce9). Detail: ${corruptionDetail.slice(0, 500)}`,
+        ).toBe(false);
+        expect(failed, 'EXPERIMENT A must not fail to heal any row within its 500-row limit (4b2bcce9).').toBe(0);
+        expect(healed, 'EXPERIMENT A (limit=500 over a 3000-row backlog) must heal exactly 500 rows in this single pass (4b2bcce9).').toBe(500);
       } finally {
         ctx.cleanup();
       }
@@ -205,10 +271,14 @@ describe('BUG-HEAL-CHURN-TRIGGERS-PAGE-CORRUPTION-001 — per-pass vs cumulative
         let corrupted = false;
         let corruptionDetail = '';
         let totalHealed = 0;
+        let totalFailed = 0;
+        const perPassHealed: number[] = [];
         try {
           for (let pass = 0; pass < 6; pass++) {
             const result = await healMissingVectors(ctx.adapter, ctx.wq, { limit: 500, logSink: () => { /* quiet */ } });
             totalHealed += result.healed;
+            totalFailed += result.failed;
+            perPassHealed.push(result.healed);
             console.log(
               `EXPERIMENT B pass ${pass}: healed=${result.healed} failed=${result.failed} ` +
               `cumulative_healed=${totalHealed}`,
@@ -232,7 +302,22 @@ describe('BUG-HEAL-CHURN-TRIGGERS-PAGE-CORRUPTION-001 — per-pass vs cumulative
           console.log(`EXPERIMENT B: threw mid-sequence: ${corruptionDetail}`);
         }
         console.log(`EXPERIMENT B RESULT: corrupted=${corrupted} total_healed=${totalHealed} detail=${corruptionDetail}`);
-        recordResult({ case: 'EXPERIMENT-B-sequential-6x500', corrupted, total_healed: totalHealed, detail: corruptionDetail });
+        expect(
+          corrupted,
+          `EXPERIMENT B sequential-6x500 healMissingVectors() (cumulative_healed=${totalHealed}) ` +
+          `left the store failing PRAGMA integrity_check (or threw) — this reproduces the ` +
+          `CRITICAL open corruption bug ae763675 ("Invalid page type: 0"). Do not weaken this ` +
+          `assertion to force green; escalate ae763675 instead (4b2bcce9). ` +
+          `Detail: ${corruptionDetail.slice(0, 500)}`,
+        ).toBe(false);
+        expect(totalFailed, 'EXPERIMENT B must not fail to heal any row across all 6 passes (4b2bcce9).').toBe(0);
+        expect(
+          perPassHealed,
+          `EXPERIMENT B must complete all 6 passes and heal exactly 500 rows in each — a short pass ` +
+          `means the backlog ran out before churn accumulated, invalidating the "cumulative churn = ` +
+          `3000, spread across 6 calls" premise this experiment is named for (4b2bcce9).`,
+        ).toEqual([500, 500, 500, 500, 500, 500]);
+        expect(totalHealed, 'EXPERIMENT B cumulative healed across all 6 passes must equal the full 3000-row backlog (4b2bcce9).').toBe(3000);
       } finally {
         ctx.cleanup();
       }
