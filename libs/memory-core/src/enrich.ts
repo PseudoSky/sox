@@ -187,6 +187,26 @@ export interface WriteEnrichmentValues {
  * SINGLE SOURCE OF TRUTH: `enrichOnWrite` delegates here too, so the folded
  * INSERT path and the UPDATE path cannot drift apart.
  */
+/**
+ * E5: resolve a `[<topic>]` leading-content prefix into a topic string.
+ *
+ * SINGLE SOURCE OF TRUTH (Backlog 29f3a4d5 blocker 1 follow-up): this used to
+ * be inlined in `computeWriteEnrichment` below AND hand-duplicated verbatim in
+ * memory-server's MCP write handler (chunked-write topic resolution needs the
+ * same regex applied to the parent's full content, resolved once, before any
+ * per-chunk params are built). Both call sites now share this export instead
+ * of two copies of the same regex that could silently drift apart.
+ *
+ * Returns `null` when there is no well-formed `[...]` prefix (no match, or a
+ * match whose captured group is empty/undefined — the `{1,64}` quantifier
+ * already forbids an empty capture, but this keeps the return type exactly
+ * `string | null`, never `string | undefined`).
+ */
+export function resolveTopicFromPrefix(content: string): string | null {
+  const prefixMatch = /^\s*\[([^\]\n]{1,64})\]/.exec(content);
+  return prefixMatch?.[1] ?? null;
+}
+
 export function computeWriteEnrichment(p: {
   content: string;
   summary: string | undefined;
@@ -202,8 +222,7 @@ export function computeWriteEnrichment(p: {
   // E5: resolve topic (caller param > [<topic>] prefix > null)
   let resolvedTopic: string | null = p.topic ?? null;
   if (resolvedTopic === null) {
-    const prefixMatch = /^\s*\[([^\]\n]{1,64})\]/.exec(p.content);
-    if (prefixMatch) resolvedTopic = prefixMatch[1] ?? null;
+    resolvedTopic = resolveTopicFromPrefix(p.content);
   }
 
   // E2/E10: resolve summary (caller-supplied wins; extractive fallback otherwise)
