@@ -221,7 +221,7 @@ before building.
 
 1. One type at a time, in waves of 3-5 extensions.
 2. After each wave (no registry step needed — see
-   [AGENTS.md § registry is release-only](../../../AGENTS.md#registry-is-release-only)):
+   [AGENTS.md § registry is release-only](../../../../AGENTS.md#registry-is-release-only)):
    `./node_modules/.bin/nx run-many -t build,lint,test` + `nx run host-runtime:test-e2e` must all
    be green. A red wave blocks the next until fixed.
 3. Track per-extension status in a catalog table (pending / done / excluded / deferred + reason).
