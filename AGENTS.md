@@ -213,7 +213,8 @@ the `os-unit` generator, or any `cmdStart/Stop/Serve/Enable/Disable` in `apps/so
 <a id="registry-is-release-only"></a>
 ## ⛔ AGENT SEQUENCE — when you change extension/lib code that ships a `dist` artifact
 
-`registry/index.json` is a release artifact pinned to published npm bytes.
+`registry/index.json` is a release artifact pinned to published npm bytes
+([ADR-0021](./docs/decisions/0021-committed-registry-is-publish-shape.md)).
 
 - **Workflow:** lint → build → typecheck/test → smoke → commit source only
   (`git diff --exit-code registry/index.json` must be clean) → `node bin/soxe upgrade --all`.

@@ -244,8 +244,8 @@ sign the publish will ship the wrong version. Verify what will actually ship wit
 
 ## Publish to PUBLIC npm (irreversible — a published version can never be replaced)
 
-Run from a CLEAN checkout of `main` (a worktree bakes absolute paths), after a final
-`npx nx run registry:sync-index` + commit:
+Run from a clean checkout of `main` (a worktree bakes absolute paths); the registry is regenerated
+by `release:prepared` below:
 
 ```bash
 npm whoami                                     # @adhd scope; automation/OTP ready

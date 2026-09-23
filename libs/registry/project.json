@@ -60,23 +60,6 @@
         "default",
         "^production"
       ]
-    },
-    "sync-index": {
-      "executor": "nx:run-commands",
-      "options": {
-        "command": "npx tsx scripts/build-index.ts",
-        "cwd": "."
-      },
-      "dependsOn": [
-        {
-          "projects": "*",
-          "target": "build"
-        }
-      ],
-      "outputs": [
-        "{workspaceRoot}/registry/index.json"
-      ],
-      "cache": false
     }
   }
 }
