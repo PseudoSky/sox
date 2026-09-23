@@ -193,6 +193,34 @@ new artifact is *more* attributable than the one it replaced, not less. Still: t
 silently rebuilds a live production artifact as a side effect, which belongs in its header and in
 any clearance to run it.
 
+## The candidate artifact WAS verified end to end — against real npm, not verdaccio
+
+Since the verdaccio script is unrunnable here, the candidate 1.2.2 artifact was instead tested
+directly, which is stronger evidence for this particular break: it exercises **the exact bytes that
+will ship** (not a rebuild of them) and resolves members from **real npm** (not a local mirror).
+
+`npm pack` in `apps/sox` → tarball carrying `dist/index.js` `e52db888…` and
+`dist/registry/index.json` `042973a0…` (6 entries, 0 `file://`, 0 provisional). Installed with
+`npm i -g --prefix` under an isolated `HOME`, from a cwd with **no repo checkout** so
+`loadRegistryResolved` is forced onto the embedded copy — the exact fresh-machine path that failed
+in 1.2.1.
+
+- **G1** — `soxe --version` → `1.2.1`; `soxe search` lists the public entries with **zero** `/Users/`
+  occurrences. (1.2.1 leaked a maintainer's home directory here.)
+- **G2 install** — `soxe install sox-memory-bundle --scope user` → exit 0, all four members resolved
+  from npm at **exactly** the checksums `304513c4` pinned:
+  `memory-server 6a4168d7…`, `memory-flush 891e1c2c…`, `memory-cli b2935bd1…`,
+  `memory-usage 35441a13…`. **This is the first confirmation that the pinning is byte-correct
+  against real npm** — the checksum gate was reached and passed, where 1.2.1 never reached it.
+- **G2 runtime** — `memory_ping` over direct stdio → `"ok":true` and
+  `"artifact":"sha256:6a4168d7ac0a…"`, matching the pinned value; real embedding model loaded.
+  (`store_ok:false` is expected for a bare probe — BL-412 refuses to guess a store path without a
+  host-injected `SOX_CONFIG_DB_PATH`. The canonical gate asserts only `ok:true` plus the content
+  address, both green.)
+
+So the production break is fixed in the candidate artifact, and both remediation axes — shape
+(`06aa9e79`) and checksum values (`304513c4`) — are verified together.
+
 ## What is already fixed
 
 `06aa9e79` guarantees the *shape* of the registry embedded in the published CLI (no `file://`, no
