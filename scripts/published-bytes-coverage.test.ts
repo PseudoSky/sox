@@ -57,13 +57,17 @@ function fixtureRoot(name: string, entries: unknown[], baseline: unknown): strin
 }
 
 function runGate(root: string): { status: number; out: string } {
+  return runGateWith(root, []);
+}
+
+function runGateWith(root: string, extraArgs: string[]): { status: number; out: string } {
   // spawnSync, never execFileSync: execFileSync only surfaces the child's
   // streams on FAILURE (via the thrown error), so a success-path assertion on
   // its return value reads an empty string and silently passes. Here both the
   // pass case and the fail case must be asserted on the same captured text.
   const r = spawnSync(
     'npx',
-    ['tsx', 'scripts/check-registry-sync.ts', '--published-bytes-only', '--no-remote', root],
+    ['tsx', 'scripts/check-registry-sync.ts', '--published-bytes-only', '--no-remote', ...extraArgs, root],
     // CI='' so the gate's "CI must verify published bytes" refusal of
     // --no-remote does not fire: these cases must fail (or pass) on COVERAGE,
     // never on network policy. Conflating the two is how this test would
@@ -123,6 +127,23 @@ describe('published-bytes coverage gate', () => {
     const r = runGate(root);
     expect(r.status).not.toBe(0);
     expect(r.out).toContain('brand-new-ext');
+  });
+
+  it('--allow-empty CANNOT be used to green a scope loss', () => {
+    // --allow-empty exists for a registry that genuinely publishes nothing, and
+    // it is the one documented bypass of the empty-set rule. It must not become
+    // a bypass of the gate itself: coverage runs FIRST, so an all-jsdelivr
+    // registry (6 rows lost) still fails even when the flag is typed. Without
+    // this case, the flag would be a one-word undo of everything above it.
+    const flipped = realRegistry.map((e) => ({
+      ...e,
+      source: `https://cdn.jsdelivr.net/npm/@adhd/sox-${e.id}@${e.version ?? '0.0.0'}/dist/index.js`,
+    }));
+    const root = fixtureRoot('all-jsdelivr-allow-empty', flipped, baseline);
+    const r = runGateWith(root, ['--allow-empty']);
+    expect(r.status).not.toBe(0);
+    expect(r.out).toContain('coverage');
+    expect(r.out).toContain('memory-server');
   });
 
   it('a missing baseline file FAILS rather than defaulting to "nothing expected"', () => {
