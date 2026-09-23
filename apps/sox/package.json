@@ -1,6 +1,6 @@
 {
   "name": "@adhd/sox-cli",
-  "version": "1.2.1",
+  "version": "1.2.2",
   "description": "soxe CLI — LLM extension ecosystem command-line interface (extension #0)",
   "private": false,
   "publishConfig": {
