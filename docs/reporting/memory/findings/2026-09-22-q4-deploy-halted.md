@@ -325,3 +325,26 @@ nothing was written.
 through the `dist` alias (`tsconfig.base.json:37`). Rebuilding only the bundle reproduces the
 §4 half-fix. Verify Q4 BEHAVIOURALLY via `memory_related` / `memory_entity_episodes`, never by
 grepping the artifact for `invalidated_count`.
+
+### What this rebuild will NOT deliver
+
+**The enrich budget bump is NOT part of this work.** `enrich-isolation.ts:121` and
+`embed-pipeline.ts:193` still read `120_000`; only test files carry `300_000`. That defect is
+real, filed, and owned elsewhere. Do not read the rebuild as having delivered it.
+
+### Gate the op on BEHAVIOUR, not on `rg`
+
+`rg restore_neardup dist/index.js` is a necessary pre-filter, not proof — it is the same class
+of check §4 showed to be inadequate. The op's **dispatch** lives in `memory-core`
+(`curate.ts`) while its **tool schema** lives in `memory-server/src/index.ts`, so a
+memory-server-only rebuild reproduces the half-fix shape exactly here too: the schema
+advertises `restore_neardup` while dispatch rejects it. The real gate is a `dry_run` call that
+returns the headline rather than `E_UNKNOWN_OP`.
+
+### Re-measure at apply time
+
+The 7058 / 852 baseline in §8 is snapshot-bound (taken 21:59 from a copy) and the store is
+written continuously — `restore-land` watched `-wal` go 70072 bytes → 0 mid-copy and
+explicitly retracted its own `integrity ok:true` verdict as snapshot-bound. Re-run the
+baseline counts AND the integrity check immediately before applying rather than reusing these
+numbers. §11's warning about hardcoded expected counts applies to these figures too.
