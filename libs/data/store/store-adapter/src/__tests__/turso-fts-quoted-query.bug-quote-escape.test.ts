@@ -2,6 +2,8 @@
  * BUG-STOREADAPTER-TURSO-FTS-QUOTE-ESCAPE-001 — a recall query containing
  * double quotes killed the whole BM25 arm on Turso.
  *
+ * Backlog: 05eb832e-95f6-473f-bd9a-f7dc2e005726
+ *
  * Production symptom (~/.adhd/sox-ecosystem/memory/logs, pid 99483,
  * 2026-09-22T19:57:59.455Z, db /Users/nix/.memory/memory.db):
  *
