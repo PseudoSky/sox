@@ -213,8 +213,16 @@ the `os-unit` generator, or any `cmdStart/Stop/Serve/Enable/Disable` in `apps/so
 <a id="registry-is-release-only"></a>
 ## ⛔ AGENT SEQUENCE — when you change extension/lib code that ships a `dist` artifact
 
-`registry/index.json` is a release artifact pinned to published npm bytes. A local rebuild
-never touches it: lint → build → typecheck/test → smoke → commit source only (`git diff --exit-code registry/index.json` must be clean). Extensions without a registry row install from their local dir with no checksum gate. Only the release flow (PUBLISHING.md) or `tools/repin-registry-entry.mjs` may write the registry. Never run `registry:sync-index` / bare `build-index` outside a release — it replaces the published pins with local hashes.
+`registry/index.json` is a release artifact pinned to published npm bytes.
+
+- **Workflow:** lint → build → typecheck/test → smoke → commit source only
+  (`git diff --exit-code registry/index.json` must be clean) → `node bin/soxe upgrade --all`.
+- **No registry row → installs from local dir, no checksum gate.**
+- **Who may write the registry:** the release flow (PUBLISHING.md) writes rows, including a
+  package's first row; `tools/repin-registry-entry.mjs` only re-pins an ALREADY-PUBLISHED row
+  (it cannot create a first row).
+- **Never run** `registry:sync-index` / bare `build-index` outside a release — it replaces the
+  published pins with local hashes.
 
 For what a bundled `dist` artifact actually IS and guarantees (self-contained CJS, sidecar
 auto-discovery, atomic staging, the tests-bypass-artifact trap), see
