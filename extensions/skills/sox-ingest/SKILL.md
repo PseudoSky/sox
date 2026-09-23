@@ -85,7 +85,7 @@ When the source is **a list of markdown agent definitions** (opencode `~/.config
 Claude `.claude/agents/*.md`, or any paths/globs), do not scaffold one-by-one — run the batch tool:
 
 ```bash
-node extensions/skills/sox-ingest/scripts/migrate-agents.mjs <agent-id|path|glob>... [--registry] [--force] [--dry-run]
+node extensions/skills/sox-ingest/scripts/migrate-agents.mjs <agent-id|path|glob>... [--force] [--dry-run]
 ```
 
 Examples:
@@ -97,10 +97,14 @@ node extensions/skills/sox-ingest/scripts/migrate-agents.mjs typescript product 
 # Absolute path to a single agent
 node extensions/skills/sox-ingest/scripts/migrate-agents.mjs ~/.config/opencode/agents/debug.md
 
-# Preview, then rebuild the registry
+# Preview first
 node extensions/skills/sox-ingest/scripts/migrate-agents.mjs typescript --dry-run
-node extensions/skills/sox-ingest/scripts/migrate-agents.mjs typescript --registry
 ```
+
+`--registry` is REMOVED — a scaffolded extension has no `registry/index.json` row and installs
+from its local dir with no checksum gate (no registry step needed). Passing `--registry` exits
+non-zero with a pointer to [AGENTS.md § registry is release-only](../../../AGENTS.md#registry-is-release-only)
+rather than silently doing nothing.
 
 This is a **skill script**, not a host custom tool — invoke it via bash from the repo root. (An
 opencode custom-tool wrapper is deliberately NOT shipped: `.opencode/tools/` modules load into
@@ -121,8 +125,7 @@ extension instead.)
    (born-conformant, `install.source` pointing at the origin, hosts `[claude, opencode]`),
    `package.json`, `README.md`, `CHANGELOG.md`.
 3. **Skips** an existing `extensions/agents/<id>/` unless `--force`.
-4. With `--registry`, registers the new extension — see [AGENTS.md § registry is release-only](../../../AGENTS.md#registry-is-release-only)
-   (BL-390: prefer a committed tree — commit the extension files first, then rebuild).
+4. **No registry step** — see [AGENTS.md § registry is release-only](../../../AGENTS.md#registry-is-release-only).
 
 **BL-566 note:** migrated agents install as a single top-level `<id>.md` (the install-engine
 fix), so `soxe install <id> --host opencode --scope user` lands discoverably — never a

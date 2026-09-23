@@ -25,18 +25,20 @@
  *        - README.md          — overview + usage
  *        - CHANGELOG.md       — initial release entry
  *   4. Refuses to overwrite an existing extension dir unless --force.
- *   5. Rebuilds registry/index.json when --registry (runs scripts/build-index.ts
- *      with --allow-dirty; per BL-390, prefer a committed tree — use --registry only
- *      when the remaining dirt is provably checksum-irrelevant).
+ *
+ * A scaffolded extension needs NO registry step — it has no `registry/index.json` row and
+ * installs straight from its local dir (see AGENTS.md § registry is release-only). `--registry`
+ * is REMOVED: passing it exits non-zero with a pointer to that rule and never touches
+ * `scripts/build-index.ts` (BL-390's dirty-tree/`--allow-dirty` mechanics no longer apply here —
+ * they are release-flow-only).
  *
  * Requires BL-566 fixed install-engine (agent file-drops land as top-level <id>.md)
  * so the migrated extensions install discoverably on opencode.
  *
  * Usage:
- *   node extensions/skills/sox-ingest/scripts/migrate-agents.mjs <paths...> [--force] [--registry] [--dry-run]
+ *   node extensions/skills/sox-ingest/scripts/migrate-agents.mjs <paths...> [--force] [--dry-run]
  */
 
-import { execFileSync } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import { basename, dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -80,9 +82,23 @@ if (IS_MAIN) {
   REGISTRY = flag('registry');
   DRY_RUN = flag('dry-run');
 
+  // BL-390-era `--registry` (rebuild registry/index.json via build-index.ts) is REMOVED: a
+  // new/harvested extension has no registry row and installs from its local dir with no
+  // checksum gate — see AGENTS.md § registry is release-only. Refuse explicitly rather than
+  // silently ignoring the flag, and exit before resolving any paths so this never reaches
+  // scaffolding or build-index.ts.
+  if (REGISTRY) {
+    console.error(
+      'migrate-agents: --registry is removed. A new/harvested extension needs no registry step — ' +
+      'it installs from its local dir with no checksum gate. See AGENTS.md § registry is ' +
+      'release-only.',
+    );
+    process.exit(1);
+  }
+
   if (paths.length === 0) {
     console.error(
-      `usage: node scripts/migrate-agents.mjs <agent-path|glob>... [--force] [--registry] [--dry-run]\n` +
+      `usage: node scripts/migrate-agents.mjs <agent-path|glob>... [--force] [--dry-run]\n` +
       `  e.g. node scripts/migrate-agents.mjs typescript researcher product 'doc-*' agent-manager\n` +
       `       node scripts/migrate-agents.mjs ~/.config/opencode/agents/debug.md\n`,
     );
@@ -473,26 +489,8 @@ if (IS_MAIN) {
       }
     }
     if (sourceMismatch > 0) {
-      console.error(`migrate-agents: ${sourceMismatch} source file(s) were modified — the migration must never write to sources. Aborting registry step.`);
+      console.error(`migrate-agents: ${sourceMismatch} source file(s) were modified — the migration must never write to sources.`);
       process.exit(1);
-    }
-  }
-
-  if (REGISTRY && !DRY_RUN) {
-    const scaffolded = results.filter((r) => r.status === 'scaffolded').length;
-    if (scaffolded > 0) {
-      console.log(`migrate-agents: rebuilding registry (${scaffolded} new extension(s))...`);
-      try {
-        execFileSync('node', ['--experimental-strip-types', 'scripts/build-index.ts', '--allow-dirty'], {
-          cwd: REPO_ROOT,
-          stdio: 'inherit',
-        });
-      } catch (e) {
-        console.error(`migrate-agents: registry rebuild failed (exit ${e.status}). Run it manually: npx tsx scripts/build-index.ts`);
-        process.exit(1);
-      }
-    } else {
-      console.log('migrate-agents: nothing new scaffolded — skipping registry rebuild.');
     }
   }
 
