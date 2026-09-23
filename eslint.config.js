@@ -20,7 +20,29 @@ const soxRules = {
 export default [
   // Ignore build outputs and tooling dirs
   {
-    ignores: ['**/dist/**', '**/node_modules/**', '**/.tmp-*/**'],
+    ignores: [
+      '**/dist/**',
+      '**/node_modules/**',
+      '**/.tmp-*/**',
+      // tools/baseline-capture is its own nx project (see its project.json)
+      // with its own `lint` target and lintFilePatterns. Excluding it here
+      // (rather than via a negated glob on every OTHER project's
+      // lintFilePatterns) keeps double-linting impossible at the source: a
+      // negated `!tools/baseline-capture/**` glob entry, once combined with
+      // other positive patterns in the same `lintFiles()` call, makes ESLint
+      // 10's CLI/API refuse to run at all ("all files matching ... are
+      // ignored") — Item 7 first-run discovery.
+      'tools/baseline-capture/**',
+      // tools/eslint-local/__fixture__ holds deliberate POSITIVE/NEGATIVE
+      // example fixtures documenting `no-hook-assigned-skip`'s exact trigger
+      // boundary (see the rule's own header). frozen-skip.spec.ts is
+      // SUPPOSED to trip the rule it demonstrates — that is the fixture's
+      // entire purpose, not a real defect. Neither fixture is consumed by any
+      // test runner (verified: no reference to either file anywhere in the
+      // repo) — they exist purely as documentation for future readers of the
+      // rule. Item 7 first-run discovery.
+      'tools/eslint-local/__fixture__/**',
+    ],
   },
   // TypeScript files: use @typescript-eslint/parser so syntax is understood
   {

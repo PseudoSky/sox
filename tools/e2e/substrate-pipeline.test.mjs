@@ -64,10 +64,16 @@ import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 
 // ── Real substrate packages — imported from their own built dist/ output ──
-
+// See tools/e2e/child-embed.mjs's header comment: deliberate
+// dist/-by-relative-path e2e loading, none of these four packages is a
+// declared root dependency. Item 7 first-run discovery.
+// eslint-disable-next-line @nx/enforce-module-boundaries
 import { openLanceDbVectorStore } from '../../libs/data/vectors/vector-store/dist/index.js';
+// eslint-disable-next-line @nx/enforce-module-boundaries
 import { fuse, createCrossEncoder } from '../../libs/data/search/hybrid-search/dist/index.js';
+// eslint-disable-next-line @nx/enforce-module-boundaries
 import { createClaimVerifier } from '../../libs/data/verify/claim-verification/dist/index.js';
+// eslint-disable-next-line @nx/enforce-module-boundaries
 import { createBlobStore } from '../../libs/data/store/blob-store/dist/index.js';
 
 // ── Fixture + model configuration ──────────────────────────────────────────

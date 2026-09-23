@@ -41,6 +41,13 @@ import { mkdtempSync, rmSync, existsSync, copyFileSync, mkdirSync } from 'node:f
 import { join, basename } from 'node:path';
 import { tmpdir } from 'node:os';
 import { openDb, openDbReadOnly, memoryRecall } from '@adhd/sox-memory-core';
+// nx infers "@adhd/sox-store-adapter is lazy-loaded" from
+// scripts/migrate-store-to-turso.mjs's `await import(...)` optional-availability
+// guard (that script alone chooses to tolerate the package being absent) and
+// then flags every OTHER static importer repo-wide, including this one,
+// which has no such requirement. Item 7 first-run discovery — not a real
+// inconsistency in this file.
+// eslint-disable-next-line @nx/enforce-module-boundaries
 import { verifyStoreIntegrity } from '@adhd/sox-store-adapter';
 
 const args = process.argv.slice(2);
