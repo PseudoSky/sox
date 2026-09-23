@@ -865,7 +865,7 @@ export const TOOLS: Array<Omit<ToolDefinition, 'handler'>> = [
   {
     name: 'memory_related',
     description:
-      'Return neighbor episodes of a given episode at depth=1 via graph edges (RELATES_TO, DERIVED_FROM, SUPPORTS, SAME_AS).',
+      'Return neighbor episodes of a given episode at depth=1 via graph edges (RELATES_TO, DERIVED_FROM, SUPPORTS, SAME_AS). Only LIVE neighbours are returned, and validity is applied BEFORE `limit`, so a short page means the neighbourhood is exhausted, not that invalidated rows ate slots. Outbound entries precede inbound ones; within a direction, order is edge-creation order — no importance ranking is applied. A reciprocal A->B/B->A pair yields two entries, one per direction. Response also carries `invalidated_count`: live edges (both directions, after the `rel` filter) whose neighbour node has been invalidated. It is NOT bounded by `limit` and is NOT a paging denominator (there is no `total` and no `offset`) — it is a neighbourhood-level diagnostic, and a non-zero value is normal, not a gap in `edges`.',
       inputSchema: {
       type: 'object',
       properties: {
