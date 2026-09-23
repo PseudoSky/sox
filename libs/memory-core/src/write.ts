@@ -52,6 +52,7 @@
 
 import { computeWriteEnrichment, detectAndApplyNearDup } from './enrich.js';
 import { gcOrphanedCommunityState } from './community-gc.js';
+import { invalidateEpisodeInTx } from './invalidation-meta.js';
 import { enqueueIngest } from './outbox-queue.js';
 import { applyEmbedding } from './embed-pipeline.js';
 import { vectorDialectFor } from './dialect.js';
@@ -847,8 +848,17 @@ export async function memoryInvalidate(
   let supersedgesEdgeUid: string | undefined;
 
   await adapter.transaction(async (tx) => {
-    // Close t_invalid (R5: never delete, invalidate instead)
-    await tx.executeRun(`UPDATE node SET t_invalid = ? WHERE uid = ?`, [tTransition, claim_uid]);
+    // Close t_invalid (R5: never delete, invalidate instead) AND record the
+    // caller's reason in node.meta — f7461993: this used to be a raw
+    // unconditional close of t_invalid that lost `reason` entirely unless a
+    // replacement_uid produced a SUPERSEDES edge to carry it instead.
+    await invalidateEpisodeInTx(tx, {
+      uid: claim_uid,
+      tInvalid: tTransition,
+      reason,
+      via: 'memory_invalidate',
+      ...(replacement_uid !== undefined ? { replacementUid: replacement_uid } : {}),
+    });
 
     // BUG-CLUSTER-ORPHANED-COMMUNITIES-NEVER-GC-001: invalidating an episode
     // must also invalidate its live MEMBER_OF edge and any now-empty global

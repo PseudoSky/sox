@@ -14,6 +14,7 @@ import { monotonicFactory } from 'ulid';
 import { ENRICH_VERSION } from './enrich-version.js';
 import { clusterSubset, dropSubsetLens, listSubsetLenses } from './cluster.js';
 import { gcOrphanedCommunityState } from './community-gc.js';
+import { invalidateEpisodeInTx } from './invalidation-meta.js';
 import { enqueueEnrichFull } from './outbox-queue.js';
 import type { MemoryFilter } from './memory-filters.js';
 import type { WriteQueue } from './write-queue.js';
@@ -445,7 +446,16 @@ async function curateMergeDuplicates(
   const sameAsEdgeUid = crypto.randomUUID();
   if (!dryRun) {
     await adapter.transaction(async (tx) => {
-      await tx.executeRun(`UPDATE node SET t_invalid = ? WHERE uid = ?`, [now, uidDrop]);
+      // f7461993: record why the dropped episode was invalidated — a raw
+      // unconditional close of t_invalid here left merge_duplicates with no
+      // recorded cause at all (no `reason` param even existed).
+      await invalidateEpisodeInTx(tx, {
+        uid: uidDrop,
+        tInvalid: now,
+        reason: `merge_duplicates: superseded by kept episode ${uidKeep}`,
+        via: 'merge_duplicates',
+        replacementUid: uidKeep,
+      });
       // BUG-CLUSTER-ORPHANED-COMMUNITIES-NEVER-GC-001: merge_duplicates
       // invalidates the dropped episode — GC its community state too.
       await gcOrphanedCommunityState(tx, dropRow.rowid, now);

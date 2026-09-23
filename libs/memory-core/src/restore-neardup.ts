@@ -56,16 +56,15 @@
  * enqueueing a full enrich. `reverse:true` re-invalidates and GCs in the same
  * transaction, per row.
  *
- * The raw statements are still returned (`result.reversal.scoped_sql`, pinned
- * to this run's report sha256, and `result.reversal.sql`, every run ever) for
- * inspection and for operators who will GC separately — they carry that
- * caveat in `reversal.note`:
- *
- *   (an UPDATE against the node table)
- *      SET t_invalid = json_extract(meta, '$.restoredFrom.prior_t_invalid')
- *    WHERE json_extract(meta, '$.restoredFrom.op') = 'restore_neardup'
- *      AND t_invalid IS NULL
- *      AND json_extract(meta, '$.restoredFrom.report.sha256') = '<sha256>';
+ * The raw statements are also returned as informational text for a manual
+ * escape hatch — `result.reversal.scoped_sql` (pinned to this run's report
+ * sha256) and `result.reversal.sql` (every run ever). Neither is executed by
+ * this module: the actual reversal path (`curateRestoreNeardupReverse`)
+ * always goes through the shared `invalidateEpisodeInTx` helper so its own
+ * invalidation is reason-recording (f7461993), and always runs
+ * `gcOrphanedCommunityState` in the same transaction — see `reversal.note`
+ * for the caveat that applies only to an operator running the raw text by
+ * hand.
  *
  * `meta.restoredFrom` is deliberately NOT cleared by a reversal: the row keeps
  * the audit trail, and re-applying the op afterwards requires the explicit
@@ -93,6 +92,7 @@ import type { StoreAdapter } from '@adhd/sox-store-adapter';
 import { enqueueEnrichFull } from './outbox-queue.js';
 import { gcOrphanedCommunityState } from './community-gc.js';
 import { expandTilde } from './recall.js';
+import { invalidateEpisodeInTx } from './invalidation-meta.js';
 
 // ── Report shape (the triage output this op consumes) ─────────────────────────
 
@@ -735,14 +735,27 @@ export async function curateRestoreNeardupReverse(
   let reinvalidated = 0;
   let edges = 0;
   let communities = 0;
+  const reason =
+    `restore_neardup reversal: re-invalidated to its recorded prior_t_invalid ` +
+    (sha === null ? '(all_runs:true)' : `(report_sha256:${sha})`);
   await adapter.transaction(async (tx) => {
     for (const r of rows) {
       if (r.prior === null) continue; // nothing recorded to restore to — leave it live
-      const res = await tx.executeRun(
-        `UPDATE node SET t_invalid = ? WHERE uid = ? AND t_invalid IS NULL`,
-        [r.prior, r.uid],
-      );
-      if (res.rowsAffected !== 1) continue;
+      // f7461993: this reversal is itself a fresh invalidation event on a
+      // row that was already invalidated once (originally, before the
+      // forward restore revived it) — it must record ITS OWN cause via the
+      // shared helper rather than a raw t_invalid close. The helper archives
+      // that original event onto meta.invalidationHistory rather than
+      // clobbering it, so nothing recorded earlier is lost; meta.restoredFrom
+      // (written only by the forward path) is untouched either way.
+      const rowsAffected = await invalidateEpisodeInTx(tx, {
+        uid: r.uid,
+        tInvalid: r.prior,
+        reason,
+        via: 'restore_neardup_reverse',
+        onlyIfLive: true,
+      });
+      if (rowsAffected !== 1) continue;
       reinvalidated += 1;
       const gc = await gcOrphanedCommunityState(tx, r.rowid, r.prior);
       edges += gc.member_of_edges_invalidated;

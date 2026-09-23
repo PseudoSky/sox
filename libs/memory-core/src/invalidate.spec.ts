@@ -372,3 +372,103 @@ describe('memoryInvalidate — orphaned-community GC (BUG-CLUSTER-ORPHANED-COMMU
     expect(commAfter!.t_invalid).not.toBeNull();
   });
 });
+
+describe('memoryInvalidate — every invalidation records its reason (f7461993)', () => {
+  let cleanupDb: () => void;
+  let db: StoreAdapter;
+
+  beforeEach(async () => {
+    const { dir, cleanup } = tmpDir();
+    cleanupDb = cleanup;
+    db = await openDb(path.join(dir, 't.db'));
+  });
+
+  afterEach(async () => {
+    if (db && raw(db).open) await db.close();
+    cleanupDb();
+  });
+
+  async function writeEpisode(content: string): Promise<string> {
+    const r = await memoryWrite(db, { content, project_path: '/test/project' });
+    expect('episode_uid' in r).toBe(true);
+    return (r as { episode_uid: string }).episode_uid;
+  }
+
+  it('(f7461993) invalidate WITHOUT a replacement_uid still records the reason in node.meta', async () => {
+    const uid = await writeEpisode('f7461993 fixture: no-replacement invalidation.');
+
+    const result = await memoryInvalidate(db, {
+      claim_uid: uid,
+      reason: 'f7461993 regression test — no replacement supplied',
+    });
+    expect('ok' in result && result.ok).toBe(true);
+
+    // BUG (pre-fix): memoryInvalidate ran a bare `UPDATE node SET t_invalid = ?`
+    // and only ever persisted `reason` onto a SUPERSEDES edge — which requires
+    // replacement_uid. Without one, the reason was silently lost. This is the
+    // dominant real-world shape: 89 invalidated episodes carried no recorded
+    // reason (backlog f7461993), and none of them had a replacement.
+    const row = await db.executeGet<{ meta: string | null }>(
+      `SELECT meta FROM node WHERE uid = ?`,
+      [uid],
+    );
+    expect(row).toBeDefined();
+    const meta = JSON.parse(row!.meta ?? '{}') as Record<string, unknown>;
+    expect(meta.invalidatedReason).toBe('f7461993 regression test — no replacement supplied');
+    expect(typeof meta.invalidatedAt).toBe('string');
+    expect(meta.invalidatedVia).toBe('memory_invalidate');
+
+    // Same assertion via json_extract directly against the column, matching
+    // the shape an operator auditing the store would actually query.
+    const extracted = await db.executeGet<{ reason: string | null }>(
+      `SELECT json_extract(meta, '$.invalidatedReason') AS reason FROM node WHERE uid = ?`,
+      [uid],
+    );
+    expect(extracted!.reason).toBe('f7461993 regression test — no replacement supplied');
+  });
+
+  it('(f7461993) a SECOND invalidation of a revived row archives the first event instead of clobbering it', async () => {
+    const uidKeep = await writeEpisode('f7461993 fixture: replacement for history test.');
+    const uid = await writeEpisode('f7461993 fixture: revived-then-reinvalidated row.');
+
+    // First invalidation — WITH a replacement, so invalidatedReplacement is set.
+    const first = await memoryInvalidate(db, {
+      claim_uid: uid,
+      reason: 'first invalidation — has a replacement',
+      replacement_uid: uidKeep,
+    });
+    expect('ok' in first && first.ok).toBe(true);
+
+    // Revive the row directly (spec files are outside the invalidation-scan
+    // allowlist's reach by design — this simulates the historical `t_invalid
+    // = NULL` revival path, not a new production writer).
+    await db.executeRun(`UPDATE node SET t_invalid = NULL WHERE uid = ?`, [uid]);
+
+    // Second invalidation — WITHOUT a replacement.
+    const second = await memoryInvalidate(db, {
+      claim_uid: uid,
+      reason: 'second invalidation — no replacement this time',
+    });
+    expect('ok' in second && second.ok).toBe(true);
+
+    const row = await db.executeGet<{ meta: string | null }>(
+      `SELECT meta FROM node WHERE uid = ?`,
+      [uid],
+    );
+    const meta = JSON.parse(row!.meta ?? '{}') as {
+      invalidatedReason?: string;
+      invalidatedReplacement?: string;
+      invalidationHistory?: Array<{ invalidatedReason?: string; invalidatedReplacement?: string }>;
+    };
+
+    // The CURRENT event reflects only the second call — no stale replacement
+    // bleeding in from the first event.
+    expect(meta.invalidatedReason).toBe('second invalidation — no replacement this time');
+    expect(meta.invalidatedReplacement).toBeUndefined();
+
+    // The FIRST event is archived, not lost.
+    expect(meta.invalidationHistory).toHaveLength(1);
+    expect(meta.invalidationHistory![0].invalidatedReason).toBe('first invalidation — has a replacement');
+    expect(meta.invalidationHistory![0].invalidatedReplacement).toBe(uidKeep);
+  });
+});

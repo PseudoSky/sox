@@ -235,13 +235,13 @@ const ALLOWLIST: ReadonlyArray<{ file: string; fn: string; via: 'raw-sql' | 'gra
     file: 'libs/memory-core/src/community-gc.ts',
     fn: 'gcOrphanedCommunityState',
     via: 'raw-sql',
-    why: 'Called ONLY from memoryInvalidate and merge_duplicates (both already intent-carrying) to retire community rows orphaned BY that same intentional invalidation — not an independent trigger.',
+    why: 'Called ONLY from memoryInvalidate, merge_duplicates, and the restore_neardup reversal (all already intent-carrying, all reason-recording via invalidateEpisodeInTx) to retire community rows orphaned BY that same intentional invalidation — not an independent trigger.',
   },
   {
-    file: 'libs/memory-core/src/curate.ts',
-    fn: 'curateMergeDuplicates',
+    file: 'libs/memory-core/src/invalidation-meta.ts',
+    fn: 'invalidateEpisodeInTx',
     via: 'raw-sql',
-    why: 'memory_curate merge_duplicates — an explicit human/agent review decision on a SAME_AS candidate surfaced by memory_near_duplicates. The intent-carrying surface d3d97584 left in place.',
+    why: '(f7461993) The ONE shared writer for episode/claim t_invalid — every intent-carrying invalidation site in this file (memoryInvalidate, curateMergeDuplicates, curateRestoreNeardupReverse) routes through it so a reason is always recorded in node.meta. This is the entry that replaces the individual write.ts::memoryInvalidate and curate.ts::curateMergeDuplicates raw-sql allowlist entries — their UPDATE statements no longer exist at those call sites.',
   },
   {
     file: 'libs/memory-core/src/extensions.ts',
@@ -254,12 +254,6 @@ const ALLOWLIST: ReadonlyArray<{ file: string; fn: string; via: 'raw-sql' | 'gra
     fn: 'memorySaveSessionState',
     via: 'raw-sql',
     why: 'Replaces a prior session-state row for the SAME session_id with a fresh one on save — caller-driven state replacement, not content destruction.',
-  },
-  {
-    file: 'libs/memory-core/src/write.ts',
-    fn: 'memoryInvalidate',
-    via: 'raw-sql',
-    why: 'The canonical intent-carrying invalidation tool (memory_invalidate) — takes an explicit `reason` parameter from the caller.',
   },
   {
     file: 'libs/data/graph/graph-store/src/index.ts',
@@ -278,12 +272,6 @@ const ALLOWLIST: ReadonlyArray<{ file: string; fn: string; via: 'raw-sql' | 'gra
     fn: 'handleSessionEnd',
     via: 'raw-sql',
     why: 'Found by the blind reviewer (finding A) — same shape as memorySaveSessionState: replaces a prior session-state row for the SAME session_id on session-end flush, caller-driven state replacement.',
-  },
-  {
-    file: 'libs/memory-core/src/restore-neardup.ts',
-    fn: 'curateRestoreNeardupReverse',
-    via: 'raw-sql',
-    why: 'memory_curate restore_neardup {reverse:true} — explicit operator-invoked undo of a prior restore run, scoped by report_sha256/report_path and recorded per row via meta.restoredFrom.',
   },
   {
     file: 'libs/memory-core/src/restore-neardup.ts',
@@ -333,14 +321,15 @@ describe('invalidation-always-has-reason — durable guard (plan §2.1, revised 
   });
 
   it('regression pin: enrich.ts and neardup.ts contain zero invalidation sites (the d3d97584 fix itself)', () => {
+    // f7461993: matched by exact basename, not `endsWith` — `endsWith('neardup.ts')`
+    // also matched `restore-neardup.ts` (a legitimate, allowlisted, DIFFERENT
+    // file), which would make this pin fail for a reason unrelated to the
+    // d3d97584 regression it exists to guard.
     const sites = scanForInvalidationSites();
-    // Exact basename match, not endsWith — endsWith('neardup.ts') also
-    // matches the legitimate, allowlisted restore-neardup.ts (explicit
-    // operator-invoked restoration, added after d3d97584), which is not
-    // the anonymous auto-invalidation writer this pin guards against.
-    const stillPresent = sites.filter(
-      (s) => path.basename(s.file) === 'enrich.ts' || path.basename(s.file) === 'neardup.ts',
-    );
+    const stillPresent = sites.filter((s) => {
+      const base = path.basename(s.file);
+      return base === 'enrich.ts' || base === 'neardup.ts';
+    });
     expect(stillPresent).toEqual([]);
   });
 });

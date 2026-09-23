@@ -1020,6 +1020,50 @@ describe('restore_neardup — reverse mode', () => {
     })) as any;
     expect(ok.rows_reinvalidated).toBe(1);
   });
+
+  it('(f7461993) reverse records its own cause and preserves meta.restoredFrom', async () => {
+    const report = await restoreOnce();
+
+    const beforeMeta = (await metaOf('FIXFP0000000000000000000B')) as any;
+    expect(beforeMeta.restoredFrom.op).toBe('restore_neardup');
+    expect(beforeMeta.restoredFrom.prior_t_invalid).toBe(T_INVALID);
+
+    const rev = (await memoryCurate(db, {
+      op: 'restore_neardup',
+      reverse: true,
+      report_sha256: report.sha256,
+      dry_run: false,
+    })) as any;
+    expect(rev.rows_reinvalidated).toBe(1);
+
+    const meta = (await metaOf('FIXFP0000000000000000000B')) as any;
+    // The reversal is itself a reason-recording invalidation event.
+    expect(meta.invalidatedVia).toBe('restore_neardup_reverse');
+    expect(typeof meta.invalidatedReason).toBe('string');
+    expect(meta.invalidatedReason as string).toContain(report.sha256);
+    expect(typeof meta.invalidatedAt).toBe('string');
+    // meta.restoredFrom (written only by the forward apply path) survives
+    // the reverse's meta write untouched — the reverse's own WHERE clause
+    // depends on it staying present and correct for a subsequent re-apply.
+    expect(meta.restoredFrom.op).toBe('restore_neardup');
+    expect(meta.restoredFrom.prior_t_invalid).toBe(T_INVALID);
+  });
+
+  it('(f7461993) all_runs reverse records a reason that does not name a single sha', async () => {
+    const report = await restoreOnce();
+    const rev = (await memoryCurate(db, {
+      op: 'restore_neardup',
+      reverse: true,
+      all_runs: true,
+      dry_run: false,
+    })) as any;
+    expect(rev.rows_reinvalidated).toBe(1);
+
+    const meta = (await metaOf('FIXFP0000000000000000000B')) as any;
+    expect(meta.invalidatedVia).toBe('restore_neardup_reverse');
+    expect(meta.invalidatedReason as string).toContain('all_runs');
+    expect(meta.invalidatedReason as string).not.toContain(report.sha256);
+  });
 });
 
 describe('restore_neardup — a dry run is always readable', () => {
