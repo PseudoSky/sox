@@ -270,8 +270,8 @@ three-document lifecycle:
 2. **Attach citations** via `backlog_add_citation` (or `backlog_append_note` for narrative) —
    file:line evidence of the fix, same standard as before.
 3. **Nothing further.** There is no second document to keep in sync, no status table to
-   regenerate by hand — `tools/plan-status.mjs` derives `PLAN.md`/`STATE.md`'s summaries straight
-   from the graph on every run, and `--check` fails the commit if they've drifted.
+   regenerate by hand — status of every `BL-*` item lives in the backlog graph; query it directly
+   (`backlog query` / `backlog get`). `PLAN.md`/`STATE.md` carry narrative only.
 
 ---
 
