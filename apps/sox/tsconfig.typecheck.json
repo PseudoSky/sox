@@ -1,14 +1,19 @@
 {
+  // TS6059: tsconfig.app.json's `rootDir: "./src"` + `outDir` (needed for
+  // `compile`'s emit) rejects any *.spec.ts that imports something outside
+  // `src`, e.g. vitest-timeout-budget.spec.ts importing ../vitest.config.
+  // tsconfig.app.json now excludes src/**/*.spec.ts / *.test.ts so `compile`
+  // stays green, but that would silently drop specs from typecheck coverage
+  // too if `typecheck` kept pointing at the same config. This config is
+  // noEmit with no rootDir/outDir, so it can include every *.ts under src
+  // (specs included) without hitting the rootDir constraint — mirroring
+  // libs/host-runtime/tsconfig.typecheck.json's split from tsconfig.lib.json.
   "extends": "../../tsconfig.base.json",
   "compilerOptions": {
     "module": "CommonJS",
     "moduleResolution": "node10",
     "ignoreDeprecations": "6.0",
-    "outDir": "../../dist/apps/sox",
-    "rootDir": "./src",
-    "declaration": true,
-    "declarationMap": false,
-    "sourceMap": true,
+    "noEmit": true,
     "esModuleInterop": true,
     "paths": {
       "@adhd/sox-manifest": ["libs/manifest/dist/index.d.ts"],
@@ -21,6 +26,6 @@
       "@adhd/sox-telemetry": ["libs/observability/sox-telemetry/dist/index.d.ts", "libs/observability/sox-telemetry/dist/index.js"]
     }
   },
-  "include": ["src/**/*.ts"],
-  "exclude": ["src/**/*.spec.ts", "src/**/*.test.ts", "node_modules"]
+  "include": ["src/**/*.ts", "vitest.config.ts"],
+  "exclude": ["node_modules"]
 }
