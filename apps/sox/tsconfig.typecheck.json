@@ -11,11 +11,15 @@
   // split from tsconfig.lib.json. rootDir is relative to THIS file's
   // directory (apps/sox/), so "." means apps/sox itself; ".." would resolve
   // to apps/ (the parent of every app), which is wrong.
+  // include/exclude REPLACE the parent's, they do not merge — tsconfig.app.json's
+  // own include/exclude (which excludes specs) has no effect here; this file's
+  // include/exclude below is the only thing that determines what gets
+  // typechecked, which is why it must independently include the specs.
   "extends": "./tsconfig.app.json",
   "compilerOptions": {
     "noEmit": true,
     "rootDir": "."
   },
-  "include": ["src/**/*.ts", "vitest.config.ts"],
+  "include": ["src/**/*.ts", "*.ts"],
   "exclude": ["node_modules"]
 }
