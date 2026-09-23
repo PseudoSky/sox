@@ -109,6 +109,55 @@ function resolveScript(guard, root = REPO_ROOT) {
 // --------------------------------------------------------------------------------------------
 // Changed-file set (for Tier 1 filtering)
 // --------------------------------------------------------------------------------------------
+
+// f1dc4926 — a pathspec commit (`git commit -- path`, the mandated form) hands the pre-commit
+// hook process a PRIVATE next-index via GIT_INDEX_FILE (F10 in fc2735f0's spec): the SHARED
+// `.git/index` can hold another agent's staged paths, and miss the paths actually being
+// committed. `SAFE_GIT_ENV` above strips GIT_INDEX_FILE unconditionally for the BL-479 reason
+// documented there (an ambient env var must never let a scratch/fixture guard's git calls
+// resolve against the invoking checkout). Those two needs conflict, so this only re-admits
+// GIT_INDEX_FILE when it can be PROVEN to belong to REPO_ROOT's own git dir — never blindly.
+function resolveAbsoluteGitDir(root) {
+  try {
+    return execFileSync('git', ['-C', root, 'rev-parse', '--absolute-git-dir'], {
+      encoding: 'utf8',
+      env: SAFE_GIT_ENV,
+    }).trim();
+  } catch (err) {
+    console.error(`run-guards: could not resolve the git dir for ${root} — ${err.message}`);
+    return null;
+  }
+}
+
+function gitEnvForChangedFiles(root) {
+  const inherited = process.env.GIT_INDEX_FILE;
+  if (!inherited) return SAFE_GIT_ENV;
+
+  const gitDir = resolveAbsoluteGitDir(root);
+  if (!gitDir) return SAFE_GIT_ENV;
+
+  let realGitDir;
+  let realIndexDir;
+  try {
+    realGitDir = fs.realpathSync(gitDir);
+    // The index file itself may not exist yet (a brand-new next-index); realpath its parent dir
+    // instead so a not-yet-created lockfile still resolves.
+    realIndexDir = fs.realpathSync(path.dirname(path.resolve(root, inherited)));
+  } catch (err) {
+    console.error(`run-guards: could not verify GIT_INDEX_FILE ownership — ${err.message}. Ignoring it.`);
+    return SAFE_GIT_ENV;
+  }
+
+  const belongsToThisRepo = realIndexDir === realGitDir || realIndexDir.startsWith(realGitDir + path.sep);
+  if (!belongsToThisRepo) return SAFE_GIT_ENV;
+
+  return { ...SAFE_GIT_ENV, GIT_INDEX_FILE: inherited };
+}
+
+// fbdfe55e — a git failure while computing the changed-file set used to be an untraced
+// `catch { return []; }`, which fails OPEN: an empty set makes every Tier 1 guard read N/A and
+// the hook exits 0 as if nothing needed checking. Trace the error (CLAUDE.md forbids empty
+// catches) and fail CLOSED — a hard non-zero exit, never a silent "nothing changed".
 function getChangedFiles() {
   try {
     if (args.base && args.head) {
@@ -120,11 +169,16 @@ function getChangedFiles() {
     }
     const out = execFileSync('git', ['-C', REPO_ROOT, 'diff', '--cached', '--name-only'], {
       encoding: 'utf8',
-      env: SAFE_GIT_ENV,
+      env: gitEnvForChangedFiles(REPO_ROOT),
     });
     return out.split('\n').filter(Boolean);
-  } catch {
-    return [];
+  } catch (err) {
+    console.error(
+      `run-guards: FATAL — could not compute the changed-file set for Tier 1 filtering (${err.message}). ` +
+        'Failing closed: refusing to silently treat this as "nothing changed".',
+    );
+    if (err.stderr) console.error(String(err.stderr));
+    process.exit(1);
   }
 }
 

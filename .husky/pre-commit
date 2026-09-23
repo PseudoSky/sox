@@ -26,4 +26,7 @@ SOX_GIT_PARENT_CMD="$(ps -o args= -p $PPID 2>/dev/null)" node tools/check-amend-
 # watched files are in this commit's staged diff. See tools/guards-manifest.mjs.
 node tools/run-guards.mjs --tier1
 
-npx nx affected --target=lint --base=HEAD~1 --head=HEAD
+# fc2735f0 — lint the STAGED change, not the previous commit's blast radius
+# (`--base=HEAD~1 --head=HEAD` gated on what already landed and never consulted the index).
+# See tools/precommit-lint.mjs's header for the full rationale.
+node tools/precommit-lint.mjs
