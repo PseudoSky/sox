@@ -122,7 +122,15 @@ export function inspectPackage(pkgDir, opts = {}) {
   const newestSrc = newestFileUnder(path.join(pkgDir, opts.srcSubdir ?? 'src'), {
     skipPattern: NON_BUILD_INPUT,
   });
-  const newestDist = newestFileUnder(path.join(pkgDir, opts.distSubdir ?? 'dist'));
+  // The SAME exclusion applies to dist/, and the asymmetry would be a silent false NEGATIVE:
+  // several builds here compile `src/**/*.ts` wholesale, specs included, so a freshly-written
+  // spec emits a fresh `thing.spec.js` into dist/. That bumps `newest(dist)` while
+  // `newest(src)` correctly ignores the spec source — masking a genuinely stale production
+  // file for exactly as long as someone is actively editing tests, which is precisely when
+  // they are also editing code.
+  const newestDist = newestFileUnder(path.join(pkgDir, opts.distSubdir ?? 'dist'), {
+    skipPattern: NON_BUILD_INPUT,
+  });
 
   // No src/ at all: nothing is being built from here, so nothing can be stale.
   if (!newestSrc) {

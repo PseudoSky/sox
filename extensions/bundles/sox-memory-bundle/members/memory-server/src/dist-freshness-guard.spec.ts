@@ -234,6 +234,18 @@ describe('8412f6a8 — a dist/ older than its src/ is reported, not silently exe
     const srcFile = path.join(pkgDir, 'src', 'thing.ts');
     fs.writeFileSync(srcFile, 'export const thing = 2;\n');
     expect(staleDistArtifacts([{ pkgDir, name: '@adhd/sox-memory-core' }])).toHaveLength(1);
+
+    // ...and the exclusion must apply to dist/ SYMMETRICALLY. Several builds here compile
+    // `src/**/*.ts` wholesale, so writing a spec also emits a compiled spec into dist/. If only
+    // the src/ side were filtered, that emitted artifact would bump `newest(dist)` past the
+    // genuinely-stale production file and silence the guard — a false NEGATIVE, arriving exactly
+    // when someone is editing tests and code together.
+    const distSpec = path.join(pkgDir, 'dist', 'thing.spec.js');
+    fs.writeFileSync(distSpec, '// compiled spec, emitted by the build\n'); // mtime = now
+    expect(
+      staleDistArtifacts([{ pkgDir, name: '@adhd/sox-memory-core' }]),
+      'a compiled *.spec.js emitted into dist/ must not count as evidence the build is current',
+    ).toHaveLength(1);
   });
 
   it('8412f6a8 AC-5: the guard covers EXACTLY the dist aliases vitest.config.ts declares', async () => {
@@ -255,8 +267,14 @@ describe('8412f6a8 — a dist/ older than its src/ is reported, not silently exe
     ].map((m) => ({ pkg: m[1]!, distEntry: m[2]! }));
 
     // Sanity: if this ever finds zero, the regex has drifted and AC-5 would pass vacuously —
-    // the BL-167 shape. Fail loudly instead.
-    expect(aliasedToDist.length).toBeGreaterThanOrEqual(2);
+    // the BL-167 shape. Fail loudly instead, and say so in the message: a vacuous pass is
+    // indistinguishable from a real one to everyone except the person reading this line.
+    expect(
+      aliasedToDist.length,
+      "AC-5's alias regex matched fewer than the 2 dist aliases vitest.config.ts is known to " +
+        'declare. The regex has drifted from the config\'s formatting, so this AC would pass ' +
+        'vacuously and stop covering anything. Fix the regex in this spec — do not relax this bound.',
+    ).toBeGreaterThanOrEqual(2);
 
     // Computed specifier, not a literal: `tsconfig.json` sets `rootDir: "src"`, so a static
     // `'../vitest.global-setup.js'` fails `nx typecheck memory-server` with TS6059/TS6307 (the
@@ -269,7 +287,18 @@ describe('8412f6a8 — a dist/ older than its src/ is reported, not silently exe
       DIST_ALIASED_PACKAGES: Array<{ name: string; pkgDir: string }>;
     };
     const covered = guardModule.DIST_ALIASED_PACKAGES.map((p) => p.name).sort();
-    expect(covered).toEqual(aliasedToDist.map((a) => a.pkg).sort());
+    // The message carries the remedy, because the person who trips this will not be the person
+    // who wrote it: they will have added one line to vitest.config.ts and gotten a red in a file
+    // they have never opened. A bare deep-equal diff of two package-name arrays invites them to
+    // "fix" it by deleting the assertion — which is exactly how the CLEAN report this change
+    // exists to repair became meaningless in the first place.
+    expect(
+      covered,
+      'vitest.config.ts declares a dist alias that the freshness guard does not cover. Add it to ' +
+        'DIST_ALIASED_PACKAGES in memory-server/vitest.global-setup.ts (not here) — until you do, ' +
+        "this suite will load that package's dist/ with no way to notice it has gone stale, which " +
+        'is the 2026-09-22 false-P0 this whole guard exists to prevent.',
+    ).toEqual(aliasedToDist.map((a) => a.pkg).sort());
 
     // And each covered package dir must be the one the alias actually points into, not a
     // same-named package elsewhere.
