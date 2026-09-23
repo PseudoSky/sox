@@ -49,7 +49,20 @@ try {
     encoding: 'utf8',
     timeout: 3000,
   });
-  dirty = status.trim().length > 0;
+  // `registry/index.json` is excluded, and ONLY it. The release path generates
+  // the registry before it builds the CLI (the published tarball ships an
+  // embedded copy), so that tracked file is ALWAYS modified by the time this
+  // runs — which stamped `dirty: true` on every release, caused by the release
+  // path's own output. It is a sidecar next to the bundle, never an input to
+  // `dist/index.js`, so it cannot make the stamped sha a lie about the code.
+  // Mirrors CHECKSUM_IRRELEVANT_EXACT_FILES in scripts/build-index.ts; keep the
+  // two carve-outs identical, and keep both to exactly this one path.
+  dirty = status
+    .split('\n')
+    .map((line) => line.trimEnd())
+    .filter((line) => line.length > 0)
+    .map((line) => (line.includes(' -> ') ? line.slice(line.indexOf(' -> ') + 4) : line.slice(3)).trim())
+    .some((file) => file !== 'registry/index.json');
 } catch {
   // Unable to determine — conservatively mark dirty.
   dirty = true;

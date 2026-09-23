@@ -398,30 +398,52 @@ function resolveChecksum(extDir: string, manifest: ExtensionManifest): string {
  */
 function loadCommittedPins(root: string): Map<string, { source: string; checksum: string }> {
   const pins = new Map<string, { source: string; checksum: string }>();
-  const indexPath = path.join(root, 'registry', 'index.json');
-  if (!fs.existsSync(indexPath)) return pins;
+
+  // COMMITTED means COMMITTED — read the blob at HEAD, never the working copy.
+  // The release path generates this index TWICE (once for the CLI's embedded
+  // sidecar, once to re-hash the CLI artifact the build in between produced).
+  // Seeding pins from the working copy would make pass 2 read pass 1's own
+  // output: it would find its own freshly written locator, call it a pin, and
+  // preserve the checksum of the PRE-REBUILD binary — discarding the rebuilt
+  // artifact's hash and re-creating the exact defect this preservation exists
+  // to prevent. Reading HEAD also means a `pnpm build-index` run that wipes the
+  // working file cannot destroy the pin source; only a commit can move a pin.
+  let raw: string;
+  try {
+    raw = execSync('git show HEAD:registry/index.json', {
+      cwd: root,
+      encoding: 'utf8',
+      maxBuffer: 64 * 1024 * 1024,
+      stdio: ['ignore', 'pipe', 'ignore'],
+    });
+  } catch {
+    // No git, no HEAD, or registry/index.json not tracked yet (fresh repo /
+    // scratch fixture). Nothing is pinned — every checksum comes from disk.
+    return pins;
+  }
+
   let parsed: unknown;
   try {
-    parsed = JSON.parse(fs.readFileSync(indexPath, 'utf8'));
+    parsed = JSON.parse(raw);
   } catch (e) {
     // A corrupt committed index must not silently disable pin preservation —
     // that would look exactly like "no pins to preserve" and re-ship the outage.
     console.error(
-      `build-index: WARNING — could not parse existing registry/index.json (${String(e)}); ` +
+      `build-index: WARNING — could not parse HEAD:registry/index.json (${String(e)}); ` +
         `published-bytes pin preservation is INACTIVE for this run.`,
     );
     return pins;
   }
   if (!Array.isArray(parsed)) return pins;
-  for (const raw of parsed as Array<Partial<IndexEntry>>) {
+  for (const row of parsed as Array<Partial<IndexEntry>>) {
     if (
-      typeof raw?.id === 'string' &&
-      typeof raw.source === 'string' &&
-      typeof raw.checksum === 'string' &&
-      raw.source.startsWith('npm-package:') &&
-      /^sha256:[0-9a-f]{64}$/.test(raw.checksum)
+      typeof row?.id === 'string' &&
+      typeof row.source === 'string' &&
+      typeof row.checksum === 'string' &&
+      row.source.startsWith('npm-package:') &&
+      /^sha256:[0-9a-f]{64}$/.test(row.checksum)
     ) {
-      pins.set(raw.id, { source: raw.source, checksum: raw.checksum });
+      pins.set(row.id, { source: row.source, checksum: row.checksum });
     }
   }
   return pins;
