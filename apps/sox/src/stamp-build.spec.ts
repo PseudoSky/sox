@@ -79,6 +79,122 @@ function runStampInRepo(setup: (repoDir: string) => void): {
   }
 }
 
+/**
+ * Path to the real `sox:build` target definition, so this test exercises the
+ * ACTUAL configured command order rather than a hardcoded assumption of it —
+ * a future re-ordering regression will be caught by re-reading this file.
+ */
+const PROJECT_JSON = path.resolve(__dirname, '..', 'project.json');
+
+/**
+ * A minimal stand-in for tools/bundle-extension.cjs's [BL-235] atomic swap:
+ * stage into `<outdir>.staging-<pid>`, then `renameSync` it into `<outdir>`,
+ * destroying whatever was there before (including any build-info.json a
+ * PRIOR command already wrote into `<outdir>`). This is the exact mechanism
+ * that wipes stamp-build.cjs's PUBLISHED-copy write when stamp-build.cjs runs
+ * BEFORE bundle-extension.cjs in the `sox:build` command order.
+ */
+const BUNDLE_STUB = `
+'use strict';
+const fs = require('fs');
+const path = require('path');
+const args = process.argv.slice(2);
+const outdirIdx = args.indexOf('--outdir');
+const outdir = path.resolve(args[outdirIdx + 1]);
+const stageDir = outdir + '.staging-stub';
+fs.rmSync(stageDir, { recursive: true, force: true });
+fs.mkdirSync(stageDir, { recursive: true });
+fs.writeFileSync(path.join(stageDir, 'index.js'), '// stub bundle\\n');
+if (fs.existsSync(outdir)) fs.rmSync(outdir, { recursive: true, force: true });
+fs.renameSync(stageDir, outdir);
+console.log('bundle-stub: swapped ' + outdir);
+`;
+
+/**
+ * [ITEM 4] Regression: `sox:build`'s command ordering must not let
+ * bundle-extension.cjs's atomic outdir swap run AFTER stamp-build.cjs has
+ * already written the PUBLISHED build-info.json copy into that same outdir —
+ * the swap silently discards it, and `warnIfDistSha()` (main.ts) reads from
+ * exactly that published `__dirname`, so the BL-65 dirty-dist warning is dead
+ * in every published artifact.
+ *
+ * This drives the REAL project.json `build` target's `commands` array (so a
+ * future re-ordering is caught, not just today's fix), substituting a stub
+ * for bundle-extension.cjs (no real esbuild bundling needed — only the
+ * atomic-swap mechanics matter) and the REAL stamp-build.cjs (copied to the
+ * matching relative path so its own __dirname-relative output-path
+ * resolution needs no patching). Everything runs inside a disposable temp
+ * dir; the real repo's dist/ is never touched.
+ *
+ * Fails before the fix (stamp-build.cjs invoked in command 1, before
+ * bundle-extension.cjs's swap in command 2 — the published copy is wiped).
+ * Passes after the fix (stamp-build.cjs invoked in command 2, chained after
+ * the swap with `&&`).
+ */
+describe('[ITEM 4] sox:build command order preserves build-info.json at both paths', () => {
+  it('build-info.json survives at BOTH the dev and published output paths', () => {
+    const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'sox-build-order-'));
+    try {
+      // Replicate only the relative directory shape stamp-build.cjs's
+      // __dirname-relative path.resolve() calls depend on:
+      //   apps/sox/scripts/stamp-build.cjs
+      //     -> ../../../dist/apps/sox/build-info.json   (repoRoot/dist/apps/sox/...)
+      //     -> ../dist/build-info.json                  (repoRoot/apps/sox/dist/...)
+      const scriptsDir = path.join(repoRoot, 'apps', 'sox', 'scripts');
+      fs.mkdirSync(scriptsDir, { recursive: true });
+      fs.copyFileSync(STAMP_BUILD, path.join(scriptsDir, 'stamp-build.cjs'));
+
+      const toolsDir = path.join(repoRoot, 'tools');
+      fs.mkdirSync(toolsDir, { recursive: true });
+      fs.writeFileSync(path.join(toolsDir, 'bundle-extension.cjs'), BUNDLE_STUB);
+
+      // Pre-create the DEV output dir (nx's `compile` target always runs
+      // before `build`, so dist/apps/sox pre-exists in real builds).
+      fs.mkdirSync(path.join(repoRoot, 'dist', 'apps', 'sox'), { recursive: true });
+
+      // Parse the REAL project.json build target's command order and reduce
+      // it to the two calls this invariant cares about, executed in order.
+      const projectJson = JSON.parse(fs.readFileSync(PROJECT_JSON, 'utf8')) as {
+        targets: { build: { options: { commands: string[] } } };
+      };
+      const commands = projectJson.targets.build.options.commands;
+      const segments = commands.flatMap((c) => c.split('&&').map((s) => s.trim()));
+
+      const relevant = segments.filter(
+        (s) => s.includes('stamp-build.cjs') || s.includes('bundle-extension.cjs'),
+      );
+      expect(relevant.length).toBeGreaterThanOrEqual(2);
+
+      for (const segment of relevant) {
+        if (segment.includes('bundle-extension.cjs')) {
+          execFileSync(
+            'node',
+            [path.join(toolsDir, 'bundle-extension.cjs'), '--outdir', path.join(repoRoot, 'apps', 'sox', 'dist')],
+            { cwd: repoRoot, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] },
+          );
+        } else if (segment.includes('stamp-build.cjs')) {
+          execFileSync('node', [path.join(scriptsDir, 'stamp-build.cjs')], {
+            cwd: repoRoot,
+            encoding: 'utf8',
+            stdio: ['ignore', 'pipe', 'pipe'],
+          });
+        }
+      }
+
+      const devPath = path.join(repoRoot, 'dist', 'apps', 'sox', 'build-info.json');
+      const publishedPath = path.join(repoRoot, 'apps', 'sox', 'dist', 'build-info.json');
+
+      expect(fs.existsSync(devPath)).toBe(true);
+      // This is the assertion that fails pre-fix: bundle-extension.cjs's
+      // atomic swap (which runs AFTER stamp-build.cjs in the buggy order)
+      // deletes the outdir stamp-build.cjs just wrote into.
+      expect(fs.existsSync(publishedPath)).toBe(true);
+    } finally {
+      fs.rmSync(repoRoot, { recursive: true, force: true });
+    }
+  });
+});
+
 describe('stamp-build.cjs', () => {
   it('[BL-68] clean committed tree → dirty = false', () => {
     const result = runStampInRepo((_dir) => {
