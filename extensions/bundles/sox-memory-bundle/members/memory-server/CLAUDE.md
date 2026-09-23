@@ -278,6 +278,16 @@ it. That guard (`SOX_RECALL_EMBED_TIMEOUT_MS`, default 3000ms) fires whenever th
 provider is saturated. For the cumulative rate across a process, read
 `memory_ping.recall_degradations`.
 
+`provider_call_count` counts embed calls **attempted** on this recall (incremented in `embed.ts`
+before the provider promise is awaited — BL-254), not calls that returned a vector. It is normally
+`1` on the `query` path (one local ONNX inference to embed the query text) and `0` on the listing
+path (no query to embed). **A degraded recall can still report `provider_call_count: 1`** — the
+attempt happened, it just timed out or failed; `degradations` (not this counter) is the field that
+tells you whether the vec channel actually got a vector back. The invariant is that this count is
+never hardcoded independent of what actually ran: both the non-empty-results path and the
+empty-corpus path compute it from the same before/after `getProviderCallCount()` delta, so it can
+never read `0` next to a `vec: …` degradation string for the same recall.
+
 #### ⚠️ The two recall paths do not honour the same parameters
 
 Omitting `query` selects a **different code path** — a flat, importance-ranked SQL listing, not the
@@ -369,7 +379,13 @@ Return graph neighbors of an episode at depth=1 (RELATES_TO, DERIVED_FROM, SUPPO
 
 **Input:** `{ "db_path": "<string>", "uid": "<string>", "rel"?: string[], "limit"?: number }`
 
-**Output:** `{ "source_uid": string, "edges": [{ "episode": EpisodeSummary, "rel", "weight", "direction": "outbound"|"inbound" }] }`
+**Output:** `{ "source_uid": string, "edges": [{ "episode": EpisodeSummary, "rel", "weight", "direction": "outbound"|"inbound" }], "invalidated_count": number }`
+
+Only LIVE neighbours are returned, and node-level validity is applied **before** `limit`, so a page is short only when the neighbourhood is genuinely exhausted. (Until 2026-09-22 invalidated neighbours consumed slots inside the limit window and were then dropped, silently returning short lists.) Outbound edges are emitted before inbound ones; within a direction, order is edge-creation order. A reciprocal A→B/B→A pair yields **two** entries, one per direction. No importance ranking is applied — unlike `memory_entity_episodes`, this tool promises no ordering by relevance.
+
+`invalidated_count` (added 2026-09-22) reports live edges — both directions, after the `rel` filter — whose neighbour node has since been invalidated. It is **not** bounded by `limit` and is **not** a paging denominator (this tool has no `total` and no `offset`): it is a diagnostic of how much of this node's neighbourhood has been invalidated. A non-zero value is normal and is **not** a gap in the returned edges. An invalidated *edge* to a live neighbour does not count here — only an invalidated neighbour node does.
+
+`limit` is coerced and clamped before it reaches SQL: a non-integer truncates, and a negative value returns zero rows rather than being read by SQLite as `LIMIT -1` ("no limit").
 
 ---
 

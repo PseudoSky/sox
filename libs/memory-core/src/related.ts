@@ -1,15 +1,32 @@
 /**
- * memoryGetRelated — graph neighbors at depth=1 using graph-store edge queries.
+ * memoryGetRelated — graph neighbors at depth=1 over live edges and live nodes.
  *
- * Uses getEdges({src}) for outbound, getEdges({dst}) for inbound.
- * Node details fetched via raw SQL (uid not in NodeRecord).
+ * Edge-level and node-level validity are applied in the SAME query that
+ * applies `LIMIT`, in both directions. The prior implementation's defect was
+ * the ORDER of those operations, not their absence: `getEdges()` does prepend
+ * `t_invalid IS NULL` to the edge scan (graph-store/src/index.ts:2698), and
+ * `t_invalid IS NULL` was applied to the neighbour nodes — but only AFTER
+ * `.slice(0, limit)` had already truncated the edge array. An invalidated
+ * neighbour inside the limit window therefore consumed a slot and was then
+ * dropped, silently returning a short list while live neighbours that would
+ * have filled those slots sat just past the cut.
+ *
+ * The replacement is a single bidirectional `UNION ALL` — out-edges keyed on
+ * `e.src`, in-edges on `e.dst` — with `LIMIT` bound in SQL. `UNION ALL`, not
+ * `UNION`: a reciprocal A→B/B→A pair is two distinct entries (one per
+ * direction) and always has been. No `n.kind` predicate is applied, matching
+ * prior behaviour — a `MENTIONS` edge reaches an entity node, and callers see
+ * those today typed as `EpisodeBase`.
+ *
+ * Ordering is `dir_rank ASC, e.rowid ASC` — a literal 0/1 rank, because
+ * `'inbound' < 'outbound'` alphabetically and outbound has always been
+ * emitted first. No importance ordering is imposed: `memory_related` promises
+ * none, unlike the sibling `memory_entity_episodes`.
  *
  * [inv:no-mcp] — returns a plain result object, never an MCP ToolResult.
  */
 
 import type { StoreAdapter } from '@adhd/sox-store-adapter';
-import { getMemoryGraphBackend } from './graph-backend.js';
-import type { EdgeRecord } from '@adhd/sox-graph-store';
 import { parseTags, isSuperseded, supersedesUidForRowid, communityUidForRowid } from './recall.js';
 
 // ── Types ──────────────────────────────────────────────────────────────────────
@@ -39,10 +56,17 @@ export interface EdgeEntry {
 export interface RelatedResult {
   source_uid: string;
   edges: EdgeEntry[];
+  /** Live edges (both directions, after the `rel` filter) whose neighbour node
+   *  has been invalidated. NOT bounded by `limit` — it counts the whole
+   *  neighbourhood, so it is a diagnostic of how much of this node's graph has
+   *  been invalidated, never a paging denominator (`memoryGetRelated` has no
+   *  `total` and no `offset`). Observability only; should trend toward zero as
+   *  the near-dup pass stops auto-invalidating. */
+  invalidated_count: number;
   code?: string;
 }
 
-interface NodeRow {
+interface NeighborRow {
   rowid: number;
   uid: string;
   content: string | null;
@@ -53,10 +77,12 @@ interface NodeRow {
   importance: number;
   t_created: string;
   agent_id: string | null;
-  t_invalid: string | null;
+  rel: string;
+  weight: number | null;
+  dir_rank: number;
 }
 
-async function nodeRowToEpisode(adapter: StoreAdapter, r: NodeRow): Promise<EpisodeBase> {
+async function nodeRowToEpisode(adapter: StoreAdapter, r: NeighborRow): Promise<EpisodeBase> {
   return {
     uid: r.uid,
     content: r.content,
@@ -81,7 +107,22 @@ export async function memoryGetRelated(
 ): Promise<RelatedResult> {
   const uid = args['uid'] as string;
   const relFilter = args['rel'] as string[] | undefined;
-  const limit = Math.min((args['limit'] as number | undefined) ?? 20, 100);
+  // Normalize `limit` BEFORE it can reach SQL as a bind param. This is not
+  // cosmetic: the MCP schema declares `limit` as a plain `number` (max 100, no
+  // `minimum`, no `multipleOf`) and direct memory-core callers bypass the
+  // schema entirely, so non-integer and negative values are reachable. Under
+  // the old `.slice(0, limit)` both were harmlessly absorbed; under a real
+  // `LIMIT ?` they are not — SQLite reads a NEGATIVE limit as "no limit"
+  // (returning the entire neighbourhood, a strictly worse failure than the one
+  // being fixed), and a non-integer bind throws `datatype mismatch`, which
+  // nothing upstream catches. `Number.isFinite` rather than `x || default`,
+  // because `||` would treat an explicit `limit: 0` as falsy and hand back a
+  // full page where the adjacent `limit: -1` clamps to zero rows.
+  const rawLimit = args['limit'] as number | undefined;
+  const limit = Math.min(
+    Math.max(Number.isFinite(rawLimit as number) ? Math.trunc(rawLimit as number) : 20, 0),
+    100,
+  );
 
   const sourceRow = await adapter.executeGet<{ rowid: number }>(
     `SELECT rowid FROM node WHERE uid = ? LIMIT 1`,
@@ -89,68 +130,60 @@ export async function memoryGetRelated(
   );
 
   if (!sourceRow) {
-    return { source_uid: uid, edges: [], code: 'E_NOT_FOUND' };
+    return { source_uid: uid, edges: [], invalidated_count: 0, code: 'E_NOT_FOUND' };
   }
 
-  const backend = getMemoryGraphBackend(adapter);
   const srcRowid = sourceRow.rowid;
 
-  // Outbound edges
-  const outEdgesRaw = await backend.getEdges({ src: srcRowid });
-  // Inbound edges
-  const inEdgesRaw = await backend.getEdges({ dst: srcRowid });
+  // `rel` filter: an IN-list over the requested relation types, or no clause at
+  // all when absent/empty — matching the prior `relSet === null` semantics of
+  // "all live relation types". Bound as parameters, never interpolated.
+  const rels = relFilter && relFilter.length > 0 ? relFilter : null;
+  const relClause = rels ? ` AND e.rel IN (${rels.map(() => '?').join(',')})` : '';
+  const relParams: unknown[] = rels ?? [];
 
-  // Filter by rel if provided
-  const relSet = relFilter && relFilter.length > 0 ? new Set(relFilter) : null;
-  const filterByRel = (e: EdgeRecord) => !relSet || relSet.has(e.rel);
+  const NEIGHBOR_COLS = `n.rowid, n.uid, n.content, n.summary, n.topic, n.tags,
+            n.project_path, n.importance, n.t_created, n.agent_id,
+            e.rel AS rel, e.weight AS weight`;
 
-  const outEdges = outEdgesRaw.filter(filterByRel).slice(0, limit);
-  const inEdges = inEdgesRaw.filter(filterByRel).slice(0, limit);
+  // One query, both directions, live edges joined to LIVE nodes, with LIMIT
+  // applied by SQL after that filtering — the whole point of the fix. Out-edges
+  // key the neighbour on e.dst, in-edges on e.src.
+  const pageResult = await adapter.executeAll<NeighborRow>(
+    `SELECT ${NEIGHBOR_COLS}, 0 AS dir_rank, e.rowid AS edge_rowid
+       FROM edge e JOIN node n ON n.rowid = e.dst
+      WHERE e.src = ? AND e.t_invalid IS NULL AND n.t_invalid IS NULL${relClause}
+      UNION ALL
+     SELECT ${NEIGHBOR_COLS}, 1 AS dir_rank, e.rowid AS edge_rowid
+       FROM edge e JOIN node n ON n.rowid = e.src
+      WHERE e.dst = ? AND e.t_invalid IS NULL AND n.t_invalid IS NULL${relClause}
+      ORDER BY dir_rank ASC, edge_rowid ASC
+      LIMIT ?`,
+    [srcRowid, ...relParams, srcRowid, ...relParams, limit],
+  );
 
-  // Collect all neighbor rowids
-  const neighborRowids = new Set<number>();
-  for (const e of outEdges) neighborRowids.add(e.dst);
-  for (const e of inEdges) neighborRowids.add(e.src);
+  // Same join shape, inverted node predicate, and deliberately NOT limited —
+  // see the `invalidated_count` docstring on RelatedResult.
+  const invalidatedRow = await adapter.executeGet<{ cnt: number }>(
+    `SELECT COUNT(*) AS cnt FROM (
+       SELECT e.rowid FROM edge e JOIN node n ON n.rowid = e.dst
+        WHERE e.src = ? AND e.t_invalid IS NULL AND n.t_invalid IS NOT NULL${relClause}
+        UNION ALL
+       SELECT e.rowid FROM edge e JOIN node n ON n.rowid = e.src
+        WHERE e.dst = ? AND e.t_invalid IS NULL AND n.t_invalid IS NOT NULL${relClause}
+     )`,
+    [srcRowid, ...relParams, srcRowid, ...relParams],
+  );
 
-  // Batch look up nodes
-  const nodeMap = new Map<number, NodeRow>();
-  if (neighborRowids.size > 0) {
-    const ph = Array.from(neighborRowids, () => '?').join(',');
-    const result = await adapter.executeAll<NodeRow>(
-      `SELECT rowid, uid, content, summary, topic, tags, project_path,
-              importance, t_created, agent_id, t_invalid
-       FROM node WHERE rowid IN (${ph}) AND t_invalid IS NULL`,
-      [...neighborRowids],
-    );
-    for (const r of result.rows) {
-      nodeMap.set(r.rowid, r);
-    }
-  }
-
-  // Build edges
   const edges: EdgeEntry[] = [];
-  for (const e of outEdges) {
-    const node = nodeMap.get(e.dst);
-    if (node) {
-      edges.push({
-        episode: await nodeRowToEpisode(adapter, node),
-        rel: e.rel,
-        weight: e.weight ?? 1.0,
-        direction: 'outbound',
-      });
-    }
-  }
-  for (const e of inEdges) {
-    const node = nodeMap.get(e.src);
-    if (node) {
-      edges.push({
-        episode: await nodeRowToEpisode(adapter, node),
-        rel: e.rel,
-        weight: e.weight ?? 1.0,
-        direction: 'inbound',
-      });
-    }
+  for (const r of pageResult.rows) {
+    edges.push({
+      episode: await nodeRowToEpisode(adapter, r),
+      rel: r.rel,
+      weight: r.weight ?? 1.0,
+      direction: r.dir_rank === 0 ? 'outbound' : 'inbound',
+    });
   }
 
-  return { source_uid: uid, edges: edges.slice(0, limit) };
+  return { source_uid: uid, edges, invalidated_count: invalidatedRow?.cnt ?? 0 };
 }
