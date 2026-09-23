@@ -102,19 +102,48 @@ verdaccio — `registry/index.json` is left rewritten. Line 69 additionally runs
 `npx nx run-many -t build`, which rebuilds every `dist/` in the checkout, including the one the live
 memory service executes (BL-235).
 
-## Recommended fix (not implemented — checksum axis is another agent's lane)
+## The `sox` entry cannot be pinned before the publish exists
 
-1. **Anchor the pin where regeneration reads it**: write the published-byte checksum into each
-   `extension.json`'s `checksum` field. `resolveChecksum` already honours it, and the code comment
-   says that is its intended purpose. The pin then survives `build-index`, `release:prepared`, and
-   the smoke script.
-2. **Reorder `release:prepared`** so the index is generated *after* `nx build sox`, or the published
-   `sox` entry is always stale against the artifact shipped beside it.
-3. **Make the smoke script non-destructive**: snapshot/restore `registry/index.json` in its trap, or
-   operate on a copied tree.
-4. **Re-point the CI drift gate** only after (1) — with the pin anchored in `extension.json`, a
-   publish-signalled `check-registry-sync` becomes satisfiable, and the `manifest:check-registry`
-   re-wiring is then correct rather than merely narrower.
+`sox`'s committed checksum `b31388ad…` is pinned to sox-cli@**1.2.1**'s published bytes. Publishing
+1.2.2 produces a different `dist/index.js`, so that entry is *necessarily* stale the moment a new
+version ships. It cannot be pre-pinned. The only correct ordering is
+**build → publish → checksum the unmodified `dist` → commit** — which is exactly what
+`release.yml:111-113` does *after* publish, and exactly what `release:prepared`'s *pre*-publish
+regeneration breaks.
+
+This is why local `2bd3ddec` matches neither committed value: `apps/sox/dist` was rebuilt today,
+after 1.2.1 shipped. **The defect is ordering, not a missing anchor.**
+
+## Options (not implemented — the checksum axis is another agent's lane)
+
+1. **Reorder `release:prepared`** so the index is generated *after* `nx build sox` — or, better, not
+   at all pre-publish, leaving `release.yml`'s existing post-publish regeneration as the single
+   writer. Unambiguous win.
+2. **Make the smoke script non-destructive**: snapshot/restore `registry/index.json` in its `trap`,
+   or operate on a copied tree. Unambiguous win.
+3. **Re-pointing the CI drift gate is NOT sufficient on its own** (measured above) and should wait
+   until the writer story is settled.
+
+### Rejected: anchoring the pin in `extension.json.checksum`
+
+Superficially attractive — `resolveChecksum` honours `manifest.checksum` first, and its comment says
+that is the intended purpose. But setting that field has a second, unwanted effect at
+`build-index.ts:300-303`:
+
+```ts
+if (manifest.checksum) {
+  return `https://cdn.jsdelivr.net/npm/${pkgName}@${resolveDisplayVersion(extDir)}/dist/index.js`;
+}
+```
+
+In publish mode this is shadowed by the `SOX_REGISTRY_PUBLISH` branch above it, so `npm-package:`
+still wins. But in a **dev** build it flips every source from `file://` to a single-file jsdelivr
+URL — and per `PUBLISHING.md`, that fetch cannot deliver the transitive native deps
+(`better-sqlite3`, `sqlite-vec`) the `npm-package:` install mode exists to provide. It would also
+pass the `06aa9e79` gate silently, since `https://` is accepted as portable.
+
+Anchoring therefore trades a release-path defect for a broken local dev path. It needs a design
+decision, not a unilateral change.
 
 ## What is already fixed
 
