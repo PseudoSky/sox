@@ -39,6 +39,7 @@ import * as crypto from 'node:crypto';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
+import { pathToFileURL } from 'node:url';
 
 import { createNpmPublishedFetcher } from './lib/npm-published-fetcher.js';
 import { checkPublishedBytes, selectNpmPackageEntries, type RegistryEntry } from './lib/published-bytes.js';
@@ -61,33 +62,67 @@ function resolveDefaultRoot(): string {
   }
 }
 
-const argv = process.argv.slice(2);
-
 /**
+ * ⛔ NO MODULE-SCOPE EXECUTION BELOW THIS POINT.
+ *
+ * This file is a CLI gate AND an importable module: its entrypoint-resolution
+ * copy is pinned against the other four by
+ * `scripts/entrypoint-resolution-conformance.test.ts`. Argv parsing, the
+ * registry read, and the `process.exit(1)` that used to live at module scope
+ * would have run — and killed the test process — on a bare `import`. They are
+ * now performed by `initCliState()`, which only `main()` calls.
+ *
  * `--published-bytes-only` runs ONLY the published-bytes assertion and skips
  * the disk-drift comparison. That is the mode CI wires in, deliberately: the
  * drift comparison is currently structurally unsatisfiable (resolveSource at
  * :~164 only emits `npm-package:` locators under SOX_REGISTRY_PUBLISH, so the
  * disk side yields file:// / jsdelivr rows while the committed registry holds
- * the six published rows — measured 31 disk vs 6 registry). That defect is
- * owned elsewhere; wiring the combined verdict into CI would mean adopting it.
+ * the six published rows — measured 31 disk vs 6 registry).
  *
  * `--no-remote` (or SOX_SKIP_PUBLISHED_BYTES=1) is the EXPLICIT offline opt-out.
  * It is the ONLY thing that makes an un-run published check a pass. A network
  * failure never silently becomes a skip — see the UNREACHABLE handling below.
  */
-const publishedBytesOnly = argv.includes('--published-bytes-only');
-const noRemote = argv.includes('--no-remote') || process.env['SOX_SKIP_PUBLISHED_BYTES'] === '1';
-const root = argv.find((a) => !a.startsWith('--')) ?? resolveDefaultRoot();
+let publishedBytesOnly = false;
+let noRemote = false;
+let root = '';
+let committedRaw = '';
+let committedRawEntries: unknown[] = [];
+let committedEntries: unknown[] = [];
 
-// Read the current committed registry
-const registryPath = path.join(root, 'registry', 'index.json');
-if (!fs.existsSync(registryPath)) {
-  console.error('check-registry-sync: registry/index.json not found — run npx nx run registry:sync-index first');
-  process.exit(1);
+function initCliState(): void {
+  const argv = process.argv.slice(2);
+  publishedBytesOnly = argv.includes('--published-bytes-only');
+  noRemote = argv.includes('--no-remote') || process.env['SOX_SKIP_PUBLISHED_BYTES'] === '1';
+  root = argv.find((a) => !a.startsWith('--')) ?? resolveDefaultRoot();
+
+  // Read the current committed registry
+  const registryPath = path.join(root, 'registry', 'index.json');
+  if (!fs.existsSync(registryPath)) {
+    console.error('check-registry-sync: registry/index.json not found — run npx nx run registry:sync-index first');
+    process.exit(1);
+  }
+
+  committedRaw = fs.readFileSync(registryPath, 'utf8');
+  committedRawEntries = JSON.parse(committedRaw) as unknown[];
+
+  // BL-390: a committed `provisional: true` entry means someone ran sync-index
+  // with `--allow-dirty` and its checksum was NOT built from committed source.
+  // That is a legitimate escape hatch, not a drift failure — but it must not
+  // pass silently, or the whole point of stamping it is lost.
+  const provisionalIds = committedRawEntries
+    .filter((e) => (e as { provisional?: boolean }).provisional === true)
+    .map((e) => (e as { id: string }).id);
+  if (provisionalIds.length > 0) {
+    console.warn(
+      `check-registry-sync: WARNING — ${provisionalIds.length} committed entr${provisionalIds.length === 1 ? 'y is' : 'ies are'} ` +
+      `provisional (built from a dirty tree via --allow-dirty): ${provisionalIds.join(', ')}`,
+    );
+    console.warn('  Re-run `npx nx run registry:sync-index` against a clean tree to replace with a reproducible checksum.');
+  }
+
+  committedEntries = stripProvenanceFields(committedRawEntries);
 }
-
-const committedRaw = fs.readFileSync(registryPath, 'utf8');
 
 // ─── Mirror of scripts/build-index.ts (read-only) ────────────────────────────
 
@@ -208,20 +243,38 @@ function resolveSource(extDir: string, manifest: Manifest): string {
   return `file://${extDir}`;
 }
 
+/**
+ * Mirror of build-index.resolveEntrypointPath.
+ *
+ * ⛔ CONFORMANCE-PINNED — see `scripts/entrypoint-resolution-conformance.test.ts`.
+ * `libs/install-engine/src/install.ts resolveEntrypointFile` is the authority.
+ */
+export function resolveEntrypointPath(extDir: string, manifest: Pick<Manifest, 'entrypoint'>): string {
+  if (typeof manifest.entrypoint === 'string' && manifest.entrypoint.trim() !== '') {
+    const declared = path.join(extDir, manifest.entrypoint);
+    // Mirror install.ts assertWithinBase / build-index: an escaping entrypoint
+    // is a hard failure, never a silently-hashed out-of-tree file.
+    if (!path.resolve(declared).startsWith(path.resolve(extDir) + path.sep)) {
+      throw new Error(`entrypoint escapes the extension dir: ${manifest.entrypoint}`);
+    }
+    if (fs.existsSync(declared)) return declared;
+  }
+  const distJs = path.join(extDir, 'dist', 'index.js');
+  if (fs.existsSync(distJs)) return distJs;
+  // prompt.md precedes SKILL.md — order matters.
+  const promptMd = path.join(extDir, 'prompt.md');
+  if (fs.existsSync(promptMd)) return promptMd;
+  const skillMd = path.join(extDir, 'SKILL.md');
+  if (fs.existsSync(skillMd)) return skillMd;
+  return path.join(extDir, 'extension.json');
+}
+
 /** Mirror of build-index.resolveChecksum (C4 entrypoint resolution order). */
 function resolveChecksum(extDir: string, manifest: Manifest): string {
   if (manifest.checksum && /^sha256:[0-9a-f]{64}$/.test(manifest.checksum)) {
     return manifest.checksum;
   }
-  if (typeof manifest.entrypoint === 'string' && manifest.entrypoint.trim() !== '') {
-    const declared = path.join(extDir, manifest.entrypoint);
-    if (fs.existsSync(declared)) return computeFileChecksum(declared);
-  }
-  const distJs = path.join(extDir, 'dist', 'index.js');
-  if (fs.existsSync(distJs)) return computeFileChecksum(distJs);
-  const promptMd = path.join(extDir, 'prompt.md');
-  if (fs.existsSync(promptMd)) return computeFileChecksum(promptMd);
-  return computeFileChecksum(path.join(extDir, 'extension.json'));
+  return computeFileChecksum(resolveEntrypointPath(extDir, manifest));
 }
 
 function buildLiveEntries(): unknown[] {
@@ -299,24 +352,6 @@ function stripProvenanceFields(entries: unknown[]): unknown[] {
   });
 }
 
-const committedRawEntries = JSON.parse(committedRaw) as unknown[];
-
-// BL-390: a committed `provisional: true` entry means someone ran sync-index
-// with `--allow-dirty` and its checksum was NOT built from committed source.
-// That is a legitimate escape hatch, not a drift failure — but it must not
-// pass silently, or the whole point of stamping it is lost.
-const provisionalIds = committedRawEntries
-  .filter((e) => (e as { provisional?: boolean }).provisional === true)
-  .map((e) => (e as { id: string }).id);
-if (provisionalIds.length > 0) {
-  console.warn(
-    `check-registry-sync: WARNING — ${provisionalIds.length} committed entr${provisionalIds.length === 1 ? 'y is' : 'ies are'} ` +
-    `provisional (built from a dirty tree via --allow-dirty): ${provisionalIds.join(', ')}`,
-  );
-  console.warn('  Re-run `npx nx run registry:sync-index` against a clean tree to replace with a reproducible checksum.');
-}
-
-const committedEntries = stripProvenanceFields(committedRawEntries);
 
 // Sort both by id for stable comparison
 function sortedById(arr: unknown[]): unknown[] {
@@ -437,6 +472,7 @@ async function runPublishedBytesGate(): Promise<boolean> {
 }
 
 async function main(): Promise<void> {
+  initCliState();
   let ok = true;
   if (!publishedBytesOnly) {
     ok = runDriftGate() && ok;
@@ -445,4 +481,8 @@ async function main(): Promise<void> {
   process.exit(ok ? 0 : 1);
 }
 
-void main();
+// Main-guard: importing this module (the conformance test does) must not run
+// the gate, parse argv, or call process.exit.
+if (import.meta.url === pathToFileURL(process.argv[1] ?? '').href) {
+  void main();
+}
