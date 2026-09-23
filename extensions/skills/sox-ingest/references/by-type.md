@@ -220,7 +220,8 @@ before building.
 ## Batch sequencing (multi-extension ingests)
 
 1. One type at a time, in waves of 3-5 extensions.
-2. After each wave: rebuild registry (`npx tsx scripts/build-index.ts`), then
+2. After each wave: register the new extensions — see
+   [AGENTS.md § registry is release-only](../../../AGENTS.md#registry-is-release-only) — then
    `./node_modules/.bin/nx run-many -t build,lint,test` + `nx run host-runtime:test-e2e` must all
    be green. A red wave blocks the next until fixed.
 3. Track per-extension status in a catalog table (pending / done / excluded / deferred + reason).

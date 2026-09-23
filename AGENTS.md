@@ -306,10 +306,7 @@ read clean the entire time; the reverted symbols appeared in `dist/index.js` 9 t
 
 Governed by **BL-235**. Builds stage into `<outdir>.staging-<pid>` and swap into place on success
 (`packages/sox-nx/src/executors/atomic-tsc/executor.ts`, `tools/bundle-extension.cjs`); a failed
-build leaves the old `dist/` intact. That staging fix closed the earlier hazard where `build`
-targets ran `rm -rf .../dist` before knowing the rebuild would succeed and could destroy a working
-artifact with no way back — which happened twice, once taking the live memory MCP server down
-mid-session.
+build leaves the old `dist/` intact.
 
 - **`--dry-run` does NOT protect you.** nx accepts the flag on a run-target and *silently ignores it* —
   `npx nx build ingest --dry-run` performs a real build. Verified 2026-07-09. There is no
