@@ -47,8 +47,8 @@
       ],
       "options": {
         "commands": [
-          "echo '{\"type\":\"commonjs\"}' > dist/apps/sox/package.json && node apps/sox/scripts/rewrite-paths.cjs && node apps/sox/scripts/stamp-build.cjs",
-          "node tools/bundle-extension.cjs --entry apps/sox/src/main.ts --outdir apps/sox/dist --tsconfig apps/sox/tsconfig.app.json",
+          "echo '{\"type\":\"commonjs\"}' > dist/apps/sox/package.json && node apps/sox/scripts/rewrite-paths.cjs",
+          "node tools/bundle-extension.cjs --entry apps/sox/src/main.ts --outdir apps/sox/dist --tsconfig apps/sox/tsconfig.app.json && node apps/sox/scripts/stamp-build.cjs",
           "node apps/sox/scripts/embed-registry.cjs"
         ],
         "parallel": false,
