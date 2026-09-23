@@ -126,6 +126,12 @@ A new parameterized suite (`install-engine/src/integrity.scope.spec.ts`, matrix 
 
 ## Migration
 
+> **Amended (2026-09-23, ADR-0021):** the "registry:sync-index" steps below (Migration preamble,
+> Phase 2, Phase 4) describe the pre-release-only model. Since ADR-0021 the committed
+> registry/index.json is written only by the release flow (PUBLISHING.md, build-index:publish) or
+> tools/repin-registry-entry.mjs; an artifact touch is followed by build → test → smoke →
+> source-only commit. The identity decision is unchanged.
+
 Phased; design-only here (do not implement under this ADR). Each phase is independently shippable and gated by `nx run-many build,lint,test` + the new scope-parity suite. Per the repo's C2/C4 sequence, any artifact touch is followed by `registry:sync-index` and an explicit-path commit.
 
 **Phase 0 — Schema + invariants (no behavior change).**
