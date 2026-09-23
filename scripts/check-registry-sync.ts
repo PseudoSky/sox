@@ -2,14 +2,29 @@
 /**
  * scripts/check-registry-sync.ts — Registry drift gate
  *
- * Fails (exit 1) if registry/index.json is out of sync with the
- * extension manifests currently on disk under extensions/ (and apps/).
+ * TWO GATES, ONE OF THEM RETIRED FROM CI. Read this before wiring anything:
  *
- * Use as a CI check or pre-commit hook:
- *   npx tsx scripts/check-registry-sync.ts
+ * 1. DRIFT GATE (default mode, `runDriftGate`) — compares registry/index.json
+ *    against a walk of the manifests on disk. It is NOT wired into any CI
+ *    workflow, deliberately, and its remediation advice ("re-sync with
+ *    registry:sync-index") must never be followed to "fix" a red gate.
+ *    Registry-vs-disk equality is the WRONG invariant: the registry is a
+ *    PUBLICATION PIN, not a mirror of the working tree. `resolveSource` below
+ *    only emits `npm-package:` locators under SOX_REGISTRY_PUBLISH — a
+ *    release-path signal — so outside a release the disk side yields file:// /
+ *    jsdelivr rows and cannot equal the committed publication rows by
+ *    construction (measured: 31 disk rows vs 6 registry rows). Running a
+ *    generator to satisfy it re-pins every checksum from local disk bytes,
+ *    which is the CHECKSUM MISMATCH outage itself. ci.yml/validate.yml used to
+ *    do exactly that; the step is gone and its absence is enforced by
+ *    scripts/ci-no-generator-in-verify.test.ts. This mode survives as a local
+ *    diagnostic ONLY.
  *
- * When it fails, re-sync with:
- *   npx nx run registry:sync-index
+ *    Use as a local diagnostic:
+ *      npx tsx scripts/check-registry-sync.ts
+ *
+ * 2. PUBLISHED-BYTES GATE + ITS COVERAGE ASSERTION — what CI actually runs.
+ *    See below.
  *
  * SECOND GATE — PUBLISHED-BYTES ASSERTION (backlog
  * fbde8dda-d6ed-4b6b-9cde-9495351a7c35 / 3df6f848-c5c4-4cf3-92dc-6490fb043fde):
@@ -78,12 +93,11 @@ function resolveDefaultRoot(): string {
  * would have run — and killed the test process — on a bare `import`. They are
  * now performed by `initCliState()`, which only `main()` calls.
  *
- * `--published-bytes-only` runs ONLY the published-bytes assertion and skips
- * the disk-drift comparison. That is the mode CI wires in, deliberately: the
- * drift comparison is currently structurally unsatisfiable (resolveSource at
- * :~164 only emits `npm-package:` locators under SOX_REGISTRY_PUBLISH, so the
- * disk side yields file:// / jsdelivr rows while the committed registry holds
- * the six published rows — measured 31 disk vs 6 registry).
+ * `--published-bytes-only` runs ONLY the published-bytes assertion (plus its
+ * coverage check) and skips the disk-drift comparison. That is the mode CI
+ * wires in, deliberately — see the header's gate 1/gate 2 note.
+ *
+ * `--allow-empty` is the only way an empty verified-row set passes.
  *
  * `--no-remote` (or SOX_SKIP_PUBLISHED_BYTES=1) is the EXPLICIT offline opt-out.
  * It is the ONLY thing that makes an un-run published check a pass. A network

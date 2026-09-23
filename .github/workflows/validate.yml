@@ -76,10 +76,10 @@ jobs:
       # locator while the generator re-pins `checksum` to new LOCAL bytes, so every
       # install dies with CHECKSUM MISMATCH (memory-server@1.3.3: 4ea74857 vs 6a4168d7).
       #
-      # MUST RUN BEFORE the drift gate below: that step runs `pnpm build-index`, which
-      # REWRITES registry/index.json from local disk bytes. After it, this check would
-      # be inspecting CI's regenerated file instead of the committed one — the same
-      # CI-bytes-vs-CI-bytes tautology that makes a post-publish-only check worthless.
+      # This inspects the COMMITTED registry/index.json. Nothing in this job may run a
+      # generator before it (or at all) — `pnpm build-index` REWRITES the file from local
+      # disk bytes, and inspecting CI's own regenerated file is the CI-bytes-vs-CI-bytes
+      # tautology that makes a post-publish-only check worthless. See the RETIRED note below.
       #
       # Not gated on any publication signal and not path-filtered: six HTTPS GETs is
       # cheap, and always-run is a superset of "any push touching registry/index.json".
@@ -88,16 +88,30 @@ jobs:
       - name: Registry checksums match published npm bytes
         run: pnpm run check-published-bytes
 
-      # Step 2.5: registry drift — regenerate registry/index.json and fail if it changed.
-      # The registry stores per-extension sha256 checksums of source artifacts; `soxe update`
-      # (and any checksum-verifying install) FAILS when the committed index is stale relative
-      # to the source. This gate forces the index to be regenerated (`pnpm build-index`)
-      # whenever source changes, so checksums can never silently drift out of sync.
-      - name: Registry index up to date
-        run: |
-          pnpm build-index
-          git diff --exit-code registry/index.json \
-            || (echo "::error::registry/index.json is stale — run 'pnpm build-index' and commit." && exit 1)
+      # RETIRED — there is deliberately NO registry-regeneration step here.
+      # This job used to run `pnpm build-index` and then
+      # `git diff --exit-code registry/index.json`, failing with
+      # "registry/index.json is stale - run 'pnpm build-index' and commit."
+      # That instruction is the OUTAGE PROCEDURE: `build-index` re-derives every
+      # row's `source` into file:// / jsdelivr locators and re-pins every
+      # `checksum` from LOCAL DISK BYTES, which is the mechanism recorded in
+      # scripts/lib/published-bytes.ts as the cause of the CHECKSUM MISMATCH
+      # outage. Committing its output replaces the 6-row publication pin with 31
+      # file:// rows. It could never have gone green either: the disk walk yields
+      # 31 rows against the registry's 6, because `resolveSource` only emits
+      # `npm-package:` locators under SOX_REGISTRY_PUBLISH, a release-path signal
+      # this job does not set. Registry-vs-disk equality is simply the wrong
+      # invariant — the registry is a PUBLICATION PIN, not a mirror of the tree.
+      #
+      # It is replaced by two assertions that are both satisfiable and
+      # load-bearing, neither of which generates anything:
+      #   1. the published-bytes step above (every npm-package: row's checksum
+      #      equals the bytes npm serves — currently 6/6), and
+      #   2. its coverage gate (registry/published-coverage.json: no row may
+      #      silently lose its npm-package: locator, and an empty verified set
+      #      is never a pass).
+      # Generation belongs in .github/workflows/release.yml, and nowhere else.
+      # Enforced by scripts/ci-no-generator-in-verify.test.ts.
 
       # Step 3: typecheck — tsc --noEmit across all workspace packages (blocking gate)
       # Runs on all packages; filter is not applied here because type errors in
