@@ -93,11 +93,11 @@
   {
     "id": "sox",
     "type": "command",
-    "version": "1.2.1",
+    "version": "1.2.2",
     "title": "soxe CLI",
     "description": "LLM extension ecosystem CLI — extension #0 (D1/D2 self-hosting)",
-    "source": "npm-package:@adhd/sox-cli@1.2.1",
-    "checksum": "sha256:b31388ad87e96ecc72abaed48d401e7fd26c3e2ae6ca036ea448e4be8717d08d",
+    "source": "npm-package:@adhd/sox-cli@1.2.2",
+    "checksum": "sha256:e52db888e93624183215209e41b0871b2a0102c63fc8e74e0d9ff54a2f8a4d3b",
     "compatibility": {
       "host": ">=1.0.0 <2.0.0"
     },
