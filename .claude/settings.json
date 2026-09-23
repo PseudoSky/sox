@@ -37,10 +37,7 @@
       "Bash(npx changeset status)",
       "Bash(npx changeset add *)",
       "Bash(npx changeset version)",
-      "Bash(npx changeset publish)",
-      "Bash(npx changeset publish *)",
-      "Bash(pnpm pack *)",
-      "Bash(npx nx run registry:sync-index)"
+      "Bash(pnpm pack *)"
     ]
   }
 }
