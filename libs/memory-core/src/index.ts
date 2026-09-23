@@ -270,7 +270,7 @@ export type {
 } from './recall.js';
 
 // ── Enrichment (write-time + batch) ───────────────────────────────────────────
-export { enrichOnWrite } from './enrich.js';
+export { enrichOnWrite, resolveTopicFromPrefix } from './enrich.js';
 export type { EnrichOnWriteParams, EnrichOnWriteResult } from './enrich.js';
 export type { NearDupResult } from './neardup.js';
 export { runBatchEnrich, computeLinkDegree } from './enrich-batch.js';

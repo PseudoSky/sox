@@ -108,6 +108,10 @@ import {
   computePingHealthVerdict,
   // (BL-582) The single derivation of last_checkpoint_at — see its doc comment.
   observedLastCheckpointAt,
+  // Backlog 29f3a4d5 blocker 1: single shared E5 `[<topic>]` prefix resolver
+  // (see its doc comment in enrich.ts) — used below so chunked writes cannot
+  // drift from computeWriteEnrichment's own topic resolution.
+  resolveTopicFromPrefix,
 } from '@adhd/sox-memory-core';
 import type { HealResult, PendingEmbed, PhaseAOutcome, WriteError, WriteResult, EnrichAlarmRecord } from '@adhd/sox-memory-core';
 import type { StoreAdapter, VectorDialect } from '@adhd/sox-store-adapter';
@@ -1739,21 +1743,19 @@ async function dispatchTool(
       };
       // Backlog 29f3a4d5 blocker 1 (re-review 2026-09-22, finding 1): topic
       // resolution is caller-param OR a leading `[<topic>]` content prefix
-      // (computeWriteEnrichment's E5 step, enrich.ts:202-207) — mirrored here
-      // so it can be resolved ONCE, against the PARENT's full content, and
-      // passed as the already-RESOLVED value into every chunk below. Passing
-      // the raw `args['topic']` straight into chunkParams (the original
+      // (computeWriteEnrichment's E5 step, enrich.ts) — resolved ONCE here,
+      // against the PARENT's full content, via the shared `resolveTopicFromPrefix`
+      // export, and passed as the already-RESOLVED value into every chunk below.
+      // Passing the raw `args['topic']` straight into chunkParams (the original
       // version of this fix) still left topic:null on every chunk whenever
       // the topic came from a `[prefix]` instead of an explicit arg — the
       // parent would resolve it, chunk 0 might independently re-derive it
       // from its own leading text by coincidence, but chunks 1..N would not
       // — exactly the unreachable-by-filtered-recall state this fix exists
-      // to close. This duplicates enrich.ts's E5 regex by hand (there is no
-      // exported helper to call instead); if that regex changes, this copy
-      // must change with it.
+      // to close.
       const callerTopic = args['topic'] as string | undefined;
       const resolvedTopicForChunks: string | undefined =
-        callerTopic ?? (/^\s*\[([^\]\n]{1,64})\]/.exec(content)?.[1] ?? undefined);
+        callerTopic ?? (resolveTopicFromPrefix(content) ?? undefined);
       const chunkParams = (chunk: string, parentUid?: string) => ({
         content: chunk,
         // BL-62 fix: chunks previously omitted project_path entirely, relying on
