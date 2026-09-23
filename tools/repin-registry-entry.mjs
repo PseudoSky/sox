@@ -10,11 +10,12 @@
  * deliberately pinned to published npm bytes (304513c4) with whatever the working
  * tree happens to hash to. `registry:sync-index` has the same failure mode.
  *
- * So: fetch the published tarball, hash the artifact npm actually serves, and
+ * So: npm-install the published version, hash the entrypoint the FETCHER would
+ * resolve (install.ts derivation, not a tarball hash), and
  * rewrite ONLY the named entry. Every other entry is preserved byte-for-byte.
  *
- * The derivation is verified, not assumed: sha256 of `@adhd/sox-cli@1.2.1`'s
- * `dist/index.js` in the published tarball is
+ * The derivation is verified, not assumed: the install-path checksum of
+ * `@adhd/sox-cli@1.2.1` is
  * b31388ad87e96ecc72abaed48d401e7fd26c3e2ae6ca036ea448e4be8717d08d, which is
  * exactly the value committed for the `sox` entry.
  *
@@ -68,36 +69,64 @@ if (!m) {
 const pkgName = m[1];
 
 const work = fs.mkdtempSync(path.join(os.tmpdir(), 'repin-'));
-console.error(`repin: fetching ${pkgName}@${version} from npm…`);
+
+// DERIVATION: mirror the INSTALL PATH, not a tarball hash. `npm-package:` mode
+// runs a real `npm install` and then checksums the resolved entrypoint inside
+// node_modules (install.ts resolveEntrypointFile / fetchArtifact). Hashing the
+// .tgz member directly happens to agree today, but it is a DIFFERENT derivation
+// and would silently diverge the moment a package gains an install lifecycle
+// step, a files/ filter change, or a postinstall that rewrites dist. The
+// fetcher's value is the one that gates real installs, so it is the only one
+// that may be committed.
+console.error(`repin: npm install ${pkgName}@${version} (install-path derivation)…`);
+fs.writeFileSync(path.join(work, 'package.json'), JSON.stringify({ name: 'repin-probe', private: true }));
 try {
-  execFileSync('npm', ['pack', `${pkgName}@${version}`, '--pack-destination', work], {
+  execFileSync('npm', ['install', '--no-audit', '--no-fund', '--silent', `${pkgName}@${version}`], {
+    cwd: work,
     stdio: ['ignore', 'pipe', 'pipe'],
   });
 } catch (e) {
-  console.error(`repin: npm pack failed — is ${pkgName}@${version} actually published yet?`);
+  console.error(`repin: npm install failed — is ${pkgName}@${version} actually published yet?`);
   console.error(String(e.stderr ?? e));
   process.exit(1);
 }
-const tgz = fs.readdirSync(work).find((f) => f.endsWith('.tgz'));
-execFileSync('tar', ['xzf', path.join(work, tgz), '-C', work]);
-
-// Mirror build-index's resolveChecksum order: declared entrypoint, else dist/index.js,
-// else prompt.md, else the manifest. In the published tarball those live under package/.
-const pkgDir = path.join(work, 'package');
-const manifestPath = path.join(pkgDir, 'extension.json');
-const candidates = [];
-if (fs.existsSync(manifestPath)) {
-  const declared = JSON.parse(fs.readFileSync(manifestPath, 'utf8')).entrypoint;
-  if (typeof declared === 'string' && declared.trim() !== '') candidates.push(path.join(pkgDir, declared));
+const pkgDir = path.join(work, 'node_modules', ...pkgName.split('/'));
+if (!fs.existsSync(pkgDir)) {
+  console.error(`repin: installed tree has no ${pkgName} at ${pkgDir}`);
+  process.exit(1);
 }
-candidates.push(
-  path.join(pkgDir, 'dist', 'index.js'),
-  path.join(pkgDir, 'SKILL.md'),
-  path.join(pkgDir, 'prompt.md'),
-  manifestPath,
-);
-const artifact = candidates.find((c) => fs.existsSync(c));
-if (!artifact) {
+
+/**
+ * Byte-for-byte mirror of install.ts resolveEntrypointFile (libs/install-engine,
+ * ~:334-359): manifest.entrypoint, then dist/index.js, then prompt.md, then
+ * SKILL.md, then extension.json. Order matters — prompt.md precedes SKILL.md.
+ */
+function resolveEntrypointFile(dir) {
+  const extJson = path.join(dir, 'extension.json');
+  if (fs.existsSync(extJson)) {
+    let manifest;
+    try {
+      manifest = JSON.parse(fs.readFileSync(extJson, 'utf8'));
+    } catch { /* unparseable — fall through to the artifact chain */ }
+    const declared = manifest?.entrypoint;
+    if (typeof declared === 'string' && declared.trim() !== '') {
+      const resolved = path.resolve(dir, declared);
+      if (!resolved.startsWith(path.resolve(dir) + path.sep)) {
+        console.error(`repin: manifest entrypoint "${declared}" escapes the package dir — refusing.`);
+        process.exit(1);
+      }
+      if (fs.existsSync(resolved)) return resolved;
+    }
+  }
+  for (const rel of [path.join('dist', 'index.js'), 'prompt.md', 'SKILL.md']) {
+    const c = path.join(dir, rel);
+    if (fs.existsSync(c)) return c;
+  }
+  return extJson;
+}
+
+const artifact = resolveEntrypointFile(pkgDir);
+if (!fs.existsSync(artifact)) {
   console.error(`repin: could not locate a checksummable artifact inside ${pkgName}@${version}`);
   process.exit(1);
 }
