@@ -93,8 +93,20 @@ export const GUARDS = [
     script: 'test-bl466-runner-tristate.mjs',
     watch: ['tools/run-guards.mjs', 'tools/guards-manifest.mjs'],
   },
+  {
+    id: 'fc2735f0',
+    tier: 1,
+    script: 'test-fc2735f0-precommit-lint-scope.mjs',
+    watch: ['.husky/pre-commit', 'tools/precommit-lint.mjs'],
+  },
+  {
+    id: 'f1dc4926-fbdfe55e',
+    tier: 1,
+    script: 'test-run-guards-hook-index-fail-closed.mjs',
+    watch: ['tools/run-guards.mjs'],
+  },
 
-  // ---------------------------------------------------------------- Tier 2 (4) ------------
+  // ---------------------------------------------------------------- Tier 2 (5) ------------
   {
     id: 'bl214',
     tier: 2,
@@ -122,6 +134,14 @@ export const GUARDS = [
     tier: 2,
     script: 'test-bl313-graph-store-migrations-asset.mjs',
     needsBuild: ['memory-server'],
+  },
+  {
+    id: 'fc2735f0-graph',
+    tier: 2,
+    script: 'test-fc2735f0-precommit-lint-graph.mjs',
+    // Read-only nx graph queries only — no dist/ dependency, but kept in Tier 2 per the item
+    // spec (§4) alongside the other real-graph (not hermetic) guards.
+    needsBuild: [],
   },
 ];
 

@@ -33,6 +33,15 @@ delete SAFE_GIT_ENV.GIT_DIR;
 delete SAFE_GIT_ENV.GIT_INDEX_FILE;
 delete SAFE_GIT_ENV.GIT_WORK_TREE;
 delete SAFE_GIT_ENV.GIT_COMMON_DIR;
+// fc2735f0 verification fallout: `git -c key=val` (e.g. `git -c core.hooksPath=...`, used to
+// verify a hook change against one worktree without touching the shared .git/hooks) propagates
+// via GIT_CONFIG_COUNT/GIT_CONFIG_KEY_N/GIT_CONFIG_VALUE_N env vars to every child git process
+// unless stripped — same class of hazard as GIT_DIR/GIT_INDEX_FILE above. Without this, this
+// fixture's own scratch `git commit -q -m base` ran the OUTER repo's hooksPath against the
+// scratch repo's cwd and failed with MODULE_NOT_FOUND on tools/check-amend-shared-index.mjs.
+for (const key of Object.keys(SAFE_GIT_ENV)) {
+  if (/^GIT_CONFIG/.test(key)) delete SAFE_GIT_ENV[key];
+}
 
 let failed = 0;
 function report(name, ok, detail) {
