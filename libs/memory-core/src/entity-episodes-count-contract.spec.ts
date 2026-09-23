@@ -1,6 +1,6 @@
 /**
  * entity-episodes-count-contract.spec.ts — Q4 of the near-dup invalidation
- * fix plan (docs/plan-drafts/neardup-invalidation-fix-plan.md §5).
+ * fix plan (docs/reporting/memory/findings/2026-09-22-neardup-invalidation-fix-plan.md §5).
  *
  * Confirmed defect: `memoryGetEntityEpisodes` computed `total = edges.length`
  * from RAW MENTIONS edges with no validity predicate, then paginated by
@@ -20,7 +20,8 @@
  * nx's default `nx test memory-core` runs this file against turso only.
  * Run with `STORE_ADAPTER=sqlite npx nx test memory-core -- entity-
  * episodes-count-contract.spec.ts` to exercise the sqlite backend — VERIFIED
- * 2026-09-22: all 9 cases (A-I) also pass under `STORE_ADAPTER=sqlite`. This
+ * 2026-09-22: all 10 cases (A-I plus D2) also pass under
+ * `STORE_ADAPTER=sqlite`. This
  * file no longer makes any transaction-semantics claim — `memoryGetEntity
  * Episodes` reads sequentially, not inside a transaction (see the top-of-
  * file docblock in entity-episodes.ts for the narrow straddling race that
@@ -120,24 +121,26 @@ async function seedFixture(db: StoreAdapter): Promise<{
 describe('memoryGetEntityEpisodes count/pagination contract (Q4)', () => {
   it('Case A: total counts only live episodes, matching episodes.length on a default call', async () => {
     const { dir, cleanup } = tmpDir();
+    let db: StoreAdapter | undefined;
     try {
-      const db = await openDb(path.join(dir, 't.db'));
+      db = await openDb(path.join(dir, 't.db'));
       const { entityUid } = await seedFixture(db);
 
       const result = await memoryGetEntityEpisodes(db, { entity_uid: entityUid });
 
       expect(result.total).toBe(3);
       expect(result.episodes?.length).toBe(3);
-      await db.close();
     } finally {
+      await db?.close();
       cleanup();
     }
   });
 
   it('Case B (HALF-FIX DETECTOR): pages of limit:2 cover all 3 live uids with no gaps or duplicates', async () => {
     const { dir, cleanup } = tmpDir();
+    let db: StoreAdapter | undefined;
     try {
-      const db = await openDb(path.join(dir, 't.db'));
+      db = await openDb(path.join(dir, 't.db'));
       const { entityUid, liveUids } = await seedFixture(db);
 
       const page1 = await memoryGetEntityEpisodes(db, { entity_uid: entityUid, limit: 2, offset: 0 });
@@ -156,31 +159,33 @@ describe('memoryGetEntityEpisodes count/pagination contract (Q4)', () => {
       expect(combined).toEqual(liveUids); // no gaps, no duplicates, correct order
       expect(new Set(combined).size).toBe(3);
 
-      await db.close();
     } finally {
+      await db?.close();
       cleanup();
     }
   });
 
   it('Case C: invalidated_count reflects the number of live MENTIONS edges pointing at invalid episodes', async () => {
     const { dir, cleanup } = tmpDir();
+    let db: StoreAdapter | undefined;
     try {
-      const db = await openDb(path.join(dir, 't.db'));
+      db = await openDb(path.join(dir, 't.db'));
       const { entityUid } = await seedFixture(db);
 
       const result = await memoryGetEntityEpisodes(db, { entity_uid: entityUid });
 
       expect(result.invalidated_count).toBe(2);
-      await db.close();
     } finally {
+      await db?.close();
       cleanup();
     }
   });
 
   it('Case D: ordering is importance DESC and stable across repeated calls', async () => {
     const { dir, cleanup } = tmpDir();
+    let db: StoreAdapter | undefined;
     try {
-      const db = await openDb(path.join(dir, 't.db'));
+      db = await openDb(path.join(dir, 't.db'));
       const { entityUid, liveUids } = await seedFixture(db);
 
       const call1 = await memoryGetEntityEpisodes(db, { entity_uid: entityUid, limit: 200 });
@@ -196,8 +201,54 @@ describe('memoryGetEntityEpisodes count/pagination contract (Q4)', () => {
       const sorted = [...importances].sort((a, b) => b - a);
       expect(importances).toEqual(sorted);
 
-      await db.close();
     } finally {
+      await db?.close();
+      cleanup();
+    }
+  });
+
+  it('Case D2: importance DESC is enforced in SQL and ties break by rowid ASC (insertion order)', async () => {
+    const { dir, cleanup } = tmpDir();
+    let db: StoreAdapter | undefined;
+    try {
+      db = await openDb(path.join(dir, 't.db'));
+
+      // Case D pins `importance DESC` using distinct importances, so it cannot
+      // observe the `n.rowid ASC` half of `ORDER BY n.importance DESC, n.rowid
+      // ASC`. Before the fix the result carried NO `ORDER BY` at all and came
+      // back in raw edge-row order, which is unspecified — so the tool's
+      // "ranked by importance" description was not actually enforced anywhere,
+      // and paging was free to repeat or skip rows between calls. Equal
+      // importances are the only input that pins the tiebreak.
+      const entityUid = await seedEntity(db, 'q4-tiebreak-entity');
+      const entityRowid = await rowidForUid(db, entityUid);
+
+      // Insertion order deliberately CONTRADICTS importance order, so raw
+      // edge-row order cannot coincidentally satisfy this assertion the way it
+      // can in `seedFixture` (whose importances happen to be inserted already
+      // descending, 5,4,3,2,1). Inserted low,high,low,high; expected order is
+      // the two high-importance rows in insertion order, then the two low ones
+      // in insertion order.
+      const inserted: string[] = [];
+      for (const importance of [3, 7, 3, 7]) {
+        const uid = await seedEpisode(db, importance);
+        inserted.push(uid);
+        await seedEdge(db, await rowidForUid(db, uid), entityRowid);
+      }
+      const expectedOrder = [inserted[1]!, inserted[3]!, inserted[0]!, inserted[2]!];
+
+      const all = await memoryGetEntityEpisodes(db, { entity_uid: entityUid, limit: 200 });
+      expect(all.total).toBe(4);
+      expect(all.episodes?.map((e) => e.uid)).toEqual(expectedOrder);
+
+      // Same order when split across pages — no duplicates, no skips.
+      const page1 = await memoryGetEntityEpisodes(db, { entity_uid: entityUid, limit: 2, offset: 0 });
+      const page2 = await memoryGetEntityEpisodes(db, { entity_uid: entityUid, limit: 2, offset: 2 });
+      expect([...(page1.episodes ?? []), ...(page2.episodes ?? [])].map((e) => e.uid)).toEqual(
+        expectedOrder,
+      );
+    } finally {
+      await db?.close();
       cleanup();
     }
   });
@@ -211,8 +262,9 @@ describe('memoryGetEntityEpisodes count/pagination contract (Q4)', () => {
 
   it('Case E: limit:2.5 (non-integer) truncates instead of throwing a SQLite datatype-mismatch error', async () => {
     const { dir, cleanup } = tmpDir();
+    let db: StoreAdapter | undefined;
     try {
-      const db = await openDb(path.join(dir, 't.db'));
+      db = await openDb(path.join(dir, 't.db'));
       const { entityUid, liveUids } = await seedFixture(db);
 
       // Pre-fix: adapter.executeAll(...[entityRow.rowid, 2.5, offset]) throws
@@ -224,16 +276,17 @@ describe('memoryGetEntityEpisodes count/pagination contract (Q4)', () => {
       expect(result.episodes?.length).toBe(2);
       expect(result.episodes?.map((e) => e.uid)).toEqual(liveUids.slice(0, 2));
 
-      await db.close();
     } finally {
+      await db?.close();
       cleanup();
     }
   });
 
   it('Case F: limit:-1 (negative) is clamped, not passed through as SQLite "no limit"', async () => {
     const { dir, cleanup } = tmpDir();
+    let db: StoreAdapter | undefined;
     try {
-      const db = await openDb(path.join(dir, 't.db'));
+      db = await openDb(path.join(dir, 't.db'));
       const { entityUid } = await seedFixture(db);
 
       // Pre-fix: Math.min(-1, 200) === -1 reaches SQL as `LIMIT -1`, which
@@ -243,18 +296,22 @@ describe('memoryGetEntityEpisodes count/pagination contract (Q4)', () => {
       const result = await memoryGetEntityEpisodes(db, { entity_uid: entityUid, limit: -1 });
 
       expect(result.total).toBe(3); // total is unaffected by limit
-      expect(result.episodes?.length).toBeLessThan(3);
+      // `limit: -1` clamps to exactly 0 (Math.max(-1, 0) -> 0), so the page is
+      // empty — asserted exactly, matching Cases H and I. A `toBeLessThan(3)`
+      // here would also pass at 1 or 2 and would not detect a partial clamp.
+      expect(result.episodes).toEqual([]);
 
-      await db.close();
     } finally {
+      await db?.close();
       cleanup();
     }
   });
 
   it('Case G (CHARACTERIZATION, NOT A RED-DETECTOR): offset:-3 is clamped to 0, matching the engine\'s own negative-OFFSET behavior', async () => {
     const { dir, cleanup } = tmpDir();
+    let db: StoreAdapter | undefined;
     try {
-      const db = await openDb(path.join(dir, 't.db'));
+      db = await openDb(path.join(dir, 't.db'));
       const { entityUid, liveUids } = await seedFixture(db);
 
       // This test previously stated it was DELETED after a review pass
@@ -276,16 +333,17 @@ describe('memoryGetEntityEpisodes count/pagination contract (Q4)', () => {
       expect(result.episodes?.length).toBe(3);
       expect(result.episodes?.map((e) => e.uid)).toEqual(liveUids);
 
-      await db.close();
     } finally {
+      await db?.close();
       cleanup();
     }
   });
 
   it('Case H (GENUINE RED-DETECTOR, THIS BRANCH ONLY): limit:0 returns an empty page, not a full default page', async () => {
     const { dir, cleanup } = tmpDir();
+    let db: StoreAdapter | undefined;
     try {
-      const db = await openDb(path.join(dir, 't.db'));
+      db = await openDb(path.join(dir, 't.db'));
       const { entityUid } = await seedFixture(db);
 
       // Scoped claim: limit:0 was correct at base 2eb54f3f (`(limit as
@@ -304,16 +362,17 @@ describe('memoryGetEntityEpisodes count/pagination contract (Q4)', () => {
       expect(result.total).toBe(3); // total must still report the true live count
       expect(result.episodes).toEqual([]);
 
-      await db.close();
     } finally {
+      await db?.close();
       cleanup();
     }
   });
 
   it('Case I (GENUINE RED-DETECTOR): offset:1e20 is bounded instead of reaching SQL as an out-of-int64-range bind', async () => {
     const { dir, cleanup } = tmpDir();
+    let db: StoreAdapter | undefined;
     try {
-      const db = await openDb(path.join(dir, 't.db'));
+      db = await openDb(path.join(dir, 't.db'));
       const { entityUid } = await seedFixture(db);
 
       // Pre-fix (offset had a floor via Math.max(...,0) but no ceiling):
@@ -329,8 +388,8 @@ describe('memoryGetEntityEpisodes count/pagination contract (Q4)', () => {
       expect(result.total).toBe(3); // total is unaffected by offset
       expect(result.episodes).toEqual([]); // offset is clamped but still far past 3 live rows
 
-      await db.close();
     } finally {
+      await db?.close();
       cleanup();
     }
   });
