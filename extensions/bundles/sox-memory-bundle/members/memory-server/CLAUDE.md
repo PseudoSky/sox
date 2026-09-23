@@ -351,11 +351,15 @@ Get a community node and its members. Now accepts `community_uid` directly in ad
 
 ### `memory_entity_episodes` (NEW — C2.7)
 
-Return episodes that mention a given entity via MENTIONS edges, ranked by importance.
+Return episodes that mention a given entity via MENTIONS edges, ordered by `importance DESC, rowid ASC` (insertion order breaks ties, so pagination is stable).
 
 **Input:** `{ "db_path": "<string>", "entity_uid"?: string, "entity_name"?: string, "limit"?: number, "offset"?: number }`
 
-**Output:** `{ "entity": { "uid", "name" }, "episodes": [EpisodeSummary], "total" }`
+**Output:** `{ "entity": { "uid", "name" }, "episodes": [EpisodeSummary], "total", "invalidated_count" }`
+
+Only LIVE episodes are returned **and counted**. `total` is the number of live episodes mentioning the entity, so it matches `episodes.length` on an unpaginated call. `invalidated_count` (added 2026-09-22) reports how many additional live MENTIONS edges point at episodes that have since been invalidated — the near-dup/supersession trail for this entity. A non-zero `invalidated_count` is normal and is **not** a gap in the page.
+
+Before that fix, `total` was `edges.length` over the raw MENTIONS edge set with no validity predicate and the page was sliced from that same raw array *before* the episode-level `t_invalid IS NULL` filter — so `total` overcounted and pages came back short (observed live at `total: 3` / 2 episodes and `total: 118` / 99 episodes).
 
 ---
 

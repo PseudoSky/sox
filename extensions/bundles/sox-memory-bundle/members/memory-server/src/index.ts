@@ -843,7 +843,12 @@ export const TOOLS: Array<Omit<ToolDefinition, 'handler'>> = [
   {
     name: 'memory_entity_episodes',
     description:
-      'Return episodes that mention a given entity (via MENTIONS edge), ranked by importance.',
+      'Return episodes that mention a given entity (via MENTIONS edge), ranked by importance ' +
+      'DESC then insertion order. Only LIVE episodes are returned and counted: `total` is the ' +
+      'number of live episodes mentioning the entity (so it matches `episodes.length` on an ' +
+      'unpaginated call), and `invalidated_count` reports how many additional MENTIONS edges ' +
+      'point at episodes that have since been invalidated. A non-zero `invalidated_count` is ' +
+      'normal — it is the near-dup/supersession trail for this entity, not a gap in the page.',
       inputSchema: {
       type: 'object',
       properties: {
