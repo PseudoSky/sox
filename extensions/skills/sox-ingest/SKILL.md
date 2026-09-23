@@ -152,16 +152,12 @@ For built-type extensions (`hook`, `command`, `mcp-server`, code `agent`):
 ./node_modules/.bin/nx run <project>:build
 ```
 
-Register the new extension: see [AGENTS.md § registry is release-only](../../../AGENTS.md#registry-is-release-only)
-for what may write `registry/index.json` and when. `build-index` also refuses to run against a dirty
-working tree (BL-390) — commit your own extension files first, then rebuild; only if the remaining
-dirt is provably checksum-irrelevant may you use the documented escape hatch `--allow-dirty`
-(stamps every entry `provisional: true`).
+No registry step is needed: an extension with no `registry/index.json` row installs straight from
+its local dir (`findLocalExtension`, no checksum gate — `libs/install-engine/src/install.ts:733-740`).
+See [AGENTS.md § registry is release-only](../../../AGENTS.md#registry-is-release-only) for what may
+write the registry and when. See `references/by-operation.md` §build for type-specific build notes.
 
-`registry/index.json` must be current before install. See `references/by-operation.md` §build
-for type-specific build notes.
-
-Gate: `nx run <project>:build` exits 0; `registry/index.json` includes the new extension.
+Gate: `nx run <project>:build` exits 0.
 
 ### Step 5 — Install & replace in place
 

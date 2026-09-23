@@ -274,35 +274,14 @@ reality, not tests.
 
 ## §registry — Registering an extension in the registry index
 
-See [AGENTS.md § registry is release-only](../../../AGENTS.md#registry-is-release-only) for what
-may write `registry/index.json` and when — a local `dist` rebuild never touches it.
+A new/harvested extension needs **no registry step**. An extension with no `registry/index.json`
+row installs straight from its local dir (`findLocalExtension`, no checksum gate —
+`libs/install-engine/src/install.ts:733-740`). See
+[AGENTS.md § registry is release-only](../../../AGENTS.md#registry-is-release-only) for what may
+write `registry/index.json` and when — a local `dist` rebuild never touches it, and `build-index`/
+`registry:sync-index` are not part of ingesting a new extension.
 
-To register a brand-new extension (`scripts/build-index.ts`, or its `npx nx run registry:sync-index`
-wrapper), the same dirty-tree rule applies (BL-390): the script REFUSES to run against a dirty
-working tree. Commit your own extension changes first; use the documented escape hatch
-`--allow-dirty` ONLY when the remaining dirt is provably checksum-irrelevant (`docs/`, `.claude/`,
-`.opencode/`, `.worktrees/`, `.nx/`, root-level `*.md`) or the repo is already operating in the
-provisional convention — it stamps every entry `provisional: true` with `builtFromCommit` suffixed
-`+dirty`.
-
-This rewrites `registry/index.json`. The script:
-
-- Walks all `extensions/<type>/<id>/extension.json` files
-- Validates required fields (aborts on missing `id`, `type`, `title`, `description`,
-  `compatibility`; `version` is display-only, sourced from `package.json` per ADR-0003)
-- Skips `manifest.private: true` extensions (note: `private: true` in `package.json` does NOT
-  exclude an extension — only the manifest flag does)
-- Checksums the declared `entrypoint` first (for a declarative skill that is `SKILL.md`, not
-  `extension.json`); falls back to `dist/index.js` → `prompt.md` → `extension.json`
-- Writes the updated `registry/index.json`
-
-**Verify the new extension is in the registry:**
-
-```bash
-grep -A5 '"id": "<ext-id>"' registry/index.json
-```
-
-**Batch gate:** after every wave of ingestions, rebuild the registry and run:
+**Batch gate:** after every wave of ingestions (no registry step needed), run:
 
 ```bash
 ./node_modules/.bin/nx run-many -t build,lint,test

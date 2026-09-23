@@ -42,9 +42,8 @@ When asked to harvest an external repo/URL into a sox extension:
 4. **Populate SKILL.md** with upstream content + YAML frontmatter with `source` and `source-version` fields.
 5. **Write reference files** into `references/` (same structure as upstream).
 6. **Update extension.json** `run_interface` with input/output schemas matching the skill's contract.
-7. **Rebuild registry** — see [registry is release-only](#registry-is-release-only) (BL-390: the
-   script refuses on a dirty tree — commit your extension files first, then rebuild; use
-   `--allow-dirty` only when the remaining dirt is provably checksum-irrelevant).
+7. **No registry step needed** — the new skill has no `registry/index.json` row and installs
+   straight from its local dir; see [registry is release-only](#registry-is-release-only).
 8. **Install & replace in place + exercise the install** — for each target host, uninstall any
    existing install of the id first (`soxe uninstall <id> --host <host> --scope user`), then
    `soxe install <id> --host <host> --scope user`; verify the installed dir is byte-identical to
@@ -52,7 +51,7 @@ When asked to harvest an external repo/URL into a sox extension:
    process (`opencode run` / `claude -p` one-turn probe reporting the skill's version). Load the
    `sox-ingest` skill for the full flow.
 9. **Upgrade consumers** with `node bin/soxe upgrade --all`.
-10. **Commit** source changes AND regenerated `registry/index.json` together.
+10. **Commit** the source changes.
 
 Existing harvested skills: `extensions/skills/tui-design/` (from gfargo/skills, TUI/CLI design).
 
