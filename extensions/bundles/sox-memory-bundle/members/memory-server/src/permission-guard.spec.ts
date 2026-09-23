@@ -467,6 +467,42 @@ describe('memory_write auto_chunk — BL-13', () => {
     } finally {
       (adapter.unwrap() as Database.Database).close();
     }
+
+    // The column assertions above prove the fields LAND. This proves the
+    // symptom the fix exists to close: a filtered memory_recall must actually
+    // RETURN the chunk rows. Both filters are the exact predicates that cannot
+    // match NULL/[] — `n.topic = ?` (recall.ts) and
+    // `EXISTS (SELECT 1 FROM json_each(n.tags) WHERE value = ?)`. `query` is
+    // omitted deliberately: that selects the importance-ranked listing path,
+    // which is keyword/embedding-independent and so deterministic here (the
+    // embed is async and may not have landed yet).
+    const recallByTopic = await handleToolCall('memory_recall', {
+      db_path: tmpDb,
+      limit: 100,
+      token_budget: 1_000_000,
+      filters: { topic: 'chunk-inherit-test' },
+    }) as { isError?: boolean; content?: Array<{ type: string; text: string }> };
+    expect(recallByTopic.isError).not.toBe(true);
+    const topicHits = (JSON.parse(recallByTopic.content![0]!.text) as {
+      results: Array<{ uid: string }>;
+    }).results.map((r) => r.uid);
+    for (const chunkUid of parsed.chunk_uids) {
+      expect(topicHits).toContain(chunkUid);
+    }
+
+    const recallByTag = await handleToolCall('memory_recall', {
+      db_path: tmpDb,
+      limit: 100,
+      token_budget: 1_000_000,
+      filters: { tags: ['inherit-tag-a'] },
+    }) as { isError?: boolean; content?: Array<{ type: string; text: string }> };
+    expect(recallByTag.isError).not.toBe(true);
+    const tagHits = (JSON.parse(recallByTag.content![0]!.text) as {
+      results: Array<{ uid: string }>;
+    }).results.map((r) => r.uid);
+    for (const chunkUid of parsed.chunk_uids) {
+      expect(tagHits).toContain(chunkUid);
+    }
   }, 30_000);
 
   it('auto-chunks resolve topic from a `[prefix]` on content (not just a caller-supplied topic arg) on every chunk (backlog 29f3a4d5 blocker 1)', async () => {
