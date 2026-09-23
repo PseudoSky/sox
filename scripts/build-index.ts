@@ -335,10 +335,54 @@ function resolveDisplayVersion(extDir: string): string {
 }
 
 /**
+ * Resolve the entrypoint *file* inside an extension directory — the single file
+ * whose bytes are the checksum anchor for that extension's registry row.
+ *
+ * ⛔ CONFORMANCE-PINNED. This is one of five copies of the same resolution order;
+ * `libs/install-engine/src/install.ts resolveEntrypointFile` is the AUTHORITY
+ * (it is what actually gates an install), and any copy that disagrees with it is
+ * a latent `CHECKSUM MISMATCH` outage: this function WRITES the pin that
+ * install.ts later VERIFIES. The five are held together by
+ * `scripts/entrypoint-resolution-conformance.test.ts`, not by this comment —
+ * before that test existed, this copy omitted the `SKILL.md` probe that the
+ * comment above it claimed to implement, so any skill scaffolded without an
+ * explicit `entrypoint` would have been pinned to `extension.json` bytes and
+ * failed every install.
+ */
+export function resolveEntrypointPath(
+  extDir: string,
+  manifest: Pick<ExtensionManifest, 'entrypoint'>,
+): string {
+  if (typeof manifest.entrypoint === 'string' && manifest.entrypoint.trim() !== '') {
+    const declared = path.join(extDir, manifest.entrypoint);
+    // BUG-EPIC-MANIFEST-PATH-ESCAPE-001: manifest.entrypoint is untrusted. The
+    // install path hard-fails on an escape (install.ts assertWithinBase); this
+    // generator must too, or it would pin a checksum over bytes that live
+    // outside the extension and can never be shipped with it.
+    if (!path.resolve(declared).startsWith(path.resolve(extDir) + path.sep)) {
+      throw new Error(`entrypoint escapes the extension dir: ${manifest.entrypoint}`);
+    }
+    if (fs.existsSync(declared)) return declared;
+  }
+
+  const distJs = path.join(extDir, 'dist', 'index.js');
+  if (fs.existsSync(distJs)) return distJs;
+
+  // Declarative content types: prompt.md precedes SKILL.md — order matters.
+  const promptMd = path.join(extDir, 'prompt.md');
+  if (fs.existsSync(promptMd)) return promptMd;
+
+  const skillMd = path.join(extDir, 'SKILL.md');
+  if (fs.existsSync(skillMd)) return skillMd;
+
+  // Fallback: the extension.json itself (bundles / bare manifests)
+  return path.join(extDir, 'extension.json');
+}
+
+/**
  * Compute checksum for the extension.
- * For a file:// source: checksum the content file (src/index.ts or prompt.md).
+ * For a file:// source: checksum the resolved entrypoint file.
  * For a published extension: use the checksum already in the manifest.
- * For unpublished: compute from local content file.
  */
 function resolveChecksum(extDir: string, manifest: ExtensionManifest): string {
   // If the manifest already has a checksum (set by CI on publish), use it
@@ -347,24 +391,7 @@ function resolveChecksum(extDir: string, manifest: ExtensionManifest): string {
   }
 
   // C4: checksum the declared entrypoint (the built artifact), not the TS source.
-  // Resolution order mirrors fetchArtifact in install.ts — must stay in sync:
-  //  1. manifest.entrypoint (explicit: dist/index.js, SKILL.md, org-agent.md, …)
-  //  2. dist/index.js (built artifact fallback for code types)
-  //  3. prompt.md (declarative prompt types)
-  //  4. extension.json (final fallback)
-  if (typeof manifest.entrypoint === 'string' && manifest.entrypoint.trim() !== '') {
-    const declared = path.join(extDir, manifest.entrypoint);
-    if (fs.existsSync(declared)) return computeFileChecksum(declared);
-  }
-
-  const distJs = path.join(extDir, 'dist', 'index.js');
-  if (fs.existsSync(distJs)) return computeFileChecksum(distJs);
-
-  const promptMd = path.join(extDir, 'prompt.md');
-  if (fs.existsSync(promptMd)) return computeFileChecksum(promptMd);
-
-  // Fallback: checksum the extension.json itself
-  return computeFileChecksum(path.join(extDir, 'extension.json'));
+  return computeFileChecksum(resolveEntrypointPath(extDir, manifest));
 }
 
 /**

@@ -331,7 +331,7 @@ export function resolveFromRegistry(
  *   3. prompt.md / SKILL.md (declarative content types)
  *   4. extension.json (final fallback for bundles / bare manifests)
  */
-function resolveEntrypointFile(dir: string): string {
+export function resolveEntrypointFile(dir: string): string {
   const extJson = path.join(dir, 'extension.json');
   if (fs.existsSync(extJson)) {
     let manifest: { entrypoint?: string } | undefined;
