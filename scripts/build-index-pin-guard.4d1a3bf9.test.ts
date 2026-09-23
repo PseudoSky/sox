@@ -317,7 +317,7 @@ describe('[4d1a3bf9 follow-up] pin loss BY OMISSION — the pin never makes it i
     ).toBe(before);
   }, 60_000);
 
-  it('SOX_REGISTRY_PUBLISH mode: a private-flip omission is NOT refused (release may intentionally stop publishing)', async () => {
+  it('SOX_REGISTRY_PUBLISH mode: a private-flip omission is NOT refused, but is warned about (release may intentionally stop publishing)', async () => {
     const root = scratchRepo('2.0.0', 'module.exports = "REBUILT LOCALLY AFTER PUBLISH";\n');
     const extDir = extDirOf(root);
     const manifestPath = path.join(extDir, 'extension.json');
@@ -329,8 +329,38 @@ describe('[4d1a3bf9 follow-up] pin loss BY OMISSION — the pin never makes it i
 
     const { code, out } = await runBuildIndex(root, { SOX_REGISTRY_PUBLISH: 'npm' });
 
+    // Release mode never refuses on omission — a private flip is a
+    // legitimate, sanctioned way to stop publishing a package — but it must
+    // still WARN, naming the id, so an accidental drop doesn't pass in total
+    // silence (see the release-mode test below for the accidental case).
     expect(code, out).toBe(0);
-    expect(out).not.toMatch(/4d1a3bf9/);
+    expect(out).toMatch(/WARNING/);
+    expect(out).toMatch(/4d1a3bf9/);
+    expect(out).toMatch(new RegExp(FIXTURE_ID));
+    const entries = JSON.parse(fs.readFileSync(path.join(root, 'registry', 'index.json'), 'utf8')) as Array<{
+      id: string;
+    }>;
+    expect(entries.find((e) => e.id === FIXTURE_ID)).toBeUndefined();
+  }, 60_000);
+
+  it('SOX_REGISTRY_PUBLISH mode + extension directory removed (accidental drop): exit 0, entry dropped, stderr warns with the id', async () => {
+    const root = scratchRepo('2.0.0', 'module.exports = "REBUILT LOCALLY AFTER PUBLISH";\n');
+
+    // The accidental case named in the follow-up: a directory lost to a bad
+    // rebase, not a deliberate `private: true` decision. Release mode must
+    // still not refuse (deprecation-by-deletion is also legitimate), but the
+    // warning is the ONLY signal a human or a CI log grep gets that this
+    // release is about to ship without a package it used to carry.
+    fs.rmSync(extDirOf(root), { recursive: true, force: true });
+    git(['add', '-A'], root);
+    git(['commit', '-q', '-m', 'chore: remove extension (simulated bad rebase)'], root);
+
+    const { code, out } = await runBuildIndex(root, { SOX_REGISTRY_PUBLISH: 'npm' });
+
+    expect(code, out).toBe(0);
+    expect(out).toMatch(/WARNING/);
+    expect(out).toMatch(/4d1a3bf9/);
+    expect(out).toMatch(new RegExp(FIXTURE_ID));
     const entries = JSON.parse(fs.readFileSync(path.join(root, 'registry', 'index.json'), 'utf8')) as Array<{
       id: string;
     }>;
