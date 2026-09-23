@@ -66,9 +66,54 @@ they read no longer exists:
 that matters, not the invocation: `version` consumes the evidence the gates read, so running it
 first makes a correct release look catastrophic.
 
-`release:prepared` is the **publish half only** — `release-consumers` → `build-index:publish` →
-`nx build sox` → `changeset publish`. It does **not** version. Where the bump comes from depends on
-the path:
+`release:prepared` is the **publish half only** — it does **not** version. Its steps, in the order
+that matters:
+
+1. `assert-release-tree-clean` — refuses outright if the working tree has any tracked change.
+2. `release-consumers` — who breaks downstream (read-only).
+3. `build-index:publish` — portable `npm-package:` registry, for the CLI's embedded copy.
+4. `SOX_REGISTRY_PUBLISH=npm nx build sox` — rebuilds the CLI **and its `dist/index.js`**.
+5. `build-index:publish` **again** — re-hashes the CLI artifact step 4 just produced.
+6. `embed-registry` — re-embeds the final index into the CLI's sidecar (checksum-neutral).
+7. `changeset publish`.
+
+Steps 3–5 are not redundant. The CLI ships a bundled copy of the registry, so the index must exist
+*before* the CLI is built (step 3; skipping it is how `@adhd/sox-cli@1.2.1` shipped 31 `file://`
+sources — PROD-BREAK-SOXCLI-121). But the `sox` row's own checksum covers the artifact that build
+then produces, so a single pre-build generation mints it from the **pre-rebuild** binary — stale
+against the very bytes being published, structurally, every release. Step 5 closes that.
+
+**`pnpm release` no longer exists as a publish path.** It ran `changeset publish` with no rebuild
+and no index regeneration, so it published whatever stale `dist/` happened to be on disk. It now
+prints that explanation and exits 1.
+
+### Checksums follow the locator, not your disk
+
+A registry row whose `source` is `npm-package:<name>@<version>` is gated at install time against the
+entrypoint **inside the published tarball** for that exact version — not against your `dist/`. So
+`build-index` now **preserves** a committed checksum whenever the locator it regenerates is
+unchanged, and re-derives from disk only when the version moved (i.e. this release is publishing
+those bytes). Consequences:
+
+- A local rebuild without a version bump can no longer silently re-pin a published row. That is the
+  defect that took every fresh install down with `CHECKSUM MISMATCH` and needed `304513c4` to repair
+  by hand.
+- To change a published row's checksum **without** a version bump — only ever to correct a pin
+  against what npm actually serves — use `tools/repin-registry-entry.mjs`. The generator will not do
+  it for you, by design.
+- `pnpm check-published-bytes` is the network-side proof that the pins are right.
+  Generation stays offline: `scripts/build-index.ts` must never grow a remote-fetch path.
+
+### The tree must be clean
+
+A release from a dirty tree stamps `build-info.json` `dirty: true` and registry entries
+`"<sha>+dirty"` / `provisional: true` — published bytes that correspond to **no commit**, which is
+how `@adhd/sox-cli@1.2.1` shipped. Two gates now make that unreachable:
+`tools/assert-release-tree-clean.mjs` runs first in `release:prepared`, and `build-index` refuses
+`--allow-dirty` whenever `SOX_REGISTRY_PUBLISH` is set. Neither has an environment escape hatch.
+Commit your work — by explicit pathspec, never `git add -A`, never `git stash`.
+
+Where the bump comes from depends on the path:
 
 | Path | What versions the packages |
 |---|---|
@@ -213,8 +258,9 @@ git add -u && git commit -m "chore: version packages"
 
 # 2. PUBLISH — release:prepared is the publish half only; it does NOT version.
 pnpm install                                   # lockfile + workspace links follow the bumps
-pnpm run release:prepared                      # = build-index:publish (portable registry) → nx build sox → changeset publish
+pnpm run release:prepared                      # clean-tree gate → portable registry → build CLI → re-hash CLI → publish
 SOX_REGISTRY_PUBLISH=npm pnpm run build-index  # rewrite registry sources → npm-package: (portable, 0 file://)
+pnpm run check-published-bytes                 # every npm-package: row vs the bytes npm now SERVES
 git add registry/index.json && git commit -m "chore: portable registry after publish"
 ```
 
