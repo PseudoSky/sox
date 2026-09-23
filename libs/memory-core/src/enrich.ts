@@ -171,23 +171,6 @@ export interface WriteEnrichmentValues {
 }
 
 /**
- * Pure (zero-DB) resolution of E1/E2/E4/E5/E7/E10/E12 — everything the write
- * path persists except the E8 near-dup pass, which genuinely needs the row and
- * its vector to exist.
- *
- * WHY THIS IS SEPARATE (PERF-MEMORY-003): the async Phase-A write used to INSERT
- * the node and then issue a SECOND UPDATE over the same row to store these
- * values. `summary` and `tags` are covered by `idx_fts_node` — a NATIVE Turso
- * FTS index maintained inside each statement, not a trigger — so that second
- * write redid FTS maintenance the INSERT had already done. Measured at ~134ms,
- * ~56% of Phase-A, while the computation below is ~3.7ms. Since the computation
- * is pure it reorders freely, so `memoryWritePhaseA` now folds these values
- * straight into the INSERT.
- *
- * SINGLE SOURCE OF TRUTH: `enrichOnWrite` delegates here too, so the folded
- * INSERT path and the UPDATE path cannot drift apart.
- */
-/**
  * E5: resolve a `[<topic>]` leading-content prefix into a topic string.
  *
  * SINGLE SOURCE OF TRUTH (Backlog 29f3a4d5 blocker 1 follow-up): this used to
@@ -207,6 +190,23 @@ export function resolveTopicFromPrefix(content: string): string | null {
   return prefixMatch?.[1] ?? null;
 }
 
+/**
+ * Pure (zero-DB) resolution of E1/E2/E4/E5/E7/E10/E12 — everything the write
+ * path persists except the E8 near-dup pass, which genuinely needs the row and
+ * its vector to exist.
+ *
+ * WHY THIS IS SEPARATE (PERF-MEMORY-003): the async Phase-A write used to INSERT
+ * the node and then issue a SECOND UPDATE over the same row to store these
+ * values. `summary` and `tags` are covered by `idx_fts_node` — a NATIVE Turso
+ * FTS index maintained inside each statement, not a trigger — so that second
+ * write redid FTS maintenance the INSERT had already done. Measured at ~134ms,
+ * ~56% of Phase-A, while the computation below is ~3.7ms. Since the computation
+ * is pure it reorders freely, so `memoryWritePhaseA` now folds these values
+ * straight into the INSERT.
+ *
+ * SINGLE SOURCE OF TRUTH: `enrichOnWrite` delegates here too, so the folded
+ * INSERT path and the UPDATE path cannot drift apart.
+ */
 export function computeWriteEnrichment(p: {
   content: string;
   summary: string | undefined;
