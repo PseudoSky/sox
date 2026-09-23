@@ -42,10 +42,9 @@ When asked to harvest an external repo/URL into a sox extension:
 4. **Populate SKILL.md** with upstream content + YAML frontmatter with `source` and `source-version` fields.
 5. **Write reference files** into `references/` (same structure as upstream).
 6. **Update extension.json** `run_interface` with input/output schemas matching the skill's contract.
-7. **Rebuild registry** — `npx tsx scripts/build-index.ts` (the `npx nx run registry:sync-index`
-   target runs the same script but does not forward flags and triggers a full build sweep). BL-390:
-   the script refuses on a dirty tree — commit your extension files first, then rebuild; use
-   `--allow-dirty` only when the remaining dirt is provably checksum-irrelevant.
+7. **Rebuild registry** — see [registry is release-only](#registry-is-release-only) (BL-390: the
+   script refuses on a dirty tree — commit your extension files first, then rebuild; use
+   `--allow-dirty` only when the remaining dirt is provably checksum-irrelevant).
 8. **Install & replace in place + exercise the install** — for each target host, uninstall any
    existing install of the id first (`soxe uninstall <id> --host <host> --scope user`), then
    `soxe install <id> --host <host> --scope user`; verify the installed dir is byte-identical to
@@ -212,13 +211,10 @@ the `os-unit` generator, or any `cmdStart/Stop/Serve/Enable/Disable` in `apps/so
 
 ---
 
-## ⛔ AGENT SEQUENCE — when you change extension/lib code that ships a `dist` artifact
+## ⛔ AGENT SEQUENCE — when you change extension/lib code that ships a `dist` artifact {#registry-is-release-only}
 
-1. `npx nx lint <project>`
-2. `npx nx build <project>`
-3. `npx nx run registry:sync-index` — rebuilds + regenerates `registry/index.json` checksums
-4. Commit source changes AND regenerated `registry/index.json` together
-5. `node bin/soxe upgrade --all` — upgrade every consumer spanning all scopes
+`registry/index.json` is a release artifact pinned to published npm bytes. A local rebuild
+never touches it: lint → build → typecheck/test → smoke → commit source only (`git diff --exit-code registry/index.json` must be clean). Extensions without a registry row install from their local dir with no checksum gate. Only the release flow (PUBLISHING.md) or `tools/repin-registry-entry.mjs` may write the registry. Never run `registry:sync-index` / bare `build-index` outside a release — it replaces the published pins with local hashes.
 
 For what a bundled `dist` artifact actually IS and guarantees (self-contained CJS, sidecar
 auto-discovery, atomic staging, the tests-bypass-artifact trap), see
@@ -291,8 +287,8 @@ After reverting (or `reset --soft`-ing) anything that feeds a bundled artifact �
 `libs/data/*` package a bundle inlines:
 
 1. `npx nx build <project>` — restore artifact↔source parity.
-2. `npx nx run registry:sync-index` — the checksum moved; the smoke gate fails with
-   `CHECKSUM MISMATCH` until you commit the regenerated `registry/index.json`.
+2. Registry: see [registry is release-only](#registry-is-release-only) — a local rebuild does not
+   touch `registry/index.json`.
 3. Restart every service that loads it (`soxe service disable <id>` → `enable <id> --node-path=<stable node>`).
 4. **Verify the live process adopted the new artifact** — compare the running server's reported
    artifact hash to the rebuilt file. Process liveness is not verification.
@@ -306,26 +302,23 @@ read clean the entire time; the reverted symbols appeared in `dist/index.js` 9 t
 
 ---
 
-## ⛔ AGENT CONSTRAINT — A DIAGNOSTIC `nx build` IS A DESTRUCTIVE OPERATION
+## ⛔ AGENT CONSTRAINT — `nx build` HAS NO SAFE DRY-RUN
 
-Governed by **BL-235**. Several `build` targets begin with `rm -rf .../dist`. They delete the existing
-artifact **before** knowing the rebuild will succeed. If the source is currently non-compiling — because
-of a real bug, or because another agent is mid-edit in a shared checkout — the working artifact is gone
-and **cannot be restored except by a successful build**, which is precisely what is impossible.
+Governed by **BL-235**. Builds stage into `<outdir>.staging-<pid>` and swap into place on success
+(`packages/sox-nx/src/executors/atomic-tsc/executor.ts`, `tools/bundle-extension.cjs`); a failed
+build leaves the old `dist/` intact. That staging fix closed the earlier hazard where `build`
+targets ran `rm -rf .../dist` before knowing the rebuild would succeed and could destroy a working
+artifact with no way back — which happened twice, once taking the live memory MCP server down
+mid-session.
 
-This has happened twice, both times to agents running a build merely to *see* an error message. One of
-them took the live memory MCP server down mid-session.
-
-- Before `npx nx build <project>` on a project you did not just fix, know you may not get the old `dist/` back.
 - **`--dry-run` does NOT protect you.** nx accepts the flag on a run-target and *silently ignores it* —
-  `npx nx build ingest --dry-run` performs a real, destructive build. Verified 2026-07-09. There is no
+  `npx nx build ingest --dry-run` performs a real build. Verified 2026-07-09. There is no
   safe "just show me the error" build flag. To inspect a failure without risking the artifact, read the
   source, or compile to a scratch `outDir` directly.
 - In a shared checkout with concurrent agents, treat every `dist/` as someone else's live artifact.
 
-**After any rebuild of a `dist` artifact that ships in an extension, run `npx nx run registry:sync-index`** —
-the rebuilt bundle's checksum will no longer match `registry/index.json`, and `smoke-test.mjs` fails with
-`CHECKSUM MISMATCH`. Commit the regenerated `registry/index.json` alongside the source.
+Registry: see [registry is release-only](#registry-is-release-only) — a local rebuild does not
+touch `registry/index.json`.
 
 **`nx test` is a build too — it carries the same hazard, from the other side (BL-456).** `nx.json`
 sets `targetDefaults.test.dependsOn = ["^build"]`, so `npx nx test <project>` rebuilds every upstream

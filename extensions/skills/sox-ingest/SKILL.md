@@ -152,21 +152,11 @@ For built-type extensions (`hook`, `command`, `mcp-server`, code `agent`):
 ./node_modules/.bin/nx run <project>:build
 ```
 
-Rebuild the registry after any extension source change:
-
-```
-npx tsx scripts/build-index.ts
-```
-
-(`npx nx run registry:sync-index` runs the same script but triggers a full build sweep and does
-NOT forward extra flags — use the direct script for a declarative-only change.)
-
-**Dirty-tree reality (BL-390):** `build-index` REFUSES to run against a dirty working tree —
-a checksum computed from uncommitted state is not reproducible from any commit. In a shared
-checkout with other agents' in-flight work, commit your own extension files first, then rebuild;
-only if the remaining dirt is provably checksum-irrelevant (`docs/`, `.claude/`, `.opencode/`,
-`.worktrees/`, `.nx/`, root-level `*.md`) may you use the documented escape hatch
-`npx tsx scripts/build-index.ts --allow-dirty` (stamps every entry `provisional: true`).
+Register the new extension: see [AGENTS.md § registry is release-only](../../../AGENTS.md#registry-is-release-only)
+for what may write `registry/index.json` and when. `build-index` also refuses to run against a dirty
+working tree (BL-390) — commit your own extension files first, then rebuild; only if the remaining
+dirt is provably checksum-irrelevant may you use the documented escape hatch `--allow-dirty`
+(stamps every entry `provisional: true`).
 
 `registry/index.json` must be current before install. See `references/by-operation.md` §build
 for type-specific build notes.
@@ -312,7 +302,7 @@ extension's files (verified in Step 5); `nx run-many -t build,lint,test` exits 0
 | `validate` rejects manifest | Missing required field; wrong type for a field | Read the per-type guideline and mirror the reference extension's `extension.json` exactly |
 | Build exits non-zero | TypeScript error or missing dependency | Fix the TS error; check the reference extension's `tsconfig.json` |
 | Install denied at runtime | Undeclared `permissions` | Declare the exact resource path(s) in `extension.json`; re-run install |
-| `soxe list` shows no extension | Registry not rebuilt after source change | Run `npx tsx scripts/build-index.ts`; re-install |
+| `soxe list` shows no extension | Registry not rebuilt after source change | See [AGENTS.md § registry is release-only](../../../AGENTS.md#registry-is-release-only); re-install |
 | Decision point blocked | Type mapping is ambiguous | Read `references/by-type.md` §decision-points; stop and report if product-level |
 | Lint fails after migration | New files violate ESLint config | Check the project ESLint config; adjust only the new files |
 
