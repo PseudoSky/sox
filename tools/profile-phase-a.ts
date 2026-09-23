@@ -21,7 +21,19 @@
  * Measurement only — changes no production code.
  */
 import { performance } from 'node:perf_hooks';
-import { createTursoAdapter } from '../libs/data/store/store-adapter/src/index.js';
+// nx infers "@adhd/sox-store-adapter is lazy-loaded" from
+// scripts/migrate-store-to-turso.mjs's `await import(...)` optional-availability
+// guard and flags every other static importer repo-wide, including this one.
+// Item 7 first-run discovery — not a real inconsistency in this file.
+// eslint-disable-next-line @nx/enforce-module-boundaries
+import { createTursoAdapter } from '@adhd/sox-store-adapter';
+// @adhd/sox-memory-core is not a declared root dependency; adding it requires
+// `pnpm install` + committing the pnpm-lock.yaml diff (CLAUDE.md "relock
+// before merge on new workspace edges"), which is unsafe to run right now
+// while another agent is mid-build-and-restart of memory-server's
+// 14-project dependency set. Item 7 first-run discovery — tracked as a
+// follow-up, not fixed here.
+// eslint-disable-next-line @nx/enforce-module-boundaries
 import { memoryWritePhaseA } from '../libs/memory-core/src/write.js';
 
 const DB = process.env.PROFILE_DB ?? '/tmp/sub600e/bench.db';

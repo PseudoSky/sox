@@ -23,7 +23,6 @@ import * as path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import Database from 'better-sqlite3';
 import { GRAPH_DDL, FTS_DDL, FTS_TRIGGERS } from '@adhd/sox-graph-store';
-import { createVectorDialect } from '@adhd/sox-store-adapter';
 
 // ── Constants ──────────────────────────────────────────────────────────────────
 
@@ -295,7 +294,12 @@ async function main() {
     const { load: loadSqliteVec } = await import('sqlite-vec');
     loadSqliteVec(rawDb);
 
-    // Create vec0 table via the store-adapter's vector dialect
+    // Create vec0 table via the store-adapter's vector dialect. Dynamic
+    // import matches the convention established by
+    // scripts/migrate-store-to-turso.mjs — @nx/enforce-module-boundaries
+    // flags any static import of @adhd/sox-store-adapter elsewhere once one
+    // consumer imports it lazily (Item 7 first-run violation).
+    const { createVectorDialect } = await import('@adhd/sox-store-adapter');
     const vectorDialect = createVectorDialect('sqlite');
     const vecDdl = vectorDialect.createTableDDL('vec_node', 'embedding', EMBED_DIM);
     rawDb.exec(vecDdl);

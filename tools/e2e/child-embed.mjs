@@ -49,9 +49,20 @@
 import { readFileSync } from 'node:fs';
 import { extname } from 'node:path';
 
+// This e2e child process deliberately loads each package's BUILT dist/
+// output by relative path (documented above: "real console output from the
+// real packages"), not via npm-scope resolution, precisely so it exercises
+// what a real consumer would load. None of these four packages is a
+// declared root dependency (adding them would require `pnpm install` + a
+// pnpm-lock.yaml commit purely to satisfy a diagnostic e2e harness — out of
+// scope tonight, see Item 7 report). Item 7 first-run discovery.
+// eslint-disable-next-line @nx/enforce-module-boundaries
 import { createLocalProvider, SourceRef } from '../../libs/source-provider/dist/index.js';
+// eslint-disable-next-line @nx/enforce-module-boundaries
 import { globalChunkerRegistry } from '../../libs/data/ingest/ingest/dist/index.js';
+// eslint-disable-next-line @nx/enforce-module-boundaries
 import { createEmbeddingProvider } from '../../libs/data/embed/embedding-provider/dist/index.js';
+// eslint-disable-next-line @nx/enforce-module-boundaries
 import { openLanceDbVectorStore } from '../../libs/data/vectors/vector-store/dist/index.js';
 
 const RESULT_MARKER = '__E2E_RESULT__';

@@ -45,7 +45,6 @@ export function setup(): void {
     );
   }
 
-  // eslint-disable-next-line no-console
   console.error(`[test-env-setup] SOX_ECOSYSTEM_HOME → ${scratchHome} (BL-179 sandbox)`);
 }
 
