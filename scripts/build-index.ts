@@ -679,14 +679,40 @@ export function buildIndex(opts: { root: string; allowDirty?: boolean }): IndexE
   // place. Both look identical from here: the id is in `committedPins` but
   // absent from `entries`. A single end-of-loop scan catches both cases
   // uniformly instead of needing a bespoke check at every early `continue`.
-  // Deliberately scoped to default mode only — under SOX_REGISTRY_PUBLISH a
-  // release MAY intentionally stop publishing a package (deprecation), and
-  // that is a real, sanctioned way for a pin to stop applying; this guard
-  // only protects the accidental, non-release path.
-  if (!process.env['SOX_REGISTRY_PUBLISH']) {
-    for (const [id, pin] of committedPins) {
-      if (!entries.some((e) => e.id === id)) {
-        pinLosses.push({ id, from: pin.source });
+  //
+  // The scan itself runs unconditionally — a dropped pin is worth knowing
+  // about in EITHER mode. Only the response differs:
+  //   - Default mode: refuse (pushed into `pinLosses`, same as a rewrite).
+  //     An accidental drop outside a release has no legitimate cause.
+  //   - SOX_REGISTRY_PUBLISH mode: warn on stderr, but do NOT refuse. A
+  //     release MAY intentionally stop publishing a package (deprecation) —
+  //     that is sanctioned and must keep working non-interactively. But an
+  //     ACCIDENTAL drop during a real release (e.g. a directory lost to a bad
+  //     rebase) previously passed release mode in total silence: the omission
+  //     scan was disabled outright under the publication signal, so nothing
+  //     ever looked at it. Naming the id on stderr means a human (or a CI log
+  //     grep) has a chance to catch a drop that was never a deliberate
+  //     decision, without blocking the ones that were.
+  const omittedPinIds: Array<{ id: string; source: string }> = [];
+  for (const [id, pin] of committedPins) {
+    if (!entries.some((e) => e.id === id)) {
+      omittedPinIds.push({ id, source: pin.source });
+    }
+  }
+  if (omittedPinIds.length > 0) {
+    if (!process.env['SOX_REGISTRY_PUBLISH']) {
+      for (const { id, source } of omittedPinIds) {
+        pinLosses.push({ id, from: source });
+      }
+    } else {
+      for (const { id, source } of omittedPinIds) {
+        console.error(
+          `build-index: WARNING — dropping published npm-package: pin for "${id}" ` +
+            `(${source}) — this id is no longer in this run's output (private:true, or its ` +
+            `extension directory is gone). If this is a deliberate deprecation, ignore this ` +
+            `warning. If it is NOT, stop: this release is about to publish a registry with ` +
+            `"${id}" silently removed (backlog 4d1a3bf9-2ffd-4a3d-b017-85ec0146759d).`,
+        );
       }
     }
   }
