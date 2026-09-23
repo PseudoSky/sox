@@ -12,10 +12,13 @@
  *   node scripts/smoke-test.mjs [--extension id] [--root /tmp/smoke]
  */
 
+import * as crypto from 'node:crypto';
 import * as fs from 'node:fs';
 import * as fsp from 'node:fs/promises';
 import * as path from 'node:path';
 import { execSync, spawn } from 'node:child_process';
+import { createRequire } from 'node:module';
+import { fileURLToPath } from 'node:url';
 // BL-192 gap fix: workspace package discovery + contract-path resolution
 // (shared with tools/verify-exports-publint-attw.mjs) so the Build-first gate
 // below checks EVERY package's main/module/types/bin/exports paths, not just
@@ -48,6 +51,17 @@ function flagValue(name) {
 const rootArg = flagValue('--root');
 const WORKSPACE = rootArg ? path.resolve(rootArg) : path.resolve('.');
 const SOXE = path.join(WORKSPACE, 'bin', 'soxe');
+const require = createRequire(import.meta.url);
+
+// 7c686059: what the local-sources registry computed for each id — populated
+// once in main() after generating TEST_ROOT's own registry/index.json (see
+// the generation block below). Diagnostic only: verifyLocalBytesInvariant()
+// asserts against the INSTALLED lockfile entry's own bytes directly (hashing
+// whatever it points at right now), not against this map — that avoids a
+// tautological "does resolver A agree with resolver B" check and stays
+// correct for ids (e.g. a private extension) that never made it into a
+// published/local-sources registry row at all.
+let localRegistryEntries = new Map();
 
 // Portability: prefer a real "timeout" binary (GNU coreutils -- present by
 // default on essentially every Linux CI image, and installable on macOS via
@@ -233,6 +247,147 @@ async function runCmd(args, opts = {}) {
   log.push(entry);
   passed ? summary.passed++ : summary.failed++;
   return { stdout, stderr, exitCode, signal };
+}
+
+// 7c686059: the project-scope lockfile this harness's every install leg
+// writes to (scopesFromManifest below always returns ['project'], and every
+// runCmd(['install', ...]) call passes --root TEST_ROOT) — mirrors
+// libs/install-engine/src/data-paths.ts scopeConfigPaths('project', root):
+// `<root>/.adhd/sox-ecosystem/extensions.lock`.
+const PROJECT_LOCKFILE = path.join(TEST_ROOT, '.adhd', 'sox-ecosystem', 'extensions.lock');
+
+/**
+ * 7c686059: after ANY install leg that should have resolved `id`, assert the
+ * project-scope lockfile recorded a LOCAL source/checksum — never an
+ * npm-package: tarball fetch, and never install.ts's npm content-store cache
+ * either — by (a) requiring `resolved[id].source` to point INSIDE this
+ * worktree's own `extensions/**`/`apps/**`, then (b) hashing whatever that
+ * source actually points at RIGHT NOW and requiring it to equal
+ * `resolved[id].checksum`. This is the positive assertion the defect
+ * (symlinking the committed, partly npm-package:-pinned registry straight
+ * into TEST_ROOT) made impossible: a regression in this worktree's own
+ * rebuilt dist/ would previously sail through a fully green smoke run
+ * because install.ts was npm-installing PUBLISHED bytes for these ids, never
+ * touching local disk.
+ *
+ * Returns a `verify`-shaped result ({ok, verdict, detail}) — pass either as
+ * `runCmd`'s `verify` option directly, or call the returned function
+ * out-of-band (bundle members never go through `testExtension`'s own runCmd
+ * calls, so their invariant is checked immediately after the bundle's own
+ * install/upgrade legs instead — see main()).
+ */
+function verifyLocalBytesInvariant(id) {
+  return ({ exitCode, stderr } = {}) => {
+    if (exitCode !== undefined && exitCode !== null && exitCode !== 0) {
+      return {
+        ok: false,
+        verdict: 'install-failed',
+        detail: `soxe install for "${id}" exited ${exitCode} — cannot assert the local-bytes invariant against a failed install: ${(stderr || '').slice(-500)}`,
+      };
+    }
+    let lockfile;
+    try {
+      lockfile = JSON.parse(fs.readFileSync(PROJECT_LOCKFILE, 'utf-8'));
+    } catch (e) {
+      return {
+        ok: false,
+        verdict: 'lockfile-unreadable',
+        detail: `could not read/parse ${PROJECT_LOCKFILE}: ${(e && e.message) ?? e}`,
+      };
+    }
+    const entry = lockfile.resolved && lockfile.resolved[id];
+    if (!entry) {
+      return {
+        ok: false,
+        verdict: 'lockfile-entry-missing',
+        detail: `no resolved["${id}"] in ${PROJECT_LOCKFILE} (keys: ${Object.keys(lockfile.resolved || {}).join(', ')})`,
+      };
+    }
+    if (typeof entry.source !== 'string' || entry.source.startsWith('npm-package:')) {
+      return {
+        ok: false,
+        verdict: 'source-is-npm-package',
+        detail: `resolved["${id}"].source = ${entry.source} — this install pulled a NPM TARBALL instead of local dist/ bytes (7c686059)`,
+      };
+    }
+    // 7c686059: the ONLY places a genuine local extension source lives are
+    // `extensions/**` and `apps/**` (apps/sox is a self-hosted extension —
+    // see build-index.ts's secondary scan). `file://${WORKSPACE}/` alone is
+    // too loose: `TEST_ROOT` (dist/smoke/**) lives INSIDE `WORKSPACE`, and
+    // install.ts's npm-package: content store (fetchNpmPackage's `storeDir`)
+    // is scoped under it too — so a genuine npm-tarball-fetched artifact's
+    // resolvedSource would ALSO start with `file://${WORKSPACE}/` and slip
+    // past a bare-prefix check. Anchor to the two real source roots instead.
+    const extensionsPrefix = `file://${path.join(WORKSPACE, 'extensions')}${path.sep}`;
+    const appsPrefix = `file://${path.join(WORKSPACE, 'apps')}${path.sep}`;
+    if (!entry.source.startsWith(extensionsPrefix) && !entry.source.startsWith(appsPrefix)) {
+      return {
+        ok: false,
+        verdict: 'source-not-local',
+        detail: `resolved["${id}"].source = ${entry.source} — expected to start with ${extensionsPrefix} or ${appsPrefix} (7c686059: must resolve to a real extension source in THIS worktree, never an npm content store or any other external location)`,
+      };
+    }
+    // 7c686059: the checksum authority is the ACTUAL bytes on disk at the
+    // resolved entrypoint RIGHT NOW — not a second lookup into a registry
+    // (comparing two things install.ts itself already derived the same way
+    // would be a tautology, and would fail to notice `id` was never in that
+    // registry to begin with, e.g. a private/local-only extension). This is
+    // exactly what makes it an assertion "the installed artifact IS this
+    // worktree's current dist/ bytes" rather than "two resolvers agreed".
+    let entryPath;
+    try {
+      entryPath = fileURLToPath(entry.source);
+    } catch (e) {
+      return {
+        ok: false,
+        verdict: 'source-unparseable',
+        detail: `resolved["${id}"].source = ${entry.source} could not be parsed as a file:// URL: ${(e && e.message) ?? e}`,
+      };
+    }
+    let actualChecksum;
+    try {
+      actualChecksum = `sha256:${crypto.createHash('sha256').update(fs.readFileSync(entryPath)).digest('hex')}`;
+    } catch (e) {
+      return {
+        ok: false,
+        verdict: 'entrypoint-unreadable',
+        detail: `could not read ${entryPath} (resolved["${id}"].source) to verify its checksum: ${(e && e.message) ?? e}`,
+      };
+    }
+    if (entry.checksum !== actualChecksum) {
+      return {
+        ok: false,
+        verdict: 'checksum-mismatch',
+        detail: `resolved["${id}"].checksum = ${entry.checksum}, but sha256(${entryPath}) = ${actualChecksum} right now — the lockfile's recorded checksum does not match the file it points at`,
+      };
+    }
+    return {
+      ok: true,
+      verdict: 'verified',
+      detail: `resolved["${id}"].source=${entry.source}, checksum=${entry.checksum} matches sha256(${entryPath}) computed just now`,
+    };
+  };
+}
+
+/**
+ * 7c686059: like verifyLocalBytesInvariant, but for a check run OUT OF BAND
+ * of any `runCmd` (bundle members never get their own `soxe install` call —
+ * they resolve as a side effect of `soxe install <bundle-id>`). Synthesizes a
+ * log/summary entry the same shape `runCmd` produces so the JSON report and
+ * `summary.failed` gate this exactly like a real step.
+ */
+function recordLocalBytesCheck(testId, extId, extType) {
+  const result = verifyLocalBytesInvariant(extId)({ exitCode: 0, stderr: '' });
+  const passed = result.ok === true;
+  log.push({
+    test_id: testId, extension_id: extId, extension_type: extType,
+    command: '(post-install local-bytes invariant check, 7c686059)',
+    exit_code: null, signal: null,
+    verdict: result.verdict, verdict_detail: result.detail,
+    stdout: '', stderr: '', file_changes: [], duration_ms: 0, passed, error: null,
+  });
+  passed ? summary.passed++ : summary.failed++;
+  return result;
 }
 
 /**
@@ -503,7 +658,7 @@ async function testExtension(ext) {
   // ── Install (standalone only) ───────────────────────────────────
   if (!isBundleMember) {
     for (const scope of scopes) {
-      await runCmd(['install', id, '--scope', scope, '--root', TEST_ROOT], { testId: `${id}-${scope}-install`, extId: id, extType: type });
+      await runCmd(['install', id, '--scope', scope, '--root', TEST_ROOT], { testId: `${id}-${scope}-install`, extId: id, extType: type, verify: verifyLocalBytesInvariant(id) });
       await runCmd(['upgrade', '--all', '--scope', scope, '--root', TEST_ROOT], { timeoutMs: 60_000, testId: `${id}-${scope}-upgrade`, extId: id, extType: type });
     }
   }
@@ -511,7 +666,7 @@ async function testExtension(ext) {
   // ── Host-based install (mcp-server / skill) ─────────────────────
   for (const host of hosts) {
     for (const scope of scopes) {
-      await runCmd(['install', id, `--host=${host}`, '--scope', scope, '--root', TEST_ROOT], { testId: `${id}-${host}-${scope}-install`, extId: id, extType: type });
+      await runCmd(['install', id, `--host=${host}`, '--scope', scope, '--root', TEST_ROOT], { testId: `${id}-${host}-${scope}-install`, extId: id, extType: type, verify: verifyLocalBytesInvariant(id) });
     }
   }
 
@@ -723,10 +878,60 @@ async function main() {
   console.error('[smoke] live fingerprint BEFORE:', JSON.stringify(fingerprint));
 
   await fsp.writeFile(path.join(TEST_ROOT, 'package.json'), JSON.stringify({ name: 'smoke', private: true }));
+
+  // 7c686059-021d-4fc9-9c3f-e17a59b61b4f: the committed registry/index.json
+  // pins several ids (memory-server, memory-cli, memory-flush, memory-usage,
+  // sox, sox-memory-bundle) to `npm-package:` locators — install.ts's REAL
+  // behavior for one of those is a genuine `npm install` of the PUBLISHED
+  // tarball (libs/install-engine/src/install.ts fetchArtifact, ~472-484).
+  // Symlinking the committed file straight into TEST_ROOT (the prior
+  // behavior here) meant this pre-merge gate exercised npm-published bytes
+  // for those ids on EVERY run, never this worktree's own rebuilt dist/ — a
+  // local regression in one of those dists could ship past a fully green
+  // smoke run. Generate a DERIVED, disposable registry instead: every row
+  // forced to a `file://` locator inside THIS checkout, with checksums
+  // freshly computed from local disk via `scripts/build-index.ts --local-sources`
+  // (the same resolver install.ts's checksum gate verifies against — never
+  // duplicated here). The release/npm-bytes leg stays the release flow's job;
+  // see PUBLISHING.md.
   const tr = path.join(TEST_ROOT, 'registry', 'index.json');
   await fsp.mkdir(path.dirname(tr), { recursive: true });
-  try { await fsp.unlink(tr); } catch {}
-  await fsp.symlink(path.join(WORKSPACE, 'registry', 'index.json'), tr);
+  try {
+    await fsp.unlink(tr);
+  } catch (e) {
+    // ENOENT (nothing there yet, the common case on a fresh TEST_ROOT) is
+    // fine to swallow silently. Anything else (permissions, a directory
+    // sitting at `tr`, ...) is a real condition the next step would fail on
+    // anyway with a far more confusing error — surface it now.
+    if (!e || e.code !== 'ENOENT') {
+      console.error(`[smoke] WARNING: could not remove stale ${tr} before regenerating it: ${(e && e.message) ?? e}`);
+    }
+  }
+  const committedRegistry = JSON.parse(
+    await fsp.readFile(path.join(WORKSPACE, 'registry', 'index.json'), 'utf-8'),
+  );
+  const committedNpmPackageIds = new Set(
+    committedRegistry
+      .filter((r) => typeof r.source === 'string' && r.source.startsWith('npm-package:'))
+      .map((r) => r.id),
+  );
+  const tsxCli = require.resolve('tsx/cli');
+  execSync(
+    `${JSON.stringify(process.execPath)} ${JSON.stringify(tsxCli)} ` +
+      `${JSON.stringify(path.join(WORKSPACE, 'scripts', 'build-index.ts'))} ` +
+      `${JSON.stringify(WORKSPACE)} --local-sources --out ${JSON.stringify(tr)}`,
+    { stdio: ['ignore', 'inherit', 'inherit'] },
+  );
+  const localRegistry = JSON.parse(await fsp.readFile(tr, 'utf-8'));
+  localRegistryEntries = new Map(localRegistry.map((r) => [r.id, r]));
+  const rewrittenIds = localRegistry
+    .filter((r) => committedNpmPackageIds.has(r.id))
+    .map((r) => r.id);
+  console.error(
+    `[smoke] test-root registry (7c686059): ${localRegistry.length} entries generated locally from ` +
+      `${WORKSPACE}; ${rewrittenIds.length} row(s) rewritten from npm-package: to file:// — ` +
+      `${rewrittenIds.join(', ') || '(none)'}`,
+  );
 
   const allExtensions = await scanAllExtensionDirs();
   const extensions = await discoverExtensions(allExtensions);
@@ -823,8 +1028,35 @@ async function main() {
       if (!installed.has(bid)) {
         installed.add(bid);
         console.error(`[smoke] installing bundle ${bid}`);
-        await runCmd(['install', bid, '--scope=project', '--root', TEST_ROOT], { timeoutMs: 60_000, testId: `bundle-${bid}-install`, extId: bid, extType: 'bundle' });
+
+        // 7c686059: a BUNDLE id never gets its own `resolved[bid]` lockfile
+        // entry — only its expanded MEMBERS do (verified empirically: a
+        // naive `verifyLocalBytesInvariant(bid)` here reads
+        // `lockfile-entry-missing`, and the entry's own `detail` lists
+        // exactly the member ids as the only keys present). So the bundle
+        // install's own `verify` only asserts it exited 0; the actual
+        // local-bytes invariant is checked per MEMBER below, out of band,
+        // right after — `testExtension`'s own install loop only runs for
+        // `mcp-server`/`service` types, so a bundle's command/hook/skill
+        // members (memory-cli/memory-flush/memory-usage) never get an
+        // individual `soxe install` call of their own; they resolve purely
+        // as a side effect of the bundle install here.
+        const memberIds = allExtensions
+          .filter((e) => e.dir.includes('/members/') && e.dir.split('/members/')[0].split('/').pop() === bid)
+          .map((e) => ({ id: e.id, type: e.type }));
+        const bundleInstallResult = await runCmd(['install', bid, '--scope=project', '--root', TEST_ROOT], {
+          timeoutMs: 60_000, testId: `bundle-${bid}-install`, extId: bid, extType: 'bundle',
+          verify: ({ exitCode, stderr } = {}) => (exitCode === 0
+            ? { ok: true, verdict: 'verified', detail: `bundle install exited 0 (${memberIds.length} member(s): ${memberIds.map((m) => m.id).join(', ')})` }
+            : { ok: false, verdict: 'install-failed', detail: `soxe install ${bid} exited ${exitCode}: ${(stderr || '').slice(-500)}` }),
+        });
         await runCmd(['upgrade', '--all', '--scope=project', '--root', TEST_ROOT], { timeoutMs: 60_000, testId: `bundle-${bid}-upgrade`, extId: bid, extType: 'bundle' });
+
+        if (bundleInstallResult.exitCode === 0) {
+          for (const member of memberIds) {
+            recordLocalBytesCheck(`${member.id}-local-bytes-invariant`, member.id, member.type);
+          }
+        }
       }
     }
   }

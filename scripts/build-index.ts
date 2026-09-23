@@ -42,6 +42,21 @@ export class DirtyTreeError extends Error {}
  */
 export class PinLossError extends Error {}
 
+/**
+ * backlog 7c686059-021d-4fc9-9c3f-e17a59b61b4f: raised by the `--out <path>
+ * --local-sources` CLI mode (see `buildIndex`'s `outPath` opt below) when the
+ * caller asks it to write to the repo's own committed `registry/index.json`.
+ * That mode exists to produce an EXTRA, disposable, local-bytes-only index for
+ * a test root (`scripts/smoke-test.mjs`) — its whole reason to exist is that it
+ * must never be the thing that gets committed (it forces every row to a
+ * checkout-bound `file://` locator, including ids the committed file correctly
+ * pins to published `npm-package:` bytes). Writing it over the real file would
+ * silently destroy every published pin the same way 4d1a3bf9 already guards
+ * against for the default path — but `--local-sources` mode deliberately skips
+ * that guard (see below), so this is the one that has to hold here instead.
+ */
+export class OutPathConflictError extends Error {}
+
 interface ExtensionManifest {
   $schema: string;
   id: string;
@@ -208,6 +223,49 @@ function isChecksumRelevant(file: string): boolean {
   return !CHECKSUM_IRRELEVANT_PREFIXES.some((prefix) => p.startsWith(prefix));
 }
 
+/**
+ * 7c686059: `path.resolve` is purely lexical — it does not follow symlinks.
+ * `writeFileSync` does. So a `--out` argument that IS a symlink (or lives
+ * inside a symlinked directory) pointing AT the committed `registry/index.json`
+ * would sail straight past a lexical `resolvedOutPath === path.resolve(defaultIndexPath)`
+ * comparison and then silently overwrite the real file — exactly the shape of
+ * the old `scripts/smoke-test.mjs` symlink this generator mode exists to
+ * replace. Resolves BOTH the file itself (if it — or a broken symlink at
+ * that exact path — already exists) and its ancestor directory chain (the
+ * first ancestor that actually exists on disk) through any symlinks, so the
+ * guard compares REAL destinations, not lexical strings. Bounded to 32 hops
+ * to guarantee termination against a symlink cycle.
+ */
+function resolveRealOrPotentialPath(p: string): string {
+  const resolved = path.resolve(p);
+  let current = resolved;
+  for (let i = 0; i < 32; i++) {
+    let lst: fs.Stats;
+    try {
+      lst = fs.lstatSync(current);
+    } catch {
+      break; // does not exist at all (broken chain or never created) — nothing left to follow
+    }
+    if (!lst.isSymbolicLink()) break;
+    const target = fs.readlinkSync(current);
+    current = path.isAbsolute(target) ? target : path.resolve(path.dirname(current), target);
+  }
+  let dir = path.dirname(current);
+  const missing: string[] = [];
+  for (let i = 0; i < 32; i++) {
+    try {
+      const real = fs.realpathSync(dir);
+      return path.join(real, ...missing, path.basename(current));
+    } catch {
+      missing.unshift(path.basename(dir));
+      const parent = path.dirname(dir);
+      if (parent === dir) return current; // reached filesystem root — give up gracefully
+      dir = parent;
+    }
+  }
+  return current;
+}
+
 const DIR_TO_TYPE: Record<string, string> = {
   agents: 'agent',
   skills: 'skill',
@@ -299,7 +357,16 @@ function findExtensionDirs(root: string): Array<{ extPath: string; bundleId?: st
  *
  * The NPM package name convention: @adhd/sox-extension-<id>
  */
-function resolveSource(extDir: string, manifest: ExtensionManifest): string {
+function resolveSource(extDir: string, manifest: ExtensionManifest, opts?: { forceLocal?: boolean }): string {
+  // 7c686059: `--local-sources` mode forces every row to the checkout-bound
+  // `file://` locator unconditionally — bypassing the SOX_REGISTRY_PUBLISH /
+  // manifest.checksum branches below entirely. This is the ONE thing this
+  // mode changes about source resolution; checksum resolution (resolveChecksum
+  // / resolveEntrypointPath) is untouched and reused as-is per BL-390's
+  // conformance pin with install.ts.
+  if (opts?.forceLocal) {
+    return `file://${extDir}`;
+  }
   const pkgPath = path.join(extDir, 'package.json');
   if (fs.existsSync(pkgPath)) {
     const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf8')) as { name?: string; version?: string; private?: boolean };
@@ -491,8 +558,67 @@ function loadCommittedPins(root: string): Map<string, { source: string; checksum
   return pins;
 }
 
-export function buildIndex(opts: { root: string; allowDirty?: boolean }): IndexEntry[] {
-  const { root, allowDirty = false } = opts;
+export function buildIndex(opts: {
+  root: string;
+  allowDirty?: boolean;
+  /**
+   * 7c686059: write to this path instead of `<root>/registry/index.json`.
+   * REFUSES (OutPathConflictError) if it resolves to the committed
+   * `registry/index.json` — this option exists to produce a disposable,
+   * NEVER-COMMITTED index elsewhere (a test root's own registry), and must
+   * never be usable to overwrite the real one, which has its own dedicated
+   * (default-path) pin-loss guard already.
+   */
+  outPath?: string;
+  /**
+   * 7c686059: force EVERY row's `source` to a checkout-bound `file://<extDir>`
+   * locator, regardless of `SOX_REGISTRY_PUBLISH` / a committed `npm-package:`
+   * pin. Built for `scripts/smoke-test.mjs`'s pre-merge gate: the committed
+   * `registry/index.json` correctly pins several ids to published npm bytes,
+   * but a pre-merge smoke run must exercise the ids' LOCAL dist/ — the exact
+   * bytes about to be merged — not whatever npm currently serves. Requires
+   * `outPath` (see above); the published-bytes pin machinery (loadCommittedPins
+   * / pinLosses) is entirely SKIPPED in this mode — those pins describe the
+   * committed registry, which this mode never touches and never reads for that
+   * purpose. A dirty working tree does not refuse here either: the output is
+   * provisional by construction (it is never committed), so it is stamped
+   * `provisional: true` / `builtFromCommit: "<sha>+dirty"` the same way
+   * `--allow-dirty` does, rather than blocking a run that was never going to
+   * produce a committable artifact in the first place.
+   */
+  localSources?: boolean;
+}): IndexEntry[] {
+  const { root, allowDirty: allowDirtyOpt = false, outPath, localSources = false } = opts;
+
+  const defaultIndexPath = path.join(root, 'registry', 'index.json');
+  const resolvedOutPath = outPath !== undefined ? path.resolve(outPath) : defaultIndexPath;
+  if (
+    outPath !== undefined &&
+    resolveRealOrPotentialPath(resolvedOutPath) === resolveRealOrPotentialPath(defaultIndexPath)
+  ) {
+    throw new OutPathConflictError(
+      `build-index: --out resolves to the repo's committed registry/index.json ` +
+        `(${defaultIndexPath}) — refusing (backlog 7c686059-021d-4fc9-9c3f-e17a59b61b4f).\n` +
+        `  This mode exists to write a DISPOSABLE index elsewhere (e.g. a test root's own\n` +
+        `  registry) — never to overwrite the committed one, which has its own pin-loss guard\n` +
+        `  at the default path already. Pass a different --out path.\n` +
+        `  (Resolution follows symlinks in both the target and its ancestor directories —\n` +
+        `  a symlinked path that ultimately points at the committed file is refused too.)`,
+    );
+  }
+  if (localSources && outPath === undefined) {
+    throw new OutPathConflictError(
+      `build-index: --local-sources requires --out <path> (backlog 7c686059-021d-4fc9-9c3f-e17a59b61b4f).\n` +
+        `  Without an explicit --out, this mode would default to the committed\n` +
+        `  registry/index.json and every published npm-package: pin would be forced to a\n` +
+        `  checkout-bound file:// locator in the file that actually ships.`,
+    );
+  }
+
+  // 7c686059: local-sources output is provisional by construction (never
+  // committed) — a dirty tree stamps `provisional`/`+dirty` (same as
+  // `--allow-dirty`) instead of refusing.
+  const allowDirty = localSources ? true : allowDirtyOpt;
 
   // BL-390: `registry:sync-index` must not bless a checksum computed from a
   // tree state no commit can reproduce. Refuse outright unless the caller
@@ -537,7 +663,13 @@ export function buildIndex(opts: { root: string; allowDirty?: boolean }): IndexE
     );
   }
 
-  const committedPins = loadCommittedPins(root);
+  // 7c686059: local-sources mode never reads or enforces the published-bytes
+  // pin — every row is about to be forced to `file://` regardless, so a
+  // "pin" here would be data this mode structurally cannot honor. Skipping the
+  // read (rather than reading it and ignoring it) also means the guard has
+  // nothing left to act on below: `committedPins` stays empty for the whole
+  // run.
+  const committedPins = localSources ? new Map<string, { source: string; checksum: string }>() : loadCommittedPins(root);
   const dirs = findExtensionDirs(root);
   const entries: IndexEntry[] = [];
   // 4d1a3bf9: ids whose committed npm-package: pin this run would clobber with
@@ -577,7 +709,7 @@ export function buildIndex(opts: { root: string; allowDirty?: boolean }): IndexE
       continue;
     }
 
-    const source = resolveSource(extDir, manifest);
+    const source = resolveSource(extDir, manifest, { forceLocal: localSources });
 
     // 4d1a3bf9: outside a release, a committed npm-package: pin must never be
     // silently rewritten to a checkout-bound source. `resolveSource` only
@@ -598,7 +730,12 @@ export function buildIndex(opts: { root: string; allowDirty?: boolean }): IndexE
     // so OMIT it from the PORTABLE/published registry entirely — never ship an entry
     // with a checkout-bound /Users path in the embedded CLI registry (the fresh-machine
     // "no /Users path" + "no dangling npm-package:" invariants).
-    if (process.env['SOX_REGISTRY_PUBLISH'] && source.startsWith('file://')) {
+    // 7c686059: under --local-sources every source is FORCED to file:// (see
+    // resolveSource's forceLocal branch above) — that is the whole point of
+    // the mode, not a sign of an unpublished package. Skip the omission
+    // entirely here; it exists to keep a checkout-bound path out of a REAL
+    // publish index, which this mode never produces.
+    if (!localSources && process.env['SOX_REGISTRY_PUBLISH'] && source.startsWith('file://')) {
       console.log(`build-index: [publish] omitting unpublished extension "${manifest.id}" (private / no npm package)`);
       continue;
     }
@@ -740,12 +877,14 @@ export function buildIndex(opts: { root: string; allowDirty?: boolean }): IndexE
     );
   }
 
-  // Write registry/index.json
-  const registryDir = path.join(root, 'registry');
-  if (!fs.existsSync(registryDir)) {
-    fs.mkdirSync(registryDir, { recursive: true });
+  // Write the index — the committed default path unless --out (7c686059)
+  // redirected it elsewhere, refused above if that would collide with the
+  // committed file.
+  const indexPath = resolvedOutPath;
+  const outDir = path.dirname(indexPath);
+  if (!fs.existsSync(outDir)) {
+    fs.mkdirSync(outDir, { recursive: true });
   }
-  const indexPath = path.join(registryDir, 'index.json');
   fs.writeFileSync(indexPath, JSON.stringify(entries, null, 2) + '\n', 'utf8');
 
   console.log(`build-index: wrote ${entries.length} entries to ${indexPath}`);
@@ -775,6 +914,21 @@ const isMainModule = import.meta.url === `file://${process.argv[1]}`;
 if (isMainModule) {
   const args = process.argv.slice(2);
   const allowDirty = args.includes('--allow-dirty');
+  const localSources = args.includes('--local-sources');
+  // 7c686059: `--out <path>` takes a value — locate it (and its value) BEFORE
+  // computing `explicitRoot` below so the path value is never misread as the
+  // positional root argument (`args.find(a => !a.startsWith('--'))` would
+  // otherwise happily match a bare path string wherever it landed).
+  const outIdx = args.indexOf('--out');
+  let outPath: string | undefined;
+  if (outIdx !== -1) {
+    outPath = args[outIdx + 1];
+    if (outPath === undefined || outPath.startsWith('--')) {
+      console.error(`build-index: --out requires a value (got ${outPath === undefined ? 'end-of-args' : outPath})`);
+      process.exit(1);
+    }
+  }
+  const consumedIdxs = new Set<number>(outIdx !== -1 ? [outIdx, outIdx + 1] : []);
   // BL-480: default root must resolve to the SHARED repo root (`git
   // rev-parse --git-common-dir` + '..'), never `process.cwd()`. The
   // `registry:sync-index` nx target runs with `cwd: "."`, which nx resolves
@@ -786,7 +940,7 @@ if (isMainModule) {
   // `source` field for entries this invocation happened to also touch.
   // `tools/check-backlog-markers.mjs` established this exact pattern for the
   // same reason (BL-416) — mirrored here rather than reinvented.
-  const explicitRoot = args.find((a) => !a.startsWith('--'));
+  const explicitRoot = args.find((a, i) => !consumedIdxs.has(i) && !a.startsWith('--'));
   let defaultRoot = process.cwd();
   try {
     const gitCommonDir = execSync('git rev-parse --git-common-dir', {
@@ -799,9 +953,9 @@ if (isMainModule) {
   }
   const root = explicitRoot ?? defaultRoot;
   try {
-    buildIndex({ root, allowDirty });
+    buildIndex({ root, allowDirty, localSources, ...(outPath !== undefined ? { outPath } : {}) });
   } catch (e) {
-    if (e instanceof DirtyTreeError || e instanceof PinLossError) {
+    if (e instanceof DirtyTreeError || e instanceof PinLossError || e instanceof OutPathConflictError) {
       console.error(e.message);
       process.exit(1);
     }
