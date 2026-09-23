@@ -39,6 +39,7 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import { withVerifiedGitIndex } from './lib/git-index-scope.mjs';
 
 const TOOLS_DIR = path.dirname(fileURLToPath(import.meta.url));
 const DEFAULT_REPO_ROOT = path.resolve(TOOLS_DIR, '..');
@@ -115,43 +116,16 @@ function resolveScript(guard, root = REPO_ROOT) {
 // `.git/index` can hold another agent's staged paths, and miss the paths actually being
 // committed. `SAFE_GIT_ENV` above strips GIT_INDEX_FILE unconditionally for the BL-479 reason
 // documented there (an ambient env var must never let a scratch/fixture guard's git calls
-// resolve against the invoking checkout). Those two needs conflict, so this only re-admits
-// GIT_INDEX_FILE when it can be PROVEN to belong to REPO_ROOT's own git dir — never blindly.
-function resolveAbsoluteGitDir(root) {
-  try {
-    return execFileSync('git', ['-C', root, 'rev-parse', '--absolute-git-dir'], {
-      encoding: 'utf8',
-      env: SAFE_GIT_ENV,
-    }).trim();
-  } catch (err) {
-    console.error(`run-guards: could not resolve the git dir for ${root} — ${err.message}`);
-    return null;
-  }
-}
-
+// resolve against the invoking checkout). Those two needs conflict; tools/lib/git-index-scope.mjs
+// (shared with tools/precommit-lint.mjs) resolves them by only re-admitting GIT_INDEX_FILE when
+// it can be PROVEN to belong to REPO_ROOT's own git dir — never blindly.
 function gitEnvForChangedFiles(root) {
-  const inherited = process.env.GIT_INDEX_FILE;
-  if (!inherited) return SAFE_GIT_ENV;
-
-  const gitDir = resolveAbsoluteGitDir(root);
-  if (!gitDir) return SAFE_GIT_ENV;
-
-  let realGitDir;
-  let realIndexDir;
-  try {
-    realGitDir = fs.realpathSync(gitDir);
-    // The index file itself may not exist yet (a brand-new next-index); realpath its parent dir
-    // instead so a not-yet-created lockfile still resolves.
-    realIndexDir = fs.realpathSync(path.dirname(path.resolve(root, inherited)));
-  } catch (err) {
-    console.error(`run-guards: could not verify GIT_INDEX_FILE ownership — ${err.message}. Ignoring it.`);
-    return SAFE_GIT_ENV;
-  }
-
-  const belongsToThisRepo = realIndexDir === realGitDir || realIndexDir.startsWith(realGitDir + path.sep);
-  if (!belongsToThisRepo) return SAFE_GIT_ENV;
-
-  return { ...SAFE_GIT_ENV, GIT_INDEX_FILE: inherited };
+  return withVerifiedGitIndex({
+    root,
+    env: SAFE_GIT_ENV,
+    indexFile: process.env.GIT_INDEX_FILE,
+    label: 'run-guards',
+  });
 }
 
 // fbdfe55e — a git failure while computing the changed-file set used to be an untraced
@@ -178,7 +152,7 @@ function getChangedFiles() {
         'Failing closed: refusing to silently treat this as "nothing changed".',
     );
     if (err.stderr) console.error(String(err.stderr));
-    process.exit(1);
+    process.exit(1); // never returns — terminates the process; no caller of getChangedFiles() sees a value here.
   }
 }
 

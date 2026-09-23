@@ -92,6 +92,13 @@ process.exit(0);
   const toolsDir = path.join(dir, 'tools');
   fs.mkdirSync(toolsDir, { recursive: true });
   fs.copyFileSync(SCRIPT_UNDER_TEST, path.join(toolsDir, 'precommit-lint.mjs'));
+  // precommit-lint.mjs imports the shared f1dc4926 helper — copy it alongside so the scratch
+  // repo's own tools/ dir is self-contained.
+  const libSrc = path.join(TOOLS_DIR, 'lib', 'git-index-scope.mjs');
+  if (fs.existsSync(libSrc)) {
+    fs.mkdirSync(path.join(toolsDir, 'lib'), { recursive: true });
+    fs.copyFileSync(libSrc, path.join(toolsDir, 'lib', 'git-index-scope.mjs'));
+  }
 
   const hookPath = path.join(dir, '.git', 'hooks', 'pre-commit');
   fs.writeFileSync(

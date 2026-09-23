@@ -173,6 +173,109 @@ node ${JSON.stringify(RUNNER)} --tier1 --manifest ${JSON.stringify(manifestPath)
   fs.rmSync(dir, { recursive: true, force: true });
 }
 
+// =====================================================================================
+// f1dc4926 (containment) — a GIT_INDEX_FILE that resolves OUTSIDE the target repo's own git dir
+// must be IGNORED (falls back to SAFE_GIT_ENV / the repo's own shared index), never trusted.
+// Sets up two independent scratch repos: REPO_A is the `--cwd` target with its own real staged
+// file; REPO_B is unrelated and only exists to provide a foreign GIT_INDEX_FILE path. Runs
+// run-guards against REPO_A while GIT_INDEX_FILE points at REPO_B's index.
+//
+// RED is produced by pointing RUN_GUARDS_SCRIPT_PATH at a copy of run-guards.mjs (+ its
+// tools/lib/git-index-scope.mjs helper) with the containment check forced to always pass — this
+// is exactly "disabling the containment check" per the review request, done from THIS test file
+// (not by mutating the real source) so the red/green pin is self-contained and reusable.
+// =====================================================================================
+{
+  const repoA = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'f1dc4926-containment-a-')));
+  const repoB = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'f1dc4926-containment-b-')));
+
+  for (const dir of [repoA, repoB]) {
+    sh(['init', '-q'], dir);
+    sh(['config', 'user.email', 'test@example.com'], dir);
+    sh(['config', 'user.name', 'f1dc4926 containment test'], dir);
+  }
+
+  // REPO_A: the real, intended target — stages libs/x/c.ts.
+  writeFile(repoA, 'libs/x/c.ts', 'export const c = 1;\n');
+  sh(['add', '-A'], repoA);
+  sh(['commit', '-q', '-m', 'base'], repoA);
+  writeFile(repoA, 'libs/x/c.ts', 'export const c = 2;\n');
+  sh(['add', 'libs/x/c.ts'], repoA);
+
+  // REPO_B: unrelated repo, only its index file's PATH is used (as a foreign GIT_INDEX_FILE).
+  writeFile(repoB, 'unrelated.txt', 'v1\n');
+  sh(['add', '-A'], repoB);
+  sh(['commit', '-q', '-m', 'base'], repoB);
+  const foreignIndexFile = path.join(repoB, '.git', 'index');
+
+  const cGuardScript = path.join(repoA, 'guard-c.mjs');
+  const ranLog = path.join(repoA, 'ran.log');
+  fs.writeFileSync(cGuardScript, `import * as fs from 'node:fs'; fs.appendFileSync(${JSON.stringify(ranLog)}, 'c\\n'); process.exit(0);\n`);
+  const manifestPath = path.join(repoA, 'fixture-manifest.mjs');
+  fs.writeFileSync(
+    manifestPath,
+    `export const GUARDS = [
+  { id: 'guard-c', tier: 1, script: ${JSON.stringify(cGuardScript)}, watch: ['libs/x/c.ts'] },
+];
+`,
+  );
+
+  function runWithForeignIndex(runnerPath) {
+    if (fs.existsSync(ranLog)) fs.rmSync(ranLog);
+    const res = spawnSync(
+      process.execPath,
+      [runnerPath, '--tier1', '--manifest', manifestPath, '--cwd', repoA],
+      {
+        encoding: 'utf8',
+        env: { ...SAFE_GIT_ENV, GIT_INDEX_FILE: foreignIndexFile },
+      },
+    );
+    const ran = fs.existsSync(ranLog) ? fs.readFileSync(ranLog, 'utf8').trim().split('\n').filter(Boolean) : [];
+    return { res, ran };
+  }
+
+  // GREEN: the real, fixed run-guards.mjs ignores the foreign GIT_INDEX_FILE and correctly sees
+  // REPO_A's own staged libs/x/c.ts, so guard-c runs.
+  const fixed = runWithForeignIndex(RUNNER);
+  report(
+    'f1dc4926 containment (GREEN, fixed code): foreign GIT_INDEX_FILE is ignored — guard-c still runs against REPO_A\'s real staged file',
+    fixed.ran.includes('c'),
+    `exit=${fixed.res.status} ran=${JSON.stringify(fixed.ran)} stderr=${(fixed.res.stderr || '').slice(0, 300)}`,
+  );
+
+  // RED: a copy of run-guards.mjs + tools/lib/git-index-scope.mjs with the containment check
+  // forced to always accept (`belongsToThisRepo = true` unconditionally) — i.e. exactly
+  // "disabling the containment check". The foreign index then gets trusted, so `git diff --cached`
+  // runs against REPO_B's index while resolving the repo via `-C REPO_A`: a structurally invalid
+  // combination that either errors or fails to see REPO_A's real staged file, so guard-c does NOT
+  // reliably run — proving the containment check is load-bearing.
+  const brokenDir = fs.mkdtempSync(path.join(os.tmpdir(), 'f1dc4926-broken-runner-'));
+  const brokenToolsDir = path.join(brokenDir, 'tools');
+  const brokenLibDir = path.join(brokenToolsDir, 'lib');
+  fs.mkdirSync(brokenLibDir, { recursive: true });
+  fs.copyFileSync(RUNNER, path.join(brokenToolsDir, 'run-guards.mjs'));
+  const realLibSrc = fs.readFileSync(path.join(path.dirname(RUNNER), 'lib', 'git-index-scope.mjs'), 'utf8');
+  const brokenLibSrc = realLibSrc.replace(
+    'const belongsToThisRepo = realIndexDir === realGitDir || realIndexDir.startsWith(realGitDir + path.sep);',
+    'const belongsToThisRepo = true; // RED FIXTURE — containment check disabled on purpose',
+  );
+  if (brokenLibSrc === realLibSrc) {
+    report('f1dc4926 containment RED fixture: could not patch the containment check (source shape changed)', false, '');
+  }
+  fs.writeFileSync(path.join(brokenLibDir, 'git-index-scope.mjs'), brokenLibSrc);
+
+  const broken = runWithForeignIndex(path.join(brokenToolsDir, 'run-guards.mjs'));
+  report(
+    'f1dc4926 containment (RED, check disabled): foreign GIT_INDEX_FILE is wrongly trusted — guard-c does not correctly run',
+    !broken.ran.includes('c'),
+    `exit=${broken.res.status} ran=${JSON.stringify(broken.ran)} stderr=${(broken.res.stderr || '').slice(0, 300)}`,
+  );
+
+  fs.rmSync(repoA, { recursive: true, force: true });
+  fs.rmSync(repoB, { recursive: true, force: true });
+  fs.rmSync(brokenDir, { recursive: true, force: true });
+}
+
 console.log('');
 console.log(
   failed === 0
