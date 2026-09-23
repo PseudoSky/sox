@@ -358,7 +358,7 @@ describe('memory_write auto_chunk — BL-13', () => {
     expect(parsed.chunk_uids).toBeUndefined();
   });
 
-  it('long content auto-chunks into parent + chunks with DERIVED_FROM edges', async () => {
+  it('long content auto-chunks into parent + chunks with DERIVED_FROM edges, inheriting topic/tags (backlog 29f3a4d5)', async () => {
     // Craft content long enough to be split at chunk_size=20 tokens (~80 chars per chunk)
     const longContent =
       'The first sentence covers topic A. ' +
@@ -367,11 +367,17 @@ describe('memory_write auto_chunk — BL-13', () => {
       'The fourth sentence covers topic D. ' +
       'The fifth sentence covers topic E.';
 
+    const explicitTOccurred = '2020-01-01T00:00:00.000Z';
     const result = await handleToolCall('memory_write', {
       db_path: tmpDb,
       content: longContent,
       chunk_size: 20, // small chunk size to force splitting
       project_path: '/test/project',
+      topic: 'chunk-inherit-test',
+      tags: ['inherit-tag-a', 'inherit-tag-b'],
+      importance: 8,
+      t_occurred: explicitTOccurred,
+      name: 'parent-title-must-not-leak-to-chunks',
     }) as { isError?: boolean; content?: Array<{ type: string; text: string }> };
 
     expect(result.isError).not.toBe(true);
@@ -388,7 +394,20 @@ describe('memory_write auto_chunk — BL-13', () => {
     expect(parsed.chunk_count).toBeGreaterThan(1);
     expect(parsed.chunk_uids.length).toBe(parsed.chunk_count);
 
-    // Verify DERIVED_FROM edges exist in the DB
+    // Verify DERIVED_FROM edges exist in the DB, and every chunk inherited the
+    // parent's topic/tags/importance/t_occurred (backlog 29f3a4d5: chunks
+    // previously landed with topic:null, tags:[], making them unreachable by
+    // filtered recall) — but NOT the parent's name (re-review 2026-09-22,
+    // item 3: dropped, see index.ts's chunkParams comment for why).
+    //
+    // NOTE: this assumes none of the chunks took the E_DEDUP path (memoryWrite
+    // returning a pre-existing uid instead of inserting a new row). A row
+    // reached via E_DEDUP carries whatever fields its ORIGINAL write set, not
+    // these inherited values, so if a future edit to `longContent` makes any
+    // chunk collide by content_hash with a pre-existing row from an earlier
+    // test/run, these per-chunk assertions will fail confusingly on THAT
+    // chunk alone rather than on a real inheritance regression — check
+    // content_hash / dedup before assuming the fix broke.
     const adapter = await openDb(tmpDb);
     try {
       const db = adapter.unwrap() as Database.Database;
@@ -396,6 +415,104 @@ describe('memory_write auto_chunk — BL-13', () => {
         `SELECT COUNT(*) as cnt FROM edge WHERE rel = 'DERIVED_FROM' AND t_expired IS NULL`,
       ).get() as { cnt: number };
       expect(edgeCount.cnt).toBe(parsed.chunk_count);
+
+      // Every chunk row must carry the parent's topic, tags, importance, and
+      // t_occurred — and must NOT carry the parent's name.
+      const placeholders = parsed.chunk_uids.map(() => '?').join(',');
+      const chunkRows = db.prepare(
+        `SELECT uid, topic, tags, importance, t_occurred, name, enrich_ver FROM node WHERE uid IN (${placeholders})`,
+      ).all(...parsed.chunk_uids) as Array<{
+        uid: string;
+        topic: string | null;
+        tags: string | null;
+        importance: number | null;
+        t_occurred: string | null;
+        name: string | null;
+        enrich_ver: string | null;
+      }>;
+      expect(chunkRows.length).toBe(parsed.chunk_uids.length);
+      for (const row of chunkRows) {
+        expect(row.topic).toBe('chunk-inherit-test');
+        expect(row.tags).not.toBeNull();
+        // Exact match, not arrayContaining — arrayContaining would also pass
+        // if a chunk picked up EXTRA or reordered tags from somewhere else.
+        const parsedTags = JSON.parse(row.tags!) as string[];
+        expect(parsedTags).toEqual(['inherit-tag-a', 'inherit-tag-b']);
+
+        expect(row.importance).toBe(8);
+        // The importance inheritance freezes the chunk out of batch importance
+        // recompute the same way it does the parent (enrich.ts's userOverride
+        // path) — assert the stamp that IS the mechanism making that freeze
+        // permanent, not just the surface importance value.
+        expect(row.enrich_ver).not.toBeNull();
+        const enrichVer = JSON.parse(row.enrich_ver!) as { note?: string };
+        expect(enrichVer.note).toBe('user_override');
+
+        expect(row.t_occurred).toBe(explicitTOccurred);
+
+        // name must NOT be inherited (re-review 2026-09-22, item 3).
+        expect(row.name).toBeNull();
+      }
+
+      // Guard against a derived_from_uid/edge regression while fixing this:
+      // each chunk must still have a live DERIVED_FROM edge to the parent.
+      const parentRow = db.prepare('SELECT rowid FROM node WHERE uid = ?').get(parsed.episode_uid) as { rowid: number };
+      for (const chunkUid of parsed.chunk_uids) {
+        const chunkRow = db.prepare('SELECT rowid FROM node WHERE uid = ?').get(chunkUid) as { rowid: number };
+        const edge = db.prepare(
+          `SELECT 1 FROM edge WHERE src = ? AND dst = ? AND rel = 'DERIVED_FROM' AND t_expired IS NULL`,
+        ).get(chunkRow.rowid, parentRow.rowid);
+        expect(edge).toBeTruthy();
+      }
+    } finally {
+      (adapter.unwrap() as Database.Database).close();
+    }
+  }, 30_000);
+
+  it('auto-chunks resolve topic from a `[prefix]` on content (not just a caller-supplied topic arg) on every chunk (backlog 29f3a4d5 blocker 1)', async () => {
+    // No `topic` arg supplied — topic must be resolved from the leading
+    // `[prefix]` on the PARENT's full content (enrich.ts E5) and that
+    // RESOLVED value must land on every chunk, not just chunk 0 (which could
+    // otherwise coincidentally rescue it from its own leading text — chunks
+    // 1..N never start with the prefix and have no other way to resolve it).
+    const longContentWithPrefix =
+      '[prefix-topic] The first sentence covers topic A. ' +
+      'The second sentence covers topic B. ' +
+      'The third sentence covers topic C. ' +
+      'The fourth sentence covers topic D. ' +
+      'The fifth sentence covers topic E.';
+
+    const result = await handleToolCall('memory_write', {
+      db_path: tmpDb,
+      content: longContentWithPrefix,
+      chunk_size: 20,
+      project_path: '/test/project',
+      // topic intentionally omitted — must be resolved from the prefix.
+    }) as { isError?: boolean; content?: Array<{ type: string; text: string }> };
+
+    expect(result.isError).not.toBe(true);
+    const parsed = JSON.parse(result.content![0]!.text) as {
+      episode_uid: string;
+      chunk_uids: string[];
+      chunk_count: number;
+    };
+    expect(parsed.chunk_count).toBeGreaterThan(1);
+
+    const adapter = await openDb(tmpDb);
+    try {
+      const db = adapter.unwrap() as Database.Database;
+      const parentRow = db.prepare('SELECT topic FROM node WHERE uid = ?').get(parsed.episode_uid) as { topic: string | null };
+      expect(parentRow.topic).toBe('prefix-topic');
+
+      const placeholders = parsed.chunk_uids.map(() => '?').join(',');
+      const chunkRows = db.prepare(
+        `SELECT uid, topic FROM node WHERE uid IN (${placeholders})`,
+      ).all(...parsed.chunk_uids) as Array<{ uid: string; topic: string | null }>;
+      expect(chunkRows.length).toBe(parsed.chunk_uids.length);
+      for (const row of chunkRows) {
+        // Every chunk — not just chunk 0 — must carry the RESOLVED topic.
+        expect(row.topic).toBe('prefix-topic');
+      }
     } finally {
       (adapter.unwrap() as Database.Database).close();
     }
