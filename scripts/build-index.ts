@@ -27,6 +27,21 @@ import * as path from 'node:path';
  */
 export class DirtyTreeError extends Error {}
 
+/**
+ * backlog 4d1a3bf9-2ffd-4a3d-b017-85ec0146759d: raised when a default-mode run
+ * (no `SOX_REGISTRY_PUBLISH`) would silently overwrite a committed
+ * `npm-package:` pin with a checkout-bound source. `resolveSource` only ever
+ * emits `npm-package:` under the publication signal — so ANY default-mode run
+ * against a repo carrying committed `npm-package:` rows resolves every one of
+ * them back to `file://`, and the pin-preservation block (`loadCommittedPins`
+ * / the `source.startsWith('npm-package:')` branch below) never fires because
+ * the newly resolved source no longer starts with `npm-package:` at all —
+ * preservation only guards a CHANGED npm-package locator, never a locator that
+ * stopped being npm-package entirely. A dedicated Error (not `process.exit`)
+ * for the same reason as `DirtyTreeError`: library callers can catch it.
+ */
+export class PinLossError extends Error {}
+
 interface ExtensionManifest {
   $schema: string;
   id: string;
@@ -525,6 +540,10 @@ export function buildIndex(opts: { root: string; allowDirty?: boolean }): IndexE
   const committedPins = loadCommittedPins(root);
   const dirs = findExtensionDirs(root);
   const entries: IndexEntry[] = [];
+  // 4d1a3bf9: ids whose committed npm-package: pin this run would clobber with
+  // a checkout-bound source. Collected across the whole loop so the refusal
+  // below can name every offending id in one message, not just the first.
+  const pinLosses: Array<{ id: string; from: string; to: string }> = [];
 
   for (const { extPath: extDir, bundleId: detectedBundleId } of dirs) {
     const manifestPath = path.join(extDir, 'extension.json');
@@ -556,6 +575,19 @@ export function buildIndex(opts: { root: string; allowDirty?: boolean }): IndexE
     }
 
     const source = resolveSource(extDir, manifest);
+
+    // 4d1a3bf9: outside a release, a committed npm-package: pin must never be
+    // silently rewritten to a checkout-bound source. `resolveSource` only
+    // emits `npm-package:` when `SOX_REGISTRY_PUBLISH` is set, so a
+    // default-mode run always resolves to `file://` even when the committed
+    // row is pinned to published npm bytes — record it here and refuse before
+    // ever writing, instead of writing the clobber and preserving nothing.
+    if (!process.env['SOX_REGISTRY_PUBLISH']) {
+      const pin = committedPins.get(manifest.id);
+      if (pin !== undefined && !source.startsWith('npm-package:')) {
+        pinLosses.push({ id: manifest.id, from: pin.source, to: source });
+      }
+    }
 
     // Under the publication signal, a source that is STILL file:// means the package
     // is private/unpublished (resolveSource only emits an npm-package: locator for a
@@ -636,6 +668,25 @@ export function buildIndex(opts: { root: string; allowDirty?: boolean }): IndexE
     entries.push(entry);
   }
 
+  // 4d1a3bf9: refuse the whole run — write nothing — if it would clobber any
+  // committed npm-package: pin. Checked once here (not per-id inside the
+  // loop) so a partial write can never happen: either every pin survives or
+  // the file is untouched.
+  if (pinLosses.length > 0) {
+    const shown = pinLosses
+      .map((p) => `    ${p.id}: ${p.from} -> ${p.to}`)
+      .join('\n');
+    throw new PinLossError(
+      `build-index: REFUSING to run — this default-mode run (no SOX_REGISTRY_PUBLISH) would ` +
+        `overwrite ${pinLosses.length} published npm-package: pin(s) with a checkout-bound ` +
+        `source (backlog 4d1a3bf9-2ffd-4a3d-b017-85ec0146759d):\n${shown}\n` +
+        `  Nothing was written.\n` +
+        `  Fix: run the real release flow (SOX_REGISTRY_PUBLISH=npm, see PUBLISHING.md) to move ` +
+        `these pins deliberately,\n` +
+        `  or re-pin a single entry without a full regenerate via tools/repin-registry-entry.mjs.`,
+    );
+  }
+
   // Write registry/index.json
   const registryDir = path.join(root, 'registry');
   if (!fs.existsSync(registryDir)) {
@@ -697,7 +748,7 @@ if (isMainModule) {
   try {
     buildIndex({ root, allowDirty });
   } catch (e) {
-    if (e instanceof DirtyTreeError) {
+    if (e instanceof DirtyTreeError || e instanceof PinLossError) {
       console.error(e.message);
       process.exit(1);
     }

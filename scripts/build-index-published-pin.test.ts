@@ -88,7 +88,12 @@ function extDirOf(root: string): string {
  *   - local `dist/index.js` bytes that do NOT hash to that checksum, exactly as
  *     a post-publish rebuild leaves them
  */
-function scratchRepo(version: string, distBody: string): string {
+function scratchRepo(
+  version: string,
+  distBody: string,
+  opts: { pinned?: boolean } = {},
+): string {
+  const { pinned = true } = opts;
   const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'pinfix-')));
   tempDirs.push(root);
   git(['init', '-q'], root);
@@ -135,7 +140,12 @@ function scratchRepo(version: string, distBody: string): string {
           version,
           title: 'pin fixture',
           description: 'pin fixture description',
-          source: `npm-package:${FIXTURE_PKG}@${version}`,
+          // (4d1a3bf9) `pinned: false` seeds a committed row that is NOT
+          // npm-package: — so there is nothing for the new default-mode pin
+          // guard to refuse on. Used by fixtures that are about something
+          // else entirely (the --allow-dirty escape hatch) and would
+          // otherwise trip the guard incidentally.
+          source: pinned ? `npm-package:${FIXTURE_PKG}@${version}` : `file://${extDir}`,
           checksum: PUBLISHED_SENTINEL,
           compatibility: { host: '>=1.0.0 <2.0.0' },
         },
@@ -323,7 +333,10 @@ describe('[812e6cfd] the publication signal and the provisional escape hatch are
   }, 60_000);
 
   it('still allows --allow-dirty for a NON-publish (local inspection) run', async () => {
-    const root = scratchRepo('1.3.3', 'module.exports = "PUBLISHED";\n');
+    // pinned: false — this fixture has no committed npm-package: row, so it
+    // exercises only the --allow-dirty escape hatch (BL-390), not the
+    // separate 4d1a3bf9 pin guard (covered in its own describe block below).
+    const root = scratchRepo('1.3.3', 'module.exports = "PUBLISHED";\n', { pinned: false });
     dirtyTrackedFile(root);
 
     const { code, out } = await runBuildIndex(CURRENT_SCRIPT, root, ['--allow-dirty'], { SOX_REGISTRY_PUBLISH: '' });
