@@ -46,6 +46,9 @@ try {
 
 assertPublishable(parsed, `the registry embedded at ${indexPath}`);
 
-console.log(
+// stderr, NOT stdout: this runs as `prepack`, and PUBLISHING.md's tarball proof
+// is `npm pack --dry-run --json`. Anything written to stdout by a lifecycle script
+// is interleaved into that JSON and makes it unparseable.
+console.error(
   `check-bundled-registry: OK — ${parsed.length} entries, all portable, none provisional, none +dirty.`,
 );
