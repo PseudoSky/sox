@@ -61,8 +61,16 @@ export interface RelatedResult {
    *  neighbourhood, so it is a diagnostic of how much of this node's graph has
    *  been invalidated, never a paging denominator (`memoryGetRelated` has no
    *  `total` and no `offset`). Observability only; should trend toward zero as
-   *  the near-dup pass stops auto-invalidating. */
-  invalidated_count: number;
+   *  the near-dup pass stops auto-invalidating.
+   *
+   *  OPTIONAL, matching `EntityEpisodesResult.invalidated_count`. This ships
+   *  under PUBLISHING.md's patch-for-additive-API exception, and a REQUIRED
+   *  property would not qualify: `RelatedResult` is re-exported from the
+   *  package root (index.ts:391), so any external site constructing the
+   *  literal — a mock, a test double, an adapter shim — would fail to compile
+   *  on a patch bump. Always populated by `memoryGetRelated`, including the
+   *  E_NOT_FOUND path. */
+  invalidated_count?: number;
   code?: string;
 }
 
