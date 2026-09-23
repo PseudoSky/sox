@@ -921,8 +921,8 @@ export const TOOLS: Array<Omit<ToolDefinition, 'handler'>> = [
         db_path: { type: 'string', description: 'Optional. Path to the SQLite memory store. Defaults to the bundle-configured store (host-injected SOX_CONFIG_DB_PATH, normally ~/.memory/memory.db). Must be within the ~/.memory/** fs allowlist; out-of-allowlist paths are denied by the permission guard with no side effects.' },
         op: {
           type: 'string',
-          enum: ['retag', 'set_topic', 'set_importance', 'merge_duplicates', 'recluster', 'drop_lens', 'drop-episodes', 'list_lenses', 'reheal_stale', 'drain', 'reset_pipeline', 'resume', 'unpoison', 'ack_alarm'],
-          description: 'The curation operation to perform. drop_lens removes a persisted subset lens by provenance_hash. drop-episodes hard-deletes episode node rows and cascading data. list_lenses returns all live subset lenses. reheal_stale re-embeds live episodes whose vector was stamped by a model that is no longer the active one (BL-88/BL-215) — a bounded, operator-invoked pass; it is never run automatically, and it always works when invoked (SOX_HEAL_STALE_VECTORS was an anti-feature and is gone, ADR-0013). drain fully drains the embed backlog (no tick time budget; dry_run previews the remaining count). reset_pipeline clears the enrich/embed health ledger, the alarm, and the poison table. resume re-arms escalation after an ack_alarm. unpoison re-admits a poisoned row (by uid) or all rows to the heal scan. ack_alarm acknowledges the current alarm, pausing re-escalation.',
+          enum: ['retag', 'set_topic', 'set_importance', 'merge_duplicates', 'recluster', 'drop_lens', 'drop-episodes', 'list_lenses', 'reheal_stale', 'drain', 'reset_pipeline', 'resume', 'unpoison', 'ack_alarm', 'restore_neardup'],
+          description: 'The curation operation to perform. drop_lens removes a persisted subset lens by provenance_hash. drop-episodes hard-deletes episode node rows and cascading data. list_lenses returns all live subset lenses. reheal_stale re-embeds live episodes whose vector was stamped by a model that is no longer the active one (BL-88/BL-215) — a bounded, operator-invoked pass; it is never run automatically, and it always works when invoked (SOX_HEAL_STALE_VECTORS was an anti-feature and is gone, ADR-0013). drain fully drains the embed backlog (no tick time budget; dry_run previews the remaining count). reset_pipeline clears the enrich/embed health ledger, the alarm, and the poison table. resume re-arms escalation after an ack_alarm. unpoison re-admits a poisoned row (by uid) or all rows to the heal scan. ack_alarm acknowledges the current alarm, pausing re-escalation. restore_neardup clears t_invalid on episodes an automatic near-duplicate pass invalidated, component-wise over live INFERRED SAME_AS edges, driven by a lexical triage report (report_path). UNLIKE EVERY OTHER OP ITS dry_run DEFAULTS TO TRUE — a caller must pass dry_run:false to mutate. Restore scope is a POLICY CHOICE (floor plus the whole ambiguous band; TRUE-DUPLICATE components stay collapsed), not a measured recoverable count, and invalidated episodes carrying no SAME_AS edge are out of scope and reported as a count. Never uses embedding cosine or any age/recency signal; never deletes a SAME_AS edge. reverse:true undoes a run (re-invalidate + community GC in one transaction). report_path is confined to ~/.memory/** unless SOX_RESTORE_REPORT_ROOTS grants more.',
         },
         uid: { type: 'string', description: 'Target episode UID (required for retag, set_topic, set_importance).' },
         uids: { type: 'array', items: { type: 'string' }, description: '(drop-episodes) Array of episode UIDs to hard-delete. Only live nodes (t_invalid IS NULL) are removed; non-existent or already-invalidated UIDs are silently skipped.' },
@@ -935,7 +935,17 @@ export const TOOLS: Array<Omit<ToolDefinition, 'handler'>> = [
         threshold: { type: 'number', description: '(recluster, filtered) Optional cosine similarity threshold override for the subset pass.' },
         provenance_hash: { type: 'string', description: '(drop_lens) The 16-hex provenance hash of the subset lens to drop (obtain from a prior recluster response).' },
         limit: { type: 'number', description: '(reheal_stale) Max rows to re-embed this call. Default 50, capped at 2000 — small enough that a single MCP call does not risk the client-side tool-call timeout. Run again while the response\'s remaining > 0.' },
-        dry_run: { type: 'boolean', default: false, description: 'If true, return proposed changes without committing them.' },
+        report_path: { type: 'string', description: '(restore_neardup) Absolute path to the lexical triage report JSON. Required to APPLY — its sha256 is recorded in meta.restoredFrom on every restored row; optional for dry_run.' },
+        component_ids: { type: 'array', items: { type: 'number' }, description: '(restore_neardup) Restrict the run to these triage component ids. Absent: every component in the report.' },
+        batch_size: { type: 'number', description: '(restore_neardup) Components per apply batch (default 50). Each batch is verified against its own uid set before the next one starts.' },
+        bl_id: { type: 'string', description: '(restore_neardup) Remediation BL id, recorded in meta.restoredFrom.' },
+        allow_rerestore: { type: 'boolean', description: '(restore_neardup) Override the halt on a node that carries meta.restoredFrom and is invalidated again. Required to re-apply after a deliberate reversal.' },
+        reverse: { type: 'boolean', description: '(restore_neardup) Undo a previous restore: re-invalidate every row carrying meta.restoredFrom to its recorded prior_t_invalid AND run gcOrphanedCommunityState in the same transaction. Needs report_sha256 / report_path, or all_runs:true. dry_run defaults to TRUE here too.' },
+        report_sha256: { type: 'string', description: '(restore_neardup, reverse) The triage report sha256 identifying WHICH run to undo.' },
+        all_runs: { type: 'boolean', description: '(restore_neardup, reverse) Undo every restore_neardup run this store has ever seen, not one report\'s.' },
+        restore_superseded: { type: 'boolean', description: '(restore_neardup) Also restore nodes that carry a live SUPERSEDES edge. Those are recorded human intent and are withheld by default; the override is recorded per row as meta.restoredFrom.intent_superseded_override.' },
+        allow_integrity_failure: { type: 'boolean', description: '(restore_neardup) Proceed despite PRAGMA integrity_check not returning ok. The decision and the exact detail string are recorded in meta.restoredFrom.integrity_at_restore.' },
+        dry_run: { type: 'boolean', description: 'If true, return proposed changes without committing them. NO SCHEMA DEFAULT ON PURPOSE: a client that materialises JSON-Schema defaults would send dry_run:false and MUTATE, and restore_neardup is destructive by omission — its default is TRUE and is decided in curate.ts, not here. Every other op treats an absent value as false, exactly as before.' },
       },
       required: ['op'],
     },
@@ -2499,6 +2509,13 @@ async function dispatchTool(
       // SAME re-entrancy reason — `drain`→drainBacklog→healMissingVectors enqueues per-row
       // apply tasks internally (nesting hangs the queue); the other four touch only
       // sox_store_meta/enrich_poison single statements and stay out for symmetry.
+      // `restore_neardup` is deliberately NOT in this set. It never calls
+      // wq.enqueue internally (it writes through the passed adapter's own
+      // transaction, one per batch), so there is no re-entrancy hazard, and
+      // routing it through the wrapper is what guarantees it cannot interleave
+      // with the enrich tick while it is clearing t_invalid. The cost is that a
+      // large apply holds the single serial slot for its duration — bound it
+      // with `component_ids` / `batch_size` and run it in slices.
       const outsideOps = new Set(['reheal_stale', 'drain', 'reset_pipeline', 'resume', 'unpoison', 'ack_alarm']);
       if (typeof args['op'] === 'string' && outsideOps.has(args['op'])) {
         const result = await memoryCurate(adapter, args, wq);

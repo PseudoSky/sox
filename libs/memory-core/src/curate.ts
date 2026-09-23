@@ -29,6 +29,11 @@ import {
   readEnrichAlarm,
 } from './enrich-alarm.js';
 import { unpoisonRow, unpoisonAll, isRowPoisoned, listPoisonedRows } from './enrich-poison.js';
+import { curateRestoreNeardup } from './restore-neardup.js';
+import type {
+  CurateRestoreNeardupResult,
+  CurateRestoreNeardupReverseResult,
+} from './restore-neardup.js';
 
 const ulid = monotonicFactory();
 
@@ -215,6 +220,8 @@ export type CurateResult =
   | CurateResumeResult
   | CurateUnpoisonResult
   | CurateAckAlarmResult
+  | CurateRestoreNeardupResult
+  | CurateRestoreNeardupReverseResult
   | { code: string; message?: string; op?: string };
 
 // ── Main dispatcher ───────────────────────────────────────────────────────────
@@ -270,6 +277,15 @@ export async function memoryCurate(
 
     case 'ack_alarm':
       return await curateAckAlarm(adapter);
+
+    // NOTE: `restore_neardup` deliberately does NOT receive the dispatcher's
+    // `dryRun`. Every other op here defaults dry_run to FALSE
+    // (`args['dry_run'] === true`); this one defaults it to TRUE and re-derives
+    // it from `args` itself (`args['dry_run'] !== false`), so a caller must opt
+    // IN to mutation. Changing the dispatcher's default instead would silently
+    // flip the contract of retag / set_topic / merge_duplicates / drop_lens.
+    case 'restore_neardup':
+      return await curateRestoreNeardup(adapter, args);
 
     default:
       return { code: 'E_UNKNOWN_OP', op };
