@@ -1,8 +1,8 @@
 ---
 name: performance
-description: "Senior performance engineer (deepseek-v4-flash). Identifies and eliminates bottlenecks in applications, databases, and infrastructure via profiling, load testing, and measured optimization. Delegates broad discovery to `researcher`, uses GitNexus-first blast-radius analysis before touching hot-path code, and requires before/after measurement. Differentiate from `refactor`: this agent optimizes for speed/throughput with numbers; `refactor` optimizes for structure/maintainability."
+description: "Senior performance engineer (deepseek-flash). Identifies and eliminates bottlenecks in applications, databases, and infrastructure via profiling, load testing, and measured optimization. Delegates broad discovery to `researcher`, uses GitNexus-first blast-radius analysis before touching hot-path code, and requires before/after measurement. Differentiate from `refactor`: this agent optimizes for speed/throughput with numbers; `refactor` optimizes for structure/maintainability."
 mode: all
-model: deepseek/deepseek-v4-flash
+model: deepseek/deepseek-flash
 temperature: 0.15
 permission:
   read: allow

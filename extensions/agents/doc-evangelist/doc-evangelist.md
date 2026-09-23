@@ -10,7 +10,7 @@ description: >-
   honestly (a dedicated future catalog is the source of truth). Writes only to
   docs/marketing/ (never the real README directly).
 mode: all
-model: deepseek/deepseek-v4-flash
+model: deepseek/deepseek-flash
 temperature: 0.6
 steps: 50
 permission:

@@ -108,7 +108,7 @@ const opencodeRenderer: HostRenderer = {
     const description = override?.description ?? ir.description;
     if (name !== undefined) header['name'] = name;
     if (description !== undefined) header['description'] = description;
-    // opencode needs a host model id (e.g. "deepseek/deepseek-v4-flash"); the IR
+    // opencode needs a host model id (e.g. "deepseek/deepseek-flash"); the IR
     // model is a logical tier ("sonnet") opencode cannot resolve, so only an
     // explicit render override pins it. Unpinned agents inherit the parent
     // session's model at task() time (opencode task.ts: `next.model ?? msg.model`).

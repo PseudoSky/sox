@@ -1,7 +1,7 @@
 {
   "$schema": "https://your-registry/schemas/extension/v2.json",
   "id": "dispatcher",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "type": "agent",
   "title": "dispatcher",
   "description": "Use this when you need the live orchestrator that lists and drives token-optimized dispatch of already-authored plan-state-machine plans (dag.json/state.json). Two modes — 'list plans' enumerates discoverable plans with their state; 'execute plan <path|slug>' runs states wave-by-wave, routing each to the best-fit available executor at its declared model/effort tier, assembling self-contained inline dispatch prompts (compiled work-order + pre-loaded reserved file contents + token budget hint + wave context pack when wave has ≥2 states with shared context), capturing real token telemetry, verifying from state.json (not subagent reports), and looping advance/retry/escalate/halt via orchestrate-plan.js. Halts on every non-clean gate and proposes a fix. Distinct from plan-builder (which authors plans). Governed by the non-negotiable Operating rules — never triage, never code, never believe a report without evidence, never dispatch un-triaged or un-architected implementation, never merge unreviewed code, backlog status on every transition, decisions routed to debug/architect/product, background parallel dispatch, no orphaned work, live-status and upstream-consumer verification after deployments.",

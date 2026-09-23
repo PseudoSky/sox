@@ -7,7 +7,7 @@ description: >-
   wanted to open source (the reader-search signal). Read-only; never edits.
   Dispatched by doc-reviewer.
 mode: subagent
-model: deepseek/deepseek-v4-flash
+model: deepseek/deepseek-flash
 temperature: 0.2
 steps: 20
 permission:

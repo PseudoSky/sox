@@ -89,13 +89,13 @@ describe('opencode renderer', () => {
   });
 
   it('pins model from the opencode render override (host model id, never the IR tier)', () => {
-    const r = agentRenderers.opencode.render(researcherIr, prose, { model: 'deepseek/deepseek-v4-flash' });
+    const r = agentRenderers.opencode.render(researcherIr, prose, { model: 'deepseek/deepseek-flash' });
     const content = (r as { content: string }).content;
-    expect(content).toContain('model: deepseek/deepseek-v4-flash');
+    expect(content).toContain('model: deepseek/deepseek-flash');
     expect(content).not.toContain('model: sonnet');
     // model sits inside the frontmatter block, before the prose
     const fm = content.slice(0, content.indexOf('\n---', 4));
-    expect(fm).toContain('model: deepseek/deepseek-v4-flash');
+    expect(fm).toContain('model: deepseek/deepseek-flash');
   });
 
   it('generates opencode resolved tool-names block', () => {

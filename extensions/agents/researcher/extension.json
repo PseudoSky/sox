@@ -1,7 +1,7 @@
 {
   "$schema": "https://your-registry/schemas/extension/v2.json",
   "id": "researcher",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "type": "agent",
   "title": "researcher",
   "description": "Use this when you need to discover, grade, and catalog third-party tools/patterns/use cases before building — sweeps registries and the web via the search MCP, grades sources, writes per-finding memory episodes (agent:approved/agent:blocked), and returns a build-vs-integrate verdict.",
@@ -99,7 +99,7 @@
       }
     },
     "opencode": {
-      "model": "deepseek/deepseek-v4-flash",
+      "model": "deepseek/deepseek-flash",
       "mode": "all",
       "temperature": 0.4
     }

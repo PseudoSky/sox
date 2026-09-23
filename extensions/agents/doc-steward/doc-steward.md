@@ -10,7 +10,7 @@ description: >-
   add/rewrite/move/delete is logged recoverably. Runs autonomously; when it
   finishes, the documentation is trustworthy.
 mode: all
-model: deepseek/deepseek-v4-flash
+model: deepseek/deepseek-flash
 temperature: 0.3
 steps: 90
 permission:

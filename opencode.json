@@ -48,7 +48,7 @@
     "flash": {
       "description": "Fast implementation agent (flash model) \u2014 single-file changes, manifest edits, boilerplate, well-specified tasks with exact code provided",
       "mode": "all",
-      "model": "deepseek/deepseek-v4-flash",
+      "model": "deepseek/deepseek-flash",
       "prompt": "{file:.opencode/prompts/flash-system.md}",
       "temperature": 0.1,
       "steps": 30,

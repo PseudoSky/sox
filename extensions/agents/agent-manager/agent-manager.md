@@ -1,6 +1,6 @@
 ---
 description: Crafts, tests, and manages agents, skills, and plugins across opencode and Claude Code. Use for "create an agent", "build a skill or plugin", "A/B test this agent", "optimize this prompt", "make a Claude plugin", "lazy-load my agents", or any cross-runtime agent-management work.
-model: deepseek/deepseek-v4-flash
+model: deepseek/deepseek-flash
 mode: primary
 temperature: 0.2
 permission:
