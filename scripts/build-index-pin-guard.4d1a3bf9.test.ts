@@ -258,3 +258,82 @@ describe('[4d1a3bf9] build-index refuses to overwrite a published npm-package: p
     expect(row!.source).toBe(`file://${extDir}`);
   }, 60_000);
 });
+
+describe('[4d1a3bf9 follow-up] pin loss BY OMISSION — the pin never makes it into `entries` at all', () => {
+  it('extension flipped to private:true: refuses, registry/index.json byte-identical', async () => {
+    const root = scratchRepo('2.0.0', 'module.exports = "REBUILT LOCALLY AFTER PUBLISH";\n');
+    const registryPath = path.join(root, 'registry', 'index.json');
+    const before = fs.readFileSync(registryPath, 'utf8');
+
+    // The commit AFTER the pin was seeded flips extension.json's `private` —
+    // this is exactly what build-index.ts's `if (manifest.private === true)
+    // continue;` reads (NOT package.json's `private`, which only gates
+    // `resolveSource`'s npm-package: emission and would exercise the REWRITE
+    // path, not the omission one). The extension never reaches the rewrite
+    // check at all: it drops out of `entries` entirely while its
+    // npm-package: pin stays committed.
+    const extDir = extDirOf(root);
+    const manifestPath = path.join(extDir, 'extension.json');
+    const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8')) as Record<string, unknown>;
+    manifest['private'] = true;
+    fs.writeFileSync(manifestPath, JSON.stringify(manifest, null, 2));
+    git(['add', '.'], root);
+    git(['commit', '-q', '-m', 'chore: flip private'], root);
+
+    const { code, out } = await runBuildIndex(root, { SOX_REGISTRY_PUBLISH: '' });
+
+    expect(code, out).not.toBe(0);
+    expect(out).toMatch(/4d1a3bf9/);
+    expect(out).toMatch(new RegExp(FIXTURE_ID));
+    expect(out).toMatch(/dropped/);
+    expect(
+      fs.readFileSync(registryPath, 'utf8'),
+      'a refused run must write nothing — the committed file must be byte-identical',
+    ).toBe(before);
+  }, 60_000);
+
+  it('extension directory removed: refuses, registry/index.json byte-identical', async () => {
+    const root = scratchRepo('2.0.0', 'module.exports = "REBUILT LOCALLY AFTER PUBLISH";\n');
+    const registryPath = path.join(root, 'registry', 'index.json');
+    const before = fs.readFileSync(registryPath, 'utf8');
+
+    // The commit AFTER the pin was seeded deletes the whole extension
+    // directory — it never enters `findExtensionDirs`'s scan, let alone the
+    // main loop, so no `continue` is even involved. Same observable symptom:
+    // the id is in `committedPins` but absent from `entries`.
+    fs.rmSync(extDirOf(root), { recursive: true, force: true });
+    git(['add', '-A'], root);
+    git(['commit', '-q', '-m', 'chore: remove extension'], root);
+
+    const { code, out } = await runBuildIndex(root, { SOX_REGISTRY_PUBLISH: '' });
+
+    expect(code, out).not.toBe(0);
+    expect(out).toMatch(/4d1a3bf9/);
+    expect(out).toMatch(new RegExp(FIXTURE_ID));
+    expect(out).toMatch(/dropped/);
+    expect(
+      fs.readFileSync(registryPath, 'utf8'),
+      'a refused run must write nothing — the committed file must be byte-identical',
+    ).toBe(before);
+  }, 60_000);
+
+  it('SOX_REGISTRY_PUBLISH mode: a private-flip omission is NOT refused (release may intentionally stop publishing)', async () => {
+    const root = scratchRepo('2.0.0', 'module.exports = "REBUILT LOCALLY AFTER PUBLISH";\n');
+    const extDir = extDirOf(root);
+    const manifestPath = path.join(extDir, 'extension.json');
+    const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8')) as Record<string, unknown>;
+    manifest['private'] = true;
+    fs.writeFileSync(manifestPath, JSON.stringify(manifest, null, 2));
+    git(['add', '.'], root);
+    git(['commit', '-q', '-m', 'chore: flip private'], root);
+
+    const { code, out } = await runBuildIndex(root, { SOX_REGISTRY_PUBLISH: 'npm' });
+
+    expect(code, out).toBe(0);
+    expect(out).not.toMatch(/4d1a3bf9/);
+    const entries = JSON.parse(fs.readFileSync(path.join(root, 'registry', 'index.json'), 'utf8')) as Array<{
+      id: string;
+    }>;
+    expect(entries.find((e) => e.id === FIXTURE_ID)).toBeUndefined();
+  }, 60_000);
+});

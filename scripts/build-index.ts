@@ -541,9 +541,12 @@ export function buildIndex(opts: { root: string; allowDirty?: boolean }): IndexE
   const dirs = findExtensionDirs(root);
   const entries: IndexEntry[] = [];
   // 4d1a3bf9: ids whose committed npm-package: pin this run would clobber with
-  // a checkout-bound source. Collected across the whole loop so the refusal
-  // below can name every offending id in one message, not just the first.
-  const pinLosses: Array<{ id: string; from: string; to: string }> = [];
+  // a checkout-bound source, OR drop entirely. Collected across the whole loop
+  // (plus the end-of-loop omission scan below) so the refusal can name every
+  // offending id in one message, not just the first. `to` is the replacement
+  // source for a REWRITE; omitted (`undefined`) means the id never made it
+  // into `entries` at all — a DROP, not a rewrite.
+  const pinLosses: Array<{ id: string; from: string; to?: string }> = [];
 
   for (const { extPath: extDir, bundleId: detectedBundleId } of dirs) {
     const manifestPath = path.join(extDir, 'extension.json');
@@ -668,18 +671,42 @@ export function buildIndex(opts: { root: string; allowDirty?: boolean }): IndexE
     entries.push(entry);
   }
 
-  // 4d1a3bf9: refuse the whole run — write nothing — if it would clobber any
-  // committed npm-package: pin. Checked once here (not per-id inside the
-  // loop) so a partial write can never happen: either every pin survives or
-  // the file is untouched.
+  // 4d1a3bf9 (follow-up): pin loss BY OMISSION. A committed npm-package: pin
+  // whose id never made it into `entries` at all is lost exactly as surely as
+  // one that got rewritten — it just took a different path: the `private:
+  // true` skip above `continue`s before the rewrite check ever runs, and an
+  // extension whose directory was deleted never enters the loop in the first
+  // place. Both look identical from here: the id is in `committedPins` but
+  // absent from `entries`. A single end-of-loop scan catches both cases
+  // uniformly instead of needing a bespoke check at every early `continue`.
+  // Deliberately scoped to default mode only — under SOX_REGISTRY_PUBLISH a
+  // release MAY intentionally stop publishing a package (deprecation), and
+  // that is a real, sanctioned way for a pin to stop applying; this guard
+  // only protects the accidental, non-release path.
+  if (!process.env['SOX_REGISTRY_PUBLISH']) {
+    for (const [id, pin] of committedPins) {
+      if (!entries.some((e) => e.id === id)) {
+        pinLosses.push({ id, from: pin.source });
+      }
+    }
+  }
+
+  // 4d1a3bf9: refuse the whole run — write nothing — if it would clobber (or
+  // drop) any committed npm-package: pin. Checked once here (not per-id
+  // inside the loop) so a partial write can never happen: either every pin
+  // survives or the file is untouched.
   if (pinLosses.length > 0) {
     const shown = pinLosses
-      .map((p) => `    ${p.id}: ${p.from} -> ${p.to}`)
+      .map((p) =>
+        p.to !== undefined
+          ? `    ${p.id}: ${p.from} -> would be rewritten to ${p.to}`
+          : `    ${p.id}: ${p.from} -> would be dropped (missing from this run's output)`,
+      )
       .join('\n');
     throw new PinLossError(
       `build-index: REFUSING to run — this default-mode run (no SOX_REGISTRY_PUBLISH) would ` +
-        `overwrite ${pinLosses.length} published npm-package: pin(s) with a checkout-bound ` +
-        `source (backlog 4d1a3bf9-2ffd-4a3d-b017-85ec0146759d):\n${shown}\n` +
+        `lose ${pinLosses.length} published npm-package: pin(s) ` +
+        `(backlog 4d1a3bf9-2ffd-4a3d-b017-85ec0146759d):\n${shown}\n` +
         `  Nothing was written.\n` +
         `  Fix: run the real release flow (SOX_REGISTRY_PUBLISH=npm, see PUBLISHING.md) to move ` +
         `these pins deliberately,\n` +
