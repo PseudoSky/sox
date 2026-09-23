@@ -121,8 +121,8 @@ extension instead.)
    (born-conformant, `install.source` pointing at the origin, hosts `[claude, opencode]`),
    `package.json`, `README.md`, `CHANGELOG.md`.
 3. **Skips** an existing `extensions/agents/<id>/` unless `--force`.
-4. With `--registry`, rebuilds `registry/index.json` (via `scripts/build-index.ts --allow-dirty`;
-   prefer a committed tree per BL-390 — commit the extension files first, then rebuild).
+4. With `--registry`, registers the new extension — see [AGENTS.md § registry is release-only](../../../AGENTS.md#registry-is-release-only)
+   (BL-390: prefer a committed tree — commit the extension files first, then rebuild).
 
 **BL-566 note:** migrated agents install as a single top-level `<id>.md` (the install-engine
 fix), so `soxe install <id> --host opencode --scope user` lands discoverably — never a

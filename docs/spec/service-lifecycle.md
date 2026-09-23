@@ -1370,8 +1370,8 @@ In the style of the CLAUDE.md constraint catalogs: each concrete failure, its de
 7. **Respect the singleton key, not the scope.** Cross-scope installs sharing a store collapse to one
    instance (§4.4); do not key singleton logic on scope or socket alone.
 8. **Build via nx targets; follow the CLAUDE.md AGENT SEQUENCE** for any artifact change (lint →
-   build → `registry:sync-index` → commit → `upgrade --all`), and on upgrade re-`enable` owned OS
-   units so they track the new artifact (§9.3).
+   build → commit → `upgrade --all`; registry: see AGENTS.md § registry is release-only), and on
+   upgrade re-`enable` owned OS units so they track the new artifact (§9.3).
 9. **Reconcile, don't trust.** Any command that displays or acts on service state runs the §10
    reconcile pass first (it is cheap: GC + descriptor compute).
 10. **Mark conjecture.** Behavioral claims in code comments and PRs must cite the enforcing

@@ -148,14 +148,9 @@ files under `src/` — the build outputs to `dist/` only.
 ./node_modules/.bin/nx run <project>:build --skip-nx-cache
 ```
 
-**After any extension source change — rebuild the registry:**
-
-```bash
-npx tsx scripts/build-index.ts
-```
-
-This regenerates `registry/index.json` with updated checksums. Required after every extension
-source change, otherwise install resolves stale checksums.
+**Registering a new extension in the registry:** see
+[AGENTS.md § registry is release-only](../../../AGENTS.md#registry-is-release-only) and §registry
+below.
 
 **Build errors:**
 
@@ -239,8 +234,9 @@ node bin/soxe install <id> -s project
 node bin/soxe install <id> -s user
 ```
 
-**After install — registry must be current.** If `registry/index.json` does not include the
-extension, run `npx tsx scripts/build-index.ts` first.
+**After install — registry.** See [AGENTS.md § registry is release-only](../../../AGENTS.md#registry-is-release-only)
+and §registry below — an unregistered extension still installs fine from its local dir (no
+checksum gate); register it only per that rule.
 
 ---
 
@@ -276,23 +272,18 @@ reality, not tests.
 
 ---
 
-## §registry — Rebuilding the registry index
+## §registry — Registering an extension in the registry index
 
-Run after any extension source change (add, modify, delete):
+See [AGENTS.md § registry is release-only](../../../AGENTS.md#registry-is-release-only) for what
+may write `registry/index.json` and when — a local `dist` rebuild never touches it.
 
-```bash
-npx tsx scripts/build-index.ts
-```
-
-(`npx nx run registry:sync-index` runs this same script but triggers a full build sweep and does
-NOT forward extra flags — use the direct script for declarative-only changes.)
-
-**Dirty-tree reality (BL-390):** the script REFUSES to run against a dirty working tree. Commit
-your own extension changes first; use the documented escape hatch
-`npx tsx scripts/build-index.ts --allow-dirty` ONLY when the remaining dirt is provably
-checksum-irrelevant (`docs/`, `.claude/`, `.opencode/`, `.worktrees/`, `.nx/`, root-level
-`*.md`) or the repo is already operating in the provisional convention — it stamps every entry
-`provisional: true` with `builtFromCommit` suffixed `+dirty`.
+To register a brand-new extension (`scripts/build-index.ts`, or its `npx nx run registry:sync-index`
+wrapper), the same dirty-tree rule applies (BL-390): the script REFUSES to run against a dirty
+working tree. Commit your own extension changes first; use the documented escape hatch
+`--allow-dirty` ONLY when the remaining dirt is provably checksum-irrelevant (`docs/`, `.claude/`,
+`.opencode/`, `.worktrees/`, `.nx/`, root-level `*.md`) or the repo is already operating in the
+provisional convention — it stamps every entry `provisional: true` with `builtFromCommit` suffixed
+`+dirty`.
 
 This rewrites `registry/index.json`. The script:
 
