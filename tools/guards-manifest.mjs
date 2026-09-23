@@ -97,13 +97,13 @@ export const GUARDS = [
     id: 'fc2735f0',
     tier: 1,
     script: 'test-fc2735f0-precommit-lint-scope.mjs',
-    watch: ['.husky/pre-commit', 'tools/precommit-lint.mjs'],
+    watch: ['.husky/pre-commit', 'tools/precommit-lint.mjs', 'tools/lib/git-index-scope.mjs'],
   },
   {
     id: 'f1dc4926-fbdfe55e',
     tier: 1,
     script: 'test-run-guards-hook-index-fail-closed.mjs',
-    watch: ['tools/run-guards.mjs'],
+    watch: ['tools/run-guards.mjs', 'tools/lib/git-index-scope.mjs'],
   },
 
   // ---------------------------------------------------------------- Tier 2 (5) ------------

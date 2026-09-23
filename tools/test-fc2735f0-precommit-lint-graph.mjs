@@ -80,6 +80,81 @@ function nxShowProjectsAffected(files) {
   report('precommit-lint --print-argv output is well-formed (nx argv or "no staged files")', wellFormed, out.slice(0, 300));
 }
 
+// ---------------------------------------------------------------------------------------------
+// Chunking path (spec §2 step 4, > MAX_ARGV_BYTES): the unioned project set across chunks must
+// equal the single-call --files= project set for the SAME staged set. Uses
+// PRECOMMIT_LINT_STAGED_FILES_OVERRIDE + PRECOMMIT_LINT_MAX_ARGV_BYTES (testing-only env vars,
+// see precommit-lint.mjs's header) to exercise the real chunking/union logic against this repo's
+// real nx graph without needing an actual multi-KB staged diff.
+// ---------------------------------------------------------------------------------------------
+function gitLsFiles(pattern) {
+  return execFileSync('git', ['ls-files', pattern], { cwd: REPO_ROOT, encoding: 'utf8' })
+    .split('\n')
+    .filter(Boolean);
+}
+
+function runPrecommitLint(extraArgs, env) {
+  return execFileSync(process.execPath, [PRECOMMIT_LINT, ...extraArgs], {
+    cwd: REPO_ROOT,
+    encoding: 'utf8',
+    env: { ...process.env, ...env },
+  });
+}
+
+{
+  // A real, diverse staged set spanning two different project owners so the union is meaningful,
+  // not just a single-project no-op.
+  const stagedSet = [
+    ...gitLsFiles('tools/*.mjs').slice(0, 12),
+    ...gitLsFiles('libs/host-runtime/src/*.ts').slice(0, 5),
+  ];
+  const overrideEnv = { PRECOMMIT_LINT_STAGED_FILES_OVERRIDE: JSON.stringify(stagedSet) };
+
+  // Single-call baseline: threshold high enough that nothing chunks.
+  const singleCallOut = runPrecommitLint(['--print-projects'], {
+    ...overrideEnv,
+    PRECOMMIT_LINT_MAX_ARGV_BYTES: '1000000',
+  });
+  const singleCallProjects = JSON.parse(singleCallOut.trim().split('\n').pop());
+
+  report(
+    'chunking fixture: single-call baseline resolves at least one real project',
+    Array.isArray(singleCallProjects) && singleCallProjects.length > 0,
+    JSON.stringify(singleCallProjects),
+  );
+
+  // Force >=2 chunks: threshold small enough that the joined staged set (well over 200 bytes for
+  // 17 real repo-relative paths) cannot fit in one chunk.
+  const chunkedOut = runPrecommitLint(['--print-argv'], {
+    ...overrideEnv,
+    PRECOMMIT_LINT_MAX_ARGV_BYTES: '80',
+  });
+  const chunkArgvLines = chunkedOut
+    .trim()
+    .split('\n')
+    .filter((l) => l.startsWith('['))
+    .map((l) => JSON.parse(l));
+  report(
+    'chunking fixture: >=2 nx show projects chunks are actually produced',
+    chunkArgvLines.length >= 2,
+    `${chunkArgvLines.length} chunk(s)`,
+  );
+
+  const chunkedProjectsOut = runPrecommitLint(['--print-projects'], {
+    ...overrideEnv,
+    PRECOMMIT_LINT_MAX_ARGV_BYTES: '80',
+  });
+  const chunkedProjects = JSON.parse(chunkedProjectsOut.trim().split('\n').pop());
+
+  const sortedSingle = [...singleCallProjects].sort();
+  const sortedChunked = [...chunkedProjects].sort();
+  report(
+    'fc2735f0 chunking: unioned project set across chunks equals the single-call --files= result',
+    JSON.stringify(sortedSingle) === JSON.stringify(sortedChunked),
+    `single=${JSON.stringify(sortedSingle)} chunked=${JSON.stringify(sortedChunked)}`,
+  );
+}
+
 console.log('');
 console.log(failed === 0 ? 'ALL fc2735f0 GRAPH ASSERTIONS PASS' : `${failed} fc2735f0 GRAPH ASSERTION(S) FAILED`);
 process.exit(failed === 0 ? 0 : 1);
