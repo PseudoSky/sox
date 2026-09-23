@@ -19,8 +19,11 @@
  * -----------------------------------------------------------------------------
  * `git status --porcelain --untracked-files=no` — tracked changes only, staged
  * or unstaged. That is deliberate coupling, not coincidence: this gate must
- * refuse precisely when the stamp would write `dirty: true`, or a release could
- * pass here and still ship an unattributable stamp. Untracked files are
+ * refuse AT LEAST as strictly as the stamp judges, or a release could pass here
+ * and still ship an unattributable stamp. It runs before anything generates, so
+ * it deliberately does NOT carry stamp-build's one carve-out
+ * (`registry/index.json`, which the release path itself rewrites at step 3):
+ * at step 1 that file should already be committed, and refusing on it is right. Untracked files are
  * excluded for the same reason stamp-build excludes them (BL-68: a fresh
  * checkout always carries some untracked editor/tooling files).
  *

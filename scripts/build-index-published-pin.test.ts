@@ -95,6 +95,12 @@ function scratchRepo(version: string, distBody: string): string {
   git(['config', 'user.email', 'test@test.com'], root);
   git(['config', 'user.name', 'test'], root);
 
+  // Mirror the real repo: `dist/` is gitignored (.gitignore:4), so rebuilding an
+  // artifact does NOT dirty the tree. A fixture that tracked dist/ would make
+  // every rebuild trip BL-390's dirty gate — a fixture-only failure that exists
+  // nowhere in production.
+  fs.writeFileSync(path.join(root, '.gitignore'), 'dist/\n');
+
   const extDir = extDirOf(root);
   fs.mkdirSync(path.join(extDir, 'dist'), { recursive: true });
   fs.writeFileSync(
@@ -142,6 +148,14 @@ function scratchRepo(version: string, distBody: string): string {
   git(['add', '.'], root);
   git(['commit', '-q', '-m', 'chore: seed published state'], root);
   return root;
+}
+
+/** Leave an uncommitted edit on a TRACKED, checksum-relevant file. */
+function dirtyTrackedFile(root: string): void {
+  const p = path.join(extDirOf(root), 'extension.json');
+  const m = JSON.parse(fs.readFileSync(p, 'utf8')) as Record<string, unknown>;
+  m['description'] = 'pin fixture description (uncommitted WIP edit)';
+  fs.writeFileSync(p, JSON.stringify(m, null, 2));
 }
 
 /** Materialize the pre-fix generator next to the current one so its relative imports resolve. */
@@ -235,6 +249,58 @@ describe('[3df6f848] build-index must not clobber a published-bytes checksum pin
     expect(row.checksum, 'a bumped locator must adopt the bytes being published').toBe(newHash);
     expect(out).toMatch(/locator changed/);
   }, 60_000);
+
+  it('TWO PASSES (the real release shape): pass 2 re-hashes the artifact the build between them produced', async () => {
+    // `release:prepared` generates the index, builds the CLI (whose published
+    // dist/index.js the `sox` row checksums), then generates AGAIN so that row
+    // covers the FINAL artifact instead of the pre-rebuild one. That second
+    // pass only works if pins come from the COMMITTED blob: seeded from the
+    // working copy, pass 2 would find pass 1's own freshly written row, treat
+    // it as a pin, and preserve the stale pre-rebuild checksum — publishing a
+    // pin to bytes that were overwritten before publish. This arm is the one
+    // that fails if that regresses.
+    const root = scratchRepo('1.3.3', 'module.exports = "OLD";\n');
+    const extDir = extDirOf(root);
+
+    // changeset version: bump + commit, so the locator differs from HEAD's pin.
+    fs.writeFileSync(
+      path.join(extDir, 'package.json'),
+      JSON.stringify({ name: FIXTURE_PKG, version: '1.3.4', private: false }, null, 2),
+    );
+    git(['add', '.'], root);
+    git(['commit', '-q', '-m', 'chore: version packages'], root);
+
+    const pass1 = await runBuildIndex(CURRENT_SCRIPT, root);
+    expect(pass1.code, pass1.out).toBe(0);
+    const staleChecksum = readRow(root).checksum;
+
+    // `nx build sox` — the artifact the release actually publishes is produced HERE.
+    fs.writeFileSync(path.join(extDir, 'dist', 'index.js'), 'module.exports = "FINAL ARTIFACT";\n');
+    const finalHash = sha256File(path.join(extDir, 'dist', 'index.js'));
+    expect(finalHash).not.toBe(staleChecksum);
+
+    const pass2 = await runBuildIndex(CURRENT_SCRIPT, root);
+    expect(pass2.code, pass2.out).toBe(0);
+
+    const row = readRow(root);
+    expect(row.source).toBe(`npm-package:${FIXTURE_PKG}@1.3.4`);
+    expect(row.checksum, 'pass 2 must adopt the FINAL artifact, not pass 1 own output').toBe(
+      finalHash,
+    );
+    expect(row.checksum).not.toBe(staleChecksum);
+  }, 60_000);
+
+  it('a pin survives a working-tree index that was wiped by a default-mode run', async () => {
+    // Pins live in the COMMITTED blob, so clobbering the working copy (what
+    // `pnpm build-index` / `registry:sync-index` does in default mode) cannot
+    // destroy the pin source. Only a commit can move a pin.
+    const root = scratchRepo('1.3.3', 'module.exports = "REBUILT LOCALLY AFTER PUBLISH";\n');
+    fs.writeFileSync(path.join(root, 'registry', 'index.json'), '[]\n');
+
+    const { code, out } = await runBuildIndex(CURRENT_SCRIPT, root);
+    expect(code, out).toBe(0);
+    expect(readRow(root).checksum).toBe(PUBLISHED_SENTINEL);
+  }, 60_000);
 });
 
 describe('[812e6cfd] the publication signal and the provisional escape hatch are mutually exclusive', () => {
@@ -242,9 +308,10 @@ describe('[812e6cfd] the publication signal and the provisional escape hatch are
     const root = scratchRepo('1.3.3', 'module.exports = "PUBLISHED";\n');
     const before = fs.readFileSync(path.join(root, 'registry', 'index.json'), 'utf8');
 
-    // Uncommitted edit to a checksum-relevant path — the "+dirty" state that
-    // @adhd/sox-cli@1.2.1 was published from.
-    fs.writeFileSync(path.join(extDirOf(root), 'dist', 'index.js'), 'module.exports = "WIP";\n');
+    // Uncommitted edit to a TRACKED, checksum-relevant path — the "+dirty" state
+    // that @adhd/sox-cli@1.2.1 was published from. (dist/ is gitignored here, as
+    // in the real repo, so the WIP edit has to land on a tracked file.)
+    dirtyTrackedFile(root);
 
     const { code, out } = await runBuildIndex(CURRENT_SCRIPT, root, ['--allow-dirty']);
     expect(code, out).toBe(1);
@@ -257,7 +324,7 @@ describe('[812e6cfd] the publication signal and the provisional escape hatch are
 
   it('still allows --allow-dirty for a NON-publish (local inspection) run', async () => {
     const root = scratchRepo('1.3.3', 'module.exports = "PUBLISHED";\n');
-    fs.writeFileSync(path.join(extDirOf(root), 'dist', 'index.js'), 'module.exports = "WIP";\n');
+    dirtyTrackedFile(root);
 
     const { code, out } = await runBuildIndex(CURRENT_SCRIPT, root, ['--allow-dirty'], { SOX_REGISTRY_PUBLISH: '' });
     expect(code, out).toBe(0);
