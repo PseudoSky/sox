@@ -15,7 +15,7 @@
  *      BACKLOG.md/CHANGELOG.md fixture needs to exist in the scratch dir for this to pass).
  *   2. An unrecognized flag — exit non-zero.
  *   3. Zero-arg (default) invocation — exit 1, stderr contains a retirement message naming
- *      `plan-status.mjs`/the graph as the replacement. This is the NEW zero-arg contract — the
+ *      the `backlog` CLI/graph as the replacement. This is the NEW zero-arg contract — the
  *      OLD one (check-backlog-markers.mjs exits 0 on a clean fixture; check-bl-id-integrity.mjs
  *      "skips" and exits 0 with nothing staged) is gone along with the files it used to read.
  *
@@ -124,15 +124,15 @@ for (const { name, script } of scripts) {
 
   // ---------------------------------------------------------------------
   // 3. Zero-arg (default) invocation — [AC-D4-retirement-default] NEW contract: retired, exit 1,
-  //    a retirement message pointing at plan-status.mjs/the graph. No BACKLOG.md/CHANGELOG.md
+  //    a retirement message pointing at the backlog CLI/graph. No BACKLOG.md/CHANGELOG.md
   //    fixture exists in this scratch dir, proving the retired script doesn't try to read one.
   // ---------------------------------------------------------------------
   {
     const dir = scratchRepo(`${name.replace(/\W/g, '')}-zero`);
     const r = run(script, [], dir);
     report(
-      `BL-446/AC-D4-retirement-default ${name} (no args): retired — exit 1, stderr names the graph/plan-status.mjs replacement`,
-      r.code === 1 && /RETIRED/i.test(r.err) && /plan-status/i.test(r.err),
+      `BL-446/AC-D4-retirement-default ${name} (no args): retired — exit 1, stderr names the graph/backlog CLI replacement`,
+      r.code === 1 && /RETIRED/i.test(r.err) && /backlog/i.test(r.err),
       `code=${r.code} stdout=${JSON.stringify(r.out)} stderr=${JSON.stringify(r.err.slice(0, 300))}`,
     );
     fs.rmSync(dir, { recursive: true, force: true });

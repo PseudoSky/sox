@@ -38,7 +38,7 @@
  *   node tools/backlog-verify-durable.mjs --repo <repo> --human-id <ID> [--json]
  *   node tools/backlog-verify-durable.mjs --repo <repo> --human-id <ID> --wait-ms 2000
  *
- * EXIT CODES  (three-valued, mirroring plan-status.mjs)
+ * EXIT CODES  (three-valued)
  *   0  DURABLE      — found from a separate process, WAL empty: the row is in
  *                     the main database
  *   0  COMMITTED    — found from a separate process; frames are in the shared

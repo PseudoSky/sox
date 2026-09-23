@@ -18,15 +18,20 @@ import { execFileSync } from 'node:child_process';
 import { mkdtempSync, rmSync, existsSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-// DEBT-HOOK-PLANSTATUS-GATES-EVERY-COMMIT-001 (Task 2): reuse the SAME "store is broken, not
-// empty" error type plan-status.mjs already defines, rather than inventing a second, divergent
-// definition of "store unavailable" in this repo (team-lead's explicit instruction). completionScore()
-// below throws this whenever `backlog list-items` fails outright (non-zero exit, timeout, ENOENT) OR
-// exits 0 but never prints a parseable JSON array line at all — both are "could not determine",
-// never silently "zero items".
-import { StoreUnavailableError } from './plan-status.mjs';
-
 const JSON_OUT = process.argv.includes('--json');
+
+/**
+ * A dedicated error type for "the store could not be reached/read", distinct from any other
+ * failure this script can hit. completionScore() below throws this whenever `backlog list-items`
+ * fails outright (non-zero exit, timeout, ENOENT) OR exits 0 but never prints a parseable JSON
+ * array line at all — both are "could not determine", never silently "zero items".
+ */
+class StoreUnavailableError extends Error {
+  constructor(message) {
+    super(message);
+    this.name = 'StoreUnavailableError';
+  }
+}
 const PROD_BACKLOG = '/Users/nix/.adhd/backlog/production/data/backlog.db';
 const cleanups = [];
 

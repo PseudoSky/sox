@@ -4,11 +4,11 @@
  *
  * This tool used to validate the `### BL-<n>` heading grammar of the shared root `BACKLOG.md`
  * (bold-status-span rules, duplicate-id detection, the "Total open: N" header count). That file
- * no longer exists — `BACKLOG.md`/`CHANGELOG.md` were deleted in this same change, and the graph
- * (queried via `tools/plan-status.mjs`, itself repointed at the `backlog` CLI) is now the sole
- * source of truth for `BL-*` status. The split-brain this script guarded against (a hand-written
- * heading whose grammar drifted from what the "Total open" count claimed) is now structurally
- * impossible — there is no heading to write.
+ * no longer exists — `BACKLOG.md`/`CHANGELOG.md` were deleted in this same change, and the backlog
+ * graph, queried directly via the `backlog` CLI, is now the sole source of truth for `BL-*`
+ * status. The split-brain this script guarded against (a hand-written heading whose grammar
+ * drifted from what the "Total open" count claimed) is now structurally impossible — there is no
+ * heading to write.
  *
  * This script is reachable today only by direct manual invocation (habit, or a stray doc
  * reference) — nothing automated calls it any more (its only automated caller,
@@ -19,8 +19,7 @@
  * would be indistinguishable from a check that never ran, which defeats the entire point of a
  * guard (see SPEC-DELETE-FILES.md D4's losing alternative).
  *
- * Use `node tools/plan-status.mjs [--check]` and the `backlog` CLI/MCP tools instead. See
- * CONTRIBUTING.md §1.9.
+ * Use the `backlog` CLI/MCP tools directly to query BL-* status. See CONTRIBUTING.md §1.9.
  *
  * Usage:
  *   node tools/check-backlog-markers.mjs               # RETIRED — prints a retirement message, exits 1
@@ -35,8 +34,8 @@ Usage:
   node tools/check-backlog-markers.mjs --fix          # RETIRED — prints a retirement message, exits 1
   node tools/check-backlog-markers.mjs --help | -h    # print this usage, no git/file I/O at all
 
-BACKLOG.md no longer exists. Use \`node tools/plan-status.mjs [--check]\` and the backlog
-CLI/MCP tools instead. See CONTRIBUTING.md §1.9.`;
+BACKLOG.md no longer exists. Use the backlog CLI/MCP tools directly to query BL-* status.
+See CONTRIBUTING.md §1.9.`;
 
 const RETIREMENT_MESSAGE = `check-backlog-markers: RETIRED (ADR-0011 Stage 3). This tool used to validate BACKLOG.md's
 heading grammar — that file was deleted (see docs/decisions/0011-backlog-tool-write-destination.md
@@ -44,8 +43,7 @@ heading grammar — that file was deleted (see docs/decisions/0011-backlog-tool-
 markdown heading left to validate.
 
 Use instead:
-  node tools/plan-status.mjs --check       # derived-plan staleness guard, sourced from the graph
-  backlog list-items / backlog get-item    # query the graph directly
+  backlog query / backlog get              # query the graph directly
 
 See CONTRIBUTING.md §1.9 for the full procedure. No BACKLOG.md read occurred.`;
 

@@ -50,7 +50,6 @@ export default {
         'observability',
         'ops',
         'permissions',
-        'plan-status',
         'readme',
         'registry',
         'release',
