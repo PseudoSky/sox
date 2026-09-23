@@ -42,7 +42,13 @@ import * as path from 'node:path';
 import { pathToFileURL } from 'node:url';
 
 import { createNpmPublishedFetcher } from './lib/npm-published-fetcher.js';
-import { checkPublishedBytes, selectNpmPackageEntries, type RegistryEntry } from './lib/published-bytes.js';
+import {
+  checkPublishedBytes,
+  checkPublishedCoverage,
+  selectNpmPackageEntries,
+  type CoverageBaseline,
+  type RegistryEntry,
+} from './lib/published-bytes.js';
 
 // BL-480: default root must mirror build-index.ts's git-common-dir resolution
 // (never `process.cwd()`) — this scanner recomputes `source` via the same
@@ -85,6 +91,7 @@ function resolveDefaultRoot(): string {
  */
 let publishedBytesOnly = false;
 let noRemote = false;
+let allowEmpty = false;
 let root = '';
 let committedRaw = '';
 let committedRawEntries: unknown[] = [];
@@ -94,6 +101,10 @@ function initCliState(): void {
   const argv = process.argv.slice(2);
   publishedBytesOnly = argv.includes('--published-bytes-only');
   noRemote = argv.includes('--no-remote') || process.env['SOX_SKIP_PUBLISHED_BYTES'] === '1';
+  // `--allow-empty` is the ONLY way an empty verified-row set is a pass. It
+  // exists for a registry that legitimately publishes nothing (a fresh fork),
+  // and it must be typed by a human every time.
+  allowEmpty = argv.includes('--allow-empty');
   root = argv.find((a) => !a.startsWith('--')) ?? resolveDefaultRoot();
 
   // Read the current committed registry
@@ -399,10 +410,80 @@ function runDriftGate(): boolean {
 
 // ─── Published-bytes assertion (fbde8dda-d6ed-4b6b-9cde-9495351a7c35) ────────
 
+/**
+ * Load the committed coverage baseline. A MISSING baseline is a hard failure,
+ * never "nothing is expected" — the whole defect being fixed here is a gate
+ * that silently narrowed its own scope to zero and called that green.
+ */
+function loadCoverageBaseline(): CoverageBaseline | null {
+  const p = path.join(root, 'registry', 'published-coverage.json');
+  if (!fs.existsSync(p)) {
+    console.error(
+      `check-registry-sync: FAIL — coverage baseline registry/published-coverage.json not found at ${p}.\n` +
+      '  It records which registry rows MUST be verified against npm. Without it this gate cannot\n' +
+      '  distinguish "nothing to verify" from "everything stopped being verified".',
+    );
+    return null;
+  }
+  try {
+    return JSON.parse(fs.readFileSync(p, 'utf8')) as CoverageBaseline;
+  } catch (e) {
+    console.error(`check-registry-sync: FAIL — registry/published-coverage.json is unparseable: ${String(e)}`);
+    return null;
+  }
+}
+
 async function runPublishedBytesGate(): Promise<boolean> {
   const targets = selectNpmPackageEntries(committedRawEntries as RegistryEntry[]);
+
+  // ── COVERAGE FIRST ──────────────────────────────────────────────────────
+  // Before asking "do the bytes match", ask "are we still looking at the rows
+  // we are supposed to be looking at". An all-jsdelivr registry (what an
+  // unguarded `build-index` produces) has ZERO npm-package: rows, and the
+  // byte comparison below would have reported that as a pass.
+  const baseline = loadCoverageBaseline();
+  if (baseline === null) return false;
+
+  const coverage = checkPublishedCoverage(committedRawEntries as RegistryEntry[], baseline);
+  if (!coverage.ok) {
+    console.error(
+      `check-registry-sync: FAIL — published-bytes coverage: expected ${baseline.ids.length} ` +
+      `npm-package row${baseline.ids.length === 1 ? '' : 's'}, found ${coverage.actual.length}.`,
+    );
+    if (coverage.baselineError !== undefined) {
+      console.error(`  ${coverage.baselineError}`);
+    }
+    if (coverage.missing.length > 0) {
+      console.error(
+        `  MISSING (no longer verified against npm — scope LOST): ${coverage.missing.join(', ')}\n` +
+        '  A row loses coverage by disappearing, or by having its `npm-package:` locator rewritten to a\n' +
+        '  file:// or CDN URL — which is exactly what `pnpm build-index` does to every row.',
+      );
+    }
+    if (coverage.unexpected.length > 0) {
+      console.error(
+        `  UNEXPECTED (verified, but not in the baseline): ${coverage.unexpected.join(', ')}\n` +
+        '  If a newly published package has legitimately entered the gate, add it to\n' +
+        '  registry/published-coverage.json in the same commit. That edit is the review signal.',
+      );
+    }
+    return false;
+  }
+  console.log(
+    `check-registry-sync: published-bytes coverage OK — ${coverage.actual.length}/${baseline.ids.length} ` +
+    'expected npm-package rows present.',
+  );
+
   if (targets.length === 0) {
-    console.log('check-registry-sync: published-bytes — no npm-package: rows to verify');
+    if (!allowEmpty) {
+      console.error(
+        'check-registry-sync: FAIL — published-bytes has NO npm-package: rows to verify. An empty target\n' +
+        '  set is never a pass: it is indistinguishable from every row having silently lost coverage.\n' +
+        '  Pass --allow-empty if this registry genuinely publishes nothing.',
+      );
+      return false;
+    }
+    console.log('check-registry-sync: published-bytes — no npm-package: rows to verify (--allow-empty)');
     return true;
   }
 
