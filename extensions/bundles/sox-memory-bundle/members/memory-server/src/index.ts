@@ -1737,6 +1737,23 @@ async function dispatchTool(
         tags: args['tags'] as string[] | undefined,
         client_request_id: args['client_request_id'] as string | undefined,
       };
+      // Backlog 29f3a4d5 blocker 1 (re-review 2026-09-22, finding 1): topic
+      // resolution is caller-param OR a leading `[<topic>]` content prefix
+      // (computeWriteEnrichment's E5 step, enrich.ts:202-207) — mirrored here
+      // so it can be resolved ONCE, against the PARENT's full content, and
+      // passed as the already-RESOLVED value into every chunk below. Passing
+      // the raw `args['topic']` straight into chunkParams (the original
+      // version of this fix) still left topic:null on every chunk whenever
+      // the topic came from a `[prefix]` instead of an explicit arg — the
+      // parent would resolve it, chunk 0 might independently re-derive it
+      // from its own leading text by coincidence, but chunks 1..N would not
+      // — exactly the unreachable-by-filtered-recall state this fix exists
+      // to close. This duplicates enrich.ts's E5 regex by hand (there is no
+      // exported helper to call instead); if that regex changes, this copy
+      // must change with it.
+      const callerTopic = args['topic'] as string | undefined;
+      const resolvedTopicForChunks: string | undefined =
+        callerTopic ?? (/^\s*\[([^\]\n]{1,64})\]/.exec(content)?.[1] ?? undefined);
       const chunkParams = (chunk: string, parentUid?: string) => ({
         content: chunk,
         // BL-62 fix: chunks previously omitted project_path entirely, relying on
@@ -1746,6 +1763,126 @@ async function dispatchTool(
         agent_id: args['agent_id'] as string | undefined,
         source: (args['source'] as 'message' | undefined) ?? ('document' as const),
         metadata: args['metadata'] as Record<string, unknown> | undefined,
+        // Backlog 29f3a4d5: chunks previously landed with topic:null, tags:[]
+        // (computeWriteEnrichment has no way to derive either without the
+        // caller's explicit value — only a leading `[prefix]` on chunk 0's own
+        // text could ever rescue topic, and there is no tag inference at all).
+        // Any topic- or tag-scoped memory_recall filter is a scalar/json_each
+        // predicate (recall.ts) that cannot match NULL/[], so unfiltered chunks
+        // were structurally unreachable by filtered recall. Inherit the same
+        // fields parentParams already carries above.
+        //
+        // topic uses the RESOLVED value computed once above
+        // (resolvedTopicForChunks), not the raw `args['topic']` — see the
+        // blocker-1 comment at that declaration for why the raw arg is wrong
+        // here (it silently drops a `[prefix]`-derived topic on every chunk).
+        topic: resolvedTopicForChunks,
+        tags: args['tags'] as string[] | undefined,
+        // importance: inheriting a caller-asserted value sets
+        // userSuppliedImportance=true for every chunk (write.ts:318-320),
+        // which stamps enrich_ver.note='user_override' (enrich.ts:214-233)
+        // and opts each chunk OUT of the batch importance recompute pass
+        // (enrich-batch.ts:351-357, CONTRACTS.md C2.1 skip) permanently —
+        // same as the parent. This is intentional: the caller explicitly
+        // asserted an importance for this content, and chunks ARE that
+        // content, so they should carry the same asserted score rather than
+        // silently reverting to a content-derived one the caller overrode.
+        // When importance is omitted, this is undefined and each chunk falls
+        // through to its own independently-computed score exactly as before.
+        //
+        // Accepted consequence (re-review 2026-09-22, item 4): the freeze is
+        // PERMANENT, not merely "same as the parent" — and chunks are
+        // precisely the rows whose link_degree just grew (they now each get
+        // a fresh DERIVED_FROM edge, see linkChunksToParent below). Before
+        // this fix, an un-tagged/un-scored chunk was recomputable by the
+        // batch importance pass on its own link_degree/access_count as that
+        // degree changed over time; after this fix, a chunk written with an
+        // explicit parent importance is frozen at that value forever, never
+        // revisited even as its own link_degree grows independently of the
+        // parent's. Accepted as the correct tradeoff (the caller's asserted
+        // score should stick, same as it does for the parent) but recorded
+        // here since it's a real, permanent behavior change, not a no-op.
+        importance: args['importance'] as number | undefined,
+        // t_occurred: inherit so chunks share the parent's occurrence time
+        // instead of each defaulting to its own write-time `now` (write.ts:335,
+        // `const tOccurred = t_occurred ?? now`) — chunks are written in a loop
+        // strictly after the parent, so without this every chunk's t_occurred
+        // trails the parent's (and each other's) by however long the loop
+        // takes, corrupting chronological ordering for content whose parent
+        // specified an explicit, meaningful t_occurred (e.g. historical
+        // import). (Re-review 2026-09-22, blocker 2: `as_of` bi-temporal
+        // recall does NOT key on t_occurred at all — every `as_of` site
+        // (recall.ts:530-531, :744-746, :821-822, :839-840) predicates on
+        // t_valid/t_invalid only, and t_valid is set unconditionally to
+        // write-time `now` for every row including chunks, write.ts:334,
+        // untouched by this fix — so there is no `as_of`-window benefit to
+        // this inheritance; the chronological-ordering benefit above is the
+        // whole of the rationale.)
+        t_occurred: args['t_occurred'] as string | undefined,
+        // Deliberately NOT inherited:
+        // - summary: the per-chunk extractive summary computed in
+        //   computeWriteEnrichment/enrich.ts is more useful per-chunk than
+        //   pasting the parent's whole-document summary onto every chunk.
+        // - content: chunk-specific, set explicitly above.
+        // - name (re-review 2026-09-22, item 3: this was inherited with zero
+        //   rationale in an earlier draft of this fix — dropped). `name` is
+        //   projected directly in recall output (recall.ts:737, :848, :966,
+        //   :1008), so inheriting it would put the parent's title on all N
+        //   chunk rows verbatim; a name-matching query would then return the
+        //   parent plus every one of its chunks as separate, visually
+        //   identical-by-title hits, which is a worse retrieval experience
+        //   than chunks simply having no name (the status quo before this
+        //   fix, and the status quo for every OTHER un-derived field a
+        //   caller doesn't explicitly set on a chunk).
+        // - args['derived_from_uid'] (the CALLER's own optional linking arg,
+        //   distinct from the internal `parentUid` param below): not
+        //   inherited — a caller-supplied derived_from_uid points at some
+        //   OTHER parent episode outside this auto-chunk operation, and
+        //   propagating it to every chunk would wire each chunk to that
+        //   unrelated node instead of (or in addition to) its own real
+        //   parent. The auto-chunk parent↔chunk relationship itself is
+        //   handled separately: linkChunksToParent's explicit DERIVED_FROM
+        //   edge insert below, PLUS the `derived_from_uid: parentUid` field
+        //   at the end of this object (Q1-C, see below) on the sync path.
+        // - client_request_id: an idempotency key: reusing the parent's across
+        //   every chunk write would fire replay-on-first-chunk-only semantics
+        //   (write.ts:260-284's `request_ledger` lookup) and silently drop
+        //   every subsequent chunk's identity.
+        // - session_id: deliberately NOT inherited. This field is dual-purpose
+        //   — the real conversational session id (memory_get_session_state,
+        //   session.ts) AND a legacy "parentDocId" fallback join key that
+        //   recall.ts:962-969's parent-context expansion reads ONLY when no
+        //   live DERIVED_FROM edge exists (tested explicitly against a
+        //   parent's UID in recall.spec.ts:151-171). linkChunksToParent
+        //   (below) unconditionally writes a live DERIVED_FROM edge for every
+        //   chunk, so that fallback branch never fires for auto-chunk writes
+        //   regardless; inheriting the caller's real session_id here would buy
+        //   nothing for the fallback and would conflate the two meanings on
+        //   the chunk row for no benefit. (Re-review 2026-09-22, item 5: the
+        //   other consumer of this field, memory_get_session_state/
+        //   session.ts, is a straight `session_id` equality lookup with no
+        //   DERIVED_FROM-aware fallback of its own — so leaving it unset also
+        //   means chunks simply will NOT appear when an agent later looks up
+        //   its own session's working memory by session_id, same as they
+        //   don't today. That is accepted, not merely undiscussed: chunks are
+        //   storage artifacts of one write, not independent turns in a
+        //   session, and session-state lookup is not expected to need them.)
+        //
+        // Accepted consequence (re-review 2026-09-22, item 4): inherited tags
+        // multiply MENTIONS edges by (chunk_count + 1) per tag — each chunk
+        // is a distinct node and gets its own MENTIONS edge to the same tag
+        // entity (write.ts:405-433's per-insert dedup guard is scoped to
+        // `src=<this node's rowid>`, so it prevents same-node duplicates
+        // only, never cross-chunk duplication). This inflates
+        // memory_list_entities' `mention_count` (list-entities.ts:111,
+        // `mentionCount = epRows.length`, a raw edge-row count) and
+        // memory_entity_episodes' result lists proportionally to
+        // chunk_count for every tagged auto-chunked write. Accepted here as
+        // the necessary cost of making tags reachable at all on chunk rows
+        // (the alternative — chunks with tags:[] — was the original bug);
+        // flagged for whoever owns entity-ranking semantics to decide
+        // whether `mention_count` should instead count distinct
+        // parent-or-standalone documents.
         // Q1-C sync-path fix (2026-09-22 re-review finding 1): only meaningful
         // on the SYNC branch below, where each chunk's E8 near-dup pass runs
         // INLINE during this same call (write.ts's E9 DERIVED_FROM write at
