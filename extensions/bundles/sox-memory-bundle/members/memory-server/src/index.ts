@@ -173,6 +173,95 @@ const INSTANCE_STARTED_AT = new Date().toISOString();
 const INSTANCE_ID = crypto.randomUUID();
 setLeaseInstanceId(INSTANCE_ID);
 
+// ── Recall degradation counters (BL-391 follow-through) ──────────────────────
+//
+// recall.ts has, since BL-391, both logged every non-fatal channel failure
+// (`recall.embed_failed` / `recall.fts_failed`, telemetry.js) AND returned a
+// machine-readable `degradations: string[]` on RecallResponse. That field was
+// then DROPPED on the floor by this file's `memory_recall` handler, which
+// serialized only `{ results, provider_call_count }` — so an MCP caller (an
+// agent) received a normal-looking result set with no way to know the vec
+// channel never participated. The read-path embed guard
+// (`SOX_RECALL_EMBED_TIMEOUT_MS`, default 3000ms, recall.ts:81) fires for real:
+// 31 `embed() timed out after 3000ms` events in
+// ~/.adhd/sox-ecosystem/memory/logs/memory-core-2026-09-22.jsonl alone.
+//
+// Two fixes: the handler now passes `degradations` through (additive — see
+// CLAUDE.md §`memory_recall`), and these counters give an operator the
+// cumulative RATE via `memory_ping` without grepping 16MB of jsonl.
+//
+// Deliberately module-local to THIS file rather than exported from recall.ts:
+// `memory_ping` and `memory_recall` are both handled here, so the counter and
+// its reader are the same module instance by construction. A counter living in
+// memory-core would be correct only while the bundle inlines exactly one copy
+// of that module — precisely the duplicate-module singleton trap BL-404 hit in
+// sox-telemetry, where the writer and reader bound to different instances and
+// the reader reported zero forever.
+interface RecallDegradationCounters {
+  /** memory_recall calls that took the query path (embedding + channels). */
+  recalls_total: number;
+  /** …of which returned at least one degradation. */
+  recalls_degraded: number;
+  /** Degraded-call counts keyed by channel prefix ('vec', 'fts', …). */
+  by_channel: Record<string, number>;
+  /** ISO timestamp of the most recent degraded recall, or null. */
+  last_degraded_at: string | null;
+  /** The degradation strings from that most recent degraded recall. */
+  last_degradations: string[];
+}
+
+const recallDegradations: RecallDegradationCounters = {
+  recalls_total: 0,
+  recalls_degraded: 0,
+  by_channel: {},
+  last_degraded_at: null,
+  last_degradations: [],
+};
+
+/**
+ * Record one query-path `memory_recall` outcome. Always called (even for a
+ * clean recall) so `recalls_degraded / recalls_total` is a true rate rather
+ * than a bare incident count — an operator cannot tell "3 degraded" apart
+ * from "3 degraded out of 3" and "3 out of 30000" without the denominator.
+ *
+ * Channel attribution parses the `"<channel>: <message>"` shape recall.ts
+ * pushes (`vec: …`, `fts: …`, and federated `scope=<s>: vec: …`); anything
+ * that does not match is bucketed under `other` rather than dropped, so a
+ * new degradation shape can never go uncounted.
+ */
+function recordRecallDegradations(degradations: readonly string[] | undefined): void {
+  recallDegradations.recalls_total++;
+  if (!degradations || degradations.length === 0) return;
+  recallDegradations.recalls_degraded++;
+  recallDegradations.last_degraded_at = new Date().toISOString();
+  recallDegradations.last_degradations = [...degradations];
+  for (const d of degradations) {
+    // Strip a federated `scope=<name>: ` prefix before reading the channel.
+    const withoutScope = d.replace(/^scope=[^:]*:\s*/, '');
+    const m = /^([a-z0-9_]+):/i.exec(withoutScope);
+    const channel = m?.[1]?.toLowerCase() ?? 'other';
+    recallDegradations.by_channel[channel] = (recallDegradations.by_channel[channel] ?? 0) + 1;
+  }
+}
+
+/** Snapshot for `memory_ping`. Returns a copy — callers must never mutate. */
+function snapshotRecallDegradations(): RecallDegradationCounters {
+  return {
+    ...recallDegradations,
+    by_channel: { ...recallDegradations.by_channel },
+    last_degradations: [...recallDegradations.last_degradations],
+  };
+}
+
+/** Test-only reset so suites do not inherit another test's counts. */
+export function _resetRecallDegradationCountersForTest(): void {
+  recallDegradations.recalls_total = 0;
+  recallDegradations.recalls_degraded = 0;
+  recallDegradations.by_channel = {};
+  recallDegradations.last_degraded_at = null;
+  recallDegradations.last_degradations = [];
+}
+
 interface ContentAddress {
   id: string;
   artifact: string; // "sha256:<full hex>"
@@ -1410,6 +1499,16 @@ async function handleToolCallImpl(name: string, args: Record<string, unknown>): 
           // embed subsystem (BL-373 family: a dead store is never 'ok').
           status: verdict.status,
           status_reason: verdict.status_reason,
+          // BL-391 follow-through: cumulative degraded-recall counters for
+          // THIS process (reset on restart — `instance.started_at` is the
+          // denominator's epoch). Lets an operator see the rate at which
+          // recall silently loses a channel — most often the vec channel
+          // dropping out when the read-path query-embed guard
+          // (SOX_RECALL_EMBED_TIMEOUT_MS, default 3000ms) fires under embed-pool
+          // saturation — without grepping the jsonl logs. Pure DATA, additive
+          // (HF-3): it never moves `status`, because a degraded recall is a
+          // correctly-handled partial result, not an unhealthy server.
+          recall_degradations: snapshotRecallDegradations(),
           store_ok: verdict.store_ok,
           store_error: verdict.store_error,
           id: addr.id,
@@ -2060,8 +2159,24 @@ async function dispatchTool(
         }
       }
 
+      // BL-391 follow-through: `degradations` is a real field on
+      // RecallResponse that this handler previously dropped, leaving an MCP
+      // caller unable to distinguish "the vec channel found nothing" from
+      // "the vec channel never ran because the query embed timed out at
+      // 3000ms". Emitted ONLY when non-empty, exactly matching recall.ts's own
+      // `if (degradations.length > 0)` rule (recall.ts:1143) and the
+      // RecallResponse doc comment's "absent when nothing degraded" contract —
+      // so a clean recall's response shape is byte-identical to before and no
+      // existing caller can break. Additive: CLAUDE.md's documented
+      // `memory_recall` output gains an optional key, loses nothing.
+      const degradations = recallResult.degradations ?? [];
+      recordRecallDegradations(degradations);
       return {
-        content: [{ type: 'text', text: JSON.stringify({ results: filteredResults, provider_call_count: recallResult.provider_call_count }) }],
+        content: [{ type: 'text', text: JSON.stringify({
+          results: filteredResults,
+          provider_call_count: recallResult.provider_call_count,
+          ...(degradations.length > 0 ? { degradations } : {}),
+        }) }],
       };
     }
 

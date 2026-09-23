@@ -679,6 +679,19 @@ export async function memoryRecall(
       },
     };
     if (filterStats) response.filterStats = filterStats;
+    // The empty-corpus path must report degradations for exactly the same
+    // reason the BL-117 comment above gives for late chunking — and more
+    // urgently. This is the MOST dangerous branch to stay silent on: a caller
+    // asking "what do you know about X" while the query embed timed out gets
+    // `results: []`, which reads as the authoritative "nothing in memory",
+    // when the truth is "the vec channel never ran, and the surviving
+    // keyword/temporal channels matched nothing". Before this line the
+    // degradations collected above (`vec: embed() timed out …`) were built and
+    // then dropped on this return, so the one case where a caller most needs
+    // the warning was the one case that never carried it. Mirrors the
+    // non-empty path's own rule at the bottom of this function — emitted only
+    // when non-empty, so a clean empty recall keeps its exact prior shape.
+    if (degradations.length > 0) response.degradations = degradations;
     return response;
   }
 

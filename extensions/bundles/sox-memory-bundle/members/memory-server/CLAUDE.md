@@ -267,6 +267,17 @@ Hybrid vec+BM25+temporal recall, <50 ms, zero LLM. `query` is now optional — o
 
 **Output:** `{ "results": [{ "uid", "content", "score", "t_valid", "scope", "provenance", "importance", "content_hash", "agent_id", "summary", "topic", "tags", "project_path", "is_superseded", "supersedes_uid", "community_uid" }], "provider_call_count": 0 }`
 
+**Output (degraded):** the same object plus an optional `"degradations": ["<channel>: <reason>", …]`,
+present **only** on the `query` path and **only** when at least one retrieval channel failed
+non-fatally. Its absence means every channel ran.
+
+A degraded recall still returns `results` and is **not** an error — the surviving channels answered.
+Treat it as a confidence signal: `vec: embed() timed out after 3000ms (recall read-path guard)`
+means the response is BM25/temporal-only, so semantic matches the keywords missed are simply not in
+it. That guard (`SOX_RECALL_EMBED_TIMEOUT_MS`, default 3000ms) fires whenever the shared embed
+provider is saturated. For the cumulative rate across a process, read
+`memory_ping.recall_degradations`.
+
 #### ⚠️ The two recall paths do not honour the same parameters
 
 Omitting `query` selects a **different code path** — a flat, importance-ranked SQL listing, not the
