@@ -169,3 +169,159 @@ Citations: [main@20d817a7, devops-engineer, claude, Q4-deploy]
 5: tools/bundle-extension.cjs:348-365
 6: extensions/bundles/sox-memory-bundle/members/memory-server/project.json
 7: libs/host-runtime/src/loader.ts:491
+
+---
+
+## 8. PRE-FLIGHT: restore scope measured independently from the store (read-only)
+
+Taken while holding for `restore-land`, from a COPY of `~/.memory/memory.db` opened
+`readOnly` via `@tursodatabase/database` (server was down, `memory.db-wal` 0 bytes, so the
+copy is clean). The stock `sqlite3` CLI was never used.
+
+**Baseline:**
+
+| metric | value |
+|---|---|
+| live episodes | **7058** |
+| invalidated episodes | **852** |
+| total episodes | 7910 |
+| rows carrying `meta.restoredFrom` | **0** |
+
+`restoredFrom = 0` independently confirms the brief's claim that `restore_neardup` has
+never been applied anywhere. It also means the post-apply authorship check (step 5c) starts
+from a clean zero — any row bearing `restoredFrom` afterwards is unambiguously ours.
+
+Note the live count is **7058**, not the ~6,882 the brief cited; agents have been writing
+throughout. Use 7058 as the pre-restore baseline, and expect `7058 + 604 = 7662` after.
+
+**The expected dry-run partition reconciles EXACTLY against the store:**
+
+```
+604 planned + 3 withheld + 82 true-duplicates + 163 out-of-scope = 852 = invalidated total ✓
+```
+
+Measured directly:
+
+| partition | measured | expected |
+|---|---|---|
+| invalidated WITH a live `SAME_AS` edge (= policy scope + true-dups) | **689** | 607 + 82 = 689 ✓ |
+| invalidated WITHOUT a live `SAME_AS` edge (out of scope) | **163** | 163 ✓ |
+
+The brief's phrase "163 edge-less invalidated episodes" means *lacking the near-dup
+`SAME_AS` edge*, NOT literally edge-free — only **3** invalidated episodes have no edges of
+any kind. Worth fixing in the vocabulary before someone greps for the wrong thing.
+
+**⚠️ ONE NUMBER DOES NOT RECONCILE — resolve before applying.** The brief expects **3**
+withheld, "each carrying a live SUPERSEDES edge = recorded human intent". Measured within
+the in-scope `SAME_AS` set:
+
+| | count |
+|---|---|
+| in-scope AND carries a live `SUPERSEDES` (either direction) | **6** |
+| …as SRC (it supersedes something) | 2 |
+| …as DST (it is superseded by something) | 4 |
+
+**6, not 3** — and no directional split yields 3 either. Caveat: this is my approximation of
+the op's scope rule, not the op's own logic (it is unmerged, so I have not read it). The op
+may scope more narrowly (e.g. requiring the surviving twin to be live, or a similarity
+threshold), which would legitimately reduce 6 → 3.
+
+Consequence for step 5d: if the dry run reports `withheld: 3`, that is NOT self-evidently
+correct — there are 6 in-scope rows carrying recorded human intent, and the 3 not withheld
+would be **restored despite a live SUPERSEDES edge**. Reconcile which rule is right BEFORE
+`dry_run: false`. The 604/163/689 figures are confirmed and can be trusted.
+
+Citations: [main@bb4ec0a8, devops-engineer, claude, Q4-deploy, 8: ~/.memory/memory.db (read-only copy), 9: docs/ops/memory-server-playbook.md]
+
+## 9. The 6-vs-3 withheld question — RECONCILED, no divergence
+
+Resolved by reading `libs/memory-core/src/restore-neardup.ts` after it landed (`4903f76c`).
+My measured 6 and the op's reported 3 describe the same reality:
+
+1. **The op counts DST only** (`:375-382`): it joins `node n ON n.rowid = e.dst`, i.e. nodes
+   superseded BY something, with `e.t_invalid IS NULL AND e.t_expired IS NULL`. My 2 SRC rows
+   (rows that supersede something else) are correctly NOT withheld — superseding something is
+   not a statement that you wanted *this* row deleted. **6 → 4.**
+2. **Guard ORDER** (`:937-938`): `withheld_true_duplicate` is evaluated BEFORE
+   `intent_superseded`, so a row that is both is counted under the former. The counters
+   partition rather than overlap. That accounts for the 4th. **4 → 3.**
+
+Independently: applying the op's exact predicate to my 689-row `SAME_AS` set yields 4, and
+policy scope is 607 (689 − 82 true-duplicates), leaving 3 in scope. Matches the op's own
+comment ("3 of the 607 policy-scope members carry one").
+
+**Conclusion: none of the 6 is restored despite recorded human intent.** The 2 SRC rows were
+never in scope; the 4th is withheld under a different label. The alarm in §8 is retracted.
+
+Two accountings must BOTH hold at dry-run time before applying:
+- the op's own invariant: `planned + withheld_intent_superseded = policy_scope_members` (604 + 3 = 607)
+- my store-derived partition: `604 + 3 + 82 + 163 = 852` = total invalidated episodes
+
+## 10. Vocabulary correction worth propagating
+
+"163 edge-less invalidated episodes" means **lacking a live `SAME_AS` edge**, NOT edge-free.
+Only **3** invalidated episodes have no edges of any kind. Anyone grepping for literally
+edge-less rows will find 3, match the expected withheld count by coincidence, and believe
+they have found the withheld set. They have not.
+
+## 11. Expected-count drift
+
+The brief's ~6,882 baseline is stale; live episodes measured **7058**. A hardcoded
+expected-count assertion would fail here for the wrong reason. Expect **7662** after a
+604-row restore.
+
+**A SUB-604 APPLIED COUNT IS SUCCESS, NOT FAILURE — do not misread it.** `restore-land`
+measured `members_already_live: 558`: of the 689 `SAME_AS` population, 558 were already live
+at 21:54. If further rows go live between measurement and apply, the `already_live` guard
+absorbs them and the applied count lands BELOW 604. An apply reporting e.g. "587 restored +
+17 already_live" — or even "restored 46" — is the guard working exactly as designed to make
+a re-run non-double-restoring. **The field that signals a real problem is `notWritten`, which
+must be empty.** Anyone comparing the applied count against a hardcoded 604 will conclude the
+op failed when it succeeded.
+
+## 12. Why commits are blocked (the real cause — NOT the restore commit)
+
+Commits fail in `.husky/pre-commit`'s `npx nx affected --target=lint`, with 13
+`@nx/enforce-module-boundaries` errors ("Static imports of lazy-loaded libraries are
+forbidden", naming `store-adapter`) in files such as `tools/rehearse-live-vacuum.mjs`.
+
+**The cause is a lint COVERAGE GAP, not the restore op.** A `sox-ecosystem:lint` target was
+created tonight; `nx run-many -t lint` previously covered none of `scripts/` or `tools/`, so
+these violations are pre-existing and are surfacing on the target's first run. They belong to
+the agent who owns `scripts/`/`tools/`.
+
+`4903f76c` (the commit carrying the 604 restore) is NOT responsible. Its shape is suggestive —
+it adds `await import('@adhd/sox-store-adapter')` at `restore-neardup.ts:489` with a type-only
+static import at `:146` — but the rule names `scripts/generate-test-store.mjs` and
+`scripts/migrate-store-to-turso.mjs` as the lazy-loaders, and `4903f76c` touches neither.
+Verified: it changes exactly 5 files (`restore-neardup.ts`, `restore-neardup.spec.ts`,
+`curate.ts`, `memory-server/src/index.ts`, `.changeset/restore-neardup-curate-op.md`).
+
+Recorded because the wrong attribution would send the next reader to audit the one commit
+carrying the restore.
+
+## 13. Deploy status: BLOCKED ON PERMISSIONS, nothing applied
+
+Both actions are user-approved yet DENIED in this agent's session:
+
+```
+soxe service restart memory-server   → DENIED  [Production Deploy]
+npx nx build memory-core             → DENIED  [Modify Shared Resources]
+```
+
+The classifier gates the session that RUNS the command. The approval was given in the
+dispatcher's session and relayed as a message, which is not an approval token for this one.
+Unblocking requires a settings Bash rule (`npx nx build *`, `node bin/soxe service restart *`)
+or the user running the two commands.
+
+**Having a peer agent run it instead was deliberately NOT done** — that launders a permission
+decision this session was denied.
+
+State at time of writing: live artifact `564840c4` unchanged, service down (zero live pids),
+`restore_neardup` absent from the running artifact, store untouched, no backup needed because
+nothing was written.
+
+**Both** `memory-core` and `memory-server` must be rebuilt — memory-server inlines memory-core
+through the `dist` alias (`tsconfig.base.json:37`). Rebuilding only the bundle reproduces the
+§4 half-fix. Verify Q4 BEHAVIOURALLY via `memory_related` / `memory_entity_episodes`, never by
+grepping the artifact for `invalidated_count`.
