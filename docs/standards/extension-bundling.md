@@ -226,12 +226,10 @@ The mandatory sequence after touching bundled source:
 ```
 npx nx lint <project>
 npx nx build <project>
-npx nx run registry:sync-index   # rebuilds + regenerates registry/index.json checksums
 ```
 
-`scripts/smoke-test.mjs` fails with `CHECKSUM MISMATCH` if this step is skipped — it is not optional,
-and it is not idempotent-safe to skip "because I didn't change the checksummed content," because the
-checksum is computed over the actual bytes on disk, not over source diffs.
+Registry: see [AGENTS.md § registry is release-only](../../AGENTS.md#registry-is-release-only) —
+a local rebuild never writes `registry/index.json`; only the release flow re-pins its checksums.
 
 ---
 

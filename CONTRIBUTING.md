@@ -157,15 +157,10 @@ Verification:
 
 **Never commit:** `.nx/`, `.DS_Store`, `dist/`, `*.js`/`*.d.ts` in `src/`, secrets, tokens, API keys.
 
-### 1.7 Registry sync (if registry packages changed)
+### 1.7 Registry sync
 
-If you changed a package registered in `registry/index.json` (libs/platform/*, apps/*, extensions/*), run:
-
-```
-npx nx run registry:sync-index
-```
-
-Commit the regenerated `registry/index.json` alongside source changes.
+See [AGENTS.md § registry is release-only](./AGENTS.md#registry-is-release-only) — `registry/index.json`
+is a release artifact; a local change to a registered package does not touch it.
 
 ### 1.8 Node.js version upgrades (native ABI check)
 
@@ -673,7 +668,7 @@ For manifest changes, extension validation must pass.
 | `manifest` | `nx test manifest` — validates extension.json files against schema |
 | `host-registry` | `soxe install <ext> --host=<newhost> --dry-run` for each host; verify surface paths |
 | `service-proxy` | Install an MCP server with stdio profile; verify in-session MCP tools work |
-| `registry` | `npx nx run registry:sync-index`; verify `registry/index.json` updated |
+| `registry` | See [AGENTS.md § registry is release-only](./AGENTS.md#registry-is-release-only) |
 
 ---
 
@@ -944,8 +939,7 @@ npx nx affected:test --base=HEAD
 gitnexus_detect_changes()
 git diff --stat
 
-# If registry packages changed
-npx nx run registry:sync-index
+# Registry: see AGENTS.md § registry is release-only — a local rebuild does not touch registry/index.json
 
 # If extensions changed
 node bin/soxe upgrade --all

@@ -924,7 +924,7 @@ plausibly run was green. It recurred on the second deploy that day even with the
 2. snapshot dist/            # nx build deletes it BEFORE knowing the rebuild succeeds (BL-235)
 3. snapshot the unit plist   # regeneration silently drops env, see below
 4. npx nx build <project>
-5. npx nx run registry:sync-index        # else the smoke gate fails on CHECKSUM MISMATCH
+5. registry: see AGENTS.md § registry is release-only — a local rebuild does not touch it
 6. sox service restart <ext> [-s <scope>]
 7. VERIFY: behaviour, not just liveness
 ```
