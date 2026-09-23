@@ -24,7 +24,7 @@
     "changeset": "changeset",
     "version-packages": "changeset version",
     "release": "node tools/release-consumers.mjs && changeset publish",
-    "release:prepared": "node tools/release-consumers.mjs && npm run build-index:publish && nx build sox && changeset publish",
+    "release:prepared": "node tools/release-consumers.mjs && npm run build-index:publish && SOX_REGISTRY_PUBLISH=npm nx build sox && changeset publish",
     "verify:publint-attw": "node tools/verify-exports-publint-attw.mjs",
     "release:consumers": "node tools/release-consumers.mjs"
   },
