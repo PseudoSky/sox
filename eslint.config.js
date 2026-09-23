@@ -24,15 +24,6 @@ export default [
       '**/dist/**',
       '**/node_modules/**',
       '**/.tmp-*/**',
-      // tools/baseline-capture is its own nx project (see its project.json)
-      // with its own `lint` target and lintFilePatterns. Excluding it here
-      // (rather than via a negated glob on every OTHER project's
-      // lintFilePatterns) keeps double-linting impossible at the source: a
-      // negated `!tools/baseline-capture/**` glob entry, once combined with
-      // other positive patterns in the same `lintFiles()` call, makes ESLint
-      // 10's CLI/API refuse to run at all ("all files matching ... are
-      // ignored") — Item 7 first-run discovery.
-      'tools/baseline-capture/**',
       // tools/eslint-local/__fixture__ holds deliberate POSITIVE/NEGATIVE
       // example fixtures documenting `no-hook-assigned-skip`'s exact trigger
       // boundary (see the rule's own header). frozen-skip.spec.ts is
