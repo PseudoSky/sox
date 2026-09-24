@@ -2475,17 +2475,27 @@ function mcpServerIsProxyMode(extId: string, scope: string, root: string): boole
  *
  * The shims re-dial across the sub-second gap → the MCP client NEVER reconnects.
  * This holds in exactly two cases: (a) no os-unit owns this extension, or
- * (b) the os-unit IS the port-listening front-shim (port set + proxy mode —
- * same predicate as the execArgs branch in cmdOsUnit, ~5169). In case (b) the
- * unit runs `soxe serve <id> --port <port>`, not the backend entrypoint, so it
- * does not supervise the detached backend process this function restarts —
- * `unloadOwnedOsUnitsBeforeReap`/`reEnableOwnedOsUnit` are skipped entirely
- * (`shimIsUnit` below), since there is nothing for them to unload or reload.
- * No separate reap is needed for the backend's embed-host child: ensure-backend
- * spawns the backend detached:true and sharedFastembedProcess spawns the embed
- * host detached:false (same process group), and reaper.ts's killAndVerify uses
- * group:true by default — the SIGTERM/SIGKILL sent to -pid reaches the embed
- * host too, and it installs no custom SIGTERM handler that could outlive it.
+ * (b) the os-unit's ON-DISK argv actually runs the port-listening front-shim
+ * (`soxe serve <id> --port <port>`) rather than the bare backend entrypoint —
+ * derived by reading the rendered unit file, NOT by re-deriving from current
+ * config (BL a49ca837 follow-up: config can disagree with what was rendered —
+ * e.g. the unit was enabled before a port was configured, or the `cmdOsUnit`
+ * execArgs branch fell back to the bare entrypoint because `cliPath` was
+ * empty — in which case the unit IS the backend and OS KeepAlive supervises
+ * it). In case (b) the unit does not supervise the detached backend process
+ * this function restarts — `unloadOwnedOsUnitsBeforeReap`/`reEnableOwnedOsUnit`
+ * are skipped entirely (`shimIsUnit` below), since there is nothing for them
+ * to unload or reload. See proxy-backend-front-shim.ts for the full predicate
+ * and why it is deliberately distinct from the `cmdOsUnit` execArgs branch's
+ * render-time predicate.
+ * No separate reap is needed for the backend's embed-host child: it is the
+ * SHARED fastembed host (sharedFastembedProcess.ts), spawned detached:false
+ * (same process group as its owning backend) and ref-counted across every
+ * client that shares it — it is not restarted by this function at all. It
+ * self-reaps via a debounced idle timer after its last client disconnects,
+ * and separately installs its own `SIGTERM` handler (embedHostMain.ts) to run
+ * that same graceful teardown when signalled directly, rather than relying on
+ * an unhandled-signal default kill.
  * Returns 'backend-restarted'.
  */
 async function restartProxyBackend(
@@ -2523,13 +2533,16 @@ async function restartProxyBackend(
 
   // [inv:unload-then-reap] (§8.5): unload any OS unit BEFORE verified-stop so
   // the OS supervisor does not immediately respawn the backend (F3 resurrection)
-  // — unless the unit IS the front-shim (BL a49ca837), which this restart never
-  // touches. `unloadOsUnitUnlessFrontShim` owns the single `shimIsUnit`
-  // predicate (mirrors the os-unit execArgs predicate ~5169) so the re-enable
-  // gate below stays in lockstep — see proxy-backend-front-shim.ts.
+  // — unless the on-disk unit's REAL argv IS the front-shim (BL a49ca837),
+  // which this restart never touches. `unloadOsUnitUnlessFrontShim` owns the
+  // `shimIsUnit` predicate (derived from the unit file, NOT from config — see
+  // that module's docblock for why this is a different question from the
+  // `cmdOsUnit` execArgs branch's render-time predicate) so the re-enable gate
+  // below stays in lockstep.
   const { shimIsUnit } = unloadOsUnitUnlessFrontShim({
-    configEnv,
-    proxyMode: mcpServerIsProxyMode(extId, scope, root),
+    extId,
+    platform: getOsUnitPlatform(detectOsSupervisor()),
+    label: osUnitLabel(scope, extId),
     unload: () =>
       unloadOwnedOsUnitsBeforeReap({
         root,
@@ -5253,6 +5266,9 @@ Options:
                           (BL-375 [inv:env-preserved-on-regenerate]) — named keys only,
                           no blanket bypass
   --wait-ms <ms>          restart/update: how long to wait for the pid to rotate (default 15000)
+  --backend-only          restart, proxy-mode+port only (§9.4a/§9.5): skip the shim kickstart,
+                          reap+respawn only the detached proxy backend by identity; refused for
+                          non-proxy extensions and for proxy-mode with no SOX_CONFIG_PORT set
   --help                  Show this message
 
 'service restart' is BL-372 / spec §9.4a's [inv:deploy-verified]: it kickstarts the
@@ -5590,6 +5606,17 @@ async function cmdServiceRestart(
       `${CLI} service restart: --backend-only refused — '${extId}' is not served in proxy mode ` +
       `(§9.5); there is no independent backend to restart without the shim. Run without ` +
       `--backend-only, or see docs/spec/service-lifecycle.md §9.5.\n`,
+    );
+    process.exit(1);
+  }
+
+  if (backendOnly && !ctx.spec.env['SOX_CONFIG_PORT']) {
+    process.stderr.write(
+      `${CLI} service restart: --backend-only refused — '${extId}' has no SOX_CONFIG_PORT ` +
+      `configured, so its os-unit runs the bare backend entrypoint directly (BL-156), not the ` +
+      `port-listening front-shim (§9.5) --backend-only exists to leave alive. Configure a port ` +
+      `and run \`${CLI} service enable ${extId} --scope ${scope}\` first, or restart without ` +
+      `--backend-only.\n`,
     );
     process.exit(1);
   }

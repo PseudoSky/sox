@@ -1073,6 +1073,54 @@ function isShellSourcedEnvKey(key: string): boolean {
  * function of the resolved config cascade, not the ambient shell, so a
  * `sox config unset` followed by `enable` must never trip this guard.
  */
+/**
+ * Parse ProgramArguments (launchd plist) / ExecStart (systemd unit) argv out
+ * of a rendered unit file's text. Returns `[]` on any missing/unparseable
+ * shape — NEVER throws — so callers that treat "can't prove argv" as "not
+ * the front-shim" get that fail-safe direction for free via
+ * {@link isFrontShimArgv} (BL a49ca837 follow-up: `shimIsUnit` must be
+ * derived from what the unit ACTUALLY runs, not from current config).
+ */
+export function extractUnitArgv(unitText: string, kind: OsSupervisor): string[] {
+  try {
+    if (kind === 'launchd') {
+      const marker = '<key>ProgramArguments</key>';
+      const start = unitText.indexOf(marker);
+      if (start === -1) return [];
+      const arrStart = unitText.indexOf('<array>', start);
+      const arrEnd = unitText.indexOf('</array>', arrStart);
+      if (arrStart === -1 || arrEnd === -1) return [];
+      const body = unitText.slice(arrStart + '<array>'.length, arrEnd);
+      const strRe = /<string>([^<]*)<\/string>/g;
+      const argv: string[] = [];
+      let m: RegExpExecArray | null;
+      while ((m = strRe.exec(body)) !== null) argv.push(xmlUnescape(m[1] ?? ''));
+      return argv;
+    }
+    const m = unitText.match(/^ExecStart=(.*)$/m);
+    if (!m) return [];
+    const argvLine = m[1] ?? '';
+    return (argvLine.match(/"[^"]*"|\S+/g) ?? []).map((t) => t.replace(/^"|"$/g, ''));
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * True iff `argv` is `... serve <extId> --port <port> ...` — the
+ * port-listening front-shim (BL-156) — rather than the bare backend
+ * entrypoint. Token-matched (not substring-matched): an unrelated `--port`
+ * elsewhere, or an extId that happens to contain "serve", cannot
+ * false-positive.
+ */
+export function isFrontShimArgv(argv: string[], extId: string): boolean {
+  const i = argv.indexOf('serve');
+  if (i === -1) return false;
+  if (argv[i + 1] !== extId) return false;
+  return argv.slice(i + 2).includes('--port');
+}
+
+
 export function droppedShellEnvKeys(
   priorEnv: Record<string, string>,
   nextEnv: Record<string, string>,
