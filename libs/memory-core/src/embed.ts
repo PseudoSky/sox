@@ -20,6 +20,7 @@ import {
   getSharedOnnxWorker,
   resetSharedFastembedProcess,
   resetSharedOnnxWorker,
+  warmupOuterBudgetMs,
 } from '@adhd/sox-embedding-provider';
 import type { EmbeddingProvider } from '@adhd/sox-embedding-provider';
 import type { StoreAdapter } from '@adhd/sox-store-adapter';
@@ -419,8 +420,24 @@ async function _embedWork(text: string): Promise<Float32Array> {
 
 /** Default warmup budget: generous, and deliberately separate from the
  * per-request `SOX_EMBED_TIMEOUT_MS` funnel timeout (typically 8s) — model
- * load on a cold process can legitimately take tens of seconds. */
-const DEFAULT_WARMUP_BUDGET_MS = 60_000;
+ * load on a cold process can legitimately take tens of seconds.
+ *
+ * MUST NOT be shorter than the inner init request's own worst-case budget —
+ * `FastembedProvider.initModel()` (fastembed.ts) sends the `{type:'init'}`
+ * IPC request under `warmupTimeoutMs(cacheHit)` (embedding-provider's own
+ * per-attempt timeout, retried up to `WARMUP_CACHE_HIT_ATTEMPTS` times on a
+ * cache hit), NOT `SOX_EMBED_TIMEOUT_MS`. `warmupOuterBudgetMs(false)`
+ * (cache-miss: one attempt, default 180s, `SOX_EMBED_WARMUP_TIMEOUT_MS`
+ * override) is the true worst case — a cache HIT budget
+ * (`warmupOuterBudgetMs(true)`, default 2 * 8s = 16s) is always smaller.
+ * Previously this was a hand-typed 60_000 that raced the inner call and
+ * could reject `warmupEmbed()` while the actual (uncancellable) model load
+ * was still legitimately in flight on a cold cache-miss download — a false
+ * warmup failure, not a real one. Sized with headroom over the derived
+ * worst case so the two budgets can never drift out of sync by hand-typo,
+ * mirroring how `warmupOuterBudgetMs` itself is derived rather than
+ * hand-typed (see its doc comment / BL-376). */
+const DEFAULT_WARMUP_BUDGET_MS = Math.max(60_000, warmupOuterBudgetMs(false) + 5_000);
 
 /** Race `promise` against `ms`; on timeout the underlying call is NOT
  * cancelled (no cancellation hook exists on the provider) — this only bounds
