@@ -486,6 +486,17 @@ export async function memoryRecall(
   const recallT0 = performance.now();
   tlog.info('recall.start', { scope, has_query: !!query });
 
+  // BL-TELEMETRY-EMBED-GAP: single-store counterpart of federatedRecall's
+  // 'recall.stores_open' (recall.ts:1603) — the adapter here is already open
+  // (passed in by the caller, no connection-open step to time), but emitting
+  // the same event name/shape right after recall.start keeps any consumer
+  // keyed on 'recall.stores_open' from seeing a gap on the non-federated path.
+  tlog.info('recall.stores_open', {
+    elapsed_ms: Math.round(performance.now() - recallT0),
+    opened: 1,
+    total: 1,
+  });
+
   // DEBT-SOXGRAPH-001: only the vec channel needs a dialect object anymore —
   // the FTS channel is fully delegated to `adapter.ftsSearch` (store-adapter's
   // A2 API), which owns all per-backend FTS SQL itself.
