@@ -1,6 +1,6 @@
 # architect
 
-> Read-only architecture agent (deepseek-v4-pro). Takes a vague feature description, delegates research to the researcher agent, analyzes the codebase with gitnexus MCP, and produces a full implementation spec with exact file paths, interface and behavioral changes, independent segments with token estimates, execution strategies for weaker agents, test cases, and documentation updates. ALWAYS delegates research — never does its own.
+> Read-only architecture agent. Takes a vague feature description, delegates research to the researcher agent, analyzes the codebase with gitnexus MCP, and produces a full implementation spec with exact file paths, interface and behavioral changes, independent segments with token estimates, execution strategies for weaker agents, test cases, and documentation updates. ALWAYS delegates research — never does its own.
 
 ## Overview
 
