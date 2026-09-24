@@ -1141,14 +1141,32 @@ function checkDxConformance(
     // a README can be >100 chars and still render a literal indicator token in place of the
     // actual description (extensions/agents/{doc-cartographer,doc-consumer,doc-evangelist,
     // doc-reviewer}/README.md, 3 commits, undetected).
-    const BLOCK_SCALAR_RE = /^>?\s*[|>][+-]?\d*$/;
+    // A lone ">" (or ">" + trailing whitespace, already stripped by .trim()) is a normal
+    // markdown idiom — continuing a multi-paragraph blockquote — and MUST pass. A real leak
+    // always carries something beyond a single bare ">": a chomp modifier ([+-]), an
+    // indentation digit, a bare "|" (never valid as ordinary blockquote content), or an
+    // explicit "> " quote-prefix wrapping a second indicator (e.g. "> >-", "> >").
+    const QUOTE_PREFIX_RE = /^>\s+/;
+    const INDICATOR_RE = /^([|>])([+-]?\d*)$/;
+    function isLeakedBlockScalarLine(trimmed: string): boolean {
+      const withoutPrefix = trimmed.replace(QUOTE_PREFIX_RE, '');
+      const hadPrefix = withoutPrefix !== trimmed;
+      const m = INDICATOR_RE.exec(withoutPrefix);
+      if (!m) return false;
+      const indicatorChar = m[1];
+      const suffix = m[2] ?? '';
+      if (indicatorChar === '|') return true; // bare "|" is never ordinary blockquote content
+      // indicatorChar === '>': only a leak if it carries a modifier/digit, or is itself
+      // wrapped by an outer "> " quote prefix (e.g. "> >-", "> >").
+      return suffix.length > 0 || hadPrefix;
+    }
     const DESC_FRONTMATTER_LEAK_RE = /^description:\s*[|>]?[+-]?\d*\s*$/i;
     const readmeLines = readmeContent.split(/\r?\n/);
     let leakedLineNumber = -1;
     let leakedLineTrimmed = '';
     for (let i = 0; i < readmeLines.length; i++) {
       const trimmed = (readmeLines[i] ?? '').trim();
-      if (trimmed.length > 0 && (BLOCK_SCALAR_RE.test(trimmed) || DESC_FRONTMATTER_LEAK_RE.test(trimmed))) {
+      if (trimmed.length > 0 && (isLeakedBlockScalarLine(trimmed) || DESC_FRONTMATTER_LEAK_RE.test(trimmed))) {
         leakedLineNumber = i + 1;
         leakedLineTrimmed = trimmed;
         break;
