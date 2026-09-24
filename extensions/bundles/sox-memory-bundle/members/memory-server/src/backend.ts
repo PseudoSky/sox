@@ -315,16 +315,17 @@ export async function coordinatedShutdown(
    * `null` skips the pre-restart backup step entirely rather than guessing a
    * path. `runBackend()` only passes a path here when `SOX_CONFIG_DB_PATH`
    * was explicitly set — the same signal a real deployed backend always has
-   * (the host runtime injects it) and a bare test spawn never does. Without
-   * this guard, `resolveDbPath(undefined)`'s documented fallback to
-   * `~/.memory/memory.db` means ANY stray SIGTERM reaching an unconfigured
-   * backend (e.g. a leaked `process.on()` listener from an earlier test in
-   * the same worker) would open a real connection to the LIVE production
-   * store purely as a side effect — reproduced while adding this suite's own
-   * regression tests (`store.integrity.repair_failed db_path:
-   * /Users/nix/.memory/memory.db` from a plain `nx test` run). BL-62
-   * established the same rule for `project_path`: never infer, only use
-   * what's explicit.
+   * (the host runtime injects it) and a bare test spawn never does.
+   * `resolveDbPath(undefined)` returns `null` when unconfigured (BL 0c3522c2
+   * fail-closed), so any stray SIGTERM reaching an unconfigured backend
+   * (e.g. a leaked `process.on()` listener from an earlier test in the same
+   * worker) will skip the backup step entirely and exit cleanly. Without this
+   * guard, a stray SIGTERM would have opened a real connection to the LIVE
+   * production store at `~/.memory/memory.db` purely as a side effect — the
+   * bug reproduced while adding this suite's own regression tests
+   * (`store.integrity.repair_failed db_path: /Users/nix/.memory/memory.db`
+   * from a plain `nx test` run). BL-62 established the same rule for
+   * `project_path`: never infer, only use what's explicit.
    */
   dbPathForBackup: string | null,
   exit: (code: number) => never,
@@ -516,14 +517,10 @@ export async function runBackend(opts: {
   // `coordinatedShutdown`'s doc comment for why a second, independent listener
   // (formerly in index.ts) was actively harmful.
   let handle: { socketPath: string; close: () => Promise<void> } | null = null;
-  // BL-405: only back up a path that was EXPLICITLY configured — never
-  // resolveDbPath(undefined)'s guessed `~/.memory/memory.db` fallback. A real
-  // deployed backend always has SOX_CONFIG_DB_PATH injected by the host
-  // runtime; a bare/test spawn never does, and must not guess its way into
-  // touching the live production store. See `coordinatedShutdown`'s
-  // `dbPathForBackup` parameter doc for the incident this guards against.
-  const configuredDbPath = (process.env['SOX_CONFIG_DB_PATH'] ?? '').trim();
-  const dbPathForBackup = configuredDbPath ? resolveDbPath(undefined) : null;
+  // BL-405 / BL 0c3522c2: only back up a path that was EXPLICITLY configured.
+  // BL 0c3522c2 (mirrors BL-405 in index.ts): back up only a CONFIGURED store.
+  // An unconfigured process has no store to back up — it must not guess one.
+  const dbPathForBackup = resolveDbPath(undefined);
   process.on('SIGTERM', () => { void coordinatedShutdown('SIGTERM', () => handle, dbPathForBackup, exit); });
   process.on('SIGINT', () => { void coordinatedShutdown('SIGINT', () => handle, dbPathForBackup, exit); });
 

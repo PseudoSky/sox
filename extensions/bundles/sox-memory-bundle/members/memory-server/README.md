@@ -50,7 +50,9 @@ The package also exports its tool dispatcher directly, which is how its own test
 ```js
 import { handleToolCall, TOOLS, resolveDbPath } from '@adhd/sox-extension-memory-server';
 
-const dbPath = resolveDbPath(undefined); // → ~/.memory/memory.db by default
+// arg → SOX_CONFIG_DB_PATH → null. There is no inferred default: with neither,
+// resolveDbPath returns null and every store tool returns E_STORE_NOT_CONFIGURED.
+const dbPath = resolveDbPath('~/.memory/memory.db');
 
 const write = await handleToolCall('memory_write', {
   db_path: dbPath,
