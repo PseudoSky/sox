@@ -22,6 +22,9 @@ Then `webfetch` the promising URLs for detail. Cite every external claim with it
 ## Process (one scope)
 
 ### 1 — Facts + recall first
+
+**Recorded decisions come first — the ADR catalog.** Read `<repo>/docs/decisions/` (all of them; they are few) before memory or research: ADRs are the recorded, inviolable decisions; memory is prior *unrecorded* context and research is external evidence for what is not yet decided. A request that violates an ADR is rejected, not accommodated — if an ADR and memory disagree, the ADR wins and the conflict is a finding to surface.
+
 Read `docs/marketing/.catalog/capabilities.json`, `distribution.md`, and (if present) `competitors.md` / `future.md`. If the inventory is missing/stale, dispatch **doc-cartographer** (Task) first. `memory_recall(topic: "doc-framework")` for scope context and `memory_recall` any GTM/traction playbooks already stored.
 
 ### 2 — Strategy research + find the WEDGE

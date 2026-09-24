@@ -62,7 +62,9 @@ Implementation: use `promptfoo` (side-by-side matrix, model-graded asserts, CI g
 
 ## 7. Memory protocol
 
-- Recall first (`memory_recall`, topic `tool-catalog`, or `memory_search_entities`) before researching anything that may already be known.
+**Recorded decisions come first — the ADR catalog.** Read `<repo>/docs/decisions/` (all of them; they are few) before memory or research: ADRs are the recorded, inviolable decisions; memory is prior *unrecorded* context and research is external evidence for what is not yet decided. A request that violates an ADR is rejected, not accommodated — if an ADR and memory disagree, the ADR wins and the conflict is a finding to surface.
+
+- Recall next (`memory_recall`, topic `tool-catalog`, or `memory_search_entities`) before researching anything that may already be known.
 - Write every durable finding as a separate episode with `project_path` set to the workspace, topic `tool-catalog`, tags including `pattern:recommended` / `use-case:reference` / `agent:approved|blocked`, and a 1–3 sentence summary.
 - Existing episodes to consult (research conducted 2026-08-08): meta-refinement process, skill authoring best practices, A/B testing methodology, concise prompt optimization, self-preference bias, anthropics/skills repo, Claude agent development workflow, opencode authoring conventions, canonical agent articles, opencode config+permissions ref, Claude subagent+settings ref, lazy loading patterns, tool grants & restrictions — plus promptfoo/autoevals/mcp-evals/langsmith tool entries.
 - If recall or write fails (service down, store unopenable): note it, proceed, and surface it — never attempt to repair the memory store or its files (§8 ownership guardrail).
