@@ -20,7 +20,7 @@
   "invocation": {
     "protocol": "function-export",
     "handler": "run",
-    "description": "Declarative agent — host reads the .md definition file directly."
+    "description": "Declarative agent — host reads the prose body and renders the host header from agent/render at install time."
   },
   "install": {
     "type": "agent",
@@ -32,5 +32,90 @@
   },
   "requires": {
     "tool_calling": true
+  },
+  "agent": {
+    "name": "typescript",
+    "description": "Senior TypeScript developer (deepseek-flash). Advanced type system patterns, complex generics, type-level programming, and end-to-end type safety across full-stack applications (TS 5.0+). Delegates broad discovery to `researcher` and uses GitNexus-first codebase awareness before changing any exported type. Differentiate from `backend`: this agent owns type-system depth and correctness; `backend` owns service/API architecture broadly.",
+    "model": "sonnet",
+    "mode": "all",
+    "temperature": 0.2,
+    "tools": [
+      "read",
+      "edit",
+      "glob",
+      "grep",
+      "bash",
+      "webfetch",
+      "task",
+      "todowrite",
+      "question",
+      "skill",
+      { "logical": "memory", "server": "memory-server" },
+      { "logical": "gitnexus", "server": "gitnexus" }
+    ],
+    "permission": {
+      "read": "allow",
+      "edit": "allow",
+      "glob": "allow",
+      "grep": "allow",
+      "bash": {
+        "*": "allow",
+        "npx nx *": "allow",
+        "npx gitnexus *": "allow",
+        "git status*": "allow",
+        "git diff*": "allow",
+        "git log*": "allow",
+        "git stash*": "deny",
+        "git add -A*": "deny",
+        "git add .*": "deny",
+        "git add --all*": "deny",
+        "git reset --hard*": "deny",
+        "git push --force*": "deny",
+        "git push *--no-verify*": "deny",
+        "git clean *-f*": "deny",
+        "rm -rf *": "deny"
+      },
+      "webfetch": "allow",
+      "websearch": "deny",
+      "task": "allow",
+      "todowrite": "allow",
+      "question": "allow",
+      "skill": "allow",
+      "memory_*": "allow",
+      "gitnexus_*": "allow"
+    }
+  },
+  "render": {
+    "claude": {
+      "model": "sonnet",
+      "tools": [
+        "Read",
+        "Edit",
+        "Glob",
+        "Grep",
+        "Bash",
+        "WebFetch",
+        "Task",
+        "TodoWrite",
+        "AskUserQuestion",
+        "Skill",
+        "TaskCreate",
+        "TaskGet",
+        "TaskUpdate",
+        "TaskList",
+        "mcp__memory-server__*",
+        "mcp__gitnexus__*",
+        "ToolSearch"
+      ],
+      "toolMap": {
+        "memory": "memory-server",
+        "gitnexus": "gitnexus"
+      }
+    },
+    "opencode": {
+      "model": "deepseek/deepseek-flash",
+      "mode": "all",
+      "temperature": 0.2
+    }
   }
 }
