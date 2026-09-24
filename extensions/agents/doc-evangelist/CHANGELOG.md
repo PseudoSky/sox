@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.2
+
+- Convert to cross-platform agent IR format: move frontmatter to `extension.json` `agent` block, add per-host `render` overrides, strip frontmatter from `.md` prose.
+
 ## 0.1.1
 
 - Pin the opencode model to the live provider id `deepseek/deepseek-flash` (the retired V4
