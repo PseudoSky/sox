@@ -81,6 +81,28 @@ function resolveEmbedKeepWarmMs(): number {
   return parsed;
 }
 
+/** Cap for both the active window and the backoff-doubled keep-warm interval. */
+const KEEPWARM_INTERVAL_CAP_MS = 900_000;
+
+/**
+ * How recently a REAL (non-keep-warm) request must have been served for
+ * keep-warm to keep ticking. The `:3099` front shim holds a permanent UDS
+ * connection to this host, so `activeClients` alone is always >= 1 and can
+ * never signal real demand — gating on client count made keep-warm fire
+ * forever even with zero actual traffic. Default 900s (15min).
+ */
+function resolveEmbedKeepWarmActiveWindowMs(): number {
+  const raw = process.env['SOX_EMBED_KEEPWARM_ACTIVE_WINDOW_MS'];
+  const DEFAULT_MS = KEEPWARM_INTERVAL_CAP_MS;
+  if (raw === undefined || raw === '') return DEFAULT_MS;
+  const parsed = Number(raw);
+  if (!Number.isFinite(parsed) || parsed < 0) {
+    log.warn('embedding_provider.embed_host.invalid_keepwarm_active_window_ms', { raw, fallback: DEFAULT_MS });
+    return DEFAULT_MS;
+  }
+  return parsed;
+}
+
 /** The `embedding.*` methods the host serves. */
 const HOST_METHODS = new Set([
   'embedding.init',
@@ -137,10 +159,21 @@ export async function runEmbedHost(): Promise<void> {
   let handle: BackendHandle | null = null;
 
   const keepWarmMs = resolveEmbedKeepWarmMs();
+  const keepWarmActiveWindowMs = resolveEmbedKeepWarmActiveWindowMs();
   let keepWarmTimer: NodeJS.Timeout | null = null;
   // Last time a request (real or keep-warm) COMPLETED — used to skip a tick
   // when a real request already refreshed the model pages this interval.
   let lastActivityAt = Date.now();
+  // Last time a REAL (non-keep-warm) request was served. Epoch (0) until the
+  // first one lands, so keep-warm never fires before any genuine traffic has
+  // been observed — a permanently-connected client with zero real requests
+  // must not keep the model paged in forever.
+  let lastRealActivityAt = 0;
+  // Adaptive keep-warm cadence: doubles (capped at KEEPWARM_INTERVAL_CAP_MS)
+  // whenever a keep-warm embed takes > 6s (a sign the box is under memory
+  // pressure and paging is expensive), and resets to the configured base on
+  // a fast tick.
+  let keepWarmIntervalMs = keepWarmMs;
 
   const cancelIdle = (): void => {
     if (idleTimer) {
@@ -156,9 +189,17 @@ export async function runEmbedHost(): Promise<void> {
     }
   };
 
+  const KEEPWARM_SLOW_MS = 6_000;
+
   const keepWarmTick = (): void => {
     if (shuttingDown || activeClients === 0 || inFlight !== 0) return;
-    if (Date.now() - lastActivityAt < keepWarmMs) return;
+    // Activity gate: the `:3099` front shim holds a permanent connection, so
+    // `activeClients` is always >= 1 and can never signal real demand on its
+    // own. Only keep warming while a REAL (non-keep-warm) request landed
+    // within the active window, AND skip this particular tick if something
+    // (real or keep-warm) already completed within the current cadence.
+    if (Date.now() - lastRealActivityAt >= keepWarmActiveWindowMs) return;
+    if (Date.now() - lastActivityAt < keepWarmIntervalMs) return;
     // No client has sent embedding.init yet — the child would just reply
     // "Model not initialized" (fastembedProcessHost.ts) and we'd log a
     // keep_warm_failed warning every interval for nothing. Wait for a real
@@ -167,7 +208,13 @@ export async function runEmbedHost(): Promise<void> {
     inFlight++;
     const start = performance.now();
     void getPrivateFastembedProcess()
-      .request({ type: 'embed', text: 'keepwarm' })
+      // `_keepWarm: true` tags this as synthetic demand: the adaptive pool's
+      // shrink/idle clock (sharedFastembedProcess.ts request()) must not
+      // treat it as real traffic, or a host idle except for its own
+      // keep-warm ticks would never shrink back to minSize. `stage:
+      // 'keepwarm'` gives it its own label wherever a stage is emitted,
+      // distinct from real embed/embedBatch requests.
+      .request({ type: 'embed', text: 'keepwarm', stage: 'keepwarm', _keepWarm: true })
       .catch((e: unknown) => {
         log.warn('embedding_provider.embed_host.keep_warm_failed', {
           error: e instanceof Error ? e.message : String(e),
@@ -177,7 +224,27 @@ export async function runEmbedHost(): Promise<void> {
         inFlight--;
         lastActivityAt = Date.now();
         const work_ms = performance.now() - start;
-        log.info('embedding_provider.embed_host.keep_warm', { work_ms, activeClients });
+        log.info('embedding_provider.embed_host.keep_warm', {
+          work_ms,
+          activeClients,
+          keepWarmIntervalMs,
+        });
+        // Backoff: a slow keep-warm embed signals memory pressure — space
+        // ticks out further (capped) rather than compounding the pressure
+        // with more frequent warm-ups. A fast tick resets to the configured
+        // base cadence.
+        if (work_ms > KEEPWARM_SLOW_MS) {
+          const nextIntervalMs = Math.min(keepWarmIntervalMs * 2, KEEPWARM_INTERVAL_CAP_MS);
+          if (nextIntervalMs !== keepWarmIntervalMs) {
+            keepWarmIntervalMs = nextIntervalMs;
+            log.info('embedding_provider.embed_host.keepwarm.backoff', {
+              work_ms,
+              keepWarmIntervalMs,
+            });
+          }
+        } else {
+          keepWarmIntervalMs = keepWarmMs;
+        }
         // A keep-warm embed can be the last in-flight work when the final
         // client disconnects mid-tick — onClientCountChange(0) would have
         // seen inFlight !== 0 and returned early, so nothing else re-arms
@@ -189,9 +256,11 @@ export async function runEmbedHost(): Promise<void> {
   const startKeepWarm = (): void => {
     if (keepWarmMs <= 0 || keepWarmTimer || shuttingDown) return;
     // Tick at half the skip threshold: keepWarmTick itself no-ops until
-    // `keepWarmMs` has elapsed since the last activity, so ticking at the
-    // full period lets the real gap between warm embeds drift toward 2x
-    // keepWarmMs depending on where in the interval the last request landed.
+    // `keepWarmIntervalMs` has elapsed since the last activity, so ticking at
+    // the full period lets the real gap between warm embeds drift toward 2x
+    // the interval depending on where in it the last request landed. Ticking
+    // at half the BASE interval is still frequent enough to catch a
+    // backed-off (doubled) cadence promptly once it resets.
     keepWarmTimer = setInterval(keepWarmTick, Math.max(1, Math.floor(keepWarmMs / 2)));
     keepWarmTimer.unref?.();
   };
@@ -268,6 +337,7 @@ export async function runEmbedHost(): Promise<void> {
     } finally {
       inFlight--;
       lastActivityAt = Date.now();
+      lastRealActivityAt = lastActivityAt;
       // A request may have drained the last in-flight work with no clients
       // attached (e.g. a one-shot embed) — re-arm the reap.
       if (activeClients === 0) armIfIdle();

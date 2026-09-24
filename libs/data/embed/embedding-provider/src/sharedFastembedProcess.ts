@@ -1584,8 +1584,14 @@ export class AdaptiveFastembedProcessPool implements SharedFastembedClient {
 
     // Any real admission means the pool is not idle right now — cancel any
     // in-progress idle clock so `maybeShrink()` requires a fresh full
-    // `SHRINK_IDLE_MS` window starting from here.
-    this.idleSinceMs = null;
+    // `SHRINK_IDLE_MS` window starting from here. A keep-warm tick
+    // (`embedHostMain.ts`, tagged `_keepWarm: true`) is synthetic demand —
+    // it must NOT look like real traffic to the shrink policy, or a host
+    // sitting idle except for its own keep-warm ticks would never shrink
+    // back toward `minSize`.
+    if (payload['_keepWarm'] !== true) {
+      this.idleSinceMs = null;
+    }
 
     // Evaluate the grow condition BEFORE reserving this request's own slot —
     // the ratio should reflect backlog that existed independent of this
