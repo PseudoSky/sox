@@ -52,8 +52,10 @@ export {
   findLocalExtension,
   loadExtensionManifest,
   SCOPES,
+  resolveRequiredConfigSeed,
+  configEnvKey,
 } from './install.js';
-export type { InstallDescriptor, DeclarativeInstallResult } from './install.js';
+export type { InstallDescriptor, DeclarativeInstallResult, ConfigSchemaProperty, RequiredConfigSeed } from './install.js';
 
 // ─── Re-export verify-integrity (ADR-0003 is-this-current primitive) ──────────
 

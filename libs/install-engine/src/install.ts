@@ -128,18 +128,65 @@ export interface ExtensionManifest {
    * Sox recognises two non-standard extension properties:
    *   x-sox-prompt  — prompt text shown during interactive install
    *   x-sox-default — value used when user enters nothing
+   *   x-sox-scope-default — per-install-scope value for a REQUIRED key, e.g.
+   *     `{ "user": "~/.memory/memory.db", "project": "~/.memory/memory-dev.db" }`.
+   *     Seeded without prompting on a non-interactive install and offered as the
+   *     prompt default on an interactive one (see resolveRequiredConfigSeed).
    */
   config_schema?: {
     type?: string;
     additionalProperties?: boolean;
     required?: string[];
-    properties?: Record<string, {
-      type?: string;
-      description?: string;
-      'x-sox-prompt'?: string;
-      'x-sox-default'?: unknown;
-    }>;
+    properties?: Record<string, ConfigSchemaProperty>;
   } | undefined;
+}
+
+/** One `config_schema.properties` entry, with the sox-specific annotations. */
+export interface ConfigSchemaProperty {
+  type?: string;
+  description?: string;
+  'x-sox-prompt'?: string;
+  'x-sox-default'?: unknown;
+  'x-sox-scope-default'?: Partial<Record<Scope, string>>;
+}
+
+/**
+ * Where install-time config capture gets a value for a REQUIRED key that no
+ * scope in the cascade sets yet.
+ *   - `env`: the operator exported `SOX_CONFIG_<KEY>` for this install — an
+ *     explicit value, persisted without prompting. (Hermetic harnesses such as
+ *     the smoke test pin their scratch store this way.)
+ *   - `scope-default`: the manifest's `x-sox-scope-default[<scope>]` — persisted
+ *     without prompting when non-interactive, offered as the default when
+ *     interactive.
+ *   - `null`: nothing to seed; the caller prompts (interactive) or warns.
+ */
+export type RequiredConfigSeed =
+  | { source: 'env'; value: string; envKey: string }
+  | { source: 'scope-default'; value: string }
+  | null;
+
+/** `db_path` → `SOX_CONFIG_DB_PATH` — the same key mapping buildExtConfigEnv uses. */
+export function configEnvKey(key: string): string {
+  return `SOX_CONFIG_${key.toUpperCase().replace(/[-\s]/g, '_')}`;
+}
+
+/**
+ * BL 0c3522c2: resolve the install-time seed for a required config key. Pure —
+ * no fs, no prompting. Blank values count as absent at every tier.
+ */
+export function resolveRequiredConfigSeed(
+  key: string,
+  propDef: ConfigSchemaProperty,
+  scope: Scope,
+  env: NodeJS.ProcessEnv = process.env,
+): RequiredConfigSeed {
+  const envKey = configEnvKey(key);
+  const fromEnv = (env[envKey] ?? '').trim();
+  if (fromEnv) return { source: 'env', value: fromEnv, envKey };
+  const scoped = propDef['x-sox-scope-default']?.[scope];
+  if (typeof scoped === 'string' && scoped.trim()) return { source: 'scope-default', value: scoped.trim() };
+  return null;
 }
 
 // ─── Scope path resolution ────────────────────────────────────────────────────
@@ -792,29 +839,44 @@ export async function install(opts: InstallOptions): Promise<ResolvedSet> {
 
         const propDef = properties[reqKey] ?? {};
         const promptText = propDef['x-sox-prompt'] ?? `Enter value for ${entry.id}.${reqKey}:`;
-        const defaultVal = propDef['x-sox-default'];
+        const seed = resolveRequiredConfigSeed(reqKey, propDef, opts.scope);
+        // A scope default outranks the generic x-sox-default as the prompt default.
+        const defaultVal = seed?.source === 'scope-default' ? seed.value : propDef['x-sox-default'];
 
-        if (opts.onMissingConfig) {
+        const persist = (value: string, how: string): void => {
+          const existing = loadConfig(configPath5) as Record<string, unknown> ?? {};
+          const cfgBlock = (existing['config'] as Record<string, Record<string, unknown>> | undefined) ?? {};
+          const extBlock = cfgBlock[entry.id] ?? {};
+          extBlock[reqKey] = value;
+          cfgBlock[entry.id] = extBlock;
+          existing['config'] = cfgBlock;
+          const configDir = path.dirname(configPath5);
+          if (!fs.existsSync(configDir)) fs.mkdirSync(configDir, { recursive: true });
+          fs.writeFileSync(configPath5, JSON.stringify(existing, null, 2) + '\n', 'utf8');
+          // The cascade snapshot is read again below (bundle members, later
+          // entries) — keep it in step with what was just written.
+          cascadedEntryConfig[reqKey] = value;
+          console.log(`install: config: set ${entry.id}.${reqKey} (scope: ${opts.scope}, ${how})`);
+        };
+
+        if (seed?.source === 'env') {
+          // Explicit operator value — never prompt over it.
+          persist(seed.value, `from ${seed.envKey}`);
+        } else if (opts.onMissingConfig) {
           // CLI layer handles the interactive prompt
           const captured = await opts.onMissingConfig(entry.id, reqKey, promptText as string, defaultVal);
           if (captured !== undefined) {
-            // Persist to the scope config file
-            const existing = loadConfig(configPath5) as Record<string, unknown> ?? {};
-            const cfgBlock = (existing['config'] as Record<string, Record<string, unknown>> | undefined) ?? {};
-            const extBlock = cfgBlock[entry.id] ?? {};
-            extBlock[reqKey] = captured;
-            cfgBlock[entry.id] = extBlock;
-            existing['config'] = cfgBlock;
-            const configDir = path.dirname(configPath5);
-            if (!fs.existsSync(configDir)) fs.mkdirSync(configDir, { recursive: true });
-            fs.writeFileSync(configPath5, JSON.stringify(existing, null, 2) + '\n', 'utf8');
-            console.log(`install: config: set ${entry.id}.${reqKey} (scope: ${opts.scope})`);
+            persist(captured, 'prompted');
           } else {
             console.warn(
               `install: warning: required config key '${reqKey}' for '${entry.id}' was not set. ` +
               `Run: soxe config set ${entry.id} ${reqKey} <value>`,
             );
           }
+        } else if (seed?.source === 'scope-default') {
+          // BL 0c3522c2: non-interactive install seeds the manifest's per-scope
+          // value instead of leaving a required key unset for the runtime to guess.
+          persist(seed.value, `x-sox-scope-default[${opts.scope}]`);
         } else {
           // Non-interactive: warn
           console.warn(
