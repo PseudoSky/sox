@@ -951,7 +951,6 @@ export async function install(opts: InstallOptions): Promise<ResolvedSet> {
         }
       }
 
-
       // P9: upsert into global install ledger (~/.sox/install-registry.json).
       // Best-effort: a failed write must never fail the install. The ledger's
       // `version` is mechanical release-bookkeeping ONLY (ADR-0003 Decision 6) —
