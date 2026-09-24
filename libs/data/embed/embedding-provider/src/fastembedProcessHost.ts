@@ -388,13 +388,14 @@ function send(msg: InitOkResponse | EmbedResponse | EmbedBatchResponse | ErrorRe
  * disk/model-load I/O without spinning the CPU shows low `cpu_ms` despite a
  * large `work_ms`), which is exactly the signal needed to tell the two apart.
  *
- * CAVEAT — `process.cpuUsage()` is whole-PROCESS, not per-request.
- * `handleRequest` is async and this child can have several requests awaiting
- * concurrently, so both `work_ms` (wall time) and `cpu_ms` for one request
- * can include time spent on other requests overlapping it on this same
- * child. The page-in vs. compute distinction above is exact only when
- * requests are effectively serialized on this child; under real concurrency
- * treat both numbers as upper bounds shared across the overlapping set.
+ * CAVEAT — `process.cpuUsage()` is whole-PROCESS, not per-request. This
+ * would matter if two `handleRequest` calls could have work in flight at
+ * once, but they cannot: every call site below runs through `enqueue()`'s
+ * `_queue` promise chain (`_queue = _queue.then(task, task)`), which is
+ * strictly serial on this child — the next task never starts until the
+ * previous one's promise settles. So `work_ms`/`cpu_ms` for a given request
+ * never overlap another request's on this same child; no upper-bound
+ * caveat applies here.
  *
  * (Page-in vs. compute, CoreML addendum) `cpu_ms` alone still under-reports
  * on the `coreml` execution provider: ANE/GPU execution time is dispatched
@@ -413,7 +414,7 @@ function measureWork<T>(
   const startedAt = performance.now();
   const cpuStart = process.cpuUsage();
   const resourceStart = typeof process.resourceUsage === 'function' ? process.resourceUsage() : undefined;
-  return fn().then((result) => {
+  const snapshot = (): { work_ms: number; cpu_ms: number; host_majflt?: number; host_minflt?: number } => {
     const cpuDelta = process.cpuUsage(cpuStart);
     let host_majflt: number | undefined;
     let host_minflt: number | undefined;
@@ -431,13 +432,25 @@ function measureWork<T>(
       }
     }
     return {
-      result,
       work_ms: Math.round(performance.now() - startedAt),
       cpu_ms: Math.round((cpuDelta.user + cpuDelta.system) / 1000),
       ...(host_majflt !== undefined ? { host_majflt } : {}),
       ...(host_minflt !== undefined ? { host_minflt } : {}),
     };
-  });
+  };
+  return fn().then(
+    (result) => ({ result, ...snapshot() }),
+    (err: unknown) => {
+      // A failed load/embed (e.g. a cold page-in that ends in a timeout) is
+      // exactly the case whose work_ms/cpu_ms/fault counts are most useful —
+      // attribute it instead of dropping the telemetry on the floor.
+      log.warn('embedding_provider.fastembed_host.measure_work_failed', {
+        error: err instanceof Error ? err.message : String(err),
+        ...snapshot(),
+      });
+      throw err;
+    },
+  );
 }
 
 /**
@@ -445,9 +458,12 @@ function measureWork<T>(
  * time, BEFORE this task is enqueued onto `_queue`; `host_queue_ms` — taken
  * here, at the moment this task actually starts running — is the wait this
  * specific request spent sitting behind whatever else was already queued on
- * this same child (BUG-005/BL-432's head-of-line blocking), a component of
- * `work_ms` that `measureWork()` alone cannot isolate since `work_ms` only
- * starts timing once the task is already executing.
+ * this same child (BUG-005/BL-432's head-of-line blocking). It is NOT part
+ * of `work_ms` — `measureWork()` only starts timing once the task is
+ * already executing, so queue wait never leaks into it. `host_queue_ms` is
+ * instead a component of the PARENT's `response_ms`
+ * (`sharedFastembedProcess.ts`'s `request()`), which spans the full
+ * `child.send()` → reply round trip.
  */
 async function handleRequest(
   msg: InitRequest | EmbedRequest | EmbedBatchRequest,

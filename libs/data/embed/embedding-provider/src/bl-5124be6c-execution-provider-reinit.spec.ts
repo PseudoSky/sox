@@ -23,6 +23,7 @@ import { homedir, tmpdir } from 'node:os';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
+import { log } from '@adhd/sox-telemetry';
 
 const HOST_PATH = resolve(__dirname, 'fastembedProcessHost.ts');
 const CACHE_DIR = join(process.env['XDG_CACHE_HOME'] ?? join(homedir(), '.cache'), 'sox', 'models');
@@ -35,16 +36,20 @@ afterEach(() => {
   if (child && !child.killed) {
     try {
       child.kill('SIGKILL');
-    } catch {
-      /* ignore */
+    } catch (err) {
+      log.warn('embedding_provider.spec.bl5124be6c.kill_failed', {
+        error: err instanceof Error ? err.message : String(err),
+      });
     }
   }
   child = undefined;
   if (scratchDir) {
     try {
       rmSync(scratchDir, { recursive: true, force: true });
-    } catch {
-      /* ignore */
+    } catch (err) {
+      log.warn('embedding_provider.spec.bl5124be6c.rm_scratch_failed', {
+        error: err instanceof Error ? err.message : String(err),
+      });
     }
     scratchDir = undefined;
   }
@@ -67,28 +72,42 @@ function forkHost(forcedProvider: string): ChildProcess {
 
 function sendInit(c: ChildProcess, id: number): Promise<Record<string, unknown>> {
   return new Promise((resolveReply, reject) => {
-    const timeout = setTimeout(
-      () => reject(new Error(`init id=${id} reply timed out after 90s`)),
-      90_000,
-    );
+    // All three listeners are removed on every exit path (resolve, reject-by-
+    // error, reject-by-timeout) so a later event on this same long-lived
+    // child (the caller re-uses `child` across two sendInit calls) never
+    // fires a listener for an already-settled promise.
+    const cleanup = (): void => {
+      clearTimeout(timeout);
+      c.off('message', onMessage);
+      c.off('error', onError);
+    };
+    const timeout = setTimeout(() => {
+      cleanup();
+      reject(new Error(`init id=${id} reply timed out after 90s`));
+    }, 90_000);
     const onMessage = (msg: { id?: number; type?: unknown } & Record<string, unknown>) => {
       if (msg.type === 'telemetry.ready') return;
       if (msg.id !== id) return;
-      clearTimeout(timeout);
-      c.off('message', onMessage);
+      cleanup();
       resolveReply(msg);
     };
-    c.on('message', onMessage);
-    c.on('error', (err) => {
-      clearTimeout(timeout);
+    const onError = (err: Error): void => {
+      cleanup();
       reject(err);
-    });
+    };
+    c.on('message', onMessage);
+    c.on('error', onError);
     c.send({ type: 'init', model: MODEL, cacheDir: CACHE_DIR, id });
   });
 }
 
 describe('BL-5124be6c — execution_provider persists across re-init of an already-loaded model', () => {
-  it(
+  // coreml is only a valid onnxruntime-node execution provider on darwin;
+  // forcing it unconditionally made this fail on Linux CI for reasons
+  // unrelated to BL-5124be6c (no CoreML EP present, so the load either
+  // throws or silently falls back). Gate to darwin so the provider name is
+  // always valid on the platform running it.
+  it.runIf(process.platform === 'darwin')(
     'second init for the SAME already-loaded model reports the ORIGINAL forced provider, not hardcoded cpu (pre-fix: always cpu)',
     async () => {
       // Force a non-cpu provider name so the pre-fix hardcoded-'cpu' default
@@ -102,6 +121,15 @@ describe('BL-5124be6c — execution_provider persists across re-init of an alrea
       expect(first['work_ms'] as number).toBeGreaterThanOrEqual(0);
       expect(typeof first['cpu_ms']).toBe('number');
       expect(first['cpu_ms'] as number).toBeGreaterThanOrEqual(0);
+      // host_queue_ms is optional (platform/timing-dependent) but must be a
+      // non-negative number whenever present — the telemetry addition this
+      // suite's header claims to cover.
+      if (first['host_queue_ms'] !== undefined) {
+        expect(typeof first['host_queue_ms']).toBe('number');
+        expect(first['host_queue_ms'] as number).toBeGreaterThanOrEqual(0);
+      }
+      if (first['host_majflt'] !== undefined) expect(typeof first['host_majflt']).toBe('number');
+      if (first['host_minflt'] !== undefined) expect(typeof first['host_minflt']).toBe('number');
 
       // Re-init with the exact same model/cacheDir hits the already-loaded
       // branch in loadModel() — this is the branch that mis-reported.
@@ -110,6 +138,9 @@ describe('BL-5124be6c — execution_provider persists across re-init of an alrea
       expect(second['execution_provider']).toBe('coreml');
       expect(typeof second['work_ms']).toBe('number');
       expect(typeof second['cpu_ms']).toBe('number');
+      // The second init is a cache hit (model already loaded) — it must not
+      // redo the real load work the first init did.
+      expect(second['work_ms'] as number).toBeLessThan(first['work_ms'] as number);
     },
     120_000,
   );

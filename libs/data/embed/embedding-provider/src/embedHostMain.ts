@@ -207,14 +207,22 @@ export async function runEmbedHost(): Promise<void> {
     if (!getPrivateFastembedProcess().lastInit) return;
     inFlight++;
     const start = performance.now();
+    let tickOk = false;
     void getPrivateFastembedProcess()
       // `_keepWarm: true` tags this as synthetic demand: the adaptive pool's
       // shrink/idle clock (sharedFastembedProcess.ts request()) must not
       // treat it as real traffic, or a host idle except for its own
-      // keep-warm ticks would never shrink back to minSize. `stage:
-      // 'keepwarm'` gives it its own label wherever a stage is emitted,
-      // distinct from real embed/embedBatch requests.
-      .request({ type: 'embed', text: 'keepwarm', stage: 'keepwarm', _keepWarm: true })
+      // keep-warm ticks would never shrink back to minSize. `stage` is NOT
+      // read by anything downstream today (sharedFastembedProcess.ts /
+      // fastembedProcessHost.ts have no `stage` handling) — it is forwarded
+      // unchanged over IPC to the ONNX child and otherwise inert. Keep-warm
+      // requests are therefore logged under the same
+      // `fastembed_process.request.start/finish` telemetry as real embeds;
+      // distinguish them downstream via `_keepWarm`, not `stage`.
+      .request({ type: 'embed', text: 'keepwarm', _keepWarm: true })
+      .then(() => {
+        tickOk = true;
+      })
       .catch((e: unknown) => {
         log.warn('embedding_provider.embed_host.keep_warm_failed', {
           error: e instanceof Error ? e.message : String(e),
@@ -225,6 +233,7 @@ export async function runEmbedHost(): Promise<void> {
         lastActivityAt = Date.now();
         const work_ms = performance.now() - start;
         log.info('embedding_provider.embed_host.keep_warm', {
+          ok: tickOk,
           work_ms,
           activeClients,
           keepWarmIntervalMs,
@@ -232,8 +241,10 @@ export async function runEmbedHost(): Promise<void> {
         // Backoff: a slow keep-warm embed signals memory pressure — space
         // ticks out further (capped) rather than compounding the pressure
         // with more frequent warm-ups. A fast tick resets to the configured
-        // base cadence.
-        if (work_ms > KEEPWARM_SLOW_MS) {
+        // base cadence. Only a SUCCESSFUL tick's timing is trustworthy for
+        // this — a failed tick (timeout, child crash) says nothing about
+        // paging cost and must not be conflated with a slow successful one.
+        if (tickOk && work_ms > KEEPWARM_SLOW_MS) {
           const nextIntervalMs = Math.min(keepWarmIntervalMs * 2, KEEPWARM_INTERVAL_CAP_MS);
           if (nextIntervalMs !== keepWarmIntervalMs) {
             keepWarmIntervalMs = nextIntervalMs;
@@ -242,7 +253,7 @@ export async function runEmbedHost(): Promise<void> {
               keepWarmIntervalMs,
             });
           }
-        } else {
+        } else if (tickOk) {
           keepWarmIntervalMs = keepWarmMs;
         }
         // A keep-warm embed can be the last in-flight work when the final
@@ -306,6 +317,13 @@ export async function runEmbedHost(): Promise<void> {
     inFlight++;
     const id = req.id;
     const method = req.method;
+    // Only a successful embedding.init/embed/embedBatch forward counts as
+    // REAL demand for `lastRealActivityAt` — health probes, resets, and
+    // method-not-found replies must not keep the activity-window gate open,
+    // or the permanently-connected `:3099` shim's own health polling would
+    // keep keep-warm firing forever (the exact failure this gate exists to
+    // prevent).
+    let isRealForward = false;
 
     try {
       if (!HOST_METHODS.has(method)) {
@@ -331,13 +349,14 @@ export async function runEmbedHost(): Promise<void> {
       // it per use so a reset mid-life never leaves us on a terminated pool.
       const params = (req.params ?? {}) as Record<string, unknown>;
       const result = await getPrivateFastembedProcess().request(params);
+      isRealForward = true;
       return ok(id, result);
     } catch (e) {
       return fail(id, -32603, e instanceof Error ? e.message : String(e));
     } finally {
       inFlight--;
       lastActivityAt = Date.now();
-      lastRealActivityAt = lastActivityAt;
+      if (isRealForward) lastRealActivityAt = lastActivityAt;
       // A request may have drained the last in-flight work with no clients
       // attached (e.g. a one-shot embed) — re-arm the reap.
       if (activeClients === 0) armIfIdle();
