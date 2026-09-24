@@ -55,6 +55,30 @@ function splitTools(ir: AgentIr): { builtins: string[]; mcp: Array<{ logical: st
 
 // ─── claude ──────────────────────────────────────────────────────────────────
 
+/**
+ * IR `permission` deny -> claude `disallowedTools` mapping (BL 33a99177).
+ * Ordered as [{tool, permKey}, ...] so the emitted `disallowedTools` list
+ * follows this table's order regardless of which IR keys are actually
+ * denied — e.g. edit:deny + write:deny renders "Edit, Write, NotebookEdit",
+ * not "Edit, NotebookEdit, Write" (edit contributes two claude tool names,
+ * write's single name sits between them).
+ */
+const CLAUDE_DISALLOWED_TOOL_MAP: ReadonlyArray<{ tool: string; permKey: string }> = [
+  { tool: 'Edit', permKey: 'edit' },
+  { tool: 'Write', permKey: 'write' },
+  { tool: 'NotebookEdit', permKey: 'edit' },
+];
+
+/** Derive claude's `disallowedTools` header value from an IR/override permission map. */
+function claudeDisallowedTools(
+  permission: Record<string, string | Record<string, string>> | undefined,
+): string[] {
+  if (permission === undefined) return [];
+  return CLAUDE_DISALLOWED_TOOL_MAP.filter((m) => permission[m.permKey] === 'deny').map(
+    (m) => m.tool,
+  );
+}
+
 const claudeRenderer: HostRenderer = {
   renderHeader(ir, override) {
     const header: Record<string, unknown> = {};
@@ -81,6 +105,14 @@ const claudeRenderer: HostRenderer = {
     // (spec §4.4) — see claude-agents categories/dispatch/agents/architect-decision.md.
     const steps = override?.steps ?? ir.steps;
     if (steps !== undefined) header['maxTurns'] = steps;
+
+    // BL 33a99177: the IR `permission` map is opencode-shaped, but an edit/write
+    // deny is a harness-level guarantee (e.g. dispatcher's never-execute rule)
+    // that must survive rendering to claude too — map it to `disallowedTools`.
+    const permission = override?.permission ?? ir.permission;
+    const disallowedTools = claudeDisallowedTools(permission);
+    if (disallowedTools.length > 0) header['disallowedTools'] = disallowedTools.join(', ');
+
     return header;
   },
 
