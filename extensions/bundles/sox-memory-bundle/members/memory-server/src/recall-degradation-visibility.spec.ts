@@ -89,6 +89,7 @@ import {
   DeterministicTestProvider,
   flushPendingEmbeds,
   WriteQueue,
+  __resetRecallVecCircuitForTest,
 } from '@adhd/sox-memory-core';
 import { handleToolCall, _resetRecallDegradationCountersForTest } from './index.js';
 
@@ -146,6 +147,12 @@ beforeEach(() => {
   // 3000ms production default is untouched by this fix.
   process.env['SOX_RECALL_EMBED_TIMEOUT_MS'] = '150';
   _resetRecallDegradationCountersForTest();
+  // The vec circuit breaker is module-level state in recall.ts, independent
+  // of the degradation counters above — without this reset, a HangingProvider
+  // call in an earlier test leaves the circuit open and every later test
+  // (even ones using a healthy provider) inherits a stale "breaker open"
+  // degradation instead of exercising its own intended path.
+  __resetRecallVecCircuitForTest();
   _setEmbedProviderForTest(new DeterministicTestProvider());
 });
 
@@ -156,6 +163,7 @@ afterEach(async () => {
   WriteQueue.clearInstances();
   _setEmbedProviderForTest(new DeterministicTestProvider());
   _resetRecallDegradationCountersForTest();
+  __resetRecallVecCircuitForTest();
   for (const c of cleanups.splice(0)) c();
 });
 

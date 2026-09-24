@@ -246,6 +246,7 @@ export {
   federatedRecall,
   getFederationConnection,
   closeFederationConnections,
+  __resetRecallVecCircuitForTest,
   SCOPE_WEIGHTS,
   readRegistry,
   writeRegistry,
