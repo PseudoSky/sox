@@ -176,6 +176,10 @@ let RUN_STARTED_MS = Date.now();
  * spawn acts on, so a live change to one of them is FATAL even when an
  * operator event also names it.
  */
+const SOXE_ID_TARGET_VERBS = new Set([
+  'install', 'uninstall', 'update', 'upgrade', 'enable', 'disable',
+  'start', 'stop', 'serve', 'exec', 'details', 'status', 'logs',
+]);
 function noteSoxeSpawn(args, extId) {
   if (isolationBaseline === null) {
     isolationBaseline = snapshotLiveFiles(LIVE_DATA_ROOT);
@@ -193,7 +197,10 @@ function noteSoxeSpawn(args, extId) {
     }
     positionals.push(a);
   }
-  const idPos = args[0] === 'service' ? positionals[1] : positionals[0];
+  // Only verbs whose positional IS an extension/bundle id (mirrors apps/sox/src/cli-invoked-fields.ts);
+  // `config set <key> <value>` names a config key, not an id.
+  const idPos = args[0] === 'service' ? positionals[1]
+    : SOXE_ID_TARGET_VERBS.has(args[0]) ? positionals[0] : undefined;
   if (idPos) SMOKE_TOUCHED_IDS.add(idPos);
 }
 
