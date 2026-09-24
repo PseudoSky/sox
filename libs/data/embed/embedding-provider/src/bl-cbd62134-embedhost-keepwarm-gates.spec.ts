@@ -8,8 +8,8 @@ import {
 } from './embedHostMain.js';
 
 /**
- * Regression coverage for the keep-warm gating/backoff logic added in
- * fix/embed-recall-resilience. Review flagged this as untested: the
+ * bl-cbd62134 — regression coverage for the keep-warm activity gate + backoff
+ * logic added in fix/embed-recall-resilience. Review flagged this as untested: the
  * activity-window gate, the skip-if-recent-activity gate, the no-lastInit
  * gate, the backoff doubling/cap, the reset-to-base on a fast tick, and the
  * env parsing for both resolver functions. `keepWarmTick`/`startKeepWarm`
