@@ -96,17 +96,28 @@ class RecallEmbedTimeoutError extends Error {
 //
 // A single embed() timeout means the provider is currently backed up — the
 // NEXT recall calling embed() again immediately just pays the same 3s guard
-// for the same reason. After a timeout, skip the query embed entirely for
-// SOX_RECALL_VEC_COOLDOWN_MS and go straight to FTS/temporal (the existing
-// BL-273 `embedVecFailed` degradation path). Half-open: once the cooldown
-// elapses, only ONE in-flight probe is allowed at a time
-// (`recallVecProbeInFlight`) — without this gate, every recall arriving
-// right after the cooldown would attempt the embed simultaneously and
-// recreate the exact backlog the breaker exists to prevent. A probe success
-// closes the circuit only if it started AFTER the circuit's current open
-// (`recallVecCircuitOpenedAt`) — otherwise a stale in-flight call that
-// happens to resolve late would clobber a newer timeout's open state.
+// for the same reason. After a timeout the circuit OPENS: every recall that
+// arrives while it is open skips the query embed entirely and goes straight
+// to FTS/temporal (the existing BL-273 `embedVecFailed` degradation path) —
+// a user recall NEVER pays the embed-timeout cost while the breaker is open,
+// not even the first one after the timeout (there is no more "the next
+// caller becomes the probe and blocks on the real query embed" mode).
+//
+// Recovery is driven by a single-flight BACKGROUND probe
+// (`embed('breaker-probe', 'recall')`, bounded by the same recall embed
+// timeout guard) fired from inside a recall that finds the circuit open and
+// probe-eligible (`recallVecProbeInFlight === false` and the backoff has
+// elapsed). The probe is NOT awaited by the recall that launches it — it
+// runs after that recall has already gone FTS-only. Only the probe's own
+// settlement (success or timeout) may clear `recallVecProbeInFlight`
+// (`closeRecallVecCircuit`'s `isProbeSettlement` param) — nothing else may,
+// since nothing else calls embed() while the circuit is open. Probe success
+// closes the circuit and resets the backoff to the base cooldown; probe
+// timeout reopens the circuit with the backoff DOUBLED, capped at
+// SOX_RECALL_VEC_COOLDOWN_MAX_MS, so a provider outage backs off instead of
+// re-probing every recall.
 const DEFAULT_RECALL_VEC_COOLDOWN_MS = 30000;
+const DEFAULT_RECALL_VEC_COOLDOWN_MAX_MS = 300000;
 
 function resolveRecallVecCooldownMs(): number {
   const raw = process.env['SOX_RECALL_VEC_COOLDOWN_MS'];
@@ -114,42 +125,67 @@ function resolveRecallVecCooldownMs(): number {
   return Number.isFinite(n) && n >= 0 ? n : DEFAULT_RECALL_VEC_COOLDOWN_MS;
 }
 
-let recallVecCircuitOpenUntil = 0;
-/** Wall-clock timestamp the circuit was last opened (0 when never/closed). */
+function resolveRecallVecCooldownMaxMs(): number {
+  const raw = process.env['SOX_RECALL_VEC_COOLDOWN_MAX_MS'];
+  const n = raw ? parseInt(raw, 10) : NaN;
+  return Number.isFinite(n) && n > 0 ? n : DEFAULT_RECALL_VEC_COOLDOWN_MAX_MS;
+}
+
+/** Wall-clock timestamp the circuit was last opened (0 when closed). */
 let recallVecCircuitOpenedAt = 0;
-/** True while a half-open probe embed is in flight. */
+/** Current backoff between probe attempts; 0 when closed, doubles on each probe timeout. */
+let recallVecCurrentCooldownMs = 0;
+/** Wall-clock timestamp the next probe is allowed to fire. */
+let recallVecNextProbeAt = 0;
+/** True while the single allowed background probe embed is in flight. */
 let recallVecProbeInFlight = false;
 
-/**
- * Whether the caller should skip the vec channel. Hard-open: always skip.
- * Half-open (cooldown elapsed but breaker not yet closed): skip unless this
- * call is the single allowed probe, in which case it claims the probe slot
- * and returns false so the caller proceeds to embed.
- */
-function shouldSkipRecallVec(): boolean {
-  const now = Date.now();
-  if (now < recallVecCircuitOpenUntil) return true;
-  if (recallVecCircuitOpenedAt !== 0) {
-    if (recallVecProbeInFlight) return true;
-    recallVecProbeInFlight = true;
-    return false;
-  }
-  return false;
-}
-
+/** Reopen (or first-open) the circuit. Only ever called from: (a) a
+ *  foreground embed timeout while closed (first open — probe eligible
+ *  immediately), or (b) a probe's own timeout (reopen with doubled backoff). */
 function openRecallVecCircuit(): void {
-  recallVecCircuitOpenUntil = Date.now() + resolveRecallVecCooldownMs();
-  recallVecCircuitOpenedAt = Date.now();
+  const now = Date.now();
+  if (recallVecCircuitOpenedAt === 0) {
+    recallVecCircuitOpenedAt = now;
+    recallVecCurrentCooldownMs = resolveRecallVecCooldownMs();
+    recallVecNextProbeAt = now;
+  } else {
+    recallVecCurrentCooldownMs = Math.min(
+      recallVecCurrentCooldownMs * 2,
+      resolveRecallVecCooldownMaxMs(),
+    );
+    recallVecNextProbeAt = now + recallVecCurrentCooldownMs;
+  }
   recallVecProbeInFlight = false;
 }
 
-/** @param embedStartedAt Date.now() captured before the embed attempt began. */
-function closeRecallVecCircuit(embedStartedAt: number): void {
-  if (embedStartedAt >= recallVecCircuitOpenedAt) {
-    recallVecCircuitOpenUntil = 0;
-    recallVecCircuitOpenedAt = 0;
-  }
-  recallVecProbeInFlight = false;
+/** Close the circuit (probe succeeded) and reset the backoff to base.
+ *  `isProbeSettlement` must be true — see the file-top docblock: only the
+ *  probe's own settlement may clear `recallVecProbeInFlight`, never a
+ *  stray/foreground caller, because nothing else calls embed() while open. */
+function closeRecallVecCircuit(isProbeSettlement: true): void {
+  recallVecCircuitOpenedAt = 0;
+  recallVecCurrentCooldownMs = 0;
+  recallVecNextProbeAt = 0;
+  if (isProbeSettlement) recallVecProbeInFlight = false;
+}
+
+/**
+ * Fire-and-forget single-flight recovery probe. Caller MUST have already
+ * claimed `recallVecProbeInFlight` (set true) before invoking this — this
+ * function's only job is to settle the circuit from that probe's outcome.
+ */
+function runRecallVecProbe(): void {
+  embedWithRecallTimeout('breaker-probe', resolveRecallEmbedTimeoutMs()).then(
+    () => {
+      closeRecallVecCircuit(true);
+    },
+    (err: unknown) => {
+      const msg = err instanceof Error ? err.message : String(err);
+      tlog.warn('recall.embed_probe_failed', { error: msg });
+      openRecallVecCircuit();
+    },
+  );
 }
 
 /**
@@ -590,9 +626,25 @@ export async function memoryRecall(
   const degradations: string[] = [];
   let embedVecFailed = false;
   let queryVecJson: string | undefined;
-  if (shouldSkipRecallVec()) {
+  if (recallVecCircuitOpenedAt !== 0) {
+    // Circuit open: this recall NEVER pays the embed timeout — always go
+    // FTS-only. Separately (not awaited, doesn't block this response), claim
+    // and fire the single-flight background recovery probe if one isn't
+    // already in flight and the backoff has elapsed.
     embedVecFailed = true;
-    degradations.push('vec: skipped, circuit open after embed timeout');
+    const now = Date.now();
+    if (!recallVecProbeInFlight && now >= recallVecNextProbeAt) {
+      recallVecProbeInFlight = true;
+      const probeTimeoutMs = resolveRecallEmbedTimeoutMs();
+      degradations.push(`vec: skipped — embed breaker open (probe in ${Math.round(probeTimeoutMs / 1000)}s)`);
+      runRecallVecProbe();
+    } else {
+      // Does NOT start with "vec:" — no embed call is attempted on this
+      // recall (BL follow-up: provider_call_count must never read 0 beside
+      // a "vec: ..." degradation, see recall-provider-call-count-invariant.spec.ts),
+      // and this message must not claim a timeout since none occurred here.
+      degradations.push('embed breaker open — vec channel skipped (probe already in flight)');
+    }
     // Emit the same 'recall.embed_start' marker the non-skipped branch emits
     // (with skipped:true) so any consumer keying off it for a per-request
     // vec-channel start marker sees one on every recall, not just the ones
@@ -605,30 +657,14 @@ export async function memoryRecall(
     tlog.warn('recall.embed_circuit_open', { scope });
   } else {
     tlog.info('recall.embed_start', { scope, elapsed_ms: Math.round(performance.now() - recallT0) });
-    const embedAttemptStartedAt = Date.now();
-    // Captured synchronously right after shouldSkipRecallVec() decided not to
-    // skip: at that point either the circuit was fully closed (this is an
-    // ordinary concurrent attempt) or this call just claimed the sole
-    // half-open probe slot. Nothing else can run between that decision and
-    // this read (single-threaded, no await yet), so this accurately reflects
-    // whether THIS attempt is the probe.
-    const isRecallVecProbeAttempt = recallVecCircuitOpenedAt !== 0;
     try {
       const queryVec = await embedWithRecallTimeout(query, resolveRecallEmbedTimeoutMs());
       queryVecJson = vecToJson(queryVec);
-      closeRecallVecCircuit(embedAttemptStartedAt);
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       tlog.warn('recall.embed_failed', { error: msg, channel: 'vec' });
       embedVecFailed = true;
       degradations.push(`vec: ${msg}`);
-      // Only release the probe slot if THIS attempt was the one holding it —
-      // otherwise an unrelated concurrent (non-probe) failure would free the
-      // slot out from under the real in-flight probe and let a second probe
-      // start concurrently, defeating the half-open gate.
-      if (isRecallVecProbeAttempt) {
-        recallVecProbeInFlight = false;
-      }
       if (err instanceof RecallEmbedTimeoutError) {
         openRecallVecCircuit();
       }
