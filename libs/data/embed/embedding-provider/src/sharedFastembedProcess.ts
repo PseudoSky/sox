@@ -693,9 +693,24 @@ export class SharedFastembedProcessClient implements SharedFastembedClient {
           // real request replays init again rather than sailing through
           // believing a failed load succeeded.
           if (isInitRequest) this.childInitialized = true;
+          // (Page-in vs. compute) `work_ms`/`cpu_ms` are measured INSIDE the
+          // child by `fastembedProcessHost.ts`'s `measureWork()` around the
+          // real fastembed call and echoed back on every reply — unlike
+          // `response_ms` below (this promise's full send→settle span, which
+          // also bundles queueing/IPC), they isolate actual on-CPU work from
+          // page-in/queue wait. Absent on an error reply (no `measureWork()`
+          // ran) or a pre-instrumentation host — read as unknown, not zero.
+          const workMs = typeof (v as Record<string, unknown>)['work_ms'] === 'number'
+            ? ((v as Record<string, unknown>)['work_ms'] as number)
+            : undefined;
+          const cpuMs = typeof (v as Record<string, unknown>)['cpu_ms'] === 'number'
+            ? ((v as Record<string, unknown>)['cpu_ms'] as number)
+            : undefined;
           log.info('fastembed_process.request.finish', {
             ...baseFields,
             response_ms: Math.round(performance.now() - sentAt),
+            ...(workMs !== undefined ? { work_ms: workMs } : {}),
+            ...(cpuMs !== undefined ? { cpu_ms: cpuMs } : {}),
           });
           resolve(v as T);
         },

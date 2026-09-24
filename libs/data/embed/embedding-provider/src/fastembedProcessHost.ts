@@ -235,9 +235,9 @@ interface EmbedBatchRequest {
 
 type HostRequest = InitRequest | EmbedRequest | EmbedBatchRequest | { __shutdown: true };
 
-interface InitOkResponse { id: number; initOk: true; dim: number; execution_provider: string }
-interface EmbedResponse { id: number; embedding: number[] }
-interface EmbedBatchResponse { id: number; embeddings: number[][] }
+interface InitOkResponse { id: number; initOk: true; dim: number; execution_provider: string; work_ms: number; cpu_ms: number }
+interface EmbedResponse { id: number; embedding: number[]; work_ms: number; cpu_ms: number }
+interface EmbedBatchResponse { id: number; embeddings: number[][]; work_ms: number; cpu_ms: number }
 interface ErrorResponse { id: number; error: string }
 
 // ── Model management ──────────────────────────────────────────────────────────
@@ -256,6 +256,7 @@ interface EmbedderInstance {
 let _embedder: EmbedderInstance | null = null;
 let _currentModel = '';
 let _currentCacheDir = '';
+let _currentExecutionProvider = 'cpu';
 
 function resolveExecutionProviders(): ExecutionProvider[] {
   const forced = process.env.SOX_EMBED_EXECUTION_PROVIDER;
@@ -273,7 +274,6 @@ function resolveExecutionProviders(): ExecutionProvider[] {
 }
 
 async function loadModel(model: string, cacheDir: string): Promise<{ dim: number; execution_provider: string }> {
-  let execution_provider = 'cpu';
   if (!(_embedder && _currentModel === model && _currentCacheDir === cacheDir)) {
     // BL-331: advisory contention check, once, right before the real (expensive,
     // ANE-contending) model load — see the lock helpers above for the full
@@ -298,7 +298,7 @@ async function loadModel(model: string, cacheDir: string): Promise<{ dim: number
 
     _currentModel = model;
     _currentCacheDir = cacheDir;
-    execution_provider = executionProviders[0]!;
+    _currentExecutionProvider = executionProviders[0]!;
   }
 
   // BUG-005: the pre-fix lookup `listSupportedModels().find((m) => m.model === model)`
@@ -316,7 +316,7 @@ async function loadModel(model: string, cacheDir: string): Promise<{ dim: number
         `not in listSupportedModels() and no MODEL_CONFIGS entry — refusing to report dim 0 (BUG-005)`,
     );
   }
-  return { dim, execution_provider };
+  return { dim, execution_provider: _currentExecutionProvider };
 }
 
 async function collectEmbeddings(embedder: EmbedderInstance, texts: string[]): Promise<number[][]> {
@@ -368,11 +368,45 @@ function send(msg: InitOkResponse | EmbedResponse | EmbedBatchResponse | ErrorRe
   });
 }
 
+/**
+ * (Embed-host page-in vs. compute telemetry) Wall-clock and CPU-time deltas
+ * for a single request's actual on-CPU work, measured entirely INSIDE this
+ * child process around the real fastembed/onnxruntime call. Distinct from
+ * the parent's `response_ms` (`sharedFastembedProcess.ts`'s `request()`),
+ * which spans `child.send()` → reply and therefore also includes IPC
+ * marshalling and any time the request sat queued behind others on this
+ * same child (BL-432's `queue_depth`/`response_ms`) — i.e. "page-in"/queue
+ * wait that looks identical to compute from the parent's vantage point.
+ * `cpuUsage().user + .system` is wall-independent (a request that blocks on
+ * disk/model-load I/O without spinning the CPU shows low `cpu_ms` despite a
+ * large `work_ms`), which is exactly the signal needed to tell the two apart.
+ *
+ * CAVEAT — `process.cpuUsage()` is whole-PROCESS, not per-request.
+ * `handleRequest` is async and this child can have several requests awaiting
+ * concurrently, so both `work_ms` (wall time) and `cpu_ms` for one request
+ * can include time spent on other requests overlapping it on this same
+ * child. The page-in vs. compute distinction above is exact only when
+ * requests are effectively serialized on this child; under real concurrency
+ * treat both numbers as upper bounds shared across the overlapping set.
+ */
+function measureWork<T>(fn: () => Promise<T>): Promise<{ result: T; work_ms: number; cpu_ms: number }> {
+  const startedAt = performance.now();
+  const cpuStart = process.cpuUsage();
+  return fn().then((result) => {
+    const cpuDelta = process.cpuUsage(cpuStart);
+    return {
+      result,
+      work_ms: Math.round(performance.now() - startedAt),
+      cpu_ms: Math.round((cpuDelta.user + cpuDelta.system) / 1000),
+    };
+  });
+}
+
 async function handleRequest(msg: InitRequest | EmbedRequest | EmbedBatchRequest): Promise<void> {
   if (msg.type === 'init') {
     try {
-      const { dim, execution_provider } = await loadModel(msg.model, msg.cacheDir);
-      send({ id: msg.id, initOk: true, dim, execution_provider });
+      const { result, work_ms, cpu_ms } = await measureWork(() => loadModel(msg.model, msg.cacheDir));
+      send({ id: msg.id, initOk: true, dim: result.dim, execution_provider: result.execution_provider, work_ms, cpu_ms });
     } catch (e) {
       send({ id: msg.id, error: String(e instanceof Error ? e.message : e) });
     }
@@ -385,8 +419,9 @@ async function handleRequest(msg: InitRequest | EmbedRequest | EmbedBatchRequest
       return;
     }
     try {
-      const vec = await _embedder.queryEmbed(msg.text);
-      send({ id: msg.id, embedding: Array.from(vec) });
+      const embedder = _embedder;
+      const { result, work_ms, cpu_ms } = await measureWork(() => embedder.queryEmbed(msg.text));
+      send({ id: msg.id, embedding: Array.from(result), work_ms, cpu_ms });
     } catch (e) {
       send({ id: msg.id, error: String(e instanceof Error ? e.message : e) });
     }
@@ -399,8 +434,9 @@ async function handleRequest(msg: InitRequest | EmbedRequest | EmbedBatchRequest
       return;
     }
     try {
-      const embeddings = await collectEmbeddings(_embedder, msg.texts);
-      send({ id: msg.id, embeddings });
+      const embedder = _embedder;
+      const { result, work_ms, cpu_ms } = await measureWork(() => collectEmbeddings(embedder, msg.texts));
+      send({ id: msg.id, embeddings: result, work_ms, cpu_ms });
     } catch (e) {
       send({ id: msg.id, error: String(e instanceof Error ? e.message : e) });
     }

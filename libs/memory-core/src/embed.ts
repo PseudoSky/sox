@@ -417,12 +417,56 @@ async function _embedWork(text: string): Promise<Float32Array> {
   }
 }
 
+/** Default warmup budget: generous, and deliberately separate from the
+ * per-request `SOX_EMBED_TIMEOUT_MS` funnel timeout (typically 8s) — model
+ * load on a cold process can legitimately take tens of seconds. */
+const DEFAULT_WARMUP_BUDGET_MS = 60_000;
+
+/** Race `promise` against `ms`; on timeout the underlying call is NOT
+ * cancelled (no cancellation hook exists on the provider) — this only bounds
+ * how long `warmupEmbed()` itself will wait before reporting failure. */
+function withWarmupTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => {
+      reject(new Error(`embed warmup timed out after ${ms}ms`));
+    }, ms);
+    promise.then(
+      (v) => {
+        clearTimeout(timer);
+        resolve(v);
+      },
+      (e) => {
+        clearTimeout(timer);
+        reject(e instanceof Error ? e : new Error(String(e)));
+      },
+    );
+  });
+}
+
 /**
  * Proactively warm up the real embedding backend and return its truthful health.
+ *
+ * (a7fbd60c) `FastembedProvider` is lazy — its constructor does not load the
+ * model, only the first real `embedSingle()` call does (see
+ * libs/data/embed/embedding-provider/src/index.ts and fastembed.ts). Reading
+ * `p.health()` immediately after `getOrCreateProvider()` therefore always
+ * observed `state: 'uninitialized'` here, so warmup logged DEGRADED and never
+ * actually preloaded the model — the first post-restart embed then paid the
+ * full model-load cost inside the much shorter per-request funnel timeout
+ * (SOX_EMBED_TIMEOUT_MS, ~8s) and timed out. Fix: perform a real single embed
+ * under its own generous budget (default 60s, independent of the per-request
+ * timeout; overridable via `_timeoutMs`) BEFORE reading health, so the model
+ * is actually resident and the reported health reflects reality.
  */
 export async function warmupEmbed(_timeoutMs?: number): Promise<EmbedHealth> {
   _configCache ??= resolveConfig();
+  const budgetMs = _timeoutMs && _timeoutMs > 0 ? _timeoutMs : DEFAULT_WARMUP_BUDGET_MS;
   try {
+    await getOrCreateProvider();
+    // Force the lazy provider to actually load the model now, under the
+    // warmup budget, instead of on the first real caller's much shorter
+    // per-request timeout.
+    await withWarmupTimeout(embed('warmup', 'warmup'), budgetMs);
     const p = await getOrCreateProvider();
     const health = p.health();
     if (health.state === 'error' || health.state === 'uninitialized') {
@@ -450,6 +494,14 @@ export interface ReinitEmbedResult {
  * embed subsystem (BUG-021's "Model not initialized" respawn-without-reinit
  * state, a stuck shared fastembed child, or any per-call failure streak that
  * has latched `getEmbedState()` to 'degraded').
+ *
+ * Budget note: step 3 below calls `warmupEmbed()` with NO explicit
+ * `_timeoutMs`, so it now runs a REAL `embed()` under the full
+ * `DEFAULT_WARMUP_BUDGET_MS` (60s) — where the pre-warmup-fix verify step
+ * only read `health()` and returned near-instantly. A self-heal caller
+ * (e.g. an alarm-escalation tick) invoking this must budget for up to 60s
+ * per attempt, or call `warmupEmbed(shorterMs)` directly instead of routing
+ * through this function if its own cadence cannot absorb that.
  *
  * Order of operations:
  *   1. Clear the in-process provider state (`_provider`, `_providerPromise`,

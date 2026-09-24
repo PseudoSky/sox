@@ -85,6 +85,73 @@ function resolveRecallEmbedTimeoutMs(): number {
   return Number.isFinite(n) && n > 0 ? n : DEFAULT_RECALL_EMBED_TIMEOUT_MS;
 }
 
+class RecallEmbedTimeoutError extends Error {
+  constructor(timeoutMs: number) {
+    super(`embed() timed out after ${timeoutMs}ms (recall read-path guard)`);
+    this.name = 'RecallEmbedTimeoutError';
+  }
+}
+
+// ── Per-process embed circuit breaker ──────────────────────────────────────
+//
+// A single embed() timeout means the provider is currently backed up — the
+// NEXT recall calling embed() again immediately just pays the same 3s guard
+// for the same reason. After a timeout, skip the query embed entirely for
+// SOX_RECALL_VEC_COOLDOWN_MS and go straight to FTS/temporal (the existing
+// BL-273 `embedVecFailed` degradation path). Half-open: once the cooldown
+// elapses, only ONE in-flight probe is allowed at a time
+// (`recallVecProbeInFlight`) — without this gate, every recall arriving
+// right after the cooldown would attempt the embed simultaneously and
+// recreate the exact backlog the breaker exists to prevent. A probe success
+// closes the circuit only if it started AFTER the circuit's current open
+// (`recallVecCircuitOpenedAt`) — otherwise a stale in-flight call that
+// happens to resolve late would clobber a newer timeout's open state.
+const DEFAULT_RECALL_VEC_COOLDOWN_MS = 30000;
+
+function resolveRecallVecCooldownMs(): number {
+  const raw = process.env['SOX_RECALL_VEC_COOLDOWN_MS'];
+  const n = raw ? parseInt(raw, 10) : NaN;
+  return Number.isFinite(n) && n >= 0 ? n : DEFAULT_RECALL_VEC_COOLDOWN_MS;
+}
+
+let recallVecCircuitOpenUntil = 0;
+/** Wall-clock timestamp the circuit was last opened (0 when never/closed). */
+let recallVecCircuitOpenedAt = 0;
+/** True while a half-open probe embed is in flight. */
+let recallVecProbeInFlight = false;
+
+/**
+ * Whether the caller should skip the vec channel. Hard-open: always skip.
+ * Half-open (cooldown elapsed but breaker not yet closed): skip unless this
+ * call is the single allowed probe, in which case it claims the probe slot
+ * and returns false so the caller proceeds to embed.
+ */
+function shouldSkipRecallVec(): boolean {
+  const now = Date.now();
+  if (now < recallVecCircuitOpenUntil) return true;
+  if (recallVecCircuitOpenedAt !== 0) {
+    if (recallVecProbeInFlight) return true;
+    recallVecProbeInFlight = true;
+    return false;
+  }
+  return false;
+}
+
+function openRecallVecCircuit(): void {
+  recallVecCircuitOpenUntil = Date.now() + resolveRecallVecCooldownMs();
+  recallVecCircuitOpenedAt = Date.now();
+  recallVecProbeInFlight = false;
+}
+
+/** @param embedStartedAt Date.now() captured before the embed attempt began. */
+function closeRecallVecCircuit(embedStartedAt: number): void {
+  if (embedStartedAt >= recallVecCircuitOpenedAt) {
+    recallVecCircuitOpenUntil = 0;
+    recallVecCircuitOpenedAt = 0;
+  }
+  recallVecProbeInFlight = false;
+}
+
 /**
  * Race `embed(query)` against a wall-clock timeout. Rejects with a
  * TimeoutError-shaped Error if the embed call has not settled within
@@ -99,10 +166,10 @@ async function embedWithRecallTimeout(query: string, timeoutMs: number): Promise
     const timer = setTimeout(() => {
       if (settled) return;
       settled = true;
-      reject(new Error(`embed() timed out after ${timeoutMs}ms (recall read-path guard)`));
+      reject(new RecallEmbedTimeoutError(timeoutMs));
     }, timeoutMs);
     if (typeof timer.unref === 'function') timer.unref();
-    embed(query).then(
+    embed(query, 'recall').then(
       (v) => {
         if (settled) return;
         settled = true;
@@ -376,6 +443,13 @@ export async function memoryRecall(
     temporal_weight = TEMPORAL_WEIGHT,
   } = params;
 
+  // BL-TELEMETRY-EMBED-GAP: recall entry timestamp — anchors the elapsed_ms
+  // fields on 'recall.embed_start' below so backend-side time spent before
+  // the query embed (adapter setup, filter parsing, etc.) is attributable
+  // instead of invisible between memory_recall's caller and embed.start.
+  const recallT0 = performance.now();
+  tlog.info('recall.start', { scope, has_query: !!query });
+
   // DEBT-SOXGRAPH-001: only the vec channel needs a dialect object anymore —
   // the FTS channel is fully delegated to `adapter.ftsSearch` (store-adapter's
   // A2 API), which owns all per-backend FTS SQL itself.
@@ -516,14 +590,29 @@ export async function memoryRecall(
   const degradations: string[] = [];
   let embedVecFailed = false;
   let queryVecJson: string | undefined;
-  try {
-    const queryVec = await embedWithRecallTimeout(query, resolveRecallEmbedTimeoutMs());
-    queryVecJson = vecToJson(queryVec);
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    tlog.warn('recall.embed_failed', { error: msg, channel: 'vec' });
+  if (shouldSkipRecallVec()) {
     embedVecFailed = true;
-    degradations.push(`vec: ${msg}`);
+    degradations.push('vec: skipped, circuit open after embed timeout');
+    tlog.warn('recall.embed_circuit_open', { scope });
+  } else {
+    tlog.info('recall.embed_start', { scope, elapsed_ms: Math.round(performance.now() - recallT0) });
+    const embedAttemptStartedAt = Date.now();
+    try {
+      const queryVec = await embedWithRecallTimeout(query, resolveRecallEmbedTimeoutMs());
+      queryVecJson = vecToJson(queryVec);
+      closeRecallVecCircuit(embedAttemptStartedAt);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      tlog.warn('recall.embed_failed', { error: msg, channel: 'vec' });
+      embedVecFailed = true;
+      degradations.push(`vec: ${msg}`);
+      // This attempt failed (whether or not it was the half-open probe) —
+      // release the probe slot regardless of error type.
+      recallVecProbeInFlight = false;
+      if (err instanceof RecallEmbedTimeoutError) {
+        openRecallVecCircuit();
+      }
+    }
   }
 
   // Validity predicate
@@ -1420,6 +1509,16 @@ export async function federatedRecall(
 
   const beforeCount = getProviderCallCount();
 
+  // BL-TELEMETRY-EMBED-GAP: federated-recall entry timestamp — same purpose
+  // as memoryRecall's recallT0 (see its 'recall.start' comment): makes the
+  // per-store connection-open cost attributable instead of vanishing into
+  // the gap before the first store's embed.start.
+  const federatedT0 = performance.now();
+  // Distinct event name from the per-store 'recall.start' each memoryRecall
+  // call below emits — sharing the name would make one federated query emit
+  // N+1 'recall.start' records and over-count any dashboard keyed on it.
+  tlog.info('recall.federated_start', { federated: true, store_count: stores.length });
+
   const { agent_id, token_budget = DEFAULT_TOKEN_BUDGET, limit = 10 } = params;
 
   // (BL-391) Accumulates every non-fatal degradation across all stores —
@@ -1441,6 +1540,15 @@ export async function federatedRecall(
     const reason = _connErrors.get(dbPath) ?? 'connection unavailable';
     federationDegradations.push(`scope=${scope}: store unreachable (${dbPath}) — ${reason}`);
   }
+
+  // BL-TELEMETRY-EMBED-GAP: marks store/federation open completion, elapsed
+  // since federatedRecall entry — the per-store recall calls below (each
+  // logging its own 'recall.embed_start') pick up the clock from here.
+  tlog.info('recall.stores_open', {
+    elapsed_ms: Math.round(performance.now() - federatedT0),
+    opened: openConns.filter((c) => c.adapter !== null).length,
+    total: openConns.length,
+  });
 
   // 1. Collect SUPERSEDES targets.
   const suppressedUids = new Set<string>();

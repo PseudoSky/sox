@@ -52,9 +52,34 @@
 
 import { fileURLToPath } from 'node:url';
 import { resolve } from 'node:path';
+import { performance } from 'node:perf_hooks';
 import { serveBackend, type BackendHandle, type JsonRpcRequest, type JsonRpcResponse } from '@adhd/sox-service-proxy';
+import { bootstrapChildTelemetry, log } from '@adhd/sox-telemetry';
 import { resolveEmbedHostIdleGraceMs } from './embedHostConfig.js';
 import { getPrivateFastembedProcess, resetPrivateFastembedProcess } from './sharedFastembedProcess.js';
+
+/**
+ * How often to run a tiny keep-warm embed while at least one client is
+ * attached, so the host's ONNX model pages stay resident under memory
+ * pressure (root cause of 5-73s cold-page query embeds). `0` disables.
+ * Default 45s — comfortably inside the funnel client's idle windows but
+ * cheap enough not to compete meaningfully with real traffic.
+ */
+function resolveEmbedKeepWarmMs(): number {
+  const raw = process.env['SOX_EMBED_KEEPWARM_MS'];
+  const DEFAULT_MS = 45_000;
+  if (raw === undefined || raw === '') return DEFAULT_MS;
+  const parsed = Number(raw);
+  if (!Number.isFinite(parsed) || parsed < 0) {
+    // Never let a malformed optional tuning var kill the detached host at
+    // startup (it has no client watching stderr) — log through telemetry so
+    // the cause lands in the host's own log file, and fall back to the
+    // default, matching resolveRecallVecCooldownMs's convention in recall.ts.
+    log.warn('embedding_provider.embed_host.invalid_keepwarm_ms', { raw, fallback: DEFAULT_MS });
+    return DEFAULT_MS;
+  }
+  return parsed;
+}
 
 /** The `embedding.*` methods the host serves. */
 const HOST_METHODS = new Set([
@@ -80,6 +105,15 @@ function fail(id: JsonRpcRequest['id'], code: number, message: string): JsonRpcR
  * arrives.
  */
 export async function runEmbedHost(): Promise<void> {
+  // Composition root for this process (mirrors memory-server's index.ts BL-404
+  // call): the detached host forked by `ensureBackend()` starts with fresh
+  // module state in @adhd/sox-telemetry — service:'unlabeled', logSink:'none' —
+  // so every `fastembed_process.request.*` record was silently dropped until
+  // this call. `bootstrapChildTelemetry` (BL-618 convention) also honours a
+  // `SOX_TELEMETRY_INIT` env override from the spawner if one is ever added,
+  // falling back to these defaults today since the funnel client does not set it.
+  bootstrapChildTelemetry({ service: 'embed-host', role: 'live-service', logSink: 'file' });
+
   const socketPath = process.env['SOX_EMBED_HOST_SOCKET'];
   if (!socketPath) {
     process.stderr.write(
@@ -102,6 +136,12 @@ export async function runEmbedHost(): Promise<void> {
   let shuttingDown = false;
   let handle: BackendHandle | null = null;
 
+  const keepWarmMs = resolveEmbedKeepWarmMs();
+  let keepWarmTimer: NodeJS.Timeout | null = null;
+  // Last time a request (real or keep-warm) COMPLETED — used to skip a tick
+  // when a real request already refreshed the model pages this interval.
+  let lastActivityAt = Date.now();
+
   const cancelIdle = (): void => {
     if (idleTimer) {
       clearTimeout(idleTimer);
@@ -109,10 +149,58 @@ export async function runEmbedHost(): Promise<void> {
     }
   };
 
+  const stopKeepWarm = (): void => {
+    if (keepWarmTimer) {
+      clearInterval(keepWarmTimer);
+      keepWarmTimer = null;
+    }
+  };
+
+  const keepWarmTick = (): void => {
+    if (shuttingDown || activeClients === 0 || inFlight !== 0) return;
+    if (Date.now() - lastActivityAt < keepWarmMs) return;
+    // No client has sent embedding.init yet — the child would just reply
+    // "Model not initialized" (fastembedProcessHost.ts) and we'd log a
+    // keep_warm_failed warning every interval for nothing. Wait for a real
+    // init before spending a tick.
+    if (!getPrivateFastembedProcess().lastInit) return;
+    inFlight++;
+    const start = performance.now();
+    void getPrivateFastembedProcess()
+      .request({ type: 'embed', text: 'keepwarm' })
+      .catch((e: unknown) => {
+        log.warn('embedding_provider.embed_host.keep_warm_failed', {
+          error: e instanceof Error ? e.message : String(e),
+        });
+      })
+      .finally(() => {
+        inFlight--;
+        lastActivityAt = Date.now();
+        const work_ms = performance.now() - start;
+        log.info('embedding_provider.embed_host.keep_warm', { work_ms, activeClients });
+        // A keep-warm embed can be the last in-flight work when the final
+        // client disconnects mid-tick — onClientCountChange(0) would have
+        // seen inFlight !== 0 and returned early, so nothing else re-arms
+        // the idle timer. Mirror the request handler's re-arm here.
+        if (activeClients === 0) armIfIdle();
+      });
+  };
+
+  const startKeepWarm = (): void => {
+    if (keepWarmMs <= 0 || keepWarmTimer || shuttingDown) return;
+    // Tick at half the skip threshold: keepWarmTick itself no-ops until
+    // `keepWarmMs` has elapsed since the last activity, so ticking at the
+    // full period lets the real gap between warm embeds drift toward 2x
+    // keepWarmMs depending on where in the interval the last request landed.
+    keepWarmTimer = setInterval(keepWarmTick, Math.max(1, Math.floor(keepWarmMs / 2)));
+    keepWarmTimer.unref?.();
+  };
+
   const teardown = async (): Promise<void> => {
     if (shuttingDown) return;
     shuttingDown = true;
     cancelIdle();
+    stopKeepWarm();
     try {
       // Resolve the accessor at teardown time: a preceding `embedding.reset`
       // may have swapped the private singleton for a fresh one.
@@ -179,6 +267,7 @@ export async function runEmbedHost(): Promise<void> {
       return fail(id, -32603, e instanceof Error ? e.message : String(e));
     } finally {
       inFlight--;
+      lastActivityAt = Date.now();
       // A request may have drained the last in-flight work with no clients
       // attached (e.g. a one-shot embed) — re-arm the reap.
       if (activeClients === 0) armIfIdle();
@@ -191,8 +280,13 @@ export async function runEmbedHost(): Promise<void> {
     onDiagnostic: (line) => process.stderr.write(line + '\n'),
     onClientCountChange: (active) => {
       activeClients = active;
-      if (active > 0) cancelIdle();
-      else armIfIdle();
+      if (active > 0) {
+        cancelIdle();
+        startKeepWarm();
+      } else {
+        armIfIdle();
+        stopKeepWarm();
+      }
     },
   });
 
