@@ -65,7 +65,7 @@ import { getPrivateFastembedProcess, resetPrivateFastembedProcess } from './shar
  * Default 45s — comfortably inside the funnel client's idle windows but
  * cheap enough not to compete meaningfully with real traffic.
  */
-function resolveEmbedKeepWarmMs(): number {
+export function resolveEmbedKeepWarmMs(): number {
   const raw = process.env['SOX_EMBED_KEEPWARM_MS'];
   const DEFAULT_MS = 45_000;
   if (raw === undefined || raw === '') return DEFAULT_MS;
@@ -84,6 +84,53 @@ function resolveEmbedKeepWarmMs(): number {
 /** Cap for both the active window and the backoff-doubled keep-warm interval. */
 const KEEPWARM_INTERVAL_CAP_MS = 900_000;
 
+/** A slow keep-warm embed (> this) signals memory pressure and triggers backoff. */
+export const KEEPWARM_SLOW_MS = 6_000;
+
+/**
+ * Pure decision function for whether a keep-warm tick should be skipped,
+ * factored out of `keepWarmTick`'s closure so the three independent gates
+ * (activity window / cadence / no-init-yet) are unit-testable without
+ * spinning up the real UDS host or a private fastembed process. Mirrors the
+ * exact checks (and order) in `keepWarmTick` — see the inline comments there
+ * for the rationale of each gate.
+ */
+export function shouldSkipKeepWarmTick(args: {
+  now: number;
+  lastRealActivityAt: number;
+  lastActivityAt: number;
+  keepWarmActiveWindowMs: number;
+  keepWarmIntervalMs: number;
+  hasInit: boolean;
+}): boolean {
+  const { now, lastRealActivityAt, lastActivityAt, keepWarmActiveWindowMs, keepWarmIntervalMs, hasInit } = args;
+  if (now - lastRealActivityAt >= keepWarmActiveWindowMs) return true;
+  if (now - lastActivityAt < keepWarmIntervalMs) return true;
+  if (!hasInit) return true;
+  return false;
+}
+
+/**
+ * Pure adaptive-cadence function, factored out of `keepWarmTick`'s `.finally`.
+ * A successful slow tick (> `KEEPWARM_SLOW_MS`) doubles the interval, capped
+ * at `KEEPWARM_INTERVAL_CAP_MS`; a successful fast tick resets to `baseMs`; a
+ * failed tick (timeout, child crash) leaves the cadence untouched — its
+ * timing says nothing about paging cost.
+ */
+export function nextKeepWarmIntervalMs(args: {
+  currentIntervalMs: number;
+  baseMs: number;
+  workMs: number;
+  tickOk: boolean;
+  capMs?: number;
+  slowMs?: number;
+}): number {
+  const { currentIntervalMs, baseMs, workMs, tickOk, capMs = KEEPWARM_INTERVAL_CAP_MS, slowMs = KEEPWARM_SLOW_MS } = args;
+  if (!tickOk) return currentIntervalMs;
+  if (workMs > slowMs) return Math.min(currentIntervalMs * 2, capMs);
+  return baseMs;
+}
+
 /**
  * How recently a REAL (non-keep-warm) request must have been served for
  * keep-warm to keep ticking. The `:3099` front shim holds a permanent UDS
@@ -91,7 +138,7 @@ const KEEPWARM_INTERVAL_CAP_MS = 900_000;
  * never signal real demand — gating on client count made keep-warm fire
  * forever even with zero actual traffic. Default 900s (15min).
  */
-function resolveEmbedKeepWarmActiveWindowMs(): number {
+export function resolveEmbedKeepWarmActiveWindowMs(): number {
   const raw = process.env['SOX_EMBED_KEEPWARM_ACTIVE_WINDOW_MS'];
   const DEFAULT_MS = KEEPWARM_INTERVAL_CAP_MS;
   if (raw === undefined || raw === '') return DEFAULT_MS;
@@ -189,22 +236,28 @@ export async function runEmbedHost(): Promise<void> {
     }
   };
 
-  const KEEPWARM_SLOW_MS = 6_000;
-
   const keepWarmTick = (): void => {
     if (shuttingDown || activeClients === 0 || inFlight !== 0) return;
     // Activity gate: the `:3099` front shim holds a permanent connection, so
     // `activeClients` is always >= 1 and can never signal real demand on its
     // own. Only keep warming while a REAL (non-keep-warm) request landed
     // within the active window, AND skip this particular tick if something
-    // (real or keep-warm) already completed within the current cadence.
-    if (Date.now() - lastRealActivityAt >= keepWarmActiveWindowMs) return;
-    if (Date.now() - lastActivityAt < keepWarmIntervalMs) return;
-    // No client has sent embedding.init yet — the child would just reply
-    // "Model not initialized" (fastembedProcessHost.ts) and we'd log a
-    // keep_warm_failed warning every interval for nothing. Wait for a real
-    // init before spending a tick.
-    if (!getPrivateFastembedProcess().lastInit) return;
+    // (real or keep-warm) already completed within the current cadence. Also
+    // skip while no client has sent embedding.init yet — the child would just
+    // reply "Model not initialized" (fastembedProcessHost.ts) and we'd log a
+    // keep_warm_failed warning every interval for nothing.
+    if (
+      shouldSkipKeepWarmTick({
+        now: Date.now(),
+        lastRealActivityAt,
+        lastActivityAt,
+        keepWarmActiveWindowMs,
+        keepWarmIntervalMs,
+        hasInit: Boolean(getPrivateFastembedProcess().lastInit),
+      })
+    ) {
+      return;
+    }
     inFlight++;
     const start = performance.now();
     let tickOk = false;
@@ -244,17 +297,21 @@ export async function runEmbedHost(): Promise<void> {
         // base cadence. Only a SUCCESSFUL tick's timing is trustworthy for
         // this — a failed tick (timeout, child crash) says nothing about
         // paging cost and must not be conflated with a slow successful one.
-        if (tickOk && work_ms > KEEPWARM_SLOW_MS) {
-          const nextIntervalMs = Math.min(keepWarmIntervalMs * 2, KEEPWARM_INTERVAL_CAP_MS);
-          if (nextIntervalMs !== keepWarmIntervalMs) {
-            keepWarmIntervalMs = nextIntervalMs;
+        const nextIntervalMs = nextKeepWarmIntervalMs({
+          currentIntervalMs: keepWarmIntervalMs,
+          baseMs: keepWarmMs,
+          workMs: work_ms,
+          tickOk,
+        });
+        if (nextIntervalMs !== keepWarmIntervalMs) {
+          const wasBackoff = nextIntervalMs > keepWarmIntervalMs;
+          keepWarmIntervalMs = nextIntervalMs;
+          if (wasBackoff) {
             log.info('embedding_provider.embed_host.keepwarm.backoff', {
               work_ms,
               keepWarmIntervalMs,
             });
           }
-        } else if (tickOk) {
-          keepWarmIntervalMs = keepWarmMs;
         }
         // A keep-warm embed can be the last in-flight work when the final
         // client disconnects mid-tick — onClientCountChange(0) would have
