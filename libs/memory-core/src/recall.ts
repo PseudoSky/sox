@@ -593,10 +593,26 @@ export async function memoryRecall(
   if (shouldSkipRecallVec()) {
     embedVecFailed = true;
     degradations.push('vec: skipped, circuit open after embed timeout');
+    // Emit the same 'recall.embed_start' marker the non-skipped branch emits
+    // (with skipped:true) so any consumer keying off it for a per-request
+    // vec-channel start marker sees one on every recall, not just the ones
+    // that actually attempted embed.
+    tlog.info('recall.embed_start', {
+      scope,
+      elapsed_ms: Math.round(performance.now() - recallT0),
+      skipped: true,
+    });
     tlog.warn('recall.embed_circuit_open', { scope });
   } else {
     tlog.info('recall.embed_start', { scope, elapsed_ms: Math.round(performance.now() - recallT0) });
     const embedAttemptStartedAt = Date.now();
+    // Captured synchronously right after shouldSkipRecallVec() decided not to
+    // skip: at that point either the circuit was fully closed (this is an
+    // ordinary concurrent attempt) or this call just claimed the sole
+    // half-open probe slot. Nothing else can run between that decision and
+    // this read (single-threaded, no await yet), so this accurately reflects
+    // whether THIS attempt is the probe.
+    const isRecallVecProbeAttempt = recallVecCircuitOpenedAt !== 0;
     try {
       const queryVec = await embedWithRecallTimeout(query, resolveRecallEmbedTimeoutMs());
       queryVecJson = vecToJson(queryVec);
@@ -606,9 +622,13 @@ export async function memoryRecall(
       tlog.warn('recall.embed_failed', { error: msg, channel: 'vec' });
       embedVecFailed = true;
       degradations.push(`vec: ${msg}`);
-      // This attempt failed (whether or not it was the half-open probe) —
-      // release the probe slot regardless of error type.
-      recallVecProbeInFlight = false;
+      // Only release the probe slot if THIS attempt was the one holding it —
+      // otherwise an unrelated concurrent (non-probe) failure would free the
+      // slot out from under the real in-flight probe and let a second probe
+      // start concurrently, defeating the half-open gate.
+      if (isRecallVecProbeAttempt) {
+        recallVecProbeInFlight = false;
+      }
       if (err instanceof RecallEmbedTimeoutError) {
         openRecallVecCircuit();
       }
