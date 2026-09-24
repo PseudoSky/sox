@@ -23,14 +23,36 @@
  *       AND target name that entry's extension id (or the bundle it belongs
  *       to). An entry for an id the smoke run itself touched is FATAL even if
  *       an operator event names it; an entry no event explains is FATAL.
- *   (b″) The scratch logs are scanned too (their harness `cli_invoked` targets
- *       join the smoke-touched set), and ANY role=harness event in the LIVE
- *       logs inside the run window is FATAL — a harness process wrote telemetry
- *       to the live root, which is itself a redirection leak.
+ *   (b″) The scratch logs are scanned too: their harness `cli_invoked`
+ *       targets join the smoke-touched set and their pids join the smoke pid
+ *       set.
  *
- * Anything the guard cannot attribute fails CLOSED: unparseable JSON, a changed
- * top-level field, bytes that changed with no entry-level difference, and
- * operator events that carry no `target` (a pre-d5c01be3 `soxe` dist).
+ * Exactly what is FATAL (verdict 'fatal', smoke exit 2):
+ *   1. any role=harness event in the LIVE sox CLI log (`<live>/sox/logs`)
+ *      inside the run window — a smoke-spawned `soxe` lost its redirect;
+ *   2. any role=harness event in ANOTHER live service log (`<live>/<svc>/logs`,
+ *      e.g. memory-core, embedding-provider) inside the run window whose pid is
+ *      one the smoke run spawned (`smokePids`: spawn()ed children and their
+ *      descendants, the proxy backend, detached process-group members, and
+ *      every pid seen in the scratch logs) — a smoke child lost
+ *      SOX_ECOSYSTEM_HOME but kept SOX_TELEMETRY_HARNESS;
+ *   3. any changed guarded-file entry for an id the smoke run touched;
+ *   4. any changed entry no qualifying operator `cli_invoked` event explains,
+ *      including events with no `target` (a pre-d5c01be3 `soxe` dist or
+ *      `upgrade --all`);
+ *   5. unparseable JSON, a changed top-level field, or bytes that changed with
+ *      no entry-level difference.
+ * role=harness events in other live service logs from pids NOT in `smokePids`
+ * are printed as a non-fatal note: other agents' test suites write there
+ * continuously (measured 2026-09-24: 151 memory-core + 33 embedding-provider
+ * harness streams in 6 h), so role alone cannot attribute them to this run.
+ *
+ * Residual (not caught): a smoke child that spawns a DETACHED grandchild in a
+ * NEW process group after the harness last walked its descendants (e.g. a
+ * detached embed host) is not in `smokePids`; if it logs only to another
+ * service's live log and writes none of the four guarded files, it reads as a
+ * note. `runCmd` children run via execSync, whose pid is not observable at
+ * all — their harness telemetry is only attributable through scratch-log pids.
  *
  * Node built-ins only — importable by the tier-1 guard test
  * tools/test-d5c01be3-isolation-attribution.mjs without any build.
@@ -329,8 +351,10 @@ export function readTelemetryEvents(dirs, { sinceMs, untilMs, keep = isGuardRele
       for (const line of text.split('\n')) {
         if (line.trim() === '') continue;
         let ev;
-        try { ev = JSON.parse(line); } catch {
-          parseErrors++; // counted and reported by the caller — a torn tail line is normal for a live sink
+        try { ev = JSON.parse(line); } catch (e) {
+          // A torn tail line is normal for a live sink; still traced, and counted for the caller's summary.
+          parseErrors++;
+          console.error(`[smoke] isolation-guard: skipping unparseable telemetry line in ${p}: ${(e && e.message) ?? e} — ${JSON.stringify(line.slice(0, 160))}`);
           continue;
         }
         const t = Date.parse(ev?.ts ?? '');
@@ -374,6 +398,7 @@ function describeChange(c) {
  * @param {Array<object>} [input.liveOtherEvents] events from the LIVE root's other service logs — diagnostic only, never FATAL
  * @param {Array<object>} [input.scratchEvents] telemetry events from the SCRATCH root's logs
  * @param {Iterable<string>} input.smokeTouchedIds  extension/bundle ids the smoke run spawned soxe against
+ * @param {Iterable<number>} [input.smokePids]  pids the smoke run spawned (see header, FATAL rule 2)
  * @param {number} [input.operatorSlackMs]
  * @returns {{ verdict: 'ok'|'warning'|'fatal', lines: string[], changes: Array<object>, harnessLeaks: Array<object> }}
  */
@@ -390,8 +415,10 @@ export function evaluateIsolation(input) {
 
   // (b″) scratch harness targets are smoke-touched too.
   const touched = new Set(input.smokeTouchedIds ?? []);
+  const smokePids = new Set([...(input.smokePids ?? [])].map(Number));
   for (const ev of scratchEvents) {
     if (ev.event === 'cli_invoked' && ev.role === 'harness' && ev.target) touched.add(ev.target);
+    if (ev.role === 'harness' && Number.isFinite(Number(ev.pid))) smokePids.add(Number(ev.pid));
   }
 
   // (b″) any harness event in the LIVE logs inside the strict run window is a redirection leak.
@@ -412,6 +439,11 @@ export function evaluateIsolation(input) {
     others.set(k, g);
   }
   for (const g of others.values()) {
+    if (smokePids.has(Number(g.pid))) {
+      lines.push(`ISOLATION FAILURE: role=harness telemetry from a SMOKE-SPAWNED pid landed in the LIVE data root: service=${g.service} pid=${g.pid} events=${g.n} first=${g.first} last=${g.last} file=${g.file}`);
+      fatal = true;
+      continue;
+    }
     lines.push(`note: role=harness telemetry from another service in the live root (not attributable to this run; not fatal): service=${g.service} pid=${g.pid} events=${g.n} first=${g.first} last=${g.last} file=${g.file}`);
   }
 

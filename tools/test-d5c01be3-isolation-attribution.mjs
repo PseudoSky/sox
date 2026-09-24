@@ -113,7 +113,7 @@ let caseNo = 0;
  * mutate(state) → mutated state (or {state, raw}); liveEvents/scratchEvents are written as real JSONL files
  * and read back through the real module's readTelemetryEvents (so the fs readers are exercised too).
  */
-function scenario(guard, { mutate = (s) => s, liveEvents = [], liveOtherEvents = [], scratchEvents = [], touched = [] }) {
+function scenario(guard, { mutate = (s) => s, liveEvents = [], liveOtherEvents = [], scratchEvents = [], touched = [], pids = [] }) {
   const dir = path.join(TMP, `case-${++caseNo}`);
   const live = path.join(dir, 'live');
   const scratch = path.join(dir, 'scratch');
@@ -130,7 +130,7 @@ function scenario(guard, { mutate = (s) => s, liveEvents = [], liveOtherEvents =
   const le = real.readTelemetryEvents(real.soxCliLogDirs(live), window).events;
   const lo = real.readTelemetryEvents(real.otherServiceLogDirs(live), window).events;
   const se = real.readTelemetryEvents(real.telemetryLogDirs(scratch), window).events;
-  return guard.evaluateIsolation({ before, after, liveEvents: le, liveOtherEvents: lo, scratchEvents: se, smokeTouchedIds: touched });
+  return guard.evaluateIsolation({ before, after, liveEvents: le, liveOtherEvents: lo, scratchEvents: se, smokeTouchedIds: touched, smokePids: pids });
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
@@ -243,6 +243,30 @@ const CASES = [
       liveEvents: [cli({ role: 'harness', pid: 779 })],
     }),
     expect: (r) => r.verdict === 'fatal',
+  },
+  {
+    name: 'd5c01be3: SMOKE-SPAWNED pid harness event in <live>/memory-core/logs (lost SOX_ECOSYSTEM_HOME) → FATAL',
+    run: (g) => scenario(g, {
+      liveOtherEvents: [{ ts: '2026-09-24T21:04:00.000Z', event: 'store_adapter.turso.wal_cap_flush', service: 'memory-core', role: 'harness', pid: 5150 }],
+      pids: [5150],
+    }),
+    expect: (r) => r.verdict === 'fatal' && r.lines.some((l) => l.includes('SMOKE-SPAWNED') && l.includes('pid=5150')),
+  },
+  {
+    name: 'd5c01be3: smoke pid learned from the SCRATCH logs, harness event in <live>/memory-core/logs → FATAL',
+    run: (g) => scenario(g, {
+      liveOtherEvents: [{ ts: '2026-09-24T21:04:00.000Z', event: 'x', service: 'memory-core', role: 'harness', pid: 5151 }],
+      scratchEvents: [cli({ role: 'harness', pid: 5151, target: 'memory-server' })],
+    }),
+    expect: (r) => r.verdict === 'fatal',
+  },
+  {
+    name: 'd5c01be3: FOREIGN pid harness event in <live>/memory-core/logs (smoke pids known) → note, non-fatal',
+    run: (g) => scenario(g, {
+      liveOtherEvents: [{ ts: '2026-09-24T21:04:00.000Z', event: 'x', service: 'memory-core', role: 'harness', pid: 4243 }],
+      pids: [5150, 5151],
+    }),
+    expect: (r) => r.verdict === 'ok' && r.lines.some((l) => l.startsWith('note:') && l.includes('pid=4243')),
   },
   {
     name: 'no change and no harness telemetry → OK',

@@ -167,6 +167,47 @@ const LIVE_DATA_ROOT = path.join(process.env['HOME'] ?? '', '.adhd', 'sox-ecosys
 let isolationBaseline = null;
 /** Every extension/bundle id this run spawned soxe against (d5c01be3 (b′)). */
 const SMOKE_TOUCHED_IDS = new Set();
+/**
+ * Every pid this run is known to have spawned (spawn()ed children, their
+ * descendants, the proxy's backend, each detached process group's members).
+ * A role=harness event in ANOTHER live service log (e.g. memory-core) whose
+ * pid is in this set is a smoke child that lost SOX_ECOSYSTEM_HOME → FATAL.
+ */
+const SMOKE_SPAWNED_PIDS = new Set();
+
+/** Record `pid` and (best effort) its live descendants via `pgrep -P`. */
+function recordSmokePidTree(pid, testId) {
+  if (typeof pid !== 'number' || !Number.isFinite(pid) || pid <= 0) return;
+  const stack = [pid];
+  const seen = new Set();
+  while (stack.length > 0) {
+    const p = stack.pop();
+    if (seen.has(p)) continue;
+    seen.add(p);
+    SMOKE_SPAWNED_PIDS.add(p);
+    let out = '';
+    try {
+      out = execSync(`pgrep -P ${p}`, { encoding: 'utf-8', stdio: ['ignore', 'pipe', 'ignore'] });
+    } catch (e) {
+      if (!e || e.status !== 1) console.error(`[smoke] WARNING: ${testId ?? '?'} pgrep -P ${p} failed: ${(e && e.message) ?? e}`);
+      continue; // status 1 = no children
+    }
+    for (const t of out.split(/\s+/)) { const n = Number(t); if (n > 0) stack.push(n); }
+  }
+}
+
+/** Record every member of process group `pgid` (`pgrep -g`). */
+function recordSmokePgroup(pgid, testId) {
+  let out = '';
+  try {
+    out = execSync(`pgrep -g ${pgid}`, { encoding: 'utf-8', stdio: ['ignore', 'pipe', 'ignore'] });
+  } catch (e) {
+    if (!e || e.status !== 1) console.error(`[smoke] WARNING: ${testId ?? '?'} pgrep -g ${pgid} (pid recording) failed: ${(e && e.message) ?? e}`);
+    return;
+  }
+  for (const t of out.split(/\s+/)) { const n = Number(t); if (n > 0) SMOKE_SPAWNED_PIDS.add(n); }
+}
+
 /** Wall-clock start of main() — lower bound for the scratch-log scan. */
 let RUN_STARTED_MS = Date.now();
 
@@ -530,6 +571,7 @@ async function runServeProxyAndVerify(args, opts) {
   const child = spawn(spawnCmd, spawnArgs, {
     cwd: cwd, env: opts.env || smokeEnv(), stdio: ["pipe", "pipe", "pipe"],
   });
+  recordSmokePidTree(child.pid, testId);
   let stdout = "";
   let stderr = "";
   child.stdout.on("data", function (d) { stdout += d.toString(); });
@@ -551,6 +593,8 @@ async function runServeProxyAndVerify(args, opts) {
     // `exited` and record a proper `done — N failed` summary.
     await new Promise(function (r) { setTimeout(r, 150); });
   }
+  // d5c01be3: the soxe → backend descendants exist by now; record them before teardown.
+  recordSmokePidTree(child.pid, testId);
   if (TIMEOUT_BIN !== null) {
     // TIMEOUT_BIN itself owns termination -- just wait for it to actually exit,
     // bounded so a broken timeout binary can never hang the harness forever.
@@ -578,6 +622,7 @@ async function runServeProxyAndVerify(args, opts) {
   const spawnedPidMatch = stderr.match(/spawned backend pid (\d+)/);
   if (spawnedPidMatch) {
     const backendPid = Number(spawnedPidMatch[1]);
+    recordSmokePidTree(backendPid, testId);
     try {
       process.kill(backendPid, "SIGTERM");
     } catch (e) { /* already gone, or never actually came up -- nothing to reap */ }
@@ -826,6 +871,8 @@ async function killProcessGroup(pgid, testId) {
   };
 
   if (!groupAlive()) return;
+  // d5c01be3: record every group member before it is torn down.
+  recordSmokePgroup(pgid, testId);
   signalGroup('SIGTERM');
   const termDeadline = Date.now() + 5000;
   while (Date.now() < termDeadline && groupAlive()) {
@@ -895,6 +942,7 @@ async function runMemoryServerDirectServeAndVerify(args, opts) {
   // timers.
   let spawnError = null;
   const child = spawn(SOXE, args, { cwd: cwd, env: env, stdio: ["pipe", "pipe", "pipe"], detached: true });
+  recordSmokePidTree(child.pid, testId);
   let stdout = "";
   let stderr = "";
   child.stdout.on("data", function (d) { stdout += d.toString(); });
@@ -1514,7 +1562,7 @@ async function main() {
   console.error(`[smoke] isolation telemetry: live sox ${liveLogs.events.length} event(s) from ${liveLogs.filesRead.length} file(s)` +
     ` (${liveLogs.parseErrors} unparseable line(s)); live other-service ${liveOtherLogs.events.length} relevant event(s) from ${liveOtherLogs.filesRead.length} file(s)` +
     ` (${liveOtherLogs.parseErrors} unparseable line(s)); scratch ${scratchLogs.events.length} event(s) from ${scratchLogs.filesRead.length} file(s)` +
-    ` (${scratchLogs.parseErrors} unparseable line(s)); smoke-touched ids: ${[...SMOKE_TOUCHED_IDS].sort().join(', ') || '(none)'}`);
+    ` (${scratchLogs.parseErrors} unparseable line(s)); smoke-touched ids: ${[...SMOKE_TOUCHED_IDS].sort().join(', ') || '(none)'}; smoke-spawned pids recorded: ${SMOKE_SPAWNED_PIDS.size}`);
   const isolation = evaluateIsolation({
     before: isolationBefore,
     after: isolationAfter,
@@ -1522,6 +1570,7 @@ async function main() {
     liveOtherEvents: liveOtherLogs.events,
     scratchEvents: scratchLogs.events,
     smokeTouchedIds: SMOKE_TOUCHED_IDS,
+    smokePids: SMOKE_SPAWNED_PIDS,
   });
   for (const line of isolation.lines) console.error(`[smoke] ${line}`);
   if (isolation.verdict === 'fatal') isolationFailed = true;
