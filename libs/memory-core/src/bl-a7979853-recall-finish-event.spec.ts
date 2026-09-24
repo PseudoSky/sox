@@ -16,7 +16,7 @@ import type { EmbedRole } from '@adhd/sox-embedding-provider';
 import type { StoreAdapter } from '@adhd/sox-store-adapter';
 import { openDb } from './db.js';
 import { memoryWrite } from './write.js';
-import { memoryRecall } from './recall.js';
+import { memoryRecall, federatedRecall, closeFederationConnections, __resetRecallVecCircuitForTest } from './recall.js';
 import { WriteQueue } from './write-queue.js';
 import { _setEmbedProviderForTest } from './embed.js';
 import { DeterministicTestProvider } from './embed-test-provider.js';
@@ -70,6 +70,11 @@ describe('memoryRecall — a7979853 persisted recall.finish outcome event', () =
     WriteQueue.setBypass(false);
     _setEmbedProviderForTest(new DeterministicTestProvider());
     process.env['SOX_RECALL_EMBED_TIMEOUT_MS'] = '150';
+    // (BL-a7979853) The embed circuit breaker is module-level state that
+    // otherwise leaks between tests in this file — a prior test's hung
+    // provider opens it, which then makes the NEXT test's recall skip its
+    // own embed entirely (degradation path) instead of exercising it.
+    __resetRecallVecCircuitForTest();
   });
 
   afterEach(async () => {
@@ -83,6 +88,48 @@ describe('memoryRecall — a7979853 persisted recall.finish outcome event', () =
       process.env['SOX_RECALL_EMBED_TIMEOUT_MS'] = ORIGINAL_TIMEOUT_ENV;
     }
   });
+
+  it(
+    // BL-a7979853 review item 1: federatedRecall previously derived vec_used
+    // from `providerDelta > 0` (getProviderCallCount() before/after), but
+    // embed.ts's providerCallCount is incremented BEFORE the embed settles
+    // (BL-254) — a query embed that HANGS/times out for the entire recall
+    // still bumps that counter, so the old logic reported vec_used:true for
+    // a federated recall whose vec channel never produced a usable vector.
+    // Placed as the FIRST test in this file (deliberately, no beforeEach
+    // reset added — dropped per review scope-narrowing) so the module-level
+    // embed circuit breaker (recall.ts) is still closed: a later test in
+    // this file opens it via a real timeout, which would short-circuit the
+    // embed call entirely and mask this exact regression.
+    'federatedRecall vec_used reflects actual per-store vec use, not provider_call_count, when a provider hangs',
+    async () => {
+      _setEmbedProviderForTest(new HangingProvider());
+      const infoSpy = vi.spyOn(tlog, 'info');
+      try {
+        const response = await federatedRecall(
+          [{ scope: 'project', dbPath: ctx.dbPath }],
+          { query: 'nothing matches, provider is hanging', limit: 10 },
+        );
+
+        // Fixed behavior: no store ever produced a usable query vector, so
+        // vec_used must be false and stores_vec_used must be 0 — regardless
+        // of how many embed-call ATTEMPTS provider_call_count recorded.
+        expect(response.vec_used).toBe(false);
+        expect(response.stores_vec_used).toBe(0);
+
+        const finishCalls = infoSpy.mock.calls.filter((c) => c[0] === 'recall.federated_finish');
+        expect(finishCalls).toHaveLength(1);
+        const [, payload] = finishCalls[0]!;
+        const p = payload as { vec_used: boolean; stores_vec_used: number };
+        expect(p.vec_used).toBe(false);
+        expect(p.stores_vec_used).toBe(0);
+      } finally {
+        infoSpy.mockRestore();
+        await closeFederationConnections();
+      }
+    },
+    8000,
+  );
 
   it(
     'emits exactly one recall.finish with vec_used:true when the provider embeds',
