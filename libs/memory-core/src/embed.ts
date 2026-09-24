@@ -99,13 +99,16 @@ export function getConfiguredEmbedBackend(): EmbedBackend {
 
 function resolveConfig(): EmbedConfig {
   const backend = resolveBackendEnv();
+  // Machine-wide default MUST match `@adhd/sox-embedding-provider`'s own
+  // `joinDefaultCacheDir()` fallback (`<XDG_CACHE_HOME|~/.cache>/sox/models`).
+  // A 'sox-memory' literal here would diverge from every OTHER consumer of the
+  // package that doesn't pass `options.cacheDir` (e.g. adhd's backlog
+  // bootstrap.ts), giving them different `embedHostSingletonKey()` digests for
+  // the SAME model/ep and spawning two embedding hosts + two model downloads
+  // on one machine instead of one shared host.
   const cacheDir =
     process.env['SOX_EMBED_CACHE_DIR'] ??
-    join(
-      process.env['XDG_CACHE_HOME'] ?? join(homedir(), '.cache'),
-      'sox-memory',
-      'models',
-    );
+    join(process.env['XDG_CACHE_HOME'] ?? join(homedir(), '.cache'), 'sox', 'models');
   return {
     backend,
     cacheDir,
