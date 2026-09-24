@@ -96,6 +96,24 @@ describe('createServeChildSignalForwarder — BL 5b2fc7a2', () => {
     expect(child.killed).toEqual([]);
   });
 
+  it('a missing pid does NOT permanently latch `forwarding` — a later call with a pid still forwards', () => {
+    // Regression: `forward()` used to set `forwarding = true` before checking
+    // `child.pid === undefined`, so a no-pid call (e.g. a signal that arrives
+    // before spawn assigns a pid) would forever disable every subsequent
+    // forward() call, even once the child had a real pid.
+    const child = new FakeChild();
+    child.pid = undefined;
+    const { forward } = createServeChildSignalForwarder(child, { graceMs: 1000 });
+
+    forward('SIGTERM');
+    expect(child.killed).toEqual([]);
+
+    child.pid = 4242;
+    forward('SIGTERM');
+
+    expect(child.killed).toEqual(['SIGTERM']);
+  });
+
   it('dispose() clears a pending escalation timer', () => {
     vi.useFakeTimers();
     const child = new FakeChild();

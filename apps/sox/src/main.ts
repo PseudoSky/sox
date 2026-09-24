@@ -149,6 +149,7 @@ import {
   waitForServePortSignal,
 } from './serve-shutdown.js';
 import { verifyRunningArtifact } from './verify-artifact.js';
+import { resolveGraceMs } from './grace-ms.js';
 import { initTelemetry, log, resolveProcessRole, type InitTelemetryOptions } from '@adhd/sox-telemetry';
 // @adhd/sox-host-registry is also lazy-required via install-engine; import it lazily here too
 // to avoid the NX "static import of lazy-loaded library" lint error.
@@ -4942,11 +4943,7 @@ async function cmdStop(flags: Record<string, string>): Promise<void> {
   }
 
   // ── BL-31: configurable grace period for SIGTERM→SIGKILL escalation ──────────
-  const graceMs = (() => {
-    const raw = flags['grace-ms'] ?? process.env['SOX_STOP_GRACE_MS'];
-    const n = raw !== undefined ? Number(raw) : NaN;
-    return Number.isFinite(n) && n >= 0 ? n : 5000;
-  })();
+  const graceMs = resolveGraceMs(flags['grace-ms'], process.env['SOX_STOP_GRACE_MS']) ?? 5000;
 
   const record = getRuntimeRecord(runtimeFilePath);
   if (!record) {
@@ -5259,11 +5256,7 @@ OS units are GENERATED from the manifest; hand-editing them is unsupported.
   // grace (computed per-subcommand, once `ctx` — and therefore the manifest's
   // `lifecycle.stop_timeout_ms` — is available) falls through to
   // `ctx.spec.stopTimeoutMs`, then the unchanged `5000` default.
-  const explicitGraceMs = (() => {
-    const raw = flags['grace-ms'] ?? process.env['SOX_STOP_GRACE_MS'];
-    const n = raw !== undefined ? Number(raw) : NaN;
-    return Number.isFinite(n) && n >= 0 ? n : undefined;
-  })();
+  const explicitGraceMs = resolveGraceMs(flags['grace-ms'], process.env['SOX_STOP_GRACE_MS']);
 
   if (sub === 'list') {
     await cmdServiceList(flags);
@@ -6159,11 +6152,7 @@ async function doctorReconcile(flags: Record<string, string>): Promise<void> {
   const filterScope = flags['scope'];
   const dryRun = flags['dry-run'] !== undefined;
   const jsonMode = flags['json'] !== undefined;
-  const graceMs = (() => {
-    const raw = flags['grace-ms'] ?? process.env['SOX_STOP_GRACE_MS'];
-    const n = raw !== undefined ? Number(raw) : NaN;
-    return Number.isFinite(n) && n >= 0 ? n : 5000;
-  })();
+  const graceMs = resolveGraceMs(flags['grace-ms'], process.env['SOX_STOP_GRACE_MS']) ?? 5000;
 
   // Durable action log — every line is `soxe logs --id doctor-reconcile`-visible.
   // SYNCHRONOUS appends (not LogManager's WriteStream): the pass ends in
@@ -9103,6 +9092,10 @@ Flags:
    --port=<port>     Start an HTTP listener on the given port in addition to stdio.
                      Supports dual transport — stdio and HTTP clients simultaneously.
                      Compatible with proxy mode: the shim proxies both to the backend.
+   --grace-ms=<ms>   Grace period (ms) between forwarding SIGTERM/SIGHUP/SIGINT to the
+                     no-proxy grandchild and escalating to SIGKILL. 0 means immediate
+                     SIGKILL. Default 5000, or SOX_STOP_GRACE_MS if set. A blank or
+                     absent value falls back to the default.
    --help            Show this message
 `);
     process.exit(0);
@@ -9512,11 +9505,7 @@ Flags:
   // `killAndVerify`, `libs/host-runtime/src/reaper.ts`). Precedence for the
   // grace window matches the rest of the CLI: --grace-ms > SOX_STOP_GRACE_MS
   // > 5000ms default (`apps/sox/src/main.ts` `cmdService`'s resolver).
-  const serveGraceMs = (() => {
-    const raw = flags['grace-ms'] ?? process.env['SOX_STOP_GRACE_MS'];
-    const n = raw !== undefined ? Number(raw) : NaN;
-    return Number.isFinite(n) && n >= 0 ? n : 5000;
-  })();
+  const serveGraceMs = resolveGraceMs(flags['grace-ms'], process.env['SOX_STOP_GRACE_MS']) ?? 5000;
   const forwarder = createServeChildSignalForwarder(child, {
     graceMs: serveGraceMs,
     log: (m) => process.stderr.write(`[soxe serve] ${m}\n`),
@@ -9539,6 +9528,7 @@ Flags:
   // process) so an OS-delivered group signal (Ctrl-C, terminal hangup) still
   // reaches it directly regardless of this handler.
   process.once('exit', () => {
+    offParentSignals();
     forwarder.dispose();
     if (child.pid !== undefined && child.exitCode === null && child.signalCode === null) {
       try {

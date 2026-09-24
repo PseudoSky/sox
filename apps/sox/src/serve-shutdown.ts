@@ -121,8 +121,13 @@ export function createServeChildSignalForwarder(
 
   const forward = (sig: NodeJS.Signals): void => {
     if (forwarding) return;
-    forwarding = true;
+    // Check for a missing pid BEFORE latching `forwarding = true` — an early
+    // call (spawn failed, or fired before the child process object even has
+    // a pid assigned) must not permanently disable forwarding for every
+    // subsequent signal; a later call with a real pid still needs to go
+    // through.
     if (child.pid === undefined) return;
+    forwarding = true;
     log(`${sig} received — forwarding to grandchild pid ${child.pid} (grace ${graceMs}ms)`);
     try {
       child.kill(sig);

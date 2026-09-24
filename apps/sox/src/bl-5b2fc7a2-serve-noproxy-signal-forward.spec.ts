@@ -28,6 +28,8 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { afterEach, beforeAll, describe, expect, it } from 'vitest';
 
+const INITIATING_SIGNALS = ['SIGTERM', 'SIGHUP', 'SIGINT'] as const;
+
 // `__dirname` is the CJS global — this test file is compiled/run as CJS
 // (see apps/sox/tsconfig.typecheck.json), same as the rest of apps/sox/src.
 const REPO_ROOT = path.resolve(__dirname, '../../..');
@@ -136,10 +138,10 @@ function makeFixtureWorkspace(
   return { root, extId, pidFile, readyFile };
 }
 
-describe('BL 5b2fc7a2 — cmdServe forwards SIGTERM to its no-proxy grandchild', () => {
-  it(
-    'SIGTERM on the soxe-serve pid reaps the grandchild within the grace period',
-    async () => {
+describe('BL 5b2fc7a2 — cmdServe forwards the initiating signal to its no-proxy grandchild', () => {
+  it.each(INITIATING_SIGNALS)(
+    '%s on the soxe-serve pid reaps the grandchild within the grace period',
+    async (initiatingSignal) => {
       const fixture = makeFixtureWorkspace();
       tmpRoot = fixture.root;
 
@@ -173,31 +175,31 @@ describe('BL 5b2fc7a2 — cmdServe forwards SIGTERM to its no-proxy grandchild',
       expect(Number.isInteger(grandchildPid) && grandchildPid > 0).toBe(true);
       expect(pidAlive(grandchildPid)).toBe(true);
 
-      process.kill(servePid as number, 'SIGTERM');
+      process.kill(servePid as number, initiatingSignal);
 
       // Grace is 3000ms; give a comfortable margin for the poll loop + process
       // teardown scheduling on a loaded CI box.
       const grandchildGone = await waitFor(() => !pidAlive(grandchildPid), 8_000, 100);
       expect(
         grandchildGone,
-        `grandchild pid ${grandchildPid} is still alive ${8_000}ms after SIGTERM-ing soxe serve pid ${servePid}.\n` +
-          `stderr:\n${stderrBuf}\nstdout:\n${stdoutBuf}`,
+        `grandchild pid ${grandchildPid} is still alive ${8_000}ms after ${initiatingSignal}-ing soxe serve pid ` +
+          `${servePid}.\nstderr:\n${stderrBuf}\nstdout:\n${stdoutBuf}`,
       ).toBe(true);
     },
     20_000,
   );
 });
 
-describe('cmdServe --grace-ms 0 — main.ts grace resolver `n >= 0` (was `n > 0`)', () => {
+describe('cmdServe --grace-ms 0 means immediate SIGKILL', () => {
   it(
     'means immediate SIGKILL escalation, not a silent fallback to the 5000ms default',
     async () => {
       // Fixture ignores SIGTERM outright, so it can ONLY die via SIGKILL —
-      // this isolates the grace-window bug from the fixture's own shutdown
-      // behaviour. Pre-fix, `Number("0") > 0` is false, so the resolver fell
-      // back to the 5000ms default and the grandchild would still be alive
-      // well under that window. Post-fix, `Number("0") >= 0` is true, so
-      // SIGKILL fires (almost) immediately after SIGTERM is forwarded.
+      // this isolates the grace-window behavior from the fixture's own shutdown
+      // behaviour. `parseGraceMsFlag('0')` resolves to `0` (a valid,
+      // non-negative override), so SIGKILL fires (almost) immediately after
+      // SIGTERM is forwarded — the grandchild must not still be alive well
+      // into the 5000ms default window.
       const fixture = makeFixtureWorkspace({ ignoreSigterm: true });
       tmpRoot = fixture.root;
 
