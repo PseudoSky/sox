@@ -141,9 +141,14 @@ import {
   verifyIntegrity,
 } from '@adhd/sox-install-engine';
 import { registerBundleMember, resolveBundleDir } from './bundle-init.js';
+import { resolveGraceMs } from './grace-ms.js';
 import { assertWithinBase, PathEscapeError } from './path-safety.js';
 import { dedupeRestartRows, type RestartIdentity } from './restart-dedup.js';
-import { exitCodeForListenOutcome, waitForServePortSignal } from './serve-shutdown.js';
+import {
+  exitCodeForListenOutcome,
+  installServeChildSignalHandling,
+  waitForServePortSignal,
+} from './serve-shutdown.js';
 import { verifyRunningArtifact } from './verify-artifact.js';
 import { initTelemetry, log, resolveProcessRole, type InitTelemetryOptions } from '@adhd/sox-telemetry';
 // @adhd/sox-host-registry is also lazy-required via install-engine; import it lazily here too
@@ -4938,11 +4943,7 @@ async function cmdStop(flags: Record<string, string>): Promise<void> {
   }
 
   // ── BL-31: configurable grace period for SIGTERM→SIGKILL escalation ──────────
-  const graceMs = (() => {
-    const raw = flags['grace-ms'] ?? process.env['SOX_STOP_GRACE_MS'];
-    const n = raw !== undefined ? Number(raw) : NaN;
-    return Number.isFinite(n) && n >= 0 ? n : 5000;
-  })();
+  const graceMs = resolveGraceMs(flags['grace-ms'], process.env['SOX_STOP_GRACE_MS']) ?? 5000;
 
   const record = getRuntimeRecord(runtimeFilePath);
   if (!record) {
@@ -5255,11 +5256,7 @@ OS units are GENERATED from the manifest; hand-editing them is unsupported.
   // grace (computed per-subcommand, once `ctx` — and therefore the manifest's
   // `lifecycle.stop_timeout_ms` — is available) falls through to
   // `ctx.spec.stopTimeoutMs`, then the unchanged `5000` default.
-  const explicitGraceMs = (() => {
-    const raw = flags['grace-ms'] ?? process.env['SOX_STOP_GRACE_MS'];
-    const n = raw !== undefined ? Number(raw) : NaN;
-    return Number.isFinite(n) && n >= 0 ? n : undefined;
-  })();
+  const explicitGraceMs = resolveGraceMs(flags['grace-ms'], process.env['SOX_STOP_GRACE_MS']);
 
   if (sub === 'list') {
     await cmdServiceList(flags);
@@ -6155,11 +6152,7 @@ async function doctorReconcile(flags: Record<string, string>): Promise<void> {
   const filterScope = flags['scope'];
   const dryRun = flags['dry-run'] !== undefined;
   const jsonMode = flags['json'] !== undefined;
-  const graceMs = (() => {
-    const raw = flags['grace-ms'] ?? process.env['SOX_STOP_GRACE_MS'];
-    const n = raw !== undefined ? Number(raw) : NaN;
-    return Number.isFinite(n) && n >= 0 ? n : 5000;
-  })();
+  const graceMs = resolveGraceMs(flags['grace-ms'], process.env['SOX_STOP_GRACE_MS']) ?? 5000;
 
   // Durable action log — every line is `soxe logs --id doctor-reconcile`-visible.
   // SYNCHRONOUS appends (not LogManager's WriteStream): the pass ends in
@@ -9099,6 +9092,10 @@ Flags:
    --port=<port>     Start an HTTP listener on the given port in addition to stdio.
                      Supports dual transport — stdio and HTTP clients simultaneously.
                      Compatible with proxy mode: the shim proxies both to the backend.
+   --grace-ms=<ms>   Grace period (ms) between forwarding SIGTERM/SIGHUP/SIGINT to the
+                     no-proxy grandchild and escalating to SIGKILL. 0 means immediate
+                     SIGKILL. Default 5000, or SOX_STOP_GRACE_MS if set. A blank or
+                     absent value falls back to the default.
    --help            Show this message
 `);
     process.exit(0);
@@ -9456,20 +9453,42 @@ Flags:
     return true;
   })();
 
+  // BL 5b2fc7a2 / docs/spec/service-lifecycle.md `[contract:signal]`.
+  // Compute grace once before the branching — same for both log-tee and --no-log paths.
+  const serveGraceMs = resolveGraceMs(flags['grace-ms'], process.env['SOX_STOP_GRACE_MS']) ?? 5000;
+
   if (!wantLog) {
-    // Opt-out path: replace this process (stdio inherited) — MCP server takes over
-    // stdin/stdout directly with no intermediary.
-    const { execFileSync } = require('node:child_process') as typeof import('node:child_process');
-    try {
-      execFileSync(process.execPath, ['--enable-source-maps', entrypointPath2], {
-        stdio: 'inherit',
-        env: serveEnv,
-        cwd: extDir2,
-      });
-    } catch (e) {
-      const code = (e as NodeJS.ErrnoException & { status?: number }).status ?? 1;
-      process.exit(code);
-    }
+    // Opt-out path: stdio is fully inherited (no tee) — MCP server takes over
+    // stdin/stdout directly with no intermediary. Previously this used a
+    // BLOCKING `execFileSync(..., {stdio:'inherit'})`, which — like the
+    // log-tee branch below before its own fix — installed no signal handler
+    // of its own: a SIGTERM/SIGHUP/SIGINT to `soxe serve --no-log` orphaned
+    // the grandchild exactly as BL 5b2fc7a2 describes for the log-tee path.
+    // `spawn` (not `execFileSync`) lets this process stay alive to forward
+    // the signal via the shared `installServeChildSignalHandling` helper —
+    // see the log-tee branch below, which shares this wiring.
+    const { spawn } = require('node:child_process') as typeof import('node:child_process');
+    const child = spawn(process.execPath, ['--enable-source-maps', entrypointPath2], {
+      stdio: 'inherit',
+      env: serveEnv,
+      cwd: extDir2,
+    });
+
+    const signalHandle = installServeChildSignalHandling(child, {
+      graceMs: serveGraceMs,
+      log: (m) => process.stderr.write(`[soxe serve] ${m}\n`),
+    });
+
+    child.on('close', (code: number | null) => {
+      signalHandle.dispose();
+      process.exit(code ?? 0);
+    });
+
+    child.on('error', (err: Error) => {
+      signalHandle.dispose();
+      process.stderr.write(`[soxe serve] spawn error: ${err.message}\n`);
+      process.exit(1);
+    });
     return;
   }
 
@@ -9500,13 +9519,31 @@ Flags:
     lm.write(chunk);
   });
 
+  // BL 5b2fc7a2 / docs/spec/service-lifecycle.md `[contract:signal]`: this
+  // grandchild has no signal handler of its own installed by us — without
+  // forwarding, killing the `soxe serve` pid (or its terminal session)
+  // leaves the grandchild running and holding its store lease. Forward
+  // SIGTERM/SIGHUP/SIGINT, grace, then SIGKILL (same shape as
+  // `killAndVerify`, `libs/host-runtime/src/reaper.ts`). Precedence for the
+  // grace window matches the rest of the CLI: --grace-ms > SOX_STOP_GRACE_MS
+  // > 5000ms default (`apps/sox/src/main.ts` `cmdService`'s resolver).
+  // Shared with the `--no-log`/opt-out branch above via
+  // `installServeChildSignalHandling` (apps/sox/src/serve-shutdown.ts) so the
+  // forward + exit-time-safety-net wiring exists in exactly one place.
+  const signalHandle = installServeChildSignalHandling(child, {
+    graceMs: serveGraceMs,
+    log: (m) => process.stderr.write(`[soxe serve] ${m}\n`),
+  });
+
   // Propagate exit code; close the log stream cleanly.
   child.on('close', (code: number | null) => {
+    signalHandle.dispose();
     lm.close();
     process.exit(code ?? 0);
   });
 
   child.on('error', (err: Error) => {
+    signalHandle.dispose();
     process.stderr.write(`[soxe serve] spawn error: ${err.message}\n`);
     lm.close();
     process.exit(1);
