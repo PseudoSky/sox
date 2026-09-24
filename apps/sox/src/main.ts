@@ -42,6 +42,7 @@ import {
   getScopePaths,
   healSingletonDuplicates,
   identityToken,
+  findLiveUnitBackendTokens,
   installRegistryPath,
   killAndVerify,
   listCrashLoopMarkers,
@@ -5588,6 +5589,30 @@ OS units are GENERATED from the manifest; hand-editing them is unsupported.
  * that window will see JSON-RPC `-32001` timeouts on the reconnect race — that
  * is expected, not a bug in this verb.
  */
+/**
+ * dc6261c1: the entrypoint token(s) the unit's LIVE backend actually runs, when
+ * they differ from `token` (the entrypoint re-resolved from the current
+ * lockfile). The front-shim resolves its backend path once at start, so a
+ * lockfile re-pointed afterwards makes `token` name a path no live process
+ * runs. Identity-safe by construction — see `findLiveUnitBackendTokens`
+ * (direct children of the unit's own mainPid whose manifest id === extId).
+ */
+function divergentLiveBackendTokens(extId: string, mainPid: number | undefined, token: string): string[] {
+  const live = findLiveUnitBackendTokens({
+    extId,
+    mainPid,
+    log: (m: string) => process.stderr.write(`  ${m}\n`),
+  });
+  const divergent = live.filter((t) => t !== token);
+  if (divergent.length > 0) {
+    process.stdout.write(
+      `  identity: lockfile-resolved entrypoint ${token} is not what the live backend under ` +
+      `main=${mainPid ?? '(none)'} runs ([${divergent.join(', ')}]); matching both (dc6261c1)\n`,
+    );
+  }
+  return divergent;
+}
+
 async function cmdServiceRestart(
   extId: string,
   scope: string,
@@ -5671,6 +5696,7 @@ async function cmdServiceRestart(
   const token = identityToken(entrypoint);
   const beforeMainPid = platform.mainPid(label, realOsExec);
   process.stdout.write(`${CLI} service restart: ${label}\n  before: main=${beforeMainPid ?? '(none)'}\n`);
+  const extraTokens = divergentLiveBackendTokens(extId, beforeMainPid, token);
 
   if (backendOnly) {
     process.stdout.write(
@@ -5685,6 +5711,7 @@ async function cmdServiceRestart(
     const result = await restartAndVerify({
       label,
       token,
+      extraTokens,
       platform,
       exec: realOsExec,
       waitMs,
@@ -5712,6 +5739,7 @@ async function cmdServiceRestart(
   const result = await restartAndVerify({
     label,
     token,
+    extraTokens,
     platform,
     exec: realOsExec,
     waitMs,
@@ -5811,6 +5839,7 @@ async function cmdServiceUpdate(
   // front-shim (§8.1a); for a direct-mode service the token IS the managed
   // process (§9.4b design, "For a direct-mode service...").
   const token = identityToken(entrypoint);
+  const extraTokens = divergentLiveBackendTokens(extId, platform.mainPid(ctx.spec.label, realOsExec), token);
 
   const result = await updateOsUnit(ctx.spec, platform, {
     unitDir,
@@ -5818,6 +5847,7 @@ async function cmdServiceUpdate(
     log: (m: string) => process.stdout.write(`sox: ${m}\n`),
     unsetKeys,
     token,
+    extraTokens,
     waitMs,
     excludePids: [process.pid],
   });

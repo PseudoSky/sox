@@ -1699,6 +1699,14 @@ export interface RestartAndVerifyOptions {
   label: string;
   /** Identity token (the entrypoint path) to match survivors/respawns against. */
   token: string;
+  /**
+   * dc6261c1: additional identity tokens matched alongside `token` in every
+   * phase (before-snapshot, reap, rotation poll) — the entrypoint path(s) the
+   * unit's live backend is ACTUALLY running (`findLiveUnitBackendTokens`),
+   * which diverge from `token` when the install lockfile was re-pointed after
+   * the front-shim resolved its backend. Duplicates/empties are ignored.
+   */
+  extraTokens?: string[];
   platform: OsUnitPlatform;
   exec?: OsExec;
   /** How long to wait for a rotated pid to appear (ms). Default 15000. */
@@ -1793,7 +1801,16 @@ export async function restartAndVerify(opts: RestartAndVerifyOptions): Promise<R
       );
   const excludeOpt = excludePids !== undefined ? { excludePids } : {};
 
-  const before = findMatches(opts.token, excludeOpt).map((m) => m.pid);
+  // dc6261c1: match the resolved token AND every live-backend token, union by pid.
+  const tokens = [...new Set([opts.token, ...(opts.extraTokens ?? [])].filter((t) => t.length > 0))];
+  if (tokens.length > 1) log(`identity tokens: [${tokens.join(', ')}]`);
+  const matchAll = (): number[] => {
+    const pids = new Set<number>();
+    for (const t of tokens) for (const m of findMatches(t, excludeOpt)) pids.add(m.pid);
+    return [...pids];
+  };
+
+  const before = matchAll();
   log(`before: matching-pids=[${before.join(', ')}]`);
 
   let kickstart: OsExecResult | undefined;
@@ -1816,10 +1833,14 @@ export async function restartAndVerify(opts: RestartAndVerifyOptions): Promise<R
     log('kickstart: skipped (kickstart:false, backend-only restart)');
   }
 
-  const reap = await reapFn(opts.token, { ...excludeOpt, log: (m: string) => log(`reaper: ${m}`) });
+  const reap: ReapResult = { token: opts.token, killed: [] };
+  for (const t of tokens) {
+    const r = await reapFn(t, { ...excludeOpt, log: (m: string) => log(`reaper: ${m}`) });
+    for (const k of r.killed) if (!reap.killed.some((x) => x.pid === k.pid)) reap.killed.push(k);
+  }
   const undead = reap.killed.filter((k) => k.outcome === 'undead').map((k) => k.pid);
   if (undead.length > 0) {
-    const after = findMatches(opts.token, excludeOpt).map((m) => m.pid);
+    const after = matchAll();
     return {
       label: opts.label, token: opts.token, ...kickstartField(), ...kickstartSkippedField(),
       before, after, reap, undead,
@@ -1835,7 +1856,7 @@ export async function restartAndVerify(opts: RestartAndVerifyOptions): Promise<R
   let after: number[] = [];
   let rotated = false;
   do {
-    after = findMatches(opts.token, excludeOpt).map((m) => m.pid);
+    after = matchAll();
     if (after.some((p) => !beforeSet.has(p))) {
       rotated = true;
       break;
@@ -1882,6 +1903,8 @@ export interface UpdateOsUnitOptions {
    * orphan (§9.4b gap this verb closes).
    */
   token: string;
+  /** dc6261c1: live-backend identity tokens — passed through to `restartAndVerify.extraTokens`. */
+  extraTokens?: string[];
   /** How long to wait for a rotated pid to appear (ms). Default 15000 — passed through to `restartAndVerify`. */
   waitMs?: number;
   /** Poll interval while waiting (ms). Default 300 — passed through to `restartAndVerify`. */
@@ -2005,6 +2028,7 @@ export async function updateOsUnit(
     log,
   };
   if (opts.exec !== undefined) restartOptsBase.exec = opts.exec;
+  if (opts.extraTokens !== undefined) restartOptsBase.extraTokens = opts.extraTokens;
   if (opts.waitMs !== undefined) restartOptsBase.waitMs = opts.waitMs;
   if (opts.pollMs !== undefined) restartOptsBase.pollMs = opts.pollMs;
   if (opts.excludePids !== undefined) restartOptsBase.excludePids = opts.excludePids;

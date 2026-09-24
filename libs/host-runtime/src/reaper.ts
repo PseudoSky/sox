@@ -279,6 +279,117 @@ export function argvContainsToken(argv: string, token: string): boolean {
   }
 }
 
+// ─── dc6261c1: identity of the backend a unit is ACTUALLY running ─────────────
+
+/** Filesystem seam for {@link findLiveUnitBackendTokens} (tests inject a fake tree). */
+export interface BackendTokenFs {
+  existsSync(p: string): boolean;
+  readFileSync(p: string, enc: 'utf8'): string;
+  realpathSync(p: string): string;
+}
+
+export interface FindLiveUnitBackendTokensOptions {
+  /** The extension id the unit serves — a candidate's manifest must declare exactly this `id`. */
+  extId: string;
+  /** The OS unit's own (front-shim) pid. Only its DIRECT children are candidates. */
+  mainPid: number | undefined;
+  /** Injectable process snapshot. Defaults to {@link snapshotProcesses}. */
+  procs?: PsProcess[];
+  /** Injectable fs. Defaults to `node:fs`. */
+  fsImpl?: BackendTokenFs;
+  /** Diagnostic sink for rejected-candidate reasons (never used for control flow). */
+  log?: (m: string) => void;
+}
+
+/** How many directories above an argv entrypoint to search for its `extension.json`. */
+const BACKEND_MANIFEST_SEARCH_DEPTH = 4;
+const ENTRYPOINT_EXTS = ['.js', '.cjs', '.mjs'];
+
+/**
+ * dc6261c1 — the identity token(s) of the backend a unit's front-shim is
+ * ACTUALLY running right now, read from the process table rather than
+ * re-derived from the install lockfile.
+ *
+ * Why this exists: `soxe serve <id> --port` (the unit's front-shim, §9.5)
+ * resolves its backend entrypoint ONCE, at shim start (`cmdServe`), and
+ * respawns every backend with that same path for its whole lifetime. A later
+ * `service restart` re-resolves the entrypoint from the CURRENT lockfile
+ * (`resolveOsUnitContext` → `resolveServeManifest`). If the lockfile's source
+ * moved in between (e.g. the user scope re-pointed from a `file://` dev
+ * checkout to an npm-installed copy under `~/.adhd/.../ext/`), the re-derived
+ * token names a path no live process runs, `findOrphansByIdentity` returns
+ * `[]`, nothing is reaped, and `[inv:deploy-verified]` times out with
+ * `before=[] after=[]` while the stale backend keeps serving.
+ *
+ * Identity safety (never matches a foreign process). A returned token is an
+ * argv element of a process that satisfies ALL of:
+ *   1. its PPID is the unit's own `mainPid` (a pid the OS supervisor reports
+ *      for this label — kernel parentage, not a name match);
+ *   2. it is neither `mainPid` itself nor this CLI (`process.pid`);
+ *   3. the argv element is an absolute `.js`/`.cjs`/`.mjs` path that exists,
+ *      whose nearest-ancestor `extension.json` (≤ 4 levels up) declares
+ *      `id === extId` AND whose `entrypoint` resolves (realpath) to that same
+ *      file.
+ * Anything else the shim may spawn (a log tee, a helper, a different
+ * extension's server) fails (3) and is ignored. Returns `[]` when `mainPid` is
+ * unknown — never guesses.
+ */
+export function findLiveUnitBackendTokens(opts: FindLiveUnitBackendTokensOptions): string[] {
+  const { extId, mainPid } = opts;
+  if (!extId || mainPid === undefined || mainPid <= 1) return [];
+  const fsI: BackendTokenFs = opts.fsImpl ?? fs;
+  const log = opts.log ?? (() => { /* no diagnostics requested */ });
+  const procs = opts.procs ?? snapshotProcesses();
+
+  const real = (p: string): string | undefined => {
+    try {
+      return fsI.realpathSync(p);
+    } catch (e) {
+      log(`dc6261c1: realpath(${p}) failed: ${(e as Error).message}`);
+      return undefined;
+    }
+  };
+
+  const manifestEntrypointFor = (file: string): string | undefined => {
+    let dir = path.dirname(file);
+    for (let i = 0; i < BACKEND_MANIFEST_SEARCH_DEPTH; i++) {
+      const manifestPath = path.join(dir, 'extension.json');
+      if (fsI.existsSync(manifestPath)) {
+        let manifest: { id?: unknown; entrypoint?: unknown };
+        try {
+          manifest = JSON.parse(fsI.readFileSync(manifestPath, 'utf8')) as typeof manifest;
+        } catch (e) {
+          log(`dc6261c1: unreadable manifest ${manifestPath}: ${(e as Error).message}`);
+          return undefined;
+        }
+        if (manifest.id !== extId || typeof manifest.entrypoint !== 'string') return undefined;
+        return path.resolve(dir, manifest.entrypoint);
+      }
+      const parent = path.dirname(dir);
+      if (parent === dir) break;
+      dir = parent;
+    }
+    return undefined;
+  };
+
+  const tokens = new Set<string>();
+  for (const p of procs) {
+    if (p.ppid !== mainPid || p.pid === mainPid || p.pid === process.pid) continue;
+    // argv[0] is the interpreter; every later absolute script path is a candidate.
+    const argv = p.args.split(/\s+/).filter((a) => a.length > 0).slice(1);
+    for (const arg of argv) {
+      if (!path.isAbsolute(arg) || !ENTRYPOINT_EXTS.some((ext) => arg.endsWith(ext))) continue;
+      if (!fsI.existsSync(arg)) continue;
+      const declared = manifestEntrypointFor(arg);
+      if (declared === undefined) continue;
+      const argReal = real(arg);
+      const declaredReal = real(declared);
+      if (argReal !== undefined && argReal === declaredReal) tokens.add(arg);
+    }
+  }
+  return [...tokens];
+}
+
 // ─── PI-1: identity-based matching by SOX_SERVICE_ID env ──────────────────────
 
 /**

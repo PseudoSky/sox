@@ -129,6 +129,7 @@ export {
   findOrphansByServiceId,
   readProcessEnv,
   argvContainsToken,
+  findLiveUnitBackendTokens,
   snapshotProcesses,
   snapshotProcessTable,
   identityToken,
@@ -143,6 +144,8 @@ export type {
   PsProcess,
   OrphanMatch,
   ReapResult,
+  BackendTokenFs,
+  FindLiveUnitBackendTokensOptions,
   ProcessSnapshotRow,
   ProcessRowSource,
 } from './reaper.js';
