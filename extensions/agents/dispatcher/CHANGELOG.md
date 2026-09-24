@@ -1,5 +1,25 @@
 # Changelog
 
+## 1.4.2
+
+- **Worktree teardown is now mandatory.** Adds a Hard rule — "always tear down every worktree you create; no orphaned worktrees" — requiring isolation worktrees to live under `<repo>/.worktrees/<slug>/`, be recorded in the orchestration ledger, and be removed (`git worktree remove` → `git worktree prune` → `git branch -d` when merged) once their state/wave merges or is abandoned, with a **Step 7 close-time reconciliation** of `git worktree list` against the ledger. A dirty worktree this run did not author is explicitly not ours to remove.
+- Adds the **Orphaned worktree** failure mode. Root cause it fixes: the spec previously mentioned `worktree` only for *isolation* (write-conflict prevention) and `$SKILL` resolution — never for cleanup — which is why isolation worktrees accumulated across runs (106 present on this repo).
+
+## 1.4.1
+
+- **Body reconciled from the `wip/dispatcher-0.1.2-transition-discipline` worktree.** The 1.4.0
+  full-replace carried the ad-hoc `dispatcher` body; the long-running/live dispatcher is the
+  **plan-state-machine** orchestrator (`dag.json`/`state.json`, `orchestrate-plan.js`,
+  advance/retry/escalate/halt), so that body is restored — carried forward in the IR pattern
+  (prose-only `dispatcher.md` + `render.<host>` from `extension.json`), staying on 1.4.x.
+- Carries the 0.1.2 **backlog transition discipline** (Operating rule 6): one deliberate
+  vocabulary `open` → `claimed` → `closed`; `toStatus` is an open catalog, never a validated enum.
+- **Fixes the infinite blind-review loop.** Operating rule 5 gains a **minimum-severity floor**
+  (only findings ≥ HIGH re-open the review; sub-HIGH findings are recorded once, non-blocking,
+  never re-reviewed), a discretion clause (may clear a sub-HIGH finding, never elevate one), and a
+  **2-round cap** (a still-open blocking finding on round 2 halts to the human). Step 5b and the
+  failure-mode catalog record the same floor; adds the "Review-loop divergence" failure mode.
+
 ## 1.4.0
 
 - **Full replace.** Prior content (0.1.x) was a mislabeled copy of the `plan-orchestrator` agent

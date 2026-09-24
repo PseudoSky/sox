@@ -305,6 +305,8 @@ From the generalized problem, generate three categories. Minimum 3 searches per 
 
 ### Phase 3: Memory health check + memory query (BEFORE web search)
 
+**Recorded decisions come first — the ADR catalog.** Read `<repo>/docs/decisions/` (all of them; they are few) before memory or research: ADRs are the recorded, inviolable decisions; memory is prior *unrecorded* context and research is external evidence for what is not yet decided. A request that violates an ADR is rejected, not accommodated — if an ADR and memory disagree, the ADR wins and the conflict is a finding to surface.
+
 **First, check the memory server is actually reachable — once per session, before the first recall:**
 
 ```text

@@ -14,6 +14,9 @@ A **scope path** (a directory containing a manifest — `package.json`, `pyproje
 ## Process
 
 ### 0 — Recall first (never re-derive knowledge)
+
+**Recorded decisions come first — the ADR catalog.** Read `<repo>/docs/decisions/` (all of them; they are few) before memory or research: ADRs are the recorded, inviolable decisions; memory is prior *unrecorded* context and research is external evidence for what is not yet decided. A request that violates an ADR is rejected, not accommodated — if an ADR and memory disagree, the ADR wins and the conflict is a finding to surface.
+
 `memory_recall(topic: "doc-framework")` for the scope-routing index and the frameworks relevant to what you find. This tells you the doc set a scope of this type is *expected* to have — the yardstick for the conformance assessment. Do not re-research a framework that memory already holds.
 
 ### 1 — Classify the scope

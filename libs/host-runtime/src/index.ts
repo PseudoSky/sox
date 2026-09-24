@@ -237,6 +237,8 @@ export {
   // BL-375: [inv:env-preserved-on-regenerate] guard internals, exported for
   // external test/tooling consistency with every other os-unit.ts symbol.
   extractUnitEnv,
+  extractUnitArgv,
+  isFrontShimArgv,
   droppedShellEnvKeys,
   disableOsUnit,
   restartOsUnit,

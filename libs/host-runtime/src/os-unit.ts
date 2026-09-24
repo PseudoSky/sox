@@ -1073,6 +1073,54 @@ function isShellSourcedEnvKey(key: string): boolean {
  * function of the resolved config cascade, not the ambient shell, so a
  * `sox config unset` followed by `enable` must never trip this guard.
  */
+/**
+ * Parse ProgramArguments (launchd plist) / ExecStart (systemd unit) argv out
+ * of a rendered unit file's text. Returns `[]` on any missing/unparseable
+ * shape — NEVER throws — so callers that treat "can't prove argv" as "not
+ * the front-shim" get that fail-safe direction for free via
+ * {@link isFrontShimArgv} (BL a49ca837 follow-up: `shimIsUnit` must be
+ * derived from what the unit ACTUALLY runs, not from current config).
+ */
+export function extractUnitArgv(unitText: string, kind: OsSupervisor): string[] {
+  try {
+    if (kind === 'launchd') {
+      const marker = '<key>ProgramArguments</key>';
+      const start = unitText.indexOf(marker);
+      if (start === -1) return [];
+      const arrStart = unitText.indexOf('<array>', start);
+      const arrEnd = unitText.indexOf('</array>', arrStart);
+      if (arrStart === -1 || arrEnd === -1) return [];
+      const body = unitText.slice(arrStart + '<array>'.length, arrEnd);
+      const strRe = /<string>([^<]*)<\/string>/g;
+      const argv: string[] = [];
+      let m: RegExpExecArray | null;
+      while ((m = strRe.exec(body)) !== null) argv.push(xmlUnescape(m[1] ?? ''));
+      return argv;
+    }
+    const m = unitText.match(/^ExecStart=(.*)$/m);
+    if (!m) return [];
+    const argvLine = m[1] ?? '';
+    return (argvLine.match(/"[^"]*"|\S+/g) ?? []).map((t) => t.replace(/^"|"$/g, ''));
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * True iff `argv` is `... serve <extId> --port <port> ...` — the
+ * port-listening front-shim (BL-156) — rather than the bare backend
+ * entrypoint. Token-matched (not substring-matched): an unrelated `--port`
+ * elsewhere, or an extId that happens to contain "serve", cannot
+ * false-positive.
+ */
+export function isFrontShimArgv(argv: string[], extId: string): boolean {
+  const i = argv.indexOf('serve');
+  if (i === -1) return false;
+  if (argv[i + 1] !== extId) return false;
+  return argv.slice(i + 2).includes('--port');
+}
+
+
 export function droppedShellEnvKeys(
   priorEnv: Record<string, string>,
   nextEnv: Record<string, string>,
@@ -1661,10 +1709,20 @@ export interface RestartAndVerifyOptions {
   /**
    * When false, skip `platform.kickstart` entirely — restart only the backend
    * (reap + rotation-verify), never the front-shim/unit itself. The unit's own
-   * process is added to `excludePids` via `platform.mainPid` so it is never
-   * reaped alongside the backend. Default true (kickstart the unit as before).
+   * process is added to `excludePids` so it is never reaped alongside the
+   * backend. By default this is re-queried via `platform.mainPid` at call
+   * time — pass `mainPid` explicitly (the caller's already-read pid) to avoid
+   * a second, possibly-stale query if the caller already has one on hand.
+   * Default true (kickstart the unit as before).
    */
   kickstart?: boolean;
+  /**
+   * Caller-supplied main/shim pid to exclude from the reap when
+   * `kickstart:false`, instead of re-querying `platform.mainPid` internally.
+   * Avoids a TOCTOU window between a caller's own pre-restart pid read and
+   * this function's exclude-set computation.
+   */
+  mainPid?: number;
   /** Injectable: find live pids matching `token`. Defaults to `findOrphansByIdentity`. */
   findMatches?: (token: string, opts: { excludePids?: number[] }) => RestartMatch[];
   /** Injectable: reap survivors matching `token`. Defaults to `reapByIdentity`. */
@@ -1680,7 +1738,10 @@ export interface RestartAndVerifyOptions {
 export interface RestartAndVerifyResult {
   label: string;
   token: string;
-  kickstart: OsExecResult;
+  /** Absent (not a fake `{code:0,...}`) when `kickstart:false` skipped it — see `kickstartSkipped`. */
+  kickstart?: OsExecResult;
+  /** True when `opts.kickstart === false` skipped `platform.kickstart` entirely (backend-only restart). */
+  kickstartSkipped?: true;
   before: number[];
   after: number[];
   reap: ReapResult;
@@ -1727,7 +1788,7 @@ export async function restartAndVerify(opts: RestartAndVerifyOptions): Promise<R
   const doKickstart = opts.kickstart ?? true;
   const excludePids = doKickstart
     ? opts.excludePids
-    : [...(opts.excludePids ?? []), opts.platform.mainPid(opts.label, exec)].filter(
+    : [...(opts.excludePids ?? []), opts.mainPid ?? opts.platform.mainPid(opts.label, exec)].filter(
         (p): p is number => p !== undefined,
       );
   const excludeOpt = excludePids !== undefined ? { excludePids } : {};
@@ -1735,20 +1796,24 @@ export async function restartAndVerify(opts: RestartAndVerifyOptions): Promise<R
   const before = findMatches(opts.token, excludeOpt).map((m) => m.pid);
   log(`before: matching-pids=[${before.join(', ')}]`);
 
-  let kickstart: OsExecResult;
+  let kickstart: OsExecResult | undefined;
+  // exactOptionalPropertyTypes: only spread these keys in when they have a real
+  // value — never assign an explicit `undefined`, which the compiler (rightly)
+  // treats as distinct from "key absent".
+  const kickstartField = () => (kickstart !== undefined ? { kickstart } : {});
+  const kickstartSkippedField = () => (doKickstart ? {} : { kickstartSkipped: true as const });
   if (doKickstart) {
     kickstart = opts.platform.kickstart(opts.label, exec);
     log(`kickstart: exit ${kickstart.code}`);
     if (kickstart.code !== 0) {
       return {
-        label: opts.label, token: opts.token, kickstart, before, after: before,
+        label: opts.label, token: opts.token, ...kickstartField(), before, after: before,
         reap: { token: opts.token, killed: [] }, undead: [], rotated: false, ok: false,
         reason: `kickstart FAILED (code ${kickstart.code})`,
       };
     }
   } else {
     log('kickstart: skipped (kickstart:false, backend-only restart)');
-    kickstart = { code: 0, stdout: '', stderr: '' };
   }
 
   const reap = await reapFn(opts.token, { ...excludeOpt, log: (m: string) => log(`reaper: ${m}`) });
@@ -1756,7 +1821,8 @@ export async function restartAndVerify(opts: RestartAndVerifyOptions): Promise<R
   if (undead.length > 0) {
     const after = findMatches(opts.token, excludeOpt).map((m) => m.pid);
     return {
-      label: opts.label, token: opts.token, kickstart, before, after, reap, undead,
+      label: opts.label, token: opts.token, ...kickstartField(), ...kickstartSkippedField(),
+      before, after, reap, undead,
       rotated: false, ok: false,
       reason: `survivor(s) could not be confirmed dead (undead): [${undead.join(', ')}]`,
     };
@@ -1779,7 +1845,8 @@ export async function restartAndVerify(opts: RestartAndVerifyOptions): Promise<R
   } while (Date.now() < deadline);
 
   return {
-    label: opts.label, token: opts.token, kickstart, before, after, reap, undead,
+    label: opts.label, token: opts.token, ...kickstartField(), ...kickstartSkippedField(),
+    before, after, reap, undead,
     rotated, ok: rotated,
     ...(rotated ? {} : {
       reason: `[inv:deploy-verified] violated: no pid rotated within ${waitMs}ms `

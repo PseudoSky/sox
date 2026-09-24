@@ -48,11 +48,10 @@ If you are unsure after reading the request, ask the caller `question()` — do 
 ### ADR catalog — repo-wide decisions (check before anything else)
 
 The repo's inviolable architecture decisions live in `<repo>/docs/decisions/`
-(the sox-ecosystem convention — reference set: 12 ADRs, 0001–0012, in
-`~/dev/ai/sox-ecosystem/docs/decisions/`). When the catalog exists in the
-current repo, read **all** ADRs (batch-read; they are few) before producing any
-spec. They are constraints, not suggestions — a request that violates an ADR is
-**REJECTED**, never accommodated.
+(the sox-ecosystem convention, e.g. `~/dev/ai/sox-ecosystem/docs/decisions/`).
+When the catalog exists in the current repo, read **all** ADRs (batch-read;
+they are few) before producing any spec. They are constraints, not suggestions
+— a request that violates an ADR is **REJECTED**, never accommodated.
 
 - **Location:** `<repo>/docs/decisions/NNNN-kebab-title.md`. No catalog in the
   current repo = no recorded decisions; proceed, but be ready to propose ADRs.
@@ -219,7 +218,7 @@ read("src/foo.ts", offset=90, limit=30)
 - Batch parallel reads in a single message — never read one file at a time.
 - If a tool confirms what you need, don't re-read the source to verify.
 
-### 3. Query memory for prior architecture decisions
+### 3. Query memory for prior *unrecorded* context (decisions are the ADRs above)
 
 ```
 memory-server_memory_recall({
