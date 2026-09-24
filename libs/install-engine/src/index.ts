@@ -54,6 +54,7 @@ export {
   SCOPES,
   resolveRequiredConfigSeed,
   configEnvKey,
+  findManifestForSource,
 } from './install.js';
 export type { InstallDescriptor, DeclarativeInstallResult, ConfigSchemaProperty, RequiredConfigSeed } from './install.js';
 

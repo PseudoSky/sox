@@ -25,7 +25,13 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { configEnvKey, resolveRequiredConfigSeed, type ConfigSchemaProperty } from './install.js';
+import {
+  configEnvKey,
+  fetchArtifact,
+  findManifestForSource,
+  resolveRequiredConfigSeed,
+  type ConfigSchemaProperty,
+} from './install.js';
 import { scopeConfigPaths } from './data-paths.js';
 
 const REPO_ROOT = path.resolve(__dirname, '../../..');
@@ -88,7 +94,7 @@ let workspace: string;
 let dataHome: string;
 let savedHome: string | undefined;
 
-function makeProbeExtension(root: string): void {
+function makeProbeExtension(root: string): string {
   const extDir = path.join(root, 'extensions', 'agents', PROBE);
   fs.mkdirSync(extDir, { recursive: true });
   fs.writeFileSync(path.join(extDir, 'extension.json'), JSON.stringify({
@@ -113,6 +119,7 @@ function makeProbeExtension(root: string): void {
   fs.writeFileSync(path.join(extDir, 'package.json'),
     JSON.stringify({ name: `@adhd/sox-extension-${PROBE}`, version: '0.1.0', private: true }));
   fs.writeFileSync(path.join(extDir, `${PROBE}.md`), `---\nname: ${PROBE}\ndescription: probe\n---\n\n# ${PROBE}\n`);
+  return extDir;
 }
 
 function runCli(args: string[], extraEnv: Record<string, string> = {}): { code: number; out: string } {
@@ -181,5 +188,37 @@ describe('soxe install — BL 0c3522c2 seeds a required key from x-sox-scope-def
     expect(r.code, r.out).toBe(0);
     expect(seededDbPath('local')).toBeUndefined();
     expect(r.out).toMatch(/required config key 'db_path'/);
+  });
+});
+
+// ── Extension NOT under --root (registry file:// row / npm-package store) ─────
+
+describe('soxe install — BL 0c3522c2 seeds even when the manifest is not under --root', () => {
+  it('findManifestForSource walks up from a file:// entrypoint to the matching extension.json', () => {
+    const extDir = path.join(path.dirname(workspace), 'elsewhere', PROBE);
+    fs.mkdirSync(path.join(extDir, 'dist'), { recursive: true });
+    fs.writeFileSync(path.join(extDir, 'extension.json'), JSON.stringify({ id: PROBE, type: 'agent' }));
+    fs.writeFileSync(path.join(extDir, 'dist', 'index.js'), '');
+    expect(findManifestForSource(`file://${path.join(extDir, 'dist', 'index.js')}`, PROBE)?.id).toBe(PROBE);
+    expect(findManifestForSource(`file://${extDir}`, PROBE)?.id).toBe(PROBE);
+    expect(findManifestForSource(`file://${extDir}`, 'some-other-id')).toBeNull();
+    expect(findManifestForSource('npm-package:@x/y@1.0.0', PROBE)).toBeNull();
+  });
+
+  it('project install resolved through a registry file:// row outside --root still seeds db_path', async () => {
+    // Move the probe out of the workspace: only the registry row points at it.
+    const inRoot = path.join(workspace, 'extensions');
+    const outside = path.join(path.dirname(workspace), 'outside');
+    const extDir = makeProbeExtension(outside);
+    fs.rmSync(inRoot, { recursive: true, force: true });
+    const { checksum } = await fetchArtifact(`file://${extDir}`);
+    fs.mkdirSync(path.join(workspace, 'registry'), { recursive: true });
+    fs.writeFileSync(path.join(workspace, 'registry', 'index.json'), JSON.stringify([{
+      id: PROBE, type: 'agent', title: PROBE, description: PROBE,
+      source: `file://${extDir}`, checksum, compatibility: { host: '>=1.0.0 <2.0.0' },
+    }], null, 2));
+    const r = runCli(['install', PROBE, '--scope', 'project', '--root', workspace]);
+    expect(r.code, r.out).toBe(0);
+    expect(seededDbPath('project')).toBe(SCOPE_DEFAULTS.project);
   });
 });

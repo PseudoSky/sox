@@ -823,70 +823,6 @@ export async function install(opts: InstallOptions): Promise<ResolvedSet> {
 
     const extManifest = loadExtensionManifest(root, entry.id);
 
-    // ── Install-time config capture ─────────────────────────────────────────
-    // If the extension declares a config_schema with required keys, check the
-    // cascade-resolved config and prompt (or warn) for missing values.
-    if (extManifest?.config_schema) {
-      const schema = extManifest.config_schema;
-      const requiredKeys: string[] = schema.required ?? [];
-      const properties = schema.properties ?? {};
-      // Get the cascade-resolved config for this extension
-      const cascadedEntryConfig: Record<string, unknown> = cascadedConfig[entry.id]?.config ?? {};
-      const configPath5 = opts.configPath ?? scopePaths.config;
-
-      for (const reqKey of requiredKeys) {
-        if (reqKey in cascadedEntryConfig) continue; // already set in some scope
-
-        const propDef = properties[reqKey] ?? {};
-        const promptText = propDef['x-sox-prompt'] ?? `Enter value for ${entry.id}.${reqKey}:`;
-        const seed = resolveRequiredConfigSeed(reqKey, propDef, opts.scope);
-        // A scope default outranks the generic x-sox-default as the prompt default.
-        const defaultVal = seed?.source === 'scope-default' ? seed.value : propDef['x-sox-default'];
-
-        const persist = (value: string, how: string): void => {
-          const existing = loadConfig(configPath5) as Record<string, unknown> ?? {};
-          const cfgBlock = (existing['config'] as Record<string, Record<string, unknown>> | undefined) ?? {};
-          const extBlock = cfgBlock[entry.id] ?? {};
-          extBlock[reqKey] = value;
-          cfgBlock[entry.id] = extBlock;
-          existing['config'] = cfgBlock;
-          const configDir = path.dirname(configPath5);
-          if (!fs.existsSync(configDir)) fs.mkdirSync(configDir, { recursive: true });
-          fs.writeFileSync(configPath5, JSON.stringify(existing, null, 2) + '\n', 'utf8');
-          // The cascade snapshot is read again below (bundle members, later
-          // entries) — keep it in step with what was just written.
-          cascadedEntryConfig[reqKey] = value;
-          console.log(`install: config: set ${entry.id}.${reqKey} (scope: ${opts.scope}, ${how})`);
-        };
-
-        if (seed?.source === 'env') {
-          // Explicit operator value — never prompt over it.
-          persist(seed.value, `from ${seed.envKey}`);
-        } else if (opts.onMissingConfig) {
-          // CLI layer handles the interactive prompt
-          const captured = await opts.onMissingConfig(entry.id, reqKey, promptText as string, defaultVal);
-          if (captured !== undefined) {
-            persist(captured, 'prompted');
-          } else {
-            console.warn(
-              `install: warning: required config key '${reqKey}' for '${entry.id}' was not set. ` +
-              `Run: soxe config set ${entry.id} ${reqKey} <value>`,
-            );
-          }
-        } else if (seed?.source === 'scope-default') {
-          // BL 0c3522c2: non-interactive install seeds the manifest's per-scope
-          // value instead of leaving a required key unset for the runtime to guess.
-          persist(seed.value, `x-sox-scope-default[${opts.scope}]`);
-        } else {
-          // Non-interactive: warn
-          console.warn(
-            `install: warning: required config key '${reqKey}' for '${entry.id}' is not set in any scope.\n` +
-            `  Run: soxe config set ${entry.id} ${reqKey} <value>`,
-          );
-        }
-      }
-    }
-
     if (extManifest?.requires !== undefined && activeProvider !== undefined) {
       const capResult = checkProviderCapabilities(activeProvider, extManifest.requires);
       if (!capResult.ok) {
@@ -935,6 +871,86 @@ export async function install(opts: InstallOptions): Promise<ResolvedSet> {
       newResolved[lockKey] = lockEntry;
 
       console.log(`install: resolved ${lockKey} from ${resolvedSource} (${checksum})`);
+
+      // ── Install-time config capture ─────────────────────────────────────────
+      // If the extension declares a config_schema with required keys, check the
+      // cascade-resolved config and prompt (or warn) for missing values.
+      //
+      // BL 0c3522c2: runs AFTER the fetch so the manifest can be located from the
+      // resolved artifact, not only under `root`. `findLocalExtension(root)` only
+      // sees an in-repo extension; an install run from any other project dir (a
+      // registry `file://` row, or an `npm-package:` materialized into the content
+      // store) used to find no manifest and skip this block without a sound —
+      // leaving a required key such as memory-server's db_path unset.
+      const configManifest =
+        extManifest ?? findManifestForSource(resolvedSource, entry.id) ?? findManifestForSource(source, entry.id);
+      if (configManifest === null) {
+        console.warn(
+          `install: warning: could not locate extension.json for '${entry.id}' (root ${root}, source ${resolvedSource}) — ` +
+          `required config keys were not checked.`,
+        );
+      }
+      if (configManifest?.config_schema) {
+        const schema = configManifest.config_schema;
+        const requiredKeys: string[] = schema.required ?? [];
+        const properties = schema.properties ?? {};
+        // Get the cascade-resolved config for this extension
+        const cascadedEntryConfig: Record<string, unknown> = cascadedConfig[entry.id]?.config ?? {};
+        const configPath5 = opts.configPath ?? scopePaths.config;
+
+        for (const reqKey of requiredKeys) {
+          if (reqKey in cascadedEntryConfig) continue; // already set in some scope
+
+          const propDef = properties[reqKey] ?? {};
+          const promptText = propDef['x-sox-prompt'] ?? `Enter value for ${entry.id}.${reqKey}:`;
+          const seed = resolveRequiredConfigSeed(reqKey, propDef, opts.scope);
+          // A scope default outranks the generic x-sox-default as the prompt default.
+          const defaultVal = seed?.source === 'scope-default' ? seed.value : propDef['x-sox-default'];
+
+          const persist = (value: string, how: string): void => {
+            const existing = loadConfig(configPath5) as Record<string, unknown> ?? {};
+            const cfgBlock = (existing['config'] as Record<string, Record<string, unknown>> | undefined) ?? {};
+            const extBlock = cfgBlock[entry.id] ?? {};
+            extBlock[reqKey] = value;
+            cfgBlock[entry.id] = extBlock;
+            existing['config'] = cfgBlock;
+            const configDir = path.dirname(configPath5);
+            if (!fs.existsSync(configDir)) fs.mkdirSync(configDir, { recursive: true });
+            fs.writeFileSync(configPath5, JSON.stringify(existing, null, 2) + '\n', 'utf8');
+            // The cascade snapshot is read again below (bundle members, later
+            // entries) — keep it in step with what was just written.
+            cascadedEntryConfig[reqKey] = value;
+            console.log(`install: config: set ${entry.id}.${reqKey} (scope: ${opts.scope}, ${how})`);
+          };
+
+          if (seed?.source === 'env') {
+            // Explicit operator value — never prompt over it.
+            persist(seed.value, `from ${seed.envKey}`);
+          } else if (opts.onMissingConfig) {
+            // CLI layer handles the interactive prompt
+            const captured = await opts.onMissingConfig(entry.id, reqKey, promptText as string, defaultVal);
+            if (captured !== undefined) {
+              persist(captured, 'prompted');
+            } else {
+              console.warn(
+                `install: warning: required config key '${reqKey}' for '${entry.id}' was not set. ` +
+                `Run: soxe config set ${entry.id} ${reqKey} <value>`,
+              );
+            }
+          } else if (seed?.source === 'scope-default') {
+            // BL 0c3522c2: non-interactive install seeds the manifest's per-scope
+            // value instead of leaving a required key unset for the runtime to guess.
+            persist(seed.value, `x-sox-scope-default[${opts.scope}]`);
+          } else {
+            // Non-interactive: warn
+            console.warn(
+              `install: warning: required config key '${reqKey}' for '${entry.id}' is not set in any scope.\n` +
+              `  Run: soxe config set ${entry.id} ${reqKey} <value>`,
+            );
+          }
+        }
+      }
+
 
       // P9: upsert into global install ledger (~/.sox/install-registry.json).
       // Best-effort: a failed write must never fail the install. The ledger's
@@ -1296,6 +1312,39 @@ function buildResolvedSetFromInstallList(
     };
   }
   return result;
+}
+
+/**
+ * BL 0c3522c2: locate the manifest of an extension from a `file://` source (a
+ * file or a directory), walking up a few levels until an `extension.json` whose
+ * `id` matches is found. Covers a registry `file://…/dist/index.js` row and an
+ * `npm-package:` source, whose resolved form is `file://<pkgDir>/dist/index.js`.
+ */
+export function findManifestForSource(source: string, id: string): ExtensionManifest | null {
+  if (!source.startsWith('file://')) return null;
+  let dir = source.slice('file://'.length);
+  try {
+    if (!fs.existsSync(dir)) return null;
+    if (!fs.statSync(dir).isDirectory()) dir = path.dirname(dir);
+  } catch (err) {
+    console.warn(`install: warning: cannot stat source ${source}: ${String(err)}`);
+    return null;
+  }
+  for (let i = 0; i < 4; i++) {
+    const manifestPath = path.join(dir, 'extension.json');
+    if (fs.existsSync(manifestPath)) {
+      try {
+        const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8')) as ExtensionManifest & { id?: string };
+        if (manifest.id === id) return manifest;
+      } catch (err) {
+        console.warn(`install: warning: malformed ${manifestPath}: ${String(err)}`);
+      }
+    }
+    const parent = path.dirname(dir);
+    if (parent === dir) break;
+    dir = parent;
+  }
+  return null;
 }
 
 export function findLocalExtension(root: string, id: string): string | null {
