@@ -88,7 +88,11 @@ import { declareStages } from '@adhd/sox-telemetry';
 
 export const MEMORY_CORE_STAGES = declareStages('memory-core', {
   write_queue: { paths: ['queued', 'bypass'] },
-  embed: { paths: ['write', 'heal', 'reembed'] },
+  // 'warmup': warmupEmbed()'s real embed() call (a7fbd60c) — kept distinct
+  // from 'write' so warmup traffic (including reinitEmbedProvider()'s
+  // self-heal verify step) doesn't inflate memory-core.embed:write samples
+  // with non-write activity.
+  embed: { paths: ['write', 'heal', 'reembed', 'recall', 'warmup'] },
   cluster: { paths: ['full', 'incremental', 'subset'] },
   // BUG-MEMORYSERVER-EMBED-HEAL-NOOPERATOR-001: the self-heal health plane is
   // itself a contended resource worth instrumenting — a health plane that

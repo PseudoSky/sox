@@ -85,6 +85,125 @@ function resolveRecallEmbedTimeoutMs(): number {
   return Number.isFinite(n) && n > 0 ? n : DEFAULT_RECALL_EMBED_TIMEOUT_MS;
 }
 
+class RecallEmbedTimeoutError extends Error {
+  constructor(timeoutMs: number) {
+    super(`embed() timed out after ${timeoutMs}ms (recall read-path guard)`);
+    this.name = 'RecallEmbedTimeoutError';
+  }
+}
+
+// ── Per-process embed circuit breaker ──────────────────────────────────────
+//
+// A single embed() timeout means the provider is currently backed up — the
+// NEXT recall calling embed() again immediately just pays the same 3s guard
+// for the same reason. After a timeout the circuit OPENS: every recall that
+// arrives while it is open skips the query embed entirely and goes straight
+// to FTS/temporal (the existing BL-273 `embedVecFailed` degradation path) —
+// a user recall NEVER pays the embed-timeout cost while the breaker is open,
+// not even the first one after the timeout (there is no more "the next
+// caller becomes the probe and blocks on the real query embed" mode).
+//
+// Recovery is driven by a single-flight BACKGROUND probe
+// (`embed('breaker-probe', 'recall')`, bounded by the same recall embed
+// timeout guard) fired from inside a recall that finds the circuit open and
+// probe-eligible (`recallVecProbeInFlight === false` and the backoff has
+// elapsed). The probe is NOT awaited by the recall that launches it — it
+// runs after that recall has already gone FTS-only. Only the probe's own
+// settlement (success or timeout) may clear `recallVecProbeInFlight`
+// (`closeRecallVecCircuit`'s `isProbeSettlement` param) — nothing else may,
+// since nothing else calls embed() while the circuit is open. Probe success
+// closes the circuit and resets the backoff to the base cooldown; probe
+// timeout reopens the circuit with the backoff DOUBLED, capped at
+// SOX_RECALL_VEC_COOLDOWN_MAX_MS, so a provider outage backs off instead of
+// re-probing every recall.
+const DEFAULT_RECALL_VEC_COOLDOWN_MS = 30000;
+const DEFAULT_RECALL_VEC_COOLDOWN_MAX_MS = 300000;
+
+function resolveRecallVecCooldownMs(): number {
+  const raw = process.env['SOX_RECALL_VEC_COOLDOWN_MS'];
+  const n = raw ? parseInt(raw, 10) : NaN;
+  return Number.isFinite(n) && n >= 0 ? n : DEFAULT_RECALL_VEC_COOLDOWN_MS;
+}
+
+function resolveRecallVecCooldownMaxMs(): number {
+  const raw = process.env['SOX_RECALL_VEC_COOLDOWN_MAX_MS'];
+  const n = raw ? parseInt(raw, 10) : NaN;
+  return Number.isFinite(n) && n > 0 ? n : DEFAULT_RECALL_VEC_COOLDOWN_MAX_MS;
+}
+
+/** Wall-clock timestamp the circuit was last opened (0 when closed). */
+let recallVecCircuitOpenedAt = 0;
+/** Current backoff between probe attempts; 0 when closed, doubles on each probe timeout. */
+let recallVecCurrentCooldownMs = 0;
+/** Wall-clock timestamp the next probe is allowed to fire. */
+let recallVecNextProbeAt = 0;
+/** True while the single allowed background probe embed is in flight. */
+let recallVecProbeInFlight = false;
+
+/** Reopen (or first-open) the circuit. Only ever called from: (a) a
+ *  foreground embed timeout while closed (first open — probe eligible
+ *  immediately), or (b) a probe's own timeout (reopen with doubled backoff). */
+function openRecallVecCircuit(): void {
+  const now = Date.now();
+  if (recallVecCircuitOpenedAt === 0) {
+    recallVecCircuitOpenedAt = now;
+    recallVecCurrentCooldownMs = resolveRecallVecCooldownMs();
+    recallVecNextProbeAt = now;
+  } else {
+    recallVecCurrentCooldownMs = Math.min(
+      recallVecCurrentCooldownMs * 2,
+      resolveRecallVecCooldownMaxMs(),
+    );
+    recallVecNextProbeAt = now + recallVecCurrentCooldownMs;
+  }
+  recallVecProbeInFlight = false;
+}
+
+/** Close the circuit (probe succeeded) and reset the backoff to base.
+ *  `isProbeSettlement` must be true — see the file-top docblock: only the
+ *  probe's own settlement may clear `recallVecProbeInFlight`, never a
+ *  stray/foreground caller, because nothing else calls embed() while open. */
+function closeRecallVecCircuit(isProbeSettlement: true): void {
+  recallVecCircuitOpenedAt = 0;
+  recallVecCurrentCooldownMs = 0;
+  recallVecNextProbeAt = 0;
+  if (isProbeSettlement) recallVecProbeInFlight = false;
+}
+
+/**
+ * (BL-a7979853, test-only) Unconditionally resets the module-level embed
+ * circuit breaker to closed. Unlike `closeRecallVecCircuit`, this does NOT
+ * require `isProbeSettlement` — a test opening the breaker via a real
+ * timeout/hanging provider has no probe to settle, and without this reset
+ * that state otherwise leaks into every subsequent test in the same file
+ * (vitest does not reset module scope between tests, only between files).
+ * Never call this from production code paths.
+ */
+export function __resetRecallVecCircuitForTest(): void {
+  recallVecCircuitOpenedAt = 0;
+  recallVecCurrentCooldownMs = 0;
+  recallVecNextProbeAt = 0;
+  recallVecProbeInFlight = false;
+}
+
+/**
+ * Fire-and-forget single-flight recovery probe. Caller MUST have already
+ * claimed `recallVecProbeInFlight` (set true) before invoking this — this
+ * function's only job is to settle the circuit from that probe's outcome.
+ */
+function runRecallVecProbe(): void {
+  embedWithRecallTimeout('breaker-probe', resolveRecallEmbedTimeoutMs()).then(
+    () => {
+      closeRecallVecCircuit(true);
+    },
+    (err: unknown) => {
+      const msg = err instanceof Error ? err.message : String(err);
+      tlog.warn('recall.embed_probe_failed', { error: msg });
+      openRecallVecCircuit();
+    },
+  );
+}
+
 /**
  * Race `embed(query)` against a wall-clock timeout. Rejects with a
  * TimeoutError-shaped Error if the embed call has not settled within
@@ -99,10 +218,10 @@ async function embedWithRecallTimeout(query: string, timeoutMs: number): Promise
     const timer = setTimeout(() => {
       if (settled) return;
       settled = true;
-      reject(new Error(`embed() timed out after ${timeoutMs}ms (recall read-path guard)`));
+      reject(new RecallEmbedTimeoutError(timeoutMs));
     }, timeoutMs);
     if (typeof timer.unref === 'function') timer.unref();
-    embed(query).then(
+    embed(query, 'recall').then(
       (v) => {
         if (settled) return;
         settled = true;
@@ -201,6 +320,17 @@ export interface RecallResult {
 export interface RecallResponse {
   results: RecallResult[];
   provider_call_count: number;
+  /**
+   * (BL-a7979853) True iff the vec (cosine KNN) channel actually produced a
+   * usable query embedding for this call — mirrors the gate at the vec0 KNN
+   * call site (`queryVecJson` set AND the embed attempt didn't fail/time out
+   * the circuit breaker). Distinct from `provider_call_count > 0`: the embed
+   * provider is called (incrementing that counter) BEFORE the embed settles,
+   * so a call that times out still increments provider_call_count while
+   * never producing a query vector — `vec_used` is the correct signal for
+   * "did this recall actually search by vector", not the call counter.
+   */
+  vec_used: boolean;
   filterStats?: {
     candidates_before_filter: number;
     candidates_after_filter: number;
@@ -376,6 +506,35 @@ export async function memoryRecall(
     temporal_weight = TEMPORAL_WEIGHT,
   } = params;
 
+  // BL-TELEMETRY-EMBED-GAP: recall entry timestamp — anchors the elapsed_ms
+  // fields on 'recall.embed_start' below so backend-side time spent before
+  // the query embed (adapter setup, filter parsing, etc.) is attributable
+  // instead of invisible between memory_recall's caller and embed.start.
+  const recallT0 = performance.now();
+  tlog.info('recall.start', { scope, has_query: !!query });
+
+  // BL-TELEMETRY-EMBED-GAP: single-store counterpart of federatedRecall's
+  // 'recall.stores_open' (recall.ts:1603) — the adapter here is already open
+  // (passed in by the caller, no connection-open step to time), but emitting
+  // the same event name/shape right after recall.start keeps any consumer
+  // keyed on 'recall.stores_open' from seeing a gap on the non-federated path.
+  tlog.info('recall.stores_open', {
+    elapsed_ms: Math.round(performance.now() - recallT0),
+    opened: 1,
+    total: 1,
+  });
+
+  // BL-a7979853: hoisted above the try/finally below so the finally block
+  // (which fires on every exit path — normal return, early return, or a
+  // thrown ExpansionOverflowError) can read the values assigned deeper in
+  // the function body. Reassigned in place further down; never re-declared.
+  let response: RecallResponse | undefined;
+  let degradations: string[] = [];
+  let embedVecFailed = false;
+  let queryVecJson: string | undefined;
+  let beforeCount = 0;
+
+  try {
   // DEBT-SOXGRAPH-001: only the vec channel needs a dialect object anymore —
   // the FTS channel is fully delegated to `adapter.ftsSearch` (store-adapter's
   // A2 API), which owns all per-backend FTS SQL itself.
@@ -386,7 +545,7 @@ export async function memoryRecall(
   const knnLimit = filters ? Math.max(DEFAULT_KNN_LIMIT, (limit || 20) * 2) : DEFAULT_KNN_LIMIT;
   const ftsLimit = filters ? Math.max(DEFAULT_FTS_LIMIT, (limit || 20) * 2) : DEFAULT_FTS_LIMIT;
 
-  const beforeCount = getProviderCallCount();
+  beforeCount = getProviderCallCount();
 
   // BUG-MEMORY-003: computed unconditionally (not gated behind `if (filters)`
   // below) — the null-content-padding bug reproduces with zero filters
@@ -513,17 +672,57 @@ export async function memoryRecall(
   // BL-391: collects non-fatal per-channel failures so a caller can tell
   // "channel found nothing" apart from "channel died silently" — surfaced on
   // RecallResponse.degradations instead of being swallowed by a bare catch.
-  const degradations: string[] = [];
-  let embedVecFailed = false;
-  let queryVecJson: string | undefined;
-  try {
-    const queryVec = await embedWithRecallTimeout(query, resolveRecallEmbedTimeoutMs());
-    queryVecJson = vecToJson(queryVec);
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    tlog.warn('recall.embed_failed', { error: msg, channel: 'vec' });
+  if (recallVecCircuitOpenedAt !== 0) {
+    // Circuit open: this recall NEVER pays the embed timeout — always go
+    // FTS-only. Separately (not awaited, doesn't block this response), claim
+    // and fire the single-flight background recovery probe if one isn't
+    // already in flight and the backoff has elapsed.
     embedVecFailed = true;
-    degradations.push(`vec: ${msg}`);
+    const now = Date.now();
+    if (!recallVecProbeInFlight && now >= recallVecNextProbeAt) {
+      recallVecProbeInFlight = true;
+      const probeTimeoutMs = resolveRecallEmbedTimeoutMs();
+      degradations.push(`vec: skipped — embed breaker open (probe in ${Math.round(probeTimeoutMs / 1000)}s)`);
+      runRecallVecProbe();
+    } else {
+      // Does NOT start with "vec:" — no embed call is attempted on this
+      // recall (BL follow-up: provider_call_count must never read 0 beside
+      // a "vec: ..." degradation, see recall-provider-call-count-invariant.spec.ts),
+      // and this message must not claim a timeout since none occurred here.
+      degradations.push('embed breaker open — vec channel skipped (probe already in flight)');
+    }
+    // Emit the same 'recall.embed_start' marker the non-skipped branch emits
+    // (with skipped:true) so any consumer keying off it for a per-request
+    // vec-channel start marker sees one on every recall, not just the ones
+    // that actually attempted embed.
+    tlog.info('recall.embed_start', {
+      scope,
+      elapsed_ms: Math.round(performance.now() - recallT0),
+      skipped: true,
+    });
+    tlog.warn('recall.embed_circuit_open', { scope });
+  } else {
+    tlog.info('recall.embed_start', { scope, elapsed_ms: Math.round(performance.now() - recallT0) });
+    try {
+      const queryVec = await embedWithRecallTimeout(query, resolveRecallEmbedTimeoutMs());
+      queryVecJson = vecToJson(queryVec);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      tlog.warn('recall.embed_failed', { error: msg, channel: 'vec' });
+      embedVecFailed = true;
+      degradations.push(`vec: ${msg}`);
+      // Only this foreground call's OWN timeout may first-open the circuit
+      // (recallVecCircuitOpenedAt === 0 check inside openRecallVecCircuit).
+      // If the circuit is already open by the time we land here, a
+      // concurrent recall's probe raced ahead of us — do NOT call
+      // openRecallVecCircuit() again: it unconditionally clears
+      // recallVecProbeInFlight and doubles the backoff, which would steal
+      // the probe's settlement bookkeeping out from under it (only the
+      // probe's own settlement may do that — see file-top docblock).
+      if (err instanceof RecallEmbedTimeoutError && recallVecCircuitOpenedAt === 0) {
+        openRecallVecCircuit();
+      }
+    }
   }
 
   // Validity predicate
@@ -679,9 +878,10 @@ export async function memoryRecall(
     // succeeded. Computing the same `getProviderCallCount() - beforeCount`
     // delta used by the non-empty path keeps both branches honest and
     // consistent with each other.
-    const response: RecallResponse = {
+    response = {
       results: [],
       provider_call_count: getProviderCallCount() - beforeCount,
+      vec_used: !!queryVecJson && !embedVecFailed,
       metadata: {
         totalChunksRetrieved: 0,
         totalChunksAfterExpansion: 0,
@@ -1153,9 +1353,15 @@ export async function memoryRecall(
     ? totalTokensAfterExpansion
     : tokenCount;
 
-  const response: RecallResponse = {
+  response = {
     results,
     provider_call_count: providerCallCount,
+    // (BL-a7979853) vec_used mirrors the gate at the vec0 KNN call site above
+    // (queryVecJson set AND the embed attempt didn't fail/time out) — the
+    // single source of truth `recallFromOpenDb` forwards up to
+    // `federatedRecall` so its aggregate vec_used/stores_vec_used are derived
+    // from actual per-store vec usage, not `provider_call_count`.
+    vec_used: !!queryVecJson && !embedVecFailed,
     metadata: {
       totalChunksRetrieved: results.length,
       totalChunksAfterExpansion,
@@ -1168,6 +1374,21 @@ export async function memoryRecall(
   if (filterStats) response.filterStats = filterStats;
   if (degradations.length > 0) response.degradations = degradations;
   return response;
+  } finally {
+    // BL-a7979853: exactly one persisted outcome event per memoryRecall call,
+    // on every exit path (early empty-corpus return, normal return, or a
+    // thrown ExpansionOverflowError) — so vec-channel usage is countable from
+    // the log across restarts. vec_used mirrors the gate at the vec0 KNN call
+    // site above (queryVecJson set AND the embed attempt didn't fail).
+    tlog.info('recall.finish', {
+      scope,
+      vec_used: !!queryVecJson && !embedVecFailed,
+      degradations,
+      result_count: response?.results?.length ?? 0,
+      total_ms: Math.round(performance.now() - recallT0),
+      provider_call_count: getProviderCallCount() - beforeCount,
+    });
+  }
 }
 
 // ── Federation (design.md §2.7) ───────────────────────────────────────────────
@@ -1191,6 +1412,18 @@ export interface StoreDescriptor {
 export interface FederatedRecallResponse {
   results: RecallResult[];
   provider_call_count: number;
+  /**
+   * (BL-a7979853) True iff ANY per-store recall used its vec channel. A
+   * single federated query spans N stores — one store's provider timing out
+   * must not mask another store's genuinely-used vector channel, so this is
+   * an OR across stores, not `provider_call_count > 0` (see RecallResponse's
+   * `vec_used` doc comment for why the call counter is the wrong signal).
+   */
+  vec_used: boolean;
+  /** (BL-a7979853) Count of per-store recalls (out of `stores.length`) whose
+   *  own `vec_used` was true — lets a caller distinguish "1 of 5 stores used
+   *  vec" from "all 5 did" without re-deriving it from degradations. */
+  stores_vec_used: number;
   /**
    * (BL-391) Non-fatal degradations observed across the federated stores —
    * a store's FTS/BM25 arm failing, a store's connection being entirely
@@ -1360,17 +1593,20 @@ async function recallFromOpenDb(
   adapter: StoreAdapter,
   scope: string,
   params: RecallParams,
-): Promise<{ results: RecallResult[]; degradations: string[] }> {
+): Promise<{ results: RecallResult[]; degradations: string[]; vec_used: boolean }> {
   try {
+    // (BL-a7979853) vec_used forwarded from memoryRecall's own response —
+    // the single source of truth federatedRecall uses to derive its
+    // vec_used/stores_vec_used, instead of provider_call_count.
     const res = await memoryRecall(adapter, scope, params);
-    return { results: res.results, degradations: res.degradations ?? [] };
+    return { results: res.results, degradations: res.degradations ?? [], vec_used: res.vec_used };
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     // Keep the BL-391 degradation surface (caller-visible), AND make the total
     // recall failure durably visible — a store that dies entirely mid-recall is
     // the highest-signal event this function can produce.
     tlog.error('federation.recall.store_failed', { scope, error: msg });
-    return { results: [], degradations: [`recall failed entirely — ${msg}`] };
+    return { results: [], degradations: [`recall failed entirely — ${msg}`], vec_used: false };
   }
 }
 
@@ -1415,16 +1651,51 @@ export async function federatedRecall(
   params: RecallParams,
 ): Promise<FederatedRecallResponse> {
   if (!stores || stores.length === 0) {
-    return { results: [], provider_call_count: 0, degradations: [] };
+    tlog.info('recall.federated_finish', {
+      scope: 'federated',
+      vec_used: false,
+      stores_vec_used: 0,
+      degradations: [],
+      result_count: 0,
+      total_ms: 0,
+      provider_call_count: 0,
+    });
+    return { results: [], provider_call_count: 0, vec_used: false, stores_vec_used: 0, degradations: [] };
   }
 
   const beforeCount = getProviderCallCount();
+  // BL-a7979853: hoisted above the try/finally below so the finally block
+  // (every exit path) can read them. Reassigned in place further down.
+  let results: RecallResult[] = [];
+  let federationDegradations: string[] = [];
+  // (BL-a7979853) True iff ANY per-store recall actually used its vec
+  // channel, and the count of stores that did — derived from each store's
+  // OWN memoryRecall response (`recallFromOpenDb`'s vec_used), never from
+  // `provider_call_count`. The provider's embed-call counter is incremented
+  // in embed.ts BEFORE the embed settles (BL-254), so a store whose query
+  // embed times out still bumps that counter — using `providerDelta > 0` as
+  // the vec_used gate reported vec_used:true for a federated query where the
+  // vec channel never actually produced a usable embedding anywhere.
+  let anyStoreVecUsed = false;
+  let storesVecUsedCount = 0;
+  // BL-TELEMETRY-EMBED-GAP: federated-recall entry timestamp — same purpose
+  // as memoryRecall's recallT0 (see its 'recall.start' comment): makes the
+  // per-store connection-open cost attributable instead of vanishing into
+  // the gap before the first store's embed.start. Hoisted above try/finally
+  // (BL-a7979853) so the finally block below can read it.
+  const federatedT0 = performance.now();
+
+  try {
+  // Distinct event name from the per-store 'recall.start' each memoryRecall
+  // call below emits — sharing the name would make one federated query emit
+  // N+1 'recall.start' records and over-count any dashboard keyed on it.
+  tlog.info('recall.federated_start', { federated: true, store_count: stores.length });
 
   const { agent_id, token_budget = DEFAULT_TOKEN_BUDGET, limit = 10 } = params;
 
   // (BL-391) Accumulates every non-fatal degradation across all stores —
   // never dropped. See FederatedRecallResponse.degradations doc comment.
-  const federationDegradations: string[] = [];
+  federationDegradations = [];
 
   // Use cached connections (warm page cache, amortize open cost).
   interface OpenConn { scope: string; dbPath: string; adapter: StoreAdapter | null }
@@ -1442,6 +1713,15 @@ export async function federatedRecall(
     federationDegradations.push(`scope=${scope}: store unreachable (${dbPath}) — ${reason}`);
   }
 
+  // BL-TELEMETRY-EMBED-GAP: marks store/federation open completion, elapsed
+  // since federatedRecall entry — the per-store recall calls below (each
+  // logging its own 'recall.embed_start') pick up the clock from here.
+  tlog.info('recall.stores_open', {
+    elapsed_ms: Math.round(performance.now() - federatedT0),
+    opened: openConns.filter((c) => c.adapter !== null).length,
+    total: openConns.length,
+  });
+
   // 1. Collect SUPERSEDES targets.
   const suppressedUids = new Set<string>();
   for (const { adapter } of openConns) {
@@ -1454,8 +1734,12 @@ export async function federatedRecall(
   const allStoreResults: Array<{ scope: string; results: RecallResult[] }> = [];
   for (const { scope, adapter } of openConns) {
     if (!adapter) continue;
-    const { results, degradations } = await recallFromOpenDb(adapter, scope, storeParams);
+    const { results, degradations, vec_used } = await recallFromOpenDb(adapter, scope, storeParams);
     allStoreResults.push({ scope, results });
+    if (vec_used) {
+      anyStoreVecUsed = true;
+      storesVecUsedCount += 1;
+    }
     for (const d of degradations) federationDegradations.push(`scope=${scope}: ${d}`);
   }
 
@@ -1521,7 +1805,7 @@ export async function federatedRecall(
   // 6. Sort + assemble within token_budget
   const sorted = [...candidateMap.values()].sort((a, b) => b.weightedScore - a.weightedScore);
 
-  const results: RecallResult[] = [];
+  results = [];
   let tokenCount = 0;
   for (const cand of sorted) {
     if (results.length >= limit) break;
@@ -1534,7 +1818,36 @@ export async function federatedRecall(
   }
 
   const afterCount = getProviderCallCount();
-  return { results, provider_call_count: afterCount - beforeCount, degradations: federationDegradations };
+  return {
+    results,
+    provider_call_count: afterCount - beforeCount,
+    vec_used: anyStoreVecUsed,
+    stores_vec_used: storesVecUsedCount,
+    degradations: federationDegradations,
+  };
+  } finally {
+    // BL-a7979853: exactly one persisted outcome event per federatedRecall
+    // call, distinct from the per-store 'recall.finish' each memoryRecall
+    // call underneath emits (so a federated search is not double-counted
+    // with its inner per-store calls). Fires on every exit path.
+    //
+    // vec_used/stores_vec_used are read off anyStoreVecUsed/storesVecUsedCount
+    // (derived from each store's own memoryRecall response), NOT from
+    // `getProviderCallCount() delta > 0` — the embed provider's call counter
+    // increments before the embed settles (BL-254/embed.ts:391), so a store
+    // whose query embed times out still bumps it while never producing a
+    // usable vector. Using the delta as the gate reported vec_used:true for
+    // a hung/timed-out provider.
+    tlog.info('recall.federated_finish', {
+      scope: 'federated',
+      vec_used: anyStoreVecUsed,
+      stores_vec_used: storesVecUsedCount,
+      degradations: federationDegradations,
+      result_count: results.length,
+      total_ms: Math.round(performance.now() - federatedT0),
+      provider_call_count: getProviderCallCount() - beforeCount,
+    });
+  }
 }
 
 // ── Helper functions (centralized from client/db.ts) ─────────────────────

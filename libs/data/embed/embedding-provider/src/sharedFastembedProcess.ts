@@ -693,9 +693,45 @@ export class SharedFastembedProcessClient implements SharedFastembedClient {
           // real request replays init again rather than sailing through
           // believing a failed load succeeded.
           if (isInitRequest) this.childInitialized = true;
+          // (Page-in vs. compute) `work_ms`/`cpu_ms` are measured INSIDE the
+          // child by `fastembedProcessHost.ts`'s `measureWork()` around the
+          // real fastembed call and echoed back on every reply — unlike
+          // `response_ms` below (this promise's full send→settle span, which
+          // also bundles queueing/IPC), they isolate actual on-CPU work from
+          // page-in/queue wait. Absent on an error reply (no `measureWork()`
+          // ran) or a pre-instrumentation host — read as unknown, not zero.
+          const workMs = typeof (v as Record<string, unknown>)['work_ms'] === 'number'
+            ? ((v as Record<string, unknown>)['work_ms'] as number)
+            : undefined;
+          const cpuMs = typeof (v as Record<string, unknown>)['cpu_ms'] === 'number'
+            ? ((v as Record<string, unknown>)['cpu_ms'] as number)
+            : undefined;
+          // (Page-in vs. compute, CoreML addendum) `host_majflt`/`host_minflt`
+          // are process.resourceUsage() major/minor page-fault DELTAS spanning
+          // the same window as work_ms/cpu_ms — ANE/GPU execution time never
+          // accrues to cpu_ms, so these are the signal that disambiguates a
+          // genuine page-in wait from ANE/GPU compute. `host_queue_ms` is the
+          // receipt->task-start wait on the CHILD's own serialized queue
+          // (distinct from this promise's send->settle `response_ms`, which
+          // also includes IPC marshalling). All three: absent on an error
+          // reply or a pre-instrumentation host — read as unknown, not zero.
+          const hostMajflt = typeof (v as Record<string, unknown>)['host_majflt'] === 'number'
+            ? ((v as Record<string, unknown>)['host_majflt'] as number)
+            : undefined;
+          const hostMinflt = typeof (v as Record<string, unknown>)['host_minflt'] === 'number'
+            ? ((v as Record<string, unknown>)['host_minflt'] as number)
+            : undefined;
+          const hostQueueMs = typeof (v as Record<string, unknown>)['host_queue_ms'] === 'number'
+            ? ((v as Record<string, unknown>)['host_queue_ms'] as number)
+            : undefined;
           log.info('fastembed_process.request.finish', {
             ...baseFields,
             response_ms: Math.round(performance.now() - sentAt),
+            ...(workMs !== undefined ? { work_ms: workMs } : {}),
+            ...(cpuMs !== undefined ? { cpu_ms: cpuMs } : {}),
+            ...(hostMajflt !== undefined ? { host_majflt: hostMajflt } : {}),
+            ...(hostMinflt !== undefined ? { host_minflt: hostMinflt } : {}),
+            ...(hostQueueMs !== undefined ? { host_queue_ms: hostQueueMs } : {}),
           });
           resolve(v as T);
         },
@@ -1569,8 +1605,14 @@ export class AdaptiveFastembedProcessPool implements SharedFastembedClient {
 
     // Any real admission means the pool is not idle right now — cancel any
     // in-progress idle clock so `maybeShrink()` requires a fresh full
-    // `SHRINK_IDLE_MS` window starting from here.
-    this.idleSinceMs = null;
+    // `SHRINK_IDLE_MS` window starting from here. A keep-warm tick
+    // (`embedHostMain.ts`, tagged `_keepWarm: true`) is synthetic demand —
+    // it must NOT look like real traffic to the shrink policy, or a host
+    // sitting idle except for its own keep-warm ticks would never shrink
+    // back toward `minSize`.
+    if (payload['_keepWarm'] !== true) {
+      this.idleSinceMs = null;
+    }
 
     // Evaluate the grow condition BEFORE reserving this request's own slot —
     // the ratio should reflect backlog that existed independent of this
@@ -1636,12 +1678,19 @@ let _privateSingleton: PrivateFastembedProcess | null = null;
 
 /**
  * The concrete shape {@link getPrivateFastembedProcess} returns: a
- * `SharedFastembedClient` that also exposes `pendingCount`. The extra member is
- * a SUBTYPE of the public interface (whose shape is deliberately unchanged) —
- * only the host process, which must know when in-flight work has drained before
- * it can reap itself, depends on it.
+ * `SharedFastembedClient` that also exposes `pendingCount` and `lastInit`. The
+ * extra members are a SUBTYPE of the public interface (whose shape is
+ * deliberately unchanged) — only the host process depends on them: `pendingCount`
+ * to know when in-flight work has drained before it can reap itself, and
+ * `lastInit` (BUG-021) so `embedHostMain.ts`'s keep-warm tick can skip ticking
+ * before any client has actually initialized the model — both concrete pool
+ * implementations (`FastembedProcessPool`, `AdaptiveFastembedProcessPool`)
+ * already expose a `lastInit` getter; this type just needs to say so.
  */
-export type PrivateFastembedProcess = SharedFastembedClient & { readonly pendingCount: number };
+export type PrivateFastembedProcess = SharedFastembedClient & {
+  readonly pendingCount: number;
+  readonly lastInit: Record<string, unknown> | null;
+};
 
 /**
  * The PRIVATE (un-funneled) pool — the OLD body of `getSharedFastembedProcess()`,

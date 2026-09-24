@@ -233,6 +233,28 @@ const recallDegradations: RecallDegradationCounters = {
  * that does not match is bucketed under `other` rather than dropped, so a
  * new degradation shape can never go uncounted.
  */
+/**
+ * Attribute one degradation string to a channel. Most messages follow the
+ * `"<channel>: <message>"` shape recall.ts pushes (`vec: …`, `fts: …`,
+ * federated `scope=<s>: vec: …`) and are read straight off that prefix.
+ *
+ * One message is a deliberate exception: recall.ts's vec-circuit-breaker
+ * "probe already in flight" branch pushes a message that does NOT start with
+ * "vec:" on purpose — a "vec:"-prefixed degradation is otherwise proof an
+ * embed call WAS attempted on that recall (see
+ * recall-provider-call-count-invariant.spec.ts), and no embed call happens on
+ * that branch. It still belongs to the vec channel for monitoring purposes,
+ * so it is attributed by content-sniffing instead of the colon prefix.
+ */
+function classifyDegradationChannel(raw: string): string {
+  // Strip a federated `scope=<name>: ` prefix before reading the channel.
+  const withoutScope = raw.replace(/^scope=[^:]*:\s*/, '');
+  const m = /^([a-z0-9_]+):/i.exec(withoutScope);
+  if (m?.[1]) return m[1].toLowerCase();
+  if (/embed breaker open/i.test(withoutScope)) return 'vec';
+  return 'other';
+}
+
 function recordRecallDegradations(degradations: readonly string[] | undefined): void {
   recallDegradations.recalls_total++;
   if (!degradations || degradations.length === 0) return;
@@ -240,10 +262,7 @@ function recordRecallDegradations(degradations: readonly string[] | undefined): 
   recallDegradations.last_degraded_at = new Date().toISOString();
   recallDegradations.last_degradations = [...degradations];
   for (const d of degradations) {
-    // Strip a federated `scope=<name>: ` prefix before reading the channel.
-    const withoutScope = d.replace(/^scope=[^:]*:\s*/, '');
-    const m = /^([a-z0-9_]+):/i.exec(withoutScope);
-    const channel = m?.[1]?.toLowerCase() ?? 'other';
+    const channel = classifyDegradationChannel(d);
     recallDegradations.by_channel[channel] = (recallDegradations.by_channel[channel] ?? 0) + 1;
   }
 }

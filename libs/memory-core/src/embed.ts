@@ -20,6 +20,7 @@ import {
   getSharedOnnxWorker,
   resetSharedFastembedProcess,
   resetSharedOnnxWorker,
+  warmupOuterBudgetMs,
 } from '@adhd/sox-embedding-provider';
 import type { EmbeddingProvider } from '@adhd/sox-embedding-provider';
 import type { StoreAdapter } from '@adhd/sox-store-adapter';
@@ -98,13 +99,16 @@ export function getConfiguredEmbedBackend(): EmbedBackend {
 
 function resolveConfig(): EmbedConfig {
   const backend = resolveBackendEnv();
+  // Machine-wide default MUST match `@adhd/sox-embedding-provider`'s own
+  // `joinDefaultCacheDir()` fallback (`<XDG_CACHE_HOME|~/.cache>/sox/models`).
+  // A 'sox-memory' literal here would diverge from every OTHER consumer of the
+  // package that doesn't pass `options.cacheDir` (e.g. adhd's backlog
+  // bootstrap.ts), giving them different `embedHostSingletonKey()` digests for
+  // the SAME model/ep and spawning two embedding hosts + two model downloads
+  // on one machine instead of one shared host.
   const cacheDir =
     process.env['SOX_EMBED_CACHE_DIR'] ??
-    join(
-      process.env['XDG_CACHE_HOME'] ?? join(homedir(), '.cache'),
-      'sox-memory',
-      'models',
-    );
+    join(process.env['XDG_CACHE_HOME'] ?? join(homedir(), '.cache'), 'sox', 'models');
   return {
     backend,
     cacheDir,
@@ -417,12 +421,72 @@ async function _embedWork(text: string): Promise<Float32Array> {
   }
 }
 
+/** Default warmup budget: generous, and deliberately separate from the
+ * per-request `SOX_EMBED_TIMEOUT_MS` funnel timeout (typically 8s) — model
+ * load on a cold process can legitimately take tens of seconds.
+ *
+ * MUST NOT be shorter than the inner init request's own worst-case budget —
+ * `FastembedProvider.initModel()` (fastembed.ts) sends the `{type:'init'}`
+ * IPC request under `warmupTimeoutMs(cacheHit)` (embedding-provider's own
+ * per-attempt timeout, retried up to `WARMUP_CACHE_HIT_ATTEMPTS` times on a
+ * cache hit), NOT `SOX_EMBED_TIMEOUT_MS`. `warmupOuterBudgetMs(false)`
+ * (cache-miss: one attempt, default 180s, `SOX_EMBED_WARMUP_TIMEOUT_MS`
+ * override) is the true worst case — a cache HIT budget
+ * (`warmupOuterBudgetMs(true)`, default 2 * 8s = 16s) is always smaller.
+ * Previously this was a hand-typed 60_000 that raced the inner call and
+ * could reject `warmupEmbed()` while the actual (uncancellable) model load
+ * was still legitimately in flight on a cold cache-miss download — a false
+ * warmup failure, not a real one. Sized with headroom over the derived
+ * worst case so the two budgets can never drift out of sync by hand-typo,
+ * mirroring how `warmupOuterBudgetMs` itself is derived rather than
+ * hand-typed (see its doc comment / BL-376). */
+const DEFAULT_WARMUP_BUDGET_MS = Math.max(60_000, warmupOuterBudgetMs(false) + 5_000);
+
+/** Race `promise` against `ms`; on timeout the underlying call is NOT
+ * cancelled (no cancellation hook exists on the provider) — this only bounds
+ * how long `warmupEmbed()` itself will wait before reporting failure. */
+function withWarmupTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => {
+      reject(new Error(`embed warmup timed out after ${ms}ms`));
+    }, ms);
+    promise.then(
+      (v) => {
+        clearTimeout(timer);
+        resolve(v);
+      },
+      (e) => {
+        clearTimeout(timer);
+        reject(e instanceof Error ? e : new Error(String(e)));
+      },
+    );
+  });
+}
+
 /**
  * Proactively warm up the real embedding backend and return its truthful health.
+ *
+ * (a7fbd60c) `FastembedProvider` is lazy — its constructor does not load the
+ * model, only the first real `embedSingle()` call does (see
+ * libs/data/embed/embedding-provider/src/index.ts and fastembed.ts). Reading
+ * `p.health()` immediately after `getOrCreateProvider()` therefore always
+ * observed `state: 'uninitialized'` here, so warmup logged DEGRADED and never
+ * actually preloaded the model — the first post-restart embed then paid the
+ * full model-load cost inside the much shorter per-request funnel timeout
+ * (SOX_EMBED_TIMEOUT_MS, ~8s) and timed out. Fix: perform a real single embed
+ * under its own generous budget (default 60s, independent of the per-request
+ * timeout; overridable via `_timeoutMs`) BEFORE reading health, so the model
+ * is actually resident and the reported health reflects reality.
  */
 export async function warmupEmbed(_timeoutMs?: number): Promise<EmbedHealth> {
   _configCache ??= resolveConfig();
+  const budgetMs = _timeoutMs && _timeoutMs > 0 ? _timeoutMs : DEFAULT_WARMUP_BUDGET_MS;
   try {
+    await getOrCreateProvider();
+    // Force the lazy provider to actually load the model now, under the
+    // warmup budget, instead of on the first real caller's much shorter
+    // per-request timeout.
+    await withWarmupTimeout(embed('warmup', 'warmup'), budgetMs);
     const p = await getOrCreateProvider();
     const health = p.health();
     if (health.state === 'error' || health.state === 'uninitialized') {
@@ -450,6 +514,14 @@ export interface ReinitEmbedResult {
  * embed subsystem (BUG-021's "Model not initialized" respawn-without-reinit
  * state, a stuck shared fastembed child, or any per-call failure streak that
  * has latched `getEmbedState()` to 'degraded').
+ *
+ * Budget note: step 3 below calls `warmupEmbed()` with NO explicit
+ * `_timeoutMs`, so it now runs a REAL `embed()` under the full
+ * `DEFAULT_WARMUP_BUDGET_MS` (60s) — where the pre-warmup-fix verify step
+ * only read `health()` and returned near-instantly. A self-heal caller
+ * (e.g. an alarm-escalation tick) invoking this must budget for up to 60s
+ * per attempt, or call `warmupEmbed(shorterMs)` directly instead of routing
+ * through this function if its own cadence cannot absorb that.
  *
  * Order of operations:
  *   1. Clear the in-process provider state (`_provider`, `_providerPromise`,
