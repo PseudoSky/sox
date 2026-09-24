@@ -5526,22 +5526,31 @@ OS units are GENERATED from the manifest; hand-editing them is unsupported.
  *      a kickstart that exited 0 and a unit that shows loaded are NOT evidence
  *      the code changed; only a rotated pid is.
  *
- * `--backend-only`: skip the kickstart entirely and reap+respawn ONLY the
- * proxy-mode backend by delegating to `restartProxyBackend` (the same
- * verified-stop + `ensureBackend` re-spawn used by the auto-restart-on-deploy
- * path) — the shim (main unit pid) is never touched. `restartAndVerify` alone
- * cannot do this: it only reaps and then polls for a NEW pid to appear for
- * `token`, but nothing in it ever spawns a replacement backend when kickstart
- * is skipped, so a reap-only call would always time out. Refused (non-zero)
- * unless the extension
- * is actually served in proxy mode (`mcpServerIsProxyMode`, §9.5): a
- * direct-mode service has no independent backend to reap without the shim,
- * so "backend-only" would be a silent no-op there. Verified by reading the
- * unit's `mainPid` before and after — `--backend-only` must show the SAME
- * shim pid; any change is treated as a failure of the flag's own contract.
- * A cold backend start can take >10s (module load + MCP handshake), so a
- * client mid-flight during that window will see JSON-RPC `-32001` timeouts
- * on the reconnect race — that is expected, not a bug in this verb.
+ * `--backend-only`: skip the kickstart entirely and reap ONLY the proxy-mode
+ * backend, via `restartAndVerify({..., kickstart:false})` — the unit file is
+ * never unloaded/re-enabled and never kickstarted. `excludePids` for this call
+ * always includes the unit's own `mainPid` (added by `restartAndVerify` itself
+ * when `kickstart:false`), so the shim is never a candidate for the reap or the
+ * post-reap poll. Nothing here spawns the replacement backend directly: when a
+ * front-shim is connected (port-mode, §9.5), reaping the backend by identity
+ * makes the shim's live socket notice the disconnect and respawn a fresh
+ * backend on the current bundle (`libs/service-proxy/src/shim.ts`
+ * `onDisconnect` -> `ensureBackendLive`) — that respawned pid is what the poll
+ * is waiting to see. Without a connected shim (proxy mode but no `--port`, so
+ * the unit itself IS the bare backend process — BL-156) there is nothing to
+ * trigger a respawn, and this honestly times out non-zero rather than
+ * unloading/re-enabling the unit to force a rotation. Refused (non-zero)
+ * unless the extension is actually served in proxy mode
+ * (`mcpServerIsProxyMode`, §9.5): a direct-mode service has no independent
+ * backend to reap without the shim, so "backend-only" would be a silent no-op
+ * there. Verified by reading the unit's `mainPid` before and after —
+ * `--backend-only` must show the SAME shim pid; any change is treated as a
+ * failure of the flag's own contract (this is now a redundant safety check,
+ * since `restartAndVerify` structurally excludes `mainPid` from the reap when
+ * `kickstart:false`, but it stays as defense in depth). A cold backend start
+ * can take >10s (module load + MCP handshake), so a client mid-flight during
+ * that window will see JSON-RPC `-32001` timeouts on the reconnect race — that
+ * is expected, not a bug in this verb.
  */
 async function cmdServiceRestart(
   extId: string,
@@ -5598,18 +5607,25 @@ async function cmdServiceRestart(
   process.stdout.write(`${CLI} service restart: ${label}\n  before: main=${beforeMainPid ?? '(none)'}\n`);
 
   if (backendOnly) {
-    // `restartAndVerify`'s reap-only path has no way to bring a NEW backend up —
-    // that is exactly what `restartProxyBackend` already does (verified-stop the
-    // live backend by identity, then `ensureBackend` a fresh one on the current
-    // code, shimIsUnit-aware). Reusing it here — rather than a second, partial
-    // reap+ensure implementation — is what keeps this refusal-predicate and the
-    // shimIsUnit predicate in `restartProxyBackend` from drifting apart.
     process.stdout.write(
-      `  --backend-only: kickstart skipped; reaping + re-ensuring only the proxy backend. ` +
+      `  --backend-only: kickstart skipped; reaping only the proxy backend by identity. ` +
+      `If a front-shim is connected (port-mode, §9.5) it notices the disconnect and respawns ` +
+      `a fresh backend on the current bundle (shim.ts onDisconnect -> ensureBackendLive). ` +
       `A cold backend start can take >10s, so any in-flight call during that window may fail ` +
-      `fast with JSON-RPC -32001 while the reconnect races the respawn.\n`,
+      `fast with JSON-RPC -32001 while the reconnect races the respawn. Without a connected ` +
+      `shim (proxy mode but no --port) there is nothing to trigger a respawn, and this ` +
+      `honestly times out non-zero rather than unloading/re-enabling the unit.\n`,
     );
-    const rp = await restartProxyBackend(extId, scope, root, (m: string) => process.stdout.write(`  ${m}\n`));
+    const result = await restartAndVerify({
+      label,
+      token,
+      platform,
+      exec: realOsExec,
+      waitMs,
+      kickstart: false,
+      excludePids: [process.pid],
+      log: (m: string) => process.stdout.write(`  ${m}\n`),
+    });
     const afterMainPid = platform.mainPid(label, realOsExec);
     process.stdout.write(`  after:  main=${afterMainPid ?? '(none)'}\n`);
     if (afterMainPid !== beforeMainPid) {
@@ -5620,13 +5636,17 @@ async function cmdServiceRestart(
       );
       process.exit(1);
     }
-    if (rp.disposition !== 'backend-restarted' && rp.disposition !== 'backend-restarted-unsupervised') {
+    if (!result.ok) {
       process.stderr.write(
-        `${CLI} service restart: FAILED — ${rp.detail}. See docs/spec/service-lifecycle.md §9.5.\n`,
+        `${CLI} service restart: FAILED — ${result.reason ?? 'backend deploy could not be verified'}. ` +
+        `See docs/spec/service-lifecycle.md §9.4a/§9.5.\n`,
       );
       process.exit(1);
     }
-    process.stdout.write(`${CLI} service restart: '${label}' backend-only deploy — ${rp.detail}\n`);
+    process.stdout.write(
+      `${CLI} service restart: '${label}' backend-only deploy — pid(s) rotated ` +
+      `([${result.before.join(', ') || '(none)'}] -> [${result.after.join(', ')}])\n`,
+    );
     process.exit(0);
   }
 
