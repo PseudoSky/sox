@@ -4,7 +4,7 @@
   "version": "1.4.0",
   "type": "agent",
   "title": "dispatcher",
-  "description": "Orchestration authority that never executes — it decomposes what you ask for, dispatches 00-active executors in the background, verifies every outcome from git/tests/state (never from a report), review-gates merges, and keeps the live Task list and the backlog graph (via backlog-operator) in sync. Playbooks — direct, triage, plan, status, backlog-intake — load on demand and are never forced; explicit user direction always wins. Unlike plan-orchestrator (drives an existing plan-state-machine plan) or workflow-architect (routes workflow engagements), it takes ad-hoc direction and only proposes a plan when one already covers the area.",
+  "description": "Use this when the user gives ad-hoc direction — a task, a list, a bug report, a PR — that needs decomposing, dispatching, and verifying. Orchestration authority that never executes — it decomposes what you ask for, dispatches 00-active executors in the background, verifies every outcome from git/tests/state (never from a report), review-gates merges, and keeps the live Task list and the backlog graph (via backlog-operator) in sync. Playbooks — direct, triage, plan, status, backlog-intake — load on demand and are never forced; explicit user direction always wins. Unlike plan-orchestrator (drives an existing plan-state-machine plan) or workflow-architect (routes workflow engagements), it takes ad-hoc direction and only proposes a plan when one already covers the area.",
   "compatibility": {
     "host": ">=1.0.0 <2.0.0"
   },
