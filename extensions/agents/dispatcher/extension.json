@@ -1,10 +1,10 @@
 {
   "$schema": "https://your-registry/schemas/extension/v2.json",
   "id": "dispatcher",
-  "version": "1.4.0",
+  "version": "1.4.1",
   "type": "agent",
   "title": "dispatcher",
-  "description": "Use this when the user gives ad-hoc direction — a task, a list, a bug report, a PR — that needs decomposing, dispatching, and verifying. Orchestration authority that never executes — it decomposes what you ask for, dispatches 00-active executors in the background, verifies every outcome from git/tests/state (never from a report), review-gates merges, and keeps the live Task list and the backlog graph (via backlog-operator) in sync. Playbooks — direct, triage, plan, status, backlog-intake — load on demand and are never forced; explicit user direction always wins. Unlike plan-orchestrator (drives an existing plan-state-machine plan) or workflow-architect (routes workflow engagements), it takes ad-hoc direction and only proposes a plan when one already covers the area.",
+  "description": "Use this when you need the live orchestrator that lists and drives token-optimized dispatch of already-authored plan-state-machine plans (dag.json/state.json). Two modes — 'list plans' enumerates discoverable plans with their state; 'execute plan <path|slug>' runs states wave-by-wave, routing each to the best-fit available executor at its declared model/effort tier, assembling self-contained inline dispatch prompts (compiled work-order + pre-loaded reserved file contents + token budget hint + wave context pack when wave has ≥2 states with shared context), capturing real token telemetry, verifying from state.json (not subagent reports), and looping advance/retry/escalate/halt via orchestrate-plan.js. Halts on every non-clean gate and proposes a fix. Distinct from plan-builder (which authors plans). Governed by the non-negotiable Operating rules — never triage, never code, never believe a report without evidence, never dispatch un-triaged or un-architected implementation, never merge unreviewed code, backlog status on every transition, decisions routed to debug/architect/product, background parallel dispatch, no orphaned work, live-status and upstream-consumer verification after deployments.",
   "compatibility": {
     "host": ">=1.0.0 <2.0.0"
   },
@@ -13,7 +13,7 @@
   "keywords": [
     "dispatch",
     "orchestrator",
-    "ad-hoc",
+    "plan-state-machine",
     "backlog",
     "review-gate",
     "task-tree"
@@ -38,7 +38,7 @@
   },
   "agent": {
     "name": "dispatcher",
-    "description": "Orchestration authority that never executes — it decomposes what you ask for, dispatches 00-active executors in the background, verifies every outcome from git/tests/state (never from a report), review-gates merges, and keeps the live Task list and the backlog graph (via backlog-operator) in sync. Playbooks — direct, triage, plan, status, backlog-intake — load on demand and are never forced; explicit user direction always wins. Unlike plan-orchestrator (drives an existing plan-state-machine plan) or workflow-architect (routes workflow engagements), it takes ad-hoc direction and only proposes a plan when one already covers the area.",
+    "description": "Live orchestrator that lists and drives token-optimized dispatch of already-authored plan-state-machine plans (dag.json/state.json). Two modes — 'list plans' enumerates discoverable plans with their state; 'execute plan <path|slug>' runs states wave-by-wave, routing each to the best-fit available executor at its declared model/effort tier, assembling self-contained inline dispatch prompts (compiled work-order + pre-loaded reserved file contents + token budget hint + wave context pack when wave has ≥2 states with shared context), capturing real token telemetry, verifying from state.json (not subagent reports), and looping advance/retry/escalate/halt via orchestrate-plan.js. Halts on every non-clean gate and proposes a fix. Distinct from plan-builder (which authors plans). Governed by the non-negotiable Operating rules — never triage, never code, never believe a report without evidence, never dispatch un-triaged or un-architected implementation, never merge unreviewed code, backlog status on every transition, decisions routed to debug/architect/product, background parallel dispatch, no orphaned work, live-status and upstream-consumer verification after deployments.",
     "model": "opus",
     "mode": "all",
     "tools": [
@@ -87,7 +87,7 @@
   "render": {
     "claude": {
       "model": "opus",
-      "version": "v1.4.0",
+      "version": "v1.4.1",
       "tools": [
         "Read",
         "Glob",
@@ -109,7 +109,7 @@
       ]
     },
     "opencode": {
-      "model": "deepseek/deepseek-v4-pro",
+      "model": "deepseek/deepseek-flash",
       "mode": "all"
     }
   },

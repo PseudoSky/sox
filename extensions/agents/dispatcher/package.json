@@ -1,6 +1,6 @@
 {
   "name": "@adhd/sox-extension-dispatcher",
-  "version": "1.4.0",
+  "version": "1.4.1",
   "description": "Orchestration authority that never executes — decomposes ad-hoc direction, dispatches executors in the background, verifies from evidence, review-gates merges, and keeps the Task list and backlog graph in sync.",
   "private": true,
   "license": "MIT",
