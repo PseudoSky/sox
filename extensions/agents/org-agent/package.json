@@ -1,6 +1,6 @@
 {
   "name": "@adhd/sox-extension-org-agent",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Declarative organisation-scoped memory agent",
   "private": true,
   "license": "MIT"

@@ -1,7 +1,7 @@
 {
   "$schema": "https://your-registry/schemas/extension/v2.json",
   "id": "performance-engineer",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "type": "agent",
   "title": "performance-engineer",
   "description": "Use this agent when you need to identify and eliminate performance bottlenecks in applications, databases, or infrastructure systems, and when baseline performance metrics need improvement.",
@@ -20,17 +20,81 @@
   "invocation": {
     "protocol": "function-export",
     "handler": "run",
-    "description": "Declarative agent — host reads the .md definition file directly."
+    "description": "Declarative agent — host reads the prose body and renders the host header from agent/render at install time."
+  },
+  "requires": {
+    "tool_calling": true
+  },
+  "agent": {
+    "name": "performance-engineer",
+    "description": "Use this agent when you need to identify and eliminate performance bottlenecks in applications, databases, or infrastructure systems, and when baseline performance metrics need improvement.",
+    "model": "sonnet",
+    "tools": [
+      "read",
+      "write",
+      "edit",
+      "bash",
+      "glob",
+      "grep",
+      "question",
+      "websearch",
+      { "logical": "memory", "server": "memory-server" },
+      { "logical": "backlog", "server": "backlog" }
+    ],
+    "permission": {
+      "read": "allow",
+      "write": "allow",
+      "edit": "allow",
+      "bash": {
+        "*": "allow"
+      },
+      "glob": "allow",
+      "grep": "allow",
+      "question": "allow",
+      "websearch": "allow",
+      "memory_*": "allow",
+      "backlog_*": "allow"
+    }
+  },
+  "render": {
+    "claude": {
+      "model": "sonnet",
+      "version": "v0.1.1",
+      "tools": [
+        "Read",
+        "Write",
+        "Edit",
+        "Bash",
+        "Glob",
+        "Grep",
+        "ListMcpResourcesTool",
+        "ReadMcpResourceTool",
+        "WaitForMcpServers",
+        "AskUserQuestion",
+        "WebSearch",
+        "Monitor",
+        "LSP",
+        "mcp__memory-server__*",
+        "SendMessage",
+        "TaskGet",
+        "TaskList",
+        "Explore",
+        "mcp__backlog__*"
+      ],
+      "toolMap": {
+        "memory-server": "memory-server",
+        "backlog": "backlog"
+      }
+    },
+    "opencode": {
+      "model": "deepseek/deepseek-flash"
+    }
   },
   "install": {
     "type": "agent",
     "hosts": [
       "claude",
       "opencode"
-    ],
-    "source": "file:///Users/nix/.claude/agents/performance-engineer.md"
-  },
-  "requires": {
-    "tool_calling": true
+    ]
   }
 }

@@ -1,10 +1,10 @@
 {
   "$schema": "https://your-registry/schemas/extension/v2.json",
   "id": "architect",
-  "version": "0.1.1",
+  "version": "0.1.3",
   "type": "agent",
   "title": "architect",
-  "description": "Use this when you need a read-only architecture agent (deepseek-v4-pro): takes a vague feature description, delegates research to the researcher agent, analyzes the codebase with gitnexus MCP, and produces a full implementation spec with exact file paths, interface and behavioral changes, independent segments with token estimates, execution strategies for weaker agents, test cases, and documentation updates. ALWAYS delegates research — never does its own.",
+  "description": "Use this when you need a read-only architecture agent: takes a vague feature description, delegates research to the researcher agent, analyzes the codebase with gitnexus MCP, and produces a full implementation spec with exact file paths, interface and behavioral changes, independent segments with token estimates, execution strategies for weaker agents, test cases, and documentation updates. ALWAYS delegates research — never does its own.",
   "compatibility": {
     "host": ">=1.0.0 <2.0.0"
   },
@@ -20,15 +20,66 @@
   "invocation": {
     "protocol": "function-export",
     "handler": "run",
-    "description": "Declarative agent — host reads the .md definition file directly."
+    "description": "Declarative agent — host reads the prose body and renders the host header from agent/render at install time."
+  },
+  "agent": {
+    "name": "architect",
+    "description": "Read-only architecture agent. Takes a vague feature description, delegates research to the researcher agent, analyzes the codebase with gitnexus MCP, and produces a full implementation spec with exact file paths, interface and behavioral changes, independent segments with token estimates, execution strategies for weaker agents, test cases, and documentation updates. ALWAYS delegates research — never does its own.",
+    "model": "sonnet",
+    "mode": "all",
+    "temperature": 0.2,
+    "steps": 100,
+    "tools": [
+      "read",
+      "edit",
+      "webfetch",
+      "bash",
+      "task",
+      "question",
+      "skill"
+    ],
+    "permission": {
+      "read": "allow",
+      "edit": "allow",
+      "glob": "deny",
+      "grep": "deny",
+      "bash": {
+        "npx gitnexus *": "allow",
+        "nx *": "allow",
+        "npx nx *": "allow",
+        "git log --oneline *": "allow",
+        "rg *": "allow",
+        "gx *": "allow",
+        "*": "deny"
+      },
+      "webfetch": "allow",
+      "websearch": "deny",
+      "github": "deny",
+      "task": "allow",
+      "todowrite": "deny",
+      "question": "allow",
+      "skill": "allow",
+      "memory_*": "allow",
+      "backlog_*": "allow"
+    }
+  },
+  "render": {
+    "claude": {
+      "model": "sonnet",
+      "version": "v0.1.2"
+    },
+    "opencode": {
+      "model": "deepseek/deepseek-flash",
+      "mode": "all",
+      "temperature": 0.2
+    }
   },
   "install": {
     "type": "agent",
     "hosts": [
       "claude",
       "opencode"
-    ],
-    "source": "file:///Users/nix/.config/opencode/agents/architect.md"
+    ]
   },
   "requires": {
     "tool_calling": true

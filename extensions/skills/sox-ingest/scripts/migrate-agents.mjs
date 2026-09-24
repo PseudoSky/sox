@@ -503,4 +503,4 @@ if (IS_MAIN) {
 // No-op at CLI runtime; lets a unit test import the pure parsing/scaffolding
 // functions directly instead of spawning the process or writing into the
 // real extensions/agents/ tree.
-export { parseFrontmatter, readBlockScalar, manifest, detectFormatter, deriveId };
+export { parseFrontmatter, readBlockScalar, manifest, readme, detectFormatter, deriveId };

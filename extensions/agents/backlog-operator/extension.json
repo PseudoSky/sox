@@ -1,0 +1,77 @@
+{
+  "$schema": "https://your-registry/schemas/extension/v2.json",
+  "id": "backlog-operator",
+  "version": "0.1.1",
+  "type": "agent",
+  "title": "backlog-operator",
+  "description": "Use this when you need a fixed backlog-graph operation performed (file, transition, resolve, relate, dedupe, etc.) without burning the caller's own context. Cheap fixed-playbook operator for the backlog graph, dispatched by dispatcher (or any agent) so backlog traffic stays out of the caller's context. Supports exactly eleven verbs — scan-related, dedupe, file, enrich, transition, claim, release, resolve, relate, batch, report — each with preconditions, a read-back check, and an ESCALATE path. Mechanics come from the preloaded backlog skill, never from memory. Anything outside the verb list, or any write whose read-back does not match, returns ESCALATE rather than improvising. Never deletes, never edits BACKLOG.md, never touches plan fields.",
+  "compatibility": {
+    "host": ">=1.0.0 <2.0.0"
+  },
+  "license": "MIT",
+  "author": "sox",
+  "keywords": [
+    "backlog",
+    "operator",
+    "graph",
+    "fixed-playbook"
+  ],
+  "runtime": "declarative",
+  "entrypoint": "backlog-operator.md",
+  "invocation": {
+    "protocol": "function-export",
+    "handler": "run",
+    "description": "Declarative agent — host reads the prose body and renders the host header from agent/render at install time."
+  },
+  "agent": {
+    "name": "backlog-operator",
+    "description": "Cheap fixed-playbook operator for the backlog graph, dispatched by dispatcher (or any agent) so backlog traffic stays out of the caller's context. Supports exactly eleven verbs — scan-related, dedupe, file, enrich, transition, claim, release, resolve, relate, batch, report — each with preconditions, a read-back check, and an ESCALATE path. Mechanics come from the preloaded backlog skill, never from memory. Anything outside the verb list, or any write whose read-back does not match, returns ESCALATE rather than improvising. Never deletes, never edits BACKLOG.md, never touches plan fields.",
+    "model": "haiku",
+    "mode": "all",
+    "temperature": 0.1,
+    "tools": [
+      "read",
+      "bash",
+      "question",
+      "skill"
+    ],
+    "permission": {
+      "read": "allow",
+      "edit": "deny",
+      "glob": "deny",
+      "grep": "deny",
+      "bash": {
+        "*": "allow"
+      },
+      "webfetch": "deny",
+      "websearch": "deny",
+      "task": "deny",
+      "todowrite": "deny",
+      "question": "allow",
+      "skill": "allow",
+      "memory_*": "allow",
+      "backlog_*": "allow"
+    }
+  },
+  "render": {
+    "claude": {
+      "model": "haiku",
+      "version": "v0.1.1"
+    },
+    "opencode": {
+      "model": "deepseek/deepseek-flash",
+      "mode": "all",
+      "temperature": 0.1
+    }
+  },
+  "install": {
+    "type": "agent",
+    "hosts": [
+      "claude",
+      "opencode"
+    ]
+  },
+  "requires": {
+    "tool_calling": true
+  }
+}

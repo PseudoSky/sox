@@ -1798,6 +1798,95 @@ describe('validate-manifests — P4 DX-conformance advisory rules', () => {
     expect(result.ok).toBe(true);
   });
 
+  // ─── README leaked YAML block-scalar indicator — hard error, both modes (BL 5b69402d) ──
+  // Unlike the rest of this advisory (warn/strict-toggled) rule family, a leaked YAML
+  // control token in rendered README output is a hard structural defect, not a DX nicety:
+  // it already shipped undetected through 3 commits because the surrounding
+  // length/lorem-only placeholder check does not catch it. So this sub-check always emits
+  // severity:'error' and fails validation even in default (fail-open) mode.
+
+  it('BL 5b69402d: fails when README.md line 3 is a bare block-scalar indicator ("> >-")', () => {
+    makeNonConformantExtension(tmpRoot, 'skills', 'block-scalar-readme');
+    const extDir = path.join(tmpRoot, 'extensions', 'skills', 'block-scalar-readme');
+    // Reproduces the doc-cartographer/doc-consumer/doc-evangelist/doc-reviewer regression:
+    // migrate-agents.mjs's scalar() captured the YAML block-scalar INDICATOR TOKEN
+    // ("description: >-") instead of the folded body beneath it, so line 3 rendered the
+    // literal "> >-" instead of the agent's description. The file is otherwise >100 chars
+    // and not lorem ipsum, so only a dedicated line-shape check catches it.
+    fs.writeFileSync(
+      path.join(extDir, 'README.md'),
+      '# block-scalar-readme\n\n' +
+        '> >-\n\n' +
+        '## Overview\n\nThis skill is used for testing the DX-conformance advisory rules ' +
+        'around leaked YAML block-scalar indicators surviving into rendered README output.\n',
+    );
+    const result = validateManifests(tmpRoot);
+    const errors = result.errors.filter((d) => d.severity === 'error');
+    const leakError = errors.find(
+      (w) => w.message.includes('README') && w.message.includes('block-scalar'),
+    );
+    expect(leakError).toBeDefined();
+    expect(result.ok).toBe(false);
+  });
+
+  it('BL 5b69402d: fails when README.md contains a bare "description:" frontmatter leak', () => {
+    makeNonConformantExtension(tmpRoot, 'skills', 'desc-leak-readme');
+    const extDir = path.join(tmpRoot, 'extensions', 'skills', 'desc-leak-readme');
+    fs.writeFileSync(
+      path.join(extDir, 'README.md'),
+      '# desc-leak-readme\n\n' +
+        'description:\n\n' +
+        '## Overview\n\nThis skill is used for testing the DX-conformance advisory rules ' +
+        'around leaked YAML frontmatter keys surviving into rendered README output.\n',
+    );
+    const result = validateManifests(tmpRoot);
+    const errors = result.errors.filter((d) => d.severity === 'error');
+    const leakError = errors.find(
+      (w) => w.message.includes('README') && w.message.includes('frontmatter leak'),
+    );
+    expect(leakError).toBeDefined();
+    expect(result.ok).toBe(false);
+  });
+
+  it('BL 5b69402d: does NOT fail on a conformant README with a real blockquote description', () => {
+    makeConformantExtension(tmpRoot, 'skills', 'no-false-positive-readme');
+    const result = validateManifests(tmpRoot);
+    const leakDiag = result.errors.find(
+      (w) =>
+        w.path.includes('no-false-positive-readme') &&
+        w.message.includes('README') &&
+        (w.message.includes('block-scalar') || w.message.includes('frontmatter leak')),
+    );
+    expect(leakDiag).toBeUndefined();
+    expect(result.ok).toBe(true);
+  });
+
+  it('BL 5b69402d: does NOT fail on a bare ">" multi-paragraph blockquote continuation line', () => {
+    makeNonConformantExtension(tmpRoot, 'skills', 'bare-quote-continuation-readme');
+    const extDir = path.join(tmpRoot, 'extensions', 'skills', 'bare-quote-continuation-readme');
+    // A lone ">" (or ">" + trailing whitespace) is a normal markdown idiom for continuing a
+    // multi-paragraph blockquote — it must NOT be treated as a leaked YAML indicator.
+    fs.writeFileSync(
+      path.join(extDir, 'README.md'),
+      '# bare-quote-continuation-readme\n\n' +
+        '> First paragraph of a real blockquote description that spans multiple\n' +
+        '> paragraphs, using the standard markdown convention.\n' +
+        '>\n' +
+        '> Second paragraph continues here after a bare continuation marker line.\n\n' +
+        '## Overview\n\nThis skill is used for testing the DX-conformance advisory rules ' +
+        'around multi-paragraph blockquotes that must not false-positive as YAML leaks.\n',
+    );
+    const result = validateManifests(tmpRoot);
+    const leakDiag = result.errors.find(
+      (w) =>
+        w.path.includes('bare-quote-continuation-readme') &&
+        w.message.includes('README') &&
+        (w.message.includes('block-scalar') || w.message.includes('frontmatter leak')),
+    );
+    expect(leakDiag).toBeUndefined();
+    expect(result.ok).toBe(true);
+  });
+
   // ─── Strict mode: fail-closed ─────────────────────────────────────────────
 
   it('strict mode: exits ok=false when any advisory issue is present', () => {

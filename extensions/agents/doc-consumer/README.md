@@ -1,6 +1,6 @@
 # doc-consumer
 
-> >-
+> Fresh-eyes consumer for the doc-reviewer's usability lens. Given a scope's documentation and a small set of canonical tasks, it attempts each task using ONLY the docs — no source code — and reports, per task, whether the docs were sufficient, where it had to guess, and every point at which it wanted to open source (the reader-search signal). Read-only; never edits. Dispatched by doc-reviewer.
 
 ## Overview
 
