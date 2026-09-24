@@ -4,7 +4,7 @@
   "description": "Fixed-playbook operator for the backlog graph",
   "private": true,
   "license": "MIT",
-  "author": "sox-ecosystem",
+  "author": "sox",
   "keywords": [
     "backlog",
     "operator",

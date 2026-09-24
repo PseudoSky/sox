@@ -1,8 +1,6 @@
 ---
 name: dispatch-contract
 description: The brief every dispatcher dispatch carries and the return contract every executor must satisfy. Load once per dispatcher session before the first dispatch, and whenever assembling a brief, reading a return, or writing a telemetry row. Defines the brief template (goal, observable done-state, scope, tools/model, budget, return shape, check-and-confirm items), the structured return block, the operator request shape, and the one-line-per-dispatch telemetry format. Not a playbook — the other dispatch-* skills all assume it.
-source: git@bitbucket.org:id8/agents.git#categories/dispatch/skills/dispatch-contract/SKILL.md
-source-version: v1.4.0 (6ffe0db1)
 ---
 
 # dispatch-contract — what every dispatch carries and returns

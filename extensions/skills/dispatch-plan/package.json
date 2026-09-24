@@ -4,7 +4,7 @@
   "description": "The dispatcher's playbook for plan-state-machine plans — plans on request, never by default.",
   "private": true,
   "license": "MIT",
-  "author": "sox-ecosystem",
+  "author": "sox",
   "keywords": [
     "dispatch",
     "orchestrator",

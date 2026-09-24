@@ -4,7 +4,7 @@
   "description": "The dispatcher's default playbook — direction in, dispatched and verified work out.",
   "private": true,
   "license": "MIT",
-  "author": "sox-ecosystem",
+  "author": "sox",
   "keywords": [
     "dispatch",
     "orchestrator",

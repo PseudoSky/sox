@@ -9,7 +9,7 @@
     "host": ">=1.0.0 <2.0.0"
   },
   "license": "MIT",
-  "author": "sox-ecosystem",
+  "author": "sox",
   "keywords": [
     "dispatch",
     "orchestrator",
@@ -25,8 +25,6 @@
     "handler": "run",
     "description": "Declarative agent — host reads the prose body and renders the host header from agent/render at install time."
   },
-  "source": "git@bitbucket.org:id8/agents.git#categories/dispatch/agents/dispatcher.md",
-  "source-version": "v1.4.0 (6ffe0db1)",
   "dependencies": [
     "dispatch-contract",
     "dispatch-direct",
@@ -120,7 +118,6 @@
     "hosts": [
       "claude",
       "opencode"
-    ],
-    "source": "file:///Users/nix/dev/ai/sox-ecosystem/extensions/agents/dispatcher/dispatcher.md"
+    ]
   }
 }

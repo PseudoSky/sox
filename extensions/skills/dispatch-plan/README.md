@@ -20,9 +20,7 @@ Loaded when a plan is named or discovered; otherwise `dispatcher` stays in `disp
 
 ## Source
 
-Ported verbatim from `categories/dispatch/skills/dispatch-plan/SKILL.md` in the `claude-agents`
-catalog (`git@bitbucket.org:id8/agents.git`), v1.4.0, commit `6ffe0db1`. Provenance recorded in
-`SKILL.md` frontmatter (`source` / `source-version`).
+Ported verbatim from an external dispatch-agent catalog, v1.4.0.
 
 ## Usage
 

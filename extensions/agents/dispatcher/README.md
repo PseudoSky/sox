@@ -37,10 +37,7 @@ Declared in `extension.json` → `dependencies`: the six dispatch skills it load
 
 ## Source
 
-Ported verbatim (body unchanged) from
-`categories/dispatch/agents/dispatcher.md` in the `claude-agents` catalog
-(`git@bitbucket.org:id8/agents.git`), v1.4.0, commit `6ffe0db1`. Provenance recorded in
-`extension.json` → `source` / `source-version`.
+Ported verbatim (body unchanged) from an external dispatch-agent catalog, v1.4.0.
 
 ## Usage
 

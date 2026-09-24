@@ -1,8 +1,6 @@
 ---
 name: dispatch-plan
 description: The dispatcher's playbook for plan-state-machine plans — used only when the user explicitly asks for a plan, points at docs/plan/<slug>/, or confirms after the dispatcher highlights that an existing plan covers the area. It never turns a direct request into a plan on its own. Delegates authoring/repair to plan-builder and execution to plan-orchestrator after a one-line confirmation; the dispatcher never authors, edits, or executes a plan itself. Load when a plan is named or discovered; otherwise stay in dispatch-direct.
-source: git@bitbucket.org:id8/agents.git#categories/dispatch/skills/dispatch-plan/SKILL.md
-source-version: v1.4.0 (6ffe0db1)
 ---
 
 # dispatch-plan — plans on request, never by default

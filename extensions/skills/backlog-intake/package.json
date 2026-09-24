@@ -4,7 +4,7 @@
   "description": "The dispatcher's intake step — burn the backlog while you're there.",
   "private": true,
   "license": "MIT",
-  "author": "sox-ecosystem",
+  "author": "sox",
   "keywords": [
     "dispatch",
     "orchestrator",

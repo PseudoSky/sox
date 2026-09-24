@@ -1,8 +1,6 @@
 ---
 name: dispatch-triage
 description: The dispatcher's playbook for an issue report — a bug, a red test, a reviewer finding, an executor's out-of-scope observation, or any "pre-existing / unrelated / skipped" claim. Root-cause with debugger first (evidence, never the dispatcher's own guess), plan the fix with architect-reviewer when the decision is technical, then implement through dispatch-direct and review-gate. Nothing is filed to the backlog or surfaced to the user as fact until triage has evidence. Load on any report; the user's explicit direction still overrides.
-source: git@bitbucket.org:id8/agents.git#categories/dispatch/skills/dispatch-triage/SKILL.md
-source-version: v1.4.0 (6ffe0db1)
 ---
 
 # dispatch-triage — evidence before anything

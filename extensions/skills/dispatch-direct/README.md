@@ -21,9 +21,7 @@ followed as given.
 
 ## Source
 
-Ported verbatim from `categories/dispatch/skills/dispatch-direct/SKILL.md` in the `claude-agents`
-catalog (`git@bitbucket.org:id8/agents.git`), v1.4.0, commit `6ffe0db1`. Provenance recorded in
-`SKILL.md` frontmatter (`source` / `source-version`).
+Ported verbatim from an external dispatch-agent catalog, v1.4.0.
 
 ## Usage
 

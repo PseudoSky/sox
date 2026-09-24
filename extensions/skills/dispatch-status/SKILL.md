@@ -1,8 +1,6 @@
 ---
 name: dispatch-status
 description: The dispatcher's read-only playbook — answer "where are we" for the current run — in-flight and finished dispatches with their verified state, Task-list status, backlog items touched this run, open plans and claims, and unrecorded transitions. Also run before every dispatcher return to prove nothing is orphaned. Dispatches nothing, writes nothing. Load on "status", "what's in flight", "what's left", or at close.
-source: git@bitbucket.org:id8/agents.git#categories/dispatch/skills/dispatch-status/SKILL.md
-source-version: v1.4.0 (6ffe0db1)
 ---
 
 # dispatch-status — what is true right now

@@ -49,8 +49,7 @@ No process is spawned. Install target resolved from host-registry at install tim
 
 ## Source
 
-Ingested from `sox-active:backlog-operator` catalog.
-Provenance recorded in `extension.json` → `install.source`.
+Ingested from an internal agent catalog.
 
 ## Usage
 
