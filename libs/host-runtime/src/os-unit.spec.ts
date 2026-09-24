@@ -1260,6 +1260,64 @@ describe('restartAndVerify — kickstart:false (--backend-only)', () => {
     expect(seenExcludePids).toEqual([]);
     expect(result.kickstart.code).toBe(0);
   });
+
+  it('a49ca837: restartAndVerify kickstart:false rotates backend without kickstart', async () => {
+    const MAIN_PID = 111;
+    let kickstartCalls = 0;
+    const stubPlatform: OsUnitPlatform = Object.assign(
+      Object.create(Object.getPrototypeOf(platform)) as OsUnitPlatform,
+      platform,
+      {
+        kickstart: (): OsExecResult => {
+          kickstartCalls += 1;
+          return { code: 0, stdout: '', stderr: '' };
+        },
+        mainPid: () => MAIN_PID,
+      },
+    );
+
+    let findCalls = 0;
+    let seenReapExcludePids: number[] | undefined;
+    const findMatches = (_tok: string, o: { excludePids?: number[] }): RestartMatch[] => {
+      findCalls += 1;
+      const excl = new Set(o.excludePids ?? []);
+      const raw = findCalls === 1 ? [MAIN_PID, 200] : [MAIN_PID, 300];
+      return raw.filter((pid) => !excl.has(pid)).map((pid) => ({ pid }));
+    };
+    const reapFn = async (
+      tok: string,
+      o: { excludePids?: number[] },
+    ): Promise<ReapResult> => {
+      seenReapExcludePids = o.excludePids;
+      return { token: tok, killed: [] };
+    };
+
+    const result = await restartAndVerify({
+      label,
+      token,
+      platform: stubPlatform,
+      exec: () => ({ code: 0, stdout: '', stderr: '' }),
+      kickstart: false,
+      findMatches,
+      reapFn,
+      waitMs: 50,
+      sleepFn: async () => { /* instant */ },
+    });
+
+    // 0 kickstarts.
+    expect(kickstartCalls).toBe(0);
+    // Token pid rotated: pre-restart snapshot was [200], post-restart includes 300.
+    expect(result.before).toEqual([200]);
+    expect(result.after).toContain(300);
+    expect(result.rotated).toBe(true);
+    expect(result.ok).toBe(true);
+    // mainPid unchanged: the front-shim's own pid is excluded from both the
+    // before/after snapshots and the reap's excludePids, so kickstart:false
+    // never touches — and never reports rotation for — the shim process itself.
+    expect(result.before).not.toContain(MAIN_PID);
+    expect(result.after).not.toContain(MAIN_PID);
+    expect(seenReapExcludePids).toContain(MAIN_PID);
+  });
 });
 
 // ─── BL-593/§9.4b: `updateOsUnit` — `soxe service update`, enable + verified rotation ──

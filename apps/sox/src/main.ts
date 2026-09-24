@@ -143,6 +143,7 @@ import {
 import { registerBundleMember, resolveBundleDir } from './bundle-init.js';
 import { resolveGraceMs } from './grace-ms.js';
 import { assertWithinBase, PathEscapeError } from './path-safety.js';
+import { unloadOsUnitUnlessFrontShim } from './proxy-backend-front-shim.js';
 import { dedupeRestartRows, type RestartIdentity } from './restart-dedup.js';
 import {
   exitCodeForListenOutcome,
@@ -2520,28 +2521,23 @@ async function restartProxyBackend(
     require('@adhd/sox-service-proxy') as typeof import('@adhd/sox-service-proxy');
   const backendSock = backendSocketPath(socketDir(), key);
 
-  // Mirrors the os-unit execArgs predicate (~5169): when this extension's
-  // os-unit IS the port-listening front-shim, the unit runs `soxe serve <id>
-  // --port <port>` — it does NOT supervise the detached backend process we are
-  // about to verified-stop/re-ensure (ensure-backend.ts spawns detached:true).
-  // Unloading/re-enabling that unit here would be pointless churn on a process
-  // this restart never touches.
-  const shimIsUnit = Boolean(configEnv['SOX_CONFIG_PORT']) && mcpServerIsProxyMode(extId, scope, root);
-
   // [inv:unload-then-reap] (§8.5): unload any OS unit BEFORE verified-stop so
-  // the OS supervisor does not immediately respawn the backend (F3 resurrection).
-  // Best-effort; unloadOnlyTargetId wraps unloadOwnedOsUnitsBeforeReap for a
-  // single extension. Skipped when the unit is the front-shim (see shimIsUnit
-  // above) — the shim is not the thing being restarted here.
-  if (!shimIsUnit) {
-    unloadOwnedOsUnitsBeforeReap({
-      root,
-      onlyIds: [extId],
-      log: (m) => log(`[unload-then-reap] ${m}`),
-    });
-  } else {
-    log(`skip unload: os-unit for ${extId} is the front-shim, does not supervise the detached backend`);
-  }
+  // the OS supervisor does not immediately respawn the backend (F3 resurrection)
+  // — unless the unit IS the front-shim (BL a49ca837), which this restart never
+  // touches. `unloadOsUnitUnlessFrontShim` owns the single `shimIsUnit`
+  // predicate (mirrors the os-unit execArgs predicate ~5169) so the re-enable
+  // gate below stays in lockstep — see proxy-backend-front-shim.ts.
+  const { shimIsUnit } = unloadOsUnitUnlessFrontShim({
+    configEnv,
+    proxyMode: mcpServerIsProxyMode(extId, scope, root),
+    unload: () =>
+      unloadOwnedOsUnitsBeforeReap({
+        root,
+        onlyIds: [extId],
+        log: (m) => log(`[unload-then-reap] ${m}`),
+      }),
+    log: (m) => log(`${m} (${extId})`),
+  });
 
   // Find + VERIFIED-STOP (await — the kill MUST complete before we re-ensure, or
   // ensureBackend would see the old backend still live and no-op) the live
