@@ -1,7 +1,7 @@
 {
   "$schema": "https://your-registry/schemas/extension/v2.json",
   "id": "backlog-operator",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "type": "agent",
   "title": "backlog-operator",
   "description": "Cheap fixed-playbook operator for the backlog graph, dispatched by dispatcher (or any agent) so backlog traffic stays out of the caller's context. Supports exactly eleven verbs — scan-related, dedupe, file, enrich, transition, claim, release, resolve, relate, batch, report — each with preconditions, a read-back check, and an ESCALATE path. Mechanics come from the preloaded backlog skill, never from memory. Anything outside the verb list, or any write whose read-back does not match, returns ESCALATE rather than improvising. Never deletes, never edits BACKLOG.md, never touches plan fields.",
@@ -21,15 +21,55 @@
   "invocation": {
     "protocol": "function-export",
     "handler": "run",
-    "description": "Declarative agent — host reads the .md definition file directly."
+    "description": "Declarative agent — host reads the prose body and renders the host header from agent/render at install time."
+  },
+  "agent": {
+    "name": "backlog-operator",
+    "description": "Cheap fixed-playbook operator for the backlog graph, dispatched by dispatcher (or any agent) so backlog traffic stays out of the caller's context. Supports exactly eleven verbs — scan-related, dedupe, file, enrich, transition, claim, release, resolve, relate, batch, report — each with preconditions, a read-back check, and an ESCALATE path. Mechanics come from the preloaded backlog skill, never from memory. Anything outside the verb list, or any write whose read-back does not match, returns ESCALATE rather than improvising. Never deletes, never edits BACKLOG.md, never touches plan fields.",
+    "model": "haiku",
+    "mode": "all",
+    "temperature": 0.1,
+    "tools": [
+      "read",
+      "bash",
+      "question",
+      "skill"
+    ],
+    "permission": {
+      "read": "allow",
+      "edit": "deny",
+      "glob": "deny",
+      "grep": "deny",
+      "bash": {
+        "*": "allow"
+      },
+      "webfetch": "deny",
+      "websearch": "deny",
+      "task": "deny",
+      "todowrite": "deny",
+      "question": "allow",
+      "skill": "allow",
+      "memory_*": "allow",
+      "backlog_*": "allow"
+    }
+  },
+  "render": {
+    "claude": {
+      "model": "haiku",
+      "version": "v0.1.1"
+    },
+    "opencode": {
+      "model": "deepseek/deepseek-flash",
+      "mode": "all",
+      "temperature": 0.1
+    }
   },
   "install": {
     "type": "agent",
     "hosts": [
       "claude",
       "opencode"
-    ],
-    "source": "file:///Users/nix/dev/ai/sox-ecosystem/extensions/agents/backlog-operator/backlog-operator.md"
+    ]
   },
   "requires": {
     "tool_calling": true
