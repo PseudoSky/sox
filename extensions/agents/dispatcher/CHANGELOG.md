@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.4.2
+
+- **Worktree teardown is now mandatory.** Adds a Hard rule — "always tear down every worktree you create; no orphaned worktrees" — requiring isolation worktrees to live under `<repo>/.worktrees/<slug>/`, be recorded in the orchestration ledger, and be removed (`git worktree remove` → `git worktree prune` → `git branch -d` when merged) once their state/wave merges or is abandoned, with a **Step 7 close-time reconciliation** of `git worktree list` against the ledger. A dirty worktree this run did not author is explicitly not ours to remove.
+- Adds the **Orphaned worktree** failure mode. Root cause it fixes: the spec previously mentioned `worktree` only for *isolation* (write-conflict prevention) and `$SKILL` resolution — never for cleanup — which is why isolation worktrees accumulated across runs (106 present on this repo).
+
 ## 1.4.1
 
 - **Body reconciled from the `wip/dispatcher-0.1.2-transition-discipline` worktree.** The 1.4.0
