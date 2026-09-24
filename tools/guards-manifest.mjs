@@ -27,7 +27,7 @@
  */
 
 export const GUARDS = [
-  // ---------------------------------------------------------------- Tier 1 (10) -----------
+  // ---------------------------------------------------------------- Tier 1 (13) -----------
   {
     id: 'bl222',
     tier: 1,
@@ -104,6 +104,14 @@ export const GUARDS = [
     tier: 1,
     script: 'test-run-guards-hook-index-fail-closed.mjs',
     watch: ['tools/run-guards.mjs', 'tools/lib/git-index-scope.mjs'],
+  },
+  {
+    id: '19434c31',
+    tier: 1,
+    script: 'test-19434c31-dispatcher-review-floor.mjs',
+    // Pins a property of the dispatcher agent prose (the blind-review severity floor + round cap),
+    // not a tool script — the pre-fix shape (v1.4.0, commit 9ab825e3) is the negative control.
+    watch: ['extensions/agents/dispatcher/dispatcher.md'],
   },
 
   // ---------------------------------------------------------------- Tier 2 (5) ------------
