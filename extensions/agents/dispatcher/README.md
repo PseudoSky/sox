@@ -11,16 +11,17 @@ graph (via `backlog-operator`) in sync. Playbooks — `dispatch-direct`, `dispat
 `dispatch-plan`, `dispatch-status`, `backlog-intake` — load on demand and are never forced;
 explicit user direction always wins.
 
-Unlike `plan-orchestrator` (drives an already-authored `docs/plan/<slug>/` plan wave-by-wave) or
-`workflow-architect` (routes workflow-plugin engagements), dispatcher takes ad-hoc direction and
-only proposes a plan when one already covers the area — it hands execution of a named plan to
-`plan-orchestrator` rather than re-implementing its loop.
+Unlike `plan-builder` (authors document-based `docs/plan/<slug>/` plans) or `architect` (designs
+and returns the plan structure), dispatcher takes ad-hoc direction. Plans are crafted **into the backlog** — `product-manager` prioritizes, `architect` returns the structured items
+with their `part_of` / `blocks` edges, `backlog-operator` files and links them, and dispatcher
+executes from the **ready view**. An existing plan is surfaced in one line.
 
 ## When to use
 
 Use this agent for direction that is not an issue report (that's the `dispatch-triage` playbook)
-and not a plan reference (that's `dispatch-plan`) — a task, a list, a bug report, a PR. Do **not**
-use it to execute an already-authored plan-state-machine plan directly (that is `plan-orchestrator`).
+and not a plan reference (that's `dispatch-plan`) — a task, a list, a bug report, a PR. It does
+**not** design the plan: `product-manager` prioritizes and `architect` returns the
+structured items; the dispatcher has `backlog-operator` land them and executes the ready view.
 
 ## Runtime
 

@@ -1,44 +1,54 @@
 ---
 name: dispatch-plan
-description: The dispatcher's playbook for plan-state-machine plans — used only when the user explicitly asks for a plan, points at docs/plan/<slug>/, or confirms after the dispatcher highlights that an existing plan covers the area. It never turns a direct request into a plan on its own. Delegates authoring/repair to plan-builder and execution to plan-orchestrator after a one-line confirmation; the dispatcher never authors, edits, or executes a plan itself. Load when a plan is named or discovered; otherwise stay in dispatch-direct.
+description: The dispatcher's playbook for plans, which live in the backlog — used when the user asks for a plan, or when a plan-item already covers the area. A plan is crafted into the backlog: product-manager prioritizes, architect returns the structured items with their part_of / blocks edges, the dispatcher has backlog-operator file and link them, and it executes from the ready view. The dispatcher never designs the plan structure and never touches the graph. Load when a plan is named or discovered; otherwise stay in dispatch-direct.
 ---
 
-# dispatch-plan — plans on request, never by default
+# dispatch-plan — plans are backlog structure
 
 The user owns the choice to plan. This playbook exists so that when they make
-it, the dispatcher hands off cleanly to the agents that own plans — and so that
-when they do not, the existence of a plan is *mentioned*, not *imposed*.
+it, the plan is crafted properly — as dependency-correct backlog structure — and
+so that when they do not, the existence of a plan is *mentioned*, not *imposed*.
+
+A plan is not a document the dispatcher reads. It is an `issue` row in the
+backlog: its work items attach by a `part_of` edge, and their order is expressed
+as `blocks` dependencies. Execution is driven by the **ready view** — the items
+whose blockers are resolved.
 
 ## Entry conditions (any one)
 
-- The user says "plan", "make a plan", "use the plan", "execute the plan", or names a slug/path.
-- `Glob docs/plan/*/state.json` finds a plan whose slug or `README` plausibly covers the current direction — in which case the dispatcher says **one line**: "`docs/plan/<slug>/` covers this (state: `<current_state>`). Say the word to use it; otherwise I'll continue on the task list." — and continues on the task list unless told otherwise.
+- The user says "plan", "make a plan", "use the plan", "execute the plan", or names a plan.
+- The backlog already holds a plan that plausibly covers the current direction — in which case the dispatcher says **one line**: "plan `<uid>` covers this; N items ready. Say the word to work it; otherwise I'll continue on the task list." — and continues on the task list unless told otherwise.
 
-## Confirmation gate (always, before any plan agent is dispatched)
+## Confirmation gate
 
-Ask exactly one question with the concrete action named:
-
-- "Author a new plan for `<direction>` with plan-builder?"
-- "Repair/update `docs/plan/<slug>/` with plan-builder for `<defect>`?"
-- "Execute `docs/plan/<slug>/` with plan-orchestrator from `<current_state>`?"
-
-No confirmation, no dispatch. A confirmation for one action is not a
-confirmation for the others.
+Crafting a plan dispatches two agents (`product-manager`, then `architect`) and files
+items. Do it only when the user asks for a plan. On discovery alone: highlight in one line, then
+wait.
 
 ## Steps
 
-1. **Discover.** `Glob docs/plan/*/state.json`; `Read` `state.json` for `current_state`, `claimed_by`/`claimed_at`, and the status map of any candidate. Report claimed plans as claimed (by whom, how old); never override a live claim.
-2. **Confirm** (gate above).
-3. **Delegate.**
-   - Author/repair → dispatch `plan-builder` (opus) with the direction or defect list inline, per `dispatch-contract`; done-state: the plan dir exists / the named check passes.
-   - Execute → dispatch `plan-orchestrator` (opus) with the plan path; done-state: `state.json.current_state` advanced or a halt with a proposed fix. Its orchestration ledger is the record; the dispatcher does not duplicate it.
-4. **Track.** One Task entry per delegated action; `backlog-operator: transition` any linked items. Plan bookkeeping (`plan` fields) is set by the plan agents, not by the operator on the dispatcher's behalf.
-5. **Verify.** Read `state.json` (execution) or the plan dir (authoring) directly; the plan agent's report is a pointer.
-6. **Return.** Halts from `plan-orchestrator` are surfaced verbatim with its proposed fix; the dispatcher does not re-triage them (that agent already did).
+1. **Read the existing structure.** Ask `backlog-operator` for the plan item, its `part_of`
+   children, their `blocks` edges, and the **ready view**. Report any live claim (by whom, how old);
+   never override it.
+2. **Craft — only when the user wants a plan and none exists.** The dispatcher does not design the
+   plan. Dispatch `product-manager` to set what matters and in what order; then dispatch
+   `architect` with the prioritized direction, asking for **returned structured items** —
+   each item's title/body plus its membership (`part_of`) and dependency (`blocks`) edges. The
+   architect *returns* the structure; it does not touch the backlog.
+3. **Land the structure.** Hand the architect's returned items to `backlog-operator`: `file` each
+   item, `relate … part_of` to attach it to the plan, and `relate … blocks` for each dependency
+   edge. The dispatcher never writes the graph directly (rule 15). Done-state: the ready view
+   returns the first dispatchable items.
+4. **Execute from the ready view.** Dispatch the ready items through the normal `dispatch-contract`
+   brief and review gate; `resolve` each on completion, which unblocks its dependents; re-read the
+   ready view. Repeat until nothing is ready and the plan is complete or blocked.
+5. **Track.** One Task entry per item; every claim/transition goes through `backlog-operator`. The
+   plan's dependency structure is landed from the architect's output — never edited by you.
 
 ## Hard rules
 
-- Never author, edit, or execute a plan directly; never hand-edit `state.json`/`dag.json`.
+- Never design the plan structure yourself; take `architect`'s returned items. Never touch
+  the backlog directly — `backlog-operator` files and links.
+- Never dispatch a dependency-blocked item; work the ready view.
 - Never enter this playbook on discovery alone — highlight, then wait.
-- Never dispatch a plan agent without the confirmation gate.
 - Never take over a live claim.

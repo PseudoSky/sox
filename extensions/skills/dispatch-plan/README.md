@@ -1,14 +1,15 @@
 # dispatch-plan
 
-> The dispatcher's playbook for plan-state-machine plans — plans on request, never by default.
+> The dispatcher's playbook for plans — crafted into the backlog, never by default.
 
 ## Overview
 
-Used only when the user explicitly asks for a plan, points at `docs/plan/<slug>/`, or confirms
-after the dispatcher highlights that an existing plan covers the area. Never turns a direct
-request into a plan on its own. Delegates authoring/repair to `plan-builder` and execution to
-`plan-orchestrator` after a one-line confirmation gate — `dispatcher` never authors, edits, or
-executes a plan itself.
+Used when the user asks for a plan, or when the backlog already holds a plan that covers the
+area. Never turns a direct request into a plan on its own. A plan is backlog structure: an `issue`
+row with its work items attached by a `part_of` edge and their order expressed as `blocks`
+dependencies. `product-manager` prioritizes, `architect` **returns** the structured items
+with those edges, and `backlog-operator` files and links them — `dispatcher` never designs the
+structure and never touches the graph. Execution is driven by the **ready view**.
 
 ## When to use
 

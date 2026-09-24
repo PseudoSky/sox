@@ -1,5 +1,27 @@
 # Changelog
 
+## 1.4.3
+
+- **Body restored to the ad-hoc dispatcher; the plan-state-machine body is withdrawn.** 1.4.1 had
+  reconciled the plan-state-machine orchestrator body into the IR pattern; that direction is
+  reversed. The extension carries the ad-hoc-direction `dispatcher` again (the agent ingested in
+  1.4.0) and no longer contains a `docs/plan/<slug>/` execution loop.
+- **`plan-orchestrator` removed — no such agent exists.** Every reference is gone from the body,
+  the `extension.json` descriptions, the README, and the `dispatch-plan` skill. The dispatcher's
+  real division of labour is now stated: **plans are crafted into the backlog** — a plan is an
+  `issue` row whose work items attach by a `part_of` edge with their order expressed as `blocks`
+  dependencies. `product-manager` prioritizes, `architect` **returns** the structured
+  items (it does not touch the backlog), the dispatcher has `backlog-operator` file and link them,
+  and it executes from the **ready view**. `plan-builder` is recorded as the author of
+  document-based `docs/plan/<slug>/` plans, which are not this agent's plan of record.
+- Carries forward the 1.4.1 **minimum-severity review-loop floor** (only findings ≥ HIGH re-open a
+  review; sub-HIGH recorded once, non-blocking; hard 2-round cap) and the 1.4.2 **mandatory worktree
+  teardown**, both now on the ad-hoc body.
+- Adds the repo-agnostic hard rule: no repo-relative path may be assumed — these agents run in any
+  repo, so refer to the target repo's conventions and write `<repo>/…`.
+- opencode model pinned to `deepseek/deepseek-flash`, the live provider id every other agent
+  extension uses.
+
 ## 1.4.2
 
 - **Worktree teardown is now mandatory.** Adds a Hard rule — "always tear down every worktree you create; no orphaned worktrees" — requiring isolation worktrees to live under `<repo>/.worktrees/<slug>/`, be recorded in the orchestration ledger, and be removed (`git worktree remove` → `git worktree prune` → `git branch -d` when merged) once their state/wave merges or is abandoned, with a **Step 7 close-time reconciliation** of `git worktree list` against the ledger. A dirty worktree this run did not author is explicitly not ours to remove.
