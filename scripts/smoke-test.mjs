@@ -655,7 +655,7 @@ function verifyMemoryServerPing(args) {
     (c) => c.path === smokeDbRel || c.path.startsWith(smokeDbStem + '-') || c.path.startsWith(smokeDbStem + '.'),
   );
   const defaultStoreCreated = fileChanges.some(
-    (c) => c.op === 'created' && (c.path === defaultDbRel || c.path.startsWith(defaultDbRel + '-')),
+    (c) => c.op === 'created' && (c.path === defaultDbRel || c.path.startsWith(defaultDbRel + '-') || c.path.startsWith(defaultDbRel + '.')),
   );
 
   const lines = args.stdout.split(String.fromCharCode(10));
