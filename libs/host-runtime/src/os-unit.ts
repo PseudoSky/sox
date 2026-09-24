@@ -1658,6 +1658,13 @@ export interface RestartAndVerifyOptions {
   /** Poll interval while waiting (ms). Default 300. */
   pollMs?: number;
   excludePids?: number[];
+  /**
+   * When false, skip `platform.kickstart` entirely — restart only the backend
+   * (reap + rotation-verify), never the front-shim/unit itself. The unit's own
+   * process is added to `excludePids` via `platform.mainPid` so it is never
+   * reaped alongside the backend. Default true (kickstart the unit as before).
+   */
+  kickstart?: boolean;
   /** Injectable: find live pids matching `token`. Defaults to `findOrphansByIdentity`. */
   findMatches?: (token: string, opts: { excludePids?: number[] }) => RestartMatch[];
   /** Injectable: reap survivors matching `token`. Defaults to `reapByIdentity`. */
@@ -1717,19 +1724,31 @@ export async function restartAndVerify(opts: RestartAndVerifyOptions): Promise<R
   const log = opts.log ?? (() => { /* no-op */ });
   const waitMs = opts.waitMs ?? 15000;
   const pollMs = opts.pollMs ?? 300;
-  const excludeOpt = opts.excludePids !== undefined ? { excludePids: opts.excludePids } : {};
+  const doKickstart = opts.kickstart ?? true;
+  const excludePids = doKickstart
+    ? opts.excludePids
+    : [...(opts.excludePids ?? []), opts.platform.mainPid(opts.label, exec)].filter(
+        (p): p is number => p !== undefined,
+      );
+  const excludeOpt = excludePids !== undefined ? { excludePids } : {};
 
   const before = findMatches(opts.token, excludeOpt).map((m) => m.pid);
   log(`before: matching-pids=[${before.join(', ')}]`);
 
-  const kickstart = opts.platform.kickstart(opts.label, exec);
-  log(`kickstart: exit ${kickstart.code}`);
-  if (kickstart.code !== 0) {
-    return {
-      label: opts.label, token: opts.token, kickstart, before, after: before,
-      reap: { token: opts.token, killed: [] }, undead: [], rotated: false, ok: false,
-      reason: `kickstart FAILED (code ${kickstart.code})`,
-    };
+  let kickstart: OsExecResult;
+  if (doKickstart) {
+    kickstart = opts.platform.kickstart(opts.label, exec);
+    log(`kickstart: exit ${kickstart.code}`);
+    if (kickstart.code !== 0) {
+      return {
+        label: opts.label, token: opts.token, kickstart, before, after: before,
+        reap: { token: opts.token, killed: [] }, undead: [], rotated: false, ok: false,
+        reason: `kickstart FAILED (code ${kickstart.code})`,
+      };
+    }
+  } else {
+    log('kickstart: skipped (kickstart:false, backend-only restart)');
+    kickstart = { code: 0, stdout: '', stderr: '' };
   }
 
   const reap = await reapFn(opts.token, { ...excludeOpt, log: (m: string) => log(`reaper: ${m}`) });
