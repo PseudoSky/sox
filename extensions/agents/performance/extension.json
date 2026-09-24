@@ -1,7 +1,7 @@
 {
   "$schema": "https://your-registry/schemas/extension/v2.json",
   "id": "performance",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "type": "agent",
   "title": "performance",
   "description": "Use this when you need a senior performance engineer (deepseek-flash) to identify and eliminate bottlenecks in applications, databases, and infrastructure via profiling, load testing, and measured optimization. Delegates broad discovery to `researcher`, uses GitNexus-first blast-radius analysis before touching hot-path code, and requires before/after measurement. Differentiate from `refactor`: this agent optimizes for speed/throughput with numbers; `refactor` optimizes for structure/maintainability.",
@@ -20,17 +20,101 @@
   "invocation": {
     "protocol": "function-export",
     "handler": "run",
-    "description": "Declarative agent — host reads the .md definition file directly."
+    "description": "Declarative agent — host reads the prose body and renders the host header from agent/render at install time."
+  },
+  "requires": {
+    "tool_calling": true
+  },
+  "agent": {
+    "name": "performance",
+    "description": "Senior performance engineer (deepseek-flash). Identifies and eliminates bottlenecks in applications, databases, and infrastructure via profiling, load testing, and measured optimization. Delegates broad discovery to `researcher`, uses GitNexus-first blast-radius analysis before touching hot-path code, and requires before/after measurement. Differentiate from `refactor`: this agent optimizes for speed/throughput with numbers; `refactor` optimizes for structure/maintainability.",
+    "model": "haiku",
+    "temperature": 0.15,
+    "mode": "all",
+    "tools": [
+      "read",
+      "edit",
+      "bash",
+      "glob",
+      "grep",
+      "webfetch",
+      "task",
+      "todowrite",
+      "question",
+      "skill",
+      { "logical": "memory", "server": "memory-server" },
+      { "logical": "gitnexus", "server": "agent-mcp" },
+      { "logical": "search", "server": "search" }
+    ],
+    "permission": {
+      "read": "allow",
+      "edit": "allow",
+      "glob": "allow",
+      "grep": "allow",
+      "bash": {
+        "*": "allow",
+        "npx nx *": "allow",
+        "npx gitnexus *": "allow",
+        "git status*": "allow",
+        "git diff*": "allow",
+        "git log*": "allow",
+        "git stash*": "deny",
+        "git add -A*": "deny",
+        "git add .*": "deny",
+        "git add --all*": "deny",
+        "git reset --hard*": "deny",
+        "git push --force*": "deny",
+        "git push *--no-verify*": "deny",
+        "git clean *-f*": "deny",
+        "rm -rf *": "deny"
+      },
+      "webfetch": "allow",
+      "websearch": "deny",
+      "task": "allow",
+      "todowrite": "allow",
+      "question": "allow",
+      "skill": "allow",
+      "memory_*": "allow",
+      "gitnexus_*": "allow",
+      "search_*": "allow"
+    }
+  },
+  "render": {
+    "claude": {
+      "model": "opus",
+      "version": "v0.1.2",
+      "tools": [
+        "Read",
+        "Edit",
+        "Bash",
+        "Glob",
+        "Grep",
+        "WebFetch",
+        "Task",
+        "TodoWrite",
+        "AskUserQuestion",
+        "Skill",
+        "mcp__memory-server__*",
+        "mcp__agent-mcp__*",
+        "mcp__search__*"
+      ],
+      "toolMap": {
+        "memory-server": "memory-server",
+        "agent-mcp": "agent-mcp",
+        "search": "agent_browser_search_mcp_source"
+      }
+    },
+    "opencode": {
+      "model": "deepseek/deepseek-flash",
+      "mode": "all",
+      "temperature": 0.15
+    }
   },
   "install": {
     "type": "agent",
     "hosts": [
       "claude",
       "opencode"
-    ],
-    "source": "file:///Users/nix/.config/opencode/agents/performance.md"
-  },
-  "requires": {
-    "tool_calling": true
+    ]
   }
 }

@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.2
+
+- refactor: cross-platform IR — move agent config to extension.json agent/render blocks, strip frontmatter from .md
+
 ## 0.1.1
 
 - Pin the opencode model to the live provider id `deepseek/deepseek-flash` (the retired V4
