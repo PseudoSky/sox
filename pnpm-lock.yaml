@@ -134,6 +134,8 @@ importers:
 
   extensions/agents/architect: {}
 
+  extensions/agents/backlog-operator: {}
+
   extensions/agents/debug: {}
 
   extensions/agents/dispatcher: {}

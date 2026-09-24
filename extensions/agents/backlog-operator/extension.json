@@ -1,0 +1,37 @@
+{
+  "$schema": "https://your-registry/schemas/extension/v2.json",
+  "id": "backlog-operator",
+  "version": "0.1.0",
+  "type": "agent",
+  "title": "backlog-operator",
+  "description": "Cheap fixed-playbook operator for the backlog graph, dispatched by dispatcher (or any agent) so backlog traffic stays out of the caller's context. Supports exactly eleven verbs — scan-related, dedupe, file, enrich, transition, claim, release, resolve, relate, batch, report — each with preconditions, a read-back check, and an ESCALATE path. Mechanics come from the preloaded backlog skill, never from memory. Anything outside the verb list, or any write whose read-back does not match, returns ESCALATE rather than improvising. Never deletes, never edits BACKLOG.md, never touches plan fields.",
+  "compatibility": {
+    "host": ">=1.0.0 <2.0.0"
+  },
+  "license": "MIT",
+  "author": "sox-ecosystem",
+  "keywords": [
+    "backlog",
+    "operator",
+    "graph",
+    "fixed-playbook"
+  ],
+  "runtime": "declarative",
+  "entrypoint": "backlog-operator.md",
+  "invocation": {
+    "protocol": "function-export",
+    "handler": "run",
+    "description": "Declarative agent — host reads the .md definition file directly."
+  },
+  "install": {
+    "type": "agent",
+    "hosts": [
+      "claude",
+      "opencode"
+    ],
+    "source": "file:///Users/nix/dev/ai/sox-ecosystem/extensions/agents/backlog-operator/backlog-operator.md"
+  },
+  "requires": {
+    "tool_calling": true
+  }
+}
