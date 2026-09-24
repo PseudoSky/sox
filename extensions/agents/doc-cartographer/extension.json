@@ -61,7 +61,7 @@
   "render": {
     "claude": {
       "model": "haiku",
-      "version": "v0.1.3",
+      "version": "v0.1.2",
       "tools": [
         "Read",
         "Edit",
