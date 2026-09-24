@@ -92,6 +92,10 @@ import {
   // other and from host-runtime's two, so a tunable reached some spawn paths
   // and not others — silently.
   scrubEnvReported,
+  // BL-review(leafR): --backend-only port refusal must read the on-disk
+  // unit's REAL argv (like `shimIsUnit`), not config — see cmdServiceRestart.
+  extractUnitArgv,
+  isFrontShimArgv,
   type DataScope,
   type OsSupervisor,
   type OsUnitPlatform,
@@ -2493,14 +2497,18 @@ function mcpServerIsProxyMode(extId: string, scope: string, root: string): boole
  * to unload or reload. See proxy-backend-front-shim.ts for the full predicate
  * and why it is deliberately distinct from the `cmdOsUnit` execArgs branch's
  * render-time predicate.
- * No separate reap is needed for the backend's embed-host child: it is the
- * SHARED fastembed host (sharedFastembedProcess.ts), spawned detached:false
- * (same process group as its owning backend) and ref-counted across every
- * client that shares it — it is not restarted by this function at all. It
- * self-reaps via a debounced idle timer after its last client disconnects,
- * and separately installs its own `SIGTERM` handler (embedHostMain.ts) to run
+ * No separate reap is needed for the backend's embed-host child: by default
+ * it is the DETACHED, machine-wide SHARED fastembed funnel host (see
+ * funnelClient.ts), ref-counted across every client that shares it — the
+ * fresh backend re-ensured above simply reuses the already-running host (or
+ * causes one to be spawned if none is live) rather than owning its lifecycle;
+ * it is not restarted by this function at all. That shared host self-reaps
+ * via a debounced idle timer after its last client disconnects, and
+ * separately installs its own `SIGTERM` handler (embedHostMain.ts) to run
  * that same graceful teardown when signalled directly, rather than relying on
- * an unhandled-signal default kill.
+ * an unhandled-signal default kill. (The host's OWN ONNX worker child, spawned
+ * `detached:false` in sharedFastembedProcess.ts, lives in the host's process
+ * group, not the backend's, and is torn down by the host itself.)
  * Returns 'backend-restarted'.
  */
 async function restartProxyBackend(
@@ -5616,11 +5624,28 @@ async function cmdServiceRestart(
       if (proxyRefusal.stderr) process.stderr.write(proxyRefusal.stderr);
       process.exit(proxyRefusal.exitCode);
     }
+    // BL-review(leafR): read the on-disk unit's REAL argv, exactly like
+    // `shimIsUnit` (proxy-backend-front-shim.ts) — config (SOX_CONFIG_PORT)
+    // can disagree with what was actually rendered (unit enabled before a
+    // port was configured), which previously let a stale unit pass this
+    // refusal and then wait out the full --wait-ms only to fail downstream.
+    let unitIsFrontShim = false;
+    try {
+      const unitText = fsM.readFileSync(unitPath, 'utf8');
+      const unitArgv = extractUnitArgv(unitText, platform.kind);
+      unitIsFrontShim = isFrontShimArgv(unitArgv, extId);
+    } catch (e) {
+      process.stderr.write(
+        `${CLI} service restart: warning — failed to read unit argv at ${unitPath} (${(e as Error).message}); ` +
+        `treating as NOT the front-shim (fail-safe)\n`,
+      );
+      unitIsFrontShim = false;
+    }
     const portRefusal = checkBackendOnlyPortRefusal({
       cli: CLI,
       extId,
       scope,
-      portConfigured: Boolean(ctx.spec.env['SOX_CONFIG_PORT']),
+      portConfigured: unitIsFrontShim,
     });
     if (portRefusal) {
       if (portRefusal.stderr) process.stderr.write(portRefusal.stderr);

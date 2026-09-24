@@ -36,10 +36,19 @@ export function checkBackendOnlyProxyModeRefusal(opts: {
 }
 
 /**
- * BL-156 refusal: proxy mode with no `SOX_CONFIG_PORT` means the os-unit
- * runs the bare backend entrypoint directly — there is no port-listening
- * front-shim for `--backend-only` to leave alive. Refuse early instead of
- * waiting the full `--wait-ms` for an outcome already known up front.
+ * BL-156 refusal: if the on-disk os-unit's REAL argv does not run the
+ * port-listening front-shim (`soxe serve <id> --port <port>`), the unit
+ * runs the bare backend entrypoint directly — there is no front-shim for
+ * `--backend-only` to leave alive. Refuse early instead of waiting the full
+ * `--wait-ms` for an outcome already known up front.
+ *
+ * `portConfigured` here is really "does the on-disk unit's argv resolve to
+ * the front-shim" (`isFrontShimArgv`, same predicate as `shimIsUnit` in
+ * proxy-backend-front-shim.ts) — NOT `Boolean(SOX_CONFIG_PORT)`. Config can
+ * disagree with what was actually rendered (e.g. the unit was enabled
+ * before a port was configured), so the caller (`cmdServiceRestart`,
+ * main.ts) must derive this from `extractUnitArgv`/`isFrontShimArgv`
+ * against the unit file, not from config.
  */
 export function checkBackendOnlyPortRefusal(opts: {
   cli: string;
