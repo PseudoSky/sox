@@ -141,6 +141,7 @@ import {
   verifyIntegrity,
 } from '@adhd/sox-install-engine';
 import { registerBundleMember, resolveBundleDir } from './bundle-init.js';
+import { resolveGraceMs } from './grace-ms.js';
 import { assertWithinBase, PathEscapeError } from './path-safety.js';
 import { dedupeRestartRows, type RestartIdentity } from './restart-dedup.js';
 import {
@@ -149,7 +150,6 @@ import {
   waitForServePortSignal,
 } from './serve-shutdown.js';
 import { verifyRunningArtifact } from './verify-artifact.js';
-import { resolveGraceMs } from './grace-ms.js';
 import { initTelemetry, log, resolveProcessRole, type InitTelemetryOptions } from '@adhd/sox-telemetry';
 // @adhd/sox-host-registry is also lazy-required via install-engine; import it lazily here too
 // to avoid the NX "static import of lazy-loaded library" lint error.
@@ -9453,6 +9453,10 @@ Flags:
     return true;
   })();
 
+  // BL 5b2fc7a2 / docs/spec/service-lifecycle.md `[contract:signal]`.
+  // Compute grace once before the branching — same for both log-tee and --no-log paths.
+  const serveGraceMs = resolveGraceMs(flags['grace-ms'], process.env['SOX_STOP_GRACE_MS']) ?? 5000;
+
   if (!wantLog) {
     // Opt-out path: stdio is fully inherited (no tee) — MCP server takes over
     // stdin/stdout directly with no intermediary. Previously this used a
@@ -9470,10 +9474,8 @@ Flags:
       cwd: extDir2,
     });
 
-    // BL 5b2fc7a2 / docs/spec/service-lifecycle.md `[contract:signal]`.
-    const serveGraceMsNoLog = resolveGraceMs(flags['grace-ms'], process.env['SOX_STOP_GRACE_MS']) ?? 5000;
     const signalHandle = installServeChildSignalHandling(child, {
-      graceMs: serveGraceMsNoLog,
+      graceMs: serveGraceMs,
       log: (m) => process.stderr.write(`[soxe serve] ${m}\n`),
     });
 
@@ -9528,7 +9530,6 @@ Flags:
   // Shared with the `--no-log`/opt-out branch above via
   // `installServeChildSignalHandling` (apps/sox/src/serve-shutdown.ts) so the
   // forward + exit-time-safety-net wiring exists in exactly one place.
-  const serveGraceMs = resolveGraceMs(flags['grace-ms'], process.env['SOX_STOP_GRACE_MS']) ?? 5000;
   const signalHandle = installServeChildSignalHandling(child, {
     graceMs: serveGraceMs,
     log: (m) => process.stderr.write(`[soxe serve] ${m}\n`),

@@ -80,6 +80,22 @@ afterEach(async () => {
   serveProc = undefined;
   if (tmpRoot) {
     try {
+      // Also clean up the grandchild if the fixture wrote its pid file.
+      const pidFile = path.join(tmpRoot, 'child.pid');
+      if (fs.existsSync(pidFile)) {
+        const grandchildPid = Number(fs.readFileSync(pidFile, 'utf8').trim());
+        if (Number.isInteger(grandchildPid) && grandchildPid > 0) {
+          try {
+            process.kill(grandchildPid, 'SIGKILL');
+          } catch (e) {
+            const err = e as NodeJS.ErrnoException;
+            // ESRCH: pid does not exist, which is fine (process already exited).
+            if (err.code !== 'ESRCH') {
+              process.stderr.write(`[test cleanup] failed to SIGKILL grandchild pid ${grandchildPid}: ${err.message}\n`);
+            }
+          }
+        }
+      }
       fs.rmSync(tmpRoot, { recursive: true, force: true });
     } catch (e) {
       process.stderr.write(`[test cleanup] failed to remove tmpRoot ${tmpRoot}: ${(e as Error).message}\n`);
