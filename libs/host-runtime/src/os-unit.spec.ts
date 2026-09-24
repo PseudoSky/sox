@@ -1282,8 +1282,10 @@ describe('restartAndVerify — kickstart:false (--backend-only)', () => {
 
     let findCalls = 0;
     let seenReapExcludePids: number[] | undefined;
+    const seenFindExcludePids: (number[] | undefined)[] = [];
     const findMatches = (_tok: string, o: { excludePids?: number[] }): RestartMatch[] => {
       findCalls += 1;
+      seenFindExcludePids.push(o.excludePids);
       const excl = new Set(o.excludePids ?? []);
       const raw = findCalls === 1 ? [MAIN_PID, 200] : [MAIN_PID, 300];
       return raw.filter((pid) => !excl.has(pid)).map((pid) => ({ pid }));
@@ -1321,6 +1323,15 @@ describe('restartAndVerify — kickstart:false (--backend-only)', () => {
     expect(result.before).not.toContain(MAIN_PID);
     expect(result.after).not.toContain(MAIN_PID);
     expect(seenReapExcludePids).toContain(MAIN_PID);
+    // The signal that actually matters: every findMatches call (before-snapshot
+    // AND the post-restart poll) was given MAIN_PID in its exclude set, not just
+    // the reap call — otherwise `not.toContain(MAIN_PID)` above would hold by
+    // construction (the stub itself filters excludePids out of its raw list)
+    // without restartAndVerify ever having computed/passed the exclude set.
+    expect(findCalls).toBeGreaterThanOrEqual(2);
+    for (const excl of seenFindExcludePids) {
+      expect(excl).toContain(MAIN_PID);
+    }
   });
 });
 

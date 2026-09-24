@@ -1709,10 +1709,20 @@ export interface RestartAndVerifyOptions {
   /**
    * When false, skip `platform.kickstart` entirely — restart only the backend
    * (reap + rotation-verify), never the front-shim/unit itself. The unit's own
-   * process is added to `excludePids` via `platform.mainPid` so it is never
-   * reaped alongside the backend. Default true (kickstart the unit as before).
+   * process is added to `excludePids` so it is never reaped alongside the
+   * backend. By default this is re-queried via `platform.mainPid` at call
+   * time — pass `mainPid` explicitly (the caller's already-read pid) to avoid
+   * a second, possibly-stale query if the caller already has one on hand.
+   * Default true (kickstart the unit as before).
    */
   kickstart?: boolean;
+  /**
+   * Caller-supplied main/shim pid to exclude from the reap when
+   * `kickstart:false`, instead of re-querying `platform.mainPid` internally.
+   * Avoids a TOCTOU window between a caller's own pre-restart pid read and
+   * this function's exclude-set computation.
+   */
+  mainPid?: number;
   /** Injectable: find live pids matching `token`. Defaults to `findOrphansByIdentity`. */
   findMatches?: (token: string, opts: { excludePids?: number[] }) => RestartMatch[];
   /** Injectable: reap survivors matching `token`. Defaults to `reapByIdentity`. */
@@ -1778,7 +1788,7 @@ export async function restartAndVerify(opts: RestartAndVerifyOptions): Promise<R
   const doKickstart = opts.kickstart ?? true;
   const excludePids = doKickstart
     ? opts.excludePids
-    : [...(opts.excludePids ?? []), opts.platform.mainPid(opts.label, exec)].filter(
+    : [...(opts.excludePids ?? []), opts.mainPid ?? opts.platform.mainPid(opts.label, exec)].filter(
         (p): p is number => p !== undefined,
       );
   const excludeOpt = excludePids !== undefined ? { excludePids } : {};

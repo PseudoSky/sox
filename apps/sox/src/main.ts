@@ -144,6 +144,11 @@ import { registerBundleMember, resolveBundleDir } from './bundle-init.js';
 import { resolveGraceMs } from './grace-ms.js';
 import { assertWithinBase, PathEscapeError } from './path-safety.js';
 import { unloadOsUnitUnlessFrontShim } from './proxy-backend-front-shim.js';
+import {
+  checkBackendOnlyProxyModeRefusal,
+  checkBackendOnlyPortRefusal,
+  evaluateBackendOnlyOutcome,
+} from './backend-only-restart.js';
 import { dedupeRestartRows, type RestartIdentity } from './restart-dedup.js';
 import {
   exitCodeForListenOutcome,
@@ -5601,24 +5606,26 @@ async function cmdServiceRestart(
     process.exit(1);
   }
 
-  if (backendOnly && !mcpServerIsProxyMode(extId, scope, root)) {
-    process.stderr.write(
-      `${CLI} service restart: --backend-only refused — '${extId}' is not served in proxy mode ` +
-      `(§9.5); there is no independent backend to restart without the shim. Run without ` +
-      `--backend-only, or see docs/spec/service-lifecycle.md §9.5.\n`,
-    );
-    process.exit(1);
-  }
-
-  if (backendOnly && !ctx.spec.env['SOX_CONFIG_PORT']) {
-    process.stderr.write(
-      `${CLI} service restart: --backend-only refused — '${extId}' has no SOX_CONFIG_PORT ` +
-      `configured, so its os-unit runs the bare backend entrypoint directly (BL-156), not the ` +
-      `port-listening front-shim (§9.5) --backend-only exists to leave alive. Configure a port ` +
-      `and run \`${CLI} service enable ${extId} --scope ${scope}\` first, or restart without ` +
-      `--backend-only.\n`,
-    );
-    process.exit(1);
+  if (backendOnly) {
+    const proxyRefusal = checkBackendOnlyProxyModeRefusal({
+      cli: CLI,
+      extId,
+      isProxyMode: mcpServerIsProxyMode(extId, scope, root),
+    });
+    if (proxyRefusal) {
+      if (proxyRefusal.stderr) process.stderr.write(proxyRefusal.stderr);
+      process.exit(proxyRefusal.exitCode);
+    }
+    const portRefusal = checkBackendOnlyPortRefusal({
+      cli: CLI,
+      extId,
+      scope,
+      portConfigured: Boolean(ctx.spec.env['SOX_CONFIG_PORT']),
+    });
+    if (portRefusal) {
+      if (portRefusal.stderr) process.stderr.write(portRefusal.stderr);
+      process.exit(portRefusal.exitCode);
+    }
   }
 
   const waitMsRaw = flags['wait-ms'] ?? process.env['SOX_SERVICE_RESTART_WAIT_MS'];
@@ -5647,30 +5654,21 @@ async function cmdServiceRestart(
       waitMs,
       kickstart: false,
       excludePids: [process.pid],
+      ...(beforeMainPid !== undefined ? { mainPid: beforeMainPid } : {}),
       log: (m: string) => process.stdout.write(`  ${m}\n`),
     });
     const afterMainPid = platform.mainPid(label, realOsExec);
     process.stdout.write(`  after:  main=${afterMainPid ?? '(none)'}\n`);
-    if (afterMainPid !== beforeMainPid) {
-      process.stderr.write(
-        `${CLI} service restart: FAILED — --backend-only rotated the shim pid ` +
-        `(${beforeMainPid ?? '(none)'} -> ${afterMainPid ?? '(none)'}); the shim must never change ` +
-        `under --backend-only. See docs/spec/service-lifecycle.md §9.4a/§9.5.\n`,
-      );
-      process.exit(1);
-    }
-    if (!result.ok) {
-      process.stderr.write(
-        `${CLI} service restart: FAILED — ${result.reason ?? 'backend deploy could not be verified'}. ` +
-        `See docs/spec/service-lifecycle.md §9.4a/§9.5.\n`,
-      );
-      process.exit(1);
-    }
-    process.stdout.write(
-      `${CLI} service restart: '${label}' backend-only deploy — pid(s) rotated ` +
-      `([${result.before.join(', ') || '(none)'}] -> [${result.after.join(', ')}])\n`,
-    );
-    process.exit(0);
+    const outcome = evaluateBackendOnlyOutcome({
+      cli: CLI,
+      label,
+      beforeMainPid,
+      afterMainPid,
+      result,
+    });
+    if (outcome.stdout) process.stdout.write(outcome.stdout);
+    if (outcome.stderr) process.stderr.write(outcome.stderr);
+    process.exit(outcome.exitCode);
   }
 
   // [inv:deploy-verified] (BL-372, §9.4a) — kickstart, reap any survivor by
