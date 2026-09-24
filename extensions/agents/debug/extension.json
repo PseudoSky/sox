@@ -1,10 +1,10 @@
 {
   "$schema": "https://your-registry/schemas/extension/v2.json",
   "id": "debug",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "type": "agent",
   "title": "debug",
-  "description": "Use this when you need a senior debugging specialist (deepseek-flash) to diagnose complex software issues, analyze system behavior, and identify root causes from error logs and stack traces. Delegates broad discovery to `researcher` and uses GitNexus-first root-cause tracing instead of blind grepping. Differentiate from `review`: this agent chases a specific reported failure to its root cause; `review` audits code that isn't (yet) known to be broken.",
+  "description": "Use this when you need a senior debugging specialist to diagnose complex software issues, analyze system behavior, and identify root causes from error logs and stack traces. Delegates broad discovery to `researcher` and uses GitNexus-first root-cause tracing instead of blind grepping. Differentiate from `review`: this agent chases a specific reported failure to its root cause; `review` audits code that isn't (yet) known to be broken.",
   "compatibility": {
     "host": ">=1.0.0 <2.0.0"
   },
@@ -20,15 +20,79 @@
   "invocation": {
     "protocol": "function-export",
     "handler": "run",
-    "description": "Declarative agent — host reads the .md definition file directly."
+    "description": "Declarative agent — host reads the prose body and renders the host header from agent/render at install time."
+  },
+  "agent": {
+    "name": "debug",
+    "description": "Senior debugging specialist. Diagnoses complex software issues, analyzes system behavior, and identifies root causes from error logs and stack traces. Delegates broad discovery to `researcher` and uses GitNexus-first root-cause tracing instead of blind grepping.",
+    "model": "sonnet",
+    "mode": "all",
+    "temperature": 0.1,
+    "tools": [
+      "read",
+      "edit",
+      "glob",
+      "grep",
+      "bash",
+      "webfetch",
+      "task",
+      "todowrite",
+      "question",
+      "skill"
+    ],
+    "permission": {
+      "read": "allow",
+      "edit": "allow",
+      "glob": "allow",
+      "grep": "allow",
+      "bash": {
+        "*": "allow",
+        "npx nx *": "allow",
+        "npx gitnexus *": "allow",
+        "git status*": "allow",
+        "git diff*": "allow",
+        "git log*": "allow",
+        "git stash*": "deny",
+        "git add -A*": "deny",
+        "git add .*": "deny",
+        "git add --all*": "deny",
+        "git reset --hard*": "deny",
+        "git push --force*": "deny",
+        "git push *--no-verify*": "deny",
+        "git clean *-f*": "deny",
+        "rm -rf *": "deny"
+      },
+      "webfetch": "allow",
+      "websearch": "deny",
+      "task": {
+        "*": "deny",
+        "researcher": "allow"
+      },
+      "todowrite": "allow",
+      "question": "allow",
+      "skill": "allow",
+      "memory_*": "allow",
+      "gitnexus_*": "allow",
+      "mcp__backlog__*": "allow"
+    }
+  },
+  "render": {
+    "claude": {
+      "model": "sonnet",
+      "version": "v0.1.2"
+    },
+    "opencode": {
+      "model": "deepseek/deepseek-flash",
+      "mode": "all",
+      "temperature": 0.1
+    }
   },
   "install": {
     "type": "agent",
     "hosts": [
       "claude",
       "opencode"
-    ],
-    "source": "file:///Users/nix/.config/opencode/agents/debug.md"
+    ]
   },
   "requires": {
     "tool_calling": true
