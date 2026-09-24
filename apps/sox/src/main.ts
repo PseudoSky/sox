@@ -148,6 +148,7 @@ import { registerBundleMember, resolveBundleDir } from './bundle-init.js';
 import { resolveGraceMs } from './grace-ms.js';
 import { assertWithinBase, PathEscapeError } from './path-safety.js';
 import { unloadOsUnitUnlessFrontShim } from './proxy-backend-front-shim.js';
+import { determineShimIsUnit, reEnableAfterRestartGate } from './restart-proxy-backend-gate.js';
 import {
   checkBackendOnlyProxyModeRefusal,
   checkBackendOnlyPortRefusal,
@@ -2552,17 +2553,18 @@ async function restartProxyBackend(
   // that module's docblock for why this is a different question from the
   // `cmdOsUnit` execArgs branch's render-time predicate) so the re-enable gate
   // below stays in lockstep.
-  const { shimIsUnit } = unloadOsUnitUnlessFrontShim({
+  const { shimIsUnit } = determineShimIsUnit({
     extId,
     platform: getOsUnitPlatform(detectOsSupervisor()),
     label: osUnitLabel(scope, extId),
+    log,
     unload: () =>
       unloadOwnedOsUnitsBeforeReap({
         root,
         onlyIds: [extId],
         log: (m) => log(`[unload-then-reap] ${m}`),
       }),
-    log: (m) => log(`${m} (${extId})`),
+    deps: { unloadOsUnitUnlessFrontShim },
   });
 
   // Find + VERIFIED-STOP (await — the kill MUST complete before we re-ensure, or
@@ -2644,9 +2646,10 @@ async function restartProxyBackend(
   // if the unit did not come back loaded.
   // This guard applies only when shimIsUnit is false — when the os-unit is the
   // front-shim there was no unload above, so there is nothing to re-enable here.
-  let reenable: ReturnType<typeof reEnableOwnedOsUnit> | undefined;
-  if (!shimIsUnit) {
-    reenable = reEnableOwnedOsUnit(extId, scope, root, log);
+  const reenable = reEnableAfterRestartGate(shimIsUnit, extId, scope, root, log, {
+    reEnableOwnedOsUnit,
+  });
+  if (reenable !== undefined) {
     if (reenable.owned && !reenable.verifiedLoaded) {
       return {
         disposition: 'backend-restarted-unsupervised',
