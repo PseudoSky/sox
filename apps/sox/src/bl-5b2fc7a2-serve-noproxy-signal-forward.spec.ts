@@ -190,6 +190,60 @@ describe('BL 5b2fc7a2 — cmdServe forwards the initiating signal to its no-prox
   );
 });
 
+describe('BL 5b2fc7a2 — cmdServe forwards the initiating signal on the --no-log/SOX_SERVE_LOG=0 branch too', () => {
+  it(
+    'SIGTERM on the soxe-serve pid reaps the --no-log grandchild within the grace period',
+    async () => {
+      // This exercises the OTHER no-proxy branch — `--no-log` (equivalently
+      // `SOX_SERVE_LOG=0`) — which previously ran the grandchild via a
+      // blocking `execFileSync(..., {stdio:'inherit'})` with no signal
+      // forwarding of its own: identical bug to the log-tee branch above,
+      // on the opt-out path.
+      const fixture = makeFixtureWorkspace();
+      tmpRoot = fixture.root;
+
+      const proc = spawn(
+        process.execPath,
+        [SOXE_BIN, 'serve', fixture.extId, '--root', fixture.root, '--no-proxy', '--no-log', '--grace-ms', '3000'],
+        {
+          cwd: REPO_ROOT,
+          env: { ...process.env },
+          stdio: ['ignore', 'pipe', 'pipe'],
+        },
+      );
+      serveProc = proc;
+      const servePid = proc.pid;
+      expect(servePid).toBeDefined();
+
+      let stderrBuf = '';
+      proc.stderr?.on('data', (c: Buffer) => {
+        stderrBuf += c.toString();
+      });
+      let stdoutBuf = '';
+      proc.stdout?.on('data', (c: Buffer) => {
+        stdoutBuf += c.toString();
+      });
+
+      const readyOk = await waitFor(() => fs.existsSync(fixture.readyFile), 15_000, 100);
+      expect(readyOk, `fixture never became ready.\nstderr:\n${stderrBuf}\nstdout:\n${stdoutBuf}`).toBe(true);
+
+      const grandchildPid = Number(fs.readFileSync(fixture.pidFile, 'utf8').trim());
+      expect(Number.isInteger(grandchildPid) && grandchildPid > 0).toBe(true);
+      expect(pidAlive(grandchildPid)).toBe(true);
+
+      process.kill(servePid as number, 'SIGTERM');
+
+      const grandchildGone = await waitFor(() => !pidAlive(grandchildPid), 8_000, 100);
+      expect(
+        grandchildGone,
+        `--no-log grandchild pid ${grandchildPid} is still alive ${8_000}ms after SIGTERM-ing soxe serve pid ` +
+          `${servePid}.\nstderr:\n${stderrBuf}\nstdout:\n${stdoutBuf}`,
+      ).toBe(true);
+    },
+    20_000,
+  );
+});
+
 describe('cmdServe --grace-ms 0 means immediate SIGKILL', () => {
   it(
     'means immediate SIGKILL escalation, not a silent fallback to the 5000ms default',

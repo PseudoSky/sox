@@ -144,8 +144,8 @@ import { registerBundleMember, resolveBundleDir } from './bundle-init.js';
 import { assertWithinBase, PathEscapeError } from './path-safety.js';
 import { dedupeRestartRows, type RestartIdentity } from './restart-dedup.js';
 import {
-  createServeChildSignalForwarder,
   exitCodeForListenOutcome,
+  installServeChildSignalHandling,
   waitForServePortSignal,
 } from './serve-shutdown.js';
 import { verifyRunningArtifact } from './verify-artifact.js';
@@ -9454,19 +9454,39 @@ Flags:
   })();
 
   if (!wantLog) {
-    // Opt-out path: replace this process (stdio inherited) — MCP server takes over
-    // stdin/stdout directly with no intermediary.
-    const { execFileSync } = require('node:child_process') as typeof import('node:child_process');
-    try {
-      execFileSync(process.execPath, ['--enable-source-maps', entrypointPath2], {
-        stdio: 'inherit',
-        env: serveEnv,
-        cwd: extDir2,
-      });
-    } catch (e) {
-      const code = (e as NodeJS.ErrnoException & { status?: number }).status ?? 1;
-      process.exit(code);
-    }
+    // Opt-out path: stdio is fully inherited (no tee) — MCP server takes over
+    // stdin/stdout directly with no intermediary. Previously this used a
+    // BLOCKING `execFileSync(..., {stdio:'inherit'})`, which — like the
+    // log-tee branch below before its own fix — installed no signal handler
+    // of its own: a SIGTERM/SIGHUP/SIGINT to `soxe serve --no-log` orphaned
+    // the grandchild exactly as BL 5b2fc7a2 describes for the log-tee path.
+    // `spawn` (not `execFileSync`) lets this process stay alive to forward
+    // the signal via the shared `installServeChildSignalHandling` helper —
+    // see the log-tee branch below, which shares this wiring.
+    const { spawn } = require('node:child_process') as typeof import('node:child_process');
+    const child = spawn(process.execPath, ['--enable-source-maps', entrypointPath2], {
+      stdio: 'inherit',
+      env: serveEnv,
+      cwd: extDir2,
+    });
+
+    // BL 5b2fc7a2 / docs/spec/service-lifecycle.md `[contract:signal]`.
+    const serveGraceMsNoLog = resolveGraceMs(flags['grace-ms'], process.env['SOX_STOP_GRACE_MS']) ?? 5000;
+    const signalHandle = installServeChildSignalHandling(child, {
+      graceMs: serveGraceMsNoLog,
+      log: (m) => process.stderr.write(`[soxe serve] ${m}\n`),
+    });
+
+    child.on('close', (code: number | null) => {
+      signalHandle.dispose();
+      process.exit(code ?? 0);
+    });
+
+    child.on('error', (err: Error) => {
+      signalHandle.dispose();
+      process.stderr.write(`[soxe serve] spawn error: ${err.message}\n`);
+      process.exit(1);
+    });
     return;
   }
 
@@ -9505,53 +9525,24 @@ Flags:
   // `killAndVerify`, `libs/host-runtime/src/reaper.ts`). Precedence for the
   // grace window matches the rest of the CLI: --grace-ms > SOX_STOP_GRACE_MS
   // > 5000ms default (`apps/sox/src/main.ts` `cmdService`'s resolver).
+  // Shared with the `--no-log`/opt-out branch above via
+  // `installServeChildSignalHandling` (apps/sox/src/serve-shutdown.ts) so the
+  // forward + exit-time-safety-net wiring exists in exactly one place.
   const serveGraceMs = resolveGraceMs(flags['grace-ms'], process.env['SOX_STOP_GRACE_MS']) ?? 5000;
-  const forwarder = createServeChildSignalForwarder(child, {
+  const signalHandle = installServeChildSignalHandling(child, {
     graceMs: serveGraceMs,
     log: (m) => process.stderr.write(`[soxe serve] ${m}\n`),
-  });
-  const onParentSignal = (sig: NodeJS.Signals): void => forwarder.forward(sig);
-  process.on('SIGTERM', onParentSignal);
-  process.on('SIGHUP', onParentSignal);
-  process.on('SIGINT', onParentSignal);
-  const offParentSignals = (): void => {
-    process.off('SIGTERM', onParentSignal);
-    process.off('SIGHUP', onParentSignal);
-    process.off('SIGINT', onParentSignal);
-  };
-  // Best-effort: if this process is torn down by anything that still lets the
-  // JS event loop run an 'exit' handler (uncaught exception, explicit
-  // process.exit elsewhere, normal fall-through) make sure the grandchild
-  // doesn't outlive it. A direct `kill -9` on this pid cannot be intercepted
-  // from user space on any platform — that gap is unclosable, not unhandled;
-  // the child is spawned non-detached (same process group/session as this
-  // process) so an OS-delivered group signal (Ctrl-C, terminal hangup) still
-  // reaches it directly regardless of this handler.
-  process.once('exit', () => {
-    offParentSignals();
-    forwarder.dispose();
-    if (child.pid !== undefined && child.exitCode === null && child.signalCode === null) {
-      try {
-        child.kill('SIGKILL');
-      } catch (e) {
-        process.stderr.write(
-          `[soxe serve] exit-time SIGKILL of grandchild pid ${child.pid} failed: ${(e as Error).message}\n`,
-        );
-      }
-    }
   });
 
   // Propagate exit code; close the log stream cleanly.
   child.on('close', (code: number | null) => {
-    offParentSignals();
-    forwarder.dispose();
+    signalHandle.dispose();
     lm.close();
     process.exit(code ?? 0);
   });
 
   child.on('error', (err: Error) => {
-    offParentSignals();
-    forwarder.dispose();
+    signalHandle.dispose();
     process.stderr.write(`[soxe serve] spawn error: ${err.message}\n`);
     lm.close();
     process.exit(1);

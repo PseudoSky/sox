@@ -17,6 +17,7 @@
  * close()` tears down that connection — `libs/service-proxy/src/shim.ts`).
  */
 
+import * as fs from 'node:fs';
 import type { ListenOutcome } from '@adhd/sox-listen-guard';
 
 export function waitForServePortSignal(handle: { close: () => void }): Promise<void> {
@@ -116,6 +117,11 @@ export function createServeChildSignalForwarder(
       return;
     }
     verifyTimer = setTimeout(() => verifyAfterSigkill(sig, deadline), pollMs);
+    // .unref()'d deliberately: this timer must never by itself keep the event
+    // loop alive. It relies on the live `child` ChildProcess handle (held by
+    // the caller) to keep the loop running until the grandchild actually
+    // exits — once nothing else references the process, Node is free to exit
+    // even with this timer still pending.
     verifyTimer.unref();
   };
 
@@ -145,6 +151,11 @@ export function createServeChildSignalForwarder(
         verifyAfterSigkill(sig, Date.now() + killWaitMs);
       }
     }, graceMs);
+    // .unref()'d deliberately: this timer must never by itself keep the event
+    // loop alive. It relies on the live `child` ChildProcess handle (held by
+    // the caller) to keep the loop running until the grandchild actually
+    // exits — once nothing else references the process, Node is free to exit
+    // even with this timer still pending.
     killTimer.unref();
     onExit = (): void => {
       clearTimers();
@@ -161,4 +172,78 @@ export function createServeChildSignalForwarder(
   };
 
   return { forward, dispose };
+}
+
+/**
+ * BL 5b2fc7a2: shared wiring for the two `cmdServe` no-proxy branches
+ * (log-tee default and `--no-log`/`SOX_SERVE_LOG=0` opt-out) so the
+ * SIGTERM/SIGHUP/SIGINT-forward + exit-time safety-net logic exists in one
+ * place instead of being duplicated per branch. Both branches spawn (not
+ * exec) their grandchild with stdio inherited/piped and otherwise differ only
+ * in whether stderr is teed to a log file — the signal-handling contract is
+ * identical.
+ *
+ * Installs:
+ *  - `process.on('SIGTERM'|'SIGHUP'|'SIGINT', ...)` → `forwarder.forward(sig)`.
+ *  - `process.once('exit', ...)` best-effort safety net: if this process is
+ *    torn down by anything that still lets the JS event loop run an 'exit'
+ *    handler (uncaught exception, explicit `process.exit` elsewhere, normal
+ *    fall-through) make sure the grandchild doesn't outlive it. A direct
+ *    `kill -9` on this pid cannot be intercepted from user space on any
+ *    platform — that gap is unclosable, not unhandled; the child is spawned
+ *    non-detached (same process group/session as this process) so an
+ *    OS-delivered group signal (Ctrl-C, terminal hangup) still reaches it
+ *    directly regardless of this handler.
+ *
+ * The caller MUST call the returned `dispose()` from its own child
+ * `'close'`/`'error'` handlers before `process.exit(...)` — `dispose()` is
+ * idempotent, so calling it from both the exit-time safety net and the
+ * normal close/error path is safe.
+ */
+export function installServeChildSignalHandling(
+  child: ServeChildLike,
+  opts: { graceMs: number; log: (msg: string) => void },
+): { dispose: () => void } {
+  const forwarder = createServeChildSignalForwarder(child, {
+    graceMs: opts.graceMs,
+    log: opts.log,
+  });
+  const onParentSignal = (sig: NodeJS.Signals): void => forwarder.forward(sig);
+  process.on('SIGTERM', onParentSignal);
+  process.on('SIGHUP', onParentSignal);
+  process.on('SIGINT', onParentSignal);
+  const offParentSignals = (): void => {
+    process.off('SIGTERM', onParentSignal);
+    process.off('SIGHUP', onParentSignal);
+    process.off('SIGINT', onParentSignal);
+  };
+
+  const onProcessExit = (): void => {
+    offParentSignals();
+    forwarder.dispose();
+    if (child.pid !== undefined && child.exitCode === null && child.signalCode === null) {
+      try {
+        child.kill('SIGKILL');
+      } catch (e) {
+        // 'exit' handlers cannot rely on async stream flushing — process.stderr
+        // is a normal (possibly async, pipe-backed) writable and a write queued
+        // here can be dropped when the process exits before it flushes. Use a
+        // synchronous fd write instead so the diagnostic is guaranteed to land.
+        const msg = `[soxe serve] exit-time SIGKILL of grandchild pid ${child.pid} failed: ${(e as Error).message}\n`;
+        fs.writeSync(2, msg);
+      }
+    }
+  };
+  process.once('exit', onProcessExit);
+
+  let disposed = false;
+  const dispose = (): void => {
+    if (disposed) return;
+    disposed = true;
+    offParentSignals();
+    forwarder.dispose();
+    process.off('exit', onProcessExit);
+  };
+
+  return { dispose };
 }
