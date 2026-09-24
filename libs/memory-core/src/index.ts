@@ -426,6 +426,19 @@ export type {
   CurateUnpoisonResult,
   CurateAckAlarmResult,
 } from './curate.js';
+// 503cdc2b: memory_curate backfill_invalidation_reason
+export {
+  BACKFILL_503CDC2B_OP,
+  BACKFILL_503CDC2B_VIA,
+  BACKFILL_503CDC2B_REASON,
+  BACKFILL_503CDC2B_KEYS,
+} from './backfill-invalidation-reason.js';
+export type {
+  CurateContext,
+  CurateBackfillInvalidationReasonResult,
+  CurateBackfillInvalidationReasonReverseResult,
+  BackfillInvalidationReasonError,
+} from './backfill-invalidation-reason.js';
 export { memoryGetStats, observedLastCheckpointAt } from './stats.js';
 export type { StatsResult, EmbedProvenanceStats } from './stats.js';
 

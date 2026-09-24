@@ -35,6 +35,12 @@ import type {
   CurateRestoreNeardupResult,
   CurateRestoreNeardupReverseResult,
 } from './restore-neardup.js';
+import { curateBackfillInvalidationReason } from './backfill-invalidation-reason.js';
+import type {
+  CurateBackfillInvalidationReasonResult,
+  CurateBackfillInvalidationReasonReverseResult,
+  CurateContext,
+} from './backfill-invalidation-reason.js';
 
 const ulid = monotonicFactory();
 
@@ -223,6 +229,8 @@ export type CurateResult =
   | CurateAckAlarmResult
   | CurateRestoreNeardupResult
   | CurateRestoreNeardupReverseResult
+  | CurateBackfillInvalidationReasonResult
+  | CurateBackfillInvalidationReasonReverseResult
   | { code: string; message?: string; op?: string };
 
 // ── Main dispatcher ───────────────────────────────────────────────────────────
@@ -231,6 +239,7 @@ export async function memoryCurate(
   adapter: StoreAdapter,
   args: Record<string, unknown>,
   wq?: WriteQueue,
+  ctx: CurateContext = {},
 ): Promise<CurateResult> {
   const op = args['op'] as string;
   const dryRun = args['dry_run'] === true;
@@ -287,6 +296,13 @@ export async function memoryCurate(
     // flip the contract of retag / set_topic / merge_duplicates / drop_lens.
     case 'restore_neardup':
       return await curateRestoreNeardup(adapter, args);
+
+    // 503cdc2b: same dry_run-defaults-TRUE contract as restore_neardup, for the
+    // same reason — it re-derives dry_run from `args` itself. `ctx.dbPath` is
+    // required to APPLY/REVERSE (a verified backup of that file is taken first);
+    // `ctx.backup` is a dependency-injection seam for tests.
+    case 'backfill_invalidation_reason':
+      return await curateBackfillInvalidationReason(adapter, args, ctx);
 
     default:
       return { code: 'E_UNKNOWN_OP', op };
