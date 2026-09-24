@@ -1,7 +1,7 @@
 {
   "$schema": "https://your-registry/schemas/extension/v2.json",
   "id": "doc-cartographer",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "type": "agent",
   "title": "doc-cartographer",
   "description": "Use this when you need the FACTS subagent for the documentation trio. Given a scope (a directory with a manifest), it classifies the scope type, recalls the best-in-class doc frameworks from memory, drives GitNexus to discover the REAL features (tagged shipped/roadmap/deprecated with runnable receipts), assesses the existing doc surface for junk/redundancy/gaps, records public distribution + freshness, surfaces missing verification tools, and logs three health metrics per run. Writes only to <scope>/docs/marketing/.catalog/. Never writes prose docs, never guesses. Dispatched by doc-steward.",
@@ -20,15 +20,68 @@
   "invocation": {
     "protocol": "function-export",
     "handler": "run",
-    "description": "Declarative agent — host reads the .md definition file directly."
+    "description": "Declarative agent — host reads the prose body and renders the host header from agent/render at install time."
+  },
+  "agent": {
+    "name": "doc-cartographer",
+    "description": "FACTS subagent for the documentation trio. Given a scope (a directory with a manifest), it classifies the scope type, recalls the best-in-class doc frameworks from memory, drives GitNexus to discover the REAL features (tagged shipped/roadmap/deprecated with runnable receipts), assesses the existing doc surface for junk/redundancy/gaps, records public distribution + freshness, surfaces missing verification tools, and logs three health metrics per run. Writes only to <scope>/docs/marketing/.catalog/. Never writes prose docs, never guesses. Dispatched by doc-steward.",
+    "model": "haiku",
+    "temperature": 0.1,
+    "mode": "subagent",
+    "tools": [
+      "read",
+      "edit",
+      "glob",
+      "grep",
+      "todowrite",
+      { "logical": "memory", "server": "memory-server" }
+    ],
+    "permission": {
+      "read": "allow",
+      "edit": "allow",
+      "glob": "allow",
+      "grep": "allow",
+      "webfetch": "deny",
+      "websearch": "deny",
+      "task": "deny",
+      "todowrite": "allow",
+      "question": "deny",
+      "skill": "deny",
+      "memory_*": "allow",
+      "bash": {
+        "*": "allow",
+        "rm *": "deny",
+        "git push*": "deny",
+        "git reset --hard*": "deny",
+        "git stash*": "deny"
+      }
+    }
+  },
+  "render": {
+    "claude": {
+      "model": "haiku",
+      "version": "v0.1.2",
+      "tools": [
+        "Read",
+        "Edit",
+        "Glob",
+        "Grep",
+        "Bash",
+        "mcp__memory-server__*"
+      ]
+    },
+    "opencode": {
+      "model": "deepseek/deepseek-flash",
+      "mode": "subagent",
+      "temperature": 0.1
+    }
   },
   "install": {
     "type": "agent",
     "hosts": [
       "claude",
       "opencode"
-    ],
-    "source": "file:///Users/nix/.config/opencode/agents/doc-cartographer.md"
+    ]
   },
   "requires": {
     "tool_calling": true
