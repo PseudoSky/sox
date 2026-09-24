@@ -103,18 +103,46 @@ let runCompleted = false;
 //   SOX_ECOSYSTEM_HOME  — redirects userDataRoot() → socket dir, install-registry,
 //                          supervisors, ledger, ownership (libs/host-runtime AND
 //                          libs/install-engine both honour the same var).
-//   SOX_CONFIG_DB_PATH  — redirects the singleton-key for the memory-server backend
-//                          (resolveStoreResource() in libs/host-runtime uses this as
-//                          the canonical single-writer SQLite resource). Without it
-//                          the backend's singleton key defaults to the live
-//                          ~/.memory/memory.db path, which causes the smoke-spawned
-//                          process to contest the live backend's store.
+//
+// NOT injected here: SOX_CONFIG_DB_PATH. Every resolveStoreResource() call site
+// (apps/sox/src/main.ts) is fed `buildExtConfigEnv()`'s config-cascade env, never
+// raw `process.env` — and for memory-server specifically, `soxe serve` always
+// scrubs SOX_CONFIG_* from the AMBIENT env before re-applying it from the resolved
+// config cascade (`env-policy.ts` ENV_DENY_PREFIXES; memory-server declares a
+// `permissions` block, so this scrub always fires for it). An ambient
+// SOX_CONFIG_DB_PATH in this function would therefore never reach the singleton
+// key or the served store — see the BL-635 `config set` call in testExtension()
+// below, which is the only path that actually threads db_path through.
 //
 // The live user data root (~/.adhd/sox-ecosystem) MUST remain untouched.
 // An assertion in main() verifies no sockets appeared under the real socket dir.
 
 const SMOKE_DATA_ROOT = path.join(TEST_ROOT, 'sox-data-root');
-const SMOKE_DB_PATH = path.join(TEST_ROOT, 'sox-data-root', 'memory-smoke.db');
+// BL-635 (memory-server-serve-no-proxy false green / db_path never reachable):
+// two independent gates stood between an ambient SOX_CONFIG_DB_PATH and the
+// spawned memory-server, and BOTH must be satisfied, not just one:
+//
+//   1. env-policy.ts's ENV_DENY_PREFIXES denies `SOX_CONFIG_*` from the
+//      AMBIENT environment on any policy-enforced spawn (memory-server
+//      declares a `permissions` block, so cmdServe's `soxe serve` always
+//      scrubs it — apps/sox/src/main.ts's `serveEnv = {...baseEnv2,
+//      ...configEnv2, ...}`, where baseEnv2 = scrubEnvReported()). This is
+//      BY DESIGN (SOX_CONFIG_* is host-authoritative, see env-policy.ts's
+//      module header) — the fix is to inject db_path through the resolved
+//      config CASCADE (`soxe config set`), not the ambient env; see the
+//      config-set call in testExtension() below.
+//   2. Even once SOX_CONFIG_DB_PATH threads through correctly, the
+//      extension's OWN in-process fs-permission guard
+//      (extension.json permissions.fs: read/write ["~/.memory/**"]) governs
+//      the resolved db_path too, and `~` expands via `expandTilde`/
+//      `os.homedir()` against the REAL $HOME — NOT $SOX_ECOSYSTEM_HOME. A
+//      db_path under TEST_ROOT (outside the real ~/.memory) is denied
+//      regardless of (1). Give the memory-server legs a SCRATCH $HOME
+//      (mirroring the FAKE_HOME technique memory-server's own
+//      permission-guard.spec.ts uses) so `~/.memory/**` resolves inside
+//      TEST_ROOT, and put the scratch store there.
+const MEMORY_FAKE_HOME = path.join(TEST_ROOT, 'sox-data-root', 'fake-home');
+const SMOKE_DB_PATH = path.join(MEMORY_FAKE_HOME, '.memory', 'memory-smoke.db');
 
 // Derive the real live socket dir so we can assert against it after the run.
 const REAL_SOCKET_DIR = process.env['SOX_ECOSYSTEM_HOME']
@@ -126,9 +154,8 @@ function smokeEnv() {
   return {
     ...process.env,
     NODE_NO_WARNINGS: '1',
-    // BL-173: redirect data root and db path away from the live user installation.
+    // BL-173: redirect the data root away from the live user installation.
     SOX_ECOSYSTEM_HOME: SMOKE_DATA_ROOT,
-    SOX_CONFIG_DB_PATH: SMOKE_DB_PATH,
     // BL-501: every process this harness execs (memory-server, memory-cli, ...)
     // is a synthetic spawn of the real compiled binary, not a genuine
     // production/operator invocation. Without this signal those spawns report
@@ -138,6 +165,17 @@ function smokeEnv() {
     // cross-repo incident this class of bug caused.
     SOX_TELEMETRY_HARNESS: '1',
   };
+}
+
+/**
+ * smokeEnv() plus a scratch $HOME (see MEMORY_FAKE_HOME above) — used ONLY
+ * for the memory-server legs, so `~/.memory/**` fs-permission expansion
+ * resolves inside TEST_ROOT instead of the operator's real home directory.
+ * Scoped narrowly (not folded into smokeEnv() itself) so no other
+ * extension's child processes have $HOME redirected out from under them.
+ */
+function memoryServerEnv() {
+  return { ...smokeEnv(), HOME: MEMORY_FAKE_HOME };
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
@@ -176,7 +214,7 @@ function diffSnapshots(before, after) {
 }
 
 async function runCmd(args, opts = {}) {
-  const { cwd = TEST_ROOT, timeoutMs = 120_000, testId, extId, extType, stdinInput, verify } = opts;
+  const { cwd = TEST_ROOT, timeoutMs = 120_000, testId, extId, extType, stdinInput, verify, env } = opts;
   const before = await snapshotFiles(TEST_ROOT);
   const t0 = Date.now();
   let stdout = '', stderr = '', exitCode = null, signal = null, error = null;
@@ -184,7 +222,7 @@ async function runCmd(args, opts = {}) {
   try {
     stdout = execSync(`${SOXE} ${args.join(' ')}`, {
       cwd, encoding: 'utf-8', timeout: timeoutMs,
-      env: smokeEnv(),
+      env: env || smokeEnv(),
       stdio: ['pipe', 'pipe', 'pipe'], input: stdinInput,
     });
     exitCode = 0;
@@ -431,7 +469,7 @@ async function runServeProxyAndVerify(args, opts) {
     ? ["--kill-after=5", waitSec + "s", SOXE].concat(args)
     : args;
   const child = spawn(spawnCmd, spawnArgs, {
-    cwd: cwd, env: smokeEnv(), stdio: ["pipe", "pipe", "pipe"],
+    cwd: cwd, env: opts.env || smokeEnv(), stdio: ["pipe", "pipe", "pipe"],
   });
   let stdout = "";
   let stderr = "";
@@ -586,9 +624,39 @@ function verifyDirectServe(args) {
 // memory_ping, then asserts the store-concurrency contract on the ping surface:
 // `ping.store.wal_mode === 'multiprocess-wal'` (turso default, ADR-0012), plus
 // `wal_mode_verified === true`; presence-only when STORE_ADAPTER=sqlite.
+//
+// Review item #2: the WAL-mode assertions above prove the store this process
+// opened is CONFIGURED for the right concurrency mode, but never prove it is
+// the SCRATCH store (SMOKE_DB_PATH) rather than the fake-home DEFAULT_DB_PATH
+// (`~/.memory/memory.db`, i.e. `<fake-home>/.memory/memory.db` under
+// MEMORY_FAKE_HOME) — a broken `config set db_path` thread-through would fall
+// back to that default and still report a plausible wal_mode block. Assert
+// three independent facts instead of trusting the happy path:
+//   1. `store.path` (the server's OWN resolved path, index.ts's
+//      `storeBlock.path = resolvedPath`) equals SMOKE_DB_PATH exactly.
+//   2. The scratch store file (or a WAL/SHM/TSHM sidecar sharing its stem —
+//      WAL mode can land a write in `-wal`/`-tshm` without touching the main
+//      file) shows up as created/modified in this leg's fileChanges diff.
+//   3. The fake-home DEFAULT_DB_PATH (`<fake-home>/.memory/memory.db` —
+//      `memory-smoke.db` vs `memory.db`, deliberately distinct stems so this
+//      check can never alias) was NOT created — the one file a broken
+//      db_path thread-through would produce instead.
 function verifyMemoryServerPing(args) {
   const base = verifyDirectServe(args);
   if (!base.ok) return base;
+
+  const fileChanges = args.fileChanges || [];
+  const smokeDbRel = path.relative(TEST_ROOT, SMOKE_DB_PATH);
+  const smokeDbStem = smokeDbRel.replace(/\.db$/, '');
+  const defaultDbPath = path.join(MEMORY_FAKE_HOME, '.memory', 'memory.db');
+  const defaultDbRel = path.relative(TEST_ROOT, defaultDbPath);
+
+  const scratchStoreTouched = fileChanges.some(
+    (c) => c.path === smokeDbRel || c.path.startsWith(smokeDbStem + '-') || c.path.startsWith(smokeDbStem + '.'),
+  );
+  const defaultStoreCreated = fileChanges.some(
+    (c) => c.op === 'created' && (c.path === defaultDbRel || c.path.startsWith(defaultDbRel + '-') || c.path.startsWith(defaultDbRel + '.')),
+  );
 
   const lines = args.stdout.split(String.fromCharCode(10));
   for (const line of lines) {
@@ -609,6 +677,33 @@ function verifyMemoryServerPing(args) {
       if (!store || typeof store !== "object") {
         return { ok: false, verdict: "ping-no-store", detail: "memory_ping store block is null/absent: " + text.slice(0, 200) };
       }
+
+      // ── Review item #2: the store served is SMOKE_DB_PATH, not the default ──
+      if (store.path !== SMOKE_DB_PATH) {
+        return {
+          ok: false,
+          verdict: "ping-wrong-store-path",
+          detail: "store.path=" + store.path + ", expected SMOKE_DB_PATH=" + SMOKE_DB_PATH +
+            " — db_path never threaded through the resolved config cascade",
+        };
+      }
+      if (!scratchStoreTouched) {
+        return {
+          ok: false,
+          verdict: "ping-scratch-store-not-written",
+          detail: "no file under " + smokeDbStem + "(.db|-wal|-shm|-tshm) appears in this leg's fileChanges: " +
+            JSON.stringify(fileChanges.slice(0, 20)),
+        };
+      }
+      if (defaultStoreCreated) {
+        return {
+          ok: false,
+          verdict: "ping-default-store-created",
+          detail: "fake-home DEFAULT_DB_PATH (" + defaultDbRel + ") was created this leg — db_path fell back " +
+            "to the default instead of SMOKE_DB_PATH",
+        };
+      }
+
       const walMode = store.wal_mode;
       if (process.env.STORE_ADAPTER === "sqlite") {
         // Presence-only on the sqlite arm: no -tshm coordinator to verify, so
@@ -616,7 +711,7 @@ function verifyMemoryServerPing(args) {
         if (walMode === undefined || walMode === null) {
           return { ok: false, verdict: "ping-wal-mode-absent", detail: "store.wal_mode absent (STORE_ADAPTER=sqlite)" };
         }
-        return { ok: true, verdict: "verified", detail: "store.wal_mode=" + walMode + " (presence-only, STORE_ADAPTER=sqlite)" };
+        return { ok: true, verdict: "verified", detail: "store.path=" + store.path + ", store.wal_mode=" + walMode + " (presence-only, STORE_ADAPTER=sqlite)" };
       }
       if (walMode !== "multiprocess-wal") {
         return { ok: false, verdict: "ping-wrong-wal-mode", detail: "store.wal_mode=" + walMode + ", expected multiprocess-wal" };
@@ -624,10 +719,237 @@ function verifyMemoryServerPing(args) {
       if (store.wal_mode_verified !== true) {
         return { ok: false, verdict: "ping-wal-unverified", detail: "store.wal_mode_verified=" + store.wal_mode_verified + ", expected true" };
       }
-      return { ok: true, verdict: "verified", detail: "store.wal_mode=multiprocess-wal, wal_mode_verified=true" };
+      return { ok: true, verdict: "verified", detail: "store.path=" + store.path + ", store.wal_mode=multiprocess-wal, wal_mode_verified=true" };
     }
   }
   return { ok: false, verdict: "ping-no-response", detail: "no memory_ping tools/call (id:3) response observed on stdout" };
+}
+
+/**
+ * Reap `soxe serve --no-proxy`'s whole process-group tree — the grandchild
+ * memory-server process it execs (apps/sox/src/main.ts's wantLog spawn path)
+ * gets no SIGTERM forwarding, unlike the proxy shim's own SIGHUP/SIGTERM
+ * handler, so signalling only `child.pid` orphans it. `child` is spawned
+ * `detached: true` (its call site below) so `pgid === child.pid`; every
+ * non-detached descendant it forks inherits that same group.
+ *
+ * Liveness is probed with `pgrep -g <pgid>` (exit 1 / empty stdout = group
+ * gone), never `process.kill(pgid, 0)` — that probe form returned `EPERM`
+ * against a group this process's own child leads, which is not a "does it
+ * exist" answer libuv gives a consistent meaning to across platforms; pgrep
+ * reports group membership directly. The wait loops below intentionally use
+ * `setTimeout` WITHOUT `.unref()` — an unref'd timer does not keep the event
+ * loop alive, so if `soxe` (child.pid) has already exited and its streams
+ * closed, Node can drain and exit mid-teardown while this async function is
+ * still suspended on the timer, abandoning the kill sequence silently (BL-585
+ * completion sentinel then fires as a false "run did not complete", measured
+ * directly while developing this function).
+ */
+async function killProcessGroup(pgid, testId) {
+  const wait = (ms) => new Promise((r) => { setTimeout(r, ms); });
+  const groupAlive = () => {
+    try {
+      execSync(`pgrep -g ${pgid}`, { encoding: 'utf-8', stdio: ['ignore', 'pipe', 'ignore'] });
+      return true;
+    } catch (e) {
+      if (e && e.status === 1) return false; // pgrep: no matches — group is gone
+      console.error(`[smoke] WARNING: ${testId} pgrep -g ${pgid} failed: ${(e && e.message) ?? e}`);
+      return true; // unknown — assume alive so we don't stop retrying early
+    }
+  };
+  const signalGroup = (sig) => {
+    try {
+      process.kill(-pgid, sig);
+    } catch (e) {
+      // ESRCH: group already gone — expected steady state at teardown's end.
+      if (!e || e.code !== 'ESRCH') console.error(`[smoke] WARNING: ${testId} ${sig} to process group ${pgid} failed: ${(e && e.message) ?? e}`);
+    }
+  };
+
+  if (!groupAlive()) return;
+  signalGroup('SIGTERM');
+  const termDeadline = Date.now() + 5000;
+  while (Date.now() < termDeadline && groupAlive()) {
+    await wait(100);
+  }
+  if (groupAlive()) {
+    signalGroup('SIGKILL');
+    const killDeadline = Date.now() + 5000;
+    while (Date.now() < killDeadline && groupAlive()) {
+      await wait(100);
+    }
+  }
+}
+
+/**
+ * Orphan proof for the no-proxy leg (dispatch-2026-09-24-7743 item 3): list
+ * every live process whose command line OR environment mentions TEST_ROOT.
+ * `ps -axEww` prints the environment block after the command, which is how a
+ * memory-server grandchild is findable at all — its own argv is just
+ * `node --enable-source-maps <dist>/index.js`, with no TEST_ROOT in it; the
+ * TEST_ROOT signal lives in its env (SOX_ECOSYSTEM_HOME / HOME, set by
+ * memoryServerEnv()/smokeEnv()). Filtering happens in JS, not by piping
+ * through `rg`/`grep`, so the filter process's own argv can never self-match.
+ */
+function listTestRootProcesses() {
+  let raw = '';
+  try {
+    // Default execSync maxBuffer (1 MiB) is too small for `-E` (full
+    // per-process environment blocks) across a normal process table — it
+    // failed with ENOBUFS in practice, which the catch below then silently
+    // turned into an empty (and wrong) "no orphans" result. 64 MiB is far
+    // more than a real process table needs.
+    raw = execSync('ps -axEww -o pid,ppid,pgid,command', { encoding: 'utf-8', maxBuffer: 64 * 1024 * 1024 });
+  } catch (e) {
+    console.error(`[smoke] WARNING: ps -axEww failed: ${(e && e.message) ?? e}`);
+    return null; // unknown, not "zero" — callers must not read this as proof of nothing
+  }
+  return raw.split('\n').filter((line) => line.includes(TEST_ROOT));
+}
+
+// BL-635: the no-proxy memory-server leg used to send initialize + memory_write
+// + memory_ping as one static stdin blob to execSync (runCmd). On a genuinely
+// FRESH scratch store (SMOKE_DB_PATH is a new path every run) that races
+// openDb(): memory_ping's liveness check refuses to open/create a store it
+// did not itself request (by design — a liveness probe must not have the
+// side effect of creating a store) and can observe "store file does not
+// exist yet" if it runs before memory_write's own store-open lands, because
+// the two tools/call requests are dispatched concurrently, not queued
+// strictly behind one another. Fix: spawn interactively, wait for the
+// memory_write response (id:2) — which guarantees the store file now
+// exists — before writing the memory_ping request (id:3) to stdin.
+async function runMemoryServerDirectServeAndVerify(args, opts) {
+  const cwd = opts.cwd || TEST_ROOT;
+  const testId = opts.testId;
+  const extId = opts.extId;
+  const extType = opts.extType;
+  const env = opts.env || smokeEnv();
+  const timeoutMs = opts.timeoutMs || 30_000;
+  const before = await snapshotFiles(TEST_ROOT);
+  const t0 = Date.now();
+
+  // `detached: true` makes `child.pid` the leader of a NEW process group, so
+  // its non-detached grandchild (the actual memory-server process `soxe`
+  // execs) inherits that same group — see killProcessGroup() above for the
+  // teardown side of this and why the wait loops there must not use unref'd
+  // timers.
+  let spawnError = null;
+  const child = spawn(SOXE, args, { cwd: cwd, env: env, stdio: ["pipe", "pipe", "pipe"], detached: true });
+  let stdout = "";
+  let stderr = "";
+  child.stdout.on("data", function (d) { stdout += d.toString(); });
+  child.stderr.on("data", function (d) { stderr += d.toString(); });
+  // An EPIPE on a write past process exit surfaces as an async 'error' event
+  // on the stream, not a thrown exception the surrounding try/catch below can
+  // see — an unhandled one crashes the whole harness (AGENTS.md: never leave
+  // an error path untraced).
+  child.stdin.on("error", function (err) {
+    console.error(`[smoke] WARNING: ${testId} child.stdin error (likely EPIPE after early exit): ${(err && err.message) ?? err}`);
+  });
+  let exited = false;
+  let exitCode = null;
+  let signal = null;
+  child.on("exit", function (code, sig) { exited = true; exitCode = code; signal = sig; });
+  child.on("error", function (err) {
+    // AGENTS.md: never use an empty/silent catch. A spawn error (e.g. ENOENT
+    // on SOXE) must be traced AND carried into this leg's result entry
+    // instead of being swallowed as a bare `exited = true`.
+    exited = true;
+    spawnError = err;
+    console.error(`[smoke] WARNING: ${testId} child process error: ${(err && err.message) ?? err}`);
+  });
+
+  const initPayload = JSON.stringify({ jsonrpc: "2.0", id: 1, method: "initialize", params: { protocolVersion: "2024-11-05", capabilities: {}, clientInfo: { name: "smoke", version: "1" } } }) + "\n";
+  // A constant content string dedups (content_hash) against a prior leg's
+  // write to the same store family, so "the store changed" would silently
+  // fail to prove anything on a re-run that reused a stem. Keep the write
+  // unique per invocation.
+  const writeContent = `smoke-test store-init probe ${testId} ${Date.now()}`;
+  const memoryWritePayload = JSON.stringify({ jsonrpc: "2.0", id: 2, method: "tools/call", params: { name: "memory_write", arguments: { content: writeContent, project_path: TEST_ROOT } } }) + "\n";
+  const memoryPingPayload = JSON.stringify({ jsonrpc: "2.0", id: 3, method: "tools/call", params: { name: "memory_ping", arguments: {} } }) + "\n";
+
+  try {
+    child.stdin.write(initPayload + memoryWritePayload);
+  } catch (e) {
+    // Synchronous write-after-end (rare; the common EPIPE case lands on the
+    // 'error' listener above) — trace it, don't swallow it.
+    console.error(`[smoke] WARNING: ${testId} stdin write (init+write) threw: ${(e && e.message) ?? e}`);
+  }
+
+  // These wait loops intentionally do NOT unref their timers — see the
+  // killProcessGroup() doc comment for why an unref'd timer here can let
+  // Node drain and exit mid-await once `soxe`'s own streams close.
+  const writeDeadline = Date.now() + timeoutMs;
+  while (Date.now() < writeDeadline && !exited && !/"id":\s*2[,}]/.test(stdout)) {
+    await new Promise(function (r) { setTimeout(r, 100); });
+  }
+  if (!exited) {
+    try {
+      child.stdin.write(memoryPingPayload);
+    } catch (e) {
+      console.error(`[smoke] WARNING: ${testId} stdin write (ping) threw (process may have exited between the check and this write): ${(e && e.message) ?? e}`);
+    }
+  }
+
+  const pingDeadline = Date.now() + 10_000;
+  while (Date.now() < pingDeadline && !exited && !/"id":\s*3[,}]/.test(stdout)) {
+    await new Promise(function (r) { setTimeout(r, 100); });
+  }
+
+  // Orphan proof (dispatch-2026-09-24-7743 item 3), captured around the same
+  // teardown this leg exercises live: snapshot every TEST_ROOT-tagged process
+  // just before signalling, and again after. A non-empty "before" is what
+  // makes an empty "after" mean something — see listTestRootProcesses().
+  const testRootProcsBefore = listTestRootProcesses();
+
+  // Teardown: always run the group-kill sequence, not just `if (!exited)` —
+  // `soxe` itself can exit (stdin.end() closing its stdio) while the
+  // grandchild memory-server process it spawned keeps running, which is
+  // exactly how a plain `!exited`-gated kill would orphan it.
+  try { child.stdin.end(); } catch (e) { console.error(`[smoke] WARNING: ${testId} stdin.end() threw: ${(e && e.message) ?? e}`); }
+  if (typeof child.pid === "number") {
+    await killProcessGroup(child.pid, testId);
+  }
+  const exitWaitDeadline = Date.now() + 5000;
+  while (Date.now() < exitWaitDeadline && !exited) {
+    await new Promise(function (r) { setTimeout(r, 50); });
+  }
+
+  const testRootProcsAfter = listTestRootProcesses();
+  if (testRootProcsAfter === null || testRootProcsBefore === null) {
+    console.error(`[smoke] WARNING: ${testId} orphan proof UNKNOWN — ps capture failed at least once, see the ps WARNING above`);
+  } else {
+    if (testRootProcsAfter.length > 0) {
+      console.error(`[smoke] WARNING: ${testId} TEST_ROOT-tagged process(es) survived teardown: ${JSON.stringify(testRootProcsAfter)}`);
+    }
+    console.error(`[smoke] ${testId} orphan proof — before teardown: ${testRootProcsBefore.length} TEST_ROOT process(es); after: ${testRootProcsAfter.length}`);
+  }
+
+  const after = await snapshotFiles(TEST_ROOT);
+  const fileChanges = diffSnapshots(before, after);
+
+  let result;
+  try {
+    result = verifyMemoryServerPing({ stdout: stdout, stderr: stderr, exitCode: exitCode, signal: signal, fileChanges: fileChanges });
+  } catch (verr) {
+    result = { ok: false, verdict: "verify-threw", detail: "verify() threw: " + ((verr && verr.message) || verr) };
+  }
+  const passed = result != null && result.ok === true;
+  const verdict = passed ? "verified" : ((result && result.verdict) || "unverified");
+  const verdictDetail = (result && result.detail) || "";
+
+  const entry = {
+    test_id: testId, extension_id: extId, extension_type: extType,
+    command: SOXE + " " + args.join(" ") + " (interactive write-then-ping)",
+    exit_code: exitCode, signal: signal, verdict: verdict, verdict_detail: verdictDetail,
+    stdout: (stdout || "").slice(-2000), stderr: (stderr || "").slice(-2000),
+    file_changes: (fileChanges || []).slice(0, 50), duration_ms: Date.now() - t0, passed: passed,
+    error: spawnError ? spawnError.message : null,
+    orphan_proof: { test_root_procs_before: testRootProcsBefore, test_root_procs_after: testRootProcsAfter },
+  };
+  log.push(entry);
+  passed ? summary.passed++ : summary.failed++;
+  return { stdout: stdout, stderr: stderr, exitCode: exitCode, signal: signal };
 }
 
 function verifyServiceRunning(args) {
@@ -681,13 +1003,31 @@ async function testExtension(ext) {
 
   // ── MCP serve modes ────────────────────────────────────────────
   const initPayload = JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'initialize', params: { protocolVersion: '2024-11-05', capabilities: {}, clientInfo: { name: 'smoke', version: '1' } } }) + '\n';
-  // BUG-MEMORYCORE-MULTIPROCESS-WAL-NOT-OPTED-IN-001: for the memory-server,
-  // follow initialize with a memory_write (creates the scratch store) then a
-  // memory_ping, so the serve step can assert the store-concurrency contract on
-  // the live process's ping surface (ping.store.wal_mode). Other mcp-servers
-  // keep the bare initialize probe.
-  const memoryWritePayload = JSON.stringify({ jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name: 'memory_write', arguments: { content: 'smoke-test store-init probe', project_path: TEST_ROOT } } }) + '\n';
-  const memoryPingPayload = JSON.stringify({ jsonrpc: '2.0', id: 3, method: 'tools/call', params: { name: 'memory_ping', arguments: {} } }) + '\n';
+  // BUG-MEMORYCORE-MULTIPROCESS-WAL-NOT-OPTED-IN-001 / BL-635: for the
+  // memory-server, the serve step asserts the store-concurrency contract on
+  // the live process's ping surface (ping.store.wal_mode) — see
+  // runMemoryServerDirectServeAndVerify. Other mcp-servers keep the bare
+  // initialize probe.
+  const isMemoryServer = id === 'memory-server';
+  const memoryEnv = isMemoryServer ? memoryServerEnv() : undefined;
+
+  if (isMemoryServer) {
+    // BL-635: point db_path at the scratch store through the extension's OWN
+    // documented config key (config_schema.db_path, extension.json) rather
+    // than ambient SOX_CONFIG_DB_PATH — memory-server declares a
+    // `permissions` block, so `soxe serve` always scrubs SOX_CONFIG_* from
+    // the ambient env for it ([def:policy-env] / env-policy.ts's deny-list,
+    // by design: SOX_CONFIG_* is host-authoritative). `soxe config set`
+    // writes to the project-scope config.json that cmdServe's own
+    // buildExtConfigEnv() reads and re-applies AFTER the scrub, so the
+    // resulting SOX_CONFIG_DB_PATH survives — the same path a real deployed
+    // install takes.
+    await runCmd(
+      ['config', 'set', id, 'db_path', SMOKE_DB_PATH, '--scope', 'project', '--root', TEST_ROOT, '--no-restart'],
+      { testId: `${id}-config-set-db-path`, extId: id, extType: type, env: memoryEnv },
+    );
+  }
+
   for (const mode of modes) {
     const args = ['serve', id];
     if (mode === 'no-proxy') args.push('--no-proxy');
@@ -698,12 +1038,11 @@ async function testExtension(ext) {
       // BL-578 audit finding #2: execSync-with-no-stdin exits the shim before
       // its fire-and-forget ensure() can ever be observed -- use the async
       // spawn+poll+kill helper so the step genuinely waits for evidence.
-      await runServeProxyAndVerify(args, { testId: `${id}-serve-${mode}`, extId: id, extType: type });
+      await runServeProxyAndVerify(args, { testId: `${id}-serve-${mode}`, extId: id, extType: type, env: memoryEnv });
+    } else if (isMemoryServer) {
+      await runMemoryServerDirectServeAndVerify(args, { timeoutMs: 30_000, testId: `${id}-serve-${mode}`, extId: id, extType: type, env: memoryEnv });
     } else {
-      const isMemoryServer = id === 'memory-server';
-      const stdinInput = isMemoryServer ? initPayload + memoryWritePayload + memoryPingPayload : initPayload;
-      const verify = isMemoryServer ? verifyMemoryServerPing : verifyDirectServe;
-      await runCmd(args, { timeoutMs: 30_000, testId: `${id}-serve-${mode}`, extId: id, extType: type, stdinInput, verify });
+      await runCmd(args, { timeoutMs: 30_000, testId: `${id}-serve-${mode}`, extId: id, extType: type, stdinInput: initPayload, verify: verifyDirectServe });
     }
   }
 
@@ -854,7 +1193,7 @@ async function main() {
   // ── BL-173: create scratch data root and verify isolation ──────────────────
   await fsp.mkdir(SMOKE_DATA_ROOT, { recursive: true });
   console.error(`[smoke] SOX_ECOSYSTEM_HOME (scratch) → ${SMOKE_DATA_ROOT}`);
-  console.error(`[smoke] SOX_CONFIG_DB_PATH  (scratch) → ${SMOKE_DB_PATH}`);
+  console.error(`[smoke] db_path (config set, scratch) → ${SMOKE_DB_PATH}`);
 
   // Assert: scratch root is NOT the real user data root.
   const realUserDataRoot = path.join(process.env['HOME'] ?? '', '.adhd', 'sox-ecosystem');
