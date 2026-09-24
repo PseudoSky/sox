@@ -1,13 +1,15 @@
 {
   "name": "@adhd/sox-extension-dispatcher",
-  "version": "0.1.1",
-  "description": "Pure-dispatch orchestrator for already-authored plan-state-machine plans",
+  "version": "1.4.0",
+  "description": "Orchestration authority that never executes — decomposes ad-hoc direction, dispatches executors in the background, verifies from evidence, review-gates merges, and keeps the Task list and backlog graph in sync.",
   "private": true,
   "license": "MIT",
   "author": "sox-ecosystem",
   "keywords": [
     "dispatch",
     "orchestrator",
-    "plan-state-machine"
+    "ad-hoc",
+    "backlog",
+    "review-gate"
   ]
 }

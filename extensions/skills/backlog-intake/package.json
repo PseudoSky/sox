@@ -1,0 +1,15 @@
+{
+  "name": "@adhd/sox-extension-backlog-intake",
+  "version": "1.4.0",
+  "description": "The dispatcher's intake step — burn the backlog while you're there.",
+  "private": true,
+  "license": "MIT",
+  "author": "sox-ecosystem",
+  "keywords": [
+    "dispatch",
+    "orchestrator",
+    "playbook",
+    "backlog",
+    "intake"
+  ]
+}

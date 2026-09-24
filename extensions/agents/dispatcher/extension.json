@@ -1,10 +1,10 @@
 {
   "$schema": "https://your-registry/schemas/extension/v2.json",
   "id": "dispatcher",
-  "version": "0.1.1",
+  "version": "1.4.0",
   "type": "agent",
   "title": "dispatcher",
-  "description": "Use this when you need the live orchestrator that lists and drives token-optimized dispatch of already-authored plan-state-machine plans (dag.json/state.json). Two modes — 'list plans' enumerates discoverable plans with their state; 'execute plan <path|slug>' runs states wave-by-wave, routing each to the best-fit available executor at its declared model/effort tier, assembling self-contained inline dispatch prompts (compiled work-order + pre-loaded reserved file contents + token budget hint + wave context pack when wave has ≥2 states with shared context), capturing real token telemetry, verifying from state.json (not subagent reports), and looping advance/retry/escalate/halt via orchestrate-plan.js. Halts on every non-clean gate and proposes a fix. Distinct from plan-builder (which authors plans). Governed by the non-negotiable Operating rules — never triage, never code, never believe a report without evidence, never dispatch un-triaged or un-architected implementation, never merge unreviewed code, backlog status on every transition, decisions routed to debug/architect/product, background parallel dispatch, no orphaned work, live-status and upstream-consumer verification after deployments.",
+  "description": "Orchestration authority that never executes — it decomposes what you ask for, dispatches 00-active executors in the background, verifies every outcome from git/tests/state (never from a report), review-gates merges, and keeps the live Task list and the backlog graph (via backlog-operator) in sync. Playbooks — direct, triage, plan, status, backlog-intake — load on demand and are never forced; explicit user direction always wins. Unlike plan-orchestrator (drives an existing plan-state-machine plan) or workflow-architect (routes workflow engagements), it takes ad-hoc direction and only proposes a plan when one already covers the area.",
   "compatibility": {
     "host": ">=1.0.0 <2.0.0"
   },
@@ -13,16 +13,107 @@
   "keywords": [
     "dispatch",
     "orchestrator",
-    "plan-state-machine",
-    "plans",
-    "execution"
+    "ad-hoc",
+    "backlog",
+    "review-gate",
+    "task-tree"
   ],
   "runtime": "declarative",
   "entrypoint": "dispatcher.md",
   "invocation": {
     "protocol": "function-export",
     "handler": "run",
-    "description": "Declarative agent — host reads the .md definition file directly."
+    "description": "Declarative agent — host reads the prose body and renders the host header from agent/render at install time."
+  },
+  "source": "git@bitbucket.org:id8/agents.git#categories/dispatch/agents/dispatcher.md",
+  "source-version": "v1.4.0 (6ffe0db1)",
+  "dependencies": [
+    "dispatch-contract",
+    "dispatch-direct",
+    "dispatch-plan",
+    "dispatch-status",
+    "dispatch-triage",
+    "backlog-intake"
+  ],
+  "requires": {
+    "tool_calling": true
+  },
+  "agent": {
+    "name": "dispatcher",
+    "description": "Orchestration authority that never executes — it decomposes what you ask for, dispatches 00-active executors in the background, verifies every outcome from git/tests/state (never from a report), review-gates merges, and keeps the live Task list and the backlog graph (via backlog-operator) in sync. Playbooks — direct, triage, plan, status, backlog-intake — load on demand and are never forced; explicit user direction always wins. Unlike plan-orchestrator (drives an existing plan-state-machine plan) or workflow-architect (routes workflow engagements), it takes ad-hoc direction and only proposes a plan when one already covers the area.",
+    "model": "opus",
+    "mode": "all",
+    "tools": [
+      "read",
+      "glob",
+      "grep",
+      "bash",
+      "task",
+      "question",
+      "skill",
+      { "logical": "agent-mcp", "server": "agent-mcp" },
+      { "logical": "memory", "server": "memory-server" }
+    ],
+    "permission": {
+      "read": "allow",
+      "edit": "deny",
+      "write": "deny",
+      "glob": "allow",
+      "grep": "allow",
+      "bash": {
+        "*": "allow",
+        "rg": "allow",
+        "git status*": "allow",
+        "git diff*": "allow",
+        "git log*": "allow",
+        "git stash*": "deny",
+        "git add -A*": "deny",
+        "git add .*": "deny",
+        "git add --all*": "deny",
+        "git reset --hard*": "deny",
+        "git push --force*": "deny",
+        "git push *--no-verify*": "deny",
+        "git clean *-f*": "deny",
+        "rm -rf *": "deny"
+      },
+      "webfetch": "deny",
+      "websearch": "deny",
+      "task": "allow",
+      "todowrite": "allow",
+      "question": "allow",
+      "skill": "allow",
+      "memory_*": "allow",
+      "backlog_*": "allow"
+    }
+  },
+  "render": {
+    "claude": {
+      "model": "opus",
+      "version": "v1.4.0",
+      "tools": [
+        "Read",
+        "Glob",
+        "Grep",
+        "Bash",
+        "Agent",
+        "Task",
+        "Workflow",
+        "SendMessage",
+        "AskUserQuestion",
+        "Skill",
+        "TaskCreate",
+        "TaskGet",
+        "TaskUpdate",
+        "TaskList",
+        "mcp__agent-mcp__*",
+        "mcp__memory-server__*",
+        "ToolSearch"
+      ]
+    },
+    "opencode": {
+      "model": "deepseek/deepseek-v4-pro",
+      "mode": "all"
+    }
   },
   "install": {
     "type": "agent",
@@ -30,9 +121,6 @@
       "claude",
       "opencode"
     ],
-    "source": "file:///Users/nix/.config/opencode/agents/dispatcher.md"
-  },
-  "requires": {
-    "tool_calling": true
+    "source": "file:///Users/nix/dev/ai/sox-ecosystem/extensions/agents/dispatcher/dispatcher.md"
   }
 }

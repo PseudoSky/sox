@@ -1,0 +1,14 @@
+{
+  "name": "@adhd/sox-extension-dispatch-plan",
+  "version": "1.4.0",
+  "description": "The dispatcher's playbook for plan-state-machine plans — plans on request, never by default.",
+  "private": true,
+  "license": "MIT",
+  "author": "sox-ecosystem",
+  "keywords": [
+    "dispatch",
+    "orchestrator",
+    "playbook",
+    "plan-state-machine"
+  ]
+}

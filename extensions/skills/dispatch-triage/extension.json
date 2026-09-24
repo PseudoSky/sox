@@ -1,0 +1,39 @@
+{
+  "$schema": "https://your-registry/schemas/extension/v2.json",
+  "id": "dispatch-triage",
+  "version": "1.4.0",
+  "type": "skill",
+  "title": "dispatch-triage — the dispatcher's playbook for an issue report",
+  "description": "The dispatcher's playbook for an issue report — a bug, a red test, a reviewer finding, an executor's out-of-scope observation, or any \"pre-existing / unrelated / skipped\" claim. Root-cause with debugger first (evidence, never the dispatcher's own guess), plan the fix with architect-reviewer when the decision is technical, then implement through dispatch-direct and review-gate. Nothing is filed to the backlog or surfaced to the user as fact until triage has evidence. Load on any report; the user's explicit direction still overrides.",
+  "compatibility": {
+    "host": ">=1.0.0 <2.0.0"
+  },
+  "license": "MIT",
+  "author": "sox-ecosystem",
+  "keywords": [
+    "dispatch",
+    "orchestrator",
+    "playbook",
+    "triage",
+    "evidence"
+  ],
+  "runtime": "declarative",
+  "entrypoint": "SKILL.md",
+  "run_interface": {
+    "input_schema": {
+      "type": "object",
+      "properties": {}
+    },
+    "output_schema": {
+      "type": "object",
+      "properties": {}
+    }
+  },
+  "install": {
+    "type": "skill",
+    "hosts": [
+      "claude",
+      "opencode"
+    ]
+  }
+}
