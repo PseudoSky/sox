@@ -4,7 +4,7 @@
 
 Use this when an agent needs durable, searchable memory across sessions — exposes **20 `memory_*` tools** (v1.1.0) over a single-file SQLite graph store with hybrid recall (<50 ms, zero LLM), deterministic enrichment (provenance, tags, topic, near-dup detection), session state, community/cluster lookup, curation, bi-temporal invalidation, and in-place node editing.
 
-> **`db_path` is OPTIONAL — omit it (BL-55).** Every tool defaults `db_path` to the bundle-configured store the host injects as `SOX_CONFIG_DB_PATH` (normally `~/.memory/memory.db`), falling back to `~/.memory/memory.db`. Do **not** guess a path like `~/.sox/memory` — just leave `db_path` out and the server uses the right store. Pass `db_path` only to target a non-default store inside the `~/.memory/**` allowlist; out-of-allowlist paths are denied by the permission guard with no side effects.
+> **`db_path` is OPTIONAL — omit it (BL-55).** Every tool defaults `db_path` to the bundle-configured store the host injects as `SOX_CONFIG_DB_PATH` (`soxe install` seeds `config.memory-server.db_path`: user scope → `~/.memory/memory.db`, project scope → `~/.memory/memory-dev.db`). The server never infers a path: with no `store`/`db_path` argument and no `SOX_CONFIG_DB_PATH`, every store tool fails with `{ "code": "E_STORE_NOT_CONFIGURED" }` and opens nothing (`memory_ping` still answers, with `store.configured: false`). Do **not** guess a path like `~/.sox/memory` — just leave `db_path` out and the server uses the right store. Pass `db_path` only to target a non-default store inside the `~/.memory/**` allowlist; out-of-allowlist paths are denied by the permission guard with no side effects.
 
 ## Transport profiles
 
@@ -537,6 +537,7 @@ Tools return `{ "isError": true, "content": [{ "type": "text", "text": "..." }] 
 - `E_MISSING` / `E_MISSING_INPUT` — required parameter not supplied for the operation
 - `E_UNKNOWN_OP` — unknown `op` value for memory_curate
 - `E_WRONG_KIND` — memory_invalidate: uid resolves to a live node whose kind is not episode/claim
+- `E_STORE_NOT_CONFIGURED` — no `store`/`db_path` argument and no host-injected `SOX_CONFIG_DB_PATH`; the server never infers a store path. Fix with `soxe config set memory-server db_path <path>` or pass `db_path`/`store`
 
 ## Transport
 
@@ -577,7 +578,7 @@ now import logic directly from `@adhd/sox-memory-core`. No intermediate layer.
 
 This extension declares an `fs` allowlist covering `~/.memory/**` (both read and write). The host runtime injects this allowlist as an environment policy at spawn time.
 
-The optional `db_path` parameter (BL-55) resolves as: explicit arg → host-injected `SOX_CONFIG_DB_PATH` (the `config.memory-server.db_path` bundle property) → `~/.memory/memory.db`. The resolved path is then validated against this allowlist by the in-process permission guard before any database operation begins. If the resolved path falls outside `~/.memory/**`, the guard denies the operation and returns an error — no file is created, no partial write occurs, and no side effects are left on disk.
+The optional `db_path` parameter (BL-55) resolves as: explicit arg → host-injected `SOX_CONFIG_DB_PATH` (the `config.memory-server.db_path` bundle property) → otherwise `E_STORE_NOT_CONFIGURED` (no inferred default). The resolved path is then validated against this allowlist by the in-process permission guard before any database operation begins. If the resolved path falls outside `~/.memory/**`, the guard denies the operation and returns an error — no file is created, no partial write occurs, and no side effects are left on disk.
 
 To use a `db_path` outside `~/.memory/`:
 - Reconfigure the `fs.write` and `fs.read` allowlist in this extension's `permissions` block to include the desired path, then re-install.
