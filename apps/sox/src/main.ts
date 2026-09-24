@@ -143,7 +143,11 @@ import {
 import { registerBundleMember, resolveBundleDir } from './bundle-init.js';
 import { assertWithinBase, PathEscapeError } from './path-safety.js';
 import { dedupeRestartRows, type RestartIdentity } from './restart-dedup.js';
-import { exitCodeForListenOutcome, waitForServePortSignal } from './serve-shutdown.js';
+import {
+  createServeChildSignalForwarder,
+  exitCodeForListenOutcome,
+  waitForServePortSignal,
+} from './serve-shutdown.js';
 import { verifyRunningArtifact } from './verify-artifact.js';
 import { initTelemetry, log, resolveProcessRole, type InitTelemetryOptions } from '@adhd/sox-telemetry';
 // @adhd/sox-host-registry is also lazy-required via install-engine; import it lazily here too
@@ -9500,13 +9504,64 @@ Flags:
     lm.write(chunk);
   });
 
+  // BL 5b2fc7a2 / docs/spec/service-lifecycle.md `[contract:signal]`: this
+  // grandchild has no signal handler of its own installed by us — without
+  // forwarding, killing the `soxe serve` pid (or its terminal session)
+  // leaves the grandchild running and holding its store lease. Forward
+  // SIGTERM/SIGHUP/SIGINT, grace, then SIGKILL (same shape as
+  // `killAndVerify`, `libs/host-runtime/src/reaper.ts`). Precedence for the
+  // grace window matches the rest of the CLI: --grace-ms > SOX_STOP_GRACE_MS
+  // > 5000ms default (`apps/sox/src/main.ts` `cmdService`'s resolver).
+  const serveGraceMs = (() => {
+    const raw = flags['grace-ms'] ?? process.env['SOX_STOP_GRACE_MS'];
+    const n = raw !== undefined ? Number(raw) : NaN;
+    return Number.isFinite(n) && n > 0 ? n : 5000;
+  })();
+  const forwarder = createServeChildSignalForwarder(child, {
+    graceMs: serveGraceMs,
+    log: (m) => process.stderr.write(`[soxe serve] ${m}\n`),
+  });
+  const onParentSignal = (sig: NodeJS.Signals): void => forwarder.forward(sig);
+  process.on('SIGTERM', onParentSignal);
+  process.on('SIGHUP', onParentSignal);
+  process.on('SIGINT', onParentSignal);
+  const offParentSignals = (): void => {
+    process.off('SIGTERM', onParentSignal);
+    process.off('SIGHUP', onParentSignal);
+    process.off('SIGINT', onParentSignal);
+  };
+  // Best-effort: if this process is torn down by anything that still lets the
+  // JS event loop run an 'exit' handler (uncaught exception, explicit
+  // process.exit elsewhere, normal fall-through) make sure the grandchild
+  // doesn't outlive it. A direct `kill -9` on this pid cannot be intercepted
+  // from user space on any platform — that gap is unclosable, not unhandled;
+  // the child is spawned non-detached (same process group/session as this
+  // process) so an OS-delivered group signal (Ctrl-C, terminal hangup) still
+  // reaches it directly regardless of this handler.
+  process.once('exit', () => {
+    forwarder.dispose();
+    if (child.pid !== undefined && child.exitCode === null && child.signalCode === null) {
+      try {
+        child.kill('SIGKILL');
+      } catch (e) {
+        process.stderr.write(
+          `[soxe serve] exit-time SIGKILL of grandchild pid ${child.pid} failed: ${(e as Error).message}\n`,
+        );
+      }
+    }
+  });
+
   // Propagate exit code; close the log stream cleanly.
   child.on('close', (code: number | null) => {
+    offParentSignals();
+    forwarder.dispose();
     lm.close();
     process.exit(code ?? 0);
   });
 
   child.on('error', (err: Error) => {
+    offParentSignals();
+    forwarder.dispose();
     process.stderr.write(`[soxe serve] spawn error: ${err.message}\n`);
     lm.close();
     process.exit(1);
