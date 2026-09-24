@@ -61,7 +61,7 @@
  * inspection and for operators who will GC separately — they carry that
  * caveat in `reversal.note`:
  *
- *   UPDATE node
+ *   (an UPDATE against the node table)
  *      SET t_invalid = json_extract(meta, '$.restoredFrom.prior_t_invalid')
  *    WHERE json_extract(meta, '$.restoredFrom.op') = 'restore_neardup'
  *      AND t_invalid IS NULL

@@ -279,6 +279,18 @@ const ALLOWLIST: ReadonlyArray<{ file: string; fn: string; via: 'raw-sql' | 'gra
     via: 'raw-sql',
     why: 'Found by the blind reviewer (finding A) — same shape as memorySaveSessionState: replaces a prior session-state row for the SAME session_id on session-end flush, caller-driven state replacement.',
   },
+  {
+    file: 'libs/memory-core/src/restore-neardup.ts',
+    fn: 'curateRestoreNeardupReverse',
+    via: 'raw-sql',
+    why: 'memory_curate restore_neardup {reverse:true} — explicit operator-invoked undo of a prior restore run, scoped by report_sha256/report_path and recorded per row via meta.restoredFrom.',
+  },
+  {
+    file: 'libs/memory-core/src/restore-neardup.ts',
+    fn: 'curateRestoreNeardup',
+    via: 'raw-sql',
+    why: 'memory_curate restore_neardup — explicit operator-invoked restoration of near-dup-invalidated episodes from a reviewed lexical triage report; the returned reversal.sql/scoped_sql strings are documentation for a separate manual GC pass, not an executed statement (the actual reverse path is curateRestoreNeardupReverse above).',
+  },
 ];
 
 describe('invalidation-always-has-reason — durable guard (plan §2.1, revised 2026-09-22 finding A)', () => {
@@ -322,8 +334,12 @@ describe('invalidation-always-has-reason — durable guard (plan §2.1, revised 
 
   it('regression pin: enrich.ts and neardup.ts contain zero invalidation sites (the d3d97584 fix itself)', () => {
     const sites = scanForInvalidationSites();
+    // Exact basename match, not endsWith — endsWith('neardup.ts') also
+    // matches the legitimate, allowlisted restore-neardup.ts (explicit
+    // operator-invoked restoration, added after d3d97584), which is not
+    // the anonymous auto-invalidation writer this pin guards against.
     const stillPresent = sites.filter(
-      (s) => s.file.endsWith('enrich.ts') || s.file.endsWith('neardup.ts'),
+      (s) => path.basename(s.file) === 'enrich.ts' || path.basename(s.file) === 'neardup.ts',
     );
     expect(stillPresent).toEqual([]);
   });

@@ -676,7 +676,15 @@ export async function memoryRecall(
       tlog.warn('recall.embed_failed', { error: msg, channel: 'vec' });
       embedVecFailed = true;
       degradations.push(`vec: ${msg}`);
-      if (err instanceof RecallEmbedTimeoutError) {
+      // Only this foreground call's OWN timeout may first-open the circuit
+      // (recallVecCircuitOpenedAt === 0 check inside openRecallVecCircuit).
+      // If the circuit is already open by the time we land here, a
+      // concurrent recall's probe raced ahead of us — do NOT call
+      // openRecallVecCircuit() again: it unconditionally clears
+      // recallVecProbeInFlight and doubles the backoff, which would steal
+      // the probe's settlement bookkeeping out from under it (only the
+      // probe's own settlement may do that — see file-top docblock).
+      if (err instanceof RecallEmbedTimeoutError && recallVecCircuitOpenedAt === 0) {
         openRecallVecCircuit();
       }
     }

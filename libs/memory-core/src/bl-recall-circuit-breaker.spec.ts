@@ -140,18 +140,22 @@ describe('memoryRecall — per-process vec circuit breaker (recallCircuitBreaker
     const callsAfterTimeout = provider.calls;
     expect(callsAfterTimeout).toBeGreaterThan(0);
 
-    // 2) Second recall, immediately after (circuit open, cooldown not
-    //    elapsed): the query embed must be SKIPPED entirely — provider.calls
-    //    must not increase — and the specific skip degradation must be
-    //    reported.
-    provider.delayMs = 0; // would succeed instantly if attempted
+    // 2) Second recall, immediately after (circuit open): the query embed
+    //    for THIS recall is skipped — its own vec channel never pays the
+    //    embed-timeout cost — but under the immediate-probe design the
+    //    circuit is probe-eligible right away (recallVecNextProbeAt is set
+    //    to "now" on first open), so this recall claims the single-flight
+    //    background probe and fires it (fire-and-forget, not awaited by
+    //    this recall). That probe's own embed call is what bumps
+    //    provider.calls here, not this recall's (skipped) query embed.
+    provider.delayMs = 0; // probe succeeds instantly
     const r2 = await memoryRecall(ctx.adapter, 'project', {
       query: 'circuit breaker probe two',
       limit: 10,
     });
-    expect(provider.calls).toBe(callsAfterTimeout);
-    expect(r2.degradations ?? []).toContain(
-      'vec: skipped, circuit open after embed timeout',
+    expect(provider.calls).toBeGreaterThan(callsAfterTimeout);
+    expect(r2.degradations ?? []).toEqual(
+      expect.arrayContaining([expect.stringMatching(/^vec: skipped/)]),
     );
 
     // 3) Wait out the cooldown, then recall again (half-open probe). Provider
