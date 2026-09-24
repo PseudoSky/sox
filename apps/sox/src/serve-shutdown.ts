@@ -53,6 +53,7 @@ export interface ServeChildLike {
   readonly signalCode: NodeJS.Signals | null;
   kill(signal: NodeJS.Signals): boolean;
   once(event: 'exit', listener: () => void): void;
+  off(event: 'exit', listener: () => void): void;
 }
 
 /**
@@ -70,19 +71,53 @@ export interface ServeChildLike {
  * `process.on('SIGTERM'|'SIGHUP'|'SIGINT', ...)` handler installed around the
  * spawn in `cmdServe`. On first call it SIGTERMs (or forwards whatever signal
  * arrived to) the child, arms a `graceMs` timer, and SIGKILLs if the child has
- * not exited by then — mirroring `killAndVerify`'s SIGTERM→grace→SIGKILL shape
- * (`libs/host-runtime/src/reaper.ts`) without depending on OS process-group
- * semantics, since this child is not spawned `detached`. Idempotent: a second
- * signal while a forward is already in flight is a no-op.
+ * not exited by then. After SIGKILL it POLLS the child's `exitCode`/
+ * `signalCode` over `killWaitMs` and, if the child is still alive once that
+ * window elapses, logs a CRITICAL "still alive after SIGKILL" diagnostic
+ * naming the pid — mirroring `killAndVerify`'s Phase 2→3 escalate-then-verify
+ * shape (`libs/host-runtime/src/reaper.ts:112-138`) rather than the
+ * fire-and-forget SIGKILL this module shipped with previously. `reaper.ts`'s
+ * own verification (`waitForDeath`, `pidAlive`) probes the real OS process
+ * table via `process.kill(pid, 0)` and is not reused directly here: this
+ * child is not spawned `detached`/in its own process group, and — more
+ * importantly — an OS-table probe can't be driven by the injectable
+ * `ServeChildLike` test double the way `exitCode`/`signalCode` can, which is
+ * how the "still alive after SIGKILL" path gets deterministic unit coverage
+ * (`bl-5b2fc7a2-serve-child-forwarder.spec.ts`). Idempotent: a second signal
+ * while a forward is already in flight is a no-op.
  */
 export function createServeChildSignalForwarder(
   child: ServeChildLike,
-  opts: { graceMs?: number; log?: (msg: string) => void } = {},
+  opts: { graceMs?: number; killWaitMs?: number; pollMs?: number; log?: (msg: string) => void } = {},
 ): { forward: (sig: NodeJS.Signals) => void; dispose: () => void } {
   const graceMs = opts.graceMs ?? 5000;
+  const killWaitMs = opts.killWaitMs ?? 2000;
+  const pollMs = opts.pollMs ?? 100;
   const log = opts.log ?? ((): void => { /* no-op */ });
   let forwarding = false;
   let killTimer: NodeJS.Timeout | undefined;
+  let verifyTimer: NodeJS.Timeout | undefined;
+  let onExit: (() => void) | undefined;
+
+  const childDead = (): boolean => child.exitCode !== null || child.signalCode !== null;
+
+  const clearTimers = (): void => {
+    if (killTimer) clearTimeout(killTimer);
+    if (verifyTimer) clearTimeout(verifyTimer);
+    killTimer = undefined;
+    verifyTimer = undefined;
+  };
+
+  /** Poll for death after SIGKILL, over a bounded `killWaitMs` window. */
+  const verifyAfterSigkill = (sig: NodeJS.Signals, deadline: number): void => {
+    if (childDead()) return;
+    if (Date.now() >= deadline) {
+      log(`CRITICAL: grandchild pid ${child.pid} still alive after SIGKILL (sent following ${sig}, grace ${graceMs}ms)`);
+      return;
+    }
+    verifyTimer = setTimeout(() => verifyAfterSigkill(sig, deadline), pollMs);
+    verifyTimer.unref();
+  };
 
   const forward = (sig: NodeJS.Signals): void => {
     if (forwarding) return;
@@ -95,23 +130,29 @@ export function createServeChildSignalForwarder(
       log(`failed to signal grandchild pid ${child.pid}: ${(e as Error).message}`);
     }
     killTimer = setTimeout(() => {
-      if (child.exitCode === null && child.signalCode === null) {
+      if (!childDead()) {
         log(`grandchild pid ${child.pid} survived ${sig} after ${graceMs}ms — SIGKILL`);
         try {
           child.kill('SIGKILL');
         } catch (e) {
           log(`failed to SIGKILL grandchild pid ${child.pid}: ${(e as Error).message}`);
         }
+        verifyAfterSigkill(sig, Date.now() + killWaitMs);
       }
     }, graceMs);
     killTimer.unref();
-    child.once('exit', () => {
-      if (killTimer) clearTimeout(killTimer);
-    });
+    onExit = (): void => {
+      clearTimers();
+    };
+    child.once('exit', onExit);
   };
 
   const dispose = (): void => {
-    if (killTimer) clearTimeout(killTimer);
+    clearTimers();
+    if (onExit) {
+      child.off('exit', onExit);
+      onExit = undefined;
+    }
   };
 
   return { forward, dispose };

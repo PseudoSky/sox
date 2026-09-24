@@ -31,6 +31,10 @@ class FakeChild extends EventEmitter implements ServeChildLike {
     this.exitCode = null;
     this.emit('exit');
   }
+
+  override off(event: 'exit', listener: () => void): this {
+    return this.removeListener(event, listener);
+  }
 }
 
 describe('createServeChildSignalForwarder — BL 5b2fc7a2', () => {
@@ -102,5 +106,68 @@ describe('createServeChildSignalForwarder — BL 5b2fc7a2', () => {
     vi.advanceTimersByTime(5000);
 
     expect(child.killed).toEqual(['SIGTERM']);
+  });
+
+  it('dispose() removes the exit listener forward() registered', () => {
+    const child = new FakeChild();
+    const { forward, dispose } = createServeChildSignalForwarder(child, { graceMs: 1000 });
+
+    forward('SIGTERM');
+    expect(child.listenerCount('exit')).toBe(1);
+
+    dispose();
+
+    expect(child.listenerCount('exit')).toBe(0);
+    // And a subsequent real exit doesn't throw / do anything surprising.
+    expect(() => child.simulateExit('SIGTERM')).not.toThrow();
+  });
+
+  it(
+    'logs a CRITICAL diagnostic naming the pid if the child is still alive after SIGKILL (undead path)',
+    () => {
+      vi.useFakeTimers();
+      const child = new FakeChild();
+      const logs: string[] = [];
+      const { forward } = createServeChildSignalForwarder(child, {
+        graceMs: 1000,
+        killWaitMs: 500,
+        pollMs: 100,
+        log: (m) => logs.push(m),
+      });
+
+      forward('SIGTERM');
+      // Grace elapses with no exit -> SIGKILL fires.
+      vi.advanceTimersByTime(1000);
+      expect(child.killed).toEqual(['SIGTERM', 'SIGKILL']);
+
+      // Child NEVER reports exit (D-state / EPERM analogue) — advance past
+      // the killWaitMs verification window.
+      vi.advanceTimersByTime(500);
+
+      expect(logs.some((m) => m.includes('CRITICAL') && m.includes('still alive after SIGKILL') && m.includes('4242'))).toBe(true);
+    },
+  );
+
+  it('does NOT log CRITICAL if the child dies shortly after SIGKILL', () => {
+    vi.useFakeTimers();
+    const child = new FakeChild();
+    const logs: string[] = [];
+    const { forward } = createServeChildSignalForwarder(child, {
+      graceMs: 1000,
+      killWaitMs: 500,
+      pollMs: 100,
+      log: (m) => logs.push(m),
+    });
+
+    forward('SIGTERM');
+    vi.advanceTimersByTime(1000);
+    expect(child.killed).toEqual(['SIGTERM', 'SIGKILL']);
+
+    // Child dies partway through the verification window.
+    vi.advanceTimersByTime(200);
+    child.simulateExit('SIGKILL');
+    vi.advanceTimersByTime(500);
+
+    expect(logs.some((m) => m.includes('CRITICAL'))).toBe(false);
   });
 });

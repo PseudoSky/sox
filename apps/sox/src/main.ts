@@ -9515,7 +9515,7 @@ Flags:
   const serveGraceMs = (() => {
     const raw = flags['grace-ms'] ?? process.env['SOX_STOP_GRACE_MS'];
     const n = raw !== undefined ? Number(raw) : NaN;
-    return Number.isFinite(n) && n > 0 ? n : 5000;
+    return Number.isFinite(n) && n >= 0 ? n : 5000;
   })();
   const forwarder = createServeChildSignalForwarder(child, {
     graceMs: serveGraceMs,
