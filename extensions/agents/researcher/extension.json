@@ -80,7 +80,7 @@
   "render": {
     "claude": {
       "model": "sonnet",
-      "version": "v1.0.1",
+      "version": "v0.1.2",
       "tools": [
         "Read",
         "Bash",
