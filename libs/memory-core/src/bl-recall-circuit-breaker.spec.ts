@@ -179,4 +179,42 @@ describe('memoryRecall — per-process vec circuit breaker (recallCircuitBreaker
     const vecDegradations4 = (r4.degradations ?? []).filter((d) => d.startsWith('vec:'));
     expect(vecDegradations4).toEqual([]);
   });
+
+  it('cbd62134: single-flight background probe — a recall arriving while a probe is already in flight does not start a second probe', async () => {
+    // 1) Open the circuit.
+    provider.delayMs = EMBED_TIMEOUT_MS + 200;
+    await memoryRecall(ctx.adapter, 'project', { query: 'probe-slot one', limit: 10 });
+    const callsAfterOpen = provider.calls;
+
+    // 2) Claim + fire the single-flight background probe (fire-and-forget,
+    //    this recall does not await it). Make the probe itself slow so it
+    //    stays "in flight" long enough for step 3 to race it.
+    provider.delayMs = 150;
+    const r2 = await memoryRecall(ctx.adapter, 'project', { query: 'probe-slot two', limit: 10 });
+    expect(r2.degradations ?? []).toEqual(
+      expect.arrayContaining([expect.stringMatching(/^vec: skipped — embed breaker open/)]),
+    );
+    const callsAfterProbeClaim = provider.calls;
+    expect(callsAfterProbeClaim).toBe(callsAfterOpen + 1); // the probe's own embed call
+
+    // 3) A second recall arrives WHILE the probe from step 2 is still in
+    //    flight (its 150ms delay has not elapsed). Only the probe's own
+    //    settlement may release recallVecProbeInFlight (recall.ts file-top
+    //    docblock) — so this recall must NOT start a second probe, and its
+    //    degradation must say "probe already in flight", not attempt embed.
+    const r3 = await memoryRecall(ctx.adapter, 'project', { query: 'probe-slot three', limit: 10 });
+    expect(provider.calls).toBe(callsAfterProbeClaim); // no new embed call fired
+    expect(r3.degradations ?? []).toEqual(
+      expect.arrayContaining([expect.stringMatching(/probe already in flight/)]),
+    );
+
+    // 4) Let the in-flight probe settle successfully, then confirm the
+    //    circuit is closed and a later recall can start a fresh probe cycle
+    //    if needed (proves the slot WAS released, just only by its owner).
+    await new Promise((r) => setTimeout(r, 200));
+    provider.delayMs = 0;
+    const r4 = await memoryRecall(ctx.adapter, 'project', { query: 'probe-slot four', limit: 10 });
+    const vecDegradations4 = (r4.degradations ?? []).filter((d) => d.startsWith('vec:'));
+    expect(vecDegradations4).toEqual([]);
+  });
 });
