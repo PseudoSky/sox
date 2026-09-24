@@ -1089,7 +1089,7 @@ describe('restartAndVerify — BL-372 [inv:deploy-verified]', () => {
     });
 
     expect(result.ok).toBe(false);
-    expect(result.kickstart.code).toBe(1);
+    expect(result.kickstart?.code).toBe(1);
     expect(reapCalled).toBe(false);
     expect(result.reason).toMatch(/kickstart FAILED/);
   });
@@ -1193,7 +1193,10 @@ describe('restartAndVerify — kickstart:false (--backend-only)', () => {
     });
 
     expect(kickstartCalled).toBe(false);
-    expect(result.kickstart).toEqual({ code: 0, stdout: '', stderr: '' });
+    // BL a49ca837 follow-up: no fake `{code:0,...}` when kickstart was skipped —
+    // `kickstart` is undefined and `kickstartSkipped` is the honest signal.
+    expect(result.kickstart).toBeUndefined();
+    expect(result.kickstartSkipped).toBe(true);
     expect(result.ok).toBe(true);
     expect(result.rotated).toBe(true);
   });
@@ -1258,7 +1261,8 @@ describe('restartAndVerify — kickstart:false (--backend-only)', () => {
     });
 
     expect(seenExcludePids).toEqual([]);
-    expect(result.kickstart.code).toBe(0);
+    expect(result.kickstart).toBeUndefined();
+    expect(result.kickstartSkipped).toBe(true);
   });
 
   it('a49ca837: restartAndVerify kickstart:false rotates backend without kickstart', async () => {
@@ -1278,8 +1282,10 @@ describe('restartAndVerify — kickstart:false (--backend-only)', () => {
 
     let findCalls = 0;
     let seenReapExcludePids: number[] | undefined;
+    const seenFindExcludePids: (number[] | undefined)[] = [];
     const findMatches = (_tok: string, o: { excludePids?: number[] }): RestartMatch[] => {
       findCalls += 1;
+      seenFindExcludePids.push(o.excludePids);
       const excl = new Set(o.excludePids ?? []);
       const raw = findCalls === 1 ? [MAIN_PID, 200] : [MAIN_PID, 300];
       return raw.filter((pid) => !excl.has(pid)).map((pid) => ({ pid }));
@@ -1317,6 +1323,15 @@ describe('restartAndVerify — kickstart:false (--backend-only)', () => {
     expect(result.before).not.toContain(MAIN_PID);
     expect(result.after).not.toContain(MAIN_PID);
     expect(seenReapExcludePids).toContain(MAIN_PID);
+    // The signal that actually matters: every findMatches call (before-snapshot
+    // AND the post-restart poll) was given MAIN_PID in its exclude set, not just
+    // the reap call — otherwise `not.toContain(MAIN_PID)` above would hold by
+    // construction (the stub itself filters excludePids out of its raw list)
+    // without restartAndVerify ever having computed/passed the exclude set.
+    expect(findCalls).toBeGreaterThanOrEqual(2);
+    for (const excl of seenFindExcludePids) {
+      expect(excl).toContain(MAIN_PID);
+    }
   });
 });
 

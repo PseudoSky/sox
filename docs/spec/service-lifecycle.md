@@ -929,6 +929,17 @@ plausibly run was green. It recurred on the second deploy that day even with the
 7. VERIFY: behaviour, not just liveness
 ```
 
+**`--backend-only` (proxy-mode + configured port only).** `sox service restart <ext> --backend-only`
+skips the unit `kickstart` entirely and reaps only the detached proxy backend by identity, leaving
+the front-shim's own pid untouched — for the case where only the **backend** code changed and the
+shim's live client connections must not be dropped. It asserts the shim pid is unchanged before and
+after (any change is a hard failure, never silently accepted), and it is refused up front — before
+the `--wait-ms` wait — for a non-proxy extension (§9.5 has no independent backend to restart) and for
+a proxy-mode extension with no `SOX_CONFIG_PORT` configured (BL-156: its unit runs the bare backend
+entrypoint directly, so there is no front-shim to protect). See `apps/sox/src/main.ts`
+`cmdServiceRestart`'s `backendOnly` branch and `libs/host-runtime/src/os-unit.ts`
+`restartAndVerify({ kickstart: false, ... })`.
+
 **Step 6 IS the invariant, enforced by the tool, not by prose.** `sox service restart` (BL-372,
 `apps/sox/src/main.ts` `cmdServiceRestart`, backed by `OsUnitPlatform.kickstart`/`mainPid` in
 `libs/host-runtime/src/os-unit.ts`):

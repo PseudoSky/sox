@@ -92,6 +92,10 @@ import {
   // other and from host-runtime's two, so a tunable reached some spawn paths
   // and not others — silently.
   scrubEnvReported,
+  // BL-review(leafR): --backend-only port refusal must read the on-disk
+  // unit's REAL argv (like `shimIsUnit`), not config — see cmdServiceRestart.
+  extractUnitArgv,
+  isFrontShimArgv,
   type DataScope,
   type OsSupervisor,
   type OsUnitPlatform,
@@ -144,6 +148,12 @@ import { registerBundleMember, resolveBundleDir } from './bundle-init.js';
 import { resolveGraceMs } from './grace-ms.js';
 import { assertWithinBase, PathEscapeError } from './path-safety.js';
 import { unloadOsUnitUnlessFrontShim } from './proxy-backend-front-shim.js';
+import { determineShimIsUnit, reEnableAfterRestartGate } from './restart-proxy-backend-gate.js';
+import {
+  checkBackendOnlyProxyModeRefusal,
+  checkBackendOnlyPortRefusal,
+  evaluateBackendOnlyOutcome,
+} from './backend-only-restart.js';
 import { dedupeRestartRows, type RestartIdentity } from './restart-dedup.js';
 import {
   exitCodeForListenOutcome,
@@ -2475,17 +2485,31 @@ function mcpServerIsProxyMode(extId: string, scope: string, root: string): boole
  *
  * The shims re-dial across the sub-second gap → the MCP client NEVER reconnects.
  * This holds in exactly two cases: (a) no os-unit owns this extension, or
- * (b) the os-unit IS the port-listening front-shim (port set + proxy mode —
- * same predicate as the execArgs branch in cmdOsUnit, ~5169). In case (b) the
- * unit runs `soxe serve <id> --port <port>`, not the backend entrypoint, so it
- * does not supervise the detached backend process this function restarts —
- * `unloadOwnedOsUnitsBeforeReap`/`reEnableOwnedOsUnit` are skipped entirely
- * (`shimIsUnit` below), since there is nothing for them to unload or reload.
- * No separate reap is needed for the backend's embed-host child: ensure-backend
- * spawns the backend detached:true and sharedFastembedProcess spawns the embed
- * host detached:false (same process group), and reaper.ts's killAndVerify uses
- * group:true by default — the SIGTERM/SIGKILL sent to -pid reaches the embed
- * host too, and it installs no custom SIGTERM handler that could outlive it.
+ * (b) the os-unit's ON-DISK argv actually runs the port-listening front-shim
+ * (`soxe serve <id> --port <port>`) rather than the bare backend entrypoint —
+ * derived by reading the rendered unit file, NOT by re-deriving from current
+ * config (BL a49ca837 follow-up: config can disagree with what was rendered —
+ * e.g. the unit was enabled before a port was configured, or the `cmdOsUnit`
+ * execArgs branch fell back to the bare entrypoint because `cliPath` was
+ * empty — in which case the unit IS the backend and OS KeepAlive supervises
+ * it). In case (b) the unit does not supervise the detached backend process
+ * this function restarts — `unloadOwnedOsUnitsBeforeReap`/`reEnableOwnedOsUnit`
+ * are skipped entirely (`shimIsUnit` below), since there is nothing for them
+ * to unload or reload. See proxy-backend-front-shim.ts for the full predicate
+ * and why it is deliberately distinct from the `cmdOsUnit` execArgs branch's
+ * render-time predicate.
+ * No separate reap is needed for the backend's embed-host child: by default
+ * it is the DETACHED, machine-wide SHARED fastembed funnel host (see
+ * funnelClient.ts), ref-counted across every client that shares it — the
+ * fresh backend re-ensured above simply reuses the already-running host (or
+ * causes one to be spawned if none is live) rather than owning its lifecycle;
+ * it is not restarted by this function at all. That shared host self-reaps
+ * via a debounced idle timer after its last client disconnects, and
+ * separately installs its own `SIGTERM` handler (embedHostMain.ts) to run
+ * that same graceful teardown when signalled directly, rather than relying on
+ * an unhandled-signal default kill. (The host's OWN ONNX worker child, spawned
+ * `detached:false` in sharedFastembedProcess.ts, lives in the host's process
+ * group, not the backend's, and is torn down by the host itself.)
  * Returns 'backend-restarted'.
  */
 async function restartProxyBackend(
@@ -2523,20 +2547,24 @@ async function restartProxyBackend(
 
   // [inv:unload-then-reap] (§8.5): unload any OS unit BEFORE verified-stop so
   // the OS supervisor does not immediately respawn the backend (F3 resurrection)
-  // — unless the unit IS the front-shim (BL a49ca837), which this restart never
-  // touches. `unloadOsUnitUnlessFrontShim` owns the single `shimIsUnit`
-  // predicate (mirrors the os-unit execArgs predicate ~5169) so the re-enable
-  // gate below stays in lockstep — see proxy-backend-front-shim.ts.
-  const { shimIsUnit } = unloadOsUnitUnlessFrontShim({
-    configEnv,
-    proxyMode: mcpServerIsProxyMode(extId, scope, root),
+  // — unless the on-disk unit's REAL argv IS the front-shim (BL a49ca837),
+  // which this restart never touches. `unloadOsUnitUnlessFrontShim` owns the
+  // `shimIsUnit` predicate (derived from the unit file, NOT from config — see
+  // that module's docblock for why this is a different question from the
+  // `cmdOsUnit` execArgs branch's render-time predicate) so the re-enable gate
+  // below stays in lockstep.
+  const { shimIsUnit } = determineShimIsUnit({
+    extId,
+    platform: getOsUnitPlatform(detectOsSupervisor()),
+    label: osUnitLabel(scope, extId),
+    log,
     unload: () =>
       unloadOwnedOsUnitsBeforeReap({
         root,
         onlyIds: [extId],
         log: (m) => log(`[unload-then-reap] ${m}`),
       }),
-    log: (m) => log(`${m} (${extId})`),
+    deps: { unloadOsUnitUnlessFrontShim },
   });
 
   // Find + VERIFIED-STOP (await — the kill MUST complete before we re-ensure, or
@@ -2618,9 +2646,10 @@ async function restartProxyBackend(
   // if the unit did not come back loaded.
   // This guard applies only when shimIsUnit is false — when the os-unit is the
   // front-shim there was no unload above, so there is nothing to re-enable here.
-  let reenable: ReturnType<typeof reEnableOwnedOsUnit> | undefined;
-  if (!shimIsUnit) {
-    reenable = reEnableOwnedOsUnit(extId, scope, root, log);
+  const reenable = reEnableAfterRestartGate(shimIsUnit, extId, scope, root, log, {
+    reEnableOwnedOsUnit,
+  });
+  if (reenable !== undefined) {
     if (reenable.owned && !reenable.verifiedLoaded) {
       return {
         disposition: 'backend-restarted-unsupervised',
@@ -5253,6 +5282,9 @@ Options:
                           (BL-375 [inv:env-preserved-on-regenerate]) — named keys only,
                           no blanket bypass
   --wait-ms <ms>          restart/update: how long to wait for the pid to rotate (default 15000)
+  --backend-only          restart, proxy-mode+port only (§9.4a/§9.5): skip the shim kickstart,
+                          reap+respawn only the detached proxy backend by identity; refused for
+                          non-proxy extensions and for proxy-mode with no SOX_CONFIG_PORT set
   --help                  Show this message
 
 'service restart' is BL-372 / spec §9.4a's [inv:deploy-verified]: it kickstarts the
@@ -5585,13 +5617,43 @@ async function cmdServiceRestart(
     process.exit(1);
   }
 
-  if (backendOnly && !mcpServerIsProxyMode(extId, scope, root)) {
-    process.stderr.write(
-      `${CLI} service restart: --backend-only refused — '${extId}' is not served in proxy mode ` +
-      `(§9.5); there is no independent backend to restart without the shim. Run without ` +
-      `--backend-only, or see docs/spec/service-lifecycle.md §9.5.\n`,
-    );
-    process.exit(1);
+  if (backendOnly) {
+    const proxyRefusal = checkBackendOnlyProxyModeRefusal({
+      cli: CLI,
+      extId,
+      isProxyMode: mcpServerIsProxyMode(extId, scope, root),
+    });
+    if (proxyRefusal) {
+      if (proxyRefusal.stderr) process.stderr.write(proxyRefusal.stderr);
+      process.exit(proxyRefusal.exitCode);
+    }
+    // BL-review(leafR): read the on-disk unit's REAL argv, exactly like
+    // `shimIsUnit` (proxy-backend-front-shim.ts) — config (SOX_CONFIG_PORT)
+    // can disagree with what was actually rendered (unit enabled before a
+    // port was configured), which previously let a stale unit pass this
+    // refusal and then wait out the full --wait-ms only to fail downstream.
+    let unitIsFrontShim = false;
+    try {
+      const unitText = fsM.readFileSync(unitPath, 'utf8');
+      const unitArgv = extractUnitArgv(unitText, platform.kind);
+      unitIsFrontShim = isFrontShimArgv(unitArgv, extId);
+    } catch (e) {
+      process.stderr.write(
+        `${CLI} service restart: warning — failed to read unit argv at ${unitPath} (${(e as Error).message}); ` +
+        `treating as NOT the front-shim (fail-safe)\n`,
+      );
+      unitIsFrontShim = false;
+    }
+    const portRefusal = checkBackendOnlyPortRefusal({
+      cli: CLI,
+      extId,
+      scope,
+      portConfigured: unitIsFrontShim,
+    });
+    if (portRefusal) {
+      if (portRefusal.stderr) process.stderr.write(portRefusal.stderr);
+      process.exit(portRefusal.exitCode);
+    }
   }
 
   const waitMsRaw = flags['wait-ms'] ?? process.env['SOX_SERVICE_RESTART_WAIT_MS'];
@@ -5620,30 +5682,21 @@ async function cmdServiceRestart(
       waitMs,
       kickstart: false,
       excludePids: [process.pid],
+      ...(beforeMainPid !== undefined ? { mainPid: beforeMainPid } : {}),
       log: (m: string) => process.stdout.write(`  ${m}\n`),
     });
     const afterMainPid = platform.mainPid(label, realOsExec);
     process.stdout.write(`  after:  main=${afterMainPid ?? '(none)'}\n`);
-    if (afterMainPid !== beforeMainPid) {
-      process.stderr.write(
-        `${CLI} service restart: FAILED — --backend-only rotated the shim pid ` +
-        `(${beforeMainPid ?? '(none)'} -> ${afterMainPid ?? '(none)'}); the shim must never change ` +
-        `under --backend-only. See docs/spec/service-lifecycle.md §9.4a/§9.5.\n`,
-      );
-      process.exit(1);
-    }
-    if (!result.ok) {
-      process.stderr.write(
-        `${CLI} service restart: FAILED — ${result.reason ?? 'backend deploy could not be verified'}. ` +
-        `See docs/spec/service-lifecycle.md §9.4a/§9.5.\n`,
-      );
-      process.exit(1);
-    }
-    process.stdout.write(
-      `${CLI} service restart: '${label}' backend-only deploy — pid(s) rotated ` +
-      `([${result.before.join(', ') || '(none)'}] -> [${result.after.join(', ')}])\n`,
-    );
-    process.exit(0);
+    const outcome = evaluateBackendOnlyOutcome({
+      cli: CLI,
+      label,
+      beforeMainPid,
+      afterMainPid,
+      result,
+    });
+    if (outcome.stdout) process.stdout.write(outcome.stdout);
+    if (outcome.stderr) process.stderr.write(outcome.stderr);
+    process.exit(outcome.exitCode);
   }
 
   // [inv:deploy-verified] (BL-372, §9.4a) — kickstart, reap any survivor by
