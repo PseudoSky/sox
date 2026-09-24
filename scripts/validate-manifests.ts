@@ -1031,7 +1031,8 @@ export interface ValidateOptions {
  *       action verb or "use this when" — the model the scaffolder enforces).
  *   (b) keywords field is present and has at least one element.
  *   (c) author field is set (non-empty string).
- *   (d) README.md exists and contains meaningful content (>100 chars, not a lorem stub).
+ *   (d) README.md exists and contains meaningful content (>100 chars, not a lorem stub, and
+ *       no leaked YAML block-scalar indicator / "description:" frontmatter line — BL 5b69402d).
  *
  * In default mode (strict=false) severity is 'warn' → process exits 0 (fail-open).
  * In strict mode  (strict=true)  severity is 'error' → process exits non-zero (fail-closed).
@@ -1129,6 +1130,42 @@ function checkDxConformance(
           `). Replace it with a meaningful overview, when-to-use, inputs, and outputs section. ` +
           `(P4 advisory — fix before P6 strict flip)`,
         severity,
+      });
+    }
+
+    // BL 5b69402d: reject a README whose body carries a leaked YAML artifact — either a
+    // bare block-scalar indicator line (e.g. "> >-", ">-", "|") or a bare "description:"
+    // frontmatter key line — surviving verbatim from a generator that captured the YAML
+    // scalar indicator token instead of the folded body beneath it. These lines are short
+    // and otherwise well-formed-looking, so a lorem/length-only check does not catch them;
+    // a README can be >100 chars and still render a literal indicator token in place of the
+    // actual description (extensions/agents/{doc-cartographer,doc-consumer,doc-evangelist,
+    // doc-reviewer}/README.md, 3 commits, undetected).
+    const BLOCK_SCALAR_RE = /^>?\s*[|>][+-]?\d*$/;
+    const DESC_FRONTMATTER_LEAK_RE = /^description:\s*[|>]?[+-]?\d*\s*$/i;
+    const readmeLines = readmeContent.split(/\r?\n/);
+    let leakedLineNumber = -1;
+    let leakedLineTrimmed = '';
+    for (let i = 0; i < readmeLines.length; i++) {
+      const trimmed = (readmeLines[i] ?? '').trim();
+      if (trimmed.length > 0 && (BLOCK_SCALAR_RE.test(trimmed) || DESC_FRONTMATTER_LEAK_RE.test(trimmed))) {
+        leakedLineNumber = i + 1;
+        leakedLineTrimmed = trimmed;
+        break;
+      }
+    }
+    if (leakedLineNumber !== -1) {
+      // Hardcoded 'error' — unlike the rest of this advisory (warn/strict-toggled) function,
+      // this is a hard structural defect: a raw YAML control token rendered into rendered
+      // README output. It has already shipped undetected through 3 commits (BL 5b69402d)
+      // because the surrounding placeholder check is length/lorem-only and this is neither.
+      diags.push({
+        path: readmePath,
+        message:
+          `README.md line ${leakedLineNumber} is a bare YAML block-scalar indicator or ` +
+          `"description:" frontmatter leak ("${leakedLineTrimmed}") instead of real content. ` +
+          `Replace it with the actual description text (BL 5b69402d).`,
+        severity: 'error',
       });
     }
   }
