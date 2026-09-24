@@ -1089,7 +1089,7 @@ describe('restartAndVerify — BL-372 [inv:deploy-verified]', () => {
     });
 
     expect(result.ok).toBe(false);
-    expect(result.kickstart.code).toBe(1);
+    expect(result.kickstart?.code).toBe(1);
     expect(reapCalled).toBe(false);
     expect(result.reason).toMatch(/kickstart FAILED/);
   });
@@ -1193,7 +1193,10 @@ describe('restartAndVerify — kickstart:false (--backend-only)', () => {
     });
 
     expect(kickstartCalled).toBe(false);
-    expect(result.kickstart).toEqual({ code: 0, stdout: '', stderr: '' });
+    // BL a49ca837 follow-up: no fake `{code:0,...}` when kickstart was skipped —
+    // `kickstart` is undefined and `kickstartSkipped` is the honest signal.
+    expect(result.kickstart).toBeUndefined();
+    expect(result.kickstartSkipped).toBe(true);
     expect(result.ok).toBe(true);
     expect(result.rotated).toBe(true);
   });
@@ -1258,7 +1261,8 @@ describe('restartAndVerify — kickstart:false (--backend-only)', () => {
     });
 
     expect(seenExcludePids).toEqual([]);
-    expect(result.kickstart.code).toBe(0);
+    expect(result.kickstart).toBeUndefined();
+    expect(result.kickstartSkipped).toBe(true);
   });
 
   it('a49ca837: restartAndVerify kickstart:false rotates backend without kickstart', async () => {

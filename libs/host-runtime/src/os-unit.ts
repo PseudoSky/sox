@@ -1728,7 +1728,10 @@ export interface RestartAndVerifyOptions {
 export interface RestartAndVerifyResult {
   label: string;
   token: string;
-  kickstart: OsExecResult;
+  /** Absent (not a fake `{code:0,...}`) when `kickstart:false` skipped it — see `kickstartSkipped`. */
+  kickstart?: OsExecResult;
+  /** True when `opts.kickstart === false` skipped `platform.kickstart` entirely (backend-only restart). */
+  kickstartSkipped?: true;
   before: number[];
   after: number[];
   reap: ReapResult;
@@ -1783,20 +1786,24 @@ export async function restartAndVerify(opts: RestartAndVerifyOptions): Promise<R
   const before = findMatches(opts.token, excludeOpt).map((m) => m.pid);
   log(`before: matching-pids=[${before.join(', ')}]`);
 
-  let kickstart: OsExecResult;
+  let kickstart: OsExecResult | undefined;
+  // exactOptionalPropertyTypes: only spread these keys in when they have a real
+  // value — never assign an explicit `undefined`, which the compiler (rightly)
+  // treats as distinct from "key absent".
+  const kickstartField = () => (kickstart !== undefined ? { kickstart } : {});
+  const kickstartSkippedField = () => (doKickstart ? {} : { kickstartSkipped: true as const });
   if (doKickstart) {
     kickstart = opts.platform.kickstart(opts.label, exec);
     log(`kickstart: exit ${kickstart.code}`);
     if (kickstart.code !== 0) {
       return {
-        label: opts.label, token: opts.token, kickstart, before, after: before,
+        label: opts.label, token: opts.token, ...kickstartField(), before, after: before,
         reap: { token: opts.token, killed: [] }, undead: [], rotated: false, ok: false,
         reason: `kickstart FAILED (code ${kickstart.code})`,
       };
     }
   } else {
     log('kickstart: skipped (kickstart:false, backend-only restart)');
-    kickstart = { code: 0, stdout: '', stderr: '' };
   }
 
   const reap = await reapFn(opts.token, { ...excludeOpt, log: (m: string) => log(`reaper: ${m}`) });
@@ -1804,7 +1811,8 @@ export async function restartAndVerify(opts: RestartAndVerifyOptions): Promise<R
   if (undead.length > 0) {
     const after = findMatches(opts.token, excludeOpt).map((m) => m.pid);
     return {
-      label: opts.label, token: opts.token, kickstart, before, after, reap, undead,
+      label: opts.label, token: opts.token, ...kickstartField(), ...kickstartSkippedField(),
+      before, after, reap, undead,
       rotated: false, ok: false,
       reason: `survivor(s) could not be confirmed dead (undead): [${undead.join(', ')}]`,
     };
@@ -1827,7 +1835,8 @@ export async function restartAndVerify(opts: RestartAndVerifyOptions): Promise<R
   } while (Date.now() < deadline);
 
   return {
-    label: opts.label, token: opts.token, kickstart, before, after, reap, undead,
+    label: opts.label, token: opts.token, ...kickstartField(), ...kickstartSkippedField(),
+    before, after, reap, undead,
     rotated, ok: rotated,
     ...(rotated ? {} : {
       reason: `[inv:deploy-verified] violated: no pid rotated within ${waitMs}ms `
