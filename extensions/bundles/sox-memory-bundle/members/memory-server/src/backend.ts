@@ -516,12 +516,15 @@ export async function runBackend(opts: {
   // `coordinatedShutdown`'s doc comment for why a second, independent listener
   // (formerly in index.ts) was actively harmful.
   let handle: { socketPath: string; close: () => Promise<void> } | null = null;
-  // BL-405: only back up a path that was EXPLICITLY configured — never
-  // resolveDbPath(undefined)'s guessed `~/.memory/memory.db` fallback. A real
-  // deployed backend always has SOX_CONFIG_DB_PATH injected by the host
-  // runtime; a bare/test spawn never does, and must not guess its way into
-  // touching the live production store. See `coordinatedShutdown`'s
-  // `dbPathForBackup` parameter doc for the incident this guards against.
+  // BL-405 / BL 0c3522c2: only back up a path that was EXPLICITLY configured.
+  // `resolveDbPath` no longer has a third-tier default to guess with — an
+  // unconfigured call now returns `null` outright (BL 0c3522c2 fail-closed) —
+  // but this guard still gates on `configuredDbPath` directly rather than
+  // trusting `resolveDbPath(undefined)` alone, since a real deployed backend
+  // always has SOX_CONFIG_DB_PATH injected by the host runtime, and a
+  // bare/test spawn never does and must not attempt to back up any store at
+  // all. See `coordinatedShutdown`'s `dbPathForBackup` parameter doc for the
+  // incident this guards against.
   const configuredDbPath = (process.env['SOX_CONFIG_DB_PATH'] ?? '').trim();
   const dbPathForBackup = configuredDbPath ? resolveDbPath(undefined) : null;
   process.on('SIGTERM', () => { void coordinatedShutdown('SIGTERM', () => handle, dbPathForBackup, exit); });

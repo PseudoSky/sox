@@ -1172,11 +1172,12 @@ async function handleToolCallImpl(name: string, args: Record<string, unknown>): 
     // `db_path` AND the host never injected SOX_CONFIG_DB_PATH — that
     // combination only arises when the process was spawned bare (a test
     // harness, a stray `node index.js`), never from a properly configured
-    // install (the host always injects SOX_CONFIG_DB_PATH). In that case the
-    // resolution below would otherwise silently fall through to
-    // `resolveDbPath`'s final default (`~/.memory/memory.db`, the user's real
-    // production store) purely to answer "are you reachable?". Refuse to
-    // resolve at all in that case; report `configured: false` instead.
+    // install (the host always injects SOX_CONFIG_DB_PATH). BL 0c3522c2
+    // removed `resolveDbPath`'s third-tier default entirely — it now returns
+    // `null` in this case rather than silently guessing `~/.memory/memory.db`
+    // — but a liveness check must still refuse to resolve *anything* here
+    // purely to answer "are you reachable?"; report `configured: false`
+    // instead of opening (or attempting to open) any store.
     let storeBlock: Record<string, unknown> | null = null;
     // BL-373 family (ping honesty): capture WHY the store is not open, and
     // whether it ever opened. `store: null` was the incident's false-positive
