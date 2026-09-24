@@ -1,0 +1,39 @@
+{
+  "$schema": "https://your-registry/schemas/extension/v2.json",
+  "id": "dispatch-status",
+  "version": "1.4.0",
+  "type": "skill",
+  "title": "dispatch-status — the dispatcher's read-only status playbook",
+  "description": "Use this on \"status\", \"what's in flight\", \"what's left\", or at close of every dispatcher run. The dispatcher's read-only playbook — answer \"where are we\" for the current run — in-flight and finished dispatches with their verified state, Task-list status, backlog items touched this run, open plans and claims, and unrecorded transitions. Also run before every dispatcher return to prove nothing is orphaned. Dispatches nothing, writes nothing. Load on \"status\", \"what's in flight\", \"what's left\", or at close.",
+  "compatibility": {
+    "host": ">=1.0.0 <2.0.0"
+  },
+  "license": "MIT",
+  "author": "sox",
+  "keywords": [
+    "dispatch",
+    "orchestrator",
+    "playbook",
+    "status",
+    "read-only"
+  ],
+  "runtime": "declarative",
+  "entrypoint": "SKILL.md",
+  "run_interface": {
+    "input_schema": {
+      "type": "object",
+      "properties": {}
+    },
+    "output_schema": {
+      "type": "object",
+      "properties": {}
+    }
+  },
+  "install": {
+    "type": "skill",
+    "hosts": [
+      "claude",
+      "opencode"
+    ]
+  }
+}

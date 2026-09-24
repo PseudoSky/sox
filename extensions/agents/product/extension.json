@@ -1,10 +1,10 @@
 {
   "$schema": "https://your-registry/schemas/extension/v2.json",
   "id": "product",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "type": "agent",
   "title": "product",
-  "description": "Use this when you need a senior product manager (deepseek-flash) to own product strategy, roadmap, feature prioritization, and new-feature research (competitive analysis, market trends, user need discovery). Delegates broad discovery to `researcher` (never freelances a web search) and uses GitNexus-first codebase awareness. Differentiate from `backend`/`typescript`: this agent decides WHAT and WHY; it does not implement.",
+  "description": "Use this when you need a senior product manager to own product strategy, roadmap, feature prioritization, and new-feature research (competitive analysis, market trends, user need discovery). Delegates broad discovery to `researcher` (never freelances a web search) and uses GitNexus-first codebase awareness. Differentiate from `backend`/`typescript`: this agent decides WHAT and WHY; it does not implement.",
   "compatibility": {
     "host": ">=1.0.0 <2.0.0"
   },
@@ -20,7 +20,7 @@
   "invocation": {
     "protocol": "function-export",
     "handler": "run",
-    "description": "Declarative agent — host reads the .md definition file directly."
+    "description": "Declarative agent — host reads the prose body and renders the host header from agent/render at install time."
   },
   "install": {
     "type": "agent",
@@ -32,5 +32,94 @@
   },
   "requires": {
     "tool_calling": true
+  },
+  "agent": {
+    "name": "product",
+    "description": "Senior product manager. Owns product strategy, roadmap, feature prioritization, and new-feature research (competitive analysis, market trends, user need discovery). Delegates broad discovery to `researcher` (never freelances a web search) and uses GitNexus-first codebase awareness. Differentiate from `backend`/`typescript`: this agent decides WHAT and WHY; it does not implement.",
+    "model": "sonnet",
+    "mode": "all",
+    "temperature": 0.4,
+    "tools": [
+      "read",
+      "edit",
+      "glob",
+      "grep",
+      "bash",
+      "webfetch",
+      "task",
+      "todowrite",
+      "question",
+      "skill",
+      { "logical": "memory", "server": "memory-server" },
+      { "logical": "gitnexus", "server": "gitnexus" },
+      { "logical": "search", "server": "search" }
+    ],
+    "permission": {
+      "read": "allow",
+      "edit": "allow",
+      "glob": "allow",
+      "grep": "allow",
+      "bash": {
+        "*": "allow",
+        "npx nx *": "allow",
+        "npx gitnexus *": "allow",
+        "git status*": "allow",
+        "git diff*": "allow",
+        "git log*": "allow",
+        "git stash*": "deny",
+        "git add -A*": "deny",
+        "git add .*": "deny",
+        "git add --all*": "deny",
+        "git reset --hard*": "deny",
+        "git push --force*": "deny",
+        "git push *--no-verify*": "deny",
+        "git clean *-f*": "deny",
+        "rm -rf *": "deny"
+      },
+      "webfetch": "allow",
+      "websearch": "deny",
+      "task": "allow",
+      "todowrite": "allow",
+      "question": "allow",
+      "skill": "allow",
+      "memory_*": "allow",
+      "gitnexus_*": "allow",
+      "search_*": "allow"
+    }
+  },
+  "render": {
+    "claude": {
+      "model": "sonnet",
+      "tools": [
+        "Read",
+        "Edit",
+        "Glob",
+        "Grep",
+        "Bash",
+        "WebFetch",
+        "Task",
+        "TodoWrite",
+        "AskUserQuestion",
+        "Skill",
+        "TaskCreate",
+        "TaskGet",
+        "TaskUpdate",
+        "TaskList",
+        "mcp__memory-server__*",
+        "mcp__gitnexus__*",
+        "mcp__search__*",
+        "ToolSearch"
+      ],
+      "toolMap": {
+        "memory": "memory-server",
+        "gitnexus": "gitnexus",
+        "search": "search"
+      }
+    },
+    "opencode": {
+      "model": "deepseek/deepseek-flash",
+      "mode": "all",
+      "temperature": 0.4
+    }
   }
 }

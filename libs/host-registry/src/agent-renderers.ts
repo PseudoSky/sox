@@ -6,9 +6,10 @@
  * (docs/spec/cross-platform-install-rendering.md). Each host module attaches the
  * matching renderer as `render` on its HostModule.
  *
- * claude  → YAML frontmatter (name, description, tools, model, version)
- * opencode → YAML frontmatter (name, description, mode, temperature, permission)
- * codex   → TOML [agents.<name>] config value (description, model, prompt)
+ * claude  → YAML frontmatter (name, description, tools, model, version, maxTurns)
+ * opencode → YAML frontmatter (name, description, mode, temperature, permission, steps)
+ * codex   → TOML [agents.<name>] config value (description, model, prompt) — no
+ *           step/turn-budget field known yet, so ir.steps is not rendered there.
  *
  * Renderers are pure functions of (ir, prose, override, host rule). No host
  * module hardcodes another server's registration key — concrete server keys come
@@ -54,6 +55,30 @@ function splitTools(ir: AgentIr): { builtins: string[]; mcp: Array<{ logical: st
 
 // ─── claude ──────────────────────────────────────────────────────────────────
 
+/**
+ * IR `permission` deny -> claude `disallowedTools` mapping (BL 33a99177).
+ * Ordered as [{tool, permKey}, ...] so the emitted `disallowedTools` list
+ * follows this table's order regardless of which IR keys are actually
+ * denied — e.g. edit:deny + write:deny renders "Edit, Write, NotebookEdit",
+ * not "Edit, NotebookEdit, Write" (edit contributes two claude tool names,
+ * write's single name sits between them).
+ */
+const CLAUDE_DISALLOWED_TOOL_MAP: ReadonlyArray<{ tool: string; permKey: string }> = [
+  { tool: 'Edit', permKey: 'edit' },
+  { tool: 'Write', permKey: 'write' },
+  { tool: 'NotebookEdit', permKey: 'edit' },
+];
+
+/** Derive claude's `disallowedTools` header value from an IR/override permission map. */
+function claudeDisallowedTools(
+  permission: Record<string, string | Record<string, string>> | undefined,
+): string[] {
+  if (permission === undefined) return [];
+  return CLAUDE_DISALLOWED_TOOL_MAP.filter((m) => permission[m.permKey] === 'deny').map(
+    (m) => m.tool,
+  );
+}
+
 const claudeRenderer: HostRenderer = {
   renderHeader(ir, override) {
     const header: Record<string, unknown> = {};
@@ -76,6 +101,18 @@ const claudeRenderer: HostRenderer = {
 
     header['model'] = override?.model ?? ir.model ?? 'sonnet';
     if (override?.version !== undefined) header['version'] = override.version;
+    // Claude's harness-enforced turn cap. Field name is `maxTurns`, not `steps`
+    // (spec §4.4) — see claude-agents categories/dispatch/agents/architect-decision.md.
+    const steps = override?.steps ?? ir.steps;
+    if (steps !== undefined) header['maxTurns'] = steps;
+
+    // BL 33a99177: the IR `permission` map is opencode-shaped, but an edit/write
+    // deny is a harness-level guarantee (e.g. dispatcher's never-execute rule)
+    // that must survive rendering to claude too — map it to `disallowedTools`.
+    const permission = override?.permission ?? ir.permission;
+    const disallowedTools = claudeDisallowedTools(permission);
+    if (disallowedTools.length > 0) header['disallowedTools'] = disallowedTools.join(', ');
+
     return header;
   },
 
@@ -119,6 +156,8 @@ const opencodeRenderer: HostRenderer = {
     if (temperature !== undefined) header['temperature'] = temperature;
     const permission = override?.permission ?? ir.permission;
     if (permission !== undefined) header['permission'] = permission;
+    const steps = override?.steps ?? ir.steps;
+    if (steps !== undefined) header['steps'] = steps;
     return header;
   },
 
@@ -151,6 +190,10 @@ const codexRenderer: HostRenderer = {
     const header: Record<string, unknown> = {};
     if (description !== undefined) header['description'] = description;
     if (model !== undefined) header['model'] = model;
+    // ir.steps / override.steps deliberately NOT rendered: codex's
+    // `[agents.<name>]` TOML schema has no known step/turn-budget field as of
+    // this spec (docs/spec/cross-platform-install-rendering.md §4.4). Revisit
+    // if/when codex ships an equivalent.
     return header;
   },
 

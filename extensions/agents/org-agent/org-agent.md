@@ -1,10 +1,3 @@
----
-name: org-agent
-description: org-agent extension
-tools: Read, Write, Edit, Bash, Glob, Grep
-model: sonnet
----
-
 # org-agent
 
 org-agent extension
