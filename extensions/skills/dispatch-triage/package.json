@@ -1,0 +1,15 @@
+{
+  "name": "@adhd/sox-extension-dispatch-triage",
+  "version": "1.4.0",
+  "description": "The dispatcher's playbook for an issue report — evidence before anything.",
+  "private": true,
+  "license": "MIT",
+  "author": "sox",
+  "keywords": [
+    "dispatch",
+    "orchestrator",
+    "playbook",
+    "triage",
+    "evidence"
+  ]
+}

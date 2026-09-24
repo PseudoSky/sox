@@ -115,6 +115,126 @@ describe('codex renderer', () => {
     expect(v.model).toBe('sonnet');
     expect(v.prompt).toBe(prose);
   });
+
+  it('never renders a step/turn budget — no known codex TOML field yet', () => {
+    const ir: AgentIr = { ...researcherIr, steps: 100 };
+    const r = agentRenderers.codex.render(ir, prose);
+    const v = (r as { value: Record<string, unknown> }).value;
+    expect(v['steps']).toBeUndefined();
+    expect(v['maxTurns']).toBeUndefined();
+  });
+});
+
+describe('steps (turn/step budget) rendering', () => {
+  const irWithSteps: AgentIr = { ...researcherIr, steps: 100 };
+
+  it('claude renders ir.steps as maxTurns', () => {
+    const r = agentRenderers.claude.render(irWithSteps, prose);
+    const content = (r as { content: string }).content;
+    expect(content).toContain('maxTurns: 100');
+  });
+
+  it('claude omits maxTurns entirely when steps is not set', () => {
+    const r = agentRenderers.claude.render(researcherIr, prose);
+    const content = (r as { content: string }).content;
+    expect(content).not.toContain('maxTurns');
+  });
+
+  it('claude prefers an override steps value over the IR value', () => {
+    const r = agentRenderers.claude.render(irWithSteps, prose, { steps: 6 });
+    const content = (r as { content: string }).content;
+    expect(content).toContain('maxTurns: 6');
+    expect(content).not.toContain('maxTurns: 100');
+  });
+
+  it('opencode renders ir.steps as steps', () => {
+    const r = agentRenderers.opencode.render(irWithSteps, prose);
+    const content = (r as { content: string }).content;
+    expect(content).toContain('steps: 100');
+  });
+
+  it('opencode omits steps entirely when not set', () => {
+    const r = agentRenderers.opencode.render(researcherIr, prose);
+    const content = (r as { content: string }).content;
+    expect(content).not.toContain('steps:');
+  });
+
+  it('opencode prefers an override steps value over the IR value', () => {
+    const r = agentRenderers.opencode.render(irWithSteps, prose, { steps: 90 });
+    const content = (r as { content: string }).content;
+    expect(content).toContain('steps: 90');
+    expect(content).not.toContain('steps: 100');
+  });
+});
+
+describe('disallowedTools from IR permission denies (BL 33a99177)', () => {
+  // Regression for the claude renderer silently dropping an edit/write deny —
+  // e.g. dispatcher's IR sets permission.edit/write to "deny" so its
+  // never-execute rule holds at the harness level, but agentRenderers.claude
+  // emitted no disallowedTools line at all, so an installed claude header let
+  // Edit/Write/NotebookEdit through anyway.
+  const dispatcherLikeIr: AgentIr = {
+    name: 'dispatcher',
+    description: 'Orchestration authority that never executes.',
+    model: 'opus',
+    tools: ['read', 'bash'],
+    permission: {
+      read: 'allow',
+      edit: 'deny',
+      write: 'deny',
+      bash: { '*': 'allow' },
+    },
+  };
+
+  it('renders "disallowedTools: Edit, Write, NotebookEdit" for an IR with edit+write deny', () => {
+    const r = agentRenderers.claude.render(dispatcherLikeIr, prose);
+    const content = (r as { content: string }).content;
+    expect(content).toContain('disallowedTools: Edit, Write, NotebookEdit');
+  });
+
+  it('maps edit:deny alone to Edit, NotebookEdit (write allowed stays off the list)', () => {
+    const ir: AgentIr = { ...dispatcherLikeIr, permission: { edit: 'deny' } };
+    const r = agentRenderers.claude.render(ir, prose);
+    const content = (r as { content: string }).content;
+    expect(content).toContain('disallowedTools: Edit, NotebookEdit');
+    expect(content).not.toContain('Write,');
+  });
+
+  it('maps write:deny alone to Write only', () => {
+    const ir: AgentIr = { ...dispatcherLikeIr, permission: { write: 'deny' } };
+    const r = agentRenderers.claude.render(ir, prose);
+    const content = (r as { content: string }).content;
+    expect(content).toContain('disallowedTools: Write');
+    expect(content).not.toContain('Edit');
+  });
+
+  it('emits no disallowedTools line when neither edit nor write is denied', () => {
+    const r = agentRenderers.claude.render(researcherIr, prose);
+    const content = (r as { content: string }).content;
+    expect(content).not.toContain('disallowedTools');
+  });
+
+  it('emits no disallowedTools line when the IR carries no permission map at all', () => {
+    const { permission: _omit, ...irWithoutPermission } = dispatcherLikeIr;
+    const ir: AgentIr = irWithoutPermission;
+    const r = agentRenderers.claude.render(ir, prose);
+    const content = (r as { content: string }).content;
+    expect(content).not.toContain('disallowedTools');
+  });
+
+  it('an override permission map takes precedence over the IR permission map', () => {
+    const r = agentRenderers.claude.render(dispatcherLikeIr, prose, {
+      permission: { edit: 'allow', write: 'allow' },
+    });
+    const content = (r as { content: string }).content;
+    expect(content).not.toContain('disallowedTools');
+  });
+
+  it('opencode renderer is unaffected — no disallowedTools field exists there', () => {
+    const r = agentRenderers.opencode.render(dispatcherLikeIr, prose);
+    const content = (r as { content: string }).content;
+    expect(content).not.toContain('disallowedTools');
+  });
 });
 
 describe('determinism', () => {

@@ -1,0 +1,38 @@
+{
+  "$schema": "https://your-registry/schemas/extension/v2.json",
+  "id": "dispatch-plan",
+  "version": "1.4.0",
+  "type": "skill",
+  "title": "dispatch-plan — the dispatcher's playbook for plan-state-machine plans",
+  "description": "Use this when a plan is named or discovered — the user explicitly asks for a plan, points at docs/plan/<slug>/, or confirms an existing plan covers the area; otherwise the dispatcher stays in dispatch-direct. The dispatcher's playbook for plan-state-machine plans — used only when the user explicitly asks for a plan, points at docs/plan/<slug>/, or confirms after the dispatcher highlights that an existing plan covers the area. It never turns a direct request into a plan on its own. Delegates authoring/repair to plan-builder and execution to plan-orchestrator after a one-line confirmation; the dispatcher never authors, edits, or executes a plan itself. Load when a plan is named or discovered; otherwise stay in dispatch-direct.",
+  "compatibility": {
+    "host": ">=1.0.0 <2.0.0"
+  },
+  "license": "MIT",
+  "author": "sox",
+  "keywords": [
+    "dispatch",
+    "orchestrator",
+    "playbook",
+    "plan-state-machine"
+  ],
+  "runtime": "declarative",
+  "entrypoint": "SKILL.md",
+  "run_interface": {
+    "input_schema": {
+      "type": "object",
+      "properties": {}
+    },
+    "output_schema": {
+      "type": "object",
+      "properties": {}
+    }
+  },
+  "install": {
+    "type": "skill",
+    "hosts": [
+      "claude",
+      "opencode"
+    ]
+  }
+}

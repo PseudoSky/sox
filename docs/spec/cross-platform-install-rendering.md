@@ -150,7 +150,8 @@ An `agent` extension becomes two inputs:
       "memory_*": "allow",
       "bash": { "*": "allow", "git stash*": "deny", "git reset --hard*": "deny",
                 "rm -rf *": "deny" }
-    }
+    },
+    "steps": 100                                // step/turn budget — host-mapped, see §4.4
   }
 }
 ```
@@ -231,6 +232,7 @@ resolved as **both**, because they serve different needs):
 | `tools` (logical) | ✓ | ✓ (concrete) | see §5.3 tool-name mapping |
 | `permission` | ✓ | ✓ | opencode-specific; claude/codex use config surfaces |
 | `version` (display) | — | ✓ | claude display field; meaningless to others |
+| `steps` | ✓ | ✓ | step/turn budget — host-mapped, not host-verbatim: opencode renders `steps:` as-is; claude renders it as its own `maxTurns:` field (its harness-enforced turn cap — see `~/dev/ai/claude-agents` agents that already carry `maxTurns`, e.g. `architect-decision.md`); codex omits it (no known equivalent TOML field as of this spec — revisit if codex ships one) |
 
 ---
 

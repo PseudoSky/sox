@@ -134,6 +134,8 @@ importers:
 
   extensions/agents/architect: {}
 
+  extensions/agents/backlog-operator: {}
+
   extensions/agents/debug: {}
 
   extensions/agents/dispatcher: {}
@@ -246,11 +248,23 @@ importers:
         specifier: workspace:^
         version: link:../../../libs/tokenguard-core
 
+  extensions/skills/backlog-intake: {}
+
   extensions/skills/demo-creator: {}
 
   extensions/skills/di-codex-skill: {}
 
   extensions/skills/di-skill: {}
+
+  extensions/skills/dispatch-contract: {}
+
+  extensions/skills/dispatch-direct: {}
+
+  extensions/skills/dispatch-plan: {}
+
+  extensions/skills/dispatch-status: {}
+
+  extensions/skills/dispatch-triage: {}
 
   extensions/skills/forbidden-skill: {}
 

@@ -1,0 +1,13 @@
+{
+  "name": "@adhd/sox-extension-backlog-operator",
+  "version": "0.1.1",
+  "description": "Fixed-playbook operator for the backlog graph",
+  "private": true,
+  "license": "MIT",
+  "author": "sox",
+  "keywords": [
+    "backlog",
+    "operator",
+    "graph"
+  ]
+}

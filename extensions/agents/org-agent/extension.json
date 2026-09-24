@@ -1,8 +1,9 @@
 {
-  "$schema": "https://your-registry/schemas/extension/v1.json",
+  "$schema": "https://your-registry/schemas/extension/v2.json",
   "id": "memory-org",
+  "version": "0.1.1",
   "type": "agent",
-  "title": "memory-org",
+  "title": "org-agent",
   "description": "Use this when you need an agent that organises or retrieves memories scoped to a project or organisation.",
   "keywords": ["memory", "organisation", "agent"],
   "author": "sox-ecosystem",
@@ -15,7 +16,42 @@
   "invocation": {
     "protocol": "function-export",
     "handler": "run",
-    "description": "Declarative agent — host reads the .md definition file directly."
+    "description": "Declarative agent — host reads the prose body and renders the host header from agent/render at install time."
+  },
+  "requires": {
+    "tool_calling": true
+  },
+  "agent": {
+    "name": "org-agent",
+    "description": "Agent that organises or retrieves memories scoped to a project or organisation.",
+    "model": "sonnet",
+    "tools": [
+      "read",
+      "write",
+      "edit",
+      "bash",
+      "glob",
+      "grep"
+    ],
+    "permission": {
+      "read": "allow",
+      "write": "allow",
+      "edit": "allow",
+      "bash": {
+        "*": "allow"
+      },
+      "glob": "allow",
+      "grep": "allow"
+    }
+  },
+  "render": {
+    "claude": {
+      "model": "sonnet",
+      "version": "v0.1.1"
+    },
+    "opencode": {
+      "model": "deepseek/deepseek-flash"
+    }
   },
   "install": {
     "type": "agent",
