@@ -497,6 +497,17 @@ export async function memoryRecall(
     total: 1,
   });
 
+  // BL-a7979853: hoisted above the try/finally below so the finally block
+  // (which fires on every exit path — normal return, early return, or a
+  // thrown ExpansionOverflowError) can read the values assigned deeper in
+  // the function body. Reassigned in place further down; never re-declared.
+  let response: RecallResponse | undefined;
+  let degradations: string[] = [];
+  let embedVecFailed = false;
+  let queryVecJson: string | undefined;
+  let beforeCount = 0;
+
+  try {
   // DEBT-SOXGRAPH-001: only the vec channel needs a dialect object anymore —
   // the FTS channel is fully delegated to `adapter.ftsSearch` (store-adapter's
   // A2 API), which owns all per-backend FTS SQL itself.
@@ -507,7 +518,7 @@ export async function memoryRecall(
   const knnLimit = filters ? Math.max(DEFAULT_KNN_LIMIT, (limit || 20) * 2) : DEFAULT_KNN_LIMIT;
   const ftsLimit = filters ? Math.max(DEFAULT_FTS_LIMIT, (limit || 20) * 2) : DEFAULT_FTS_LIMIT;
 
-  const beforeCount = getProviderCallCount();
+  beforeCount = getProviderCallCount();
 
   // BUG-MEMORY-003: computed unconditionally (not gated behind `if (filters)`
   // below) — the null-content-padding bug reproduces with zero filters
@@ -634,9 +645,6 @@ export async function memoryRecall(
   // BL-391: collects non-fatal per-channel failures so a caller can tell
   // "channel found nothing" apart from "channel died silently" — surfaced on
   // RecallResponse.degradations instead of being swallowed by a bare catch.
-  const degradations: string[] = [];
-  let embedVecFailed = false;
-  let queryVecJson: string | undefined;
   if (recallVecCircuitOpenedAt !== 0) {
     // Circuit open: this recall NEVER pays the embed timeout — always go
     // FTS-only. Separately (not awaited, doesn't block this response), claim
@@ -843,7 +851,7 @@ export async function memoryRecall(
     // succeeded. Computing the same `getProviderCallCount() - beforeCount`
     // delta used by the non-empty path keeps both branches honest and
     // consistent with each other.
-    const response: RecallResponse = {
+    response = {
       results: [],
       provider_call_count: getProviderCallCount() - beforeCount,
       metadata: {
@@ -1317,7 +1325,7 @@ export async function memoryRecall(
     ? totalTokensAfterExpansion
     : tokenCount;
 
-  const response: RecallResponse = {
+  response = {
     results,
     provider_call_count: providerCallCount,
     metadata: {
@@ -1332,6 +1340,21 @@ export async function memoryRecall(
   if (filterStats) response.filterStats = filterStats;
   if (degradations.length > 0) response.degradations = degradations;
   return response;
+  } finally {
+    // BL-a7979853: exactly one persisted outcome event per memoryRecall call,
+    // on every exit path (early empty-corpus return, normal return, or a
+    // thrown ExpansionOverflowError) — so vec-channel usage is countable from
+    // the log across restarts. vec_used mirrors the gate at the vec0 KNN call
+    // site above (queryVecJson set AND the embed attempt didn't fail).
+    tlog.info('recall.finish', {
+      scope,
+      vec_used: !!queryVecJson && !embedVecFailed,
+      degradations,
+      result_count: response?.results?.length ?? 0,
+      total_ms: Math.round(performance.now() - recallT0),
+      provider_call_count: getProviderCallCount() - beforeCount,
+    });
+  }
 }
 
 // ── Federation (design.md §2.7) ───────────────────────────────────────────────
@@ -1579,16 +1602,30 @@ export async function federatedRecall(
   params: RecallParams,
 ): Promise<FederatedRecallResponse> {
   if (!stores || stores.length === 0) {
+    tlog.info('recall.federated_finish', {
+      scope: 'federated',
+      vec_used: false,
+      degradations: [],
+      result_count: 0,
+      total_ms: 0,
+      provider_call_count: 0,
+    });
     return { results: [], provider_call_count: 0, degradations: [] };
   }
 
   const beforeCount = getProviderCallCount();
-
+  // BL-a7979853: hoisted above the try/finally below so the finally block
+  // (every exit path) can read them. Reassigned in place further down.
+  let results: RecallResult[] = [];
+  let federationDegradations: string[] = [];
   // BL-TELEMETRY-EMBED-GAP: federated-recall entry timestamp — same purpose
   // as memoryRecall's recallT0 (see its 'recall.start' comment): makes the
   // per-store connection-open cost attributable instead of vanishing into
-  // the gap before the first store's embed.start.
+  // the gap before the first store's embed.start. Hoisted above try/finally
+  // (BL-a7979853) so the finally block below can read it.
   const federatedT0 = performance.now();
+
+  try {
   // Distinct event name from the per-store 'recall.start' each memoryRecall
   // call below emits — sharing the name would make one federated query emit
   // N+1 'recall.start' records and over-count any dashboard keyed on it.
@@ -1598,7 +1635,7 @@ export async function federatedRecall(
 
   // (BL-391) Accumulates every non-fatal degradation across all stores —
   // never dropped. See FederatedRecallResponse.degradations doc comment.
-  const federationDegradations: string[] = [];
+  federationDegradations = [];
 
   // Use cached connections (warm page cache, amortize open cost).
   interface OpenConn { scope: string; dbPath: string; adapter: StoreAdapter | null }
@@ -1704,7 +1741,7 @@ export async function federatedRecall(
   // 6. Sort + assemble within token_budget
   const sorted = [...candidateMap.values()].sort((a, b) => b.weightedScore - a.weightedScore);
 
-  const results: RecallResult[] = [];
+  results = [];
   let tokenCount = 0;
   for (const cand of sorted) {
     if (results.length >= limit) break;
@@ -1718,6 +1755,21 @@ export async function federatedRecall(
 
   const afterCount = getProviderCallCount();
   return { results, provider_call_count: afterCount - beforeCount, degradations: federationDegradations };
+  } finally {
+    // BL-a7979853: exactly one persisted outcome event per federatedRecall
+    // call, distinct from the per-store 'recall.finish' each memoryRecall
+    // call underneath emits (so a federated search is not double-counted
+    // with its inner per-store calls). Fires on every exit path.
+    const providerDelta = getProviderCallCount() - beforeCount;
+    tlog.info('recall.federated_finish', {
+      scope: 'federated',
+      vec_used: providerDelta > 0,
+      degradations: federationDegradations,
+      result_count: results.length,
+      total_ms: Math.round(performance.now() - federatedT0),
+      provider_call_count: providerDelta,
+    });
+  }
 }
 
 // ── Helper functions (centralized from client/db.ts) ─────────────────────
