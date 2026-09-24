@@ -116,6 +116,13 @@ export interface AgentIr {
   tools?: AgentToolRef[];
   /** opencode agent-frontmatter permission map: action | (pattern -> action). */
   permission?: Record<string, string | Record<string, string>>;
+  /**
+   * Step/turn budget for the agent. Host-mapped, not host-verbatim (spec
+   * §4.4): opencode renders it as `steps`; claude renders it as `maxTurns`
+   * (its harness-enforced turn cap — see claude-agents `architect-decision.md`
+   * for a live example); codex omits it (no known equivalent as of this spec).
+   */
+  steps?: number;
 }
 
 /**
@@ -134,6 +141,8 @@ export interface AgentOverride {
   version?: string;
   toolMap?: Record<string, string>;
   fallbackPath?: string;
+  /** Per-host override of the IR's `steps` budget (see AgentIr.steps). */
+  steps?: number;
 }
 
 /** Result of rendering an agent for one host. */

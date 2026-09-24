@@ -6,9 +6,10 @@
  * (docs/spec/cross-platform-install-rendering.md). Each host module attaches the
  * matching renderer as `render` on its HostModule.
  *
- * claude  → YAML frontmatter (name, description, tools, model, version)
- * opencode → YAML frontmatter (name, description, mode, temperature, permission)
- * codex   → TOML [agents.<name>] config value (description, model, prompt)
+ * claude  → YAML frontmatter (name, description, tools, model, version, maxTurns)
+ * opencode → YAML frontmatter (name, description, mode, temperature, permission, steps)
+ * codex   → TOML [agents.<name>] config value (description, model, prompt) — no
+ *           step/turn-budget field known yet, so ir.steps is not rendered there.
  *
  * Renderers are pure functions of (ir, prose, override, host rule). No host
  * module hardcodes another server's registration key — concrete server keys come
@@ -76,6 +77,10 @@ const claudeRenderer: HostRenderer = {
 
     header['model'] = override?.model ?? ir.model ?? 'sonnet';
     if (override?.version !== undefined) header['version'] = override.version;
+    // Claude's harness-enforced turn cap. Field name is `maxTurns`, not `steps`
+    // (spec §4.4) — see claude-agents categories/dispatch/agents/architect-decision.md.
+    const steps = override?.steps ?? ir.steps;
+    if (steps !== undefined) header['maxTurns'] = steps;
     return header;
   },
 
@@ -119,6 +124,8 @@ const opencodeRenderer: HostRenderer = {
     if (temperature !== undefined) header['temperature'] = temperature;
     const permission = override?.permission ?? ir.permission;
     if (permission !== undefined) header['permission'] = permission;
+    const steps = override?.steps ?? ir.steps;
+    if (steps !== undefined) header['steps'] = steps;
     return header;
   },
 
@@ -151,6 +158,10 @@ const codexRenderer: HostRenderer = {
     const header: Record<string, unknown> = {};
     if (description !== undefined) header['description'] = description;
     if (model !== undefined) header['model'] = model;
+    // ir.steps / override.steps deliberately NOT rendered: codex's
+    // `[agents.<name>]` TOML schema has no known step/turn-budget field as of
+    // this spec (docs/spec/cross-platform-install-rendering.md §4.4). Revisit
+    // if/when codex ships an equivalent.
     return header;
   },
 

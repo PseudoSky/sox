@@ -115,6 +115,56 @@ describe('codex renderer', () => {
     expect(v.model).toBe('sonnet');
     expect(v.prompt).toBe(prose);
   });
+
+  it('never renders a step/turn budget — no known codex TOML field yet', () => {
+    const ir: AgentIr = { ...researcherIr, steps: 100 };
+    const r = agentRenderers.codex.render(ir, prose);
+    const v = (r as { value: Record<string, unknown> }).value;
+    expect(v['steps']).toBeUndefined();
+    expect(v['maxTurns']).toBeUndefined();
+  });
+});
+
+describe('steps (turn/step budget) rendering', () => {
+  const irWithSteps: AgentIr = { ...researcherIr, steps: 100 };
+
+  it('claude renders ir.steps as maxTurns', () => {
+    const r = agentRenderers.claude.render(irWithSteps, prose);
+    const content = (r as { content: string }).content;
+    expect(content).toContain('maxTurns: 100');
+  });
+
+  it('claude omits maxTurns entirely when steps is not set', () => {
+    const r = agentRenderers.claude.render(researcherIr, prose);
+    const content = (r as { content: string }).content;
+    expect(content).not.toContain('maxTurns');
+  });
+
+  it('claude prefers an override steps value over the IR value', () => {
+    const r = agentRenderers.claude.render(irWithSteps, prose, { steps: 6 });
+    const content = (r as { content: string }).content;
+    expect(content).toContain('maxTurns: 6');
+    expect(content).not.toContain('maxTurns: 100');
+  });
+
+  it('opencode renders ir.steps as steps', () => {
+    const r = agentRenderers.opencode.render(irWithSteps, prose);
+    const content = (r as { content: string }).content;
+    expect(content).toContain('steps: 100');
+  });
+
+  it('opencode omits steps entirely when not set', () => {
+    const r = agentRenderers.opencode.render(researcherIr, prose);
+    const content = (r as { content: string }).content;
+    expect(content).not.toContain('steps:');
+  });
+
+  it('opencode prefers an override steps value over the IR value', () => {
+    const r = agentRenderers.opencode.render(irWithSteps, prose, { steps: 90 });
+    const content = (r as { content: string }).content;
+    expect(content).toContain('steps: 90');
+    expect(content).not.toContain('steps: 100');
+  });
 });
 
 describe('determinism', () => {
