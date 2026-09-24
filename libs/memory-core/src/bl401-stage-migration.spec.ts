@@ -89,7 +89,7 @@ describe('BL-401: memory-core is a real consumer of the stage substrate', () => 
     // silent zero nobody can distinguish from an idle system.
     expect(Object.keys(MEMORY_CORE_STAGES.stages.write_queue.paths.slice())).toHaveLength(2);
     expect(MEMORY_CORE_STAGES.stages.write_queue.paths).toEqual(['queued', 'bypass']);
-    expect(MEMORY_CORE_STAGES.stages.embed.paths).toEqual(['write', 'heal', 'reembed', 'recall']);
+    expect(MEMORY_CORE_STAGES.stages.embed.paths).toEqual(['write', 'heal', 'reembed', 'recall', 'warmup']);
 
     const zeroPaths = telemetrySelfCheck().paths_with_zero_samples;
     expect(zeroPaths).toContain('memory-core.embed:heal');

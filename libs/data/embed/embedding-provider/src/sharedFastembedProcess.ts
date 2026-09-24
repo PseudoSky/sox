@@ -1651,12 +1651,19 @@ let _privateSingleton: PrivateFastembedProcess | null = null;
 
 /**
  * The concrete shape {@link getPrivateFastembedProcess} returns: a
- * `SharedFastembedClient` that also exposes `pendingCount`. The extra member is
- * a SUBTYPE of the public interface (whose shape is deliberately unchanged) —
- * only the host process, which must know when in-flight work has drained before
- * it can reap itself, depends on it.
+ * `SharedFastembedClient` that also exposes `pendingCount` and `lastInit`. The
+ * extra members are a SUBTYPE of the public interface (whose shape is
+ * deliberately unchanged) — only the host process depends on them: `pendingCount`
+ * to know when in-flight work has drained before it can reap itself, and
+ * `lastInit` (BUG-021) so `embedHostMain.ts`'s keep-warm tick can skip ticking
+ * before any client has actually initialized the model — both concrete pool
+ * implementations (`FastembedProcessPool`, `AdaptiveFastembedProcessPool`)
+ * already expose a `lastInit` getter; this type just needs to say so.
  */
-export type PrivateFastembedProcess = SharedFastembedClient & { readonly pendingCount: number };
+export type PrivateFastembedProcess = SharedFastembedClient & {
+  readonly pendingCount: number;
+  readonly lastInit: Record<string, unknown> | null;
+};
 
 /**
  * The PRIVATE (un-funneled) pool — the OLD body of `getSharedFastembedProcess()`,
