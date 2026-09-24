@@ -706,11 +706,32 @@ export class SharedFastembedProcessClient implements SharedFastembedClient {
           const cpuMs = typeof (v as Record<string, unknown>)['cpu_ms'] === 'number'
             ? ((v as Record<string, unknown>)['cpu_ms'] as number)
             : undefined;
+          // (Page-in vs. compute, CoreML addendum) `host_majflt`/`host_minflt`
+          // are process.resourceUsage() major/minor page-fault DELTAS spanning
+          // the same window as work_ms/cpu_ms — ANE/GPU execution time never
+          // accrues to cpu_ms, so these are the signal that disambiguates a
+          // genuine page-in wait from ANE/GPU compute. `host_queue_ms` is the
+          // receipt->task-start wait on the CHILD's own serialized queue
+          // (distinct from this promise's send->settle `response_ms`, which
+          // also includes IPC marshalling). All three: absent on an error
+          // reply or a pre-instrumentation host — read as unknown, not zero.
+          const hostMajflt = typeof (v as Record<string, unknown>)['host_majflt'] === 'number'
+            ? ((v as Record<string, unknown>)['host_majflt'] as number)
+            : undefined;
+          const hostMinflt = typeof (v as Record<string, unknown>)['host_minflt'] === 'number'
+            ? ((v as Record<string, unknown>)['host_minflt'] as number)
+            : undefined;
+          const hostQueueMs = typeof (v as Record<string, unknown>)['host_queue_ms'] === 'number'
+            ? ((v as Record<string, unknown>)['host_queue_ms'] as number)
+            : undefined;
           log.info('fastembed_process.request.finish', {
             ...baseFields,
             response_ms: Math.round(performance.now() - sentAt),
             ...(workMs !== undefined ? { work_ms: workMs } : {}),
             ...(cpuMs !== undefined ? { cpu_ms: cpuMs } : {}),
+            ...(hostMajflt !== undefined ? { host_majflt: hostMajflt } : {}),
+            ...(hostMinflt !== undefined ? { host_minflt: hostMinflt } : {}),
+            ...(hostQueueMs !== undefined ? { host_queue_ms: hostQueueMs } : {}),
           });
           resolve(v as T);
         },

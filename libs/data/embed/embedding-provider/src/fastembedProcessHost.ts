@@ -235,9 +235,16 @@ interface EmbedBatchRequest {
 
 type HostRequest = InitRequest | EmbedRequest | EmbedBatchRequest | { __shutdown: true };
 
-interface InitOkResponse { id: number; initOk: true; dim: number; execution_provider: string; work_ms: number; cpu_ms: number }
-interface EmbedResponse { id: number; embedding: number[]; work_ms: number; cpu_ms: number }
-interface EmbedBatchResponse { id: number; embeddings: number[][]; work_ms: number; cpu_ms: number }
+// (Page-in telemetry, host-side) `host_majflt`/`host_minflt` are
+// process.resourceUsage() major/minor page-fault DELTAS spanning the same
+// window as work_ms/cpu_ms (see measureWork() below); `host_queue_ms` is the
+// receipt->task-start wait on this child's own serialized `_queue` (see
+// `handleRequest`). All three are optional: absent on an error reply (the
+// measured span never completed) or when resourceUsage() throws on a
+// platform that doesn't support it (guarded in measureWork()).
+interface InitOkResponse { id: number; initOk: true; dim: number; execution_provider: string; work_ms: number; cpu_ms: number; host_majflt?: number; host_minflt?: number; host_queue_ms?: number }
+interface EmbedResponse { id: number; embedding: number[]; work_ms: number; cpu_ms: number; host_majflt?: number; host_minflt?: number; host_queue_ms?: number }
+interface EmbedBatchResponse { id: number; embeddings: number[][]; work_ms: number; cpu_ms: number; host_majflt?: number; host_minflt?: number; host_queue_ms?: number }
 interface ErrorResponse { id: number; error: string }
 
 // ── Model management ──────────────────────────────────────────────────────────
@@ -388,25 +395,82 @@ function send(msg: InitOkResponse | EmbedResponse | EmbedBatchResponse | ErrorRe
  * child. The page-in vs. compute distinction above is exact only when
  * requests are effectively serialized on this child; under real concurrency
  * treat both numbers as upper bounds shared across the overlapping set.
+ *
+ * (Page-in vs. compute, CoreML addendum) `cpu_ms` alone still under-reports
+ * on the `coreml` execution provider: ANE/GPU execution time is dispatched
+ * off-CPU and never accrues to `process.cpuUsage()`, so a request that is
+ * genuinely blocked waiting on a page-in (first touch of a model weight
+ * page not yet resident) looks identical to one blocked waiting on the ANE
+ * — both show high `work_ms`, low `cpu_ms`. `process.resourceUsage()`'s
+ * `majorPageFault`/`minorPageFault` DELTAS across the same window
+ * disambiguate the page-in case specifically: a nonzero `host_majflt` means
+ * the kernel actually served a fault from disk/backing-store during this
+ * request, which ANE/GPU compute time alone cannot produce.
  */
-function measureWork<T>(fn: () => Promise<T>): Promise<{ result: T; work_ms: number; cpu_ms: number }> {
+function measureWork<T>(
+  fn: () => Promise<T>,
+): Promise<{ result: T; work_ms: number; cpu_ms: number; host_majflt?: number; host_minflt?: number }> {
   const startedAt = performance.now();
   const cpuStart = process.cpuUsage();
+  const resourceStart = typeof process.resourceUsage === 'function' ? process.resourceUsage() : undefined;
   return fn().then((result) => {
     const cpuDelta = process.cpuUsage(cpuStart);
+    let host_majflt: number | undefined;
+    let host_minflt: number | undefined;
+    if (resourceStart) {
+      try {
+        const resourceEnd = process.resourceUsage();
+        host_majflt = resourceEnd.majorPageFault - resourceStart.majorPageFault;
+        host_minflt = resourceEnd.minorPageFault - resourceStart.minorPageFault;
+      } catch (err) {
+        // Non-fatal: page-fault telemetry is an observability aid, never a
+        // correctness mechanism — a platform without resourceUsage() support
+        // (or a transient failure) must not break the embed reply.
+        const errMsg = err instanceof Error ? err.message : String(err);
+        process.stderr.write(`[fastembed-host] resourceUsage() failed (non-fatal): ${errMsg}\n`);
+      }
+    }
     return {
       result,
       work_ms: Math.round(performance.now() - startedAt),
       cpu_ms: Math.round((cpuDelta.user + cpuDelta.system) / 1000),
+      ...(host_majflt !== undefined ? { host_majflt } : {}),
+      ...(host_minflt !== undefined ? { host_minflt } : {}),
     };
   });
 }
 
-async function handleRequest(msg: InitRequest | EmbedRequest | EmbedBatchRequest): Promise<void> {
+/**
+ * (Host-side queue wait) `receivedAt` is stamped at `process.on('message')`
+ * time, BEFORE this task is enqueued onto `_queue`; `host_queue_ms` — taken
+ * here, at the moment this task actually starts running — is the wait this
+ * specific request spent sitting behind whatever else was already queued on
+ * this same child (BUG-005/BL-432's head-of-line blocking), a component of
+ * `work_ms` that `measureWork()` alone cannot isolate since `work_ms` only
+ * starts timing once the task is already executing.
+ */
+async function handleRequest(
+  msg: InitRequest | EmbedRequest | EmbedBatchRequest,
+  receivedAt: number,
+): Promise<void> {
+  const host_queue_ms = Math.round(performance.now() - receivedAt);
+
   if (msg.type === 'init') {
     try {
-      const { result, work_ms, cpu_ms } = await measureWork(() => loadModel(msg.model, msg.cacheDir));
-      send({ id: msg.id, initOk: true, dim: result.dim, execution_provider: result.execution_provider, work_ms, cpu_ms });
+      const { result, work_ms, cpu_ms, host_majflt, host_minflt } = await measureWork(() =>
+        loadModel(msg.model, msg.cacheDir),
+      );
+      send({
+        id: msg.id,
+        initOk: true,
+        dim: result.dim,
+        execution_provider: result.execution_provider,
+        work_ms,
+        cpu_ms,
+        host_queue_ms,
+        ...(host_majflt !== undefined ? { host_majflt } : {}),
+        ...(host_minflt !== undefined ? { host_minflt } : {}),
+      });
     } catch (e) {
       send({ id: msg.id, error: String(e instanceof Error ? e.message : e) });
     }
@@ -420,8 +484,16 @@ async function handleRequest(msg: InitRequest | EmbedRequest | EmbedBatchRequest
     }
     try {
       const embedder = _embedder;
-      const { result, work_ms, cpu_ms } = await measureWork(() => embedder.queryEmbed(msg.text));
-      send({ id: msg.id, embedding: Array.from(result), work_ms, cpu_ms });
+      const { result, work_ms, cpu_ms, host_majflt, host_minflt } = await measureWork(() => embedder.queryEmbed(msg.text));
+      send({
+        id: msg.id,
+        embedding: Array.from(result),
+        work_ms,
+        cpu_ms,
+        host_queue_ms,
+        ...(host_majflt !== undefined ? { host_majflt } : {}),
+        ...(host_minflt !== undefined ? { host_minflt } : {}),
+      });
     } catch (e) {
       send({ id: msg.id, error: String(e instanceof Error ? e.message : e) });
     }
@@ -435,8 +507,18 @@ async function handleRequest(msg: InitRequest | EmbedRequest | EmbedBatchRequest
     }
     try {
       const embedder = _embedder;
-      const { result, work_ms, cpu_ms } = await measureWork(() => collectEmbeddings(embedder, msg.texts));
-      send({ id: msg.id, embeddings: result, work_ms, cpu_ms });
+      const { result, work_ms, cpu_ms, host_majflt, host_minflt } = await measureWork(() =>
+        collectEmbeddings(embedder, msg.texts),
+      );
+      send({
+        id: msg.id,
+        embeddings: result,
+        work_ms,
+        cpu_ms,
+        host_queue_ms,
+        ...(host_majflt !== undefined ? { host_majflt } : {}),
+        ...(host_minflt !== undefined ? { host_minflt } : {}),
+      });
     } catch (e) {
       send({ id: msg.id, error: String(e instanceof Error ? e.message : e) });
     }
@@ -481,7 +563,8 @@ process.on('message', (msg: HostRequest) => {
     });
     return;
   }
-  enqueue(() => handleRequest(msg));
+  const receivedAt = performance.now();
+  enqueue(() => handleRequest(msg, receivedAt));
 });
 
 /**
