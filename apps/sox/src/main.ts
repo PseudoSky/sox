@@ -145,6 +145,7 @@ import {
   verifyIntegrity,
 } from '@adhd/sox-install-engine';
 import { registerBundleMember, resolveBundleDir } from './bundle-init.js';
+import { cliInvokedFields } from './cli-invoked-fields.js';
 import { resolveGraceMs } from './grace-ms.js';
 import { assertWithinBase, PathEscapeError } from './path-safety.js';
 import { unloadOsUnitUnlessFrontShim } from './proxy-backend-front-shim.js';
@@ -221,7 +222,14 @@ initTelemetry(SOX_CLI_TELEMETRY_INIT_OPTIONS);
 // runtime.ts's own doc comment on the one-shot uninitialised-emission
 // warning). This durably proves, for every `soxe` invocation, that telemetry
 // really was initialised before any downstream code had a chance to emit.
-log.info('cli_invoked', { verb: verb ?? null });
+//
+// d5c01be3: the event also names the extension id the invocation acts on
+// (`target`, plus `subverb`/`host`/`scope`/`root`/`all`) — additive fields, see
+// cli-invoked-fields.ts. The smoke harness's isolation guard
+// (scripts/lib/isolation-guard.mjs) matches a live data-root change to the
+// operator invocation that made it by exactly these fields; without them a
+// concurrent operator `soxe install <id>` is indistinguishable from a leak.
+log.info('cli_invoked', { ...cliInvokedFields(verb, flags) });
 
 async function main(): Promise<void> {
   // ADR-0004: SOX_HOME is RETIRED and fully INERT — data placement is governed solely

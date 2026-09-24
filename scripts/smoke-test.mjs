@@ -24,6 +24,13 @@ import { fileURLToPath } from 'node:url';
 // below checks EVERY package's main/module/types/bin/exports paths, not just
 // the CLI bundle + extension entrypoints.
 import { workspacePackageDirs, contractArtifactPaths } from '../tools/workspace-package-scan.mjs';
+import {
+  DEFAULT_OPERATOR_SLACK_MS,
+  evaluateIsolation,
+  readTelemetryEvents,
+  snapshotLiveFiles,
+  telemetryLogDirs,
+} from './lib/isolation-guard.mjs';
 
 // ──────────────────────────────────────────────────────────────────────────────
 // Configuration
@@ -149,6 +156,47 @@ const REAL_SOCKET_DIR = process.env['SOX_ECOSYSTEM_HOME']
   ? path.join(process.env['SOX_ECOSYSTEM_HOME'], 'run', 'supervisors')
   : path.join(process.env['HOME'] ?? '', '.adhd', 'sox-ecosystem', 'run', 'supervisors');
 
+// ── BL-173 / d5c01be3: live data-root isolation baseline ─────────────────────
+// The LIVE data root the smoke run must never write. Deliberately derived from
+// $HOME, never from $SOX_ECOSYSTEM_HOME (which the harness overrides for its
+// children and an operator may have pointed anywhere).
+const LIVE_DATA_ROOT = path.join(process.env['HOME'] ?? '', '.adhd', 'sox-ecosystem');
+/** Live snapshot taken immediately before the FIRST smoke-spawned soxe (d5c01be3 (c)). */
+let isolationBaseline = null;
+/** Every extension/bundle id this run spawned soxe against (d5c01be3 (b′)). */
+const SMOKE_TOUCHED_IDS = new Set();
+/** Wall-clock start of main() — lower bound for the scratch-log scan. */
+let RUN_STARTED_MS = Date.now();
+
+/**
+ * Called at the top of every soxe spawn wrapper. Takes the BEFORE snapshot on
+ * the first call only — after the ~86 s preflight (nx graph, build-index,
+ * publint/attw) that spawns no soxe, so an operator write landing during
+ * preflight can never be misread as a smoke leak — and records the id(s) the
+ * spawn acts on, so a live change to one of them is FATAL even when an
+ * operator event also names it.
+ */
+function noteSoxeSpawn(args, extId) {
+  if (isolationBaseline === null) {
+    isolationBaseline = snapshotLiveFiles(LIVE_DATA_ROOT);
+    console.error(`[smoke] live fingerprint BEFORE (first soxe spawn, ${new Date(isolationBaseline.takenAtMs).toISOString()}):`,
+      JSON.stringify(Object.fromEntries(Object.entries(isolationBaseline.files).map(([k, v]) => [k, v.sha256 ?? 'ABSENT']))));
+  }
+  if (typeof extId === 'string' && extId !== '') SMOKE_TOUCHED_IDS.add(extId);
+  // Positional ids after the verb (`install <id>`, `service enable <id>`), never flag values.
+  const positionals = [];
+  for (let i = 1; i < args.length; i++) {
+    const a = String(args[i]);
+    if (a.startsWith('-')) {
+      if (!a.includes('=') && i + 1 < args.length && !String(args[i + 1]).startsWith('-')) i++;
+      continue;
+    }
+    positionals.push(a);
+  }
+  const idPos = args[0] === 'service' ? positionals[1] : positionals[0];
+  if (idPos) SMOKE_TOUCHED_IDS.add(idPos);
+}
+
 /** Env block injected into every child process this harness spawns. */
 function smokeEnv() {
   return {
@@ -215,6 +263,7 @@ function diffSnapshots(before, after) {
 
 async function runCmd(args, opts = {}) {
   const { cwd = TEST_ROOT, timeoutMs = 120_000, testId, extId, extType, stdinInput, verify, env } = opts;
+  noteSoxeSpawn(args, extId);
   const before = await snapshotFiles(TEST_ROOT);
   const t0 = Date.now();
   let stdout = '', stderr = '', exitCode = null, signal = null, error = null;
@@ -456,6 +505,7 @@ async function runServeProxyAndVerify(args, opts) {
   const extId = opts.extId;
   const extType = opts.extType;
   const waitSec = opts.waitSec || 15;
+  noteSoxeSpawn(args, extId);
   const before = await snapshotFiles(TEST_ROOT);
   const t0 = Date.now();
 
@@ -825,6 +875,7 @@ async function runMemoryServerDirectServeAndVerify(args, opts) {
   const extType = opts.extType;
   const env = opts.env || smokeEnv();
   const timeoutMs = opts.timeoutMs || 30_000;
+  noteSoxeSpawn(args, extId);
   const before = await snapshotFiles(TEST_ROOT);
   const t0 = Date.now();
 
@@ -1187,6 +1238,7 @@ function computePreflightOnlyDirs(allExts) {
 // ──────────────────────────────────────────────────────────────────────────────
 
 async function main() {
+  RUN_STARTED_MS = Date.now();
   console.error(`[smoke] root: ${TEST_ROOT}`);
   await fsp.mkdir(TEST_ROOT, { recursive: true });
 
@@ -1196,25 +1248,15 @@ async function main() {
   console.error(`[smoke] db_path (config set, scratch) → ${SMOKE_DB_PATH}`);
 
   // Assert: scratch root is NOT the real user data root.
-  const realUserDataRoot = path.join(process.env['HOME'] ?? '', '.adhd', 'sox-ecosystem');
-  if (SMOKE_DATA_ROOT === realUserDataRoot) {
+  if (SMOKE_DATA_ROOT === LIVE_DATA_ROOT) {
     console.error('[smoke] FATAL: scratch data root resolved to real user data root — aborting');
     process.exit(2);
   }
 
-  // Capture fingerprint of live data-root files BEFORE the run.
-  const LIVE_FILES = [
-    path.join(realUserDataRoot, 'extensions.lock'),
-    path.join(realUserDataRoot, 'install-registry.json'),
-    path.join(realUserDataRoot, 'ledger.json'),
-    path.join(realUserDataRoot, 'ownership.json'),
-  ];
-  const fingerprint = {};
-  for (const f of LIVE_FILES) {
-    try { fingerprint[f] = execSync(`shasum "${f}"`, { encoding: 'utf-8' }).trim(); }
-    catch { fingerprint[f] = 'ABSENT'; }
-  }
-  console.error('[smoke] live fingerprint BEFORE:', JSON.stringify(fingerprint));
+  // d5c01be3 (c): the live BEFORE snapshot is NOT taken here. The preflight
+  // below (nx graph, build-index, publint/attw — ~86 s) spawns no soxe, so a
+  // snapshot here only widens the window in which an unrelated operator write
+  // reads as a smoke leak. noteSoxeSpawn() takes it at the first soxe spawn.
 
   await fsp.writeFile(path.join(TEST_ROOT, 'package.json'), JSON.stringify({ name: 'smoke', private: true }));
 
@@ -1383,6 +1425,9 @@ async function main() {
         const memberIds = allExtensions
           .filter((e) => e.dir.includes('/members/') && e.dir.split('/members/')[0].split('/').pop() === bid)
           .map((e) => ({ id: e.id, type: e.type }));
+        // d5c01be3: a bundle install writes its MEMBERS' entries (ledger/ownership/
+        // lockfile) — those ids are smoke-touched even though no spawn names them.
+        for (const m of memberIds) SMOKE_TOUCHED_IDS.add(m.id);
         const bundleInstallResult = await runCmd(['install', bid, '--scope=project', '--root', TEST_ROOT], {
           timeoutMs: 60_000, testId: `bundle-${bid}-install`, extId: bid, extType: 'bundle',
           verify: ({ exitCode, stderr } = {}) => (exitCode === 0
@@ -1441,24 +1486,34 @@ async function main() {
   // ── BL-173: post-run isolation assertions ──────────────────────────────────
   let isolationFailed = false;
 
-  // 1. Verify live data-root files are byte-identical to pre-run fingerprint.
-  const fingerprintAfter = {};
-  for (const f of LIVE_FILES) {
-    try { fingerprintAfter[f] = execSync(`shasum "${f}"`, { encoding: 'utf-8' }).trim(); }
-    catch { fingerprintAfter[f] = 'ABSENT'; }
-  }
-  console.error('[smoke] live fingerprint AFTER:', JSON.stringify(fingerprintAfter));
-  for (const f of LIVE_FILES) {
-    if (fingerprint[f] !== fingerprintAfter[f]) {
-      console.error(`[smoke] ISOLATION FAILURE: live file mutated during smoke run: ${f}`);
-      console.error(`  before: ${fingerprint[f]}`);
-      console.error(`  after:  ${fingerprintAfter[f]}`);
-      isolationFailed = true;
-    }
-  }
-  if (!isolationFailed) {
-    console.error('[smoke] isolation OK — live data-root files byte-identical before/after');
-  }
+  // 1. d5c01be3: attribute every live data-root change (see scripts/lib/isolation-guard.mjs).
+  //    (c′) This runs only after every extension's teardown/uninstall step has
+  //    completed (testExtension ends with them) — nothing the harness spawned is
+  //    still expected to write. If no soxe was ever spawned there is no baseline
+  //    and nothing the run did could have written the live root; the harness-
+  //    telemetry leak check below still runs over the whole run.
+  const isolationAfter = snapshotLiveFiles(LIVE_DATA_ROOT);
+  const isolationBefore = isolationBaseline ?? { ...isolationAfter, takenAtMs: RUN_STARTED_MS };
+  console.error('[smoke] live fingerprint AFTER:',
+    JSON.stringify(Object.fromEntries(Object.entries(isolationAfter.files).map(([k, v]) => [k, v.sha256 ?? 'ABSENT']))));
+  const liveLogs = readTelemetryEvents(telemetryLogDirs(LIVE_DATA_ROOT), {
+    sinceMs: isolationBefore.takenAtMs - DEFAULT_OPERATOR_SLACK_MS, untilMs: isolationAfter.takenAtMs,
+  });
+  const scratchLogs = readTelemetryEvents(telemetryLogDirs(SMOKE_DATA_ROOT), {
+    sinceMs: RUN_STARTED_MS, untilMs: isolationAfter.takenAtMs,
+  });
+  console.error(`[smoke] isolation telemetry: live ${liveLogs.events.length} event(s) from ${liveLogs.filesRead.length} file(s)` +
+    ` (${liveLogs.parseErrors} unparseable line(s)); scratch ${scratchLogs.events.length} event(s) from ${scratchLogs.filesRead.length} file(s)` +
+    ` (${scratchLogs.parseErrors} unparseable line(s)); smoke-touched ids: ${[...SMOKE_TOUCHED_IDS].sort().join(', ') || '(none)'}`);
+  const isolation = evaluateIsolation({
+    before: isolationBefore,
+    after: isolationAfter,
+    liveEvents: liveLogs.events,
+    scratchEvents: scratchLogs.events,
+    smokeTouchedIds: SMOKE_TOUCHED_IDS,
+  });
+  for (const line of isolation.lines) console.error(`[smoke] ${line}`);
+  if (isolation.verdict === 'fatal') isolationFailed = true;
 
   // 2. Assert no sockets appeared under the REAL (live) socket dir during the run.
   try {
@@ -1486,7 +1541,7 @@ async function main() {
   }
 
   if (isolationFailed) {
-    console.error('[smoke] FATAL: live data-root was mutated — BL-173 isolation breach');
+    console.error('[smoke] FATAL: live data-root was mutated (or harness telemetry reached it) and the change is not attributable to a concurrent operator invocation — BL-173 isolation breach (d5c01be3 attribution above)');
     runCompleted = true;
     process.exit(2);
   }

@@ -27,7 +27,7 @@
  */
 
 export const GUARDS = [
-  // ---------------------------------------------------------------- Tier 1 (13) -----------
+  // ---------------------------------------------------------------- Tier 1 (14) -----------
   {
     id: 'bl222',
     tier: 1,
@@ -112,6 +112,15 @@ export const GUARDS = [
     // Pins a property of the dispatcher agent prose (the blind-review severity floor + round cap),
     // not a tool script — the pre-fix shape (v1.4.0, commit 9ab825e3) is the negative control.
     watch: ['extensions/agents/dispatcher/dispatcher.md'],
+  },
+  {
+    id: 'd5c01be3',
+    tier: 1,
+    script: 'test-d5c01be3-isolation-attribution.mjs',
+    // Pins the smoke harness's BL-173 live data-root isolation guard: a concurrent OPERATOR soxe
+    // write attributed by cli_invoked verb+target is a WARNING; every leak shape stays FATAL. The
+    // authentic pre-fix any-hash-mismatch-is-FATAL rule is the embedded negative control.
+    watch: ['scripts/lib/isolation-guard.mjs', 'scripts/smoke-test.mjs', 'apps/sox/src/cli-invoked-fields.ts'],
   },
 
   // ---------------------------------------------------------------- Tier 2 (5) ------------
