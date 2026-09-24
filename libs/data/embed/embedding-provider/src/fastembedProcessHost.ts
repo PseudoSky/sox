@@ -408,7 +408,7 @@ function send(msg: InitOkResponse | EmbedResponse | EmbedBatchResponse | ErrorRe
  * the kernel actually served a fault from disk/backing-store during this
  * request, which ANE/GPU compute time alone cannot produce.
  */
-function measureWork<T>(
+export function measureWork<T>(
   fn: () => Promise<T>,
 ): Promise<{ result: T; work_ms: number; cpu_ms: number; host_majflt?: number; host_minflt?: number }> {
   const startedAt = performance.now();
