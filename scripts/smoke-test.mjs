@@ -114,7 +114,31 @@ let runCompleted = false;
 // An assertion in main() verifies no sockets appeared under the real socket dir.
 
 const SMOKE_DATA_ROOT = path.join(TEST_ROOT, 'sox-data-root');
-const SMOKE_DB_PATH = path.join(TEST_ROOT, 'sox-data-root', 'memory-smoke.db');
+// BL-635 (memory-server-serve-no-proxy false green / db_path never reachable):
+// two independent gates stood between an ambient SOX_CONFIG_DB_PATH and the
+// spawned memory-server, and BOTH must be satisfied, not just one:
+//
+//   1. env-policy.ts's ENV_DENY_PREFIXES denies `SOX_CONFIG_*` from the
+//      AMBIENT environment on any policy-enforced spawn (memory-server
+//      declares a `permissions` block, so cmdServe's `soxe serve` always
+//      scrubs it — apps/sox/src/main.ts's `serveEnv = {...baseEnv2,
+//      ...configEnv2, ...}`, where baseEnv2 = scrubEnvReported()). This is
+//      BY DESIGN (SOX_CONFIG_* is host-authoritative, see env-policy.ts's
+//      module header) — the fix is to inject db_path through the resolved
+//      config CASCADE (`soxe config set`), not the ambient env; see the
+//      config-set call in testExtension() below.
+//   2. Even once SOX_CONFIG_DB_PATH threads through correctly, the
+//      extension's OWN in-process fs-permission guard
+//      (extension.json permissions.fs: read/write ["~/.memory/**"]) governs
+//      the resolved db_path too, and `~` expands via `expandTilde`/
+//      `os.homedir()` against the REAL $HOME — NOT $SOX_ECOSYSTEM_HOME. A
+//      db_path under TEST_ROOT (outside the real ~/.memory) is denied
+//      regardless of (1). Give the memory-server legs a SCRATCH $HOME
+//      (mirroring the FAKE_HOME technique memory-server's own
+//      permission-guard.spec.ts uses) so `~/.memory/**` resolves inside
+//      TEST_ROOT, and put the scratch store there.
+const MEMORY_FAKE_HOME = path.join(TEST_ROOT, 'sox-data-root', 'fake-home');
+const SMOKE_DB_PATH = path.join(MEMORY_FAKE_HOME, '.memory', 'memory-smoke.db');
 
 // Derive the real live socket dir so we can assert against it after the run.
 const REAL_SOCKET_DIR = process.env['SOX_ECOSYSTEM_HOME']
@@ -138,6 +162,17 @@ function smokeEnv() {
     // cross-repo incident this class of bug caused.
     SOX_TELEMETRY_HARNESS: '1',
   };
+}
+
+/**
+ * smokeEnv() plus a scratch $HOME (see MEMORY_FAKE_HOME above) — used ONLY
+ * for the memory-server legs, so `~/.memory/**` fs-permission expansion
+ * resolves inside TEST_ROOT instead of the operator's real home directory.
+ * Scoped narrowly (not folded into smokeEnv() itself) so no other
+ * extension's child processes have $HOME redirected out from under them.
+ */
+function memoryServerEnv() {
+  return { ...smokeEnv(), HOME: MEMORY_FAKE_HOME };
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
@@ -176,7 +211,7 @@ function diffSnapshots(before, after) {
 }
 
 async function runCmd(args, opts = {}) {
-  const { cwd = TEST_ROOT, timeoutMs = 120_000, testId, extId, extType, stdinInput, verify } = opts;
+  const { cwd = TEST_ROOT, timeoutMs = 120_000, testId, extId, extType, stdinInput, verify, env } = opts;
   const before = await snapshotFiles(TEST_ROOT);
   const t0 = Date.now();
   let stdout = '', stderr = '', exitCode = null, signal = null, error = null;
@@ -184,7 +219,7 @@ async function runCmd(args, opts = {}) {
   try {
     stdout = execSync(`${SOXE} ${args.join(' ')}`, {
       cwd, encoding: 'utf-8', timeout: timeoutMs,
-      env: smokeEnv(),
+      env: env || smokeEnv(),
       stdio: ['pipe', 'pipe', 'pipe'], input: stdinInput,
     });
     exitCode = 0;
@@ -431,7 +466,7 @@ async function runServeProxyAndVerify(args, opts) {
     ? ["--kill-after=5", waitSec + "s", SOXE].concat(args)
     : args;
   const child = spawn(spawnCmd, spawnArgs, {
-    cwd: cwd, env: smokeEnv(), stdio: ["pipe", "pipe", "pipe"],
+    cwd: cwd, env: opts.env || smokeEnv(), stdio: ["pipe", "pipe", "pipe"],
   });
   let stdout = "";
   let stderr = "";
@@ -630,6 +665,98 @@ function verifyMemoryServerPing(args) {
   return { ok: false, verdict: "ping-no-response", detail: "no memory_ping tools/call (id:3) response observed on stdout" };
 }
 
+// BL-635: the no-proxy memory-server leg used to send initialize + memory_write
+// + memory_ping as one static stdin blob to execSync (runCmd). On a genuinely
+// FRESH scratch store (SMOKE_DB_PATH is a new path every run) that races
+// openDb(): memory_ping's liveness check refuses to open/create a store it
+// did not itself request (by design — a liveness probe must not have the
+// side effect of creating a store) and can observe "store file does not
+// exist yet" if it runs before memory_write's own store-open lands, because
+// the two tools/call requests are dispatched concurrently, not queued
+// strictly behind one another. Fix: spawn interactively, wait for the
+// memory_write response (id:2) — which guarantees the store file now
+// exists — before writing the memory_ping request (id:3) to stdin.
+async function runMemoryServerDirectServeAndVerify(args, opts) {
+  const cwd = opts.cwd || TEST_ROOT;
+  const testId = opts.testId;
+  const extId = opts.extId;
+  const extType = opts.extType;
+  const env = opts.env || smokeEnv();
+  const timeoutMs = opts.timeoutMs || 30_000;
+  const before = await snapshotFiles(TEST_ROOT);
+  const t0 = Date.now();
+
+  const child = spawn(SOXE, args, { cwd: cwd, env: env, stdio: ["pipe", "pipe", "pipe"] });
+  let stdout = "";
+  let stderr = "";
+  child.stdout.on("data", function (d) { stdout += d.toString(); });
+  child.stderr.on("data", function (d) { stderr += d.toString(); });
+  let exited = false;
+  let exitCode = null;
+  let signal = null;
+  child.on("exit", function (code, sig) { exited = true; exitCode = code; signal = sig; });
+  child.on("error", function () { exited = true; });
+
+  const initPayload = JSON.stringify({ jsonrpc: "2.0", id: 1, method: "initialize", params: { protocolVersion: "2024-11-05", capabilities: {}, clientInfo: { name: "smoke", version: "1" } } }) + "\n";
+  const memoryWritePayload = JSON.stringify({ jsonrpc: "2.0", id: 2, method: "tools/call", params: { name: "memory_write", arguments: { content: "smoke-test store-init probe", project_path: TEST_ROOT } } }) + "\n";
+  const memoryPingPayload = JSON.stringify({ jsonrpc: "2.0", id: 3, method: "tools/call", params: { name: "memory_ping", arguments: {} } }) + "\n";
+
+  try { child.stdin.write(initPayload + memoryWritePayload); } catch (e) { /* process may already have exited */ }
+
+  const writeDeadline = Date.now() + timeoutMs;
+  while (Date.now() < writeDeadline && !exited && !/"id":\s*2[,}]/.test(stdout)) {
+    await new Promise(function (r) { const tm = setTimeout(r, 100); if (tm.unref) tm.unref(); });
+  }
+  if (!exited) {
+    try { child.stdin.write(memoryPingPayload); } catch (e) { /* process may have exited between the check and this write */ }
+  }
+
+  const pingDeadline = Date.now() + 10_000;
+  while (Date.now() < pingDeadline && !exited && !/"id":\s*3[,}]/.test(stdout)) {
+    await new Promise(function (r) { const tm = setTimeout(r, 100); if (tm.unref) tm.unref(); });
+  }
+
+  if (!exited) {
+    try { child.stdin.end(); } catch (e) { /* already closed */ }
+    try { process.kill(child.pid, "SIGTERM"); } catch (e) { /* already gone */ }
+    const termDeadline = Date.now() + 5000;
+    while (Date.now() < termDeadline && !exited) {
+      await new Promise(function (r) { const tm = setTimeout(r, 100); if (tm.unref) tm.unref(); });
+    }
+    if (!exited) {
+      try { process.kill(child.pid, "SIGKILL"); } catch (e) { /* already gone */ }
+    }
+  }
+  const exitWaitDeadline = Date.now() + 5000;
+  while (Date.now() < exitWaitDeadline && !exited) {
+    await new Promise(function (r) { const tm = setTimeout(r, 50); if (tm.unref) tm.unref(); });
+  }
+
+  const after = await snapshotFiles(TEST_ROOT);
+  const fileChanges = diffSnapshots(before, after);
+
+  let result;
+  try {
+    result = verifyMemoryServerPing({ stdout: stdout, stderr: stderr, exitCode: exitCode, signal: signal });
+  } catch (verr) {
+    result = { ok: false, verdict: "verify-threw", detail: "verify() threw: " + ((verr && verr.message) || verr) };
+  }
+  const passed = result != null && result.ok === true;
+  const verdict = passed ? "verified" : ((result && result.verdict) || "unverified");
+  const verdictDetail = (result && result.detail) || "";
+
+  const entry = {
+    test_id: testId, extension_id: extId, extension_type: extType,
+    command: SOXE + " " + args.join(" ") + " (interactive write-then-ping)",
+    exit_code: exitCode, signal: signal, verdict: verdict, verdict_detail: verdictDetail,
+    stdout: (stdout || "").slice(-2000), stderr: (stderr || "").slice(-2000),
+    file_changes: (fileChanges || []).slice(0, 50), duration_ms: Date.now() - t0, passed: passed, error: null,
+  };
+  log.push(entry);
+  passed ? summary.passed++ : summary.failed++;
+  return { stdout: stdout, stderr: stderr, exitCode: exitCode, signal: signal };
+}
+
 function verifyServiceRunning(args) {
   const stdout = args.stdout;
   const loadedYes = /^\s*loaded:\s*yes\s*$/m.test(stdout);
@@ -681,13 +808,31 @@ async function testExtension(ext) {
 
   // ── MCP serve modes ────────────────────────────────────────────
   const initPayload = JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'initialize', params: { protocolVersion: '2024-11-05', capabilities: {}, clientInfo: { name: 'smoke', version: '1' } } }) + '\n';
-  // BUG-MEMORYCORE-MULTIPROCESS-WAL-NOT-OPTED-IN-001: for the memory-server,
-  // follow initialize with a memory_write (creates the scratch store) then a
-  // memory_ping, so the serve step can assert the store-concurrency contract on
-  // the live process's ping surface (ping.store.wal_mode). Other mcp-servers
-  // keep the bare initialize probe.
-  const memoryWritePayload = JSON.stringify({ jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name: 'memory_write', arguments: { content: 'smoke-test store-init probe', project_path: TEST_ROOT } } }) + '\n';
-  const memoryPingPayload = JSON.stringify({ jsonrpc: '2.0', id: 3, method: 'tools/call', params: { name: 'memory_ping', arguments: {} } }) + '\n';
+  // BUG-MEMORYCORE-MULTIPROCESS-WAL-NOT-OPTED-IN-001 / BL-635: for the
+  // memory-server, the serve step asserts the store-concurrency contract on
+  // the live process's ping surface (ping.store.wal_mode) — see
+  // runMemoryServerDirectServeAndVerify. Other mcp-servers keep the bare
+  // initialize probe.
+  const isMemoryServer = id === 'memory-server';
+  const memoryEnv = isMemoryServer ? memoryServerEnv() : undefined;
+
+  if (isMemoryServer) {
+    // BL-635: point db_path at the scratch store through the extension's OWN
+    // documented config key (config_schema.db_path, extension.json) rather
+    // than ambient SOX_CONFIG_DB_PATH — memory-server declares a
+    // `permissions` block, so `soxe serve` always scrubs SOX_CONFIG_* from
+    // the ambient env for it ([def:policy-env] / env-policy.ts's deny-list,
+    // by design: SOX_CONFIG_* is host-authoritative). `soxe config set`
+    // writes to the project-scope config.json that cmdServe's own
+    // buildExtConfigEnv() reads and re-applies AFTER the scrub, so the
+    // resulting SOX_CONFIG_DB_PATH survives — the same path a real deployed
+    // install takes.
+    await runCmd(
+      ['config', 'set', id, 'db_path', SMOKE_DB_PATH, '--scope', 'project', '--root', TEST_ROOT, '--no-restart'],
+      { testId: `${id}-config-set-db-path`, extId: id, extType: type, env: memoryEnv },
+    );
+  }
+
   for (const mode of modes) {
     const args = ['serve', id];
     if (mode === 'no-proxy') args.push('--no-proxy');
@@ -698,12 +843,11 @@ async function testExtension(ext) {
       // BL-578 audit finding #2: execSync-with-no-stdin exits the shim before
       // its fire-and-forget ensure() can ever be observed -- use the async
       // spawn+poll+kill helper so the step genuinely waits for evidence.
-      await runServeProxyAndVerify(args, { testId: `${id}-serve-${mode}`, extId: id, extType: type });
+      await runServeProxyAndVerify(args, { testId: `${id}-serve-${mode}`, extId: id, extType: type, env: memoryEnv });
+    } else if (isMemoryServer) {
+      await runMemoryServerDirectServeAndVerify(args, { timeoutMs: 30_000, testId: `${id}-serve-${mode}`, extId: id, extType: type, env: memoryEnv });
     } else {
-      const isMemoryServer = id === 'memory-server';
-      const stdinInput = isMemoryServer ? initPayload + memoryWritePayload + memoryPingPayload : initPayload;
-      const verify = isMemoryServer ? verifyMemoryServerPing : verifyDirectServe;
-      await runCmd(args, { timeoutMs: 30_000, testId: `${id}-serve-${mode}`, extId: id, extType: type, stdinInput, verify });
+      await runCmd(args, { timeoutMs: 30_000, testId: `${id}-serve-${mode}`, extId: id, extType: type, stdinInput: initPayload, verify: verifyDirectServe });
     }
   }
 
