@@ -27,8 +27,10 @@ import { workspacePackageDirs, contractArtifactPaths } from '../tools/workspace-
 import {
   DEFAULT_OPERATOR_SLACK_MS,
   evaluateIsolation,
+  otherServiceLogDirs,
   readTelemetryEvents,
   snapshotLiveFiles,
+  soxCliLogDirs,
   telemetryLogDirs,
 } from './lib/isolation-guard.mjs';
 
@@ -1503,19 +1505,21 @@ async function main() {
   const isolationBefore = isolationBaseline ?? { ...isolationAfter, takenAtMs: RUN_STARTED_MS };
   console.error('[smoke] live fingerprint AFTER:',
     JSON.stringify(Object.fromEntries(Object.entries(isolationAfter.files).map(([k, v]) => [k, v.sha256 ?? 'ABSENT']))));
-  const liveLogs = readTelemetryEvents(telemetryLogDirs(LIVE_DATA_ROOT), {
-    sinceMs: isolationBefore.takenAtMs - DEFAULT_OPERATOR_SLACK_MS, untilMs: isolationAfter.takenAtMs,
-  });
+  const liveWindow = { sinceMs: isolationBefore.takenAtMs - DEFAULT_OPERATOR_SLACK_MS, untilMs: isolationAfter.takenAtMs };
+  const liveLogs = readTelemetryEvents(soxCliLogDirs(LIVE_DATA_ROOT), liveWindow);
+  const liveOtherLogs = readTelemetryEvents(otherServiceLogDirs(LIVE_DATA_ROOT), liveWindow);
   const scratchLogs = readTelemetryEvents(telemetryLogDirs(SMOKE_DATA_ROOT), {
     sinceMs: RUN_STARTED_MS, untilMs: isolationAfter.takenAtMs,
   });
-  console.error(`[smoke] isolation telemetry: live ${liveLogs.events.length} event(s) from ${liveLogs.filesRead.length} file(s)` +
-    ` (${liveLogs.parseErrors} unparseable line(s)); scratch ${scratchLogs.events.length} event(s) from ${scratchLogs.filesRead.length} file(s)` +
+  console.error(`[smoke] isolation telemetry: live sox ${liveLogs.events.length} event(s) from ${liveLogs.filesRead.length} file(s)` +
+    ` (${liveLogs.parseErrors} unparseable line(s)); live other-service ${liveOtherLogs.events.length} relevant event(s) from ${liveOtherLogs.filesRead.length} file(s)` +
+    ` (${liveOtherLogs.parseErrors} unparseable line(s)); scratch ${scratchLogs.events.length} event(s) from ${scratchLogs.filesRead.length} file(s)` +
     ` (${scratchLogs.parseErrors} unparseable line(s)); smoke-touched ids: ${[...SMOKE_TOUCHED_IDS].sort().join(', ') || '(none)'}`);
   const isolation = evaluateIsolation({
     before: isolationBefore,
     after: isolationAfter,
     liveEvents: liveLogs.events,
+    liveOtherEvents: liveOtherLogs.events,
     scratchEvents: scratchLogs.events,
     smokeTouchedIds: SMOKE_TOUCHED_IDS,
   });

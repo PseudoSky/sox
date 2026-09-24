@@ -246,6 +246,31 @@ export function bundleMembership(...snapshots) {
 // Telemetry logs (fs)
 // ──────────────────────────────────────────────────────────────────────────────
 
+/**
+ * The sox CLI telemetry directory — THE live log for attribution and the
+ * harness-leak check. Every `soxe` invocation (operator or smoke-spawned)
+ * emits `cli_invoked` here (apps/sox/src/main.ts, service 'sox').
+ */
+export const SOX_CLI_SERVICE = 'sox';
+
+/** `<root>/sox/logs` if it exists, else []. */
+export function soxCliLogDirs(root) {
+  const p = path.join(root, SOX_CLI_SERVICE, 'logs');
+  return fs.existsSync(p) ? [p] : [];
+}
+
+/**
+ * Every OTHER `<root>/<service>/logs` directory. Other harnesses on the machine
+ * (vitest suites, memory-cli/embedding-provider test drivers) legitimately run
+ * with SOX_TELEMETRY_HARNESS=1 and write role=harness events into these dirs
+ * continuously — measured 2026-09-24: 151 memory-core + 33 embedding-provider
+ * harness streams in 6 h, ZERO in sox/logs — so a harness event here cannot be
+ * attributed to this run by role alone and is reported, never FATAL.
+ */
+export function otherServiceLogDirs(root) {
+  return telemetryLogDirs(root).filter((p) => path.basename(path.dirname(p)) !== SOX_CLI_SERVICE);
+}
+
 /** Every `<root>/<service>/logs` directory that exists. */
 export function telemetryLogDirs(root) {
   let services;
@@ -264,10 +289,17 @@ export function telemetryLogDirs(root) {
 
 /**
  * Read telemetry JSONL events whose `ts` lies in [sinceMs, untilMs] from every
- * `*.jsonl` in `dirs` modified at/after `sinceMs`.
+ * `*.jsonl` in `dirs` modified at/after `sinceMs`. `keep` (default: the only two
+ * shapes the guard inspects — `cli_invoked` events and any role=harness event)
+ * bounds memory on a busy live root, whose service logs carry tens of thousands
+ * of unrelated events per run window.
  * @returns {{ events: Array<object>, parseErrors: number, filesRead: string[] }}
  */
-export function readTelemetryEvents(dirs, { sinceMs, untilMs }) {
+export function isGuardRelevantEvent(ev) {
+  return ev?.event === 'cli_invoked' || ev?.role === 'harness';
+}
+
+export function readTelemetryEvents(dirs, { sinceMs, untilMs, keep = isGuardRelevantEvent }) {
   const events = [];
   const filesRead = [];
   let parseErrors = 0;
@@ -303,6 +335,7 @@ export function readTelemetryEvents(dirs, { sinceMs, untilMs }) {
         }
         const t = Date.parse(ev?.ts ?? '');
         if (!Number.isFinite(t) || t < sinceMs || t > untilMs) continue;
+        if (!keep(ev)) continue;
         events.push({ ...ev, _file: p, _tsMs: t });
       }
     }
@@ -337,7 +370,8 @@ function describeChange(c) {
  * @param {object} input
  * @param {ReturnType<typeof snapshotLiveFiles>} input.before  live snapshot taken right before the first smoke-spawned soxe
  * @param {ReturnType<typeof snapshotLiveFiles>} input.after   live snapshot taken after teardown
- * @param {Array<object>} input.liveEvents     telemetry events from the LIVE root's logs (already window-filtered with slack)
+ * @param {Array<object>} input.liveEvents     telemetry events from the LIVE root's sox CLI log (soxCliLogDirs), window-filtered with slack
+ * @param {Array<object>} [input.liveOtherEvents] events from the LIVE root's other service logs — diagnostic only, never FATAL
  * @param {Array<object>} [input.scratchEvents] telemetry events from the SCRATCH root's logs
  * @param {Iterable<string>} input.smokeTouchedIds  extension/bundle ids the smoke run spawned soxe against
  * @param {number} [input.operatorSlackMs]
@@ -346,6 +380,7 @@ function describeChange(c) {
 export function evaluateIsolation(input) {
   const { before, after } = input;
   const liveEvents = input.liveEvents ?? [];
+  const liveOtherEvents = input.liveOtherEvents ?? [];
   const scratchEvents = input.scratchEvents ?? [];
   const slack = input.operatorSlackMs ?? DEFAULT_OPERATOR_SLACK_MS;
   const t0 = before.takenAtMs;
@@ -364,6 +399,20 @@ export function evaluateIsolation(input) {
   for (const ev of harnessLeaks) {
     lines.push(`ISOLATION FAILURE: role=harness telemetry landed in the LIVE data root during the run: event=${ev.event} ${describeEvent(ev)} file=${ev._file}`);
     fatal = true;
+  }
+
+  // Other services' harness telemetry in the live root: reported per (service, pid), never FATAL —
+  // it cannot be told apart from another agent's concurrent test suite (see otherServiceLogDirs).
+  const others = new Map();
+  for (const ev of liveOtherEvents) {
+    if (ev.role !== 'harness' || ev._tsMs < t0 || ev._tsMs > t1) continue;
+    const k = `${ev.service ?? '?'}|${ev.pid ?? '?'}`;
+    const g = others.get(k) ?? { service: ev.service ?? '?', pid: ev.pid ?? '?', n: 0, first: ev.ts, last: ev.ts, file: ev._file };
+    g.n++; g.last = ev.ts;
+    others.set(k, g);
+  }
+  for (const g of others.values()) {
+    lines.push(`note: role=harness telemetry from another service in the live root (not attributable to this run; not fatal): service=${g.service} pid=${g.pid} events=${g.n} first=${g.first} last=${g.last} file=${g.file}`);
   }
 
   const { changedFiles, changes } = diffLiveEntries(before, after);

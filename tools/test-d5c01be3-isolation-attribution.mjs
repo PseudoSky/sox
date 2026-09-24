@@ -113,7 +113,7 @@ let caseNo = 0;
  * mutate(state) → mutated state (or {state, raw}); liveEvents/scratchEvents are written as real JSONL files
  * and read back through the real module's readTelemetryEvents (so the fs readers are exercised too).
  */
-function scenario(guard, { mutate = (s) => s, liveEvents = [], scratchEvents = [], touched = [] }) {
+function scenario(guard, { mutate = (s) => s, liveEvents = [], liveOtherEvents = [], scratchEvents = [], touched = [] }) {
   const dir = path.join(TMP, `case-${++caseNo}`);
   const live = path.join(dir, 'live');
   const scratch = path.join(dir, 'scratch');
@@ -123,12 +123,14 @@ function scenario(guard, { mutate = (s) => s, liveEvents = [], scratchEvents = [
   if (m && m.raw) writeState(live, m.state, m.raw); else writeState(live, m);
   const after = real.snapshotLiveFiles(live, { now: () => T1 });
   if (liveEvents.length) writeLog(live, 'sox', 'cli', liveEvents);
+  if (liveOtherEvents.length) writeLog(live, 'memory-core', 'harness', liveOtherEvents);
   if (scratchEvents.length) writeLog(scratch, 'sox', 'harness', scratchEvents);
   const window = { sinceMs: T0 - real.DEFAULT_OPERATOR_SLACK_MS, untilMs: T1 };
   // mtime filter: fixture files are written "now", far after T0 — always read.
-  const le = real.readTelemetryEvents(real.telemetryLogDirs(live), window).events;
+  const le = real.readTelemetryEvents(real.soxCliLogDirs(live), window).events;
+  const lo = real.readTelemetryEvents(real.otherServiceLogDirs(live), window).events;
   const se = real.readTelemetryEvents(real.telemetryLogDirs(scratch), window).events;
-  return guard.evaluateIsolation({ before, after, liveEvents: le, scratchEvents: se, smokeTouchedIds: touched });
+  return guard.evaluateIsolation({ before, after, liveEvents: le, liveOtherEvents: lo, scratchEvents: se, smokeTouchedIds: touched });
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
@@ -228,6 +230,19 @@ const CASES = [
     name: 'unparseable live file → FATAL',
     run: (g) => scenario(g, { mutate: (s) => ({ state: s, raw: { 'ownership.json': '{ torn' } }), liveEvents: [cli()] }),
     expect: (r) => r.verdict === 'fatal' && r.lines.some((l) => l.includes('unparseable')),
+  },
+  {
+    name: 'role=harness telemetry only in ANOTHER live service log (concurrent test suite) → not FATAL, reported with pid',
+    run: (g) => scenario(g, { liveOtherEvents: [{ ts: '2026-09-24T21:04:00.000Z', level: 'info', event: 'store_adapter.turso.wal_cap_flush', service: 'memory-core', role: 'harness', pid: 4242 }] }),
+    expect: (r) => r.verdict === 'ok' && r.lines.some((l) => l.includes('service=memory-core') && l.includes('pid=4242') && l.includes('not fatal')),
+  },
+  {
+    name: 'other-service harness telemetry does not mask a sox-log harness leak → FATAL',
+    run: (g) => scenario(g, {
+      liveOtherEvents: [{ ts: '2026-09-24T21:04:00.000Z', event: 'x', service: 'memory-core', role: 'harness', pid: 4242 }],
+      liveEvents: [cli({ role: 'harness', pid: 779 })],
+    }),
+    expect: (r) => r.verdict === 'fatal',
   },
   {
     name: 'no change and no harness telemetry → OK',
