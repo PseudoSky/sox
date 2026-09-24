@@ -33,9 +33,12 @@
  *   2. any role=harness event in ANOTHER live service log (`<live>/<svc>/logs`,
  *      e.g. memory-core, embedding-provider) inside the run window whose pid is
  *      one the smoke run spawned (`smokePids`: spawn()ed children and their
- *      descendants, the proxy backend, detached process-group members, and
- *      every pid seen in the scratch logs) — a smoke child lost
- *      SOX_ECOSYSTEM_HOME but kept SOX_TELEMETRY_HARNESS;
+ *      descendants, the proxy backend, detached process-group members,
+ *      `soxe service enable` daemons — the `live pids:` that `soxe service
+ *      status` reports, plus their descendants — every TEST_ROOT-tagged
+ *      process seen in a `ps` snapshot, and every pid seen in the scratch
+ *      logs) — a smoke child or daemon lost SOX_ECOSYSTEM_HOME but kept
+ *      SOX_TELEMETRY_HARNESS;
  *   3. any changed guarded-file entry for an id the smoke run touched;
  *   4. any changed entry no qualifying operator `cli_invoked` event explains,
  *      including events with no `target` (a pre-d5c01be3 `soxe` dist or
@@ -47,12 +50,16 @@
  * continuously (measured 2026-09-24: 151 memory-core + 33 embedding-provider
  * harness streams in 6 h), so role alone cannot attribute them to this run.
  *
- * Residual (not caught): a smoke child that spawns a DETACHED grandchild in a
- * NEW process group after the harness last walked its descendants (e.g. a
- * detached embed host) is not in `smokePids`; if it logs only to another
- * service's live log and writes none of the four guarded files, it reads as a
- * note. `runCmd` children run via execSync, whose pid is not observable at
- * all — their harness telemetry is only attributable through scratch-log pids.
+ * Residual (not caught): a process the harness never observes is not in
+ * `smokePids` — a DETACHED grandchild started in a NEW process group after the
+ * harness last walked its descendants (e.g. a detached embed host), a service
+ * daemon that exits or restarts under a new pid before/after `service status`
+ * reports it, or a short-lived `runCmd` (execSync) child, whose pid is never
+ * observable. If such a process logs only to another service's live log and
+ * writes none of the four guarded files, it reads as a note; the only other
+ * attribution path for it is its pid appearing in the scratch logs. Pid
+ * CAPTURE lives in scripts/smoke-test.mjs and is exercised by the smoke run
+ * itself; the tier-1 guard test covers this module's evaluation of a pid set.
  *
  * Node built-ins only — importable by the tier-1 guard test
  * tools/test-d5c01be3-isolation-attribution.mjs without any build.
@@ -365,6 +372,31 @@ export function readTelemetryEvents(dirs, { sinceMs, untilMs, keep = isGuardRele
     }
   }
   return { events, parseErrors, filesRead };
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+// Smoke pid capture parsers (pure) — used by scripts/smoke-test.mjs
+// ──────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Pids from `soxe service status` stdout's `  live pids:  12, 34` line
+ * (apps/sox/src/main.ts cmdService status). `(none)` / absent → [].
+ */
+export function pidsFromServiceStatus(stdout) {
+  const m = String(stdout ?? '').match(/^\s*live pids:\s*(.*)$/m);
+  if (!m) return [];
+  return (m[1].match(/\d+/g) ?? []).map(Number).filter((n) => n > 0);
+}
+
+/** Pids (first column) of `ps -o pid,…` lines that mention `testRoot`, excluding `selfPid`. */
+export function pidsFromPsLines(lines, testRoot, selfPid) {
+  const out = [];
+  for (const line of lines ?? []) {
+    if (!String(line).includes(testRoot)) continue;
+    const pid = Number(String(line).trim().split(/\s+/)[0]);
+    if (pid > 0 && pid !== selfPid) out.push(pid);
+  }
+  return out;
 }
 
 // ──────────────────────────────────────────────────────────────────────────────

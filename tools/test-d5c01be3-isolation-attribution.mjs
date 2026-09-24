@@ -261,6 +261,31 @@ const CASES = [
     expect: (r) => r.verdict === 'fatal',
   },
   {
+    // Pid CAPTURE (service status `live pids:`) lives in scripts/smoke-test.mjs; this case covers
+    // evaluateIsolation's side: a daemon pid in the smoke pid set makes its live harness event FATAL.
+    name: 'd5c01be3: SERVICE-DAEMON pid (from `service status` live pids) harness event in <live>/memory-core/logs → FATAL',
+    // The pid set is built through the module under test's own capture parser from real
+    // `soxe service status` output shape (apps/sox/src/main.ts cmdService status).
+    run: (g) => scenario(g, {
+      liveOtherEvents: [{ ts: '2026-09-24T21:04:30.000Z', event: 'sox.stage.cluster.start', service: 'memory-core', role: 'harness', pid: 6060 }],
+      pids: g.pidsFromServiceStatus('memory-server\n  loaded:     yes\n  live pids:  6060, 6061\n'),
+    }),
+    expect: (r) => r.verdict === 'fatal' && r.lines.some((l) => l.includes('SMOKE-SPAWNED') && l.includes('pid=6060')),
+  },
+  {
+    name: 'd5c01be3: TEST_ROOT-tagged ps line pid (daemon argv --root TEST_ROOT) harness event in <live>/memory-server/logs → FATAL',
+    run: (g) => scenario(g, {
+      liveOtherEvents: [{ ts: '2026-09-24T21:04:30.000Z', event: 'x', service: 'memory-core', role: 'harness', pid: 7070 }],
+      pids: g.pidsFromPsLines(['  7070     1  7070 node /x/dist/index.js --root /tmp/smoke-root', '  7071     1  7071 node unrelated'], '/tmp/smoke-root', 1),
+    }),
+    expect: (r) => r.verdict === 'fatal' && r.lines.some((l) => l.includes('pid=7070')),
+  },
+  {
+    name: 'd5c01be3: `live pids: (none)` yields no pids',
+    run: (g) => ({ pids: g.pidsFromServiceStatus('  loaded:     yes\n  live pids:  (none)\n') }),
+    expect: (r) => Array.isArray(r.pids) && r.pids.length === 0,
+  },
+  {
     name: 'd5c01be3: FOREIGN pid harness event in <live>/memory-core/logs (smoke pids known) → note, non-fatal',
     run: (g) => scenario(g, {
       liveOtherEvents: [{ ts: '2026-09-24T21:04:00.000Z', event: 'x', service: 'memory-core', role: 'harness', pid: 4243 }],

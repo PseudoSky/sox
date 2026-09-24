@@ -28,6 +28,8 @@ import {
   DEFAULT_OPERATOR_SLACK_MS,
   evaluateIsolation,
   otherServiceLogDirs,
+  pidsFromPsLines,
+  pidsFromServiceStatus,
   readTelemetryEvents,
   snapshotLiveFiles,
   soxCliLogDirs,
@@ -175,6 +177,9 @@ const SMOKE_TOUCHED_IDS = new Set();
  */
 const SMOKE_SPAWNED_PIDS = new Set();
 
+/** Subset of SMOKE_SPAWNED_PIDS parsed from `soxe service status` `live pids:` (reported as a count). */
+const SMOKE_SERVICE_PIDS = new Set();
+
 /** Record `pid` and (best effort) its live descendants via `pgrep -P`. */
 function recordSmokePidTree(pid, testId) {
   if (typeof pid !== 'number' || !Number.isFinite(pid) || pid <= 0) return;
@@ -194,6 +199,16 @@ function recordSmokePidTree(pid, testId) {
     }
     for (const t of out.split(/\s+/)) { const n = Number(t); if (n > 0) stack.push(n); }
   }
+}
+
+/**
+ * Trace a failed process.kill. ESRCH (the process is already gone) is the
+ * expected steady state at teardown and stays silent; anything else (EPERM, a
+ * bad pid, …) is a real condition worth seeing.
+ */
+function logKillError(e, testId, pid, sig) {
+  if (e && e.code === 'ESRCH') return;
+  console.error(`[smoke] WARNING: ${testId ?? '?'} ${sig} to pid ${pid} failed: ${(e && e.code) ?? ''} ${(e && e.message) ?? e}`);
 }
 
 /** Record every member of process group `pgid` (`pgrep -g`). */
@@ -605,13 +620,13 @@ async function runServeProxyAndVerify(args, opts) {
   } else if (!exited) {
     // No timeout/gtimeout on PATH -- terminate via a raw process.kill(pid,
     // signal) syscall wrapper (SIGTERM, then SIGKILL after a grace window).
-    try { process.kill(child.pid, "SIGTERM"); } catch (e) { /* already gone */ }
+    try { process.kill(child.pid, "SIGTERM"); } catch (e) { logKillError(e, testId, child.pid, "SIGTERM"); }
     const termDeadline = Date.now() + 5000;
     while (Date.now() < termDeadline && !exited) {
       await new Promise(function (r) { const tm = setTimeout(r, 100); if (tm.unref) tm.unref(); });
     }
     if (!exited) {
-      try { process.kill(child.pid, "SIGKILL"); } catch (e) { /* already gone */ }
+      try { process.kill(child.pid, "SIGKILL"); } catch (e) { logKillError(e, testId, child.pid, "SIGKILL"); }
       await Promise.race([
         exitPromise,
         new Promise(function (r) { const tm = setTimeout(r, 2000); if (tm.unref) tm.unref(); }),
@@ -625,7 +640,7 @@ async function runServeProxyAndVerify(args, opts) {
     recordSmokePidTree(backendPid, testId);
     try {
       process.kill(backendPid, "SIGTERM");
-    } catch (e) { /* already gone, or never actually came up -- nothing to reap */ }
+    } catch (e) { logKillError(e, testId, backendPid, "SIGTERM (backend)"); }
   }
 
   const after = await snapshotFiles(TEST_ROOT);
@@ -910,7 +925,11 @@ function listTestRootProcesses() {
     console.error(`[smoke] WARNING: ps -axEww failed: ${(e && e.message) ?? e}`);
     return null; // unknown, not "zero" — callers must not read this as proof of nothing
   }
-  return raw.split('\n').filter((line) => line.includes(TEST_ROOT));
+  const lines = raw.split('\n').filter((line) => line.includes(TEST_ROOT));
+  // d5c01be3: every TEST_ROOT-tagged process (argv `--root TEST_ROOT` or env) is
+  // smoke-spawned — including supervisor/OS-unit daemons runCmd never sees a pid for.
+  for (const pid of pidsFromPsLines(lines, TEST_ROOT, process.pid)) SMOKE_SPAWNED_PIDS.add(pid);
+  return lines;
 }
 
 // BL-635: the no-proxy memory-server leg used to send initialize + memory_write
@@ -1064,6 +1083,12 @@ function verifyServiceRunning(args) {
   const stdout = args.stdout;
   const loadedYes = /^\s*loaded:\s*yes\s*$/m.test(stdout);
   const livePidsMatch = stdout.match(/^\s*live pids:\s*(.*)$/m);
+  // d5c01be3: `soxe service enable` daemons are launched by the supervisor / OS
+  // unit, never by this harness's spawn() — their pids come only from here.
+  for (const pid of pidsFromServiceStatus(stdout)) {
+    SMOKE_SERVICE_PIDS.add(pid);
+    recordSmokePidTree(pid, 'service-status');
+  }
   const hasLivePid = livePidsMatch !== undefined && livePidsMatch !== null
     && livePidsMatch[1].trim() !== "(none)" && livePidsMatch[1].trim() !== "";
   if (!loadedYes || !hasLivePid) {
@@ -1562,7 +1587,7 @@ async function main() {
   console.error(`[smoke] isolation telemetry: live sox ${liveLogs.events.length} event(s) from ${liveLogs.filesRead.length} file(s)` +
     ` (${liveLogs.parseErrors} unparseable line(s)); live other-service ${liveOtherLogs.events.length} relevant event(s) from ${liveOtherLogs.filesRead.length} file(s)` +
     ` (${liveOtherLogs.parseErrors} unparseable line(s)); scratch ${scratchLogs.events.length} event(s) from ${scratchLogs.filesRead.length} file(s)` +
-    ` (${scratchLogs.parseErrors} unparseable line(s)); smoke-touched ids: ${[...SMOKE_TOUCHED_IDS].sort().join(', ') || '(none)'}; smoke-spawned pids recorded: ${SMOKE_SPAWNED_PIDS.size}`);
+    ` (${scratchLogs.parseErrors} unparseable line(s)); smoke-touched ids: ${[...SMOKE_TOUCHED_IDS].sort().join(', ') || '(none)'}; smoke-spawned pids recorded: ${SMOKE_SPAWNED_PIDS.size} (service-status daemon pids: ${SMOKE_SERVICE_PIDS.size})`);
   const isolation = evaluateIsolation({
     before: isolationBefore,
     after: isolationAfter,
