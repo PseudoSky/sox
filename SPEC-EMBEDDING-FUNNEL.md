@@ -8,7 +8,7 @@ ADR catalog checked (`sox-ecosystem/docs/decisions/`, 0001–0018). ADR-0012 aut
 
 ## Summary
 
-Make the existing per-process singleton `getSharedFastembedProcess()` **host-aware** so that N consumer processes share ONE fastembed host per `(model, execution-provider)` **without any supervised daemon**. The host is a plain detached Node process **spawned on demand by the first consumer** through the already-shipped, race-tested `ensureBackend()` O_EXCL singleton spawn-lock (`libs/service-proxy`), and it **reaps itself** via a debounced, ref-counted teardown (`IDLE_GRACE_MS` after the last client disconnects and in-flight work drains). The two halves of the user's remembered "debouncing drainer" map cleanly onto primitives: **`ensureBackend` = funnel-to-1** (collapses a thundering herd of spawn attempts to one), **debounced teardown = the drainer** (retires the host when demand subsides). No env toggle, no supervisor, no `KeepAlive`; the host is compute-only and holds **no store connection** (ADR-0012). The funnel lives entirely inside `@adhd/sox-embedding-provider`, so consumers need no call-site change.
+Make the existing per-process singleton `getSharedFastembedProcess()` **host-aware** so that N consumer processes share ONE fastembed host per `(model, execution-provider)` **without any supervised daemon**. The host is a plain detached Node process **spawned on demand by the first consumer** through the already-shipped, race-tested `ensureBackend()` O_EXCL singleton spawn-lock (`libs/service-proxy`), and it **reaps itself** as a work-driven drainer ([ADR-0022](docs/decisions/0022-embedding-funnel-is-a-work-driven-drainer.md)): it retires `idleGraceMs` (default 60 s) after its last completed work; connections never keep it alive. The two halves of the user's remembered "debouncing drainer" map cleanly onto primitives: **`ensureBackend` = funnel-to-1** (collapses a thundering herd of spawn attempts to one), **work-driven retirement = the drainer** (retires the host `W` after its last completed work). No env toggle, no supervisor, no `KeepAlive`; the host is compute-only and holds **no store connection** (ADR-0012). The funnel lives entirely inside `@adhd/sox-embedding-provider`, so consumers need no call-site change.
 
 ## Part 1 — archaeology (what the mechanism was, where it lives, the diff)
 
@@ -54,7 +54,8 @@ Call `opts.onClientCountChange?.(sockets.size)` after `sockets.add(socket)` (bac
 export interface EmbedHostConfig { host: 'shared' | 'private'; socketDir: string; idleGraceMs: number; }
 export function resolveEmbedHostConfig(): EmbedHostConfig;         // typed; host default 'shared'
 export function resolveEmbedHostSocketDir(): string;               // SOX_ECOSYSTEM_HOME/run (ADR-0004)
-export function embedHostSingletonKey(modelId: string, ep: string, cacheDir: string): string;
+export function embedHostSingletonKey(modelId: string, ep: string, cacheDir: string, buildId: string): string;
+// key: embedding-host:v2:<buildId>:<model>:<ep>:<cacheDirDigest>; buildId = computeEmbedHostBuildId(hostMainPath)
 export function embedHostSocketPath(cfg: EmbedHostConfig, key: string): string; // backendSocketPath(socketDir,key)
 export function resolveEmbedHostMainPath(): string;                // require.resolve('@adhd/sox-embedding-provider/embed-host')
 ```
@@ -63,9 +64,10 @@ export function resolveEmbedHostMainPath(): string;                // require.re
 
 ```ts
 // handler methods: embedding.init | embedding.embed | embedding.embedBatch | embedding.reset | embedding.health
-export async function runEmbedHost(): Promise<void>;
+export async function runEmbedHost(argv?: readonly string[]): Promise<void>; // identity from argv (parseEmbedHostArgs)
+export function reapDueInMs(a: { state; inFlightWork; poolPending; lastWorkAt; now; idleWindowMs }): number | null;
 ```
-Uses `serveBackend({socketPath, handler, onClientCountChange})`; the handler forwards payloads 1:1 to `getPrivateFastembedProcess().request(payload)` — resolving the accessor **at every use** (never capturing it, so an `embedding.reset` that swaps the private singleton is never left on a terminated pool) and never the funnel accessor — no recursion. Debounced teardown: when `active===0 && inFlight===0` arm `idleGraceMs`; cancel on new client/request; on expiry `await getPrivateFastembedProcess().terminate(); await handle.close(); process.exit(0)`. `inFlight` is the host's OWN request depth, incremented synchronously before the handler's first `await` and decremented in its `finally` — the private pool's `pendingCount` is incremented only after the fork resolves, so it reads 0 during a cold-start fork and is not the drain signal.
+Uses `serveBackend({socketPath, handler})`. Every `init`/`embed`/`embedBatch` request carries `{model, cacheDir}`; the host refuses a foreign model with -32602, loads its own model through a memoized `ensureModel` (eagerly at startup, and again after `embedding.reset`), and forwards to `getPrivateFastembedProcess()` — resolving the accessor **at every use** and never the funnel accessor, so there is no recursion. Retirement is work-driven (ADR-0022): `reapDueInMs` returns null while work is in flight or the pool has pending requests, otherwise `lastWorkAt + W − now`. On 0 the host retires in order: flip to `retiring` and `handle.close()` in one tick (the inode-guarded unlink never removes a successor's socket), then terminate the pool, then exit 0. A frame arriving after the flip gets -32001 and the client retries through a fresh ensure.
 
 ### New: `funnelClient.ts`
 
@@ -110,10 +112,11 @@ export { getPrivateFastembedProcess } from './sharedFastembedProcess.js';
 - **Circuit breaker**: after K consecutive failed ensures, fail fast for a short cooldown (typed error) so 535 short-lived CLIs/day do not each pay the full 10 s bound.
 - `terminate()` is a **no-op** for `'shared'` (the host is shared; a consumer must never kill it).
 
-### `embedHostMain.ts` — debounced, ref-counted teardown (the drainer)
-- Inputs are **cross-process**: `active` = live UDS client connections (from `serveBackend`'s new hook) + this host's own `inFlight` request depth (synchronous, covers the cold-start fork prefix; the private pool's `pendingCount` does not).
-- `active===0 && inFlight===0` ⇒ arm `idleGraceMs`; a new client/request cancels it. Grace default `30_000`, set as **typed config** (`EmbeddingProviderConfig.idleGraceMs` → `EmbedHostConfig.idleGraceMs`; the spawner forwards the resolved value to the host via the internal `SOX_EMBED_HOST_IDLE_GRACE_MS` transport) — sized to the short-lived-CLI arrival cadence so a burst funnels to the warm host. (Owner directive: the bound is configurable typed config, superseding ADR-0013 D3 env tuning.)
-- On expiry: terminate the local pool, `handle.close()`, unlink the socket, exit 0. `detached:false` on the ONNX child means it dies with the host — no orphans.
+### `embedHostMain.ts` — work-driven retirement (the drainer, ADR-0022)
+- The only inputs are **work**: the host's in-flight init/embed/embedBatch count (incremented synchronously, so it covers the cold-start fork prefix) and the private pool's `pendingCount`. Connections, health probes and resets are not inputs; there is no keep-warm.
+- With nothing in flight, the host retires `W` after its last completed work. `W` is typed config (`EmbeddingProviderConfig.idleGraceMs` → `EmbedHostConfig.idleGraceMs`, default `60_000`), forwarded to the host as `--idle-window-ms`.
+- Retire: flip to `retiring` + close the listener (destroys client sockets; inode-guarded unlink) → terminate the local pool → exit 0. `detached:false` on the ONNX child means it dies with the host — no orphans.
+- The host is spawned with an allowlisted env (no `SOX_SERVICE_ID`, `SOX_CONFIG_*`, `SOX_PERM_*`, `SOX_PROXY_*`, `SOX_TELEMETRY_INIT`, `SOX_EMBED_HOST_*`), so no service's reaper treats it as its own.
 - The host **forks the ONNX pool itself**; the pool's own adaptive ceiling (`resolveFastembedPoolCeiling()`) is now computed **once machine-wide**, not N times.
 
 ### `entrypoint/backlog` (adhd) — consumer
@@ -130,7 +133,7 @@ Its path should move to the stable `SOX_ECOSYSTEM_HOME/run/` dir (kills the `tmp
 |---|---|---|---|---|---|
 | A | `serveBackend` lifecycle hook | `service-proxy/src/backend.ts` | — | 60 | 40 |
 | B | Config + socket/singleton resolution | `embedHostConfig.ts` | — | 0 | 130 |
-| C | Host process + debounced teardown | `embedHostMain.ts` | A,B | 0 | 220 |
+| C | Host process + work-driven retirement | `embedHostMain.ts` | A,B | 0 | 220 |
 | D | Funnel client + accessor split | `funnelClient.ts`, `sharedFastembedProcess.ts`, `index.ts`, `package.json` | B,C | 180 | 480 |
 | E | backlog consumer | `semantic-search.ts`, `package.json` (adhd) | D | 140 | 75 |
 | F | Teeth suite + reword 25–50× claims | `embed-funnel.spec.ts` | C,D | 40 | 240 |
@@ -159,7 +162,7 @@ Its path should move to the stable `SOX_ECOSYSTEM_HOME/run/` dir (kills the `tmp
 ## ADR implications
 
 - **ADR-0012 (authoritative):** the host is **compute-only** — no store connection, so it cannot serialize store access and must never be described as single-writer or as a store serialization point. Concurrent store writers are unaffected.
-- **ADR-0013:** no behavior-switching env var. Host selection is the typed `EmbeddingProviderConfig.host` closed union (default `'shared'`), reported in `health()`. The idle bound is likewise typed config — `EmbeddingProviderConfig.idleGraceMs` → `EmbedHostConfig.idleGraceMs`, which the spawner forwards to the host (`SOX_EMBED_HOST_IDLE_GRACE_MS` is only the internal transport); this supersedes D3's env-tuning classification per the owner directive. The socket dir is host config (D5).
+- **ADR-0013:** no behavior-switching env var. Host selection is the typed `EmbeddingProviderConfig.host` closed union (default `'shared'`), reported in `health()`. The idle bound is likewise typed config — `EmbeddingProviderConfig.idleGraceMs` → `EmbedHostConfig.idleGraceMs`, which the spawner forwards to the host as `--idle-window-ms` argv; this supersedes D3's env-tuning classification per the owner directive. The socket dir is host config (D5).
 - **ADR-0007 D3:** its decision ("activation posture is configuration") is satisfied — this implements the **non-supervised** posture it explicitly names ("The `ensureBackend` spawn path remains the non-supervised fallback"). It **departs from D3's ordering** ("always-on ships first"), which the owner's constraint overrides. **Propose ADR-0019** ("embedding funnel is peer-spawned and self-reaping; no managed service") — drafted only, **not written without owner approval**.
 - **ADR-0015:** PROPOSED, never accepted; it proposes a *backlog store* daemon. **Do not conflate** — this is a distinct, compute-only host and this spec does not implement ADR-0015.
 - **ADR-0011:** editing `entrypoint/backlog` requires the dispatch to carry the grant.
@@ -168,7 +171,7 @@ Its path should move to the stable `SOX_ECOSYSTEM_HOME/run/` dir (kills the `tmp
 ## Open questions
 
 1. **Confirm the peer-spawned host is acceptable** as "not a managed service": it is spawned by a consumer (never supervised), outlives the spawner, and self-reaps after `idleGraceMs`.
-2. `idleGraceMs` default (30 s) vs the cost of a ~200–400 MB host lingering during the grace window.
+2. `idleGraceMs` default (60 s, ADR-0022) vs the cost of a ~200–400 MB host lingering during the grace window.
 3. Should `memory-core`'s heal (`reinitEmbedProvider`, BUG-MEMORYSERVER-EMBED-HEAL-NOOPERATOR-001) route through `resetSharedFastembedHost()` (host `embedding.reset`)? Its current `terminate()`-then-refork no longer applies once the accessor is funneled.
 4. Provider upgrade staleness: a running host is an old build — should the singleton key include the provider version?
 5. Owner approval for ADR-0019, and the ADR-0011 grant to edit `entrypoint/backlog`.

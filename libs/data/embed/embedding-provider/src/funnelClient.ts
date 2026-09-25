@@ -32,6 +32,7 @@ import { dialBackend, ensureBackend, probeSocketLive, type BackendConnection } f
 import { log } from '@adhd/sox-telemetry';
 import { TransientEmbeddingError, PermanentEmbeddingError } from './errors.js';
 import {
+  buildEmbedHostEnv,
   computeEmbedHostBuildId,
   embedHostSingletonKey,
   encodeEmbedHostArgs,
@@ -336,6 +337,13 @@ export class FunneledFastembedClient implements SharedFastembedClient {
     const live = await probeSocketLive(socketPath, PROBE_TIMEOUT_MS);
     if (!live) {
       const serviceId = process.env['SOX_SERVICE_ID'];
+      // 6660076e: the host never inherits its spawner's identity/config/
+      // permission env — a service reaper would otherwise treat the shared host
+      // as that service's own process. Provenance travels as argv, telemetry-only.
+      const hostEnv = buildEmbedHostEnv(process.env);
+      if (hostEnv.denied.length > 0) {
+        log.info('embedding_provider.funnel.env_denied', { denied_env: hostEnv.denied });
+      }
       const hostArgs = encodeEmbedHostArgs({
         socketPath,
         model: ctx.model,
@@ -348,7 +356,7 @@ export class FunneledFastembedClient implements SharedFastembedClient {
           pid: process.pid,
           serviceId: serviceId !== undefined && serviceId !== '' ? serviceId : null,
           entry: process.argv[1] ?? null,
-          deniedEnv: [],
+          deniedEnv: hostEnv.denied,
         },
       });
       const result = await ensureBackend({
@@ -356,7 +364,7 @@ export class FunneledFastembedClient implements SharedFastembedClient {
         singletonKey: key,
         command: process.execPath,
         args: [hostMain, ...hostArgs],
-        env: { ...process.env },
+        env: hostEnv.env,
         stderrLogPath: resolveEmbedHostStderrLogPath(cfg),
         readyTimeoutMs: HOST_READY_TIMEOUT_MS,
       });
@@ -367,6 +375,8 @@ export class FunneledFastembedClient implements SharedFastembedClient {
         key,
         spawner_pid: process.pid,
         spawner_service: serviceId ?? null,
+        denied_env: hostEnv.denied,
+        dropped_env_count: hostEnv.dropped.length,
       });
       if (result.disposition === 'failed') {
         this.noteEnsureFailure();

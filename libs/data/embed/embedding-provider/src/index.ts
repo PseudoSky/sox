@@ -229,6 +229,7 @@ export {
   resolveEmbedHostMainPath,
   resolveEmbedHostIdleGraceMs,
   computeEmbedHostBuildId,
+  buildEmbedHostEnv,
   encodeEmbedHostArgs,
   parseEmbedHostArgs,
   EMBED_HOST_PROTOCOL_VERSION,

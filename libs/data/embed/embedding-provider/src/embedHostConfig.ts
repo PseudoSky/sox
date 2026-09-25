@@ -259,6 +259,83 @@ export interface EmbedHostSpawner {
   deniedEnv: string[];
 }
 
+/** Exact env keys a spawned host inherits (ADR-0022 §5). */
+const EMBED_HOST_ENV_FORWARD_EXACT = new Set([
+  'PATH',
+  'HOME',
+  'USER',
+  'LOGNAME',
+  'LANG',
+  'LC_ALL',
+  'LC_CTYPE',
+  'TZ',
+  'TMPDIR',
+  'XDG_CACHE_HOME',
+  // Network egress for a cold model download (fastembed fetches the model on a
+  // cache miss). No identity content; without them a host behind a proxy or a
+  // private CA could never load its model.
+  'HTTP_PROXY',
+  'HTTPS_PROXY',
+  'NO_PROXY',
+  'http_proxy',
+  'https_proxy',
+  'no_proxy',
+  'SSL_CERT_FILE',
+  'SSL_CERT_DIR',
+]);
+/** Env key prefixes a spawned host inherits. */
+const EMBED_HOST_ENV_FORWARD_PREFIXES = ['NODE_', 'SOX_'];
+/**
+ * Keys that match a forward rule but carry the SPAWNER's identity, config or
+ * permissions. `SOX_SERVICE_ID` in particular made every service reaper treat
+ * the shared host as the spawning service's own process (6660076e).
+ */
+const EMBED_HOST_ENV_DENY_EXACT = new Set(['SOX_SERVICE_ID', 'SOX_TELEMETRY_INIT']);
+const EMBED_HOST_ENV_DENY_PREFIXES = ['SOX_CONFIG_', 'SOX_PERM_', 'SOX_PROXY_', 'SOX_EMBED_HOST_'];
+
+/**
+ * 6660076e: the env a spawned embedding host runs with (ADR-0022 §5,
+ * docs/spec/service-lifecycle.md §5). The host is shared by every consumer on
+ * the box and must carry none of its spawner's identity:
+ *
+ *   - forwarded: `PATH HOME USER LOGNAME LANG LC_ALL LC_CTYPE TZ TMPDIR
+ *     XDG_CACHE_HOME`, the proxy/CA variables a cold model download needs
+ *     (`HTTP(S)_PROXY`, `NO_PROXY`, lowercase forms, `SSL_CERT_FILE/DIR`),
+ *     `NODE_*`, `SOX_*`;
+ *   - denied (reported by name in `denied`): `SOX_SERVICE_ID`,
+ *     `SOX_TELEMETRY_INIT`, `SOX_CONFIG_*`, `SOX_PERM_*`, `SOX_PROXY_*`,
+ *     `SOX_EMBED_HOST_*`;
+ *   - everything else is not forwarded (reported by name in `dropped`).
+ *
+ * Reimplemented locally on purpose: `area:data` may not import
+ * `@adhd/sox-host-runtime`'s env policy.
+ */
+export function buildEmbedHostEnv(parent: NodeJS.ProcessEnv): {
+  env: NodeJS.ProcessEnv;
+  denied: string[];
+  dropped: string[];
+} {
+  const env: NodeJS.ProcessEnv = {};
+  const denied: string[] = [];
+  const dropped: string[] = [];
+  for (const key of Object.keys(parent).sort()) {
+    const value = parent[key];
+    if (value === undefined) continue;
+    const forwarded =
+      EMBED_HOST_ENV_FORWARD_EXACT.has(key) || EMBED_HOST_ENV_FORWARD_PREFIXES.some((p) => key.startsWith(p));
+    if (!forwarded) {
+      dropped.push(key);
+      continue;
+    }
+    if (EMBED_HOST_ENV_DENY_EXACT.has(key) || EMBED_HOST_ENV_DENY_PREFIXES.some((p) => key.startsWith(p))) {
+      denied.push(key);
+      continue;
+    }
+    env[key] = value;
+  }
+  return { env, denied, dropped };
+}
+
 /** Everything a spawned host needs, transported as argv (ADR-0022). */
 export interface EmbedHostSpawnArgs {
   socketPath: string;
