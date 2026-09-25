@@ -104,4 +104,54 @@ describe('[b102d29b] isChecksumRelevant: root-level *.md is irrelevant for ANY n
 
     expect(() => buildIndex({ root })).toThrow(DirtyTreeError);
   });
+
+  // ── rename lines: judge BOTH sides, not just the destination ──────────────
+  //
+  // `git status --porcelain` reports a rename as a single "old -> new" line.
+  // Judging the destination alone is a fail-open the broadened root-markdown
+  // rule widens: `extensions/skills/x/SKILL.md -> SKILL.md` moves real
+  // packaged payload OUT of an extension into an irrelevant root path, and a
+  // destination-only judgement would call the whole line irrelevant — the
+  // dirty-tree gate would silently ignore an extension losing its payload.
+
+  it('a rename moving checksum-relevant payload OUT to an irrelevant root .md path still dirties the gate', () => {
+    fs.mkdirSync(path.join(root, 'extensions', 'skills', 'x'), { recursive: true });
+    fs.writeFileSync(path.join(root, 'extensions', 'skills', 'x', 'SKILL.md'), '# skill\n');
+    git(root, 'add -A');
+    git(root, 'commit -q -m "add SKILL.md"');
+
+    git(root, 'mv extensions/skills/x/SKILL.md SKILL.md');
+    git(root, 'add -A');
+    const status = git(root, 'status --porcelain -uall');
+    expect(status).toMatch(/->/); // sanity: git actually detected this as a rename line
+
+    expect(() => buildIndex({ root })).toThrow(DirtyTreeError);
+  });
+
+  it('a rename moving checksum-relevant payload IN from an irrelevant root .md path still dirties the gate', () => {
+    fs.writeFileSync(path.join(root, 'DRAFT-SKILL.md'), '# skill\n');
+    git(root, 'add -A');
+    git(root, 'commit -q -m "add DRAFT-SKILL.md"');
+
+    fs.mkdirSync(path.join(root, 'extensions', 'skills', 'y'), { recursive: true });
+    git(root, 'mv DRAFT-SKILL.md extensions/skills/y/SKILL.md');
+    git(root, 'add -A');
+    const status = git(root, 'status --porcelain -uall');
+    expect(status).toMatch(/->/);
+
+    expect(() => buildIndex({ root })).toThrow(DirtyTreeError);
+  });
+
+  it('a rename between two irrelevant root .md paths does NOT dirty the gate', () => {
+    fs.writeFileSync(path.join(root, 'NOTES.md'), '# scratch\n');
+    git(root, 'add -A');
+    git(root, 'commit -q -m "add NOTES.md"');
+
+    git(root, 'mv NOTES.md OTHER.md');
+    git(root, 'add -A');
+    const status = git(root, 'status --porcelain -uall');
+    expect(status).toMatch(/->/);
+
+    expect(() => buildIndex({ root })).not.toThrow();
+  });
 });

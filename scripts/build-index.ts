@@ -225,12 +225,31 @@ function isRootMarkdown(p: string): boolean {
   return !p.includes('/') && p.toLowerCase().endsWith('.md');
 }
 
-function isChecksumRelevant(file: string): boolean {
-  // Rename lines arrive as "old -> new"; judge the destination.
-  const p = (file.includes(' -> ') ? file.slice(file.indexOf(' -> ') + 4) : file).trim();
+/** Checksum-relevance of a single (non-rename) path — no "old -> new" splitting here. */
+function isPathChecksumRelevant(p: string): boolean {
   if (CHECKSUM_IRRELEVANT_EXACT_FILES.has(p)) return false;
   if (isRootMarkdown(p)) return false;
   return !CHECKSUM_IRRELEVANT_PREFIXES.some((prefix) => p.startsWith(prefix));
+}
+
+function isChecksumRelevant(file: string): boolean {
+  // backlog b102d29b: a rename line is "old -> new". Judging the destination
+  // ALONE (the prior behaviour) is a fail-open widened by the general
+  // root-markdown rule above: `extensions/skills/x/SKILL.md -> SKILL.md`
+  // moves real packaged payload OUT of an extension and into an irrelevant
+  // root path, and destination-only judging would call that irrelevant —
+  // silently blessing a checksum that no longer reflects the removed
+  // payload. Judge BOTH sides and treat the line as relevant if EITHER is:
+  // moving a checksum-relevant file anywhere, or moving anything INTO a
+  // checksum-relevant location, must still dirty the gate. A rename between
+  // two irrelevant paths (e.g. `NOTES.md -> OTHER.md`) stays irrelevant.
+  if (file.includes(' -> ')) {
+    const idx = file.indexOf(' -> ');
+    const oldPath = file.slice(0, idx).trim();
+    const newPath = file.slice(idx + 4).trim();
+    return isPathChecksumRelevant(oldPath) || isPathChecksumRelevant(newPath);
+  }
+  return isPathChecksumRelevant(file.trim());
 }
 
 /**
