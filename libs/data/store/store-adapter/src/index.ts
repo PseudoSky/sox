@@ -31,6 +31,7 @@ export * from './preflight.js';
 export * from './fts-orphan-guard.js';
 export * from './engine-guard.js';
 export * from './sidecar-retention.js';
+export * from './foreign-shm-lock.js';
 export * from './wal-ownership.js';
 // (BL-587, BL-590) Shared idle-flush/wal-cap tuning constants and pure
 // helpers, consumed identically by both adapters — exported so a caller

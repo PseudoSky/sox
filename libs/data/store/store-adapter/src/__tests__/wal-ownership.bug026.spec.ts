@@ -15,8 +15,9 @@
  *  - the HEARTBEAT detects a replaced WAL while idle and bounds the crash
  *    window with a PASSIVE checkpoint;
  *  - the sqlite adapter gains the same write-path fail-loud + close-time fold;
- *  - a foreign `-shm` beside a turso store is reconciled (quiescent) or
- *    refused (live peers);
+ *  - a foreign `-shm` beside a turso store is reconciled when the exclusive
+ *    lock probe proves it unlocked — even under live turso peers — and refused
+ *    only when a live classic holder (or an unprovable state) is present;
  *  - `getEngineIdentitySync` never opens a turso store with better-sqlite3.
  *
  * Modeled on `integrity-selfheal.test.ts` (BL-330) — same real-engine
@@ -35,7 +36,7 @@ import { join, dirname, basename } from 'node:path';
 import { tmpdir } from 'node:os';
 import { TursoAdapterImpl } from '../turso-adapter.js';
 import { SqliteAdapterImpl } from '../sqlite-adapter.js';
-import { EStoreWalReplaced, EForeignSqliteSidecar } from '../wal-ownership.js';
+import { EStoreWalReplaced } from '../wal-ownership.js';
 import { walOwnershipHeartbeatMs, verifyWalIdentityNow } from '../wal-ownership.js';
 import { getEngineIdentitySync } from '../engine-guard.js';
 import { setIntegrityReportSink } from '../integrity.js';
@@ -208,25 +209,38 @@ tursoDescribe('BUG-026 — turso lifetime WAL ownership', () => {
     expect(events.some((e) => e.event === 'repaired')).toBe(true);
   });
 
-  it('stray -shm refusal (live peers): the open throws EForeignSqliteSidecar', async () => {
-    const dbPath = tempPath('shm-refusal');
+  it('stray -shm reconcile (live peers, provably unlocked): the sidecar is renamed and the open succeeds', async () => {
+    const dbPath = tempPath('shm-reconcile-live-peer');
     const a = track(await TursoAdapterImpl.connect({ dbPath }));
     await a.exec('CREATE TABLE t (id INTEGER PRIMARY KEY, v TEXT)');
     await a.close();
     open.pop();
 
-    // A LIVE peer holds the store.
+    // A LIVE turso peer holds the store.
     const peer = track(await TursoAdapterImpl.connect({ dbPath }));
     await peer.executeGet('SELECT 1'); // real open, holds the lease
 
-    // The poisoner leaves a foreign -shm beside the live store.
+    // A stray classic -shm with NO live classic holder — abandoned residue.
+    // (The old BUG-026 gate declined under ANY live peer and threw
+    // EForeignSqliteSidecar; the fix lock-probes the sidecar instead, so a live
+    // TURSO peer is not a reason to refuse. A live CLASSIC holder still
+    // refuses — the negative control lives in
+    // `foreign-shm-lock-probe.bug026.spec.ts`.)
     writeFileSync(dbPath + '-shm', '');
     expect(existsSync(dbPath + '-shm')).toBe(true);
 
-    // A third open with a live peer + foreign -shm refuses.
     const third = track(await TursoAdapterImpl.connect({ dbPath }));
-    await expect(third.executeGet('SELECT 1')).rejects.toBeInstanceOf(EForeignSqliteSidecar);
+    await third.executeGet('SELECT COUNT(*) AS c FROM t'); // must NOT throw
+    expect(existsSync(dbPath + '-shm')).toBe(false);
+    const debris = readdirSync(dirname(dbPath)).filter((f) =>
+      f.startsWith(basename(dbPath) + '-shm.stale-'),
+    );
+    expect(debris.length).toBeGreaterThanOrEqual(1);
   });
+
+  // The refusal arm with a LIVE CLASSIC opener is covered end-to-end in
+  // `foreign-shm-lock-probe.bug026.spec.ts` ("NEGATIVE CONTROL"), where the
+  // holder is a real better-sqlite3 process holding a SHARED lock.
 
   it('probe-level guard: getEngineIdentitySync on a turso store returns null WITHOUT creating a db-shm', async () => {
     const dbPath = tempPath('probe-guard');
