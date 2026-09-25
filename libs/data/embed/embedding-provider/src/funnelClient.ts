@@ -29,10 +29,12 @@
  */
 
 import { dialBackend, ensureBackend, probeSocketLive, type BackendConnection } from '@adhd/sox-service-proxy';
+import { log } from '@adhd/sox-telemetry';
 import { TransientEmbeddingError, PermanentEmbeddingError } from './errors.js';
 import {
-  EMBED_HOST_IDLE_GRACE_ENV,
+  computeEmbedHostBuildId,
   embedHostSingletonKey,
+  encodeEmbedHostArgs,
   embedHostSocketPath,
   resolveEmbedHostConfig,
   resolveEmbedHostMainPath,
@@ -133,8 +135,13 @@ export class FunneledFastembedClient implements SharedFastembedClient {
       );
     }
 
+    // dc73d9b6: every request carries the model identity, so ANY host that
+    // answers this path — including a successor the dial layer replays to —
+    // can load the model itself and serve it. Per-connection init is unsound.
+    const ctx = this.initContext;
+    const params = ctx ? { ...payload, model: ctx.model, cacheDir: ctx.cacheDir } : payload;
     const id = `embed-funnel-${this.nextId++}`;
-    const request = { jsonrpc: '2.0' as const, id, method: `embedding.${type}`, params: payload };
+    const request = { jsonrpc: '2.0' as const, id, method: `embedding.${type}`, params };
     this._pending++;
     try {
       const resp = await this.awaitResponse(conn.send(request), id, timeoutMs, signal);
@@ -165,6 +172,11 @@ export class FunneledFastembedClient implements SharedFastembedClient {
     }
     if (error.code === -32601) {
       return new PermanentEmbeddingError(`embedding host does not implement the method: ${error.message}`);
+    }
+    if (error.code === -32602) {
+      // dc73d9b6: the host serves a different model/cacheDir — retrying the
+      // same request can never succeed.
+      return new PermanentEmbeddingError(`embedding host at ${where} refused the request: ${error.message}`);
     }
     // Application error from the private ONNX host (e.g. "Model not
     // initialized") — preserve the pre-funnel `new Error(message)` shape so
@@ -262,7 +274,11 @@ export class FunneledFastembedClient implements SharedFastembedClient {
       );
     }
     const ep = process.env['SOX_EMBED_EXECUTION_PROVIDER'] ?? 'auto';
-    const key = embedHostSingletonKey(ctx.model, ep, ctx.cacheDir);
+    // 2fe52b0f: the key carries the content build id of the host we would
+    // spawn, so we never dial a host from a foreign build.
+    const hostMain = resolveEmbedHostMainPath();
+    const buildId = computeEmbedHostBuildId(hostMain);
+    const key = embedHostSingletonKey(ctx.model, ep, ctx.cacheDir, buildId);
     const socketPath = embedHostSocketPath(cfg, key);
 
     if (this.socketPath !== socketPath) {
@@ -276,23 +292,38 @@ export class FunneledFastembedClient implements SharedFastembedClient {
 
     const live = await probeSocketLive(socketPath, PROBE_TIMEOUT_MS);
     if (!live) {
+      const serviceId = process.env['SOX_SERVICE_ID'];
+      const hostArgs = encodeEmbedHostArgs({
+        socketPath,
+        model: ctx.model,
+        cacheDir: ctx.cacheDir,
+        ep,
+        buildId,
+        // The typed idle window (`EmbedHostConfig.idleGraceMs`) travels as argv.
+        idleWindowMs: cfg.idleGraceMs,
+        spawner: {
+          pid: process.pid,
+          serviceId: serviceId !== undefined && serviceId !== '' ? serviceId : null,
+          entry: process.argv[1] ?? null,
+          deniedEnv: [],
+        },
+      });
       const result = await ensureBackend({
         socketPath,
         singletonKey: key,
         command: process.execPath,
-        args: [resolveEmbedHostMainPath()],
-        env: {
-          ...process.env,
-          SOX_EMBED_HOST_SOCKET: socketPath,
-          // Internal cross-process transport for the typed idle bound: the
-          // spawned host consumes the value the spawner resolved here
-          // (`EmbedHostConfig.idleGraceMs`), which is what makes the resolved
-          // config field the consumed surface rather than a dead declaration.
-          // The public knob is `EmbeddingProviderConfig.idleGraceMs`.
-          [EMBED_HOST_IDLE_GRACE_ENV]: String(cfg.idleGraceMs),
-        },
+        args: [hostMain, ...hostArgs],
+        env: { ...process.env },
         stderrLogPath: resolveEmbedHostStderrLogPath(cfg),
         readyTimeoutMs: HOST_READY_TIMEOUT_MS,
+      });
+      log.info('embedding_provider.funnel.spawn', {
+        disposition: result.disposition,
+        pid: result.pid ?? null,
+        build_id: buildId,
+        key,
+        spawner_pid: process.pid,
+        spawner_service: serviceId ?? null,
       });
       if (result.disposition === 'failed') {
         this.noteEnsureFailure();

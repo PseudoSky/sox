@@ -33,6 +33,8 @@ import * as path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { ensureBackend } from '@adhd/sox-service-proxy';
 import { afterEach, describe, expect, it } from 'vitest';
+import { computeEmbedHostBuildId, encodeEmbedHostArgs } from './embedHostConfig.js';
+import { hostShimSource, stubHostSource } from './test-support/funnelHarness.js';
 
 const SRC_DIR = __dirname;
 const INDEX_TS = pathToFileURL(path.resolve(SRC_DIR, 'index.ts')).href;
@@ -151,40 +153,18 @@ function setupEnv(opts: SetupOpts = {}): FunnelEnv {
   const stubIgnoreShutdown = opts.stubIgnoreShutdown ?? false;
 
   // The private stub host: speaks the fastembed-host IPC protocol
-  // (`process.on('message')`), replies to ANY request with an embedding. No
-  // fastembed import, no model.
+  // (`process.on('message')`) and is STATEFUL like the real one — `embed` /
+  // `embedBatch` before any `init` answer "Model not initialized", so a host
+  // that forgets to load its model goes red here. No fastembed, no model.
   const privateStubPath = path.join(dir, 'fastembedProcessHost-stub.mjs');
-  fs.writeFileSync(
-    privateStubPath,
-    [
-      `let q = Promise.resolve();`,
-      `process.on('message', (msg) => {`,
-      ...(stubIgnoreShutdown
-        ? [`  // Deliberately IGNORE __shutdown: terminate() must wait its full grace.`]
-        : [`  if (msg && msg.__shutdown) { try { process.disconnect(); } catch {} return; }`]),
-      `  q = q.then(() => new Promise((resolve) => {`,
-      `    setTimeout(() => {`,
-      `      if (process.connected) process.send({ id: msg.id, embedding: [0, 0, 0] });`,
-      `      resolve();`,
-      `    }, ${stubDelayMs});`,
-      `  }));`,
-      `});`,
-      '',
-    ].join('\n'),
-  );
+  fs.writeFileSync(privateStubPath, stubHostSource({ delayMs: stubDelayMs, ignoreShutdown: stubIgnoreShutdown }));
 
   // The host shim: a UNIQUE per-test entrypoint (so `ps` can attribute pids to
   // this test) that runs the REAL `src/embedHostMain.ts` via the tsx loader
-  // (`NODE_OPTIONS=--import tsx`).
+  // (`NODE_OPTIONS=--import tsx`). The source URL is written literally: the
+  // host never inherits `SOX_EMBED_HOST_*` from its spawner.
   const shimPath = path.join(dir, 'embedHostMain-testshim.mjs');
-  fs.writeFileSync(
-    shimPath,
-    [
-      `const mod = await import(process.env.SOX_EMBED_HOST_SRC);`,
-      `await mod.runEmbedHost();`,
-      '',
-    ].join('\n'),
-  );
+  fs.writeFileSync(shimPath, hostShimSource(EMBED_HOST_TS));
 
   const consumerPath = path.join(dir, 'funnel-consumer.mjs');
   fs.writeFileSync(
@@ -275,10 +255,8 @@ function setupEnv(opts: SetupOpts = {}): FunnelEnv {
     SOX_ECOSYSTEM_HOME: home,
     SOX_FASTEMBED_HOST_PATH: privateStubPath,
     SOX_EMBED_HOST_MAIN: hostMain,
-    SOX_EMBED_HOST_SRC: EMBED_HOST_TS,
-    // The idle bound is set via the TYPED config in the consumer script, NOT
-    // here — `SOX_EMBED_HOST_IDLE_GRACE_MS` is only the internal spawner→host
-    // transport, which the funnel client writes from `EmbedHostConfig.idleGraceMs`.
+    // The idle bound is set via the TYPED config in the consumer script; the
+    // funnel client forwards it to the host as `--idle-window-ms`.
     FUNNEL_TEST_GRACE_MS: String(graceMs),
     SOX_EMBED_EXECUTION_PROVIDER: 'cpu',
     FUNNEL_TEST_INDEX: INDEX_TS,
@@ -518,8 +496,19 @@ describe('SPEC-EMBEDDING-FUNNEL — rendezvous race', () => {
         socketPath,
         singletonKey: `embedding-host:race:${env.dir}`,
         command: process.execPath,
-        args: [env.shimPath],
-        env: { ...env.env, SOX_EMBED_HOST_SOCKET: socketPath },
+        args: [
+          env.shimPath,
+          ...encodeEmbedHostArgs({
+            socketPath,
+            model: 'stub',
+            cacheDir: env.cache,
+            ep: 'cpu',
+            buildId: computeEmbedHostBuildId(env.shimPath),
+            idleWindowMs: 10_000,
+            spawner: { pid: process.pid, serviceId: null, entry: null, deniedEnv: [] },
+          }),
+        ],
+        env: { ...env.env },
         stderrLogPath: path.join(env.home, 'run', 'race.stderr.log'),
         readyTimeoutMs: 15_000,
       });

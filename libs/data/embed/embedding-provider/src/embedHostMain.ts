@@ -52,10 +52,16 @@
 
 import { fileURLToPath } from 'node:url';
 import { resolve } from 'node:path';
+import { randomUUID } from 'node:crypto';
 import { performance } from 'node:perf_hooks';
 import { serveBackend, type BackendHandle, type JsonRpcRequest, type JsonRpcResponse } from '@adhd/sox-service-proxy';
 import { bootstrapChildTelemetry, log } from '@adhd/sox-telemetry';
-import { resolveEmbedHostIdleGraceMs } from './embedHostConfig.js';
+import {
+  EMBED_HOST_PROTOCOL_VERSION,
+  computeEmbedHostBuildId,
+  parseEmbedHostArgs,
+  type EmbedHostSpawnArgs,
+} from './embedHostConfig.js';
 import { getPrivateFastembedProcess, resetPrivateFastembedProcess } from './sharedFastembedProcess.js';
 
 /**
@@ -167,13 +173,36 @@ function fail(id: JsonRpcRequest['id'], code: number, message: string): JsonRpcR
   return { jsonrpc: '2.0', id: id ?? null, error: { code, message } };
 }
 
+/** JSON-RPC invalid params — a request for a model/cacheDir this host does not serve. */
+export const ERR_WRONG_MODEL = -32602;
+
+/**
+ * dc73d9b6: check a work request's `{model, cacheDir}` against the identity
+ * this host was spawned for. Returns an error message, or `null` when it matches.
+ * A request with no identity at all is also refused — a v2 client always stamps it.
+ */
+export function checkRequestIdentity(
+  params: Record<string, unknown>,
+  served: { model: string; cacheDir: string },
+): string | null {
+  const model = params['model'];
+  const cacheDir = params['cacheDir'];
+  if (model !== served.model || cacheDir !== served.cacheDir) {
+    return (
+      `embedding host serves model ${JSON.stringify(served.model)} with cacheDir ${JSON.stringify(served.cacheDir)}; ` +
+      `request named model ${JSON.stringify(model)} with cacheDir ${JSON.stringify(cacheDir)}`
+    );
+  }
+  return null;
+}
+
 /**
  * Start the host: bind the UDS, serve `embedding.*`, and arm the debounced
  * self-reap. Resolves once the listener is up (so a caller/test can await
  * readiness); the process stays alive until the teardown fires or a signal
  * arrives.
  */
-export async function runEmbedHost(): Promise<void> {
+export async function runEmbedHost(argv: readonly string[] = process.argv.slice(2)): Promise<void> {
   // Composition root for this process (mirrors memory-server's index.ts BL-404
   // call): the detached host forked by `ensureBackend()` starts with fresh
   // module state in @adhd/sox-telemetry — service:'unlabeled', logSink:'none' —
@@ -183,15 +212,87 @@ export async function runEmbedHost(): Promise<void> {
   // falling back to these defaults today since the funnel client does not set it.
   bootstrapChildTelemetry({ service: 'embed-host', role: 'live-service', logSink: 'file' });
 
-  const socketPath = process.env['SOX_EMBED_HOST_SOCKET'];
-  if (!socketPath) {
+  // dc73d9b6: identity arrives as argv (ADR-0022), never as inherited env.
+  let args: EmbedHostSpawnArgs;
+  try {
+    args = parseEmbedHostArgs(argv);
+  } catch (e) {
+    const message = e instanceof Error ? e.message : String(e);
+    log.error('embedding_provider.embed_host.bad_args', { error: message });
     process.stderr.write(
-      '[embed-host] SOX_EMBED_HOST_SOCKET is not set — the host is spawned by the funnel client, not run directly.\n',
+      `[embed-host] ${message} — the host is spawned by the funnel client, not run directly.\n`,
     );
     process.exit(2);
   }
+  const socketPath = args.socketPath;
 
-  const idleGraceMs = resolveEmbedHostIdleGraceMs();
+  // 2fe52b0f: refuse to serve under a build id that is not our own. The
+  // spawner computed it from the same host main path; a mismatch means a
+  // different build's bytes are answering for this key.
+  const entry = process.argv[1] ?? '';
+  const ownBuildId = entry ? computeEmbedHostBuildId(entry) : '';
+  if (ownBuildId !== args.buildId) {
+    log.error('embedding_provider.embed_host.spawn_rejected', {
+      reason: 'build_id_mismatch',
+      expected: args.buildId,
+      actual: ownBuildId,
+      entry,
+    });
+    process.stderr.write(
+      `[embed-host] build id mismatch: spawned as ${args.buildId}, this build is ${ownBuildId} (${entry})\n`,
+    );
+    process.exit(3);
+  }
+
+  // The execution provider is part of the key; pin it before the private pool
+  // forks its ONNX child (which reads SOX_EMBED_EXECUTION_PROVIDER).
+  if (args.ep !== 'auto') process.env['SOX_EMBED_EXECUTION_PROVIDER'] = args.ep;
+
+  const idleGraceMs = args.idleWindowMs;
+  const served = { model: args.model, cacheDir: args.cacheDir };
+  const hostInstanceId = randomUUID();
+  let requestsServed = 0;
+
+  /**
+   * dc73d9b6: the host owns its model init. Memoized so concurrent work
+   * requests share one init; cleared on failure (the next request retries) and
+   * on `embedding.reset` (the fresh pool has no model).
+   */
+  let modelPromise: Promise<Record<string, unknown>> | null = null;
+  let modelLoaded = false;
+  const ensureModel = (trigger: 'eager' | 'request' | 'after_reset'): Promise<Record<string, unknown>> => {
+    if (modelPromise) return modelPromise;
+    const started = performance.now();
+    const p = getPrivateFastembedProcess()
+      .request<Record<string, unknown>>({ type: 'init', model: served.model, cacheDir: served.cacheDir })
+      .then(
+        (res) => {
+          modelLoaded = true;
+          log.info('embedding_provider.embed_host.model.init', {
+            trigger,
+            ok: true,
+            model: served.model,
+            init_ms: performance.now() - started,
+          });
+          return res;
+        },
+        (e: unknown) => {
+          if (modelPromise === p) modelPromise = null;
+          modelLoaded = false;
+          log.warn('embedding_provider.embed_host.model.init', {
+            trigger,
+            ok: false,
+            model: served.model,
+            init_ms: performance.now() - started,
+            error: e instanceof Error ? e.message : String(e),
+          });
+          throw e;
+        },
+      );
+    modelPromise = p;
+    return p;
+  };
+  let resetSinceInit = false;
 
   let activeClients = 0;
   /**
@@ -390,21 +491,42 @@ export async function runEmbedHost(): Promise<void> {
       if (method === 'embedding.health') {
         const pc = getPrivateFastembedProcess();
         return ok(id, {
+          protocol: EMBED_HOST_PROTOCOL_VERSION,
+          buildId: args.buildId,
+          hostInstanceId,
+          modelLoaded,
           started: pc.started,
           pendingCount: pc.pendingCount,
           inFlight,
           activeClients,
           idleGraceMs,
+          requestsServed,
         });
       }
       if (method === 'embedding.reset') {
+        // The fresh pool has no model: forget the memo so the next work
+        // request (from ANY client) re-inits it — a reset never bricks peers.
+        modelPromise = null;
+        modelLoaded = false;
+        resetSinceInit = true;
         await resetPrivateFastembedProcess();
         return ok(id, { reset: true });
       }
-      // embedding.init | embedding.embed | embedding.embedBatch — forward the
-      // payload 1:1 to the PRIVATE pool (never the funnel accessor), resolving
-      // it per use so a reset mid-life never leaves us on a terminated pool.
+      // embedding.init | embedding.embed | embedding.embedBatch — the request
+      // must name the model this host serves; the host loads it itself, then
+      // forwards to the PRIVATE pool (never the funnel accessor), resolving it
+      // per use so a reset mid-life never leaves us on a terminated pool.
       const params = (req.params ?? {}) as Record<string, unknown>;
+      const mismatch = checkRequestIdentity(params, served);
+      if (mismatch !== null) return fail(id, ERR_WRONG_MODEL, mismatch);
+      const trigger = resetSinceInit ? 'after_reset' : 'request';
+      resetSinceInit = false;
+      const initResult = await ensureModel(trigger);
+      requestsServed++;
+      if (method === 'embedding.init') {
+        isRealForward = true;
+        return ok(id, initResult);
+      }
       const result = await getPrivateFastembedProcess().request(params);
       isRealForward = true;
       return ok(id, result);
@@ -435,6 +557,19 @@ export async function runEmbedHost(): Promise<void> {
       }
     },
   });
+
+  // dc73d9b6: load the model eagerly — the first request should not pay for
+  // it, and a replayed request must find a ready host. Counted as work.
+  inFlight++;
+  void ensureModel('eager')
+    .catch((e: unknown) => {
+      // Already logged by ensureModel (model.init ok:false); the next request retries.
+      log.debug('embedding_provider.embed_host.eager_init_deferred', { error: e instanceof Error ? e.message : String(e) });
+    })
+    .finally(() => {
+      inFlight--;
+      if (activeClients === 0) armIfIdle();
+    });
 
   // Arm immediately: if no client ever connects (e.g. the spawner died between
   // spawn and dial), the host must still reap rather than linger forever.

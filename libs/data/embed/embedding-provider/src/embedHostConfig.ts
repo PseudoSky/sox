@@ -24,25 +24,29 @@
  * variable: a behavior switch must be visible, validated, and auditable, not an
  * ambient string.
  *
- * `SOX_EMBED_HOST_IDLE_GRACE_MS` still exists, but it is the INTERNAL
- * cross-process transport between the spawner and the spawned host — the spawner
- * writes the resolved `EmbedHostConfig.idleGraceMs` into the child's env and the
- * host consumes it. It is not the public configuration surface; set the typed
- * `idleGraceMs` (or `configureEmbedHostIdleGraceMs()`) instead. (Owner directive:
- * "the time bound should be configurable" — typed config, not an ADR-0013 D3 env
- * tuning constant. This supersedes ADR-0020 D2's env-tuning framing.)
+ * The spawner hands the resolved `EmbedHostConfig.idleGraceMs` (and the rest of
+ * the host's identity) to the spawned host as argv — {@link encodeEmbedHostArgs} /
+ * {@link parseEmbedHostArgs} — never as env (ADR-0022). (Owner directive: "the
+ * time bound should be configurable" — typed config, not an ADR-0013 D3 env
+ * tuning constant.)
  *
  * The remaining env reads are ADR-0013 D5 shapes:
  *
  *   - `SOX_ECOSYSTEM_HOME` — host config (D5): where the socket lives.
- *   - `SOX_EMBED_HOST_MAIN` / `SOX_EMBED_HOST_SOCKET` — host-injected transport
- *     config (D5) / test seams; they select a path, they never enable a feature.
+ *   - `SOX_EMBED_HOST_MAIN` — a test seam (D5); it selects a path, it never
+ *     enables a feature.
+ *
+ * ── Identity is content-addressed (ADR-0022 §4) ──────────────────────────────
+ *
+ * The singleton key carries a {@link computeEmbedHostBuildId build id}: a digest
+ * of the host module bytes, the Node ABI and the arch. Two builds on one box get
+ * two hosts; a consumer never dials a host from a foreign build.
  *
  * Leaf module — node builtins only (fs, os, path, url, crypto, module) plus
  * `backendSocketPath` from `@adhd/sox-service-proxy`.
  */
 
-import { existsSync } from 'node:fs';
+import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { createRequire } from 'node:module';
 import { homedir } from 'node:os';
@@ -62,11 +66,12 @@ export interface EmbedHostConfig {
   /** The directory the host UDS is created under (ADR-0004: `$SOX_ECOSYSTEM_HOME/run`). */
   socketDir: string;
   /**
-   * How long the host lingers with zero clients and zero in-flight work before
-   * it reaps itself. Typed config (owner directive: "the time bound should be
-   * configurable"): the SPAWNER reads this resolved value and forwards it to the
-   * spawned host, which consumes it. Set it via
-   * `EmbeddingProviderConfig.idleGraceMs` / `configureEmbedHostIdleGraceMs()`.
+   * The idle window `W` (ADR-0022 §1): the host retires this long after its
+   * last COMPLETED real work (init/embed/embedBatch), provided nothing is in
+   * flight. Connections are not an input. Typed config: the SPAWNER reads this
+   * resolved value and forwards it to the spawned host as `--idle-window-ms`.
+   * Set it via `EmbeddingProviderConfig.idleGraceMs` /
+   * `configureEmbedHostIdleGraceMs()`.
    */
   idleGraceMs: number;
 }
@@ -74,20 +79,19 @@ export interface EmbedHostConfig {
 /**
  * Bumped whenever the host's wire protocol or behavior changes incompatibly.
  *
- * Open question #4 in SPEC-EMBEDDING-FUNNEL.md ("a running host is an old
- * build") is resolved with this constant rather than the npm package version.
- * Rationale: the real hazard is a host whose `embedding.*` contract the new
- * consumer cannot speak — a *protocol* change — not every cosmetic patch. Keying
- * on the npm version would spawn a brand-new host on every patch bump (briefly
- * two hosts, defeating the funnel across an upgrade window) while the explicit
- * protocol version forces a new socket exactly when compatibility actually
- * breaks. Bump this with any change to the `embedding.*` method set, the payload
- * shape, or the response shape in `embedHostMain.ts`.
+ * v2 (ADR-0022): every `init`/`embed`/`embedBatch` request carries
+ * `{model, cacheDir}` and the host owns its own model init; the host takes its
+ * identity from argv. The build id in the key (see
+ * {@link computeEmbedHostBuildId}) already separates builds, so this constant
+ * only needs a bump when the `embedding.*` contract itself changes.
  */
-export const EMBED_HOST_PROTOCOL_VERSION = 1;
+export const EMBED_HOST_PROTOCOL_VERSION = 2;
 
-/** Default grace before a zero-client host reaps itself. Sized to the short-lived-CLI arrival cadence. */
-export const DEFAULT_EMBED_HOST_IDLE_GRACE_MS = 30_000;
+/**
+ * Default idle window `W` (ADR-0022 §1): a host retires this long after its
+ * last completed real work. 60 s covers the short-lived-CLI arrival cadence.
+ */
+export const DEFAULT_EMBED_HOST_IDLE_GRACE_MS = 60_000;
 
 /**
  * Process-wide host-selection override. `null` ⇒ `'shared'`.
@@ -102,21 +106,13 @@ export const DEFAULT_EMBED_HOST_IDLE_GRACE_MS = 30_000;
 let _hostOverride: EmbedHostMode | null = null;
 
 /**
- * Process-wide idle-grace override. `null` ⇒ resolve from the transport env (or
- * the default). This is the TYPED public surface for the time bound: the owner
+ * Process-wide idle-grace override. `null` ⇒ the default. This is the TYPED public surface for the time bound: the owner
  * directive is that the bound be configurable as config, not as an ambient
  * ADR-0013 D3 env constant. Set via `configureEmbedHostIdleGraceMs()` (which
  * `createEmbeddingProvider()` calls with `EmbeddingProviderConfig.idleGraceMs`)
  * before the host is spawned.
  */
 let _idleGraceOverride: number | null = null;
-
-/**
- * The internal cross-process transport variable the spawner uses to hand the
- * resolved `EmbedHostConfig.idleGraceMs` to the spawned host. Not a public knob
- * — set the typed `idleGraceMs` instead.
- */
-export const EMBED_HOST_IDLE_GRACE_ENV = 'SOX_EMBED_HOST_IDLE_GRACE_MS';
 
 /**
  * Apply the typed `host` field from an `EmbeddingProviderConfig`. Passing
@@ -155,7 +151,7 @@ export function __resetEmbedHostConfigForTests(): void {
 
 /**
  * Resolve the funnel configuration. `host` defaults to `'shared'`; `idleGraceMs`
- * is typed config (with the transport env / hard default as fallbacks). The
+ * is typed config (with the hard default as fallback). The
  * SPAWNER reads the resolved `idleGraceMs` and forwards it to the spawned host —
  * see `funnelClient.ts`'s `doEnsure()` — which is what makes this field the
  * consumed surface rather than a dead declaration.
@@ -169,28 +165,12 @@ export function resolveEmbedHostConfig(): EmbedHostConfig {
 }
 
 /**
- * Resolve the idle grace, in priority order:
- *
- *   1. the typed override (`configureEmbedHostIdleGraceMs()` /
- *      `EmbeddingProviderConfig.idleGraceMs`) — the public surface;
- *   2. the internal transport env (`SOX_EMBED_HOST_IDLE_GRACE_ENV`) the spawner
- *      writes for the spawned host;
- *   3. `DEFAULT_EMBED_HOST_IDLE_GRACE_MS`.
- *
- * A non-positive or non-numeric transport value is rejected loudly (never
- * silently treated as "off").
+ * Resolve the idle window: the typed override (`configureEmbedHostIdleGraceMs()`
+ * / `EmbeddingProviderConfig.idleGraceMs`), else
+ * `DEFAULT_EMBED_HOST_IDLE_GRACE_MS`. There is no env fallback (ADR-0013).
  */
 export function resolveEmbedHostIdleGraceMs(): number {
-  if (_idleGraceOverride !== null) return _idleGraceOverride;
-  const raw = process.env[EMBED_HOST_IDLE_GRACE_ENV];
-  if (raw === undefined || raw === '') return DEFAULT_EMBED_HOST_IDLE_GRACE_MS;
-  const parsed = Number(raw);
-  if (!Number.isFinite(parsed) || parsed <= 0) {
-    throw new TypeError(
-      `${EMBED_HOST_IDLE_GRACE_ENV} must be a positive number, got ${JSON.stringify(raw)}`,
-    );
-  }
-  return parsed;
+  return _idleGraceOverride ?? DEFAULT_EMBED_HOST_IDLE_GRACE_MS;
 }
 
 /**
@@ -207,17 +187,171 @@ export function resolveEmbedHostSocketDir(): string {
 }
 
 /**
- * The machine-wide [def:singleton-key] for the host serving `(modelId, ep,
- * cacheDir)`. Identical inputs ⇒ identical key ⇒ identical socket ⇒ one host,
- * across every consumer process on the box.
+ * The machine-wide [def:singleton-key] for the host serving `(buildId, modelId,
+ * ep, cacheDir)`. Identical inputs ⇒ identical key ⇒ identical socket ⇒ one
+ * host, across every consumer process on the box.
  *
  * `cacheDirDigest` is a short sha256 of the ABSOLUTE cache dir, so two stores
- * pointed at different model caches never collide onto one host. The protocol
- * version is appended (see {@link EMBED_HOST_PROTOCOL_VERSION}).
+ * pointed at different model caches never collide onto one host. `buildId`
+ * (ADR-0022 §4) separates builds: a consumer never dials a foreign build's host.
  */
-export function embedHostSingletonKey(modelId: string, ep: string, cacheDir: string): string {
+export function embedHostSingletonKey(
+  modelId: string,
+  ep: string,
+  cacheDir: string,
+  buildId: string,
+): string {
   const digest = createHash('sha256').update(cacheDir, 'utf8').digest('hex').slice(0, 12);
-  return `embedding-host:v${EMBED_HOST_PROTOCOL_VERSION}:${modelId}:${ep}:${digest}`;
+  return `embedding-host:v${EMBED_HOST_PROTOCOL_VERSION}:${buildId}:${modelId}:${ep}:${digest}`;
+}
+
+const _buildIdMemo = new Map<string, string>();
+
+/**
+ * The content build id of the host at `hostMainPath` (ADR-0022 §4): 12 hex of a
+ * sha256 over the protocol version, the Node ABI (`process.versions.modules`),
+ * `process.arch`, and the bytes of every regular file in `dirname(hostMainPath)`
+ * matching `/\.[cm]?js$/`, sorted by name. When `hostMainPath` ends `.ts` (tsx
+ * source mode) the set is the `.ts` files, excluding `*.spec.ts`.
+ *
+ * The whole directory, not just the entry file, because the host's behavior
+ * lives in its siblings (a bundled sidecar inlines them; the npm dist imports
+ * them). Memoized per path: the bytes of a running build do not change under it,
+ * and a new build is a new process.
+ */
+export function computeEmbedHostBuildId(hostMainPath: string): string {
+  const memo = _buildIdMemo.get(hostMainPath);
+  if (memo !== undefined) return memo;
+  const dir = dirname(hostMainPath);
+  const tsMode = hostMainPath.endsWith('.ts');
+  const matches = (name: string): boolean =>
+    tsMode ? name.endsWith('.ts') && !name.endsWith('.spec.ts') : /\.[cm]?js$/.test(name);
+  const hash = createHash('sha256');
+  hash.update(`protocol:${EMBED_HOST_PROTOCOL_VERSION}\0`);
+  hash.update(`abi:${process.versions.modules}\0`);
+  hash.update(`arch:${process.arch}\0`);
+  const names = readdirSync(dir).filter(matches).sort();
+  for (const name of names) {
+    const file = join(dir, name);
+    if (!statSync(file).isFile()) continue;
+    hash.update(`file:${name}\0`);
+    hash.update(readFileSync(file));
+    hash.update('\0');
+  }
+  const id = hash.digest('hex').slice(0, 12);
+  _buildIdMemo.set(hostMainPath, id);
+  return id;
+}
+
+/** TEST-ONLY: forget memoized build ids (a test that edits a host dir in place). */
+export function __resetEmbedHostBuildIdMemoForTests(): void {
+  _buildIdMemo.clear();
+}
+
+/** Who spawned a host — provenance for telemetry only, never identity. */
+export interface EmbedHostSpawner {
+  pid: number;
+  /** The spawner's `SOX_SERVICE_ID`, carried as argv (never env — ADR-0022 §5). */
+  serviceId: string | null;
+  /** The spawner's entrypoint (`process.argv[1]`). */
+  entry: string | null;
+  /** Env keys the spawner withheld from the host (names only). */
+  deniedEnv: string[];
+}
+
+/** Everything a spawned host needs, transported as argv (ADR-0022). */
+export interface EmbedHostSpawnArgs {
+  socketPath: string;
+  model: string;
+  cacheDir: string;
+  ep: string;
+  buildId: string;
+  idleWindowMs: number;
+  spawner: EmbedHostSpawner;
+}
+
+/**
+ * Encode host spawn args as argv. Every flag uses the single-element
+ * `--flag=value` form on purpose: a spawner's entrypoint path must never appear
+ * as a whitespace-bounded argv token, because the identity reaper
+ * (`argvContainsToken`) would then match the embed host as the spawner's own
+ * process and kill it.
+ */
+export function encodeEmbedHostArgs(a: EmbedHostSpawnArgs): string[] {
+  const out = [
+    `--socket=${a.socketPath}`,
+    `--model=${a.model}`,
+    `--cache-dir=${a.cacheDir}`,
+    `--ep=${a.ep}`,
+    `--build-id=${a.buildId}`,
+    `--idle-window-ms=${String(a.idleWindowMs)}`,
+    `--spawner-pid=${String(a.spawner.pid)}`,
+  ];
+  if (a.spawner.serviceId !== null) out.push(`--spawner-service=${a.spawner.serviceId}`);
+  if (a.spawner.entry !== null) out.push(`--spawner-entry=${a.spawner.entry}`);
+  if (a.spawner.deniedEnv.length > 0) out.push(`--spawner-denied-env=${a.spawner.deniedEnv.join(',')}`);
+  return out;
+}
+
+const REQUIRED_FLAGS = ['socket', 'model', 'cache-dir', 'ep', 'build-id', 'idle-window-ms', 'spawner-pid'] as const;
+const KNOWN_FLAGS = new Set<string>([...REQUIRED_FLAGS, 'spawner-service', 'spawner-entry', 'spawner-denied-env']);
+
+/**
+ * Parse host argv produced by {@link encodeEmbedHostArgs}. Accepts `--flag=value`
+ * and `--flag value`. Throws a `TypeError` naming the offending flag on an
+ * unknown flag, a missing required flag, or a malformed value.
+ */
+export function parseEmbedHostArgs(argv: readonly string[]): EmbedHostSpawnArgs {
+  const vals = new Map<string, string>();
+  for (let i = 0; i < argv.length; i++) {
+    const tok = argv[i] ?? '';
+    if (!tok.startsWith('--')) throw new TypeError(`embed-host: unexpected argument ${JSON.stringify(tok)}`);
+    const eq = tok.indexOf('=');
+    let name: string;
+    let value: string | undefined;
+    if (eq !== -1) {
+      name = tok.slice(2, eq);
+      value = tok.slice(eq + 1);
+    } else {
+      name = tok.slice(2);
+      value = argv[i + 1];
+      i++;
+    }
+    if (!KNOWN_FLAGS.has(name)) throw new TypeError(`embed-host: unknown flag --${name}`);
+    if (value === undefined) throw new TypeError(`embed-host: flag --${name} is missing its value`);
+    vals.set(name, value);
+  }
+  for (const f of REQUIRED_FLAGS) {
+    const v = vals.get(f);
+    if (v === undefined || v === '') throw new TypeError(`embed-host: required flag --${f} is missing`);
+  }
+  const num = (flag: string, positive: boolean): number => {
+    const raw = vals.get(flag) ?? '';
+    const n = Number(raw);
+    if (!Number.isFinite(n) || (positive ? n <= 0 : n < 0) || raw.trim() === '') {
+      throw new TypeError(`embed-host: flag --${flag} must be a ${positive ? 'positive' : 'non-negative'} number, got ${JSON.stringify(raw)}`);
+    }
+    return n;
+  };
+  const buildId = vals.get('build-id') ?? '';
+  if (!/^[0-9a-f]{12}$/.test(buildId)) {
+    throw new TypeError(`embed-host: flag --build-id must be 12 lowercase hex, got ${JSON.stringify(buildId)}`);
+  }
+  const denied = vals.get('spawner-denied-env');
+  return {
+    socketPath: vals.get('socket') ?? '',
+    model: vals.get('model') ?? '',
+    cacheDir: vals.get('cache-dir') ?? '',
+    ep: vals.get('ep') ?? '',
+    buildId,
+    idleWindowMs: num('idle-window-ms', true),
+    spawner: {
+      pid: num('spawner-pid', false),
+      serviceId: vals.get('spawner-service') ?? null,
+      entry: vals.get('spawner-entry') ?? null,
+      deniedEnv: denied ? denied.split(',').filter((k) => k !== '') : [],
+    },
+  };
 }
 
 /** Derive the host UDS path from the resolved config and singleton key. */

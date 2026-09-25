@@ -8,8 +8,8 @@
  * is silently dropped — no error, just missing telemetry.
  *
  * Unit-tests that the call happens, with the right args, unconditionally at
- * the top of runEmbedHost() — before the SOX_EMBED_HOST_SOCKET validation
- * branch that can short-circuit the rest of the function via process.exit(2).
+ * the top of runEmbedHost() — before the argv validation (parseEmbedHostArgs)
+ * that can short-circuit the rest of the function via process.exit(2).
  * Driving it through the exit path lets this assert the ordering without
  * standing up a real UDS listener (avoids the fork/socket harness other
  * embedHostMain specs need).
@@ -27,19 +27,13 @@ vi.mock('@adhd/sox-telemetry', async (importOriginal) => {
 });
 
 describe('bl-a621aeac — runEmbedHost() initializes child telemetry', () => {
-  const ENV_KEY = 'SOX_EMBED_HOST_SOCKET';
-  const original = process.env[ENV_KEY];
-
   afterEach(() => {
-    if (original === undefined) delete process.env[ENV_KEY];
-    else process.env[ENV_KEY] = original;
     vi.restoreAllMocks();
     bootstrapChildTelemetry.mockReset();
     vi.resetModules();
   });
 
-  it('calls bootstrapChildTelemetry with service/role/logSink before the socket-path exit', async () => {
-    delete process.env[ENV_KEY];
+  it('calls bootstrapChildTelemetry with service/role/logSink before the bad-args exit', async () => {
     const exitError = new Error('EXIT_2');
     const exitSpy = vi.spyOn(process, 'exit').mockImplementation(((): never => {
       throw exitError;
@@ -47,7 +41,8 @@ describe('bl-a621aeac — runEmbedHost() initializes child telemetry', () => {
 
     const { runEmbedHost } = await import('./embedHostMain.js');
 
-    await expect(runEmbedHost()).rejects.toThrow(exitError);
+    // No argv: parseEmbedHostArgs throws, and the host exits 2 — after telemetry init.
+    await expect(runEmbedHost([])).rejects.toThrow(exitError);
 
     expect(bootstrapChildTelemetry).toHaveBeenCalledTimes(1);
     expect(bootstrapChildTelemetry).toHaveBeenCalledWith({

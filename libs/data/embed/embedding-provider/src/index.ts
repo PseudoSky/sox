@@ -228,11 +228,15 @@ export {
   embedHostSocketPath,
   resolveEmbedHostMainPath,
   resolveEmbedHostIdleGraceMs,
+  computeEmbedHostBuildId,
+  encodeEmbedHostArgs,
+  parseEmbedHostArgs,
   EMBED_HOST_PROTOCOL_VERSION,
   DEFAULT_EMBED_HOST_IDLE_GRACE_MS,
-  EMBED_HOST_IDLE_GRACE_ENV,
   type EmbedHostConfig,
   type EmbedHostMode,
+  type EmbedHostSpawnArgs,
+  type EmbedHostSpawner,
 } from './embedHostConfig.js';
 
 // ── Factory ───────────────────────────────────────────────────────────────────
