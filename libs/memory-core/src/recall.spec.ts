@@ -1,12 +1,15 @@
-import { describe, it, expect, afterAll } from 'vitest';
+import { describe, it, expect, afterAll, beforeEach, afterEach } from 'vitest';
 import type { StoreAdapter } from '@adhd/sox-store-adapter';
+import type { EmbeddingProvider, EmbeddingHealth, EmbedRole } from '@adhd/sox-embedding-provider';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { openDb } from './db.js';
-import { memoryWrite } from './write.js';
-import { memoryRecall, ExpansionOverflowError } from './recall.js';
-import { _shutdownEmbedWorker } from './embed.js';
+import { memoryWrite, memoryWritePhaseA } from './write.js';
+import { memoryRecall, ExpansionOverflowError, __resetRecallVecCircuitForTest } from './recall.js';
+import { _shutdownEmbedWorker, _setEmbedProviderForTest } from './embed.js';
+import { WriteQueue } from './write-queue.js';
+import { DeterministicTestProvider, featureHashEmbed } from './embed-test-provider.js';
 
 
 
@@ -625,5 +628,314 @@ describe('BUG-MEMORY-003 — memory_recall excludes non-episode node kinds by de
     } finally {
       await cleanup(db, dir);
     }
+  });
+});
+
+// ── f2237d6d: score_breakdown must report 0 for a channel that contributed
+//    nothing, not fabricate an equal share (recall.ts minMaxNorm) ────────────
+//
+// Root cause: `minMaxNorm()` (recall.ts) collapsed ANY constant array
+// (range === mx - mn === 0) to `1.0` for every element, with no check on
+// whether that constant value was itself 0. Two real scenarios hit this:
+//   (a) the vec channel is skipped for the WHOLE recall (breaker open / embed
+//       timeout) → every candidate's raw vec contribution is 0 → the whole
+//       array is `[0, 0, ..., 0]` → range 0 → normalised to `[1.0, 1.0, ...]`
+//       → score_breakdown reports a vec share that never existed.
+//   (b) a single-candidate recall where that candidate never matched the vec
+//       channel (e.g. its embedding hasn't landed yet) → array is `[0]` →
+//       same collapse-to-1.0 bug → an "equal thirds" split across vec/bm25
+//       /temporal even though vec contributed nothing.
+// Fix: `minMaxNorm()` now distinguishes "every candidate tied on a genuine
+// non-zero signal" (collapse to 1.0, unchanged) from "the channel's raw
+// value is constantly 0" (collapse to 0). Ranking (`finalScore`/`score`,
+// sort order) is untouched — it is driven by raw RRF magnitudes, never by
+// the normalised breakdown values.
+class ControllableEmbedProvider implements EmbeddingProvider {
+  delayMs = 0;
+  calls = 0;
+  metadata = { modelId: 'controllable-recall-breakdown-test', dim: 768 };
+
+  async embedSingle(text: string, _role?: EmbedRole): Promise<Float32Array> {
+    this.calls++;
+    if (this.delayMs > 0) {
+      await new Promise((r) => setTimeout(r, this.delayMs));
+    }
+    return featureHashEmbed(text);
+  }
+
+  async *embedBatch(
+    texts: string[],
+    _role?: EmbedRole,
+  ): AsyncGenerator<{ index: number; vector: Float32Array }> {
+    for (let i = 0; i < texts.length; i++) {
+      yield { index: i, vector: featureHashEmbed(texts[i] as string) };
+    }
+  }
+
+  health(): EmbeddingHealth {
+    return { status: 'ready', model: 'controllable-recall-breakdown-test', dim: 768 };
+  }
+}
+
+describe('score_breakdown — absent channel contributes 0 (f2237d6d)', () => {
+  describe('1) vec channel skipped for the whole recall (embed timeout → circuit open)', () => {
+    const EMBED_TIMEOUT_MS = 40;
+    const COOLDOWN_MS = 5000; // stay open for the duration of this test
+    let ctx: { dir: string; dbPath: string; db: StoreAdapter };
+    let provider: ControllableEmbedProvider;
+    let priorAdapterEnv: string | undefined;
+    let prevTimeout: string | undefined;
+    let prevCooldown: string | undefined;
+
+    beforeEach(async () => {
+      priorAdapterEnv = process.env['STORE_ADAPTER'];
+      process.env['STORE_ADAPTER'] = 'sqlite';
+      prevTimeout = process.env['SOX_RECALL_EMBED_TIMEOUT_MS'];
+      prevCooldown = process.env['SOX_RECALL_VEC_COOLDOWN_MS'];
+      process.env['SOX_RECALL_EMBED_TIMEOUT_MS'] = String(EMBED_TIMEOUT_MS);
+      process.env['SOX_RECALL_VEC_COOLDOWN_MS'] = String(COOLDOWN_MS);
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'recall-breakdown-vecfail-'));
+      const dbPath = path.join(dir, 'm.db');
+      const db = await openDb(dbPath);
+      ctx = { dir, dbPath, db };
+      await WriteQueue.clearInstances();
+      WriteQueue.setBypass(false);
+      provider = new ControllableEmbedProvider();
+      _setEmbedProviderForTest(provider);
+    });
+
+    afterEach(async () => {
+      await WriteQueue.clearInstances();
+      await cleanup(ctx.db, ctx.dir);
+      _setEmbedProviderForTest(new DeterministicTestProvider());
+      // The per-process circuit breaker (recall.ts module-level state) is NOT
+      // reset between tests by vitest (module scope survives within a file) —
+      // without this, the circuit this test deliberately opened would leak
+      // into every later test/describe block in this file that expects the
+      // vec channel to actually run.
+      __resetRecallVecCircuitForTest();
+      if (prevTimeout === undefined) delete process.env['SOX_RECALL_EMBED_TIMEOUT_MS'];
+      else process.env['SOX_RECALL_EMBED_TIMEOUT_MS'] = prevTimeout;
+      if (prevCooldown === undefined) delete process.env['SOX_RECALL_VEC_COOLDOWN_MS'];
+      else process.env['SOX_RECALL_VEC_COOLDOWN_MS'] = prevCooldown;
+      if (priorAdapterEnv === undefined) delete process.env['STORE_ADAPTER'];
+      else process.env['STORE_ADAPTER'] = priorAdapterEnv;
+    });
+
+    it('every result has vec===0, "vec" absent from provenance, and the channel sum invariant holds', async () => {
+      // Seed with fast (no-delay) writes so the corpus itself has real vectors.
+      provider.delayMs = 0;
+      await memoryWrite(ctx.db, { content: 'alpine glacier retreat measurements', name: 'glacier-1', project_path: '/test/project' });
+      await memoryWrite(ctx.db, { content: 'glacier ice core sample analysis', name: 'glacier-2', project_path: '/test/project' });
+      await memoryWrite(ctx.db, { content: 'mountain glacier melt rate study', name: 'glacier-3', project_path: '/test/project' });
+
+      // Force the QUERY embed for this recall to time out → circuit opens →
+      // embedVecFailed=true for this call → every candidate's raw vec value
+      // is 0 for the entire recall.
+      provider.delayMs = EMBED_TIMEOUT_MS + 200;
+      const response = await memoryRecall(ctx.db, 'project', {
+        query: 'glacier melt measurements',
+        limit: 10,
+      });
+
+      expect(response.results.length).toBeGreaterThan(0);
+      expect(response.degradations ?? []).toEqual(
+        expect.arrayContaining([expect.stringMatching(/^vec: /)]),
+      );
+
+      for (const result of response.results) {
+        const { vec, bm25, temporal, total } = result.score_breakdown;
+        expect(result.provenance).not.toContain('vec');
+        expect(vec).toBe(0);
+        expect(Math.abs(vec + bm25 + temporal - total)).toBeLessThan(1e-9);
+        expect(Math.abs(total - result.score)).toBeLessThan(1e-9);
+      }
+    });
+  });
+
+  describe('2) single candidate with fts+temporal only (no vec row yet)', () => {
+    let ctx: { dir: string; dbPath: string; db: StoreAdapter };
+    let priorAdapterEnv: string | undefined;
+
+    beforeEach(async () => {
+      priorAdapterEnv = process.env['STORE_ADAPTER'];
+      process.env['STORE_ADAPTER'] = 'sqlite';
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'recall-breakdown-singlecand-'));
+      const dbPath = path.join(dir, 'm.db');
+      const db = await openDb(dbPath);
+      ctx = { dir, dbPath, db };
+      await WriteQueue.clearInstances();
+      WriteQueue.setBypass(false);
+    });
+
+    afterEach(async () => {
+      await WriteQueue.clearInstances();
+      await cleanup(ctx.db, ctx.dir);
+    });
+
+    it('vec===0 and the split is NOT an equal three-way share', async () => {
+      // Phase A only — committed, FTS-indexed, but NO vec row: this is the
+      // single candidate in the whole DB, so every per-query min-max array
+      // (vecRaw/ftsRaw/tempRaw) has length 1 → range === 0 for all three.
+      const outcome = await memoryWritePhaseA(ctx.db, {
+        content: 'quokka sanctuary breeding program annual report',
+        name: 'quokka-report',
+        project_path: '/test/project',
+      });
+      expect('code' in outcome).toBe(false);
+
+      const response = await memoryRecall(ctx.db, 'project', {
+        query: 'quokka sanctuary breeding',
+        limit: 10,
+      });
+
+      expect(response.results.length).toBe(1);
+      const result = response.results[0]!;
+      expect(result.provenance).not.toContain('vec');
+      expect(result.provenance).toContain('fts');
+
+      const { vec, bm25, temporal, total } = result.score_breakdown;
+      expect(vec).toBe(0);
+      expect(total).toBeGreaterThan(0);
+      expect(Math.abs(vec + bm25 + temporal - total)).toBeLessThan(1e-9);
+
+      // The bug fabricated an equal three-way split (each channel === total/3)
+      // even though vec never contributed. Assert the actual split is NOT
+      // that degenerate equal-thirds pattern.
+      const third = total / 3;
+      expect(Math.abs(vec - third)).toBeGreaterThan(1e-6);
+    });
+  });
+
+  describe('3) provenance <-> breakdown invariant over an ordinary mixed recall', () => {
+    it('every channel absent from provenance reports exactly 0, present channels sum to total', async () => {
+      const { db, dir } = await tmpDb();
+      try {
+        await memoryWrite(db, { content: 'coral reef bleaching event data', name: 'coral-1', project_path: '/test/project' });
+        await memoryWrite(db, { content: 'coral reef temperature monitoring', name: 'coral-2', project_path: '/test/project' });
+        await memoryWrite(db, { content: 'ocean acidification effects on coral', name: 'coral-3', project_path: '/test/project' });
+        await memoryWrite(db, { content: 'unrelated topic about kitchen appliances', name: 'unrelated-1', project_path: '/test/project' });
+
+        const response = await memoryRecall(db, 'project', {
+          query: 'coral reef bleaching',
+          limit: 10,
+        });
+
+        expect(response.results.length).toBeGreaterThan(0);
+
+        // Preconditions: this test only proves the invariant over a genuinely
+        // MIXED recall — not vacuously, e.g. if every channel happened to be
+        // absent from every result (which would make every `if` below a
+        // no-op). Assert the corpus actually exercises the vec channel AND
+        // that at least one result is missing at least one channel.
+        const rankedResults = response.results.filter(
+          (r) => !(r.provenance.length === 1 && r.provenance[0] === 'graph'),
+        );
+        expect(rankedResults.some((r) => r.provenance.includes('vec'))).toBe(true);
+        expect(
+          rankedResults.some(
+            (r) =>
+              !r.provenance.includes('vec') ||
+              !r.provenance.includes('fts') ||
+              !r.provenance.includes('temporal'),
+          ),
+        ).toBe(true);
+
+        for (const result of rankedResults) {
+          const { vec, bm25, temporal, total } = result.score_breakdown;
+
+          if (!result.provenance.includes('vec')) expect(vec).toBe(0);
+          if (!result.provenance.includes('fts')) expect(bm25).toBe(0);
+          if (!result.provenance.includes('temporal')) expect(temporal).toBe(0);
+
+          expect(Math.abs(vec + bm25 + temporal - total)).toBeLessThan(1e-9);
+          expect(Math.abs(total - result.score)).toBeLessThan(1e-9);
+        }
+      } finally {
+        await cleanup(db, dir);
+      }
+    });
+  });
+
+  describe('4) ranking is unaffected by the breakdown normalisation fix', () => {
+    /**
+     * Real before/after fixture, not merely a repeat-call idempotency check.
+     *
+     * GOLDEN was captured against this exact corpus/query with a temporary
+     * capture harness, run TWICE: once against the fixed `minMaxNorm()`
+     * (`v === 0 ? 0 : 1.0`) and once against the pre-fix code
+     * (`() => 1.0` unconditionally). Both runs produced the IDENTICAL name
+     * order (sat-1, sat-4, sat-3, sat-2) and scores agreeing to ~1e-8 (the
+     * residual delta is wall-clock recency drift between runs, not the fix —
+     * see the channel-sum-invariant tests above for the same magnitude of
+     * drift between two back-to-back calls of unmodified code). This proves
+     * `finalScore`/`score` and sort order are driven by raw RRF magnitudes
+     * (baseRrf × rerank), never by the normalised score_breakdown values the
+     * fix changes — exactly as documented at recall.ts's ranked/breakdown
+     * comment block (~L980-1004).
+     */
+    const GOLDEN: Array<{ name: string; score: number }> = [
+      { name: 'sat-1', score: 0.019667005650027533 },
+      { name: 'sat-4', score: 0.019574297922542356 },
+      { name: 'sat-3', score: 0.019262670960423396 },
+      { name: 'sat-2', score: 0.01896081140642256 },
+    ];
+
+    it('matches the golden name order and score magnitudes captured both with and without the minMaxNorm fix', async () => {
+      const { db, dir } = await tmpDb();
+      try {
+        await memoryWrite(db, { content: 'satellite orbital mechanics and propulsion', name: 'sat-1', project_path: '/test/project' });
+        await memoryWrite(db, { content: 'satellite communication link budget analysis', name: 'sat-2', project_path: '/test/project' });
+        await memoryWrite(db, { content: 'rocket propulsion thermodynamics overview', name: 'sat-3', project_path: '/test/project' });
+        await memoryWrite(db, { content: 'orbital debris tracking satellite network', name: 'sat-4', project_path: '/test/project' });
+
+        const response = await memoryRecall(db, 'project', {
+          query: 'satellite orbital propulsion',
+          limit: 10,
+        });
+
+        expect(response.results.length).toBe(GOLDEN.length);
+
+        const withNames = await Promise.all(
+          response.results.map(async (r) => {
+            const node = await db.executeGet<{ name: string | null }>('SELECT name FROM node WHERE uid = ?', [r.uid]);
+            return { name: node?.name ?? null, score: r.score };
+          }),
+        );
+
+        expect(withNames.map((r) => r.name)).toEqual(GOLDEN.map((g) => g.name));
+        withNames.forEach((r, i) => {
+          // Loose enough to absorb wall-clock recency drift between the
+          // golden capture and this run, tight enough that a ranking-
+          // affecting regression (e.g. normalisation leaking into score)
+          // would still fail it.
+          expect(r.score).toBeCloseTo(GOLDEN[i]!.score, 4);
+        });
+      } finally {
+        await cleanup(db, dir);
+      }
+    });
+
+    it('repeat calls against the same corpus are stable (order identical, score stable within fp/recency tolerance)', async () => {
+      const { db, dir } = await tmpDb();
+      try {
+        await memoryWrite(db, { content: 'satellite orbital mechanics and propulsion', name: 'sat-1', project_path: '/test/project' });
+        await memoryWrite(db, { content: 'satellite communication link budget analysis', name: 'sat-2', project_path: '/test/project' });
+        await memoryWrite(db, { content: 'rocket propulsion thermodynamics overview', name: 'sat-3', project_path: '/test/project' });
+        await memoryWrite(db, { content: 'orbital debris tracking satellite network', name: 'sat-4', project_path: '/test/project' });
+
+        const params = { query: 'satellite orbital propulsion', limit: 10 };
+        const first = await memoryRecall(db, 'project', params);
+        const second = await memoryRecall(db, 'project', params);
+
+        expect(first.results.length).toBeGreaterThan(0);
+        expect(second.results.map((r) => r.uid)).toEqual(first.results.map((r) => r.uid));
+        second.results.forEach((r, i) => {
+          expect(r.score).toBeCloseTo(first.results[i]!.score, 6);
+        });
+      } finally {
+        await cleanup(db, dir);
+      }
+    });
   });
 });
