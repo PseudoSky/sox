@@ -2331,6 +2331,11 @@ export const SUPPRESSION_VALID_FOR = '0.7.1';
  * That issue closing on a version we have re-measured is the only event that
  * retires this function.
  */
+/** (8c93d821) Stable rule id for the {@link isKnownFalsePositive} filter — cited
+ *  in every verdict detail that discarded a message under it, so a reader can
+ *  tell "filtered as a documented false positive" from "reported and ignored". */
+export const KNOWN_FALSE_POSITIVE_RULE_ID = 'turso-7611-fts-dir-key-count';
+
 export function isKnownFalsePositive(message: string): boolean {
   return /wrong # of entries in index __turso_internal_fts_dir_.*_key/i.test(message);
 }
@@ -2406,6 +2411,36 @@ export function classifyIntegrityMessages(messages: string[]): {
     else damage.push(m);
   }
   return { damage, knownFalsePositives, pageAccounting, truncated };
+}
+
+/**
+ * (8c93d821) The ONE human-readable detail for a classified integrity_check
+ * result, consistent with its verdict (`ok` iff `damage` is empty and the
+ * output was not truncated). A verdict of ok must never be paired with a
+ * detail that merely lists the raw rows — the churn canary printed
+ * `integrity_ok=true detail=wrong # of entries in index …_key`, which reads as
+ * "ok while naming a defect". Here a filtered row is always labelled as a
+ * known false positive with its rule id.
+ */
+export function formatIntegrityVerdictDetail(
+  classified: ReturnType<typeof classifyIntegrityMessages>,
+): string {
+  const parts: string[] = [];
+  if (classified.damage.length > 0) {
+    parts.push(`DAMAGE (${classified.damage.length}): ${classified.damage.join('; ')}`);
+  } else {
+    parts.push(classified.truncated ? 'no un-filtered damage seen (output TRUNCATED at the cap)' : 'no damage');
+  }
+  if (classified.knownFalsePositives.length > 0) {
+    parts.push(
+      `filtered ${classified.knownFalsePositives.length} known false positive(s) ` +
+        `[rule ${KNOWN_FALSE_POSITIVE_RULE_ID}]: ${classified.knownFalsePositives.join('; ')}`,
+    );
+  }
+  if (classified.pageAccounting.length > 0) {
+    parts.push(`${classified.pageAccounting.length} page-accounting message(s) (reclaimable free space, not damage)`);
+  }
+  return parts.join(' | ');
 }
 
 /**
@@ -2511,7 +2546,8 @@ export async function probeIntegrityCheck(adapter: StoreAdapter): Promise<Integr
         detail:
           (messages.length === 0
             ? 'integrity_check clean.'
-            : `integrity_check clean after filtering ${filtered} known Turso FTS false positive(s).`) +
+            : `integrity_check clean after filtering ${filtered} known Turso FTS false positive(s) ` +
+              `[rule ${KNOWN_FALSE_POSITIVE_RULE_ID}].`) +
           pageNote,
         repairable: false,
         backlog: 'BL-341',

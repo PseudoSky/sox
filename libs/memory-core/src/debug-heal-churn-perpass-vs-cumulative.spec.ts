@@ -134,13 +134,15 @@ async function checkIntegrity(adapter: StoreAdapter): Promise<IntegrityVerdict> 
     // dialect.ts/store-path.ts) — dynamic import here matches that pattern
     // and keeps this test file from tripping the enforce-module-boundaries
     // static-import-of-lazy-library rule.
-    const { classifyIntegrityMessages } = await import('@adhd/sox-store-adapter');
+    const { classifyIntegrityMessages, formatIntegrityVerdictDetail } = await import('@adhd/sox-store-adapter');
     const classified = classifyIntegrityMessages(messages);
     // Only `damage` (real, unclassified rows) counts as corruption for this
     // probe. `knownFalsePositives` (the Turso FTS dir-index count artifact —
     // see file header, 4b2bcce9) and `pageAccounting` (reclaimable-free-space
     // noise) are documented-benign and are NOT ae763675.
-    return { ok: classified.damage.length === 0, rows: rawRows };
+    // (8c93d821) `rows` is the verdict-consistent detail, never the raw rows:
+    // a filtered false positive is labelled as such, with its rule id.
+    return { ok: classified.damage.length === 0, rows: [formatIntegrityVerdictDetail(classified)] };
   } catch (err) {
     // A thrown "Corrupt database: Invalid page type: 0" from the integrity
     // check itself IS the corruption signal — the whole point of this probe.
