@@ -79,7 +79,13 @@ export function evaluateBackendOnlyOutcome(opts: {
   label: string;
   beforeMainPid: number | undefined;
   afterMainPid: number | undefined;
-  result: { ok: boolean; reason?: string; before: number[]; after: number[] };
+  result: {
+    ok: boolean;
+    reason?: string;
+    before: number[];
+    after: number[];
+    rotatedOnDivergentEntrypoint?: { pids: number[]; running: string[]; resolved: string };
+  };
 }): BackendOnlyOutcome {
   if (opts.afterMainPid !== opts.beforeMainPid) {
     return {
@@ -88,6 +94,20 @@ export function evaluateBackendOnlyOutcome(opts: {
         `${opts.cli} service restart: FAILED — --backend-only rotated the shim pid ` +
         `(${opts.beforeMainPid ?? '(none)'} -> ${opts.afterMainPid ?? '(none)'}); the shim must never ` +
         `change under --backend-only. See docs/spec/service-lifecycle.md §9.4a/§9.5.\n`,
+    };
+  }
+  // dc6261c1: the backend rotated, but onto the shim's cached (stale) entrypoint —
+  // never report that as a deploy.
+  const div = opts.result.rotatedOnDivergentEntrypoint;
+  if (div) {
+    return {
+      exitCode: 1,
+      stderr:
+        `${opts.cli} service restart: NOT DEPLOYED — --backend-only rotated the backend ` +
+        `([${opts.result.before.join(', ') || '(none)'}] -> [${div.pids.join(', ')}]) but the front-shim respawned it on ` +
+        `its cached entrypoint [${div.running.join(', ')}], not the lockfile-resolved artifact ${div.resolved}. ` +
+        `The running artifact is unchanged. Run a full \`${opts.cli} service restart\` (without --backend-only) ` +
+        `to adopt the resolved artifact (dc6261c1; docs/spec/service-lifecycle.md §9.4a).\n`,
     };
   }
   if (!opts.result.ok) {

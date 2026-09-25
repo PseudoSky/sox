@@ -12,7 +12,7 @@
  * [inv:nx-free-core]               — soxe init uses libs/authoring scaffold(), not the old scaffolder
  */
 
-import type { PermissionsBlock, RuntimeEntry, RuntimeRecord } from '@adhd/sox-host-runtime';
+import type { LiveUnitBackend, PermissionsBlock, RuntimeEntry, RuntimeRecord } from '@adhd/sox-host-runtime';
 import {
   // Slice 4 (docs/spec/service-lifecycle.md §10.2/§14): doctor reconcile.
   chooseSurvivor,
@@ -42,7 +42,7 @@ import {
   getScopePaths,
   healSingletonDuplicates,
   identityToken,
-  findLiveUnitBackendTokens,
+  findLiveUnitBackends,
   installRegistryPath,
   killAndVerify,
   listCrashLoopMarkers,
@@ -5590,24 +5590,25 @@ OS units are GENERATED from the manifest; hand-editing them is unsupported.
  * is expected, not a bug in this verb.
  */
 /**
- * dc6261c1: the entrypoint token(s) the unit's LIVE backend actually runs, when
- * they differ from `token` (the entrypoint re-resolved from the current
- * lockfile). The front-shim resolves its backend path once at start, so a
- * lockfile re-pointed afterwards makes `token` name a path no live process
- * runs. Identity-safe by construction — see `findLiveUnitBackendTokens`
- * (direct children of the unit's own mainPid whose manifest id === extId).
+ * dc6261c1: the unit's LIVE backend(s) whose entrypoint differs from `token`
+ * (the entrypoint re-resolved from the current lockfile). The front-shim
+ * resolves its backend path once at start, so a lockfile re-pointed afterwards
+ * makes `token` name a path no live process runs. PID-scoped by construction —
+ * see `findLiveUnitBackends` (direct children of the unit's own mainPid whose
+ * manifest id === extId); `restartAndVerify` reaps them only by pid, after
+ * re-validating each one at kill time.
  */
-function divergentLiveBackendTokens(extId: string, mainPid: number | undefined, token: string): string[] {
-  const live = findLiveUnitBackendTokens({
+function divergentLiveBackends(extId: string, mainPid: number | undefined, token: string): LiveUnitBackend[] {
+  const divergent = findLiveUnitBackends({
     extId,
     mainPid,
     log: (m: string) => process.stderr.write(`  ${m}\n`),
-  });
-  const divergent = live.filter((t) => t !== token);
+  }).filter((b) => b.token !== token);
   if (divergent.length > 0) {
     process.stdout.write(
-      `  identity: lockfile-resolved entrypoint ${token} is not what the live backend under ` +
-      `main=${mainPid ?? '(none)'} runs ([${divergent.join(', ')}]); matching both (dc6261c1)\n`,
+      `  identity: the live backend under main=${mainPid ?? '(none)'} runs ` +
+      `[${divergent.map((b) => `${b.pid}=${b.token}`).join(', ')}], not the lockfile-resolved ${token} ` +
+      `(dc6261c1) — reaping it by pid only\n`,
     );
   }
   return divergent;
@@ -5696,7 +5697,7 @@ async function cmdServiceRestart(
   const token = identityToken(entrypoint);
   const beforeMainPid = platform.mainPid(label, realOsExec);
   process.stdout.write(`${CLI} service restart: ${label}\n  before: main=${beforeMainPid ?? '(none)'}\n`);
-  const extraTokens = divergentLiveBackendTokens(extId, beforeMainPid, token);
+  const liveBackends = divergentLiveBackends(extId, beforeMainPid, token);
 
   if (backendOnly) {
     process.stdout.write(
@@ -5711,7 +5712,8 @@ async function cmdServiceRestart(
     const result = await restartAndVerify({
       label,
       token,
-      extraTokens,
+      liveBackends,
+      findLiveBackends: () => findLiveUnitBackends({ extId, mainPid: beforeMainPid }),
       platform,
       exec: realOsExec,
       waitMs,
@@ -5739,7 +5741,7 @@ async function cmdServiceRestart(
   const result = await restartAndVerify({
     label,
     token,
-    extraTokens,
+    liveBackends,
     platform,
     exec: realOsExec,
     waitMs,
@@ -5839,7 +5841,7 @@ async function cmdServiceUpdate(
   // front-shim (§8.1a); for a direct-mode service the token IS the managed
   // process (§9.4b design, "For a direct-mode service...").
   const token = identityToken(entrypoint);
-  const extraTokens = divergentLiveBackendTokens(extId, platform.mainPid(ctx.spec.label, realOsExec), token);
+  const liveBackends = divergentLiveBackends(extId, platform.mainPid(ctx.spec.label, realOsExec), token);
 
   const result = await updateOsUnit(ctx.spec, platform, {
     unitDir,
@@ -5847,7 +5849,7 @@ async function cmdServiceUpdate(
     log: (m: string) => process.stdout.write(`sox: ${m}\n`),
     unsetKeys,
     token,
-    extraTokens,
+    liveBackends,
     waitMs,
     excludePids: [process.pid],
   });

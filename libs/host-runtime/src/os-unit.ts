@@ -44,8 +44,11 @@ import { ENV_ALLOW_PREFIXES, ENV_BASE_ALLOW, ENV_DENY_PREFIXES } from './env-pol
 import {
   findOrphansByIdentity,
   identityToken,
+  killAndVerify,
   reapByIdentity,
+  revalidateLiveUnitBackend,
   type KillOutcome,
+  type LiveUnitBackend,
   type ReapResult,
 } from './reaper.js';
 
@@ -1700,13 +1703,26 @@ export interface RestartAndVerifyOptions {
   /** Identity token (the entrypoint path) to match survivors/respawns against. */
   token: string;
   /**
-   * dc6261c1: additional identity tokens matched alongside `token` in every
-   * phase (before-snapshot, reap, rotation poll) — the entrypoint path(s) the
-   * unit's live backend is ACTUALLY running (`findLiveUnitBackendTokens`),
-   * which diverge from `token` when the install lockfile was re-pointed after
-   * the front-shim resolved its backend. Duplicates/empties are ignored.
+   * dc6261c1: the unit's live backend(s) as discovered by `findLiveUnitBackends`
+   * (direct children of the unit's shim) whose entrypoint DIFFERS from `token`
+   * — the install lockfile was re-pointed after the shim resolved its backend.
+   * PID-scoped, never path-scoped: each is added to the before-snapshot and
+   * reaped BY PID, only after `revalidateFn` confirms it is still the same
+   * process. Their path is never matched globally (another scope may run it,
+   * S2 §3.1) and never counts as deploy evidence for a full restart. Entries
+   * whose `token === token` are ignored (the global match already covers them).
    */
-  extraTokens?: string[];
+  liveBackends?: LiveUnitBackend[];
+  /**
+   * dc6261c1, `kickstart:false` only: re-discover the shim's live backends
+   * during the rotation poll, so a respawn on a DIVERGENT (stale) entrypoint is
+   * reported as `rotatedOnDivergentEntrypoint` — never as a verified deploy.
+   */
+  findLiveBackends?: () => LiveUnitBackend[];
+  /** Injectable kill-time re-validation. Defaults to `revalidateLiveUnitBackend`. */
+  revalidateFn?: (b: LiveUnitBackend, o: { allowReparentAfterParentExit: boolean }) => boolean;
+  /** Injectable verified kill for a single pid. Defaults to `killAndVerify`. */
+  killFn?: (pid: number) => Promise<KillOutcome>;
   platform: OsUnitPlatform;
   exec?: OsExec;
   /** How long to wait for a rotated pid to appear (ms). Default 15000. */
@@ -1757,8 +1773,14 @@ export interface RestartAndVerifyResult {
   undead: number[];
   /** True iff a pid NOT present in `before` appeared for `token` before the deadline. */
   rotated: boolean;
-  /** True only when kickstart succeeded, no undead survivors, AND a pid rotated. */
+  /** True only when kickstart succeeded, no undead survivors, AND a pid rotated on `token`. */
   ok: boolean;
+  /**
+   * dc6261c1 (`kickstart:false`): the backend DID rotate, but the shim respawned
+   * it on its cached entrypoint, not on the lockfile-resolved `token` — the
+   * stale artifact is still what serves. Always paired with `ok:false`.
+   */
+  rotatedOnDivergentEntrypoint?: { pids: number[]; running: string[]; resolved: string };
   /** Set when `ok` is false — why the deploy could not be verified. */
   reason?: string;
 }
@@ -1801,16 +1823,19 @@ export async function restartAndVerify(opts: RestartAndVerifyOptions): Promise<R
       );
   const excludeOpt = excludePids !== undefined ? { excludePids } : {};
 
-  // dc6261c1: match the resolved token AND every live-backend token, union by pid.
-  const tokens = [...new Set([opts.token, ...(opts.extraTokens ?? [])].filter((t) => t.length > 0))];
-  if (tokens.length > 1) log(`identity tokens: [${tokens.join(', ')}]`);
-  const matchAll = (): number[] => {
-    const pids = new Set<number>();
-    for (const t of tokens) for (const m of findMatches(t, excludeOpt)) pids.add(m.pid);
-    return [...pids];
-  };
+  // dc6261c1: live backends on a DIVERGENT entrypoint are tracked by pid only.
+  const divergent = (opts.liveBackends ?? []).filter((b) => b.token !== opts.token);
+  const revalidateFn = opts.revalidateFn ?? ((b, o) => revalidateLiveUnitBackend(b, o));
+  const killFn = opts.killFn ?? ((pid: number) => killAndVerify(pid));
+  const matchResolved = (): number[] => findMatches(opts.token, excludeOpt).map((m) => m.pid);
+  if (divergent.length > 0) {
+    log(
+      `live backend(s) on a divergent entrypoint (pid-scoped): ` +
+      divergent.map((b) => `${b.pid}=${b.token}`).join(', ') + ` (resolved: ${opts.token})`,
+    );
+  }
 
-  const before = matchAll();
+  const before = [...new Set([...matchResolved(), ...divergent.map((b) => b.pid)])];
   log(`before: matching-pids=[${before.join(', ')}]`);
 
   let kickstart: OsExecResult | undefined;
@@ -1833,14 +1858,23 @@ export async function restartAndVerify(opts: RestartAndVerifyOptions): Promise<R
     log('kickstart: skipped (kickstart:false, backend-only restart)');
   }
 
-  const reap: ReapResult = { token: opts.token, killed: [] };
-  for (const t of tokens) {
-    const r = await reapFn(t, { ...excludeOpt, log: (m: string) => log(`reaper: ${m}`) });
-    for (const k of r.killed) if (!reap.killed.some((x) => x.pid === k.pid)) reap.killed.push(k);
+  // Global identity reap on the RESOLVED token only (pre-existing, accepted S2 behaviour).
+  const reap = await reapFn(opts.token, { ...excludeOpt, log: (m: string) => log(`reaper: ${m}`) });
+  // Divergent live backends: reap BY PID, only if still the exact discovered process.
+  const excluded = new Set(excludePids ?? []);
+  for (const b of divergent) {
+    if (excluded.has(b.pid) || reap.killed.some((k) => k.pid === b.pid)) continue;
+    if (!revalidateFn(b, { allowReparentAfterParentExit: doKickstart })) {
+      log(`reaper: pid ${b.pid} is no longer the discovered backend (identity changed or gone) — not signalled`);
+      continue;
+    }
+    const outcome = await killFn(b.pid);
+    log(`reaper: pid ${b.pid} (${b.token}) -> ${outcome}`);
+    reap.killed.push({ pid: b.pid, ppid: b.ppid, orphaned: false, outcome });
   }
   const undead = reap.killed.filter((k) => k.outcome === 'undead').map((k) => k.pid);
   if (undead.length > 0) {
-    const after = matchAll();
+    const after = matchResolved();
     return {
       label: opts.label, token: opts.token, ...kickstartField(), ...kickstartSkippedField(),
       before, after, reap, undead,
@@ -1849,28 +1883,51 @@ export async function restartAndVerify(opts: RestartAndVerifyOptions): Promise<R
     };
   }
 
-  // Poll until a pid NOT in the pre-restart snapshot appears for `token` — proof
-  // the running process actually rotated, not merely that the unit is "loaded".
+  // Poll until a pid NOT in the pre-restart snapshot appears for the RESOLVED
+  // token — the only deploy evidence. A respawn on a divergent entrypoint
+  // (backend-only) is detected and reported separately, never as a deploy.
   const beforeSet = new Set(before);
+  const watchDivergent = !doKickstart && divergent.length > 0 && opts.findLiveBackends !== undefined;
   const deadline = Date.now() + waitMs;
   let after: number[] = [];
   let rotated = false;
+  let divergentRespawn: LiveUnitBackend[] = [];
   do {
-    after = matchAll();
+    after = matchResolved();
     if (after.some((p) => !beforeSet.has(p))) {
       rotated = true;
       break;
     }
+    if (watchDivergent && opts.findLiveBackends) {
+      divergentRespawn = opts.findLiveBackends().filter((b) => b.token !== opts.token && !beforeSet.has(b.pid));
+      if (divergentRespawn.length > 0) {
+        after = [...new Set([...after, ...divergentRespawn.map((b) => b.pid)])];
+        break;
+      }
+    }
     if (Date.now() >= deadline) break;
     await sleepFn(pollMs);
   } while (Date.now() < deadline);
+
+  if (!rotated && divergentRespawn.length > 0) {
+    const running = [...new Set(divergentRespawn.map((b) => b.token))];
+    return {
+      label: opts.label, token: opts.token, ...kickstartField(), ...kickstartSkippedField(),
+      before, after, reap, undead,
+      rotated: false, ok: false,
+      rotatedOnDivergentEntrypoint: { pids: divergentRespawn.map((b) => b.pid), running, resolved: opts.token },
+      reason: `[inv:deploy-verified] not met: the backend rotated (pid ${divergentRespawn.map((b) => b.pid).join(', ')}) `
+        + `but the shim respawned it on its cached entrypoint [${running.join(', ')}], not the lockfile-resolved `
+        + `${opts.token}; the stale artifact is still serving. Run a full restart (without --backend-only) to adopt it`,
+    };
+  }
 
   return {
     label: opts.label, token: opts.token, ...kickstartField(), ...kickstartSkippedField(),
     before, after, reap, undead,
     rotated, ok: rotated,
     ...(rotated ? {} : {
-      reason: `[inv:deploy-verified] violated: no pid rotated within ${waitMs}ms `
+      reason: `[inv:deploy-verified] violated: no pid rotated on ${opts.token} within ${waitMs}ms `
         + `(before=[${before.join(', ')}] after=[${after.join(', ')}])`,
     }),
   };
@@ -1903,8 +1960,8 @@ export interface UpdateOsUnitOptions {
    * orphan (§9.4b gap this verb closes).
    */
   token: string;
-  /** dc6261c1: live-backend identity tokens — passed through to `restartAndVerify.extraTokens`. */
-  extraTokens?: string[];
+  /** dc6261c1: divergent live backends (pid-scoped) — passed through to `restartAndVerify.liveBackends`. */
+  liveBackends?: LiveUnitBackend[];
   /** How long to wait for a rotated pid to appear (ms). Default 15000 — passed through to `restartAndVerify`. */
   waitMs?: number;
   /** Poll interval while waiting (ms). Default 300 — passed through to `restartAndVerify`. */
@@ -2028,7 +2085,7 @@ export async function updateOsUnit(
     log,
   };
   if (opts.exec !== undefined) restartOptsBase.exec = opts.exec;
-  if (opts.extraTokens !== undefined) restartOptsBase.extraTokens = opts.extraTokens;
+  if (opts.liveBackends !== undefined) restartOptsBase.liveBackends = opts.liveBackends;
   if (opts.waitMs !== undefined) restartOptsBase.waitMs = opts.waitMs;
   if (opts.pollMs !== undefined) restartOptsBase.pollMs = opts.pollMs;
   if (opts.excludePids !== undefined) restartOptsBase.excludePids = opts.excludePids;

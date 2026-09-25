@@ -115,3 +115,30 @@ describe('evaluateBackendOnlyOutcome', () => {
     expect(outcome.exitCode).toBe(0);
   });
 });
+
+describe('dc6261c1: evaluateBackendOnlyOutcome — a rotation onto the stale entrypoint is never "deployed"', () => {
+  it('exits non-zero naming the running and the lockfile-resolved artifact, and points at a full restart', () => {
+    const running = '/dev/checkout/extensions/bundles/sox-memory-bundle/members/memory-server/dist/index.js';
+    const resolved = '/home/.adhd/sox-ecosystem/ext/memory-server/node_modules/@adhd/sox-extension-memory-server/dist/index.js';
+    const outcome = evaluateBackendOnlyOutcome({
+      cli: 'soxe',
+      label: 'com.sox.user.memory-server',
+      beforeMainPid: 14742,
+      afterMainPid: 14742,
+      result: {
+        ok: false,
+        reason: 'rotated on divergent entrypoint',
+        before: [60640],
+        after: [70000],
+        rotatedOnDivergentEntrypoint: { pids: [70000], running: [running], resolved },
+      },
+    });
+    expect(outcome.exitCode).toBe(1);
+    expect(outcome.stdout).toBeUndefined();
+    expect(outcome.stderr).toContain('NOT DEPLOYED');
+    expect(outcome.stderr).toContain(running);
+    expect(outcome.stderr).toContain(resolved);
+    expect(outcome.stderr).toContain('without --backend-only');
+    expect(outcome.stderr).not.toContain('backend-only deploy');
+  });
+});

@@ -279,22 +279,66 @@ export function argvContainsToken(argv: string, token: string): boolean {
   }
 }
 
-// ─── dc6261c1: identity of the backend a unit is ACTUALLY running ─────────────
+// ─── dc6261c1: the backend a unit is ACTUALLY running, scoped by pid ──────────
 
-/** Filesystem seam for {@link findLiveUnitBackendTokens} (tests inject a fake tree). */
+/** Filesystem seam for {@link findLiveUnitBackends} (tests inject a fake tree). */
 export interface BackendTokenFs {
   existsSync(p: string): boolean;
   readFileSync(p: string, enc: 'utf8'): string;
   realpathSync(p: string): string;
 }
 
-export interface FindLiveUnitBackendTokensOptions {
+/** One process's kernel identity: parent, start time, full argv. */
+export interface ProcessIdentity {
+  pid: number;
+  ppid: number;
+  /** `ps -o lstart` — with `pid` + `args`, distinguishes a reused pid from the original process. */
+  startedAt: string;
+  args: string;
+}
+
+/**
+ * A backend discovered as a direct child of a unit's front-shim. It carries the
+ * FULL identity captured at discovery so it can be re-validated immediately
+ * before it is signalled — the `token` is for reporting and rotation detection
+ * only, NEVER for a path-wide reap (S2 cannot tell two scopes apart, §3.1).
+ */
+export interface LiveUnitBackend extends ProcessIdentity {
+  /** The entrypoint argv element (absolute path) the backend is running. */
+  token: string;
+}
+
+/**
+ * Read one pid's identity via `ps -ww -o ppid=,lstart=,args= -p <pid>`.
+ * Returns undefined when the pid does not exist (ps exits 1) or the row cannot
+ * be parsed — callers treat that as "not the process we discovered".
+ */
+export function readProcessIdentity(pid: number): ProcessIdentity | undefined {
+  let out: string;
+  try {
+    out = execFileSync('ps', ['-ww', '-o', 'ppid=,lstart=,args=', '-p', String(pid)], {
+      encoding: 'utf8',
+      env: { ...process.env, LC_ALL: 'C' },
+    });
+  } catch (e) {
+    // ps exits 1 for a pid that no longer exists: that IS the answer ("gone").
+    if ((e as { status?: number }).status === 1) return undefined;
+    throw e;
+  }
+  const m = /^\s*(\d+)\s+(\S+\s+\S+\s+\d+\s+\d+:\d+:\d+\s+\d+)\s+(.*?)\s*$/.exec(out.split('\n')[0] ?? '');
+  if (!m) return undefined;
+  return { pid, ppid: Number(m[1]), startedAt: m[2] ?? '', args: m[3] ?? '' };
+}
+
+export interface FindLiveUnitBackendsOptions {
   /** The extension id the unit serves — a candidate's manifest must declare exactly this `id`. */
   extId: string;
   /** The OS unit's own (front-shim) pid. Only its DIRECT children are candidates. */
   mainPid: number | undefined;
   /** Injectable process snapshot. Defaults to {@link snapshotProcesses}. */
   procs?: PsProcess[];
+  /** Injectable per-pid identity read. Defaults to {@link readProcessIdentity}. */
+  identityFn?: (pid: number) => ProcessIdentity | undefined;
   /** Injectable fs. Defaults to `node:fs`. */
   fsImpl?: BackendTokenFs;
   /** Diagnostic sink for rejected-candidate reasons (never used for control flow). */
@@ -306,38 +350,36 @@ const BACKEND_MANIFEST_SEARCH_DEPTH = 4;
 const ENTRYPOINT_EXTS = ['.js', '.cjs', '.mjs'];
 
 /**
- * dc6261c1 — the identity token(s) of the backend a unit's front-shim is
- * ACTUALLY running right now, read from the process table rather than
- * re-derived from the install lockfile.
+ * dc6261c1 — the backend process(es) a unit's front-shim is ACTUALLY running
+ * right now, read from the process table rather than re-derived from the
+ * install lockfile.
  *
  * Why this exists: `soxe serve <id> --port` (the unit's front-shim, §9.5)
  * resolves its backend entrypoint ONCE, at shim start (`cmdServe`), and
  * respawns every backend with that same path for its whole lifetime. A later
  * `service restart` re-resolves the entrypoint from the CURRENT lockfile
  * (`resolveOsUnitContext` → `resolveServeManifest`). If the lockfile's source
- * moved in between (e.g. the user scope re-pointed from a `file://` dev
- * checkout to an npm-installed copy under `~/.adhd/.../ext/`), the re-derived
- * token names a path no live process runs, `findOrphansByIdentity` returns
- * `[]`, nothing is reaped, and `[inv:deploy-verified]` times out with
- * `before=[] after=[]` while the stale backend keeps serving.
+ * moved in between, the re-derived token names a path no live process runs,
+ * `findOrphansByIdentity` returns `[]`, nothing is reaped, and
+ * `[inv:deploy-verified]` times out with `before=[] after=[]`.
  *
- * Identity safety (never matches a foreign process). A returned token is an
- * argv element of a process that satisfies ALL of:
- *   1. its PPID is the unit's own `mainPid` (a pid the OS supervisor reports
- *      for this label — kernel parentage, not a name match);
+ * Identity safety. A returned backend is a process that satisfies ALL of:
+ *   1. its PPID is the unit's own `mainPid` (kernel parentage, not a name match);
  *   2. it is neither `mainPid` itself nor this CLI (`process.pid`);
- *   3. the argv element is an absolute `.js`/`.cjs`/`.mjs` path that exists,
+ *   3. one argv element is an absolute `.js`/`.cjs`/`.mjs` path that exists,
  *      whose nearest-ancestor `extension.json` (≤ 4 levels up) declares
- *      `id === extId` AND whose `entrypoint` resolves (realpath) to that same
- *      file.
- * Anything else the shim may spawn (a log tee, a helper, a different
- * extension's server) fails (3) and is ignored. Returns `[]` when `mainPid` is
- * unknown — never guesses.
+ *      `id === extId` AND whose `entrypoint` resolves (realpath) to that file;
+ *   4. its identity (`ppid`, `lstart`, `args`) could be read.
+ * The result is PID-scoped: callers must signal only these pids, after
+ * {@link revalidateLiveUnitBackend}, and must never widen the returned `token`
+ * into a path-wide reap — another scope's backend can run the same path (S2,
+ * §3.1). Returns `[]` when `mainPid` is unknown — never guesses.
  */
-export function findLiveUnitBackendTokens(opts: FindLiveUnitBackendTokensOptions): string[] {
+export function findLiveUnitBackends(opts: FindLiveUnitBackendsOptions): LiveUnitBackend[] {
   const { extId, mainPid } = opts;
   if (!extId || mainPid === undefined || mainPid <= 1) return [];
   const fsI: BackendTokenFs = opts.fsImpl ?? fs;
+  const identityFn = opts.identityFn ?? readProcessIdentity;
   const log = opts.log ?? (() => { /* no diagnostics requested */ });
   const procs = opts.procs ?? snapshotProcesses();
 
@@ -372,22 +414,60 @@ export function findLiveUnitBackendTokens(opts: FindLiveUnitBackendTokensOptions
     return undefined;
   };
 
-  const tokens = new Set<string>();
+  const found: LiveUnitBackend[] = [];
   for (const p of procs) {
     if (p.ppid !== mainPid || p.pid === mainPid || p.pid === process.pid) continue;
     // argv[0] is the interpreter; every later absolute script path is a candidate.
     const argv = p.args.split(/\s+/).filter((a) => a.length > 0).slice(1);
-    for (const arg of argv) {
-      if (!path.isAbsolute(arg) || !ENTRYPOINT_EXTS.some((ext) => arg.endsWith(ext))) continue;
-      if (!fsI.existsSync(arg)) continue;
+    const token = argv.find((arg) => {
+      if (!path.isAbsolute(arg) || !ENTRYPOINT_EXTS.some((ext) => arg.endsWith(ext))) return false;
+      if (!fsI.existsSync(arg)) return false;
       const declared = manifestEntrypointFor(arg);
-      if (declared === undefined) continue;
+      if (declared === undefined) return false;
       const argReal = real(arg);
-      const declaredReal = real(declared);
-      if (argReal !== undefined && argReal === declaredReal) tokens.add(arg);
+      return argReal !== undefined && argReal === real(declared);
+    });
+    if (token === undefined) continue;
+    const id = identityFn(p.pid);
+    if (id === undefined || id.ppid !== mainPid) {
+      log(`dc6261c1: pid ${p.pid} identity unreadable or re-parented during discovery — skipped`);
+      continue;
     }
+    found.push({ ...id, token });
   }
-  return [...tokens];
+  return found;
+}
+
+export interface RevalidateLiveUnitBackendOptions {
+  /**
+   * Accept a backend whose original parent (the discovered shim) is now DEAD
+   * and which was therefore re-parented (PPID 1 on launchd, the user manager
+   * on systemd). Only a full restart, which kickstarts — i.e. itself kills —
+   * that shim, may set this. `--backend-only` never does.
+   */
+  allowReparentAfterParentExit?: boolean;
+  /** Injectable identity read. Defaults to {@link readProcessIdentity}. */
+  identityFn?: (pid: number) => ProcessIdentity | undefined;
+  /** Injectable liveness probe for the original parent. Defaults to {@link pidAlive}. */
+  aliveFn?: (pid: number) => boolean;
+}
+
+/**
+ * dc6261c1 — kill-time re-validation for a {@link LiveUnitBackend}. True only
+ * if `b.pid` is STILL the exact process discovered: same `lstart` and same
+ * argv (rules out pid reuse), and still a child of the discovered shim — or,
+ * when `allowReparentAfterParentExit`, that shim is gone. Anything else means
+ * the pid now names some other process, and it must not be signalled.
+ */
+export function revalidateLiveUnitBackend(
+  b: LiveUnitBackend,
+  opts: RevalidateLiveUnitBackendOptions = {},
+): boolean {
+  const cur = (opts.identityFn ?? readProcessIdentity)(b.pid);
+  if (cur === undefined) return false;
+  if (cur.startedAt !== b.startedAt || cur.args !== b.args) return false;
+  if (cur.ppid === b.ppid) return true;
+  return opts.allowReparentAfterParentExit === true && !(opts.aliveFn ?? pidAlive)(b.ppid);
 }
 
 // ─── PI-1: identity-based matching by SOX_SERVICE_ID env ──────────────────────

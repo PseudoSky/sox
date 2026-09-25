@@ -312,7 +312,7 @@ authority order.
 | Signal | Source | Strength | Weakness |
 |---|---|---|---|
 | **S1 — content address** | `artifactChecksum` (ADR-0003; ownership index `appliedHash`, ADR-0004 §D5) | Identifies *which code* an instance runs | Says nothing about whether it is *running* |
-| **S2 — entrypoint argv token** | `identityToken(source)` → absolute `dist/index.js` path, matched whitespace-bounded in `ps` argv (`reaper.ts:190-250`) | Finds **any** live process running this exact artifact, even PPID-1, even absent from runtime.json | Cannot distinguish two scopes running the *same* artifact path; relies on `ps` |
+| **S2 — entrypoint argv token** | `identityToken(source)` → absolute `dist/index.js` path, matched whitespace-bounded in `ps` argv (`reaper.ts:190-250`) | Finds **any** live process running this exact artifact, even PPID-1, even absent from runtime.json | Cannot distinguish two scopes running the *same* artifact path; relies on `ps`. Stale when the lockfile moved after the running process resolved its path (dc6261c1). A **live-backend token** (`findLiveUnitBackends`, see §9.4a) fills that gap, but it is pid-scoped: it may only be acted on by pid, never widened into a path-wide match |
 | **S3 — health socket** | `lifecycle.health.endpoint` (socket type) resolved through `${SOX_CONFIG_*}`+tilde (`resolveServiceHealthSocketPath`, `main.ts:3560`) | Confirms the service is *answering* | Only meaningful for socket-health services; a shared socket path conflates scopes |
 | **S4 — pid record** | `runtime.json` entry `pid` + `supervisorPid`; global `supervisors.json` (`registry.ts`) | Authoritative *when the supervisor is live* and GC-verified (`gc.ts`) | Goes stale on M2/crash; M2 records `pid:null` for a pre-existing instance (`main.ts:3075`) |
 | **S5 — ownership index** | `ownership.json` `(extId, scope)` → materialize store path + config keys (ADR-0004 §D5) | The authoritative record of *what an install owns*, per scope | Records ownership, not runtime state |
@@ -940,6 +940,40 @@ entrypoint directly, so there is no front-shim to protect). See `apps/sox/src/ma
 `cmdServiceRestart`'s `backendOnly` branch and `libs/host-runtime/src/os-unit.ts`
 `restartAndVerify({ kickstart: false, ... })`.
 
+**Live-backend tokens: when the lockfile moved under a running shim (dc6261c1).** A front-shim
+(`soxe serve <id> --port`) resolves its backend entrypoint **once, at shim start**, and respawns every
+backend on that cached path. `restart`/`update` re-resolve the entrypoint from the *current* lockfile.
+If the lockfile source moved in between (e.g. the user scope re-pointed from a `file://` dev checkout
+to an npm copy under `~/.adhd/.../ext`), the resolved token names a path no live process runs. Before
+the fix, the result was `before=[]`, nothing reaped, and a timeout. `cmdServiceRestart`/`cmdServiceUpdate`
+therefore also discover the unit's live backend(s) with `findLiveUnitBackends`
+(`libs/host-runtime/src/reaper.ts`). A process qualifies only if it meets all of these:
+
+- it is a **direct child of the unit's own `mainPid`**;
+- its nearest `extension.json` declares the same `id`;
+- that manifest's `entrypoint` realpath-equals the argv element;
+- its `(ppid, lstart, argv)` could be read.
+
+A discovered backend whose token differs from the resolved one is passed to `restartAndVerify` as
+`liveBackends` and handled **by pid, never by path**:
+- it joins the before-snapshot;
+- it is reaped **only by its pid**, and only after `revalidateLiveUnitBackend` confirms at kill time that
+  the pid is still the same process: same `lstart`, same argv, same parent. A full restart may accept a
+  re-parented process only when the discovered shim is dead, because the restart's own kickstart killed
+  it. `--backend-only` never accepts this;
+- its path is **never** matched globally. Another scope can run the same artifact path (S2, §3.1), and a
+  path-wide reap on it would kill that scope's backend.
+
+**Divergence reporting.** A rotation on a divergent entrypoint is **never** deploy evidence:
+- A **full restart** is `ok` only when a new pid appears on the **resolved** token. A respawn on the
+  stale path alone gives `ok:false`.
+- For **`--backend-only`**, the shim is intentionally left alive, so it respawns on its cached, stale
+  path. `restartAndVerify` detects this through `findLiveBackends` and returns
+  `rotatedOnDivergentEntrypoint { pids, running, resolved }` with `ok:false`. The CLI exits non-zero
+  with a `NOT DEPLOYED` message that names the running artifact and the lockfile-resolved one, and tells
+  the operator to run a full restart (without `--backend-only`) to adopt it. It never prints the plain
+  "deployed" line.
+
 **Step 6 IS the invariant, enforced by the tool, not by prose.** `sox service restart` (BL-372,
 `apps/sox/src/main.ts` `cmdServiceRestart`, backed by `OsUnitPlatform.kickstart`/`mainPid` in
 `libs/host-runtime/src/os-unit.ts`):
@@ -956,7 +990,8 @@ entrypoint directly, so there is no front-shim to protect). See `apps/sox/src/ma
    backend to die, which makes the already-kickstarted proxy's live backend connection notice the
    disconnect and respawn a NEW backend on the current bundle,
 4. polls (`--wait-ms`, default 15000) until a pid **not** in the pre-restart snapshot appears for
-   that token,
+   that (resolved) token. A pid on a divergent live-backend entrypoint never satisfies this (see
+   *Live-backend tokens* above),
 5. **exits non-zero if no such pid appears** — a `kickstart` exit code of 0 and a unit reporting
    `loaded: yes` are not deploy evidence; only a rotated pid is.
 
@@ -1047,7 +1082,9 @@ update(id, scope, flags):
        # guarantee the BACKEND adopted the new env (see gap above). Force + verify it the same way
        # §9.4a already forces + verifies a code change:
        snapshot = pids matching identityToken(ctx.entrypoint)   # catches the backend even in proxy mode
-       restartAndVerify({ label, token: identityToken(ctx.entrypoint), platform, waitMs, ... })  # §9.4a, reused verbatim
+       restartAndVerify({ label, token: identityToken(ctx.entrypoint), platform, waitMs,
+                          liveBackends: <divergent findLiveUnitBackends(extId, mainPid)>, ... })  # §9.4a, reused verbatim;
+                          # divergent live backends are reaped by pid only and never count as rotation (dc6261c1)
        if no new pid appears within waitMs:
          exit 1  # "unit rewritten but backend did not rotate — config change NOT verified live"
        report "'<id>' updated — config change verified live (pid rotated [before] -> [after])"; exit 0
