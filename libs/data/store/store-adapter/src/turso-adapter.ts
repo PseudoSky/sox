@@ -60,6 +60,7 @@ import {
   verifyWalIdentityNow,
   WAL_OWNERSHIP_HEARTBEAT_DEFAULT_MS,
 } from './wal-ownership.js';
+import { probeForeignShmLock } from './foreign-shm-lock.js';
 import {
   DEFAULT_IDLE_FLUSH_CEILING_MS,
   DEFAULT_IDLE_FLUSH_FLOOR_MS,
@@ -1626,31 +1627,41 @@ export class TursoAdapterImpl implements TursoAdapter {
       // abandoned residue never clears and still refuses after the bound,
       // while a live hatch's sidecar clears and the open proceeds.
       //
-      // The reconcile/rename branch is deliberately UNCHANGED and still fires
-      // only when the store is quiescent — retrying must not widen the window
-      // in which a live sidecar could be renamed out from under its owner.
+      // (BUG-026, the fix) The decision is a LOCK PROBE, not quiescence. A live
+      // TURSO peer never reads the classic `-shm`, so it is NOT a reason to
+      // refuse — only a live CLASSIC opener is. `probeForeignShmLock` takes an
+      // exclusive better-sqlite3 lock in a short-lived child process
+      // (`unlocked` = abandoned residue, `locked` = a live classic holder,
+      // `indeterminate` = not provable) and returns `absent` from a single
+      // `statSync` when there is no `-shm`, so the common open path pays
+      // nothing. This is what unblocks a store whose persistent `-shm` residue
+      // used to be refused forever while a turso peer held the store.
       if (canonicalDb !== undefined && opts.readonly !== true && opts.allowForeignEngine !== true && lease) {
         for (let attempt = 0; attempt < OPEN_RETRY_MAX_ATTEMPTS; attempt++) {
           const shmQuiescence = storeQuiescence(canonicalDb, lease.token);
+          const lock = probeForeignShmLock(canonicalDb);
           const shm = reconcileForeignSqliteShm(canonicalDb, {
             storeInUse: !shmQuiescence.quiescent,
+            foreignHolderLock: lock.state,
           });
           if (shm.reconciled && shm.renamedTo) {
             emitIntegrityReport(
               canonicalDb,
               'repaired',
-              `[BUG-026] foreign -shm sidecar reconciled BEFORE the open: moved aside to ` +
-                `${shm.renamedTo} — the turso store opens against its own -tshm coordination`,
+              `[BUG-026] foreign -shm sidecar reconciled BEFORE the open (lock probe: ${lock.state}): ` +
+                `moved aside to ${shm.renamedTo} — the turso store opens against its own -tshm coordination`,
             );
             break;
           }
-          if (shm.declined === undefined || shmQuiescence.quiescent) break; // nothing to refuse
+          if (shm.declined === undefined) break; // nothing foreign to reconcile
 
           if (attempt >= OPEN_RETRY_MAX_ATTEMPTS - 1) {
-            // Exhausted — this sidecar is not clearing, so it is genuine
-            // residue. Refuse exactly as before, marked `retryable` so the
-            // caller may retry beyond the adapter's bound (ADR-0012 §4).
-            const err = new EForeignSqliteSidecar(canonicalDb, shmQuiescence.livePeers);
+            // Exhausted — the sidecar did not clear (a live classic holder, or
+            // an unprovable state). Refuse, marked `retryable` so the caller
+            // may retry beyond the adapter's bound (ADR-0012 §4).
+            const err = new EForeignSqliteSidecar(canonicalDb, shmQuiescence.livePeers, {
+              classicHolderLocked: lock.state === 'locked',
+            });
             (err as unknown as { retryable?: boolean }).retryable = true;
             throw err;
           }
