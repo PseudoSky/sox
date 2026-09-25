@@ -177,6 +177,23 @@ export async function runEmbedHost(argv: readonly string[] = process.argv.slice(
   const served = { model: args.model, cacheDir: args.cacheDir };
   const hostInstanceId = randomUUID();
 
+  // 17a83623: lifecycle provenance — who spawned this host, under which build,
+  // and which of the spawner's env keys were withheld from it.
+  log.info('embedding_provider.embed_host.spawned', {
+    build_id: args.buildId,
+    protocol: EMBED_HOST_PROTOCOL_VERSION,
+    host_instance_id: hostInstanceId,
+    model: args.model,
+    ep: args.ep,
+    idle_window_ms: idleWindowMs,
+    spawner_pid: args.spawner.pid,
+    spawner_service: args.spawner.serviceId,
+    spawner_entry: args.spawner.entry,
+    denied_env: args.spawner.deniedEnv,
+    node_abi: process.versions.modules,
+    entry,
+  });
+
   let state: EmbedHostState = 'serving';
   let handle: BackendHandle | null = null;
   /** Live client connections — reported for diagnostics only, NEVER a reap input. */
@@ -292,6 +309,11 @@ export async function runEmbedHost(argv: readonly string[] = process.argv.slice(
       active_clients: activeClients,
       last_work_ago_ms: Date.now() - lastWorkAt,
     });
+    // 17a83623: the listener was the host's last ref'd handle (the pool child and
+    // the reap timer are unref'd). Closing it would let the event loop drain and
+    // the process exit mid-retire — before the pool is terminated or `exit` is
+    // logged. Hold the loop open until we exit deliberately.
+    const hold = setInterval(() => undefined, 60_000);
     const closing = handle ? handle.close() : Promise.resolve();
     try {
       await closing;
@@ -307,7 +329,8 @@ export async function runEmbedHost(argv: readonly string[] = process.argv.slice(
         error: e instanceof Error ? e.message : String(e),
       });
     }
-    log.info('embedding_provider.embed_host.exit', { code: 0, reason });
+    log.info('embedding_provider.embed_host.exit', { code: 0, reason, lifetime_ms: Date.now() - startedAt });
+    clearInterval(hold);
     process.exit(0);
   };
 
