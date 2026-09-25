@@ -35,6 +35,7 @@ export {
   telemetrySelfCheck,
   otelReady,
   snapshotMetrics,
+  registerSnapshotSection,
   resolveProcessRole,
   _recordChildTelemetry,
   _resetTelemetryForTest,

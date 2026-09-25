@@ -156,6 +156,7 @@ import {
   StoreOperationTimeoutError,
   type OperationClass,
 } from './operation-guard.js';
+import { mainThreadMonitor } from './mainthread-monitor.js';
 import { serverLivenessWatchdog, watchdogIntervalMs } from './liveness-watchdog.js';
 // ─── ADR-0003: content-addressed self-identity ───────────────────────────────
 //
@@ -4041,6 +4042,13 @@ if (require.main === module) {
   // Never gated behind the --emit-schema branch above: that path is a one-shot
   // build-time schema dump that exits immediately and never serves a request.
   initTelemetry(MEMORY_SERVER_TELEMETRY_INIT_OPTIONS);
+
+  // (5b58b189) Main-thread observability: event-loop lag per interval
+  // (`mainthread.lag` + the `mainthread` metrics.snapshot section),
+  // `mainthread.blocked{duration_ms}` after a block, and an OFF-THREAD
+  // `mainthread.stalled` report while a synchronous Turso step still holds the
+  // loop. Started right after telemetry so it covers every request.
+  mainThreadMonitor.start();
 
   // BL-89: proactively warm the real embedding backend at startup so a missing/broken
   // embedding runtime is reported LOUDLY at boot (stderr + memory_ping.last_embed_error).
