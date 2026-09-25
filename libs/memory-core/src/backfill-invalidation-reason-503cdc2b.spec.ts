@@ -72,7 +72,12 @@ afterEach(async () => {
   _resetTelemetryForTest();
   _resetEmbedSingleton();
   await WriteQueue.clearInstances();
-  await db.close().catch(() => { /* already closed */ });
+  await db.close().catch((err: unknown) => {
+    console.debug('backfill-503cdc2b.spec: db.close failed (already closed?)', {
+      dbPath,
+      error: err instanceof Error ? err.message : String(err),
+    });
+  });
   fs.rmSync(dir, { recursive: true, force: true });
 });
 
