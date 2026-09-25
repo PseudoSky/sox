@@ -24,7 +24,11 @@ import * as os from 'node:os';
 import { performance } from 'node:perf_hooks';
 import { log, forkChild, _recordChildTelemetry, currentRuntimeState } from '@adhd/sox-telemetry';
 import type { ChildTelemetrySnapshot } from '@adhd/sox-telemetry';
-import { resolveFastembedLockPath, resolveFastembedServiceLabel } from './fastembedLock.js';
+import {
+  classifyLockHolder,
+  resolveFastembedLockPath,
+  resolveFastembedServiceLabel,
+} from './fastembedLock.js';
 import { attachOnnxStderrFilter } from './onnxStderrFilter.js';
 import { resolveEmbedHostConfig } from './embedHostConfig.js';
 import { FunneledFastembedClient, resetSharedFastembedHost } from './funnelClient.js';
@@ -58,15 +62,14 @@ function resolveFastembedHostPath(): string {
   return sibling;
 }
 
-/** True if a process with this pid is alive (best-effort; ESRCH => dead). Not
- *  imported from `fastembedProcessHost.ts` — see `detectCompetingFastembedHost`. */
-function isPidAlive(pid: number): boolean {
+/** `kill(pid, 0)` liveness — no exec, safe on the request path. EPERM ⇒ alive. */
+function pidAliveNoExec(pid: number): boolean {
   if (!Number.isFinite(pid) || pid <= 0) return false;
   try {
     process.kill(pid, 0);
     return true;
-  } catch {
-    return false;
+  } catch (e) {
+    return (e as NodeJS.ErrnoException).code === 'EPERM';
   }
 }
 
@@ -171,14 +174,31 @@ export function detectCompetingFastembedHost(
       startedAt?: unknown;
       poolGroup?: unknown;
       service?: unknown;
+      ppid?: unknown;
     };
     const pid = typeof raw.pid === 'number' ? raw.pid : null;
-    const isKnownPoolSibling =
-      typeof raw.poolGroup === 'string' && ownPoolGroup !== undefined && raw.poolGroup === ownPoolGroup;
-    // (BL-432) Same-service suppression — see this function's doc comment.
-    const isSameService =
-      typeof raw.service === 'string' && ownService !== undefined && raw.service === ownService;
-    if (pid === null || pid === ownPid || !isPidAlive(pid) || isKnownPoolSibling || isSameService) {
+    // cfe12302: the same classification the writer uses — minus the `ps`
+    // identity probe, which is a synchronous exec and this runs on the request
+    // path. The lock's recorded `ppid` still identifies our OWN children (any
+    // of our pools' members, across a reset); liveness is `kill(pid, 0)`.
+    const verdict =
+      pid === null
+        ? 'dead'
+        : classifyLockHolder(
+            {
+              pid,
+              ...(typeof raw.poolGroup === 'string' ? { poolGroup: raw.poolGroup } : {}),
+              ...(typeof raw.service === 'string' ? { service: raw.service } : {}),
+            },
+            { pid: ownPid, ppid: process.pid, poolGroup: ownPoolGroup, service: ownService },
+            {
+              alive: pidAliveNoExec(pid),
+              zombie: false,
+              ppid: typeof raw.ppid === 'number' ? raw.ppid : null,
+              startMs: null,
+            },
+          );
+    if (pid === null || verdict !== 'competing') {
       _competingHostCache = null;
       return null;
     }

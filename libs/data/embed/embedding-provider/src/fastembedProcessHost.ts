@@ -60,7 +60,14 @@
 import * as fs from 'node:fs';
 import type { EmbeddingModel, ExecutionProvider } from 'fastembed';
 import { bootstrapChildTelemetry, childTelemetrySnapshot, log } from '@adhd/sox-telemetry';
-import { resolveFastembedLockPath, resolveFastembedServiceLabel, type FastembedLockInfo } from './fastembedLock.js';
+import {
+  classifyLockHolder,
+  ownProcessStartMs,
+  probeLockHolder,
+  resolveFastembedLockPath,
+  resolveFastembedServiceLabel,
+  type FastembedLockInfo,
+} from './fastembedLock.js';
 // BUG-005: MODEL_MAP + resolveModelDim live in the side-effect-free
 // `fastembedModels.js` (see its doc comment — importing them from
 // `./fastembed.js` here would drag parent-side modules into this child
@@ -149,28 +156,24 @@ export function checkAndClaimFastembedLock(): void {
     if (fs.existsSync(lockPath)) {
       const raw = fs.readFileSync(lockPath, 'utf8');
       const prev = JSON.parse(raw) as Partial<FastembedLockInfo>;
-      const isKnownPoolSibling =
-        typeof prev.poolGroup === 'string' &&
-        ownPoolGroup !== undefined &&
-        prev.poolGroup === ownPoolGroup;
-      // (BL-432) The sequential-CLI false positive: a lock naming OUR OWN
-      // service (e.g. a previous run of the same CLI, or a second instance of
-      // the same service) is not "a genuinely unrelated fastembed host".
-      // Suppress it exactly as a pool sibling is suppressed. Requires BOTH
-      // sides to carry a real identity — `ownService === undefined` (owner
-      // never declared one) or an unlabelled/old lock keeps the original
-      // warn-on-any-live-pid behaviour.
-      const isSameService =
-        typeof prev.service === 'string' &&
-        ownService !== undefined &&
-        prev.service === ownService;
-      if (
-        typeof prev.pid === 'number' &&
-        prev.pid !== process.pid &&
-        isPidAlive(prev.pid) &&
-        !isKnownPoolSibling &&
-        !isSameService
-      ) {
+      // cfe12302: ask the OS who holds the pid NOW before warning. A dead or
+      // zombie pid, a pid reused by an unrelated process (start time differs
+      // from the claimant's), and a child of our own parent (another member of
+      // this host's pools — including one replaced by `embedding.reset`, which
+      // starts a new pool group) are not competing hosts. The BL-432
+      // pool-group and same-service suppressions still apply.
+      const verdict =
+        typeof prev.pid === 'number'
+          ? classifyLockHolder(
+              prev,
+              { pid: process.pid, ppid: process.ppid, poolGroup: ownPoolGroup, service: ownService },
+              probeLockHolder(prev.pid),
+            )
+          : 'dead';
+      if (verdict !== 'competing' && verdict !== 'self' && verdict !== 'dead') {
+        log.info('embedding_provider.fastembed.lock_holder_ignored', { verdict, holder_pid: prev.pid ?? null });
+      }
+      if (verdict === 'competing' && typeof prev.pid === 'number') {
         const prevService = typeof prev.service === 'string' ? prev.service : 'unknown';
         const msg = `another fastembed host process (pid ${prev.pid}, ` +
             `service ${prevService}, ` +
@@ -203,12 +206,18 @@ export function checkAndClaimFastembedLock(): void {
     const info: FastembedLockInfo = {
       pid: process.pid,
       startedAt: new Date().toISOString(),
+      ppid: process.ppid,
+      procStartMs: ownProcessStartMs(),
       ...(ownPoolGroup !== undefined ? { poolGroup: ownPoolGroup } : {}),
       ...(ownService !== undefined ? { service: ownService } : {}),
     };
     fs.writeFileSync(lockPath, JSON.stringify(info));
-  } catch {
+  } catch (err) {
     // Non-fatal: if /tmp isn't writable for some reason, just skip claiming.
+    log.warn('embedding_provider.fastembed.lock_claim_failed', {
+      error: err instanceof Error ? err.message : String(err),
+      lock_file: lockPath,
+    });
   }
 }
 
