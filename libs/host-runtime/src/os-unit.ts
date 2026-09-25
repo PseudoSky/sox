@@ -460,6 +460,101 @@ export function resolveUnitNodePath(opts: { execPath?: string; pathEnv?: string 
   };
 }
 
+// ─── Stable CLI path (27850011) ─────────────────────────────────────────────────
+
+/**
+ * (27850011) True when `p` lives inside a git working tree (any ancestor holds a
+ * `.git` directory or `.git` file — a linked worktree). A unit that runs a CLI
+ * from a checkout couples production to whatever branch/build that checkout is
+ * on: prod's memory-server front shim ran `<dev checkout>/bin/soxe serve …`, so
+ * any branch switch or rebuild there changed production.
+ */
+export function isGitCheckoutPath(p: string): boolean {
+  let dir = path.resolve(p);
+  for (;;) {
+    try {
+      if (fs.existsSync(path.join(dir, '.git'))) return true;
+    } catch {
+      /* unreadable ancestor — keep walking; never throws */
+    }
+    const parent = path.dirname(dir);
+    if (parent === dir) return false;
+    dir = parent;
+  }
+}
+
+/** (27850011) Where the unit's `soxe` comes from. */
+export interface UnitCliResolution {
+  /** Realpath of the CLI entry baked into the unit's argv. */
+  cliPath: string;
+  /** `flag` = explicit `--cli-path`; `invoking` = the soxe running `service
+   *  enable` (not a checkout); `installed` = a released `@adhd/sox-cli`
+   *  install found instead of the invoking checkout CLI; `checkout` = only a
+   *  git-checkout CLI was available (volatile). */
+  source: 'flag' | 'invoking' | 'installed' | 'checkout';
+  /** True only for `checkout` — the unit would track a git working tree. */
+  volatile: boolean;
+  volatileReason?: string;
+}
+
+/**
+ * (27850011) The released-CLI locations checked, in order: the global
+ * `node_modules` of the node that will run the unit (`<prefix>/lib/node_modules`),
+ * then the sox data root's own CLI install (`~/.adhd/sox-ecosystem/cli`).
+ */
+export function installedCliCandidates(nodePath: string, homeDir: string = os.homedir()): string[] {
+  const rel = path.join('node_modules', '@adhd', 'sox-cli', 'bin', 'soxe.mjs');
+  return [
+    path.join(path.dirname(path.dirname(nodePath)), 'lib', rel),
+    path.join(homeDir, '.adhd', 'sox-ecosystem', 'cli', rel),
+  ];
+}
+
+/**
+ * (27850011) Resolve the `soxe` a unit's argv runs. Never silently a git
+ * checkout: an explicit `--cli-path` always wins (explicit request); else the
+ * invoking CLI when it is NOT inside a checkout; else the first existing
+ * released install (realpath, also not in a checkout — an `npm link`ed global
+ * resolves back into the checkout and is rejected); else the invoking checkout
+ * CLI marked `volatile` so the caller can refuse it (user scope) exactly like a
+ * volatile node (§9.2, `--allow-volatile-node`).
+ */
+export function resolveUnitCliPath(opts: {
+  argv1: string;
+  nodePath: string;
+  explicit?: string | undefined;
+  candidates?: string[];
+}): UnitCliResolution {
+  const real = (p: string): string => {
+    try {
+      return fs.realpathSync(p);
+    } catch {
+      return p;
+    }
+  };
+  if (opts.explicit !== undefined && opts.explicit !== '') {
+    return { cliPath: real(opts.explicit), source: 'flag', volatile: false };
+  }
+  const invoking = opts.argv1 ? real(opts.argv1) : '';
+  if (invoking && !isGitCheckoutPath(invoking)) {
+    return { cliPath: invoking, source: 'invoking', volatile: false };
+  }
+  for (const c of opts.candidates ?? installedCliCandidates(opts.nodePath)) {
+    if (!fs.existsSync(c)) continue;
+    const r = real(c);
+    if (!isGitCheckoutPath(r)) return { cliPath: r, source: 'installed', volatile: false };
+  }
+  return {
+    cliPath: invoking,
+    source: 'checkout',
+    volatile: true,
+    volatileReason:
+      `the unit would run soxe from a git checkout (${invoking}) — any branch switch or rebuild ` +
+      `there changes the running service. Install the released CLI (npm i -g @adhd/sox-cli) or ` +
+      `pass --cli-path=<released soxe> (27850011)`,
+  };
+}
+
 // ─── Content addressing (§9.3 / [inv:os-unit-content-addressed]) ─────────────────
 
 const UNIT_META_MARKER = 'sox-os-unit';
