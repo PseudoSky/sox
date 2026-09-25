@@ -177,8 +177,26 @@ export function probeForeignShmLock(
 ): ForeignShmLockProbe {
   try {
     statSync(foreignShmPath(dbPath));
-  } catch {
-    return { state: 'absent', method: 'none' };
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException)?.code;
+    if (code === 'ENOENT') {
+      return { state: 'absent', method: 'none' };
+    }
+    // Any other stat failure (e.g. EACCES) is not provably "no -shm" — log it
+    // and decline via `indeterminate` rather than silently treating it as
+    // absent, which could let a reconcile touch a sidecar we never actually
+    // ruled out.
+    const detail = err instanceof Error ? err.message : String(err);
+    log.debug('store_adapter.foreign_shm.probe_stat_failed', {
+      db_path: dbPath,
+      code: code ?? null,
+      detail,
+    });
+    return {
+      state: 'indeterminate',
+      method: 'none',
+      detail: `stat of -shm sidecar failed: ${detail}`,
+    };
   }
 
   const betterSqlite3Path = resolveBetterSqlite3();

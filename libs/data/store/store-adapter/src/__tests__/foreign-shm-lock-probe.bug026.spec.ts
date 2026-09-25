@@ -22,16 +22,25 @@
  * No sleeps for ordering: readiness is a file latch, and liveness is inferred
  * from the probe's own verdict. Temp stores are cleaned up.
  */
-import { describe, it, expect, beforeAll, afterAll } from 'vitest';
-import { mkdtempSync, rmSync, existsSync, statSync, readdirSync } from 'node:fs';
+import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
+import { mkdtempSync, chmodSync, rmSync, existsSync, statSync, readdirSync, readFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
 import { join, basename, dirname } from 'node:path';
 import { tmpdir } from 'node:os';
 import { spawn, type ChildProcess } from 'node:child_process';
 import { createRequire } from 'node:module';
+import { log } from '@adhd/sox-telemetry';
 import { TursoAdapterImpl } from '../turso-adapter.js';
 import { EForeignSqliteSidecar } from '../wal-ownership.js';
 import { probeForeignShmLock } from '../foreign-shm-lock.js';
 import { preflightSchemaSanity } from '../preflight.js';
+
+/** SHA-256 of a file's full bytes — used where "byte-identical" must mean the
+ *  entire content, not merely the same length (two different WAL frames can
+ *  coincidentally share a byte count). */
+function sha256(path: string): string {
+  return createHash('sha256').update(readFileSync(path)).digest('hex');
+}
 
 const require = createRequire(import.meta.url);
 const BETTER_SQLITE3 = require.resolve('better-sqlite3');
@@ -155,18 +164,71 @@ describe('probeForeignShmLock — exclusive-lock probe primitive', () => {
     const shmPath = dbPath + '-shm';
     const walPath = dbPath + '-wal';
     expect(statSync(walPath).size, 'precondition: a populated WAL').toBeGreaterThan(0);
-    const walBefore = statSync(walPath).size;
-    const shmBefore = statSync(shmPath).size;
+    const walHashBefore = sha256(walPath);
+    const shmHashBefore = sha256(shmPath);
 
     const probe = probeForeignShmLock(dbPath);
     expect(probe.state).toBe('unlocked');
 
     // The probe's read-write child must NEVER checkpoint/delete the shared WAL
-    // (the exp9 poisoner). Byte-identical is the guarantee.
-    expect(statSync(walPath).size, 'the probe must not delete or truncate the shared -wal').toBe(
-      walBefore,
+    // (the exp9 poisoner). "Byte-identical" is checked over the FULL content
+    // (a hash), not merely the size — two different WAL states can coincide on
+    // size while differing in content.
+    expect(sha256(walPath), 'the probe must not mutate a single byte of the shared -wal').toBe(
+      walHashBefore,
     );
-    expect(statSync(shmPath).size).toBe(shmBefore);
+    expect(sha256(shmPath), 'the probe must not mutate a single byte of the -shm').toBe(
+      shmHashBefore,
+    );
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// probeForeignShmLock — the stat() failure branch (untraced-catch fix)
+// ═══════════════════════════════════════════════════════════════════════════
+
+describe('probeForeignShmLock — stat() failure handling', () => {
+  it('ENOENT (no -shm at all) → absent, and never logs (the hot no-op path)', () => {
+    const dbPath = tempPath('stat-enoent');
+    const debugSpy = vi.spyOn(log, 'debug');
+    try {
+      const probe = probeForeignShmLock(dbPath);
+      expect(probe.state).toBe('absent');
+      expect(probe.method).toBe('none');
+      expect(
+        debugSpy.mock.calls.some(([event]) => String(event).startsWith('store_adapter.foreign_shm')),
+      ).toBe(false);
+    } finally {
+      debugSpy.mockRestore();
+    }
+  });
+
+  it('a non-ENOENT stat failure (EACCES-like) is logged and degrades safely to indeterminate', () => {
+    const blockedDir = mkdtempSync(join(tmpDir, 'stat-eacces-'));
+    const dbPath = join(blockedDir, 'store.db');
+    // Remove all permissions on the CONTAINING directory so statSync(<dbPath>-shm)
+    // fails with EACCES rather than ENOENT (the file's own existence is
+    // unknowable without traversing the now-unreadable directory).
+    chmodSync(blockedDir, 0o000);
+    const debugSpy = vi.spyOn(log, 'debug');
+    try {
+      const probe = probeForeignShmLock(dbPath);
+      // Must degrade to the safe direction — never wrongly report `absent`
+      // (which would let a caller believe there is nothing to reconcile) or
+      // `unlocked` (which would let a caller touch a sidecar it never proved
+      // safe to touch).
+      expect(probe.state).toBe('indeterminate');
+      expect(probe.method).toBe('none');
+      expect(probe.detail).toMatch(/stat of -shm sidecar failed/);
+      const logged = debugSpy.mock.calls.find(
+        ([event]) => event === 'store_adapter.foreign_shm.probe_stat_failed',
+      );
+      expect(logged, 'the non-ENOENT stat failure must be traced, never swallowed silently').toBeTruthy();
+      expect(logged?.[1]).toMatchObject({ db_path: dbPath });
+    } finally {
+      debugSpy.mockRestore();
+      chmodSync(blockedDir, 0o700); // restore so afterAll's rmSync(tmpDir) can clean up
+    }
   });
 });
 
