@@ -103,6 +103,45 @@ import type {
  *  a toggle — a store opened concurrently must wait out transient locks. */
 const DEFAULT_BUSY_TIMEOUT_MS = 5000;
 
+/**
+ * (4cd68c4e) FTS segment bound. Turso's Tantivy FTS index (`USING fts`) commits
+ * ONE new segment per committed write that touches the indexed table and never
+ * merges them on its own — measured on a copy of prod: 5,001 segments for
+ * ~16.5k docs; per-insert main-thread block 0.4–2 s; `fts_match` 601 ms. Only
+ * `OPTIMIZE INDEX <name>` merges them (27–34 s for that 5k-segment backlog →
+ * 1 segment; insert ~0.1 s, fts_match ~80 ms afterwards).
+ *
+ * The segment count is NOT observable from SQL: the segments live only in the
+ * `__turso_internal_fts_dir_<idx>_key` backing_btree index, which cannot be
+ * selected from (`no such table`), and the `__turso_internal_fts_dir_<idx>`
+ * table stays empty (probed 2026-09-25 after 2,000 inserts + reopen). So the
+ * trigger is the count of writable operations since the last successful
+ * optimize — an over-approximation of segments (a write that does not touch an
+ * FTS-indexed table creates none), which only ever makes the pass run earlier.
+ *
+ * 256 is chosen from a scratch measurement (driver 0.7.1, 30-word docs, load
+ * avg 100+): per-insert cost grows linearly with segment count (8 ms → 112 ms
+ * over 2,000 single-row commits; fts_match 0.5 → 33 ms) and OPTIMIZE over
+ * 2,000 segments took 2.7 s. 256 keeps a steady-state pass a few hundred ms —
+ * far inside `DEFAULT_BUSY_TIMEOUT_MS`, so a peer that opens mid-pass waits
+ * rather than failing — while the per-insert penalty stays within ~2× of a
+ * merged index.
+ */
+export const DEFAULT_FTS_OPTIMIZE_WRITE_THRESHOLD = 256;
+
+/** (4cd68c4e) Outcome of one FTS optimize pass. */
+export interface FtsOptimizeOutcome {
+  status: 'optimized' | 'skipped' | 'failed';
+  /** Present when `status === 'skipped'`. */
+  reason?: 'peers';
+  peer_count?: number;
+  writes_since_optimize: number;
+  /** Indexes OPTIMIZE completed on. */
+  indexes: string[];
+  duration_ms: number;
+  error?: string;
+}
+
 /** (BL-512 follow-on) Bounded connect-level retry budget for the driver's own
  *  open-handshake race. 3 total attempts (1 initial + 2 retries) matches
  *  ADR-0012 §4's retry ceiling — the same 3 `_runTransaction`'s
@@ -527,6 +566,151 @@ export class TursoAdapterImpl implements TursoAdapter {
    *  memory-core's queue — inherits it automatically. */
   private _idleFlushTimer: ReturnType<typeof setTimeout> | null = null;
 
+  /** (4cd68c4e) Writable operations since the last successful FTS optimize
+   *  pass — the segment-count proxy (see
+   *  `DEFAULT_FTS_OPTIMIZE_WRITE_THRESHOLD`). Starts AT the threshold: a
+   *  fresh process cannot know how many segments earlier processes left
+   *  behind (prod held 5,001), so the first quiescent idle point after open
+   *  always runs one pass. On an already-merged index that pass is a 14 ms
+   *  no-op (measured). Lives on the instance, so it survives idle-release and
+   *  poison reconnects. */
+  private _ftsWritesSinceOptimize: number = DEFAULT_FTS_OPTIMIZE_WRITE_THRESHOLD;
+
+  /** (4cd68c4e) Threshold for `_ftsWritesSinceOptimize` — typed per-connect
+   *  override via `opts.ftsOptimizeWriteThreshold` (tests only). */
+  private _ftsOptimizeWriteThreshold: number = DEFAULT_FTS_OPTIMIZE_WRITE_THRESHOLD;
+
+  /** (4cd68c4e) Last FTS optimize outcome, for diagnostics/tests. */
+  private _lastFtsOptimize: FtsOptimizeOutcome | null = null;
+
+  /** (4cd68c4e) Read-only view of the FTS maintenance state. */
+  get ftsMaintenance(): {
+    writesSinceOptimize: number;
+    threshold: number;
+    last: FtsOptimizeOutcome | null;
+  } {
+    return {
+      writesSinceOptimize: this._ftsWritesSinceOptimize,
+      threshold: this._ftsOptimizeWriteThreshold,
+      last: this._lastFtsOptimize,
+    };
+  }
+
+  /**
+   * (4cd68c4e) Bounded-segment maintenance: run `OPTIMIZE INDEX` on every
+   * index-method (`USING fts`) index when at least
+   * `_ftsOptimizeWriteThreshold` writes have landed since the last pass.
+   *
+   * WHEN: only from `_performIdleFlush()` — i.e. at the adapter's own quiet
+   * point, after the idle debounce, with `_inFlightOps === 0`. Never on a
+   * request path.
+   *
+   * LOCK BEHAVIOUR under multiprocess WAL: OPTIMIZE is an ordinary write
+   * transaction — it takes the WAL write lock for its duration. It runs ONLY
+   * when the store is quiescent (`storeQuiescence` sees no other live lease
+   * holder); with a live peer (e.g. the enrich-process-host) it is SKIPPED,
+   * the counter is kept, and it is retried at the next idle point. A peer that
+   * opens mid-pass (the check-then-act window) simply waits on the 5 s busy
+   * timeout; the write-count bound keeps a steady-state pass well inside it.
+   * Peers also idle-release their lease, which is what makes quiescence
+   * reachable in production.
+   *
+   * INTERLEAVING: the pass holds `_inFlightOps` so a caller op landing between
+   * driver steps makes the following `releaseIdleConnection()` decline instead
+   * of closing under it. It deliberately bypasses `_trackOp()` (BUG-022: a
+   * tracked op re-arms this same idle timer — a self-perpetuating loop).
+   */
+  private async _maybeOptimizeFts(): Promise<FtsOptimizeOutcome | null> {
+    if (!this._idleFlushEnabled || this.closed || this._released) return null;
+    if (this._ftsWritesSinceOptimize < this._ftsOptimizeWriteThreshold) return null;
+    const coordDb = this.coordPath;
+    const writes = this._ftsWritesSinceOptimize;
+    if (coordDb !== undefined && this._lease) {
+      const q = storeQuiescence(coordDb, this._lease.token);
+      if (!q.quiescent) {
+        const outcome: FtsOptimizeOutcome = {
+          status: 'skipped',
+          reason: 'peers',
+          peer_count: q.livePeers.length,
+          writes_since_optimize: writes,
+          indexes: [],
+          duration_ms: 0,
+        };
+        this._lastFtsOptimize = outcome;
+        log.info('fts.optimize.skipped', {
+          db_path: coordDb,
+          reason: 'peers',
+          peer_count: q.livePeers.length,
+          peer_pids: q.livePeers.map((p) => p.pid).join(','),
+          writes_since_optimize: writes,
+        });
+        return outcome;
+      }
+    }
+    this._inFlightOps++;
+    const startedAt = Date.now();
+    const optimized: string[] = [];
+    try {
+      await this._ensureHealthy();
+      const rows = (await this.db.all(
+        "SELECT name FROM sqlite_master WHERE type = 'index' AND sql LIKE '%USING fts%'",
+      )) as Array<{ name: string }>;
+      if (rows.length === 0) {
+        // No index-method index on this store — nothing can accumulate.
+        this._ftsWritesSinceOptimize = 0;
+        return null;
+      }
+      for (const { name } of rows) {
+        const t0 = Date.now();
+        log.info('fts.optimize.start', {
+          db_path: coordDb ?? null,
+          index: name,
+          writes_since_optimize: writes,
+          // Not observable from SQL (see DEFAULT_FTS_OPTIMIZE_WRITE_THRESHOLD).
+          segments_before: null,
+        });
+        await this.db.exec(`OPTIMIZE INDEX "${name.replace(/"/g, '""')}"`);
+        optimized.push(name);
+        log.info('fts.optimize.finish', {
+          db_path: coordDb ?? null,
+          index: name,
+          writes_since_optimize: writes,
+          segments_before: null,
+          duration_ms: Date.now() - t0,
+        });
+      }
+      this._ftsWritesSinceOptimize = 0;
+      const outcome: FtsOptimizeOutcome = {
+        status: 'optimized',
+        writes_since_optimize: writes,
+        indexes: optimized,
+        duration_ms: Date.now() - startedAt,
+      };
+      this._lastFtsOptimize = outcome;
+      return outcome;
+    } catch (err) {
+      this._markIfFatal(err);
+      const outcome: FtsOptimizeOutcome = {
+        status: 'failed',
+        writes_since_optimize: writes,
+        indexes: optimized,
+        duration_ms: Date.now() - startedAt,
+        error: err instanceof Error ? err.message : String(err),
+      };
+      this._lastFtsOptimize = outcome;
+      log.error('fts.optimize.failed', {
+        db_path: coordDb ?? null,
+        optimized: optimized.join(','),
+        writes_since_optimize: writes,
+        duration_ms: outcome.duration_ms,
+        error: outcome.error,
+      });
+      return outcome;
+    } finally {
+      this._inFlightOps--;
+    }
+  }
+
   /** (BUG-026) True when this instance is eligible to self-arm the
    *  WAL-ownership heartbeat — set by `connect()`/`_openReal()` for writable,
    *  local-file connections only (same eligibility as `_idleFlushEnabled`: a
@@ -630,6 +814,11 @@ export class TursoAdapterImpl implements TursoAdapter {
         return 0;
       }
     };
+    // (4cd68c4e) FTS segment maintenance rides the same quiet point, BEFORE
+    // the flush/release: the merge's own WAL frames are then checkpointed by
+    // the flush that follows, and the connection is still open for it.
+    await this._maybeOptimizeFts();
+    if (this.closed || this._released || this._inFlightOps > 0) return; // work arrived mid-pass
     const startedAt = Date.now();
     const before = walBytes();
     try {
@@ -1025,6 +1214,8 @@ export class TursoAdapterImpl implements TursoAdapter {
           );
         }
         this._lastWriteAt = now;
+        // (4cd68c4e) Segment-count proxy for the FTS optimize pass.
+        this._ftsWritesSinceOptimize++;
         // (BUG-026) Lifetime WAL-identity check on EVERY write — a replaced
         // WAL is folded + the connection recycled here, not hours later at
         // close. Runs before the wal-cap backstop so the two never race.
@@ -1436,6 +1627,11 @@ export class TursoAdapterImpl implements TursoAdapter {
      * real 2s wait.
      */
     idleFlushMs?: number;
+    /**
+     * (4cd68c4e, TEST-ONLY) Override `DEFAULT_FTS_OPTIMIZE_WRITE_THRESHOLD` —
+     * the number of writes after which the idle point runs `OPTIMIZE INDEX`.
+     */
+    ftsOptimizeWriteThreshold?: number;
     /**
      * (BL-590, TEST-ONLY) Override the idle-flush debounce FLOOR (default
      * `DEFAULT_IDLE_FLUSH_FLOOR_MS` = 2000ms) WITHOUT fixing the window —
@@ -2345,6 +2541,10 @@ export class TursoAdapterImpl implements TursoAdapter {
         if (opts.idleFlushFloorMs !== undefined) instance._idleFlushMs = opts.idleFlushFloorMs;
         if (opts.idleFlushCeilingMs !== undefined) instance._idleFlushCeilingMs = opts.idleFlushCeilingMs;
         if (opts.walFlushStrategy !== undefined) instance._walFlushStrategy = opts.walFlushStrategy;
+        if (opts.ftsOptimizeWriteThreshold !== undefined) {
+          instance._ftsOptimizeWriteThreshold = opts.ftsOptimizeWriteThreshold;
+          instance._ftsWritesSinceOptimize = opts.ftsOptimizeWriteThreshold;
+        }
         instance._armIdleFlush();
 
         // (wal-cap) Same eligibility as the idle flush, same reasoning —
@@ -2557,6 +2757,10 @@ export class TursoAdapterImpl implements TursoAdapter {
       if (opts.idleFlushFloorMs !== undefined) instance._idleFlushMs = opts.idleFlushFloorMs;
       if (opts.idleFlushCeilingMs !== undefined) instance._idleFlushCeilingMs = opts.idleFlushCeilingMs;
       if (opts.walFlushStrategy !== undefined) instance._walFlushStrategy = opts.walFlushStrategy;
+      if (opts.ftsOptimizeWriteThreshold !== undefined) {
+        instance._ftsOptimizeWriteThreshold = opts.ftsOptimizeWriteThreshold;
+        instance._ftsWritesSinceOptimize = opts.ftsOptimizeWriteThreshold;
+      }
       instance._capFlushEnabled = true;
       if (opts.walCapBytes !== undefined) {
         instance._walCapExplicitBytes = opts.walCapBytes;
