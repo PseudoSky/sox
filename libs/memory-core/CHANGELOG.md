@@ -1,5 +1,188 @@
 # @adhd/sox-memory-core
 
+## 0.11.0
+
+### Minor Changes
+
+- 14265f0: Every episode invalidation now records why it happened, and a new
+  `memory_curate { op: 'backfill_invalidation_reason' }` gives legacy rows an
+  explicit reason.
+
+  - **`meta.invalidatedReason` on every invalidation (f7461993).** Every writer
+    of `t_invalid` goes through the shared `invalidateEpisodeInTx` helper in
+    `invalidation-meta.ts`: `memory_invalidate`, `merge_duplicates`, and
+    `restore_neardup` reverse. The helper stamps `invalidatedReason`,
+    `invalidatedVia` and `invalidatedAt` into `node.meta` in the same
+    transaction that sets `t_invalid`.
+  - **`backfill_invalidation_reason` (503cdc2b).** Targets invalidated episodes
+    that predate f7461993: no `SAME_AS`/`SUPERSEDES` edge in either direction and
+    no `invalidated*` meta key. It writes only `node.meta`
+    (`invalidatedReason = "unknown-legacy: …"`, `invalidatedVia =
+"backfill_503cdc2b"`, `invalidatedAt = t_invalid`,
+    `invalidatedReasonBackfilledAt = now`) and never writes `t_invalid`. The scope
+    predicate is re-checked per row inside one immediate transaction, so a second
+    run touches 0 rows. `dry_run` defaults to TRUE. Apply and reverse first run the
+    shared integrity gate and take a verified store backup, and abort without
+    mutating if either fails. `reverse: true` removes exactly the four keys where
+    `invalidatedVia == "backfill_503cdc2b"`. `memoryCurate` gains an optional
+    `ctx` parameter that carries the store's `dbPath`.
+
+  **Minor, not patch.** The public type surface published since 0.10.2 narrows
+  in ways that PUBLISHING.md's patch-for-additive-API exception excludes:
+  `NearDupResult.should_invalidate: boolean` is replaced by
+  `status: 'near_dup' | 'candidate'`, and `SupersessionChainResult.canonical_uid`
+  is now optional. Code that reads either field must be updated.
+
+### Patch Changes
+
+- a5d4f70: Fix `memoryGetEntityEpisodes` counting invalid episodes in `total` while paginating short pages.
+
+  `total` was computed as `edges.length` over the RAW `MENTIONS` edge set with no
+  validity predicate, and the page was produced by slicing that same raw array
+  _before_ `t_invalid IS NULL` was applied to the episode nodes. Two consequences,
+  both observed live: `total` overcounted, and pages came back shorter than the
+  requested `limit` whenever an invalidated episode fell inside the slice
+  (`total: 3` with 2 episodes; `total: 118` with 99 episodes at an explicit high
+  limit, so pagination could not explain the gap). Offsets also shifted meaning
+  between calls as invalidated rows landed in different slices.
+
+  `total`, the page, and the new count now read one identical live-filtered
+  `MENTIONS`→episode join (`e.t_invalid IS NULL AND n.kind = 'episode' AND
+n.t_invalid IS NULL`), with `LIMIT`/`OFFSET` bound in SQL rather than applied by
+  `Array.slice`.
+
+  Observable contract changes for callers of `memory_entity_episodes`:
+
+  - **`total`** now counts only live episodes, so it matches `episodes.length` on
+    an unpaginated call. It previously included invalidated ones.
+  - **`invalidated_count`** is a new additive response field: live `MENTIONS`
+    edges whose episode has been invalidated. Shipping as a patch under
+    PUBLISHING.md's patch-for-additive-API exception.
+  - **Ordering** is now `ORDER BY n.importance DESC, n.rowid ASC`, making the
+    tool's documented "ranked by importance" true and pagination stable. Results
+    were previously returned in unspecified edge-row order.
+  - `limit`/`offset` are coerced and clamped before binding: a non-integer or
+    out-of-int64-range value no longer throws a SQLite datatype mismatch, and
+    `limit: -1` no longer reaches SQL as `LIMIT -1` ("no limit").
+
+- 8584449: Fix `memoryRecall`'s empty-corpus early return hardcoding `provider_call_count: 0`
+  regardless of whether a query embed was actually attempted.
+
+  `provider_call_count` counts local embed calls **attempted** on this recall
+  (incremented in `embed.ts` before the provider promise is awaited — BL-254),
+  not calls that returned a vector; `degradations` is the field that reports
+  whether an attempted vec embed actually succeeded. The non-empty-results
+  return path already computed this from the real `getProviderCallCount()`
+  before/after delta. The empty-corpus early return (`allRowids.size === 0`)
+  did not — it hardcoded `0` even when the query embed above it had already
+  been attempted and timed out under the read-path guard
+  (`SOX_RECALL_EMBED_TIMEOUT_MS`, default 3000ms), producing a response where
+  `provider_call_count: 0` sat directly beside
+  `degradations: ["vec: embed() timed out after …"]` — the caller-visible
+  counter and the degradation string told opposite stories about whether a
+  provider call happened.
+
+  Both return paths now compute `provider_call_count` from the same
+  before/after delta, so the two fields can never contradict each other in the
+  same response: a `vec: …` degradation is proof an embed call was attempted,
+  and `provider_call_count` will reflect that regardless of which branch
+  returns. No change to the counter's meaning (attempted, not succeeded) —
+  this closes a hardcoding gap on one branch, it is not a redefinition of the
+  field.
+
+- e1fbc53: Fix `memoryGetRelated` letting invalidated neighbours consume `limit` slots, returning short lists.
+
+  Out-edges and in-edges were each `.slice(0, limit)`-ed from the raw `getEdges()`
+  result, and `t_invalid IS NULL` was applied to the neighbour _nodes_ only
+  afterward. The defect was the ORDER of those operations, not their absence —
+  edge-level validity was always applied (`getEdges` prepends it) and node-level
+  validity was applied too, just after the truncation. An invalidated neighbour
+  falling inside the limit window therefore consumed a slot and was then dropped,
+  so callers silently received fewer than `limit` neighbours while live ones that
+  would have filled those slots sat just past the cut. This is the same pathology
+  fixed in `memoryGetEntityEpisodes`.
+
+  The two slices are replaced by one bidirectional `UNION ALL` — out-edges keyed
+  on `e.src`, in-edges on `e.dst` — filtering `e.t_invalid IS NULL AND
+n.t_invalid IS NULL` in the same statement that binds `LIMIT`.
+
+  Observable contract changes for callers of `memory_related`:
+
+  - **`edges`** is now short only when the neighbourhood is genuinely exhausted.
+  - **`invalidated_count`** is a new additive response field: live edges (both
+    directions, after the `rel` filter) whose neighbour node has been
+    invalidated. Deliberately NOT bounded by `limit` and not a paging denominator
+    — this function has no `total` and no `offset` — so it is a neighbourhood
+    diagnostic only. Declared OPTIONAL on the exported `RelatedResult`, matching
+    `EntityEpisodesResult`: the type is re-exported from the package root, and a
+    REQUIRED property would break any external site constructing the literal, so
+    it would not qualify for PUBLISHING.md's patch-for-additive-API exception on
+    a patch bump. Always populated in practice, including on `E_NOT_FOUND`.
+  - **Ordering** is now explicitly `outbound-then-inbound, edge-creation order`
+    rather than whatever an unordered `SELECT * FROM edge` happened to yield. No
+    importance ranking is imposed: unlike `memory_entity_episodes`, this tool
+    documents no ranking contract, so adding one would be an unrequested change.
+  - `limit` is coerced and clamped before binding: a non-integer no longer throws
+    a SQLite datatype mismatch, and `limit: -1` no longer reaches SQL as
+    `LIMIT -1` ("no limit"), which would have returned the entire neighbourhood.
+
+  `UNION ALL` (not `UNION`) and the absence of any `n.kind` predicate are both
+  deliberate preservations of existing behaviour: a reciprocal A→B/B→A pair is
+  two entries, and a `MENTIONS` edge to an entity node is still returned.
+
+- 4903f76: Add `memory_curate { op: 'restore_neardup' }` — a reversible, auditable restore for
+  episodes invalidated by an automatic near-duplicate pass.
+
+  An automatic near-dup pass invalidated 852 episodes, 689 of which sit on a live
+  INFERRED `SAME_AS` edge. A separate read-only triage classified those 689
+  component-wise on **lexical** measures only (Jaccard / LCS / containment / length
+  ratio). Embedding cosine sat at 0.95–1.00 across every class and does not
+  discriminate, and an _age_ rule is what selected the parent documents for
+  destruction in the first place — so neither signal appears anywhere in this code
+  path. The op consumes the triage report; it never re-derives the decision.
+
+  Restore scope is an explicit **policy choice**, not a measured recoverable count:
+  the floor plus the whole ambiguous band, on the asymmetry argument that a wrongly
+  restored duplicate stays re-mergeable through its retained `SAME_AS` edge while a
+  wrongly withheld false positive is lost permanently. TRUE-DUPLICATE components
+  stay collapsed. A `SAME_AS` edge is never deleted.
+
+  Safety properties:
+
+  - **`dry_run` defaults to TRUE for this op only.** It is destructive by omission,
+    so a caller must pass `dry_run: false` to mutate. The default is decided in
+    `curate.ts`; the MCP input schema deliberately carries **no** JSON-Schema
+    `default` on `dry_run`, because a client that materialises schema defaults
+    would send `false` and mutate. Every other op still treats an absent value as
+    `false`, unchanged.
+  - **Apply verifies authorship, not state.** `rowsAffected !== 1` pushes to
+    `notWritten`, and the verification query requires
+    `json_extract(meta,'$.restoredFrom.at')` to equal _this_ run's timestamp — a
+    row made live by someone else between plan and apply is not counted, since
+    counting it would make it silently un-reversible.
+  - `meta` is re-read **inside** the transaction rather than merged from a
+    plan-time snapshot, so a concurrent `meta` write is not clobbered.
+  - `report_path` is a guarded read: absolute, `.json`, realpath-checked on both
+    sides, ≤32 MB, confined to `~/.memory/**` unless `SOX_RESTORE_REPORT_ROOTS`
+    grants more. The parser never echoes file contents into an error.
+  - `reverse: true` undoes a run, re-invalidating to the exact recorded
+    `prior_t_invalid` **and** GCing orphaned community state in the same
+    transaction (the raw SQL alternative leaks zero-member communities).
+  - Integrity is gated on the shared `classifyIntegrityMessages` classifier, so the
+    known turso FTS false positive does not force an operator to pass
+    `allow_integrity_failure` as routine.
+  - Guard order is load-bearing: `not_found` → `already_live` →
+    `no_live_inferred_same_as` → `skipped_membership_divergence` →
+    `withheld_true_duplicate`.
+
+  34 acceptance tests. Dry run against a copy of the live store plans 604 of 607
+  policy-scope members (435 floor + 169 policy-ambiguous), withholds 3 carrying a
+  live `SUPERSEDES` edge, leaves 82 TRUE-DUPLICATE members collapsed, and reports
+  163 edge-less invalidated episodes as out of scope.
+
+- Updated dependencies [9ffd5a8]
+  - @adhd/sox-store-adapter@0.9.3
+
 ## 0.10.2
 
 ### Patch Changes
