@@ -1149,6 +1149,18 @@ export class WriteQueue {
    * queue instance exists for that path (nothing has written through it yet).
    * Intended integration point for memory_ping's store block.
    */
+  /**
+   * (98fe54a3) Drain and close the queue for ONE store, if one exists. Returns
+   * whether a queue was closed. Used to release a transient store (a backup a
+   * diagnostic call touched) instead of leaving it open for the process life.
+   */
+  static async closeForPath(rawDbPath: string): Promise<boolean> {
+    const q = WriteQueue.instances.get(canonicalStorePath(rawDbPath));
+    if (!q) return false;
+    await q.drainAndClose();
+    return true;
+  }
+
   static metricsForPath(rawDbPath: string): WriteQueueMetrics | null {
     // Canonical key: `instances` is keyed by canonical store identity (see
     // `forPath`). Looking up the caller's raw spelling returned null for a

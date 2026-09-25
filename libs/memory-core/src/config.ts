@@ -13,7 +13,7 @@
  * (intervalMs, retentionCount, dir) are tuning/config per D3/D5 and may be
  * env-tunable, but they never gate a code path.
  */
-import { resolve } from 'node:path';
+import { resolve, sep } from 'node:path';
 import { expandDbPath } from './db.js';
 
 // ── BackupConfig (skeleton — the full backup feature lands separately) ───────
@@ -74,6 +74,21 @@ export function resolveBackupConfig(overrides?: { dir?: string }): BackupConfig 
     // `path.resolve(expandDbPath(raw))` in autoBackup).
     dir: resolve(expandDbPath(declaredDir)),
   };
+}
+
+/**
+ * (98fe54a3) True when `dbPath` lives inside the backup directory
+ * (`resolveBackupConfig().dir`, or `backupDir` when given). A backup is a
+ * point-in-time snapshot: it must never be enlisted into a server's background
+ * maintenance (enrich/heal/drain/compaction) nor kept open after the call that
+ * touched it — prod idle-flushed and reconciled
+ * `~/.memory/backups/backfill-503cdc2b-apply-….db` for hours because one
+ * `memory_ping db_path=<backup>` enlisted it forever.
+ */
+export function isBackupStorePath(dbPath: string, backupDir?: string): boolean {
+  const dir = resolve(backupDir ?? resolveBackupConfig().dir);
+  const target = resolve(expandDbPath(dbPath));
+  return target.startsWith(dir.endsWith(sep) ? dir : dir + sep);
 }
 
 // ── EnrichHealthConfig (BUG-MEMORYSERVER-EMBED-HEAL-NOOPERATOR-001) ──────────

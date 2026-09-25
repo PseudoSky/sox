@@ -1142,6 +1142,19 @@ export async function openDbReadOnly(dbPath: string): Promise<StoreAdapter> {
  * the cache. Used by the memory-server backend shutdown handler to ensure
  * all write leases are released before process exit.
  */
+/**
+ * (98fe54a3) Close and evict ONE cached adapter (lease released). Returns
+ * whether an adapter was cached for `dbPath`. Used to release a transient store
+ * (e.g. a backup snapshot a diagnostic call touched) so it is not held open.
+ */
+export async function closeCachedAdapter(dbPath: string): Promise<boolean> {
+  const adapter = adapterCache.get(dbPath);
+  if (!adapter) return false;
+  adapterCache.delete(dbPath);
+  await closeDbWithLease(adapter, dbPath);
+  return true;
+}
+
 export async function closeAllAdapters(): Promise<void> {
   for (const [dbPath, adapter] of adapterCache) {
     await closeDbWithLease(adapter, dbPath);

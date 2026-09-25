@@ -41,7 +41,7 @@
  */
 
 // ── Database ──────────────────────────────────────────────────────────────────
-export { openDb, openDbReadOnly, initScope, migrateAddColumn, expandDbPath, getDb, stampStoreMeta, verifyStoreMeta, setWriterArtifact, getWriterArtifact, EStoreMismatch, STORE_META_KEYS, STORE_SCHEMA_VERSION, closeAllAdapters, wrapRawDbAsAdapter, getStoreEngineIdentity } from './db.js';
+export { openDb, openDbReadOnly, initScope, migrateAddColumn, expandDbPath, getDb, stampStoreMeta, verifyStoreMeta, setWriterArtifact, getWriterArtifact, EStoreMismatch, STORE_META_KEYS, STORE_SCHEMA_VERSION, closeAllAdapters, closeCachedAdapter, wrapRawDbAsAdapter, getStoreEngineIdentity } from './db.js';
 export type { ScopeKind, MemoryScope } from './db.js';
 
 // ── Ping health verdict (BL-373 family — ping honesty) ───────────────────────
@@ -49,7 +49,7 @@ export { computePingHealthVerdict } from './ping-health.js';
 export type { PingHealthInput, PingHealthStatus, PingHealthVerdict } from './ping-health.js';
 
 // ── Typed config surface (ADR-0013 D2/D3) ────────────────────────────────────
-export { resolveBackupConfig, DEFAULT_BACKUP_CONFIG, resolveEnrichHealthConfig, DEFAULT_ENRICH_HEALTH_CONFIG } from './config.js';
+export { isBackupStorePath, resolveBackupConfig, DEFAULT_BACKUP_CONFIG, resolveEnrichHealthConfig, DEFAULT_ENRICH_HEALTH_CONFIG } from './config.js';
 export type { BackupConfig, EnrichHealthConfig } from './config.js';
 
 // ── Writer lease (SA-8, BL-128) ───────────────────────────────────────────────

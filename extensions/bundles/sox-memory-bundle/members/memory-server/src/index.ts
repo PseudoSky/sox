@@ -43,6 +43,8 @@ import {
   embedBacklogStats,
   expandTilde,
   getDb,
+  closeCachedAdapter,
+  isBackupStorePath,
   getEmbedHealth,
   getEmbedPipelineMetrics,
   getClusterPipelineMetrics,
@@ -544,6 +546,57 @@ function getPolicy(): Policy {
 // ─── Active DB paths (tracked for fallback enrichment pass) ────────────────────
 
 const openedPaths = new Set<string>();
+
+/**
+ * (98fe54a3) Backup-dir stores touched during the CURRENT tool call. They are
+ * never enlisted into `openedPaths` (the set every background loop —
+ * enrich, drain, compaction — iterates), and they are closed and evicted when
+ * the call that touched them finishes. Before this, one
+ * `memory_ping db_path=<backup>` enlisted the backfill-503cdc2b backup forever:
+ * prod reopened, idle-flushed and BUG-026-reconciled it every tick, and the
+ * heal pass would have WRITTEN embeddings into a point-in-time snapshot.
+ */
+const transientBackupPaths = new Set<string>();
+
+/** (98fe54a3) Register a store for background maintenance — refusing any
+ *  store inside the backup directory. Returns whether it was enlisted. */
+export function enlistForBackgroundMaintenance(dbPath: string): boolean {
+  if (isBackupStorePath(dbPath)) {
+    if (!transientBackupPaths.has(dbPath)) {
+      log.info('store.background_enlist_refused', { db_path: dbPath, reason: 'backup_store' });
+    }
+    transientBackupPaths.add(dbPath);
+    return false;
+  }
+  openedPaths.add(dbPath);
+  return true;
+}
+
+/** (98fe54a3) Test seam: is `dbPath` enlisted for background maintenance? */
+export function _isEnlistedForBackgroundMaintenanceForTest(dbPath: string): boolean {
+  return openedPaths.has(dbPath);
+}
+
+/** (98fe54a3) Close + evict every backup store the finished call touched. */
+async function releaseTransientBackupStores(): Promise<void> {
+  for (const dbPath of [...transientBackupPaths]) {
+    transientBackupPaths.delete(dbPath);
+    try {
+      const closedAdapter = await closeCachedAdapter(dbPath);
+      const closedQueue = await WriteQueue.closeForPath(dbPath);
+      log.info('store.transient_backup_released', {
+        db_path: dbPath,
+        adapter_closed: closedAdapter,
+        queue_closed: closedQueue,
+      });
+    } catch (err) {
+      log.warn('store.transient_backup_release_failed', {
+        db_path: dbPath,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
+}
 
 export const TOOLS: Array<Omit<ToolDefinition, 'handler'>> = [
   {
@@ -1149,6 +1202,8 @@ export async function handleToolCall(name: string, args: Record<string, unknown>
     }
     throw err;
   } finally {
+    // (98fe54a3) A backup store touched by this call is closed, never kept.
+    if (transientBackupPaths.size > 0) await releaseTransientBackupStores();
     endLiveness();
   }
 }
@@ -1270,7 +1325,7 @@ async function handleToolCallImpl(name: string, args: Record<string, unknown>): 
           opName: 'memory_ping.getDb',
           dbPath: resolvedPath,
         });
-        openedPaths.add(resolvedPath);
+        enlistForBackgroundMaintenance(resolvedPath);
 
         // BUG A fix: these were unconditional raw better-sqlite3 `.prepare()`
         // calls via `adapter.unwrap()`. On Turso, `unwrap()` returns the
@@ -1648,7 +1703,7 @@ async function handleToolCallImpl(name: string, args: Record<string, unknown>): 
   // executeAll/executeRun), which is correct for both backends. See BL-324/
   // team-lead's "BUG A" report for the full live-reproduction trace
   // (memory_recall listing threw "rows is not iterable" on Turso).
-  openedPaths.add(dbPath);
+  enlistForBackgroundMaintenance(dbPath);
 
   // BUG-MEMORYSERVER-WEDGES-SILENTLY-NO-SELF-RECOVERY-001: every tool body
   // below (SQL reads/writes against `adapter`, plus any embed dispatch on
