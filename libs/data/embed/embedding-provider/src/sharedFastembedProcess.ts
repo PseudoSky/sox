@@ -1603,16 +1603,10 @@ export class AdaptiveFastembedProcessPool implements SharedFastembedClient {
       return results[0] as T;
     }
 
-    // Any real admission means the pool is not idle right now — cancel any
+    // Any admission means the pool is not idle right now — cancel any
     // in-progress idle clock so `maybeShrink()` requires a fresh full
-    // `SHRINK_IDLE_MS` window starting from here. A keep-warm tick
-    // (`embedHostMain.ts`, tagged `_keepWarm: true`) is synthetic demand —
-    // it must NOT look like real traffic to the shrink policy, or a host
-    // sitting idle except for its own keep-warm ticks would never shrink
-    // back toward `minSize`.
-    if (payload['_keepWarm'] !== true) {
-      this.idleSinceMs = null;
-    }
+    // `SHRINK_IDLE_MS` window starting from here.
+    this.idleSinceMs = null;
 
     // Evaluate the grow condition BEFORE reserving this request's own slot —
     // the ratio should reflect backlog that existed independent of this
@@ -1680,12 +1674,11 @@ let _privateSingleton: PrivateFastembedProcess | null = null;
  * The concrete shape {@link getPrivateFastembedProcess} returns: a
  * `SharedFastembedClient` that also exposes `pendingCount` and `lastInit`. The
  * extra members are a SUBTYPE of the public interface (whose shape is
- * deliberately unchanged) — only the host process depends on them: `pendingCount`
- * to know when in-flight work has drained before it can reap itself, and
- * `lastInit` (BUG-021) so `embedHostMain.ts`'s keep-warm tick can skip ticking
- * before any client has actually initialized the model — both concrete pool
- * implementations (`FastembedProcessPool`, `AdaptiveFastembedProcessPool`)
- * already expose a `lastInit` getter; this type just needs to say so.
+ * deliberately unchanged): `pendingCount` is an input to the host's reap policy
+ * (`reapDueInMs`, ADR-0022), and `lastInit` (BUG-021) reports the payload the
+ * pool re-inits respawned members with — both concrete pool implementations
+ * (`FastembedProcessPool`, `AdaptiveFastembedProcessPool`) already expose it;
+ * this type just needs to say so.
  */
 export type PrivateFastembedProcess = SharedFastembedClient & {
   readonly pendingCount: number;

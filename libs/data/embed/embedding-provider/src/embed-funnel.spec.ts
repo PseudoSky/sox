@@ -220,15 +220,6 @@ function setupEnv(opts: SetupOpts = {}): FunnelEnv {
       `    const res2 = await client2.request({ type: 'embed', text: 'hello again' }, 25000);`,
       `    if (!res2 || !Array.isArray(res2.embedding)) { process.stderr.write('CONSUMER_BAD\\n'); process.exit(3); }`,
       `  }`,
-      `  if (op === 'reset-race') {`,
-      `    // Fire the host reset WITHOUT awaiting it, then exit shortly after: the`,
-      `    // host is still mid-reset (terminating its private pool) when the last`,
-      `    // client disconnects. Its request depth must keep it from reaping.`,
-      `    void mod.resetSharedFastembedProcess();`,
-      `    await new Promise((r) => setTimeout(r, 100));`,
-      `    process.stderr.write('CONSUMER_OK\\n');`,
-      `    process.exit(0);`,
-      `  }`,
       `  process.stderr.write('CONSUMER_OK\\n');`,
       `  if (naturalExit) {`,
       `    // Fall off the end with NO process.exit and NO keep-alive interval: the`,
@@ -280,7 +271,6 @@ type ConsumerMode =
   | 'terminate'
   | 'reset-shared'
   | 'reset-private'
-  | 'reset-race'
   | 'exit-natural';
 
 /** Spawn one consumer process and resolve when it exits. */
@@ -458,9 +448,9 @@ describe('SPEC-EMBEDDING-FUNNEL — a read-only verb spawns zero hosts (backlog 
   );
 });
 
-describe('SPEC-EMBEDDING-FUNNEL — debounced, ref-counted self-reap', () => {
+describe('SPEC-EMBEDDING-FUNNEL — work-driven self-reap (ADR-0022)', () => {
   it(
-    'reuses the SAME host pid for a second burst inside the grace window, then reaps it after the grace',
+    'reuses the SAME host pid for a second burst inside the idle window, then retires it W after the last work',
     async () => {
       const graceMs = 6_000;
       const env = setupEnv({ graceMs });
@@ -644,38 +634,12 @@ describe('SPEC-EMBEDDING-FUNNEL — the host resolves the private accessor at EV
   }
 });
 
-describe('SPEC-EMBEDDING-FUNNEL — the reap gate honors in-flight work (not just the pool counter)', () => {
-  it(
-    'a client that disconnects while the host is mid-work does NOT trigger a reap — the host survives',
-    async () => {
-      // grace 300ms << the ~1s `terminate()` the in-flight reset is awaiting
-      // (the stub ignores `__shutdown`, so the graceful teardown runs its full
-      // TERMINATE_GRACE_MS). The consumer fires `embedding.reset` and exits, so
-      // the last client is gone while the host's own request is still in flight.
-      const env = setupEnv({ graceMs: 300, stubIgnoreShutdown: true });
-      const result = await runConsumers(env, 1, 'reset-race', 0);
-      expect(result[0]?.code, result[0]?.stderr).toBe(0);
-      const hosts = pidsMatching(path.join(env.dir, 'embedHostMain'));
-      expect(hosts.length, 'exactly one host').toBe(1);
-      const hostPid = hosts[0]!;
-
-      // At ~650ms after the consumer exits: past the 300ms grace (the OLD gate,
-      // which read `pendingCount === 0` because `terminate()` cleared the pool,
-      // would have reaped the host by now) but still inside the 1s reset
-      // teardown (the NEW gate sees `inFlight === 1` and does not arm).
-      await new Promise((r) => setTimeout(r, 650));
-      expect(
-        pidsMatching(path.join(env.dir, 'embedHostMain')),
-        'the host must survive while its own request is in flight',
-      ).toEqual([hostPid]);
-    },
-    60_000,
-  );
-});
+// The in-flight-work reap gate and the connection-independence of the reap are
+// covered by 68a4bf68-reap-on-work.spec.ts (ADR-0022 §1).
 
 describe('SPEC-EMBEDDING-FUNNEL — the idle bound is typed config', () => {
   it(
-    'a non-default typed idleGraceMs (2s) takes effect — the host reaps ~2s after the last client, not the 30s default',
+    'a non-default typed idleGraceMs (2s) takes effect — the host retires ~2s after its last work, not the 60s default',
     async () => {
       const env = setupEnv({ graceMs: 2_000 });
       const first = await runConsumers(env, 1, 'shared', 200);
@@ -685,11 +649,11 @@ describe('SPEC-EMBEDDING-FUNNEL — the idle bound is typed config', () => {
       const hostPid = hosts[0]!;
 
       // If the typed value did not flow through `EmbedHostConfig.idleGraceMs`
-      // to the host, the host would reap at the 30s DEFAULT and this 10s bound
+      // to the host, the host would retire at the 60s DEFAULT and this 10s bound
       // would time out — so the test is RED without the fix.
       const t0 = Date.now();
       await waitForPidGone(hostPid, 10_000);
-      expect(Date.now() - t0, 'reaped well under the 30s default').toBeLessThan(9_000);
+      expect(Date.now() - t0, 'retired well under the 60s default').toBeLessThan(9_000);
     },
     60_000,
   );
