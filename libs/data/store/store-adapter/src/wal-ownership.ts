@@ -45,6 +45,7 @@ import { renameSync, statSync } from 'node:fs';
 import { log } from '@adhd/sox-telemetry';
 import { probeWalIdentity } from './integrity.js';
 import type { IntegrityFinding, WalIdentity } from './integrity.js';
+import type { ForeignShmLockState } from './foreign-shm-lock.js';
 
 // ── Heartbeat tuning (typed, clamped — ADR-0013 D3) ─────────────────────────
 
@@ -130,12 +131,15 @@ export class EStoreWalReplaced extends Error {
 }
 
 /**
- * (BUG-026) Thrown by `TursoAdapterImpl._openReal` when a foreign
- * better-sqlite3 `-shm` sidecar sits beside a turso store WHILE live turso
- * peers hold the store — reconciling it under a live peer is the exact
- * cross-engine hazard this module exists to prevent, so the open refuses
- * instead. Once the store is quiescent the same sidecar is reconciled (renamed
- * to `.stale-*`) rather than refused.
+ * (BUG-026) Thrown by `TursoAdapterImpl._openReal` when a classic
+ * better-sqlite3 `-shm` sidecar sits beside a turso store and is NOT provably
+ * abandoned — either a LIVE classic SQLite connection holds it (the exclusive
+ * lock probe returns `SQLITE_BUSY`), or the probe could not prove it unlocked.
+ * Renaming it in either case is the exact cross-engine hazard this module
+ * exists to prevent, so the open refuses instead. A `-shm` the probe proves
+ * unlocked is reconciled (renamed to `.stale-*`) even while live TURSO peers
+ * hold the store — turso never reads the classic `-shm`, so a live turso peer
+ * is not a reason to refuse.
  */
 export class EForeignSqliteSidecar extends Error {
   public readonly code = 'E_FOREIGN_SQLITE_SIDECAR';
@@ -144,12 +148,19 @@ export class EForeignSqliteSidecar extends Error {
     public readonly dbPath: string,
     /** Live peer entries at the moment of the refusal (token + pid). */
     public readonly livePeers: { token: string; pid: number }[],
+    /** (BUG-026) Set when the refusal came from the exclusive lock probe
+     *  (`SQLITE_BUSY`) rather than from an unprovable/quiescent gate — names
+     *  the live classic holder in the message. */
+    opts: { classicHolderLocked?: boolean } = {},
   ) {
     const pids = livePeers.map((p) => p.pid).join(', ') || 'none';
+    const holder = opts.classicHolderLocked
+      ? `a LIVE classic SQLite connection holds it (exclusive-lock probe returned SQLITE_BUSY)`
+      : `${livePeers.length} live peer(s) hold the store (live peer pids: ${pids})`;
     super(
       `[BUG-026] a foreign better-sqlite3 -shm sidecar sits beside "${dbPath}" while ` +
-        `${livePeers.length} live peer(s) hold the store (live peer pids: ${pids}) — refusing to ` +
-        `open until the store is quiescent, so a reconcile cannot race a live peer's WAL coordination.`,
+        `${holder} — refusing to open until the sidecar is provably unlocked, so a reconcile ` +
+        `cannot race a live classic reader's WAL coordination.`,
     );
     this.name = 'EForeignSqliteSidecar';
   }
@@ -161,9 +172,29 @@ export interface ReconcileForeignSqliteShmResult {
   reconciled: boolean;
   /** The rename target when reconciled (preserved for forensics). */
   renamedTo?: string;
-  /** Why nothing was moved, when the reconcile was declined (live peers, or a
-   *  rename failure). Absent when there was simply no `-shm` to reconcile. */
+  /** Why nothing was moved, when the reconcile was declined (a live classic
+   *  holder, or a rename failure). Absent when there was simply no `-shm` to
+   *  reconcile. */
   declined?: string;
+  /** (BUG-026) The lock-probe verdict the decision was made on, when one was
+   *  supplied — recorded so callers can log/attribute the outcome. */
+  lockState?: ForeignShmLockState;
+}
+
+/** Options for {@link reconcileForeignSqliteShm}. */
+export interface ReconcileForeignSqliteShmOptions {
+  /** Live TURSO/adapter peers hold the store (from `storeQuiescence`). On its
+   *  own this no longer blocks a reconcile — see `foreignHolderLock`. */
+  storeInUse?: boolean;
+  /**
+   * The exclusive-lock-probe verdict for the `-shm` (see
+   * `probeForeignShmLock`). This is the gate that matters:
+   *   - `'unlocked'`  → reconcile, even with live turso peers (the BUG-026 fix);
+   *   - `'locked'`    → DECLINE (a live classic reader holds it);
+   *   - `'indeterminate'`/`'absent'`/omitted → fall back to the legacy
+   *     quiescence gate (`storeInUse`).
+   */
+  foreignHolderLock?: ForeignShmLockState;
 }
 
 /**
@@ -186,52 +217,100 @@ export interface ReconcileForeignSqliteShmResult {
  * `_openReal` distinguishes the two by retrying the refusal on a bounded
  * backoff (BUG-031) — residue persists, a live hatch's sidecar does not.
  *
- * Reconcile it so the turso open never contends with a stale classic-sidecar:
+ * Reconcile it so the turso open never contends with a stale classic-sidecar.
+ * The decision is driven SOLELY by whether the `-shm` is provably unlocked
+ * (`opts.foreignHolderLock`, from `probeForeignShmLock`) — a live TURSO peer
+ * does not touch the classic `-shm`, so it is not a reason to refuse:
  *
- * - **Quiescent** (`storeInUse !== true`): rename `<db>-shm` to
- *   `<db>-shm.stale-<stamp>` (never delete — the forensic record).
- * - **Live peers** (`storeInUse === true`): decline — under a live peer the
- *   `-shm` may still be in use by a concurrent classic opener, and renaming it
- *   is the cross-engine corruption risk this module refuses to take. The
- *   caller decides what to do with the decline (turso-adapter throws
- *   {@link EForeignSqliteSidecar}).
+ * - **`foreignHolderLock === 'unlocked'`** → rename `<db>-shm` to
+ *   `<db>-shm.stale-<stamp>` (never delete — the forensic record), EVEN while
+ *   live turso peers hold the store. (BUG-026: this is the fix — the probe
+ *   proves no live classic reader exists, so the rename cannot race one.)
+ * - **`foreignHolderLock === 'locked'`** → decline — a live classic SQLite
+ *   connection holds the `-shm`; renaming it is the cross-engine corruption
+ *   risk this module refuses to take. The caller throws
+ *   {@link EForeignSqliteSidecar}.
+ * - **`'indeterminate'` / `'absent'` / omitted** → fall back to the legacy
+ *   quiescence gate: decline when `storeInUse === true`, otherwise rename
+ *   (preserves the pre-probe behaviour where the probe cannot run).
  *
  * Deterministic fs-only; never throws. A `-shm` that is absent is not a
  * decline — it is "nothing foreign to reconcile" (`reconciled: false`, no
- * `declined`).
+ * `declined`). A non-ENOENT failure statting the `-shm` itself (e.g. EACCES)
+ * is traced via `log.debug('store_adapter.foreign_shm.reconcile_stat_failed')`
+ * and declines — its presence is unprovable, so this refuses to guess either
+ * way (mirrors `probeForeignShmLock`'s `indeterminate` handling).
  */
 export function reconcileForeignSqliteShm(
   dbPath: string,
-  opts: { storeInUse?: boolean },
+  opts: ReconcileForeignSqliteShmOptions = {},
 ): ReconcileForeignSqliteShmResult {
   const shmPath = dbPath + '-shm';
   let present = false;
   try {
     statSync(shmPath);
     present = true;
-  } catch {
-    present = false;
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException)?.code;
+    if (code === 'ENOENT') {
+      present = false;
+    } else {
+      // Any other stat failure (e.g. EACCES) is not provably "no -shm" —
+      // log it and decline via the same `indeterminate` semantics as
+      // `probeForeignShmLock`, rather than silently treating it as absent
+      // (which would let a caller believe there is nothing to reconcile when
+      // the sidecar's actual presence is unknowable).
+      const detail = err instanceof Error ? err.message : String(err);
+      log.debug('store_adapter.foreign_shm.reconcile_stat_failed', {
+        db_path: dbPath,
+        code: code ?? null,
+        detail,
+      });
+      return {
+        reconciled: false,
+        declined: `stat of the -shm sidecar failed unexpectedly (${code ?? 'unknown'}): ${detail} — its presence is unprovable, refusing to reconcile`,
+      };
+    }
   }
   if (!present) {
     return { reconciled: false }; // nothing foreign to reconcile
   }
-  if (opts.storeInUse === true) {
+
+  const lockState = opts.foreignHolderLock;
+  if (lockState === 'locked') {
+    return {
+      reconciled: false,
+      declined:
+        'a LIVE classic SQLite connection holds the -shm (exclusive-lock probe returned ' +
+        'SQLITE_BUSY) — refusing to rename WAL coordination state out from under it',
+      lockState,
+    };
+  }
+
+  // Legacy quiescence gate — only when the lock probe did NOT prove unlocked
+  // (an 'unlocked' verdict overrides it, which is the BUG-026 fix).
+  if (lockState !== 'unlocked' && opts.storeInUse === true) {
     return {
       reconciled: false,
       declined:
         'store is in use by another connection — refusing to reconcile the foreign -shm sidecar ' +
         '(live WAL coordination state may still be in use)',
+      ...(lockState !== undefined ? { lockState } : {}),
     };
   }
+
   const stamp = new Date().toISOString().replace(/[:.]/g, '').replace('T', '-').slice(0, 15);
   const to = `${shmPath}.stale-${stamp}`;
   try {
     renameSync(shmPath, to);
-    return { reconciled: true, renamedTo: to };
+    return lockState !== undefined
+      ? { reconciled: true, renamedTo: to, lockState }
+      : { reconciled: true, renamedTo: to };
   } catch (err) {
     return {
       reconciled: false,
       declined: `could not move ${shmPath} aside: ${err instanceof Error ? err.message : String(err)}`,
+      ...(lockState !== undefined ? { lockState } : {}),
     };
   }
 }

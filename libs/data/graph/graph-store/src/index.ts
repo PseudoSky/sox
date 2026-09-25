@@ -725,8 +725,10 @@ export interface GraphBackendCapabilities {
 /**
  * BUG-040 — write options. `skipDedupe` opts a write out of the global
  * case-insensitive content-hash dedupe (default false, back-compat). Entity
- * nodes identified by a business key MUST set this; the unique (kind, name)
- * index (FEAT-012) is the real uniqueness guard.
+ * nodes identified by a business key MUST set this: identity is the DB-generated
+ * `uid`, and uniqueness is consumer-declared via {@link NodeUniquenessPolicy}
+ * (FEAT-023, ADR-0010 D2). FEAT-012's global `(kind, name)` index was
+ * reverted — it is not a uniqueness guard.
  */
 export interface WriteNodeOpts {
   skipDedupe?: boolean;
