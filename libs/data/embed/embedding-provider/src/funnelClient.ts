@@ -77,6 +77,14 @@ function msg(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
 
+/**
+ * 2fadb3cd: the host went away under a request (it retired, crashed, or the
+ * dial gave up). Embeds are idempotent, so `request()` re-ensures a host and
+ * retries such a request ONCE. Timeouts and aborts are NOT this class — the
+ * caller's own bound has already been spent.
+ */
+class HostGoneError extends TransientEmbeddingError {}
+
 export class FunneledFastembedClient implements SharedFastembedClient {
   private conn: BackendConnection | null = null;
   private socketPath: string | null = null;
@@ -87,6 +95,10 @@ export class FunneledFastembedClient implements SharedFastembedClient {
   private nextId = 1;
   private consecutiveEnsureFailures = 0;
   private circuitOpenUntil = 0;
+  /** Successful dial connects on the current connection (1 = first connect). */
+  private connects = 0;
+  /** Requests handed to the dial connection and not yet answered. */
+  private _sent = 0;
 
   constructor() {
     _activeClient = this;
@@ -125,6 +137,41 @@ export class FunneledFastembedClient implements SharedFastembedClient {
       }
     }
 
+    // dc73d9b6: every request carries the model identity, so ANY host that
+    // answers this path — including a successor the dial layer replays to —
+    // can load the model itself and serve it. Per-connection init is unsound.
+    const ctx = this.initContext;
+    const params = ctx ? { ...payload, model: ctx.model, cacheDir: ctx.cacheDir } : payload;
+    const method = `embedding.${type}`;
+    const deadline = timeoutMs !== undefined && timeoutMs > 0 ? Date.now() + timeoutMs : undefined;
+
+    this._pending++;
+    try {
+      try {
+        return await this.sendOnce<T>(method, params, timeoutMs, signal);
+      } catch (e) {
+        if (!(e instanceof HostGoneError)) throw e;
+        // 2fadb3cd: the host went away under this request. Re-ensure (spawning
+        // a successor if none answers) and retry ONCE inside the caller's own
+        // bound — an embed is idempotent.
+        const remaining = deadline === undefined ? undefined : deadline - Date.now();
+        if (remaining !== undefined && remaining <= 0) throw e;
+        log.info('embedding_provider.funnel.retry', { method, reason: e.message, remaining_ms: remaining ?? null });
+        this._started = false;
+        return await this.sendOnce<T>(method, params, remaining, signal);
+      }
+    } finally {
+      this._pending--;
+    }
+  }
+
+  /** Ensure a host, send one request, await its response (bounded). */
+  private async sendOnce<T>(
+    method: string,
+    params: Record<string, unknown>,
+    timeoutMs: number | undefined,
+    signal: AbortSignal | undefined,
+  ): Promise<T> {
     await this.ensureHost();
     const conn = this.conn;
     if (!conn) {
@@ -134,23 +181,17 @@ export class FunneledFastembedClient implements SharedFastembedClient {
         `embedding funnel: no connection to host at ${this.socketPath ?? '(unresolved)'}`,
       );
     }
-
-    // dc73d9b6: every request carries the model identity, so ANY host that
-    // answers this path — including a successor the dial layer replays to —
-    // can load the model itself and serve it. Per-connection init is unsound.
-    const ctx = this.initContext;
-    const params = ctx ? { ...payload, model: ctx.model, cacheDir: ctx.cacheDir } : payload;
     const id = `embed-funnel-${this.nextId++}`;
-    const request = { jsonrpc: '2.0' as const, id, method: `embedding.${type}`, params };
-    this._pending++;
+    this._sent++;
+    let resp: Record<string, unknown>;
     try {
-      const resp = await this.awaitResponse(conn.send(request), id, timeoutMs, signal);
-      const error = (resp as { error?: RpcError }).error;
-      if (error) throw this.mapError(error);
-      return (resp as { result?: unknown }).result as T;
+      resp = await this.awaitResponse(conn.send({ jsonrpc: '2.0', id, method, params }), id, timeoutMs, signal);
     } finally {
-      this._pending--;
+      this._sent--;
     }
+    const error = (resp as { error?: RpcError }).error;
+    if (error) throw this.mapError(error);
+    return (resp as { result?: unknown }).result as T;
   }
 
   /**
@@ -168,7 +209,7 @@ export class FunneledFastembedClient implements SharedFastembedClient {
   private mapError(error: RpcError): Error {
     const where = this.socketPath ?? '(unresolved socket)';
     if (error.code === -32001) {
-      return new TransientEmbeddingError(`embedding host unavailable at ${where}: ${error.message}`, 1_000);
+      return new HostGoneError(`embedding host unavailable at ${where}: ${error.message}`, 1_000);
     }
     if (error.code === -32601) {
       return new PermanentEmbeddingError(`embedding host does not implement the method: ${error.message}`);
@@ -235,12 +276,7 @@ export class FunneledFastembedClient implements SharedFastembedClient {
         (err: unknown) => {
           if (settled) return;
           settle();
-          reject(
-            new TransientEmbeddingError(
-              `embedding funnel transport error: ${msg(err)}`,
-              1_000,
-            ),
-          );
+          reject(new HostGoneError(`embedding funnel transport error: ${msg(err)}`, 1_000));
         },
       );
     });
@@ -288,6 +324,13 @@ export class FunneledFastembedClient implements SharedFastembedClient {
       this.conn = null;
       this._started = false;
       this.socketPath = socketPath;
+    } else if (this.conn && !this.conn.isConnected() && this._sent === 0) {
+      // 2fadb3cd: a dial that has been down with nothing outstanding carries a
+      // stale down-since clock and a maxed backoff — its next connect failure
+      // would fast-fail a fresh request at once. Start over with a fresh dial.
+      // (With work pending, keep it: its queue replays to the successor.)
+      this.conn.close();
+      this.conn = null;
     }
 
     const live = await probeSocketLive(socketPath, PROBE_TIMEOUT_MS);
@@ -336,13 +379,32 @@ export class FunneledFastembedClient implements SharedFastembedClient {
 
     this.consecutiveEnsureFailures = 0;
     if (!this.conn) {
+      this.connects = 0;
       this.conn = dialBackend({
         socketPath,
+        onConnect: () => {
+          this.connects++;
+          if (this.connects > 1) {
+            log.info('embedding_provider.funnel.reconnected', { attempt: this.connects - 1, socket: socketPath });
+          }
+        },
         onDisconnect: () => {
-          // The host may have self-reaped (idle) or crashed. The next request's
-          // `send()` re-dials and, on failure, re-ensures. Mark unstarted so
-          // `ensureHost()` runs the full probe/spawn path again.
+          // The host retired or died. Mark unstarted so the next ensure runs the
+          // full probe/spawn path.
           this._started = false;
+          // 2fadb3cd: with requests in flight, bring a successor up NOW. The
+          // dial layer re-dials this path and replays the unanswered requests;
+          // it never spawns, so without this they would sit until the 10 s
+          // give-up and fail.
+          if (this._sent > 0) {
+            void this.ensureHost().catch((e: unknown) => {
+              log.warn('embedding_provider.funnel.reensure_failed', {
+                error: msg(e),
+                pending: this._sent,
+                socket: socketPath,
+              });
+            });
+          }
         },
       });
     }

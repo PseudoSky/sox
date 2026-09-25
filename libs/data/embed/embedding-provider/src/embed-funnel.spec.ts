@@ -524,7 +524,7 @@ describe('SPEC-EMBEDDING-FUNNEL — rendezvous race', () => {
 
 describe('SPEC-EMBEDDING-FUNNEL — crash + stale-socket recovery', () => {
   it(
-    'kill -9 the host mid-request ⇒ the consumer gets a typed error (bounded); the NEXT consumer re-ensures and succeeds',
+    'kill -9 the host mid-request ⇒ the consumer\'s in-flight request is served by a respawned host (2fadb3cd)',
     async () => {
       const env = setupEnv({ graceMs: 10_000, stubDelayMs: 3_000 });
 
@@ -538,20 +538,16 @@ describe('SPEC-EMBEDDING-FUNNEL — crash + stale-socket recovery', () => {
       killPid(hostPid, 'SIGKILL');
       await waitForPidGone(hostPid, 5_000);
 
-      // The holder either fails typed or (if its request already drained) is
-      // fine — but it must never hang: bound it.
+      // The consumer re-ensures a successor and its request is replayed there:
+      // it SUCCEEDS, bounded (never hangs, never surfaces the crash).
       const holderExit = new Promise<number | null>((resolve) => holder.on('exit', (c) => resolve(c)));
       const code = await Promise.race([
         holderExit,
-        new Promise<number | null>((resolve) => setTimeout(() => resolve(-999), 20_000).unref?.()),
+        new Promise<number | null>((resolve) => setTimeout(() => resolve(-999), 30_000).unref?.()),
       ]);
-      expect(code, 'consumer must terminate, never hang').not.toBe(-999);
-      // If it failed, it failed with a typed funnel error (TransientEmbeddingError message).
       void ok.catch(() => undefined);
+      expect(code, 'consumer must succeed, never hang').toBe(0);
 
-      // The next consumer re-ensures and succeeds.
-      const next = await runConsumers(env, 1, 'shared', 200);
-      expect(next[0]?.code, next[0]?.stderr).toBe(0);
       const hosts = pidsMatching(path.join(env.dir, 'embedHostMain'));
       expect(hosts.length).toBe(1);
       expect(hosts[0]).not.toBe(hostPid);
