@@ -330,6 +330,17 @@ function resolveEmbedTimeoutMs(): number {
  * `embed.timeout` line if SOX_EMBED_TIMEOUT_MS elapses first) with durations.
  * Never logs the text itself — only its length.
  */
+/** (819a416b) Wall-clock ms of the last successful embed in this process (any
+ *  stage path), 0 before the first. Read by recall's cold-start-aware budget. */
+let _lastEmbedSuccessAtMs = 0;
+export function getLastEmbedSuccessAtMs(): number {
+  return _lastEmbedSuccessAtMs;
+}
+/** Test seam: forget the last-success stamp (a fresh-process state). */
+export function _resetLastEmbedSuccessForTest(): void {
+  _lastEmbedSuccessAtMs = 0;
+}
+
 export async function embed(text: string, stagePath: EmbedStagePath = 'write'): Promise<Float32Array> {
   // BL-401: `admit` is acquiring the shared fastembed child process, `work` is
   // the inference. Previously both were fused into one `embed.finish
@@ -396,6 +407,7 @@ async function _embedWork(text: string): Promise<Float32Array> {
     // pipeline actually does, not only after a process restart.
     _lastEmbedError = null;
     _consecutiveEmbedFailures = 0;
+    _lastEmbedSuccessAtMs = Date.now();
     return vec;
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
