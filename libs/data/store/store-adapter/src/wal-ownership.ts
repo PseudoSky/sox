@@ -236,7 +236,10 @@ export interface ReconcileForeignSqliteShmOptions {
  *
  * Deterministic fs-only; never throws. A `-shm` that is absent is not a
  * decline — it is "nothing foreign to reconcile" (`reconciled: false`, no
- * `declined`).
+ * `declined`). A non-ENOENT failure statting the `-shm` itself (e.g. EACCES)
+ * is traced via `log.debug('store_adapter.foreign_shm.reconcile_stat_failed')`
+ * and declines — its presence is unprovable, so this refuses to guess either
+ * way (mirrors `probeForeignShmLock`'s `indeterminate` handling).
  */
 export function reconcileForeignSqliteShm(
   dbPath: string,
@@ -247,8 +250,27 @@ export function reconcileForeignSqliteShm(
   try {
     statSync(shmPath);
     present = true;
-  } catch {
-    present = false;
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException)?.code;
+    if (code === 'ENOENT') {
+      present = false;
+    } else {
+      // Any other stat failure (e.g. EACCES) is not provably "no -shm" —
+      // log it and decline via the same `indeterminate` semantics as
+      // `probeForeignShmLock`, rather than silently treating it as absent
+      // (which would let a caller believe there is nothing to reconcile when
+      // the sidecar's actual presence is unknowable).
+      const detail = err instanceof Error ? err.message : String(err);
+      log.debug('store_adapter.foreign_shm.reconcile_stat_failed', {
+        db_path: dbPath,
+        code: code ?? null,
+        detail,
+      });
+      return {
+        reconciled: false,
+        declined: `stat of the -shm sidecar failed unexpectedly (${code ?? 'unknown'}): ${detail} — its presence is unprovable, refusing to reconcile`,
+      };
+    }
   }
   if (!present) {
     return { reconciled: false }; // nothing foreign to reconcile

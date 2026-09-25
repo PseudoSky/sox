@@ -24,9 +24,10 @@
  * `tursoDescribe` gate, same temp-store helpers, same "unlink the WAL then
  * assert the rows survive" shape.
  */
-import { describe, it, expect, beforeAll, afterEach } from 'vitest';
+import { describe, it, expect, beforeAll, afterEach, vi } from 'vitest';
 import {
   mkdtempSync,
+  chmodSync,
   existsSync,
   unlinkSync,
   writeFileSync,
@@ -34,10 +35,15 @@ import {
 } from 'node:fs';
 import { join, dirname, basename } from 'node:path';
 import { tmpdir } from 'node:os';
+import { log } from '@adhd/sox-telemetry';
 import { TursoAdapterImpl } from '../turso-adapter.js';
 import { SqliteAdapterImpl } from '../sqlite-adapter.js';
 import { EStoreWalReplaced } from '../wal-ownership.js';
-import { walOwnershipHeartbeatMs, verifyWalIdentityNow } from '../wal-ownership.js';
+import {
+  walOwnershipHeartbeatMs,
+  verifyWalIdentityNow,
+  reconcileForeignSqliteShm,
+} from '../wal-ownership.js';
 import { getEngineIdentitySync } from '../engine-guard.js';
 import { setIntegrityReportSink } from '../integrity.js';
 import type { IntegrityReportEvent } from '../integrity.js';
@@ -374,5 +380,55 @@ describe('BUG-026 — sqlite lifetime WAL ownership', () => {
     expect(verifyWalIdentityNow({ path: 'x-wal', present: false, dev: null, ino: null }).status).toBe(
       'no-baseline',
     );
+  });
+});
+
+describe('reconcileForeignSqliteShm — presence-stat failure handling', () => {
+  it('ENOENT (no -shm) is silent: reconciled:false, nothing logged', () => {
+    const dbPath = tempPath('reconcile-enoent');
+    // No -shm ever written at dbPath — statSync must fail with ENOENT.
+    const debugSpy = vi.spyOn(log, 'debug');
+    try {
+      const result = reconcileForeignSqliteShm(dbPath);
+      expect(result).toEqual({ reconciled: false });
+      expect(
+        debugSpy.mock.calls.some(([event]) =>
+          String(event).startsWith('store_adapter.foreign_shm.reconcile_stat_failed'),
+        ),
+      ).toBe(false);
+    } finally {
+      debugSpy.mockRestore();
+    }
+  });
+
+  it('a non-ENOENT stat failure (EACCES-like) is logged and declines rather than guessing', () => {
+    const blockedDir = mkdtempSync(join(tmpDir, 'reconcile-eacces-'));
+    const dbPath = join(blockedDir, 'store.db');
+    // Remove all permissions on the CONTAINING directory so
+    // statSync(<dbPath>-shm) fails with EACCES rather than ENOENT (the
+    // sidecar's own existence is unknowable without traversing the now-
+    // unreadable directory).
+    chmodSync(blockedDir, 0o000);
+    const debugSpy = vi.spyOn(log, 'debug');
+    try {
+      const result = reconcileForeignSqliteShm(dbPath);
+      // Must degrade to the safe direction — never silently report "nothing
+      // to reconcile" (reconciled:false with no `declined`), which would let
+      // a caller believe the -shm is absent when its presence was never
+      // actually proven.
+      expect(result.reconciled).toBe(false);
+      expect(result.declined).toMatch(/stat of the -shm sidecar failed unexpectedly/);
+      const logged = debugSpy.mock.calls.find(
+        ([event]) => event === 'store_adapter.foreign_shm.reconcile_stat_failed',
+      );
+      expect(
+        logged,
+        'the non-ENOENT stat failure must be traced, never swallowed silently',
+      ).toBeTruthy();
+      expect(logged?.[1]).toMatchObject({ db_path: dbPath });
+    } finally {
+      debugSpy.mockRestore();
+      chmodSync(blockedDir, 0o700); // restore so the tmpdir cleanup can remove it
+    }
   });
 });
