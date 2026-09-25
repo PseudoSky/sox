@@ -56,6 +56,7 @@ import {
   describeWalReplaced,
   logWalReplacedObserved,
   reconcileForeignSqliteShm,
+  foreignShmOpenAction,
   resolveWalOwnershipHeartbeatMs,
   verifyWalIdentityNow,
   WAL_OWNERSHIP_HEARTBEAT_DEFAULT_MS,
@@ -1653,7 +1654,21 @@ export class TursoAdapterImpl implements TursoAdapter {
             );
             break;
           }
-          if (shm.declined === undefined) break; // nothing foreign to reconcile
+          const shmAction = foreignShmOpenAction(shm);
+          if (shmAction === 'proceed') {
+            // (25af34c2) Nothing foreign to reconcile, OR the -shm's presence
+            // could not be proven (a non-ENOENT stat failure, already traced
+            // by reconcileForeignSqliteShm). A stat failure is not evidence of
+            // a live classic holder, so it must never escalate into
+            // EForeignSqliteSidecar via this retry loop — the open proceeds.
+            if (shm.declineKind === 'stat_unprovable') {
+              log.warn('store_adapter.foreign_shm.open_proceeds_stat_unprovable', {
+                db_path: canonicalDb,
+                detail: shm.declined ?? null,
+              });
+            }
+            break;
+          }
 
           if (attempt >= OPEN_RETRY_MAX_ATTEMPTS - 1) {
             // Exhausted — the sidecar did not clear (a live classic holder, or

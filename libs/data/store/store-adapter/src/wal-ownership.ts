@@ -176,9 +176,43 @@ export interface ReconcileForeignSqliteShmResult {
    *  holder, or a rename failure). Absent when there was simply no `-shm` to
    *  reconcile. */
   declined?: string;
+  /**
+   * (25af34c2) WHICH kind of decline this was — the caller acts on the kind,
+   * never on the free-text `declined` string:
+   *   - `'stat_unprovable'` — a non-ENOENT failure statting the `-shm` itself
+   *     (e.g. EACCES). Presence is unknown, NOT proven foreign: the open
+   *     PROCEEDS (the pre-41c8ba34 behaviour); only the traced log records it.
+   *   - `'locked'` — the exclusive-lock probe PROVED a live classic holder.
+   *   - `'in_use'` — the legacy quiescence gate (probe could not prove unlocked
+   *     and live peers hold the store).
+   *   - `'rename_failed'` — the sidecar was present and reconcilable but could
+   *     not be moved aside.
+   * The last three are "proven/present" declines and keep the caller's
+   * bounded retry → `EForeignSqliteSidecar` behaviour unchanged.
+   */
+  declineKind?: ForeignShmDeclineKind;
   /** (BUG-026) The lock-probe verdict the decision was made on, when one was
    *  supplied — recorded so callers can log/attribute the outcome. */
   lockState?: ForeignShmLockState;
+}
+
+/** (25af34c2) Discriminant for {@link ReconcileForeignSqliteShmResult.declined}. */
+export type ForeignShmDeclineKind = 'stat_unprovable' | 'locked' | 'in_use' | 'rename_failed';
+
+/**
+ * (25af34c2) The open-path action for a reconcile result — the ONE place the
+ * caller's retry loop reads a decline. A `stat_unprovable` decline proceeds
+ * with the open (a stat failure is not evidence of a foreign holder, and
+ * escalating it into `EForeignSqliteSidecar` made an otherwise-healthy store
+ * unopenable); every other decline is retried and, once exhausted, refused.
+ */
+export function foreignShmOpenAction(
+  result: ReconcileForeignSqliteShmResult,
+): 'proceed' | 'reconciled' | 'retry' {
+  if (result.reconciled) return 'reconciled';
+  if (result.declined === undefined) return 'proceed';
+  if (result.declineKind === 'stat_unprovable') return 'proceed';
+  return 'retry';
 }
 
 /** Options for {@link reconcileForeignSqliteShm}. */
@@ -238,8 +272,9 @@ export interface ReconcileForeignSqliteShmOptions {
  * decline — it is "nothing foreign to reconcile" (`reconciled: false`, no
  * `declined`). A non-ENOENT failure statting the `-shm` itself (e.g. EACCES)
  * is traced via `log.debug('store_adapter.foreign_shm.reconcile_stat_failed')`
- * and declines — its presence is unprovable, so this refuses to guess either
- * way (mirrors `probeForeignShmLock`'s `indeterminate` handling).
+ * and declines with `declineKind: 'stat_unprovable'` — this function refuses to
+ * rename a sidecar it cannot see, but (25af34c2) the open path treats that kind
+ * as PROCEED, not as a refusal (see {@link foreignShmOpenAction}).
  */
 export function reconcileForeignSqliteShm(
   dbPath: string,
@@ -269,6 +304,7 @@ export function reconcileForeignSqliteShm(
       return {
         reconciled: false,
         declined: `stat of the -shm sidecar failed unexpectedly (${code ?? 'unknown'}): ${detail} — its presence is unprovable, refusing to reconcile`,
+        declineKind: 'stat_unprovable',
       };
     }
   }
@@ -283,6 +319,7 @@ export function reconcileForeignSqliteShm(
       declined:
         'a LIVE classic SQLite connection holds the -shm (exclusive-lock probe returned ' +
         'SQLITE_BUSY) — refusing to rename WAL coordination state out from under it',
+      declineKind: 'locked',
       lockState,
     };
   }
@@ -295,6 +332,7 @@ export function reconcileForeignSqliteShm(
       declined:
         'store is in use by another connection — refusing to reconcile the foreign -shm sidecar ' +
         '(live WAL coordination state may still be in use)',
+      declineKind: 'in_use',
       ...(lockState !== undefined ? { lockState } : {}),
     };
   }
@@ -310,6 +348,7 @@ export function reconcileForeignSqliteShm(
     return {
       reconciled: false,
       declined: `could not move ${shmPath} aside: ${err instanceof Error ? err.message : String(err)}`,
+      declineKind: 'rename_failed',
       ...(lockState !== undefined ? { lockState } : {}),
     };
   }
