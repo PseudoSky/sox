@@ -396,6 +396,16 @@ tools — never scripts, never simulated results.
 
 ---
 
+## ⛔ AGENT CONSTRAINT — OUTAGE TRIAGE: TELEMETRY FIRST, THEN LOGS
+
+When a service is reported down or misbehaving, check in this order:
+
+1. **Telemetry first** — live health/metrics for the service (e.g. `memory_ping`, or the
+   `*.jsonl` event/metrics streams under `~/.adhd/sox-ecosystem/<service>/logs/`).
+2. **Logs second** — stderr/stdout under `~/.adhd/sox-ecosystem/run/logs/`.
+
+---
+
 ## Definition of Done
 
 The bar for "the initial system is finished" is **[DOD.md](./DOD.md)**. Status: `[x]` done · `[~]` partial · `[ ]` not done.
