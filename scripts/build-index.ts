@@ -205,20 +205,21 @@ const CHECKSUM_IRRELEVANT_PREFIXES = [
 const CHECKSUM_IRRELEVANT_EXACT_FILES = new Set(['registry/index.json']);
 
 /**
- * Root-level documents that are never part of any extension payload.
- *
- * backlog b102d29b: this used to be a named allow-list of exactly 7 files
- * (BACKLOG.md, CHANGELOG.md, README.md, AGENTS.md, CLAUDE.md, CONTRIBUTING.md,
- * DOD.md) even though the module doc comment above already promised "root-level
- * `*.md` files are ignored" for ALL of them. Any other untracked root `.md`
- * (an agent's scratch spec, a new ADR draft, etc.) fell through to "relevant"
- * and refused the dirty-tree gate for every release, since nothing outside
- * this list matched. The rule is now general: ANY path with no `/` (i.e. it
- * lives at repo root, not inside `extensions/`, `libs/`, `docs/`, etc.) whose
- * name ends in `.md` is checksum-irrelevant — root markdown is documentation,
- * never a packaged artifact. This intentionally does NOT touch nested `.md`
- * files (e.g. `extensions/skills/x/SKILL.md`, `libs/a/README.md`) — those can
- * be part of an extension's checksummed payload and must stay relevant.
+ * backlog b102d29b: `getGitState`'s own console.error (below, "root-level
+ * *.md") already documented this gate as ignoring root-level markdown
+ * wholesale, but the code backing that claim was a named allow-list of
+ * exactly 7 files (BACKLOG.md, CHANGELOG.md, README.md, AGENTS.md, CLAUDE.md,
+ * CONTRIBUTING.md, DOD.md). Any other untracked root `.md` (an agent's
+ * scratch spec, a new ADR draft, etc.) fell through to "relevant" and refused
+ * the dirty-tree gate for every release, since nothing outside that list
+ * matched. The rule below now matches what was already documented: a path
+ * counts as root-level markdown, and is therefore checksum-irrelevant, iff it
+ * contains no `/` (i.e. it lives at repo root, not inside `extensions/`,
+ * `libs/`, `docs/`, etc.) and its name ends in `.md` (case-insensitively —
+ * `.MD` is still documentation, not an extension asset). This intentionally
+ * does NOT touch nested `.md` files (e.g. `extensions/skills/x/SKILL.md`,
+ * `libs/a/README.md`) — those can be part of an extension's checksummed
+ * payload and must stay relevant.
  */
 function isRootMarkdown(p: string): boolean {
   return !p.includes('/') && p.toLowerCase().endsWith('.md');
