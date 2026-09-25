@@ -37,12 +37,20 @@ export interface InvalidateEpisodeMetaOpts {
   onlyIfLive?: boolean;
 }
 
-/** The four top-level meta keys this helper owns. */
+/**
+ * The top-level meta keys that together describe ONE invalidation event. The
+ * first four are written by this helper; `invalidatedReasonBackfilledAt` is
+ * written only by the 503cdc2b backfill (backfill-invalidation-reason.ts) and
+ * is part of that event — it must be archived with it, never left at top
+ * level beside a newer event's reason (where it would read as "this reason
+ * was backfilled").
+ */
 const INVALIDATION_META_KEYS = [
   'invalidatedReason',
   'invalidatedAt',
   'invalidatedVia',
   'invalidatedReplacement',
+  'invalidatedReasonBackfilledAt',
 ] as const;
 
 /**
@@ -55,8 +63,8 @@ const INVALIDATION_META_KEYS = [
  * A row CAN be invalidated more than once in its lifetime (revived, then
  * invalidated again — e.g. a restore_neardup reversal re-invalidating a row
  * that a prior memory_invalidate had already touched before it was restored).
- * If the row already carries a PRIOR invalidation event (any of the four
- * `invalidated*` keys from an earlier call to this same helper), that event
+ * If the row already carries a PRIOR invalidation event (any of the
+ * `invalidated*` keys from an earlier call to this helper or the 503cdc2b backfill), that event
  * is archived as one entry onto `meta.invalidationHistory` before the new
  * one is written — never overwritten in place. Overwriting in place would
  * silently splice a new reason next to a stale `invalidatedReplacement` from

@@ -29,6 +29,7 @@ import { _setEmbedProviderForTest, _resetEmbedSingleton } from './embed.js';
 import { DeterministicTestProvider } from './embed-test-provider.js';
 import { _resetTelemetryForTest } from './telemetry.js';
 import type { BackupStoreResult, BackupStoreError } from './backup.js';
+import { invalidateEpisodeInTx } from './invalidation-meta.js';
 
 const OP = 'backfill_invalidation_reason';
 const VIA = 'backfill_503cdc2b';
@@ -347,5 +348,39 @@ describe('503cdc2b backfill_invalidation_reason — reverse', () => {
     const res = (await memoryCurate(db, { op: OP, reverse: true, dry_run: false }, undefined, { dbPath, backup: failingBackup })) as Record<string, unknown>;
     expect(res['code']).toBe('E_BACKUP_FAILED');
     expect(await snapshotAll()).toEqual(afterApply);
+  });
+});
+
+describe('503cdc2b backfill_invalidation_reason — interaction with a LATER real invalidation', () => {
+  it('invalidateEpisodeInTx archives the whole backfill event (incl. invalidatedReasonBackfilledAt) into invalidationHistory', async () => {
+    await seed();
+    await memoryCurate(db, { op: OP, dry_run: false }, undefined, { dbPath, backup: stubBackup });
+    const backfilled = parse((await rowOf('legacy-meta')).meta)!;
+
+    // A later intent-carrying invalidation (e.g. merge_duplicates, which
+    // invalidates unconditionally) re-invalidates the already-backfilled row.
+    await db.transaction(async (tx) => {
+      await invalidateEpisodeInTx(tx, { uid: 'legacy-meta', tInvalid: T_C, reason: 'later merge', via: 'merge_duplicates' });
+    });
+
+    const m = parse((await rowOf('legacy-meta')).meta)!;
+    expect(m['invalidatedReason']).toBe('later merge');
+    expect(m['invalidatedVia']).toBe('merge_duplicates');
+    // The backfill marker must NOT be left at top level beside the new event —
+    // that would read as "this merge reason was backfilled".
+    expect(m['invalidatedReasonBackfilledAt']).toBeUndefined();
+    const history = m['invalidationHistory'] as Array<Record<string, unknown>>;
+    expect(history).toHaveLength(1);
+    expect(history[0]).toEqual({
+      invalidatedReason: REASON,
+      invalidatedVia: VIA,
+      invalidatedAt: T_B,
+      invalidatedReasonBackfilledAt: backfilled['invalidatedReasonBackfilledAt'],
+    });
+
+    // Reverse leaves a row alone once another writer owns its current event.
+    const rev = (await memoryCurate(db, { op: OP, reverse: true, dry_run: false }, undefined, { dbPath, backup: stubBackup })) as Record<string, unknown>;
+    expect(rev['rows_reverted']).toBe(2);
+    expect(parse((await rowOf('legacy-meta')).meta)).toEqual(m);
   });
 });
