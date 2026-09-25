@@ -88,7 +88,18 @@ echo "[smoke] building everything…"
 # ── 3. portable registry (npm-package: sources) BEFORE publishing, so the CLI
 #       embeds it and is published once (no 409 republish). ───────────────────
 echo "[smoke] regenerating registry with publication signal…"
-( cd "$REPO" && SOX_REGISTRY_PUBLISH=npm npx tsx scripts/build-index.ts >/dev/null 2>&1 )
+BUILD_INDEX_LOG="$WORK/build-index.log"
+# backlog b102d29b: this used to discard build-index's output entirely
+# (`>/dev/null 2>&1`), so a refusal (e.g. the dirty-tree gate firing on an
+# unrelated untracked file) killed the whole smoke run via `set -e` with zero
+# diagnostic — just a silent exit. Capture stdout+stderr to a log instead and
+# surface it (plus the real exit code) on failure before re-raising.
+if ! ( cd "$REPO" && SOX_REGISTRY_PUBLISH=npm npx tsx scripts/build-index.ts ) >"$BUILD_INDEX_LOG" 2>&1; then
+  BUILD_INDEX_EXIT=$?
+  echo "[smoke] build-index FAILED (exit $BUILD_INDEX_EXIT):" >&2
+  cat "$BUILD_INDEX_LOG" >&2
+  exit "$BUILD_INDEX_EXIT"
+fi
 FILE_COUNT=$(grep -c 'file://' "$REPO/registry/index.json" || true)
 echo "[smoke] registry file:// count = $FILE_COUNT (expect 0)"
 echo "[smoke] rebuilding CLI so it embeds the portable registry…"

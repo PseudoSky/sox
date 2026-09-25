@@ -204,22 +204,31 @@ const CHECKSUM_IRRELEVANT_PREFIXES = [
  */
 const CHECKSUM_IRRELEVANT_EXACT_FILES = new Set(['registry/index.json']);
 
-/** Root-level documents that are never part of any extension payload. */
-const CHECKSUM_IRRELEVANT_ROOT_FILES = new Set([
-  'BACKLOG.md',
-  'CHANGELOG.md',
-  'README.md',
-  'AGENTS.md',
-  'CLAUDE.md',
-  'CONTRIBUTING.md',
-  'DOD.md',
-]);
+/**
+ * Root-level documents that are never part of any extension payload.
+ *
+ * backlog b102d29b: this used to be a named allow-list of exactly 7 files
+ * (BACKLOG.md, CHANGELOG.md, README.md, AGENTS.md, CLAUDE.md, CONTRIBUTING.md,
+ * DOD.md) even though the module doc comment above already promised "root-level
+ * `*.md` files are ignored" for ALL of them. Any other untracked root `.md`
+ * (an agent's scratch spec, a new ADR draft, etc.) fell through to "relevant"
+ * and refused the dirty-tree gate for every release, since nothing outside
+ * this list matched. The rule is now general: ANY path with no `/` (i.e. it
+ * lives at repo root, not inside `extensions/`, `libs/`, `docs/`, etc.) whose
+ * name ends in `.md` is checksum-irrelevant — root markdown is documentation,
+ * never a packaged artifact. This intentionally does NOT touch nested `.md`
+ * files (e.g. `extensions/skills/x/SKILL.md`, `libs/a/README.md`) — those can
+ * be part of an extension's checksummed payload and must stay relevant.
+ */
+function isRootMarkdown(p: string): boolean {
+  return !p.includes('/') && p.toLowerCase().endsWith('.md');
+}
 
 function isChecksumRelevant(file: string): boolean {
   // Rename lines arrive as "old -> new"; judge the destination.
   const p = (file.includes(' -> ') ? file.slice(file.indexOf(' -> ') + 4) : file).trim();
   if (CHECKSUM_IRRELEVANT_EXACT_FILES.has(p)) return false;
-  if (CHECKSUM_IRRELEVANT_ROOT_FILES.has(p)) return false;
+  if (isRootMarkdown(p)) return false;
   return !CHECKSUM_IRRELEVANT_PREFIXES.some((prefix) => p.startsWith(prefix));
 }
 
