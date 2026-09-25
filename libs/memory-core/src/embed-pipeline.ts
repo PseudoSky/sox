@@ -72,6 +72,7 @@ import { applyNearDupResult, NEARDUP_THRESHOLD } from './enrich.js';
 import { recordRowFailure, poisonThreshold, unpoisonRow, poisonReentryBoundary } from './enrich-poison.js';
 import type { StoreAdapter, AdapterTransaction, VectorDialect } from '@adhd/sox-store-adapter';
 import { LatencyRing, summarizeLatencies } from './latency-stats.js';
+import { stampSuccessfulEmbed } from './enrich-health.js';
 import type { WriteQueue } from './write-queue.js';
 import { log as tlog, newTraceId, traceIdOrNew, withTrace } from './telemetry.js';
 
@@ -367,6 +368,41 @@ function trackEmbedCompletion(state: EmbedPipelineState): void {
   }
 }
 
+/**
+ * (324da3a8) Minimum spacing between persisted `last_successful_embed_at`
+ * stamps from the write-path pipeline, per queue. A stamp is one small
+ * sox_store_meta upsert; 30 s bounds it to ≤2 extra writes/minute however hot
+ * the write path runs, while keeping memory_ping's freshness within 30 s.
+ */
+export const EMBED_SUCCESS_STAMP_INTERVAL_MS = 30_000;
+const lastEmbedStampAt = new WeakMap<WriteQueue, number>();
+
+/** Test seam: forget the per-queue throttle state. */
+export function _resetEmbedStampThrottleForTest(wq: WriteQueue): void {
+  lastEmbedStampAt.delete(wq);
+}
+
+/**
+ * (324da3a8) Persist a successful pipeline embed into the health ledger,
+ * throttled per queue. Runs as its own short queue task AFTER the apply task
+ * settled (never from inside a task — BL-154). Bookkeeping only: a failure is
+ * traced and never fails the embed it describes.
+ */
+async function maybeStampEmbedSuccess(wq: WriteQueue): Promise<void> {
+  const nowMs = Date.now();
+  const last = lastEmbedStampAt.get(wq);
+  if (last !== undefined && nowMs - last < EMBED_SUCCESS_STAMP_INTERVAL_MS) return;
+  lastEmbedStampAt.set(wq, nowMs);
+  const atIso = new Date(nowMs).toISOString();
+  try {
+    await wq.enqueue('embed_success_stamp', (qdb) => stampSuccessfulEmbed(qdb, atIso), 'apply');
+  } catch (err) {
+    tlog.warn('embed_pipeline.success_stamp.failed', {
+      error: err instanceof Error ? err.message : String(err),
+    });
+  }
+}
+
 /** Compute embed throughput (completions/sec) from the rolling window. */
 function embedThroughput(state: EmbedPipelineState): number {
   return state.completionTimes.length / (EMBED_THROUGHPUT_WINDOW_MS / 1000);
@@ -593,6 +629,7 @@ export async function schedulePendingEmbeds(
           if (r.status === 'applied' && p.startedAtMs !== undefined) {
             metrics.timeToVector.push(performance.now() - p.startedAtMs);
           }
+          if (r.status === 'applied') await maybeStampEmbedSuccess(wq);
         } catch (err) {
           out.failed++;
           metrics.counters.embeds_failed++;

@@ -155,6 +155,9 @@ export async function recordEnrichPass(
     last_pass_at: now,
     last_pass_ok: ok,
     last_successful_pass_at: ok ? now : prev.last_successful_pass_at,
+    // (324da3a8) max(), never a plain overwrite: the write-path pipeline
+    // stamps this field between passes (stampSuccessfulEmbed), and a pass that
+    // healed nothing must not roll that stamp back.
     last_successful_embed_at:
       record.embeds_completed > 0 ? now : prev.last_successful_embed_at,
     passes_ok: prev.passes_ok + (ok ? 1 : 0),
@@ -171,6 +174,21 @@ export async function recordEnrichPass(
 
   await writeMetaJson(adapter, LEDGER_META_KEY, next);
   return next;
+}
+
+/**
+ * (324da3a8) Advance `last_successful_embed_at` for an embed that landed OUTSIDE
+ * an enrich pass — the write-path pipeline (`schedulePendingEmbeds`, which is
+ * the funnel path every `memory_write` takes). Before this, only
+ * `recordEnrichPass` wrote the field, fed by the periodic HEAL count, so a
+ * healthy pipeline that left the heal nothing to do froze the stamp (prod:
+ * stuck at 2026-09-24T17:26:51Z through 1,703 successful host embeds on
+ * 09-25). Monotonic: never moves the stamp backwards. Callers throttle.
+ */
+export async function stampSuccessfulEmbed(adapter: StoreAdapter, atIso: string): Promise<void> {
+  const prev = await readEnrichHealthLedger(adapter);
+  if (prev.last_successful_embed_at !== null && prev.last_successful_embed_at >= atIso) return;
+  await writeMetaJson(adapter, LEDGER_META_KEY, { ...prev, last_successful_embed_at: atIso });
 }
 
 /** Clear the persisted ledger — `memory_curate reset_pipeline`. Returns void. */
