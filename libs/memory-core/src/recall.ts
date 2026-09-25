@@ -937,7 +937,19 @@ export async function memoryRecall(
     let mn = Infinity, mx = -Infinity;
     for (const v of vals) { if (v < mn) mn = v; if (v > mx) mx = v; }
     const range = mx - mn;
-    if (range === 0) return vals.map(() => 1.0);
+    // f2237d6d: a degenerate (range === 0) channel is either
+    // (a) every candidate genuinely tied on a REAL non-zero signal — collapse
+    // to 1.0 so that channel still reports a proportional share, or
+    // (b) the channel never contributed anything at all (mn === mx === 0,
+    // e.g. the vec channel was skipped for the whole recall — breaker open,
+    // embed timeout, or every raw value is legitimately 0 because no
+    // candidate matched that channel) — collapse to 0 so a non-contributing
+    // channel never fabricates a share of the score. Before this fix, case
+    // (b) was indistinguishable from case (a) and every constant-zero
+    // channel (including "vec never ran") was normalised to 1.0, so
+    // score_breakdown reported a vec/fts/temporal contribution for a channel
+    // that supplied zero raw signal to the ranking.
+    if (range === 0) return vals.map((v) => (v === 0 ? 0 : 1.0));
     return vals.map((v) => (v - mn) / range);
   }
 
