@@ -20,6 +20,7 @@ import {
   type AgentCatalogClient,
   type AgentCatalogPayload,
 } from './agent-catalog.js';
+import type { CatalogAgentDefinition } from '../agent-mcp-client.js';
 
 const PAYLOAD: AgentCatalogPayload = {
   name: 'researcher',
@@ -38,7 +39,7 @@ function fakeClient(overrides?: Partial<AgentCatalogClient>): {
   const client: AgentCatalogClient = {
     upsert: async (p) => {
       calls.upserts.push(p);
-      return p as unknown as Record<string, unknown>;
+      return p as unknown as CatalogAgentDefinition;
     },
     delete: async (n) => {
       calls.deletes.push(n);

@@ -34,11 +34,11 @@ describe('schema.json ↔ ManifestSchema parity (BL-623)', () => {
     expect(onDisk).toEqual(ManifestSchema);
   });
 
-  it('install.hosts enumerates all three hosts', () => {
+  it('install.hosts enumerates all four hosts', () => {
     const props = ManifestSchema['properties'] as Record<string, unknown>;
     const install = props['install'] as Record<string, unknown>;
     const installProps = install['properties'] as Record<string, unknown>;
     const hosts = installProps['hosts'] as { items: { enum: string[] } };
-    expect(hosts.items.enum).toEqual(['claude', 'codex', 'opencode']);
+    expect(hosts.items.enum).toEqual(['claude', 'codex', 'opencode', 'agent-mcp']);
   });
 });

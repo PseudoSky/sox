@@ -55,8 +55,9 @@ export {
   resolveRequiredConfigSeed,
   configEnvKey,
   findManifestForSource,
+  readAgentRenderInputs,
 } from './install.js';
-export type { InstallDescriptor, DeclarativeInstallResult, ConfigSchemaProperty, RequiredConfigSeed } from './install.js';
+export type { InstallDescriptor, DeclarativeInstallResult, ConfigSchemaProperty, RequiredConfigSeed, AgentRenderInputs } from './install.js';
 
 // ─── Re-export verify-integrity (ADR-0003 is-this-current primitive) ──────────
 
@@ -113,6 +114,18 @@ export type { ProjectSyncResult, SyncMcpOptions } from './mcp-project-sync.js';
 // ─── mcp-trust auto-management: Claude's per-project enabledMcpjsonServers ─────
 export { syncMcpTrustToProjects, reverseMcpTrustFromProjects } from './mcp-trust-sync.js';
 export type { TrustSyncResult, SyncTrustOptions } from './mcp-trust-sync.js';
+
+// ─── bug eb1ab168: one-shot agent-mcp catalog reconcile ───────────────────────
+export { reconcileAgentMcpCatalog, defaultReconcileClient } from './reconcile-agent-mcp.js';
+export type {
+  ReconcileAgentMcpOpts,
+  ReconcileCatalogClient,
+  ReconcileInstallFn,
+  ReconcileOutcome,
+  ReconcileProviderSummary,
+  ReconcileRowResult,
+  ReconcileSummary,
+} from './reconcile-agent-mcp.js';
 
 // ─── ADR-0004: data-paths resolver (leaf) ────────────────────────────────────
 export {

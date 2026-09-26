@@ -918,6 +918,7 @@ describe('[schema-delta] install descriptor — new hybrid fields', () => {
         hosts: ['claude'],
         overrides: { claude: { managed: { some: 'policy' } } },
       },
+      render: { claude: {} },
     }));
     expect(result.ok).toBe(false);
     expect(result.errors.some((e) => e.includes('managed') && e.includes('managed-tier'))).toBe(true);
@@ -964,6 +965,7 @@ describe('[schema-delta] install descriptor — new hybrid fields', () => {
         hosts: ['claude'],
         overrides: { claude: { theme: 'dark' } }, // not a managed-tier key
       },
+      render: { claude: {} },
     }));
     expect(result.ok).toBe(true);
   });
@@ -1004,6 +1006,56 @@ describe('[schema-delta] install descriptor — new hybrid fields', () => {
     const result = validate(minimal('skill'));
     expect(result.ok).toBe(true);
     expect(result.errors).toHaveLength(0);
+  });
+
+  // ── agent host-render completeness (bug eb1ab168) ──────────────────────────
+  // An `agent` listing a host must declare render.<host> — otherwise that host
+  // silently inherits another host's model at render time.
+  it('agent host-render completeness: lists host with no render.<host> is rejected (names the host)', () => {
+    const result = validate(minimal('agent', {
+      install: { hosts: ['claude', 'codex'] },
+      render: { claude: {} },
+    }));
+    expect(result.ok).toBe(false);
+    expect(result.errors.some((e) => e.includes('render.codex'))).toBe(true);
+    expect(result.errors.some((e) => e.includes('install.hosts') && e.includes('codex'))).toBe(true);
+    // The satisfied host is NOT reported.
+    expect(result.errors.some((e) => e.includes('render.claude'))).toBe(false);
+  });
+
+  it('agent host-render completeness NC: every listed host rendered ⇒ ok', () => {
+    const result = validate(minimal('agent', {
+      install: { hosts: ['claude', 'codex'] },
+      render: { claude: {}, codex: {} },
+    }));
+    expect(result.ok).toBe(true);
+    expect(result.errors).toHaveLength(0);
+  });
+
+  it('agent host-render completeness NC: rule is agent-scoped (skill with hosts and no render ⇒ ok)', () => {
+    const result = validate(minimal('skill', {
+      install: { hosts: ['claude', 'codex'] },
+    }));
+    expect(result.ok).toBe(true);
+    expect(result.errors).toHaveLength(0);
+  });
+
+  it('agent with render.agent-mcp is accepted', () => {
+    const result = validate(minimal('agent', {
+      install: { hosts: ['agent-mcp'] },
+      render: { 'agent-mcp': {} },
+    }));
+    expect(result.ok).toBe(true);
+    expect(result.errors).toHaveLength(0);
+  });
+
+  it('agent with a non-object render.<host> (e.g. null) is rejected', () => {
+    const result = validate(minimal('agent', {
+      install: { hosts: ['claude'] },
+      render: { claude: null },
+    }));
+    expect(result.ok).toBe(false);
+    expect(result.errors.some((e) => e.includes('render.claude'))).toBe(true);
   });
 
   it('[schema-delta] ManifestSchema has install, profiles, serves, source properties', () => {

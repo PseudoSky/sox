@@ -136,6 +136,7 @@ import {
   OwnershipIndex,
   parseArgs,
   readInstallRegistry,
+  reconcileAgentMcpCatalog,
   registerUserMcpServer,
   removeInstallRecord,
   resolveFromRegistry,
@@ -308,6 +309,9 @@ async function main(): Promise<void> {
       break;
     case 'upgrade':
       await cmdUpgrade(flags);
+      break;
+    case 'reconcile-agent-mcp':
+      await cmdReconcileAgentMcp(flags);
       break;
     case 'uninstall':
       await cmdUninstall(flags);
@@ -532,6 +536,10 @@ Extension management:
                             --host=<host>  host for the --force reconcile (default: claude)
   uninstall          Remove an extension
                      Flags: --id=<ext-id>  --scope=<scope>
+  reconcile-agent-mcp  Heal the agent-mcp catalog: re-render + re-upsert each
+                       catalog row from repo source (agent-catalog rows are not
+                       lockfile consumers, so 'upgrade --all' cannot reach them)
+                     Flags: --dry-run  --json  --all (include non-anthropic rows)
   enable             Enable a disabled extension
                      Flags: --id=<ext-id>  --scope=<scope>
   disable            Disable an extension
@@ -932,7 +940,19 @@ Exit codes:
       let entries: string[];
       try { entries = fs.readdirSync(dir); } catch { return; }
       for (const ent of entries) {
-        if (ent === 'node_modules' || ent === '.git' || ent === 'dist' || ent.startsWith('.nx')) continue;
+        // git worktrees (house rule: under <project>/.worktrees/) and Claude's
+        // own session worktrees (.claude/worktrees/) are throwaway checkouts of
+        // OTHER branches — validating them reports that branch's manifests, not
+        // this tree's (bug eb1ab168: dozens of sibling worktrees turned the
+        // repo-wide validate gate red on stale manifests).
+        if (
+          ent === 'node_modules' ||
+          ent === '.git' ||
+          ent === 'dist' ||
+          ent === '.worktrees' ||
+          ent === 'worktrees' ||
+          ent.startsWith('.nx')
+        ) continue;
         const full = path.join(dir, ent);
         let stat: ReturnType<typeof fs.statSync> | null = null;
         try { stat = fs.statSync(full); } catch { continue; }
@@ -3067,6 +3087,58 @@ interface ConsumerOutcome {
   root: string;
   state: 'current' | 'upgraded' | 'restarted' | 'restart-mismatch' | 'restarted-unsupervised' | 'backend-restarted' | 'backend-restart-mismatch' | 'backend-restarted-unsupervised' | 'reconnect-needed' | 'not-installed' | 'unresolvable' | 'failed';
   detail: string;
+}
+
+/**
+ * cmdReconcileAgentMcp — one-shot heal of the agent-mcp catalog (bug eb1ab168).
+ *
+ * `upgrade --all` cannot fix these rows: the agent-catalog install path writes no
+ * lockfile entry (install.ts gates lockfile sync to mcp-server|service) and the
+ * row lives outside the ledger's file targets, so cmdUpgrade's consumer pass never
+ * sees it. This verb re-renders each existing catalog row from the current repo
+ * source through the same declarativeInstall path (idempotent upsert).
+ *
+ *   soxe reconcile-agent-mcp [--dry-run] [--json] [--all]
+ *
+ * Default policy: only rows whose provider.type === 'anthropic' (the provably
+ * wrong set) are touched. `--all` processes every row, including already-correct
+ * openai rows. Rows with no local manifest are reported, never deleted.
+ *
+ * Exit: non-zero when any row failed.
+ */
+async function cmdReconcileAgentMcp(flags: Record<string, string>): Promise<void> {
+  const dryRun = flags['dry-run'] === 'true' || flags['dry-run'] === '';
+  const json = flags['json'] === 'true' || flags['json'] === '';
+  const all = flags['all'] === 'true' || flags['all'] === '';
+  const scope = (flags['scope'] ?? 'project') as DataScope;
+  const root = process.cwd();
+  const scopeRoot = dataRoot(scope, root);
+
+  const summary = await reconcileAgentMcpCatalog(root, {
+    dryRun,
+    onlyAnthropic: !all,
+    scope,
+    scopeRoot,
+    workspaceRoot: root,
+  });
+
+  if (json) {
+    process.stdout.write(JSON.stringify(summary, null, 2) + '\n');
+  } else {
+    const mode = dryRun ? ' (dry-run)' : '';
+    process.stdout.write(
+      `${CLI} reconcile-agent-mcp${mode}: ${summary.considered} row(s) — ` +
+        `rewritten=${summary.changed} unchanged=${summary.unchanged} skipped=${summary.skipped} failed=${summary.failed}\n`,
+    );
+    for (const r of summary.rows) {
+      const from = r.before === null ? '∅' : `${r.before.type ?? '?'}${r.before.model !== undefined ? `:${r.before.model}` : ''}`;
+      const to = r.after === null ? '∅' : `${r.after.type ?? '?'}${r.after.model !== undefined ? `:${r.after.model}` : r.after.secret !== undefined ? `:${r.after.secret}` : ''}`;
+      const detail = r.detail !== undefined ? ` — ${r.detail}` : '';
+      process.stdout.write(`  ${r.name}: ${r.outcome} (${from} → ${to})${detail}\n`);
+    }
+  }
+
+  if (summary.failed > 0) process.exit(1);
 }
 
 /**

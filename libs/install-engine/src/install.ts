@@ -1422,6 +1422,11 @@ function resolveActiveProvider(configs: ScopeConfigWithMeta[]): string | undefin
 import { Ledger } from './ledger.js';
 // [inv:no-untracked-injection]: every placement is ALSO recorded in the ownership index.
 import { OwnershipIndex, type OwnedEntry } from './ownership.js';
+// Type-only: the agent-catalog capability's injectable client. It is imported as a
+// type so no runtime edge is added — the capability itself is dynamically imported
+// at the agent-catalog branch (see DECISION below) and its client defaults to the
+// MCP-over-stdio implementation. A caller (e.g. reconcile-agent-mcp) may inject one.
+import type { AgentCatalogClient } from './capabilities/agent-catalog.js';
 
 // ─── Host-registry: loaded at runtime from dist to avoid cross-lib rootDir ──
 // [ref:host-keyed-target]: all literal host paths live in libs/host-registry.
@@ -1439,7 +1444,12 @@ interface HostSurface {
 }
 
 /** Minimal local shape for a host renderer (mirrors HostRenderer in host-registry). */
-interface AgentRenderLocal {
+export interface AgentRenderLocal {
+  /**
+   * Sibling `render.<host>` name to inherit `{provider, model}` from when this
+   * host's own render lacks both (bug eb1ab168). Mirrors HostRenderer.providerFrom.
+   */
+  providerFrom?: string;
   render(ir: unknown, prose: string, overrides?: unknown): { kind: string; content?: string; value?: unknown };
 }
 
@@ -1591,7 +1601,7 @@ export async function declarativeInstall(
   scope: RegistryHostScope,
   workspaceRoot: string,
   scopeRoot: string,
-  opts?: { isProject?: boolean; ledger?: Ledger; dryRun?: boolean; force?: boolean },
+  opts?: { isProject?: boolean; ledger?: Ledger; dryRun?: boolean; force?: boolean; catalogClient?: AgentCatalogClient },
 ): Promise<DeclarativeInstallResult[]> {
   const results: DeclarativeInstallResult[] = [];
   const isProject = opts?.isProject ?? (scope === 'project');
@@ -2011,7 +2021,7 @@ export async function declarativeInstall(
         descriptor.srcPath !== undefined &&
         hostMod.render !== undefined
       ) {
-        const inputs = readAgentRenderInputs(descriptor.srcPath, hostName);
+        const inputs = readAgentRenderInputs(descriptor.srcPath, hostName, hostMod.render);
         if (inputs !== null && inputs.renderable) {
           const prose = readAgentProse(descriptor.srcPath);
           const result = hostMod.render.render(inputs.ir, prose, inputs.override);
@@ -2080,7 +2090,7 @@ export async function declarativeInstall(
           `[declarative-install] host '${hostName}' declares capability agent-catalog but exposes no renderer`,
         );
       }
-      const inputs = readAgentRenderInputs(descriptor.srcPath, hostName);
+      const inputs = readAgentRenderInputs(descriptor.srcPath, hostName, hostMod.render);
       if (inputs === null) {
         throw new Error(
           `[declarative-install] agent-catalog: cannot read agent IR for '${descriptor.ext}' (no extension.json at ${descriptor.srcPath})`,
@@ -2111,6 +2121,8 @@ export async function declarativeInstall(
           value: rendered.value as import('./capabilities/agent-catalog.js').AgentCatalogPayload,
         },
         ledger,
+        // exactOptionalPropertyTypes: only attach when a client was actually injected.
+        ...(opts?.catalogClient !== undefined ? { client: opts.catalogClient } : {}),
       });
 
       const acResult: DeclarativeInstallResult = {
@@ -2370,14 +2382,29 @@ function hashDirForInstall(dirPath: string): string {
 // header instead of copying the entrypoint verbatim. Raw passthrough when the
 // host has no renderer or the manifest declares neither block.
 
-interface AgentRenderInputs {
+export interface AgentRenderInputs {
   ir: Record<string, unknown>;
   override: Record<string, unknown> | undefined;
   renderable: boolean;
 }
 
-/** Read the `agent` IR and `render.<host>` override from an extension's manifest. */
-function readAgentRenderInputs(srcPath: string, hostName: string): AgentRenderInputs | null {
+/**
+ * Read the `agent` IR and `render.<host>` override from an extension's manifest.
+ *
+ * `render` is the host's own agent renderer (optional). When the host's render
+ * block lacks BOTH `provider` and `model`, and the renderer declares a
+ * `providerFrom` sibling, that sibling's `{provider, model}` is inherited
+ * (own fields win). This is how agent-mcp — a catalog that serves whatever host
+ * actually runs the agent — picks up the opencode model instead of minting a
+ * vendor default (bug eb1ab168). An absent sibling leaves the override unchanged.
+ *
+ * Exported so it is unit-testable without spawning the catalog server.
+ */
+export function readAgentRenderInputs(
+  srcPath: string,
+  hostName: string,
+  render?: AgentRenderLocal,
+): AgentRenderInputs | null {
   const manifestPath = path.join(srcPath, 'extension.json');
   if (!fs.existsSync(manifestPath)) return null;
   let manifest: Record<string, unknown>;
@@ -2388,10 +2415,41 @@ function readAgentRenderInputs(srcPath: string, hostName: string): AgentRenderIn
   }
   const ir = manifest['agent'];
   const renders = manifest['render'];
-  const override =
+  const renderMap =
     renders !== null && typeof renders === 'object' && !Array.isArray(renders)
-      ? ((renders as Record<string, unknown>)[hostName] as Record<string, unknown> | undefined)
+      ? (renders as Record<string, unknown>)
       : undefined;
+  let override = renderMap?.[hostName] as Record<string, unknown> | undefined;
+
+  // Provider inheritance (bug eb1ab168): the host render names a sibling to
+  // inherit from when its own override supplies neither provider nor model.
+  const siblingName = typeof render?.providerFrom === 'string' ? render.providerFrom : undefined;
+  if (siblingName !== undefined && renderMap !== undefined) {
+    const ownLacksProviderAndModel =
+      override === undefined ||
+      (typeof override !== 'object') ||
+      Array.isArray(override) ||
+      (override['provider'] === undefined && override['model'] === undefined);
+    if (ownLacksProviderAndModel) {
+      const siblingRaw = renderMap[siblingName];
+      const sibling =
+        siblingRaw !== null && typeof siblingRaw === 'object' && !Array.isArray(siblingRaw)
+          ? (siblingRaw as Record<string, unknown>)
+          : undefined;
+      if (sibling !== undefined) {
+        const inherited: Record<string, unknown> = {};
+        if (sibling['provider'] !== undefined) inherited['provider'] = sibling['provider'];
+        if (sibling['model'] !== undefined) inherited['model'] = sibling['model'];
+        const own =
+          override !== null && typeof override === 'object' && !Array.isArray(override)
+            ? override
+            : {};
+        // Own-wins, shallow spread: the host's own fields override the sibling's.
+        override = { ...inherited, ...own };
+      }
+    }
+  }
+
   const hasIr = ir !== null && typeof ir === 'object' && !Array.isArray(ir);
   const hasOverride = override !== undefined && typeof override === 'object' && !Array.isArray(override);
   return {
@@ -2418,7 +2476,7 @@ function renderAgentForHost(
   hostName: string,
   render: AgentRenderLocal,
 ): string | null {
-  const inputs = readAgentRenderInputs(srcPath, hostName);
+  const inputs = readAgentRenderInputs(srcPath, hostName, render);
   if (inputs === null || !inputs.renderable) return null;
   const prose = readAgentProse(srcPath);
   const result = render.render(inputs.ir, prose, inputs.override);

@@ -186,7 +186,11 @@ const opencodeRenderer: HostRenderer = {
 const codexRenderer: HostRenderer = {
   renderHeader(ir, override) {
     const description = override?.description ?? ir.description;
-    const model = override?.model ?? ir.model;
+    // Only an explicit render override pins the codex model — mirror opencode's
+    // deliberate no-fallback (see opencodeRenderer.renderHeader). ir.model is a
+    // logical Claude tier ("opus"/"sonnet") codex cannot resolve; filling it in
+    // would hand codex a Claude model id it does not serve (bug eb1ab168).
+    const model = override?.model;
     const header: Record<string, unknown> = {};
     if (description !== undefined) header['description'] = description;
     if (model !== undefined) header['model'] = model;

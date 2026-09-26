@@ -176,6 +176,14 @@ export type RenderedArtifact =
  * (ir, prose, override, host data) — see the spec §5.2/§5.3.
  */
 export interface HostRenderer {
+  /**
+   * Name of the sibling `render.<host>` block to inherit `{provider, model}` from
+   * when this host's own render lacks BOTH (bug eb1ab168). Used by hosts that do
+   * not own a model of their own — the agent-mcp catalog serves the surface the
+   * host actually runs the agent on, so it inherits opencode's model rather than
+   * minting a vendor default.
+   */
+  providerFrom?: string;
   /** Bare header fields (no fences) for an agent IR. */
   renderHeader(ir: AgentIr, overrides?: AgentOverride): Record<string, unknown>;
   /** Generated "resolved tool names" block, or null when the host needs none. */

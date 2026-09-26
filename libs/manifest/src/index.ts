@@ -113,7 +113,7 @@ export interface ManifestInstall {
   /** Host-agnostic extension type. [inv:host-agnostic-type] */
   type?: 'agent' | 'skill' | 'mcp-server' | 'prompt' | 'hook' | 'command' | 'bundle' | 'service';
   /** Chosen host targets. Engine resolves target paths from libs/host-registry. */
-  hosts?: Array<'claude' | 'codex' | 'opencode'>;
+  hosts?: Array<'claude' | 'codex' | 'opencode' | 'agent-mcp'>;
   /**
    * [def:profile] Install-layer presets over (capability + transport + host-target + config).
    * Keys are profile names (e.g. 'standalone', 'shared'). profiles ⊆ {serves∪transports}
@@ -237,7 +237,7 @@ const VALID_HOOK_EVENTS = new Set<string>([
 export { VALID_HOOK_EVENTS };
 
 /** Known host identifiers for install.hosts validation. */
-export const KNOWN_HOSTS = new Set<string>(['claude', 'codex', 'opencode']);
+export const KNOWN_HOSTS = new Set<string>(['claude', 'codex', 'opencode', 'agent-mcp']);
 
 // ADR-0003: `version` is NO LONGER a required (or even meaningful) identity input.
 // Identity is `id` + content `checksum`. `version`, if present, is a deprecated,
@@ -783,6 +783,39 @@ export function validate(raw: Record<string, unknown>): ValidateResult {
     }
   }
 
+  // ── agent host-render completeness (bug eb1ab168) ──────────────────────────
+  // An `agent` that lists a host in install.hosts MUST declare a render.<host>
+  // object. Without this rule a host with no render of its own silently inherits
+  // another host's model at render time — the agent-mcp rows all inherited
+  // Claude's default, making every sox agent non-dispatchable on openai surfaces.
+  // A host must not inherit another host's model: declare render.<host> or drop
+  // the host from install.hosts. Scoped to type:"agent" (skills, etc. have no
+  // host-rendered agent header).
+  if (
+    typeStr === 'agent' &&
+    install !== undefined &&
+    typeof install === 'object' &&
+    !Array.isArray(install)
+  ) {
+    const agentHosts = (install as Record<string, unknown>)['hosts'];
+    if (Array.isArray(agentHosts)) {
+      const renderMap =
+        render !== undefined && typeof render === 'object' && !Array.isArray(render)
+          ? (render as Record<string, unknown>)
+          : undefined;
+      for (const h of agentHosts as unknown[]) {
+        if (typeof h !== 'string') continue; // install.hosts value check already reported it
+        const hostRender = renderMap?.[h];
+        if (hostRender === undefined || hostRender === null || typeof hostRender !== 'object' || Array.isArray(hostRender)) {
+          errors.push(
+            `agent lists host "${h}" in install.hosts but declares no render.${h} object — ` +
+              `a host must not inherit another host's model. Add render.${h} or remove "${h}" from install.hosts.`,
+          );
+        }
+      }
+    }
+  }
+
   // ── config_schema meta-validation ────────────────────────────────────────
   // config_schema is optional but strongly recommended for process types.
   // We validate the shape (must be an object) and emit advisory warnings for
@@ -1079,7 +1112,7 @@ export const ManifestSchema: Record<string, unknown> = {
           type: 'string',
           enum: ['agent', 'skill', 'mcp-server', 'prompt', 'hook', 'command', 'bundle', 'service'],
         },
-        hosts: { type: 'array', items: { type: 'string', enum: ['claude', 'codex', 'opencode'] } },
+        hosts: { type: 'array', items: { type: 'string', enum: ['claude', 'codex', 'opencode', 'agent-mcp'] } },
         profiles: { type: 'object', additionalProperties: true },
         serves: { type: 'array', items: { type: 'string', enum: ['stdio', 'sse', 'http'] } },
         transports: { type: 'array', items: { type: 'string', enum: ['stdio', 'http', 'sse', 'socket'] } },
@@ -1135,6 +1168,7 @@ export const ManifestSchema: Record<string, unknown> = {
         claude: { type: 'object', additionalProperties: true },
         opencode: { type: 'object', additionalProperties: true },
         codex: { type: 'object', additionalProperties: true },
+        'agent-mcp': { type: 'object', additionalProperties: true },
       },
     },
     config: { type: 'object', additionalProperties: true },

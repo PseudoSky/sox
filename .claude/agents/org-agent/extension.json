@@ -18,7 +18,6 @@
     "description": "Declarative agent — host reads the .md definition file directly."
   },
   "install": {
-    "type": "agent",
-    "hosts": ["claude", "opencode"]
+    "type": "agent"
   }
 }

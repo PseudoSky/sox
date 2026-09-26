@@ -107,13 +107,24 @@ describe('opencode renderer', () => {
 });
 
 describe('codex renderer', () => {
-  it('returns a config-value with description/model/prompt (prose in prompt field)', () => {
+  it('returns a config-value with description/prompt (no model — the IR tier is not a codex model)', () => {
     const r = agentRenderers.codex.render(researcherIr, prose);
     expect(r.kind).toBe('config-value');
     const v = (r as { value: Record<string, unknown> }).value;
     expect(v.description).toBe(researcherIr.description);
-    expect(v.model).toBe('sonnet');
+    // bug eb1ab168: ir.model is a logical Claude tier — codex must NOT emit it.
+    expect(v.model).toBeUndefined();
     expect(v.prompt).toBe(prose);
+  });
+
+  it('NC: renderHeader({model:"opus"}) omits model entirely (no IR fallback)', () => {
+    expect(agentRenderers.codex.renderHeader({ model: 'opus' })).toEqual({});
+  });
+
+  it('renderHeader emits only an explicit override model', () => {
+    expect(agentRenderers.codex.renderHeader({ model: 'opus' }, { model: 'gpt-5.1-codex' })).toEqual({
+      model: 'gpt-5.1-codex',
+    });
   });
 
   it('never renders a step/turn budget — no known codex TOML field yet', () => {

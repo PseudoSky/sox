@@ -15,12 +15,19 @@
  *
  * Mapping (agent extension → catalog row), verified against
  * `@adhd/agent-engine-orchestrator`'s agentCreateInputSchema:
- *   agent.name        → name            (required)
- *   agent.description → description
- *   <entrypoint>.md   → systemPrompt    (frontmatter stripped)
- *   agent/render.model→ provider        (see deriveProvider)
- *   agent.steps       → maxToolLoops    (host-mapped, like claude's maxTurns)
- *   render.agent-mcp  → per-field override (provider / mcpServers / permissions / model)
+ *   agent.name             → name            (required)
+ *   agent.description      → description
+ *   <entrypoint>.md        → systemPrompt    (frontmatter stripped)
+ *   render.agent-mcp.model → provider        (via deriveProvider; falls back to
+ *                                             the host's providerFrom sibling —
+ *                                             see readAgentRenderInputs)
+ *   agent.steps            → maxToolLoops    (host-mapped, like claude's maxTurns)
+ *   render.agent-mcp       → per-field override (provider / mcpServers / permissions / model)
+ *
+ * The agent IR's `model` is a logical Claude tier (opus/sonnet/haiku) and is NEVER
+ * read as a provider source: agent-mcp serves whatever host surface installed the
+ * row, so an absent explicit model is a hard error, not a Claude default (bug
+ * eb1ab168).
  *
  * The catalog is GLOBAL — the operational DB path is shared across scopes
  * (ADHD_AGENT_DATABASE_PATH, default ~/.adhd/agent-mcp/agents.db). Scope still
@@ -220,39 +227,69 @@ function scopePaths(scope: HostScope): ScopePathMap {
 // Provider derivation
 // ---------------------------------------------------------------------------
 
-interface CatalogProvider {
+export interface CatalogProvider {
   type: 'anthropic' | 'openai' | 'claudecli' | string;
   model?: string;
   env?: Record<string, string>;
 }
 
-/** Claude logical-tier → concrete catalog model id. */
-const CLAUDE_MODEL_ALIASES: Record<string, string> = {
-  sonnet: 'claude-sonnet-4-5',
-  opus: 'claude-opus-4-1',
-  haiku: 'claude-haiku-4-5',
-};
+/**
+ * Thrown when the agent-mcp renderer cannot derive a provider because no
+ * explicit render model/provider was supplied. This is deliberate: the agent IR
+ * `model` is a logical Claude tier and deriving "anthropic" from it silently
+ * binds a host surface to a vendor it may not speak (bug eb1ab168). The throw
+ * names the agent so the fix — a `render.<host>.model`/`.provider`, or a
+ * `providerFrom` host-renderer link — is obvious.
+ */
+export class AgentProviderUnderivableError extends Error {
+  constructor(agentName: string) {
+    super(
+      `[agent-mcp] cannot derive a provider for agent "${agentName}": ` +
+        `no render.agent-mcp.model or render.agent-mcp.provider was supplied, and the ` +
+        `agent IR's logical Claude tier is deliberately not a provider source. Declare ` +
+        `render.agent-mcp.model (a deepseek/gpt/qwen/openai or vendor/model slug) or ` +
+        `render.agent-mcp.provider, or wire providerFrom on the host renderer.`,
+    );
+    this.name = 'AgentProviderUnderivableError';
+  }
+}
+
+/** True when `v` is a well-formed catalog provider object (object with string `type`). */
+function isProviderObject(v: unknown): v is CatalogProvider {
+  return (
+    typeof v === 'object' &&
+    v !== null &&
+    !Array.isArray(v) &&
+    typeof (v as { type?: unknown }).type === 'string'
+  );
+}
 
 /**
- * Derive the agent-mcp provider block from the IR + per-host override.
+ * Derive the agent-mcp provider block from the per-host override.
  *
- * Precedence: an explicit `render['agent-mcp'].provider` wins. Otherwise the
- * model string selects a family:
- *   - an OpenAI-compatible slug (deepseek / gpt / qwen / vendor/model) → openai,
- *     credentials from the ADHD_AGENT_OPENAI_* / ADHD_AGENT_DEEPSEEK_* env refs;
- *   - anything claude-ish (or the "sonnet" logical tier, the SOX default) → anthropic,
- *     credential from ADHD_AGENT_ANTHROPIC_SECRET.
+ * Precedence:
+ *   1. an explicit, well-formed `render.agent-mcp.provider` (passed through verbatim);
+ *   2. a `model` containing `deepseek`  → openai, ADHD_AGENT_DEEPSEEK_* env refs;
+ *   3. a `model` containing `gpt|qwen|openai` → openai, ADHD_AGENT_OPENAI_* env refs;
+ *   4. a vendor-slugged `model` (contains `/`, e.g. `deepseek/deepseek-flash` /
+ *      `anthropic/claude-...`) → openai passthrough;
+ *   5. otherwise → THROW {@link AgentProviderUnderivableError}.
+ *
+ * The agent IR `model` is deliberately NOT consulted — it is a logical Claude
+ * tier, and neither claude-ish nor any other string may mint a vendor default
+ * here (the deleted CLAUDE_MODEL_ALIASES table was exactly that defect). In a
+ * real install the engine synthesizes `override.model` from the host's
+ * `providerFrom` sibling render (see install.ts readAgentRenderInputs).
  *
  * Env refs MUST be ADHD_AGENT_-prefixed: the server rejects any other name at
  * create time (BUG-ORCH-011 / assertEnvNamesAllowed).
  */
 function deriveProvider(ir: AgentIr, override?: AgentOverride): CatalogProvider {
-  if (override?.provider !== undefined) {
-    return override.provider as unknown as CatalogProvider;
+  if (isProviderObject(override?.provider)) {
+    return override.provider;
   }
   const hostModel = typeof override?.model === 'string' ? override.model : undefined;
-  const logical = typeof ir.model === 'string' ? ir.model : undefined;
-  const model = (hostModel ?? logical ?? '').toLowerCase();
+  const model = (hostModel ?? '').toLowerCase();
 
   if (model.includes('deepseek')) {
     return {
@@ -274,7 +311,7 @@ function deriveProvider(ir: AgentIr, override?: AgentOverride): CatalogProvider 
       },
     };
   }
-  // Vendor-slugged model (e.g. "anthropic/claude-...") the catalog can pass through.
+  // Vendor-slugged model (e.g. "deepseek/deepseek-flash") the catalog can pass through.
   if (hostModel !== undefined && hostModel.includes('/')) {
     return {
       type: 'openai',
@@ -282,8 +319,13 @@ function deriveProvider(ir: AgentIr, override?: AgentOverride): CatalogProvider 
       env: { secret: 'ADHD_AGENT_OPENAI_SECRET', base_url: 'ADHD_AGENT_OPENAI_BASE_URL' },
     };
   }
-  const concrete = CLAUDE_MODEL_ALIASES[model] ?? (model.includes('claude') ? model : undefined) ?? 'claude-sonnet-4-5';
-  return { type: 'anthropic', model: concrete, env: { secret: 'ADHD_AGENT_ANTHROPIC_SECRET' } };
+  const agentName =
+    typeof ir.name === 'string' && ir.name !== ''
+      ? ir.name
+      : typeof override?.name === 'string' && override.name !== ''
+        ? override.name
+        : '<unnamed>';
+  throw new AgentProviderUnderivableError(agentName);
 }
 
 // ---------------------------------------------------------------------------
@@ -302,6 +344,12 @@ export interface AgentCatalogPayload {
 }
 
 const agentMcpRenderer: HostRenderer = {
+  // [bug eb1ab168]: agent-mcp serves the host surface that installed the row, so
+  // when the manifest has no render.agent-mcp model/provider the engine inherits
+  // the opencode render's model — the same model the opencode host runs the agent
+  // with — instead of minting a Claude default.
+  providerFrom: 'opencode',
+
   renderHeader(ir, override) {
     const header: Record<string, unknown> = {};
     const name = override?.name ?? ir.name;
