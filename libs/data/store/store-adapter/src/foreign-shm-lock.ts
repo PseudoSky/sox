@@ -67,6 +67,12 @@ export const FOREIGN_SHM_LOCK_PROBE_DEFAULT_TIMEOUT_MS = 5_000;
 export const FOREIGN_SHM_LOCK_PROBE_FLOOR_MS = 250;
 export const FOREIGN_SHM_LOCK_PROBE_CEILING_MS = 30_000;
 
+/** (BUG-026 follow-on) Smallest main-file size the read-write probe child may
+ *  open: one page at the minimum size a probed store uses (Turso writes a full
+ *  4096-byte page 1 at create). Below it SQLite treats the file as zero pages
+ *  and deletes a sibling `-wal` on a read-write open. */
+export const MIN_PROBEABLE_MAIN_BYTES = 4096;
+
 /** Clamp a caller-supplied probe timeout to the permitted range. Never a
  *  toggle — there is no value that disables the probe. */
 export function clampForeignShmLockProbeTimeoutMs(ms: number): number {
@@ -197,6 +203,34 @@ export function probeForeignShmLock(
       method: 'none',
       detail: `stat of -shm sidecar failed: ${detail}`,
     };
+  }
+
+  // (BUG-026 follow-on) Never spawn the READ-WRITE child against a main file
+  // that is missing or under one page. SQLite's pager, on a read-write open
+  // that finds a `-wal` beside a ZERO-page main file, DELETES the `-wal`
+  // (`pagerOpenWalIfPresent`), and on a missing main file better-sqlite3
+  // CREATES an empty one first — so the probe itself would destroy a store
+  // whose data lives only in its WAL (reproduced:
+  // foreign-shm-probe-empty-main.bug026.spec.ts). Such a store cannot be
+  // proven either way without that risk, so it is `indeterminate`.
+  let mainSize: number | null = null;
+  let mainStatDetail: string | null = null;
+  try {
+    mainSize = statSync(dbPath).size;
+  } catch (err) {
+    mainStatDetail = err instanceof Error ? err.message : String(err);
+  }
+  if (mainSize === null || mainSize < MIN_PROBEABLE_MAIN_BYTES) {
+    const detail =
+      mainSize === null
+        ? `main db file unreadable or missing (${mainStatDetail}); a read-write probe could create it and delete its -wal`
+        : `main db file is ${mainSize} bytes (< ${MIN_PROBEABLE_MAIN_BYTES}); a read-write probe could delete its -wal`;
+    log.warn('store_adapter.foreign_shm.probe_declined_small_main', {
+      db_path: dbPath,
+      main_bytes: mainSize,
+      detail,
+    });
+    return { state: 'indeterminate', method: 'none', detail };
   }
 
   const betterSqlite3Path = resolveBetterSqlite3();

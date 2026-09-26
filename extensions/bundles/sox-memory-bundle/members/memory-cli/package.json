@@ -16,6 +16,7 @@
   },
   "devDependencies": {
     "@adhd/sox-memory-core": "workspace:*",
+    "@adhd/sox-store-adapter": "workspace:*",
     "@adhd/sox-telemetry": "workspace:*"
   },
   "dependencies": {

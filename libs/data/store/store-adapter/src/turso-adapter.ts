@@ -127,14 +127,66 @@ const DEFAULT_BUSY_TIMEOUT_MS = 5000;
  * far inside `DEFAULT_BUSY_TIMEOUT_MS`, so a peer that opens mid-pass waits
  * rather than failing — while the per-insert penalty stays within ~2× of a
  * merged index.
+ *
+ * That bound holds ONLY for steady-state growth, which is why the in-service
+ * counter starts at 0 and the idle pass never attempts an unknown backlog: a
+ * pre-existing backlog (prod: 5,001 segments, a 27–34 s synchronous merge that
+ * blocks the event loop and outlasts every peer's busy timeout) is merged by
+ * the OFFLINE entry point `optimizeFtsIndexes(dbPath)` with the service
+ * stopped (`memory fts-optimize`).
  */
 export const DEFAULT_FTS_OPTIMIZE_WRITE_THRESHOLD = 256;
+
+/** (4cd68c4e) A pass skipped for live peers warns `fts.optimize.starved` once
+ *  the counter exceeds this multiple of the threshold. */
+export const FTS_OPTIMIZE_STARVED_FACTOR = 4;
+
+/** (4cd68c4e) Backoff after a failed pass: base × 2^(failures−1), capped. */
+export const FTS_OPTIMIZE_BACKOFF_BASE_MS = 60_000;
+export const FTS_OPTIMIZE_BACKOFF_CAP_MS = 3_600_000;
+
+/** (4cd68c4e) Delay before the next pass after `consecutiveFailures` failed
+ *  passes in a row (≥ 1): exponential from `FTS_OPTIMIZE_BACKOFF_BASE_MS`,
+ *  capped at `FTS_OPTIMIZE_BACKOFF_CAP_MS` (1 h). */
+export function ftsOptimizeBackoffMs(consecutiveFailures: number): number {
+  const n = Math.max(1, Math.floor(consecutiveFailures));
+  // Clamp the exponent: 2^40 × base is far past the cap, and the arithmetic
+  // must never reach Infinity.
+  const raw = FTS_OPTIMIZE_BACKOFF_BASE_MS * 2 ** Math.min(n - 1, 40);
+  return Math.min(raw, FTS_OPTIMIZE_BACKOFF_CAP_MS);
+}
+
+/** (4cd68c4e) Per-index result of an OPTIMIZE loop. */
+export interface FtsIndexOptimizeResult {
+  index: string;
+  ok: boolean;
+  duration_ms: number;
+  error?: string;
+}
+
+/** (4cd68c4e) Report of the offline `optimizeFtsIndexes(dbPath)` run. */
+export interface FtsOfflineOptimizeReport {
+  /** `refused`: a live lease peer holds the store (or no lease could be taken
+   *  to prove otherwise) — nothing was run. */
+  status: 'optimized' | 'refused' | 'failed';
+  reason?: 'peers' | 'no_lease' | 'not_found';
+  db_path: string;
+  peer_count?: number;
+  peer_pids?: number[];
+  /** Indexes OPTIMIZE completed on (empty with `optimized` ⇒ no FTS index). */
+  indexes: string[];
+  per_index: FtsIndexOptimizeResult[];
+  duration_ms: number;
+  error?: string;
+}
 
 /** (4cd68c4e) Outcome of one FTS optimize pass. */
 export interface FtsOptimizeOutcome {
   status: 'optimized' | 'skipped' | 'failed';
-  /** Present when `status === 'skipped'`. */
-  reason?: 'peers';
+  /** Present when `status === 'skipped'`. `no_lease`: the adapter holds no
+   *  store lease / coordination path, so quiescence cannot be checked and the
+   *  pass never runs unchecked. */
+  reason?: 'peers' | 'no_lease';
   peer_count?: number;
   writes_since_optimize: number;
   /** Indexes OPTIMIZE completed on. */
@@ -569,13 +621,28 @@ export class TursoAdapterImpl implements TursoAdapter {
 
   /** (4cd68c4e) Writable operations since the last successful FTS optimize
    *  pass — the segment-count proxy (see
-   *  `DEFAULT_FTS_OPTIMIZE_WRITE_THRESHOLD`). Starts AT the threshold: a
-   *  fresh process cannot know how many segments earlier processes left
-   *  behind (prod held 5,001), so the first quiescent idle point after open
-   *  always runs one pass. On an already-merged index that pass is a 14 ms
-   *  no-op (measured). Lives on the instance, so it survives idle-release and
-   *  poison reconnects. */
-  private _ftsWritesSinceOptimize: number = DEFAULT_FTS_OPTIMIZE_WRITE_THRESHOLD;
+   *  `DEFAULT_FTS_OPTIMIZE_WRITE_THRESHOLD`). Starts at 0: the idle pass only
+   *  ever merges the segments THIS process added (`threshold` writes' worth,
+   *  a few hundred ms). A backlog left by earlier processes is unknown here
+   *  and can be a 27–34 s main-thread merge (prod: 5,001 segments), so it is
+   *  never attempted in-service — `optimizeFtsIndexes(dbPath)` is the offline
+   *  entry point for it. Lives on the instance, so it survives idle-release
+   *  and poison reconnects. */
+  private _ftsWritesSinceOptimize = 0;
+
+  /** (4cd68c4e) Latched once a peer-skipped pass has let the counter exceed
+   *  `FTS_OPTIMIZE_STARVED_FACTOR` × threshold (`fts.optimize.starved` is
+   *  warned once per crossing); cleared when the counter resets. */
+  private _ftsStarvedWarned = false;
+
+  /** (4cd68c4e) Consecutive failed passes, and the earliest time the next may
+   *  run (`ftsOptimizeBackoffMs`). Both reset on a successful pass. */
+  private _ftsOptimizeFailures = 0;
+  private _ftsOptimizeNextAttemptAt: number | null = null;
+
+  /** (4cd68c4e) Latched once `fts.optimize.skipped{reason:no_lease}` has been
+   *  warned, so a lease-less instance does not warn at every idle point. */
+  private _ftsNoLeaseWarned = false;
 
   /** (4cd68c4e) Threshold for `_ftsWritesSinceOptimize` — typed per-connect
    *  override via `opts.ftsOptimizeWriteThreshold` (tests only). */
@@ -589,11 +656,15 @@ export class TursoAdapterImpl implements TursoAdapter {
     writesSinceOptimize: number;
     threshold: number;
     last: FtsOptimizeOutcome | null;
+    consecutiveFailures: number;
+    nextAttemptAt: number | null;
   } {
     return {
       writesSinceOptimize: this._ftsWritesSinceOptimize,
       threshold: this._ftsOptimizeWriteThreshold,
       last: this._lastFtsOptimize,
+      consecutiveFailures: this._ftsOptimizeFailures,
+      nextAttemptAt: this._ftsOptimizeNextAttemptAt,
     };
   }
 
@@ -604,17 +675,23 @@ export class TursoAdapterImpl implements TursoAdapter {
    *
    * WHEN: only from `_performIdleFlush()` — i.e. at the adapter's own quiet
    * point, after the idle debounce, with `_inFlightOps === 0`. Never on a
-   * request path.
+   * request path. The counter starts at 0, so a pass only ever merges the
+   * steady-state growth this process produced; a pre-existing backlog is the
+   * OFFLINE entry point's job (`optimizeFtsIndexes`).
    *
    * LOCK BEHAVIOUR under multiprocess WAL: OPTIMIZE is an ordinary write
-   * transaction — it takes the WAL write lock for its duration. It runs ONLY
-   * when the store is quiescent (`storeQuiescence` sees no other live lease
-   * holder); with a live peer (e.g. the enrich-process-host) it is SKIPPED,
-   * the counter is kept, and it is retried at the next idle point. A peer that
-   * opens mid-pass (the check-then-act window) simply waits on the 5 s busy
-   * timeout; the write-count bound keeps a steady-state pass well inside it.
-   * Peers also idle-release their lease, which is what makes quiescence
-   * reachable in production.
+   * transaction — it takes the WAL write lock for its duration, and the driver
+   * runs it synchronously on the main thread. It runs ONLY when the store is
+   * quiescent (`storeQuiescence` sees no other live lease holder); with a live
+   * peer it is SKIPPED, the counter is kept, and it is retried at the next idle
+   * point (warning `fts.optimize.starved` once the counter passes
+   * `FTS_OPTIMIZE_STARVED_FACTOR` × threshold). The quiescence check is
+   * check-then-act under no lock: a peer that opens mid-pass waits on its 5 s
+   * busy timeout, which holds because a steady-state pass (threshold writes'
+   * worth of segments) is a few hundred ms. With no lease / coordination path
+   * quiescence cannot be checked, so the pass is skipped (`no_lease`) — never
+   * run unchecked. A failed pass backs off exponentially (`ftsOptimizeBackoffMs`,
+   * capped at 1 h) rather than erroring at every idle point.
    *
    * INTERLEAVING: the pass holds `_inFlightOps` so a caller op landing between
    * driver steps makes the following `releaseIdleConnection()` decline instead
@@ -626,61 +703,86 @@ export class TursoAdapterImpl implements TursoAdapter {
     if (this._ftsWritesSinceOptimize < this._ftsOptimizeWriteThreshold) return null;
     const coordDb = this.coordPath;
     const writes = this._ftsWritesSinceOptimize;
-    if (coordDb !== undefined && this._lease) {
-      const q = storeQuiescence(coordDb, this._lease.token);
-      if (!q.quiescent) {
-        const outcome: FtsOptimizeOutcome = {
-          status: 'skipped',
-          reason: 'peers',
-          peer_count: q.livePeers.length,
-          writes_since_optimize: writes,
-          indexes: [],
-          duration_ms: 0,
-        };
-        this._lastFtsOptimize = outcome;
-        log.info('fts.optimize.skipped', {
-          db_path: coordDb,
-          reason: 'peers',
-          peer_count: q.livePeers.length,
-          peer_pids: q.livePeers.map((p) => p.pid).join(','),
-          writes_since_optimize: writes,
-        });
-        return outcome;
+    if (this._ftsOptimizeNextAttemptAt !== null && Date.now() < this._ftsOptimizeNextAttemptAt) {
+      log.debug('fts.optimize.backoff', {
+        db_path: coordDb ?? null,
+        consecutive_failures: this._ftsOptimizeFailures,
+        next_attempt_at: new Date(this._ftsOptimizeNextAttemptAt).toISOString(),
+        writes_since_optimize: writes,
+      });
+      return null;
+    }
+    if (coordDb === undefined || !this._lease) {
+      const outcome: FtsOptimizeOutcome = {
+        status: 'skipped',
+        reason: 'no_lease',
+        writes_since_optimize: writes,
+        indexes: [],
+        duration_ms: 0,
+      };
+      this._lastFtsOptimize = outcome;
+      const fields = {
+        db_path: coordDb ?? null,
+        reason: 'no_lease',
+        has_coord_path: coordDb !== undefined,
+        has_lease: this._lease !== null,
+        writes_since_optimize: writes,
+      };
+      if (!this._ftsNoLeaseWarned) {
+        this._ftsNoLeaseWarned = true;
+        log.warn('fts.optimize.skipped', fields);
+      } else {
+        log.debug('fts.optimize.skipped', fields);
       }
+      return outcome;
+    }
+    const q = storeQuiescence(coordDb, this._lease.token);
+    if (!q.quiescent) {
+      const outcome: FtsOptimizeOutcome = {
+        status: 'skipped',
+        reason: 'peers',
+        peer_count: q.livePeers.length,
+        writes_since_optimize: writes,
+        indexes: [],
+        duration_ms: 0,
+      };
+      this._lastFtsOptimize = outcome;
+      const peerPids = q.livePeers.map((p) => p.pid).join(',');
+      log.info('fts.optimize.skipped', {
+        db_path: coordDb,
+        reason: 'peers',
+        peer_count: q.livePeers.length,
+        peer_pids: peerPids,
+        writes_since_optimize: writes,
+      });
+      const starvedAt = FTS_OPTIMIZE_STARVED_FACTOR * this._ftsOptimizeWriteThreshold;
+      if (writes > starvedAt && !this._ftsStarvedWarned) {
+        this._ftsStarvedWarned = true;
+        log.warn('fts.optimize.starved', {
+          db_path: coordDb,
+          writes_since_optimize: writes,
+          threshold: this._ftsOptimizeWriteThreshold,
+          starved_factor: FTS_OPTIMIZE_STARVED_FACTOR,
+          peer_count: q.livePeers.length,
+          peer_pids: peerPids,
+        });
+      }
+      return outcome;
     }
     this._inFlightOps++;
     const startedAt = Date.now();
-    const optimized: string[] = [];
+    const perIndex: FtsIndexOptimizeResult[] = [];
     try {
       await this._ensureHealthy();
-      const rows = (await this.db.all(
-        "SELECT name FROM sqlite_master WHERE type = 'index' AND sql LIKE '%USING fts%'",
-      )) as Array<{ name: string }>;
-      if (rows.length === 0) {
+      const optimized = await this._optimizeAllFtsIndexes(coordDb, writes, perIndex);
+      this._ftsWritesSinceOptimize = 0;
+      this._ftsStarvedWarned = false;
+      this._ftsOptimizeFailures = 0;
+      this._ftsOptimizeNextAttemptAt = null;
+      if (optimized.length === 0) {
         // No index-method index on this store — nothing can accumulate.
-        this._ftsWritesSinceOptimize = 0;
         return null;
       }
-      for (const { name } of rows) {
-        const t0 = Date.now();
-        log.info('fts.optimize.start', {
-          db_path: coordDb ?? null,
-          index: name,
-          writes_since_optimize: writes,
-          // Not observable from SQL (see DEFAULT_FTS_OPTIMIZE_WRITE_THRESHOLD).
-          segments_before: null,
-        });
-        await this.db.exec(`OPTIMIZE INDEX "${name.replace(/"/g, '""')}"`);
-        optimized.push(name);
-        log.info('fts.optimize.finish', {
-          db_path: coordDb ?? null,
-          index: name,
-          writes_since_optimize: writes,
-          segments_before: null,
-          duration_ms: Date.now() - t0,
-        });
-      }
-      this._ftsWritesSinceOptimize = 0;
       const outcome: FtsOptimizeOutcome = {
         status: 'optimized',
         writes_since_optimize: writes,
@@ -691,24 +793,195 @@ export class TursoAdapterImpl implements TursoAdapter {
       return outcome;
     } catch (err) {
       this._markIfFatal(err);
+      this._ftsOptimizeFailures++;
+      const backoffMs = ftsOptimizeBackoffMs(this._ftsOptimizeFailures);
+      this._ftsOptimizeNextAttemptAt = Date.now() + backoffMs;
       const outcome: FtsOptimizeOutcome = {
         status: 'failed',
         writes_since_optimize: writes,
-        indexes: optimized,
+        indexes: perIndex.filter((r) => r.ok).map((r) => r.index),
         duration_ms: Date.now() - startedAt,
         error: err instanceof Error ? err.message : String(err),
       };
       this._lastFtsOptimize = outcome;
       log.error('fts.optimize.failed', {
-        db_path: coordDb ?? null,
-        optimized: optimized.join(','),
+        db_path: coordDb,
+        optimized: outcome.indexes.join(','),
         writes_since_optimize: writes,
         duration_ms: outcome.duration_ms,
         error: outcome.error,
+        consecutive_failures: this._ftsOptimizeFailures,
+        backoff_ms: backoffMs,
       });
       return outcome;
     } finally {
       this._inFlightOps--;
+    }
+  }
+
+  /**
+   * (4cd68c4e) The ONE `OPTIMIZE INDEX` loop, shared by the in-service idle
+   * pass and the offline entry point. Runs every index-method (`USING fts`)
+   * index in turn, recording one `perIndex` entry each (the failing one
+   * included), emitting `fts.optimize.start`/`finish`. Returns the names it
+   * optimized (empty ⇒ the store has no FTS index); rethrows the first
+   * failure. The caller owns quiescence, `_inFlightOps` and health.
+   */
+  private async _optimizeAllFtsIndexes(
+    dbPath: string,
+    writes: number | null,
+    perIndex: FtsIndexOptimizeResult[],
+  ): Promise<string[]> {
+    const rows = (await this.db.all(
+      "SELECT name FROM sqlite_master WHERE type = 'index' AND sql LIKE '%USING fts%'",
+    )) as Array<{ name: string }>;
+    const optimized: string[] = [];
+    for (const { name } of rows) {
+      const t0 = Date.now();
+      log.info('fts.optimize.start', {
+        db_path: dbPath,
+        index: name,
+        writes_since_optimize: writes,
+        // Not observable from SQL (see DEFAULT_FTS_OPTIMIZE_WRITE_THRESHOLD).
+        segments_before: null,
+      });
+      try {
+        await this.db.exec(`OPTIMIZE INDEX "${name.replace(/"/g, '""')}"`);
+      } catch (err) {
+        perIndex.push({
+          index: name,
+          ok: false,
+          duration_ms: Date.now() - t0,
+          error: err instanceof Error ? err.message : String(err),
+        });
+        throw err;
+      }
+      const durationMs = Date.now() - t0;
+      perIndex.push({ index: name, ok: true, duration_ms: durationMs });
+      optimized.push(name);
+      log.info('fts.optimize.finish', {
+        db_path: dbPath,
+        index: name,
+        writes_since_optimize: writes,
+        segments_before: null,
+        duration_ms: durationMs,
+      });
+    }
+    return optimized;
+  }
+
+  /**
+   * (4cd68c4e) Implementation of the exported `optimizeFtsIndexes` — static so
+   * it can read the opened instance's lease token for the post-open
+   * quiescence re-check.
+   */
+  static async optimizeFtsIndexesOffline(dbPath: string): Promise<FtsOfflineOptimizeReport> {
+    const startedAt = Date.now();
+    const base = { indexes: [] as string[], per_index: [] as FtsIndexOptimizeResult[] };
+    if (!existsSync(dbPath)) {
+      const report: FtsOfflineOptimizeReport = {
+        ...base,
+        status: 'failed',
+        reason: 'not_found',
+        db_path: dbPath,
+        duration_ms: 0,
+        error: `db not found: ${dbPath}`,
+      };
+      log.error('fts.optimize.offline.failed', { db_path: dbPath, reason: 'not_found' });
+      return report;
+    }
+    const canonical = canonicalDbPath(dbPath);
+    const refuse = (reason: 'peers' | 'no_lease', pids: number[]): FtsOfflineOptimizeReport => {
+      log.warn('fts.optimize.offline.refused', {
+        db_path: canonical,
+        reason,
+        peer_count: pids.length,
+        peer_pids: pids.join(','),
+      });
+      return {
+        ...base,
+        status: 'refused',
+        reason,
+        db_path: canonical,
+        peer_count: pids.length,
+        peer_pids: pids,
+        duration_ms: Date.now() - startedAt,
+      };
+    };
+    // Before opening: a live lease peer (e.g. a running memory-server) means
+    // the service is up — the merge blocks it for tens of seconds. Refuse.
+    const pre = storeQuiescence(canonical);
+    if (!pre.quiescent) return refuse('peers', pre.livePeers.map((p) => p.pid));
+
+    const openFailed = (err: unknown): FtsOfflineOptimizeReport => {
+      const error = err instanceof Error ? err.message : String(err);
+      log.error('fts.optimize.offline.failed', { db_path: canonical, stage: 'open', error });
+      return { ...base, status: 'failed', db_path: canonical, duration_ms: Date.now() - startedAt, error };
+    };
+    // Idle flush far out: the adapter must not idle-release mid-pass.
+    let adapter: TursoAdapterImpl;
+    try {
+      adapter = await TursoAdapterImpl.connect({ dbPath: canonical, idleFlushMs: 3_600_000 });
+    } catch (err) {
+      return openFailed(err);
+    }
+    try {
+      // A freshly connected instance takes its lease with its first operation
+      // (measured: `_lease` is null straight after connect(), set after one
+      // statement), so issue one before the re-check.
+      try {
+        await adapter.executeGet('SELECT 1 AS one');
+      } catch (err) {
+        return openFailed(err);
+      }
+      // After opening, excluding our own lease: closes most of the window in
+      // which a peer could have started between the two checks.
+      if (!adapter._lease) return refuse('no_lease', []);
+      const post = storeQuiescence(canonical, adapter._lease.token);
+      if (!post.quiescent) return refuse('peers', post.livePeers.map((p) => p.pid));
+
+      const perIndex: FtsIndexOptimizeResult[] = [];
+      adapter._inFlightOps++;
+      try {
+        await adapter._ensureHealthy();
+        log.info('fts.optimize.offline.start', { db_path: canonical });
+        const optimized = await adapter._optimizeAllFtsIndexes(canonical, null, perIndex);
+        const report: FtsOfflineOptimizeReport = {
+          status: 'optimized',
+          db_path: canonical,
+          indexes: optimized,
+          per_index: perIndex,
+          duration_ms: Date.now() - startedAt,
+        };
+        log.info('fts.optimize.offline.finish', {
+          db_path: canonical,
+          indexes: optimized.join(','),
+          duration_ms: report.duration_ms,
+        });
+        return report;
+      } catch (err) {
+        const error = err instanceof Error ? err.message : String(err);
+        log.error('fts.optimize.offline.failed', { db_path: canonical, error });
+        return {
+          status: 'failed',
+          db_path: canonical,
+          indexes: perIndex.filter((r) => r.ok).map((r) => r.index),
+          per_index: perIndex,
+          duration_ms: Date.now() - startedAt,
+          error,
+        };
+      } finally {
+        adapter._inFlightOps--;
+      }
+    } finally {
+      try {
+        await adapter.close();
+      } catch (err) {
+        log.error('fts.optimize.offline.close_failed', {
+          db_path: canonical,
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
     }
   }
 
@@ -2555,7 +2828,6 @@ export class TursoAdapterImpl implements TursoAdapter {
         if (opts.walFlushStrategy !== undefined) instance._walFlushStrategy = opts.walFlushStrategy;
         if (opts.ftsOptimizeWriteThreshold !== undefined) {
           instance._ftsOptimizeWriteThreshold = opts.ftsOptimizeWriteThreshold;
-          instance._ftsWritesSinceOptimize = opts.ftsOptimizeWriteThreshold;
         }
         instance._armIdleFlush();
 
@@ -2780,7 +3052,6 @@ export class TursoAdapterImpl implements TursoAdapter {
       if (opts.walFlushStrategy !== undefined) instance._walFlushStrategy = opts.walFlushStrategy;
       if (opts.ftsOptimizeWriteThreshold !== undefined) {
         instance._ftsOptimizeWriteThreshold = opts.ftsOptimizeWriteThreshold;
-        instance._ftsWritesSinceOptimize = opts.ftsOptimizeWriteThreshold;
       }
       instance._capFlushEnabled = true;
       if (opts.walCapBytes !== undefined) {
@@ -3697,4 +3968,24 @@ export class TursoAdapterImpl implements TursoAdapter {
       this._inFlightOps--;
     }
   }
+}
+
+/**
+ * (4cd68c4e) OFFLINE FTS maintenance: merge every Turso FTS (`USING fts`)
+ * index's segment backlog with `OPTIMIZE INDEX`, then close.
+ *
+ * This is the ONE place a pre-existing backlog is merged. The in-service idle
+ * pass never attempts it: on prod's ~5,001 segments it is a 27–34 s merge that
+ * holds the WAL write lock and runs synchronously on the main thread, so every
+ * peer would outlast its busy timeout. Run it with the service STOPPED
+ * (`memory fts-optimize --db <path>`).
+ *
+ * Refuses (`status: 'refused'`, nothing run) when a live lease peer holds the
+ * store — checked before opening and again after, excluding its own lease.
+ * Never throws for an operational failure: the report carries `failed` and the
+ * error. Emits `fts.optimize.offline.{start,finish,failed,refused}` plus the
+ * per-index `fts.optimize.start`/`finish` events.
+ */
+export async function optimizeFtsIndexes(dbPath: string): Promise<FtsOfflineOptimizeReport> {
+  return TursoAdapterImpl.optimizeFtsIndexesOffline(dbPath);
 }

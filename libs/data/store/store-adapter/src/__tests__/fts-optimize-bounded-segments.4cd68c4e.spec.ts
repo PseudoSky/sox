@@ -89,11 +89,9 @@ tursoDescribe('4cd68c4e — FTS segments are bounded by an idle-point OPTIMIZE I
       ftsOptimizeWriteThreshold: 200,
     });
     try {
-      // The fresh-process "unknown backlog" pass: a new instance starts AT the
-      // threshold, so its first idle point optimizes once.
-      await a.executeGet('SELECT 1 AS one');
-      await until(() => a.ftsMaintenance.last?.status === 'optimized', 60_000, 'first (catch-up) optimize');
-      infoSpy.mockClear();
+      // A fresh instance starts at 0 (no first-pass optimize — the backlog is
+      // the offline entry point's job; see 4cd68c4e-first-pass.spec.ts).
+      expect(a.ftsMaintenance.writesSinceOptimize).toBe(0);
 
       // Accumulate 400 single-row commits = ~400 segments.
       for (let i = 0; i < 400; i++) {
