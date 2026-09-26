@@ -24,7 +24,11 @@ import * as os from 'node:os';
 import { performance } from 'node:perf_hooks';
 import { log, forkChild, _recordChildTelemetry, currentRuntimeState } from '@adhd/sox-telemetry';
 import type { ChildTelemetrySnapshot } from '@adhd/sox-telemetry';
-import { resolveFastembedLockPath, resolveFastembedServiceLabel } from './fastembedLock.js';
+import {
+  classifyLockHolder,
+  resolveFastembedLockPath,
+  resolveFastembedServiceLabel,
+} from './fastembedLock.js';
 import { attachOnnxStderrFilter } from './onnxStderrFilter.js';
 import { resolveEmbedHostConfig } from './embedHostConfig.js';
 import { FunneledFastembedClient, resetSharedFastembedHost } from './funnelClient.js';
@@ -58,15 +62,14 @@ function resolveFastembedHostPath(): string {
   return sibling;
 }
 
-/** True if a process with this pid is alive (best-effort; ESRCH => dead). Not
- *  imported from `fastembedProcessHost.ts` — see `detectCompetingFastembedHost`. */
-function isPidAlive(pid: number): boolean {
+/** `kill(pid, 0)` liveness — no exec, safe on the request path. EPERM ⇒ alive. */
+function pidAliveNoExec(pid: number): boolean {
   if (!Number.isFinite(pid) || pid <= 0) return false;
   try {
     process.kill(pid, 0);
     return true;
-  } catch {
-    return false;
+  } catch (e) {
+    return (e as NodeJS.ErrnoException).code === 'EPERM';
   }
 }
 
@@ -171,14 +174,31 @@ export function detectCompetingFastembedHost(
       startedAt?: unknown;
       poolGroup?: unknown;
       service?: unknown;
+      ppid?: unknown;
     };
     const pid = typeof raw.pid === 'number' ? raw.pid : null;
-    const isKnownPoolSibling =
-      typeof raw.poolGroup === 'string' && ownPoolGroup !== undefined && raw.poolGroup === ownPoolGroup;
-    // (BL-432) Same-service suppression — see this function's doc comment.
-    const isSameService =
-      typeof raw.service === 'string' && ownService !== undefined && raw.service === ownService;
-    if (pid === null || pid === ownPid || !isPidAlive(pid) || isKnownPoolSibling || isSameService) {
+    // cfe12302: the same classification the writer uses — minus the `ps`
+    // identity probe, which is a synchronous exec and this runs on the request
+    // path. The lock's recorded `ppid` still identifies our OWN children (any
+    // of our pools' members, across a reset); liveness is `kill(pid, 0)`.
+    const verdict =
+      pid === null
+        ? 'dead'
+        : classifyLockHolder(
+            {
+              pid,
+              ...(typeof raw.poolGroup === 'string' ? { poolGroup: raw.poolGroup } : {}),
+              ...(typeof raw.service === 'string' ? { service: raw.service } : {}),
+            },
+            { pid: ownPid, ppid: process.pid, poolGroup: ownPoolGroup, service: ownService },
+            {
+              alive: pidAliveNoExec(pid),
+              zombie: false,
+              ppid: typeof raw.ppid === 'number' ? raw.ppid : null,
+              startMs: null,
+            },
+          );
+    if (pid === null || verdict !== 'competing') {
       _competingHostCache = null;
       return null;
     }
@@ -1603,16 +1623,10 @@ export class AdaptiveFastembedProcessPool implements SharedFastembedClient {
       return results[0] as T;
     }
 
-    // Any real admission means the pool is not idle right now — cancel any
+    // Any admission means the pool is not idle right now — cancel any
     // in-progress idle clock so `maybeShrink()` requires a fresh full
-    // `SHRINK_IDLE_MS` window starting from here. A keep-warm tick
-    // (`embedHostMain.ts`, tagged `_keepWarm: true`) is synthetic demand —
-    // it must NOT look like real traffic to the shrink policy, or a host
-    // sitting idle except for its own keep-warm ticks would never shrink
-    // back toward `minSize`.
-    if (payload['_keepWarm'] !== true) {
-      this.idleSinceMs = null;
-    }
+    // `SHRINK_IDLE_MS` window starting from here.
+    this.idleSinceMs = null;
 
     // Evaluate the grow condition BEFORE reserving this request's own slot —
     // the ratio should reflect backlog that existed independent of this
@@ -1680,12 +1694,11 @@ let _privateSingleton: PrivateFastembedProcess | null = null;
  * The concrete shape {@link getPrivateFastembedProcess} returns: a
  * `SharedFastembedClient` that also exposes `pendingCount` and `lastInit`. The
  * extra members are a SUBTYPE of the public interface (whose shape is
- * deliberately unchanged) — only the host process depends on them: `pendingCount`
- * to know when in-flight work has drained before it can reap itself, and
- * `lastInit` (BUG-021) so `embedHostMain.ts`'s keep-warm tick can skip ticking
- * before any client has actually initialized the model — both concrete pool
- * implementations (`FastembedProcessPool`, `AdaptiveFastembedProcessPool`)
- * already expose a `lastInit` getter; this type just needs to say so.
+ * deliberately unchanged): `pendingCount` is an input to the host's reap policy
+ * (`reapDueInMs`, ADR-0022), and `lastInit` (BUG-021) reports the payload the
+ * pool re-inits respawned members with — both concrete pool implementations
+ * (`FastembedProcessPool`, `AdaptiveFastembedProcessPool`) already expose it;
+ * this type just needs to say so.
  */
 export type PrivateFastembedProcess = SharedFastembedClient & {
   readonly pendingCount: number;

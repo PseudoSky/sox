@@ -30,6 +30,7 @@
       ]
     },
     "test": {
+      "dependsOn": ["^build", "build"],
       "executor": "nx:run-commands",
       "options": {
         "command": "vitest run --config libs/data/embed/embedding-provider/vitest.config.ts",

@@ -29,11 +29,15 @@
  */
 
 import { dialBackend, ensureBackend, probeSocketLive, type BackendConnection } from '@adhd/sox-service-proxy';
+import { log } from '@adhd/sox-telemetry';
 import { TransientEmbeddingError, PermanentEmbeddingError } from './errors.js';
 import {
-  EMBED_HOST_IDLE_GRACE_ENV,
+  buildEmbedHostEnv,
+  computeEmbedHostBuildId,
   embedHostSingletonKey,
+  encodeEmbedHostArgs,
   embedHostSocketPath,
+  invalidateEmbedHostBuildId,
   resolveEmbedHostConfig,
   resolveEmbedHostMainPath,
   resolveEmbedHostStderrLogPath,
@@ -75,6 +79,14 @@ function msg(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
 
+/**
+ * 2fadb3cd: the host went away under a request (it retired, crashed, or the
+ * dial gave up). Embeds are idempotent, so `request()` re-ensures a host and
+ * retries such a request ONCE. Timeouts and aborts are NOT this class — the
+ * caller's own bound has already been spent.
+ */
+class HostGoneError extends TransientEmbeddingError {}
+
 export class FunneledFastembedClient implements SharedFastembedClient {
   private conn: BackendConnection | null = null;
   private socketPath: string | null = null;
@@ -85,6 +97,10 @@ export class FunneledFastembedClient implements SharedFastembedClient {
   private nextId = 1;
   private consecutiveEnsureFailures = 0;
   private circuitOpenUntil = 0;
+  /** Successful dial connects on the current connection (1 = first connect). */
+  private connects = 0;
+  /** Requests handed to the dial connection and not yet answered. */
+  private _sent = 0;
 
   constructor() {
     _activeClient = this;
@@ -123,6 +139,41 @@ export class FunneledFastembedClient implements SharedFastembedClient {
       }
     }
 
+    // dc73d9b6: every request carries the model identity, so ANY host that
+    // answers this path — including a successor the dial layer replays to —
+    // can load the model itself and serve it. Per-connection init is unsound.
+    const ctx = this.initContext;
+    const params = ctx ? { ...payload, model: ctx.model, cacheDir: ctx.cacheDir } : payload;
+    const method = `embedding.${type}`;
+    const deadline = timeoutMs !== undefined && timeoutMs > 0 ? Date.now() + timeoutMs : undefined;
+
+    this._pending++;
+    try {
+      try {
+        return await this.sendOnce<T>(method, params, timeoutMs, signal);
+      } catch (e) {
+        if (!(e instanceof HostGoneError)) throw e;
+        // 2fadb3cd: the host went away under this request. Re-ensure (spawning
+        // a successor if none answers) and retry ONCE inside the caller's own
+        // bound — an embed is idempotent.
+        const remaining = deadline === undefined ? undefined : deadline - Date.now();
+        if (remaining !== undefined && remaining <= 0) throw e;
+        log.info('embedding_provider.funnel.retry', { method, reason: e.message, remaining_ms: remaining ?? null });
+        this._started = false;
+        return await this.sendOnce<T>(method, params, remaining, signal);
+      }
+    } finally {
+      this._pending--;
+    }
+  }
+
+  /** Ensure a host, send one request, await its response (bounded). */
+  private async sendOnce<T>(
+    method: string,
+    params: Record<string, unknown>,
+    timeoutMs: number | undefined,
+    signal: AbortSignal | undefined,
+  ): Promise<T> {
     await this.ensureHost();
     const conn = this.conn;
     if (!conn) {
@@ -132,25 +183,25 @@ export class FunneledFastembedClient implements SharedFastembedClient {
         `embedding funnel: no connection to host at ${this.socketPath ?? '(unresolved)'}`,
       );
     }
-
     const id = `embed-funnel-${this.nextId++}`;
-    const request = { jsonrpc: '2.0' as const, id, method: `embedding.${type}`, params: payload };
-    this._pending++;
+    this._sent++;
+    let resp: Record<string, unknown>;
     try {
-      const resp = await this.awaitResponse(conn.send(request), id, timeoutMs, signal);
-      const error = (resp as { error?: RpcError }).error;
-      if (error) throw this.mapError(error);
-      return (resp as { result?: unknown }).result as T;
+      resp = await this.awaitResponse(conn.send({ jsonrpc: '2.0', id, method, params }), id, timeoutMs, signal);
     } finally {
-      this._pending--;
+      this._sent--;
     }
+    const error = (resp as { error?: RpcError }).error;
+    if (error) throw this.mapError(error);
+    return (resp as { result?: unknown }).result as T;
   }
 
   /**
    * NO-OP by design: under `host: 'shared'` the host is shared with every other
    * consumer on the machine — a consumer must never kill it. Its lifetime is
-   * governed solely by its own debounced, ref-counted teardown
-   * (`embedHostMain.ts`). Kept to satisfy `SharedFastembedClient`.
+   * governed solely by its own work-driven retire (ADR-0022): it retires `W`
+   * after its last completed work, irrespective of how many consumers are
+   * connected (`embedHostMain.ts`). Kept to satisfy `SharedFastembedClient`.
    */
   async terminate(): Promise<void> {
     // Intentionally empty — see the method doc.
@@ -161,10 +212,15 @@ export class FunneledFastembedClient implements SharedFastembedClient {
   private mapError(error: RpcError): Error {
     const where = this.socketPath ?? '(unresolved socket)';
     if (error.code === -32001) {
-      return new TransientEmbeddingError(`embedding host unavailable at ${where}: ${error.message}`, 1_000);
+      return new HostGoneError(`embedding host unavailable at ${where}: ${error.message}`, 1_000);
     }
     if (error.code === -32601) {
       return new PermanentEmbeddingError(`embedding host does not implement the method: ${error.message}`);
+    }
+    if (error.code === -32602) {
+      // dc73d9b6: the host serves a different model/cacheDir — retrying the
+      // same request can never succeed.
+      return new PermanentEmbeddingError(`embedding host at ${where} refused the request: ${error.message}`);
     }
     // Application error from the private ONNX host (e.g. "Model not
     // initialized") — preserve the pre-funnel `new Error(message)` shape so
@@ -223,12 +279,7 @@ export class FunneledFastembedClient implements SharedFastembedClient {
         (err: unknown) => {
           if (settled) return;
           settle();
-          reject(
-            new TransientEmbeddingError(
-              `embedding funnel transport error: ${msg(err)}`,
-              1_000,
-            ),
-          );
+          reject(new HostGoneError(`embedding funnel transport error: ${msg(err)}`, 1_000));
         },
       );
     });
@@ -262,56 +313,145 @@ export class FunneledFastembedClient implements SharedFastembedClient {
       );
     }
     const ep = process.env['SOX_EMBED_EXECUTION_PROVIDER'] ?? 'auto';
-    const key = embedHostSingletonKey(ctx.model, ep, ctx.cacheDir);
-    const socketPath = embedHostSocketPath(cfg, key);
+    // 2fe52b0f: the key carries the content build id of the host we would
+    // spawn, so we never dial a host from a foreign build. `computeEmbedHostBuildId`
+    // itself re-hashes when the host dir's fingerprint changed (a rebuild), so a
+    // long-lived consumer that outlives an in-place `dist/` rebuild still gets a
+    // fresh id here without recreating this client.
+    const hostMain = resolveEmbedHostMainPath();
+    let buildId = computeEmbedHostBuildId(hostMain);
+    let key = embedHostSingletonKey(ctx.model, ep, ctx.cacheDir, buildId);
+    let socketPath = embedHostSocketPath(cfg, key);
 
-    if (this.socketPath !== socketPath) {
-      // The identity changed (a different model/ep/cacheDir). Drop the old dial
-      // and re-point. The old host is NOT killed — it self-reaps.
-      this.conn?.close();
-      this.conn = null;
-      this._started = false;
-      this.socketPath = socketPath;
-    }
+    const repoint = (): void => {
+      if (this.socketPath !== socketPath) {
+        // The identity changed (a different model/ep/cacheDir, or [2fe52b0f] a
+        // rebuild changed the build id). Drop the old dial and re-point. The
+        // old host is NOT killed — it self-reaps.
+        this.conn?.close();
+        this.conn = null;
+        this._started = false;
+        this.socketPath = socketPath;
+      } else if (this.conn && !this.conn.isConnected() && this._sent === 0) {
+        // 2fadb3cd: a dial that has been down with nothing outstanding carries a
+        // stale down-since clock and a maxed backoff — its next connect failure
+        // would fast-fail a fresh request at once. Start over with a fresh dial.
+        // (With work pending, keep it: its queue replays to the successor.)
+        this.conn.close();
+        this.conn = null;
+      }
+    };
+    repoint();
 
-    const live = await probeSocketLive(socketPath, PROBE_TIMEOUT_MS);
-    if (!live) {
+    let live = await probeSocketLive(socketPath, PROBE_TIMEOUT_MS);
+    // [2fe52b0f] backstop: normally `computeEmbedHostBuildId`'s fingerprint
+    // check already catches a rebuild before we ever spawn. This loop only
+    // fires (once) when the host we spawn still rejects our build id — e.g. a
+    // filesystem with coarse mtimes left the fingerprint unchanged across a
+    // rebuild. On that specific failure we force a full rehash and retry with
+    // the corrected identity instead of counting the failure and opening the
+    // circuit on a stale id forever.
+    for (let attempt = 0; !live && attempt < 2; attempt++) {
+      const serviceId = process.env['SOX_SERVICE_ID'];
+      // 6660076e: the host never inherits its spawner's identity/config/
+      // permission env — a service reaper would otherwise treat the shared host
+      // as that service's own process. Provenance travels as argv, telemetry-only.
+      const hostEnv = buildEmbedHostEnv(process.env);
+      if (hostEnv.denied.length > 0) {
+        log.info('embedding_provider.funnel.env_denied', { denied_env: hostEnv.denied });
+      }
+      const hostArgs = encodeEmbedHostArgs({
+        socketPath,
+        model: ctx.model,
+        cacheDir: ctx.cacheDir,
+        ep,
+        buildId,
+        // The typed idle window (`EmbedHostConfig.idleGraceMs`) travels as argv.
+        idleWindowMs: cfg.idleGraceMs,
+        spawner: {
+          pid: process.pid,
+          serviceId: serviceId !== undefined && serviceId !== '' ? serviceId : null,
+          entry: process.argv[1] ?? null,
+          deniedEnv: hostEnv.denied,
+        },
+      });
       const result = await ensureBackend({
         socketPath,
         singletonKey: key,
         command: process.execPath,
-        args: [resolveEmbedHostMainPath()],
-        env: {
-          ...process.env,
-          SOX_EMBED_HOST_SOCKET: socketPath,
-          // Internal cross-process transport for the typed idle bound: the
-          // spawned host consumes the value the spawner resolved here
-          // (`EmbedHostConfig.idleGraceMs`), which is what makes the resolved
-          // config field the consumed surface rather than a dead declaration.
-          // The public knob is `EmbeddingProviderConfig.idleGraceMs`.
-          [EMBED_HOST_IDLE_GRACE_ENV]: String(cfg.idleGraceMs),
-        },
+        args: [hostMain, ...hostArgs],
+        env: hostEnv.env,
         stderrLogPath: resolveEmbedHostStderrLogPath(cfg),
         readyTimeoutMs: HOST_READY_TIMEOUT_MS,
       });
+      log.info('embedding_provider.funnel.spawn', {
+        disposition: result.disposition,
+        pid: result.pid ?? null,
+        build_id: buildId,
+        key,
+        spawner_pid: process.pid,
+        spawner_service: serviceId ?? null,
+        denied_env: hostEnv.denied,
+        dropped_env_count: hostEnv.dropped.length,
+        attempt,
+      });
       if (result.disposition === 'failed') {
+        // embedHostMain.ts exits 3 (`process.exit(3)`) specifically on a build
+        // id mismatch (ensure-backend.ts's exit-monitoring stamps the code
+        // into `detail` as `(exit code 3)`). Any other failure shape (timeout,
+        // other exit code) is a real failure, not a stale-id symptom.
+        const buildMismatch = /\(exit code 3\)/.test(result.detail);
+        if (buildMismatch && attempt === 0) {
+          log.warn('embedding_provider.funnel.build_id_stale', {
+            detail: result.detail,
+            stale_build_id: buildId,
+            socket: socketPath,
+          });
+          invalidateEmbedHostBuildId(hostMain);
+          buildId = computeEmbedHostBuildId(hostMain);
+          key = embedHostSingletonKey(ctx.model, ep, ctx.cacheDir, buildId);
+          socketPath = embedHostSocketPath(cfg, key);
+          repoint();
+          live = await probeSocketLive(socketPath, PROBE_TIMEOUT_MS);
+          continue;
+        }
         this.noteEnsureFailure();
         throw new TransientEmbeddingError(
           `embedding funnel could not bring up a host at ${socketPath}: ${result.detail}`,
           1_000,
         );
       }
+      live = true;
     }
 
     this.consecutiveEnsureFailures = 0;
     if (!this.conn) {
+      this.connects = 0;
       this.conn = dialBackend({
         socketPath,
+        onConnect: () => {
+          this.connects++;
+          if (this.connects > 1) {
+            log.info('embedding_provider.funnel.reconnected', { attempt: this.connects - 1, socket: socketPath });
+          }
+        },
         onDisconnect: () => {
-          // The host may have self-reaped (idle) or crashed. The next request's
-          // `send()` re-dials and, on failure, re-ensures. Mark unstarted so
-          // `ensureHost()` runs the full probe/spawn path again.
+          // The host retired or died. Mark unstarted so the next ensure runs the
+          // full probe/spawn path.
           this._started = false;
+          // 2fadb3cd: with requests in flight, bring a successor up NOW. The
+          // dial layer re-dials this path and replays the unanswered requests;
+          // it never spawns, so without this they would sit until the 10 s
+          // give-up and fail.
+          if (this._sent > 0) {
+            void this.ensureHost().catch((e: unknown) => {
+              log.warn('embedding_provider.funnel.reensure_failed', {
+                error: msg(e),
+                pending: this._sent,
+                socket: socketPath,
+              });
+            });
+          }
         },
       });
     }
@@ -335,9 +475,13 @@ export class FunneledFastembedClient implements SharedFastembedClient {
     if (!this.socketPath) return;
     try {
       await this.control('embedding.reset');
-    } catch {
+    } catch (e) {
       // Best-effort: an unreachable host has either reaped (fine) or is wedged;
       // dropping the connection lets the next request re-ensure.
+      log.warn('embedding_provider.funnel.reset_host_unreachable', {
+        error: msg(e),
+        socket: this.socketPath,
+      });
     } finally {
       this.dropConnection();
     }

@@ -1,4 +1,7 @@
-import { describe, it, expect } from 'vitest';
+import { afterAll, beforeAll, describe, it, expect } from 'vitest';
+import * as fs from 'node:fs';
+import * as os from 'node:os';
+import * as path from 'node:path';
 import { createEmbeddingProvider } from './index.js';
 import { getSharedFastembedProcess } from './sharedFastembedProcess.js';
 
@@ -25,6 +28,21 @@ import { getSharedFastembedProcess } from './sharedFastembedProcess.js';
  * process alive, so the crash class is structurally impossible.
  */
 describe('BL-238/BL-171 — concurrent fastembed consumers share ONE child process (no crash)', () => {
+  // The funnel host this suite spawns must never bind in the REAL data root
+  // (~/.adhd/sox-ecosystem/run): a test build answering a production socket is
+  // the 2026-09-25 outage shape (ADR-0022). Sandbox the data root.
+  let prevHome: string | undefined;
+  let sandboxHome = '';
+  beforeAll(() => {
+    prevHome = process.env['SOX_ECOSYSTEM_HOME'];
+    sandboxHome = fs.mkdtempSync(path.join(os.tmpdir(), 'sox-bl238-home-'));
+    process.env['SOX_ECOSYSTEM_HOME'] = sandboxHome;
+  });
+  afterAll(() => {
+    if (prevHome === undefined) delete process.env['SOX_ECOSYSTEM_HOME'];
+    else process.env['SOX_ECOSYSTEM_HOME'] = prevHome;
+  });
+
   it(
     'two concurrent FastembedProvider instances both complete real embed inference without crashing the process',
     async () => {

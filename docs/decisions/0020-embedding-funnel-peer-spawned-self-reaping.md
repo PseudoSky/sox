@@ -1,6 +1,6 @@
 # ADR-0020 — The embedding funnel is peer-spawned and self-reaping; no managed service
 
-**Status:** ACCEPTED (2026-09-22).
+**Status:** ACCEPTED (2026-09-22); D2 and D6 SUPERSEDED BY [ADR-0022](./0022-embedding-funnel-is-a-work-driven-drainer.md).
 **Owner:** pseudosky.
 **Grounding:** owner directive (verbatim — *"I do not approve a managed service for embedding"*), the
 approved `SPEC-EMBEDDING-FUNNEL.md`, and the shipped implementation in

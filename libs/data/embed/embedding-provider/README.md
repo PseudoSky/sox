@@ -44,7 +44,7 @@ interface EmbeddingProviderConfig {
   model: string;
   options?: Record<string, unknown>;
   host?: 'shared' | 'private';  // default 'shared' — see "Host posture" below
-  idleGraceMs?: number;         // how long an idle shared host lingers (default 30000)
+  idleGraceMs?: number;         // idle window W: a shared host retires W after its last work (default 60000)
 }
 ```
 
@@ -110,12 +110,18 @@ Built-in models (`modelId` → dimensions):
 | `codexembed-400m` | 1024 | 8192 | code-only, ~1.6GB RAM, long context |
 
 fastembed inference is routed through **one machine-wide, peer-spawned, self-reaping host
-process** per `(model, execution-provider, cacheDir)` — not one ONNX host per consumer process.
+process** per `(build, model, execution-provider, cacheDir)` — not one ONNX host per consumer
+process. The build id in the key (a digest of the host module bytes, the Node ABI and the arch)
+means two builds on one box run two hosts and a consumer never dials a foreign build's host.
 The first consumer to need it peer-spawns the host through the service-proxy's `ensureBackend()`
 singleton spawn-lock; every other consumer on the box dials that same host over a Unix domain
-socket. The host is compute-only (it holds no store connection) and it **reaps itself**: a
-debounced, ref-counted teardown retires it `idleGraceMs` after the last client disconnects and its
-last in-flight request drains. There is no supervised service and no daemon.
+socket. The host is compute-only (it holds no store connection) and it is a **work-driven
+drainer** ([ADR-0022](../../../../docs/decisions/0022-embedding-funnel-is-a-work-driven-drainer.md)):
+it retires `idleGraceMs` after its last completed init/embed/embedBatch once nothing is in flight.
+Open connections and health probes never keep it alive, and there is no keep-warm. Every request
+carries `{model, cacheDir}` and the host loads its own model, so a consumer whose host retired or
+died is served by a respawned successor transparently (the client re-ensures and retries once).
+There is no supervised service and no daemon.
 
 #### Host posture
 
@@ -129,7 +135,7 @@ process-wide before the accessor is constructed and reported in `health().host`:
   returns the private pool directly.
 
 `EmbeddingProviderConfig.idleGraceMs` (typed config, default `DEFAULT_EMBED_HOST_IDLE_GRACE_MS` =
-30 s) sets how long a zero-client host lingers before it reaps itself. A host that fails to come up
+60 s) is the idle window `W` after the host's last completed work. A host that fails to come up
 throws a typed `TransientEmbeddingError` naming the socket — it never silently falls back to a
 private host.
 

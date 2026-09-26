@@ -170,8 +170,8 @@ export function serveBackend(opts: ServeBackendOptions): Promise<BackendHandle> 
     if (!useInheritedFd) {
       try {
         fs.mkdirSync(path.dirname(opts.socketPath), { recursive: true, mode: 0o700 });
-      } catch {
-        /* dir may already exist */
+      } catch (err) {
+        diag(`[service-proxy backend] mkdir ${path.dirname(opts.socketPath)} failed: ${errMessage(err)}`);
       }
 
       // SA-4: Probe-connect before bind — NEVER steal a live socket.
@@ -186,11 +186,12 @@ export function serveBackend(opts: ServeBackendOptions): Promise<BackendHandle> 
             return;
           }
           // Stale socket from a dead backend — clean it so bind succeeds.
-          try { fs.unlinkSync(opts.socketPath); } catch { /* best-effort */ }
+          try { fs.unlinkSync(opts.socketPath); } catch (err) { diag(`[service-proxy backend] stale-socket unlink failed: ${errMessage(err)}`); }
           doBind();
-        }).catch(() => {
+        }).catch((probeErr: unknown) => {
           // Probe itself failed — still try to unlink the stale socket.
-          try { fs.unlinkSync(opts.socketPath); } catch { /* best-effort */ }
+          diag(`[service-proxy backend] liveness probe failed: ${errMessage(probeErr)}`);
+          try { fs.unlinkSync(opts.socketPath); } catch (err) { diag(`[service-proxy backend] stale-socket unlink failed: ${errMessage(err)}`); }
           doBind();
         });
         return; // Async probe in flight above
@@ -224,15 +225,21 @@ function doListen(
   server: net.Server,
   opts: ServeBackendOptions,
   resolve: (h: BackendHandle) => void,
-  _diag: (line: string) => void,
+  diag: (line: string) => void,
   sockets: Set<net.Socket>,
 ): void {
   server.listen(opts.socketPath, () => {
     try {
       fs.chmodSync(opts.socketPath, 0o600);
-    } catch {
-      /* best-effort perms hardening */
+    } catch (err) {
+      diag(`[service-proxy backend] chmod 0600 failed on ${opts.socketPath}: ${errMessage(err)}`);
     }
+    // 448f9d93: record WHICH filesystem object we bound. The close callback
+    // below runs only after every client connection has closed — long after
+    // libuv already unlinked the path inside `server.close()` — so by then a
+    // successor may have bound a fresh socket at the same path. Unlinking by
+    // path alone deleted that successor's socket (reproduced on Node 24.11.1).
+    const bound = statIdentity(opts.socketPath, diag);
     resolve({
       socketPath: opts.socketPath,
       close: () =>
@@ -241,14 +248,67 @@ function doListen(
           sockets.clear();
           opts.onClientCountChange?.(0);
           server.close(() => {
-            try {
-              if (fs.existsSync(opts.socketPath)) fs.unlinkSync(opts.socketPath);
-            } catch {
-              /* best-effort */
-            }
+            unlinkIfStillOurs(opts.socketPath, bound, diag);
             res();
           });
         }),
     });
   });
+}
+
+/** `(dev, ino)` of the socket file we bound — the identity the close path checks. */
+interface SocketIdentity {
+  dev: number;
+  ino: number;
+}
+
+function errMessage(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
+}
+
+function statIdentity(socketPath: string, diag: (line: string) => void): SocketIdentity | null {
+  try {
+    const st = fs.lstatSync(socketPath);
+    return { dev: st.dev, ino: st.ino };
+  } catch (err) {
+    diag(`[service-proxy backend] could not stat bound socket ${socketPath}: ${errMessage(err)}`);
+    return null;
+  }
+}
+
+/**
+ * 448f9d93: unlink `socketPath` only when it is still the exact filesystem
+ * object this listener bound. A path that is gone (libuv already unlinked it)
+ * or that now names a DIFFERENT socket (a successor bound it) is left alone.
+ * An unknown bound identity never unlinks — deleting a live successor's socket
+ * is strictly worse than leaving a stale file the next binder's probe cleans.
+ */
+function unlinkIfStillOurs(
+  socketPath: string,
+  bound: SocketIdentity | null,
+  diag: (line: string) => void,
+): void {
+  if (bound === null) return;
+  let current: fs.Stats;
+  try {
+    current = fs.lstatSync(socketPath);
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === 'ENOENT') return;
+    diag(`[service-proxy backend] could not stat ${socketPath} at close: ${errMessage(err)}`);
+    return;
+  }
+  if (current.dev !== bound.dev || current.ino !== bound.ino) {
+    diag(
+      `[service-proxy backend] not unlinking ${socketPath}: it now names a successor's socket ` +
+        `(bound ino ${bound.ino}, current ino ${current.ino})`,
+    );
+    return;
+  }
+  try {
+    fs.unlinkSync(socketPath);
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== 'ENOENT') {
+      diag(`[service-proxy backend] unlink ${socketPath} failed: ${errMessage(err)}`);
+    }
+  }
 }

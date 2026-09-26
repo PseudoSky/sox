@@ -33,6 +33,8 @@ import * as path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { ensureBackend } from '@adhd/sox-service-proxy';
 import { afterEach, describe, expect, it } from 'vitest';
+import { computeEmbedHostBuildId, encodeEmbedHostArgs } from './embedHostConfig.js';
+import { hostShimSource, stubHostSource } from './test-support/funnelHarness.js';
 
 const SRC_DIR = __dirname;
 const INDEX_TS = pathToFileURL(path.resolve(SRC_DIR, 'index.ts')).href;
@@ -151,40 +153,18 @@ function setupEnv(opts: SetupOpts = {}): FunnelEnv {
   const stubIgnoreShutdown = opts.stubIgnoreShutdown ?? false;
 
   // The private stub host: speaks the fastembed-host IPC protocol
-  // (`process.on('message')`), replies to ANY request with an embedding. No
-  // fastembed import, no model.
+  // (`process.on('message')`) and is STATEFUL like the real one — `embed` /
+  // `embedBatch` before any `init` answer "Model not initialized", so a host
+  // that forgets to load its model goes red here. No fastembed, no model.
   const privateStubPath = path.join(dir, 'fastembedProcessHost-stub.mjs');
-  fs.writeFileSync(
-    privateStubPath,
-    [
-      `let q = Promise.resolve();`,
-      `process.on('message', (msg) => {`,
-      ...(stubIgnoreShutdown
-        ? [`  // Deliberately IGNORE __shutdown: terminate() must wait its full grace.`]
-        : [`  if (msg && msg.__shutdown) { try { process.disconnect(); } catch {} return; }`]),
-      `  q = q.then(() => new Promise((resolve) => {`,
-      `    setTimeout(() => {`,
-      `      if (process.connected) process.send({ id: msg.id, embedding: [0, 0, 0] });`,
-      `      resolve();`,
-      `    }, ${stubDelayMs});`,
-      `  }));`,
-      `});`,
-      '',
-    ].join('\n'),
-  );
+  fs.writeFileSync(privateStubPath, stubHostSource({ delayMs: stubDelayMs, ignoreShutdown: stubIgnoreShutdown }));
 
   // The host shim: a UNIQUE per-test entrypoint (so `ps` can attribute pids to
   // this test) that runs the REAL `src/embedHostMain.ts` via the tsx loader
-  // (`NODE_OPTIONS=--import tsx`).
+  // (`NODE_OPTIONS=--import tsx`). The source URL is written literally: the
+  // host never inherits `SOX_EMBED_HOST_*` from its spawner.
   const shimPath = path.join(dir, 'embedHostMain-testshim.mjs');
-  fs.writeFileSync(
-    shimPath,
-    [
-      `const mod = await import(process.env.SOX_EMBED_HOST_SRC);`,
-      `await mod.runEmbedHost();`,
-      '',
-    ].join('\n'),
-  );
+  fs.writeFileSync(shimPath, hostShimSource(EMBED_HOST_TS));
 
   const consumerPath = path.join(dir, 'funnel-consumer.mjs');
   fs.writeFileSync(
@@ -240,15 +220,6 @@ function setupEnv(opts: SetupOpts = {}): FunnelEnv {
       `    const res2 = await client2.request({ type: 'embed', text: 'hello again' }, 25000);`,
       `    if (!res2 || !Array.isArray(res2.embedding)) { process.stderr.write('CONSUMER_BAD\\n'); process.exit(3); }`,
       `  }`,
-      `  if (op === 'reset-race') {`,
-      `    // Fire the host reset WITHOUT awaiting it, then exit shortly after: the`,
-      `    // host is still mid-reset (terminating its private pool) when the last`,
-      `    // client disconnects. Its request depth must keep it from reaping.`,
-      `    void mod.resetSharedFastembedProcess();`,
-      `    await new Promise((r) => setTimeout(r, 100));`,
-      `    process.stderr.write('CONSUMER_OK\\n');`,
-      `    process.exit(0);`,
-      `  }`,
       `  process.stderr.write('CONSUMER_OK\\n');`,
       `  if (naturalExit) {`,
       `    // Fall off the end with NO process.exit and NO keep-alive interval: the`,
@@ -275,10 +246,8 @@ function setupEnv(opts: SetupOpts = {}): FunnelEnv {
     SOX_ECOSYSTEM_HOME: home,
     SOX_FASTEMBED_HOST_PATH: privateStubPath,
     SOX_EMBED_HOST_MAIN: hostMain,
-    SOX_EMBED_HOST_SRC: EMBED_HOST_TS,
-    // The idle bound is set via the TYPED config in the consumer script, NOT
-    // here — `SOX_EMBED_HOST_IDLE_GRACE_MS` is only the internal spawner→host
-    // transport, which the funnel client writes from `EmbedHostConfig.idleGraceMs`.
+    // The idle bound is set via the TYPED config in the consumer script; the
+    // funnel client forwards it to the host as `--idle-window-ms`.
     FUNNEL_TEST_GRACE_MS: String(graceMs),
     SOX_EMBED_EXECUTION_PROVIDER: 'cpu',
     FUNNEL_TEST_INDEX: INDEX_TS,
@@ -302,7 +271,6 @@ type ConsumerMode =
   | 'terminate'
   | 'reset-shared'
   | 'reset-private'
-  | 'reset-race'
   | 'exit-natural';
 
 /** Spawn one consumer process and resolve when it exits. */
@@ -480,9 +448,9 @@ describe('SPEC-EMBEDDING-FUNNEL — a read-only verb spawns zero hosts (backlog 
   );
 });
 
-describe('SPEC-EMBEDDING-FUNNEL — debounced, ref-counted self-reap', () => {
+describe('SPEC-EMBEDDING-FUNNEL — work-driven self-reap (ADR-0022)', () => {
   it(
-    'reuses the SAME host pid for a second burst inside the grace window, then reaps it after the grace',
+    'reuses the SAME host pid for a second burst inside the idle window, then retires it W after the last work',
     async () => {
       const graceMs = 6_000;
       const env = setupEnv({ graceMs });
@@ -518,8 +486,19 @@ describe('SPEC-EMBEDDING-FUNNEL — rendezvous race', () => {
         socketPath,
         singletonKey: `embedding-host:race:${env.dir}`,
         command: process.execPath,
-        args: [env.shimPath],
-        env: { ...env.env, SOX_EMBED_HOST_SOCKET: socketPath },
+        args: [
+          env.shimPath,
+          ...encodeEmbedHostArgs({
+            socketPath,
+            model: 'stub',
+            cacheDir: env.cache,
+            ep: 'cpu',
+            buildId: computeEmbedHostBuildId(env.shimPath),
+            idleWindowMs: 10_000,
+            spawner: { pid: process.pid, serviceId: null, entry: null, deniedEnv: [] },
+          }),
+        ],
+        env: { ...env.env },
         stderrLogPath: path.join(env.home, 'run', 'race.stderr.log'),
         readyTimeoutMs: 15_000,
       });
@@ -535,7 +514,7 @@ describe('SPEC-EMBEDDING-FUNNEL — rendezvous race', () => {
 
 describe('SPEC-EMBEDDING-FUNNEL — crash + stale-socket recovery', () => {
   it(
-    'kill -9 the host mid-request ⇒ the consumer gets a typed error (bounded); the NEXT consumer re-ensures and succeeds',
+    'kill -9 the host mid-request ⇒ the consumer\'s in-flight request is served by a respawned host (2fadb3cd)',
     async () => {
       const env = setupEnv({ graceMs: 10_000, stubDelayMs: 3_000 });
 
@@ -549,20 +528,16 @@ describe('SPEC-EMBEDDING-FUNNEL — crash + stale-socket recovery', () => {
       killPid(hostPid, 'SIGKILL');
       await waitForPidGone(hostPid, 5_000);
 
-      // The holder either fails typed or (if its request already drained) is
-      // fine — but it must never hang: bound it.
+      // The consumer re-ensures a successor and its request is replayed there:
+      // it SUCCEEDS, bounded (never hangs, never surfaces the crash).
       const holderExit = new Promise<number | null>((resolve) => holder.on('exit', (c) => resolve(c)));
       const code = await Promise.race([
         holderExit,
-        new Promise<number | null>((resolve) => setTimeout(() => resolve(-999), 20_000).unref?.()),
+        new Promise<number | null>((resolve) => setTimeout(() => resolve(-999), 30_000).unref?.()),
       ]);
-      expect(code, 'consumer must terminate, never hang').not.toBe(-999);
-      // If it failed, it failed with a typed funnel error (TransientEmbeddingError message).
       void ok.catch(() => undefined);
+      expect(code, 'consumer must succeed, never hang').toBe(0);
 
-      // The next consumer re-ensures and succeeds.
-      const next = await runConsumers(env, 1, 'shared', 200);
-      expect(next[0]?.code, next[0]?.stderr).toBe(0);
       const hosts = pidsMatching(path.join(env.dir, 'embedHostMain'));
       expect(hosts.length).toBe(1);
       expect(hosts[0]).not.toBe(hostPid);
@@ -659,38 +634,12 @@ describe('SPEC-EMBEDDING-FUNNEL — the host resolves the private accessor at EV
   }
 });
 
-describe('SPEC-EMBEDDING-FUNNEL — the reap gate honors in-flight work (not just the pool counter)', () => {
-  it(
-    'a client that disconnects while the host is mid-work does NOT trigger a reap — the host survives',
-    async () => {
-      // grace 300ms << the ~1s `terminate()` the in-flight reset is awaiting
-      // (the stub ignores `__shutdown`, so the graceful teardown runs its full
-      // TERMINATE_GRACE_MS). The consumer fires `embedding.reset` and exits, so
-      // the last client is gone while the host's own request is still in flight.
-      const env = setupEnv({ graceMs: 300, stubIgnoreShutdown: true });
-      const result = await runConsumers(env, 1, 'reset-race', 0);
-      expect(result[0]?.code, result[0]?.stderr).toBe(0);
-      const hosts = pidsMatching(path.join(env.dir, 'embedHostMain'));
-      expect(hosts.length, 'exactly one host').toBe(1);
-      const hostPid = hosts[0]!;
-
-      // At ~650ms after the consumer exits: past the 300ms grace (the OLD gate,
-      // which read `pendingCount === 0` because `terminate()` cleared the pool,
-      // would have reaped the host by now) but still inside the 1s reset
-      // teardown (the NEW gate sees `inFlight === 1` and does not arm).
-      await new Promise((r) => setTimeout(r, 650));
-      expect(
-        pidsMatching(path.join(env.dir, 'embedHostMain')),
-        'the host must survive while its own request is in flight',
-      ).toEqual([hostPid]);
-    },
-    60_000,
-  );
-});
+// The in-flight-work reap gate and the connection-independence of the reap are
+// covered by 68a4bf68-reap-on-work.spec.ts (ADR-0022 §1).
 
 describe('SPEC-EMBEDDING-FUNNEL — the idle bound is typed config', () => {
   it(
-    'a non-default typed idleGraceMs (2s) takes effect — the host reaps ~2s after the last client, not the 30s default',
+    'a non-default typed idleGraceMs (2s) takes effect — the host retires ~2s after its last work, not the 60s default',
     async () => {
       const env = setupEnv({ graceMs: 2_000 });
       const first = await runConsumers(env, 1, 'shared', 200);
@@ -700,11 +649,11 @@ describe('SPEC-EMBEDDING-FUNNEL — the idle bound is typed config', () => {
       const hostPid = hosts[0]!;
 
       // If the typed value did not flow through `EmbedHostConfig.idleGraceMs`
-      // to the host, the host would reap at the 30s DEFAULT and this 10s bound
+      // to the host, the host would retire at the 60s DEFAULT and this 10s bound
       // would time out — so the test is RED without the fix.
       const t0 = Date.now();
       await waitForPidGone(hostPid, 10_000);
-      expect(Date.now() - t0, 'reaped well under the 30s default').toBeLessThan(9_000);
+      expect(Date.now() - t0, 'retired well under the 60s default').toBeLessThan(9_000);
     },
     60_000,
   );

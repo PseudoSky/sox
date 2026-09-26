@@ -1,153 +1,87 @@
 /**
- * embedHostMain.ts — the peer-spawned, self-reaping embedding host process
- * (SPEC-EMBEDDING-FUNNEL.md §C).
+ * embedHostMain.ts — the peer-spawned embedding host: a work-driven drainer
+ * (ADR-0022, superseding ADR-0020 D2/D6).
  *
  * This is the compute backend of the funnel: a plain, DETACHED Node process,
  * spawned on demand by the first consumer through `ensureBackend()`'s O_EXCL
- * singleton spawn-lock. It is **never supervised** (no launchd/KeepAlive) and it
- * **reaps itself** — a debounced, ref-counted teardown retires it
- * `idleGraceMs` after the last cross-process client disconnects and in-flight
- * work drains.
+ * singleton spawn-lock. It is **never supervised** (no launchd/KeepAlive).
+ *
+ * ── Lifecycle: it works, then it dies (ADR-0022 §1, §2) ───────────────────────
+ *
+ * The host lives while it has work and retires `W` (`--idle-window-ms`, the
+ * typed `idleGraceMs`, default 60 s) after its last COMPLETED real work.
+ * "Work" is `embedding.init` / `embedding.embed` / `embedding.embedBatch` and
+ * the host's own eager model load. Connections are NOT an input: the `:3099`
+ * front shim holds a permanent connection, and a connection-counted reap made
+ * the host immortal. Health probes, resets and handshakes are not work.
+ * There is no keep-warm.
+ *
+ * {@link reapDueInMs} is the whole policy. Retirement is ordered and starts
+ * synchronously in one tick: flip to `'retiring'` → close the listener
+ * (destroys client sockets; the socket path is unlinked, inode-guarded) → THEN
+ * terminate the private pool → exit 0. A frame that lands after the flip gets
+ * -32001 "embedding host retiring" and never touches the pool; the client
+ * retries through a fresh ensure.
+ *
+ * ── Identity (ADR-0022 §3, §4, §5) ───────────────────────────────────────────
+ *
+ * The host takes its identity from argv (`parseEmbedHostArgs`), refuses to run
+ * under a build id that is not its own (exit 3), serves only the model it was
+ * spawned for (-32602 otherwise), and loads that model itself — eagerly, and
+ * again after `embedding.reset` — so any request routed to it can be served.
  *
  * ── Compute-only (ADR-0012) ────────────────────────────────────────────────────
  *
- * The host holds NO store connection. It forwards `embedding.*` payloads 1:1 to
- * its private ONNX pool and never opens a database. It therefore cannot
- * serialize store access and must never be described as single-writer or as a
- * store serialization point; concurrent store writers are unaffected.
+ * The host holds NO store connection. It forwards `embedding.*` payloads to its
+ * private ONNX pool and never opens a database.
  *
- * ── No recursion ───────────────────────────────────────────────────────────────
+ * ── No recursion; the accessor is resolved at EVERY use ────────────────────────
  *
- * The handler forwards to `getPrivateFastembedProcess()` — the PRIVATE pool — and
- * NEVER to `getSharedFastembedProcess()`, which under `host: 'shared'` would
- * return a `FunneledFastembedClient` and dial this very host (infinite
- * recursion). The import graph is arranged so that mistake is a type error, not
- * a runtime hang.
- *
- * ── Teardown inputs are CROSS-PROCESS ─────────────────────────────────────────
- *
- *   - `activeClients` — live UDS client connections, from `serveBackend`'s
- *     `onClientCountChange` hook (the cross-process half);
- *   - `inFlight` — THIS host's own request depth, incremented synchronously at
- *     the top of every handler invocation and decremented in its `finally` (the
- *     in-process half). It is deliberately NOT the private pool's
- *     `pendingCount`: that counter is incremented only AFTER `ensureProcess()`
- *     (the fork) resolves, so it reads 0 during a cold-start fork and would arm
- *     a reap over live work. `inFlight` is the synchronous truth.
- *
- * `activeClients === 0 && inFlight === 0` arms the grace timer; a new client
- * or request cancels it. On expiry the private pool is terminated, the listener
- * closed (which unlinks the socket), and the process exits 0. The private pool's
- * ONNX child is forked `detached: false`, so it dies with the host — no orphans.
- *
- * ── The accessor is resolved at EVERY use, never captured ──────────────────────
- *
- * `embedding.reset` terminates AND nulls the private singleton
- * (`resetPrivateFastembedProcess()`); a host that captured the accessor once
- * would keep forwarding through the terminated reference and answer every later
- * request with `shared fastembed process terminated`. Every use
- * (the request handler, `armIfIdle`, `teardown`, `health`) therefore calls
- * `getPrivateFastembedProcess()` fresh.
+ * The handler forwards to `getPrivateFastembedProcess()` — the PRIVATE pool —
+ * and NEVER to `getSharedFastembedProcess()` (which would dial this very host).
+ * `embedding.reset` terminates AND nulls the private singleton, so every use
+ * resolves the accessor fresh rather than capturing it.
  */
 
 import { fileURLToPath } from 'node:url';
 import { resolve } from 'node:path';
+import { randomUUID } from 'node:crypto';
 import { performance } from 'node:perf_hooks';
 import { serveBackend, type BackendHandle, type JsonRpcRequest, type JsonRpcResponse } from '@adhd/sox-service-proxy';
 import { bootstrapChildTelemetry, log } from '@adhd/sox-telemetry';
-import { resolveEmbedHostIdleGraceMs } from './embedHostConfig.js';
+import {
+  EMBED_HOST_PROTOCOL_VERSION,
+  computeEmbedHostBuildId,
+  parseEmbedHostArgs,
+  type EmbedHostSpawnArgs,
+} from './embedHostConfig.js';
 import { getPrivateFastembedProcess, resetPrivateFastembedProcess } from './sharedFastembedProcess.js';
 
-/**
- * How often to run a tiny keep-warm embed while at least one client is
- * attached, so the host's ONNX model pages stay resident under memory
- * pressure (root cause of 5-73s cold-page query embeds). `0` disables.
- * Default 45s — comfortably inside the funnel client's idle windows but
- * cheap enough not to compete meaningfully with real traffic.
- */
-export function resolveEmbedKeepWarmMs(): number {
-  const raw = process.env['SOX_EMBED_KEEPWARM_MS'];
-  const DEFAULT_MS = 45_000;
-  if (raw === undefined || raw === '') return DEFAULT_MS;
-  const parsed = Number(raw);
-  if (!Number.isFinite(parsed) || parsed < 0) {
-    // Never let a malformed optional tuning var kill the detached host at
-    // startup (it has no client watching stderr) — log through telemetry so
-    // the cause lands in the host's own log file, and fall back to the
-    // default, matching resolveRecallVecCooldownMs's convention in recall.ts.
-    log.warn('embedding_provider.embed_host.invalid_keepwarm_ms', { raw, fallback: DEFAULT_MS });
-    return DEFAULT_MS;
-  }
-  return parsed;
-}
+/** `'serving'` until retirement starts; `'retiring'` is terminal. */
+export type EmbedHostState = 'serving' | 'retiring';
 
-/** Cap for both the active window and the backoff-doubled keep-warm interval. */
-const KEEPWARM_INTERVAL_CAP_MS = 900_000;
-
-/** A slow keep-warm embed (> this) signals memory pressure and triggers backoff. */
-export const KEEPWARM_SLOW_MS = 6_000;
+/** JSON-RPC code a retiring host answers with (the client re-ensures and retries). */
+export const ERR_HOST_RETIRING = -32001;
 
 /**
- * Pure decision function for whether a keep-warm tick should be skipped,
- * factored out of `keepWarmTick`'s closure so the three independent gates
- * (activity window / cadence / no-init-yet) are unit-testable without
- * spinning up the real UDS host or a private fastembed process. Mirrors the
- * exact checks (and order) in `keepWarmTick` — see the inline comments there
- * for the rationale of each gate.
+ * 68a4bf68: the reap policy, as a pure function (ADR-0022 §1).
+ *
+ * Returns `null` when the host must not retire at all right now (it is already
+ * retiring, or work is in flight, or its private pool still has requests
+ * pending) and otherwise the milliseconds until the idle window `W` since the
+ * last COMPLETED work elapses (0 = retire now). Connection count is
+ * deliberately not a parameter.
  */
-export function shouldSkipKeepWarmTick(args: {
+export function reapDueInMs(args: {
+  state: EmbedHostState;
+  inFlightWork: number;
+  poolPending: number;
+  lastWorkAt: number;
   now: number;
-  lastRealActivityAt: number;
-  lastActivityAt: number;
-  keepWarmActiveWindowMs: number;
-  keepWarmIntervalMs: number;
-  hasInit: boolean;
-}): boolean {
-  const { now, lastRealActivityAt, lastActivityAt, keepWarmActiveWindowMs, keepWarmIntervalMs, hasInit } = args;
-  if (now - lastRealActivityAt >= keepWarmActiveWindowMs) return true;
-  if (now - lastActivityAt < keepWarmIntervalMs) return true;
-  if (!hasInit) return true;
-  return false;
-}
-
-/**
- * Pure adaptive-cadence function, factored out of `keepWarmTick`'s `.finally`.
- * A successful slow tick (> `KEEPWARM_SLOW_MS`) doubles the interval, capped
- * at `KEEPWARM_INTERVAL_CAP_MS`; a successful fast tick resets to `baseMs`; a
- * failed tick (timeout, child crash) leaves the cadence untouched — its
- * timing says nothing about paging cost.
- */
-export function nextKeepWarmIntervalMs(args: {
-  currentIntervalMs: number;
-  baseMs: number;
-  workMs: number;
-  tickOk: boolean;
-  capMs?: number;
-  slowMs?: number;
-}): number {
-  const { currentIntervalMs, baseMs, workMs, tickOk, capMs = KEEPWARM_INTERVAL_CAP_MS, slowMs = KEEPWARM_SLOW_MS } = args;
-  if (!tickOk) return currentIntervalMs;
-  if (workMs > slowMs) return Math.min(currentIntervalMs * 2, capMs);
-  return baseMs;
-}
-
-/**
- * How recently a REAL (non-keep-warm) request must have been served for
- * keep-warm to keep ticking. The `:3099` front shim holds a permanent UDS
- * connection to this host, so `activeClients` alone is always >= 1 and can
- * never signal real demand — gating on client count made keep-warm fire
- * forever even with zero actual traffic. Default 900s (15min).
- */
-export function resolveEmbedKeepWarmActiveWindowMs(): number {
-  const raw = process.env['SOX_EMBED_KEEPWARM_ACTIVE_WINDOW_MS'];
-  const DEFAULT_MS = KEEPWARM_INTERVAL_CAP_MS;
-  if (raw === undefined || raw === '') return DEFAULT_MS;
-  const parsed = Number(raw);
-  if (!Number.isFinite(parsed) || parsed < 0) {
-    log.warn('embedding_provider.embed_host.invalid_keepwarm_active_window_ms', { raw, fallback: DEFAULT_MS });
-    return DEFAULT_MS;
-  }
-  return parsed;
+  idleWindowMs: number;
+}): number | null {
+  if (args.state === 'retiring' || args.inFlightWork > 0 || args.poolPending > 0) return null;
+  return Math.max(0, args.lastWorkAt + args.idleWindowMs - args.now);
 }
 
 /** The `embedding.*` methods the host serves. */
@@ -167,256 +101,306 @@ function fail(id: JsonRpcRequest['id'], code: number, message: string): JsonRpcR
   return { jsonrpc: '2.0', id: id ?? null, error: { code, message } };
 }
 
-/**
- * Start the host: bind the UDS, serve `embedding.*`, and arm the debounced
- * self-reap. Resolves once the listener is up (so a caller/test can await
- * readiness); the process stays alive until the teardown fires or a signal
- * arrives.
- */
-export async function runEmbedHost(): Promise<void> {
-  // Composition root for this process (mirrors memory-server's index.ts BL-404
-  // call): the detached host forked by `ensureBackend()` starts with fresh
-  // module state in @adhd/sox-telemetry — service:'unlabeled', logSink:'none' —
-  // so every `fastembed_process.request.*` record was silently dropped until
-  // this call. `bootstrapChildTelemetry` (BL-618 convention) also honours a
-  // `SOX_TELEMETRY_INIT` env override from the spawner if one is ever added,
-  // falling back to these defaults today since the funnel client does not set it.
-  bootstrapChildTelemetry({ service: 'embed-host', role: 'live-service', logSink: 'file' });
+/** JSON-RPC invalid params — a request for a model/cacheDir this host does not serve. */
+export const ERR_WRONG_MODEL = -32602;
 
-  const socketPath = process.env['SOX_EMBED_HOST_SOCKET'];
-  if (!socketPath) {
+/**
+ * dc73d9b6: check a work request's `{model, cacheDir}` against the identity
+ * this host was spawned for. Returns an error message, or `null` when it matches.
+ * A request with no identity at all is also refused — a v2 client always stamps it.
+ */
+export function checkRequestIdentity(
+  params: Record<string, unknown>,
+  served: { model: string; cacheDir: string },
+): string | null {
+  const model = params['model'];
+  const cacheDir = params['cacheDir'];
+  if (model !== served.model || cacheDir !== served.cacheDir) {
+    return (
+      `embedding host serves model ${JSON.stringify(served.model)} with cacheDir ${JSON.stringify(served.cacheDir)}; ` +
+      `request named model ${JSON.stringify(model)} with cacheDir ${JSON.stringify(cacheDir)}`
+    );
+  }
+  return null;
+}
+
+/**
+ * Start the host: parse argv, bind the UDS, serve `embedding.*`, load the
+ * model, and arm the work-driven reap. Resolves once the listener is up; the
+ * process stays alive until it retires or a signal arrives.
+ */
+export async function runEmbedHost(argv: readonly string[] = process.argv.slice(2)): Promise<void> {
+  // Composition root for this process (mirrors memory-server's index.ts BL-404
+  // call): the detached host starts with fresh @adhd/sox-telemetry module state
+  // — service:'unlabeled', logSink:'none' — so without this every record would
+  // be silently dropped. It runs before anything that can exit.
+  bootstrapChildTelemetry({ service: 'embed-host', role: 'live-service', logSink: 'file' });
+  const startedAt = Date.now();
+
+  // dc73d9b6: identity arrives as argv (ADR-0022), never as inherited env.
+  let args: EmbedHostSpawnArgs;
+  try {
+    args = parseEmbedHostArgs(argv);
+  } catch (e) {
+    const message = e instanceof Error ? e.message : String(e);
+    log.error('embedding_provider.embed_host.bad_args', { error: message });
     process.stderr.write(
-      '[embed-host] SOX_EMBED_HOST_SOCKET is not set — the host is spawned by the funnel client, not run directly.\n',
+      `[embed-host] ${message} — the host is spawned by the funnel client, not run directly.\n`,
     );
     process.exit(2);
   }
+  const socketPath = args.socketPath;
 
-  const idleGraceMs = resolveEmbedHostIdleGraceMs();
+  // 2fe52b0f: refuse to serve under a build id that is not our own. The
+  // spawner computed it from the same host main path; a mismatch means a
+  // different build's bytes are answering for this key.
+  const entry = process.argv[1] ?? '';
+  const ownBuildId = entry ? computeEmbedHostBuildId(entry) : '';
+  if (ownBuildId !== args.buildId) {
+    log.error('embedding_provider.embed_host.spawn_rejected', {
+      reason: 'build_id_mismatch',
+      expected: args.buildId,
+      actual: ownBuildId,
+      entry,
+    });
+    process.stderr.write(
+      `[embed-host] build id mismatch: spawned as ${args.buildId}, this build is ${ownBuildId} (${entry})\n`,
+    );
+    process.exit(3);
+  }
 
-  let activeClients = 0;
-  /**
-   * This host's own in-flight request depth. Incremented synchronously before
-   * the handler's first `await` and decremented in its `finally`, so it covers a
-   * request's entire synchronous prefix — including the cold-start fork, where
-   * the private pool's `pendingCount` still reads 0.
-   */
-  let inFlight = 0;
-  let idleTimer: NodeJS.Timeout | null = null;
-  let shuttingDown = false;
+  // The execution provider is part of the key; pin it before the private pool
+  // forks its ONNX child (which reads SOX_EMBED_EXECUTION_PROVIDER).
+  if (args.ep !== 'auto') process.env['SOX_EMBED_EXECUTION_PROVIDER'] = args.ep;
+
+  const idleWindowMs = args.idleWindowMs;
+  const served = { model: args.model, cacheDir: args.cacheDir };
+  const hostInstanceId = randomUUID();
+
+  // 17a83623: lifecycle provenance — who spawned this host, under which build,
+  // and which of the spawner's env keys were withheld from it.
+  log.info('embedding_provider.embed_host.spawned', {
+    build_id: args.buildId,
+    protocol: EMBED_HOST_PROTOCOL_VERSION,
+    host_instance_id: hostInstanceId,
+    model: args.model,
+    ep: args.ep,
+    idle_window_ms: idleWindowMs,
+    spawner_pid: args.spawner.pid,
+    spawner_service: args.spawner.serviceId,
+    spawner_entry: args.spawner.entry,
+    denied_env: args.spawner.deniedEnv,
+    node_abi: process.versions.modules,
+    entry,
+  });
+
+  let state: EmbedHostState = 'serving';
   let handle: BackendHandle | null = null;
+  /** Live client connections — reported for diagnostics only, NEVER a reap input. */
+  let activeClients = 0;
+  let requestsServed = 0;
+  /**
+   * Real work in flight (init/embed/embedBatch + the eager model load).
+   * Incremented synchronously before a handler's first `await`, so it covers a
+   * cold-start fork where the private pool's `pendingCount` still reads 0.
+   */
+  let inFlightWork = 0;
+  /** When the last real work COMPLETED (success or failure). Starts at spawn. */
+  let lastWorkAt = startedAt;
+  let reapTimer: NodeJS.Timeout | null = null;
 
-  const keepWarmMs = resolveEmbedKeepWarmMs();
-  const keepWarmActiveWindowMs = resolveEmbedKeepWarmActiveWindowMs();
-  let keepWarmTimer: NodeJS.Timeout | null = null;
-  // Last time a request (real or keep-warm) COMPLETED — used to skip a tick
-  // when a real request already refreshed the model pages this interval.
-  let lastActivityAt = Date.now();
-  // Last time a REAL (non-keep-warm) request was served. Epoch (0) until the
-  // first one lands, so keep-warm never fires before any genuine traffic has
-  // been observed — a permanently-connected client with zero real requests
-  // must not keep the model paged in forever.
-  let lastRealActivityAt = 0;
-  // Adaptive keep-warm cadence: doubles (capped at KEEPWARM_INTERVAL_CAP_MS)
-  // whenever a keep-warm embed takes > 6s (a sign the box is under memory
-  // pressure and paging is expensive), and resets to the configured base on
-  // a fast tick.
-  let keepWarmIntervalMs = keepWarmMs;
+  // ── host-owned model init (dc73d9b6) ────────────────────────────────────────
+  let modelPromise: Promise<Record<string, unknown>> | null = null;
+  let modelLoaded = false;
+  let resetSinceInit = false;
+  /**
+   * Load the served model into the private pool. Memoized so concurrent work
+   * shares one init; cleared on failure (the next request retries) and on
+   * `embedding.reset` (the fresh pool has no model).
+   */
+  const ensureModel = (trigger: 'eager' | 'request' | 'after_reset'): Promise<Record<string, unknown>> => {
+    if (modelPromise) return modelPromise;
+    const started = performance.now();
+    const p = getPrivateFastembedProcess()
+      .request<Record<string, unknown>>({ type: 'init', model: served.model, cacheDir: served.cacheDir })
+      .then(
+        (res) => {
+          modelLoaded = true;
+          log.info('embedding_provider.embed_host.model.init', {
+            trigger,
+            ok: true,
+            model: served.model,
+            init_ms: performance.now() - started,
+          });
+          return res;
+        },
+        (e: unknown) => {
+          if (modelPromise === p) modelPromise = null;
+          modelLoaded = false;
+          log.warn('embedding_provider.embed_host.model.init', {
+            trigger,
+            ok: false,
+            model: served.model,
+            init_ms: performance.now() - started,
+            error: e instanceof Error ? e.message : String(e),
+          });
+          throw e;
+        },
+      );
+    modelPromise = p;
+    return p;
+  };
 
-  const cancelIdle = (): void => {
-    if (idleTimer) {
-      clearTimeout(idleTimer);
-      idleTimer = null;
+  // ── the work-driven reap (68a4bf68) ─────────────────────────────────────────
+  const dueNow = (): number | null =>
+    reapDueInMs({
+      state,
+      inFlightWork,
+      poolPending: getPrivateFastembedProcess().pendingCount,
+      lastWorkAt,
+      now: Date.now(),
+      idleWindowMs,
+    });
+
+  const clearReap = (): void => {
+    if (reapTimer) {
+      clearTimeout(reapTimer);
+      reapTimer = null;
     }
   };
 
-  const stopKeepWarm = (): void => {
-    if (keepWarmTimer) {
-      clearInterval(keepWarmTimer);
-      keepWarmTimer = null;
-    }
+  /** (Re-)arm the reap from the current state. Called at startup and after every work completion. */
+  const scheduleReap = (): void => {
+    const due = dueNow();
+    const wasArmed = reapTimer !== null;
+    clearReap();
+    if (due === null) return;
+    reapTimer = setTimeout(onReapTimer, due);
+    // The listener keeps the loop alive; the timer itself must not.
+    reapTimer.unref?.();
+    if (!wasArmed) log.info('embedding_provider.embed_host.reap.armed', { due_ms: due, idle_window_ms: idleWindowMs });
   };
 
-  const keepWarmTick = (): void => {
-    if (shuttingDown || activeClients === 0 || inFlight !== 0) return;
-    // Activity gate: the `:3099` front shim holds a permanent connection, so
-    // `activeClients` is always >= 1 and can never signal real demand on its
-    // own. Only keep warming while a REAL (non-keep-warm) request landed
-    // within the active window, AND skip this particular tick if something
-    // (real or keep-warm) already completed within the current cadence. Also
-    // skip while no client has sent embedding.init yet — the child would just
-    // reply "Model not initialized" (fastembedProcessHost.ts) and we'd log a
-    // keep_warm_failed warning every interval for nothing.
-    if (
-      shouldSkipKeepWarmTick({
-        now: Date.now(),
-        lastRealActivityAt,
-        lastActivityAt,
-        keepWarmActiveWindowMs,
-        keepWarmIntervalMs,
-        hasInit: Boolean(getPrivateFastembedProcess().lastInit),
-      })
-    ) {
+  const onReapTimer = (): void => {
+    reapTimer = null;
+    const due = dueNow();
+    if (due === null) return;
+    if (due > 0) {
+      reapTimer = setTimeout(onReapTimer, due);
+      reapTimer.unref?.();
       return;
     }
-    inFlight++;
-    const start = performance.now();
-    let tickOk = false;
-    void getPrivateFastembedProcess()
-      // `_keepWarm: true` tags this as synthetic demand: the adaptive pool's
-      // shrink/idle clock (sharedFastembedProcess.ts request()) must not
-      // treat it as real traffic, or a host idle except for its own
-      // keep-warm ticks would never shrink back to minSize. `stage` is NOT
-      // read by anything downstream today (sharedFastembedProcess.ts /
-      // fastembedProcessHost.ts have no `stage` handling) — it is forwarded
-      // unchanged over IPC to the ONNX child and otherwise inert. Keep-warm
-      // requests are therefore logged under the same
-      // `fastembed_process.request.start/finish` telemetry as real embeds;
-      // distinguish them downstream via `_keepWarm`, not `stage`.
-      .request({ type: 'embed', text: 'keepwarm', _keepWarm: true })
-      .then(() => {
-        tickOk = true;
-      })
-      .catch((e: unknown) => {
-        log.warn('embedding_provider.embed_host.keep_warm_failed', {
-          error: e instanceof Error ? e.message : String(e),
-        });
-      })
-      .finally(() => {
-        inFlight--;
-        lastActivityAt = Date.now();
-        const work_ms = performance.now() - start;
-        log.info('embedding_provider.embed_host.keep_warm', {
-          ok: tickOk,
-          work_ms,
-          activeClients,
-          keepWarmIntervalMs,
-        });
-        // Backoff: a slow keep-warm embed signals memory pressure — space
-        // ticks out further (capped) rather than compounding the pressure
-        // with more frequent warm-ups. A fast tick resets to the configured
-        // base cadence. Only a SUCCESSFUL tick's timing is trustworthy for
-        // this — a failed tick (timeout, child crash) says nothing about
-        // paging cost and must not be conflated with a slow successful one.
-        const nextIntervalMs = nextKeepWarmIntervalMs({
-          currentIntervalMs: keepWarmIntervalMs,
-          baseMs: keepWarmMs,
-          workMs: work_ms,
-          tickOk,
-        });
-        if (nextIntervalMs !== keepWarmIntervalMs) {
-          const wasBackoff = nextIntervalMs > keepWarmIntervalMs;
-          keepWarmIntervalMs = nextIntervalMs;
-          if (wasBackoff) {
-            log.info('embedding_provider.embed_host.keepwarm.backoff', {
-              work_ms,
-              keepWarmIntervalMs,
-            });
-          }
-        }
-        // A keep-warm embed can be the last in-flight work when the final
-        // client disconnects mid-tick — onClientCountChange(0) would have
-        // seen inFlight !== 0 and returned early, so nothing else re-arms
-        // the idle timer. Mirror the request handler's re-arm here.
-        if (activeClients === 0) armIfIdle();
-      });
+    void retire('idle_window_elapsed');
   };
 
-  const startKeepWarm = (): void => {
-    if (keepWarmMs <= 0 || keepWarmTimer || shuttingDown) return;
-    // Tick at half the skip threshold: keepWarmTick itself no-ops until
-    // `keepWarmIntervalMs` has elapsed since the last activity, so ticking at
-    // the full period lets the real gap between warm embeds drift toward 2x
-    // the interval depending on where in it the last request landed. Ticking
-    // at half the BASE interval is still frequent enough to catch a
-    // backed-off (doubled) cadence promptly once it resets.
-    keepWarmTimer = setInterval(keepWarmTick, Math.max(1, Math.floor(keepWarmMs / 2)));
-    keepWarmTimer.unref?.();
-  };
-
-  const teardown = async (): Promise<void> => {
-    if (shuttingDown) return;
-    shuttingDown = true;
-    cancelIdle();
-    stopKeepWarm();
+  /**
+   * Ordered retirement (ADR-0022 §2). The prefix up to `handle.close()` runs
+   * synchronously in one tick: nothing can be admitted between the decision
+   * and the listener closing. Only then is the pool terminated.
+   */
+  const retire = async (reason: string): Promise<void> => {
+    if (state === 'retiring') return;
+    state = 'retiring';
+    clearReap();
+    log.info('embedding_provider.embed_host.reap.fired', {
+      reason,
+      lifetime_ms: Date.now() - startedAt,
+      requests_served: requestsServed,
+      active_clients: activeClients,
+      last_work_ago_ms: Date.now() - lastWorkAt,
+    });
+    // 17a83623: the listener was the host's last ref'd handle (the pool child and
+    // the reap timer are unref'd). Closing it would let the event loop drain and
+    // the process exit mid-retire — before the pool is terminated or `exit` is
+    // logged. Hold the loop open until we exit deliberately.
+    const hold = setInterval(() => undefined, 60_000);
+    const closing = handle ? handle.close() : Promise.resolve();
     try {
-      // Resolve the accessor at teardown time: a preceding `embedding.reset`
-      // may have swapped the private singleton for a fresh one.
+      await closing;
+    } catch (e) {
+      log.warn('embedding_provider.embed_host.close_failed', { error: e instanceof Error ? e.message : String(e) });
+    }
+    try {
+      // Resolve the accessor now: a reset may have swapped the private singleton.
       await getPrivateFastembedProcess().terminate();
-    } catch {
-      /* best-effort — the ONNX child dies with us regardless (detached:false) */
+    } catch (e) {
+      // The ONNX child is forked detached:false and dies with us regardless.
+      log.warn('embedding_provider.embed_host.pool_terminate_failed', {
+        error: e instanceof Error ? e.message : String(e),
+      });
     }
-    try {
-      await handle?.close();
-    } catch {
-      /* best-effort — the socket unlink happens inside close() */
-    }
+    log.info('embedding_provider.embed_host.exit', { code: 0, reason, lifetime_ms: Date.now() - startedAt });
+    clearInterval(hold);
     process.exit(0);
   };
 
-  const armIfIdle = (): void => {
-    if (shuttingDown || idleTimer) return;
-    if (activeClients !== 0 || inFlight !== 0) return;
-    // Defensive second gate: the private pool's own counter, resolved per use so
-    // a post-reset pool is never the stale terminated reference.
-    if (getPrivateFastembedProcess().pendingCount !== 0) return;
-    idleTimer = setTimeout(() => {
-      idleTimer = null;
-      void teardown();
-    }, idleGraceMs);
-    // The listener keeps the loop alive; the timer itself must not.
-    idleTimer.unref?.();
+  /** Run one unit of real work under the in-flight count; completion re-arms the reap. */
+  const doWork = async <T>(method: string, fn: () => Promise<T>): Promise<T> => {
+    inFlightWork++;
+    if (reapTimer) {
+      clearReap();
+      log.info('embedding_provider.embed_host.reap.cancelled', { reason: 'work', method });
+    }
+    try {
+      return await fn();
+    } finally {
+      inFlightWork--;
+      lastWorkAt = Date.now();
+      scheduleReap();
+    }
   };
 
   const handler = async (req: JsonRpcRequest): Promise<JsonRpcResponse> => {
-    // Any inbound request is demand — cancel a pending reap, and count this
-    // request as in-flight BEFORE the first await (the synchronous prefix).
-    cancelIdle();
-    inFlight++;
     const id = req.id;
     const method = req.method;
-    // Only a successful embedding.init/embed/embedBatch forward counts as
-    // REAL demand for `lastRealActivityAt` — health probes, resets, and
-    // method-not-found replies must not keep the activity-window gate open,
-    // or the permanently-connected `:3099` shim's own health polling would
-    // keep keep-warm firing forever (the exact failure this gate exists to
-    // prevent).
-    let isRealForward = false;
+    // A frame that lands after the retire flip never touches the pool.
+    if (state === 'retiring') return fail(id, ERR_HOST_RETIRING, 'embedding host retiring');
+    if (!HOST_METHODS.has(method)) return fail(id, -32601, `method not found: ${method}`);
 
     try {
-      if (!HOST_METHODS.has(method)) {
-        return fail(id, -32601, `method not found: ${method}`);
-      }
-
       if (method === 'embedding.health') {
         const pc = getPrivateFastembedProcess();
         return ok(id, {
+          protocol: EMBED_HOST_PROTOCOL_VERSION,
+          buildId: args.buildId,
+          hostInstanceId,
+          state,
+          modelLoaded,
+          lastWorkAgoMs: Date.now() - lastWorkAt,
+          reapDueInMs: dueNow(),
           started: pc.started,
           pendingCount: pc.pendingCount,
-          inFlight,
+          inFlightWork,
           activeClients,
-          idleGraceMs,
+          idleWindowMs,
+          requestsServed,
         });
       }
       if (method === 'embedding.reset') {
+        // The fresh pool has no model: forget the memo so the next work
+        // request (from ANY client) re-inits it — a reset never bricks peers.
+        modelPromise = null;
+        modelLoaded = false;
+        resetSinceInit = true;
         await resetPrivateFastembedProcess();
         return ok(id, { reset: true });
       }
-      // embedding.init | embedding.embed | embedding.embedBatch — forward the
-      // payload 1:1 to the PRIVATE pool (never the funnel accessor), resolving
-      // it per use so a reset mid-life never leaves us on a terminated pool.
+      // embedding.init | embedding.embed | embedding.embedBatch — the request
+      // must name the model this host serves (a refusal is not work).
       const params = (req.params ?? {}) as Record<string, unknown>;
-      const result = await getPrivateFastembedProcess().request(params);
-      isRealForward = true;
-      return ok(id, result);
+      const mismatch = checkRequestIdentity(params, served);
+      if (mismatch !== null) return fail(id, ERR_WRONG_MODEL, mismatch);
+      return await doWork(method, async () => {
+        const trigger = resetSinceInit ? 'after_reset' : 'request';
+        resetSinceInit = false;
+        const initResult = await ensureModel(trigger);
+        requestsServed++;
+        if (method === 'embedding.init') return ok(id, initResult);
+        // Forward to the PRIVATE pool, resolved per use (never captured).
+        return ok(id, await getPrivateFastembedProcess().request(params));
+      });
     } catch (e) {
       return fail(id, -32603, e instanceof Error ? e.message : String(e));
-    } finally {
-      inFlight--;
-      lastActivityAt = Date.now();
-      if (isRealForward) lastRealActivityAt = lastActivityAt;
-      // A request may have drained the last in-flight work with no clients
-      // attached (e.g. a one-shot embed) — re-arm the reap.
-      if (activeClients === 0) armIfIdle();
     }
   };
 
@@ -425,24 +409,32 @@ export async function runEmbedHost(): Promise<void> {
     handler,
     onDiagnostic: (line) => process.stderr.write(line + '\n'),
     onClientCountChange: (active) => {
+      // Diagnostics only — connections are not a reap input (ADR-0022 §1).
       activeClients = active;
-      if (active > 0) {
-        cancelIdle();
-        startKeepWarm();
-      } else {
-        armIfIdle();
-        stopKeepWarm();
-      }
     },
   });
+  log.info('embedding_provider.embed_host.listening', {
+    socket: socketPath,
+    build_id: args.buildId,
+    host_instance_id: hostInstanceId,
+    idle_window_ms: idleWindowMs,
+  });
 
-  // Arm immediately: if no client ever connects (e.g. the spawner died between
-  // spawn and dial), the host must still reap rather than linger forever.
-  armIfIdle();
+  // Load the model eagerly (counted as work): the first request should not pay
+  // for it, and a replayed request must find a ready host.
+  void doWork('eager_init', () => ensureModel('eager')).catch((e: unknown) => {
+    // Already logged by ensureModel (model.init ok:false); the next request retries.
+    log.debug('embedding_provider.embed_host.eager_init_deferred', {
+      error: e instanceof Error ? e.message : String(e),
+    });
+  });
+
+  // Arm at startup too: a host nobody ever uses must still retire.
+  scheduleReap();
 
   // A detached host can still be signalled directly (kill, OS teardown).
-  process.on('SIGTERM', () => void teardown());
-  process.on('SIGINT', () => void teardown());
+  process.on('SIGTERM', () => void retire('signal:SIGTERM'));
+  process.on('SIGINT', () => void retire('signal:SIGINT'));
 }
 
 /**
@@ -456,7 +448,10 @@ function isEntrypoint(): boolean {
   if (!argv1) return false;
   try {
     return resolve(fileURLToPath(import.meta.url)) === resolve(argv1);
-  } catch {
+  } catch (e) {
+    // An unresolvable module URL means we cannot prove we are the entrypoint;
+    // never double-start (a shim that imports this module calls runEmbedHost).
+    process.stderr.write(`[embed-host] entrypoint check skipped: ${e instanceof Error ? e.message : String(e)}\n`);
     return false;
   }
 }
