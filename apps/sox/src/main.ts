@@ -574,6 +574,10 @@ Runtime:
                              --reconcile [--dry-run]  safe idempotent heal pass
                              --install-tick [--interval <sec>]  schedule periodic
                                reconcile under launchd/systemd (default 300s)
+                               --cli-path=<soxe>  pin the installed soxe the tick
+                                 unit runs (else resolved automatically, 27850011)
+                               --allow-checkout-cli  allow a git-checkout soxe at
+                                 user scope (refused by default, 27850011)
                              --remove-tick  reverse --install-tick
   logs <ext-id>      Tail or follow extension log output
                      Flags: --id=<ext-id>  --scope=<scope>  --lines=<n>
@@ -5246,11 +5250,16 @@ function resolveOsUnitContext(
     // `--allow-checkout-cli` (see gateVolatileCli). Previously this was always
     // `process.argv[1]`, so prod's launchd unit ran the dev checkout's
     // bin/soxe and every branch switch/build there changed production.
-    cliRes = resolveUnitCliPath({
-      argv1: process.argv[1] ?? '',
-      nodePath: nodeRes.nodePath,
-      explicit: flags['cli-path'],
-    });
+    try {
+      cliRes = resolveUnitCliPath({
+        argv1: process.argv[1] ?? '',
+        nodePath: nodeRes.nodePath,
+        explicit: flags['cli-path'],
+      });
+    } catch (e) {
+      process.stderr.write(`sox: --cli-path: ${(e as Error).message}\n`);
+      return null;
+    }
     if (cliRes.cliPath) {
       execArgs = ['--enable-source-maps', cliRes.cliPath, 'serve', extId, '--port', String(port)];
     }
@@ -6059,11 +6068,17 @@ async function doctorInstallTick(flags: Record<string, string>): Promise<void> {
   // execArgs pattern — the unit launches the CLI, not a bare extension entrypoint).
   // (27850011) Same stable-CLI resolution + user-scope checkout gate as
   // `service enable`: the tick must not run a dev checkout's soxe silently.
-  const tickCli = resolveUnitCliPath({
-    argv1: process.argv[1] ?? '',
-    nodePath: nodeRes.nodePath,
-    explicit: flags['cli-path'],
-  });
+  let tickCli: ReturnType<typeof resolveUnitCliPath>;
+  try {
+    tickCli = resolveUnitCliPath({
+      argv1: process.argv[1] ?? '',
+      nodePath: nodeRes.nodePath,
+      explicit: flags['cli-path'],
+    });
+  } catch (e) {
+    process.stderr.write(`${CLI} doctor --install-tick: --cli-path: ${(e as Error).message}\n`);
+    process.exit(1);
+  }
   const cliPath = tickCli.cliPath;
   if (!cliPath) {
     process.stderr.write(`${CLI} doctor --install-tick: cannot resolve the CLI path (process.argv[1] empty)\n`);

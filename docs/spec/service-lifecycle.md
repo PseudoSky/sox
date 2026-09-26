@@ -887,14 +887,19 @@ The unit is **derived from the `lifecycle` block + resolved config env**, never 
 - **Stable CLI path (27850011).** When the unit runs the front-shim (`soxe serve <id> --port <port>`,
   §9.5) or the doctor tick, the `soxe` in its argv is resolved by `resolveUnitCliPath`
   (`libs/host-runtime/src/os-unit.ts`), never blindly `process.argv[1]`: (1) an explicit
-  `--cli-path=<path>` always wins; (2) else the invoking soxe if it is **not** inside a git working
-  tree; (3) else the first released `@adhd/sox-cli` install found (`<node prefix>/lib/node_modules`,
-  then `~/.adhd/sox-ecosystem/cli/node_modules`), realpath'd and itself not inside a checkout (an
-  `npm link` back into the checkout is rejected); (4) else the checkout CLI, marked **volatile**.
-  `service enable|update` and `doctor --install-tick` **refuse** a volatile CLI at **user** scope
-  unless `--allow-checkout-cli` (the same human-ack shape as `--allow-volatile-node`); project/local
-  scopes warn and proceed. Why: a user-scope unit that runs a dev checkout's `bin/soxe` couples
-  production to whatever branch/build that checkout is on.
+  `--cli-path=<path>` always wins, but MUST be an absolute, existing path (anything else throws
+  before any state is touched); (2) else the invoking soxe if it is **not** inside a git working
+  tree — a path is only a checkout if the nearest `.git` is found BEFORE the upward walk crosses a
+  `node_modules` segment, so a released CLI installed under Homebrew's or nvm's own `node_modules`
+  (each of which owns a `.git` further up its own tree) is correctly classified as installed, not a
+  checkout; (3) else the first released `@adhd/sox-cli` install found, via `npm root -g` run through
+  the PINNED node's own npm (never the caller's `PATH` npm), falling back to the
+  `<node prefix>/lib/node_modules` heuristic only when that call cannot be resolved — realpath'd and
+  itself not inside a checkout (an `npm link` back into the checkout is rejected); (4) else the
+  checkout CLI, marked **volatile**. `service enable|update` and `doctor --install-tick` **refuse** a
+  volatile CLI at **user** scope unless `--allow-checkout-cli` (the same human-ack shape as
+  `--allow-volatile-node`); project/local scopes warn and proceed. Why: a user-scope unit that runs a
+  dev checkout's `bin/soxe` couples production to whatever branch/build that checkout is on.
 
 ### 9.3 Idempotent + content-addressed re-enable on upgrade
 

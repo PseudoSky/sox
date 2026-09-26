@@ -25,6 +25,12 @@ let checkoutCli: string;
 let prefix: string;
 let nodePath: string;
 let installedCli: string;
+// (27850011) Homebrew-shaped fixture: <root>/brew/.git owns the WHOLE tree (like
+// /opt/homebrew/.git in production), and a released CLI sits inside its own
+// node_modules further down. A path under node_modules is installed, full stop
+// — even though .git is a real ancestor if you keep walking past node_modules.
+let brewRoot: string;
+let brewCli: string;
 
 beforeAll(() => {
   root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), '27850011-')));
@@ -38,9 +44,20 @@ beforeAll(() => {
   nodePath = path.join(prefix, 'bin', 'node');
   fs.mkdirSync(path.dirname(nodePath), { recursive: true });
   fs.writeFileSync(nodePath, '');
-  installedCli = installedCliCandidates(nodePath, path.join(root, 'home'))[0]!;
+  // No `npm` sibling exists for this fake node, so `installedCliCandidates`
+  // falls back to the realpath heuristic (`npm root -g` cannot be resolved).
+  installedCli = installedCliCandidates(nodePath)[0]!;
   fs.mkdirSync(path.dirname(installedCli), { recursive: true });
   fs.writeFileSync(installedCli, '// released soxe\n');
+
+  // Homebrew-shaped fixture: .git at the ROOT of the tree, released CLI under
+  // node_modules several levels below it (mirrors /opt/homebrew/.git +
+  // /opt/homebrew/lib/node_modules/@adhd/sox-cli).
+  brewRoot = path.join(root, 'brew');
+  fs.mkdirSync(path.join(brewRoot, '.git'), { recursive: true });
+  brewCli = path.join(brewRoot, 'lib', 'node_modules', '@adhd', 'sox-cli', 'bin', 'soxe.mjs');
+  fs.mkdirSync(path.dirname(brewCli), { recursive: true });
+  fs.writeFileSync(brewCli, '// released soxe under a git-owned prefix\n');
 });
 
 afterAll(() => {
@@ -89,5 +106,47 @@ describe('27850011 — stable CLI path for OS units', () => {
     const r = resolveUnitCliPath({ argv1: checkoutCli, nodePath, candidates: [linked] });
     expect(r.source).toBe('checkout');
     expect(r.volatile).toBe(true);
+  });
+
+  // (27850011) BLOCKING finding: a released CLI under a git-owned prefix
+  // (/opt/homebrew/.git, ~/.nvm/.git) must classify as INSTALLED, never a
+  // checkout — the nearest `.git` only counts if it is found BEFORE the walk
+  // crosses a `node_modules` segment.
+  it('a released CLI whose ANCESTOR is a git repo (Homebrew/.nvm-shaped) is installed, not a checkout', () => {
+    expect(isGitCheckoutPath(brewCli)).toBe(false);
+    const r = resolveUnitCliPath({ argv1: brewCli, nodePath, candidates: [] });
+    expect(r).toMatchObject({ source: 'invoking', cliPath: brewCli, volatile: false });
+    const out: string[] = [];
+    expect(gateVolatileCli(r, 'user', {}, 'soxe service enable', (m) => out.push(m))).toBe(true);
+    expect(out.join('')).toBe('');
+  });
+
+  it('a symlink under node_modules whose REAL target is a checkout is still classified as a checkout', () => {
+    const linked = path.join(brewRoot, 'lib', 'node_modules', 'linked-soxe.mjs');
+    fs.symlinkSync(checkoutCli, linked);
+    expect(isGitCheckoutPath(linked)).toBe(true);
+  });
+
+  it('an explicit --cli-path that is not absolute throws before any state is touched', () => {
+    expect(() => resolveUnitCliPath({ argv1: installedCli, nodePath, explicit: 'relative/soxe' })).toThrow(
+      /absolute/,
+    );
+  });
+
+  it('an explicit --cli-path that does not exist throws', () => {
+    expect(() =>
+      resolveUnitCliPath({ argv1: installedCli, nodePath, explicit: path.join(root, 'does-not-exist') }),
+    ).toThrow(/does not exist/);
+  });
+
+  it('installedCliCandidates resolves via an injected `npm root -g` seam, not the realpath heuristic', () => {
+    const globalRootDir = path.join(root, 'npm-global-root');
+    const seamInstalled = path.join(globalRootDir, '@adhd', 'sox-cli', 'bin', 'soxe.mjs');
+    fs.mkdirSync(path.dirname(seamInstalled), { recursive: true });
+    fs.writeFileSync(seamInstalled, '// released soxe via npm root -g\n');
+    const candidates = installedCliCandidates(nodePath, { globalRoot: () => globalRootDir });
+    expect(candidates).toEqual([seamInstalled]);
+    const r = resolveUnitCliPath({ argv1: checkoutCli, nodePath, globalRoot: () => globalRootDir });
+    expect(r).toMatchObject({ source: 'installed', cliPath: seamInstalled, volatile: false });
   });
 });

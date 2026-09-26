@@ -41,6 +41,7 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 
 import { ENV_ALLOW_PREFIXES, ENV_BASE_ALLOW, ENV_DENY_PREFIXES } from './env-policy.js';
+import { createDefaultLogger, type RuntimeLogger } from './logger-types.js';
 import {
   findOrphansByIdentity,
   identityToken,
@@ -464,19 +465,33 @@ export function resolveUnitNodePath(opts: { execPath?: string; pathEnv?: string 
 
 /**
  * (27850011) True when `p` lives inside a git working tree (any ancestor holds a
- * `.git` directory or `.git` file — a linked worktree). A unit that runs a CLI
- * from a checkout couples production to whatever branch/build that checkout is
- * on: prod's memory-server front shim ran `<dev checkout>/bin/soxe serve …`, so
- * any branch switch or rebuild there changed production.
+ * `.git` directory or `.git` file — a linked worktree) — PROVIDED the nearest
+ * `.git` is found BEFORE the walk crosses a `node_modules` segment. A path
+ * inside `node_modules` is by definition an installed package, never a
+ * checkout, even when some outer ancestor happens to be a git repo itself
+ * (Homebrew's own `/opt/homebrew/.git`, nvm's `~/.nvm/.git`) — those repos own
+ * the tree, not the package installed inside it. `p` is realpath'd first so an
+ * `npm link`ed global that resolves back into a checkout is still correctly
+ * classified as a checkout (the symlink itself may sit under `node_modules`,
+ * but its target does not).
+ *
+ * A unit that runs a CLI from a checkout couples production to whatever
+ * branch/build that checkout is on: prod's memory-server front shim ran
+ * `<dev checkout>/bin/soxe serve …`, so any branch switch or rebuild there
+ * changed production.
  */
-export function isGitCheckoutPath(p: string): boolean {
-  let dir = path.resolve(p);
+export function isGitCheckoutPath(p: string, logger: RuntimeLogger = createDefaultLogger()): boolean {
+  let real = p;
+  try {
+    real = fs.realpathSync(p);
+  } catch (e) {
+    logger.warn('os-unit.checkout-path-realpath-failed', { path: p, error: String(e) });
+    real = p;
+  }
+  let dir = path.resolve(real);
   for (;;) {
-    try {
-      if (fs.existsSync(path.join(dir, '.git'))) return true;
-    } catch {
-      /* unreadable ancestor — keep walking; never throws */
-    }
+    if (path.basename(dir) === 'node_modules') return false;
+    if (fs.existsSync(path.join(dir, '.git'))) return true;
     const parent = path.dirname(dir);
     if (parent === dir) return false;
     dir = parent;
@@ -497,52 +512,120 @@ export interface UnitCliResolution {
   volatileReason?: string;
 }
 
+/** Injectable `npm root -g` runner — tests never shell out. Returns the global
+ *  `node_modules` root, or `undefined` on any failure (no npm sibling, timeout,
+ *  non-zero exit, empty output). */
+export type GlobalRootResolver = (nodePath: string) => string | undefined;
+
+/** Real resolver: runs `<npm sibling of nodePath> root -g` through the PINNED
+ *  node itself (never the caller's own `npm` on PATH — that could belong to a
+ *  different, unrelated node install). Never throws; a failure just means "no
+ *  answer", not a crash. */
+function defaultGlobalRoot(nodePath: string, logger: RuntimeLogger): string | undefined {
+  try {
+    const npmSibling = path.join(path.dirname(nodePath), 'npm');
+    let npmBin = npmSibling;
+    try {
+      npmBin = fs.realpathSync(npmSibling);
+    } catch {
+      /* no realpath — fall through and let execFileSync report the real error */
+    }
+    const out = execFileSync(nodePath, [npmBin, 'root', '-g'], {
+      encoding: 'utf8',
+      timeout: 5000,
+      stdio: ['ignore', 'pipe', 'pipe'],
+    }).trim();
+    return out.length > 0 ? out : undefined;
+  } catch (e) {
+    logger.warn('os-unit.npm-root-g-failed', { nodePath, error: String(e) });
+    return undefined;
+  }
+}
+
 /**
- * (27850011) The released-CLI locations checked, in order: the global
- * `node_modules` of the node that will run the unit (`<prefix>/lib/node_modules`),
- * then the sox data root's own CLI install (`~/.adhd/sox-ecosystem/cli`).
+ * (27850011) The released-CLI location(s) checked, resolved via `npm root -g`
+ * run through the PINNED node's own npm (§ the node that will run the unit,
+ * not whatever `npm` happens to be on the caller's PATH). This is the only
+ * correct source of truth for where that node's global installs land — the
+ * old `<dirname(dirname(nodePath))>/lib/node_modules` heuristic assumed a
+ * plain `<prefix>/bin/node` layout and silently resolved to
+ * `/opt/homebrew/Cellar/node/<version>/lib/node_modules` for a Homebrew
+ * Cellar-pinned node, which Homebrew never populates — global installs land
+ * in `/opt/homebrew/lib/node_modules` instead. The heuristic is kept only as a
+ * fallback for when `npm root -g` cannot be run at all (e.g. no `npm` sibling
+ * in a test fixture).
+ *
+ * The former second candidate, `~/.adhd/sox-ecosystem/cli`, is dropped: nothing
+ * in this repo populates that path (verified via a repo-wide search), so it
+ * was a candidate that could never match.
  */
-export function installedCliCandidates(nodePath: string, homeDir: string = os.homedir()): string[] {
-  const rel = path.join('node_modules', '@adhd', 'sox-cli', 'bin', 'soxe.mjs');
-  return [
-    path.join(path.dirname(path.dirname(nodePath)), 'lib', rel),
-    path.join(homeDir, '.adhd', 'sox-ecosystem', 'cli', rel),
-  ];
+export function installedCliCandidates(
+  nodePath: string,
+  opts: { globalRoot?: GlobalRootResolver; logger?: RuntimeLogger } = {},
+): string[] {
+  const logger = opts.logger ?? createDefaultLogger();
+  const rel = path.join('@adhd', 'sox-cli', 'bin', 'soxe.mjs');
+  const globalRoot = opts.globalRoot ?? ((np: string) => defaultGlobalRoot(np, logger));
+  const resolvedRoot = globalRoot(nodePath);
+  if (resolvedRoot) {
+    return [path.join(resolvedRoot, rel)];
+  }
+  // Fallback heuristic — only reached when `npm root -g` could not be resolved.
+  return [path.join(path.dirname(path.dirname(nodePath)), 'lib', 'node_modules', rel)];
 }
 
 /**
  * (27850011) Resolve the `soxe` a unit's argv runs. Never silently a git
- * checkout: an explicit `--cli-path` always wins (explicit request); else the
- * invoking CLI when it is NOT inside a checkout; else the first existing
- * released install (realpath, also not in a checkout — an `npm link`ed global
- * resolves back into the checkout and is rejected); else the invoking checkout
- * CLI marked `volatile` so the caller can refuse it (user scope) exactly like a
- * volatile node (§9.2, `--allow-volatile-node`).
+ * checkout: an explicit `--cli-path` always wins (explicit request, MUST be an
+ * absolute, existing path — anything else throws before any caller state is
+ * touched); else the invoking CLI when it is NOT inside a checkout; else the
+ * first existing released install (realpath, also not in a checkout — an
+ * `npm link`ed global resolves back into the checkout and is rejected); else
+ * the invoking checkout CLI marked `volatile` so the caller can refuse it
+ * (user scope) exactly like a volatile node (§9.2, `--allow-volatile-node`).
+ *
+ * @throws Error if `explicit` is supplied but is not an absolute, existing path.
  */
 export function resolveUnitCliPath(opts: {
   argv1: string;
   nodePath: string;
   explicit?: string | undefined;
   candidates?: string[];
+  globalRoot?: GlobalRootResolver;
+  logger?: RuntimeLogger;
 }): UnitCliResolution {
+  const logger = opts.logger ?? createDefaultLogger();
   const real = (p: string): string => {
     try {
       return fs.realpathSync(p);
-    } catch {
+    } catch (e) {
+      logger.warn('os-unit.cli-path-realpath-failed', { path: p, error: String(e) });
       return p;
     }
   };
   if (opts.explicit !== undefined && opts.explicit !== '') {
+    if (!path.isAbsolute(opts.explicit)) {
+      throw new Error(`--cli-path must be an absolute path, got: ${opts.explicit}`);
+    }
+    if (!fs.existsSync(opts.explicit)) {
+      throw new Error(`--cli-path does not exist: ${opts.explicit}`);
+    }
     return { cliPath: real(opts.explicit), source: 'flag', volatile: false };
   }
   const invoking = opts.argv1 ? real(opts.argv1) : '';
-  if (invoking && !isGitCheckoutPath(invoking)) {
+  if (invoking && !isGitCheckoutPath(invoking, logger)) {
     return { cliPath: invoking, source: 'invoking', volatile: false };
   }
-  for (const c of opts.candidates ?? installedCliCandidates(opts.nodePath)) {
+  const candidates =
+    opts.candidates ??
+    installedCliCandidates(opts.nodePath, {
+      ...(opts.globalRoot !== undefined ? { globalRoot: opts.globalRoot } : {}),
+      logger,
+    });
+  for (const c of candidates) {
     if (!fs.existsSync(c)) continue;
     const r = real(c);
-    if (!isGitCheckoutPath(r)) return { cliPath: r, source: 'installed', volatile: false };
+    if (!isGitCheckoutPath(r, logger)) return { cliPath: r, source: 'installed', volatile: false };
   }
   return {
     cliPath: invoking,
