@@ -384,18 +384,21 @@ export function _resetEmbedStampThrottleForTest(wq: WriteQueue): void {
 
 /**
  * (324da3a8) Persist a successful pipeline embed into the health ledger,
- * throttled per queue. Runs as its own short queue task AFTER the apply task
- * settled (never from inside a task — BL-154). Bookkeeping only: a failure is
- * traced and never fails the embed it describes.
+ * throttled per queue. Called from INSIDE the embed's own apply task, on that
+ * task's connection, after the vector transaction committed — so one pipeline
+ * apply is exactly one apply-kind queue task (`apply_tasks_completed` counts
+ * embed applies only) and no extra queue slot is taken. It never enqueues
+ * (BL-154). The throttle advances only after a stamp lands, so a failed stamp
+ * is retried on the next apply. Bookkeeping only: a failure is traced and
+ * never fails the apply it describes.
  */
-async function maybeStampEmbedSuccess(wq: WriteQueue): Promise<void> {
+async function stampEmbedSuccessInApplyTask(qdb: StoreAdapter, wq: WriteQueue): Promise<void> {
   const nowMs = Date.now();
   const last = lastEmbedStampAt.get(wq);
   if (last !== undefined && nowMs - last < EMBED_SUCCESS_STAMP_INTERVAL_MS) return;
-  lastEmbedStampAt.set(wq, nowMs);
-  const atIso = new Date(nowMs).toISOString();
   try {
-    await wq.enqueue('embed_success_stamp', (qdb) => stampSuccessfulEmbed(qdb, atIso), 'apply');
+    await stampSuccessfulEmbed(qdb, new Date(nowMs).toISOString());
+    lastEmbedStampAt.set(wq, nowMs);
   } catch (err) {
     tlog.warn('embed_pipeline.success_stamp.failed', {
       error: err instanceof Error ? err.message : String(err),
@@ -612,9 +615,11 @@ export async function schedulePendingEmbeds(
           const r = await wq.enqueue(
             `embed_apply:${p.uid}`,
             async (qdb) => {
-              return qdb.transaction(async (tx) => {
+              const applied = await qdb.transaction(async (tx) => {
                 return applyEmbedding(tx, p, vec, useBinaryFormat, vectorDialect);
               }, { mode: 'immediate' });
+              if (applied.status === 'applied') await stampEmbedSuccessInApplyTask(qdb, wq);
+              return applied;
             },
             'apply',
             traceId,
@@ -629,7 +634,6 @@ export async function schedulePendingEmbeds(
           if (r.status === 'applied' && p.startedAtMs !== undefined) {
             metrics.timeToVector.push(performance.now() - p.startedAtMs);
           }
-          if (r.status === 'applied') await maybeStampEmbedSuccess(wq);
         } catch (err) {
           out.failed++;
           metrics.counters.embeds_failed++;

@@ -184,11 +184,28 @@ export async function recordEnrichPass(
  * healthy pipeline that left the heal nothing to do froze the stamp (prod:
  * stuck at 2026-09-24T17:26:51Z through 1,703 successful host embeds on
  * 09-25). Monotonic: never moves the stamp backwards. Callers throttle.
+ *
+ * ONE atomic statement: `json_set` rewrites only `$.last_successful_embed_at`
+ * in place, so a concurrent read-modify-write of the ledger
+ * (`recordEnrichPass`) can never be clobbered by a stale whole-object copy from
+ * this path (86ca8a02). The upsert's WHERE clause is the monotonic guard, and
+ * a missing or unparseable ledger row is (re)seeded with just this field —
+ * `readEnrichHealthLedger` fills every other field from the empty ledger.
  */
 export async function stampSuccessfulEmbed(adapter: StoreAdapter, atIso: string): Promise<void> {
-  const prev = await readEnrichHealthLedger(adapter);
-  if (prev.last_successful_embed_at !== null && prev.last_successful_embed_at >= atIso) return;
-  await writeMetaJson(adapter, LEDGER_META_KEY, { ...prev, last_successful_embed_at: atIso });
+  await adapter.executeRun(
+    `INSERT INTO sox_store_meta (key, value) VALUES (?, json_object('last_successful_embed_at', ?))
+     ON CONFLICT(key) DO UPDATE SET value =
+       CASE WHEN json_valid(sox_store_meta.value)
+            THEN json_set(sox_store_meta.value, '$.last_successful_embed_at', ?)
+            ELSE json_object('last_successful_embed_at', ?)
+       END
+     WHERE CASE WHEN json_valid(sox_store_meta.value)
+                THEN coalesce(json_extract(sox_store_meta.value, '$.last_successful_embed_at') < ?, 1)
+                ELSE 1
+           END`,
+    [LEDGER_META_KEY, atIso, atIso, atIso, atIso],
+  );
 }
 
 /** Clear the persisted ledger — `memory_curate reset_pipeline`. Returns void. */

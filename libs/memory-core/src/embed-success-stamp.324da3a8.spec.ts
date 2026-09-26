@@ -8,11 +8,16 @@
  * (`embeds_completed: heal.healed`, memory-server index.ts). A healthy
  * pipeline leaves the heal nothing to do, so the stamp never moved.
  *
- * Fix: `schedulePendingEmbeds` stamps the ledger (throttled) after an apply
- * lands (`stampSuccessfulEmbed`), and the stamp is monotonic.
+ * Fix: `schedulePendingEmbeds` stamps the ledger (throttled) INSIDE the
+ * embed's own apply task, after the vector commit (`stampSuccessfulEmbed`, one
+ * atomic `json_set` upsert). The stamp is monotonic, never rewrites the rest of
+ * the ledger, and never costs a second queue task — `apply_tasks_completed`
+ * counts embed applies only.
  *
- * RED (fix disabled — the `maybeStampEmbedSuccess` call removed): the ledger
- * still reads the stale seeded timestamp after a successful pipeline embed.
+ * RED (fix disabled — the stamp call removed): the ledger still reads the stale
+ * seeded timestamp after a successful pipeline embed. RED (stamp enqueued as its
+ * own apply-kind task, the first 324da3a8 shape): `apply_tasks_completed` is 2
+ * for one pipeline apply.
  */
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import * as fs from 'node:fs';
@@ -34,6 +39,16 @@ import { DeterministicTestProvider } from './embed-test-provider.js';
 import { readEnrichHealthLedger, recordEnrichPass, stampSuccessfulEmbed } from './enrich-health.js';
 
 const STALE = '2026-09-24T17:26:51.000Z';
+
+const hasTurso = (() => {
+  try {
+    require.resolve('@tursodatabase/database');
+    return true;
+  } catch (err) {
+    console.warn(`[324da3a8 spec] turso adapter unavailable, skipping turso cases: ${String(err)}`);
+    return false;
+  }
+})();
 
 let dir: string;
 let dbPath: string;
@@ -105,3 +120,82 @@ describe('324da3a8 — last_successful_embed_at advances on the write-path (funn
     expect((await readEnrichHealthLedger(adapter)).last_successful_embed_at).toBe('2026-09-25T10:00:00.000Z');
   });
 });
+
+describe('324da3a8 — the stamp rides the apply task, it is not a second queue task', () => {
+  it('one pipeline apply completes exactly one apply-kind task AND advances last_successful_embed_at', async () => {
+    await stampSuccessfulEmbed(adapter, STALE);
+    const wq = await WriteQueue.forPath(dbPath);
+    const a = await phaseA('one apply, one apply task, one fresh stamp');
+    const before = new Date().toISOString();
+    const res = await schedulePendingEmbeds(wq, [a.pending!], { vectorDialect: await vectorDialectFor(adapter) });
+    expect(res.applied).toBe(1);
+
+    const c = wq.getMetrics().counters;
+    expect(c.apply_tasks_completed).toBe(1);
+    expect(c.tasks_completed).toBe(1);
+
+    const stamped = (await readEnrichHealthLedger(adapter)).last_successful_embed_at;
+    expect(stamped).not.toBe(STALE);
+    expect(stamped! >= before).toBe(true);
+  });
+});
+
+describe.each(hasTurso ? (['sqlite', 'turso'] as const) : (['sqlite'] as const))(
+  '324da3a8 — stampSuccessfulEmbed is one atomic json_set upsert (%s)',
+  (kind) => {
+    let kDir: string;
+    let kAdapter: StoreAdapter;
+
+    beforeEach(async () => {
+      process.env.STORE_ADAPTER = kind;
+      kDir = fs.mkdtempSync(path.join(os.tmpdir(), `324da3a8-${kind}-`));
+      kAdapter = await openDb(path.join(kDir, 'm.db'));
+    });
+
+    afterEach(async () => {
+      await kAdapter.close();
+      process.env.STORE_ADAPTER = 'sqlite';
+      fs.rmSync(kDir, { recursive: true, force: true });
+    });
+
+    it('seeds a missing ledger row with the stamp; every other field reads as empty', async () => {
+      await stampSuccessfulEmbed(kAdapter, STALE);
+      const l = await readEnrichHealthLedger(kAdapter);
+      expect(l.last_successful_embed_at).toBe(STALE);
+      expect(l.passes_ok).toBe(0);
+    });
+
+    it('rewrites only $.last_successful_embed_at — pass counters recorded by recordEnrichPass survive (86ca8a02)', async () => {
+      await recordEnrichPass(kAdapter, {
+        ok: true,
+        embeds_completed: 0,
+        embeds_failed: 2,
+        heals_applied: 3,
+        heals_failed: 0,
+        poisoned_skipped: 1,
+        backlog_before: 9,
+        backlog_after: 5,
+      });
+      const before = await readEnrichHealthLedger(kAdapter);
+      await stampSuccessfulEmbed(kAdapter, '2099-01-01T00:00:00.000Z');
+      const after = await readEnrichHealthLedger(kAdapter);
+      expect(after).toEqual({ ...before, last_successful_embed_at: '2099-01-01T00:00:00.000Z' });
+    });
+
+    it('is monotonic — an older timestamp never overwrites a newer one', async () => {
+      await stampSuccessfulEmbed(kAdapter, '2026-09-25T10:00:00.000Z');
+      await stampSuccessfulEmbed(kAdapter, STALE);
+      expect((await readEnrichHealthLedger(kAdapter)).last_successful_embed_at).toBe('2026-09-25T10:00:00.000Z');
+    });
+
+    it('reseeds an unparseable ledger row instead of throwing', async () => {
+      await kAdapter.executeRun(
+        `INSERT INTO sox_store_meta (key, value) VALUES ('enrich_health_ledger', '{not json')
+         ON CONFLICT(key) DO UPDATE SET value = excluded.value`,
+        [],
+      );
+      await stampSuccessfulEmbed(kAdapter, STALE);
+      expect((await readEnrichHealthLedger(kAdapter)).last_successful_embed_at).toBe(STALE);
+    });
+  },
+);
