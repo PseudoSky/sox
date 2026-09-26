@@ -324,15 +324,15 @@ function changesetStatusReleases(): { ok: true; names: Set<string> } | { ok: fal
       error: `changeset status exited ${res.status}: ${res.stderr || res.stdout}`,
     };
   }
-  let parsed: { releases?: { name: string; type?: string }[] };
+  let parsed: { releases?: { name: string }[] };
   try {
-    parsed = JSON.parse(fs.readFileSync(outFile, 'utf8')) as { releases?: { name: string; type?: string }[] };
+    parsed = JSON.parse(fs.readFileSync(outFile, 'utf8')) as { releases?: { name: string }[] };
   } catch (e) {
     return { ok: false, error: `could not parse changeset status --output JSON: ${(e as Error).message}` };
   } finally {
     fs.rmSync(path.dirname(outFile), { recursive: true, force: true });
   }
-  return { ok: true, names: new Set((parsed.releases ?? []).filter((r) => r.type !== 'none').map((r) => r.name)) };
+  return { ok: true, names: new Set((parsed.releases ?? []).map((r) => r.name)) };
 }
 
 function main(): void {
