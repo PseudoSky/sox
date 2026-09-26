@@ -10,10 +10,11 @@
  * the next recall. The stamp alone also cannot see a host that retired (ADR-0022
  * W = 60 s) or died while this process's client stayed initialized.
  *
- * RED (fix disabled — `recallEmbedBudgetFor` ignoring `readiness`, breaker
- * opening on the first cold timeout): the host-retired and contended recalls
- * below degrade with `vec: embed() timed out after 3000ms`, and the breaker is
- * open after the single cold timeout.
+ * RED observed (fix disabled — `recallEmbedBudgetFor` ignoring `readiness` and
+ * RECALL_VEC_COLD_TIMEOUTS_TO_OPEN = 1): 6 failed / 4 passed — the host-retired
+ * and contended recalls degrade with `vec: embed() timed out after 3000ms`, and
+ * with only the threshold reverted the two breaker-count cases fail (the
+ * breaker is open after a single cold-start timeout).
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import * as fs from 'node:fs';
@@ -186,6 +187,16 @@ describe('819a416b — recall survives a cold host without degrading or tripping
     const b = await memoryRecall(adapter, 'project', { query: 'host cannot come up (2)', limit: 5 });
     expect(b.degradations ?? []).toEqual(expect.arrayContaining([expect.stringMatching(/^vec: embed\(\) timed out/)]));
     expect(__recallVecCircuitStateForTest().open).toBe(true);
+  }, 60_000);
+
+  it('a CONTENDED timeout (warm host, queue ahead) still opens the breaker at once — a backlog is not a cold start', async () => {
+    provider.state = { warm: true, pending: 2 };
+    provider.delayMs = RECALL_EMBED_TIMEOUT_COLD_MS + 1500;
+    const r = await memoryRecall(adapter, 'project', { query: 'sustained backlog', limit: 5 });
+    expect(r.degradations ?? []).toEqual(
+      expect.arrayContaining([expect.stringMatching(new RegExp(`^vec: embed\\(\\) timed out after ${RECALL_EMBED_TIMEOUT_COLD_MS}ms`))]),
+    );
+    expect(__recallVecCircuitStateForTest()).toEqual({ open: true, coldTimeouts: 0 });
   }, 60_000);
 
   it('a success between cold timeouts resets the count', async () => {

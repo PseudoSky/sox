@@ -130,8 +130,7 @@ export type RecallEmbedBudgetReason =
 
 export interface RecallEmbedBudget {
   timeoutMs: number;
-  /** True when the cold budget applies: a timeout here is a slow start, not
-   *  by itself evidence of a backed-up provider (see the breaker below). */
+  /** True when the cold budget applies (cold start OR contended). */
   cold: boolean;
   reason: RecallEmbedBudgetReason;
 }
@@ -236,12 +235,15 @@ let recallVecNextProbeAt = 0;
 /** True while the single allowed background probe embed is in flight. */
 let recallVecProbeInFlight = false;
 /**
- * (819a416b) Consecutive foreground timeouts taken under the COLD budget. A
- * cold/contended budget already expects a slow embed, so ONE such timeout is a
- * slow start, not a backed-up provider — it degrades that recall but does not
- * open the breaker. A second consecutive one does (a host that cannot come up
- * inside 12 s twice running is an outage; without this bound every recall
- * would keep paying the cold budget). Reset by any successful foreground embed.
+ * (819a416b) Consecutive foreground timeouts taken on a COLD START (budget
+ * reason no_success_yet | idle_exit | host_not_warm). ONE such timeout is a
+ * slow host spawn + model load, not a backed-up provider — it degrades that
+ * recall but does not open the breaker. A second consecutive one does (a host
+ * that cannot come up inside 12 s twice running is an outage; without this
+ * bound every recall would keep paying the cold budget). A CONTENDED timeout
+ * (warm host, queue ahead) still opens the breaker at once: a backlog is
+ * exactly what the breaker exists for, and a sustained one would otherwise
+ * make every recall pay 12 s. Reset by any successful foreground embed.
  */
 let recallVecColdTimeouts = 0;
 /** (819a416b) Consecutive cold-budget timeouts that open the breaker. */
@@ -850,11 +852,13 @@ export async function memoryRecall(
       // the probe's settlement bookkeeping out from under it (only the
       // probe's own settlement may do that — see file-top docblock).
       //
-      // (819a416b) A timeout under the COLD budget counts toward
+      // (819a416b) A COLD-START timeout counts toward
       // RECALL_VEC_COLD_TIMEOUTS_TO_OPEN instead of opening immediately: one
       // cold start must not push the next recalls onto the breaker.
       if (err instanceof RecallEmbedTimeoutError && recallVecCircuitOpenedAt === 0) {
-        if (budget.cold) {
+        const coldStart =
+          budget.reason === 'no_success_yet' || budget.reason === 'idle_exit' || budget.reason === 'host_not_warm';
+        if (coldStart) {
           recallVecColdTimeouts++;
           tlog.warn('recall.embed_cold_timeout', {
             reason: budget.reason,
@@ -862,7 +866,7 @@ export async function memoryRecall(
             opens_at: RECALL_VEC_COLD_TIMEOUTS_TO_OPEN,
           });
         }
-        if (!budget.cold || recallVecColdTimeouts >= RECALL_VEC_COLD_TIMEOUTS_TO_OPEN) {
+        if (!coldStart || recallVecColdTimeouts >= RECALL_VEC_COLD_TIMEOUTS_TO_OPEN) {
           recallVecColdTimeouts = 0;
           openRecallVecCircuit();
         }

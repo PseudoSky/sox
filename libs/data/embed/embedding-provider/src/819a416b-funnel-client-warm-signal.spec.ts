@@ -9,8 +9,9 @@
  * LIVE connection has served a successful embed since connecting.
  *
  * Real host (`embedHostMain.ts`) behind a stub private pool — no model loaded.
- * RED (fix disabled — no `warm` getter / no `readiness()`): every `warm`
- * assertion reads `undefined` and `provider.readiness` is not a function.
+ * RED observed (`warm` reduced to `started && connected`, i.e. without the
+ * served-since-connect proof): 1 failed / 3 passed — the "connected is not
+ * warm" case reads a host that is still loading its model as warm.
  */
 import { afterEach, describe, expect, it } from 'vitest';
 import { __resetEmbedHostConfigForTests, configureEmbedHostIdleGraceMs } from './embedHostConfig.js';
