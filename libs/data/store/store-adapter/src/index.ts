@@ -23,6 +23,7 @@ export * from './fts-ops.js';
 // operation whose frequency is the confirmed corruption driver. This is a pure
 // filesystem scan: zero opens.
 export * from './store-lease.js';
+export * from './cold-open-lock.js';
 export * from './adapter-meta.js';
 export * from './integrity.js';
 export * from './integrity-status.js';

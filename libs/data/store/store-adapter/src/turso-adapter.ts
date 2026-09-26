@@ -22,6 +22,7 @@ import {
 import type { BackupIntegrityReport, WalIdentity } from './integrity.js';
 import { maybePruneStaleTshmSidecars } from './sidecar-retention.js';
 import { acquireStoreLease, storeQuiescence, type StoreLease } from './store-lease.js';
+import { acquireColdOpenLock, type ColdOpenLock } from './cold-open-lock.js';
 import { canonicalDbPath } from './path-identity.js';
 import {
   clearStoreOpenMarker,
@@ -1739,6 +1740,17 @@ export class TursoAdapterImpl implements TursoAdapter {
       lease = await acquireStoreLease(canonicalDb);
     }
 
+    // (6fd60658) Serialize the driver open + shared-WAL coordination init of
+    // THIS path across processes. Concurrent cold opens otherwise abort in
+    // Rust (`shared_wal_coordination.rs:1644`) — uncatchable, so the bounded
+    // open retry below cannot absorb it. Released in the `finally` of the try
+    // below, i.e. before the instance is returned: never held across a query.
+    // Bounded + stale-safe; see cold-open-lock.ts.
+    let coldOpen: ColdOpenLock | null = null;
+    if (canonicalDb !== undefined) {
+      coldOpen = await acquireColdOpenLock(canonicalDb);
+    }
+
     try {
       // (BL-391) Soft-readonly: caller wants read-only semantics but needs
       // fts_match to keep working, which Turso's native readonly option
@@ -2595,8 +2607,17 @@ export class TursoAdapterImpl implements TursoAdapter {
 
       return instance;
     } catch (err) {
-      if (lease) await lease.release().catch(() => {});
+      if (lease) {
+        await lease.release().catch((releaseErr: unknown) => {
+          log.debug('store_adapter.turso.open_failed_lease_release_failed', {
+            error: releaseErr instanceof Error ? releaseErr.message : String(releaseErr),
+            reason: 'best-effort release on a failed open; the open error is rethrown',
+          });
+        });
+      }
       throw err;
+    } finally {
+      coldOpen?.release();
     }
   }
 

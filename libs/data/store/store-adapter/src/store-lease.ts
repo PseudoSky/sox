@@ -116,7 +116,7 @@ function sweepEntry(entryPath: string): void {
   }
 }
 
-function isEexist(err: unknown): boolean {
+export function isEexist(err: unknown): boolean {
   return (
     typeof err === 'object' && err !== null && (err as { code?: unknown }).code === 'EEXIST'
   );
