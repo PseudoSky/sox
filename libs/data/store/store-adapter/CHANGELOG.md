@@ -1,5 +1,69 @@
 # @adhd/sox-store-adapter
 
+## 0.10.0
+
+### Minor Changes
+
+- f6cbbb5: (BUG-026) Reconcile a classic `-shm` sidecar when an exclusive lock probe proves it **unlocked** — even while live turso peers hold the store — instead of refusing the open forever.
+
+  - **New exports** (additive public surface): `probeForeignShmLock`, `removeForeignShmIfUnlocked`, `foreignShmPath`, the `ForeignShmLockState` / `ForeignShmLockProbe` types, `ReconcileForeignSqliteShmOptions`, and the typed, clamped probe-timeout tuning (`FOREIGN_SHM_LOCK_PROBE_*` + `clampForeignShmLockProbeTimeoutMs`). A live classic SQLite opener holds a SHARED lock on the store, so an **exclusive** better-sqlite3 open distinguishes abandoned residue (`unlocked`) from a live classic holder (`locked`) — and succeeds under live turso peers (turso never reads the classic `-shm`). The probe runs in a short-lived child process that opens read-write, takes the exclusive lock, and `process.exit`s **without** `close()`, so it can never checkpoint or delete the shared `-wal` (the exp9 poisoner).
+  - **Behavior change** (`reconcileForeignSqliteShm` + `TursoAdapterImpl._openReal`): an abandoned `-shm` is now renamed aside and the open proceeds — it no longer throws `EForeignSqliteSidecar` merely because a turso peer holds the store. A **live classic** holder (or an unprovable state) still refuses, marked `retryable`. This is what unblocks a store whose persistent `-shm` residue was previously unopenable for as long as any peer held it.
+  - **New optional** `ReconcileForeignSqliteShmOptions.foreignHolderLock`; the second `reconcileForeignSqliteShm` argument is a structurally-wider interface, so existing callers are unaffected.
+  - `preflightSchemaSanity` now removes the `-shm` its own readonly open materialised, once the probe proves it unlocked, so a read-only connection no longer leaves accumulating residue.
+  - `EForeignSqliteSidecar` gained an optional third constructor argument (message refinement only; backward compatible).
+
+  No dependent's declared range needs to change and no consumer call site must act, but this is a behavior change (not purely additive), so it is a pre-1.0 minor.
+
+- 7b42583: fix(store-adapter): the BUG-026 foreign-`-shm` probe no longer opens a main db file that is missing or under one page. SQLite's pager deletes the `-wal` beside a zero-page main file on a read-write open (and better-sqlite3 creates a missing main file first), so the probe could destroy a store whose data lived only in its WAL. It now returns `indeterminate` without spawning and emits `store_adapter.foreign_shm.probe_declined_small_main`.
+- 5882e24: fix(store-adapter): the in-service FTS optimize pass no longer merges an unknown backlog at a fresh process's first idle point (4cd68c4e). The write counter starts at 0, so the idle pass only merges steady-state growth. The one-time backlog merge is the new offline entry point `optimizeFtsIndexes(dbPath)`, exposed as `memory fts-optimize --db <path>`. It refuses while any store-lease peer is live and reports duration per index. The idle pass now skips and logs, never runs unchecked, when the adapter holds no lease. It warns `fts.optimize.starved` once when live peers have kept it skipping past 4× the threshold, and backs off exponentially (capped at 1 h) after a failed pass.
+- fdd9909: feat(store-adapter): a process-liveness "opener" registry (4cd68c4e-H1). Every `TursoAdapterImpl` that opens a local store now registers an opener entry, one file per process per store at `<db>.sox-lease.d/.openers/<pid>`. The entry lasts from `connect()` to the final `close()`, stays through idle-release and reconnects, is unlinked on process exit, and is swept once its pid is dead. `optimizeFtsIndexes(dbPath)` now also refuses with `reason: 'openers'` while any other live process or adapter has the store open. Before this, a running-but-idle memory-server, which drops its lease on idle-release, passed the lease-only check. New exports: `registerStoreOpener`, `storeOpeners`, `openerDirPath` and `FTS_OPTIMIZE_INSERVICE_MAX_MULTIPLE`. The in-service FTS optimize pass is now bounded (4cd68c4e-H2). Once live peers have starved it past 4× the threshold, it never runs in-service. It skips with `backlog_exceeds_bound`, warns `fts.optimize.starved` once, and leaves the backlog to the offline entry point. `memory fts-optimize` now tells you to run `soxe service disable memory-server` first, because under launchd KeepAlive a killed process respawns.
+
+### Patch Changes
+
+- e8592b9: A non-ENOENT failure statting a turso store's `-shm` sidecar (e.g. EACCES) no
+  longer escalates into `EForeignSqliteSidecar` through the open path's bounded
+  retry loop. `reconcileForeignSqliteShm` now tags every decline with a
+  `declineKind` (`stat_unprovable` | `locked` | `in_use` | `rename_failed`) and the
+  open path routes through the new `foreignShmOpenAction()`: a `stat_unprovable`
+  decline proceeds with the open (traced as
+  `store_adapter.foreign_shm.open_proceeds_stat_unprovable`), while a proven live
+  classic holder still refuses exactly as before. (25af34c2)
+- 8d601a9: Turso FTS (Tantivy) index segments are now bounded. Every committed write that
+  touches an `USING fts`-indexed table adds a segment and nothing merged them, so
+  insert cost and `fts_match` latency grew linearly with a store's write history
+  (prod: 5,001 segments, fts_match 601 ms). The turso adapter now runs
+  `OPTIMIZE INDEX` on every index-method index at its idle point once
+  `DEFAULT_FTS_OPTIMIZE_WRITE_THRESHOLD` (256) writes have landed since the last
+  pass — only when the store is quiescent (a live peer lease skips the pass and
+  keeps the counter), never on a request path. A fresh process runs one catch-up
+  pass at its first quiescent idle point (a 14 ms no-op on a merged index).
+  Telemetry: `fts.optimize.start` / `fts.optimize.finish{index, duration_ms}` /
+  `fts.optimize.skipped{reason, peer_count}` / `fts.optimize.failed`. New typed
+  test-only connect option `ftsOptimizeWriteThreshold`; new read-only
+  `ftsMaintenance` getter. (4cd68c4e)
+- 74cc494: An integrity verdict's detail now agrees with the verdict. A row filtered as the
+  documented Turso FTS false positive (`wrong # of entries in index
+__turso_internal_fts_dir_*_key`, upstream turso#7611) is labelled as filtered
+  and cites the new `KNOWN_FALSE_POSITIVE_RULE_ID` in the `pragma_integrity_check`
+  probe detail (surfaced by `memory_ping`), and the new
+  `formatIntegrityVerdictDetail()` gives callers one verdict-consistent detail
+  string instead of the raw rows (which printed `integrity_ok=true` next to what
+  read as a defect). (8c93d821)
+- 20c97c9: Serialize concurrent cold opens of the same Turso store across processes.
+  `@tursodatabase/database` 0.7.x aborts in Rust
+  (`shared_wal_coordination.rs:1644`) when many processes open one store at the
+  same instant, and the adapter's open retry cannot catch an abort. The real
+  open now holds an advisory lock (`<db>.sox-lease.d/.coldopen.lock`, new
+  `acquireColdOpenLock`) around the driver open and the open-time
+  WAL-coordination init. The lock is released before the adapter is returned, so
+  no caller query ever runs under it. It is stale-safe: a dead or aged-out holder
+  is swept, and a live holder is waited on for at most 15 s before the open
+  proceeds unlocked. Measured with 24 simultaneous cold opens per path: 7
+  panics in 1536 processes without the lock, 0 in 1536 with it. 0.7.2 does not
+  change the coordination code, so the lockfile stays on 0.7.1. (6fd60658)
+- Updated dependencies [2657cb4]
+  - @adhd/sox-telemetry@0.3.2
+
 ## 0.9.3
 
 ### Patch Changes

@@ -1,6 +1,0 @@
----
-"@adhd/sox-store-adapter": minor
-"@adhd/sox-extension-memory-cli": minor
----
-
-feat(store-adapter): a process-liveness "opener" registry (4cd68c4e-H1). Every `TursoAdapterImpl` that opens a local store now registers an opener entry, one file per process per store at `<db>.sox-lease.d/.openers/<pid>`. The entry lasts from `connect()` to the final `close()`, stays through idle-release and reconnects, is unlinked on process exit, and is swept once its pid is dead. `optimizeFtsIndexes(dbPath)` now also refuses with `reason: 'openers'` while any other live process or adapter has the store open. Before this, a running-but-idle memory-server, which drops its lease on idle-release, passed the lease-only check. New exports: `registerStoreOpener`, `storeOpeners`, `openerDirPath` and `FTS_OPTIMIZE_INSERVICE_MAX_MULTIPLE`. The in-service FTS optimize pass is now bounded (4cd68c4e-H2). Once live peers have starved it past 4× the threshold, it never runs in-service. It skips with `backlog_exceeds_bound`, warns `fts.optimize.starved` once, and leaves the backlog to the offline entry point. `memory fts-optimize` now tells you to run `soxe service disable memory-server` first, because under launchd KeepAlive a killed process respawns.

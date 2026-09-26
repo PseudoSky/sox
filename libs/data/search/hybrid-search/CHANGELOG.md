@@ -1,5 +1,34 @@
 # @adhd/sox-hybrid-search
 
+## 0.5.0
+
+### Minor Changes
+
+- 68e4338: **Behaviour change (ranking).** `normalize(scores, 'min_max')` no longer maps a
+  channel whose every value is `0` to `1.0`. A degenerate (constant) channel now
+  normalises to `0` when that constant is `0` (the channel supplied no signal) and
+  to `1.0` only for a genuine non-zero tie — the same rule memory-core adopted in
+  f2237d6d. `fuse()`, `fuseWithBreakdown()` and `search()` inherit it: e.g.
+  `A{text 0.2, vec 0}` no longer ties a real winner via a fabricated full-weight
+  vec contribution. `TOPIC_BOOST_FLOOR` keeps its intended behaviour — an all-zero
+  result set floors uniformly and is still reordered by topic. (2c49d74d)
+
+### Patch Changes
+
+- 6251948: Rebuilt against `@adhd/sox-embedding-provider` 0.6.0 and
+  `@adhd/sox-service-proxy` 0.4.4 (ADR-0022: the embedding host retires on work,
+  keys on a content build id, owns its model init, and never inherits a
+  service's identity env).
+
+  The `workspace:^` ranges on embedding-provider do not admit a minor bump, so
+  every direct and transitive dependent is republished here explicitly. The
+  memory-server, memory-cli and memory-flush bundles inline the new embedding
+  host sidecar, so their published artifacts carry the fix. No source change in
+  these packages.
+
+- Updated dependencies [b7aebf5]
+  - @adhd/sox-graph-store@0.11.1
+
 ## 0.4.9
 
 ### Patch Changes

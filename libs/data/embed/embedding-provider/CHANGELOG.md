@@ -1,5 +1,136 @@
 # @adhd/sox-embedding-provider
 
+## 0.6.0
+
+### Minor Changes
+
+- 73474ba: Embedding host protocol v2: requests carry the model identity, the host owns
+  its model init, and the host key includes a content build id (ADR-0022;
+  dc73d9b6, 2fe52b0f).
+
+  - Every `init`/`embed`/`embedBatch` request the funnel client forwards now
+    carries `{model, cacheDir}`. The host loads its own model (eagerly at startup
+    and on demand, memoized, re-armed after `embedding.reset`), so a host that
+    never saw a client's `init` — a successor the dial layer replays to, or a
+    pool a peer just reset — still serves the request. A request naming a
+    different model or cache dir is refused `-32602` and surfaces as
+    `PermanentEmbeddingError`.
+  - The singleton key is now
+    `embedding-host:v2:<buildId>:<model>:<ep>:<cacheDirDigest>`. `buildId`
+    (`computeEmbedHostBuildId`) digests the host module bytes, the Node ABI and
+    the arch, so two builds on one machine get two hosts and a consumer never
+    dials a foreign build. A host started with a build id that is not its own
+    exits 3.
+  - The host takes its identity from argv (`encodeEmbedHostArgs` /
+    `parseEmbedHostArgs`), not env. `EMBED_HOST_IDLE_GRACE_ENV` is removed;
+    `resolveEmbedHostIdleGraceMs()` no longer reads `SOX_EMBED_HOST_IDLE_GRACE_MS`.
+    `embedHostSingletonKey()` takes a fourth `buildId` argument.
+  - `embedding.health` reports `protocol`, `buildId`, `hostInstanceId` and
+    `modelLoaded`.
+
+- 4e6d92e: The embedding host is a work-driven drainer (ADR-0022; 68a4bf68).
+
+  The host retires `idleGraceMs` after its last completed init/embed/embedBatch
+  once nothing is in flight and its pool has no pending requests. Connection
+  count is no longer an input, so a permanently connected consumer (the memory
+  front shim) no longer makes the host immortal, and health probes do not extend
+  its life. `DEFAULT_EMBED_HOST_IDLE_GRACE_MS` is now 60 000. Retirement is
+  ordered: the listener closes (in the same tick as the decision) before the
+  private pool is terminated, and a request that arrives after the flip is
+  answered `-32001` so the client retries on a successor. SIGTERM/SIGINT retire
+  the same way. `embedding.health` adds `state`, `lastWorkAgoMs` and
+  `reapDueInMs`.
+
+  Keep-warm is removed with its env knobs (`SOX_EMBED_KEEPWARM_MS`,
+  `SOX_EMBED_KEEPWARM_ACTIVE_WINDOW_MS`) and its exports from the `./embed-host`
+  subpath (`resolveEmbedKeepWarmMs`, `shouldSkipKeepWarmTick`,
+  `nextKeepWarmIntervalMs`, `resolveEmbedKeepWarmActiveWindowMs`,
+  `KEEPWARM_SLOW_MS`). New exports there: `reapDueInMs`, `EmbedHostState`,
+  `ERR_HOST_RETIRING`, `ERR_WRONG_MODEL`, `checkRequestIdentity`.
+
+### Patch Changes
+
+- 69e9915: Fix (2fe52b0f): `computeEmbedHostBuildId()` no longer trusts a per-process
+  memo forever. Services here run straight out of a `dist/` rebuilt in place, so
+  a long-lived spawner process can outlive many rebuilds of the host it spawns —
+  the "a new build is a new process" assumption behind the old memo was false.
+  Every call now re-checks a cheap stat fingerprint (name/size/mtimeMs/ino per
+  file) and only re-hashes file bytes when it changed, so a rebuilt host is
+  detected without recreating the client. As a backstop, `FunneledFastembedClient`
+  now recognises the host's exit-3 "build id mismatch" failure, forces one full
+  rehash, and retries once before counting the ensure as failed and tripping the
+  circuit breaker — previously it retried the same stale id forever and stayed
+  down until the consumer process was restarted. `computeEmbedHostBuildId()` also
+  now throws a typed `TransientEmbeddingError` (rather than an untyped ENOENT)
+  when the host directory vanishes mid-rebuild-swap.
+
+  Also replaces two untraced empty `catch {}` blocks (`funnelClient.ts`'s
+  `resetHost`, `embedHostConfig.ts`'s `resolveEmbedHostMainPath`) with traced
+  `@adhd/sox-telemetry` warnings, and updates two stale doc comments that still
+  described the pre-ADR-0022 "debounced, ref-counted teardown" / "debounced
+  self-reap" lifecycle — the host's actual lifecycle is a work-driven retire
+  (`W` after its last completed work; connections are not counted).
+
+- af9a5bc: The BL-331 "another fastembed host process is ALREADY RUNNING" warning names
+  only a genuinely competing host (cfe12302).
+
+  The check asked only `kill(pid, 0)`, so it warned about a pid reused by an
+  unrelated process, a zombie, and — most often — a member of the SAME host's
+  pool after `embedding.reset` started a new pool group. The ONNX child now
+  probes the lock holder once with `ps` (state, parent, start time) and
+  classifies it (`classifyLockHolder`: self, dead, zombie, pid_reused,
+  own_parent, pool_sibling, same_service, competing); only `competing` warns,
+  and every other non-trivial verdict is logged as
+  `embedding_provider.fastembed.lock_holder_ignored`. The lock now records the
+  claimant's `ppid` and `procStartMs`. The parent-side reader
+  (`detectCompetingFastembedHost`) applies the same classification without an
+  exec on the request path, using the recorded `ppid`. A failed lock claim is
+  logged instead of swallowed.
+
+- c7cb336: The embedding host no longer inherits its spawner's identity env (6660076e).
+
+  The host was spawned with the spawner's whole environment, including
+  `SOX_SERVICE_ID`, so service teardown (`findOrphansByServiceId`) and the
+  OS-truth process scan treated the shared host as memory-server's own process
+  and reaped it with memory-server. `buildEmbedHostEnv()` now builds the host env
+  from an allowlist (`PATH HOME USER LOGNAME LANG LC_ALL LC_CTYPE TZ TMPDIR
+XDG_CACHE_HOME`, the proxy/CA variables a cold model download needs, `NODE_*`,
+  `SOX_*`) and denies `SOX_SERVICE_ID`, `SOX_TELEMETRY_INIT`, `SOX_CONFIG_*`,
+  `SOX_PERM_*`, `SOX_PROXY_*` and `SOX_EMBED_HOST_*`. Every denied key is logged
+  by name (`embedding_provider.funnel.env_denied`) and passed to the host as
+  provenance argv. Spawner provenance uses single `--flag=value` argv elements so
+  a spawner's entrypoint is never a token the identity reaper matches.
+
+- 0c31031: The embedding host records its whole lifecycle, and retirement can no longer
+  end before it finishes (17a83623).
+
+  The host writes `embedding_provider.embed_host.spawned` (build id, protocol,
+  host instance id, spawner pid/service/entry, denied env keys, Node ABI),
+  `listening`, `model.init{trigger}`, `reap.armed`, `reap.cancelled`,
+  `reap.fired` and `exit` to its own `embed-host` jsonl. Retirement now holds
+  the event loop open until it exits deliberately: previously, closing the
+  listener released the last ref'd handle, so the process could drain and exit
+  mid-retire, before the private pool was terminated and before `exit` was
+  logged. The lifecycle is verified against a packed artifact (the real publish
+  closure installed outside the workspace), and the package's test target now
+  builds the package first.
+
+- 0317e72: An in-flight embed survives the death of its host (2fadb3cd).
+
+  The dial layer re-dials the host socket and replays unanswered requests, but
+  it never spawns a host, so a request whose host died waited out the 10 s
+  give-up and failed `-32001`. The funnel client now re-ensures a successor as
+  soon as its connection drops with requests outstanding, retries a host-gone
+  failure (`-32001` or a transport error) once within the caller's own timeout,
+  and replaces a dial that has been idle-down (stale give-up clock) before a new
+  request uses it. New telemetry: `embedding_provider.funnel.reconnected`,
+  `.retry`, `.reensure_failed`.
+
+- Updated dependencies [2657cb4]
+- Updated dependencies [d03ac1e]
+  - @adhd/sox-telemetry@0.3.2
+  - @adhd/sox-service-proxy@0.4.4
+
 ## 0.5.3
 
 ### Patch Changes

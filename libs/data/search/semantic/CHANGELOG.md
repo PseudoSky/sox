@@ -1,5 +1,35 @@
 # @adhd/sox-semantic
 
+## 0.1.8
+
+### Patch Changes
+
+- 6251948: Rebuilt against `@adhd/sox-embedding-provider` 0.6.0 and
+  `@adhd/sox-service-proxy` 0.4.4 (ADR-0022: the embedding host retires on work,
+  keys on a content build id, owns its model init, and never inherits a
+  service's identity env).
+
+  The `workspace:^` ranges on embedding-provider do not admit a minor bump, so
+  every direct and transitive dependent is republished here explicitly. The
+  memory-server, memory-cli and memory-flush bundles inline the new embedding
+  host sidecar, so their published artifacts carry the fix. No source change in
+  these packages.
+
+- Updated dependencies [f6cbbb5]
+- Updated dependencies [6251948]
+- Updated dependencies [7b42583]
+- Updated dependencies [e8592b9]
+- Updated dependencies [8d601a9]
+- Updated dependencies [5882e24]
+- Updated dependencies [b7aebf5]
+- Updated dependencies [68e4338]
+- Updated dependencies [74cc494]
+- Updated dependencies [fdd9909]
+- Updated dependencies [20c97c9]
+  - @adhd/sox-store-adapter@0.10.0
+  - @adhd/sox-hybrid-search@0.5.0
+  - @adhd/sox-graph-store@0.11.1
+
 ## 0.1.7
 
 ### Patch Changes

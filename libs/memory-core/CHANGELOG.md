@@ -1,5 +1,90 @@
 # @adhd/sox-memory-core
 
+## 0.11.1
+
+### Patch Changes
+
+- b0fc808: A store inside the backup directory is never enlisted into memory-server's
+  background maintenance. Any tool call resolving a `db_path` (including
+  `memory_ping`'s store block) used to add it to the set the enrich, drain and
+  compaction loops iterate for the life of the process, so one
+  `memory_ping db_path=<backup>` kept a backfill backup open, idle-flushed and
+  BUG-026-reconciled indefinitely — and eligible for heal writes. Such a store is
+  now refused (`store.background_enlist_refused`) and closed + evicted when the
+  call that touched it finishes (`store.transient_backup_released`). New
+  memory-core exports: `isBackupStorePath`, `closeCachedAdapter`,
+  `WriteQueue.closeForPath`. (98fe54a3)
+- 17fdbc0: `memory_ping`'s `enrichment.progress.last_successful_embed_at` now advances on
+  write-path (funnel) embeds. The field was written only by `recordEnrichPass`,
+  fed by the periodic heal count, so a healthy pipeline that left the heal nothing
+  to repair froze the stamp. `schedulePendingEmbeds` now stamps the ledger after
+  an apply lands (new `stampSuccessfulEmbed`, monotonic; throttled to one stamp
+  per `EMBED_SUCCESS_STAMP_INTERVAL_MS` = 30 s per queue, as its own short queue
+  task). (324da3a8)
+- 6251948: Rebuilt against `@adhd/sox-embedding-provider` 0.6.0 and
+  `@adhd/sox-service-proxy` 0.4.4 (ADR-0022: the embedding host retires on work,
+  keys on a content build id, owns its model init, and never inherits a
+  service's identity env).
+
+  The `workspace:^` ranges on embedding-provider do not admit a minor bump, so
+  every direct and transitive dependent is republished here explicitly. The
+  memory-server, memory-cli and memory-flush bundles inline the new embedding
+  host sidecar, so their published artifacts carry the fix. No source change in
+  these packages.
+
+- 68e4338: **Behaviour change (ranking).** `normalize(scores, 'min_max')` no longer maps a
+  channel whose every value is `0` to `1.0`. A degenerate (constant) channel now
+  normalises to `0` when that constant is `0` (the channel supplied no signal) and
+  to `1.0` only for a genuine non-zero tie — the same rule memory-core adopted in
+  f2237d6d. `fuse()`, `fuseWithBreakdown()` and `search()` inherit it: e.g.
+  `A{text 0.2, vec 0}` no longer ties a real winner via a fabricated full-weight
+  vec contribution. `TOPIC_BOOST_FLOOR` keeps its intended behaviour — an all-zero
+  result set floors uniformly and is still reordered by topic. (2c49d74d)
+- 913f543: `memory_recall`'s query-embed budget is now cold-start aware. With the embedding
+  funnel's host exiting after 60 s idle, the first recall after any idle period
+  paid a host respawn + model load against a flat 3 s budget, always timed out,
+  opened the vec breaker and served BM25-only. A cold path (no successful embed
+  yet in this process, or none within `EMBED_HOST_IDLE_EXIT_MS`) now gets
+  `RECALL_EMBED_TIMEOUT_COLD_MS` (12 s, from embed-host telemetry: cold p95 3.4 s /
+  max 12.2 s host-side plus spawn); a warm recall keeps the 3 s read budget. The
+  explicit `SOX_RECALL_EMBED_TIMEOUT_MS` override still governs both. New exports:
+  `recallEmbedTimeoutMsFor`, `getLastEmbedSuccessAtMs`. (819a416b)
+- a4891ed: Fixes `memory_recall`'s `score_breakdown` fabricating a non-zero contribution
+  for a channel (vec/bm25/temporal) that never actually contributed to a
+  result. `minMaxNorm()`'s degenerate-range branch collapsed ANY constant
+  per-channel array to `1.0`, including an all-zero array (the vec channel
+  skipped for the whole recall — embed timeout/circuit breaker open — or a
+  single candidate that never matched a given channel). It now distinguishes a
+  genuine non-zero tie (still collapses to `1.0`) from a channel that
+  contributed nothing (`0`), so `score_breakdown[channel] === 0` whenever that
+  channel is absent from `provenance`. Ranking (`score`, sort order) is
+  unchanged — it is driven by raw RRF magnitudes, never by the normalised
+  breakdown values. (f2237d6d)
+- Updated dependencies [f6cbbb5]
+- Updated dependencies [6251948]
+- Updated dependencies [69e9915]
+- Updated dependencies [af9a5bc]
+- Updated dependencies [c7cb336]
+- Updated dependencies [0c31031]
+- Updated dependencies [0317e72]
+- Updated dependencies [73474ba]
+- Updated dependencies [4e6d92e]
+- Updated dependencies [7b42583]
+- Updated dependencies [e8592b9]
+- Updated dependencies [8d601a9]
+- Updated dependencies [5882e24]
+- Updated dependencies [b7aebf5]
+- Updated dependencies [68e4338]
+- Updated dependencies [74cc494]
+- Updated dependencies [2657cb4]
+- Updated dependencies [fdd9909]
+- Updated dependencies [20c97c9]
+  - @adhd/sox-store-adapter@0.10.0
+  - @adhd/sox-hybrid-search@0.5.0
+  - @adhd/sox-embedding-provider@0.6.0
+  - @adhd/sox-graph-store@0.11.1
+  - @adhd/sox-telemetry@0.3.2
+
 ## 0.11.0
 
 ### Minor Changes

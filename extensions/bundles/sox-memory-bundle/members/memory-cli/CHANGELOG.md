@@ -1,5 +1,25 @@
 # Changelog
 
+## 0.3.0
+
+### Minor Changes
+
+- 5882e24: fix(store-adapter): the in-service FTS optimize pass no longer merges an unknown backlog at a fresh process's first idle point (4cd68c4e). The write counter starts at 0, so the idle pass only merges steady-state growth. The one-time backlog merge is the new offline entry point `optimizeFtsIndexes(dbPath)`, exposed as `memory fts-optimize --db <path>`. It refuses while any store-lease peer is live and reports duration per index. The idle pass now skips and logs, never runs unchecked, when the adapter holds no lease. It warns `fts.optimize.starved` once when live peers have kept it skipping past 4× the threshold, and backs off exponentially (capped at 1 h) after a failed pass.
+- fdd9909: feat(store-adapter): a process-liveness "opener" registry (4cd68c4e-H1). Every `TursoAdapterImpl` that opens a local store now registers an opener entry, one file per process per store at `<db>.sox-lease.d/.openers/<pid>`. The entry lasts from `connect()` to the final `close()`, stays through idle-release and reconnects, is unlinked on process exit, and is swept once its pid is dead. `optimizeFtsIndexes(dbPath)` now also refuses with `reason: 'openers'` while any other live process or adapter has the store open. Before this, a running-but-idle memory-server, which drops its lease on idle-release, passed the lease-only check. New exports: `registerStoreOpener`, `storeOpeners`, `openerDirPath` and `FTS_OPTIMIZE_INSERVICE_MAX_MULTIPLE`. The in-service FTS optimize pass is now bounded (4cd68c4e-H2). Once live peers have starved it past 4× the threshold, it never runs in-service. It skips with `backlog_exceeds_bound`, warns `fts.optimize.starved` once, and leaves the backlog to the offline entry point. `memory fts-optimize` now tells you to run `soxe service disable memory-server` first, because under launchd KeepAlive a killed process respawns.
+
+### Patch Changes
+
+- 6251948: Rebuilt against `@adhd/sox-embedding-provider` 0.6.0 and
+  `@adhd/sox-service-proxy` 0.4.4 (ADR-0022: the embedding host retires on work,
+  keys on a content build id, owns its model init, and never inherits a
+  service's identity env).
+
+  The `workspace:^` ranges on embedding-provider do not admit a minor bump, so
+  every direct and transitive dependent is republished here explicitly. The
+  memory-server, memory-cli and memory-flush bundles inline the new embedding
+  host sidecar, so their published artifacts carry the fix. No source change in
+  these packages.
+
 ## 0.2.5
 
 ### Patch Changes
