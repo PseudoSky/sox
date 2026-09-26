@@ -51,7 +51,8 @@
 import * as path from 'node:path';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
-import { embed, vecToJson, getProviderCallCount, getLastEmbedSuccessAtMs } from './embed.js';
+import { embed, vecToJson, getProviderCallCount, getLastEmbedSuccessAtMs, getEmbedReadiness } from './embed.js';
+import type { EmbedReadiness } from '@adhd/sox-embedding-provider';
 import { log as tlog } from './telemetry.js';
 import { openDbReadOnly } from './db.js';
 import { buildFilterClause, rrfScore } from '@adhd/sox-hybrid-search';
@@ -95,30 +96,89 @@ const DEFAULT_RECALL_EMBED_TIMEOUT_MS = 3000;
  * observed cold max plus the spawn, while a warm recall keeps the 3 s read
  * budget.
  *
- * "Cold" = no successful embed in this process yet, or none within the host's
- * idle-exit window (the host may have exited). The explicit
- * `SOX_RECALL_EMBED_TIMEOUT_MS` tuning override, when set, governs BOTH (an
- * operator/test pinning the guard means exactly that value).
+ * "Cold" (gets the cold budget) = ANY of:
+ *   - no successful embed in this process yet, or none within the host's
+ *     idle-exit window (the host has most likely retired);
+ *   - the provider's own readiness says the host is not warm — no live
+ *     connection to a host that has served this process since connecting
+ *     (retired, died, reset, never spawned), so the next embed dials/spawns
+ *     and loads the model. The last-success stamp alone cannot see a host
+ *     that retired or died early;
+ *   - embeds are already in flight on this process's client (write/heal/
+ *     warmup): the query queues behind them on the host. Measured 2026-09-26
+ *     03:06:18Z: the first recall after a restart had a WARM host, but queued
+ *     behind a write and a heal embed (host `queue_depth:1`, `response_ms`
+ *     2245 vs `work_ms` 1153) plus a 1180 ms client main-thread block, and
+ *     lost the 3 s race by 212 ms. That is the incident this budget closes.
+ * The explicit `SOX_RECALL_EMBED_TIMEOUT_MS` tuning override, when set,
+ * governs ALL cases (an operator/test pinning the guard means exactly that
+ * value) and is never treated as cold.
  */
 export const RECALL_EMBED_TIMEOUT_WARM_MS = DEFAULT_RECALL_EMBED_TIMEOUT_MS;
 export const RECALL_EMBED_TIMEOUT_COLD_MS = 12_000;
 /** The funnel host's idle-exit window (60 s): past it, assume a cold host. */
 export const EMBED_HOST_IDLE_EXIT_MS = 60_000;
 
-/** Pure: the recall embed budget for a given last-success stamp. */
-export function recallEmbedTimeoutMsFor(nowMs: number, lastEmbedSuccessAtMs: number, envRaw?: string): number {
-  const n = envRaw ? parseInt(envRaw, 10) : NaN;
-  if (Number.isFinite(n) && n > 0) return n;
-  const cold = lastEmbedSuccessAtMs === 0 || nowMs - lastEmbedSuccessAtMs >= EMBED_HOST_IDLE_EXIT_MS;
-  return cold ? RECALL_EMBED_TIMEOUT_COLD_MS : RECALL_EMBED_TIMEOUT_WARM_MS;
+/** Why a recall embed got the budget it got (telemetry + breaker policy). */
+export type RecallEmbedBudgetReason =
+  | 'override'
+  | 'no_success_yet'
+  | 'idle_exit'
+  | 'host_not_warm'
+  | 'contended'
+  | 'warm';
+
+export interface RecallEmbedBudget {
+  timeoutMs: number;
+  /** True when the cold budget applies: a timeout here is a slow start, not
+   *  by itself evidence of a backed-up provider (see the breaker below). */
+  cold: boolean;
+  reason: RecallEmbedBudgetReason;
 }
 
-function resolveRecallEmbedTimeoutMs(): number {
-  return recallEmbedTimeoutMsFor(
+/** Pure: the recall embed budget for a last-success stamp and the provider's
+ *  readiness (`null` = the provider cannot tell; the stamp alone decides). */
+export function recallEmbedBudgetFor(
+  nowMs: number,
+  lastEmbedSuccessAtMs: number,
+  envRaw?: string,
+  readiness?: EmbedReadiness | null,
+): RecallEmbedBudget {
+  const n = envRaw ? parseInt(envRaw, 10) : NaN;
+  if (Number.isFinite(n) && n > 0) return { timeoutMs: n, cold: false, reason: 'override' };
+  const cold = (reason: RecallEmbedBudgetReason): RecallEmbedBudget => ({
+    timeoutMs: RECALL_EMBED_TIMEOUT_COLD_MS,
+    cold: true,
+    reason,
+  });
+  if (lastEmbedSuccessAtMs === 0) return cold('no_success_yet');
+  if (nowMs - lastEmbedSuccessAtMs >= EMBED_HOST_IDLE_EXIT_MS) return cold('idle_exit');
+  if (readiness && !readiness.warm) return cold('host_not_warm');
+  if (readiness && readiness.pending > 0) return cold('contended');
+  return { timeoutMs: RECALL_EMBED_TIMEOUT_WARM_MS, cold: false, reason: 'warm' };
+}
+
+/** Pure: the recall embed budget in ms (see `recallEmbedBudgetFor`). */
+export function recallEmbedTimeoutMsFor(
+  nowMs: number,
+  lastEmbedSuccessAtMs: number,
+  envRaw?: string,
+  readiness?: EmbedReadiness | null,
+): number {
+  return recallEmbedBudgetFor(nowMs, lastEmbedSuccessAtMs, envRaw, readiness).timeoutMs;
+}
+
+function resolveRecallEmbedBudget(): RecallEmbedBudget {
+  return recallEmbedBudgetFor(
     Date.now(),
     getLastEmbedSuccessAtMs(),
     process.env['SOX_RECALL_EMBED_TIMEOUT_MS'],
+    getEmbedReadiness(),
   );
+}
+
+function resolveRecallEmbedTimeoutMs(): number {
+  return resolveRecallEmbedBudget().timeoutMs;
 }
 
 class RecallEmbedTimeoutError extends Error {
@@ -175,6 +235,17 @@ let recallVecCurrentCooldownMs = 0;
 let recallVecNextProbeAt = 0;
 /** True while the single allowed background probe embed is in flight. */
 let recallVecProbeInFlight = false;
+/**
+ * (819a416b) Consecutive foreground timeouts taken under the COLD budget. A
+ * cold/contended budget already expects a slow embed, so ONE such timeout is a
+ * slow start, not a backed-up provider — it degrades that recall but does not
+ * open the breaker. A second consecutive one does (a host that cannot come up
+ * inside 12 s twice running is an outage; without this bound every recall
+ * would keep paying the cold budget). Reset by any successful foreground embed.
+ */
+let recallVecColdTimeouts = 0;
+/** (819a416b) Consecutive cold-budget timeouts that open the breaker. */
+export const RECALL_VEC_COLD_TIMEOUTS_TO_OPEN = 2;
 
 /** Reopen (or first-open) the circuit. Only ever called from: (a) a
  *  foreground embed timeout while closed (first open — probe eligible
@@ -220,6 +291,12 @@ export function __resetRecallVecCircuitForTest(): void {
   recallVecCurrentCooldownMs = 0;
   recallVecNextProbeAt = 0;
   recallVecProbeInFlight = false;
+  recallVecColdTimeouts = 0;
+}
+
+/** (819a416b, test-only) Read-only view of the breaker for assertions. */
+export function __recallVecCircuitStateForTest(): { open: boolean; coldTimeouts: number } {
+  return { open: recallVecCircuitOpenedAt !== 0, coldTimeouts: recallVecColdTimeouts };
 }
 
 /**
@@ -253,8 +330,18 @@ async function embedWithRecallTimeout(query: string, timeoutMs: number): Promise
     let settled = false;
     const timer = setTimeout(() => {
       if (settled) return;
-      settled = true;
-      reject(new RecallEmbedTimeoutError(timeoutMs));
+      // (819a416b) Settle on the NEXT check phase, not in this timers phase.
+      // After a main-thread block (1180 ms measured in the 2026-09-26
+      // incident) the embed's reply is already sitting in the socket buffer
+      // when this timer fires — the timers phase runs before the poll phase,
+      // so rejecting here lets a stalled event loop declare a timeout for an
+      // answer that has already arrived. setImmediate runs after poll, so an
+      // arrived reply settles first; a genuinely missing one still rejects.
+      setImmediate(() => {
+        if (settled) return;
+        settled = true;
+        reject(new RecallEmbedTimeoutError(timeoutMs));
+      });
     }, timeoutMs);
     if (typeof timer.unref === 'function') timer.unref();
     embed(query, 'recall').then(
@@ -738,10 +825,17 @@ export async function memoryRecall(
     });
     tlog.warn('recall.embed_circuit_open', { scope });
   } else {
-    tlog.info('recall.embed_start', { scope, elapsed_ms: Math.round(performance.now() - recallT0) });
+    const budget = resolveRecallEmbedBudget();
+    tlog.info('recall.embed_start', {
+      scope,
+      elapsed_ms: Math.round(performance.now() - recallT0),
+      budget_ms: budget.timeoutMs,
+      budget_reason: budget.reason,
+    });
     try {
-      const queryVec = await embedWithRecallTimeout(query, resolveRecallEmbedTimeoutMs());
+      const queryVec = await embedWithRecallTimeout(query, budget.timeoutMs);
       queryVecJson = vecToJson(queryVec);
+      recallVecColdTimeouts = 0;
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       tlog.warn('recall.embed_failed', { error: msg, channel: 'vec' });
@@ -755,8 +849,23 @@ export async function memoryRecall(
       // recallVecProbeInFlight and doubles the backoff, which would steal
       // the probe's settlement bookkeeping out from under it (only the
       // probe's own settlement may do that — see file-top docblock).
+      //
+      // (819a416b) A timeout under the COLD budget counts toward
+      // RECALL_VEC_COLD_TIMEOUTS_TO_OPEN instead of opening immediately: one
+      // cold start must not push the next recalls onto the breaker.
       if (err instanceof RecallEmbedTimeoutError && recallVecCircuitOpenedAt === 0) {
-        openRecallVecCircuit();
+        if (budget.cold) {
+          recallVecColdTimeouts++;
+          tlog.warn('recall.embed_cold_timeout', {
+            reason: budget.reason,
+            consecutive: recallVecColdTimeouts,
+            opens_at: RECALL_VEC_COLD_TIMEOUTS_TO_OPEN,
+          });
+        }
+        if (!budget.cold || recallVecColdTimeouts >= RECALL_VEC_COLD_TIMEOUTS_TO_OPEN) {
+          recallVecColdTimeouts = 0;
+          openRecallVecCircuit();
+        }
       }
     }
   }

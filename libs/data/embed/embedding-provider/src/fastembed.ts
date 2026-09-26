@@ -1,7 +1,7 @@
 import { warmupTimeoutMs, isModelCached, WARMUP_CACHE_HIT_ATTEMPTS } from './index.js';
 import { getSharedFastembedProcess, type SharedFastembedClient } from './sharedFastembedProcess.js';
 import { resolveEmbedHostConfig } from './embedHostConfig.js';
-import type { EmbeddingHealth, EmbeddingProvider, EmbeddingProviderMetadata, EmbedRole } from './index.js';
+import type { EmbeddingHealth, EmbeddingProvider, EmbeddingProviderMetadata, EmbedReadiness, EmbedRole } from './index.js';
 // BUG-005: MODEL_CONFIGS lives in the side-effect-free `fastembedModels.js`
 // (shared with the child-process host) — see that module's doc comment for
 // why it cannot be imported from this file by the child. Re-exported below
@@ -114,6 +114,18 @@ export class FastembedProvider implements EmbeddingProvider {
       // ADR-0013 D2: the active host-selection posture is visible from one call.
       host: resolveEmbedHostConfig().host,
     };
+  }
+
+  /**
+   * (819a416b) Warm only when this provider has initialized AND its client
+   * reports a live, model-loaded host. Under the funnel (ADR-0022) the host
+   * retires after its idle window while `this.ready` stays true, so `ready`
+   * alone would misreport a retired host as warm. A client that does not
+   * expose `warm` falls back to `started`.
+   */
+  readiness(): EmbedReadiness {
+    const clientWarm = this.shared.warm ?? this.shared.started;
+    return { warm: this.ready && clientWarm, pending: this.shared.pendingCount ?? 0 };
   }
 
   async embedSingle(text: string, _role?: EmbedRole): Promise<Float32Array> {

@@ -238,6 +238,14 @@ export interface SharedFastembedClient {
   ): Promise<T>;
   terminate(): Promise<void>;
   readonly started: boolean;
+  /**
+   * (819a416b) True only when the next request can be served without a host
+   * dial/spawn or model load. Optional so a minimal test client need not
+   * implement it; a consumer treats an absent value as unknown.
+   */
+  readonly warm?: boolean;
+  /** (819a416b) Requests admitted on this client and not yet settled. */
+  readonly pendingCount?: number;
 }
 
 /**
@@ -1200,6 +1208,12 @@ export class FastembedProcessPool implements SharedFastembedClient {
   /** True once at least one member has forked its child process. */
   get started(): boolean {
     return this.members.some((m) => m.started);
+  }
+
+  /** (819a416b) The private pool is in-process-owned: a forked member is a
+   *  live child (a dead one is un-forked), so `started` is the honest signal. */
+  get warm(): boolean {
+    return this.started;
   }
 
   /** The last `{ type: 'init', model, cacheDir }` payload broadcast to every

@@ -22,7 +22,7 @@ import {
   resetSharedOnnxWorker,
   warmupOuterBudgetMs,
 } from '@adhd/sox-embedding-provider';
-import type { EmbeddingProvider } from '@adhd/sox-embedding-provider';
+import type { EmbeddingProvider, EmbedReadiness } from '@adhd/sox-embedding-provider';
 import type { StoreAdapter } from '@adhd/sox-store-adapter';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
@@ -336,6 +336,16 @@ let _lastEmbedSuccessAtMs = 0;
 export function getLastEmbedSuccessAtMs(): number {
   return _lastEmbedSuccessAtMs;
 }
+/**
+ * (819a416b) The resolved provider's own latency-readiness (host live + model
+ * loaded, embeds already queued), or `null` when no provider is resolved yet or
+ * the provider cannot tell. Never resolves a provider — a pure read.
+ */
+export function getEmbedReadiness(): EmbedReadiness | null {
+  const p = _testProvider ?? _provider;
+  return p?.readiness?.() ?? null;
+}
+
 /** Test seam: forget the last-success stamp (a fresh-process state). */
 export function _resetLastEmbedSuccessForTest(): void {
   _lastEmbedSuccessAtMs = 0;

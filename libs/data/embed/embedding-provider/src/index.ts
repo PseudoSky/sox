@@ -49,6 +49,22 @@ export interface EmbeddingProvider {
   warmUp(texts: string[]): Promise<void>;
   /** Return the current embedding health per CONTRACTS §E. */
   health(): EmbeddingHealth;
+  /**
+   * (819a416b) Latency-readiness of the NEXT embed, for a caller sizing a
+   * wall-clock budget (recall's read-path guard). Optional: a provider that
+   * cannot tell omits it and the caller falls back to its own heuristic.
+   */
+  readiness?(): EmbedReadiness;
+}
+
+/**
+ * (819a416b) `warm`: the next embed needs no host dial/spawn or model load.
+ * `pending`: embeds already admitted on this process's client — requests the
+ * next one will queue behind on the host.
+ */
+export interface EmbedReadiness {
+  warm: boolean;
+  pending: number;
 }
 
 export interface EmbeddingProviderConfig {

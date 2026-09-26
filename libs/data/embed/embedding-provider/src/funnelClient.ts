@@ -101,6 +101,15 @@ export class FunneledFastembedClient implements SharedFastembedClient {
   private connects = 0;
   /** Requests handed to the dial connection and not yet answered. */
   private _sent = 0;
+  /**
+   * (819a416b) True once the CURRENT host connection has answered an
+   * init/embed request successfully — proof the host is alive AND has the
+   * model loaded (protocol v2: the host loads it before answering either).
+   * Cleared on disconnect (the host retired/died) and whenever the connection
+   * is dropped or replaced, so a previously initialized client never reports
+   * a host it has not heard from on this connection as warm.
+   */
+  private _servedOnConn = false;
 
   constructor() {
     _activeClient = this;
@@ -109,6 +118,19 @@ export class FunneledFastembedClient implements SharedFastembedClient {
   /** True once the host has been resolved and the dial connection established. */
   get started(): boolean {
     return this._started;
+  }
+
+  /**
+   * (819a416b) Honest host-readiness signal for a caller sizing a latency
+   * budget: true only while this consumer holds a LIVE connection to a host
+   * that has already served it a successful response since connecting (so the
+   * model is loaded). False before the first request, after the host retires
+   * (ADR-0022 idle exit) or dies, and after `resetHost()` — i.e. whenever the
+   * next request must dial, spawn, or wait for a model load. `started` alone
+   * is not this signal: it is set as soon as the dial is armed.
+   */
+  get warm(): boolean {
+    return this._started && this._servedOnConn && (this.conn?.isConnected() ?? false);
   }
 
   /** In-flight request count on THIS consumer (not the host's). */
@@ -193,6 +215,11 @@ export class FunneledFastembedClient implements SharedFastembedClient {
     }
     const error = (resp as { error?: RpcError }).error;
     if (error) throw this.mapError(error);
+    // (819a416b) Only a response on the connection that is STILL current proves
+    // the live host is serving; a stale connection's late answer proves nothing.
+    if (this.conn === conn && (method === 'embedding.init' || method === 'embedding.embed' || method === 'embedding.embedBatch')) {
+      this._servedOnConn = true;
+    }
     return (resp as { result?: unknown }).result as T;
   }
 
@@ -434,6 +461,7 @@ export class FunneledFastembedClient implements SharedFastembedClient {
     this.consecutiveEnsureFailures = 0;
     if (!this.conn) {
       this.connects = 0;
+      this._servedOnConn = false;
       this.conn = dialBackend({
         socketPath,
         onConnect: () => {
@@ -446,6 +474,7 @@ export class FunneledFastembedClient implements SharedFastembedClient {
           // The host retired or died. Mark unstarted so the next ensure runs the
           // full probe/spawn path.
           this._started = false;
+          this._servedOnConn = false;
           // 2fadb3cd: with requests in flight, bring a successor up NOW. The
           // dial layer re-dials this path and replays the unanswered requests;
           // it never spawns, so without this they would sit until the 10 s
@@ -519,6 +548,7 @@ export class FunneledFastembedClient implements SharedFastembedClient {
     this.conn?.close();
     this.conn = null;
     this._started = false;
+    this._servedOnConn = false;
   }
 }
 
