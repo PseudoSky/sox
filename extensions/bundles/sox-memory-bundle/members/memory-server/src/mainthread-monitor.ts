@@ -62,7 +62,7 @@ const NS_PER_MS = 1e6;
  *  CJS artifact needs no sidecar file). Reads heartbeat[0] (epoch ms, written
  *  by the main thread) and writes a JSON line to fd 2 on a live stall. */
 export const MAINTHREAD_WATCHER_SOURCE = `
-const { workerData } = require('node:worker_threads');
+const { workerData, parentPort } = require('node:worker_threads');
 const fs = require('node:fs');
 const hb = new Float64Array(workerData.sab);
 const sleeper = new Int32Array(new SharedArrayBuffer(4));
@@ -85,7 +85,18 @@ for (;;) {
         pid: workerData.pid, blocked_for_ms: age,
         detail: 'the main thread has not run for blocked_for_ms — a synchronous step (e.g. a Turso driver step) is holding it; reported off-thread while the stall is live',
       }) + '\\n');
-    } catch (e) { /* fd 2 closed — nothing else can report this either */ }
+    } catch (e) {
+      // fd 2 is closed (or the write itself failed) — the ONE other channel this
+      // worker has is postMessage, which the main thread drains once the stall
+      // ends and it can run again (BL: untraced catch — this must never be silent).
+      try {
+        parentPort?.postMessage({
+          event: 'mainthread.watcher_write_failed',
+          error: e instanceof Error ? e.message : String(e),
+          blocked_for_ms: age,
+        });
+      } catch (e2) { /* postMessage itself failed — nothing else can report this */ }
+    }
   }
 }
 `;
@@ -140,6 +151,16 @@ export class MainThreadMonitor {
         this.watcher.unref();
         this.watcher.on('error', (err) => {
           log.warn('mainthread.watcher_failed', { error: err instanceof Error ? err.message : String(err) });
+        });
+        // The worker's own fd-2 write can fail (fd closed, etc) while the main
+        // thread is still blocked and cannot receive anything; postMessage is
+        // queued and delivered once the main thread runs again — traced here
+        // rather than silently dropped inside the worker's eval string.
+        this.watcher.on('message', (msg: { event?: string; error?: string; blocked_for_ms?: number }) => {
+          log.warn(msg?.event ?? 'mainthread.watcher_message', {
+            error: msg?.error,
+            blocked_for_ms: msg?.blocked_for_ms,
+          });
         });
       } catch (err) {
         this.watcher = null;
