@@ -1,5 +1,5 @@
 /**
- * Memory CLI — memory init|import|status|list|promote|registry|export
+ * Memory CLI — memory init|import|status|list|promote|registry|export|fts-optimize
  * Deterministic: no LLM calls, predictable output.
  *
  * P3: multi-scope with registry.json.
@@ -54,6 +54,7 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { initTelemetry, resolveProcessRole, type InitTelemetryOptions } from '@adhd/sox-telemetry';
+import { optimizeFtsIndexes } from '@adhd/sox-store-adapter';
 
 export type ScopeKind = 'project' | 'user' | 'org' | 'local';
 
@@ -586,6 +587,43 @@ async function cmdCompact(dbFlag: string, rest: string[], noOptimize: boolean): 
   }
 }
 
+/**
+ * (4cd68c4e) `fts-optimize` — OFFLINE merge of every Turso FTS index's
+ * segment backlog (`OPTIMIZE INDEX`). The in-service idle pass only merges
+ * steady-state growth; a pre-existing backlog (prod: ~5,001 segments, a
+ * 27–34 s main-thread merge) must be merged here, with memory-server STOPPED.
+ * `optimizeFtsIndexes` refuses while any store-lease peer is live, and this
+ * command exits non-zero on refused or failed.
+ */
+async function cmdFtsOptimize(dbFlag: string, rest: string[]): Promise<void> {
+  const home = process.env['HOME'] ?? process.env['USERPROFILE'] ?? os.homedir();
+  const rawDb = dbFlag || rest[0] || path.join(home, '.memory', 'memory.db');
+  const resolvedDb = path.resolve(rawDb.replace(/^~(?=\/|$)/, home));
+
+  if (!fs.existsSync(resolvedDb)) {
+    console.error(`[fts-optimize] db not found: ${resolvedDb}`);
+    process.exit(1);
+  }
+
+  const report = await optimizeFtsIndexes(resolvedDb);
+  if (report.status === 'refused') {
+    console.error(
+      `[fts-optimize] REFUSED: ${report.reason === 'peers' ? `${report.peer_count ?? 0} live store peer(s) (pids ${(report.peer_pids ?? []).join(',')})` : report.reason} — stop memory-server and every other process holding ${report.db_path}, then re-run`,
+    );
+    process.exit(2);
+  }
+  for (const r of report.per_index) {
+    console.log(`  ${r.ok ? 'ok    ' : 'FAILED'} ${r.index}  ${r.duration_ms} ms${r.error ? `  ${r.error}` : ''}`);
+  }
+  if (report.status === 'failed') {
+    console.error(`[fts-optimize] ERROR: ${report.error ?? 'unknown'} (${report.duration_ms} ms)`);
+    process.exit(1);
+  }
+  console.log(`[fts-optimize] complete: ${report.db_path}`);
+  console.log(`  indexes:     ${report.indexes.length === 0 ? '(no FTS index)' : report.indexes.join(', ')}`);
+  console.log(`  duration_ms: ${report.duration_ms}`);
+}
+
 export async function runCli(argv: string[]): Promise<void> {
   const { command, scope, basePath, exportDir, dbPathOverride, dryRun, force, noBackup, limit, destPath, noOptimize, rest } = parseArgs(argv);
 
@@ -617,6 +655,9 @@ export async function runCli(argv: string[]): Promise<void> {
     case 'pipeline':
       await cmdPipeline(rest[0], dbPathOverride, dryRun, limit);
       break;
+    case 'fts-optimize':
+      await cmdFtsOptimize(dbPathOverride, rest);
+      break;
     case 'help':
     default:
       console.log(`sox-memory CLI (P3: multi-scope)
@@ -635,6 +676,9 @@ Commands:
           [<path> positional arg also works]
   pipeline <status|drain|reset|resume> [--db <path>]   Enrich/embed pipeline control plane
           [--dry-run] [--limit N]
+  fts-optimize [--db <path>]                           OFFLINE merge of FTS index segments
+          [<path> positional arg also works]          (stop memory-server first; refuses
+                                                      while any store peer is live)
 `);
   }
 }
