@@ -110,6 +110,7 @@ import { createRequire } from 'node:module';
 import type { Database as BetterSqlite3Database } from 'better-sqlite3';
 import { engineForApplicationId } from './engine-guard.js';
 import { entryLiveness, leaseDirPath, storeQuiescence } from './store-lease.js';
+import { removeForeignShmIfUnlocked } from './foreign-shm-lock.js';
 import { log } from '@adhd/sox-telemetry';
 
 const require = createRequire(import.meta.url);
@@ -453,7 +454,18 @@ export function preflightSchemaSanity(
         .prepare('SELECT type, name, tbl_name, rootpage, sql FROM sqlite_master')
         .all() as MasterRow[];
     } finally {
-      db.close();
+      try {
+        db.close();
+      } finally {
+        // (BUG-026) A read-only connection CANNOT unlink the `-shm` its own
+        // open materialised, so the sidecar persists after this close and
+        // becomes the residue that starts the next open's reconcile / refusal.
+        // Remove OUR OWN sidecar once the exclusive-lock probe proves it
+        // unlocked — never a live classic reader's, and never when the probe
+        // cannot prove it (removeForeignShmIfUnlocked declines on
+        // `locked`/`indeterminate`).
+        removeForeignShmIfUnlocked(dbPath);
+      }
     }
   } catch (err) {
     result.skipped = `could not read sqlite_master: ${

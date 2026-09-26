@@ -21,7 +21,15 @@ import {
 } from './integrity.js';
 import type { BackupIntegrityReport, WalIdentity } from './integrity.js';
 import { maybePruneStaleTshmSidecars } from './sidecar-retention.js';
-import { acquireStoreLease, storeQuiescence, type StoreLease } from './store-lease.js';
+import {
+  acquireStoreLease,
+  registerStoreOpener,
+  storeOpeners,
+  storeQuiescence,
+  type StoreLease,
+  type StoreOpener,
+} from './store-lease.js';
+import { acquireColdOpenLock, type ColdOpenLock } from './cold-open-lock.js';
 import { canonicalDbPath } from './path-identity.js';
 import {
   clearStoreOpenMarker,
@@ -56,10 +64,12 @@ import {
   describeWalReplaced,
   logWalReplacedObserved,
   reconcileForeignSqliteShm,
+  foreignShmOpenAction,
   resolveWalOwnershipHeartbeatMs,
   verifyWalIdentityNow,
   WAL_OWNERSHIP_HEARTBEAT_DEFAULT_MS,
 } from './wal-ownership.js';
+import { probeForeignShmLock } from './foreign-shm-lock.js';
 import {
   DEFAULT_IDLE_FLUSH_CEILING_MS,
   DEFAULT_IDLE_FLUSH_FLOOR_MS,
@@ -100,6 +110,109 @@ import type {
  *  locked" and the write is lost (measured 2026-08-12, see connect()). Never
  *  a toggle — a store opened concurrently must wait out transient locks. */
 const DEFAULT_BUSY_TIMEOUT_MS = 5000;
+
+/**
+ * (4cd68c4e) FTS segment bound. Turso's Tantivy FTS index (`USING fts`) commits
+ * ONE new segment per committed write that touches the indexed table and never
+ * merges them on its own — measured on a copy of prod: 5,001 segments for
+ * ~16.5k docs; per-insert main-thread block 0.4–2 s; `fts_match` 601 ms. Only
+ * `OPTIMIZE INDEX <name>` merges them (27–34 s for that 5k-segment backlog →
+ * 1 segment; insert ~0.1 s, fts_match ~80 ms afterwards).
+ *
+ * The segment count is NOT observable from SQL: the segments live only in the
+ * `__turso_internal_fts_dir_<idx>_key` backing_btree index, which cannot be
+ * selected from (`no such table`), and the `__turso_internal_fts_dir_<idx>`
+ * table stays empty (probed 2026-09-25 after 2,000 inserts + reopen). So the
+ * trigger is the count of writable operations since the last successful
+ * optimize — an over-approximation of segments (a write that does not touch an
+ * FTS-indexed table creates none), which only ever makes the pass run earlier.
+ *
+ * 256 is chosen from a scratch measurement (driver 0.7.1, 30-word docs, load
+ * avg 100+): per-insert cost grows linearly with segment count (8 ms → 112 ms
+ * over 2,000 single-row commits; fts_match 0.5 → 33 ms) and OPTIMIZE over
+ * 2,000 segments took 2.7 s. 256 keeps a steady-state pass a few hundred ms —
+ * far inside `DEFAULT_BUSY_TIMEOUT_MS`, so a peer that opens mid-pass waits
+ * rather than failing — while the per-insert penalty stays within ~2× of a
+ * merged index.
+ *
+ * That bound holds ONLY for steady-state growth, which is why the in-service
+ * counter starts at 0 and the idle pass never attempts an unknown backlog: a
+ * pre-existing backlog (prod: 5,001 segments, a 27–34 s synchronous merge that
+ * blocks the event loop and outlasts every peer's busy timeout) is merged by
+ * the OFFLINE entry point `optimizeFtsIndexes(dbPath)` with the service
+ * stopped (`memory fts-optimize`).
+ */
+export const DEFAULT_FTS_OPTIMIZE_WRITE_THRESHOLD = 256;
+
+/** (4cd68c4e) A pass skipped for live peers warns `fts.optimize.starved` once
+ *  the counter exceeds this multiple of the threshold. */
+export const FTS_OPTIMIZE_STARVED_FACTOR = 4;
+
+/** (4cd68c4e-H2) Upper bound on what the in-service pass will ever merge: once
+ *  `_ftsWritesSinceOptimize` exceeds this multiple of the threshold (a backlog
+ *  that built up while live peers starved the pass), the in-service pass NEVER
+ *  runs — it skips with `backlog_exceeds_bound` and defers to the offline
+ *  `optimizeFtsIndexes(dbPath)`. Equal to `FTS_OPTIMIZE_STARVED_FACTOR`, so the
+ *  `fts.optimize.starved` warning and the bound mark the same crossing. */
+export const FTS_OPTIMIZE_INSERVICE_MAX_MULTIPLE = FTS_OPTIMIZE_STARVED_FACTOR;
+
+/** (4cd68c4e) Backoff after a failed pass: base × 2^(failures−1), capped. */
+export const FTS_OPTIMIZE_BACKOFF_BASE_MS = 60_000;
+export const FTS_OPTIMIZE_BACKOFF_CAP_MS = 3_600_000;
+
+/** (4cd68c4e) Delay before the next pass after `consecutiveFailures` failed
+ *  passes in a row (≥ 1): exponential from `FTS_OPTIMIZE_BACKOFF_BASE_MS`,
+ *  capped at `FTS_OPTIMIZE_BACKOFF_CAP_MS` (1 h). */
+export function ftsOptimizeBackoffMs(consecutiveFailures: number): number {
+  const n = Math.max(1, Math.floor(consecutiveFailures));
+  // Clamp the exponent: 2^40 × base is far past the cap, and the arithmetic
+  // must never reach Infinity.
+  const raw = FTS_OPTIMIZE_BACKOFF_BASE_MS * 2 ** Math.min(n - 1, 40);
+  return Math.min(raw, FTS_OPTIMIZE_BACKOFF_CAP_MS);
+}
+
+/** (4cd68c4e) Per-index result of an OPTIMIZE loop. */
+export interface FtsIndexOptimizeResult {
+  index: string;
+  ok: boolean;
+  duration_ms: number;
+  error?: string;
+}
+
+/** (4cd68c4e) Report of the offline `optimizeFtsIndexes(dbPath)` run. */
+export interface FtsOfflineOptimizeReport {
+  /** `refused`: the store is not provably out of use — a live lease peer
+   *  holds a connection (`peers`), a live process has an adapter open on it
+   *  even while idle-released (`openers`), or no lease could be taken to prove
+   *  otherwise (`no_lease`) — nothing was run. */
+  status: 'optimized' | 'refused' | 'failed';
+  reason?: 'peers' | 'openers' | 'no_lease' | 'not_found';
+  db_path: string;
+  peer_count?: number;
+  peer_pids?: number[];
+  /** Indexes OPTIMIZE completed on (empty with `optimized` ⇒ no FTS index). */
+  indexes: string[];
+  per_index: FtsIndexOptimizeResult[];
+  duration_ms: number;
+  error?: string;
+}
+
+/** (4cd68c4e) Outcome of one FTS optimize pass. */
+export interface FtsOptimizeOutcome {
+  status: 'optimized' | 'skipped' | 'failed';
+  /** Present when `status === 'skipped'`. `no_lease`: the adapter holds no
+   *  store lease / coordination path, so quiescence cannot be checked and the
+   *  pass never runs unchecked. `backlog_exceeds_bound`: the counter is past
+   *  `FTS_OPTIMIZE_INSERVICE_MAX_MULTIPLE` × threshold — too large to merge on
+   *  the main thread; left for the offline entry point. */
+  reason?: 'peers' | 'no_lease' | 'backlog_exceeds_bound';
+  peer_count?: number;
+  writes_since_optimize: number;
+  /** Indexes OPTIMIZE completed on. */
+  indexes: string[];
+  duration_ms: number;
+  error?: string;
+}
 
 /** (BL-512 follow-on) Bounded connect-level retry budget for the driver's own
  *  open-handshake race. 3 total attempts (1 initial + 2 retries) matches
@@ -406,6 +519,15 @@ export class TursoAdapterImpl implements TursoAdapter {
    *  open only to immediately tear it down. */
   private _neverOpened = false;
 
+  /** (4cd68c4e-H1) This adapter OBJECT's opener registration
+   *  (`<leaseDir>/.openers/<pid>`, see store-lease.ts). Taken by `connect()`
+   *  for a local-file store, held across idle-release and poison/repair
+   *  reconnects (those tear the connection down via `_closeConnection()`,
+   *  never `close()`), dropped only by the final `close()`. It is what lets
+   *  `optimizeFtsIndexes` see a running-but-idle service that holds no
+   *  lease. */
+  private _opener: StoreOpener | null = null;
+
   /** (idle-release) Count of operations currently executing against this
    *  connection — incremented SYNCHRONOUSLY at the top of `_trackOp` (before
    *  any `await`), so a burst of calls issued in the same tick is never
@@ -525,6 +647,434 @@ export class TursoAdapterImpl implements TursoAdapter {
    *  memory-core's queue — inherits it automatically. */
   private _idleFlushTimer: ReturnType<typeof setTimeout> | null = null;
 
+  /** (4cd68c4e) Writable operations since the last successful FTS optimize
+   *  pass — the segment-count proxy (see
+   *  `DEFAULT_FTS_OPTIMIZE_WRITE_THRESHOLD`). Starts at 0: the idle pass only
+   *  ever merges the segments THIS process added (`threshold` writes' worth,
+   *  a few hundred ms). A backlog left by earlier processes is unknown here
+   *  and can be a 27–34 s main-thread merge (prod: 5,001 segments), so it is
+   *  never attempted in-service — `optimizeFtsIndexes(dbPath)` is the offline
+   *  entry point for it. Peer-skipped passes keep the counter, so it CAN grow
+   *  past the steady state; once it exceeds `FTS_OPTIMIZE_INSERVICE_MAX_MULTIPLE`
+   *  × threshold the in-service pass stops running for good
+   *  (`backlog_exceeds_bound`) and that backlog, too, is the offline entry
+   *  point's. Lives on the instance, so it survives idle-release and poison
+   *  reconnects. */
+  private _ftsWritesSinceOptimize = 0;
+
+  /** (4cd68c4e) Latched once a peer-skipped pass has let the counter exceed
+   *  `FTS_OPTIMIZE_STARVED_FACTOR` × threshold (`fts.optimize.starved` is
+   *  warned once per crossing); cleared when the counter resets. */
+  private _ftsStarvedWarned = false;
+
+  /** (4cd68c4e) Consecutive failed passes, and the earliest time the next may
+   *  run (`ftsOptimizeBackoffMs`). Both reset on a successful pass. */
+  private _ftsOptimizeFailures = 0;
+  private _ftsOptimizeNextAttemptAt: number | null = null;
+
+  /** (4cd68c4e) Latched once `fts.optimize.skipped{reason:no_lease}` has been
+   *  warned, so a lease-less instance does not warn at every idle point. */
+  private _ftsNoLeaseWarned = false;
+
+  /** (4cd68c4e) Threshold for `_ftsWritesSinceOptimize` — typed per-connect
+   *  override via `opts.ftsOptimizeWriteThreshold` (tests only). */
+  private _ftsOptimizeWriteThreshold: number = DEFAULT_FTS_OPTIMIZE_WRITE_THRESHOLD;
+
+  /** (4cd68c4e) Last FTS optimize outcome, for diagnostics/tests. */
+  private _lastFtsOptimize: FtsOptimizeOutcome | null = null;
+
+  /** (4cd68c4e) Read-only view of the FTS maintenance state. */
+  get ftsMaintenance(): {
+    writesSinceOptimize: number;
+    threshold: number;
+    last: FtsOptimizeOutcome | null;
+    consecutiveFailures: number;
+    nextAttemptAt: number | null;
+  } {
+    return {
+      writesSinceOptimize: this._ftsWritesSinceOptimize,
+      threshold: this._ftsOptimizeWriteThreshold,
+      last: this._lastFtsOptimize,
+      consecutiveFailures: this._ftsOptimizeFailures,
+      nextAttemptAt: this._ftsOptimizeNextAttemptAt,
+    };
+  }
+
+  /**
+   * (4cd68c4e) Bounded-segment maintenance: run `OPTIMIZE INDEX` on every
+   * index-method (`USING fts`) index when at least
+   * `_ftsOptimizeWriteThreshold` writes have landed since the last pass.
+   *
+   * WHEN: only from `_performIdleFlush()` — i.e. at the adapter's own quiet
+   * point, after the idle debounce, with `_inFlightOps === 0`. Never on a
+   * request path. The counter starts at 0, and a pass runs only while it is
+   * at most `FTS_OPTIMIZE_INSERVICE_MAX_MULTIPLE` × threshold, so an
+   * in-service merge is bounded to that many writes' worth of segments this
+   * process produced. A pre-existing backlog, or one that grew past the bound
+   * while live peers starved the pass, is NEVER merged in-service (skipped
+   * with `backlog_exceeds_bound`): it is the OFFLINE entry point's job
+   * (`optimizeFtsIndexes`).
+   *
+   * LOCK BEHAVIOUR under multiprocess WAL: OPTIMIZE is an ordinary write
+   * transaction — it takes the WAL write lock for its duration, and the driver
+   * runs it synchronously on the main thread. It runs ONLY when the store is
+   * quiescent (`storeQuiescence` sees no other live lease holder); with a live
+   * peer it is SKIPPED, the counter is kept, and it is retried at the next idle
+   * point (warning `fts.optimize.starved` once the counter passes
+   * `FTS_OPTIMIZE_STARVED_FACTOR` × threshold — the same crossing past which
+   * the pass is bounded out and never retried in-service). The quiescence check is
+   * check-then-act under no lock: a peer that opens mid-pass waits on its 5 s
+   * busy timeout, which holds because a steady-state pass (threshold writes'
+   * worth of segments) is a few hundred ms. With no lease / coordination path
+   * quiescence cannot be checked, so the pass is skipped (`no_lease`) — never
+   * run unchecked. A failed pass backs off exponentially (`ftsOptimizeBackoffMs`,
+   * capped at 1 h) rather than erroring at every idle point.
+   *
+   * INTERLEAVING: the pass holds `_inFlightOps` so a caller op landing between
+   * driver steps makes the following `releaseIdleConnection()` decline instead
+   * of closing under it. It deliberately bypasses `_trackOp()` (BUG-022: a
+   * tracked op re-arms this same idle timer — a self-perpetuating loop).
+   */
+  private async _maybeOptimizeFts(): Promise<FtsOptimizeOutcome | null> {
+    if (!this._idleFlushEnabled || this.closed || this._released) return null;
+    if (this._ftsWritesSinceOptimize < this._ftsOptimizeWriteThreshold) return null;
+    const coordDb = this.coordPath;
+    const writes = this._ftsWritesSinceOptimize;
+    if (this._ftsOptimizeNextAttemptAt !== null && Date.now() < this._ftsOptimizeNextAttemptAt) {
+      log.debug('fts.optimize.backoff', {
+        db_path: coordDb ?? null,
+        consecutive_failures: this._ftsOptimizeFailures,
+        next_attempt_at: new Date(this._ftsOptimizeNextAttemptAt).toISOString(),
+        writes_since_optimize: writes,
+      });
+      return null;
+    }
+    if (coordDb === undefined || !this._lease) {
+      const outcome: FtsOptimizeOutcome = {
+        status: 'skipped',
+        reason: 'no_lease',
+        writes_since_optimize: writes,
+        indexes: [],
+        duration_ms: 0,
+      };
+      this._lastFtsOptimize = outcome;
+      const fields = {
+        db_path: coordDb ?? null,
+        reason: 'no_lease',
+        has_coord_path: coordDb !== undefined,
+        has_lease: this._lease !== null,
+        writes_since_optimize: writes,
+      };
+      if (!this._ftsNoLeaseWarned) {
+        this._ftsNoLeaseWarned = true;
+        log.warn('fts.optimize.skipped', fields);
+      } else {
+        log.debug('fts.optimize.skipped', fields);
+      }
+      return outcome;
+    }
+    const q = storeQuiescence(coordDb, this._lease.token);
+    if (!q.quiescent) {
+      const outcome: FtsOptimizeOutcome = {
+        status: 'skipped',
+        reason: 'peers',
+        peer_count: q.livePeers.length,
+        writes_since_optimize: writes,
+        indexes: [],
+        duration_ms: 0,
+      };
+      this._lastFtsOptimize = outcome;
+      const peerPids = q.livePeers.map((p) => p.pid).join(',');
+      log.info('fts.optimize.skipped', {
+        db_path: coordDb,
+        reason: 'peers',
+        peer_count: q.livePeers.length,
+        peer_pids: peerPids,
+        writes_since_optimize: writes,
+      });
+      const starvedAt = FTS_OPTIMIZE_STARVED_FACTOR * this._ftsOptimizeWriteThreshold;
+      if (writes > starvedAt && !this._ftsStarvedWarned) {
+        this._ftsStarvedWarned = true;
+        log.warn('fts.optimize.starved', {
+          db_path: coordDb,
+          writes_since_optimize: writes,
+          threshold: this._ftsOptimizeWriteThreshold,
+          starved_factor: FTS_OPTIMIZE_STARVED_FACTOR,
+          peer_count: q.livePeers.length,
+          peer_pids: peerPids,
+        });
+      }
+      return outcome;
+    }
+    // (4cd68c4e-H2) Upper bound. Peer skips KEEP the counter, so a long
+    // starvation leaves a backlog the steady-state timing argument no longer
+    // covers — merging it at the first quiescent point is exactly the
+    // multi-second main-thread stall the offline entry point exists for.
+    // Checked after the peer gate so a starved-by-peers pass still reports
+    // `peers` while peers are live.
+    const boundAt = FTS_OPTIMIZE_INSERVICE_MAX_MULTIPLE * this._ftsOptimizeWriteThreshold;
+    if (writes > boundAt) {
+      const outcome: FtsOptimizeOutcome = {
+        status: 'skipped',
+        reason: 'backlog_exceeds_bound',
+        writes_since_optimize: writes,
+        indexes: [],
+        duration_ms: 0,
+      };
+      const first = this._lastFtsOptimize?.reason !== 'backlog_exceeds_bound';
+      this._lastFtsOptimize = outcome;
+      const fields = {
+        db_path: coordDb,
+        reason: 'backlog_exceeds_bound',
+        writes_since_optimize: writes,
+        threshold: this._ftsOptimizeWriteThreshold,
+        max_multiple: FTS_OPTIMIZE_INSERVICE_MAX_MULTIPLE,
+        remedy: 'soxe service disable memory-server, then `memory fts-optimize`',
+      };
+      if (first) log.info('fts.optimize.skipped', fields);
+      else log.debug('fts.optimize.skipped', fields);
+      if (!this._ftsStarvedWarned) {
+        this._ftsStarvedWarned = true;
+        log.warn('fts.optimize.starved', {
+          db_path: coordDb,
+          writes_since_optimize: writes,
+          threshold: this._ftsOptimizeWriteThreshold,
+          starved_factor: FTS_OPTIMIZE_STARVED_FACTOR,
+          reason: 'backlog_exceeds_bound',
+        });
+      }
+      return outcome;
+    }
+    this._inFlightOps++;
+    const startedAt = Date.now();
+    const perIndex: FtsIndexOptimizeResult[] = [];
+    try {
+      await this._ensureHealthy();
+      const optimized = await this._optimizeAllFtsIndexes(coordDb, writes, perIndex);
+      this._ftsWritesSinceOptimize = 0;
+      this._ftsStarvedWarned = false;
+      this._ftsOptimizeFailures = 0;
+      this._ftsOptimizeNextAttemptAt = null;
+      if (optimized.length === 0) {
+        // No index-method index on this store — nothing can accumulate.
+        return null;
+      }
+      const outcome: FtsOptimizeOutcome = {
+        status: 'optimized',
+        writes_since_optimize: writes,
+        indexes: optimized,
+        duration_ms: Date.now() - startedAt,
+      };
+      this._lastFtsOptimize = outcome;
+      return outcome;
+    } catch (err) {
+      this._markIfFatal(err);
+      this._ftsOptimizeFailures++;
+      const backoffMs = ftsOptimizeBackoffMs(this._ftsOptimizeFailures);
+      this._ftsOptimizeNextAttemptAt = Date.now() + backoffMs;
+      const outcome: FtsOptimizeOutcome = {
+        status: 'failed',
+        writes_since_optimize: writes,
+        indexes: perIndex.filter((r) => r.ok).map((r) => r.index),
+        duration_ms: Date.now() - startedAt,
+        error: err instanceof Error ? err.message : String(err),
+      };
+      this._lastFtsOptimize = outcome;
+      log.error('fts.optimize.failed', {
+        db_path: coordDb,
+        optimized: outcome.indexes.join(','),
+        writes_since_optimize: writes,
+        duration_ms: outcome.duration_ms,
+        error: outcome.error,
+        consecutive_failures: this._ftsOptimizeFailures,
+        backoff_ms: backoffMs,
+      });
+      return outcome;
+    } finally {
+      this._inFlightOps--;
+    }
+  }
+
+  /**
+   * (4cd68c4e) The ONE `OPTIMIZE INDEX` loop, shared by the in-service idle
+   * pass and the offline entry point. Runs every index-method (`USING fts`)
+   * index in turn, recording one `perIndex` entry each (the failing one
+   * included), emitting `fts.optimize.start`/`finish`. Returns the names it
+   * optimized (empty ⇒ the store has no FTS index); rethrows the first
+   * failure. The caller owns quiescence, `_inFlightOps` and health.
+   */
+  private async _optimizeAllFtsIndexes(
+    dbPath: string,
+    writes: number | null,
+    perIndex: FtsIndexOptimizeResult[],
+  ): Promise<string[]> {
+    const rows = (await this.db.all(
+      "SELECT name FROM sqlite_master WHERE type = 'index' AND sql LIKE '%USING fts%'",
+    )) as Array<{ name: string }>;
+    const optimized: string[] = [];
+    for (const { name } of rows) {
+      const t0 = Date.now();
+      log.info('fts.optimize.start', {
+        db_path: dbPath,
+        index: name,
+        writes_since_optimize: writes,
+        // Not observable from SQL (see DEFAULT_FTS_OPTIMIZE_WRITE_THRESHOLD).
+        segments_before: null,
+      });
+      try {
+        await this.db.exec(`OPTIMIZE INDEX "${name.replace(/"/g, '""')}"`);
+      } catch (err) {
+        perIndex.push({
+          index: name,
+          ok: false,
+          duration_ms: Date.now() - t0,
+          error: err instanceof Error ? err.message : String(err),
+        });
+        throw err;
+      }
+      const durationMs = Date.now() - t0;
+      perIndex.push({ index: name, ok: true, duration_ms: durationMs });
+      optimized.push(name);
+      log.info('fts.optimize.finish', {
+        db_path: dbPath,
+        index: name,
+        writes_since_optimize: writes,
+        segments_before: null,
+        duration_ms: durationMs,
+      });
+    }
+    return optimized;
+  }
+
+  /**
+   * (4cd68c4e) Implementation of the exported `optimizeFtsIndexes` — static so
+   * it can read the opened instance's lease token for the post-open
+   * quiescence re-check.
+   */
+  static async optimizeFtsIndexesOffline(dbPath: string): Promise<FtsOfflineOptimizeReport> {
+    const startedAt = Date.now();
+    const base = { indexes: [] as string[], per_index: [] as FtsIndexOptimizeResult[] };
+    if (!existsSync(dbPath)) {
+      const report: FtsOfflineOptimizeReport = {
+        ...base,
+        status: 'failed',
+        reason: 'not_found',
+        db_path: dbPath,
+        duration_ms: 0,
+        error: `db not found: ${dbPath}`,
+      };
+      log.error('fts.optimize.offline.failed', { db_path: dbPath, reason: 'not_found' });
+      return report;
+    }
+    const canonical = canonicalDbPath(dbPath);
+    const refuse = (reason: 'peers' | 'openers' | 'no_lease', pids: number[]): FtsOfflineOptimizeReport => {
+      log.warn('fts.optimize.offline.refused', {
+        db_path: canonical,
+        reason,
+        peer_count: pids.length,
+        peer_pids: pids.join(','),
+      });
+      return {
+        ...base,
+        status: 'refused',
+        reason,
+        db_path: canonical,
+        peer_count: pids.length,
+        peer_pids: pids,
+        duration_ms: Date.now() - startedAt,
+      };
+    };
+    // Before opening: a live lease peer (e.g. a running memory-server) means
+    // the service is up — the merge blocks it for tens of seconds. Refuse.
+    const pre = storeQuiescence(canonical);
+    if (!pre.quiescent) return refuse('peers', pre.livePeers.map((p) => p.pid));
+    // (4cd68c4e-H1) The lease is not enough: an IDLE service has released its
+    // connection and its lease (`releaseIdleConnection()`, the default
+    // `'gated'` idle flush) yet is alive and will reconnect on its next
+    // request, straight into a 27–34 s merge. Its opener entry outlives the
+    // idle-release — refuse while any live opener exists. `unknown` (the
+    // opener dir exists but cannot be read) is not proof of absence.
+    const preOpeners = storeOpeners(canonical);
+    if (preOpeners.livePids.length > 0 || preOpeners.unknown) {
+      return refuse('openers', preOpeners.livePids);
+    }
+
+    const openFailed = (err: unknown): FtsOfflineOptimizeReport => {
+      const error = err instanceof Error ? err.message : String(err);
+      log.error('fts.optimize.offline.failed', { db_path: canonical, stage: 'open', error });
+      return { ...base, status: 'failed', db_path: canonical, duration_ms: Date.now() - startedAt, error };
+    };
+    // Idle flush far out: the adapter must not idle-release mid-pass.
+    let adapter: TursoAdapterImpl;
+    try {
+      adapter = await TursoAdapterImpl.connect({ dbPath: canonical, idleFlushMs: 3_600_000 });
+    } catch (err) {
+      return openFailed(err);
+    }
+    try {
+      // A freshly connected instance takes its lease with its first operation
+      // (measured: `_lease` is null straight after connect(), set after one
+      // statement), so issue one before the re-check.
+      try {
+        await adapter.executeGet('SELECT 1 AS one');
+      } catch (err) {
+        return openFailed(err);
+      }
+      // After opening, excluding our own lease: closes most of the window in
+      // which a peer could have started between the two checks.
+      if (!adapter._lease) return refuse('no_lease', []);
+      const post = storeQuiescence(canonical, adapter._lease.token);
+      if (!post.quiescent) return refuse('peers', post.livePeers.map((p) => p.pid));
+      const postOpeners = storeOpeners(canonical, adapter._opener ?? undefined);
+      if (postOpeners.livePids.length > 0 || postOpeners.unknown) {
+        return refuse('openers', postOpeners.livePids);
+      }
+
+      const perIndex: FtsIndexOptimizeResult[] = [];
+      adapter._inFlightOps++;
+      try {
+        await adapter._ensureHealthy();
+        log.info('fts.optimize.offline.start', { db_path: canonical });
+        const optimized = await adapter._optimizeAllFtsIndexes(canonical, null, perIndex);
+        const report: FtsOfflineOptimizeReport = {
+          status: 'optimized',
+          db_path: canonical,
+          indexes: optimized,
+          per_index: perIndex,
+          duration_ms: Date.now() - startedAt,
+        };
+        log.info('fts.optimize.offline.finish', {
+          db_path: canonical,
+          indexes: optimized.join(','),
+          duration_ms: report.duration_ms,
+        });
+        return report;
+      } catch (err) {
+        const error = err instanceof Error ? err.message : String(err);
+        log.error('fts.optimize.offline.failed', { db_path: canonical, error });
+        return {
+          status: 'failed',
+          db_path: canonical,
+          indexes: perIndex.filter((r) => r.ok).map((r) => r.index),
+          per_index: perIndex,
+          duration_ms: Date.now() - startedAt,
+          error,
+        };
+      } finally {
+        adapter._inFlightOps--;
+      }
+    } finally {
+      try {
+        await adapter.close();
+      } catch (err) {
+        log.error('fts.optimize.offline.close_failed', {
+          db_path: canonical,
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
+    }
+  }
+
   /** (BUG-026) True when this instance is eligible to self-arm the
    *  WAL-ownership heartbeat — set by `connect()`/`_openReal()` for writable,
    *  local-file connections only (same eligibility as `_idleFlushEnabled`: a
@@ -628,6 +1178,11 @@ export class TursoAdapterImpl implements TursoAdapter {
         return 0;
       }
     };
+    // (4cd68c4e) FTS segment maintenance rides the same quiet point, BEFORE
+    // the flush/release: the merge's own WAL frames are then checkpointed by
+    // the flush that follows, and the connection is still open for it.
+    await this._maybeOptimizeFts();
+    if (this.closed || this._released || this._inFlightOps > 0) return; // work arrived mid-pass
     const startedAt = Date.now();
     const before = walBytes();
     try {
@@ -1023,6 +1578,8 @@ export class TursoAdapterImpl implements TursoAdapter {
           );
         }
         this._lastWriteAt = now;
+        // (4cd68c4e) Segment-count proxy for the FTS optimize pass.
+        this._ftsWritesSinceOptimize++;
         // (BUG-026) Lifetime WAL-identity check on EVERY write — a replaced
         // WAL is folded + the connection recycled here, not hours later at
         // close. Runs before the wal-cap backstop so the two never race.
@@ -1435,6 +1992,11 @@ export class TursoAdapterImpl implements TursoAdapter {
      */
     idleFlushMs?: number;
     /**
+     * (4cd68c4e, TEST-ONLY) Override `DEFAULT_FTS_OPTIMIZE_WRITE_THRESHOLD` —
+     * the number of writes after which the idle point runs `OPTIMIZE INDEX`.
+     */
+    ftsOptimizeWriteThreshold?: number;
+    /**
      * (BL-590, TEST-ONLY) Override the idle-flush debounce FLOOR (default
      * `DEFAULT_IDLE_FLUSH_FLOOR_MS` = 2000ms) WITHOUT fixing the window —
      * unlike `idleFlushMs`, this does NOT disable adaptive computation.
@@ -1541,6 +2103,17 @@ export class TursoAdapterImpl implements TursoAdapter {
       lease = await acquireStoreLease(canonicalDb);
     }
 
+    // (6fd60658) Serialize the driver open + shared-WAL coordination init of
+    // THIS path across processes. Concurrent cold opens otherwise abort in
+    // Rust (`shared_wal_coordination.rs:1644`) — uncatchable, so the bounded
+    // open retry below cannot absorb it. Released in the `finally` of the try
+    // below, i.e. before the instance is returned: never held across a query.
+    // Bounded + stale-safe; see cold-open-lock.ts.
+    let coldOpen: ColdOpenLock | null = null;
+    if (canonicalDb !== undefined) {
+      coldOpen = await acquireColdOpenLock(canonicalDb);
+    }
+
     try {
       // (BL-391) Soft-readonly: caller wants read-only semantics but needs
       // fts_match to keep working, which Turso's native readonly option
@@ -1626,31 +2199,55 @@ export class TursoAdapterImpl implements TursoAdapter {
       // abandoned residue never clears and still refuses after the bound,
       // while a live hatch's sidecar clears and the open proceeds.
       //
-      // The reconcile/rename branch is deliberately UNCHANGED and still fires
-      // only when the store is quiescent — retrying must not widen the window
-      // in which a live sidecar could be renamed out from under its owner.
+      // (BUG-026, the fix) The decision is a LOCK PROBE, not quiescence. A live
+      // TURSO peer never reads the classic `-shm`, so it is NOT a reason to
+      // refuse — only a live CLASSIC opener is. `probeForeignShmLock` takes an
+      // exclusive better-sqlite3 lock in a short-lived child process
+      // (`unlocked` = abandoned residue, `locked` = a live classic holder,
+      // `indeterminate` = not provable) and returns `absent` from a single
+      // `statSync` when there is no `-shm`, so the common open path pays
+      // nothing. This is what unblocks a store whose persistent `-shm` residue
+      // used to be refused forever while a turso peer held the store.
       if (canonicalDb !== undefined && opts.readonly !== true && opts.allowForeignEngine !== true && lease) {
         for (let attempt = 0; attempt < OPEN_RETRY_MAX_ATTEMPTS; attempt++) {
           const shmQuiescence = storeQuiescence(canonicalDb, lease.token);
+          const lock = probeForeignShmLock(canonicalDb);
           const shm = reconcileForeignSqliteShm(canonicalDb, {
             storeInUse: !shmQuiescence.quiescent,
+            foreignHolderLock: lock.state,
           });
           if (shm.reconciled && shm.renamedTo) {
             emitIntegrityReport(
               canonicalDb,
               'repaired',
-              `[BUG-026] foreign -shm sidecar reconciled BEFORE the open: moved aside to ` +
-                `${shm.renamedTo} — the turso store opens against its own -tshm coordination`,
+              `[BUG-026] foreign -shm sidecar reconciled BEFORE the open (lock probe: ${lock.state}): ` +
+                `moved aside to ${shm.renamedTo} — the turso store opens against its own -tshm coordination`,
             );
             break;
           }
-          if (shm.declined === undefined || shmQuiescence.quiescent) break; // nothing to refuse
+          const shmAction = foreignShmOpenAction(shm);
+          if (shmAction === 'proceed') {
+            // (25af34c2) Nothing foreign to reconcile, OR the -shm's presence
+            // could not be proven (a non-ENOENT stat failure, already traced
+            // by reconcileForeignSqliteShm). A stat failure is not evidence of
+            // a live classic holder, so it must never escalate into
+            // EForeignSqliteSidecar via this retry loop — the open proceeds.
+            if (shm.declineKind === 'stat_unprovable') {
+              log.warn('store_adapter.foreign_shm.open_proceeds_stat_unprovable', {
+                db_path: canonicalDb,
+                detail: shm.declined ?? null,
+              });
+            }
+            break;
+          }
 
           if (attempt >= OPEN_RETRY_MAX_ATTEMPTS - 1) {
-            // Exhausted — this sidecar is not clearing, so it is genuine
-            // residue. Refuse exactly as before, marked `retryable` so the
-            // caller may retry beyond the adapter's bound (ADR-0012 §4).
-            const err = new EForeignSqliteSidecar(canonicalDb, shmQuiescence.livePeers);
+            // Exhausted — the sidecar did not clear (a live classic holder, or
+            // an unprovable state). Refuse, marked `retryable` so the caller
+            // may retry beyond the adapter's bound (ADR-0012 §4).
+            const err = new EForeignSqliteSidecar(canonicalDb, shmQuiescence.livePeers, {
+              classicHolderLocked: lock.state === 'locked',
+            });
             (err as unknown as { retryable?: boolean }).retryable = true;
             throw err;
           }
@@ -2319,6 +2916,9 @@ export class TursoAdapterImpl implements TursoAdapter {
         if (opts.idleFlushFloorMs !== undefined) instance._idleFlushMs = opts.idleFlushFloorMs;
         if (opts.idleFlushCeilingMs !== undefined) instance._idleFlushCeilingMs = opts.idleFlushCeilingMs;
         if (opts.walFlushStrategy !== undefined) instance._walFlushStrategy = opts.walFlushStrategy;
+        if (opts.ftsOptimizeWriteThreshold !== undefined) {
+          instance._ftsOptimizeWriteThreshold = opts.ftsOptimizeWriteThreshold;
+        }
         instance._armIdleFlush();
 
         // (wal-cap) Same eligibility as the idle flush, same reasoning —
@@ -2369,8 +2969,17 @@ export class TursoAdapterImpl implements TursoAdapter {
 
       return instance;
     } catch (err) {
-      if (lease) await lease.release().catch(() => {});
+      if (lease) {
+        await lease.release().catch((releaseErr: unknown) => {
+          log.debug('store_adapter.turso.open_failed_lease_release_failed', {
+            error: releaseErr instanceof Error ? releaseErr.message : String(releaseErr),
+            reason: 'best-effort release on a failed open; the open error is rethrown',
+          });
+        });
+      }
       throw err;
+    } finally {
+      coldOpen?.release();
     }
   }
 
@@ -2506,6 +3115,10 @@ export class TursoAdapterImpl implements TursoAdapter {
     };
 
     const instance = new TursoAdapterImpl(createNeverOpenedDb(), config, capabilities);
+    // (4cd68c4e-H1) Registered here — on the caller-held object — and never in
+    // `_openReal()`, whose throwaway `fresh` instances are adopted by
+    // `_reconnect()`/repair and never closed (they would leak the refcount).
+    if (canonicalDb !== undefined) instance._opener = registerStoreOpener(canonicalDb);
     instance._softReadonly = opts.readonly === true && opts.allowFtsInReadonly === true;
     instance._canonicalDb = canonicalDb;
     // (SPEC-CONN-RECYCLE) Capture the exact `opts` this call received —
@@ -2531,6 +3144,9 @@ export class TursoAdapterImpl implements TursoAdapter {
       if (opts.idleFlushFloorMs !== undefined) instance._idleFlushMs = opts.idleFlushFloorMs;
       if (opts.idleFlushCeilingMs !== undefined) instance._idleFlushCeilingMs = opts.idleFlushCeilingMs;
       if (opts.walFlushStrategy !== undefined) instance._walFlushStrategy = opts.walFlushStrategy;
+      if (opts.ftsOptimizeWriteThreshold !== undefined) {
+        instance._ftsOptimizeWriteThreshold = opts.ftsOptimizeWriteThreshold;
+      }
       instance._capFlushEnabled = true;
       if (opts.walCapBytes !== undefined) {
         instance._walCapExplicitBytes = opts.walCapBytes;
@@ -2913,8 +3529,10 @@ export class TursoAdapterImpl implements TursoAdapter {
    *
    * Runs the FULL `close()` ceremony first — PASSIVE checkpoint always, then
    * a quiescence-gated `wal_checkpoint(TRUNCATE)`, driver close, marker
-   * clear, lease release — by literally calling `this.close()` and then
-   * un-setting `closed`. This is deliberate reuse, not parallel
+   * clear, lease release — by literally calling `this._closeConnection()`
+   * (the ceremony `close()` itself runs; the opener registration is left in
+   * place because the adapter object stays open) and then un-setting
+   * `closed`. This is deliberate reuse, not parallel
    * reimplementation: every durability guarantee `close()` already has
    * (BL-330 orphaned-WAL PASSIVE backstop, BUG-008 single-TRUNCATE-per-close,
    * the BUG-STOREADAPTER-QUIESCENCE-TOCTOU detector) applies unchanged to a
@@ -2948,9 +3566,9 @@ export class TursoAdapterImpl implements TursoAdapter {
     if (this.closed || this._released || this._reconnectPromise || this._inFlightOps > 0) {
       return false;
     }
-    await this.close();
-    // `close()` sets `closed = true` — undo that so this instance stays
-    // usable. `close()` already nulled `this._lease` as part of its own
+    await this._closeConnection();
+    // `_closeConnection()` sets `closed = true` — undo that so this instance stays
+    // usable. It already nulled `this._lease` as part of its own
     // teardown; `_reconnect()` (triggered by `_ensureHealthy()` on the next
     // operation) adopts a fresh one, see its doc comment for why that must
     // differ from poison recovery's lease handling.
@@ -2960,6 +3578,25 @@ export class TursoAdapterImpl implements TursoAdapter {
   }
 
   async close(): Promise<void> {
+    if (this.closed) return;
+    try {
+      await this._closeConnection();
+    } finally {
+      // (4cd68c4e-H1) The FINAL close — the only place the opener
+      // registration is dropped, after the connection ceremony (even a
+      // throwing one: a stranded opener would refuse offline maintenance for
+      // this process's whole remaining life).
+      this._opener?.release();
+      this._opener = null;
+    }
+  }
+
+  /**
+   * The connection teardown ceremony shared by the final `close()` and the
+   * transient teardowns (`releaseIdleConnection()`, the repair path). It does
+   * NOT touch the opener registration — the adapter object stays open.
+   */
+  private async _closeConnection(): Promise<void> {
     if (this.closed) return;
     // (DEBT-003, lazy-connect) An instance that was constructed via
     // `connect()` and closed WITHOUT ever performing an operation has no
@@ -3402,7 +4039,7 @@ export class TursoAdapterImpl implements TursoAdapter {
       // directory no peer ever wrote to — the worst possible place for this bug.
       const repairDbPath = this.coordPath;
       const ownLeaseToken = this._lease?.token;
-      await this.close(); // full clean-close ceremony (checkpoint, driver close, marker clear)
+      await this._closeConnection(); // full clean-close ceremony (checkpoint, driver close, marker clear); keeps the opener registration
       try {
         // (BUG-017 review fix) The quiescence probe is LOCAL-FILE-only. A
         // URL-only connection (`dbPath === undefined`) is exempt: the exp9
@@ -3446,4 +4083,28 @@ export class TursoAdapterImpl implements TursoAdapter {
       this._inFlightOps--;
     }
   }
+}
+
+/**
+ * (4cd68c4e) OFFLINE FTS maintenance: merge every Turso FTS (`USING fts`)
+ * index's segment backlog with `OPTIMIZE INDEX`, then close.
+ *
+ * This is the ONE place a pre-existing backlog is merged. The in-service idle
+ * pass never attempts it: on prod's ~5,001 segments it is a 27–34 s merge that
+ * holds the WAL write lock and runs synchronously on the main thread, so every
+ * peer would outlast its busy timeout. Run it with the service STOPPED —
+ * `soxe service disable memory-server` (under launchd KeepAlive a killed
+ * process respawns) — then `memory fts-optimize --db <path>`.
+ *
+ * Refuses (`status: 'refused'`, nothing run) unless the store is provably not
+ * in use: a live lease peer holds a connection (`peers`), or any live process
+ * — including another adapter in this one — has the store open (`openers`,
+ * the registry an idle-released adapter still appears in). Both are checked
+ * before opening and again after, excluding its own lease and opener.
+ * Never throws for an operational failure: the report carries `failed` and the
+ * error. Emits `fts.optimize.offline.{start,finish,failed,refused}` plus the
+ * per-index `fts.optimize.start`/`finish` events.
+ */
+export async function optimizeFtsIndexes(dbPath: string): Promise<FtsOfflineOptimizeReport> {
+  return TursoAdapterImpl.optimizeFtsIndexesOffline(dbPath);
 }

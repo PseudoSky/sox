@@ -181,6 +181,9 @@ importers:
       '@adhd/sox-memory-core':
         specifier: workspace:*
         version: link:../../../../../libs/memory-core
+      '@adhd/sox-store-adapter':
+        specifier: workspace:*
+        version: link:../../../../../libs/data/store/store-adapter
       '@adhd/sox-telemetry':
         specifier: workspace:*
         version: link:../../../../../libs/observability/sox-telemetry

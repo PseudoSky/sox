@@ -51,7 +51,7 @@
 import * as path from 'node:path';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
-import { embed, vecToJson, getProviderCallCount } from './embed.js';
+import { embed, vecToJson, getProviderCallCount, getLastEmbedSuccessAtMs } from './embed.js';
 import { log as tlog } from './telemetry.js';
 import { openDbReadOnly } from './db.js';
 import { buildFilterClause, rrfScore } from '@adhd/sox-hybrid-search';
@@ -79,10 +79,46 @@ import type { StoreAdapter } from '@adhd/sox-store-adapter';
 // via `embedVecFailed` below) instead of hanging the whole recall forever.
 const DEFAULT_RECALL_EMBED_TIMEOUT_MS = 3000;
 
+/**
+ * (819a416b) COLD-start-aware budget. Under the embedding funnel the shared
+ * embed host exits after `EMBED_HOST_IDLE_EXIT_MS` idle, and the next request
+ * pays a host respawn + model load (~4.5 s measured by the funnel work, model
+ * `init_ms` 902 ms in the 2026-09-25 host log) on top of inference. With a flat
+ * 3 s budget the FIRST recall after any idle period always timed out, opened
+ * the vec breaker (30 s+ cooldown) and served BM25-only.
+ *
+ * Telemetry basis (~/.adhd/sox-ecosystem/embed-host/logs, `request.finish`
+ * `response_ms`): 2026-09-24 n=684 warm p50 411 / p95 5392; 2026-09-25 n=1908
+ * p50 631 / p95 4503; first request after a pool grow / init / >60 s idle:
+ * p95 1181 (09-24) and 3361 (09-25), max 12158. Those are HOST-side times —
+ * a cold path additionally pays the client-side host spawn. 12 s covers the
+ * observed cold max plus the spawn, while a warm recall keeps the 3 s read
+ * budget.
+ *
+ * "Cold" = no successful embed in this process yet, or none within the host's
+ * idle-exit window (the host may have exited). The explicit
+ * `SOX_RECALL_EMBED_TIMEOUT_MS` tuning override, when set, governs BOTH (an
+ * operator/test pinning the guard means exactly that value).
+ */
+export const RECALL_EMBED_TIMEOUT_WARM_MS = DEFAULT_RECALL_EMBED_TIMEOUT_MS;
+export const RECALL_EMBED_TIMEOUT_COLD_MS = 12_000;
+/** The funnel host's idle-exit window (60 s): past it, assume a cold host. */
+export const EMBED_HOST_IDLE_EXIT_MS = 60_000;
+
+/** Pure: the recall embed budget for a given last-success stamp. */
+export function recallEmbedTimeoutMsFor(nowMs: number, lastEmbedSuccessAtMs: number, envRaw?: string): number {
+  const n = envRaw ? parseInt(envRaw, 10) : NaN;
+  if (Number.isFinite(n) && n > 0) return n;
+  const cold = lastEmbedSuccessAtMs === 0 || nowMs - lastEmbedSuccessAtMs >= EMBED_HOST_IDLE_EXIT_MS;
+  return cold ? RECALL_EMBED_TIMEOUT_COLD_MS : RECALL_EMBED_TIMEOUT_WARM_MS;
+}
+
 function resolveRecallEmbedTimeoutMs(): number {
-  const raw = process.env['SOX_RECALL_EMBED_TIMEOUT_MS'];
-  const n = raw ? parseInt(raw, 10) : NaN;
-  return Number.isFinite(n) && n > 0 ? n : DEFAULT_RECALL_EMBED_TIMEOUT_MS;
+  return recallEmbedTimeoutMsFor(
+    Date.now(),
+    getLastEmbedSuccessAtMs(),
+    process.env['SOX_RECALL_EMBED_TIMEOUT_MS'],
+  );
 }
 
 class RecallEmbedTimeoutError extends Error {
@@ -937,7 +973,19 @@ export async function memoryRecall(
     let mn = Infinity, mx = -Infinity;
     for (const v of vals) { if (v < mn) mn = v; if (v > mx) mx = v; }
     const range = mx - mn;
-    if (range === 0) return vals.map(() => 1.0);
+    // f2237d6d: a degenerate (range === 0) channel is either
+    // (a) every candidate genuinely tied on a REAL non-zero signal — collapse
+    // to 1.0 so that channel still reports a proportional share, or
+    // (b) the channel never contributed anything at all (mn === mx === 0,
+    // e.g. the vec channel was skipped for the whole recall — breaker open,
+    // embed timeout, or every raw value is legitimately 0 because no
+    // candidate matched that channel) — collapse to 0 so a non-contributing
+    // channel never fabricates a share of the score. Before this fix, case
+    // (b) was indistinguishable from case (a) and every constant-zero
+    // channel (including "vec never ran") was normalised to 1.0, so
+    // score_breakdown reported a vec/fts/temporal contribution for a channel
+    // that supplied zero raw signal to the ranking.
+    if (range === 0) return vals.map((v) => (v === 0 ? 0 : 1.0));
     return vals.map((v) => (v - mn) / range);
   }
 

@@ -168,7 +168,15 @@ export function normalize(
         if (s > max) max = s;
       }
       if (max === min) {
-        return scores.map(() => 1.0);
+        // 2c49d74d (same rule as memory-core's f2237d6d): a degenerate channel
+        // is either (a) every candidate genuinely TIED on a real non-zero
+        // signal — collapse to 1.0 so the tie still carries its full weight —
+        // or (b) a channel that supplied NO signal at all (every value is 0:
+        // the channel never matched, or was skipped) — collapse to 0. Before
+        // this, (b) was normalised to 1.0 too, fabricating a full-weight
+        // contribution: in fuse(), A{text 0.2, vec 0} scored (1+1)/2 = 1.0 and
+        // tied a real winner. max === min here, so `max` is every value.
+        return scores.map(() => (max === 0 ? 0 : 1.0));
       }
       const range = max - min;
       return scores.map((s) => (s - min) / range);
@@ -457,6 +465,13 @@ function topicBoost(
 //     eps > 0.5 to flip, which was deliberately rejected as too aggressive).
 //   - eps >= 0.15: starts overtaking in wider-margin scenarios too, growing the
 //     blast radius of the change without a clear additional benefit measured here.
+// 2c49d74d re-evaluation: normalize('min_max') now maps an all-zero channel to 0
+// (was 1.0). The floor's intent is unchanged and still holds: the literal-zero
+// case is exactly what the floor exists to rescue, and it now ALSO covers an
+// all-zero text-only result set — every candidate floors to the same 0.1, so
+// topicBoost() reorders them exactly as it did when they all sat at 1.0 (a
+// uniform scale factor never changes relative order). A genuine non-zero tie
+// still normalises to 1.0 and is untouched by the floor.
 // This is a synthetic measurement (representative score-distribution shapes), not
 // a live-traffic A/B — no production recall query log was available in this
 // environment. If real recall telemetry becomes available, re-validate against it.

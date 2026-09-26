@@ -35,7 +35,7 @@ import { mkdtempSync, rmSync, readdirSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { TursoAdapterImpl } from '../turso-adapter.js';
-import { leaseDirPath, storeQuiescence } from '../store-lease.js';
+import { leaseDirPath, openerDirPath, storeQuiescence } from '../store-lease.js';
 import { canonicalDbPath } from '../path-identity.js';
 
 const cleanups: Array<() => void> = [];
@@ -56,13 +56,17 @@ function makeStore(): string {
   return join(root, 'store.db');
 }
 
-function leaseDirContents(dbPath: string): { leases: string[]; markers: string[] } {
+function leaseDirContents(dbPath: string): { leases: string[]; markers: string[]; openers: string[] } {
   const dir = leaseDirPath(canonicalDbPath(dbPath));
-  if (!existsSync(dir)) return { leases: [], markers: [] };
-  const all = readdirSync(dir);
+  if (!existsSync(dir)) return { leases: [], markers: [], openers: [] };
+  // Dot-names (the `.openers/` registry dir, `.coldopen.lock`) are not lease
+  // entries — the same rule `storeQuiescence` applies.
+  const all = readdirSync(dir).filter((n) => !n.startsWith('.'));
+  const openerDir = openerDirPath(canonicalDbPath(dbPath));
   return {
     leases: all.filter((n) => !n.endsWith('.openmark')),
     markers: all.filter((n) => n.endsWith('.openmark')),
+    openers: existsSync(openerDir) ? readdirSync(openerDir) : [],
   };
 }
 
@@ -89,6 +93,9 @@ describe('BUG-STOREADAPTER-CLOSE-THROW-STRANDS-MARKER-AND-LEASE', () => {
     const after = leaseDirContents(dbPath);
     expect(after.markers).toEqual([]);
     expect(after.leases).toEqual([]);
+    // (4cd68c4e-H1) A throwing final close still drops the opener entry.
+    expect(before.openers).toEqual([String(process.pid)]);
+    expect(after.openers).toEqual([]);
 
     // And the store is genuinely considered quiescent again, not merely tidy.
     expect(storeQuiescence(canonicalDbPath(dbPath)).quiescent).toBe(true);

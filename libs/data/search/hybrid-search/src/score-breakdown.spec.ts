@@ -6,7 +6,8 @@
  *   (b) normalised scores for two very different queries are on a comparable scale
  */
 import { describe, it, expect } from 'vitest';
-import { fuseWithBreakdown, fuse } from './index.js';
+import { fuseWithBreakdown, fuse, normalize, search } from './index.js';
+import type { SearchBackend } from './index.js';
 import type { FusionResultWithBreakdown } from './index.js';
 
 const TOLERANCE = 1e-10;
@@ -227,5 +228,57 @@ describe('fuseWithBreakdown — cross-query score comparability', () => {
     expect(typeof r.breakdown.bm25).toBe('number');
     expect(typeof r.breakdown.vec).toBe('number');
     expect(typeof r.breakdown.total).toBe('number');
+  });
+});
+
+// ── 2c49d74d — a constant ZERO channel contributes 0, a real tie still 1.0 ────
+
+describe('2c49d74d — normalize(min_max) never fabricates signal for an all-zero channel', () => {
+  it('all-zero channel normalises to 0; a genuine non-zero tie still normalises to 1.0', () => {
+    expect(normalize([0, 0, 0], 'min_max')).toEqual([0, 0, 0]);
+    expect(normalize([0], 'min_max')).toEqual([0]);
+    expect(normalize([0.4, 0.4], 'min_max')).toEqual([1, 1]);
+    expect(normalize([0.7], 'min_max')).toEqual([1]);
+    // Non-degenerate ranges are unchanged.
+    expect(normalize([0, 0.5, 1], 'min_max')).toEqual([0, 0.5, 1]);
+  });
+
+  it('fuse(): A{text 0.2, vec 0} no longer ties the real winner', () => {
+    // Pre-fix: the vec channel [0] normalised to [1.0] and the text channel
+    // [0.2] also to [1.0] — A scored (1+1)/2 = 1.0, tying B (whose score is
+    // earned). Now A's vec channel supplies no signal and A drops below B.
+    const out = fuse([
+      { id: 1, textScore: 0.2, vecScore: 0 },
+      { id: 2, textScore: 0.9 },
+    ]);
+    const a = out.find((r) => r.id === 1)!;
+    const b = out.find((r) => r.id === 2)!;
+    expect(b.score).toBe(1);
+    expect(a.score).toBe(0); // text min of [0.2, 0.9] → 0, vec all-zero → 0
+    expect(out[0]!.id).toBe(2);
+  });
+
+  it('fuseWithBreakdown(): a channel that never contributed reports breakdown 0', () => {
+    const [r] = fuseWithBreakdown([{ id: 1, textScore: 0.5, vecScore: 0 }]);
+    expect(r!.breakdown.vec).toBe(0);
+    expect(r!.breakdown.bm25).toBeGreaterThan(0);
+    expect(Math.abs(r!.breakdown.bm25 + r!.breakdown.vec - r!.score)).toBeLessThan(TOLERANCE);
+  });
+
+  it('TOPIC_BOOST_FLOOR keeps its intent: an all-zero text-only set is still reordered by topic', async () => {
+    // Every candidate has text score 0 → all normalise to 0 → floored to the
+    // same TOPIC_BOOST_FLOOR → the exact-topic match (2.0x) must win, exactly
+    // as it did when the set normalised to a uniform 1.0.
+    const backend: SearchBackend = {
+      search: async () => [
+        { id: 1, textScore: 0, fields: { topic: 'unrelated' } },
+        { id: 2, textScore: 0, fields: { topic: 'widgets' } },
+        { id: 3, textScore: 0, fields: { topic: 'other' } },
+      ],
+    };
+    const res = await search(backend, { text: 'widgets' });
+    expect(res[0]!.id).toBe(2);
+    expect(res[0]!.score).toBeCloseTo(0.1 * 2.0, 10);
+    expect(res[1]!.score).toBeCloseTo(0.1, 10);
   });
 });

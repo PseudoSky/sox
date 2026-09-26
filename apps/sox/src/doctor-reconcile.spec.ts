@@ -39,6 +39,7 @@ const tickLabel = () => osUnitLabelFor('user', 'doctor-tick', home);
 const sysdName = (ext: string) => `sox-${tickLabel().replace(/^com\.sox\./, '').replace(/\./g, '-')}.${ext}`;
 let unitDir: string;
 let storeDir: string;
+let releasedCliPath: string;
 
 function runCli(args: string[]): { code: number; stdout: string; stderr: string } {
   const r = spawnSync(process.execPath, [CLI_MAIN, ...args], {
@@ -83,6 +84,15 @@ beforeEach(() => {
       },
     }),
   );
+
+  // (27850011) `gateVolatileCli` refuses a user-scope tick baked from a git
+  // checkout unless `--cli-path` names a real, non-checkout CLI. Fixture a
+  // "released" CLI under a tmp node_modules/@adhd/sox-cli/ layout so the spec
+  // exercises the real released-CLI path instead of `--allow-checkout-cli`.
+  const releasedCliDir = path.join(base, 'node_modules', '@adhd', 'sox-cli', 'bin');
+  fs.mkdirSync(releasedCliDir, { recursive: true });
+  releasedCliPath = path.join(releasedCliDir, 'soxe.js');
+  fs.copyFileSync(CLI_MAIN, releasedCliPath);
 });
 
 afterEach(() => {
@@ -93,14 +103,23 @@ afterEach(() => {
   }
 });
 
-const TICK_ARGS = ['--supervisor', 'launchd', '--allow-volatile-node', '--dry-run'];
+// (27850011) `--cli-path` names a fixtured "released" CLI (not a git checkout)
+// so `gateVolatileCli` admits the user-scope tick without `--allow-checkout-cli`.
+const TICK_ARGS = (): string[] => [
+  '--supervisor',
+  'launchd',
+  '--allow-volatile-node',
+  '--dry-run',
+  '--cli-path',
+  releasedCliPath,
+];
 
 describe('soxe doctor --install-tick / --remove-tick (Slice 4 scheduling)', () => {
   it('renders a content-addressed StartInterval unit running `doctor --reconcile` into the SANDBOX only', () => {
     const realLaunchAgents = path.join(os.homedir(), 'Library', 'LaunchAgents', 'com.sox.user.doctor-tick.plist');
     const before = fs.existsSync(realLaunchAgents);
 
-    const r = runCli(['doctor', '--install-tick', ...TICK_ARGS]);
+    const r = runCli(['doctor', '--install-tick', ...TICK_ARGS()]);
     expect(r.code).toBe(0);
 
     const unitPath = path.join(unitDir, `${tickLabel()}.plist`);
@@ -120,7 +139,7 @@ describe('soxe doctor --install-tick / --remove-tick (Slice 4 scheduling)', () =
   });
 
   it('--interval overrides the default and is ownership-tracked under doctor-tick', () => {
-    const r = runCli(['doctor', '--install-tick', '--interval', '60', ...TICK_ARGS]);
+    const r = runCli(['doctor', '--install-tick', '--interval', '60', ...TICK_ARGS()]);
     expect(r.code).toBe(0);
     const plist = fs.readFileSync(path.join(unitDir, `${tickLabel()}.plist`), 'utf8');
     expect(plist).toContain('<integer>60</integer>');
@@ -137,7 +156,16 @@ describe('soxe doctor --install-tick / --remove-tick (Slice 4 scheduling)', () =
   });
 
   it('systemd seam: renders the paired content-addressed .timer unit', () => {
-    const r = runCli(['doctor', '--install-tick', '--supervisor', 'systemd', '--allow-volatile-node', '--dry-run']);
+    const r = runCli([
+      'doctor',
+      '--install-tick',
+      '--supervisor',
+      'systemd',
+      '--allow-volatile-node',
+      '--dry-run',
+      '--cli-path',
+      releasedCliPath,
+    ]);
     expect(r.code).toBe(0);
     const svc = path.join(unitDir, sysdName('service'));
     const timer = path.join(unitDir, sysdName('timer'));
@@ -150,7 +178,7 @@ describe('soxe doctor --install-tick / --remove-tick (Slice 4 scheduling)', () =
   });
 
   it('--remove-tick removes the unit file and clears the ownership entry', () => {
-    runCli(['doctor', '--install-tick', ...TICK_ARGS]);
+    runCli(['doctor', '--install-tick', ...TICK_ARGS()]);
     const unitPath = path.join(unitDir, `${tickLabel()}.plist`);
     expect(fs.existsSync(unitPath)).toBe(true);
 

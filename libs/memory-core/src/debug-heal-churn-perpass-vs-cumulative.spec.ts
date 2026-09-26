@@ -67,7 +67,26 @@ try {
   _hasTurso = false;
 }
 
-const HOOK_TIMEOUT_MS = 300_000;
+/**
+ * (f18f9c04) Timing is DERIVED from the work this canary defines, not set equal
+ * to vitest's ceiling. Each case = seed 3,000 rows + ONE heal pass bounded by
+ * the heal time budget + a PRAGMA integrity_check. Measured 2026-09-25: 140–168 s
+ * per case at load avg ~30; the BASELINE hit the old flat 300 s limit at
+ * 308.9 s on a box at load 100–300, turning the whole memory-core suite red.
+ *
+ * - `CANARY_HEAL_BUDGET_MS` is pinned for this file (SOX_EMBED_HEAL_TIME_BUDGET_MS,
+ *   restored after each case) so the "one pass, one call" premise the BASELINE
+ *   asserts (`time_budget_exceeded === false`) is about the heal, not about
+ *   host load — a budget-truncated pass under contention would be EXPERIMENT A
+ *   in disguise.
+ * - `HOOK_TIMEOUT_MS` = heal budget + seeding/integrity headroom, so the budget
+ *   assertion (not a vitest kill) is what reports a genuinely slow heal.
+ * Every corruption/heal-count assertion is unchanged.
+ */
+const CANARY_HEAL_BUDGET_MS = 480_000;
+const CANARY_SEED_AND_INTEGRITY_HEADROOM_MS = 240_000;
+const HOOK_TIMEOUT_MS = CANARY_HEAL_BUDGET_MS + CANARY_SEED_AND_INTEGRITY_HEADROOM_MS;
+let _origHealBudget: string | undefined;
 
 interface TestContext {
   dir: string;
@@ -134,13 +153,15 @@ async function checkIntegrity(adapter: StoreAdapter): Promise<IntegrityVerdict> 
     // dialect.ts/store-path.ts) — dynamic import here matches that pattern
     // and keeps this test file from tripping the enforce-module-boundaries
     // static-import-of-lazy-library rule.
-    const { classifyIntegrityMessages } = await import('@adhd/sox-store-adapter');
+    const { classifyIntegrityMessages, formatIntegrityVerdictDetail } = await import('@adhd/sox-store-adapter');
     const classified = classifyIntegrityMessages(messages);
     // Only `damage` (real, unclassified rows) counts as corruption for this
     // probe. `knownFalsePositives` (the Turso FTS dir-index count artifact —
     // see file header, 4b2bcce9) and `pageAccounting` (reclaimable-free-space
     // noise) are documented-benign and are NOT ae763675.
-    return { ok: classified.damage.length === 0, rows: rawRows };
+    // (8c93d821) `rows` is the verdict-consistent detail, never the raw rows:
+    // a filtered false positive is labelled as such, with its rule id.
+    return { ok: classified.damage.length === 0, rows: [formatIntegrityVerdictDetail(classified)] };
   } catch (err) {
     // A thrown "Corrupt database: Invalid page type: 0" from the integrity
     // check itself IS the corruption signal — the whole point of this probe.
@@ -150,11 +171,15 @@ async function checkIntegrity(adapter: StoreAdapter): Promise<IntegrityVerdict> 
 
 describe('BUG-HEAL-CHURN-TRIGGERS-PAGE-CORRUPTION-001 — per-pass vs cumulative heal churn', () => {
   beforeEach(() => {
+    _origHealBudget = process.env['SOX_EMBED_HEAL_TIME_BUDGET_MS'];
+    process.env['SOX_EMBED_HEAL_TIME_BUDGET_MS'] = String(CANARY_HEAL_BUDGET_MS);
     _origStoreAdapter = process.env['STORE_ADAPTER'];
     _setEmbedProviderForTest(new DeterministicTestProvider());
   });
 
   afterEach(async () => {
+    if (_origHealBudget === undefined) delete process.env['SOX_EMBED_HEAL_TIME_BUDGET_MS'];
+    else process.env['SOX_EMBED_HEAL_TIME_BUDGET_MS'] = _origHealBudget;
     if (_origStoreAdapter === undefined) delete process.env['STORE_ADAPTER'];
     else process.env['STORE_ADAPTER'] = _origStoreAdapter;
     _setEmbedProviderForTest(null);

@@ -861,6 +861,49 @@ function scheduleOpportunisticSnapshot(): void {
  * activity counter it is resetting and recurse, and it would put a large
  * aggregate line into the event stream whose retention it must outlive.
  */
+/**
+ * (5b58b189) Named, process-local extra sections for every `metrics.snapshot`
+ * line (e.g. memory-server's main-thread lag summary). A section provider is
+ * called synchronously at snapshot time; a throwing provider is recorded as
+ * `{ error }` and never breaks the snapshot.
+ */
+const snapshotSections = new Map<string, () => Record<string, unknown>>();
+
+export function registerSnapshotSection(name: string, provider: () => Record<string, unknown>): () => void {
+  snapshotSections.set(name, provider);
+  return () => {
+    if (snapshotSections.get(name) === provider) snapshotSections.delete(name);
+  };
+}
+
+/** (5b58b189) Process CPU/RSS at snapshot time — cheap, always present, so a
+ *  CPU-pinned or ballooning process is visible from telemetry alone (the
+ *  22:02Z hang was diagnosable only via `sample <pid>`). */
+function processStats(): Record<string, unknown> {
+  const mem = process.memoryUsage();
+  const cpu = process.cpuUsage();
+  return {
+    rss_bytes: mem.rss,
+    heap_used_bytes: mem.heapUsed,
+    external_bytes: mem.external,
+    cpu_user_ms: Math.round(cpu.user / 1000),
+    cpu_system_ms: Math.round(cpu.system / 1000),
+    uptime_s: Math.round(process.uptime()),
+  };
+}
+
+function collectSnapshotSections(): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
+  for (const [name, provider] of snapshotSections) {
+    try {
+      out[name] = provider();
+    } catch (err) {
+      out[name] = { error: err instanceof Error ? err.message : String(err) };
+    }
+  }
+  return out;
+}
+
 export async function snapshotMetrics(reason: 'activity' | 'pull' | 'shutdown' | 'interval'): Promise<void> {
   const rt = runtime();
   if (rt.snapshotInFlight) return;
@@ -896,6 +939,8 @@ export async function snapshotMetrics(reason: 'activity' | 'pull' | 'shutdown' |
       snapshot_seq: rt.snapshotsWritten + 1,
       self_check: stagesView,
       otel_metrics: otelMetrics,
+      process: processStats(),
+      sections: collectSnapshotSections(),
     };
     sink.write(JSON.stringify(record) + '\n');
     rt.snapshotsWritten += 1;

@@ -65,6 +65,7 @@ import {
   // Slice 1 (docs/spec/service-lifecycle.md): cross-scope singleton.
   resolveStoreResource,
   resolveUnitNodePath,
+  resolveUnitCliPath,
   restartAndVerify,
   restartOsUnit,
   // BL-593/§9.4b: `soxe service update` — enable + verified rotation check.
@@ -145,6 +146,7 @@ import {
   IntegrityResult,
   verifyIntegrity,
 } from '@adhd/sox-install-engine';
+import { gateVolatileCli } from './cli-path-gate.js';
 import { registerBundleMember, resolveBundleDir } from './bundle-init.js';
 import { cliInvokedFields } from './cli-invoked-fields.js';
 import { resolveGraceMs } from './grace-ms.js';
@@ -572,6 +574,10 @@ Runtime:
                              --reconcile [--dry-run]  safe idempotent heal pass
                              --install-tick [--interval <sec>]  schedule periodic
                                reconcile under launchd/systemd (default 300s)
+                               --cli-path=<soxe>  pin the installed soxe the tick
+                                 unit runs (else resolved automatically, 27850011)
+                               --allow-checkout-cli  allow a git-checkout soxe at
+                                 user scope (refused by default, 27850011)
                              --remove-tick  reverse --install-tick
   logs <ext-id>      Tail or follow extension log output
                      Flags: --id=<ext-id>  --scope=<scope>  --lines=<n>
@@ -5187,6 +5193,9 @@ function resolveOsUnitContext(
   extDir: string;
   entrypoint: string;
   nodeRes: ReturnType<typeof resolveUnitNodePath>;
+  /** (27850011) The soxe the unit's front-shim argv runs — null when the unit
+   *  runs the bare entrypoint (no CLI in its argv). */
+  cliRes: ReturnType<typeof resolveUnitCliPath> | null;
   manifestType: string;
 } | null {
   const pathM = require('node:path') as typeof import('node:path');
@@ -5231,14 +5240,28 @@ function resolveOsUnitContext(
   // auto-ensures the singleton UDS backend. The BACKEND still runs `entrypoint`
   // (SOX_PROXY_BACKEND=1), so the reaper's identity token stays `entrypoint`.
   let execArgs: string[] | undefined;
+  let cliRes: ReturnType<typeof resolveUnitCliPath> | null = null;
   const port = env['SOX_CONFIG_PORT'];
   if (port && mcpServerIsProxyMode(extId, scope, root)) {
-    // The CLI that is enabling this unit — run the SAME soxe for the shim so the
-    // served code matches the resolved entrypoint (dev checkout vs installed CLI).
-    let cliPath = process.argv[1] ?? '';
-    try { cliPath = fsM.realpathSync(cliPath); } catch { /* keep as-is */ }
-    if (cliPath) {
-      execArgs = ['--enable-source-maps', cliPath, 'serve', extId, '--port', String(port)];
+    // (27850011) The shim's soxe is resolved to a STABLE CLI — never silently a
+    // git checkout: `--cli-path` (explicit) → the invoking soxe if it is not in a
+    // checkout → a released @adhd/sox-cli install → else the checkout CLI marked
+    // volatile, which `service enable|update` refuse at user scope without
+    // `--allow-checkout-cli` (see gateVolatileCli). Previously this was always
+    // `process.argv[1]`, so prod's launchd unit ran the dev checkout's
+    // bin/soxe and every branch switch/build there changed production.
+    try {
+      cliRes = resolveUnitCliPath({
+        argv1: process.argv[1] ?? '',
+        nodePath: nodeRes.nodePath,
+        explicit: flags['cli-path'],
+      });
+    } catch (e) {
+      process.stderr.write(`sox: --cli-path: ${(e as Error).message}\n`);
+      return null;
+    }
+    if (cliRes.cliPath) {
+      execArgs = ['--enable-source-maps', cliRes.cliPath, 'serve', extId, '--port', String(port)];
     }
   }
 
@@ -5256,8 +5279,9 @@ function resolveOsUnitContext(
   });
   // sanity: entrypoint must exist on disk
   if (!fsM.existsSync(entrypoint)) return null;
-  return { platform, spec, extDir: resolved.extDir, entrypoint, nodeRes, manifestType: resolved.manifest.type ?? '' };
+  return { platform, spec, extDir: resolved.extDir, entrypoint, nodeRes, cliRes, manifestType: resolved.manifest.type ?? '' };
 }
+
 
 /**
  * `soxe service <enable|disable|status|list>` — the ONLY sanctioned way to create
@@ -5286,6 +5310,8 @@ Options:
   --supervisor <kind>     Force 'launchd' or 'systemd' (default: per-platform)
   --node-path <path>      Override the pinned node binary baked into the unit
   --allow-volatile-node   Proceed even if the pinned node is under nvm/asdf/volta
+  --cli-path <path>       Bake this soxe into a front-shim unit's argv (explicit; may be a checkout)
+  --allow-checkout-cli    user scope: proceed even if the only soxe found is inside a git checkout
   --unset <key>[,<key>]   enable/update: acknowledge dropping previously-set shell-sourced
                           env key(s) that this invocation's shell no longer exports
                           (BL-375 [inv:env-preserved-on-regenerate]) — named keys only,
@@ -5361,6 +5387,8 @@ OS units are GENERATED from the manifest; hand-editing them is unsupported.
         process.exit(1);
       }
     }
+
+    if (!gateVolatileCli(ctx.cliRes, scope, flags, `${CLI} service enable`)) process.exit(1);
 
     const platform = ctx.platform;
     const unitDir = resolveOsUnitDir(flags, platform);
@@ -5827,6 +5855,8 @@ async function cmdServiceUpdate(
     }
   }
 
+  if (!gateVolatileCli(ctx.cliRes, scope, flags, `${CLI} service update`)) process.exit(1);
+
   const { platform, entrypoint } = ctx;
   const dryRun = flags['dry-run'] !== undefined;
   const unitDir = resolveOsUnitDir(flags, platform);
@@ -6036,12 +6066,25 @@ async function doctorInstallTick(flags: Record<string, string>): Promise<void> {
 
   // The tick runs THIS soxe: `node <cli> doctor --reconcile` (the BL-156
   // execArgs pattern — the unit launches the CLI, not a bare extension entrypoint).
-  let cliPath = process.argv[1] ?? '';
-  try { cliPath = fsM.realpathSync(cliPath); } catch { /* keep as-is */ }
+  // (27850011) Same stable-CLI resolution + user-scope checkout gate as
+  // `service enable`: the tick must not run a dev checkout's soxe silently.
+  let tickCli: ReturnType<typeof resolveUnitCliPath>;
+  try {
+    tickCli = resolveUnitCliPath({
+      argv1: process.argv[1] ?? '',
+      nodePath: nodeRes.nodePath,
+      explicit: flags['cli-path'],
+    });
+  } catch (e) {
+    process.stderr.write(`${CLI} doctor --install-tick: --cli-path: ${(e as Error).message}\n`);
+    process.exit(1);
+  }
+  const cliPath = tickCli.cliPath;
   if (!cliPath) {
     process.stderr.write(`${CLI} doctor --install-tick: cannot resolve the CLI path (process.argv[1] empty)\n`);
     process.exit(1);
   }
+  if (!gateVolatileCli(tickCli, scope, flags, `${CLI} doctor --install-tick`)) process.exit(1);
 
   const workingDirectory = dataRoot(scope as DataScope, root);
   try { fsM.mkdirSync(workingDirectory, { recursive: true }); } catch { /* best-effort */ }
