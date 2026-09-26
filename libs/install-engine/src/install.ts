@@ -1426,7 +1426,7 @@ import { OwnershipIndex, type OwnedEntry } from './ownership.js';
 // type so no runtime edge is added — the capability itself is dynamically imported
 // at the agent-catalog branch (see DECISION below) and its client defaults to the
 // MCP-over-stdio implementation. A caller (e.g. reconcile-agent-mcp) may inject one.
-import type { AgentCatalogClient } from './capabilities/agent-catalog.js';
+import type { AgentCatalogClient, AgentCatalogPayload } from './capabilities/agent-catalog.js';
 
 // ─── Host-registry: loaded at runtime from dist to avoid cross-lib rootDir ──
 // [ref:host-keyed-target]: all literal host paths live in libs/host-registry.
@@ -1503,6 +1503,74 @@ export class DeclarativeDeniedError extends Error {
     super(`[declarative-install] DENIED: ${reason} (ext=${ext}, host=${host}, scope=${scope})`);
     this.name = 'DeclarativeDeniedError';
   }
+}
+
+/**
+ * Thrown when an `agent` extension is installed into an agent catalog but declares
+ * neither an `agent` IR nor a `render.<host>` override — a raw passthrough has no
+ * host-rendered header to produce (bug f775d10c). Reaching the renderer with an
+ * empty IR instead surfaces an unnamed `AgentProviderUnderivableError`, which a
+ * caller cannot distinguish from a genuine provider problem. Named + typed, the
+ * reconcile one-shot classifies it as `skipped: not-renderable` rather than failing.
+ */
+export class AgentNotRenderableError extends Error {
+  constructor(public readonly ext: string) {
+    super(`[agent-catalog] agent '${ext}' declares no agent IR or render`);
+    this.name = 'AgentNotRenderableError';
+  }
+}
+
+/**
+ * Render an `agent` extension into an agent-catalog payload for a host, or throw.
+ *
+ * CENTRALIZED RENDERABILITY GATE (bug f775d10c): a row with no agent IR and no
+ * `render.<host>` override is not renderable and is rejected with the named,
+ * typed `AgentNotRenderableError` BEFORE the renderer is invoked — never reached
+ * with `ir={}`, which makes `deriveProvider` throw the unnamed
+ * `AgentProviderUnderivableError` and, through `reconcileAgentMcpCatalog`, turns a
+ * heal into a hard exit-1 failure.
+ *
+ * Both the apply branch AND the `--dry-run` block call this, so a dry run exercises
+ * the SAME renderability decision apply will and cannot promise a rewrite apply
+ * would reject (the finding: the dry-run hid the throw because it never rendered).
+ */
+function renderAgentCatalogPayload(
+  descriptor: InstallDescriptor,
+  hostName: string,
+  render: AgentRenderLocal,
+): AgentCatalogPayload {
+  if (descriptor.type !== 'agent') {
+    throw new Error(
+      `[declarative-install] agent-catalog is only defined for type=agent (got type=${descriptor.type} for ext=${descriptor.ext})`,
+    );
+  }
+  if (descriptor.srcPath === undefined) {
+    throw new Error(
+      `[declarative-install] agent-catalog requires srcPath for ext=${descriptor.ext}`,
+    );
+  }
+  const inputs = readAgentRenderInputs(descriptor.srcPath, hostName, render);
+  if (inputs === null) {
+    throw new Error(
+      `[declarative-install] agent-catalog: cannot read agent IR for '${descriptor.ext}' (no extension.json at ${descriptor.srcPath})`,
+    );
+  }
+  if (!inputs.renderable) {
+    throw new AgentNotRenderableError(descriptor.ext);
+  }
+  // A manifest need not duplicate its id in the IR — fall back to the ext id.
+  const override = { ...(inputs.override ?? {}) };
+  if (override['name'] === undefined && inputs.ir['name'] === undefined) {
+    override['name'] = descriptor.ext;
+  }
+  const prose = readAgentProse(descriptor.srcPath);
+  const rendered = render.render(inputs.ir, prose, override);
+  if (rendered.kind !== 'config-value') {
+    throw new Error(
+      `[declarative-install] agent-catalog host '${hostName}' renderer must return a config-value (got kind=${rendered.kind})`,
+    );
+  }
+  return rendered.value as AgentCatalogPayload;
 }
 
 /**
@@ -1801,6 +1869,28 @@ export async function declarativeInstall(
     // Placed before ledger load / ownership recording so a dry run creates
     // zero state (no files, no ledger, no ownership entries, no lockfile).
     if (opts?.dryRun) {
+      // agent-catalog has no filesystem target — the artifact is a catalog ROW.
+      // Render IN-MEMORY (bug f775d10c) so the plan exercises the SAME
+      // renderability decision apply will: a raw-passthrough agent throws the
+      // named AgentNotRenderableError here, and the caller (reconcile) reports it
+      // `skipped: not-renderable` instead of promising a rewrite apply would reject.
+      if (surface.capability === 'agent-catalog') {
+        if (hostMod.render === undefined) {
+          throw new Error(
+            `[declarative-install] host '${hostName}' declares capability agent-catalog but exposes no renderer`,
+          );
+        }
+        renderAgentCatalogPayload(descriptor, hostName, hostMod.render);
+        results.push({
+          host: hostName,
+          scope,
+          capability: 'agent-catalog',
+          target: `agent-mcp catalog row '${descriptor.ext}'`,
+          applied: false,
+          dryRun: true,
+        });
+        continue;
+      }
       let planTarget = absTarget;
       if (surface.capability === 'file-drop' && descriptor.srcPath) {
         // Mirror the file-drop destPath logic below so the plan names the
@@ -2075,39 +2165,15 @@ export async function declarativeInstall(
       // catalog's own MCP surface (host = agent-mcp). No filesystem target —
       // the renderer produces the create payload ({name, systemPrompt, provider,
       // ...}) and the capability performs an idempotent read→update-or-create.
-      if (descriptor.type !== 'agent') {
-        throw new Error(
-          `[declarative-install] agent-catalog is only defined for type=agent (got type=${descriptor.type} for ext=${descriptor.ext})`,
-        );
-      }
-      if (descriptor.srcPath === undefined) {
-        throw new Error(
-          `[declarative-install] agent-catalog requires srcPath for ext=${descriptor.ext}`,
-        );
-      }
       if (hostMod.render === undefined) {
         throw new Error(
           `[declarative-install] host '${hostName}' declares capability agent-catalog but exposes no renderer`,
         );
       }
-      const inputs = readAgentRenderInputs(descriptor.srcPath, hostName, hostMod.render);
-      if (inputs === null) {
-        throw new Error(
-          `[declarative-install] agent-catalog: cannot read agent IR for '${descriptor.ext}' (no extension.json at ${descriptor.srcPath})`,
-        );
-      }
-      // A manifest need not duplicate its id in the IR — fall back to the ext id.
-      const override = { ...(inputs.override ?? {}) };
-      if (override['name'] === undefined && inputs.ir['name'] === undefined) {
-        override['name'] = descriptor.ext;
-      }
-      const prose = readAgentProse(descriptor.srcPath);
-      const rendered = hostMod.render.render(inputs.ir, prose, override);
-      if (rendered.kind !== 'config-value') {
-        throw new Error(
-          `[declarative-install] agent-catalog host '${hostName}' renderer must return a config-value (got kind=${rendered.kind})`,
-        );
-      }
+      // f775d10c: the renderability gate lives in the helper, so apply and
+      // --dry-run make the identical decision (a non-renderable passthrough
+      // throws AgentNotRenderableError here, never reaching render() with {}).
+      const payload = renderAgentCatalogPayload(descriptor, hostName, hostMod.render);
       const { apply: agentCatalogApply } = await import('./capabilities/agent-catalog.js');
       await agentCatalogApply({
         host: hostName,
@@ -2117,9 +2183,7 @@ export async function declarativeInstall(
         isProject,
         ext: descriptor.ext,
         target: { filePath: absTarget },
-        payload: {
-          value: rendered.value as import('./capabilities/agent-catalog.js').AgentCatalogPayload,
-        },
+        payload: { value: payload },
         ledger,
         // exactOptionalPropertyTypes: only attach when a client was actually injected.
         ...(opts?.catalogClient !== undefined ? { client: opts.catalogClient } : {}),

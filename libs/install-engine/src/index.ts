@@ -49,6 +49,7 @@ export {
   install,
   declarativeInstall,
   DeclarativeDeniedError,
+  AgentNotRenderableError,
   findLocalExtension,
   loadExtensionManifest,
   SCOPES,

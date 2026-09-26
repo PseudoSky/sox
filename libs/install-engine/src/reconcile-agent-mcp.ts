@@ -22,6 +22,7 @@
  */
 
 import {
+  AgentNotRenderableError,
   declarativeInstall,
   findLocalExtension,
   type DeclarativeInstallResult,
@@ -52,7 +53,7 @@ export type ReconcileInstallFn = (
   scope: RegistryHostScope,
   workspaceRoot: string,
   scopeRoot: string,
-  opts?: { isProject?: boolean; catalogClient?: AgentCatalogClient },
+  opts?: { isProject?: boolean; catalogClient?: AgentCatalogClient; dryRun?: boolean },
 ) => Promise<DeclarativeInstallResult[]>;
 
 /** A minimal, comparable slice of a catalog provider block. */
@@ -68,6 +69,7 @@ export type ReconcileOutcome =
   | 'planned'
   | 'skipped: non-anthropic'
   | 'skipped: no-local-manifest'
+  | 'skipped: not-renderable'
   | 'failed';
 
 export interface ReconcileRowResult {
@@ -147,6 +149,7 @@ function summarize(
         break;
       case 'skipped: non-anthropic':
       case 'skipped: no-local-manifest':
+      case 'skipped: not-renderable':
         skipped++;
         break;
       case 'failed':
@@ -211,29 +214,36 @@ export async function reconcileAgentMcpCatalog(
       continue;
     }
 
-    if (opts.dryRun === true) {
-      results.push({ name, before, after: before, outcome: 'planned' });
-      continue;
-    }
-
     try {
+      // f775d10c: --dry-run routes through the SAME install path with dryRun set,
+      // so it renders in-memory and makes the identical renderability decision
+      // apply will (surfaced as AgentNotRenderableError). A row the dry-run
+      // reports `planned` is a row apply can actually perform.
       await install(
         { ext: name, type: 'agent', hosts: ['agent-mcp'], srcPath },
         opts.scope,
         opts.workspaceRoot,
         opts.scopeRoot,
-        { isProject: opts.scope === 'project', catalogClient: client },
+        {
+          isProject: opts.scope === 'project',
+          catalogClient: client,
+          ...(opts.dryRun === true ? { dryRun: true } : {}),
+        },
       );
-      const afterRow = await client.read(name);
-      const after = summarizeProvider(afterRow);
-      const changed = JSON.stringify(before) !== JSON.stringify(after);
-      results.push({
-        name,
-        before,
-        after,
-        outcome: changed ? 'rewritten' : 'unchanged',
-      });
     } catch (e) {
+      // A raw-passthrough agent (no agent IR, no render.<host>) is not
+      // renderable: report it as an explicit skip — distinct from a missing
+      // manifest, never a failure — so the heal can complete (bug f775d10c).
+      if (e instanceof AgentNotRenderableError) {
+        results.push({
+          name,
+          before,
+          after: before,
+          outcome: 'skipped: not-renderable',
+          detail: e.message,
+        });
+        continue;
+      }
       results.push({
         name,
         before,
@@ -241,7 +251,23 @@ export async function reconcileAgentMcpCatalog(
         outcome: 'failed',
         detail: e instanceof Error ? e.message : String(e),
       });
+      continue;
     }
+
+    if (opts.dryRun === true) {
+      results.push({ name, before, after: before, outcome: 'planned' });
+      continue;
+    }
+
+    const afterRow = await client.read(name);
+    const after = summarizeProvider(afterRow);
+    const changed = JSON.stringify(before) !== JSON.stringify(after);
+    results.push({
+      name,
+      before,
+      after,
+      outcome: changed ? 'rewritten' : 'unchanged',
+    });
   }
 
   return summarize(results);

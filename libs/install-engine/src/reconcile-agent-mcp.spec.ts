@@ -12,9 +12,10 @@
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import Module from 'node:module';
+import { afterAll, afterEach, beforeEach, describe, expect, it } from 'vitest';
 
-import { readAgentRenderInputs } from './install.js';
+import { AgentNotRenderableError, declarativeInstall, readAgentRenderInputs } from './install.js';
 import {
   reconcileAgentMcpCatalog,
   type ReconcileCatalogClient,
@@ -32,6 +33,33 @@ const hostRegistryPath = path.resolve(__dirname, '../../host-registry/dist/index
 const hostRegistry = require(hostRegistryPath) as {
   agentMcpHost: { render: { providerFrom?: string; render(ir: unknown, prose: string, overrides?: unknown): { kind: string; value?: unknown } } };
 };
+
+// ── Drive the REAL declarativeInstall in source-mode ─────────────────────────
+// install.ts's host loop lazily `require('@adhd/sox-host-registry')`. That bare
+// specifier is rewritten to a relative dist path only by the post-tsc build
+// (scripts/rewrite-paths.cjs), so under source-mode vitest it does NOT resolve
+// (documented in data-paths.ts and mcp-project-sync.spec.ts). The f775d10c
+// regression must exercise the REAL install branch — not a fake — so redirect
+// just that one specifier to the built sibling dist for the duration of this
+// spec. `vi.mock`/`resolve.alias` do not intercept a native require; a
+// resolution hook does. Isolated + restored, never a node_modules mutation.
+const M = Module as unknown as {
+  _resolveFilename: (request: string, parent: unknown, isMain: boolean, options?: unknown) => string;
+};
+const originalResolveFilename = M._resolveFilename;
+M._resolveFilename = function patchedResolveFilename(
+  request: string,
+  parent: unknown,
+  isMain: boolean,
+  options?: unknown,
+): string {
+  if (request === '@adhd/sox-host-registry') return hostRegistryPath;
+  return originalResolveFilename.call(this, request, parent, isMain, options);
+};
+
+afterAll(() => {
+  M._resolveFilename = originalResolveFilename;
+});
 
 class FakeCatalogClient implements ReconcileCatalogClient {
   readonly rows = new Map<string, CatalogAgentDefinition>();
@@ -68,8 +96,14 @@ const fakeInstall: ReconcileInstallFn = async (descriptor, _scope, _workspaceRoo
   const entry = manifest.entrypoint ?? 'agent.md';
   const inputs = readAgentRenderInputs(srcPath, 'agent-mcp', hostRegistry.agentMcpHost.render);
   if (inputs === null) throw new Error('no render inputs');
+  // Mirror install.ts's guard (f775d10c): a raw passthrough is not renderable.
+  if (!inputs.renderable) throw new AgentNotRenderableError(descriptor.ext);
   const prose = fs.readFileSync(path.join(srcPath, entry), 'utf8');
   const rendered = hostRegistry.agentMcpHost.render.render(inputs.ir, prose, inputs.override);
+  // Honor --dry-run like the real install: render in-memory, mutate nothing.
+  if (opts?.dryRun === true) {
+    return [{ host: 'agent-mcp', scope: 'user', capability: 'agent-catalog', target: `row '${descriptor.ext}'`, applied: false, dryRun: true }];
+  }
   const target = opts?.catalogClient ?? client;
   await target.upsert(rendered.value as AgentCatalogPayload);
   return [{ host: 'agent-mcp', scope: 'user', capability: 'agent-catalog', target: `row '${descriptor.ext}'`, applied: true }];
@@ -168,5 +202,82 @@ describe('reconcileAgentMcpCatalog (bug eb1ab168)', () => {
       model: 'claude-sonnet-4-5',
       env: { secret: 'ADHD_AGENT_ANTHROPIC_SECRET' },
     });
+  });
+
+  // ── f775d10c ───────────────────────────────────────────────────────────────
+  // The blocking finding: a raw-passthrough agent (no `agent` IR, no `render`)
+  // reached the renderer as `ir={}` and threw AgentProviderUnderivableError,
+  // which reconcile caught as `failed` → cmdReconcileAgentMcp exit(1). The heal
+  // could not complete. These cases drive the REAL declarativeInstall (not the
+  // fake), which is exactly the path the earlier spec claimed to cover but
+  // bypassed (152a6903).
+
+  /** Write a raw-passthrough agent: install id `test-runner`, no IR, no render. */
+  function writePassthrough(): void {
+    writeAgent('test-agent', {
+      id: 'test-runner',
+      type: 'agent',
+      install: { type: 'agent' },
+      entrypoint: 'agent.md',
+    });
+  }
+
+  it('[f775d10c] REAL declarativeInstall: a non-renderable agent is skipped, not failed', async () => {
+    writePassthrough();
+    // Isolated client: only test-runner is listed, so the shared researcher
+    // fixture cannot contaminate the upsert assertion.
+    const isolated = new FakeCatalogClient([
+      agentRow('test-runner', {
+        type: 'anthropic',
+        model: 'claude-opus-4-1',
+        env: { secret: 'ADHD_AGENT_ANTHROPIC_SECRET' },
+      }),
+    ]);
+
+    const summary = await reconcileAgentMcpCatalog(
+      workspace,
+      opts({ client: isolated, install: declarativeInstall }),
+    );
+
+    expect(summary.failed).toBe(0);
+    const row = summary.rows.find((r) => r.name === 'test-runner')!;
+    expect(row.outcome).toBe('skipped: not-renderable');
+    // The guard fires before the renderer: no throw escaped, no row written.
+    expect(isolated.upserts).toHaveLength(0);
+    // The row survives untouched (never deleted).
+    expect((await isolated.read('test-runner'))!.provider).toMatchObject({ type: 'anthropic' });
+  });
+
+  it('[f775d10c] REAL declarativeInstall dry-run makes the SAME decision: skipped: not-renderable', async () => {
+    writePassthrough();
+    const isolated = new FakeCatalogClient([
+      agentRow('test-runner', { type: 'anthropic', env: { secret: 'ADHD_AGENT_ANTHROPIC_SECRET' } }),
+    ]);
+
+    const summary = await reconcileAgentMcpCatalog(
+      workspace,
+      opts({ client: isolated, install: declarativeInstall, dryRun: true }),
+    );
+
+    expect(summary.failed).toBe(0);
+    const row = summary.rows.find((r) => r.name === 'test-runner')!;
+    // The dry-run renders in-memory and reaches the SAME verdict as apply — it
+    // does not promise a `planned` rewrite that apply would reject.
+    expect(row.outcome).toBe('skipped: not-renderable');
+    expect(isolated.upserts).toHaveLength(0);
+  });
+
+  it('[f775d10c] renderAgentCatalogPayload guard is named + typed (no AgentProviderUnderivableError)', async () => {
+    writePassthrough();
+    const srcPath = path.join(workspace, 'extensions', 'agents', 'test-agent');
+    await expect(
+      declarativeInstall(
+        { ext: 'test-runner', type: 'agent', hosts: ['agent-mcp'], srcPath },
+        'project',
+        workspace,
+        scopeRoot,
+        { catalogClient: client },
+      ),
+    ).rejects.toBeInstanceOf(AgentNotRenderableError);
   });
 });
