@@ -527,8 +527,10 @@ function defaultGlobalRoot(nodePath: string, logger: RuntimeLogger): string | un
     let npmBin = npmSibling;
     try {
       npmBin = fs.realpathSync(npmSibling);
-    } catch {
-      /* no realpath — fall through and let execFileSync report the real error */
+    } catch (e) {
+      // No realpath — fall through with the unresolved sibling and let
+      // execFileSync report the real error.
+      logger.debug('os-unit.npm-sibling-realpath-failed', { npmSibling, error: String(e) });
     }
     const out = execFileSync(nodePath, [npmBin, 'root', '-g'], {
       encoding: 'utf8',
