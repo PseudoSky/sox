@@ -35,7 +35,7 @@ import {
   __recallVecCircuitStateForTest,
 } from './recall.js';
 import { WriteQueue } from './write-queue.js';
-import { _setEmbedProviderForTest, _resetLastEmbedSuccessForTest, getEmbedReadiness } from './embed.js';
+import { embed, _setEmbedProviderForTest, _resetLastEmbedSuccessForTest, getEmbedReadiness } from './embed.js';
 import { DeterministicTestProvider, featureHashEmbed } from './embed-test-provider.js';
 
 vi.mock('sqlite-vec', async (importOriginal) => {
@@ -209,5 +209,63 @@ describe('819a416b — recall survives a cold host without degrading or tripping
     const ok = await memoryRecall(adapter, 'project', { query: 'host is back', limit: 5 });
     expect(vecDegradations(ok)).toEqual([]);
     expect(__recallVecCircuitStateForTest()).toEqual({ open: false, coldTimeouts: 0 });
+  }, 60_000);
+
+  // (819a416b follow-up, defect 1) `recallVecColdTimeouts` was a single
+  // module counter bumped by every in-flight recall — two recalls racing the
+  // SAME post-restart cold host spawn both time out and the counter reached
+  // RECALL_VEC_COLD_TIMEOUTS_TO_OPEN, opening the breaker for what is really
+  // ONE cold start, not two. Fixed by keying each cold timeout to the
+  // episode (the cold window) it belongs to, so concurrent timeouts in the
+  // same episode count once.
+  it('two concurrent recalls that both cold-timeout on the SAME host-spawn episode count once — the breaker stays closed', async () => {
+    provider.state = { warm: false, pending: 0 };
+    provider.delayMs = RECALL_EMBED_TIMEOUT_COLD_MS + 1500;
+
+    const [a, b] = await Promise.all([
+      memoryRecall(adapter, 'project', { query: 'concurrent cold recall (1)', limit: 5 }),
+      memoryRecall(adapter, 'project', { query: 'concurrent cold recall (2)', limit: 5 }),
+    ]);
+    const timeoutPattern = new RegExp(`^vec: embed\\(\\) timed out after ${RECALL_EMBED_TIMEOUT_COLD_MS}ms`);
+    expect(a.degradations ?? []).toEqual(expect.arrayContaining([expect.stringMatching(timeoutPattern)]));
+    expect(b.degradations ?? []).toEqual(expect.arrayContaining([expect.stringMatching(timeoutPattern)]));
+    // Two recalls, one cold episode: the breaker must still be closed with
+    // exactly ONE counted cold timeout, not two.
+    expect(__recallVecCircuitStateForTest()).toEqual({ open: false, coldTimeouts: 1 });
+  }, 60_000);
+
+  // (819a416b follow-up, defect 2) The cold-timeout count never expired —
+  // only a foreground recall SUCCESS reset it, so a lone background embed
+  // success (write/heal/warmup — anything that stamps
+  // getLastEmbedSuccessAtMs() without going through memoryRecall) never
+  // cleared a prior cold timeout, letting it silently carry forward toward
+  // the breaker threshold. Fixed by also resetting the count when any embed
+  // success is newer than the last counted cold timeout.
+  it('a cold timeout, then a BACKGROUND embed success, then a later cold timeout — the breaker stays closed', async () => {
+    provider.state = { warm: false, pending: 0 };
+    provider.delayMs = RECALL_EMBED_TIMEOUT_COLD_MS + 1500;
+
+    const a = await memoryRecall(adapter, 'project', { query: 'cold timeout before background success', limit: 5 });
+    expect(a.degradations ?? []).toEqual(
+      expect.arrayContaining([expect.stringMatching(new RegExp(`^vec: embed\\(\\) timed out after ${RECALL_EMBED_TIMEOUT_COLD_MS}ms`))]),
+    );
+    expect(__recallVecCircuitStateForTest()).toEqual({ open: false, coldTimeouts: 1 });
+
+    // A background embed succeeds WITHOUT going through memoryRecall at all
+    // (e.g. a write/heal/warmup embed) — only the last-success stamp moves;
+    // the provider's own readiness still reports the host as not warm.
+    provider.delayMs = 0;
+    await embed('background write embed', 'write');
+    expect(getEmbedReadiness()).toEqual({ warm: false, pending: 0 });
+
+    provider.delayMs = RECALL_EMBED_TIMEOUT_COLD_MS + 1500;
+    const b = await memoryRecall(adapter, 'project', { query: 'cold timeout after background success', limit: 5 });
+    expect(b.degradations ?? []).toEqual(
+      expect.arrayContaining([expect.stringMatching(new RegExp(`^vec: embed\\(\\) timed out after ${RECALL_EMBED_TIMEOUT_COLD_MS}ms`))]),
+    );
+    // The background success reset the counter — this is a fresh episode's
+    // FIRST cold timeout (count 1), not the second, so the breaker stays
+    // closed.
+    expect(__recallVecCircuitStateForTest()).toEqual({ open: false, coldTimeouts: 1 });
   }, 60_000);
 });

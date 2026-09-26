@@ -235,19 +235,70 @@ let recallVecNextProbeAt = 0;
 /** True while the single allowed background probe embed is in flight. */
 let recallVecProbeInFlight = false;
 /**
- * (819a416b) Consecutive foreground timeouts taken on a COLD START (budget
- * reason no_success_yet | idle_exit | host_not_warm). ONE such timeout is a
+ * (819a416b) Consecutive cold-start EPISODES that have timed out (budget
+ * reason no_success_yet | idle_exit | host_not_warm). ONE such episode is a
  * slow host spawn + model load, not a backed-up provider — it degrades that
  * recall but does not open the breaker. A second consecutive one does (a host
  * that cannot come up inside 12 s twice running is an outage; without this
  * bound every recall would keep paying the cold budget). A CONTENDED timeout
  * (warm host, queue ahead) still opens the breaker at once: a backlog is
  * exactly what the breaker exists for, and a sustained one would otherwise
- * make every recall pay 12 s. Reset by any successful foreground embed.
+ * make every recall pay 12 s.
+ *
+ * Counts EPISODES, not recalls (fix for the concurrent-recall bug): two
+ * recalls racing the same post-restart host spawn both time out on the same
+ * cold start, and must count as ONE episode, not two — see
+ * `recallVecColdEpisodeStartAt`/`recallVecColdTimeoutCountedEpisodeKey` below.
+ * Reset by any successful foreground embed, OR by `resetStaleColdTimeouts`
+ * (any background embed success newer than the last counted timeout, or
+ * `EMBED_HOST_IDLE_EXIT_MS` of silence since it — fix for the never-expires
+ * bug).
  */
 let recallVecColdTimeouts = 0;
-/** (819a416b) Consecutive cold-budget timeouts that open the breaker. */
+/**
+ * (819a416b) Wall-clock start of the current cold-start episode (0 = none).
+ * A cold-start attempt reuses this key when it falls within
+ * `RECALL_EMBED_TIMEOUT_COLD_MS` of the episode's start — grouping every
+ * recall racing the SAME underlying host spawn under one key — and starts a
+ * fresh episode (a new key) once that window has fully elapsed, even with no
+ * intervening embed success (a host that fails to come up twice running is
+ * two distinct outages, not one).
+ */
+let recallVecColdEpisodeStartAt = 0;
+/**
+ * (819a416b) Episode key already counted toward `recallVecColdTimeouts`. A
+ * second concurrent cold timeout carrying this same key is a duplicate
+ * report from the episode already counted and must not increment again.
+ */
+let recallVecColdTimeoutCountedEpisodeKey = 0;
+/**
+ * (819a416b) Wall-clock time of the last counted cold timeout — the basis
+ * for `resetStaleColdTimeouts`: a background embed success newer than this,
+ * or `EMBED_HOST_IDLE_EXIT_MS` of silence since, means the outage this
+ * counter was tracking is over.
+ */
+let recallVecLastColdTimeoutAt = 0;
+/** (819a416b) Consecutive cold-budget episode timeouts that open the breaker. */
 export const RECALL_VEC_COLD_TIMEOUTS_TO_OPEN = 2;
+
+/**
+ * (819a416b) Clear a stale cold-timeout count. Any embed success — including
+ * a BACKGROUND write/heal/warmup embed that never went through this recall
+ * path — newer than the last counted cold timeout means the host has come
+ * back; `EMBED_HOST_IDLE_EXIT_MS` of silence since the last counted timeout
+ * with nothing new means whatever caused it has itself gone quiet long
+ * enough that it must not count against the NEXT, independent cold start.
+ */
+function resetStaleColdTimeouts(nowMs: number): void {
+  if (recallVecColdTimeouts === 0) return;
+  const staleBySuccess = getLastEmbedSuccessAtMs() >= recallVecLastColdTimeoutAt;
+  const staleByIdle = nowMs - recallVecLastColdTimeoutAt >= EMBED_HOST_IDLE_EXIT_MS;
+  if (staleBySuccess || staleByIdle) {
+    recallVecColdTimeouts = 0;
+    recallVecColdEpisodeStartAt = 0;
+    recallVecColdTimeoutCountedEpisodeKey = 0;
+  }
+}
 
 /** Reopen (or first-open) the circuit. Only ever called from: (a) a
  *  foreground embed timeout while closed (first open — probe eligible
@@ -294,6 +345,9 @@ export function __resetRecallVecCircuitForTest(): void {
   recallVecNextProbeAt = 0;
   recallVecProbeInFlight = false;
   recallVecColdTimeouts = 0;
+  recallVecColdEpisodeStartAt = 0;
+  recallVecColdTimeoutCountedEpisodeKey = 0;
+  recallVecLastColdTimeoutAt = 0;
 }
 
 /** (819a416b, test-only) Read-only view of the breaker for assertions. */
@@ -834,10 +888,48 @@ export async function memoryRecall(
       budget_ms: budget.timeoutMs,
       budget_reason: budget.reason,
     });
+    // (819a416b) A cold-start attempt (contended is deliberately excluded —
+    // it opens the breaker immediately, unconditionally, below) earns/reuses
+    // an episode key up front, BEFORE the await — so every recall racing the
+    // SAME cold window (e.g. two recalls concurrent right after a restart)
+    // computes the SAME key, letting the catch below dedup them to one
+    // counted timeout.
+    const isColdStartReason =
+      budget.reason === 'no_success_yet' || budget.reason === 'idle_exit' || budget.reason === 'host_not_warm';
+    let episodeKeyForThisCall = 0;
+    if (isColdStartReason) {
+      const nowForEpisode = Date.now();
+      // (819a416b) Staleness is judged ONLY here, from successes that landed
+      // strictly BEFORE this attempt started — never re-checked once this
+      // attempt is already in flight. `embedWithRecallTimeout` cannot cancel
+      // the underlying embed; a call whose OWN timed-out embed happens to
+      // land late (after this attempt's `Date.now()` above but before its
+      // catch below runs) stamps `getLastEmbedSuccessAtMs()` too and must
+      // NOT be allowed to erase the very episode that stray completion just
+      // contributed to.
+      resetStaleColdTimeouts(nowForEpisode);
+      // New episode when: none yet, OR the current one has already had a
+      // timeout counted against it (a fresh cold-start attempt after that is
+      // necessarily a NEW outage, whatever its wall-clock gap), OR the cold
+      // window has elapsed with nothing counted. The counted-key check makes
+      // this exact rather than a `>= RECALL_EMBED_TIMEOUT_COLD_MS` timing
+      // race against `setTimeout`, which can fire a hair early against
+      // `Date.now()`.
+      if (
+        recallVecColdEpisodeStartAt === 0 ||
+        recallVecColdTimeoutCountedEpisodeKey === recallVecColdEpisodeStartAt ||
+        nowForEpisode - recallVecColdEpisodeStartAt >= RECALL_EMBED_TIMEOUT_COLD_MS
+      ) {
+        recallVecColdEpisodeStartAt = nowForEpisode;
+      }
+      episodeKeyForThisCall = recallVecColdEpisodeStartAt;
+    }
     try {
       const queryVec = await embedWithRecallTimeout(query, budget.timeoutMs);
       queryVecJson = vecToJson(queryVec);
       recallVecColdTimeouts = 0;
+      recallVecColdEpisodeStartAt = 0;
+      recallVecColdTimeoutCountedEpisodeKey = 0;
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       tlog.warn('recall.embed_failed', { error: msg, channel: 'vec' });
@@ -852,22 +944,40 @@ export async function memoryRecall(
       // the probe's settlement bookkeeping out from under it (only the
       // probe's own settlement may do that — see file-top docblock).
       //
-      // (819a416b) A COLD-START timeout counts toward
+      // (819a416b) A COLD-START EPISODE timeout counts toward
       // RECALL_VEC_COLD_TIMEOUTS_TO_OPEN instead of opening immediately: one
-      // cold start must not push the next recalls onto the breaker.
+      // cold start must not push the next recalls onto the breaker — and a
+      // second concurrent recall timing out in the SAME episode (same key)
+      // must not double-count it.
       if (err instanceof RecallEmbedTimeoutError && recallVecCircuitOpenedAt === 0) {
-        const coldStart =
-          budget.reason === 'no_success_yet' || budget.reason === 'idle_exit' || budget.reason === 'host_not_warm';
+        // (819a416b) NOT re-checked here — see the staleness note above the
+        // pre-await block: this attempt's own late-arriving stray embed must
+        // not erase the episode its own timeout is about to contribute to.
+        const now = Date.now();
+        const coldStart = isColdStartReason;
         if (coldStart) {
-          recallVecColdTimeouts++;
-          tlog.warn('recall.embed_cold_timeout', {
-            reason: budget.reason,
-            consecutive: recallVecColdTimeouts,
-            opens_at: RECALL_VEC_COLD_TIMEOUTS_TO_OPEN,
-          });
+          if (recallVecColdTimeoutCountedEpisodeKey !== episodeKeyForThisCall) {
+            recallVecColdTimeouts++;
+            recallVecColdTimeoutCountedEpisodeKey = episodeKeyForThisCall;
+            recallVecLastColdTimeoutAt = now;
+            tlog.warn('recall.embed_cold_timeout', {
+              reason: budget.reason,
+              consecutive: recallVecColdTimeouts,
+              opens_at: RECALL_VEC_COLD_TIMEOUTS_TO_OPEN,
+            });
+          } else {
+            tlog.warn('recall.embed_cold_timeout', {
+              reason: budget.reason,
+              consecutive: recallVecColdTimeouts,
+              opens_at: RECALL_VEC_COLD_TIMEOUTS_TO_OPEN,
+              deduped_same_episode: true,
+            });
+          }
         }
         if (!coldStart || recallVecColdTimeouts >= RECALL_VEC_COLD_TIMEOUTS_TO_OPEN) {
           recallVecColdTimeouts = 0;
+          recallVecColdEpisodeStartAt = 0;
+          recallVecColdTimeoutCountedEpisodeKey = 0;
           openRecallVecCircuit();
         }
       }
