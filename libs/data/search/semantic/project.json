@@ -60,7 +60,7 @@
     "lint": {
       "executor": "nx:run-commands",
       "options": {
-        "command": "eslint libs/data/search/semantic/src --ext .ts",
+        "command": "eslint libs/data/search/semantic/src",
         "cwd": "."
       },
       "cache": true,
