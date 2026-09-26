@@ -22,7 +22,7 @@
  * never by a bare sleep — a sleep would pass on the broken code too.
  */
 import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { createRequire } from 'node:module';
@@ -170,6 +170,15 @@ tursoDescribe('4cd68c4e — no first-pass optimize; backlog merge is offline', (
       await peer.close();
     }
   }, 120_000);
+
+  it('optimizeFtsIndexes(dbPath) reports failed (never rejects) when the path cannot be opened as a store', async () => {
+    const notAStore = join(tmpDir, 'not-a-store.db');
+    writeFileSync(notAStore, 'this is not a sqlite database '.repeat(400));
+    const report = await optimizeFtsIndexes(notAStore);
+    expect(report.status).toBe('failed');
+    expect(typeof report.error).toBe('string');
+    expect(report.indexes).toEqual([]);
+  }, 60_000);
 
   it('a pass starved by a live peer warns fts.optimize.starved ONCE when the counter crosses 4x the threshold', async () => {
     const dbPath = join(tmpDir, 'starved.db');

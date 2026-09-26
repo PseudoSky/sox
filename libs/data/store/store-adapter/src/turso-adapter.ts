@@ -913,13 +913,27 @@ export class TursoAdapterImpl implements TursoAdapter {
     const pre = storeQuiescence(canonical);
     if (!pre.quiescent) return refuse('peers', pre.livePeers.map((p) => p.pid));
 
+    const openFailed = (err: unknown): FtsOfflineOptimizeReport => {
+      const error = err instanceof Error ? err.message : String(err);
+      log.error('fts.optimize.offline.failed', { db_path: canonical, stage: 'open', error });
+      return { ...base, status: 'failed', db_path: canonical, duration_ms: Date.now() - startedAt, error };
+    };
     // Idle flush far out: the adapter must not idle-release mid-pass.
-    const adapter = await TursoAdapterImpl.connect({ dbPath: canonical, idleFlushMs: 3_600_000 });
+    let adapter: TursoAdapterImpl;
+    try {
+      adapter = await TursoAdapterImpl.connect({ dbPath: canonical, idleFlushMs: 3_600_000 });
+    } catch (err) {
+      return openFailed(err);
+    }
     try {
       // A freshly connected instance takes its lease with its first operation
       // (measured: `_lease` is null straight after connect(), set after one
       // statement), so issue one before the re-check.
-      await adapter.executeGet('SELECT 1 AS one');
+      try {
+        await adapter.executeGet('SELECT 1 AS one');
+      } catch (err) {
+        return openFailed(err);
+      }
       // After opening, excluding our own lease: closes most of the window in
       // which a peer could have started between the two checks.
       if (!adapter._lease) return refuse('no_lease', []);
@@ -960,7 +974,14 @@ export class TursoAdapterImpl implements TursoAdapter {
         adapter._inFlightOps--;
       }
     } finally {
-      await adapter.close();
+      try {
+        await adapter.close();
+      } catch (err) {
+        log.error('fts.optimize.offline.close_failed', {
+          db_path: canonical,
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
     }
   }
 
