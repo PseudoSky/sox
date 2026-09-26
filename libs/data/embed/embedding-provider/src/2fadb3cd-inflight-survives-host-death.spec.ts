@@ -8,13 +8,16 @@
  * host-gone failure once. The caller's ONE call resolves from the successor.
  */
 import * as fs from 'node:fs';
+import { probeSocketLive } from '@adhd/sox-service-proxy';
 import { afterEach, describe, expect, it } from 'vitest';
 import { FunneledFastembedClient } from './funnelClient.js';
 import {
   applyEnv,
   destroyFunnelDir,
+  EMBED_HOST_TS_URL,
   funnelEnvVars,
   hostPids,
+  hostShimSource,
   killPid,
   makeFunnelDir,
   pidAlive,
@@ -62,5 +65,48 @@ describe('2fadb3cd — in-flight work survives host death', () => {
     expect(now, 'exactly one successor host').toHaveLength(1);
     expect(now[0]).not.toBe(firstPid);
     expect(fs.existsSync(client.hostSocketPath!)).toBe(true);
+  }, 60_000);
+
+  it('SIGKILL the host BEFORE it is ready ⇒ the waiting request resolves from a respawned host, not CONSUMER_ERR', async () => {
+    // The embed-funnel e2e kills its host 500 ms after it appears in `ps`. When
+    // host startup outlasts that (a loaded box), the kill lands while the
+    // consumer is still inside ensureBackend's readiness wait: ensureBackend
+    // reports `backend process (signal SIGKILL) died before socket became
+    // ready`, and that failure was a plain TransientEmbeddingError — not
+    // host-gone — so the retry-once never fired and the consumer's ONE call
+    // failed (exit 4). Pin the window open: this shim sleeps before loading the
+    // host, so a kill on first `ps` sighting is guaranteed to land pre-ready.
+    const f = makeFunnelDir('sox-2fadb3cd-preready', { delayMs: 0 });
+    cleanups.push(() => destroyFunnelDir(f));
+    fs.writeFileSync(
+      f.shimPath,
+      `await new Promise((r) => setTimeout(r, 1500));\n${hostShimSource(EMBED_HOST_TS_URL, 'slow-start shim (2fadb3cd pre-ready)')}`,
+    );
+    cleanups.push(applyEnv(funnelEnvVars(f)));
+
+    const client = new FunneledFastembedClient();
+    const inflight = client.request<{ initOk?: boolean }>({ type: 'init', model: 'stub', cacheDir: f.cache }, 30_000);
+    // Surface a rejection through the assertion below, never as unhandled.
+    const settled = inflight.then(
+      (v) => ({ ok: true as const, v }),
+      (e: unknown) => ({ ok: false as const, e: e instanceof Error ? e.message : String(e) }),
+    );
+
+    await waitFor(() => hostPids(f.shimPath).length === 1, 10_000, 'first host spawned');
+    const [firstPid] = hostPids(f.shimPath);
+    const sock = client.hostSocketPath;
+    expect(sock, 'the client resolved its socket before spawning').not.toBeNull();
+    // Precondition: the kill really lands BEFORE readiness.
+    expect(await probeSocketLive(sock!, 250), 'host must not be ready yet').toBe(false);
+    killPid(firstPid!, 'SIGKILL');
+    await waitFor(() => !pidAlive(firstPid!), 5_000, 'first host to die');
+
+    const outcome = await settled;
+    expect(outcome, `the waiting request must succeed: ${JSON.stringify(outcome)}`).toMatchObject({ ok: true });
+    const res = await client.request<{ embedding: number[] }>({ type: 'embed', text: 'hello' }, 30_000);
+    expect(res.embedding).toHaveLength(3);
+    const now = hostPids(f.shimPath);
+    expect(now, 'exactly one successor host').toHaveLength(1);
+    expect(now[0]).not.toBe(firstPid);
   }, 60_000);
 });

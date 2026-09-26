@@ -416,10 +416,17 @@ export class FunneledFastembedClient implements SharedFastembedClient {
           continue;
         }
         this.noteEnsureFailure();
-        throw new TransientEmbeddingError(
-          `embedding funnel could not bring up a host at ${socketPath}: ${result.detail}`,
-          1_000,
-        );
+        // 2fadb3cd: a host killed by a SIGNAL during its startup window (OOM
+        // kill, a reaper, `kill -9`) went away under this caller's request just
+        // as surely as one killed after it answered — ensure-backend stamps it
+        // `(signal SIGKILL)` into `detail`. Classify it host-gone so
+        // `request()`'s retry-once respawns a successor inside the caller's
+        // bound. An exit-CODE death (a broken entrypoint, a build mismatch) or a
+        // readiness timeout is deterministic or has already spent the bound, so
+        // it stays a plain transient failure — never retried here.
+        const diedBySignal = /\(signal [A-Z0-9]+\)/.test(result.detail);
+        const message = `embedding funnel could not bring up a host at ${socketPath}: ${result.detail}`;
+        throw diedBySignal ? new HostGoneError(message, 1_000) : new TransientEmbeddingError(message, 1_000);
       }
       live = true;
     }

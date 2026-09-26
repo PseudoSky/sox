@@ -309,7 +309,7 @@ function spawnHoldingConsumer(
   env: FunnelEnv,
   mode: 'shared' | 'private',
   holdMs: number,
-): { child: ChildProcess; ok: Promise<void> } {
+): { child: ChildProcess; ok: Promise<void>; stderr: () => string } {
   const child = spawn(process.execPath, [TSX_CLI, env.consumerPath], {
     cwd: REPO_ROOT,
     env: { ...env.env, FUNNEL_TEST_MODE: mode, FUNNEL_TEST_HOLD_MS: String(holdMs) },
@@ -330,7 +330,28 @@ function spawnHoldingConsumer(
   // A caller may kill the consumer (crash tests) before it reports; attach a
   // no-op catch NOW so the rejection is never "unhandled".
   void ok.catch(() => undefined);
-  return { child, ok };
+  return { child, ok, stderr: () => stderr };
+}
+
+/** Every `*.log` under the test's sox home — host stderr + funnel telemetry, for failure messages. */
+function hostLogs(env: FunnelEnv): string {
+  const out: string[] = [];
+  const walk = (d: string): void => {
+    let entries: fs.Dirent[];
+    try {
+      entries = fs.readdirSync(d, { withFileTypes: true });
+    } catch (err) {
+      out.push(`<unreadable ${d}: ${(err as Error).message}>`);
+      return;
+    }
+    for (const e of entries) {
+      const p = path.join(d, e.name);
+      if (e.isDirectory()) walk(p);
+      else if (/\.(log|jsonl)$/.test(e.name)) out.push(`--- ${path.relative(env.home, p)}\n${fs.readFileSync(p, 'utf8')}`);
+    }
+  };
+  walk(env.home);
+  return out.join('\n');
 }
 
 function killPid(pid: number, signal: NodeJS.Signals = 'SIGKILL'): void {
@@ -519,7 +540,7 @@ describe('SPEC-EMBEDDING-FUNNEL — crash + stale-socket recovery', () => {
       const env = setupEnv({ graceMs: 10_000, stubDelayMs: 3_000 });
 
       // Consumer 1 holds while its (slow) request is in flight.
-      const { child: holder, ok } = spawnHoldingConsumer(env, 'shared', 0);
+      const { child: holder, ok, stderr: holderStderr } = spawnHoldingConsumer(env, 'shared', 0);
       // Wait until the host is up and the consumer has at least connected.
       await waitFor(() => pidsMatching(path.join(env.dir, 'embedHostMain')).length === 1, 15_000, 'host up');
       const hostPid = pidsMatching(path.join(env.dir, 'embedHostMain'))[0]!;
@@ -536,7 +557,10 @@ describe('SPEC-EMBEDDING-FUNNEL — crash + stale-socket recovery', () => {
         new Promise<number | null>((resolve) => setTimeout(() => resolve(-999), 30_000).unref?.()),
       ]);
       void ok.catch(() => undefined);
-      expect(code, 'consumer must succeed, never hang').toBe(0);
+      expect(
+        code,
+        `consumer must succeed, never hang — consumer stderr:\n${holderStderr()}\nhost logs:\n${hostLogs(env)}`,
+      ).toBe(0);
 
       const hosts = pidsMatching(path.join(env.dir, 'embedHostMain'));
       expect(hosts.length).toBe(1);
