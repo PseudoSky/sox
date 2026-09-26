@@ -148,7 +148,24 @@ export async function acquireColdOpenLock(
     return unlocked();
   }
 
+  // Every path through the loop is bounded by the deadline check at its TOP:
+  // a sweep that cannot take effect (read-only lease dir → unlink EACCES while
+  // `wx` keeps reporting EEXIST) or an unreadable lock must never spin the
+  // main thread. Only FAST_RETRIES immediate re-attempts are allowed after a
+  // sweep or a vanished file; after that every iteration sleeps.
+  const FAST_RETRIES = 3;
+  let fastRetries = 0;
+  let attempted = false;
   for (;;) {
+    if (attempted && Date.now() - started >= maxWaitMs) {
+      log.warn('store_adapter.cold_open_lock.wait_timeout', {
+        db_path: dbPath,
+        waited_ms: Date.now() - started,
+        reason: 'holder did not release (or could not be swept) within the bound; opening without the lock',
+      });
+      return unlocked();
+    }
+    attempted = true;
     try {
       writeFileSync(path, content, { flag: 'wx' });
       let released = false;
@@ -175,6 +192,7 @@ export async function acquireColdOpenLock(
     // EEXIST — judge the current holder.
     const now = Date.now();
     const held = readLock(path);
+    let retryNow = held === null; // released between our create and read
     if (held !== null) {
       const age = lockAgeMs(path, now);
       const info = entryLiveness(held, now);
@@ -190,19 +208,12 @@ export async function acquireColdOpenLock(
           age_ms: age,
         });
         unlinkIfUnchanged(path, held, 'store_adapter.cold_open_lock.sweep_unlink_failed');
-        continue; // re-attempt immediately
+        retryNow = true;
       }
-    } else {
-      continue; // released between our create and read — re-attempt now
     }
-
-    if (Date.now() - started >= maxWaitMs) {
-      log.warn('store_adapter.cold_open_lock.wait_timeout', {
-        db_path: dbPath,
-        waited_ms: Date.now() - started,
-        reason: 'live holder did not release within the bound; opening without the lock',
-      });
-      return unlocked();
+    if (retryNow && fastRetries < FAST_RETRIES) {
+      fastRetries++;
+      continue;
     }
     await sleep(POLL_MIN_MS + Math.floor(Math.random() * (POLL_MAX_MS - POLL_MIN_MS)));
   }

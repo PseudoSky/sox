@@ -9,7 +9,7 @@
  * adapter's bounded open retry cannot help. Measured on this tree before the
  * fix, 16–24 simultaneous cold opens per path: 4/1920 and 2/960 processes
  * died with that panic, and this suite with the lock disabled saw 7 panics
- * (15 nonzero exits) in 1536 processes. With the lock: 0/1536. 0.7.2's 14 commits do not touch the
+ * (15 nonzero exits) in 1536 processes. With the lock: 0/3072 (two runs). 0.7.2's 14 commits do not touch the
  * coordination code, and 0.8.0 is prerelease only.
  *
  * THE FIX: `acquireColdOpenLock` (cold-open-lock.ts) serializes the adapter's
@@ -179,6 +179,20 @@ describe('6fd60658 — cold-open lock contract', () => {
     expect(next.waitedMs).toBeGreaterThanOrEqual(50);
     next.release();
   });
+
+  it('returns within its bound when a dead holder cannot be swept (no main-thread spin)', () => {
+    const db = join(tmpDir, `unsweepable-${Math.random().toString(36).slice(2, 8)}.db`);
+    const child = resolve(HERE, 'fixtures', 'cold-open-lock-unsweepable-child.ts');
+    const r = spawnSync(process.execPath, ['--import', 'tsx', child, db, String(deadPid())], {
+      timeout: 10_000,
+      encoding: 'utf8',
+    });
+    expect(r.signal, `child killed by timeout (spin): stderr=${String(r.stderr).slice(-300)}`).toBeNull();
+    expect(r.status).toBe(0);
+    const out = JSON.parse(String(r.stdout).trim()) as { acquired: boolean; waitedMs: number };
+    expect(out.acquired).toBe(false);
+    expect(out.waitedMs).toBeLessThan(5_000);
+  }, 15_000);
 
   it("release never deletes a successor's lock", async () => {
     const db = freshDb('successor');
