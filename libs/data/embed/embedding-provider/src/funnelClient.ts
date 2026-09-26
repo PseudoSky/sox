@@ -37,6 +37,7 @@ import {
   embedHostSingletonKey,
   encodeEmbedHostArgs,
   embedHostSocketPath,
+  invalidateEmbedHostBuildId,
   resolveEmbedHostConfig,
   resolveEmbedHostMainPath,
   resolveEmbedHostStderrLogPath,
@@ -198,8 +199,9 @@ export class FunneledFastembedClient implements SharedFastembedClient {
   /**
    * NO-OP by design: under `host: 'shared'` the host is shared with every other
    * consumer on the machine — a consumer must never kill it. Its lifetime is
-   * governed solely by its own debounced, ref-counted teardown
-   * (`embedHostMain.ts`). Kept to satisfy `SharedFastembedClient`.
+   * governed solely by its own work-driven retire (ADR-0022): it retires `W`
+   * after its last completed work, irrespective of how many consumers are
+   * connected (`embedHostMain.ts`). Kept to satisfy `SharedFastembedClient`.
    */
   async terminate(): Promise<void> {
     // Intentionally empty — see the method doc.
@@ -312,30 +314,44 @@ export class FunneledFastembedClient implements SharedFastembedClient {
     }
     const ep = process.env['SOX_EMBED_EXECUTION_PROVIDER'] ?? 'auto';
     // 2fe52b0f: the key carries the content build id of the host we would
-    // spawn, so we never dial a host from a foreign build.
+    // spawn, so we never dial a host from a foreign build. `computeEmbedHostBuildId`
+    // itself re-hashes when the host dir's fingerprint changed (a rebuild), so a
+    // long-lived consumer that outlives an in-place `dist/` rebuild still gets a
+    // fresh id here without recreating this client.
     const hostMain = resolveEmbedHostMainPath();
-    const buildId = computeEmbedHostBuildId(hostMain);
-    const key = embedHostSingletonKey(ctx.model, ep, ctx.cacheDir, buildId);
-    const socketPath = embedHostSocketPath(cfg, key);
+    let buildId = computeEmbedHostBuildId(hostMain);
+    let key = embedHostSingletonKey(ctx.model, ep, ctx.cacheDir, buildId);
+    let socketPath = embedHostSocketPath(cfg, key);
 
-    if (this.socketPath !== socketPath) {
-      // The identity changed (a different model/ep/cacheDir). Drop the old dial
-      // and re-point. The old host is NOT killed — it self-reaps.
-      this.conn?.close();
-      this.conn = null;
-      this._started = false;
-      this.socketPath = socketPath;
-    } else if (this.conn && !this.conn.isConnected() && this._sent === 0) {
-      // 2fadb3cd: a dial that has been down with nothing outstanding carries a
-      // stale down-since clock and a maxed backoff — its next connect failure
-      // would fast-fail a fresh request at once. Start over with a fresh dial.
-      // (With work pending, keep it: its queue replays to the successor.)
-      this.conn.close();
-      this.conn = null;
-    }
+    const repoint = (): void => {
+      if (this.socketPath !== socketPath) {
+        // The identity changed (a different model/ep/cacheDir, or [2fe52b0f] a
+        // rebuild changed the build id). Drop the old dial and re-point. The
+        // old host is NOT killed — it self-reaps.
+        this.conn?.close();
+        this.conn = null;
+        this._started = false;
+        this.socketPath = socketPath;
+      } else if (this.conn && !this.conn.isConnected() && this._sent === 0) {
+        // 2fadb3cd: a dial that has been down with nothing outstanding carries a
+        // stale down-since clock and a maxed backoff — its next connect failure
+        // would fast-fail a fresh request at once. Start over with a fresh dial.
+        // (With work pending, keep it: its queue replays to the successor.)
+        this.conn.close();
+        this.conn = null;
+      }
+    };
+    repoint();
 
-    const live = await probeSocketLive(socketPath, PROBE_TIMEOUT_MS);
-    if (!live) {
+    let live = await probeSocketLive(socketPath, PROBE_TIMEOUT_MS);
+    // [2fe52b0f] backstop: normally `computeEmbedHostBuildId`'s fingerprint
+    // check already catches a rebuild before we ever spawn. This loop only
+    // fires (once) when the host we spawn still rejects our build id — e.g. a
+    // filesystem with coarse mtimes left the fingerprint unchanged across a
+    // rebuild. On that specific failure we force a full rehash and retry with
+    // the corrected identity instead of counting the failure and opening the
+    // circuit on a stale id forever.
+    for (let attempt = 0; !live && attempt < 2; attempt++) {
       const serviceId = process.env['SOX_SERVICE_ID'];
       // 6660076e: the host never inherits its spawner's identity/config/
       // permission env — a service reaper would otherwise treat the shared host
@@ -377,14 +393,35 @@ export class FunneledFastembedClient implements SharedFastembedClient {
         spawner_service: serviceId ?? null,
         denied_env: hostEnv.denied,
         dropped_env_count: hostEnv.dropped.length,
+        attempt,
       });
       if (result.disposition === 'failed') {
+        // embedHostMain.ts exits 3 (`process.exit(3)`) specifically on a build
+        // id mismatch (ensure-backend.ts's exit-monitoring stamps the code
+        // into `detail` as `(exit code 3)`). Any other failure shape (timeout,
+        // other exit code) is a real failure, not a stale-id symptom.
+        const buildMismatch = /\(exit code 3\)/.test(result.detail);
+        if (buildMismatch && attempt === 0) {
+          log.warn('embedding_provider.funnel.build_id_stale', {
+            detail: result.detail,
+            stale_build_id: buildId,
+            socket: socketPath,
+          });
+          invalidateEmbedHostBuildId(hostMain);
+          buildId = computeEmbedHostBuildId(hostMain);
+          key = embedHostSingletonKey(ctx.model, ep, ctx.cacheDir, buildId);
+          socketPath = embedHostSocketPath(cfg, key);
+          repoint();
+          live = await probeSocketLive(socketPath, PROBE_TIMEOUT_MS);
+          continue;
+        }
         this.noteEnsureFailure();
         throw new TransientEmbeddingError(
           `embedding funnel could not bring up a host at ${socketPath}: ${result.detail}`,
           1_000,
         );
       }
+      live = true;
     }
 
     this.consecutiveEnsureFailures = 0;
@@ -438,9 +475,13 @@ export class FunneledFastembedClient implements SharedFastembedClient {
     if (!this.socketPath) return;
     try {
       await this.control('embedding.reset');
-    } catch {
+    } catch (e) {
       // Best-effort: an unreachable host has either reaped (fine) or is wedged;
       // dropping the connection lets the next request re-ensure.
+      log.warn('embedding_provider.funnel.reset_host_unreachable', {
+        error: msg(e),
+        socket: this.socketPath,
+      });
     } finally {
       this.dropConnection();
     }

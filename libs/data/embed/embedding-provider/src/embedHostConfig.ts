@@ -43,7 +43,9 @@
  * two hosts; a consumer never dials a host from a foreign build.
  *
  * Leaf module — node builtins only (fs, os, path, url, crypto, module) plus
- * `backendSocketPath` from `@adhd/sox-service-proxy`.
+ * `backendSocketPath` from `@adhd/sox-service-proxy`, `log` from
+ * `@adhd/sox-telemetry` (both `area:shared`, declared deps), and this
+ * package's own `./errors.js`.
  */
 
 import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
@@ -53,6 +55,8 @@ import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { backendSocketPath } from '@adhd/sox-service-proxy';
+import { log } from '@adhd/sox-telemetry';
+import { TransientEmbeddingError } from './errors.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -205,7 +209,54 @@ export function embedHostSingletonKey(
   return `embedding-host:v${EMBED_HOST_PROTOCOL_VERSION}:${buildId}:${modelId}:${ep}:${digest}`;
 }
 
-const _buildIdMemo = new Map<string, string>();
+interface BuildIdMemoEntry {
+  /** Cheap per-file `name:size:mtimeMs:ino` signature, joined. Recomputing this
+   * is orders of magnitude cheaper than re-reading every file's bytes. */
+  fingerprint: string;
+  id: string;
+}
+
+const _buildIdMemo = new Map<string, BuildIdMemoEntry>();
+
+function matchesFor(hostMainPath: string): (name: string) => boolean {
+  const tsMode = hostMainPath.endsWith('.ts');
+  return (name: string): boolean =>
+    tsMode ? name.endsWith('.ts') && !name.endsWith('.spec.ts') : /\.[cm]?js$/.test(name);
+}
+
+/**
+ * Cheap stat-based fingerprint of the same file set {@link computeEmbedHostBuildId}
+ * hashes: `name:size:mtimeMs:ino` per matching file, sorted by name. Two calls
+ * against an untouched build produce an identical string in O(files) stat
+ * calls — no file bytes are read. A rebuild (new sizes/mtimes/inodes, files
+ * added/removed) always changes this string, so it is a sound cache-invalidation
+ * key: [2fe52b0f].
+ */
+function computeBuildFingerprint(hostMainPath: string): string {
+  const dir = dirname(hostMainPath);
+  const matches = matchesFor(hostMainPath);
+  const names = readdirSync(dir).filter(matches).sort();
+  const parts: string[] = [];
+  for (const name of names) {
+    const file = join(dir, name);
+    let st;
+    try {
+      st = statSync(file);
+    } catch (e) {
+      // A rebuild swap can delete-then-recreate a sibling between our readdir
+      // and this stat; skip it — the recreated file (or its absence) is
+      // reflected on the next call. Not build-fatal, so plain log, not throw.
+      log.warn('embedding_provider.embed_host_config.fingerprint_stat_race', {
+        file,
+        error: e instanceof Error ? e.message : String(e),
+      });
+      continue;
+    }
+    if (!st.isFile()) continue;
+    parts.push(`${name}:${st.size}:${st.mtimeMs}:${st.ino}`);
+  }
+  return parts.join('|');
+}
 
 /**
  * The content build id of the host at `hostMainPath` (ADR-0022 §4): 12 hex of a
@@ -216,31 +267,86 @@ const _buildIdMemo = new Map<string, string>();
  *
  * The whole directory, not just the entry file, because the host's behavior
  * lives in its siblings (a bundled sidecar inlines them; the npm dist imports
- * them). Memoized per path: the bytes of a running build do not change under it,
- * and a new build is a new process.
+ * them).
+ *
+ * [2fe52b0f] Memoized per path, but the memo is invalidated by content, not by
+ * process lifetime: services here run straight out of a `dist/` that is
+ * rebuilt IN PLACE (see CLAUDE.md "a revert is not finished until you rebuild")
+ * — a long-lived consumer process outlives many rebuilds of its own sibling
+ * bundle, so "a new build is a new process" does not hold. Every call first
+ * recomputes the cheap {@link computeBuildFingerprint}; only a change there
+ * triggers the full byte-hash. An unchanged build is still O(1) memo hit cost
+ * plus O(files) stats — no bytes read.
+ *
+ * Throws {@link TransientEmbeddingError} if the directory itself has vanished
+ * mid-swap (ENOENT on `readdirSync`) — a rebuild is in flight; the caller
+ * should retry, not treat this as a permanent resolution failure.
  */
 export function computeEmbedHostBuildId(hostMainPath: string): string {
-  const memo = _buildIdMemo.get(hostMainPath);
-  if (memo !== undefined) return memo;
   const dir = dirname(hostMainPath);
-  const tsMode = hostMainPath.endsWith('.ts');
-  const matches = (name: string): boolean =>
-    tsMode ? name.endsWith('.ts') && !name.endsWith('.spec.ts') : /\.[cm]?js$/.test(name);
+  let fingerprint: string;
+  try {
+    fingerprint = computeBuildFingerprint(hostMainPath);
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code === 'ENOENT') {
+      throw new TransientEmbeddingError(
+        `embed host build id: ${dir} vanished mid-rebuild swap — retry`,
+        250,
+      );
+    }
+    throw e;
+  }
+  const memo = _buildIdMemo.get(hostMainPath);
+  if (memo !== undefined && memo.fingerprint === fingerprint) return memo.id;
+
+  const matches = matchesFor(hostMainPath);
   const hash = createHash('sha256');
   hash.update(`protocol:${EMBED_HOST_PROTOCOL_VERSION}\0`);
   hash.update(`abi:${process.versions.modules}\0`);
   hash.update(`arch:${process.arch}\0`);
-  const names = readdirSync(dir).filter(matches).sort();
+  let names: string[];
+  try {
+    names = readdirSync(dir).filter(matches).sort();
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code === 'ENOENT') {
+      throw new TransientEmbeddingError(
+        `embed host build id: ${dir} vanished mid-rebuild swap — retry`,
+        250,
+      );
+    }
+    throw e;
+  }
   for (const name of names) {
     const file = join(dir, name);
-    if (!statSync(file).isFile()) continue;
-    hash.update(`file:${name}\0`);
-    hash.update(readFileSync(file));
-    hash.update('\0');
+    try {
+      if (!statSync(file).isFile()) continue;
+      hash.update(`file:${name}\0`);
+      hash.update(readFileSync(file));
+      hash.update('\0');
+    } catch (e) {
+      if ((e as NodeJS.ErrnoException).code === 'ENOENT') {
+        throw new TransientEmbeddingError(
+          `embed host build id: ${file} vanished mid-rebuild swap — retry`,
+          250,
+        );
+      }
+      throw e;
+    }
   }
   const id = hash.digest('hex').slice(0, 12);
-  _buildIdMemo.set(hostMainPath, id);
+  _buildIdMemo.set(hostMainPath, { fingerprint, id });
   return id;
+}
+
+/**
+ * Backstop for the case the fingerprint (mtime/size/ino) happened not to
+ * change across a rebuild (e.g. a filesystem with second-granularity mtimes)
+ * yet the spawned host still rejected our build id [2fe52b0f]: drop the memo
+ * entry so the NEXT {@link computeEmbedHostBuildId} call is a forced full
+ * rehash rather than trusting a fingerprint that just proved stale.
+ */
+export function invalidateEmbedHostBuildId(hostMainPath: string): void {
+  _buildIdMemo.delete(hostMainPath);
 }
 
 /** TEST-ONLY: forget memoized build ids (a test that edits a host dir in place). */
@@ -463,8 +569,12 @@ export function resolveEmbedHostMainPath(): string {
 
   try {
     return createRequire(import.meta.url).resolve('@adhd/sox-embedding-provider/embed-host');
-  } catch {
+  } catch (e) {
     // Last resort: name the path that was actually attempted in any later error.
+    log.warn('embedding_provider.embed_host_config.resolve_fallback', {
+      error: e instanceof Error ? e.message : String(e),
+      fallback: sibling,
+    });
     return sibling;
   }
 }

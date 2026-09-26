@@ -673,7 +673,8 @@ export async function _shutdownEmbedWorker(): Promise<void> {
  * therefore intentionally inert (a consumer must never kill a host other
  * consumers are using); the host tears its private child down itself, either
  * gracefully on `embedding.reset` (the heal path,
- * `resetSharedFastembedHost()`) or on its own debounced self-reap, using the
+ * `resetSharedFastembedHost()`) or on its own work-driven retire (ADR-0022:
+ * `W` after its last completed work, connections not counted), using the
  * child's `{ __shutdown: true }` protocol rather than yanking the pipe it is
  * mid-write on. So BL-405's EPIPE crash is structurally impossible via the
  * funnel: a consumer's shutdown never touches the child's IPC channel. Proven
