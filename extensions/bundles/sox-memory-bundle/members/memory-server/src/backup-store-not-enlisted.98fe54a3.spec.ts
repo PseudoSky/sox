@@ -66,7 +66,9 @@ describe('98fe54a3 — a backup store is never enlisted into background maintena
     expect(_isEnlistedForBackgroundMaintenanceForTest(backup)).toBe(false);
     // Released on the way out: the lease directory holds no live entry from us.
     const leaseDir = `${backup}.sox-lease.d`;
-    const entries = fs.existsSync(leaseDir) ? fs.readdirSync(leaseDir) : [];
+    // Dot-names (the `.openers/` registry dir, `.coldopen.lock`) are not lease
+    // entries — the same rule `storeQuiescence` applies.
+    const entries = fs.existsSync(leaseDir) ? fs.readdirSync(leaseDir).filter((e) => !e.startsWith('.')) : [];
     // Entry name = connection token; content = `<pid>\n<openedAt>\n`.
     const ours = entries.filter(
       (e) => fs.readFileSync(path.join(leaseDir, e), 'utf8').split('\n')[0] === String(process.pid),

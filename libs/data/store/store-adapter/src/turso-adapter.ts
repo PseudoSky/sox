@@ -3529,8 +3529,10 @@ export class TursoAdapterImpl implements TursoAdapter {
    *
    * Runs the FULL `close()` ceremony first — PASSIVE checkpoint always, then
    * a quiescence-gated `wal_checkpoint(TRUNCATE)`, driver close, marker
-   * clear, lease release — by literally calling `this.close()` and then
-   * un-setting `closed`. This is deliberate reuse, not parallel
+   * clear, lease release — by literally calling `this._closeConnection()`
+   * (the ceremony `close()` itself runs; the opener registration is left in
+   * place because the adapter object stays open) and then un-setting
+   * `closed`. This is deliberate reuse, not parallel
    * reimplementation: every durability guarantee `close()` already has
    * (BL-330 orphaned-WAL PASSIVE backstop, BUG-008 single-TRUNCATE-per-close,
    * the BUG-STOREADAPTER-QUIESCENCE-TOCTOU detector) applies unchanged to a
@@ -3565,8 +3567,8 @@ export class TursoAdapterImpl implements TursoAdapter {
       return false;
     }
     await this._closeConnection();
-    // `close()` sets `closed = true` — undo that so this instance stays
-    // usable. `close()` already nulled `this._lease` as part of its own
+    // `_closeConnection()` sets `closed = true` — undo that so this instance stays
+    // usable. It already nulled `this._lease` as part of its own
     // teardown; `_reconnect()` (triggered by `_ensureHealthy()` on the next
     // operation) adopts a fresh one, see its doc comment for why that must
     // differ from poison recovery's lease handling.
