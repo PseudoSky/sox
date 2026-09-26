@@ -214,3 +214,166 @@ export function storeQuiescence(dbPath: string, excludeToken?: string): StoreQui
     return safe;
   }
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Opener registry — "is this store OPEN in a long-lived process?"
+//
+// The lease above answers "does a peer hold a CONNECTION right now?". That is
+// the wrong question for work that must never run under a live service: an
+// idle adapter (default `'gated'` idle-flush) closes its connection and drops
+// its lease (`releaseIdleConnection()`), so a running-but-idle memory-server
+// is lease-invisible. The opener entry lives for the ADAPTER OBJECT's lifetime
+// instead — from `connect()` to the final `close()` — and survives
+// idle-release and poison/repair reconnects.
+//
+// Layout: ONE file per process per store, `<leaseDir>/.openers/<pid>`, content
+// `<pid>\n<startIso>\n` (the lease shape, so `entryLiveness` judges it). The
+// directory is dot-prefixed so every lease-dir scanner that already skips
+// dot-names (`storeQuiescence`, `.coldopen.lock`'s neighbours) ignores it.
+// Several adapters in ONE process share the file through an in-process
+// refcount; the file is written on 0→1 and unlinked on 1→0, and a single
+// `process.on('exit')` hook unlinks whatever is left. A SIGKILLed process
+// leaves its file behind — `storeOpeners()` sweeps it once its pid is dead.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** Opener directory for a store. */
+export function openerDirPath(dbPath: string): string {
+  return join(leaseDirPath(dbPath), '.openers');
+}
+
+/** One adapter's registration. `release()` is idempotent. */
+export interface StoreOpener {
+  readonly dbPath: string;
+  release(): void;
+}
+
+/** In-process refcount of live registrations, keyed by (canonical) dbPath. */
+const localOpeners = new Map<string, Set<StoreOpener>>();
+let openerExitHookInstalled = false;
+
+function unlinkOwnOpenerFile(dbPath: string): void {
+  const path = join(openerDirPath(dbPath), String(process.pid));
+  try {
+    unlinkSync(path);
+  } catch (err) {
+    log.debug('store_adapter.opener.unlink_failed', {
+      db_path: dbPath,
+      path,
+      error: err instanceof Error ? err.message : String(err),
+    });
+  }
+}
+
+function writeOwnOpenerFile(dbPath: string): void {
+  try {
+    mkdirSync(openerDirPath(dbPath), { recursive: true });
+    // Plain overwrite: a file already named with OUR pid was left by a dead
+    // process whose pid we have recycled — it is ours to replace.
+    writeFileSync(
+      join(openerDirPath(dbPath), String(process.pid)),
+      `${process.pid}\n${new Date().toISOString()}\n`,
+    );
+  } catch (err) {
+    // Registration is advisory for OTHER processes' offline tools; an fs
+    // failure here must not fail the open. It is loud, because a missing
+    // entry weakens the offline refusal for this store.
+    log.warn('store_adapter.opener.register_failed', {
+      db_path: dbPath,
+      error: err instanceof Error ? err.message : String(err),
+    });
+  }
+}
+
+/** Register this adapter as an opener of `dbPath` (canonical path). */
+export function registerStoreOpener(dbPath: string): StoreOpener {
+  let set = localOpeners.get(dbPath);
+  if (!set) {
+    set = new Set();
+    localOpeners.set(dbPath, set);
+  }
+  if (set.size === 0) writeOwnOpenerFile(dbPath);
+  if (!openerExitHookInstalled) {
+    openerExitHookInstalled = true;
+    process.on('exit', () => {
+      for (const [path, owners] of localOpeners) {
+        if (owners.size > 0) unlinkOwnOpenerFile(path);
+      }
+    });
+  }
+  let released = false;
+  const handle: StoreOpener = {
+    dbPath,
+    release: () => {
+      if (released) return;
+      released = true;
+      const owners = localOpeners.get(dbPath);
+      if (!owners || !owners.delete(handle)) return;
+      if (owners.size === 0) {
+        localOpeners.delete(dbPath);
+        unlinkOwnOpenerFile(dbPath);
+      }
+    },
+  };
+  set.add(handle);
+  return handle;
+}
+
+export interface StoreOpeners {
+  /** Pids of live openers other than `exclude` (this process's pid appears
+   *  when another adapter in THIS process has the store open). */
+  livePids: number[];
+  /** True when the opener dir exists but could not be read — liveness is
+   *  unknown, so a caller that must be sure has to treat it as in use. */
+  unknown: boolean;
+}
+
+/**
+ * Live openers of `dbPath`, excluding the `exclude` registration. Dead-pid
+ * entries are swept as a side effect. Never throws.
+ */
+export function storeOpeners(dbPath: string, exclude?: StoreOpener): StoreOpeners {
+  const livePids: number[] = [];
+  const own = localOpeners.get(dbPath);
+  const localOthers = own ? own.size - (exclude && own.has(exclude) ? 1 : 0) : 0;
+  if (localOthers > 0) livePids.push(process.pid);
+  const dir = openerDirPath(dbPath);
+  let names: string[];
+  try {
+    names = readdirSync(dir);
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException | null | undefined)?.code;
+    if (code === 'ENOENT') return { livePids, unknown: false };
+    log.warn('store_adapter.opener.readdir_failed', {
+      db_path: dbPath,
+      error: err instanceof Error ? err.message : String(err),
+    });
+    return { livePids, unknown: true };
+  }
+  const now = Date.now();
+  let unknown = false;
+  for (const name of names) {
+    if (name.startsWith('.') || name === String(process.pid)) continue;
+    const entryPath = join(dir, name);
+    let content: string;
+    try {
+      content = readFileSync(entryPath, 'utf8');
+    } catch (err) {
+      log.debug('store_adapter.opener.read_entry_failed', {
+        entry: name,
+        error: err instanceof Error ? err.message : String(err),
+      });
+      continue;
+    }
+    const info = entryLiveness(content, now);
+    if (info === null) {
+      // Unparseable (e.g. torn write from a live registrar): never swept
+      // without proof of death, and never proof of absence either.
+      unknown = true;
+    } else if (info.live) {
+      livePids.push(info.pid);
+    } else {
+      sweepEntry(entryPath); // dead pid — its process never reached close()
+    }
+  }
+  return { livePids, unknown };
+}

@@ -591,9 +591,12 @@ async function cmdCompact(dbFlag: string, rest: string[], noOptimize: boolean): 
  * (4cd68c4e) `fts-optimize` — OFFLINE merge of every Turso FTS index's
  * segment backlog (`OPTIMIZE INDEX`). The in-service idle pass only merges
  * steady-state growth; a pre-existing backlog (prod: ~5,001 segments, a
- * 27–34 s main-thread merge) must be merged here, with memory-server STOPPED.
- * `optimizeFtsIndexes` refuses while any store-lease peer is live, and this
- * command exits non-zero on refused or failed.
+ * 27–34 s main-thread merge) must be merged here, with memory-server STOPPED
+ * via `soxe service disable memory-server` — under launchd KeepAlive a killed
+ * process respawns. `optimizeFtsIndexes` refuses while any store-lease peer is
+ * live OR any live process has the store open (an idle memory-server holds no
+ * lease but still has an opener entry), and this command exits non-zero on
+ * refused or failed.
  */
 async function cmdFtsOptimize(dbFlag: string, rest: string[]): Promise<void> {
   const home = process.env['HOME'] ?? process.env['USERPROFILE'] ?? os.homedir();
@@ -607,8 +610,15 @@ async function cmdFtsOptimize(dbFlag: string, rest: string[]): Promise<void> {
 
   const report = await optimizeFtsIndexes(resolvedDb);
   if (report.status === 'refused') {
+    const pids = (report.peer_pids ?? []).join(',');
+    const why =
+      report.reason === 'peers'
+        ? `${report.peer_count ?? 0} live store peer(s) (pids ${pids})`
+        : report.reason === 'openers'
+          ? `${report.peer_count ?? 0} live process(es) have the store open (pids ${pids || 'unknown'})`
+          : report.reason;
     console.error(
-      `[fts-optimize] REFUSED: ${report.reason === 'peers' ? `${report.peer_count ?? 0} live store peer(s) (pids ${(report.peer_pids ?? []).join(',')})` : report.reason} — stop memory-server and every other process holding ${report.db_path}, then re-run`,
+      `[fts-optimize] REFUSED: ${why} — run \`soxe service disable memory-server\` first (under launchd KeepAlive a killed memory-server respawns), stop every other process holding ${report.db_path}, then re-run`,
     );
     process.exit(2);
   }
@@ -677,8 +687,10 @@ Commands:
   pipeline <status|drain|reset|resume> [--db <path>]   Enrich/embed pipeline control plane
           [--dry-run] [--limit N]
   fts-optimize [--db <path>]                           OFFLINE merge of FTS index segments
-          [<path> positional arg also works]          (stop memory-server first; refuses
-                                                      while any store peer is live)
+          [<path> positional arg also works]          (run \`soxe service disable memory-server\`
+                                                      first — a killed one respawns under
+                                                      launchd KeepAlive; refuses while any
+                                                      process has the store open)
 `);
   }
 }

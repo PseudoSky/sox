@@ -22,7 +22,8 @@
  * never by a bare sleep — a sleep would pass on the broken code too.
  */
 import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { createRequire } from 'node:module';
@@ -34,7 +35,10 @@ import {
   FTS_OPTIMIZE_BACKOFF_BASE_MS,
   FTS_OPTIMIZE_BACKOFF_CAP_MS,
   DEFAULT_FTS_OPTIMIZE_WRITE_THRESHOLD,
+  FTS_OPTIMIZE_INSERVICE_MAX_MULTIPLE,
 } from '../turso-adapter.js';
+import { canonicalDbPath } from '../path-identity.js';
+import { openerDirPath, registerStoreOpener, storeOpeners, storeQuiescence } from '../store-lease.js';
 
 const require = createRequire(import.meta.url);
 const hasTurso = (() => {
@@ -256,6 +260,126 @@ tursoDescribe('4cd68c4e — no first-pass optimize; backlog merge is offline', (
       errorSpy.mockRestore();
       debugSpy.mockRestore();
       await a.close();
+    }
+  }, 180_000);
+
+  it('H1: optimizeFtsIndexes REFUSES while an idle-released peer adapter is still open (it holds no lease), and proceeds once the peer has closed', async () => {
+    const dbPath = join(tmpDir, 'offline-idle-peer.db');
+    await seedFtsStore(dbPath);
+    const canonical = canonicalDbPath(dbPath);
+    const debugSpy = vi.spyOn(log, 'debug');
+    const infoSpy = vi.spyOn(log, 'info');
+    // Short idleFlushMs + default 'gated' strategy: the peer idle-releases its
+    // connection AND its lease — the shape of a running-but-idle memory-server.
+    const peer = await TursoAdapterImpl.connect({ dbPath, idleFlushMs: 150 });
+    let peerClosed = false;
+    try {
+      await peer.executeGet('SELECT 1 AS one');
+      await nextIdlePoint(debugSpy, 'peer idle point');
+      // Precondition, proven: the peer is lease-invisible — the old
+      // lease-only check sees a quiescent store.
+      await until(() => storeQuiescence(canonical).quiescent, 30_000, 'peer lease released');
+      expect((peer as unknown as { _released: boolean })._released).toBe(true);
+
+      const refused = await optimizeFtsIndexes(dbPath);
+      expect(refused.status).toBe('refused');
+      expect(refused.reason).toBe('openers');
+      expect(refused.peer_pids).toContain(process.pid);
+      expect(refused.indexes).toEqual([]);
+      expect(count(infoSpy, 'fts.optimize.start')).toBe(0);
+
+      await peer.close();
+      peerClosed = true;
+      const ran = await optimizeFtsIndexes(dbPath);
+      expect(ran.status).toBe('optimized');
+      expect(ran.indexes).toEqual(['idx_fts_node']);
+    } finally {
+      debugSpy.mockRestore();
+      infoSpy.mockRestore();
+      if (!peerClosed) await peer.close();
+    }
+  }, 120_000);
+
+  it('H1: a live opener entry from ANOTHER process refuses the offline pass; a dead pid entry is swept and does not', async () => {
+    const dbPath = join(tmpDir, 'offline-foreign-opener.db');
+    await seedFtsStore(dbPath);
+    const canonical = canonicalDbPath(dbPath);
+    mkdirSync(openerDirPath(canonical), { recursive: true });
+    // The parent test runner is a live process that is not us.
+    const livePid = process.ppid;
+    const liveEntry = join(openerDirPath(canonical), String(livePid));
+    writeFileSync(liveEntry, `${livePid}\n${new Date().toISOString()}\n`);
+    try {
+      const refused = await optimizeFtsIndexes(dbPath);
+      expect(refused.status).toBe('refused');
+      expect(refused.reason).toBe('openers');
+      expect(refused.peer_pids).toEqual([livePid]);
+    } finally {
+      rmSync(liveEntry, { force: true });
+    }
+    // A process that has exited: its entry is swept, not counted.
+    const dead = spawnSync(process.execPath, ['-e', '0']);
+    const deadPid = dead.pid as number;
+    const deadEntry = join(openerDirPath(canonical), String(deadPid));
+    writeFileSync(deadEntry, `${deadPid}\n${new Date().toISOString()}\n`);
+    const ran = await optimizeFtsIndexes(dbPath);
+    expect(ran.status).toBe('optimized');
+    expect(existsSync(deadEntry)).toBe(false);
+  }, 120_000);
+
+  it('H1: registerStoreOpener keeps ONE file per process per store, refcounted, removed on the last release', () => {
+    const dbPath = canonicalDbPath(join(tmpDir, 'opener-refcount.db'));
+    const own = join(openerDirPath(dbPath), String(process.pid));
+    const a = registerStoreOpener(dbPath);
+    const b = registerStoreOpener(dbPath);
+    expect(readdirSync(openerDirPath(dbPath))).toEqual([String(process.pid)]);
+    expect(storeOpeners(dbPath, a).livePids).toEqual([process.pid]); // b is still open
+    b.release();
+    b.release(); // idempotent — must not drop a's count
+    expect(existsSync(own)).toBe(true);
+    expect(storeOpeners(dbPath, a).livePids).toEqual([]);
+    a.release();
+    expect(existsSync(own)).toBe(false);
+    expect(storeOpeners(dbPath).livePids).toEqual([]);
+  });
+
+  it('H2: a backlog starved past the bound by peers is NOT merged at the first quiescent point (backlog_exceeds_bound)', async () => {
+    const dbPath = join(tmpDir, 'bound.db');
+    await seedFtsStore(dbPath);
+    const threshold = 5;
+    const bound = FTS_OPTIMIZE_INSERVICE_MAX_MULTIPLE * threshold;
+    const peer = await TursoAdapterImpl.connect({ dbPath, idleFlushMs: 600_000 });
+    await peer.executeGet('SELECT 1 AS one');
+    const infoSpy = vi.spyOn(log, 'info');
+    const warnSpy = vi.spyOn(log, 'warn');
+    const debugSpy = vi.spyOn(log, 'debug');
+    const a = await TursoAdapterImpl.connect({ dbPath, idleFlushMs: 150, ftsOptimizeWriteThreshold: threshold });
+    let peerClosed = false;
+    try {
+      for (let i = 0; i < bound + 10; i++) await a.executeRun('INSERT INTO node (content) VALUES (?)', [doc()]);
+      await nextIdlePoint(debugSpy, 'starved idle point');
+      expect(a.ftsMaintenance.last).toMatchObject({ status: 'skipped', reason: 'peers' });
+      expect(a.ftsMaintenance.writesSinceOptimize).toBeGreaterThan(bound);
+
+      await peer.close();
+      peerClosed = true;
+      // Now quiescent: one more write arms a fresh idle point.
+      await a.executeRun('INSERT INTO node (content) VALUES (?)', [doc()]);
+      await nextIdlePoint(debugSpy, 'quiescent idle point');
+      expect(count(infoSpy, 'fts.optimize.start')).toBe(0);
+      expect(a.ftsMaintenance.last).toMatchObject({ status: 'skipped', reason: 'backlog_exceeds_bound' });
+      expect(a.ftsMaintenance.writesSinceOptimize).toBeGreaterThan(bound);
+      const skipped = infoSpy.mock.calls.filter(
+        ([e, f]) => e === 'fts.optimize.skipped' && (f as { reason?: string }).reason === 'backlog_exceeds_bound',
+      );
+      expect(skipped.length).toBe(1);
+      expect(count(warnSpy, 'fts.optimize.starved')).toBe(1);
+    } finally {
+      infoSpy.mockRestore();
+      warnSpy.mockRestore();
+      debugSpy.mockRestore();
+      await a.close();
+      if (!peerClosed) await peer.close();
     }
   }, 180_000);
 

@@ -182,7 +182,7 @@ describe('canonical store identity', () => {
     await viaAlias.executeGet('SELECT 1');
 
     const dir = leaseDirPath(canonicalDbPath(realPath));
-    expect(readdirSync(dir).filter((n) => !n.endsWith('.openmark')).length).toBe(2);
+    expect(readdirSync(dir).filter((n) => !n.endsWith('.openmark') && !n.startsWith('.')).length).toBe(2);
 
     await viaAlias.close();
     await viaReal.close();

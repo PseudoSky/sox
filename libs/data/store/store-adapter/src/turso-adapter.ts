@@ -21,7 +21,14 @@ import {
 } from './integrity.js';
 import type { BackupIntegrityReport, WalIdentity } from './integrity.js';
 import { maybePruneStaleTshmSidecars } from './sidecar-retention.js';
-import { acquireStoreLease, storeQuiescence, type StoreLease } from './store-lease.js';
+import {
+  acquireStoreLease,
+  registerStoreOpener,
+  storeOpeners,
+  storeQuiescence,
+  type StoreLease,
+  type StoreOpener,
+} from './store-lease.js';
 import { acquireColdOpenLock, type ColdOpenLock } from './cold-open-lock.js';
 import { canonicalDbPath } from './path-identity.js';
 import {
@@ -141,6 +148,14 @@ export const DEFAULT_FTS_OPTIMIZE_WRITE_THRESHOLD = 256;
  *  the counter exceeds this multiple of the threshold. */
 export const FTS_OPTIMIZE_STARVED_FACTOR = 4;
 
+/** (4cd68c4e-H2) Upper bound on what the in-service pass will ever merge: once
+ *  `_ftsWritesSinceOptimize` exceeds this multiple of the threshold (a backlog
+ *  that built up while live peers starved the pass), the in-service pass NEVER
+ *  runs — it skips with `backlog_exceeds_bound` and defers to the offline
+ *  `optimizeFtsIndexes(dbPath)`. Equal to `FTS_OPTIMIZE_STARVED_FACTOR`, so the
+ *  `fts.optimize.starved` warning and the bound mark the same crossing. */
+export const FTS_OPTIMIZE_INSERVICE_MAX_MULTIPLE = FTS_OPTIMIZE_STARVED_FACTOR;
+
 /** (4cd68c4e) Backoff after a failed pass: base × 2^(failures−1), capped. */
 export const FTS_OPTIMIZE_BACKOFF_BASE_MS = 60_000;
 export const FTS_OPTIMIZE_BACKOFF_CAP_MS = 3_600_000;
@@ -166,10 +181,12 @@ export interface FtsIndexOptimizeResult {
 
 /** (4cd68c4e) Report of the offline `optimizeFtsIndexes(dbPath)` run. */
 export interface FtsOfflineOptimizeReport {
-  /** `refused`: a live lease peer holds the store (or no lease could be taken
-   *  to prove otherwise) — nothing was run. */
+  /** `refused`: the store is not provably out of use — a live lease peer
+   *  holds a connection (`peers`), a live process has an adapter open on it
+   *  even while idle-released (`openers`), or no lease could be taken to prove
+   *  otherwise (`no_lease`) — nothing was run. */
   status: 'optimized' | 'refused' | 'failed';
-  reason?: 'peers' | 'no_lease' | 'not_found';
+  reason?: 'peers' | 'openers' | 'no_lease' | 'not_found';
   db_path: string;
   peer_count?: number;
   peer_pids?: number[];
@@ -185,8 +202,10 @@ export interface FtsOptimizeOutcome {
   status: 'optimized' | 'skipped' | 'failed';
   /** Present when `status === 'skipped'`. `no_lease`: the adapter holds no
    *  store lease / coordination path, so quiescence cannot be checked and the
-   *  pass never runs unchecked. */
-  reason?: 'peers' | 'no_lease';
+   *  pass never runs unchecked. `backlog_exceeds_bound`: the counter is past
+   *  `FTS_OPTIMIZE_INSERVICE_MAX_MULTIPLE` × threshold — too large to merge on
+   *  the main thread; left for the offline entry point. */
+  reason?: 'peers' | 'no_lease' | 'backlog_exceeds_bound';
   peer_count?: number;
   writes_since_optimize: number;
   /** Indexes OPTIMIZE completed on. */
@@ -500,6 +519,15 @@ export class TursoAdapterImpl implements TursoAdapter {
    *  open only to immediately tear it down. */
   private _neverOpened = false;
 
+  /** (4cd68c4e-H1) This adapter OBJECT's opener registration
+   *  (`<leaseDir>/.openers/<pid>`, see store-lease.ts). Taken by `connect()`
+   *  for a local-file store, held across idle-release and poison/repair
+   *  reconnects (those tear the connection down via `_closeConnection()`,
+   *  never `close()`), dropped only by the final `close()`. It is what lets
+   *  `optimizeFtsIndexes` see a running-but-idle service that holds no
+   *  lease. */
+  private _opener: StoreOpener | null = null;
+
   /** (idle-release) Count of operations currently executing against this
    *  connection — incremented SYNCHRONOUSLY at the top of `_trackOp` (before
    *  any `await`), so a burst of calls issued in the same tick is never
@@ -626,8 +654,12 @@ export class TursoAdapterImpl implements TursoAdapter {
    *  a few hundred ms). A backlog left by earlier processes is unknown here
    *  and can be a 27–34 s main-thread merge (prod: 5,001 segments), so it is
    *  never attempted in-service — `optimizeFtsIndexes(dbPath)` is the offline
-   *  entry point for it. Lives on the instance, so it survives idle-release
-   *  and poison reconnects. */
+   *  entry point for it. Peer-skipped passes keep the counter, so it CAN grow
+   *  past the steady state; once it exceeds `FTS_OPTIMIZE_INSERVICE_MAX_MULTIPLE`
+   *  × threshold the in-service pass stops running for good
+   *  (`backlog_exceeds_bound`) and that backlog, too, is the offline entry
+   *  point's. Lives on the instance, so it survives idle-release and poison
+   *  reconnects. */
   private _ftsWritesSinceOptimize = 0;
 
   /** (4cd68c4e) Latched once a peer-skipped pass has let the counter exceed
@@ -675,9 +707,13 @@ export class TursoAdapterImpl implements TursoAdapter {
    *
    * WHEN: only from `_performIdleFlush()` — i.e. at the adapter's own quiet
    * point, after the idle debounce, with `_inFlightOps === 0`. Never on a
-   * request path. The counter starts at 0, so a pass only ever merges the
-   * steady-state growth this process produced; a pre-existing backlog is the
-   * OFFLINE entry point's job (`optimizeFtsIndexes`).
+   * request path. The counter starts at 0, and a pass runs only while it is
+   * at most `FTS_OPTIMIZE_INSERVICE_MAX_MULTIPLE` × threshold, so an
+   * in-service merge is bounded to that many writes' worth of segments this
+   * process produced. A pre-existing backlog, or one that grew past the bound
+   * while live peers starved the pass, is NEVER merged in-service (skipped
+   * with `backlog_exceeds_bound`): it is the OFFLINE entry point's job
+   * (`optimizeFtsIndexes`).
    *
    * LOCK BEHAVIOUR under multiprocess WAL: OPTIMIZE is an ordinary write
    * transaction — it takes the WAL write lock for its duration, and the driver
@@ -685,7 +721,8 @@ export class TursoAdapterImpl implements TursoAdapter {
    * quiescent (`storeQuiescence` sees no other live lease holder); with a live
    * peer it is SKIPPED, the counter is kept, and it is retried at the next idle
    * point (warning `fts.optimize.starved` once the counter passes
-   * `FTS_OPTIMIZE_STARVED_FACTOR` × threshold). The quiescence check is
+   * `FTS_OPTIMIZE_STARVED_FACTOR` × threshold — the same crossing past which
+   * the pass is bounded out and never retried in-service). The quiescence check is
    * check-then-act under no lock: a peer that opens mid-pass waits on its 5 s
    * busy timeout, which holds because a steady-state pass (threshold writes'
    * worth of segments) is a few hundred ms. With no lease / coordination path
@@ -765,6 +802,45 @@ export class TursoAdapterImpl implements TursoAdapter {
           starved_factor: FTS_OPTIMIZE_STARVED_FACTOR,
           peer_count: q.livePeers.length,
           peer_pids: peerPids,
+        });
+      }
+      return outcome;
+    }
+    // (4cd68c4e-H2) Upper bound. Peer skips KEEP the counter, so a long
+    // starvation leaves a backlog the steady-state timing argument no longer
+    // covers — merging it at the first quiescent point is exactly the
+    // multi-second main-thread stall the offline entry point exists for.
+    // Checked after the peer gate so a starved-by-peers pass still reports
+    // `peers` while peers are live.
+    const boundAt = FTS_OPTIMIZE_INSERVICE_MAX_MULTIPLE * this._ftsOptimizeWriteThreshold;
+    if (writes > boundAt) {
+      const outcome: FtsOptimizeOutcome = {
+        status: 'skipped',
+        reason: 'backlog_exceeds_bound',
+        writes_since_optimize: writes,
+        indexes: [],
+        duration_ms: 0,
+      };
+      const first = this._lastFtsOptimize?.reason !== 'backlog_exceeds_bound';
+      this._lastFtsOptimize = outcome;
+      const fields = {
+        db_path: coordDb,
+        reason: 'backlog_exceeds_bound',
+        writes_since_optimize: writes,
+        threshold: this._ftsOptimizeWriteThreshold,
+        max_multiple: FTS_OPTIMIZE_INSERVICE_MAX_MULTIPLE,
+        remedy: 'soxe service disable memory-server, then `memory fts-optimize`',
+      };
+      if (first) log.info('fts.optimize.skipped', fields);
+      else log.debug('fts.optimize.skipped', fields);
+      if (!this._ftsStarvedWarned) {
+        this._ftsStarvedWarned = true;
+        log.warn('fts.optimize.starved', {
+          db_path: coordDb,
+          writes_since_optimize: writes,
+          threshold: this._ftsOptimizeWriteThreshold,
+          starved_factor: FTS_OPTIMIZE_STARVED_FACTOR,
+          reason: 'backlog_exceeds_bound',
         });
       }
       return outcome;
@@ -891,7 +967,7 @@ export class TursoAdapterImpl implements TursoAdapter {
       return report;
     }
     const canonical = canonicalDbPath(dbPath);
-    const refuse = (reason: 'peers' | 'no_lease', pids: number[]): FtsOfflineOptimizeReport => {
+    const refuse = (reason: 'peers' | 'openers' | 'no_lease', pids: number[]): FtsOfflineOptimizeReport => {
       log.warn('fts.optimize.offline.refused', {
         db_path: canonical,
         reason,
@@ -912,6 +988,16 @@ export class TursoAdapterImpl implements TursoAdapter {
     // the service is up — the merge blocks it for tens of seconds. Refuse.
     const pre = storeQuiescence(canonical);
     if (!pre.quiescent) return refuse('peers', pre.livePeers.map((p) => p.pid));
+    // (4cd68c4e-H1) The lease is not enough: an IDLE service has released its
+    // connection and its lease (`releaseIdleConnection()`, the default
+    // `'gated'` idle flush) yet is alive and will reconnect on its next
+    // request, straight into a 27–34 s merge. Its opener entry outlives the
+    // idle-release — refuse while any live opener exists. `unknown` (the
+    // opener dir exists but cannot be read) is not proof of absence.
+    const preOpeners = storeOpeners(canonical);
+    if (preOpeners.livePids.length > 0 || preOpeners.unknown) {
+      return refuse('openers', preOpeners.livePids);
+    }
 
     const openFailed = (err: unknown): FtsOfflineOptimizeReport => {
       const error = err instanceof Error ? err.message : String(err);
@@ -939,6 +1025,10 @@ export class TursoAdapterImpl implements TursoAdapter {
       if (!adapter._lease) return refuse('no_lease', []);
       const post = storeQuiescence(canonical, adapter._lease.token);
       if (!post.quiescent) return refuse('peers', post.livePeers.map((p) => p.pid));
+      const postOpeners = storeOpeners(canonical, adapter._opener ?? undefined);
+      if (postOpeners.livePids.length > 0 || postOpeners.unknown) {
+        return refuse('openers', postOpeners.livePids);
+      }
 
       const perIndex: FtsIndexOptimizeResult[] = [];
       adapter._inFlightOps++;
@@ -3025,6 +3115,10 @@ export class TursoAdapterImpl implements TursoAdapter {
     };
 
     const instance = new TursoAdapterImpl(createNeverOpenedDb(), config, capabilities);
+    // (4cd68c4e-H1) Registered here — on the caller-held object — and never in
+    // `_openReal()`, whose throwaway `fresh` instances are adopted by
+    // `_reconnect()`/repair and never closed (they would leak the refcount).
+    if (canonicalDb !== undefined) instance._opener = registerStoreOpener(canonicalDb);
     instance._softReadonly = opts.readonly === true && opts.allowFtsInReadonly === true;
     instance._canonicalDb = canonicalDb;
     // (SPEC-CONN-RECYCLE) Capture the exact `opts` this call received —
@@ -3470,7 +3564,7 @@ export class TursoAdapterImpl implements TursoAdapter {
     if (this.closed || this._released || this._reconnectPromise || this._inFlightOps > 0) {
       return false;
     }
-    await this.close();
+    await this._closeConnection();
     // `close()` sets `closed = true` — undo that so this instance stays
     // usable. `close()` already nulled `this._lease` as part of its own
     // teardown; `_reconnect()` (triggered by `_ensureHealthy()` on the next
@@ -3482,6 +3576,25 @@ export class TursoAdapterImpl implements TursoAdapter {
   }
 
   async close(): Promise<void> {
+    if (this.closed) return;
+    try {
+      await this._closeConnection();
+    } finally {
+      // (4cd68c4e-H1) The FINAL close — the only place the opener
+      // registration is dropped, after the connection ceremony (even a
+      // throwing one: a stranded opener would refuse offline maintenance for
+      // this process's whole remaining life).
+      this._opener?.release();
+      this._opener = null;
+    }
+  }
+
+  /**
+   * The connection teardown ceremony shared by the final `close()` and the
+   * transient teardowns (`releaseIdleConnection()`, the repair path). It does
+   * NOT touch the opener registration — the adapter object stays open.
+   */
+  private async _closeConnection(): Promise<void> {
     if (this.closed) return;
     // (DEBT-003, lazy-connect) An instance that was constructed via
     // `connect()` and closed WITHOUT ever performing an operation has no
@@ -3924,7 +4037,7 @@ export class TursoAdapterImpl implements TursoAdapter {
       // directory no peer ever wrote to — the worst possible place for this bug.
       const repairDbPath = this.coordPath;
       const ownLeaseToken = this._lease?.token;
-      await this.close(); // full clean-close ceremony (checkpoint, driver close, marker clear)
+      await this._closeConnection(); // full clean-close ceremony (checkpoint, driver close, marker clear); keeps the opener registration
       try {
         // (BUG-017 review fix) The quiescence probe is LOCAL-FILE-only. A
         // URL-only connection (`dbPath === undefined`) is exempt: the exp9
@@ -3977,11 +4090,15 @@ export class TursoAdapterImpl implements TursoAdapter {
  * This is the ONE place a pre-existing backlog is merged. The in-service idle
  * pass never attempts it: on prod's ~5,001 segments it is a 27–34 s merge that
  * holds the WAL write lock and runs synchronously on the main thread, so every
- * peer would outlast its busy timeout. Run it with the service STOPPED
- * (`memory fts-optimize --db <path>`).
+ * peer would outlast its busy timeout. Run it with the service STOPPED —
+ * `soxe service disable memory-server` (under launchd KeepAlive a killed
+ * process respawns) — then `memory fts-optimize --db <path>`.
  *
- * Refuses (`status: 'refused'`, nothing run) when a live lease peer holds the
- * store — checked before opening and again after, excluding its own lease.
+ * Refuses (`status: 'refused'`, nothing run) unless the store is provably not
+ * in use: a live lease peer holds a connection (`peers`), or any live process
+ * — including another adapter in this one — has the store open (`openers`,
+ * the registry an idle-released adapter still appears in). Both are checked
+ * before opening and again after, excluding its own lease and opener.
  * Never throws for an operational failure: the report carries `failed` and the
  * error. Emits `fts.optimize.offline.{start,finish,failed,refused}` plus the
  * per-index `fts.optimize.start`/`finish` events.
