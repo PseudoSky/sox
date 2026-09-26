@@ -95,6 +95,12 @@ it so the founder can confirm the guideline is complete.
 tools/model + system prompt). Installs to the host-discovery path and is invocable. No persistent
 process; `lifecycle` block is vestigial on agents and ignored at runtime.
 
+**Hosts:** `claude`, `codex`, `opencode` place a file (or TOML value). `agent-mcp` is different —
+it writes no file; it upserts the agent into the agent-mcp catalog over that package's own MCP
+surface (`agent_read`→`agent_update`/`agent_create` / `agent_delete`), making the agent dispatchable
+via the agent-mcp `task` tool. The `agent-catalog` capability is only defined for `type: agent`.
+See CONTRIBUTING §2.4 for the read-back verification.
+
 **CAUTION — two agent shapes:** CODE agents (`runtime: node`, entrypoint, `function-export`
 invocation) and DECLARATIVE agents (frontmatter + system prompt, `runtime: declarative`) are
 different shapes. For declarative agents, follow the `agent` guideline's declarative path;

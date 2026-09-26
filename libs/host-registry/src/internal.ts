@@ -52,7 +52,16 @@ export type CapabilityId =
   | 'object-array-merge'
   | 'bin-link'
   | 'run-service'
-  | 'materialize';
+  | 'materialize'
+  /**
+   * agent-catalog — write a row into a remote agent catalog over that catalog's
+   * own protocol (the agent-mcp host). Unlike file-drop/config-merge the artifact
+   * is not a file: the capability reads the rendered create payload and calls the
+   * catalog's `agent_read` → `agent_create`/`agent_update` (or `agent_delete` on
+   * reverse) MCP surface. See libs/host-registry/src/agent-mcp.ts and
+   * libs/install-engine/src/capabilities/agent-catalog.ts.
+   */
+  | 'agent-catalog';
 
 // ─── Surface ─────────────────────────────────────────────────────────────────
 
@@ -143,6 +152,17 @@ export interface AgentOverride {
   fallbackPath?: string;
   /** Per-host override of the IR's `steps` budget (see AgentIr.steps). */
   steps?: number;
+  /**
+   * agent-catalog hosts only (agent-mcp). Explicit provider config for the
+   * catalog row — `{ type: 'anthropic' | 'openai' | 'claudecli', model?, env? }`.
+   * When absent the agent-mcp renderer derives a provider from the IR/override
+   * model. Kept structural (not imported) so host-registry stays dependency-free.
+   */
+  provider?: Record<string, unknown>;
+  /** agent-catalog hosts only (agent-mcp). `mcpServers` map for the catalog row. */
+  mcpServers?: Record<string, unknown>;
+  /** agent-catalog hosts only (agent-mcp). `permissions` block for the catalog row. */
+  permissions?: Record<string, unknown>;
 }
 
 /** Result of rendering an agent for one host. */

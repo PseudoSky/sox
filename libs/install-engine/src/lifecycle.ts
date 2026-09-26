@@ -274,6 +274,15 @@ async function reverseAction(action: LedgerAction, ctx: LifecycleCtx): Promise<v
       break;
     }
 
+    case 'agent-catalog': {
+      // agent-catalog: retire the row from the remote catalog over its own MCP
+      // surface. Idempotent — a missing row is success. The row name IS the
+      // extension id; the ledger's portable pseudo-path carries no extra data.
+      const { reverse: agentCatalogReverse } = await import('./capabilities/agent-catalog.js');
+      await agentCatalogReverse({ ext: ctx.ext });
+      break;
+    }
+
     case 'object-array-merge': {
       // object-array-merge: remove ONLY the identity-tagged entries soxe appended.
       // [inv:ledger-reversible]: other entries (foreign identities) are untouched.

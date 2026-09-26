@@ -1,7 +1,7 @@
 {
   "name": "@adhd/sox-host-registry",
   "version": "0.5.0",
-  "description": "Pluggable per-host registry: claude + codex modules with detect/scopePaths/surfaces",
+  "description": "Pluggable per-host registry: claude, codex, opencode, and agent-mcp modules with detect/scopePaths/surfaces + per-host agent renderers",
   "license": "MIT",
   "publishConfig": {
     "access": "public"
@@ -27,6 +27,8 @@
     "registry",
     "claude",
     "codex",
+    "opencode",
+    "agent-mcp",
     "typescript"
   ],
   "repository": {

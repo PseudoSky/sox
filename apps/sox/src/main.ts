@@ -1244,7 +1244,7 @@ Options:
   -s, --scope <scope>    Scope: user | project | local  (default: local)
   --frozen-lockfile      Use frozen-lockfile mode
   --update               Update pinned hashes (with --host or positional) or run full sync (no id)
-  --host=<hosts>         Target host(s) (claude, codex, opencode)
+  --host=<hosts>         Target host(s) (claude, codex, opencode, agent-mcp)
   --root <dir>           Workspace root override
    --profile=<p>          MCP transport profile (stdio, sse, http; default: stdio)
    --version=<semver>     Install from npm package at the given version range (e.g. 1.1.0, ^1.0.0)
@@ -1957,6 +1957,76 @@ async function hostPlaceExtension(
     // the install (matches maybePropagateUserMcp's own non-fatal contract).
     await maybeSyncMcpTrust(extType, scope, hostName, id, workspaceRoot);
   }
+}
+
+/**
+ * Declarative host re-sync — keeps a synced host in lockstep with the repo.
+ *
+ * Agent-catalog rows (the agent-mcp host) live OUTSIDE both the lockfile and the
+ * install registry, so cmdUpgrade's consumer pass never sees them. This re-applies
+ * every ledger-recorded AGENT-CATALOG placement from the CURRENT repo source.
+ *
+ * Deliberately narrowed to `agent-catalog` surfaces: file-drop / config-merge
+ * placements are already re-applied by the `install --update` path and re-running
+ * them here would needlessly rewrite host config files during an upgrade. Apply is
+ * idempotent (read→update-or-create), so re-syncing an unchanged agent is a no-op
+ * that never duplicates a row.
+ *
+ * Best-effort — a single extension that fails to resolve or place is warned about,
+ * never fatal to the upgrade.
+ */
+async function resyncDeclarativeHosts(
+  scope: DataScope,
+  workspaceRoot: string,
+): Promise<{ attempted: number; resynced: number }> {
+  const fsMod = require('node:fs') as typeof import('node:fs');
+  const pathMod = require('node:path') as typeof import('node:path');
+  const { getHost } = require('@adhd/sox-host-registry') as typeof import('@adhd/sox-host-registry');
+
+  const scopeRoot = dataRoot(scope, workspaceRoot);
+  const ledgerPath = pathMod.join(scopeRoot, 'ledger.json');
+  if (!fsMod.existsSync(ledgerPath)) return { attempted: 0, resynced: 0 };
+
+  let entries: Array<{ ext: string; host: string }> = [];
+  try {
+    const parsed = JSON.parse(fsMod.readFileSync(ledgerPath, 'utf8')) as {
+      entries?: Array<{ ext?: string; host?: string }>;
+    };
+    entries = (parsed.entries ?? [])
+      .filter((e): e is { ext: string; host: string } => typeof e.ext === 'string' && typeof e.host === 'string');
+  } catch {
+    return { attempted: 0, resynced: 0 };
+  }
+
+  let attempted = 0;
+  let resynced = 0;
+  for (const entry of entries) {
+    const srcPath = findLocalExtension(workspaceRoot, entry.ext);
+    if (srcPath === null) continue;
+    const manifest = loadExtensionManifest(workspaceRoot, entry.ext);
+    const extType = manifest?.type;
+    if (typeof extType !== 'string' || extType === '') continue;
+
+    // Only re-sync agent-catalog surfaces — see the doc comment above.
+    let capability: string | undefined;
+    try {
+      capability = getHost(entry.host).surfaces[extType]?.capability;
+    } catch {
+      continue; // unknown host in the ledger — skip
+    }
+    if (capability !== 'agent-catalog') continue;
+
+    attempted++;
+    try {
+      await hostPlaceExtension(entry.ext, srcPath, extType, [entry.host], scope, workspaceRoot);
+      resynced++;
+    } catch (e) {
+      process.stderr.write(
+        `${CLI} upgrade: re-sync warning: ${entry.ext}@${entry.host} — ${String(e)}\n`,
+      );
+    }
+  }
+  return { attempted, resynced };
 }
 
 /**
@@ -3039,6 +3109,17 @@ async function cmdUpgrade(flags: Record<string, string>): Promise<void> {
   const consumers = extId !== undefined && extId !== ''
     ? registry.installs.filter((r) => r.extId === extId)
     : registry.installs;
+
+  // ── Declarative host re-sync (runs regardless of the consumer set) ──────────
+  // agent-catalog rows (agent-mcp) have no lockfile/install-registry consumer, so
+  // the pass below never sees them. Re-apply the cwd project scope's declarative
+  // host placements from the current repo source (idempotent).
+  const resyncSummary = await resyncDeclarativeHosts('project', process.cwd());
+  if (resyncSummary.resynced > 0) {
+    process.stdout.write(
+      `${CLI} upgrade: re-synced ${resyncSummary.resynced} declarative host placement(s) from repo source\n`,
+    );
+  }
 
   if (consumers.length === 0) {
     process.stdout.write(

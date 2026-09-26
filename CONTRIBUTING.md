@@ -430,6 +430,27 @@ node bin/soxe install <agent-id> --host=<host> --scope=project
 | `claude` | `.claude/agents/{id}/` | `ls .claude/agents/{id}/` |
 | `opencode` | `.opencode/agents/{id}/` | `ls .opencode/agents/{id}/` |
 | `codex` | `~/.codex/agents/{id}/` | `ls ~/.codex/agents/{id}/` |
+| `agent-mcp` | *no filesystem target* — a row in the agent-mcp catalog | read it back: `agent_read {name}` over the agent-mcp surface (e.g. the `agent_agent_read` MCP tool), or `soxe install {id} --host agent-mcp` twice and confirm `version` increments rather than a duplicate row |
+
+**agent-mcp host (`agent-catalog` capability).** Unlike the file-drop/config-merge
+hosts, `--host agent-mcp` writes no file: it upserts the agent into the agent-mcp
+catalog over that package's OWN MCP server (spawned over stdio), using the
+sanctioned `agent_read`→`agent_update`/`agent_create` and `agent_delete` tools —
+never a direct `agents.db` write. Mapping: `agent.name`→`name`, entrypoint prose
+(frontmatter stripped)→`systemPrompt`, `agent.description`→`description`,
+`agent.model`/`render.agent-mcp.model`→`provider` (see
+`libs/host-registry/src/agent-mcp.ts` `deriveProvider`), `agent.steps`→`maxToolLoops`.
+The catalog is global; soxe resolves which DB to write via
+`SOX_AGENT_MCP_DATABASE_PATH` → ambient `ADHD_AGENT_DATABASE_PATH` → the agent-mcp
+registration in `~/.config/opencode/opencode.json` → an existing
+`~/.adhd/agent-mcp/agents.db` → the server's zero-config default (in that order).
+
+```
+node bin/soxe install <agent-id> --host agent-mcp --scope project
+node bin/soxe install <agent-id> --host agent-mcp --scope project   # idempotent update, no duplicate
+node bin/soxe upgrade --all                                         # re-syncs the catalog from repo source
+node bin/soxe uninstall <agent-id> --host agent-mcp --scope project # retires the row
+```
 
 #### §2.4.3 Content verification
 

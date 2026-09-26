@@ -30,7 +30,7 @@ import { ledgerPathFor } from './data-paths.js';
 
 // --- Shape: LedgerAction ([shape:ledger-action]) ---
 
-/** The seven capability identifiers that can appear in a ledger action. */
+/** The capability identifiers that can appear in a ledger action. */
 export type CapabilityId =
   | 'config-merge'
   | 'array-merge'
@@ -38,7 +38,8 @@ export type CapabilityId =
   | 'materialize'
   | 'file-drop'
   | 'bin-link'
-  | 'run-service';
+  | 'run-service'
+  | 'agent-catalog';
 
 /**
  * A single recorded write in the ledger.

@@ -2060,6 +2060,73 @@ export async function declarativeInstall(
         file: absTarget,
         keyPath: resolvedKeyPath,
       });
+    } else if (surface.capability === 'agent-catalog') {
+      // agent-catalog: upsert an agent row into a remote catalog over that
+      // catalog's own MCP surface (host = agent-mcp). No filesystem target —
+      // the renderer produces the create payload ({name, systemPrompt, provider,
+      // ...}) and the capability performs an idempotent read→update-or-create.
+      if (descriptor.type !== 'agent') {
+        throw new Error(
+          `[declarative-install] agent-catalog is only defined for type=agent (got type=${descriptor.type} for ext=${descriptor.ext})`,
+        );
+      }
+      if (descriptor.srcPath === undefined) {
+        throw new Error(
+          `[declarative-install] agent-catalog requires srcPath for ext=${descriptor.ext}`,
+        );
+      }
+      if (hostMod.render === undefined) {
+        throw new Error(
+          `[declarative-install] host '${hostName}' declares capability agent-catalog but exposes no renderer`,
+        );
+      }
+      const inputs = readAgentRenderInputs(descriptor.srcPath, hostName);
+      if (inputs === null) {
+        throw new Error(
+          `[declarative-install] agent-catalog: cannot read agent IR for '${descriptor.ext}' (no extension.json at ${descriptor.srcPath})`,
+        );
+      }
+      // A manifest need not duplicate its id in the IR — fall back to the ext id.
+      const override = { ...(inputs.override ?? {}) };
+      if (override['name'] === undefined && inputs.ir['name'] === undefined) {
+        override['name'] = descriptor.ext;
+      }
+      const prose = readAgentProse(descriptor.srcPath);
+      const rendered = hostMod.render.render(inputs.ir, prose, override);
+      if (rendered.kind !== 'config-value') {
+        throw new Error(
+          `[declarative-install] agent-catalog host '${hostName}' renderer must return a config-value (got kind=${rendered.kind})`,
+        );
+      }
+      const { apply: agentCatalogApply } = await import('./capabilities/agent-catalog.js');
+      await agentCatalogApply({
+        host: hostName,
+        scope,
+        scopeRoot,
+        workspaceRoot,
+        isProject,
+        ext: descriptor.ext,
+        target: { filePath: absTarget },
+        payload: {
+          value: rendered.value as import('./capabilities/agent-catalog.js').AgentCatalogPayload,
+        },
+        ledger,
+      });
+
+      const acResult: DeclarativeInstallResult = {
+        host: hostName,
+        scope,
+        capability: 'agent-catalog',
+        target: `agent-mcp catalog row '${descriptor.ext}'`,
+        applied: true,
+      };
+      if (surface.postInstallHint) {
+        acResult.hints = [surface.postInstallHint];
+      }
+      results.push(acResult);
+      // [inv:no-untracked-injection]: the catalog row is owned. No filesystem
+      // target — the ledger's agent-catalog action reverses it (agent_delete).
+      ownedEntries.push({ kind: 'agent-catalog', name: descriptor.ext });
     } else if (surface.capability === 'array-merge') {
       // array-merge: append values to an array in the shared config file.
       // Used for permissions arrays, MCP trust arrays, etc.

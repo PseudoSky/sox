@@ -421,7 +421,8 @@
             "enum": [
               "claude",
               "codex",
-              "opencode"
+              "opencode",
+              "agent-mcp"
             ]
           }
         },
@@ -528,6 +529,10 @@
           "additionalProperties": true
         },
         "codex": {
+          "type": "object",
+          "additionalProperties": true
+        },
+        "agent-mcp": {
           "type": "object",
           "additionalProperties": true
         }

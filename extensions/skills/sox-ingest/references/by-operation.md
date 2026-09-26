@@ -202,7 +202,7 @@ paths. Not supported on the no-host config/lockfile resolver path.
 | Flag | Meaning |
 |---|---|
 | `<id>` | Positional — extension id (required) |
-| `--host <name>` | Host to install on: `claude`, `codex`, `opencode` |
+| `--host <name>` | Host to install on: `claude`, `codex`, `opencode`, `agent-mcp` |
 | `--scope <scope>` | Install scope: `project` (default), `user` |
 | `--root <dir>` | Override workspace root (for sandboxed testing) |
 | `--profile <name>` | Profile variant to apply (optional) |

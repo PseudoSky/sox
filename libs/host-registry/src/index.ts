@@ -8,10 +8,12 @@
  * All other code must resolve targets via this registry — never hard-code
  * host paths elsewhere.
  *
- * The registry ships three modules:
+ * The registry ships four modules:
  *   claude.ts  — [inv:never-managed], MCP trust = prompt
  *   codex.ts   — [def:project-forbidden-keys], TOML config-merge
  *   opencode.ts — mcp.{id} key format, command array format, json config-merge
+ *   agent-mcp.ts — agent-catalog capability; agent rows written over the
+ *                  agent-mcp MCP surface (no discovery dir)
  *
  * [shape:host-registry]:
  *   interface HostModule {
@@ -55,11 +57,13 @@ import type { HostModule } from './internal.js';
 import { claudeHost } from './claude.js';
 import { codexHost } from './codex.js';
 import { opencodeHost } from './opencode.js';
+import { agentMcpHost } from './agent-mcp.js';
 
 const _registry: Map<string, HostModule> = new Map([
   [claudeHost.host, claudeHost],
   [codexHost.host, codexHost],
   [opencodeHost.host, opencodeHost],
+  [agentMcpHost.host, agentMcpHost],
 ]);
 
 /** Retrieve a registered host module by name, or throw. */
@@ -102,3 +106,5 @@ export function resolveWorkspaceRoot(workspaceRoot?: string): string {
 export { claudeHost } from './claude.js';
 export { codexHost } from './codex.js';
 export { opencodeHost } from './opencode.js';
+export { agentMcpHost, defaultCatalogDbPath, resolveAgentMcpEnv } from './agent-mcp.js';
+export type { AgentCatalogPayload, AgentMcpEnv } from './agent-mcp.js';
