@@ -24,46 +24,46 @@
         "id": "memory-usage"
       }
     ],
-    "builtFromCommit": "89b0c144f11e207c24795e2d511a13c112985faf"
+    "builtFromCommit": "737d108e9446b0f273b050c6d9c506f439b687e0"
   },
   {
     "id": "memory-cli",
     "type": "command",
-    "version": "0.2.5",
+    "version": "0.3.0",
     "title": "Memory CLI",
     "description": "Use this when you need to manage the sox-memory store from the shell — provides memory init|status|list|registry subcommands for store lifecycle, scope selection, and registry inspection. Fully deterministic; zero LLM calls.",
-    "source": "npm-package:@adhd/sox-extension-memory-cli@0.2.5",
-    "checksum": "sha256:16aa0e44cf131f896598f1311ba3da5d9b49b0e40afc479b066e3451ee932553",
+    "source": "npm-package:@adhd/sox-extension-memory-cli@0.3.0",
+    "checksum": "sha256:e9b77ae8c8c515ace91cf565a5f39be07c08d7e5f3d0b9abdd48a68085bb4bdd",
     "compatibility": {
       "host": ">=1.0.0 <2.0.0"
     },
     "visibility": "internal",
     "bundleId": "sox-memory-bundle",
-    "builtFromCommit": "89b0c144f11e207c24795e2d511a13c112985faf"
+    "builtFromCommit": "737d108e9446b0f273b050c6d9c506f439b687e0"
   },
   {
     "id": "memory-flush",
     "type": "hook",
-    "version": "0.2.3",
+    "version": "0.2.4",
     "title": "Memory Session Flush",
     "description": "Use this when you need session memory durably persisted at conversation end and scope promotions reviewed — binds SessionEnd (persists working memory, enqueues episodes, nudges memoryd) and ScopePromotionProposed (runs promotion approval policy). Deterministic; zero LLM calls.",
-    "source": "npm-package:@adhd/sox-extension-memory-flush@0.2.3",
-    "checksum": "sha256:e60342681e6649077fac5f08fcfc58a6dda0f6a71c30664a4421b6f0ee61e551",
+    "source": "npm-package:@adhd/sox-extension-memory-flush@0.2.4",
+    "checksum": "sha256:23d59cc7ebd449f5860feea0c3c1d7914c4658f82b6c1f316741dfdcde4a6112",
     "compatibility": {
       "host": ">=1.0.0 <2.0.0"
     },
     "visibility": "internal",
     "bundleId": "sox-memory-bundle",
-    "builtFromCommit": "89b0c144f11e207c24795e2d511a13c112985faf"
+    "builtFromCommit": "737d108e9446b0f273b050c6d9c506f439b687e0"
   },
   {
     "id": "memory-server",
     "type": "mcp-server",
-    "version": "1.3.4",
+    "version": "1.3.5",
     "title": "Agent Memory Server",
     "description": "Use this when an agent needs durable, searchable memory across sessions — exposes 7 memory_* tools over a single-file SQLite graph store with hybrid recall (vec+BM25+temporal, <50ms, zero LLM), write-enqueue, session state, community lookup, and bi-temporal invalidation.",
-    "source": "npm-package:@adhd/sox-extension-memory-server@1.3.4",
-    "checksum": "sha256:9b4cadff1ce5fd8526b475a2c9ee4b00c70a223e71a3ee0facddeabaf1b42bcc",
+    "source": "npm-package:@adhd/sox-extension-memory-server@1.3.5",
+    "checksum": "sha256:a88b15aebb79ed82fcf34c1c9ed69ae3beb0400de3d6f189b89617cf55518029",
     "compatibility": {
       "host": ">=1.0.0 <2.0.0"
     },
@@ -73,7 +73,7 @@
     },
     "visibility": "internal",
     "bundleId": "sox-memory-bundle",
-    "builtFromCommit": "89b0c144f11e207c24795e2d511a13c112985faf"
+    "builtFromCommit": "737d108e9446b0f273b050c6d9c506f439b687e0"
   },
   {
     "id": "memory-usage",
@@ -88,19 +88,19 @@
     },
     "visibility": "internal",
     "bundleId": "sox-memory-bundle",
-    "builtFromCommit": "89b0c144f11e207c24795e2d511a13c112985faf"
+    "builtFromCommit": "737d108e9446b0f273b050c6d9c506f439b687e0"
   },
   {
     "id": "sox",
     "type": "command",
-    "version": "1.2.3",
+    "version": "1.3.0",
     "title": "soxe CLI",
     "description": "LLM extension ecosystem CLI — extension #0 (D1/D2 self-hosting)",
-    "source": "npm-package:@adhd/sox-cli@1.2.3",
-    "checksum": "sha256:69ecd4f9fee4dc8b6a63d9bdfa79d723a28de2ed80814f088e0980ae986b3966",
+    "source": "npm-package:@adhd/sox-cli@1.3.0",
+    "checksum": "sha256:f0407d527a2a60ebc393bbee56da4c9482ad90ddf38030662643762b9499850e",
     "compatibility": {
       "host": ">=1.0.0 <2.0.0"
     },
-    "builtFromCommit": "89b0c144f11e207c24795e2d511a13c112985faf"
+    "builtFromCommit": "737d108e9446b0f273b050c6d9c506f439b687e0"
   }
 ]
