@@ -1,0 +1,117 @@
+{
+  "$schema": "https://your-registry/schemas/extension/v2.json",
+  "id": "git-manager",
+  "version": "0.1.0",
+  "type": "agent",
+  "title": "git-manager",
+  "description": "Use when a project's git operations need one owner — worktree creation/removal, branching, merge, push, cleanup — and a per-project, solely-owned git policy document that stays in sync with the repo it governs. Triggers: \"merge this\", \"create a worktree\", \"clean up the worktrees\", \"push this\", \"what's our git workflow\", \"is this worktree safe to remove\".",
+  "compatibility": {
+    "host": ">=1.0.0 <2.0.0"
+  },
+  "license": "MIT",
+  "author": "sox-ecosystem",
+  "keywords": [
+    "git",
+    "worktree",
+    "policy",
+    "merge",
+    "separation-of-duties",
+    "cleanup"
+  ],
+  "runtime": "declarative",
+  "entrypoint": "git-manager.md",
+  "invocation": {
+    "protocol": "function-export",
+    "handler": "run",
+    "description": "Declarative agent — host reads the prose body and renders the host header from agent/render at install time."
+  },
+  "requires": {
+    "tool_calling": true
+  },
+  "agent": {
+    "name": "git-manager",
+    "description": "Sole owner of git for a project. Performs every git operation (worktree create/remove, branch, merge, push, cleanup), maintains a per-project git policy document it alone owns and keeps in sync, and refuses any operation that would destroy work it did not author or that it cannot verify. Never designs features or writes application code.",
+    "model": "sonnet",
+    "mode": "all",
+    "temperature": 0.2,
+    "tools": [
+      "read",
+      "bash",
+      "edit",
+      "write",
+      "question",
+      "skill",
+      { "logical": "memory", "server": "memory-server" }
+    ],
+    "permission": {
+      "read": "allow",
+      "edit": "allow",
+      "write": "allow",
+      "bash": {
+        "*": "ask",
+        "git status*": "allow",
+        "git diff*": "allow",
+        "git log*": "allow",
+        "git show*": "allow",
+        "git rev-parse*": "allow",
+        "git rev-list*": "allow",
+        "git branch --list*": "allow",
+        "git branch -a*": "allow",
+        "git branch --show-current*": "allow",
+        "git worktree list*": "allow",
+        "git merge-base*": "allow",
+        "git config --get*": "allow",
+        "git fetch*": "ask",
+        "git worktree add*": "ask",
+        "git worktree remove*": "ask",
+        "git worktree prune*": "ask",
+        "git worktree repair*": "ask",
+        "git switch*": "ask",
+        "git checkout*": "ask",
+        "git branch -d*": "ask",
+        "git merge*": "ask",
+        "git rebase*": "ask",
+        "git commit*": "ask",
+        "git push*": "ask",
+        "git push --force *": "deny",
+        "git push *--force*": "deny",
+        "git push *--no-verify*": "deny",
+        "git branch -D*": "deny",
+        "git reset --hard*": "deny",
+        "git clean -f*": "deny",
+        "git stash*": "deny",
+        "git restore *": "ask"
+      },
+      "question": "allow",
+      "skill": "allow",
+      "memory_*": "allow"
+    }
+  },
+  "render": {
+    "claude": {
+      "model": "sonnet",
+      "version": "v0.1.0",
+      "tools": [
+        "Read",
+        "Bash",
+        "Edit",
+        "Write",
+        "AskUserQuestion",
+        "Skill",
+        "mcp__memory-server__*"
+      ]
+    },
+    "opencode": {
+      "model": "deepseek/deepseek-flash",
+      "mode": "all",
+      "temperature": 0.2
+    }
+  },
+  "install": {
+    "type": "agent",
+    "hosts": [
+      "claude",
+      "opencode"
+    ]
+  }
+}
