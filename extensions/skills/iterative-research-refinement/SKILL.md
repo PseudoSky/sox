@@ -242,6 +242,18 @@ node ~/.config/opencode/skills/iterative-research-refinement/scripts/runtime-met
   immediately so telemetry is never lost. Baseline session ids persist in the DB
   across iterations — re-run the script with the old baseline id when needed.
 
+**Attribution — WHERE the time went (companion script).** A ratio alone invites a wrong
+causal story, so decompose any delta before explaining it:
+```
+node ~/.config/opencode/skills/iterative-research-refinement/scripts/runtime-attribution.mjs <ses_id> [...] \
+  --label <ses_id>:<label> ... --pairs <baseline_id>:<variant_id> ... [--calls]
+```
+It splits each run's wall-clock into **tool-busy** (union of tool intervals — parallel calls
+not double-counted) vs **model-wait** (`span − tool-busy`), per tool, plus seconds-per-extra-call;
+`--calls` lists the ordered calls so the extra one can be named. **Never narrate a mechanism
+without measuring the split** (2026-09-25: a variant's 1.29x wall-clock was called "more steps";
+attribution showed tool-busy flat at ±0.5s, 94–98% of the delta in model-wait).
+
 Thresholds (defaults; override explicitly if justified, and say so):
 - tool calls ≤ 1.25x baseline
 - wall-clock ≤ 1.25x baseline
