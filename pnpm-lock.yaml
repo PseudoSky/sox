@@ -150,6 +150,8 @@ importers:
 
   extensions/agents/doc-steward: {}
 
+  extensions/agents/git-manager: {}
+
   extensions/agents/org-agent: {}
 
   extensions/agents/performance: {}
