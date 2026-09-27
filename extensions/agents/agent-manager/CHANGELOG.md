@@ -1,5 +1,36 @@
 # Changelog
 
+## 0.1.5
+
+- **Adds §12, delegation discipline: a brief carries only what belongs to the caller.** Fixes the
+  42b0dc25 defect — agent-manager injected executor-owned knowledge (repo layout, artifact type,
+  release/install procedure, item→file mapping, pre-solved write scope) into dispatch briefs, which
+  MASKS the routed executor's real gaps: a run looks correct when the injected knowledge, not the
+  executor, supplied the discipline. The routed executor now derives the change discipline and the
+  verification standard from the spec it owns. The section also pins the read-the-artifact rule —
+  a search hit is not a reading; a rendered result is not the artifact.
+- Adds **§13, backlog traffic routes through `backlog-operator`** (f338366f): no agent-manager-owned
+  process writes the backlog graph directly. §2's "file debt via the backlog tool" now names
+  `backlog-operator` as the route.
+- Adds the red→green guard `tools/test-42b0dc25-brief-no-executor-knowledge.mjs`, registered Tier-1
+  in `tools/guards-manifest.mjs`. Its negative control is the authentic pre-fix brief text as
+  dispatched (session part `prt_0deddf315001ZebaxYwpdvPxXY`), which the predicate rejects; run red
+  against the pre-fix spec (`git show HEAD:…`), green against this one.
+- `version` and `render.claude.version` bumped in lockstep to 0.1.5; `package.json` realigned from a
+  stale 0.1.3. (Deploy is out of scope for this change — not installed.)
+
+## 0.1.4
+
+- **`mode: primary` → `mode: all`.** agent-manager was not `task`-dispatchable, which blocked the
+  blind agent-manager review of a change set — a review that must be performed by a *dispatched*
+  agent-manager. With `all` it stays usable as a primary agent and can also be spawned as a subagent
+  via `task`. Set in both `agent.mode` and `render.opencode.mode`; `render.claude.version` bumped in
+  lockstep to `v0.1.4`.
+- Installed to opencode + claude (user scope) and verified: a **fresh** `opencode agent list`
+  reports `agent-manager (all)`; the claude header renders `version: v0.1.4`; deployed body matches
+  the authored source (identical ignoring one blank line). The manifest declares no `dependencies`,
+  so the dependency check is vacuous.
+
 ## 0.1.3
 
 - **Adds the two knowledge areas whose absence broke the dispatcher 1.4.3 deploy** — the extension

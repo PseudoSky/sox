@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.5.0
+
+- **Terminal resolution now requires artifact-class evidence, not a commit ref (4fc3704e-56b0-4363-a1fe-ec8a51826f8b).** New operating rule 18 keys the resolution evidence on what the artifact *requires*: (a) acceptance-criteria proof for every item, (b) published-artifact proof for any publishable package, (c) live-system / deploy proof for any released/deployed service or artifact. A commit/merge ref alone is insufficient for (b)/(c). Step 7 is de-conditionalised — its trigger is the artifact class, never whether a deploy happened to occur this run. Step 5's resolve gate now requires rules 15 + 18 + 20 together; adds the **Merge-as-terminal-evidence** failure mode.
+- **A run now has its own definition of done (decda240-0954-4d99-bfc3-6c0e896cc274).** New operating rule 19 derives the run/project DoD from observable assertions (Outcome / Acceptance / Terminal evidence / Disclosure), each a binary pass/fail clause; the close report states whether the run DoD is **MET** and which clause is unmet. Wired into the Step 8 self-critique checklist; adds the **Leaf-complete, outcome-unverified** failure mode.
+- **Every executed/resolved item carries acceptance criteria written before the work, or an explicit `none applicable` declaration (e5a790a7-ab24-4e1b-89fe-bef94d9511d5).** New operating rule 20; wired into Step 2 (decompose), Step 3 (brief assembly), and Step 5 (closure verifies the criteria, not just the leaf done-state); adds the **Post-hoc acceptance** failure mode.
+- `backlog-operator` upgraded to 0.2.0 alongside: its `resolve` verb now refuses without the artifact-class evidence (returns ESCALATE), so the gate cannot be bypassed through the operator.
+
 ## 1.4.3
 
 - **Body restored to the ad-hoc dispatcher; the plan-state-machine body is withdrawn.** 1.4.1 had

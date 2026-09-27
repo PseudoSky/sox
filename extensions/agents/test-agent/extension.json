@@ -1,8 +1,9 @@
 {
-  "$schema": "https://your-registry/schemas/extension/v1.json",
+  "$schema": "https://your-registry/schemas/extension/v2.json",
   "id": "test-runner",
+  "version": "0.1.1",
   "type": "agent",
-  "title": "test-runner",
+  "title": "test-agent",
   "description": "Use this when you need an agent that runs test suites and reports results.",
   "keywords": ["testing", "runner", "agent"],
   "author": "sox-ecosystem",
@@ -15,9 +16,38 @@
   "invocation": {
     "protocol": "function-export",
     "handler": "run",
-    "description": "Declarative agent — host reads the .md definition file directly."
+    "description": "Declarative agent — host reads the prose body and renders the host header from agent/render at install time."
+  },
+  "requires": {
+    "tool_calling": true
+  },
+  "agent": {
+    "name": "test-agent",
+    "description": "Runs the project's test suites and reports what actually happened — the exact command, the exit code, the first failing assertion, and the minimal reproduction.",
+    "model": "sonnet",
+    "tools": ["read", "bash", "glob", "grep"],
+    "permission": {
+      "read": "allow",
+      "edit": "deny",
+      "write": "deny",
+      "bash": {
+        "*": "allow"
+      },
+      "glob": "allow",
+      "grep": "allow"
+    }
+  },
+  "render": {
+    "claude": {
+      "model": "sonnet",
+      "version": "v0.1.1"
+    },
+    "opencode": {
+      "model": "deepseek/deepseek-flash"
+    }
   },
   "install": {
-    "type": "agent"
+    "type": "agent",
+    "hosts": ["claude", "opencode"]
   }
 }

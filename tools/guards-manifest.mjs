@@ -27,7 +27,7 @@
  */
 
 export const GUARDS = [
-  // ---------------------------------------------------------------- Tier 1 (14) -----------
+  // ---------------------------------------------------------------- Tier 1 (22) -----------
   {
     id: 'bl222',
     tier: 1,
@@ -121,6 +121,77 @@ export const GUARDS = [
     // write attributed by cli_invoked verb+target is a WARNING; every leak shape stays FATAL. The
     // authentic pre-fix any-hash-mismatch-is-FATAL rule is the embedded negative control.
     watch: ['scripts/lib/isolation-guard.mjs', 'scripts/smoke-test.mjs', 'apps/sox/src/cli-invoked-fields.ts'],
+  },
+  {
+    id: '4fc3704e',
+    tier: 1,
+    script: 'test-4fc3704e-resolve-terminal-evidence.mjs',
+    // Pins the dispatcher's artifact-class terminal-resolution rule (rule 18) and backlog-operator's
+    // `resolve` evidence precondition — prose invariants, with the authentic pre-fix Step 5/7 text
+    // and pre-fix resolve verb embedded as the negative controls.
+    watch: ['extensions/agents/dispatcher/dispatcher.md', 'extensions/agents/backlog-operator/backlog-operator.md'],
+  },
+  {
+    id: 'decda240',
+    tier: 1,
+    script: 'test-decda240-run-definition-of-done.mjs',
+    // Pins the dispatcher's run/project definition of done (rule 19) + its Step 8 wiring.
+    watch: ['extensions/agents/dispatcher/dispatcher.md'],
+  },
+  {
+    id: 'e5a790a7',
+    tier: 1,
+    script: 'test-e5a790a7-acceptance-criteria-coverage.mjs',
+    // Pins rule 20 (acceptance criteria or a `none applicable` declaration) and its wiring in the
+    // dispatcher's Step 2/3/5/8 plus backlog-operator's resolve precondition.
+    watch: ['extensions/agents/dispatcher/dispatcher.md', 'extensions/agents/backlog-operator/backlog-operator.md'],
+  },
+  {
+    id: '3ec44b8c',
+    tier: 1,
+    script: 'test-3ec44b8c-product-priority-ownership.mjs',
+    // Pins product's BLOCKING priority duty + re-ranking path (ownership duty 6).
+    watch: ['extensions/agents/product/product.md'],
+  },
+  {
+    id: 'c1b17653',
+    tier: 1,
+    script: 'test-c1b17653-researcher-single-definition.mjs',
+    // Pins the researcher extension's single-definition install shape (one prose-only `agent.md` +
+    // the host-agnostic IR in `extension.json`; header rendered per host at install time). The
+    // authentic pre-fix three-copy shape — `install.source` pointing into the external claude-agents
+    // repo while `entrypoint` named the in-repo opencode-headed copy, plus the orphaned
+    // `researcher-claude.md` header — is embedded as the negative control (commit 09497f45's parent).
+    watch: ['extensions/agents/researcher/'],
+  },
+  {
+    id: '42b0dc25',
+    tier: 1,
+    script: 'test-42b0dc25-brief-no-executor-knowledge.mjs',
+    // Pins agent-manager's brief-independence mandate (a brief carries no knowledge owned by the
+    // routed executor) + the read-the-artifact rule + backlog-operator routing. The authentic
+    // pre-fix brief text as dispatched (prt_0deddf315001ZebaxYwpdvPxXY) is embedded as the
+    // negative control.
+    watch: ['extensions/agents/agent-manager/agent-manager.md'],
+  },
+  {
+    id: '70f75751',
+    tier: 1,
+    script: 'test-70f75751-operator-discovery.mjs',
+    // Pins backlog-operator's operator-initiated discovery duties (similar-item discovery on every
+    // invocation; sibling cascade-scan on every closure) as required prose invariants — never gated
+    // on the caller asking. The authentic pre-fix six-step `When called` protocol (no discovery
+    // step) is embedded as the negative control.
+    watch: ['extensions/agents/backlog-operator/backlog-operator.md'],
+  },
+  {
+    id: '0abc01ed',
+    tier: 1,
+    script: 'test-0abc01ed-unconfirmed-sha-refused.mjs',
+    // Pins backlog-operator's refusal of a resolution asserting a commit/merge sha not confirmed
+    // reachable in `main`. The authentic pre-fix resolve text without the "Confirm every named ref
+    // is in `main`" rule is embedded as the negative control.
+    watch: ['extensions/agents/backlog-operator/backlog-operator.md'],
   },
 
   // ---------------------------------------------------------------- Tier 2 (5) ------------

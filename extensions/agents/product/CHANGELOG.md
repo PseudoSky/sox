@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.2.0
+
+- **Priority becomes an explicit, re-rankable duty in the BLOCKING ownership contract (3ec44b8c-f6dd-4c67-8a38-eff7e0ba8e0e).** The dispatcher's division of labour asserted that product "sets the priority" while product's own contract was silent on it, so priority could go stale with no owner. Ownership duty 6 now makes assessing and assigning priority mandatory and adds a REASSIGNMENT path — product re-ranks an item as evidence changes, with the rationale recorded. Because product carries no backlog tool, the write is routed through `backlog-operator` via a `task` dispatch (the executable path chosen over adding a backlog tool to the manifest). Adds the "Priority assigned and re-ranked as evidence changes" checklist item and a `backlog-operator` integration entry.
+
 ## 0.1.2
 
 - **Fix:** batch-4's IR conversion (this entry) left `version` unbumped at `0.1.1`, unlike batches 1–3 which each bumped their converted agents' version. Applying one consistent policy for this correction: every agent extension is `private: true` (never released to npm, so the Changesets flow in `AGENTS.md`/`PUBLISHING.md` — which governs `@adhd/sox-*` npm releases — does not apply here); bump the patch version on every manifest content change regardless, same as batches 1–3. Bumped `0.1.1` → `0.1.2` for the conversion below.

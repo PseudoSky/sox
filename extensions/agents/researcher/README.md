@@ -20,12 +20,13 @@ good" — not "what is known about X" (that's `research-analyst`).
 
 ## Runtime
 
-`declarative` — the host reads `researcher.md` and injects it as a subagent definition.
-No process is spawned. Install target resolved from host-registry at install time.
+`declarative` — the extension is authored once as a prose-only `agent.md` plus the host-agnostic
+`agent` IR in `extension.json`; the host header is rendered per host at install time (see
+`docs/spec/cross-platform-install-rendering.md`). No process is spawned.
 
-The agent is multi-host: `install.hosts` covers `claude`, `codex`, and `opencode`. Tool callable
-names are resolved from the live tool list at runtime (the search MCP and memory MCP prefixes vary
-by host/registration) — see the "Tool naming" section in `researcher.md`.
+The agent is multi-host: `install.hosts` covers `claude` and `opencode`. Tool callable names are
+resolved from the live tool list at runtime (the search MCP and memory MCP prefixes vary by
+host/registration) — see the "Tool naming" section in `agent.md`.
 
 ## Capabilities
 
@@ -36,8 +37,10 @@ by host/registration) — see the "Tool naming" section in `researcher.md`.
 
 ## Source
 
-Ported from `~/dev/ai/claude-agents/categories/10-research-analysis/researcher.md` (v1.0.1).
-Provenance recorded in `extension.json` → `install.source`.
+Authored as a single host-agnostic definition: `agent.md` is the prose body (no frontmatter), and
+`extension.json` carries the `agent` IR plus per-host `render` overrides. The host header is rendered
+at install time, so there is no hand-authored per-host copy to drift. Port provenance is recorded in
+`CHANGELOG.md`.
 
 ## Usage
 

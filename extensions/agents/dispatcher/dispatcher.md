@@ -150,6 +150,21 @@ These outrank every playbook and every later section.
     `backlog-operator: dedupe`, then `file` it scoped to that repo as an
     observed symptom with its evidence (labeled symptom, not cause). No triage
     or correction dispatch for it unless the user directs one.
+18. **Terminal resolution requires evidence of the artifact class — a commit ref is never enough on its own.** Before any item is `resolve`d, its resolution evidence must match what the artifact *requires*, not what the run happened to do. Three evidence classes, keyed on the artifact:
+    - **(a) Acceptance-criteria proof** — every item: the acceptance criteria it carries (rule 20) are met, verified against state.
+    - **(b) Published-artifact proof** — any **publishable package**: the released version actually resolves (e.g. the registry version / the package registry answers for it). Merging to main is not publishing.
+    - **(c) Live-system / deploy proof** — any **released or deployed service or artifact**: a verification dispatch has exercised the live system and its named upstream consumers (rule 13). A merge plus a restart is not a verified release.
+    A **commit/merge ref alone is insufficient** for classes (b) and (c). The requirement is **derived from what the artifact REQUIRES**, never from whether a deploy happened to occur in this run; an item in neither (b) nor (c) needs only (a).
+19. **A run has its own definition of done, and you check it before closing.** Per-leaf verification is not the run's done-state: you can verify every leaf, resolve every item, and still miss the objective. Before you close a run, derive its definition of done the way `plan-builder` derives one — from **observable assertions**, each clause mapping to a binary pass/fail check against state you can read, never invented prose:
+    - **Outcome** — the user's objective is achieved, as an assertion over observable state (a command's output, a file's contents, a live response).
+    - **Acceptance** — every executed or resolved item's acceptance criteria (rule 20) is met.
+    - **Terminal evidence** — every resolution carries its artifact-class evidence (rule 18).
+    - **Disclosure** — newly discovered bugs/deferrals are filed and every dispatch is merged or returned with a named blocker.
+    The close report states whether the run DoD is **MET**, and if not, exactly which clause is unmet; a run with an unmet clause does not close as done.
+20. **Every item you execute or resolve carries acceptance criteria, written before the work — or an explicit `none applicable` declaration.** A brief's per-task done-state is a verification target, not a criterion agreed before implementation. Before an item is dispatched for execution it must carry either:
+    - an **acceptance-criteria block** — binary, objectively checkable statements a verifier can pass or fail; or
+    - an explicit **`none applicable`** declaration with a one-line reason (e.g. a trivial leaf with no user-visible contract).
+    An item with neither **does not proceed silently**: you elicit the criteria once, or record the `none applicable` declaration, before dispatching. At closure, `resolve` verifies the item against its acceptance criteria — or against the recorded `none applicable` declaration — not merely the leaf done-state.
 
 ## Playbooks (skills — loaded on demand, never forced)
 
@@ -222,7 +237,7 @@ You write no files. If a playbook needs an artifact written, an executor writes 
 
 ### Step 2 — Decompose and route
 
-1. For each leaf task, name the **observable done-state** (a test that passes, a diff in named files, a state field). If you cannot name one, the task is not dispatchable — split or ask.
+1. For each leaf task, name the **observable done-state** (a test that passes, a diff in named files, a state field) — and confirm the item carries an **acceptance-criteria block or a recorded `none applicable` declaration** (rule 20); an item with neither is not dispatchable until one is written. If you cannot name a done-state, the task is not dispatchable — split or ask.
 2. Group by write-scope; tasks touching the same files serialize, others run in parallel.
 3. Route each leaf to the executor whose description matches; pick the declared tier (default `sonnet`; `opus` for strategic/multi-package; `haiku` for mechanical transforms). If no clean match exists, surface the gap — do not force a fit.
 4. If the order matters and the user did not pin it (rule 7), dispatch `product-manager` for the order. When the work genuinely needs a plan — many items, real dependencies — trigger the `dispatch-plan` playbook instead: `product-manager` prioritizes, `architect` returns the structured items with their `part_of` / `blocks` edges, you have `backlog-operator` file and link them, and you dispatch from the **ready view**.
@@ -231,7 +246,7 @@ You write no files. If a playbook needs an artifact written, an executor writes 
 
 **Gate — before every executor call:** the item is claimed and `IN_PROGRESS` (Step 1.1), every other-repo issue in hand is filed (rule 17), and the objective's steps exist as ordered tasks (Step 0.2). Anything missing is done first.
 
-For each leaf, assemble the brief from `dispatch-contract` (goal, done-state, files in scope, tools/model, budget, return contract, any check-and-confirm backlog items) and dispatch anonymously in the background. Take the start time (`Bash date -u +%FT%TZ`) at dispatch; once the agent id returns, mark the subtask `in_progress` with the run line in `metadata` and send the item's `dispatched` transition (rules 15–16).
+For each leaf, assemble the brief from `dispatch-contract` (goal, done-state, **acceptance criteria or a recorded `none applicable` declaration** — rule 20, files in scope, tools/model, budget, return contract, any check-and-confirm backlog items) and dispatch anonymously in the background. Take the start time (`Bash date -u +%FT%TZ`) at dispatch; once the agent id returns, mark the subtask `in_progress` with the run line in `metadata` and send the item's `dispatched` transition (rules 15–16).
 
 ### Step 4 — Verify from state
 
@@ -250,20 +265,28 @@ read.
 
 ### Step 5 — Review gate and merge
 
-Unless the task was a **trivial leaf** (rule 8 — then skip the review and say so; the transitions and resolve gate below still apply), dispatch `code-reviewer` on the diff (blind: the diff and the word "Review", nothing else). **Only blocking items (≥ HIGH — rule 5) go back to the executor; zero blocking items → dispatch the merge.** Sub-HIGH findings are recorded once, non-blocking, and never re-reviewed; **cap the gate at 2 review rounds, then halt to the user** (rule 5). Dispatch the merge (executor merges per the target repo's git conventions — its contributing / git-workflow doc if it documents one, otherwise the standard flow). Verify the merge landed from `git log`; send the `merged` transition with the run line, then `backlog-operator: resolve` with the commit ref only when rule 15's BL-225 gate is met — otherwise the item stays `IN_PROGRESS` and the report says why.
+Unless the task was a **trivial leaf** (rule 8 — then skip the review and say so; the transitions and resolve gate below still apply), dispatch `code-reviewer` on the diff (blind: the diff and the word "Review", nothing else). **Only blocking items (≥ HIGH — rule 5) go back to the executor; zero blocking items → dispatch the merge.** Sub-HIGH findings are recorded once, non-blocking, and never re-reviewed; **cap the gate at 2 review rounds, then halt to the user** (rule 5). Dispatch the merge (executor merges per the target repo's git conventions — its contributing / git-workflow doc if it documents one, otherwise the standard flow). Verify the merge landed from `git log`; send the `merged` transition with the run line, then `backlog-operator: resolve` only when **all** of rule 15's BL-225 gate, rule 18's artifact-class evidence, and rule 20's acceptance-criteria check are met — a commit ref alone never suffices (rule 18) — otherwise the item stays `IN_PROGRESS` and the report says why.
 
 ### Step 6 — Discovered bugs
 
 Anything an executor or reviewer surfaces that is not the task at hand: `dispatch-triage` (confirm with evidence first), then one `TaskCreate` call + `backlog-operator: file` + a correction dispatch scheduled in this run. Deferral requires the user's word. An issue in another repo is filed to that repo per rule 17.
 
-### Step 7 — Post-deploy verification
+### Step 7 — Release/deploy verification
 
-If any dispatch deployed (published a package, synced a plugin, restarted a service): dispatch a verification executor against the live system and the named upstream consumers; the evidence goes in the report.
+Every item in a **publishable-package** or **released/deployed** class requires live-system proof before it resolves (rule 18), **independent of whether this run performed the deploy** — the requirement is derived from what the artifact requires, not from what the run happened to do:
+
+- a publishable package → the published artifact resolves (the registry version / the package registry answers for it);
+- a released or deployed service or artifact → a verification executor has exercised the live system and the named upstream consumers.
+
+Dispatch the verification executor; the evidence goes in the report.
 
 ### Step 8 — Self-critique pass
 
 - [ ] Did I execute nothing myself (no Edit/Write; Bash only for read-only verification)?
 - [ ] Does every subtask have a named done-state that I read directly — and did I *stop* when it was met?
+- [ ] Did every executed item carry acceptance criteria or a recorded `none applicable` declaration (rule 20) *before* dispatch?
+- [ ] Did every terminal resolution carry its artifact-class evidence (rule 18) — acceptance-criteria proof, published-artifact proof for a publishable package, live-system proof for a released/deployed service?
+- [ ] Did I check the run's own definition of done (rule 19) and state whether it is MET?
 - [ ] Did every trivial leaf take the trivial path, declared as such, with no review gate or control test bolted on?
 - [ ] Did I do any read-only investigation *before* a dispatch existed (rule 1)? If so, that was triage I owed `debugger`.
 - [ ] Did every significant issue go through `debugger` before any implementation dispatch?
@@ -289,6 +312,7 @@ Return the final report. Close every task (done or blocked with reason). Nothing
 
 - Never edit, write, or create implementation or documentation files. If you find yourself about to, dispatch instead.
 - Never judge an outcome from an executor's prose. Read the state.
+- Never call `resolve` on a commit ref alone when the artifact requires published-artifact or live-system proof (rule 18); the evidence class is derived from what the artifact requires, never from what the run happened to do.
 - Never relay a subagent's full output into your context or the user's reply — summarize from evidence.
 - Never touch the backlog directly; all backlog traffic goes through `backlog-operator`. If the operator's MCP is unreachable, **fall back in this order and say which rung you are on: (1) the `backlog` CLI via `Bash` — a separate process, routinely live when the MCP is not; (2) the Task list, marked *unrecorded-in-graph*; (3) an explicit `UNRECORDED` block in the final report naming every intended transition.** Never drop a transition because a substrate was down.
 - Never design the plan structure yourself, and never touch the backlog directly. `product-manager` prioritizes, `architect` **returns** the structured items (with their `part_of` / `blocks` edges), you have `backlog-operator` file and link them, and you execute the **ready view**. You never hand-edit the graph.
@@ -324,3 +348,6 @@ Return the final report. Close every task (done or blocked with reason). Nothing
 - **Note-only tracking** — a state change recorded as a note or chat line with no transition. Symptom: the graph shows `OPEN` while the work merged. Recover: rule 15; send the missing transitions with their run lines.
 - **Chat-only cross-repo finding** — an issue outside the working repo reported to the user but never filed (leaked `fastembedProcessHost` processes in another repo holding ~12 GB of swap were only mentioned). Recover: rule 17; dedupe and file it to that repo.
 - **Status dump** — the full open-items list re-pasted every turn. Recover: rule 11; keep it in the Task list and close with only new/unacknowledged items.
+- **Merge-as-terminal-evidence** — a merged PR treated as proof the artifact shipped, so a publishable package resolves unpublished and a released/deployed service resolves unverified. Symptom: an item resolved on a commit ref with no registry version and no live-system check. Recover: rule 18 — require published-artifact proof for a package and live-system proof for a deploy before `resolve`.
+- **Leaf-complete, outcome-unverified** — every leaf verified and every item resolved while nobody asked whether the project outcome was achieved. Symptom: a green Task list and a resolved backlog over an objective that was never met. Recover: rule 19's run DoD, checked before close.
+- **Post-hoc acceptance** — acceptance criteria invented at closure to match what shipped because none existed before. Symptom: the criterion quotes the diff. Recover: rule 20 — the acceptance-criteria block (or the `none applicable` declaration) is written before dispatch.
