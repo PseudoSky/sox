@@ -3695,7 +3695,24 @@ export class TursoAdapterImpl implements TursoAdapter {
     return true;
   }
 
-  async close(): Promise<void> {
+  /** (BL-33e3a8e5) The one in-flight/settled final teardown — see {@link close}. */
+  private _closePromise: Promise<void> | null = null;
+
+  /**
+   * (BL-33e3a8e5) Idempotent AND re-entrant: concurrent callers share one
+   * teardown. `closed` is only set inside `_closeConnection()`, after
+   * `releaseDeepVerify` awaits, so a bare `if (this.closed) return` let a
+   * second caller slip through that gap and run the checkpoint / driver close
+   * / marker clear a second time. Internal transient teardowns
+   * (`releaseIdleConnection`, the repair path) call `_closeConnection()`
+   * directly and never touch this memo.
+   */
+  close(): Promise<void> {
+    if (this._closePromise === null) this._closePromise = this._closeOnce();
+    return this._closePromise;
+  }
+
+  private async _closeOnce(): Promise<void> {
     if (this.closed) return;
     // (BL-fc5ab895) Stop a background deep verifier this adapter owns BEFORE
     // the close ceremony: its read lease would otherwise count as a live peer
