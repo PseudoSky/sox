@@ -1560,10 +1560,22 @@ async function discoverFtsTargets(adapter: StoreAdapter): Promise<FtsTarget[]> {
  *
  * The lookarounds are the fix: a 22-letter identifier is simply not a
  * candidate, rather than being chopped down to a 20-letter non-word.
+ *
+ * **(BL-62027a66) "Complete" means complete to the TOKENIZER, and Tantivy's
+ * tokens are alphanumeric runs.** With letter-only lookarounds, `epsilon3`
+ * yielded the candidate `epsilon`; Tantivy indexes `epsilon3` as ONE token, so
+ * `fts_match('epsilon')` returns 0 rows (`fts_match('epsilon3')` returns 1),
+ * on Turso 0.7.1 and 0.7.2 alike. The probe then reported a healthy index as
+ * damaged and the open-time repair DROPped and re-CREATEd it on EVERY open —
+ * and a DROP orphans the index's btree on Turso, so each open leaked a full
+ * index copy (+46 pages per open at 1k docs, ~+140 at 2k). The lookarounds
+ * therefore reject any adjacent letter OR digit — Unicode-wide
+ * (`\p{L}`/`\p{N}`), because the tokenizer's notion of alphanumeric is
+ * Unicode's, so `résumé`-style runs are not split at the accent either.
  */
 export function pickSentinelTokens(text: unknown, max = 3): string[] {
   if (typeof text !== 'string') return [];
-  const words = text.match(/(?<![A-Za-z])[A-Za-z]{6,20}(?![A-Za-z])/g);
+  const words = text.match(/(?<![\p{L}\p{N}])[A-Za-z]{6,20}(?![\p{L}\p{N}])/gu);
   if (!words) return [];
   const seen = new Set<string>();
   const out: string[] = [];
