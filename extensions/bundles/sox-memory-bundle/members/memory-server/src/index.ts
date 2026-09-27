@@ -1792,7 +1792,29 @@ async function dispatchTool(
   switch (name) {
     case 'memory_write': {
       const wq = await WriteQueue.forPath(dbPath);
-      const content = args['content'] as string;
+      const content = args['content'] as string | undefined;
+      // BL-7e575717: inputSchema declares `content` required, but the
+      // MCP layer never enforces required-ness server-side (schema validation
+      // is advisory for the client, not a runtime guard here) — an omitted or
+      // non-string `content` reached splitIntoChunksSentence() as `undefined`
+      // and crashed on `text.length` (core.ts:160) before ever reaching
+      // write.ts's own `!content || !content.trim()` guard (write.ts:254),
+      // because chunking runs earlier than Phase A. Reject with a typed error
+      // at the tool boundary instead of letting it throw deep in ingest.
+      if (typeof content !== 'string' || content.trim().length === 0) {
+        return {
+          isError: true,
+          content: [{
+            type: 'text',
+            text: JSON.stringify({
+              code: 'E_MISSING_CONTENT',
+              message:
+                'content is required and must be a non-empty string — omitted, non-string, ' +
+                'or whitespace-only content cannot be chunked or written.',
+            }),
+          }],
+        };
+      }
       const chunkSize = (args['chunk_size'] as number | undefined) ?? 500;
       // S11 / BL-165: routed through ingest's canonical sentence-boundary chunker.
       const chunks = splitIntoChunksSentence(content, chunkSize);
