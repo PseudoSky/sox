@@ -3708,8 +3708,16 @@ export class TursoAdapterImpl implements TursoAdapter {
    * directly and never touch this memo.
    */
   close(): Promise<void> {
-    if (this._closePromise === null) this._closePromise = this._closeOnce();
-    return this._closePromise;
+    if (this._closePromise !== null) return this._closePromise;
+    const teardown = this._closeOnce();
+    // The FIRST caller sees a failed teardown; every other caller — concurrent
+    // or later — gets the settled memo, which never re-raises (a failed close
+    // must not raise a second, confusing error, and must not run again).
+    this._closePromise = teardown.then(
+      () => undefined,
+      () => undefined,
+    );
+    return teardown;
   }
 
   private async _closeOnce(): Promise<void> {
