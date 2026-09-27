@@ -13,9 +13,9 @@
  *
  * The fix (plan §6e): exactly ONE quiescence-gated TRUNCATE per writable
  * close. PASSIVE always runs first (BL-330 durability backstop — copies WAL
- * frames into the main db through the fd we already hold); the clean-shutdown
- * stamp is written BEFORE the single TRUNCATE (gated `!damaged`) so the
- * stamp's single frame is flushed by the SAME truncate; then the TRUNCATE is
+ * frames into the main db through the fd we already hold) — no `_adapter_meta`
+ * clean-shutdown stamp is written any more (BL-deepverify: it was a contended
+ * write that failed under a peer's write lock); then the TRUNCATE is
  * issued only when `storeQuiescence` reports no other live connection — under
  * contention it is deferred (frames stay durable; the next quiescent close
  * truncates) with a `close_checkpoint_busy` warn.
@@ -148,7 +148,7 @@ function tempPath(label: string): string {
 }
 
 describe('BUG-008 — a writable close() issues exactly ONE quiescence-gated wal_checkpoint(TRUNCATE)', () => {
-  it('(1) solo close: exactly ONE TRUNCATE, preceded by PASSIVE and by the clean-shutdown stamp', async () => {
+  it('(1) solo close: exactly ONE TRUNCATE, preceded by PASSIVE, and NO _adapter_meta write (BL-deepverify)', async () => {
     const dbPath = tempPath('bug008-solo');
     mockDriverConnect.mockResolvedValue(makeFakeDb());
     const adapter = await connect(dbPath);
@@ -171,16 +171,17 @@ describe('BUG-008 — a writable close() issues exactly ONE quiescence-gated wal
     expect(truncates, 'exactly one TRUNCATE — the pre-fix double-truncate issued two').toHaveLength(1);
     expect(passives, 'PASSIVE must still run as the durability backstop').toHaveLength(1);
 
-    // Ordering: PASSIVE → stamp → TRUNCATE. The stamp is written BEFORE the
-    // single TRUNCATE so its single frame is flushed by the SAME truncate.
+    // Ordering: PASSIVE → TRUNCATE.
     const passiveIdx = calls.findIndex((c) => /PASSIVE/.test(c.sql));
-    const stampIdx = calls.findIndex((c) => c.method === 'run' && /INSERT INTO _adapter_meta/.test(c.sql));
     const truncateIdx = calls.findIndex((c) => /TRUNCATE/.test(c.sql));
     expect(passiveIdx).toBeGreaterThanOrEqual(0);
-    expect(stampIdx).toBeGreaterThan(passiveIdx);
-    expect(truncateIdx).toBeGreaterThan(stampIdx);
-    // And the stamp is a clean-shutdown stamp (value '1'), not just any meta write.
-    expect(stamps.length, 'the clean-shutdown stamp must be present').toBeGreaterThanOrEqual(1);
+    expect(truncateIdx).toBeGreaterThan(passiveIdx);
+    // (BL-deepverify) The close no longer writes the `_adapter_meta`
+    // clean-shutdown stamp: under a peer's write lock that write waited out
+    // busy_timeout on the main thread and then failed `database is locked`,
+    // making the next open read as a crash. Turso's crash signal is the
+    // per-connection open marker, a file unlink that cannot hit SQLITE_BUSY.
+    expect(stamps, 'close must issue no _adapter_meta write').toHaveLength(0);
   });
 
   it('(2) close with a peer lease: ZERO TRUNCATE, emits close_checkpoint_busy, does not throw', async () => {

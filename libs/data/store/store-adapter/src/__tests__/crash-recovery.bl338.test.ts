@@ -170,6 +170,8 @@ interface RestartOutcome {
     missingIds: number[];
     missingCount: number;
     metaAtDamagedId: string | null;
+    /** (BL-deepverify) The background deep pass the crash made owed. */
+    deep: { status: string; reason: string | null } | null;
     persisted: {
       runAtMs: number;
       verifyOk: boolean;
@@ -372,8 +374,10 @@ tursoDescribe('BL-338 — crash recovery: SIGKILL under sustained write load', (
       expect(onStatus.runAtMs).toBeGreaterThan(0);
       expect(onStatus.runAtMs).toBeLessThanOrEqual(Date.now());
       // And the escalation actually happened BECAUSE of the crash: an
-      // unclean shutdown forces `deep`, which is what makes
-      // `pragma_integrity_check` (and everything else) run at all here.
+      // unclean shutdown makes `deep` OWED, and (BL-deepverify) it runs in a
+      // background verifier child rather than on the open — the restart
+      // waited for it, so the durable record is the merged deep result.
+      expect(onJson.deep).toEqual({ status: 'ok', reason: 'unclean_shutdown' });
       expect(onStatus.verifyDepth).toBe('deep');
     },
     120_000,

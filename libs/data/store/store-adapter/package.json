@@ -52,6 +52,14 @@
     "entrypoints": [
       "dist/index.js"
     ],
+    "sidecars": [
+      "src/deep-verify-child.ts"
+    ],
+    "sidecarExternals": [
+      "@tursodatabase/database",
+      "better-sqlite3",
+      "sqlite-vec"
+    ],
     "externalConsumers": [
       {
         "name": "@adhd/backlog",

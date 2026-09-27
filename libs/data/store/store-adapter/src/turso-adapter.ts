@@ -1,9 +1,7 @@
 import { existsSync, renameSync, statSync } from 'node:fs';
 import {
-  consumeUncleanShutdownFlag,
   ensureAdapterMetaTable,
   FTS_OPTIMIZE_PASS_INCREMENT_SQL,
-  markCleanShutdown,
   stampAdapterMeta,
 } from './adapter-meta.js';
 import {
@@ -32,6 +30,12 @@ import {
 } from './store-lease.js';
 import { acquireColdOpenLock, type ColdOpenLock } from './cold-open-lock.js';
 import { canonicalDbPath } from './path-identity.js';
+import {
+  releaseDeepVerify,
+  transferDeepVerifyMembership,
+  validateDeepVerifyConfig,
+  type DeepVerifyConfig,
+} from './deep-verify.js';
 import {
   clearStoreOpenMarker,
   describePreflight,
@@ -1936,6 +1940,11 @@ export class TursoAdapterImpl implements TursoAdapter {
       // `_trackOp` on drain), the heartbeat is periodic and has no other
       // re-arm source, so it must be re-armed here explicitly.
       fresh._cancelWalOwnershipHeartbeat();
+      // (BL-deepverify) `fresh` ran the open-time integrity pass and may have
+      // joined (or started) a background deep verifier. `fresh` is never
+      // closed, so hand its membership to `this` — otherwise `this.close()`
+      // could not cancel that verifier.
+      transferDeepVerifyMembership(fresh, this);
       this._walOwnershipHeartbeatEnabled = fresh._walOwnershipHeartbeatEnabled;
       this._walOwnershipHeartbeatMs = fresh._walOwnershipHeartbeatMs;
       this._armWalOwnershipHeartbeat();
@@ -2132,6 +2141,12 @@ export class TursoAdapterImpl implements TursoAdapter {
      * [1000, 60000].
      */
     walOwnershipHeartbeatMs?: number;
+    /**
+     * (BL-deepverify) Typed tuning for the out-of-process deep integrity pass
+     * (wall-clock bound; verifier entry seam). Validated eagerly in
+     * `connect()` — a bad value throws `EInvalidDeepVerifyConfig`.
+     */
+    deepVerify?: DeepVerifyConfig;
   }): Promise<TursoAdapterImpl> {
     // Dynamic import so @tursodatabase/database is only loaded when used
     let tursoModule: any;
@@ -2502,7 +2517,21 @@ export class TursoAdapterImpl implements TursoAdapter {
       // BUG-017 writable-repair trigger surface). The marker is per-connection
       // now, so the FIRST orderly close can no longer erase a peer's crash
       // evidence: a crashed server's dead marker still gates the next open.
-      if (canonicalDb !== undefined && opts.readonly !== true && hasUncleanShutdown(canonicalDb)) {
+      // (BL-deepverify) This SAME signal is the open's crash-recovery input: it
+      // decides whether a deep integrity pass is owed (runOpenTimeIntegrity →
+      // `deep_verify_owed`). It replaced the shared `_adapter_meta`
+      // `clean_shutdown` flag for Turso, which was wrong in both directions
+      // under multiprocess WAL: every live peer's open wrote it to '0' (so a
+      // healthy concurrent open read "unclean"), and the orderly-close write
+      // that set it back to '1' is a contended write that fails with
+      // `database is locked` after busy_timeout whenever a peer holds the
+      // write lock (measured: 152 `mark_clean_shutdown_failed` events on
+      // 2026-09-27, each followed by an "unclean" reopen). A dead-pid open
+      // marker needs no database write at close — the marker unlink is a
+      // file operation that cannot hit SQLITE_BUSY.
+      const uncleanFromDeadMarker =
+        canonicalDb !== undefined && opts.readonly !== true && hasUncleanShutdown(canonicalDb);
+      if (uncleanFromDeadMarker && canonicalDb !== undefined) {
         // (INV-5) The trigger is loud, never silent.
         log.debug('store_adapter.turso.preflight_triggered_unclean', {
           db_path: canonicalDb,
@@ -2937,11 +2966,14 @@ export class TursoAdapterImpl implements TursoAdapter {
 
       // Stamp adapter metadata (non-fatal)
       if (!opts.readonly) {
-        let uncleanShutdown = false;
+        // (BL-deepverify) Crash-recovery input = the dead-pid open marker seen
+        // at the pre-flight gate above, NOT `_adapter_meta.clean_shutdown`
+        // (see `uncleanFromDeadMarker` for why that flag cannot be trusted
+        // under multiprocess WAL).
+        const uncleanShutdown = uncleanFromDeadMarker;
         try {
           await ensureAdapterMetaTable(instance);
           await stampAdapterMeta(instance, 'turso');
-          uncleanShutdown = await consumeUncleanShutdownFlag(instance);
         } catch (err) {
           // Non-fatal — but meta stamping failing on every open is a real signal.
           log.warn('store_adapter.turso.adapter_meta_failed', {
@@ -3093,6 +3125,7 @@ export class TursoAdapterImpl implements TursoAdapter {
     if (opts.walOwnershipHeartbeatMs !== undefined) {
       config.walOwnershipHeartbeatMs = opts.walOwnershipHeartbeatMs;
     }
+    if (opts.deepVerify !== undefined) config.deepVerify = opts.deepVerify;
     return config;
   }
 
@@ -3161,6 +3194,10 @@ export class TursoAdapterImpl implements TursoAdapter {
     // before any deferred open, exactly like the foreign-engine check below.
     const mode: StoreConcurrencyMode = opts.concurrencyMode ?? resolveConcurrencyMode('turso');
     assertValidConcurrencyMode('turso', mode);
+
+    // (BL-deepverify) Reject a bad deep-verify config at connect(), loudly —
+    // never at the deferred first open, and never replaced by a default.
+    validateDeepVerifyConfig(opts.deepVerify);
 
     // (BL-508) FOREIGN-ENGINE REFUSAL — see this method's doc comment for
     // why this ONE check runs eagerly instead of deferring to first use.
@@ -3660,6 +3697,11 @@ export class TursoAdapterImpl implements TursoAdapter {
 
   async close(): Promise<void> {
     if (this.closed) return;
+    // (BL-deepverify) Stop a background deep verifier this adapter owns BEFORE
+    // the close ceremony: its read lease would otherwise count as a live peer
+    // and defer the quiescence-gated TRUNCATE, and its `cancelled` outcome is
+    // persisted through this still-open connection.
+    await releaseDeepVerify(this);
     try {
       await this._closeConnection();
     } finally {
@@ -3748,13 +3790,12 @@ export class TursoAdapterImpl implements TursoAdapter {
           );
         }
 
-        // (BL-512) Clean-shutdown stamp — written BEFORE the TRUNCATE so the
-        // stamp's single frame is flushed by the SAME truncate (this is the
-        // BUG-008 double-truncate fix: exactly one TRUNCATE per close, never two).
-        // Gated on !damaged exactly as before.
-        if (!damaged) {
-          await markCleanShutdown(this);
-        }
+        // (BL-512 → BL-deepverify) No `_adapter_meta.clean_shutdown` stamp here any more:
+        // it was a contended write on the close path that failed with
+        // `database is locked` (after a synchronous busy_timeout wait on the
+        // main thread) whenever a peer held the write lock, and a failed stamp
+        // made the next open read as a crash. Turso's crash signal is the
+        // per-connection open marker, cleared below after the driver closes.
 
         // (BUG-008) The single TRUNCATE — quiescence-gated. TRUNCATE physically
         // zeroes the -wal (turso wal.rs:5208), which races a concurrent opener's

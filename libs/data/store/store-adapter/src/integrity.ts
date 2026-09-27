@@ -124,11 +124,15 @@
  * duplicate `_adapter_meta` rows and repaired both, taking the open to 462 ms
  * once, and with the BL-342 shape re-injected into all three JSON columns of
  * the 105 MB copy it detected and repaired all three in a 1 027 ms open.
- * `deep` runs when the previous session did not shut down cleanly (the
- * crash-recovery flag, BL-338), on an explicit request, or on a cadence.
- * Deep is not the default because `integrity_check` is O(database) and grows
- * without bound, while every fast probe is O(indexes) with a constant-size
- * sample.
+ * `deep` is owed when the previous session did not shut down cleanly (the
+ * crash-recovery signal, BL-338) or on an explicit request, and it is owed
+ * durably until a deep pass completes `ok`. Deep is not the default because
+ * `integrity_check` is O(database) and grows without bound, while every fast
+ * probe is O(indexes) with a constant-size sample — and for the same reason it
+ * never runs on the opener's thread: it runs in a bounded, SIGKILL-able child
+ * process in the background (BL-deepverify, `deep-verify.ts`). Measured
+ * 2026-09-27: ~2 s on a warm copy of the 417 MB production store, 21+ minutes
+ * on that store in production under memory pressure (no-cache `pread`s).
  *
  * @module
  */
@@ -137,6 +141,13 @@ import { closeSync, openSync, readSync, renameSync, statSync } from 'node:fs';
 import { log } from '@adhd/sox-telemetry';
 import { createFTSDialect } from './fts-dialect.js';
 import type { StoreAdapter } from './types.js';
+import {
+  markDeepVerifyOwed,
+  readDeepVerifyObligation,
+  scheduleDeepVerify,
+  validateDeepVerifyConfig,
+  type ScheduleDeepVerifyOptions,
+} from './deep-verify.js';
 
 // ── Public result types ──────────────────────────────────────────────────────
 
@@ -3243,12 +3254,17 @@ export function _resetIntegrityRegistryForTest(): void {
 // ── Open-time policy ─────────────────────────────────────────────────────────
 
 /**
- * Resolve the verification depth for an adapter open.
+ * Resolve the verification depth an adapter open OWES the store.
  *
  * - `SOX_STORE_VERIFY=fast|deep` tunes the rigor (default `fast`).
  * - `uncleanShutdown` escalates `fast` → `deep`: a store that was not closed
- *   cleanly is the exact population BL-338 is about, and 300 ms of
- *   `integrity_check` is cheap against another silent outage.
+ *   cleanly is the exact population BL-338 is about.
+ *
+ * `deep` here means "a deep pass is owed", NOT "the opener runs it inline"
+ * (BL-deepverify): {@link runOpenTimeIntegrity} blocks only on `fast` and hands
+ * the owed deep pass to the out-of-process verifier. The old rationale — "300
+ * ms of `integrity_check` is cheap" — was measured on a 43–105 MB store; on the
+ * 417 MB production store it ran 21+ minutes on the main thread.
  *
  * The store ALWAYS validates — `'off'` was an anti-feature (an env var whose
  * only job was to disable a core function; ADR-0013). A caller that requests
@@ -3323,10 +3339,26 @@ export function resolveSkippedProbes(): IntegrityProbe[] {
 /**
  * The integrity pass an adapter runs on open.
  *
+ * **Blocks only on the `fast` tier** (BL-deepverify). `deep` — `PRAGMA
+ * integrity_check`, O(database), measured at 21+ minutes on the 417 MB
+ * production store under memory pressure — never runs on the opener's thread.
+ * When deep is owed it is handed to an out-of-process verifier
+ * (`deep-verify.ts`) that runs in the background with a wall-clock bound while
+ * the store serves.
+ *
+ * Deep is owed when {@link resolveVerifyDepth} says so for THIS open (an
+ * unclean shutdown, or `SOX_STORE_VERIFY=deep`) — recorded durably as the
+ * `deep_verify_owed` obligation BEFORE the fast pass — or when an earlier open
+ * left that obligation outstanding (its deep pass timed out, failed, found
+ * damage, was cancelled, or never got to run). Only a deep pass that completes
+ * `ok` clears it.
+ *
  * Fail-soft by construction: any throw is swallowed and recorded, because a
  * store that cannot be verified must still open. It is never SILENT — damage
  * and repairs go to `onReport`, and the result is retained for the status
- * surface via {@link getLastIntegrityResult}.
+ * surface via {@link getLastIntegrityResult}. The ONE thing that throws out of
+ * here is an invalid `deepVerify` config — a misconfiguration is loud, never
+ * silently replaced by a default (ADR-0013 D3).
  *
  * Always runs, always repairs what is repairable: `SOX_STORE_REPAIR=off` and
  * `SOX_STORE_VERIFY=off` were anti-features and are gone (ADR-0013). The
@@ -3341,8 +3373,29 @@ export async function runOpenTimeIntegrity(
     onReport?: VerifyAndRepairOptions['onReport'];
   },
 ): Promise<VerifyAndRepairResult> {
-  const depth = resolveVerifyDepth(opts.uncleanShutdown);
+  const owedDepth = resolveVerifyDepth(opts.uncleanShutdown);
+  validateDeepVerifyConfig(adapter.config.deepVerify);
+  const deepRequestedNow = owedDepth === 'deep';
+  const deepReason = opts.uncleanShutdown ? 'unclean_shutdown' : 'requested (SOX_STORE_VERIFY=deep)';
 
+  // Record the obligation FIRST, so a crash (or a watchdog kill) anywhere
+  // after this line still leaves the next open owing a deep pass.
+  if (deepRequestedNow) {
+    try {
+      await markDeepVerifyOwed(adapter, deepReason);
+    } catch (err) {
+      log.error('store_adapter.deep_verify.obligation_write_failed', {
+        db_path: adapter.config.dbPath,
+        reason: deepReason,
+        error: err instanceof Error ? err.message : String(err),
+        detail: 'deep verification still runs for this open; a later open may not know it is owed',
+      });
+    }
+  }
+
+  // The opener only ever waits for `fast`.
+  const depth: VerifyDepth = 'fast';
+  let result: VerifyAndRepairResult;
   try {
     const skip = resolveSkippedProbes();
     const verifyOpts: VerifyAndRepairOptions = {
@@ -3351,10 +3404,9 @@ export async function runOpenTimeIntegrity(
       ...(skip.length > 0 ? { skip } : {}),
     };
     if (opts.onReport) verifyOpts.onReport = opts.onReport;
-    const result = await verifyAndRepair(adapter, verifyOpts);
+    result = await verifyAndRepair(adapter, verifyOpts);
     recordIntegrityResult(adapter, result);
     await persistIntegrityResult(adapter, result);
-    return result;
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     opts.onReport?.('repair_failed', `integrity pass aborted: ${message}`);
@@ -3371,7 +3423,7 @@ export async function runOpenTimeIntegrity(
       backlog: 'BL-352',
       probeValidated: false,
     };
-    const failed: VerifyAndRepairResult = {
+    result = {
       verify: {
         ok: false,
         depth,
@@ -3382,8 +3434,35 @@ export async function runOpenTimeIntegrity(
       },
       repair: null,
     };
-    recordIntegrityResult(adapter, failed);
-    await persistIntegrityResult(adapter, failed);
-    return failed;
+    recordIntegrityResult(adapter, result);
+    await persistIntegrityResult(adapter, result);
   }
+
+  // Background deep — never awaited here.
+  let owed = deepRequestedNow;
+  let reason = deepReason;
+  if (!owed) {
+    try {
+      const obligation = await readDeepVerifyObligation(adapter);
+      if (obligation !== null) {
+        owed = true;
+        reason = obligation.reason;
+      }
+    } catch (err) {
+      // Cannot tell whether deep is owed ⇒ run it. A redundant background
+      // pass costs I/O; a skipped one leaves a crashed store unverified.
+      owed = true;
+      reason = 'obligation unreadable';
+      log.warn('store_adapter.deep_verify.obligation_read_failed', {
+        db_path: adapter.config.dbPath,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
+  if (owed) {
+    const scheduleOpts: ScheduleDeepVerifyOptions = { fastResult: result, reason };
+    if (opts.onReport) scheduleOpts.onReport = opts.onReport;
+    void scheduleDeepVerify(adapter, scheduleOpts);
+  }
+  return result;
 }

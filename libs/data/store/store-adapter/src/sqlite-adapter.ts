@@ -1,12 +1,14 @@
 import { createRequire } from 'node:module';
 import { existsSync, statSync } from 'node:fs';
 import { log } from '@adhd/sox-telemetry';
+import { randomUUID } from 'node:crypto';
+import { ensureAdapterMetaTable, stampAdapterMeta } from './adapter-meta.js';
 import {
-  consumeUncleanShutdownFlag,
-  ensureAdapterMetaTable,
-  markCleanShutdown,
-  stampAdapterMeta,
-} from './adapter-meta.js';
+  clearStoreOpenMarker,
+  hasUncleanShutdown,
+  markStoreOpen,
+  sweepDeadOpenMarkers,
+} from './preflight.js';
 import {
   captureWalIdentity,
   emitIntegrityReport,
@@ -55,6 +57,7 @@ import {
   updateWriteIntervalEwma,
 } from './wal-tuning.js';
 import { canonicalDbPath } from './path-identity.js';
+import { releaseDeepVerify, validateDeepVerifyConfig, type DeepVerifyConfig } from './deep-verify.js';
 import {
   ensureFtsIndex as ensureFtsIndexOn,
   ftsCount as ftsCountOn,
@@ -281,6 +284,9 @@ export class SqliteAdapterImpl implements SqliteAdapter {
    *  `init()`'s marker backfill whether the store is fresh (created by this
    *  very open → this engine owns it) or legacy (unmarked → infer). */
   private _fileExisted = false;
+  /** (BL-deepverify) This connection's open-marker token (`<leaseDir>/<token>.openmark`),
+   *  written at `init()` and cleared at `close()`. `null` when no marker was written. */
+  private _openMarkToken: string | null = null;
 
   /** (BL-330) WAL identity captured at `init()`. See TursoAdapterImpl. */
   _walBaseline: WalIdentity | null = null;
@@ -398,6 +404,8 @@ export class SqliteAdapterImpl implements SqliteAdapter {
       walCapCeilingBytes?: number;
       walOwnershipHeartbeatMs?: number;
       concurrencyMode?: StoreConcurrencyMode;
+      /** (BL-deepverify) Typed deep-verify tuning; validated here, loudly. */
+      deepVerify?: DeepVerifyConfig;
     },
   );
   constructor(db: Sqlite3Database);
@@ -413,6 +421,7 @@ export class SqliteAdapterImpl implements SqliteAdapter {
       walCapCeilingBytes?: number;
       walOwnershipHeartbeatMs?: number;
       concurrencyMode?: StoreConcurrencyMode;
+      deepVerify?: DeepVerifyConfig;
     },
   ) {
     // (BUG-MEMORYCORE-MULTIPROCESS-WAL-NOT-OPTED-IN-001) Resolve + validate the
@@ -420,6 +429,8 @@ export class SqliteAdapterImpl implements SqliteAdapter {
     // 'multiprocess-wal' declaration throws before any file/WAL is touched.
     const mode: StoreConcurrencyMode = opts?.concurrencyMode ?? resolveConcurrencyMode('sqlite');
     assertValidConcurrencyMode('sqlite', mode);
+    // (BL-deepverify) Reject a bad deep-verify config before any file is opened.
+    validateDeepVerifyConfig(opts?.deepVerify);
     if (typeof dbOrPath === 'string') {
       // (BUG014.T4, INV-4) Canonicalize ONCE at open: `config.dbPath` and every
       // sidecar/integrity path derived from it carry the canonical spelling
@@ -451,6 +462,7 @@ export class SqliteAdapterImpl implements SqliteAdapter {
         dbPath: canonicalPath,
         readonly: opts?.readonly ?? false,
         concurrencyMode: mode,
+        ...(opts?.deepVerify !== undefined ? { deepVerify: opts.deepVerify } : {}),
       };
     } else {
       this.db = dbOrPath;
@@ -870,11 +882,23 @@ export class SqliteAdapterImpl implements SqliteAdapter {
         fresh: !this._fileExisted,
       });
     }
+    // (BL-deepverify) Crash-recovery input = a DEAD-pid per-connection open
+    // marker (the Turso adapter's signal, BUG014.T5), not the shared
+    // `_adapter_meta.clean_shutdown` flag. That flag was set to '0' by EVERY
+    // open, so any concurrent connection — a second adapter in the same
+    // process, a peer CLI — read a healthy store as crashed, and its
+    // close-time write back to '1' could fail under a writer's lock.
     let uncleanShutdown = false;
+    const markerPath = this.config.dbPath;
+    if (markerPath !== undefined) {
+      uncleanShutdown = hasUncleanShutdown(markerPath);
+      if (uncleanShutdown) sweepDeadOpenMarkers(markerPath);
+      this._openMarkToken = randomUUID();
+      markStoreOpen(markerPath, this._openMarkToken);
+    }
     try {
       await ensureAdapterMetaTable(this);
       await stampAdapterMeta(this, 'sqlite');
-      uncleanShutdown = await consumeUncleanShutdownFlag(this);
     } catch (err) {
       // Non-fatal — stamping is a convenience marker, not a correctness
       // requirement — but meta stamping failing on every open is a real signal.
@@ -1090,6 +1114,9 @@ export class SqliteAdapterImpl implements SqliteAdapter {
 
   async close(): Promise<void> {
     if (this.closed) return;
+    // (BL-deepverify) Stop a background deep verifier this adapter owns, and
+    // record its `cancelled` outcome, while the connection is still open.
+    await releaseDeepVerify(this);
     this.closed = true;
     // (BL-571) Cancel any pending idle-flush timer — the connection is about
     // to be closed (or handed back to a caller-owned lifecycle), so a timer
@@ -1141,11 +1168,20 @@ export class SqliteAdapterImpl implements SqliteAdapter {
           error: err instanceof Error ? err.message : String(err),
         });
       }
-      await markCleanShutdown(this);
     }
     this.cache.clear();
-    if (this.ownDb) {
-      this.db.close();
+    try {
+      if (this.ownDb) {
+        this.db.close();
+      }
+    } finally {
+      // (BL-deepverify) Orderly close: drop THIS connection's open marker last,
+      // after the driver let go. A file unlink — it cannot fail on a peer's
+      // write lock the way the old `_adapter_meta` stamp could.
+      if (this._openMarkToken !== null) {
+        clearStoreOpenMarker(this.config.dbPath, this._openMarkToken);
+        this._openMarkToken = null;
+      }
     }
   }
 }

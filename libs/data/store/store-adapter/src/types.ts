@@ -1,5 +1,6 @@
 // Type-only import: erased at emit, so this does NOT create a runtime cycle
 // with `integrity.ts` (which imports `StoreAdapter` from here, also as a type).
+import type { DeepVerifyConfig } from './deep-verify.js';
 import type { BackupIntegrityReport } from './integrity.js';
 // Type-only import from concurrency-mode.ts — erased at emit, no runtime cycle.
 import type { StoreConcurrencyMode } from './concurrency-mode.js';
@@ -379,6 +380,14 @@ export interface AdapterConfig {
    * may set a small value to exercise the heartbeat without a real wait.
    */
   walOwnershipHeartbeatMs?: number;
+  /**
+   * (BL-deepverify) Tuning for the out-of-process `deep` integrity pass: its
+   * wall-clock bound and (test/diagnostic seam) the verifier entrypoint.
+   * Validated at open — a bad value throws `EInvalidDeepVerifyConfig`, it is
+   * never silently replaced by the default. There is no value that disables
+   * deep verification (ADR-0013). See deep-verify.ts.
+   */
+  deepVerify?: DeepVerifyConfig;
 }
 
 // ── Factory options ──────────────────────────────────────────────────────────

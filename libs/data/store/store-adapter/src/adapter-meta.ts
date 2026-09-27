@@ -92,6 +92,17 @@ export const CLEAN_SHUTDOWN_KEY = 'clean_shutdown';
 /**
  * Read-and-clear the clean-shutdown marker.
  *
+ * **No adapter uses this any more (BL-deepverify).** Both adapters take their
+ * crash signal from the per-connection dead-pid open marker
+ * (`preflight.ts` `hasUncleanShutdown`). This shared flag was wrong in both
+ * directions for any store with more than one connection: every open wrote
+ * '0', so a healthy concurrent open read "unclean"; and the close-time write
+ * back to '1' ({@link markCleanShutdown}) is a contended write that fails with
+ * `database is locked` after busy_timeout whenever a peer holds the write lock
+ * — 152 such failures on 2026-09-27 in the live service log, each one turning
+ * the next open into a forced deep verification. Kept exported for external
+ * callers of the package API.
+ *
  * Returns `true` when the PREVIOUS session did not record a clean close — the
  * store came back from a crash, a kill, or a power loss, which is exactly the
  * population that arrives with index damage nothing detects (BL-338). Callers
@@ -111,24 +122,29 @@ export async function consumeUncleanShutdownFlag(adapter: StoreAdapter): Promise
     await adapter.executeRun(STAMP_SQL, [CLEAN_SHUTDOWN_KEY, '0']);
     return unclean;
   } catch (err) {
-    log.debug('store_adapter.meta.consume_unclean_failed', {
+    log.warn('store_adapter.meta.consume_unclean_failed', {
       db_path: adapter.config.dbPath,
-      reason: 'table missing or transient error; assuming clean shutdown',
+      error: err instanceof Error ? err.message : String(err),
+      reason: 'could not read/stamp the clean-shutdown flag; assuming clean shutdown',
     });
     return false;
   }
 }
 
-/** Record that this session is closing in an orderly fashion. */
+/** Record that this session is closing in an orderly fashion. Unused by the
+ *  adapters since BL-deepverify — see {@link consumeUncleanShutdownFlag}. */
 export async function markCleanShutdown(adapter: StoreAdapter): Promise<void> {
   if (adapter.config.readonly === true) return;
   try {
     await adapter.executeRun(STAMP_SQL, [CLEAN_SHUTDOWN_KEY, '1']);
   } catch (err) {
-    // Non-fatal — a missing marker only escalates the next open's verify depth.
-    log.debug('store_adapter.meta.mark_clean_shutdown_failed', {
+    // Non-fatal — but the REAL error is logged: the old constant reason
+    // ("table missing or transient error") hid the actual cause,
+    // `database is locked` under a peer's write lock (BL-deepverify).
+    log.warn('store_adapter.meta.mark_clean_shutdown_failed', {
       db_path: adapter.config.dbPath,
-      reason: 'table missing or transient error; non-fatal, escalates next open verify depth',
+      error: err instanceof Error ? err.message : String(err),
+      reason: 'clean-shutdown flag write failed; a caller relying on this flag will read the next open as unclean',
     });
   }
 }

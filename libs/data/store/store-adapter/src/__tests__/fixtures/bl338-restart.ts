@@ -21,6 +21,7 @@
  */
 import { TursoAdapterImpl } from '../../turso-adapter.js';
 import { readIntegrityResult } from '../../integrity.js';
+import { _activeDeepVerifyForTest } from '../../deep-verify.js';
 
 const [, , dbPath] = process.argv;
 
@@ -43,6 +44,13 @@ async function main(): Promise<void> {
       'SELECT meta FROM crash_node WHERE id = 10',
     );
 
+    // (BL-deepverify) The crash makes a `deep` pass OWED; it runs in a
+    // background verifier child, not on this open. Wait for it so the durable
+    // record below reflects the completed deep pass, exactly as a status call
+    // made after it finished would.
+    const deepRun = _activeDeepVerifyForTest(dbPath);
+    const deepState = deepRun !== null ? await deepRun.done : null;
+
     const persisted = await readIntegrityResult(adapter);
 
     const out = {
@@ -51,6 +59,7 @@ async function main(): Promise<void> {
       missingIds: missingIds.slice(0, 20),
       missingCount: missingIds.length,
       metaAtDamagedId: meta?.meta ?? null,
+      deep: deepState !== null ? { status: deepState.status, reason: deepState.reason } : null,
       persisted: persisted
         ? {
             runAtMs: persisted.runAtMs,
