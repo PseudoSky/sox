@@ -633,6 +633,10 @@ async function executeRun(
   const adapterType = starter.config.type;
 
   let outcome: Outcome;
+  // (BL-374ec7b9) The `running` state write, kept so the terminal write can
+  // wait for it. Fire-and-forget let a slow `running` upsert land AFTER the
+  // terminal one and overwrite `ok`/`timed_out` with a stale `running`.
+  let runningWrite: Promise<void> = Promise.resolve();
 
   if (!existsSync(entry.path)) {
     outcome = {
@@ -743,7 +747,7 @@ async function executeRun(
 
       // Recorded AFTER the fork so `verifier_pid` is known; a write failure
       // here must not stop the pass.
-      void writeDeepVerifyState(starter, { ...base }).catch((err: unknown) => {
+      runningWrite = writeDeepVerifyState(starter, { ...base }).catch((err: unknown) => {
         log.warn('store_adapter.deep_verify.state_write_failed', {
           db_path: run.canonicalDb,
           status: 'running',
@@ -755,6 +759,9 @@ async function executeRun(
 
   run.child = null;
   try {
+    // (BL-374ec7b9) Never let the `running` record land after the outcome.
+    // `runningWrite` carries its own catch, so this await cannot throw.
+    await runningWrite;
     return await recordOutcome(run, opts, outcome, base, timeoutMs, performance.now() - t0);
   } finally {
     // Deregister only AFTER the outcome is recorded: recording may reconnect a
