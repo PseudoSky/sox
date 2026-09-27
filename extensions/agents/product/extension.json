@@ -27,8 +27,7 @@
     "hosts": [
       "claude",
       "opencode"
-    ],
-    "source": "file:///Users/nix/.config/opencode/agents/product.md"
+    ]
   },
   "requires": {
     "tool_calling": true

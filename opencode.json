@@ -1,30 +1,8 @@
 {
   "$schema": "https://opencode.ai/config.json",
   "agent": {
-    "pro": {
-      "description": "System design + tool research + orchestration. Plans large features, decomposes into dispatchable segments, knows when to use flash vs implement",
-      "mode": "all",
-      "model": "deepseek/deepseek-v4-pro",
-      "prompt": "{file:.opencode/prompts/pro-system.md}",
-      "temperature": 0,
-      "steps": 20,
-      "permission": {
-        "read": "allow",
-        "edit": "deny",
-        "glob": "allow",
-        "grep": "allow",
-        "bash": "deny",
-        "webfetch": "allow",
-        "websearch": "allow",
-        "task": "allow",
-        "todowrite": "deny",
-        "question": "deny",
-        "skill": "allow",
-        "memory_*": "allow"
-      }
-    },
     "implement": {
-      "description": "Complex implementation agent (pro model) \u2014 multi-file changes, interface design, refactors, debugging. For well-specified simple tasks, use flash instead",
+      "description": "Complex implementation agent (pro model) — multi-file changes, interface design, refactors, debugging. For well-specified simple tasks, use flash instead",
       "mode": "all",
       "model": "deepseek/deepseek-v4-pro",
       "prompt": "{file:.opencode/prompts/implement-system.md}",
@@ -37,28 +15,6 @@
         "grep": "allow",
         "bash": "allow",
         "webfetch": "allow",
-        "websearch": "deny",
-        "task": "deny",
-        "todowrite": "deny",
-        "question": "deny",
-        "skill": "allow",
-        "memory_*": "allow"
-      }
-    },
-    "flash": {
-      "description": "Fast implementation agent (flash model) \u2014 single-file changes, manifest edits, boilerplate, well-specified tasks with exact code provided",
-      "mode": "all",
-      "model": "deepseek/deepseek-flash",
-      "prompt": "{file:.opencode/prompts/flash-system.md}",
-      "temperature": 0.1,
-      "steps": 30,
-      "permission": {
-        "read": "allow",
-        "edit": "allow",
-        "glob": "allow",
-        "grep": "allow",
-        "bash": "allow",
-        "webfetch": "deny",
         "websearch": "deny",
         "task": "deny",
         "todowrite": "deny",
@@ -96,8 +52,12 @@
   },
   "mcp": {
     "memory-server": {
-      "type": "remote",
-      "url": "http://localhost:3099/sse"
+      "type": "local",
+      "command": [
+        "/Users/nix/dev/ai/sox-ecosystem/bin/soxe",
+        "serve",
+        "memory-server"
+      ]
     }
   },
   "model": "proxy/rf"
