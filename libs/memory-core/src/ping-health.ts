@@ -47,7 +47,7 @@ export interface PingHealthInput {
    */
   enrichmentState?: 'idle' | 'ok' | 'regressing' | 'stalled' | null;
   /**
-   * (BL-deepverify) The store's durable deep-integrity record: whether a deep
+   * (BL-fc5ab895) The store's durable deep-integrity record: whether a deep
    * pass is still OWED (`_adapter_meta.deep_verify_owed`) and the latest
    * attempt's outcome (`_adapter_meta.deep_verify_state.status`). When a deep
    * pass is owed and its last attempt ended `timed_out` / `failed` / `damaged`
@@ -60,7 +60,7 @@ export interface PingHealthInput {
   deepVerify?: { owed: boolean; status: string | null; detail?: string | null } | null;
 }
 
-/** (BL-deepverify) Deep-verify outcomes that degrade `status` while a pass is owed. */
+/** (BL-fc5ab895) Deep-verify outcomes that degrade `status` while a pass is owed. */
 export const DEEP_VERIFY_DEGRADING_STATUSES: readonly string[] = ['timed_out', 'failed', 'damaged', 'inconclusive'];
 
 function deepVerifyReason(input: PingHealthInput): string | null {

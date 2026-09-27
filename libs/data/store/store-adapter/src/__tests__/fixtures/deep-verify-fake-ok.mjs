@@ -1,5 +1,5 @@
 /**
- * (BL-deepverify) Fake deep verifier that completes `ok` immediately. It still
+ * (BL-fc5ab895) Fake deep verifier that completes `ok` immediately. It still
  * honours the real contract: parses `--payload`, replies once over IPC with a
  * validated `pragma_integrity_check` finding, then exits 0. When
  * DEEP_VERIFY_FAKE_TOUCH is set it appends one line per run to that file, so a

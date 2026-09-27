@@ -92,7 +92,7 @@ export const CLEAN_SHUTDOWN_KEY = 'clean_shutdown';
 /**
  * Read-and-clear the clean-shutdown marker.
  *
- * **No adapter uses this any more (BL-deepverify).** Both adapters take their
+ * **No adapter uses this any more (BL-fc5ab895).** Both adapters take their
  * crash signal from the per-connection dead-pid open marker
  * (`preflight.ts` `hasUncleanShutdown`). This shared flag was wrong in both
  * directions for any store with more than one connection: every open wrote
@@ -132,7 +132,7 @@ export async function consumeUncleanShutdownFlag(adapter: StoreAdapter): Promise
 }
 
 /** Record that this session is closing in an orderly fashion. Unused by the
- *  adapters since BL-deepverify — see {@link consumeUncleanShutdownFlag}. */
+ *  adapters since BL-fc5ab895 — see {@link consumeUncleanShutdownFlag}. */
 export async function markCleanShutdown(adapter: StoreAdapter): Promise<void> {
   if (adapter.config.readonly === true) return;
   try {
@@ -140,7 +140,7 @@ export async function markCleanShutdown(adapter: StoreAdapter): Promise<void> {
   } catch (err) {
     // Non-fatal — but the REAL error is logged: the old constant reason
     // ("table missing or transient error") hid the actual cause,
-    // `database is locked` under a peer's write lock (BL-deepverify).
+    // `database is locked` under a peer's write lock (BL-fc5ab895).
     log.warn('store_adapter.meta.mark_clean_shutdown_failed', {
       db_path: adapter.config.dbPath,
       error: err instanceof Error ? err.message : String(err),

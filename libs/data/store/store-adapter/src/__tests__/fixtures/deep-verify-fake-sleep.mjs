@@ -1,5 +1,5 @@
 /**
- * (BL-deepverify) Fake deep verifier: blocks its MAIN THREAD synchronously —
+ * (BL-fc5ab895) Fake deep verifier: blocks its MAIN THREAD synchronously —
  * the shape of a native `integrity_check` parked in `pread` — and never
  * replies. Only SIGKILL ends it; it has no self-reaper, so the parent's kill
  * paths are the only thing under test. Writes nothing to stdout.

@@ -1,5 +1,5 @@
 /**
- * BL-deepverify — memory_ping's verdict reports a store whose owed deep
+ * BL-fc5ab895 — memory_ping's verdict reports a store whose owed deep
  * integrity pass timed out / failed as DEGRADED, never `ok`
  * ([inv:list-never-lies]); and the deep-verify bound is typed config that
  * rejects a malformed value loudly (ADR-0013 D3).
@@ -10,7 +10,7 @@ import { DEEP_VERIFY_TIMEOUT_CONFIG_ENV, resolveStoreVerifyConfig } from './conf
 
 const healthy = { storeOpened: true, storeError: null, embedState: 'real' } as const;
 
-describe('BL-deepverify — ping verdict reads the deep-verify record', () => {
+describe('BL-fc5ab895 — ping verdict reads the deep-verify record', () => {
   it.each(['timed_out', 'failed', 'damaged', 'inconclusive'])(
     'owed + last attempt %s ⇒ degraded, with the reason named',
     (status) => {
@@ -63,7 +63,7 @@ describe('BL-deepverify — ping verdict reads the deep-verify record', () => {
   });
 });
 
-describe('BL-deepverify — deep-verify bound is typed config, loud on garbage', () => {
+describe('BL-fc5ab895 — deep-verify bound is typed config, loud on garbage', () => {
   it('unset ⇒ undefined (store-adapter default applies)', () => {
     expect(resolveStoreVerifyConfig(undefined, {}).deepVerifyTimeoutMs).toBeUndefined();
   });

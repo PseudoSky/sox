@@ -485,7 +485,7 @@ export async function openDb(dbPath: string): Promise<StoreAdapter> {
 }
 
 /**
- * (BL-deepverify) The deep-verify slice of every WRITABLE store open's config:
+ * (BL-fc5ab895) The deep-verify slice of every WRITABLE store open's config:
  * the typed bound for the background deep integrity pass
  * (`resolveStoreVerifyConfig`, which rejects a malformed value before the store
  * is touched — ADR-0013 D3). Spread into each writable open's config-object

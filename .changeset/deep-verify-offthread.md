@@ -5,7 +5,7 @@
 ---
 
 Opening a store never blocks on `deep` integrity verification any more, and a
-failed clean-shutdown write is no longer read as a crash (BL-deepverify).
+failed clean-shutdown write is no longer read as a crash (BL-fc5ab895).
 
 `@adhd/sox-store-adapter` — `runOpenTimeIntegrity` blocks only on the `fast`
 tier. When `deep` is owed (unclean shutdown, `SOX_STORE_VERIFY=deep`, or an

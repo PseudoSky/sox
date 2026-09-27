@@ -1,5 +1,5 @@
 /**
- * BL-deepverify — `memory_ping` reads the store's durable deep-verify record
+ * BL-fc5ab895 — `memory_ping` reads the store's durable deep-verify record
  * and reports a store whose OWED deep integrity pass timed out as `degraded`
  * ([inv:list-never-lies]). Driven through the real `handleToolCall` →
  * `memory_ping` path against a real store; the record is written into
@@ -22,15 +22,15 @@ function body(resp: { content: Array<{ text?: string }> }): Record<string, unkno
 
 const UPSERT = `INSERT INTO _adapter_meta(key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value`;
 
-describe('BL-deepverify — memory_ping degrades on an owed deep pass that timed out', () => {
+describe('BL-fc5ab895 — memory_ping degrades on an owed deep pass that timed out', () => {
   it('an owed + timed_out deep pass reads degraded, with the record in store.deep_verify', async () => {
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'sox-bl-deepverify-ping-'));
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'sox-bl-fc5ab895-ping-'));
     const dbPath = path.join(dir, 'test.db');
     try {
       await handleToolCall('memory_write', {
         db_path: dbPath,
         project_path: dir,
-        content: 'BL-deepverify ping fixture episode.',
+        content: 'BL-fc5ab895 ping fixture episode.',
       });
       const before = body(await handleToolCall('memory_ping', { db_path: dbPath }));
       expect(String(before['status_reason'] ?? '')).not.toMatch(/deep integrity verification/);

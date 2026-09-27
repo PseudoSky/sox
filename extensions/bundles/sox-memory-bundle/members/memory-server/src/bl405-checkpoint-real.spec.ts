@@ -97,7 +97,7 @@ describe('BL-405 — production shutdown path actually checkpoints the write-tak
 
     await closeAllAdapters();
 
-    // (BL-deepverify) No WAL-size assertion here any more. It used to read
+    // (BL-fc5ab895) No WAL-size assertion here any more. It used to read
     // `after > 0`, but the frame it was actually observing was the
     // `_adapter_meta.clean_shutdown` stamp the SQLite close wrote AFTER its
     // own TRUNCATE — the getDb-cached connection's close checkpoints the

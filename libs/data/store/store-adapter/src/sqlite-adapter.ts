@@ -284,7 +284,7 @@ export class SqliteAdapterImpl implements SqliteAdapter {
    *  `init()`'s marker backfill whether the store is fresh (created by this
    *  very open → this engine owns it) or legacy (unmarked → infer). */
   private _fileExisted = false;
-  /** (BL-deepverify) This connection's open-marker token (`<leaseDir>/<token>.openmark`),
+  /** (BL-fc5ab895) This connection's open-marker token (`<leaseDir>/<token>.openmark`),
    *  written at `init()` and cleared at `close()`. `null` when no marker was written. */
   private _openMarkToken: string | null = null;
 
@@ -404,7 +404,7 @@ export class SqliteAdapterImpl implements SqliteAdapter {
       walCapCeilingBytes?: number;
       walOwnershipHeartbeatMs?: number;
       concurrencyMode?: StoreConcurrencyMode;
-      /** (BL-deepverify) Typed deep-verify tuning; validated here, loudly. */
+      /** (BL-fc5ab895) Typed deep-verify tuning; validated here, loudly. */
       deepVerify?: DeepVerifyConfig;
     },
   );
@@ -429,7 +429,7 @@ export class SqliteAdapterImpl implements SqliteAdapter {
     // 'multiprocess-wal' declaration throws before any file/WAL is touched.
     const mode: StoreConcurrencyMode = opts?.concurrencyMode ?? resolveConcurrencyMode('sqlite');
     assertValidConcurrencyMode('sqlite', mode);
-    // (BL-deepverify) Reject a bad deep-verify config before any file is opened.
+    // (BL-fc5ab895) Reject a bad deep-verify config before any file is opened.
     validateDeepVerifyConfig(opts?.deepVerify);
     if (typeof dbOrPath === 'string') {
       // (BUG014.T4, INV-4) Canonicalize ONCE at open: `config.dbPath` and every
@@ -882,7 +882,7 @@ export class SqliteAdapterImpl implements SqliteAdapter {
         fresh: !this._fileExisted,
       });
     }
-    // (BL-deepverify) Crash-recovery input = a DEAD-pid per-connection open
+    // (BL-fc5ab895) Crash-recovery input = a DEAD-pid per-connection open
     // marker (the Turso adapter's signal, BUG014.T5), not the shared
     // `_adapter_meta.clean_shutdown` flag. That flag was set to '0' by EVERY
     // open, so any concurrent connection — a second adapter in the same
@@ -1114,7 +1114,7 @@ export class SqliteAdapterImpl implements SqliteAdapter {
 
   async close(): Promise<void> {
     if (this.closed) return;
-    // (BL-deepverify) Stop a background deep verifier this adapter owns, and
+    // (BL-fc5ab895) Stop a background deep verifier this adapter owns, and
     // record its `cancelled` outcome, while the connection is still open.
     await releaseDeepVerify(this);
     this.closed = true;
@@ -1175,7 +1175,7 @@ export class SqliteAdapterImpl implements SqliteAdapter {
         this.db.close();
       }
     } finally {
-      // (BL-deepverify) Orderly close: drop THIS connection's open marker last,
+      // (BL-fc5ab895) Orderly close: drop THIS connection's open marker last,
       // after the driver let go. A file unlink — it cannot fail on a peer's
       // write lock the way the old `_adapter_meta` stamp could.
       if (this._openMarkToken !== null) {

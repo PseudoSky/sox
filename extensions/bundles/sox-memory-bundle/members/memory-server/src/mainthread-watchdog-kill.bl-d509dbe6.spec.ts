@@ -1,5 +1,5 @@
 /**
- * BL-deepverify — the off-thread watchdog SIGKILLs a process whose main thread
+ * BL-d509dbe6 — the off-thread watchdog SIGKILLs a process whose main thread
  * is blocked synchronously.
  *
  * The incident: a 21-minute `PRAGMA integrity_check` held memory-server's main
@@ -53,7 +53,7 @@ function runHost(killAfterMs: number, blockMs: number): Promise<{
   });
 }
 
-describe('BL-deepverify — off-thread watchdog kill path', () => {
+describe('BL-d509dbe6 — off-thread watchdog kill path', () => {
   it('(d) SIGKILLs the process while its main thread is blocked in Atomics.wait', async () => {
     const r = await runHost(1_500, 15_000);
     expect(r.stdout, `stderr: ${r.stderr.slice(-1500)}`).toContain('BLOCKING');

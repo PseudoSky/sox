@@ -127,7 +127,7 @@ import {
   readIntegrityResult,
   summarizeIntegrityForStatus,
   integrityHeadline,
-  // BL-deepverify: the durable deep-verify obligation + latest outcome. A deep
+  // BL-fc5ab895: the durable deep-verify obligation + latest outcome. A deep
   // pass that is owed and timed out / failed degrades `memory_ping.status`.
   readDeepVerifyObligation,
   readDeepVerifyState,
@@ -1268,7 +1268,7 @@ async function handleToolCallImpl(name: string, args: Record<string, unknown>): 
     // state, hoisted out of the try so the top-level `status` can fold it in.
     // null when the store never opened (the verdict is then 'unhealthy' anyway).
     let pipelineVerdictState: 'idle' | 'ok' | 'regressing' | 'stalled' | null = null;
-    // BL-deepverify: filled from the store's deep-verify record when it opens.
+    // BL-fc5ab895: filled from the store's deep-verify record when it opens.
     let deepVerifyInput: { owed: boolean; status: string | null; detail: string | null } | null = null;
     try {
       const storeArg = args['store'];
@@ -1445,7 +1445,7 @@ async function handleToolCallImpl(name: string, args: Record<string, unknown>): 
           persisted?.runAtMs ?? null,
         );
 
-        // BL-deepverify: the out-of-process deep pass's durable record. Read
+        // BL-fc5ab895: the out-of-process deep pass's durable record. Read
         // from the store (same reason as `integrity` above). An unreadable
         // obligation row is reported as owed — "cannot tell" is never "fine".
         let deepOwed: { reason: string; since: string } | null;
@@ -1511,7 +1511,7 @@ async function handleToolCallImpl(name: string, args: Record<string, unknown>): 
           // the verdict is legible without expanding the block.
           integrity: integrityView,
           integrity_headline: integrityHeadline(integrityView),
-          // BL-deepverify: additive (HF-3). `owed` is the durable obligation;
+          // BL-fc5ab895: additive (HF-3). `owed` is the durable obligation;
           // `last` is the latest attempt (running/ok/timed_out/failed/…).
           deep_verify: { owed: deepOwed, last: deepState },
           last_checkpoint_at: lastCheckpointAt,
@@ -1639,7 +1639,7 @@ async function handleToolCallImpl(name: string, args: Record<string, unknown>): 
       // pipeline downgrades `status` to 'degraded' even with store + embed
       // healthy — the exact 2026-08-26 false-positive this guards against.
       enrichmentState: pipelineVerdictState,
-      // BL-deepverify: an owed deep pass that timed out / failed ⇒ degraded.
+      // BL-fc5ab895: an owed deep pass that timed out / failed ⇒ degraded.
       deepVerify: deepVerifyInput,
     });
 

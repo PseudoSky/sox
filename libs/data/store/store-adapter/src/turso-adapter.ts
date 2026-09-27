@@ -1940,7 +1940,7 @@ export class TursoAdapterImpl implements TursoAdapter {
       // `_trackOp` on drain), the heartbeat is periodic and has no other
       // re-arm source, so it must be re-armed here explicitly.
       fresh._cancelWalOwnershipHeartbeat();
-      // (BL-deepverify) `fresh` ran the open-time integrity pass and may have
+      // (BL-fc5ab895) `fresh` ran the open-time integrity pass and may have
       // joined (or started) a background deep verifier. `fresh` is never
       // closed, so hand its membership to `this` — otherwise `this.close()`
       // could not cancel that verifier.
@@ -2142,7 +2142,7 @@ export class TursoAdapterImpl implements TursoAdapter {
      */
     walOwnershipHeartbeatMs?: number;
     /**
-     * (BL-deepverify) Typed tuning for the out-of-process deep integrity pass
+     * (BL-fc5ab895) Typed tuning for the out-of-process deep integrity pass
      * (wall-clock bound; verifier entry seam). Validated eagerly in
      * `connect()` — a bad value throws `EInvalidDeepVerifyConfig`.
      */
@@ -2517,7 +2517,7 @@ export class TursoAdapterImpl implements TursoAdapter {
       // BUG-017 writable-repair trigger surface). The marker is per-connection
       // now, so the FIRST orderly close can no longer erase a peer's crash
       // evidence: a crashed server's dead marker still gates the next open.
-      // (BL-deepverify) This SAME signal is the open's crash-recovery input: it
+      // (BL-fc5ab895) This SAME signal is the open's crash-recovery input: it
       // decides whether a deep integrity pass is owed (runOpenTimeIntegrity →
       // `deep_verify_owed`). It replaced the shared `_adapter_meta`
       // `clean_shutdown` flag for Turso, which was wrong in both directions
@@ -2966,7 +2966,7 @@ export class TursoAdapterImpl implements TursoAdapter {
 
       // Stamp adapter metadata (non-fatal)
       if (!opts.readonly) {
-        // (BL-deepverify) Crash-recovery input = the dead-pid open marker seen
+        // (BL-fc5ab895) Crash-recovery input = the dead-pid open marker seen
         // at the pre-flight gate above, NOT `_adapter_meta.clean_shutdown`
         // (see `uncleanFromDeadMarker` for why that flag cannot be trusted
         // under multiprocess WAL).
@@ -3195,7 +3195,7 @@ export class TursoAdapterImpl implements TursoAdapter {
     const mode: StoreConcurrencyMode = opts.concurrencyMode ?? resolveConcurrencyMode('turso');
     assertValidConcurrencyMode('turso', mode);
 
-    // (BL-deepverify) Reject a bad deep-verify config at connect(), loudly —
+    // (BL-fc5ab895) Reject a bad deep-verify config at connect(), loudly —
     // never at the deferred first open, and never replaced by a default.
     validateDeepVerifyConfig(opts.deepVerify);
 
@@ -3697,7 +3697,7 @@ export class TursoAdapterImpl implements TursoAdapter {
 
   async close(): Promise<void> {
     if (this.closed) return;
-    // (BL-deepverify) Stop a background deep verifier this adapter owns BEFORE
+    // (BL-fc5ab895) Stop a background deep verifier this adapter owns BEFORE
     // the close ceremony: its read lease would otherwise count as a live peer
     // and defer the quiescence-gated TRUNCATE, and its `cancelled` outcome is
     // persisted through this still-open connection.
@@ -3790,7 +3790,7 @@ export class TursoAdapterImpl implements TursoAdapter {
           );
         }
 
-        // (BL-512 → BL-deepverify) No `_adapter_meta.clean_shutdown` stamp here any more:
+        // (BL-512 → BL-fc5ab895) No `_adapter_meta.clean_shutdown` stamp here any more:
         // it was a contended write on the close path that failed with
         // `database is locked` (after a synchronous busy_timeout wait on the
         // main thread) whenever a peer held the write lock, and a failed stamp

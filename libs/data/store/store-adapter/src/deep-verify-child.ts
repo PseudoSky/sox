@@ -1,6 +1,6 @@
 /**
  * deep-verify-child.ts — the out-of-process `deep` integrity verifier
- * (BL-deepverify). A SIDECAR: forked by `deep-verify.ts` via
+ * (BL-fc5ab895). A SIDECAR: forked by `deep-verify.ts` via
  * `child_process.fork()`, never imported.
  *
  * Why a child PROCESS and not a worker_thread: the work is one native call

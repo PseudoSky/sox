@@ -1,5 +1,5 @@
 /**
- * BL-deepverify — `deep` integrity verification never blocks a store open.
+ * BL-fc5ab895 — `deep` integrity verification never blocks a store open.
  *
  * Incident: a 417 MB Turso store ran `PRAGMA integrity_check` on the Node main
  * thread for 21+ minutes after an unclean shutdown; the in-thread watchdog
@@ -20,7 +20,7 @@
  *  (c) the obligation survives crash → open → timeout → clean shutdown →
  *      reopen, and a completed `ok` pass clears it (negative control: the
  *      NEXT clean open spawns nothing);
- *  (e) BL-deepverify-marker: a clean close whose `_adapter_meta` write would
+ *  (e) BL-fc5ab895-marker: a clean close whose `_adapter_meta` write would
  *      fail under a peer's write lock is NOT read as a crash on reopen, and
  *      the close does not stall on busy_timeout;
  *  (f) the verifier child's off-thread self-reaper kills its host on parent
@@ -54,7 +54,7 @@ const hasTurso = (() => {
     require.resolve('@tursodatabase/database');
     return true;
   } catch (err) {
-    process.stderr.write(`[bl-deepverify test] turso driver unavailable: ${String(err)}\n`);
+    process.stderr.write(`[bl-fc5ab895 test] turso driver unavailable: ${String(err)}\n`);
     return false;
   }
 })();
@@ -69,7 +69,7 @@ const REAPER_HOST = resolve(HERE, 'fixtures', 'deep-verify-reaper-host.ts');
 
 let tmpDir: string;
 beforeAll(() => {
-  tmpDir = mkdtempSync(join(tmpdir(), 'bl-deepverify-'));
+  tmpDir = mkdtempSync(join(tmpdir(), 'bl-fc5ab895-'));
 });
 afterAll(() => {
   rmSync(tmpDir, { recursive: true, force: true });
@@ -154,7 +154,7 @@ async function awaitActive(dbPath: string, timeoutMs: number): Promise<ReturnTyp
   }
 }
 
-tursoDescribe('BL-deepverify — deep verification runs off-thread, out of process', () => {
+tursoDescribe('BL-fc5ab895 — deep verification runs off-thread, out of process', () => {
   it('(a) the open returns and serves queries while a deep verifier is blocked', async () => {
     const dbPath = tempDb('a');
     await crashStore(dbPath);
@@ -219,7 +219,7 @@ tursoDescribe('BL-deepverify — deep verification runs off-thread, out of proce
 
       const persisted = await readIntegrityResult(adapter);
       const deep = persisted!.result.verify.findings.filter(
-        (f) => f.probe === 'pragma_integrity_check' && f.backlog === 'BL-deepverify',
+        (f) => f.probe === 'pragma_integrity_check' && f.backlog === 'BL-fc5ab895',
       );
       expect(deep).toHaveLength(1);
       expect(deep[0]!.status).toBe('unknown');
@@ -311,7 +311,7 @@ tursoDescribe('BL-deepverify — deep verification runs off-thread, out of proce
   });
 });
 
-tursoDescribe('BL-deepverify-marker — a failed clean-shutdown write is not a crash', () => {
+tursoDescribe('BL-fc5ab895-marker — a failed clean-shutdown write is not a crash', () => {
   it('(e) a close under a peer write lock neither stalls nor makes the reopen owe deep', async () => {
     const dbPath = tempDb('marker');
     const seed = await TursoAdapterImpl.connect({ dbPath });
@@ -367,13 +367,13 @@ tursoDescribe('BL-deepverify-marker — a failed clean-shutdown write is not a c
   }, 60_000);
 });
 
-describe('BL-deepverify-marker — SQLite: a live peer connection is not a crash', () => {
+describe('BL-fc5ab895-marker — SQLite: a live peer connection is not a crash', () => {
   const hasSqlite = (() => {
     try {
       require.resolve('better-sqlite3');
       return true;
     } catch (err) {
-      process.stderr.write(`[bl-deepverify test] better-sqlite3 unavailable: ${String(err)}\n`);
+      process.stderr.write(`[bl-fc5ab895 test] better-sqlite3 unavailable: ${String(err)}\n`);
       return false;
     }
   })();
@@ -418,7 +418,7 @@ describe('BL-deepverify-marker — SQLite: a live peer connection is not a crash
   }, 30_000);
 });
 
-describe('BL-deepverify — the verifier self-reaper runs off the blocked main thread', () => {
+describe('BL-fc5ab895 — the verifier self-reaper runs off the blocked main thread', () => {
   function startHost(parentPid: number, hardDeadlineMs: number): { proc: ChildProcess; ready: Promise<number> } {
     const proc = spawn(process.execPath, ['--import', 'tsx', REAPER_HOST, String(parentPid), String(hardDeadlineMs)], {
       stdio: ['ignore', 'pipe', 'pipe'],

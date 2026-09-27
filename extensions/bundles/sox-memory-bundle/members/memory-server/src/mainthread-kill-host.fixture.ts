@@ -1,7 +1,7 @@
 /**
- * (BL-deepverify) Test host for the off-thread watchdog kill path.
+ * (BL-d509dbe6) Test host for the off-thread watchdog kill path.
  * NOT part of the server — spawned only by
- * mainthread-watchdog-kill.bl-deepverify.spec.ts.
+ * mainthread-watchdog-kill.bl-d509dbe6.spec.ts.
  *
  * Usage: node --import tsx mainthread-kill-host.fixture.ts <killAfterMs> <blockMs>
  *

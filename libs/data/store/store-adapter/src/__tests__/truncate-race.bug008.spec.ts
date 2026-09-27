@@ -14,7 +14,7 @@
  * The fix (plan §6e): exactly ONE quiescence-gated TRUNCATE per writable
  * close. PASSIVE always runs first (BL-330 durability backstop — copies WAL
  * frames into the main db through the fd we already hold) — no `_adapter_meta`
- * clean-shutdown stamp is written any more (BL-deepverify: it was a contended
+ * clean-shutdown stamp is written any more (BL-fc5ab895: it was a contended
  * write that failed under a peer's write lock); then the TRUNCATE is
  * issued only when `storeQuiescence` reports no other live connection — under
  * contention it is deferred (frames stay durable; the next quiescent close
@@ -148,7 +148,7 @@ function tempPath(label: string): string {
 }
 
 describe('BUG-008 — a writable close() issues exactly ONE quiescence-gated wal_checkpoint(TRUNCATE)', () => {
-  it('(1) solo close: exactly ONE TRUNCATE, preceded by PASSIVE, and NO _adapter_meta write (BL-deepverify)', async () => {
+  it('(1) solo close: exactly ONE TRUNCATE, preceded by PASSIVE, and NO _adapter_meta write (BL-fc5ab895)', async () => {
     const dbPath = tempPath('bug008-solo');
     mockDriverConnect.mockResolvedValue(makeFakeDb());
     const adapter = await connect(dbPath);
@@ -176,7 +176,7 @@ describe('BUG-008 — a writable close() issues exactly ONE quiescence-gated wal
     const truncateIdx = calls.findIndex((c) => /TRUNCATE/.test(c.sql));
     expect(passiveIdx).toBeGreaterThanOrEqual(0);
     expect(truncateIdx).toBeGreaterThan(passiveIdx);
-    // (BL-deepverify) The close no longer writes the `_adapter_meta`
+    // (BL-fc5ab895) The close no longer writes the `_adapter_meta`
     // clean-shutdown stamp: under a peer's write lock that write waited out
     // busy_timeout on the main thread and then failed `database is locked`,
     // making the next open read as a crash. Turso's crash signal is the

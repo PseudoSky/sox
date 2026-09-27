@@ -270,7 +270,7 @@ export function resolveStoreGrowthConfig(
   };
 }
 
-// ── StoreVerifyConfig (BL-deepverify) ────────────────────────────────────────
+// ── StoreVerifyConfig (BL-fc5ab895) ────────────────────────────────────────
 //
 // The out-of-process `deep` integrity pass (store-adapter `deep-verify.ts`) has
 // a wall-clock bound. It is TUNING (ADR-0013 D3): numeric, never a toggle —

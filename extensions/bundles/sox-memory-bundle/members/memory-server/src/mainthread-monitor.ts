@@ -22,7 +22,7 @@
  *      is proxied through the main thread and would block with it). Re-reported
  *      at doubling intervals while the stall persists.
  *
- *   4. KILL PATH (BL-deepverify) — the same off-thread watcher SIGKILLs this
+ *   4. KILL PATH (BL-d509dbe6) — the same off-thread watcher SIGKILLs this
  *      process once the main thread has not run for `killAfterMs`. The
  *      pending-request watchdog (liveness-watchdog.ts) is a `setInterval` ON
  *      the main thread, so it cannot fire during the very stall it exists for:
@@ -62,7 +62,7 @@ export interface MainThreadMonitorOptions {
   /** Start the off-thread stall watcher. Default true. */
   offThreadWatcher?: boolean;
   /**
-   * (BL-deepverify) Main-thread silence, ms, after which the off-thread watcher
+   * (BL-d509dbe6) Main-thread silence, ms, after which the off-thread watcher
    * SIGKILLs this process. Typed tuning (ADR-0013 D3): an integer in
    * [{@link MIN_MAINTHREAD_KILL_AFTER_MS}, {@link MAX_MAINTHREAD_KILL_AFTER_MS}];
    * anything else throws. Default {@link resolveMainThreadKillAfterMs} (the
@@ -189,7 +189,7 @@ for (;;) {
     }
   }
   if (typeof killAfter === 'number' && age >= killAfter) {
-    // BL-deepverify: the main thread cannot run the pending-request watchdog,
+    // BL-d509dbe6: the main thread cannot run the pending-request watchdog,
     // a signal handler, or a timer. End the process from here.
     try {
       fs.writeSync(2, JSON.stringify({
@@ -198,7 +198,7 @@ for (;;) {
       }) + '\\n' +
         '[memory-server] FATAL: main thread blocked for ' + age + 'ms (kill_after_ms ' + killAfter + ') — ' +
         'the off-thread watchdog is SIGKILLing pid ' + workerData.pid + ' for the supervisor to restart. ' +
-        'A service that cannot serve should die, not linger (BL-deepverify).\\n');
+        'A service that cannot serve should die, not linger (BL-d509dbe6).\\n');
     } catch (e) {
       report('mainthread.watchdog_kill_write_failed', { error: e instanceof Error ? e.message : String(e), blocked_for_ms: age });
     } finally {
@@ -288,7 +288,7 @@ export class MainThreadMonitor {
         this.watcher = null;
         this.heartbeat = null;
         // error, not warn: without the watcher there is NO kill path for a
-        // main-thread stall (BL-deepverify).
+        // main-thread stall (BL-d509dbe6).
         log.error('mainthread.watcher_unavailable', { error: err instanceof Error ? err.message : String(err) });
       }
     }

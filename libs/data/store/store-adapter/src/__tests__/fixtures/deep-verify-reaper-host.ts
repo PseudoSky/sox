@@ -1,5 +1,5 @@
 /**
- * (BL-deepverify) Host process for the deep-verify self-reaper tests.
+ * (BL-fc5ab895) Host process for the deep-verify self-reaper tests.
  *
  * Usage: node --import tsx deep-verify-reaper-host.ts <parentPid> <hardDeadlineMs>
  *

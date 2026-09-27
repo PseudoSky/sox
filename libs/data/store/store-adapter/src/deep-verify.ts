@@ -1,6 +1,6 @@
 /**
  * deep-verify.ts — `deep` integrity verification, off the opener's thread and
- * out of its process (BL-deepverify).
+ * out of its process (BL-fc5ab895).
  *
  * ── The incident ────────────────────────────────────────────────────────────
  *
@@ -786,7 +786,7 @@ async function recordOutcome(
         status: 'unknown',
         detail: `Deep verification ${outcome.status}: ${outcome.detail}. The store is NOT verified at depth deep.`,
         repairable: false,
-        backlog: 'BL-deepverify',
+        backlog: 'BL-fc5ab895',
         probeValidated: false,
       },
     ];

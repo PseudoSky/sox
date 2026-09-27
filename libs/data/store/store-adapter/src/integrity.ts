@@ -130,7 +130,7 @@
  * `integrity_check` is O(database) and grows without bound, while every fast
  * probe is O(indexes) with a constant-size sample — and for the same reason it
  * never runs on the opener's thread: it runs in a bounded, SIGKILL-able child
- * process in the background (BL-deepverify, `deep-verify.ts`). Measured
+ * process in the background (BL-fc5ab895, `deep-verify.ts`). Measured
  * 2026-09-27: ~2 s on a warm copy of the 417 MB production store, 21+ minutes
  * on that store in production under memory pressure (no-cache `pread`s).
  *
@@ -3273,7 +3273,7 @@ export function _resetIntegrityRegistryForTest(): void {
  *   cleanly is the exact population BL-338 is about.
  *
  * `deep` here means "a deep pass is owed", NOT "the opener runs it inline"
- * (BL-deepverify): {@link runOpenTimeIntegrity} blocks only on `fast` and hands
+ * (BL-fc5ab895): {@link runOpenTimeIntegrity} blocks only on `fast` and hands
  * the owed deep pass to the out-of-process verifier. The old rationale — "300
  * ms of `integrity_check` is cheap" — was measured on a 43–105 MB store; on the
  * 417 MB production store it ran 21+ minutes on the main thread.
@@ -3351,7 +3351,7 @@ export function resolveSkippedProbes(): IntegrityProbe[] {
 /**
  * The integrity pass an adapter runs on open.
  *
- * **Blocks only on the `fast` tier** (BL-deepverify). `deep` — `PRAGMA
+ * **Blocks only on the `fast` tier** (BL-fc5ab895). `deep` — `PRAGMA
  * integrity_check`, O(database), measured at 21+ minutes on the 417 MB
  * production store under memory pressure — never runs on the opener's thread.
  * When deep is owed it is handed to an out-of-process verifier

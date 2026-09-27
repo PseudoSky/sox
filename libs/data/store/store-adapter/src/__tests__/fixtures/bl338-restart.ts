@@ -44,7 +44,7 @@ async function main(): Promise<void> {
       'SELECT meta FROM crash_node WHERE id = 10',
     );
 
-    // (BL-deepverify) The crash makes a `deep` pass OWED; it runs in a
+    // (BL-fc5ab895) The crash makes a `deep` pass OWED; it runs in a
     // background verifier child, not on this open. Wait for it so the durable
     // record below reflects the completed deep pass, exactly as a status call
     // made after it finished would.

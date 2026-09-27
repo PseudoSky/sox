@@ -1,6 +1,6 @@
 /**
  * deep-verify-reaper.ts — the deep verifier child's OFF-THREAD self-reaper
- * (BL-deepverify).
+ * (BL-fc5ab895).
  *
  * The deep verifier (`deep-verify-child.ts`) spends its life inside ONE native
  * call: `PRAGMA integrity_check` → `turso_node::step_sync` → `pread`. Measured

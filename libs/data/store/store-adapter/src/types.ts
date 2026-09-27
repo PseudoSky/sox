@@ -381,7 +381,7 @@ export interface AdapterConfig {
    */
   walOwnershipHeartbeatMs?: number;
   /**
-   * (BL-deepverify) Tuning for the out-of-process `deep` integrity pass: its
+   * (BL-fc5ab895) Tuning for the out-of-process `deep` integrity pass: its
    * wall-clock bound and (test/diagnostic seam) the verifier entrypoint.
    * Validated at open — a bad value throws `EInvalidDeepVerifyConfig`, it is
    * never silently replaced by the default. There is no value that disables
