@@ -97,12 +97,15 @@ describe('BL-405 — production shutdown path actually checkpoints the write-tak
 
     await closeAllAdapters();
 
-    const after = walSize(dbPath);
-    // The pre-fix sequence's checkpoint (on the OTHER, getDb-cached
-    // connection) still flushes most frames — WAL checkpointing is a
-    // file-level operation — but cannot fully TRUNCATE while the write
-    // queue's own connection remains open. It does NOT reach near-zero.
-    expect(after).toBeGreaterThan(0);
+    // (BL-deepverify) No WAL-size assertion here any more. It used to read
+    // `after > 0`, but the frame it was actually observing was the
+    // `_adapter_meta.clean_shutdown` stamp the SQLite close wrote AFTER its
+    // own TRUNCATE — the getDb-cached connection's close checkpoints the
+    // shared WAL fully either way. That stamp is gone (the crash signal is the
+    // per-connection open marker now), so the WAL size says nothing about the
+    // defect this test pins. The defect is the LEAKED write connection,
+    // asserted below.
+    expect(walSize(dbPath)).toBeLessThan(before);
 
     // The write queue's connection was NEVER closed by closeAllAdapters() —
     // it must still accept a write. This is the actual defect: a real
