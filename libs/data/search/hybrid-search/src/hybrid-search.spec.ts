@@ -656,6 +656,58 @@ describe('StoreSearchBackend integration', () => {
     expect(results).toHaveLength(5);
   });
 
+  // ── 7bbc2883: the text-first merge must not evict a strong vector-only hit ──
+  //
+  // `StoreSearchBackend.search` merged its two channels into ONE insertion-ordered
+  // Map — every TEXT hit first, then every vector-only hit — and applied
+  // `.slice(0, limit)` to that insertion order. So whenever the text channel alone
+  // filled `limit`, a vector-only hit (a semantic near-duplicate whose wording
+  // shares too few FTS tokens to enter the text page) was appended AFTER the text
+  // page and silently dropped, even at cosine 1.0. The fix ranks the merged
+  // candidates with the package's own `fuse()` and applies the limit to that fused
+  // rank, so a vector-only hit is selected on its calibrated signal.
+  //
+  // Negative control — these assertions must FAIL on the unfixed backend:
+  //   * text channel: 8 rows all containing the token `alphaword` (>= limit = 5);
+  //   * vec channel: a 9th node whose content does NOT contain `alphaword` (invisible
+  //     to the text channel) whose vector is IDENTICAL to the query (cosine 1.0) —
+  //     exactly the near-duplicate the dedupe gate exists to catch.
+  // Unfixed, the returned page is precisely the first `limit` TEXT ids.
+  it('7bbc2883: a vector-only exact-match hit survives when the text channel alone fills `limit`', async () => {
+    const TEXT_ROWS = 8;
+    const limit = 5;
+    for (let i = 0; i < TEXT_ROWS; i++) {
+      // Orthogonal to the query vector, so these carry no real vec signal — their
+      // only channel is text.
+      await seedNode(`alphaword document number ${i}`, `text-${i}`, ['text'], [0.0, 0.0, 0.0, 1.0]);
+    }
+    // No `alphaword` token in content/name/summary -> absent from the text channel.
+    // Its vector is the query vector exactly -> cosine similarity 1.0.
+    const vecOnlyId = await seedNode(
+      'betaword unique vector-only duplicate',
+      'vector-only',
+      ['vec'],
+      [1.0, 0.0, 0.0, 0.0],
+    );
+
+    // Preconditions, asserted rather than assumed: the text channel is genuinely
+    // saturated at `limit`, and the vec-only node is genuinely NOT a text hit.
+    const textOnly = await backend.search({ text: 'alphaword' }, limit);
+    expect(textOnly).toHaveLength(limit);
+    expect(textOnly.some((r) => r.id === vecOnlyId)).toBe(false);
+
+    const results = await backend.search(
+      { text: 'alphaword', vec: new Float32Array([1.0, 0.0, 0.0, 0.0]) },
+      limit,
+    );
+    expect(results).toHaveLength(limit);
+
+    const vecOnly = results.find((r) => r.id === vecOnlyId);
+    expect(vecOnly).toBeDefined();
+    // ...and it is the CALIBRATED exact match, not merely present.
+    expect(vecOnly!.vecScore).toBeGreaterThan(0.99);
+  });
+
   it('filters by topic via graph backend', async () => {
     const pyId = await seedNode('Python async guide', 'python', ['ai'], [1.0, 0.0, 0.0, 0.0]);
     await seedNode('Rust ownership guide', 'rust', ['systems'], [0.0, 1.0, 0.0, 0.0]);
