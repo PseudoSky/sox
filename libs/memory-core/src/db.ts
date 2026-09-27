@@ -18,6 +18,7 @@ import { PRAGMAS, DDL_BASE, FTS_DDL, FTS_TRIGGERS } from './schema.js';
 import { ftsDialectFor } from './dialect.js';
 import { EMBED_DIM, getActiveEmbedModel } from './embed.js';
 import { closeDbWithLease } from './lease.js';
+import { resolveStoreVerifyConfig } from './config.js';
 import type Database from 'better-sqlite3';
 import type {
   StoreAdapter,
@@ -483,6 +484,25 @@ export async function openDb(dbPath: string): Promise<StoreAdapter> {
   }
 }
 
+/**
+ * (BL-deepverify) The config every WRITABLE store open in this file passes to
+ * `createStoreAdapter`: the concurrency mode plus the typed bound for the
+ * background deep integrity pass (`resolveStoreVerifyConfig`, which rejects a
+ * malformed value before the store is touched — ADR-0013 D3).
+ */
+function writableStoreConfig(dbPath: string): {
+  dbPath: string;
+  concurrencyMode: ReturnType<typeof STORE_MODE>;
+  deepVerify?: { timeoutMs: number };
+} {
+  const deepVerifyTimeoutMs = resolveStoreVerifyConfig().deepVerifyTimeoutMs;
+  return {
+    dbPath,
+    concurrencyMode: STORE_MODE(),
+    ...(deepVerifyTimeoutMs !== undefined ? { deepVerify: { timeoutMs: deepVerifyTimeoutMs } } : {}),
+  };
+}
+
 async function _openDbInner(dbPath: string): Promise<StoreAdapter> {
   // Ensure parent directory exists
   const dir = path.dirname(dbPath);
@@ -494,7 +514,7 @@ async function _openDbInner(dbPath: string): Promise<StoreAdapter> {
     createVectorDialect,
     canonicalFtsIndexName,
   } = await import('@adhd/sox-store-adapter');
-  let adapter = await createStoreAdapter({ dbPath, concurrencyMode: STORE_MODE() });
+  let adapter = await createStoreAdapter(writableStoreConfig(dbPath));
   const vectorDialect = createVectorDialect(adapter.config.type);
 
   // ═══════════════════════════════════════════════════════════════════════════
@@ -534,7 +554,7 @@ async function _openDbInner(dbPath: string): Promise<StoreAdapter> {
         log.warn('store.open.turso_vacuum_repair', { db_path: dbPath });
         await adapter.close();
         await dropVec0ViaBetterSqlite3(dbPath, { runVacuum: true });
-        adapter = await createStoreAdapter({ dbPath, concurrencyMode: STORE_MODE() });
+        adapter = await createStoreAdapter(writableStoreConfig(dbPath));
       }
     }
   }
@@ -771,7 +791,7 @@ async function _openDbInner(dbPath: string): Promise<StoreAdapter> {
         // the reopen below would still fail this open.
         await adapter.close();
         await dropFtsResidueViaBetterSqlite3(dbPath, residueNames);
-        adapter = await createStoreAdapter({ dbPath, concurrencyMode: STORE_MODE() });
+        adapter = await createStoreAdapter(writableStoreConfig(dbPath));
       }
     }
   }
@@ -880,7 +900,7 @@ async function _openDbInner(dbPath: string): Promise<StoreAdapter> {
     log.warn('store.open.turso_vec0_drop', { db_path: dbPath });
     await adapter.close();
     await dropVec0ViaBetterSqlite3(dbPath);
-    adapter = await createStoreAdapter({ dbPath, concurrencyMode: STORE_MODE() });
+    adapter = await createStoreAdapter(writableStoreConfig(dbPath));
   }
 
   // 3. Create native vector table and index via dialect

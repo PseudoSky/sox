@@ -45,11 +45,11 @@ export { openDb, openDbReadOnly, initScope, migrateAddColumn, expandDbPath, getD
 export type { ScopeKind, MemoryScope } from './db.js';
 
 // ── Ping health verdict (BL-373 family — ping honesty) ───────────────────────
-export { computePingHealthVerdict } from './ping-health.js';
+export { computePingHealthVerdict, DEEP_VERIFY_DEGRADING_STATUSES } from './ping-health.js';
 export type { PingHealthInput, PingHealthStatus, PingHealthVerdict } from './ping-health.js';
 
 // ── Typed config surface (ADR-0013 D2/D3) ────────────────────────────────────
-export { isBackupStorePath, resolveBackupConfig, DEFAULT_BACKUP_CONFIG, resolveEnrichHealthConfig, DEFAULT_ENRICH_HEALTH_CONFIG } from './config.js';
+export { isBackupStorePath, resolveBackupConfig, DEFAULT_BACKUP_CONFIG, resolveEnrichHealthConfig, DEFAULT_ENRICH_HEALTH_CONFIG, resolveStoreVerifyConfig, DEEP_VERIFY_TIMEOUT_CONFIG_ENV } from './config.js';
 // BL-c5249cdd: store-growth gauge (memory_ping) + its typed D3 config.
 export {
   resolveStoreGrowthConfig,
@@ -64,7 +64,7 @@ export {
   _resetStoreGrowthAlarmWarningsForTest,
 } from './store-growth.js';
 export type { StoreGrowthGauge } from './store-growth.js';
-export type { BackupConfig, EnrichHealthConfig } from './config.js';
+export type { BackupConfig, EnrichHealthConfig, StoreVerifyConfig } from './config.js';
 
 // ── Writer lease (SA-8, BL-128) ───────────────────────────────────────────────
 export {

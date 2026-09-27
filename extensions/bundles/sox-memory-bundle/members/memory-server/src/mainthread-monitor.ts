@@ -22,9 +22,29 @@
  *      is proxied through the main thread and would block with it). Re-reported
  *      at doubling intervals while the stall persists.
  *
+ *   4. KILL PATH (BL-deepverify) — the same off-thread watcher SIGKILLs this
+ *      process once the main thread has not run for `killAfterMs`. The
+ *      pending-request watchdog (liveness-watchdog.ts) is a `setInterval` ON
+ *      the main thread, so it cannot fire during the very stall it exists for:
+ *      in the incident a 21-minute `PRAGMA integrity_check` step held the
+ *      thread and nothing in-process could end it. The watcher writes a raw
+ *      line to fd 2 (the pending-request watchdog's pattern — the durable log
+ *      sink runs on the blocked thread) and calls
+ *      `process.kill(process.pid, 'SIGKILL')`, which a parked main thread
+ *      cannot delay. The supervisor restarts the process; the store's
+ *      deep-verify obligation (store-adapter deep-verify.ts) guarantees the
+ *      restart does not re-run the stall inline.
+ *
+ * Clock: the heartbeat is `process.hrtime` milliseconds (monotonic, shared by
+ * every thread, and on macOS not advancing across system sleep), never
+ * `Date.now()` — a wall-clock age would read a closed laptop lid as a blocked
+ * main thread and SIGKILL a healthy server on wake. A watcher that itself
+ * overslept its poll by seconds (the whole process was stopped — SIGSTOP, a
+ * debugger) measures ages from its own wake, not across the suspension.
+ *
  * Everything is `unref()`'d: the monitor never keeps a finished process alive.
- * The liveness watchdog (liveness-watchdog.ts) remains the kill-switch; this
- * module only makes the cause visible.
+ * The pending-request liveness watchdog stays in place for the wedge it
+ * catches (requests pending, none completing, loop still turning).
  */
 import { monitorEventLoopDelay, type IntervalHistogram } from 'node:perf_hooks';
 import { Worker } from 'node:worker_threads';
@@ -41,6 +61,68 @@ export interface MainThreadMonitorOptions {
   tickMs?: number;
   /** Start the off-thread stall watcher. Default true. */
   offThreadWatcher?: boolean;
+  /**
+   * (BL-deepverify) Main-thread silence, ms, after which the off-thread watcher
+   * SIGKILLs this process. Typed tuning (ADR-0013 D3): an integer in
+   * [{@link MIN_MAINTHREAD_KILL_AFTER_MS}, {@link MAX_MAINTHREAD_KILL_AFTER_MS}];
+   * anything else throws. Default {@link resolveMainThreadKillAfterMs} (the
+   * `mainthread_kill_after_ms` config key, else
+   * {@link DEFAULT_MAINTHREAD_KILL_AFTER_MS}).
+   */
+  killAfterMs?: number;
+}
+
+/**
+ * Default main-thread silence before the off-thread SIGKILL: 5 minutes — the
+ * same budget as the pending-request watchdog's threshold. The longest
+ * legitimate main-thread holds on record are the synchronous Turso steps of a
+ * `fast` open (~1 s on the 105 MB store) and ONNX model load (seconds); the
+ * incident's hold was 21+ minutes. NOT measured: `VACUUM INTO` + its inline
+ * deep check in the pre-restart `autoBackup` on the 417 MB store — that path
+ * runs after the store queues are closed, so a kill there loses no writes and
+ * re-arms nothing, but tune this key if backups are observed near the bound.
+ */
+export const DEFAULT_MAINTHREAD_KILL_AFTER_MS = 5 * 60_000;
+export const MIN_MAINTHREAD_KILL_AFTER_MS = 1_000;
+export const MAX_MAINTHREAD_KILL_AFTER_MS = 60 * 60_000;
+/** Config-cascade env key carrying `mainthread_kill_after_ms` (ADR-0013 D5). */
+export const MAINTHREAD_KILL_AFTER_CONFIG_ENV = 'SOX_CONFIG_MAINTHREAD_KILL_AFTER_MS';
+
+function assertKillAfterMs(value: number, source: string): number {
+  if (
+    !Number.isInteger(value) ||
+    value < MIN_MAINTHREAD_KILL_AFTER_MS ||
+    value > MAX_MAINTHREAD_KILL_AFTER_MS
+  ) {
+    throw new Error(
+      `${source}: mainthread kill-after must be an integer number of milliseconds in ` +
+        `[${MIN_MAINTHREAD_KILL_AFTER_MS}, ${MAX_MAINTHREAD_KILL_AFTER_MS}]; got ${JSON.stringify(value)}. ` +
+        `There is no value that disables the off-thread watchdog (ADR-0013).`,
+    );
+  }
+  return value;
+}
+
+/**
+ * Resolve the kill threshold from the config cascade. A present value that is
+ * not a base-10 integer, or is out of range, THROWS — a misconfigured watchdog
+ * must fail the boot loudly, never fall back silently (ADR-0013 D3).
+ */
+export function resolveMainThreadKillAfterMs(env: NodeJS.ProcessEnv = process.env): number {
+  const raw = env[MAINTHREAD_KILL_AFTER_CONFIG_ENV];
+  if (raw === undefined || raw.trim() === '') return DEFAULT_MAINTHREAD_KILL_AFTER_MS;
+  if (!/^\d+$/.test(raw.trim())) {
+    throw new Error(
+      `${MAINTHREAD_KILL_AFTER_CONFIG_ENV}=${JSON.stringify(raw)} is not an integer number of milliseconds ` +
+        `(config key mainthread_kill_after_ms).`,
+    );
+  }
+  return assertKillAfterMs(Number.parseInt(raw.trim(), 10), MAINTHREAD_KILL_AFTER_CONFIG_ENV);
+}
+
+/** Monotonic milliseconds — the heartbeat clock shared with the watcher. */
+function monoNowMs(): number {
+  return Number(process.hrtime.bigint() / 1_000_000n);
 }
 
 export interface LagSummary {
@@ -66,15 +148,29 @@ const { workerData, parentPort } = require('node:worker_threads');
 const fs = require('node:fs');
 const hb = new Float64Array(workerData.sab);
 const sleeper = new Int32Array(new SharedArrayBuffer(4));
+const nowMs = () => Number(process.hrtime.bigint() / 1000000n);
+const POLL_MS = 250;
+const SUSPEND_SLACK_MS = 2000;
 const threshold = workerData.stallThresholdMs;
+const killAfter = workerData.killAfterMs;
 let nextReportAt = threshold;
 let reportedForBeat = -1;
+let lastWake = nowMs();
+let suspendedFloor = 0;
+function report(event, fields) {
+  parentPort?.postMessage({ event, ...fields });
+}
 for (;;) {
-  Atomics.wait(sleeper, 0, 0, 250);
+  Atomics.wait(sleeper, 0, 0, POLL_MS);
+  const now = nowMs();
+  // This thread overslept by seconds: the whole process was stopped, not just
+  // the main thread. Measure from this wake, never across the suspension.
+  if (now - lastWake > POLL_MS + SUSPEND_SLACK_MS) suspendedFloor = now;
+  lastWake = now;
+  if (hb[1] === 1) break; // stop flag
   const beat = hb[0];
   if (beat === 0) continue;
-  if (hb[1] === 1) break; // stop flag
-  const age = Date.now() - beat;
+  const age = now - Math.max(beat, suspendedFloor);
   if (beat !== reportedForBeat) { nextReportAt = threshold; }
   if (age >= nextReportAt) {
     reportedForBeat = beat;
@@ -88,14 +184,25 @@ for (;;) {
     } catch (e) {
       // fd 2 is closed (or the write itself failed) — the ONE other channel this
       // worker has is postMessage, which the main thread drains once the stall
-      // ends and it can run again (BL: untraced catch — this must never be silent).
-      try {
-        parentPort?.postMessage({
-          event: 'mainthread.watcher_write_failed',
-          error: e instanceof Error ? e.message : String(e),
-          blocked_for_ms: age,
-        });
-      } catch (e2) { /* postMessage itself failed — nothing else can report this */ }
+      // ends and it can run again.
+      report('mainthread.watcher_write_failed', { error: e instanceof Error ? e.message : String(e), blocked_for_ms: age });
+    }
+  }
+  if (typeof killAfter === 'number' && age >= killAfter) {
+    // BL-deepverify: the main thread cannot run the pending-request watchdog,
+    // a signal handler, or a timer. End the process from here.
+    try {
+      fs.writeSync(2, JSON.stringify({
+        ts: new Date().toISOString(), level: 'fatal', event: 'mainthread.watchdog_kill',
+        pid: workerData.pid, blocked_for_ms: age, kill_after_ms: killAfter,
+      }) + '\\n' +
+        '[memory-server] FATAL: main thread blocked for ' + age + 'ms (kill_after_ms ' + killAfter + ') — ' +
+        'the off-thread watchdog is SIGKILLing pid ' + workerData.pid + ' for the supervisor to restart. ' +
+        'A service that cannot serve should die, not linger (BL-deepverify).\\n');
+    } catch (e) {
+      report('mainthread.watchdog_kill_write_failed', { error: e instanceof Error ? e.message : String(e), blocked_for_ms: age });
+    } finally {
+      process.kill(process.pid, 'SIGKILL');
     }
   }
 }
@@ -107,6 +214,7 @@ export class MainThreadMonitor {
   private readonly stallThresholdMs: number;
   private readonly tickMs: number;
   private readonly useWatcher: boolean;
+  private readonly killAfterMs: number;
 
   private histogram: IntervalHistogram | null = null;
   private tickTimer: ReturnType<typeof setInterval> | null = null;
@@ -128,6 +236,15 @@ export class MainThreadMonitor {
     this.stallThresholdMs = opts.stallThresholdMs ?? 5_000;
     this.tickMs = opts.tickMs ?? 100;
     this.useWatcher = opts.offThreadWatcher ?? true;
+    this.killAfterMs =
+      opts.killAfterMs !== undefined
+        ? assertKillAfterMs(opts.killAfterMs, 'MainThreadMonitorOptions.killAfterMs')
+        : resolveMainThreadKillAfterMs();
+  }
+
+  /** The resolved kill threshold (reported in the `mainthread` snapshot section). */
+  get killAfter(): number {
+    return this.killAfterMs;
   }
 
   start(): void {
@@ -143,10 +260,15 @@ export class MainThreadMonitor {
       try {
         const sab = new SharedArrayBuffer(16);
         this.heartbeat = new Float64Array(sab);
-        this.heartbeat[0] = now;
+        this.heartbeat[0] = monoNowMs();
         this.watcher = new Worker(MAINTHREAD_WATCHER_SOURCE, {
           eval: true,
-          workerData: { sab, stallThresholdMs: this.stallThresholdMs, pid: process.pid },
+          workerData: {
+            sab,
+            stallThresholdMs: this.stallThresholdMs,
+            killAfterMs: this.killAfterMs,
+            pid: process.pid,
+          },
         });
         this.watcher.unref();
         this.watcher.on('error', (err) => {
@@ -165,7 +287,9 @@ export class MainThreadMonitor {
       } catch (err) {
         this.watcher = null;
         this.heartbeat = null;
-        log.warn('mainthread.watcher_unavailable', { error: err instanceof Error ? err.message : String(err) });
+        // error, not warn: without the watcher there is NO kill path for a
+        // main-thread stall (BL-deepverify).
+        log.error('mainthread.watcher_unavailable', { error: err instanceof Error ? err.message : String(err) });
       }
     }
 
@@ -176,6 +300,7 @@ export class MainThreadMonitor {
     this.unregisterSection = registerSnapshotSection('mainthread', () => ({
       ...(this.last ?? {}),
       threshold_ms: this.blockedThresholdMs,
+      kill_after_ms: this.killAfterMs,
     }));
   }
 
@@ -183,7 +308,7 @@ export class MainThreadMonitor {
   tick(nowMs: number = Date.now()): void {
     const drift = nowMs - this.lastTickAt - this.tickMs;
     this.lastTickAt = nowMs;
-    if (this.heartbeat !== null) this.heartbeat[0] = nowMs;
+    if (this.heartbeat !== null) this.heartbeat[0] = monoNowMs();
     if (drift >= this.blockedThresholdMs) {
       this.blockedEvents += 1;
       if (drift > this.longestBlockMs) this.longestBlockMs = drift;

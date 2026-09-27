@@ -127,6 +127,10 @@ import {
   readIntegrityResult,
   summarizeIntegrityForStatus,
   integrityHeadline,
+  // BL-deepverify: the durable deep-verify obligation + latest outcome. A deep
+  // pass that is owed and timed out / failed degrades `memory_ping.status`.
+  readDeepVerifyObligation,
+  readDeepVerifyState,
 } from '@adhd/sox-store-adapter';
 // BL-401 gap 3: BL-351's stated acceptance requires every emitted metric be
 // reachable from the status surface WITHOUT reading a log file — the exact
@@ -1264,6 +1268,8 @@ async function handleToolCallImpl(name: string, args: Record<string, unknown>): 
     // state, hoisted out of the try so the top-level `status` can fold it in.
     // null when the store never opened (the verdict is then 'unhealthy' anyway).
     let pipelineVerdictState: 'idle' | 'ok' | 'regressing' | 'stalled' | null = null;
+    // BL-deepverify: filled from the store's deep-verify record when it opens.
+    let deepVerifyInput: { owed: boolean; status: string | null; detail: string | null } | null = null;
     try {
       const storeArg = args['store'];
       const dbPathArg = args['db_path'];
@@ -1439,6 +1445,22 @@ async function handleToolCallImpl(name: string, args: Record<string, unknown>): 
           persisted?.runAtMs ?? null,
         );
 
+        // BL-deepverify: the out-of-process deep pass's durable record. Read
+        // from the store (same reason as `integrity` above). An unreadable
+        // obligation row is reported as owed — "cannot tell" is never "fine".
+        let deepOwed: { reason: string; since: string } | null;
+        try {
+          deepOwed = await readDeepVerifyObligation(adapter);
+        } catch (err) {
+          deepOwed = { reason: `obligation unreadable: ${err instanceof Error ? err.message : String(err)}`, since: '' };
+        }
+        const deepState = await readDeepVerifyState(adapter);
+        deepVerifyInput = {
+          owed: deepOwed !== null,
+          status: deepState?.status ?? null,
+          detail: deepState?.detail ?? null,
+        };
+
         // BL-413: the durable corrective-action record a stalled tick writes
         // (see enrich-stall.ts / runEnrichPassOnDb). Read-only here — this
         // call never writes; only a tick's own checkAndEscalateEnrichStall
@@ -1489,6 +1511,9 @@ async function handleToolCallImpl(name: string, args: Record<string, unknown>): 
           // the verdict is legible without expanding the block.
           integrity: integrityView,
           integrity_headline: integrityHeadline(integrityView),
+          // BL-deepverify: additive (HF-3). `owed` is the durable obligation;
+          // `last` is the latest attempt (running/ok/timed_out/failed/…).
+          deep_verify: { owed: deepOwed, last: deepState },
           last_checkpoint_at: lastCheckpointAt,
           enrichment_watermark: enrichmentWatermark,
           queue_depth: queueDepth,
@@ -1614,6 +1639,8 @@ async function handleToolCallImpl(name: string, args: Record<string, unknown>): 
       // pipeline downgrades `status` to 'degraded' even with store + embed
       // healthy — the exact 2026-08-26 false-positive this guards against.
       enrichmentState: pipelineVerdictState,
+      // BL-deepverify: an owed deep pass that timed out / failed ⇒ degraded.
+      deepVerify: deepVerifyInput,
     });
 
     return {

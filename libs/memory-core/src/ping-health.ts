@@ -46,6 +46,32 @@ export interface PingHealthInput {
    * not compute a pipeline verdict) leave `status` unchanged.
    */
   enrichmentState?: 'idle' | 'ok' | 'regressing' | 'stalled' | null;
+  /**
+   * (BL-deepverify) The store's durable deep-integrity record: whether a deep
+   * pass is still OWED (`_adapter_meta.deep_verify_owed`) and the latest
+   * attempt's outcome (`_adapter_meta.deep_verify_state.status`). When a deep
+   * pass is owed and its last attempt ended `timed_out` / `failed` / `damaged`
+   * / `inconclusive`, `status` is `'degraded'` — the store serves, but it was
+   * owed a verification it could not get, and `[inv:list-never-lies]` forbids
+   * reading that as `'ok'`. `running` (a pass in progress) and `cancelled` (the
+   * owning adapter closed; the next open reruns it) leave `status` unchanged;
+   * absent/`null` (a caller that does not read the record) also does.
+   */
+  deepVerify?: { owed: boolean; status: string | null; detail?: string | null } | null;
+}
+
+/** (BL-deepverify) Deep-verify outcomes that degrade `status` while a pass is owed. */
+export const DEEP_VERIFY_DEGRADING_STATUSES: readonly string[] = ['timed_out', 'failed', 'damaged', 'inconclusive'];
+
+function deepVerifyReason(input: PingHealthInput): string | null {
+  const dv = input.deepVerify;
+  if (dv === undefined || dv === null || !dv.owed || dv.status === null) return null;
+  if (!DEEP_VERIFY_DEGRADING_STATUSES.includes(dv.status)) return null;
+  return (
+    `store deep integrity verification is owed and its last attempt ended '${dv.status}'` +
+    (dv.detail ? `: ${dv.detail}` : '') +
+    ' (see store.deep_verify)'
+  );
 }
 
 export type PingHealthStatus = 'ok' | 'degraded' | 'unhealthy';
@@ -77,6 +103,10 @@ export function computePingHealthVerdict(input: PingHealthInput): PingHealthVerd
     // floor success rate) is `degraded`, never `ok` — the exact 2026-08-26
     // false-positive this guards against (store + embed read clean while the
     // pipeline had not succeeded in >24h).
+    const deepReason = deepVerifyReason(input);
+    if (deepReason !== null) {
+      return { status: 'degraded', status_reason: deepReason, store_ok: true, store_error: null };
+    }
     const enrichment = input.enrichmentState ?? null;
     if (enrichment === 'stalled' || enrichment === 'regressing') {
       return {
@@ -103,9 +133,11 @@ export function computePingHealthVerdict(input: PingHealthInput): PingHealthVerd
   }
 
   // Store healthy; embed subsystem not real.
-  const embedReason = input.embedError
+  const embedReason0 = input.embedError
     ? `embed subsystem: ${input.embedError}`
     : `embed subsystem is '${input.embedState}' (not 'real')`;
+  const deepReason = deepVerifyReason(input);
+  const embedReason = deepReason !== null ? `${deepReason}; ${embedReason0}` : embedReason0;
   return {
     status: 'degraded',
     status_reason: embedReason,
