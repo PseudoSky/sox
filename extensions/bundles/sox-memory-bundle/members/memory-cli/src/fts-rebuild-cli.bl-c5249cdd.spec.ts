@@ -98,7 +98,7 @@ async function seedLeakedStore(): Promise<string> {
           [`u${i}`, 'episode', `alpha beta gamma delta ${tok(i)} epsilon`, `name ${tok(i)}`, 'summary text', new Date().toISOString()],
         );
       }
-      await a.unwrap().exec('OPTIMIZE INDEX idx_fts_node');
+      await (a.unwrap() as import('@tursodatabase/database').Database).exec('OPTIMIZE INDEX idx_fts_node');
     }
   } finally {
     await a.close();
