@@ -27,7 +27,6 @@ describe('BL-fc5ab895 — ping verdict reads the deep-verify record', () => {
 
   it.each([
     ['running', true],
-    ['cancelled', true],
     ['ok', false],
     [null, false],
   ] as const)('status %s (owed=%s) leaves an otherwise-healthy store ok', (status, owed) => {

@@ -115,6 +115,7 @@ import {
   // (see its doc comment in enrich.ts) — used below so chunked writes cannot
   // drift from computeWriteEnrichment's own topic resolution.
   resolveTopicFromPrefix,
+  setDeepVerifySchedule,
 } from '@adhd/sox-memory-core';
 import type { HealResult, PendingEmbed, PhaseAOutcome, WriteError, WriteResult, EnrichAlarmRecord } from '@adhd/sox-memory-core';
 import type { StoreAdapter, VectorDialect } from '@adhd/sox-store-adapter';
@@ -131,6 +132,7 @@ import {
   // pass that is owed and timed out / failed degrades `memory_ping.status`.
   readDeepVerifyObligation,
   readDeepVerifyState,
+  isDeepVerifyOwnerAlive,
 } from '@adhd/sox-store-adapter';
 // BL-401 gap 3: BL-351's stated acceptance requires every emitted metric be
 // reachable from the status surface WITHOUT reading a log file — the exact
@@ -1269,7 +1271,7 @@ async function handleToolCallImpl(name: string, args: Record<string, unknown>): 
     // null when the store never opened (the verdict is then 'unhealthy' anyway).
     let pipelineVerdictState: 'idle' | 'ok' | 'regressing' | 'stalled' | null = null;
     // BL-fc5ab895: filled from the store's deep-verify record when it opens.
-    let deepVerifyInput: { owed: boolean; status: string | null; detail: string | null } | null = null;
+    let deepVerifyInput: { owed: boolean; status: string | null; detail: string | null; ownerAlive: boolean | null } | null = null;
     try {
       const storeArg = args['store'];
       const dbPathArg = args['db_path'];
@@ -1459,6 +1461,8 @@ async function handleToolCallImpl(name: string, args: Record<string, unknown>): 
           owed: deepOwed !== null,
           status: deepState?.status ?? null,
           detail: deepState?.detail ?? null,
+          // (BL-9f6681ee) A `running` record whose opener died never finishes.
+          ownerAlive: deepState?.status === 'running' ? isDeepVerifyOwnerAlive(deepState) : null,
         };
 
         // BL-413: the durable corrective-action record a stalled tick writes
@@ -4096,6 +4100,12 @@ if (require.main === module) {
     process.stdout.write(JSON.stringify(buildToolsListResult(), null, 2) + '\n');
     process.exit(0);
   }
+
+  // (BL-9f6681ee) memory-server is the long-lived store OWNER: it alone
+  // schedules the owed background deep integrity pass (and waits out a peer
+  // that holds the lock). Every one-shot opener keeps memory-core's 'never'
+  // default. Must run before the first store open.
+  setDeepVerifySchedule('owner');
 
   // BL-404: this is the telemetry composition root. Before this fix, NOTHING
   // outside a spec file ever called initTelemetry() — every emitter (memory-core,

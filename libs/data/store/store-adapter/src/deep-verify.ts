@@ -92,6 +92,42 @@ export const MAX_DEEP_VERIFY_TIMEOUT_MS = 6 * 60 * 60_000;
  *  parent's own SIGKILL (and its `timed_out` record) normally wins the race. */
 export const DEEP_VERIFY_REAPER_GRACE_MS = 10_000;
 
+/**
+ * Who may START a background deep pass (BL-9f6681ee).
+ *
+ * - `'owner'` — a long-lived opener (memory-server). It schedules the owed
+ *   pass, and when a live peer holds the single-flight lock it waits for the
+ *   lock to free and tries again ({@link DeepVerifyPeerRetry}), for as long as
+ *   it stays open and the obligation stays owed.
+ * - `'never'` — a one-shot opener (CLI, hooks, flush). It still RECORDS the
+ *   obligation when it detects an unclean shutdown, but never forks a
+ *   verifier: a one-shot that took the lock and then closed or exited would
+ *   cancel/kill the pass and starve the owner.
+ *
+ * Default `'never'`, so an unknown caller can never starve the owner. This
+ * chooses WHICH process verifies, never WHETHER verification is owed
+ * (ADR-0013): the obligation is written unconditionally.
+ */
+export type DeepVerifySchedule = 'owner' | 'never';
+/** Accepted {@link DeepVerifySchedule} values. */
+export const DEEP_VERIFY_SCHEDULES: readonly DeepVerifySchedule[] = ['owner', 'never'];
+/** First wait before an owner re-attempts a lock a live peer holds, ms. */
+export const DEFAULT_DEEP_VERIFY_PEER_RETRY_INITIAL_MS = 1_000;
+/** Backoff ceiling for the peer-lock re-attempt, ms. */
+export const DEFAULT_DEEP_VERIFY_PEER_RETRY_MAX_MS = 60_000;
+/** Accepted range for either peer-retry bound, ms. */
+export const MIN_DEEP_VERIFY_PEER_RETRY_MS = 10;
+export const MAX_DEEP_VERIFY_PEER_RETRY_MS = 60 * 60_000;
+
+/** Bounded exponential backoff for an owner blocked by a live peer's lock.
+ *  Tuning only — there is no value that makes the owner give up. */
+export interface DeepVerifyPeerRetry {
+  /** First wait, ms. Default {@link DEFAULT_DEEP_VERIFY_PEER_RETRY_INITIAL_MS}. */
+  initialMs?: number;
+  /** Ceiling the doubling wait is clamped to, ms. Default {@link DEFAULT_DEEP_VERIFY_PEER_RETRY_MAX_MS}. */
+  maxMs?: number;
+}
+
 /** Where the verifier entrypoint lives and how to run it. */
 export interface DeepVerifyVerifierEntry {
   /** Absolute path of the verifier script. */
@@ -116,6 +152,11 @@ export interface DeepVerifyConfig {
    * verification runs). Default {@link resolveDeepVerifierEntry}.
    */
   verifier?: DeepVerifyVerifierEntry;
+  /** Whether this opener may start the pass. Default `'never'` — see
+   *  {@link DeepVerifySchedule}. */
+  schedule?: DeepVerifySchedule;
+  /** Owner-only: backoff for re-attempting a lock a live peer holds. */
+  peerRetry?: DeepVerifyPeerRetry;
 }
 
 /** A deep-verify config value was rejected. Thrown at open — loud, never
@@ -146,10 +187,53 @@ export function resolveDeepVerifyTimeoutMs(value: unknown): number {
   return value;
 }
 
+/** The effective {@link DeepVerifySchedule}. Throws {@link EInvalidDeepVerifyConfig}. */
+export function resolveDeepVerifySchedule(cfg: DeepVerifyConfig | undefined): DeepVerifySchedule {
+  const value: unknown = cfg?.schedule;
+  if (value === undefined) return 'never';
+  if (typeof value !== 'string' || !(DEEP_VERIFY_SCHEDULES as readonly string[]).includes(value)) {
+    throw new EInvalidDeepVerifyConfig(
+      `deepVerify.schedule must be one of ${DEEP_VERIFY_SCHEDULES.map((v) => `'${v}'`).join(', ')}; ` +
+        `got ${JSON.stringify(value)}.`,
+    );
+  }
+  return value as DeepVerifySchedule;
+}
+
+function resolvePeerRetryBound(value: unknown, field: string, fallback: number): number {
+  if (value === undefined) return fallback;
+  if (
+    typeof value !== 'number' ||
+    !Number.isInteger(value) ||
+    value < MIN_DEEP_VERIFY_PEER_RETRY_MS ||
+    value > MAX_DEEP_VERIFY_PEER_RETRY_MS
+  ) {
+    throw new EInvalidDeepVerifyConfig(
+      `deepVerify.peerRetry.${field} must be an integer number of milliseconds in ` +
+        `[${MIN_DEEP_VERIFY_PEER_RETRY_MS}, ${MAX_DEEP_VERIFY_PEER_RETRY_MS}]; got ${JSON.stringify(value)}.`,
+    );
+  }
+  return value;
+}
+
+/** The effective peer-retry bounds. Throws {@link EInvalidDeepVerifyConfig}. */
+export function resolveDeepVerifyPeerRetry(cfg: DeepVerifyConfig | undefined): { initialMs: number; maxMs: number } {
+  const initialMs = resolvePeerRetryBound(cfg?.peerRetry?.initialMs, 'initialMs', DEFAULT_DEEP_VERIFY_PEER_RETRY_INITIAL_MS);
+  const maxMs = resolvePeerRetryBound(cfg?.peerRetry?.maxMs, 'maxMs', Math.max(initialMs, DEFAULT_DEEP_VERIFY_PEER_RETRY_MAX_MS));
+  if (maxMs < initialMs) {
+    throw new EInvalidDeepVerifyConfig(
+      `deepVerify.peerRetry.maxMs (${maxMs}) must be >= deepVerify.peerRetry.initialMs (${initialMs}).`,
+    );
+  }
+  return { initialMs, maxMs };
+}
+
 /** Validate a whole {@link DeepVerifyConfig}. Throws {@link EInvalidDeepVerifyConfig}. */
 export function validateDeepVerifyConfig(cfg: DeepVerifyConfig | undefined): void {
   if (cfg === undefined) return;
   resolveDeepVerifyTimeoutMs(cfg.timeoutMs);
+  resolveDeepVerifySchedule(cfg);
+  resolveDeepVerifyPeerRetry(cfg);
   if (cfg.verifier !== undefined) {
     if (typeof cfg.verifier.path !== 'string' || cfg.verifier.path === '') {
       throw new EInvalidDeepVerifyConfig('deepVerify.verifier.path must be a non-empty string');
@@ -297,6 +381,31 @@ export async function readDeepVerifyState(adapter: StoreAdapter): Promise<DeepVe
   }
 }
 
+/**
+ * (BL-9f6681ee) Whether the process that recorded a `running` state is still
+ * alive: `kill(pid, 0)`, with `EPERM` counted as alive. `null` when the state
+ * names no usable pid. A `running` record whose owner is dead is a pass that
+ * will never finish — its opener was killed (a one-shot's exit hook SIGKILLs
+ * the verifier and cannot write a terminal state).
+ */
+export function isDeepVerifyOwnerAlive(state: Pick<DeepVerifyState, 'owner_pid'> | null): boolean | null {
+  const pid = state?.owner_pid;
+  if (typeof pid !== 'number' || !Number.isInteger(pid) || pid <= 0) return null;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException).code;
+    if (code === 'EPERM') return true;
+    if (code === 'ESRCH') return false;
+    log.warn('store_adapter.deep_verify.owner_liveness_undeterminable', {
+      owner_pid: pid,
+      error: err instanceof Error ? err.message : String(err),
+    });
+    return null;
+  }
+}
+
 async function writeDeepVerifyState(adapter: StoreAdapter, state: DeepVerifyState): Promise<void> {
   await adapter.executeRun(UPSERT_META_SQL, [DEEP_VERIFY_STATE_KEY, JSON.stringify(state)]);
 }
@@ -403,6 +512,71 @@ interface DeepVerifyRun {
 }
 
 const runs = new Map<string, DeepVerifyRun>();
+
+/**
+ * (BL-9f6681ee) An owner adapter waiting for a live peer's lock to free. One
+ * entry per adapter; cleared by `releaseDeepVerify` (close) and moved by
+ * `transferDeepVerifyMembership` (Turso reconnect).
+ */
+interface PeerWait {
+  timer: NodeJS.Timeout;
+  opts: ScheduleDeepVerifyOptions;
+  /** The wait that produced `timer`; the next one doubles it, up to the cap. */
+  delayMs: number;
+}
+const peerWaits = new Map<StoreAdapter, PeerWait>();
+
+/** Test-only: whether `adapter` is waiting to re-attempt a peer-held lock. */
+export function _peerWaitPendingForTest(adapter: StoreAdapter): boolean {
+  return peerWaits.has(adapter);
+}
+
+function cancelPeerWait(adapter: StoreAdapter): void {
+  const wait = peerWaits.get(adapter);
+  if (wait === undefined) return;
+  clearTimeout(wait.timer);
+  peerWaits.delete(adapter);
+}
+
+function armPeerWait(adapter: StoreAdapter, opts: ScheduleDeepVerifyOptions, delayMs: number, canonicalDb: string): void {
+  cancelPeerWait(adapter);
+  const timer = setTimeout(() => {
+    const current = peerWaits.get(adapter);
+    if (current === undefined || current.timer !== timer) return;
+    peerWaits.delete(adapter);
+    void retryAfterPeer(adapter, current.opts, current.delayMs, canonicalDb);
+  }, delayMs);
+  // Never keep a process alive just to wait for a peer's verifier.
+  timer.unref();
+  peerWaits.set(adapter, { timer, opts, delayMs });
+}
+
+async function retryAfterPeer(
+  adapter: StoreAdapter,
+  opts: ScheduleDeepVerifyOptions,
+  lastDelayMs: number,
+  canonicalDb: string,
+): Promise<void> {
+  try {
+    // The peer's pass may have completed `ok` and cleared the obligation.
+    const obligation = await readDeepVerifyObligation(adapter);
+    if (obligation === null) {
+      log.info('store_adapter.deep_verify.peer_satisfied', {
+        db_path: canonicalDb,
+        detail: 'the obligation was cleared while waiting for a peer-held lock; nothing left to run',
+      });
+      return;
+    }
+  } catch (err) {
+    // "Cannot tell" is owed — same rule as the open path.
+    log.warn('store_adapter.deep_verify.obligation_read_failed', {
+      db_path: canonicalDb,
+      error: err instanceof Error ? err.message : String(err),
+      detail: 'retrying the deep pass after a peer-held lock as if still owed',
+    });
+  }
+  void scheduleDeepVerifyInternal(adapter, opts, lastDelayMs);
+}
 let exitHookInstalled = false;
 
 function installExitHook(): void {
@@ -459,6 +633,15 @@ export function transferDeepVerifyMembership(from: StoreAdapter, to: StoreAdapte
   for (const run of runs.values()) {
     if (run.members.delete(from)) run.members.add(to);
   }
+  // (BL-9f6681ee) A pending peer-lock re-attempt belongs to the adapter that
+  // stays open, not to the throwaway instance the reconnect discards.
+  const wait = peerWaits.get(from);
+  if (wait !== undefined && from !== to) {
+    clearTimeout(wait.timer);
+    peerWaits.delete(from);
+    const canonicalDb = canonicalOrRaw(to.config.dbPath ?? from.config.dbPath ?? '');
+    armPeerWait(to, wait.opts, wait.delayMs, canonicalDb);
+  }
 }
 
 /**
@@ -469,6 +652,8 @@ export function transferDeepVerifyMembership(from: StoreAdapter, to: StoreAdapte
  * live verifier lease would otherwise defer — proceeds.
  */
 export async function releaseDeepVerify(adapter: StoreAdapter): Promise<void> {
+  // (BL-9f6681ee) A closing owner stops waiting for a peer-held lock.
+  cancelPeerWait(adapter);
   for (const run of [...runs.values()]) {
     if (!run.members.has(adapter)) continue;
     if (run.members.size > 1) {
@@ -520,6 +705,18 @@ export function scheduleDeepVerify(
   adapter: StoreAdapter,
   opts: ScheduleDeepVerifyOptions,
 ): Promise<DeepVerifyState | null> {
+  return scheduleDeepVerifyInternal(adapter, opts, null);
+}
+
+/**
+ * @param lastPeerDelayMs the wait that preceded this attempt when it is a
+ *   peer-lock re-attempt (the next wait doubles it); `null` for a first attempt.
+ */
+function scheduleDeepVerifyInternal(
+  adapter: StoreAdapter,
+  opts: ScheduleDeepVerifyOptions,
+  lastPeerDelayMs: number | null,
+): Promise<DeepVerifyState | null> {
   const dbPath = adapter.config.dbPath;
   if (dbPath === undefined || dbPath === '') {
     log.warn('store_adapter.deep_verify.skipped_remote', {
@@ -538,11 +735,22 @@ export function scheduleDeepVerify(
   const timeoutMs = resolveDeepVerifyTimeoutMs(adapter.config.deepVerify?.timeoutMs);
   const lock = tryAcquireDeepVerifyLock(canonicalDb);
   if (!lock.acquired) {
+    // (BL-9f6681ee) Never give up: the peer may be a one-shot that closes or
+    // exits mid-pass, leaving the obligation owed. An owner re-attempts on a
+    // bounded exponential backoff until the lock frees (then runs) or the
+    // obligation is cleared (then stops), for as long as it stays open.
+    const bounds = resolveDeepVerifyPeerRetry(adapter.config.deepVerify);
+    const nextDelayMs =
+      lastPeerDelayMs === null ? bounds.initialMs : Math.min(bounds.maxMs, Math.max(bounds.initialMs, lastPeerDelayMs * 2));
     log.info('store_adapter.deep_verify.peer_running', {
       db_path: canonicalDb,
       holder_pid: lock.holderPid,
-      detail: 'another process is already running the deep pass for this store; the obligation stays until it completes ok',
+      retry_in_ms: nextDelayMs,
+      detail:
+        'another process holds the deep-pass lock for this store; re-attempting when it frees. ' +
+        'The obligation stays until a pass completes ok',
     });
+    armPeerWait(adapter, opts, nextDelayMs, canonicalDb);
     return Promise.resolve(null);
   }
 
@@ -691,8 +899,9 @@ async function executeRun(
       }
       run.child = child;
       base.verifier_pid = child.pid ?? null;
-      // Never keep the opener alive for the verifier: a one-shot CLI exits, its
+      // Never keep the opener alive for the verifier: if the owner exits, its
       // `exit` hook SIGKILLs the child, and the obligation stays for next time.
+      // (One-shot openers never get here — `schedule: 'never'`, BL-9f6681ee.)
       child.unref();
       child.channel?.unref();
       const errStream = child.stderr as unknown as { unref?: () => void } | null;

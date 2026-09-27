@@ -41,8 +41,8 @@
  */
 
 // ── Database ──────────────────────────────────────────────────────────────────
-export { openDb, openDbReadOnly, initScope, migrateAddColumn, expandDbPath, getDb, stampStoreMeta, verifyStoreMeta, setWriterArtifact, getWriterArtifact, EStoreMismatch, STORE_META_KEYS, STORE_SCHEMA_VERSION, closeAllAdapters, closeCachedAdapter, wrapRawDbAsAdapter, getStoreEngineIdentity } from './db.js';
-export type { ScopeKind, MemoryScope } from './db.js';
+export { openDb, openDbReadOnly, initScope, migrateAddColumn, expandDbPath, getDb, stampStoreMeta, verifyStoreMeta, setWriterArtifact, getWriterArtifact, setDeepVerifySchedule, getDeepVerifySchedule, EStoreMismatch, STORE_META_KEYS, STORE_SCHEMA_VERSION, closeAllAdapters, closeCachedAdapter, wrapRawDbAsAdapter, getStoreEngineIdentity } from './db.js';
+export type { ScopeKind, MemoryScope, DeepVerifyScheduleRole } from './db.js';
 
 // ── Ping health verdict (BL-373 family — ping honesty) ───────────────────────
 export { computePingHealthVerdict, DEEP_VERIFY_DEGRADING_STATUSES } from './ping-health.js';

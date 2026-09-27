@@ -51,21 +51,43 @@ export interface PingHealthInput {
    * pass is still OWED (`_adapter_meta.deep_verify_owed`) and the latest
    * attempt's outcome (`_adapter_meta.deep_verify_state.status`). When a deep
    * pass is owed and its last attempt ended `timed_out` / `failed` / `damaged`
-   * / `inconclusive`, `status` is `'degraded'` — the store serves, but it was
-   * owed a verification it could not get, and `[inv:list-never-lies]` forbids
-   * reading that as `'ok'`. `running` (a pass in progress) and `cancelled` (the
-   * owning adapter closed; the next open reruns it) leave `status` unchanged;
-   * absent/`null` (a caller that does not read the record) also does.
+   * / `inconclusive` / `cancelled`, `status` is `'degraded'` — the store
+   * serves, but it was owed a verification it did not get, and
+   * `[inv:list-never-lies]` forbids reading that as `'ok'`. (BL-9f6681ee) An
+   * owed `running` record degrades too when its `owner_pid` is dead
+   * (`ownerAlive === false`): that pass will never finish. `running` with a
+   * live or undeterminable owner (a pass in progress) leaves `status`
+   * unchanged, as does absent/`null` (a caller that does not read the record).
    */
-  deepVerify?: { owed: boolean; status: string | null; detail?: string | null } | null;
+  deepVerify?: {
+    owed: boolean;
+    status: string | null;
+    detail?: string | null;
+    /** Liveness of the recorded `owner_pid`; `null`/absent = undeterminable. */
+    ownerAlive?: boolean | null;
+  } | null;
 }
 
 /** (BL-fc5ab895) Deep-verify outcomes that degrade `status` while a pass is owed. */
-export const DEEP_VERIFY_DEGRADING_STATUSES: readonly string[] = ['timed_out', 'failed', 'damaged', 'inconclusive'];
+export const DEEP_VERIFY_DEGRADING_STATUSES: readonly string[] = [
+  'timed_out',
+  'failed',
+  'damaged',
+  'inconclusive',
+  // (BL-9f6681ee) The owning opener closed mid-pass. Owed and not running.
+  'cancelled',
+];
 
 function deepVerifyReason(input: PingHealthInput): string | null {
   const dv = input.deepVerify;
   if (dv === undefined || dv === null || !dv.owed || dv.status === null) return null;
+  if (dv.status === 'running' && dv.ownerAlive === false) {
+    // (BL-9f6681ee) The recording opener is dead: nothing will finish this pass.
+    return (
+      "store deep integrity verification is owed and its last attempt is recorded 'running' " +
+      'but its owner process is dead, so it will never finish (see store.deep_verify)'
+    );
+  }
   if (!DEEP_VERIFY_DEGRADING_STATUSES.includes(dv.status)) return null;
   return (
     `store deep integrity verification is owed and its last attempt ended '${dv.status}'` +

@@ -139,8 +139,9 @@ async function crashStore(dbPath: string): Promise<void> {
   expect(hasUncleanShutdown(dbPath)).toBe(true);
 }
 
+/** Opens as the deep-verify OWNER (BL-9f6681ee): only an owner forks the verifier. */
 function connect(dbPath: string, deepVerify: DeepVerifyConfig): Promise<TursoAdapterImpl> {
-  return TursoAdapterImpl.connect({ dbPath, deepVerify });
+  return TursoAdapterImpl.connect({ dbPath, deepVerify: { schedule: 'owner', ...deepVerify } });
 }
 
 /** Wait for the background verifier the open scheduled, if any. */
@@ -284,7 +285,7 @@ tursoDescribe('BL-fc5ab895 — deep verification runs off-thread, out of process
   it('the REAL verifier child runs integrity_check read-only and clears the obligation', async () => {
     const dbPath = tempDb('real');
     await crashStore(dbPath);
-    const adapter = await TursoAdapterImpl.connect({ dbPath, deepVerify: { timeoutMs: 60_000 } });
+    const adapter = await TursoAdapterImpl.connect({ dbPath, deepVerify: { schedule: 'owner', timeoutMs: 60_000 } });
     try {
       await adapter.executeGet('SELECT 1');
       const run = await awaitActive(dbPath, 10_000);
@@ -306,6 +307,15 @@ tursoDescribe('BL-fc5ab895 — deep verification runs off-thread, out of process
     const dbPath = tempDb('cfg');
     for (const bad of [0, -1, 1.5, Number.NaN, 999, 7 * 60 * 60_000, '5000' as unknown as number]) {
       await expect(connect(dbPath, { timeoutMs: bad })).rejects.toBeInstanceOf(EInvalidDeepVerifyConfig);
+    }
+    // (BL-9f6681ee) schedule / peerRetry are typed config too.
+    for (const bad of [
+      { schedule: 'always' as unknown as 'owner' },
+      { peerRetry: { initialMs: 5 } },
+      { peerRetry: { initialMs: 1_000, maxMs: 500 } },
+      { peerRetry: { maxMs: 1.5 } },
+    ] satisfies DeepVerifyConfig[]) {
+      await expect(TursoAdapterImpl.connect({ dbPath, deepVerify: bad })).rejects.toBeInstanceOf(EInvalidDeepVerifyConfig);
     }
     expect(existsSync(dbPath)).toBe(false);
   });
@@ -381,7 +391,7 @@ describe('BL-fc5ab895-marker — SQLite: a live peer connection is not a crash',
 
   sqliteIt('(e2) a second open while the first is live owes nothing; a real crash still does', async () => {
     const dbPath = tempDb('sqlite-peer');
-    const cfg: DeepVerifyConfig = { timeoutMs: 10_000, verifier: { path: FAKE_OK } };
+    const cfg: DeepVerifyConfig = { schedule: 'owner', timeoutMs: 10_000, verifier: { path: FAKE_OK } };
     const a = new SqliteAdapterImpl(dbPath, { deepVerify: cfg });
     await a.init();
     await a.exec('CREATE TABLE t (x INTEGER)');

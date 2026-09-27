@@ -492,9 +492,41 @@ export async function openDb(dbPath: string): Promise<StoreAdapter> {
  * literal, so db-concurrency-contract.spec.ts still sees every site's
  * `concurrencyMode: STORE_MODE()`.
  */
-function deepVerifyStoreOpts(): { deepVerify?: { timeoutMs: number } } {
+function deepVerifyStoreOpts(): { deepVerify: { timeoutMs?: number; schedule: DeepVerifyScheduleRole } } {
   const deepVerifyTimeoutMs = resolveStoreVerifyConfig().deepVerifyTimeoutMs;
-  return deepVerifyTimeoutMs !== undefined ? { deepVerify: { timeoutMs: deepVerifyTimeoutMs } } : {};
+  return {
+    deepVerify: {
+      schedule: _deepVerifySchedule,
+      ...(deepVerifyTimeoutMs !== undefined ? { timeoutMs: deepVerifyTimeoutMs } : {}),
+    },
+  };
+}
+
+/** (BL-9f6681ee) Mirrors store-adapter's `DeepVerifySchedule` (kept local so
+ *  this CJS module needs no type-only import across the ESM bridge). */
+export type DeepVerifyScheduleRole = 'owner' | 'never';
+
+let _deepVerifySchedule: DeepVerifyScheduleRole = 'never';
+
+/**
+ * (BL-9f6681ee) Declare this PROCESS's role for the background deep integrity
+ * pass on every writable store it opens. Only a long-lived process (the
+ * memory-server composition root) passes `'owner'`; everything else — the
+ * CLI, hooks, memory-flush — keeps the `'never'` default, so a one-shot that
+ * opens a store owing deep verification records the obligation but never
+ * forks a verifier it would cancel or kill on exit. Typed process config
+ * (ADR-0013), not an env toggle; call before the first `openDb`.
+ */
+export function setDeepVerifySchedule(role: DeepVerifyScheduleRole): void {
+  if (role !== 'owner' && role !== 'never') {
+    throw new Error(`setDeepVerifySchedule: expected 'owner' or 'never', got ${JSON.stringify(role)}`);
+  }
+  _deepVerifySchedule = role;
+}
+
+/** The deep-verify schedule role this process opens stores with. */
+export function getDeepVerifySchedule(): DeepVerifyScheduleRole {
+  return _deepVerifySchedule;
 }
 
 async function _openDbInner(dbPath: string): Promise<StoreAdapter> {

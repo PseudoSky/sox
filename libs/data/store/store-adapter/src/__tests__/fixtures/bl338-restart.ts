@@ -28,7 +28,8 @@ const [, , dbPath] = process.argv;
 async function main(): Promise<void> {
   if (!dbPath) throw new Error('usage: bl338-restart <dbPath>');
 
-  const adapter = await TursoAdapterImpl.connect({ dbPath });
+  // (BL-9f6681ee) Open as the deep-verify owner so the owed pass actually runs.
+  const adapter = await TursoAdapterImpl.connect({ dbPath, deepVerify: { schedule: 'owner' } });
   try {
     const rows = await adapter.executeAll<{ id: number }>('SELECT id FROM crash_node ORDER BY id');
     const ids = rows.rows.map((r) => Number(r.id));

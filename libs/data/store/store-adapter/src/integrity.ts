@@ -145,6 +145,7 @@ import {
   markDeepVerifyOwed,
   readDeepVerifyObligation,
   scheduleDeepVerify,
+  resolveDeepVerifySchedule,
   validateDeepVerifyConfig,
   type ScheduleDeepVerifyOptions,
 } from './deep-verify.js';
@@ -3471,10 +3472,19 @@ export async function runOpenTimeIntegrity(
       });
     }
   }
-  if (owed) {
+  if (owed && resolveDeepVerifySchedule(adapter.config.deepVerify) === 'owner') {
     const scheduleOpts: ScheduleDeepVerifyOptions = { fastResult: result, reason };
     if (opts.onReport) scheduleOpts.onReport = opts.onReport;
     void scheduleDeepVerify(adapter, scheduleOpts);
+  } else if (owed) {
+    // (BL-9f6681ee) A one-shot opener records the obligation (above) but never
+    // forks: it would close or exit mid-pass, cancel/kill the verifier, and
+    // starve the long-lived owner that can actually finish it.
+    log.info('store_adapter.deep_verify.deferred_to_owner', {
+      db_path: adapter.config.dbPath,
+      reason,
+      detail: "deep verification is owed; this opener's deepVerify.schedule is 'never', so a long-lived owner runs it",
+    });
   }
   return result;
 }
