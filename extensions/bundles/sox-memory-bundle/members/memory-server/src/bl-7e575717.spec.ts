@@ -35,7 +35,7 @@ beforeAll(() => {
 });
 
 afterAll(() => {
-  try { fs.rmSync(TEST_DIR, { recursive: true, force: true }); } catch { /* ignore */ }
+  fs.rmSync(TEST_DIR, { recursive: true, force: true });
 });
 
 function parseError(result: Awaited<ReturnType<typeof handleToolCall>>): { code?: string; message?: string } {
