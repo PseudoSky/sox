@@ -25,6 +25,7 @@ export * from './fts-ops.js';
 export * from './store-lease.js';
 export * from './cold-open-lock.js';
 export * from './adapter-meta.js';
+export * from './store-rebuild.js';
 export * from './integrity.js';
 export * from './integrity-status.js';
 export * from './migration.js';

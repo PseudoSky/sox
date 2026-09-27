@@ -76,6 +76,7 @@ import {
   memoryWriteBatchPhaseA,
   memoryWritePhaseA,
   readEnrichStallEscalation,
+  readStoreGrowthGauge,
   resolveStoreOrDbPath,
   runEnrichIsolated,
   runCompactionPass,
@@ -1445,6 +1446,23 @@ async function handleToolCallImpl(name: string, args: Record<string, unknown>): 
         // stall already recovered.
         const enrichStallEscalation = await readEnrichStallEscalation(adapter);
 
+        // BL-c5249cdd: store-growth gauge — file bytes / page_count /
+        // freelist_count, bytes per live node, and the persisted count of
+        // in-service FTS OPTIMIZE passes since the last offline rebuild (the
+        // Turso 0.7.x segment-leak driver), alarmed on typed numeric
+        // thresholds (ADR-0013 D3). Additive (HF-3): its alarm does NOT fold
+        // into `status` — a leaking store still serves every read and write,
+        // so it is an operator action item (`remedy`), not a health failure.
+        // A failure here degrades to `growth: null` + `growth_error`, never
+        // takes out the store block.
+        let storeGrowth: Awaited<ReturnType<typeof readStoreGrowthGauge>> | null = null;
+        let storeGrowthError: string | null = null;
+        try {
+          storeGrowth = await readStoreGrowthGauge(adapter, resolvedPath);
+        } catch (err) {
+          storeGrowthError = err instanceof Error ? err.message : String(err);
+        }
+
         // The store opened AND the probe queries above succeeded — the write
         // path is reachable right now (any poisoned-connection failure would
         // have thrown out of executeGet through the reconnect path, landing in
@@ -1566,6 +1584,8 @@ async function handleToolCallImpl(name: string, args: Record<string, unknown>): 
           // the store 'poisoned' or stuck 'reconnecting' would have been
           // invisible to `memory_ping` even though the field existed.
           connection_health: adapterConnectionHealth(adapter),
+          growth: storeGrowth,
+          growth_error: storeGrowthError,
         };
       } else if (resolvedPath) {
         // Resolved to a path whose file does not exist yet — an unborn store,

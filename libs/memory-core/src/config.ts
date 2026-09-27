@@ -180,3 +180,92 @@ export function resolveEnrichHealthConfig(overrides?: {
     },
   };
 }
+
+// ── StoreGrowthConfig (BL-c5249cdd) ───────────────────────────────────────────
+//
+// `memory_ping`'s store-growth gauge alarms when the store has grown past what
+// its live content explains. On `@tursodatabase/database` 0.7.1/0.7.2 every
+// interleaved insert + in-service `OPTIMIZE INDEX` round orphans the merged-away
+// FTS segments; only an offline `memory fts-rebuild` (VACUUM INTO) reclaims
+// them. Measured on a copy of production: 436.1 MB before, 160.3 MB after —
+// 2.72× — with identical rows.
+//
+// ADR-0013 D3: numeric tuning, never a switch. Both thresholds are typed config
+// with a default; each MAY be tuned by env with a loud parse failure (a bad
+// value is reported in `config_errors` on the gauge and the default is kept).
+// Nothing here can disable the gauge or the alarm.
+
+export interface StoreGrowthConfig {
+  /**
+   * Alarm when `file_bytes / live_nodes` exceeds this. Default 24 KiB ≈ 3× the
+   * compacted density measured on the Aug-15 VACUUM rehearsal (97.3 MB /
+   * 11,782 nodes ≈ 8.3 KB per node) — a store carrying roughly twice its
+   * compacted size in orphaned pages.
+   */
+  bytesPerLiveNodeAlarm: number;
+  /**
+   * Alarm when in-service OPTIMIZE passes since the last rebuild exceed this.
+   * Each pass merges ≥ 256 writes' segments (`DEFAULT_FTS_OPTIMIZE_WRITE_
+   * THRESHOLD`) and orphans them; at the production copy's measured ~30 KB per
+   * orphan segment (216.9 MB / 7,273) that is several MB per pass, so 32 passes
+   * is on the order of one compacted store's worth of leak.
+   */
+  optimizePassesSinceRebuildAlarm: number;
+  /** Below this many live nodes the bytes-per-node ratio is not judged — a
+   *  near-empty store is all fixed overhead and would alarm meaninglessly. */
+  minLiveNodes: number;
+}
+
+export const DEFAULT_STORE_GROWTH_CONFIG: StoreGrowthConfig = {
+  bytesPerLiveNodeAlarm: 24 * 1024,
+  optimizePassesSinceRebuildAlarm: 32,
+  minLiveNodes: 500,
+};
+
+/** D3 env tuning knobs for {@link StoreGrowthConfig} (numeric only). */
+export const STORE_GROWTH_ENV = Object.freeze({
+  bytesPerLiveNodeAlarm: 'SOX_STORE_GROWTH_BYTES_PER_NODE_ALARM',
+  optimizePassesSinceRebuildAlarm: 'SOX_STORE_GROWTH_OPTIMIZE_PASSES_ALARM',
+  minLiveNodes: 'SOX_STORE_GROWTH_MIN_LIVE_NODES',
+} as const);
+
+export interface ResolvedStoreGrowthConfig {
+  config: StoreGrowthConfig;
+  /** One entry per env value that failed to parse (default kept). */
+  errors: string[];
+}
+
+/**
+ * Resolve the growth-gauge config: typed `overrides` > env (D3) > defaults.
+ * Never throws; a malformed env value is reported in `errors`, never silently
+ * ignored and never allowed to disable anything.
+ */
+export function resolveStoreGrowthConfig(
+  overrides?: Partial<StoreGrowthConfig>,
+  env: NodeJS.ProcessEnv = process.env,
+): ResolvedStoreGrowthConfig {
+  const errors: string[] = [];
+  const pick = (key: keyof StoreGrowthConfig): number => {
+    const o = overrides?.[key];
+    if (o !== undefined) {
+      if (Number.isFinite(o) && o > 0) return o;
+      errors.push(`override ${key}=${String(o)} is not a positive number; using default ${DEFAULT_STORE_GROWTH_CONFIG[key]}`);
+      return DEFAULT_STORE_GROWTH_CONFIG[key];
+    }
+    const name = STORE_GROWTH_ENV[key];
+    const raw = env[name];
+    if (raw === undefined || raw.trim() === '') return DEFAULT_STORE_GROWTH_CONFIG[key];
+    const n = Number(raw);
+    if (Number.isFinite(n) && n > 0) return n;
+    errors.push(`${name}=${JSON.stringify(raw)} is not a positive number; using default ${DEFAULT_STORE_GROWTH_CONFIG[key]}`);
+    return DEFAULT_STORE_GROWTH_CONFIG[key];
+  };
+  return {
+    config: {
+      bytesPerLiveNodeAlarm: pick('bytesPerLiveNodeAlarm'),
+      optimizePassesSinceRebuildAlarm: pick('optimizePassesSinceRebuildAlarm'),
+      minLiveNodes: pick('minLiveNodes'),
+    },
+    errors,
+  };
+}

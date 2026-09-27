@@ -2,6 +2,7 @@ import { existsSync, renameSync, statSync } from 'node:fs';
 import {
   consumeUncleanShutdownFlag,
   ensureAdapterMetaTable,
+  FTS_OPTIMIZE_PASS_INCREMENT_SQL,
   markCleanShutdown,
   stampAdapterMeta,
 } from './adapter-meta.js';
@@ -851,6 +852,7 @@ export class TursoAdapterImpl implements TursoAdapter {
     try {
       await this._ensureHealthy();
       const optimized = await this._optimizeAllFtsIndexes(coordDb, writes, perIndex);
+      if (optimized.length > 0) await this._countInServiceOptimizePass(coordDb);
       this._ftsWritesSinceOptimize = 0;
       this._ftsStarvedWarned = false;
       this._ftsOptimizeFailures = 0;
@@ -892,6 +894,30 @@ export class TursoAdapterImpl implements TursoAdapter {
       return outcome;
     } finally {
       this._inFlightOps--;
+    }
+  }
+
+  /**
+   * (BL-c5249cdd) Persist one more in-service OPTIMIZE pass into
+   * `_adapter_meta` (`fts_optimize_passes_since_rebuild`). Measured on 0.7.1
+   * and 0.7.2: every interleaved insert+OPTIMIZE round leaks the merged-away
+   * FTS segments into orphaned pages that only an offline `VACUUM INTO`
+   * (`memory fts-rebuild`) reclaims, so this counter is the leak's driver and
+   * `memory_ping`'s growth gauge reads it. `rebuildStoreOffline` resets it to 0
+   * in the rebuilt file.
+   *
+   * Written through `this.db` directly — NOT `executeRun`, whose `_trackOp`
+   * re-arms the idle timer this pass runs from (BUG-022's self-perpetuating
+   * loop). Best-effort: a failure is logged and never fails the pass it counts.
+   */
+  private async _countInServiceOptimizePass(dbPath: string): Promise<void> {
+    try {
+      await this.db.exec(FTS_OPTIMIZE_PASS_INCREMENT_SQL);
+    } catch (err) {
+      log.warn('fts.optimize.pass_count_failed', {
+        db_path: dbPath,
+        error: err instanceof Error ? err.message : String(err),
+      });
     }
   }
 
@@ -947,9 +973,110 @@ export class TursoAdapterImpl implements TursoAdapter {
   }
 
   /**
-   * (4cd68c4e) Implementation of the exported `optimizeFtsIndexes` — static so
-   * it can read the opened instance's lease token for the post-open
-   * quiescence re-check.
+   * (4cd68c4e, BL-c5249cdd) The ONE offline-exclusivity gate, shared by every
+   * operation that must run with the store provably out of use
+   * (`optimizeFtsIndexes`, `rebuildStoreOffline`). Returns an OPEN adapter on
+   * success — the caller owns closing it — or the refusal, having closed
+   * anything it opened.
+   *
+   * Before opening: a live lease peer (e.g. a running memory-server) means the
+   * service is up. Refuse.
+   *
+   * (4cd68c4e-H1) The lease is not enough: an IDLE service has released its
+   * connection and its lease (`releaseIdleConnection()`, the default `'gated'`
+   * idle flush) yet is alive and will reconnect on its next request. Its
+   * opener entry outlives the idle-release — refuse while any live opener
+   * exists. `unknown` (the opener dir exists but cannot be read) is not proof
+   * of absence.
+   *
+   * After opening, excluding our own lease and opener: closes most of the
+   * window in which a peer could have started between the two checks. A
+   * freshly connected instance takes its lease with its first operation
+   * (measured: `_lease` is null straight after connect(), set after one
+   * statement), so one is issued before the re-check.
+   *
+   * `readonly: true` opens `readonly + allowFtsInReadonly` — the source bytes
+   * are never written (no engine stamp, no clean-shutdown marker, no open-time
+   * repair), which is what `rebuildStoreOffline --dry-run` needs; measured
+   * 2026-09-27 on 0.7.1: the soft-readonly open still takes a lease and an
+   * opener entry, so the post-open re-check is identical.
+   */
+  static async openOfflineExclusive(
+    dbPath: string,
+    opts: { event: string; readonly?: boolean },
+  ): Promise<
+    | { ok: true; canonical: string; adapter: TursoAdapterImpl }
+    | { ok: false; canonical: string; reason: 'peers' | 'openers' | 'no_lease'; pids: number[] }
+    | { ok: false; canonical: string; reason: 'open_failed'; pids: number[]; error: string }
+  > {
+    const canonical = canonicalDbPath(dbPath);
+    const refuse = (reason: 'peers' | 'openers' | 'no_lease', pids: number[]) => {
+      log.warn(`${opts.event}.refused`, {
+        db_path: canonical,
+        reason,
+        peer_count: pids.length,
+        peer_pids: pids.join(','),
+      });
+      return { ok: false as const, canonical, reason, pids };
+    };
+    const pre = storeQuiescence(canonical);
+    if (!pre.quiescent) return refuse('peers', pre.livePeers.map((p) => p.pid));
+    const preOpeners = storeOpeners(canonical);
+    if (preOpeners.livePids.length > 0 || preOpeners.unknown) {
+      return refuse('openers', preOpeners.livePids);
+    }
+    const openFailed = (err: unknown) => {
+      const error = err instanceof Error ? err.message : String(err);
+      log.error(`${opts.event}.failed`, { db_path: canonical, stage: 'open', error });
+      return { ok: false as const, canonical, reason: 'open_failed' as const, pids: [] as number[], error };
+    };
+    let adapter: TursoAdapterImpl;
+    try {
+      adapter = await TursoAdapterImpl.connect({
+        dbPath: canonical,
+        // Idle flush far out: the adapter must not idle-release mid-pass.
+        idleFlushMs: 3_600_000,
+        ...(opts.readonly === true ? { readonly: true, allowFtsInReadonly: true } : {}),
+      });
+    } catch (err) {
+      return openFailed(err);
+    }
+    const closeQuietly = async (): Promise<void> => {
+      try {
+        await adapter.close();
+      } catch (err) {
+        log.error(`${opts.event}.close_failed`, {
+          db_path: canonical,
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
+    };
+    try {
+      await adapter.executeGet('SELECT 1 AS one');
+    } catch (err) {
+      await closeQuietly();
+      return openFailed(err);
+    }
+    if (!adapter._lease) {
+      await closeQuietly();
+      return refuse('no_lease', []);
+    }
+    const post = storeQuiescence(canonical, adapter._lease.token);
+    if (!post.quiescent) {
+      await closeQuietly();
+      return refuse('peers', post.livePeers.map((p) => p.pid));
+    }
+    const postOpeners = storeOpeners(canonical, adapter._opener ?? undefined);
+    if (postOpeners.livePids.length > 0 || postOpeners.unknown) {
+      await closeQuietly();
+      return refuse('openers', postOpeners.livePids);
+    }
+    return { ok: true, canonical, adapter };
+  }
+
+  /**
+   * (4cd68c4e) Implementation of the exported `optimizeFtsIndexes` — gated by
+   * {@link TursoAdapterImpl.openOfflineExclusive}.
    */
   static async optimizeFtsIndexesOffline(dbPath: string): Promise<FtsOfflineOptimizeReport> {
     const startedAt = Date.now();
@@ -966,70 +1093,24 @@ export class TursoAdapterImpl implements TursoAdapter {
       log.error('fts.optimize.offline.failed', { db_path: dbPath, reason: 'not_found' });
       return report;
     }
-    const canonical = canonicalDbPath(dbPath);
-    const refuse = (reason: 'peers' | 'openers' | 'no_lease', pids: number[]): FtsOfflineOptimizeReport => {
-      log.warn('fts.optimize.offline.refused', {
-        db_path: canonical,
-        reason,
-        peer_count: pids.length,
-        peer_pids: pids.join(','),
-      });
+    const gate = await TursoAdapterImpl.openOfflineExclusive(dbPath, { event: 'fts.optimize.offline' });
+    const canonical = gate.canonical;
+    if (!gate.ok) {
+      if (gate.reason === 'open_failed') {
+        return { ...base, status: 'failed', db_path: canonical, duration_ms: Date.now() - startedAt, error: gate.error };
+      }
       return {
         ...base,
         status: 'refused',
-        reason,
+        reason: gate.reason,
         db_path: canonical,
-        peer_count: pids.length,
-        peer_pids: pids,
+        peer_count: gate.pids.length,
+        peer_pids: gate.pids,
         duration_ms: Date.now() - startedAt,
       };
-    };
-    // Before opening: a live lease peer (e.g. a running memory-server) means
-    // the service is up — the merge blocks it for tens of seconds. Refuse.
-    const pre = storeQuiescence(canonical);
-    if (!pre.quiescent) return refuse('peers', pre.livePeers.map((p) => p.pid));
-    // (4cd68c4e-H1) The lease is not enough: an IDLE service has released its
-    // connection and its lease (`releaseIdleConnection()`, the default
-    // `'gated'` idle flush) yet is alive and will reconnect on its next
-    // request, straight into a 27–34 s merge. Its opener entry outlives the
-    // idle-release — refuse while any live opener exists. `unknown` (the
-    // opener dir exists but cannot be read) is not proof of absence.
-    const preOpeners = storeOpeners(canonical);
-    if (preOpeners.livePids.length > 0 || preOpeners.unknown) {
-      return refuse('openers', preOpeners.livePids);
     }
-
-    const openFailed = (err: unknown): FtsOfflineOptimizeReport => {
-      const error = err instanceof Error ? err.message : String(err);
-      log.error('fts.optimize.offline.failed', { db_path: canonical, stage: 'open', error });
-      return { ...base, status: 'failed', db_path: canonical, duration_ms: Date.now() - startedAt, error };
-    };
-    // Idle flush far out: the adapter must not idle-release mid-pass.
-    let adapter: TursoAdapterImpl;
+    const adapter = gate.adapter;
     try {
-      adapter = await TursoAdapterImpl.connect({ dbPath: canonical, idleFlushMs: 3_600_000 });
-    } catch (err) {
-      return openFailed(err);
-    }
-    try {
-      // A freshly connected instance takes its lease with its first operation
-      // (measured: `_lease` is null straight after connect(), set after one
-      // statement), so issue one before the re-check.
-      try {
-        await adapter.executeGet('SELECT 1 AS one');
-      } catch (err) {
-        return openFailed(err);
-      }
-      // After opening, excluding our own lease: closes most of the window in
-      // which a peer could have started between the two checks.
-      if (!adapter._lease) return refuse('no_lease', []);
-      const post = storeQuiescence(canonical, adapter._lease.token);
-      if (!post.quiescent) return refuse('peers', post.livePeers.map((p) => p.pid));
-      const postOpeners = storeOpeners(canonical, adapter._opener ?? undefined);
-      if (postOpeners.livePids.length > 0 || postOpeners.unknown) {
-        return refuse('openers', postOpeners.livePids);
-      }
-
       const perIndex: FtsIndexOptimizeResult[] = [];
       adapter._inFlightOps++;
       try {

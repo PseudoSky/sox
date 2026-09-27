@@ -185,3 +185,69 @@ export async function detectAdapterChange(
   if (meta.adapter_type === null) return false;
   return meta.adapter_type !== requestedType;
 }
+
+// ── Store-growth meta (BL-c5249cdd) ───────────────────────────────────────────
+
+/**
+ * `_adapter_meta` keys behind `memory_ping`'s store-growth gauge.
+ *
+ * `fts_optimize_passes_since_rebuild` counts in-service `OPTIMIZE INDEX` passes
+ * (the turso adapter's idle-flush FTS maintenance). Measured on
+ * `@tursodatabase/database` 0.7.1 and 0.7.2: interleaved insert+OPTIMIZE rounds
+ * orphan the merged-away FTS segments, so page_count grows with this counter
+ * while a single OPTIMIZE over the same corpus does not. Only an offline
+ * `VACUUM INTO` rebuild (`memory fts-rebuild`) reclaims the space; the rebuild
+ * resets the counter to 0 and stamps `last_rebuild_at` in the rebuilt file.
+ */
+export const STORE_GROWTH_META_KEYS = Object.freeze({
+  FTS_OPTIMIZE_PASSES_SINCE_REBUILD: 'fts_optimize_passes_since_rebuild',
+  LAST_REBUILD_AT: 'last_rebuild_at',
+} as const);
+
+/** One in-service OPTIMIZE pass: increment the persisted counter (row created
+ *  at 1 when absent). A single self-contained statement so the adapter can run
+ *  it through its raw driver handle without `_trackOp` (BUG-022). */
+export const FTS_OPTIMIZE_PASS_INCREMENT_SQL = `INSERT INTO ${META_TABLE}(key, value) VALUES ('${STORE_GROWTH_META_KEYS.FTS_OPTIMIZE_PASSES_SINCE_REBUILD}', '1')
+  ON CONFLICT(key) DO UPDATE SET value = CAST(CAST(value AS INTEGER) + 1 AS TEXT)`;
+
+/** Upsert statement for a store-growth key (rebuild reset). Parameters: key, value. */
+export const STORE_GROWTH_META_UPSERT_SQL = STAMP_SQL;
+
+/** Create-if-missing for `_adapter_meta`, for callers holding a raw driver handle. */
+export const ADAPTER_META_CREATE_SQL = CREATE_META_TABLE;
+
+export interface StoreGrowthMeta {
+  /** In-service OPTIMIZE passes since the last rebuild; `null` when never
+   *  counted (a store that predates the counter, or has never optimized). */
+  ftsOptimizePassesSinceRebuild: number | null;
+  /** ISO timestamp of the last `memory fts-rebuild` swap; `null` when never rebuilt. */
+  lastRebuildAt: string | null;
+}
+
+/**
+ * Read the store-growth keys. Never throws: a missing table or a transient
+ * read error is logged and reads as all-null (the gauge then reports the
+ * counter as unknown, never as 0).
+ */
+export async function readStoreGrowthMeta(adapter: StoreAdapter): Promise<StoreGrowthMeta> {
+  try {
+    const { rows } = await adapter.executeAll<{ key: string; value: string }>(
+      `SELECT key, value FROM ${META_TABLE} WHERE key IN (?, ?)`,
+      [STORE_GROWTH_META_KEYS.FTS_OPTIMIZE_PASSES_SINCE_REBUILD, STORE_GROWTH_META_KEYS.LAST_REBUILD_AT],
+    );
+    const map = new Map(rows.map((r) => [r.key, r.value]));
+    const rawPasses = map.get(STORE_GROWTH_META_KEYS.FTS_OPTIMIZE_PASSES_SINCE_REBUILD);
+    const passes = rawPasses === undefined ? null : Number(rawPasses);
+    return {
+      ftsOptimizePassesSinceRebuild: passes !== null && Number.isFinite(passes) ? passes : null,
+      lastRebuildAt: map.get(STORE_GROWTH_META_KEYS.LAST_REBUILD_AT) ?? null,
+    };
+  } catch (err) {
+    log.debug('store_adapter.meta.read_growth_failed', {
+      db_path: adapter.config.dbPath,
+      error: err instanceof Error ? err.message : String(err),
+      reason: 'table missing or transient error; growth meta reads as unknown',
+    });
+    return { ftsOptimizePassesSinceRebuild: null, lastRebuildAt: null };
+  }
+}

@@ -50,6 +50,20 @@ export type { PingHealthInput, PingHealthStatus, PingHealthVerdict } from './pin
 
 // ── Typed config surface (ADR-0013 D2/D3) ────────────────────────────────────
 export { isBackupStorePath, resolveBackupConfig, DEFAULT_BACKUP_CONFIG, resolveEnrichHealthConfig, DEFAULT_ENRICH_HEALTH_CONFIG } from './config.js';
+// BL-c5249cdd: store-growth gauge (memory_ping) + its typed D3 config.
+export {
+  resolveStoreGrowthConfig,
+  DEFAULT_STORE_GROWTH_CONFIG,
+  STORE_GROWTH_ENV,
+} from './config.js';
+export type { StoreGrowthConfig, ResolvedStoreGrowthConfig } from './config.js';
+export {
+  readStoreGrowthGauge,
+  evaluateStoreGrowthAlarm,
+  STORE_GROWTH_REMEDY,
+  _resetStoreGrowthAlarmWarningsForTest,
+} from './store-growth.js';
+export type { StoreGrowthGauge } from './store-growth.js';
 export type { BackupConfig, EnrichHealthConfig } from './config.js';
 
 // ── Writer lease (SA-8, BL-128) ───────────────────────────────────────────────

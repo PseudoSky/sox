@@ -1,5 +1,5 @@
 /**
- * Memory CLI — memory init|import|status|list|promote|registry|export|fts-optimize
+ * Memory CLI — memory init|import|status|list|promote|registry|export|fts-optimize|fts-rebuild|restore
  * Deterministic: no LLM calls, predictable output.
  *
  * P3: multi-scope with registry.json.
@@ -54,7 +54,13 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { initTelemetry, resolveProcessRole, type InitTelemetryOptions } from '@adhd/sox-telemetry';
-import { optimizeFtsIndexes } from '@adhd/sox-store-adapter';
+import {
+  optimizeFtsIndexes,
+  rebuildStoreOffline,
+  restoreStoreOffline,
+  type StorePageStats,
+  type StoreReplacementVerification,
+} from '@adhd/sox-store-adapter';
 
 export type ScopeKind = 'project' | 'user' | 'org' | 'local';
 
@@ -634,6 +640,123 @@ async function cmdFtsOptimize(dbFlag: string, rest: string[]): Promise<void> {
   console.log(`  duration_ms: ${report.duration_ms}`);
 }
 
+function resolveCliDb(dbFlag: string, positional: string | undefined): string {
+  const home = process.env['HOME'] ?? process.env['USERPROFILE'] ?? os.homedir();
+  const rawDb = dbFlag || positional || path.join(home, '.memory', 'memory.db');
+  return path.resolve(rawDb.replace(/^~(?=\/|$)/, home));
+}
+
+function fmtStats(s: StorePageStats): string {
+  return `${s.file_bytes} bytes, page_count ${s.page_count} × page_size ${s.page_size}, freelist_count ${s.freelist_count}`;
+}
+
+function printVerification(tag: string, v: StoreReplacementVerification): void {
+  const tablesOk = v.table_counts.filter((t) => t.ok).length;
+  const ftsOk = v.fts_round_trip.filter((f) => f.ok).length;
+  console.log(`  verification: ${v.ok ? 'ok' : 'FAILED'}`);
+  console.log(`    tables:     ${tablesOk}/${v.table_counts.length} row counts equal`);
+  console.log(`    fts:        ${ftsOk}/${v.fts_round_trip.length} sentinel round-trips equal`);
+  console.log(
+    `    integrity:  ${v.integrity.ok ? 'ok' : 'DAMAGED'} (known false positives ${v.integrity.known_false_positives}, ` +
+      `page-accounting ${v.integrity.page_accounting}${v.integrity.truncated ? ', TRUNCATED' : ''})`,
+  );
+  for (const f of v.failures) console.error(`[${tag}]   ${f}`);
+}
+
+function refusalMessage(tag: string, reason: string | undefined, pids: number[] | undefined, db: string, detail?: string): string {
+  const p = (pids ?? []).join(',');
+  const why =
+    reason === 'peers'
+      ? `${pids?.length ?? 0} live store peer(s) (pids ${p})`
+      : reason === 'openers'
+        ? `${pids?.length ?? 0} live process(es) have the store open (pids ${p || 'unknown'})`
+        : `${reason ?? 'unknown'}${detail ? `: ${detail}` : ''}`;
+  return (
+    `[${tag}] REFUSED: ${why} — run \`soxe service disable memory-server\` first (under launchd KeepAlive a ` +
+    `killed memory-server respawns), stop every other process holding ${db}, then re-run`
+  );
+}
+
+/**
+ * (BL-c5249cdd) `fts-rebuild` — OFFLINE compaction. Every interleaved
+ * insert + OPTIMIZE round (the in-service FTS maintenance) orphans the merged-away
+ * FTS segments on Turso 0.7.x; only `VACUUM INTO` reclaims them. This verb runs
+ * `rebuildStoreOffline` (store-adapter/src/store-rebuild.ts): same refusal gate
+ * as `fts-optimize`, VACUUM INTO `<db>.rebuild-<ts>`, verify, atomic swap, the
+ * pre-swap file kept as `<db>.pre-rebuild-<ts>`. Exit 2 on refused, 1 on failed.
+ */
+async function cmdFtsRebuild(dbFlag: string, rest: string[], dryRun: boolean): Promise<void> {
+  const resolvedDb = resolveCliDb(dbFlag, rest[0]);
+  if (!fs.existsSync(resolvedDb)) {
+    console.error(`[fts-rebuild] db not found: ${resolvedDb}`);
+    process.exit(1);
+  }
+  const r = await rebuildStoreOffline(resolvedDb, { dryRun });
+  if (r.status === 'refused') {
+    console.error(refusalMessage('fts-rebuild', r.reason, r.peer_pids, r.db_path, r.error));
+    process.exit(2);
+  }
+  if (r.before) console.log(`  before: ${fmtStats(r.before)}`);
+  if (r.after) console.log(`  after:  ${fmtStats(r.after)}`);
+  if (r.verification) printVerification('fts-rebuild', r.verification);
+  if (r.status === 'failed') {
+    console.error(`[fts-rebuild] ERROR (${r.reason ?? 'unknown'}): ${r.error ?? 'unknown'} (${r.duration_ms} ms)`);
+    if (r.reason === 'verification_failed' && r.rebuild_path) {
+      console.error(`[fts-rebuild] the unverified copy is kept for inspection: ${r.rebuild_path} — the store was NOT swapped`);
+    }
+    process.exit(1);
+  }
+  if (r.before && r.after) {
+    const saved = r.before.file_bytes - r.after.file_bytes;
+    const pct = r.before.file_bytes > 0 ? ((saved / r.before.file_bytes) * 100).toFixed(1) : '0.0';
+    console.log(`  ${r.status === 'dry_run' ? 'would reclaim' : 'reclaimed'}: ${saved} bytes (${pct}%), ${r.before.page_count - r.after.page_count} pages`);
+  }
+  if (r.status === 'dry_run') {
+    console.log(`[fts-rebuild] DRY-RUN: copy verified and deleted; ${r.db_path} was not swapped (${r.duration_ms} ms)`);
+    return;
+  }
+  console.log(`[fts-rebuild] complete: ${r.db_path} (${r.duration_ms} ms)`);
+  if (r.backup_path) {
+    console.log(`  backup: ${r.backup_path}`);
+    console.log(`  undo:   memory restore ${r.backup_path} --db ${r.db_path}`);
+  }
+}
+
+/**
+ * (BL-c5249cdd) `restore <backup>` — OFFLINE restore of a single-file backup
+ * (the `fts-rebuild` pre-swap file) over the store. The backup is cloned, the
+ * clone verified against it, the current store hard-linked to
+ * `<db>.pre-restore-<ts>`, and the clone renamed over `<db>`. Exit 2 on
+ * refused, 1 on failed.
+ */
+async function cmdRestore(dbFlag: string, rest: string[], dryRun: boolean): Promise<void> {
+  const backupArg = rest[0];
+  if (!backupArg) {
+    console.error('[restore] ERROR: backup path required: memory restore <backup> [--db <path>] [--dry-run]');
+    process.exit(1);
+  }
+  const home = process.env['HOME'] ?? process.env['USERPROFILE'] ?? os.homedir();
+  const resolvedBackup = path.resolve(backupArg.replace(/^~(?=\/|$)/, home));
+  const resolvedDb = resolveCliDb(dbFlag, rest[1]);
+  const r = await restoreStoreOffline(resolvedBackup, resolvedDb, { dryRun });
+  if (r.status === 'refused') {
+    console.error(refusalMessage('restore', r.reason, r.peer_pids, r.db_path, r.error));
+    process.exit(2);
+  }
+  if (r.restored) console.log(`  restored: ${fmtStats(r.restored)}`);
+  if (r.verification) printVerification('restore', r.verification);
+  if (r.status === 'failed') {
+    console.error(`[restore] ERROR (${r.reason ?? 'unknown'}): ${r.error ?? 'unknown'} (${r.duration_ms} ms)`);
+    process.exit(1);
+  }
+  if (r.status === 'dry_run') {
+    console.log(`[restore] DRY-RUN: clone of ${r.backup_path} verified and deleted; ${r.db_path} was not replaced`);
+    return;
+  }
+  console.log(`[restore] complete: ${r.backup_path} -> ${r.db_path} (${r.duration_ms} ms)`);
+  if (r.replaced_path) console.log(`  replaced store kept at: ${r.replaced_path}`);
+}
+
 export async function runCli(argv: string[]): Promise<void> {
   const { command, scope, basePath, exportDir, dbPathOverride, dryRun, force, noBackup, limit, destPath, noOptimize, rest } = parseArgs(argv);
 
@@ -668,6 +791,12 @@ export async function runCli(argv: string[]): Promise<void> {
     case 'fts-optimize':
       await cmdFtsOptimize(dbPathOverride, rest);
       break;
+    case 'fts-rebuild':
+      await cmdFtsRebuild(dbPathOverride, rest, dryRun);
+      break;
+    case 'restore':
+      await cmdRestore(dbPathOverride, rest, dryRun);
+      break;
     case 'help':
     default:
       console.log(`sox-memory CLI (P3: multi-scope)
@@ -691,6 +820,17 @@ Commands:
                                                       first — a killed one respawns under
                                                       launchd KeepAlive; refuses while any
                                                       process has the store open)
+  fts-rebuild [--db <path>] [--dry-run]                OFFLINE compaction: VACUUM INTO a copy,
+                                                      verify it (row counts, FTS round-trip,
+                                                      integrity_check), atomically swap it in;
+                                                      the pre-swap file is kept as the backup.
+                                                      Same refusal rules as fts-optimize.
+                                                      --dry-run verifies the copy, never swaps.
+  restore <backup> [--db <path>] [--dry-run]           OFFLINE restore of a single-file backup
+                                                      (e.g. <db>.pre-rebuild-<ts>) over the store;
+                                                      the replaced store is kept as
+                                                      <db>.pre-restore-<ts>. Refuses while any
+                                                      process has the store open.
 `);
   }
 }
