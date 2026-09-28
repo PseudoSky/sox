@@ -48,3 +48,29 @@ export function resolveGraceMs(flagRaw: string | undefined, envRaw: string | und
   const normalizedFlag = flagRaw !== undefined && flagRaw.trim() === '' ? undefined : flagRaw;
   return parseGraceMsFlag(normalizedFlag ?? envRaw);
 }
+
+/**
+ * Resolve a retention millisecond flag (`--grace-ms`, `--max-age-ms`) that has NO
+ * env-var fallback: absent or blank (`--flag=` → `''`) yields `defaultMs`; a
+ * present-but-invalid value (non-numeric, `Infinity`, `NaN`, negative, or a bare
+ * `--flag` which the parser stores as `'true'`) THROWS.
+ *
+ * This is the `gc` flag class the `Number(flags['x'] ?? None)` spelling silently
+ * broke: `Number('') === 0` turned a blank `--grace-ms=` into grace 0 (trash
+ * swept in the SAME command) and `Number('true') === NaN` made the `maxAgeMs`
+ * comparison always-false (age gate disabled). Both are refused here instead.
+ */
+export function resolveRetentionMsFlag(
+  raw: string | undefined,
+  defaultMs: number,
+  flagName: string,
+): number {
+  if (raw === undefined || raw.trim() === '') return defaultMs;
+  const n = parseGraceMsFlag(raw);
+  if (n === undefined) {
+    throw new Error(
+      `${flagName} must be a finite, non-negative number of milliseconds (got ${JSON.stringify(raw)})`,
+    );
+  }
+  return n;
+}

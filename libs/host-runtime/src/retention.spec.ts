@@ -10,7 +10,14 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import { planRetention, applyRetention, sweepTrash, type RootsModel, type RetentionPolicy } from './retention.js';
+import {
+  planRetention,
+  applyRetention,
+  sweepTrash,
+  type RootsModel,
+  type RetentionPolicy,
+  type RetentionPlan,
+} from './retention.js';
 
 let dir: string;
 let trashDir: string;
@@ -100,5 +107,144 @@ describe('AC5 — retention never deletes a root; unreferenced survives the grac
     const plan = planRetention(dir, roots(), { ...policy(), maxAgeMs: 60_000 });
     expect(plan.reclaim.map((r) => path.basename(r.path))).not.toContain('fresh-snap');
     expect(plan.protected.map((p) => path.basename(p.path))).toContain('fresh-snap');
+  });
+});
+
+describe('H1 — live roots are matched PATH-AWARE (trailing separator; no over-protecting substrings)', () => {
+  it('an absolute live root WITH a trailing separator still protects its generation', () => {
+    const genPath = mk('gen-1'); // path.join(dir, 'gen-1')
+    // Shell tab-completion supplies the trailing separator; the old matcher
+    // (`name === r || r.endsWith(name) || fullPath === r || ...`) matched none
+    // of its arms, so this live-rooted generation was classified reclaimable.
+    const plan = planRetention(
+      dir,
+      { liveGenerations: [genPath + path.sep], lockEntries: [], runningPids: [] },
+      policy(),
+    );
+    expect(plan.reclaim.map((r) => path.basename(r.path))).not.toContain('gen-1');
+    expect(plan.protected.map((p) => path.basename(p.path))).toContain('gen-1');
+  });
+
+  it('a bare live-root name WITH a trailing separator still protects its generation', () => {
+    mk('gen-1');
+    const plan = planRetention(
+      dir,
+      { liveGenerations: ['gen-1' + path.sep], lockEntries: [], runningPids: [] },
+      policy(),
+    );
+    expect(plan.protected.map((p) => path.basename(p.path))).toContain('gen-1');
+  });
+
+  it('a short root does NOT over-protect unrelated siblings (substring arms dropped)', () => {
+    mk('gen-1');
+    mk('gen-11'); // `name.startsWith('gen-1')` used to protect this unrelated dir
+    mk('1-other'); // `r.endsWith(name)` style: root 'gen-1' ends with '1'…
+    const plan = planRetention(
+      dir,
+      { liveGenerations: ['gen-1'], lockEntries: [], runningPids: [] },
+      policy(),
+    );
+    const protectedNames = plan.protected.map((p) => path.basename(p.path));
+    expect(protectedNames).toContain('gen-1');
+    expect(protectedNames).not.toContain('gen-11');
+    expect(plan.reclaim.map((r) => path.basename(r.path)).sort()).toEqual(['1-other', 'gen-11']);
+  });
+
+  it('a root given as an ancestor directory still roots everything beneath it', () => {
+    mk('gen-1');
+    mk('snapshot-2020');
+    // Root is the managed dir's PARENT (an ancestor of both children).
+    const plan = planRetention(
+      dir,
+      { liveGenerations: [path.dirname(dir)], lockEntries: [], runningPids: [] },
+      policy(),
+    );
+    expect(plan.reclaim).toEqual([]);
+    expect(plan.protected).toHaveLength(2);
+  });
+});
+
+describe('H2 — the trash namespace is never reclaimed (no self-nesting EINVAL)', () => {
+  it('a trash dir INSIDE the managed root is excluded, so a second gc run succeeds', async () => {
+    mk('gen-1');
+    mk('snapshot-2020');
+    const insideTrash = path.join(dir, '.trash');
+    const p: RetentionPolicy = { ...policy(), trashDir: insideTrash };
+
+    // First run: the unreferenced snapshot moves into <dir>/.trash.
+    const plan1 = planRetention(dir, roots(), p);
+    expect(plan1.reclaim.map((r) => path.basename(r.path))).toEqual(['snapshot-2020']);
+    await applyRetention(plan1, p);
+    expect(fs.existsSync(path.join(dir, 'snapshot-2020'))).toBe(false);
+    expect(fs.existsSync(insideTrash)).toBe(true);
+
+    // A gc seconds later (not the same instant): the trash dir from the PRIOR
+    // run is now older than maxAgeMs, so pre-fix it is a genuine reclaim
+    // candidate (`ageMs < maxAgeMs` is false) and the second apply throws EINVAL.
+    fs.utimesSync(insideTrash, PAST, PAST);
+
+    // Second run: `.trash` must NOT be a reclaim candidate (it matches no root),
+    // and applyRetention must not try to rename it into its own descendant.
+    const plan2 = planRetention(dir, roots(), p);
+    expect(plan2.reclaim.map((r) => path.basename(r.path))).not.toContain('.trash');
+    await expect(applyRetention(plan2, p)).resolves.toBeUndefined();
+    expect(fs.existsSync(path.join(dir, 'gen-1'))).toBe(true); // root untouched
+    expect(fs.existsSync(path.join(insideTrash, 'snapshot'))).toBe(true); // trash intact
+  });
+
+  it('applyRetention refuses an item that CONTAINS policy.trashDir (guard)', async () => {
+    const managed = path.join(dir, 'sub');
+    fs.mkdirSync(managed, { recursive: true });
+    fs.utimesSync(managed, PAST, PAST);
+    const nestedTrash = path.join(managed, 'trash');
+    const plan: RetentionPlan = {
+      reclaim: [{ path: managed, class: 'scratch', bytes: 1, reason: 'x' }],
+      protected: [],
+      unmanaged: [],
+      totalBytes: 1,
+    };
+    await expect(applyRetention(plan, { ...policy(), trashDir: nestedTrash })).rejects.toThrow(
+      /ancestor of/,
+    );
+    expect(fs.existsSync(managed)).toBe(true); // never moved into its own descendant
+  });
+});
+
+describe('MEDIUM — a mid-loop throw leaves already-moved trees recorded (recoverable)', () => {
+  it('trees moved before the throw are persisted to the manifest and remain sweepable', async () => {
+    const a = mk('snapshot-a');
+    const b = mk('snapshot-b');
+    const bad = path.join(dir, 'sub');
+    fs.mkdirSync(bad, { recursive: true });
+    fs.utimesSync(bad, PAST, PAST);
+    const nestedTrash = path.join(bad, 'trash');
+
+    // A hand-built plan whose last item is an ancestor of the trash dir, so the
+    // loop throws only AFTER a and b have moved.
+    const plan: RetentionPlan = {
+      reclaim: [
+        { path: a, class: 'snapshot', bytes: 1, reason: 'x' },
+        { path: b, class: 'snapshot', bytes: 1, reason: 'x' },
+        { path: bad, class: 'scratch', bytes: 1, reason: 'x' },
+      ],
+      protected: [],
+      unmanaged: [],
+      totalBytes: 3,
+    };
+    const p: RetentionPolicy = { ...policy(), trashDir: nestedTrash };
+    await expect(applyRetention(plan, p)).rejects.toThrow(/ancestor of/);
+
+    // The moved trees are RECORDED even though the loop threw mid-way.
+    const manifestPath = path.join(nestedTrash, 'manifest.json');
+    expect(fs.existsSync(manifestPath)).toBe(true);
+    const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8')) as Array<{ originalPath: string }>;
+    expect(manifest.map((e) => path.basename(e.originalPath)).sort()).toEqual([
+      'snapshot-a',
+      'snapshot-b',
+    ]);
+
+    // …and therefore sweepable past the grace window.
+    const swept = sweepTrash(nestedTrash, Date.now() + 120_000).sort();
+    expect(swept).toEqual([a, b].sort());
   });
 });

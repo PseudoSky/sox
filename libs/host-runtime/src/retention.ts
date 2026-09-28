@@ -81,11 +81,34 @@ function classify(name: string): RetentionClass {
   return 'scratch';
 }
 
-/** Is `name` referenced by any live root? Returns the root string, or undefined. */
+/**
+ * Is `name`/`fullPath` referenced by any live root? Returns the root string, or
+ * undefined.
+ *
+ * Roots are compared PATH-AWARE, both sides normalized (`path.resolve`, which
+ * also strips a trailing separator): an entry is rooted when its resolved path
+ * EQUALS a resolved root, when it lies BELOW a resolved root (the root is an
+ * ancestor directory), or when its basename equals the root's basename. A root
+ * supplied as an absolute path WITH a trailing separator (`join(dir,'gen-1')+sep`
+ * — what shell tab-completion produces) resolves to the same path as the entry
+ * and is therefore still protected; the previous `name === r || r.endsWith(name)`
+ * substring arms matched neither it nor a bare `gen-1/`, so a live-rooted
+ * generation was classified reclaimable and hard-deleted after the grace window
+ * (counter-design to the module header's "no artifact with a live root is ever
+ * reclaimed"). The non-path-aware substring arms are intentionally dropped:
+ * `name.startsWith(r)`/`r.endsWith(name)` over-protected on a short root (a root
+ * `gen-1` protected an unrelated `gen-1-backup`) and so defeated the GC.
+ */
 function matchingRoot(name: string, fullPath: string, roots: string[]): string | undefined {
-  return roots.find(
-    (r) => name === r || name.startsWith(r) || r.endsWith(name) || fullPath === r || fullPath.startsWith(r + path.sep),
-  );
+  const full = path.resolve(fullPath);
+  return roots.find((r) => {
+    const resolved = path.resolve(r);
+    return (
+      full === resolved ||                 // exact path (trailing separators normalized away)
+      full.startsWith(resolved + path.sep) || // entry lives under a rooted directory
+      path.basename(resolved) === name     // bare name/id/basename root
+    );
+  });
 }
 
 /**
@@ -114,9 +137,24 @@ export function planRetention(dir: string, roots: RootsModel, policy: RetentionP
 
   const now = Date.now();
   let totalBytes = 0;
+  const trashResolved = path.resolve(policy.trashDir);
 
   for (const e of entries) {
     const full = path.join(dir, e.name);
+    // The trash namespace is NEVER a reclaim candidate. If it were, a second
+    // `gc` run would select `<dir>/.trash` (it matches no live root) and
+    // `applyRetention` would rename it into its own descendant → EINVAL,
+    // leaving the just-moved trees unrecorded. Exclude it, and equally exclude
+    // any entry that CONTAINS the trash dir (moving that would be the same
+    // self-nesting move).
+    const fullResolved = path.resolve(full);
+    if (
+      fullResolved === trashResolved ||
+      fullResolved.startsWith(trashResolved + path.sep) ||
+      trashResolved.startsWith(fullResolved + path.sep)
+    ) {
+      continue;
+    }
     const root = matchingRoot(e.name, full, rootStrings);
     if (root !== undefined) {
       protectedList.push({ path: full, root });
@@ -176,12 +214,31 @@ function writeManifest(trashDir: string, entries: TrashManifestEntry[]): void {
  * namespace (SOFT delete) and records a manifest with `sweepAfter = now + graceMs`.
  * It never touches a `protected`/`unmanaged` path (they are not in the plan's
  * reclaim list). A path that vanished between planning and applying is skipped.
+ *
+ * The manifest is persisted INCREMENTALLY (after each moved tree), so a crash
+ * mid-loop can never leave an already-moved tree unrecorded — which would make it
+ * unsweepable forever (the pre-fix code wrote the manifest once, after the whole
+ * loop, outside any try/finally).
+ *
+ * An item whose path is an ANCESTOR of `policy.trashDir` is refused (a clear
+ * error) rather than renamed into its own descendant, which fails `EINVAL`.
  */
 export async function applyRetention(plan: RetentionPlan, policy: RetentionPolicy): Promise<void> {
   const manifest = readManifest(policy.trashDir);
   const now = Date.now();
+  const trashResolved = path.resolve(policy.trashDir);
   for (const item of plan.reclaim) {
     if (!fs.existsSync(item.path)) continue;
+    const itemResolved = path.resolve(item.path);
+    // Guard: moving a path into its own descendant is impossible (EINVAL) and
+    // would leave it half-recorded. planRetention already excludes these, so
+    // reaching here is an invariant violation — refuse loudly, never rename.
+    if (itemResolved === trashResolved || trashResolved.startsWith(itemResolved + path.sep)) {
+      throw new Error(
+        `[retention] refusing to trash ${item.path}: it is an ancestor of (or equal to) ` +
+        `policy.trashDir ${policy.trashDir} — a move into its own descendant is impossible (EINVAL)`,
+      );
+    }
     const destDir = path.join(policy.trashDir, item.class);
     fs.mkdirSync(destDir, { recursive: true });
     const stamped = `${path.basename(item.path)}.${now}`;
@@ -194,8 +251,10 @@ export async function applyRetention(plan: RetentionPlan, policy: RetentionPolic
       trashedAt: now,
       sweepAfter: now + policy.graceMs,
     });
+    // Persist the moved set INCREMENTALLY: a throw/crash after this point still
+    // leaves every already-moved tree recorded and therefore sweepable.
+    writeManifest(policy.trashDir, manifest);
   }
-  writeManifest(policy.trashDir, manifest);
 }
 
 /**

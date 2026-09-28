@@ -332,6 +332,45 @@ export class OwnershipIndex {
     }
   }
 
+  /**
+   * D-B Migration §3: fill `contentHash` for every hashless `file-drop` /
+   * `materialize` entry. `hashOf` computes the hash — the filesystem access and
+   * target-path semantics stay in repair.ts, which owns them; this method owns
+   * only the in-place edit and the dirty-marking. `hashOf` returns `undefined`
+   * when the target is absent, so the entry stays honestly hash-less and is
+   * counted `missingTargets`.
+   *
+   * Every record whose entries changed is marked dirty, so `save()` publishes it
+   * through this class's read-merge-verify loop. That is the whole point: the
+   * pre-fix `backfillHashes` read the index, mutated it, and published the WHOLE
+   * snapshot with `writeOwnershipAtomic`, so a concurrent `recordOwnership` that
+   * landed between the read and the write was silently erased (an untracked
+   * injection an uninstall could then never reverse).
+   */
+  backfillContentHashes(
+    hashOf: (entry: Extract<OwnedEntry, { kind: 'file-drop' | 'materialize' }>) => string | undefined,
+  ): { filled: number; missingTargets: number } {
+    let filled = 0;
+    let missingTargets = 0;
+    for (const rec of this.data.owned) {
+      let touched = false;
+      for (const e of rec.entries) {
+        if (e.kind !== 'file-drop' && e.kind !== 'materialize') continue;
+        if (e.contentHash !== undefined) continue;
+        const hash = hashOf(e);
+        if (hash === undefined) {
+          missingTargets++;
+          continue;
+        }
+        e.contentHash = hash;
+        filled++;
+        touched = true;
+      }
+      if (touched) this.markDirty(rec.extId, rec.scope);
+    }
+    return { filled, missingTargets };
+  }
+
   /** Append entries to the existing record for (extId, scope) (creating it if absent). */
   addEntries(extId: string, scope: string, entries: OwnedEntry[], meta?: {
     host?: string; bundleId?: string; artifactChecksum?: string;

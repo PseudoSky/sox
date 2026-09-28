@@ -16,7 +16,7 @@ import * as crypto from 'node:crypto';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { ownershipPathFor, type DataScope } from './data-paths.js';
-import { readOwnership, writeOwnershipAtomic, type OwnedEntry } from './ownership.js';
+import { OwnershipIndex, readOwnership, type OwnedEntry } from './ownership.js';
 
 export interface BackfillReport {
   /** file-drop/materialize entries without a contentHash BEFORE the backfill. */
@@ -49,28 +49,24 @@ export function countUnverifiable(scope: DataScope, root?: string): number {
  * backfillHashes — compute and persist `contentHash` for every file-drop /
  * materialize entry that lacks one and whose target exists on disk. Idempotent.
  * Returns before/after counts so a caller can report the migration delta.
+ *
+ * The write goes through `OwnershipIndex` (strict-load once, mutate entries via
+ * `backfillContentHashes`, `save()`), so it inherits the class's read-merge-verify
+ * lost-update protection. The previous `readOwnership` + in-place mutate +
+ * `writeOwnershipAtomic(wholeSnapshot)` published the entire file and could erase
+ * a concurrent install's just-recorded ownership.
  */
 export function backfillHashes(scope: DataScope, root?: string): BackfillReport {
   const filePath = ownershipPathFor(scope, root);
-  const data = readOwnership(filePath); // ENOENT → empty; corrupt → throws (loud)
+  const idx = OwnershipIndex.loadFromFile(filePath, { strict: true }); // ENOENT → empty; corrupt → throws (loud)
   let before = 0;
-  let filled = 0;
-  let missingTargets = 0;
+  for (const rec of idx.all()) for (const e of rec.entries) if (isHashless(e)) before++;
 
-  for (const rec of data.owned) {
-    for (const e of rec.entries) {
-      if (!isHashless(e)) continue;
-      before++;
-      const target = path.isAbsolute(e.path) ? e.path : path.join(root ?? process.cwd(), e.path);
-      if (!fs.existsSync(target)) {
-        missingTargets++;
-        continue;
-      }
-      e.contentHash = sha256File(target);
-      filled++;
-    }
-  }
+  const { filled, missingTargets } = idx.backfillContentHashes((e) => {
+    const target = path.isAbsolute(e.path) ? e.path : path.join(root ?? process.cwd(), e.path);
+    return fs.existsSync(target) ? sha256File(target) : undefined;
+  });
 
-  if (filled > 0) writeOwnershipAtomic(filePath, data);
+  if (filled > 0) idx.save();
   return { before, after: before - filled, filled, missingTargets };
 }

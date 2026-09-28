@@ -157,7 +157,7 @@ import {
 import { gateVolatileCli } from './cli-path-gate.js';
 import { registerBundleMember, resolveBundleDir } from './bundle-init.js';
 import { cliInvokedFields } from './cli-invoked-fields.js';
-import { resolveGraceMs } from './grace-ms.js';
+import { resolveGraceMs, resolveRetentionMsFlag } from './grace-ms.js';
 import { assertWithinBase, PathEscapeError } from './path-safety.js';
 import { unloadOsUnitUnlessFrontShim } from './proxy-backend-front-shim.js';
 import { determineShimIsUnit, reEnableAfterRestartGate } from './restart-proxy-backend-gate.js';
@@ -2303,10 +2303,31 @@ async function cmdGc(flags: Record<string, string>): Promise<void> {
     lockEntries: (flags['lock-entries'] ?? '').split(',').filter(Boolean),
     runningPids: (flags['running-pids'] ?? '').split(',').filter(Boolean).map(Number),
   };
+  // H4: `?? 'default'` only catches null/undefined, but the flag parser stores
+  // '' for `--grace-ms=` and 'true' for a bare `--grace-ms`, so `Number('') === 0`
+  // (grace 0 → trash swept in the same command) and `Number('true') === NaN`
+  // (age gate permanently disabled). Route both flags through the shared parser:
+  // blank → default; present-but-invalid → exit 2.
+  const resolvedDir = pathMod.resolve(dir);
+  let maxAgeMs: number;
+  let graceMs: number;
+  try {
+    maxAgeMs = resolveRetentionMsFlag(flags['max-age-ms'], 604_800_000, '--max-age-ms'); // 7d
+    graceMs = resolveRetentionMsFlag(flags['grace-ms'], 86_400_000, '--grace-ms');        // 1d
+  } catch (e) {
+    process.stderr.write(`[sox] gc: ${e instanceof Error ? e.message : String(e)}\n`);
+    process.exitCode = 2;
+    return;
+  }
   const policy = {
-    maxAgeMs: Number(flags['max-age-ms'] ?? '604800000'),
-    graceMs: Number(flags['grace-ms'] ?? '86400000'),
-    trashDir: flags['trash'] ?? pathMod.join(dir, '.trash'),
+    maxAgeMs,
+    graceMs,
+    // H2: default the trash to a SIBLING of the managed dir, never inside it —
+    // a `<dir>/.trash` becomes a top-level child that matches no root and is
+    // re-selected as a reclaim candidate on the next run.
+    trashDir:
+      flags['trash'] ??
+      pathMod.join(pathMod.dirname(resolvedDir), `.trash-${pathMod.basename(resolvedDir)}`),
   };
   const plan = planRetention(dir, roots, policy);
   if (flags['apply'] === undefined || flags['confirm'] === undefined) {
