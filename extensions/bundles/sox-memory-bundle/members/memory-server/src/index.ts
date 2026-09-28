@@ -4089,6 +4089,74 @@ export const MEMORY_SERVER_TELEMETRY_INIT_OPTIONS: InitTelemetryOptions = {
   logSink: 'file',
 };
 
+// ── Direct-stdio pre-restart auto-backup shutdown guard (BL-e7716825) ────────
+//
+// `handleDirectStdioShutdown` is the DIRECT-STDIO MODE ONLY shutdown handler
+// (see the BL-405 comment on its call site below for why BACKEND mode never
+// registers this). It must be IDEMPOTENT: a single SIGTERM/SIGINT can arrive
+// more than once — tsx's `relaySignalToChild` (node_modules/tsx/dist/cli.mjs)
+// re-sends SIGTERM 30ms after forwarding it if the child has not yet exited
+// and escalates to SIGKILL 30ms after that, launchd can redeliver a signal to
+// a process group, and Node itself fires every listener registered for a
+// signal (never just one) — so `process.on('SIGTERM', ...)` and
+// `process.on('SIGINT', ...)` can both fire for what is, from the operator's
+// perspective, a single shutdown request. Without a guard, a second
+// invocation could start a SECOND `autoBackup()` (a VACUUM INTO) concurrently
+// with the first — two backup files, or one interrupted mid-write by the
+// process exiting out from under it.
+//
+// `_directShutdownInFlight` makes the whole sequence idempotent by sharing a
+// single in-flight promise across every entry point: the FIRST call starts
+// the sequence and every LATER call (whatever signal or entry point
+// triggered it) awaits/joins that same promise instead of re-running the
+// body — mirrors the `_shuttingDown` guard `coordinatedShutdown` in
+// backend.ts already uses for the BACKEND-mode shutdown sequence (see that
+// function's own doc comment).
+let _directShutdownInFlight: Promise<void> | null = null;
+
+/** Test-only: reset the guard between specs. */
+export function __resetDirectShutdownStateForTest(): void {
+  _directShutdownInFlight = null;
+}
+
+export async function handleDirectStdioShutdown(
+  signal: string,
+  dbPathForBackup: string | null,
+  runAutoBackup: typeof autoBackup,
+  exit: (code: number) => never,
+): Promise<void> {
+  if (_directShutdownInFlight !== null) return _directShutdownInFlight;
+  _directShutdownInFlight = (async (): Promise<void> => {
+    if (dbPathForBackup === null) {
+      process.stderr.write(
+        `[memory-server] received ${signal}; no store configured (SOX_CONFIG_DB_PATH unset) — skipping pre-restart backup\n`,
+      );
+      exit(0);
+      return;
+    }
+    process.stderr.write(`[memory-server] received ${signal}, running pre-restart backup...\n`);
+    try {
+      const result = await runAutoBackup(dbPathForBackup);
+      if (!result.skipped && result.path) {
+        process.stderr.write(`[memory-server] pre-restart backup saved: ${result.path} (${result.size} bytes)\n`);
+      }
+    } catch (err) {
+      // autoBackup() is documented to never throw (all error conditions
+      // resolve to a skipped result) — this catch is a defensive backstop
+      // against a future regression, never observed to fire, but a caught
+      // error here must never be silent.
+      log.error('shutdown.pre_restart_backup.failed', {
+        signal,
+        db_path: dbPathForBackup,
+        error: err instanceof Error ? err.message : String(err),
+      });
+      process.stderr.write(`[memory-server] pre-restart backup failed: ${err}\n`);
+    }
+    exit(0);
+  })();
+  return _directShutdownInFlight;
+}
+
 if (require.main === module) {
   // Schema emission (build step). `node dist/index.js --emit-schema` prints the
   // canonical tools/list result to stdout so gen-schema.cjs can write
@@ -4197,24 +4265,12 @@ if (require.main === module) {
     // BL 0c3522c2 (mirrors BL-405 in backend.ts): back up only a CONFIGURED store.
     // An unconfigured process has no store to back up — it must not guess one.
     const dbPathForBackup = resolveDbPath(undefined);
-    async function handleShutdown(signal: string): Promise<void> {
-      if (dbPathForBackup === null) {
-        process.stderr.write(`[memory-server] received ${signal}; no store configured (SOX_CONFIG_DB_PATH unset) — skipping pre-restart backup\n`);
-        process.exit(0);
-      }
-      process.stderr.write(`[memory-server] received ${signal}, running pre-restart backup...\n`);
-      try {
-        const result = await autoBackup(dbPathForBackup);
-        if (!result.skipped && result.path) {
-          process.stderr.write(`[memory-server] pre-restart backup saved: ${result.path} (${result.size} bytes)\n`);
-        }
-      } catch (err) {
-        process.stderr.write(`[memory-server] pre-restart backup failed: ${err}\n`);
-      }
-      process.exit(0);
-    }
-    process.on('SIGTERM', () => { void handleShutdown('SIGTERM'); });
-    process.on('SIGINT', () => { void handleShutdown('SIGINT'); });
+    // BL-e7716825: every entry point that can trigger a direct-stdio shutdown
+    // goes through the SAME idempotent handler (see its doc comment above) —
+    // a repeated SIGTERM/SIGINT is a no-op that joins the first invocation's
+    // in-flight promise instead of re-running the pre-restart backup.
+    process.on('SIGTERM', () => { void handleDirectStdioShutdown('SIGTERM', dbPathForBackup, autoBackup, process.exit); });
+    process.on('SIGINT', () => { void handleDirectStdioShutdown('SIGINT', dbPathForBackup, autoBackup, process.exit); });
   }
 
   if (process.env.SOX_PROXY_BACKEND === '1') {
