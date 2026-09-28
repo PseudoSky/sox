@@ -57,7 +57,11 @@ export {
   configEnvKey,
   findManifestForSource,
   readAgentRenderInputs,
+  resolveRegistryIndexForRoot,
+  resolveDesiredPin,
+  mergeLockEntry,
 } from './install.js';
+export type { DesiredPin } from './install.js';
 export type { InstallDescriptor, DeclarativeInstallResult, ConfigSchemaProperty, RequiredConfigSeed, AgentRenderInputs } from './install.js';
 
 // ─── Re-export verify-integrity (ADR-0003 is-this-current primitive) ──────────

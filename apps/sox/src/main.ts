@@ -147,6 +147,8 @@ import {
   syncUserMcpToProjects,
   IntegrityResult,
   verifyIntegrity,
+  resolveDesiredPin,
+  resolveRegistryIndexForRoot,
 } from '@adhd/sox-install-engine';
 import { gateVolatileCli } from './cli-path-gate.js';
 import { registerBundleMember, resolveBundleDir } from './bundle-init.js';
@@ -2362,6 +2364,38 @@ async function cmdUpdate(flags: Record<string, string>): Promise<void> {
  * user/project/local; org is repo-rooted and resolved via install-engine's
  * `getScopePath('org')`.
  */
+/**
+ * BL-cd1fe520: the registry an upgrade judges and re-pins a consumer against —
+ * exactly what `install()` would resolve from for that root (its own registry,
+ * else one recovered from lockfile provenance), falling back to the registry
+ * the CLI itself can see (cwd, then the copy bundled with the CLI).
+ */
+function upgradeRegistryIndexFor(
+  root: string,
+  lock: ReturnType<typeof loadLockfile>,
+): ReturnType<typeof loadRegistryIndex> {
+  const forRoot = resolveRegistryIndexForRoot(root, lock).index;
+  if (forRoot.length > 0) return forRoot;
+  return loadRegistryResolved(process.cwd());
+}
+
+/**
+ * BL-cd1fe520: the explicit `source` a scope config pins for `id`, if any.
+ * install() honours it ahead of the registry, so upgrade must judge against it too.
+ */
+function configuredSourceFor(configPath: string, id: string): string | undefined {
+  const fsMod = require('node:fs') as typeof import('node:fs');
+  if (!fsMod.existsSync(configPath)) return undefined;
+  try {
+    const cfg = JSON.parse(fsMod.readFileSync(configPath, 'utf8')) as { install?: Array<{ id?: string; source?: string }> };
+    const found = cfg.install?.find((e) => e.id === id);
+    return typeof found?.source === 'string' && found.source !== '' ? found.source : undefined;
+  } catch (e) {
+    process.stderr.write(`${CLI} upgrade: warning: could not read ${configPath} for '${id}' source: ${String(e)}\n`);
+    return undefined;
+  }
+}
+
 function lockfilePathForRecord(scope: string, root: string): string {
   if (scope === 'org') return getScopePath('org').lockfile;
   return getScopePaths(scope, root).lockfile;
@@ -3155,8 +3189,11 @@ async function cmdReconcileAgentMcp(flags: Record<string, string>): Promise<void
  *   soxe upgrade --all        — upgrade EVERY consumer of EVERY id (full deploy).
  *
  * For each consumer (extId × scope × root) the flow is uniform:
- *   1. verifyIntegrity(scope, id) — the ONE is-this-current check (sha256 of the
- *      artifact at the lockfile `source` vs the recorded checksum).
+ *   1. verifyIntegrity(scope, id, { desired }) — the ONE is-this-current check:
+ *      sha256 of the artifact at the lockfile `source` vs the recorded checksum,
+ *      AND the recorded pin vs what resolution yields now (the registry row's
+ *      published checksum, a configured source, or a re-hashed `file://`
+ *      origin) — BL-cd1fe520.
  *   2. CURRENT → report current, make ZERO changes (idempotent — a fully-current
  *      system is the verification; there is no separate doctor/verify command).
  *   3. STALE → re-install (mode:'update' refreshes artifact + re-pins lockfile),
@@ -3224,7 +3261,12 @@ async function cmdUpgrade(flags: Record<string, string>): Promise<void> {
   // Snapshot all verdicts BEFORE any re-install so a bundle install that updates
   // the lockfile mid-pass can't taint subsequent consumers' is-this-current check.
   // Each consumer's verdict is computed from the lockfile as it was at pass start.
-  interface Snapshot { record: typeof consumers[0]; verdict: IntegrityResult | null; tag: string }
+  interface Snapshot {
+    record: typeof consumers[0];
+    verdict: IntegrityResult | null;
+    tag: string;
+    registryIndex: ReturnType<typeof loadRegistryIndex>;
+  }
   const snapshot: Snapshot[] = [];
   for (let i = 0; i < consumers.length; i++) {
     const record = consumers[i]!;
@@ -3240,18 +3282,29 @@ async function cmdUpgrade(flags: Record<string, string>): Promise<void> {
       // not-in-lockfile is a terminal state — no re-install needed, no verdict.
       process.stdout.write(`  ${tag}\n    → not in lockfile (skipped — run ${CLI} install to re-add)\n`);
       outcomes.push({ extId: record.extId, scope: record.scope, root: record.root, state: 'not-installed', detail: 'not in lockfile' });
-      snapshot.push({ record, verdict: null, tag });
+      snapshot.push({ record, verdict: null, tag, registryIndex: [] });
       continue;
     }
 
-    const verdict = await verifyIntegrity(record.scope as Scope, record.extId, { lockfilePath });
-    snapshot.push({ record, verdict, tag });
+    // BL-cd1fe520: judge the pin against what a fresh resolution would install
+    // NOW — the same registry the re-install below resolves from, and the
+    // consumer's explicit config source when it has one. Hashing the lock's
+    // `source` alone compares an npm-package content-store copy with a checksum
+    // taken from itself, so a newer published version was never visible.
+    const registryIndex = upgradeRegistryIndexFor(record.root, currentLockfile);
+    const desired = resolveDesiredPin(
+      record.extId,
+      registryIndex,
+      configuredSourceFor(configPathForRecord(record.scope, record.root), record.extId),
+    );
+    const verdict = await verifyIntegrity(record.scope as Scope, record.extId, { lockfilePath, desired });
+    snapshot.push({ record, verdict, tag, registryIndex });
   }
 
   // ── Re-install pass ─────────────────────────────────────────────────────────
   // Uses the snapshot verdicts — NEVER re-reads the lockfile — so a bundle
   // install that updates the lockfile does not taint subsequent consumers.
-  for (const { record, verdict, tag } of snapshot) {
+  for (const { record, verdict, tag, registryIndex } of snapshot) {
     if (verdict === null) continue; // already emitted not-installed above
 
     if (verdict.status === 'current') {
@@ -3270,7 +3323,8 @@ async function cmdUpgrade(flags: Record<string, string>): Promise<void> {
     // STALE — re-install (refresh artifact + re-pin lockfile).
     const lockfilePath = lockfilePathForRecord(record.scope, record.root);
     process.stdout.write(
-      `  ${tag}\n    → STALE (expected ${(verdict.expected ?? '').slice(0, 19)}…, got ${(verdict.actual ?? '').slice(0, 19)}…) — re-installing\n`,
+      `  ${tag}\n    → STALE (expected ${(verdict.expected ?? '').slice(0, 19)}…, got ${(verdict.actual ?? '').slice(0, 19)}…) — re-installing\n` +
+      (verdict.reason !== undefined ? `      reason: ${verdict.reason}\n` : ''),
     );
     try {
       await install({
@@ -3279,6 +3333,8 @@ async function cmdUpgrade(flags: Record<string, string>): Promise<void> {
         root: record.root,
         configPath: configPathForRecord(record.scope, record.root),
         lockfilePath,
+        // BL-cd1fe520: re-pin from the same index the verdict was judged against.
+        ...(registryIndex.length > 0 ? { registryIndex } : {}),
       });
       rematerializeServiceStores(record.scope, record.root, lockfilePath);
     } catch (e) {
