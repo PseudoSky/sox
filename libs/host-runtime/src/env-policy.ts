@@ -90,18 +90,29 @@
  * through it; without it the backend silently degrades) and `TMPDIR`
  * (BL-2df86153 — `os.tmpdir()` in a child MUST resolve to the same per-user
  * temp directory the parent resolves to, not fall back to the world-shared
- * `/tmp`). Without `TMPDIR` here, a child spawned through `scrubEnvReported`
- * on any of the four IN-PROCESS spawn paths — the `soxe serve` backend
- * (`main.ts:9613`), the in-process supervisor (`supervisor.ts:322`),
- * `runtime-cli.ts`'s exec path (`runtime-cli.ts:548`), and `cmdExec`
- * (`main.ts:10322`) — resolved `os.tmpdir()` to `/tmp` while the parent
- * resolved it to macOS's per-user `/var/folders/.../T/`. That silently
- * defeated ADR-0022 §5's forwarding of `TMPDIR` to the embedding host
- * (`embedHostConfig.ts`'s own, separately-maintained
- * `EMBED_HOST_ENV_FORWARD_EXACT` already carried `TMPDIR` — only these
- * parent-to-child hops were missing it) and made the BL-578 fallback socket
- * path (`libs/service-proxy/src/socket-path.ts`) resolve differently between
- * the parent and its children.
+ * `/tmp`).
+ *
+ * `TMPDIR` is forwarded on every IN-PROCESS spawn path that goes through
+ * `scrubEnvReported` — the `soxe serve` backend
+ * (`scrubEnvReported('serve backend')` in `main.ts`), the in-process
+ * supervisor (`scrubEnvReported('supervisor')` in `supervisor.ts`),
+ * `runtime-cli.ts`'s exec path (`scrubEnvReported('runtime-cli exec')`), and
+ * `cmdExec` (`scrubEnvReported('exec')` in `main.ts`) — so a spawned child's
+ * `os.tmpdir()` resolves to the same per-user directory the parent resolves
+ * to (on darwin, macOS's `/var/folders/.../T/`, never the world-shared
+ * `/tmp`). This keeps the BL-578 fallback socket path
+ * (`libs/service-proxy/src/socket-path.ts`) resolving identically between a
+ * parent and its children, and stays consistent with ADR-0022 §5's
+ * forwarding of `TMPDIR` to the embedding host — the embed-host allowlist
+ * (`embedHostConfig.ts`'s `EMBED_HOST_ENV_FORWARD_EXACT`) is asserted to be a
+ * superset of this one by
+ * `apps/sox/src/d8769bb9-embed-host-env-superset.spec.ts` (`embedding-provider`
+ * is tagged `area:data` and this module lives in `area:platform`;
+ * `eslint.config.js`'s `@nx/enforce-module-boundaries` `depConstraints`
+ * restrict `area:data` to `onlyDependOnLibsWithTags: ['area:data',
+ * 'area:shared']`, so `embedding-provider` cannot import this module
+ * directly — the equivalence is enforced by a spec in a project that
+ * depends on both instead).
  *
  * `TMPDIR` in this base-allow set is deliberately spawn-time-only: it is
  * NEVER persisted into a launchd/systemd unit's on-disk env

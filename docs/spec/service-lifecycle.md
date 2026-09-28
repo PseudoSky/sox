@@ -582,12 +582,15 @@ and the future M4 path):
    though they match `SOX_*`: `SOX_PERM_*` (the compiled sandbox policy) and `SOX_CONFIG_*` (the
    resolved config cascade) are host-authoritative and must never be inherited from an ambient
    shell (`ENV_DENY_PREFIXES`); the spawning call site injects the real values for both AFTER the
-   scrub. **BL-52 note:** `XDG_CACHE_HOME` and any `SOX_EMBED_*` reach the embed backend through
-   this same allow set, so it resolves to the real BGE/ONNX model instead of degrading. **BL-2df86153
-   note:** `TMPDIR` is forwarded so a spawned child's `os.tmpdir()` resolves to the same per-user
-   directory as its parent, not the world-shared `/tmp` — the broken hops were the four IN-PROCESS
-   spawn paths (`soxe serve` backend `main.ts:9613`, the in-process supervisor `supervisor.ts:322`,
-   `runtime-cli.ts:548`'s exec path, and `cmdExec` `main.ts:10322`). `TMPDIR` is deliberately
+   scrub. **BL-52 note:** `XDG_CACHE_HOME` reaches the embed backend through this same base allow
+   set, and `SOX_*` reaches it through the wholesale `SOX_*` forward (BL-344, minus the
+   `SOX_PERM_*`/`SOX_CONFIG_*` deny), so it resolves to the real BGE/ONNX model instead of
+   degrading. **BL-2df86153 note:** `TMPDIR` is forwarded so a spawned child's `os.tmpdir()`
+   resolves to the same per-user directory as its parent, not the world-shared `/tmp` — across all
+   four IN-PROCESS spawn paths (`soxe serve` backend's `scrubEnvReported('serve backend')`, the
+   in-process supervisor's `scrubEnvReported('supervisor')`, `runtime-cli.ts`'s exec path's
+   `scrubEnvReported('runtime-cli exec')`, and `cmdExec`'s `scrubEnvReported('exec')`). `TMPDIR` is
+   deliberately
    spawn-time-only: `buildOsUnitEnv` (`main.ts`) and `deriveOsUnitSpec` (`os-unit.ts`) both strip it
    before it ever reaches a launchd/systemd unit's on-disk env, and `isShellSourcedEnvKey`
    (`os-unit.ts`) excludes it from the BL-375 drift guard — a unit written once at `enable` time and
@@ -879,7 +882,7 @@ The unit is **derived from the `lifecycle` block + resolved config env**, never 
 | Manifest / resolved value | launchd key | systemd key |
 |---|---|---|
 | node path + `--enable-source-maps` + entrypoint | `ProgramArguments` | `ExecStart` |
-| `buildExtConfigEnv` output (SOX_CONFIG_*) + BL-52 SOX_EMBED_* | `EnvironmentVariables` | `Environment=` |
+| `buildExtConfigEnv` output (SOX_CONFIG_*) + base scrub allowlist (ENV_BASE_ALLOW minus TMPDIR) + NODE_*/SOX_* minus SOX_PERM_*/SOX_CONFIG_* | `EnvironmentVariables` | `Environment=` |
 | store dir (ADR-0004 `ext/<id>`) | `WorkingDirectory` | `WorkingDirectory=` |
 | `lifecycle.background:true` ⇒ run at load | `RunAtLoad: true` | `WantedBy=default.target` |
 | `lifecycle.singleton:true` ⇒ keep alive | `KeepAlive: true` (+ `Crashed`) | `Restart=on-failure` |

@@ -9619,10 +9619,14 @@ Flags:
   const policy2 = compilePolicy(manifest2.permissions);
   let serveEnv: NodeJS.ProcessEnv;
   if (policy2.enforced) {
-    // BL-52: forward SOX_EMBED_* and XDG_CACHE_HOME so the embed backend resolves
-    // to real BGE (ONNX) instead of silently falling back to hash embedding when the
-    // served process inherits a scrubbed env. Also forward SOX_SERVE_LOG so the
-    // child's own diagnostics path is consistent if a sub-server is spawned.
+    // env-policy.ts forwards SOX_* wholesale (minus SOX_PERM_*/SOX_CONFIG_*,
+    // BL-344) plus XDG_CACHE_HOME from ENV_BASE_ALLOW, so the embed backend
+    // resolves to real BGE (ONNX) — using the right model cache dir —
+    // instead of silently falling back to hash embedding when the served
+    // process inherits a scrubbed env, and so SOX_SERVE_LOG keeps the
+    // child's own diagnostics path consistent if a sub-server is spawned.
+    // ENV_BASE_ALLOW also forwards TMPDIR (BL-2df86153, spawn-time only —
+    // never persisted into an OS unit's on-disk env).
     // BL-344/BL-339: this is the SERVE path — it builds serveEnv, which becomes
     // backendEnv for the proxy-spawned backend. It is the copy that actually
     // gates the live symptom: patching the os-unit builder alone looks like it
@@ -10335,8 +10339,12 @@ Examples:
 
   let execEnv: NodeJS.ProcessEnv;
   if (policy.enforced) {
-    // BL-52: forward SOX_EMBED_* and XDG_CACHE_HOME so the embed backend resolves
-    // to real BGE (ONNX) instead of silently falling back to hash embedding.
+    // env-policy.ts forwards SOX_* wholesale (minus SOX_PERM_*/SOX_CONFIG_*,
+    // BL-344) plus XDG_CACHE_HOME from ENV_BASE_ALLOW, so the embed backend
+    // resolves to real BGE (ONNX) — using the right model cache dir —
+    // instead of silently falling back to hash embedding. ENV_BASE_ALLOW
+    // also forwards TMPDIR (BL-2df86153, spawn-time only — never persisted
+    // into an OS unit's on-disk env).
     // BL-344: this was the THIRD copy of the allowlist in this file, and its own
     // comment recorded the defect ("Adding a tunable requires remembering every
     // one of them"). That is now structurally impossible — there is one

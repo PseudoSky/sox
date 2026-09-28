@@ -18,9 +18,15 @@
  *                                      killing the pid, so launchd/systemd cannot
  *                                      resurrect a just-killed process (§8.4/§8.5).
  *   §7 step 5 / §9.2 env mirror      — the unit's EnvironmentVariables are the
- *                                      resolved SOX_CONFIG_* + the SAME scrub
- *                                      allowlist the supervisor uses (SOX_EMBED_*,
- *                                      XDG_CACHE_HOME, NODE_*). Never widen silently.
+ *                                      resolved SOX_CONFIG_* + the SAME base
+ *                                      scrub allowlist the supervisor uses
+ *                                      (env-policy.ts's ENV_BASE_ALLOW minus
+ *                                      TMPDIR, plus the NODE_ and SOX_
+ *                                      prefixes forwarded wholesale minus
+ *                                      SOX_PERM_ and SOX_CONFIG_, BL-344).
+ *                                      TMPDIR is spawn-time-only and is NEVER
+ *                                      persisted into the unit (BL-2df86153).
+ *                                      Never widen silently.
  *
  * Leaf-ish: node builtins + reaper.ts only (for the verified-stop reap). It never
  * re-implements process scan/kill. All filesystem + launchctl/systemctl effects
@@ -1264,7 +1270,7 @@ export function extractUnitEnv(unitText: string, kind: OsSupervisor): Record<str
 /** True when `key` is exactly the set `scrubEnvReported` forwards from the shell (D2). */
 function isShellSourcedEnvKey(key: string): boolean {
   if (ENV_DENY_PREFIXES.some((p) => key.startsWith(p))) return false; // SOX_PERM_*/SOX_CONFIG_*
-  // BL-2df86153: TMPDIR is in ENV_BASE_ALLOW for the spawn-time scrub, but
+  // BL-2df86153/BL-70a3070d: TMPDIR is in ENV_BASE_ALLOW for the spawn-time scrub, but
   // `buildOsUnitEnv` deliberately never bakes it into the persisted unit —
   // the OS supervisor supplies it live to the unit's own process (confirmed
   // on darwin: launchd hands the unit process a real per-user TMPDIR with no

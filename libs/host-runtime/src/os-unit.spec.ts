@@ -414,18 +414,32 @@ describe('BL-375 — enableOsUnit refuses to silently drop shell-sourced env on 
     expect(written).not.toContain('TMPDIR');
   });
 
-  it('BL-2df86153: a re-enable from a shell without TMPDIR is NOT blocked by the drift guard', () => {
-    // Unlike every other ENV_BASE_ALLOW key, TMPDIR must not be sticky: since
-    // it is never baked into the unit to begin with (previous test), a
-    // regenerate from a shell/session that never exported TMPDIR must be
-    // treated as a no-op with respect to TMPDIR, not as a drop requiring
-    // `--unset` acknowledgment. `isShellSourcedEnvKey` excludes TMPDIR from
-    // D2's shell-sourced set for exactly this reason.
-    const fake1 = makeFakeExec();
-    const first = makeSpec({ env: { SOX_CONFIG_DB_PATH: 'x', TMPDIR: '/var/folders/aa/T/' } });
-    enableOsUnit(first, platform, { unitDir, exec: fake1.exec, load: false });
+  it('70a3070d/BL-2df86153: a re-enable from a shell without TMPDIR is NOT blocked by the drift guard', () => {
+    // Unlike every other ENV_BASE_ALLOW key, TMPDIR must not be sticky:
+    // `isShellSourcedEnvKey` excludes TMPDIR from D2's shell-sourced set so a
+    // regenerate from a shell/session that never exported TMPDIR is a no-op
+    // with respect to TMPDIR, never a drop requiring `--unset`
+    // acknowledgment.
+    //
+    // `enableOsUnit`'s drift guard reads `priorEnv` from the unit file ON
+    // DISK via `extractUnitEnv`, not from `deriveOsUnitSpec`'s output — so
+    // exercising the `isShellSourcedEnvKey` TMPDIR exclusion requires an
+    // on-disk unit that actually carries a TMPDIR key. `makeSpec` alone
+    // cannot produce one, since `deriveOsUnitSpec` strips TMPDIR out of
+    // `opts.env` before `enableOsUnit` ever sees it (proven by the preceding
+    // test) — so this test writes the "prior" unit file directly via
+    // `platform.render`, mimicking a legacy unit written before the strip
+    // existed, or one hand-edited outside `enableOsUnit`.
+    const spec = makeSpec({ env: { SOX_CONFIG_DB_PATH: 'x' } });
+    const unitPath = path.join(unitDir, platform.unitFileName(spec.label));
+    const legacyRendered = platform.render({
+      ...spec,
+      env: { ...spec.env, TMPDIR: '/x/T/' },
+    });
+    fs.writeFileSync(unitPath, legacyRendered);
+    expect(extractUnitEnv(legacyRendered, platform.kind)['TMPDIR']).toBe('/x/T/');
 
-    // Second enable from a shell/session that never exported TMPDIR, with an
+    // Re-enable from a shell/session that never exported TMPDIR, with an
     // unrelated field change so content-hash comparison alone would not be a
     // no-op (mirrors AC1's real-incident shape).
     const second = makeSpec({ env: { SOX_CONFIG_DB_PATH: 'x' }, processType: 'Background' });

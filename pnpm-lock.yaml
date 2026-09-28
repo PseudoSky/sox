@@ -102,6 +102,9 @@ importers:
       '@adhd/sox-authoring':
         specifier: workspace:*
         version: link:../../libs/authoring
+      '@adhd/sox-embedding-provider':
+        specifier: workspace:*
+        version: link:../../libs/data/embed/embedding-provider
       '@adhd/sox-host-registry':
         specifier: workspace:*
         version: link:../../libs/host-registry
