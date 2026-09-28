@@ -6,7 +6,7 @@
  * and overloaded onto SOX_HOME. This module collapses them into the canonical
  * per-scope layout `<scopeRoot>/.adhd/sox-ecosystem/` (ADR-0004 §D2).
  *
- * Leaf module — imports ONLY node builtins (os, path). NO import from any sox
+ * Leaf module — imports ONLY node builtins (fs, os, path). NO import from any sox
  * package, so install-engine / apps/sox / host-registry can all resolve through it.
  *
  * ── Two orthogonal env vars (ADR-0004 §D1, §D3) ──────────────────────────────
@@ -24,6 +24,7 @@
  * import are honoured (tests, e2e harness).
  */
 
+import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 
@@ -154,4 +155,19 @@ export function logDirFor(supervisorId: string): string {
 /** Exec-socket directory: $userDataRoot/run/supervisors/. */
 export function socketDir(): string {
   return path.join(runDir(), 'supervisors');
+}
+
+/**
+ * Create a directory under a sox data root (BL-4041c6e0, BL-6233c1c2).
+ *
+ * Always mode 0700. Under a umask of 002 (Linux user-private-group hosts) a bare
+ * `mkdirSync(p, {recursive:true})` makes 0775 directories, and the socket-dir
+ * trust check (`@adhd/sox-service-proxy` `assertPrivateSocketDir`) then refuses
+ * every bind and dial under `run/`. The requested 0700 is still masked by the
+ * umask, which can only remove bits, so the result is never group- or
+ * world-writable. Existing directories are left as they are; `soxe` tightens
+ * its own run dirs at start (`tightenOwnedSocketDir`).
+ */
+export function mkdirDataDir(p: string): void {
+  fs.mkdirSync(p, { recursive: true, mode: 0o700 });
 }

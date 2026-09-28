@@ -33,6 +33,7 @@ import {
   ensureBackend,
   isUdsDirUnsafeError,
   probeSocketLive as rawProbeSocketLive,
+  tightenOwnedSocketDir,
   type BackendConnection,
 } from '@adhd/sox-service-proxy';
 import { log } from '@adhd/sox-telemetry';
@@ -46,6 +47,7 @@ import {
   invalidateEmbedHostBuildId,
   resolveEmbedHostConfig,
   resolveEmbedHostMainPath,
+  resolveEmbedHostSocketDir,
   resolveEmbedHostStderrLogPath,
 } from './embedHostConfig.js';
 import type { SharedFastembedClient } from './sharedFastembedProcess.js';
@@ -93,6 +95,27 @@ function msg(err: unknown): string {
  * caller's own bound has already been spent.
  */
 class HostGoneError extends TransientEmbeddingError {}
+
+/**
+ * BL-4041c6e0 / BL-6233c1c2: tighten the embed host's socket dir
+ * (`$SOX_ECOSYSTEM_HOME/run`) if it is ours and group/other-writable. Never throws.
+ * A failure is logged, and the trust check then reports the precise problem.
+ */
+function tightenEmbedHostSocketDir(): void {
+  const dir = resolveEmbedHostSocketDir();
+  try {
+    tightenOwnedSocketDir(dir, {
+      onTightened: (e) =>
+        log.info('embedding_provider.funnel.socket_dir_tightened', {
+          dir: e.dir,
+          old_mode: `0${e.oldMode.toString(8)}`,
+          new_mode: `0${e.newMode.toString(8)}`,
+        }),
+    });
+  } catch (err) {
+    log.warn('embedding_provider.funnel.socket_dir_tighten_failed', { dir, error: String(err) });
+  }
+}
 
 /** BL-4041c6e0: does a -32001 error's `data` carry the dial layer's unsafe-dir code? */
 function isUdsDirUnsafeData(data: unknown): boolean {
@@ -364,6 +387,11 @@ export class FunneledFastembedClient implements SharedFastembedClient {
     }
 
     const cfg = resolveEmbedHostConfig();
+    // BL-4041c6e0 / BL-6233c1c2: before the first probe or ensure can judge the
+    // socket dir, drop a group/other write bit that an older build or a umask-002
+    // mkdir left on our own run dir. Otherwise the trust check refuses it and
+    // every embed fails permanently.
+    tightenEmbedHostSocketDir();
     const ctx = this.initContext;
     if (!ctx) {
       throw new TransientEmbeddingError(

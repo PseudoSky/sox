@@ -18,7 +18,7 @@
 
 import * as fs from 'node:fs';
 import * as path from 'node:path';
-import { supervisorsPath } from './data-paths.js';
+import { mkdirDataDir, supervisorsPath } from './data-paths.js';
 
 // ─── Schema ───────────────────────────────────────────────────────────────────
 
@@ -87,7 +87,7 @@ export function readSupervisorsFile(filePath?: string): SupervisorsFile {
 export function writeSupervisorsFile(file: SupervisorsFile, filePath?: string): void {
   const p = filePath ?? getSupervisorsFilePath();
   const dir = path.dirname(p);
-  fs.mkdirSync(dir, { recursive: true });
+  mkdirDataDir(dir);
   const tmp = p + '.tmp';
   fs.writeFileSync(tmp, JSON.stringify(file, null, 2) + '\n', 'utf8');
   fs.renameSync(tmp, p);

@@ -62,6 +62,7 @@ import {
   resolveExtensionDir,
   // BL-393: singleton-violation heal marker — surfaced by `service status`.
   runDir,
+  mkdirDataDir,
   // Slice 1 (docs/spec/service-lifecycle.md): cross-scope singleton.
   resolveStoreResource,
   resolveUnitNodePath,
@@ -167,6 +168,7 @@ import {
 } from './serve-shutdown.js';
 import { verifyRunningArtifact } from './verify-artifact.js';
 import { initTelemetry, log, resolveProcessRole, type InitTelemetryOptions } from '@adhd/sox-telemetry';
+import { tightenSoxRunDirs } from './tighten-run-dirs.js';
 // @adhd/sox-host-registry is also lazy-required via install-engine; import it lazily here too
 // to avoid the NX "static import of lazy-loaded library" lint error.
 // [inv:host-registry-lazy]: getHost() used only in cmdInstall; require() at call site.
@@ -248,15 +250,19 @@ async function main(): Promise<void> {
       `[sox] SOX_ECOSYSTEM_HOME is set — data root: ${process.env['SOX_ECOSYSTEM_HOME']} (placement unaffected)\n`,
     );
   }
+  // BL-4041c6e0 / BL-6233c1c2: before any verb can bind or dial a socket under
+  // run/, drop a group/other write bit an older soxe (or a umask-002 host) left
+  // on our own run dirs — the socket-dir trust check refuses those otherwise.
+  tightenSoxRunDirs();
 
   // ── Command audit log (append-only JSONL) ──────────────────────────────────
   try {
-    const { appendFileSync, mkdirSync } = await import('node:fs');
+    const { appendFileSync } = await import('node:fs');
     const { join } = await import('node:path');
     const auditScope = (flags['scope'] ?? 'user') as DataScope;
     const rootDir = dataRoot(auditScope);
     const runDir = join(rootDir, 'run');
-    mkdirSync(runDir, { recursive: true });
+    mkdirDataDir(runDir);
     const entry = {
       t: new Date().toISOString(),
       pid: process.pid,
@@ -4892,7 +4898,7 @@ async function cmdStart(flags: Record<string, string>): Promise<void> {
         supervisorPid: process.pid,
       };
       const runtimeDir = pathMod.dirname(runtimeFilePath);
-      if (!fsMod.existsSync(runtimeDir)) fsMod.mkdirSync(runtimeDir, { recursive: true });
+      if (!fsMod.existsSync(runtimeDir)) mkdirDataDir(runtimeDir);
       fsMod.writeFileSync(runtimeFilePath, JSON.stringify(record, null, 2) + '\n', 'utf8');
 
       process.stdout.write(

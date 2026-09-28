@@ -212,7 +212,9 @@ describe('4041c6e0: (3) foreign owner is refused', () => {
       isSymlink: false,
     });
     expect((caught as Error).message).toMatch(/^E_UDS_DIR_UNSAFE: /);
-    expect((caught as Error).message).toMatch(/Inspect the directory and remove it/);
+    expect(caught).toMatchObject({ reason: 'foreign' });
+    expect((caught as Error).message).toMatch(/not a directory you own/);
+    expect((caught as Error).message).not.toMatch(/rm -r/);
   });
 
   it('4041c6e0: a foreign-owned fallback root is refused even at exactly 0700 (injected)', () => {

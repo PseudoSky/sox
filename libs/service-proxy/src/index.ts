@@ -45,11 +45,16 @@ export {
   ensurePrivateSocketDir,
   assertPrivateSocketDir,
   isUdsDirUnsafeError,
+  tightenOwnedSocketDir,
 } from './socket-dir.js';
 export type {
   SocketDirDeps,
   EnsurePrivateSocketDirOptions,
   UdsDirUnsafeError,
+  UdsDirUnsafeReason,
+  TightenOutcome,
+  TightenEvent,
+  TightenOwnedSocketDirOptions,
 } from './socket-dir.js';
 
 // ── JSON-RPC 2.0 types + helpers ──────────────────────────────────────────────

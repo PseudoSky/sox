@@ -24,6 +24,7 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { compilePolicy } from './policy.js';
 import { scrubEnvReported } from './env-policy.js';
+import { mkdirDataDir } from './data-paths.js';
 import {
   getRuntimeFilePath,
   getRuntimeRecord,
@@ -248,9 +249,9 @@ async function cmdStop(flags: Record<string, string>): Promise<void> {
         }
       }
     }
-    const { writeFileSync, mkdirSync } = await import('node:fs');
+    const { writeFileSync } = await import('node:fs');
     const { dirname } = await import('node:path');
-    mkdirSync(dirname(runtimeFilePath), { recursive: true });
+    mkdirDataDir(dirname(runtimeFilePath));
     const cleared = {
       ...record,
       supervisorPid: undefined,
@@ -280,9 +281,9 @@ async function cmdStop(flags: Record<string, string>): Promise<void> {
     }
     if (!id) {
       // Clear the record file
-      const { writeFileSync, mkdirSync } = await import('node:fs');
+      const { writeFileSync } = await import('node:fs');
       const { dirname } = await import('node:path');
-      mkdirSync(dirname(runtimeFilePath), { recursive: true });
+      mkdirDataDir(dirname(runtimeFilePath));
       const cleared = {
         ...record,
         entries: record.entries.map((e) => ({ ...e, running: false, pid: null })),
@@ -333,9 +334,9 @@ async function cmdStop(flags: Record<string, string>): Promise<void> {
   }
 
   // Write updated record
-  const { writeFileSync, mkdirSync } = await import('node:fs');
+  const { writeFileSync } = await import('node:fs');
   const { dirname } = await import('node:path');
-  mkdirSync(dirname(runtimeFilePath), { recursive: true });
+  mkdirDataDir(dirname(runtimeFilePath));
   writeFileSync(runtimeFilePath, JSON.stringify(record, null, 2) + '\n', 'utf8');
 
   process.stdout.write(`sox: stop complete — stopped ${stopped}, failed ${failed}\n`);

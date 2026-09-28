@@ -169,16 +169,17 @@ const MEMORY_FAKE_HOME = path.join(TEST_ROOT, 'sox-data-root', 'fake-home');
 // (embedHostConfig.ts resolveEmbedHostSocketDir). SMOKE_DATA_ROOT sits ~100
 // bytes deep in a worktree, so `<root>/run/<socket>` blows the 104-byte
 // sun_path budget and backendSocketPath() (libs/service-proxy/src/socket-path.ts,
-// BL-578) falls back to `os.tmpdir()/sox-uds/` — a directory every deep-rooted
-// process on the box shares, and `/tmp` for a `soxe serve` child whose env
-// policy drops TMPDIR. SMOKE_SHORT_ROOT is a short, run-unique symlink to
+// BL-578, BL-4041c6e0) falls back to the per-uid root `/tmp/sox-<uid>/` — a
+// directory every deep-rooted process of this user shares, production included.
+// SMOKE_SHORT_ROOT is a short, run-unique symlink to
 // SMOKE_DATA_ROOT: the children get it as SOX_ECOSYSTEM_HOME, so every socket
 // fits under it (28-byte `<short>/run/` + a 72-byte key filename = 100), while
 // every file still lands physically under TEST_ROOT for the snapshot diffs.
 const SMOKE_SHORT_ROOT = path.join('/tmp', `sox-smoke-${crypto.randomBytes(4).toString('hex')}`);
 // The model cache and the TMPDIR every smoke child resolves (XDG_CACHE_HOME
-// outranks $HOME/.cache in joinDefaultCacheDir(); TMPDIR must be short too,
-// since it is the BL-578 fallback's parent).
+// outranks $HOME/.cache in joinDefaultCacheDir(); TMPDIR stays run-owned so no
+// child writes scratch files into the operator's temp dir. The socket fallback
+// no longer reads TMPDIR).
 const SMOKE_XDG_CACHE_HOME = path.join(TEST_ROOT, 'sox-data-root', 'xdg-cache');
 const SMOKE_TMPDIR = path.join(SMOKE_SHORT_ROOT, 'tmp');
 /** Every root a smoke-owned process may resolve HOME / cache / socket under. */
@@ -1234,8 +1235,8 @@ async function testExtension(ext) {
   // enable/status/disable, config, serve, uninstall — runs with the scratch
   // $HOME. The service daemon embeds on warmup, and before this it ran under
   // smokeEnv()'s operator $HOME: its embedding host resolved the operator's
-  // model cache (~/.cache/sox/models) and, via the operator TMPDIR, a
-  // socket under the shared os.tmpdir()/sox-uds fallback. undefined → smokeEnv().
+  // model cache (~/.cache/sox/models) and a socket under the shared
+  // /tmp/sox-<uid> fallback. undefined → smokeEnv().
   const legEnv = id === 'memory-server' ? memoryServerEnv() : undefined;
 
   // ── Install (standalone only) ───────────────────────────────────

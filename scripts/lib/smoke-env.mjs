@@ -10,19 +10,19 @@
  * spawner (ADR-0022 §5) and resolves from them:
  *   - its model cache — `SOX_EMBED_CACHE_DIR` → `$XDG_CACHE_HOME/sox/models` →
  *     `$HOME/.cache/sox/models` (libs/data/embed/embedding-provider/src/index.ts);
- *   - its socket — `$SOX_ECOSYSTEM_HOME/run/<key>.sock`, falling back to
- *     `os.tmpdir()/sox-uds/` when that path exceeds the 104-byte sun_path budget
- *     (libs/service-proxy/src/socket-path.ts, BL-578).
+ *   - its socket — `$SOX_ECOSYSTEM_HOME/run/<key>.sock`, falling back to the
+ *     per-uid root `/tmp/sox-<uid>/` when that path exceeds the 104-byte sun_path
+ *     budget (libs/service-proxy/src/socket-path.ts, BL-578, BL-4041c6e0).
  * So the harness pins every one of those inputs inside the run: a short data-root
- * alias (so the socket never needs the tmp fallback), a run-owned XDG cache and
- * TMPDIR, and no inherited SOX_EMBED_CACHE_DIR.
+ * alias (so the socket never needs the shared /tmp/sox-<uid> fallback), a
+ * run-owned XDG cache and TMPDIR, and no inherited SOX_EMBED_CACHE_DIR.
  */
 
 /**
  * @typedef {object} SmokeEnvConfig
  * @property {string} dataRoot       SOX_ECOSYSTEM_HOME for children (the SHORT alias)
  * @property {string} xdgCacheHome   run-owned XDG_CACHE_HOME (model cache parent)
- * @property {string} tmpdir         run-owned TMPDIR (short: the BL-578 fallback parent)
+ * @property {string} tmpdir         run-owned TMPDIR (keeps child scratch files inside the run)
  * @property {string} fastembedLock  run-owned SOX_FASTEMBED_LOCK_PATH
  * @property {string} memoryHome     scratch $HOME for the memory-server legs
  */
