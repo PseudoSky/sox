@@ -25,7 +25,25 @@
  *      the BL-412 `~/.memory` guard in vitest.setup.ts keys on `os.homedir()`.
  *   4. Teardown: audit + verified-stop (SIGTERM → poll → identity re-check → SIGKILL) every embed
  *      host / fastembed child whose argv or env names this root — never any other process — then
- *      assert none of them ran with a cache dir or socket outside the root, then `rm -rf` it.
+ *      assert none of them ran with a cache dir or socket outside the root.
+ *
+ * ## BL-bd91334d — kept-root-on-any-fault policy
+ *
+ * The whole audit body runs inside try/catch/finally now. ANY problem — an undead process, an
+ * unverifiable `ps` capture, a containment breach, a fetch/download marker, or the teardown itself
+ * throwing (e.g. `auditAndReapEmbedHosts` or the log-scan's `readFileSync` throwing) — is reported
+ * and the scratch root is **kept**, never `rm -rf`'d: a throw mid-audit means we do not know what
+ * is still running against that root, and deleting it would delete the only evidence. Only a run
+ * with zero problems removes the root. A kept root is named twice: once in the `say()` line at
+ * teardown time, and again in the failure report, each with an `rm -rf <root>` cleanup hint.
+ *
+ * vitest 4.1.8 runs globalSetup teardowns inside `Vitest.close()`, which catches a **thrown**
+ * teardown error, logs it as "error during close", and still exits 0 — so failure is reported via
+ * `process.exitCode = 1` + a stderr report, never via throwing (see `libs/memory-core/vitest.
+ * global-guard.ts` and `libs/data/embed/embedding-provider/vitest.global-scratch.ts` for the same
+ * fix). The removed `throw new Error(report)` used to print the same report twice for no benefit
+ * — once from the explicit stderr write, once from vitest's own "error during close" log of the
+ * (silently swallowed) throw.
  *
  * Idempotent: if the root is already pinned in this process (a second invocation for another
  * project), it is reused and only the first invocation's teardown cleans up.
@@ -41,7 +59,16 @@ import {
   MODEL_SEEDED_ENV,
   SCRATCH_ROOT_ENV,
   TELEMETRY_DIR_ENV,
+  TEST_INJECT_ENV,
+  type TestInjection,
 } from './src/test-support/bl-26291f21-embed-scratch-env.js';
+
+/** BL-bd91334d: typed read of the test-only injection hook — see the env module for the contract. */
+function testInjection(): TestInjection | 'unknown' | undefined {
+  const v = process.env[TEST_INJECT_ENV];
+  if (v === undefined || v === '') return undefined;
+  return v === 'throw' || v === 'force-problem' ? v : 'unknown';
+}
 
 const PINNED_KEYS = [
   'SOX_EMBED_CACHE_DIR',
@@ -159,10 +186,10 @@ export default function setup(): () => Promise<void> {
 
   return async function teardown(): Promise<void> {
     const problems: string[] = [];
-    // Set when the reap left an undead run-owned host or the ps capture used to verify the reap
-    // failed outright — in either case we cannot prove the root is free of live processes, so
-    // `rm -rf` on it would delete the only evidence of what is still running against it.
-    let keepRoot = false;
+    // BL-bd91334d: the whole audit body is inside try/catch — a throw from `auditAndReapEmbedHosts`,
+    // `treeFingerprint`, or `countFetchMarkers`'s `readFileSync` must become a reported problem, not
+    // an exception that skips straight to `finally` and out of this function silently (vitest
+    // swallows a thrown teardown outright — see the header note).
     try {
       const r = await auditAndReapEmbedHosts(
         { smokeRoots: [root], spawnedPids: new Set<number>(), runStartedMs },
@@ -179,14 +206,8 @@ export default function setup(): () => Promise<void> {
         `embed-host reap: run-owned ${String(r.smoke.length)} [${r.smoke.map((p) => `${String(p.pid)}:${p.kind}`).join(', ')}], ` +
           `stopped ${String(r.stopped.length)}, undead ${String(r.undead.length)}, foreign (untouched) ${String(r.foreign.length)}`,
       );
-      if (r.psFailed) {
-        problems.push('embed-host ps capture failed — reap unverifiable');
-        keepRoot = true;
-      }
-      if (r.undead.length > 0) {
-        problems.push(`undead run-owned embed processes: ${r.undead.join(', ')}`);
-        keepRoot = true;
-      }
+      if (r.psFailed) problems.push('embed-host ps capture failed — reap unverifiable');
+      if (r.undead.length > 0) problems.push(`undead run-owned embed processes: ${r.undead.join(', ')}`);
       // HOME is intentionally inherited (see header), so only the two paths this item is about are
       // contained here: the model cache and the socket of every host this run spawned.
       for (const p of r.smoke) {
@@ -203,37 +224,64 @@ export default function setup(): () => Promise<void> {
       );
       if (seed.seeded && scratchModelsAfter !== scratchModelsAtSeed) problems.push('the seeded scratch model cache changed during the run (a model download or rewrite happened)');
       if (seed.seeded && fetch.hits > 0) problems.push(`${String(fetch.hits)} fetch/download marker(s) in run logs despite a seeded cache`);
+      // BL-bd91334d test-only injection — see bl-26291f21-embed-scratch-env.ts for the contract.
+      // Placed AFTER the reap so a 'throw' injection still exercises the real reap/containment
+      // checks above it before proving the catch below.
+      const injection = testInjection();
+      if (injection === 'throw') throw new Error('BL-bd91334d test injection: forced teardown exception');
+      if (injection === 'force-problem') problems.push('BL-bd91334d test injection: forced problem, no throw');
+      if (injection === 'unknown') problems.push(`BL-bd91334d test injection: unrecognised ${TEST_INJECT_ENV}=${String(process.env[TEST_INJECT_ENV])}`);
+    } catch (err) {
+      problems.push(`teardown threw: ${String(err)}`);
     } finally {
-      const operatorAfter = fs.existsSync(operatorModelDir) ? JSON.stringify(treeFingerprint(operatorModelDir)) : null;
-      const operatorStatAfter = JSON.stringify(bytesAndMtime(operatorModelDir));
-      say(
-        // The operator path itself is deliberately not echoed: a leak audit greps this run's output
-        // for it, and the clone source must never read as a leak line.
-        `operator model dir ${EMBED_MODEL_DIR_NAME} (clone source, read-only): ${operatorAfter === operatorBefore && operatorStatAfter === operatorStatBefore ? 'unchanged (stat fingerprint identical' : 'CHANGED during the run (this harness only reads it — check for a concurrent operator download'}; bytes+newest mtime before ${operatorStatBefore} after ${operatorStatAfter})`,
-      );
+      // F4 (unchanged): an operator-cache change during the run is LOGGED, never a fail-the-run
+      // problem — that policy call is pending an owner decision on warn-vs-fail. A failure to even
+      // MEASURE the operator cache, though, is a teardown fault like any other above.
+      try {
+        const operatorAfter = fs.existsSync(operatorModelDir) ? JSON.stringify(treeFingerprint(operatorModelDir)) : null;
+        const operatorStatAfter = JSON.stringify(bytesAndMtime(operatorModelDir));
+        say(
+          // The operator path itself is deliberately not echoed: a leak audit greps this run's
+          // output for it, and the clone source must never read as a leak line.
+          `operator model dir ${EMBED_MODEL_DIR_NAME} (clone source, read-only): ${operatorAfter === operatorBefore && operatorStatAfter === operatorStatBefore ? 'unchanged (stat fingerprint identical' : 'CHANGED during the run (this harness only reads it — check for a concurrent operator download'}; bytes+newest mtime before ${operatorStatBefore} after ${operatorStatAfter})`,
+        );
+      } catch (err) {
+        problems.push(`could not fingerprint operator model dir ${EMBED_MODEL_DIR_NAME}: ${String(err)}`);
+      }
       for (const k of PINNED_KEYS) {
         const v = prior[k];
         if (v === undefined) delete process.env[k];
         else process.env[k] = v;
       }
-      if (keepRoot) {
-        say(`leaving scratch root ${root} in place — undead process or unverifiable ps capture, see problems above`);
+      // BL-bd91334d: one policy — keep the root on ANY problem, from any source above, never only
+      // on the undead/psFailed cases. A throw mid-audit or a lone containment breach means we
+      // cannot prove the root is safe to delete just as much as an undead process does.
+      if (problems.length > 0) {
+        say(`leaving scratch root ${root} in place — see problems below; clean up manually once inspected: rm -rf ${root}`);
       } else {
-        fs.rmSync(root, { recursive: true, force: true });
+        try {
+          fs.rmSync(root, { recursive: true, force: true });
+        } catch (err) {
+          problems.push(`could not remove scratch root ${root}: ${String(err)}`);
+        }
       }
     }
     if (problems.length > 0) {
       // vitest 4.1.8 runs globalSetup teardowns inside `Vitest.close()`, which catches a thrown
-      // teardown error, logs it as "error during close", and lets the process exit 0 — a throw
-      // alone cannot fail the run (same fix as libs/memory-core/vitest.global-guard.ts and
-      // libs/data/embed/embedding-provider/vitest.global-scratch.ts). Set exitCode first, then
-      // report, so the failure survives even if something upstream swallows the throw too.
+      // teardown error, logs it as "error during close", and still exits 0 — a throw alone cannot
+      // fail the run (same fix as libs/memory-core/vitest.global-guard.ts and libs/data/embed/
+      // embedding-provider/vitest.global-scratch.ts). `process.exitCode = 1` + this stderr report
+      // is the ONLY failure signal; a redundant throw here would just print the same report a
+      // second time via vitest's own swallowed "error during close" log, so it is deliberately not
+      // thrown.
       process.exitCode = 1;
       const report =
-        `BL-26291f21: embed scratch teardown found:\n  - ${problems.join('\n  - ')}` +
-        (keepRoot ? `\n  scratch root kept for inspection: ${root}` : '');
+        `BL-26291f21: embed scratch teardown found:\n  - ${problems.join('\n  - ')}\n` +
+        `  scratch root kept for inspection: ${root}\n` +
+        `  clean up manually once done inspecting: rm -rf ${root}`;
       process.stderr.write(`\n${report}\n\n`);
-      throw new Error(report);
+      return;
     }
+    say(`teardown OK: scratch root ${root} removed, no problems found`);
   };
 }

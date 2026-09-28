@@ -27,7 +27,7 @@
  */
 
 export const GUARDS = [
-  // ---------------------------------------------------------------- Tier 1 (30) -----------
+  // ---------------------------------------------------------------- Tier 1 (31) -----------
   {
     id: 'bl222',
     tier: 1,
@@ -177,6 +177,18 @@ export const GUARDS = [
     // Pins the smoke teardown hardening: ordered + identity-checked verified stops, per-spawner and
     // reparented-child attribution, signal sweep, space-safe ps parsing, alias-collision retry.
     watch: ['scripts/lib/embed-host-isolation.mjs', 'scripts/lib/smoke-fs.mjs', 'scripts/lib/smoke-teardown.mjs', 'scripts/smoke-test.mjs', 'tools/guards-manifest.mjs'],
+  },
+  {
+    id: 'bd91334d',
+    tier: 1,
+    script: 'test-bd91334d-embed-scratch-teardown-fault.mjs',
+    // Pins memory-server's vitest.global-embed-scratch.ts teardown: a thrown exception mid-audit,
+    // or any recorded problem with no throw, must fail the run (process.exitCode = 1) and keep the
+    // scratch root — never a bare try/finally that lets vitest 4.1.8 swallow the throw and exit 0.
+    watch: [
+      'extensions/bundles/sox-memory-bundle/members/memory-server/vitest.global-embed-scratch.ts',
+      'extensions/bundles/sox-memory-bundle/members/memory-server/src/test-support/bl-26291f21-embed-scratch-env.ts',
+    ],
   },
   {
     id: '8c3f8f87',
