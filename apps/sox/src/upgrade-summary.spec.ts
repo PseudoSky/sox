@@ -11,7 +11,7 @@ import { describe, expect, it } from 'vitest';
 import { formatUpgradeSummary, type UpgradeConsumerOutcome } from './upgrade-summary.js';
 
 describe('formatUpgradeSummary — BL-ad811031', () => {
-  it('tallies current/upgraded/failed and reports fully-current when all consumers are current', () => {
+  it('tallies current/upgraded/failed and does not claim fully-current when something changed', () => {
     const outcomes: UpgradeConsumerOutcome[] = [
       { state: 'current' },
       { state: 'current' },
@@ -19,7 +19,15 @@ describe('formatUpgradeSummary — BL-ad811031', () => {
     ];
     const { tally, fullyCurrent } = formatUpgradeSummary(outcomes, 1, 0);
     expect(tally).toBe('2 current, 1 upgraded, 0 ahead, 0 no-registry, 0 failed.');
-    expect(fullyCurrent).toBe(true);
+    expect(fullyCurrent).toBe(false);
+  });
+
+  it('reports fully-current when every consumer is current and nothing changed/failed', () => {
+    const outcomes: UpgradeConsumerOutcome[] = [
+      { state: 'current' },
+      { state: 'current' },
+    ];
+    expect(formatUpgradeSummary(outcomes, 0, 0).fullyCurrent).toBe(true);
   });
 
   it('regression: includes ahead/no-registry counts in the tally instead of dropping them', () => {
