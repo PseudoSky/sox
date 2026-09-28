@@ -22,15 +22,25 @@
  */
 
 import * as fs from 'node:fs';
-import * as path from 'node:path';
 import { ownershipPathFor, type DataScope } from './data-paths.js';
+import { atomicWriteFileSync, withReconciledRetry } from './atomic-write.js';
 
 // ─── Entry shapes ──────────────────────────────────────────────────────────────
 
-/** One owned thing. `kind` selects how uninstall reverses it. */
+/**
+ * One owned thing. `kind` selects how uninstall reverses it.
+ *
+ * `contentHash` (D-B / B-I4, substrate DESIGN §2 D3): the sha256 of the placed
+ * bytes, so `detectDrift` can compare CONTENT, never mtime/size. It is OPTIONAL:
+ * entries written before this field existed carry none and are honestly reported
+ * `unverifiable` by the drift pass until `soxe repair --backfill-hashes` fills
+ * them. Making it required would have re-written every existing producer in one
+ * breaking step; optional + backfill is the additive migration the spec's
+ * Migration §3 names.
+ */
 export type OwnedEntry =
-  | { kind: 'file-drop'; path: string }
-  | { kind: 'materialize'; path: string }
+  | { kind: 'file-drop'; path: string; contentHash?: string }
+  | { kind: 'materialize'; path: string; contentHash?: string }
   | { kind: 'config-key'; file: string; keyPath: string; appliedHash?: string }
   | { kind: 'array-values'; file: string; keyPath: string; values: string[] }
   | { kind: 'object-array-values'; file: string; keyPath: string; entries: Array<Record<string, unknown>>; identityField: string; identityValue: string }
@@ -72,9 +82,11 @@ export interface OwnershipFile {
 
 /**
  * The ownership index at `filePath` is unparseable / structurally invalid.
- * In a STRICT load this must THROW (never read as empty — an empty read is
- * silently wiped by the next save, which is exactly how the doctor-tick entry
- * was lost). Non-strict loads (the legacy default) still return empty.
+ * This ALWAYS throws (B-I3): a corrupt index must never read as empty — an
+ * empty read is silently wiped by the next save, which is exactly how the
+ * doctor-tick entry was lost. `{ owned: [] }` is returned ONLY when the file
+ * genuinely does not exist (ENOENT). The `strict` option is retained for call
+ * signature compatibility but no longer yields an empty index on failure.
  */
 export class OwnershipCorruptError extends Error {
   readonly filePath: string;
@@ -86,6 +98,28 @@ export class OwnershipCorruptError extends Error {
     );
     this.name = 'OwnershipCorruptError';
     this.filePath = filePath;
+  }
+}
+
+/**
+ * The install could not record ownership for (extId, scope). B-I8: an unrecorded
+ * injection violates [inv:no-untracked-injection], so the install must FAIL LOUDLY
+ * rather than ship an artifact nothing can reverse. Wraps the underlying cause.
+ */
+export class OwnershipWriteError extends Error {
+  readonly extId: string;
+  readonly scope: string;
+  readonly cause: unknown;
+  constructor(extId: string, scope: string, cause: unknown) {
+    super(
+      `[ownership] failed to record ownership for ${extId} (${scope}): ` +
+      `${cause instanceof Error ? cause.message : String(cause)} ` +
+      `— [inv:no-untracked-injection] at risk; refusing to report install success`,
+    );
+    this.name = 'OwnershipWriteError';
+    this.extId = extId;
+    this.scope = scope;
+    this.cause = cause;
   }
 }
 
@@ -108,30 +142,27 @@ export class OwnershipConflictError extends Error {
 
 // ─── Read / write (atomic) ──────────────────────────────────────────────────────
 
-export function readOwnership(filePath: string, opts: { strict?: boolean } = {}): OwnershipFile {
+export function readOwnership(filePath: string, _opts: { strict?: boolean } = {}): OwnershipFile {
+  // Genuinely absent → empty, and ONLY then (B-I3).
   if (!fs.existsSync(filePath)) return { version: 1, owned: [] };
+  let parsed: OwnershipFile;
   try {
-    const parsed = JSON.parse(fs.readFileSync(filePath, 'utf8')) as OwnershipFile;
-    if (!Array.isArray(parsed.owned)) {
-      if (opts.strict) throw new OwnershipCorruptError(filePath, '`owned` is not an array');
-      return { version: 1, owned: [] };
-    }
-    return parsed;
+    parsed = JSON.parse(fs.readFileSync(filePath, 'utf8')) as OwnershipFile;
   } catch (e) {
-    if (opts.strict) {
-      if (e instanceof OwnershipCorruptError) throw e;
-      throw new OwnershipCorruptError(filePath, e instanceof Error ? e.message : String(e));
-    }
-    return { version: 1, owned: [] };
+    throw new OwnershipCorruptError(filePath, e instanceof Error ? e.message : String(e));
   }
+  if (parsed === null || typeof parsed !== 'object' || !Array.isArray(parsed.owned)) {
+    throw new OwnershipCorruptError(filePath, '`owned` is not an array');
+  }
+  return parsed;
 }
 
+/**
+ * Publish the ownership index atomically (B-I1). The mechanism is a unique
+ * O_EXCL temp + one atomic rename (see atomic-write.ts) — never a fixed `.tmp`.
+ */
 export function writeOwnershipAtomic(filePath: string, data: OwnershipFile): void {
-  const dir = path.dirname(filePath);
-  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-  const tmp = filePath + '.tmp';
-  fs.writeFileSync(tmp, JSON.stringify(data, null, 2) + '\n', 'utf8');
-  fs.renameSync(tmp, filePath);
+  atomicWriteFileSync(filePath, JSON.stringify(data, null, 2) + '\n');
 }
 
 // ─── Ownership index (per scope) ────────────────────────────────────────────────
@@ -144,8 +175,15 @@ export function writeOwnershipAtomic(filePath: string, data: OwnershipFile): voi
 export class OwnershipIndex {
   private readonly filePath: string;
   private data: OwnershipFile;
-  /** Stat of the file at load time (null = absent), for optimistic-concurrency save. */
+  /** Stat of the file at load time (null = absent); a fast change signal, never a verdict. */
   private statAtLoad: { mtimeMs: number; size: number } | null;
+  /**
+   * Records THIS instance touched, keyed `${extId}\u0000${scope}`; value is the
+   * record to publish, or `null` for a removal. On save we merge exactly these
+   * into a FRESH on-disk read, so two concurrent writers of DIFFERENT extensions
+   * both persist (AC1) without depending on a lock (B-I1).
+   */
+  private readonly dirty = new Map<string, OwnershipRecord | null>();
 
   private constructor(
     filePath: string,
@@ -155,6 +193,17 @@ export class OwnershipIndex {
     this.filePath = filePath;
     this.data = data;
     this.statAtLoad = statAtLoad;
+  }
+
+  /** Stable merge key for a record. */
+  private static keyOf(extId: string, scope: string): string {
+    return `${extId}\u0000${scope}`;
+  }
+
+  /** Mark the (extId, scope) record as touched from the current in-memory state. */
+  private markDirty(extId: string, scope: string): void {
+    const rec = this.data.owned.find((r) => r.extId === extId && r.scope === scope);
+    this.dirty.set(OwnershipIndex.keyOf(extId, scope), rec ?? null);
   }
 
   /** Load (or create) the ownership index at an explicit ownership.json path. */
@@ -225,6 +274,7 @@ export class OwnershipIndex {
         entries: opts.entries,
       };
     }
+    this.markDirty(opts.extId, opts.scope);
   }
 
   /**
@@ -278,6 +328,7 @@ export class OwnershipIndex {
   compact(): void {
     for (const rec of this.data.owned) {
       rec.entries = OwnershipIndex.dedupeEntries(rec.entries);
+      this.markDirty(rec.extId, rec.scope);
     }
   }
 
@@ -305,26 +356,92 @@ export class OwnershipIndex {
     this.data.owned = this.data.owned.filter(
       (r) => !(r.extId === extId && r.scope === scope),
     );
+    this.dirty.set(OwnershipIndex.keyOf(extId, scope), null);
   }
 
   /**
-   * Persist atomically. Optimistic-concurrency guarded (BL-620 / INV-4): before
-   * the rename, re-stat the file and compare against the stat recorded at load.
-   * If the file changed on disk since load (mtime or size), an external writer
-   * updated it out from under us — throw OwnershipConflictError rather than
-   * silently clobbering their update. After a successful write, re-record the
-   * new stat so a subsequent save on this instance does not self-conflict.
+   * Persist atomically AND reconcile concurrent writers (AC1 / B-I1). The old
+   * behaviour — throw `OwnershipConflictError` the moment the file changed since
+   * load — refused a lost update but could not let two installs of DIFFERENT
+   * extensions both persist. Instead we run a bounded read-merge-verify loop:
+   *
+   *   1. fresh on-disk read (strict — a corrupt index throws, never reads empty);
+   *   2. overlay THIS instance's dirty records onto it (union);
+   *   3. if the on-disk state already equals the desired state, adopt it (no write);
+   *   4. else publish with one atomic rename, re-read, and assert our records
+   *      landed. A concurrent clobber between (1) and the rename re-throws
+   *      `OwnershipConflictError`, which `withReconciledRetry` turns into another
+   *      merge round against the newer union.
+   *
+   * Correctness is the rename (atomicWriteFileSync); the loop only resolves the
+   * lost-update RACE, never the torn-file class (which the unique temp removes
+   * by construction). The stat is kept only as a cheap change signal.
    */
   save(): void {
-    const current = statFile(this.filePath);
-    const loaded = this.statAtLoad;
-    const changed =
-      (loaded === null) !== (current === null) ||
-      (loaded !== null && current !== null &&
-        (loaded.mtimeMs !== current.mtimeMs || loaded.size !== current.size));
-    if (changed) throw new OwnershipConflictError(this.filePath);
-    writeOwnershipAtomic(this.filePath, this.data);
-    this.statAtLoad = statFile(this.filePath);
+    withReconciledRetry(this.filePath, () => {
+      // Fast change signal only (never a verdict): nothing to write AND the file
+      // is unchanged since load ⇒ nothing to do (and never CREATE a missing file).
+      const loadedStat = this.statAtLoad;
+      const nowStat = statFile(this.filePath);
+      const changed =
+        (loadedStat === null) !== (nowStat === null) ||
+        (loadedStat !== null && nowStat !== null &&
+          (loadedStat.mtimeMs !== nowStat.mtimeMs || loadedStat.size !== nowStat.size));
+      if (this.dirty.size === 0 && !changed) return;
+
+      // 1. Fresh on-disk snapshot. ENOENT → empty; corrupt → throw (B-I3).
+      const onDisk: OwnershipFile = fs.existsSync(this.filePath)
+        ? readOwnership(this.filePath, { strict: true })
+        : { version: 1, owned: [] };
+      const onDiskKeys = new Set(onDisk.owned.map((r) => OwnershipIndex.keyOf(r.extId, r.scope)));
+
+      // 2. Fast path: is the on-disk state already our desired state?
+      const needsWrite = [...this.dirty].some(([k, rec]) => {
+        const onDiskHas = onDiskKeys.has(k);
+        if (rec === null) return onDiskHas;
+        if (!onDiskHas) return true;
+        const cur = onDisk.owned.find((r) => OwnershipIndex.keyOf(r.extId, r.scope) === k);
+        return JSON.stringify(cur) !== JSON.stringify(rec);
+      });
+      if (!needsWrite) {
+        // Our dirty records already equal what is on disk (or there are none) —
+        // adopt the on-disk union in-memory and persist nothing. This keeps a
+        // read-then-save no-op from CREATING a file that did not exist.
+        this.data = { version: 1, owned: [...onDisk.owned] };
+        this.statAtLoad = statFile(this.filePath);
+        this.dirty.clear();
+        return;
+      }
+
+      // 3. Merge our dirty records onto the on-disk union.
+      const byKey = new Map(
+        onDisk.owned.map((r) => [OwnershipIndex.keyOf(r.extId, r.scope), r] as const),
+      );
+      for (const [k, rec] of this.dirty) {
+        if (rec === null) byKey.delete(k);
+        else byKey.set(k, rec);
+      }
+
+      // 4. Publish atomically, then verify our records landed.
+      const merged: OwnershipFile = { version: 1, owned: [...byKey.values()] };
+      writeOwnershipAtomic(this.filePath, merged);
+      const after = readOwnership(this.filePath, { strict: true });
+      const afterKeys = new Map(
+        after.owned.map((r) => [OwnershipIndex.keyOf(r.extId, r.scope), r] as const),
+      );
+      for (const [k, rec] of this.dirty) {
+        const cur = afterKeys.get(k);
+        const ok =
+          rec === null
+            ? cur === undefined
+            : cur !== undefined && JSON.stringify(cur) === JSON.stringify(rec);
+        // Clobbered by a concurrent writer between read and rename → re-merge.
+        if (!ok) throw new OwnershipConflictError(this.filePath);
+      }
+      this.data = { version: 1, owned: [...afterKeys.values()] };
+      this.statAtLoad = statFile(this.filePath);
+      this.dirty.clear();
+    });
   }
 
   /**
@@ -387,6 +504,8 @@ export class OwnershipIndex {
     rec.entries = rec.entries.filter(
       (e) => !(e.kind === 'os-unit' && e.label === opts.label),
     );
+    // Direct mutation bypasses record(); mark the key dirty so save() publishes it.
+    idx.markDirty(opts.extId, opts.scope);
     idx.save();
     const verify = readOwnership(filePath, { strict: true });
     const vRec = verify.owned.find((r) => r.extId === opts.extId && r.scope === opts.scope);

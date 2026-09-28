@@ -579,9 +579,13 @@ async function fetchOrgBaseline(
 // ─── Atomic lockfile write ──────────────────────────────────────────────────────
 
 /**
- * PI-5 / BL-141: atomic lockfile write using temp-file + rename.
+ * PI-5 / BL-141: atomic lockfile write.
  * Prevents partial writes from producing a corrupt lockfile.
  * Also rejects lockfiles with zero resolved entries (hard failure).
+ *
+ * D-B / B-I1: delegates to the SHARED `atomicWriteFileSync` primitive (unique
+ * per-process O_EXCL temp + one atomic rename). This was the SECOND fixed-`.tmp`
+ * site; flipping only one would leave the other racing, so both route here.
  */
 export function writeLockfileAtomic(lockPath: string, lockfile: Lockfile): void {
   // PI-5: hard failure when resolution yields zero members
@@ -591,13 +595,7 @@ export function writeLockfileAtomic(lockPath: string, lockfile: Lockfile): void 
       `resolution yielded zero members. Check config or registry.`,
     );
   }
-  const lockDir = path.dirname(lockPath);
-  if (!fs.existsSync(lockDir)) {
-    fs.mkdirSync(lockDir, { recursive: true });
-  }
-  const tmp = lockPath + '.tmp';
-  fs.writeFileSync(tmp, JSON.stringify(lockfile, null, 2) + '\n', 'utf8');
-  fs.renameSync(tmp, lockPath);
+  atomicWriteFileSync(lockPath, JSON.stringify(lockfile, null, 2) + '\n');
 }
 
 // ─── Core install function ────────────────────────────────────────────────────
@@ -1421,7 +1419,9 @@ function resolveActiveProvider(configs: ScopeConfigWithMeta[]): string | undefin
 // [inv:ledger-reversible]: every placement is recorded in the per-scope ledger.
 import { Ledger } from './ledger.js';
 // [inv:no-untracked-injection]: every placement is ALSO recorded in the ownership index.
-import { OwnershipIndex, type OwnedEntry } from './ownership.js';
+import { OwnershipIndex, OwnershipWriteError, type OwnedEntry } from './ownership.js';
+// D-B / B-I1: the one parallel-safe publish primitive (unique O_EXCL temp + one rename).
+import { atomicWriteFileSync } from './atomic-write.js';
 // Type-only: the agent-catalog capability's injectable client. It is imported as a
 // type so no runtime edge is added — the capability itself is dynamically imported
 // at the agent-catalog branch (see DECISION below) and its client defaults to the
@@ -1643,6 +1643,12 @@ export interface DeclarativeInstallResult {
    * place" for these and skips post-install side effects.
    */
   dryRun?: boolean;
+  /**
+   * D-B: set when the best-effort lockfile sync failed AFTER a successful
+   * placement. Previously swallowed to a stderr `console.warn`; now surfaced on
+   * the result so the caller can see the lockfile is stale (never silent).
+   */
+  lockSyncWarning?: string;
 }
 
 /**
@@ -1817,7 +1823,11 @@ export async function declarativeInstall(
         writeLockfileAtomic(lPath, existing);
       }
     } catch (e) {
-      console.warn(`install: warning: could not write lockfile entry for ${descriptor.ext}: ${String(e)}`);
+      // D-B: never silent — surface the stale-lockfile warning on the result.
+      const warn = `install: could not write lockfile entry for ${descriptor.ext}: ${String(e)}`;
+      console.warn(`warning: ${warn}`);
+      const last = results[results.length - 1];
+      if (last !== undefined) last.lockSyncWarning = warn;
     }
 
     return results;
@@ -2379,7 +2389,11 @@ export async function declarativeInstall(
         writeLockfileAtomic(lockPath, existing);
       }
     } catch (e) {
-      console.warn(`install: warning: could not write lockfile entry for ${descriptor.ext}: ${String(e)}`);
+      // D-B: never silent — surface the stale-lockfile warning on the result.
+      const warn = `install: could not write lockfile entry for ${descriptor.ext}: ${String(e)}`;
+      console.warn(`warning: ${warn}`);
+      const last = results[results.length - 1];
+      if (last !== undefined) last.lockSyncWarning = warn;
     }
   }
 
@@ -2389,8 +2403,11 @@ export async function declarativeInstall(
 /**
  * recordOwnership — ADR-0004 §D5: upsert the owned-entry set for (ext, scope) into
  * the ownership index at <scopeRoot>/ownership.json (scopeRoot is the data dir).
- * Best-effort: a failure here must not fail the install, but it IS logged loudly
- * because an unrecorded injection violates [inv:no-untracked-injection].
+ *
+ * D-B / B-I2 + B-I8: the caller invokes this AFTER the placement it records has
+ * succeeded, and a failure here THROWS a typed `OwnershipWriteError` — an install
+ * that placed bytes but could not record them must fail loudly rather than ship an
+ * untracked artifact nothing can reverse (the old swallow-then-continue is gone).
  */
 function recordOwnership(
   scopeRoot: string,
@@ -2399,17 +2416,17 @@ function recordOwnership(
   entries: OwnedEntry[],
 ): void {
   try {
-    const idx = OwnershipIndex.loadFromFile(path.join(scopeRoot, 'ownership.json'));
+    // Strict load: a corrupt index throws (never reads empty and wipes entries).
+    const idx = OwnershipIndex.loadFromFile(path.join(scopeRoot, 'ownership.json'), { strict: true });
     const meta: { host?: string; bundleId?: string } = {};
     if (descriptor.hosts[0] !== undefined) meta.host = descriptor.hosts[0];
     if (descriptor.bundleId !== undefined) meta.bundleId = descriptor.bundleId;
     idx.addEntries(descriptor.ext, scope, entries, meta);
     idx.save();
   } catch (e) {
-    console.error(
-      `[ownership] WARNING: failed to record ownership for ${descriptor.ext} (${scope}): ${String(e)} ` +
-      `— [inv:no-untracked-injection] at risk`,
-    );
+    // B-I2: the placement already happened; failing here is the correct, loud
+    // outcome (artifact is untracked-and-repairable, never silently unrecorded).
+    throw new OwnershipWriteError(descriptor.ext, scope, e);
   }
 }
 
