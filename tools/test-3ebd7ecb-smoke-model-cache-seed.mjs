@@ -120,7 +120,9 @@ console.log('D. harness wiring');
   const snap = src.slice(src.indexOf('async function snapshotFiles('), src.indexOf('function diffSnapshots('));
   check('D3 3ebd7ecb: snapshotFiles excludes the model cache and TMPDIR',
     /exclude: SNAPSHOT_EXCLUDE/.test(snap) && /const SNAPSHOT_EXCLUDE = \[SMOKE_XDG_CACHE_HOME, SMOKE_TMPDIR_PHYSICAL\]/.test(src));
-  check('D4 3ebd7ecb: the run end records model-cache-no-download from the seeded file\'s identity', /test_id: 'model-cache-no-download'/.test(main) && /fileIdentity\(onnx\)/.test(main));
+  check('D4 3ebd7ecb: the run end records model-cache-no-download by comparing the WHOLE seeded models tree',
+    /test_id: 'model-cache-no-download'/.test(main) && /treeAtSeed: seed\.seeded \? JSON\.stringify\(treeFingerprint\(smokeModelsRoot\)\)/.test(main) &&
+    /JSON\.stringify\(treeNow\) === modelSeed\.treeAtSeed/.test(main));
 }
 
 console.log(failed === 0 ? 'PASS 3ebd7ecb: all cases pass' : `FAIL 3ebd7ecb: ${failed} case(s) failed`);

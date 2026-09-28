@@ -57,15 +57,18 @@ console.log('B. the header claim and the red are both real');
   const pre = execFileSync('git', ['-C', REPO_ROOT, 'show', '0bb5b497:scripts/smoke-test.mjs'], { encoding: 'utf8', maxBuffer: 16 * 1024 * 1024 });
   check('B1 9303b749: 0bb5b497\'s harness has no embedding-host audit to load (so evaluateIsolation IS the pre-fix check)',
     !/embedHostMain|auditEmbedHosts|parsePsLines/.test(pre) && /evaluateIsolation\(/.test(pre));
-  // Run the guard's own pre-fix mode from THIS checkout's libs (only the control differs between variants).
-  const tmp = path.join(REPO_ROOT, 'tools', `.9303b749-probe-${process.pid}.mjs`);
-  fs.writeFileSync(tmp, src);
+  // Run the guard's own pre-fix mode against THIS checkout's libs (only the control differs
+  // between variants). In place for the normal run; only a --code-root guard (red demo) is
+  // copied beside this checkout's tools/ so its REPO_ROOT resolves here.
   let out = '';
+  const inPlace = CODE_ROOT === REPO_ROOT;
+  const probe = inPlace ? GUARD : path.join(REPO_ROOT, 'tools', `.9303b749-probe-${process.pid}.mjs`);
+  if (!inPlace) fs.writeFileSync(probe, src);
   try {
-    const r = spawnSync(process.execPath, [tmp, '--pre-fix'], { encoding: 'utf8' });
+    const r = spawnSync(process.execPath, [probe, '--pre-fix'], { encoding: 'utf8' });
     out = `${r.stdout}${r.stderr}`;
   } finally {
-    fs.rmSync(tmp, { force: true });
+    if (!inPlace) fs.rmSync(probe, { force: true });
   }
   check('B2 9303b749: --pre-fix is red on Part A, driven by the real evaluateIsolation verdict',
     /FAIL A1 reported shape/.test(out) && /pre-fix evaluateIsolation verdict: ok/.test(out), out.split('\n').filter((l) => /A1|verdict|Error/.test(l)).slice(0, 4).join(' | '));

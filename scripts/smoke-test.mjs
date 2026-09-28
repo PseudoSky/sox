@@ -1063,9 +1063,11 @@ function listTestRootProcesses() {
   const lines = raw.split('\n').filter((line) => SMOKE_ROOTS.some((r) => line.includes(r)));
   // d5c01be3: every TEST_ROOT-tagged process (argv `--root TEST_ROOT` or env) is
   // smoke-spawned — including supervisor/OS-unit daemons runCmd never sees a pid for.
+  const tagged = [];
   for (const root of SMOKE_ROOTS) {
-    for (const pid of pidsFromPsLines(lines, root, process.pid)) SMOKE_SPAWNED_PIDS.add(pid);
+    for (const pid of pidsFromPsLines(lines, root, process.pid)) { SMOKE_SPAWNED_PIDS.add(pid); tagged.push(pid); }
   }
+  noteSpawnStarts(tagged, 'test-root-scan'); // e5cf17a0: their own start times, not the run start
   return lines;
 }
 
@@ -1673,7 +1675,14 @@ async function main() {
   const operatorBefore = fs.existsSync(OPERATOR_MODEL_DIR) ? JSON.stringify(treeFingerprint(OPERATOR_MODEL_DIR)) : null;
   const seed = seedModelCache({ src: OPERATOR_MODEL_DIR, dst: SMOKE_MODEL_DIR, log: (m) => console.error(`[smoke] WARNING: model cache seed: ${m}`) });
   const seededOnnx = path.join(SMOKE_MODEL_DIR, 'model_optimized.onnx');
-  modelSeed = { ...seed, operatorBefore, onnxIdentity: seed.seeded ? fileIdentity(seededOnnx) : null };
+  // The WHOLE run model tree, so a download into a sibling dir (another model
+  // name, a leftover archive) is seen too — not only a replaced .onnx.
+  const smokeModelsRoot = path.dirname(SMOKE_MODEL_DIR);
+  modelSeed = {
+    ...seed, operatorBefore,
+    onnxIdentity: seed.seeded ? fileIdentity(seededOnnx) : null,
+    treeAtSeed: seed.seeded ? JSON.stringify(treeFingerprint(smokeModelsRoot)) : null,
+  };
   console.error(`[smoke] model cache (3ebd7ecb): ${seed.seeded
     ? `seeded by ${seed.method} from ${OPERATOR_MODEL_DIR} → ${SMOKE_MODEL_DIR} (${seed.files} file(s), ${seed.bytes} bytes; model_optimized.onnx identity ${modelSeed.onnxIdentity})`
     : `NOT seeded — ${seed.reason}`}`);
@@ -1968,11 +1977,14 @@ async function main() {
   if (modelSeed !== null) {
     const onnx = path.join(SMOKE_MODEL_DIR, 'model_optimized.onnx');
     const nowIdentity = fs.existsSync(onnx) ? fileIdentity(onnx) : null;
+    const modelsRoot = path.dirname(SMOKE_MODEL_DIR);
+    const treeNow = fs.existsSync(modelsRoot) ? treeFingerprint(modelsRoot) : {};
     const operatorAfter = fs.existsSync(OPERATOR_MODEL_DIR) ? JSON.stringify(treeFingerprint(OPERATOR_MODEL_DIR)) : null;
-    const noDownload = !modelSeed.seeded || nowIdentity === modelSeed.onnxIdentity;
+    const noDownload = !modelSeed.seeded || JSON.stringify(treeNow) === modelSeed.treeAtSeed;
     const detail = modelSeed.seeded
-      ? `seeded by ${modelSeed.method}; model_optimized.onnx identity at seed ${modelSeed.onnxIdentity}, at run end ${nowIdentity}` +
-        (noDownload ? ' — unchanged, no download' : ' — REPLACED during the run (a download re-fetched the seeded model)')
+      ? `seeded by ${modelSeed.method}; model_optimized.onnx identity at seed ${modelSeed.onnxIdentity}, at run end ${nowIdentity}; ` +
+        `models tree ${Object.keys(treeNow).length} file(s)` +
+        (noDownload ? ' — whole tree unchanged, no download' : ` — CHANGED during the run (a download wrote into the seeded cache): ${Object.keys(treeNow).join(', ')}`)
       : `not seeded (${modelSeed.reason}); the run downloaded the model (identity at run end ${nowIdentity})`;
     console.error(`[smoke] model cache (3ebd7ecb): ${detail}; operator cache ${operatorAfter === modelSeed.operatorBefore ? 'unchanged (stat fingerprint identical)' : 'fingerprint CHANGED during the run'}`);
     modelSteps.push({ test_id: 'model-cache-no-download', passed: noDownload, verdict: 'model-cache-redownloaded', detail });
