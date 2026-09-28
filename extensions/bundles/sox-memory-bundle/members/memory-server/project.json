@@ -56,7 +56,7 @@
     "typecheck-src": {
       "executor": "nx:run-commands",
       "options": {
-        "command": "tsc -p extensions/bundles/sox-memory-bundle/members/memory-server/tsconfig.json --noEmit",
+        "command": "tsc -p extensions/bundles/sox-memory-bundle/members/memory-server/tsconfig.typecheck.json --noEmit",
         "cwd": "."
       },
       "cache": true,

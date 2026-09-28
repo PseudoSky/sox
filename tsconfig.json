@@ -11,23 +11,26 @@
     "extensions/**/*.spec.ts",
     // `.test.ts` was omitted here while `.spec.ts` was excluded — an
     // asymmetry, not a decision. Both are project-owned test files; memory-server
-    // has its own `typecheck` + `typecheck-tests` targets (BL-340) that compile
+    // has its own `typecheck-tests` target (leaf of the noop `typecheck` ->
+    // `typecheck-tests` -> `typecheck-src` chain, BL-340/da25489b) that compiles
     // them with the ESM settings vitest actually runs them under. This root
     // catch-all was compiling only the `.test.ts` half as CommonJS, producing
     // TS1541/TS1479 that say nothing about the code.
     "extensions/**/*.test.ts",
 
-    // Same asymmetry, one level up: these five extensions own a `typecheck`
-    // target that compiles their sources under the module mode they are ACTUALLY
-    // built with (`module: CommonJS` + `moduleResolution: node10`, mirroring the
-    // esbuild CJS bundle). This root catch-all inherits tsconfig.base's
-    // `Node16`/`Node16` instead, so it re-compiled the same files under a mode
-    // nothing ships, and reported TS1541/TS1479 on `import type … from
-    // '@adhd/sox-store-adapter'` — a diagnostic about the compile settings, not
-    // about the code. Coverage is not lost by excluding them: every file below is
-    // compiled by its owning project's `typecheck` (and, for memory-server's
-    // vitest.setup.ts, `typecheck-tests`), which run in `nx run-many -t typecheck`
-    // and are now gates on both ci.yml and release.yml.
+    // Same asymmetry, one level up: these five extensions own a `typecheck-src`
+    // target (the leaf that actually invokes `tsc`; `typecheck` itself is
+    // `executor: "nx:noop"` and runs no compile of its own) that compiles their
+    // sources under the module mode they are ACTUALLY built with (`module:
+    // CommonJS` + `moduleResolution: node10`, mirroring the esbuild CJS bundle).
+    // This root catch-all inherits tsconfig.base's `Node16`/`Node16` instead, so
+    // it re-compiled the same files under a mode nothing ships, and reported
+    // TS1541/TS1479 on `import type … from '@adhd/sox-store-adapter'` — a
+    // diagnostic about the compile settings, not about the code. Coverage is not
+    // lost by excluding them: every file below is compiled by its owning
+    // project's `typecheck-src` (and, for memory-server's vitest.setup.ts,
+    // `typecheck-tests`), which `typecheck`'s `dependsOn` chain reaches on every
+    // `nx run-many -t typecheck` and are now gates on both ci.yml and release.yml.
     "extensions/bundles/sox-memory-bundle/members/memory-server/**",
     "extensions/bundles/sox-memory-bundle/members/memory-flush/**",
     "extensions/bundles/sox-memory-bundle/members/memory-cli/**",

@@ -43,10 +43,15 @@ command of its own — and depends on `^build` + `typecheck-tests`. `typecheck-t
 depends on `^build` + `typecheck-src`, a leaf target that runs the production-only `tsc` command
 (`tsconfig.typecheck.json` — no specs). Keeping the two real `tsc` invocations as separate leaf
 targets is what preserves triage clarity: the nx task name in a failure (`<p>:typecheck-src` vs
-`<p>:typecheck-tests`) tells you whether the break is in production code or in specs/test-support,
-even though a whole-repo `nx run-many -t typecheck` sweep always reaches both — `typecheck` cannot
-report green while `typecheck-tests` or `typecheck-src` silently never ran, because it has no
-command of its own to short-circuit on. Guard: `tools/test-7ff58364-gate-reaches-typecheck-tests.mjs`.
+`<p>:typecheck-tests`) tells you whether the break is in production code or in specs/test-support.
+A whole-repo `nx run-many -t typecheck` sweep always REACHES `typecheck-src` (it has no command of
+its own to short-circuit on), but `typecheck-tests` `dependsOn` `typecheck-src`, so nx SKIPS
+`typecheck-tests` outright when `typecheck-src` fails — the sweep still reports non-green overall
+(the failed `typecheck-src` task fails it), but a failing `<p>:typecheck-src` run does not by itself
+tell you whether specs would also have failed; it means the spec-inclusive check never ran at all.
+`typecheck` cannot report green while EITHER leaf target silently never ran, because it depends on
+both transitively and has no command of its own to short-circuit on. Guard:
+`tools/test-7ff58364-gate-reaches-typecheck-tests.mjs`.
 
 **Red→green watched by me, not taken on trust.** Appending
 `const __probe: number = "not a number";` to `errors.spec.ts` makes the target fail:

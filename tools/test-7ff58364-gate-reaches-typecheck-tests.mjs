@@ -39,6 +39,14 @@
  *     - A3: effective `typecheck-src.dependsOn` contains `^build`, and contains neither
  *       `typecheck-tests` nor `typecheck` (no back-edge / no cycle)
  *     - A4: the project's own `typecheck.executor` is `"nx:noop"`
+ *   ...and, for EVERY project that defines a `typecheck-src` target (independent of whether it also
+ *   defines `typecheck-tests` — A7 is a config-shape check on typecheck-src alone):
+ *     - A7: the tsconfig named by typecheck-src's own `-p <path>` command flag resolves (via
+ *       TypeScript's own `parseJsonConfigFileContent`, extends chain included) to a file set
+ *       containing no `.spec.ts`/`.test.ts` files — i.e. typecheck-src never compiles specs. Pins
+ *       BL-565d6f8c: before the fix, `memory-server:typecheck-src` pointed straight at
+ *       `tsconfig.json` (no exclude), so it type-checked every spec file under src alongside
+ *       production code and folded spec-only errors into the production triage bucket.
  *   task-graph (real `nx run-many -t typecheck --graph=<file>`, only when the target CODE_ROOT is
  *   an invocable nx workspace — the graph-level proof that the config above isn't merely declared
  *   but is actually reached by the whole-repo sweep):
@@ -63,6 +71,7 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import ts from 'typescript';
 
 const TOOLS_DIR = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(TOOLS_DIR, '..');
@@ -87,32 +96,53 @@ function readJson(p) {
 
 // --- project discovery -------------------------------------------------------------------------
 //
-// Discover projects the same way nx itself does (`nx show projects --json` / `nx show project
-// <p> --json`) rather than a hand-rolled filesystem walk with an ad-hoc exclusion list. The old
-// walk needed a manually maintained `EXCLUDE_DIRS` set (including a 'transcripts' entry for
-// non-project `project.json`-shaped fixtures under docs/research/**) that could silently drift
-// from what nx actually considers a project. `nx show projects` is only invocable when CODE_ROOT
-// is a real nx workspace (node_modules present); the red-demo path (a bare copy with no
-// node_modules) falls back to the filesystem walk, since that is the only way to exercise the
-// config-merge assertions against a minimal fixture tree at all.
+// A6 (resolver coverage, discovery half — honest about when each path actually runs): discover
+// every project via a SINGLE `nx graph --file=<tmp>.json` call rather than a hand-rolled
+// filesystem walk with an ad-hoc exclusion list, or (ef033f92) the earlier `nx show projects
+// --json` + N * `nx show project <p> --json` loop (1 + 2*68 = 137 subprocess spawns, ~42.6s on
+// this repo). `nx graph`'s project-graph JSON carries the same fully-resolved
+// `data.{root,targets}` per project as `nx show project` in one ~1s call. The fs-walk fallback
+// (`discoverProjectsViaFilesystem`, with its own maintained `EXCLUDE_DIRS` — including a
+// 'transcripts' entry for non-project `project.json`-shaped fixtures under docs/research/**) runs
+// ONLY when `canInvokeNx(CODE_ROOT)` is false, i.e. ONLY on the `--code-root <dir>` red-demo path
+// against a bare fixture copy with no `node_modules` — never on the live, in-place repo, and never
+// merely because `--skip-graph` was passed (that flag only skips the separate task-graph proof
+// below, A5; it has no effect on how projects are discovered in the first place).
 
 function canInvokeNx(root) {
   return fs.existsSync(path.join(root, 'package.json')) && fs.existsSync(path.join(root, 'node_modules'));
 }
 
+// Single `nx graph --file=<tmp>.json` call feeds project discovery for every project at once —
+// `graph.nodes[name].data.{root,targets}` carries the same fully-resolved target config as `nx
+// show project <name> --json`, so this replaces what used to be 1 + 2*N `npx nx show ...`
+// subprocess spawns (1 for `nx show projects`, 2 per project) with exactly one nx invocation.
+// Measured on this repo (68 projects): ~42.6s (N+1 `nx show` calls) -> ~1s (single `nx graph`).
 function discoverProjectsViaNx(root) {
-  const names = JSON.parse(
-    execFileSync('npx', ['nx', 'show', 'projects', '--json'], { cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }),
-  );
-  const out = [];
-  for (const name of names) {
-    const proj = JSON.parse(
-      execFileSync('npx', ['nx', 'show', 'project', name, '--json'], { cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }),
-    );
-    const projectJsonPath = proj.root ? path.join(root, proj.root, 'project.json') : null;
-    out.push({ name, targets: proj.targets ?? {}, file: projectJsonPath && fs.existsSync(projectJsonPath) ? projectJsonPath : null });
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'bl-ef033f92-graph-'));
+  try {
+    const graphFile = path.join(tmpDir, 'project-graph.json');
+    execFileSync('npx', ['nx', 'graph', '--file=' + graphFile], {
+      cwd: root,
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    const graph = readJson(graphFile);
+    const nodes = graph.graph?.nodes ?? {};
+    const out = [];
+    for (const [name, node] of Object.entries(nodes)) {
+      const data = node?.data ?? {};
+      const projectJsonPath = data.root ? path.join(root, data.root, 'project.json') : null;
+      out.push({
+        name,
+        targets: data.targets ?? {},
+        file: projectJsonPath && fs.existsSync(projectJsonPath) ? projectJsonPath : null,
+      });
+    }
+    return out;
+  } finally {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
   }
-  return out;
 }
 
 function discoverProjectsViaFilesystem(root) {
@@ -192,7 +222,7 @@ if (canAskNx) {
   try {
     allProjects = discoverProjectsViaNx(CODE_ROOT);
   } catch (err) {
-    report('nx show projects --json succeeded', false, String(err.message ?? err));
+    report('nx graph --file=<tmp>.json succeeded', false, String(err.message ?? err));
     allProjects = discoverProjectsViaFilesystem(CODE_ROOT);
   }
 } else {
@@ -253,6 +283,48 @@ for (const { name, targets } of allProjects) {
     // A4
     const typecheckExecutor = targets.typecheck?.executor;
     report(`${name}: A4 — typecheck.executor === "nx:noop"`, typecheckExecutor === 'nx:noop', String(typecheckExecutor));
+  }
+
+  // A7 — runs for every project with a typecheck-src target (not gated on hasTypecheckTests):
+  // the tsconfig that typecheck-src's own command actually invokes must resolve to a file set
+  // that excludes *.spec.ts / *.test.ts. This is a project-config-shape check, unrelated to
+  // whether the project also happens to define typecheck-tests. Config resolution is done via
+  // TypeScript's own `parseJsonConfigFileContent` (extends chain, include/exclude, matched
+  // fileNames) rather than a hand-rolled glob or a full `tsc --listFilesOnly` spawn per project —
+  // it is the same resolution logic tsc itself uses, but returns instantly with no type checking.
+  if (hasTypecheckSrc) {
+    const command = targets['typecheck-src']?.options?.command;
+    const match = typeof command === 'string' ? command.match(/(?:^|\s)-p\s+(\S+)/) : null;
+    if (!match) {
+      report(`${name}: A7 — typecheck-src command has a "-p <tsconfig>" flag`, false, JSON.stringify(command));
+    } else {
+      const configPath = path.resolve(CODE_ROOT, match[1]);
+      if (!fs.existsSync(configPath)) {
+        report(`${name}: A7 — tsconfig referenced by typecheck-src exists`, false, configPath);
+      } else {
+        const readResult = ts.readConfigFile(configPath, ts.sys.readFile);
+        if (readResult.error) {
+          report(
+            `${name}: A7 — tsconfig referenced by typecheck-src parses`,
+            false,
+            ts.flattenDiagnosticMessageText(readResult.error.messageText, '\n'),
+          );
+        } else {
+          const parsed = ts.parseJsonConfigFileContent(readResult.config, ts.sys, path.dirname(configPath));
+          const specOrTestFiles = parsed.fileNames.filter((f) => f.endsWith('.spec.ts') || f.endsWith('.test.ts'));
+          report(
+            `${name}: A7 — typecheck-src tsconfig (${path.relative(CODE_ROOT, configPath)}) excludes *.spec.ts/*.test.ts`,
+            specOrTestFiles.length === 0,
+            specOrTestFiles.length === 0
+              ? `${parsed.fileNames.length} file(s) resolved, none spec/test`
+              : `${specOrTestFiles.length} spec/test file(s) included: ${specOrTestFiles
+                  .slice(0, 5)
+                  .map((f) => path.relative(CODE_ROOT, f))
+                  .join(', ')}`,
+          );
+        }
+      }
+    }
   }
 }
 

@@ -26,46 +26,40 @@
  * script invocation (bl266 — see SPEC-BL-466.md Decision 6 / tools/run-guards.mjs `buildBl266Args`).
  */
 
-import * as fs from 'node:fs';
+import { execFileSync } from 'node:child_process';
 import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 
-// 3b752549: the 7ff58364 guard (below) needs to re-run whenever ANY project's `project.json`
-// changes, not just the three projects it happened to be written against — a new project growing
-// a `typecheck-tests` target with no matching `typecheck-src`/noop `typecheck` would otherwise
-// ship unwatched. `run-guards.mjs`'s watch matcher only understands an exact path or a directory
-// prefix (a trailing-slash entry), not a glob, so the accurate fix is to enumerate every real
-// `project.json` path once here — mirroring the same exclude-dir walk the guard script itself
-// uses — rather than widen to an imprecise top-level directory prefix (which would also re-run
-// the guard on unrelated source edits anywhere under libs/ or extensions/).
-function findAllProjectJsonPaths(root) {
-  const EXCLUDE_DIRS = new Set(['node_modules', 'dist', '.git', '.nx', '.worktrees', '.claude', 'transcripts']);
-  const out = [];
-  const stack = [root];
-  while (stack.length) {
-    const dir = stack.pop();
-    let entries;
-    try {
-      entries = fs.readdirSync(dir, { withFileTypes: true });
-    } catch (err) {
-      console.error(`guards-manifest: readdirSync(${dir}) failed, skipping: ${err.message ?? err}`);
-      continue;
-    }
-    for (const entry of entries) {
-      if (entry.isDirectory()) {
-        if (EXCLUDE_DIRS.has(entry.name)) continue;
-        stack.push(path.join(dir, entry.name));
-      } else if (entry.isFile() && entry.name === 'project.json') {
-        out.push(path.posix.join(path.relative(root, dir).split(path.sep).join('/'), 'project.json'));
-      }
-    }
-  }
-  return out.sort();
+// 3b752549 / ef033f92: the 7ff58364 guard (below) needs to re-run whenever ANY project's
+// `project.json` changes, not just the three projects it happened to be written against — a new
+// project growing a `typecheck-tests` target with no matching `typecheck-src`/noop `typecheck`
+// would otherwise ship unwatched. `run-guards.mjs`'s watch matcher only understands an exact path
+// or a directory prefix (a trailing-slash entry), not a glob (see `matchesDiff` in
+// tools/run-guards.mjs), so the watch list is still an enumerated path list — but built from
+// `git ls-files` against the real tracked tree instead of a hand-rolled `fs.readdirSync` walk
+// with its own maintained `EXCLUDE_DIRS` set. That walker duplicated the one already living in
+// tools/test-7ff58364-gate-reaches-typecheck-tests.mjs's `discoverProjectsViaFilesystem` and could
+// silently drift from it; `git ls-files` is the tracked-file truth (untracked scratch/fixture
+// `project.json`-shaped files, e.g. under docs/research/**/transcripts/**, are never tracked, so
+// they need no exclude list at all) and its result is identical on every machine/checkout — no
+// dependence on what happens to exist in a given working tree's `node_modules`/`dist`/`.worktrees`.
+//
+// Also widened (per BL-ef033f92) to `package.json` and `tsconfig*.json`: A7 (added to the 7ff58364
+// guard) reads the tsconfig file named by a project's `typecheck-src` command, so a change to
+// e.g. `tsconfig.typecheck.json`'s `exclude` list — with no accompanying `project.json` edit —
+// must also re-arm this guard.
+function trackedFiles(pattern) {
+  return execFileSync('git', ['-C', REPO_ROOT, 'ls-files', '--', pattern], { encoding: 'utf8' })
+    .split('\n')
+    .filter(Boolean)
+    .sort();
 }
 
-const ALL_PROJECT_JSON_PATHS = findAllProjectJsonPaths(REPO_ROOT);
+const ALL_PROJECT_JSON_PATHS = trackedFiles('**/project.json');
+const ALL_PACKAGE_JSON_PATHS = trackedFiles('**/package.json');
+const ALL_TSCONFIG_JSON_PATHS = trackedFiles('**/tsconfig*.json');
 
 export const GUARDS = [
   // ---------------------------------------------------------------- Tier 1 (34) -----------
@@ -376,11 +370,12 @@ export const GUARDS = [
     // `typecheck-src`, so production-only breakage is triage-distinguishable from spec breakage
     // even though both are always reached by a whole-repo sweep.
     //
-    // Watch list (3b752549): every project.json in the repo, not just the three this guard was
-    // originally written against — any project that grows a typecheck-tests target without a
-    // matching typecheck-src/noop typecheck needs this guard to re-run. See
-    // `findAllProjectJsonPaths` above.
-    watch: ['nx.json', ...ALL_PROJECT_JSON_PATHS],
+    // Watch list (3b752549, widened ef033f92): every tracked project.json/package.json/
+    // tsconfig*.json in the repo, not just the three projects this guard was originally written
+    // against — any project that grows a typecheck-tests target without a matching
+    // typecheck-src/noop typecheck needs this guard to re-run, and A7 needs it to re-run on a
+    // bare tsconfig edit too. Built from `git ls-files`, see the trackedFiles() helper above.
+    watch: ['nx.json', ...ALL_PROJECT_JSON_PATHS, ...ALL_PACKAGE_JSON_PATHS, ...ALL_TSCONFIG_JSON_PATHS],
   },
 
   // ---------------------------------------------------------------- Tier 2 (5) ------------
