@@ -190,14 +190,16 @@ describe('BL-472 — coordinatedShutdown step 0: bounded Phase-B/heal drain', ()
     // after it.
     const drainEvents = events.slice(0, 2).sort();
     expect(drainEvents).toEqual(['flushPendingEmbeds', 'waitForDrainSettled']);
+    // (ff7d9e24) 'autoBackup' no longer appears — coordinatedShutdown's step 3
+    // unconditionally skips the backup instead of calling autoBackup().
     expect(events.slice(2)).toEqual([
       'terminateEmbedWorkers',
       'closeAllAdapters',
       'writeQueueCloseAllForShutdown',
-      'autoBackup',
       'handle.close',
       'exit',
     ]);
+    expect(mockAutoBackup).not.toHaveBeenCalled();
   });
 
   it('[BL-472 bounded] a hung flushPendingEmbeds() does not block shutdown past SHUTDOWN_EMBED_DRAIN_TIMEOUT_MS', async () => {

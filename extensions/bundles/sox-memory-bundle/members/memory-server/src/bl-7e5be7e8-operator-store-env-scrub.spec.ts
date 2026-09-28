@@ -2,28 +2,42 @@
  * BL-7e5be7e8 — a test that SIGTERMs a real memory-server must never back up
  * (open) the operator's production store or touch its backup dir.
  *
- * The hazard: the direct-stdio SIGTERM/SIGINT handler in index.ts runs
- * `autoBackup(resolveDbPath(undefined))`, i.e. a VACUUM INTO of whatever store
- * `SOX_CONFIG_DB_PATH` names, into `SOX_AUTO_BACKUP_DIR` (default
- * `~/.memory/backups`), followed by a retention PRUNE of that dir. `autoBackup`
- * allowlists only the SOURCE, never the destination. A spec that spawns the
- * entrypoint with `{ ...process.env }` hands the child whatever the operator's
- * shell carried, so an inherited `SOX_CONFIG_DB_PATH` made every such spec a
- * production-store reader and a potential deleter of operator backups.
+ * HISTORICAL HAZARD (pre-ff7d9e24): the direct-stdio SIGTERM/SIGINT handler in
+ * index.ts ran `autoBackup(resolveDbPath(undefined))`, i.e. a VACUUM INTO of
+ * whatever store `SOX_CONFIG_DB_PATH` named, into `SOX_AUTO_BACKUP_DIR`
+ * (default `~/.memory/backups`), followed by a retention PRUNE of that dir.
+ * `autoBackup` allowlists only the SOURCE, never the destination. A spec that
+ * spawns the entrypoint with `{ ...process.env }` hands the child whatever
+ * the operator's shell carried, so an inherited `SOX_CONFIG_DB_PATH` made
+ * every such spec a production-store reader and a potential deleter of
+ * operator backups.
  *
- * The fix (libs/memory-core/src/test-env-scrub.ts) scrubs the operator's
- * host-injected store config in both suites' vitest.setup.ts and in
- * `buildScratchEmbedEnv()`. This spec proves:
+ * (ff7d9e24) THE SHUTDOWN-TIME VACUUM IS GONE ENTIRELY — see
+ * `handleDirectStdioShutdown`'s own doc comment for why (a VACUUM INTO cut
+ * off by the reaper's SIGTERM grace landed torn/empty backup files under the
+ * final rotated-backup name in production). This spec now proves the hazard
+ * class is closed at the mechanism level, not merely mitigated by the scrub:
  *
  *   1. wiring — vitest.config.ts injects a decoy `SOX_CONFIG_DB_PATH` /
  *      `SOX_AUTO_BACKUP_DIR` into every worker before setupFiles run; after
  *      setup, none of the scrubbed keys is left. Removing the setup call turns
  *      this red on every run;
  *   2. control — with an UNSCRUBBED operator-shaped env, the real entrypoint,
- *      SIGTERMed, really does VACUUM INTO a backup of the configured store
- *      (the hazard is live and this spec's detector sees it);
+ *      SIGTERMed, STILL never backs up the configured store (ff7d9e24 removed
+ *      the shutdown-time VACUUM outright, so this now holds regardless of the
+ *      scrub — the scrub's job is narrower than it used to be, see the "still
+ *      worth keeping" note below);
  *   3. treatment — the same operator-shaped env passed through the harness
  *      scrub leaves the configured store unopened and the backup dir untouched.
+ *
+ * The scrub (libs/memory-core/src/test-env-scrub.ts) is still worth keeping:
+ * an unscrubbed env still lets a SIGTERMed test spawn `resolveDbPath()` and
+ * name the operator's real path in a stderr log line, and still leaves
+ * `SOX_PROXY_BACKEND=1` (BACKEND mode) reachable, which runs its own
+ * `coordinatedShutdown()` teardown sequence (closeAllAdapters/WriteQueue
+ * checkpoint) against whatever store it resolves — a real write-path touch
+ * this suite's SAFETY INDEPENDENT OF THE FIX UNDER TEST paragraph below still
+ * guards against by using decoys throughout.
  *
  * SAFETY INDEPENDENT OF THE FIX UNDER TEST: every child env is built as
  * `buildScratchEmbedEnv()` (a `{ ...process.env }` copy, scrubbed, with scratch
@@ -277,14 +291,17 @@ describe('BL-7e5be7e8: a SIGTERMed test memory-server never backs up the operato
     expect(env).toEqual({ SOX_ECOSYSTEM_HOME: '/keep', STORE_ADAPTER: 'sqlite', HOME: '/keep-home' });
   });
 
-  it('[BL-7e5be7e8 control] UNSCRUBBED operator env: SIGTERM really backs up the configured store', async () => {
+  it('[BL-7e5be7e8 control, ff7d9e24] UNSCRUBBED operator env: SIGTERM STILL never backs up the configured store — ff7d9e24 removed the shutdown-time VACUUM entirely, so the scrub is no longer the only thing standing between a SIGTERMed test and the operator store', async () => {
+    const storeMtimeBefore = fs.statSync(control.store).mtimeMs;
     expect(listBackups(control.backups)).toEqual([]);
     const run = await bootAndSigterm(control, { ...control.operatorEnv });
     assertCleanTeardown(run.teardown);
-    expect(run.stderr).toContain('running pre-restart backup');
-    expect(run.stderr).toContain(`pre-restart backup saved: ${control.backups}${path.sep}`);
-    expect(listBackups(control.backups)).toHaveLength(1);
+    expect(run.stderr).not.toContain('running pre-restart backup');
+    expect(run.stderr).not.toContain('pre-restart backup saved');
+    expect(run.stderr).toContain(`skipping pre-restart backup for ${control.store} (ff7d9e24: no VACUUM in shutdown path`);
+    expect(listBackups(control.backups)).toEqual([]);
     expect(fs.existsSync(path.join(control.backups, BACKUP_SENTINEL))).toBe(true);
+    expect(fs.statSync(control.store).mtimeMs).toBe(storeMtimeBefore);
   }, ARM_TIMEOUT_MS);
 
   it('[BL-7e5be7e8 treatment] harness-scrubbed env: SIGTERM leaves the configured store and backup dir untouched', async () => {

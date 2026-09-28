@@ -30,6 +30,21 @@
  *   A `memory_backup` MCP tool is a natural follow-up. Wiring it in memory-server
  *   is an integration step outside this shard's scope fence (S4 covers memory-core +
  *   memory-cli only). See BL-FOLLOW-backup-mcp-tool in discovered notes.
+ *
+ * Staged, verified, atomically-published backups (ff7d9e24):
+ *   `autoBackup()` never writes directly to the final rotated-backup name.
+ *   It VACUUM INTOs to a `.<pid>.tmp`-suffixed staging path, runs BOTH
+ *   `backupStore()`'s integrity check AND {@link verifyStagedBackupIsNotTorn}
+ *   (a torn/schema-empty copy passes `pragma_integrity_check` trivially, so a
+ *   second, independent gate is required — see that function's own doc
+ *   comment for the production incident this responds to), fsyncs the staged
+ *   file, and only THEN renames it into the final name. A failed verification
+ *   deletes the staged file and reports the backup skipped — a torn or empty
+ *   copy is never observable under the final rotated-backup name. There is
+ *   NO VACUUM anywhere in the memory-server shutdown path — `autoBackup()` is
+ *   called only from the periodic/idle path, never from `coordinatedShutdown`
+ *   or `handleDirectStdioShutdown` (memory-server/src/{backend,index}.ts),
+ *   which unconditionally skip the backup step and log why.
  */
 
 import * as crypto from 'node:crypto';
@@ -296,6 +311,69 @@ export async function backupStore(
   } finally {
     try { await srcAdapter?.close(); } catch (err) {
       tlog.debug('backup.adapter_close_failed', { error: err instanceof Error ? err.message : String(err) });
+    }
+  }
+}
+
+/**
+ * (ff7d9e24) Verdict from {@link verifyStagedBackupIsNotTorn}.
+ */
+export type TornBackupVerdict =
+  | { ok: true }
+  | { ok: false; reason: string };
+
+/**
+ * (ff7d9e24) Second, independent verification gate on the STAGED (`.tmp`)
+ * backup copy, run in addition to `backupStore()`'s own
+ * `pragma_integrity_check`-based verdict. That check answers "is this file
+ * structurally consistent SQLite" — a torn/empty copy (a `VACUUM INTO` cut
+ * off before it wrote any schema) still answers "consistent": a bare,
+ * single-page SQLite header with zero tables passes `integrity_check`
+ * trivially, because there is nothing inconsistent to find in a file that
+ * never got far enough to contain anything. This is the EXACT shape of the
+ * three real torn backups this fix responds to: 4 KB `.db` files, 0 commit
+ * frames, no schema.
+ *
+ * This gate answers a different question: "does this copy actually contain
+ * the source's data?" — by opening it read-only via the store's own adapter
+ * (never a hardcoded driver, mirroring `backupStore()`'s own BL-385 rule) and
+ * requiring at least one row in `sqlite_master`. A source store with truly
+ * zero tables would fail this too, but `autoBackup()` is only ever pointed at
+ * a real memory-server store, which always has a schema before it is ever
+ * live enough to be worth backing up — so a zero count here is only ever the
+ * torn-copy failure mode, never a legitimate empty source.
+ *
+ * Never deletes the file itself — the caller (`autoBackup`) owns cleanup so
+ * it can also skip the idempotency-marker write and the retention prune on
+ * failure, neither of which this function has access to.
+ */
+export async function verifyStagedBackupIsNotTorn(
+  destPath: string,
+  opts: { skipIntegrityCheck?: boolean } = {},
+): Promise<TornBackupVerdict> {
+  if (opts.skipIntegrityCheck) return { ok: true };
+  let adapter: StoreAdapter | null = null;
+  try {
+    const { createStoreAdapter } = await import('@adhd/sox-store-adapter');
+    adapter = await createStoreAdapter({ dbPath: destPath, readonly: true, concurrencyMode: STORE_MODE() });
+    const row = await adapter.executeGet<{ c: number }>('SELECT count(*) AS c FROM sqlite_master');
+    const count = Number(row?.c ?? 0);
+    if (!Number.isFinite(count) || count <= 0) {
+      return {
+        ok: false,
+        reason: `staged backup copy at ${destPath} has no schema objects (sqlite_master count=${count}) — ` +
+          `torn/truncated VACUUM INTO`,
+      };
+    }
+    return { ok: true };
+  } catch (err) {
+    return {
+      ok: false,
+      reason: `staged backup copy at ${destPath} failed to open/query: ${err instanceof Error ? err.message : String(err)}`,
+    };
+  } finally {
+    try { await adapter?.close(); } catch (err) {
+      tlog.debug('backup.verify_adapter_close_failed', { path: destPath, error: err instanceof Error ? err.message : String(err) });
     }
   }
 }
@@ -607,14 +685,58 @@ export async function autoBackup(
     return { path: '', size: 0, skipped: true, pruned: [] };
   }
 
-  // 9b. (BL-85a62f57) Rename into the real rotated-backup name only now that
-  //     backupStore has confirmed the VACUUM INTO completed and passed its
-  //     integrity check — the file at `finalDestPath` is never observable in
-  //     a partial state. A rename failure (same filesystem, so practically
-  //     only a permission error or an extremely unlucky racing deletion) is
-  //     treated the same as any other backup failure: the temp file is
-  //     cleaned up best-effort and the call reports skipped rather than
-  //     risk leaving a leftover `.tmp` the next sweep can't yet explain.
+  // 9a. (ff7d9e24) Second, independent verification gate on the staged copy
+  //     — see verifyStagedBackupIsNotTorn's own doc comment for why this is
+  //     necessary IN ADDITION TO backupStore()'s pragma_integrity_check-based
+  //     verdict: a torn/empty copy (VACUUM INTO cut off before it wrote any
+  //     schema) passes integrity_check trivially. A failure here deletes the
+  //     tmp file and reports skipped — it is NEVER renamed into the final
+  //     rotated-backup name, and neither the idempotency marker nor the
+  //     retention prune runs, so a torn copy can never masquerade as this
+  //     backup having succeeded.
+  const tornVerdict = await verifyStagedBackupIsNotTorn(tmpDestPath, opts);
+  if (!tornVerdict.ok) {
+    log(`[auto-backup] staged backup failed verification: ${tornVerdict.reason}`);
+    tlog.warn('backup.verify_failed', { path: tmpDestPath, reason: tornVerdict.reason });
+    try { fs.unlinkSync(tmpDestPath); } catch (cleanupErr) {
+      tlog.debug('backup.cleanup_torn_file_failed', {
+        path: tmpDestPath,
+        error: cleanupErr instanceof Error ? cleanupErr.message : String(cleanupErr),
+      });
+    }
+    return { path: '', size: 0, skipped: true, pruned: [] };
+  }
+
+  // 9b. (BL-85a62f57, ff7d9e24) Rename into the real rotated-backup name only
+  //     now that BOTH backupStore's integrity check AND the torn-copy
+  //     verification above have passed — the file at `finalDestPath` is
+  //     never observable in a partial state. `fsyncSync` the staged file
+  //     first: without it, a crash between the rename and the next fsync of
+  //     the containing directory could still leave an empty/truncated file
+  //     visible under the final name after an unclean shutdown of the HOST
+  //     machine (not this process) — renameSync alone only guarantees the
+  //     directory entry moves atomically, not that the file's own bytes were
+  //     durably on disk beforehand. A rename failure (same filesystem, so
+  //     practically only a permission error or an extremely unlucky racing
+  //     deletion) is treated the same as any other backup failure: the temp
+  //     file is cleaned up best-effort and the call reports skipped rather
+  //     than risk leaving a leftover `.tmp` the next sweep can't yet explain.
+  try {
+    const fd = fs.openSync(tmpDestPath, 'r+');
+    try {
+      fs.fsyncSync(fd);
+    } finally {
+      fs.closeSync(fd);
+    }
+  } catch (err) {
+    // Best-effort durability step — never fatal to the backup: the file is
+    // still structurally verified above, and a rename failure (if the fsync
+    // itself surfaced a real I/O problem) is caught by the block below.
+    tlog.debug('backup.fsync_before_rename_failed', {
+      path: tmpDestPath,
+      error: err instanceof Error ? err.message : String(err),
+    });
+  }
   try {
     fs.renameSync(tmpDestPath, finalDestPath);
   } catch (err) {

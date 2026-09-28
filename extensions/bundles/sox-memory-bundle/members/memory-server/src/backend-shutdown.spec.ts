@@ -187,17 +187,19 @@ describe('BL-405 — coordinatedShutdown', () => {
     releaseClose();
     await p;
 
+    // (ff7d9e24) 'autoBackup' no longer appears in this sequence — step 3
+    // now unconditionally skips the backup instead of calling autoBackup().
     expect(events).toEqual([
       'flushPendingEmbeds',
       'waitForDrainSettled',
       'terminateEmbedWorkers',
       'closeAllAdapters',
       'writeQueueCloseAllForShutdown',
-      'autoBackup',
       'handle.close',
       'exit',
     ]);
     expect(exit).toHaveBeenCalledWith(0);
+    expect(mockAutoBackup).not.toHaveBeenCalled();
   });
 
   it('is idempotent — SIGTERM and SIGINT firing together run the teardown exactly once', async () => {
@@ -244,11 +246,14 @@ describe('BL-405 — coordinatedShutdown', () => {
     expect(exit).toHaveBeenCalledWith(0);
   });
 
-  it('a hung pre-restart backup never blocks exit past its own bounded timeout — the checkpoint already ran', async () => {
+  it('[ff7d9e24] a configured store never triggers autoBackup on shutdown — the checkpoint is the only durability step, and a hung autoBackup mock proves it is never even awaited', async () => {
     vi.useFakeTimers();
 
-    // autoBackup that never resolves — simulates a VACUUM INTO on a large
-    // store that outruns the whole restart's share of the reaper grace.
+    // autoBackup that never resolves if it were ever called — simulates the
+    // pre-ff7d9e24 hazard (a VACUUM INTO on a large store outrunning the
+    // restart's share of the reaper grace). Step 3 must never call this at
+    // all, so exit must proceed immediately without ever needing
+    // SHUTDOWN_BACKUP_TIMEOUT_MS to bound anything.
     mockAutoBackup.mockImplementation(() => new Promise(() => {}));
 
     const exit = vi.fn((_code: number): never => undefined as never);
@@ -262,21 +267,19 @@ describe('BL-405 — coordinatedShutdown', () => {
     );
 
     // closeAllAdapters (the real, required checkpoint) must have already
-    // completed before the backup's own timeout is what's gating anything.
+    // completed, and the whole sequence must finish with ZERO time advance —
+    // there is no backup step left to wait on.
     await vi.advanceTimersByTimeAsync(0);
-    expect(mockCloseAllAdapters).toHaveBeenCalledTimes(1);
-    expect(exit).not.toHaveBeenCalled();
-
-    // Advance past the backup's own bounded timeout (well short of the
-    // overall safety net) — shutdown must proceed without ever awaiting the
-    // hung autoBackup() call.
-    await vi.advanceTimersByTimeAsync(SHUTDOWN_BACKUP_TIMEOUT_MS + 10);
     await p;
 
+    expect(mockCloseAllAdapters).toHaveBeenCalledTimes(1);
+    expect(mockAutoBackup).not.toHaveBeenCalled();
     expect(handleClose).toHaveBeenCalledTimes(1);
     expect(exit).toHaveBeenCalledWith(0);
-    // Sanity: the backup timeout is comfortably inside the overall safety
-    // net, which is itself comfortably inside the reaper's 5000ms grace.
+    // Sanity: SHUTDOWN_BACKUP_TIMEOUT_MS is still exported (compat with
+    // bug018-shutdown-budget-headroom.spec.ts's arithmetic) and still
+    // comfortably inside the overall safety net, even though step 3 no
+    // longer uses it to bound anything.
     expect(SHUTDOWN_BACKUP_TIMEOUT_MS).toBeLessThan(SHUTDOWN_SAFETY_NET_MS);
     expect(SHUTDOWN_SAFETY_NET_MS).toBeLessThan(5000);
   });

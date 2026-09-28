@@ -19,6 +19,11 @@
  * one + the test fixture), the `toMatch(/concurrencyMode\s*:/)` assertion fails
  * on every site, and the count assertions fail too (the sites existed but none
  * declared a mode). GREEN: every site now passes `concurrencyMode: STORE_MODE()`.
+ *
+ * (ff7d9e24) backup.ts's count moved from 1 to 2 when `verifyStagedBackupIsNotTorn()`
+ * added a second, independent `createStoreAdapter` open (the staged-copy
+ * schema-emptiness gate). It declares `concurrencyMode: STORE_MODE()` like the
+ * pre-existing site, so it is caught by this file's audit, not exempt from it.
  */
 import { describe, it, expect } from 'vitest';
 import { readFileSync } from 'node:fs';
@@ -62,9 +67,15 @@ describe('db-concurrency-contract — memory-core declares its store mode at eve
     }
   });
 
-  it('the site count is pinned — db.ts: 5, backup.ts: 1 — so a NEW bare site cannot hide behind the regex', () => {
+  it('the site count is pinned — db.ts: 5, backup.ts: 2 — so a NEW bare site cannot hide behind the regex', () => {
+    // (ff7d9e24) backup.ts's second site is `verifyStagedBackupIsNotTorn()` —
+    // the staged-copy schema-emptiness gate `autoBackup()` runs between
+    // `backupStore()` succeeding and the atomic rename into the final
+    // rotated-backup name. It declares `concurrencyMode: STORE_MODE()`
+    // exactly like the pre-existing site, so it is audited by the assertion
+    // above, not exempted from it — this pin is bumped, not weakened.
     expect(createStoreAdapterConfigBodies('db.ts').length).toBe(5);
-    expect(createStoreAdapterConfigBodies('backup.ts').length).toBe(1);
+    expect(createStoreAdapterConfigBodies('backup.ts').length).toBe(2);
   });
 
   it('the declaration is via the ONE STORE_MODE() helper, not a duplicated literal', () => {

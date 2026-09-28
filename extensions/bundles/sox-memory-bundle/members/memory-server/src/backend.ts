@@ -31,7 +31,7 @@ import { serveBackend } from '@adhd/sox-service-proxy';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 
-import { autoBackup, closeAllAdapters, flushPendingEmbeds, terminateEmbedWorkers, WriteQueue } from '@adhd/sox-memory-core';
+import { closeAllAdapters, flushPendingEmbeds, terminateEmbedWorkers, WriteQueue } from '@adhd/sox-memory-core';
 import { getContentAddress, handleToolCall, resolveDbPath, TOOLS, waitForDrainSettled } from './index.js';
 import { computeShutdownSafetyNetMs, SHUTDOWN_BACKUP_TIMEOUT_MS } from './shutdown-margin.js';
 
@@ -281,13 +281,22 @@ export function __resetShutdownStateForTest(): void {
  *      queue's connection was STILL OPEN and accepting further writes after
  *      "shutdown" had already finished. Both must complete, not race an
  *      unrelated handle-close.
- *   3. Fire the pre-restart backup best-effort, racing its own timeout (see
- *      `SHUTDOWN_BACKUP_TIMEOUT_MS` above) so it is not INTENDED to gate the
- *      exit past that bound — but for a synchronously-blocking `VACUUM INTO`
- *      (today's `SqliteAdapterImpl.backupTo()`) the timer racing it cannot
- *      even be scheduled until the call returns, so it DOES gate the exit
- *      for as long as that takes; see step 3's own inline comment below and
- *      `SHUTDOWN_BACKUP_TIMEOUT_MS`'s doc comment for the full caveat.
+ *   3. (ff7d9e24) NO VACUUM IN THE SHUTDOWN PATH. This step used to fire the
+ *      pre-restart `autoBackup()` (a `VACUUM INTO`) best-effort, racing its
+ *      own `SHUTDOWN_BACKUP_TIMEOUT_MS` timeout — but `Promise.race` never
+ *      cancels the loser, and a synchronously-blocking `VACUUM INTO` (today's
+ *      `SqliteAdapterImpl.backupTo()`) held the event loop for its entire
+ *      duration, so neither that race nor the whole-sequence safety net
+ *      could even be scheduled until the VACUUM returned. When the reaper's
+ *      SIGTERM grace expired first, the VACUUM INTO was cut off mid-write,
+ *      landing a torn/empty backup file under the FINAL rotated-backup name
+ *      (production incident: three 4 KB `.db` files with 0 commit frames).
+ *      Step 3 now UNCONDITIONALLY SKIPS the backup (logged, never silent) —
+ *      durability here is already provided by step 2's WAL checkpoint
+ *      (`closeAllAdapters()` + `WriteQueue.closeAllForShutdown()`). A
+ *      `VACUUM INTO` backup is taken only by the periodic/idle `autoBackup()`
+ *      path (`backup.ts`), which is never racing a shutdown deadline and can
+ *      stage+verify+atomically-rename its result.
  *   4. Close the UDS listener and exit.
  *
  * `_shuttingDown` makes the whole sequence idempotent: SIGTERM and SIGINT can
@@ -312,6 +321,15 @@ export async function coordinatedShutdown(
    * (`store.integrity.repair_failed db_path: /Users/nix/.memory/memory.db`
    * from a plain `nx test` run). BL-62 established the same rule for
    * `project_path`: never infer, only use what's explicit.
+   */
+  /**
+   * (ff7d9e24) Kept for logging/API continuity even though step 3 no longer
+   * runs a backup for either value: a `null` logs "no store configured", a
+   * non-null path logs "skipping" naming that path. Neither ever opens the
+   * store. `runBackend()` only passes a real path when `SOX_CONFIG_DB_PATH`
+   * was explicitly set (`resolveDbPath(undefined)` returns `null`
+   * otherwise, BL 0c3522c2 fail-closed) — that distinction still matters for
+   * the log line even with the backup itself removed.
    */
   dbPathForBackup: string | null,
   exit: (code: number) => never,
@@ -423,54 +441,33 @@ export async function coordinatedShutdown(
   }
   logShutdownStep(t0, '2b', 'WriteQueue.closeAllForShutdown', 'finished');
 
-  // 3. Best-effort pre-restart backup, racing its own timeout — NOT
-  //    guaranteed to gate the exit past that bound (BL-405); see the
-  //    caveat immediately below for when it does anyway.
-  //    Skipped (not guessed) when no explicit SOX_CONFIG_DB_PATH was ever
-  //    configured — see the `dbPathForBackup` parameter doc above.
-  //
-  //    (BL-85a62f57) This bound races the BACKUP PROMISE settling against
-  //    `SHUTDOWN_BACKUP_TIMEOUT_MS` — it does not preempt the underlying
-  //    work, and `Promise.race` never cancels the loser. It is a real bound
-  //    only for a `backupTo()` that yields to the event loop while it runs.
-  //    `SqliteAdapterImpl.backupTo()` (the default/typical backend) does
-  //    NOT: its `VACUUM INTO` is a synchronous better-sqlite3 call that
-  //    blocks the event loop for its entire duration, so neither this race
-  //    nor `SHUTDOWN_SAFETY_NET_MS` above can even be scheduled until it
-  //    returns — the only thing bounding a hung/slow VACUUM INTO in that
-  //    case is the supervisor's own SIGKILL after its stop grace expires.
-  //    `TursoAdapterImpl.backupTo()` awaits `this.db.exec(...)` on the
-  //    `@libsql/client` driver; whether that yields during the VACUUM INTO
-  //    has not been verified — treat it the same as the sqlite case until
-  //    it has been. Moving the backup off the main thread so this bound can
-  //    actually preempt it is tracked separately as BL-5b29f533 and is
-  //    explicitly NOT done here — see `index.ts`'s `handleDirectStdioShutdown`
-  //    doc comment for the same caveat spelled out for DIRECT-STDIO mode.
+  // 3. (ff7d9e24) NO VACUUM IN THE SHUTDOWN PATH. This step used to fire the
+  //    pre-restart `autoBackup()` (a `VACUUM INTO`) best-effort, racing its
+  //    own `SHUTDOWN_BACKUP_TIMEOUT_MS` timeout — but `Promise.race` never
+  //    cancels the loser, and `SqliteAdapterImpl.backupTo()`'s `VACUUM INTO`
+  //    is a synchronous better-sqlite3 call that blocks the event loop for
+  //    its entire duration, so neither that race nor `SHUTDOWN_SAFETY_NET_MS`
+  //    above could even be scheduled until the VACUUM returned. When the
+  //    reaper's SIGTERM grace expired first, the VACUUM INTO was cut off
+  //    mid-write, landing a torn/empty backup file under the FINAL
+  //    rotated-backup name (production incident: three 4 KB `.db` files with
+  //    0 commit frames). The fix is to never run a VACUUM here at all —
+  //    durability is already provided by step 2's WAL checkpoint
+  //    (`closeAllAdapters()` + `WriteQueue.closeAllForShutdown()`), which ran
+  //    unconditionally above regardless of `dbPathForBackup`. A `VACUUM INTO`
+  //    backup is now taken only by the periodic/idle `autoBackup()` path
+  //    (`backup.ts`), which is never racing a shutdown deadline and can
+  //    stage+verify+atomically-rename its result.
   logShutdownStep(t0, 3, 'pre-restart backup', 'started');
-  if (dbPathForBackup !== null) {
-    try {
-      await Promise.race([
-        autoBackup(dbPathForBackup).then((result) => {
-          if (!result.skipped && result.path) {
-            process.stderr.write(
-              `[memory-server backend] pre-restart backup saved: ${result.path} (${result.size} bytes)\n`,
-            );
-          }
-        }),
-        new Promise<void>((resolve) => {
-          const t = setTimeout(() => {
-            process.stderr.write(
-              `[memory-server backend] pre-restart backup exceeded ${SHUTDOWN_BACKUP_TIMEOUT_MS}ms — ` +
-              `abandoning it (the checkpoint in step 2 already gives durability; BL-405)\n`,
-            );
-            resolve();
-          }, SHUTDOWN_BACKUP_TIMEOUT_MS);
-          if (typeof t.unref === 'function') t.unref();
-        }),
-      ]);
-    } catch (err) {
-      process.stderr.write(`[memory-server backend] pre-restart backup failed: ${err}\n`);
-    }
+  if (dbPathForBackup === null) {
+    process.stderr.write(
+      `[memory-server backend] ${sig}: no store configured (SOX_CONFIG_DB_PATH unset) — skipping pre-restart backup\n`,
+    );
+  } else {
+    process.stderr.write(
+      `[memory-server backend] ${sig}: skipping pre-restart backup for ${dbPathForBackup} ` +
+      `(ff7d9e24: no VACUUM in shutdown path — see the periodic/idle autoBackup() path in backup.ts for backups)\n`,
+    );
   }
   logShutdownStep(t0, 3, 'pre-restart backup', 'finished');
 

@@ -37,7 +37,6 @@
 import type { ToolDefinition, ToolResult } from '@adhd/sox-mcp-runtime';
 import { defineTool, serve } from '@adhd/sox-mcp-runtime';
 import {
-  autoBackup,
   buildFiltersClause,
   communityUidForRowid,
   embedBacklogStats,
@@ -176,7 +175,7 @@ import {
 } from './operation-guard.js';
 import { mainThreadMonitor } from './mainthread-monitor.js';
 import { serverLivenessWatchdog, watchdogIntervalMs } from './liveness-watchdog.js';
-import { computeShutdownSafetyNetMs, SHUTDOWN_BACKUP_TIMEOUT_MS } from './shutdown-margin.js';
+import { computeShutdownSafetyNetMs } from './shutdown-margin.js';
 // ─── ADR-0003: content-addressed self-identity ───────────────────────────────
 //
 // The server's identity is `id` + the sha256 content address of its RUNNING
@@ -4447,7 +4446,7 @@ export const MEMORY_SERVER_TELEMETRY_INIT_OPTIONS: InitTelemetryOptions = {
   logSink: 'file',
 };
 
-// ── Direct-stdio pre-restart auto-backup shutdown guard (BL-e7716825) ────────
+// ── Direct-stdio shutdown guard (BL-e7716825, ff7d9e24) ─────────────────────
 //
 // `handleDirectStdioShutdown` is the DIRECT-STDIO MODE ONLY shutdown handler
 // (see the BL-405 comment on its call site below for why BACKEND mode never
@@ -4457,17 +4456,7 @@ export const MEMORY_SERVER_TELEMETRY_INIT_OPTIONS: InitTelemetryOptions = {
 //      the CHILD'S IPC ACKNOWLEDGEMENT of the signal, not the child exiting:
 //      if tsx hasn't seen that ack ~30ms after relaying the first signal, it
 //      re-sends the SAME signal, then escalates to SIGKILL ~60ms after the
-//      original relay — a SIGKILL this guard cannot intercept at all. Under
-//      a TSX-LAUNCHED CHILD specifically, that ~60ms window is real and the
-//      900ms `SHUTDOWN_BACKUP_TIMEOUT_MS` bound below is moot — the child is
-//      gone long before it could fire. For every OTHER launch path (a
-//      launchd/OS-unit service, or `node` invoked directly with no tsx
-//      relay in front of it) there is no such 60ms escalation, and the
-//      900ms bound is the mechanism that is SUPPOSED to stand between a hung
-//      backup and waiting out the reaper's SIGTERM grace — but see the
-//      `(BL-85a62f57)` paragraph below for the case (a synchronously-
-//      blocking `VACUUM INTO`) where it cannot actually fire in time to do
-//      that, and `computeShutdownSafetyNetMs()` shares the identical caveat.
+//      original relay.
 //   2. Node fires every listener registered for a GIVEN signal (never just
 //      one) — so two listeners on the same `process.on('SIGTERM', ...)`
 //      would both run for one delivery. It does NOT mean a SIGTERM delivery
@@ -4477,9 +4466,6 @@ export const MEMORY_SERVER_TELEMETRY_INIT_OPTIONS: InitTelemetryOptions = {
 //      operator's perspective, a single shutdown request only when BOTH
 //      signals are actually delivered (e.g. a terminal Ctrl-C raising SIGINT
 //      while `soxe service restart`'s stop path independently sends SIGTERM).
-// Without a guard, a second invocation could start a SECOND `autoBackup()`
-// (a VACUUM INTO) concurrently with the first — two backup files, or one
-// interrupted mid-write by the process exiting out from under it.
 //
 // `_directShutdownInFlight` makes the whole sequence idempotent by sharing a
 // single in-flight promise across every entry point: the FIRST call starts
@@ -4489,47 +4475,28 @@ export const MEMORY_SERVER_TELEMETRY_INIT_OPTIONS: InitTelemetryOptions = {
 // backend.ts already uses for the BACKEND-mode shutdown sequence (see that
 // function's own doc comment).
 //
-// (BL-85a62f57) Bounded the same way backend.ts's `coordinatedShutdown`
-// bounds its own pre-restart backup step: the VACUUM INTO races
-// `SHUTDOWN_BACKUP_TIMEOUT_MS` (shared literal, `./shutdown-margin.js`), and
-// the whole handler is wrapped in a `computeShutdownSafetyNetMs()` safety
-// net. IMPORTANT — what this actually bounds: `Promise.race` never cancels
-// the loser. Both timers are ordinary `setTimeout`s on the Node event loop,
-// so they can only fire between turns of that loop — they race the BACKUP
-// PROMISE settling, not the underlying work. For a `backupTo()` that yields
-// control back to the loop while it runs, this is a real bound: the loser
-// keeps running as an abandoned background promise while `exitOnce`
-// proceeds. `SqliteAdapterImpl.backupTo()` — VERIFIED, not assumed
-// (`libs/data/store/store-adapter/src/sqlite-adapter.ts:933`) — is the
-// opposite: `VACUUM INTO` there is a synchronous better-sqlite3 call
-// (`this.db.exec(...)`) that blocks the event loop for its entire duration.
-// While it runs, NEITHER timer callback can even be scheduled, so this
-// bound cannot fire until the VACUUM INTO itself returns. In that case the
-// only thing standing between a hung/slow backup and the process staying
-// alive is the supervisor's own SIGKILL after its stop grace expires (see
-// `docs/spec/service-lifecycle.md`) — moving the backup off the main thread
-// so this bound can actually preempt it is tracked separately as
-// BL-5b29f533 and is explicitly NOT done here.
-// `TursoAdapterImpl.backupTo()` (`turso-adapter.ts:3323`) awaits
-// `this.db.exec(...)` on the `@tursodatabase/database` native driver
-// (dynamically imported at `turso-adapter.ts:2154`); whether that call
-// yields to the event loop during the VACUUM INTO, or blocks it the same
-// way the sqlite path does under an `await` that resolves synchronously
-// on the microtask queue, has NOT been verified either way — this file
-// makes no claim about it. A repeated signal while a shutdown is already in
-// flight logs `shutdown.signal_repeated` (naming both the repeat and the
-// signal that started the in-flight sequence) and joins —
-// it does NOT force an immediate exit. Mirrors backend.ts's own precedent
-// (`if (_shuttingDown) return;`, no forced exit on repeat): forcing exit on
-// the repeat would abort the VACUUM INTO mid-write in exactly the case this
-// guard exists to protect, and cause (1) above means a repeat is expected
-// and imminent within ~30ms of the first. The safety net (not the repeated
-// signal) is what this handler relies on for a genuinely hung backup — but,
-// per the block above, that only actually escapes a backup that yields to
-// the event loop. Against a synchronously-blocking `VACUUM INTO`
-// (`SqliteAdapterImpl.backupTo()` today), neither this handler's own bound
-// nor the safety net can run until the call returns; the real escape hatch
-// in that case is the supervisor's SIGKILL, not this code (BL-5b29f533).
+// (ff7d9e24) NO VACUUM IN THE SHUTDOWN PATH. This handler used to run
+// `autoBackup()` (a `VACUUM INTO` pre-restart backup) here, bounded by a race
+// against `SHUTDOWN_BACKUP_TIMEOUT_MS` — but `Promise.race` never cancels the
+// loser, and `SqliteAdapterImpl.backupTo()`'s `VACUUM INTO` is a *synchronous*
+// better-sqlite3 call that blocks the event loop for its entire duration, so
+// neither that race nor the safety net below could even be scheduled until
+// the VACUUM returned. When the reaper's SIGTERM grace expired first, the
+// VACUUM INTO was cut off mid-write, landing a torn/empty backup file under
+// the FINAL rotated-backup name (observed in production: three 4 KB `.db`
+// files with 0 commit frames). The fix is not a tighter bound — it is to
+// never run a VACUUM on this path at all: the backup step is now
+// UNCONDITIONALLY SKIPPED on shutdown (logged, never silently dropped).
+// Shutdown durability is provided by the store's own WAL journal, not by a
+// compacting backup copy. Taking a `VACUUM INTO` backup is now exclusively
+// the periodic/idle `autoBackup()` path (`backup.ts`), which is never racing
+// a shutdown deadline and can safely stage the copy under a `.tmp` name,
+// verify it is neither torn nor schema-empty, and only then atomically
+// rename it into the final rotated-backup name (see `backup.ts`'s `autoBackup`
+// doc comment). A repeated signal while a shutdown is already in flight logs
+// `shutdown.signal_repeated` (naming both the repeat and the signal that
+// started the in-flight sequence) and joins the same in-flight promise rather
+// than re-running the body or forcing an immediate exit.
 let _directShutdownInFlight: Promise<void> | null = null;
 let _directShutdownFirstSignal: string | null = null;
 
@@ -4542,7 +4509,6 @@ export function __resetDirectShutdownStateForTest(): void {
 export async function handleDirectStdioShutdown(
   signal: string,
   dbPathForBackup: string | null,
-  runAutoBackup: typeof autoBackup,
   exit: (code: number) => never,
 ): Promise<void> {
   if (_directShutdownInFlight !== null) {
@@ -4551,11 +4517,11 @@ export async function handleDirectStdioShutdown(
   }
   _directShutdownFirstSignal = signal;
   _directShutdownInFlight = (async (): Promise<void> => {
-    // (BL-85a62f57) `exit` is injected and, in tests, is a mock that RETURNS
-    // instead of terminating the process — so without this latch, a
-    // safety-net force-exit followed later by the backup race's own exit(0)
-    // (or vice versa) would call `exit` twice. Guard so only the first call
-    // through this handler's own body reaches the real `exit`.
+    // `exit` is injected and, in tests, is a mock that RETURNS instead of
+    // terminating the process — so without this latch, a safety-net
+    // force-exit racing this handler's own normal completion (or vice versa)
+    // would call `exit` twice. Guard so only the first call through this
+    // handler's own body reaches the real `exit`.
     let exited = false;
     const exitOnce = (code: number): void => {
       if (exited) return;
@@ -4563,23 +4529,9 @@ export async function handleDirectStdioShutdown(
       exit(code);
     };
 
-    if (dbPathForBackup === null) {
-      process.stderr.write(
-        `[memory-server] received ${signal}; no store configured (SOX_CONFIG_DB_PATH unset) — skipping pre-restart backup\n`,
-      );
-      exitOnce(0);
-      return;
-    }
-
-    // (BL-85a62f57) Hard ceiling on the whole handler, mirroring backend.ts's
-    // `coordinatedShutdown` safety net: if the bounded backup race below
-    // somehow still hangs (or a future step is added that can), this forces
-    // the exit — for a backup that yields to the event loop while it runs.
-    // Like the race it wraps, this timer itself cannot be scheduled while a
-    // synchronously-blocking `VACUUM INTO` (SqliteAdapterImpl.backupTo()
-    // today) still holds the event loop; see this handler's own doc comment
-    // above for the full caveat. It does not, by itself, guarantee escaping
-    // without SIGKILL.
+    // Hard ceiling on the whole handler, mirroring backend.ts's
+    // `coordinatedShutdown` safety net: if a future step is added here that
+    // can hang, this still forces the exit inside the reaper's grace.
     const safetyNetMs = computeShutdownSafetyNetMs();
     const safetyNet = setTimeout(() => {
       log.error('shutdown.safety_net_exceeded', { signal, safety_net_ms: safetyNetMs });
@@ -4590,44 +4542,25 @@ export async function handleDirectStdioShutdown(
     }, safetyNetMs);
     if (typeof safetyNet.unref === 'function') safetyNet.unref();
 
-    process.stderr.write(`[memory-server] received ${signal}, running pre-restart backup...\n`);
-    try {
-      const timedOut = await Promise.race([
-        runAutoBackup(dbPathForBackup).then((result) => {
-          if (!result.skipped && result.path) {
-            process.stderr.write(
-              `[memory-server] pre-restart backup saved: ${result.path} (${result.size} bytes)\n`,
-            );
-          }
-          return false;
-        }),
-        new Promise<boolean>((resolve) => {
-          const t = setTimeout(() => resolve(true), SHUTDOWN_BACKUP_TIMEOUT_MS);
-          if (typeof t.unref === 'function') t.unref();
-        }),
-      ]);
-      if (timedOut) {
-        log.warn('shutdown.pre_restart_backup.timeout', {
-          signal,
-          db_path: dbPathForBackup,
-          timeout_ms: SHUTDOWN_BACKUP_TIMEOUT_MS,
-        });
-        process.stderr.write(
-          `[memory-server] pre-restart backup exceeded ${SHUTDOWN_BACKUP_TIMEOUT_MS}ms — abandoning it\n`,
-        );
-      }
-    } catch (err) {
-      // autoBackup() is documented to never throw (all error conditions
-      // resolve to a skipped result) — this catch is a defensive backstop
-      // against a future regression, never observed to fire, but a caught
-      // error here must never be silent.
-      log.error('shutdown.pre_restart_backup.failed', {
+    // (ff7d9e24) NO VACUUM IN THE SHUTDOWN PATH — see this section's own doc
+    // comment above. The backup step is unconditionally skipped, for both a
+    // configured and an unconfigured store; only the log message differs.
+    if (dbPathForBackup === null) {
+      process.stderr.write(
+        `[memory-server] received ${signal}; no store configured (SOX_CONFIG_DB_PATH unset) — skipping pre-restart backup\n`,
+      );
+    } else {
+      log.info('shutdown.pre_restart_backup.skipped', {
         signal,
         db_path: dbPathForBackup,
-        error: err instanceof Error ? err.message : String(err),
+        reason: 'ff7d9e24: no VACUUM in shutdown path',
       });
-      process.stderr.write(`[memory-server] pre-restart backup failed: ${err}\n`);
+      process.stderr.write(
+        `[memory-server] received ${signal}; skipping pre-restart backup for ${dbPathForBackup} ` +
+          `(ff7d9e24: no VACUUM in shutdown path — see the periodic/idle autoBackup() path in backup.ts for backups)\n`,
+      );
     }
+
     clearTimeout(safetyNet);
     exitOnce(0);
   })();
@@ -4635,30 +4568,29 @@ export async function handleDirectStdioShutdown(
 }
 
 /**
- * (BL-85a62f57) Wires the DIRECT-STDIO-mode SIGTERM/SIGINT handlers onto
- * `proc` (defaults to the real `process`), routing both to
- * `handleDirectStdioShutdown`. Extracted from the module-load call site so
- * the wiring itself — which signal maps to which handler, and that BACKEND
- * mode registers neither — is directly testable without emitting a real
- * SIGTERM/SIGINT at the actual test process (BL-405's own doc comment
- * records a leaked real listener opening the live `~/.memory/memory.db` as a
- * side effect). Returns `null` when `env.SOX_PROXY_BACKEND === '1'`, since
- * BACKEND mode installs its own `coordinatedShutdown` listeners instead (see
- * the BL-405 comment at this function's call site).
+ * Wires the DIRECT-STDIO-mode SIGTERM/SIGINT handlers onto `proc` (defaults
+ * to the real `process`), routing both to `handleDirectStdioShutdown`.
+ * Extracted from the module-load call site so the wiring itself — which
+ * signal maps to which handler, and that BACKEND mode registers neither — is
+ * directly testable without emitting a real SIGTERM/SIGINT at the actual test
+ * process (BL-405's own doc comment records a leaked real listener opening
+ * the live `~/.memory/memory.db` as a side effect). Returns `null` when
+ * `env.SOX_PROXY_BACKEND === '1'`, since BACKEND mode installs its own
+ * `coordinatedShutdown` listeners instead (see the BL-405 comment at this
+ * function's call site).
  */
 export function registerDirectStdioShutdownHandlers(
   env: NodeJS.ProcessEnv = process.env,
   dbPathForBackup: string | null = resolveDbPath(undefined),
-  runAutoBackupFn: typeof autoBackup = autoBackup,
   exitFn: (code: number) => never = process.exit,
   proc: { on: (event: string, listener: (...args: unknown[]) => void) => unknown } = process,
 ): { sigterm: () => void; sigint: () => void } | null {
   if (env.SOX_PROXY_BACKEND === '1') return null;
   const sigterm = (): void => {
-    void handleDirectStdioShutdown('SIGTERM', dbPathForBackup, runAutoBackupFn, exitFn);
+    void handleDirectStdioShutdown('SIGTERM', dbPathForBackup, exitFn);
   };
   const sigint = (): void => {
-    void handleDirectStdioShutdown('SIGINT', dbPathForBackup, runAutoBackupFn, exitFn);
+    void handleDirectStdioShutdown('SIGINT', dbPathForBackup, exitFn);
   };
   proc.on('SIGTERM', sigterm);
   proc.on('SIGINT', sigint);
@@ -4747,36 +4679,32 @@ if (require.main === module) {
     process.exit(1);
   }
 
-  // ── Pre-restart auto-backup (BL-313) ────────────────────────────────────────
+  // ── Direct-stdio shutdown handlers (BL-313, ff7d9e24) ───────────────────────
   //
-  // Before the process exits on SIGTERM or SIGINT, create a timestamped VACUUM
-  // INTO backup of the active database. The backup is idempotent: if the source
-  // has not changed since the last backup, it is skipped.
-  //
-  // The handler runs async (backup via VACUUM INTO) and then calls process.exit.
-  // The void wrapper is the standard Node pattern for async signal handlers.
+  // Before the process exits on SIGTERM or SIGINT, this DOES NOT back up the
+  // database (ff7d9e24: no VACUUM in the shutdown path — see
+  // `handleDirectStdioShutdown`'s own doc comment for the full rationale and
+  // the production incident that motivated it). It only logs why the backup
+  // step was skipped and exits.
   //
   // BL-405: this handler is DIRECT-STDIO MODE ONLY. In BACKEND mode
   // (SOX_PROXY_BACKEND=1, the production path), `runBackend()` below installs
-  // its own coordinated shutdown (`backend.ts`'s `coordinatedShutdown`) that
-  // already runs this same pre-restart backup as one bounded step of a single
-  // sequenced teardown. Registering BOTH used to mean two independent
-  // `process.on('SIGTERM', ...)` listeners raced to call `process.exit()` —
-  // Node fires every listener for a signal, it does not pick one — and
-  // whichever finished first killed the process and aborted the other's
-  // in-flight work. Verified empirically: the real WAL checkpoint
+  // its own coordinated shutdown (`backend.ts`'s `coordinatedShutdown`), which
+  // likewise no longer runs a shutdown-time backup. Registering BOTH used to
+  // mean two independent `process.on('SIGTERM', ...)` listeners raced to call
+  // `process.exit()` — Node fires every listener for a signal, it does not
+  // pick one — and whichever finished first killed the process and aborted
+  // the other's in-flight work. Verified empirically: the real WAL checkpoint
   // (`closeDbWithLease`'s `PRAGMA wal_checkpoint(TRUNCATE)`, run from
   // `coordinatedShutdown`'s `closeAllAdapters()` step) routinely never
   // completed — the WAL file was byte-identical after a "clean" shutdown log
   // line. See BACKLOG.md BL-405.
-  // BL 0c3522c2 (mirrors BL-405 in backend.ts): back up only a CONFIGURED
-  // store — an unconfigured process has no store to back up and must not
-  // guess one. BL-e7716825: every entry point that can trigger a
-  // direct-stdio shutdown goes through the SAME idempotent handler (see its
-  // doc comment above) — a repeated SIGTERM/SIGINT is a no-op that joins the
-  // first invocation's in-flight promise instead of re-running the
-  // pre-restart backup. `registerDirectStdioShutdownHandlers` itself no-ops
-  // (returns null, registers nothing) in BACKEND mode.
+  // BL-e7716825: every entry point that can trigger a direct-stdio shutdown
+  // goes through the SAME idempotent handler (see its doc comment above) — a
+  // repeated SIGTERM/SIGINT is a no-op that joins the first invocation's
+  // in-flight promise instead of re-running the body.
+  // `registerDirectStdioShutdownHandlers` itself no-ops (returns null,
+  // registers nothing) in BACKEND mode.
   registerDirectStdioShutdownHandlers();
 
   if (process.env.SOX_PROXY_BACKEND === '1') {
