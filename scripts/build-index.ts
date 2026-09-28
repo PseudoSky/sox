@@ -514,7 +514,7 @@ function resolveChecksum(extDir: string, manifest: ExtensionManifest): string {
  * hashes the entrypoint inside the PUBLISHED tarball. The two agree only while
  * local `dist/` happens to equal the bytes npm serves — and `dist/` is rewritten
  * by every rebuild. When they diverge, every fresh install fails closed with
- * CHECKSUM MISMATCH. That is the outage 304513c4 hand-repaired, and this is the
+ * CHECKSUM MISMATCH. That is the outage b5a90314 hand-repaired, and this is the
  * mechanism that stops the repair from being undone by the next generator run.
  *
  * The rule: **an unchanged locator keeps its committed checksum.** If the

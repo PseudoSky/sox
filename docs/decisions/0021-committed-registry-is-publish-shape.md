@@ -6,7 +6,7 @@
 disk bytes — including the `npm-package:` rows ADR-0005 §4 pins to published npm bytes — is the
 exact outage class that shipped `@adhd/sox-cli@1.2.1` with a bundled registry of 31 `file://`
 sources stamped `+dirty` (PROD-BREAK-SOXCLI-121) and the memory-server CHECKSUM MISMATCH outage
-hand-repaired in commit `304513c4`. `libs/install-engine/src/install.ts:733-740`
+hand-repaired in commit `b5a90314`. `libs/install-engine/src/install.ts:733-740`
 (`findLocalExtension`, called from the resolver at `install.ts:735` and `install.ts:1008`) already
 installs an unregistered extension straight from its local dir via a `file://` source with **no**
 checksum comparison — the local-development path this ADR sanctions already existed and needed no

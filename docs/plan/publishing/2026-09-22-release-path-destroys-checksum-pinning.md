@@ -1,14 +1,14 @@
 # The release path destroys the checksum pinning it is supposed to ship
 
 **Date:** 2026-09-22 · **Author:** `cli-index-release` agent · **Status:** BLOCKER, unresolved
-**Related:** commit `304513c4` (checksum pinning), commit `06aa9e79` (bundled-registry gate)
+**Related:** commit `b5a90314` (checksum pinning), commit `06aa9e79` (bundled-registry gate)
 
 > Filed as a document because the backlog MCP server is down (`CONNECTION_CLOSED`) — this belongs
 > in the graph as a `BL-*` item once it is reachable.
 
 ## Summary
 
-`registry/index.json` was pinned to **published npm bytes** by `304513c4`. Every mechanism that
+`registry/index.json` was pinned to **published npm bytes** by `b5a90314`. Every mechanism that
 regenerates, verifies, or releases that file recomputes checksums from **local disk bytes**. The two
 are different by construction, so:
 
@@ -18,7 +18,7 @@ are different by construction, so:
 3. `scripts/acceptance/clean-room-smoke.sh` — the documented canonical pre-publish gate — **also**
    overwrites it, and does not restore it.
 
-Following `PUBLISHING.md` verbatim would re-ship the exact defect `304513c4` fixed, at a higher
+Following `PUBLISHING.md` verbatim would re-ship the exact defect `b5a90314` fixed, at a higher
 version number.
 
 ## Evidence
@@ -29,7 +29,7 @@ version number.
 `extension.json` first — "If the manifest already has a checksum (set by CI on publish), use it" —
 and otherwise checksums the local entrypoint (`computeFileChecksum(extDir/dist/index.js)`).
 
-`304513c4` touched **only `registry/index.json`**; no `extension.json` carries a `checksum` field:
+`b5a90314` touched **only `registry/index.json`**; no `extension.json` carries a `checksum` field:
 
 ```
 memory-cli: manifest.checksum = <ABSENT>
@@ -43,7 +43,7 @@ So the pin lives in a file that every regeneration rewrites, with nothing to res
 
 ### Three-way checksum divergence (measured)
 
-| extension | local `dist/index.js` now | committed (`304513c4`, = npm bytes) | pre-remediation committed |
+| extension | local `dist/index.js` now | committed (`b5a90314`, = npm bytes) | pre-remediation committed |
 |---|---|---|---|
 | memory-cli | `b1ec63b78a7a8645` | `b2935bd16d305…` | `c685c53599d81…` |
 | memory-flush | `afbdfc5d72c429ff` | `891e1c2c0465e…` | `d530fcac2eff7…` |
@@ -72,7 +72,7 @@ check-registry-sync: FAIL — registry/index.json is out of sync with disk.
   ~ content differs for: sox
 ```
 
-Those are **exactly** the four entries `304513c4` corrected. Re-wiring the workflows to
+Those are **exactly** the four entries `b5a90314` corrected. Re-wiring the workflows to
 `manifest:check-registry` (`libs/manifest/project.json:57-69`) therefore does **not** produce a green
 pipeline; it narrows the failure from 31 entries to the 4 deliberately-pinned ones. The gate's
 premise — "the registry should equal what the local tree hashes to" — is incompatible with pinning
@@ -208,7 +208,7 @@ in 1.2.1.
 - **G1** — `soxe --version` → `1.2.1`; `soxe search` lists the public entries with **zero** `/Users/`
   occurrences. (1.2.1 leaked a maintainer's home directory here.)
 - **G2 install** — `soxe install sox-memory-bundle --scope user` → exit 0, all four members resolved
-  from npm at **exactly** the checksums `304513c4` pinned:
+  from npm at **exactly** the checksums `b5a90314` pinned:
   `memory-server 6a4168d7…`, `memory-flush 891e1c2c…`, `memory-cli b2935bd1…`,
   `memory-usage 35441a13…`. **This is the first confirmation that the pinning is byte-correct
   against real npm** — the checksum gate was reached and passed, where 1.2.1 never reached it.
@@ -219,7 +219,7 @@ in 1.2.1.
   address, both green.)
 
 So the production break is fixed in the candidate artifact, and both remediation axes — shape
-(`06aa9e79`) and checksum values (`304513c4`) — are verified together.
+(`06aa9e79`) and checksum values (`b5a90314`) — are verified together.
 
 ## What is already fixed
 

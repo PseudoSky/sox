@@ -7,7 +7,7 @@
  * `scripts/acceptance/clean-room-smoke.sh` is the canonical "is it publishable?"
  * gate, and step 3 regenerates the REAL `$REPO/registry/index.json` in place via
  * `SOX_REGISTRY_PUBLISH=npm build-index`. That file is not a build artifact: its
- * checksums are deliberately pinned to published npm bytes (304513c4), while
+ * checksums are deliberately pinned to published npm bytes (b5a90314), while
  * `build-index` recomputes them from LOCAL disk bytes. Before the trap fix, the
  * cleanup handler only killed verdaccio — so running the gate you must pass
  * before publishing silently destroyed the supply-chain record you were about to
