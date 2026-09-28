@@ -362,7 +362,27 @@ export function deriveOsUnitSpec(opts: {
     // actually waits for. Present unconditionally (falls back to 5000, matching
     // cmdService's own default) so a service never has to guess whether the
     // var is set.
-    env: { ...opts.env, SOX_SERVICE_ID: opts.id, SOX_CONFIG_STOP_TIMEOUT_MS: String(stopTimeoutMs ?? 5000) },
+    // BL-2df86153: TMPDIR is NEVER persisted into a unit's EnvironmentVariables,
+    // regardless of what the caller passed in `opts.env` — enforced here, not
+    // just at the `buildOsUnitEnv` call site, so this is a hard invariant of
+    // the primitive rather than a caller habit. A unit is written once at
+    // `enable` time and stays on disk indefinitely; a persisted TMPDIR would
+    // go stale the moment its session-scoped source directory (a nix-shell
+    // /tmp/nix-shell.XXXX, an agent sandbox, a CI runner's /run/user/UID)
+    // disappears, breaking mkdtemp and the BL-578 socket fallback in the
+    // long-lived unit process. The OS supervisor already supplies a live,
+    // session-correct TMPDIR to the unit's own process (confirmed on darwin:
+    // launchd hands the unit process a real per-user `/var/folders/.../T/`
+    // with no TMPDIR key in the plist at all) — there is nothing to persist.
+    env: (() => {
+      const envWithoutTmpdir = { ...opts.env };
+      delete envWithoutTmpdir['TMPDIR'];
+      return {
+        ...envWithoutTmpdir,
+        SOX_SERVICE_ID: opts.id,
+        SOX_CONFIG_STOP_TIMEOUT_MS: String(stopTimeoutMs ?? 5000),
+      };
+    })(),
     workingDirectory: opts.workingDirectory,
     runAtLoad,
     keepAlive,
@@ -1244,6 +1264,15 @@ export function extractUnitEnv(unitText: string, kind: OsSupervisor): Record<str
 /** True when `key` is exactly the set `scrubEnvReported` forwards from the shell (D2). */
 function isShellSourcedEnvKey(key: string): boolean {
   if (ENV_DENY_PREFIXES.some((p) => key.startsWith(p))) return false; // SOX_PERM_*/SOX_CONFIG_*
+  // BL-2df86153: TMPDIR is in ENV_BASE_ALLOW for the spawn-time scrub, but
+  // `buildOsUnitEnv` deliberately never bakes it into the persisted unit —
+  // the OS supervisor supplies it live to the unit's own process (confirmed
+  // on darwin: launchd hands the unit process a real per-user TMPDIR with no
+  // corresponding plist key at all). Treating it as shell-sourced here would
+  // make the BL-375 drift guard block a legitimate re-enable from a shell
+  // that never exported TMPDIR (a nix-shell, an agent sandbox, CI), even
+  // though the unit never carried the key to begin with.
+  if (key === 'TMPDIR') return false;
   if ((ENV_BASE_ALLOW as readonly string[]).includes(key)) return true;
   return ENV_ALLOW_PREFIXES.some((p) => key.startsWith(p)); // NODE_* / SOX_* (minus denied above)
 }

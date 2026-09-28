@@ -394,29 +394,56 @@ describe('BL-375 — enableOsUnit refuses to silently drop shell-sourced env on 
     expect(droppedShellEnvKeys(prior, next)).toEqual([]);
   });
 
-  it('BL-2df86153: a re-enable from a shell without TMPDIR is BLOCKED, not silently baked without it', () => {
-    // TMPDIR joined ENV_BASE_ALLOW for BL-2df86153, so it is now
-    // shell-sourced (D2) and subject to the same BL-375 drift guard as any
-    // other base-allow key: once a unit has TMPDIR baked in, a regenerate
-    // that omits it must block rather than silently ship a unit whose
-    // os.tmpdir() falls back to /tmp — the exact defect BL-2df86153 fixed.
+  it('BL-2df86153: TMPDIR is NEVER written into the unit file, even if a caller passes it', () => {
+    // A unit is written once at `enable` time and stays on disk indefinitely.
+    // TMPDIR is frequently session-scoped (a nix-shell /tmp/nix-shell.XXXX,
+    // an agent sandbox, a CI runner, /run/user/UID wiped at logout) — baking
+    // it in would go stale and break mkdtemp / the BL-578 socket fallback in
+    // the long-lived unit process. The OS supervisor already supplies a
+    // live, session-correct TMPDIR to the unit's own process (confirmed on
+    // darwin: launchd hands the unit process a real per-user
+    // /var/folders/.../T/ with no TMPDIR key in the plist at all), so
+    // `deriveOsUnitSpec` strips TMPDIR out of `opts.env` unconditionally —
+    // proven here even when a caller passes it in.
+    const fake = makeFakeExec();
+    const spec = makeSpec({ env: { SOX_CONFIG_DB_PATH: 'x', TMPDIR: '/var/folders/aa/T/' } });
+    const r = enableOsUnit(spec, platform, { unitDir, exec: fake.exec, load: false });
+    expect(r.action).toBe('created');
+    const written = fs.readFileSync(r.unitPath, 'utf8');
+    expect(extractUnitEnv(written, 'launchd')['TMPDIR']).toBeUndefined();
+    expect(written).not.toContain('TMPDIR');
+  });
+
+  it('BL-2df86153: a re-enable from a shell without TMPDIR is NOT blocked by the drift guard', () => {
+    // Unlike every other ENV_BASE_ALLOW key, TMPDIR must not be sticky: since
+    // it is never baked into the unit to begin with (previous test), a
+    // regenerate from a shell/session that never exported TMPDIR must be
+    // treated as a no-op with respect to TMPDIR, not as a drop requiring
+    // `--unset` acknowledgment. `isShellSourcedEnvKey` excludes TMPDIR from
+    // D2's shell-sourced set for exactly this reason.
     const fake1 = makeFakeExec();
     const first = makeSpec({ env: { SOX_CONFIG_DB_PATH: 'x', TMPDIR: '/var/folders/aa/T/' } });
-    const r1 = enableOsUnit(first, platform, { unitDir, exec: fake1.exec, load: false });
-    expect(r1.action).toBe('created');
-    const bytesAfterFirst = fs.readFileSync(r1.unitPath, 'utf8');
+    enableOsUnit(first, platform, { unitDir, exec: fake1.exec, load: false });
 
-    // Second enable from a shell/session that never exported TMPDIR.
+    // Second enable from a shell/session that never exported TMPDIR, with an
+    // unrelated field change so content-hash comparison alone would not be a
+    // no-op (mirrors AC1's real-incident shape).
     const second = makeSpec({ env: { SOX_CONFIG_DB_PATH: 'x' }, processType: 'Background' });
     const fake2 = makeFakeExec();
     const r2 = enableOsUnit(second, platform, { unitDir, exec: fake2.exec, load: false });
 
-    expect(r2.action).toBe('blocked');
-    expect(r2.droppedEnvKeys).toContain('TMPDIR');
-    // Nothing was overwritten — the unit keeps the real per-user TMPDIR.
-    const bytesAfterSecond = fs.readFileSync(r1.unitPath, 'utf8');
-    expect(bytesAfterSecond).toBe(bytesAfterFirst);
-    expect(fake2.calls.length).toBe(0);
+    expect(r2.action).not.toBe('blocked');
+    expect(r2.action).toBe('updated');
+    expect(r2.droppedEnvKeys ?? []).not.toContain('TMPDIR');
+  });
+
+  it('BL-2df86153 mutation guard: isShellSourcedEnvKey / droppedShellEnvKeys must exclude TMPDIR', () => {
+    // A same-PR regression guard on the pure function directly, mirroring
+    // AC3's guard for SOX_CONFIG_*/SOX_PERM_* — if the TMPDIR exclusion were
+    // ever removed, this must go red before any integration test does.
+    const prior = { SOX_CONFIG_PORT: '4000', TMPDIR: '/var/folders/aa/T/', SOX_EMBED_DRAIN_FLOOR_MS: '30000' };
+    const next = { SOX_EMBED_DRAIN_FLOOR_MS: '30000' }; // TMPDIR dropped, nothing acknowledged
+    expect(droppedShellEnvKeys(prior, next)).toEqual([]);
   });
 
   it('AC4: extractUnitEnv round-trips XML-escaped launchd env values', () => {

@@ -5324,6 +5324,22 @@ function buildOsUnitEnv(extId: string, root: string): Record<string, string> {
   // default (minus the host-authoritative `SOX_PERM_*`/`SOX_CONFIG_*`), so a
   // brake or a log control reaches the generated unit without an edit here.
   const env = scrubEnvReported('os-unit');
+  // BL-2df86153: TMPDIR is deliberately NOT persisted into the unit's
+  // EnvironmentVariables/Environment= block, even though ENV_BASE_ALLOW
+  // forwards it for a spawn-time scrub. A unit is written once at `enable`
+  // time and stays on disk indefinitely; the enabling shell's TMPDIR is
+  // frequently session-scoped (a nix-shell /tmp/nix-shell.XXXX, an agent
+  // sandbox, a CI runner, /run/user/UID wiped at logout) and would go stale
+  // — os.tmpdir() in the long-lived unit process would then point at a
+  // directory that no longer exists, breaking mkdtemp and the BL-578 socket
+  // fallback. The OS supervisor supplies a live, session-correct TMPDIR to
+  // the unit process itself (confirmed on darwin: launchd hands the unit's
+  // own process a real per-user `/var/folders/.../T/` with no TMPDIR key in
+  // the plist at all), so there is nothing to persist here. Baking TMPDIR
+  // into the unit would also make it "sticky" under the BL-375 drift guard
+  // (`isShellSourcedEnvKey` in os-unit.ts excludes it for the same reason) —
+  // any later re-enable from a shell lacking TMPDIR would otherwise block.
+  delete env['TMPDIR'];
   Object.assign(env, buildExtConfigEnv(extId, root));
   return env;
 }

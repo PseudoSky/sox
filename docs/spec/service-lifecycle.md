@@ -584,9 +584,18 @@ and the future M4 path):
    scrub. **BL-52 note:** `XDG_CACHE_HOME` and any `SOX_EMBED_*` reach the embed backend through
    this same allow set, so it resolves to the real BGE/ONNX model instead of degrading. **BL-2df86153
    note:** `TMPDIR` is forwarded so a spawned child's `os.tmpdir()` resolves to the same per-user
-   directory as its parent, not the world-shared `/tmp` — see `env-policy.ts`'s `ENV_BASE_ALLOW` doc
-   comment for the full incident. Any future service-required env var added to the scrub allowlist
-   MUST be documented here.
+   directory as its parent, not the world-shared `/tmp` — the broken hops were the four IN-PROCESS
+   spawn paths (`soxe serve` backend `main.ts:9613`, the in-process supervisor `supervisor.ts:322`,
+   `runtime-cli.ts:548`'s exec path, and `cmdExec` `main.ts:10322`). `TMPDIR` is deliberately
+   spawn-time-only: `buildOsUnitEnv` (`main.ts`) and `deriveOsUnitSpec` (`os-unit.ts`) both strip it
+   before it ever reaches a launchd/systemd unit's on-disk env, and `isShellSourcedEnvKey`
+   (`os-unit.ts`) excludes it from the BL-375 drift guard — a unit written once at `enable` time and
+   left on disk indefinitely would otherwise go stale the moment its often session-scoped source (a
+   `nix-shell`, an agent sandbox, a CI runner's `/run/user/UID`) disappears, and on darwin persisting
+   it is redundant regardless: launchd already hands the unit's own process a live, correct per-user
+   `TMPDIR` with no corresponding plist key at all. See `env-policy.ts`'s `ENV_BASE_ALLOW` doc comment
+   for the full incident. Any future service-required env var added to the scrub allowlist MUST be
+   documented here.
 6. **Spawn** `detached: true` (new pgid, `supervisor.ts:307-312` for M1; `main.ts:3084-3092` for M2),
    cwd = materialized store dir (`storePath`, ADR-0004) so no monorepo siblings are on the path.
 7. **Health gate** (§11): wait for first health probe (`_waitForHealth`, socket / stdio-ping /

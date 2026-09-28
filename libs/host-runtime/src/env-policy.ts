@@ -90,15 +90,30 @@
  * through it; without it the backend silently degrades) and `TMPDIR`
  * (BL-2df86153 — `os.tmpdir()` in a child MUST resolve to the same per-user
  * temp directory the parent resolves to, not fall back to the world-shared
- * `/tmp`). Without `TMPDIR` here, `soxe serve` children (and any OS-unit
- * child spawned through `scrubEnvReported`) resolved `os.tmpdir()` to `/tmp`
- * while the parent resolved it to macOS's per-user `/var/folders/.../T/`.
- * That silently defeated ADR-0022 §5's forwarding of `TMPDIR` to the
- * embedding host (`embedHostConfig.ts`'s own, separately-maintained
- * `EMBED_HOST_ENV_FORWARD_EXACT` already carried `TMPDIR` — only this
- * parent-to-child hop was missing it) and made the BL-578 fallback socket
+ * `/tmp`). Without `TMPDIR` here, a child spawned through `scrubEnvReported`
+ * on any of the four IN-PROCESS spawn paths — the `soxe serve` backend
+ * (`main.ts:9613`), the in-process supervisor (`supervisor.ts:322`),
+ * `runtime-cli.ts`'s exec path (`runtime-cli.ts:548`), and `cmdExec`
+ * (`main.ts:10322`) — resolved `os.tmpdir()` to `/tmp` while the parent
+ * resolved it to macOS's per-user `/var/folders/.../T/`. That silently
+ * defeated ADR-0022 §5's forwarding of `TMPDIR` to the embedding host
+ * (`embedHostConfig.ts`'s own, separately-maintained
+ * `EMBED_HOST_ENV_FORWARD_EXACT` already carried `TMPDIR` — only these
+ * parent-to-child hops were missing it) and made the BL-578 fallback socket
  * path (`libs/service-proxy/src/socket-path.ts`) resolve differently between
  * the parent and its children.
+ *
+ * `TMPDIR` in this base-allow set is deliberately spawn-time-only: it is
+ * NEVER persisted into a launchd/systemd unit's on-disk env
+ * (`buildOsUnitEnv` in `main.ts` strips it before rendering, and
+ * `deriveOsUnitSpec` in `os-unit.ts` strips it again as a hard invariant of
+ * the primitive; `isShellSourcedEnvKey` there also excludes it from the
+ * BL-375 drift guard). A unit is written once at `enable` time and stays on
+ * disk indefinitely, so a baked-in `TMPDIR` would go stale the moment its
+ * often session-scoped source (a `nix-shell`, an agent sandbox, a CI
+ * runner's `/run/user/UID`) disappears — and on darwin it is redundant
+ * regardless, since launchd already hands the unit's own process a live,
+ * correct per-user `TMPDIR` with no corresponding plist key at all.
  */
 export const ENV_BASE_ALLOW: readonly string[] = [
   'PATH',
