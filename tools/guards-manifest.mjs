@@ -27,7 +27,7 @@
  */
 
 export const GUARDS = [
-  // ---------------------------------------------------------------- Tier 1 (32) -----------
+  // ---------------------------------------------------------------- Tier 1 (33) -----------
   {
     id: 'bl222',
     tier: 1,
@@ -61,6 +61,17 @@ export const GUARDS = [
     id: 'bl456',
     tier: 1,
     script: 'test-bl456-suite-tree-state.mjs',
+    watch: ['tools/check-suite-tree-state.mjs'],
+  },
+  {
+    id: '28f22e8d',
+    tier: 1,
+    script: 'test-28f22e8d-tree-state-config-dirt.mjs',
+    // Pins that check-suite-tree-state.mjs's git-status scope is each dependency's PROJECT ROOT
+    // (project.json, tsconfig.json, vitest.config.ts, top-level test files) plus repo root config
+    // (nx.json, tsconfig.base.json, pnpm-lock.yaml) — not just sourceRoot, which misses all of
+    // those. The authentic pre-fix sourceRoot-only scoping (buildReport() absent) is the negative
+    // control.
     watch: ['tools/check-suite-tree-state.mjs'],
   },
   {
