@@ -40,14 +40,22 @@
  * the "committed as a regression test, never actually watched pass" failure
  * mode BL-225 exists to catch). Fixed by obtaining `fs` via CommonJS
  * `createRequire(...)('node:fs')` instead — Node's real, mutable
- * `module.exports` object for the `fs` module, which every ESM
- * `import * as fs from 'node:fs'` elsewhere in the process (index.ts,
- * memory-core) reads live off of, so recording calls against THIS
- * reference observes every consumer. See vitest.setup.ts's own BL-412
- * suite-wide guard for the same technique and a longer explanation.
+ * `module.exports` object for the `fs` module.
+ *
+ * BL-6434a8fc: that alone is still not enough. `handleToolCall` (imported
+ * below from `./index.js`) reaches its `fs` calls through an ESM
+ * `import * as fs from 'node:fs'` binding — a SNAPSHOT taken when the
+ * builtin was first loaded as ESM, which mutating the CJS object above does
+ * not retroactively update. `syncBuiltinESMExports()` (from `node:module`)
+ * re-syncs that snapshot after the patch below, and again after the
+ * `finally` restore — without it, this spec's own wrapped functions are
+ * never the ones `handleToolCall` calls, and every assertion below would
+ * pass trivially regardless of what the code under test actually touched.
+ * See vitest.setup.ts's own BL-412 suite-wide guard (BL-6434a8fc section)
+ * for the same fix and a longer explanation.
  */
 
-import { createRequire } from 'node:module';
+import { createRequire, syncBuiltinESMExports } from 'node:module';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
@@ -100,6 +108,9 @@ describe('memory_ping — BL-412: no arguments must never open the live store', 
         return (originals[name] as (...a: unknown[]) => unknown).apply(fs, args);
       };
     }
+    // BL-6434a8fc: without this, `handleToolCall`'s ESM `fs` binding never
+    // sees the patch above and every assertion below passes trivially.
+    syncBuiltinESMExports();
 
     let res: Awaited<ReturnType<typeof handleToolCall>>;
     try {
@@ -108,6 +119,10 @@ describe('memory_ping — BL-412: no arguments must never open the live store', 
       for (const name of Object.keys(calls) as Array<keyof typeof calls>) {
         (fs as unknown as Record<string, unknown>)[name] = originals[name];
       }
+      // BL-6434a8fc: restore the ESM snapshot too, or the ORIGINAL functions
+      // set above stay invisible to ESM `fs` callers for the rest of this
+      // worker (the wrapped closures would keep being called instead).
+      syncBuiltinESMExports();
     }
 
     expect(res.isError).not.toBe(true);

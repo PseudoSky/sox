@@ -112,13 +112,26 @@ assertEmbedPathsIsolated('vitest.setup load');
  * Fix: obtain `fs` via CommonJS `createRequire(...)('node:fs')` instead of
  * an ESM namespace import. That returns Node's actual internal
  * `module.exports` object for the `fs` module — a genuinely mutable plain
- * object, not a frozen ESM namespace — and Node's ESM/CJS interop means
- * every `import * as fs from 'node:fs'` elsewhere in the process (including
- * inside index.ts and the memory-core dist bundle) reads its properties
- * live off that SAME underlying object, so mutating it here is visible
- * everywhere. Verified with a standalone repro before wiring this in.
+ * object, not a frozen ESM namespace.
+ *
+ * ## Why `syncBuiltinESMExports()` (BL-6434a8fc)
+ *
+ * Patching the CommonJS `require('node:fs')` object only changes what CJS
+ * callers see. ESM callers (`import * as fs from 'node:fs'`,
+ * `import { existsSync } from 'node:fs'` — every production import in
+ * `index.ts` and the memory-core dist bundle, as vitest runs them) read the
+ * builtin's ESM namespace, which is a SNAPSHOT of the CJS exports taken when
+ * the builtin was first loaded. Without `syncBuiltinESMExports()` from
+ * `node:module` after every patch, the guard sees none of those calls and
+ * never fires. `install()` (below) ends with that call.
+ *
+ * Mirrors memory-core's identical fix to its sibling guard
+ * (`libs/memory-core/vitest.home-guard-setup.ts`, BL-bae70da4). Proof spec:
+ * `bl-6434a8fc-fs-guard-syncesm.test.ts` (package root, alongside this file
+ * — a `src/` spec cannot import this module without violating the
+ * production `tsconfig.json`'s `rootDir`).
  */
-import { createRequire } from 'node:module';
+import { createRequire, syncBuiltinESMExports } from 'node:module';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { afterEach, beforeEach } from 'vitest';
@@ -130,11 +143,30 @@ afterEach(() => {
 const require = createRequire(import.meta.url);
 const fs = require('node:fs') as typeof import('node:fs');
 
-const REAL_HOME_MEMORY_DIR = path.join(os.homedir(), '.memory');
+export const REAL_HOME_MEMORY_DIR = path.join(os.homedir(), '.memory');
 let liveStoreTouches: string[] = [];
 
+// Test-only extra roots (BL-6434a8fc proof spec): lets the guard's own proof
+// spec exercise a real ESM `fs` call against a disposable scratch directory
+// instead of the operator's actual ~/.memory, while still exercising the
+// exact same `touchesRealStore` / wrap / syncBuiltinESMExports machinery.
+const extraGuardedRoots = new Set<string>();
+
+export function addGuardedRootForTest(root: string): void {
+  extraGuardedRoots.add(path.resolve(root));
+}
+
+export function removeGuardedRootForTest(root: string): void {
+  extraGuardedRoots.delete(path.resolve(root));
+}
+
 function touchesRealStore(p: unknown): p is string {
-  return typeof p === 'string' && (p === REAL_HOME_MEMORY_DIR || p.startsWith(REAL_HOME_MEMORY_DIR + path.sep));
+  if (typeof p !== 'string') return false;
+  if (p === REAL_HOME_MEMORY_DIR || p.startsWith(REAL_HOME_MEMORY_DIR + path.sep)) return true;
+  for (const root of extraGuardedRoots) {
+    if (p === root || p.startsWith(root + path.sep)) return true;
+  }
+  return false;
 }
 
 const GUARDED_FNS = ['existsSync', 'readFileSync', 'statSync', 'openSync', 'mkdirSync', 'writeFileSync', 'lstatSync'] as const;
@@ -150,7 +182,7 @@ for (const fnName of GUARDED_FNS) {
   trueOriginals[fnName] = fs[fnName] as unknown as (...args: unknown[]) => unknown;
 }
 
-function install(): void {
+export function install(): void {
   for (const fnName of GUARDED_FNS) {
     const original = trueOriginals[fnName];
     (fs as unknown as Record<string, unknown>)[fnName] = function bl412Guarded(...args: unknown[]) {
@@ -160,6 +192,16 @@ function install(): void {
       return original.apply(fs, args);
     };
   }
+  // BL-6434a8fc: re-sync the ESM builtin snapshot from the CJS object we
+  // just mutated above. Without this call, every wrap() assignment is
+  // invisible to `import * as fs from 'node:fs'` / named-import callers —
+  // see the "Why syncBuiltinESMExports()" section in the file header.
+  syncBuiltinESMExports();
+}
+
+/** Test-only: drain and return touches recorded so far (BL-6434a8fc proof spec). */
+export function drainLiveStoreTouches(): string[] {
+  return liveStoreTouches.splice(0, liveStoreTouches.length);
 }
 
 // Installed once at setup-load time. Re-installed defensively in beforeEach
