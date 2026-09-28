@@ -159,6 +159,13 @@ for (const specRel of SPEC_RELPATHS) {
     'BL-26291f21: vitest.setup.ts fails fast via assertEmbedPathsIsolated() at load and afterEach',
     setupSrc !== null && (setupSrc.match(/assertEmbedPathsIsolated\(/g) ?? []).length >= 2,
   );
+  const guardSrc = readAtRef(`${MEMBER_ROOT}/src/test-support/bl-26291f21-embed-scratch.ts`);
+  report(
+    "BL-26291f21: worker guard allowlists exactly <ecosystem home>/sox-tests/logs (BL-404) under the operator root, by exact match",
+    guardSrc !== null &&
+      /path\.join\(operatorEmbedRoots\(\)\.ecosystemHome, 'sox-tests', 'logs'\)/.test(guardSrc) &&
+      /path\.resolve\(telemetryDir\) !== sanctionedOperatorTelemetryDir\(\)/.test(guardSrc),
+  );
   for (const rel of REAL_BACKEND_RELPATHS) {
     const src = readAtRef(rel);
     const label = path.basename(rel);

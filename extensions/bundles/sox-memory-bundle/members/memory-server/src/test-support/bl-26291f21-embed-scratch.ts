@@ -30,9 +30,9 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import * as fs from 'node:fs';
 import { getConfiguredEmbedPaths } from '@adhd/sox-memory-core';
-import { EMBED_MODEL_DIR_NAME, SCRATCH_ROOT_ENV } from './bl-26291f21-embed-scratch-env.js';
+import { EMBED_MODEL_DIR_NAME, SCRATCH_ROOT_ENV, TELEMETRY_DIR_ENV } from './bl-26291f21-embed-scratch-env.js';
 
-export { SCRATCH_ROOT_ENV, TELEMETRY_DIR_ENV, EMBED_MODEL_DIR_NAME } from './bl-26291f21-embed-scratch-env.js';
+export { SCRATCH_ROOT_ENV, TELEMETRY_DIR_ENV, EMBED_MODEL_DIR_NAME, MODEL_SEEDED_ENV } from './bl-26291f21-embed-scratch-env.js';
 
 /** macOS reaches /tmp and /var through /private; compare both spellings. */
 function spellings(p: string): string[] {
@@ -87,7 +87,31 @@ export function embedIsolationViolations(env: NodeJS.ProcessEnv = process.env): 
       if (isInside(p, root)) out.push(`${what} ${p} resolves under the OPERATOR's ${root}`);
     }
   }
+  if (env['SOX_ECOSYSTEM_HOME'] !== undefined && isInside(env['SOX_ECOSYSTEM_HOME'], op.ecosystemHome)) {
+    out.push(`SOX_ECOSYSTEM_HOME ${env['SOX_ECOSYSTEM_HOME']} resolves under the OPERATOR's ${op.ecosystemHome}`);
+  }
+  const telemetryDir = env[TELEMETRY_DIR_ENV];
+  if (telemetryDir !== undefined && telemetryDir !== '' && isInside(telemetryDir, op.ecosystemHome)) {
+    if (path.resolve(telemetryDir) !== sanctionedOperatorTelemetryDir()) {
+      out.push(
+        `${TELEMETRY_DIR_ENV} ${telemetryDir} is under the OPERATOR's ${op.ecosystemHome} but is not the one ` +
+          `sanctioned exception ${sanctionedOperatorTelemetryDir()} (BL-404)`,
+      );
+    }
+  }
   return out;
+}
+
+/**
+ * The ONE path under the operator's `~/.adhd/sox-ecosystem` a memory-server test worker may
+ * resolve: `<ecosystem home>/sox-tests/logs`, the dedicated durable namespace BL-404 gives the
+ * per-worker `sox-tests` telemetry JSONL (vitest.setup.ts `initTelemetry`). It is test-only and
+ * disjoint from every service's logs, so keeping it durable under the operator home is the
+ * deliberate BL-404 design, not a leak. Anything else under that root — the embed-host socket
+ * dir above all — is a BL-26291f21 violation. Exact match, never a prefix.
+ */
+export function sanctionedOperatorTelemetryDir(): string {
+  return path.join(operatorEmbedRoots().ecosystemHome, 'sox-tests', 'logs');
 }
 
 /** Throw (fail fast, before anything can spawn a host) when the embed paths are not isolated. */

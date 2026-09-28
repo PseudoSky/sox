@@ -38,11 +38,37 @@ import { operatorModelCacheDir, seedModelCache, treeFingerprint } from '../../..
 import { PS_ARGS, auditAndReapEmbedHosts, describeHost, isInsideRoot } from '../../../../../scripts/lib/embed-host-isolation.mjs';
 import {
   EMBED_MODEL_DIR_NAME,
+  MODEL_SEEDED_ENV,
   SCRATCH_ROOT_ENV,
   TELEMETRY_DIR_ENV,
 } from './src/test-support/bl-26291f21-embed-scratch-env.js';
 
-const PINNED_KEYS = ['SOX_EMBED_CACHE_DIR', 'XDG_CACHE_HOME', 'SOX_ECOSYSTEM_HOME', SCRATCH_ROOT_ENV, TELEMETRY_DIR_ENV] as const;
+const PINNED_KEYS = [
+  'SOX_EMBED_CACHE_DIR',
+  'XDG_CACHE_HOME',
+  'SOX_ECOSYSTEM_HOME',
+  SCRATCH_ROOT_ENV,
+  TELEMETRY_DIR_ENV,
+  MODEL_SEEDED_ENV,
+] as const;
+
+/** Evidence of a model fetch in a host log (fastembed/HF download path, or the host's own events). */
+const FETCH_MARKER_RE = /download|huggingface|https?:\/\/|fetching model|model_fetch/i;
+
+/** Count fetch/download markers in every log file under `dir` (stderr logs + JSONL); stat-bounded. */
+function countFetchMarkers(dir: string): { files: number; hits: number } {
+  let files = 0;
+  let hits = 0;
+  if (!fs.existsSync(dir)) return { files, hits };
+  for (const rel of Object.keys(treeFingerprint(dir))) {
+    if (!/\.(log|jsonl)$/.test(rel)) continue;
+    files++;
+    for (const line of fs.readFileSync(path.join(dir, rel), 'utf8').split('\n')) {
+      if (FETCH_MARKER_RE.test(line)) hits++;
+    }
+  }
+  return { files, hits };
+}
 
 function say(msg: string): void {
   process.stderr.write(`[memory-server vitest.global-embed-scratch] BL-26291f21: ${msg}\n`);
@@ -96,7 +122,8 @@ export default function setup(): () => Promise<void> {
   const prior = Object.fromEntries(PINNED_KEYS.map((k) => [k, process.env[k]]));
   const operatorModelDir = path.join(operatorModelCacheDir(process.env), EMBED_MODEL_DIR_NAME);
   // BL-404 keeps worker telemetry durable under the ORIGINAL ecosystem home (never a bare tmpdir);
-  // resolved here, before SOX_ECOSYSTEM_HOME is re-pointed at the scratch root.
+  // resolved here, before SOX_ECOSYSTEM_HOME is re-pointed at the scratch root. Its
+  // `sox-tests/logs` leaf is the one operator path the worker guard allowlists (exact match).
   const originalEcosystemHome =
     process.env['SOX_ECOSYSTEM_HOME'] !== undefined && process.env['SOX_ECOSYSTEM_HOME'] !== ''
       ? process.env['SOX_ECOSYSTEM_HOME']
@@ -120,6 +147,10 @@ export default function setup(): () => Promise<void> {
     `scratch root ${root}; model cache ${seed.seeded ? `seeded by ${String(seed.method)} (${String(seed.files)} files, ${String(seed.bytes)} bytes)` : `NOT seeded (${seed.reason}) — real-backend files will skip`}`,
   );
 
+  // Downloads land on the SCRATCH side, so that is the tree whose drift proves or disproves one.
+  const scratchModelsAtSeed = JSON.stringify(treeFingerprint(cacheDir));
+
+  process.env[MODEL_SEEDED_ENV] = seed.seeded ? '1' : '0';
   process.env['SOX_EMBED_CACHE_DIR'] = cacheDir;
   process.env['XDG_CACHE_HOME'] = xdgCache;
   process.env['SOX_ECOSYSTEM_HOME'] = ecosystemHome;
@@ -153,6 +184,15 @@ export default function setup(): () => Promise<void> {
         if (!isInsideRoot(p.cacheDir, root)) problems.push(`host ${describeHost(p)} ran with --cache-dir outside ${root}`);
         if (!isInsideRoot(p.socket, root)) problems.push(`host ${describeHost(p)} ran with --socket outside ${root}`);
       }
+      // No-download proof, taken on the side a download would write to, before the rm below.
+      const scratchModelsAfter = JSON.stringify(treeFingerprint(cacheDir));
+      const fetch = countFetchMarkers(ecosystemHome);
+      say(
+        `scratch model cache tree ${scratchModelsAfter === scratchModelsAtSeed ? 'unchanged since seed (no download)' : 'CHANGED since seed'}; ` +
+          `fetch/download markers in ${String(fetch.files)} run log file(s) under the scratch ecosystem home: ${String(fetch.hits)}`,
+      );
+      if (seed.seeded && scratchModelsAfter !== scratchModelsAtSeed) problems.push('the seeded scratch model cache changed during the run (a model download or rewrite happened)');
+      if (seed.seeded && fetch.hits > 0) problems.push(`${String(fetch.hits)} fetch/download marker(s) in run logs despite a seeded cache`);
     } finally {
       const operatorAfter = fs.existsSync(operatorModelDir) ? JSON.stringify(treeFingerprint(operatorModelDir)) : null;
       const operatorStatAfter = JSON.stringify(bytesAndMtime(operatorModelDir));

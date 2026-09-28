@@ -19,11 +19,15 @@ import { describe, expect, it } from 'vitest';
 import { getConfiguredEmbedPaths } from '@adhd/sox-memory-core';
 import {
   EMBED_MODEL_DIR_NAME,
+  MODEL_SEEDED_ENV,
   SCRATCH_ROOT_ENV,
   embedIsolationViolations,
   isInside,
+  isRealModelCached,
   operatorEmbedRoots,
   realModelCacheDir,
+  sanctionedOperatorTelemetryDir,
+  TELEMETRY_DIR_ENV,
 } from './test-support/bl-26291f21-embed-scratch.js';
 
 describe('BL-26291f21 — memory-server test workers never resolve operator embed paths', () => {
@@ -49,12 +53,26 @@ describe('BL-26291f21 — memory-server test workers never resolve operator embe
     }
   });
 
-  it('the scratch model cache was seeded (clone) whenever the operator had the model, so real-backend never downloads', () => {
-    const operatorModel = path.join(operatorEmbedRoots().modelCacheRoot, 'models', EMBED_MODEL_DIR_NAME, 'model_optimized.onnx');
+  it('the scratch model cache is seeded by the global setup (clone), never read from the operator cache by a test', () => {
+    const seeded = process.env[MODEL_SEEDED_ENV];
+    expect(seeded, `${MODEL_SEEDED_ENV} must be exported by vitest.global-embed-scratch.ts`).toMatch(/^[01]$/);
     const scratchModel = path.join(getConfiguredEmbedPaths().cacheDir, EMBED_MODEL_DIR_NAME, 'model_optimized.onnx');
-    if (fs.existsSync(operatorModel)) {
-      expect(fs.existsSync(scratchModel), `scratch model missing at ${scratchModel}`).toBe(true);
-      expect(fs.statSync(scratchModel).ino).not.toBe(fs.statSync(operatorModel).ino);
+    // The real-backend gate must agree with the seed: seeded => runs (no download); not seeded => skips.
+    expect(fs.existsSync(scratchModel)).toBe(seeded === '1');
+    expect(isRealModelCached()).toBe(seeded === '1');
+  });
+
+  it('the only operator ~/.adhd/sox-ecosystem path a worker resolves is the BL-404 sox-tests/logs telemetry dir, exactly', () => {
+    const op = operatorEmbedRoots();
+    expect(isInside(process.env['SOX_ECOSYSTEM_HOME'] ?? '', op.ecosystemHome)).toBe(false);
+    const telemetryDir = process.env[TELEMETRY_DIR_ENV] ?? '';
+    if (isInside(telemetryDir, op.ecosystemHome)) {
+      expect(path.resolve(telemetryDir)).toBe(sanctionedOperatorTelemetryDir());
     }
+    // The allowlist is exact, never a prefix: a sibling or a child of it is still a violation.
+    for (const bad of [path.join(op.ecosystemHome, 'sox-tests'), path.join(sanctionedOperatorTelemetryDir(), 'nested'), path.join(op.ecosystemHome, 'run')]) {
+      expect(embedIsolationViolations({ ...process.env, [TELEMETRY_DIR_ENV]: bad }).length, bad).toBeGreaterThan(0);
+    }
+    expect(embedIsolationViolations({ ...process.env, [TELEMETRY_DIR_ENV]: sanctionedOperatorTelemetryDir() })).toEqual([]);
   });
 });

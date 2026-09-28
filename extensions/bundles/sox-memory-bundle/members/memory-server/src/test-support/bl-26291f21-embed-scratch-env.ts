@@ -14,5 +14,8 @@ export const SCRATCH_ROOT_ENV = 'SOX_MEMSRV_TEST_SCRATCH_ROOT';
  */
 export const TELEMETRY_DIR_ENV = 'SOX_MEMSRV_TEST_TELEMETRY_DIR';
 
+/** `'1'` when the global setup seeded the scratch model cache by clone, `'0'` when it could not. */
+export const MODEL_SEEDED_ENV = 'SOX_MEMSRV_TEST_MODEL_SEEDED';
+
 /** The on-disk model dir name for bge-base-en-v1.5 (embedding-provider's fastembed carrier). */
 export const EMBED_MODEL_DIR_NAME = 'fast-bge-base-en-v1.5';

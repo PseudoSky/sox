@@ -200,9 +200,12 @@ afterEach(() => {
 import { initTelemetry } from '@adhd/sox-telemetry';
 import { TELEMETRY_DIR_ENV } from './src/test-support/bl-26291f21-embed-scratch-env.js';
 
-// BL-26291f21: SOX_ECOSYSTEM_HOME now points at the run's embed scratch root, which is removed at
-// teardown; the global setup resolves the ORIGINAL ecosystem home's sox-tests/logs so these
-// records stay as durable as BL-404 intended.
+// BL-26291f21 / BL-404: SOX_ECOSYSTEM_HOME now points at the run's embed scratch root, which is
+// removed at teardown; the global setup resolves the ORIGINAL ecosystem home's sox-tests/logs so
+// these records stay as durable as BL-404 intended. `<~/.adhd/sox-ecosystem>/sox-tests/logs` is
+// the ONE sanctioned operator path a test worker may resolve (a dedicated test-only namespace,
+// disjoint from service logs); the fail-fast guard allowlists exactly it and nothing else — see
+// sanctionedOperatorTelemetryDir() in src/test-support/bl-26291f21-embed-scratch.ts.
 const telemetryLogDir = process.env[TELEMETRY_DIR_ENV];
 initTelemetry({
   service: 'sox-tests',
