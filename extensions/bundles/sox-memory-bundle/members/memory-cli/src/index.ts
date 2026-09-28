@@ -694,6 +694,11 @@ async function cmdFtsRebuild(dbFlag: string, rest: string[], dryRun: boolean): P
   const r = await rebuildStoreOffline(resolvedDb, { dryRun });
   if (r.status === 'refused') {
     console.error(refusalMessage('fts-rebuild', r.reason, r.peer_pids, r.db_path, r.error));
+    if (r.reason === 'source_changed' && r.rebuild_path) {
+      console.error(
+        `[fts-rebuild] the store was written after the snapshot and was NOT swapped; the verified copy of the snapshot is kept: ${r.rebuild_path} — delete it and re-run once every writer is stopped`,
+      );
+    }
     process.exit(2);
   }
   if (r.before) console.log(`  before: ${fmtStats(r.before)}`);
