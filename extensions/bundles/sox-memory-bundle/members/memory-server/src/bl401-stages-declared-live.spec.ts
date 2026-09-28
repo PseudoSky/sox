@@ -30,6 +30,8 @@ import { spawn } from 'node:child_process';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
+import { log } from '@adhd/sox-telemetry';
+import { buildScratchEmbedEnv, stopSpawnedEmbedHosts } from './test-support/bl-df0ea359-embed-host-isolation.js';
 
 const REPO_ROOT = path.resolve(__dirname, '../../../../../..');
 const MEMORY_SERVER_DIR = path.resolve(__dirname, '..');
@@ -115,11 +117,11 @@ describe('BL-401: the real spawned memory-server reports a non-zero stage invent
     async () => {
       const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'sox-bl401-live-'));
       const dbPath = path.join(dir, 'test.db');
+      // BL-df0ea359: same real-entrypoint spawn as bl404 — isolate the embedding
+      // host's HOME/cache/socket to a scratch dir and verified-stop it afterward.
+      const { env: scratchEnv, cacheDir } = buildScratchEmbedEnv(dir);
       try {
-        const body = await callMemoryStatsOnRealEntrypoint(
-          { ...process.env, SOX_ECOSYSTEM_HOME: path.join(dir, 'home') },
-          dbPath,
-        );
+        const body = await callMemoryStatsOnRealEntrypoint(scratchEnv, dbPath);
         const check = body['telemetry_self_check'] as Record<string, unknown> | undefined;
         expect(check).toBeDefined();
 
@@ -147,6 +149,10 @@ describe('BL-401: the real spawned memory-server reports a non-zero stage invent
         expect(typeof persistence['file']).toBe('string');
         expect(persistence['file'] as string).toContain('.metrics-snapshot-');
       } finally {
+        const { stillRunning } = await stopSpawnedEmbedHosts(cacheDir);
+        if (stillRunning.length > 0) {
+          log.warn('bl_df0ea359_embed_host_survived_stop', { pids: stillRunning, cacheDir });
+        }
         fs.rmSync(dir, { recursive: true, force: true });
       }
     },

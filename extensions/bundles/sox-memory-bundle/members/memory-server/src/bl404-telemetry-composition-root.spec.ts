@@ -44,6 +44,7 @@ import {
   _resetTelemetryForTest,
 } from '@adhd/sox-telemetry';
 import { MEMORY_SERVER_TELEMETRY_INIT_OPTIONS } from './index.js';
+import { buildScratchEmbedEnv, stopSpawnedEmbedHosts } from './test-support/bl-df0ea359-embed-host-isolation.js';
 
 const REPO_ROOT = path.resolve(__dirname, '../../../../../..');
 const MEMORY_SERVER_DIR = path.resolve(__dirname, '..');
@@ -154,11 +155,14 @@ describe('BL-404: memory-server telemetry composition root', () => {
       async () => {
         const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'sox-bl404-e2e-'));
         const dbPath = path.join(dir, 'test.db');
+        // BL-df0ea359: this spec spawns the REAL entrypoint, which unconditionally
+        // warms the real embedding backend on startup (BL-89) and can spawn a real
+        // embedding-host child process. Never let that host share the operator's
+        // HOME, model cache, or embed socket dir — give it an isolated scratch env
+        // and verified-stop whatever it spawns before the test ends.
+        const { env: scratchEnv, cacheDir } = buildScratchEmbedEnv(dir);
         try {
-          const body = await callMemoryStatsOnRealEntrypoint(
-            { ...process.env, SOX_ECOSYSTEM_HOME: path.join(dir, 'home') },
-            dbPath,
-          );
+          const body = await callMemoryStatsOnRealEntrypoint(scratchEnv, dbPath);
           const check = body['telemetry_self_check'] as Record<string, unknown> | undefined;
           expect(check).toBeDefined();
           // THE regression: before BL-404, this was 'test' on the live production
@@ -167,10 +171,17 @@ describe('BL-404: memory-server telemetry composition root', () => {
           // because nothing ever called initTelemetry() to override it.
           expect(check!['role']).toBe('live-service');
         } finally {
+          const { stillRunning } = await stopSpawnedEmbedHosts(cacheDir);
+          if (stillRunning.length > 0) {
+            log.warn('bl_df0ea359_embed_host_survived_stop', { pids: stillRunning, cacheDir });
+          }
           fs.rmSync(dir, { recursive: true, force: true });
         }
       },
-      30_000,
+      // BL-df0ea359: bumped from 30_000 — verified-stopping a real embed host
+      // (discover window up to 20s, see stopSpawnedEmbedHosts) runs in this test's
+      // own `finally`, on top of the MCP round trip itself.
+      60_000,
     );
   });
 

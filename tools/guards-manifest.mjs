@@ -27,7 +27,7 @@
  */
 
 export const GUARDS = [
-  // ---------------------------------------------------------------- Tier 1 (22) -----------
+  // ---------------------------------------------------------------- Tier 1 (25) -----------
   {
     id: 'bl222',
     tier: 1,
@@ -138,6 +138,23 @@ export const GUARDS = [
     // Pins the smoke serve legs' teardown: the detached embedding host (ADR-0022) is verified-stopped
     // after the soxe group kill, a survivor fails the leg, and an untagged host is never signalled.
     watch: ['scripts/lib/embed-host-isolation.mjs', 'scripts/smoke-test.mjs'],
+  },
+  {
+    id: 'df0ea359',
+    tier: 1,
+    script: 'test-df0ea359-spec-embed-isolation.mjs',
+    // Pins memory-server's bl404/bl401 real-entrypoint specs to never spawn a real
+    // embedding host sharing the operator's HOME, model cache, or embed socket dir
+    // (observed live: pids 21798/21856/22069 with HOME=/Users/nix), and to verified-stop
+    // the whole spawned process tree (the tsx wrapper's grandchild server was orphaned by a
+    // wrapper-only SIGKILL). Structural check on the spec sources plus a dynamic probe of the
+    // real helper via `node --import tsx`. `--ref 80261908` (the pre-fix base) is the pinned
+    // negative control.
+    watch: [
+      'extensions/bundles/sox-memory-bundle/members/memory-server/src/bl404-telemetry-composition-root.spec.ts',
+      'extensions/bundles/sox-memory-bundle/members/memory-server/src/bl401-stages-declared-live.spec.ts',
+      'extensions/bundles/sox-memory-bundle/members/memory-server/src/test-support/bl-df0ea359-embed-host-isolation.ts',
+    ],
   },
   {
     id: '4fc3704e',
