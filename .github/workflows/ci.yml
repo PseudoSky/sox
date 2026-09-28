@@ -40,7 +40,7 @@ concurrency:
 
 jobs:
   ci:
-    name: nx affected build, lint, test + validate
+    name: nx affected build, lint, typecheck, test + validate
     runs-on: ubuntu-latest
 
     steps:

@@ -285,6 +285,16 @@ export const GUARDS = [
     // is in `main`" rule is embedded as the negative control.
     watch: ['extensions/agents/backlog-operator/backlog-operator.md'],
   },
+  {
+    id: '7ff58364-7dd7a974-062504ba',
+    tier: 1,
+    script: 'test-7ff58364-gate-reaches-typecheck-tests.mjs',
+    // Pins 7ff58364/7dd7a974 (062504ba's resolution waits on this guard): every project's
+    // `typecheck` target must effectively depend on `^build`, and on `typecheck-tests` wherever
+    // that target exists, so a whole-repo `nx run-many -t typecheck` sweep never reports green
+    // while typecheck-tests silently never ran (config-merge + real task-graph proof).
+    watch: ['nx.json', 'libs/memory-core/project.json', 'extensions/bundles/sox-memory-bundle/members/memory-server/project.json', 'libs/observability/sox-telemetry/project.json'],
+  },
 
   // ---------------------------------------------------------------- Tier 2 (5) ------------
   {

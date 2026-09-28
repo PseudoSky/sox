@@ -60,6 +60,10 @@
         "cwd": "."
       },
       "cache": true,
+      "dependsOn": [
+        "^build",
+        "typecheck-tests"
+      ],
       "inputs": [
         "default",
         "^production"
