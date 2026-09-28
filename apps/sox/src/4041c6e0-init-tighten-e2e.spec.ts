@@ -49,10 +49,6 @@ describe('BL-4041c6e0 / 6233c1c2: CLI init repairs a legacy 0775 run dir', () =>
 
       // CLI init.
       const results = tightenSoxRunDirs();
-      expect(results).toEqual([
-        { dir: runDir(), outcome: 'tightened' },
-        { dir: socketDir(), outcome: 'tightened' },
-      ]);
 
       const sock = path.join(socketDir(), 'e2e.sock');
       const handle = await proxy.serveBackend({
@@ -68,6 +64,10 @@ describe('BL-4041c6e0 / 6233c1c2: CLI init repairs a legacy 0775 run dir', () =>
       expect(resp.error).toBeUndefined();
       expect(resp.result).toBe('pong');
       expect(fs.statSync(socketDir()).mode & 0o777).toBe(0o755);
+      expect(results).toEqual([
+        { dir: runDir(), outcome: 'tightened' },
+        { dir: socketDir(), outcome: 'tightened' },
+      ]);
     } finally {
       process.umask(prevUmask);
     }
