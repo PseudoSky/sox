@@ -31,9 +31,24 @@ export default defineConfig({
       SOX_AUTO_BACKUP_DIR: '/nonexistent/bl-7e5be7e8-decoy/backups',
     },
     testTimeout: 30_000,
-    // Install the deterministic test provider before any test runs so no spec
-    // triggers a real ONNX warmup unless it explicitly opts in.
-    setupFiles: [resolve(__dirname, 'vitest.setup.ts')],
+    // BL-bae70da4: globalSetup runs in its own process, outside every forked
+    // worker, before any worker starts and after all have exited — it never
+    // sees the per-worker HOME redirect below, so it can snapshot the real
+    // operator ~/.memory from an unaffected vantage point. See
+    // vitest.global-guard.ts for the full rationale.
+    globalSetup: [resolve(__dirname, 'vitest.global-guard.ts')],
+    // Order matters: the HOME redirect MUST run before anything else
+    // (including vitest.setup.ts, which calls initTelemetry) so no
+    // ~/.memory-shaped path is resolved against the operator's real home at
+    // any point in this worker. The fs-touch guard is installed next so it
+    // is armed before the first spec module (which may call os.homedir()
+    // at import time in a future edit) ever loads. See
+    // vitest.home-scratch-setup.ts / vitest.home-guard-setup.ts.
+    setupFiles: [
+      resolve(__dirname, 'vitest.home-scratch-setup.ts'),
+      resolve(__dirname, 'vitest.home-guard-setup.ts'),
+      resolve(__dirname, 'vitest.setup.ts'),
+    ],
     // Run all spec files in a single forked worker. This prevents per-file ONNX
     // re-loads (each fork would re-initialise the model) and eliminates the
     // concurrency-driven timeout flake (BL-161).
