@@ -77,6 +77,7 @@ import {
   STORE_GROWTH_META_UPSERT_SQL,
 } from './adapter-meta.js';
 import { acquireColdOpenLock } from './cold-open-lock.js';
+import { SOX_ENGINE_TABLE } from './engine-guard.js';
 import { classifyIntegrityMessages, parseFtsColumns, pickSentinelTokens } from './integrity.js';
 import { canonicalDbPath } from './path-identity.js';
 import { storeOpeners, storeQuiescence } from './store-lease.js';
@@ -780,9 +781,59 @@ export async function rebuildStoreOffline(dbPath: string, opts: StoreRebuildOpti
 // ── Restore ──────────────────────────────────────────────────────────────────
 
 export interface StoreRestoreOptions {
-  /** Verify the clone, delete it, never swap. */
+  /** Verify the clone, delete it, never swap. Every content refusal below applies to a dry run too. */
   dryRun?: boolean;
   now?: () => Date;
+  /**
+   * BL-15d6300c: tables the backup MUST contain, else `refused`/`backup_no_schema`.
+   * The store-adapter is schema-agnostic, so the default is empty; a caller that
+   * owns a schema (memory-cli passes memory-core's `REQUIRED_STORE_TABLES`)
+   * names it here. Never bypassed by `allowEmptyBackup` — a store without the
+   * caller's schema is the wrong file, not an empty store.
+   */
+  requiredTables?: readonly string[];
+  /**
+   * BL-15d6300c: the table whose row count measures how much a store holds
+   * (memory-cli: `node`). Absent: the sum of every user table's rows (the
+   * adapter's own bookkeeping tables excluded).
+   */
+  contentTable?: string;
+  /**
+   * BL-15d6300c: explicit consent to restore an EMPTY backup — lifts the
+   * `page_count <= 1`, no-user-schema and zero-content refusals (all reported
+   * as `backup_empty`/`backup_no_schema`), and the shrink check when the
+   * backup's content count is 0. Deliberately a typed option, never an env var
+   * (ADR-0013). CLI: `memory restore --allow-empty-backup`.
+   */
+  allowEmptyBackup?: boolean;
+  /**
+   * BL-15d6300c: largest fraction of the live target's content a restore may
+   * drop before it is refused as `backup_shrinks_store`. POLICY, not a
+   * measurement: default {@link DEFAULT_RESTORE_MAX_CONTENT_DROP} (0.9 — refuse
+   * when the backup holds < 10% of the target's rows). Must be in [0, 1].
+   * Skipped when the target is absent, unreadable, or has no content.
+   */
+  maxContentDrop?: number;
+  /** BL-15d6300c: lift the `backup_shrinks_store` refusal. CLI: `memory restore --allow-shrink`. */
+  allowContentDrop?: boolean;
+}
+
+/** BL-15d6300c: default for {@link StoreRestoreOptions.maxContentDrop}. */
+export const DEFAULT_RESTORE_MAX_CONTENT_DROP = 0.9;
+
+/** BL-15d6300c: what the restore measured about the backup's (and target's) content. */
+export interface StoreRestoreContentCheck {
+  /** The counted table, or `null` when the count is the sum over user tables. */
+  table: string | null;
+  backup_page_count: number;
+  /** User tables in the backup (adapter bookkeeping excluded). */
+  backup_tables: string[];
+  /** `null` when `table` is absent from the backup. */
+  backup_count: number | null;
+  /** `null` when the target is absent, unreadable, or lacks `table`. */
+  target_count: number | null;
+  /** The threshold applied, or `null` when the shrink check was lifted or skipped. */
+  max_content_drop: number | null;
 }
 
 export interface StoreRestoreReport {
@@ -790,6 +841,14 @@ export interface StoreRestoreReport {
   reason?:
     | 'not_found'
     | 'backup_wal_not_empty'
+    /** BL-15d6300c: the backup is 1 page or holds zero content rows. */
+    | 'backup_empty'
+    /** BL-15d6300c: the backup has no user schema, or lacks a `requiredTables` entry. */
+    | 'backup_no_schema'
+    /** BL-15d6300c: the backup would drop more than `maxContentDrop` of the live target's content. */
+    | 'backup_shrinks_store'
+    /** BL-15d6300c: `maxContentDrop` is outside [0, 1]. */
+    | 'invalid_option'
     /** The backup resolves to the target file itself (same path, or a hard-link alias). */
     | 'backup_is_target'
     /** The backup is itself a live store (lease peers or registered openers). */
@@ -809,8 +868,96 @@ export interface StoreRestoreReport {
   replaced_path?: string;
   restored?: StorePageStats;
   verification?: StoreReplacementVerification;
+  /** BL-15d6300c: the content measurement every restore makes before cloning. */
+  content?: StoreRestoreContentCheck;
   duration_ms: number;
   error?: string;
+}
+
+/** Tables the adapter itself writes into ANY store it opens writable — never user schema. */
+const ADAPTER_BOOKKEEPING_TABLES = new Set<string>([SOX_ENGINE_TABLE, '_adapter_meta']);
+
+/** Rows in `table` of an open store, or the sum over user tables when `table` is null; null when `table` is absent. */
+async function contentCount(adapter: StoreAdapter, tables: string[], table: string | null): Promise<number | null> {
+  if (table !== null) return tables.includes(table) ? countRows(adapter, table) : null;
+  let n = 0;
+  for (const t of tables) n += await countRows(adapter, t);
+  return n;
+}
+
+async function listContentTables(adapter: StoreAdapter): Promise<string[]> {
+  return (await listUserTables(adapter)).filter((t) => !ADAPTER_BOOKKEEPING_TABLES.has(t));
+}
+
+/**
+ * BL-15d6300c: content count of the restore TARGET, read-only, leaving no
+ * artifact behind it did not find (a stray sidecar would trip the swap's
+ * `sidecars_dirty` gate). Restoring over a damaged store is the main reason
+ * restore exists, so an unreadable target is logged and reads as `null` —
+ * never a refusal.
+ */
+async function readTargetContentCount(dbPath: string, table: string | null): Promise<number | null> {
+  if (!existsSync(dbPath)) return null;
+  const preexisting = listFileArtifacts(dbPath, 'store.restore.cleanup_failed');
+  try {
+    const t = await TursoAdapterImpl.connect({ dbPath, readonly: true, allowFtsInReadonly: true, idleFlushMs: 3_600_000 });
+    try {
+      return await contentCount(t, await listContentTables(t), table);
+    } finally {
+      await t.close();
+    }
+  } catch (err) {
+    log.warn('store.restore.target_count_unreadable', {
+      db_path: dbPath,
+      error: err instanceof Error ? err.message : String(err),
+    });
+    return null;
+  } finally {
+    removeCreatedArtifacts(dbPath, preexisting, 'store.restore.cleanup_failed');
+  }
+}
+
+type ContentRefusal = { reason: 'backup_empty' | 'backup_no_schema' | 'backup_shrinks_store'; error: string };
+
+/** BL-15d6300c: the content gate. Pure over the measurement, so every branch is spelled out once. */
+function judgeRestoreContent(
+  c: StoreRestoreContentCheck,
+  opts: Pick<StoreRestoreOptions, 'requiredTables' | 'allowEmptyBackup' | 'allowContentDrop'>,
+  backup: string,
+): ContentRefusal | null {
+  const missing = (opts.requiredTables ?? []).filter((t) => !c.backup_tables.includes(t));
+  if (missing.length > 0) {
+    return { reason: 'backup_no_schema', error: `${backup} lacks required table(s) ${missing.join(', ')} — not a store of this schema` };
+  }
+  const allowEmpty = opts.allowEmptyBackup === true;
+  if (!allowEmpty) {
+    if (c.backup_page_count <= 1) {
+      return { reason: 'backup_empty', error: `${backup} is ${c.backup_page_count} page(s) — an empty or torn store file (pass allowEmptyBackup to restore it anyway)` };
+    }
+    if (c.backup_tables.length === 0) {
+      return { reason: 'backup_no_schema', error: `${backup} has no user tables — an empty or torn store file (pass allowEmptyBackup to restore it anyway)` };
+    }
+    if (c.table !== null && c.backup_count === null) {
+      return { reason: 'backup_no_schema', error: `${backup} has no ${c.table} table` };
+    }
+    if (c.backup_count === 0) {
+      return { reason: 'backup_empty', error: `${backup} holds 0 ${c.table ?? 'user'} rows (pass allowEmptyBackup to restore it anyway)` };
+    }
+  }
+  if (allowEmpty && c.backup_count === 0) return null; // explicit consent to replace with nothing
+  if (c.max_content_drop !== null && c.backup_count !== null && c.target_count !== null && c.target_count > 0) {
+    const floor = c.target_count * (1 - c.max_content_drop);
+    if (c.backup_count < floor) {
+      const drop = (1 - c.backup_count / c.target_count) * 100;
+      return {
+        reason: 'backup_shrinks_store',
+        error:
+          `${backup} holds ${c.backup_count} ${c.table ?? 'user'} rows against ${c.target_count} in the live store ` +
+          `(a ${drop.toFixed(1)}% drop, over the ${(c.max_content_drop * 100).toFixed(1)}% limit; pass allowContentDrop to restore it anyway)`,
+      };
+    }
+  }
+  return null;
 }
 
 /**
@@ -818,6 +965,15 @@ export interface StoreRestoreReport {
  * `.pre-rebuild-*` file, or any closed, checkpointed Turso store file) over
  * `dbPath`. Refuses while the target has live peers or openers. The backup
  * itself is never modified or consumed — it is cloned.
+ *
+ * BL-15d6300c: before anything is cloned — dry run included — the backup's
+ * content is measured and the restore refused when the backup is 1 page
+ * (`backup_empty`), has no user schema or lacks a `requiredTables` entry
+ * (`backup_no_schema`), holds zero content rows (`backup_empty`), or would drop
+ * more than `maxContentDrop` of the live target's content
+ * (`backup_shrinks_store`). The clone-vs-backup verification cannot catch any
+ * of these: it proves the clone equals the backup, and an empty backup equals
+ * itself. `allowEmptyBackup` / `allowContentDrop` are the explicit overrides.
  */
 export async function restoreStoreOffline(
   backupPath: string,
@@ -884,21 +1040,37 @@ export async function restoreStoreOffline(
     return done({ status: 'refused', reason: 'openers', peer_pids: preOpeners.livePids });
   }
 
+  const maxDrop = opts.maxContentDrop ?? DEFAULT_RESTORE_MAX_CONTENT_DROP;
+  if (!(maxDrop >= 0 && maxDrop <= 1)) {
+    return done({ status: 'refused', reason: 'invalid_option', error: `maxContentDrop must be in [0, 1], got ${String(opts.maxContentDrop)}` });
+  }
+
   const ts = now();
   const clone = `${canonical}.restore-${stamp(ts)}`;
   const replacedPath = `${canonical}.pre-restore-${stamp(ts)}`;
-  let restored: StorePageStats;
-  let verification: StoreReplacementVerification;
+  // Facts from the backup itself, read-only (measured: a soft-readonly open
+  // leaves the file's bytes unchanged), so the clone is checked against it.
+  // Those facts only prove the clone equals the backup — they say nothing
+  // about whether the backup is worth restoring (a torn 1-page file verifies
+  // against itself). BL-15d6300c measures that separately, before any clone.
+  let facts: StoreFacts;
+  let content: StoreRestoreContentCheck;
+  const contentTable = opts.contentTable ?? null;
   try {
-    if (existsSync(clone) || existsSync(replacedPath)) throw new Error(`${clone} or ${replacedPath} already exists`);
-    // Facts from the backup itself, read-only (measured: a soft-readonly open
-    // leaves the file's bytes unchanged), so the clone is checked against it.
     const preexisting = listFileArtifacts(backup, 'store.restore.cleanup_failed');
-    let facts: StoreFacts;
     try {
       const src = await TursoAdapterImpl.connect({ dbPath: backup, readonly: true, allowFtsInReadonly: true, idleFlushMs: 3_600_000 });
       try {
         facts = await captureFacts(src);
+        const tables = await listContentTables(src);
+        content = {
+          table: contentTable,
+          backup_page_count: await pragmaNumber(src, 'page_count'),
+          backup_tables: tables,
+          backup_count: await contentCount(src, tables, contentTable),
+          target_count: null,
+          max_content_drop: opts.allowContentDrop === true ? null : maxDrop,
+        };
       } finally {
         await src.close();
       }
@@ -907,6 +1079,17 @@ export async function restoreStoreOffline(
       // backup — remove exactly those, never what was already there.
       removeCreatedArtifacts(backup, preexisting, 'store.restore.cleanup_failed');
     }
+    if (content.max_content_drop !== null) content.target_count = await readTargetContentCount(canonical, contentTable);
+  } catch (err) {
+    return done({ status: 'failed', reason: 'error', error: err instanceof Error ? err.message : String(err) });
+  }
+  const refusal = judgeRestoreContent(content, opts, backup);
+  if (refusal !== null) return done({ status: 'refused', ...refusal, content });
+
+  let restored: StorePageStats;
+  let verification: StoreReplacementVerification;
+  try {
+    if (existsSync(clone) || existsSync(replacedPath)) throw new Error(`${clone} or ${replacedPath} already exists`);
     copyFileSync(backup, clone, fsConstants.COPYFILE_FICLONE);
     ({ stats: restored, verification } = await verifyReplacement(clone, facts, { expectGrowthReset: false }));
   } catch (err) {
@@ -916,28 +1099,29 @@ export async function restoreStoreOffline(
   removeFileArtifacts(clone, 'store.restore.cleanup_failed');
   if (!verification.ok) {
     removeFileAndArtifacts(clone, 'store.restore.cleanup_failed');
-    return done({ status: 'failed', reason: 'verification_failed', restored, verification, error: verification.failures.join('; ') });
+    return done({ status: 'failed', reason: 'verification_failed', restored, verification, content, error: verification.failures.join('; ') });
   }
   if (opts.dryRun === true) {
     removeFileAndArtifacts(clone, 'store.restore.cleanup_failed');
-    return done({ status: 'dry_run', restored, verification });
+    return done({ status: 'dry_run', restored, verification, content });
   }
   let swap: SwapResult;
   try {
     swap = await swapIntoPlace(canonical, clone, replacedPath, 'store.restore');
   } catch (err) {
     removeFileAndArtifacts(clone, 'store.restore.cleanup_failed');
-    return done({ status: 'failed', reason: 'error', restored, verification, error: err instanceof Error ? err.message : String(err) });
+    return done({ status: 'failed', reason: 'error', restored, verification, content, error: err instanceof Error ? err.message : String(err) });
   }
   if (!swap.ok) {
     removeFileAndArtifacts(clone, 'store.restore.cleanup_failed');
     const refused = swap.reason !== 'sidecars_dirty';
-    return done({ status: refused ? 'refused' : 'failed', reason: swap.reason, peer_pids: swap.pids, restored, verification, error: swap.detail });
+    return done({ status: refused ? 'refused' : 'failed', reason: swap.reason, peer_pids: swap.pids, restored, verification, content, error: swap.detail });
   }
   return done({
     status: 'restored',
     ...(swap.backup_path !== null ? { replaced_path: swap.backup_path } : {}),
     restored,
+    content,
     verification,
   });
 }

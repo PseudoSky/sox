@@ -94,7 +94,7 @@ export { wrapDbError } from './errors.js';
 export type { StorageError, StorageErrorCode } from './errors.js';
 
 // ── Schema ────────────────────────────────────────────────────────────────────
-export { PRAGMAS, DDL_BASE, FTS_TRIGGERS } from './schema.js';
+export { PRAGMAS, DDL_BASE, FTS_TRIGGERS, REQUIRED_STORE_TABLES, STORE_CONTENT_TABLE, ddlTableNames } from './schema.js';
 
 // ── Embedding ─────────────────────────────────────────────────────────────────
 export {

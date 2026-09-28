@@ -40,6 +40,8 @@ import {
   readEnrichAlarm,
   countPoisonedRows,
   embedBacklogStats,
+  REQUIRED_STORE_TABLES,
+  STORE_CONTENT_TABLE,
 } from '@adhd/sox-memory-core';
 import type {
   CurateDrainResult,
@@ -100,6 +102,10 @@ interface ParsedArgs {
   force: boolean;
   /** reembed: --no-backup */
   noBackup: boolean;
+  /** restore: --allow-empty-backup (BL-15d6300c) */
+  allowEmptyBackup: boolean;
+  /** restore: --allow-shrink (BL-15d6300c) */
+  allowShrink: boolean;
   /** reembed: --limit N */
   limit: number;
   /** backup: --dest <path> */
@@ -122,6 +128,8 @@ function parseArgs(argv: string[]): ParsedArgs {
   let limit = 0;
   let destPath = '';
   let noOptimize = false;
+  let allowEmptyBackup = false;
+  let allowShrink = false;
   const rest: string[] = [];
 
   for (let i = 1; i < argv.length; i++) {
@@ -151,12 +159,16 @@ function parseArgs(argv: string[]): ParsedArgs {
       destPath = argv[++i] ?? '';
     } else if (arg === '--no-optimize') {
       noOptimize = true;
+    } else if (arg === '--allow-empty-backup') {
+      allowEmptyBackup = true;
+    } else if (arg === '--allow-shrink') {
+      allowShrink = true;
     } else {
       rest.push(arg ?? '');
     }
   }
 
-  return { command, scope, basePath, exportDir, dbPathOverride, dryRun, force, noBackup, limit, destPath, noOptimize, rest };
+  return { command, scope, basePath, exportDir, dbPathOverride, dryRun, force, noBackup, limit, destPath, noOptimize, allowEmptyBackup, allowShrink, rest };
 }
 
 /**
@@ -727,14 +739,31 @@ async function cmdFtsRebuild(dbFlag: string, rest: string[], dryRun: boolean): P
   }
 }
 
+/** BL-15d6300c: restore refusals about the backup's content, each with its override. */
+const RESTORE_CONTENT_REFUSALS: Readonly<Record<string, string>> = {
+  backup_empty: 'if an empty store is really what you want, re-run with --allow-empty-backup',
+  backup_no_schema: `a memory store backup must contain the ${REQUIRED_STORE_TABLES.join(', ')} tables — this file is not one (no flag overrides this; an empty store created by \`memory init\` has them)`,
+  backup_shrinks_store: 'if losing that content is intended, re-run with --allow-shrink',
+};
+
 /**
  * (BL-c5249cdd) `restore <backup>` — OFFLINE restore of a single-file backup
  * (the `fts-rebuild` pre-swap file) over the store. The backup is cloned, the
  * clone verified against it, the current store hard-linked to
  * `<db>.pre-restore-<ts>`, and the clone renamed over `<db>`. Exit 2 on
  * refused, 1 on failed.
+ *
+ * BL-15d6300c: the backup must hold memory-core's `REQUIRED_STORE_TABLES`
+ * and at least one `node` row, and at least 10% of the live store's nodes —
+ * checked before any clone, dry run included. `--allow-empty-backup` and
+ * `--allow-shrink` are the explicit overrides.
  */
-async function cmdRestore(dbFlag: string, rest: string[], dryRun: boolean): Promise<void> {
+async function cmdRestore(
+  dbFlag: string,
+  rest: string[],
+  dryRun: boolean,
+  overrides: { allowEmptyBackup: boolean; allowShrink: boolean },
+): Promise<void> {
   const backupArg = rest[0];
   if (!backupArg) {
     console.error('[restore] ERROR: backup path required: memory restore <backup> [--db <path>] [--dry-run]');
@@ -743,9 +772,30 @@ async function cmdRestore(dbFlag: string, rest: string[], dryRun: boolean): Prom
   const home = process.env['HOME'] ?? process.env['USERPROFILE'] ?? os.homedir();
   const resolvedBackup = path.resolve(backupArg.replace(/^~(?=\/|$)/, home));
   const resolvedDb = resolveCliDb(dbFlag, rest[1]);
-  const r = await restoreStoreOffline(resolvedBackup, resolvedDb, { dryRun });
+  const r = await restoreStoreOffline(resolvedBackup, resolvedDb, {
+    dryRun,
+    requiredTables: REQUIRED_STORE_TABLES,
+    contentTable: STORE_CONTENT_TABLE,
+    allowEmptyBackup: overrides.allowEmptyBackup,
+    allowContentDrop: overrides.allowShrink,
+  });
   if (r.status === 'refused') {
-    console.error(refusalMessage('restore', r.reason, r.peer_pids, r.db_path, r.error));
+    const content = RESTORE_CONTENT_REFUSALS[r.reason ?? ''];
+    if (content !== undefined) {
+      // BL-15d6300c: a content refusal is about the BACKUP, not about who holds
+      // the store — the generic "stop memory-server" advice would mislead.
+      console.error(`[restore] REFUSED (${r.reason}): ${r.error ?? 'unknown'}`);
+      if (r.content) {
+        const c = r.content;
+        console.error(
+          `  backup: ${c.backup_page_count} page(s), tables [${c.backup_tables.join(', ')}], ` +
+            `${c.table ?? 'rows'}=${c.backup_count ?? 'absent'}; live store ${c.table ?? 'rows'}=${c.target_count ?? 'n/a'}`,
+        );
+      }
+      console.error(`[restore] nothing was replaced; ${content}`);
+    } else {
+      console.error(refusalMessage('restore', r.reason, r.peer_pids, r.db_path, r.error));
+    }
     process.exit(2);
   }
   if (r.restored) console.log(`  restored: ${fmtStats(r.restored)}`);
@@ -763,7 +813,8 @@ async function cmdRestore(dbFlag: string, rest: string[], dryRun: boolean): Prom
 }
 
 export async function runCli(argv: string[]): Promise<void> {
-  const { command, scope, basePath, exportDir, dbPathOverride, dryRun, force, noBackup, limit, destPath, noOptimize, rest } = parseArgs(argv);
+  const { command, scope, basePath, exportDir, dbPathOverride, dryRun, force, noBackup, limit, destPath, noOptimize, allowEmptyBackup, allowShrink, rest } =
+    parseArgs(argv);
 
   switch (command) {
     case 'init':
@@ -800,7 +851,7 @@ export async function runCli(argv: string[]): Promise<void> {
       await cmdFtsRebuild(dbPathOverride, rest, dryRun);
       break;
     case 'restore':
-      await cmdRestore(dbPathOverride, rest, dryRun);
+      await cmdRestore(dbPathOverride, rest, dryRun, { allowEmptyBackup, allowShrink });
       break;
     case 'help':
     default:
@@ -832,10 +883,15 @@ Commands:
                                                       Same refusal rules as fts-optimize.
                                                       --dry-run verifies the copy, never swaps.
   restore <backup> [--db <path>] [--dry-run]           OFFLINE restore of a single-file backup
-                                                      (e.g. <db>.pre-rebuild-<ts>) over the store;
+          [--allow-empty-backup] [--allow-shrink]     (e.g. <db>.pre-rebuild-<ts>) over the store;
                                                       the replaced store is kept as
                                                       <db>.pre-restore-<ts>. Refuses while any
-                                                      process has the store open.
+                                                      process has the store open. Refuses (dry
+                                                      run too) a backup that is 1 page, lacks
+                                                      the node/edge tables, or holds 0 nodes
+                                                      (--allow-empty-backup overrides), or that
+                                                      holds <10% of the live store's nodes
+                                                      (--allow-shrink overrides).
 `);
   }
 }
