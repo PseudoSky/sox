@@ -109,11 +109,12 @@ To correct a *fact* rather than a node, prefer supersession: `memory_write` the 
 
 - **Discover valid filter values:** `memory_topics`, `memory_list_projects`, `memory_list_entities`, `memory_search_entities`.
 - **Graph traversal:** `memory_related` (neighbours), `memory_entity_episodes` (episodes mentioning an entity), `memory_get_community` (a cluster + members), `memory_supersession_chain`, `memory_near_duplicates`.
-- **Curate:** `memory_curate` with an `op` of `retag`, `set_topic`, `set_importance`, `merge_duplicates`, or `recluster`.
+- **Curate:** `memory_curate` with an `op` of `retag`, `set_topic`, `set_importance`, `merge_duplicates`, or `recluster` (which returns a durable job handle; poll it with `op: "recluster_status"`). To edit a live node in place, `memory_update`.
+- **Claims (SR-7):** `memory_claim_upsert` (atomic claim/update for a caller), `memory_claim_get`, `memory_claim_list`.
 - **Session state:** `memory_get_session_state` / `memory_save_session_state`.
 - **Health:** `memory_stats` (coverage + cluster quality), `memory_ping` (liveness), `memory_link` (create an edge between two existing nodes).
 
-`memory-server`'s own README documents the full input/output schema for all 20 tools.
+`memory-server`'s own README documents the full input/output schema for all 23 tools.
 
 ## Output shapes
 

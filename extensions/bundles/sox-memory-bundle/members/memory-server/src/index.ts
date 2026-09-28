@@ -1,6 +1,6 @@
 /**
  * MCP Server: Agent Memory Server v1.1.0
- * 20 memory_* tools over a single-file SQLite graph store.
+ * 23 memory_* tools over a single-file SQLite graph store.
  * Transport: stdio JSON-RPC (tools/list + tools/call).
  *
  * v1.0.0 adds (P4 enrichment surface — CONTRACTS.md C2):
@@ -127,7 +127,7 @@ import {
   // drift from computeWriteEnrichment's own topic resolution.
   resolveTopicFromPrefix,
 } from '@adhd/sox-memory-core';
-import type { HealResult, PendingEmbed, PhaseAOutcome, WriteError, WriteResult, EnrichAlarmRecord } from '@adhd/sox-memory-core';
+import type { HealResult, PendingEmbed, PhaseAOutcome, WriteError, WriteResult, EnrichAlarmRecord, ReclusterSettleOutcome } from '@adhd/sox-memory-core';
 import type { StoreAdapter, VectorDialect } from '@adhd/sox-store-adapter';
 // BL-334: the adapter verifies and repairs its own generated artifacts at open
 // (BL-352). Until this wiring, NOTHING read the retained result — so a store
@@ -1020,9 +1020,9 @@ export const TOOLS: Array<Omit<ToolDefinition, 'handler'>> = [
         importance: { type: 'number', minimum: 1, maximum: 10, description: '(set_importance) User-asserted importance.' },
         uid_keep: { type: 'string', description: '(merge_duplicates) UID of the episode to keep.' },
         uid_drop: { type: 'string', description: '(merge_duplicates) UID of the episode to invalidate.' },
-        filters: { type: 'object', description: '(recluster) Restrict clustering to the matching subset of episodes. Same filter vocabulary as memory_recall: project_path, topic, tags, tags_match_all, importance_min, t_created_after/before. When present, recluster runs SYNCHRONOUSLY over the subset and returns the resulting communities. Combined with dry_run: dry_run=true returns communities without writing; dry_run=false persists them as a provenance-scoped community slice that leaves the global partition untouched. Absent: a global full re-cluster is ENQUEUED, NOT run inline — the call returns {enqueued:true, seq} as soon as the trigger row commits, and the pass executes on a later in-process periodic enrichment tick (typically minutes away), so memory_stats read immediately after WILL still show the old partition. This deferral is deliberate (BL-186): a synchronous full pass holds the serial WriteQueue slot for its entire duration, fast-failing writes behind it with E_BUSY, and can out-wait the MCP client timeout. With dry_run:true nothing is enqueued and {enqueued:false, dry_run:true} returns.' },
+        filters: { type: 'object', description: '(recluster) Restrict clustering to the matching subset of episodes. Same filter vocabulary as memory_recall: project_path, topic, tags, tags_match_all, importance_min, t_created_after/before. When present, recluster runs SYNCHRONOUSLY over the subset and returns the resulting communities. Combined with dry_run: dry_run=true returns communities without writing; dry_run=false persists them as a provenance-scoped community slice that leaves the global partition untouched. Absent: a global full re-cluster is ENQUEUED, NOT run inline — the call returns an observable handle {op:"recluster", scope:"global", enqueued:true, seq, job_id, status:"pending"} as soon as the trigger row commits, and the pass executes on a later in-process periodic enrichment tick (typically minutes away), so memory_stats read immediately after WILL still show the old partition. Poll the handle with {op:"recluster_status", job_id} until it is terminal. This deferral is deliberate (BL-186): a synchronous full pass holds the serial WriteQueue slot for its entire duration, fast-failing writes behind it with E_BUSY, and can out-wait the MCP client timeout. With dry_run:true nothing is enqueued and {enqueued:false, dry_run:true} returns.' },
         threshold: { type: 'number', description: '(recluster, filtered) Optional cosine similarity threshold override for the subset pass.' },
-        job_id: { type: 'string', description: '(recluster_status, SR-9) The job handle returned by a global `recluster`. Poll it until `status` is terminal: `completed` (carries the resulting `partition`) or `failed` (carries `error`). `pending` means the full pass has not run yet. "enqueued" is never the final answer.' },
+        job_id: { type: 'string', description: '(recluster_status, SR-9) The job handle returned by a global `recluster`. Poll it until `status` is terminal: `completed` (carries the resulting `partition`), `failed` (carries `error`), or `skipped` (the pass ran but its cluster step did not — the mixed-model / no-neighbour guard; carries `skip_reason`). `pending` means the full pass has not run yet. "enqueued" is never the final answer, and a skipped pass is never reported `completed`.' },
         provenance_hash: { type: 'string', description: '(drop_lens) The 16-hex provenance hash of the subset lens to drop (obtain from a prior recluster response).' },
         limit: { type: 'number', description: '(reheal_stale) Max rows to re-embed this call. Default 50, capped at 2000 — small enough that a single MCP call does not risk the client-side tool-call timeout. Run again while the response\'s remaining > 0.' },
         report_path: { type: 'string', description: '(restore_neardup) Absolute path to the lexical triage report JSON. Required to APPLY — its sha256 is recorded in meta.restoredFrom on every restored row; optional for dry_run.' },
@@ -1755,7 +1755,7 @@ async function handleToolCallImpl(name: string, args: Record<string, unknown>): 
 
     // BL-373 family (ping honesty): the health verdict is computed from the
     // observed facts, not from embed health alone. `ok` keeps its RPC-success
-    // meaning for all 20 tools; `status`/`store_ok`/`store_error` are what an
+    // meaning for all 23 tools; `status`/`store_ok`/`store_error` are what an
     // operator reads. A store that failed to open ⇒ `unhealthy` (the Aug-11
     // incident shape: ping said ok while every write failed).
     const verdict = computePingHealthVerdict({
@@ -3554,12 +3554,21 @@ export async function runEnrichPassOnDb(
   // marks them `failed` (terminal) with the error, so a caller is never left
   // polling a request whose pass errored. Idempotent and additive: a store with
   // no recluster jobs is a no-op. Bookkeeping only — never fails the tick.
+  //
+  // M1: `isolated.ok` is NOT sufficient for `completed`. The isolated child can
+  // finish cleanly while its cluster STEP was skipped (`cluster_pass_skipped` —
+  // the mixed-model / incremental-no-neighbour guard in enrich-batch.ts), which
+  // leaves the partition byte-for-byte unchanged. Settling that `completed` told
+  // a caller a reorganisation had happened when none had. Report `skipped` +
+  // the child's reason, and let `recluster_status` distinguish it; only the
+  // skipped case is downgraded — a genuinely failed pass still settles `failed`.
   try {
-    await settleReclusterJobs(
-      adapter,
-      maxSeq,
-      isolated.ok ? { ok: true } : { ok: false, error: isolated.error ?? 'unknown' },
-    );
+    const settleOutcome: ReclusterSettleOutcome = !isolated.ok
+      ? { ok: false, error: isolated.error ?? 'unknown' }
+      : isolated.result.cluster_pass_skipped
+        ? { ok: false, skipped: true, reason: isolated.result.cluster_skip_reason ?? 'cluster pass skipped' }
+        : { ok: true };
+    await settleReclusterJobs(adapter, maxSeq, settleOutcome);
   } catch (err) {
     log.error('enrich.recluster_job.settle_failed', {
       db_path: dbPath,

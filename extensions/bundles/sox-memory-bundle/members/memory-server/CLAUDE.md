@@ -2,7 +2,7 @@
 
 ## Purpose
 
-Use this when an agent needs durable, searchable memory across sessions — exposes **20 `memory_*` tools** (v1.1.0) over a single-file SQLite graph store with hybrid recall (<50 ms, zero LLM), deterministic enrichment (provenance, tags, topic, near-dup detection), session state, community/cluster lookup, curation, bi-temporal invalidation, and in-place node editing.
+Use this when an agent needs durable, searchable memory across sessions — exposes **23 `memory_*` tools** (v1.1.0) over a single-file SQLite graph store with hybrid recall (<50 ms, zero LLM), deterministic enrichment (provenance, tags, topic, near-dup detection), session state, community/cluster lookup, curation, atomic claims, an observable global re-cluster, bi-temporal invalidation, and in-place node editing.
 
 > **`db_path` is OPTIONAL — omit it (BL-55).** Every tool defaults `db_path` to the bundle-configured store the host injects as `SOX_CONFIG_DB_PATH` (`soxe install` seeds `config.memory-server.db_path`: user scope → `~/.memory/memory.db`, project scope → `~/.memory/memory-dev.db`). The server never infers a path: with no `store`/`db_path` argument and no `SOX_CONFIG_DB_PATH`, every store tool fails with `{ "code": "E_STORE_NOT_CONFIGURED" }` and opens nothing (`memory_ping` still answers, with `store.configured: false`). Do **not** guess a path like `~/.sox/memory` — just leave `db_path` out and the server uses the right store. Pass `db_path` only to target a non-default store inside the `~/.memory/**` allowlist; out-of-allowlist paths are denied by the permission guard with no side effects.
 
@@ -411,16 +411,32 @@ List near-duplicate episode pairs connected by SAME_AS edges.
 
 ### `memory_curate` (NEW — C2.11)
 
-Curation operations: retag, set topic, override importance, merge near-duplicates, or trigger re-cluster.
+Curation operations: retag, set topic, override importance, merge near-duplicates, trigger an (observable) re-cluster, and the lifetime control-plane ops (drop/list lenses, drop episodes, reheal, drain, reset/resume, unpoison, ack alarm, restore/backfill).
 
-**Input:** `{ "db_path": "<string>", "op": "retag"|"set_topic"|"set_importance"|"merge_duplicates"|"recluster", "uid"?: string, "tags"?: string[], "topic"?: string, "importance"?: number, "uid_keep"?: string, "uid_drop"?: string, "dry_run"?: boolean }`
+**Input:** `{ "db_path": "<string>", "op": "retag"|"set_topic"|"set_importance"|"merge_duplicates"|"recluster"|"recluster_status"|…, "uid"?: string, "tags"?: string[], "topic"?: string, "importance"?: number, "uid_keep"?: string, "uid_drop"?: string, "job_id"?: string, "dry_run"?: boolean }` (the full `op` enum and per-op args: `memory-server/src/index.ts` → `TOOLS`).
 
 **Outputs by op:**
 - `retag`: `{ op, uid, tags_added, new_entity_uids }`
 - `set_topic`: `{ op, uid, old_topic, new_topic }`
 - `set_importance`: `{ op, uid, old_importance, new_importance }`
 - `merge_duplicates`: `{ op, uid_kept, uid_dropped, same_as_edge_uid, dry_run }`
-- `recluster` (global, no filters): `{ op, enqueued, dry_run?, seq? }` — BL-186: enqueues a full-pass trigger row consumed by the in-process periodic tick (within ~5 min); `enqueued: true` is honest (the row is committed before returning) and `seq` is its organizer_queue id. The tool call never runs the full cluster pass inline.
+- `recluster` (global, no filters): `{ op, scope: "global", enqueued: true, seq, job_id, status: "pending", dry_run? }` — BL-186/SR-9: enqueues a full-pass trigger row consumed by the in-process periodic tick (within ~5 min). `enqueued: true` is honest (the row is committed before returning); `job_id` is a durable handle. The tool call never runs the full cluster pass inline. `dry_run: true` returns `{ op, scope: "global", enqueued: false, dry_run: true }`.
+- `recluster_status` (SR-9): `{ op: "recluster_status", job_id, seq, status, partition, error, skip_reason, requested_by, created_at, updated_at }` — poll a `recluster` handle with `{ op: "recluster_status", job_id }` until `status` is **terminal**: `completed` (carries `partition`), `failed` (carries `error`), or `skipped` (the pass ran but its cluster step did not — the mixed-model / no-neighbour guard; carries `skip_reason`). `pending` means the pass has not run yet. A skipped pass is **never** reported `completed`. `E_NOT_FOUND` for an unknown handle; `E_MISSING` with no `job_id`.
+
+---
+
+### `memory_claim_upsert` / `memory_claim_get` / `memory_claim_list` (NEW — SR-7)
+
+An atomic, queryable, persisted claim on a node — for a caller to mark a node as "held"
+without an advisory lock (ADR-0012: the store primitive is the correctness boundary).
+
+- **`memory_claim_upsert`** — `{ "db_path": "<string>", "uid": "<string>", "caller": "<string>", "patch"?: object }`. Claims the node for `caller`, or updates it if that caller already holds it. One winner under a race; a distinct caller is refused with `{ ok: false, code: "E_CLAIM_HELD", held_by, uid }`; the same caller re-claiming is idempotent (`refreshed: true`). On success: `{ ok: true, claim: { caller, ... }, refreshed }`.
+- **`memory_claim_get`** — `{ "db_path": "<string>", "uid": "<string>" }`. Returns `{ ok: true, uid, claim: <record> | null }`; `claim: null` means the node is live but unheld; `E_NOT_FOUND` when no live node has that uid.
+- **`memory_claim_list`** — `{ "db_path": "<string>", "caller"?: "<string>" }`. Returns `{ count, claims: [{ uid, claim }] }` for the live held nodes (all callers when `caller` is omitted).
+
+The claim is stored at `node.meta.claim` and is durable across a store reopen and across
+processes. SR-6's node-level `revision`/CAS does not exist yet, so contention surfaces as
+`E_CLAIM_HELD` rather than a revision conflict.
 
 ---
 
@@ -571,7 +587,7 @@ Implements: `initialize`, `tools/list`, `tools/call`.
 └──────────────────┴──────────────────┴────────────┘
 ```
 
-The `client/` directory was extracted during refactoring and then deleted — all 20 tools
+The `client/` directory was extracted during refactoring and then deleted — all 23 tools
 now import logic directly from `@adhd/sox-memory-core`. No intermediate layer.
 
 ## Permissions and db_path constraint

@@ -18,6 +18,13 @@
  *   6. --offline                                                        → exit 1 (fail-closed)
  *   7. registry unreachable for the packument                           → exit 1, UNVERIFIABLE
  *   8. package not yet published (packument 404, first publish)         → exit 0
+ *   9. C1(b) RED — a BUNDLE with no `dist/*.d.ts` but a changed
+ *      `dist/schema.json` tool list, no changeset                       → exit 1
+ *  10. C1(b) GREEN — the same bundle diff, a pending changeset          → exit 0
+ *  11. C1(b) GREEN — bundle `dist/schema.json` byte-identical           → exit 0
+ *  12. C1(b) NEGATIVE CONTROL — the pre-C1(b) script (fallback patched out)
+ *      MISSES the exact diff case 9 catches                              → exit 0
+ *      (proves case 9 has teeth: it goes red only because of the fallback)
  */
 
 import { spawn, spawnSync } from 'node:child_process';
@@ -31,6 +38,14 @@ const REPO_ROOT = path.resolve(__dirname, '..');
 const SCRIPT = path.join(REPO_ROOT, 'scripts', 'check-changeset-surface.ts');
 
 const PKG_NAME = '@adhd/sox-fixture-surface';
+
+// The exact source line the C1(b) fallback lives on — the negative-control test
+// patches it out to reproduce the pre-C1(b) "no schema.json fallback" script.
+const FALLBACK_SOURCE_LINE =
+  "  if (fs.existsSync(path.join(pkgRoot, SURFACE_FALLBACK_FILE))) {\n" +
+  "    return { files: [SURFACE_FALLBACK_FILE], via: 'schema' };\n" +
+  '  }';
+
 
 const tempRoots: string[] = [];
 const servers: http.Server[] = [];
@@ -68,6 +83,49 @@ function makeFixtureWorkspace(localDtsContent: string | null): string {
     write('libs/fixture-surface/dist/index.d.ts', localDtsContent);
   }
   return root;
+}
+
+/**
+ * A BUNDLE workspace: a publishable package whose `dist/` carries no `.d.ts` —
+ * only the tool-list snapshot `dist/schema.json` (memory-server's real shape).
+ * `localSchemaContent === null` means no local dist/ at all.
+ */
+function makeBundleFixtureWorkspace(localSchemaContent: string | null): string {
+  const root = mktemp('check-changeset-surface-bundle-');
+  const write = (rel: string, content: string): void => {
+    const full = path.join(root, rel);
+    fs.mkdirSync(path.dirname(full), { recursive: true });
+    fs.writeFileSync(full, content);
+  };
+  write(
+    'libs/fixture-surface/package.json',
+    JSON.stringify({ name: PKG_NAME, version: '1.0.0', private: false }, null, 2),
+  );
+  if (localSchemaContent !== null) {
+    write('libs/fixture-surface/dist/schema.json', localSchemaContent);
+  }
+  return root;
+}
+
+/** Writes a copy of the gate script with the C1(b) schema.json fallback patched
+ *  out — the pre-C1(b) script — so the negative control runs the REAL tool minus
+ *  only the fix, not a stub. Throws if the marker line moved (test maintenance). */
+function writePreFixVariantScript(): string {
+  const src = fs.readFileSync(SCRIPT, 'utf8');
+  if (!src.includes(FALLBACK_SOURCE_LINE)) {
+    throw new Error(
+      'negative-control marker not found in scripts/check-changeset-surface.ts — ' +
+        'the C1(b) fallback line moved; update FALLBACK_SOURCE_LINE in this test.',
+    );
+  }
+  const patched = src.replace(
+    FALLBACK_SOURCE_LINE,
+    "  // negative control: pre-C1(b) behaviour — no schema.json fallback.\n",
+  );
+  const dir = mktemp('check-changeset-surface-pre-fix-');
+  const p = path.join(dir, 'check-changeset-surface.ts');
+  fs.writeFileSync(p, patched);
+  return p;
 }
 
 /** Packs `{relPath: content}` into an npm-shaped tarball (`package/<relPath>`). */
@@ -137,10 +195,11 @@ async function startFixtureRegistry(opts: {
 async function run(
   root: string,
   extraArgs: string[],
+  scriptPath: string = SCRIPT,
 ): Promise<{ code: number; out: string }> {
   const env = { ...process.env };
   delete env['npm_config_registry'];
-  const child = spawn('npx', ['tsx', SCRIPT, root, ...extraArgs], { cwd: REPO_ROOT, env });
+  const child = spawn('npx', ['tsx', scriptPath, root, ...extraArgs], { cwd: REPO_ROOT, env });
   let out = '';
   child.stdout.on('data', (d: Buffer) => (out += d.toString()));
   child.stderr.on('data', (d: Buffer) => (out += d.toString()));
@@ -244,5 +303,76 @@ describe('check-changeset-surface — BL-460 gate', () => {
 
     expect(code).toBe(0);
     expect(out).toContain('first publish');
+  }, 60_000);
+
+  // ── C1(b): bundle-only surface changes (no dist/*.d.ts) ────────────────────
+  // The defect: a bundle whose dist/ has no `.d.ts` (memory-server ships only
+  // index.js + schema.json) hit "no *.d.ts — nothing to diff" and `continue`d,
+  // so adding a memory_* tool changed the published surface with the gate green.
+  // The fallback diffs the bundle's dist/schema.json tool list instead.
+  const SCHEMA_BEFORE = JSON.stringify({ tools: [{ name: 'memory_ping' }, { name: 'memory_write' }] });
+  const SCHEMA_AFTER = JSON.stringify({
+    tools: [
+      { name: 'memory_ping' },
+      { name: 'memory_write' },
+      { name: 'memory_claim_upsert' },
+    ],
+  });
+
+  it('C1(b) FAILS when a bundle with no *.d.ts changed its dist/schema.json tool list and no changeset exists', async () => {
+    const root = makeBundleFixtureWorkspace(SCHEMA_AFTER);
+    const tarball = buildTarball({ 'dist/schema.json': SCHEMA_BEFORE });
+    const registry = await startFixtureRegistry({ name: PKG_NAME, tarball });
+
+    const { code, out } = await run(root, ['--registry', registry]);
+
+    expect(code).toBe(1);
+    expect(out).toContain('differs from the published');
+    expect(out).toContain('schema.json tool list');
+    expect(out).toContain(PKG_NAME);
+    expect(out).toContain('no .changeset/*.md');
+  }, 60_000);
+
+  it('C1(b) PASSES with a NOTE when the bundle diff is covered by a pending changeset', async () => {
+    const root = makeBundleFixtureWorkspace(SCHEMA_AFTER);
+    fs.mkdirSync(path.join(root, '.changeset'), { recursive: true });
+    fs.writeFileSync(
+      path.join(root, '.changeset', 'brave-pandas-bundle.md'),
+      `---\n'${PKG_NAME}': minor\n---\n\nAdd memory_claim_upsert.\n`,
+    );
+    const tarball = buildTarball({ 'dist/schema.json': SCHEMA_BEFORE });
+    const registry = await startFixtureRegistry({ name: PKG_NAME, tarball });
+
+    const { code, out } = await run(root, ['--registry', registry]);
+
+    expect(code).toBe(0);
+    expect(out).toContain('pending changeset');
+  }, 60_000);
+
+  it('C1(b) PASSES when the bundle dist/schema.json is byte-identical to published', async () => {
+    const root = makeBundleFixtureWorkspace(SCHEMA_AFTER);
+    const tarball = buildTarball({ 'dist/schema.json': SCHEMA_AFTER });
+    const registry = await startFixtureRegistry({ name: PKG_NAME, tarball });
+
+    const { code, out } = await run(root, ['--registry', registry]);
+
+    expect(code).toBe(0);
+    expect(out).toContain('unchanged from published');
+  }, 60_000);
+
+  it('C1(b) NEGATIVE CONTROL — the pre-fix script MISSES the same bundle diff (proving the case above has teeth)', async () => {
+    const root = makeBundleFixtureWorkspace(SCHEMA_AFTER);
+    const tarball = buildTarball({ 'dist/schema.json': SCHEMA_BEFORE });
+    const registry = await startFixtureRegistry({ name: PKG_NAME, tarball });
+
+    // The REAL script catches it (the fix).
+    const fixed = await run(root, ['--registry', registry]);
+    expect(fixed.code).toBe(1);
+
+    // The SAME fixture against the script with the C1(b) fallback removed — the
+    // pre-fix behaviour — silently passes with "nothing to diff".
+    const preFix = await run(root, ['--registry', registry], writePreFixVariantScript());
+    expect(preFix.code).toBe(0);
+    expect(preFix.out).toContain('nothing to diff');
   }, 60_000);
 });

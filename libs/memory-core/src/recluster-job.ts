@@ -29,7 +29,16 @@
  * The enrich tick runs the pass and settles the job in place:
  *
  *   pending ──(full pass ok)────▶ completed  (+ the resulting partition)
- *      └──────(pass failed)─────▶ failed     (+ the error)
+ *      ├──────(pass FAILED)─────▶ failed     (+ the error)
+ *      └──────(pass SKIPPED)────▶ skipped    (+ the skip reason)
+ *
+ * `skipped` is distinct from `completed` on purpose. The enrich child can run to
+ * completion (`ok:true`) while its cluster STEP is skipped — the mixed-model
+ * guard (null `enrich_ver`) or the incremental-no-neighbour guard sets
+ * `cluster_pass_skipped` — leaving the partition byte-for-byte unchanged. Reporting
+ * that `completed` told a caller a reorganisation had happened when none had; the
+ * caller now reads `skipped` + `skip_reason` and re-requests once the store is
+ * reindexed. `skipped` is terminal, exactly like `failed`.
  *
  * A caller polls `recluster_status {job_id}` to a terminal state. The state is
  * persisted, so it is readable after a store reopen and across processes.
@@ -45,7 +54,7 @@
  * A failed pass leaves the trigger row open (retryable) but marks the JOB
  * `failed` — terminal, so the caller is never left polling a request whose
  * pass errored. Re-requesting mints a new job. A job only ever transitions
- * `pending → {completed|failed}`; a terminal job is never resurrected.
+ * `pending → {completed|failed|skipped}`; a terminal job is never resurrected.
  *
  * [inv:no-mcp] — returns plain result objects, never MCP ToolResults.
  */
@@ -53,7 +62,7 @@
 import * as crypto from 'node:crypto';
 import type { StoreAdapter } from '@adhd/sox-store-adapter';
 
-export type ReclusterJobStatus = 'pending' | 'completed' | 'failed';
+export type ReclusterJobStatus = 'pending' | 'completed' | 'failed' | 'skipped';
 
 /** The partition a completed full pass produced, read from the store. */
 export interface ReclusterPartition {
@@ -70,6 +79,8 @@ export interface ReclusterJob {
   status: ReclusterJobStatus;
   partition: ReclusterPartition | null;
   error: string | null;
+  /** Why the pass was `skipped` (cluster step did not run); null otherwise. */
+  skip_reason: string | null;
   requested_by: string | null;
   created_at: string;
   updated_at: string;
@@ -93,6 +104,8 @@ interface JobEnvelope {
   /** The partition as a JSON TEXT string (portable across json_set backends). */
   partition: string | null;
   error: string | null;
+  /** Why a `skipped` pass did not cluster; null until/unless skipped. */
+  skip_reason: string | null;
   requested_by: string | null;
   created_at: string;
   updated_at: string;
@@ -150,6 +163,7 @@ export async function enqueueReclusterJob(
     status: 'pending',
     partition: null,
     error: null,
+    skip_reason: null,
     requested_by: opts.requestedBy ?? null,
     created_at: now,
     updated_at: now,
@@ -178,6 +192,7 @@ function parseJobEnvelope(rawPayload: string | null): JobEnvelope | null {
       status: env['status'] as ReclusterJobStatus,
       partition: typeof env['partition'] === 'string' ? env['partition'] : null,
       error: typeof env['error'] === 'string' ? env['error'] : null,
+      skip_reason: typeof env['skip_reason'] === 'string' ? env['skip_reason'] : null,
       requested_by: typeof env['requested_by'] === 'string' ? env['requested_by'] : null,
       created_at: typeof env['created_at'] === 'string' ? env['created_at'] : '',
       updated_at: typeof env['updated_at'] === 'string' ? env['updated_at'] : '',
@@ -219,6 +234,7 @@ export async function readReclusterJob(
     status: env.status,
     partition: parsePartition(env.partition),
     error: env.error,
+    skip_reason: env.skip_reason,
     requested_by: env.requested_by,
     created_at: env.created_at,
     updated_at: env.updated_at,
@@ -227,7 +243,10 @@ export async function readReclusterJob(
 
 // ── Consumer (called by the enrich tick) ──────────────────────────────────────
 
-export type ReclusterSettleOutcome = { ok: true } | { ok: false; error: string };
+export type ReclusterSettleOutcome =
+  | { ok: true }
+  | { ok: false; error: string; skipped?: false }
+  | { ok: false; skipped: true; reason: string };
 
 /**
  * Settle every OPEN job whose trigger row was inside the tick's pre-pass
@@ -236,8 +255,10 @@ export type ReclusterSettleOutcome = { ok: true } | { ok: false; error: string }
  * the pass actually covered may be settled.
  *
  * `pending → completed` (with the store's resulting partition) on a successful
- * pass; `pending → failed` (with the error) otherwise. Terminal jobs are never
- * touched. Returns the number of jobs settled.
+ * pass; `pending → failed` (with the error) when the pass threw; `pending →
+ * skipped` (with the reason) when the pass ran but its cluster step was skipped
+ * (`cluster_pass_skipped`) and the partition is therefore unchanged. Terminal
+ * jobs are never touched. Returns the number of jobs settled.
  */
 export async function settleReclusterJobs(
   adapter: StoreAdapter,
@@ -248,6 +269,21 @@ export async function settleReclusterJobs(
   const now = new Date().toISOString();
 
   if (!outcome.ok) {
+    if (outcome.skipped === true) {
+      const res = await adapter.executeRun(
+        `UPDATE organizer_queue
+            SET payload = json_set(payload,
+                  '$.job.status', 'skipped',
+                  '$.job.skip_reason', ?,
+                  '$.job.error', NULL,
+                  '$.job.updated_at', ?)
+          WHERE seq <= ?
+            AND json_extract(payload, '$.job.job_id') IS NOT NULL
+            AND json_extract(payload, '$.job.status') = 'pending'`,
+        [outcome.reason, now, maxSeq],
+      );
+      return res.rowsAffected;
+    }
     const res = await adapter.executeRun(
       `UPDATE organizer_queue
           SET payload = json_set(payload,
@@ -269,6 +305,7 @@ export async function settleReclusterJobs(
               '$.job.status', 'completed',
               '$.job.partition', ?,
               '$.job.error', NULL,
+              '$.job.skip_reason', NULL,
               '$.job.updated_at', ?)
       WHERE seq <= ?
         AND json_extract(payload, '$.job.job_id') IS NOT NULL

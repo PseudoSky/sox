@@ -24,6 +24,7 @@ import {
   closeCachedAdapter,
   getDb,
   flushPendingEmbeds,
+  _setEnrichHostForkResolverForTest,
 } from '@adhd/sox-memory-core';
 import { handleToolCall, runEnrichPassOnDb } from './index.js';
 
@@ -33,6 +34,34 @@ function tmpStorePath(): string {
   cleanups.push(() => fs.rmSync(d, { recursive: true, force: true }));
   return path.join(d, 'store.db');
 }
+
+/** Write a fake isolated-enrich host and point the fork resolver at it directly
+ *  (plain JS — no execArgv needed). Mirrors bl348-stage-isolation.spec.ts: this
+ *  is the isolation BOUNDARY, the seam the parent's settle logic consumes. */
+function fakeHostScript(body: string): { modulePath: string; execArgv: string[] } {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'sr7sr9-host-'));
+  cleanups.push(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const p = path.join(dir, 'fake-host.js');
+  fs.writeFileSync(p, body);
+  return { modulePath: p, execArgv: [] };
+}
+
+/** Fake host that reports success BUT sets `cluster_pass_skipped` — the
+ *  mixed-model / no-neighbour guard shape (enrich-batch.ts): the pass ran,
+ *  the cluster step did not, the partition is unchanged. */
+const SKIPPED_HOST = `
+process.on('message', (msg) => {
+  if (typeof process.send === 'function') {
+    process.send({ id: msg.id, result: {
+      communities_upserted: 0, member_of_edges: 0, importance_updated: 0,
+      relates_to_edges: 0, topics_backfilled: 0, legacy_nodes_stamped: 0,
+      cluster_pass_skipped: true,
+      cluster_skip_reason: 'mixed-model guard: null enrich_ver episodes detected; reindex required (D5.3)',
+    } });
+  }
+  setImmediate(() => process.exit(0));
+});
+`;
 
 function parseResult(resp: { content: Array<{ text?: string }> }): Record<string, unknown> {
   return JSON.parse(resp.content[0]?.text ?? '{}') as Record<string, unknown>;
@@ -54,6 +83,7 @@ beforeEach(() => {
 });
 
 afterEach(async () => {
+  _setEnrichHostForkResolverForTest(null);
   for (const c of cleanups) c();
   cleanups.length = 0;
 });
@@ -170,6 +200,42 @@ describe('SR-9 — observable recluster through the real MCP tools and the real 
       },
     );
     expect(resp['code']).toBe('E_NOT_FOUND');
+    await closeCachedAdapter(dbPath);
+  });
+
+  it('a SKIPPED cluster pass settles `skipped`, NOT `completed` (M1)', async () => {
+    const dbPath = tmpStorePath();
+    const adapter = await getDb(dbPath);
+    await writeEpisode(dbPath, 'SR-9 skipped-pass corpus with unique quokka tokens.');
+    await flushPendingEmbeds();
+
+    const out = parseResult(
+      (await handleToolCall('memory_curate', { db_path: dbPath, op: 'recluster' })) as {
+        content: Array<{ text?: string }>;
+      },
+    );
+    const jobId = out['job_id'] as string;
+    expect(typeof jobId).toBe('string');
+
+    // The isolated enrich child runs cleanly (`ok`) but SKIPS its cluster step —
+    // the mixed-model / no-neighbour guard shape (enrich-batch.ts). Before M1 the
+    // tick settled `completed` whenever `isolated.ok`, reporting a reorganisation
+    // that never happened and leaving the partition unchanged.
+    _setEnrichHostForkResolverForTest(() => fakeHostScript(SKIPPED_HOST));
+
+    const pass = await runEnrichPassOnDb(adapter, dbPath);
+    expect(pass.cluster_ok).toBe(true); // the pass itself completed...
+
+    const after = parseResult(
+      (await handleToolCall('memory_curate', { db_path: dbPath, op: 'recluster_status', job_id: jobId })) as {
+        content: Array<{ text?: string }>;
+      },
+    );
+    // ...but the reorganisation did NOT happen, and the caller is told so.
+    expect(after['status']).toBe('skipped');
+    expect(after['status']).not.toBe('completed');
+    expect(String(after['skip_reason'])).toContain('mixed-model guard');
+
     await closeCachedAdapter(dbPath);
   });
 });

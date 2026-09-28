@@ -33,7 +33,7 @@ There is no separate daemon process. An earlier version of this subsystem ran a 
 ```
 memory-server (mcp-server, stdio/http/sse)
   ├─ reads/writes one store file per scope (Turso default + multiprocess_wal, or SQLite fallback)
-  ├─ exposes 20 memory_* MCP tools; write-time enrichment runs synchronously
+  ├─ exposes 23 memory_* MCP tools; write-time enrichment runs synchronously
   └─ runs periodic in-process batch enrichment
        └─ clustering, importance, auto-links, stale-vector healing (deterministic, zero LLM)
 

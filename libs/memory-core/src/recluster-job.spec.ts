@@ -108,6 +108,32 @@ describe('SR-9 — observable recluster job lifecycle', () => {
     expect(after!.status).toBe('failed');
   });
 
+  it('a SKIPPED cluster pass settles `skipped` (with the reason) — never `completed`', async () => {
+    // M1: the enrich child can run to completion (`ok`) while its cluster STEP is
+    // skipped by the mixed-model / no-neighbour guard, leaving the partition
+    // unchanged. Reporting that `completed` told a caller a reorganisation
+    // happened when it had not. It must settle the distinct terminal `skipped`.
+    const job = await enqueueReclusterJob(db);
+    const settled = await settleOrSkip(db, job.seq, {
+      ok: false,
+      skipped: true,
+      reason: 'mixed-model guard: null enrich_ver episodes detected; reindex required (D5.3)',
+    });
+    expect(settled).toBe(1);
+
+    const skipped = await readReclusterJob(db, job.job_id);
+    expect(skipped!.status).toBe('skipped');
+    expect(skipped!.status).not.toBe('completed');
+    expect(skipped!.skip_reason).toContain('mixed-model guard');
+    expect(skipped!.partition).toBeNull();
+    expect(skipped!.error).toBeNull();
+
+    // Terminal — a later successful settle must NOT resurrect a skipped job.
+    await settleReclusterJobs(db, job.seq, { ok: true });
+    const after = await readReclusterJob(db, job.job_id);
+    expect(after!.status).toBe('skipped');
+  });
+
   it('the job state SURVIVES A STORE REOPEN — the caller keeps polling a fresh connection', async () => {
     const job = await enqueueReclusterJob(db);
     await settleOrSkip(db, job.seq, { ok: true });

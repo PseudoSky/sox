@@ -129,11 +129,15 @@ export interface CurateReclusterStatusResult {
   job_id: string;
   /** The organizer_queue seq this job requested. */
   seq: number;
+  /** `pending` until the pass runs; then terminal — `completed` (partition),
+   *  `failed` (error), or `skipped` (the cluster step did not run; reason). */
   status: ReclusterJobStatus;
   /** Present once `status === 'completed'` — the resulting partition. */
   partition: { community_count: number; clustered_episodes: number; live_episodes: number; coverage: number } | null;
   /** Present once `status === 'failed'`. */
   error: string | null;
+  /** Present once `status === 'skipped'` — why the cluster step did not run. */
+  skip_reason: string | null;
   requested_by: string | null;
   created_at: string;
   updated_at: string;
@@ -568,11 +572,11 @@ async function curateRecluster(
   // SR-9: the request is now OBSERVABLE. Instead of a bare `{enqueued:true, seq}`
   // (a claim with no check), this mints a durable `recluster_job` handle AND the
   // trigger row in one transaction, and returns `job_id`/`status:'pending'`. The
-  // tick settles the job to 'completed' (with the partition) or 'failed' (with
-  // the error); the caller polls `{op:'recluster_status', job_id}`. The return
-  // value stays HONEST: `enqueued:true` only after both rows are committed (an
-  // insert failure propagates as a tool error, never a false success —
-  // [inv:list-never-lies]).
+  // tick settles the job to `completed` (with the partition), `failed` (with the
+  // error), or `skipped` (the cluster step did not run; with the reason); the
+  // caller polls `{op:'recluster_status', job_id}`. The return value stays
+  // HONEST: `enqueued:true` only after both rows are committed (an insert failure
+  // propagates as a tool error, never a false success — [inv:list-never-lies]).
   if (dryRun) {
     return { op: 'recluster', scope: 'global', enqueued: false, dry_run: true };
   }
@@ -590,9 +594,10 @@ async function curateRecluster(
 
 /**
  * (SR-9) Poll an observable global-recluster job. The terminal states are
- * `completed` (carries the resulting partition) and `failed` (carries the
- * error); `pending` means the pass has not run yet. A job handle is stable and
- * readable after a store reopen / from another process.
+ * `completed` (carries the resulting partition), `failed` (carries the error),
+ * and `skipped` (the pass ran but its cluster step was skipped; carries
+ * `skip_reason`) — `pending` means the pass has not run yet. A job handle is
+ * stable and readable after a store reopen / from another process.
  */
 async function curateReclusterStatus(
   adapter: StoreAdapter,
