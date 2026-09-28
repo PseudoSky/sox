@@ -64,6 +64,17 @@ describe('BL-344 — operator tunables reach the child', () => {
     expect(env['SOX_EMBED_DRAIN_FLOOR_MS']).toBe('30000');
   });
 
+  it('BL-2df86153: forwards TMPDIR so a child\'s os.tmpdir() matches its parent', () => {
+    // Before this fix TMPDIR was absent from ENV_BASE_ALLOW, so scrubEnv
+    // silently dropped it like any other non-SOX_ ambient var — a spawned
+    // child then fell back to the world-shared /tmp while the parent
+    // resolved os.tmpdir() to a per-user directory (e.g. macOS's
+    // /var/folders/.../T/).
+    const { env, denied } = scrubEnv({ TMPDIR: '/x/T/' });
+    expect(env['TMPDIR']).toBe('/x/T/');
+    expect(denied).toEqual([]);
+  });
+
   it('preserves the pre-existing allowances: base keys, NODE_*, SOX_EMBED_*', () => {
     const { env } = scrubEnv({
       PATH: '/usr/bin',

@@ -87,7 +87,18 @@
 /**
  * Non-`SOX_` process keys forwarded verbatim. Locale and shell fundamentals,
  * plus `XDG_CACHE_HOME` (BL-52 — the embed backend resolves its model cache
- * through it; without it the backend silently degrades).
+ * through it; without it the backend silently degrades) and `TMPDIR`
+ * (BL-2df86153 — `os.tmpdir()` in a child MUST resolve to the same per-user
+ * temp directory the parent resolves to, not fall back to the world-shared
+ * `/tmp`). Without `TMPDIR` here, `soxe serve` children (and any OS-unit
+ * child spawned through `scrubEnvReported`) resolved `os.tmpdir()` to `/tmp`
+ * while the parent resolved it to macOS's per-user `/var/folders/.../T/`.
+ * That silently defeated ADR-0022 §5's forwarding of `TMPDIR` to the
+ * embedding host (`embedHostConfig.ts`'s own, separately-maintained
+ * `EMBED_HOST_ENV_FORWARD_EXACT` already carried `TMPDIR` — only this
+ * parent-to-child hop was missing it) and made the BL-578 fallback socket
+ * path (`libs/service-proxy/src/socket-path.ts`) resolve differently between
+ * the parent and its children.
  */
 export const ENV_BASE_ALLOW: readonly string[] = [
   'PATH',
@@ -98,6 +109,7 @@ export const ENV_BASE_ALLOW: readonly string[] = [
   'LC_ALL',
   'LC_CTYPE',
   'TZ',
+  'TMPDIR',
   'XDG_CACHE_HOME',
 ];
 

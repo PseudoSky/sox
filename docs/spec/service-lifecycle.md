@@ -571,12 +571,22 @@ and the future M4 path):
 4. **Singleton guard** (§5.2): resolve `[def:singleton-key]`, probe socket (`probeUnixSocketLive`),
    scan entrypoint token, check cross-scope ownership. If live → record-and-skip; if stale →
    pre-spawn reap (`reapOrphansForExtension`, already wired `main.ts:2941-2968`).
-5. **Env-scrub allowlist** (enforced path only): the supervisor scrubs child env to a minimal
-   allowlist + `NODE_*` + `SOX_EMBED_*` + `XDG_CACHE_HOME`, then layers extension env, then policy env
-   (`supervisor.ts:269-290`). **BL-52 note:** `SOX_EMBED_BACKEND`, `SOX_EMBED_CACHE_DIR`,
-   `XDG_CACHE_HOME`, and any `SOX_EMBED_*` are explicitly forwarded so the embed backend resolves to
-   real BGE/ONNX instead of silently falling back to hash (`supervisor.ts:266-284`). Any future
-   service-required env var added to the scrub allowlist MUST be documented here.
+5. **Env-scrub allowlist** (enforced path only): the supervisor scrubs child env through
+   `scrubEnvReported()` (`libs/host-runtime/src/env-policy.ts`), then layers extension env, then
+   policy env (`supervisor.ts:322`, `[def:policy-env]`). The base allowlist is `PATH`, `HOME`,
+   `USER`, `LOGNAME`, `LANG`, `LC_ALL`, `LC_CTYPE`, `TZ`, `TMPDIR`, `XDG_CACHE_HOME`
+   (`ENV_BASE_ALLOW`), plus everything prefixed `NODE_*` or `SOX_*` (`ENV_ALLOW_PREFIXES`) — since
+   BL-344 this is a wholesale `SOX_*` forward, not a hand-maintained per-variable list, so an
+   operator tunable never needs an edit here to reach the child. Two prefixes are denied even
+   though they match `SOX_*`: `SOX_PERM_*` (the compiled sandbox policy) and `SOX_CONFIG_*` (the
+   resolved config cascade) are host-authoritative and must never be inherited from an ambient
+   shell (`ENV_DENY_PREFIXES`); the spawning call site injects the real values for both AFTER the
+   scrub. **BL-52 note:** `XDG_CACHE_HOME` and any `SOX_EMBED_*` reach the embed backend through
+   this same allow set, so it resolves to the real BGE/ONNX model instead of degrading. **BL-2df86153
+   note:** `TMPDIR` is forwarded so a spawned child's `os.tmpdir()` resolves to the same per-user
+   directory as its parent, not the world-shared `/tmp` — see `env-policy.ts`'s `ENV_BASE_ALLOW` doc
+   comment for the full incident. Any future service-required env var added to the scrub allowlist
+   MUST be documented here.
 6. **Spawn** `detached: true` (new pgid, `supervisor.ts:307-312` for M1; `main.ts:3084-3092` for M2),
    cwd = materialized store dir (`storePath`, ADR-0004) so no monorepo siblings are on the path.
 7. **Health gate** (§11): wait for first health probe (`_waitForHealth`, socket / stdio-ping /

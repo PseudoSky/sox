@@ -394,6 +394,31 @@ describe('BL-375 — enableOsUnit refuses to silently drop shell-sourced env on 
     expect(droppedShellEnvKeys(prior, next)).toEqual([]);
   });
 
+  it('BL-2df86153: a re-enable from a shell without TMPDIR is BLOCKED, not silently baked without it', () => {
+    // TMPDIR joined ENV_BASE_ALLOW for BL-2df86153, so it is now
+    // shell-sourced (D2) and subject to the same BL-375 drift guard as any
+    // other base-allow key: once a unit has TMPDIR baked in, a regenerate
+    // that omits it must block rather than silently ship a unit whose
+    // os.tmpdir() falls back to /tmp — the exact defect BL-2df86153 fixed.
+    const fake1 = makeFakeExec();
+    const first = makeSpec({ env: { SOX_CONFIG_DB_PATH: 'x', TMPDIR: '/var/folders/aa/T/' } });
+    const r1 = enableOsUnit(first, platform, { unitDir, exec: fake1.exec, load: false });
+    expect(r1.action).toBe('created');
+    const bytesAfterFirst = fs.readFileSync(r1.unitPath, 'utf8');
+
+    // Second enable from a shell/session that never exported TMPDIR.
+    const second = makeSpec({ env: { SOX_CONFIG_DB_PATH: 'x' }, processType: 'Background' });
+    const fake2 = makeFakeExec();
+    const r2 = enableOsUnit(second, platform, { unitDir, exec: fake2.exec, load: false });
+
+    expect(r2.action).toBe('blocked');
+    expect(r2.droppedEnvKeys).toContain('TMPDIR');
+    // Nothing was overwritten — the unit keeps the real per-user TMPDIR.
+    const bytesAfterSecond = fs.readFileSync(r1.unitPath, 'utf8');
+    expect(bytesAfterSecond).toBe(bytesAfterFirst);
+    expect(fake2.calls.length).toBe(0);
+  });
+
   it('AC4: extractUnitEnv round-trips XML-escaped launchd env values', () => {
     const spec = makeSpec({ env: { SOX_CONFIG_X: 'a & b < c > d' } });
     const rendered = platform.render(spec);
