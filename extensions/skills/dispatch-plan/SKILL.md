@@ -1,6 +1,6 @@
 ---
 name: dispatch-plan
-description: The dispatcher's playbook for plans, which live in the backlog — used when the user asks for a plan, or when a plan-item already covers the area. A plan is crafted into the backlog: product-manager prioritizes, architect returns the structured items with their part_of / blocks edges, the dispatcher has backlog-operator file and link them, and it executes from the ready view. The dispatcher never designs the plan structure and never touches the graph. Load when a plan is named or discovered; otherwise stay in dispatch-direct.
+description: The dispatcher's playbook for plans, which live in the backlog — used when the user asks for a plan, or when a plan-item already covers the area. A plan is crafted into the backlog: product prioritizes, architect returns the structured items with their part_of / blocks edges, the dispatcher has backlog-operator file and link them, and it executes from the ready view. The dispatcher never designs the plan structure and never touches the graph. Load when a plan is named or discovered; otherwise stay in dispatch-direct.
 ---
 
 # dispatch-plan — plans are backlog structure
@@ -21,7 +21,7 @@ whose blockers are resolved.
 
 ## Confirmation gate
 
-Crafting a plan dispatches two agents (`product-manager`, then `architect`) and files
+Crafting a plan dispatches two agents (`product`, then `architect`) and files
 items. Do it only when the user asks for a plan. On discovery alone: highlight in one line, then
 wait.
 
@@ -31,7 +31,7 @@ wait.
    children, their `blocks` edges, and the **ready view**. Report any live claim (by whom, how old);
    never override it.
 2. **Craft — only when the user wants a plan and none exists.** The dispatcher does not design the
-   plan. Dispatch `product-manager` to set what matters and in what order; then dispatch
+   plan. Dispatch `product` to set what matters and in what order; then dispatch
    `architect` with the prioritized direction, asking for **returned structured items** —
    each item's title/body plus its membership (`part_of`) and dependency (`blocks`) edges. The
    architect *returns* the structure; it does not touch the backlog.

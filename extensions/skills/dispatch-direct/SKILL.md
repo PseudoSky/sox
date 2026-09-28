@@ -27,18 +27,16 @@ direction ─► intake (backlog-intake) ─► task tree ─► route + brief �
 2. **Intake.** Run `backlog-intake` once for the whole direction (one `scan-related` per distinct area). Fold in what the policy says to fold in; attach `old-unverified` items as check-and-confirm to the executor whose scope they touch.
 3. **Task tree.** One subtask per dispatchable leaf. A leaf is dispatchable when you can write its done-state in `dispatch-contract` terms. Split until you can; never dispatch a leaf without one. Cap: no leaf covers more than five discrete items.
 4. **Serialize by write-scope.** Leaves that touch the same files run in sequence; everything else runs in parallel. Keep the same-file rule even when the executor promises to be careful.
-5. **Order.** Keep the user's order if they gave one. If order matters, is unpinned, and there are more than three leaves, dispatch `product-manager` for the order; otherwise dependency order, then shortest-first.
-6. **Route.** Match each leaf to the executor whose roster description covers it, at the declared tier. Route gaps are surfaced, not forced. Typical matches:
-   - TypeScript/type-level → `typescript-pro`; JS/Node → `javascript-pro`; Python → `python-pro`
-   - server/API → `backend-developer`; React/Next → `react-specialist` / `nextjs-developer`; full feature → `fullstack-developer`
-   - restructuring → `refactoring-specialist`; perf → `performance-engineer`; tests → `test-automator` / `qa-expert`
-   - CI/CD, deploy → `deployment-engineer` / `devops-engineer`; DB → `database-administrator`
-   - root-cause → `debugger` (via `dispatch-triage`); review → `code-reviewer`; decisions → `architect-decision` / `architect-reviewer`
-   - research → `researcher`; documentation has no dedicated in-roster executor — route code-adjacent docs with the code change, otherwise surface the roster gap
+5. **Order.** Keep the user's order if they gave one. If order matters, is unpinned, and there are more than three leaves, dispatch `product` for the order; otherwise dependency order, then shortest-first.
+6. **Route.** Match each leaf to a named specialist against the dispatcher's Step 2.3 work-class table; route gaps are surfaced, not forced, and `general` is never the route for work a specialist covers. Typical matches:
+   - implement a module/API/service (production code) → `backend`; type-system depth → `typescript`; restructure → `refactor`; measured perf → `performance`
+   - run tests → `test`; static review → `review`; root-cause a failure → `debug` (via `dispatch-triage`); one-shot decision → `architect-decision`; multi-package spec → `architect`
+   - backlog graph writes → `backlog-operator`; docs surface → `doc-steward`; git ops → `git-manager`; prioritisation → `product`; research → `researcher`
+   - `general` is a last resort only; no match → surface the roster gap to the user
 7. **Brief + dispatch.** Fill `dispatch-contract` §1; dispatch anonymously in the background with `model` and `tools` stated. Mark the subtask `in_progress` with the `dispatch-contract` §5 run line in `metadata`; `backlog-operator: transition` any linked item to `IN_PROGRESS` with that run line as the note (dispatcher rules 15–16).
 8. **Verify.** On return, read the diff, run the done-state checks yourself, classify (`verified-pass` / `verified-fail` / `partial` / `deflection`). Update the Task entry. A `RETURN` block without evidence is `blocked`.
 9. **Retry ladder.** `verified-fail` → once more at the same tier with the failure evidence inlined → once at the next tier up → surface to the user with the evidence. Never a fourth attempt without the user.
-10. **Review gate.** Blind review: dispatch `code-reviewer` with the diff and the word "Review" — no context, no rationale, no prior state. Open items go back to the same executor; zero items → merge.
+10. **Review gate.** Blind review: dispatch `review` with the diff and the word "Review" — no context, no rationale, no prior state. Open items go back to the same executor; zero items → merge.
 11. **Merge.** Dispatch the merge per `docs/contributing/conventions/git-workflow.md`; confirm from `git log`; `transition` the item `merged`, then `backlog-operator: resolve` with the commit ref only when a red→green test names its id (BL-225), else leave it at its intermediate status; mark the subtask done.
 12. **Out-of-scope observations.** Anything in `out-of-scope-observed` is a candidate discovered bug: route it through `dispatch-triage`; if confirmed, `TaskCreate` + `backlog-operator: file` + a correction dispatch in this run (dispatcher rule 12). An observation in another repo is filed to that repo instead (dispatcher rule 17).
 13. **Post-deploy.** If any leaf deployed, dispatch live-status + upstream-consumer verification before closing (dispatcher rule 13).

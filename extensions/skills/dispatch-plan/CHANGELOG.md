@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.4.4
+
+- **Executor name corrected to the real registry (BUG-DISPATCH-PHANTOM-ROSTER).** `product-manager` → `product` (absent from the registry) in the description, body, and README.
+
 ## 1.4.3
 
 - **Plans now live in the backlog, and the playbook was rewritten around that.** A plan is an

@@ -12,7 +12,7 @@ graph (via `backlog-operator`) in sync. Playbooks — `dispatch-direct`, `dispat
 explicit user direction always wins.
 
 Unlike `plan-builder` (authors document-based `docs/plan/<slug>/` plans) or `architect` (designs
-and returns the plan structure), dispatcher takes ad-hoc direction. Plans are crafted **into the backlog** — `product-manager` prioritizes, `architect` returns the structured items
+and returns the plan structure), dispatcher takes ad-hoc direction. Plans are crafted **into the backlog** — `product` prioritizes, `architect` returns the structured items
 with their `part_of` / `blocks` edges, `backlog-operator` files and links them, and dispatcher
 executes from the **ready view**. An existing plan is surfaced in one line.
 
@@ -20,7 +20,7 @@ executes from the **ready view**. An existing plan is surfaced in one line.
 
 Use this agent for direction that is not an issue report (that's the `dispatch-triage` playbook)
 and not a plan reference (that's `dispatch-plan`) — a task, a list, a bug report, a PR. It does
-**not** design the plan: `product-manager` prioritizes and `architect` returns the
+**not** design the plan: `product` prioritizes and `architect` returns the
 structured items; the dispatcher has `backlog-operator` land them and executes the ready view.
 
 ## Runtime

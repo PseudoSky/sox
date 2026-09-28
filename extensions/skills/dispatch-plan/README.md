@@ -7,7 +7,7 @@
 Used when the user asks for a plan, or when the backlog already holds a plan that covers the
 area. Never turns a direct request into a plan on its own. A plan is backlog structure: an `issue`
 row with its work items attached by a `part_of` edge and their order expressed as `blocks`
-dependencies. `product-manager` prioritizes, `architect` **returns** the structured items
+dependencies. `product` prioritizes, `architect` **returns** the structured items
 with those edges, and `backlog-operator` files and links them — `dispatcher` never designs the
 structure and never touches the graph. Execution is driven by the **ready view**.
 

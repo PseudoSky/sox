@@ -5,8 +5,8 @@
 ## Overview
 
 A bug, a red test, a reviewer finding, an executor's out-of-scope observation, or any
-"pre-existing / unrelated / skipped" claim. Root-causes with `debugger` first (evidence, never the
-dispatcher's own guess), plans the fix with `architect-reviewer` when the decision is technical,
+"pre-existing / unrelated / skipped" claim. Root-causes with `debug` first (evidence, never the
+dispatcher's own guess), plans the fix with `architect` when the decision is technical,
 then implements through `dispatch-direct` and review-gate. Nothing is filed to the backlog or
 surfaced to the user as fact until triage has evidence.
 
