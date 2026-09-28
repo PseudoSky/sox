@@ -50,6 +50,8 @@ const REPO_ROOT = path.resolve(HERE, '..');
 const MEMBER_DIR = 'extensions/bundles/sox-memory-bundle/members/memory-server/src';
 // BL-7e5be7e8: the operator-store-env scrub spec SIGTERMs the real entrypoint too, so it is held
 // to the same whole-tree teardown contract (no wrapper-only SIGKILL, asserted clean teardown).
+// BL-26291f21 (section 1c below) covers the in-process real-backend project, which spawns its
+// embed host from inside the vitest worker rather than through a tsx child.
 const SPEC_RELPATHS = [
   `${MEMBER_DIR}/bl404-telemetry-composition-root.spec.ts`,
   `${MEMBER_DIR}/bl401-stages-declared-live.spec.ts`,
@@ -122,6 +124,49 @@ for (const specRel of SPEC_RELPATHS) {
     // BL-7e5be7e8: one scrub list for every harness — the helper must use the shared
     // scrubOperatorStoreEnv(), never a hand-maintained subset of `delete env[...]` lines.
     report('helper strips operator store config via the shared scrubOperatorStoreEnv()', /scrubOperatorStoreEnv\(env\)/.test(helperSrc));
+  }
+}
+
+// ── 1c. BL-26291f21: the in-process real-backend project must not reach operator embed paths ──
+//    The three 'real-backend' vitest files embed for real INSIDE a fork worker (no tsx spawn, so
+//    sections 1/1b never saw them); with nothing pinning the worker env, memory-core resolved
+//    ~/.cache/sox/models and the funnel bound ~/.adhd/sox-ecosystem/run/proxy-*.sock. The harness
+//    now mints a run-scoped scratch root (vitest.global-embed-scratch.ts), every worker fails fast
+//    if its embed paths escape it (vitest.setup.ts), and the files gate on the shared
+//    isRealModelCached() instead of a re-derived `.../sox-memory/models` path (the gate/load split).
+{
+  const MEMBER_ROOT = 'extensions/bundles/sox-memory-bundle/members/memory-server';
+  const REAL_BACKEND_RELPATHS = ['recall-sqlite.test.ts', 'turso-clean-room.test.ts', 'clustering-e2e.test.ts'].map((f) => `${MEMBER_ROOT}/${f}`);
+  const cfg = readAtRef(`${MEMBER_ROOT}/vitest.config.ts`);
+  report(
+    'BL-26291f21: vitest.config.ts registers vitest.global-embed-scratch.ts as a globalSetup',
+    cfg !== null && /globalSetup:[\s\S]*vitest\.global-embed-scratch\.ts/.test(cfg),
+  );
+  const gs = readAtRef(`${MEMBER_ROOT}/vitest.global-embed-scratch.ts`);
+  report(
+    'BL-26291f21: global setup pins SOX_EMBED_CACHE_DIR + XDG_CACHE_HOME + SOX_ECOSYSTEM_HOME into the worker env',
+    gs !== null &&
+      /process\.env\['SOX_EMBED_CACHE_DIR'\]\s*=/.test(gs) &&
+      /process\.env\['XDG_CACHE_HOME'\]\s*=/.test(gs) &&
+      /process\.env\['SOX_ECOSYSTEM_HOME'\]\s*=/.test(gs),
+  );
+  report(
+    'BL-26291f21: global setup seeds by clone (seedModelCache) and reaps run-owned embed hosts (auditAndReapEmbedHosts)',
+    gs !== null && /seedModelCache\(/.test(gs) && /auditAndReapEmbedHosts\(/.test(gs),
+  );
+  const setupSrc = readAtRef(`${MEMBER_ROOT}/vitest.setup.ts`);
+  report(
+    'BL-26291f21: vitest.setup.ts fails fast via assertEmbedPathsIsolated() at load and afterEach',
+    setupSrc !== null && (setupSrc.match(/assertEmbedPathsIsolated\(/g) ?? []).length >= 2,
+  );
+  for (const rel of REAL_BACKEND_RELPATHS) {
+    const src = readAtRef(rel);
+    const label = path.basename(rel);
+    report(`BL-26291f21: ${label} gates on the shared isRealModelCached()`, src !== null && /isRealModelCached\(\)/.test(src));
+    report(
+      `BL-26291f21: ${label} no longer re-derives the stale 'sox-memory' model cache path (gate/load mismatch)`,
+      src !== null && !/'sox-memory'/.test(src),
+    );
   }
 }
 

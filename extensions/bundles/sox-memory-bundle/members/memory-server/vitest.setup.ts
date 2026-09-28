@@ -75,6 +75,20 @@ if (scrubbedOperatorKeys.length > 0) {
 }
 
 /**
+ * BL-26291f21: fail fast if a real embed in this worker could reach the operator's model cache
+ * or embed-host socket dir. `vitest.global-embed-scratch.ts` pins SOX_EMBED_CACHE_DIR /
+ * XDG_CACHE_HOME / SOX_ECOSYSTEM_HOME to a run-scoped scratch root before any worker forks; this
+ * asserts — against memory-core's own resolvers (`getConfiguredEmbedPaths()`), not a re-derived
+ * path — that this worker actually inherited them, at load and again after every test (a spec
+ * that deletes one of those keys would otherwise re-open the leak for the rest of its file). The
+ * real-backend project opts out of the mock provider and embeds for real in-process, so without
+ * this the next leak would again be discovered only by reading a spawn line in the test log.
+ */
+import { assertEmbedPathsIsolated } from './src/test-support/bl-26291f21-embed-scratch.js';
+
+assertEmbedPathsIsolated('vitest.setup load');
+
+/**
  * BL-412 whole-suite guard: no test in this project may EVER open a
  * connection (or even probe with existsSync/statSync/mkdirSync) against the
  * REAL, live, production store under `~/.memory/**`. That directory is the
@@ -108,6 +122,10 @@ import { createRequire } from 'node:module';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { afterEach, beforeEach } from 'vitest';
+
+afterEach(() => {
+  assertEmbedPathsIsolated('afterEach');
+});
 
 const require = createRequire(import.meta.url);
 const fs = require('node:fs') as typeof import('node:fs');
@@ -180,5 +198,15 @@ afterEach(() => {
  * worker (otelDefaultFor in @adhd/sox-telemetry).
  */
 import { initTelemetry } from '@adhd/sox-telemetry';
+import { TELEMETRY_DIR_ENV } from './src/test-support/bl-26291f21-embed-scratch-env.js';
 
-initTelemetry({ service: 'sox-tests', role: 'test', logSink: 'file' });
+// BL-26291f21: SOX_ECOSYSTEM_HOME now points at the run's embed scratch root, which is removed at
+// teardown; the global setup resolves the ORIGINAL ecosystem home's sox-tests/logs so these
+// records stay as durable as BL-404 intended.
+const telemetryLogDir = process.env[TELEMETRY_DIR_ENV];
+initTelemetry({
+  service: 'sox-tests',
+  role: 'test',
+  logSink: 'file',
+  ...(telemetryLogDir !== undefined && telemetryLogDir !== '' ? { logDir: telemetryLogDir } : {}),
+});

@@ -110,6 +110,7 @@ export {
   getLastEmbedError,
   getEmbedHealth,
   warmupEmbed,
+  getConfiguredEmbedPaths,
   reinitEmbedProvider,
   reembedNodes,
   _resetEmbedSingleton,

@@ -20,7 +20,9 @@
     // Run-scoped dist-freshness banner (8412f6a8). Listed explicitly for the same reason
     // vitest.setup.ts is: it is real, shipped test infrastructure that nothing else would
     // typecheck, and it imports across the repo root into tools/dist-freshness.mjs.
-    "vitest.global-setup.ts"
+    "vitest.global-setup.ts",
+    // BL-26291f21 run-scoped embed scratch root; imports scripts/lib/*.mjs via hand-written .d.mts.
+    "vitest.global-embed-scratch.ts"
   ],
   "exclude": ["node_modules", "dist"]
 }

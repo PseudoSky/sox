@@ -70,6 +70,7 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { handleToolCall } from './src/index.js';
+import { isRealModelCached } from './src/test-support/bl-26291f21-embed-scratch.js';
 
 // ── Turso availability — resolved SYNCHRONOUSLY at module load ─────────────
 // See file header: do NOT resolve this via an async beforeAll + `{ skip }`.
@@ -94,14 +95,13 @@ const HAS_TURSO = (() => {
 // collection). The cache check mirrors embedding-provider's canonical
 // isModelCached() (src/index.ts:327): <cacheDir>/<hfRepoId>/model_optimized.onnx,
 // with memory-core's cacheDir resolution (embed.ts resolveConfig:
-// SOX_EMBED_CACHE_DIR ?? $XDG_CACHE_HOME/sox-memory/models). Cache absent →
+// SOX_EMBED_CACHE_DIR ?? $XDG_CACHE_HOME/sox/models). Cache absent →
 // the test SKIPS, never fails or downloads.
-const REAL_MODEL_CACHE_DIR =
-  process.env['SOX_EMBED_CACHE_DIR'] ??
-  path.join(process.env['XDG_CACHE_HOME'] ?? path.join(os.homedir(), '.cache'), 'sox-memory', 'models');
-const REAL_MODEL_CACHED = fs.existsSync(
-  path.join(REAL_MODEL_CACHE_DIR, 'fast-bge-base-en-v1.5', 'model_optimized.onnx'),
-);
+// BL-26291f21: the gate reads the cache dir memory-core ACTUALLY loads from
+// (`getConfiguredEmbedPaths().cacheDir` — `.../sox/models`, inside the run's embed scratch root
+// that vitest.global-embed-scratch.ts seeds by clone). It used to re-derive the path here as
+// `.../sox-memory/models`, so the gate and the load read two different directories.
+const REAL_MODEL_CACHED = isRealModelCached();
 
 // ── Helpers ──────────────────────────────────────────────────────────────
 
