@@ -2365,7 +2365,15 @@ async function cmdUpdate(flags: Record<string, string>): Promise<void> {
   // BL-73: derive the project root from cwd (not REPO_ROOT).
   const updateRoot = require('node:path').resolve(flags['root'] ?? process.cwd()) as string;
 
-  await install({ scope, mode: 'update', root: updateRoot });
+  try {
+    await install({ scope, mode: 'update', root: updateRoot });
+  } catch (e) {
+    // BL-6e5191e4: install() in 'update' mode now throws on a fetch/checksum
+    // failure instead of calling process.exit() directly — preserve this
+    // verb's prior fail-fast CLI behavior (print + exit 1) at the boundary.
+    console.error(String(e));
+    process.exit(1);
+  }
   // BL-39 / ADR-0004 §D6: re-materialize service stores so an updated artifact is
   // re-copied into the store (a running daemon must not keep stale copied code).
   rematerializeServiceStores(scope, updateRoot, getScopePaths(scope, updateRoot).lockfile);

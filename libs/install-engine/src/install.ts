@@ -1100,6 +1100,17 @@ export async function install(opts: InstallOptions): Promise<ResolvedSet> {
         console.warn(`install: warning: could not update install registry: ${String(regErr)}`);
       }
     } catch (e) {
+      // BL-6e5191e4: a fetch/checksum failure here used to call process.exit(1)
+      // directly. cmdUpgrade's per-consumer try/catch (main.ts) awaits
+      // install({mode:'update'}) expecting a rejected promise it can catch and
+      // report per-consumer — process.exit() cannot be caught, so it killed the
+      // whole `soxe upgrade --all` run and skipped every remaining consumer and
+      // the rolling restart. In update mode, throw a typed error instead so the
+      // caller can recover; other modes (a direct `soxe install`) keep the
+      // original fail-fast CLI behavior.
+      if (opts.mode === 'update') {
+        throw new Error(`install: failed for "${entry.id}": ${String(e)}`);
+      }
       console.error(String(e));
       process.exit(1);
     }
