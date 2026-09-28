@@ -5,9 +5,12 @@
  * memory-core has no signal handler of its own, but `createStoreAdapter()`
  * (store-adapter factory.ts) falls back to `SOX_CONFIG_DB_PATH` when called
  * without a `dbPath`, and every spec that spawns a child with
- * `{ ...process.env }` forwards whatever the worker inherited. Run the suite
- * with `SOX_CONFIG_DB_PATH=<scratch decoy>` exported to exercise this for real:
- * without the setup call this spec fails, with it the key is gone.
+ * `{ ...process.env }` forwards whatever the worker inherited.
+ *
+ * vitest.config.ts injects a decoy `SOX_CONFIG_DB_PATH` / `SOX_AUTO_BACKUP_DIR`
+ * (`test.env`, applied before setupFiles) into every worker, so this spec is
+ * red on every run if the setup call is removed — not only when an operator
+ * shell happens to export those variables.
  */
 import { describe, it, expect } from 'vitest';
 import { isOperatorStoreEnvKey } from './test-env-scrub.js';

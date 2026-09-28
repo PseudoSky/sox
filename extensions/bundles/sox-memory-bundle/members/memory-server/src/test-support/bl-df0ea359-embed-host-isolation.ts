@@ -20,7 +20,8 @@
  *    `--cache-dir=<home>/.cache/sox/models`. `buildEmbedHostEnv()` (`embedHostConfig.ts`)
  *    forwards `HOME`/`XDG_CACHE_HOME`/`TMPDIR` from the spawner's env, so overriding them on
  *    the spawned entrypoint isolates the whole chain. `buildScratchEmbedEnv()` does that and
- *    also strips `SOX_CONFIG_DB_PATH`/`SOX_PROXY_BACKEND`: the entrypoint's SIGTERM handler
+ *    also strips the operator's store config via `scrubOperatorStoreEnv()` (BL-7e5be7e8:
+ *    every `SOX_CONFIG_*`, `SOX_PROXY_BACKEND*`, `SOX_AUTO_BACKUP_DIR`): the entrypoint's SIGTERM handler
  *    VACUUM-INTO-backs-up whatever store `SOX_CONFIG_DB_PATH` names, and a test must never
  *    touch the operator's store (the specs pass `db_path` explicitly on every call).
  *
@@ -44,6 +45,7 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import assert from 'node:assert/strict';
 import { log } from '@adhd/sox-telemetry';
+import { scrubOperatorStoreEnv } from '@adhd/sox-memory-core';
 
 /** The on-disk model dir name embedding-provider's fastembed carrier resolves to. */
 const MODEL_DIR_NAME = 'fast-bge-base-en-v1.5';
@@ -115,11 +117,12 @@ export function buildScratchEmbedEnv(scratchRoot: string, baseEnv: NodeJS.Proces
     TMPDIR: tmp,
     SOX_ECOSYSTEM_HOME: sandboxEcosystemHome,
   };
-  // The entrypoint's SIGTERM handler backs up the store SOX_CONFIG_DB_PATH names, and
-  // SOX_PROXY_BACKEND=1 would switch it into backend mode. Neither may leak in from the
-  // operator's env: the specs always pass `db_path` explicitly.
-  delete env['SOX_CONFIG_DB_PATH'];
-  delete env['SOX_PROXY_BACKEND'];
+  // The entrypoint's SIGTERM handler backs up the store SOX_CONFIG_DB_PATH names into
+  // SOX_AUTO_BACKUP_DIR (and prunes that dir), and SOX_PROXY_BACKEND=1 would switch it into
+  // backend mode. None of the operator's host-injected store config may leak in: the specs
+  // always pass `db_path` explicitly. (BL-7e5be7e8) One scrub list for every harness — the
+  // same function both vitest.setup.ts files apply to the worker env.
+  scrubOperatorStoreEnv(env);
 
   return { env, cacheDir, home };
 }

@@ -48,7 +48,13 @@ import { fileURLToPath } from 'node:url';
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(HERE, '..');
 const MEMBER_DIR = 'extensions/bundles/sox-memory-bundle/members/memory-server/src';
-const SPEC_RELPATHS = [`${MEMBER_DIR}/bl404-telemetry-composition-root.spec.ts`, `${MEMBER_DIR}/bl401-stages-declared-live.spec.ts`];
+// BL-7e5be7e8: the operator-store-env scrub spec SIGTERMs the real entrypoint too, so it is held
+// to the same whole-tree teardown contract (no wrapper-only SIGKILL, asserted clean teardown).
+const SPEC_RELPATHS = [
+  `${MEMBER_DIR}/bl404-telemetry-composition-root.spec.ts`,
+  `${MEMBER_DIR}/bl401-stages-declared-live.spec.ts`,
+  `${MEMBER_DIR}/bl-7e5be7e8-operator-store-env-scrub.spec.ts`,
+];
 const HELPER_RELPATH = `${MEMBER_DIR}/test-support/bl-df0ea359-embed-host-isolation.ts`;
 
 const refArg = process.argv.indexOf('--ref');
@@ -113,6 +119,9 @@ for (const specRel of SPEC_RELPATHS) {
     report('helper signals the whole process group (process.kill(-pgid, ...))', /process\.kill\(\s*-\s*\w+/.test(helperSrc));
     report('helper reads the process table with portable `ps -axww` (no BSD-only -E)', /'-axww'/.test(helperSrc) && !/-axEww/.test(helperSrc));
     report('helper fails closed on a ps failure (checks spawnSync error/status)', /out\.error !== undefined/.test(helperSrc) && /out\.status !== 0/.test(helperSrc));
+    // BL-7e5be7e8: one scrub list for every harness — the helper must use the shared
+    // scrubOperatorStoreEnv(), never a hand-maintained subset of `delete env[...]` lines.
+    report('helper strips operator store config via the shared scrubOperatorStoreEnv()', /scrubOperatorStoreEnv\(env\)/.test(helperSrc));
   }
 }
 
@@ -131,11 +140,18 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 const scratch = fs.mkdtempSync(path.join(os.tmpdir(), 'bl-df0ea359-dyn-'));
-const operatorEnv = { ...process.env, HOME: '/Users/nix' };
+const operatorEnv = {
+  ...process.env,
+  HOME: '/Users/nix',
+  SOX_CONFIG_DB_PATH: '/Users/nix/.memory/memory.db',
+  SOX_AUTO_BACKUP_DIR: '/Users/nix/.memory/backups',
+  SOX_PROXY_BACKEND: '1',
+};
 delete operatorEnv.XDG_CACHE_HOME;
 delete operatorEnv.SOX_EMBED_CACHE_DIR;
 const { env, cacheDir } = buildScratchEmbedEnv(scratch, operatorEnv);
-process.stdout.write(JSON.stringify({ HOME: env.HOME, SOX_EMBED_CACHE_DIR: env.SOX_EMBED_CACHE_DIR, cacheDir, scratch }) + '\\n');
+const leakedStoreKeys = ['SOX_CONFIG_DB_PATH', 'SOX_AUTO_BACKUP_DIR', 'SOX_PROXY_BACKEND'].filter((k) => k in env);
+process.stdout.write(JSON.stringify({ HOME: env.HOME, SOX_EMBED_CACHE_DIR: env.SOX_EMBED_CACHE_DIR, cacheDir, scratch, leakedStoreKeys }) + '\\n');
 fs.rmSync(scratch, { recursive: true, force: true });
 `;
     fs.writeFileSync(probeFile, probeSrc);
@@ -149,6 +165,11 @@ fs.rmSync(scratch, { recursive: true, force: true });
         parsed.SOX_EMBED_CACHE_DIR,
       );
       report('buildScratchEmbedEnv(): resolved cacheDir is under the given scratch root', parsed.cacheDir.startsWith(parsed.scratch), parsed.cacheDir);
+      report(
+        'buildScratchEmbedEnv(): no operator store config survives (SOX_CONFIG_DB_PATH / SOX_AUTO_BACKUP_DIR / SOX_PROXY_BACKEND) [BL-7e5be7e8]',
+        parsed.leakedStoreKeys.length === 0,
+        JSON.stringify(parsed.leakedStoreKeys),
+      );
     } catch (err) {
       report('buildScratchEmbedEnv() dynamic probe ran successfully', false, String(err));
     } finally {

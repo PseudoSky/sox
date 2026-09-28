@@ -21,6 +21,15 @@ export default defineConfig({
     globals: false,
     environment: 'node',
     passWithNoTests: true,
+    // BL-7e5be7e8: permanent decoy operator store config, injected into every worker BEFORE
+    // setupFiles run. vitest.setup.ts must scrub it (scrubOperatorStoreEnv), so the
+    // bl-7e5be7e8 wiring spec goes red on EVERY run if that call is ever removed — not only
+    // when someone happens to export the variables. Paths are unreachable and outside any
+    // ~/.memory allowlist, so an unscrubbed decoy can never resolve a real store.
+    env: {
+      SOX_CONFIG_DB_PATH: '/nonexistent/bl-7e5be7e8-decoy/memory.db',
+      SOX_AUTO_BACKUP_DIR: '/nonexistent/bl-7e5be7e8-decoy/backups',
+    },
     testTimeout: 30_000,
     // Install the deterministic test provider before any test runs so no spec
     // triggers a real ONNX warmup unless it explicitly opts in.
