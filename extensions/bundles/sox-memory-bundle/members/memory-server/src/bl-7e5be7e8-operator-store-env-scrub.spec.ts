@@ -51,9 +51,11 @@ import { createStoreAdapter } from '@adhd/sox-store-adapter';
 import {
   assertCleanTeardown,
   buildScratchEmbedEnv,
+  readProcessTable,
   spawnRealEntrypoint,
   teardownRealEntrypoint,
   TEARDOWN_WORST_CASE_MS,
+  type ProcRow,
   type RealEntrypointRun,
   type TeardownReport,
 } from './test-support/bl-df0ea359-embed-host-isolation.js';
@@ -123,10 +125,41 @@ async function seedArm(label: string): Promise<DecoyArm> {
 }
 
 /**
+ * Find the single innermost process in `pgid` whose command line carries `ENTRY`: `tsx`
+ * (`spawnRealEntrypoint`'s direct child) runs `index.ts` in a separate GRANDCHILD process, and
+ * both the wrapper and the grandchild carry the entry path in their argv, so a raw substring
+ * match can return either. The real server is the one that is not the parent of another
+ * ENTRY-bearing row in the same group.
+ */
+function findInnermostEntryPid(pgid: number): number {
+  const rows = readProcessTable().filter((r) => r.pgid === pgid && r.command.includes(ENTRY));
+  const leaves = rows.filter((r) => !rows.some((other) => other.ppid === r.pid));
+  if (leaves.length !== 1) {
+    const fmt = (rs: ProcRow[]): string => rs.map((r) => `${r.pid} (ppid ${r.ppid}, pgid ${r.pgid}): ${r.command}`).join('\n');
+    throw new Error(
+      `expected exactly one innermost ENTRY-bearing process in group ${pgid}, found ${leaves.length}:\n${fmt(rows)}`,
+    );
+  }
+  const leaf = leaves[0];
+  if (leaf === undefined) throw new Error(`unreachable: leaves.length === 1 but leaves[0] is undefined (pgid ${pgid})`);
+  return leaf.pid;
+}
+
+/**
  * Spawn the real entrypoint (direct-stdio mode) in its own process group, complete the MCP
- * initialize handshake (the SIGTERM handler is installed before `serve()`), SIGTERM the
- * whole group, and collect stderr until every writer of the pipes is gone. Always ends with
- * the whole-tree verified stop, whatever failed before it.
+ * initialize handshake (the SIGTERM handler is installed before `serve()`), SIGTERM ONLY the
+ * real server process — never the whole group — and collect stderr until every writer of the
+ * pipes is gone.
+ *
+ * Why not the group: `tsx`'s own esbuild transform runs as a service process inside the same
+ * spawned group. A group-wide `kill(-pgid, 'SIGTERM')` kills that esbuild service too, and any
+ * module still being lazily `import()`-ed at that moment (this entrypoint's own warmup path,
+ * or `backup.ts`'s lazy `@adhd/sox-store-adapter` import) then fails with esbuild's own
+ * "The service is no longer running" — a harness artifact, not anything this spec is testing.
+ * Production (`node dist/index.js`) has no tsx wrapper and receives SIGTERM directly with no
+ * such collateral process in its group; signalling only the real server process here mirrors
+ * that. `teardownRealEntrypoint()` (whole-tree, in the `finally` block) still cleans up the
+ * wrapper and everything else afterwards.
  */
 async function bootAndSigterm(arm: DecoyArm, env: NodeJS.ProcessEnv): Promise<SigtermOutcome> {
   const run: RealEntrypointRun = spawnRealEntrypoint({
@@ -179,7 +212,8 @@ async function bootAndSigterm(arm: DecoyArm, env: NodeJS.ProcessEnv): Promise<Si
     }
     const pgid = child.pid;
     if (pgid === undefined) throw new Error('spawned entrypoint has no pid');
-    process.kill(-pgid, 'SIGTERM');
+    const serverPid = findInnermostEntryPid(pgid);
+    process.kill(serverPid, 'SIGTERM');
     const exited = await Promise.race([
       closed,
       new Promise<boolean>((r) => { const t = setTimeout(() => r(false), EXIT_TIMEOUT_MS); t.unref(); }),
