@@ -272,13 +272,22 @@ describe('4041c6e0: (5) dialers refuse an unsafe dir without connecting', () => 
     });
     cleanups.push(() => conn.close());
 
-    const resp = await conn.send({ jsonrpc: '2.0', id: 1, method: 'ping' });
-    expect(resp.error?.code).toBe(ERR_BACKEND_UNAVAILABLE);
-    expect(resp.error?.message).toMatch(/^E_UDS_DIR_UNSAFE: /);
-    expect(resp.error?.data).toMatchObject({ code: 'E_UDS_DIR_UNSAFE', dir, expectedUid: UID });
+    // Bounded: a dialer that ignores the directory would connect and keep
+    // re-dialing the counting server forever, so race the reply against a timer.
+    const resp = await Promise.race([
+      conn.send({ jsonrpc: '2.0', id: 1, method: 'ping' }),
+      new Promise<'no-reply'>((r) => setTimeout(() => r('no-reply'), 1000)),
+    ]);
+    // Refused BEFORE any connect attempt.
+    expect(server.count()).toBe(0);
+    expect(resp).not.toBe('no-reply');
+    const r = resp as Exclude<typeof resp, 'no-reply'>;
+    expect(r.error?.code).toBe(ERR_BACKEND_UNAVAILABLE);
+    expect(r.error?.message).toMatch(/^E_UDS_DIR_UNSAFE: /);
+    expect(r.error?.data).toMatchObject({ code: 'E_UDS_DIR_UNSAFE', dir, expectedUid: UID });
 
     // Non-retryable: nothing is re-dialed in the background.
-    await new Promise((r) => setTimeout(r, 200));
+    await new Promise((res) => setTimeout(res, 200));
     expect(server.count()).toBe(0);
     expect(conn.isConnected()).toBe(false);
   });
