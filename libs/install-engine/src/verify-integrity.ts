@@ -26,17 +26,20 @@
  * (sha256 of the built entrypoint) IS the identity.
  */
 
+import * as fs from 'node:fs';
+import * as path from 'node:path';
 import { fetchArtifact } from './install.js';
 import { loadLockfile } from './install.js';
 import type { Scope } from './install.js';
 import { getScopePath } from './install.js';
-import type { DesiredPin } from './install.js';
+import type { DesiredPin, LockfileEntry } from './install.js';
 
 export type IntegrityStatus =
   | 'current'        // artifact hash == recorded checksum
   | 'stale'          // artifact hash != recorded checksum (needs upgrade)
   | 'not-installed'  // no lockfile entry for this id
-  | 'unresolvable';  // entry exists but the artifact could not be fetched/hashed
+  | 'unresolvable'   // entry exists but the artifact could not be fetched/hashed
+  | 'ahead';         // BL-cd1fe520: the pin is NEWER than the desired row — never downgraded
 
 export interface IntegrityResult {
   id: string;
@@ -55,6 +58,67 @@ export interface IntegrityResult {
   origin?: string | undefined;
   /** BL-cd1fe520: why a 'stale' verdict was reached (drift / origin-changed / pin-moved). */
   reason?: string | undefined;
+}
+
+/**
+ * BL-cd1fe520: order two dotted release versions (`1.3.6`, `v2.0.0-rc.1`).
+ * Returns <0 / 0 / >0, or null when either side is not a parseable version —
+ * callers treat null as "order unknown". A pre-release sorts before its release.
+ *
+ * ADR-0003 keeps the checksum as the sole identity; this is used ONLY as the
+ * direction guard that stops `upgrade` from re-pinning a newer install to an
+ * older registry row.
+ */
+export function compareVersions(a: string, b: string): number | null {
+  const parse = (v: string): { nums: number[]; pre: string | null } | null => {
+    const m = /^v?(\d+(?:\.\d+)*)(?:-([0-9A-Za-z.-]+))?(?:\+.*)?$/.exec(v.trim());
+    if (m === null || m[1] === undefined) return null;
+    return { nums: m[1].split('.').map(Number), pre: m[2] ?? null };
+  };
+  const pa = parse(a);
+  const pb = parse(b);
+  if (pa === null || pb === null) return null;
+  const len = Math.max(pa.nums.length, pb.nums.length);
+  for (let i = 0; i < len; i++) {
+    const d = (pa.nums[i] ?? 0) - (pb.nums[i] ?? 0);
+    if (d !== 0) return d;
+  }
+  if (pa.pre === pb.pre) return 0;
+  if (pa.pre === null) return 1;
+  if (pb.pre === null) return -1;
+  return pa.pre < pb.pre ? -1 : 1;
+}
+
+/**
+ * BL-cd1fe520: the version a lock entry is pinned at — the recorded `version`,
+ * else the version in an `npm-package:`/`npm:` origin spec, else the nearest
+ * `package.json` above the materialized artifact (legacy entries carry neither).
+ */
+export function pinnedVersionOf(entry: LockfileEntry): string | undefined {
+  if (entry.version !== undefined && entry.version !== '') return entry.version;
+  const origin = entry.origin ?? '';
+  const spec = origin.startsWith('npm-package:') ? origin.slice('npm-package:'.length)
+    : origin.startsWith('npm:') ? origin.slice('npm:'.length) : '';
+  const at = spec.lastIndexOf('@');
+  if (at > 0) return spec.slice(at + 1);
+  if (!entry.source.startsWith('file://')) return undefined;
+  let dir = path.dirname(entry.source.slice('file://'.length));
+  for (let i = 0; i < 4; i++) {
+    const pkg = path.join(dir, 'package.json');
+    if (fs.existsSync(pkg)) {
+      try {
+        const v = (JSON.parse(fs.readFileSync(pkg, 'utf8')) as { version?: unknown }).version;
+        return typeof v === 'string' && v !== '' ? v : undefined;
+      } catch (e) {
+        console.warn(`verifyIntegrity: unreadable ${pkg} while ordering the pin: ${String(e)}`);
+        return undefined;
+      }
+    }
+    const parent = path.dirname(dir);
+    if (parent === dir) break;
+    dir = parent;
+  }
+  return undefined;
 }
 
 /**
@@ -166,6 +230,16 @@ export async function verifyIntegrity(
   if (desired !== null) {
     if (desired.checksum !== undefined) {
       if (desired.checksum !== expected) {
+        const pinned = pinnedVersionOf(entry);
+        const order = pinned !== undefined && desired.version !== undefined
+          ? compareVersions(desired.version, pinned)
+          : null;
+        if (order !== null && order < 0) {
+          return {
+            id, status: 'ahead', current: false, expected, actual, source, origin,
+            reason: `pinned ${pinned} is newer than the registry's ${desired.version} — not downgrading`,
+          };
+        }
         return stale(desired.checksum, `pin moved: ${origin ?? source} → ${desired.source}`);
       }
     } else if (desired.source.startsWith('file://')) {

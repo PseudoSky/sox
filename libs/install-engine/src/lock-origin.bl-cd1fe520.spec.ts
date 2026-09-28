@@ -35,7 +35,7 @@ import * as path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { scopeConfigPaths } from './data-paths.js';
 import { mergeLockEntry, resolveDesiredPin, type LockfileEntry } from './install.js';
-import { verifyIntegrity } from './verify-integrity.js';
+import { compareVersions, verifyIntegrity } from './verify-integrity.js';
 
 const REPO_ROOT = path.resolve(__dirname, '../../..');
 const CLI_MAIN = path.join(REPO_ROOT, 'dist/apps/sox/main.js');
@@ -76,10 +76,10 @@ function stagePackage(version: string): void {
   fs.writeFileSync(path.join(dir, 'dist', 'index.js'), entryBody(version));
 }
 
-/** Point the workspace registry at `version` of the probe package. */
-function publishRow(version: string): void {
-  fs.mkdirSync(path.join(workspace, 'registry'), { recursive: true });
-  fs.writeFileSync(path.join(workspace, 'registry', 'index.json'), JSON.stringify([{
+/** Point the workspace (or `dir`) registry at `version` of the probe package. */
+function publishRow(version: string, dir: string = workspace): void {
+  fs.mkdirSync(path.join(dir, 'registry'), { recursive: true });
+  fs.writeFileSync(path.join(dir, 'registry', 'index.json'), JSON.stringify([{
     id: ID,
     type: 'command',
     version,
@@ -114,7 +114,7 @@ fs.cpSync(src, dst, { recursive: true });
   fs.writeFileSync(path.join(fakeBin, 'npm'), script, { mode: 0o755 });
 }
 
-function runCli(args: string[]): { code: number; out: string } {
+function runCli(args: string[], cwd: string = workspace): { code: number; out: string } {
   const env: NodeJS.ProcessEnv = {
     ...process.env,
     HOME: fakeHome,
@@ -122,7 +122,7 @@ function runCli(args: string[]): { code: number; out: string } {
     FAKE_NPM_PKGS: pkgFixtures,
     PATH: `${fakeBin}${path.delimiter}${process.env['PATH'] ?? ''}`,
   };
-  const r = spawnSync(process.execPath, [CLI_MAIN, ...args], { encoding: 'utf8', env, cwd: workspace });
+  const r = spawnSync(process.execPath, [CLI_MAIN, ...args], { encoding: 'utf8', env, cwd });
   return { code: r.status ?? -1, out: `${r.stdout ?? ''}\n${r.stderr ?? ''}` };
 }
 
@@ -219,6 +219,59 @@ describe('BL-cd1fe520 — npm-package lock entry records its origin; upgrade com
   });
 });
 
+describe('BL-cd1fe520 — the upgrade verdict is independent of cwd and never downgrades a pin', () => {
+  // A consumer project with NO registry of its own, installed from the
+  // workspace registry: the exact shape where the old verdict fell back to
+  // whatever registry the upgrading shell's cwd (or the CLI's bundled copy) held.
+  let project: string;
+  let projectLock: string;
+
+  function projectEntry(): Record<string, unknown> {
+    const lock = JSON.parse(fs.readFileSync(projectLock, 'utf8')) as { resolved: Record<string, Record<string, unknown>> };
+    return lock.resolved[ID]!;
+  }
+
+  beforeEach(() => {
+    project = path.join(sandbox, 'proj');
+    fs.mkdirSync(project, { recursive: true });
+    projectLock = scopeConfigPaths('project', project).lockfile;
+    publishRow('1.1.0');
+    const r = runCli(['install', ID, '--scope', 'project', '--root', project]);
+    expect(r.code, r.out).toBe(0);
+    expect(projectEntry()['checksum']).toBe(sha256(entryBody('1.1.0')));
+  });
+
+  it('upgrading from a cwd that holds an OLDER registry leaves the newer install alone', () => {
+    const older = path.join(sandbox, 'older-checkout');
+    publishRow('1.0.0', older);
+    const up = runCli(['upgrade', ID, '--all'], older);
+    expect(up.code, up.out).toBe(0);
+    expect(up.out).not.toMatch(/STALE/);
+    expect(projectEntry()['checksum']).toBe(sha256(entryBody('1.1.0')));
+    expect(projectEntry()['origin']).toBe(`npm-package:${PKG}@1.1.0`);
+  });
+
+  it('with no authoritative registry visible it reports so and never re-pins', () => {
+    fs.rmSync(path.join(workspace, 'registry'), { recursive: true, force: true });
+    const empty = path.join(sandbox, 'empty-cwd');
+    fs.mkdirSync(empty, { recursive: true });
+    const up = runCli(['upgrade', ID, '--all'], empty);
+    expect(up.code, up.out).toBe(0);
+    expect(up.out).toMatch(/no registry visible/);
+    expect(up.out).not.toMatch(/STALE/);
+    expect(projectEntry()['checksum']).toBe(sha256(entryBody('1.1.0')));
+  });
+
+  it('a recorded registry that rolls back to an older version is never followed downwards', () => {
+    publishRow('1.0.0'); // the registry the pin came from now publishes an older row
+    const up = runCli(['upgrade', ID, '--all']);
+    expect(up.code, up.out).toBe(0);
+    expect(up.out).not.toMatch(/STALE/);
+    expect(up.out).toMatch(/not downgrading/);
+    expect(projectEntry()['checksum']).toBe(sha256(entryBody('1.1.0')));
+  });
+});
+
 describe('BL-cd1fe520 — secondary lock writers merge instead of re-creating the self-reference', () => {
   const store = '/data/ext';
   const prev: LockfileEntry = {
@@ -286,5 +339,16 @@ describe('BL-cd1fe520 — verifyIntegrity freshness against a desired pin', () =
     expect((await verifyIntegrity('project', 'x', { lockfilePath: lockFile, desired: same })).status).toBe('current');
     const moved = resolveDesiredPin('x', [], 'npm-package:@a/x@2.0.0');
     expect((await verifyIntegrity('project', 'x', { lockfilePath: lockFile, desired: moved })).status).toBe('stale');
+  });
+});
+
+describe('BL-cd1fe520 — compareVersions orders pins for the never-downgrade guard', () => {
+  it('orders releases, pre-releases and unparseable input', () => {
+    expect(compareVersions('1.3.7', '1.3.6')).toBeGreaterThan(0);
+    expect(compareVersions('1.10.0', '1.9.9')).toBeGreaterThan(0);
+    expect(compareVersions('1.0.0', '1.0.0')).toBe(0);
+    expect(compareVersions('2.0.0-rc.1', '2.0.0')).toBeLessThan(0);
+    expect(compareVersions('v1.2', '1.2.0')).toBe(0);
+    expect(compareVersions('latest', '1.0.0')).toBeNull();
   });
 });

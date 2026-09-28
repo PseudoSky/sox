@@ -449,13 +449,23 @@ function safeResolveManifestPath(extDir: string, relPath: string): string | null
 }
 
 function loadRegistryResolved(cwdRoot: string): ReturnType<typeof loadRegistryIndex> {
+  return loadRegistryResolvedWithRoot(cwdRoot).index;
+}
+
+/**
+ * loadRegistryResolved plus the directory the index was read from, so an
+ * install can record it on the lock entry as `registry_root` (BL-cd1fe520).
+ */
+function loadRegistryResolvedWithRoot(
+  cwdRoot: string,
+): { index: ReturnType<typeof loadRegistryIndex>; root: string | undefined } {
+  const pathMod = require('node:path') as typeof import('node:path');
   try {
     const fromCwd = loadRegistryIndex(cwdRoot);
-    if (fromCwd.length > 0) return fromCwd;
-  } catch {
-    /* fall through to bundled copy */
+    if (fromCwd.length > 0) return { index: fromCwd, root: pathMod.resolve(cwdRoot) };
+  } catch (e) {
+    process.stderr.write(`${CLI}: registry at ${cwdRoot} unreadable (${String(e)}) — trying the bundled copy\n`);
   }
-  const pathMod = require('node:path') as typeof import('node:path');
   const bundledCandidates = [
     __dirname,
     // dev tsc build (`dist/apps/sox`): the embedded copy lives in the sibling
@@ -465,12 +475,12 @@ function loadRegistryResolved(cwdRoot: string): ReturnType<typeof loadRegistryIn
   for (const dir of bundledCandidates) {
     try {
       const fromBundle = loadRegistryIndex(dir);
-      if (fromBundle.length > 0) return fromBundle;
-    } catch {
-      /* try next candidate */
+      if (fromBundle.length > 0) return { index: fromBundle, root: dir };
+    } catch (e) {
+      process.stderr.write(`${CLI}: bundled registry at ${dir} unreadable (${String(e)}) — trying next candidate\n`);
     }
   }
-  return [];
+  return { index: [], root: undefined };
 }
 
 /**
@@ -1665,7 +1675,8 @@ Options:
     }
 
     // ── Build install opts and install ────────────────────────────────────────
-    const resolvedRegistryForInstall = loadRegistryResolved(process.cwd());
+    const resolvedRegistryWithRoot = loadRegistryResolvedWithRoot(process.cwd());
+    const resolvedRegistryForInstall = resolvedRegistryWithRoot.index;
 
     // BL-219: positional install must target only the named extension — derive the
     // scope config path and pass it to trigger singleScopeOnly in loadScopeCascade,
@@ -1678,7 +1689,9 @@ Options:
       root: workspaceRoot,
       configPath: configForPositional,
       ...(lockfilePathFlag !== undefined ? { lockfilePath: lockfilePathFlag } : {}),
-      ...(resolvedRegistryForInstall.length > 0 ? { registryIndex: resolvedRegistryForInstall } : {}),
+      ...(resolvedRegistryForInstall.length > 0
+        ? { registryIndex: resolvedRegistryForInstall, registryRoot: resolvedRegistryWithRoot.root }
+        : {}),
     };
 
     if (process.stdout.isTTY) {
@@ -1773,14 +1786,17 @@ Options:
 
   // --update flag: run full install with cascade for backwards compat
   if (update) {
-    const resolvedRegistryForInstall = loadRegistryResolved(process.cwd());
+    const resolvedRegistryWithRoot = loadRegistryResolvedWithRoot(process.cwd());
+    const resolvedRegistryForInstall = resolvedRegistryWithRoot.index;
     const installOpts: Parameters<typeof import('@adhd/sox-install-engine').install>[0] = {
       scope,
       mode,
       root: workspaceRoot,
       ...(configPathFlag !== undefined ? { configPath: configPathFlag } : {}),
       ...(lockfilePathFlag !== undefined ? { lockfilePath: lockfilePathFlag } : {}),
-      ...(resolvedRegistryForInstall.length > 0 ? { registryIndex: resolvedRegistryForInstall } : {}),
+      ...(resolvedRegistryForInstall.length > 0
+        ? { registryIndex: resolvedRegistryForInstall, registryRoot: resolvedRegistryWithRoot.root }
+        : {}),
     };
 
     if (process.stdout.isTTY) {
@@ -2365,18 +2381,52 @@ async function cmdUpdate(flags: Record<string, string>): Promise<void> {
  * `getScopePath('org')`.
  */
 /**
- * BL-cd1fe520: the registry an upgrade judges and re-pins a consumer against —
- * exactly what `install()` would resolve from for that root (its own registry,
- * else one recovered from lockfile provenance), falling back to the registry
- * the CLI itself can see (cwd, then the copy bundled with the CLI).
+ * BL-cd1fe520: the AUTHORITATIVE registry for one consumer's pin — never the
+ * upgrading shell's cwd, never the CLI's bundled snapshot (an older globally
+ * installed soxe run elsewhere would otherwise re-pin newer installs to its own
+ * older rows). In order:
+ *   1. the `registry_root` recorded on the lock entry at install time;
+ *   2. the consumer root's own registry, or one recovered from its lockfile
+ *      provenance — exactly what `install()` resolves from for that root.
+ * Returns null when neither is visible: the caller reports it and never re-pins.
  */
-function upgradeRegistryIndexFor(
+function authoritativeRegistryFor(
+  id: string,
   root: string,
   lock: ReturnType<typeof loadLockfile>,
-): ReturnType<typeof loadRegistryIndex> {
-  const forRoot = resolveRegistryIndexForRoot(root, lock).index;
-  if (forRoot.length > 0) return forRoot;
-  return loadRegistryResolved(process.cwd());
+): { index: ReturnType<typeof loadRegistryIndex>; root: string } | null {
+  const pinned = lock?.resolved[id]?.registry_root;
+  if (pinned !== undefined && pinned !== '') {
+    const fromPinned = loadRegistryIndex(pinned);
+    if (fromPinned.length > 0) return { index: fromPinned, root: pinned };
+  }
+  const forRoot = resolveRegistryIndexForRoot(root, lock);
+  if (forRoot.index.length > 0 && forRoot.registryRoot !== null) {
+    return { index: forRoot.index, root: forRoot.registryRoot };
+  }
+  return null;
+}
+
+/**
+ * BL-cd1fe520: can this entry be judged WITHOUT a registry? Only when its origin
+ * (or, for a legacy entry, its source) is a local file outside the content
+ * store — then re-hashing it is the whole freshness check. An npm-package /
+ * npm / https origin, or a legacy content-store copy, needs its registry.
+ */
+function judgeableWithoutRegistry(
+  entry: { source: string; origin?: string | undefined },
+  scope: string,
+  root: string,
+): boolean {
+  const pathMod = require('node:path') as typeof import('node:path');
+  const locator = entry.origin ?? entry.source;
+  if (!locator.startsWith('file://')) return false;
+  const rel = pathMod.relative(
+    pathMod.resolve(pathMod.join(dataRoot(scope as DataScope, root), 'ext')), // storeRootFor (ADR-0004 §D2)
+    pathMod.resolve(locator.slice('file://'.length)),
+  );
+  const inStore = rel === '' || (!rel.startsWith('..') && !pathMod.isAbsolute(rel));
+  return !inStore;
 }
 
 /**
@@ -3125,7 +3175,7 @@ interface ConsumerOutcome {
   extId: string;
   scope: string;
   root: string;
-  state: 'current' | 'upgraded' | 'restarted' | 'restart-mismatch' | 'restarted-unsupervised' | 'backend-restarted' | 'backend-restart-mismatch' | 'backend-restarted-unsupervised' | 'reconnect-needed' | 'not-installed' | 'unresolvable' | 'failed';
+  state: 'current' | 'ahead' | 'no-registry' | 'upgraded' | 'restarted' | 'restart-mismatch' | 'restarted-unsupervised' | 'backend-restarted' | 'backend-restart-mismatch' | 'backend-restarted-unsupervised' | 'reconnect-needed' | 'not-installed' | 'unresolvable' | 'failed';
   detail: string;
 }
 
@@ -3266,6 +3316,7 @@ async function cmdUpgrade(flags: Record<string, string>): Promise<void> {
     verdict: IntegrityResult | null;
     tag: string;
     registryIndex: ReturnType<typeof loadRegistryIndex>;
+    registryRoot: string | undefined;
   }
   const snapshot: Snapshot[] = [];
   for (let i = 0; i < consumers.length; i++) {
@@ -3282,7 +3333,7 @@ async function cmdUpgrade(flags: Record<string, string>): Promise<void> {
       // not-in-lockfile is a terminal state — no re-install needed, no verdict.
       process.stdout.write(`  ${tag}\n    → not in lockfile (skipped — run ${CLI} install to re-add)\n`);
       outcomes.push({ extId: record.extId, scope: record.scope, root: record.root, state: 'not-installed', detail: 'not in lockfile' });
-      snapshot.push({ record, verdict: null, tag, registryIndex: [] });
+      snapshot.push({ record, verdict: null, tag, registryIndex: [], registryRoot: undefined });
       continue;
     }
 
@@ -3291,21 +3342,48 @@ async function cmdUpgrade(flags: Record<string, string>): Promise<void> {
     // consumer's explicit config source when it has one. Hashing the lock's
     // `source` alone compares an npm-package content-store copy with a checksum
     // taken from itself, so a newer published version was never visible.
-    const registryIndex = upgradeRegistryIndexFor(record.root, currentLockfile);
-    const desired = resolveDesiredPin(
-      record.extId,
-      registryIndex,
-      configuredSourceFor(configPathForRecord(record.scope, record.root), record.extId),
-    );
+    const lockKeyNow = Object.keys(currentLockfile.resolved).find(
+      (k) => k === record.extId || k.startsWith(`${record.extId}@`),
+    )!;
+    const lockEntryNow = currentLockfile.resolved[lockKeyNow]!;
+    const configuredSource = configuredSourceFor(configPathForRecord(record.scope, record.root), record.extId);
+    const authoritative = authoritativeRegistryFor(lockKeyNow, record.root, currentLockfile);
+    if (authoritative === null && configuredSource === undefined
+      && !judgeableWithoutRegistry(lockEntryNow, record.scope, record.root)) {
+      // No registry the pin can be judged against is visible for THIS consumer.
+      // Never borrow the cwd's or the CLI's bundled registry, and never re-pin.
+      const where = lockEntryNow.registry_root ?? record.root;
+      process.stdout.write(
+        `  ${tag}\n    → no registry visible for this consumer (looked at ${where}) — pin kept, not re-pinned\n`,
+      );
+      outcomes.push({
+        extId: record.extId, scope: record.scope, root: record.root,
+        state: 'no-registry', detail: `no registry visible at ${where}; pin kept`,
+      });
+      snapshot.push({ record, verdict: null, tag, registryIndex: [], registryRoot: undefined });
+      continue;
+    }
+    const registryIndex = authoritative?.index ?? [];
+    const desired = resolveDesiredPin(record.extId, registryIndex, configuredSource);
     const verdict = await verifyIntegrity(record.scope as Scope, record.extId, { lockfilePath, desired });
-    snapshot.push({ record, verdict, tag, registryIndex });
+    snapshot.push({ record, verdict, tag, registryIndex, registryRoot: authoritative?.root });
   }
 
   // ── Re-install pass ─────────────────────────────────────────────────────────
   // Uses the snapshot verdicts — NEVER re-reads the lockfile — so a bundle
   // install that updates the lockfile does not taint subsequent consumers.
-  for (const { record, verdict, tag, registryIndex } of snapshot) {
-    if (verdict === null) continue; // already emitted not-installed above
+  for (const { record, verdict, tag, registryIndex, registryRoot } of snapshot) {
+    if (verdict === null) continue; // already emitted not-installed / no-registry above
+
+    if (verdict.status === 'ahead') {
+      // BL-cd1fe520: the pin is newer than the authoritative row — never downgrade.
+      process.stdout.write(`  ${tag}\n    → ${verdict.reason ?? 'pin is newer than the registry — not downgrading'}\n`);
+      outcomes.push({
+        extId: record.extId, scope: record.scope, root: record.root,
+        state: 'ahead', detail: verdict.reason ?? 'pin newer than registry; not downgrading',
+      });
+      continue;
+    }
 
     if (verdict.status === 'current') {
       process.stdout.write(`  ${tag}\n    → current (${(verdict.actual ?? '').slice(0, 19)}…) — no change\n`);
@@ -3334,7 +3412,7 @@ async function cmdUpgrade(flags: Record<string, string>): Promise<void> {
         configPath: configPathForRecord(record.scope, record.root),
         lockfilePath,
         // BL-cd1fe520: re-pin from the same index the verdict was judged against.
-        ...(registryIndex.length > 0 ? { registryIndex } : {}),
+        ...(registryIndex.length > 0 ? { registryIndex, registryRoot } : {}),
       });
       rematerializeServiceStores(record.scope, record.root, lockfilePath);
     } catch (e) {

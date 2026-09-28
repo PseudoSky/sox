@@ -66,6 +66,15 @@ export interface LockfileEntry {
    * entries written before BL-cd1fe520 (the legacy self-referential shape).
    */
   origin?: string | undefined;
+  /**
+   * BL-cd1fe520: the directory whose `registry/index.json` supplied this pin
+   * (absent when the entry was not resolved from a registry row). `upgrade`
+   * judges the pin against THIS registry — never against whatever registry the
+   * upgrading shell's cwd, or the CLI's bundled copy, happens to hold.
+   */
+  registry_root?: string | undefined;
+  /** BL-cd1fe520: the registry row's display version at pin time; orders pins so upgrade never downgrades. */
+  version?: string | undefined;
 }
 
 export interface LockfileExtendsPin {
@@ -385,12 +394,13 @@ function recoverRegistryRootFromLockfile(lock: Lockfile | null): string | null {
 export function resolveRegistryIndexForRoot(
   root: string,
   lock: Lockfile | null,
-): { index: IndexEntry[]; recoveredRoot: string | null } {
+): { index: IndexEntry[]; registryRoot: string | null; recoveredRoot: string | null } {
   const direct = loadRegistryIndex(root);
-  if (direct.length > 0) return { index: direct, recoveredRoot: null };
+  if (direct.length > 0) return { index: direct, registryRoot: root, recoveredRoot: null };
   const recoveredRoot = recoverRegistryRootFromLockfile(lock);
-  if (recoveredRoot === null) return { index: [], recoveredRoot: null };
-  return { index: loadRegistryIndex(recoveredRoot), recoveredRoot };
+  if (recoveredRoot === null) return { index: [], registryRoot: null, recoveredRoot: null };
+  const recovered = loadRegistryIndex(recoveredRoot);
+  return { index: recovered, registryRoot: recovered.length > 0 ? recoveredRoot : null, recoveredRoot };
 }
 
 /**
@@ -432,6 +442,8 @@ export interface DesiredPin {
   source: string;
   /** The checksum the registry publishes for it; absent for an explicit config source. */
   checksum?: string | undefined;
+  /** The registry row's display version, when published — orders pins (never downgrade). */
+  version?: string | undefined;
 }
 
 /**
@@ -448,7 +460,9 @@ export function resolveDesiredPin(
   if (configSource !== undefined && configSource !== '') return { source: configSource };
   const row = resolveFromRegistry(id, registryIndex);
   if (row === null) return null;
-  return { source: row.source, checksum: row.checksum };
+  const pin: DesiredPin = { source: row.source, checksum: row.checksum };
+  if (typeof row.version === 'string' && row.version !== '') pin.version = row.version;
+  return pin;
 }
 
 /**
@@ -717,6 +731,12 @@ export interface InstallOptions {
    */
   registryIndex?: IndexEntry[] | undefined;
   /**
+   * BL-cd1fe520: the directory `registryIndex` was loaded from. Recorded on every
+   * lock entry resolved from a registry row as `registry_root`, so `upgrade`
+   * can judge the pin against the registry it actually came from.
+   */
+  registryRoot?: string | undefined;
+  /**
    * Called for each required config key that has no cascade-resolved value.
    * The CLI layer provides a readline implementation in interactive mode.
    * Return the string value to persist, or undefined to skip (with a warning).
@@ -768,12 +788,15 @@ export async function install(opts: InstallOptions): Promise<ResolvedSet> {
   // provenance before concluding the registry is unreachable. See
   // `recoverRegistryRootFromLockfile` for why this is sound.
   let recoveredRegistryRoot: string | null = null;
+  let registryRootUsed: string | undefined;
   if (opts.registryIndex !== undefined && opts.registryIndex.length > 0) {
     registryIndex = opts.registryIndex;
+    registryRootUsed = opts.registryRoot;
   } else {
     const resolvedIndex = resolveRegistryIndexForRoot(root, existingLock);
     registryIndex = resolvedIndex.index;
     recoveredRegistryRoot = resolvedIndex.recoveredRoot;
+    registryRootUsed = resolvedIndex.registryRoot ?? undefined;
     if (recoveredRegistryRoot !== null && registryIndex.length > 0) {
       console.log(
         `install: registry not found under root ${root} — recovered it from lockfile ` +
@@ -868,6 +891,7 @@ export async function install(opts: InstallOptions): Promise<ResolvedSet> {
 
     let source: string;
     let expectedChecksum: string | undefined;
+    let pinnedFromRow: IndexEntry | undefined;
 
     if (entry.source !== undefined && entry.source.startsWith('file://')) {
       source = entry.source;
@@ -915,6 +939,7 @@ export async function install(opts: InstallOptions): Promise<ResolvedSet> {
       } else {
         source = indexEntry.source;
         expectedChecksum = indexEntry.checksum;
+        pinnedFromRow = indexEntry;
       }
     }
 
@@ -967,6 +992,10 @@ export async function install(opts: InstallOptions): Promise<ResolvedSet> {
         resolved_at: new Date().toISOString(),
         origin: source,
       };
+      if (pinnedFromRow !== undefined) {
+        if (registryRootUsed !== undefined) lockEntry.registry_root = path.resolve(registryRootUsed);
+        if (typeof pinnedFromRow.version === 'string' && pinnedFromRow.version !== '') lockEntry.version = pinnedFromRow.version;
+      }
       if (entry.bundleId !== undefined) {
         lockEntry.bundle_id = entry.bundleId;
       }

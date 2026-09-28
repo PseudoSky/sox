@@ -35,8 +35,9 @@ let artifactPath: string;
 let lockfilePath: string;
 let runtimeFilePath: string;
 
+// The format every lock writer actually records (install-engine computeChecksum).
 function sha256(buf: Buffer): string {
-  return crypto.createHash('sha256').update(buf).digest('hex');
+  return 'sha256:' + crypto.createHash('sha256').update(buf).digest('hex');
 }
 
 function writeLockfile(checksum: string): void {
@@ -111,7 +112,7 @@ describe('BUG-SOX-VERIFYARTIFACT-PASSES-FILEURL-TO-FS-001', () => {
   });
 
   it('still reports a real mismatch for a file:// runtime source with the WRONG checksum', async () => {
-    writeLockfile('0'.repeat(64)); // deliberately wrong checksum
+    writeLockfile('sha256:' + '0'.repeat(64)); // deliberately wrong checksum
     writeRuntimeRecord(`file://${artifactPath}`);
 
     const result = await verifyRunningArtifact('memory-server', lockfilePath);

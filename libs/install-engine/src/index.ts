@@ -71,7 +71,7 @@ export type {
   IntegrityResult,
   VerifyIntegrityOptions,
 } from './verify-integrity.js';
-export { verifyIntegrity } from './verify-integrity.js';
+export { verifyIntegrity, compareVersions, pinnedVersionOf } from './verify-integrity.js';
 
 // ─── Re-export build-index ────────────────────────────────────────────────────
 
