@@ -24,13 +24,15 @@
  * WHAT IT DOES
  * ------------
  * Resolves the project's transitive nx dependency set, maps each to its PROJECT ROOT (the dir
- * `nx.json`'s own `namedInputs.default` names as `{projectRoot}/** /*` (no space in the real glob)
- * — not just `sourceRoot`, a
+ * `nx.json`'s own `namedInputs.default` names as `{projectRoot}/**\/*` — not just `sourceRoot`, a
  * `src/` subdirectory of it), and reports `git status --porcelain` restricted to those roots plus
- * the repo's shared-global config (`nx.json` `namedInputs.sharedGlobals` names
- * `tsconfig.base.json`; `nx.json` and `pnpm-lock.yaml` are added on top because a change to either
- * changes what `^build`/`test` actually execute against, even though nx does not hash them as
- * cache inputs). Dirt anywhere else in the repo is irrelevant to the suite and is deliberately not
+ * the repo's shared-global config (`nx.json` `namedInputs.sharedGlobals` names `tsconfig.base.json`; `nx.json`
+ * itself is ALSO added even though it is already an implicit global input nx hashes into every
+ * task automatically — it is listed here for the reader's benefit, not because nx would otherwise
+ * miss it. `pnpm-lock.yaml`, `package.json`, `pnpm-workspace.yaml`, and `.npmrc` are added on top
+ * because a change to any of them changes what gets resolved into `node_modules` — and therefore
+ * what `^build`/`test` actually execute against — even though nx does not hash them as cache
+ * inputs). Dirt anywhere else in the repo is irrelevant to the suite and is deliberately not
  * reported — a report that is noisy gets ignored, and this one has to be read.
  *
  * [28f22e8d, 2026-09-28] Earlier versions of this tool restricted `git status` to `sourceRoot`
@@ -38,9 +40,21 @@
  * build/test OUTSIDE `src/` — `project.json`, `tsconfig.json`, `vitest.config.ts`, and (for
  * memory-server specifically) its top-level `*.test.ts` files all live at the project root, one
  * level above `sourceRoot`. A dirty `project.json` was therefore invisible to this tool: it could
- * report CLEAN while three dependency-set `project.json` files sat uncommitted. See
- * `sourceRoot` vs `root` at `tools/check-suite-tree-state.mjs:82-96` and nx's own
- * `{projectRoot}/** /*` (no space in the real glob) default input in `nx.json`.
+ * report CLEAN while three dependency-set `project.json` files sat uncommitted. See the
+ * `sourceRoots()` vs `projectRoots()` functions below, and nx's own `{projectRoot}/**\/*` default
+ * input in `nx.json`. (That glob — and every other one in this file — carries a backslash before
+ * its middle slash: the un-escaped four-character sequence star-star-slash-star is also how a
+ * JS block comment ends, so writing it literally here would truncate this very comment.)
+ *
+ * [followups, 2026-09-28] A project root is a plain path PREFIX, not a project boundary — it also
+ * matches any nx project nested inside it (e.g. `graph-store` contains
+ * `graph-store-conformance-consumer`; `sox-memory-bundle` contains its own member projects). A
+ * nested project that is NOT itself part of the dependency set is excluded via `:(exclude)`
+ * pathspec magic — see `buildPathspecs()`. The repo ROOT project (`.`, when it is itself part of
+ * the dependency set) gets the same treatment for a stronger reason: `.` as a pathspec matches the
+ * ENTIRE repo, so left unguarded it would defeat the whole point of this tool by reporting dirt in
+ * every project, dependency set or not. `buildPathspecs()` scopes `.` down to files that live
+ * directly at the repo root.
  *
  * It ALSO reports any dependency whose `dist/` is older than its `src/` (see `staleDistOver`
  * below and `tools/dist-freshness.mjs`). `dist/` is gitignored, so `git status` is structurally
@@ -117,15 +131,68 @@ export function projectRoots(graph, projects) {
  * graph membership, restricted to files that actually exist (this tool must also run cleanly
  * against a fixture repo that has none of these). `tsconfig.base.json` is nx's own declared
  * `sharedGlobals` input (`nx.json` `namedInputs.sharedGlobals`) — a change here invalidates every
- * project's build cache. `nx.json` and `pnpm-lock.yaml` are not nx-hashed cache inputs, but a
- * change to either changes what `^build`/`test` execute against (target definitions, dependency
- * resolution) just as surely as a source edit — they are included on that basis, not because nx
- * says so.
+ * project's build cache. `nx.json` is included for the reader's benefit even though nx ALREADY
+ * hashes it implicitly into every task (it is nx's own config file — plugins, target defaults,
+ * task runner options — so nx treats a change to it as a global cache-busting input on its own;
+ * this tool doesn't need to compensate for a gap there). `pnpm-lock.yaml`, `package.json`
+ * (root — declares the pnpm workspace globs' consumers and root devDependencies),
+ * `pnpm-workspace.yaml` (declares which package globs exist AT ALL — changing it changes
+ * dependency resolution exactly like the lockfile does), and `.npmrc` (registry/resolution
+ * settings) are NOT nx-hashed cache inputs, but a change to any of them changes what
+ * `^build`/`test` actually execute against (what gets resolved into `node_modules`) just as
+ * surely as a source edit — they are included on that basis, not because nx says so.
  */
 export function rootConfigFiles(cwd = process.cwd()) {
-  return ['nx.json', 'tsconfig.base.json', 'pnpm-lock.yaml'].filter((f) =>
-    existsSync(path.join(cwd, f)),
-  );
+  return [
+    'nx.json',
+    'tsconfig.base.json',
+    'pnpm-lock.yaml',
+    'package.json',
+    'pnpm-workspace.yaml',
+    '.npmrc',
+  ].filter((f) => existsSync(path.join(cwd, f)));
+}
+
+/**
+ * [followups, 2026-09-28] `git status -- <pathspec>` pathspecs to scope a `git status` scan to
+ * exactly `pkgRoots`, with two corrections a plain list of dirs gets wrong:
+ *
+ *   1. A project root is a path PREFIX, not a project boundary — it also matches any nx project
+ *      nested inside it (e.g. `graph-store` contains `graph-store-conformance-consumer`;
+ *      `sox-memory-bundle` contains its own member projects). A nested project that is not itself
+ *      part of `pkgRoots` is excluded via `:(exclude)` pathspec magic.
+ *   2. The repo ROOT project (`root: '.'`, when it is itself part of the dependency set) needs the
+ *      same treatment for a stronger reason: `.` as a pathspec matches the ENTIRE repo. Left
+ *      unguarded it would defeat the whole point of this tool — reporting dirt in every project
+ *      in the repo, dependency set or not. It is scoped down to files that live directly at the
+ *      repo root by excluding every OTHER project root that is not itself part of `pkgRoots`
+ *      (a project root that IS part of `pkgRoots` is already separately included as its own entry
+ *      — excluding it here too would be a no-op at best and, since `:(exclude)` wins over any
+ *      matching include pattern in the same pathspec set, would wrongly cancel that legitimate
+ *      inclusion if the ordering of exclude-vs-include patterns were ever relied upon instead).
+ */
+export function buildPathspecs(graph, pkgRoots) {
+  const pkgRootSet = new Set(pkgRoots);
+  const allRoots = [
+    ...new Set(Object.values(graph.nodes).map((n) => n.data?.root).filter(Boolean)),
+  ];
+  const specs = [];
+  for (const root of pkgRoots) {
+    specs.push(root);
+    if (root === '.') {
+      for (const other of allRoots) {
+        if (other !== '.' && !pkgRootSet.has(other)) specs.push(`:(exclude)${other}`);
+      }
+      continue;
+    }
+    const prefix = `${root.replace(/\/$/, '')}/`;
+    for (const other of allRoots) {
+      if (other !== root && other.startsWith(prefix) && !pkgRootSet.has(other)) {
+        specs.push(`:(exclude)${other}`);
+      }
+    }
+  }
+  return [...new Set(specs)];
 }
 
 /**
@@ -206,11 +273,13 @@ export function buildReport(graph, project, cwd = process.cwd()) {
   // vitest.config.ts, top-level test files included) plus shared root config — not sourceRoots,
   // which is a `src/` subdirectory that misses all of the above. sourceRoots is still reported
   // below (informational: the narrower set a plain source-only rebuild would read).
-  const dirty = porcelainOver([...pkgRoots, ...globalConfig], cwd);
+  // [followups] `pkgRoots` is expanded to `buildPathspecs()` pathspecs first — plain dirs would
+  // over-scope into nested non-dependency projects and, when `.` is a dependency, the whole repo.
+  const dirty = porcelainOver([...buildPathspecs(graph, pkgRoots), ...globalConfig], cwd);
   const staleDist = staleDistOver(pkgRoots, cwd);
   return {
     project,
-    dependencies: deps.sort(),
+    dependencies: [...deps].sort(),
     sourceRoots: sourceRoots(graph, deps),
     projectRoots: pkgRoots,
     rootConfigFiles: globalConfig,
@@ -236,22 +305,21 @@ function main() {
     return 2;
   }
 
-  const deps = transitiveDeps(graph, project);
   const report = buildReport(graph, project);
 
   if (json) {
     console.log(JSON.stringify(report, null, 2));
   } else if (report.clean) {
     console.log(
-      `check-suite-tree-state: CLEAN — ${deps.length} project(s) in ${project}'s dependency set, ` +
-        'no uncommitted changes and no dist/ older than its src/. A suite result here is ' +
-        'attributable to committed source [BL-456].',
+      `check-suite-tree-state: CLEAN — ${report.dependencies.length} project(s) in ${project}'s ` +
+        "dependency set, no uncommitted changes and no dist/ older than its src/. A suite result " +
+        'here is attributable to committed source [BL-456].',
     );
   } else {
     if (report.dirty.length > 0) {
       console.log(
         `check-suite-tree-state: DIRTY — ${report.dirty.length} uncommitted path(s) inside ${project}'s ` +
-          `dependency set (${deps.length} project(s)) [BL-456]:`,
+          `dependency set (${report.dependencies.length} project(s)) [BL-456]:`,
       );
       for (const line of report.dirty) console.log(`  ${line}`);
       console.log(

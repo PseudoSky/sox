@@ -162,10 +162,11 @@ const graph = {
     env: SAFE_GIT_ENV,
   });
   let parsed = null;
+  let parseError = null;
   try {
     parsed = JSON.parse(r.stdout);
-  } catch {
-    /* reported below */
+  } catch (e) {
+    parseError = e;
   }
   report(
     "BL-456: the real repo's graph resolves and memory-server's dependency set is enumerated",
@@ -175,7 +176,8 @@ const graph = {
       parsed.sourceRoots.length > 0,
     parsed
       ? `${parsed.dependencies.length} project(s), ${parsed.sourceRoots.length} source root(s), clean=${parsed.clean}`
-      : `exit=${r.status} stderr=${(r.stderr ?? '').trim().slice(0, 200)}`,
+      : `exit=${r.status} stderr=${(r.stderr ?? '').trim().slice(0, 200)}` +
+          (parseError ? ` jsonParseError=${parseError.message} stdout=${r.stdout.slice(0, 200)}` : ''),
   );
   report(
     'BL-456: --require-clean turns the report into a gate, and agrees with the report it printed',

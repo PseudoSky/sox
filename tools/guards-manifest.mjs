@@ -68,7 +68,7 @@ function findAllProjectJsonPaths(root) {
 const ALL_PROJECT_JSON_PATHS = findAllProjectJsonPaths(REPO_ROOT);
 
 export const GUARDS = [
-  // ---------------------------------------------------------------- Tier 1 (33) -----------
+  // ---------------------------------------------------------------- Tier 1 (34) -----------
   {
     id: 'bl222',
     tier: 1,
@@ -110,9 +110,30 @@ export const GUARDS = [
     script: 'test-28f22e8d-tree-state-config-dirt.mjs',
     // Pins that check-suite-tree-state.mjs's git-status scope is each dependency's PROJECT ROOT
     // (project.json, tsconfig.json, vitest.config.ts, top-level test files) plus repo root config
-    // (nx.json, tsconfig.base.json, pnpm-lock.yaml) — not just sourceRoot, which misses all of
-    // those. The authentic pre-fix sourceRoot-only scoping (buildReport() absent) is the negative
-    // control.
+    // (nx.json, tsconfig.base.json, pnpm-lock.yaml, package.json, pnpm-workspace.yaml, .npmrc) —
+    // not just sourceRoot, which misses all of those — AND that a project root's `git status`
+    // pathspec correctly excludes a NESTED non-dependency nx project (item 2) and, when the repo
+    // ROOT project itself is a dependency, is scoped to the literal repo root rather than
+    // sweeping in every other project via the `.` pathspec (item 3). Most arms use a scratch
+    // fixture repo as the negative control (the authentic pre-fix sourceRoot-only scoping —
+    // buildReport() absent entirely — for arms 1-4; the authentic pre-fix buildPathspecs()-absent
+    // scoping for arms 5-6). The FINAL arm (7) is deliberately NOT hermetic — it spawns the CLI
+    // against this real checkout's own live git state and graph, not a scratch fixture, so it can
+    // only assert shape (non-empty projectRoots/rootConfigFiles), not exact dirty content; it
+    // stays Tier 1 on the same basis bl456's own arm 6 already established for that pattern.
+    watch: ['tools/check-suite-tree-state.mjs'],
+  },
+  {
+    id: 'aa65862e',
+    tier: 1,
+    script: 'test-aa65862e-tree-state-git-env-isolation.mjs',
+    // Pins check-suite-tree-state.mjs's gitEnv() helper: porcelainOver() must strip inherited
+    // GIT_DIR/GIT_INDEX_FILE/GIT_WORK_TREE/GIT_COMMON_DIR before every spawned `git status` call,
+    // so a value inherited from an enclosing git process (e.g. `.husky/pre-commit`'s in-progress
+    // commit index) can never redirect the report away from the scratch/real repo it was asked to
+    // scope to. The negative control is not a pinned git revision — it is a raw, un-stripped
+    // `git status` call made in the same test process, so the guard never depends on old history
+    // staying reachable.
     watch: ['tools/check-suite-tree-state.mjs'],
   },
   {
