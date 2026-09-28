@@ -123,6 +123,23 @@ export const GUARDS = [
     watch: ['scripts/lib/isolation-guard.mjs', 'scripts/smoke-test.mjs', 'apps/sox/src/cli-invoked-fields.ts'],
   },
   {
+    id: '26121495',
+    tier: 1,
+    script: 'test-26121495-smoke-embed-host-isolation.mjs',
+    // Pins the smoke harness's embedding-host containment: a smoke-owned host with the operator
+    // HOME, model cache or a temp-dir socket is a breach; the harness env keeps socket + cache in
+    // the run through the product's own resolution; every memory-server leg gets the scratch HOME.
+    watch: ['scripts/lib/embed-host-isolation.mjs', 'scripts/lib/smoke-env.mjs', 'scripts/smoke-test.mjs', 'libs/service-proxy/src/socket-path.ts'],
+  },
+  {
+    id: '97e7f214',
+    tier: 1,
+    script: 'test-97e7f214-smoke-embed-host-teardown.mjs',
+    // Pins the smoke serve legs' teardown: the detached embedding host (ADR-0022) is verified-stopped
+    // after the soxe group kill, a survivor fails the leg, and an untagged host is never signalled.
+    watch: ['scripts/lib/embed-host-isolation.mjs', 'scripts/smoke-test.mjs'],
+  },
+  {
     id: '4fc3704e',
     tier: 1,
     script: 'test-4fc3704e-resolve-terminal-evidence.mjs',

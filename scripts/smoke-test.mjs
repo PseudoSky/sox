@@ -35,6 +35,14 @@ import {
   soxCliLogDirs,
   telemetryLogDirs,
 } from './lib/isolation-guard.mjs';
+import {
+  PS_ARGS as EMBED_PS_ARGS,
+  auditAndReapEmbedHosts,
+  auditEmbedHosts,
+  describeHost,
+  parsePsLines,
+} from './lib/embed-host-isolation.mjs';
+import { buildMemoryServerEnv, buildSmokeEnv } from './lib/smoke-env.mjs';
 
 // ──────────────────────────────────────────────────────────────────────────────
 // Configuration
@@ -153,6 +161,31 @@ const SMOKE_DATA_ROOT = path.join(TEST_ROOT, 'sox-data-root');
 //      permission-guard.spec.ts uses) so `~/.memory/**` resolves inside
 //      TEST_ROOT, and put the scratch store there.
 const MEMORY_FAKE_HOME = path.join(TEST_ROOT, 'sox-data-root', 'fake-home');
+
+// ── 26121495: a smoke run shares no socket path class, model cache or
+// embedding host with production ──────────────────────────────────────────
+// The embedding host's socket lives under `$SOX_ECOSYSTEM_HOME/run`
+// (embedHostConfig.ts resolveEmbedHostSocketDir). SMOKE_DATA_ROOT sits ~100
+// bytes deep in a worktree, so `<root>/run/<socket>` blows the 104-byte
+// sun_path budget and backendSocketPath() (libs/service-proxy/src/socket-path.ts,
+// BL-578) falls back to `os.tmpdir()/sox-uds/` — a directory every deep-rooted
+// process on the box shares, and `/tmp` for a `soxe serve` child whose env
+// policy drops TMPDIR. SMOKE_SHORT_ROOT is a short, run-unique symlink to
+// SMOKE_DATA_ROOT: the children get it as SOX_ECOSYSTEM_HOME, so every socket
+// fits under it (28-byte `<short>/run/` + a 72-byte key filename = 100), while
+// every file still lands physically under TEST_ROOT for the snapshot diffs.
+const SMOKE_SHORT_ROOT = path.join('/tmp', `sox-smoke-${crypto.randomBytes(4).toString('hex')}`);
+// The model cache and the TMPDIR every smoke child resolves (XDG_CACHE_HOME
+// outranks $HOME/.cache in joinDefaultCacheDir(); TMPDIR must be short too,
+// since it is the BL-578 fallback's parent).
+const SMOKE_XDG_CACHE_HOME = path.join(TEST_ROOT, 'sox-data-root', 'xdg-cache');
+const SMOKE_TMPDIR = path.join(SMOKE_SHORT_ROOT, 'tmp');
+/** Every root a smoke-owned process may resolve HOME / cache / socket under. */
+const SMOKE_ROOTS = [TEST_ROOT, SMOKE_SHORT_ROOT];
+/** 26121495: every embedding host this run spawned that escaped containment. */
+const EMBED_ISOLATION_BREACHES = [];
+/** 97e7f214: every smoke embedding host that survived a verified stop. */
+const EMBED_UNDEAD = new Set();
 const SMOKE_DB_PATH = path.join(MEMORY_FAKE_HOME, '.memory', 'memory-smoke.db');
 
 // Derive the real live socket dir so we can assert against it after the run.
@@ -262,33 +295,27 @@ function noteSoxeSpawn(args, extId) {
   if (idPos) SMOKE_TOUCHED_IDS.add(idPos);
 }
 
-/** Env block injected into every child process this harness spawns. */
+const SMOKE_ENV_CFG = {
+  dataRoot: SMOKE_SHORT_ROOT,
+  xdgCacheHome: SMOKE_XDG_CACHE_HOME,
+  tmpdir: SMOKE_TMPDIR,
+  fastembedLock: path.join(SMOKE_DATA_ROOT, 'fastembed-host.lock'),
+  memoryHome: MEMORY_FAKE_HOME,
+};
+
+/** Env block injected into every child process this harness spawns (scripts/lib/smoke-env.mjs). */
 function smokeEnv() {
-  return {
-    ...process.env,
-    NODE_NO_WARNINGS: '1',
-    // BL-173: redirect the data root away from the live user installation.
-    SOX_ECOSYSTEM_HOME: SMOKE_DATA_ROOT,
-    // BL-501: every process this harness execs (memory-server, memory-cli, ...)
-    // is a synthetic spawn of the real compiled binary, not a genuine
-    // production/operator invocation. Without this signal those spawns report
-    // telemetry role:'live-service'/'cli' identically to a real one — see
-    // resolveProcessRole() in @adhd/sox-telemetry and docs/reporting/memory/
-    // findings/2026-08-17-store-connection-lifetime-forensics.md §1d for the
-    // cross-repo incident this class of bug caused.
-    SOX_TELEMETRY_HARNESS: '1',
-  };
+  return buildSmokeEnv(process.env, SMOKE_ENV_CFG);
 }
 
 /**
- * smokeEnv() plus a scratch $HOME (see MEMORY_FAKE_HOME above) — used ONLY
- * for the memory-server legs, so `~/.memory/**` fs-permission expansion
- * resolves inside TEST_ROOT instead of the operator's real home directory.
- * Scoped narrowly (not folded into smokeEnv() itself) so no other
- * extension's child processes have $HOME redirected out from under them.
+ * smokeEnv() plus a scratch $HOME (see MEMORY_FAKE_HOME above) — used for
+ * EVERY memory-server leg (26121495), so `~/.memory/**` fs-permission expansion
+ * and the embedding host's model cache resolve inside TEST_ROOT instead of the
+ * operator's real home directory.
  */
 function memoryServerEnv() {
-  return { ...smokeEnv(), HOME: MEMORY_FAKE_HOME };
+  return buildMemoryServerEnv(process.env, SMOKE_ENV_CFG);
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
@@ -354,6 +381,7 @@ async function runCmd(args, opts = {}) {
   }
   const after = await snapshotFiles(TEST_ROOT);
   const fileChanges = diffSnapshots(before, after);
+  auditSmokeEmbedHosts(testId ?? args.join(' '));
 
   // ── BL-578: fail-closed verdict computation ────────────────────────────────
   // Every step's pass/fail must be a POSITIVE assertion, never an absence of a
@@ -642,6 +670,8 @@ async function runServeProxyAndVerify(args, opts) {
       process.kill(backendPid, "SIGTERM");
     } catch (e) { logKillError(e, testId, backendPid, "SIGTERM (backend)"); }
   }
+  // 97e7f214/26121495: the embedding host the backend spawned is detached; stop it here.
+  const embedReap = await reapSmokeEmbedHosts(testId);
 
   const after = await snapshotFiles(TEST_ROOT);
   const fileChanges = diffSnapshots(before, after);
@@ -651,6 +681,9 @@ async function runServeProxyAndVerify(args, opts) {
     result = verifyProxyServe({ stdout: stdout, stderr: stderr });
   } catch (verr) {
     result = { ok: false, verdict: "verify-threw", detail: "verify() threw: " + ((verr && verr.message) || verr) };
+  }
+  if (result && result.ok === true && !embedReap.ok) {
+    result = { ok: false, verdict: "embed-host-teardown", detail: embedReap.detail };
   }
   const passed = result != null && result.ok === true;
   const verdict = passed ? "verified" : ((result && result.verdict) || "unverified");
@@ -925,11 +958,87 @@ function listTestRootProcesses() {
     console.error(`[smoke] WARNING: ps -axEww failed: ${(e && e.message) ?? e}`);
     return null; // unknown, not "zero" — callers must not read this as proof of nothing
   }
-  const lines = raw.split('\n').filter((line) => line.includes(TEST_ROOT));
+  // 26121495: a child's SOX_ECOSYSTEM_HOME is SMOKE_SHORT_ROOT, which is not a
+  // substring of TEST_ROOT — tag on every smoke root.
+  const lines = raw.split('\n').filter((line) => SMOKE_ROOTS.some((r) => line.includes(r)));
   // d5c01be3: every TEST_ROOT-tagged process (argv `--root TEST_ROOT` or env) is
   // smoke-spawned — including supervisor/OS-unit daemons runCmd never sees a pid for.
-  for (const pid of pidsFromPsLines(lines, TEST_ROOT, process.pid)) SMOKE_SPAWNED_PIDS.add(pid);
+  for (const root of SMOKE_ROOTS) {
+    for (const pid of pidsFromPsLines(lines, root, process.pid)) SMOKE_SPAWNED_PIDS.add(pid);
+  }
   return lines;
+}
+
+/** `ps` capture for the embedding-host audit; null (unknown, never "none") on failure. */
+function psEmbedHosts(testId) {
+  try {
+    return execSync(`ps ${EMBED_PS_ARGS.join(' ')}`, { encoding: 'utf-8', maxBuffer: 64 * 1024 * 1024 });
+  } catch (e) {
+    console.error(`[smoke] WARNING: ${testId} embed-host ps capture failed: ${(e && e.message) ?? e}`);
+    return null;
+  }
+}
+
+function embedAuditCtx() {
+  return { smokeRoots: SMOKE_ROOTS, spawnedPids: SMOKE_SPAWNED_PIDS, runStartedMs: RUN_STARTED_MS };
+}
+
+function recordEmbedBreaches(testId, violations, procs) {
+  for (const v of violations) {
+    const p = procs.find((x) => x.pid === v.pid);
+    const line = `${testId}: ${p ? describeHost(p) : `pid=${v.pid}`} — ${v.reasons.join('; ')}`;
+    if (!EMBED_ISOLATION_BREACHES.includes(line)) EMBED_ISOLATION_BREACHES.push(line);
+    console.error(`[smoke] EMBED ISOLATION BREACH (26121495) ${line}`);
+  }
+}
+
+/**
+ * 26121495: audit-only pass (no signals) — records every smoke-owned embedding
+ * host that escaped containment. Called after every soxe step so a host is seen
+ * while it is still inside its idle window.
+ */
+function auditSmokeEmbedHosts(testId) {
+  const raw = psEmbedHosts(testId);
+  if (raw === null) {
+    EMBED_ISOLATION_BREACHES.push(`${testId}: embed-host audit UNKNOWN (ps failed)`);
+    return;
+  }
+  const procs = parsePsLines(raw, Date.now());
+  const audit = auditEmbedHosts(procs, embedAuditCtx());
+  recordEmbedBreaches(testId, audit.violations, audit.smoke);
+}
+
+/**
+ * 97e7f214 + 26121495: audit, then verified-stop every embedding host this run
+ * owns (SIGTERM → poll → SIGKILL → re-verify, spec §8.3), re-scanning once for a
+ * host spawned during teardown. The host is detached into its own process group
+ * (ADR-0022), so the soxe group kill in the caller can never reach it. Foreign
+ * hosts (production, other sessions) are reported and never signalled.
+ *
+ * @returns {Promise<{ ok: boolean, detail: string }>}
+ */
+async function reapSmokeEmbedHosts(testId) {
+  const r = await auditAndReapEmbedHosts(embedAuditCtx(), {
+    ps: () => psEmbedHosts(testId),
+    now: () => Date.now(),
+    kill: (pid, sig) => process.kill(pid, sig),
+    // Ref'd timer: see killProcessGroup() for why an unref'd wait can let the loop drain.
+    sleep: (ms) => new Promise((res) => { setTimeout(res, ms); }),
+    log: (msg) => console.error(`[smoke] WARNING: ${testId} embed-host reap: ${msg}`),
+  });
+  recordEmbedBreaches(testId, r.violations, r.smoke);
+  for (const pid of r.undead) EMBED_UNDEAD.add(pid);
+  for (const p of r.smoke) SMOKE_SPAWNED_PIDS.add(p.pid);
+  console.error(`[smoke] ${testId} embed-host reap (97e7f214): smoke-owned ${r.smoke.length} ` +
+    `[${r.smoke.map((p) => `${p.pid}:${p.kind}`).join(', ')}], stopped ${r.stopped.length}, undead ${r.undead.length}, ` +
+    `violations ${r.violations.length}, foreign (untouched) ${r.foreign.length}`);
+  const problems = [];
+  if (r.psFailed) problems.push('embed-host ps capture failed — reap unverifiable');
+  if (r.undead.length > 0) problems.push(`embed host(s) survived verified stop: ${r.undead.join(', ')}`);
+  if (r.violations.length > 0) {
+    problems.push(`embed host isolation breach: ${r.violations.map((v) => `pid ${v.pid}: ${v.reasons.join('; ')}`).join(' | ')}`);
+  }
+  return { ok: problems.length === 0, detail: problems.join(' || ') };
 }
 
 // BL-635: the no-proxy memory-server leg used to send initialize + memory_write
@@ -1041,13 +1150,19 @@ async function runMemoryServerDirectServeAndVerify(args, opts) {
   while (Date.now() < exitWaitDeadline && !exited) {
     await new Promise(function (r) { setTimeout(r, 50); });
   }
+  // 97e7f214: the embedding host is its own process-group leader (ADR-0022), so
+  // the group kill above never reaches it — verified-stop it explicitly.
+  const embedReap = await reapSmokeEmbedHosts(testId);
 
   const testRootProcsAfter = listTestRootProcesses();
+  let orphanProblem = null;
   if (testRootProcsAfter === null || testRootProcsBefore === null) {
     console.error(`[smoke] WARNING: ${testId} orphan proof UNKNOWN — ps capture failed at least once, see the ps WARNING above`);
+    orphanProblem = "orphan proof unknown: ps capture failed";
   } else {
     if (testRootProcsAfter.length > 0) {
-      console.error(`[smoke] WARNING: ${testId} TEST_ROOT-tagged process(es) survived teardown: ${JSON.stringify(testRootProcsAfter)}`);
+      console.error(`[smoke] FAIL: ${testId} smoke-tagged process(es) survived teardown (97e7f214): ${JSON.stringify(testRootProcsAfter)}`);
+      orphanProblem = `${testRootProcsAfter.length} smoke-tagged process(es) survived teardown`;
     }
     console.error(`[smoke] ${testId} orphan proof — before teardown: ${testRootProcsBefore.length} TEST_ROOT process(es); after: ${testRootProcsAfter.length}`);
   }
@@ -1060,6 +1175,9 @@ async function runMemoryServerDirectServeAndVerify(args, opts) {
     result = verifyMemoryServerPing({ stdout: stdout, stderr: stderr, exitCode: exitCode, signal: signal, fileChanges: fileChanges });
   } catch (verr) {
     result = { ok: false, verdict: "verify-threw", detail: "verify() threw: " + ((verr && verr.message) || verr) };
+  }
+  if (result && result.ok === true && (!embedReap.ok || orphanProblem !== null)) {
+    result = { ok: false, verdict: "teardown-leak", detail: [embedReap.detail, orphanProblem].filter(Boolean).join(" || ") };
   }
   const passed = result != null && result.ok === true;
   const verdict = passed ? "verified" : ((result && result.verdict) || "unverified");
@@ -1109,28 +1227,35 @@ async function testExtension(ext) {
   const scopes = scopesFromManifest(m);
   const isBackground = hasBackground(m);
   const modes = type === 'mcp-server' ? serveModes(m) : [];
+  // 26121495: EVERY memory-server leg — install, upgrade, service
+  // enable/status/disable, config, serve, uninstall — runs with the scratch
+  // $HOME. The service daemon embeds on warmup, and before this it ran under
+  // smokeEnv()'s operator $HOME: its embedding host resolved the operator's
+  // model cache (~/.cache/sox/models) and, via the operator TMPDIR, a
+  // socket under the shared os.tmpdir()/sox-uds fallback. undefined → smokeEnv().
+  const legEnv = id === 'memory-server' ? memoryServerEnv() : undefined;
 
   // ── Install (standalone only) ───────────────────────────────────
   if (!isBundleMember) {
     for (const scope of scopes) {
-      await runCmd(['install', id, '--scope', scope, '--root', TEST_ROOT], { testId: `${id}-${scope}-install`, extId: id, extType: type, verify: verifyLocalBytesInvariant(id) });
-      await runCmd(['upgrade', '--all', '--scope', scope, '--root', TEST_ROOT], { timeoutMs: 60_000, testId: `${id}-${scope}-upgrade`, extId: id, extType: type });
+      await runCmd(['install', id, '--scope', scope, '--root', TEST_ROOT], { testId: `${id}-${scope}-install`, extId: id, extType: type, env: legEnv, verify: verifyLocalBytesInvariant(id) });
+      await runCmd(['upgrade', '--all', '--scope', scope, '--root', TEST_ROOT], { timeoutMs: 60_000, testId: `${id}-${scope}-upgrade`, extId: id, extType: type, env: legEnv });
     }
   }
 
   // ── Host-based install (mcp-server / skill) ─────────────────────
   for (const host of hosts) {
     for (const scope of scopes) {
-      await runCmd(['install', id, `--host=${host}`, '--scope', scope, '--root', TEST_ROOT], { testId: `${id}-${host}-${scope}-install`, extId: id, extType: type, verify: verifyLocalBytesInvariant(id) });
+      await runCmd(['install', id, `--host=${host}`, '--scope', scope, '--root', TEST_ROOT], { testId: `${id}-${host}-${scope}-install`, extId: id, extType: type, env: legEnv, verify: verifyLocalBytesInvariant(id) });
     }
   }
 
   // ── Service lifecycle (background: true) ───────────────────────
   if (isBackground) {
     for (const scope of scopes) {
-      await runCmd(['service', 'enable', id, '--allow-volatile-node', '--scope', scope, '--root', TEST_ROOT], { timeoutMs: 60_000, testId: `${id}-${scope}-enable`, extId: id, extType: type });
-      await runCmd(['service', 'status', id, '--scope', scope, '--root', TEST_ROOT], { testId: `${id}-${scope}-status`, extId: id, extType: type, verify: verifyServiceRunning });
-      await runCmd(['service', 'disable', id, '--scope', scope, '--root', TEST_ROOT], { timeoutMs: 30_000, testId: `${id}-${scope}-disable`, extId: id, extType: type });
+      await runCmd(['service', 'enable', id, '--allow-volatile-node', '--scope', scope, '--root', TEST_ROOT], { timeoutMs: 60_000, testId: `${id}-${scope}-enable`, extId: id, extType: type, env: legEnv });
+      await runCmd(['service', 'status', id, '--scope', scope, '--root', TEST_ROOT], { testId: `${id}-${scope}-status`, extId: id, extType: type, env: legEnv, verify: verifyServiceRunning });
+      await runCmd(['service', 'disable', id, '--scope', scope, '--root', TEST_ROOT], { timeoutMs: 30_000, testId: `${id}-${scope}-disable`, extId: id, extType: type, env: legEnv });
     }
   }
 
@@ -1142,7 +1267,7 @@ async function testExtension(ext) {
   // runMemoryServerDirectServeAndVerify. Other mcp-servers keep the bare
   // initialize probe.
   const isMemoryServer = id === 'memory-server';
-  const memoryEnv = isMemoryServer ? memoryServerEnv() : undefined;
+  const memoryEnv = legEnv;
 
   if (isMemoryServer) {
     // BL-635: point db_path at the scratch store through the extension's OWN
@@ -1175,14 +1300,14 @@ async function testExtension(ext) {
     } else if (isMemoryServer) {
       await runMemoryServerDirectServeAndVerify(args, { timeoutMs: 30_000, testId: `${id}-serve-${mode}`, extId: id, extType: type, env: memoryEnv });
     } else {
-      await runCmd(args, { timeoutMs: 30_000, testId: `${id}-serve-${mode}`, extId: id, extType: type, stdinInput: initPayload, verify: verifyDirectServe });
+      await runCmd(args, { timeoutMs: 30_000, testId: `${id}-serve-${mode}`, extId: id, extType: type, env: legEnv, stdinInput: initPayload, verify: verifyDirectServe });
     }
   }
 
   // ── Uninstall (standalone only) ────────────────────────────────
   if (!isBundleMember) {
     for (const scope of scopes) {
-      await runCmd(['uninstall', id, '--scope', scope, '--root', TEST_ROOT], { testId: `${id}-${scope}-uninstall`, extId: id, extType: type });
+      await runCmd(['uninstall', id, '--scope', scope, '--root', TEST_ROOT], { testId: `${id}-${scope}-uninstall`, extId: id, extType: type, env: legEnv });
     }
   }
 }
@@ -1326,7 +1451,12 @@ async function main() {
 
   // ── BL-173: create scratch data root and verify isolation ──────────────────
   await fsp.mkdir(SMOKE_DATA_ROOT, { recursive: true });
-  console.error(`[smoke] SOX_ECOSYSTEM_HOME (scratch) → ${SMOKE_DATA_ROOT}`);
+  // 26121495: short alias (see SMOKE_SHORT_ROOT) + the run-owned cache/tmp dirs.
+  await fsp.symlink(SMOKE_DATA_ROOT, SMOKE_SHORT_ROOT, 'dir');
+  await fsp.mkdir(SMOKE_TMPDIR, { recursive: true });
+  await fsp.mkdir(SMOKE_XDG_CACHE_HOME, { recursive: true });
+  console.error(`[smoke] SOX_ECOSYSTEM_HOME (scratch) → ${SMOKE_SHORT_ROOT} → ${SMOKE_DATA_ROOT}`);
+  console.error(`[smoke] XDG_CACHE_HOME (scratch) → ${SMOKE_XDG_CACHE_HOME}; TMPDIR (scratch) → ${SMOKE_TMPDIR}`);
   console.error(`[smoke] db_path (config set, scratch) → ${SMOKE_DB_PATH}`);
 
   // Assert: scratch root is NOT the real user data root.
@@ -1600,6 +1730,22 @@ async function main() {
   for (const line of isolation.lines) console.error(`[smoke] ${line}`);
   if (isolation.verdict === 'fatal') isolationFailed = true;
 
+  // 1b. 26121495 / 97e7f214: final embedding-host sweep. Every smoke-owned host
+  // must have been contained (HOME, model cache and socket inside the run) and
+  // none may outlive the run.
+  let embedIsolationFailed = false;
+  const finalEmbed = await reapSmokeEmbedHosts('final-sweep');
+  if (EMBED_ISOLATION_BREACHES.length > 0) {
+    console.error(`[smoke] FATAL: ${EMBED_ISOLATION_BREACHES.length} embedding-host isolation breach(es) (26121495): a smoke-owned ` +
+      `embedding host ran with the operator HOME, model cache or a socket outside the run:\n  ${EMBED_ISOLATION_BREACHES.join('\n  ')}`);
+    embedIsolationFailed = true;
+  } else if (EMBED_UNDEAD.size > 0 || !finalEmbed.ok) {
+    console.error(`[smoke] FATAL: smoke embedding host(s) outlived the run (97e7f214): ${[...EMBED_UNDEAD].join(', ')} ${finalEmbed.detail}`);
+    embedIsolationFailed = true;
+  } else {
+    console.error('[smoke] embedding-host isolation OK — every smoke-owned host was contained in the run and verified-stopped');
+  }
+
   // 2. Assert no sockets appeared under the REAL (live) socket dir during the run.
   try {
     const realSocketEntries = await fsp.readdir(REAL_SOCKET_DIR);
@@ -1631,6 +1777,12 @@ async function main() {
     process.exit(2);
   }
 
+  if (embedIsolationFailed) {
+    console.error('[smoke] FATAL: embedding-host isolation breach (26121495/97e7f214 — see the embedding-host FATAL above)');
+    runCompleted = true;
+    process.exit(2);
+  }
+
   runCompleted = true;
   process.exit(summary.failed > 0 ? 1 : 0);
 }
@@ -1654,6 +1806,13 @@ async function main() {
  * can cover that — but then the caller sees a signal rather than 0.
  */
 process.on('exit', (code) => {
+  // 26121495: the short SOX_ECOSYSTEM_HOME alias lives in /tmp — remove it on
+  // every exit path (the data it points at stays under TEST_ROOT).
+  try {
+    fs.unlinkSync(SMOKE_SHORT_ROOT);
+  } catch (e) {
+    if (!e || e.code !== 'ENOENT') console.error(`[smoke] WARNING: removing ${SMOKE_SHORT_ROOT} failed: ${(e && e.message) ?? e}`);
+  }
   if (runCompleted) return;
   // `console.error` is sync on a pipe at exit; `process.exitCode` is the only
   // mutation still honoured inside an 'exit' handler.
