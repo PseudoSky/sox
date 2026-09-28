@@ -22,6 +22,7 @@ export default [
   {
     ignores: [
       '**/dist/**',
+      '**/dist.staging-*/**',
       '**/node_modules/**',
       '**/.tmp-*/**',
       // tools/eslint-local/__fixture__ holds deliberate POSITIVE/NEGATIVE
@@ -133,7 +134,7 @@ export default [
   // way it crashes a server. See tools/eslint-local/no-unguarded-listen.cjs.
   {
     files: ['**/*.ts', '**/*.tsx'],
-    ignores: ['**/dist/**', '**/node_modules/**'],
+    ignores: ['**/dist/**', '**/dist.staging-*/**', '**/node_modules/**'],
     languageOptions: {
       parser: tsParser,
       parserOptions: { ecmaVersion: 2022, sourceType: 'module' },
