@@ -104,6 +104,9 @@ import {
   type ReconcileMatch,
   type ScopeResource,
   type StoreResource,
+  applyRetention,
+  planRetention,
+  sweepTrash,
 } from '@adhd/sox-host-runtime';
 // NOTE: `@adhd/sox-manifest` is deliberately LAZY-LOADED in this file (see the
 // `await import('@adhd/sox-manifest')` in cmdValidate, and printHelp below).
@@ -146,6 +149,10 @@ import {
   syncUserMcpToProjects,
   IntegrityResult,
   verifyIntegrity,
+  backfillHashes,
+  countUnverifiable,
+  detectDrift,
+  reconcile,
 } from '@adhd/sox-install-engine';
 import { gateVolatileCli } from './cli-path-gate.js';
 import { registerBundleMember, resolveBundleDir } from './bundle-init.js';
@@ -304,6 +311,21 @@ async function main(): Promise<void> {
     case 'diff':
       await cmdDiff(flags);
       break;
+
+    // ── Artifact lifecycle (D-B): detect ≠ remediate (B-I5/B-I7) ──────────────
+    case 'drift':
+      await cmdDrift(flags);
+      break;
+    case 'repair':
+      await cmdRepair(flags);
+      break;
+    case 'reconcile':
+      await cmdReconcile(flags);
+      break;
+    case 'gc':
+      await cmdGc(flags);
+      break;
+
     case 'update':
       await cmdUpdate(flags);
       break;
@@ -2214,6 +2236,94 @@ async function cmdBuild(_flags: Record<string, string>): Promise<void> {
  *
  * [cli-wiring.4]: new verb, wired to diffExtension() from libs/install-engine/src/diff.ts.
  */
+// ── D-B: artifact lifecycle commands (drift / repair / reconcile / gc) ────────
+// All are typed (ADR-0013: no env toggles). drift/reconcile are read-only; repair
+// and gc are separate deliberate acts (report-first where they mutate).
+
+async function cmdDrift(flags: Record<string, string>): Promise<void> {
+  const scope = (flags['scope'] ?? 'user') as DataScope;
+  const report = await detectDrift(scope, flags['root']);
+  if (flags['json'] !== undefined) {
+    process.stdout.write(JSON.stringify(report, null, 2) + '\n');
+    return;
+  }
+  process.stdout.write(`drift [scope=${scope}]: ${report.entries.length} entries\n`);
+  for (const v of ['still-valid', 'drifted', 'gone', 'foreign', 'unverifiable'] as const) {
+    process.stdout.write(`  ${v}: ${report.counts[v]}\n`);
+  }
+  for (const e of report.entries) {
+    if (e.verdict !== 'still-valid') process.stdout.write(`  [${e.verdict}] ${e.target} (${e.extId})\n`);
+  }
+}
+
+async function cmdReconcile(flags: Record<string, string>): Promise<void> {
+  const scope = (flags['scope'] ?? 'user') as DataScope;
+  const report = await reconcile(scope, flags['root']);
+  if (flags['json'] !== undefined) {
+    process.stdout.write(JSON.stringify(report, null, 2) + '\n');
+    return;
+  }
+  process.stdout.write(`reconcile [scope=${scope}]:\n`);
+  for (const p of report.perExtension) process.stdout.write(`  ${p.id}: ${p.status}\n`);
+  process.stdout.write(`  lockOnly: ${report.lockOnly.join(', ') || '(none)'}\n`);
+  process.stdout.write(`  installedOnly: ${report.installedOnly.join(', ') || '(none)'}\n`);
+  process.stdout.write(`  stubs: ${report.stubs.join(', ') || '(none)'}\n`);
+}
+
+async function cmdRepair(flags: Record<string, string>): Promise<void> {
+  const scope = (flags['scope'] ?? 'user') as DataScope;
+  if (flags['backfill-hashes'] === undefined) {
+    process.stderr.write('[sox] repair: nothing to do — pass --backfill-hashes\n');
+    process.exitCode = 2;
+    return;
+  }
+  const before = countUnverifiable(scope, flags['root']);
+  if (flags['confirm'] === undefined) {
+    process.stdout.write(
+      `repair --backfill-hashes: would fill hashes for ${before} unverifiable entr${before === 1 ? 'y' : 'ies'} at scope=${scope}. Re-run with --confirm.\n`,
+    );
+    return;
+  }
+  const report = backfillHashes(scope, flags['root']);
+  process.stdout.write(
+    `repair --backfill-hashes: filled=${report.filled} missing-targets=${report.missingTargets} unverifiable ${report.before}→${report.after}\n`,
+  );
+}
+
+async function cmdGc(flags: Record<string, string>): Promise<void> {
+  const pathMod = require('node:path') as typeof import('node:path');
+  const dir = flags['dir'] ?? flags['root'];
+  if (dir === undefined) {
+    process.stderr.write('[sox] gc: --dir <path> is required\n');
+    process.exitCode = 2;
+    return;
+  }
+  const roots = {
+    liveGenerations: (flags['live-generations'] ?? '').split(',').filter(Boolean),
+    lockEntries: (flags['lock-entries'] ?? '').split(',').filter(Boolean),
+    runningPids: (flags['running-pids'] ?? '').split(',').filter(Boolean).map(Number),
+  };
+  const policy = {
+    maxAgeMs: Number(flags['max-age-ms'] ?? '604800000'),
+    graceMs: Number(flags['grace-ms'] ?? '86400000'),
+    trashDir: flags['trash'] ?? pathMod.join(dir, '.trash'),
+  };
+  const plan = planRetention(dir, roots, policy);
+  if (flags['apply'] === undefined || flags['confirm'] === undefined) {
+    process.stdout.write(
+      `gc (report-first): reclaim ${plan.reclaim.length} (${plan.totalBytes} bytes), ` +
+        `protected ${plan.protected.length}, unmanaged ${plan.unmanaged.length}. Re-run with --apply --confirm.\n`,
+    );
+    for (const r of plan.reclaim) {
+      process.stdout.write(`  would reclaim [${r.class}] ${r.path} (${r.bytes}B): ${r.reason}\n`);
+    }
+    return;
+  }
+  await applyRetention(plan, policy);
+  const swept = sweepTrash(policy.trashDir);
+  process.stdout.write(`gc: trashed ${plan.reclaim.length}, swept ${swept.length} past grace.\n`);
+}
+
 async function cmdDiff(flags: Record<string, string>): Promise<void> {
   const pathMod = require('node:path') as typeof import('node:path');
 
