@@ -190,6 +190,18 @@ export {
   scrubOperatorStoreEnv,
 } from './test-env-scrub.js';
 
+// ── Test-harness embed-path isolation check (BL-57ae788f; TEST-ONLY) ─────────
+// Shared by every OTHER suite's harness (memory-cli, and available to
+// memory-server) that needs to prove a worker's embed paths resolve inside a
+// run-scoped scratch root and never under the operator's real
+// ~/.cache/sox or ~/.adhd/sox-ecosystem. See test-support/embed-isolation.ts.
+export {
+  isInside,
+  operatorEmbedRoots,
+  embedIsolationViolations,
+  assertEmbedPathsIsolated,
+} from './test-support/embed-isolation.js';
+
 // ── Outbox queue (transactional enrichment triggers — BL-172 / BL-186) ────────
 // Producers only: the consumer is memory-server's in-process periodic pass.
 // (The unwired createMemoryOutboxQueue/memoryFlush/migrate surface was deleted
