@@ -433,6 +433,18 @@ export function mergeLockEntry(
   };
   if (origin !== undefined) merged.origin = origin;
   else delete merged.origin;
+  // BL-0ebb23c3: `version`/`registry_root` were pinned against `prev`'s bytes.
+  // When the checksum changes (the bundle was rebuilt/re-materialized), the
+  // spread of `prev` above silently carries them forward onto the NEW bytes —
+  // e.g. a host-placement install from repo bytes inheriting the npm version
+  // it happened to have last time, producing a false 'ahead' freeze or
+  // spurious re-pin on every subsequent run. Neither caller of
+  // mergeLockEntry supplies a fresh version/registry_root, so on a checksum
+  // change they must be dropped rather than carried over.
+  if (prev !== undefined && prev.checksum !== next.checksum) {
+    delete merged.version;
+    delete merged.registry_root;
+  }
   return merged;
 }
 
