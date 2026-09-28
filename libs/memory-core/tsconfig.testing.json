@@ -1,0 +1,29 @@
+{
+  // BL-611a711e — dedicated build for the `@adhd/sox-memory-core/testing` subpath. A SEPARATE
+  // tsc invocation from tsconfig.lib.json (the main `.` entry) on purpose: this compiles
+  // src/testing/embed-isolation.ts + its barrel (index.ts) into ITS OWN physical output
+  // directory, `dist-testing/` — deliberately NOT `dist/testing/`, because `memory-core:build`
+  // uses `@adhd/sox-nx:atomic-tsc`, which stages into a scratch dir and then atomically
+  // RENAMES it over the entire `outputPath` (`dist/`) — any file nx build wrote into `dist/`
+  // outside that staged compile (e.g. a nested `dist/testing/` from a separate tsc run) would be
+  // silently swapped away every time `memory-core:build` runs (verified: it was). A sibling
+  // `dist-testing/` directory is untouched by that swap. The test-only helper still never
+  // re-enters `dist/index.js` / `dist/index.d.ts` (the main barrel), and is still a real, typed,
+  // cross-package-importable build output for memory-cli's harness — `package.json`'s
+  // `exports["./testing"]` and `typesVersions` map the PUBLIC subpath name `./testing` onto this
+  // physical `dist-testing/` directory.
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "module": "CommonJS",
+    "moduleResolution": "node10",
+    "ignoreDeprecations": "6.0",
+    "outDir": "./dist-testing",
+    "rootDir": "./src/testing",
+    "declaration": true,
+    "declarationMap": true,
+    "sourceMap": true,
+    "esModuleInterop": true
+  },
+  "include": ["src/testing/index.ts", "src/testing/embed-isolation.ts"],
+  "exclude": ["src/testing/**/*.spec.ts", "src/testing/**/*.test.ts", "node_modules"]
+}

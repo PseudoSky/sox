@@ -21,7 +21,8 @@
 import type { EmbeddingProvider, EmbeddingHealth, EmbeddingProviderMetadata, EmbedRole } from '@adhd/sox-embedding-provider';
 
 const EMBED_DIMENSIONS = 768;
-const MODEL_ID = 'test-feature-hash-768';
+/** BL-611a711e: exported so consumers assert against the real id, never a re-typed literal. */
+export const MODEL_ID = 'test-feature-hash-768';
 
 /** djb2 hash — unsigned 32-bit */
 function djb2(s: string): number {

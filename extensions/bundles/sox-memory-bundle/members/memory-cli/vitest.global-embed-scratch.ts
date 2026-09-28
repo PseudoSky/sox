@@ -25,7 +25,6 @@
  */
 import { execFileSync } from 'node:child_process';
 import * as fs from 'node:fs';
-import * as os from 'node:os';
 import * as path from 'node:path';
 import { PS_ARGS, auditAndReapEmbedHosts, describeHost, isInsideRoot } from '../../../../../scripts/lib/embed-host-isolation.mjs';
 import { SCRATCH_ROOT_ENV } from './src/test-support/bl-57ae788f-embed-scratch-env.js';
@@ -58,21 +57,52 @@ function processIdentity(pid: number): string | null {
   }
 }
 
+/** BL-611a711e: the marker file minted alongside the scratch root — proves reuse below is really
+ * reattaching to a root THIS run created, not trusting a stale/foreign env var whose directory
+ * may have been removed, or worse, since been recreated by something unrelated. */
+const OWNER_MARKER_NAME = '.sox-cli-scratch-owner';
+
 export default function setup(): () => Promise<void> {
-  if (process.env[SCRATCH_ROOT_ENV]) {
-    say(`reusing run scratch root ${process.env[SCRATCH_ROOT_ENV]}`);
+  const inherited = process.env[SCRATCH_ROOT_ENV];
+  if (inherited) {
+    const markerPath = path.join(inherited, OWNER_MARKER_NAME);
+    if (!fs.existsSync(inherited) || !fs.existsSync(markerPath)) {
+      throw new Error(
+        `BL-611a711e: ${SCRATCH_ROOT_ENV}=${inherited} is set but ${fs.existsSync(inherited) ? 'carries no owner marker' : 'does not exist'} ` +
+          `(${markerPath}) — refusing to reuse a root this run did not mint. A previous run's env leaked ` +
+          'into this one without the directory (or its marker) surviving.',
+      );
+    }
+    say(`reusing run scratch root ${inherited} (owner marker verified)`);
     return async () => {
       say('teardown deferred to the invocation that minted the scratch root');
     };
   }
 
   const runStartedMs = Date.now();
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'sox-cli-embed-'));
+  // BL-611a711e: a short, ABSOLUTE `/tmp/sox-cli-` base (mirrors memory-server's own
+  // `/tmp/sox-ms-`, vitest.global-embed-scratch.ts), never `path.join(os.tmpdir(), ...)`. On
+  // macOS, `os.tmpdir()` resolves to `/var/folders/<2>/<~30 chars>/T/`, which alone eats ~50-70
+  // bytes of the 104-byte Unix-domain-socket `sun_path` budget the real embed host's socket file
+  // is bound under (`@adhd/sox-service-proxy`'s `backendSocketPath()`) — leaving so little margin
+  // that a realistic singleton key forces `backendSocketPath()`'s tier-2 (shortened-filename)
+  // fallback just to stay under budget, a handful of bytes from tier-3's fallback OUTSIDE this
+  // scratch root entirely (`/tmp/sox-<uid>/p-<16hex>.sock`, `libs/service-proxy/src/socket-path.ts`).
+  // A fixed `/tmp/sox-cli-` root keeps the full, unshortened socket path comfortably inside the
+  // 104-byte budget without ever needing either fallback tier — see
+  // `611a711e-scratch-socket-path.spec.ts`.
+  const root = fs.mkdtempSync('/tmp/sox-cli-');
   const xdgCache = path.join(root, 'xdg-cache');
   const cacheDir = path.join(xdgCache, 'sox', 'models');
   const ecosystemHome = path.join(root, 'eco');
   fs.mkdirSync(cacheDir, { recursive: true });
   fs.mkdirSync(ecosystemHome, { recursive: true });
+  // BL-611a711e: owner marker — see the reuse check above.
+  fs.writeFileSync(
+    path.join(root, OWNER_MARKER_NAME),
+    JSON.stringify({ pid: process.pid, mintedAtMs: runStartedMs }),
+    'utf8',
+  );
 
   process.env['SOX_EMBED_CACHE_DIR'] = cacheDir;
   process.env['XDG_CACHE_HOME'] = xdgCache;

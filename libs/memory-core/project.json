@@ -23,9 +23,25 @@
         "rootDir": "libs/memory-core/src"
       },
       "cache": true,
+      "dependsOn": ["build-testing"],
       "inputs": [
         "{projectRoot}/src/**/*.ts",
         "{projectRoot}/tsconfig.lib.json"
+      ]
+    },
+    "build-testing": {
+      "executor": "nx:run-commands",
+      "outputs": [
+        "{workspaceRoot}/libs/memory-core/dist-testing"
+      ],
+      "options": {
+        "command": "tsc -p libs/memory-core/tsconfig.testing.json",
+        "cwd": "."
+      },
+      "cache": true,
+      "inputs": [
+        "{projectRoot}/src/testing/**/*.ts",
+        "{projectRoot}/tsconfig.testing.json"
       ]
     },
     "test": {

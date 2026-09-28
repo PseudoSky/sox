@@ -7,6 +7,15 @@ const SPEC_DIR = 'extensions/bundles/sox-memory-bundle/members/memory-server';
 export default defineConfig({
   resolve: {
     alias: {
+      // BL-611a711e: the memory-core alias below bypasses package.json `exports` resolution
+      // entirely (vite/vitest resolves `alias` entries before consulting a package's exports
+      // map), so the new `@adhd/sox-memory-core/testing` subpath needs its OWN alias entry —
+      // without this, Node's real exports-aware resolver would find it fine (verified: `node -e
+      // require.resolve(...)` from a script colocated with the importing file succeeds), but
+      // vitest's aliasing here means that resolver is never consulted for `@adhd/sox-memory-core`
+      // imports in this suite. The MORE SPECIFIC alias must come first — vite matches longest-key
+      // aliases eagerly, but keeping order explicit here documents the intent.
+      '@adhd/sox-memory-core/testing': resolve(repoRoot, 'libs/memory-core/dist-testing/index.js'),
       '@adhd/sox-memory-core': resolve(repoRoot, 'libs/memory-core/dist/index.js'),
       '@adhd/sox-service-proxy': resolve(repoRoot, 'libs/service-proxy/dist/index.js'),
     },

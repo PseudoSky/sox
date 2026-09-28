@@ -27,8 +27,9 @@ import {
   DeterministicTestProvider,
   _setEmbedProviderForTest,
   scrubOperatorStoreEnv,
-  assertEmbedPathsIsolated,
+  getConfiguredEmbedPaths,
 } from '@adhd/sox-memory-core';
+import { assertEmbedPathsIsolated } from '@adhd/sox-memory-core/testing';
 import { SCRATCH_ROOT_ENV } from './src/test-support/bl-57ae788f-embed-scratch-env.js';
 
 _setEmbedProviderForTest(new DeterministicTestProvider());
@@ -40,8 +41,11 @@ if (scrubbedOperatorKeys.length > 0) {
   );
 }
 
-assertEmbedPathsIsolated(SCRATCH_ROOT_ENV, 'vitest.setup load');
+// BL-611a711e: `getConfiguredEmbedPaths()` is resolved here, by the caller, and passed in — the
+// shared `@adhd/sox-memory-core/testing` helper takes paths as a parameter rather than resolving
+// them itself (see that module's header comment).
+assertEmbedPathsIsolated(SCRATCH_ROOT_ENV, getConfiguredEmbedPaths(), 'vitest.setup load');
 
 afterEach(() => {
-  assertEmbedPathsIsolated(SCRATCH_ROOT_ENV, 'afterEach');
+  assertEmbedPathsIsolated(SCRATCH_ROOT_ENV, getConfiguredEmbedPaths(), 'afterEach');
 });

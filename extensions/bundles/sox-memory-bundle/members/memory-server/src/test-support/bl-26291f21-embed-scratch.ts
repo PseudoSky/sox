@@ -25,81 +25,53 @@
  * This module is the single definition both sides share. The env-name constants live in the
  * dependency-free `bl-26291f21-embed-scratch-env.ts` so the global setup (runner process) never
  * loads memory-core.
+ *
+ * BL-611a711e: `isInside`/`operatorEmbedRoots`/`embedIsolationViolations`/
+ * `assertEmbedPathsIsolated`'s CONTAINMENT ALGORITHM now delegates to the shared
+ * `@adhd/sox-memory-core/testing` helper (originally extracted FROM this file for memory-cli,
+ * BL-57ae788f) rather than carrying a second copy of it — this file's exported function
+ * signatures are UNCHANGED, so `vitest.setup.ts` and this package's own isolation spec need no
+ * changes. The two extra, product-specific checks this file has always carried beyond the shared
+ * base — the `SOX_ECOSYSTEM_HOME`-under-operator check and the BL-404
+ * `TELEMETRY_DIR_ENV`-exception check — are passed to the shared helper via its `extra` hook
+ * rather than duplicated inline.
  */
-import * as os from 'node:os';
 import * as path from 'node:path';
 import * as fs from 'node:fs';
 import { getConfiguredEmbedPaths } from '@adhd/sox-memory-core';
+import {
+  isInside,
+  operatorEmbedRoots,
+  embedIsolationViolations as sharedEmbedIsolationViolations,
+} from '@adhd/sox-memory-core/testing';
 import { EMBED_MODEL_DIR_NAME, SCRATCH_ROOT_ENV, TELEMETRY_DIR_ENV } from './bl-26291f21-embed-scratch-env.js';
 
 export { SCRATCH_ROOT_ENV, TELEMETRY_DIR_ENV, EMBED_MODEL_DIR_NAME, MODEL_SEEDED_ENV } from './bl-26291f21-embed-scratch-env.js';
-
-/** macOS reaches /tmp and /var through /private; compare both spellings. */
-function spellings(p: string): string[] {
-  const n = path.resolve(p);
-  const out = new Set([n]);
-  if (n.startsWith('/private/')) out.add(n.slice('/private'.length));
-  else if (/^\/(?:tmp|var)(?:\/|$)/.test(n)) out.add(`/private${n}`);
-  return [...out];
-}
-
-/** True when `p` is `root` or lies beneath it (in any /private spelling). */
-export function isInside(p: string, root: string): boolean {
-  for (const a of spellings(p)) {
-    for (const r of spellings(root)) {
-      if (a === r || a.startsWith(r.endsWith(path.sep) ? r : r + path.sep)) return true;
-    }
-  }
-  return false;
-}
-
-/**
- * The operator's real embed roots, derived from the passwd entry (`os.userInfo().homedir`), never
- * from `HOME` — a harness that overrides `HOME` must not be able to talk this check out of seeing
- * the real home.
- */
-export function operatorEmbedRoots(): { modelCacheRoot: string; ecosystemHome: string } {
-  const home = os.userInfo().homedir;
-  return {
-    modelCacheRoot: path.join(home, '.cache', 'sox'),
-    ecosystemHome: path.join(home, '.adhd', 'sox-ecosystem'),
-  };
-}
+export { isInside, operatorEmbedRoots } from '@adhd/sox-memory-core/testing';
 
 /**
  * Every reason the embed paths THIS process would resolve are not isolated (empty = isolated).
  * Positive containment (inside the run's scratch root) AND negative (never under the operator's
- * `~/.cache/sox` or `~/.adhd/sox-ecosystem`), both against the product's own resolvers.
+ * `~/.cache/sox` or `~/.adhd/sox-ecosystem`) come from the shared base check; the two extra checks
+ * below (`SOX_ECOSYSTEM_HOME`, BL-404's `TELEMETRY_DIR_ENV` exception) are this package's own.
  */
 export function embedIsolationViolations(env: NodeJS.ProcessEnv = process.env): string[] {
-  const out: string[] = [];
-  const scratch = env[SCRATCH_ROOT_ENV];
-  const { cacheDir, hostSocketDir } = getConfiguredEmbedPaths();
-  const op = operatorEmbedRoots();
-  if (scratch === undefined || scratch === '') {
-    out.push(`${SCRATCH_ROOT_ENV} is unset — vitest.global-embed-scratch.ts did not run for this worker`);
-  } else {
-    if (!isInside(cacheDir, scratch)) out.push(`embed model cache ${cacheDir} is outside the run scratch root ${scratch}`);
-    if (!isInside(hostSocketDir, scratch)) out.push(`embed host socket dir ${hostSocketDir} is outside the run scratch root ${scratch}`);
-  }
-  for (const [what, p] of [['embed model cache', cacheDir], ['embed host socket dir', hostSocketDir]] as const) {
-    for (const root of [op.modelCacheRoot, op.ecosystemHome]) {
-      if (isInside(p, root)) out.push(`${what} ${p} resolves under the OPERATOR's ${root}`);
+  return sharedEmbedIsolationViolations(SCRATCH_ROOT_ENV, getConfiguredEmbedPaths(), env, (envArg, op) => {
+    const out: string[] = [];
+    if (envArg['SOX_ECOSYSTEM_HOME'] !== undefined && isInside(envArg['SOX_ECOSYSTEM_HOME'], op.ecosystemHome)) {
+      out.push(`SOX_ECOSYSTEM_HOME ${envArg['SOX_ECOSYSTEM_HOME']} resolves under the OPERATOR's ${op.ecosystemHome}`);
     }
-  }
-  if (env['SOX_ECOSYSTEM_HOME'] !== undefined && isInside(env['SOX_ECOSYSTEM_HOME'], op.ecosystemHome)) {
-    out.push(`SOX_ECOSYSTEM_HOME ${env['SOX_ECOSYSTEM_HOME']} resolves under the OPERATOR's ${op.ecosystemHome}`);
-  }
-  const telemetryDir = env[TELEMETRY_DIR_ENV];
-  if (telemetryDir !== undefined && telemetryDir !== '' && isInside(telemetryDir, op.ecosystemHome)) {
-    if (path.resolve(telemetryDir) !== sanctionedOperatorTelemetryDir()) {
-      out.push(
-        `${TELEMETRY_DIR_ENV} ${telemetryDir} is under the OPERATOR's ${op.ecosystemHome} but is not the one ` +
-          `sanctioned exception ${sanctionedOperatorTelemetryDir()} (BL-404)`,
-      );
+    const telemetryDir = envArg[TELEMETRY_DIR_ENV];
+    if (telemetryDir !== undefined && telemetryDir !== '' && isInside(telemetryDir, op.ecosystemHome)) {
+      if (path.resolve(telemetryDir) !== sanctionedOperatorTelemetryDir()) {
+        out.push(
+          `${TELEMETRY_DIR_ENV} ${telemetryDir} is under the OPERATOR's ${op.ecosystemHome} but is not the one ` +
+            `sanctioned exception ${sanctionedOperatorTelemetryDir()} (BL-404)`,
+        );
+      }
     }
-  }
-  return out;
+    return out;
+  });
 }
 
 /**

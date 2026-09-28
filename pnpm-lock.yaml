@@ -183,9 +183,15 @@ importers:
         specifier: ^0.1.9
         version: 0.1.9
     devDependencies:
+      '@adhd/sox-embedding-provider':
+        specifier: workspace:*
+        version: link:../../../../../libs/data/embed/embedding-provider
       '@adhd/sox-memory-core':
         specifier: workspace:*
         version: link:../../../../../libs/memory-core
+      '@adhd/sox-service-proxy':
+        specifier: workspace:*
+        version: link:../../../../../libs/service-proxy
       '@adhd/sox-store-adapter':
         specifier: workspace:*
         version: link:../../../../../libs/data/store/store-adapter

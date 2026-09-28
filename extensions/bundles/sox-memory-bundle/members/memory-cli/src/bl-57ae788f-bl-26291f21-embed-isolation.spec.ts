@@ -30,13 +30,12 @@
  */
 import { describe, expect, it } from 'vitest';
 import {
-  embedIsolationViolations,
+  DETERMINISTIC_TEST_PROVIDER_MODEL_ID,
   getActiveEmbedModel,
   getConfiguredEmbedPaths,
   getEmbedState,
-  isInside,
-  operatorEmbedRoots,
 } from '@adhd/sox-memory-core';
+import { embedIsolationViolations, isInside, operatorEmbedRoots } from '@adhd/sox-memory-core/testing';
 import { SCRATCH_ROOT_ENV } from './test-support/bl-57ae788f-embed-scratch-env.js';
 
 describe('BL-57ae788f — memory-cli scrubs operator env', () => {
@@ -60,12 +59,12 @@ describe('BL-26291f21 (memory-cli half) — memory-cli test workers never resolv
     expect(scratch, `${SCRATCH_ROOT_ENV} must be pinned by vitest.global-embed-scratch.ts`).toBeTruthy();
     expect(isInside(cacheDir, scratch as string)).toBe(true);
     expect(isInside(hostSocketDir, scratch as string)).toBe(true);
-    expect(embedIsolationViolations(SCRATCH_ROOT_ENV)).toEqual([]);
+    expect(embedIsolationViolations(SCRATCH_ROOT_ENV, getConfiguredEmbedPaths())).toEqual([]);
   });
 
   it('the deterministic test provider is installed by default, so drain never reaches the real backend', () => {
-    // MODEL_ID from embed-test-provider.ts — proves the mock, not real bge-base-en-v1.5, is active.
-    expect(getActiveEmbedModel()).toBe('test-feature-hash-768');
+    // proves the mock, not real bge-base-en-v1.5, is active.
+    expect(getActiveEmbedModel()).toBe(DETERMINISTIC_TEST_PROVIDER_MODEL_ID);
     expect(getEmbedState()).toBe('real'); // 'real' here means "a provider is constructed"; it is the mock.
   });
 });

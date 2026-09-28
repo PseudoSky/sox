@@ -1,0 +1,21 @@
+{
+  // BL-611a711e — production-only typecheck, mirroring
+  // extensions/bundles/sox-memory-bundle/members/memory-server/tsconfig.typecheck.json /
+  // libs/memory-core/tsconfig.typecheck.json: same `include`, spec/test-support excluded, so a
+  // `typecheck-src` failure always means a production-code error, never a spec or test-harness
+  // one. Before this file, memory-cli's `typecheck` target ran `tsc -p tsconfig.json` directly —
+  // that config has no exclude, so it type-checked every `src/**/*.spec.ts` alongside production
+  // code AND never reached the root `vitest.*.ts` harness files at all (they are outside
+  // `tsconfig.json`'s `rootDir: "src"` / `include: ["src/**/*.ts"]`).
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": true
+  },
+  "include": ["src/**/*.ts"],
+  "exclude": [
+    "src/**/*.spec.ts",
+    "src/**/*.test.ts",
+    "src/test-support/**/*.ts",
+    "node_modules"
+  ]
+}

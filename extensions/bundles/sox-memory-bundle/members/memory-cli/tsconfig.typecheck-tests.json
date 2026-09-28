@@ -1,0 +1,29 @@
+{
+  // BL-611a711e — spec-inclusive typecheck, mirroring
+  // extensions/bundles/sox-memory-bundle/members/memory-server/tsconfig.typecheck-tests.json /
+  // libs/memory-core/tsconfig.typecheck-tests.json. `include` covers the whole `src/` tree (a
+  // spec cannot be typechecked without also checking the modules it imports) PLUS the root
+  // `vitest.*.ts` harness files — before this file, nothing typechecked those at all.
+  //
+  // Chain: `typecheck` (nx:noop) -> `typecheck-tests` (this file) -> `typecheck-src`
+  // (production-only, tsconfig.typecheck.json). A failure here means specs/test-support/the
+  // vitest harness; a failure in `typecheck-src` means production code.
+  "extends": "../../../../../tsconfig.base.json",
+  "compilerOptions": {
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "ignoreDeprecations": "6.0",
+    "noEmit": true,
+    "esModuleInterop": true,
+    "types": ["node"]
+  },
+  "include": [
+    "src/**/*.ts",
+    "vitest.config.mts",
+    "vitest.setup.ts",
+    // BL-57ae788f run-scoped embed scratch root; imports scripts/lib/*.mjs via the same
+    // hand-written .d.mts memory-server's copy of this harness already uses.
+    "vitest.global-embed-scratch.ts"
+  ],
+  "exclude": ["node_modules", "dist"]
+}

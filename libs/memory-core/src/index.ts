@@ -179,7 +179,7 @@ export type {
 } from './embed-pipeline.js';
 
 // ── Deterministic test embedding provider (BL-161 seam; TEST-ONLY) ────────────
-export { DeterministicTestProvider, featureHashEmbed } from './embed-test-provider.js';
+export { DeterministicTestProvider, featureHashEmbed, MODEL_ID as DETERMINISTIC_TEST_PROVIDER_MODEL_ID } from './embed-test-provider.js';
 export { _setEmbedProviderForTest } from './embed.js';
 
 // ── Test-harness operator store-env scrub (BL-7e5be7e8; TEST-ONLY) ───────────
@@ -191,16 +191,11 @@ export {
 } from './test-env-scrub.js';
 
 // ── Test-harness embed-path isolation check (BL-57ae788f; TEST-ONLY) ─────────
-// Shared by every OTHER suite's harness (memory-cli, and available to
-// memory-server) that needs to prove a worker's embed paths resolve inside a
-// run-scoped scratch root and never under the operator's real
-// ~/.cache/sox or ~/.adhd/sox-ecosystem. See test-support/embed-isolation.ts.
-export {
-  isInside,
-  operatorEmbedRoots,
-  embedIsolationViolations,
-  assertEmbedPathsIsolated,
-} from './test-support/embed-isolation.js';
+// BL-611a711e: moved OUT of the main barrel — it now lives at
+// src/testing/embed-isolation.ts and is reachable cross-package only via the
+// dedicated `@adhd/sox-memory-core/testing` subpath (never via `.`), so it no
+// longer ships as part of this package's public npm surface. See
+// src/testing/embed-isolation.ts and src/testing/index.ts.
 
 // ── Outbox queue (transactional enrichment triggers — BL-172 / BL-186) ────────
 // Producers only: the consumer is memory-server's in-process periodic pass.

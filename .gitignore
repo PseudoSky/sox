@@ -2,6 +2,10 @@ node_modules/
 
 __pycache__
 dist/
+# BL-611a711e — memory-core's dedicated `@adhd/sox-memory-core/testing` subpath build output.
+# A separate physical directory from `dist/` on purpose (see tsconfig.testing.json); build
+# output, never committed, same as `dist/` above.
+dist-testing/
 
 # [BL-313] bundle-extension.cjs auto-discovered static assets (e.g. graph-store's
 # Drizzle migrations folder) land as a sibling of a bundled extension's dist/ —
