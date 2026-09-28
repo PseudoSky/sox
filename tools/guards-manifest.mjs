@@ -117,8 +117,13 @@ export const GUARDS = [
     // sweeping in every other project via the `.` pathspec (item 3). Most arms use a scratch
     // fixture repo as the negative control (the authentic pre-fix sourceRoot-only scoping —
     // buildReport() absent entirely — for arms 1-4; the authentic pre-fix buildPathspecs()-absent
-    // scoping for arms 5-6). The FINAL arm (7) is deliberately NOT hermetic — it spawns the CLI
-    // against this real checkout's own live git state and graph, not a scratch fixture, so it can
+    // scoping for arms 5-6). Arm 7 is the ancestor self-cancellation arm — it goes RED only
+    // against 6b75974c (the nested/root-scoping commit before the ancestor guard in
+    // `isAncestorOfPkgRoot` landed), not against earlier history, where `buildPathspecs()` didn't
+    // exist yet either. Arm 8 [BL-48d92088] pins `--untracked-files=all` on `porcelainOver()`'s
+    // `git status` call, config-independent. The FINAL arm (9) is deliberately NOT hermetic — it
+    // spawns the CLI against this real checkout's own live git state and graph, not a scratch
+    // fixture, so it can
     // only assert shape (non-empty projectRoots/rootConfigFiles), not exact dirty content; it
     // stays Tier 1 on the same basis bl456's own arm 6 already established for that pattern.
     watch: ['tools/check-suite-tree-state.mjs'],

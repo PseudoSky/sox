@@ -120,22 +120,38 @@ try {
 
   try {
     // Arm 1 [RED] — raw git, no gitEnv() stripping: inherits the polluted env as-is.
+    //
+    // [BL-48d92088] The correctness check below matches the EXACT porcelain line a correct report
+    // would produce for this fixture (" M lib/src/index.ts" — a tracked file modified after
+    // commit), not a substring match on the path. A substring match is config-dependent: under
+    // `status.showUntrackedFiles=all`, git (wrongly, from the FOREIGN index's point of view, where
+    // this path was never added) reports the file as untracked ("?? lib/src/index.ts"), which also
+    // happens to contain the path substring — so the old substring check read that as "correctly
+    // reported" and flipped this arm to a false PASS-as-FAIL under that one config value. Passing
+    // `-c status.showUntrackedFiles=normal` on the raw call pins the config this specific raw probe
+    // observes with, independent of whatever the invoking user/CI has set ambiently — the fixed
+    // `porcelainOver()` in Arms 2-3 needs no such pin because [BL-48d92088] already made it pass
+    // `--untracked-files=all` on the CLI itself.
     let rawOut;
     let rawThrew = null;
     try {
-      rawOut = execFileSync('git', ['status', '--porcelain', '--', 'lib'], {
-        cwd: dir,
-        encoding: 'utf8',
-        maxBuffer: 32 * 1024 * 1024,
-        // deliberately NOT passing an `env` override here — this is the exact shape
-        // `porcelainOver()` had before gitEnv() existed (see the historical fix at
-        // tools/check-suite-tree-state.mjs's `[28f22e8d]` gitEnv() comment).
-      }).split('\n').filter(Boolean);
+      rawOut = execFileSync(
+        'git',
+        ['-c', 'status.showUntrackedFiles=normal', 'status', '--porcelain', '--', 'lib'],
+        {
+          cwd: dir,
+          encoding: 'utf8',
+          maxBuffer: 32 * 1024 * 1024,
+          // deliberately NOT passing an `env` override here — this is the exact shape
+          // `porcelainOver()` had before gitEnv() existed (see the historical fix at
+          // tools/check-suite-tree-state.mjs's `[28f22e8d]` gitEnv() comment).
+        },
+      ).split('\n').filter(Boolean);
     } catch (e) {
       rawThrew = e;
       rawOut = [];
     }
-    const rawCorrect = !rawThrew && rawOut.some((l) => l.includes('lib/src/index.ts'));
+    const rawCorrect = !rawThrew && rawOut.includes(' M lib/src/index.ts');
     report(
       'aa65862e RED: raw `git status` WITHOUT gitEnv() stripping does NOT correctly report the ' +
         'scratch repo dirty file when GIT_DIR/GIT_INDEX_FILE are inherited from a different repo',

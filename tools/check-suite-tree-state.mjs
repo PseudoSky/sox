@@ -53,8 +53,9 @@
  * pathspec magic — see `buildPathspecs()`. The repo ROOT project (`.`, when it is itself part of
  * the dependency set) gets the same treatment for a stronger reason: `.` as a pathspec matches the
  * ENTIRE repo, so left unguarded it would defeat the whole point of this tool by reporting dirt in
- * every project, dependency set or not. `buildPathspecs()` scopes `.` down to files that live
- * directly at the repo root.
+ * every project, dependency set or not. `buildPathspecs()` scopes `.` down by excluding every
+ * other project root — the result still includes non-project subdirectories of the repo root, not
+ * only files that live directly at the top level.
  *
  * It ALSO reports any dependency whose `dist/` is older than its `src/` (see `staleDistOver`
  * below and `tools/dist-freshness.mjs`). `dist/` is gitignored, so `git status` is structurally
@@ -165,12 +166,12 @@ export function rootConfigFiles(cwd = process.cwd()) {
  *   2. The repo ROOT project (`root: '.'`, when it is itself part of the dependency set) needs the
  *      same treatment for a stronger reason: `.` as a pathspec matches the ENTIRE repo. Left
  *      unguarded it would defeat the whole point of this tool — reporting dirt in every project
- *      in the repo, dependency set or not. It is scoped down to files that live directly at the
- *      repo root by excluding every OTHER project root that is not itself part of `pkgRoots`
+ *      in the repo, dependency set or not. It is scoped down by excluding every OTHER project
+ *      root that is not itself part of `pkgRoots` — the result still includes non-project
+ *      subdirectories of the repo root, not only files that live directly at the top level
  *      (a project root that IS part of `pkgRoots` is already separately included as its own entry
- *      — excluding it here too would be a no-op at best and, since `:(exclude)` wins over any
- *      matching include pattern in the same pathspec set, would wrongly cancel that legitimate
- *      inclusion if the ordering of exclude-vs-include patterns were ever relied upon instead).
+ *      — excluding it here too would always cancel that legitimate inclusion, since `:(exclude)`
+ *      wins over any matching include pattern in the same pathspec set regardless of ordering).
  *
  * A THIRD correction guards both of the above against a subtler self-cancellation: `:(exclude)`
  * wins over every matching include pattern in the SAME pathspec set, globally, regardless of
@@ -256,15 +257,30 @@ function gitEnv() {
   return env;
 }
 
-/** `git status --porcelain` restricted to the given paths. */
+/**
+ * `git status --porcelain` restricted to the given paths.
+ *
+ * [BL-48d92088] `--untracked-files=all` is passed explicitly, not left to the ambient config.
+ * `git status` defaults to reporting ALL untracked files (`status.showUntrackedFiles` defaults to
+ * `all`), but that default is a per-user/per-repo git config setting a caller can override — with
+ * `status.showUntrackedFiles=no` set, a brand-new untracked file inside a dependency root is
+ * silently omitted and this tool reports CLEAN (and `--require-clean` passes) even though the
+ * suite's `^build` step will pick that file up. `--untracked-files=all` on the CLI always wins
+ * over config, making the report's behavior independent of whatever the invoking user or CI image
+ * happens to have set.
+ */
 export function porcelainOver(roots, cwd = process.cwd()) {
   if (!roots.length) return [];
-  const out = execFileSync('git', ['status', '--porcelain', '--', ...roots], {
-    cwd,
-    encoding: 'utf8',
-    maxBuffer: 32 * 1024 * 1024,
-    env: gitEnv(),
-  });
+  const out = execFileSync(
+    'git',
+    ['status', '--porcelain', '--untracked-files=all', '--', ...roots],
+    {
+      cwd,
+      encoding: 'utf8',
+      maxBuffer: 32 * 1024 * 1024,
+      env: gitEnv(),
+    },
+  );
   return out.split('\n').filter(Boolean);
 }
 

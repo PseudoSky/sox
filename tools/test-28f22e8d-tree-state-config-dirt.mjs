@@ -31,13 +31,19 @@
  *      is an ANCESTOR of a genuinely-included dependency root must NOT be excluded — doing so
  *      would silently swallow that descendant dependency's own dirt. Deps `.` and `a/b/m`, with
  *      `a/b` (containing `a/b/m`) NOT itself a dependency: `a/b/m`'s dirt is still reported.
- *   8. Live (non-hermetic — see `tools/guards-manifest.mjs`'s `28f22e8d` entry): the real repo's
+ *   8. [BL-48d92088, 2026-09-28] `porcelainOver()` pins `--untracked-files=all` on the `git
+ *      status` call so a new untracked file inside a dependency root is always reported
+ *      regardless of the invoking user's/CI's `status.showUntrackedFiles` git config. Reproduced
+ *      via `GIT_CONFIG_COUNT`/`GIT_CONFIG_KEY_0`/`GIT_CONFIG_VALUE_0` forcing
+ *      `showUntrackedFiles=no` — quoted RED (bare `git status`, no pin) and GREEN
+ *      (`porcelainOver()`/`buildReport()`) in the same arm.
+ *   9. Live (non-hermetic — see `tools/guards-manifest.mjs`'s `28f22e8d` entry): the real repo's
  *      `check-suite-tree-state.mjs --project memory-server --json` output carries non-empty
  *      `projectRoots` and `rootConfigFiles` fields (the fix is wired into `main()`, not just
  *      exported and unused).
  *
  * Uses throwaway scratch git repos (fs.mkdtempSync) — never the invoking checkout's real tree —
- * for arms 1-7. Each scratch-repo block is wrapped in try/finally so the temp dir is always
+ * for arms 1-8. Each scratch-repo block is wrapped in try/finally so the temp dir is always
  * removed, including on assertion or git-command failure.
  *
  * Usage: node tools/test-28f22e8d-tree-state-config-dirt.mjs
@@ -337,7 +343,103 @@ const graph = {
 }
 
 // ---------------------------------------------------------------------------
-// Arm 8 — live, against the real repo: the fix is wired into `main()`'s --json output. NOT
+// Arm 8 [BL-48d92088, untracked-files config independence] — `porcelainOver()` must report a
+// NEW UNTRACKED file inside a dependency root regardless of the invoking user's/CI's
+// `status.showUntrackedFiles` git config. Before the fix, `porcelainOver()` called bare
+// `git status --porcelain` and let the ambient config decide; with `status.showUntrackedFiles=no`
+// set (reproduced here via `GIT_CONFIG_COUNT`/`GIT_CONFIG_KEY_0`/`GIT_CONFIG_VALUE_0`, git's own
+// env-based config-injection mechanism — no on-disk `.gitconfig` needed), a brand-new untracked
+// file was silently omitted and the tool reported CLEAN. The fix passes `--untracked-files=all`
+// explicitly on the CLI, which always wins over config.
+// ---------------------------------------------------------------------------
+{
+  const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'bl48d92088-untracked-')));
+  try {
+    const git = (args, env) =>
+      execFileSync('git', args, { cwd: dir, encoding: 'utf8', env: env ?? SAFE_GIT_ENV });
+    git(['init', '-q']);
+    git(['config', 'user.email', 'test@test.com']);
+    git(['config', 'user.name', 'test']);
+
+    const untrackedGraph = {
+      nodes: { app: { data: { sourceRoot: 'lib/src', root: 'lib' } } },
+      dependencies: { app: [] },
+    };
+
+    fs.mkdirSync(path.join(dir, 'lib/src'), { recursive: true });
+    fs.writeFileSync(path.join(dir, 'lib/src/index.ts'), 'export const x = 1;\n');
+    git(['add', '.']);
+    git(['commit', '-q', '-m', 'chore: initial']);
+
+    // A brand-new file, never added — the exact shape a config-blind `git status` can hide.
+    fs.writeFileSync(path.join(dir, 'lib/src/new-untracked.ts'), 'export const y = 1;\n');
+
+    const noUntrackedEnv = {
+      ...SAFE_GIT_ENV,
+      GIT_CONFIG_COUNT: '1',
+      GIT_CONFIG_KEY_0: 'status.showUntrackedFiles',
+      GIT_CONFIG_VALUE_0: 'no',
+    };
+
+    // The un-stripped-config negative control: a bare `git status --porcelain` under
+    // `showUntrackedFiles=no` really does hide the untracked file — confirms the fixture
+    // reproduces the bug rather than being a no-op.
+    const rawUnderNoConfig = execFileSync('git', ['status', '--porcelain', '--', 'lib'], {
+      cwd: dir,
+      encoding: 'utf8',
+      env: noUntrackedEnv,
+    })
+      .split('\n')
+      .filter(Boolean);
+    report(
+      'BL-48d92088[untracked]: setup — bare `git status --porcelain` under showUntrackedFiles=no ' +
+        'really does hide the untracked file (confirms the fixture reproduces the bug)',
+      !rawUnderNoConfig.some((l) => l.includes('lib/src/new-untracked.ts')),
+      `raw=${JSON.stringify(rawUnderNoConfig)}`,
+    );
+
+    // The fixed `porcelainOver()`, run under the SAME polluted config via process.env (it spawns
+    // `git` inheriting process.env minus the GIT_DIR/etc it strips itself, so GIT_CONFIG_COUNT
+    // rides along) — must report the file anyway because it now pins `--untracked-files=all`.
+    const savedGitConfigEnv = {
+      GIT_CONFIG_COUNT: process.env.GIT_CONFIG_COUNT,
+      GIT_CONFIG_KEY_0: process.env.GIT_CONFIG_KEY_0,
+      GIT_CONFIG_VALUE_0: process.env.GIT_CONFIG_VALUE_0,
+    };
+    process.env.GIT_CONFIG_COUNT = '1';
+    process.env.GIT_CONFIG_KEY_0 = 'status.showUntrackedFiles';
+    process.env.GIT_CONFIG_VALUE_0 = 'no';
+    try {
+      const fixedDirty =
+        typeof mod.porcelainOver === 'function' ? mod.porcelainOver(['lib'], dir) : [];
+      report(
+        'BL-48d92088[untracked]: porcelainOver() (--untracked-files=all pinned) reports a new ' +
+          'untracked file inside a dependency root even under status.showUntrackedFiles=no',
+        fixedDirty.some((l) => l.includes('lib/src/new-untracked.ts')),
+        `dirty=${JSON.stringify(fixedDirty)}`,
+      );
+
+      const rep =
+        typeof mod.buildReport === 'function' ? mod.buildReport(untrackedGraph, 'app', dir) : null;
+      report(
+        'BL-48d92088[untracked]: buildReport() (the function main() uses) also reports the same ' +
+          'untracked file under status.showUntrackedFiles=no',
+        !!rep && rep.dirty.some((l) => l.includes('lib/src/new-untracked.ts')),
+        `dirty=${JSON.stringify(rep?.dirty)}`,
+      );
+    } finally {
+      for (const k of Object.keys(savedGitConfigEnv)) {
+        if (savedGitConfigEnv[k] === undefined) delete process.env[k];
+        else process.env[k] = savedGitConfigEnv[k];
+      }
+    }
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Arm 9 — live, against the real repo: the fix is wired into `main()`'s --json output. NOT
 // hermetic (it spawns against this checkout's real git state, not a scratch fixture) — see the
 // `28f22e8d` entry in `tools/guards-manifest.mjs` for why it still runs as Tier 1.
 // ---------------------------------------------------------------------------
