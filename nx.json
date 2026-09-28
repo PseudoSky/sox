@@ -64,6 +64,16 @@
         "default",
         "^production"
       ]
+    },
+    "typecheck-src": {
+      "cache": true,
+      "dependsOn": [
+        "^build"
+      ],
+      "inputs": [
+        "default",
+        "^production"
+      ]
     }
   },
   "plugins": [],

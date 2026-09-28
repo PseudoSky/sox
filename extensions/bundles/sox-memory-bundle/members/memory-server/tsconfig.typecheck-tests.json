@@ -3,6 +3,12 @@
   // for why `include` covers the whole source tree rather than only the spec glob.
   // memory-server additionally keeps cross-backend tests at the package root
   // (*.test.ts), so those are included explicitly.
+  //
+  // da25489b: this is a leaf of the `typecheck` (nx:noop) -> `typecheck-tests`
+  // -> `typecheck-src` chain — see memory-core's copy of this file for the full
+  // triage-split rationale. A failure here means specs/test-support (or a
+  // production file that only fails under bundler resolution); a failure in
+  // `typecheck-src` (`tsconfig.json`, `--noEmit`) means production code.
   "extends": "../../../../../tsconfig.base.json",
   "compilerOptions": {
     "module": "ESNext",

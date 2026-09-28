@@ -53,7 +53,7 @@
         ]
       }
     },
-    "typecheck": {
+    "typecheck-src": {
       "executor": "nx:run-commands",
       "options": {
         "command": "tsc -p extensions/bundles/sox-memory-bundle/members/memory-server/tsconfig.json --noEmit",
@@ -61,8 +61,7 @@
       },
       "cache": true,
       "dependsOn": [
-        "^build",
-        "typecheck-tests"
+        "^build"
       ],
       "inputs": [
         "default",
@@ -76,9 +75,20 @@
         "cwd": "."
       },
       "cache": true,
+      "dependsOn": [
+        "^build",
+        "typecheck-src"
+      ],
       "inputs": [
         "default",
         "^production"
+      ]
+    },
+    "typecheck": {
+      "executor": "nx:noop",
+      "dependsOn": [
+        "^build",
+        "typecheck-tests"
       ]
     }
   }

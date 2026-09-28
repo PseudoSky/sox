@@ -1,7 +1,11 @@
 {
   // BL-340 — spec-inclusive typecheck (see memory-core's copy of this file for
   // the full incident rationale: BL-325 shipped an 18-file await-drop because
-  // no target ever typechecked *.spec.ts).
+  // no target ever typechecked *.spec.ts). da25489b: this is a leaf of the
+  // `typecheck` (nx:noop) -> `typecheck-tests` -> `typecheck-src` chain — see
+  // memory-core's copy for the full triage-split rationale. A failure here
+  // means specs/test-support; a failure in `typecheck-src` means production
+  // code.
   "extends": "../../../tsconfig.base.json",
   "compilerOptions": {
     "module": "ESNext",

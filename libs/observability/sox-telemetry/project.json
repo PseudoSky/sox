@@ -49,14 +49,14 @@
         ]
       }
     },
-    "typecheck": {
+    "typecheck-src": {
       "executor": "nx:run-commands",
       "options": {
         "command": "tsc -p libs/observability/sox-telemetry/tsconfig.typecheck.json --noEmit",
         "cwd": "."
       },
       "cache": true,
-      "dependsOn": ["^build", "typecheck-tests"],
+      "dependsOn": ["^build"],
       "inputs": ["default", "^production"]
     },
     "typecheck-tests": {
@@ -66,7 +66,12 @@
         "cwd": "."
       },
       "cache": true,
+      "dependsOn": ["^build", "typecheck-src"],
       "inputs": ["default", "^production"]
+    },
+    "typecheck": {
+      "executor": "nx:noop",
+      "dependsOn": ["^build", "typecheck-tests"]
     }
   }
 }

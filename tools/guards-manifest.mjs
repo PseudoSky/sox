@@ -26,6 +26,47 @@
  * script invocation (bl266 — see SPEC-BL-466.md Decision 6 / tools/run-guards.mjs `buildBl266Args`).
  */
 
+import * as fs from 'node:fs';
+import * as path from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+
+// 3b752549: the 7ff58364 guard (below) needs to re-run whenever ANY project's `project.json`
+// changes, not just the three projects it happened to be written against — a new project growing
+// a `typecheck-tests` target with no matching `typecheck-src`/noop `typecheck` would otherwise
+// ship unwatched. `run-guards.mjs`'s watch matcher only understands an exact path or a directory
+// prefix (a trailing-slash entry), not a glob, so the accurate fix is to enumerate every real
+// `project.json` path once here — mirroring the same exclude-dir walk the guard script itself
+// uses — rather than widen to an imprecise top-level directory prefix (which would also re-run
+// the guard on unrelated source edits anywhere under libs/ or extensions/).
+function findAllProjectJsonPaths(root) {
+  const EXCLUDE_DIRS = new Set(['node_modules', 'dist', '.git', '.nx', '.worktrees', '.claude', 'transcripts']);
+  const out = [];
+  const stack = [root];
+  while (stack.length) {
+    const dir = stack.pop();
+    let entries;
+    try {
+      entries = fs.readdirSync(dir, { withFileTypes: true });
+    } catch (err) {
+      console.error(`guards-manifest: readdirSync(${dir}) failed, skipping: ${err.message ?? err}`);
+      continue;
+    }
+    for (const entry of entries) {
+      if (entry.isDirectory()) {
+        if (EXCLUDE_DIRS.has(entry.name)) continue;
+        stack.push(path.join(dir, entry.name));
+      } else if (entry.isFile() && entry.name === 'project.json') {
+        out.push(path.posix.join(path.relative(root, dir).split(path.sep).join('/'), 'project.json'));
+      }
+    }
+  }
+  return out.sort();
+}
+
+const ALL_PROJECT_JSON_PATHS = findAllProjectJsonPaths(REPO_ROOT);
+
 export const GUARDS = [
   // ---------------------------------------------------------------- Tier 1 (33) -----------
   {
@@ -297,14 +338,23 @@ export const GUARDS = [
     watch: ['extensions/agents/backlog-operator/backlog-operator.md'],
   },
   {
-    id: '7ff58364-7dd7a974-062504ba',
+    id: '7ff58364-7dd7a974-062504ba-3b752549-da25489b',
     tier: 1,
     script: 'test-7ff58364-gate-reaches-typecheck-tests.mjs',
     // Pins 7ff58364/7dd7a974 (062504ba's resolution waits on this guard): every project's
     // `typecheck` target must effectively depend on `^build`, and on `typecheck-tests` wherever
     // that target exists, so a whole-repo `nx run-many -t typecheck` sweep never reports green
     // while typecheck-tests silently never ran (config-merge + real task-graph proof).
-    watch: ['nx.json', 'libs/memory-core/project.json', 'extensions/bundles/sox-memory-bundle/members/memory-server/project.json', 'libs/observability/sox-telemetry/project.json'],
+    //
+    // da25489b layered the gate further: `typecheck` (nx:noop) -> `typecheck-tests` ->
+    // `typecheck-src`, so production-only breakage is triage-distinguishable from spec breakage
+    // even though both are always reached by a whole-repo sweep.
+    //
+    // Watch list (3b752549): every project.json in the repo, not just the three this guard was
+    // originally written against — any project that grows a typecheck-tests target without a
+    // matching typecheck-src/noop typecheck needs this guard to re-run. See
+    // `findAllProjectJsonPaths` above.
+    watch: ['nx.json', ...ALL_PROJECT_JSON_PATHS],
   },
 
   // ---------------------------------------------------------------- Tier 2 (5) ------------
