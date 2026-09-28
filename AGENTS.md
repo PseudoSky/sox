@@ -170,8 +170,10 @@ was `build,lint,test` and no project had a `typecheck` target at all — so `mem
 missing an `await`, so it always returned `{}` and could never report an error; BL-250: reads of an
 `on_hash_fallback` field that no longer exists). See BL-248.
 
-If you add a project, give it a `typecheck` target. If a `typecheck` fails, fix the code — never
-weaken `strict`, `noUnusedLocals`, or `exactOptionalPropertyTypes` to silence it.
+If you add a project, give it a `typecheck` target; if it type-checks specs, use the
+`typecheck-src` ← `typecheck-tests` ← `typecheck` (nx:noop) layering — see
+`libs/memory-core/project.json`. If a `typecheck` fails, fix the code — never weaken `strict`,
+`noUnusedLocals`, or `exactOptionalPropertyTypes` to silence it.
 
 ## ⛔ AGENT CONSTRAINT — NEVER USE EMPTY CATCH STATEMENTS
 
