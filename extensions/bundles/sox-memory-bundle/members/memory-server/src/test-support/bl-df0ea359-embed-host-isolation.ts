@@ -7,40 +7,50 @@
  * real). The entrypoint unconditionally fires `warmupEmbed()` on startup
  * (`index.ts`'s `setImmediate(() => void warmupEmbed()...)`, right after
  * `initTelemetry()` — see BL-89), which resolves the real fastembed backend and spawns
- * a shared embedding-host CHILD PROCESS (`embedHostMain.ts`) if one isn't already
+ * a shared, DETACHED embedding-host process (`embedHostMain`) if one isn't already
  * running for the resolved `(model, ep, cacheDir, buildId)` singleton key.
  *
- * Before this fix, both specs only overrode `SOX_ECOSYSTEM_HOME` in the spawned
- * entrypoint's env and otherwise spread the calling process's `process.env` verbatim.
- * `resolveConfig()` in `libs/memory-core/src/embed.ts` falls back to
- * `join(process.env['XDG_CACHE_HOME'] ?? join(homedir(), '.cache'), 'sox', 'models')`
- * when `SOX_EMBED_CACHE_DIR` is unset, and `homedir()` reads the process's `HOME` env
- * var — so every spec run spawned a REAL embedding host with the OPERATOR's
- * `HOME=/Users/nix` and `--cache-dir=/Users/nix/.cache/sox/models`, sharing the
- * production model cache and (via `resolveEmbedHostSocketDir()`'s
- * `SOX_ECOSYSTEM_HOME` default) the production embed socket directory whenever that
- * var happened to be unset elsewhere in the chain. `buildEmbedHostEnv()`
- * (`embedHostConfig.ts`) forwards `HOME`/`XDG_CACHE_HOME`/`TMPDIR` verbatim from the
- * spawner's own env to the host it launches, so overriding them on the spawned
- * `tsx` entrypoint's env is sufficient to isolate the whole chain — no code outside
- * this test-support module needs to change.
+ * Two defects this module closes:
  *
- * `buildScratchEmbedEnv()` gives each spec its own scratch `HOME`, `XDG_CACHE_HOME`,
- * `SOX_EMBED_CACHE_DIR`, and `TMPDIR`, plus a scratch `SOX_ECOSYSTEM_HOME` (unchanged
- * from before this fix) so the socket dir is isolated too. `stopSpawnedEmbedHosts()`
- * verified-stops (SIGTERM, poll, escalate to SIGKILL, re-check) any embed host whose
- * argv carries that scratch cache dir, so a spec never leaves an orphaned host running
- * after `afterAll`.
+ * 1. ENV LEAK. Both specs used to spread the calling process's `process.env` verbatim
+ *    (overriding only `SOX_ECOSYSTEM_HOME`). `resolveConfig()` in
+ *    `libs/memory-core/src/embed.ts` falls back to
+ *    `join(process.env['XDG_CACHE_HOME'] ?? join(homedir(), '.cache'), 'sox', 'models')`,
+ *    so every spec run spawned a real embedding host with the OPERATOR's HOME and
+ *    `--cache-dir=<home>/.cache/sox/models`. `buildEmbedHostEnv()` (`embedHostConfig.ts`)
+ *    forwards `HOME`/`XDG_CACHE_HOME`/`TMPDIR` from the spawner's env, so overriding them on
+ *    the spawned entrypoint isolates the whole chain. `buildScratchEmbedEnv()` does that and
+ *    also strips `SOX_CONFIG_DB_PATH`/`SOX_PROXY_BACKEND`: the entrypoint's SIGTERM handler
+ *    VACUUM-INTO-backs-up whatever store `SOX_CONFIG_DB_PATH` names, and a test must never
+ *    touch the operator's store (the specs pass `db_path` explicitly on every call).
+ *
+ * 2. ORPHANED SERVER. `node_modules/.bin/tsx` runs `index.ts` in a separate node
+ *    GRANDCHILD. The specs used to `child.kill('SIGKILL')` the wrapper only: SIGKILL is not
+ *    relayed, `index.ts` has no stdin-EOF exit, so the real memory-server was reparented to
+ *    ppid 1 and kept running (measured alive at t+90s) while the spec `rmSync`'d its scratch
+ *    dir. `spawnRealEntrypoint()` now spawns `detached: true` (its own process group) and
+ *    tags the argv with a scratch-root sentinel; `teardownRealEntrypoint()` signals the whole
+ *    group (SIGTERM → poll for ESRCH → SIGKILL), then reaps every process whose argv carries
+ *    the scratch root (the detached embed host carries it via `--socket=`/`--cache-dir=`),
+ *    and waits for a stable, empty process table before returning a report the spec ASSERTS.
+ *
+ * Never signals a process this module did not start: the group id is the pid of a child it
+ * spawned with `detached: true`, and every other target carries this run's unique
+ * `mkdtemp` scratch root in its argv.
  */
-import { spawnSync } from 'node:child_process';
+import { spawn, spawnSync, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
+import assert from 'node:assert/strict';
 import { log } from '@adhd/sox-telemetry';
 
 /** The on-disk model dir name embedding-provider's fastembed carrier resolves to. */
 const MODEL_DIR_NAME = 'fast-bge-base-en-v1.5';
 const MODEL_MARKER_FILE = 'model_optimized.onnx';
+
+/** argv sentinel carrying the scratch root, so the server (and an orphan of it) is findable by argv. */
+export const SCRATCH_ROOT_ARG_PREFIX = '--bl-df0ea359-scratch-root=';
 
 /**
  * Resolve where THIS (calling, un-overridden) process would find its own cached
@@ -62,8 +72,8 @@ function resolveOperatorModelCacheDir(): string {
  * hit on every single spec run. This is a one-time file COPY performed by THIS
  * process, before the scratch env is ever handed to a spawned child — the spawned
  * embed host's own `cacheDir` argv is always the scratch path; it is never pointed
- * at, and never touches, the operator's real cache directory. Silently no-ops (and
- * lets the real backend fall back to a network fetch) if no cached model is found.
+ * at, and never touches, the operator's real cache directory. No-ops (and lets the
+ * real backend fall back to a network fetch) if no cached model is found.
  */
 function seedScratchModelCache(destCacheDir: string): boolean {
   const srcModelDir = path.join(resolveOperatorModelCacheDir(), MODEL_DIR_NAME);
@@ -86,7 +96,7 @@ export interface ScratchEmbedEnv {
 
 /**
  * Build a spawn env for a real memory-server entrypoint test that never shares the
- * operator's HOME, model cache, XDG cache dir, tmp dir, or embed socket dir.
+ * operator's HOME, model cache, XDG cache dir, tmp dir, embed socket dir, or store.
  */
 export function buildScratchEmbedEnv(scratchRoot: string, baseEnv: NodeJS.ProcessEnv = process.env): ScratchEmbedEnv {
   const home = path.join(scratchRoot, 'home');
@@ -97,103 +107,360 @@ export function buildScratchEmbedEnv(scratchRoot: string, baseEnv: NodeJS.Proces
 
   seedScratchModelCache(cacheDir);
 
-  return {
-    env: {
-      ...baseEnv,
-      HOME: home,
-      XDG_CACHE_HOME: xdgCache,
-      SOX_EMBED_CACHE_DIR: cacheDir,
-      TMPDIR: tmp,
-      SOX_ECOSYSTEM_HOME: sandboxEcosystemHome,
-    },
-    cacheDir,
-    home,
+  const env: NodeJS.ProcessEnv = {
+    ...baseEnv,
+    HOME: home,
+    XDG_CACHE_HOME: xdgCache,
+    SOX_EMBED_CACHE_DIR: cacheDir,
+    TMPDIR: tmp,
+    SOX_ECOSYSTEM_HOME: sandboxEcosystemHome,
   };
+  // The entrypoint's SIGTERM handler backs up the store SOX_CONFIG_DB_PATH names, and
+  // SOX_PROXY_BACKEND=1 would switch it into backend mode. Neither may leak in from the
+  // operator's env: the specs always pass `db_path` explicitly.
+  delete env['SOX_CONFIG_DB_PATH'];
+  delete env['SOX_PROXY_BACKEND'];
+
+  return { env, cacheDir, home };
 }
 
-/** Find pids of `embedHostMain` child processes whose argv carries `--cache-dir=<cacheDir>`. */
-function findEmbedHostPids(cacheDir: string): number[] {
-  const out = spawnSync('ps', ['-axEww', '-o', 'pid=,command='], { encoding: 'utf8' });
-  const lines = (out.stdout ?? '').split('\n');
-  const needle = `--cache-dir=${cacheDir}`;
-  const pids: number[] = [];
-  for (const line of lines) {
-    if (line.includes('embedHostMain') && line.includes(needle)) {
-      const m = /^\s*(\d+)/.exec(line);
-      if (m?.[1] !== undefined) pids.push(Number(m[1]));
+// ── process table ────────────────────────────────────────────────────────────
+
+export interface ProcRow {
+  pid: number;
+  ppid: number;
+  pgid: number;
+  command: string;
+}
+
+/**
+ * Snapshot the process table. `-axww` (every process, unlimited width) is accepted by both
+ * BSD and procps `ps`. Throws if `ps` cannot run or exits non-zero — an unreadable process
+ * table must never read as "nothing survived".
+ */
+export function readProcessTable(): ProcRow[] {
+  const out = spawnSync('ps', ['-axww', '-o', 'pid=,ppid=,pgid=,command='], { encoding: 'utf8' });
+  if (out.error !== undefined) {
+    throw new Error(`BL-df0ea359: ps failed to run: ${String(out.error)}`);
+  }
+  if (out.status !== 0) {
+    throw new Error(`BL-df0ea359: ps exited ${String(out.status)} (signal ${String(out.signal)}): ${out.stderr}`);
+  }
+  const rows: ProcRow[] = [];
+  for (const line of out.stdout.split('\n')) {
+    const m = /^\s*(\d+)\s+(\d+)\s+(\d+)\s+(.*)$/.exec(line);
+    if (m === null) continue;
+    rows.push({ pid: Number(m[1]), ppid: Number(m[2]), pgid: Number(m[3]), command: m[4] ?? '' });
+  }
+  if (rows.length === 0) {
+    throw new Error(`BL-df0ea359: ps returned no parsable rows:\n${out.stdout}`);
+  }
+  return rows;
+}
+
+/** Both spellings of the scratch root (macOS tmp paths may surface as `/private/var/...`). */
+function scratchRootNeedles(scratchRoot: string): string[] {
+  const needles = new Set<string>([scratchRoot]);
+  try {
+    needles.add(fs.realpathSync(scratchRoot));
+  } catch (err) {
+    log.warn('bl_df0ea359_scratch_realpath_failed', { scratchRoot, error: String(err) });
+  }
+  return [...needles];
+}
+
+function argvCarries(command: string, needles: readonly string[]): boolean {
+  return needles.some((n) => command.includes(n));
+}
+
+function argValue(command: string, flag: string): string | null {
+  const m = new RegExp(`(?:^|\\s)${flag}=(\\S+)`).exec(command);
+  return m?.[1] ?? null;
+}
+
+// ── spawn + teardown ─────────────────────────────────────────────────────────
+
+export interface RealEntrypointRun {
+  child: ChildProcessWithoutNullStreams;
+  scratchRoot: string;
+  /** Every process observed as part of this run: pid -> last seen command. */
+  seen: Map<number, string>;
+  /** Stops the background sampler; idempotent. */
+  stopSampler: () => void;
+  /** Take one sample now (also called by the sampler on an interval). */
+  sample: () => void;
+}
+
+export interface SpawnRealEntrypointOptions {
+  tsxBin: string;
+  entry: string;
+  cwd: string;
+  env: NodeJS.ProcessEnv;
+  scratchRoot: string;
+  sampleIntervalMs?: number;
+}
+
+/**
+ * Spawn the real entrypoint through the tsx wrapper as the leader of its OWN process group
+ * (`detached: true`), tagged with the scratch-root argv sentinel, and start a process-table
+ * sampler that records the run's whole tree while it is still attributable by ppid (once the
+ * server dies its children reparent to ppid 1 and a tree walk can no longer find them).
+ */
+export function spawnRealEntrypoint(opts: SpawnRealEntrypointOptions): RealEntrypointRun {
+  const child = spawn(opts.tsxBin, [opts.entry, `${SCRATCH_ROOT_ARG_PREFIX}${opts.scratchRoot}`], {
+    cwd: opts.cwd,
+    env: opts.env,
+    stdio: ['pipe', 'pipe', 'pipe'],
+    detached: true,
+  });
+  const needles = scratchRootNeedles(opts.scratchRoot);
+  const seen = new Map<number, string>();
+
+  const sample = (): void => {
+    const rootPid = child.pid;
+    if (rootPid === undefined) return;
+    const rows = readProcessTable();
+    const members = new Set<number>([rootPid, ...seen.keys()]);
+    // Fixpoint: descendants of any known member, plus anything carrying the scratch root,
+    // plus any embed host whose --spawner-pid is a member (the host is detached and may be
+    // reparented before a ppid walk sees it).
+    let grew = true;
+    while (grew) {
+      grew = false;
+      for (const r of rows) {
+        if (members.has(r.pid)) continue;
+        const spawner = argValue(r.command, '--spawner-pid');
+        if (
+          members.has(r.ppid) ||
+          r.pgid === rootPid ||
+          argvCarries(r.command, needles) ||
+          (spawner !== null && members.has(Number(spawner)))
+        ) {
+          members.add(r.pid);
+          grew = true;
+        }
+      }
+    }
+    for (const r of rows) {
+      if (members.has(r.pid)) seen.set(r.pid, r.command);
+    }
+  };
+
+  let timer: NodeJS.Timeout | null = setInterval(() => {
+    try {
+      sample();
+    } catch (err) {
+      log.warn('bl_df0ea359_sampler_failed', { scratchRoot: opts.scratchRoot, error: String(err) });
+    }
+  }, opts.sampleIntervalMs ?? 250);
+  timer.unref();
+  const stopSampler = (): void => {
+    if (timer !== null) clearInterval(timer);
+    timer = null;
+  };
+
+  return { child, scratchRoot: opts.scratchRoot, seen, stopSampler, sample };
+}
+
+export interface EmbedHostSighting {
+  pid: number;
+  cacheDir: string | null;
+  command: string;
+}
+
+export interface TeardownReport {
+  /** True iff `kill(-pgid, 0)` reached ESRCH (every process in the spawned group is gone). */
+  groupGone: boolean;
+  /** True iff SIGTERM was not enough and the group needed SIGKILL. */
+  groupEscalatedToKill: boolean;
+  /**
+   * Non-embed-host processes of this run (scratch root in argv, or in the spawned process
+   * group) still alive right AFTER the group stop, before any reap. Must be empty: a
+   * non-empty list is an orphaned memory-server the tree kill failed to take down.
+   */
+  aliveAfterTreeStop: ProcRow[];
+  /** Every pid observed as part of the run. */
+  seenPids: number[];
+  /** Every embed host observed during the run, attributed by scratch argv or --spawner-pid. */
+  embedHosts: EmbedHostSighting[];
+  /** Embed hosts whose --cache-dir is NOT under the scratch root (must be empty). */
+  foreignCacheEmbedHosts: EmbedHostSighting[];
+  /** Pids that needed a reap signal after the group kill. */
+  reaped: number[];
+  /** Processes still alive after teardown that carry the scratch root or were seen in the run (must be empty). */
+  survivors: ProcRow[];
+}
+
+function isAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === 'ESRCH') return false;
+    // EPERM: exists but not ours — still alive.
+    log.warn('bl_df0ea359_liveness_probe_error', { pid, error: String(err) });
+    return true;
+  }
+}
+
+function groupAlive(pgid: number): boolean {
+  try {
+    process.kill(-pgid, 0);
+    return true;
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === 'ESRCH') return false;
+    log.warn('bl_df0ea359_group_probe_error', { pgid, error: String(err) });
+    return true;
+  }
+}
+
+function signalGroup(pgid: number, sig: NodeJS.Signals): void {
+  try {
+    process.kill(-pgid, sig);
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== 'ESRCH') {
+      log.warn('bl_df0ea359_group_signal_failed', { pgid, sig, error: String(err) });
     }
   }
-  return pids;
+}
+
+function signalPid(pid: number, sig: NodeJS.Signals): void {
+  try {
+    process.kill(pid, sig);
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== 'ESRCH') {
+      log.warn('bl_df0ea359_pid_signal_failed', { pid, sig, error: String(err) });
+    }
+  }
 }
 
 async function sleep(ms: number): Promise<void> {
   await new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+async function waitUntil(pred: () => boolean, timeoutMs: number, stepMs = 100): Promise<boolean> {
+  const start = Date.now();
+  while (Date.now() - start < timeoutMs) {
+    if (pred()) return true;
+    await sleep(stepMs);
+  }
+  return pred();
+}
+
+export interface TeardownOptions {
+  /** SIGTERM → SIGKILL grace for the spawned group and for each reap round. */
+  termGraceMs?: number;
+  /** Consecutive empty process-table samples required before declaring the run clean. */
+  stableSamples?: number;
+  /** Gap between stable-table samples. */
+  stableIntervalMs?: number;
+  /** Hard ceiling on the reap/stabilise phase. */
+  reapDeadlineMs?: number;
+}
+
+/** Worst-case wall time of {@link teardownRealEntrypoint} with default options (for test timeouts). */
+export const TEARDOWN_WORST_CASE_MS = 5_000 + 2_000 + 12_000 + 2_000;
+
 /**
- * Verified-stop every embed host spawned under `cacheDir` (SIGTERM, poll for exit,
- * escalate to SIGKILL on timeout, re-check). Never kills a process this helper did not
- * itself discover via the scratch `--cache-dir=` argv marker — it never touches a host
- * running against the operator's real cache dir.
+ * Verified-stop the whole run: group SIGTERM → poll ESRCH → group SIGKILL; then reap every
+ * remaining process that carries the scratch root in argv or was seen in the run (the
+ * detached embed host lives in its own group), and wait for `stableSamples` consecutive
+ * process-table samples with no such process. Returns a report; the caller ASSERTS on it.
  */
-export async function stopSpawnedEmbedHosts(
-  cacheDir: string,
-  watchWindowMs = 25_000,
-  killGraceMs = 4_000,
-): Promise<{ found: number[]; stopped: number[]; stillRunning: number[] }> {
-  // The parent entrypoint's warmupEmbed() is fire-and-forget (setImmediate); its
-  // actual fork of the embed-host child can lag well behind the MCP round trip this
-  // spec already completed (buildId fingerprinting + singleton-key resolution run
-  // first). Worse, `funnelClient.ts`'s ensure() retries a failed/not-ready host up
-  // to ENSURE_FAILURE_THRESHOLD times with an ENSURE_CIRCUIT_COOLDOWN_MS gap between
-  // attempts — a NEW pid each time — so a single discover-then-kill pass can miss a
-  // later retry entirely. `buildScratchEmbedEnv()` pre-seeds the scratch cache with a
-  // real cached model specifically to make the FIRST attempt succeed and avoid this
-  // storm, but this loop still watches for and kills every distinct pid it ever sees
-  // under `cacheDir` for the whole window, not just the first.
-  const seen = new Map<number, boolean>(); // pid -> SIGTERM sent
-  const windowStart = Date.now();
-  while (Date.now() - windowStart < watchWindowMs) {
-    const current = findEmbedHostPids(cacheDir);
-    for (const pid of current) {
-      if (!seen.has(pid)) {
-        seen.set(pid, false);
+export async function teardownRealEntrypoint(run: RealEntrypointRun, opts: TeardownOptions = {}): Promise<TeardownReport> {
+  const termGraceMs = opts.termGraceMs ?? 5_000;
+  const stableSamples = opts.stableSamples ?? 3;
+  const stableIntervalMs = opts.stableIntervalMs ?? 250;
+  const reapDeadlineMs = opts.reapDeadlineMs ?? 12_000;
+  const needles = scratchRootNeedles(run.scratchRoot);
+
+  // Final attribution sample while the tree is still intact (ppid links not yet broken).
+  try {
+    run.sample();
+  } catch (err) {
+    log.warn('bl_df0ea359_final_sample_failed', { scratchRoot: run.scratchRoot, error: String(err) });
+  }
+  run.stopSampler();
+
+  const pgid = run.child.pid;
+  let groupGone = true;
+  let groupEscalatedToKill = false;
+  if (pgid !== undefined && pgid > 1) {
+    run.child.stdin.end();
+    signalGroup(pgid, 'SIGTERM');
+    groupGone = await waitUntil(() => !groupAlive(pgid), termGraceMs);
+    if (!groupGone) {
+      groupEscalatedToKill = true;
+      signalGroup(pgid, 'SIGKILL');
+      groupGone = await waitUntil(() => !groupAlive(pgid), 2_000);
+    }
+  }
+
+  const aliveAfterTreeStop = readProcessTable().filter(
+    (r) =>
+      r.pid !== process.pid &&
+      !r.command.includes('embedHostMain') &&
+      (argvCarries(r.command, needles) || (pgid !== undefined && r.pgid === pgid)),
+  );
+
+  const seenPids = [...run.seen.keys()];
+  const isOurs = (r: ProcRow): boolean => argvCarries(r.command, needles) || (run.seen.has(r.pid) && run.seen.get(r.pid) === r.command);
+
+  const reaped = new Set<number>();
+  const termedAt = new Map<number, number>();
+  let clean = 0;
+  let survivors: ProcRow[] = [];
+  const reapStart = Date.now();
+  while (Date.now() - reapStart < reapDeadlineMs) {
+    const rows = readProcessTable();
+    survivors = rows.filter((r) => r.pid !== process.pid && isOurs(r));
+    for (const r of survivors) {
+      if (!run.seen.has(r.pid)) run.seen.set(r.pid, r.command);
+      const t = termedAt.get(r.pid);
+      if (t === undefined) {
+        reaped.add(r.pid);
+        termedAt.set(r.pid, Date.now());
+        signalPid(r.pid, 'SIGTERM');
+      } else if (Date.now() - t > termGraceMs) {
+        signalPid(r.pid, 'SIGKILL');
       }
     }
-    for (const [pid, termed] of seen) {
-      if (!termed && current.includes(pid)) {
-        try {
-          process.kill(pid, 'SIGTERM');
-        } catch (err) {
-          log.warn('bl_df0ea359_embed_host_sigterm_failed', { pid, error: String(err) });
-        }
-        seen.set(pid, true);
-      }
-    }
-    await sleep(250);
+    clean = survivors.length === 0 ? clean + 1 : 0;
+    if (clean >= stableSamples) break;
+    await sleep(stableIntervalMs);
   }
+  // Last word comes from the process table, never from the loop's bookkeeping.
+  survivors = readProcessTable().filter((r) => r.pid !== process.pid && isOurs(r) && isAlive(r.pid));
 
-  const found = [...seen.keys()];
+  const embedHosts: EmbedHostSighting[] = [...run.seen.entries()]
+    .filter(([, command]) => command.includes('embedHostMain'))
+    .map(([pid, command]) => ({ pid, cacheDir: argValue(command, '--cache-dir'), command }));
+  const foreignCacheEmbedHosts = embedHosts.filter(
+    (h) => h.cacheDir === null || !needles.some((n) => h.cacheDir!.startsWith(n + path.sep)),
+  );
 
-  const killStart = Date.now();
-  let remaining = findEmbedHostPids(cacheDir).filter((pid) => found.includes(pid));
-  while (remaining.length > 0 && Date.now() - killStart < killGraceMs) {
-    await sleep(150);
-    remaining = findEmbedHostPids(cacheDir).filter((pid) => found.includes(pid));
-  }
+  return {
+    groupGone,
+    groupEscalatedToKill,
+    aliveAfterTreeStop,
+    seenPids,
+    embedHosts,
+    foreignCacheEmbedHosts,
+    reaped: [...reaped],
+    survivors,
+  };
+}
 
-  for (const pid of remaining) {
-    try {
-      process.kill(pid, 'SIGKILL');
-    } catch (err) {
-      log.warn('bl_df0ea359_embed_host_sigkill_failed', { pid, error: String(err) });
-    }
-  }
-  if (remaining.length > 0) {
-    await sleep(300);
-  }
-
-  const stillRunning = findEmbedHostPids(cacheDir);
-  const stopped = found.filter((pid) => !stillRunning.includes(pid));
-  return { found, stopped, stillRunning };
+/**
+ * BL-df0ea359 teardown contract, asserted (never merely logged) by both real-entrypoint specs:
+ * the spawned tree died to the group stop with no orphaned server, nothing carrying the
+ * scratch root survived the reap, and every embed host the run used had its `--cache-dir`
+ * under the scratch root.
+ */
+export function assertCleanTeardown(report: TeardownReport): void {
+  const fmt = (rows: ProcRow[]): string => rows.map((r) => `${r.pid} (ppid ${r.ppid}, pgid ${r.pgid}): ${r.command}`).join('\n');
+  assert.deepEqual(report.aliveAfterTreeStop, [], `orphaned run processes after the tree stop:\n${fmt(report.aliveAfterTreeStop)}`);
+  assert.equal(report.groupGone, true, 'spawned process group still has live members');
+  assert.deepEqual(report.survivors, [], `scratch-root processes alive after teardown:\n${fmt(report.survivors)}`);
+  assert.deepEqual(report.foreignCacheEmbedHosts, [], 'embed hosts seen this run with a --cache-dir outside the scratch root');
 }

@@ -18,11 +18,14 @@
  *
  *   1. STRUCTURAL (static, source-level): both spec files must build their
  *      spawn env via `buildScratchEmbedEnv()` from
- *      `test-support/bl-df0ea359-embed-host-isolation.ts` and verified-stop
- *      whatever they spawn via `stopSpawnedEmbedHosts()` — and must NOT still
- *      contain the pre-fix `{ ...process.env, SOX_ECOSYSTEM_HOME: ... }` spawn-env
- *      pattern. Run with `--ref <gitref>` to check the spec files AT THAT REF
- *      instead of on disk (used below to prove RED against the pre-fix commit).
+ *      `test-support/bl-df0ea359-embed-host-isolation.ts`, spawn through
+ *      `spawnRealEntrypoint()` (own process group), stop the whole tree via
+ *      `teardownRealEntrypoint()` and ASSERT the report via `assertCleanTeardown()`
+ *      — and must NOT still contain the pre-fix `{ ...process.env,
+ *      SOX_ECOSYSTEM_HOME: ... }` spawn-env pattern or a wrapper-only
+ *      `child.kill('SIGKILL')` (the tsx wrapper does not relay SIGKILL, which
+ *      orphaned the real memory-server grandchild to ppid 1). Run with
+ *      `--ref <gitref>` to check the spec files AT THAT REF instead of on disk.
  *
  *   2. DYNAMIC (real code, real fallback env): actually calls the real
  *      `buildScratchEmbedEnv()` (via `node --import tsx`, never re-implemented)
@@ -33,7 +36,7 @@
  *
  * Usage:
  *   node tools/test-df0ea359-spec-embed-isolation.mjs                  # GREEN: checks the working tree
- *   node tools/test-df0ea359-spec-embed-isolation.mjs --ref main       # RED: checks main's pre-fix specs
+ *   node tools/test-df0ea359-spec-embed-isolation.mjs --ref 80261908   # RED: the pinned pre-fix base
  * Exit 0 iff every check for the checked ref passes.
  */
 import { execFileSync } from 'node:child_process';
@@ -63,9 +66,12 @@ function readAtRef(relPath) {
     return fs.readFileSync(path.join(REPO_ROOT, relPath), 'utf8');
   }
   try {
-    return execFileSync('git', ['show', `${ref}:${relPath}`], { cwd: REPO_ROOT, encoding: 'utf8' });
+    return execFileSync('git', ['show', `${ref}:${relPath}`], { cwd: REPO_ROOT, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
   } catch (err) {
-    return null; // file did not exist at that ref (e.g. the helper module itself, pre-fix)
+    // A path absent at that ref (e.g. the helper module itself, pre-fix) reads as null; anything
+    // else (bad ref, git failure) is traced so a broken probe is never mistaken for a RED.
+    console.error(`[TRACE] git show ${ref}:${relPath} failed: ${String(err?.stderr ?? err).trim()}`);
+    return null;
   }
 }
 
@@ -79,7 +85,10 @@ for (const specRel of SPEC_RELPATHS) {
   }
   const importsHelper = /from ['"]\.\/test-support\/bl-df0ea359-embed-host-isolation\.js['"]/.test(src);
   const usesBuildEnv = /buildScratchEmbedEnv\(/.test(src);
-  const usesStop = /stopSpawnedEmbedHosts\(/.test(src);
+  const usesSpawn = /spawnRealEntrypoint\(/.test(src);
+  const usesTeardown = /teardownRealEntrypoint\(/.test(src);
+  const assertsTeardown = /assertCleanTeardown\(/.test(src);
+  const wrapperOnlyKill = /child\.kill\(\s*['"]SIGKILL['"]\s*\)/.test(src);
   // The exact pre-fix pattern this BL replaces: spreading the caller's own
   // process.env into the spawn env with only SOX_ECOSYSTEM_HOME overridden —
   // this is what let the operator's real HOME/cache leak through.
@@ -87,8 +96,24 @@ for (const specRel of SPEC_RELPATHS) {
 
   report(`${label}: imports the scratch-embed isolation helper`, importsHelper);
   report(`${label}: builds its spawn env via buildScratchEmbedEnv()`, usesBuildEnv);
-  report(`${label}: verified-stops spawned hosts via stopSpawnedEmbedHosts()`, usesStop);
+  report(`${label}: spawns via spawnRealEntrypoint() (own process group)`, usesSpawn);
+  report(`${label}: stops the whole tree via teardownRealEntrypoint()`, usesTeardown);
+  report(`${label}: asserts the teardown report via assertCleanTeardown()`, assertsTeardown);
+  report(`${label}: no wrapper-only child.kill('SIGKILL') teardown`, !wrapperOnlyKill);
   report(`${label}: pre-fix raw process.env spawn-env pattern is gone`, !usesPreFixRawSpread);
+}
+
+// ── 1b. Helper structural checks: group spawn + group signal + fail-closed ps ──
+{
+  const helperSrc = readAtRef(HELPER_RELPATH);
+  if (helperSrc === null) {
+    report(`helper module exists at ${ref ?? 'HEAD'}`, false, HELPER_RELPATH);
+  } else {
+    report('helper spawns the entrypoint detached (own process group)', /detached:\s*true/.test(helperSrc));
+    report('helper signals the whole process group (process.kill(-pgid, ...))', /process\.kill\(\s*-\s*\w+/.test(helperSrc));
+    report('helper reads the process table with portable `ps -axww` (no BSD-only -E)', /'-axww'/.test(helperSrc) && !/-axEww/.test(helperSrc));
+    report('helper fails closed on a ps failure (checks spawnSync error/status)', /out\.error !== undefined/.test(helperSrc) && /out\.status !== 0/.test(helperSrc));
+  }
 }
 
 // ── 2. Dynamic check — only meaningful (and only run) against the working tree,

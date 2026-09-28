@@ -26,12 +26,19 @@
  * silently redeploy the live backend). `tsx` transforms the source on the fly.
  */
 import { describe, it, expect } from 'vitest';
-import { spawn } from 'node:child_process';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { log } from '@adhd/sox-telemetry';
-import { buildScratchEmbedEnv, stopSpawnedEmbedHosts } from './test-support/bl-df0ea359-embed-host-isolation.js';
+import {
+  buildScratchEmbedEnv,
+  assertCleanTeardown,
+  spawnRealEntrypoint,
+  teardownRealEntrypoint,
+  TEARDOWN_WORST_CASE_MS,
+  type RealEntrypointRun,
+  type TeardownReport,
+} from './test-support/bl-df0ea359-embed-host-isolation.js';
 
 const REPO_ROOT = path.resolve(__dirname, '../../../../../..');
 const MEMORY_SERVER_DIR = path.resolve(__dirname, '..');
@@ -47,10 +54,10 @@ interface JsonRpcMsg {
 }
 
 async function callMemoryStatsOnRealEntrypoint(
-  env: NodeJS.ProcessEnv,
+  run: RealEntrypointRun,
   dbPath: string,
 ): Promise<Record<string, unknown>> {
-  const child = spawn(TSX_BIN, [ENTRY], { cwd: MEMORY_SERVER_DIR, env, stdio: ['pipe', 'pipe', 'pipe'] });
+  const { child } = run;
 
   let stdoutBuf = '';
   const responses: JsonRpcMsg[] = [];
@@ -63,7 +70,8 @@ async function callMemoryStatsOnRealEntrypoint(
       if (line.trim()) {
         try {
           responses.push(JSON.parse(line) as JsonRpcMsg);
-        } catch {
+        } catch (err) {
+          log.warn('bl_df0ea359_non_jsonrpc_stdout_line', { line: line.slice(0, 200), error: String(err) });
           // stdout is never a legal telemetry sink — noise here would corrupt
           // the MCP JSON-RPC channel and is itself a regression worth seeing.
         }
@@ -92,36 +100,35 @@ async function callMemoryStatsOnRealEntrypoint(
     throw new Error(`timeout waiting for id ${id}.\nstderr so far:\n${stderrBuf}`);
   }
 
-  try {
-    send({
-      jsonrpc: '2.0',
-      id: 1,
-      method: 'initialize',
-      params: { protocolVersion: '2024-11-05', capabilities: {}, clientInfo: { name: 'bl401-spec', version: '0.0.0' } },
-    });
-    await waitFor(1, 20_000);
-    send({ jsonrpc: '2.0', method: 'notifications/initialized' });
-    send({ jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name: 'memory_stats', arguments: { db_path: dbPath } } });
-    const resp = await waitFor(2, 20_000);
-    const text = resp.result?.content?.[0]?.text;
-    if (typeof text !== 'string') throw new Error(`memory_stats returned no text: ${JSON.stringify(resp)}`);
-    return JSON.parse(text) as Record<string, unknown>;
-  } finally {
-    child.kill('SIGKILL');
-  }
+  // Teardown is the caller's: teardownRealEntrypoint() stops the whole tree (BL-df0ea359).
+  send({
+    jsonrpc: '2.0',
+    id: 1,
+    method: 'initialize',
+    params: { protocolVersion: '2024-11-05', capabilities: {}, clientInfo: { name: 'bl401-spec', version: '0.0.0' } },
+  });
+  await waitFor(1, 20_000);
+  send({ jsonrpc: '2.0', method: 'notifications/initialized' });
+  send({ jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name: 'memory_stats', arguments: { db_path: dbPath } } });
+  const resp = await waitFor(2, 20_000);
+  const text = resp.result?.content?.[0]?.text;
+  if (typeof text !== 'string') throw new Error(`memory_stats returned no text: ${JSON.stringify(resp)}`);
+  return JSON.parse(text) as Record<string, unknown>;
 }
 
 describe('BL-401: the real spawned memory-server reports a non-zero stage inventory', () => {
   it(
-    'memory_stats.telemetry_self_check.stages_declared > 0, with memory-core stages present by name',
+    'memory_stats.telemetry_self_check.stages_declared > 0, with memory-core stages present by name; BL-df0ea359: teardown leaves no scratch-root process alive and every embed host used the scratch cache',
     async () => {
       const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'sox-bl401-live-'));
       const dbPath = path.join(dir, 'test.db');
       // BL-df0ea359: same real-entrypoint spawn as bl404 — isolate the embedding
       // host's HOME/cache/socket to a scratch dir and verified-stop it afterward.
-      const { env: scratchEnv, cacheDir } = buildScratchEmbedEnv(dir);
+      const { env: scratchEnv } = buildScratchEmbedEnv(dir);
+      const run = spawnRealEntrypoint({ tsxBin: TSX_BIN, entry: ENTRY, cwd: MEMORY_SERVER_DIR, env: scratchEnv, scratchRoot: dir });
+      let teardown: TeardownReport | null = null;
       try {
-        const body = await callMemoryStatsOnRealEntrypoint(scratchEnv, dbPath);
+        const body = await callMemoryStatsOnRealEntrypoint(run, dbPath);
         const check = body['telemetry_self_check'] as Record<string, unknown> | undefined;
         expect(check).toBeDefined();
 
@@ -149,13 +156,13 @@ describe('BL-401: the real spawned memory-server reports a non-zero stage invent
         expect(typeof persistence['file']).toBe('string');
         expect(persistence['file'] as string).toContain('.metrics-snapshot-');
       } finally {
-        const { stillRunning } = await stopSpawnedEmbedHosts(cacheDir);
-        if (stillRunning.length > 0) {
-          log.warn('bl_df0ea359_embed_host_survived_stop', { pids: stillRunning, cacheDir });
-        }
-        fs.rmSync(dir, { recursive: true, force: true });
+        teardown = await teardownRealEntrypoint(run);
+        // Only remove the scratch dir from under a tree that is verifiably gone.
+        if (teardown.survivors.length === 0) fs.rmSync(dir, { recursive: true, force: true });
       }
+      assertCleanTeardown(teardown);
     },
-    60_000,
+    // 2 x 20s MCP waits + the teardown's worst case + startup headroom under load.
+    40_000 + TEARDOWN_WORST_CASE_MS + 30_000,
   );
 });
