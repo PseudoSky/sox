@@ -326,14 +326,15 @@ build leaves the old `dist/` intact.
 Registry: see [registry is release-only](#registry-is-release-only) — a local rebuild does not
 touch `registry/index.json`.
 
-**`nx test` is a build too — it carries the same hazard, from the other side (BL-456).** `nx.json`
-sets `targetDefaults.test.dependsOn = ["^build"]`, so `npx nx test <project>` rebuilds every upstream
-`dist/` from whatever source is on disk — **including another agent's uncommitted edits**. This is not
-theoretical: an agent's isolated runs were green and its first full `nx test memory-server
---skip-nx-cache` went red on an assertion its packet had never touched, because a concurrent agent's
-in-flight `write-queue.ts` was compiled into `memory-core/dist` by the test run itself. The reverse is
-worse and silent — a suite can go **green** against code the running agent has never seen, and be
-reported as verification.
+**`nx test` and `nx typecheck` are builds too — they carry the same hazard, from the other side
+(BL-456).** `nx.json` sets `targetDefaults.test.dependsOn = ["^build"]` (and the same for
+`typecheck`/`typecheck-tests`), so `npx nx test <project>` and `npx nx typecheck <project>` both
+rebuild every upstream `dist/` from whatever source is on disk — **including another agent's
+uncommitted edits**. This is not theoretical: an agent's isolated runs were green and its first full
+`nx test memory-server --skip-nx-cache` went red on an assertion its packet had never touched,
+because a concurrent agent's in-flight `write-queue.ts` was compiled into `memory-core/dist` by the
+test run itself. The reverse is worse and silent — a suite can go **green** against code the running
+agent has never seen, and be reported as verification.
 
 So a suite result is evidence only when the tree state it ran against is stated with it:
 
