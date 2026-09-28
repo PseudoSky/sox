@@ -68,6 +68,23 @@ function report(name, ok, detail) {
   if (!ok) failed++;
 }
 
+// [BL-48d92088] The correct report for this fixture is the EXACT porcelain line for a tracked
+// file modified after commit (" M lib/src/index.ts"), never a substring match on the path. A
+// substring match is config-dependent: under `status.showUntrackedFiles=all` (which
+// `porcelainOver()` always passes on the CLI), a run reading the FOREIGN index reports this same
+// path as untracked ("?? lib/src/index.ts") — which also contains the path substring, so a
+// substring check reads that polluted-env failure as a correct report. A correct report must
+// contain the exact " M lib/src/index.ts" line AND must not ALSO carry an untracked ("??") line
+// for the same path.
+const EXACT_MODIFIED_LINE = ' M lib/src/index.ts';
+function reportsCorrectly(lines) {
+  const hasExactModifiedLine = lines.includes(EXACT_MODIFIED_LINE);
+  const hasUntrackedForSamePath = lines.some(
+    (l) => l.startsWith('??') && l.includes('lib/src/index.ts'),
+  );
+  return hasExactModifiedLine && !hasUntrackedForSamePath;
+}
+
 const mod = await import(`file://${TOOL}`);
 
 const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'aa65862e-')));
@@ -161,23 +178,68 @@ try {
 
     // Arm 2 [GREEN] — the shipped porcelainOver(), same polluted process.env, gitEnv() strips it.
     const fixedDirty = mod.porcelainOver(['lib'], dir);
-    const fixedCorrect = fixedDirty.some((l) => l.includes('lib/src/index.ts'));
+    const fixedCorrect = reportsCorrectly(fixedDirty);
     report(
       'aa65862e GREEN: porcelainOver() (gitEnv() stripping restored) correctly reports the ' +
-        'scratch repo dirty file under the SAME inherited GIT_DIR/GIT_INDEX_FILE pollution',
+        'scratch repo dirty file (exact " M lib/src/index.ts" line, no "??" line for the same ' +
+        'path) under the SAME inherited GIT_DIR/GIT_INDEX_FILE pollution',
       fixedCorrect,
       `dirty=${JSON.stringify(fixedDirty)}`,
     );
 
     // Arm 3 [GREEN] — buildReport(), the exact function main() calls, end to end.
     const rep = mod.buildReport(graph, 'app', dir);
-    const repCorrect = rep.dirty.some((l) => l.includes('lib/src/index.ts'));
+    const repCorrect = reportsCorrectly(rep.dirty);
     report(
       'aa65862e GREEN: buildReport() (the function main() uses) also correctly reports the ' +
-        'scratch repo dirty file under the SAME inherited GIT_DIR/GIT_INDEX_FILE pollution',
+        'scratch repo dirty file (exact " M lib/src/index.ts" line, no "??" line for the same ' +
+        'path) under the SAME inherited GIT_DIR/GIT_INDEX_FILE pollution',
       repCorrect,
       `dirty=${JSON.stringify(rep.dirty)}`,
     );
+
+    // Arm 4 [PROOF] — with gitEnv() stripping disabled in a scratch copy of the shipped module
+    // (never this repo's own file), the exact-line check Arms 2-3 rely on goes RED under the SAME
+    // polluted environment. This proves the check can actually fail — that Arms 2-3 are not
+    // passing unconditionally regardless of what gitEnv() does.
+    const shippedSrc = fs.readFileSync(TOOL, 'utf8');
+    const STRIP_TOKEN = 'const env = { ...process.env };';
+    if (!shippedSrc.includes(STRIP_TOKEN)) {
+      throw new Error(
+        `aa65862e: expected stable token ${JSON.stringify(STRIP_TOKEN)} in ${TOOL} to disable ` +
+          'gitEnv() stripping for the proof arm — not found. Tool source has changed; update this test.',
+      );
+    }
+    const brokenSrc = shippedSrc.replace(
+      STRIP_TOKEN,
+      `${STRIP_TOKEN}\n  return env; // aa65862e PROOF ARM: stripping disabled on purpose`,
+    );
+    const scratchDir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'aa65862e-broken-')));
+    try {
+      const brokenToolPath = path.join(scratchDir, 'check-suite-tree-state-broken.mjs');
+      fs.writeFileSync(brokenToolPath, brokenSrc);
+      // `check-suite-tree-state.mjs` imports `./dist-freshness.mjs` by relative path — copy it
+      // alongside the scratch copy so the broken module resolves it identically outside the repo.
+      fs.copyFileSync(
+        path.join(TOOLS, 'dist-freshness.mjs'),
+        path.join(scratchDir, 'dist-freshness.mjs'),
+      );
+
+      const brokenMod = await import(`file://${brokenToolPath}`);
+      const brokenPorcelainDirty = brokenMod.porcelainOver(['lib'], dir);
+      const brokenReport = brokenMod.buildReport(graph, 'app', dir);
+      const brokenPorcelainCorrect = reportsCorrectly(brokenPorcelainDirty);
+      const brokenReportCorrect = reportsCorrectly(brokenReport.dirty);
+      report(
+        'aa65862e PROOF: with gitEnv() stripping disabled, porcelainOver() and buildReport() do ' +
+          'NOT correctly report the scratch repo dirty file under the SAME polluted environment ' +
+          '— confirming Arms 2-3\'s exact-line check can go red on a real regression',
+        !brokenPorcelainCorrect && !brokenReportCorrect,
+        `porcelainOver dirty=${JSON.stringify(brokenPorcelainDirty)} buildReport dirty=${JSON.stringify(brokenReport.dirty)}`,
+      );
+    } finally {
+      fs.rmSync(scratchDir, { recursive: true, force: true });
+    }
   } finally {
     for (const k of Object.keys(process.env)) delete process.env[k];
     Object.assign(process.env, savedEnv);
