@@ -19,20 +19,25 @@
  *      to no single project's root.
  *   4. A dirty file OUTSIDE every dependency's root and outside the root config set is NOT
  *      reported (the anti-noise design is preserved).
- *   5. [followups, 2026-09-28] A project root is a plain path PREFIX: a dirty file inside a nx
+ *   5. [48d92088, 2026-09-28] A project root is a plain path PREFIX: a dirty file inside a nx
  *      project NESTED inside a dependency-set root, but not itself part of the dependency set,
  *      is NOT reported — while dirt in the parent dependency-set project itself still is.
- *   6. [followups, 2026-09-28] When the repo ROOT project (`root: '.'`) is itself part of the
+ *   6. [48d92088, 2026-09-28] When the repo ROOT project (`root: '.'`) is itself part of the
  *      dependency set, a dirty file literally at the repo root IS reported, but `.`'s pathspec
  *      is NOT allowed to sweep in dirt from every other unrelated project in the repo — the
  *      failure mode `.` as a bare git pathspec would otherwise produce.
- *   7. Live (non-hermetic — see `tools/guards-manifest.mjs`'s `28f22e8d` entry): the real repo's
+ *   7. [48d92088, 2026-09-28] Self-cancellation guard: `:(exclude)` wins over every matching
+ *      include pattern globally, not just the include it was paired with. An excluded root that
+ *      is an ANCESTOR of a genuinely-included dependency root must NOT be excluded — doing so
+ *      would silently swallow that descendant dependency's own dirt. Deps `.` and `a/b/m`, with
+ *      `a/b` (containing `a/b/m`) NOT itself a dependency: `a/b/m`'s dirt is still reported.
+ *   8. Live (non-hermetic — see `tools/guards-manifest.mjs`'s `28f22e8d` entry): the real repo's
  *      `check-suite-tree-state.mjs --project memory-server --json` output carries non-empty
  *      `projectRoots` and `rootConfigFiles` fields (the fix is wired into `main()`, not just
  *      exported and unused).
  *
  * Uses throwaway scratch git repos (fs.mkdtempSync) — never the invoking checkout's real tree —
- * for arms 1-6. Each scratch-repo block is wrapped in try/finally so the temp dir is always
+ * for arms 1-7. Each scratch-repo block is wrapped in try/finally so the temp dir is always
  * removed, including on assertion or git-command failure.
  *
  * Usage: node tools/test-28f22e8d-tree-state-config-dirt.mjs
@@ -188,7 +193,7 @@ const graph = {
     }
     git(['checkout', '--', 'libs/unrelated/project.json', 'README.md']);
 
-    // Arm 5 [followups, item 2] — a project root is a plain path PREFIX, so it also matches any nx
+    // Arm 5 [BL-48d92088, item 2] — a project root is a plain path PREFIX, so it also matches any nx
     // project nested inside it. `libNested` (root `libs/lib/nested`) sits inside `lib`'s own root
     // (`libs/lib`) but has NO dependency edge to/from `app` — dirt there must NOT be reported, even
     // though dirt in `lib`'s own root (a real dependency-set member) still must be.
@@ -199,12 +204,12 @@ const graph = {
       const parentReported = rep.dirty.some((l) => l.includes('libs/lib/project.json'));
       const nestedReported = rep.dirty.some((l) => l.includes('libs/lib/nested/src/index.ts'));
       report(
-        'followups[BL-2]: dirt in a dependency-set project root IS reported alongside a nested non-dependency project',
+        'BL-48d92088[nested]: dirt in a dependency-set project root IS reported alongside a nested non-dependency project',
         parentReported,
         `dirty=${JSON.stringify(rep.dirty)}`,
       );
       report(
-        'followups[BL-2]: dirt in a NESTED project that is NOT itself in the dependency set is NOT reported',
+        'BL-48d92088[nested]: dirt in a NESTED project that is NOT itself in the dependency set is NOT reported',
         !nestedReported,
         `dirty=${JSON.stringify(rep.dirty)}`,
       );
@@ -216,7 +221,7 @@ const graph = {
 }
 
 // ---------------------------------------------------------------------------
-// Arm 6 [followups, item 3] — the repo ROOT project (`root: '.'`) is itself part of the
+// Arm 6 [BL-48d92088, item 3] — the repo ROOT project (`root: '.'`) is itself part of the
 // dependency set. `.` as a bare git pathspec matches the ENTIRE repo, so naively passing it
 // through would sweep in dirt from every other unrelated project — the exact failure mode this
 // arm pins against. A dirty file literally at the repo root must still be reported.
@@ -255,12 +260,12 @@ const graph = {
     const rootFileReported = rep.dirty.some((l) => l.includes('root-config.txt'));
     const otherProjectReported = rep.dirty.some((l) => l.includes('libs/other'));
     report(
-      'followups[BL-3]: a dirty file at the literal repo root IS reported when the root project (".") is in the dependency set',
+      'BL-48d92088[root]: a dirty file at the literal repo root IS reported when the root project (".") is in the dependency set',
       rootFileReported,
       `dirty=${JSON.stringify(rep.dirty)}`,
     );
     report(
-      'followups[BL-3]: dirt inside ANOTHER project is NOT swept in by the "." dependency\'s pathspec',
+      'BL-48d92088[root]: dirt inside ANOTHER project is NOT swept in by the "." dependency\'s pathspec',
       !otherProjectReported,
       `dirty=${JSON.stringify(rep.dirty)}`,
     );
@@ -270,7 +275,69 @@ const graph = {
 }
 
 // ---------------------------------------------------------------------------
-// Arm 7 — live, against the real repo: the fix is wired into `main()`'s --json output. NOT
+// Arm 7 [BL-48d92088, self-cancellation] — an excluded root must never be an ANCESTOR of a
+// genuinely-included dependency root. `:(exclude)` wins over every matching include pattern in
+// the SAME pathspec set, globally — so excluding a non-dependency ancestor directory would also
+// cancel a real descendant dependency's own separate include entry. Deps here are `.` and
+// `a/b/m`; `a/b` (which CONTAINS `a/b/m`) is NOT a dependency. Naively excluding `a/b` from `.`'s
+// scope (because `a/b` itself isn't in the dependency set) would silently swallow `a/b/m`'s dirt
+// too, even though `a/b/m` has its own explicit include entry. `a/b/m`'s dirt must still be
+// reported; `a/b`'s own (non-`a/b/m`) files are the accepted over-report (documented as the safe
+// direction to be wrong in — see `buildPathspecs()`'s `isAncestorOfPkgRoot`).
+// ---------------------------------------------------------------------------
+{
+  const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'bl48d92088-ancestor-')));
+  try {
+    const git = (args) => execFileSync('git', args, { cwd: dir, encoding: 'utf8', env: SAFE_GIT_ENV });
+    git(['init', '-q']);
+    git(['config', 'user.email', 'test@test.com']);
+    git(['config', 'user.name', 'test']);
+
+    const ancestorGraph = {
+      nodes: {
+        root: { data: { sourceRoot: '.', root: '.' } },
+        deepDep: { data: { sourceRoot: 'a/b/m/src', root: 'a/b/m' } },
+        // `ab` (root `a/b`) is a REAL nx project — NOT a dependency of `root` — that is an
+        // ancestor directory of `deepDep`'s root. Without it as a graph node, buildPathspecs()
+        // would never even consider excluding `a/b` (allRoots wouldn't contain it), so this arm
+        // would pass vacuously. Its presence is what makes the exclusion actually fire.
+        ab: { data: { sourceRoot: 'a/b/src', root: 'a/b' } },
+      },
+      dependencies: {
+        root: [{ source: 'root', target: 'deepDep', type: 'static' }],
+        deepDep: [],
+        ab: [],
+      },
+    };
+
+    fs.mkdirSync(path.join(dir, 'a/b/m/src'), { recursive: true });
+    fs.writeFileSync(path.join(dir, 'a/b/m/src/index.ts'), 'export const x = 1;\n');
+    fs.writeFileSync(path.join(dir, 'a/b/other.txt'), 'ancestor-only file\n');
+    fs.writeFileSync(path.join(dir, 'root-file.txt'), 'root file\n');
+    git(['add', '.']);
+    git(['commit', '-q', '-m', 'chore: initial']);
+
+    const build = () =>
+      typeof mod.buildReport === 'function'
+        ? mod.buildReport(ancestorGraph, 'root', dir)
+        : { dirty: [] };
+
+    fs.writeFileSync(path.join(dir, 'a/b/m/src/index.ts'), 'export const x = 2;\n');
+    const rep = build();
+    const deepDepReported = rep.dirty.some((l) => l.includes('a/b/m/src/index.ts'));
+    report(
+      'BL-48d92088[ancestor]: dirt in a real DESCENDANT dependency (a/b/m) is still reported even ' +
+        "though its non-dependency ANCESTOR directory (a/b) would otherwise be excluded from '.'",
+      deepDepReported,
+      `dirty=${JSON.stringify(rep.dirty)}`,
+    );
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Arm 8 — live, against the real repo: the fix is wired into `main()`'s --json output. NOT
 // hermetic (it spawns against this checkout's real git state, not a scratch fixture) — see the
 // `28f22e8d` entry in `tools/guards-manifest.mjs` for why it still runs as Tier 1.
 // ---------------------------------------------------------------------------

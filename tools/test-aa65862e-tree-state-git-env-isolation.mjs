@@ -20,18 +20,26 @@
  * under the exact same polluted environment and show they are unaffected — the mechanism gitEnv()
  * is supposed to guarantee.
  *
+ * The "different repo" GIT_DIR/GIT_INDEX_FILE pollution is a SECOND throwaway scratch repo, never
+ * this checkout's own live `.git`. `git status` can rewrite its target index with refreshed stat
+ * cache data even in read paths, and this checkout's real `.git/index` is the SAME shared index
+ * every other guard, the pre-commit hook, and concurrent agents write through — Tier 1's whole
+ * promise is that it is safe to run in the invoking checkout. Pointing at it (even read-mostly)
+ * would violate that promise for no reason: a second scratch repo reproduces the exact bug shape
+ * (GIT_DIR/GIT_INDEX_FILE resolving to a repo other than `cwd`'s) with zero shared-state risk.
+ *
  * Arms:
  *   1. RED — a raw `git status --porcelain` call that inherits `GIT_DIR`/`GIT_INDEX_FILE` pointed
- *      at a DIFFERENT real repo (this checkout's own main git dir) does NOT correctly report a
- *      dirty file in the scratch repo. This is the failure `gitEnv()` exists to prevent, and
- *      confirms the polluted env fixture actually reproduces the bug rather than being a no-op.
+ *      at a DIFFERENT real (scratch) repo does NOT correctly report a dirty file in the repo under
+ *      test. This is the failure `gitEnv()` exists to prevent, and confirms the polluted env
+ *      fixture actually reproduces the bug rather than being a no-op.
  *   2. GREEN — `porcelainOver()` under the SAME polluted `process.env` correctly reports the dirty
  *      file anyway (its internal `gitEnv()` strips the inherited vars before spawning `git`).
  *   3. GREEN — `buildReport()` (the function `main()` actually calls) shows the same, end to end.
  *
- * Uses a throwaway scratch git repo (fs.mkdtempSync) — never the invoking checkout's real tree —
- * wrapped in try/finally so the temp dir and any env mutation are always restored, including on
- * assertion or git-command failure.
+ * Uses two throwaway scratch git repos (fs.mkdtempSync) — never the invoking checkout's real tree
+ * — wrapped in try/finally so both temp dirs and any env mutation are always restored, including
+ * on assertion or git-command failure.
  *
  * Usage: node tools/test-aa65862e-tree-state-git-env-isolation.mjs
  * Exit 0 iff every assertion holds.
@@ -43,7 +51,6 @@ import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const TOOLS = path.dirname(fileURLToPath(import.meta.url));
-const REPO = path.resolve(TOOLS, '..');
 const TOOL = path.join(TOOLS, 'check-suite-tree-state.mjs');
 
 // Strip inherited GIT_DIR/GIT_INDEX_FILE/GIT_WORK_TREE/GIT_COMMON_DIR before any SETUP git call
@@ -63,25 +70,10 @@ function report(name, ok, detail) {
 
 const mod = await import(`file://${TOOL}`);
 
-// A DIFFERENT real repo's GIT_DIR/index to simulate an inherited value from an enclosing git
-// process (this checkout's own main `.git` — always a real, valid, unrelated repo from the
-// scratch repo's point of view).
-const commonDir = execFileSync('git', ['rev-parse', '--git-common-dir'], {
-  cwd: REPO,
-  encoding: 'utf8',
-  env: SAFE_GIT_ENV,
-}).trim();
-const foreignGitDir = path.resolve(REPO, commonDir);
-const foreignIndexFile = path.join(foreignGitDir, 'index');
-if (!fs.existsSync(foreignIndexFile)) {
-  report(
-    'aa65862e: setup — a foreign repo GIT_DIR/index is available to pollute the environment with',
-    false,
-    `expected an index file at ${foreignIndexFile}`,
-  );
-}
-
 const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'aa65862e-')));
+// A SECOND throwaway scratch repo to be the "different repo" GIT_DIR/GIT_INDEX_FILE points at —
+// never this checkout's own live `.git` (see the file-header note on why).
+const foreignDir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'aa65862e-foreign-')));
 const savedEnv = { ...process.env };
 try {
   const git = (args) => execFileSync('git', args, { cwd: dir, encoding: 'utf8', env: SAFE_GIT_ENV });
@@ -94,14 +86,34 @@ try {
   git(['commit', '-q', '-m', 'chore: initial']);
   fs.writeFileSync(path.join(dir, 'lib/src/index.ts'), 'export const x = 2;\n');
 
+  const foreignGit = (args) =>
+    execFileSync('git', args, { cwd: foreignDir, encoding: 'utf8', env: SAFE_GIT_ENV });
+  foreignGit(['init', '-q']);
+  foreignGit(['config', 'user.email', 'test@test.com']);
+  foreignGit(['config', 'user.name', 'test']);
+  fs.writeFileSync(path.join(foreignDir, 'unrelated.txt'), 'nothing to do with the repo under test\n');
+  foreignGit(['add', '.']);
+  foreignGit(['commit', '-q', '-m', 'chore: unrelated foreign repo']);
+
+  const foreignGitDir = path
+    .resolve(foreignDir, foreignGit(['rev-parse', '--git-common-dir']).trim());
+  const foreignIndexFile = path.join(foreignGitDir, 'index');
+  if (!fs.existsSync(foreignIndexFile)) {
+    report(
+      'aa65862e: setup — a foreign scratch repo GIT_DIR/index is available to pollute the environment with',
+      false,
+      `expected an index file at ${foreignIndexFile}`,
+    );
+  }
+
   const graph = {
     nodes: { app: { data: { sourceRoot: 'lib/src', root: 'lib' } } },
     dependencies: { app: [] },
   };
 
-  // Pollute process.env with the foreign repo's GIT_DIR/GIT_INDEX_FILE — simulating the real
-  // aa65862e scenario (an enclosing git process, e.g. the pre-commit hook, having already set
-  // these before this tool's own `git` subprocesses run).
+  // Pollute process.env with the foreign scratch repo's GIT_DIR/GIT_INDEX_FILE — simulating the
+  // real aa65862e scenario (an enclosing git process, e.g. the pre-commit hook, having already
+  // set these before this tool's own `git` subprocesses run).
   for (const k of ['GIT_DIR', 'GIT_INDEX_FILE', 'GIT_WORK_TREE', 'GIT_COMMON_DIR']) delete process.env[k];
   process.env.GIT_DIR = foreignGitDir;
   process.env.GIT_INDEX_FILE = foreignIndexFile;
@@ -156,6 +168,7 @@ try {
   }
 } finally {
   fs.rmSync(dir, { recursive: true, force: true });
+  fs.rmSync(foreignDir, { recursive: true, force: true });
 }
 
 console.log(

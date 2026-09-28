@@ -31,9 +31,9 @@
  * task automatically — it is listed here for the reader's benefit, not because nx would otherwise
  * miss it. `pnpm-lock.yaml`, `package.json`, `pnpm-workspace.yaml`, and `.npmrc` are added on top
  * because a change to any of them changes what gets resolved into `node_modules` — and therefore
- * what `^build`/`test` actually execute against — even though nx does not hash them as cache
- * inputs). Dirt anywhere else in the repo is irrelevant to the suite and is deliberately not
- * reported — a report that is noisy gets ignored, and this one has to be read.
+ * what `^build`/`test` actually execute against — whether or not nx hashes them as cache inputs).
+ * Dirt anywhere else in the repo is irrelevant to the suite and is deliberately not reported — a
+ * report that is noisy gets ignored, and this one has to be read.
  *
  * [28f22e8d, 2026-09-28] Earlier versions of this tool restricted `git status` to `sourceRoot`
  * (`<project>/src`) instead of `root` (`<project>/`). Every project keeps files that feed its
@@ -46,7 +46,7 @@
  * its middle slash: the un-escaped four-character sequence star-star-slash-star is also how a
  * JS block comment ends, so writing it literally here would truncate this very comment.)
  *
- * [followups, 2026-09-28] A project root is a plain path PREFIX, not a project boundary — it also
+ * [48d92088, 2026-09-28] A project root is a plain path PREFIX, not a project boundary — it also
  * matches any nx project nested inside it (e.g. `graph-store` contains
  * `graph-store-conformance-consumer`; `sox-memory-bundle` contains its own member projects). A
  * nested project that is NOT itself part of the dependency set is excluded via `:(exclude)`
@@ -138,9 +138,10 @@ export function projectRoots(graph, projects) {
  * (root — declares the pnpm workspace globs' consumers and root devDependencies),
  * `pnpm-workspace.yaml` (declares which package globs exist AT ALL — changing it changes
  * dependency resolution exactly like the lockfile does), and `.npmrc` (registry/resolution
- * settings) are NOT nx-hashed cache inputs, but a change to any of them changes what
- * `^build`/`test` actually execute against (what gets resolved into `node_modules`) just as
- * surely as a source edit — they are included on that basis, not because nx says so.
+ * settings) are included on a DIFFERENT basis than `nx.json`/`tsconfig.base.json` above: whether
+ * or not nx hashes them as a cache input, a change to any of them changes what gets resolved into
+ * `node_modules` — and therefore what `^build`/`test` actually execute against — just as surely
+ * as a source edit.
  */
 export function rootConfigFiles(cwd = process.cwd()) {
   return [
@@ -154,7 +155,7 @@ export function rootConfigFiles(cwd = process.cwd()) {
 }
 
 /**
- * [followups, 2026-09-28] `git status -- <pathspec>` pathspecs to scope a `git status` scan to
+ * [48d92088, 2026-09-28] `git status -- <pathspec>` pathspecs to scope a `git status` scan to
  * exactly `pkgRoots`, with two corrections a plain list of dirs gets wrong:
  *
  *   1. A project root is a path PREFIX, not a project boundary — it also matches any nx project
@@ -170,24 +171,46 @@ export function rootConfigFiles(cwd = process.cwd()) {
  *      — excluding it here too would be a no-op at best and, since `:(exclude)` wins over any
  *      matching include pattern in the same pathspec set, would wrongly cancel that legitimate
  *      inclusion if the ordering of exclude-vs-include patterns were ever relied upon instead).
+ *
+ * A THIRD correction guards both of the above against a subtler self-cancellation: `:(exclude)`
+ * wins over every matching include pattern in the SAME pathspec set, globally, regardless of
+ * which include pattern produced the match. If an excluded root is itself an ANCESTOR directory
+ * of a genuinely-included `pkgRoots` entry (not just equal to one — already handled above), the
+ * exclude would cancel that descendant's own inclusion too, e.g. deps `.` and `a/b/m` with `a/b`
+ * NOT a dependency: excluding `a/b` from `.`'s scope would also swallow `a/b/m`, even though
+ * `a/b/m` is a real dependency-set member with its own explicit include entry. `isAncestorOfPkgRoot`
+ * withholds the exclude in that case — the safe direction to be wrong in is over-reporting (dirt
+ * in `a/b` itself, which is not a dependency, leaks into the report) rather than silently losing a
+ * real dependency's dirt.
  */
 export function buildPathspecs(graph, pkgRoots) {
   const pkgRootSet = new Set(pkgRoots);
   const allRoots = [
     ...new Set(Object.values(graph.nodes).map((n) => n.data?.root).filter(Boolean)),
   ];
+  const isAncestorOfPkgRoot = (candidate) => {
+    const prefix = `${candidate.replace(/\/$/, '')}/`;
+    return pkgRoots.some((pr) => pr !== candidate && pr.startsWith(prefix));
+  };
   const specs = [];
   for (const root of pkgRoots) {
     specs.push(root);
     if (root === '.') {
       for (const other of allRoots) {
-        if (other !== '.' && !pkgRootSet.has(other)) specs.push(`:(exclude)${other}`);
+        if (other !== '.' && !pkgRootSet.has(other) && !isAncestorOfPkgRoot(other)) {
+          specs.push(`:(exclude)${other}`);
+        }
       }
       continue;
     }
     const prefix = `${root.replace(/\/$/, '')}/`;
     for (const other of allRoots) {
-      if (other !== root && other.startsWith(prefix) && !pkgRootSet.has(other)) {
+      if (
+        other !== root &&
+        other.startsWith(prefix) &&
+        !pkgRootSet.has(other) &&
+        !isAncestorOfPkgRoot(other)
+      ) {
         specs.push(`:(exclude)${other}`);
       }
     }
@@ -273,7 +296,7 @@ export function buildReport(graph, project, cwd = process.cwd()) {
   // vitest.config.ts, top-level test files included) plus shared root config — not sourceRoots,
   // which is a `src/` subdirectory that misses all of the above. sourceRoots is still reported
   // below (informational: the narrower set a plain source-only rebuild would read).
-  // [followups] `pkgRoots` is expanded to `buildPathspecs()` pathspecs first — plain dirs would
+  // [48d92088] `pkgRoots` is expanded to `buildPathspecs()` pathspecs first — plain dirs would
   // over-scope into nested non-dependency projects and, when `.` is a dependency, the whole repo.
   const dirty = porcelainOver([...buildPathspecs(graph, pkgRoots), ...globalConfig], cwd);
   const staleDist = staleDistOver(pkgRoots, cwd);
