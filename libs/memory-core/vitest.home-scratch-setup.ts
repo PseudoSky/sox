@@ -53,8 +53,10 @@
  *     backend for a subset of tests; pointing that cache into a scratch dir
  *     that gets deleted at process exit would force a re-download (or an
  *     outright failure in a sandboxed run with no network) on every run.
- *     Pinning `SOX_EMBED_CACHE_DIR` to the real, pre-existing cache dir
- *     keeps that model cache shared and warm, unchanged from before this fix.
+ *     Pinning `SOX_EMBED_CACHE_DIR` to the dir embed.ts would have resolved
+ *     against the real home — `(XDG_CACHE_HOME ?? <real home>/.cache)/sox/models`,
+ *     the same derivation — keeps that model cache shared and warm,
+ *     unchanged from before this fix.
  *   - `telemetry.ts:81-84` `ecosystemHome()` resolves
  *     `SOX_ECOSYSTEM_HOME ?? homedir()/.adhd/sox-ecosystem`, and
  *     `vitest.setup.ts`'s `initTelemetry()` call relies on that default so
@@ -67,23 +69,48 @@
  * Both pins read `os.userInfo().homedir` (the HOME-override-proof lookup)
  * rather than `os.homedir()`, so they resolve correctly even if a future
  * setupFiles reordering moved this file later.
+ *
+ * ## Scratch HOME lifetime
+ *
+ * `vitest.global-guard.ts` (globalSetup) creates ONE scratch root per run and
+ * hands it down with `project.provide`. This file creates each test file's
+ * scratch HOME inside that root with `mkdtempSync`, and the globalSetup
+ * teardown removes the whole root after every worker has exited. Cleanup is
+ * deliberately not tied to the worker's `process.on('exit')`, which does not
+ * fire when a fork is torn down by a signal.
  */
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
+import { inject } from 'vitest';
+import { SCRATCH_RUN_ROOT_KEY } from './vitest.global-guard';
 
 const REAL_HOME = os.userInfo().homedir;
 
 // Preserve pre-existing, unrelated-to-this-bug behaviour that would
-// otherwise change as a side effect of redirecting HOME below.
+// otherwise change as a side effect of redirecting HOME below. Same
+// derivation as embed.ts resolveConfig(), evaluated against the real home.
 if (process.env['SOX_EMBED_CACHE_DIR'] === undefined) {
-  process.env['SOX_EMBED_CACHE_DIR'] = path.join(REAL_HOME, '.cache', 'sox', 'models');
+  process.env['SOX_EMBED_CACHE_DIR'] = path.join(
+    process.env['XDG_CACHE_HOME'] ?? path.join(REAL_HOME, '.cache'),
+    'sox',
+    'models',
+  );
 }
 if (process.env['SOX_ECOSYSTEM_HOME'] === undefined) {
   process.env['SOX_ECOSYSTEM_HOME'] = path.join(REAL_HOME, '.adhd', 'sox-ecosystem');
 }
 
-const scratchHome = fs.mkdtempSync(path.join(os.tmpdir(), 'sox-memcore-test-home-'));
+const runRoot = inject(SCRATCH_RUN_ROOT_KEY);
+if (typeof runRoot !== 'string' || runRoot === '' || !fs.existsSync(runRoot)) {
+  throw new Error(
+    'BL-bae70da4: vitest.home-scratch-setup.ts needs the per-run scratch root provided by ' +
+      `vitest.global-guard.ts (globalSetup); got ${JSON.stringify(runRoot)}. Run memory-core ` +
+      'tests through libs/memory-core/vitest.config.ts.',
+  );
+}
+
+const scratchHome = fs.mkdtempSync(path.join(runRoot, 'home-'));
 fs.mkdirSync(path.join(scratchHome, '.memory'), { recursive: true });
 
 process.env['HOME'] = scratchHome;
@@ -92,8 +119,8 @@ process.env['HOME'] = scratchHome;
 process.env['USERPROFILE'] = scratchHome;
 
 /**
- * Exposed for the BL-bae70da4 regression spec and the fs-touch guard, so
- * they don't need to re-derive it via `os.userInfo()` themselves (and so a
- * spec can assert against the literal value this file actually used).
+ * The scratch HOME this file installed. The BL-bae70da4 regression spec
+ * asserts `os.homedir()` equals it, which proves the redirect it observes is
+ * this file's, not some other HOME that happens to differ from the real one.
  */
 process.env['SOX_TEST_SCRATCH_HOME'] = scratchHome;

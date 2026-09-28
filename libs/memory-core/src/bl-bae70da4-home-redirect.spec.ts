@@ -65,4 +65,9 @@ describe('BL-bae70da4: memory-core tests never resolve into the operator real ~/
     const scratchHome = os.homedir();
     expect(scratchHome.startsWith(os.tmpdir())).toBe(true);
   });
+
+  it('os.homedir() is exactly the scratch HOME vitest.home-scratch-setup.ts installed', () => {
+    expect(process.env['SOX_TEST_SCRATCH_HOME']).toBeTruthy();
+    expect(os.homedir()).toBe(process.env['SOX_TEST_SCRATCH_HOME']);
+  });
 });
