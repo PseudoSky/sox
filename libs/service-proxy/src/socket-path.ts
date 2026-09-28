@@ -7,23 +7,29 @@
  * CALLER passes in the resolved socket directory (`socketDir()`, ADR-0004) and the
  * singleton key; this helper composes the deterministic path + sanitises it.
  *
- * Leaf module -- node builtins only (path, crypto, os).
+ * Leaf module, and PURE -- node builtins `path` and `crypto` only. It never reads
+ * the environment (no `os.tmpdir()`), so every peer that computes the path for
+ * the same (socketDir, key) derives the same bytes regardless of its `TMPDIR`
+ * ([inv:singleton]: one key => one socket => one backend).
  *
- * BL-578: the original fallback below assumed only the FILENAME could overflow the
- * kernel's `sun_path` budget, and shortened only the filename while re-joining onto
- * the SAME `socketDir`. That is unsound whenever `socketDir` itself already exceeds
- * the budget -- which is the normal case for a scratch data root nested several
- * directories deep (e.g. `.claude/worktrees/agent-<hash>/dist/smoke/run-<ts>/
- * sox-data-root/run/supervisors` measures 138 bytes on its own, already 34 bytes
- * over the 104-byte macOS limit, before any filename is appended). `bind(2)` then
- * fails with `EINVAL`, the losing singleton racer exits (by design, S9.5), and
- * nothing downstream noticed because the caller never re-checked disposition
- * (fixed separately in scripts/smoke-test.mjs). See socket-path.spec.ts's
- * "long socketDir" case for the reproduction.
+ * Three tiers, first fit wins against the 104-byte `sun_path` budget:
+ *
+ *   1. `<socketDir>/proxy-<sanitised-key>-<digest12>.sock` -- the full name.
+ *   2. `<socketDir>/proxy-<digest12>.sock` -- the short name, for a long key
+ *      under a short dir.
+ *   3. `/tmp/sox-<uid>/p-<sha256(socketDir + ' ' + key)[0:16]>.sock` -- when
+ *      `socketDir` itself is too long (BL-578: a scratch data root nested several
+ *      directories deep, e.g. `.claude/worktrees/agent-<hash>/dist/smoke/run-<ts>/
+ *      sox-data-root/run/supervisors`, measures 138 bytes on its own). The root
+ *      is a fixed, short, per-uid directory: `/tmp/sox-<uid>/p-<16hex>.sock` is at
+ *      most 43 bytes for any 32-bit uid. It lives in world-writable `/tmp`, so it
+ *      is only safe because the listener and every dialer verify it is a real
+ *      directory, owned by this uid, mode exactly 0700, before binding or
+ *      connecting (`socket-dir.ts`, BL-4041c6e0). A root that fails that check
+ *      is refused, never repaired and never swapped for another path.
  */
 
 import * as path from 'node:path';
-import * as os from 'node:os';
 import { createHash } from 'node:crypto';
 
 /**
@@ -32,6 +38,33 @@ import { createHash } from 'node:crypto';
  * works on Linux. A key that would overflow is hashed into a short stable name.
  */
 const MAX_SUN_PATH = 104;
+
+/**
+ * The per-uid root for tier-3 socket paths: `/tmp/sox-<uid>`.
+ *
+ * Fixed (never derived from `TMPDIR`) so every peer converges on one path, and
+ * per-uid so two users never share a directory. `/tmp` is used rather than
+ * `os.tmpdir()` because macOS `TMPDIR` (`/var/folders/<2>/<30+>/T/`) is itself
+ * long enough to blow the `sun_path` budget and differs between processes that
+ * inherit different environments.
+ *
+ * @param uid  the owning uid; defaults to `process.getuid()`.
+ * @throws Error with `code: 'E_UDS_UNSUPPORTED_PLATFORM'` when no uid is given
+ *         and the platform has no `process.getuid` (Windows).
+ */
+export function udsFallbackRoot(uid?: number): string {
+  if (uid !== undefined) return `/tmp/sox-${String(uid)}`;
+  if (typeof process.getuid !== 'function') {
+    throw Object.assign(
+      new Error(
+        'E_UDS_UNSUPPORTED_PLATFORM: process.getuid() is unavailable on this platform; ' +
+          'a per-uid Unix-domain-socket root cannot be derived',
+      ),
+      { code: 'E_UDS_UNSUPPORTED_PLATFORM' },
+    );
+  }
+  return `/tmp/sox-${String(process.getuid())}`;
+}
 
 /**
  * Derive the backend service socket path.
@@ -60,26 +93,13 @@ export function backendSocketPath(socketDir: string, singletonKey: string): stri
     return shortenedFilenameOnly;
   }
 
-  // BL-578: shortening the filename alone was not enough -- `socketDir` itself is
-  // already too long (deep worktree/scratch roots). A UDS path has no notion of
-  // "relative to the data root"; the kernel only sees the literal byte string
-  // passed to bind(2). Fall back to a directory OUTSIDE the (possibly deep) data
-  // root: the OS temp dir, which every platform guarantees stays well under the
-  // sun_path budget for exactly this reason (mktemp/mkstemp UDS conventions).
-  // Deterministic on (socketDir, singletonKey) so repeated calls for the same
-  // store still converge on ONE backend (the singleton invariant is unaffected --
-  // it never depended on the socket living under the data root, only on the key).
+  // Tier 3 (BL-578): `socketDir` itself is already too long. The kernel only sees
+  // the literal byte string passed to bind(2), so the socket moves OUTSIDE the
+  // data root, into the fixed per-uid root. Deterministic on (socketDir,
+  // singletonKey), so every peer for the same store converges on ONE backend.
   const bothDigest = createHash('sha256')
     .update(`${socketDir} ${singletonKey}`, 'utf8')
     .digest('hex')
     .slice(0, 16);
-  const tmpFallback = path.join(os.tmpdir(), 'sox-uds', `p-${bothDigest}.sock`);
-  if (Buffer.byteLength(tmpFallback, 'utf8') <= MAX_SUN_PATH) return tmpFallback;
-
-  // Last resort -- os.tmpdir() itself can be long on some sandboxes (macOS
-  // /var/folders/xx/xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx/T/ occasionally exceeds
-  // budget once joined with even a 20-byte leaf). '/tmp' is POSIX-guaranteed to
-  // exist and be short on every target platform this repo ships to (darwin,
-  // linux) -- the true floor when even os.tmpdir() doesn't fit.
-  return path.join('/tmp', `s-${bothDigest.slice(0, 12)}.sock`);
+  return path.join(udsFallbackRoot(), `p-${bothDigest}.sock`);
 }

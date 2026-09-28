@@ -38,7 +38,19 @@ export { computeSchemaHash, canonicalize } from './schema-hash.js';
 export { encodeFrame, FrameDecoder, HEADER_BYTES, MAX_FRAME_BYTES } from './framing.js';
 
 // ── Backend socket-path derivation (data-root-keyed, §9.5.4) ──────────────────
-export { backendSocketPath } from './socket-path.js';
+export { backendSocketPath, udsFallbackRoot } from './socket-path.js';
+
+// ── Socket-directory trust check (BL-4041c6e0) ────────────────────────────────
+export {
+  ensurePrivateSocketDir,
+  assertPrivateSocketDir,
+  isUdsDirUnsafeError,
+} from './socket-dir.js';
+export type {
+  SocketDirDeps,
+  EnsurePrivateSocketDirOptions,
+  UdsDirUnsafeError,
+} from './socket-dir.js';
 
 // ── JSON-RPC 2.0 types + helpers ──────────────────────────────────────────────
 export {

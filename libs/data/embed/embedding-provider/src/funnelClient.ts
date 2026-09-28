@@ -28,7 +28,13 @@
  * Leaf module — `@adhd/sox-service-proxy` + node builtins.
  */
 
-import { dialBackend, ensureBackend, probeSocketLive, type BackendConnection } from '@adhd/sox-service-proxy';
+import {
+  dialBackend,
+  ensureBackend,
+  isUdsDirUnsafeError,
+  probeSocketLive as rawProbeSocketLive,
+  type BackendConnection,
+} from '@adhd/sox-service-proxy';
 import { log } from '@adhd/sox-telemetry';
 import { TransientEmbeddingError, PermanentEmbeddingError } from './errors.js';
 import {
@@ -59,6 +65,7 @@ const CONTROL_TIMEOUT_MS = 5_000;
 interface RpcError {
   code: number;
   message: string;
+  data?: unknown;
 }
 
 /**
@@ -86,6 +93,26 @@ function msg(err: unknown): string {
  * caller's own bound has already been spent.
  */
 class HostGoneError extends TransientEmbeddingError {}
+
+/** BL-4041c6e0: does a -32001 error's `data` carry the dial layer's unsafe-dir code? */
+function isUdsDirUnsafeData(data: unknown): boolean {
+  return typeof data === 'object' && data !== null && (data as { code?: unknown }).code === 'E_UDS_DIR_UNSAFE';
+}
+
+/**
+ * `probeSocketLive`, with its BL-4041c6e0 unsafe-directory rejection mapped to a
+ * {@link PermanentEmbeddingError} (non-retryable); any other rejection passes through.
+ */
+async function probeSocketLive(socketPath: string, timeoutMs: number): Promise<boolean> {
+  try {
+    return await rawProbeSocketLive(socketPath, timeoutMs);
+  } catch (err) {
+    if (isUdsDirUnsafeError(err)) {
+      throw new PermanentEmbeddingError(`embedding funnel refused socket at ${socketPath}: ${err.message}`);
+    }
+    throw err;
+  }
+}
 
 export class FunneledFastembedClient implements SharedFastembedClient {
   private conn: BackendConnection | null = null;
@@ -238,6 +265,11 @@ export class FunneledFastembedClient implements SharedFastembedClient {
 
   private mapError(error: RpcError): Error {
     const where = this.socketPath ?? '(unresolved socket)';
+    // BL-4041c6e0: the dial layer refused an unsafe socket directory. That needs
+    // an operator, not a retry — never classify it host-gone.
+    if (error.code === -32001 && isUdsDirUnsafeData(error.data)) {
+      return new PermanentEmbeddingError(`embedding host socket refused at ${where}: ${error.message}`);
+    }
     if (error.code === -32001) {
       return new HostGoneError(`embedding host unavailable at ${where}: ${error.message}`, 1_000);
     }
@@ -422,6 +454,11 @@ export class FunneledFastembedClient implements SharedFastembedClient {
         dropped_env_count: hostEnv.dropped.length,
         attempt,
       });
+      if (result.disposition === 'failed' && result.errorCode === 'E_UDS_DIR_UNSAFE') {
+        // BL-4041c6e0: an unsafe socket directory is not transient — respawning or
+        // backing off cannot fix it, and it must not open the retry circuit.
+        throw new PermanentEmbeddingError(`embedding funnel refused socket at ${socketPath}: ${result.detail}`);
+      }
       if (result.disposition === 'failed') {
         // embedHostMain.ts exits 3 (`process.exit(3)`) specifically on a build
         // id mismatch (ensure-backend.ts's exit-monitoring stamps the code

@@ -46,6 +46,12 @@ import * as fs from 'node:fs';
 import * as net from 'node:net';
 import * as path from 'node:path';
 import { encodeFrame, FrameDecoder } from './framing.js';
+import {
+  assertPrivateSocketDir,
+  ensurePrivateSocketDir,
+  isUdsDirUnsafeError,
+  type UdsDirUnsafeError,
+} from './socket-dir.js';
 
 /** Options for {@link ensureBackend}. */
 export interface EnsureBackendOptions {
@@ -105,13 +111,45 @@ export interface EnsureBackendResult {
   pid?: number;
   /** Diagnostic detail. */
   detail: string;
+  /**
+   * BL-4041c6e0: set (with disposition 'failed') when the socket directory
+   * failed the privacy check. Non-retryable — the directory needs an operator,
+   * so callers must not respawn or back off on it.
+   */
+  errorCode?: 'E_UDS_DIR_UNSAFE';
 }
 
-/** Probe the UDS: resolve true iff a backend accepts a connection. */
+/**
+ * BL-4041c6e0: verify the socket's directory is private before dialing into it.
+ * Returns the structured `E_UDS_DIR_UNSAFE` error to reject with, or null to
+ * proceed. Any other failure (e.g. the directory vanished) is not a trust
+ * verdict — the connect attempt below reports it as "not live" as before.
+ */
+function unsafeDirError(socketPath: string): UdsDirUnsafeError | null {
+  try {
+    assertPrivateSocketDir(path.dirname(socketPath));
+    return null;
+  } catch (err) {
+    return isUdsDirUnsafeError(err) ? err : null;
+  }
+}
+
+/**
+ * Probe the UDS: resolve true iff a backend accepts a connection.
+ *
+ * Rejects with `E_UDS_DIR_UNSAFE` (BL-4041c6e0) — never resolves `false` — when
+ * the socket's directory fails the privacy check: "not live" would make
+ * {@link ensureBackend} spawn a backend that then refuses the same directory.
+ */
 export function probeSocketLive(socketPath: string, timeoutMs = 250): Promise<boolean> {
-  return new Promise((resolve) => {
+  return new Promise((resolve, reject) => {
     if (!fs.existsSync(socketPath)) {
       resolve(false);
+      return;
+    }
+    const unsafeErr = unsafeDirError(socketPath);
+    if (unsafeErr) {
+      reject(unsafeErr);
       return;
     }
     const sock = net.createConnection(socketPath);
@@ -145,9 +183,15 @@ export function probeSocketLive(socketPath: string, timeoutMs = 250): Promise<bo
  * method) proves the backend is live.
  */
 export function handshakeBackend(socketPath: string, timeoutMs = 1000): Promise<boolean> {
-  return new Promise<boolean>((resolve) => {
+  return new Promise<boolean>((resolve, reject) => {
     if (!fs.existsSync(socketPath)) {
       resolve(false);
+      return;
+    }
+    // BL-4041c6e0: same directory trust check as probeSocketLive.
+    const unsafeErr = unsafeDirError(socketPath);
+    if (unsafeErr) {
+      reject(unsafeErr);
       return;
     }
     const sock = net.createConnection(socketPath);
@@ -308,6 +352,34 @@ const sleep = (ms: number): Promise<void> => new Promise((r) => { setTimeout(r, 
  */
 export async function ensureBackend(opts: EnsureBackendOptions): Promise<EnsureBackendResult> {
   const diag = opts.onDiagnostic ?? ((l: string) => process.stderr.write(l + '\n'));
+  try {
+    return await ensureBackendInner(opts, diag);
+  } catch (err) {
+    // BL-4041c6e0: an unsafe socket directory surfaces from the probes as a
+    // rejection. Report it as a terminal, coded failure — never spawn into it.
+    if (isUdsDirUnsafeError(err)) {
+      diag(`[service-proxy ensure] ${err.message}`);
+      return { disposition: 'failed', detail: err.message, errorCode: 'E_UDS_DIR_UNSAFE' };
+    }
+    throw err;
+  }
+}
+
+async function ensureBackendInner(
+  opts: EnsureBackendOptions,
+  diag: (l: string) => void,
+): Promise<EnsureBackendResult> {
+  // BL-4041c6e0: create/verify the socket directory before probing or taking the
+  // lock in it, so an unsafe directory is a coded refusal here rather than a
+  // spawned backend that exits on the same check. An unsafe verdict throws
+  // (handled by ensureBackend); any other mkdir/stat failure keeps the previous
+  // best-effort behaviour — the probe/spawn below reports it on its own terms.
+  try {
+    ensurePrivateSocketDir(path.dirname(opts.socketPath), { create: true });
+  } catch (err) {
+    if (isUdsDirUnsafeError(err)) throw err;
+    diag(`[service-proxy ensure] socket dir ${path.dirname(opts.socketPath)} not prepared: ${(err as Error).message}`);
+  }
   const readyTimeoutMs = opts.readyTimeoutMs ?? 10000;
   const probeTimeoutMs = opts.probeTimeoutMs ?? 250;
   const lockTtlMs = opts.lockTtlMs ?? 30000;

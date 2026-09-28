@@ -21,6 +21,7 @@ import * as path from 'node:path';
 import { buildFailureRecord, classifyListenError, emitListenFailure } from '@adhd/sox-listen-guard';
 import { encodeFrame, FrameDecoder } from './framing.js';
 import { probeSocketLive } from './ensure-backend.js';
+import { ensurePrivateSocketDir, isUdsDirUnsafeError } from './socket-dir.js';
 import {
   type JsonRpcRequest,
   type JsonRpcResponse,
@@ -168,10 +169,20 @@ export function serveBackend(opts: ServeBackendOptions): Promise<BackendHandle> 
     });
 
     if (!useInheritedFd) {
+      // BL-4041c6e0: the socket directory must exist AND be private (ours, not a
+      // symlink, no group/other write; the /tmp/sox-<uid> fallback root exactly
+      // 0700) before we bind. A directory another user can write lets them
+      // unlink our socket and bind an impostor in its place, so an unsafe dir is
+      // a hard refusal -- never repaired, never swapped for another path.
       try {
-        fs.mkdirSync(path.dirname(opts.socketPath), { recursive: true, mode: 0o700 });
+        ensurePrivateSocketDir(path.dirname(opts.socketPath), { create: true });
       } catch (err) {
-        diag(`[service-proxy backend] mkdir ${path.dirname(opts.socketPath)} failed: ${errMessage(err)}`);
+        diag(`[service-proxy backend] socket dir ${path.dirname(opts.socketPath)} refused: ${errMessage(err)}`);
+        emitListenFailure(
+          buildFailureRecord(err, classifyListenError(err), { socketPath: opts.socketPath }),
+        );
+        reject(err);
+        return;
       }
 
       // SA-4: Probe-connect before bind — NEVER steal a live socket.
@@ -189,6 +200,15 @@ export function serveBackend(opts: ServeBackendOptions): Promise<BackendHandle> 
           try { fs.unlinkSync(opts.socketPath); } catch (err) { diag(`[service-proxy backend] stale-socket unlink failed: ${errMessage(err)}`); }
           doBind();
         }).catch((probeErr: unknown) => {
+          // BL-4041c6e0: the directory turned unsafe between our check and the
+          // probe — refuse; never unlink or bind inside it.
+          if (isUdsDirUnsafeError(probeErr)) {
+            emitListenFailure(
+              buildFailureRecord(probeErr, classifyListenError(probeErr), { socketPath: opts.socketPath }),
+            );
+            reject(probeErr);
+            return;
+          }
           // Probe itself failed — still try to unlink the stale socket.
           diag(`[service-proxy backend] liveness probe failed: ${errMessage(probeErr)}`);
           try { fs.unlinkSync(opts.socketPath); } catch (err) { diag(`[service-proxy backend] stale-socket unlink failed: ${errMessage(err)}`); }
