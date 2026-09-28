@@ -403,8 +403,16 @@ export const GUARDS = [
     // while typecheck-tests silently never ran (config-merge + real task-graph proof).
     //
     // da25489b layered the gate further: `typecheck` (nx:noop) -> `typecheck-tests` ->
-    // `typecheck-src`, so production-only breakage is triage-distinguishable from spec breakage
-    // even though both are always reached by a whole-repo sweep.
+    // `typecheck-src`, so production-only breakage is triage-distinguishable from spec breakage.
+    // BL-20d01a62: this used to claim "both are always reached by a whole-repo sweep" — false, and
+    // contradicted by docs/reporting/memory/handoff/typecheck-tests.md's own account of the chain:
+    // nx SKIPS `typecheck-tests` outright when its `typecheck-src` dependency fails, so only
+    // `typecheck-src` is guaranteed to run on every sweep. A failing `typecheck-src` still fails the
+    // sweep overall (non-green), but by itself it does not tell you whether specs would also have
+    // failed — the spec-inclusive check simply never ran. `typecheck` itself has no command of its
+    // own to short-circuit on, so the sweep can never report green while EITHER leaf silently never
+    // ran — that "never both-silently-skipped" guarantee is what's reached on every sweep, not "both
+    // leaves always run".
     //
     // Watch list (3b752549, widened ef033f92): every tracked project.json/package.json/
     // tsconfig*.json in the repo, not just the three projects this guard was originally written
