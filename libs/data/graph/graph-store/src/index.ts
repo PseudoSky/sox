@@ -568,6 +568,14 @@ export type EdgeRel =
   | 'MEMBER_OF'
   | 'PART_OF'
   | 'DEPENDS_ON'
+  // D-C / SR-5: a first-class refutation relation. Purely ADDITIVE to the
+  // literal union — the `(string & {})` member already made any string
+  // assignable (BL-444/BL-448/PKT-74), so adding the named literal only adds
+  // autocomplete and does NOT widen the source break further. Writing an edge
+  // with this rel on an EXISTING store still requires the ADR-0010 D3
+  // operator-invoked open-schema migration (the CHECK-free fresh-store DDL
+  // accepts it; a pre-migration store's CHECK does not) — see SR-5.
+  | 'REFUTES'
   | (string & {});
 
 export type Confidence = 'confirmed' | 'unverified' | 'disputed' | 'deprecated';
@@ -923,6 +931,9 @@ export const DEFAULT_EDGE_RELS: readonly EdgeRel[] = [
   'SAME_AS',
   'ASSIGNED_TO',
   'DEPENDS_ON',
+  // D-C / SR-5: the refutation relation. Kept byte-identical to memory-core's
+  // MEMORY_EDGE_RELS (ontology.ts) — the two constants must never drift.
+  'REFUTES',
 ];
 
 /**

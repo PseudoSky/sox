@@ -235,6 +235,122 @@ export interface ResolvedStoreGrowthConfig {
   errors: string[];
 }
 
+// ── KnowledgeConfig (D-C knowledge layer — ADR-0013) ─────────────────────────
+//
+// The typed policy for the knowledge layer: the coverage-abstention thresholds
+// and the facet-promotion demand gate. ADR-0013 is binding — every threshold is
+// a typed field with a documented default; there is NO env-var toggle for any of
+// this, and `memory_stats` reports the resolved config so the active policy is
+// visible in one call (D2).
+//
+// Defaults are deliberately PERMISSIVE (D-C spec §Migration 4): with the shipped
+// defaults the retriever abstains only on the clearest no-coverage case — an
+// empty candidate set. The three distribution-shape signals are computed and
+// reported but their thresholds are set above the (bounded) signal range so they
+// never fire until an operator tunes them against a labeled query set. That is a
+// tuning decision, not a silent one: `threshold_source` on every coverage
+// envelope names the config field that decided the verdict.
+
+export interface CoverageConfig {
+  /**
+   * Abstain when the top candidate's ABSOLUTE similarity is below this. The
+   * absolute signal is the raw vector (1 − cosine distance) score when the vec
+   * channel ran; when it did not, the fused score is used (a weaker proxy).
+   * Cosine similarity ranges [-1, 1], so a default BELOW -1 disables the signal
+   * — the shipped default therefore abstains only on an empty candidate set.
+   */
+  minMaxSimilarity: number;
+  /**
+   * Abstain when the top-k similarity distribution is flatter than this
+   * (flatness = topK_min / topK_max ∈ [0,1]; 1 = perfectly flat). Default > 1
+   * disables the signal.
+   */
+  maxFlatness: number;
+  /**
+   * Abstain when the normalised Shannon entropy of the top-k similarity
+   * distribution exceeds this (∈ [0,1]). Default > 1 disables the signal.
+   */
+  maxEntropy: number;
+  /**
+   * Abstain when similarity decays faster than this from rank 1 to rank k
+   * (decay = (top1 − topK) / top1 ∈ [0,1]). Default > 1 disables the signal.
+   */
+  maxDecay: number;
+  /**
+   * `recall.count.value` is capped at this. When the true match count exceeds
+   * it, the count reports `{value: countCap, exactness: 'gte'}` rather than
+   * pretending to be exact (SR-3). An exact count is `eq`.
+   */
+  countCap: number;
+}
+
+export interface FacetPromotionConfig {
+  /**
+   * Promotion gate (schema.org 'pending' + OBO Foundry): an unpromoted facet
+   * term is promoted only once it is demanded by at least this many DISTINCT
+   * live claims. Default 2 is the Rule-of-Three floor reduced for a young
+   * vocabulary; the spec's vocabulary-leak guard is that promotion is a
+   * governed step, never accretion.
+   */
+  minDistinctClaims: number;
+}
+
+export interface KnowledgeConfig {
+  coverage: CoverageConfig;
+  facetPromotion: FacetPromotionConfig;
+}
+
+export const DEFAULT_KNOWLEDGE_CONFIG: KnowledgeConfig = {
+  coverage: {
+    // Permissive default — abstain only on the clearest no-coverage case (an
+    // empty candidate set). Cosine similarity ∈ [-1,1]; a floor below -1
+    // disables this signal, so an unrelated-but-non-empty candidate set is
+    // still answered rather than abstained. Calibrate against a labeled query
+    // set to opt in.
+    minMaxSimilarity: -1.01,
+    // Signal range is [0,1]; > 1 means "disabled until tuned".
+    maxFlatness: 1.01,
+    maxEntropy: 1.01,
+    maxDecay: 1.01,
+    countCap: 10_000,
+  },
+  facetPromotion: {
+    minDistinctClaims: 2,
+  },
+};
+
+/**
+ * Test-only override seam (mirrors `_setEmbedProviderForTest`). ADR-0013 forbids
+ * an env-var toggle for these thresholds, so a test that must exercise a
+ * non-default policy sets it here, in-process, and resets it to `null`. Recall
+ * resolves through {@link resolveKnowledgeConfig}, which honours this override.
+ */
+let knowledgeConfigOverride: KnowledgeConfig | null = null;
+
+export function _setKnowledgeConfigForTest(config: KnowledgeConfig | null): void {
+  knowledgeConfigOverride = config;
+}
+
+export interface KnowledgeConfigOverrides {
+  coverage?: Partial<CoverageConfig>;
+  facetPromotion?: Partial<FacetPromotionConfig>;
+}
+
+/**
+ * Resolve the effective knowledge-layer config: test override (if set) > typed
+ * `overrides` > {@link DEFAULT_KNOWLEDGE_CONFIG}. Returns a fresh object every
+ * call; never throws. The typed `overrides` seam is where the platform
+ * config-cascade (ADR-0013 D2) will inject once memory-core gains an injected
+ * config channel.
+ */
+export function resolveKnowledgeConfig(overrides?: KnowledgeConfigOverrides): KnowledgeConfig {
+  const base = knowledgeConfigOverride ?? DEFAULT_KNOWLEDGE_CONFIG;
+  return {
+    coverage: { ...base.coverage, ...(overrides?.coverage ?? {}) },
+    facetPromotion: { ...base.facetPromotion, ...(overrides?.facetPromotion ?? {}) },
+  };
+}
+
 /**
  * Resolve the growth-gauge config: typed `overrides` > env (D3) > defaults.
  * Never throws; a malformed env value is reported in `errors`, never silently

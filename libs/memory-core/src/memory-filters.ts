@@ -11,6 +11,17 @@
  */
 
 /**
+ * SR-3 / D-C: a predicate against a `meta.*` value. `path` is a dotted path
+ * into the node's metadata (e.g. `case.outcome.result`); `in` matches any of a
+ * value set, `eq` a single value. Applied store-side (never a client-side join).
+ */
+export interface MetadataPredicate {
+  path: string;
+  in?: unknown[];
+  eq?: unknown;
+}
+
+/**
  * Structured filter for episode subsets. All fields are optional and additive
  * (AND-combined). Mirrors the `filters` object accepted by `memory_recall`.
  */
@@ -37,6 +48,36 @@ export interface MemoryFilter {
   t_created_after?: string;
   /** Only episodes created BEFORE this ISO timestamp. */
   t_created_before?: string;
+  /** SR-3: a `meta.*` predicate (store-side). */
+  metadata?: MetadataPredicate;
+}
+
+/**
+ * Build the SQL fragment + params for an SR-3 metadata predicate against node
+ * alias `alias`. Returns `null` when no usable predicate is supplied. The JSON
+ * path is passed as a BOUND param (sqlite `json_extract(X, P)` accepts one), so
+ * there is no injection surface; `path` is additionally charset-validated so a
+ * malformed path fails closed (returns null) rather than producing broken SQL.
+ */
+export function buildMetadataPredicate(
+  metadata: MetadataPredicate | undefined,
+  alias = 'n',
+): { sql: string; params: unknown[] } | null {
+  if (!metadata || typeof metadata.path !== 'string' || metadata.path.length === 0) return null;
+  if (!/^[A-Za-z0-9_.]+$/.test(metadata.path)) return null;
+  const jsonPath = `$.${metadata.path}`;
+  const valid = `${alias}.meta IS NOT NULL AND json_valid(${alias}.meta)`;
+  const extract = `json_extract(${alias}.meta, ?)`;
+
+  if (Array.isArray(metadata.in)) {
+    if (metadata.in.length === 0) return null; // an empty IN resolves to nothing
+    const ph = metadata.in.map(() => '?').join(', ');
+    return { sql: `(${valid} AND ${extract} IN (${ph}))`, params: [jsonPath, ...metadata.in] };
+  }
+  if ('eq' in metadata) {
+    return { sql: `(${valid} AND ${extract} = ?)`, params: [jsonPath, metadata.eq] };
+  }
+  return null;
 }
 
 /**
@@ -131,6 +172,16 @@ export function buildFiltersClause(
   if (typeof tBefore === 'string') {
     parts.push('n.t_created < ?');
     params.push(tBefore);
+  }
+
+  // SR-3: meta.* predicate (store-side)
+  const metaPred = buildMetadataPredicate(
+    (filters as Record<string, unknown>)['metadata'] as MetadataPredicate | undefined,
+    'n',
+  );
+  if (metaPred) {
+    parts.push(metaPred.sql);
+    params.push(...metaPred.params);
   }
 
   const sql = parts.length > 0 ? ' AND ' + parts.join(' AND ') : '';

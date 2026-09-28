@@ -664,6 +664,118 @@ export interface BatchResult {
 }
 
 /**
+ * SR-8 — verify-after-write. A success envelope that does not imply persistence
+ * is the single most damaging class of defect in this estate: it is the same
+ * failure as closing on a commit ref, one layer down. These helpers read each
+ * SUPPLIED structured field back off the node and report any that did not land,
+ * so a batch can FAIL the item by name rather than return `ok:true` over a
+ * partial record.
+ *
+ * `_setBatchDropFieldForTest` / `_setBatchVerifyDisabledForTest` are the test
+ * seams that let `sr8.spec.ts` (a) inject the pre-fix SILENT DROP and prove the
+ * verifier catches it, and (b) disable the verifier to prove the assertion goes
+ * RED without it (the negative control). Both default to the real behaviour.
+ */
+export const VERIFIED_BATCH_FIELDS = ['topic', 'tags', 'importance', 'summary'] as const;
+export type VerifiedBatchField = (typeof VERIFIED_BATCH_FIELDS)[number];
+
+let batchDropFieldForTest: VerifiedBatchField | null = null;
+let batchVerifyDisabledForTest = false;
+
+export function _setBatchDropFieldForTest(field: VerifiedBatchField | null): void {
+  batchDropFieldForTest = field;
+}
+export function _setBatchVerifyDisabledForTest(disabled: boolean): void {
+  batchVerifyDisabledForTest = disabled;
+}
+
+export interface FieldVerification {
+  ok: boolean;
+  /** The supplied fields that did NOT read back as supplied. */
+  missing: string[];
+}
+
+function parseTagsColumn(raw: string | null): string[] {
+  if (!raw) return [];
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed.filter((t): t is string => typeof t === 'string') : [];
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Read each structured field the caller SUPPLIED back off the node and confirm
+ * it landed verbatim. Fields not supplied are not checked (omitted ≠ dropped).
+ */
+export async function verifyPersistedFields(
+  adapter: StoreAdapter,
+  uid: string,
+  item: Pick<BatchItem, 'topic' | 'tags' | 'importance' | 'summary'>,
+): Promise<FieldVerification> {
+  const supplied = VERIFIED_BATCH_FIELDS.filter((f) => item[f] !== undefined);
+  if (supplied.length === 0) return { ok: true, missing: [] };
+
+  const row = await adapter.executeGet<{
+    topic: string | null;
+    tags: string | null;
+    importance: number | null;
+    summary: string | null;
+  }>(
+    `SELECT topic, tags, importance, summary FROM node WHERE uid = ? AND t_invalid IS NULL LIMIT 1`,
+    [uid],
+  );
+  if (!row) return { ok: false, missing: [...supplied] };
+
+  const missing: string[] = [];
+  if (item.topic !== undefined && (row.topic ?? '') !== item.topic) missing.push('topic');
+  if (item.summary !== undefined && (row.summary ?? '') !== item.summary) missing.push('summary');
+  if (item.importance !== undefined && row.importance !== item.importance) missing.push('importance');
+  if (item.tags !== undefined) {
+    const stored = parseTagsColumn(row.tags);
+    const want = item.tags;
+    const same = stored.length === want.length && want.every((t) => stored.includes(t));
+    if (!same) missing.push('tags');
+  }
+  return { ok: missing.length === 0, missing };
+}
+
+/** Apply the injected test drop (a no-op in production). */
+function applyTestDrop(item: BatchItem): BatchItem {
+  if (!batchDropFieldForTest) return item;
+  const clone: BatchItem = { ...item };
+  switch (batchDropFieldForTest) {
+    case 'topic': delete clone.topic; break;
+    case 'summary': delete clone.summary; break;
+    case 'importance': delete clone.importance; break;
+    case 'tags': delete clone.tags; break;
+  }
+  return clone;
+}
+
+/**
+ * SR-8 verification for one landed item, returned as an optional per-item error.
+ * `verifyItem` is the ORIGINAL caller item (fields as supplied), not the
+ * possibly-dropped one.
+ */
+async function verifyBatchItem(
+  adapter: StoreAdapter,
+  episodeUid: string,
+  verifyItem: BatchItem,
+): Promise<BatchItemError | null> {
+  if (batchVerifyDisabledForTest) return null;
+  const v = await verifyPersistedFields(adapter, episodeUid, verifyItem);
+  if (v.ok) return null;
+  return {
+    ok: false,
+    code: 'E_VERIFY_FAILED',
+    message: `write reported success but supplied field(s) did not persist: ${v.missing.join(', ')}`,
+    details: { missing: v.missing, field: v.missing[0] ?? 'unknown' },
+  };
+}
+
+/**
  * Write multiple memory episodes as a single batch.
  *
  * CONTRACTS §C:
@@ -672,6 +784,9 @@ export interface BatchResult {
  *   - Per-item E_DEDUP is `ok:false, code:"E_DEDUP"` with `details.existing_uid`
  *     and is NOT a batch failure — other items still succeed.
  *   - Chunked transactions allowed (one transaction per item for isolation).
+ *   - SR-8: every supplied structured field is read back before `ok:true`; a
+ *     field that did not persist FAILS the item with `E_VERIFY_FAILED`, naming
+ *     it. A success envelope never sits over a partial record.
  *
  * This function does NOT queue itself — the caller (memory-server handler) is
  * responsible for enqueuing the entire batch as a single queue entry so that
@@ -685,8 +800,14 @@ export async function memoryWriteBatch(
 
   for (const item of items) {
     try {
-      const r = await memoryWrite(adapter, item);
+      const r = await memoryWrite(adapter, applyTestDrop(item));
       if ('episode_uid' in r) {
+        // SR-8: verify supplied fields against the ORIGINAL item.
+        const verifyErr = await verifyBatchItem(adapter, r.episode_uid, item);
+        if (verifyErr) {
+          results.push(verifyErr);
+          continue;
+        }
         results.push({
           ok: true,
           episode_uid: r.episode_uid,
@@ -740,7 +861,7 @@ export async function memoryWriteBatchPhaseA(
 
   for (const item of items) {
     try {
-      const r = await memoryWritePhaseA(adapter, item);
+      const r = await memoryWritePhaseA(adapter, applyTestDrop(item));
       if ('code' in r) {
         results.push({
           ok: false,
@@ -749,6 +870,12 @@ export async function memoryWriteBatchPhaseA(
           ...('existing_uid' in r ? { details: { existing_uid: r.existing_uid } as Record<string, unknown> } : {}),
         });
       } else {
+        // SR-8: verify supplied fields against the ORIGINAL item before ok.
+        const verifyErr = await verifyBatchItem(adapter, r.result.episode_uid, item);
+        if (verifyErr) {
+          results.push(verifyErr);
+          continue;
+        }
         results.push({
           ok: true,
           episode_uid: r.result.episode_uid,

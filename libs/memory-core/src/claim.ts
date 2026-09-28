@@ -51,6 +51,9 @@
 
 import type { StoreAdapter } from '@adhd/sox-store-adapter';
 import { deepMerge } from './update.js';
+import { getMemoryGraphBackend } from './graph-backend.js';
+import { FROZEN_CLAIM_META_KEYS } from './knowledge.js';
+import type { ClaimView, Expectation, Confidence } from './knowledge.js';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -102,7 +105,16 @@ export interface ClaimUpsertOk {
 export type ClaimUpsertError =
   | { ok: false; code: 'E_CLAIM_HELD'; message: string; held_by: string; claimed_at: string }
   | { ok: false; code: 'E_NOT_FOUND'; message: string }
-  | { ok: false; code: 'E_INVALID'; message: string };
+  | { ok: false; code: 'E_INVALID'; message: string }
+  | { ok: false; code: 'E_CLAIM_IMMUTABLE'; message: string; field: string };
+
+/**
+ * The frozen fields of a knowledge `claim` node (K-I1) live in knowledge.ts
+ * (single source, so the upsert guard here and update.ts's in-place guard cannot
+ * drift). Re-exported here for convenience. NOTE the envelope key is
+ * `claim_record`, not `claim` — `meta.claim` is SR-7's mutable work-LEASE.
+ */
+export { FROZEN_CLAIM_META_KEYS };
 
 export type ClaimUpsertResult = ClaimUpsertOk | ClaimUpsertError;
 
@@ -196,8 +208,8 @@ export async function memoryClaimUpsert(
   // guarded UPDATE simply affects 0 rows (no conflict, no retry).
   const { withRetry } = await import('@adhd/sox-store-adapter');
   return withRetry(() => adapter.transaction(async (tx): Promise<ClaimUpsertResult> => {
-    const row = await tx.executeGet<{ meta: string | null }>(
-      `SELECT meta FROM node WHERE uid = ? AND t_invalid IS NULL LIMIT 1`,
+    const row = await tx.executeGet<{ kind: string; meta: string | null }>(
+      `SELECT kind, meta FROM node WHERE uid = ? AND t_invalid IS NULL LIMIT 1`,
       [uid],
     );
     if (!row) {
@@ -205,6 +217,29 @@ export async function memoryClaimUpsert(
     }
 
     const existing = parseMeta(row.meta);
+
+    // K-I1 — a `claim` node's immutable fields are frozen at first write. A
+    // patch that would CHANGE a frozen field is refused (E_CLAIM_IMMUTABLE); the
+    // only permitted mutation against a claim is appending a new outcome node.
+    const patchMeta0 = params.patch?.metadata;
+    if (row.kind === 'claim' && patchMeta0 !== undefined) {
+      for (const key of FROZEN_CLAIM_META_KEYS) {
+        if (
+          key in patchMeta0 &&
+          JSON.stringify((patchMeta0 as Record<string, unknown>)[key]) !== JSON.stringify(existing[key])
+        ) {
+          return {
+            ok: false,
+            code: 'E_CLAIM_IMMUTABLE',
+            message:
+              `Claim ${uid} is immutable: meta.${key} is frozen at first write (K-I1). ` +
+              `Record the change as a new outcome (memory_outcome_append) instead.`,
+            field: key,
+          };
+        }
+      }
+    }
+
     const held = readClaim(existing);
     if (held && held.caller !== caller) {
       return {
@@ -324,4 +359,153 @@ export async function memoryClaimList(
     if (claim) claims.push({ uid: r.uid, claim });
   }
   return { claims, count: claims.length };
+}
+
+// ── Knowledge claim: assert / read (D-C primitive (a)) ───────────────────────
+
+const CONFIDENCES: readonly Confidence[] = ['low', 'medium', 'high'];
+
+export interface ClaimAssertParams {
+  /** The assertion text (stored as the claim node's `content`). */
+  text: string;
+  /** The facet term id this claim is filed under (stored at `meta.facet`). */
+  facet: string;
+  /** The caller's project root (stored at `node.project_path`). */
+  project_path: string;
+  /** The ADR-half: the expected outcome + confidence recorded at assertion time. */
+  expectation: Expectation;
+  /** The asserting caller — also receives the SR-7 lease on the new claim. */
+  asserted_by: string;
+}
+
+export interface ClaimAssertOk {
+  ok: true;
+  uid: string;
+}
+
+export type ClaimAssertError = { ok: false; code: 'E_INVALID'; message: string };
+export type ClaimAssertResult = ClaimAssertOk | ClaimAssertError;
+
+/**
+ * Assert a knowledge claim: mint a native `claim` node with the immutable
+ * subject/text + expectation + facet, then take its SR-7 lease so
+ * {@link ClaimView.revision} is the lease upsert counter.
+ *
+ * Writes with `skipDedupe: true` — two distinct assertions with identical text
+ * are distinct claims (identity is the generated uid, not the content hash).
+ */
+export async function memoryClaimAssert(
+  adapter: StoreAdapter,
+  params: ClaimAssertParams,
+): Promise<ClaimAssertResult> {
+  const text = typeof params.text === 'string' ? params.text.trim() : '';
+  const facet = typeof params.facet === 'string' ? params.facet.trim() : '';
+  const project_path = typeof params.project_path === 'string' ? params.project_path.trim() : '';
+  const asserted_by = typeof params.asserted_by === 'string' ? params.asserted_by.trim() : '';
+  if (!text || !facet || !project_path || !asserted_by) {
+    return { ok: false, code: 'E_INVALID', message: 'text, facet, project_path and asserted_by are required' };
+  }
+  const exp = params.expectation;
+  if (
+    !exp ||
+    typeof exp.expected_outcome !== 'string' ||
+    !CONFIDENCES.includes(exp.confidence)
+  ) {
+    return {
+      ok: false,
+      code: 'E_INVALID',
+      message: "expectation must be { expected_outcome: string, confidence: 'low'|'medium'|'high' }",
+    };
+  }
+
+  const backend = getMemoryGraphBackend(adapter);
+  const rowid = await backend.writeNode(
+    text,
+    {
+      kind: 'claim',
+      projectPath: project_path,
+      source: 'observation',
+      metadata: {
+        facet,
+        expectation: { expected_outcome: exp.expected_outcome, confidence: exp.confidence },
+        claim_record: {
+          kind: 'knowledge-claim',
+          asserted_by,
+          asserted_at: new Date().toISOString(),
+        },
+      },
+    },
+    { skipDedupe: true },
+  );
+  const rec = await backend.getNode(rowid);
+  const uid = rec?.uid;
+  if (!uid) {
+    return { ok: false, code: 'E_INVALID', message: 'claim node was written but could not be read back' };
+  }
+  // Establish the lease so the claim carries a revision. Best-effort: a lease
+  // conflict cannot happen on a node we just minted (nobody else holds it).
+  await memoryClaimUpsert(adapter, { uid, caller: asserted_by });
+  return { ok: true, uid };
+}
+
+/**
+ * Read the immutable half of a knowledge record. Returns `null` when no LIVE
+ * `claim`-kind node carries `uid` (a non-claim node is not a knowledge claim).
+ *
+ * A legacy `claim` node with no `meta.expectation` yields a default
+ * `{ expected_outcome: '', confidence: 'low' }` — and, with no outcomes, derives
+ * `unverified` (D-C spec §Migration 1).
+ */
+export async function readClaimView(
+  adapter: StoreAdapter,
+  uid: string,
+): Promise<ClaimView | null> {
+  const id = typeof uid === 'string' ? uid.trim() : '';
+  if (!id) return null;
+  const row = await adapter.executeGet<{
+    uid: string;
+    kind: string;
+    content: string | null;
+    project_path: string | null;
+    meta: string | null;
+    t_created: string;
+  }>(
+    `SELECT uid, kind, content, project_path, meta, t_created
+       FROM node WHERE uid = ? AND t_invalid IS NULL LIMIT 1`,
+    [id],
+  );
+  if (!row || row.kind !== 'claim') return null;
+
+  const meta = parseMeta(row.meta);
+  const expRaw = meta['expectation'];
+  const expectation: Expectation =
+    expRaw !== null &&
+    typeof expRaw === 'object' &&
+    !Array.isArray(expRaw) &&
+    typeof (expRaw as Record<string, unknown>)['expected_outcome'] === 'string' &&
+    CONFIDENCES.includes((expRaw as Record<string, unknown>)['confidence'] as Confidence)
+      ? {
+          expected_outcome: (expRaw as Record<string, unknown>)['expected_outcome'] as string,
+          confidence: (expRaw as Record<string, unknown>)['confidence'] as Confidence,
+        }
+      : { expected_outcome: '', confidence: 'low' };
+
+  const claimRec = meta['claim'];
+  const revision =
+    claimRec !== null &&
+    typeof claimRec === 'object' &&
+    !Array.isArray(claimRec) &&
+    typeof (claimRec as Record<string, unknown>)['revision'] === 'number'
+      ? ((claimRec as Record<string, unknown>)['revision'] as number)
+      : 1;
+
+  return {
+    uid: row.uid,
+    text: row.content ?? '',
+    facet: typeof meta['facet'] === 'string' ? meta['facet'] : '',
+    project_path: row.project_path ?? '',
+    expectation,
+    revision,
+    t_created: row.t_created,
+  };
 }

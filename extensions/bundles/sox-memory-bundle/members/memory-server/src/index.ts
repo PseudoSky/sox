@@ -57,6 +57,13 @@ import {
   memoryClaimGet,
   memoryClaimList,
   memoryClaimUpsert,
+  // D-C knowledge layer: outcome-gated records, open facets, decision-backing.
+  memoryClaimAssert,
+  memoryOutcomeAppend,
+  memoryBack,
+  memoryFacetAdmit,
+  memoryFacetPromote,
+  memoryFacetList,
   memoryCurate,
   memoryGetEntityEpisodes,
   memoryGetNearDuplicates,
@@ -1078,6 +1085,103 @@ export const TOOLS: Array<Omit<ToolDefinition, 'handler'>> = [
     },
   },
   {
+    name: 'memory_claim_assert',
+    description:
+      'D-C: assert an IMMUTABLE knowledge claim — a native `claim` node carrying the assertion text, a facet term id (see memory_facet_admit), and an expectation{expected_outcome, confidence} recorded at assertion time. Frozen at first write (K-I1): the only permitted mutation is appending an outcome (memory_outcome_append). Returns {ok, uid}.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        store: { type: 'string', description: 'Optional. Named store to use (e.g., "default", "user"). Overrides db_path. See memory init --help to register stores.' },
+        db_path: { type: 'string', description: 'Optional. Path to the SQLite memory store. Defaults to the bundle-configured store (host-injected SOX_CONFIG_DB_PATH, seeded by soxe install). With neither, the call fails with E_STORE_NOT_CONFIGURED — the server never infers a path. Must be within the ~/.memory/** fs allowlist; out-of-allowlist paths are denied by the permission guard with no side effects.' },
+        text: { type: 'string', description: 'The assertion text (required) — stored as the claim node content.' },
+        facet: { type: 'string', description: 'The facet term id this claim is filed under (required), e.g. "technique:bisection".' },
+        project_path: { type: 'string', description: 'The caller\'s project root (required).' },
+        expectation: { type: 'object', description: 'The ADR-half (required): { expected_outcome: string, confidence: "low"|"medium"|"high" } recorded at assertion time so low-confidence claims are the first revisits.' },
+        asserted_by: { type: 'string', description: 'The asserting caller (required) — also receives the SR-7 lease on the new claim.' },
+      },
+      required: ['text', 'facet', 'project_path', 'expectation', 'asserted_by'],
+    },
+  },
+  {
+    name: 'memory_outcome_append',
+    description:
+      'D-C: append an OUTCOME to a claim — a NEW episode node carrying meta.outcome, linked DERIVED_FROM the claim; never a mutation of the claim (K-I2). `independence` records the reproduction level (self vs independent) and is what splits self-reproduced from independently-reproduced from replicated. Verdict is derived on read (memory_back) from the outcome set + REFUTES edges, never stored.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        store: { type: 'string', description: 'Optional. Named store to use (e.g., "default", "user"). Overrides db_path. See memory init --help to register stores.' },
+        db_path: { type: 'string', description: 'Optional. Path to the SQLite memory store. Defaults to the bundle-configured store (host-injected SOX_CONFIG_DB_PATH, seeded by soxe install). With neither, the call fails with E_STORE_NOT_CONFIGURED — the server never infers a path. Must be within the ~/.memory/** fs allowlist; out-of-allowlist paths are denied by the permission guard with no side effects.' },
+        claim_uid: { type: 'string', description: 'The claim this outcome speaks to (required) — must be a live claim node.' },
+        observed_result: { type: 'string', description: 'What was observed (required).' },
+        observed_by: { type: 'string', description: 'Who observed it (required).' },
+        method: { type: 'string', description: 'How it was observed (required).' },
+        observed_at: { type: 'string', description: 'ISO timestamp; defaults to now.' },
+        independence: { type: 'string', enum: ['self', 'independent'], description: 'Required. "self" = the claimant\'s own observation; "independent" = a distinct observer. Two independent agreeing outcomes ⇒ replicated.' },
+        client_request_id: { type: 'string', description: 'Optional idempotency key — replay returns the original outcome.' },
+      },
+      required: ['claim_uid', 'observed_result', 'observed_by', 'method', 'independence'],
+    },
+  },
+  {
+    name: 'memory_back',
+    description:
+      'D-C: read a knowledge record as DECISION-BACKING — the immutable claim, its append-only outcomes, the live REFUTES edges, and the DERIVED tiered verdict (unverified|self-reproduced|independently-reproduced|replicated|stale|refuted|unknown) with a basis and the citation list. Pure read. Returns E_NOT_FOUND when no live claim node has the uid.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        store: { type: 'string', description: 'Optional. Named store to use (e.g., "default", "user"). Overrides db_path. See memory init --help to register stores.' },
+        db_path: { type: 'string', description: 'Optional. Path to the SQLite memory store. Defaults to the bundle-configured store (host-injected SOX_CONFIG_DB_PATH, seeded by soxe install). With neither, the call fails with E_STORE_NOT_CONFIGURED — the server never infers a path. Must be within the ~/.memory/** fs allowlist; out-of-allowlist paths are denied by the permission guard with no side effects.' },
+        uid: { type: 'string', description: 'The claim node uid (required).' },
+      },
+      required: ['uid'],
+    },
+  },
+  {
+    name: 'memory_facet_admit',
+    description:
+      'D-C: admit an OPEN facet term. A new term is minted unpromoted (no schema/code change to add a term). Admitting an existing id with a DIFFERENT definition is refused with E_TERM_REDEFINED — terms are never redefined in place (mint a NEW id for a new meaning). Idempotent for the same definition.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        store: { type: 'string', description: 'Optional. Named store to use (e.g., "default", "user"). Overrides db_path. See memory init --help to register stores.' },
+        db_path: { type: 'string', description: 'Optional. Path to the SQLite memory store. Defaults to the bundle-configured store (host-injected SOX_CONFIG_DB_PATH, seeded by soxe install). With neither, the call fails with E_STORE_NOT_CONFIGURED — the server never infers a path. Must be within the ~/.memory/** fs allowlist; out-of-allowlist paths are denied by the permission guard with no side effects.' },
+        facet: { type: 'string', description: 'The facet (orthogonal dimension), e.g. "technique" (required).' },
+        term: { type: 'string', description: 'The term within the facet, e.g. "bisection" (required).' },
+        definition: { type: 'string', description: 'The term definition (required) — its hash is frozen once minted.' },
+        origin: { type: 'string', description: 'The source/owner tag (required for later promotion).' },
+      },
+      required: ['facet', 'term', 'definition'],
+    },
+  },
+  {
+    name: 'memory_facet_promote',
+    description:
+      'D-C: attempt to PROMOTE an unpromoted facet term via its governed demand gate (demand ≥ config.facetPromotion.minDistinctClaims distinct live claims AND a non-empty origin tag). Idempotent. A term below the gate is returned still `unpromoted` with its current demand — the caller can read demand vs threshold; demand accrues over time.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        store: { type: 'string', description: 'Optional. Named store to use (e.g., "default", "user"). Overrides db_path. See memory init --help to register stores.' },
+        db_path: { type: 'string', description: 'Optional. Path to the SQLite memory store. Defaults to the bundle-configured store (host-injected SOX_CONFIG_DB_PATH, seeded by soxe install). With neither, the call fails with E_STORE_NOT_CONFIGURED — the server never infers a path. Must be within the ~/.memory/** fs allowlist; out-of-allowlist paths are denied by the permission guard with no side effects.' },
+        term_id: { type: 'string', description: 'The facet term id, e.g. "technique:bisection" (required).' },
+      },
+      required: ['term_id'],
+    },
+  },
+  {
+    name: 'memory_facet_list',
+    description:
+      'D-C: list the readable facet catalog, optionally narrowed to one facet. A newly-admitted term appears here immediately — no code change. Pure read.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        store: { type: 'string', description: 'Optional. Named store to use (e.g., "default", "user"). Overrides db_path. See memory init --help to register stores.' },
+        db_path: { type: 'string', description: 'Optional. Path to the SQLite memory store. Defaults to the bundle-configured store (host-injected SOX_CONFIG_DB_PATH, seeded by soxe install). With neither, the call fails with E_STORE_NOT_CONFIGURED — the server never infers a path. Must be within the ~/.memory/** fs allowlist; out-of-allowlist paths are denied by the permission guard with no side effects.' },
+        facet: { type: 'string', description: 'Optional. Narrow the catalog to one facet.' },
+      },
+      required: [],
+    },
+  },
+  {
     name: 'memory_stats',
     description:
       'Return enrichment coverage and cluster quality statistics. Use for health checks and CI gates. Returns a `tools` capability list (tool-name presence) — to identify the running code, call memory_ping (content-addressed sha256).',
@@ -1830,10 +1934,16 @@ function toolOperationClass(name: string): OperationClass {
     case 'memory_write_batch':
     case 'memory_update':
     case 'memory_claim_upsert':
+    case 'memory_claim_assert':
+    case 'memory_outcome_append':
+    case 'memory_facet_admit':
+    case 'memory_facet_promote':
       return 'write';
     case 'memory_recall':
     case 'memory_claim_get':
     case 'memory_claim_list':
+    case 'memory_back':
+    case 'memory_facet_list':
     case 'memory_search_entities':
     case 'memory_get_session_state':
     case 'memory_get_community':
@@ -2916,6 +3026,119 @@ async function dispatchTool(
     case 'memory_claim_list': {
       const caller = typeof args['caller'] === 'string' && args['caller'].length > 0 ? args['caller'] : undefined;
       const result = await memoryClaimList(adapter, caller !== undefined ? { caller } : {});
+      return { content: [{ type: 'text', text: JSON.stringify(result) }] };
+    }
+
+    // ── D-C: knowledge layer (claim/outcome/back + open facets) ─────────────────
+    case 'memory_claim_assert': {
+      const text = args['text'];
+      const facet = args['facet'];
+      const projectPath = args['project_path'];
+      const assertedBy = args['asserted_by'];
+      const expRaw = args['expectation'];
+      const exp =
+        expRaw !== null && typeof expRaw === 'object' && !Array.isArray(expRaw)
+          ? (expRaw as { expected_outcome?: unknown; confidence?: unknown })
+          : null;
+      if (
+        typeof text !== 'string' || typeof facet !== 'string' ||
+        typeof projectPath !== 'string' || typeof assertedBy !== 'string' ||
+        exp === null || typeof exp.expected_outcome !== 'string' ||
+        (exp.confidence !== 'low' && exp.confidence !== 'medium' && exp.confidence !== 'high')
+      ) {
+        return { isError: true, content: [{ type: 'text', text: JSON.stringify({ ok: false, code: 'E_INVALID', message: 'text, facet, project_path, asserted_by and a valid expectation are required' }) }] };
+      }
+      const wq = await WriteQueue.forPath(dbPath);
+      const result = await wq.enqueue('memory_claim_assert', async (writeDb) =>
+        memoryClaimAssert(writeDb, {
+          text, facet, project_path: projectPath, asserted_by: assertedBy,
+          expectation: {
+            expected_outcome: exp.expected_outcome as string,
+            confidence: exp.confidence as 'low' | 'medium' | 'high',
+          },
+        }),
+      );
+      if (!result.ok) return { isError: true, content: [{ type: 'text', text: JSON.stringify(result) }] };
+      return { content: [{ type: 'text', text: JSON.stringify(result) }] };
+    }
+
+    case 'memory_outcome_append': {
+      const claimUid = args['claim_uid'];
+      const independence = args['independence'];
+      if (
+        typeof claimUid !== 'string' || claimUid.length === 0 ||
+        typeof args['observed_result'] !== 'string' ||
+        typeof args['observed_by'] !== 'string' || typeof args['method'] !== 'string' ||
+        (independence !== 'self' && independence !== 'independent')
+      ) {
+        return { isError: true, content: [{ type: 'text', text: JSON.stringify({ ok: false, code: 'E_INVALID', message: 'claim_uid, observed_result, observed_by, method and independence (self|independent) are required' }) }] };
+      }
+      const wq = await WriteQueue.forPath(dbPath);
+      const result = await wq.enqueue('memory_outcome_append', async (writeDb) =>
+        memoryOutcomeAppend(writeDb, {
+          claim_uid: claimUid,
+          observed_result: args['observed_result'] as string,
+          observed_by: args['observed_by'] as string,
+          method: args['method'] as string,
+          independence,
+          ...(typeof args['observed_at'] === 'string' ? { observed_at: args['observed_at'] as string } : {}),
+          ...(typeof args['client_request_id'] === 'string' ? { client_request_id: args['client_request_id'] as string } : {}),
+        }),
+      );
+      if (!result.ok) return { isError: true, content: [{ type: 'text', text: JSON.stringify(result) }] };
+      return { content: [{ type: 'text', text: JSON.stringify(result) }] };
+    }
+
+    case 'memory_back': {
+      const uid = args['uid'];
+      if (typeof uid !== 'string' || uid.length === 0) {
+        return { isError: true, content: [{ type: 'text', text: JSON.stringify({ ok: false, code: 'E_INVALID', message: 'uid is required' }) }] };
+      }
+      const result = await memoryBack(adapter, uid);
+      if (!result.ok) return { isError: true, content: [{ type: 'text', text: JSON.stringify(result) }] };
+      return { content: [{ type: 'text', text: JSON.stringify(result) }] };
+    }
+
+    case 'memory_facet_admit': {
+      const facet = args['facet'];
+      const term = args['term'];
+      const definition = args['definition'];
+      if (typeof facet !== 'string' || typeof term !== 'string' || typeof definition !== 'string') {
+        return { isError: true, content: [{ type: 'text', text: JSON.stringify({ ok: false, code: 'E_INVALID', message: 'facet, term and definition are required' }) }] };
+      }
+      const origin = typeof args['origin'] === 'string' ? (args['origin'] as string) : '';
+      const wq = await WriteQueue.forPath(dbPath);
+      try {
+        const result = await wq.enqueue('memory_facet_admit', async (writeDb) =>
+          memoryFacetAdmit(writeDb, { facet, term, definition, origin }),
+        );
+        return { content: [{ type: 'text', text: JSON.stringify(result) }] };
+      } catch (err) {
+        const e = err as { code?: string; message?: string };
+        return { isError: true, content: [{ type: 'text', text: JSON.stringify({ ok: false, code: e.code ?? 'E_FACET', message: e.message ?? String(err) }) }] };
+      }
+    }
+
+    case 'memory_facet_promote': {
+      const termId = args['term_id'];
+      if (typeof termId !== 'string' || termId.length === 0) {
+        return { isError: true, content: [{ type: 'text', text: JSON.stringify({ ok: false, code: 'E_INVALID', message: 'term_id is required' }) }] };
+      }
+      const wq = await WriteQueue.forPath(dbPath);
+      try {
+        const result = await wq.enqueue('memory_facet_promote', async (writeDb) =>
+          memoryFacetPromote(writeDb, { term_id: termId }),
+        );
+        return { content: [{ type: 'text', text: JSON.stringify(result) }] };
+      } catch (err) {
+        const e = err as { code?: string; message?: string };
+        return { isError: true, content: [{ type: 'text', text: JSON.stringify({ ok: false, code: e.code ?? 'E_FACET', message: e.message ?? String(err) }) }] };
+      }
+    }
+
+    case 'memory_facet_list': {
+      const facet = typeof args['facet'] === 'string' && args['facet'].length > 0 ? (args['facet'] as string) : undefined;
+      const result = await memoryFacetList(adapter, facet !== undefined ? { facet } : {});
       return { content: [{ type: 'text', text: JSON.stringify(result) }] };
     }
 

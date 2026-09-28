@@ -57,6 +57,9 @@ import { log as tlog } from './telemetry.js';
 import { openDbReadOnly } from './db.js';
 import { buildFilterClause, rrfScore } from '@adhd/sox-hybrid-search';
 import type { StoreAdapter } from '@adhd/sox-store-adapter';
+import { resolveKnowledgeConfig } from './config.js';
+import { assessCoverage, type CoverageEnvelope } from './coverage.js';
+import { buildMetadataPredicate, type MetadataPredicate } from './memory-filters.js';
 
 // ── Query-embed timeout (read-path guard) ─────────────────────────────────────
 //
@@ -539,6 +542,20 @@ export interface RecallResponse {
    * failure.
    */
   degradations?: string[];
+  /**
+   * D-C / K-I6 — the coverage envelope, present on every response. When
+   * `abstained` is true the retriever REFUSED to answer (`results` is empty) and
+   * `reason` names why; a coverage gap was logged. The obligation is that an
+   * out-of-scope query yields a visible gap rather than the nearest held row.
+   */
+  coverage?: CoverageEnvelope;
+  /**
+   * SR-3 — the MATCH count for the query's predicate (kind + filters), distinct
+   * from the corpus count. `exactness:'eq'` is exact; `'gte'` means the true
+   * count exceeded the configured cap and `value` is that cap (an honest lower
+   * bound, never a pretended exact).
+   */
+  count?: { value: number; exactness: 'eq' | 'gte' };
 }
 
 // ── Parent-context expansion ──────────────────────────────────────────────────
@@ -739,6 +756,11 @@ export async function memoryRecall(
   const kindClause = kinds.length > 0 ? ` AND n.kind IN (${kinds.map(() => '?').join(',')})` : '';
   const kindParams: unknown[] = kinds;
 
+  // D-C / ADR-0013 — the resolved knowledge-layer policy (coverage thresholds +
+  // count cap). Resolved once per call; a test may override it in-process via
+  // `_setKnowledgeConfigForTest` (never an env var).
+  const knowledgeCfg = resolveKnowledgeConfig();
+
   // BL-100: resolve filters into SQL pre-filter clauses. Uses hybrid-search's
   // buildFilterClause for the standard fields (topic, tags, importance_min,
   // project_path, agent_id) and adds time-range + tags_match_all directly.
@@ -787,6 +809,17 @@ export async function memoryRecall(
             nodeParams.push(value);
           }
           break;
+        case 'metadata': {
+          // SR-3: a `meta.*` predicate, applied store-side. `kinds` and
+          // `metadata` are memory-core-native (not hybrid-search NodeFilter
+          // fields), so they must NOT fall through to buildFilterClause.
+          const pred = buildMetadataPredicate(value as MetadataPredicate, 'n');
+          if (pred) {
+            nodeClauses.push(pred.sql);
+            nodeParams.push(...pred.params);
+          }
+          break;
+        }
         default:
           nativeFilters[key] = value;
       }
@@ -993,6 +1026,32 @@ export async function memoryRecall(
   const agentFilter =
     agent_id ? `AND n.agent_id = '${agent_id.replace(/'/g, "''")}'` : '';
 
+  // SR-3 — the MATCH count for this query's predicate (kind + filters), distinct
+  // from the corpus count. Capped: above `coverage.countCap` the count is
+  // reported `gte` (an honest lower bound), never a pretended exact.
+  const computeMatchCount = async (): Promise<{ value: number; exactness: 'eq' | 'gte' }> => {
+    const cap = knowledgeCfg.coverage.countCap;
+    const row = await adapter.executeGet<{ cnt: number }>(
+      `SELECT COUNT(*) as cnt FROM node n WHERE ${validityPred} ${agentFilter} ${filterSql} ${kindClause}`,
+      [...filterParams, ...kindParams],
+    );
+    const n = row?.cnt ?? 0;
+    return n > cap ? { value: cap, exactness: 'gte' } : { value: n, exactness: 'eq' };
+  };
+
+  // D-C — a coverage gap is a first-class, logged event (never a silent empty).
+  const logCoverageGap = (env: CoverageEnvelope): void => {
+    tlog.warn('recall.coverage_gap', {
+      scope,
+      reason: env.reason ?? 'none',
+      threshold_source: env.threshold_source,
+      max_similarity: env.signals.max_similarity,
+      signal_flatness: env.signals.distribution_flatness,
+      signal_entropy: env.signals.topk_entropy,
+      signal_decay: env.signals.decay_rate,
+    });
+  };
+
   // 2a. Vec0 KNN search
   let vecRows: { node_id: number; distance: number }[] = [];
   if (queryVecJson && !embedVecFailed) {
@@ -1151,6 +1210,13 @@ export async function memoryRecall(
       },
     };
     if (filterStats) response.filterStats = filterStats;
+    // D-C / K-I6: an empty candidate set is the clearest no-coverage case — the
+    // retriever ABSTAINS (results stay []) and logs the gap. It never invents a
+    // nearest-held answer.
+    const coverage0 = assessCoverage([], knowledgeCfg);
+    response.coverage = coverage0;
+    if (coverage0.abstained) logCoverageGap(coverage0);
+    response.count = await computeMatchCount();
     // The empty-corpus path must report degradations for exactly the same
     // reason the BL-117 comment above gives for late chunking — and more
     // urgently. This is the MOST dangerous branch to stay silent on: a caller
@@ -1309,6 +1375,38 @@ export async function memoryRecall(
   });
 
   ranked.sort((a, b) => b.score - a.score);
+
+  // D-C / K-I6: the coverage boundary check, run BEFORE assembling results. When
+  // the candidate set shows no coverage of the query, ABSTAIN — return no
+  // results (never the nearest held row) and log the gap. The absolute signal is
+  // the raw vector similarity (1 − cosine distance) when the vec channel ran.
+  const coverageTopSimilarity = vecRows.length > 0 ? 1 - vecRows[0]!.distance : null;
+  const coverage = assessCoverage(
+    ranked.map((r) => ({ score: r.score })),
+    knowledgeCfg,
+    { topSimilarity: coverageTopSimilarity },
+  );
+  if (coverage.abstained) {
+    logCoverageGap(coverage);
+    const { applied: lcAppliedA, skipReason: lcSkipA } = evaluateLateChunking(params.lateChunking);
+    const abstained: RecallResponse = {
+      results: [],
+      provider_call_count: getProviderCallCount() - beforeCount,
+      vec_used: !!queryVecJson && !embedVecFailed,
+      coverage,
+      count: await computeMatchCount(),
+      metadata: {
+        totalChunksRetrieved: 0,
+        totalChunksAfterExpansion: 0,
+        lateChunkingApplied: lcAppliedA,
+        ...(lcSkipA ? { lateChunkingSkipReason: lcSkipA } : {}),
+        totalTokensAfterExpansion: 0,
+        expansionTruncated: false,
+      },
+    };
+    if (degradations.length > 0) abstained.degradations = degradations;
+    return abstained;
+  }
 
   // 6. Graph depth-1 expansion via live edges
   const topRowids = ranked.slice(0, limit).map((r) => r.node.rowid);
@@ -1643,6 +1741,10 @@ export async function memoryRecall(
     },
   };
   if (filterStats) response.filterStats = filterStats;
+  // D-C / K-I6 + SR-3: the coverage envelope (not abstained on this path) and the
+  // match count travel with every non-abstained response.
+  response.coverage = coverage;
+  response.count = await computeMatchCount();
   if (degradations.length > 0) response.degradations = degradations;
   return response;
   } finally {

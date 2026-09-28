@@ -49,7 +49,7 @@ const PRE_EXISTING_FIELDS = [
 ];
 
 describe('AC-7 (BL-441) — memory_stats additively exposes the registered ontology vocabulary', () => {
-  it('ontology field is present with 6 kinds and 10 rels, every pre-existing field is untouched', async () => {
+  it('ontology field is present with 6 kinds and 11 rels, every pre-existing field is untouched', async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'sox-bl441-ontology-stats-'));
     const dbPath = path.join(dir, 'test.db');
     try {
@@ -70,7 +70,7 @@ describe('AC-7 (BL-441) — memory_stats additively exposes the registered ontol
       expect(ontology.rels.sort()).toEqual(
         [
           'MENTIONS', 'SUPPORTS', 'RELATES_TO', 'SUPERSEDES', 'DERIVED_FROM',
-          'MEMBER_OF', 'PART_OF', 'SAME_AS', 'ASSIGNED_TO', 'DEPENDS_ON',
+          'MEMBER_OF', 'PART_OF', 'SAME_AS', 'ASSIGNED_TO', 'DEPENDS_ON', 'REFUTES',
         ].sort(),
       );
 

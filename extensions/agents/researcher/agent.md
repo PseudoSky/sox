@@ -286,18 +286,37 @@ If all phases A–F are complete and the RQs are researchable externally, procee
 
 From the generalized problem, generate three categories. Minimum 3 searches per category. Reformulate if results come back empty or off-topic.
 
+**The facet vocabulary is OPEN, not a closed three-bucket enum.** The three
+categories below are the *habitual* facets, not the only ones — a finding about a
+technique, a process, a measurement, or an incident is a first-class finding with
+**no mandatory package schema** (it does not have to be an npm/PyPI/crate). When a
+finding fits none of the habitual facets, mint a new term instead of forcing it
+into a catch-all:
+
 ```text
-## Tools — packages, libraries, SaaS that solve or partially solve this
+memory_facet_admit({ data: { facet: "technique", term: "llm-output-quarantine",
+  definition: "isolating sub-agent output behind a structural boundary before it reaches the parent",
+  origin: "researcher:2026-09-27" } })
+```
+
+A term is minted `unpromoted`; it becomes `promoted` only once it is demanded by
+the governed threshold (≥ `config.facetPromotion.minDistinctClaims` distinct
+claims) via `memory_facet_promote`. A term is **never redefined in place** — a
+changed meaning is a *new* term id (`E_TERM_REDEFINED` guards this). The catalog
+is readable with `memory_facet_list`.
+
+```text
+## Tools — packages, libraries, SaaS that solve or partially solve this   (facet: tool)
 1. "llm prompt injection defense typescript npm package"
 2. "output sanitization guardrails ai safety typescript"
 3. "sub-agent output validation wrapping library"
 
-## Patterns — frameworks, best practices, antipatterns
+## Patterns — frameworks, best practices, antipatterns                     (facet: pattern)
 1. "prompt injection defense multi-layer strategy"
 2. "llm agent output isolation structural cues best practice"
 3. "tool call result sanitization anti-pattern"
 
-## Use Cases — similar implementations across varied contexts
+## Use Cases — similar implementations across varied contexts              (facet: use-case)
 1. "langchain agent tool output formatting wrapping"
 2. "multi-agent system sub-agent output trust boundary"
 3. "openai assistants tool call result handling"
