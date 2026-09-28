@@ -80,18 +80,20 @@ export default function setup(): () => Promise<void> {
   }
 
   const runStartedMs = Date.now();
-  // BL-611a711e: a short, ABSOLUTE `/tmp/sox-cli-` base (mirrors memory-server's own
-  // `/tmp/sox-ms-`, vitest.global-embed-scratch.ts), never `path.join(os.tmpdir(), ...)`. On
+  // BL-611a711e: a short, ABSOLUTE `/tmp/cl-` base, never `path.join(os.tmpdir(), ...)`. On
   // macOS, `os.tmpdir()` resolves to `/var/folders/<2>/<~30 chars>/T/`, which alone eats ~50-70
   // bytes of the 104-byte Unix-domain-socket `sun_path` budget the real embed host's socket file
   // is bound under (`@adhd/sox-service-proxy`'s `backendSocketPath()`) — leaving so little margin
   // that a realistic singleton key forces `backendSocketPath()`'s tier-2 (shortened-filename)
   // fallback just to stay under budget, a handful of bytes from tier-3's fallback OUTSIDE this
   // scratch root entirely (`/tmp/sox-<uid>/p-<16hex>.sock`, `libs/service-proxy/src/socket-path.ts`).
-  // A fixed `/tmp/sox-cli-` root keeps the full, unshortened socket path comfortably inside the
-  // 104-byte budget without ever needing either fallback tier — see
-  // `611a711e-scratch-socket-path.spec.ts`.
-  const root = fs.mkdtempSync('/tmp/sox-cli-');
+  // An initial `/tmp/sox-cli-` root (mirroring memory-server's `/tmp/sox-ms-`) still only bought
+  // 100 bytes for the full name — 4 bytes of margin, and the ACTUAL `backendSocketPath()` choice
+  // at that root was tier-2 (101 bytes), not tier-1 (measured, see
+  // `611a711e-scratch-socket-path.spec.ts`'s RED). The shorter `/tmp/cl-` root gets the full,
+  // unshortened tier-1 socket path to 96 bytes — an 8-byte margin — without ever needing either
+  // fallback tier.
+  const root = fs.mkdtempSync('/tmp/cl-');
   const xdgCache = path.join(root, 'xdg-cache');
   const cacheDir = path.join(xdgCache, 'sox', 'models');
   const ecosystemHome = path.join(root, 'eco');

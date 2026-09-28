@@ -179,7 +179,11 @@ export type {
 } from './embed-pipeline.js';
 
 // ── Deterministic test embedding provider (BL-161 seam; TEST-ONLY) ────────────
-export { DeterministicTestProvider, featureHashEmbed, MODEL_ID as DETERMINISTIC_TEST_PROVIDER_MODEL_ID } from './embed-test-provider.js';
+// BL-611a711e item 3: MODEL_ID is deliberately NOT re-exported from this main barrel (it would
+// widen the package's public npm surface for a test-only constant) — it lives on the
+// `@adhd/sox-memory-core/testing` subpath instead, as DETERMINISTIC_TEST_PROVIDER_MODEL_ID. See
+// src/testing/index.ts.
+export { DeterministicTestProvider, featureHashEmbed } from './embed-test-provider.js';
 export { _setEmbedProviderForTest } from './embed.js';
 
 // ── Test-harness operator store-env scrub (BL-7e5be7e8; TEST-ONLY) ───────────

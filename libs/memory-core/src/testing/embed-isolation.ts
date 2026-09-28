@@ -17,15 +17,16 @@
  * memory-server/memory-core that can trigger a real embed). Rather than
  * re-implement path containment a second time, the generic, product-agnostic
  * part is extracted here, into memory-core, which both memory-server and
- * memory-cli already depend on. memory-server's own module is left UNTOUCHED
- * by this extraction (this is purely additive) — the logic here is the same
- * containment ALGORITHM (`isInside`/`spellings`), parameterized on the
- * scratch-root env var name instead of hardcoding memory-server's
- * `SOX_MEMSRV_TEST_SCRATCH_ROOT`. It is NOT byte-for-byte identical to
- * memory-server's own `embedIsolationViolations`/`assertEmbedPathsIsolated`:
- * memory-server's version carries two extra, product-specific checks this
- * shared version does not (a `SOX_ECOSYSTEM_HOME`-under-operator check, and
- * the BL-404 `TELEMETRY_DIR_ENV`-exception check) — see BL-611a711e item 3.
+ * memory-cli already depend on. memory-server's `src/test-support/
+ * bl-26291f21-embed-scratch.ts` now DELEGATES its containment algorithm to
+ * this shared helper (via an `extra` hook for its two extra checks) instead
+ * of carrying its own copy — its exported function signatures are unchanged,
+ * so nothing downstream of it needed to change. This module is NOT
+ * byte-for-byte identical to what memory-server's file carried before that
+ * delegation: memory-server keeps two extra, product-specific checks this
+ * shared version does not run (a `SOX_ECOSYSTEM_HOME`-under-operator check,
+ * and the BL-404 `TELEMETRY_DIR_ENV`-exception check), passed in via that
+ * `extra` hook rather than duplicated here.
  *
  * BL-611a711e: TEST-ONLY, and now genuinely test-only in the package's shipped
  * surface — this module lives under `src/testing/` (excluded from the main
@@ -33,24 +34,26 @@
  * like the existing `src/testing/legacy-store.ts` convention) and is reachable
  * cross-package ONLY via the dedicated `@adhd/sox-memory-core/testing`
  * subpath (`src/testing/index.ts` → its own `tsconfig.testing.json` build →
- * `dist/testing/index.js`), never via `.`/`dist/index.js`. Before this fix the
- * module lived in `src/test-support/` (not excluded from `tsconfig.lib.json`)
- * AND was re-exported from the main barrel, so it shipped as part of this
- * package's PUBLIC npm surface (`dist/index.js`/`dist/index.d.ts`) — a leak,
- * since tsc emits any file an included root file (`index.ts`) imports,
- * regardless of `exclude`.
+ * `dist-testing/testing/index.js`), never via `.`/`dist/index.js`, and never via
+ * a package.json `exports`/`files` entry — that subpath is in-repo-only
+ * (tsconfig.base.json `paths` + each consuming suite's vitest `resolve.alias`).
+ * Before this fix the module lived in `src/test-support/` (not excluded from
+ * `tsconfig.lib.json`) AND was re-exported from the main barrel, so it shipped
+ * as part of this package's PUBLIC npm surface (`dist/index.js`/
+ * `dist/index.d.ts`) — a leak, since tsc emits any file an included root file
+ * (`index.ts`) imports, regardless of `exclude`.
  *
  * Never imported by production code paths.
  *
  * PURE, dependency-free-within-the-package on purpose (BL-611a711e): this module takes the
  * embed paths it checks as a PARAMETER rather than importing `getConfiguredEmbedPaths` from
- * `../embed.js` itself. Two reasons:
- *   1. `src/testing/` is its own build root (`tsconfig.testing.json`, `rootDir: src/testing`) —
- *      an import reaching outside that root would either fail tsc's rootDir check or drag the
- *      rest of `memory-core/src` into this subpath's dist output.
- *   2. Each caller already imports `@adhd/sox-memory-core`'s main barrel for
- *      `getConfiguredEmbedPaths()` itself; resolving paths there and passing them in means this
- *      module never causes a second module-graph entry into memory-core internals.
+ * `../embed.js` itself. `getConfiguredEmbedPaths()` lives in `embed.ts`, which pulls in most of
+ * memory-core's production dependency graph (db, sqlite-vec, fastembed, …) — importing it here
+ * would drag all of that into `tsconfig.testing.json`'s build (`rootDir: ./src`, so it emits
+ * whatever this subpath's files import). Each caller already imports
+ * `@adhd/sox-memory-core`'s main barrel for `getConfiguredEmbedPaths()` itself; resolving paths
+ * there and passing them in means this module never causes a second module-graph entry into
+ * memory-core internals.
  */
 import * as os from 'node:os';
 import * as path from 'node:path';

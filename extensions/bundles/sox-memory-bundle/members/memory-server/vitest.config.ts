@@ -7,15 +7,16 @@ const SPEC_DIR = 'extensions/bundles/sox-memory-bundle/members/memory-server';
 export default defineConfig({
   resolve: {
     alias: {
-      // BL-611a711e: the memory-core alias below bypasses package.json `exports` resolution
-      // entirely (vite/vitest resolves `alias` entries before consulting a package's exports
-      // map), so the new `@adhd/sox-memory-core/testing` subpath needs its OWN alias entry —
-      // without this, Node's real exports-aware resolver would find it fine (verified: `node -e
-      // require.resolve(...)` from a script colocated with the importing file succeeds), but
-      // vitest's aliasing here means that resolver is never consulted for `@adhd/sox-memory-core`
-      // imports in this suite. The MORE SPECIFIC alias must come first — vite matches longest-key
-      // aliases eagerly, but keeping order explicit here documents the intent.
-      '@adhd/sox-memory-core/testing': resolve(repoRoot, 'libs/memory-core/dist-testing/index.js'),
+      // BL-611a711e: `@adhd/sox-memory-core/testing` is an IN-REPO-ONLY subpath — the package's
+      // `package.json` carries no `exports["./testing"]` entry and does not ship `dist-testing/`
+      // (it is not part of the published npm surface), so this alias is the ONLY way this suite
+      // resolves it at runtime (tsconfig.base.json's `paths` entry covers typecheck only, not
+      // vitest's module resolution). The MORE SPECIFIC alias MUST come first: vite's aliasing
+      // (rollup's `@rollup/plugin-alias` semantics) matches in insertion order and returns the
+      // FIRST entry whose key matches, not the longest key — swapping this order would make
+      // `@adhd/sox-memory-core/testing` imports match the plain `@adhd/sox-memory-core` alias
+      // instead and resolve to the wrong file.
+      '@adhd/sox-memory-core/testing': resolve(repoRoot, 'libs/memory-core/dist-testing/testing/index.js'),
       '@adhd/sox-memory-core': resolve(repoRoot, 'libs/memory-core/dist/index.js'),
       '@adhd/sox-service-proxy': resolve(repoRoot, 'libs/service-proxy/dist/index.js'),
     },

@@ -5,6 +5,21 @@ const repoRoot = resolve(__dirname, '../../../../..');
 const SPEC_DIR = 'extensions/bundles/sox-memory-bundle/members/memory-cli';
 
 export default defineConfig({
+  resolve: {
+    alias: {
+      // BL-611a711e: `@adhd/sox-memory-core/testing` is an IN-REPO-ONLY subpath — memory-core's
+      // `package.json` carries no `exports["./testing"]` entry and does not ship `dist-testing/`
+      // (not part of the published npm surface), so this alias is the ONLY way this suite
+      // resolves it at runtime (tsconfig.base.json's `paths` entry covers typecheck only).
+      // Mirrors memory-server's own `vitest.config.ts` alias pair. The MORE SPECIFIC alias MUST
+      // come first: vite's aliasing (rollup's `@rollup/plugin-alias` semantics) matches in
+      // insertion order and returns the FIRST entry whose key matches, not the longest key —
+      // swapping this order would make `@adhd/sox-memory-core/testing` imports match the plain
+      // `@adhd/sox-memory-core` alias instead and resolve to the wrong file.
+      '@adhd/sox-memory-core/testing': resolve(repoRoot, 'libs/memory-core/dist-testing/testing/index.js'),
+      '@adhd/sox-memory-core': resolve(repoRoot, 'libs/memory-core/dist/index.js'),
+    },
+  },
   test: {
     include: ['extensions/bundles/sox-memory-bundle/members/memory-cli/src/**/*.spec.ts'],
     environment: 'node',

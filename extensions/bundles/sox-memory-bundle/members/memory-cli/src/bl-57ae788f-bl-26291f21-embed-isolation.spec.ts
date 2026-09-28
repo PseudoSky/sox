@@ -30,12 +30,16 @@
  */
 import { describe, expect, it } from 'vitest';
 import {
-  DETERMINISTIC_TEST_PROVIDER_MODEL_ID,
   getActiveEmbedModel,
   getConfiguredEmbedPaths,
   getEmbedState,
 } from '@adhd/sox-memory-core';
-import { embedIsolationViolations, isInside, operatorEmbedRoots } from '@adhd/sox-memory-core/testing';
+import {
+  DETERMINISTIC_TEST_PROVIDER_MODEL_ID,
+  embedIsolationViolations,
+  isInside,
+  operatorEmbedRoots,
+} from '@adhd/sox-memory-core/testing';
 import { SCRATCH_ROOT_ENV } from './test-support/bl-57ae788f-embed-scratch-env.js';
 
 describe('BL-57ae788f — memory-cli scrubs operator env', () => {
