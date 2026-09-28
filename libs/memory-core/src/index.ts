@@ -391,6 +391,36 @@ export {
   getOntologySnapshot,
 } from './graph-backend.js';
 
+// ── Claim (SR-7: memory_claim_upsert + a queryable, persisted claim) ───────────
+export { memoryClaimUpsert, memoryClaimGet, memoryClaimList } from './claim.js';
+export type {
+  ClaimRecord,
+  ClaimUpsertParams,
+  ClaimUpsertOk,
+  ClaimUpsertError,
+  ClaimUpsertResult,
+  ClaimGetOk,
+  ClaimGetResult,
+  ClaimListEntry,
+  ClaimListResult,
+} from './claim.js';
+
+// ── Observable recluster (SR-9) ────────────────────────────────────────────────
+export {
+  enqueueReclusterJob,
+  readReclusterJob,
+  settleReclusterJobs,
+  readPartition,
+} from './recluster-job.js';
+export type {
+  ReclusterJobStatus,
+  ReclusterPartition,
+  ReclusterJob,
+  EnqueueReclusterJobOptions,
+  EnqueueReclusterJobResult,
+  ReclusterSettleOutcome,
+} from './recluster-job.js';
+
 // ── Markdown export mirror ────────────────────────────────────────────────────
 export { exportMarkdown } from './export.js';
 export type { ExportOpts, ExportResult } from './export.js';
@@ -430,6 +460,7 @@ export type {
   CurateMergeResult,
   CurateReclusterSubsetResult,
   CurateReclusterGlobalResult,
+  CurateReclusterStatusResult,
   CurateDropLensResult,
   CurateDropEpisodesResult,
   CurateListLensesResult,

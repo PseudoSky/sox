@@ -54,6 +54,9 @@ import {
   hasPendingFullEnrich,
   healMissingVectors,
   log,
+  memoryClaimGet,
+  memoryClaimList,
+  memoryClaimUpsert,
   memoryCurate,
   memoryGetEntityEpisodes,
   memoryGetNearDuplicates,
@@ -83,6 +86,7 @@ import {
   DEFAULT_COMPACTION_INTERVAL_MS,
   schedulePendingEmbeds,
   setLeaseInstanceId,
+  settleReclusterJobs,
   supersedesUidForRowid,
   vectorDialectFor,
   syncEmbedEnabled,
@@ -999,7 +1003,7 @@ export const TOOLS: Array<Omit<ToolDefinition, 'handler'>> = [
         db_path: { type: 'string', description: 'Optional. Path to the SQLite memory store. Defaults to the bundle-configured store (host-injected SOX_CONFIG_DB_PATH, seeded by soxe install). With neither, the call fails with E_STORE_NOT_CONFIGURED — the server never infers a path. Must be within the ~/.memory/** fs allowlist; out-of-allowlist paths are denied by the permission guard with no side effects.' },
         op: {
           type: 'string',
-          enum: ['retag', 'set_topic', 'set_importance', 'merge_duplicates', 'recluster', 'drop_lens', 'drop-episodes', 'list_lenses', 'reheal_stale', 'drain', 'reset_pipeline', 'resume', 'unpoison', 'ack_alarm', 'restore_neardup', 'backfill_invalidation_reason'],
+          enum: ['retag', 'set_topic', 'set_importance', 'merge_duplicates', 'recluster', 'recluster_status', 'drop_lens', 'drop-episodes', 'list_lenses', 'reheal_stale', 'drain', 'reset_pipeline', 'resume', 'unpoison', 'ack_alarm', 'restore_neardup', 'backfill_invalidation_reason'],
           description: 'The curation operation to perform. drop_lens removes a persisted subset lens by provenance_hash. drop-episodes hard-deletes episode node rows and cascading data. list_lenses returns all live subset lenses. reheal_stale re-embeds live episodes whose vector was stamped by a model that is no longer the active one (BL-88/BL-215) — a bounded, operator-invoked pass; it is never run automatically, and it always works when invoked (SOX_HEAL_STALE_VECTORS was an anti-feature and is gone, ADR-0013). drain fully drains the embed backlog (no tick time budget; dry_run previews the remaining count). reset_pipeline clears the enrich/embed health ledger, the alarm, and the poison table. resume re-arms escalation after an ack_alarm. unpoison re-admits a poisoned row (by uid) or all rows to the heal scan. ack_alarm acknowledges the current alarm, pausing re-escalation. restore_neardup clears t_invalid on episodes an automatic near-duplicate pass invalidated, component-wise over live INFERRED SAME_AS edges, driven by a lexical triage report (report_path). UNLIKE EVERY OTHER OP ITS dry_run DEFAULTS TO TRUE — a caller must pass dry_run:false to mutate. Restore scope is a POLICY CHOICE (floor plus the whole ambiguous band; TRUE-DUPLICATE components stay collapsed), not a measured recoverable count, and invalidated episodes carrying no SAME_AS edge are out of scope and reported as a count. Never uses embedding cosine or any age/recency signal; never deletes a SAME_AS edge. reverse:true undoes a run (re-invalidate + community GC in one transaction). report_path is confined to ~/.memory/** unless SOX_RESTORE_REPORT_ROOTS grants more. backfill_invalidation_reason (503cdc2b) records an explicit unknown-legacy reason in node.meta (invalidatedReason / invalidatedVia="backfill_503cdc2b" / invalidatedAt = the row\'s existing t_invalid / invalidatedReasonBackfilledAt) on invalidated episodes that predate 9171d5cb — scope: no SAME_AS or SUPERSEDES edge in either direction and no meta key starting "invalidated". It never writes t_invalid. ITS dry_run ALSO DEFAULTS TO TRUE (dry run returns the count + sample uids); an apply runs the integrity gate and takes a verified backup first, aborting on either failure; reverse:true strips exactly those keys where invalidatedVia == "backfill_503cdc2b".',
         },
         uid: { type: 'string', description: 'Target episode UID (required for retag, set_topic, set_importance).' },
@@ -1011,6 +1015,7 @@ export const TOOLS: Array<Omit<ToolDefinition, 'handler'>> = [
         uid_drop: { type: 'string', description: '(merge_duplicates) UID of the episode to invalidate.' },
         filters: { type: 'object', description: '(recluster) Restrict clustering to the matching subset of episodes. Same filter vocabulary as memory_recall: project_path, topic, tags, tags_match_all, importance_min, t_created_after/before. When present, recluster runs SYNCHRONOUSLY over the subset and returns the resulting communities. Combined with dry_run: dry_run=true returns communities without writing; dry_run=false persists them as a provenance-scoped community slice that leaves the global partition untouched. Absent: a global full re-cluster is ENQUEUED, NOT run inline — the call returns {enqueued:true, seq} as soon as the trigger row commits, and the pass executes on a later in-process periodic enrichment tick (typically minutes away), so memory_stats read immediately after WILL still show the old partition. This deferral is deliberate (BL-186): a synchronous full pass holds the serial WriteQueue slot for its entire duration, fast-failing writes behind it with E_BUSY, and can out-wait the MCP client timeout. With dry_run:true nothing is enqueued and {enqueued:false, dry_run:true} returns.' },
         threshold: { type: 'number', description: '(recluster, filtered) Optional cosine similarity threshold override for the subset pass.' },
+        job_id: { type: 'string', description: '(recluster_status, SR-9) The job handle returned by a global `recluster`. Poll it until `status` is terminal: `completed` (carries the resulting `partition`) or `failed` (carries `error`). `pending` means the full pass has not run yet. "enqueued" is never the final answer.' },
         provenance_hash: { type: 'string', description: '(drop_lens) The 16-hex provenance hash of the subset lens to drop (obtain from a prior recluster response).' },
         limit: { type: 'number', description: '(reheal_stale) Max rows to re-embed this call. Default 50, capped at 2000 — small enough that a single MCP call does not risk the client-side tool-call timeout. Run again while the response\'s remaining > 0.' },
         report_path: { type: 'string', description: '(restore_neardup) Absolute path to the lexical triage report JSON. Required to APPLY — its sha256 is recorded in meta.restoredFrom on every restored row; optional for dry_run.' },
@@ -1026,6 +1031,50 @@ export const TOOLS: Array<Omit<ToolDefinition, 'handler'>> = [
         dry_run: { type: 'boolean', description: 'If true, return proposed changes without committing them. NO SCHEMA DEFAULT ON PURPOSE: a client that materialises JSON-Schema defaults would send dry_run:false and MUTATE, and restore_neardup is destructive by omission — its default is TRUE and is decided in curate.ts, not here. Every other op treats an absent value as false, exactly as before.' },
       },
       required: ['op'],
+    },
+  },
+  {
+    name: 'memory_claim_upsert',
+    description:
+      'SR-7: claim a node for a caller — or update it if already held by that caller — ATOMICALLY. Two callers racing for one node yield exactly one claim; a distinct caller is refused with a typed E_CLAIM_HELD conflict; the same caller re-claiming is idempotent. The claim is a first-class record at node.meta.claim, readable via memory_claim_get / memory_claim_list and durable across a store reopen. Correctness is the store primitive (a conditional UPDATE in an IMMEDIATE transaction), never an advisory lock (ADR-0012).',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        store: { type: 'string', description: 'Optional. Named store to use (e.g., "default", "user"). Overrides db_path. See memory init --help to register stores.' },
+        db_path: { type: 'string', description: 'Optional. Path to the SQLite memory store. Defaults to the bundle-configured store (host-injected SOX_CONFIG_DB_PATH, seeded by soxe install). With neither, the call fails with E_STORE_NOT_CONFIGURED — the server never infers a path. Must be within the ~/.memory/** fs allowlist; out-of-allowlist paths are denied by the permission guard with no side effects.' },
+        uid: { type: 'string', description: 'Target node UID (required). E_NOT_FOUND if no live node has it.' },
+        caller: { type: 'string', description: 'The caller claiming the node (required). A distinct caller already holding it is refused with E_CLAIM_HELD.' },
+        patch: { type: 'object', description: 'Optional. {metadata: {...}} deep-merged into the node meta alongside the claim (arrays replaced, same contract as memory_update.metadata). The `claim` key is owned by this op and is ignored if supplied in a patch.' },
+      },
+      required: ['uid', 'caller'],
+    },
+  },
+  {
+    name: 'memory_claim_get',
+    description:
+      'SR-7: read the live claim (holder) on a node. `claim: null` means the node is live but unheld; E_NOT_FOUND means no live node has that uid. Durable — reads the same record memory_claim_upsert wrote, across processes and store reopens.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        store: { type: 'string', description: 'Optional. Named store to use (e.g., "default", "user"). Overrides db_path. See memory init --help to register stores.' },
+        db_path: { type: 'string', description: 'Optional. Path to the SQLite memory store. Defaults to the bundle-configured store (host-injected SOX_CONFIG_DB_PATH, seeded by soxe install). With neither, the call fails with E_STORE_NOT_CONFIGURED — the server never infers a path. Must be within the ~/.memory/** fs allowlist; out-of-allowlist paths are denied by the permission guard with no side effects.' },
+        uid: { type: 'string', description: 'Node UID to read the claim for (required).' },
+      },
+      required: ['uid'],
+    },
+  },
+  {
+    name: 'memory_claim_list',
+    description:
+      'SR-7: list live claims, optionally narrowed to one caller. The queryable half of the claim surface — a claim is a record a caller can enumerate, not a write with no read. Pure read.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        store: { type: 'string', description: 'Optional. Named store to use (e.g., "default", "user"). Overrides db_path. See memory init --help to register stores.' },
+        db_path: { type: 'string', description: 'Optional. Path to the SQLite memory store. Defaults to the bundle-configured store (host-injected SOX_CONFIG_DB_PATH, seeded by soxe install). With neither, the call fails with E_STORE_NOT_CONFIGURED — the server never infers a path. Must be within the ~/.memory/** fs allowlist; out-of-allowlist paths are denied by the permission guard with no side effects.' },
+        caller: { type: 'string', description: 'Optional. Narrow the list to claims held by this caller.' },
+      },
+      required: [],
     },
   },
   {
@@ -1780,8 +1829,11 @@ function toolOperationClass(name: string): OperationClass {
     case 'memory_write':
     case 'memory_write_batch':
     case 'memory_update':
+    case 'memory_claim_upsert':
       return 'write';
     case 'memory_recall':
+    case 'memory_claim_get':
+    case 'memory_claim_list':
     case 'memory_search_entities':
     case 'memory_get_session_state':
     case 'memory_get_community':
@@ -2792,7 +2844,9 @@ async function dispatchTool(
       // with the enrich tick while it is clearing t_invalid. The cost is that a
       // large apply holds the single serial slot for its duration — bound it
       // with `component_ids` / `batch_size` and run it in slices.
-      const outsideOps = new Set(['reheal_stale', 'drain', 'reset_pipeline', 'resume', 'unpoison', 'ack_alarm']);
+      // SR-9: `recluster_status` is a pure read (it must NOT hold the serial
+      // write slot while a caller polls), so it joins the out-of-wrapper set.
+      const outsideOps = new Set(['reheal_stale', 'drain', 'reset_pipeline', 'resume', 'unpoison', 'ack_alarm', 'recluster_status']);
       if (typeof args['op'] === 'string' && outsideOps.has(args['op'])) {
         const result = await memoryCurate(adapter, args, wq);
         if ('code' in result) {
@@ -2813,6 +2867,56 @@ async function dispatchTool(
           content: [{ type: 'text', text: JSON.stringify(result) }],
         };
       });
+    }
+
+    // ── SR-7: claim surface ────────────────────────────────────────────────────
+    case 'memory_claim_upsert': {
+      // A claim is a WRITE (it mutates node.meta) — route it through the queue
+      // like every other write. memoryClaimUpsert never enqueues internally
+      // (BL-154 re-entrancy safe): it writes through the passed adapter's own
+      // IMMEDIATE transaction, whose conditional UPDATE is the cross-process CAS.
+      const uid = args['uid'];
+      const caller = args['caller'];
+      if (typeof uid !== 'string' || uid.length === 0 || typeof caller !== 'string' || caller.length === 0) {
+        return {
+          isError: true,
+          content: [{ type: 'text', text: JSON.stringify({ ok: false, code: 'E_INVALID', message: 'uid and caller are required' }) }],
+        };
+      }
+      const rawPatch = args['patch'];
+      const patch =
+        rawPatch !== null && typeof rawPatch === 'object' && !Array.isArray(rawPatch)
+          ? (rawPatch as { metadata?: Record<string, unknown> })
+          : undefined;
+      const wq = await WriteQueue.forPath(dbPath);
+      const result = await wq.enqueue('memory_claim_upsert', async (writeDb) =>
+        memoryClaimUpsert(writeDb, { uid, caller, ...(patch !== undefined ? { patch } : {}) }),
+      );
+      if (!result.ok) {
+        return { isError: true, content: [{ type: 'text', text: JSON.stringify(result) }] };
+      }
+      return { content: [{ type: 'text', text: JSON.stringify(result) }] };
+    }
+
+    case 'memory_claim_get': {
+      const uid = args['uid'];
+      if (typeof uid !== 'string' || uid.length === 0) {
+        return {
+          isError: true,
+          content: [{ type: 'text', text: JSON.stringify({ ok: false, code: 'E_INVALID', message: 'uid is required' }) }],
+        };
+      }
+      const result = await memoryClaimGet(adapter, uid);
+      if (!result.ok) {
+        return { isError: true, content: [{ type: 'text', text: JSON.stringify(result) }] };
+      }
+      return { content: [{ type: 'text', text: JSON.stringify(result) }] };
+    }
+
+    case 'memory_claim_list': {
+      const caller = typeof args['caller'] === 'string' && args['caller'].length > 0 ? args['caller'] : undefined;
+      const result = await memoryClaimList(adapter, caller !== undefined ? { caller } : {});
+      return { content: [{ type: 'text', text: JSON.stringify(result) }] };
     }
 
     case 'memory_stats': {
@@ -3219,6 +3323,27 @@ export async function runEnrichPassOnDb(
   }
 
   const queueCompleted = isolated.ok ? await completeEnrichTriggerRows(adapter, maxSeq) : 0;
+
+  // SR-9: settle any observable recluster jobs this pass covered. The snapshot
+  // discipline mirrors completeEnrichTriggerRows — only jobs whose trigger row
+  // was inside the pre-pass window (seq <= maxSeq) are settled. A successful
+  // pass completes them with the store's resulting partition; a failed pass
+  // marks them `failed` (terminal) with the error, so a caller is never left
+  // polling a request whose pass errored. Idempotent and additive: a store with
+  // no recluster jobs is a no-op. Bookkeeping only — never fails the tick.
+  try {
+    await settleReclusterJobs(
+      adapter,
+      maxSeq,
+      isolated.ok ? { ok: true } : { ok: false, error: isolated.error ?? 'unknown' },
+    );
+  } catch (err) {
+    log.error('enrich.recluster_job.settle_failed', {
+      db_path: dbPath,
+      error: err instanceof Error ? err.message : String(err),
+    });
+  }
+
   const backlogAfter = (await embedBacklogStats(adapter)).count;
 
   if (isolated.ok) {

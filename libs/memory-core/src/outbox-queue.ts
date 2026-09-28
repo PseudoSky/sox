@@ -15,7 +15,14 @@
  * needed, design it WITH the live periodic-tick consumer, not beside it.
  */
 
-import type { StoreAdapter } from '@adhd/sox-store-adapter';
+import type { StoreAdapter, RunResult } from '@adhd/sox-store-adapter';
+
+/**
+ * Anything that can run a parameterised statement — a `StoreAdapter` or an
+ * in-flight `AdapterTransaction`. Used so a producer can fold its own row and
+ * the queue row into ONE transaction (`enqueueReclusterJob`, SR-9).
+ */
+type SqlRunner = { executeRun(sql: string, args?: unknown[]): Promise<RunResult> };
 
 // ── Producer ──────────────────────────────────────────────────────────────────
 
@@ -55,10 +62,10 @@ export async function enqueueIngest(
  * Returns the inserted row's seq (also surfaced in the curate response so
  * callers can correlate with memory_ping's queue fields).
  */
-export async function enqueueEnrichFull(adapter: StoreAdapter, reason: string): Promise<number> {
+export async function enqueueEnrichFull(runner: SqlRunner, reason: string): Promise<number> {
   const now = new Date().toISOString();
   const payload = JSON.stringify({ full: true, reason });
-  const info = await adapter.executeRun(
+  const info = await runner.executeRun(
     `INSERT INTO organizer_queue (op, payload, priority, enqueued)
      VALUES ('enrich', ?, 1, ?)`,
     [payload, now],
