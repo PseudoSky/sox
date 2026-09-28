@@ -3473,8 +3473,13 @@ export async function runOpenTimeIntegrity(
  * opener (a one-shot CLI that saw a dead-pid marker) is still picked up here
  * and scheduled, exactly as a full open would.
  *
- * Returns `false` — and does nothing — when there is no retained verdict to
- * stand on; the caller must then run {@link runOpenTimeIntegrity} instead.
+ * Returns `false` — and does nothing, not even the deep-verify scheduling,
+ * which the full pass then does itself — when there is no CLEAN retained
+ * verdict to stand on (see {@link isCleanIntegrityVerdict}); the caller must
+ * then run {@link runOpenTimeIntegrity} instead. A verdict that is aborted
+ * (the BL-352 `ok:false` + `unknown` shape), damaged, unvalidated, or whose
+ * repair failed is never carried forward: reusing it would freeze the store in
+ * that state, with repair never retried until a poison event or a restart.
  * Never used for a first open or a poison recovery.
  */
 export async function resumeOpenTimeIntegrityAfterRelease(
@@ -3482,10 +3487,30 @@ export async function resumeOpenTimeIntegrityAfterRelease(
   opts: { onReport?: VerifyAndRepairOptions['onReport'] },
 ): Promise<boolean> {
   const prior = getLastIntegrityResult(adapter);
-  if (prior === null) return false;
+  if (!isCleanIntegrityVerdict(prior)) return false;
   validateDeepVerifyConfig(adapter.config.deepVerify);
   await scheduleOwedDeepVerify(adapter, prior, false, 'requested (SOX_STORE_VERIFY=deep)', opts.onReport);
   return true;
+}
+
+/**
+ * (BL-1010e417) Whether a retained open-time verdict is clean enough for a
+ * release reopen to stand on instead of re-verifying: verification completed
+ * and passed (`verify.ok === true`), found nothing damaged, left no probe
+ * unvalidated, and no repair failed. Anything else — including "no verdict at
+ * all" — must be re-verified (and, if damaged, re-repaired) by a full pass.
+ * A successfully repaired verdict still reads `verify.ok === false` and so
+ * costs one more full pass, which is the conservative direction.
+ */
+export function isCleanIntegrityVerdict(result: VerifyAndRepairResult | null): result is VerifyAndRepairResult {
+  if (result === null) return false;
+  const { verify, repair } = result;
+  return (
+    verify.ok === true &&
+    verify.damaged.length === 0 &&
+    verify.unknown.length === 0 &&
+    (repair === null || repair.ok === true)
+  );
 }
 
 /** Background deep verification, if one is owed — never awaited by the open. */

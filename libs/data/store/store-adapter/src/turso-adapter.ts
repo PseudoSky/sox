@@ -546,6 +546,22 @@ export class TursoAdapterImpl implements TursoAdapter {
    *  `_reconnect()` for how the two cases differ in lease handling. */
   private _released = false;
 
+  /** (BL-1010e417) Whether the connection teardown that produced the current
+   *  `_released` state was CLEAN: the close-time `wal_identity` check found no
+   *  damage and the PASSIVE checkpoint succeeded (every PASSIVE this close
+   *  attempted). Copied from {@link _lastCloseClean} by
+   *  `releaseIdleConnection()`. Only a clean release may reopen with reason
+   *  `'release'` (which reuses the last full open's integrity verdict); an
+   *  unclean one reopens as `'initial'` — full integrity pass and persist. */
+  private _releasedClean = false;
+
+  /** (BL-1010e417) Set by every `_closeConnection()`: see {@link _releasedClean}.
+   *  `false` until a close proves otherwise — a close that could not check
+   *  (verify threw, never-opened shell) is never clean. A non-writable close
+   *  runs no WAL check and no checkpoint, so it has nothing to be unclean
+   *  about and reads `true`. */
+  private _lastCloseClean = false;
+
   /** (DEBT-003, lazy-connect, 2026-08-17 — owner directive: "Consumers of
    *  store adapter should not have to think about connect / disconnect,
    *  that should be automatic under the hood") True from construction until
@@ -1962,7 +1978,7 @@ export class TursoAdapterImpl implements TursoAdapter {
       ? 'poison'
       : wasNeverOpened
         ? 'initial'
-        : this._released && this._lastOpenTiming !== null
+        : this._released && this._releasedClean && this._lastOpenTiming !== null
           ? 'release'
           : 'initial';
     try {
@@ -2035,6 +2051,7 @@ export class TursoAdapterImpl implements TursoAdapter {
       }
       this._poisoned = false;
       this._released = false;
+      this._releasedClean = false;
       this._neverOpened = false;
     } catch (err) {
       log.error('store_adapter.turso.connection.reconnect_failed', {
@@ -3834,6 +3851,10 @@ export class TursoAdapterImpl implements TursoAdapter {
       return false;
     }
     await this._closeConnection();
+    // (BL-1010e417) A release whose own close saw WAL-identity damage or a
+    // failed PASSIVE checkpoint must not let the reopen reuse the prior
+    // integrity verdict — `_reconnect()` then opens with reason 'initial'.
+    this._releasedClean = this._lastCloseClean;
     // `_closeConnection()` sets `closed = true` — undo that so this instance stays
     // usable. It already nulled `this._lease` as part of its own
     // teardown; `_reconnect()` (triggered by `_ensureHealthy()` on the next
@@ -3895,6 +3916,8 @@ export class TursoAdapterImpl implements TursoAdapter {
    */
   private async _closeConnection(): Promise<void> {
     if (this.closed) return;
+    // (BL-1010e417) Not clean until this close proves it — see `_lastCloseClean`.
+    this._lastCloseClean = false;
     // (DEBT-003, lazy-connect) An instance that was constructed via
     // `connect()` and closed WITHOUT ever performing an operation has no
     // driver connection, no lease, no marker, and no idle-flush timer to
@@ -3930,6 +3953,8 @@ export class TursoAdapterImpl implements TursoAdapter {
     // (BL-391 — opened without the native readonly option so `fts_match`
     // works, enforced read-only only at the application layer).
     const writableClose = !this.config.readonly || this._softReadonly;
+    // (BL-1010e417) No WAL check, no checkpoint: nothing this close could find.
+    if (!writableClose) this._lastCloseClean = true;
     if (writableClose) {
       // (BL-1010e417) `-wal` size at the START of the close — the fallback
       // evidence for "nothing to truncate" when the PASSIVE result carries no
@@ -3963,6 +3988,10 @@ export class TursoAdapterImpl implements TursoAdapter {
         } catch (passiveErr) {
           this.reportFailedPassiveCheckpoint(passiveErr, damaged);
         }
+        // (BL-1010e417) Clean so far iff the WAL identity held and PASSIVE ran.
+        // A later fallback PASSIVE failure clears it again, inside
+        // `reportFailedPassiveCheckpoint()`.
+        this._lastCloseClean = !damaged && passiveOk;
 
         // (BL-1010e417) NOTHING TO TRUNCATE ⇒ NO TRUNCATE, NO -tshm RENAME.
         // Every idle release used to TRUNCATE and then rename the -tshm aside,
@@ -4132,6 +4161,7 @@ export class TursoAdapterImpl implements TursoAdapter {
       } catch (err) {
         // A verification failure must never block a close — but it is a
         // data-loss-adjacent signal (BL-330) and must be durable, not silent.
+        this._lastCloseClean = false;
         log.warn('store_adapter.turso.close_verify_failed', {
           error: err instanceof Error ? err.message : String(err),
         });
@@ -4230,6 +4260,9 @@ export class TursoAdapterImpl implements TursoAdapter {
    * WAL cannot be inspected from here, so nothing is reclassified.
    */
   private reportFailedPassiveCheckpoint(passiveErr: unknown, walDamaged: boolean): void {
+    // (BL-1010e417) Every failed PASSIVE on the close path makes the close
+    // unclean, so a release reopen after it runs the full integrity pass.
+    this._lastCloseClean = false;
     // (BUG-STOREADAPTER-COORDINATION-PATH-ASYMMETRY) Canonical: this probes the
     // real `-wal` on disk and the verdict it produces (`repair_failed` vs
     // `checkpoint_deferred`) is a data-loss signal. A raw spelling that missed
@@ -4433,6 +4466,7 @@ export class TursoAdapterImpl implements TursoAdapter {
         this._capabilities = fresh._capabilities;
         this._poisoned = false;
         this._released = false; // (idle-release) defense-in-depth — should already be false
+        this._releasedClean = false; // (BL-1010e417) paired with `_released`
         this._neverOpened = false; // (DEBT-003) defense-in-depth — should already be false
         this.closed = false; // the fresh connection is live; close() set this true
       }

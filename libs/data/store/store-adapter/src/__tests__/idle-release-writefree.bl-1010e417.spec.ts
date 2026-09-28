@@ -26,6 +26,13 @@
  *     integrity; a release reconnect does not.
  *  T5 stale naming (5eacd776): two resets in the same minute leave both files,
  *     and retention ranks and prunes them alongside legacy-named debris.
+ *  T7 unclean prior verdict (BL-1010e417): a retained verdict that is aborted,
+ *     damaged, unvalidated (`unknown`) or carries a failed repair is never
+ *     reused — the next release reopen runs the full integrity pass; once that
+ *     pass is clean, release reopens skip again.
+ *  T8 unclean release (BL-1010e417): a release whose own close detected
+ *     WAL-identity damage or a failed PASSIVE checkpoint reopens with reason
+ *     'initial' (full ceremony), not 'release'.
  */
 import { describe, it, expect, beforeAll, afterEach, vi } from 'vitest';
 import { mkdtempSync, statSync, readdirSync, existsSync, writeFileSync } from 'node:fs';
@@ -35,7 +42,14 @@ import { createRequire } from 'node:module';
 import { TursoAdapterImpl } from '../turso-adapter.js';
 import { leaseDirPath } from '../store-lease.js';
 import { stampAdapterMeta, readAdapterMeta } from '../adapter-meta.js';
-import { getLastIntegrityRunAt } from '../integrity.js';
+import {
+  getLastIntegrityRunAt,
+  getLastIntegrityResultForPath,
+  isCleanIntegrityVerdict,
+  recordIntegrityResult,
+  type IntegrityFinding,
+  type VerifyAndRepairResult,
+} from '../integrity.js';
 import { DEFAULT_STALE_SIDECAR_KEEP_N, pruneStaleTshmSidecars, staleSidecarPath } from '../sidecar-retention.js';
 
 const require = createRequire(import.meta.url);
@@ -81,15 +95,39 @@ async function waitReleased(a: TursoAdapterImpl, ms = 5000): Promise<boolean> {
   return (a as unknown as { _released: boolean })._released;
 }
 
-/** A store shaped like memory-core's: a node table with a Turso FTS index. */
-async function seedStore(dbPath: string): Promise<void> {
+/**
+ * A store shaped like memory-core's: a node table with a Turso FTS index.
+ *
+ * Content is longer than 24 chars on purpose: the `fts_index_live` probe only
+ * samples rows past that floor (integrity.ts, BL-347), and a store with none
+ * records an `unknown` finding — an UNCLEAN verdict, which a release reopen
+ * must not reuse (T7). Real memory episodes are long-form; `short` reproduces
+ * the unvalidated shape.
+ */
+async function seedStore(dbPath: string, opts: { short?: boolean } = {}): Promise<void> {
   const seed = await TursoAdapterImpl.connect({ dbPath });
   await seed.exec('CREATE TABLE node (id INTEGER PRIMARY KEY, kind TEXT, content TEXT, t_invalid TEXT)');
   await seed.ensureFtsIndex('node', ['content']);
   for (let i = 0; i < 50; i++) {
-    await seed.executeRun('INSERT INTO node (kind, content) VALUES (?, ?)', ['episode', `row ${i} alpha memory ${i}`]);
+    const content = opts.short
+      ? `row ${i} alpha`
+      : `row ${i} alpha memory episode about the retrieval pipeline ${i}`;
+    await seed.executeRun('INSERT INTO node (kind, content) VALUES (?, ?)', ['episode', content]);
   }
   await seed.close();
+}
+
+/** An integrity finding for crafted verdicts (T7). */
+function finding(status: 'damaged' | 'unknown', detail: string): IntegrityFinding {
+  return {
+    probe: 'fts_index_live',
+    object: 'idx_fts_node',
+    status,
+    detail,
+    repairable: status === 'damaged',
+    backlog: 'BL-1010e417',
+    probeValidated: status === 'damaged',
+  };
 }
 
 /** Spies on every adapter instance (the throwaway `fresh` ones included). */
@@ -169,6 +207,9 @@ tursoDescribe('BL-1010e417 — idle release/reopen is write-free when nothing wa
       else process.env['SOX_SIDECAR_SWEEP_THROTTLE_MS'] = prevThrottle;
     }
 
+    // The premise of every skip below: the verdict the first open left is
+    // clean. If fixture drift ever makes it unclean, fail HERE, not as frames=1.
+    expect(isCleanIntegrityVerdict(getLastIntegrityResultForPath(a.config.dbPath!)), 'cycle-1 verdict must be clean').toBe(true);
     // Cycle 1 is the first real open: it may write (integrity verdict).
     for (const [i, c] of perCycle.slice(1).entries()) {
       const cycle = i + 2;
@@ -308,6 +349,152 @@ tursoDescribe('BL-1010e417 — idle release/reopen is write-free when nothing wa
     expect(a.lastOpenTiming?.skipped['integrity'], 'poison reopen never skips integrity').toBeUndefined();
     expect(a.lastOpenTiming?.skipped['cte_probe'], 'poison reopen re-probes').toBeUndefined();
     expect(getLastIntegrityRunAt(a.config.dbPath)!).toBeGreaterThan(ranAtInitial!);
+    await a.close();
+  });
+
+  const cleanFast = (): VerifyAndRepairResult['verify'] => ({
+    ok: true, depth: 'fast', durationMs: 0, findings: [], damaged: [], unknown: [],
+  });
+  const uncleanVerdicts: Array<[string, () => VerifyAndRepairResult]> = [
+    [
+      'aborted pass (BL-352 shape: ok:false + unknown)',
+      () => {
+        const f = { ...finding('unknown', 'Integrity pass aborted before completing: boom'), probe: 'pragma_integrity_check' as const, object: 'main' };
+        return { verify: { ...cleanFast(), ok: false, findings: [f], unknown: [f] }, repair: null };
+      },
+    ],
+    [
+      'damaged finding',
+      () => {
+        const f = finding('damaged', 'FTS index returns no hits for a sentinel token');
+        return { verify: { ...cleanFast(), findings: [f], damaged: [f] }, repair: null };
+      },
+    ],
+    [
+      'unknown finding',
+      () => {
+        const f = finding('unknown', 'liveness is unverified');
+        return { verify: { ...cleanFast(), findings: [f], unknown: [f] }, repair: null };
+      },
+    ],
+    [
+      'failed repair',
+      () => ({
+        verify: cleanFast(),
+        repair: { ok: false, actions: [], durationMs: 0, verified: null },
+      }),
+    ],
+  ];
+
+  it.each(uncleanVerdicts)(
+    'T7 BL-1010e417: a retained %s is not reused — the next release reopen runs the full integrity pass, and skips again once clean',
+    async (_label, craft) => {
+      const dbPath = tempPath('t7-unclean');
+      await seedStore(dbPath);
+      const a = await TursoAdapterImpl.connect({ dbPath, idleFlushMs: 60_000 });
+      await a.executeGet('SELECT 1');
+      expect(a.lastOpenTiming?.reason).toBe('initial');
+      expect(isCleanIntegrityVerdict(getLastIntegrityResultForPath(a.config.dbPath!)), 'real first verdict is clean').toBe(true);
+
+      // The store's retained verdict becomes the unclean one. Read back by
+      // PATH: that is what a reopen consults — every reopen builds a fresh
+      // instance, so the per-object entry for `a` is never looked up again.
+      recordIntegrityResult(a, craft());
+      expect(isCleanIntegrityVerdict(getLastIntegrityResultForPath(a.config.dbPath!))).toBe(false);
+      const stampedAt = getLastIntegrityRunAt(a.config.dbPath)!;
+      await sleep(5);
+
+      expect(await a.releaseIdleConnection()).toBe(true);
+      await a.executeGet('SELECT 1');
+      expect(a.lastOpenTiming?.reason, 'the release itself was clean').toBe('release');
+      expect(a.lastOpenTiming?.skipped['integrity'], 'an unclean prior verdict must not be reused').toBeUndefined();
+      expect(getLastIntegrityRunAt(a.config.dbPath)!, 'the full pass re-ran').toBeGreaterThan(stampedAt);
+      expect(isCleanIntegrityVerdict(getLastIntegrityResultForPath(a.config.dbPath!)), 'the re-run verdict is clean').toBe(true);
+
+      // Recovery: with a clean verdict retained, release reopens skip again.
+      expect(await a.releaseIdleConnection()).toBe(true);
+      await a.executeGet('SELECT 1');
+      expect(a.lastOpenTiming?.reason).toBe('release');
+      expect(a.lastOpenTiming?.skipped['integrity'], 'clean verdict ⇒ skip').toBeDefined();
+      await a.close();
+    },
+  );
+
+  it('T7 BL-1010e417: a real unvalidated verdict (FTS store with no row past the sentinel floor) is re-verified on every release reopen', async () => {
+    const dbPath = tempPath('t7-short');
+    await seedStore(dbPath, { short: true });
+    const a = await TursoAdapterImpl.connect({ dbPath, idleFlushMs: 60_000 });
+    await a.executeGet('SELECT 1');
+    const verdict = getLastIntegrityResultForPath(a.config.dbPath!);
+    expect(verdict?.verify.unknown.map((f) => f.probe)).toContain('fts_index_live');
+    const ranAt = getLastIntegrityRunAt(a.config.dbPath)!;
+    await sleep(5);
+    expect(await a.releaseIdleConnection()).toBe(true);
+    await a.executeGet('SELECT 1');
+    expect(a.lastOpenTiming?.reason).toBe('release');
+    expect(a.lastOpenTiming?.skipped['integrity'], 'unvalidated verdict must not be reused').toBeUndefined();
+    expect(getLastIntegrityRunAt(a.config.dbPath)!).toBeGreaterThan(ranAt);
+    await a.close();
+  });
+
+  it('T8 BL-1010e417: a release whose close saw a failed PASSIVE checkpoint reopens as initial, not release', async () => {
+    const dbPath = tempPath('t8-passive');
+    await seedStore(dbPath);
+    const a = await TursoAdapterImpl.connect({ dbPath, idleFlushMs: 60_000 });
+    await a.executeRun(`INSERT INTO node (kind, content) VALUES ('episode', 'a fresh episode written before the release')`);
+    const proto = TursoAdapterImpl.prototype as unknown as Record<string, (...x: unknown[]) => Promise<unknown>>;
+    const origAll = proto['executeAll']!;
+    let failedPassive = 0;
+    vi.spyOn(proto, 'executeAll').mockImplementation(async function (this: unknown, ...args: unknown[]) {
+      if (failedPassive === 0 && /wal_checkpoint\(PASSIVE\)/i.test(String(args[0]))) {
+        failedPassive++;
+        throw new Error('SQLITE_BUSY: simulated PASSIVE checkpoint failure');
+      }
+      return origAll.apply(this, args);
+    });
+    expect(await a.releaseIdleConnection()).toBe(true);
+    expect(failedPassive, 'the close attempted (and failed) a PASSIVE checkpoint').toBe(1);
+    expect((a as unknown as { _poisoned: boolean })._poisoned).toBe(false);
+    const ranAt = getLastIntegrityRunAt(a.config.dbPath)!;
+    await sleep(5);
+    await a.executeGet('SELECT 1');
+    expect(a.lastOpenTiming?.reason, 'unclean release ⇒ full ceremony').toBe('initial');
+    expect(a.lastOpenTiming?.skipped['integrity']).toBeUndefined();
+    expect(getLastIntegrityRunAt(a.config.dbPath)!).toBeGreaterThan(ranAt);
+
+    // A subsequent clean release goes back to the write-free reopen.
+    expect(await a.releaseIdleConnection()).toBe(true);
+    await a.executeGet('SELECT 1');
+    expect(a.lastOpenTiming?.reason).toBe('release');
+    await a.close();
+  });
+
+  it('T8 BL-1010e417: a release whose close detected WAL-identity damage reopens as initial, not release', async () => {
+    const dbPath = tempPath('t8-walid');
+    await seedStore(dbPath);
+    const a = await TursoAdapterImpl.connect({ dbPath, idleFlushMs: 60_000 });
+    await a.executeRun(`INSERT INTO node (kind, content) VALUES ('episode', 'a fresh episode written before the release')`);
+    const internals = a as unknown as {
+      _walBaseline: { path: string; present: boolean; dev: number | null; ino: number | null } | null;
+      _poisoned: boolean;
+    };
+    const baseline = internals._walBaseline;
+    expect(baseline?.present, 'the WAL exists, so its identity is checkable').toBe(true);
+    // Simulate the WAL having been replaced under this connection (BL-330):
+    // the close-time `wal_identity` probe compares against this baseline.
+    // No await between this and the release — nothing else may observe it.
+    internals._walBaseline = { ...baseline!, ino: (baseline!.ino ?? 0) + 1 };
+    const released = a.releaseIdleConnection();
+    expect(await released).toBe(true);
+    expect(internals._poisoned).toBe(false);
+    const ranAt = getLastIntegrityRunAt(a.config.dbPath)!;
+    await sleep(5);
+    await a.executeGet('SELECT 1');
+    expect(a.lastOpenTiming?.reason, 'unclean release ⇒ full ceremony').toBe('initial');
+    expect(a.lastOpenTiming?.skipped['integrity']).toBeUndefined();
+    expect(getLastIntegrityRunAt(a.config.dbPath)!).toBeGreaterThan(ranAt);
+    const row = await a.executeGet<{ c: number }>('SELECT COUNT(*) AS c FROM node');
+    expect(row?.c).toBe(51);
     await a.close();
   });
 
