@@ -305,11 +305,14 @@ for (const { name, targets } of allProjects) {
   // logic tsc itself uses, but returns instantly with no type checking.
   if (hasTypecheckSrc) {
     const command = targets['typecheck-src']?.options?.command;
-    // BL-20d01a62 (item 3): accept `-p x`, `-p=x`, `--project x`, and `--project=x` — the previous
-    // regex only matched `-p <space> <path>` and silently reported "no -p flag" (a false A7
-    // failure with no diagnostic value) for any project using the equally-valid `--project` long
-    // form or `=`-joined value.
-    const match = typeof command === 'string' ? command.match(/(?:^|\s)(?:-p|--project)(?:=|\s+)(\S+)/) : null;
+    // BL-20d01a62 (item 3): accept `-p x` and `--project x` — the previous regex only matched
+    // `-p <space> <path>` and silently reported "no -p flag" (a false A7 failure with no
+    // diagnostic value) for any project using the equally-valid `--project` long form. The
+    // `=`-joined forms (`-p=x`, `--project=x`) are deliberately NOT matched: `tsc` itself rejects
+    // them with TS5023 ("Unknown compiler option"), so a command using either would already be
+    // broken at typecheck time — matching them here would mask that breakage instead of
+    // surfacing it as an A7 failure.
+    const match = typeof command === 'string' ? command.match(/(?:^|\s)(?:-p|--project)\s+(\S+)/) : null;
     if (!match) {
       report(`${name}: A7 — typecheck-src command has a "-p <tsconfig>"/"--project <tsconfig>" flag`, false, JSON.stringify(command));
     } else {

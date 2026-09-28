@@ -79,14 +79,18 @@ function trackedFiles(pattern) {
       .filter(Boolean)
       .sort();
   } catch (err) {
-    // BL-20d01a62: this used to throw at module-import time (any transient `git` failure —
-    // detached-HEAD edge cases, a corrupt index mid-write from a concurrent agent, `git` missing
-    // from PATH in some sandbox — took down every consumer of guards-manifest.mjs, including
-    // tools/run-guards.mjs itself, with no guard actually at fault). Degrade to an empty watch
-    // list instead: a guard that under-watches on a `git` hiccup still runs on its own script-path
-    // change and via `--all`; a manifest that can't be imported runs NO guards at all.
-    console.error(`guards-manifest: git ls-files -- ${pattern} failed, watch list degraded to []: ${err.message ?? err}`);
-    return [];
+    // BL-20d01a62: this must fail CLOSED, not open. An earlier version of this catch degraded to
+    // an empty watch list on any `git` failure, on the theory that a guard which under-watches
+    // still runs on its own script-path change and via `--all`. That reasoning was wrong: the
+    // 7ff58364 guard's watch list is built ENTIRELY from trackedFiles() calls (ALL_PROJECT_JSON_
+    // PATHS / ALL_PACKAGE_JSON_PATHS / ALL_TSCONFIG_JSON_PATHS below) — degrading to [] there means
+    // the guard watches only 'nx.json' and its own script path, so a commit touching
+    // project.json/package.json/tsconfig anywhere in the repo is reported "N/A — not in scope" and
+    // the commit passes with NO guard coverage at all. A manifest that can't be imported runs no
+    // guards and the caller sees that failure directly; a manifest that imports successfully but
+    // silently watches nothing is far worse — it reports green while blind. Rethrow with context
+    // so run-guards.mjs and the pre-commit hook both exit non-zero instead of passing unguarded.
+    throw new Error(`guards-manifest: git ls-files -- ${pattern} failed: ${err.message ?? err}`, { cause: err });
   }
 }
 
@@ -419,7 +423,16 @@ export const GUARDS = [
     // against — any project that grows a typecheck-tests target without a matching
     // typecheck-src/noop typecheck needs this guard to re-run, and A7 needs it to re-run on a
     // bare tsconfig edit too. Built from `git ls-files`, see the trackedFiles() helper above.
-    watch: ['nx.json', ...ALL_PROJECT_JSON_PATHS, ...ALL_PACKAGE_JSON_PATHS, ...ALL_TSCONFIG_JSON_PATHS],
+    // Also watches its own manifest's watch-list machinery (BL-20d01a62 item 2):
+    // tools/guards-manifest.mjs — a change to trackedFiles()/the glob patterns above changes what
+    // this guard actually watches, so the guard must re-run on its own edit too.
+    watch: [
+      'nx.json',
+      'tools/guards-manifest.mjs',
+      ...ALL_PROJECT_JSON_PATHS,
+      ...ALL_PACKAGE_JSON_PATHS,
+      ...ALL_TSCONFIG_JSON_PATHS,
+    ],
   },
 
   // ---------------------------------------------------------------- Tier 2 (5) ------------
