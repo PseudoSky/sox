@@ -23,7 +23,7 @@ import { openDb } from './db.js';
 import { memoryClaimAssert, readClaimView, memoryClaimUpsert } from './claim.js';
 import { memoryOutcomeAppend, readOutcomes } from './outcome.js';
 import { memoryBack } from './back.js';
-import { memoryFacetAdmit, memoryFacetPromote, memoryFacetList, FacetError, type FacetTerm } from './facets.js';
+import { memoryFacetAdmit, memoryFacetPromote, memoryFacetList, facetTermId, FacetError, type FacetTerm } from './facets.js';
 import { memoryUpdate } from './update.js';
 import {
   memoryWriteBatch,
@@ -453,4 +453,136 @@ describe('D-C — K-I7 concurrency: exactly one claim wins (DC_NEGATIVE_CLAIM=1 
       db = await openDb(dbPath);
     }
   });
+});
+
+// ── H2 — facet-admit race: exactly one registry node per term id ──────────────
+//
+// `memoryFacetAdmit` checks `findByTermId` and then INSERTs with
+// `skipDedupe:true`. Two concurrent PROCESSES admitting the SAME term id (with
+// DIFFERENT definitions) could each miss the check and both INSERT → two
+// registry nodes carrying the same `meta.facet_term.id` but different
+// `definitionHash`, bypassing the K-I5 `E_TERM_REDEFINED` guard (ADR-0012: a
+// check-then-INSERT is not atomic across processes). The fix runs the check and
+// the INSERT in ONE `BEGIN IMMEDIATE` transaction (the ADR-0012 §1 CAS
+// primitive) so writers serialize: the losing admit's check runs only after the
+// winner commits, and it then throws the SAME K-I5 error.
+//
+// DC_NEGATIVE_FACET_RACE=1 swaps in the pre-fix UNGUARDED shape (no transaction)
+// held at a latch barrier, so both checks pass and both INSERT — two registry
+// nodes, and the exactly-one-winner assertion goes RED.
+
+/**
+ * The pre-fix `memoryFacetAdmit` shape: a bare existence check, then an
+ * UNGUARDED `skipDedupe` INSERT — no transaction, so two callers can both miss
+ * the check. `afterRead` is the K-I7 latch barrier (never a sleep) that holds
+ * both callers at their check until each has read, forcing the race window open
+ * deterministically for the negative control.
+ */
+async function facetAdmitUnguarded(
+  adapter: StoreAdapter,
+  p: { facet: string; term: string; definition: string; origin: string },
+  afterRead: () => Promise<void>,
+): Promise<FacetTerm> {
+  const id = facetTermId(p.facet, p.term);
+  const row = await adapter.executeGet<{ uid: string }>(
+    `SELECT uid, name, meta FROM node
+      WHERE kind = 'generic' AND topic = 'facet-registry' AND t_invalid IS NULL
+        AND json_valid(meta) AND json_extract(meta, '$.facet_term.id') = ?
+      LIMIT 1`,
+    [id],
+  );
+  if (row) throw new FacetError('E_TERM_REDEFINED', `pre-fix guard: ${id}`);
+  await afterRead();
+  await getMemoryGraphBackend(adapter).writeNode(
+    p.term,
+    {
+      kind: 'generic',
+      name: p.term,
+      topic: 'facet-registry',
+      source: 'observation',
+      metadata: {
+        facet_term: {
+          id,
+          facet: p.facet,
+          term: p.term,
+          definition: p.definition,
+          definitionHash: `pre-fix-${p.definition}`,
+          status: 'unpromoted',
+          origin: p.origin,
+          created_at: new Date().toISOString(),
+        },
+      },
+    },
+    { skipDedupe: true },
+  );
+  return {
+    id,
+    facet: p.facet,
+    term: p.term,
+    definition: p.definition,
+    definitionHash: `pre-fix-${p.definition}`,
+    status: 'unpromoted',
+    origin: p.origin,
+    demand: { count: 0, distinctClaims: 0 },
+    created_at: '',
+  };
+}
+
+describe('D-C — H2 facet-admit race: exactly one registry node per term id (DC_NEGATIVE_FACET_RACE=1 → RED)', () => {
+  it('two racing admits of the same term id yield one winner; the loser gets E_TERM_REDEFINED and no duplicate exists', async () => {
+    await db.close();
+
+    const a = await openDb(dbPath);
+    const b = await openDb(dbPath);
+    try {
+      const negative = process.env['DC_NEGATIVE_FACET_RACE'] === '1';
+
+      let releaseStart!: () => void;
+      const start = new Promise<void>((r) => (releaseStart = r));
+      let reads = 0;
+      let releaseReads!: () => void;
+      const bothRead = new Promise<void>((r) => (releaseReads = r));
+      const afterRead = async (): Promise<void> => {
+        reads += 1;
+        if (reads === 2) releaseReads();
+        await bothRead;
+      };
+
+      const base = { facet: 'pattern', term: 'retry', origin: 'researcher' } as const;
+      // Positive path: the fix serializes the two BEGIN IMMEDIATE transactions.
+      // Negative path: the pre-fix unguarded shape, held at the latch barrier.
+      const run = (adapter: StoreAdapter, definition: string) =>
+        start.then(() =>
+          negative
+            ? facetAdmitUnguarded(adapter, { ...base, definition }, afterRead)
+            : memoryFacetAdmit(adapter, { ...base, definition }),
+        );
+
+      const pA = run(a, 'bounded retry with jitter');
+      const pB = run(b, 'the racing pre-fix definition');
+      releaseStart();
+      const settled = await Promise.allSettled([pA, pB]);
+
+      const fulfilled = settled.filter((s) => s.status === 'fulfilled');
+      const rejected = settled.filter((s) => s.status === 'rejected');
+      // The invariant: exactly one admit wins. RED (2 fulfilled) under the
+      // unguarded pre-fix shape.
+      expect(fulfilled.length).toBe(1);
+      expect(rejected.length).toBe(1);
+      expect((rejected[0] as PromiseRejectedResult).reason).toMatchObject({ code: 'E_TERM_REDEFINED' });
+
+      // Exactly ONE registry node for this term id — never a duplicate.
+      const nodes = await a.executeAll<{ uid: string }>(
+        `SELECT uid FROM node
+          WHERE kind = 'generic' AND topic = 'facet-registry' AND t_invalid IS NULL
+            AND json_valid(meta) AND json_extract(meta, '$.facet_term.id') = ?`,
+        ['pattern:retry'],
+      );
+      expect(nodes.rows.length).toBe(1);
+    } finally {
+      await a.close();
+      await b.close();
+      db = await openDb(dbPath);
+    }
+  }, 30_000);
 });

@@ -1017,9 +1017,20 @@ export async function memoryRecall(
     }
   }
 
-  // Validity predicate
+  // Validity predicate — bi-temporal window.
+  //
+  // SECURITY (H1): `as_of` is a public MCP tool parameter (memory_recall.as_of,
+  // forwarded from the memory-server bundle). It is BOUND as `?`, never
+  // interpolated into the SQL string: a crafted value (a single quote + an
+  // `OR '1'='1'` / UNION payload) must be treated as a literal, never executed.
+  // This mirrors the bundle server's own BL-240 fix one function away
+  // (memory-server/src/index.ts — `validityParams = asOf ? [asOf, asOf] : []`).
+  // The value appears twice, hence two params. Every query that consumes this
+  // predicate below must prepend `validityParams` to its parameter list, in the
+  // same order the predicate renders (`t_valid` comparison, then `t_invalid`).
+  const validityParams: unknown[] = as_of ? [as_of, as_of] : [];
   const validityPred = as_of
-    ? `(n.t_valid IS NULL OR n.t_valid <= '${as_of}') AND (n.t_invalid IS NULL OR n.t_invalid > '${as_of}')`
+    ? '(n.t_valid IS NULL OR n.t_valid <= ?) AND (n.t_invalid IS NULL OR n.t_invalid > ?)'
     : 'n.t_invalid IS NULL';
 
 
@@ -1033,7 +1044,7 @@ export async function memoryRecall(
     const cap = knowledgeCfg.coverage.countCap;
     const row = await adapter.executeGet<{ cnt: number }>(
       `SELECT COUNT(*) as cnt FROM node n WHERE ${validityPred} ${agentFilter} ${filterSql} ${kindClause}`,
-      [...filterParams, ...kindParams],
+      [...validityParams, ...filterParams, ...kindParams],
     );
     const n = row?.cnt ?? 0;
     return n > cap ? { value: cap, exactness: 'gte' } : { value: n, exactness: 'eq' };
@@ -1068,7 +1079,7 @@ export async function memoryRecall(
       '__PLACEHOLDER__',
       `v.node_id IN (SELECT n.rowid FROM node n WHERE ${filterClauses})`,
     );
-    const vecParams: unknown[] = [...dialectArgs, ...filterParams, ...kindParams];
+    const vecParams: unknown[] = [...dialectArgs, ...validityParams, ...filterParams, ...kindParams];
     const vecResult = await adapter.executeAll<{ node_id: number; distance: number }>(vecSql, vecParams);
     vecRows = vecResult.rows;
     // BL-367: stable secondary sort on node_id to break EXACT distance ties
@@ -1126,7 +1137,7 @@ export async function memoryRecall(
         // bug was specific to the default `IS NULL` predicate + a non-empty
         // agentFilter.)
         where: [validityPred, agentFilter, filterSql, kindClause].filter(Boolean).join(' '),
-        params: [...filterParams, ...kindParams],
+        params: [...validityParams, ...filterParams, ...kindParams],
       },
     );
     ftsRows.forEach((r, i) => ftsRowids.set(r.rowid, i + 1));
@@ -1148,7 +1159,7 @@ export async function memoryRecall(
   const temporalSql = `SELECT n.rowid, n.t_created FROM node n
        WHERE ${validityPred} ${agentFilter} ${filterSql} ${kindClause}
        ORDER BY n.t_created DESC LIMIT ?`;
-  const temporalParams: unknown[] = [...filterParams, ...kindParams, knnLimit];
+  const temporalParams: unknown[] = [...validityParams, ...filterParams, ...kindParams, knnLimit];
   const temporalResult = await adapter.executeAll<{ rowid: number; t_created: string }>(temporalSql, temporalParams);
   const temporalRows = temporalResult.rows;
 
@@ -1169,10 +1180,11 @@ export async function memoryRecall(
     if (filterSql) {
       const beforeCount = (await adapter.executeGet<{ cnt: number }>(
         `SELECT COUNT(*) as cnt FROM node n WHERE n.kind = 'episode' AND ${validityPred}`,
+        validityParams,
       ))?.cnt ?? 0;
       const afterCount = (await adapter.executeGet<{ cnt: number }>(
         `SELECT COUNT(*) as cnt FROM node n WHERE n.kind = 'episode' AND ${validityPred} ${filterSql}`,
-        filterParams,
+        [...validityParams, ...filterParams],
       ))?.cnt ?? 0;
       filterStats = {
         candidates_before_filter: beforeCount,
@@ -1414,13 +1426,14 @@ export async function memoryRecall(
 
   if (depth > 0 && topRowids.length > 0) {
     const validPred = as_of
-      ? `(t_valid IS NULL OR t_valid <= '${as_of}') AND (t_invalid IS NULL OR t_invalid > '${as_of}')`
+      ? '(t_valid IS NULL OR t_valid <= ?) AND (t_invalid IS NULL OR t_invalid > ?)'
       : 't_invalid IS NULL';
     const neighborResult = await adapter.executeAll<{ neighbor_id: number }>(
       `SELECT DISTINCT CASE WHEN src IN (${topRowids.join(',')}) THEN dst ELSE src END AS neighbor_id
        FROM edge
        WHERE (src IN (${topRowids.join(',')}) OR dst IN (${topRowids.join(',')}))
          AND t_expired IS NULL AND ${validPred}`,
+      validityParams,
     );
     const neighborRows = neighborResult.rows;
     neighborRows.forEach((r) => expandedRowids.add(r.neighbor_id));
@@ -1432,7 +1445,7 @@ export async function memoryRecall(
   let expandedNodes: NodeRow[] = [];
   if (expandedNew.length > 0) {
     const nodeValidPred = as_of
-      ? `(t_valid IS NULL OR t_valid <= '${as_of.replace(/'/g, "''")}') AND (t_invalid IS NULL OR t_invalid > '${as_of.replace(/'/g, "''")}')`
+      ? '(t_valid IS NULL OR t_valid <= ?) AND (t_invalid IS NULL OR t_invalid > ?)'
       : 't_invalid IS NULL';
     // BUG-MEMORY-003 §1b: no `n` alias on this query (unlike the temporal/vec/FTS
     // channels above), so the un-aliased kind predicate is inlined directly rather
@@ -1442,7 +1455,7 @@ export async function memoryRecall(
     const expResult = await adapter.executeAll<NodeRow>(
       `SELECT rowid, uid, content, name, summary, importance, t_created, t_valid, t_invalid, agent_id, content_hash, session_id
        FROM node WHERE rowid IN (${expandedNew.join(',')}) AND ${nodeValidPred} ${expKindClause}`,
-      expKindParams,
+      [...validityParams, ...expKindParams],
     );
     expandedNodes = expResult.rows;
   }
@@ -1698,10 +1711,11 @@ export async function memoryRecall(
     if (filterSql) {
       const beforeCount = (await adapter.executeGet<{ cnt: number }>(
         `SELECT COUNT(*) as cnt FROM node n WHERE n.kind = 'episode' AND ${validityPred}`,
+        validityParams,
       ))?.cnt ?? 0;
       const afterCount = (await adapter.executeGet<{ cnt: number }>(
         `SELECT COUNT(*) as cnt FROM node n WHERE n.kind = 'episode' AND ${validityPred} ${filterSql}`,
-        filterParams,
+        [...validityParams, ...filterParams],
       ))?.cnt ?? 0;
       filterStats = {
         candidates_before_filter: beforeCount,

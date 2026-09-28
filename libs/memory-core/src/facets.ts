@@ -95,6 +95,14 @@ interface RegistryRow {
   meta: string | null;
 }
 
+/**
+ * The read surface the registry helpers need. Widened from `StoreAdapter` to
+ * `Pick<…, 'executeGet'>` so the SAME helpers can run inside a transaction
+ * handle (`AdapterTransaction`/`GraphTransaction` both expose `executeGet`),
+ * letting `memoryFacetAdmit` do its existence check and INSERT on one handle.
+ */
+type FacetQuerySurface = Pick<StoreAdapter, 'executeGet'>;
+
 function parseMeta(raw: string | null): Record<string, unknown> {
   if (!raw) return {};
   try {
@@ -132,8 +140,8 @@ function readTerm(row: RegistryRow, demand: FacetDemand): FacetTerm | null {
 }
 
 /** Count the distinct live claims filed under a term id (`meta.facet`). */
-async function computeDemand(adapter: StoreAdapter, termId: string): Promise<FacetDemand> {
-  const row = await adapter.executeGet<{ cnt: number }>(
+async function computeDemand(db: FacetQuerySurface, termId: string): Promise<FacetDemand> {
+  const row = await db.executeGet<{ cnt: number }>(
     `SELECT COUNT(DISTINCT uid) AS cnt FROM node
       WHERE kind = 'claim' AND t_invalid IS NULL
         AND json_valid(meta) AND json_extract(meta, '$.facet') = ?`,
@@ -144,10 +152,10 @@ async function computeDemand(adapter: StoreAdapter, termId: string): Promise<Fac
 }
 
 async function findByTermId(
-  adapter: StoreAdapter,
+  db: FacetQuerySurface,
   termId: string,
 ): Promise<{ row: RegistryRow; term: FacetTerm } | null> {
-  const row = await adapter.executeGet<RegistryRow>(
+  const row = await db.executeGet<RegistryRow>(
     `SELECT uid, name, meta FROM node
       WHERE kind = 'generic' AND topic = ? AND t_invalid IS NULL
         AND json_valid(meta) AND json_extract(meta, '$.facet_term.id') = ?
@@ -155,16 +163,40 @@ async function findByTermId(
     [REGISTRY_TOPIC, termId],
   );
   if (!row) return null;
-  const demand = await computeDemand(adapter, termId);
+  const demand = await computeDemand(db, termId);
   const term = readTerm(row, demand);
   if (!term) return null;
   return { row, term };
 }
 
 /**
+ * The K-I5 refusal, thrown whenever an EXISTING id is admitted with a different
+ * definition (synchronously before the write, and — after serialization — from
+ * within the admission transaction). The two call sites must never drift.
+ */
+function termRedefined(id: string): FacetError {
+  return new FacetError(
+    'E_TERM_REDEFINED',
+    `Facet term "${id}" already exists with a different definition. ` +
+      `Terms are never redefined in place (K-I5) — mint a NEW term id for the new meaning.`,
+  );
+}
+
+/**
  * Admit a facet term. A NEW id is minted `unpromoted`. Admitting an EXISTING id
  * with the same definition is idempotent; with a DIFFERENT definition it throws
  * `E_TERM_REDEFINED` (K-I5) — mint a new term id for a new meaning.
+ *
+ * Race safety (ADR-0012). The store is parallel-process enabled, so a bare
+ * `findByTermId` check followed by an INSERT is NOT atomic across processes —
+ * two processes admitting the same id can both miss the check and both INSERT,
+ * producing two registry nodes that bypass K-I5. The check and the INSERT
+ * therefore run inside ONE `BEGIN IMMEDIATE` transaction (the ADR-0012 §1 CAS
+ * primitive): `BEGIN IMMEDIATE` takes the write lock up front, so a second
+ * admit's transaction cannot read until the first commits — its check then sees
+ * the committed row and applies the SAME K-I5 rule. The write goes through
+ * `tx.writeNode` (the same policy-validating internal the bare backend uses), so
+ * no raw INSERT column list is re-derived.
  */
 export async function memoryFacetAdmit(
   adapter: StoreAdapter,
@@ -179,55 +211,54 @@ export async function memoryFacetAdmit(
   }
   const id = facetTermId(facet, term);
   const definitionHash = hexSha256(definition);
-
-  const existing = await findByTermId(adapter, id);
-  if (existing) {
-    if (existing.term.definitionHash !== definitionHash) {
-      throw new FacetError(
-        'E_TERM_REDEFINED',
-        `Facet term "${id}" already exists with a different definition. ` +
-          `Terms are never redefined in place (K-I5) — mint a NEW term id for the new meaning.`,
-      );
-    }
-    return existing.term;
-  }
-
   const backend = getMemoryGraphBackend(adapter);
   const createdAt = new Date().toISOString();
-  await backend.writeNode(
-    term,
-    {
-      kind: 'generic',
-      name: term,
-      topic: REGISTRY_TOPIC,
-      source: 'observation',
-      metadata: {
-        facet_term: {
-          id,
-          facet,
-          term,
-          definition,
-          definitionHash,
-          status: 'unpromoted',
-          origin,
-          created_at: createdAt,
-        },
-      },
-    },
-    { skipDedupe: true },
-  );
 
-  return {
-    id,
-    facet,
-    term,
-    definition,
-    definitionHash,
-    status: 'unpromoted',
-    origin,
-    demand: { count: 0, distinctClaims: 0 },
-    created_at: createdAt,
-  };
+  return backend.transaction(
+    async (tx) => {
+      const existing = await findByTermId(tx, id);
+      if (existing) {
+        if (existing.term.definitionHash !== definitionHash) throw termRedefined(id);
+        return existing.term;
+      }
+
+      await tx.writeNode(
+        term,
+        {
+          kind: 'generic',
+          name: term,
+          topic: REGISTRY_TOPIC,
+          source: 'observation',
+          metadata: {
+            facet_term: {
+              id,
+              facet,
+              term,
+              definition,
+              definitionHash,
+              status: 'unpromoted',
+              origin,
+              created_at: createdAt,
+            },
+          },
+        },
+        { skipDedupe: true },
+      );
+
+      return {
+        id,
+        facet,
+        term,
+        definition,
+        definitionHash,
+        status: 'unpromoted' as const,
+        origin,
+        demand: { count: 0, distinctClaims: 0 },
+        created_at: createdAt,
+      };
+    },
+    { mode: 'immediate' },
+  );
 }
 
 /**
