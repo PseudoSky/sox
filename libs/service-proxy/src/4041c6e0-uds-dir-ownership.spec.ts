@@ -310,6 +310,39 @@ describe('4041c6e0: (5) dialers refuse an unsafe dir without connecting', () => 
     expect(ok.result).toBe('ok');
   });
 
+  it('4041c6e0: an unsafe dir the operator REMOVES recovers once it is recreated (no hung send)', async () => {
+    const dir = path.join(scratch(), 'run');
+    fs.mkdirSync(dir, { mode: 0o700 });
+    const sock = path.join(dir, 'b.sock');
+    const first = await serveBackend({ socketPath: sock, handler: echoHandler(), onDiagnostic: noop });
+    fs.chmodSync(dir, 0o777);
+
+    const conn = dialBackend({
+      socketPath: sock,
+      onDiagnostic: noop,
+      backoff: { initialMs: 20, maxMs: 50, giveUpAfterMs: 5000 },
+    });
+    cleanups.push(() => conn.close());
+    const refused = await conn.send({ jsonrpc: '2.0', id: 1, method: 'ping' });
+    expect(refused.error?.data).toMatchObject({ code: 'E_UDS_DIR_UNSAFE' });
+
+    // Remediation as the error message instructs: remove the directory.
+    await first.close();
+    fs.rmSync(dir, { recursive: true, force: true });
+
+    const pending = conn.send({ jsonrpc: '2.0', id: 2, method: 'ping' });
+    await new Promise((r) => setTimeout(r, 100));
+    const second = await serveBackend({ socketPath: sock, handler: echoHandler(), onDiagnostic: noop });
+    cleanups.push(() => second.close());
+
+    const resp = await Promise.race([
+      pending,
+      new Promise<'no-reply'>((r) => setTimeout(() => r('no-reply'), 2000)),
+    ]);
+    expect(resp).not.toBe('no-reply');
+    expect((resp as Exclude<typeof resp, 'no-reply'>).result).toBe('ok');
+  });
+
   it('4041c6e0: a dir that does not exist yet stays retryable — dial connects once it appears', async () => {
     const dir = path.join(scratch(), 'later');
     const sock = path.join(dir, 'b.sock');

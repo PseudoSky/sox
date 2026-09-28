@@ -165,9 +165,12 @@ export function dialBackend(opts: DialOptions): BackendConnection {
     // later send() re-checks, so a repaired directory recovers without restart.
     // A directory that cannot be stat'd (e.g. not created yet on first start) is
     // not a trust verdict — fall through to the ordinary connect/re-dial path.
+    // Cleared on every attempt: only a fresh unsafe verdict may suppress re-dial.
+    // (A directory the operator removed — the remediation the error prescribes —
+    // must fall back to ordinary re-dialing, or the queued send would hang.)
+    unsafeDir = null;
     try {
       assertPrivateSocketDir(path.dirname(opts.socketPath));
-      unsafeDir = null;
     } catch (err) {
       if (isUdsDirUnsafeError(err)) {
         unsafeDir = err;

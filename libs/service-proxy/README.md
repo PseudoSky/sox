@@ -254,6 +254,49 @@ a singleton key, sanitizing the result to fit within the platform's
 from a deeply nested scratch directory can otherwise silently overflow it and
 fail `bind(2)` with `EINVAL`.
 
+Three tiers, first fit wins: `<socketDir>/proxy-<key>-<digest>.sock`, then
+`<socketDir>/proxy-<digest>.sock`, then — when `socketDir` alone is too long —
+`/tmp/sox-<uid>/p-<digest>.sock` under the fixed per-uid root
+`udsFallbackRoot()`. The result never depends on `TMPDIR`, so every peer
+derives the same path for the same key. On a platform without
+`process.getuid` the tier-3 root throws `E_UDS_UNSUPPORTED_PLATFORM`.
+
+### Socket-directory trust check
+
+```typescript
+function ensurePrivateSocketDir(dir: string, opts: { create: boolean; deps?: Partial<SocketDirDeps> }): void;
+function assertPrivateSocketDir(dir: string, deps?: Partial<SocketDirDeps>): void;
+function isUdsDirUnsafeError(err: unknown): err is UdsDirUnsafeError;
+function udsFallbackRoot(uid?: number): string; // '/tmp/sox-<uid>'
+```
+
+A socket is only as private as its directory. `serveBackend` calls
+`ensurePrivateSocketDir(dirname(socketPath), { create: true })` before binding.
+`dialBackend`, `probeSocketLive`, `handshakeBackend`, and `ensureBackend` check
+the directory before they connect. The directory must pass `lstat`:
+
+- it is not a symlink, and it is a directory;
+- it is owned by the current uid;
+- the `/tmp/sox-<uid>` root is exactly `0700` (created non-recursively);
+- any other directory has no group or other write bit.
+
+A failure throws `E_UDS_DIR_UNSAFE` with
+`{ dir, expectedUid, actualUid, mode, isSymlink }` and an operator message.
+The directory is never chmod'ed, chown'ed, deleted, or swapped for another path.
+
+The refusal is non-retryable:
+
+- `serveBackend` rejects without binding.
+- `dialBackend` fast-fails pending requests with `-32001` and
+  `data.code: 'E_UDS_DIR_UNSAFE'`. It does not re-dial, and the next `send()`
+  re-checks the directory.
+- `probeSocketLive` and `handshakeBackend` reject instead of resolving `false`.
+- `ensureBackend` returns `{ disposition: 'failed', errorCode: 'E_UDS_DIR_UNSAFE' }`
+  and spawns nothing.
+
+A directory that does not exist yet is not unsafe. Dialing into it keeps the
+ordinary re-dial behaviour.
+
 ### JSON-RPC 2.0 types + helpers
 
 ```typescript
