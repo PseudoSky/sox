@@ -1,6 +1,6 @@
 import { describe, it, expect, afterAll, beforeEach, afterEach } from 'vitest';
 import type { StoreAdapter } from '@adhd/sox-store-adapter';
-import type { EmbeddingProvider, EmbeddingHealth, EmbedRole } from '@adhd/sox-embedding-provider';
+import type { EmbeddingProvider, EmbeddingHealth, EmbeddingProviderMetadata, EmbedRole } from '@adhd/sox-embedding-provider';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
@@ -653,7 +653,13 @@ describe('BUG-MEMORY-003 — memory_recall excludes non-episode node kinds by de
 class ControllableEmbedProvider implements EmbeddingProvider {
   delayMs = 0;
   calls = 0;
-  metadata = { modelId: 'controllable-recall-breakdown-test', dim: 768 };
+  readonly metadata: EmbeddingProviderMetadata = {
+    modelId: 'controllable-recall-breakdown-test',
+    dimensions: 768,
+    maxTokens: 512,
+    isRemote: false,
+    isDeterministic: true,
+  };
 
   async embedSingle(text: string, _role?: EmbedRole): Promise<Float32Array> {
     this.calls++;
@@ -665,15 +671,25 @@ class ControllableEmbedProvider implements EmbeddingProvider {
 
   async *embedBatch(
     texts: string[],
-    _role?: EmbedRole,
-  ): AsyncGenerator<{ index: number; vector: Float32Array }> {
-    for (let i = 0; i < texts.length; i++) {
-      yield { index: i, vector: featureHashEmbed(texts[i] as string) };
+    _opts?: { role?: EmbedRole; batchSize?: number },
+  ): AsyncIterable<Float32Array> {
+    for (const text of texts) {
+      yield featureHashEmbed(text);
     }
   }
 
+  async warmUp(_texts: string[]): Promise<void> {
+    // no-op — test double, always "warm"
+  }
+
   health(): EmbeddingHealth {
-    return { status: 'ready', model: 'controllable-recall-breakdown-test', dim: 768 };
+    return {
+      configured: `test:${this.metadata.modelId}`,
+      active: this.metadata.modelId,
+      state: 'real',
+      dimensions: this.metadata.dimensions,
+      last_error: null,
+    };
   }
 }
 
@@ -771,6 +787,12 @@ describe('score_breakdown — absent channel contributes 0 (f2237d6d)', () => {
     afterEach(async () => {
       await WriteQueue.clearInstances();
       await cleanup(ctx.db, ctx.dir);
+      // Genuine leak fixed here: STORE_ADAPTER was set unconditionally in
+      // beforeEach but never restored, so it leaked 'sqlite' into every
+      // later test/file in the same process. Mirror the sibling describe
+      // block's afterEach above.
+      if (priorAdapterEnv === undefined) delete process.env['STORE_ADAPTER'];
+      else process.env['STORE_ADAPTER'] = priorAdapterEnv;
     });
 
     it('vec===0 and the split is NOT an equal three-way share', async () => {

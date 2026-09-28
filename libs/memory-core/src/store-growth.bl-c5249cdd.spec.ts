@@ -12,6 +12,7 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import type { TursoAdapter } from '@adhd/sox-store-adapter';
 import { openDb } from './db.js';
 import { resolveStoreGrowthConfig } from './config.js';
 import { _resetStoreGrowthAlarmWarningsForTest, readStoreGrowthGauge } from './store-growth.js';
@@ -63,7 +64,15 @@ async function seedLeakedStore(): Promise<string> {
           [`u${i}`, 'episode', `alpha beta gamma ${tok(i)}`, `name ${tok(i)}`, 'summary', new Date().toISOString()],
         );
       }
-      await a.unwrap().exec('OPTIMIZE INDEX idx_fts_node');
+      // Base `StoreAdapter.unwrap()` returns `unknown`. `openDb` defaults to
+      // the Turso adapter (no STORE_ADAPTER override here, and this file
+      // already imports TursoAdapterImpl directly below) — `OPTIMIZE INDEX`
+      // is Turso's own FTS maintenance statement, not SQLite syntax, which
+      // is the actual tell. Cast to the Turso driver handle's return type
+      // via `ReturnType`, not a direct `@tursodatabase/database` import —
+      // memory-core does not depend on that package directly (lint: no
+      // static value imports of store-adapter internals either).
+      await (a.unwrap() as ReturnType<TursoAdapter['unwrap']>).exec('OPTIMIZE INDEX idx_fts_node');
     }
     // One invalidated node: live_nodes must exclude it.
     await a.executeRun(

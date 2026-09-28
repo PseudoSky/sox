@@ -207,6 +207,12 @@ class RecordingAdapter implements StoreAdapter {
     fts: true,
     needsWriteSerialization: false,
     recursiveCte: true,
+    // BUG-MEMORYCORE-MULTIPROCESS-WAL-NOT-OPTED-IN-001: every AdapterCapabilities
+    // literal must declare its resolved concurrency mode. This double is a
+    // single-process/single-writer test recorder — same posture as
+    // mock-adapter.ts's own capabilities literal.
+    walMode: 'single-writer',
+    walModeVerified: true,
   };
 
   async executeGet<T = Record<string, unknown>>(sql: string, args: unknown[] = []): Promise<T | null> {

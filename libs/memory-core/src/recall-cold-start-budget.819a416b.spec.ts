@@ -17,7 +17,7 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import type { StoreAdapter } from '@adhd/sox-store-adapter';
-import type { EmbeddingProvider, EmbeddingHealth, EmbedRole } from '@adhd/sox-embedding-provider';
+import type { EmbeddingProvider, EmbeddingHealth, EmbeddingProviderMetadata, EmbedRole } from '@adhd/sox-embedding-provider';
 import { openDb } from './db.js';
 import {
   memoryRecall,
@@ -38,16 +38,31 @@ vi.mock('sqlite-vec', async (importOriginal) => {
 
 class SlowProvider implements EmbeddingProvider {
   delayMs = 0;
-  metadata = { modelId: 'slow-test', dim: 768 };
+  readonly metadata: EmbeddingProviderMetadata = {
+    modelId: 'slow-test',
+    dimensions: 768,
+    maxTokens: 512,
+    isRemote: false,
+    isDeterministic: true,
+  };
   async embedSingle(text: string, _role?: EmbedRole): Promise<Float32Array> {
     if (this.delayMs > 0) await new Promise((r) => setTimeout(r, this.delayMs));
     return featureHashEmbed(text);
   }
-  async *embedBatch(texts: string[], _role?: EmbedRole): AsyncGenerator<{ index: number; vector: Float32Array }> {
-    for (let i = 0; i < texts.length; i++) yield { index: i, vector: featureHashEmbed(texts[i] as string) };
+  async *embedBatch(texts: string[], _opts?: { role?: EmbedRole; batchSize?: number }): AsyncIterable<Float32Array> {
+    for (const text of texts) yield featureHashEmbed(text);
+  }
+  async warmUp(_texts: string[]): Promise<void> {
+    // no-op — test double, always "warm"
   }
   health(): EmbeddingHealth {
-    return { status: 'ready', model: 'slow-test', dim: 768 };
+    return {
+      configured: `test:${this.metadata.modelId}`,
+      active: this.metadata.modelId,
+      state: 'real',
+      dimensions: this.metadata.dimensions,
+      last_error: null,
+    };
   }
 }
 

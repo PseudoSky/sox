@@ -10,6 +10,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
+import type { TransactionOptions } from '@adhd/sox-store-adapter';
 import {
   log,
   newTraceId,
@@ -338,7 +339,7 @@ describe('telemetry — adapter/transaction SQL-error instrumentation', () => {
   it('instrumentAdapter also instruments the tx object handed to transaction()', async () => {
     const adapter = fakeAdapter();
     const instrumented = instrumentAdapter(
-      adapter as unknown as { transaction<T>(fn: (tx: typeof adapter) => T | Promise<T>): Promise<T> } & typeof adapter,
+      adapter as unknown as { transaction<T>(fn: (tx: typeof adapter) => T | Promise<T>, opts?: TransactionOptions): Promise<T> } & typeof adapter,
       'turso',
     );
     await expect(
@@ -358,7 +359,7 @@ describe('telemetry — adapter/transaction SQL-error instrumentation', () => {
     async () => {
       const adapter = fakeAdapter();
       const instrumented = instrumentAdapter(
-        adapter as unknown as { transaction<T>(fn: (tx: typeof adapter) => T | Promise<T>): Promise<T> } & typeof adapter,
+        adapter as unknown as { transaction<T>(fn: (tx: typeof adapter) => T | Promise<T>, opts?: TransactionOptions): Promise<T> } & typeof adapter,
         'turso',
       );
       // Mirror bug-memory-001-write-loss-ac3.spec.ts's injectPeriodicLockFault exactly: capture

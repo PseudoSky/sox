@@ -468,7 +468,7 @@ describe('memoryInvalidate — every invalidation records its reason (f7461993)'
 
     // The FIRST event is archived, not lost.
     expect(meta.invalidationHistory).toHaveLength(1);
-    expect(meta.invalidationHistory![0].invalidatedReason).toBe('first invalidation — has a replacement');
-    expect(meta.invalidationHistory![0].invalidatedReplacement).toBe(uidKeep);
+    expect(meta.invalidationHistory![0]!.invalidatedReason).toBe('first invalidation — has a replacement');
+    expect(meta.invalidationHistory![0]!.invalidatedReplacement).toBe(uidKeep);
   });
 });

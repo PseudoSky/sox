@@ -59,6 +59,7 @@
         "cwd": "."
       },
       "cache": true,
+      "dependsOn": ["typecheck-tests"],
       "inputs": ["default", "^production"]
     },
     "typecheck-tests": {
