@@ -72,6 +72,7 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import ts from 'typescript';
+import { GUARDS as MANIFEST_GUARDS } from './guards-manifest.mjs';
 
 const TOOLS_DIR = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(TOOLS_DIR, '..');
@@ -231,74 +232,95 @@ if (canAskNx) {
 
 report('at least one project discovered under CODE_ROOT', allProjects.length > 0, `${allProjects.length} found`);
 
+// BL-20d01a62 (item 2): A1's own doc comment above ("EVERY project that defines a typecheck-src
+// target ... independent of whether it also defines typecheck-tests") already stated A7 must be
+// unconditional on `typecheck` too — this loop's top-level `if (!('typecheck' in targets))
+// continue;` silently violated that: a project with `typecheck-src` but NO `typecheck` target at
+// all (e.g. mid-migration, or a project that only ever runs `nx run <p>:typecheck-src` directly)
+// was skipped before A7 ever ran. Gating removed; every A-check below is now individually gated
+// on the target(s) it actually needs, not on a blanket per-project skip.
 const projectsChecked = [];
 for (const { name, targets } of allProjects) {
-  if (!('typecheck' in targets)) continue;
-
+  const hasTypecheck = 'typecheck' in targets;
   const hasTypecheckTests = 'typecheck-tests' in targets;
   const hasTypecheckSrc = 'typecheck-src' in targets;
-  projectsChecked.push({ name, hasTypecheckTests, hasTypecheckSrc });
 
-  const typecheckDependsOn = effectiveDependsOn('typecheck', targets);
-  report(
-    `${name}: typecheck.dependsOn (effective) contains "^build"`,
-    typecheckDependsOn.includes('^build'),
-    JSON.stringify(typecheckDependsOn),
-  );
+  if (hasTypecheck) {
+    projectsChecked.push({ name, hasTypecheckTests, hasTypecheckSrc });
 
-  if (hasTypecheckTests) {
+    const typecheckDependsOn = effectiveDependsOn('typecheck', targets);
     report(
-      `${name}: has typecheck-tests, so typecheck.dependsOn (effective) contains "typecheck-tests"`,
-      typecheckDependsOn.includes('typecheck-tests'),
+      `${name}: typecheck.dependsOn (effective) contains "^build"`,
+      typecheckDependsOn.includes('^build'),
       JSON.stringify(typecheckDependsOn),
     );
 
-    // A1
-    report(`${name}: A1 — defines typecheck-src`, hasTypecheckSrc, hasTypecheckSrc ? 'present' : 'missing');
-
-    // A2
-    const typecheckTestsDependsOn = effectiveDependsOn('typecheck-tests', targets);
-    report(
-      `${name}: A2 — typecheck-tests.dependsOn (effective) contains "typecheck-src"`,
-      typecheckTestsDependsOn.includes('typecheck-src'),
-      JSON.stringify(typecheckTestsDependsOn),
-    );
-
-    // A3 — only meaningful if typecheck-src actually exists; otherwise A1 already failed and this
-    // would just be reporting on an absent target's (vacuous []) defaults.
-    if (hasTypecheckSrc) {
-      const typecheckSrcDependsOn = effectiveDependsOn('typecheck-src', targets);
+    if (hasTypecheckTests) {
       report(
-        `${name}: A3 — typecheck-src.dependsOn (effective) contains "^build"`,
-        typecheckSrcDependsOn.includes('^build'),
-        JSON.stringify(typecheckSrcDependsOn),
+        `${name}: has typecheck-tests, so typecheck.dependsOn (effective) contains "typecheck-tests"`,
+        typecheckDependsOn.includes('typecheck-tests'),
+        JSON.stringify(typecheckDependsOn),
       );
+
+      // A1
+      report(`${name}: A1 — defines typecheck-src`, hasTypecheckSrc, hasTypecheckSrc ? 'present' : 'missing');
+
+      // A2
+      const typecheckTestsDependsOn = effectiveDependsOn('typecheck-tests', targets);
       report(
-        `${name}: A3 — typecheck-src.dependsOn (effective) excludes "typecheck-tests" and "typecheck" (no back-edge)`,
-        !typecheckSrcDependsOn.includes('typecheck-tests') && !typecheckSrcDependsOn.includes('typecheck'),
-        JSON.stringify(typecheckSrcDependsOn),
+        `${name}: A2 — typecheck-tests.dependsOn (effective) contains "typecheck-src"`,
+        typecheckTestsDependsOn.includes('typecheck-src'),
+        JSON.stringify(typecheckTestsDependsOn),
       );
+
+      // A3 — only meaningful if typecheck-src actually exists; otherwise A1 already failed and this
+      // would just be reporting on an absent target's (vacuous []) defaults.
+      if (hasTypecheckSrc) {
+        const typecheckSrcDependsOn = effectiveDependsOn('typecheck-src', targets);
+        report(
+          `${name}: A3 — typecheck-src.dependsOn (effective) contains "^build"`,
+          typecheckSrcDependsOn.includes('^build'),
+          JSON.stringify(typecheckSrcDependsOn),
+        );
+        report(
+          `${name}: A3 — typecheck-src.dependsOn (effective) excludes "typecheck-tests" and "typecheck" (no back-edge)`,
+          !typecheckSrcDependsOn.includes('typecheck-tests') && !typecheckSrcDependsOn.includes('typecheck'),
+          JSON.stringify(typecheckSrcDependsOn),
+        );
+      }
+
+      // A4
+      const typecheckExecutor = targets.typecheck?.executor;
+      report(`${name}: A4 — typecheck.executor === "nx:noop"`, typecheckExecutor === 'nx:noop', String(typecheckExecutor));
     }
-
-    // A4
-    const typecheckExecutor = targets.typecheck?.executor;
-    report(`${name}: A4 — typecheck.executor === "nx:noop"`, typecheckExecutor === 'nx:noop', String(typecheckExecutor));
   }
 
-  // A7 — runs for every project with a typecheck-src target (not gated on hasTypecheckTests):
-  // the tsconfig that typecheck-src's own command actually invokes must resolve to a file set
-  // that excludes *.spec.ts / *.test.ts. This is a project-config-shape check, unrelated to
-  // whether the project also happens to define typecheck-tests. Config resolution is done via
-  // TypeScript's own `parseJsonConfigFileContent` (extends chain, include/exclude, matched
-  // fileNames) rather than a hand-rolled glob or a full `tsc --listFilesOnly` spawn per project —
-  // it is the same resolution logic tsc itself uses, but returns instantly with no type checking.
+  // A7 — runs for EVERY project with a typecheck-src target, regardless of whether the project
+  // also defines `typecheck`/`typecheck-tests` (BL-20d01a62 item 2, above): the tsconfig that
+  // typecheck-src's own command actually invokes must resolve to a file set that excludes spec,
+  // test, and test-support files. This is a project-config-shape check, unrelated to whether the
+  // project also happens to define typecheck-tests. Config resolution is done via TypeScript's own
+  // `parseJsonConfigFileContent` (extends chain, include/exclude, matched fileNames) rather than a
+  // hand-rolled glob or a full `tsc --listFilesOnly` spawn per project — it is the same resolution
+  // logic tsc itself uses, but returns instantly with no type checking.
   if (hasTypecheckSrc) {
     const command = targets['typecheck-src']?.options?.command;
-    const match = typeof command === 'string' ? command.match(/(?:^|\s)-p\s+(\S+)/) : null;
+    // BL-20d01a62 (item 3): accept `-p x`, `-p=x`, `--project x`, and `--project=x` — the previous
+    // regex only matched `-p <space> <path>` and silently reported "no -p flag" (a false A7
+    // failure with no diagnostic value) for any project using the equally-valid `--project` long
+    // form or `=`-joined value.
+    const match = typeof command === 'string' ? command.match(/(?:^|\s)(?:-p|--project)(?:=|\s+)(\S+)/) : null;
     if (!match) {
-      report(`${name}: A7 — typecheck-src command has a "-p <tsconfig>" flag`, false, JSON.stringify(command));
+      report(`${name}: A7 — typecheck-src command has a "-p <tsconfig>"/"--project <tsconfig>" flag`, false, JSON.stringify(command));
     } else {
-      const configPath = path.resolve(CODE_ROOT, match[1]);
+      // BL-20d01a62 (item 3): resolve against the target's own `options.cwd` (nx's default is the
+      // workspace root when a project omits `cwd`, which is what CODE_ROOT already represents for
+      // this script) rather than always resolving straight from CODE_ROOT — a project that sets
+      // `cwd` to its own project root and passes a project-relative `-p` path was previously
+      // resolved against the wrong base and reported a spurious "tsconfig does not exist".
+      const targetCwd = targets['typecheck-src']?.options?.cwd;
+      const resolveBase = typeof targetCwd === 'string' ? path.resolve(CODE_ROOT, targetCwd) : CODE_ROOT;
+      const configPath = path.resolve(resolveBase, match[1]);
       if (!fs.existsSync(configPath)) {
         report(`${name}: A7 — tsconfig referenced by typecheck-src exists`, false, configPath);
       } else {
@@ -311,13 +333,43 @@ for (const { name, targets } of allProjects) {
           );
         } else {
           const parsed = ts.parseJsonConfigFileContent(readResult.config, ts.sys, path.dirname(configPath));
-          const specOrTestFiles = parsed.fileNames.filter((f) => f.endsWith('.spec.ts') || f.endsWith('.test.ts'));
+
+          // BL-20d01a62 (item 3): fail on ANY parsed.errors — not just silently trusting fileNames.
+          // `parseJsonConfigFileContent` reports genuine config-shape problems (bad `extends`
+          // chain, unresolvable `include`, etc.) as diagnostics in `.errors` without throwing, and
+          // a config that resolves ZERO files emits TS18003 ("No inputs were found in config
+          // file") here rather than as a thrown exception — a zero-file typecheck-src that never
+          // actually type-checks anything is exactly the "config is silently doing nothing" shape
+          // this guard exists to catch, not a vacuous pass.
+          if (parsed.errors && parsed.errors.length > 0) {
+            report(
+              `${name}: A7 — tsconfig referenced by typecheck-src resolves with no config errors`,
+              false,
+              parsed.errors.map((e) => `TS${e.code}: ${ts.flattenDiagnosticMessageText(e.messageText, ' ')}`).join(' | '),
+            );
+          }
           report(
-            `${name}: A7 — typecheck-src tsconfig (${path.relative(CODE_ROOT, configPath)}) excludes *.spec.ts/*.test.ts`,
-            specOrTestFiles.length === 0,
-            specOrTestFiles.length === 0
-              ? `${parsed.fileNames.length} file(s) resolved, none spec/test`
-              : `${specOrTestFiles.length} spec/test file(s) included: ${specOrTestFiles
+            `${name}: A7 — typecheck-src tsconfig (${path.relative(CODE_ROOT, configPath)}) resolves at least one file`,
+            parsed.fileNames.length > 0,
+            `${parsed.fileNames.length} file(s) resolved`,
+          );
+
+          // BL-20d01a62 (item 3): match spec/test extensions beyond bare `.ts` — `.tsx`, `.mts`,
+          // `.cts` are all real, compilable TypeScript extensions a project can legitimately use
+          // for a spec/test file, and a `.spec.tsx`/`.test.mts` slipping into typecheck-src's file
+          // set was previously invisible to this check entirely. Also flag any file under a
+          // `test-support/` directory (regardless of its own extension/name pattern) — test
+          // fixtures and harness helpers under `src/test-support/**` are shipped test
+          // infrastructure, not production code, and belong in typecheck-tests, not typecheck-src.
+          const isSpecOrTestFile = (f) => /\.(?:spec|test)\.(?:ts|tsx|mts|cts)$/.test(f);
+          const isTestSupportFile = (f) => /(?:^|\/)test-support\//.test(path.relative(CODE_ROOT, f));
+          const flaggedFiles = parsed.fileNames.filter((f) => isSpecOrTestFile(f) || isTestSupportFile(f));
+          report(
+            `${name}: A7 — typecheck-src tsconfig (${path.relative(CODE_ROOT, configPath)}) excludes spec/test/test-support files`,
+            flaggedFiles.length === 0,
+            flaggedFiles.length === 0
+              ? `${parsed.fileNames.length} file(s) resolved, none spec/test/test-support`
+              : `${flaggedFiles.length} spec/test/test-support file(s) included: ${flaggedFiles
                   .slice(0, 5)
                   .map((f) => path.relative(CODE_ROOT, f))
                   .join(', ')}`,
@@ -329,6 +381,34 @@ for (const { name, targets } of allProjects) {
 }
 
 report('at least one project with a typecheck target was checked', projectsChecked.length > 0, `${projectsChecked.length} checked`);
+
+// --- BL-20d01a62 (item 1): guards-manifest.mjs watch-list coverage of root config files --------
+//
+// Always evaluated against the true repo tree (guards-manifest.mjs resolves its own REPO_ROOT
+// from import.meta.url, independent of this script's --code-root), never CODE_ROOT-scoped —
+// this is a check on the guard's OWN watch declaration, not on a fixture.
+{
+  const gateGuard = MANIFEST_GUARDS.find((g) => g.id === '7ff58364-7dd7a974-062504ba-3b752549-da25489b');
+  if (!gateGuard) {
+    report('20d01a62: guards-manifest.mjs defines the 7ff58364 guard entry', false, 'no matching id in GUARDS');
+  } else {
+    report(
+      '20d01a62: 7ff58364 guard watch list includes root tsconfig.base.json',
+      gateGuard.watch.includes('tsconfig.base.json'),
+      `${gateGuard.watch.length} watch entries`,
+    );
+    report(
+      '20d01a62: 7ff58364 guard watch list includes root project.json',
+      gateGuard.watch.includes('project.json'),
+      `${gateGuard.watch.length} watch entries`,
+    );
+    report(
+      '20d01a62: 7ff58364 guard watch list includes root package.json',
+      gateGuard.watch.includes('package.json'),
+      `${gateGuard.watch.length} watch entries`,
+    );
+  }
+}
 
 // --- task-graph check (A5) -----------------------------------------------------------------------
 

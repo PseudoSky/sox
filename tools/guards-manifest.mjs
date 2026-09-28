@@ -41,25 +41,61 @@ const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..
 // `git ls-files` against the real tracked tree instead of a hand-rolled `fs.readdirSync` walk
 // with its own maintained `EXCLUDE_DIRS` set. That walker duplicated the one already living in
 // tools/test-7ff58364-gate-reaches-typecheck-tests.mjs's `discoverProjectsViaFilesystem` and could
-// silently drift from it; `git ls-files` is the tracked-file truth (untracked scratch/fixture
-// `project.json`-shaped files, e.g. under docs/research/**/transcripts/**, are never tracked, so
-// they need no exclude list at all) and its result is identical on every machine/checkout — no
-// dependence on what happens to exist in a given working tree's `node_modules`/`dist`/`.worktrees`.
+// silently drift from it; `git ls-files` is the tracked-file truth and its result is identical on
+// every machine/checkout — no dependence on what happens to exist in a given working tree's
+// `node_modules`/`dist`/`.worktrees`.
+//
+// BL-20d01a62: the claim this comment used to make here — that `project.json`-shaped fixture
+// files under `docs/research/**/transcripts/**` are "never tracked, so they need no exclude
+// list at all" — is FALSE. At least
+// `docs/research/content-first/proxy/transcripts/file-writes/cf_pre/packages/apigen/apigen-plugin-batch/project.json`
+// IS tracked (`git ls-files` returns it) and is NOT valid JSON (it is a line-numbered transcript
+// capture — every line starts with `N:\t`, which fails `JSON.parse` at line 1). It ends up in
+// `ALL_PROJECT_JSON_PATHS` below like any other tracked `project.json` path — that is fine and
+// intentional, because nothing in this file (or in `tools/run-guards.mjs`'s exact-path/prefix
+// `matchesDiff`) ever parses the watch list as JSON; it is used purely as a set of diff-changed
+// paths to match against. The exclusion of `transcripts` that DOES matter lives in
+// `tools/test-7ff58364-gate-reaches-typecheck-tests.mjs`'s `discoverProjectsViaFilesystem`
+// (its own `EXCLUDE_DIRS`, used only on the `--code-root` red-demo fallback path, where the
+// walker DOES `JSON.parse` every `project.json` it finds and would otherwise crash on this file).
 //
 // Also widened (per BL-ef033f92) to `package.json` and `tsconfig*.json`: A7 (added to the 7ff58364
 // guard) reads the tsconfig file named by a project's `typecheck-src` command, so a change to
 // e.g. `tsconfig.typecheck.json`'s `exclude` list — with no accompanying `project.json` edit —
 // must also re-arm this guard.
+//
+// BL-20d01a62: the bare `**/project.json` pathspec (no `:(glob)` magic) is a LITERAL-with-`?`/`*`
+// pathspec, not a recursive glob — `**` has no special "any depth including zero" meaning without
+// `:(glob)`, so it never matches a top-level file. Verified live (2026-09-28): the plain pattern
+// missed the repo's own root `project.json`, `package.json`, `tsconfig.json`, and
+// `tsconfig.base.json` entirely — exactly the root config files this guard exists to watch (A6's
+// own resolver reads `nx.json.targetDefaults`, and root `tsconfig.base.json` is the thing every
+// project's `tsconfig.typecheck*.json` extends). Every pattern below is now `:(glob)`-prefixed so
+// `**` recurses through zero or more directories, root included.
 function trackedFiles(pattern) {
-  return execFileSync('git', ['-C', REPO_ROOT, 'ls-files', '--', pattern], { encoding: 'utf8' })
-    .split('\n')
-    .filter(Boolean)
-    .sort();
+  try {
+    return execFileSync('git', ['-C', REPO_ROOT, 'ls-files', '--', pattern], { encoding: 'utf8' })
+      .split('\n')
+      .filter(Boolean)
+      .sort();
+  } catch (err) {
+    // BL-20d01a62: this used to throw at module-import time (any transient `git` failure —
+    // detached-HEAD edge cases, a corrupt index mid-write from a concurrent agent, `git` missing
+    // from PATH in some sandbox — took down every consumer of guards-manifest.mjs, including
+    // tools/run-guards.mjs itself, with no guard actually at fault). Degrade to an empty watch
+    // list instead: a guard that under-watches on a `git` hiccup still runs on its own script-path
+    // change and via `--all`; a manifest that can't be imported runs NO guards at all.
+    console.error(`guards-manifest: git ls-files -- ${pattern} failed, watch list degraded to []: ${err.message ?? err}`);
+    return [];
+  }
 }
 
-const ALL_PROJECT_JSON_PATHS = trackedFiles('**/project.json');
-const ALL_PACKAGE_JSON_PATHS = trackedFiles('**/package.json');
-const ALL_TSCONFIG_JSON_PATHS = trackedFiles('**/tsconfig*.json');
+// BL-20d01a62 (item 1, item 4 comment correction below): `:(glob)` pathspec magic makes `**` match
+// zero or more path segments, so these now correctly include top-level `project.json`,
+// `package.json`, `tsconfig.json`, and `tsconfig.base.json` alongside every nested one.
+const ALL_PROJECT_JSON_PATHS = trackedFiles(':(glob)**/project.json');
+const ALL_PACKAGE_JSON_PATHS = trackedFiles(':(glob)**/package.json');
+const ALL_TSCONFIG_JSON_PATHS = trackedFiles(':(glob)**/tsconfig*.json');
 
 export const GUARDS = [
   // ---------------------------------------------------------------- Tier 1 (34) -----------
