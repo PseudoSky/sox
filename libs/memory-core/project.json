@@ -23,7 +23,7 @@
         "rootDir": "libs/memory-core/src"
       },
       "cache": true,
-      "dependsOn": ["build-testing"],
+      "dependsOn": ["^build", "build-testing"],
       "inputs": [
         "{projectRoot}/src/**/*.ts",
         "{projectRoot}/tsconfig.lib.json"
@@ -39,6 +39,7 @@
         "cwd": "."
       },
       "cache": true,
+      "dependsOn": ["^build"],
       "inputs": [
         "{projectRoot}/src/testing/**/*.ts",
         "{projectRoot}/tsconfig.testing.json"
