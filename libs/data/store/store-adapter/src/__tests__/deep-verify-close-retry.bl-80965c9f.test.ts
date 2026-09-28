@@ -13,129 +13,26 @@
  * promise with `void`, so any throw after its await — here the config
  * re-resolution in `scheduleDeepVerifyInternal` — was an unhandled rejection.
  * RED (no catch): `unhandledRejection` fires.
- *
- * A stub adapter is used on purpose: the window is between two awaits inside
- * the module, and only a controllable `executeGet` makes it deterministic.
  */
-import { spawn, type ChildProcess } from 'node:child_process';
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { dirname, join } from 'node:path';
-import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
+import { afterAll, afterEach, describe, expect, it, vi } from 'vitest';
 import { log } from '@adhd/sox-telemetry';
 import {
   _activeDeepVerifyForTest,
   _peerWaitPendingForTest,
-  deepVerifyLockPath,
   releaseDeepVerify,
   scheduleDeepVerify,
-  type ScheduleDeepVerifyOptions,
 } from '../deep-verify.js';
-import { canonicalDbPath } from '../path-identity.js';
-import type { StoreAdapter } from '../types.js';
+import { makeStub, macrotasks, OPTS, OWED, peerLockHarness, retryInFlight } from './fixtures/deep-verify-peer-stub.js';
 
-interface Deferred<T> {
-  promise: Promise<T>;
-  resolve: (v: T) => void;
-}
-function deferred<T>(): Deferred<T> {
-  let resolve!: (v: T) => void;
-  const promise = new Promise<T>((r) => {
-    resolve = r;
-  });
-  return { promise, resolve };
-}
-
-interface Stub {
-  adapter: StoreAdapter;
-  config: { dbPath: string; type: 'turso'; deepVerify: Record<string, unknown> };
-  calls: string[];
-  /** Resolves when the retry's obligation read has been issued. */
-  readIssued: Promise<void>;
-  /** Controls the in-flight obligation read. */
-  read: Deferred<{ value: string } | null>;
-}
-
-function makeStub(dbPath: string): Stub {
-  const calls: string[] = [];
-  const read = deferred<{ value: string } | null>();
-  const issued = deferred<void>();
-  const config = {
-    dbPath,
-    type: 'turso' as const,
-    deepVerify: { schedule: 'owner', timeoutMs: 10_000, peerRetry: { initialMs: 100, maxMs: 400 } } as Record<
-      string,
-      unknown
-    >,
-  };
-  const adapter = {
-    config,
-    executeGet: (sql: string) => {
-      calls.push(`get:${sql}`);
-      issued.resolve();
-      return read.promise;
-    },
-    executeRun: (sql: string) => {
-      calls.push(`run:${sql}`);
-      return Promise.resolve({ changes: 0 });
-    },
-  } as unknown as StoreAdapter;
-  return { adapter, config, calls, readIssued: issued.promise, read };
-}
-
-const OPTS: ScheduleDeepVerifyOptions = {
-  fastResult: {
-    verify: { ok: true, depth: 'fast', durationMs: 0, findings: [], damaged: [], unknown: [] },
-    repair: null,
-  } as unknown as ScheduleDeepVerifyOptions['fastResult'],
-  reason: 'unclean_shutdown',
-};
-
-const OWED = { value: JSON.stringify({ reason: 'unclean_shutdown', since: '2026-09-27T00:00:00.000Z' }) };
-
-const macrotasks = async (n: number): Promise<void> => {
-  for (let i = 0; i < n; i++) await new Promise((r) => setTimeout(r, 20));
-};
-
-let tmpDir: string;
-let holder: ChildProcess;
-const lockPaths: string[] = [];
-
-beforeAll(() => {
-  tmpDir = mkdtempSync(join(tmpdir(), 'bl-80965c9f-'));
-  // A live FOREIGN pid holds the lock (our own pid would be treated as a
-  // leaked lock of ours and stolen).
-  holder = spawn(process.execPath, ['-e', 'setTimeout(() => {}, 120000)'], { stdio: 'ignore' });
-});
+const harness = peerLockHarness('bl-80965c9f-');
 afterEach(() => {
   vi.restoreAllMocks();
-  // The module never removes a lock naming a pid other than its own.
-  for (const p of lockPaths.splice(0)) rmSync(p, { force: true });
+  harness.cleanupLocks();
 });
 afterAll(() => {
-  if (holder.exitCode === null && holder.signalCode === null) holder.kill('SIGKILL');
-  rmSync(tmpDir, { recursive: true, force: true });
+  harness.dispose();
 });
-
-/** A store file whose deep-pass lock is held by the live foreign `holder`. */
-function peerLockedStore(name: string): string {
-  const dbPath = join(tmpDir, name);
-  writeFileSync(dbPath, '');
-  const lockPath = deepVerifyLockPath(canonicalDbPath(dbPath));
-  mkdirSync(dirname(lockPath), { recursive: true });
-  writeFileSync(lockPath, `${String(holder.pid)}\n${new Date().toISOString()}\n`);
-  lockPaths.push(lockPath);
-  return dbPath;
-}
-
-/** Schedule as an owner, then wait until the peer-wait timer has FIRED and the
- *  retry is parked on its obligation read (the entry is already consumed). */
-async function retryInFlight(stub: Stub): Promise<void> {
-  expect(await scheduleDeepVerify(stub.adapter, OPTS)).toBeNull(); // peer_running
-  expect(_peerWaitPendingForTest(stub.adapter)).toBe(true);
-  await stub.readIssued;
-  expect(_peerWaitPendingForTest(stub.adapter)).toBe(false);
-}
+const peerLockedStore = (name: string): string => harness.peerLockedStore(name);
 
 describe('BL-80965c9f — a peer-lock re-attempt never touches a closed adapter', () => {
   it('close during the in-flight re-attempt (peer still holds the lock): no timer is re-armed, no adapter I/O after close', async () => {
@@ -164,7 +61,7 @@ describe('BL-80965c9f — a peer-lock re-attempt never touches a closed adapter'
 
     await releaseDeepVerify(stub.adapter);
     const callsAtClose = stub.calls.length;
-    rmSync(lockPaths[lockPaths.length - 1] as string, { force: true }); // peer finished
+    harness.freeLastLock(); // peer finished
     stub.read.resolve(OWED);
     await macrotasks(5);
 

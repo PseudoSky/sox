@@ -537,6 +537,30 @@ const peerWaits = new Map<StoreAdapter, PeerWait>();
  */
 const releasedAdapters = new WeakSet<StoreAdapter>();
 
+/**
+ * (BL-026af34c) `from → to` for every {@link transferDeepVerifyMembership}.
+ * The Turso reconnect abandons `from` (never closed, so never tombstoned) and
+ * keeps `to`. A peer-lock re-attempt that had already FIRED for `from` when
+ * the transfer ran has no `peerWaits` entry left to move; it is parked on its
+ * obligation read and would otherwise resume against `from`. It FOLLOWS the
+ * membership to `to` instead of being dropped: the obligation belongs to the
+ * store, not to an instance, and that in-flight re-attempt is the only thing
+ * still serving it — dropping it would starve the owed pass for the rest of
+ * `to`'s life (the BL-9f6681ee shape).
+ */
+const transferredTo = new WeakMap<StoreAdapter, StoreAdapter>();
+
+/** The adapter that now owns `adapter`'s deep-verify membership. */
+function currentOwner(adapter: StoreAdapter): StoreAdapter {
+  let cur = adapter;
+  const seen = new Set<StoreAdapter>();
+  for (let next = transferredTo.get(cur); next !== undefined && !seen.has(cur); next = transferredTo.get(cur)) {
+    seen.add(cur);
+    cur = next;
+  }
+  return cur;
+}
+
 /** Test-only: whether `adapter` is waiting to re-attempt a peer-held lock. */
 export function _peerWaitPendingForTest(adapter: StoreAdapter): boolean {
   return peerWaits.has(adapter);
@@ -603,10 +627,20 @@ async function retryAfterPeer(
       detail: 'retrying the deep pass after a peer-held lock as if still owed',
     });
   }
+  // (BL-026af34c) A Turso reconnect may have handed this adapter's membership
+  // to the instance that stays open while the read was in flight; the
+  // re-attempt continues against THAT one and never touches `adapter` again.
+  const owner = currentOwner(adapter);
+  if (owner !== adapter) {
+    log.info('store_adapter.deep_verify.peer_retry_followed_transfer', {
+      db_path: canonicalDb,
+      detail: 'the adapter was replaced by a reconnect during the peer-lock re-attempt; continuing on its successor',
+    });
+  }
   // (BL-80965c9f) The adapter may have closed while the obligation read was in
   // flight — its peer wait was already consumed, so `releaseDeepVerify` had
   // nothing to cancel. Touch it no further.
-  if (releasedAdapters.has(adapter)) {
+  if (releasedAdapters.has(owner)) {
     log.info('store_adapter.deep_verify.peer_retry_skipped_closed', {
       db_path: canonicalDb,
       detail: 'the owning adapter closed during the peer-lock re-attempt; the obligation stays for the next owner',
@@ -615,7 +649,7 @@ async function retryAfterPeer(
   }
   // `run.done` is already caught inside; a synchronous throw here rejects this
   // function's promise, which the timer callback catches and traces.
-  await scheduleDeepVerifyInternal(adapter, opts, lastDelayMs);
+  await scheduleDeepVerifyInternal(owner, opts, lastDelayMs);
 }
 let exitHookInstalled = false;
 
@@ -670,6 +704,8 @@ function canonicalOrRaw(dbPath: string): string {
  * `this.close()` would leave it running.
  */
 export function transferDeepVerifyMembership(from: StoreAdapter, to: StoreAdapter): void {
+  // (BL-026af34c) Forward any re-attempt already in flight for `from`.
+  if (from !== to) transferredTo.set(from, to);
   for (const run of runs.values()) {
     if (run.members.delete(from)) run.members.add(to);
   }
