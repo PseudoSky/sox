@@ -526,6 +526,17 @@ interface PeerWait {
 }
 const peerWaits = new Map<StoreAdapter, PeerWait>();
 
+/**
+ * (BL-80965c9f) Adapters whose final `close()` has begun. Marked as the FIRST
+ * synchronous step of {@link releaseDeepVerify} — never inferred from the
+ * adapter's own `closed` flag, which both adapters set only AFTER
+ * `releaseDeepVerify`'s awaits settle (the exact window the race lives in),
+ * and which transient teardowns (idle release, repair) also flip. A tombstone
+ * is permanent: a closed adapter never re-opens, so nothing may re-arm a
+ * peer-lock wait on it, start a run through it, or join a run with it.
+ */
+const releasedAdapters = new WeakSet<StoreAdapter>();
+
 /** Test-only: whether `adapter` is waiting to re-attempt a peer-held lock. */
 export function _peerWaitPendingForTest(adapter: StoreAdapter): boolean {
   return peerWaits.has(adapter);
@@ -540,11 +551,28 @@ function cancelPeerWait(adapter: StoreAdapter): void {
 
 function armPeerWait(adapter: StoreAdapter, opts: ScheduleDeepVerifyOptions, delayMs: number, canonicalDb: string): void {
   cancelPeerWait(adapter);
+  if (releasedAdapters.has(adapter)) {
+    // (BL-80965c9f) Never leave a timer armed against a closed adapter.
+    log.info('store_adapter.deep_verify.peer_wait_skipped_closed', {
+      db_path: canonicalDb,
+      detail: 'the owning adapter closed; not re-attempting the peer-held lock. The obligation stays for the next owner',
+    });
+    return;
+  }
   const timer = setTimeout(() => {
     const current = peerWaits.get(adapter);
     if (current === undefined || current.timer !== timer) return;
     peerWaits.delete(adapter);
-    void retryAfterPeer(adapter, current.opts, current.delayMs, canonicalDb);
+    if (releasedAdapters.has(adapter)) return; // (BL-80965c9f) closed since arming
+    // (BL-10b71ea6) Never discard the retry's promise untraced: a throw from
+    // the re-attempt (e.g. config resolution) would be an unhandled rejection.
+    retryAfterPeer(adapter, current.opts, current.delayMs, canonicalDb).catch((err: unknown) => {
+      log.error('store_adapter.deep_verify.peer_retry_failed', {
+        db_path: canonicalDb,
+        error: err instanceof Error ? err.message : String(err),
+        detail: 'the re-attempt after a peer-held lock threw; the obligation stays owed',
+      });
+    });
   }, delayMs);
   // Never keep a process alive just to wait for a peer's verifier.
   timer.unref();
@@ -575,7 +603,19 @@ async function retryAfterPeer(
       detail: 'retrying the deep pass after a peer-held lock as if still owed',
     });
   }
-  void scheduleDeepVerifyInternal(adapter, opts, lastDelayMs);
+  // (BL-80965c9f) The adapter may have closed while the obligation read was in
+  // flight — its peer wait was already consumed, so `releaseDeepVerify` had
+  // nothing to cancel. Touch it no further.
+  if (releasedAdapters.has(adapter)) {
+    log.info('store_adapter.deep_verify.peer_retry_skipped_closed', {
+      db_path: canonicalDb,
+      detail: 'the owning adapter closed during the peer-lock re-attempt; the obligation stays for the next owner',
+    });
+    return;
+  }
+  // `run.done` is already caught inside; a synchronous throw here rejects this
+  // function's promise, which the timer callback catches and traces.
+  await scheduleDeepVerifyInternal(adapter, opts, lastDelayMs);
 }
 let exitHookInstalled = false;
 
@@ -652,6 +692,9 @@ export function transferDeepVerifyMembership(from: StoreAdapter, to: StoreAdapte
  * live verifier lease would otherwise defer — proceeds.
  */
 export async function releaseDeepVerify(adapter: StoreAdapter): Promise<void> {
+  // (BL-80965c9f) Tombstone FIRST, synchronously, before any await: an
+  // in-flight peer-lock re-attempt checks this after its own await.
+  releasedAdapters.add(adapter);
   // (BL-9f6681ee) A closing owner stops waiting for a peer-held lock.
   cancelPeerWait(adapter);
   for (const run of [...runs.values()]) {
@@ -717,6 +760,8 @@ function scheduleDeepVerifyInternal(
   opts: ScheduleDeepVerifyOptions,
   lastPeerDelayMs: number | null,
 ): Promise<DeepVerifyState | null> {
+  // (BL-80965c9f) A closed adapter never arms, starts, or joins a pass.
+  if (releasedAdapters.has(adapter)) return Promise.resolve(null);
   const dbPath = adapter.config.dbPath;
   if (dbPath === undefined || dbPath === '') {
     log.warn('store_adapter.deep_verify.skipped_remote', {
