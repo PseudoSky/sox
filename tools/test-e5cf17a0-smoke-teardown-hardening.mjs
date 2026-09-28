@@ -141,6 +141,30 @@ console.log('c. identity re-check before SIGKILL');
   check('c2 e5cf17a0: and is reported as identity-changed, not undead', Array.isArray(r.identityChanged) && r.identityChanged.includes(900) && !r.undead.includes(900), JSON.stringify(r));
   const sweepSrc = slice('function processIo(', '\n}\n');
   check('c3 e5cf17a0: the harness wires identity (lstart + argv) into every verified stop', /identity: \(pid\) => processIdentity\(pid, testId\)/.test(sweepSrc) && /lstart=,command=/.test(src));
+
+  // c4/c5/c6 (BL-e5cf17a0-1a32-4cdd-94c1-8b213c5e24ac, HIGH): a failed identity probe
+  // must fail closed as undead, never as a silent identityChanged/stopped pass.
+  const procs4 = { 910: { alive: true, onTerm: () => {} } }; // ignores SIGTERM
+  const io4 = fakeIo(procs4, { identity: () => null });
+  const r4 = await lib.reapEmbedHosts([910], io4);
+  check('c4 e5cf17a0-1a32: identity() returning null on a still-alive pid is undead (fail-closed), never identityChanged',
+    r4.undead.includes(910) && !r4.identityChanged.includes(910) && !io4.sent.some((s) => s.startsWith('SIGKILL:910')), JSON.stringify(r4));
+
+  let calls5 = 0;
+  const procs5 = { 920: { alive: true, onTerm: () => {} } }; // ignores SIGTERM
+  const io5 = fakeIo(procs5, {
+    identity: () => { calls5++; return calls5 === 1 ? null : 'Mon Sep 28 10:00:00 2026 node /x/embedHostMain.js'; },
+  });
+  const r5 = await lib.reapEmbedHosts([920], io5);
+  check('c5 e5cf17a0-1a32: a null identity0 (the pre-SIGTERM read failed) on a still-alive pid is undead, never identityChanged',
+    r5.undead.includes(920) && !r5.identityChanged.includes(920) && !io5.sent.some((s) => s.startsWith('SIGKILL:920')), JSON.stringify(r5));
+
+  let ident6 = 'Mon Sep 28 10:00:00 2026 node /x/embedHostMain.js';
+  const procs6 = { 930: { alive: true, onTerm: () => {} } }; // ignores SIGTERM
+  const io6 = fakeIo(procs6, { identity: () => ident6, sleep: async () => { ident6 = 'Mon Sep 28 10:00:04 2026 /usr/bin/some-operator-tool'; } });
+  const r6 = await lib.reapEmbedHosts([930], io6);
+  check('c6 e5cf17a0-1a32: a genuine non-null identity mismatch stays identityChanged, never undead, never killed (regression guard)',
+    r6.identityChanged.includes(930) && !r6.undead.includes(930) && !io6.sent.some((s) => s.startsWith('SIGKILL:930')), JSON.stringify(r6));
 }
 
 const NOW = Date.parse('2026-09-28T10:10:00Z');

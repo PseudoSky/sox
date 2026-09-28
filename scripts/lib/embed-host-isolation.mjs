@@ -285,13 +285,23 @@ export async function reapEmbedHosts(targets, io) {
   if (orphanedChildren.length > 0) await waitGone(orphanedChildren, termMs);
 
   const identityChanged = [];
+  const unverifiable = [];
   const killed = [];
   for (const pid of all.filter(alive)) {
     if (io.identity) {
       const now = io.identity(pid);
-      if (now === null || now !== identity0.get(pid)) {
+      const before = identity0.get(pid);
+      // e5cf17a0/HIGH: a failed identity read (either side) is unverifiable, not a
+      // benign "not ours any more" — fail closed and count it as undead so the
+      // caller's verified-stop actually fails instead of silently skipping the pid.
+      if (now === null || before === null) {
+        unverifiable.push(pid);
+        if (io.log) io.log(`pid ${pid} identity unverifiable before SIGKILL (was ${JSON.stringify(before)}, now ${JSON.stringify(now)}) — treating as undead, not killed`);
+        continue;
+      }
+      if (now !== before) {
         identityChanged.push(pid);
-        if (io.log) io.log(`pid ${pid} identity changed before SIGKILL (was ${JSON.stringify(identity0.get(pid))}, now ${JSON.stringify(now)}) — not ours any more, not killed`);
+        if (io.log) io.log(`pid ${pid} identity changed before SIGKILL (was ${JSON.stringify(before)}, now ${JSON.stringify(now)}) — not ours any more, not killed`);
         continue;
       }
     }
@@ -299,7 +309,7 @@ export async function reapEmbedHosts(targets, io) {
     killed.push(pid);
   }
   if (killed.length > 0) await waitGone(killed, killMs);
-  const undead = killed.filter(alive);
+  const undead = [...killed.filter(alive), ...unverifiable];
   return { stopped: all.filter((p) => !undead.includes(p) && !identityChanged.includes(p)), undead, identityChanged };
 }
 
@@ -341,7 +351,11 @@ export async function auditAndReapEmbedHosts(ctx, io) {
     for (const p of fresh) seen.set(p.pid, p);
     if (fresh.length === 0) continue;
     const r = await reapEmbedHosts(fresh, io);
-    for (const pid of [...r.stopped, ...r.identityChanged]) { stopped.add(pid); undead.delete(pid); }
+    // e5cf17a0/HIGH: identityChanged means "not ours any more" — it must NOT be
+    // folded into `stopped`. Leave it out of both sets so the next rescan pass
+    // re-decides ownership from a fresh ps capture, instead of the reap itself
+    // silently vouching for a pid whose identity it could not confirm as smoke's.
+    for (const pid of r.stopped) { stopped.add(pid); undead.delete(pid); }
     for (const pid of r.undead) undead.add(pid);
   }
   return {
