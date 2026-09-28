@@ -8,12 +8,10 @@
  * fork the REAL `fastembedProcessHost.ts` (via tsx) and drive a real
  * `init` → `__shutdown` sequence against the real `fastembed` package.
  *
- * Deliberately points `cacheDir` at the package's OWN default model cache
- * (`~/.cache/sox/models`, resolved exactly like `joinDefaultCacheDir()` in
- * `index.ts`): the model loads from cache when present (the normal
- * development state — and the state that makes the test fast and hermetic,
- * no download), and downloads on first run in a cold environment, matching
- * the bl426 spec's existing download behavior.
+ * `cacheDir` is the run's SCRATCH model cache (BL-230d1d2a): the project
+ * globalSetup clones the operator's cache into a `/tmp/sox-ep-*` root, so the
+ * model loads with no download and the operator cache is never opened by the
+ * host. With nothing seeded (a cold box) the test skips rather than download.
  *
  * Isolation: `SOX_EMBED_EXECUTION_PROVIDER=cpu` (fast, avoids CoreML/ANE
  * contention), `SOX_FASTEMBED_LOCK_PATH` and `SOX_ECOSYSTEM_HOME` pointed at
@@ -21,17 +19,23 @@
  * never the real ecosystem home.
  */
 import { fork, type ChildProcess } from 'node:child_process';
-import { homedir, tmpdir } from 'node:os';
+import { tmpdir } from 'node:os';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { join, resolve } from 'node:path';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, inject, it } from 'vitest';
+import { log } from '@adhd/sox-telemetry';
 import { MODEL_CONFIGS } from './fastembedModels.js';
+import { isModelCached } from './index.js';
+import { EMBED_SCRATCH_KEY, embedScratchOrNull } from './test-support/scratchModelCache.js';
 
 const HOST_PATH = resolve(__dirname, 'fastembedProcessHost.ts');
 
-// The package's own default cache dir (mirrors `joinDefaultCacheDir()` in
-// index.ts: $XDG_CACHE_HOME/sox/models, else ~/.cache/sox/models).
-const CACHE_DIR = join(process.env['XDG_CACHE_HOME'] ?? join(homedir(), '.cache'), 'sox', 'models');
+// BL-230d1d2a: the run-scoped scratch model cache (seeded by APFS clone from the
+// operator cache in vitest.global-scratch.ts) — NEVER the operator's
+// ~/.cache/sox/models, which this spec used to fork the real host at.
+const SCRATCH = embedScratchOrNull(inject(EMBED_SCRATCH_KEY));
+if (SCRATCH === null) throw new Error('run through the project vitest config: no scratch model cache was provided');
+const CACHE_DIR = SCRATCH.modelCache;
 
 let child: ChildProcess | undefined;
 let scratchDir: string | undefined;
@@ -40,8 +44,8 @@ afterEach(() => {
   if (child && !child.killed) {
     try {
       child.kill('SIGKILL');
-    } catch {
-      /* ignore */
+    } catch (err) {
+      log.warn('embedding_provider.spec.bug005.kill_failed', { error: String(err) });
     }
   }
   child = undefined;
@@ -50,8 +54,8 @@ afterEach(() => {
   if (scratchDir) {
     try {
       rmSync(scratchDir, { recursive: true, force: true });
-    } catch {
-      /* ignore */
+    } catch (err) {
+      log.warn('embedding_provider.spec.bug005.rm_scratch_failed', { error: String(err) });
     }
     scratchDir = undefined;
   }
@@ -94,7 +98,7 @@ function initRealChild(model: string): Promise<Record<string, unknown>> {
 }
 
 describe('BUG-005 — fastembed child init reply reports the REAL model dimension', () => {
-  it(
+  it.runIf(isModelCached(CACHE_DIR, 'fast-bge-base-en-v1.5'))(
     'init with the cached bge-base-en-v1.5 model: initOk true and dim 768 (pre-fix: dim was always 0)',
     async () => {
       const reply = await initRealChild('bge-base-en-v1.5');

@@ -51,6 +51,7 @@ import {
   resolveEmbedHostStderrLogPath,
 } from './embedHostConfig.js';
 import type { SharedFastembedClient } from './sharedFastembedProcess.js';
+import { activeFunnelSpawnGuard, assertSpawnInsideScratchRoot } from './spawnScratchGuard.js';
 
 /** Consecutive failed ensures before the breaker opens. */
 export const ENSURE_FAILURE_THRESHOLD = 3;
@@ -409,6 +410,13 @@ export class FunneledFastembedClient implements SharedFastembedClient {
     let buildId = computeEmbedHostBuildId(hostMain);
     let key = embedHostSingletonKey(ctx.model, ep, ctx.cacheDir, buildId);
     let socketPath = embedHostSocketPath(cfg, key);
+    // BL-0b0573f8: a test harness may arm a typed scratch-root guard (test seam,
+    // never env — ADR-0013). Checked BEFORE the first probe, so a mis-scoped
+    // spec can neither dial the operator's live host nor spawn one on the
+    // operator's cache/socket. Production never arms it: the guard is null and
+    // the assertion returns immediately.
+    const spawnGuard = activeFunnelSpawnGuard();
+    assertSpawnInsideScratchRoot({ cacheDir: ctx.cacheDir, socketPath }, spawnGuard);
 
     const repoint = (): void => {
       if (this.socketPath !== socketPath) {
@@ -503,6 +511,7 @@ export class FunneledFastembedClient implements SharedFastembedClient {
           buildId = computeEmbedHostBuildId(hostMain);
           key = embedHostSingletonKey(ctx.model, ep, ctx.cacheDir, buildId);
           socketPath = embedHostSocketPath(cfg, key);
+          assertSpawnInsideScratchRoot({ cacheDir: ctx.cacheDir, socketPath }, spawnGuard);
           repoint();
           live = await probeSocketLive(socketPath, PROBE_TIMEOUT_MS);
           continue;
