@@ -338,3 +338,12 @@ export type {
   CommandAdapterOptions,
   CommandAdapterHandle,
 } from './adapters/command.js';
+
+// ─── D-B: bounded, roots-first retention (AC5 / B-I6) ──────────────────────────
+export { planRetention, applyRetention, sweepTrash } from './retention.js';
+export type {
+  RootsModel,
+  RetentionPolicy,
+  RetentionClass,
+  RetentionPlan,
+} from './retention.js';
