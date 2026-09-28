@@ -40,6 +40,7 @@ import {
   auditAndReapEmbedHosts,
   auditEmbedHosts,
   describeHost,
+  embedGateVerdict,
   parsePsLines,
 } from './lib/embed-host-isolation.mjs';
 import { buildMemoryServerEnv, buildSmokeEnv } from './lib/smoke-env.mjs';
@@ -186,6 +187,8 @@ const SMOKE_ROOTS = [TEST_ROOT, SMOKE_SHORT_ROOT];
 const EMBED_ISOLATION_BREACHES = [];
 /** 97e7f214: every smoke embedding host that survived a verified stop. */
 const EMBED_UNDEAD = new Set();
+/** 26121495: every distinct pid attributed to this run by an embed-host reap (the gate's evidence). */
+const EMBED_ATTRIBUTED = new Set();
 const SMOKE_DB_PATH = path.join(MEMORY_FAKE_HOME, '.memory', 'memory-smoke.db');
 
 // Derive the real live socket dir so we can assert against it after the run.
@@ -671,7 +674,8 @@ async function runServeProxyAndVerify(args, opts) {
     } catch (e) { logKillError(e, testId, backendPid, "SIGTERM (backend)"); }
   }
   // 97e7f214/26121495: the embedding host the backend spawned is detached; stop it here.
-  const embedReap = await reapSmokeEmbedHosts(testId);
+  // The memory-server backend is known to embed, so the leg must attribute a host.
+  const embedReap = await reapSmokeEmbedHosts(testId, { requireObserved: extId === 'memory-server' });
 
   const after = await snapshotFiles(TEST_ROOT);
   const fileChanges = diffSnapshots(before, after);
@@ -1017,7 +1021,7 @@ function auditSmokeEmbedHosts(testId) {
  *
  * @returns {Promise<{ ok: boolean, detail: string }>}
  */
-async function reapSmokeEmbedHosts(testId) {
+async function reapSmokeEmbedHosts(testId, opts = {}) {
   const r = await auditAndReapEmbedHosts(embedAuditCtx(), {
     ps: () => psEmbedHosts(testId),
     now: () => Date.now(),
@@ -1032,13 +1036,11 @@ async function reapSmokeEmbedHosts(testId) {
   console.error(`[smoke] ${testId} embed-host reap (97e7f214): smoke-owned ${r.smoke.length} ` +
     `[${r.smoke.map((p) => `${p.pid}:${p.kind}`).join(', ')}], stopped ${r.stopped.length}, undead ${r.undead.length}, ` +
     `violations ${r.violations.length}, foreign (untouched) ${r.foreign.length}`);
-  const problems = [];
-  if (r.psFailed) problems.push('embed-host ps capture failed — reap unverifiable');
-  if (r.undead.length > 0) problems.push(`embed host(s) survived verified stop: ${r.undead.join(', ')}`);
-  if (r.violations.length > 0) {
-    problems.push(`embed host isolation breach: ${r.violations.map((v) => `pid ${v.pid}: ${v.reasons.join('; ')}`).join(' | ')}`);
-  }
-  return { ok: problems.length === 0, detail: problems.join(' || ') };
+  for (const p of r.smoke) EMBED_ATTRIBUTED.add(p.pid);
+  // requireObserved: a leg known to embed must attribute >=1 host, else fail closed.
+  const verdict = embedGateVerdict(r, { requireObserved: opts.requireObserved === true });
+  if (!verdict.ok) console.error(`[smoke] FAIL: ${testId} embed-host gate: ${verdict.problems.join(' || ')}`);
+  return { ok: verdict.ok, detail: verdict.problems.join(' || '), attributed: r.smoke.length };
 }
 
 // BL-635: the no-proxy memory-server leg used to send initialize + memory_write
@@ -1152,7 +1154,8 @@ async function runMemoryServerDirectServeAndVerify(args, opts) {
   }
   // 97e7f214: the embedding host is its own process-group leader (ADR-0022), so
   // the group kill above never reaches it — verified-stop it explicitly.
-  const embedReap = await reapSmokeEmbedHosts(testId);
+  // This leg writes a memory (embeds), so it must attribute >=1 host (26121495).
+  const embedReap = await reapSmokeEmbedHosts(testId, { requireObserved: true });
 
   const testRootProcsAfter = listTestRootProcesses();
   let orphanProblem = null;
@@ -1743,7 +1746,8 @@ async function main() {
     console.error(`[smoke] FATAL: smoke embedding host(s) outlived the run (97e7f214): ${[...EMBED_UNDEAD].join(', ')} ${finalEmbed.detail}`);
     embedIsolationFailed = true;
   } else {
-    console.error('[smoke] embedding-host isolation OK — every smoke-owned host was contained in the run and verified-stopped');
+    console.error(`[smoke] embedding-host isolation OK — ${EMBED_ATTRIBUTED.size} smoke-owned embedding process(es) attributed ` +
+      `[${[...EMBED_ATTRIBUTED].join(', ')}]; all contained in the run and verified-stopped`);
   }
 
   // 2. Assert no sockets appeared under the REAL (live) socket dir during the run.

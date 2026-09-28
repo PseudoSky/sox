@@ -150,11 +150,11 @@ try {
   const src = fs.readFileSync(SMOKE_PATH, 'utf8');
   const leg = src.slice(src.indexOf('async function runMemoryServerDirectServeAndVerify'), src.indexOf('function verifyServiceRunning'));
   check('C1 the no-proxy leg verified-stops embedding hosts after the group kill',
-    /killProcessGroup\(child\.pid, testId\)[\s\S]*reapSmokeEmbedHosts\(testId\)/.test(leg));
+    /killProcessGroup\(child\.pid, testId\)[\s\S]*reapSmokeEmbedHosts\(testId[,)]/.test(leg));
   check('C2 a survivor fails the no-proxy leg (not a WARNING)', /verdict: "teardown-leak"/.test(leg));
   const proxy = src.slice(src.indexOf('async function runServeProxyAndVerify'), src.indexOf('function hostsFromManifest'));
   check('C3 the proxy leg verified-stops embedding hosts and fails on a survivor',
-    /reapSmokeEmbedHosts\(testId\)/.test(proxy) && /verdict: "embed-host-teardown"/.test(proxy));
+    /reapSmokeEmbedHosts\(testId[,)]/.test(proxy) && /verdict: "embed-host-teardown"/.test(proxy));
 } finally {
   // Clean up every process THIS test started (and only those).
   for (const pid of started) {

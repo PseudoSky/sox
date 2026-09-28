@@ -282,3 +282,29 @@ export async function auditAndReapEmbedHosts(ctx, io) {
     psFailed,
   };
 }
+
+/**
+ * The pass/fail verdict for one audit+reap result (26121495, 97e7f214).
+ *
+ * `requireObserved` is set for a leg KNOWN to embed (the memory-server serve
+ * legs). For such a leg, zero attributed hosts is not "clean" — it means
+ * attribution found nothing to check, which is exactly the no-evidence
+ * false-green 26121495 was filed for (e.g. the host env stops carrying the smoke
+ * root, or the `ps -E` format changes). It fails closed.
+ *
+ * @param {{ smoke: object[], undead: number[], violations: {pid:number, reasons:string[]}[], psFailed: boolean }} r
+ * @param {{ requireObserved?: boolean }} [opts]
+ * @returns {{ ok: boolean, problems: string[] }}
+ */
+export function embedGateVerdict(r, opts = {}) {
+  const problems = [];
+  if (r.psFailed) problems.push('embed-host ps capture failed — reap unverifiable');
+  if (opts.requireObserved && r.smoke.length === 0 && !r.psFailed) {
+    problems.push('no smoke-owned embedding host was observed for a leg that embeds — attribution found nothing to verify (no evidence is not a pass)');
+  }
+  if (r.undead.length > 0) problems.push(`embed host(s) survived verified stop: ${r.undead.join(', ')}`);
+  if (r.violations.length > 0) {
+    problems.push(`embed host isolation breach: ${r.violations.map((v) => `pid ${v.pid}: ${v.reasons.join('; ')}`).join(' | ')}`);
+  }
+  return { ok: problems.length === 0, problems };
+}

@@ -32,6 +32,11 @@
  * Usage:
  *   node tools/test-26121495-smoke-embed-host-isolation.mjs                     # green: all cases pass
  *   node tools/test-26121495-smoke-embed-host-isolation.mjs --pre-fix --smoke <pre-fix smoke-test.mjs>   # red demo
+ *   node tools/test-26121495-smoke-embed-host-isolation.mjs --pre-fix-gate --smoke <853b283f smoke-test.mjs>   # part D red demo
+ *
+ * Part D (review HIGH on 853b283f): the gate must FAIL a leg known to embed when
+ * attribution finds zero smoke-owned hosts — no evidence is not a pass. Control:
+ * the authentic 853b283f gate (ok iff no ps failure / undead / violations).
  */
 import * as fs from 'node:fs';
 import * as os from 'node:os';
@@ -57,6 +62,20 @@ const { backendSocketPath } = await import(pathToFileURL(socketPathMod).href);
 const PRE_FIX_AUDIT = (procs) => ({ smoke: [], foreign: procs, violations: [] });
 /** Pre-fix smokeEnv()/memoryServerEnv(): inherit everything, deep SOX_ECOSYSTEM_HOME. */
 const preFixSmokeEnv = (base, cfg) => ({ ...base, NODE_NO_WARNINGS: '1', SOX_ECOSYSTEM_HOME: cfg.deepDataRoot, SOX_TELEMETRY_HARNESS: '1' });
+
+/**
+ * Pre-fix gate (authentic, scripts/smoke-test.mjs @ 853b283f reapSmokeEmbedHosts):
+ * ok iff no ps failure, no undead, no violations — zero attributed hosts passed.
+ */
+const PRE_FIX_GATE = (r) => {
+  const problems = [];
+  if (r.psFailed) problems.push('ps failed');
+  if (r.undead.length > 0) problems.push('undead');
+  if (r.violations.length > 0) problems.push('violations');
+  return { ok: problems.length === 0, problems };
+};
+// --pre-fix-gate swaps ONLY the gate (isolates part D's red demo from A–C).
+const gate = PRE_FIX || process.argv.includes('--pre-fix-gate') ? PRE_FIX_GATE : lib.embedGateVerdict;
 
 const audit = PRE_FIX ? PRE_FIX_AUDIT : (procs, ctx) => lib.auditEmbedHosts(procs, ctx);
 const buildEnv = PRE_FIX ? preFixSmokeEnv : envLib.buildSmokeEnv;
@@ -184,6 +203,29 @@ console.log('C. harness wiring');
     `${bare.length} leg(s) default to the operator-HOME smokeEnv(): ${JSON.stringify(bare)}`);
   check('C2 the run fails (exit 2) on an embedding-host isolation breach', /embedIsolationFailed = true/.test(src) && /if \(embedIsolationFailed\)[\s\S]{0,300}process\.exit\(2\)/.test(src));
   check('C3 every soxe step is audited for smoke-owned embedding hosts', /auditSmokeEmbedHosts\(/.test(src) && /reapSmokeEmbedHosts\('final-sweep'\)/.test(src));
+}
+
+// ── D. the gate fails closed on no evidence (review HIGH on 853b283f) ─────────────
+console.log('D. embed-host gate requires evidence for a leg that embeds');
+{
+  // Attribution broke silently: the smoke host no longer carries the root, so the
+  // audit sees only a foreign host and attributes nothing.
+  const raw = hostLine({ pid: 9001, socket: '/Users/op/.adhd/sox-ecosystem/run/p.sock', cache: '/Users/op/.cache/sox/models', spawner: 85328, env: 'HOME=/Users/op' });
+  const a = lib.auditEmbedHosts(lib.parsePsLines(raw, NOW), { smokeRoots: ROOTS, spawnedPids: new Set(), runStartedMs: RUN_START });
+  const r = { smoke: a.smoke, undead: [], violations: a.violations, psFailed: false };
+  const v = gate(r, { requireObserved: true });
+  check('D1 an embedding leg that attributes zero smoke-owned hosts FAILS the gate', a.smoke.length === 0 && v.ok === false,
+    `attributed ${a.smoke.length}, gate ok=${v.ok}`);
+  const v2 = gate(r, { requireObserved: false });
+  check('D2 a leg that is not known to embed may attribute zero hosts', v2.ok === true);
+  const src = fs.readFileSync(SMOKE_PATH, 'utf8');
+  const noProxy = src.slice(src.indexOf('async function runMemoryServerDirectServeAndVerify'), src.indexOf('function verifyServiceRunning'));
+  const proxy = src.slice(src.indexOf('async function runServeProxyAndVerify'), src.indexOf('function hostsFromManifest'));
+  check('D3 both memory-server serve legs demand an observed host',
+    /reapSmokeEmbedHosts\(testId, \{ requireObserved: true \}\)/.test(noProxy) &&
+    /reapSmokeEmbedHosts\(testId, \{ requireObserved: extId === 'memory-server' \}\)/.test(proxy));
+  check('D4 the final OK line reports the attributed count, not "every … host"',
+    /EMBED_ATTRIBUTED\.size\} smoke-owned embedding process/.test(src) && !/every smoke-owned host was contained/.test(src));
 }
 
 console.log(failed === 0 ? 'PASS 26121495: all cases pass' : `FAIL 26121495: ${failed} case(s) failed`);
