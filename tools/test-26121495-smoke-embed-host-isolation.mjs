@@ -18,7 +18,14 @@
  *   A. the audit (scripts/lib/embed-host-isolation.mjs) flags a smoke-owned host
  *      whose HOME, --cache-dir or --socket leaves the run, attributes by lineage
  *      only, and never flags a foreign (production / other session) host.
- *      Pre-fix control: the harness had no embed-host audit at all.
+ *      Pre-fix control (9303b749): the pre-fix harness had NO process-level check
+ *      of any kind — its only isolation verdict was evaluateIsolation() over the
+ *      live data root's files and telemetry. The control therefore loads the REAL
+ *      `evaluateIsolation`/`snapshotLiveFiles` from
+ *      `git show 0bb5b497:scripts/lib/isolation-guard.mjs` and hands it exactly
+ *      what such a run produced (an untouched live root, no harness telemetry — an
+ *      embedding host writes neither): a pre-fix FATAL would flag every host, a
+ *      pre-fix "ok" flags none. It returns "ok", which is the reported false green.
  *   B. the env the harness hands its children (scripts/lib/smoke-env.mjs), fed
  *      through the product's own socket-path function and cache resolution,
  *      keeps socket and cache inside the run — with and without TMPDIR (a
@@ -38,6 +45,7 @@
  * attribution finds zero smoke-owned hosts — no evidence is not a pass. Control:
  * the authentic 853b283f gate (ok iff no ps failure / undead / violations).
  */
+import { execFileSync } from 'node:child_process';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
@@ -57,9 +65,31 @@ if (!fs.existsSync(socketPathMod)) {
 }
 const { backendSocketPath } = await import(pathToFileURL(socketPathMod).href);
 
-// ── Pre-fix controls (authentic shapes lifted from scripts/smoke-test.mjs @ 0bb5b497) ──
-/** Pre-fix: no embed-host audit existed; the run's only check was data-root file hashes. */
-const PRE_FIX_AUDIT = (procs) => ({ smoke: [], foreign: procs, violations: [] });
+// ── Pre-fix controls (authentic code from 0bb5b497, the commit before 8ee98667) ──
+const PRE_FIX_REV = '0bb5b497';
+/**
+ * 9303b749: the pre-fix harness's only isolation verdict, loaded from git — never
+ * a hand-written stub. Returns an audit-shaped result from that verdict.
+ */
+async function loadPreFixAudit() {
+  const src = execFileSync('git', ['-C', REPO_ROOT, 'show', `${PRE_FIX_REV}:scripts/lib/isolation-guard.mjs`], { encoding: 'utf8' });
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'sox-9303b749-'));
+  const file = path.join(dir, 'isolation-guard.pre-fix.mjs');
+  fs.writeFileSync(file, src);
+  const pre = await import(pathToFileURL(file).href);
+  process.on('exit', () => fs.rmSync(dir, { recursive: true, force: true }));
+  const liveRoot = path.join(dir, 'live-root'); // the operator's live data root, untouched by the embed host
+  fs.mkdirSync(liveRoot);
+  return (procs, ctx) => {
+    const before = pre.snapshotLiveFiles(liveRoot);
+    const after = pre.snapshotLiveFiles(liveRoot);
+    const v = pre.evaluateIsolation({ before, after, liveEvents: [], liveOtherEvents: [], scratchEvents: [], smokeTouchedIds: [], smokePids: ctx.spawnedPids });
+    return v.verdict === 'fatal'
+      ? { smoke: procs, foreign: [], violations: procs.map((p) => ({ pid: p.pid, kind: p.kind, reasons: [`pre-fix evaluateIsolation fatal: ${v.lines.join('; ')}`] })) }
+      : { smoke: [], foreign: procs, violations: [], preFixVerdict: v.verdict };
+  };
+}
+const PRE_FIX_AUDIT = PRE_FIX ? await loadPreFixAudit() : null;
 /** Pre-fix smokeEnv()/memoryServerEnv(): inherit everything, deep SOX_ECOSYSTEM_HOME. */
 const preFixSmokeEnv = (base, cfg) => ({ ...base, NODE_NO_WARNINGS: '1', SOX_ECOSYSTEM_HOME: cfg.deepDataRoot, SOX_TELEMETRY_HARNESS: '1' });
 
@@ -115,6 +145,7 @@ console.log('A. embed-host audit (positive containment, lineage attribution)');
     childLine({ pid: 5002, ppid: 5001, env }),
   ].join('\n');
   const r = audit(lib.parsePsLines(raw, NOW), { smokeRoots: ROOTS, spawnedPids: new Set(), runStartedMs: RUN_START });
+  if (PRE_FIX) console.log(`  note pre-fix evaluateIsolation verdict: ${r.preFixVerdict ?? 'fatal'} (the harness printed "isolation OK" for this run)`);
   const v = r.violations.find((x) => x.pid === 5001);
   check('A1 reported shape (operator HOME + cache + $TMPDIR/sox-uds socket) is a breach', !!v && v.reasons.length === 3,
     JSON.stringify(r.violations));
@@ -201,7 +232,9 @@ console.log('C. harness wiring');
   const bare = calls.filter((m) => !/\benv:\s*\w/.test(m[2])).map((m) => m[2].split('\n')[0].slice(0, 90));
   check('C1 every testExtension leg passes an explicit env (memory-server legs get the scratch HOME)', calls.length > 0 && bare.length === 0,
     `${bare.length} leg(s) default to the operator-HOME smokeEnv(): ${JSON.stringify(bare)}`);
-  check('C2 the run fails (exit 2) on an embedding-host isolation breach', /embedIsolationFailed = true/.test(src) && /if \(embedIsolationFailed\)[\s\S]{0,300}process\.exit\(2\)/.test(src));
+  check('C2 the run fails (exit 2) on an embedding-host isolation breach',
+    (/embedIsolationFailed = true/.test(src) && /if \(embedIsolationFailed\)[\s\S]{0,300}process\.exit\(2\)/.test(src)) ||
+    (/const embed = finalEmbedVerdict\(/.test(src) && /if \(!embed\.ok\)[\s\S]{0,300}process\.exit\(2\)/.test(src)));
   check('C3 every soxe step is audited for smoke-owned embedding hosts', /auditSmokeEmbedHosts\(/.test(src) && /reapSmokeEmbedHosts\('final-sweep'\)/.test(src));
 }
 
@@ -222,10 +255,14 @@ console.log('D. embed-host gate requires evidence for a leg that embeds');
   const noProxy = src.slice(src.indexOf('async function runMemoryServerDirectServeAndVerify'), src.indexOf('function verifyServiceRunning'));
   const proxy = src.slice(src.indexOf('async function runServeProxyAndVerify'), src.indexOf('function hostsFromManifest'));
   check('D3 both memory-server serve legs demand an observed host',
-    /reapSmokeEmbedHosts\(testId, \{ requireObserved: true \}\)/.test(noProxy) &&
-    /reapSmokeEmbedHosts\(testId, \{ requireObserved: extId === 'memory-server' \}\)/.test(proxy));
+    /reapSmokeEmbedHosts\(testId, \{ requireObserved: true[ ,]/.test(noProxy) &&
+    (/reapSmokeEmbedHosts\(testId, \{ requireObserved: extId === 'memory-server'[ ,]/.test(proxy) ||
+      (/const embeds = extId === 'memory-server';/.test(proxy) && /reapSmokeEmbedHosts\(testId, \{ requireObserved: embeds[ ,]/.test(proxy))));
+  const okLine = typeof lib.finalEmbedVerdict === 'function'
+    ? lib.finalEmbedVerdict({ breaches: [], undead: [], auditFailures: [], finalSweep: { ok: true, detail: '' }, attributed: [11, 12] }).okLine ?? ''
+    : (src.match(/embedding-host isolation OK[^\n]*/) ?? [''])[0];
   check('D4 the final OK line reports the attributed count, not "every … host"',
-    /EMBED_ATTRIBUTED\.size\} smoke-owned embedding process/.test(src) && !/every smoke-owned host was contained/.test(src));
+    /(EMBED_ATTRIBUTED\.size\}|^embedding-host isolation OK — 2) smoke-owned embedding process/.test(okLine) && !/every smoke-owned host was contained/.test(src), okLine);
 }
 
 console.log(failed === 0 ? 'PASS 26121495: all cases pass' : `FAIL 26121495: ${failed} case(s) failed`);

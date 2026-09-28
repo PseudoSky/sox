@@ -58,16 +58,23 @@ export function parseEtime(s) {
   return (Number(m[1] ?? 0) * 86400) + (Number(m[2] ?? 0) * 3600) + (Number(m[3]) * 60) + Number(m[4]);
 }
 
-/** Pull `KEY=value` (whitespace-bounded) out of a `ps -E` line. */
-function envValue(line, key) {
-  const m = new RegExp(`(?:^|\\s)${key}=(\\S*)`).exec(line);
+// e5cf17a0: `ps -E` joins argv and environment with single spaces and quotes
+// nothing, so a value ends where the NEXT `NAME=` / `--flag=` token begins — not
+// at the first whitespace. `\S+` truncated `HOME=/Users/op/My Smoke/home` to
+// `/Users/op/My`, which then failed (or worse, passed) containment on a prefix.
+const NEXT_ENV = '\\s+[A-Za-z_][A-Za-z0-9_]*=';
+const NEXT_FLAG = '\\s+--[A-Za-z][A-Za-z0-9-]*=';
+
+/** Pull `KEY=value` out of a `ps -E` line (value may contain spaces). */
+export function envValue(line, key) {
+  const m = new RegExp(`(?:^|\\s)${key}=(.*?)(?=${NEXT_ENV}|${NEXT_FLAG}|\\s*$)`).exec(line);
   return m ? m[1] : null;
 }
 
-/** Pull `--flag=value` out of the host argv (ADR-0022 §5 uses the `=` form). */
-function flagValue(line, flag) {
-  const m = new RegExp(`(?:^|\\s)--${flag}=(\\S+)`).exec(line);
-  return m ? m[1] : null;
+/** Pull `--flag=value` out of the host argv (ADR-0022 §5 uses the `=` form; value may contain spaces). */
+export function flagValue(line, flag) {
+  const m = new RegExp(`(?:^|\\s)--${flag}=(.*?)(?=${NEXT_FLAG}|${NEXT_ENV}|\\s*$)`).exec(line);
+  return m && m[1] !== '' ? m[1] : null;
 }
 
 /**
@@ -132,19 +139,39 @@ function insideAny(p, roots) {
   return roots.some((r) => isInsideRoot(p, r));
 }
 
+/** Two etime-derived start estimates of ONE process differ by < 1 s each way. */
+const SAME_START_MS = 2000;
+
 /**
  * Is this host record the smoke run's? Lineage only (see the module header).
  *
+ * e5cf17a0:
+ *  - `ownedIds` (pid → startedMs) remembers every record a previous audit
+ *    attributed. A fastembed child attributed through its parent host keeps its
+ *    ownership after that host dies and it is reparented to pid 1; the start
+ *    time must match, so a recycled pid never inherits it.
+ *  - `spawnStartedMs` (pid → startedMs) is when each spawned pid itself started.
+ *    A host is attributed by `--spawner-pid` only when it started no earlier than
+ *    THAT spawner (1 s etime slack) — the run-wide start alone let a host whose
+ *    spawner pid was recycled mid-run by a smoke child count as the run's.
+ *    Without an entry the run start is the (weaker) floor.
+ *
  * @param {object} proc  a {@link parsePsLines} record
- * @param {{ smokeRoots: string[], spawnedPids: Set<number>, runStartedMs: number, hostPids?: Set<number> }} ctx
+ * @param {{ smokeRoots: string[], spawnedPids: Set<number>, runStartedMs: number, hostPids?: Set<number>,
+ *           ownedIds?: Map<number, number>, spawnStartedMs?: Map<number, number> }} ctx
  */
 export function isSmokeOwned(proc, ctx) {
   if (ctx.smokeRoots.some((r) => r && proc.line.includes(r))) return true;
+  if (ctx.ownedIds && ctx.ownedIds.has(proc.pid)) {
+    const was = ctx.ownedIds.get(proc.pid);
+    if (Number.isFinite(was) && Number.isFinite(proc.startedMs) && Math.abs(was - proc.startedMs) < SAME_START_MS) return true;
+  }
   if (ctx.hostPids && ctx.hostPids.has(proc.ppid)) return true; // fastembed child of a smoke host
   if (Number.isFinite(proc.spawnerPid) && ctx.spawnedPids.has(proc.spawnerPid)) {
-    // A recycled pid cannot make a pre-existing host the run's: it must have
-    // started no earlier than the run (1 s slack for etime's resolution).
-    return Number.isFinite(proc.startedMs) && proc.startedMs >= ctx.runStartedMs - 1000;
+    const spawnerStart = ctx.spawnStartedMs?.get(proc.spawnerPid);
+    const floor = Number.isFinite(spawnerStart) ? spawnerStart : ctx.runStartedMs;
+    // A recycled pid cannot make an older host the run's (1 s slack for etime's resolution).
+    return Number.isFinite(proc.startedMs) && proc.startedMs >= floor - 1000;
   }
   return false;
 }
@@ -196,15 +223,24 @@ export function describeHost(p) {
 }
 
 /**
- * Verified stop (docs/spec/service-lifecycle.md §8.3 shape) of each pid:
- * SIGTERM → poll for ESRCH → SIGKILL → re-verify. Hosts are signalled before
- * their children so a host's own ordered retire can terminate its pool first.
+ * Verified stop (docs/spec/service-lifecycle.md §8.3 shape), ordered (e5cf17a0):
+ *   1. SIGTERM every host, poll for ESRCH — a host's own ordered retire
+ *      terminates its fastembed pool, so most children need no signal at all;
+ *   2. SIGTERM only the children that SURVIVED that, poll again;
+ *   3. SIGKILL whatever is left — but only after re-reading its identity
+ *      (`io.identity`: start time + argv) and finding it unchanged, so a pid the
+ *      kernel recycled for an unrelated process during the wait is never killed;
+ *   4. re-verify; anything still alive is undead.
  *
- * @param {number[]} pids
- * @param {{ kill: (pid:number, sig:string|number)=>void, sleep: (ms:number)=>Promise<void>, log?: (s:string)=>void, termMs?: number, killMs?: number }} io
- * @returns {Promise<{ stopped: number[], undead: number[] }>}
+ * `targets` are {@link parsePsLines} records (or `{ pid, kind }`); a bare pid is
+ * treated as a host. Without `io.identity` step 3 skips the re-check.
+ *
+ * @param {Array<number|{pid:number, kind?:string}>} targets
+ * @param {{ kill: (pid:number, sig:string|number)=>void, sleep: (ms:number)=>Promise<void>, identity?: (pid:number)=>string|null,
+ *           log?: (s:string)=>void, termMs?: number, killMs?: number }} io
+ * @returns {Promise<{ stopped: number[], undead: number[], identityChanged: number[] }>}
  */
-export async function reapEmbedHosts(pids, io) {
+export async function reapEmbedHosts(targets, io) {
   const termMs = io.termMs ?? 5000;
   const killMs = io.killMs ?? 3000;
   const alive = (pid) => {
@@ -227,18 +263,49 @@ export async function reapEmbedHosts(pids, io) {
       }
     }
   };
-  const waitGone = async (set, ms) => {
+  const waitGone = async (list, ms) => {
     const deadline = Date.now() + ms;
-    while (Date.now() < deadline && [...set].some(alive)) await io.sleep(100);
+    while (Date.now() < deadline && list.some(alive)) await io.sleep(100);
   };
-  const targets = [...new Set(pids)].filter((p) => Number.isInteger(p) && p > 0);
-  for (const pid of targets) signal(pid, 'SIGTERM');
-  await waitGone(targets, termMs);
-  const stubborn = targets.filter(alive);
-  for (const pid of stubborn) signal(pid, 'SIGKILL');
-  if (stubborn.length > 0) await waitGone(stubborn, killMs);
-  const undead = targets.filter(alive);
-  return { stopped: targets.filter((p) => !undead.includes(p)), undead };
+  const recs = new Map();
+  for (const t of targets) {
+    const r = typeof t === 'number' ? { pid: t, kind: 'host' } : t;
+    if (Number.isInteger(r.pid) && r.pid > 0 && !recs.has(r.pid)) recs.set(r.pid, r);
+  }
+  const all = [...recs.keys()];
+  const hosts = all.filter((p) => recs.get(p).kind === 'host');
+  const children = all.filter((p) => recs.get(p).kind !== 'host');
+  const identity0 = new Map();
+  if (io.identity) for (const pid of all) identity0.set(pid, io.identity(pid));
+
+  for (const pid of hosts) signal(pid, 'SIGTERM');
+  if (hosts.length > 0) await waitGone(hosts, termMs);
+  const orphanedChildren = children.filter(alive);
+  for (const pid of orphanedChildren) signal(pid, 'SIGTERM');
+  if (orphanedChildren.length > 0) await waitGone(orphanedChildren, termMs);
+
+  const identityChanged = [];
+  const killed = [];
+  for (const pid of all.filter(alive)) {
+    if (io.identity) {
+      const now = io.identity(pid);
+      if (now === null || now !== identity0.get(pid)) {
+        identityChanged.push(pid);
+        if (io.log) io.log(`pid ${pid} identity changed before SIGKILL (was ${JSON.stringify(identity0.get(pid))}, now ${JSON.stringify(now)}) — not ours any more, not killed`);
+        continue;
+      }
+    }
+    signal(pid, 'SIGKILL');
+    killed.push(pid);
+  }
+  if (killed.length > 0) await waitGone(killed, killMs);
+  const undead = killed.filter(alive);
+  return { stopped: all.filter((p) => !undead.includes(p) && !identityChanged.includes(p)), undead, identityChanged };
+}
+
+/** Verified stop of plain pids (e.g. the proxy leg's backend), same §8.3 shape. */
+export function verifiedStop(pids, io) {
+  return reapEmbedHosts(pids.map((pid) => ({ pid, kind: 'host' })), io);
 }
 
 /**
@@ -246,8 +313,11 @@ export async function reapEmbedHosts(pids, io) {
  * `rescanMs` to catch a host spawned during teardown. Foreign hosts are only
  * reported. The caller fails its step on `violations` or `undead`.
  *
- * @param {{ smokeRoots: string[], spawnedPids: Set<number>, runStartedMs: number }} ctx
- * @param {{ ps: () => string|null, now: () => number, kill: Function, sleep: Function, log?: Function, rescanMs?: number, termMs?: number, killMs?: number }} io
+ * `ctx.ownedIds`, when supplied, is updated in place with every record this call
+ * attributes, so the caller's later audits keep a reparented child the run's.
+ *
+ * @param {{ smokeRoots: string[], spawnedPids: Set<number>, runStartedMs: number, ownedIds?: Map<number, number>, spawnStartedMs?: Map<number, number> }} ctx
+ * @param {{ ps: () => string|null, now: () => number, kill: Function, sleep: Function, identity?: Function, log?: Function, rescanMs?: number, termMs?: number, killMs?: number }} io
  */
 export async function auditAndReapEmbedHosts(ctx, io) {
   const seen = new Map();
@@ -255,22 +325,23 @@ export async function auditAndReapEmbedHosts(ctx, io) {
   const foreign = new Map();
   const undead = new Set();
   const stopped = new Set();
+  const ownedIds = ctx.ownedIds ?? new Map();
+  const actx = { ...ctx, ownedIds };
   let psFailed = false;
   for (let pass = 0; pass < 2; pass++) {
     if (pass === 1) await io.sleep(io.rescanMs ?? 750);
     const raw = io.ps();
     if (raw === null) { psFailed = true; continue; }
     const procs = parsePsLines(raw, io.now());
-    const audit = auditEmbedHosts(procs, ctx);
+    const audit = auditEmbedHosts(procs, actx);
     for (const p of audit.foreign) foreign.set(p.pid, p);
     for (const v of audit.violations) if (!violations.some((x) => x.pid === v.pid)) violations.push(v);
+    for (const p of audit.smoke) if (!ownedIds.has(p.pid)) ownedIds.set(p.pid, p.startedMs);
     const fresh = audit.smoke.filter((p) => !stopped.has(p.pid));
     for (const p of fresh) seen.set(p.pid, p);
     if (fresh.length === 0) continue;
-    // Hosts first, then children (see reapEmbedHosts).
-    const ordered = [...fresh.filter((p) => p.kind === 'host'), ...fresh.filter((p) => p.kind !== 'host')].map((p) => p.pid);
-    const r = await reapEmbedHosts(ordered, io);
-    for (const pid of r.stopped) { stopped.add(pid); undead.delete(pid); }
+    const r = await reapEmbedHosts(fresh, io);
+    for (const pid of [...r.stopped, ...r.identityChanged]) { stopped.add(pid); undead.delete(pid); }
     for (const pid of r.undead) undead.add(pid);
   }
   return {
@@ -287,24 +358,93 @@ export async function auditAndReapEmbedHosts(ctx, io) {
  * The pass/fail verdict for one audit+reap result (26121495, 97e7f214).
  *
  * `requireObserved` is set for a leg KNOWN to embed (the memory-server serve
- * legs). For such a leg, zero attributed hosts is not "clean" — it means
- * attribution found nothing to check, which is exactly the no-evidence
- * false-green 26121495 was filed for (e.g. the host env stops carrying the smoke
- * root, or the `ps -E` format changes). It fails closed.
+ * legs, and its service leg). For such a leg, zero attributed hosts is not
+ * "clean" — it means attribution found nothing to check, which is exactly the
+ * no-evidence false-green 26121495 was filed for (e.g. the host env stops
+ * carrying the smoke root, or the `ps -E` format changes). It fails closed.
+ *
+ * `legStartedMs` (1647035b): the evidence must be the leg's OWN. A host that
+ * started before the leg did — e.g. the service daemon's warm-up host, reused
+ * through the identical socket key — cannot satisfy `requireObserved`.
  *
  * @param {{ smoke: object[], undead: number[], violations: {pid:number, reasons:string[]}[], psFailed: boolean }} r
- * @param {{ requireObserved?: boolean }} [opts]
- * @returns {{ ok: boolean, problems: string[] }}
+ * @param {{ requireObserved?: boolean, legStartedMs?: number }} [opts]
+ * @returns {{ ok: boolean, problems: string[], observed: number }}
  */
 export function embedGateVerdict(r, opts = {}) {
   const problems = [];
   if (r.psFailed) problems.push('embed-host ps capture failed — reap unverifiable');
-  if (opts.requireObserved && r.smoke.length === 0 && !r.psFailed) {
-    problems.push('no smoke-owned embedding host was observed for a leg that embeds — attribution found nothing to verify (no evidence is not a pass)');
+  const legT0 = opts.legStartedMs;
+  const own = r.smoke.filter((p) => !Number.isFinite(legT0) || (Number.isFinite(p.startedMs) && p.startedMs >= legT0 - 1000));
+  if (opts.requireObserved && own.length === 0 && !r.psFailed) {
+    problems.push(r.smoke.length > 0
+      ? `only embedding host(s) that predate this leg were observed [${r.smoke.map((p) => p.pid).join(', ')}] — another leg's host is not this leg's evidence`
+      : 'no smoke-owned embedding host was observed for a leg that embeds — attribution found nothing to verify (no evidence is not a pass)');
   }
   if (r.undead.length > 0) problems.push(`embed host(s) survived verified stop: ${r.undead.join(', ')}`);
   if (r.violations.length > 0) {
     problems.push(`embed host isolation breach: ${r.violations.map((v) => `pid ${v.pid}: ${v.reasons.join('; ')}`).join(' | ')}`);
   }
-  return { ok: problems.length === 0, problems };
+  return { ok: problems.length === 0, problems, observed: own.length };
+}
+
+/**
+ * 1647035b: precondition for a leg that must produce its own embedding-host
+ * evidence — no smoke-owned host may be alive when it starts. `audit` is an
+ * {@link auditEmbedHosts} result (or null when ps failed).
+ *
+ * @returns {{ ok: boolean, problems: string[], alive: object[] }}
+ */
+export function preLegEmbedVerdict(audit) {
+  if (audit === null) return { ok: false, problems: ['pre-leg embed-host ps capture failed — leg evidence unattributable'], alive: [] };
+  if (audit.smoke.length === 0) return { ok: true, problems: [], alive: [] };
+  return {
+    ok: false,
+    alive: audit.smoke,
+    problems: [`smoke-owned embedding process(es) already alive before the leg started [${audit.smoke.map((p) => `${p.pid}:${p.kind}`).join(', ')}] — ` +
+      'a previous leg leaked its host, and this leg could reuse it as its own evidence'],
+  };
+}
+
+/**
+ * e5cf17a0 + 8c3f8f87: the run-end embedding-host verdict. Every category is
+ * reported on its own (an isolation breach no longer hides undead hosts behind
+ * an `else`), and a ps failure is named as an unverifiable audit, never as a
+ * breach. `steps` are the log.json entries the harness records for each
+ * category, pass or fail, so a FATAL can never coexist with `summary.failed: 0`.
+ *
+ * @param {{ breaches: string[], undead: number[], auditFailures: string[], finalSweep: { ok: boolean, detail: string, attributed?: number },
+ *           attributed: number[] }} s
+ * @returns {{ ok: boolean, fatalLines: string[], okLine: string|null, steps: {test_id:string, passed:boolean, verdict:string, detail:string}[] }}
+ */
+export function finalEmbedVerdict(s) {
+  const fatalLines = [];
+  const steps = [];
+  const step = (test_id, passed, failVerdict, detail) => steps.push({ test_id, passed, verdict: passed ? 'verified' : failVerdict, detail });
+  step('embed-host-final-sweep', s.finalSweep.ok, 'embed-host-final-sweep-failed',
+    s.finalSweep.ok ? `final sweep clean (${s.finalSweep.attributed ?? 0} smoke-owned process(es) stopped)` : s.finalSweep.detail);
+  if (!s.finalSweep.ok) fatalLines.push(`FATAL: final embedding-host sweep failed (97e7f214): ${s.finalSweep.detail}`);
+  step('embed-host-isolation-breaches', s.breaches.length === 0, 'embed-host-isolation-breach',
+    s.breaches.length === 0 ? 'no smoke-owned embedding host escaped containment' : s.breaches.join(' | '));
+  if (s.breaches.length > 0) {
+    fatalLines.push(`FATAL: ${s.breaches.length} embedding-host isolation breach(es) (26121495): a smoke-owned embedding host ran with the ` +
+      `operator HOME, model cache or a socket outside the run:\n  ${s.breaches.join('\n  ')}`);
+  }
+  step('embed-host-undead', s.undead.length === 0, 'embed-host-undead',
+    s.undead.length === 0 ? 'no smoke embedding host survived a verified stop' : `undead: ${s.undead.join(', ')}`);
+  if (s.undead.length > 0) fatalLines.push(`FATAL: smoke embedding host(s) outlived a verified stop (97e7f214): ${s.undead.join(', ')}`);
+  step('embed-host-audit', s.auditFailures.length === 0, 'embed-host-audit-unverifiable',
+    s.auditFailures.length === 0 ? 'every embed-host audit captured ps' : s.auditFailures.join(' | '));
+  if (s.auditFailures.length > 0) {
+    fatalLines.push(`FATAL: ${s.auditFailures.length} embedding-host audit(s) could not run (ps capture failed) — containment is UNVERIFIED, ` +
+      `not breached:\n  ${s.auditFailures.join('\n  ')}`);
+  }
+  const ok = fatalLines.length === 0;
+  return {
+    ok,
+    fatalLines,
+    okLine: ok ? `embedding-host isolation OK — ${s.attributed.length} smoke-owned embedding process(es) attributed ` +
+      `[${s.attributed.join(', ')}]; all contained in the run and verified-stopped` : null,
+    steps,
+  };
 }

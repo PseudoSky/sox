@@ -41,9 +41,22 @@ import {
   auditEmbedHosts,
   describeHost,
   embedGateVerdict,
+  finalEmbedVerdict,
   parsePsLines,
+  preLegEmbedVerdict,
+  verifiedStop,
 } from './lib/embed-host-isolation.mjs';
 import { buildMemoryServerEnv, buildSmokeEnv } from './lib/smoke-env.mjs';
+import {
+  claimShortAlias,
+  fileIdentity,
+  operatorModelCacheDir,
+  releaseShortAlias,
+  seedModelCache,
+  treeFingerprint,
+  walkFiles,
+} from './lib/smoke-fs.mjs';
+import { diffTeardownSurvivors, finalizeRun, installSignalSweep } from './lib/smoke-teardown.mjs';
 
 // ──────────────────────────────────────────────────────────────────────────────
 // Configuration
@@ -175,17 +188,38 @@ const MEMORY_FAKE_HOME = path.join(TEST_ROOT, 'sox-data-root', 'fake-home');
 // SMOKE_DATA_ROOT: the children get it as SOX_ECOSYSTEM_HOME, so every socket
 // fits under it (28-byte `<short>/run/` + a 72-byte key filename = 100), while
 // every file still lands physically under TEST_ROOT for the snapshot diffs.
-const SMOKE_SHORT_ROOT = path.join('/tmp', `sox-smoke-${crypto.randomBytes(4).toString('hex')}`);
+// e5cf17a0: claimed here, before any path is derived from it, with a retry on a
+// name collision (4 random bytes) instead of an abort; the target may dangle
+// until main() creates SMOKE_DATA_ROOT.
+const SMOKE_SHORT_ROOT = claimShortAlias({
+  target: SMOKE_DATA_ROOT,
+  log: (msg) => console.error(`[smoke] ${msg}`),
+});
 // The model cache and the TMPDIR every smoke child resolves (XDG_CACHE_HOME
 // outranks $HOME/.cache in joinDefaultCacheDir(); TMPDIR stays run-owned so no
 // child writes scratch files into the operator's temp dir. The socket fallback
 // no longer reads TMPDIR).
 const SMOKE_XDG_CACHE_HOME = path.join(TEST_ROOT, 'sox-data-root', 'xdg-cache');
 const SMOKE_TMPDIR = path.join(SMOKE_SHORT_ROOT, 'tmp');
+/** Where SMOKE_TMPDIR's files physically land (the alias points at SMOKE_DATA_ROOT). */
+const SMOKE_TMPDIR_PHYSICAL = path.join(SMOKE_DATA_ROOT, 'tmp');
+// 3ebd7ecb: the model the memory-server legs embed with, seeded (APFS clone) from
+// the operator's cache instead of cold-downloaded (~219 MB) every run.
+const SMOKE_MODEL_NAME = 'fast-bge-base-en-v1.5';
+const SMOKE_MODEL_DIR = path.join(SMOKE_XDG_CACHE_HOME, 'sox', 'models', SMOKE_MODEL_NAME);
+const OPERATOR_MODEL_DIR = path.join(operatorModelCacheDir(process.env), SMOKE_MODEL_NAME);
+/** 3ebd7ecb: the seed result + the seeded model file's identity, compared at run end. */
+let modelSeed = null;
+/** Directories snapshotFiles() never walks (3ebd7ecb): neither is isolation evidence. */
+const SNAPSHOT_EXCLUDE = [SMOKE_XDG_CACHE_HOME, SMOKE_TMPDIR_PHYSICAL];
 /** Every root a smoke-owned process may resolve HOME / cache / socket under. */
 const SMOKE_ROOTS = [TEST_ROOT, SMOKE_SHORT_ROOT];
 /** 26121495: every embedding host this run spawned that escaped containment. */
 const EMBED_ISOLATION_BREACHES = [];
+/** e5cf17a0: every embed-host audit that could not run (ps failed) — unverified, not a breach. */
+const EMBED_AUDIT_FAILURES = [];
+/** e5cf17a0: pid → startedMs of every embedding process ever attributed (keeps a reparented child the run's). */
+const EMBED_OWNED_IDS = new Map();
 /** 97e7f214: every smoke embedding host that survived a verified stop. */
 const EMBED_UNDEAD = new Set();
 /** 26121495: every distinct pid attributed to this run by an embed-host reap (the gate's evidence). */
@@ -217,6 +251,41 @@ const SMOKE_SPAWNED_PIDS = new Set();
 /** Subset of SMOKE_SPAWNED_PIDS parsed from `soxe service status` `live pids:` (reported as a count). */
 const SMOKE_SERVICE_PIDS = new Set();
 
+/**
+ * e5cf17a0: pid → when that spawned process itself started (from `ps` etime at
+ * record time — a descendant found by `pgrep -P` started BEFORE it was
+ * recorded). A host is attributed by `--spawner-pid` only if it started no
+ * earlier than its spawner. Parallel to SMOKE_SPAWNED_PIDS, which stays a Set
+ * (evaluateIsolation consumes it).
+ */
+const SMOKE_SPAWN_STARTED_MS = new Map();
+
+function noteSpawnStarts(pids, testId) {
+  const fresh = [...pids].filter((p) => Number.isInteger(p) && p > 0 && !SMOKE_SPAWN_STARTED_MS.has(p));
+  if (fresh.length === 0) return;
+  let out = '';
+  try {
+    out = execSync(`ps -o pid=,etime= -p ${fresh.join(',')}`, { encoding: 'utf-8', stdio: ['ignore', 'pipe', 'ignore'] });
+  } catch (e) {
+    // status 1 = none of them is alive any more (nothing to record).
+    if (!e || e.status !== 1) console.error(`[smoke] WARNING: ${testId ?? '?'} ps etime for ${fresh.join(',')} failed: ${(e && e.message) ?? e}`);
+    out = (e && e.stdout) || '';
+  }
+  const now = Date.now();
+  for (const line of String(out).split('\n')) {
+    const [pidS, etime] = line.trim().split(/\s+/);
+    const secs = parseEtimeSeconds(etime);
+    if (Number(pidS) > 0 && Number.isFinite(secs)) SMOKE_SPAWN_STARTED_MS.set(Number(pidS), now - secs * 1000);
+  }
+}
+
+/** `[[dd-]hh:]mm:ss` → seconds (NaN when unparseable). */
+function parseEtimeSeconds(s) {
+  const m = /^(?:(\d+)-)?(?:(\d+):)?(\d+):(\d+)$/.exec(String(s ?? '').trim());
+  if (!m) return Number.NaN;
+  return (Number(m[1] ?? 0) * 86400) + (Number(m[2] ?? 0) * 3600) + (Number(m[3]) * 60) + Number(m[4]);
+}
+
 /** Record `pid` and (best effort) its live descendants via `pgrep -P`. */
 function recordSmokePidTree(pid, testId) {
   if (typeof pid !== 'number' || !Number.isFinite(pid) || pid <= 0) return;
@@ -236,6 +305,7 @@ function recordSmokePidTree(pid, testId) {
     }
     for (const t of out.split(/\s+/)) { const n = Number(t); if (n > 0) stack.push(n); }
   }
+  noteSpawnStarts(seen, testId);
 }
 
 /**
@@ -257,7 +327,9 @@ function recordSmokePgroup(pgid, testId) {
     if (!e || e.status !== 1) console.error(`[smoke] WARNING: ${testId ?? '?'} pgrep -g ${pgid} (pid recording) failed: ${(e && e.message) ?? e}`);
     return;
   }
-  for (const t of out.split(/\s+/)) { const n = Number(t); if (n > 0) SMOKE_SPAWNED_PIDS.add(n); }
+  const members = [];
+  for (const t of out.split(/\s+/)) { const n = Number(t); if (n > 0) { SMOKE_SPAWNED_PIDS.add(n); members.push(n); } }
+  noteSpawnStarts(members, testId);
 }
 
 /** Wall-clock start of main() — lower bound for the scratch-log scan. */
@@ -333,16 +405,16 @@ function sha256(buf) { return require('node:crypto').createHash('sha256').update
 
 async function snapshotFiles(root) {
   const m = new Map();
-  try {
-    for await (const d of await fsp.opendir(root, { recursive: true })) {
-      if (!d.isFile()) continue;
-      const full = path.join(d.parentPath, d.name);
-      try { m.set(path.relative(root, full), sha256(await fsp.readFile(full))); } catch { m.set(path.relative(root, full), 'UNREADABLE'); }
+  // 3ebd7ecb: the model cache and TMPDIR are never walked (SNAPSHOT_EXCLUDE).
+  const onError = (p, err) => console.error(`[smoke] WARNING: snapshot of ${p} failed (${(err && err.message) ?? err}); before/after diff will be unreliable`);
+  for await (const full of walkFiles(root, { exclude: SNAPSHOT_EXCLUDE, onError })) {
+    try {
+      m.set(path.relative(root, full), sha256(await fsp.readFile(full)));
+    } catch (err) {
+      // A file removed between readdir and read is ordinary churn; still say so.
+      if (!err || err.code !== 'ENOENT') console.error(`[smoke] WARNING: snapshot could not read ${full}: ${(err && err.message) ?? err}`);
+      m.set(path.relative(root, full), 'UNREADABLE');
     }
-  } catch (err) {
-    // A failed snapshot silently yields an empty map, which then diffs as
-    // "everything created" — false isolation evidence. Trace it.
-    console.error(`[smoke] WARNING: snapshot of ${root} failed (${(err && err.message) ?? err}); before/after diff will be unreliable`);
   }
   return m;
 }
@@ -385,7 +457,9 @@ async function runCmd(args, opts = {}) {
   }
   const after = await snapshotFiles(TEST_ROOT);
   const fileChanges = diffSnapshots(before, after);
-  auditSmokeEmbedHosts(testId ?? args.join(' '));
+  // 8c3f8f87: a breach (or an unverifiable audit) seen after THIS step fails
+  // THIS step, so it reaches log.json with the step that produced it.
+  const embedAudit = auditSmokeEmbedHosts(testId ?? args.join(' '));
 
   // ── BL-578: fail-closed verdict computation ────────────────────────────────
   // Every step's pass/fail must be a POSITIVE assertion, never an absence of a
@@ -419,6 +493,11 @@ async function runCmd(args, opts = {}) {
     passed = exitCode === 0;
     verdict = passed ? 'verified' : (signal ? `killed(${signal})` : 'failed');
     verdictDetail = passed ? '' : (error ?? '');
+  }
+  if (passed && embedAudit.problems.length > 0) {
+    passed = false;
+    verdict = embedAudit.psFailed ? 'embed-host-audit-unverifiable' : 'embed-host-isolation-breach';
+    verdictDetail = embedAudit.problems.join(' || ');
   }
 
   const entry = {
@@ -602,7 +681,10 @@ async function runServeProxyAndVerify(args, opts) {
   const extId = opts.extId;
   const extType = opts.extType;
   const waitSec = opts.waitSec || 15;
+  const embeds = extId === 'memory-server';
   noteSoxeSpawn(args, extId);
+  // 1647035b: this leg's embed evidence must be its own — no smoke host may be alive yet.
+  const preLeg = embeds ? await embedPreLegCheck(testId) : { ok: true, detail: '' };
   const before = await snapshotFiles(TEST_ROOT);
   const t0 = Date.now();
 
@@ -642,6 +724,9 @@ async function runServeProxyAndVerify(args, opts) {
   }
   // d5c01be3: the soxe → backend descendants exist by now; record them before teardown.
   recordSmokePidTree(child.pid, testId);
+  // 1647035b: the backend warms its embedder on a setImmediate — give it a
+  // bounded window to spawn THIS leg's host before the teardown kills it.
+  if (embeds) await awaitSmokeEmbedHost(testId, t0, 30_000);
   if (TIMEOUT_BIN !== null) {
     // TIMEOUT_BIN itself owns termination -- just wait for it to actually exit,
     // bounded so a broken timeout binary can never hang the harness forever.
@@ -667,16 +752,20 @@ async function runServeProxyAndVerify(args, opts) {
   }
 
   const spawnedPidMatch = stderr.match(/spawned backend pid (\d+)/);
+  let backendProblem = null;
   if (spawnedPidMatch) {
     const backendPid = Number(spawnedPidMatch[1]);
     recordSmokePidTree(backendPid, testId);
-    try {
-      process.kill(backendPid, "SIGTERM");
-    } catch (e) { logKillError(e, testId, backendPid, "SIGTERM (backend)"); }
+    // e5cf17a0: verified stop (SIGTERM → poll ESRCH → identity re-check → SIGKILL),
+    // BEFORE the embed reap — a live backend could spawn a fresh host after it.
+    const stop = await verifiedStop([backendPid], processIo(testId, 'backend stop'));
+    console.error(`[smoke] ${testId} backend verified stop (e5cf17a0): pid ${backendPid} stopped=${stop.stopped.length} undead=${stop.undead.length} identity-changed=${stop.identityChanged.length}`);
+    if (stop.undead.length > 0) backendProblem = `backend pid ${backendPid} survived a verified stop`;
   }
   // 97e7f214/26121495: the embedding host the backend spawned is detached; stop it here.
-  // The memory-server backend is known to embed, so the leg must attribute a host.
-  const embedReap = await reapSmokeEmbedHosts(testId, { requireObserved: extId === 'memory-server' });
+  // The memory-server backend is known to embed, so the leg must attribute a host
+  // that started during this leg (1647035b).
+  const embedReap = await reapSmokeEmbedHosts(testId, { requireObserved: embeds, legStartedMs: t0 });
 
   const after = await snapshotFiles(TEST_ROOT);
   const fileChanges = diffSnapshots(before, after);
@@ -689,6 +778,12 @@ async function runServeProxyAndVerify(args, opts) {
   }
   if (result && result.ok === true && !embedReap.ok) {
     result = { ok: false, verdict: "embed-host-teardown", detail: embedReap.detail };
+  }
+  if (result && result.ok === true && backendProblem !== null) {
+    result = { ok: false, verdict: "backend-teardown", detail: backendProblem };
+  }
+  if (result && result.ok === true && !preLeg.ok) {
+    result = { ok: false, verdict: "embed-host-precondition", detail: preLeg.detail };
   }
   const passed = result != null && result.ok === true;
   const verdict = passed ? "verified" : ((result && result.verdict) || "unverified");
@@ -984,53 +1079,127 @@ function psEmbedHosts(testId) {
   }
 }
 
-function embedAuditCtx() {
-  return { smokeRoots: SMOKE_ROOTS, spawnedPids: SMOKE_SPAWNED_PIDS, runStartedMs: RUN_STARTED_MS };
+/**
+ * e5cf17a0: a process's identity (start time + argv, no environment) for the
+ * pre-SIGKILL re-check; null once it is gone.
+ */
+function processIdentity(pid, testId) {
+  try {
+    return execSync(`ps -ww -o lstart=,command= -p ${pid}`, { encoding: 'utf-8', stdio: ['ignore', 'pipe', 'ignore'] }).trim() || null;
+  } catch (e) {
+    if (!e || e.status !== 1) console.error(`[smoke] WARNING: ${testId} identity probe of pid ${pid} failed: ${(e && e.message) ?? e}`);
+    return null;
+  }
 }
 
+/** The injected process I/O for the verified-stop helpers. */
+function processIo(testId, what) {
+  return {
+    kill: (pid, sig) => process.kill(pid, sig),
+    identity: (pid) => processIdentity(pid, testId),
+    // Ref'd timer: see killProcessGroup() for why an unref'd wait can let the loop drain.
+    sleep: (ms) => new Promise((res) => { setTimeout(res, ms); }),
+    log: (msg) => console.error(`[smoke] WARNING: ${testId} ${what}: ${msg}`),
+  };
+}
+
+function embedAuditCtx() {
+  return {
+    smokeRoots: SMOKE_ROOTS, spawnedPids: SMOKE_SPAWNED_PIDS, runStartedMs: RUN_STARTED_MS,
+    ownedIds: EMBED_OWNED_IDS, spawnStartedMs: SMOKE_SPAWN_STARTED_MS,
+  };
+}
+
+/** @returns {string[]} the breach lines newly recorded by this call */
 function recordEmbedBreaches(testId, violations, procs) {
+  const added = [];
   for (const v of violations) {
     const p = procs.find((x) => x.pid === v.pid);
     const line = `${testId}: ${p ? describeHost(p) : `pid=${v.pid}`} — ${v.reasons.join('; ')}`;
-    if (!EMBED_ISOLATION_BREACHES.includes(line)) EMBED_ISOLATION_BREACHES.push(line);
+    if (!EMBED_ISOLATION_BREACHES.includes(line)) { EMBED_ISOLATION_BREACHES.push(line); added.push(line); }
     console.error(`[smoke] EMBED ISOLATION BREACH (26121495) ${line}`);
   }
+  return added;
 }
 
 /**
  * 26121495: audit-only pass (no signals) — records every smoke-owned embedding
  * host that escaped containment. Called after every soxe step so a host is seen
- * while it is still inside its idle window.
+ * while it is still inside its idle window. A ps failure is an unverifiable
+ * audit (e5cf17a0), recorded apart from breaches.
+ *
+ * @returns {{ problems: string[], psFailed: boolean }} what the calling step must fail on (8c3f8f87)
  */
 function auditSmokeEmbedHosts(testId) {
   const raw = psEmbedHosts(testId);
   if (raw === null) {
-    EMBED_ISOLATION_BREACHES.push(`${testId}: embed-host audit UNKNOWN (ps failed)`);
-    return;
+    const line = `${testId}: embed-host audit could not run (ps capture failed) — containment unverified`;
+    EMBED_AUDIT_FAILURES.push(line);
+    return { problems: [line], psFailed: true };
   }
   const procs = parsePsLines(raw, Date.now());
   const audit = auditEmbedHosts(procs, embedAuditCtx());
-  recordEmbedBreaches(testId, audit.violations, audit.smoke);
+  for (const p of audit.smoke) if (!EMBED_OWNED_IDS.has(p.pid)) EMBED_OWNED_IDS.set(p.pid, p.startedMs);
+  const added = recordEmbedBreaches(testId, audit.violations, audit.smoke);
+  return { problems: added.map((l) => `embed host isolation breach: ${l}`), psFailed: false };
+}
+
+/**
+ * 1647035b: before a leg that must produce its own embed evidence, no
+ * smoke-owned embedding process may be alive. A leftover is reaped (so the leg
+ * still exercises a fresh host) and the leg fails, naming the leak.
+ */
+async function embedPreLegCheck(testId) {
+  const raw = psEmbedHosts(`${testId} pre-leg`);
+  const audit = raw === null ? null : auditEmbedHosts(parsePsLines(raw, Date.now()), embedAuditCtx());
+  const v = preLegEmbedVerdict(audit);
+  console.error(`[smoke] ${testId} embed-host pre-leg check (1647035b): ${v.ok ? 'no smoke-owned host alive' : v.problems.join(' || ')}`);
+  if (!v.ok && v.alive.length > 0) await reapSmokeEmbedHosts(`${testId}-pre-leg`);
+  return { ok: v.ok, detail: v.problems.join(' || ') };
+}
+
+/**
+ * 1647035b: poll (bounded) until a smoke-owned embedding host that started at or
+ * after `sinceMs` is alive. Warm-up is fire-and-forget (setImmediate), so a
+ * teardown that races it would find no host — or, worse, pass on a stale one.
+ */
+async function awaitSmokeEmbedHost(testId, sinceMs, timeoutMs) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const raw = psEmbedHosts(`${testId} await-host`);
+    if (raw !== null) {
+      const audit = auditEmbedHosts(parsePsLines(raw, Date.now()), embedAuditCtx());
+      const own = audit.smoke.filter((p) => p.kind === 'host' && p.startedMs >= sinceMs - 1000);
+      if (own.length > 0) {
+        console.error(`[smoke] ${testId} embed host observed after ${Date.now() - sinceMs} ms: ${own.map((p) => p.pid).join(', ')}`);
+        return true;
+      }
+    }
+    await new Promise((r) => { setTimeout(r, 250); });
+  }
+  console.error(`[smoke] WARNING: ${testId} no smoke-owned embedding host appeared within ${timeoutMs} ms`);
+  return false;
 }
 
 /**
  * 97e7f214 + 26121495: audit, then verified-stop every embedding host this run
- * owns (SIGTERM → poll → SIGKILL → re-verify, spec §8.3), re-scanning once for a
- * host spawned during teardown. The host is detached into its own process group
- * (ADR-0022), so the soxe group kill in the caller can never reach it. Foreign
- * hosts (production, other sessions) are reported and never signalled.
+ * owns (SIGTERM hosts → poll → SIGTERM surviving children → identity re-check →
+ * SIGKILL → re-verify, spec §8.3), re-scanning once for a host spawned during
+ * teardown. The host is detached into its own process group (ADR-0022), so the
+ * soxe group kill in the caller can never reach it. Foreign hosts (production,
+ * other sessions) are reported and never signalled.
  *
- * @returns {Promise<{ ok: boolean, detail: string }>}
+ * @param {string} testId
+ * @param {{ requireObserved?: boolean, legStartedMs?: number }} [opts]
+ * @returns {Promise<{ ok: boolean, detail: string, attributed: number }>}
  */
 async function reapSmokeEmbedHosts(testId, opts = {}) {
   const r = await auditAndReapEmbedHosts(embedAuditCtx(), {
     ps: () => psEmbedHosts(testId),
     now: () => Date.now(),
-    kill: (pid, sig) => process.kill(pid, sig),
-    // Ref'd timer: see killProcessGroup() for why an unref'd wait can let the loop drain.
-    sleep: (ms) => new Promise((res) => { setTimeout(res, ms); }),
-    log: (msg) => console.error(`[smoke] WARNING: ${testId} embed-host reap: ${msg}`),
+    ...processIo(testId, 'embed-host reap'),
   });
+  if (r.psFailed) EMBED_AUDIT_FAILURES.push(`${testId}: embed-host reap ps capture failed — reap unverifiable`);
   recordEmbedBreaches(testId, r.violations, r.smoke);
   for (const pid of r.undead) EMBED_UNDEAD.add(pid);
   for (const p of r.smoke) SMOKE_SPAWNED_PIDS.add(p.pid);
@@ -1038,10 +1207,26 @@ async function reapSmokeEmbedHosts(testId, opts = {}) {
     `[${r.smoke.map((p) => `${p.pid}:${p.kind}`).join(', ')}], stopped ${r.stopped.length}, undead ${r.undead.length}, ` +
     `violations ${r.violations.length}, foreign (untouched) ${r.foreign.length}`);
   for (const p of r.smoke) EMBED_ATTRIBUTED.add(p.pid);
-  // requireObserved: a leg known to embed must attribute >=1 host, else fail closed.
-  const verdict = embedGateVerdict(r, { requireObserved: opts.requireObserved === true });
+  // requireObserved: a leg known to embed must attribute >=1 host that started
+  // during the leg (legStartedMs, 1647035b), else fail closed.
+  const verdict = embedGateVerdict(r, { requireObserved: opts.requireObserved === true, legStartedMs: opts.legStartedMs });
+  if (opts.requireObserved) console.error(`[smoke] ${testId} embed-host attribution (1647035b): ${verdict.observed} process(es) started during this leg`);
   if (!verdict.ok) console.error(`[smoke] FAIL: ${testId} embed-host gate: ${verdict.problems.join(' || ')}`);
   return { ok: verdict.ok, detail: verdict.problems.join(' || '), attributed: r.smoke.length };
+}
+
+/**
+ * Record an out-of-band check as a log/summary step (same shape as runCmd's),
+ * so it gates `summary.failed` like any other step.
+ */
+function recordStep(testId, extId, extType, passed, verdict, detail) {
+  log.push({
+    test_id: testId, extension_id: extId, extension_type: extType,
+    command: '(out-of-band check)', exit_code: null, signal: null,
+    verdict: passed ? 'verified' : verdict, verdict_detail: detail,
+    stdout: '', stderr: '', file_changes: [], duration_ms: 0, passed, error: null,
+  });
+  passed ? summary.passed++ : summary.failed++;
 }
 
 // BL-635: the no-proxy memory-server leg used to send initialize + memory_write
@@ -1063,6 +1248,8 @@ async function runMemoryServerDirectServeAndVerify(args, opts) {
   const env = opts.env || smokeEnv();
   const timeoutMs = opts.timeoutMs || 30_000;
   noteSoxeSpawn(args, extId);
+  // 1647035b: this leg's embed evidence must be its own — no smoke host may be alive yet.
+  const preLeg = await embedPreLegCheck(testId);
   const before = await snapshotFiles(TEST_ROOT);
   const t0 = Date.now();
 
@@ -1156,7 +1343,7 @@ async function runMemoryServerDirectServeAndVerify(args, opts) {
   // 97e7f214: the embedding host is its own process-group leader (ADR-0022), so
   // the group kill above never reaches it — verified-stop it explicitly.
   // This leg writes a memory (embeds), so it must attribute >=1 host (26121495).
-  const embedReap = await reapSmokeEmbedHosts(testId, { requireObserved: true });
+  const embedReap = await reapSmokeEmbedHosts(testId, { requireObserved: true, legStartedMs: t0 });
 
   const testRootProcsAfter = listTestRootProcesses();
   let orphanProblem = null;
@@ -1164,11 +1351,15 @@ async function runMemoryServerDirectServeAndVerify(args, opts) {
     console.error(`[smoke] WARNING: ${testId} orphan proof UNKNOWN — ps capture failed at least once, see the ps WARNING above`);
     orphanProblem = "orphan proof unknown: ps capture failed";
   } else {
-    if (testRootProcsAfter.length > 0) {
-      console.error(`[smoke] FAIL: ${testId} smoke-tagged process(es) survived teardown (97e7f214): ${JSON.stringify(testRootProcsAfter)}`);
-      orphanProblem = `${testRootProcsAfter.length} smoke-tagged process(es) survived teardown`;
+    // e5cf17a0: a survivor is a process alive before AND after the teardown;
+    // one that only exists afterwards appeared during it — both fail, named apart.
+    const diff = diffTeardownSurvivors(testRootProcsBefore, testRootProcsAfter);
+    if (diff.problems.length > 0) {
+      console.error(`[smoke] FAIL: ${testId} teardown (97e7f214/e5cf17a0): ${diff.problems.join(' || ')}: ${JSON.stringify([...diff.survivors, ...diff.appeared])}`);
+      orphanProblem = diff.problems.join(" || ");
     }
-    console.error(`[smoke] ${testId} orphan proof — before teardown: ${testRootProcsBefore.length} TEST_ROOT process(es); after: ${testRootProcsAfter.length}`);
+    console.error(`[smoke] ${testId} orphan proof — before teardown: ${testRootProcsBefore.length} TEST_ROOT process(es); after: ${testRootProcsAfter.length} ` +
+      `(survivors ${diff.survivors.length}, appeared ${diff.appeared.length})`);
   }
 
   const after = await snapshotFiles(TEST_ROOT);
@@ -1182,6 +1373,9 @@ async function runMemoryServerDirectServeAndVerify(args, opts) {
   }
   if (result && result.ok === true && (!embedReap.ok || orphanProblem !== null)) {
     result = { ok: false, verdict: "teardown-leak", detail: [embedReap.detail, orphanProblem].filter(Boolean).join(" || ") };
+  }
+  if (result && result.ok === true && !preLeg.ok) {
+    result = { ok: false, verdict: "embed-host-precondition", detail: preLeg.detail };
   }
   const passed = result != null && result.ok === true;
   const verdict = passed ? "verified" : ((result && result.verdict) || "unverified");
@@ -1257,9 +1451,22 @@ async function testExtension(ext) {
   // ── Service lifecycle (background: true) ───────────────────────
   if (isBackground) {
     for (const scope of scopes) {
+      const serviceT0 = Date.now();
       await runCmd(['service', 'enable', id, '--allow-volatile-node', '--scope', scope, '--root', TEST_ROOT], { timeoutMs: 60_000, testId: `${id}-${scope}-enable`, extId: id, extType: type, env: legEnv });
       await runCmd(['service', 'status', id, '--scope', scope, '--root', TEST_ROOT], { testId: `${id}-${scope}-status`, extId: id, extType: type, env: legEnv, verify: verifyServiceRunning });
+      // 1647035b: the memory-server daemon warms its embedder (fire-and-forget) and
+      // spawns a DETACHED embedding host that outlives `service disable`. Wait for
+      // it while the daemon is alive (a disabled daemon never spawns one), then
+      // verified-stop it after the disable leg — otherwise the next serve leg
+      // reuses it through the identical socket key as its own evidence.
+      if (id === 'memory-server') await awaitSmokeEmbedHost(`${id}-${scope}-service`, serviceT0, 30_000);
       await runCmd(['service', 'disable', id, '--scope', scope, '--root', TEST_ROOT], { timeoutMs: 30_000, testId: `${id}-${scope}-disable`, extId: id, extType: type, env: legEnv });
+      if (id === 'memory-server') {
+        const reapId = `${id}-${scope}-service-embed-reap`;
+        const reap = await reapSmokeEmbedHosts(reapId, { requireObserved: true, legStartedMs: serviceT0 });
+        recordStep(reapId, id, type, reap.ok, 'embed-host-teardown',
+          reap.ok ? `verified-stopped ${reap.attributed} smoke-owned embedding process(es) after service disable` : reap.detail);
+      }
     }
   }
 
@@ -1455,12 +1662,21 @@ async function main() {
 
   // ── BL-173: create scratch data root and verify isolation ──────────────────
   await fsp.mkdir(SMOKE_DATA_ROOT, { recursive: true });
-  // 26121495: short alias (see SMOKE_SHORT_ROOT) + the run-owned cache/tmp dirs.
-  await fsp.symlink(SMOKE_DATA_ROOT, SMOKE_SHORT_ROOT, 'dir');
+  // 26121495: the short alias (claimed at load, see SMOKE_SHORT_ROOT) now resolves;
+  // create the run-owned cache/tmp dirs behind it.
   await fsp.mkdir(SMOKE_TMPDIR, { recursive: true });
   await fsp.mkdir(SMOKE_XDG_CACHE_HOME, { recursive: true });
   console.error(`[smoke] SOX_ECOSYSTEM_HOME (scratch) → ${SMOKE_SHORT_ROOT} → ${SMOKE_DATA_ROOT}`);
   console.error(`[smoke] XDG_CACHE_HOME (scratch) → ${SMOKE_XDG_CACHE_HOME}; TMPDIR (scratch) → ${SMOKE_TMPDIR}`);
+  // 3ebd7ecb: seed the model cache by copy-on-write clone (read-only on the
+  // operator side); a missing source falls back to the product's own download.
+  const operatorBefore = fs.existsSync(OPERATOR_MODEL_DIR) ? JSON.stringify(treeFingerprint(OPERATOR_MODEL_DIR)) : null;
+  const seed = seedModelCache({ src: OPERATOR_MODEL_DIR, dst: SMOKE_MODEL_DIR, log: (m) => console.error(`[smoke] WARNING: model cache seed: ${m}`) });
+  const seededOnnx = path.join(SMOKE_MODEL_DIR, 'model_optimized.onnx');
+  modelSeed = { ...seed, operatorBefore, onnxIdentity: seed.seeded ? fileIdentity(seededOnnx) : null };
+  console.error(`[smoke] model cache (3ebd7ecb): ${seed.seeded
+    ? `seeded by ${seed.method} from ${OPERATOR_MODEL_DIR} → ${SMOKE_MODEL_DIR} (${seed.files} file(s), ${seed.bytes} bytes; model_optimized.onnx identity ${modelSeed.onnxIdentity})`
+    : `NOT seeded — ${seed.reason}`}`);
   console.error(`[smoke] db_path (config set, scratch) → ${SMOKE_DB_PATH}`);
 
   // Assert: scratch root is NOT the real user data root.
@@ -1695,13 +1911,11 @@ async function main() {
     }
   }
 
-  await fsp.mkdir(path.dirname(LOG_PATH), { recursive: true });
-  await fsp.writeFile(LOG_PATH, JSON.stringify({ run_id: path.basename(TEST_ROOT), root: TEST_ROOT, tests: log, summary }, null, 2) + '\n');
-  console.error(`[smoke] done — ${summary.passed} passed, ${summary.failed} failed, ${summary.skipped} skipped`);
+  // 8c3f8f87: log.json is written only after EVERY post-run assertion below has
+  // been folded into the log as a step, so a FATAL can never sit next to a
+  // `summary.failed: 0`.
 
   // ── BL-173: post-run isolation assertions ──────────────────────────────────
-  let isolationFailed = false;
-
   // 1. d5c01be3: attribute every live data-root change (see scripts/lib/isolation-guard.mjs).
   //    (c′) This runs only after every extension's teardown/uninstall step has
   //    completed (testExtension ends with them) — nothing the harness spawned is
@@ -1732,24 +1946,54 @@ async function main() {
     smokePids: SMOKE_SPAWNED_PIDS,
   });
   for (const line of isolation.lines) console.error(`[smoke] ${line}`);
-  if (isolation.verdict === 'fatal') isolationFailed = true;
+  const isolationFailed = isolation.verdict === 'fatal';
 
-  // 1b. 26121495 / 97e7f214: final embedding-host sweep. Every smoke-owned host
-  // must have been contained (HOME, model cache and socket inside the run) and
-  // none may outlive the run.
-  let embedIsolationFailed = false;
+  // 1b. 26121495 / 97e7f214 / e5cf17a0: final embedding-host sweep. Every
+  // smoke-owned host must have been contained (HOME, model cache and socket
+  // inside the run) and none may outlive the run. Every category is reported.
   const finalEmbed = await reapSmokeEmbedHosts('final-sweep');
-  if (EMBED_ISOLATION_BREACHES.length > 0) {
-    console.error(`[smoke] FATAL: ${EMBED_ISOLATION_BREACHES.length} embedding-host isolation breach(es) (26121495): a smoke-owned ` +
-      `embedding host ran with the operator HOME, model cache or a socket outside the run:\n  ${EMBED_ISOLATION_BREACHES.join('\n  ')}`);
-    embedIsolationFailed = true;
-  } else if (EMBED_UNDEAD.size > 0 || !finalEmbed.ok) {
-    console.error(`[smoke] FATAL: smoke embedding host(s) outlived the run (97e7f214): ${[...EMBED_UNDEAD].join(', ')} ${finalEmbed.detail}`);
-    embedIsolationFailed = true;
-  } else {
-    console.error(`[smoke] embedding-host isolation OK — ${EMBED_ATTRIBUTED.size} smoke-owned embedding process(es) attributed ` +
-      `[${[...EMBED_ATTRIBUTED].join(', ')}]; all contained in the run and verified-stopped`);
+  const embed = finalEmbedVerdict({
+    breaches: EMBED_ISOLATION_BREACHES,
+    undead: [...EMBED_UNDEAD],
+    auditFailures: EMBED_AUDIT_FAILURES,
+    finalSweep: finalEmbed,
+    attributed: [...EMBED_ATTRIBUTED],
+  });
+  for (const line of embed.fatalLines) console.error(`[smoke] ${line}`);
+  if (embed.okLine) console.error(`[smoke] ${embed.okLine}`);
+
+  // 1c. 3ebd7ecb: the seeded model was used as is — no download replaced it —
+  // and the operator's cache was only ever read.
+  const modelSteps = [];
+  if (modelSeed !== null) {
+    const onnx = path.join(SMOKE_MODEL_DIR, 'model_optimized.onnx');
+    const nowIdentity = fs.existsSync(onnx) ? fileIdentity(onnx) : null;
+    const operatorAfter = fs.existsSync(OPERATOR_MODEL_DIR) ? JSON.stringify(treeFingerprint(OPERATOR_MODEL_DIR)) : null;
+    const noDownload = !modelSeed.seeded || nowIdentity === modelSeed.onnxIdentity;
+    const detail = modelSeed.seeded
+      ? `seeded by ${modelSeed.method}; model_optimized.onnx identity at seed ${modelSeed.onnxIdentity}, at run end ${nowIdentity}` +
+        (noDownload ? ' — unchanged, no download' : ' — REPLACED during the run (a download re-fetched the seeded model)')
+      : `not seeded (${modelSeed.reason}); the run downloaded the model (identity at run end ${nowIdentity})`;
+    console.error(`[smoke] model cache (3ebd7ecb): ${detail}; operator cache ${operatorAfter === modelSeed.operatorBefore ? 'unchanged (stat fingerprint identical)' : 'fingerprint CHANGED during the run'}`);
+    modelSteps.push({ test_id: 'model-cache-no-download', passed: noDownload, verdict: 'model-cache-redownloaded', detail });
+    if (operatorAfter !== modelSeed.operatorBefore) {
+      // Not FATAL: a concurrent operator process may legitimately write its own cache.
+      console.error('[smoke] WARNING: the operator model cache fingerprint changed during the run — this harness only reads it (cp -c source); check for a concurrent operator download');
+    }
   }
+
+  const exitCode = finalizeRun({
+    summary, log,
+    steps: [
+      { test_id: 'live-data-root-isolation', passed: !isolationFailed, verdict: 'live-data-root-isolation-breach', fatal: true,
+        detail: isolationFailed ? isolation.lines.join(' | ') : `verdict ${isolation.verdict}` },
+      ...embed.steps.map((st) => ({ ...st, fatal: true })),
+      ...modelSteps,
+    ],
+  });
+  await fsp.mkdir(path.dirname(LOG_PATH), { recursive: true });
+  await fsp.writeFile(LOG_PATH, JSON.stringify({ run_id: path.basename(TEST_ROOT), root: TEST_ROOT, tests: log, summary }, null, 2) + '\n');
+  console.error(`[smoke] done — ${summary.passed} passed, ${summary.failed} failed, ${summary.skipped} skipped`);
 
   // 2. Assert no sockets appeared under the REAL (live) socket dir during the run.
   try {
@@ -1782,14 +2026,14 @@ async function main() {
     process.exit(2);
   }
 
-  if (embedIsolationFailed) {
-    console.error('[smoke] FATAL: embedding-host isolation breach (26121495/97e7f214 — see the embedding-host FATAL above)');
+  if (!embed.ok) {
+    console.error('[smoke] FATAL: embedding-host gate failed (26121495/97e7f214/e5cf17a0 — see the embedding-host FATAL lines above)');
     runCompleted = true;
     process.exit(2);
   }
 
   runCompleted = true;
-  process.exit(summary.failed > 0 ? 1 : 0);
+  process.exit(exitCode);
 }
 
 /**
@@ -1810,14 +2054,29 @@ async function main() {
  * a partial run as a pass. A SIGKILL bypasses this entirely — nothing in-process
  * can cover that — but then the caller sees a signal rather than 0.
  */
+/** 26121495/e5cf17a0: remove the /tmp alias this run claimed (only while it is still ours). */
+function removeShortAlias() {
+  try {
+    const r = releaseShortAlias(SMOKE_SHORT_ROOT, SMOKE_DATA_ROOT);
+    if (r === 'foreign') console.error(`[smoke] WARNING: ${SMOKE_SHORT_ROOT} no longer points at this run — left in place`);
+  } catch (e) {
+    console.error(`[smoke] WARNING: removing ${SMOKE_SHORT_ROOT} failed: ${(e && e.message) ?? e}`);
+  }
+}
+
+// e5cf17a0: an interrupted run verified-stops its embedding hosts and removes
+// its /tmp alias before exiting (the 'exit' handler below then reports the run
+// as incomplete and forces a non-zero code).
+installSignalSweep(process, {
+  sweep: () => reapSmokeEmbedHosts('signal-sweep'),
+  cleanup: removeShortAlias,
+  log: (msg) => console.error(`[smoke] ${msg}`),
+});
+
 process.on('exit', (code) => {
   // 26121495: the short SOX_ECOSYSTEM_HOME alias lives in /tmp — remove it on
   // every exit path (the data it points at stays under TEST_ROOT).
-  try {
-    fs.unlinkSync(SMOKE_SHORT_ROOT);
-  } catch (e) {
-    if (!e || e.code !== 'ENOENT') console.error(`[smoke] WARNING: removing ${SMOKE_SHORT_ROOT} failed: ${(e && e.message) ?? e}`);
-  }
+  removeShortAlias();
   if (runCompleted) return;
   // `console.error` is sync on a pipe at exit; `process.exitCode` is the only
   // mutation still honoured inside an 'exit' handler.

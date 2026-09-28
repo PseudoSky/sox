@@ -27,7 +27,7 @@
  */
 
 export const GUARDS = [
-  // ---------------------------------------------------------------- Tier 1 (25) -----------
+  // ---------------------------------------------------------------- Tier 1 (30) -----------
   {
     id: 'bl222',
     tier: 1,
@@ -129,7 +129,13 @@ export const GUARDS = [
     // Pins the smoke harness's embedding-host containment: a smoke-owned host with the operator
     // HOME, model cache or a temp-dir socket is a breach; the harness env keeps socket + cache in
     // the run through the product's own resolution; every memory-server leg gets the scratch HOME.
-    watch: ['scripts/lib/embed-host-isolation.mjs', 'scripts/lib/smoke-env.mjs', 'scripts/smoke-test.mjs', 'libs/service-proxy/src/socket-path.ts'],
+    // e5cf17a0: also the product sources whose behaviour Part B reimplements or depends on — the
+    // embed socket dir (embedHostConfig.ts), the model-cache resolution (embedding-provider index.ts)
+    // and the `soxe serve` env scrub that drops TMPDIR (env-policy.ts).
+    watch: [
+      'scripts/lib/embed-host-isolation.mjs', 'scripts/lib/smoke-env.mjs', 'scripts/smoke-test.mjs', 'libs/service-proxy/src/socket-path.ts',
+      'libs/data/embed/embedding-provider/src/embedHostConfig.ts', 'libs/data/embed/embedding-provider/src/index.ts', 'libs/host-runtime/src/env-policy.ts',
+    ],
   },
   {
     id: '97e7f214',
@@ -155,6 +161,46 @@ export const GUARDS = [
       'extensions/bundles/sox-memory-bundle/members/memory-server/src/bl401-stages-declared-live.spec.ts',
       'extensions/bundles/sox-memory-bundle/members/memory-server/src/test-support/bl-df0ea359-embed-host-isolation.ts',
     ],
+  },
+  {
+    id: '1647035b',
+    tier: 1,
+    script: 'test-1647035b-smoke-embed-evidence-per-leg.mjs',
+    // Pins that each embedding leg's requireObserved is satisfied by its OWN host: the service leg's
+    // host is verified-stopped after `service disable`, serve legs start with no smoke host alive.
+    watch: ['scripts/lib/embed-host-isolation.mjs', 'scripts/smoke-test.mjs'],
+  },
+  {
+    id: 'e5cf17a0',
+    tier: 1,
+    script: 'test-e5cf17a0-smoke-teardown-hardening.mjs',
+    // Pins the smoke teardown hardening: ordered + identity-checked verified stops, per-spawner and
+    // reparented-child attribution, signal sweep, space-safe ps parsing, alias-collision retry.
+    watch: ['scripts/lib/embed-host-isolation.mjs', 'scripts/lib/smoke-fs.mjs', 'scripts/lib/smoke-teardown.mjs', 'scripts/smoke-test.mjs', 'tools/guards-manifest.mjs'],
+  },
+  {
+    id: '8c3f8f87',
+    tier: 1,
+    script: 'test-8c3f8f87-smoke-log-reflects-exit.mjs',
+    // Pins that log.json is written after every post-run assertion and that exit 2 implies
+    // summary.failed > 0 (behavioural over every failure combination).
+    watch: ['scripts/lib/embed-host-isolation.mjs', 'scripts/lib/smoke-teardown.mjs', 'scripts/smoke-test.mjs'],
+  },
+  {
+    id: '9303b749',
+    tier: 1,
+    script: 'test-9303b749-embed-isolation-prefix-control.mjs',
+    // Pins that test-26121495's Part A pre-fix control is the real 0bb5b497 evaluateIsolation loaded
+    // from git, not a stub.
+    watch: ['tools/test-26121495-smoke-embed-host-isolation.mjs', 'scripts/lib/embed-host-isolation.mjs'],
+  },
+  {
+    id: '3ebd7ecb',
+    tier: 1,
+    script: 'test-3ebd7ecb-smoke-model-cache-seed.mjs',
+    // Pins the smoke model-cache seed: copy-on-write clone from the operator cache (read-only source,
+    // never hardlinks), download fallback, and the per-step snapshot excluding the cache and TMPDIR.
+    watch: ['scripts/lib/smoke-fs.mjs', 'scripts/smoke-test.mjs'],
   },
   {
     id: '4fc3704e',
