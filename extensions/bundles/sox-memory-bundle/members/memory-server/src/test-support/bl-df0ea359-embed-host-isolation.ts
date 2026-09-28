@@ -220,7 +220,12 @@ export function spawnRealEntrypoint(opts: SpawnRealEntrypointOptions): RealEntry
     const rootPid = child.pid;
     if (rootPid === undefined) return;
     const rows = readProcessTable();
-    const members = new Set<number>([rootPid, ...seen.keys()]);
+    // Seed only from pids still running the SAME command first recorded for them: a pid the
+    // kernel reused for an unrelated process must never be adopted (nor its children).
+    const members = new Set<number>([rootPid]);
+    for (const r of rows) {
+      if (seen.get(r.pid) === r.command) members.add(r.pid);
+    }
     // Fixpoint: descendants of any known member, plus anything carrying the scratch root,
     // plus any embed host whose --spawner-pid is a member (the host is detached and may be
     // reparented before a ppid walk sees it).
@@ -242,7 +247,8 @@ export function spawnRealEntrypoint(opts: SpawnRealEntrypointOptions): RealEntry
       }
     }
     for (const r of rows) {
-      if (members.has(r.pid)) seen.set(r.pid, r.command);
+      // First sighting wins: never overwrite a recorded command (pid-reuse safety).
+      if (members.has(r.pid) && !seen.has(r.pid)) seen.set(r.pid, r.command);
     }
   };
 
@@ -359,7 +365,7 @@ export interface TeardownOptions {
 }
 
 /** Worst-case wall time of {@link teardownRealEntrypoint} with default options (for test timeouts). */
-export const TEARDOWN_WORST_CASE_MS = 5_000 + 2_000 + 12_000 + 2_000;
+export const TEARDOWN_WORST_CASE_MS = 5_000 + 2_000 + 12_000 + 1_000 + 2_000;
 
 /**
  * Verified-stop the whole run: group SIGTERM → poll ESRCH → group SIGKILL; then reap every
@@ -428,6 +434,15 @@ export async function teardownRealEntrypoint(run: RealEntrypointRun, opts: Teard
     clean = survivors.length === 0 ? clean + 1 : 0;
     if (clean >= stableSamples) break;
     await sleep(stableIntervalMs);
+  }
+  // Deadline hit with processes still standing: SIGKILL every one we SIGTERM'd that is still
+  // running the command we signalled, so a late-seen process never escapes its escalation.
+  if (clean < stableSamples) {
+    const rows = readProcessTable();
+    for (const r of rows) {
+      if (termedAt.has(r.pid) && isOurs(r)) signalPid(r.pid, 'SIGKILL');
+    }
+    await sleep(500);
   }
   // Last word comes from the process table, never from the loop's bookkeeping.
   survivors = readProcessTable().filter((r) => r.pid !== process.pid && isOurs(r) && isAlive(r.pid));
