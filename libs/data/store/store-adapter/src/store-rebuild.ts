@@ -81,6 +81,7 @@ import { SOX_ENGINE_TABLE } from './engine-guard.js';
 import { classifyIntegrityMessages, parseFtsColumns, pickSentinelTokens } from './integrity.js';
 import { canonicalDbPath } from './path-identity.js';
 import { storeOpeners, storeQuiescence } from './store-lease.js';
+import { staleSidecarPath } from './sidecar-retention.js';
 import { TursoAdapterImpl } from './turso-adapter.js';
 import type { StoreAdapter } from './types.js';
 
@@ -571,7 +572,9 @@ async function swapIntoPlace(
     // A -tshm beside an EMPTY -wal indexes nothing; move it aside exactly as
     // the adapter's own close()-TRUNCATE does (renamed, never deleted).
     if (existsSync(`${canonical}-tshm`)) {
-      const to = `${canonical}-tshm.stale-${stamp(new Date())}`;
+      // (BL-1010e417) Same collision-free name the adapter uses, so the
+      // sidecar-retention sweep recognises (and bounds) this artefact too.
+      const to = staleSidecarPath(`${canonical}-tshm`);
       renameSync(`${canonical}-tshm`, to);
       log.info(`${event}.tshm_moved_aside`, { db_path: canonical, to });
     }

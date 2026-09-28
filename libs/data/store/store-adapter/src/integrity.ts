@@ -141,6 +141,7 @@ import { closeSync, openSync, readSync, renameSync, statSync } from 'node:fs';
 import { log } from '@adhd/sox-telemetry';
 import { createFTSDialect } from './fts-dialect.js';
 import type { StoreAdapter } from './types.js';
+import { staleSidecarPath } from './sidecar-retention.js';
 import {
   markDeepVerifyOwed,
   readDeepVerifyObligation,
@@ -864,8 +865,7 @@ export function recoverStaleWalIndex(
       };
     }
     result.attempted = true;
-    const stamp = new Date().toISOString().replace(/[:.]/g, '').replace('T', '-').slice(0, 15);
-    const to = `${tshmPath}.stale-${stamp}`;
+    const to = staleSidecarPath(tshmPath);
     try {
       renameSync(tshmPath, to);
       result.movedAside.push({ from: tshmPath, to });
@@ -906,11 +906,10 @@ export function recoverStaleWalIndex(
   const verdict = isTshmContentDead(dbPath);
   if (verdict.dead) {
     result.attempted = true;
-    const stamp = new Date().toISOString().replace(/[:.]/g, '').replace('T', '-').slice(0, 15);
     if (walBytes > 0) {
       // Index-beyond-EOF shape: move ONLY the -tshm — never the -shm (see the
       // doc comment above). Reopen is the caller's job, against the WAL as-is.
-      const to = `${tshmPath}.stale-${stamp}`;
+      const to = staleSidecarPath(tshmPath);
       try {
         renameSync(tshmPath, to);
         result.movedAside.push({ from: tshmPath, to });
@@ -927,7 +926,7 @@ export function recoverStaleWalIndex(
         } catch {
           continue; // not present
         }
-        const to = `${from}.stale-${stamp}`;
+        const to = staleSidecarPath(from);
         try {
           renameSync(from, to);
           result.movedAside.push({ from, to });
@@ -1079,8 +1078,7 @@ export function proactivelyReconcileStaleSidecar(
     };
   }
 
-  const stamp = new Date().toISOString().replace(/[:.]/g, '').replace('T', '-').slice(0, 15);
-  const to = `${tshmPath}.stale-${stamp}`;
+  const to = staleSidecarPath(tshmPath);
   try {
     renameSync(tshmPath, to);
     return { moved: true, to };
@@ -3220,8 +3218,12 @@ export async function persistIntegrityResult(
          ON CONFLICT(key) DO UPDATE SET value = excluded.value`,
       [INTEGRITY_META_KEY, JSON.stringify(payload)],
     );
-  } catch {
+  } catch (err) {
     // Non-fatal — the in-memory registries still hold this process's view.
+    log.warn('store_adapter.integrity.persist_failed', {
+      db_path: adapter.config.dbPath,
+      error: err instanceof Error ? err.message : String(err),
+    });
   }
 }
 
@@ -3451,7 +3453,49 @@ export async function runOpenTimeIntegrity(
     await persistIntegrityResult(adapter, result);
   }
 
-  // Background deep — never awaited here.
+  await scheduleOwedDeepVerify(adapter, result, deepRequestedNow, deepReason, opts.onReport);
+  return result;
+}
+
+/**
+ * (BL-1010e417) The open-time integrity step for a reopen after
+ * `releaseIdleConnection()` voluntarily closed a HEALTHY connection of the same
+ * adapter instance, in the same process.
+ *
+ * Skips the `fast` verify and its durable `persistIntegrityResult` upsert —
+ * that upsert changes `run_at_ms` on every call, so it is a guaranteed WAL
+ * frame on every reopen, which is exactly what the next idle flush then has to
+ * checkpoint and truncate (measured: the ONLY frame a release reopen wrote).
+ * The verdict retained for this store is the one the instance's last full open
+ * produced; its age is reported honestly by `getLastIntegrityRunAt`.
+ *
+ * Keeps the read-only half: a deep-verify obligation recorded by another
+ * opener (a one-shot CLI that saw a dead-pid marker) is still picked up here
+ * and scheduled, exactly as a full open would.
+ *
+ * Returns `false` — and does nothing — when there is no retained verdict to
+ * stand on; the caller must then run {@link runOpenTimeIntegrity} instead.
+ * Never used for a first open or a poison recovery.
+ */
+export async function resumeOpenTimeIntegrityAfterRelease(
+  adapter: StoreAdapter,
+  opts: { onReport?: VerifyAndRepairOptions['onReport'] },
+): Promise<boolean> {
+  const prior = getLastIntegrityResult(adapter);
+  if (prior === null) return false;
+  validateDeepVerifyConfig(adapter.config.deepVerify);
+  await scheduleOwedDeepVerify(adapter, prior, false, 'requested (SOX_STORE_VERIFY=deep)', opts.onReport);
+  return true;
+}
+
+/** Background deep verification, if one is owed — never awaited by the open. */
+async function scheduleOwedDeepVerify(
+  adapter: StoreAdapter,
+  result: VerifyAndRepairResult,
+  deepRequestedNow: boolean,
+  deepReason: string,
+  onReport: VerifyAndRepairOptions['onReport'] | undefined,
+): Promise<void> {
   let owed = deepRequestedNow;
   let reason = deepReason;
   if (!owed) {
@@ -3474,7 +3518,7 @@ export async function runOpenTimeIntegrity(
   }
   if (owed && resolveDeepVerifySchedule(adapter.config.deepVerify) === 'owner') {
     const scheduleOpts: ScheduleDeepVerifyOptions = { fastResult: result, reason };
-    if (opts.onReport) scheduleOpts.onReport = opts.onReport;
+    if (onReport) scheduleOpts.onReport = onReport;
     void scheduleDeepVerify(adapter, scheduleOpts);
   } else if (owed) {
     // (BL-9f6681ee) A one-shot opener records the obligation (above) but never
@@ -3486,5 +3530,4 @@ export async function runOpenTimeIntegrity(
       detail: "deep verification is owed; this opener's deepVerify.schedule is 'never', so a long-lived owner runs it",
     });
   }
-  return result;
 }

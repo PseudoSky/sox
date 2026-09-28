@@ -66,9 +66,12 @@ interface FakeCall {
 /** A driver handle shaped like @tursodatabase/database's Database that
  *  satisfies the post-open connect ceremony AND records every SQL statement
  *  issued through `run`/`all` so the close() PRAGMA sequence is assertable.
- *  `wal_checkpoint` answers with the driver's real busy=0 row shape
- *  (`[{ busy: 0, log: 0, checkpointed: 0 }]` — the raw array, which
- *  `executeAll` wraps into `{ columns, rows }`). */
+ *  `wal_checkpoint` answers with the driver's real busy=0 row shape — the raw
+ *  array, which `executeAll` wraps into `{ columns, rows }`. PASSIVE reports
+ *  frames in the WAL (`log: 3`): every case here pins the close of a WAL that
+ *  holds frames. (BL-1010e417) A close whose PASSIVE reports `log: 0` has
+ *  nothing to truncate and issues no TRUNCATE at all — pinned in
+ *  `idle-release-writefree.bl-1010e417.spec.ts` T3. */
 function makeFakeDb(): any {
   const calls: FakeCall[] = [];
   return {
@@ -83,6 +86,9 @@ function makeFakeDb(): any {
     get: async () => null,
     all: async (sql: string) => {
       calls.push({ method: 'all', sql });
+      if (/wal_checkpoint\(PASSIVE\)/.test(sql)) {
+        return [{ busy: 0, log: 3, checkpointed: 3 }];
+      }
       if (/wal_checkpoint/.test(sql)) {
         return [{ busy: 0, log: 0, checkpointed: 0 }];
       }

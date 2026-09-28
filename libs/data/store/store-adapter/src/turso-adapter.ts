@@ -1,5 +1,6 @@
 import { existsSync, renameSync, statSync } from 'node:fs';
 import {
+  adapterMetaIsCurrent,
   ensureAdapterMetaTable,
   FTS_OPTIMIZE_PASS_INCREMENT_SQL,
   stampAdapterMeta,
@@ -13,13 +14,14 @@ import {
   proactivelyReconcileStaleSidecar,
   probeWalFrames,
   recoverStaleWalIndex,
+  resumeOpenTimeIntegrityAfterRelease,
   runOpenTimeIntegrity,
   summarizeBackupIntegrity,
   verifyStoreIntegrity,
   warnIfStaleSidecar,
 } from './integrity.js';
 import type { BackupIntegrityReport, WalIdentity } from './integrity.js';
-import { maybePruneStaleTshmSidecars } from './sidecar-retention.js';
+import { maybePruneStaleTshmSidecars, staleSidecarPath } from './sidecar-retention.js';
 import {
   acquireStoreLease,
   registerStoreOpener,
@@ -264,6 +266,47 @@ const OPEN_RETRY_BACKOFF_STEP_MS = 100;
  * `store_adapter.turso.idle_flush*` event (`idle_window_ms`) so the tuning
  * is verifiable from telemetry, not inferred. */
 const DEFAULT_IDLE_FLUSH_MS = DEFAULT_IDLE_FLUSH_FLOOR_MS;
+
+/**
+ * (BL-1010e417) WHY `_openReal()` is running. Internal and typed — never an
+ * option a caller can pass and never an env var (ADR-0013).
+ *
+ *  - `'initial'`: the first real open of an instance (lazy `connect()`'s
+ *    deferred open) and the reopen after an out-of-band classic-engine repair
+ *    (`withConnectionClosedForRepair`, where the schema was just rewritten
+ *    underneath this process). The full ceremony, always.
+ *  - `'poison'`: recovery after a fatal driver fault. The full ceremony,
+ *    always — the connection just proved it could fail, so nothing observed
+ *    through it may be trusted.
+ *  - `'release'`: the reopen after `releaseIdleConnection()` voluntarily
+ *    closed a HEALTHY connection. The only reason under which open steps may
+ *    reuse what this instance already proved on its previous connection (see
+ *    {@link ReleaseReopenEvidence}). Every reopen, whatever the reason, keeps
+ *    the lease, the preflight (foreign-shm lock probe, sidecar reconcile), the
+ *    BUG-026 WAL baseline and the BL-461 orphaned-FTS guard.
+ */
+type OpenReason = 'initial' | 'poison' | 'release';
+
+/**
+ * (BL-1010e417) What a `'release'` reopen carries over from the connection it
+ * replaces — facts this instance established on a real connection that was
+ * then closed voluntarily and healthily.
+ */
+interface ReleaseReopenEvidence {
+  /** `capabilities.recursiveCte` — a property of the driver build loaded in
+   *  this process, which cannot change between two connections of it. */
+  recursiveCte: boolean;
+}
+
+/** (BL-1010e417) Per-phase wall time of one `_openReal()` run, in ms, plus the
+ *  phases this open deliberately did not run and the evidence that allowed
+ *  it. Exposed as {@link TursoAdapterImpl.lastOpenTiming}. */
+export interface TursoOpenTiming {
+  reason: OpenReason;
+  totalMs: number;
+  phases: Record<string, number>;
+  skipped: Record<string, string>;
+}
 
 /**
  * (wal-cap, 2026-08-18 — owner directive: "constraints around the maximum
@@ -1685,6 +1728,17 @@ export class TursoAdapterImpl implements TursoAdapter {
    *  `connect()`. */
   _walBaseline: WalIdentity | null = null;
 
+  /** (BL-1010e417) Timing of the open that produced the CURRENT connection.
+   *  `null` until the first real open. */
+  private _lastOpenTiming: TursoOpenTiming | null = null;
+
+  /** (BL-1010e417) Per-phase wall time of the open that produced the current
+   *  connection — the measurement behind the reconnect-cost claim in
+   *  {@link releaseIdleConnection}'s doc. */
+  get lastOpenTiming(): Readonly<TursoOpenTiming> | null {
+    return this._lastOpenTiming;
+  }
+
   /** (BL-391) Set by `connect()` when opened with `readonly: true,
    *  allowFtsInReadonly: true` — the native driver connection is writable
    *  (required for `fts_match` to work at all), so this adapter enforces
@@ -1899,9 +1953,27 @@ export class TursoAdapterImpl implements TursoAdapter {
     const staleDb = this.db;
     const wasNeverOpened = this._neverOpened;
     const wasReleased = this._released || wasNeverOpened;
+    // (BL-1010e417) Why this reopen is happening. Precedence matters: a
+    // release-reconnect that FAILED leaves `_poisoned` set while `_released`
+    // stays true, and its retry must get the full ceremony — so poison is
+    // checked first. Only a reopen after a voluntary, healthy release of a
+    // connection this instance really opened may reuse anything.
+    const reason: OpenReason = this._poisoned
+      ? 'poison'
+      : wasNeverOpened
+        ? 'initial'
+        : this._released && this._lastOpenTiming !== null
+          ? 'release'
+          : 'initial';
     try {
-      const fresh = await TursoAdapterImpl._openReal(this._connectOpts);
+      const fresh = await TursoAdapterImpl._openReal(
+        this._connectOpts,
+        reason === 'release'
+          ? { reason, evidence: { recursiveCte: this._capabilities.recursiveCte } }
+          : { reason },
+      );
       this.db = fresh.db;
+      this._lastOpenTiming = fresh._lastOpenTiming;
       this._walBaseline = fresh._walBaseline;
       this._softReadonly = fresh._softReadonly;
       // (DEBT-003, lazy-connect) `recursiveCte` is the one capability that
@@ -2147,7 +2219,18 @@ export class TursoAdapterImpl implements TursoAdapter {
      * `connect()` — a bad value throws `EInvalidDeepVerifyConfig`.
      */
     deepVerify?: DeepVerifyConfig;
-  }): Promise<TursoAdapterImpl> {
+  }, internal: { reason: OpenReason; evidence?: ReleaseReopenEvidence } = { reason: 'initial' }): Promise<TursoAdapterImpl> {
+    // (BL-1010e417) Phase timing — every phase below is measured, so a claim
+    // about what a reopen costs is read from here, never assumed.
+    const openStartedAt = performance.now();
+    let lapAt = openStartedAt;
+    const phases: Record<string, number> = {};
+    const skipped: Record<string, string> = {};
+    const lap = (name: string): void => {
+      const now = performance.now();
+      phases[name] = Math.round((now - lapAt) * 100) / 100;
+      lapAt = now;
+    };
     // Dynamic import so @tursodatabase/database is only loaded when used
     let tursoModule: any;
     try {
@@ -2209,6 +2292,7 @@ export class TursoAdapterImpl implements TursoAdapter {
     if (canonicalDb !== undefined) {
       coldOpen = await acquireColdOpenLock(canonicalDb);
     }
+    lap('lease_and_cold_open_lock');
 
     try {
       // (BL-391) Soft-readonly: caller wants read-only semantics but needs
@@ -2352,6 +2436,7 @@ export class TursoAdapterImpl implements TursoAdapter {
           );
         }
       }
+      lap('preflight_foreign_shm');
 
       // Turso adapter supports both local file: and remote libsql:// URLs
       // When authToken is present, it's a remote connection
@@ -2554,6 +2639,7 @@ export class TursoAdapterImpl implements TursoAdapter {
         // open. Live peers' markers are never touched.
         sweepDeadOpenMarkers(canonicalDb);
       }
+      lap('preflight_schema');
 
       // (BL-373 family) Informational, BEFORE any open attempt: a `-tshm` that
       // is provably older than the `-wal` beside it is decaying, and the open
@@ -2636,6 +2722,7 @@ export class TursoAdapterImpl implements TursoAdapter {
           });
         }
       }
+      lap('preflight_sidecar_reconcile');
 
       // (BL-508) Was the db file already there before this open? `ensureEngineMarker`
       // needs to know whether the store is FRESH (created by this very open → this
@@ -2854,6 +2941,7 @@ export class TursoAdapterImpl implements TursoAdapter {
           );
         }
       }
+      lap('driver_open');
 
       // (BL-508) FOREIGN-ENGINE REFUSAL, BEFORE the driver even opens the file: a
       // store whose marker claims SQLite ownership must not be opened by the Turso
@@ -2881,20 +2969,30 @@ export class TursoAdapterImpl implements TursoAdapter {
       // would throw. A single read-only counter CTE in a try/catch settles it;
       // the result is cached in the capabilities object below (the instance's
       // only cache — `capabilities` is captured at construction).
+      lap('engine_refusal');
       let recursiveCte = false;
-      try {
-        await db.get(
-          `WITH RECURSIVE cnt(x) AS (SELECT 1 UNION ALL SELECT x + 1 FROM cnt WHERE x < 5) SELECT x FROM cnt`,
-        );
-        recursiveCte = true;
-      } catch (err) {
-        // Feature probe — a 0.7.x Turso rejects WITH RECURSIVE; that is the
-        // expected false. Any OTHER failure is still worth a trace.
-        log.debug('store_adapter.turso.recursive_cte_probe_failed', {
-          error: err instanceof Error ? err.message : String(err),
-        });
-        recursiveCte = false;
+      if (internal.reason === 'release' && internal.evidence !== undefined) {
+        // (BL-1010e417) The probe answers "does THIS driver build parse WITH
+        // RECURSIVE" — fixed for the life of the process. A release reopen
+        // reuses the answer this instance already probed on a real connection.
+        recursiveCte = internal.evidence.recursiveCte;
+        skipped['cte_probe'] = 'release reopen: reused the value probed on the previous connection of this instance';
+      } else {
+        try {
+          await db.get(
+            `WITH RECURSIVE cnt(x) AS (SELECT 1 UNION ALL SELECT x + 1 FROM cnt WHERE x < 5) SELECT x FROM cnt`,
+          );
+          recursiveCte = true;
+        } catch (err) {
+          // Feature probe — a 0.7.x Turso rejects WITH RECURSIVE; that is the
+          // expected false. Any OTHER failure is still worth a trace.
+          log.debug('store_adapter.turso.recursive_cte_probe_failed', {
+            error: err instanceof Error ? err.message : String(err),
+          });
+          recursiveCte = false;
+        }
       }
+      lap('cte_probe');
 
       const config = TursoAdapterImpl._buildConfig(opts, canonicalDb, mode);
 
@@ -2939,6 +3037,7 @@ export class TursoAdapterImpl implements TursoAdapter {
       // carrying this pid, so a sibling connection's orderly close can never
       // erase this session's crash evidence (the shared-marker failure).
       if (opts.readonly !== true) markStoreOpen(canonicalDb, lease?.token);
+      lap('engine_marker');
 
       // (BL-461) IN-PROCESS FTS ORPHAN GUARD. The pre-flight above is gated on
       // the marker, so it never runs for a store damaged inside a session that
@@ -2963,6 +3062,7 @@ export class TursoAdapterImpl implements TursoAdapter {
           );
         }
       }
+      lap('fts_orphan_guard');
 
       // Stamp adapter metadata (non-fatal)
       if (!opts.readonly) {
@@ -2972,25 +3072,50 @@ export class TursoAdapterImpl implements TursoAdapter {
         // under multiprocess WAL).
         const uncleanShutdown = uncleanFromDeadMarker;
         try {
-          await ensureAdapterMetaTable(instance);
-          await stampAdapterMeta(instance, 'turso');
+          // (BL-1010e417 / 595e7daf) Read first. `CREATE TABLE IF NOT EXISTS`
+          // on an existing table still opens a write transaction (measured: it
+          // initialises the -wal header on every reopen), and an unchanged
+          // stamp needs no write at all — so both run only when the stamp is
+          // missing or stale.
+          if (!(await adapterMetaIsCurrent(instance, 'turso'))) {
+            await ensureAdapterMetaTable(instance);
+            await stampAdapterMeta(instance, 'turso');
+          }
         } catch (err) {
           // Non-fatal — but meta stamping failing on every open is a real signal.
           log.warn('store_adapter.turso.adapter_meta_failed', {
             error: err instanceof Error ? err.message : String(err),
           });
         }
+        lap('meta_stamp');
 
         // (BL-352) Verify — and repair — the artifacts this adapter generates.
         // `CREATE INDEX IF NOT EXISTS` cannot see a structure that exists but is
         // empty, so schema reconciliation alone leaves damage permanent and
         // invisible. See integrity.ts for the probes and their negative controls.
         instance._walBaseline = captureWalIdentity(config.dbPath ?? config.url);
-        await runOpenTimeIntegrity(instance, {
-          uncleanShutdown,
-          walBaseline: instance._walBaseline,
-          onReport: (event, detail) => emitIntegrityReport(config.dbPath ?? config.url, event, detail),
-        });
+        const onReport = (event: Parameters<typeof emitIntegrityReport>[1], detail: string): void =>
+          emitIntegrityReport(config.dbPath ?? config.url, event, detail);
+        // (BL-1010e417) A reopen after a voluntary, healthy release skips the
+        // `fast` verify and its durable result upsert — the only WAL frame such
+        // a reopen wrote (P1), and the reason every idle flush had something
+        // to truncate. NEVER skipped for 'initial' or 'poison', and never when
+        // a crash marker was seen at this open.
+        const resumed =
+          internal.reason === 'release' &&
+          !uncleanShutdown &&
+          (await resumeOpenTimeIntegrityAfterRelease(instance, { onReport }));
+        if (resumed) {
+          skipped['integrity'] =
+            'release reopen: fast verify + result persist skipped; the verdict of the last full open stands, owed deep verification still scheduled';
+        } else {
+          await runOpenTimeIntegrity(instance, {
+            uncleanShutdown,
+            walBaseline: instance._walBaseline,
+            onReport,
+          });
+        }
+        lap('integrity');
       }
 
       // (SPEC-CONN-RECYCLE) Capture the exact `opts` this connect() call
@@ -3079,6 +3204,21 @@ export class TursoAdapterImpl implements TursoAdapter {
         }
         instance._capabilities = { ...instance._capabilities, walModeVerified: true };
       }
+      lap('arm_and_wal_mode_verify');
+
+      instance._lastOpenTiming = {
+        reason: internal.reason,
+        totalMs: Math.round((performance.now() - openStartedAt) * 100) / 100,
+        phases,
+        skipped,
+      };
+      log.debug('store_adapter.turso.open_timing', {
+        db_path: canonicalDb ?? null,
+        reason: internal.reason,
+        total_ms: instance._lastOpenTiming.totalMs,
+        phases: JSON.stringify(phases),
+        skipped: Object.keys(skipped).join(',') || null,
+      });
 
       return instance;
     } catch (err) {
@@ -3640,10 +3780,19 @@ export class TursoAdapterImpl implements TursoAdapter {
    * release the underlying driver connection AND this connection's lease-dir
    * entry while KEEPING this adapter instance usable: `closed` stays `false`,
    * and the NEXT call to any query/exec/transaction method transparently
-   * reconnects (paying the full `connect()` ceremony — measured ~3-4ms
-   * steady-state, `tools/bench-connect-cost.mjs` — before proceeding), via
-   * the same `_ensureHealthy()`/`_reconnectPromise` machinery SPEC-CONN-
-   * RECYCLE already uses for poison recovery.
+   * reconnects before proceeding, via the same
+   * `_ensureHealthy()`/`_reconnectPromise` machinery SPEC-CONN-RECYCLE
+   * already uses for poison recovery.
+   *
+   * (BL-1010e417 / 44896cff) What that reconnect costs — measured, per phase,
+   * by `lastOpenTiming`, on a 115 MB copy of a live-store snapshot (2026-09-28):
+   *  - reopen after THIS release (`'release'`): 2.6–10.4 ms over 5 samples.
+   *    It reuses the instance's `recursiveCte` probe, and skips the `fast`
+   *    integrity pass and its durable result upsert. It keeps the lease, the
+   *    preflight, the BUG-026 WAL baseline and the BL-461 FTS orphan guard.
+   *  - a first open, or a reopen after a poison fault (`'initial'`/`'poison'`):
+   *    506–542 ms, ~505 ms of it the `fast` integrity pass — by design, since
+   *    those opens trust nothing from a previous connection.
    *
    * Runs the FULL `close()` ceremony first — PASSIVE checkpoint always, then
    * a quiescence-gated `wal_checkpoint(TRUNCATE)`, driver close, marker
@@ -3782,6 +3931,11 @@ export class TursoAdapterImpl implements TursoAdapter {
     // works, enforced read-only only at the application layer).
     const writableClose = !this.config.readonly || this._softReadonly;
     if (writableClose) {
+      // (BL-1010e417) `-wal` size at the START of the close — the fallback
+      // evidence for "nothing to truncate" when the PASSIVE result carries no
+      // frame count. `null` = unknown (remote URL / stat failure) ⇒ never
+      // treated as empty.
+      const walBytesAtCloseStart = this._walBytesForClose();
       try {
         const report = await verifyStoreIntegrity(this, {
           only: ['wal_identity'],
@@ -3799,11 +3953,42 @@ export class TursoAdapterImpl implements TursoAdapter {
         // WAL frames into the main db through the fd we already hold, even when
         // the WAL was unlinked or a concurrent reader holds it. Never truncates.
         let passiveOk = false;
+        let passiveFrames: number | null = null;
         try {
-          await this.executeAll('PRAGMA wal_checkpoint(PASSIVE)');
+          const passive = await this.executeAll<{ log?: unknown }>('PRAGMA wal_checkpoint(PASSIVE)');
           passiveOk = true;
+          const frames = passive.rows[0]?.log;
+          if (typeof frames === 'number' && Number.isFinite(frames)) passiveFrames = frames;
+          else if (typeof frames === 'bigint') passiveFrames = Number(frames);
         } catch (passiveErr) {
           this.reportFailedPassiveCheckpoint(passiveErr, damaged);
+        }
+
+        // (BL-1010e417) NOTHING TO TRUNCATE ⇒ NO TRUNCATE, NO -tshm RENAME.
+        // Every idle release used to TRUNCATE and then rename the -tshm aside,
+        // even when the reconnect since the last release had written nothing:
+        // a guaranteed `.stale-*` file and a TRUNCATE (an exclusive-lock
+        // window peers must wait out) per ~30 s cycle, for a WAL with zero
+        // frames in it. The evidence is the frame count the PASSIVE checkpoint
+        // just returned (`log`); when that column is unavailable, the -wal
+        // must have been 0 bytes at the start of this close AND still be 0
+        // now. Anything else — frames present, PASSIVE failed, size unknown —
+        // takes today's path unchanged, including the one quiescence-gated
+        // TRUNCATE (BUG-008) and the rename (renamed, never deleted).
+        const walBytesNow = this._walBytesForClose();
+        const nothingToTruncate =
+          passiveOk &&
+          (passiveFrames !== null
+            ? passiveFrames === 0
+            : walBytesAtCloseStart === 0 && walBytesNow === 0);
+        if (nothingToTruncate) {
+          log.debug('store_adapter.turso.close_truncate_skipped_empty_wal', {
+            db_path: this.coordPath ?? null,
+            evidence:
+              passiveFrames !== null
+                ? `PASSIVE checkpoint reported log=${passiveFrames}`
+                : `-wal was ${walBytesAtCloseStart} bytes at close start and ${walBytesNow} now`,
+          });
         }
 
         // (BL-330) The orphaned-WAL recovery report rides the PASSIVE result.
@@ -3833,7 +4018,9 @@ export class TursoAdapterImpl implements TursoAdapter {
         // raw spelling here found an empty lease dir and truncated the WAL under
         // live peers — the #7833 trigger, with no race required.
         const coordDb = this.coordPath;
-        if (coordDb && this._lease) {
+        if (nothingToTruncate) {
+          // (BL-1010e417) see above — the WAL holds no frames.
+        } else if (coordDb && this._lease) {
           const quiescence = storeQuiescence(coordDb, this._lease.token);
           if (!quiescence.quiescent) {
             log.warn('store_adapter.turso.close_checkpoint_busy', {
@@ -4000,6 +4187,25 @@ export class TursoAdapterImpl implements TursoAdapter {
     }
   }
 
+  /** (BL-1010e417) Current `-wal` size for the close-time "nothing to
+   *  truncate" check: `0` when the file is absent, `null` when there is no
+   *  local path or the stat fails for any other reason (unknown ⇒ never
+   *  treated as empty). */
+  private _walBytesForClose(): number | null {
+    const dbPath = this.coordPath;
+    if (dbPath === undefined) return null;
+    try {
+      return statSync(dbPath + '-wal').size;
+    } catch (err) {
+      if ((err as { code?: string } | null)?.code === 'ENOENT') return 0;
+      log.debug('store_adapter.turso.close_wal_stat_failed', {
+        db_path: dbPath,
+        error: err instanceof Error ? err.message : String(err),
+      });
+      return null;
+    }
+  }
+
   /**
    * (BUG-011) Report a failed PASSIVE checkpoint with an ACCURATE verdict.
    *
@@ -4077,8 +4283,9 @@ export class TursoAdapterImpl implements TursoAdapter {
     } catch {
       return; // no residue to reset
     }
-    const stamp = new Date().toISOString().replace(/[:.]/g, '').replace('T', '-').slice(0, 15);
-    const to = `${tshmPath}.stale-${stamp}`;
+    // (BL-1010e417 / 5eacd776) Collision-free: the old minute-precision stamp
+    // made every rename inside one minute overwrite the previous forensic file.
+    const to = staleSidecarPath(tshmPath);
     try {
       renameSync(tshmPath, to);
       log.debug('store_adapter.turso.close_tshm_reset', {
@@ -4210,8 +4417,11 @@ export class TursoAdapterImpl implements TursoAdapter {
         // hand back a never-opened shell instead of an actually-reopened
         // connection, which is exactly what this `finally` needs (the
         // caller keeps using `this` immediately after this returns).
-        const fresh = await TursoAdapterImpl._openReal(this._connectOpts);
+        // (BL-1010e417) 'initial', i.e. the full ceremony: the schema was just
+        // rewritten underneath this process, so nothing may be reused.
+        const fresh = await TursoAdapterImpl._openReal(this._connectOpts, { reason: 'initial' });
         this.db = fresh.db;
+        this._lastOpenTiming = fresh._lastOpenTiming;
         this._lease = fresh._lease;
         // (BUG-STOREADAPTER-COORDINATION-PATH-ASYMMETRY) Adopt the fresh instance's
         // canonical identity alongside its lease. The two are a pair: `_lease` was
