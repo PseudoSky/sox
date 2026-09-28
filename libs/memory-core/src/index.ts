@@ -181,6 +181,14 @@ export type {
 export { DeterministicTestProvider, featureHashEmbed } from './embed-test-provider.js';
 export { _setEmbedProviderForTest } from './embed.js';
 
+// ── Test-harness operator store-env scrub (BL-7e5be7e8; TEST-ONLY) ───────────
+export {
+  HOST_CONFIG_ENV_PREFIX,
+  OPERATOR_STORE_ENV_KEYS,
+  isOperatorStoreEnvKey,
+  scrubOperatorStoreEnv,
+} from './test-env-scrub.js';
+
 // ── Outbox queue (transactional enrichment triggers — BL-172 / BL-186) ────────
 // Producers only: the consumer is memory-server's in-process periodic pass.
 // (The unwired createMemoryOutboxQueue/memoryFlush/migrate surface was deleted

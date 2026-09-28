@@ -53,9 +53,26 @@ process.env['STORE_ADAPTER'] = 'sqlite';
  * The test provider survives _resetEmbedSingleton() calls (those clear the
  * cached fastembed instance but deliberately leave _testProvider intact).
  */
-import { DeterministicTestProvider, _setEmbedProviderForTest } from '@adhd/sox-memory-core';
+import { DeterministicTestProvider, _setEmbedProviderForTest, scrubOperatorStoreEnv } from '@adhd/sox-memory-core';
 
 _setEmbedProviderForTest(new DeterministicTestProvider());
+
+/**
+ * BL-7e5be7e8: remove the operator's host-injected store config
+ * (`SOX_CONFIG_*`, `SOX_PROXY_BACKEND*`, `SOX_AUTO_BACKUP_DIR`) from this
+ * worker's environment before any spec loads. The BL-412 guard below only sees
+ * THIS process; a spec that spawns the real entrypoint with `{ ...process.env }`
+ * would otherwise hand the child `SOX_CONFIG_DB_PATH=~/.memory/memory.db`, and
+ * that child's SIGTERM handler backs up (opens) the production store and prunes
+ * its backup dir. See libs/memory-core/src/test-env-scrub.ts for the full
+ * rationale and bl-7e5be7e8-operator-store-env-scrub.spec.ts for the proof.
+ */
+const scrubbedOperatorKeys = scrubOperatorStoreEnv(process.env);
+if (scrubbedOperatorKeys.length > 0) {
+  process.stderr.write(
+    `[memory-server vitest.setup] BL-7e5be7e8: scrubbed inherited operator store config: ${scrubbedOperatorKeys.join(', ')}\n`,
+  );
+}
 
 /**
  * BL-412 whole-suite guard: no test in this project may EVER open a
