@@ -4,12 +4,14 @@
  * `handleDirectStdioShutdown` (index.ts) is the DIRECT-STDIO MODE shutdown
  * handler registered on both `process.on('SIGTERM', ...)` and
  * `process.on('SIGINT', ...)`. It must be idempotent: a repeated signal
- * (tsx's `relaySignalToChild` re-sends SIGTERM 30ms after forwarding it if
- * the child has not yet reported, launchd/a process-group kill can also
- * deliver a signal twice, and Node fires every registered listener for a
- * signal) must never re-run the pre-restart `autoBackup()` (a VACUUM INTO)
- * a second time, and must never let a second invocation race ahead of the
- * first's in-flight backup.
+ * (tsx's `relaySignalToChild` keys off the CHILD'S IPC ACKNOWLEDGEMENT of
+ * the signal, not the child exiting — if it hasn't seen that ack ~30ms
+ * after relaying the first signal it re-sends the same signal, then
+ * escalates to SIGKILL ~60ms after the original relay; launchd/a
+ * process-group kill can also deliver a signal twice, and Node fires every
+ * registered listener for a signal) must never re-run the pre-restart
+ * `autoBackup()` (a VACUUM INTO) a second time, and must never let a second
+ * invocation race ahead of the first's in-flight backup.
  *
  * This suite calls `handleDirectStdioShutdown` directly (unit level, no
  * process spawn — mirrors `bl472-shutdown-drain.spec.ts`'s approach to
@@ -63,9 +65,16 @@ describe('BL-e7716825 — handleDirectStdioShutdown is idempotent under a repeat
     const p1 = handleDirectStdioShutdown('SIGTERM', '/scratch/db.sqlite', mockRunAutoBackup, exit);
     const p2 = handleDirectStdioShutdown('SIGINT', '/scratch/db.sqlite', mockRunAutoBackup, exit);
 
-    // Give both calls a chance to enter the guard before releasing the
-    // in-flight backup — proves the SECOND call did not start its own
-    // autoBackup while the first was still pending.
+    // Entry into the guard is SYNCHRONOUS, not something these awaits cause:
+    // handleDirectStdioShutdown's body runs synchronously up to its first
+    // `await`, which is the runAutoBackup() call itself — so by the time p2
+    // is constructed on the line above, p1 has already run past the guard
+    // check and already invoked mockRunAutoBackup once. These two
+    // `Promise.resolve()` ticks just flush pending microtasks (stderr
+    // writes, the guard's own promise-chain setup) before asserting, so a
+    // deferred SECOND backup scheduled via `.then()`/microtask (rather than
+    // synchronously, on the next line) would still have had a chance to run
+    // and be caught by the assertion below.
     await Promise.resolve();
     await Promise.resolve();
     expect(mockRunAutoBackup).toHaveBeenCalledTimes(1);
@@ -110,12 +119,21 @@ describe('BL-e7716825 — handleDirectStdioShutdown is idempotent under a repeat
     expect(p2Resolved).toBe(false);
 
     releaseBackup();
-    await Promise.all([p1, p2]);
+    // (BL-85a62f57) Fail fast on a regression that leaves p2 forever
+    // unsettled, instead of riding out vitest's much longer default test
+    // timeout — a bare `await Promise.all([p1, p2])` here would hang the
+    // whole suite run to that default on a broken guard.
+    await Promise.race([
+      Promise.all([p1, p2]),
+      new Promise((_resolve, reject) => {
+        setTimeout(() => reject(new Error('p1/p2 did not settle within 2000ms — join guard likely broken')), 2000);
+      }),
+    ]);
 
     expect(p2Resolved).toBe(true);
     expect(order).toEqual(['backup-resolved', 'exit']);
     expect(exit).toHaveBeenCalledTimes(1);
-  });
+  }, 5000);
 
   it('[BL-e7716825] an unconfigured store (dbPathForBackup null) still only exits once across two signals', async () => {
     const mockRunAutoBackup = vi.fn();

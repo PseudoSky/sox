@@ -48,3 +48,25 @@ export function computeShutdownSafetyNetMs(env: NodeJS.ProcessEnv = process.env)
   const net = stopTimeoutMs - SOX_SHUTDOWN_SAFETY_MARGIN_MS;
   return net > 0 ? net : 0;
 }
+
+// (BL-405, BUG-018 rebalanced, BL-85a62f57) The pre-restart VACUUM INTO backup
+// is best-effort ONLY — a full compacting copy of a large store is
+// legitimately unbounded I/O, so it must never be allowed to consume the
+// shutdown's share of the reaper's grace window. It races its own timeout
+// and is abandoned (not awaited to completion) if still running past this
+// bound.
+//
+// Owned HERE (not in backend.ts, which re-exports it) so BOTH shutdown
+// sequences — `backend.ts`'s `coordinatedShutdown` (BACKEND mode) and
+// `index.ts`'s `handleDirectStdioShutdown` (DIRECT-STDIO mode) — race the
+// SAME literal instead of drifting copies. `backend.ts` imports `./index.js`
+// at module scope, so `index.ts` importing the constant back out of
+// `backend.ts` would be a circular import inside the esbuild CJS bundle;
+// this standalone module has no such edge to either.
+//
+// (BUG-018) Was 2500, cut to 900 — still generous for a best-effort,
+// non-durability operation, leaving real headroom under
+// `computeShutdownSafetyNetMs()`'s envelope for whatever step must complete
+// for durability (backend mode's WAL checkpoint). See
+// `bug018-shutdown-budget-headroom.spec.ts`.
+export const SHUTDOWN_BACKUP_TIMEOUT_MS = 900;

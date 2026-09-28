@@ -176,6 +176,7 @@ import {
 } from './operation-guard.js';
 import { mainThreadMonitor } from './mainthread-monitor.js';
 import { serverLivenessWatchdog, watchdogIntervalMs } from './liveness-watchdog.js';
+import { computeShutdownSafetyNetMs, SHUTDOWN_BACKUP_TIMEOUT_MS } from './shutdown-margin.js';
 // ─── ADR-0003: content-addressed self-identity ───────────────────────────────
 //
 // The server's identity is `id` + the sha256 content address of its RUNNING
@@ -4450,17 +4451,27 @@ export const MEMORY_SERVER_TELEMETRY_INIT_OPTIONS: InitTelemetryOptions = {
 //
 // `handleDirectStdioShutdown` is the DIRECT-STDIO MODE ONLY shutdown handler
 // (see the BL-405 comment on its call site below for why BACKEND mode never
-// registers this). It must be IDEMPOTENT: a single SIGTERM/SIGINT can arrive
-// more than once — tsx's `relaySignalToChild` (node_modules/tsx/dist/cli.mjs)
-// re-sends SIGTERM 30ms after forwarding it if the child has not yet exited
-// and escalates to SIGKILL 30ms after that, launchd can redeliver a signal to
-// a process group, and Node itself fires every listener registered for a
-// signal (never just one) — so `process.on('SIGTERM', ...)` and
-// `process.on('SIGINT', ...)` can both fire for what is, from the operator's
-// perspective, a single shutdown request. Without a guard, a second
-// invocation could start a SECOND `autoBackup()` (a VACUUM INTO) concurrently
-// with the first — two backup files, or one interrupted mid-write by the
-// process exiting out from under it.
+// registers this). It must be IDEMPOTENT: a single logical shutdown request
+// can reach this handler more than once. Two distinct causes, not one:
+//   1. tsx's `relaySignalToChild` (node_modules/tsx/dist/cli.mjs) keys off
+//      the CHILD'S IPC ACKNOWLEDGEMENT of the signal, not the child exiting:
+//      if tsx hasn't seen that ack ~30ms after relaying the first signal, it
+//      re-sends the SAME signal, then escalates to SIGKILL ~60ms after the
+//      original relay — a SIGKILL this guard cannot intercept at all, so the
+//      guard's real job is finishing (or bounding) the backup well inside
+//      that ~60ms budget, not just deduping the resend.
+//   2. Node fires every listener registered for a GIVEN signal (never just
+//      one) — so two listeners on the same `process.on('SIGTERM', ...)`
+//      would both run for one delivery. It does NOT mean a SIGTERM delivery
+//      also invokes SIGINT's listeners: SIGTERM and SIGINT are independent
+//      signal channels. `process.on('SIGTERM', ...)` and
+//      `process.on('SIGINT', ...)` can both fire for what is, from the
+//      operator's perspective, a single shutdown request only when BOTH
+//      signals are actually delivered (e.g. a terminal Ctrl-C raising SIGINT
+//      while `soxe service restart`'s stop path independently sends SIGTERM).
+// Without a guard, a second invocation could start a SECOND `autoBackup()`
+// (a VACUUM INTO) concurrently with the first — two backup files, or one
+// interrupted mid-write by the process exiting out from under it.
 //
 // `_directShutdownInFlight` makes the whole sequence idempotent by sharing a
 // single in-flight promise across every entry point: the FIRST call starts
@@ -4469,11 +4480,27 @@ export const MEMORY_SERVER_TELEMETRY_INIT_OPTIONS: InitTelemetryOptions = {
 // body — mirrors the `_shuttingDown` guard `coordinatedShutdown` in
 // backend.ts already uses for the BACKEND-mode shutdown sequence (see that
 // function's own doc comment).
+//
+// (BL-85a62f57) Bounded the same way backend.ts's `coordinatedShutdown`
+// bounds its own pre-restart backup step: the VACUUM INTO races
+// `SHUTDOWN_BACKUP_TIMEOUT_MS` (shared literal, `./shutdown-margin.js`), and
+// the whole handler is wrapped in a `computeShutdownSafetyNetMs()` safety net
+// so a hung backup can be escaped without SIGKILL. A repeated signal while a
+// shutdown is already in flight logs `shutdown.signal_repeated` (naming both
+// the repeat and the signal that started the in-flight sequence) and joins —
+// it does NOT force an immediate exit. Mirrors backend.ts's own precedent
+// (`if (_shuttingDown) return;`, no forced exit on repeat): forcing exit on
+// the repeat would abort the VACUUM INTO mid-write in exactly the case this
+// guard exists to protect, and cause (1) above means a repeat is expected
+// and imminent within ~30ms of the first — the safety net (not the repeated
+// signal) is the intended escape hatch for a genuinely hung backup.
 let _directShutdownInFlight: Promise<void> | null = null;
+let _directShutdownFirstSignal: string | null = null;
 
 /** Test-only: reset the guard between specs. */
 export function __resetDirectShutdownStateForTest(): void {
   _directShutdownInFlight = null;
+  _directShutdownFirstSignal = null;
 }
 
 export async function handleDirectStdioShutdown(
@@ -4482,20 +4509,71 @@ export async function handleDirectStdioShutdown(
   runAutoBackup: typeof autoBackup,
   exit: (code: number) => never,
 ): Promise<void> {
-  if (_directShutdownInFlight !== null) return _directShutdownInFlight;
+  if (_directShutdownInFlight !== null) {
+    log.warn('shutdown.signal_repeated', { signal, first_signal: _directShutdownFirstSignal });
+    return _directShutdownInFlight;
+  }
+  _directShutdownFirstSignal = signal;
   _directShutdownInFlight = (async (): Promise<void> => {
+    // (BL-85a62f57) `exit` is injected and, in tests, is a mock that RETURNS
+    // instead of terminating the process — so without this latch, a
+    // safety-net force-exit followed later by the backup race's own exit(0)
+    // (or vice versa) would call `exit` twice. Guard so only the first call
+    // through this handler's own body reaches the real `exit`.
+    let exited = false;
+    const exitOnce = (code: number): void => {
+      if (exited) return;
+      exited = true;
+      exit(code);
+    };
+
     if (dbPathForBackup === null) {
       process.stderr.write(
         `[memory-server] received ${signal}; no store configured (SOX_CONFIG_DB_PATH unset) — skipping pre-restart backup\n`,
       );
-      exit(0);
+      exitOnce(0);
       return;
     }
+
+    // (BL-85a62f57) Hard ceiling on the whole handler, mirroring backend.ts's
+    // `coordinatedShutdown` safety net: if the bounded backup race below
+    // somehow still hangs (or a future step is added that can), this forces
+    // the exit rather than leaving the process waiting on SIGKILL.
+    const safetyNetMs = computeShutdownSafetyNetMs();
+    const safetyNet = setTimeout(() => {
+      log.error('shutdown.safety_net_exceeded', { signal, safety_net_ms: safetyNetMs });
+      process.stderr.write(
+        `[memory-server] shutdown exceeded ${safetyNetMs}ms safety net — force-exiting\n`,
+      );
+      exitOnce(0);
+    }, safetyNetMs);
+    if (typeof safetyNet.unref === 'function') safetyNet.unref();
+
     process.stderr.write(`[memory-server] received ${signal}, running pre-restart backup...\n`);
     try {
-      const result = await runAutoBackup(dbPathForBackup);
-      if (!result.skipped && result.path) {
-        process.stderr.write(`[memory-server] pre-restart backup saved: ${result.path} (${result.size} bytes)\n`);
+      const timedOut = await Promise.race([
+        runAutoBackup(dbPathForBackup).then((result) => {
+          if (!result.skipped && result.path) {
+            process.stderr.write(
+              `[memory-server] pre-restart backup saved: ${result.path} (${result.size} bytes)\n`,
+            );
+          }
+          return false;
+        }),
+        new Promise<boolean>((resolve) => {
+          const t = setTimeout(() => resolve(true), SHUTDOWN_BACKUP_TIMEOUT_MS);
+          if (typeof t.unref === 'function') t.unref();
+        }),
+      ]);
+      if (timedOut) {
+        log.warn('shutdown.pre_restart_backup.timeout', {
+          signal,
+          db_path: dbPathForBackup,
+          timeout_ms: SHUTDOWN_BACKUP_TIMEOUT_MS,
+        });
+        process.stderr.write(
+          `[memory-server] pre-restart backup exceeded ${SHUTDOWN_BACKUP_TIMEOUT_MS}ms — abandoning it\n`,
+        );
       }
     } catch (err) {
       // autoBackup() is documented to never throw (all error conditions
@@ -4509,9 +4587,41 @@ export async function handleDirectStdioShutdown(
       });
       process.stderr.write(`[memory-server] pre-restart backup failed: ${err}\n`);
     }
-    exit(0);
+    clearTimeout(safetyNet);
+    exitOnce(0);
   })();
   return _directShutdownInFlight;
+}
+
+/**
+ * (BL-85a62f57) Wires the DIRECT-STDIO-mode SIGTERM/SIGINT handlers onto
+ * `proc` (defaults to the real `process`), routing both to
+ * `handleDirectStdioShutdown`. Extracted from the module-load call site so
+ * the wiring itself — which signal maps to which handler, and that BACKEND
+ * mode registers neither — is directly testable without emitting a real
+ * SIGTERM/SIGINT at the actual test process (BL-405's own doc comment
+ * records a leaked real listener opening the live `~/.memory/memory.db` as a
+ * side effect). Returns `null` when `env.SOX_PROXY_BACKEND === '1'`, since
+ * BACKEND mode installs its own `coordinatedShutdown` listeners instead (see
+ * the BL-405 comment at this function's call site).
+ */
+export function registerDirectStdioShutdownHandlers(
+  env: NodeJS.ProcessEnv = process.env,
+  dbPathForBackup: string | null = resolveDbPath(undefined),
+  runAutoBackupFn: typeof autoBackup = autoBackup,
+  exitFn: (code: number) => never = process.exit,
+  proc: { on: (event: string, listener: (...args: unknown[]) => void) => unknown } = process,
+): { sigterm: () => void; sigint: () => void } | null {
+  if (env.SOX_PROXY_BACKEND === '1') return null;
+  const sigterm = (): void => {
+    void handleDirectStdioShutdown('SIGTERM', dbPathForBackup, runAutoBackupFn, exitFn);
+  };
+  const sigint = (): void => {
+    void handleDirectStdioShutdown('SIGINT', dbPathForBackup, runAutoBackupFn, exitFn);
+  };
+  proc.on('SIGTERM', sigterm);
+  proc.on('SIGINT', sigint);
+  return { sigterm, sigint };
 }
 
 if (require.main === module) {
@@ -4618,17 +4728,15 @@ if (require.main === module) {
   // `coordinatedShutdown`'s `closeAllAdapters()` step) routinely never
   // completed — the WAL file was byte-identical after a "clean" shutdown log
   // line. See BACKLOG.md BL-405.
-  if (process.env.SOX_PROXY_BACKEND !== '1') {
-    // BL 0c3522c2 (mirrors BL-405 in backend.ts): back up only a CONFIGURED store.
-    // An unconfigured process has no store to back up — it must not guess one.
-    const dbPathForBackup = resolveDbPath(undefined);
-    // BL-e7716825: every entry point that can trigger a direct-stdio shutdown
-    // goes through the SAME idempotent handler (see its doc comment above) —
-    // a repeated SIGTERM/SIGINT is a no-op that joins the first invocation's
-    // in-flight promise instead of re-running the pre-restart backup.
-    process.on('SIGTERM', () => { void handleDirectStdioShutdown('SIGTERM', dbPathForBackup, autoBackup, process.exit); });
-    process.on('SIGINT', () => { void handleDirectStdioShutdown('SIGINT', dbPathForBackup, autoBackup, process.exit); });
-  }
+  // BL 0c3522c2 (mirrors BL-405 in backend.ts): back up only a CONFIGURED
+  // store — an unconfigured process has no store to back up and must not
+  // guess one. BL-e7716825: every entry point that can trigger a
+  // direct-stdio shutdown goes through the SAME idempotent handler (see its
+  // doc comment above) — a repeated SIGTERM/SIGINT is a no-op that joins the
+  // first invocation's in-flight promise instead of re-running the
+  // pre-restart backup. `registerDirectStdioShutdownHandlers` itself no-ops
+  // (returns null, registers nothing) in BACKEND mode.
+  registerDirectStdioShutdownHandlers();
 
   if (process.env.SOX_PROXY_BACKEND === '1') {
     const socketPath = process.env.SOX_PROXY_BACKEND_SOCKET;

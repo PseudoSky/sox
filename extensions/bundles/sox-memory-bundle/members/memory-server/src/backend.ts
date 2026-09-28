@@ -33,7 +33,7 @@ import * as path from 'node:path';
 
 import { autoBackup, closeAllAdapters, flushPendingEmbeds, terminateEmbedWorkers, WriteQueue } from '@adhd/sox-memory-core';
 import { getContentAddress, handleToolCall, resolveDbPath, TOOLS, waitForDrainSettled } from './index.js';
-import { computeShutdownSafetyNetMs } from './shutdown-margin.js';
+import { computeShutdownSafetyNetMs, SHUTDOWN_BACKUP_TIMEOUT_MS } from './shutdown-margin.js';
 
 /**
  * Build the canonical `tools/list` result — the EXACT shape the MCP `serve()` path
@@ -166,34 +166,15 @@ export async function handleBackendRequest(
 // (no `SOX_CONFIG_STOP_TIMEOUT_MS` override) value without invoking the
 // function themselves.
 export const SHUTDOWN_SAFETY_NET_MS = computeShutdownSafetyNetMs();
-// (BL-405, BUG-018 rebalanced) The pre-restart VACUUM INTO backup is
-// best-effort ONLY — it is not required for durability (step 2 below, the
-// WAL checkpoint, already gives that per BL-330) and a full compacting copy
-// of a large store is legitimately unbounded I/O. It must never be allowed
-// to consume the shutdown's share of the reaper's grace window, so it races
-// its own timeout and is abandoned (not awaited to completion) if it's
-// still running past this bound.
-//
-// (BUG-018) Was 2500. `SPEC-BL-472.md` Decision D1 already did the
-// arithmetic and found `SHUTDOWN_EMBED_DRAIN_TIMEOUT_MS` (750) + the
-// underlying fastembed-process TERMINATE_GRACE_MS (1000, real background
-// cost of step 1's own still-running loser promise) + this constant (2500)
-// summed to 4250 — MORE than `SHUTDOWN_SAFETY_NET_MS` (4000) — and knowingly
-// accepted it, reasoning the safety net would "force-exit that pathological
-// case cleanly." That is wrong: an `exit(0)` fired by the safety net WHILE
-// step 2 (`closeAllAdapters()`'s `PRAGMA wal_checkpoint(TRUNCATE)`) is still
-// in flight skips the exact ceremony BUG-018 exists to protect — it is not
-// "clean" merely because it isn't a crash. Reproduced live with real
-// multi-process fastembed/CoreML contention (BL-331): total
-// `coordinatedShutdown` wall-clock ranged 2.4s-5.4s across five real trials,
-// one of which exceeded the reaper's own 5000ms grace outright. This
-// constant is cut to 900 — still generous for a best-effort, non-durability
-// operation that runs AFTER the real checkpoint has already completed — so
-// the three best-effort budgets combined (see
-// `bug018-shutdown-budget-headroom.spec.ts`) leave real, measured-informed
-// headroom under `SHUTDOWN_SAFETY_NET_MS` for the checkpoint instead of
-// exceeding the whole envelope before it even runs.
-export const SHUTDOWN_BACKUP_TIMEOUT_MS = 900;
+// (BL-85a62f57) `SHUTDOWN_BACKUP_TIMEOUT_MS` is now OWNED by `./shutdown-margin.js`
+// (imported above) so `index.ts`'s DIRECT-STDIO `handleDirectStdioShutdown` can
+// race the exact same literal without a circular import (`backend.ts` imports
+// `./index.js`, so the reverse import can't happen). Re-exported here so every
+// existing import site (`backend-shutdown.spec.ts`,
+// `bug018-shutdown-budget-headroom.spec.ts`) keeps working unchanged. See
+// `shutdown-margin.ts`'s doc comment for the full history (BL-405, BUG-018
+// rebalanced) this constant's value carries forward.
+export { SHUTDOWN_BACKUP_TIMEOUT_MS };
 
 // (BL-472, BUG-018 rebalanced) Bounded best-effort drain for in-flight
 // Phase-B embed work AND any in-flight background heal/drain pass, before
