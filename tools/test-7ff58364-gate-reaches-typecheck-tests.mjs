@@ -80,7 +80,8 @@ function findProjectJsonFiles(root) {
     let entries;
     try {
       entries = fs.readdirSync(dir, { withFileTypes: true });
-    } catch {
+    } catch (err) {
+      console.error(`test-7ff58364: readdirSync(${dir}) failed, skipping: ${err.message ?? err}`);
       continue;
     }
     for (const entry of entries) {
