@@ -159,6 +159,10 @@ export default function setup(): () => Promise<void> {
 
   return async function teardown(): Promise<void> {
     const problems: string[] = [];
+    // Set when the reap left an undead run-owned host or the ps capture used to verify the reap
+    // failed outright — in either case we cannot prove the root is free of live processes, so
+    // `rm -rf` on it would delete the only evidence of what is still running against it.
+    let keepRoot = false;
     try {
       const r = await auditAndReapEmbedHosts(
         { smokeRoots: [root], spawnedPids: new Set<number>(), runStartedMs },
@@ -175,8 +179,14 @@ export default function setup(): () => Promise<void> {
         `embed-host reap: run-owned ${String(r.smoke.length)} [${r.smoke.map((p) => `${String(p.pid)}:${p.kind}`).join(', ')}], ` +
           `stopped ${String(r.stopped.length)}, undead ${String(r.undead.length)}, foreign (untouched) ${String(r.foreign.length)}`,
       );
-      if (r.psFailed) problems.push('embed-host ps capture failed — reap unverifiable');
-      if (r.undead.length > 0) problems.push(`undead run-owned embed processes: ${r.undead.join(', ')}`);
+      if (r.psFailed) {
+        problems.push('embed-host ps capture failed — reap unverifiable');
+        keepRoot = true;
+      }
+      if (r.undead.length > 0) {
+        problems.push(`undead run-owned embed processes: ${r.undead.join(', ')}`);
+        keepRoot = true;
+      }
       // HOME is intentionally inherited (see header), so only the two paths this item is about are
       // contained here: the model cache and the socket of every host this run spawned.
       for (const p of r.smoke) {
@@ -206,10 +216,24 @@ export default function setup(): () => Promise<void> {
         if (v === undefined) delete process.env[k];
         else process.env[k] = v;
       }
-      fs.rmSync(root, { recursive: true, force: true });
+      if (keepRoot) {
+        say(`leaving scratch root ${root} in place — undead process or unverifiable ps capture, see problems above`);
+      } else {
+        fs.rmSync(root, { recursive: true, force: true });
+      }
     }
     if (problems.length > 0) {
-      throw new Error(`BL-26291f21: embed scratch teardown found:\n  - ${problems.join('\n  - ')}`);
+      // vitest 4.1.8 runs globalSetup teardowns inside `Vitest.close()`, which catches a thrown
+      // teardown error, logs it as "error during close", and lets the process exit 0 — a throw
+      // alone cannot fail the run (same fix as libs/memory-core/vitest.global-guard.ts and
+      // libs/data/embed/embedding-provider/vitest.global-scratch.ts). Set exitCode first, then
+      // report, so the failure survives even if something upstream swallows the throw too.
+      process.exitCode = 1;
+      const report =
+        `BL-26291f21: embed scratch teardown found:\n  - ${problems.join('\n  - ')}` +
+        (keepRoot ? `\n  scratch root kept for inspection: ${root}` : '');
+      process.stderr.write(`\n${report}\n\n`);
+      throw new Error(report);
     }
   };
 }
