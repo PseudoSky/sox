@@ -347,6 +347,102 @@ export interface AutoBackupOptions extends BackupStoreOptions {
  */
 const ROTATED_BACKUP_RE = /^memory-\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}\.\d{3}\.db$/;
 
+/** (BL-85a62f57) Suffix `autoBackup` appends to the real backup name (after
+ * the writer's own pid) while `VACUUM INTO` is still writing it — see
+ * {@link ROTATED_BACKUP_TMP_RE}. */
+const BACKUP_TMP_SUFFIX = '.tmp';
+
+/**
+ * (BL-85a62f57) The IN-PROGRESS-write name `autoBackup` gives a backup while
+ * `backupTo()`'s `VACUUM INTO` is still writing it: `memory-<ts>.db.<pid>.tmp`.
+ * Same base shape as {@link ROTATED_BACKUP_RE} plus a `.<pid>.tmp` suffix —
+ * that suffix means this NEVER matches `ROTATED_BACKUP_RE` (anchored on
+ * `\.db$`), so a VACUUM INTO killed mid-write (e.g.
+ * `handleDirectStdioShutdown`'s `SHUTDOWN_BACKUP_TIMEOUT_MS`/safety-net
+ * `exitOnce` abandoning it — see `index.ts`'s doc comment) can never be
+ * counted by {@link pruneRotatedBackups}'s retention accounting or mistaken
+ * for a restorable backup by anything that lists the backup dir.
+ * `autoBackup` writes here first and renames to the real `memory-*.db` name
+ * only after `backupStore` reports success (VACUUM INTO complete + integrity
+ * verified).
+ *
+ * The PID is embedded (not just a fixed `.tmp` suffix) because the backup
+ * DIRECTORY is shared across every source keyed off it — both the user and
+ * project-scope stores default to the same `~/.memory/backups` — so two
+ * `autoBackup()` calls from two DIFFERENT live processes can have in-flight
+ * `.tmp` writes in the same directory at the same time. A sweep that deleted
+ * every `.tmp` file unconditionally would race and delete a concurrent,
+ * still-writing process's own target file out from under it. Capturing the
+ * pid lets the sweep tell "leftover from a process that is dead" (safe to
+ * remove) apart from "in flight under a process that is still alive" (must
+ * be left alone) — see {@link sweepStaleBackupTempFiles}.
+ */
+const ROTATED_BACKUP_TMP_RE = /^memory-\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}\.\d{3}\.db\.(\d+)\.tmp$/;
+
+/**
+ * True when no process with this pid currently exists. Uses the standard
+ * `kill(pid, 0)` liveness probe (no signal actually sent) — throws `ESRCH`
+ * when the pid is dead, `EPERM` when it's alive but owned by another user
+ * (still alive, so NOT dead), and succeeds silently when alive and
+ * signalable. Only `ESRCH` means "safe to sweep"; any other outcome
+ * (including an unexpected error) is treated as "assume alive" — the safe
+ * default here is to leave a file alone, never to delete something that
+ * might still be in flight.
+ */
+function isPidDead(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return false; // signalable — alive.
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException).code;
+    if (code === 'ESRCH') return true; // no such process — genuinely dead.
+    return false; // EPERM (alive, different owner) or anything else: assume alive.
+  }
+}
+
+/**
+ * (BL-85a62f57) Best-effort sweep of leftover `*.db.<pid>.tmp` files from a
+ * PREVIOUS `autoBackup` call that was killed mid-`VACUUM INTO` (the exact
+ * scenario `handleDirectStdioShutdown`'s bound exists to bound the damage
+ * of) — but ONLY when the pid embedded in the filename no longer exists
+ * ({@link isPidDead}). A `.tmp` file whose writer is still alive is left
+ * completely alone: it may be a concurrent, still-in-flight backup from a
+ * different live process sharing this same backup directory (see
+ * {@link ROTATED_BACKUP_TMP_RE}'s doc comment for why that is a real,
+ * not theoretical, scenario). Never touches anything matching
+ * {@link ROTATED_BACKUP_RE} — only the `.tmp`-suffixed in-progress name.
+ * Never throws: an unreadable dir, an unparseable pid, or a file that fails
+ * to delete (already gone, permission error) is logged and skipped, exactly
+ * like {@link pruneRotatedBackups}'s own best-effort contract, since a
+ * sweep failure must never turn a successful backup that follows it into a
+ * reported failure.
+ */
+function sweepStaleBackupTempFiles(
+  backupDir: string,
+  log: (...args: unknown[]) => void = () => undefined,
+): void {
+  let files: string[];
+  try {
+    files = fs.readdirSync(backupDir);
+  } catch (err) {
+    log(`[auto-backup] temp-sweep: cannot read backup dir ${backupDir}: ${err}`);
+    return;
+  }
+  for (const f of files) {
+    const m = ROTATED_BACKUP_TMP_RE.exec(f);
+    if (!m) continue;
+    const pid = Number(m[1]);
+    if (!Number.isFinite(pid) || !isPidDead(pid)) continue; // alive or unparseable — leave it alone.
+    const p = path.join(backupDir, f);
+    try {
+      fs.unlinkSync(p);
+      log(`[auto-backup] temp-sweep: removed stale partial backup from dead pid ${pid}: ${p}`);
+    } catch (err) {
+      log(`[auto-backup] temp-sweep: failed to delete ${p}: ${err}`);
+    }
+  }
+}
+
 /**
  * Enforce `BackupConfig.retentionCount`: keep the `retentionCount` most
  * recent rotated backups in `backupDir`, delete the rest.
@@ -453,6 +549,11 @@ export async function autoBackup(
     return { path: '', size: 0, skipped: true, pruned: [] };
   }
 
+  // 5b. (BL-85a62f57) Sweep any `.tmp` leftover from a PREVIOUS call that was
+  //     killed mid-VACUUM-INTO before it could rename its result into place
+  //     (below). Best-effort, never fatal to this call.
+  sweepStaleBackupTempFiles(backupDir, log);
+
   // 6. Idempotency: compare source mtime against the last-backup marker.
   let srcStat: fs.Stats;
   try {
@@ -485,15 +586,48 @@ export async function autoBackup(
     .replace(/:/g, '-')       // cross-platform filename safety
     .replace(/Z$/, '');       // remove trailing Z, keep milliseconds
   const backupName = `memory-${timestamp}.db`;
-  const destPath = path.join(backupDir, backupName);
+  const finalDestPath = path.join(backupDir, backupName);
+  // (BL-85a62f57) VACUUM INTO writes under a `.<pid>.tmp`-suffixed name —
+  // one that ROTATED_BACKUP_RE deliberately does NOT match — so a shutdown
+  // that abandons this call mid-write (`handleDirectStdioShutdown`'s
+  // SHUTDOWN_BACKUP_TIMEOUT_MS/safety-net `exitOnce`) never leaves a partial
+  // file counted toward retention or mistaken for a restorable backup. The
+  // pid identifies THIS writer so a concurrent backup from another live
+  // process sharing this backup dir is never swept as if it were stale —
+  // see `sweepStaleBackupTempFiles`'s doc comment. Only renamed to the real
+  // name below, after `backupStore` reports the VACUUM INTO complete AND
+  // integrity-verified.
+  const tmpDestPath = `${finalDestPath}.${process.pid}${BACKUP_TMP_SUFFIX}`;
 
-  // 9. Run the actual VACUUM INTO backup.
-  const result = await backupStore(resolvedSrc, destPath, opts);
+  // 9. Run the actual VACUUM INTO backup against the temp path.
+  const result = await backupStore(resolvedSrc, tmpDestPath, opts);
 
   if (isBackupStoreError(result)) {
     log(`[auto-backup] backupStore failed: ${result.message}`);
     return { path: '', size: 0, skipped: true, pruned: [] };
   }
+
+  // 9b. (BL-85a62f57) Rename into the real rotated-backup name only now that
+  //     backupStore has confirmed the VACUUM INTO completed and passed its
+  //     integrity check — the file at `finalDestPath` is never observable in
+  //     a partial state. A rename failure (same filesystem, so practically
+  //     only a permission error or an extremely unlucky racing deletion) is
+  //     treated the same as any other backup failure: the temp file is
+  //     cleaned up best-effort and the call reports skipped rather than
+  //     risk leaving a leftover `.tmp` the next sweep can't yet explain.
+  try {
+    fs.renameSync(tmpDestPath, finalDestPath);
+  } catch (err) {
+    log(`[auto-backup] failed to finalize backup (rename ${tmpDestPath} -> ${finalDestPath}): ${err}`);
+    try { fs.unlinkSync(tmpDestPath); } catch (cleanupErr) {
+      tlog.debug('backup.cleanup_tmp_after_rename_failure_failed', {
+        path: tmpDestPath,
+        error: cleanupErr instanceof Error ? cleanupErr.message : String(cleanupErr),
+      });
+    }
+    return { path: '', size: 0, skipped: true, pruned: [] };
+  }
+  const destPath = finalDestPath;
 
   // 10. Update idempotency marker (non-fatal).
   try {

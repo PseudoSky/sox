@@ -4457,9 +4457,17 @@ export const MEMORY_SERVER_TELEMETRY_INIT_OPTIONS: InitTelemetryOptions = {
 //      the CHILD'S IPC ACKNOWLEDGEMENT of the signal, not the child exiting:
 //      if tsx hasn't seen that ack ~30ms after relaying the first signal, it
 //      re-sends the SAME signal, then escalates to SIGKILL ~60ms after the
-//      original relay — a SIGKILL this guard cannot intercept at all, so the
-//      guard's real job is finishing (or bounding) the backup well inside
-//      that ~60ms budget, not just deduping the resend.
+//      original relay — a SIGKILL this guard cannot intercept at all. Under
+//      a TSX-LAUNCHED CHILD specifically, that ~60ms window is real and the
+//      900ms `SHUTDOWN_BACKUP_TIMEOUT_MS` bound below is moot — the child is
+//      gone long before it could fire. For every OTHER launch path (a
+//      launchd/OS-unit service, or `node` invoked directly with no tsx
+//      relay in front of it) there is no such 60ms escalation, and the
+//      900ms bound is the mechanism that is SUPPOSED to stand between a hung
+//      backup and waiting out the reaper's SIGTERM grace — but see the
+//      `(BL-85a62f57)` paragraph below for the case (a synchronously-
+//      blocking `VACUUM INTO`) where it cannot actually fire in time to do
+//      that, and `computeShutdownSafetyNetMs()` shares the identical caveat.
 //   2. Node fires every listener registered for a GIVEN signal (never just
 //      one) — so two listeners on the same `process.on('SIGTERM', ...)`
 //      would both run for one delivery. It does NOT mean a SIGTERM delivery
@@ -4484,16 +4492,44 @@ export const MEMORY_SERVER_TELEMETRY_INIT_OPTIONS: InitTelemetryOptions = {
 // (BL-85a62f57) Bounded the same way backend.ts's `coordinatedShutdown`
 // bounds its own pre-restart backup step: the VACUUM INTO races
 // `SHUTDOWN_BACKUP_TIMEOUT_MS` (shared literal, `./shutdown-margin.js`), and
-// the whole handler is wrapped in a `computeShutdownSafetyNetMs()` safety net
-// so a hung backup can be escaped without SIGKILL. A repeated signal while a
-// shutdown is already in flight logs `shutdown.signal_repeated` (naming both
-// the repeat and the signal that started the in-flight sequence) and joins —
+// the whole handler is wrapped in a `computeShutdownSafetyNetMs()` safety
+// net. IMPORTANT — what this actually bounds: `Promise.race` never cancels
+// the loser. Both timers are ordinary `setTimeout`s on the Node event loop,
+// so they can only fire between turns of that loop — they race the BACKUP
+// PROMISE settling, not the underlying work. For a `backupTo()` that yields
+// control back to the loop while it runs, this is a real bound: the loser
+// keeps running as an abandoned background promise while `exitOnce`
+// proceeds. `SqliteAdapterImpl.backupTo()` — VERIFIED, not assumed
+// (`libs/data/store/store-adapter/src/sqlite-adapter.ts:933`) — is the
+// opposite: `VACUUM INTO` there is a synchronous better-sqlite3 call
+// (`this.db.exec(...)`) that blocks the event loop for its entire duration.
+// While it runs, NEITHER timer callback can even be scheduled, so this
+// bound cannot fire until the VACUUM INTO itself returns. In that case the
+// only thing standing between a hung/slow backup and the process staying
+// alive is the supervisor's own SIGKILL after its stop grace expires (see
+// `docs/spec/service-lifecycle.md`) — moving the backup off the main thread
+// so this bound can actually preempt it is tracked separately as
+// BL-5b29f533 and is explicitly NOT done here.
+// `TursoAdapterImpl.backupTo()` (`turso-adapter.ts:3323`) awaits
+// `this.db.exec(...)` on the `@tursodatabase/database` native driver
+// (dynamically imported at `turso-adapter.ts:2154`); whether that call
+// yields to the event loop during the VACUUM INTO, or blocks it the same
+// way the sqlite path does under an `await` that resolves synchronously
+// on the microtask queue, has NOT been verified either way — this file
+// makes no claim about it. A repeated signal while a shutdown is already in
+// flight logs `shutdown.signal_repeated` (naming both the repeat and the
+// signal that started the in-flight sequence) and joins —
 // it does NOT force an immediate exit. Mirrors backend.ts's own precedent
 // (`if (_shuttingDown) return;`, no forced exit on repeat): forcing exit on
 // the repeat would abort the VACUUM INTO mid-write in exactly the case this
 // guard exists to protect, and cause (1) above means a repeat is expected
-// and imminent within ~30ms of the first — the safety net (not the repeated
-// signal) is the intended escape hatch for a genuinely hung backup.
+// and imminent within ~30ms of the first. The safety net (not the repeated
+// signal) is what this handler relies on for a genuinely hung backup — but,
+// per the block above, that only actually escapes a backup that yields to
+// the event loop. Against a synchronously-blocking `VACUUM INTO`
+// (`SqliteAdapterImpl.backupTo()` today), neither this handler's own bound
+// nor the safety net can run until the call returns; the real escape hatch
+// in that case is the supervisor's SIGKILL, not this code (BL-5b29f533).
 let _directShutdownInFlight: Promise<void> | null = null;
 let _directShutdownFirstSignal: string | null = null;
 
@@ -4510,7 +4546,7 @@ export async function handleDirectStdioShutdown(
   exit: (code: number) => never,
 ): Promise<void> {
   if (_directShutdownInFlight !== null) {
-    log.warn('shutdown.signal_repeated', { signal, first_signal: _directShutdownFirstSignal });
+    log.info('shutdown.signal_repeated', { signal, first_signal: _directShutdownFirstSignal });
     return _directShutdownInFlight;
   }
   _directShutdownFirstSignal = signal;
@@ -4538,7 +4574,12 @@ export async function handleDirectStdioShutdown(
     // (BL-85a62f57) Hard ceiling on the whole handler, mirroring backend.ts's
     // `coordinatedShutdown` safety net: if the bounded backup race below
     // somehow still hangs (or a future step is added that can), this forces
-    // the exit rather than leaving the process waiting on SIGKILL.
+    // the exit — for a backup that yields to the event loop while it runs.
+    // Like the race it wraps, this timer itself cannot be scheduled while a
+    // synchronously-blocking `VACUUM INTO` (SqliteAdapterImpl.backupTo()
+    // today) still holds the event loop; see this handler's own doc comment
+    // above for the full caveat. It does not, by itself, guarantee escaping
+    // without SIGKILL.
     const safetyNetMs = computeShutdownSafetyNetMs();
     const safetyNet = setTimeout(() => {
       log.error('shutdown.safety_net_exceeded', { signal, safety_net_ms: safetyNetMs });

@@ -3,14 +3,24 @@
  *
  * `handleDirectStdioShutdown` (index.ts) previously ran its pre-restart
  * `autoBackup()` (a VACUUM INTO) with NO time bound at all — a later signal
- * joined the in-flight promise silently (BL-e7716825's guard), but a
- * genuinely hung backup could only be escaped with SIGKILL. This suite
- * proves the fix: the backup races `SHUTDOWN_BACKUP_TIMEOUT_MS`
+ * joined the in-flight promise silently (BL-e7716825's guard), and a
+ * genuinely hung backup had no bound in the code at all; only the
+ * supervisor's own SIGKILL could ever end it. This suite proves the fix
+ * AS FAR AS IT GOES: the backup now races `SHUTDOWN_BACKUP_TIMEOUT_MS`
  * (`./shutdown-margin.js`, shared with backend.ts's `coordinatedShutdown`),
  * the whole handler is bounded by a `computeShutdownSafetyNetMs()` safety
  * net, a repeated signal while shutdown is in flight is logged
  * (`shutdown.signal_repeated`), and `exit` is only ever invoked once even
- * when both bounds fire for the same shutdown.
+ * when both bounds fire for the same shutdown. IMPORTANT CAVEAT this suite
+ * does NOT and cannot cover: both races are ordinary `setTimeout`s, so
+ * neither can fire while a *synchronously-blocking* backup — today's
+ * `SqliteAdapterImpl.backupTo()`'s `VACUUM INTO` — holds the event loop.
+ * Every "hung" backup below is an injected Promise that never resolves,
+ * which DOES yield to the event loop (that's what a pending Promise is) —
+ * it proves the race mechanics work, not that they preempt a real
+ * synchronous VACUUM INTO. See `index.ts`'s doc comment on
+ * `handleDirectStdioShutdown` for the full caveat and BL-5b29f533 for the
+ * separate, not-yet-done fix (moving the backup off the main thread).
  *
  * It also covers `registerDirectStdioShutdownHandlers` — the extracted
  * SIGTERM/SIGINT wiring — via an injected fake `proc` so no real signal
@@ -18,14 +28,15 @@
  * doc comment on why a leaked real listener is dangerous: it once opened a
  * connection to the live `~/.memory/memory.db` as a side effect).
  *
- * RED→GREEN PROCEDURE (BL-225): run this suite against a git-stashed-back
- * `handleDirectStdioShutdown`/`registerDirectStdioShutdownHandlers` (the
- * pre-fix shape, unbounded backup + no repeated-signal log + no exported
- * registration function) and all specs here fail — either on a timeout
- * that never resolves (unbounded backup), a missing log call assertion, or
- * an import error (`registerDirectStdioShutdownHandlers` does not exist).
- * Restoring this change turns them GREEN. See the handback report for the
- * quoted `npx nx test` output of both arms.
+ * RED→GREEN PROCEDURE (BL-225), reproducible from the repo (no stash):
+ * `git show ca49f818^:extensions/bundles/sox-memory-bundle/members/memory-server/src/index.ts`
+ * is the pre-fix shape (unbounded backup + no repeated-signal log + no
+ * exported registration function) — check that revision of `index.ts` out
+ * into a scratch copy (or `git worktree add` at `ca49f818^`) and run this
+ * suite against it: every spec here fails, either on a timeout that never
+ * resolves (unbounded backup), a missing log call assertion, or an import
+ * error (`registerDirectStdioShutdownHandlers` does not exist). Running the
+ * same suite against `ca49f818` (or later) turns every spec GREEN.
  *
  * Gate: npx nx test memory-server -- --run bl-85a62f57-shutdown-bound.spec
  */
@@ -96,7 +107,11 @@ describe('BL-85a62f57 — handleDirectStdioShutdown is bounded', () => {
     expect(warnSpy).toHaveBeenCalledWith('shutdown.pre_restart_backup.timeout', expect.objectContaining({ signal: 'SIGTERM' }));
   });
 
-  it('[BL-85a62f57] a repeated signal while shutdown is in flight logs shutdown.signal_repeated', async () => {
+  it('[BL-85a62f57] a repeated signal while shutdown is in flight logs shutdown.signal_repeated at info level', async () => {
+    // info, not warn: a repeat is EXPECTED and imminent (tsx's ack-based
+    // resend within ~30ms — see this handler's own doc comment, cause 1),
+    // not an anomaly worth a warn-level signal.
+    const infoSpy = vi.spyOn(log, 'info').mockImplementation(() => undefined);
     const warnSpy = vi.spyOn(log, 'warn').mockImplementation(() => undefined);
     let releaseBackup!: () => void;
     const mockRunAutoBackup = vi.fn(
@@ -111,7 +126,8 @@ describe('BL-85a62f57 — handleDirectStdioShutdown is bounded', () => {
     await Promise.resolve();
     const p2 = handleDirectStdioShutdown('SIGINT', '/scratch/db.sqlite', mockRunAutoBackup, exit);
 
-    expect(warnSpy).toHaveBeenCalledWith('shutdown.signal_repeated', { signal: 'SIGINT', first_signal: 'SIGTERM' });
+    expect(infoSpy).toHaveBeenCalledWith('shutdown.signal_repeated', { signal: 'SIGINT', first_signal: 'SIGTERM' });
+    expect(warnSpy).not.toHaveBeenCalledWith('shutdown.signal_repeated', expect.anything());
 
     releaseBackup();
     await Promise.all([p1, p2]);

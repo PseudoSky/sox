@@ -281,8 +281,13 @@ export function __resetShutdownStateForTest(): void {
  *      queue's connection was STILL OPEN and accepting further writes after
  *      "shutdown" had already finished. Both must complete, not race an
  *      unrelated handle-close.
- *   3. Fire the pre-restart backup best-effort, bounded by its own timeout —
- *      never gates the exit (see `SHUTDOWN_BACKUP_TIMEOUT_MS` above).
+ *   3. Fire the pre-restart backup best-effort, racing its own timeout (see
+ *      `SHUTDOWN_BACKUP_TIMEOUT_MS` above) so it is not INTENDED to gate the
+ *      exit past that bound — but for a synchronously-blocking `VACUUM INTO`
+ *      (today's `SqliteAdapterImpl.backupTo()`) the timer racing it cannot
+ *      even be scheduled until the call returns, so it DOES gate the exit
+ *      for as long as that takes; see step 3's own inline comment below and
+ *      `SHUTDOWN_BACKUP_TIMEOUT_MS`'s doc comment for the full caveat.
  *   4. Close the UDS listener and exit.
  *
  * `_shuttingDown` makes the whole sequence idempotent: SIGTERM and SIGINT can
@@ -418,9 +423,29 @@ export async function coordinatedShutdown(
   }
   logShutdownStep(t0, '2b', 'WriteQueue.closeAllForShutdown', 'finished');
 
-  // 3. Best-effort pre-restart backup, bounded — never gates exit (BL-405).
+  // 3. Best-effort pre-restart backup, racing its own timeout — NOT
+  //    guaranteed to gate the exit past that bound (BL-405); see the
+  //    caveat immediately below for when it does anyway.
   //    Skipped (not guessed) when no explicit SOX_CONFIG_DB_PATH was ever
   //    configured — see the `dbPathForBackup` parameter doc above.
+  //
+  //    (BL-85a62f57) This bound races the BACKUP PROMISE settling against
+  //    `SHUTDOWN_BACKUP_TIMEOUT_MS` — it does not preempt the underlying
+  //    work, and `Promise.race` never cancels the loser. It is a real bound
+  //    only for a `backupTo()` that yields to the event loop while it runs.
+  //    `SqliteAdapterImpl.backupTo()` (the default/typical backend) does
+  //    NOT: its `VACUUM INTO` is a synchronous better-sqlite3 call that
+  //    blocks the event loop for its entire duration, so neither this race
+  //    nor `SHUTDOWN_SAFETY_NET_MS` above can even be scheduled until it
+  //    returns — the only thing bounding a hung/slow VACUUM INTO in that
+  //    case is the supervisor's own SIGKILL after its stop grace expires.
+  //    `TursoAdapterImpl.backupTo()` awaits `this.db.exec(...)` on the
+  //    `@libsql/client` driver; whether that yields during the VACUUM INTO
+  //    has not been verified — treat it the same as the sqlite case until
+  //    it has been. Moving the backup off the main thread so this bound can
+  //    actually preempt it is tracked separately as BL-5b29f533 and is
+  //    explicitly NOT done here — see `index.ts`'s `handleDirectStdioShutdown`
+  //    doc comment for the same caveat spelled out for DIRECT-STDIO mode.
   logShutdownStep(t0, 3, 'pre-restart backup', 'started');
   if (dbPathForBackup !== null) {
     try {

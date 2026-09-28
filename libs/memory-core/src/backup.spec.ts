@@ -25,7 +25,7 @@
  *   consistency guarantee.
  */
 
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
@@ -43,7 +43,48 @@ import {
 } from './backup.js';
 import { _resetEmbedSingleton } from './embed.js';
 
+// (BL-85a62f57) A mutable, per-test override for `fs.renameSync`, used only
+// by the two "finalize wiring" tests below. `vi.spyOn(fs, 'renameSync')` is
+// not viable here: backup.ts imports fs via `import * as fs from 'node:fs'`,
+// an ESM namespace object vitest reports as non-configurable ("Module
+// namespace is not configurable in ESM"), and the CJS-interop default-export
+// object is a SEPARATE instance under vitest's module graph, so mutating it
+// does not reach backup.ts's own binding. `vi.mock('node:fs', ...)` rewrites
+// every consumer's binding (including backup.ts's) through one shared
+// module record, so it is the only reliable interception point. All other
+// exports pass through to the real implementation unchanged — every other
+// test in this file (and every other fs call backup.ts itself makes) is
+// unaffected as long as `renameSyncOverride.current` is left `undefined`.
+const { renameSyncOverride, realRenameSyncRef } = vi.hoisted(() => ({
+  renameSyncOverride: { current: undefined as ((...args: unknown[]) => unknown) | undefined },
+  // Populated with the UNMOCKED `renameSync` by the factory below so a test
+  // override can call through to the real implementation without recursing
+  // back into this same mocked binding (which would call the override again).
+  realRenameSyncRef: { current: undefined as ((...args: unknown[]) => unknown) | undefined },
+}));
+
+vi.mock('node:fs', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('node:fs')>();
+  realRenameSyncRef.current = actual.renameSync as (...args: unknown[]) => unknown;
+  return {
+    ...actual,
+    default: actual,
+    renameSync: (...args: unknown[]) => {
+      if (renameSyncOverride.current) return renameSyncOverride.current(...args);
+      return (actual.renameSync as (...a: unknown[]) => unknown)(...args);
+    },
+  };
+});
+
 // ── Helpers ───────────────────────────────────────────────────────────────────
+
+/** Mirrors backup.ts's private `ROTATED_BACKUP_RE` — kept in sync manually
+ * since the module intentionally does not export its internal naming regex. */
+const ROTATED_BACKUP_PATTERN = /^memory-\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}\.\d{3}\.db$/;
+
+/** Mirrors backup.ts's private `ROTATED_BACKUP_TMP_RE` — kept in sync
+ * manually for the same reason as {@link ROTATED_BACKUP_PATTERN}. */
+const ROTATED_BACKUP_TMP_PATTERN = /^memory-\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}\.\d{3}\.db\.\d+\.tmp$/;
 
 function makeTempDir(): string {
   return fs.mkdtempSync(path.join(os.tmpdir(), 'sox-backup-test-'));
@@ -762,6 +803,193 @@ describe('autoBackup', () => {
 
     expect(fs.existsSync(path.join(backupDir, 'not-a-rotated-backup.txt'))).toBe(true);
     expect(fs.existsSync(path.join(backupDir, 'memory-not-a-real-timestamp.db'))).toBe(true);
+  });
+
+  // ── BL-85a62f57: interrupted/partial backups never look like real ones ────
+  //
+  // `handleDirectStdioShutdown` (memory-server/src/index.ts) can abandon an
+  // in-flight `autoBackup()` at `SHUTDOWN_BACKUP_TIMEOUT_MS` and force-exit
+  // the process. Pre-fix, `autoBackup` wrote `VACUUM INTO` directly to the
+  // real `memory-<ts>.db` name, so a process kill mid-write left a
+  // PARTIAL/corrupt file that matched `ROTATED_BACKUP_RE` — indistinguishable
+  // from a real, complete, integrity-verified backup to anything that lists
+  // the backup dir (retention pruning, an operator restoring from backups).
+  // These pin: (1) the leftover a killed run leaves behind never matches the
+  // real-backup name shape, (2) it is cleaned up, not silently accumulated,
+  // on the next backup call by a DEAD writer — without ever touching a real
+  // rotated backup that happens to sit alongside it, and (3) a `.tmp` file
+  // whose writer pid is still ALIVE is left alone (the backup dir is shared
+  // across sources, so a concurrent live writer's in-progress file must
+  // never be swept out from under it).
+
+  // A pid essentially guaranteed not to exist on any real system (max
+  // 32-bit signed int + 1 headroom is well past any real pid space) — used
+  // to construct a "dead writer" leftover deterministically, without
+  // spawning and killing a real child process.
+  const DEAD_PID = 2147483646;
+
+  it('[BL-85a62f57] a leftover partial-write temp file from a DEAD writer is swept on the next call and never appears as a rotated backup', async () => {
+    // Simulate exactly what a process kill mid-`VACUUM INTO` leaves behind:
+    // a `.<pid>.tmp`-suffixed file, partially written, with no
+    // corresponding rename ever having happened, whose writer pid no
+    // longer exists.
+    const staleTmpName = `memory-2020-01-01T00-00-00.000.db.${DEAD_PID}.tmp`;
+    const staleTmp = path.join(backupDir, staleTmpName);
+    fs.writeFileSync(staleTmp, 'partial VACUUM INTO bytes — process was killed mid-write');
+
+    // Sanity on the naming contract itself: the leftover must NOT match the
+    // real rotated-backup pattern that retention/listing code anchors on.
+    expect(ROTATED_BACKUP_PATTERN.test(staleTmpName)).toBe(false);
+
+    // A real backup call must both succeed AND sweep the stale partial away
+    // — it must never be left to accumulate or be mistaken for a restorable
+    // backup.
+    const result = await autoBackup(dbPath, { log: () => undefined });
+    expect(result.skipped).toBe(false);
+    expect(fs.existsSync(staleTmp)).toBe(false);
+
+    const files = fs.readdirSync(backupDir);
+    expect(files.some((f) => f.endsWith('.tmp'))).toBe(false);
+
+    const rotated = files.filter((f) => ROTATED_BACKUP_PATTERN.test(f));
+    expect(rotated).toHaveLength(1);
+    expect(rotated[0]).toBe(path.basename(result.path));
+  });
+
+  it('[BL-85a62f57] sweeping a leftover temp file from a dead writer never deletes a real, already-complete rotated backup', async () => {
+    // A genuine prior backup (complete, correctly named) coexisting with a
+    // stale partial from a separate killed run — the sweep must be
+    // name-anchored precisely enough to leave the real one alone.
+    const first = await autoBackup(dbPath, { log: () => undefined });
+    expect(first.skipped).toBe(false);
+
+    const staleTmp = path.join(backupDir, `memory-2020-01-01T00-00-00.000.db.${DEAD_PID}.tmp`);
+    fs.writeFileSync(staleTmp, 'partial bytes');
+
+    // Force mtime forward so the second call is not skipped as a no-op.
+    const content = fs.readFileSync(dbPath);
+    fs.writeFileSync(dbPath, content);
+
+    const second = await autoBackup(dbPath, { log: () => undefined });
+    expect(second.skipped).toBe(false);
+
+    expect(fs.existsSync(staleTmp)).toBe(false); // swept
+    expect(fs.existsSync(first.path)).toBe(true); // real backup untouched
+    expect(fs.existsSync(second.path)).toBe(true);
+  });
+
+  it('[BL-85a62f57] a `.tmp` file whose writer pid is still ALIVE is never swept — a concurrent live backup is not destroyed', async () => {
+    // The backup dir is shared across sources (both user and dev-scope
+    // stores default to the same `~/.memory/backups`), so a second live
+    // process's own in-flight `VACUUM INTO` output can legitimately be
+    // sitting here when this call's sweep runs. Use this test process's
+    // OWN pid — guaranteed alive for the duration of the test — to stand
+    // in for that concurrent live writer.
+    const livePid = process.pid;
+    const liveTmp = path.join(backupDir, `memory-2020-01-01T00-00-00.000.db.${livePid}.tmp`);
+    fs.writeFileSync(liveTmp, 'a concurrent process is still mid-VACUUM-INTO on this file');
+
+    const result = await autoBackup(dbPath, { log: () => undefined });
+    expect(result.skipped).toBe(false);
+
+    // Must survive — sweeping it would have destroyed a live concurrent
+    // backup.
+    expect(fs.existsSync(liveTmp)).toBe(true);
+    expect(fs.readFileSync(liveTmp, 'utf8')).toBe(
+      'a concurrent process is still mid-VACUUM-INTO on this file',
+    );
+  });
+
+  it('[BL-85a62f57] a successful backup leaves no `.tmp` file behind — only the final rotated-backup name', async () => {
+    const result = await autoBackup(dbPath, { log: () => undefined });
+    expect(result.skipped).toBe(false);
+
+    const files = fs.readdirSync(backupDir);
+    expect(files.some((f) => f.endsWith('.tmp'))).toBe(false);
+    expect(fs.existsSync(`${result.path}.tmp`)).toBe(false);
+    expect(path.basename(result.path)).toMatch(ROTATED_BACKUP_PATTERN);
+  });
+
+  // ── BL-85a62f57: the disclosed gap — pin the temp-then-rename WIRING ──────
+  //
+  // Every test above proves the OUTCOME on the happy path (no `.tmp` left
+  // behind) and on the sweep. None of them would catch a regression that
+  // reverts the temp-write-then-rename mechanism itself while leaving the
+  // sweep in place — i.e. `backupStore()` called with the FINAL
+  // `memory-<ts>.db` name directly, no `fs.renameSync` finalize step. On the
+  // happy path that regression is invisible (`sweepStaleBackupTempFiles`
+  // still runs and finds nothing to sweep, and the direct write still
+  // produces a correctly-named file) — it only bites when a shutdown (or any
+  // other cause) kills the process mid-`VACUUM INTO`, which is exactly the
+  // unbounded-backup scenario `handleDirectStdioShutdown`'s bound exists to
+  // cap the damage of. These two tests pin the invariant directly instead of
+  // only through its happy-path side effect:
+  //   (1) `fs.renameSync` is actually invoked, from a `.tmp`-pattern name to
+  //       the real rotated-backup name — the wiring a revert would remove.
+  //   (2) when that finalize step fails, NO file matching the real
+  //       rotated-backup name pattern exists afterward — the invariant a
+  //       revert to a direct final-name write would violate on any
+  //       mid/post-write failure, including a process kill.
+
+  it('[BL-85a62f57] autoBackup finalizes via an explicit rename from a `.tmp`-pattern name to the real rotated-backup name — reverting to a direct final-name write removes this call entirely', async () => {
+    const calls: unknown[][] = [];
+    renameSyncOverride.current = (...args: unknown[]) => {
+      calls.push(args);
+      return realRenameSyncRef.current!(...args);
+    };
+    try {
+      const result = await autoBackup(dbPath, { log: () => undefined });
+      expect(result.skipped).toBe(false);
+
+      // The rename call is the load-bearing evidence: a regression that
+      // writes VACUUM INTO straight to the final name never calls
+      // fs.renameSync at all, so this assertion is what actually fails RED
+      // under that regression (not just an absence-of-.tmp check, which a
+      // direct-write regression would trivially also satisfy). The store
+      // adapter's own WAL/shm housekeeping also calls renameSync as a side
+      // effect of the underlying VACUUM INTO (e.g. renaming a stale `-tshm`
+      // sidecar) — that call is unrelated to autoBackup's own finalize step,
+      // so we isolate the finalize rename by matching on its destination
+      // name rather than assuming it is the only renameSync call observed.
+      const finalizeCalls = calls.filter(([, toArg]) =>
+        ROTATED_BACKUP_PATTERN.test(path.basename(String(toArg))),
+      );
+      expect(finalizeCalls).toHaveLength(1);
+      const [fromArg, toArg] = finalizeCalls[0]!;
+      const fromName = path.basename(String(fromArg));
+      const toName = path.basename(String(toArg));
+      expect(fromName).toMatch(ROTATED_BACKUP_TMP_PATTERN);
+      expect(toName).toMatch(ROTATED_BACKUP_PATTERN);
+      expect(toArg).toBe(result.path);
+    } finally {
+      renameSyncOverride.current = undefined;
+    }
+  });
+
+  it('[BL-85a62f57] when the finalize rename fails, no file matching the real rotated-backup name exists afterward — the VACUUM INTO output stays under its `.tmp` name (and is cleaned up), never observable as a corrupt "real" backup', async () => {
+    renameSyncOverride.current = () => {
+      throw new Error('simulated ENOSPC mid-finalize');
+    };
+    try {
+      const result = await autoBackup(dbPath, { log: () => undefined });
+      expect(result.skipped).toBe(true);
+
+      // The load-bearing assertion: after a failure at finalize time, NOTHING
+      // in the backup dir matches the real rotated-backup name pattern. A
+      // regression that writes VACUUM INTO directly to the final name would
+      // leave a corrupt-but-real-named file behind right here — the exact
+      // failure mode BL-85a62f57 exists to prevent.
+      const files = fs.readdirSync(backupDir);
+      expect(files.some((f) => ROTATED_BACKUP_PATTERN.test(f))).toBe(false);
+
+      // The current implementation also best-effort cleans up its own .tmp
+      // on a finalize failure (it can't in a real process-kill, which is why
+      // sweepStaleBackupTempFiles exists as the backstop — covered above);
+      // when cleanup itself succeeds, nothing should remain at all.
+      expect(files.some((f) => ROTATED_BACKUP_TMP_PATTERN.test(f))).toBe(false);
+    } finally {
+      renameSyncOverride.current = undefined;
+    }
   });
 });
 

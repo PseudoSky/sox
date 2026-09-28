@@ -53,8 +53,18 @@ export function computeShutdownSafetyNetMs(env: NodeJS.ProcessEnv = process.env)
 // is best-effort ONLY — a full compacting copy of a large store is
 // legitimately unbounded I/O, so it must never be allowed to consume the
 // shutdown's share of the reaper's grace window. It races its own timeout
-// and is abandoned (not awaited to completion) if still running past this
-// bound.
+// and is INTENDED to be abandoned (not awaited to completion) if still
+// running past this bound — but that only actually happens for a
+// `backupTo()` that yields to the event loop while it runs. Today's
+// `SqliteAdapterImpl.backupTo()` does not: its `VACUUM INTO` is a
+// synchronous better-sqlite3 call that blocks the event loop for its whole
+// duration, so this timeout cannot even be scheduled until that call
+// returns — in that case this bound does not fire in time to abandon
+// anything, and the supervisor's own SIGKILL after its stop grace is what
+// actually bounds a hung backup. See `index.ts`'s `handleDirectStdioShutdown`
+// and `backend.ts`'s `coordinatedShutdown` doc comments for the full caveat;
+// moving the backup off the main thread so this bound can actually preempt
+// it is tracked separately as BL-5b29f533 and is explicitly NOT done here.
 //
 // Owned HERE (not in backend.ts, which re-exports it) so BOTH shutdown
 // sequences — `backend.ts`'s `coordinatedShutdown` (BACKEND mode) and
