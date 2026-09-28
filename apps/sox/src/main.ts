@@ -154,6 +154,7 @@ import { gateVolatileCli } from './cli-path-gate.js';
 import { registerBundleMember, resolveBundleDir } from './bundle-init.js';
 import { cliInvokedFields } from './cli-invoked-fields.js';
 import { resolveGraceMs } from './grace-ms.js';
+import { formatUpgradeSummary } from './upgrade-summary.js';
 import { assertWithinBase, PathEscapeError } from './path-safety.js';
 import { unloadOsUnitUnlessFrontShim } from './proxy-backend-front-shim.js';
 import { determineShimIsUnit, reEnableAfterRestartGate } from './restart-proxy-backend-gate.js';
@@ -3604,11 +3605,9 @@ async function cmdUpgrade(flags: Record<string, string>): Promise<void> {
     );
   }
 
-  const currentCount = outcomes.filter((o) => o.state === 'current').length;
-  process.stdout.write(
-    `\n${currentCount} current, ${changed} upgraded, ${failed} failed.\n`,
-  );
-  if (changed === 0 && failed === 0) {
+  const { tally, fullyCurrent } = formatUpgradeSummary(outcomes, changed, failed);
+  process.stdout.write(`\n${tally}\n`);
+  if (fullyCurrent) {
     process.stdout.write(`${CLI} upgrade: system fully current — zero changes.\n`);
   }
   process.exit(failed > 0 ? 1 : 0);
