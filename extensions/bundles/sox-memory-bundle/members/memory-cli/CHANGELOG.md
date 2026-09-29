@@ -1,5 +1,27 @@
 # Changelog
 
+## 0.3.1
+
+### Patch Changes
+
+- Re-version the `sox-memory-bundle` members whose bundled bytes drifted from their published
+  `registry/index.json` pins, so a fresh-machine install from the registry receives exactly the bytes
+  the local build produces.
+
+  The drift is a build-inlining effect, not a source change: each member bundles workspace libraries
+  (`@adhd/sox-store-adapter`, `@adhd/sox-memory-core`) declared as **devDependencies**
+  `workspace:*`. Changesets' `updateInternalDependencies: "patch"` cascades only through
+  `dependencies`/`peerDependencies`, so the `turso-driver-offthread` rework of those libraries rebuilt
+  these three members' entrypoints without bumping their versions. `build-index.ts` correctly
+  preserves a committed pin while its locator is unchanged, so the stale pins survived and the
+  clean-room smoke's G2 compared the correct published bytes against unpublished local bytes —
+  CHECKSUM MISMATCH.
+
+  A patch bump moves each locator, so the release flow re-derives the checksum from the bytes it
+  publishes. `memory-server` is intentionally not touched: its version is already ahead of its pin
+  (1.4.2 vs the committed 1.4.1) and needs no re-version. `registry/index.json` is untouched
+  (ADR-0021) — the registry is written by the release flow, not by this change.
+
 ## 0.3.0
 
 ### Minor Changes
