@@ -2,20 +2,24 @@
 title: Fallback research findings — multi-agent dispatch failure modes & research-subagent cost/benefit
 date: 2026-09-28
 agent: researcher
-status: NOT-IN-MEMORY
-reason_memory_unavailable: "memory-server MCP not registered in this host's tool list (no memory_ping/memory_recall/memory_write callables). Fallback protocol activated per researcher spec."
+status: IN-MEMORY
+ingested_at: 2026-09-29T03:34:38Z
+ingested_into: /Users/nix/.memory/memory.db
+ingested_by: agent-manager
+ingest_note: "Written as episodes 01M3NKN3DM464REF46F0QEGQ9N … 01M3NKP7CEBWPND5WTV3YJ1KYK. Note: agent_id is null on these episodes — memory_write_batch carries no attributable author, so they are not reachable by agent_id-scoped recall."
 engagement: "Generalize the failure modes of a multi-agent dispatch process and the cost/benefit of a dedicated research subagent; graded, sourced findings to inform a dispatcher/orchestrator agent spec."
 ---
 
 # Why this directory exists
 
-The researcher agent's required Phase-3 memory probe could not be run: **the `memory-server` MCP is not
-present in this runtime's tool list.** No `memory_ping`, `memory_recall`, or `memory_write` callable exists.
-Per the researcher spec, an absent MCP must not be silently skipped, so findings were written here as
-YAML-frontmatter + markdown, shaped exactly like a `memory_write` payload, so a later pass can ingest them
-verbatim once the memory server is reachable.
+The researcher agent's required Phase-3 memory probe could not be run when this research was executed:
+the `memory-server` MCP was absent from that runtime's tool list, so no `memory_ping`, `memory_recall`, or
+`memory_write` was callable. Per the researcher spec, an absent MCP must not be silently skipped, so the
+findings were written here as YAML-frontmatter + markdown, shaped exactly like a `memory_write` payload.
 
-**These findings are NOT in memory and will not surface in a future recall until they are ingested.**
+**These findings are in memory** — ingested 2026-09-29 into `/Users/nix/.memory/memory.db` (explicit
+`db_path`; the default store is *not* the user store). This directory remains as the provenance record and
+as the fallback for any host where the MCP is still unreachable.
 
 Contract:
 - One file per finding (`NN-<slug>.md`).
