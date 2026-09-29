@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.1.6
+
+- **Architect no longer holds the backlog; it routes.** 0.1.5 copied CLI syntax into the prose
+  (`adhd-backlog spec-append …`) — the same stale-copy failure that left
+  `backlog append-note --repo … --human-id …` wrong. Both the spec-enrichment and rejection
+  paths now dispatch **`backlog-operator`** with the uid and the payload; the operator holds the
+  only backlog write access, the verb surface, and its CAS semantics. `backlog_*` is `deny` for
+  architect, and the backlog MCP ref and `adhd-backlog *` bash allow are withdrawn.
+
 ## 0.1.5
 
 - **Architect can enrich the backlog items it is given.** When the request passes item IDs
