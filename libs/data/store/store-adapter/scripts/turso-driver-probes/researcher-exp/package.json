@@ -1,10 +1,10 @@
 {
   "name": "exp",
   "version": "1.0.0",
-  "description": "",
-  "main": "index.js",
+  "private": true,
+  "description": "Scratch Turso driver probes (e1.mjs..e7p.mjs) — not a publishable package; run with `node eN.mjs`.",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "test": "echo \"Scratch probe dir — run one of e1.mjs..e7p.mjs directly\""
   },
   "keywords": [],
   "author": "",
