@@ -1,9 +1,11 @@
 ---
 name: memory-usage
-description: How to recall prior knowledge and store durable findings in the soxe graph-memory system via the memory_* MCP tools. Use whenever you are about to research, decide, or could benefit from what was learned before — recall first; and whenever you produce a durable, generalized, sourced finding worth carrying forward — write it.
+description: Use when an agent should recall prior knowledge or store durable findings in the soxe graph-memory system via the memory_* MCP tools (memory_recall / memory_write / memory_search_entities / memory_invalidate).
+license: MIT
 ---
-
 # memory-usage — using the soxe graph memory system
+
+How to recall prior knowledge and store durable findings in the soxe graph-memory system via the memory_* MCP tools. Use whenever you are about to research, decide, or could benefit from what was learned before — recall first; and whenever you produce a durable, generalized, sourced finding worth carrying forward — write it.
 
 <!-- markdownlint-disable MD013 -->
 
@@ -16,10 +18,13 @@ store lives at **`~/.memory/memory.db`** (user scope).
 Every write is **enriched deterministically on the spot** — topic, tags, an
 extractive summary, near-duplicate detection — with **zero LLM calls and no
 provider** (the legacy LLM organizer was removed; clustering/auto-links run as a
-deterministic batch pass in-process inside `memory-server` itself — ADR-0007's
-single-writer architecture, no separate daemon process). `memory-server` exposes
-**20 `memory_*` tools** (v1.1.0). See the server's `CLAUDE.md` for full per-tool
-schemas; this skill covers the everyday recall / write / update path.
+deterministic batch pass in-process inside `memory-server` itself — no separate
+daemon process. This is unrelated to store concurrency: with the default Turso
+backend the store itself runs in `multiprocess_wal` mode, so multiple processes
+may hold concurrent write connections to it; only the `better-sqlite3` fallback
+is single-writer). `memory-server` exposes **20 `memory_*` tools**. See that
+package's own README for full per-tool schemas; this skill covers the everyday
+recall / write / update path.
 
 Interact with it only through the `memory_*` MCP tools. Never open the DB file
 directly.
@@ -46,7 +51,7 @@ importance-ranked listing). An optional `filters` object narrows the candidate s
 ```jsonc
 memory_recall({
   query: "how should an orchestrator decide a plan state is complete",
-  db_path: "~/.memory/memory.db",   // REQUIRED; must be under ~/.memory/ (allowlist)
+  db_path: "~/.memory/memory.db",   // optional — omit it; defaults to the user store (BL-55)
   token_budget: 50000,               // PASS THIS — see caveat
   limit: 8,
   filters: {                         // all optional
@@ -65,19 +70,24 @@ pass your actual workspace root explicitly, always. There is no cwd/env/git fall
 or empty `project_path` fails the call outright with `{ code: "E_MISSING_PROJECT_PATH" }` before
 anything is written, and a wrong guess would permanently mis-attribute the finding (the dedup key
 ignores `project_path`, so you can't fix it by re-writing — see `memory_update` in the server's
-`CLAUDE.md` for the only in-place remediation path):
+`CLAUDE.md` for the only in-place remediation path). **There is no `scope` parameter on
+`memory_write`** — a write lands in whichever store `db_path`/`store` selects, and the default is the
+user-scope `~/.memory/memory.db` shared by every agent on this machine. (`scope` exists only on
+`memory_recall`, and there it is a cosmetic label.) Do **not** pass `scope` on a write.
 
 ```jsonc
 memory_write({
   content: "<the finding — one focused idea>",
-  db_path: "~/.memory/memory.db",
+  db_path: "~/.memory/memory.db", // optional — omit to use the default user store
   project_path: "/Users/.../repo", // REQUIRED — your actual workspace root, never inferred
   topic: "<topic>",         // first-class — drives organization + filtered recall
   tags: ["<concept>"],      // first-class — also creates linkable entity nodes
+  name: "<title>",          // optional — episode title (node.name)
+  summary: "<1-3 sentences>", // optional — node.summary; extractive fallback if omitted
   source: "document",       // message | tool_output | observation | document | reflection | import
   agent_id: "<your-agent-name>",
-  metadata: { original_path: "<source path if any>" }, // arbitrary structured data (JSON)
-  scope: "user"             // user = this machine, all agents
+  importance: 7,            // optional — user-asserted 1–10
+  metadata: { original_path: "<source path if any>" } // arbitrary structured data (JSON)
 })
 ```
 
@@ -102,8 +112,10 @@ memory_update({
 })
 ```
 
-To correct a *fact* (rather than edit a node), prefer **supersession**: `memory_write`
-the new claim + `memory_invalidate({ claim_uid, reason, replacement_uid })` the old one
+To correct a *fact* (rather than edit a node), prefer **supersession**: `memory_write` the
+replacement episode + `memory_invalidate({ claim_uid: <old episode_uid>, reason,
+replacement_uid: <new episode_uid> })` the old one — `claim_uid` accepts the plain
+`episode_uid` from `memory_write` directly, there is no separate "claim" identity to wait for
 (bi-temporal — the old claim stays visible in `as_of` recall, drops from current recall).
 
 ### Other tools (19 total — see the server `CLAUDE.md` for schemas)
@@ -168,7 +180,7 @@ memory_write({
   db_path: "~/.memory/memory.db",
   project_path: "/Users/.../repo",  // REQUIRED
   tags: ["audience:orchestrator", "kind:pattern"],
-  source: "observation", agent_id: "flash-impl", scope: "user"
+  source: "observation", agent_id: "flash-impl"
 })
 
 // recall — pull everything addressed to orchestrators
@@ -229,8 +241,11 @@ on a value no node carries returns nothing.
 `project_path`, `importance`, `is_superseded`, `supersedes_uid`, and
 `community_uid`. `memory_write` returns `{ episode_uid, enrichment: { topic,
 project_path, summary, tags, near_dup } }`, or `{ code: "E_DEDUP", existing_uid }`
-(writes are content-hash idempotent). `memory_update` returns
-`{ uid, updated_fields, reembedded }`.
+(writes are content-hash idempotent). `near_dup` is always `null` in this response — near-dup
+detection is asynchronous (see `memory_write`'s own tool description); to check after the fact
+whether a written episode picked up a `SAME_AS` edge, call `memory_near_duplicates` scoped by
+that episode's `project_path`/`topic` and look for its uid in the returned `uid_a`/`uid_b`
+pairs. `memory_update` returns `{ uid, updated_fields, reembedded }`.
 
 ## Caveats
 
@@ -258,7 +273,7 @@ project_path, summary, tags, near_dup } }`, or `{ code: "E_DEDUP", existing_uid 
 ## Examples
 
 - *Recall before researching:* `memory_recall({query:"token cost optimization for multi-agent dispatch", db_path:"~/.memory/memory.db", token_budget:50000, limit:5})` → reuse the top findings by `uid`, research only the gap.
-- *Write a finding:* `memory_write({content:"Thin orchestrator holds only board + state deltas; executors hold working context.", db_path:"~/.memory/memory.db", project_path:"/Users/.../repo", source:"document", agent_id:"workflow-researcher", metadata:{topic:"execution-context-partition"}, scope:"user"})`.
+- *Write a finding:* `memory_write({content:"Thin orchestrator holds only board + state deltas; executors hold working context.", project_path:"/Users/.../repo", source:"document", agent_id:"workflow-researcher", metadata:{topic:"execution-context-partition"}})`.
 
 ## Skill id
 
