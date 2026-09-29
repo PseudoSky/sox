@@ -42,6 +42,63 @@ const turso = await createTursoAdapter({
 });
 ```
 
+## Execution model
+
+The Turso backend runs its native driver (`@tursodatabase/database`) on a **process-wide off-thread
+driver worker** — the sidecar `turso-driver-worker.js` — never on the main thread. `TursoAdapter`
+reaches it through a connection-shaped async RPC, so every `executeGet` / `executeRun` / `exec` /
+`pragma*` call site is unchanged.
+
+**Worker topology.** One `worker_threads.Worker` per process (per JS realm). The host holds it in a
+`globalThis` slot keyed on `Symbol.for('@adhd/sox-store-adapter/turso-driver-host')`, so N copies of
+this package in one process resolve to **one** worker — two worker threads driving one store is the
+exact multi-open hazard this design removes. A separate realm (a forked child process, or a worker
+thread) has its own `globalThis` and therefore its own host — correct, because it is a genuinely
+separate isolate. The worker is spawned lazily on the first connection open and torn down when the
+last connection closes. Requests cross a **versioned** protocol: a copy of this package speaking a
+different protocol throws `E_TURSO_DRIVER_PROTOCOL_MISMATCH` rather than spawning a competing worker.
+
+### What this does — and does not — fix
+
+- **It bounds main-thread blocking, NOT operation latency.** A slow native step no longer freezes the
+  whole process (an MCP server stays responsive to other work), but the operation itself still takes
+  exactly as long. Moving work off the main thread does not make it faster.
+- **One driver thread per process serializes all ops on that store.** Every request from every
+  connection in the process is served FIFO from one port. A slow op delays the ops queued behind it;
+  it does not run concurrently with them. (The worker dispatches requests fire-and-forget, so a slow
+  call does not block *dequeuing* the next message — it blocks that next call's *native execution*.)
+- **Same-process writers still pay the 5s busy timeout.** On the pinned `@tursodatabase/database`
+  0.7.x the step loop never yields, so a writer's busy-wait runs synchronously inside one native step
+  on the driver thread. When the lock holder is in the same process, the holder's own queued `COMMIT`
+  waits out the full `DEFAULT_BUSY_TIMEOUT_MS` (5s). Moving the wait off the main thread removes it
+  from the main thread but does not shorten it. Tracked as BL `809153d1`; upstream 0.8's `STEP_SLEEP`
+  is the fix.
+- **Reads queue behind a store's writes.** One connection per store serves both reads and writes, so a
+  recall read queued behind a write's busy-wait waits too — even though WAL snapshot reads do not need
+  the writer slot. A dedicated read connection per store is a separate, deferred connection-topology
+  change (BL `56c72ccb`).
+
+### `unwrap()` returns an async connection handle
+
+On the Turso adapter `unwrap()` now returns a **`TursoDriverConnection`** — the off-thread proxy —
+**not** the native `Database`. Its methods (`run` / `get` / `all` / `exec` / `pragma` / `close`) are
+**async**; callers must `await` them. Handing it to a library that expects the synchronous native
+`Database` will not work. `unwrap()` is itself still synchronous and still throws `[DEBT-003]` if
+called before the first real operation has opened the connection — await a cheap op
+(`executeGet('SELECT 1')`) first.
+
+### Observing a stalled driver
+
+`driverStatus` is a synchronous, worker-touching-free snapshot of the driver host: lifecycle state
+(`not-started` / `idle` / `busy` / `stalled` / `exited`), in-flight count, the oldest pending op's
+label and age, open connections, and the worker thread id. `'stalled'` is a **deadline verdict**
+derived from the oldest op's age versus `driverStallAfterMs` (default
+`DEFAULT_DRIVER_STALL_AFTER_MS`, 5s). Reading it never spawns or contacts the worker, so it is safe
+from a watchdog or health probe. It **reports** a stalled driver; it does not cancel it — a native
+call cannot be aborted, so cancellation is the consumer's policy (in `memory-server`, the
+driver-stall watchdog's hard `forceExit`). `connectionHealth` is deliberately unchanged: that reports
+this adapter's own connection lifecycle, not the process driver thread.
+
 ## API reference
 
 ### `StoreAdapter` interface
@@ -375,6 +432,11 @@ const adapter = await createTursoAdapter({ dbPath: 'app.db' });
 const client = (adapter as TursoAdapter).unwrap();
 const db = drizzle({ client });
 ```
+
+> **Note (off-thread driver, 862129b5):** `unwrap()` now yields a `TursoDriverConnection` — an
+> async proxy — not the native `Database`. This bridge only works if the ORM accepts an
+> async, connection-shaped client; otherwise use the adapter's own query methods (see the
+> [Execution model](#execution-model) section).
 
 ## Testing guide
 
