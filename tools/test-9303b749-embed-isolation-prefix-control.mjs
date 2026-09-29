@@ -9,16 +9,16 @@
  * A stub cannot fail for the reason the real pre-fix code failed, so its red
  * proves nothing about that code.
  *
- * There is no pre-fix embed-host audit to load: 0bb5b497:scripts/smoke-test.mjs
+ * There is no pre-fix embed-host audit to load: 49768a63:scripts/smoke-test.mjs
  * contains no embedding-host check at all (B1 re-verifies that from git). The
  * pre-fix harness's only isolation verdict was evaluateIsolation() in
  * scripts/lib/isolation-guard.mjs, so that is what the control must run.
  *
  * Invariants pinned (on the guard at --code-root):
  *   A1 no stubbed PRE_FIX_AUDIT that ignores its input;
- *   A2 the control is loaded from `git show 0bb5b497:scripts/lib/isolation-guard.mjs`;
+ *   A2 the control is loaded from `git show 49768a63:scripts/lib/isolation-guard.mjs`;
  *   A3 the header describes that control truthfully;
- *   B1 0bb5b497's harness really has no embed-host audit (the header's claim);
+ *   B1 49768a63's harness really has no embed-host audit (the header's claim);
  *   B2 behavioural: the guard's --pre-fix run goes red on Part A BECAUSE the real
  *      pre-fix evaluateIsolation returns "ok" for a leaking host.
  *
@@ -37,6 +37,12 @@ const CODE_ROOT = crIdx !== -1 ? path.resolve(process.argv[crIdx + 1]) : REPO_RO
 const GUARD = path.join(CODE_ROOT, 'tools/test-26121495-smoke-embed-host-isolation.mjs');
 const src = fs.readFileSync(GUARD, 'utf8');
 
+// The pre-fix revision the Part A control loads via `git show <rev>:...`. Pinned to a revision
+// that IS an object in this repo: 49768a63 is the parent of 683e34b1 ("contain and verified-stop
+// smoke embedding hosts"), i.e. the last commit before the embed-host audit existed. The earlier
+// pin (0bb5b497) is absent from this clone's object store, which crashed this guard at `git show`.
+const PRE_FIX_REV = '49768a63';
+
 let failed = 0;
 function check(name, cond, detail = '') {
   if (cond) console.log(`  ok   ${name}`);
@@ -48,14 +54,23 @@ console.log('A. the Part A pre-fix control is real pre-fix code');
 check('A1 9303b749: no hand-written PRE_FIX_AUDIT that returns smoke: [] regardless of input',
   !/PRE_FIX_AUDIT\s*=\s*\(procs\)\s*=>\s*\(\{\s*smoke:\s*\[\]/.test(src));
 check('A2 9303b749: the control is loaded from git at the pre-fix revision',
-  /'show', `\$\{PRE_FIX_REV\}:scripts\/lib\/isolation-guard\.mjs`/.test(src) && /const PRE_FIX_REV = '0bb5b497'/.test(src));
+  /'show', `\$\{PRE_FIX_REV\}:scripts\/lib\/isolation-guard\.mjs`/.test(src) && /const PRE_FIX_REV = '49768a63'/.test(src));
 check('A3 9303b749: the header names that control (no "no audit existed" stub claim)',
   /Pre-fix control \(9303b749\)/.test(src) && !/Pre-fix: no embed-host audit existed; the run's only check was data-root file hashes/.test(src));
 
 console.log('B. the header claim and the red are both real');
 {
-  const pre = execFileSync('git', ['-C', REPO_ROOT, 'show', '0bb5b497:scripts/smoke-test.mjs'], { encoding: 'utf8', maxBuffer: 16 * 1024 * 1024 });
-  check('B1 9303b749: 0bb5b497\'s harness has no embedding-host audit to load (so evaluateIsolation IS the pre-fix check)',
+  let pre;
+  try {
+    pre = execFileSync('git', ['-C', REPO_ROOT, 'show', `${PRE_FIX_REV}:scripts/smoke-test.mjs`], { encoding: 'utf8', maxBuffer: 16 * 1024 * 1024 });
+  } catch (err) {
+    // Fail loudly with a clear prerequisite, never a raw `fatal: invalid object name` crash
+    // (precedent: a0733239). Re-pin PRE_FIX_REV to the real parent of the embed-host isolation
+    // commit if this revision ever leaves the object store.
+    console.error(`FAIL 9303b749: pre-fix revision ${PRE_FIX_REV} is not an object in this repo — the pinned Part A control cannot be loaded (${String(err.message).split('\n')[0]})`);
+    process.exit(1);
+  }
+  check('B1 9303b749: 49768a63\'s harness has no embedding-host audit to load (so evaluateIsolation IS the pre-fix check)',
     !/embedHostMain|auditEmbedHosts|parsePsLines/.test(pre) && /evaluateIsolation\(/.test(pre));
   // Run the guard's own pre-fix mode against THIS checkout's libs (only the control differs
   // between variants). In place for the normal run; only a --code-root guard (red demo) is

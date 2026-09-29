@@ -22,7 +22,7 @@
  *      of any kind — its only isolation verdict was evaluateIsolation() over the
  *      live data root's files and telemetry. The control therefore loads the REAL
  *      `evaluateIsolation`/`snapshotLiveFiles` from
- *      `git show 0bb5b497:scripts/lib/isolation-guard.mjs` and hands it exactly
+ *      `git show 49768a63:scripts/lib/isolation-guard.mjs` and hands it exactly
  *      what such a run produced (an untouched live root, no harness telemetry — an
  *      embedding host writes neither): a pre-fix FATAL would flag every host, a
  *      pre-fix "ok" flags none. It returns "ok", which is the reported false green.
@@ -65,8 +65,9 @@ if (!fs.existsSync(socketPathMod)) {
 }
 const { backendSocketPath } = await import(pathToFileURL(socketPathMod).href);
 
-// ── Pre-fix controls (authentic code from 0bb5b497, the commit before 8ee98667) ──
-const PRE_FIX_REV = '0bb5b497';
+// ── Pre-fix controls (authentic code from 49768a63, the parent of 683e34b1 — the commit that
+//    introduced the embed-host audit; the earlier pin 0bb5b497 is not an object in this repo) ──
+const PRE_FIX_REV = '49768a63';
 /**
  * 9303b749: the pre-fix harness's only isolation verdict, loaded from git — never
  * a hand-written stub. Returns an audit-shaped result from that verdict.

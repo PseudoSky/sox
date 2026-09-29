@@ -314,8 +314,9 @@ export const GUARDS = [
     id: '9303b749',
     tier: 1,
     script: 'test-9303b749-embed-isolation-prefix-control.mjs',
-    // Pins that test-26121495's Part A pre-fix control is the real 0bb5b497 evaluateIsolation loaded
-    // from git, not a stub.
+    // Pins that test-26121495's Part A pre-fix control is the real 49768a63 evaluateIsolation loaded
+    // from git, not a stub. (49768a63 = parent of 683e34b1, the embed-host isolation commit; the
+    // earlier pin 0bb5b497 was absent from this clone's object store and crashed this guard.)
     watch: ['tools/test-26121495-smoke-embed-host-isolation.mjs', 'scripts/lib/embed-host-isolation.mjs'],
   },
   {
