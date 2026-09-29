@@ -1,5 +1,26 @@
 # Changelog
 
+## 1.7.0
+
+- **Bounded scope, visible cost, honest reporting, portable procedure** — six changes:
+  record vs schedule (rule 12: a defect is filed; a correction dispatch needs the blocking
+  floor, relevance to the objective, and an owner); cost measured into every run line and
+  reported at decision time (16, 21); gate termination and "capped, not converged" (5);
+  brief effort ∝ degrees of freedom (8); `opus` gated on a recorded user-approved reason
+  (16); a standing status table replacing the per-turn deferral dump (14 + Report format).
+- **Rules 22–27, from live failures:** absorb a dirty tree rather than discard it (22);
+  `git-manager` owns every git operation (23); concurrent dispatches need disjoint
+  write-scopes (24); a release freezes its target so new work cannot keep it from quiescing
+  (25); a documented-forbidden or ignored `--dry-run` is a real execution, never a rehearsal
+  (26); the backlog is the system of record — resumable from the graph with no handoff
+  (11, 27).
+- **Portability:** Step 0 no longer assumes Claude-only tools (`ToolSearch`, `Task*`,
+  `SendMessage`, `mcp__` prefixes); it probes what the host has, and names task-list
+  read-back as the thing that matters.
+- 353 → 496 lines. Three fresh-agent runs (an execution test, a structural review, a
+  re-verification); every contradiction they found is fixed. `package.json` realigned from
+  a stale 1.5.0.
+
 ## 1.6.0
 
 - **Routing is roster-aware; the phantom executor table is gone (BUG-DISPATCH-PHANTOM-ROSTER).** Step 2.3 said only "route each leaf to the executor whose description matches", and the loaded `dispatch-direct` playbook's table named 17 of 19 executors that do not exist in the registry (`typescript-pro`, `backend-developer`, `javascript-pro`, `python-pro`, `react-specialist`, `nextjs-developer`, `fullstack-developer`, `refactoring-specialist`, `performance-engineer`, `test-automator`, `qa-expert`, `deployment-engineer`, `devops-engineer`, `database-administrator`, `debugger`, `code-reviewer`, `architect-reviewer`, `product-manager`). Measured on the live dispatcher run `ses_f1bc04916ffemeLCpoBzjoX84x`: ~20 implementation leaves routed to the generic catch-all `general` while `review`/`test`/`debug`/`architect-decision` routed correctly — the verification rows mapped near-identically onto real agents, the implementation rows (`backend`/`typescript`) matched neither phantom row, and the catch-all absorbed the rest. Step 2.3 now states the discipline (**named specialist over catch-all**; `general` a last resort), carries a work-class → executor mapping over the real roster (implement → `backend`/`typescript`; verify → `test`/`review`/`debug`; decision → `architect-decision`; spec → `architect`; restructure → `refactor`; perf → `performance`; backlog → `backlog-operator`; docs → `doc-steward`; git → `git-manager`; priority → `product`; research → `researcher`), and the stop rule (**no match → surface the roster gap; never fall back to `general`**). Hard rule extended; every stale executor name in the body corrected to its registry id (`debugger`→`debug`, `code-reviewer`→`review`, `product-manager`→`product`, `typescript-pro`→`typescript`).
