@@ -24,6 +24,7 @@ import { fileURLToPath } from 'node:url';
 // below checks EVERY package's main/module/types/bin/exports paths, not just
 // the CLI bundle + extension entrypoints.
 import { workspacePackageDirs, contractArtifactPaths } from '../tools/workspace-package-scan.mjs';
+import { pruneSmokeRuns } from './lib/prune-smoke-runs.mjs';
 import {
   DEFAULT_OPERATOR_SLACK_MS,
   evaluateIsolation,
@@ -113,6 +114,11 @@ function findTimeoutBin() {
 }
 const TIMEOUT_BIN = findTimeoutBin();
 const EXTENSION_FILTER = flagValue('--extension');
+// 87cff53c: the harness now prunes its own stale `dist/smoke/run-*` dirs, so
+// the doc no longer needs the `rm -rf dist/smoke &&` prefix (which the global
+// `"rm -rf *": "ask"` rule denies on headless agents). Prior runs to retain for
+// post-mortem; the run being started is always kept.
+const KEEP_RUNS = Number(flagValue('--keep-runs') ?? '1');
 
 const TEST_ROOT = path.resolve(WORKSPACE, 'dist', 'smoke',
   `run-${new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19)}`);
@@ -1661,6 +1667,15 @@ async function main() {
   RUN_STARTED_MS = Date.now();
   console.error(`[smoke] root: ${TEST_ROOT}`);
   await fsp.mkdir(TEST_ROOT, { recursive: true });
+
+  // 87cff53c: bounded disk — drop stale run dirs ourselves (scoped to
+  // dist/smoke, current run always kept) so callers never run `rm -rf dist/smoke`.
+  {
+    const pruned = await pruneSmokeRuns(path.dirname(TEST_ROOT), TEST_ROOT, KEEP_RUNS);
+    if (pruned.removed.length)
+      console.error(`[smoke] pruned ${pruned.removed.length} stale run dir(s) under ${path.dirname(TEST_ROOT)} (kept ${KEEP_RUNS} prior; --keep-runs to change): ${pruned.removed.join(', ')}`);
+    for (const e of pruned.errors) console.error(`[smoke] WARNING: prune: ${e}`);
+  }
 
   // ── BL-173: create scratch data root and verify isolation ──────────────────
   await fsp.mkdir(SMOKE_DATA_ROOT, { recursive: true });

@@ -1969,7 +1969,7 @@ Citations: [sox-ecosystem, architect, deepseek, turso-go-live-revised, 1: libs/d
 | **depends_on** | P3.2 |
 | **input_tokens** | ~500 (smoke test commands) |
 | **output_tokens** | ~0 |
-| **gate** | `rm -rf dist/smoke && STORE_ADAPTER=sqlite node scripts/smoke-test.mjs --extension memory-server && rm -rf dist/smoke && STORE_ADAPTER=turso node scripts/smoke-test.mjs --extension memory-server` — both runs exit 0 with `summary.failed === 0` |
+| **gate** | `STORE_ADAPTER=sqlite node scripts/smoke-test.mjs --extension memory-server && STORE_ADAPTER=turso node scripts/smoke-test.mjs --extension memory-server` — both runs exit 0 with `summary.failed === 0` |
 
 ---
 
@@ -2195,8 +2195,8 @@ npx nx build memory-core         # P2.1–P2.5 gate (single build verifies all)
 # Wave 3
 npx nx typecheck memory-server   # P3.1 gate
 npx nx build store-adapter && npx nx build memory-core && npx nx build memory-server && npx nx run registry:sync-index  # P3.2
-rm -rf dist/smoke && STORE_ADAPTER=sqlite node scripts/smoke-test.mjs --extension memory-server  # P3.3a
-rm -rf dist/smoke && STORE_ADAPTER=turso node scripts/smoke-test.mjs --extension memory-server  # P3.3b
+STORE_ADAPTER=sqlite node scripts/smoke-test.mjs --extension memory-server  # P3.3a
+STORE_ADAPTER=turso node scripts/smoke-test.mjs --extension memory-server  # P3.3b
 
 # Wave 4 — all 4 parallel
 node scripts/migrate-store-to-turso.mjs --help  # P4.1
@@ -2237,6 +2237,6 @@ When all 26 packets pass:
 - **memory-core has no `typecheck` target.** Use `npx nx build memory-core` as the type-check gate — `atomic-tsc` runs `tsc` before emitting output. The build is destructive (BL-235), so gate-only packets should run build → confirm exit 0, rather than relying on the artifact.
 - **`npx nx build memory-server` is destructive** (deletes dist before building). Run only once per Wave 3 pass.
 - **Registry sync** (`npx nx run registry:sync-index`) must be run after every rebuild of memory-server and the regenerated `registry/index.json` committed alongside source changes.
-- **Smoke tests** (`scripts/smoke-test.mjs`) require `dist/smoke/` to not exist at start — the `rm -rf dist/smoke` in the gate command is deliberate.
+- **Smoke tests** (`scripts/smoke-test.mjs`) write each run into a unique `dist/smoke/run-<ts>/` dir and prune stale ones themselves at startup — no `rm -rf dist/smoke` is needed (87cff53c).
 - **Parallelism within waves** is safe because reserved_files are disjoint: no two packets in the same wave write to the same file.
 - **P5.1 and P5.2** are conceptually independent but are run sequentially in practice because they validate complementary sides of the same coin (Turso works / Sqlite still works). They can be parallelized.

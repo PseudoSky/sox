@@ -70,8 +70,10 @@ json. Read the output or ensure `summary.failed === 0` at the end.
 
 Run:
 ```
-rm -rf dist/smoke && node scripts/smoke-test.mjs
+node scripts/smoke-test.mjs
 ```
+The harness prunes its own stale `dist/smoke/run-*` dirs at startup — no `rm -rf dist/smoke`
+is needed (and that raw `rm -rf` was itself denied by the agent permission layer). `--keep-runs <n>` retains more prior runs.
 
 Single extension fast pass:
 ```

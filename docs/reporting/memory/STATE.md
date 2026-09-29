@@ -146,7 +146,7 @@ graceful-stop window is not sufficient for this service under load.
 
 **Still outstanding:** `npx nx run registry:sync-index` — the rebuilt bundle's checksum no longer
 matches `registry/index.json` and the smoke gate fails with `CHECKSUM MISMATCH` until it is
-regenerated **and committed** — then `rm -rf dist/smoke && node scripts/smoke-test.mjs` with
+regenerated **and committed** — then `node scripts/smoke-test.mjs` with
 `summary.failed === 0`, then the live behaviour probe (two near-identical throwaway episodes: a
 `SAME_AS` edge must land and **neither** node may receive a `t_invalid`).
 
