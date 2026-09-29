@@ -1,5 +1,62 @@
 # @adhd/sox-install-engine
 
+## 0.5.0
+
+### Minor Changes
+
+- 54cc80c: Derive an agent-mcp catalog row's provider from the host surface it serves, never
+  from the agent IR's logical Claude tier.
+
+  `@adhd/sox-host-registry` — new `agentMcpHost` surface (`agent-mcp`, capability
+  `agent-catalog`). `HostRenderer` gains an optional `providerFrom`, naming a sibling
+  `render.<host>` whose `{provider, model}` a row inherits when its own render supplies
+  neither — so agent-mcp serves whatever host actually runs the agent instead of
+  minting a vendor default. `deriveProvider` no longer reads the agent IR's `model`
+  tier, so a row can never silently become `type: 'anthropic'`; with no explicit render
+  model/provider it now throws `AgentProviderUnderivableError` rather than defaulting
+  to `claude-sonnet-4-5`. Codex drops its `?? ir.model` fallback to match.
+
+  `@adhd/sox-install-engine` — `readAgentRenderInputs` (exported) resolves the host
+  render override including `providerFrom` inheritance. New `renderAgentCatalogPayload`
+  renders an `agent` into a catalog payload behind a single renderability gate, and new
+  `AgentNotRenderableError` names the raw-passthrough case (no `agent` IR, no `render`):
+  the apply branch and `--dry-run` both reach the renderer only when it is renderable,
+  so a dry run cannot promise a rewrite apply would reject. New `reconcileAgentMcpCatalog`
+  one-shot (`soxe reconcile-agent-mcp`) re-renders existing rows through the same
+  `declarativeInstall` path — agent-catalog rows are not lockfile consumers, so
+  `upgrade --all` cannot reach them — reporting non-renderable rows as
+  `skipped: not-renderable` (never a failure) and manifestless rows as
+  `skipped: no-local-manifest` (never deleted).
+
+  `@adhd/sox-manifest` — **BREAKING**: `validate()` now requires that an `agent` with
+  any entry in `install.hosts` declares a non-null object `render.<host>` for each of
+  those hosts; a manifest listing a host it has no render for previously inherited
+  another host's model silently and now fails validation. `agent-mcp` is added to the
+  known hosts and the manifest schema.
+
+### Patch Changes
+
+- fdd0566: Backend Unix sockets are only bound or dialed inside a verified-private directory
+  (BL-4041c6e0). The tier-3 socket path for an over-long socket directory is now
+  `/tmp/sox-<uid>/p-<16hex>.sock` — fixed and TMPDIR-independent, so every peer
+  derives the same path — instead of `$TMPDIR/sox-uds/…` or `/tmp/s-<hex>.sock`.
+  `serveBackend` creates the directory 0700 and refuses (`E_UDS_DIR_UNSAFE`, no
+  bind) when it is a symlink, not a directory, owned by another uid, group/other
+  writable, or — for the `/tmp/sox-<uid>` root — not exactly 0700. `dialBackend`,
+  `probeSocketLive`, `handshakeBackend` and `ensureBackend` refuse to connect into
+  such a directory; the refusal is non-retryable (no re-dial, `ensureBackend`
+  returns `errorCode: 'E_UDS_DIR_UNSAFE'`, the embedding funnel raises a
+  `PermanentEmbeddingError`). New exports: `udsFallbackRoot`,
+  `ensurePrivateSocketDir`, `assertPrivateSocketDir`, `isUdsDirUnsafeError`.
+
+  Data-root directories are now created 0700 (`mkdirDataDir`), so they are private
+  even under umask 002. `soxe` and the embedding funnel repair their own run dirs
+  at start with the new `tightenOwnedSocketDir`: it removes group/other write
+  through a single O_NOFOLLOW descriptor and skips anything it cannot prove is
+  yours. An `E_UDS_DIR_UNSAFE` refusal now carries a `reason` (`foreign`,
+  `own-writable`, `fallback-mode`) with a matching remediation, and no message
+  suggests a recursive delete (BL-6233c1c2).
+
 ## 0.4.0
 
 ### Minor Changes

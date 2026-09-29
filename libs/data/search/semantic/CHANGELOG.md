@@ -1,5 +1,17 @@
 # @adhd/sox-semantic
 
+## 0.1.9
+
+### Patch Changes
+
+- Updated dependencies [0f02825]
+- Updated dependencies [a37ca25]
+- Updated dependencies [ac4b8a6]
+- Updated dependencies [e5b712d]
+  - @adhd/sox-graph-store@0.12.0
+  - @adhd/sox-store-adapter@0.11.0
+  - @adhd/sox-hybrid-search@0.6.0
+
 ## 0.1.8
 
 ### Patch Changes

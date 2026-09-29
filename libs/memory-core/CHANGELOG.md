@@ -1,5 +1,175 @@
 # @adhd/sox-memory-core
 
+## 0.12.0
+
+### Minor Changes
+
+- 0f02825: D-C — the knowledge layer: outcome-gated records, an open facet vocabulary, and
+  coverage-aware retrieval.
+
+  **Outcome-gated records.** A knowledge record splits into an IMMUTABLE claim (a
+  native `claim` node carrying `meta.facet` + `meta.expectation`, frozen at first
+  write — K-I1) and APPEND-ONLY outcomes (each a NEW `episode` node with a
+  `meta.outcome` envelope, `DERIVED_FROM` the claim — K-I2). `memoryClaimAssert`
+  mints a claim; `memoryOutcomeAppend` appends an outcome; `memoryBack` reads the
+  record as decision-backing. The verdict is DERIVED on read (never stored — K-I3)
+  and TIERED, not a boolean: `unverified | self-reproduced | independently-reproduced
+| replicated | stale | refuted | unknown`, splitting Repeatability (self) from
+  Reproducibility (independent) from Replicability (two independent agreeing
+  outcomes). `deriveVerdict` is pure and unit-tested, with a negative control that
+  collapses it to a boolean and goes RED. No new node kind — so no ADR-0010 D3
+  migration for the split.
+
+  **Open facets.** `memoryFacetAdmit` / `memoryFacetPromote` / `memoryFacetList`
+  back a governed, open vocabulary stored on `generic` nodes at `meta.facet_term`
+  (no new kind). A term is minted `unpromoted`; promotion is a demand gate
+  (≥ `config.facetPromotion.minDistinctClaims` distinct claims + a non-empty
+  origin). A term is NEVER redefined in place — a changed meaning is a new id
+  (`E_TERM_REDEFINED`, K-I5).
+
+  **Coverage-aware retrieval.** `memory_recall` now carries a `CoverageEnvelope`
+  and an SR-3 `count` (`eq`/`gte`). It ABSTAINS (returns no results and logs a
+  `recall.coverage_gap`) when the candidate set shows no coverage, rather than
+  returning the nearest held row (K-I6). Thresholds are typed config
+  (`KnowledgeConfig`, ADR-0013) with permissive defaults, reported by `memory_stats`;
+  every envelope names the `threshold_source` that decided it.
+
+  **SR-3 / SR-8.** `filters.metadata` adds a store-side `meta.*` predicate
+  (`{path, in?, eq?}`). `memory_write_batch` now verifies every supplied structured
+  field (topic/tags/importance/summary) — a field that did not persist FAILS the
+  item with `E_VERIFY_FAILED` naming it, never a success envelope over a partial
+  record (SR-8).
+
+  **graph-store.** `REFUTES` joins `EdgeRel` / `DEFAULT_EDGE_RELS` — additive to
+  the already-widened `(string & {})` union, so not a further source break.
+  Writing a `REFUTES` edge on an EXISTING store still requires the ADR-0010 D3
+  operator-invoked migration; fresh stores accept it from the CHECK-free DDL, and
+  reads are unaffected either way.
+
+  New MCP tools: `memory_claim_assert`, `memory_outcome_append`, `memory_back`,
+  `memory_facet_admit`, `memory_facet_promote`, `memory_facet_list`; `memory_recall`
+  / `memory_update` extended. Tests: `knowledge.spec.ts`, `coverage`/facet/outcome
+  coverage in `dc-knowledge.spec.ts` (each capability with a negative control proven
+  red→green), the memory-server `dc-knowledge-host.spec.ts` driving the real MCP
+  tools, and a two-connection latch race for K-I7. `docs/decisions/0023` is a
+  PROPOSED ADR (not ratified).
+
+  **Dependencies (recorded, not silently assumed).** SR-6 (documented per-node CAS)
+  does not exist, so `memoryClaimUpsert` degrades to `E_CLAIM_HELD`-on-conflict;
+  `REFUTES` on a live store needs the ADR-0010 D3 migration.
+
+- a37ca25: Opening a store never blocks on `deep` integrity verification any more, and a
+  failed clean-shutdown write is no longer read as a crash (BL-fc5ab895).
+
+  `@adhd/sox-store-adapter` — `runOpenTimeIntegrity` blocks only on the `fast`
+  tier. When `deep` is owed (unclean shutdown, `SOX_STORE_VERIFY=deep`, or an
+  outstanding obligation) it runs `PRAGMA integrity_check` in a background,
+  non-detached, SIGKILL-able child process (`deep-verify-child.js`, a declared
+  sidecar) that opens its own `readonly` + `query_only` connection, never repairs,
+  and reaps itself off-thread if its parent dies or its hard deadline passes. The
+  bound is typed config (`AdapterConfig.deepVerify.timeoutMs`, default 30 min,
+  rejected loudly with `EInvalidDeepVerifyConfig`). On timeout/failure the child
+  is killed, the probe is recorded `unknown`, and a loud event is emitted. The
+  obligation lives in `_adapter_meta.deep_verify_owed`, separate from any
+  clean-shutdown signal, and is cleared only by a deep pass that completes `ok`;
+  the latest attempt is in `_adapter_meta.deep_verify_state`. At most one verifier
+  runs per store across processes (`.deep-verify.lock` in the lease dir).
+  Behaviour change: damage found by `deep` is reported but no longer REINDEXed at
+  open. Both adapters now take their crash signal from the dead-pid per-connection
+  open marker instead of `_adapter_meta.clean_shutdown`, and no longer write that
+  flag at close — it was set to '0' by every concurrent open and its close-time
+  write failed with `database is locked` under a peer's write lock.
+
+  `@adhd/sox-memory-core` — `computePingHealthVerdict` accepts `deepVerify` and
+  reports `degraded` while a deep pass is owed and its last attempt ended
+  `timed_out`/`failed`/`damaged`/`inconclusive`. `resolveStoreVerifyConfig` carries
+  the bound from the `deep_verify_timeout_ms` config key into every writable open.
+
+  `@adhd/sox-extension-memory-server` — `memory_ping` reports `store.deep_verify`
+  and degrades on it. The off-thread main-thread watcher now SIGKILLs the process
+  after `mainthread_kill_after_ms` (default 5 min) of main-thread silence, writing
+  a raw fd-2 FATAL line first; the heartbeat uses the monotonic clock.
+
+- 929515c: SR-7 (`memory_claim_upsert` + a memory-side, queryable claim) and SR-9 (an
+  observable global `recluster`) — the two substrate capabilities D-C's knowledge
+  layer consumes.
+
+  **SR-7 — `claim.ts` (new).** `memoryClaimUpsert(adapter, {uid, caller, patch?})`
+  claims a node for a caller, or updates it if that caller already holds it, as one
+  atomic compare-and-swap — a conditional `UPDATE` inside an `IMMEDIATE`
+  transaction, whose `rowsAffected` is the verdict. Correctness is the store
+  primitive, never an advisory lock (ADR-0012): two callers racing for one node
+  yield exactly one winner; a distinct caller is refused with a typed
+  `E_CLAIM_HELD` (naming the holder); the same caller re-claiming is idempotent.
+  `memoryClaimGet` / `memoryClaimList` read it back — the claim is a first-class,
+  queryable record stored at `node.meta.claim`, durable across a store reopen.
+  No graph-store change was needed — SR-6's node-level `revision`/CAS does not
+  exist yet, so the claim degrades to conflict-on-`E_CLAIM_HELD` per the D-C
+  migration note.
+
+  **SR-9 — `recluster-job.ts` (new).** A global `memory_curate {op:'recluster'}`
+  now returns an observable job handle (`{job_id, status:'pending', seq}`) instead
+  of the bare `{enqueued:true, seq}` claim-with-no-check. The job state lives on
+  the full-pass `organizer_queue` trigger row it describes (under
+  `payload.job`) — deliberately **no new table**, so a store that never reclusters
+  keeps its post-open WAL baseline byte-for-byte (the adapter idle-flush tests
+  BL-586/BL-572 measure that baseline, and BL-625 records schema growth breaking
+  them). The in-process enrich tick settles the job in place via
+  `settleReclusterJobs` — `completed` (with the resulting partition), `failed`
+  (with the error), or `skipped` (when the pass ran but the cluster step was
+  skipped by the mixed-model / incremental-no-neighbour guard, carrying
+  `skip_reason`) — terminal, snapshot-disciplined to `seq <= maxSeq`. A new
+  `memory_curate {op:'recluster_status', job_id}` op polls it to that terminal
+  state; "enqueued" is never the final answer, and a skipped pass is never
+  reported `completed`.
+
+  **MCP surface — `@adhd/sox-extension-memory-server`.** The three new
+  `memory_*` tools (`memory_claim_upsert`, `memory_claim_get`, `memory_claim_list`)
+  and the new `memory_curate {op:'recluster_status'}` op live in the memory-server
+  bundle, whose `dist/index.js` inlines `@adhd/sox-memory-core` (the bundle build
+  treats it as an inlined workspace dep, and memory-server lists it only as a
+  devDependency). `changeset version` bumps only named packages and
+  `updateInternalDependencies: "patch"` follows only dependencies/peerDependencies,
+  so naming `sox-memory-core` alone would leave the published bundle surfacing the
+  old 20-tool set while the release reports green. The bundle is therefore
+  republished explicitly here — the same reason the 1.3.5 entry republished it when
+  its inlined deps changed. The surface gate no longer depends on a `.changeset`
+  file existing for this: `scripts/check-changeset-surface.ts` now falls back to a
+  bundle's `dist/schema.json` tool list when its `dist/` has no `.d.ts`.
+
+  Tests: `claim.spec.ts`, `recluster-job.spec.ts`, and the memory-server
+  `sr7-sr9-substrate.spec.ts` drive each capability through the real entrypoints,
+  with negative controls (SR7_NEGATIVE / SR9_NEGATIVE) proven red→green and the
+  claim race proved under two real connections (sqlite `BEGIN IMMEDIATE`).
+
+### Patch Changes
+
+- ba7a546: Fix a torn-backup-published and a VACUUM-on-shutdown defect in the store backup
+  path (BL-ff7d9e24).
+
+  `backupStore` now stages the backup under a temp name, runs
+  `verifyStagedBackupIsNotTorn` against the staged file, and only then publishes
+  it (atomic rename) to its final rotated name — a backup that fails verification
+  is never published under a name a restore path would pick up. Shutdown no
+  longer runs `VACUUM INTO` as part of its backup: VACUUM INTO on a live,
+  possibly-still-writing store could itself produce a torn/inconsistent copy,
+  and the shutdown path's job is a safe snapshot, not compaction.
+
+  Tests (red→green, each naming BL-ff7d9e24):
+  `libs/memory-core/src/bl-ff7d9e24-torn-backup-not-published.spec.ts`,
+  `extensions/bundles/sox-memory-bundle/members/memory-server/src/bl-ff7d9e24-no-vacuum-on-shutdown.spec.ts`.
+
+- Updated dependencies [0f02825]
+- Updated dependencies [a37ca25]
+- Updated dependencies [ac4b8a6]
+- Updated dependencies [e5b712d]
+- Updated dependencies [fdd0566]
+  - @adhd/sox-graph-store@0.12.0
+  - @adhd/sox-store-adapter@0.11.0
+  - @adhd/sox-hybrid-search@0.6.0
+  - @adhd/sox-embedding-provider@0.6.2
+  - @adhd/sox-analysis@0.1.15
+
 ## 0.11.2
 
 ### Patch Changes
