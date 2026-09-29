@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.1.6
+
+- **Adds a §3 renderer fact: always write `render.opencode.mode: "all"` for every opencode agent.**
+  `all` makes an agent BOTH selectable as a primary and dispatchable as a subagent; omitting it ships
+  a half-available agent. The rule carries its measured discriminator: `opencode run --agent <id>`
+  refuses a subagent-only id with "is a subagent, not a primary agent. Falling back to default agent"
+  (measured 2026-09-28 — `doc-cartographer`, subagent-only, fell back; `git-manager`, `all`, ran).
+- **Adds §6 step 7: commit before you report.** An uncommitted agent change is not finished — the
+  deployed file then exists in no revision, and the next install, worktree, or concurrent agent
+  strands it as unrecoverable drift. Commit the extension source and its `CHANGELOG.md` by pathspec
+  the moment §4's checks pass; same for every other artifact this agent ships.
+- Removes the stray `bl0c35probe` agent from the user-scope opencode agent dir — a 60-byte hand-made
+  probe, never an extension and absent from every registry.
+- `version`, `render.claude.version`, and `package.json` bumped in lockstep to 0.1.6.
+
 ## 0.1.5
 
 - **Adds §12, delegation discipline: a brief carries only what belongs to the caller.** Fixes the

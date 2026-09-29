@@ -38,6 +38,12 @@ Renderer facts that change what you write:
 - The IR `model` is a **logical tier** (`opus`/`sonnet`/`haiku`) that opencode cannot resolve. Only
   `render.opencode.model` pins a concrete host id (`deepseek/deepseek-flash`); unpinned, the agent
   inherits the parent session's model. Pin it explicitly, to an id that resolves on that host.
+- **Always write `render.opencode.mode: "all"` — it is the default for every opencode agent, no
+  exceptions unless the agent must never be chosen as the top-level agent, and then say why in the
+  same breath.** `all` makes an agent BOTH selectable as a primary and dispatchable as a subagent;
+  omitting it ships a half-available agent that `opencode run --agent <id>` refuses with
+  "is a subagent, not a primary agent. Falling back to default agent" (measured 2026-09-28:
+  `doc-cartographer`, subagent-only, fell back; `git-manager`, `all`, ran).
 - `render.claude.version` tracks the extension `version` — bump both together.
 - `permission.edit`/`write: deny` renders to claude `disallowedTools: Edit, Write, NotebookEdit`
   (BL 33a99177) — a harness guarantee, not a hope.
@@ -86,6 +92,14 @@ nest; narrower overrides wider) plus `--dry-run` to plan. `node bin/soxe --help`
 4. **Validate** structure: for skills run the Anthropic checklist (name/description rules, <500-line SKILL.md, one-level-deep references, progressive disclosure); for agents check frontmatter fields against the refs tables and `validate-agent.sh` equivalents.
 5. **A/B test** against the baseline (§7).
 6. **Promote** only when all thresholds are met; record the delta in the changelog; then ship per §4 — bump `version` and `render.claude.version` together, `soxe install` to each declared host, install every entry in `dependencies`, and run §4's four verification checks. "placed" is not proof.
+7. **Commit before you report — an uncommitted agent change is not finished.** Verification without a
+   commit is the failure mode this step kills: the deployed file then exists in no revision, and the
+   next install, worktree, or concurrent agent strands it as unrecoverable drift. The moment §4's
+   checks pass, commit the extension source and its `CHANGELOG.md` by pathspec
+   (`git commit <paths> -m "..."` — never `git add -A`, per the repo AGENTS.md), then report. Same
+   for every repo-tracked artifact this agent ships. An edit to an untracked host path (measured
+   2026-09-28: `~/.config/opencode/` is not a git repo) has no revision to land in — report the edit
+   and its backup path instead of claiming a commit.
 
 ## 7. A/B testing protocol (golden-set methodology)
 
