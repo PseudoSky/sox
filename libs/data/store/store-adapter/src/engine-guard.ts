@@ -72,6 +72,7 @@ import { dirname, join } from 'node:path';
 import { log } from '@adhd/sox-telemetry';
 import type { StoreAdapter } from './types.js';
 import { ETursoNativeStore, ESqliteNativeStore } from './errors.js';
+import { openTursoConnection } from './turso-driver-host.js';
 
 const require = createRequire(import.meta.url);
 const { version: PKG_VERSION } = require('../package.json') as { version: string };
@@ -517,8 +518,10 @@ export async function getEngineIdentity(dbPath: string): Promise<EngineIdentity 
     // turso driver read disambiguates (WAL-merged), and a genuinely unmarked
     // store simply has no `_sox_engine` row.
     try {
-      const { connect } = await import('@tursodatabase/database');
-      const db = await connect(dbPath, {
+      // (862129b5, TUR-D) The identity read runs on the process-wide off-thread
+      // driver host — the same connection seam every other Turso read uses, so
+      // the native driver is loaded ONLY in the worker realm.
+      const db = await openTursoConnection(dbPath, {
         readonly: true,
         experimental: ['index_method', 'multiprocess_wal'],
         // (BL-512) Same bounded busy timeout as the adapter: a read-only open
@@ -530,7 +533,7 @@ export async function getEngineIdentity(dbPath: string): Promise<EngineIdentity 
         timeout: 5000,
       });
       try {
-        const row = (await db.get(SELECT_IDENTITY_SQL)) as Record<string, unknown> | undefined;
+        const row = await db.get(SELECT_IDENTITY_SQL);
         return normalizeIdentityRow(row);
       } finally {
         await db.close();

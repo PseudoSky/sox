@@ -4,6 +4,10 @@ import type { DeepVerifyConfig } from './deep-verify.js';
 import type { BackupIntegrityReport } from './integrity.js';
 // Type-only import from concurrency-mode.ts — erased at emit, no runtime cycle.
 import type { StoreConcurrencyMode } from './concurrency-mode.js';
+// (862129b5) The off-thread driver host's connection/status shapes. Type-only —
+// erased at emit, so this does NOT pull the host (or its worker spawn) into a
+// consumer that only imports types.
+import type { TursoDriverConnection, TursoDriverStatus } from './turso-driver-host.js';
 
 // ── Adapter meta (adapter-type stamping) ────────────────────────────────────
 
@@ -413,6 +417,15 @@ export interface AdapterConfig {
    * same op completes (success or failure), in the op's `finally`.
    */
   onOpEnd?: () => void;
+  /**
+   * (862129b5, TUR-D — folds the deadline-based half of 3e3ff0ec) The age of the
+   * oldest in-flight driver op at which {@link TursoAdapter.driverStatus}
+   * reports `'stalled'`. Typed tuning, never an env toggle (ADR-0013 D3);
+   * unset falls back to `DEFAULT_DRIVER_STALL_AFTER_MS` (5s) inside
+   * `getTursoDriverStatus()`. Numeric only — there is no value that disables
+   * the deadline-based verdict.
+   */
+  driverStallAfterMs?: number;
 }
 
 // ── Factory options ──────────────────────────────────────────────────────────
@@ -574,8 +587,24 @@ export interface SqliteAdapter extends StoreAdapter {
 
 export interface TursoAdapter extends StoreAdapter {
   readonly config: Readonly<AdapterConfig & { type: 'turso' }>;
-  /** Escape hatch — returns the raw @tursodatabase/database handle. Calling this breaks portability. */
-  unwrap(): import('@tursodatabase/database').Database;
+  /** Escape hatch — returns this adapter's live connection on the process-wide
+   *  off-thread driver host (862129b5, TUR-D). Calling this breaks portability;
+   *  the handle is a `TursoDriverConnection`, NOT the native `Database` (the
+   *  native driver now lives only in the worker realm). */
+  unwrap(): TursoDriverConnection;
+  /**
+   * (862129b5, TUR-D — folds the deadline-based half of 3e3ff0ec) Synchronous,
+   * query-free snapshot of the process-wide driver host: its lifecycle state,
+   * the in-flight request count, the oldest pending op (label + age), open
+   * connections and worker thread id. `'stalled'` is a DEADLINE verdict derived
+   * from the oldest op's age vs `AdapterConfig.driverStallAfterMs` (default
+   * `DEFAULT_DRIVER_STALL_AFTER_MS`) — this is the adapter-level suspect state
+   * 3e3ff0ec asks for. Reading it never touches the worker and never spawns one
+   * (safe from a watchdog / health probe). `connectionHealth` is deliberately
+   * unchanged: that reports THIS adapter's own connection lifecycle, not the
+   * process driver thread.
+   */
+  readonly driverStatus: TursoDriverStatus;
   /**
    * (BL-587) Capture the store's CURRENT `-wal` byte size as the wal-cap
    * backstop's baseline — see `SqliteAdapter.captureWalCapBaseline()`'s doc

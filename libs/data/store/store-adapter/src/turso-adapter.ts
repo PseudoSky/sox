@@ -60,6 +60,12 @@ import {
 import { ESqliteNativeStore, isBusyError } from './errors.js';
 import { ensureEngineMarker, readApplicationId, SOX_APP_ID_SQLITE } from './engine-guard.js';
 import {
+  getTursoDriverStatus,
+  openTursoConnection,
+  type TursoDriverConnection,
+  type TursoDriverStatus,
+} from './turso-driver-host.js';
+import {
   assertValidConcurrencyMode,
   resolveConcurrencyMode,
   verifyMultiprocessWalSidecar,
@@ -417,9 +423,9 @@ export interface TursoOpenTiming {
 const DEFAULT_WAL_CAP_BYTES = DEFAULT_WAL_CAP_HEADROOM_BYTES;
 
 class TursoTransactionImpl implements AdapterTransaction {
-  private db: { run: Function; get: Function; all: Function; exec: Function };
+  private db: TursoDriverConnection;
 
-  constructor(db: { run: Function; get: Function; all: Function; exec: Function }) {
+  constructor(db: TursoDriverConnection) {
     this.db = db;
   }
 
@@ -455,14 +461,7 @@ class TursoTransactionImpl implements AdapterTransaction {
  *  `_neverOpened` is still true. So these throw only if some future call
  *  site bypasses `_ensureHealthy()`; the message says so plainly rather than
  *  surfacing an obscure "x is not a function" from a stub. */
-function createNeverOpenedDb(): {
-  run: Function;
-  get: Function;
-  all: Function;
-  exec: Function;
-  close: Function;
-  pragma: Function;
-} {
+function createNeverOpenedDb(): TursoDriverConnection {
   const fail = (method: string) => (): never => {
     throw new Error(
       `[DEBT-003] TursoAdapterImpl.db.${method}() invoked on a never-opened instance without going ` +
@@ -477,6 +476,11 @@ function createNeverOpenedDb(): {
     exec: fail('exec'),
     close: fail('close'),
     pragma: fail('pragma'),
+    // Never read: every method above throws before a caller could observe this,
+    // and `_closeConnectionBody` short-circuits on `_neverOpened`. Present only
+    // to satisfy `TursoDriverConnection`'s handle shape — the host's real
+    // connections carry the driver's generation-stamped id instead.
+    connId: -1,
   };
 }
 
@@ -502,14 +506,7 @@ export class TursoAdapterImpl implements TursoAdapter {
     return this._capabilities;
   }
 
-  private db: {
-    run: Function;
-    get: Function;
-    all: Function;
-    exec: Function;
-    close: Function;
-    pragma: Function;
-  };
+  private db: TursoDriverConnection;
   private closed = false;
 
   /** (SPEC-CONN-RECYCLE) The exact `opts` argument `connect()` received —
@@ -1967,6 +1964,24 @@ export class TursoAdapterImpl implements TursoAdapter {
   }
 
   /**
+   * (862129b5, TUR-D — the production fold of 3e3ff0ec) Synchronous,
+   * query-free snapshot of the process-wide off-thread driver host. `'stalled'`
+   * is a DEADLINE verdict: the oldest in-flight request has been pending for at
+   * least `AdapterConfig.driverStallAfterMs` (default
+   * `DEFAULT_DRIVER_STALL_AFTER_MS`, applied inside `getTursoDriverStatus()`).
+   * This is the adapter-level suspect state 3e3ff0ec asks for and every
+   * consumer of the adapter inherits it.
+   *
+   * Never touches the worker and never spawns one — safe from a watchdog or a
+   * `memory_ping` handler on the main thread. Distinct from
+   * {@link connectionHealth}, which reports THIS adapter's own connection
+   * lifecycle and is deliberately left unchanged.
+   */
+  get driverStatus(): TursoDriverStatus {
+    return getTursoDriverStatus(this.config.driverStallAfterMs);
+  }
+
+  /**
    * (SPEC-CONN-RECYCLE) If `err` is a fatal connection-level fault (see
    * `isFatalConnectionError`), mark this adapter `_poisoned` so the NEXT
    * call reconnects before issuing its query. Never swallows or transforms
@@ -2202,7 +2217,7 @@ export class TursoAdapterImpl implements TursoAdapter {
   }
 
   private constructor(
-    db: any,
+    db: TursoDriverConnection,
     config: AdapterConfig & { type: 'turso' },
     capabilities: AdapterCapabilities,
   ) {
@@ -2375,23 +2390,19 @@ export class TursoAdapterImpl implements TursoAdapter {
       phases[name] = Math.round((now - lapAt) * 100) / 100;
       lapAt = now;
     };
-    // Dynamic import so @tursodatabase/database is only loaded when used
-    let tursoModule: any;
-    try {
-      tursoModule = await import('@tursodatabase/database');
-    } catch (err) {
-      // The thrown message says "not installed", but the import can fail for
-      // other reasons (native binding, version) — trace the REAL error, which
-      // this throw would otherwise discard.
-      log.error('store_adapter.turso.driver_import_failed', {
-        error: err instanceof Error ? err.message : String(err),
-      });
-      throw new Error(
-        '@tursodatabase/database is not installed. Install it with: pnpm add @tursodatabase/database',
-      );
-    }
+    // (862129b5, TUR-D) Cumulative wall time spent in the off-thread driver
+    // host's open RPC (worker spawn + native connect on the worker), summed
+    // across the bounded open/retry attempts below. Recorded as the
+    // `driver_host` phase — distinct from `driver_open`, which also covers the
+    // surrounding sidecar-recovery orchestration and retry backoff.
+    let driverHostMs = 0;
 
-    const { connect } = tursoModule;
+    // (862129b5, TUR-D) THE NATIVE DRIVER IS NO LONGER IMPORTED HERE. The
+    // `@tursodatabase/database` connection now lives on the process-wide
+    // off-thread worker (turso-driver-worker.ts, TUR-B) and is reached through
+    // `openTursoConnection()` (turso-driver-host.ts, TUR-C). A resolution or
+    // native-load failure is reported by the worker/host (with the REAL error,
+    // not a synthesized "not installed" message) and rejects the open below.
 
     // Determine connection path/url.
     // @tursodatabase/database connect() accepts a bare file path for local mode
@@ -2583,17 +2594,23 @@ export class TursoAdapterImpl implements TursoAdapter {
       lap('preflight_foreign_shm');
 
       // Turso adapter supports both local file: and remote libsql:// URLs
-      // When authToken is present, it's a remote connection
-      const driverOpen = async (): Promise<any> => {
+      // (862129b5, TUR-D) The driver open runs on the process-wide off-thread
+      // driver host. The auth token rides the opts only for a remote
+      // (non-`file:`) URL — local file paths never carry one. `dbOpts` is a
+      // flat object of primitives (plus the `experimental` string array and the
+      // optional `encryption` object), all structured-cloneable, so the host's
+      // `assertCloneableOpts` guard passes.
+      const driverOpen = async (): Promise<TursoDriverConnection> => {
+        const openOpts: Record<string, unknown> = { ...dbOpts };
         if (opts.authToken && !url.startsWith('file:')) {
-          // Remote connection via libsql:// — use connect()
-          return connect(url, { authToken: opts.authToken, ...dbOpts });
+          openOpts.authToken = opts.authToken;
         }
-        if (url.startsWith('file:') || !opts.authToken) {
-          // Local connection — use connect() for async
-          return connect(url, dbOpts);
+        const hostStartedAt = performance.now();
+        try {
+          return await openTursoConnection(url, openOpts);
+        } finally {
+          driverHostMs += performance.now() - hostStartedAt;
         }
-        return connect(url, { authToken: opts.authToken, ...dbOpts });
       };
 
       // (BL-512 follow-on) BOUNDED CONNECT-LEVEL RETRY for the driver's own
@@ -2656,7 +2673,7 @@ export class TursoAdapterImpl implements TursoAdapter {
       // `retryable: true`, never wrapped) so the CALLER decides beyond this
       // bound and the driver's own text is never lost (§4). No config
       // toggle: unconditional fixed behavior (ADR-0013).
-      const openOnce = async (): Promise<any> => {
+      const openOnce = async (): Promise<TursoDriverConnection> => {
         let lastError: unknown;
         for (let attempt = 0; attempt < OPEN_RETRY_MAX_ATTEMPTS; attempt++) {
           try {
@@ -2873,7 +2890,7 @@ export class TursoAdapterImpl implements TursoAdapter {
       // engine owns it) or LEGACY (unmarked → infer the owning engine before stamping).
       const fileExisted = canonicalDb !== undefined && existsSync(canonicalDb);
 
-      let db: any;
+      let db: TursoDriverConnection | undefined;
       try {
         db = await openOnce();
       } catch (err) {
@@ -3086,6 +3103,10 @@ export class TursoAdapterImpl implements TursoAdapter {
         }
       }
       lap('driver_open');
+      // (862129b5, TUR-D) The cumulative off-thread host-open cost — see
+      // `driverHostMs`. Distinct from `driver_open` above (which also covers the
+      // sidecar-recovery orchestration and any retry backoff).
+      phases['driver_host'] = Math.round(driverHostMs * 100) / 100;
 
       // (BL-508) FOREIGN-ENGINE REFUSAL, BEFORE the driver even opens the file: a
       // store whose marker claims SQLite ownership must not be opened by the Turso
@@ -3123,7 +3144,7 @@ export class TursoAdapterImpl implements TursoAdapter {
         skipped['cte_probe'] = 'release reopen: reused the value probed on the previous connection of this instance';
       } else {
         try {
-          await db.get(
+          await db!.get(
             `WITH RECURSIVE cnt(x) AS (SELECT 1 UNION ALL SELECT x + 1 FROM cnt WHERE x < 5) SELECT x FROM cnt`,
           );
           recursiveCte = true;
@@ -3156,7 +3177,7 @@ export class TursoAdapterImpl implements TursoAdapter {
         recursiveCte,
       };
 
-      const instance = new TursoAdapterImpl(db, config, capabilities);
+      const instance = new TursoAdapterImpl(db!, config, capabilities);
       instance._softReadonly = softReadonly;
 
       // (BL-373 family) The open SUCCEEDED despite a mtime-skewed sidecar — the
@@ -3572,18 +3593,19 @@ export class TursoAdapterImpl implements TursoAdapter {
   /**
    * (DEBT-003, lazy-connect) The one caller-visible surface `connect()`'s
    * doc comment names as unable to "keep working" before the first real
-   * operation: `unwrap()` is synchronous and returns the LIVE driver handle,
-   * which by construction does not exist yet on a never-opened instance —
+   * operation: `unwrap()` is synchronous and returns the LIVE connection handle
+   * on the process-wide off-thread driver host (862129b5, TUR-D), which by
+   * construction does not exist yet on a never-opened instance —
    * there is no way to synchronously await the async open this class defers.
    * Throws a clear, actionable error rather than returning `null`/a dead
    * stub/the `NEVER_OPENED_DB` sentinel (any of which would fail far later,
    * at the first real query against it, with a confusing stack). Callers
-   * that need the raw handle must perform (and await) any real operation
+   * that need the handle must perform (and await) any real operation
    * first — `executeGet('SELECT 1')` is the cheapest — which transparently
    * opens the connection via the same `_ensureHealthy()` path every other
    * method uses.
    */
-  unwrap(): import('@tursodatabase/database').Database {
+  unwrap(): TursoDriverConnection {
     if (this._neverOpened) {
       throw new Error(
         '[DEBT-003] TursoAdapterImpl.unwrap() called before any operation has run — this adapter ' +
@@ -3591,7 +3613,7 @@ export class TursoAdapterImpl implements TursoAdapter {
           "first (e.g. `await adapter.executeGet('SELECT 1')`), then call unwrap().",
       );
     }
-    return this.db as import('@tursodatabase/database').Database;
+    return this.db;
   }
 
   /**

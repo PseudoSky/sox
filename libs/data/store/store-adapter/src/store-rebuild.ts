@@ -89,6 +89,7 @@ import { canonicalDbPath } from './path-identity.js';
 import { storeOpeners, storeQuiescence } from './store-lease.js';
 import { staleSidecarPath } from './sidecar-retention.js';
 import { TursoAdapterImpl } from './turso-adapter.js';
+import { openTursoConnection } from './turso-driver-host.js';
 import type { StoreAdapter } from './types.js';
 
 /**
@@ -341,27 +342,24 @@ async function verifyReplacement(
 
 // ── Raw-handle growth reset (never a writable adapter open — see header) ─────
 
-interface RawStatement {
-  run(...args: unknown[]): unknown;
-}
-interface RawDb {
-  exec(sql: string): Promise<unknown>;
-  prepare(sql: string): RawStatement | Promise<RawStatement>;
-  close(): Promise<unknown> | unknown;
-}
-
 async function stampRebuildMeta(path: string, rebuiltAt: string): Promise<void> {
-  const mod = (await import('@tursodatabase/database')) as unknown as {
-    connect(p: string, o: Record<string, unknown>): Promise<RawDb>;
-  };
-  // Same experiments every adapter open uses (index_method for the FTS index
-  // the copy carries, multiprocess_wal for the WAL format the store runs under).
-  const db = await mod.connect(path, { timeout: 5000, experimental: ['index_method', 'multiprocess_wal'] });
+  // (862129b5, TUR-D) The driver connection now lives on the process-wide
+  // off-thread host. Same experiments every adapter open uses (index_method for
+  // the FTS index the copy carries, multiprocess_wal for the WAL format the
+  // store runs under). The protocol has no prepared-statement handle, so the
+  // growth upsert runs as a parameterized `run(sql, key, value)`.
+  const db = await openTursoConnection(path, {
+    timeout: 5000,
+    experimental: ['index_method', 'multiprocess_wal'],
+  });
   try {
     await db.exec(ADAPTER_META_CREATE_SQL);
-    const upsert = await db.prepare(STORE_GROWTH_META_UPSERT_SQL);
-    await upsert.run(STORE_GROWTH_META_KEYS.FTS_OPTIMIZE_PASSES_SINCE_REBUILD, '0');
-    await upsert.run(STORE_GROWTH_META_KEYS.LAST_REBUILD_AT, rebuiltAt);
+    await db.run(
+      STORE_GROWTH_META_UPSERT_SQL,
+      STORE_GROWTH_META_KEYS.FTS_OPTIMIZE_PASSES_SINCE_REBUILD,
+      '0',
+    );
+    await db.run(STORE_GROWTH_META_UPSERT_SQL, STORE_GROWTH_META_KEYS.LAST_REBUILD_AT, rebuiltAt);
     // Everything committed must be IN the file that gets renamed — a copy
     // whose data sits in its own -wal would swap in without it.
     await db.exec('PRAGMA wal_checkpoint(TRUNCATE)');
