@@ -20,20 +20,30 @@ export default {
     // rule; it reflects actual drift. Prefer the package-name scope for a
     // package-scoped change and the concern-name scope only for work that
     // is genuinely cross-package or docs/process-level.
+    //
+    // A third kind of scope is an AGENT NAME — the directory under
+    // extensions/agents/<name>/ (e.g. 'git-manager', 'architect',
+    // 'dispatcher', 'doc-steward'), used when a change is scoped to a single
+    // agent's definition. 'agents' stays the cross-agent scope for changes
+    // that touch the roster or several agents at once.
     'scope-enum': [
       1, // warn (not error) — scopes are advisory, not blocking
       'always',
       [
         'agents',
+        'architect',
         'authoring',
         'build-index',
         'ci',
         'citations',
         'data',
         'deps',
+        'dispatcher',
+        'doc-steward',
         'embed',
         'embedding-provider',
         'extensions',
+        'git-manager',
         'graph-store',
         'handoff',
         'host-registry',
