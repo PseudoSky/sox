@@ -1,6 +1,6 @@
 {
   "name": "@adhd/sox-extension-dispatch-plan",
-  "version": "1.4.3",
+  "version": "1.4.5",
   "description": "The dispatcher's playbook for plan-state-machine plans — plans on request, never by default.",
   "private": true,
   "license": "MIT",

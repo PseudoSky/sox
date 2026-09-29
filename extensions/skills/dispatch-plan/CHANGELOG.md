@@ -1,5 +1,16 @@
 # Changelog
 
+## 1.4.5
+
+- **Fixed a silent YAML parse failure that hid this skill from every agent.** The description
+  contained `backlog: product prioritizes` — a colon+space inside an unquoted scalar, which
+  YAML reads as a mapping separator. The frontmatter therefore failed to parse, opencode
+  dropped the skill with no error, and the dispatcher reported it could not see
+  `dispatch-plan` while the four sibling playbooks (no `: ` in their descriptions) loaded
+  fine. Reworded to an em dash. Proven red→green with a YAML parser: the pre-fix bytes at
+  HEAD fail with "mapping values are not allowed here"; the fixed bytes parse.
+- `package.json` realigned from a stale 1.4.3.
+
 ## 1.4.4
 
 - **Executor name corrected to the real registry (BUG-DISPATCH-PHANTOM-ROSTER).** `product-manager` → `product` (absent from the registry) in the description, body, and README.
