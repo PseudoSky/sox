@@ -44,6 +44,17 @@ import { log } from '@adhd/sox-memory-core';
  *  while a `write` may be riding behind a 109s embed. */
 export type OperationClass = 'connect' | 'read' | 'mutate' | 'write';
 
+/**
+ * (862129b5, TUR-F) What a timed-out operation's true effect is.
+ *
+ * `'not_applied'` (read/connect): the deadline fired before the call could have
+ * mutated anything, so retrying is safe. `'unknown'` (write/mutate): the
+ * deadline is a CALLER-SIDE ceiling, not a cancellation — the detached call may
+ * still COMMIT after this error is returned, so a caller MUST verify the effect
+ * before retrying.
+ */
+export type StoreOperationOutcome = 'unknown' | 'not_applied';
+
 /** Env var name for each class's deadline override (milliseconds). */
 export const DEADLINE_ENV: Record<OperationClass, string> = {
   connect: 'SOX_MEMORY_SERVER_DEADLINE_CONNECT_MS',
@@ -159,18 +170,42 @@ export class StoreOperationTimeoutError extends Error {
    */
   readonly censored = true as const;
 
+  /**
+   * (862129b5, TUR-F) Whether the operation can be assumed NOT to have applied.
+   * `'not_applied'` for read/connect; `'unknown'` for write/mutate, whose
+   * detached call may still commit after the deadline fired.
+   */
+  readonly outcome: StoreOperationOutcome;
+  /**
+   * (862129b5, TUR-F) Whether a blind retry is safe. `true` for read/connect;
+   * `false` for write/mutate — retrying can double-apply a write whose true
+   * outcome is unknown.
+   */
+  readonly retryable: boolean;
+
   constructor(opClass: OperationClass, opName: string, timeoutMs: number, dbPath: string | undefined) {
+    // Write-flavoured classes may still be committing in the background when the
+    // caller-side deadline rejects; read/connect never mutate. Computed before
+    // `super()` (no `this` access) so the message and the fields below agree.
+    const writeLike = opClass === 'write' || opClass === 'mutate';
     super(
       `store operation "${opName}" (class=${opClass}) exceeded its ${timeoutMs}ms deadline — ` +
         'the underlying store call is still outstanding (BUG-MEMORYSERVER-WEDGES-SILENTLY-NO-SELF-RECOVERY-001); ' +
         'this request failed fast instead of hanging the process. timeoutMs is a CEILING, not a ' +
-        'measurement — see the `censored` field.',
+        'measurement — see the `censored` field. ' +
+        (writeLike
+          ? 'This is a WRITE-class operation that may still COMMIT after this error: the deadline is a ' +
+            'caller-side ceiling, not a cancellation — VERIFY the effect before retrying ' +
+            "(outcome=unknown, retryable=false)."
+          : 'This operation did not apply and is safe to retry (outcome=not_applied, retryable=true).'),
     );
     this.name = 'StoreOperationTimeoutError';
     this.opClass = opClass;
     this.opName = opName;
     this.timeoutMs = timeoutMs;
     this.dbPath = dbPath;
+    this.outcome = writeLike ? 'unknown' : 'not_applied';
+    this.retryable = !writeLike;
   }
 }
 

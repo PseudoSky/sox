@@ -1,12 +1,24 @@
 /**
- * mainthread-monitor.ts — (5b58b189) main-thread observability for memory-server.
+ * mainthread-monitor.ts — (5b58b189; ownership re-scoped a6203466) main-thread
+ * observability for memory-server.
  *
- * THE GAP: every Turso step runs synchronously on the Node main thread (the
- * driver's step loop, `@tursodatabase/database-common/dist/promise.js`), so a
- * slow step — an FTS writer open over thousands of segments, or a plain read
- * blocked in `pread` (seen at 22:02Z) — freezes the whole MCP server. Nothing
- * in telemetry showed it: the process looked alive, SIGTERM handlers could not
- * run, and the only diagnosis was `sample <pid>`. Three signals close it:
+ * OWNERSHIP (a6203466, plan 862129b5 TUR-F). Two different stalls used to look
+ * alike, and now have two different owners:
+ *
+ *   - A stalled OFF-THREAD Turso driver is owned by `driver-stall-watchdog.ts`.
+ *     Since TUR-C/D the native `@tursodatabase/database` driver runs on a
+ *     worker thread, so a slow/blocked driver step no longer holds the main
+ *     thread — it is invisible to the watcher below and is caught by reading
+ *     `getTursoDriverStatus()` instead. (The stale claim that "every Turso step
+ *     runs synchronously on the Node main thread" described the pre-TUR-C/D
+ *     in-line driver and is no longer true.)
+ *   - THIS monitor owns the stalls that DO hold the main thread: a synchronous
+ *     JS loop (an accidental spin, an O(n²) scan) and the SQLite adapter
+ *     (`better-sqlite3`), whose calls are synchronous and run on the main
+ *     thread — an FTS writer open over thousands of segments, or a plain read
+ *     blocked in `pread` (seen at 22:02Z). Nothing in telemetry showed the
+ *     latter: the process looked alive, SIGTERM handlers could not run, and the
+ *     only diagnosis was `sample <pid>`. Three signals close it:
  *
  *   1. `mainthread.lag` — every `intervalMs`, the event-loop delay distribution
  *      (perf_hooks `monitorEventLoopDelay`: p50/p99/max/mean) plus process CPU%

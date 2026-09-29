@@ -33,6 +33,7 @@
  */
 
 import { log } from '@adhd/sox-memory-core';
+import { forceExit } from './hard-exit.js';
 
 export const WATCHDOG_THRESHOLD_ENV = 'SOX_MEMORY_SERVER_WATCHDOG_THRESHOLD_MS';
 export const WATCHDOG_INTERVAL_ENV = 'SOX_MEMORY_SERVER_WATCHDOG_INTERVAL_MS';
@@ -60,7 +61,9 @@ export function watchdogIntervalMs(): number {
 export interface LivenessWatchdogDeps {
   now?: () => number;
   /** Called when the watchdog decides the process must die. Defaults to
-   *  `process.exit`. Tests inject a spy instead. */
+   *  {@link forceExit} — SIGKILL when a driver op is in flight, `process.exit`
+   *  when idle, so this exit cannot itself be delayed by a blocked native step.
+   *  Tests inject a spy instead. */
   exit?: (code: number) => void;
 }
 
@@ -87,7 +90,7 @@ export class LivenessWatchdog {
   constructor(opts: LivenessWatchdogOptions = {}) {
     this.thresholdMs = opts.thresholdMs ?? watchdogThresholdMs();
     this.now = opts.deps?.now ?? (() => Date.now());
-    this.exit = opts.deps?.exit ?? ((code: number) => process.exit(code));
+    this.exit = opts.deps?.exit ?? ((code: number) => forceExit(code, 'liveness_watchdog'));
     this.lastCompletionAt = this.now();
   }
 

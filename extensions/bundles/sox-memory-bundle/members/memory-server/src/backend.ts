@@ -34,6 +34,7 @@ import * as path from 'node:path';
 import { closeAllAdapters, flushPendingEmbeds, terminateEmbedWorkers, WriteQueue } from '@adhd/sox-memory-core';
 import { getContentAddress, handleToolCall, resolveDbPath, TOOLS, waitForDrainSettled } from './index.js';
 import { computeShutdownSafetyNetMs, SHUTDOWN_BACKUP_TIMEOUT_MS } from './shutdown-margin.js';
+import { forceExit } from './hard-exit.js';
 
 /**
  * Build the canonical `tools/list` result — the EXACT shape the MCP `serve()` path
@@ -501,7 +502,13 @@ export async function coordinatedShutdown(
  *      ([inv:no-stdout-diagnostics]), and the process exits 1 so the winning
  *      singleton self-heals without a manual reap.
  * `exit` is an injectable seam so the regression test can assert the exit path
- * without killing the test runner; production callers omit it (process.exit).
+ * without killing the test runner; production callers omit it, and the default
+ * routes through `forceExit` (862129b5 TUR-F) rather than a bare `process.exit`
+ * — so a shutdown whose teardown is wedged behind an in-flight driver op
+ * SIGKILLs instead of waiting for the blocked native step (measured up to 21
+ * min). Both call sites below (`coordinatedShutdown`'s safety net at ~L352 and
+ * its normal completion at ~L487) already go through this seam; neither is a
+ * bare `process.exit`.
  */
 export async function runBackend(opts: {
   socketPath: string;
@@ -510,7 +517,7 @@ export async function runBackend(opts: {
   exit?: (code: number) => never;
 }): Promise<{ close: () => Promise<void> }> {
   const exit: (code: number) => never =
-    opts.exit ?? ((code: number): never => process.exit(code));
+    opts.exit ?? ((code: number): never => forceExit(code, 'backend_exit'));
 
   if (opts.schemaPath) publishSchema(opts.schemaPath);
 

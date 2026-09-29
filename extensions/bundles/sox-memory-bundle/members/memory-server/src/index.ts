@@ -144,6 +144,11 @@ import {
   readDeepVerifyObligation,
   readDeepVerifyState,
   isDeepVerifyOwnerAlive,
+  // (862129b5 TUR-F) the off-thread Turso driver's SYNCHRONOUS, zero-worker-touch
+  // status snapshot — read before any store query so `memory_ping` can report a
+  // driver stall without touching the store.
+  getTursoDriverStatus,
+  type TursoDriverStatus,
 } from '@adhd/sox-store-adapter';
 // BL-401 gap 3: BL-351's stated acceptance requires every emitted metric be
 // reachable from the status surface WITHOUT reading a log file — the exact
@@ -176,6 +181,9 @@ import {
 } from './operation-guard.js';
 import { mainThreadMonitor } from './mainthread-monitor.js';
 import { serverLivenessWatchdog, watchdogIntervalMs } from './liveness-watchdog.js';
+// (862129b5 TUR-F) The off-thread Turso driver's stall owner — started at boot
+// below, alongside the liveness watchdog.
+import { startDriverStallWatchdog } from './driver-stall-watchdog.js';
 import { computeShutdownSafetyNetMs } from './shutdown-margin.js';
 // ─── ADR-0003: content-addressed self-identity ───────────────────────────────
 //
@@ -305,6 +313,22 @@ export function _resetRecallDegradationCountersForTest(): void {
   recallDegradations.by_channel = {};
   recallDegradations.last_degraded_at = null;
   recallDegradations.last_degradations = [];
+}
+
+/**
+ * (862129b5 TUR-F) The driver-status reader `memory_ping` uses. The indirection
+ * exists SOLELY so the driver-stall spec can inject a synthetic `stalled`
+ * snapshot without a real driver worker (the red→green for "zero store queries
+ * while stalled"). Production always reads the real, synchronous,
+ * zero-worker-touch `getTursoDriverStatus()` (turso-driver-host.ts's contract).
+ */
+let driverStatusProvider: (stallAfterMs?: number) => TursoDriverStatus = getTursoDriverStatus;
+
+/** @internal Test-only seam; pass `null` to restore the real reader. */
+export function _setDriverStatusProviderForTest(
+  provider: ((stallAfterMs?: number) => TursoDriverStatus) | null,
+): void {
+  driverStatusProvider = provider ?? getTursoDriverStatus;
 }
 
 interface ContentAddress {
@@ -1373,6 +1397,10 @@ export async function handleToolCall(name: string, args: Record<string, unknown>
             op_class: err.opClass,
             op_name: err.opName,
             timeout_ms: err.timeoutMs,
+            // (862129b5 TUR-F) machine-readable retry guidance: a write-class
+            // timeout may still commit (outcome 'unknown', retryable false).
+            outcome: err.outcome,
+            retryable: err.retryable,
           }),
         }],
       };
@@ -1400,6 +1428,25 @@ async function handleToolCallImpl(name: string, args: Record<string, unknown>): 
   if (name === 'memory_ping') {
     const addr = getContentAddress();
     const embedHealth = getEmbedHealth();
+
+    // (862129b5 TUR-F) Read the driver host's status SYNCHRONOUSLY, before any
+    // store query. `getTursoDriverStatus()` never touches the worker (pure
+    // snapshot), so this is safe on the liveness path and cannot itself block.
+    // A `stalled` driver means at least one op has not completed within the
+    // stall window — the store probe below is then SKIPPED ENTIRELY (zero store
+    // queries): enqueueing more work behind an already-stalled driver is exactly
+    // how a fast liveness check turns into a wedge.
+    const driverStatus = driverStatusProvider();
+    const driverBlock = {
+      state: driverStatus.state,
+      in_flight: driverStatus.inFlight,
+      oldest_op_label: driverStatus.oldestOpLabel,
+      oldest_op_age_ms: driverStatus.oldestOpAgeMs,
+      open_connections: driverStatus.openConnections,
+      worker_thread_id: driverStatus.workerThreadId,
+      exits: driverStatus.exits,
+    };
+    const driverStalled = driverStatus.state === 'stalled';
 
     // ── Instance block (SA-7) ────────────────────────────────────────────────
     const instanceBlock = {
@@ -1449,36 +1496,47 @@ async function handleToolCallImpl(name: string, args: Record<string, unknown>): 
     // BL-fc5ab895: filled from the store's deep-verify record when it opens.
     let deepVerifyInput: { owed: boolean; status: string | null; detail: string | null; ownerAlive: boolean | null } | null = null;
     try {
-      const storeArg = args['store'];
-      const dbPathArg = args['db_path'];
-      const storeResult = resolveStoreOrDbPath(storeArg, dbPathArg);
-      const hasHostConfig = (process.env['SOX_CONFIG_DB_PATH'] ?? '').trim() !== '';
-
       let resolvedPath = '';
       let storeName = '';
 
-      if (storeResult === null && !hasHostConfig) {
-        // No explicit store/db_path AND no host-injected config — this is a
-        // guess, not a resolution. Do not open anything.
-        storeBlock = {
-          configured: false,
-          reason:
-            'no "store"/"db_path" argument was supplied and SOX_CONFIG_DB_PATH is not set — ' +
-            'refusing to guess a store path merely to answer a liveness check (BL-412). ' +
-            'Pass "store" or "db_path" explicitly, or run under a host that injects SOX_CONFIG_DB_PATH.',
-        };
+      if (driverStalled) {
+        // (862129b5 TUR-F) Zero store queries — and zero store-REGISTRY touches —
+        // while the driver is stalled. Checked BEFORE `resolveStoreOrDbPath` so
+        // even its `statSync` fingerprint probe never runs against the target
+        // path. `storeOpenError` names the reason so the verdict below reads
+        // `degraded`, never a false `ok`.
         storeOpenError =
-          'store not configured: no "store"/"db_path" argument and no SOX_CONFIG_DB_PATH ' +
-          '(bare process, BL-412) — this process can serve no writes';
-      } else if (storeResult === null) {
-        // hasHostConfig is true: the host explicitly configured a store via
-        // SOX_CONFIG_DB_PATH — this is real production config, not a guess.
-        // hasHostConfig guarantees a non-null resolution (same env var, trimmed).
-        resolvedPath = expandTilde(resolveDbPath(undefined) ?? '');
-        storeName = 'default';
-      } else if (!('code' in storeResult)) {
-        resolvedPath = storeResult.path;
-        storeName = storeResult.name;
+          'turso driver is stalled (an in-flight driver op has not completed) — ' +
+          'store probe skipped, zero store queries issued (see driver)';
+      } else {
+        const storeArg = args['store'];
+        const dbPathArg = args['db_path'];
+        const storeResult = resolveStoreOrDbPath(storeArg, dbPathArg);
+        const hasHostConfig = (process.env['SOX_CONFIG_DB_PATH'] ?? '').trim() !== '';
+
+        if (storeResult === null && !hasHostConfig) {
+          // No explicit store/db_path AND no host-injected config — this is a
+          // guess, not a resolution. Do not open anything.
+          storeBlock = {
+            configured: false,
+            reason:
+              'no "store"/"db_path" argument was supplied and SOX_CONFIG_DB_PATH is not set — ' +
+              'refusing to guess a store path merely to answer a liveness check (BL-412). ' +
+              'Pass "store" or "db_path" explicitly, or run under a host that injects SOX_CONFIG_DB_PATH.',
+          };
+          storeOpenError =
+            'store not configured: no "store"/"db_path" argument and no SOX_CONFIG_DB_PATH ' +
+            '(bare process, BL-412) — this process can serve no writes';
+        } else if (storeResult === null) {
+          // hasHostConfig is true: the host explicitly configured a store via
+          // SOX_CONFIG_DB_PATH — this is real production config, not a guess.
+          // hasHostConfig guarantees a non-null resolution (same env var, trimmed).
+          resolvedPath = expandTilde(resolveDbPath(undefined) ?? '');
+          storeName = 'default';
+        } else if (!('code' in storeResult)) {
+          resolvedPath = storeResult.path;
+          storeName = storeResult.name;
+        }
       }
 
       if (resolvedPath && fs.existsSync(resolvedPath)) {
@@ -1810,7 +1868,7 @@ async function handleToolCallImpl(name: string, args: Record<string, unknown>): 
     // meaning for all 23 tools; `status`/`store_ok`/`store_error` are what an
     // operator reads. A store that failed to open ⇒ `unhealthy` (the Aug-11
     // incident shape: ping said ok while every write failed).
-    const verdict = computePingHealthVerdict({
+    let verdict = computePingHealthVerdict({
       storeOpened,
       storeError: storeOpenError,
       embedState: embedHealth.state,
@@ -1822,6 +1880,26 @@ async function handleToolCallImpl(name: string, args: Record<string, unknown>): 
       // BL-fc5ab895: an owed deep pass that timed out / failed ⇒ degraded.
       deepVerify: deepVerifyInput,
     });
+
+    if (driverStalled) {
+      // (862129b5 TUR-F) A stalled driver OVERRIDES the pure store/embed verdict.
+      // The store was deliberately NOT probed (zero store queries), so the
+      // verdict above saw `storeOpened:false` and returned `unhealthy`. A
+      // stalled driver is a live, recoverable condition — the op may still
+      // complete, or the driver-stall watchdog exits the process for the
+      // supervisor to restart — so it is `degraded`, not `unhealthy`.
+      verdict = {
+        ...verdict,
+        status: 'degraded',
+        status_reason:
+          `turso driver is stalled: in-flight op '${driverStatus.oldestOpLabel ?? 'unknown'}' ` +
+          `pending ${driverStatus.oldestOpAgeMs ?? '?'}ms — store probe skipped, zero store queries ` +
+          `issued (see driver)`,
+        store_ok: false,
+        store_error:
+          storeOpenError ?? 'turso driver stalled — store not probed while the driver is stalled (see driver)',
+      };
+    }
 
     return {
       content: [{
@@ -1862,6 +1940,10 @@ async function handleToolCallImpl(name: string, args: Record<string, unknown>): 
           instance: instanceBlock,
           store: storeBlock,
           embed: embedBlock,
+          // (862129b5 TUR-F) the off-thread Turso driver's lifecycle snapshot,
+          // read synchronously before any store query. `state:'stalled'` is the
+          // signal that the store was NOT probed (see `status`).
+          driver: driverBlock,
           // ── Legacy flat keys (preserved for one minor version) ─────────────
           // BL-250: embed_on_hash_fallback removed — the hash backend no longer
           // exists (EmbedBackend = 'auto' | 'real' only), so this key always
@@ -4428,6 +4510,14 @@ scheduleNextCompactionTick();
 // `LivenessWatchdog.start`, so it never keeps a process alive on its own.
 serverLivenessWatchdog.start(watchdogIntervalMs());
 
+// (862129b5 TUR-F) NOTE: the off-thread Turso driver's stall watchdog is NOT
+// started here at module load. It is a SIGKILL-capable, process-wide watcher —
+// the same class as `mainThreadMonitor`'s off-thread kill path — and those are
+// started ONLY in the real entrypoint (`require.main === module`) so a test
+// that imports this module can never have its own long-running Turso work
+// killed by a watchdog it never asked for. See the start site below, next to
+// `mainThreadMonitor.start()`.
+
 // ── Entrypoint dispatch: backend mode vs direct-stdio (spec §9.5) ─────────────
 //
 // memory-server has two run modes:
@@ -4659,6 +4749,17 @@ if (require.main === module) {
   // `mainthread.stalled` report while a synchronous Turso step still holds the
   // loop. Started right after telemetry so it covers every request.
   mainThreadMonitor.start();
+
+  // (862129b5 TUR-F) Start the off-thread Turso driver's stall watchdog here —
+  // the real entrypoint, in BOTH run modes (backend-proxy and direct-stdio)
+  // since this block precedes the mode branch below — alongside the other
+  // SIGKILL-capable watcher. TUR-C/D moved the native driver onto a worker
+  // thread, so a stalled driver op no longer freezes the main thread and the
+  // off-thread mainthread watcher above can never see it; this is its owner.
+  // Deliberately NOT at module load (see the note at the liveness-watchdog start
+  // site): a test that imports this module must not have its own Turso work
+  // killed by a watchdog it never asked for.
+  startDriverStallWatchdog();
 
   // (per-call DB-op tracing) Wire memory-core's per-open DB-op hooks to the
   // monitor's NESTING stack (`pushOp`/`popOp`) — never `setOp`/`clearOp`,
