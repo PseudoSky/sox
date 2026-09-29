@@ -1,6 +1,6 @@
 {
   "name": "@adhd/sox-extension-git-manager",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "git-manager agent — sole owner of git operations and of a per-project git policy document",
   "private": true,
   "license": "MIT",
