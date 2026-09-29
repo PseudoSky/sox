@@ -5,7 +5,7 @@
   "visibility": "internal",
   "bundle_id": "sox-memory-bundle",
   "title": "Agent Memory Server",
-  "description": "Use this when an agent needs durable, searchable memory across sessions — exposes 7 memory_* tools over a single-file SQLite graph store with hybrid recall (vec+BM25+temporal, <50ms, zero LLM), write-enqueue, session state, community lookup, and bi-temporal invalidation.",
+  "description": "Use this when an agent needs durable, searchable memory across sessions — exposes 23 memory_* tools over a single-file SQLite graph store with hybrid recall (vec+BM25+temporal, <50ms, zero LLM), write-enqueue, session state, community lookup, bi-temporal invalidation, atomic claims, and an observable global re-cluster.",
   "keywords": ["memory", "rag", "graph", "sqlite", "recall", "session", "federation"],
   "author": "sox-ecosystem",
   "compatibility": { "host": ">=1.0.0 <2.0.0" },

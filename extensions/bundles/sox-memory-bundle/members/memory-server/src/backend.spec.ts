@@ -3,7 +3,7 @@
  *
  * Proves the backend JSON-RPC handler mirrors the MCP serve() surface:
  *   - initialize → serverInfo (content-addressed version) + tools capability
-   *   - tools/list → the canonical 20-tool list (same shape serve() returns)
+   *   - tools/list → the canonical 29-tool list (same shape serve() returns)
  *   - tools/call → routes to handleToolCall (here: memory_ping, no db touched —
  *     see BL-412: this was FALSE until the memory_ping guard landed; a bare
  *     memory_ping used to fall through to the real ~/.memory/memory.db and
@@ -39,12 +39,14 @@ function tmpDir(): string {
 }
 
 describe('memory-server backend handler', () => {
-  it('tools/list returns the canonical 20-tool surface', async () => {
+  it('tools/list returns the canonical 29-tool surface', async () => {
     const resp = await handleBackendRequest({ jsonrpc: '2.0', id: 1, method: 'tools/list' });
     const result = resp?.result as { tools: Array<{ name: string }> };
-    expect(result.tools.length).toBe(20);
+    // 20 original + SR-7's memory_claim_upsert / memory_claim_get / memory_claim_list.
+    expect(result.tools.length).toBe(29);
     expect(result.tools.map((t) => t.name)).toContain('memory_ping');
     expect(result.tools.map((t) => t.name)).toContain('memory_update');
+    expect(result.tools.map((t) => t.name)).toContain('memory_claim_upsert');
   });
 
   it('initialize returns content-addressed serverInfo + tools capability', async () => {
@@ -153,7 +155,7 @@ describe('memory-server backend handler', () => {
     const conn: BackendConnection = dialBackend({ socketPath: sock, onDiagnostic: () => {} });
     cleanups.push(() => conn.close());
     const resp = await conn.send({ jsonrpc: '2.0', id: 99, method: 'tools/list' });
-    expect((resp.result as { tools: unknown[] }).tools.length).toBe(20);
+    expect((resp.result as { tools: unknown[] }).tools.length).toBe(29);
   });
 
   it('runBackend binds a UDS that a dialBackend client round-trips against', async () => {
@@ -171,7 +173,7 @@ describe('memory-server backend handler', () => {
 
     const listResp = await conn.send({ jsonrpc: '2.0', id: 10, method: 'tools/list' });
     const tools = (listResp.result as { tools: unknown[] }).tools;
-    expect(tools.length).toBe(20);
+    expect(tools.length).toBe(29);
 
     const pingResp = await conn.send({
       jsonrpc: '2.0',

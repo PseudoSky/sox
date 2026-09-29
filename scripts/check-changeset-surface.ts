@@ -19,6 +19,15 @@
  * prompt), but never false-negatives a real type change (which a normalization
  * bug in an AST differ could).
  *
+ * Bundle surface (C1(b), 2026-09-28): a package whose `dist/` carries no `.d.ts`
+ * (a self-contained bundle that inlines its workspace deps — memory-server's
+ * `dist/` is `index.js` + `schema.json`) previously fell into the "no *.d.ts —
+ * nothing to diff" `continue`, so a bundle-only surface change (a new `memory_*`
+ * tool) shipped with the gate reporting green. Such a package now falls back to
+ * its declared tool surface, `dist/schema.json` (the MCP `tools/list` snapshot),
+ * and is diffed/bumped like any other. Only a `dist/` with NEITHER a `.d.ts` NOR
+ * a `schema.json` keeps the nothing-to-diff pass.
+ *
  * Package selection (Decision F): the SAME predicate and directory walk as
  * `scripts/check-publishable.ts` (`pkg.private !== true && pkg.name.startsWith
  * ('@adhd/sox-')`, roots `libs/apps/extensions/packages`) — reproduced here
@@ -164,7 +173,7 @@ function pendingChangesetPackages(): Set<string> {
 // ── local dist walk ─────────────────────────────────────────────────────────
 // Returns paths relative to the PACKAGE ROOT (e.g. "dist/index.d.ts"), not to
 // `distDir` itself — this must match the tarball layout (`package/dist/...`)
-// so extractDtsFromTarball() can look the same relative path up under `package/`.
+// so extractSurfaceFromTarball() can look the same relative path up under `package/`.
 function listDtsFilesRelativeToPkgRoot(distDir: string): string[] {
   const out: string[] = [];
   const walk = (dir: string, rel: string): void => {
@@ -186,6 +195,34 @@ function listDtsFilesRelativeToPkgRoot(distDir: string): string[] {
   };
   walk(distDir, 'dist');
   return out.sort();
+}
+
+// ── surface artefact selection (C1(b)) ───────────────────────────────────────
+// A package's public surface is normally its built `dist/*.d.ts`. But a BUNDLE
+// inlines its workspace deps and ships a self-contained executable — no `.d.ts`
+// at all (memory-server's `dist/` is `index.js` + `schema.json`). Before this,
+// such a package hit the "no *.d.ts — nothing to diff" `continue`, so adding a
+// tool to a bundle (e.g. the SR-7/SR-9 `memory_*` surface) changed the published
+// surface with the gate reporting green. Fall back to the bundle's declared tool
+// surface, `dist/schema.json` (the MCP `tools/list` snapshot the host reads), so a
+// bundle-only surface change cannot slip.
+//
+// `via` is carried out so the note/error text can name the artefact that actually
+// differed, and so a dist/ with NEITHER a `.d.ts` NOR a `schema.json` keeps the
+// original "nothing to diff" pass (there is genuinely no surface to compare).
+const SURFACE_FALLBACK_FILE = 'dist/schema.json';
+
+function listSurfaceFilesRelativeToPkgRoot(pkgRoot: string): {
+  files: string[];
+  via: 'dts' | 'schema' | 'none';
+} {
+  const dts = listDtsFilesRelativeToPkgRoot(path.join(pkgRoot, 'dist'));
+  if (dts.length > 0) return { files: dts, via: 'dts' };
+  // C1(b): no typed surface — fall back to the bundle's tool list.
+  if (fs.existsSync(path.join(pkgRoot, SURFACE_FALLBACK_FILE))) {
+    return { files: [SURFACE_FALLBACK_FILE], via: 'schema' };
+  }
+  return { files: [], via: 'none' };
 }
 
 // ── registry packument fetch ────────────────────────────────────────────────
@@ -254,7 +291,7 @@ async function downloadTarball(
 }
 
 /** Extracts `package/<rel>` for each wanted relative path from a downloaded npm tarball. */
-function extractDtsFromTarball(
+function extractSurfaceFromTarball(
   tarBuf: Buffer,
   wantRelPaths: string[],
 ): { ok: true; files: Map<string, Buffer> } | { ok: false; error: string } {
@@ -337,11 +374,13 @@ async function main(): Promise<void> {
 
   for (const p of withDist) {
     checked++;
-    const relDtsPaths = listDtsFilesRelativeToPkgRoot(p.distDir);
-    if (relDtsPaths.length === 0) {
-      notes.push(`"${p.name}": dist/ has no *.d.ts files — nothing to diff.`);
+    const surface = listSurfaceFilesRelativeToPkgRoot(p.dir);
+    const surfaceFiles = surface.files;
+    if (surfaceFiles.length === 0) {
+      notes.push(`"${p.name}": dist/ has no *.d.ts or schema.json — nothing to diff.`);
       continue;
     }
+    const surfaceLabel = surface.via === 'schema' ? 'schema.json tool list' : 'dist/*.d.ts';
 
     const packumentResult = await fetchPackument(p.name);
     if (!packumentResult.ok) {
@@ -368,34 +407,34 @@ async function main(): Promise<void> {
       continue;
     }
 
-    const extracted = extractDtsFromTarball(tarball.buf, relDtsPaths);
+    const extracted = extractSurfaceFromTarball(tarball.buf, surfaceFiles);
     if (!extracted.ok) {
       errors.push(`UNVERIFIABLE: "${p.name}"@${latest} — ${extracted.error}. This gate fails closed rather than assuming no drift.`);
       continue;
     }
 
     const diffFiles: string[] = [];
-    for (const rel of relDtsPaths) {
+    for (const rel of surfaceFiles) {
       const localBuf = fs.readFileSync(path.join(p.dir, rel));
       const publishedBuf = extracted.files.get(rel);
       if (publishedBuf === undefined || !localBuf.equals(publishedBuf)) diffFiles.push(rel);
     }
 
     if (diffFiles.length === 0) {
-      notes.push(`"${p.name}": dist/*.d.ts unchanged from published ${latest}.`);
+      notes.push(`"${p.name}": ${surfaceLabel} unchanged from published ${latest}.`);
       continue;
     }
 
     if (pending.has(p.name)) {
       notes.push(
-        `"${p.name}": dist/*.d.ts differs from published ${latest} (${diffFiles.join(', ')}) — ` +
+        `"${p.name}": ${surfaceLabel} differs from published ${latest} (${diffFiles.join(', ')}) — ` +
           'covered by a pending changeset, publishes in this same run.',
       );
       continue;
     }
 
     errors.push(
-      `"${p.name}": dist/*.d.ts differs from the published ${latest} (${diffFiles.join(', ')}) and no ` +
+      `"${p.name}": ${surfaceLabel} differs from the published ${latest} (${diffFiles.join(', ')}) and no ` +
         '.changeset/*.md in this tree names this package. A public-surface change is about to ship with ' +
         'no changeset recording it (BL-460) — add one with `pnpm changeset`.',
     );

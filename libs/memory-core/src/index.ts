@@ -411,6 +411,99 @@ export {
   getOntologySnapshot,
 } from './graph-backend.js';
 
+// ── Claim (SR-7: memory_claim_upsert + a queryable, persisted claim) ───────────
+export { memoryClaimUpsert, memoryClaimGet, memoryClaimList } from './claim.js';
+export type {
+  ClaimRecord,
+  ClaimUpsertParams,
+  ClaimUpsertOk,
+  ClaimUpsertError,
+  ClaimUpsertResult,
+  ClaimGetOk,
+  ClaimGetResult,
+  ClaimListEntry,
+  ClaimListResult,
+} from './claim.js';
+
+// ── Observable recluster (SR-9) ────────────────────────────────────────────────
+export {
+  enqueueReclusterJob,
+  readReclusterJob,
+  settleReclusterJobs,
+  readPartition,
+} from './recluster-job.js';
+export type {
+  ReclusterJobStatus,
+  ReclusterPartition,
+  ReclusterJob,
+  EnqueueReclusterJobOptions,
+  EnqueueReclusterJobResult,
+  ReclusterSettleOutcome,
+} from './recluster-job.js';
+
+// ── Knowledge layer (D-C): outcome-gated records + open facets + coverage ──────
+// The pure verdict (types + deriveVerdict), the claim/outcome split, the
+// decision-backing read, the open facet vocabulary, and coverage-aware retrieval.
+export { deriveVerdict, normalizeObserved, FROZEN_CLAIM_META_KEYS } from './knowledge.js';
+export type {
+  VerdictTier,
+  Independence,
+  Confidence,
+  Expectation,
+  ClaimView,
+  OutcomeView,
+  Verdict,
+  Citation,
+  BackResult,
+  DeriveVerdictOpts,
+} from './knowledge.js';
+export { memoryClaimAssert, readClaimView } from './claim.js';
+export type {
+  ClaimAssertParams,
+  ClaimAssertOk,
+  ClaimAssertError,
+  ClaimAssertResult,
+} from './claim.js';
+export { memoryOutcomeAppend, readOutcomes, parseOutcome } from './outcome.js';
+export type {
+  OutcomeAppendParams,
+  OutcomeAppendOk,
+  OutcomeAppendError,
+  OutcomeAppendResult,
+} from './outcome.js';
+export { memoryBack } from './back.js';
+export type { BackOk, BackError, BackResponse } from './back.js';
+export { assessCoverage, normalizedEntropy, COVERAGE_TOPK } from './coverage.js';
+export type {
+  CoverageEnvelope,
+  CoverageReason,
+  CoverageSignals,
+  CoverageCandidate,
+  CoverageOptions,
+} from './coverage.js';
+export { memoryFacetAdmit, memoryFacetPromote, memoryFacetList, facetTermId, FacetError } from './facets.js';
+export type { FacetTerm, FacetTermStatus, FacetDemand, FacetErrorCode } from './facets.js';
+export {
+  resolveKnowledgeConfig,
+  DEFAULT_KNOWLEDGE_CONFIG,
+  _setKnowledgeConfigForTest,
+} from './config.js';
+export type {
+  KnowledgeConfig,
+  CoverageConfig,
+  FacetPromotionConfig,
+  KnowledgeConfigOverrides,
+} from './config.js';
+export { buildMetadataPredicate } from './memory-filters.js';
+export type { MetadataPredicate } from './memory-filters.js';
+export {
+  verifyPersistedFields,
+  _setBatchDropFieldForTest,
+  _setBatchVerifyDisabledForTest,
+  VERIFIED_BATCH_FIELDS,
+} from './write.js';
+export type { FieldVerification, VerifiedBatchField } from './write.js';
+
 // ── Markdown export mirror ────────────────────────────────────────────────────
 export { exportMarkdown } from './export.js';
 export type { ExportOpts, ExportResult } from './export.js';
@@ -450,6 +543,7 @@ export type {
   CurateMergeResult,
   CurateReclusterSubsetResult,
   CurateReclusterGlobalResult,
+  CurateReclusterStatusResult,
   CurateDropLensResult,
   CurateDropEpisodesResult,
   CurateListLensesResult,

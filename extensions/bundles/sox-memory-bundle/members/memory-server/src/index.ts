@@ -1,6 +1,6 @@
 /**
  * MCP Server: Agent Memory Server v1.1.0
- * 20 memory_* tools over a single-file SQLite graph store.
+ * 23 memory_* tools over a single-file SQLite graph store.
  * Transport: stdio JSON-RPC (tools/list + tools/call).
  *
  * v1.0.0 adds (P4 enrichment surface — CONTRACTS.md C2):
@@ -54,6 +54,16 @@ import {
   hasPendingFullEnrich,
   healMissingVectors,
   log,
+  memoryClaimGet,
+  memoryClaimList,
+  memoryClaimUpsert,
+  // D-C knowledge layer: outcome-gated records, open facets, decision-backing.
+  memoryClaimAssert,
+  memoryOutcomeAppend,
+  memoryBack,
+  memoryFacetAdmit,
+  memoryFacetPromote,
+  memoryFacetList,
   memoryCurate,
   memoryGetEntityEpisodes,
   memoryGetNearDuplicates,
@@ -83,6 +93,7 @@ import {
   DEFAULT_COMPACTION_INTERVAL_MS,
   schedulePendingEmbeds,
   setLeaseInstanceId,
+  settleReclusterJobs,
   supersedesUidForRowid,
   vectorDialectFor,
   syncEmbedEnabled,
@@ -117,7 +128,7 @@ import {
   resolveTopicFromPrefix,
   setDeepVerifySchedule,
 } from '@adhd/sox-memory-core';
-import type { HealResult, PendingEmbed, PhaseAOutcome, WriteError, WriteResult, EnrichAlarmRecord } from '@adhd/sox-memory-core';
+import type { HealResult, PendingEmbed, PhaseAOutcome, WriteError, WriteResult, EnrichAlarmRecord, ReclusterSettleOutcome } from '@adhd/sox-memory-core';
 import type { StoreAdapter, VectorDialect } from '@adhd/sox-store-adapter';
 // BL-334: the adapter verifies and repairs its own generated artifacts at open
 // (BL-352). Until this wiring, NOTHING read the retained result — so a store
@@ -1005,7 +1016,7 @@ export const TOOLS: Array<Omit<ToolDefinition, 'handler'>> = [
         db_path: { type: 'string', description: 'Optional. Path to the SQLite memory store. Defaults to the bundle-configured store (host-injected SOX_CONFIG_DB_PATH, seeded by soxe install). With neither, the call fails with E_STORE_NOT_CONFIGURED — the server never infers a path. Must be within the ~/.memory/** fs allowlist; out-of-allowlist paths are denied by the permission guard with no side effects.' },
         op: {
           type: 'string',
-          enum: ['retag', 'set_topic', 'set_importance', 'merge_duplicates', 'recluster', 'drop_lens', 'drop-episodes', 'list_lenses', 'reheal_stale', 'drain', 'reset_pipeline', 'resume', 'unpoison', 'ack_alarm', 'restore_neardup', 'backfill_invalidation_reason'],
+          enum: ['retag', 'set_topic', 'set_importance', 'merge_duplicates', 'recluster', 'recluster_status', 'drop_lens', 'drop-episodes', 'list_lenses', 'reheal_stale', 'drain', 'reset_pipeline', 'resume', 'unpoison', 'ack_alarm', 'restore_neardup', 'backfill_invalidation_reason'],
           description: 'The curation operation to perform. drop_lens removes a persisted subset lens by provenance_hash. drop-episodes hard-deletes episode node rows and cascading data. list_lenses returns all live subset lenses. reheal_stale re-embeds live episodes whose vector was stamped by a model that is no longer the active one (BL-88/BL-215) — a bounded, operator-invoked pass; it is never run automatically, and it always works when invoked (SOX_HEAL_STALE_VECTORS was an anti-feature and is gone, ADR-0013). drain fully drains the embed backlog (no tick time budget; dry_run previews the remaining count). reset_pipeline clears the enrich/embed health ledger, the alarm, and the poison table. resume re-arms escalation after an ack_alarm. unpoison re-admits a poisoned row (by uid) or all rows to the heal scan. ack_alarm acknowledges the current alarm, pausing re-escalation. restore_neardup clears t_invalid on episodes an automatic near-duplicate pass invalidated, component-wise over live INFERRED SAME_AS edges, driven by a lexical triage report (report_path). UNLIKE EVERY OTHER OP ITS dry_run DEFAULTS TO TRUE — a caller must pass dry_run:false to mutate. Restore scope is a POLICY CHOICE (floor plus the whole ambiguous band; TRUE-DUPLICATE components stay collapsed), not a measured recoverable count, and invalidated episodes carrying no SAME_AS edge are out of scope and reported as a count. Never uses embedding cosine or any age/recency signal; never deletes a SAME_AS edge. reverse:true undoes a run (re-invalidate + community GC in one transaction). report_path is confined to ~/.memory/** unless SOX_RESTORE_REPORT_ROOTS grants more. backfill_invalidation_reason (503cdc2b) records an explicit unknown-legacy reason in node.meta (invalidatedReason / invalidatedVia="backfill_503cdc2b" / invalidatedAt = the row\'s existing t_invalid / invalidatedReasonBackfilledAt) on invalidated episodes that predate 9171d5cb — scope: no SAME_AS or SUPERSEDES edge in either direction and no meta key starting "invalidated". It never writes t_invalid. ITS dry_run ALSO DEFAULTS TO TRUE (dry run returns the count + sample uids); an apply runs the integrity gate and takes a verified backup first, aborting on either failure; reverse:true strips exactly those keys where invalidatedVia == "backfill_503cdc2b".',
         },
         uid: { type: 'string', description: 'Target episode UID (required for retag, set_topic, set_importance).' },
@@ -1015,8 +1026,9 @@ export const TOOLS: Array<Omit<ToolDefinition, 'handler'>> = [
         importance: { type: 'number', minimum: 1, maximum: 10, description: '(set_importance) User-asserted importance.' },
         uid_keep: { type: 'string', description: '(merge_duplicates) UID of the episode to keep.' },
         uid_drop: { type: 'string', description: '(merge_duplicates) UID of the episode to invalidate.' },
-        filters: { type: 'object', description: '(recluster) Restrict clustering to the matching subset of episodes. Same filter vocabulary as memory_recall: project_path, topic, tags, tags_match_all, importance_min, t_created_after/before. When present, recluster runs SYNCHRONOUSLY over the subset and returns the resulting communities. Combined with dry_run: dry_run=true returns communities without writing; dry_run=false persists them as a provenance-scoped community slice that leaves the global partition untouched. Absent: a global full re-cluster is ENQUEUED, NOT run inline — the call returns {enqueued:true, seq} as soon as the trigger row commits, and the pass executes on a later in-process periodic enrichment tick (typically minutes away), so memory_stats read immediately after WILL still show the old partition. This deferral is deliberate (BL-186): a synchronous full pass holds the serial WriteQueue slot for its entire duration, fast-failing writes behind it with E_BUSY, and can out-wait the MCP client timeout. With dry_run:true nothing is enqueued and {enqueued:false, dry_run:true} returns.' },
+        filters: { type: 'object', description: '(recluster) Restrict clustering to the matching subset of episodes. Same filter vocabulary as memory_recall: project_path, topic, tags, tags_match_all, importance_min, t_created_after/before. When present, recluster runs SYNCHRONOUSLY over the subset and returns the resulting communities. Combined with dry_run: dry_run=true returns communities without writing; dry_run=false persists them as a provenance-scoped community slice that leaves the global partition untouched. Absent: a global full re-cluster is ENQUEUED, NOT run inline — the call returns an observable handle {op:"recluster", scope:"global", enqueued:true, seq, job_id, status:"pending"} as soon as the trigger row commits, and the pass executes on a later in-process periodic enrichment tick (typically minutes away), so memory_stats read immediately after WILL still show the old partition. Poll the handle with {op:"recluster_status", job_id} until it is terminal. This deferral is deliberate (BL-186): a synchronous full pass holds the serial WriteQueue slot for its entire duration, fast-failing writes behind it with E_BUSY, and can out-wait the MCP client timeout. With dry_run:true nothing is enqueued and {enqueued:false, dry_run:true} returns.' },
         threshold: { type: 'number', description: '(recluster, filtered) Optional cosine similarity threshold override for the subset pass.' },
+        job_id: { type: 'string', description: '(recluster_status, SR-9) The job handle returned by a global `recluster`. Poll it until `status` is terminal: `completed` (carries the resulting `partition`), `failed` (carries `error`), or `skipped` (the pass ran but its cluster step did not — the mixed-model / no-neighbour guard; carries `skip_reason`). `pending` means the full pass has not run yet. "enqueued" is never the final answer, and a skipped pass is never reported `completed`.' },
         provenance_hash: { type: 'string', description: '(drop_lens) The 16-hex provenance hash of the subset lens to drop (obtain from a prior recluster response).' },
         limit: { type: 'number', description: '(reheal_stale) Max rows to re-embed this call. Default 50, capped at 2000 — small enough that a single MCP call does not risk the client-side tool-call timeout. Run again while the response\'s remaining > 0.' },
         report_path: { type: 'string', description: '(restore_neardup) Absolute path to the lexical triage report JSON. Required to APPLY — its sha256 is recorded in meta.restoredFrom on every restored row; optional for dry_run.' },
@@ -1032,6 +1044,147 @@ export const TOOLS: Array<Omit<ToolDefinition, 'handler'>> = [
         dry_run: { type: 'boolean', description: 'If true, return proposed changes without committing them. NO SCHEMA DEFAULT ON PURPOSE: a client that materialises JSON-Schema defaults would send dry_run:false and MUTATE, and restore_neardup is destructive by omission — its default is TRUE and is decided in curate.ts, not here. Every other op treats an absent value as false, exactly as before.' },
       },
       required: ['op'],
+    },
+  },
+  {
+    name: 'memory_claim_upsert',
+    description:
+      'SR-7: claim a node for a caller — or update it if already held by that caller — ATOMICALLY. Two callers racing for one node yield exactly one claim; a distinct caller is refused with a typed E_CLAIM_HELD conflict; the same caller re-claiming is idempotent. The claim is a first-class record at node.meta.claim, readable via memory_claim_get / memory_claim_list and durable across a store reopen. Correctness is the store primitive (a conditional UPDATE in an IMMEDIATE transaction), never an advisory lock (ADR-0012).',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        store: { type: 'string', description: 'Optional. Named store to use (e.g., "default", "user"). Overrides db_path. See memory init --help to register stores.' },
+        db_path: { type: 'string', description: 'Optional. Path to the SQLite memory store. Defaults to the bundle-configured store (host-injected SOX_CONFIG_DB_PATH, seeded by soxe install). With neither, the call fails with E_STORE_NOT_CONFIGURED — the server never infers a path. Must be within the ~/.memory/** fs allowlist; out-of-allowlist paths are denied by the permission guard with no side effects.' },
+        uid: { type: 'string', description: 'Target node UID (required). E_NOT_FOUND if no live node has it.' },
+        caller: { type: 'string', description: 'The caller claiming the node (required). A distinct caller already holding it is refused with E_CLAIM_HELD.' },
+        patch: { type: 'object', description: 'Optional. {metadata: {...}} deep-merged into the node meta alongside the claim (arrays replaced, same contract as memory_update.metadata). The `claim` key is owned by this op and is ignored if supplied in a patch.' },
+      },
+      required: ['uid', 'caller'],
+    },
+  },
+  {
+    name: 'memory_claim_get',
+    description:
+      'SR-7: read the live claim (holder) on a node. `claim: null` means the node is live but unheld; E_NOT_FOUND means no live node has that uid. Durable — reads the same record memory_claim_upsert wrote, across processes and store reopens.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        store: { type: 'string', description: 'Optional. Named store to use (e.g., "default", "user"). Overrides db_path. See memory init --help to register stores.' },
+        db_path: { type: 'string', description: 'Optional. Path to the SQLite memory store. Defaults to the bundle-configured store (host-injected SOX_CONFIG_DB_PATH, seeded by soxe install). With neither, the call fails with E_STORE_NOT_CONFIGURED — the server never infers a path. Must be within the ~/.memory/** fs allowlist; out-of-allowlist paths are denied by the permission guard with no side effects.' },
+        uid: { type: 'string', description: 'Node UID to read the claim for (required).' },
+      },
+      required: ['uid'],
+    },
+  },
+  {
+    name: 'memory_claim_list',
+    description:
+      'SR-7: list live claims, optionally narrowed to one caller. The queryable half of the claim surface — a claim is a record a caller can enumerate, not a write with no read. Pure read.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        store: { type: 'string', description: 'Optional. Named store to use (e.g., "default", "user"). Overrides db_path. See memory init --help to register stores.' },
+        db_path: { type: 'string', description: 'Optional. Path to the SQLite memory store. Defaults to the bundle-configured store (host-injected SOX_CONFIG_DB_PATH, seeded by soxe install). With neither, the call fails with E_STORE_NOT_CONFIGURED — the server never infers a path. Must be within the ~/.memory/** fs allowlist; out-of-allowlist paths are denied by the permission guard with no side effects.' },
+        caller: { type: 'string', description: 'Optional. Narrow the list to claims held by this caller.' },
+      },
+      required: [],
+    },
+  },
+  {
+    name: 'memory_claim_assert',
+    description:
+      'D-C: assert an IMMUTABLE knowledge claim — a native `claim` node carrying the assertion text, a facet term id (see memory_facet_admit), and an expectation{expected_outcome, confidence} recorded at assertion time. Frozen at first write (K-I1): the only permitted mutation is appending an outcome (memory_outcome_append). Returns {ok, uid}.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        store: { type: 'string', description: 'Optional. Named store to use (e.g., "default", "user"). Overrides db_path. See memory init --help to register stores.' },
+        db_path: { type: 'string', description: 'Optional. Path to the SQLite memory store. Defaults to the bundle-configured store (host-injected SOX_CONFIG_DB_PATH, seeded by soxe install). With neither, the call fails with E_STORE_NOT_CONFIGURED — the server never infers a path. Must be within the ~/.memory/** fs allowlist; out-of-allowlist paths are denied by the permission guard with no side effects.' },
+        text: { type: 'string', description: 'The assertion text (required) — stored as the claim node content.' },
+        facet: { type: 'string', description: 'The facet term id this claim is filed under (required), e.g. "technique:bisection".' },
+        project_path: { type: 'string', description: 'The caller\'s project root (required).' },
+        expectation: { type: 'object', description: 'The ADR-half (required): { expected_outcome: string, confidence: "low"|"medium"|"high" } recorded at assertion time so low-confidence claims are the first revisits.' },
+        asserted_by: { type: 'string', description: 'The asserting caller (required) — also receives the SR-7 lease on the new claim.' },
+      },
+      required: ['text', 'facet', 'project_path', 'expectation', 'asserted_by'],
+    },
+  },
+  {
+    name: 'memory_outcome_append',
+    description:
+      'D-C: append an OUTCOME to a claim — a NEW episode node carrying meta.outcome, linked DERIVED_FROM the claim; never a mutation of the claim (K-I2). `independence` records the reproduction level (self vs independent) and is what splits self-reproduced from independently-reproduced from replicated. Verdict is derived on read (memory_back) from the outcome set + REFUTES edges, never stored.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        store: { type: 'string', description: 'Optional. Named store to use (e.g., "default", "user"). Overrides db_path. See memory init --help to register stores.' },
+        db_path: { type: 'string', description: 'Optional. Path to the SQLite memory store. Defaults to the bundle-configured store (host-injected SOX_CONFIG_DB_PATH, seeded by soxe install). With neither, the call fails with E_STORE_NOT_CONFIGURED — the server never infers a path. Must be within the ~/.memory/** fs allowlist; out-of-allowlist paths are denied by the permission guard with no side effects.' },
+        claim_uid: { type: 'string', description: 'The claim this outcome speaks to (required) — must be a live claim node.' },
+        observed_result: { type: 'string', description: 'What was observed (required).' },
+        observed_by: { type: 'string', description: 'Who observed it (required).' },
+        method: { type: 'string', description: 'How it was observed (required).' },
+        observed_at: { type: 'string', description: 'ISO timestamp; defaults to now.' },
+        independence: { type: 'string', enum: ['self', 'independent'], description: 'Required. "self" = the claimant\'s own observation; "independent" = a distinct observer. Two independent agreeing outcomes ⇒ replicated.' },
+        client_request_id: { type: 'string', description: 'Optional idempotency key — replay returns the original outcome.' },
+      },
+      required: ['claim_uid', 'observed_result', 'observed_by', 'method', 'independence'],
+    },
+  },
+  {
+    name: 'memory_back',
+    description:
+      'D-C: read a knowledge record as DECISION-BACKING — the immutable claim, its append-only outcomes, the live REFUTES edges, and the DERIVED tiered verdict (unverified|self-reproduced|independently-reproduced|replicated|stale|refuted|unknown) with a basis and the citation list. Pure read. Returns E_NOT_FOUND when no live claim node has the uid.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        store: { type: 'string', description: 'Optional. Named store to use (e.g., "default", "user"). Overrides db_path. See memory init --help to register stores.' },
+        db_path: { type: 'string', description: 'Optional. Path to the SQLite memory store. Defaults to the bundle-configured store (host-injected SOX_CONFIG_DB_PATH, seeded by soxe install). With neither, the call fails with E_STORE_NOT_CONFIGURED — the server never infers a path. Must be within the ~/.memory/** fs allowlist; out-of-allowlist paths are denied by the permission guard with no side effects.' },
+        uid: { type: 'string', description: 'The claim node uid (required).' },
+      },
+      required: ['uid'],
+    },
+  },
+  {
+    name: 'memory_facet_admit',
+    description:
+      'D-C: admit an OPEN facet term. A new term is minted unpromoted (no schema/code change to add a term). Admitting an existing id with a DIFFERENT definition is refused with E_TERM_REDEFINED — terms are never redefined in place (mint a NEW id for a new meaning). Idempotent for the same definition.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        store: { type: 'string', description: 'Optional. Named store to use (e.g., "default", "user"). Overrides db_path. See memory init --help to register stores.' },
+        db_path: { type: 'string', description: 'Optional. Path to the SQLite memory store. Defaults to the bundle-configured store (host-injected SOX_CONFIG_DB_PATH, seeded by soxe install). With neither, the call fails with E_STORE_NOT_CONFIGURED — the server never infers a path. Must be within the ~/.memory/** fs allowlist; out-of-allowlist paths are denied by the permission guard with no side effects.' },
+        facet: { type: 'string', description: 'The facet (orthogonal dimension), e.g. "technique" (required).' },
+        term: { type: 'string', description: 'The term within the facet, e.g. "bisection" (required).' },
+        definition: { type: 'string', description: 'The term definition (required) — its hash is frozen once minted.' },
+        origin: { type: 'string', description: 'The source/owner tag (required for later promotion).' },
+      },
+      required: ['facet', 'term', 'definition'],
+    },
+  },
+  {
+    name: 'memory_facet_promote',
+    description:
+      'D-C: attempt to PROMOTE an unpromoted facet term via its governed demand gate (demand ≥ config.facetPromotion.minDistinctClaims distinct live claims AND a non-empty origin tag). Idempotent. A term below the gate is returned still `unpromoted` with its current demand — the caller can read demand vs threshold; demand accrues over time.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        store: { type: 'string', description: 'Optional. Named store to use (e.g., "default", "user"). Overrides db_path. See memory init --help to register stores.' },
+        db_path: { type: 'string', description: 'Optional. Path to the SQLite memory store. Defaults to the bundle-configured store (host-injected SOX_CONFIG_DB_PATH, seeded by soxe install). With neither, the call fails with E_STORE_NOT_CONFIGURED — the server never infers a path. Must be within the ~/.memory/** fs allowlist; out-of-allowlist paths are denied by the permission guard with no side effects.' },
+        term_id: { type: 'string', description: 'The facet term id, e.g. "technique:bisection" (required).' },
+      },
+      required: ['term_id'],
+    },
+  },
+  {
+    name: 'memory_facet_list',
+    description:
+      'D-C: list the readable facet catalog, optionally narrowed to one facet. A newly-admitted term appears here immediately — no code change. Pure read.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        store: { type: 'string', description: 'Optional. Named store to use (e.g., "default", "user"). Overrides db_path. See memory init --help to register stores.' },
+        db_path: { type: 'string', description: 'Optional. Path to the SQLite memory store. Defaults to the bundle-configured store (host-injected SOX_CONFIG_DB_PATH, seeded by soxe install). With neither, the call fails with E_STORE_NOT_CONFIGURED — the server never infers a path. Must be within the ~/.memory/** fs allowlist; out-of-allowlist paths are denied by the permission guard with no side effects.' },
+        facet: { type: 'string', description: 'Optional. Narrow the catalog to one facet.' },
+      },
+      required: [],
     },
   },
   {
@@ -1631,7 +1784,7 @@ async function handleToolCallImpl(name: string, args: Record<string, unknown>): 
 
     // BL-373 family (ping honesty): the health verdict is computed from the
     // observed facts, not from embed health alone. `ok` keeps its RPC-success
-    // meaning for all 20 tools; `status`/`store_ok`/`store_error` are what an
+    // meaning for all 23 tools; `status`/`store_ok`/`store_error` are what an
     // operator reads. A store that failed to open ⇒ `unhealthy` (the Aug-11
     // incident shape: ping said ok while every write failed).
     const verdict = computePingHealthVerdict({
@@ -1811,8 +1964,17 @@ function toolOperationClass(name: string): OperationClass {
     case 'memory_write':
     case 'memory_write_batch':
     case 'memory_update':
+    case 'memory_claim_upsert':
+    case 'memory_claim_assert':
+    case 'memory_outcome_append':
+    case 'memory_facet_admit':
+    case 'memory_facet_promote':
       return 'write';
     case 'memory_recall':
+    case 'memory_claim_get':
+    case 'memory_claim_list':
+    case 'memory_back':
+    case 'memory_facet_list':
     case 'memory_search_entities':
     case 'memory_get_session_state':
     case 'memory_get_community':
@@ -2823,7 +2985,9 @@ async function dispatchTool(
       // with the enrich tick while it is clearing t_invalid. The cost is that a
       // large apply holds the single serial slot for its duration — bound it
       // with `component_ids` / `batch_size` and run it in slices.
-      const outsideOps = new Set(['reheal_stale', 'drain', 'reset_pipeline', 'resume', 'unpoison', 'ack_alarm']);
+      // SR-9: `recluster_status` is a pure read (it must NOT hold the serial
+      // write slot while a caller polls), so it joins the out-of-wrapper set.
+      const outsideOps = new Set(['reheal_stale', 'drain', 'reset_pipeline', 'resume', 'unpoison', 'ack_alarm', 'recluster_status']);
       if (typeof args['op'] === 'string' && outsideOps.has(args['op'])) {
         const result = await memoryCurate(adapter, args, wq);
         if ('code' in result) {
@@ -2844,6 +3008,169 @@ async function dispatchTool(
           content: [{ type: 'text', text: JSON.stringify(result) }],
         };
       });
+    }
+
+    // ── SR-7: claim surface ────────────────────────────────────────────────────
+    case 'memory_claim_upsert': {
+      // A claim is a WRITE (it mutates node.meta) — route it through the queue
+      // like every other write. memoryClaimUpsert never enqueues internally
+      // (BL-154 re-entrancy safe): it writes through the passed adapter's own
+      // IMMEDIATE transaction, whose conditional UPDATE is the cross-process CAS.
+      const uid = args['uid'];
+      const caller = args['caller'];
+      if (typeof uid !== 'string' || uid.length === 0 || typeof caller !== 'string' || caller.length === 0) {
+        return {
+          isError: true,
+          content: [{ type: 'text', text: JSON.stringify({ ok: false, code: 'E_INVALID', message: 'uid and caller are required' }) }],
+        };
+      }
+      const rawPatch = args['patch'];
+      const patch =
+        rawPatch !== null && typeof rawPatch === 'object' && !Array.isArray(rawPatch)
+          ? (rawPatch as { metadata?: Record<string, unknown> })
+          : undefined;
+      const wq = await WriteQueue.forPath(dbPath);
+      const result = await wq.enqueue('memory_claim_upsert', async (writeDb) =>
+        memoryClaimUpsert(writeDb, { uid, caller, ...(patch !== undefined ? { patch } : {}) }),
+      );
+      if (!result.ok) {
+        return { isError: true, content: [{ type: 'text', text: JSON.stringify(result) }] };
+      }
+      return { content: [{ type: 'text', text: JSON.stringify(result) }] };
+    }
+
+    case 'memory_claim_get': {
+      const uid = args['uid'];
+      if (typeof uid !== 'string' || uid.length === 0) {
+        return {
+          isError: true,
+          content: [{ type: 'text', text: JSON.stringify({ ok: false, code: 'E_INVALID', message: 'uid is required' }) }],
+        };
+      }
+      const result = await memoryClaimGet(adapter, uid);
+      if (!result.ok) {
+        return { isError: true, content: [{ type: 'text', text: JSON.stringify(result) }] };
+      }
+      return { content: [{ type: 'text', text: JSON.stringify(result) }] };
+    }
+
+    case 'memory_claim_list': {
+      const caller = typeof args['caller'] === 'string' && args['caller'].length > 0 ? args['caller'] : undefined;
+      const result = await memoryClaimList(adapter, caller !== undefined ? { caller } : {});
+      return { content: [{ type: 'text', text: JSON.stringify(result) }] };
+    }
+
+    // ── D-C: knowledge layer (claim/outcome/back + open facets) ─────────────────
+    case 'memory_claim_assert': {
+      const text = args['text'];
+      const facet = args['facet'];
+      const projectPath = args['project_path'];
+      const assertedBy = args['asserted_by'];
+      const expRaw = args['expectation'];
+      const exp =
+        expRaw !== null && typeof expRaw === 'object' && !Array.isArray(expRaw)
+          ? (expRaw as { expected_outcome?: unknown; confidence?: unknown })
+          : null;
+      if (
+        typeof text !== 'string' || typeof facet !== 'string' ||
+        typeof projectPath !== 'string' || typeof assertedBy !== 'string' ||
+        exp === null || typeof exp.expected_outcome !== 'string' ||
+        (exp.confidence !== 'low' && exp.confidence !== 'medium' && exp.confidence !== 'high')
+      ) {
+        return { isError: true, content: [{ type: 'text', text: JSON.stringify({ ok: false, code: 'E_INVALID', message: 'text, facet, project_path, asserted_by and a valid expectation are required' }) }] };
+      }
+      const wq = await WriteQueue.forPath(dbPath);
+      const result = await wq.enqueue('memory_claim_assert', async (writeDb) =>
+        memoryClaimAssert(writeDb, {
+          text, facet, project_path: projectPath, asserted_by: assertedBy,
+          expectation: {
+            expected_outcome: exp.expected_outcome as string,
+            confidence: exp.confidence as 'low' | 'medium' | 'high',
+          },
+        }),
+      );
+      if (!result.ok) return { isError: true, content: [{ type: 'text', text: JSON.stringify(result) }] };
+      return { content: [{ type: 'text', text: JSON.stringify(result) }] };
+    }
+
+    case 'memory_outcome_append': {
+      const claimUid = args['claim_uid'];
+      const independence = args['independence'];
+      if (
+        typeof claimUid !== 'string' || claimUid.length === 0 ||
+        typeof args['observed_result'] !== 'string' ||
+        typeof args['observed_by'] !== 'string' || typeof args['method'] !== 'string' ||
+        (independence !== 'self' && independence !== 'independent')
+      ) {
+        return { isError: true, content: [{ type: 'text', text: JSON.stringify({ ok: false, code: 'E_INVALID', message: 'claim_uid, observed_result, observed_by, method and independence (self|independent) are required' }) }] };
+      }
+      const wq = await WriteQueue.forPath(dbPath);
+      const result = await wq.enqueue('memory_outcome_append', async (writeDb) =>
+        memoryOutcomeAppend(writeDb, {
+          claim_uid: claimUid,
+          observed_result: args['observed_result'] as string,
+          observed_by: args['observed_by'] as string,
+          method: args['method'] as string,
+          independence,
+          ...(typeof args['observed_at'] === 'string' ? { observed_at: args['observed_at'] as string } : {}),
+          ...(typeof args['client_request_id'] === 'string' ? { client_request_id: args['client_request_id'] as string } : {}),
+        }),
+      );
+      if (!result.ok) return { isError: true, content: [{ type: 'text', text: JSON.stringify(result) }] };
+      return { content: [{ type: 'text', text: JSON.stringify(result) }] };
+    }
+
+    case 'memory_back': {
+      const uid = args['uid'];
+      if (typeof uid !== 'string' || uid.length === 0) {
+        return { isError: true, content: [{ type: 'text', text: JSON.stringify({ ok: false, code: 'E_INVALID', message: 'uid is required' }) }] };
+      }
+      const result = await memoryBack(adapter, uid);
+      if (!result.ok) return { isError: true, content: [{ type: 'text', text: JSON.stringify(result) }] };
+      return { content: [{ type: 'text', text: JSON.stringify(result) }] };
+    }
+
+    case 'memory_facet_admit': {
+      const facet = args['facet'];
+      const term = args['term'];
+      const definition = args['definition'];
+      if (typeof facet !== 'string' || typeof term !== 'string' || typeof definition !== 'string') {
+        return { isError: true, content: [{ type: 'text', text: JSON.stringify({ ok: false, code: 'E_INVALID', message: 'facet, term and definition are required' }) }] };
+      }
+      const origin = typeof args['origin'] === 'string' ? (args['origin'] as string) : '';
+      const wq = await WriteQueue.forPath(dbPath);
+      try {
+        const result = await wq.enqueue('memory_facet_admit', async (writeDb) =>
+          memoryFacetAdmit(writeDb, { facet, term, definition, origin }),
+        );
+        return { content: [{ type: 'text', text: JSON.stringify(result) }] };
+      } catch (err) {
+        const e = err as { code?: string; message?: string };
+        return { isError: true, content: [{ type: 'text', text: JSON.stringify({ ok: false, code: e.code ?? 'E_FACET', message: e.message ?? String(err) }) }] };
+      }
+    }
+
+    case 'memory_facet_promote': {
+      const termId = args['term_id'];
+      if (typeof termId !== 'string' || termId.length === 0) {
+        return { isError: true, content: [{ type: 'text', text: JSON.stringify({ ok: false, code: 'E_INVALID', message: 'term_id is required' }) }] };
+      }
+      const wq = await WriteQueue.forPath(dbPath);
+      try {
+        const result = await wq.enqueue('memory_facet_promote', async (writeDb) =>
+          memoryFacetPromote(writeDb, { term_id: termId }),
+        );
+        return { content: [{ type: 'text', text: JSON.stringify(result) }] };
+      } catch (err) {
+        const e = err as { code?: string; message?: string };
+        return { isError: true, content: [{ type: 'text', text: JSON.stringify({ ok: false, code: e.code ?? 'E_FACET', message: e.message ?? String(err) }) }] };
+      }
+    }
+
+    case 'memory_facet_list': {
+      const facet = typeof args['facet'] === 'string' && args['facet'].length > 0 ? (args['facet'] as string) : undefined;
+      const result = await memoryFacetList(adapter, facet !== undefined ? { facet } : {});
+      return { content: [{ type: 'text', text: JSON.stringify(result) }] };
     }
 
     case 'memory_stats': {
@@ -3250,6 +3577,36 @@ export async function runEnrichPassOnDb(
   }
 
   const queueCompleted = isolated.ok ? await completeEnrichTriggerRows(adapter, maxSeq) : 0;
+
+  // SR-9: settle any observable recluster jobs this pass covered. The snapshot
+  // discipline mirrors completeEnrichTriggerRows — only jobs whose trigger row
+  // was inside the pre-pass window (seq <= maxSeq) are settled. A successful
+  // pass completes them with the store's resulting partition; a failed pass
+  // marks them `failed` (terminal) with the error, so a caller is never left
+  // polling a request whose pass errored. Idempotent and additive: a store with
+  // no recluster jobs is a no-op. Bookkeeping only — never fails the tick.
+  //
+  // M1: `isolated.ok` is NOT sufficient for `completed`. The isolated child can
+  // finish cleanly while its cluster STEP was skipped (`cluster_pass_skipped` —
+  // the mixed-model / incremental-no-neighbour guard in enrich-batch.ts), which
+  // leaves the partition byte-for-byte unchanged. Settling that `completed` told
+  // a caller a reorganisation had happened when none had. Report `skipped` +
+  // the child's reason, and let `recluster_status` distinguish it; only the
+  // skipped case is downgraded — a genuinely failed pass still settles `failed`.
+  try {
+    const settleOutcome: ReclusterSettleOutcome = !isolated.ok
+      ? { ok: false, error: isolated.error ?? 'unknown' }
+      : isolated.result.cluster_pass_skipped
+        ? { ok: false, skipped: true, reason: isolated.result.cluster_skip_reason ?? 'cluster pass skipped' }
+        : { ok: true };
+    await settleReclusterJobs(adapter, maxSeq, settleOutcome);
+  } catch (err) {
+    log.error('enrich.recluster_job.settle_failed', {
+      db_path: dbPath,
+      error: err instanceof Error ? err.message : String(err),
+    });
+  }
+
   const backlogAfter = (await embedBacklogStats(adapter)).count;
 
   if (isolated.ok) {

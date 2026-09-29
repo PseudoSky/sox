@@ -869,13 +869,15 @@ describe('memory_curate recluster — filtered subset', () => {
     expect(a['provenance_hash']).toBe(b['provenance_hash']);
   });
 
-  it('no filters → unchanged global behaviour (daemon enqueue, not subset)', async () => {
+  it('no filters → global enqueue semantics (never the subset shape)', async () => {
     const out = parseResult(
       await handleToolCall('memory_curate', { db_path: DB_PATH, op: 'recluster', dry_run: true }),
     );
-    // Global path reports enqueue semantics, never the subset shape.
-    expect(out['scope']).toBeUndefined();
+    // Global path (SR-9) reports enqueue semantics and is tagged scope:'global'
+    // — never the subset shape (which carries `clusters`).
+    expect(out['scope']).toBe('global');
     expect(out).toHaveProperty('enqueued');
+    expect(out).not.toHaveProperty('clusters');
   });
 
   it('dry_run:false persists the subset and leaves global communities intact (BL-27 LOW-3)', async () => {

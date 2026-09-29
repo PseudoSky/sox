@@ -4,7 +4,7 @@
 
 ## Overview
 
-`@adhd/sox-extension-memory-server` is the keystone of the sox-memory subsystem: a single MCP server that owns 20 `memory_*` tools, all enrichment, clustering, and session-state persistence. There is no separate daemon process — everything, including periodic batch enrichment, runs in-process inside this one server.
+`@adhd/sox-extension-memory-server` is the keystone of the sox-memory subsystem: a single MCP server that owns 23 `memory_*` tools, all enrichment, clustering, and session-state persistence. There is no separate daemon process — everything, including periodic batch enrichment, runs in-process inside this one server.
 
 All persistent state lives in one store file per scope, opened through `@adhd/sox-store-adapter`. **Turso is the default backend** and runs with `multiprocess_wal` enabled: multiple OS processes can hold concurrent write connections to the same store file, with writers serialized through a coordinator sidecar rather than one process owning the file. That means you can run several agents, several CLI invocations, and several `memory-server` instances against one store concurrently without external locking. Set `STORE_ADAPTER=sqlite` to fall back to `better-sqlite3`, which remains single-writer. Either backend is extended with vector search (Turso native vectors or `sqlite-vec`) and FTS5 for BM25 full-text search.
 
@@ -70,7 +70,7 @@ const recall = await handleToolCall('memory_recall', {
 });
 console.log(JSON.parse(recall.content[0].text as string));
 
-console.log(TOOLS.map((t) => t.name).length); // 20
+console.log(TOOLS.map((t) => t.name).length); // 23
 ```
 
 `handleToolCall(name, args)` returns `{ content: [{ type: 'text', text: string }], isError?: boolean }` — the same shape every MCP tool call returns; the payload is JSON in `content[0].text`.
@@ -83,7 +83,7 @@ console.log(TOOLS.map((t) => t.name).length); // 20
 
 Do not use `memory-server` for transient scratchpad data that doesn't need to survive a session — keep that in the host's own context window.
 
-## Tools (20)
+## Tools (23)
 
 | Tool | Description |
 | --- | --- |
@@ -105,8 +105,28 @@ Do not use `memory-server` for transient scratchpad data that doesn't need to su
 | `memory_related` | Return graph neighbors of an episode at depth 1. |
 | `memory_supersession_chain` | Return the full supersession chain for an episode. |
 | `memory_near_duplicates` | List near-duplicate episode pairs (`SAME_AS` edges). |
-| `memory_curate` | Curation ops: retag, set topic, set importance, merge duplicates, recluster. |
+| `memory_curate` | Curation ops: retag, set topic, set importance, merge duplicates, drop/list lenses, drop episodes, re-cluster, **`recluster_status`** (poll a global re-cluster's durable job handle to a terminal state), reheal, drain, reset/resume, unpoison, ack alarm, restore/backfill. |
 | `memory_stats` | Enrichment coverage, cluster quality, and the running tool-capability list. |
+| `memory_claim_upsert` | **SR-7.** Atomic claim of a node for a caller — one winner under a race, a distinct caller refused with the typed `E_CLAIM_HELD`, the same caller idempotent. Stored at `node.meta.claim`. |
+| `memory_claim_get` | **SR-7.** Read the live claim (holder) on a node; `claim: null` when the node is live but unheld. |
+| `memory_claim_list` | **SR-7.** List the live nodes claimed by a caller. |
+
+### Observable global re-cluster (SR-9)
+
+`memory_curate { op: "recluster" }` (no filters) returns a durable handle —
+`{ op, scope: "global", enqueued: true, seq, job_id, status: "pending" }` — never a
+fire-and-forget `{ enqueued: true }`. Poll `memory_curate { op: "recluster_status",
+job_id }` until `status` is terminal:
+
+- `completed` — the pass ran; carries the resulting `partition`
+  (`community_count`, `clustered_episodes`, `live_episodes`, `coverage`).
+- `failed` — the pass errored; carries `error`.
+- `skipped` — the pass ran but its cluster step did not (the mixed-model /
+  no-neighbour guard); carries `skip_reason`. The partition is unchanged, so this
+  is deliberately **not** reported as `completed`.
+
+The job state lives on the `organizer_queue` trigger row it describes (no new
+table), so it survives a store reopen and is readable from another process.
 
 ## Recall algorithm
 

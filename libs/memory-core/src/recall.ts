@@ -57,6 +57,9 @@ import { log as tlog } from './telemetry.js';
 import { openDbReadOnly } from './db.js';
 import { buildFilterClause, rrfScore } from '@adhd/sox-hybrid-search';
 import type { StoreAdapter } from '@adhd/sox-store-adapter';
+import { resolveKnowledgeConfig } from './config.js';
+import { assessCoverage, type CoverageEnvelope } from './coverage.js';
+import { buildMetadataPredicate, type MetadataPredicate } from './memory-filters.js';
 
 // ── Query-embed timeout (read-path guard) ─────────────────────────────────────
 //
@@ -539,6 +542,20 @@ export interface RecallResponse {
    * failure.
    */
   degradations?: string[];
+  /**
+   * D-C / K-I6 — the coverage envelope, present on every response. When
+   * `abstained` is true the retriever REFUSED to answer (`results` is empty) and
+   * `reason` names why; a coverage gap was logged. The obligation is that an
+   * out-of-scope query yields a visible gap rather than the nearest held row.
+   */
+  coverage?: CoverageEnvelope;
+  /**
+   * SR-3 — the MATCH count for the query's predicate (kind + filters), distinct
+   * from the corpus count. `exactness:'eq'` is exact; `'gte'` means the true
+   * count exceeded the configured cap and `value` is that cap (an honest lower
+   * bound, never a pretended exact).
+   */
+  count?: { value: number; exactness: 'eq' | 'gte' };
 }
 
 // ── Parent-context expansion ──────────────────────────────────────────────────
@@ -739,6 +756,11 @@ export async function memoryRecall(
   const kindClause = kinds.length > 0 ? ` AND n.kind IN (${kinds.map(() => '?').join(',')})` : '';
   const kindParams: unknown[] = kinds;
 
+  // D-C / ADR-0013 — the resolved knowledge-layer policy (coverage thresholds +
+  // count cap). Resolved once per call; a test may override it in-process via
+  // `_setKnowledgeConfigForTest` (never an env var).
+  const knowledgeCfg = resolveKnowledgeConfig();
+
   // BL-100: resolve filters into SQL pre-filter clauses. Uses hybrid-search's
   // buildFilterClause for the standard fields (topic, tags, importance_min,
   // project_path, agent_id) and adds time-range + tags_match_all directly.
@@ -787,6 +809,17 @@ export async function memoryRecall(
             nodeParams.push(value);
           }
           break;
+        case 'metadata': {
+          // SR-3: a `meta.*` predicate, applied store-side. `kinds` and
+          // `metadata` are memory-core-native (not hybrid-search NodeFilter
+          // fields), so they must NOT fall through to buildFilterClause.
+          const pred = buildMetadataPredicate(value as MetadataPredicate, 'n');
+          if (pred) {
+            nodeClauses.push(pred.sql);
+            nodeParams.push(...pred.params);
+          }
+          break;
+        }
         default:
           nativeFilters[key] = value;
       }
@@ -984,14 +1017,51 @@ export async function memoryRecall(
     }
   }
 
-  // Validity predicate
+  // Validity predicate — bi-temporal window.
+  //
+  // SECURITY (H1): `as_of` is a public MCP tool parameter (memory_recall.as_of,
+  // forwarded from the memory-server bundle). It is BOUND as `?`, never
+  // interpolated into the SQL string: a crafted value (a single quote + an
+  // `OR '1'='1'` / UNION payload) must be treated as a literal, never executed.
+  // This mirrors the bundle server's own BL-240 fix one function away
+  // (memory-server/src/index.ts — `validityParams = asOf ? [asOf, asOf] : []`).
+  // The value appears twice, hence two params. Every query that consumes this
+  // predicate below must prepend `validityParams` to its parameter list, in the
+  // same order the predicate renders (`t_valid` comparison, then `t_invalid`).
+  const validityParams: unknown[] = as_of ? [as_of, as_of] : [];
   const validityPred = as_of
-    ? `(n.t_valid IS NULL OR n.t_valid <= '${as_of}') AND (n.t_invalid IS NULL OR n.t_invalid > '${as_of}')`
+    ? '(n.t_valid IS NULL OR n.t_valid <= ?) AND (n.t_invalid IS NULL OR n.t_invalid > ?)'
     : 'n.t_invalid IS NULL';
 
 
   const agentFilter =
     agent_id ? `AND n.agent_id = '${agent_id.replace(/'/g, "''")}'` : '';
+
+  // SR-3 — the MATCH count for this query's predicate (kind + filters), distinct
+  // from the corpus count. Capped: above `coverage.countCap` the count is
+  // reported `gte` (an honest lower bound), never a pretended exact.
+  const computeMatchCount = async (): Promise<{ value: number; exactness: 'eq' | 'gte' }> => {
+    const cap = knowledgeCfg.coverage.countCap;
+    const row = await adapter.executeGet<{ cnt: number }>(
+      `SELECT COUNT(*) as cnt FROM node n WHERE ${validityPred} ${agentFilter} ${filterSql} ${kindClause}`,
+      [...validityParams, ...filterParams, ...kindParams],
+    );
+    const n = row?.cnt ?? 0;
+    return n > cap ? { value: cap, exactness: 'gte' } : { value: n, exactness: 'eq' };
+  };
+
+  // D-C — a coverage gap is a first-class, logged event (never a silent empty).
+  const logCoverageGap = (env: CoverageEnvelope): void => {
+    tlog.warn('recall.coverage_gap', {
+      scope,
+      reason: env.reason ?? 'none',
+      threshold_source: env.threshold_source,
+      max_similarity: env.signals.max_similarity,
+      signal_flatness: env.signals.distribution_flatness,
+      signal_entropy: env.signals.topk_entropy,
+      signal_decay: env.signals.decay_rate,
+    });
+  };
 
   // 2a. Vec0 KNN search
   let vecRows: { node_id: number; distance: number }[] = [];
@@ -1009,7 +1079,7 @@ export async function memoryRecall(
       '__PLACEHOLDER__',
       `v.node_id IN (SELECT n.rowid FROM node n WHERE ${filterClauses})`,
     );
-    const vecParams: unknown[] = [...dialectArgs, ...filterParams, ...kindParams];
+    const vecParams: unknown[] = [...dialectArgs, ...validityParams, ...filterParams, ...kindParams];
     const vecResult = await adapter.executeAll<{ node_id: number; distance: number }>(vecSql, vecParams);
     vecRows = vecResult.rows;
     // BL-367: stable secondary sort on node_id to break EXACT distance ties
@@ -1067,7 +1137,7 @@ export async function memoryRecall(
         // bug was specific to the default `IS NULL` predicate + a non-empty
         // agentFilter.)
         where: [validityPred, agentFilter, filterSql, kindClause].filter(Boolean).join(' '),
-        params: [...filterParams, ...kindParams],
+        params: [...validityParams, ...filterParams, ...kindParams],
       },
     );
     ftsRows.forEach((r, i) => ftsRowids.set(r.rowid, i + 1));
@@ -1089,7 +1159,7 @@ export async function memoryRecall(
   const temporalSql = `SELECT n.rowid, n.t_created FROM node n
        WHERE ${validityPred} ${agentFilter} ${filterSql} ${kindClause}
        ORDER BY n.t_created DESC LIMIT ?`;
-  const temporalParams: unknown[] = [...filterParams, ...kindParams, knnLimit];
+  const temporalParams: unknown[] = [...validityParams, ...filterParams, ...kindParams, knnLimit];
   const temporalResult = await adapter.executeAll<{ rowid: number; t_created: string }>(temporalSql, temporalParams);
   const temporalRows = temporalResult.rows;
 
@@ -1110,10 +1180,11 @@ export async function memoryRecall(
     if (filterSql) {
       const beforeCount = (await adapter.executeGet<{ cnt: number }>(
         `SELECT COUNT(*) as cnt FROM node n WHERE n.kind = 'episode' AND ${validityPred}`,
+        validityParams,
       ))?.cnt ?? 0;
       const afterCount = (await adapter.executeGet<{ cnt: number }>(
         `SELECT COUNT(*) as cnt FROM node n WHERE n.kind = 'episode' AND ${validityPred} ${filterSql}`,
-        filterParams,
+        [...validityParams, ...filterParams],
       ))?.cnt ?? 0;
       filterStats = {
         candidates_before_filter: beforeCount,
@@ -1151,6 +1222,13 @@ export async function memoryRecall(
       },
     };
     if (filterStats) response.filterStats = filterStats;
+    // D-C / K-I6: an empty candidate set is the clearest no-coverage case — the
+    // retriever ABSTAINS (results stay []) and logs the gap. It never invents a
+    // nearest-held answer.
+    const coverage0 = assessCoverage([], knowledgeCfg);
+    response.coverage = coverage0;
+    if (coverage0.abstained) logCoverageGap(coverage0);
+    response.count = await computeMatchCount();
     // The empty-corpus path must report degradations for exactly the same
     // reason the BL-117 comment above gives for late chunking — and more
     // urgently. This is the MOST dangerous branch to stay silent on: a caller
@@ -1310,19 +1388,52 @@ export async function memoryRecall(
 
   ranked.sort((a, b) => b.score - a.score);
 
+  // D-C / K-I6: the coverage boundary check, run BEFORE assembling results. When
+  // the candidate set shows no coverage of the query, ABSTAIN — return no
+  // results (never the nearest held row) and log the gap. The absolute signal is
+  // the raw vector similarity (1 − cosine distance) when the vec channel ran.
+  const coverageTopSimilarity = vecRows.length > 0 ? 1 - vecRows[0]!.distance : null;
+  const coverage = assessCoverage(
+    ranked.map((r) => ({ score: r.score })),
+    knowledgeCfg,
+    { topSimilarity: coverageTopSimilarity },
+  );
+  if (coverage.abstained) {
+    logCoverageGap(coverage);
+    const { applied: lcAppliedA, skipReason: lcSkipA } = evaluateLateChunking(params.lateChunking);
+    const abstained: RecallResponse = {
+      results: [],
+      provider_call_count: getProviderCallCount() - beforeCount,
+      vec_used: !!queryVecJson && !embedVecFailed,
+      coverage,
+      count: await computeMatchCount(),
+      metadata: {
+        totalChunksRetrieved: 0,
+        totalChunksAfterExpansion: 0,
+        lateChunkingApplied: lcAppliedA,
+        ...(lcSkipA ? { lateChunkingSkipReason: lcSkipA } : {}),
+        totalTokensAfterExpansion: 0,
+        expansionTruncated: false,
+      },
+    };
+    if (degradations.length > 0) abstained.degradations = degradations;
+    return abstained;
+  }
+
   // 6. Graph depth-1 expansion via live edges
   const topRowids = ranked.slice(0, limit).map((r) => r.node.rowid);
   const expandedRowids = new Set<number>(topRowids);
 
   if (depth > 0 && topRowids.length > 0) {
     const validPred = as_of
-      ? `(t_valid IS NULL OR t_valid <= '${as_of}') AND (t_invalid IS NULL OR t_invalid > '${as_of}')`
+      ? '(t_valid IS NULL OR t_valid <= ?) AND (t_invalid IS NULL OR t_invalid > ?)'
       : 't_invalid IS NULL';
     const neighborResult = await adapter.executeAll<{ neighbor_id: number }>(
       `SELECT DISTINCT CASE WHEN src IN (${topRowids.join(',')}) THEN dst ELSE src END AS neighbor_id
        FROM edge
        WHERE (src IN (${topRowids.join(',')}) OR dst IN (${topRowids.join(',')}))
          AND t_expired IS NULL AND ${validPred}`,
+      validityParams,
     );
     const neighborRows = neighborResult.rows;
     neighborRows.forEach((r) => expandedRowids.add(r.neighbor_id));
@@ -1334,7 +1445,7 @@ export async function memoryRecall(
   let expandedNodes: NodeRow[] = [];
   if (expandedNew.length > 0) {
     const nodeValidPred = as_of
-      ? `(t_valid IS NULL OR t_valid <= '${as_of.replace(/'/g, "''")}') AND (t_invalid IS NULL OR t_invalid > '${as_of.replace(/'/g, "''")}')`
+      ? '(t_valid IS NULL OR t_valid <= ?) AND (t_invalid IS NULL OR t_invalid > ?)'
       : 't_invalid IS NULL';
     // BUG-MEMORY-003 §1b: no `n` alias on this query (unlike the temporal/vec/FTS
     // channels above), so the un-aliased kind predicate is inlined directly rather
@@ -1344,7 +1455,7 @@ export async function memoryRecall(
     const expResult = await adapter.executeAll<NodeRow>(
       `SELECT rowid, uid, content, name, summary, importance, t_created, t_valid, t_invalid, agent_id, content_hash, session_id
        FROM node WHERE rowid IN (${expandedNew.join(',')}) AND ${nodeValidPred} ${expKindClause}`,
-      expKindParams,
+      [...validityParams, ...expKindParams],
     );
     expandedNodes = expResult.rows;
   }
@@ -1600,10 +1711,11 @@ export async function memoryRecall(
     if (filterSql) {
       const beforeCount = (await adapter.executeGet<{ cnt: number }>(
         `SELECT COUNT(*) as cnt FROM node n WHERE n.kind = 'episode' AND ${validityPred}`,
+        validityParams,
       ))?.cnt ?? 0;
       const afterCount = (await adapter.executeGet<{ cnt: number }>(
         `SELECT COUNT(*) as cnt FROM node n WHERE n.kind = 'episode' AND ${validityPred} ${filterSql}`,
-        filterParams,
+        [...validityParams, ...filterParams],
       ))?.cnt ?? 0;
       filterStats = {
         candidates_before_filter: beforeCount,
@@ -1643,6 +1755,10 @@ export async function memoryRecall(
     },
   };
   if (filterStats) response.filterStats = filterStats;
+  // D-C / K-I6 + SR-3: the coverage envelope (not abstained on this path) and the
+  // match count travel with every non-abstained response.
+  response.coverage = coverage;
+  response.count = await computeMatchCount();
   if (degradations.length > 0) response.degradations = degradations;
   return response;
   } finally {

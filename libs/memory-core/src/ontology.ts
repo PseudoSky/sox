@@ -3,10 +3,19 @@ import { ConstraintError, type TypePolicy } from '@adhd/sox-graph-store';
 /** Byte-identical to graph-store's DEFAULT_NODE_KINDS (index.ts:257) — memory's six kinds. */
 export const MEMORY_NODE_KINDS = ['episode', 'entity', 'claim', 'community', 'session', 'generic'] as const;
 
-/** Byte-identical to graph-store's DEFAULT_EDGE_RELS (index.ts:538-549) — memory's ten rels. */
+/**
+ * Byte-identical to graph-store's DEFAULT_EDGE_RELS (index.ts) — memory's rels.
+ *
+ * `REFUTES` is the D-C / SR-5 refutation relation (a first-class, linkable
+ * "this evidence contradicts that claim" edge). Adding it here makes the
+ * injected MemoryOntologyPolicy permit it; on a fresh store the CHECK-free DDL
+ * accepts it immediately, while an existing store needs the ADR-0010 D3
+ * operator-invoked open-schema migration before the rel is writable (the store
+ * CHECK rejects it until then — surfaced through `translateStoreVocabularyError`).
+ */
 export const MEMORY_EDGE_RELS = [
   'MENTIONS', 'SUPPORTS', 'RELATES_TO', 'SUPERSEDES', 'DERIVED_FROM',
-  'MEMBER_OF', 'PART_OF', 'SAME_AS', 'ASSIGNED_TO', 'DEPENDS_ON',
+  'MEMBER_OF', 'PART_OF', 'SAME_AS', 'ASSIGNED_TO', 'DEPENDS_ON', 'REFUTES',
 ] as const;
 
 export interface OntologyExtension {

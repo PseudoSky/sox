@@ -9,6 +9,7 @@
 import * as fs from 'node:fs';
 import type { StoreAdapter, StoreConcurrencyMode } from '@adhd/sox-store-adapter';
 import { ENRICH_VERSION } from './enrich-version.js';
+import { resolveKnowledgeConfig, type KnowledgeConfig } from './config.js';
 import { clusterStats } from './cluster.js';
 import type { ClusterStats } from './cluster.js';
 import {
@@ -184,6 +185,12 @@ export interface StatsResult {
    * always reports `true`). Read from `adapter.capabilities.walModeVerified`.
    */
   wal_mode_verified: boolean | null;
+  /**
+   * D-C / ADR-0013 D2 — the RESOLVED knowledge-layer config (coverage
+   * abstention thresholds + facet-promotion demand gate). Reported here so the
+   * active policy is visible in one call, never guessed and never an env var.
+   */
+  knowledge_config: KnowledgeConfig;
 }
 
 /**
@@ -481,5 +488,6 @@ export async function memoryGetStats(
     malformed_rows: malformedRows,
     wal_mode: adapter.capabilities.walMode,
     wal_mode_verified: adapter.capabilities.walModeVerified,
+    knowledge_config: resolveKnowledgeConfig(),
   };
 }

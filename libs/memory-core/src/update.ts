@@ -32,6 +32,7 @@ import { vectorDialectFor } from './dialect.js';
 import { performance } from 'node:perf_hooks';
 import { embed } from './embed.js';
 import { applyEmbedding, type PendingEmbed } from './embed-pipeline.js';
+import { FROZEN_CLAIM_META_KEYS } from './knowledge.js';
 
 // ── Deep-merge helper ─────────────────────────────────────────────────────────
 
@@ -124,7 +125,8 @@ export interface UpdateResult {
 
 export type UpdateError =
   | { code: 'E_NOT_FOUND'; message: string }
-  | { code: 'E_NO_FIELDS'; message: string };
+  | { code: 'E_NO_FIELDS'; message: string }
+  | { code: 'E_CLAIM_IMMUTABLE'; message: string; field: string };
 
 /** Phase-A outcome for the two-phase update (BL-189, mirrors write.ts). */
 export interface UpdatePhaseAOutcome {
@@ -169,6 +171,7 @@ export async function memoryUpdatePhaseA(
   // ── 1. Load the existing live node ──────────────────────────────────────────
   const existing = await adapter.executeGet<{
     rowid: number;
+    kind: string;
     content: string | null;
     summary: string | null;
     name: string | null;
@@ -180,7 +183,7 @@ export async function memoryUpdatePhaseA(
     t_valid: string | null;
     project_path: string | null;
   }>(
-    `SELECT rowid, content, summary, name, topic, tags, importance, meta,
+    `SELECT rowid, kind, content, summary, name, topic, tags, importance, meta,
             t_occurred, t_valid, project_path
      FROM node
      WHERE uid = ? AND t_invalid IS NULL
@@ -193,6 +196,48 @@ export async function memoryUpdatePhaseA(
       code: 'E_NOT_FOUND',
       message: `No live node with uid: ${uid}`,
     };
+  }
+
+  // ── K-I1: a `claim` node's immutable fields are frozen at first write ────────
+  // The only permitted mutation against a claim is attaching a NEW outcome node
+  // (memoryOutcomeAppend). A direct content edit, or a metadata merge that would
+  // change a frozen key, is refused with a typed E_CLAIM_IMMUTABLE.
+  if (existing.kind === 'claim') {
+    if (content !== undefined && content !== existing.content) {
+      return {
+        code: 'E_CLAIM_IMMUTABLE',
+        message:
+          `Claim ${uid} is immutable: content is frozen at first write (K-I1). ` +
+          `Record the change as a new outcome (memory_outcome_append) instead.`,
+        field: 'content',
+      };
+    }
+    if (metadata !== undefined) {
+      let existingMeta: Record<string, unknown> = {};
+      if (existing.meta) {
+        try {
+          const parsed: unknown = JSON.parse(existing.meta);
+          if (parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed)) {
+            existingMeta = parsed as Record<string, unknown>;
+          }
+        } catch {
+          /* malformed meta — treat as empty */
+        }
+      }
+      const merged =
+        metadata_merge === 'replace' ? metadata : deepMerge(existingMeta, metadata);
+      for (const key of FROZEN_CLAIM_META_KEYS) {
+        if (JSON.stringify(merged[key]) !== JSON.stringify(existingMeta[key])) {
+          return {
+            code: 'E_CLAIM_IMMUTABLE',
+            message:
+              `Claim ${uid} is immutable: meta.${key} is frozen at first write (K-I1). ` +
+              `Record the change as a new outcome (memory_outcome_append) instead.`,
+            field: `meta.${key}`,
+          };
+        }
+      }
+    }
   }
 
   // ── 2. Determine what changes ────────────────────────────────────────────────
