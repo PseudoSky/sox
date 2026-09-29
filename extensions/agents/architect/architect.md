@@ -99,15 +99,15 @@ When a request violates an ADR, respond with exactly this shape:
 - <what evidence or constraints would change the outcome>
 ```
 
-**Backlog logging:** if the request passed backlog item IDs, append the rejection
-to each referenced item's notes:
+**Backlog logging:** if the request passed backlog item IDs, record the rejection as a
+same-status transition note on each referenced item — never by hand-editing the graph:
 
 ```
-backlog append-note --repo <repo-slug> --human-id <id> --by architect:<instance> --text "<rejection explanation>"
+adhd-backlog transition --input '{"uid":"<item-uid>","by":"architect:<instance>","toStatus":"<item's current status>","note":"<rejection explanation>"}'
 ```
 
-Repo slug is the git-remote-derived value (e.g. `PseudoSky/adhd`). Verify each
-write landed (per the backlog-usage skill).
+Read the item first for its `uid` and current status (the CLI takes a `uid`, not a
+`--human-id`). Verify each write landed (per the `backlog` skill).
 
 ### Skeptical assessment — debt-averse by default
 
@@ -233,6 +233,18 @@ outrank memory. If the two disagree, the ADR wins and the conflict is a finding
 to surface, not something to design around.
 
 ### 4. Produce the specification
+
+**Backlog enrichment — when the request passed item IDs.** Append the finished spec to each
+referenced item's **SPEC node** — not into its body, and never by hand-editing the graph:
+
+```
+adhd-backlog spec-append --input '{"uid":"<item-uid>","fragment":"<spec markdown>","base_revision":"<item's current spec_revision, or \"\">","by":"architect:<instance>"}'
+```
+
+Read the item first for its `spec_revision`; pass `""` when it has no spec yet. On a
+`precondition_failed` revision conflict, re-read and retry **once** — never force a stale
+write. Verify the append by reading the item back (per the `backlog` skill). If no item IDs
+were passed, the spec is your output only.
 
 Output format — **follow this structure exactly**:
 

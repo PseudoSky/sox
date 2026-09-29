@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.1.5
+
+- **Architect can enrich the backlog items it is given.** When the request passes item IDs
+  and it is asked for a spec, it appends the spec to each item's **SPEC node** via
+  `adhd-backlog spec-append`, keyed on the item's current `spec_revision` (CAS) — retrying
+  once on a revision conflict, never forcing a stale write, and verifying the read-back.
+  Granted the backlog MCP tools (renders `mcp__backlog__*` on Claude) and `adhd-backlog *`
+  in bash.
+- **Fixed a phantom instruction.** The rejection path called `backlog append-note --repo …
+  --human-id …` — a CLI not on PATH, with a subcommand and flags that do not exist. It now
+  uses `adhd-backlog transition` with a same-status note, reading the item's real uid.
+
 ## 0.1.4
 
 - **Architect could not use the gitnexus MCP.** Its permission set granted `gx`/`npx gitnexus`
