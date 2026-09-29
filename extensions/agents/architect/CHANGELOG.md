@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.1.4
+
+- **Architect could not use the gitnexus MCP.** Its permission set granted `gx`/`npx gitnexus`
+  through bash but carried no `gitnexus_*` key, so the MCP tools were ungranted even though its
+  own prose tells it to prefer them — it reported the gap instead. Now granted, matching
+  `typescript`, `researcher`, `performance`, `product` and `debug`; bash keeps `gx *` as the
+  fallback path.
+- `render.claude.version` realigned (was `v0.1.2` against `version: 0.1.3`).
+
 ## 0.1.3
 
 - **Fix:** restore the `steps: 100` step/turn budget that 0.1.2's IR conversion silently dropped. The IR (`AgentIr`/`AgentOverride` in `libs/host-registry/src/internal.ts`) now carries a `steps` field, host-mapped at render time: opencode emits `steps:` verbatim, claude emits its own `maxTurns:` field (its harness-enforced turn cap), codex omits it (no known equivalent). `agent.steps: 100` is restored in `extension.json`.
