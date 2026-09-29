@@ -1,7 +1,6 @@
 {
   "$schema": "https://your-registry/schemas/extension/v2.json",
   "id": "demo-creator",
-  "version": "0.1.0",
   "type": "skill",
   "title": "demo-creator — generate a project's DEMO.md acceptance script",
   "description": "Use this skill to produce a project's demo script / DEMO.md / acceptance walkthrough / QA verification doc that both tells the product story like a live demo AND functions as a rigorous acceptance test. Turns a project spec (or PRD/README/landing copy/code) into a persona-narrated, presentation-grade DEMO.md with exact commands, exact data, binary pass/fail assertions, full happy/edge/recovery coverage, requirement->capability traceability, and a tracked UNRESOLVED.md ledger for any guessed interface.",

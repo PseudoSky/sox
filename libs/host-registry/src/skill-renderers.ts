@@ -17,6 +17,19 @@
 
 import { stripFrontmatter, yamlStringify } from './serialize.js';
 
+/**
+ * Fold line breaks in a manifest description to single spaces. A skill's
+ * `description` is a single-line header field ([def:agent-renderer] §5.2
+ * serialization mandate: "no raw newlines in single-line fields"). YAML would
+ * silently fold a newline inside a single-quoted scalar to a space anyway, so
+ * the surfaced header would disagree with the manifest byte-for-byte. We
+ * normalise at the manifest boundary instead of emitting a block scalar, so the
+ * rendered description is exactly one line and round-trips deterministically.
+ */
+function normalizeDescription(d: string): string {
+  return d.replace(/[ \t]*[\r\n]+[ \t]*/g, ' ');
+}
+
 /** Header keys a skill renderer may emit. `name` is always present. */
 export const SKILL_ALLOWED_KEYS = [
   'name',
@@ -58,9 +71,10 @@ export interface SkillManifestLike {
  */
 export function skillManifestToInput(manifest: SkillManifestLike): SkillHeaderInput | null {
   const id = manifest.id;
-  const description = manifest.description;
+  const rawDescription = manifest.description;
   if (typeof id !== 'string' || id.trim() === '') return null;
-  if (typeof description !== 'string' || description.trim() === '') return null;
+  if (typeof rawDescription !== 'string' || rawDescription.trim() === '') return null;
+  const description = normalizeDescription(rawDescription);
 
   const license =
     typeof manifest.license === 'string' && manifest.license !== '' ? manifest.license : undefined;

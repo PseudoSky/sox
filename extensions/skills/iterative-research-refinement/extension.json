@@ -1,7 +1,6 @@
 {
   "$schema": "https://your-registry/schemas/extension/v2.json",
   "id": "iterative-research-refinement",
-  "version": "0.2.0",
   "type": "skill",
   "title": "Iterative Research Refinement — meta-cognitive research process",
   "description": "Use this when you need to research a question, produce findings, audit your own process, and iteratively refine the methodology — not just the answer. A meta-cognitive research process (v9) that improves itself through nested feedback loops: Position Declaration, Iteration Manifest with quantified baselines and MANDATORY runtime metrics, Pre-Commitment, Observation Generalization, Loop 1 research, Loop 2 process audit, Loop 3 propose-to-new-file, Loop 3a fresh-subagent real-execution test with runtime measurement, Loop 3b commit, Loop 4 verification.",

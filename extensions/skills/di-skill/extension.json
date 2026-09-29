@@ -1,9 +1,8 @@
 {
   "$schema": "https://your-registry/schemas/extension/v2.json",
   "id": "di-skill",
-  "version": "0.1.0",
   "type": "skill",
-  "title": "dep-injector",
+  "title": "di-skill",
   "description": "Use this when you need a skill that demonstrates dependency injection for Claude-based workflows.",
   "keywords": ["dependency-injection", "demo", "skill"],
   "author": "sox-ecosystem",

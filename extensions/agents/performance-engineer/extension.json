@@ -67,18 +67,9 @@
         "Bash",
         "Glob",
         "Grep",
-        "ListMcpResourcesTool",
-        "ReadMcpResourceTool",
-        "WaitForMcpServers",
         "AskUserQuestion",
         "WebSearch",
-        "Monitor",
-        "LSP",
         "mcp__memory-server__*",
-        "SendMessage",
-        "TaskGet",
-        "TaskList",
-        "Explore",
         "mcp__backlog__*"
       ],
       "toolMap": {

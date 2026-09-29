@@ -54,7 +54,6 @@ export {
   renderSkillHeader,
   renderSkillFile,
   skillManifestToInput,
-  SKILL_ALLOWED_KEYS,
 } from './skill-renderers.js';
 export type { SkillHeaderInput, SkillManifestLike } from './skill-renderers.js';
 

@@ -88,12 +88,19 @@ describe('renderSkillFile — adversarial descriptions stay parseable', () => {
     });
   }
 
-  it('quotes an embedded newline (single-line-safe, never a bare control char)', () => {
+  it('folds an embedded newline to a single space so the header round-trips', () => {
     const r = renderSkillFile({ id: 's', description: 'line1\nline2' }, '# s\n');
     const content = (r as { content: string }).content;
-    // A real newline inside a single-quoted YAML scalar is a valid multi-line
-    // scalar; the renderer must never emit it as an unquoted plain scalar.
-    expect(content).toContain("description: 'line1\nline2'");
+    // A description is a single-line header field: the renderer normalises the
+    // line break to a space rather than emitting a multi-line scalar, so the
+    // surfaced header matches the (single-line) manifest description exactly.
+    expect(content).toContain('description: line1 line2');
+    expect(parseFrontmatterDescription(content)).toBe('line1 line2');
+  });
+
+  it('normalises CRLF and surrounding whitespace to a single space', () => {
+    const input = skillManifestToInput({ id: 's', description: 'a\r\n  b\n\tc' });
+    expect(input?.description).toBe('a b c');
   });
 
   it('a plain description needs no quoting and still round-trips', () => {

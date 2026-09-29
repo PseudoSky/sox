@@ -1,7 +1,6 @@
 {
   "$schema": "https://your-registry/schemas/extension/v2.json",
   "id": "backlog-intake",
-  "version": "1.4.0",
   "type": "skill",
   "title": "backlog-intake — burn the backlog while you're there",
   "description": "Use this once per direction, at intake, before the dispatcher decomposes it. The dispatcher's intake step — before decomposing any direction, ask backlog-operator for related backlog items (by symbol, path, error text) and apply the inclusion policy — same root cause → recommend folding in; small and in scope → fold in to burn the backlog; old or unverified → attach to the related executor as check-and-confirm (the executor must message the dispatcher confirm/deny with evidence before correcting); unrelated → leave. Runs once per direction in dispatch-direct/dispatch-triage. Load at intake; never files new items (that is triage).",

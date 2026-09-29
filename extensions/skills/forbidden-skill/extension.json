@@ -1,9 +1,8 @@
 {
   "$schema": "https://your-registry/schemas/extension/v2.json",
   "id": "forbidden-skill",
-  "version": "0.1.0",
   "type": "skill",
-  "title": "forbidden-access",
+  "title": "forbidden-skill",
   "description": "Use this when testing permission enforcement — this skill targets a forbidden host path and must be rejected.",
   "keywords": ["permissions", "enforcement", "testing"],
   "author": "sox-ecosystem",

@@ -1,7 +1,6 @@
 {
   "$schema": "https://your-registry/schemas/extension/v2.json",
   "id": "tui-design",
-  "version": "0.1.0",
   "type": "skill",
   "title": "TUI & CLI Design — design and build professional terminal interfaces",
   "description": "Use this when designing or building clean, professional, minimal terminal UI (TUI) applications and command-line tools. Covers full-screen TUIs (file managers, dashboards, monitors, git/k8s tools, REPLs), interactive CLI prompts, and simple command-line utilities. Includes per-ecosystem deep-dives (Go/Bubble Tea, Rust/Ratatui, Python/Textual, TypeScript/Ink), visual and interaction pattern references, exemplar app analysis, and universal TUI design principles. Harvested from gfargo/skills v1.4.0.",
