@@ -171,6 +171,33 @@ describe('skill install — header rendered from the manifest, SKILL.md prose-on
     );
     expect(fs.readFileSync(path.join(workspace, '.claude', 'skills', 'colon-skill', 'references', 'guide.md'), 'utf8')).toBe('# guide\n');
   });
+
+  it('a file removed from the source is not a silent no-op on re-install — e1e98fe0', async () => {
+    const srcPath = writeSkill('colon-skill', 'Use this when the manifest description wins');
+    fs.mkdirSync(path.join(srcPath, 'references'), { recursive: true });
+    const gone = path.join(srcPath, 'references', 'gone.md');
+    fs.writeFileSync(gone, '# gone\n', 'utf8');
+    const first = await declarativeInstall(
+      { ext: 'colon-skill', type: 'skill', hosts: ['claude'], srcPath },
+      'project',
+      workspace,
+      scopeRoot,
+    );
+    expect(first[0]?.applied).toBe(true);
+
+    // SKILL.md is byte-identical, so the rendered-content cache key does not change.
+    // Without pruning the staged tree the source hash would stay at its previous value
+    // and the install would report applied=false over stale content.
+    fs.rmSync(gone);
+    const second = await declarativeInstall(
+      { ext: 'colon-skill', type: 'skill', hosts: ['claude'], srcPath },
+      'project',
+      workspace,
+      scopeRoot,
+    );
+    expect(second[0]?.applied).toBe(true);
+    // Destination-side pruning is a separate, pre-existing defect (1b42e982).
+  });
 });
 
 describe('sweep — every real skill renders and its id == dirname', () => {

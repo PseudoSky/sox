@@ -2792,6 +2792,10 @@ function renderSkillForHost(srcDir: string, ext: string): string | null {
   const scratchDir = path.join(os.tmpdir(), 'sox-render');
   fs.mkdirSync(scratchDir, { recursive: true });
   const stagedSkillDir = path.join(scratchDir, `${ext}-${csum}`, path.basename(srcDir));
+  // Mirror the source EXACTLY: cpSync merges and never deletes, so a file removed from the
+  // source would survive in the staged tree, leaving hashPathForInstall unchanged and the
+  // install reporting applied=false while stale content installs (e1e98fe0).
+  fs.rmSync(stagedSkillDir, { recursive: true, force: true });
   fs.mkdirSync(stagedSkillDir, { recursive: true });
   fs.cpSync(srcDir, stagedSkillDir, { recursive: true, force: true });
   const stagedSkillMd = path.join(stagedSkillDir, 'SKILL.md');
