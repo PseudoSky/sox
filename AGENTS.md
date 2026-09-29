@@ -406,6 +406,7 @@ When a service is reported down or misbehaving, check in this order:
 1. **Telemetry first** — live health/metrics for the service (e.g. `memory_ping`, or the
    `*.jsonl` event/metrics streams under `~/.adhd/sox-ecosystem/<service>/logs/`).
 2. **Logs second** — stderr/stdout under `~/.adhd/sox-ecosystem/run/logs/`.
+3. **Kill permission.** Once telemetry and logs confirm a genuine wedge (e.g. a timed-out health ping plus `ps`/`sample` showing the process pinned/non-responsive, not just busy), `kill -9` the wedged process without asking first — the supervisor respawns it. This is not permission for routine restarts or unverified guesses.
 
 ---
 
