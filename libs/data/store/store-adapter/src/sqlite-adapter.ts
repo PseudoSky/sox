@@ -2,6 +2,7 @@ import { createRequire } from 'node:module';
 import { existsSync, statSync } from 'node:fs';
 import { log } from '@adhd/sox-telemetry';
 import { randomUUID } from 'node:crypto';
+import { DEFAULT_SLOW_OP_THRESHOLD_MS, recordOpOutcome, nowMs, elapsedMs } from './op-tracing.js';
 import { ensureAdapterMetaTable, stampAdapterMeta } from './adapter-meta.js';
 import {
   clearStoreOpenMarker,
@@ -406,6 +407,12 @@ export class SqliteAdapterImpl implements SqliteAdapter {
       concurrencyMode?: StoreConcurrencyMode;
       /** (BL-fc5ab895) Typed deep-verify tuning; validated here, loudly. */
       deepVerify?: DeepVerifyConfig;
+      /** (per-call DB-op tracing) see `AdapterConfig.slowOpThresholdMs`. */
+      slowOpThresholdMs?: number;
+      /** (per-call DB-op tracing) see `AdapterConfig.onOpStart`. */
+      onOpStart?: (label: string) => void;
+      /** (per-call DB-op tracing) see `AdapterConfig.onOpEnd`. */
+      onOpEnd?: () => void;
     },
   );
   constructor(db: Sqlite3Database);
@@ -422,6 +429,9 @@ export class SqliteAdapterImpl implements SqliteAdapter {
       walOwnershipHeartbeatMs?: number;
       concurrencyMode?: StoreConcurrencyMode;
       deepVerify?: DeepVerifyConfig;
+      slowOpThresholdMs?: number;
+      onOpStart?: (label: string) => void;
+      onOpEnd?: () => void;
     },
   ) {
     // (BUG-MEMORYCORE-MULTIPROCESS-WAL-NOT-OPTED-IN-001) Resolve + validate the
@@ -463,6 +473,9 @@ export class SqliteAdapterImpl implements SqliteAdapter {
         readonly: opts?.readonly ?? false,
         concurrencyMode: mode,
         ...(opts?.deepVerify !== undefined ? { deepVerify: opts.deepVerify } : {}),
+        ...(opts?.slowOpThresholdMs !== undefined ? { slowOpThresholdMs: opts.slowOpThresholdMs } : {}),
+        ...(opts?.onOpStart !== undefined ? { onOpStart: opts.onOpStart } : {}),
+        ...(opts?.onOpEnd !== undefined ? { onOpEnd: opts.onOpEnd } : {}),
       };
     } else {
       this.db = dbOrPath;
@@ -616,6 +629,13 @@ export class SqliteAdapterImpl implements SqliteAdapter {
    */
   private _performIdleFlush(): void {
     if (this.closed || this._inFlightOps > 0) return;
+    // (per-call DB-op tracing) Deliberately NOT routed through `_trackOp` —
+    // that would re-arm the idle timer and break the documented quiescence
+    // rule this method itself is gated on (BUG-022). Same hook + timing
+    // helper, called directly.
+    this.config.onOpStart?.('idle_flush');
+    const startedAt = nowMs();
+    let caughtErr: unknown;
     try {
       const rows = this.db.pragma('wal_checkpoint(TRUNCATE)') as
         | Array<{ busy?: number; log?: number; checkpointed?: number }>
@@ -641,11 +661,21 @@ export class SqliteAdapterImpl implements SqliteAdapter {
         });
       }
     } catch (err) {
+      caughtErr = err;
       log.error('store_adapter.sqlite.idle_flush_failed', {
         db_path: this.config.dbPath,
         error: err instanceof Error ? err.message : String(err),
         idle_window_ms: this._lastArmedIdleFlushMs,
       });
+    } finally {
+      this.config.onOpEnd?.();
+      recordOpOutcome(
+        'sqlite',
+        'idle_flush',
+        { op_ms: elapsedMs(startedAt) },
+        caughtErr,
+        this.config.slowOpThresholdMs ?? DEFAULT_SLOW_OP_THRESHOLD_MS,
+      );
     }
   }
 
@@ -671,6 +701,11 @@ export class SqliteAdapterImpl implements SqliteAdapter {
    * path's job). Re-arms itself in `finally`.
    */
   private _performWalOwnershipHeartbeat(): void {
+    // (per-call DB-op tracing) Bypass site — never routed through `_trackOp`
+    // (BUG-022), same reasoning as `_performIdleFlush`.
+    this.config.onOpStart?.('wal_ownership_heartbeat');
+    const startedAt = nowMs();
+    let caughtErr: unknown;
     try {
       if (this.closed || this._walReplaced || this._inFlightOps > 0 || this._walBaseline === null) {
         return;
@@ -683,12 +718,21 @@ export class SqliteAdapterImpl implements SqliteAdapter {
       }
       // no-baseline: nothing to compare against — no-op.
     } catch (err) {
+      caughtErr = err;
       log.warn('store_adapter.sqlite.wal_ownership_heartbeat_failed', {
         db_path: this.config.dbPath,
         error: err instanceof Error ? err.message : String(err),
       });
     } finally {
       this._armWalOwnershipHeartbeat();
+      this.config.onOpEnd?.();
+      recordOpOutcome(
+        'sqlite',
+        'wal_ownership_heartbeat',
+        { op_ms: elapsedMs(startedAt) },
+        caughtErr,
+        this.config.slowOpThresholdMs ?? DEFAULT_SLOW_OP_THRESHOLD_MS,
+      );
     }
   }
 
@@ -826,7 +870,15 @@ export class SqliteAdapterImpl implements SqliteAdapter {
    *  runs the cap check inline after a successful write (before the op's
    *  caller gets control back), and re-arms the idle timer once the
    *  connection returns to idle. */
-  private async _trackOp<T>(fn: () => T | Promise<T>, isWrite = false): Promise<T> {
+  private async _trackOp<T>(fn: () => T | Promise<T>, isWrite = false, opLabel = 'unknown'): Promise<T> {
+    // (per-call DB-op tracing) Additive around the existing body below — the
+    // counter increment, the existing try body, and the `finally` re-arm
+    // execute in EXACTLY the same order as before this instrumentation was
+    // added. Only timing capture and the `onOpStart`/`onOpEnd` hooks are new.
+    this.config.onOpStart?.(opLabel);
+    let opMs = 0;
+    let postWriteMs: number | undefined;
+    let caughtErr: unknown;
     this._cancelIdleFlush();
     this._inFlightOps++;
     try {
@@ -837,7 +889,9 @@ export class SqliteAdapterImpl implements SqliteAdapter {
       if (isWrite && this._walReplaced) {
         throw new EStoreWalReplaced(this.config.dbPath);
       }
+      const fnStartedAt = nowMs();
       const result = await fn();
+      opMs = elapsedMs(fnStartedAt);
       if (isWrite) {
         // (BL-590) Feed the observed inter-write gap into the EWMA before
         // the cap check — see `TursoAdapterImpl._trackOp()` for why.
@@ -849,6 +903,7 @@ export class SqliteAdapterImpl implements SqliteAdapter {
           );
         }
         this._lastWriteAt = now;
+        const postWriteStartedAt = nowMs();
         // (BUG-026) Lifetime WAL-identity check on EVERY write — a replaced
         // WAL is folded + marked fail-loud here, not only at close.
         const status = verifyWalIdentityNow(this._walBaseline);
@@ -856,11 +911,23 @@ export class SqliteAdapterImpl implements SqliteAdapter {
           this._recoverReplacedWal('write', status.finding);
         }
         this._checkWalCapAndFlush();
+        postWriteMs = elapsedMs(postWriteStartedAt);
       }
       return result;
+    } catch (err) {
+      caughtErr = err;
+      throw err;
     } finally {
       this._inFlightOps--;
       if (this._inFlightOps === 0) this._armIdleFlush();
+      this.config.onOpEnd?.();
+      recordOpOutcome(
+        'sqlite',
+        opLabel,
+        { op_ms: opMs, post_write_ms: postWriteMs },
+        caughtErr,
+        this.config.slowOpThresholdMs ?? DEFAULT_SLOW_OP_THRESHOLD_MS,
+      );
     }
   }
 
@@ -965,7 +1032,7 @@ export class SqliteAdapterImpl implements SqliteAdapter {
       const stmt = this.cache.get(sql, this.db);
       const row = args !== undefined ? stmt.get(...args) : stmt.get();
       return (row as T | null) ?? null;
-    });
+    }, false, 'executeGet');
   }
 
   async executeAll<T = Record<string, unknown>>(sql: string, args?: unknown[]): Promise<AllResult<T>> {
@@ -974,7 +1041,7 @@ export class SqliteAdapterImpl implements SqliteAdapter {
       const rows = args !== undefined ? stmt.all(...args) : stmt.all();
       const columns = stmt.columns().map((c) => c.name);
       return { columns, rows: rows as T[] };
-    });
+    }, false, 'executeAll');
   }
 
   async executeRun(sql: string, args?: unknown[]): Promise<RunResult> {
@@ -982,27 +1049,27 @@ export class SqliteAdapterImpl implements SqliteAdapter {
       const stmt = this.cache.get(sql, this.db);
       const info = args !== undefined ? stmt.run(...args) : stmt.run();
       return { rowsAffected: info.changes, lastInsertRowid: info.lastInsertRowid };
-    }, true);
+    }, true, 'executeRun');
   }
 
   async exec(sql: string): Promise<void> {
     return this._trackOp(() => {
       this.db.exec(sql);
-    }, true);
+    }, true, 'exec');
   }
 
   async pragmaSet(key: string, value: string | number | boolean): Promise<void> {
     return this._trackOp(() => {
       const boolVal = typeof value === 'boolean' ? (value ? 1 : 0) : value;
       this.db.pragma(`${key} = ${boolVal}`);
-    });
+    }, false, 'pragmaSet');
   }
 
   async pragmaGet<T = unknown>(key: string): Promise<T> {
     return this._trackOp(() => {
       const result = this.db.pragma(key, { simple: true });
       return result as T;
-    });
+    }, false, 'pragmaGet');
   }
 
   async transaction<T>(
@@ -1013,7 +1080,7 @@ export class SqliteAdapterImpl implements SqliteAdapter {
     // is one tracked op, mirroring `TursoAdapterImpl.transaction()`: the cap
     // check must not run mid-transaction, and the idle timer must not arm
     // until the transaction (successful or not) has fully settled.
-    return this._trackOp(() => this._runTransaction(fn, opts), true);
+    return this._trackOp(() => this._runTransaction(fn, opts), true, 'transaction');
   }
 
   private async _runTransaction<T>(
@@ -1136,6 +1203,31 @@ export class SqliteAdapterImpl implements SqliteAdapter {
 
   private async _closeOnce(): Promise<void> {
     if (this.closed) return;
+    // (per-call DB-op tracing) Bypass site — never routed through `_trackOp`
+    // (BUG-022): close() must run to completion even with `_inFlightOps`
+    // machinery already torn down. Additive try/catch/finally wrapping the
+    // EXISTING body below, unchanged in order — only timing + hooks added.
+    this.config.onOpStart?.('close');
+    const closeStartedAt = nowMs();
+    let caughtErr: unknown;
+    try {
+      await this._closeOnceBody();
+    } catch (err) {
+      caughtErr = err;
+      throw err;
+    } finally {
+      this.config.onOpEnd?.();
+      recordOpOutcome(
+        'sqlite',
+        'close',
+        { op_ms: elapsedMs(closeStartedAt) },
+        caughtErr,
+        this.config.slowOpThresholdMs ?? DEFAULT_SLOW_OP_THRESHOLD_MS,
+      );
+    }
+  }
+
+  private async _closeOnceBody(): Promise<void> {
     // (BL-fc5ab895) Stop a background deep verifier this adapter owns, and
     // record its `cancelled` outcome, while the connection is still open.
     await releaseDeepVerify(this);

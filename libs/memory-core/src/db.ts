@@ -502,6 +502,57 @@ function deepVerifyStoreOpts(): { deepVerify: { timeoutMs?: number; schedule: De
   };
 }
 
+/**
+ * (per-call DB-op tracing) The DB-op-tracing slice of every store open's
+ * config: `onOpStart`/`onOpEnd`/`slowOpThresholdMs`, forwarded verbatim to
+ * `createStoreAdapter()`. Spread into each open's config-object literal —
+ * same pattern as `deepVerifyStoreOpts()` above — so
+ * db-concurrency-contract.spec.ts still sees every site's flat
+ * `concurrencyMode: STORE_MODE()` body (a bare function-call spread adds no
+ * nested braces to the regex it scans).
+ *
+ * Unlike `deepVerifyStoreOpts()`, this is spread into EVERY `createStoreAdapter`
+ * call site (writable, readonly, and `backup.ts`'s) — a stall inside a
+ * readonly recall query or a backup `VACUUM INTO` is exactly the kind of
+ * event a consumer's main-thread-stall attribution wants visibility into,
+ * not just the writable path.
+ */
+export function dbOpHooksOpts(): {
+  slowOpThresholdMs?: number;
+  onOpStart?: (label: string) => void;
+  onOpEnd?: () => void;
+} {
+  if (_dbOpHooks === null) return {};
+  const opts: { slowOpThresholdMs?: number; onOpStart?: (label: string) => void; onOpEnd?: () => void } = {};
+  if (_dbOpHooks.slowOpThresholdMs !== undefined) opts.slowOpThresholdMs = _dbOpHooks.slowOpThresholdMs;
+  if (_dbOpHooks.onOpStart !== undefined) opts.onOpStart = _dbOpHooks.onOpStart;
+  if (_dbOpHooks.onOpEnd !== undefined) opts.onOpEnd = _dbOpHooks.onOpEnd;
+  return opts;
+}
+
+/**
+ * (per-call DB-op tracing, ADR-0006 DI-for-live-objects) Register process-wide
+ * DB-operation tracing hooks, forwarded into every `createStoreAdapter()` call
+ * this module makes from here on (existing cached adapters are unaffected —
+ * call this before the first `getDb`/`openDb`, exactly like
+ * `setDeepVerifySchedule`). Lets a consumer (e.g. memory-server's
+ * main-thread-stall attribution) observe DB-operation granularity without
+ * memory-core or store-adapter importing anything from that consumer.
+ */
+export function setDbOpHooks(hooks: {
+  slowOpThresholdMs?: number;
+  onOpStart?: (label: string) => void;
+  onOpEnd?: () => void;
+} | null): void {
+  _dbOpHooks = hooks;
+}
+
+let _dbOpHooks: {
+  slowOpThresholdMs?: number;
+  onOpStart?: (label: string) => void;
+  onOpEnd?: () => void;
+} | null = null;
+
 /** (BL-9f6681ee) Mirrors store-adapter's `DeepVerifySchedule` (kept local so
  *  this CJS module needs no type-only import across the ESM bridge). */
 export type DeepVerifyScheduleRole = 'owner' | 'never';
@@ -540,7 +591,7 @@ async function _openDbInner(dbPath: string): Promise<StoreAdapter> {
     createVectorDialect,
     canonicalFtsIndexName,
   } = await import('@adhd/sox-store-adapter');
-  let adapter = await createStoreAdapter({ dbPath, concurrencyMode: STORE_MODE(), ...deepVerifyStoreOpts() });
+  let adapter = await createStoreAdapter({ dbPath, concurrencyMode: STORE_MODE(), ...deepVerifyStoreOpts(), ...dbOpHooksOpts() });
   const vectorDialect = createVectorDialect(adapter.config.type);
 
   // ═══════════════════════════════════════════════════════════════════════════
@@ -580,7 +631,7 @@ async function _openDbInner(dbPath: string): Promise<StoreAdapter> {
         log.warn('store.open.turso_vacuum_repair', { db_path: dbPath });
         await adapter.close();
         await dropVec0ViaBetterSqlite3(dbPath, { runVacuum: true });
-        adapter = await createStoreAdapter({ dbPath, concurrencyMode: STORE_MODE(), ...deepVerifyStoreOpts() });
+        adapter = await createStoreAdapter({ dbPath, concurrencyMode: STORE_MODE(), ...deepVerifyStoreOpts(), ...dbOpHooksOpts() });
       }
     }
   }
@@ -817,7 +868,7 @@ async function _openDbInner(dbPath: string): Promise<StoreAdapter> {
         // the reopen below would still fail this open.
         await adapter.close();
         await dropFtsResidueViaBetterSqlite3(dbPath, residueNames);
-        adapter = await createStoreAdapter({ dbPath, concurrencyMode: STORE_MODE(), ...deepVerifyStoreOpts() });
+        adapter = await createStoreAdapter({ dbPath, concurrencyMode: STORE_MODE(), ...deepVerifyStoreOpts(), ...dbOpHooksOpts() });
       }
     }
   }
@@ -926,7 +977,7 @@ async function _openDbInner(dbPath: string): Promise<StoreAdapter> {
     log.warn('store.open.turso_vec0_drop', { db_path: dbPath });
     await adapter.close();
     await dropVec0ViaBetterSqlite3(dbPath);
-    adapter = await createStoreAdapter({ dbPath, concurrencyMode: STORE_MODE(), ...deepVerifyStoreOpts() });
+    adapter = await createStoreAdapter({ dbPath, concurrencyMode: STORE_MODE(), ...deepVerifyStoreOpts(), ...dbOpHooksOpts() });
   }
 
   // 3. Create native vector table and index via dialect
@@ -1156,7 +1207,7 @@ export async function openDbReadOnly(dbPath: string): Promise<StoreAdapter> {
   // flag (that flag is unconditionally on for every Turso connection; see
   // TursoAdapterImpl.connect()). On SqliteAdapter this option is a no-op —
   // SQLite's native readonly already coexists fine with FTS5.
-  const adapter = await createStoreAdapter({ dbPath, readonly: true, allowFtsInReadonly: true, concurrencyMode: STORE_MODE() });
+  const adapter = await createStoreAdapter({ dbPath, readonly: true, allowFtsInReadonly: true, concurrencyMode: STORE_MODE(), ...dbOpHooksOpts() });
 
   // Load sqlite-vec extension only for adapters without native vector support.
   // BL-323: named export only — see dropVec0ViaBetterSqlite3() above.

@@ -147,6 +147,13 @@ export const MAINTHREAD_WATCHER_SOURCE = `
 const { workerData, parentPort } = require('node:worker_threads');
 const fs = require('node:fs');
 const hb = new Float64Array(workerData.sab);
+const opBuf = workerData.opBuf ? new Uint8Array(workerData.opBuf) : null;
+function currentOp() {
+  if (!opBuf) return null;
+  const len = opBuf[0];
+  if (!len) return null;
+  try { return Buffer.from(opBuf.buffer, opBuf.byteOffset + 1, len).toString('utf8'); } catch { return null; }
+}
 const sleeper = new Int32Array(new SharedArrayBuffer(4));
 const nowMs = () => Number(process.hrtime.bigint() / 1000000n);
 const POLL_MS = 250;
@@ -178,8 +185,8 @@ for (;;) {
     try {
       fs.writeSync(2, JSON.stringify({
         ts: new Date().toISOString(), level: 'error', event: 'mainthread.stalled',
-        pid: workerData.pid, blocked_for_ms: age,
-        detail: 'the main thread has not run for blocked_for_ms — a synchronous step (e.g. a Turso driver step) is holding it; reported off-thread while the stall is live',
+        pid: workerData.pid, blocked_for_ms: age, current_op: currentOp(),
+        detail: 'the main thread has not run for blocked_for_ms — a synchronous step (e.g. a Turso driver step) is holding it; reported off-thread while the stall is live. current_op names the MCP tool dispatch in flight when the stall began, if any was recorded.',
       }) + '\\n');
     } catch (e) {
       // fd 2 is closed (or the write itself failed) — the ONE other channel this
@@ -194,7 +201,7 @@ for (;;) {
     try {
       fs.writeSync(2, JSON.stringify({
         ts: new Date().toISOString(), level: 'fatal', event: 'mainthread.watchdog_kill',
-        pid: workerData.pid, blocked_for_ms: age, kill_after_ms: killAfter,
+        pid: workerData.pid, blocked_for_ms: age, kill_after_ms: killAfter, current_op: currentOp(),
       }) + '\\n' +
         '[memory-server] FATAL: main thread blocked for ' + age + 'ms (kill_after_ms ' + killAfter + ') — ' +
         'the off-thread watchdog is SIGKILLing pid ' + workerData.pid + ' for the supervisor to restart. ' +
@@ -221,6 +228,8 @@ export class MainThreadMonitor {
   private summaryTimer: ReturnType<typeof setInterval> | null = null;
   private watcher: Worker | null = null;
   private heartbeat: Float64Array | null = null;
+  /** (mainthread-op-attribution) Shared byte buffer: [0]=len, [1..len]=UTF-8 label of the MCP tool currently dispatching on the main thread, or len=0 for none. Read by the off-thread watcher so a stall event can name what was running. */
+  private opLabel: Uint8Array | null = null;
   private unregisterSection: (() => void) | null = null;
 
   private lastTickAt = 0;
@@ -247,6 +256,80 @@ export class MainThreadMonitor {
     return this.killAfterMs;
   }
 
+  /**
+   * (per-call DB-op tracing, nesting) LIFO stack of in-flight operation
+   * labels — frame 0 is always the tool-level label set by {@link setOp};
+   * a DB-level {@link pushOp} call nests a more specific label on top
+   * without clobbering it, and {@link popOp} unwinds back to whatever was
+   * running before. Only {@link pushOp}/{@link popOp} touch frames above 0 —
+   * {@link setOp}/{@link clearOp} (the tool-level call sites) are unchanged
+   * and always reset the whole stack.
+   */
+  private opStack: string[] = [];
+
+  /** Write `label` (or clear, for `label === null`) into the shared byte
+   *  buffer the off-thread watcher reads — the actual wire format, shared by
+   *  every one of `setOp`/`pushOp`/`popOp`/`clearOp`. */
+  private _writeLabel(label: string | null): void {
+    if (this.opLabel === null) return;
+    if (label === null) {
+      this.opLabel[0] = 0;
+      return;
+    }
+    const bytes = Buffer.from(label, 'utf8').subarray(0, 31);
+    this.opLabel.fill(0);
+    this.opLabel[0] = bytes.length;
+    this.opLabel.set(bytes, 1);
+  }
+
+  /**
+   * (mainthread-op-attribution) Record the name of the operation about to run
+   * synchronously on the main thread, so a live `mainthread.stalled` event can
+   * name it instead of guessing. Call at the start of any request dispatch;
+   * pair with {@link clearOp} in a `finally`. A label longer than 31 UTF-8
+   * bytes is truncated, never thrown on.
+   *
+   * Tool-level baseline: resets the whole nesting stack to a single frame
+   * (this label). Does NOT nest under a `pushOp` call — those are a
+   * separate, DB-op-level concern (see {@link pushOp}).
+   */
+  setOp(label: string): void {
+    this.opStack = [label];
+    this._writeLabel(label);
+  }
+
+  /** Clear the current-operation label (no operation in flight). Also resets
+   *  the nesting stack — call sites pair this with {@link setOp} in a
+   *  `finally`, so any DB-op frame left dangling by an unbalanced
+   *  `pushOp`/`popOp` is discarded along with the tool-level frame. */
+  clearOp(): void {
+    this.opStack = [];
+    this._writeLabel(null);
+  }
+
+  /**
+   * (per-call DB-op tracing, nesting) Nest a more specific, DB-operation-level
+   * label on top of whatever tool-level label {@link setOp} already recorded
+   * — the watcher reports the most specific in-flight op. Pair with
+   * {@link popOp} in a `finally`. Never call `clearOp`/`setOp` from this
+   * layer — those belong exclusively to the tool-dispatch call sites and
+   * would clobber (or extend past) the tool-level baseline.
+   */
+  pushOp(label: string): void {
+    this.opStack.push(label);
+    this._writeLabel(label);
+  }
+
+  /** Pop the most specific DB-operation-level label pushed by {@link pushOp},
+   *  restoring whatever was running before it (typically the tool-level
+   *  label) — or clearing the buffer entirely if the stack is now empty
+   *  (an unbalanced `popOp` called with no matching `pushOp`/`setOp`). */
+  popOp(): void {
+    this.opStack.pop();
+    const top = this.opStack.length > 0 ? this.opStack[this.opStack.length - 1] : undefined;
+    this._writeLabel(top ?? null);
+  }
+
   start(): void {
     if (this.tickTimer !== null) return;
     this.histogram = monitorEventLoopDelay({ resolution: 20 });
@@ -261,10 +344,17 @@ export class MainThreadMonitor {
         const sab = new SharedArrayBuffer(16);
         this.heartbeat = new Float64Array(sab);
         this.heartbeat[0] = monoNowMs();
+        // (mainthread-op-attribution) 32 bytes: [0]=label length, [1..31]=UTF-8 label.
+        // Plain writes, no Atomics — same tolerance as the heartbeat: a torn read
+        // during the rare concurrent write just yields a stale or empty label, never
+        // a crash, and this is diagnostic-only.
+        const opBuf = new SharedArrayBuffer(32);
+        this.opLabel = new Uint8Array(opBuf);
         this.watcher = new Worker(MAINTHREAD_WATCHER_SOURCE, {
           eval: true,
           workerData: {
             sab,
+            opBuf,
             stallThresholdMs: this.stallThresholdMs,
             killAfterMs: this.killAfterMs,
             pid: process.pid,
@@ -287,6 +377,7 @@ export class MainThreadMonitor {
       } catch (err) {
         this.watcher = null;
         this.heartbeat = null;
+        this.opLabel = null;
         // error, not warn: without the watcher there is NO kill path for a
         // main-thread stall (BL-d509dbe6).
         log.error('mainthread.watcher_unavailable', { error: err instanceof Error ? err.message : String(err) });
@@ -362,6 +453,7 @@ export class MainThreadMonitor {
     this.unregisterSection?.();
     this.unregisterSection = null;
     if (this.heartbeat !== null) this.heartbeat[1] = 1;
+    this.opLabel = null;
     const w = this.watcher;
     this.watcher = null;
     if (w !== null) await w.terminate();

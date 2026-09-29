@@ -39,9 +39,21 @@ export async function createStoreAdapter(
     // explicitly at the call site — declared, never the engine's implicit
     // default. SqliteAdapterImpl validates it ('single-writer' only).
     const mode: StoreConcurrencyMode = config?.concurrencyMode ?? resolveConcurrencyMode('sqlite');
-    const sqliteOpts: { dbPath: string; readonly?: boolean; statementCacheSize?: number; concurrencyMode?: StoreConcurrencyMode; deepVerify?: DeepVerifyConfig } = { dbPath, concurrencyMode: mode };
+    const sqliteOpts: {
+      dbPath: string;
+      readonly?: boolean;
+      statementCacheSize?: number;
+      concurrencyMode?: StoreConcurrencyMode;
+      deepVerify?: DeepVerifyConfig;
+      slowOpThresholdMs?: number;
+      onOpStart?: (label: string) => void;
+      onOpEnd?: () => void;
+    } = { dbPath, concurrencyMode: mode };
     if (config?.readonly !== undefined) sqliteOpts.readonly = config.readonly;
     if (config?.deepVerify !== undefined) sqliteOpts.deepVerify = config.deepVerify;
+    if (config?.slowOpThresholdMs !== undefined) sqliteOpts.slowOpThresholdMs = config.slowOpThresholdMs;
+    if (config?.onOpStart !== undefined) sqliteOpts.onOpStart = config.onOpStart;
+    if (config?.onOpEnd !== undefined) sqliteOpts.onOpEnd = config.onOpEnd;
     adapter = createSqliteAdapter(sqliteOpts);
   } else if (adapterType === 'turso') {
     // (BUG-MEMORYCORE-MULTIPROCESS-WAL-NOT-OPTED-IN-001) Same explicit
@@ -57,6 +69,9 @@ export async function createStoreAdapter(
     if (config?.readonly !== undefined) tursoOpts.readonly = config.readonly;
     if (config?.allowFtsInReadonly !== undefined) tursoOpts.allowFtsInReadonly = config.allowFtsInReadonly;
     if (config?.deepVerify !== undefined) tursoOpts.deepVerify = config.deepVerify;
+    if (config?.slowOpThresholdMs !== undefined) tursoOpts.slowOpThresholdMs = config.slowOpThresholdMs;
+    if (config?.onOpStart !== undefined) tursoOpts.onOpStart = config.onOpStart;
+    if (config?.onOpEnd !== undefined) tursoOpts.onOpEnd = config.onOpEnd;
     // (BL-508) The deliberate-migration path opens the store with the WRONG
     // adapter on purpose (source read for migrateStore) — the foreign-engine
     // refusal must not block it.
@@ -110,22 +125,39 @@ export async function createStoreAdapter(
 
 // ── createSqliteAdapter — explicit, narrowed return type ──────────────────────
 
-export function createSqliteAdapter(
-  opts: { dbPath: string; readonly?: boolean; statementCacheSize?: number; concurrencyMode?: StoreConcurrencyMode; deepVerify?: DeepVerifyConfig },
-): SqliteAdapter;
+interface SqliteAdapterOpenOpts {
+  dbPath: string;
+  readonly?: boolean;
+  statementCacheSize?: number;
+  concurrencyMode?: StoreConcurrencyMode;
+  deepVerify?: DeepVerifyConfig;
+  slowOpThresholdMs?: number;
+  onOpStart?: (label: string) => void;
+  onOpEnd?: () => void;
+}
+
+export function createSqliteAdapter(opts: SqliteAdapterOpenOpts): SqliteAdapter;
 export function createSqliteAdapter(
   db: import('better-sqlite3').Database,
 ): SqliteAdapter;
 export function createSqliteAdapter(
-  dbOrOpts:
-    | { dbPath: string; readonly?: boolean; statementCacheSize?: number; concurrencyMode?: StoreConcurrencyMode; deepVerify?: DeepVerifyConfig }
-    | import('better-sqlite3').Database,
+  dbOrOpts: SqliteAdapterOpenOpts | import('better-sqlite3').Database,
 ): SqliteAdapter {
   if (typeof dbOrOpts === 'object' && 'dbPath' in dbOrOpts) {
-    const ctorOpts: { readonly?: boolean; concurrencyMode?: StoreConcurrencyMode; deepVerify?: DeepVerifyConfig } = {};
+    const ctorOpts: {
+      readonly?: boolean;
+      concurrencyMode?: StoreConcurrencyMode;
+      deepVerify?: DeepVerifyConfig;
+      slowOpThresholdMs?: number;
+      onOpStart?: (label: string) => void;
+      onOpEnd?: () => void;
+    } = {};
     if (dbOrOpts.readonly !== undefined) ctorOpts.readonly = dbOrOpts.readonly;
     if (dbOrOpts.deepVerify !== undefined) ctorOpts.deepVerify = dbOrOpts.deepVerify;
     if (dbOrOpts.concurrencyMode !== undefined) ctorOpts.concurrencyMode = dbOrOpts.concurrencyMode;
+    if (dbOrOpts.slowOpThresholdMs !== undefined) ctorOpts.slowOpThresholdMs = dbOrOpts.slowOpThresholdMs;
+    if (dbOrOpts.onOpStart !== undefined) ctorOpts.onOpStart = dbOrOpts.onOpStart;
+    if (dbOrOpts.onOpEnd !== undefined) ctorOpts.onOpEnd = dbOrOpts.onOpEnd;
     return new SqliteAdapterImpl(dbOrOpts.dbPath, ctorOpts);
   }
   return new SqliteAdapterImpl(dbOrOpts);
@@ -143,6 +175,9 @@ export async function createTursoAdapter(
     allowForeignEngine?: boolean;
     concurrencyMode?: StoreConcurrencyMode;
     deepVerify?: DeepVerifyConfig;
+    slowOpThresholdMs?: number;
+    onOpStart?: (label: string) => void;
+    onOpEnd?: () => void;
   },
 ): Promise<TursoAdapter> {
   return TursoAdapterImpl.connect(opts);

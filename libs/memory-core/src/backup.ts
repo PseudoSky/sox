@@ -53,6 +53,10 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import type { StorageError } from './errors.js';
 import { expandDbPath, STORE_MODE } from './db.js';
+// (per-call DB-op tracing) db.ts's module-level DB-op-tracing hooks — see setDbOpHooks().
+// Imported separately (not re-exported alongside expandDbPath/STORE_MODE above) to keep
+// this import list's diff minimal against its existing shape.
+import { dbOpHooksOpts } from './db.js';
 import { resolveBackupConfig } from './config.js';
 import type { BackupIntegrityReport, StoreAdapter } from '@adhd/sox-store-adapter';
 import { log as tlog } from './telemetry.js';
@@ -210,7 +214,7 @@ export async function backupStore(
   let backend = (process.env.STORE_ADAPTER || 'turso').toLowerCase();
   try {
     const { createStoreAdapter } = await import('@adhd/sox-store-adapter');
-    srcAdapter = await createStoreAdapter({ dbPath: resolvedSrc, readonly: true, concurrencyMode: STORE_MODE() });
+    srcAdapter = await createStoreAdapter({ dbPath: resolvedSrc, readonly: true, concurrencyMode: STORE_MODE(), ...dbOpHooksOpts() });
     backend = srcAdapter.config.type;
 
     if (typeof srcAdapter.backupTo !== 'function') {
@@ -355,7 +359,7 @@ export async function verifyStagedBackupIsNotTorn(
   let adapter: StoreAdapter | null = null;
   try {
     const { createStoreAdapter } = await import('@adhd/sox-store-adapter');
-    adapter = await createStoreAdapter({ dbPath: destPath, readonly: true, concurrencyMode: STORE_MODE() });
+    adapter = await createStoreAdapter({ dbPath: destPath, readonly: true, concurrencyMode: STORE_MODE(), ...dbOpHooksOpts() });
     const row = await adapter.executeGet<{ c: number }>('SELECT count(*) AS c FROM sqlite_master');
     const count = Number(row?.c ?? 0);
     if (!Number.isFinite(count) || count <= 0) {

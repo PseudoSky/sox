@@ -126,6 +126,7 @@ import {
   // drift from computeWriteEnrichment's own topic resolution.
   resolveTopicFromPrefix,
   setDeepVerifySchedule,
+  setDbOpHooks,
 } from '@adhd/sox-memory-core';
 import type { HealResult, PendingEmbed, PhaseAOutcome, WriteError, WriteResult, EnrichAlarmRecord, ReclusterSettleOutcome } from '@adhd/sox-memory-core';
 import type { StoreAdapter, VectorDialect } from '@adhd/sox-store-adapter';
@@ -1343,10 +1344,25 @@ export function storeNotConfiguredError(toolName: string): ToolResult & { isErro
  */
 export async function handleToolCall(name: string, args: Record<string, unknown>): Promise<ToolResult> {
   const endLiveness = serverLivenessWatchdog.beginRequest(name);
+  const startedAt = Date.now();
+  // (mainthread-op-attribution) Name the in-flight tool for the off-thread
+  // mainthread-monitor watcher, so a live mainthread.stalled event can report
+  // current_op instead of guessing "e.g. a Turso driver step".
+  mainThreadMonitor.setOp(name);
   try {
-    return await handleToolCallImpl(name, args);
+    const result = await handleToolCallImpl(name, args);
+    const durationMs = Date.now() - startedAt;
+    log.info('tool.call', { tool: name, duration_ms: durationMs, outcome: 'ok' });
+    return result;
   } catch (err) {
+    const durationMs = Date.now() - startedAt;
     if (err instanceof StoreOperationTimeoutError) {
+      log.warn('tool.call_failed', {
+        tool: name,
+        duration_ms: durationMs,
+        error: err.message,
+        code: err.code,
+      });
       return {
         isError: true,
         content: [{
@@ -1361,8 +1377,15 @@ export async function handleToolCall(name: string, args: Record<string, unknown>
         }],
       };
     }
+    log.warn('tool.call_failed', {
+      tool: name,
+      duration_ms: durationMs,
+      error: err instanceof Error ? err.message : String(err),
+      code: (err as any)?.code,
+    });
     throw err;
   } finally {
+    mainThreadMonitor.clearOp();
     // (98fe54a3) A backup store touched by this call is closed, never kept.
     if (transientBackupPaths.size > 0) await releaseTransientBackupStores();
     endLiveness();
@@ -4636,6 +4659,20 @@ if (require.main === module) {
   // `mainthread.stalled` report while a synchronous Turso step still holds the
   // loop. Started right after telemetry so it covers every request.
   mainThreadMonitor.start();
+
+  // (per-call DB-op tracing) Wire memory-core's per-open DB-op hooks to the
+  // monitor's NESTING stack (`pushOp`/`popOp`) — never `setOp`/`clearOp`,
+  // which are the tool-dispatch call sites' own baseline (see ~L1350/~L1387
+  // below) and would be clobbered by a DB-op-level clear the instant the
+  // first query inside a tool call finished. Arrow-wrapped: `setOp`/`clearOp`/
+  // `pushOp`/`popOp` are declared with method syntax, so a bare method
+  // reference passed here would run with the wrong `this`. Registered once,
+  // before the first `getDb`/`openDb` call (mirrors `setDeepVerifySchedule`
+  // above) — every store this process opens from here on carries these hooks.
+  setDbOpHooks({
+    onOpStart: (label: string) => mainThreadMonitor.pushOp(label),
+    onOpEnd: () => mainThreadMonitor.popOp(),
+  });
 
   // BL-89: proactively warm the real embedding backend at startup so a missing/broken
   // embedding runtime is reported LOUDLY at boot (stderr + memory_ping.last_embed_error).

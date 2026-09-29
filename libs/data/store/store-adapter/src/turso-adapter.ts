@@ -87,6 +87,7 @@ import {
   updateWriteIntervalEwma,
 } from './wal-tuning.js';
 import { log } from '@adhd/sox-telemetry';
+import { DEFAULT_SLOW_OP_THRESHOLD_MS, recordOpOutcome, nowMs, elapsedMs } from './op-tracing.js';
 import {
   ensureFtsIndex as ensureFtsIndexOn,
   ftsCount as ftsCountOn,
@@ -800,6 +801,27 @@ export class TursoAdapterImpl implements TursoAdapter {
    * tracked op re-arms this same idle timer — a self-perpetuating loop).
    */
   private async _maybeOptimizeFts(): Promise<FtsOptimizeOutcome | null> {
+    // (per-call DB-op tracing) Bypass site — never routed through `_trackOp`
+    // (BUG-022, see doc comment above). Thin timing/hook wrapper around the
+    // EXISTING, unmodified body (renamed `_maybeOptimizeFtsBody`) so its many
+    // early-return outcomes are untouched.
+    this.config.onOpStart?.('maybe_optimize_fts');
+    const startedAt = nowMs();
+    try {
+      return await this._maybeOptimizeFtsBody();
+    } finally {
+      this.config.onOpEnd?.();
+      recordOpOutcome(
+        'turso',
+        'maybe_optimize_fts',
+        { op_ms: elapsedMs(startedAt) },
+        undefined,
+        this.config.slowOpThresholdMs ?? DEFAULT_SLOW_OP_THRESHOLD_MS,
+      );
+    }
+  }
+
+  private async _maybeOptimizeFtsBody(): Promise<FtsOptimizeOutcome | null> {
     if (!this._idleFlushEnabled || this.closed || this._released) return null;
     if (this._ftsWritesSinceOptimize < this._ftsOptimizeWriteThreshold) return null;
     const coordDb = this.coordPath;
@@ -974,6 +996,10 @@ export class TursoAdapterImpl implements TursoAdapter {
    * loop). Best-effort: a failure is logged and never fails the pass it counts.
    */
   private async _countInServiceOptimizePass(dbPath: string): Promise<void> {
+    // (per-call DB-op tracing) Bypass site — never routed through `_trackOp`
+    // (BUG-022, see doc comment above).
+    this.config.onOpStart?.('count_inservice_optimize_pass');
+    const startedAt = nowMs();
     try {
       await this.db.exec(FTS_OPTIMIZE_PASS_INCREMENT_SQL);
     } catch (err) {
@@ -981,6 +1007,15 @@ export class TursoAdapterImpl implements TursoAdapter {
         db_path: dbPath,
         error: err instanceof Error ? err.message : String(err),
       });
+    } finally {
+      this.config.onOpEnd?.();
+      recordOpOutcome(
+        'turso',
+        'count_inservice_optimize_pass',
+        { op_ms: elapsedMs(startedAt) },
+        undefined,
+        this.config.slowOpThresholdMs ?? DEFAULT_SLOW_OP_THRESHOLD_MS,
+      );
     }
   }
 
@@ -1298,6 +1333,26 @@ export class TursoAdapterImpl implements TursoAdapter {
    * release) can land between "timer armed" and "timer fires".
    */
   private async _performIdleFlush(): Promise<void> {
+    // (per-call DB-op tracing) Bypass site — never routed through `_trackOp`
+    // (BUG-022, see doc comments in the renamed body below). Thin timing/hook
+    // wrapper around the EXISTING, unmodified body.
+    this.config.onOpStart?.('idle_flush');
+    const opStartedAt = nowMs();
+    try {
+      await this._performIdleFlushBody();
+    } finally {
+      this.config.onOpEnd?.();
+      recordOpOutcome(
+        'turso',
+        'idle_flush',
+        { op_ms: elapsedMs(opStartedAt) },
+        undefined,
+        this.config.slowOpThresholdMs ?? DEFAULT_SLOW_OP_THRESHOLD_MS,
+      );
+    }
+  }
+
+  private async _performIdleFlushBody(): Promise<void> {
     if (this.closed || this._released || this._inFlightOps > 0) return;
     // (BL-589) Observability parity with the wal-cap backstop.
     //
@@ -1618,6 +1673,11 @@ export class TursoAdapterImpl implements TursoAdapter {
    * running until close.
    */
   private async _performWalOwnershipHeartbeat(): Promise<void> {
+    // (per-call DB-op tracing) Bypass site — never routed through `_trackOp`
+    // (BUG-022).
+    this.config.onOpStart?.('wal_ownership_heartbeat');
+    const opStartedAt = nowMs();
+    let caughtErr: unknown;
     try {
       if (
         this.closed ||
@@ -1636,11 +1696,20 @@ export class TursoAdapterImpl implements TursoAdapter {
       }
       // no-baseline: nothing to compare against — no-op.
     } catch (err) {
+      caughtErr = err;
       log.warn('store_adapter.turso.wal_ownership_heartbeat_failed', {
         error: err instanceof Error ? err.message : String(err),
       });
     } finally {
       this._armWalOwnershipHeartbeat();
+      this.config.onOpEnd?.();
+      recordOpOutcome(
+        'turso',
+        'wal_ownership_heartbeat',
+        { op_ms: elapsedMs(opStartedAt) },
+        caughtErr,
+        this.config.slowOpThresholdMs ?? DEFAULT_SLOW_OP_THRESHOLD_MS,
+      );
     }
   }
 
@@ -1704,12 +1773,26 @@ export class TursoAdapterImpl implements TursoAdapter {
    *  arm mid-check, and the two triggers are structurally unable to race
    *  each other: the cap check only ever runs while `_inFlightOps > 0`, the
    *  idle flush only ever fires once it observes `_inFlightOps === 0`. */
-  private async _trackOp<T>(fn: () => Promise<T>, isWrite = false): Promise<T> {
+  private async _trackOp<T>(fn: () => Promise<T>, isWrite = false, opLabel = 'unknown'): Promise<T> {
+    // (per-call DB-op tracing) Additive around the existing body below — the
+    // counter increment, `_ensureHealthy()` call, the existing try body, and
+    // the `finally` re-arm execute in EXACTLY the same order as before this
+    // instrumentation was added. Only timing capture and the
+    // `onOpStart`/`onOpEnd` hooks are new.
+    this.config.onOpStart?.(opLabel);
+    let healthMs = 0;
+    let opMs = 0;
+    let postWriteMs: number | undefined;
+    let caughtErr: unknown;
     this._cancelIdleFlush();
     this._inFlightOps++;
     try {
+      const healthStartedAt = nowMs();
       await this._ensureHealthy();
+      healthMs = elapsedMs(healthStartedAt);
+      const fnStartedAt = nowMs();
       const result = await fn();
+      opMs = elapsedMs(fnStartedAt);
       if (isWrite) {
         // (BL-590) Feed the observed inter-write gap into the EWMA BEFORE
         // the cap check — the cap check's own (rare) latency must not itself
@@ -1724,16 +1807,29 @@ export class TursoAdapterImpl implements TursoAdapter {
         this._lastWriteAt = now;
         // (4cd68c4e) Segment-count proxy for the FTS optimize pass.
         this._ftsWritesSinceOptimize++;
+        const postWriteStartedAt = nowMs();
         // (BUG-026) Lifetime WAL-identity check on EVERY write — a replaced
         // WAL is folded + the connection recycled here, not hours later at
         // close. Runs before the wal-cap backstop so the two never race.
         await this._recoverReplacedWalIfNeeded();
         await this._checkWalCapAndFlush();
+        postWriteMs = elapsedMs(postWriteStartedAt);
       }
       return result;
+    } catch (err) {
+      caughtErr = err;
+      throw err;
     } finally {
       this._inFlightOps--;
       if (this._inFlightOps === 0) this._armIdleFlush();
+      this.config.onOpEnd?.();
+      recordOpOutcome(
+        'turso',
+        opLabel,
+        { health_ms: healthMs, op_ms: opMs, post_write_ms: postWriteMs },
+        caughtErr,
+        this.config.slowOpThresholdMs ?? DEFAULT_SLOW_OP_THRESHOLD_MS,
+      );
     }
   }
 
@@ -1966,6 +2062,31 @@ export class TursoAdapterImpl implements TursoAdapter {
    * and every genuine poison/release reconnect go through it.
    */
   private async _reconnect(): Promise<void> {
+    // (per-call DB-op tracing) Bypass site — never routed through `_trackOp`
+    // (`_trackOp` itself calls `_ensureHealthy()`, which calls this — routing
+    // it back through `_trackOp` would recurse). Thin timing/hook wrapper
+    // around the EXISTING, unmodified body.
+    this.config.onOpStart?.('reconnect');
+    const opStartedAt = nowMs();
+    let caughtErr: unknown;
+    try {
+      await this._reconnectBody();
+    } catch (err) {
+      caughtErr = err;
+      throw err;
+    } finally {
+      this.config.onOpEnd?.();
+      recordOpOutcome(
+        'turso',
+        'reconnect',
+        { op_ms: elapsedMs(opStartedAt) },
+        caughtErr,
+        this.config.slowOpThresholdMs ?? DEFAULT_SLOW_OP_THRESHOLD_MS,
+      );
+    }
+  }
+
+  private async _reconnectBody(): Promise<void> {
     const staleDb = this.db;
     const wasNeverOpened = this._neverOpened;
     const wasReleased = this._released || wasNeverOpened;
@@ -2236,6 +2357,12 @@ export class TursoAdapterImpl implements TursoAdapter {
      * `connect()` — a bad value throws `EInvalidDeepVerifyConfig`.
      */
     deepVerify?: DeepVerifyConfig;
+    /** (per-call DB-op tracing) see `AdapterConfig.slowOpThresholdMs`. */
+    slowOpThresholdMs?: number;
+    /** (per-call DB-op tracing) see `AdapterConfig.onOpStart`. */
+    onOpStart?: (label: string) => void;
+    /** (per-call DB-op tracing) see `AdapterConfig.onOpEnd`. */
+    onOpEnd?: () => void;
   }, internal: { reason: OpenReason; evidence?: ReleaseReopenEvidence } = { reason: 'initial' }): Promise<TursoAdapterImpl> {
     // (BL-1010e417) Phase timing — every phase below is measured, so a claim
     // about what a reopen costs is read from here, never assumed.
@@ -3283,6 +3410,9 @@ export class TursoAdapterImpl implements TursoAdapter {
       config.walOwnershipHeartbeatMs = opts.walOwnershipHeartbeatMs;
     }
     if (opts.deepVerify !== undefined) config.deepVerify = opts.deepVerify;
+    if (opts.slowOpThresholdMs !== undefined) config.slowOpThresholdMs = opts.slowOpThresholdMs;
+    if (opts.onOpStart !== undefined) config.onOpStart = opts.onOpStart;
+    if (opts.onOpEnd !== undefined) config.onOpEnd = opts.onOpEnd;
     return config;
   }
 
@@ -3490,7 +3620,7 @@ export class TursoAdapterImpl implements TursoAdapter {
         this._markIfFatal(err);
         throw err;
       }
-    });
+    }, false, 'backupTo');
 
     let integrityCheck = 'ok';
     let integrityReport: BackupIntegrityReport | undefined;
@@ -3552,7 +3682,7 @@ export class TursoAdapterImpl implements TursoAdapter {
         this._markIfFatal(err);
         throw err;
       }
-    });
+    }, false, 'executeGet');
   }
 
   async executeAll<T = Record<string, unknown>>(sql: string, args?: unknown[]): Promise<AllResult<T>> {
@@ -3566,7 +3696,7 @@ export class TursoAdapterImpl implements TursoAdapter {
         this._markIfFatal(err);
         throw err;
       }
-    });
+    }, false, 'executeAll');
   }
 
   async executeRun(sql: string, args?: unknown[]): Promise<RunResult> {
@@ -3579,7 +3709,7 @@ export class TursoAdapterImpl implements TursoAdapter {
         this._markIfFatal(err);
         throw err;
       }
-    }, true);
+    }, true, 'executeRun');
   }
 
   /**
@@ -3607,7 +3737,7 @@ export class TursoAdapterImpl implements TursoAdapter {
         this._markIfFatal(err);
         throw err;
       }
-    }, true);
+    }, true, 'exec');
   }
 
   /** (SPEC-CONN-RECYCLE) Wired through `_trackOp` (`_ensureHealthy`/
@@ -3626,7 +3756,7 @@ export class TursoAdapterImpl implements TursoAdapter {
         this._markIfFatal(err);
         throw err;
       }
-    });
+    }, false, 'pragmaSet');
   }
 
   /** (SPEC-CONN-RECYCLE) See `pragmaSet` doc comment — same wiring. */
@@ -3639,7 +3769,7 @@ export class TursoAdapterImpl implements TursoAdapter {
         this._markIfFatal(err);
         throw err;
       }
-    });
+    }, false, 'pragmaGet');
   }
 
   async transaction<T>(
@@ -3656,7 +3786,7 @@ export class TursoAdapterImpl implements TursoAdapter {
     // non-zero for the entire BEGIN..COMMIT/ROLLBACK window (including the
     // caller's `fn`), or `releaseIdleConnection()` could tear the connection
     // down between two statements of an in-progress transaction.
-    return this._trackOp(() => this._withTxLock(() => this._runTransaction(fn, opts)), true);
+    return this._trackOp(() => this._withTxLock(() => this._runTransaction(fn, opts)), true, 'transaction');
   }
 
   private async _runTransaction<T>(
@@ -3915,6 +4045,31 @@ export class TursoAdapterImpl implements TursoAdapter {
    * NOT touch the opener registration — the adapter object stays open.
    */
   private async _closeConnection(): Promise<void> {
+    // (per-call DB-op tracing) Bypass site — never routed through `_trackOp`
+    // (close-time teardown must run regardless of `_trackOp`'s idle-timer
+    // machinery). Thin timing/hook wrapper around the EXISTING, unmodified
+    // body (its several early returns are untouched).
+    this.config.onOpStart?.('close_connection');
+    const opStartedAt = nowMs();
+    let caughtErr: unknown;
+    try {
+      await this._closeConnectionBody();
+    } catch (err) {
+      caughtErr = err;
+      throw err;
+    } finally {
+      this.config.onOpEnd?.();
+      recordOpOutcome(
+        'turso',
+        'close_connection',
+        { op_ms: elapsedMs(opStartedAt) },
+        caughtErr,
+        this.config.slowOpThresholdMs ?? DEFAULT_SLOW_OP_THRESHOLD_MS,
+      );
+    }
+  }
+
+  private async _closeConnectionBody(): Promise<void> {
     if (this.closed) return;
     // (BL-1010e417) Not clean until this close proves it — see `_lastCloseClean`.
     this._lastCloseClean = false;

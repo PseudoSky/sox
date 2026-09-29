@@ -388,6 +388,31 @@ export interface AdapterConfig {
    * deep verification (ADR-0013). See deep-verify.ts.
    */
   deepVerify?: DeepVerifyConfig;
+  /**
+   * (per-call DB-op tracing) A completed op is logged only when its `op_ms`
+   * meets/exceeds this threshold — every op is still counted in the
+   * `metrics.snapshot` aggregate regardless. Typed tuning, never an env
+   * toggle (ADR-0013). Default: `DEFAULT_SLOW_OP_THRESHOLD_MS` (1000ms),
+   * see `op-tracing.ts`.
+   */
+  slowOpThresholdMs?: number;
+  /**
+   * (per-call DB-op tracing, ADR-0006 DI-for-live-objects) Optional hook
+   * fired at the start of every tracked op (`_trackOp`) AND every documented
+   * bypass site (idle-flush, wal-ownership heartbeat, reconnect, close,
+   * fts-optimize), before any work runs. `label` is a short op name (e.g.
+   * `'executeRun'`, `'transaction'`, `'idle_flush'`). Lets a consumer (e.g.
+   * memory-server's main-thread-stall attribution) observe DB-operation
+   * granularity without store-adapter importing anything from that
+   * consumer. Never throws on the adapter's behalf — a throwing hook is the
+   * caller's bug, not caught here.
+   */
+  onOpStart?: (label: string) => void;
+  /**
+   * (per-call DB-op tracing) Paired with {@link onOpStart} — fired once the
+   * same op completes (success or failure), in the op's `finally`.
+   */
+  onOpEnd?: () => void;
 }
 
 // ── Factory options ──────────────────────────────────────────────────────────
