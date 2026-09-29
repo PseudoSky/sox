@@ -116,6 +116,12 @@ Implementation: use `promptfoo` (side-by-side matrix, model-graded asserts, CI g
 
 ## 8. Prompt optimization rules (concise, not verbose)
 
+- **Write the absolute minimum that enforces the behaviour** — for edits as much as authoring: the smallest text that is *correct*.
+  - **Net growth is a defect.** A bug fix must not grow the file: same-or-fewer lines out, with before/after counts in the CHANGELOG.
+  - **Never restate a rule.** One home per rule; a rule, a checklist item and a failure-mode entry saying the same thing is three places to drift (observed: an edit left a checklist contradicting its own rule).
+  - **Over two sentences → restructure**, don't elaborate: a table, a bullet, or deletion.
+  - **WHY only where it changes behaviour.** No preamble, no history, no rationale the reader would not act on.
+  - Verbose drift is the default failure (measured: a 5-line fix landed as 18). Every added line needs a reason.
 - Prescriptive limits over soft adjectives: "One to two sentences, never more than three" beats "Be concise".
 - Tell what TO do, not what not to do: "Respond in flowing prose" beats "Do not use markdown".
 - Structure instruction kinds with XML tags once a prompt has more than one content type.

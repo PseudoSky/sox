@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.1.7
+
+- **§8 gains the governing minimum-prose rule.** The section warned against soft
+  adjectives while itself only saying "concise, not verbose" — and the failure it names
+  happened: a 5-line fix landed as 18 lines of prose. Now: write the absolute minimum that
+  enforces the behaviour; net growth is a defect; never restate a rule (one home per rule);
+  over two sentences → restructure, don't elaborate; WHY only where it changes behaviour.
+- `agent-manager.md` 165 → 171 lines (+6: one new rule, nothing removed). Tested by a fresh
+  subagent given the rule and a 4-line section to extend: it edited an existing line rather
+  than adding one — before=4 after=4, net zero.
+
 ## 0.1.6
 
 - **Adds a §3 renderer fact: always write `render.opencode.mode: "all"` for every opencode agent.**
