@@ -61,7 +61,9 @@ import { ESqliteNativeStore, isBusyError } from './errors.js';
 import { ensureEngineMarker, readApplicationId, SOX_APP_ID_SQLITE } from './engine-guard.js';
 import {
   getTursoDriverStatus,
+  holdTursoDriverWorker,
   openTursoConnection,
+  unholdTursoDriverWorker,
   type TursoDriverConnection,
   type TursoDriverStatus,
 } from './turso-driver-host.js';
@@ -553,6 +555,44 @@ export class TursoAdapterImpl implements TursoAdapter {
    *  unclean one reopens as `'initial'` — full integrity pass and persist. */
   private _releasedClean = false;
 
+  /**
+   * (5ee20d65, TUR-D correction) True for the whole duration of a
+   * `releaseIdleConnection()` teardown. Guards against a second concurrent
+   * release and lets `_closeConnectionBody` know to raise {@link _releaseBarrier}.
+   */
+  private _releaseRequested = false;
+
+  /**
+   * (5ee20d65, TUR-D correction) The barrier an EXTERNAL operation awaits once
+   * the release has actually begun tearing the driver connection down. Raised
+   * inside `_closeConnectionBody` immediately BEFORE `this.db.close()` — the
+   * off-thread rewire turned that close into a worker RPC, and `_released` is
+   * only set after the whole ceremony (including `this._lease.release()`)
+   * returns, so for that window `this.db` was a CLOSED host connection while
+   * `_released` was still false. An op landing there ran `_ensureHealthy()`
+   * (early-return: not poisoned / not released / not never-opened), queried the
+   * dead handle, and rejected fatal — poisoning the adapter.
+   *
+   * Raised at the driver-close point, NOT at the release's entry, precisely so
+   * the close ceremony's OWN tracked queries (the integrity verify and the
+   * PASSIVE/TRUNCATE PRAGMAs, all of which run BEFORE the driver close) never
+   * wait on it — that would deadlock release-on-close. Only ops arriving after
+   * `this.db.close()` begins wait, then reconnect against a fully settled
+   * `this.db`. Resolved by `releaseIdleConnection()`'s `finally` (so even a
+   * throwing close unblocks waiters). `null` outside an in-flight release.
+   */
+  private _releaseBarrier: { promise: Promise<void>; resolve: () => void } | null = null;
+
+  /**
+   * (cfed929d, TUR-D correction) Whether this adapter currently holds the
+   * process-wide driver worker open ({@link holdTursoDriverWorker}). Taken on a
+   * successful real open and dropped by the final `close()`, so the worker
+   * outlives the idle releases this adapter performs but is not pinned past the
+   * adapter's lifetime. Idempotent — a poison/release reconnect reuses the same
+   * hold rather than taking a second one.
+   */
+  private _driverHeld = false;
+
   /** (BL-1010e417) Set by every `_closeConnection()`: see {@link _releasedClean}.
    *  `false` until a close proves otherwise — a close that could not check
    *  (verify threw, never-opened shell) is never clean. A non-writable close
@@ -934,22 +974,28 @@ export class TursoAdapterImpl implements TursoAdapter {
     try {
       await this._ensureHealthy();
       const optimized = await this._optimizeAllFtsIndexes(coordDb, writes, perIndex);
+      // (c5eb649a) Build and PUBLISH the outcome BEFORE the awaited pass-count
+      // write. `_optimizeAllFtsIndexes` emits `fts.optimize.finish` per index
+      // before it returns; on the off-thread driver the pass-count write below
+      // is a multi-ms worker RPC, so an observer (the bounded-segments spec's
+      // `until()` on that log) could read `ftsMaintenance.last` while it was
+      // still null. Publishing here is synchronous with the finish log's own
+      // return, so the pass is never observable as "finished but unrecorded".
+      const outcome: FtsOptimizeOutcome | null =
+        optimized.length === 0
+          ? null
+          : {
+              status: 'optimized',
+              writes_since_optimize: writes,
+              indexes: optimized,
+              duration_ms: Date.now() - startedAt,
+            };
+      if (outcome !== null) this._lastFtsOptimize = outcome;
       if (optimized.length > 0) await this._countInServiceOptimizePass(coordDb);
       this._ftsWritesSinceOptimize = 0;
       this._ftsStarvedWarned = false;
       this._ftsOptimizeFailures = 0;
       this._ftsOptimizeNextAttemptAt = null;
-      if (optimized.length === 0) {
-        // No index-method index on this store — nothing can accumulate.
-        return null;
-      }
-      const outcome: FtsOptimizeOutcome = {
-        status: 'optimized',
-        writes_since_optimize: writes,
-        indexes: optimized,
-        duration_ms: Date.now() - startedAt,
-      };
-      this._lastFtsOptimize = outcome;
       return outcome;
     } catch (err) {
       this._markIfFatal(err);
@@ -2008,6 +2054,16 @@ export class TursoAdapterImpl implements TursoAdapter {
    * expressed through this existing recovery path rather than a parallel one.
    */
   private async _ensureHealthy(): Promise<void> {
+    // (5ee20d65, TUR-D correction) A release that has reached the driver-close
+    // point owns the connection teardown. Wait it out BEFORE deciding: the
+    // release flips `_released` at the very end, so once the barrier resolves
+    // this op reconnects against a settled `this.db` instead of racing
+    // `this.db.close()` / the lease unlink and executing on a dead connection
+    // (which would reject fatal and poison the adapter). `null` except during
+    // that window; the close ceremony's own ops run before the barrier is
+    // raised and are therefore never blocked by it.
+    const releaseBarrier = this._releaseBarrier;
+    if (releaseBarrier !== null) await releaseBarrier.promise;
     if (!this._poisoned && !this._released && !this._neverOpened) return;
     if (!this._reconnectPromise) {
       this._reconnectPromise = this._reconnect();
@@ -2189,6 +2245,16 @@ export class TursoAdapterImpl implements TursoAdapter {
       this._released = false;
       this._releasedClean = false;
       this._neverOpened = false;
+      // (cfed929d, TUR-D correction) Hold the process-wide driver worker open
+      // for this adapter's remaining lifetime. A subsequent idle release drops
+      // the DRIVER CONNECTION (so peers' close-time TRUNCATE sees a quiescent
+      // store) but must not drop the worker — otherwise the next op pays a full
+      // respawn (observed 341 ms vs. the 250 ms release-reopen budget). Taken
+      // once; released by the final `close()`.
+      if (!this._driverHeld) {
+        holdTursoDriverWorker();
+        this._driverHeld = true;
+      }
     } catch (err) {
       log.error('store_adapter.turso.connection.reconnect_failed', {
         error: err instanceof Error ? err.message : String(err),
@@ -3999,22 +4065,42 @@ export class TursoAdapterImpl implements TursoAdapter {
    * error.
    */
   async releaseIdleConnection(): Promise<boolean> {
-    if (this.closed || this._released || this._reconnectPromise || this._inFlightOps > 0) {
+    if (
+      this.closed ||
+      this._released ||
+      this._reconnectPromise ||
+      this._releaseRequested ||
+      this._inFlightOps > 0
+    ) {
       return false;
     }
-    await this._closeConnection();
-    // (BL-1010e417) A release whose own close saw WAL-identity damage or a
-    // failed PASSIVE checkpoint must not let the reopen reuse the prior
-    // integrity verdict — `_reconnect()` then opens with reason 'initial'.
-    this._releasedClean = this._lastCloseClean;
-    // `_closeConnection()` sets `closed = true` — undo that so this instance stays
-    // usable. It already nulled `this._lease` as part of its own
-    // teardown; `_reconnect()` (triggered by `_ensureHealthy()` on the next
-    // operation) adopts a fresh one, see its doc comment for why that must
-    // differ from poison recovery's lease handling.
-    this.closed = false;
-    this._released = true;
-    return true;
+    // (5ee20d65) Mark the teardown requested; `_closeConnectionBody` raises
+    // `_releaseBarrier` at the driver-close point (see its doc comment).
+    this._releaseRequested = true;
+    try {
+      await this._closeConnection();
+      // (BL-1010e417) A release whose own close saw WAL-identity damage or a
+      // failed PASSIVE checkpoint must not let the reopen reuse the prior
+      // integrity verdict — `_reconnect()` then opens with reason 'initial'.
+      this._releasedClean = this._lastCloseClean;
+      // `_closeConnection()` sets `closed = true` — undo that so this instance stays
+      // usable. It already nulled `this._lease` as part of its own
+      // teardown; `_reconnect()` (triggered by `_ensureHealthy()` on the next
+      // operation) adopts a fresh one, see its doc comment for why that must
+      // differ from poison recovery's lease handling.
+      this.closed = false;
+      this._released = true;
+      return true;
+    } finally {
+      // Clear request + barrier, then resolve — a waiter resumed from the
+      // barrier therefore observes a fully settled release (`_released` set,
+      // `this.db` the closed old handle) and reconnects, never the teardown
+      // mid-flight.
+      this._releaseRequested = false;
+      const barrier = this._releaseBarrier;
+      this._releaseBarrier = null;
+      barrier?.resolve();
+    }
   }
 
   /** (BL-33e3a8e5) The one in-flight/settled final teardown — see {@link close}. */
@@ -4043,6 +4129,16 @@ export class TursoAdapterImpl implements TursoAdapter {
   }
 
   private async _closeOnce(): Promise<void> {
+    // (cfed929d, TUR-D correction) The FINAL close drops the driver-worker hold
+    // — unconditionally, including when `closed` is already true from a
+    // half-completed idle release. Once `close()` is called this adapter will
+    // never open again, so the singleton worker must not stay pinned on its
+    // behalf. Placed before the `closed` short-circuit so that path cannot leak
+    // the hold for the rest of the process's life.
+    if (this._driverHeld) {
+      this._driverHeld = false;
+      unholdTursoDriverWorker();
+    }
     if (this.closed) return;
     // (BL-fc5ab895) Stop a background deep verifier this adapter owns BEFORE
     // the close ceremony: its read lease would otherwise count as a live peer
@@ -4360,6 +4456,20 @@ export class TursoAdapterImpl implements TursoAdapter {
     // The close error still propagates. This is deliberately NOT a swallow: the
     // point is that cleanup becomes unconditional, not that failure becomes
     // silent.
+    // (5ee20d65) Raise the release barrier the instant the driver connection is
+    // about to be torn down. Until `releaseIdleConnection()` fully settles
+    // (incl. the lease unlink below), `this.db` is a CLOSED host connection
+    // while `_released` is still false — an external op landing there must wait
+    // on this barrier and reconnect, not query the dead handle. Placed here,
+    // AFTER every close-ceremony query (integrity verify + PASSIVE/TRUNCATE),
+    // so those never wait on it.
+    if (this._releaseRequested && this._releaseBarrier === null) {
+      let resolveBarrier!: () => void;
+      const promise = new Promise<void>((resolve) => {
+        resolveBarrier = resolve;
+      });
+      this._releaseBarrier = { promise, resolve: resolveBarrier };
+    }
     try {
       await this.db.close();
     } finally {

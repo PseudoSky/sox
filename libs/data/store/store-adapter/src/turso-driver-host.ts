@@ -312,6 +312,11 @@ class TursoDriverHost {
   private stallTimer: ReturnType<typeof setTimeout> | null = null;
   private stallIntervalMs = DEFAULT_DRIVER_STALL_AFTER_MS;
   private stallReported = false;
+  /**
+   * (cfed929d) Outstanding adapter holds — see {@link maybeDispose}. The worker
+   * is kept alive while this is non-zero even with zero open connections.
+   */
+  private holds = 0;
 
   // ── Public operations ─────────────────────────────────────────────────────
 
@@ -550,11 +555,34 @@ class TursoDriverHost {
     if (this.worker === null) return;
     if (this.connections.size > 0) return;
     if (this.pending.size > 0) return;
+    // (cfed929d, TUR-D correction) An adapter that has voluntarily RELEASED its
+    // connection (`releaseIdleConnection()`) but may still reopen it holds a
+    // ref here. Without it, the idle release→reopen cycle tore the worker down
+    // on the release and paid a full (re)spawn — plus, under vitest, a
+    // `--import tsx` compile — on the next op (observed 341 ms against a 250 ms
+    // budget). The hold keeps the singleton worker alive across an idle release
+    // and is dropped by the adapter's final `close()`.
+    if (this.holds > 0) return;
     const worker = this.worker;
     this.worker = null;
     this.expectedTermination = true;
     this.ready = Promise.resolve();
     void worker.terminate();
+  }
+
+  /**
+   * Pin the worker open on behalf of one adapter that may reopen after an idle
+   * release. Refcounted; balanced by {@link unholdWorker} at the adapter's
+   * final close. See {@link maybeDispose} for why this exists.
+   */
+  holdWorker(): void {
+    this.holds += 1;
+  }
+
+  /** Release one {@link holdWorker} ref, disposing if it was the last. */
+  unholdWorker(): void {
+    if (this.holds > 0) this.holds -= 1;
+    this.maybeDispose();
   }
 
   // ── Stall telemetry (unref'd; doubling interval) ──────────────────────────
@@ -713,6 +741,24 @@ export async function openTursoConnection(
   opts: Record<string, unknown>,
 ): Promise<TursoDriverConnection> {
   return getSlot().host.open(url, opts);
+}
+
+/**
+ * (cfed929d) Pin the process-wide driver worker open on behalf of one adapter
+ * that may reopen after an idle release. The adapter takes this on a successful
+ * open and drops it ({@link unholdTursoDriverWorker}) on its final `close()`, so
+ * the singleton worker survives release→reopen cycles without pinning it past
+ * the adapter's lifetime. Refcounted across adapters; see `maybeDispose`.
+ */
+export function holdTursoDriverWorker(): void {
+  getSlot().host.holdWorker();
+}
+
+/** (cfed929d) Release one {@link holdTursoDriverWorker} ref. */
+export function unholdTursoDriverWorker(): void {
+  // `peekSlot` — never create a slot just to drop a hold. A hold can only
+  // exist if a slot already existed, so this is a no-op on a missing slot.
+  peekSlot()?.host.unholdWorker();
 }
 
 /**
