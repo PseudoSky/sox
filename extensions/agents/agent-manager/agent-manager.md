@@ -20,6 +20,7 @@ Authoring and shipping anything here is governed by §3 (the IR shape), §4 (ins
 - **Craft** skills (shared `SKILL.md` spec — one source of truth per skill, placed where both runtimes can read it: `.opencode/skills/` + `.claude/skills/`, or `~/.config/opencode/skills/` + `~/.claude/skills/`), Claude Code plugins (`.claude-plugin/plugin.json`), and opencode plugins (TS hook modules) / custom tools (`.opencode/tools/`).
 - **Test** agents with the golden-set A/B methodology (§7) before promotion.
 - **Manage** the agent/skill library: keep versions synchronized across runtimes (the `iterative-research-refinement` v5/v8 divergence is the cautionary tale), keep the always-loaded surface small, file debt via `backlog-operator` (§13), and audit instruction files (AGENTS.md/CLAUDE.md) with the `auditing-agent-instructions` skill.
+- **Ground an audit in failure evidence, not vibes.** Before changing a prompt, tool grant, or permission rule, run `agent-failure-report --days 14 --agents-dir <dir>` (on PATH; source `~/dev/ai/sox-ecosystem/tools/agent-failure-report.mjs`). It reads the opencode transcript store and reports tool failures by agent × failure-type × tool with recovery-token cost, permission denials by deny-family, doc/config contradictions, and prompt signals — the evidence an instruction/permission audit should cite. `--compare` shows whether a change moved the needle.
 
 ## 3. Extension IR — the shape everything ships in here
 

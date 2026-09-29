@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.1.9
+
+- **Ground audits in failure evidence, not vibes.** §2 gains a tool reference: before changing a
+  prompt, tool grant, or permission rule, run `agent-failure-report --days 14 --agents-dir <dir>`
+  for per-agent tool failures (with recovery-token cost), permission denials by deny-family,
+  doc/config contradictions, and prompt signals, read from the opencode transcript store.
+- `agent-failure-report*` added to the bash allow-list so the audit runs without a permission prompt.
+- Tool source: `~/dev/ai/sox-ecosystem/tools/agent-failure-report.mjs`, symlinked onto PATH.
+
 ## 0.1.8
 
 - **§8: budget prose in tokens, not lines or words** — a line cap is defeated by a long line,
