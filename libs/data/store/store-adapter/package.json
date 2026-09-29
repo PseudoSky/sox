@@ -53,7 +53,8 @@
       "dist/index.js"
     ],
     "sidecars": [
-      "src/deep-verify-child.ts"
+      "src/deep-verify-child.ts",
+      "src/turso-driver-worker.ts"
     ],
     "sidecarExternals": [
       "@tursodatabase/database",
