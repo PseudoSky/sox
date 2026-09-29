@@ -73,3 +73,6 @@ docs/plan/runtime-productionization/_shared/baselines/*.db-shm
 # Build scratch (apigen and friends) — never tracked; blocked registry:sync-index
 # by tripping build-index.ts's dirty-tree refusal (BL-390/BL-484).
 tmp/
+
+# machine-local secrets/env file — never committed, never tracked
+.env
