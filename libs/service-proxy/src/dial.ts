@@ -420,6 +420,13 @@ export function dialBackend(opts: DialOptions): BackendConnection {
    * instead of pinning the main thread. Re-entrant-safe: a second call while a
    * drain is already scheduled is a no-op (the in-flight drain will pick up
    * anything newly queued before it next yields).
+   *
+   * Ordering: while this drain is in flight (`flushImmediate` set), `send()`
+   * routes every new request through `queue` instead of writing directly
+   * even when the socket is writable — otherwise a request issued during the
+   * yield window between two chunks would overtake older backlog items still
+   * waiting for their chunk (review finding on BL-6b4ff2b8; see
+   * dial-flush-ordering.bl-6b4ff2b8.spec.ts).
    */
   function flushQueue(): void {
     if (!socket) return;
@@ -508,7 +515,14 @@ export function dialBackend(opts: DialOptions): BackendConnection {
         );
       }
 
-      if (socket && socket.writable) {
+      // BL-6b4ff2b8 (review finding): while a chunked drain is in flight
+      // (flushImmediate set), a request that lands in the yield window
+      // between chunks must NOT be written directly even though the socket
+      // is currently writable — it would overtake older, still-queued
+      // backlog items waiting for their next chunk. Route it through the
+      // queue instead; the in-flight drain will pick it up in FIFO order
+      // once it reaches the back of the queue.
+      if (socket && socket.writable && !flushImmediate) {
         writeToBackend(p);
       } else {
         queue.pushBack(p);
