@@ -198,6 +198,24 @@ describe('skill install — header rendered from the manifest, SKILL.md prose-on
     expect(second[0]?.applied).toBe(true);
     // Destination-side pruning is a separate, pre-existing defect (1b42e982).
   });
+
+  it('refuses an ext that escapes the staging root instead of writing outside it — cf915fee', async () => {
+    const srcPath = writeSkill('colon-skill', 'Use this when the manifest description wins');
+    const probes = () =>
+      fs.readdirSync(os.tmpdir()).filter((n) => n.startsWith('sox-escape-probe'));
+    const before = probes(); // scoped to what THIS run creates — a prior run must not decide it
+    await expect(
+      declarativeInstall(
+        { ext: '../sox-escape-probe', type: 'skill', hosts: ['claude'], srcPath },
+        'project',
+        workspace,
+        scopeRoot,
+      ),
+    ).rejects.toThrow();
+    // os.tmpdir() is writable, so only the containment guard — not a permission error —
+    // can explain the absence of a NEWLY escaped staging directory.
+    expect(probes()).toEqual(before);
+  });
 });
 
 describe('sweep — every real skill renders and its id == dirname', () => {

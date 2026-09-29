@@ -2752,6 +2752,11 @@ function renderAgentForHost(
   const scratchDir = path.join(os.tmpdir(), 'sox-render');
   fs.mkdirSync(scratchDir, { recursive: true });
   const scratchPath = path.join(scratchDir, `${ext}-${hostName}-${csum}.md`);
+  // `ext` is caller-supplied and this path is predictable: contain it, and drop any
+  // existing entry first, or a planted symlink is followed by writeFileSync and its
+  // target clobbered (cf915fee — same shape as the skill stager).
+  assertWithinBase(scratchDir, scratchPath);
+  fs.rmSync(scratchPath, { force: true });
   fs.writeFileSync(scratchPath, result.content, 'utf8');
   return scratchPath;
 }
@@ -2792,6 +2797,8 @@ function renderSkillForHost(srcDir: string, ext: string): string | null {
   const scratchDir = path.join(os.tmpdir(), 'sox-render');
   fs.mkdirSync(scratchDir, { recursive: true });
   const stagedSkillDir = path.join(scratchDir, `${ext}-${csum}`, path.basename(srcDir));
+  // `ext` is caller-supplied: contain the staged path before touching it (cf915fee).
+  assertWithinBase(scratchDir, stagedSkillDir);
   // Mirror the source EXACTLY: cpSync merges and never deletes, so a file removed from the
   // source would survive in the staged tree, leaving hashPathForInstall unchanged and the
   // install reporting applied=false while stale content installs (e1e98fe0).
