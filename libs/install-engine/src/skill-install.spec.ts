@@ -196,7 +196,8 @@ describe('skill install — header rendered from the manifest, SKILL.md prose-on
       scopeRoot,
     );
     expect(second[0]?.applied).toBe(true);
-    // Destination-side pruning is a separate, pre-existing defect (1b42e982).
+    // Destination-side pruning (the removed file vanishing from the installed
+    // dir) is covered by dir-drop-pruning.1b42e982.spec.ts.
   });
 
   it('refuses an ext that escapes the staging root instead of writing outside it — cf915fee', async () => {

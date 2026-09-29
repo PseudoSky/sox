@@ -1371,6 +1371,33 @@ function copyDirSync(src: string, dest: string): void {
   }
 }
 
+/**
+ * mirrorPathSync — copy a source file or directory onto a destination so the
+ * destination is a byte-exact image of the source, removing any destination
+ * entry absent from the source.
+ *
+ * `fs.cpSync(src, dest, {recursive:true, force:true})` overwrites but never
+ * deletes: a file removed from the source survives the merge, and
+ * `hashPathForInstall(dest)` then cements that stale tree as "current" across
+ * re-installs and upgrades (1b42e982). Removing the destination directory before
+ * copying is the same mirror semantic renderSkillForHost already applies to its
+ * staged tree (c206ec5e / e1e98fe0).
+ *
+ * The destination must be an install-owned path — the per-extension directory
+ * under the host's discovery root — because the removal deletes the WHOLE tree.
+ * Callers enforce that via the BUG-028 ownership guard before invoking this.
+ */
+function mirrorPathSync(src: string, dest: string): void {
+  if (fs.statSync(src).isDirectory()) {
+    fs.rmSync(dest, { recursive: true, force: true });
+    fs.cpSync(src, dest, { recursive: true, force: true });
+  } else {
+    const dir = path.dirname(dest);
+    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+    fs.copyFileSync(src, dest);
+  }
+}
+
 function buildInstallList(
   scopeConfig: ScopeConfig,
   cascadedConfig: ResolvedConfigMap,
@@ -2190,15 +2217,12 @@ export async function declarativeInstall(
           // Non-agent: src can be a directory (skill/command/hook) or a file.
           // contentPath is descriptor.srcPath except for skills, where it is the
           // staged directory carrying the rendered header.
-          const srcStat = fs.statSync(contentPath);
-          if (srcStat.isDirectory()) {
-            if (!fs.existsSync(destPath)) fs.mkdirSync(destPath, { recursive: true });
-            fs.cpSync(contentPath, destPath, { recursive: true, force: true });
-          } else {
-            const dir = path.dirname(destPath);
-            if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-            fs.copyFileSync(contentPath, destPath);
-          }
+          // mirrorPathSync (1b42e982): a plain cpSync merge never deletes, so a
+          // file removed from the source would survive every re-install; mirror
+          // the destination exactly instead. destPath is the install-owned
+          // per-extension directory (the BUG-028 guard above has already refused
+          // any unowned destination).
+          mirrorPathSync(contentPath, destPath);
         }
         applied = true;
       }
@@ -2484,15 +2508,32 @@ export async function declarativeInstall(
               : path.join(workspaceRoot, hookScriptRawTarget);
             const srcBasename = path.basename(descriptor.srcPath);
             const hookDestPath = path.join(hookScriptAbsTarget, srcBasename);
-            if (!fs.existsSync(hookDestPath)) {
-              const srcStat = fs.statSync(descriptor.srcPath);
-              if (srcStat.isDirectory()) {
-                fs.cpSync(descriptor.srcPath, hookDestPath, { recursive: true, force: true });
-              } else {
-                const dir = path.dirname(hookDestPath);
-                if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-                fs.copyFileSync(descriptor.srcPath, hookDestPath);
+            // Unowned-file guard (BUG-028): mirroring REMOVES destination entries
+            // absent from the source, so a directory this extension does not own
+            // must be refused — never deleted — exactly like the primary file-drop
+            // branch above.
+            if (fs.existsSync(hookDestPath) && !opts?.force) {
+              const hookOwnershipIdx = OwnershipIndex.loadFromFile(ownershipPathFor(scope, workspaceRoot));
+              const hookOwnedByThis = hookOwnershipIdx
+                .get(descriptor.ext, scope)
+                ?.entries?.some((e) => e.kind === 'file-drop' && e.path === hookDestPath);
+              if (!hookOwnedByThis) {
+                throw new Error(
+                  `[declarative-install] refusing to overwrite unowned file at ${hookDestPath} (BUG-028). ` +
+                    `This file exists but is not owned by extension '${descriptor.ext}' in scope '${scope}'. ` +
+                    `It may be a hand-authored or legacy host file. Uninstall it first if it is a stale ` +
+                    `extension install, or pass force=true to overwrite deliberately.`,
+                );
               }
+            }
+            const hookSrcHash = hashPathForInstall(descriptor.srcPath);
+            const hookDestHash = fs.existsSync(hookDestPath) ? hashPathForInstall(hookDestPath) : '';
+            let hookApplied = false;
+            if (hookSrcHash !== hookDestHash) {
+              // mirrorPathSync (1b42e982): a merge never deletes, so a file removed
+              // from the hook source would survive; mirror the destination exactly.
+              mirrorPathSync(descriptor.srcPath, hookDestPath);
+              hookApplied = true;
             }
             ownedEntries.push({ kind: 'file-drop', path: hookDestPath });
             // Record in ledger for reversal
@@ -2511,7 +2552,7 @@ export async function declarativeInstall(
               scope,
               capability: 'file-drop',
               target: hookDestPath,
-              applied: true,
+              applied: hookApplied,
             });
           }
         }
