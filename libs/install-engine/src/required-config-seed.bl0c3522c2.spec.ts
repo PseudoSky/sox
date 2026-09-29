@@ -137,6 +137,8 @@ function seededDbPath(scope: 'user' | 'project' | 'local'): unknown {
   return cfg.config?.[PROBE]?.['db_path'];
 }
 
+let savedSandbox: string | undefined;
+
 beforeEach(() => {
   const base = fs.mkdtempSync(path.join(os.tmpdir(), 'sox-bl0c35-'));
   workspace = path.join(base, 'workspace');
@@ -146,12 +148,19 @@ beforeEach(() => {
   // scopeConfigPaths('user') reads SOX_ECOSYSTEM_HOME at call time.
   savedHome = process.env['SOX_ECOSYSTEM_HOME'];
   process.env['SOX_ECOSYSTEM_HOME'] = dataHome;
+  // Host-side writes are NOT covered by SOX_ECOSYSTEM_HOME: without this, the
+  // `install --scope user` case below writes bl0c35probe.md into the REAL
+  // ~/.config/opencode/agents/ on every test run.
+  savedSandbox = process.env['SOX_SANDBOX_ROOT'];
+  process.env['SOX_SANDBOX_ROOT'] = base;
   makeProbeExtension(workspace);
 });
 
 afterEach(() => {
   if (savedHome === undefined) delete process.env['SOX_ECOSYSTEM_HOME'];
   else process.env['SOX_ECOSYSTEM_HOME'] = savedHome;
+  if (savedSandbox === undefined) delete process.env['SOX_SANDBOX_ROOT'];
+  else process.env['SOX_SANDBOX_ROOT'] = savedSandbox;
   fs.rmSync(path.dirname(workspace), { recursive: true, force: true });
 });
 
