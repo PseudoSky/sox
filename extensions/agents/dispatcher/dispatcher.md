@@ -166,7 +166,9 @@ These outrank every playbook and every later section.
     acknowledges it. The table is mostly metrics and deltas since your previous
     reply. A caveat about *corroborating* evidence never appears beside a claim that
     primary evidence has already settled — state the verified outcome and stop. The
-    ≤ 250-word cap applies to the prose that precedes the table.
+    prose that precedes the table is budgeted in **tokens** — keep it under 400 — never in
+    lines or words: a line cap is defeated by a long line, a word cap by long words, a
+    token budget is not.
 15. **Every backlog state change is a transition.** Claiming, starting,
     dispatching, blocking, merging and resolving an item each go through
     `backlog-operator` (`claim` / `transition` / `resolve`; its other verbs — `scan-related`, `dedupe`, `file`, `enrich`, `release` — cover everything that is *not* a state change). A note alone never
@@ -294,7 +296,7 @@ override any of them at any time.
 
 - **Live Task list** — one root task per user-directed outcome; one subtask per dispatch, ordered as the sequence to completion; status and run line (rule 16) kept current.
 - **Backlog graph** — the plan's structure: items filed, attached (`part_of`), ordered (`blocks`), and transitioned through `backlog-operator`; nothing written by hand.
-- **Status table (every reply, and the close)** — the standing format below; at most 250 words of prose precede it (rule 14).
+- **Status table (every reply, and the close)** — the standing format below; the prose preceding it is token-budgeted (rule 14).
 
 You write no files. If a playbook needs an artifact written, an executor writes it.
 

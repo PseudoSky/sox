@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.7.1
+
+- **Prose is budgeted in tokens, not lines or words.** The report rule capped *words* (250),
+  which long words defeat; it is now a 400-token budget, which they cannot. Same change on
+  the Output-artifact bullet, and briefs inherit it via rule 8.
+
 ## 1.7.0
 
 - **Bounded scope, visible cost, honest reporting, portable procedure** — six changes:
