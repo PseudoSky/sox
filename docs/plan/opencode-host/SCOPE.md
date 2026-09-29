@@ -106,9 +106,9 @@ OpenCode (opencode-ai, v1.17.11, ~1.6M weekly npm downloads) is the dominant ope
 
 Only extensions that declare `install.hosts: ["claude"]` or `["codex"]` without including `"opencode"`:
 
-- `memory-org`, `test-runner`, `sox-ingest`, `demo-creator`, `dep-injector`, `dep-inject`, `memory-usage` — add `"opencode"` to their `hosts` array
-- `di-codex` — add `"opencode"` (already targets codex, works identically)
-- `forbidden-access` — omit `hosts` (already default, no change needed)
+- `memory-org`, `test-runner`, `sox-ingest`, `demo-creator`, `di-skill`, `dep-inject`, `memory-usage` — add `"opencode"` to their `hosts` array
+- `di-codex-skill` — add `"opencode"` (already targets codex, works identically)
+- `forbidden-skill` — omit `hosts` (already default, no change needed)
 
 ## Engine Changes Required (Found During Audit)
 
@@ -449,13 +449,13 @@ Only `mcp-server` and `service` types with transports beyond stdio need `soxe se
 |---|---|---|---|---|
 | `memory-org` | agent | `.opencode/agents/org-agent.md` | `~/.config/opencode/agents/org-agent.md` | YAML frontmatter + prompt |
 | `test-runner` | agent | `.opencode/agents/test-agent.md` | `~/.config/opencode/agents/test-agent.md` | YAML frontmatter + prompt |
-| `sox-ingest` | skill | `.opencode/skills/sox-ingest/SKILL.md` | `~/.config/opencode/skills/sox-ingest/SKILL.md` | Raw SKILL.md |
+| `sox-ingest` | skill | `.opencode/skills/sox-ingest/SKILL.md` | `~/.config/opencode/skills/sox-ingest/SKILL.md` | Rendered SKILL.md |
 | `forbidden-skill` | skill | `.opencode/skills/forbidden-skill/SKILL.md` | `~/.config/opencode/skills/forbidden-skill/SKILL.md` | Rendered SKILL.md |
 | `demo-creator` | skill | `.opencode/skills/demo-creator/SKILL.md` | `~/.config/opencode/skills/demo-creator/SKILL.md` | Rendered SKILL.md |
 | `di-skill` | skill | `.opencode/skills/di-skill/SKILL.md` | `~/.config/opencode/skills/di-skill/SKILL.md` | Rendered SKILL.md |
 | `di-codex-skill` | skill | `.opencode/skills/di-codex-skill/SKILL.md` | `~/.config/opencode/skills/di-codex-skill/SKILL.md` | Rendered SKILL.md |
 | `dep-inject` | command | `opencode.json` `command.dep-inject` | `~/.config/opencode/opencode.json` `command.dep-inject` | `{ description, invoke }` |
-| `memory-usage` | skill | `.opencode/skills/memory-usage/SKILL.md` | `~/.config/opencode/skills/memory-usage/SKILL.md` | Raw SKILL.md |
+| `memory-usage` | skill | `.opencode/skills/memory-usage/SKILL.md` | `~/.config/opencode/skills/memory-usage/SKILL.md` | Rendered SKILL.md |
 | `memory-server` | mcp-server | `opencode.json` `mcp.memory-server` | `~/.config/opencode/opencode.json` `mcp.memory-server` | `{ type: "local", command: [...] }` via `mcpConfig` |
 | `memory-cli` | command | `opencode.json` `command.memory-cli` | `~/.config/opencode/opencode.json` `command.memory-cli` | `{ description, invoke }` |
 
