@@ -50,6 +50,13 @@ export type {
 } from './internal.js';
 export { expandHome, existsIn } from './internal.js';
 export { agentRenderers, stripFrontmatter, yamlScalar, yamlStringify } from './agent-renderers.js';
+export {
+  renderSkillHeader,
+  renderSkillFile,
+  skillManifestToInput,
+  SKILL_ALLOWED_KEYS,
+} from './skill-renderers.js';
+export type { SkillHeaderInput, SkillManifestLike } from './skill-renderers.js';
 
 // ─── Registry ────────────────────────────────────────────────────────────────
 

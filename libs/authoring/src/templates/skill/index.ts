@@ -2,7 +2,8 @@
  * Skill template — scaffolds a declarative markdown skill extension.
  *
  * Real shape (from ~/dev/ai/claude-agents/categories/workflow/skills/):
- *   - Skills are SKILL.md files with YAML frontmatter (name, description).
+ *   - Skills are SKILL.md files whose header (name, description) is rendered from
+ *     extension.json at install time; the source SKILL.md is prose-only.
  *   - Runtime: declarative — no process spawned; host reads and injects the
  *     SKILL.md at invocation time.
  *   - Entrypoint: SKILL.md (the markdown invocation guide).
@@ -14,7 +15,7 @@
  *   extension.json   (born-conformant manifest: type=skill, runtime=declarative,
  *                     entrypoint=SKILL.md, install block with type+hosts)
  *   package.json     (minimal — no build scripts)
- *   SKILL.md         (YAML frontmatter + markdown invocation guide — the real shape)
+ *   SKILL.md         (prose-only markdown invocation guide — header rendered at install)
  *   CHANGELOG.md
  *   README.md
  *
@@ -67,14 +68,12 @@ export function skillTemplate(opts: TemplateOpts): FileSet {
 
     'package.json': skillPkg,
 
-    // The canonical skill definition — YAML frontmatter + markdown body.
-    // Matches the real shape from claude-agents/categories/workflow/skills/*/SKILL.md
+    // The canonical skill definition — prose-only markdown body. The YAML header
+    // (name, description, …) is rendered from extension.json at install time by
+    // libs/host-registry/src/skill-renderers.ts, so the source SKILL.md carries no
+    // frontmatter (bug aace3faa — a hand-written frontmatter diverged from the
+    // manifest and could silently drop the skill on an unquoted "colon+space").
     'SKILL.md': [
-      `---`,
-      `name: ${opts.id}`,
-      `description: ${opts.description}`,
-      `---`,
-      ``,
       `# ${opts.title}`,
       ``,
       `<!-- markdownlint-disable MD013 -->`,

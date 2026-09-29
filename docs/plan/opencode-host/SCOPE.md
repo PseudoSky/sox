@@ -89,10 +89,10 @@ OpenCode (opencode-ai, v1.17.11, ~1.6M weekly npm downloads) is the dominant ope
 | `memory-org` | agent | `claude` | Yes | `file-drop` → `.opencode/agents/org-agent.md` or `config-merge` to `opencode.json` |
 | `test-runner` | agent | `claude` | Yes | same as above |
 | `sox-ingest` | skill | `claude` | Yes | `file-drop` → `.opencode/skills/sox-ingest/SKILL.md` |
-| `forbidden-access` | skill | _(default)_ | Yes | `file-drop` → `.opencode/skills/forbidden-access/SKILL.md` |
+| `forbidden-skill` | skill | _(default)_ | Yes | `file-drop` → `.opencode/skills/forbidden-skill/SKILL.md` |
 | `demo-creator` | skill | `claude` | Yes | `file-drop` → `.opencode/skills/demo-creator/SKILL.md` |
-| `dep-injector` | skill | `claude` | Yes | `file-drop` → `.opencode/skills/dep-injector/SKILL.md` |
-| `di-codex` | skill | `codex` | Yes | cross-host — needs `hosts: ["opencode"]` added to manifest |
+| `di-skill` | skill | `claude` | Yes | `file-drop` → `.opencode/skills/di-skill/SKILL.md` |
+| `di-codex-skill` | skill | `codex` | Yes | cross-host — needs `hosts: ["opencode"]` added to manifest |
 | `dep-inject` | command | `claude` | Yes | `config-merge` → `opencode.json` `command.dep-inject` — requires `node` runtime available |
 | `tokenguard` | service | _(none)_ | Partial | Http-based, no agent host dependency. Could be wired as MCP proxy. `background/singleton/permissions` not portable. |
 | `sox-memory-bundle` | bundle | _(expands)_ | See members | Bundle expansion is host-agnostic |
@@ -450,10 +450,10 @@ Only `mcp-server` and `service` types with transports beyond stdio need `soxe se
 | `memory-org` | agent | `.opencode/agents/org-agent.md` | `~/.config/opencode/agents/org-agent.md` | YAML frontmatter + prompt |
 | `test-runner` | agent | `.opencode/agents/test-agent.md` | `~/.config/opencode/agents/test-agent.md` | YAML frontmatter + prompt |
 | `sox-ingest` | skill | `.opencode/skills/sox-ingest/SKILL.md` | `~/.config/opencode/skills/sox-ingest/SKILL.md` | Raw SKILL.md |
-| `forbidden-access` | skill | `.opencode/skills/forbidden-access/SKILL.md` | `~/.config/opencode/skills/forbidden-access/SKILL.md` | Raw SKILL.md |
-| `demo-creator` | skill | `.opencode/skills/demo-creator/SKILL.md` | `~/.config/opencode/skills/demo-creator/SKILL.md` | Raw SKILL.md |
-| `dep-injector` | skill | `.opencode/skills/dep-injector/SKILL.md` | `~/.config/opencode/skills/dep-injector/SKILL.md` | Raw SKILL.md |
-| `di-codex` | skill | `.opencode/skills/di-codex/SKILL.md` | `~/.config/opencode/skills/di-codex/SKILL.md` | Raw SKILL.md |
+| `forbidden-skill` | skill | `.opencode/skills/forbidden-skill/SKILL.md` | `~/.config/opencode/skills/forbidden-skill/SKILL.md` | Rendered SKILL.md |
+| `demo-creator` | skill | `.opencode/skills/demo-creator/SKILL.md` | `~/.config/opencode/skills/demo-creator/SKILL.md` | Rendered SKILL.md |
+| `di-skill` | skill | `.opencode/skills/di-skill/SKILL.md` | `~/.config/opencode/skills/di-skill/SKILL.md` | Rendered SKILL.md |
+| `di-codex-skill` | skill | `.opencode/skills/di-codex-skill/SKILL.md` | `~/.config/opencode/skills/di-codex-skill/SKILL.md` | Rendered SKILL.md |
 | `dep-inject` | command | `opencode.json` `command.dep-inject` | `~/.config/opencode/opencode.json` `command.dep-inject` | `{ description, invoke }` |
 | `memory-usage` | skill | `.opencode/skills/memory-usage/SKILL.md` | `~/.config/opencode/skills/memory-usage/SKILL.md` | Raw SKILL.md |
 | `memory-server` | mcp-server | `opencode.json` `mcp.memory-server` | `~/.config/opencode/opencode.json` `mcp.memory-server` | `{ type: "local", command: [...] }` via `mcpConfig` |

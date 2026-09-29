@@ -399,20 +399,25 @@ export const GUARDS = [
     watch: ['extensions/agents/backlog-operator/backlog-operator.md'],
   },
   {
-    id: 'skill-frontmatter',
+    id: 'skill-headers',
     tier: 1,
     script: 'check-skill-frontmatter.mjs',
-    // 1ceffdbf: a `description` containing "backlog: product prioritizes" (colon+space inside an
-    // unquoted YAML scalar) made the SKILL.md frontmatter unparseable, and the host silently
-    // dropped the skill with no error anywhere. This guard runs the off-the-shelf `skillcheck`
-    // linter (via `uvx`) over exactly the changed SKILL.md files, so a re-introduced unquoted
-    // "colon+space" — or a frontmatter block that is missing/malformed — fails the commit. It is
-    // a linter, not a regression pin: it validates the changed files only (the staged diff), never
-    // the whole tree, so pre-existing broken skills are surfaced only when someone actually edits
-    // them. Agent source .md files are prose-only in this repo (frontmatter rendered at install
-    // from extension.json), so the `extensions/agents/` watch arms the guard for the future but
-    // the agent leg is a structural no-op today (see tools/check-skill-frontmatter.mjs).
-    watch: ['extensions/skills/', 'extensions/agents/'],
+    // aace3faa: skill extensions had two sources of truth for their header — the
+    // manifest description and a hand-written SKILL.md frontmatter — and the
+    // hand-written one was what the host surfaced. 1ceffdbf proved the failure class
+    // (a `description` with "backlog: product prioritizes" — colon+space in an
+    // unquoted scalar — made the frontmatter unparseable and silently dropped the
+    // skill). The fix makes extension.json the single source of truth: the header is
+    // rendered at install (libs/host-registry/src/skill-renderers.ts, mirroring
+    // agent-renderers.ts) and SKILL.md is prose-only. This guard keeps three legs
+    // fail-closed: source-purity (no hand-written `---` fence — rejects the authentic
+    // pre-fix bytes), manifest (id == dirname, description ≤1024, no `render` block,
+    // non-empty body), and rendered-artifact (the off-the-shelf `skillcheck` linter
+    // run over the rendered header, proving a colon-in-scalar description still
+    // renders to parseable YAML). Agent source .md files are prose-only in this repo
+    // (frontmatter rendered at install from extension.json), so the `extensions/agents/`
+    // watch arms the guard for the future but finds no skill files today.
+    watch: ['extensions/skills/', 'extensions/agents/', 'extensions/bundles/'],
   },
   {
     id: '7ff58364-7dd7a974-062504ba-3b752549-da25489b',

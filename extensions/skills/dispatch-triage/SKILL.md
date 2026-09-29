@@ -1,9 +1,6 @@
----
-name: dispatch-triage
-description: The dispatcher's playbook for an issue report — a bug, a red test, a reviewer finding, an executor's out-of-scope observation, or any "pre-existing / unrelated / skipped" claim. Root-cause with debug first (evidence, never the dispatcher's own guess), plan the fix with architect when the decision is technical, then implement through dispatch-direct and review-gate. Nothing is filed to the backlog or surfaced to the user as fact until triage has evidence. Load on any report; the user's explicit direction still overrides.
----
-
 # dispatch-triage — evidence before anything
+
+The dispatcher's playbook for an issue report — a bug, a red test, a reviewer finding, an executor's out-of-scope observation, or any "pre-existing / unrelated / skipped" claim. Root-cause with debug first (evidence, never the dispatcher's own guess), plan the fix with architect when the decision is technical, then implement through dispatch-direct and review-gate. Nothing is filed to the backlog or surfaced to the user as fact until triage has evidence. Load on any report; the user's explicit direction still overrides.
 
 A report is a hypothesis. This playbook turns it into either a confirmed defect
 with a scheduled fix or a documented non-issue — and nothing in between reaches

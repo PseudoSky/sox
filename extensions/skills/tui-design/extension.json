@@ -10,6 +10,8 @@
   },
   "license": "MIT",
   "author": "gfargo (harvested); sox-ecosystem",
+  "source": "https://github.com/gfargo/skills/tree/main/plugins/terminal/skills/tui-design",
+  "sourceVersion": "v1.4.0",
   "keywords": [
     "tui",
     "cli",

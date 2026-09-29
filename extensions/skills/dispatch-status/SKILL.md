@@ -1,9 +1,6 @@
----
-name: dispatch-status
-description: The dispatcher's read-only playbook — answer "where are we" for the current run — in-flight and finished dispatches with their verified state, Task-list status, backlog items touched this run, open plans and claims, and unrecorded transitions. Also run before every dispatcher return to prove nothing is orphaned. Dispatches nothing, writes nothing. Load on "status", "what's in flight", "what's left", or at close.
----
-
 # dispatch-status — what is true right now
+
+The dispatcher's read-only playbook — answer "where are we" for the current run — in-flight and finished dispatches with their verified state, Task-list status, backlog items touched this run, open plans and claims, and unrecorded transitions. Also run before every dispatcher return to prove nothing is orphaned. Dispatches nothing, writes nothing. Load on "status", "what's in flight", "what's left", or at close.
 
 ## Sources (read, never infer)
 

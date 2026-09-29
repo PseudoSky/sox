@@ -10,6 +10,8 @@
   },
   "license": "MIT",
   "author": "sox-ecosystem",
+  "source": "~/.config/opencode/skills/iterative-research-refinement",
+  "sourceVersion": "9",
   "keywords": [
     "research",
     "meta-cognition",

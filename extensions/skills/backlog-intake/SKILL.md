@@ -1,9 +1,6 @@
----
-name: backlog-intake
-description: The dispatcher's intake step — before decomposing any direction, ask backlog-operator for related backlog items (by symbol, path, error text) and apply the inclusion policy — same root cause → recommend folding in; small and in scope → fold in to burn the backlog; old or unverified → attach to the related executor as check-and-confirm (the executor must message the dispatcher confirm/deny with evidence before correcting); unrelated → leave. Runs once per direction in dispatch-direct/dispatch-triage. Load at intake; never files new items (that is triage).
----
-
 # backlog-intake — burn the backlog while you're there
+
+The dispatcher's intake step — before decomposing any direction, ask backlog-operator for related backlog items (by symbol, path, error text) and apply the inclusion policy — same root cause → recommend folding in; small and in scope → fold in to burn the backlog; old or unverified → attach to the related executor as check-and-confirm (the executor must message the dispatcher confirm/deny with evidence before correcting); unrelated → leave. Runs once per direction in dispatch-direct/dispatch-triage. Load at intake; never files new items (that is triage).
 
 Related backlog items are cheapest to fix when an executor is already in the
 file. This step finds them, buckets them with the operator, and applies a fixed

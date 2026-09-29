@@ -1,20 +1,6 @@
----
-name: demo-creator
-description: >
-  Use this skill whenever you need to produce a project's demo script, DEMO.md,
-  acceptance walkthrough, QA verification script, or end-to-end "prove it works"
-  document — and especially when the user wants something that both tells the
-  product's story like a live demo AND functions as a rigorous acceptance test.
-  Trigger it even when the user doesn't say "demo": phrases like "walkthrough for
-  QA", "exercise every path", "verify we built what the spec says", "acceptance
-  script", "show the system works 100%", "a script I can hand to QA/an agent", or
-  "a TED/YouTube-style demo of the project" all mean this skill. It turns a project
-  spec (or PRD/README/landing copy/code) into a persona-narrated, presentation-grade
-  DEMO.md with exact commands, exact data, binary pass/fail assertions, full
-  happy/edge/recovery coverage, and requirement→capability traceability.
----
-
 # Demo Creator
+
+Use this skill whenever you need to produce a project's demo script, DEMO.md, acceptance walkthrough, QA verification script, or end-to-end "prove it works" document — and especially when the user wants something that both tells the product's story like a live demo AND functions as a rigorous acceptance test. Trigger it even when the user doesn't say "demo": phrases like "walkthrough for QA", "exercise every path", "verify we built what the spec says", "acceptance script", "show the system works 100%", "a script I can hand to QA/an agent", or "a TED/YouTube-style demo of the project" all mean this skill. It turns a project spec (or PRD/README/landing copy/code) into a persona-narrated, presentation-grade DEMO.md with exact commands, exact data, binary pass/fail assertions, full happy/edge/recovery coverage, and requirement→capability traceability.
 
 Turn a project's context into a **DEMO.md** that is two documents fused into one:
 

@@ -1,6 +1,6 @@
 {
   "$schema": "https://your-registry/schemas/extension/v2.json",
-  "id": "dep-injector",
+  "id": "di-skill",
   "version": "0.1.0",
   "type": "skill",
   "title": "dep-injector",

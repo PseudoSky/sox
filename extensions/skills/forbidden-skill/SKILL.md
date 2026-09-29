@@ -1,8 +1,3 @@
----
-name: forbidden-skill
-description: forbidden-skill extension
----
-
 # forbidden-skill
 
 <!-- markdownlint-disable MD013 -->

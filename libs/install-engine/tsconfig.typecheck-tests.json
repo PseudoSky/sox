@@ -1,0 +1,25 @@
+{
+  // Spec-inclusive typecheck. `tsconfig.typecheck.json` excludes *.spec.ts /
+  // *.test.ts, so specs were never typechecked and top-level-await specs
+  // (repair-concurrent-backfill.spec.ts, which binds `node:fs` after a hoisted
+  // `vi.mock`) shipped with a typecheck target that could not even run under
+  // the lib config's `module: CommonJS`.
+  //
+  // Chain: `typecheck` (executor `nx:noop`) -> `typecheck-tests` (this file) ->
+  // `typecheck-src` (production-only, `tsconfig.typecheck.json`). Mirrors
+  // libs/memory-core's layering so a whole-repo sweep reports which leaf failed.
+  //
+  // module/moduleResolution differ from the lib config on purpose: vitest runs
+  // these files as ESM, which CommonJS/node10 rejects (TS1378 top-level await).
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "ignoreDeprecations": "6.0",
+    "noEmit": true,
+    "esModuleInterop": true,
+    "types": ["node"]
+  },
+  "include": ["src/**/*.ts"],
+  "exclude": ["node_modules"]
+}

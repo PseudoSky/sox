@@ -5,6 +5,16 @@
 > `bundle`). Each gets its own `docs/guidelines/<type>.md`, all built on the same five-layer model.
 > Reference instance: `docs/guidelines/mcp.md`.
 
+> **Note (bug aace3faa, 2026-09):** this document predates the declarative skill
+> shape and describes `SKILL.md` as "authored prose". That is now literally true at
+> the header level too — the skill header (`name`, `description`, `license`,
+> `allowed-tools`, `metadata`) is rendered from `extension.json` at install time by
+> `libs/host-registry/src/skill-renderers.ts`, so the source `SKILL.md` is prose-only
+> and the manifest is the single source of truth. The `skill-headers` guard
+> (`tools/check-skill-frontmatter.mjs`) now validates the manifest + rendered artifact
+> (source-purity, id == dirname, description ≤1024, rendered-YAML parse). The run()/
+> `SkillInput`/`SkillOutput` seam analysis below is unaffected by that change.
+
 ---
 
 ## Operating principle (read first)

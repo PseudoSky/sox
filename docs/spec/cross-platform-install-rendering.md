@@ -459,9 +459,14 @@ else:  // 'config-value'
 2. Does `temperature`/`mode` belong in the shared IR when only opencode consumes
    them, or should they be opencode-only overrides? (Leaning: IR, ignored by
    hosts that don't support them — §4.4.)
-3. Should `render-drop` also apply to **skills** (gap-analysis G7 — validate
+3. ~~Should `render-drop` also apply to **skills** (gap-analysis G7 — validate
    skill frontmatter per host), or is skill a pure shared-SKILL.md file-drop that
-   stays untouched? (Leaning: skills stay file-drop; only *validation* is added.)
+   stays untouched?~~ **CLOSED (bug aace3faa):** skills now render their header from
+   `extension.json` through `libs/host-registry/src/skill-renderers.ts` (the skill
+   counterpart of `agent-renderers.ts`), so the source `SKILL.md` is prose-only and
+   the header is machine-generated at install. The install engine's `renderSkillForHost`
+   stages a rendered copy for the file-drop; the `skill-headers` guard validates the
+   manifest + rendered artifact.
 4. **Exact codex agent TOML field name** for the prompt/instructions body
    (`instructions` vs `prompt` vs `system_prompt`) — to be confirmed against the
    codex agent schema at implementation time (§5.4).

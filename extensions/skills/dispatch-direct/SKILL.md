@@ -1,9 +1,6 @@
----
-name: dispatch-direct
-description: The dispatcher's default playbook — turn explicit user direction (a task, a list, a port, a refactor, a PR) into a Task tree, dispatch 00-active executors in the background under dispatch-contract briefs, verify each outcome from git/tests/state, review-gate and merge, and keep the Task list and backlog in sync. Load when the user gives direction that is not an issue report (that is dispatch-triage) and not a plan reference (that is dispatch-plan). Explicit direction is followed as given.
----
-
 # dispatch-direct — direction in, merged work out
+
+The dispatcher's default playbook — turn explicit user direction (a task, a list, a port, a refactor, a PR) into a Task tree, dispatch 00-active executors in the background under dispatch-contract briefs, verify each outcome from git/tests/state, review-gate and merge, and keep the Task list and backlog in sync. Load when the user gives direction that is not an issue report (that is dispatch-triage) and not a plan reference (that is dispatch-plan). Explicit direction is followed as given.
 
 The user told you what they want. Your job is to get it done by others, prove it
 is done, and leave nothing in flight. You do not reframe the request into

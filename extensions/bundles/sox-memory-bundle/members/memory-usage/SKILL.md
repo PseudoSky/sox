@@ -1,9 +1,6 @@
----
-name: memory-usage
-description: How to recall prior knowledge and store durable findings in the soxe graph-memory system via the memory_* MCP tools. Use whenever you are about to research, decide, or could benefit from what was learned before — recall first; and whenever you produce a durable, generalized, sourced finding worth carrying forward — write it.
----
-
 # memory-usage — using the soxe graph memory system
+
+How to recall prior knowledge and store durable findings in the soxe graph-memory system via the memory_* MCP tools. Use whenever you are about to research, decide, or could benefit from what was learned before — recall first; and whenever you produce a durable, generalized, sourced finding worth carrying forward — write it.
 
 <!-- markdownlint-disable MD013 -->
 

@@ -1,11 +1,6 @@
----
-name: iterative-research-refinement
-description: Meta-cognitive research process (v9) that improves itself through nested feedback loops — Position Declaration → Iteration Manifest (quantified baselines + MANDATORY runtime metrics, success thresholds) → Pre-Commitment → Observation Generalization → Loop 1 research → Loop 2 process audit → Loop 3 propose-to-new-file → Loop 3a fresh-subagent real-execution test + runtime measurement (Step 5.5) → Loop 3b commit → Loop 4 verification. Runtime metrics (tool calls, wall-clock, cost, tokens, cache reads) are required success criteria for any real-execution iteration; a variant that regresses runtime beyond threshold does not promote unchanged. Use for any research or refinement engagement that needs quantified baselines, measured deltas, A/B refinement, or self-auditing methodology. Load by reference at the start of every engagement; the canonical source is the sox-ecosystem registry extension (extensions/skills/iterative-research-refinement/), and installed copies on both hosts are synced from it.
-source: ~/.config/opencode/skills/iterative-research-refinement
-source-version: "9"
----
-
 # Iterative Research Refinement Skill
+
+Meta-cognitive research process (v9) that improves itself through nested feedback loops — Position Declaration → Iteration Manifest (quantified baselines + MANDATORY runtime metrics, success thresholds) → Pre-Commitment → Observation Generalization → Loop 1 research → Loop 2 process audit → Loop 3 propose-to-new-file → Loop 3a fresh-subagent real-execution test + runtime measurement (Step 5.5) → Loop 3b commit → Loop 4 verification. Runtime metrics (tool calls, wall-clock, cost, tokens, cache reads) are required success criteria for any real-execution iteration; a variant that regresses runtime beyond threshold does not promote unchanged. Use for any research or refinement engagement that needs quantified baselines, measured deltas, A/B refinement, or self-auditing methodology. Load by reference at the start of every engagement; the canonical source is the sox-ecosystem registry extension (extensions/skills/iterative-research-refinement/), and installed copies on both hosts are synced from it.
 
 **Version:** 9 — Runtime metrics are MANDATORY success criteria. Every iteration
 must measure tool calls, wall-clock, cost, tokens, and cache reads for baseline AND

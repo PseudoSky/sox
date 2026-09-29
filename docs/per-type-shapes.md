@@ -58,7 +58,7 @@
 
 ## skill
 
-**Entrypoint form:** `SKILL.md` — a markdown file with YAML frontmatter (`name`, `description`). The real shape (`plan-state-machine/SKILL.md`, `workflow-memory/SKILL.md`) is a pure markdown document with frontmatter. No source code, no build step. The previous template generated `src/index.ts` + `tsconfig.json` + build scripts, which does not match reality.
+**Entrypoint form:** `SKILL.md` — a prose-only markdown document (no YAML frontmatter in source). The header (`name`, `description`, `license`, `allowed-tools`, `metadata`) is rendered from `extension.json` at install time by `libs/host-registry/src/skill-renderers.ts`, so the manifest is the single source of truth for the header (bug aace3faa — a hand-written frontmatter diverged from the manifest and could silently drop the skill). No source code, no build step.
 
 **Runtime:** `declarative` — no process is spawned. The host injects the `SKILL.md` content at invocation time. **Template changed from `runtime: node` to `runtime: declarative`.**
 
@@ -66,7 +66,7 @@
 
 **Install-target:** `~/.claude/skills/<id>/` — the host discovers skills at this path. [flex:install-target] applied.
 
-**Key refinements made:** Replaced `src/index.ts` + `tsconfig.json` + `run_interface` with `SKILL.md` frontmatter + markdown body. Changed `runtime: node` to `runtime: declarative`. Added `entrypoint: SKILL.md`. Added `install-target`. Removed build scripts from `package.json` (minimal identity-only `package.json`).
+**Key refinements made:** Replaced `src/index.ts` + `tsconfig.json` + `run_interface` with a prose-only `SKILL.md` body + a manifest-rendered header. Changed `runtime: node` to `runtime: declarative`. Added `entrypoint: SKILL.md`. Added `install-target`. Removed build scripts from `package.json` (minimal identity-only `package.json`).
 
 ---
 

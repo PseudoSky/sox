@@ -39,7 +39,10 @@ When asked to harvest an external repo/URL into a sox extension:
 1. **Fetch the upstream content** (SKILL.md and any references/, assets/, scripts/ dirs).
 2. **Scaffold** with `soxe init skill <id>` (adds extension.json, package.json, CHANGELOG.md, README.md, SKILL.md skeleton).
 3. **Move to** `extensions/skills/<id>/`.
-4. **Populate SKILL.md** with upstream content + YAML frontmatter with `source` and `source-version` fields.
+4. **Populate SKILL.md** with upstream content — prose only (no frontmatter). Put the `source`
+   and `source-version` provenance into `extension.json` as `source`/`sourceVersion`; the header
+   (`name`, `description`, `license`, `metadata`) is rendered from the manifest at install time
+   (bug aace3faa).
 5. **Write reference files** into `references/` (same structure as upstream).
 6. **Update extension.json** `run_interface` with input/output schemas matching the skill's contract.
 7. **No registry step needed** — the new skill has no `registry/index.json` row and installs

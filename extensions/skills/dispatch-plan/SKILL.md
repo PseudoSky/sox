@@ -1,9 +1,6 @@
----
-name: dispatch-plan
-description: The dispatcher's playbook for plans, which live in the backlog — used when the user asks for a plan, or when a plan-item already covers the area. A plan is crafted into the backlog — product prioritizes, architect returns the structured items with their part_of / blocks edges, the dispatcher has backlog-operator file and link them, and it executes from the ready view. The dispatcher never designs the plan structure and never touches the graph. Load when a plan is named or discovered; otherwise stay in dispatch-direct.
----
-
 # dispatch-plan — plans are backlog structure
+
+The dispatcher's playbook for plans, which live in the backlog — used when the user asks for a plan, or when a plan-item already covers the area. A plan is crafted into the backlog — product prioritizes, architect returns the structured items with their part_of / blocks edges, the dispatcher has backlog-operator file and link them, and it executes from the ready view. The dispatcher never designs the plan structure and never touches the graph. Load when a plan is named or discovered; otherwise stay in dispatch-direct.
 
 The user owns the choice to plan. This playbook exists so that when they make
 it, the plan is crafted properly — as dependency-correct backlog structure — and

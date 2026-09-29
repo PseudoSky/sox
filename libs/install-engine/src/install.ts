@@ -1636,10 +1636,15 @@ export type RegistryHostScope = 'project' | 'user' | 'local' | 'org';
 function loadHostRegistry(): {
   getHost(name: string): HostModuleLocal;
   expandHome(p: string): string;
+  renderSkillFile(
+    manifest: unknown,
+    prose: string,
+  ): { kind: string; content?: string } | null;
 } {
   const mod = require('@adhd/sox-host-registry') as {
     getHost(name: string): HostModuleLocal;
     expandHome(p: string): string;
+    renderSkillFile(manifest: unknown, prose: string): { kind: string; content?: string } | null;
   };
   return mod;
 }
@@ -2120,6 +2125,13 @@ export async function declarativeInstall(
           const rendered = renderAgentForHost(descriptor.srcPath, descriptor.ext, hostName, hostMod.render);
           if (rendered !== null) contentPath = rendered;
         }
+      } else if (descriptor.type === 'skill' && fs.statSync(descriptor.srcPath).isDirectory()) {
+        // [def:skill-renderer]: render the host-agnostic header from the manifest
+        // so the copied SKILL.md carries a machine-generated YAML header and the
+        // source SKILL.md stays prose-only (bug aace3faa). Raw passthrough when
+        // the manifest has no usable id/description.
+        const staged = renderSkillForHost(descriptor.srcPath, descriptor.ext);
+        if (staged !== null) contentPath = staged;
       }
       const srcHash = hashPathForInstall(contentPath);
 
@@ -2176,14 +2188,16 @@ export async function declarativeInstall(
           fs.copyFileSync(contentPath, destPath);
         } else {
           // Non-agent: src can be a directory (skill/command/hook) or a file.
-          const srcStat = fs.statSync(descriptor.srcPath);
+          // contentPath is descriptor.srcPath except for skills, where it is the
+          // staged directory carrying the rendered header.
+          const srcStat = fs.statSync(contentPath);
           if (srcStat.isDirectory()) {
             if (!fs.existsSync(destPath)) fs.mkdirSync(destPath, { recursive: true });
-            fs.cpSync(descriptor.srcPath, destPath, { recursive: true, force: true });
+            fs.cpSync(contentPath, destPath, { recursive: true, force: true });
           } else {
             const dir = path.dirname(destPath);
             if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-            fs.copyFileSync(descriptor.srcPath, destPath);
+            fs.copyFileSync(contentPath, destPath);
           }
         }
         applied = true;
@@ -2740,4 +2754,47 @@ function renderAgentForHost(
   const scratchPath = path.join(scratchDir, `${ext}-${hostName}-${csum}.md`);
   fs.writeFileSync(scratchPath, result.content, 'utf8');
   return scratchPath;
+}
+
+/**
+ * Render a skill's header from its manifest (extension.json) into a staged
+ * directory, or return null when the manifest has no usable id/description
+ * (raw passthrough). The staged directory's basename equals basename(srcDir)
+ * so destPath (path.join(absTarget, basename(srcPath))) and the cpSync
+ * semantics are unchanged; the rendered SKILL.md overwrites the source copy
+ * inside the staged directory.
+ *
+ * [def:skill-renderer]: the skill half of "author once, install everywhere" —
+ * the header is derived from extension.json through host-registry's
+ * renderSkillFile (yamlStringify), making SKILL.md prose-only (bug aace3faa).
+ */
+function renderSkillForHost(srcDir: string, ext: string): string | null {
+  const manifestPath = path.join(srcDir, 'extension.json');
+  if (!fs.existsSync(manifestPath)) return null;
+  let manifest: Record<string, unknown>;
+  try {
+    manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8')) as Record<string, unknown>;
+  } catch {
+    return null;
+  }
+  const prosePath = resolveEntrypointFile(srcDir);
+  if (!fs.existsSync(prosePath)) return null;
+  const prose = fs.readFileSync(prosePath, 'utf8');
+  const { renderSkillFile } = loadHostRegistry();
+  const result = renderSkillFile(manifest, prose);
+  if (result === null || result.kind !== 'file-body' || typeof result.content !== 'string') {
+    return null;
+  }
+  // Deterministic staging dir: content-hash-named so identical rendered bytes
+  // share one directory and re-install hashing is byte-stable
+  // ([inv:rendered-deterministic]).
+  const csum = crypto.createHash('sha256').update(result.content).digest('hex').slice(0, 16);
+  const scratchDir = path.join(os.tmpdir(), 'sox-render');
+  fs.mkdirSync(scratchDir, { recursive: true });
+  const stagedSkillDir = path.join(scratchDir, `${ext}-${csum}`, path.basename(srcDir));
+  fs.mkdirSync(stagedSkillDir, { recursive: true });
+  fs.cpSync(srcDir, stagedSkillDir, { recursive: true, force: true });
+  const stagedSkillMd = path.join(stagedSkillDir, 'SKILL.md');
+  fs.writeFileSync(stagedSkillMd, result.content, 'utf8');
+  return stagedSkillDir;
 }
