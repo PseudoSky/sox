@@ -51,8 +51,44 @@
       "options": { "command": "node tools/run-guards.mjs --tier2", "cwd": "." },
       "cache": false
     },
+    "check-skill-headers": {
+      "executor": "nx:run-commands",
+      "options": {
+        "command": "node tools/check-skill-frontmatter.mjs --all",
+        "cwd": "."
+      },
+      "cache": false,
+      "dependsOn": [
+        {
+          "projects": [
+            "host-registry"
+          ],
+          "target": "build"
+        }
+      ]
+    },
+    "check-skill-headers-test": {
+      "executor": "nx:run-commands",
+      "options": {
+        "command": "node tools/check-skill-frontmatter.test.mjs",
+        "cwd": "."
+      },
+      "cache": false,
+      "dependsOn": [
+        {
+          "projects": [
+            "host-registry"
+          ],
+          "target": "build"
+        }
+      ]
+    },
     "lint": {
       "executor": "@nx/eslint:lint",
+      "dependsOn": [
+        "check-skill-headers",
+        "check-skill-headers-test"
+      ],
       "options": {
         "lintFilePatterns": [
           "scripts/**/*.ts",

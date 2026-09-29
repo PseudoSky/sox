@@ -17,6 +17,10 @@
  * Run: node tools/check-skill-frontmatter.test.mjs
  * (plain node:test; requires `npx nx build host-registry` first so the built renderer
  * is loadable — the same prerequisite the guard itself has.)
+ *
+ * Runner: wired as the root project's `check-skill-headers-test` nx target, which
+ * `lint` depends on — so `npx nx run-many -t lint` runs this suite (the a93f36fc
+ * defect: it previously passed 8/8 by hand but was wired to no runner at all).
  */
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -35,6 +39,10 @@ import {
 } from './check-skill-frontmatter.mjs';
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+
+// Leg 1 delegates to the renderer's own stripFrontmatter (the shared detector), so
+// the purity tests load it once here — same prerequisite as the guard itself.
+const { stripFrontmatter, renderSkillFile } = loadRenderer();
 
 function preFixBytes() {
   return execFileSync(
@@ -61,13 +69,33 @@ function unquoteSingle(raw) {
 }
 
 test('RED: source-purity rejects the authentic pre-fix bytes (frontmatter fence)', () => {
-  const err = checkSourcePurity(preFixBytes(), 'extensions/skills/dispatch-plan/SKILL.md');
+  const err = checkSourcePurity(preFixBytes(), 'extensions/skills/dispatch-plan/SKILL.md', stripFrontmatter);
   assert.ok(err !== null, 'pre-fix bytes must be rejected by the source-purity leg');
   assert.match(err, /prose-only/);
 });
 
 test('GREEN: source-purity accepts the migrated prose-only source', () => {
-  assert.equal(checkSourcePurity(migratedBytes(), 'extensions/skills/dispatch-plan/SKILL.md'), null);
+  assert.equal(checkSourcePurity(migratedBytes(), 'extensions/skills/dispatch-plan/SKILL.md', stripFrontmatter), null);
+});
+
+test('source-purity rejects a fence hidden behind a leading blank line (aligns with stripFrontmatter)', () => {
+  // stripFrontmatter is anchored to `^---`; a blank line ahead of the fence defeats
+  // stripping, so leg 1 must reject it rather than pass a source that renders broken.
+  const err = checkSourcePurity('\n---\nname: x\n---\nbody\n', 'x/SKILL.md', stripFrontmatter);
+  assert.ok(err !== null, 'a fence after a leading blank line defeats stripFrontmatter and must be rejected');
+  assert.match(err, /prose-only/);
+});
+
+test('source-purity rejects a fence hidden behind a BOM', () => {
+  const err = checkSourcePurity('\uFEFF\n---\nname: x\n---\nbody\n', 'x/SKILL.md', stripFrontmatter);
+  assert.ok(err !== null, 'a fence after a BOM defeats stripFrontmatter and must be rejected');
+});
+
+test('source-purity accepts a bare horizontal rule (no closing fence — not frontmatter)', () => {
+  // A lone leading `---` is a markdown horizontal rule, not a frontmatter fence —
+  // stripFrontmatter does not strip it, so leg 1 (now sharing that detector) does
+  // not reject it either.
+  assert.equal(checkSourcePurity('---\njust a rule\n', 'x/SKILL.md', stripFrontmatter), null);
 });
 
 test('manifest: id must equal the directory basename and be a kebab slug', () => {
@@ -94,7 +122,6 @@ test('body: empty prose is rejected', () => {
 });
 
 test('IMMUNE: the pre-fix colon description renders to a quoted scalar that round-trips', () => {
-  const { renderSkillFile } = loadRenderer();
   const manifest = {
     id: 'dispatch-plan',
     description: 'The dispatcher plays back plans: product prioritizes, architect returns the items',

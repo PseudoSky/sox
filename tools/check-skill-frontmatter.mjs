@@ -30,13 +30,17 @@
  *   default                `git diff --cached` (the pre-commit hook's staged set).
  *   --base <ref> --head <ref>
  *                          `git diff --name-only <base> <head>` (manual / CI context).
+ *   --all                  whole-tree: every tracked source SKILL.md under
+ *                          extensions/skills/ and extensions/bundles/ — the build/CI
+ *                          mode (a CI runner has no staged set, so the changed-file
+ *                          modes would silently check nothing).
  *
  * Exit 0 when there is nothing to check or every checked file passes. Exit non-zero
  * on any source-purity / manifest violation, when `skillcheck` fails on a rendered
  * artifact, or when a required dependency (the host-registry build, or `uvx`) cannot
  * be satisfied while files are in scope — fail-closed, never a silent pass.
  *
- * Usage: node tools/check-skill-frontmatter.mjs [--base <ref> --head <ref>]
+ * Usage: node tools/check-skill-frontmatter.mjs [--base <ref> --head <ref>] [--all]
  */
 import { execFileSync, spawnSync } from 'node:child_process';
 import * as fs from 'node:fs';
@@ -83,11 +87,21 @@ export function isSkillManifest(f) {
 
 /**
  * Leg 1 — source purity. Returns an error string when the source prose still
- * carries a hand-written frontmatter fence (a leading `---` line), else null.
+ * carries a hand-written frontmatter fence, else null.
+ *
+ * `strip` is the renderer's own `stripFrontmatter` (shared — one detector, no
+ * drift). The renderer strips a leading fence only when it sits at absolute
+ * position 0 (`^---\s*\n…\n---`), so a fence hidden behind a BOM or a leading
+ * blank line would survive stripping and ship as a stale second header. We
+ * normalize leading BOM + blank lines first, then ask that same detector
+ * whether a fence remains — so a source the renderer would fail to strip is
+ * rejected here instead of silently rendering a broken header.
  */
-export function checkSourcePurity(content, file) {
-  const firstLine = content.split('\n', 1)[0] ?? '';
-  if (/^\s*---\s*$/.test(firstLine)) {
+export function checkSourcePurity(content, file, strip) {
+  const normalized = content
+    .replace(/^\uFEFF/, '')
+    .replace(/^(?:[ \t]*\r?\n)+/, '');
+  if (strip(normalized) !== normalized) {
     return `${file}: source SKILL.md begins with a YAML fence — the header is rendered from extension.json, so the source must be prose-only (this is the 1ceffdbf silent-drop class)`;
   }
   return null;
@@ -186,7 +200,7 @@ function parseArgs(argv) {
     const i = argv.indexOf(name);
     return i !== -1 && argv[i + 1] ? argv[i + 1] : undefined;
   };
-  return { base: flagVal('--base'), head: flagVal('--head') };
+  return { base: flagVal('--base'), head: flagVal('--head'), all: argv.includes('--all') };
 }
 
 // No try/catch: a git failure here is a hook failure. Let it throw — fail-closed by
@@ -215,16 +229,33 @@ function getChangedFiles(args) {
   return out.split('\0').filter(Boolean);
 }
 
+/**
+ * Whole-tree mode: every tracked source SKILL.md under extensions/skills/ and
+ * extensions/bundles/. Uses `git ls-files` (tracked truth, like guards-manifest)
+ * so untracked scratch/dist files are never swept in.
+ */
+function getAllSkillFiles() {
+  const out = execFileSync(
+    'git',
+    ['-C', REPO_ROOT, 'ls-files', '-z', '--', 'extensions/skills', 'extensions/bundles'],
+    { encoding: 'utf8' },
+  );
+  return out.split('\0').filter(isSourceSkillMd);
+}
+
 function main() {
   const args = parseArgs(process.argv.slice(2));
-  const changed = getChangedFiles(args);
+  const changed = args.all ? null : getChangedFiles(args);
 
   // A changed SKILL.md or a changed extension.json both select their skill dir for
   // the full leg run (a manifest edit must re-render and re-check the same skill).
-  const skillFiles = new Set(changed.filter(isSourceSkillMd));
-  for (const f of changed.filter(isSkillManifest)) {
-    const skillMd = path.posix.join(path.posix.dirname(f), 'SKILL.md');
-    if (fs.existsSync(path.join(REPO_ROOT, skillMd))) skillFiles.add(skillMd);
+  // `--all` enumerates every tracked source SKILL.md instead of the diff.
+  const skillFiles = new Set(args.all ? getAllSkillFiles() : changed.filter(isSourceSkillMd));
+  if (!args.all) {
+    for (const f of changed.filter(isSkillManifest)) {
+      const skillMd = path.posix.join(path.posix.dirname(f), 'SKILL.md');
+      if (fs.existsSync(path.join(REPO_ROOT, skillMd))) skillFiles.add(skillMd);
+    }
   }
 
   if (skillFiles.size === 0) {
@@ -237,9 +268,15 @@ function main() {
   const renderedPaths = [];
 
   // Load the renderer up-front so a missing/stale build fails closed before any leg runs.
-  const { renderSkillFile } = loadRenderer();
+  const { renderSkillFile, stripFrontmatter } = loadRenderer();
 
   const scratch = fs.mkdtempSync(path.join(os.tmpdir(), 'sox-skillcheck-'));
+  // Never leak the staged-render dir — `process.exit()` skips try/finally, but a
+  // synchronous 'exit' handler runs on every exit path (success, violation, or a
+  // thrown skillcheck/spawn error).
+  process.on('exit', () => {
+    fs.rmSync(scratch, { recursive: true, force: true });
+  });
 
   for (const rel of files) {
     const abs = path.join(REPO_ROOT, rel);
@@ -249,7 +286,7 @@ function main() {
     const manifestAbs = path.join(REPO_ROOT, manifestRel);
 
     // Leg 1: source purity.
-    const purity = checkSourcePurity(content, rel);
+    const purity = checkSourcePurity(content, rel, stripFrontmatter);
     if (purity !== null) errors.push(purity);
 
     // Leg 2: manifest + body.
@@ -315,7 +352,10 @@ function main() {
 
 // Only run as a CLI when executed directly — importing this module (e.g. from
 // tools/check-skill-frontmatter.test.mjs) must not shell out to git/uvx or call
-// process.exit().
-if (import.meta.url === `file://${process.argv[1]}`) {
+// process.exit(). Compare real paths (fileURLToPath decodes percent-encoding), so
+// a repo path containing a space or non-ASCII still resolves to the entrypoint —
+// the old `import.meta.url === \`file://${process.argv[1]}\`` compared an encoded
+// URL against a raw path and silently failed open on those, skipping the guard.
+if (process.argv[1] && fileURLToPath(import.meta.url) === path.resolve(process.argv[1])) {
   main();
 }
