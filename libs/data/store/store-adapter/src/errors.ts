@@ -310,7 +310,16 @@ export function isDatabaseError(err: unknown): boolean {
  */
 export function isFatalConnectionError(err: unknown): boolean {
   if (!isErrorWithCode(err)) return false;
-  return /\bI\/O error\b/i.test(err.message) || /database disk image is malformed/i.test(err.message);
+  // (plan 862129b5 TUR-C) The off-thread driver host rejects every pending call
+  // with `E_TURSO_DRIVER_WORKER_EXITED` when its worker dies. That is a fatal
+  // connection fault exactly like a native I/O error — the connection is gone
+  // and requires a reconnect — so it is recognized here rather than left to the
+  // generic tier. It is the ONLY marker this predicate gained.
+  return (
+    err.code === 'E_TURSO_DRIVER_WORKER_EXITED' ||
+    /\bI\/O error\b/i.test(err.message) ||
+    /database disk image is malformed/i.test(err.message)
+  );
 }
 
 // ── RepairDeclinedLivePeersError (BUG-017) ─────────────────────────────────

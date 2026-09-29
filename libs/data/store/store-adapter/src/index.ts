@@ -43,6 +43,7 @@ export * from './wal-ownership.js';
 // `captureWalCapBaseline()`) can read the same defaults this package uses
 // rather than re-guessing them.
 export * from './wal-tuning.js';
+export * from './turso-driver-host.js';
 
 /**
  * (PERF/CORRECTNESS) Canonical store identity — the ONE definition of "are these
