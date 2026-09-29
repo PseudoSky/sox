@@ -102,7 +102,7 @@ const ALL_PACKAGE_JSON_PATHS = trackedFiles(':(glob)**/package.json');
 const ALL_TSCONFIG_JSON_PATHS = trackedFiles(':(glob)**/tsconfig*.json');
 
 export const GUARDS = [
-  // ---------------------------------------------------------------- Tier 1 (34) -----------
+  // ---------------------------------------------------------------- Tier 1 (35) -----------
   {
     id: 'bl222',
     tier: 1,
@@ -397,6 +397,22 @@ export const GUARDS = [
     // reachable in `main`. The authentic pre-fix resolve text without the "Confirm every named ref
     // is in `main`" rule is embedded as the negative control.
     watch: ['extensions/agents/backlog-operator/backlog-operator.md'],
+  },
+  {
+    id: 'skill-frontmatter',
+    tier: 1,
+    script: 'check-skill-frontmatter.mjs',
+    // 1ceffdbf: a `description` containing "backlog: product prioritizes" (colon+space inside an
+    // unquoted YAML scalar) made the SKILL.md frontmatter unparseable, and the host silently
+    // dropped the skill with no error anywhere. This guard runs the off-the-shelf `skillcheck`
+    // linter (via `uvx`) over exactly the changed SKILL.md files, so a re-introduced unquoted
+    // "colon+space" — or a frontmatter block that is missing/malformed — fails the commit. It is
+    // a linter, not a regression pin: it validates the changed files only (the staged diff), never
+    // the whole tree, so pre-existing broken skills are surfaced only when someone actually edits
+    // them. Agent source .md files are prose-only in this repo (frontmatter rendered at install
+    // from extension.json), so the `extensions/agents/` watch arms the guard for the future but
+    // the agent leg is a structural no-op today (see tools/check-skill-frontmatter.mjs).
+    watch: ['extensions/skills/', 'extensions/agents/'],
   },
   {
     id: '7ff58364-7dd7a974-062504ba-3b752549-da25489b',
