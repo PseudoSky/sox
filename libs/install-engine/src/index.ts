@@ -101,8 +101,20 @@ export {
   supersededEntries,
   OwnershipCorruptError,
   OwnershipConflictError,
+  OwnershipWriteError,
 } from './ownership.js';
 export type { OwnedEntry, OwnershipRecord, OwnershipFile } from './ownership.js';
+
+// ─── D-B: parallel-safe publish primitive + drift/reconcile ────────────────────
+export { atomicWriteFileSync, withReconciledRetry } from './atomic-write.js';
+export type { DriftVerdict, DriftEntry, DriftReport } from './drift.js';
+export { detectDrift } from './drift.js';
+export type { ReconcileStatus, ReconcileReport, ReconcileExtensionEntry } from './reconcile.js';
+export { reconcile } from './reconcile.js';
+
+// ─── D-B / S5: hash-backfill migration (`soxe repair --backfill-hashes`) ───────
+export { backfillHashes, countUnverifiable } from './repair.js';
+export type { BackfillReport } from './repair.js';
 
 // ─── #16728 fix: auto-merge user-scope MCP servers into project .mcp.json ──────
 export {

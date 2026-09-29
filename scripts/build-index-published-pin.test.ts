@@ -11,7 +11,7 @@
  * (`install.ts fetchArtifact`) npm-installs THAT version and hashes the
  * entrypoint inside the PUBLISHED tarball. Local and published agree only while
  * nobody has rebuilt since publishing — and `dist/` is rewritten by every build.
- * Commit 304513c4 hand-repaired four such rows after every fresh install started
+ * Commit b5a90314 hand-repaired four such rows after every fresh install started
  * failing closed with CHECKSUM MISMATCH; its own commit message warned "the next
  * `registry:sync-index` run will regenerate these four from local bytes and
  * re-break them." The documented release command (`pnpm release:prepared`) runs
@@ -53,12 +53,19 @@ const CURRENT_SCRIPT = path.join(REPO_ROOT, 'scripts', 'build-index.ts');
 const TSX_CLI = require.resolve('tsx/cli');
 
 /**
- * The last commit BEFORE pin preservation landed. The RED arm materializes this
- * exact pre-fix generator and proves it clobbers the sentinel — without it, a
- * test that only asserts the GREEN behaviour cannot distinguish "the fix works"
+ * The last commit BEFORE pin preservation landed — the parent of `1cf898e3`
+ * ("fix(release): stop the release path from clobbering published-bytes pins"),
+ * the commit that introduced the `preserving published-bytes checksum` branch
+ * in `scripts/build-index.ts` (see `loadCommittedPins`). The RED arm materializes
+ * this exact pre-fix generator and proves it clobbers the sentinel — without it,
+ * a test that only asserts the GREEN behaviour cannot distinguish "the fix works"
  * from "the fixture never exercised the defect".
+ *
+ * Pinned to a full, reachable sha. This MUST be the revision immediately before
+ * the fix so the materialized copy's imports still resolve in the live checkout.
+ * (A prior placeholder, `6d955c24`, is not an object in this repository.)
  */
-const PRE_FIX_REV = '6d955c24';
+const PRE_FIX_REV = 'd829b2003aa1d59453cc8ef4c3d796663708806c';
 
 const PUBLISHED_SENTINEL = 'sha256:' + 'a'.repeat(64);
 const FIXTURE_ID = 'pinfix-fixture-server';
@@ -168,10 +175,29 @@ function dirtyTrackedFile(root: string): void {
   fs.writeFileSync(p, JSON.stringify(m, null, 2));
 }
 
-/** Materialize the pre-fix generator next to the current one so its relative imports resolve. */
+/**
+ * Materialize the pre-fix generator next to the current one so its relative imports resolve.
+ *
+ * Fails LOUDLY if the pinned revision cannot be read from the local object store
+ * (e.g. a shallow/filtered clone): that is a genuine prerequisite of this spec,
+ * not a flake, so it must never degrade to a raw `fatal:` from `git show`.
+ */
 function materializePreFixScript(): string {
+  let source: string;
+  try {
+    source = git(['show', `${PRE_FIX_REV}:scripts/build-index.ts`], REPO_ROOT);
+  } catch (err) {
+    throw new Error(
+      `build-index-published-pin: cannot resolve pre-fix revision ${PRE_FIX_REV} ` +
+        `(${PRE_FIX_REV}:scripts/build-index.ts) in the local git object store. ` +
+        `This spec needs that commit's history; a shallow or filtered clone cannot run it. ` +
+        `Fetch full history (or unshallow) before running. Underlying error: ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+    );
+  }
   const dest = path.join(REPO_ROOT, 'scripts', `.build-index.prefix.${process.pid}.ts`);
-  fs.writeFileSync(dest, git(['show', `${PRE_FIX_REV}:scripts/build-index.ts`], REPO_ROOT));
+  fs.writeFileSync(dest, source);
   tempDirs.push(dest); // rmSync(recursive) removes a plain file too
   return dest;
 }
@@ -218,7 +244,7 @@ describe('[3df6f848] build-index must not clobber a published-bytes checksum pin
     expect(out).toMatch(/preserving published-bytes checksum/);
   }, 60_000);
 
-  it('RED (pre-fix generator at 6d955c24): the same run re-pins the row to LOCAL disk bytes', async () => {
+  it(`RED (pre-fix generator @ ${PRE_FIX_REV.slice(0, 8)}): the same run re-pins the row to LOCAL disk bytes`, async () => {
     const root = scratchRepo('1.3.3', 'module.exports = "REBUILT LOCALLY AFTER PUBLISH";\n');
     const localHash = sha256File(path.join(extDirOf(root), 'dist', 'index.js'));
     const preFix = materializePreFixScript();

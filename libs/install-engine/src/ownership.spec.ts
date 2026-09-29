@@ -8,7 +8,6 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import {
   OwnershipIndex,
-  OwnershipConflictError,
   OwnershipCorruptError,
   readOwnership,
   supersededEntries,
@@ -84,10 +83,10 @@ describe('OwnershipIndex — record / get / remove', () => {
     expect(OwnershipIndex.loadFromFile(ownPath()).get('ext', 'user')).toBeUndefined();
   });
 
-  it('tolerates a missing / corrupt file (returns empty)', () => {
+  it('returns empty ONLY for a genuinely absent file; a corrupt one is loud (B-I3)', () => {
     expect(readOwnership(ownPath()).owned).toEqual([]);
     fs.writeFileSync(ownPath(), 'not json');
-    expect(readOwnership(ownPath()).owned).toEqual([]);
+    expect(() => readOwnership(ownPath())).toThrow(OwnershipCorruptError);
   });
 });
 
@@ -198,19 +197,22 @@ describe('BL-620 — ownership write is the commit point (strict load + save-con
     expect(() => readOwnership(ownPath(), { strict: true })).toThrow(OwnershipCorruptError);
   });
 
-  it('non-strict load (legacy default) still returns empty on corrupt JSON', () => {
+  it('non-strict load ALSO throws on corrupt JSON (B-I3 — the empty fallback is gone)', () => {
     fs.writeFileSync(ownPath(), 'not json');
-    expect(readOwnership(ownPath()).owned).toEqual([]);
+    expect(() => readOwnership(ownPath())).toThrow(OwnershipCorruptError);
   });
 
-  it('save() throws OwnershipConflictError when the file changed on disk since load', () => {
+  it('save() RECONCILES an external write since load — both records persist (AC1, no lost update)', () => {
     const idx = OwnershipIndex.loadFromFile(ownPath());
     idx.record({ extId: 'ext', scope: 'user', entries: [{ kind: 'file-drop', path: '/a' }] });
     // External write between this instance's load and save.
     const external = OwnershipIndex.loadFromFile(ownPath());
     external.record({ extId: 'other', scope: 'user', entries: [{ kind: 'file-drop', path: '/b' }] });
     external.save();
-    expect(() => idx.save()).toThrow(OwnershipConflictError);
+    // No throw: the merge loop unions our record with theirs.
+    idx.save();
+    const all = readOwnership(ownPath()).owned;
+    expect(all.map((r) => r.extId).sort()).toEqual(['ext', 'other']);
   });
 
   it('save() does NOT conflict when nothing changed on disk (single load→save cycle)', () => {

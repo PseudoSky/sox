@@ -7,7 +7,7 @@
  */
 import { describe, expect, it } from 'vitest';
 
-import { parseGraceMsFlag, resolveGraceMs } from './grace-ms.js';
+import { parseGraceMsFlag, resolveGraceMs, resolveRetentionMsFlag } from './grace-ms.js';
 
 describe('parseGraceMsFlag', () => {
   it('returns undefined when the value is absent', () => {
@@ -80,5 +80,41 @@ describe('resolveGraceMs', () => {
 
   it('both absent resolves to undefined', () => {
     expect(resolveGraceMs(undefined, undefined)).toBeUndefined();
+  });
+});
+
+describe('resolveRetentionMsFlag — gc flags (H4: blank → default; invalid → throw)', () => {
+  const DEFAULT = 86_400_000;
+
+  it('an absent flag falls back to the caller default', () => {
+    expect(resolveRetentionMsFlag(undefined, DEFAULT, '--grace-ms')).toBe(DEFAULT);
+  });
+
+  it('a blank `--grace-ms=` falls back to the default (regression: Number("") === 0 → grace 0)', () => {
+    expect(resolveRetentionMsFlag('', DEFAULT, '--grace-ms')).toBe(DEFAULT);
+    expect(resolveRetentionMsFlag('   ', DEFAULT, '--grace-ms')).toBe(DEFAULT);
+  });
+
+  it('parses a valid non-negative value (including 0, which is meaningful)', () => {
+    expect(resolveRetentionMsFlag('0', DEFAULT, '--grace-ms')).toBe(0);
+    expect(resolveRetentionMsFlag('604800000', DEFAULT, '--max-age-ms')).toBe(604_800_000);
+  });
+
+  it('THROWS on a bare `--flag` (parser stores "true" → NaN, which disabled the age gate)', () => {
+    expect(() => resolveRetentionMsFlag('true', DEFAULT, '--max-age-ms')).toThrow(/--max-age-ms/);
+    expect(() => resolveRetentionMsFlag('true', DEFAULT, '--grace-ms')).toThrow(/--grace-ms/);
+  });
+
+  it('THROWS on a present-but-invalid value rather than silently disabling a gate', () => {
+    expect(() => resolveRetentionMsFlag('not-a-number', DEFAULT, '--grace-ms')).toThrow();
+    expect(() => resolveRetentionMsFlag('-1', DEFAULT, '--grace-ms')).toThrow();
+    expect(() => resolveRetentionMsFlag('Infinity', DEFAULT, '--max-age-ms')).toThrow();
+    expect(() => resolveRetentionMsFlag('NaN', DEFAULT, '--max-age-ms')).toThrow();
+  });
+
+  it('always yields a finite, non-negative millisecond count for a non-throwing input', () => {
+    const v = resolveRetentionMsFlag('1500', DEFAULT, '--grace-ms');
+    expect(Number.isFinite(v)).toBe(true);
+    expect(v).toBeGreaterThanOrEqual(0);
   });
 });

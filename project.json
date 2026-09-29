@@ -30,7 +30,11 @@
       "dependsOn": [
         {
           "projects": [
-            "sox"
+            "sox",
+            "memory-cli",
+            "memory-flush",
+            "memory-server",
+            "di-command"
           ],
           "target": "build"
         },

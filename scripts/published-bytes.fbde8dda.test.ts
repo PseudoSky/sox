@@ -1,6 +1,6 @@
 /**
  * Regression test for backlog uid fbde8dda-d6ed-4b6b-9cde-9495351a7c35
- * (published-registry checksum outage, fixed in 304513c4) and its generator
+ * (published-registry checksum outage, fixed in b5a90314) and its generator
  * cause 3df6f848-c5c4-4cf3-92dc-6490fb043fde.
  *
  * BL-225: the uid appears in the TEST NAMES, not merely in a comment, so the
@@ -53,9 +53,9 @@ function fetcherFor(map: Record<string, string>): PackageFetcher {
 }
 
 /**
- * The four checksums that were live in registry/index.json BEFORE 304513c4 —
+ * The four checksums that were live in registry/index.json BEFORE b5a90314 —
  * local-rebuild bytes that npm never served. Verbatim from
- * `git show 304513c4^:registry/index.json`.
+ * `git show b5a90314^:registry/index.json`.
  */
 const PRE_FIX_CHECKSUMS: Record<string, string> = {
   'memory-cli': 'sha256:c685c53599d817e9432ba5f459b4fd1435be270d50241b9dd582c17f650e4e31',
@@ -64,7 +64,7 @@ const PRE_FIX_CHECKSUMS: Record<string, string> = {
   'sox': 'sha256:7377e85ecf52188ab7e0e5aea8abd9ee77a869f969a11a2c119cfa91e6f102d4',
 };
 
-/** The checksums committed by 304513c4 — the bytes npm actually serves. */
+/** The checksums committed by b5a90314 — the bytes npm actually serves. */
 const POST_FIX_CHECKSUMS: Record<string, string> = {
   'memory-cli': 'sha256:b2935bd16d3053b02f2b16f83426a33bd57d6c7ce8048e9d2331808b89307d09',
   'memory-flush': 'sha256:891e1c2c0465ee8652d461958c52ca3f567e1379953a972330021a2d61f514a9',
@@ -85,7 +85,7 @@ describe('fbde8dda-d6ed-4b6b-9cde-9495351a7c35 — registry checksums must match
    * we invert it: the STUBBED npm serves bytes whose real hash IS the post-fix
    * checksum for that row, and we assert the pre-fix registry FAILS while the
    * post-fix registry PASSES. Same fetcher, same code path, only the committed
-   * checksum column differs — which is exactly the 304513c4 diff.
+   * checksum column differs — which is exactly the b5a90314 diff.
    */
   const rows = Object.keys(LOCATORS).map((id) => {
     // Bytes chosen so their sha256 is deterministic and recorded per row.
@@ -140,7 +140,7 @@ describe('fbde8dda-d6ed-4b6b-9cde-9495351a7c35 — registry checksums must match
     expect(result.rows.every((r) => r.verdict === 'MATCH')).toBe(true);
   });
 
-  it('fbde8dda-d6ed-4b6b-9cde-9495351a7c35: the post-fix checksums are distinct from the pre-fix ones (the 304513c4 diff is real)', () => {
+  it('fbde8dda-d6ed-4b6b-9cde-9495351a7c35: the post-fix checksums are distinct from the pre-fix ones (the b5a90314 diff is real)', () => {
     for (const id of Object.keys(PRE_FIX_CHECKSUMS)) {
       expect(POST_FIX_CHECKSUMS[id]).not.toBe(PRE_FIX_CHECKSUMS[id]);
     }

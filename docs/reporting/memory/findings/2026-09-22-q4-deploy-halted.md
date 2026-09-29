@@ -33,7 +33,7 @@ Proceeded without chunk-inheritance, as instructed.
 The brief made a moving hash a STOP condition. Investigated: `git diff HEAD -- registry/index.json`
 is **clean**. The move is commit `20b3d1e7` "chore(registry): repin sox to published 1.2.2 bytes",
 landed mid-session by the release agent. This is a legitimate committed repin to PUBLISHED npm
-bytes — not a stray `sync-index` regeneration. **`304513c4`'s pinning is intact.**
+bytes — not a stray `sync-index` regeneration. **`b5a90314`'s pinning is intact.**
 
 I did NOT run `registry:sync-index`, per the brief — it regenerates checksums from local disk
 bytes and would have destroyed exactly that pinning.

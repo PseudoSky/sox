@@ -96,7 +96,7 @@ unchanged, and re-derives from disk only when the version moved (i.e. this relea
 those bytes). Consequences:
 
 - A local rebuild without a version bump can no longer silently re-pin a published row. That is the
-  defect that took every fresh install down with `CHECKSUM MISMATCH` and needed `304513c4` to repair
+  defect that took every fresh install down with `CHECKSUM MISMATCH` and needed `b5a90314` to repair
   by hand.
 - To change a published row's checksum **without** a version bump — only ever to correct a pin
   against what npm actually serves — use `tools/repin-registry-entry.mjs`. The generator will not do

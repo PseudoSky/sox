@@ -105,6 +105,9 @@ import {
   type ReconcileMatch,
   type ScopeResource,
   type StoreResource,
+  applyRetention,
+  planRetention,
+  sweepTrash,
 } from '@adhd/sox-host-runtime';
 // NOTE: `@adhd/sox-manifest` is deliberately LAZY-LOADED in this file (see the
 // `await import('@adhd/sox-manifest')` in cmdValidate, and printHelp below).
@@ -147,13 +150,17 @@ import {
   syncUserMcpToProjects,
   IntegrityResult,
   verifyIntegrity,
+  backfillHashes,
+  countUnverifiable,
+  detectDrift,
+  reconcile,
   resolveDesiredPin,
   resolveRegistryIndexForRoot,
 } from '@adhd/sox-install-engine';
 import { gateVolatileCli } from './cli-path-gate.js';
 import { registerBundleMember, resolveBundleDir } from './bundle-init.js';
 import { cliInvokedFields } from './cli-invoked-fields.js';
-import { resolveGraceMs } from './grace-ms.js';
+import { resolveGraceMs, resolveRetentionMsFlag } from './grace-ms.js';
 import { formatUpgradeSummary } from './upgrade-summary.js';
 import { assertWithinBase, PathEscapeError } from './path-safety.js';
 import { unloadOsUnitUnlessFrontShim } from './proxy-backend-front-shim.js';
@@ -313,6 +320,21 @@ async function main(): Promise<void> {
     case 'diff':
       await cmdDiff(flags);
       break;
+
+    // ── Artifact lifecycle (D-B): detect ≠ remediate (B-I5/B-I7) ──────────────
+    case 'drift':
+      await cmdDrift(flags);
+      break;
+    case 'repair':
+      await cmdRepair(flags);
+      break;
+    case 'reconcile':
+      await cmdReconcile(flags);
+      break;
+    case 'gc':
+      await cmdGc(flags);
+      break;
+
     case 'update':
       await cmdUpdate(flags);
       break;
@@ -2239,6 +2261,115 @@ async function cmdBuild(_flags: Record<string, string>): Promise<void> {
  *
  * [cli-wiring.4]: new verb, wired to diffExtension() from libs/install-engine/src/diff.ts.
  */
+// ── D-B: artifact lifecycle commands (drift / repair / reconcile / gc) ────────
+// All are typed (ADR-0013: no env toggles). drift/reconcile are read-only; repair
+// and gc are separate deliberate acts (report-first where they mutate).
+
+async function cmdDrift(flags: Record<string, string>): Promise<void> {
+  const scope = (flags['scope'] ?? 'user') as DataScope;
+  const report = await detectDrift(scope, flags['root']);
+  if (flags['json'] !== undefined) {
+    process.stdout.write(JSON.stringify(report, null, 2) + '\n');
+    return;
+  }
+  process.stdout.write(`drift [scope=${scope}]: ${report.entries.length} entries\n`);
+  for (const v of ['still-valid', 'drifted', 'gone', 'foreign', 'unverifiable'] as const) {
+    process.stdout.write(`  ${v}: ${report.counts[v]}\n`);
+  }
+  for (const e of report.entries) {
+    if (e.verdict !== 'still-valid') process.stdout.write(`  [${e.verdict}] ${e.target} (${e.extId})\n`);
+  }
+}
+
+async function cmdReconcile(flags: Record<string, string>): Promise<void> {
+  const scope = (flags['scope'] ?? 'user') as DataScope;
+  const report = await reconcile(scope, flags['root']);
+  if (flags['json'] !== undefined) {
+    process.stdout.write(JSON.stringify(report, null, 2) + '\n');
+    return;
+  }
+  process.stdout.write(`reconcile [scope=${scope}]:\n`);
+  for (const p of report.perExtension) process.stdout.write(`  ${p.id}: ${p.status}\n`);
+  process.stdout.write(`  lockOnly: ${report.lockOnly.join(', ') || '(none)'}\n`);
+  process.stdout.write(`  installedOnly: ${report.installedOnly.join(', ') || '(none)'}\n`);
+  process.stdout.write(`  stubs: ${report.stubs.join(', ') || '(none)'}\n`);
+}
+
+async function cmdRepair(flags: Record<string, string>): Promise<void> {
+  const scope = (flags['scope'] ?? 'user') as DataScope;
+  if (flags['backfill-hashes'] === undefined) {
+    process.stderr.write('[sox] repair: nothing to do — pass --backfill-hashes\n');
+    process.exitCode = 2;
+    return;
+  }
+  const before = countUnverifiable(scope, flags['root']);
+  if (flags['confirm'] === undefined) {
+    process.stdout.write(
+      `repair --backfill-hashes: would fill hashes for ${before} unverifiable entr${before === 1 ? 'y' : 'ies'} at scope=${scope}. Re-run with --confirm.\n`,
+    );
+    return;
+  }
+  const report = backfillHashes(scope, flags['root']);
+  process.stdout.write(
+    `repair --backfill-hashes: filled=${report.filled} missing-targets=${report.missingTargets} unverifiable ${report.before}→${report.after}\n`,
+  );
+}
+
+async function cmdGc(flags: Record<string, string>): Promise<void> {
+  const pathMod = require('node:path') as typeof import('node:path');
+  const dir = flags['dir'] ?? flags['root'];
+  if (dir === undefined) {
+    process.stderr.write('[sox] gc: --dir <path> is required\n');
+    process.exitCode = 2;
+    return;
+  }
+  const roots = {
+    liveGenerations: (flags['live-generations'] ?? '').split(',').filter(Boolean),
+    lockEntries: (flags['lock-entries'] ?? '').split(',').filter(Boolean),
+    runningPids: (flags['running-pids'] ?? '').split(',').filter(Boolean).map(Number),
+  };
+  // H4: `?? 'default'` only catches null/undefined, but the flag parser stores
+  // '' for `--grace-ms=` and 'true' for a bare `--grace-ms`, so `Number('') === 0`
+  // (grace 0 → trash swept in the same command) and `Number('true') === NaN`
+  // (age gate permanently disabled). Route both flags through the shared parser:
+  // blank → default; present-but-invalid → exit 2.
+  const resolvedDir = pathMod.resolve(dir);
+  let maxAgeMs: number;
+  let graceMs: number;
+  try {
+    maxAgeMs = resolveRetentionMsFlag(flags['max-age-ms'], 604_800_000, '--max-age-ms'); // 7d
+    graceMs = resolveRetentionMsFlag(flags['grace-ms'], 86_400_000, '--grace-ms');        // 1d
+  } catch (e) {
+    process.stderr.write(`[sox] gc: ${e instanceof Error ? e.message : String(e)}\n`);
+    process.exitCode = 2;
+    return;
+  }
+  const policy = {
+    maxAgeMs,
+    graceMs,
+    // H2: default the trash to a SIBLING of the managed dir, never inside it —
+    // a `<dir>/.trash` becomes a top-level child that matches no root and is
+    // re-selected as a reclaim candidate on the next run.
+    trashDir:
+      flags['trash'] ??
+      pathMod.join(pathMod.dirname(resolvedDir), `.trash-${pathMod.basename(resolvedDir)}`),
+  };
+  const plan = planRetention(dir, roots, policy);
+  if (flags['apply'] === undefined || flags['confirm'] === undefined) {
+    process.stdout.write(
+      `gc (report-first): reclaim ${plan.reclaim.length} (${plan.totalBytes} bytes), ` +
+        `protected ${plan.protected.length}, unmanaged ${plan.unmanaged.length}. Re-run with --apply --confirm.\n`,
+    );
+    for (const r of plan.reclaim) {
+      process.stdout.write(`  would reclaim [${r.class}] ${r.path} (${r.bytes}B): ${r.reason}\n`);
+    }
+    return;
+  }
+  await applyRetention(plan, policy);
+  const swept = sweepTrash(policy.trashDir);
+  process.stdout.write(`gc: trashed ${plan.reclaim.length}, swept ${swept.length} past grace.\n`);
+}
+
 async function cmdDiff(flags: Record<string, string>): Promise<void> {
   const pathMod = require('node:path') as typeof import('node:path');
 

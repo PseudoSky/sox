@@ -8,7 +8,7 @@
  * from LOCAL disk bytes while their `npm-package:<name>@<version>` locator
  * still pointed at an EARLIER published version. npm kept serving the old
  * bytes; `fetchArtifact` gates the install on the moved pin, so every install
- * died with CHECKSUM MISMATCH. Fixed in 304513c4 by repointing the four
+ * died with CHECKSUM MISMATCH. Fixed in b5a90314 by repointing the four
  * checksums at the published bytes — with nothing to stop recurrence.
  *
  * Backlog 3df6f848-c5c4-4cf3-92dc-6490fb043fde: the generators

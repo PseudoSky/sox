@@ -7,7 +7,7 @@
  * it still pins the PREVIOUS release's bytes. The obvious fix — rerun
  * `build-index` — is the defect this whole remediation was about: it recomputes
  * EVERY entry from LOCAL disk bytes, silently replacing checksums that were
- * deliberately pinned to published npm bytes (304513c4) with whatever the working
+ * deliberately pinned to published npm bytes (b5a90314) with whatever the working
  * tree happens to hash to. `registry:sync-index` has the same failure mode.
  *
  * So: npm-install the published version, hash the entrypoint the FETCHER would
