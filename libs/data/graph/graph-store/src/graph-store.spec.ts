@@ -753,22 +753,83 @@ describe('recursive-cte fallback parity (SOXGRAPH-001)', () => {
       // with the store) instead of driving from the small CTE via rowid-PK:
       // 8.1s @ 651 nodes → 98.6s @ ~2.8k (12× time for 4.3× data). The fix —
       // `FROM node n NOT INDEXED JOIN …` — forces the rowid-PK path and the same
-      // query runs in ~10-50ms. This test seeds a 2501-node graph in ONE atomic
-      // writeGraph call, asserts both arms return the identical budget-truncated
-      // id-set, and gates the sqlite arm's elapsed time under 1000ms (≈100× below
-      // pre-fix, ≈20× above expected post-fix — not flaky on CI). Pre-fix the
-      // ~90s query blows the 20s vitest timeout → loud RED (BL-225).
-      it('BL-504: 2501-node getNeighbors depth-2 — identical budget-truncated id-set both arms; <1000ms on the recursive SQL path', { skip, timeout: 200000 }, async () => {
+      // query runs in ~10-50ms.
+      //
+      // The certificate covers TWO independent properties that were previously
+      // fused into one 2501-node test:
+      //   (P) budget-truncation correctness + recursive-SQL/iterative-fallback
+      //       parity — SIZE-INDEPENDENT: any shape that truncates mid-walk proves it;
+      //   (S) the sqlite recursive-SQL planner perf — needs MANY live rows, because
+      //       the pre-fix footgun's cost grows with the node table, so a small
+      //       fixture cannot distinguish the fixed plan from the broken one.
+      // Fused, the turso arm — which runs the ITERATIVE FALLBACK and therefore has
+      // NO perf gate — was forced to pay turso's ~40ms/node write cost for ~104s of
+      // pure fixture (the turso WALK is ~15ms) to build a 2501-node graph only the
+      // sqlite arm's perf gate needs. Under a 20-project `nx affected` sweep that
+      // contention tipped the arm past its 200s cap. Split so each property runs at
+      // the size it actually needs: parity on both engines at 251 nodes; the perf
+      // gate on the sqlite arm at the full 2501-node scale.
+
+      // (P) Parity — identical budget-truncated id-set on the recursive SQL path
+      // AND the iterative fallback. root + 5 level-1 + 5×49 level-2 = 251 nodes;
+      // the depth-2 budget (200 CTE rows incl. seed → 199 results) still truncates
+      // mid-level-2, which is the whole property.
+      it('BL-504: getNeighbors depth-2 truncates the walk at the total budget — identical budget-truncated id-set both arms', { skip, timeout: 30000 }, async () => {
+        const { backend, adapter } = await open();
+        try {
+          const N = 5, M = 49;
+          const nodes: Array<{ content: string; meta: object }> = [{ content: 'root', meta: {} }];
+          for (let i = 0; i < N; i++) nodes.push({ content: `l1-${i}`, meta: {} });
+          for (let i = 0; i < N; i++) for (let j = 0; j < M; j++) nodes.push({ content: `l2-${i}-${j}`, meta: {} });
+          const edges: Array<{ srcIdx: number; dstIdx: number; rel: EdgeRel }> = [];
+          for (let i = 0; i < N; i++) edges.push({ srcIdx: 0, dstIdx: 1 + i, rel: 'RELATES_TO' });
+          for (let i = 0; i < N; i++)
+            for (let j = 0; j < M; j++)
+              edges.push({ srcIdx: 1 + i, dstIdx: 1 + N + i * M + j, rel: 'RELATES_TO' });
+          const ids = await backend.writeGraph(nodes, edges);
+          expect(ids).toHaveLength(1 + N * (M + 1));
+
+          const neighborIds = new Set(
+            (await backend.getNeighbors(ids[0]!, { depth: 2, direction: 'out' })).map((n) => n.id),
+          );
+
+          // Budget depth*100 = 200 CTE rows incl. the seed → 199 results: all N
+          // level-1 nodes, then level-2 children in edge-scan order (= rowid order
+          // on both engines, ix_edge_src/dst index order), so the truncated id-set
+          // is identical on the recursive SQL path AND the iterative fallback.
+          const budget = 199;
+          const expected = new Set<number>();
+          for (let i = 0; i < N; i++) expected.add(ids[1 + i]!);
+          let remaining = budget - N;
+          for (let i = 0; i < N && remaining > 0; i++) {
+            const take = Math.min(M, remaining);
+            for (let j = 0; j < take; j++) expected.add(ids[1 + N + i * M + j]!);
+            remaining -= take;
+          }
+          expect(remaining).toBe(0); // the budget was consumed exactly → the walk truncated
+          expect(neighborIds).toEqual(expected);
+          expect(neighborIds.size).toBe(budget);
+          expect(neighborIds.size).toBeLessThan(N * (M + 1)); // strictly fewer than every non-seed node → truncation really happened
+          expect(neighborIds.has(ids[0]!)).toBe(false); // seed excluded
+        } finally {
+          await adapter.close();
+        }
+      });
+
+      // (S) Perf gate — sqlite recursive-SQL path ONLY (`runsRecursiveSql`). Seeds
+      // a 2501-node graph in ONE atomic writeGraph call and gates the elapsed time
+      // under 1000ms (≈100× below pre-fix, ≈20× above expected post-fix). The
+      // sqlite arm seeds in ~90ms; its pre-fix WALK is ~73s but blocks the event
+      // loop (sync better-sqlite3), so vitest's timer cannot fire — the RED
+      // surfaces as the assertion failure once the walk completes (BL-225). The
+      // turso arm is skipped: it has no perf gate (it runs the iterative fallback)
+      // and seeding 2501 nodes through turso's per-node adapter write path costs
+      // ~104s, which is exactly the fixture cost (P) was made to stop paying.
+      it('BL-504 (perf gate): 2501-node getNeighbors depth-2 on the recursive SQL path — same id-set, <1000ms', { skip: skip || !runsRecursiveSql, timeout: 200000 }, async () => {
         const { backend, adapter } = await open();
         try {
           // root + 50 level-1 + 50×49 level-2 = 2501 nodes; 50 + 50×49 = 2500
           // edges (RELATES_TO) — all in one atomic writeGraph transaction.
-          // NOTE the 200s timeout: the turso arm's writeGraph seeds at ~20ms per
-          // statement (~104s for 2501 nodes — a pre-existing turso adapter write
-          // characteristic, unrelated to BL-504; the turso WALK is ~15ms). The
-          // sqlite arm seeds in ~90ms; its pre-fix WALK is ~73s but blocks the
-          // event loop (sync better-sqlite3), so vitest's timer cannot fire — the
-          // RED surfaces as the assertion failure once the walk completes.
           const nodes: Array<{ content: string; meta: object }> = [{ content: 'root', meta: {} }];
           for (let i = 0; i < 50; i++) nodes.push({ content: `l1-${i}`, meta: {} });
           for (let i = 0; i < 50; i++) for (let j = 0; j < 49; j++) nodes.push({ content: `l2-${i}-${j}`, meta: {} });
@@ -788,9 +849,7 @@ describe('recursive-cte fallback parity (SOXGRAPH-001)', () => {
 
           // Budget depth*100 = 200 CTE rows incl. the seed → 199 results: all 50
           // level-1, the full children of level-1 #0..#2 (49 each = 147), and the
-          // first 2 children of level-1 #3 — edge-scan order = rowid order on
-          // both engines (ix_edge_src/dst index order), so the truncated id-set
-          // is identical on the recursive SQL path AND the iterative fallback.
+          // first 2 children of level-1 #3.
           const expected = new Set<number>();
           for (let i = 0; i < 50; i++) expected.add(ids[1 + i]!);
           for (let i = 0; i < 3; i++) for (let j = 0; j < 49; j++) expected.add(ids[1 + 50 + i * 49 + j]!);
@@ -799,12 +858,10 @@ describe('recursive-cte fallback parity (SOXGRAPH-001)', () => {
           expect(neighborIds).toEqual(expected);
           expect(neighborIds.has(ids[0]!)).toBe(false); // seed excluded
 
-          if (runsRecursiveSql) {
-            // Perf gate — sqlite arm ONLY. Pre-fix: planner scans ix_node_validity
-            // (all 2501 live nodes) → ~90s → vitest timeout (20s) → loud RED.
-            // Post-fix: NOT INDEXED forces the rowid-PK path → ~10-50ms.
-            expect(elapsed).toBeLessThan(1000);
-          }
+          // Perf gate. Pre-fix: planner scans ix_node_validity (all 2501 live
+          // nodes) → ~90s → loud RED. Post-fix: NOT INDEXED forces the rowid-PK
+          // path → ~10-50ms.
+          expect(elapsed).toBeLessThan(1000);
         } finally {
           await adapter.close();
         }
