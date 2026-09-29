@@ -139,6 +139,8 @@ Refuse, name the rule, and stop:
 - **Batch cleanup.** Reaping many worktrees in one sweep — one of them always holds someone's
   work. Reap one at a time, each with the three-part check.
 - **Dirty-tree amnesia.** Treating `git status` output as advisory. It is the predicate.
+- **`cd`-chained git.** `cd <path> && git …` defeats the run allowlist and prompts; address
+  another tree with the bash tool's `workdir` parameter, or `git -C <path>` for read-only work.
 - **Policy drift.** Following a remembered policy instead of the committed one. Re-read it.
 - **Kind-equivalence.** Accepting a document as the policy because of *what it is* (a
   `CONTRIBUTING.md`, an `AGENTS.md`, a `.github/` file) or because a *set* of documents covers

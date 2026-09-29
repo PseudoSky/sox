@@ -1,5 +1,33 @@
 # Changelog
 
+## 0.2.0
+
+- **Every `git -C <path>` call and every repo guard tool prompted.** 0.1.1's run-permission
+  allowlist matched only `git <verb>` with the verb immediately after `git`, so the agent's
+  standing idiom for inspecting another worktree fell through to the `"*": "ask"` catch-all.
+  Reproduced in a fresh `opencode run --agent git-manager` against a scratch repo:
+  `git status --porcelain` ran, then `git -C . status --porcelain` →
+  `permission requested: bash (git -C . status --porcelain); auto-rejecting`; and
+  `node tools/commit-mine.mjs --dry-run` — the repo's mandated commit guard — likewise.
+  The allowlist now covers the `-C` form of every read-only verb, the repo's `node tools/*.mjs`
+  guards, and — the narrowest scope that clears the prompts — the mutation verbs this agent
+  solely owns (`fetch`, `worktree add/remove/prune/repair`, `commit`, `merge`, `push`, `switch`,
+  `branch -d`). `checkout`, `rebase` and `restore` stay `ask`; the deny family (`--force` /
+  `--no-verify` push, `branch -D`, `reset --hard`, `clean -f`, `stash`) is unchanged and still
+  ordered last, so it wins over the new allows.
+- **The `cd` idiom, which the allowlist cannot match.** Keys match the command string, so
+  `cd <path> && git …` was never covered. One failure-mode bullet names the fix (the bash tool's
+  `workdir` parameter, or `git -C` for read-only work); `git-manager.md` 177 → 179 lines.
+- **Claude Code gets no per-command rule from this file — a host limitation, recorded here on
+  purpose.** Claude's subagent frontmatter has no allow-rule field (documented set: `tools`,
+  `disallowedTools`, `permissionMode`, …); a `disallowedTools` specifier drops the *whole* tool,
+  and per-command Bash rules live in `settings.json` `permissions`, which governs the entire
+  session — the wrong home for one agent's surface, and a downgrade for every other agent. So the
+  claude render deliberately carries no permission block; its `tools` list already includes
+  `Bash`, and prompt suppression there is the harness's own (`Bash(git:*)` + `defaultMode: auto`
+  are already configured on this machine). Nothing shipped here is inert: opencode reads this
+  map, claude is governed by settings.
+
 ## 0.1.1
 
 - **The equivalence test is now single-file and content-based.** 0.1.0 said `<project>/docs/GIT-POLICY.md`
