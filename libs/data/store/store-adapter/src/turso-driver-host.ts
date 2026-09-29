@@ -464,14 +464,33 @@ class TursoDriverHost {
   }
 
   private onWorkerExit(worker: Worker, code: number): void {
-    if (this.worker !== worker) return;
+    // Consume the intentional-termination flag FIRST — before the stale-worker
+    // guard below. Every disposal path (`maybeDispose`, `onReady`'s
+    // protocol-mismatch branch, `_resetForTest`) nulls `this.worker` before it
+    // calls `terminate()`, so the disposal's OWN exit event arrives here with
+    // `this.worker !== worker`. Clearing only after that guard (the original
+    // order) left the flag set forever: the NEXT genuinely-unexpected death was
+    // then misread as intentional and swallowed — its pending calls stranded
+    // and never rejected, `exits` not incremented, `driver_worker.exited` not
+    // emitted. (BL-16766e77)
+    const expected = this.expectedTermination;
+    this.expectedTermination = false;
+
+    if (this.worker !== worker) return; // a stale exit from a replaced/disposed worker
     this.worker = null;
+    // A worker that dies before posting `ready` (spawn/bootstrap failure, a
+    // missing sidecar, bad `execArgv`) can never resolve the pending `this.ready`
+    // promise. Capture the rejecter before it is discarded so the awaiting
+    // `ensureWorker()` settles with a fatal `E_TURSO_DRIVER_WORKER_EXITED`
+    // instead of hanging forever; the `if (this.worker === null) throw` guard
+    // after `await this.ready` is unreachable on this path otherwise. Mirrors
+    // `onReady()`'s rejecter handoff. (BL-3767d78c)
+    const readyReject = this.readyReject;
     this.readyResolve = undefined;
     this.readyReject = undefined;
     this.clearStallTimer();
     this.stallReported = false;
-    const expected = this.expectedTermination;
-    this.expectedTermination = false;
+    readyReject?.(new ETursoDriverWorkerExited('the Turso driver worker exited while opening'));
     if (expected) return;
 
     this.exits += 1;
