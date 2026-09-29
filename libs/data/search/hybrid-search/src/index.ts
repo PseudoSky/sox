@@ -719,21 +719,42 @@ export class StoreSearchBackend implements SearchBackend {
     const degraded: SearchDegradeInfo | undefined =
       unsupportedFilters.length > 0 ? { unsupportedFilters } : undefined;
 
-    return Array.from(merged.entries())
-      .map(([id, data]) => {
-        const entry: {
-          id: number;
-          textScore?: number;
-          vecScore?: number;
-          fields: Record<string, unknown>;
-          degraded?: SearchDegradeInfo;
-        } = { id, fields: data.fields };
-        if (data.textScore !== undefined) entry.textScore = data.textScore;
-        if (data.vecScore !== undefined) entry.vecScore = data.vecScore;
-        if (degraded) entry.degraded = degraded;
-        return entry;
-      })
-      .slice(0, limit);
+    // 7bbc2883 — `merged` is insertion-ordered: every TEXT hit is inserted before
+    // any vector-only hit, so a naive `Array.from(merged.entries()).slice(0, limit)`
+    // drops exactly the vector-only candidates this backend exists to fuse whenever
+    // the text channel alone fills `limit`. Rank the merged candidates with the
+    // package's own `fuse()` (the same min_max score fusion the top-level `search()`
+    // applies) and apply the limit to that fused rank, so a vector-only hit is
+    // selected on its calibrated signal and never evicted by text-first insertion
+    // order. Only WHICH rows survive the cap — and their order — is fused; the raw
+    // `textScore`/`vecScore` on each returned row are unchanged.
+    const fusionInput: Array<{
+      id: number;
+      textScore?: number;
+      vecScore?: number;
+    }> = [];
+    for (const [id, data] of merged) {
+      const candidate: { id: number; textScore?: number; vecScore?: number } = { id };
+      if (data.textScore !== undefined) candidate.textScore = data.textScore;
+      if (data.vecScore !== undefined) candidate.vecScore = data.vecScore;
+      fusionInput.push(candidate);
+    }
+    const fusedOrder = fuse(fusionInput, { normalizer: 'min_max' });
+
+    return fusedOrder.slice(0, limit).map((fused) => {
+      const data = merged.get(fused.id)!;
+      const entry: {
+        id: number;
+        textScore?: number;
+        vecScore?: number;
+        fields: Record<string, unknown>;
+        degraded?: SearchDegradeInfo;
+      } = { id: fused.id, fields: data.fields };
+      if (data.textScore !== undefined) entry.textScore = data.textScore;
+      if (data.vecScore !== undefined) entry.vecScore = data.vecScore;
+      if (degraded) entry.degraded = degraded;
+      return entry;
+    });
   }
 
   /**
