@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.7.2
+
+- **Fix: `git add .*` denied the `git add <path>` form that `AGENTS.md` mandates.** As a glob the
+  pattern matches any dot-prefixed path, so `git add .changeset/…`, `git add .gitignore`,
+  `git add .mcp.json` and `git add .githooks/…` were denied — **9 such denials** measured in the
+  opencode transcript store (`~/.local/share/opencode/log/opencode.log`), every one of them the
+  sanctioned pathspec form. Replaced with the exact-match `git add .`, which blocks only the
+  stage-everything form; any pathspec — including a dot-prefixed one — now passes.
+
 ## 1.7.1
 
 - **Prose is budgeted in tokens, not lines or words.** The report rule capped *words* (250),

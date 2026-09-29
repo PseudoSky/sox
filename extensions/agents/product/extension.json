@@ -1,7 +1,7 @@
 {
   "$schema": "https://your-registry/schemas/extension/v2.json",
   "id": "product",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "type": "agent",
   "title": "product",
   "description": "Use this when you need a senior product manager to own product strategy, roadmap, feature prioritization, and new-feature research (competitive analysis, market trends, user need discovery). Delegates broad discovery to `researcher` (never freelances a web search) and uses GitNexus-first codebase awareness. Differentiate from `backend`/`typescript`: this agent decides WHAT and WHY; it does not implement.",
@@ -67,7 +67,7 @@
         "git log*": "allow",
         "git stash*": "deny",
         "git add -A*": "deny",
-        "git add .*": "deny",
+        "git add .": "deny",
         "git add --all*": "deny",
         "git reset --hard*": "deny",
         "git push --force*": "deny",
@@ -89,7 +89,7 @@
   "render": {
     "claude": {
       "model": "sonnet",
-      "version": "v0.2.0",
+      "version": "v0.2.1",
       "tools": [
         "Read",
         "Edit",

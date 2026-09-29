@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.2.1
+
+- **Fix: `git add .*` denied the `git add <path>` form that `AGENTS.md` mandates.** As a glob the
+  pattern matches any dot-prefixed path, so `git add .changeset/…`, `git add .gitignore`,
+  `git add .mcp.json` and `git add .githooks/…` were denied — **9 such denials** measured in the
+  opencode transcript store (`~/.local/share/opencode/log/opencode.log`), every one of them the
+  sanctioned pathspec form. Replaced with the exact-match `git add .`, which blocks only the
+  stage-everything form; any pathspec — including a dot-prefixed one — now passes.
+
 ## 0.2.0
 
 - **Priority becomes an explicit, re-rankable duty in the BLOCKING ownership contract (3ec44b8c-f6dd-4c67-8a38-eff7e0ba8e0e).** The dispatcher's division of labour asserted that product "sets the priority" while product's own contract was silent on it, so priority could go stale with no owner. Ownership duty 6 now makes assessing and assigning priority mandatory and adds a REASSIGNMENT path — product re-ranks an item as evidence changes, with the rationale recorded. Because product carries no backlog tool, the write is routed through `backlog-operator` via a `task` dispatch (the executable path chosen over adding a backlog tool to the manifest). Adds the "Priority assigned and re-ranked as evidence changes" checklist item and a `backlog-operator` integration entry.

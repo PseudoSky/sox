@@ -1,7 +1,7 @@
 {
   "$schema": "https://your-registry/schemas/extension/v2.json",
   "id": "performance",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "type": "agent",
   "title": "performance",
   "description": "Use this when you need a senior performance engineer to identify and eliminate bottlenecks in applications, databases, and infrastructure via profiling, load testing, and measured optimization. Delegates broad discovery to `researcher`, uses GitNexus-first blast-radius analysis before touching hot-path code, and requires before/after measurement. Differentiate from `refactor`: this agent optimizes for speed/throughput with numbers; `refactor` optimizes for structure/maintainability.",
@@ -60,7 +60,7 @@
         "git log*": "allow",
         "git stash*": "deny",
         "git add -A*": "deny",
-        "git add .*": "deny",
+        "git add .": "deny",
         "git add --all*": "deny",
         "git reset --hard*": "deny",
         "git push --force*": "deny",
@@ -82,7 +82,7 @@
   "render": {
     "claude": {
       "model": "haiku",
-      "version": "v0.1.4",
+      "version": "v0.1.5",
       "tools": [
         "Read",
         "Edit",

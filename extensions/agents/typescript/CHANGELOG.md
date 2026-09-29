@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.1.3
+
+- **Fix: `git add .*` denied the `git add <path>` form that `AGENTS.md` mandates.** As a glob the
+  pattern matches any dot-prefixed path, so `git add .changeset/…`, `git add .gitignore`,
+  `git add .mcp.json` and `git add .githooks/…` were denied — **9 such denials** measured in the
+  opencode transcript store (`~/.local/share/opencode/log/opencode.log`), every one of them the
+  sanctioned pathspec form. Replaced with the exact-match `git add .`, which blocks only the
+  stage-everything form; any pathspec — including a dot-prefixed one — now passes.
+
 ## 0.1.2
 
 - **Fix:** batch-4's IR conversion (this entry) left `version` unbumped at `0.1.1`, unlike batches 1–3 which each bumped their converted agents' version. Applying one consistent policy for this correction: every agent extension is `private: true` (never released to npm, so the Changesets flow in `AGENTS.md`/`PUBLISHING.md` — which governs `@adhd/sox-*` npm releases — does not apply here); bump the patch version on every manifest content change regardless, same as batches 1–3. Bumped `0.1.1` → `0.1.2` for the conversion below.

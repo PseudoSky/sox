@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.1.4
+
+- **Fix: `git add .*` denied the `git add <path>` form that `AGENTS.md` mandates.** As a glob the
+  pattern matches any dot-prefixed path, so `git add .changeset/…`, `git add .gitignore`,
+  `git add .mcp.json` and `git add .githooks/…` were denied — **9 such denials** measured in the
+  opencode transcript store (`~/.local/share/opencode/log/opencode.log`), every one of them the
+  sanctioned pathspec form. Replaced with the exact-match `git add .`, which blocks only the
+  stage-everything form; any pathspec — including a dot-prefixed one — now passes.
+
 ## 0.1.3
 
 - **Fix:** restore the "Differentiate from `review`: this agent chases a specific reported failure to its root cause; `review` audits code that isn't (yet) known to be broken." sentence that 0.1.2's IR conversion dropped from `agent.description` (the top-level `extension.json.description` kept it, so the two descriptions had silently diverged since 0.1.2).
