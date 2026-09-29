@@ -1,5 +1,27 @@
 # Changelog
 
+## 0.1.10
+
+- **The bash allow-list grows 11 → 123 rules, derived from the real transcript, not from guessing.**
+  Measured across 7 days of opencode sessions (677 permission asks mined from
+  `~/.local/share/opencode/log/opencode.log`, joined to the session store for agent attribution):
+  this agent's `"*": "ask"` catch-all produced **333 of all 492 bash asks (68%)**, and every one was
+  a trivially-safe read-only segment — `head`, `rg`, `echo`, `tail`, `printf`, `sed`, `wc`, `diff`,
+  `sort`, `tr`, `sqlite3`, `node`, `git show`. Those families are now `allow`.
+- **An `ask` is a functional failure, not just friction.** In any non-interactive context
+  (`opencode run`, a dispatched subagent) opencode prints `permission requested: bash (…); auto-rejecting`
+  and the call **fails** — which is why the failure report attributes ~31.8M recovery tokens to
+  `permission/consent`. The allowed set is therefore the measured working set, not a courtesy list.
+- Git verbs are split by intent: read-only plumbing (`show`, `rev-parse`, `ls-files`, `cat-file`,
+  `merge-base`, …) plus the AGENTS.md-mandated `git add *` / `git commit*` / `git push*` are `allow`;
+  `git checkout*` / `git rebase*` / `sed -i*` stay `ask`; the repo-banned verbs (`git stash*`,
+  `git add -A*` / `--all*` / `.`, `git reset --hard*`, `git push *--force*` / `*--no-verify*`,
+  `git clean *-f*`, `rm -rf *`) stay `deny` and are ordered **last**, so they win the last-match.
+- §9 correction: opencode `permission` does **not** override `opencode.json`. Measured live — the maps
+  **merge with the agent's rules last**, so an agent rule beats a config rule, and an agent that
+  declares no `permission.bash` map inherits the config wholesale and defaults unmatched segments to
+  `allow`.
+
 ## 0.1.9
 
 - **Ground audits in failure evidence, not vibes.** §2 gains a tool reference: before changing a
