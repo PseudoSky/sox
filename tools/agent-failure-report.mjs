@@ -51,6 +51,7 @@
 import { DatabaseSync } from 'node:sqlite';
 import { readFileSync, writeFileSync, existsSync, readdirSync, statSync, realpathSync } from 'node:fs';
 import { homedir } from 'node:os';
+import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 
 const DEFAULT_DB = path.join(homedir(), '.local', 'share', 'opencode', 'opencode.db');
@@ -640,4 +641,7 @@ function finish(o, report) {
 }
 
 // Run only when invoked directly (so the test can import this module).
-if (process.argv[1] && import.meta.url === `file://${path.resolve(process.argv[1])}`) main();
+// Compare REAL paths: a symlinked entry point (e.g. ~/.local/bin/agent-failure-report)
+// gives process.argv[1] = the symlink while import.meta.url is the real module.
+const _invoked = process.argv[1] ? (() => { try { return realpathSync(process.argv[1]); } catch { return path.resolve(process.argv[1]); } })() : '';
+if (_invoked && _invoked === fileURLToPath(import.meta.url)) main();
