@@ -24,7 +24,7 @@
         "id": "memory-usage"
       }
     ],
-    "builtFromCommit": "3cd53aec880821245155f492ad3b6c20b2529a19"
+    "builtFromCommit": "b9f98215b94449c2b05f2a152b36ad55222c44d6"
   },
   {
     "id": "memory-cli",
@@ -39,7 +39,7 @@
     },
     "visibility": "internal",
     "bundleId": "sox-memory-bundle",
-    "builtFromCommit": "3cd53aec880821245155f492ad3b6c20b2529a19"
+    "builtFromCommit": "b9f98215b94449c2b05f2a152b36ad55222c44d6"
   },
   {
     "id": "memory-flush",
@@ -54,16 +54,16 @@
     },
     "visibility": "internal",
     "bundleId": "sox-memory-bundle",
-    "builtFromCommit": "3cd53aec880821245155f492ad3b6c20b2529a19"
+    "builtFromCommit": "b9f98215b94449c2b05f2a152b36ad55222c44d6"
   },
   {
     "id": "memory-server",
     "type": "mcp-server",
-    "version": "1.4.0",
+    "version": "1.4.1",
     "title": "Agent Memory Server",
     "description": "Use this when an agent needs durable, searchable memory across sessions — exposes 23 memory_* tools over a single-file SQLite graph store with hybrid recall (vec+BM25+temporal, <50ms, zero LLM), write-enqueue, session state, community lookup, bi-temporal invalidation, atomic claims, and an observable global re-cluster.",
-    "source": "npm-package:@adhd/sox-extension-memory-server@1.4.0",
-    "checksum": "sha256:ab62c2bd482eef532f16f7974c9961f444517e24051e27af172295b57b48ad0d",
+    "source": "npm-package:@adhd/sox-extension-memory-server@1.4.1",
+    "checksum": "sha256:269f42b0ba3ed7bf65c4cfe94779dfe07c34efc60cd69b154f204e5bfebaf05b",
     "compatibility": {
       "host": ">=1.0.0 <2.0.0"
     },
@@ -73,7 +73,7 @@
     },
     "visibility": "internal",
     "bundleId": "sox-memory-bundle",
-    "builtFromCommit": "3cd53aec880821245155f492ad3b6c20b2529a19"
+    "builtFromCommit": "b9f98215b94449c2b05f2a152b36ad55222c44d6"
   },
   {
     "id": "memory-usage",
@@ -88,7 +88,7 @@
     },
     "visibility": "internal",
     "bundleId": "sox-memory-bundle",
-    "builtFromCommit": "3cd53aec880821245155f492ad3b6c20b2529a19"
+    "builtFromCommit": "b9f98215b94449c2b05f2a152b36ad55222c44d6"
   },
   {
     "id": "sox",
@@ -101,6 +101,6 @@
     "compatibility": {
       "host": ">=1.0.0 <2.0.0"
     },
-    "builtFromCommit": "3cd53aec880821245155f492ad3b6c20b2529a19"
+    "builtFromCommit": "b9f98215b94449c2b05f2a152b36ad55222c44d6"
   }
 ]
