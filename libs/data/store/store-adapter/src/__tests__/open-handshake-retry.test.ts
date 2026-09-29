@@ -46,27 +46,34 @@ import { isAlreadyOpenWithoutMultiprocessWal } from '../errors.js';
 
 // ── Driver mock ──────────────────────────────────────────────────────────────
 //
-// `TursoAdapterImpl.connect()` dynamically imports '@tursodatabase/database'
-// and destructures `connect` from it. Mock the module so the retry loop can be
-// driven with synthetic open failures — no real driver, no real files. The
-// `mockDriverConnect` vi.fn() is referenced by the hoisted `vi.mock` factory
-// (the `mock` prefix is what vitest's hoisting transform permits).
-const mockDriverConnect = vi.fn();
+// (862129b5, TUR-E) `TursoAdapterImpl.connect()` no longer touches
+// '@tursodatabase/database' on the main thread — it opens the driver through
+// the process-wide off-thread host, `openTursoConnection` from
+// '../turso-driver-host.js'. Mock THAT seam so the retry loop can be driven
+// with synthetic open failures — no real driver, no worker thread, no real
+// files. The `mockOpenTursoConnection` vi.fn() is referenced by the hoisted
+// `vi.mock` factory (the `mock` prefix is what vitest's hoisting transform
+// permits).
+const mockOpenTursoConnection = vi.fn();
 
-vi.mock('@tursodatabase/database', () => ({
-  connect: (...args: unknown[]) => {
-    // (BUG-MEMORYCORE-MULTIPROCESS-WAL-NOT-OPTED-IN-001) Mimic the REAL driver:
-    // a writable local open creates the -tshm coordinator sidecar — the
-    // filesystem proof the multiprocess-WAL mandate is live. The adapter's
-    // post-open verification polls for it; without this the mock falsely
-    // trips E_WAL_MODE_UNVERIFIED.
-    const url = args[0];
-    if (typeof url === 'string' && !url.includes('://')) {
-      writeFileSync(url + '-tshm', '');
-    }
-    return mockDriverConnect(...args);
-  },
-}));
+vi.mock('../turso-driver-host.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../turso-driver-host.js')>();
+  return {
+    ...actual,
+    openTursoConnection: (...args: unknown[]) => {
+      // (BUG-MEMORYCORE-MULTIPROCESS-WAL-NOT-OPTED-IN-001) Mimic the REAL
+      // driver: a writable local open creates the -tshm coordinator sidecar —
+      // the filesystem proof the multiprocess-WAL mandate is live. The
+      // adapter's post-open verification polls for it; without this the mock
+      // falsely trips E_WAL_MODE_UNVERIFIED.
+      const url = args[0];
+      if (typeof url === 'string' && !url.includes('://')) {
+        writeFileSync(url + '-tshm', '');
+      }
+      return mockOpenTursoConnection(...args);
+    },
+  };
+});
 
 /** A driver handle shaped like @tursodatabase/database's Database that
  *  satisfies the post-open connect ceremony (recursive-CTE probe, engine
@@ -103,7 +110,7 @@ beforeAll(() => {
 });
 
 beforeEach(() => {
-  mockDriverConnect.mockReset();
+  mockOpenTursoConnection.mockReset();
 });
 
 const openAdapters: TursoAdapterImpl[] = [];
@@ -115,7 +122,7 @@ async function connect(dbPath: string): Promise<TursoAdapterImpl> {
   // mocked driver eagerly — the open-handshake retry loop this whole file
   // pins now runs on the first real operation, via `_ensureHealthy()` →
   // `_reconnect()` → `_openReal()`. Force it here so every existing
-  // `mockDriverConnect` call-count/timing/error assertion still observes the
+  // `mockOpenTursoConnection` call-count/timing/error assertion still observes the
   // real open sequence, and a rejection propagates exactly as a rejecting
   // `connect()` used to.
   await adapter.executeGet('SELECT 1');
@@ -140,15 +147,15 @@ function tempPath(label: string): string {
 
 describe('TursoAdapterImpl.connect — bounded open-handshake retry (BL-512 follow-on)', () => {
   it('baseline: a clean driver open connects once and the ceremony survives the mocked handle', async () => {
-    mockDriverConnect.mockResolvedValue(makeFakeDb());
+    mockOpenTursoConnection.mockResolvedValue(makeFakeDb());
     const adapter = await connect(tempPath('baseline'));
-    expect(mockDriverConnect).toHaveBeenCalledTimes(1);
+    expect(mockOpenTursoConnection).toHaveBeenCalledTimes(1);
     expect(adapter).toBeInstanceOf(TursoAdapterImpl);
   });
 
   it('(a) retries the open-handshake race and succeeds on the second attempt, honoring the 100ms backoff', async () => {
     const dbPath = tempPath('retry-success');
-    mockDriverConnect
+    mockOpenTursoConnection
       .mockRejectedValueOnce(openHandshakeError(dbPath))
       .mockResolvedValueOnce(makeFakeDb());
 
@@ -156,7 +163,7 @@ describe('TursoAdapterImpl.connect — bounded open-handshake retry (BL-512 foll
     const adapter = await connect(dbPath);
     const elapsed = Date.now() - t0;
 
-    expect(mockDriverConnect).toHaveBeenCalledTimes(2);
+    expect(mockOpenTursoConnection).toHaveBeenCalledTimes(2);
     expect(adapter).toBeInstanceOf(TursoAdapterImpl);
     // (d) backoff: exactly one linear backoff (100ms) between attempts.
     expect(elapsed).toBeGreaterThanOrEqual(100);
@@ -165,7 +172,7 @@ describe('TursoAdapterImpl.connect — bounded open-handshake retry (BL-512 foll
   it('(b) bounds retries to 3 total attempts and surfaces the original error with retryable: true on exhaustion', async () => {
     const dbPath = tempPath('retry-exhaust');
     const original = openHandshakeError(dbPath);
-    mockDriverConnect.mockRejectedValue(original);
+    mockOpenTursoConnection.mockRejectedValue(original);
 
     const t0 = Date.now();
     let thrown: unknown;
@@ -176,7 +183,7 @@ describe('TursoAdapterImpl.connect — bounded open-handshake retry (BL-512 foll
     }
     const elapsed = Date.now() - t0;
 
-    expect(mockDriverConnect).toHaveBeenCalledTimes(3);
+    expect(mockOpenTursoConnection).toHaveBeenCalledTimes(3);
     expect(thrown).toBeDefined();
     // The ORIGINAL driver error, not a wrapper — with retryable: true so the
     // CALLER decides beyond the adapter's bound (ADR-0012 §4). Never silent.
@@ -193,7 +200,7 @@ describe('TursoAdapterImpl.connect — bounded open-handshake retry (BL-512 foll
     const different = Object.assign(new Error('unable to open database file'), {
       code: 'GenericFailure',
     });
-    mockDriverConnect.mockRejectedValue(different);
+    mockOpenTursoConnection.mockRejectedValue(different);
 
     const t0 = Date.now();
     let thrown: unknown;
@@ -204,7 +211,7 @@ describe('TursoAdapterImpl.connect — bounded open-handshake retry (BL-512 foll
     }
     const elapsed = Date.now() - t0;
 
-    expect(mockDriverConnect).toHaveBeenCalledTimes(1);
+    expect(mockOpenTursoConnection).toHaveBeenCalledTimes(1);
     expect(thrown).toBe(different); // the original error object, identity-preserved
     expect((thrown as { retryable?: boolean }).retryable).toBeUndefined();
     // No backoff was awaited — the failure propagated on the first attempt.

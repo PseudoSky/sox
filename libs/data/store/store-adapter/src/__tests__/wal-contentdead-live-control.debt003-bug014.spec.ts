@@ -8,10 +8,10 @@
  * operators see the failure class change mid-retry (DEBT-003 fix-packet item
  * 1 / SPEC §T2 Change 4).
  *
- * Harness (deterministic, mocked driver — the heal spec proves the real
- * engine; this one pins the DECISION LOGIC): `@tursodatabase/database` is
- * mocked so every `connect()` rejects with a SHORT-READ error (the same class
- * `isStaleWalIndexError` matches). The on-disk fixture is fabricated to be
+ * Harness (deterministic, mocked driver HOST — the heal spec proves the real
+ * engine; this one pins the DECISION LOGIC — 862129b5, TUR-E): the adapter's
+ * `openTursoConnection` host seam is mocked so every open rejects with a
+ * SHORT-READ error (the same class `isStaleWalIndexError` matches). The on-disk fixture is fabricated to be
  * CONTENT-LIVE: a real-format `-wal` (32-byte header + one 4120-byte frame →
  * 4152 bytes, frame-aligned Shape A) and a real-format `-tshm` (76-byte
  * `TSHMWAL\0` header, `max_frame=1` at both probe offsets → the index claims
@@ -35,16 +35,23 @@ import { TursoAdapterImpl } from '../turso-adapter.js';
 import { acquireStoreLease } from '../store-lease.js';
 import { log } from '@adhd/sox-telemetry';
 
-const mockDriverConnect = vi.fn();
+// (862129b5, TUR-E) The adapter opens the driver through the process-wide
+// off-thread host (`openTursoConnection`), so that host seam — not
+// `@tursodatabase/database` — is what a test mocks to drive the open sequence.
+const mockOpenTursoConnection = vi.fn();
 
-vi.mock('@tursodatabase/database', () => ({
-  connect: (...args: unknown[]) => mockDriverConnect(...args),
-}));
+vi.mock('../turso-driver-host.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../turso-driver-host.js')>();
+  return {
+    ...actual,
+    openTursoConnection: (...args: unknown[]) => mockOpenTursoConnection(...args),
+  };
+});
 
 let tmpDir: string;
 beforeEach(() => {
   tmpDir = mkdtempSync(join(tmpdir(), 'store-adapter-debt003-live-'));
-  mockDriverConnect.mockReset();
+  mockOpenTursoConnection.mockReset();
 });
 
 /** Every `.stale-*` sidecar rename under the store (excludes the lease dir). */
@@ -92,7 +99,7 @@ describe('DEBT-003 — content-LIVE -tshm keeps the BUG-009 retry path (never re
 
     // The three open attempts fail with DISTINCT messages so the serialized
     // error is observable: original, then a shifted offset on each retry.
-    mockDriverConnect
+    mockOpenTursoConnection
       .mockRejectedValueOnce(new Error('I/O error: short read on WAL frame at offset 100: expected 4096 bytes, got 0'))
       .mockRejectedValueOnce(new Error('I/O error: short read on WAL frame at offset 200: expected 4096 bytes, got 0'))
       .mockRejectedValueOnce(new Error('I/O error: short read on WAL frame at offset 300: expected 4096 bytes, got 0'));

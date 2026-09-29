@@ -21,8 +21,9 @@
  *      with the "frames remain durable in the WAL and replay on the next
  *      open (checkpoint deferred)" wording — never a loss claim.
  *
- * Harness: the driver is mocked (same shape as truncate-race.bug008.spec.ts)
- * so `wal_checkpoint(PASSIVE)` can be forced to throw deterministically, and
+ * Harness: the driver HOST is mocked (same shape as
+ * truncate-race.bug008.spec.ts — 862129b5, TUR-E) so
+ * `wal_checkpoint(PASSIVE)` can be forced to throw deterministically, and
  * the `-wal` file's real on-disk existence is what the adapter's
  * `existsSync` discriminator reads. `setIntegrityReportSink` captures every
  * emitted event.
@@ -40,23 +41,31 @@ import { TursoAdapterImpl } from '../turso-adapter.js';
 import { setIntegrityReportSink } from '../integrity.js';
 import type { IntegrityReportEvent } from '../integrity.js';
 
-// ── Driver mock ──────────────────────────────────────────────────────────────
-const mockDriverConnect = vi.fn();
+// ── Driver-host mock (862129b5, TUR-E) ───────────────────────────────────────
+//
+// The adapter opens the driver through the process-wide off-thread host
+// (`openTursoConnection`), so that host seam — not `@tursodatabase/database` —
+// is what a test mocks to drive the open sequence.
+const mockOpenTursoConnection = vi.fn();
 
-vi.mock('@tursodatabase/database', () => ({
-  connect: (...args: unknown[]) => {
-    // (BUG-MEMORYCORE-MULTIPROCESS-WAL-NOT-OPTED-IN-001) Mimic the REAL driver:
-    // a writable local open creates the -tshm coordinator sidecar — the
-    // filesystem proof the multiprocess-WAL mandate is live. The adapter's
-    // post-open verification polls for it; without this the mock falsely
-    // trips E_WAL_MODE_UNVERIFIED.
-    const url = args[0];
-    if (typeof url === 'string' && !url.includes('://')) {
-      writeFileSync(url + '-tshm', '');
-    }
-    return mockDriverConnect(...args);
-  },
-}));
+vi.mock('../turso-driver-host.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../turso-driver-host.js')>();
+  return {
+    ...actual,
+    openTursoConnection: (...args: unknown[]) => {
+      // (BUG-MEMORYCORE-MULTIPROCESS-WAL-NOT-OPTED-IN-001) Mimic the REAL
+      // driver: a writable local open creates the -tshm coordinator sidecar —
+      // the filesystem proof the multiprocess-WAL mandate is live. The
+      // adapter's post-open verification polls for it; without this the mock
+      // falsely trips E_WAL_MODE_UNVERIFIED.
+      const url = args[0];
+      if (typeof url === 'string' && !url.includes('://')) {
+        writeFileSync(url + '-tshm', '');
+      }
+      return mockOpenTursoConnection(...args);
+    },
+  };
+});
 
 interface FakeCall {
   method: 'run' | 'all';
@@ -100,7 +109,7 @@ beforeAll(() => {
 });
 
 beforeEach(() => {
-  mockDriverConnect.mockReset();
+  mockOpenTursoConnection.mockReset();
 });
 
 const openAdapters: TursoAdapterImpl[] = [];
@@ -152,7 +161,7 @@ describe('BUG-011 — close() PASSIVE-failure diagnostics distinguish contention
     // The contention shape: a real -wal file exists on disk, so the frames it
     // holds are durable and replay on the next open.
     writeFileSync(dbPath + '-wal', 'wal-frames');
-    mockDriverConnect.mockResolvedValue(makeFakeDb({ throwPassive: true }));
+    mockOpenTursoConnection.mockResolvedValue(makeFakeDb({ throwPassive: true }));
     const adapter = await connect(dbPath);
 
     const events = await captureEvents(() => adapter.close());
@@ -180,7 +189,7 @@ describe('BUG-011 — close() PASSIVE-failure diagnostics distinguish contention
     // The BL-330 orphaned-WAL shape: the WAL existed at open (baseline
     // captured) but was unlinked before close — the frames are unreachable.
     writeFileSync(dbPath + '-wal', 'wal-frames');
-    mockDriverConnect.mockResolvedValue(makeFakeDb({ throwPassive: true }));
+    mockOpenTursoConnection.mockResolvedValue(makeFakeDb({ throwPassive: true }));
     const adapter = await connect(dbPath);
     unlinkSync(dbPath + '-wal');
 

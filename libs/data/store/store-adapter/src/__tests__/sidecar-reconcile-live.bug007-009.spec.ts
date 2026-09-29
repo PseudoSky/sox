@@ -25,12 +25,13 @@
  * reaches the open-time catch's quiescent empty-WAL branch, which is
  * exercised end-to-end below.
  *
- * Harness: real fs + mocked driver. The scratch store is SEEDED with the REAL
- * `@tursodatabase/database` driver (`vi.importActual` — the `vi.mock` shim is
- * file-scoped, so the seed bypasses it), producing a genuine `-tshm` beside a
- * genuine WAL. The adapter under test opens with the driver MOCKED, so the
- * open-time catch can be driven with synthetic short-read errors while every
- * fs side effect (renames, `.stale-*` files) happens for real.
+ * Harness: real fs + mocked driver HOST (862129b5, TUR-E). The scratch store
+ * is SEEDED with the REAL `@tursodatabase/database` driver (a direct
+ * `vi.importActual` connect — the test process holds no host worker at seed
+ * time), producing a genuine `-tshm` beside a genuine WAL. The adapter under
+ * test opens through a MOCKED `openTursoConnection`, so the open-time catch can
+ * be driven with synthetic short-read errors while every fs side effect
+ * (renames, `.stale-*` files) happens for real.
  *
  * RED→GREEN (BL-225): against the pre-fix code these fail as follows —
  * (1) the stale `-tshm` of a live store is renamed (`.stale-*` appears);
@@ -57,24 +58,34 @@ const hasTurso = (() => {
 })();
 const tursoDescribe = hasTurso ? describe : describe.skip;
 
-// ── Driver mock ──────────────────────────────────────────────────────────────
-const mockDriverConnect = vi.fn();
+// ── Driver-host mock (862129b5, TUR-E) ───────────────────────────────────────
+//
+// The adapter opens the driver through the process-wide off-thread host
+// (`openTursoConnection`), so that host seam — not `@tursodatabase/database` —
+// is what a test mocks to drive the open sequence. `rawSeed` below still uses
+// `vi.importActual('@tursodatabase/database')` for a genuine on-disk fixture.
+const mockOpenTursoConnection = vi.fn();
 
-vi.mock('@tursodatabase/database', () => ({
-  connect: (...args: unknown[]) => {
-    // (BUG-MEMORYCORE-MULTIPROCESS-WAL-NOT-OPTED-IN-001) Mimic the REAL driver:
-    // a writable local open creates the -tshm coordinator sidecar — the
-    // filesystem proof the multiprocess-WAL mandate is live. The adapter's
-    // post-open verification polls for it; without this the mock falsely
-    // trips E_WAL_MODE_UNVERIFIED. (`-tshm` is distinct from the foreign
-    // `-shm` this suite reconciles, so it never perturbs those assertions.)
-    const url = args[0];
-    if (typeof url === 'string' && !url.includes('://')) {
-      writeFileSync(url + '-tshm', '');
-    }
-    return mockDriverConnect(...args);
-  },
-}));
+vi.mock('../turso-driver-host.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../turso-driver-host.js')>();
+  return {
+    ...actual,
+    openTursoConnection: (...args: unknown[]) => {
+      // (BUG-MEMORYCORE-MULTIPROCESS-WAL-NOT-OPTED-IN-001) Mimic the REAL
+      // driver: a writable local open creates the -tshm coordinator sidecar —
+      // the filesystem proof the multiprocess-WAL mandate is live. The
+      // adapter's post-open verification polls for it; without this the mock
+      // falsely trips E_WAL_MODE_UNVERIFIED. (`-tshm` is distinct from the
+      // foreign `-shm` this suite reconciles, so it never perturbs those
+      // assertions.)
+      const url = args[0];
+      if (typeof url === 'string' && !url.includes('://')) {
+        writeFileSync(url + '-tshm', '');
+      }
+      return mockOpenTursoConnection(...args);
+    },
+  };
+});
 
 function makeFakeDb(): any {
   return {
@@ -141,7 +152,7 @@ function staleSidecars(dbPath: string): string[] {
 const openAdapters: TursoAdapterImpl[] = [];
 
 beforeEach(() => {
-  mockDriverConnect.mockReset();
+  mockOpenTursoConnection.mockReset();
 });
 
 afterEach(async () => {
@@ -160,7 +171,7 @@ async function connect(dbPath: string): Promise<TursoAdapterImpl> {
   openAdapters.push(adapter);
   // (DEBT-003, lazy-connect) `TursoAdapterImpl.connect()` no longer opens the
   // mocked driver eagerly — every real-open effect this whole file pins
-  // (mockDriverConnect call count, proactive/catch sidecar reconcile,
+  // (mockOpenTursoConnection call count, proactive/catch sidecar reconcile,
   // retry-then-throw on exhaustion) now happens on the first real operation.
   // This helper is this file's ONLY entry point for "get a live adapter", so
   // forcing the real open here — and letting a rejection propagate exactly
@@ -186,7 +197,7 @@ tursoDescribe('BUG-007 — pre-open proactive reconcile with a live peer renames
     // A live peer holds the store — exactly the BUG-007 contention shape.
     const peer = await acquireStoreLease(dbPath);
     try {
-      mockDriverConnect.mockResolvedValue(makeFakeDb());
+      mockOpenTursoConnection.mockResolvedValue(makeFakeDb());
       const adapter = await connect(dbPath);
 
       // Pinned: NOTHING renamed. Pre-fix, the proactive reconcile moved the
@@ -214,7 +225,7 @@ tursoDescribe('BUG-009 — open-time catch with a live peer retries and never cl
     try {
       // The close()-TRUNCATE race shape: the frame pread short-reads twice,
       // then the sibling has let go and the open lands.
-      mockDriverConnect
+      mockOpenTursoConnection
         .mockRejectedValueOnce(shortReadError())
         .mockRejectedValueOnce(shortReadError())
         .mockResolvedValueOnce(makeFakeDb());
@@ -222,7 +233,7 @@ tursoDescribe('BUG-009 — open-time catch with a live peer retries and never cl
       const adapter = await connect(dbPath); // must NOT throw
 
       expect(
-        mockDriverConnect,
+        mockOpenTursoConnection,
         'BUG-009: the LIVE branch must retry the open (1 initial + 2 retries), never recover',
       ).toHaveBeenCalledTimes(3);
       expect(staleSidecars(dbPath), 'recovery must never rename sidecars while a peer is live').toHaveLength(0);
@@ -240,7 +251,7 @@ tursoDescribe('BUG-009 — open-time catch with a live peer retries and never cl
     const peer = await acquireStoreLease(dbPath);
     try {
       const original = shortReadError();
-      mockDriverConnect.mockRejectedValue(original);
+      mockOpenTursoConnection.mockRejectedValue(original);
 
       let thrown: unknown;
       try {
@@ -251,7 +262,7 @@ tursoDescribe('BUG-009 — open-time catch with a live peer retries and never cl
 
       expect(thrown).toBeDefined();
       expect(
-        mockDriverConnect,
+        mockOpenTursoConnection,
         'exhaustion after the bounded budget: 1 initial + 2 retries = 3 driver attempts',
       ).toHaveBeenCalledTimes(3);
       // The ORIGINAL driver error, marked retryable — the caller decides
@@ -289,7 +300,7 @@ tursoDescribe('BUG-009 — open-time catch with NO peer: the orphaned sidecar is
     // that performs it moved earlier.
     unlinkSync(dbPath + '-wal');
 
-    mockDriverConnect.mockResolvedValue(makeFakeDb());
+    mockOpenTursoConnection.mockResolvedValue(makeFakeDb());
 
     const adapter = await connect(dbPath);
 
@@ -319,7 +330,7 @@ tursoDescribe('BUG-009 — open-time catch with NO peer: the orphaned sidecar is
     // removed the WAL BEFORE the open, so the proactive site — not the catch —
     // performed the recovery and this branch was no longer exercised
     // end-to-end.
-    mockDriverConnect
+    mockOpenTursoConnection
       .mockImplementationOnce(async (path: string) => {
         truncateSync(path + '-wal', 0);
         throw shortReadError();
@@ -329,7 +340,7 @@ tursoDescribe('BUG-009 — open-time catch with NO peer: the orphaned sidecar is
     const adapter = await connect(dbPath);
 
     expect(
-      mockDriverConnect,
+      mockOpenTursoConnection,
       'the catch ran: 1 initial failed open + 1 reopen after the recovery (the proactive path would be a single call)',
     ).toHaveBeenCalledTimes(2);
     expect(

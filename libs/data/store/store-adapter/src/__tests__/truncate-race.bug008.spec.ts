@@ -20,12 +20,12 @@
  * contention it is deferred (frames stay durable; the next quiescent close
  * truncates) with a `close_checkpoint_busy` warn.
  *
- * Harness: the driver is mocked (`vi.mock('@tursodatabase/database')`, same
- * shape as open-handshake-retry.test.ts), so the sequence of PRAGMAs the
- * adapter issues through `executeAll`/`executeRun` is fully observable. The
- * fake's `all()` records every SQL text it receives and answers
- * `wal_checkpoint` with a busy=0 row (the driver's real TRUNCATE response when
- * no other connection holds the WAL).
+ * Harness: the driver host is mocked (`vi.mock('../turso-driver-host.js')`,
+ * same shape as open-handshake-retry.test.ts — 862129b5, TUR-E), so the
+ * sequence of PRAGMAs the adapter issues through `executeAll`/`executeRun` is
+ * fully observable. The fake's `all()` records every SQL text it receives and
+ * answers `wal_checkpoint` with a busy=0 row (the driver's real TRUNCATE
+ * response when no other connection holds the WAL).
  *
  * RED→GREEN (BL-225): against the pre-fix close() all three of these fail —
  * (1) observes TWO TRUNCATEs instead of one, (2) issues a TRUNCATE despite the
@@ -40,23 +40,31 @@ import { TursoAdapterImpl } from '../turso-adapter.js';
 import { acquireStoreLease } from '../store-lease.js';
 import { log } from '@adhd/sox-telemetry';
 
-// ── Driver mock ──────────────────────────────────────────────────────────────
-const mockDriverConnect = vi.fn();
+// ── Driver-host mock (862129b5, TUR-E) ───────────────────────────────────────
+//
+// The adapter opens the driver through the process-wide off-thread host
+// (`openTursoConnection`), so that host seam — not `@tursodatabase/database` —
+// is what a test mocks to drive the open sequence.
+const mockOpenTursoConnection = vi.fn();
 
-vi.mock('@tursodatabase/database', () => ({
-  connect: (...args: unknown[]) => {
-    // (BUG-MEMORYCORE-MULTIPROCESS-WAL-NOT-OPTED-IN-001) Mimic the REAL driver:
-    // a writable local open creates the -tshm coordinator sidecar — the
-    // filesystem proof the multiprocess-WAL mandate is live. The adapter's
-    // post-open verification polls for it; without this the mock falsely
-    // trips E_WAL_MODE_UNVERIFIED on every writable open.
-    const url = args[0];
-    if (typeof url === 'string' && !url.includes('://')) {
-      writeFileSync(url + '-tshm', '');
-    }
-    return mockDriverConnect(...args);
-  },
-}));
+vi.mock('../turso-driver-host.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../turso-driver-host.js')>();
+  return {
+    ...actual,
+    openTursoConnection: (...args: unknown[]) => {
+      // (BUG-MEMORYCORE-MULTIPROCESS-WAL-NOT-OPTED-IN-001) Mimic the REAL
+      // driver: a writable local open creates the -tshm coordinator sidecar —
+      // the filesystem proof the multiprocess-WAL mandate is live. The
+      // adapter's post-open verification polls for it; without this the mock
+      // falsely trips E_WAL_MODE_UNVERIFIED on every writable open.
+      const url = args[0];
+      if (typeof url === 'string' && !url.includes('://')) {
+        writeFileSync(url + '-tshm', '');
+      }
+      return mockOpenTursoConnection(...args);
+    },
+  };
+});
 
 interface FakeCall {
   method: 'run' | 'all';
@@ -107,7 +115,7 @@ beforeAll(() => {
 });
 
 beforeEach(() => {
-  mockDriverConnect.mockReset();
+  mockOpenTursoConnection.mockReset();
 });
 
 const openAdapters: TursoAdapterImpl[] = [];
@@ -116,7 +124,7 @@ async function connect(dbPath: string, opts: { readonly?: boolean } = {}): Promi
   const adapter = await TursoAdapterImpl.connect({ dbPath, ...opts });
   openAdapters.push(adapter);
   // (DEBT-003, lazy-connect) `TursoAdapterImpl.connect()` no longer opens the
-  // mocked driver eagerly — `lastFakeDb()` below reads `mockDriverConnect`'s
+  // mocked driver eagerly — `lastFakeDb()` below reads `mockOpenTursoConnection`'s
   // results, which stay empty until a real operation forces the open. Force
   // it here (a read is safe even for `readonly` opens) so every existing
   // close()-sequence assertion in this file observes the real fake handle.
@@ -128,7 +136,7 @@ async function connect(dbPath: string, opts: { readonly?: boolean } = {}): Promi
  *  observation surface for the close() sequence. (The mock's `results[i].value`
  *  holds the call's Promise — await it for the resolved handle.) */
 async function lastFakeDb(): Promise<{ __calls: FakeCall[]; __reset: () => void }> {
-  const results = mockDriverConnect.mock.results;
+  const results = mockOpenTursoConnection.mock.results;
   const result = results[results.length - 1];
   const value = result ? await (result.value as Promise<unknown>) : null;
   return (value as { __calls: FakeCall[]; __reset: () => void } | null) ?? {
@@ -156,7 +164,7 @@ function tempPath(label: string): string {
 describe('BUG-008 — a writable close() issues exactly ONE quiescence-gated wal_checkpoint(TRUNCATE)', () => {
   it('(1) solo close: exactly ONE TRUNCATE, preceded by PASSIVE, and NO _adapter_meta write (BL-fc5ab895)', async () => {
     const dbPath = tempPath('bug008-solo');
-    mockDriverConnect.mockResolvedValue(makeFakeDb());
+    mockOpenTursoConnection.mockResolvedValue(makeFakeDb());
     const adapter = await connect(dbPath);
     const fake = await lastFakeDb();
 
@@ -192,7 +200,7 @@ describe('BUG-008 — a writable close() issues exactly ONE quiescence-gated wal
 
   it('(2) close with a peer lease: ZERO TRUNCATE, emits close_checkpoint_busy, does not throw', async () => {
     const dbPath = tempPath('bug008-peer');
-    mockDriverConnect.mockResolvedValue(makeFakeDb());
+    mockOpenTursoConnection.mockResolvedValue(makeFakeDb());
     const adapter = await connect(dbPath);
 
     // A live peer holds the store through its own lease entry (same process,
@@ -224,7 +232,7 @@ describe('BUG-008 — a writable close() issues exactly ONE quiescence-gated wal
 
   it('(3) a hard readonly close issues no checkpoint at all (guard)', async () => {
     const dbPath = tempPath('bug008-readonly');
-    mockDriverConnect.mockResolvedValue(makeFakeDb());
+    mockOpenTursoConnection.mockResolvedValue(makeFakeDb());
     const adapter = await connect(dbPath, { readonly: true });
     const fake = await lastFakeDb();
     fake.__reset();
