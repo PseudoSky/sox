@@ -1,5 +1,13 @@
 # @adhd/sox-memory-core
 
+## 0.12.2
+
+### Patch Changes
+
+- Updated dependencies [2bf37fe]
+  - @adhd/sox-store-adapter@0.13.0
+  - @adhd/sox-graph-store@0.12.2
+
 ## 0.12.1
 
 ### Patch Changes

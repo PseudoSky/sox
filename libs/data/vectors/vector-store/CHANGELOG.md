@@ -1,5 +1,12 @@
 # @adhd/sox-vector-store
 
+## 0.7.5
+
+### Patch Changes
+
+- Updated dependencies [2bf37fe]
+  - @adhd/sox-store-adapter@0.13.0
+
 ## 0.7.4
 
 ### Patch Changes
