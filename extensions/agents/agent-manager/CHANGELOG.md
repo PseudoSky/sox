@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.8
+
+- **§8: budget prose in tokens, not lines or words** — a line cap is defeated by a long line,
+  a word cap by long words. State the budget in tokens and measure it.
+
 ## 0.1.7
 
 - **§8 gains the governing minimum-prose rule.** The section warned against soft

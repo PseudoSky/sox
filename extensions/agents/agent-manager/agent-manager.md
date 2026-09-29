@@ -122,6 +122,7 @@ Implementation: use `promptfoo` (side-by-side matrix, model-graded asserts, CI g
   - **Over two sentences → restructure**, don't elaborate: a table, a bullet, or deletion.
   - **WHY only where it changes behaviour.** No preamble, no history, no rationale the reader would not act on.
   - Verbose drift is the default failure (measured: a 5-line fix landed as 18). Every added line needs a reason.
+  - **Budget prose in tokens, not lines or words.** A line cap is defeated by a long line, a word cap by long words. State the budget in tokens ("the report's prose: ≤400"), and measure it.
 - Prescriptive limits over soft adjectives: "One to two sentences, never more than three" beats "Be concise".
 - Tell what TO do, not what not to do: "Respond in flowing prose" beats "Do not use markdown".
 - Structure instruction kinds with XML tags once a prompt has more than one content type.
