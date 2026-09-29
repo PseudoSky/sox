@@ -105,6 +105,7 @@ describe('SR-7 — memory_claim_upsert (acquire / read / idempotent / conflict)'
     expect(res.ok).toBe(false);
     if (res.ok) throw new Error('unreachable');
     expect(res.code).toBe('E_CLAIM_HELD');
+    if (res.code !== 'E_CLAIM_HELD') throw new Error('unreachable');
     expect(res.held_by).toBe('alpha');
 
     // The loser's attempt did not steal or duplicate the claim.
