@@ -20,6 +20,7 @@ import {
   getSharedOnnxWorker,
   resetSharedFastembedProcess,
   resetSharedOnnxWorker,
+  resolveEmbedHostSocketDir,
   warmupOuterBudgetMs,
 } from '@adhd/sox-embedding-provider';
 import type { EmbeddingProvider, EmbedReadiness } from '@adhd/sox-embedding-provider';
@@ -123,6 +124,22 @@ function resolveConfig(): EmbedConfig {
 /** Public accessor: the typed sync-embed mode flag (config, not a hack). */
 export function getConfiguredSyncEmbed(): boolean {
   return resolveConfig().sync;
+}
+
+/**
+ * BL-26291f21: the two filesystem locations a REAL embed resolves from this
+ * process's environment — `cacheDir`, the model cache the fastembed backend is
+ * constructed with (`resolveConfig().cacheDir`, forwarded to the shared host as
+ * `--cache-dir=`), and `hostSocketDir`, where the funnel binds/dials the shared
+ * embedding host (`resolveEmbedHostSocketDir()`, `$SOX_ECOSYSTEM_HOME/run`).
+ *
+ * Exposed so a test harness can assert isolation against the resolvers the
+ * product actually uses, instead of re-deriving the fallback chain (the
+ * memory-server real-backend gates re-derived it as `.../sox-memory/models` while
+ * this module loads from `.../sox/models`). Pure: reads env, spawns nothing.
+ */
+export function getConfiguredEmbedPaths(): { cacheDir: string; hostSocketDir: string } {
+  return { cacheDir: resolveConfig().cacheDir, hostSocketDir: resolveEmbedHostSocketDir() };
 }
 
 // ── Provider singleton ────────────────────────────────────────────────────────

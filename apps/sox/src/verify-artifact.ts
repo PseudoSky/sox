@@ -40,6 +40,17 @@ export function resolveArtifactFsPath(source: string): string {
 }
 
 /**
+ * BL-cd1fe520: canonical form for comparing sha256 digests. Every lock writer
+ * records `sha256:<hex>` (install-engine computeChecksum); a hand-written or
+ * legacy lock may hold bare hex. Strip the prefix and lower-case both sides so
+ * a correctly restarted consumer is never reported as a mismatch.
+ */
+export function normalizeSha256(checksum: string): string {
+  const trimmed = checksum.trim();
+  return (trimmed.toLowerCase().startsWith('sha256:') ? trimmed.slice('sha256:'.length) : trimmed).toLowerCase();
+}
+
+/**
  * Verify that the running process for (extId, scope) loaded the artifact whose
  * sha256 matches the lockfile's expected checksum. Reads the runtime record to
  * find the entrypoint file path, then sha256s the file on disk and compares.
@@ -77,6 +88,6 @@ export async function verifyRunningArtifact(
     return { ok: false, detail: `cannot read artifact ${artifactPath}: ${String(e)}` };
   }
 
-  if (actual === expected) return { ok: true };
+  if (normalizeSha256(actual) === normalizeSha256(expected)) return { ok: true };
   return { ok: false, detail: `entrypoint sha256 ${actual.slice(0, 19)}… ≠ expected ${expected.slice(0, 19)}…` };
 }

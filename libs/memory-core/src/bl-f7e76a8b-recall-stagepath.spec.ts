@@ -67,17 +67,11 @@ describe('MEMORY_CORE_STAGES — embed stage declares recall as a valid path (BL
   it("'recall' is a declared stagePath for the embed stage", () => {
     // Static half of the fix: the closed union must include 'recall'
     // (pre-fix: ['write', 'heal', 'reembed'] — no 'recall' member existed).
-    const paths = MEMORY_CORE_STAGES.getStagePaths
-      ? MEMORY_CORE_STAGES.getStagePaths('embed')
-      : undefined;
-    if (paths) {
-      expect(paths).toContain('recall');
-    } else {
-      // Fallback if no introspection accessor exists: exercised indirectly
-      // by the call-site test below, which would throw on an invalid
-      // stagePath if 'recall' were not declared.
-      expect(true).toBe(true);
-    }
+    // `MEMORY_CORE_STAGES` has no `getStagePaths` introspection accessor —
+    // the real (and only) surface is `.stages.<name>.paths`, same as
+    // bl401-stage-migration.spec.ts and cluster-metrics.spec.ts use.
+    const paths = MEMORY_CORE_STAGES.stages.embed.paths;
+    expect(paths).toContain('recall');
   });
 });
 

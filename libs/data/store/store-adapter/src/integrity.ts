@@ -124,11 +124,15 @@
  * duplicate `_adapter_meta` rows and repaired both, taking the open to 462 ms
  * once, and with the BL-342 shape re-injected into all three JSON columns of
  * the 105 MB copy it detected and repaired all three in a 1 027 ms open.
- * `deep` runs when the previous session did not shut down cleanly (the
- * crash-recovery flag, BL-338), on an explicit request, or on a cadence.
- * Deep is not the default because `integrity_check` is O(database) and grows
- * without bound, while every fast probe is O(indexes) with a constant-size
- * sample.
+ * `deep` is owed when the previous session did not shut down cleanly (the
+ * crash-recovery signal, BL-338) or on an explicit request, and it is owed
+ * durably until a deep pass completes `ok`. Deep is not the default because
+ * `integrity_check` is O(database) and grows without bound, while every fast
+ * probe is O(indexes) with a constant-size sample — and for the same reason it
+ * never runs on the opener's thread: it runs in a bounded, SIGKILL-able child
+ * process in the background (BL-fc5ab895, `deep-verify.ts`). Measured
+ * 2026-09-27: ~2 s on a warm copy of the 417 MB production store, 21+ minutes
+ * on that store in production under memory pressure (no-cache `pread`s).
  *
  * @module
  */
@@ -137,6 +141,15 @@ import { closeSync, openSync, readSync, renameSync, statSync } from 'node:fs';
 import { log } from '@adhd/sox-telemetry';
 import { createFTSDialect } from './fts-dialect.js';
 import type { StoreAdapter } from './types.js';
+import { staleSidecarPath } from './sidecar-retention.js';
+import {
+  markDeepVerifyOwed,
+  readDeepVerifyObligation,
+  scheduleDeepVerify,
+  resolveDeepVerifySchedule,
+  validateDeepVerifyConfig,
+  type ScheduleDeepVerifyOptions,
+} from './deep-verify.js';
 
 // ── Public result types ──────────────────────────────────────────────────────
 
@@ -852,8 +865,7 @@ export function recoverStaleWalIndex(
       };
     }
     result.attempted = true;
-    const stamp = new Date().toISOString().replace(/[:.]/g, '').replace('T', '-').slice(0, 15);
-    const to = `${tshmPath}.stale-${stamp}`;
+    const to = staleSidecarPath(tshmPath);
     try {
       renameSync(tshmPath, to);
       result.movedAside.push({ from: tshmPath, to });
@@ -894,11 +906,10 @@ export function recoverStaleWalIndex(
   const verdict = isTshmContentDead(dbPath);
   if (verdict.dead) {
     result.attempted = true;
-    const stamp = new Date().toISOString().replace(/[:.]/g, '').replace('T', '-').slice(0, 15);
     if (walBytes > 0) {
       // Index-beyond-EOF shape: move ONLY the -tshm — never the -shm (see the
       // doc comment above). Reopen is the caller's job, against the WAL as-is.
-      const to = `${tshmPath}.stale-${stamp}`;
+      const to = staleSidecarPath(tshmPath);
       try {
         renameSync(tshmPath, to);
         result.movedAside.push({ from: tshmPath, to });
@@ -915,7 +926,7 @@ export function recoverStaleWalIndex(
         } catch {
           continue; // not present
         }
-        const to = `${from}.stale-${stamp}`;
+        const to = staleSidecarPath(from);
         try {
           renameSync(from, to);
           result.movedAside.push({ from, to });
@@ -1067,8 +1078,7 @@ export function proactivelyReconcileStaleSidecar(
     };
   }
 
-  const stamp = new Date().toISOString().replace(/[:.]/g, '').replace('T', '-').slice(0, 15);
-  const to = `${tshmPath}.stale-${stamp}`;
+  const to = staleSidecarPath(tshmPath);
   try {
     renameSync(tshmPath, to);
     return { moved: true, to };
@@ -1549,10 +1559,22 @@ async function discoverFtsTargets(adapter: StoreAdapter): Promise<FtsTarget[]> {
  *
  * The lookarounds are the fix: a 22-letter identifier is simply not a
  * candidate, rather than being chopped down to a 20-letter non-word.
+ *
+ * **(BL-62027a66) "Complete" means complete to the TOKENIZER, and Tantivy's
+ * tokens are alphanumeric runs.** With letter-only lookarounds, `epsilon3`
+ * yielded the candidate `epsilon`; Tantivy indexes `epsilon3` as ONE token, so
+ * `fts_match('epsilon')` returns 0 rows (`fts_match('epsilon3')` returns 1),
+ * on Turso 0.7.1 and 0.7.2 alike. The probe then reported a healthy index as
+ * damaged and the open-time repair DROPped and re-CREATEd it on EVERY open —
+ * and a DROP orphans the index's btree on Turso, so each open leaked a full
+ * index copy (+46 pages per open at 1k docs, ~+140 at 2k). The lookarounds
+ * therefore reject any adjacent letter OR digit — Unicode-wide
+ * (`\p{L}`/`\p{N}`), because the tokenizer's notion of alphanumeric is
+ * Unicode's, so `résumé`-style runs are not split at the accent either.
  */
 export function pickSentinelTokens(text: unknown, max = 3): string[] {
   if (typeof text !== 'string') return [];
-  const words = text.match(/(?<![A-Za-z])[A-Za-z]{6,20}(?![A-Za-z])/g);
+  const words = text.match(/(?<![\p{L}\p{N}])[A-Za-z]{6,20}(?![\p{L}\p{N}])/gu);
   if (!words) return [];
   const seen = new Set<string>();
   const out: string[] = [];
@@ -3196,8 +3218,12 @@ export async function persistIntegrityResult(
          ON CONFLICT(key) DO UPDATE SET value = excluded.value`,
       [INTEGRITY_META_KEY, JSON.stringify(payload)],
     );
-  } catch {
+  } catch (err) {
     // Non-fatal — the in-memory registries still hold this process's view.
+    log.warn('store_adapter.integrity.persist_failed', {
+      db_path: adapter.config.dbPath,
+      error: err instanceof Error ? err.message : String(err),
+    });
   }
 }
 
@@ -3243,12 +3269,17 @@ export function _resetIntegrityRegistryForTest(): void {
 // ── Open-time policy ─────────────────────────────────────────────────────────
 
 /**
- * Resolve the verification depth for an adapter open.
+ * Resolve the verification depth an adapter open OWES the store.
  *
  * - `SOX_STORE_VERIFY=fast|deep` tunes the rigor (default `fast`).
  * - `uncleanShutdown` escalates `fast` → `deep`: a store that was not closed
- *   cleanly is the exact population BL-338 is about, and 300 ms of
- *   `integrity_check` is cheap against another silent outage.
+ *   cleanly is the exact population BL-338 is about.
+ *
+ * `deep` here means "a deep pass is owed", NOT "the opener runs it inline"
+ * (BL-fc5ab895): {@link runOpenTimeIntegrity} blocks only on `fast` and hands
+ * the owed deep pass to the out-of-process verifier. The old rationale — "300
+ * ms of `integrity_check` is cheap" — was measured on a 43–105 MB store; on the
+ * 417 MB production store it ran 21+ minutes on the main thread.
  *
  * The store ALWAYS validates — `'off'` was an anti-feature (an env var whose
  * only job was to disable a core function; ADR-0013). A caller that requests
@@ -3323,10 +3354,26 @@ export function resolveSkippedProbes(): IntegrityProbe[] {
 /**
  * The integrity pass an adapter runs on open.
  *
+ * **Blocks only on the `fast` tier** (BL-fc5ab895). `deep` — `PRAGMA
+ * integrity_check`, O(database), measured at 21+ minutes on the 417 MB
+ * production store under memory pressure — never runs on the opener's thread.
+ * When deep is owed it is handed to an out-of-process verifier
+ * (`deep-verify.ts`) that runs in the background with a wall-clock bound while
+ * the store serves.
+ *
+ * Deep is owed when {@link resolveVerifyDepth} says so for THIS open (an
+ * unclean shutdown, or `SOX_STORE_VERIFY=deep`) — recorded durably as the
+ * `deep_verify_owed` obligation BEFORE the fast pass — or when an earlier open
+ * left that obligation outstanding (its deep pass timed out, failed, found
+ * damage, was cancelled, or never got to run). Only a deep pass that completes
+ * `ok` clears it.
+ *
  * Fail-soft by construction: any throw is swallowed and recorded, because a
  * store that cannot be verified must still open. It is never SILENT — damage
  * and repairs go to `onReport`, and the result is retained for the status
- * surface via {@link getLastIntegrityResult}.
+ * surface via {@link getLastIntegrityResult}. The ONE thing that throws out of
+ * here is an invalid `deepVerify` config — a misconfiguration is loud, never
+ * silently replaced by a default (ADR-0013 D3).
  *
  * Always runs, always repairs what is repairable: `SOX_STORE_REPAIR=off` and
  * `SOX_STORE_VERIFY=off` were anti-features and are gone (ADR-0013). The
@@ -3341,8 +3388,29 @@ export async function runOpenTimeIntegrity(
     onReport?: VerifyAndRepairOptions['onReport'];
   },
 ): Promise<VerifyAndRepairResult> {
-  const depth = resolveVerifyDepth(opts.uncleanShutdown);
+  const owedDepth = resolveVerifyDepth(opts.uncleanShutdown);
+  validateDeepVerifyConfig(adapter.config.deepVerify);
+  const deepRequestedNow = owedDepth === 'deep';
+  const deepReason = opts.uncleanShutdown ? 'unclean_shutdown' : 'requested (SOX_STORE_VERIFY=deep)';
 
+  // Record the obligation FIRST, so a crash (or a watchdog kill) anywhere
+  // after this line still leaves the next open owing a deep pass.
+  if (deepRequestedNow) {
+    try {
+      await markDeepVerifyOwed(adapter, deepReason);
+    } catch (err) {
+      log.error('store_adapter.deep_verify.obligation_write_failed', {
+        db_path: adapter.config.dbPath,
+        reason: deepReason,
+        error: err instanceof Error ? err.message : String(err),
+        detail: 'deep verification still runs for this open; a later open may not know it is owed',
+      });
+    }
+  }
+
+  // The opener only ever waits for `fast`.
+  const depth: VerifyDepth = 'fast';
+  let result: VerifyAndRepairResult;
   try {
     const skip = resolveSkippedProbes();
     const verifyOpts: VerifyAndRepairOptions = {
@@ -3351,10 +3419,9 @@ export async function runOpenTimeIntegrity(
       ...(skip.length > 0 ? { skip } : {}),
     };
     if (opts.onReport) verifyOpts.onReport = opts.onReport;
-    const result = await verifyAndRepair(adapter, verifyOpts);
+    result = await verifyAndRepair(adapter, verifyOpts);
     recordIntegrityResult(adapter, result);
     await persistIntegrityResult(adapter, result);
-    return result;
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     opts.onReport?.('repair_failed', `integrity pass aborted: ${message}`);
@@ -3371,7 +3438,7 @@ export async function runOpenTimeIntegrity(
       backlog: 'BL-352',
       probeValidated: false,
     };
-    const failed: VerifyAndRepairResult = {
+    result = {
       verify: {
         ok: false,
         depth,
@@ -3382,8 +3449,110 @@ export async function runOpenTimeIntegrity(
       },
       repair: null,
     };
-    recordIntegrityResult(adapter, failed);
-    await persistIntegrityResult(adapter, failed);
-    return failed;
+    recordIntegrityResult(adapter, result);
+    await persistIntegrityResult(adapter, result);
+  }
+
+  await scheduleOwedDeepVerify(adapter, result, deepRequestedNow, deepReason, opts.onReport);
+  return result;
+}
+
+/**
+ * (BL-1010e417) The open-time integrity step for a reopen after
+ * `releaseIdleConnection()` voluntarily closed a HEALTHY connection of the same
+ * adapter instance, in the same process.
+ *
+ * Skips the `fast` verify and its durable `persistIntegrityResult` upsert —
+ * that upsert changes `run_at_ms` on every call, so it is a guaranteed WAL
+ * frame on every reopen, which is exactly what the next idle flush then has to
+ * checkpoint and truncate (measured: the ONLY frame a release reopen wrote).
+ * The verdict retained for this store is the one the instance's last full open
+ * produced; its age is reported honestly by `getLastIntegrityRunAt`.
+ *
+ * Keeps the read-only half: a deep-verify obligation recorded by another
+ * opener (a one-shot CLI that saw a dead-pid marker) is still picked up here
+ * and scheduled, exactly as a full open would.
+ *
+ * Returns `false` — and does nothing, not even the deep-verify scheduling,
+ * which the full pass then does itself — when there is no CLEAN retained
+ * verdict to stand on (see {@link isCleanIntegrityVerdict}); the caller must
+ * then run {@link runOpenTimeIntegrity} instead. A verdict that is aborted
+ * (the BL-352 `ok:false` + `unknown` shape), damaged, unvalidated, or whose
+ * repair failed is never carried forward: reusing it would freeze the store in
+ * that state, with repair never retried until a poison event or a restart.
+ * Never used for a first open or a poison recovery.
+ */
+export async function resumeOpenTimeIntegrityAfterRelease(
+  adapter: StoreAdapter,
+  opts: { onReport?: VerifyAndRepairOptions['onReport'] },
+): Promise<boolean> {
+  const prior = getLastIntegrityResult(adapter);
+  if (!isCleanIntegrityVerdict(prior)) return false;
+  validateDeepVerifyConfig(adapter.config.deepVerify);
+  await scheduleOwedDeepVerify(adapter, prior, false, 'requested (SOX_STORE_VERIFY=deep)', opts.onReport);
+  return true;
+}
+
+/**
+ * (BL-1010e417) Whether a retained open-time verdict is clean enough for a
+ * release reopen to stand on instead of re-verifying: verification completed
+ * and passed (`verify.ok === true`), found nothing damaged, left no probe
+ * unvalidated, and no repair failed. Anything else — including "no verdict at
+ * all" — must be re-verified (and, if damaged, re-repaired) by a full pass.
+ * A successfully repaired verdict still reads `verify.ok === false` and so
+ * costs one more full pass, which is the conservative direction.
+ */
+export function isCleanIntegrityVerdict(result: VerifyAndRepairResult | null): result is VerifyAndRepairResult {
+  if (result === null) return false;
+  const { verify, repair } = result;
+  return (
+    verify.ok === true &&
+    verify.damaged.length === 0 &&
+    verify.unknown.length === 0 &&
+    (repair === null || repair.ok === true)
+  );
+}
+
+/** Background deep verification, if one is owed — never awaited by the open. */
+async function scheduleOwedDeepVerify(
+  adapter: StoreAdapter,
+  result: VerifyAndRepairResult,
+  deepRequestedNow: boolean,
+  deepReason: string,
+  onReport: VerifyAndRepairOptions['onReport'] | undefined,
+): Promise<void> {
+  let owed = deepRequestedNow;
+  let reason = deepReason;
+  if (!owed) {
+    try {
+      const obligation = await readDeepVerifyObligation(adapter);
+      if (obligation !== null) {
+        owed = true;
+        reason = obligation.reason;
+      }
+    } catch (err) {
+      // Cannot tell whether deep is owed ⇒ run it. A redundant background
+      // pass costs I/O; a skipped one leaves a crashed store unverified.
+      owed = true;
+      reason = 'obligation unreadable';
+      log.warn('store_adapter.deep_verify.obligation_read_failed', {
+        db_path: adapter.config.dbPath,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
+  if (owed && resolveDeepVerifySchedule(adapter.config.deepVerify) === 'owner') {
+    const scheduleOpts: ScheduleDeepVerifyOptions = { fastResult: result, reason };
+    if (onReport) scheduleOpts.onReport = onReport;
+    void scheduleDeepVerify(adapter, scheduleOpts);
+  } else if (owed) {
+    // (BL-9f6681ee) A one-shot opener records the obligation (above) but never
+    // forks: it would close or exit mid-pass, cancel/kill the verifier, and
+    // starve the long-lived owner that can actually finish it.
+    log.info('store_adapter.deep_verify.deferred_to_owner', {
+      db_path: adapter.config.dbPath,
+      reason,
+      detail: "deep verification is owed; this opener's deepVerify.schedule is 'never', so a long-lived owner runs it",
+    });
   }
 }

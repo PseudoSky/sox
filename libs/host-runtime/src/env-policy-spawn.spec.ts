@@ -130,6 +130,51 @@ describe('BL-344 — acceptance on a real spawned process', () => {
     }
   }, 20_000);
 
+  it('BL-2df86153: a spawned child\'s os.tmpdir() resolves to the SAME dir as the parent\'s TMPDIR', async () => {
+    // Before this fix TMPDIR was dropped like any other non-SOX_ ambient var,
+    // so the child's os.tmpdir() fell back to /tmp while the parent resolved
+    // it to a per-user directory. Spawn a real child that reports its OWN
+    // os.tmpdir() — not just process.env.TMPDIR — since that is exactly the
+    // call ADR-0022 §5 and the BL-578 fallback socket path depend on.
+    const tmpdirScript = join(dir, 'dump-tmpdir.cjs');
+    writeFileSync(
+      tmpdirScript,
+      `const fs = require('node:fs');
+       fs.writeFileSync(process.argv[2], require('node:os').tmpdir());
+       setInterval(() => {}, 1000);
+      `,
+    );
+    const mktemp = mkdtempSync(join(tmpdir(), 'bl2df86153-'));
+    const prev = process.env['TMPDIR'];
+    process.env['TMPDIR'] = mktemp;
+    const out = join(dir, `tmpdir-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.json`);
+    const sup = new ProcessSupervisor({
+      key: `bl2df86153-${Math.random().toString(36).slice(2, 8)}`,
+      entrypointPath: tmpdirScript,
+      args: [out],
+      permissions: { fs: { read: [dir + '/**'], write: [dir + '/**', mktemp + '/**'] } },
+      lifecycle: {},
+    });
+    try {
+      await sup.start();
+      const deadline = Date.now() + 5000;
+      while (Date.now() < deadline && !existsSync(out)) {
+        await new Promise((r) => setTimeout(r, 25));
+      }
+      const childTmpdir = existsSync(out) ? readFileSync(out, 'utf8') : '';
+      expect(childTmpdir, 'child never wrote its tmpdir — spawn failed').not.toBe('');
+      // Normalize trailing slash: os.tmpdir() strips it, mkdtemp's return value
+      // never had one, but TMPDIR itself may or may not carry one.
+      const normalize = (p: string): string => p.replace(/\/+$/, '');
+      expect(normalize(childTmpdir)).toBe(normalize(mktemp));
+    } finally {
+      await sup.stop();
+      if (prev === undefined) delete process.env['TMPDIR'];
+      else process.env['TMPDIR'] = prev;
+      rmSync(mktemp, { recursive: true, force: true });
+    }
+  }, 20_000);
+
   it('NEGATIVE CONTROL: an arbitrary non-SOX_ var is still scrubbed from the child', async () => {
     // Proves the scrub is intact and this suite is not passing because
     // everything leaks. Without this, all three tests above would also pass

@@ -23,9 +23,26 @@
         "rootDir": "libs/memory-core/src"
       },
       "cache": true,
+      "dependsOn": ["^build", "build-testing"],
       "inputs": [
         "{projectRoot}/src/**/*.ts",
         "{projectRoot}/tsconfig.lib.json"
+      ]
+    },
+    "build-testing": {
+      "executor": "nx:run-commands",
+      "outputs": [
+        "{workspaceRoot}/libs/memory-core/dist-testing"
+      ],
+      "options": {
+        "command": "tsc -p libs/memory-core/tsconfig.testing.json",
+        "cwd": "."
+      },
+      "cache": true,
+      "dependsOn": ["^build"],
+      "inputs": [
+        "{projectRoot}/src/testing/**/*.ts",
+        "{projectRoot}/tsconfig.testing.json"
       ]
     },
     "test": {
@@ -52,13 +69,14 @@
         ]
       }
     },
-    "typecheck": {
+    "typecheck-src": {
       "executor": "nx:run-commands",
       "options": {
         "command": "tsc -p libs/memory-core/tsconfig.typecheck.json --noEmit",
         "cwd": "."
       },
       "cache": true,
+      "dependsOn": ["^build"],
       "inputs": ["default", "^production"]
     },
     "typecheck-tests": {
@@ -68,7 +86,12 @@
         "cwd": "."
       },
       "cache": true,
+      "dependsOn": ["^build", "typecheck-src"],
       "inputs": ["default", "^production"]
+    },
+    "typecheck": {
+      "executor": "nx:noop",
+      "dependsOn": ["^build", "typecheck-tests"]
     }
   }
 }

@@ -42,7 +42,7 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 
-import { runDir } from './data-paths.js';
+import { mkdirDataDir, runDir } from './data-paths.js';
 
 // ─── Defaults (§11.3 decision: 5-in-60s) ─────────────────────────────────────────
 
@@ -239,7 +239,7 @@ export class CrashLoopGuard {
 
   private _writeMarker(): void {
     try {
-      fs.mkdirSync(this._markerDir, { recursive: true });
+      mkdirDataDir(this._markerDir);
       const marker: CrashLoopMarker = {
         key: this._key,
         cappedAt: new Date(this._now()).toISOString(),

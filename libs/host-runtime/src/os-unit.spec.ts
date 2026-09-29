@@ -394,6 +394,72 @@ describe('BL-375 — enableOsUnit refuses to silently drop shell-sourced env on 
     expect(droppedShellEnvKeys(prior, next)).toEqual([]);
   });
 
+  it('BL-2df86153: TMPDIR is NEVER written into the unit file, even if a caller passes it', () => {
+    // A unit is written once at `enable` time and stays on disk indefinitely.
+    // TMPDIR is frequently session-scoped (a nix-shell /tmp/nix-shell.XXXX,
+    // an agent sandbox, a CI runner, /run/user/UID wiped at logout) — baking
+    // it in would go stale and break mkdtemp / the BL-578 socket fallback in
+    // the long-lived unit process. The OS supervisor already supplies a
+    // live, session-correct TMPDIR to the unit's own process (confirmed on
+    // darwin: launchd hands the unit process a real per-user
+    // /var/folders/.../T/ with no TMPDIR key in the plist at all), so
+    // `deriveOsUnitSpec` strips TMPDIR out of `opts.env` unconditionally —
+    // proven here even when a caller passes it in.
+    const fake = makeFakeExec();
+    const spec = makeSpec({ env: { SOX_CONFIG_DB_PATH: 'x', TMPDIR: '/var/folders/aa/T/' } });
+    const r = enableOsUnit(spec, platform, { unitDir, exec: fake.exec, load: false });
+    expect(r.action).toBe('created');
+    const written = fs.readFileSync(r.unitPath, 'utf8');
+    expect(extractUnitEnv(written, 'launchd')['TMPDIR']).toBeUndefined();
+    expect(written).not.toContain('TMPDIR');
+  });
+
+  it('70a3070d/BL-2df86153: a re-enable from a shell without TMPDIR is NOT blocked by the drift guard', () => {
+    // Unlike every other ENV_BASE_ALLOW key, TMPDIR must not be sticky:
+    // `isShellSourcedEnvKey` excludes TMPDIR from D2's shell-sourced set so a
+    // regenerate from a shell/session that never exported TMPDIR is a no-op
+    // with respect to TMPDIR, never a drop requiring `--unset`
+    // acknowledgment.
+    //
+    // `enableOsUnit`'s drift guard reads `priorEnv` from the unit file ON
+    // DISK via `extractUnitEnv`, not from `deriveOsUnitSpec`'s output — so
+    // exercising the `isShellSourcedEnvKey` TMPDIR exclusion requires an
+    // on-disk unit that actually carries a TMPDIR key. `makeSpec` alone
+    // cannot produce one, since `deriveOsUnitSpec` strips TMPDIR out of
+    // `opts.env` before `enableOsUnit` ever sees it (proven by the preceding
+    // test) — so this test writes the "prior" unit file directly via
+    // `platform.render`, mimicking a legacy unit written before the strip
+    // existed, or one hand-edited outside `enableOsUnit`.
+    const spec = makeSpec({ env: { SOX_CONFIG_DB_PATH: 'x' } });
+    const unitPath = path.join(unitDir, platform.unitFileName(spec.label));
+    const legacyRendered = platform.render({
+      ...spec,
+      env: { ...spec.env, TMPDIR: '/x/T/' },
+    });
+    fs.writeFileSync(unitPath, legacyRendered);
+    expect(extractUnitEnv(legacyRendered, platform.kind)['TMPDIR']).toBe('/x/T/');
+
+    // Re-enable from a shell/session that never exported TMPDIR, with an
+    // unrelated field change so content-hash comparison alone would not be a
+    // no-op (mirrors AC1's real-incident shape).
+    const second = makeSpec({ env: { SOX_CONFIG_DB_PATH: 'x' }, processType: 'Background' });
+    const fake2 = makeFakeExec();
+    const r2 = enableOsUnit(second, platform, { unitDir, exec: fake2.exec, load: false });
+
+    expect(r2.action).not.toBe('blocked');
+    expect(r2.action).toBe('updated');
+    expect(r2.droppedEnvKeys ?? []).not.toContain('TMPDIR');
+  });
+
+  it('BL-2df86153 mutation guard: isShellSourcedEnvKey / droppedShellEnvKeys must exclude TMPDIR', () => {
+    // A same-PR regression guard on the pure function directly, mirroring
+    // AC3's guard for SOX_CONFIG_*/SOX_PERM_* — if the TMPDIR exclusion were
+    // ever removed, this must go red before any integration test does.
+    const prior = { SOX_CONFIG_PORT: '4000', TMPDIR: '/var/folders/aa/T/', SOX_EMBED_DRAIN_FLOOR_MS: '30000' };
+    const next = { SOX_EMBED_DRAIN_FLOOR_MS: '30000' }; // TMPDIR dropped, nothing acknowledged
+    expect(droppedShellEnvKeys(prior, next)).toEqual([]);
+  });
+
   it('AC4: extractUnitEnv round-trips XML-escaped launchd env values', () => {
     const spec = makeSpec({ env: { SOX_CONFIG_X: 'a & b < c > d' } });
     const rendered = platform.render(spec);

@@ -22,7 +22,7 @@ import * as path from 'node:path';
 import { openDb } from './db.js';
 import { graphifyImport } from './extensions.js';
 
-async function tmpAdapter(): Promise<{ adapter: StoreAdapter; cleanup: () => void }> {
+async function tmpAdapter(): Promise<{ adapter: StoreAdapter; cleanup: () => Promise<void> }> {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'graphify-kind-bl441-'));
   const dbPath = path.join(dir, 'p.db');
   const adapter = await openDb(dbPath);

@@ -66,3 +66,30 @@ describe('backendSocketPath', () => {
     expect(a1).not.toBe(b);
   });
 });
+
+describe('backendSocketPath tier 3 (BL-4041c6e0)', () => {
+  // The deep scratch root from the BL-578 case above: over budget on its own, so
+  // every key lands in tier 3.
+  const deepSocketDir =
+    '/Users/nix/dev/ai/sox-ecosystem/.claude/worktrees/agent-ab422e9ad04a48819' +
+    '/dist/smoke/run-2026-08-17T23-33-50/sox-data-root/run/supervisors';
+
+  it('4041c6e0: tier 3 is TMPDIR-independent, lives under /tmp/sox-<uid>/, and fits sun_path', () => {
+    const uid = (process.getuid as () => number)();
+    const saved = process.env['TMPDIR'];
+    try {
+      process.env['TMPDIR'] = '/a';
+      const underShort = backendSocketPath(deepSocketDir, 'memory-server|/db/a.db');
+      process.env['TMPDIR'] = `/var/folders/zz/${'x'.repeat(40)}/T`;
+      const underLong = backendSocketPath(deepSocketDir, 'memory-server|/db/a.db');
+
+      // [inv:singleton]: every peer derives the same bytes whatever its env.
+      expect(underLong).toBe(underShort);
+      expect(underShort.startsWith(`/tmp/sox-${String(uid)}/`)).toBe(true);
+      expect(Buffer.byteLength(underShort, 'utf8')).toBeLessThanOrEqual(104);
+    } finally {
+      if (saved === undefined) delete process.env['TMPDIR'];
+      else process.env['TMPDIR'] = saved;
+    }
+  });
+});

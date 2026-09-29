@@ -315,10 +315,15 @@ export class ProcessSupervisor {
       // NOT `SOX_DISABLE_PERIODIC_ENRICH`, so one live emergency brake reached
       // a process spawned through here and the other did not.
       //
-      // Behaviour retained by that module: NODE_* stays forwarded (scrubbing
-      // NODE_OPTIONS/NODE_PATH breaks native addon loading, e.g. better-sqlite3),
-      // and XDG_CACHE_HOME + SOX_EMBED_* stay forwarded so the embed backend
-      // resolves real BGE instead of silently degrading (BL-52).
+      // Behaviour provided by that module: NODE_* is forwarded wholesale
+      // (scrubbing NODE_OPTIONS/NODE_PATH breaks native addon loading, e.g.
+      // better-sqlite3), and SOX_* is forwarded wholesale except the
+      // host-authoritative SOX_PERM_*/SOX_CONFIG_* prefixes (BL-344) — this is
+      // how the embed backend keeps resolving real BGE instead of silently
+      // degrading (BL-52). TMPDIR and XDG_CACHE_HOME are forwarded via the
+      // base allowlist so a spawned process's os.tmpdir() and embed model
+      // cache resolve to the same per-user paths the parent resolves to
+      // (BL-2df86153).
       const baseEnv = scrubEnvReported('supervisor');
       // Extension-declared env overrides go on top of the scrubbed base.
       // Policy env ([def:policy-env]) goes last so it cannot be shadowed.

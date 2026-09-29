@@ -254,6 +254,73 @@ a singleton key, sanitizing the result to fit within the platform's
 from a deeply nested scratch directory can otherwise silently overflow it and
 fail `bind(2)` with `EINVAL`.
 
+Three tiers, first fit wins: `<socketDir>/proxy-<key>-<digest>.sock`, then
+`<socketDir>/proxy-<digest>.sock`, then — when `socketDir` alone is too long —
+`/tmp/sox-<uid>/p-<digest>.sock` under the fixed per-uid root
+`udsFallbackRoot()`. The result never depends on `TMPDIR`, so every peer
+derives the same path for the same key. On a platform without
+`process.getuid` the tier-3 root throws `E_UDS_UNSUPPORTED_PLATFORM`.
+
+### Socket-directory trust check
+
+```typescript
+function ensurePrivateSocketDir(dir: string, opts: { create: boolean; deps?: Partial<SocketDirDeps> }): void;
+function assertPrivateSocketDir(dir: string, deps?: Partial<SocketDirDeps>): void;
+function isUdsDirUnsafeError(err: unknown): err is UdsDirUnsafeError;
+function tightenOwnedSocketDir(dir: string, opts?: TightenOwnedSocketDirOptions): TightenOutcome;
+function udsFallbackRoot(uid?: number): string; // '/tmp/sox-<uid>'
+```
+
+A socket is only as private as its directory. `serveBackend` calls
+`ensurePrivateSocketDir(dirname(socketPath), { create: true })` before binding.
+`dialBackend`, `probeSocketLive`, `handshakeBackend`, and `ensureBackend` check
+the directory before they connect. The directory must pass `lstat`:
+
+- it is not a symlink, and it is a directory;
+- it is owned by the current uid;
+- the `/tmp/sox-<uid>` root is exactly `0700` (created non-recursively);
+- any other directory has no group or other write bit.
+
+A failure throws `E_UDS_DIR_UNSAFE` with
+`{ reason, dir, expectedUid, actualUid, mode, isSymlink }`. The check never
+chmods, chowns, deletes, or swaps the directory for another path. The message
+depends on `reason`, and no message suggests a recursive delete:
+
+| `reason` | Meaning | Remediation in the message |
+|---|---|---|
+| `foreign` | A symlink, a non-directory, or owned by another uid | Check `ls -ld`. Treat it as a possible impostor. `rm <dir>` removes only a symlink. Under sticky `/tmp`, only the owner or an admin can remove it. Inside the data root, `mv` it aside and restart. For the `/tmp/sox-<uid>` root, the message also says to point `SOX_ECOSYSTEM_HOME` at a shorter path. |
+| `own-writable` | Yours, but group/other-writable (usually umask 002) | `chmod go-w <dir>`. Do not delete it: it holds live runtime state. |
+| `fallback-mode` | `/tmp/sox-<uid>` is yours but not exactly `0700` | `chmod 700 /tmp/sox-<uid>` |
+
+The refusal is non-retryable:
+
+- `serveBackend` rejects without binding.
+- `dialBackend` fast-fails pending requests with `-32001` and
+  `data.code: 'E_UDS_DIR_UNSAFE'`. It does not re-dial, and the next `send()`
+  re-checks the directory.
+- `probeSocketLive` and `handshakeBackend` reject instead of resolving `false`
+  when the socket file exists in an unsafe directory. They still resolve
+  `false`, without checking the directory, when no socket file exists.
+- `ensureBackend` returns `{ disposition: 'failed', errorCode: 'E_UDS_DIR_UNSAFE' }`
+  and spawns nothing.
+
+A directory that does not exist yet is not unsafe. Dialing into it keeps the
+ordinary re-dial behaviour.
+
+**Repair: `tightenOwnedSocketDir`.** This removes group/other write from a
+directory it can prove is yours. It opens the directory once with
+`O_RDONLY|O_DIRECTORY|O_NOFOLLOW`, then runs `fstat` and `fchmod(mode & 0o7755)`
+on that same descriptor. It returns one of:
+
+- `'absent'`: the directory does not exist;
+- `'ok'`: it was already tight;
+- `'tightened'`: the mode was changed, and `onTightened` receives `{dir, oldMode, newMode}` for the caller's telemetry;
+- `'skipped-not-owned'`: it was the fallback root, a symlink, a non-directory, or another uid's directory.
+
+The checks above never call it. Only the process that owns the data root does,
+once at start-up: `soxe` CLI init on `runDir()` and `socketDir()`, and the
+embedding funnel on `$SOX_ECOSYSTEM_HOME/run`.
+
 ### JSON-RPC 2.0 types + helpers
 
 ```typescript

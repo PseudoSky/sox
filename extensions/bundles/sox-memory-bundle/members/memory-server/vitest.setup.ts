@@ -53,9 +53,40 @@ process.env['STORE_ADAPTER'] = 'sqlite';
  * The test provider survives _resetEmbedSingleton() calls (those clear the
  * cached fastembed instance but deliberately leave _testProvider intact).
  */
-import { DeterministicTestProvider, _setEmbedProviderForTest } from '@adhd/sox-memory-core';
+import { DeterministicTestProvider, _setEmbedProviderForTest, scrubOperatorStoreEnv } from '@adhd/sox-memory-core';
 
 _setEmbedProviderForTest(new DeterministicTestProvider());
+
+/**
+ * BL-7e5be7e8: remove the operator's host-injected store config
+ * (`SOX_CONFIG_*`, `SOX_PROXY_BACKEND*`, `SOX_AUTO_BACKUP_DIR`) from this
+ * worker's environment before any spec loads. The BL-412 guard below only sees
+ * THIS process; a spec that spawns the real entrypoint with `{ ...process.env }`
+ * would otherwise hand the child `SOX_CONFIG_DB_PATH=~/.memory/memory.db`, and
+ * that child's SIGTERM handler backs up (opens) the production store and prunes
+ * its backup dir. See libs/memory-core/src/test-env-scrub.ts for the full
+ * rationale and bl-7e5be7e8-operator-store-env-scrub.spec.ts for the proof.
+ */
+const scrubbedOperatorKeys = scrubOperatorStoreEnv(process.env);
+if (scrubbedOperatorKeys.length > 0) {
+  process.stderr.write(
+    `[memory-server vitest.setup] BL-7e5be7e8: scrubbed inherited operator store config: ${scrubbedOperatorKeys.join(', ')}\n`,
+  );
+}
+
+/**
+ * BL-26291f21: fail fast if a real embed in this worker could reach the operator's model cache
+ * or embed-host socket dir. `vitest.global-embed-scratch.ts` pins SOX_EMBED_CACHE_DIR /
+ * XDG_CACHE_HOME / SOX_ECOSYSTEM_HOME to a run-scoped scratch root before any worker forks; this
+ * asserts — against memory-core's own resolvers (`getConfiguredEmbedPaths()`), not a re-derived
+ * path — that this worker actually inherited them, at load and again after every test (a spec
+ * that deletes one of those keys would otherwise re-open the leak for the rest of its file). The
+ * real-backend project opts out of the mock provider and embeds for real in-process, so without
+ * this the next leak would again be discovered only by reading a spawn line in the test log.
+ */
+import { assertEmbedPathsIsolated } from './src/test-support/bl-26291f21-embed-scratch.js';
+
+assertEmbedPathsIsolated('vitest.setup load');
 
 /**
  * BL-412 whole-suite guard: no test in this project may EVER open a
@@ -81,25 +112,61 @@ _setEmbedProviderForTest(new DeterministicTestProvider());
  * Fix: obtain `fs` via CommonJS `createRequire(...)('node:fs')` instead of
  * an ESM namespace import. That returns Node's actual internal
  * `module.exports` object for the `fs` module — a genuinely mutable plain
- * object, not a frozen ESM namespace — and Node's ESM/CJS interop means
- * every `import * as fs from 'node:fs'` elsewhere in the process (including
- * inside index.ts and the memory-core dist bundle) reads its properties
- * live off that SAME underlying object, so mutating it here is visible
- * everywhere. Verified with a standalone repro before wiring this in.
+ * object, not a frozen ESM namespace.
+ *
+ * ## Why `syncBuiltinESMExports()` (BL-6434a8fc)
+ *
+ * Patching the CommonJS `require('node:fs')` object only changes what CJS
+ * callers see. ESM callers (`import * as fs from 'node:fs'`,
+ * `import { existsSync } from 'node:fs'` — every production import in
+ * `index.ts` and the memory-core dist bundle, as vitest runs them) read the
+ * builtin's ESM namespace, which is a SNAPSHOT of the CJS exports taken when
+ * the builtin was first loaded. Without `syncBuiltinESMExports()` from
+ * `node:module` after every patch, the guard sees none of those calls and
+ * never fires. `install()` (below) ends with that call.
+ *
+ * Mirrors memory-core's identical fix to its sibling guard
+ * (`libs/memory-core/vitest.home-guard-setup.ts`, BL-bae70da4). Proof spec:
+ * `bl-6434a8fc-fs-guard-syncesm.test.ts` (package root, alongside this file
+ * — a `src/` spec cannot import this module without violating the
+ * production `tsconfig.json`'s `rootDir`).
  */
-import { createRequire } from 'node:module';
+import { createRequire, syncBuiltinESMExports } from 'node:module';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { afterEach, beforeEach } from 'vitest';
 
+afterEach(() => {
+  assertEmbedPathsIsolated('afterEach');
+});
+
 const require = createRequire(import.meta.url);
 const fs = require('node:fs') as typeof import('node:fs');
 
-const REAL_HOME_MEMORY_DIR = path.join(os.homedir(), '.memory');
+export const REAL_HOME_MEMORY_DIR = path.join(os.homedir(), '.memory');
 let liveStoreTouches: string[] = [];
 
+// Test-only extra roots (BL-6434a8fc proof spec): lets the guard's own proof
+// spec exercise a real ESM `fs` call against a disposable scratch directory
+// instead of the operator's actual ~/.memory, while still exercising the
+// exact same `touchesRealStore` / wrap / syncBuiltinESMExports machinery.
+const extraGuardedRoots = new Set<string>();
+
+export function addGuardedRootForTest(root: string): void {
+  extraGuardedRoots.add(path.resolve(root));
+}
+
+export function removeGuardedRootForTest(root: string): void {
+  extraGuardedRoots.delete(path.resolve(root));
+}
+
 function touchesRealStore(p: unknown): p is string {
-  return typeof p === 'string' && (p === REAL_HOME_MEMORY_DIR || p.startsWith(REAL_HOME_MEMORY_DIR + path.sep));
+  if (typeof p !== 'string') return false;
+  if (p === REAL_HOME_MEMORY_DIR || p.startsWith(REAL_HOME_MEMORY_DIR + path.sep)) return true;
+  for (const root of extraGuardedRoots) {
+    if (p === root || p.startsWith(root + path.sep)) return true;
+  }
+  return false;
 }
 
 const GUARDED_FNS = ['existsSync', 'readFileSync', 'statSync', 'openSync', 'mkdirSync', 'writeFileSync', 'lstatSync'] as const;
@@ -115,7 +182,7 @@ for (const fnName of GUARDED_FNS) {
   trueOriginals[fnName] = fs[fnName] as unknown as (...args: unknown[]) => unknown;
 }
 
-function install(): void {
+export function install(): void {
   for (const fnName of GUARDED_FNS) {
     const original = trueOriginals[fnName];
     (fs as unknown as Record<string, unknown>)[fnName] = function bl412Guarded(...args: unknown[]) {
@@ -125,6 +192,16 @@ function install(): void {
       return original.apply(fs, args);
     };
   }
+  // BL-6434a8fc: re-sync the ESM builtin snapshot from the CJS object we
+  // just mutated above. Without this call, every wrap() assignment is
+  // invisible to `import * as fs from 'node:fs'` / named-import callers —
+  // see the "Why syncBuiltinESMExports()" section in the file header.
+  syncBuiltinESMExports();
+}
+
+/** Test-only: drain and return touches recorded so far (BL-6434a8fc proof spec). */
+export function drainLiveStoreTouches(): string[] {
+  return liveStoreTouches.splice(0, liveStoreTouches.length);
 }
 
 // Installed once at setup-load time. Re-installed defensively in beforeEach
@@ -163,5 +240,18 @@ afterEach(() => {
  * worker (otelDefaultFor in @adhd/sox-telemetry).
  */
 import { initTelemetry } from '@adhd/sox-telemetry';
+import { TELEMETRY_DIR_ENV } from './src/test-support/bl-26291f21-embed-scratch-env.js';
 
-initTelemetry({ service: 'sox-tests', role: 'test', logSink: 'file' });
+// BL-26291f21 / BL-404: SOX_ECOSYSTEM_HOME now points at the run's embed scratch root, which is
+// removed at teardown; the global setup resolves the ORIGINAL ecosystem home's sox-tests/logs so
+// these records stay as durable as BL-404 intended. `<~/.adhd/sox-ecosystem>/sox-tests/logs` is
+// the ONE sanctioned operator path a test worker may resolve (a dedicated test-only namespace,
+// disjoint from service logs); the fail-fast guard allowlists exactly it and nothing else — see
+// sanctionedOperatorTelemetryDir() in src/test-support/bl-26291f21-embed-scratch.ts.
+const telemetryLogDir = process.env[TELEMETRY_DIR_ENV];
+initTelemetry({
+  service: 'sox-tests',
+  role: 'test',
+  logSink: 'file',
+  ...(telemetryLogDir !== undefined && telemetryLogDir !== '' ? { logDir: telemetryLogDir } : {}),
+});

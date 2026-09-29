@@ -170,8 +170,10 @@ was `build,lint,test` and no project had a `typecheck` target at all — so `mem
 missing an `await`, so it always returned `{}` and could never report an error; BL-250: reads of an
 `on_hash_fallback` field that no longer exists). See BL-248.
 
-If you add a project, give it a `typecheck` target. If a `typecheck` fails, fix the code — never
-weaken `strict`, `noUnusedLocals`, or `exactOptionalPropertyTypes` to silence it.
+If you add a project, give it a `typecheck` target; if it type-checks specs, use the
+`typecheck-src` ← `typecheck-tests` ← `typecheck` (nx:noop) layering — see
+`libs/memory-core/project.json`. If a `typecheck` fails, fix the code — never weaken `strict`,
+`noUnusedLocals`, or `exactOptionalPropertyTypes` to silence it.
 
 ## ⛔ AGENT CONSTRAINT — NEVER USE EMPTY CATCH STATEMENTS
 
@@ -326,14 +328,15 @@ build leaves the old `dist/` intact.
 Registry: see [registry is release-only](#registry-is-release-only) — a local rebuild does not
 touch `registry/index.json`.
 
-**`nx test` is a build too — it carries the same hazard, from the other side (BL-456).** `nx.json`
-sets `targetDefaults.test.dependsOn = ["^build"]`, so `npx nx test <project>` rebuilds every upstream
-`dist/` from whatever source is on disk — **including another agent's uncommitted edits**. This is not
-theoretical: an agent's isolated runs were green and its first full `nx test memory-server
---skip-nx-cache` went red on an assertion its packet had never touched, because a concurrent agent's
-in-flight `write-queue.ts` was compiled into `memory-core/dist` by the test run itself. The reverse is
-worse and silent — a suite can go **green** against code the running agent has never seen, and be
-reported as verification.
+**`nx test` and `nx typecheck` are builds too — they carry the same hazard, from the other side
+(BL-456).** `nx.json` sets `targetDefaults.test.dependsOn = ["^build"]` (and the same for
+`typecheck`/`typecheck-tests`), so `npx nx test <project>` and `npx nx typecheck <project>` both
+rebuild every upstream `dist/` from whatever source is on disk — **including another agent's
+uncommitted edits**. This is not theoretical: an agent's isolated runs were green and its first full
+`nx test memory-server --skip-nx-cache` went red on an assertion its packet had never touched,
+because a concurrent agent's in-flight `write-queue.ts` was compiled into `memory-core/dist` by the
+test run itself. The reverse is worse and silent — a suite can go **green** against code the running
+agent has never seen, and be reported as verification.
 
 So a suite result is evidence only when the tree state it ran against is stated with it:
 
@@ -403,6 +406,7 @@ When a service is reported down or misbehaving, check in this order:
 1. **Telemetry first** — live health/metrics for the service (e.g. `memory_ping`, or the
    `*.jsonl` event/metrics streams under `~/.adhd/sox-ecosystem/<service>/logs/`).
 2. **Logs second** — stderr/stdout under `~/.adhd/sox-ecosystem/run/logs/`.
+3. **Kill permission.** Once telemetry and logs confirm a genuine wedge (e.g. a timed-out health ping plus `ps`/`sample` showing the process pinned/non-responsive, not just busy), `kill -9` the wedged process without asking first — the supervisor respawns it. This is not permission for routine restarts or unverified guesses.
 
 ---
 

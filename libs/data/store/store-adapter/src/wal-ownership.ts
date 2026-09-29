@@ -46,6 +46,7 @@ import { log } from '@adhd/sox-telemetry';
 import { probeWalIdentity } from './integrity.js';
 import type { IntegrityFinding, WalIdentity } from './integrity.js';
 import type { ForeignShmLockState } from './foreign-shm-lock.js';
+import { staleSidecarPath } from './sidecar-retention.js';
 
 // ── Heartbeat tuning (typed, clamped — ADR-0013 D3) ─────────────────────────
 
@@ -337,8 +338,7 @@ export function reconcileForeignSqliteShm(
     };
   }
 
-  const stamp = new Date().toISOString().replace(/[:.]/g, '').replace('T', '-').slice(0, 15);
-  const to = `${shmPath}.stale-${stamp}`;
+  const to = staleSidecarPath(shmPath);
   try {
     renameSync(shmPath, to);
     return lockState !== undefined

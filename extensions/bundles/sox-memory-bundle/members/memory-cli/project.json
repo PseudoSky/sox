@@ -47,20 +47,47 @@
       "executor": "@nx/eslint:lint",
       "options": {
         "lintFilePatterns": [
-          "extensions/bundles/sox-memory-bundle/members/memory-cli/src/**/*.ts"
+          "extensions/bundles/sox-memory-bundle/members/memory-cli/src/**/*.ts",
+          "extensions/bundles/sox-memory-bundle/members/memory-cli/vitest.setup.ts"
         ]
       }
     },
-    "typecheck": {
+    "typecheck-src": {
       "executor": "nx:run-commands",
       "options": {
-        "command": "tsc -p extensions/bundles/sox-memory-bundle/members/memory-cli/tsconfig.json --noEmit",
+        "command": "tsc -p extensions/bundles/sox-memory-bundle/members/memory-cli/tsconfig.typecheck.json --noEmit",
         "cwd": "."
       },
       "cache": true,
+      "dependsOn": [
+        "^build"
+      ],
       "inputs": [
         "default",
         "^production"
+      ]
+    },
+    "typecheck-tests": {
+      "executor": "nx:run-commands",
+      "options": {
+        "command": "tsc -p extensions/bundles/sox-memory-bundle/members/memory-cli/tsconfig.typecheck-tests.json --noEmit",
+        "cwd": "."
+      },
+      "cache": true,
+      "dependsOn": [
+        "^build",
+        "typecheck-src"
+      ],
+      "inputs": [
+        "default",
+        "^production"
+      ]
+    },
+    "typecheck": {
+      "executor": "nx:noop",
+      "dependsOn": [
+        "^build",
+        "typecheck-tests"
       ]
     }
   }

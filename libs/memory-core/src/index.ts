@@ -41,15 +41,15 @@
  */
 
 // ── Database ──────────────────────────────────────────────────────────────────
-export { openDb, openDbReadOnly, initScope, migrateAddColumn, expandDbPath, getDb, stampStoreMeta, verifyStoreMeta, setWriterArtifact, getWriterArtifact, EStoreMismatch, STORE_META_KEYS, STORE_SCHEMA_VERSION, closeAllAdapters, closeCachedAdapter, wrapRawDbAsAdapter, getStoreEngineIdentity } from './db.js';
-export type { ScopeKind, MemoryScope } from './db.js';
+export { openDb, openDbReadOnly, initScope, migrateAddColumn, expandDbPath, getDb, stampStoreMeta, verifyStoreMeta, setWriterArtifact, getWriterArtifact, setDeepVerifySchedule, getDeepVerifySchedule, EStoreMismatch, STORE_META_KEYS, STORE_SCHEMA_VERSION, closeAllAdapters, closeCachedAdapter, wrapRawDbAsAdapter, getStoreEngineIdentity } from './db.js';
+export type { ScopeKind, MemoryScope, DeepVerifyScheduleRole } from './db.js';
 
 // ── Ping health verdict (BL-373 family — ping honesty) ───────────────────────
-export { computePingHealthVerdict } from './ping-health.js';
+export { computePingHealthVerdict, DEEP_VERIFY_DEGRADING_STATUSES } from './ping-health.js';
 export type { PingHealthInput, PingHealthStatus, PingHealthVerdict } from './ping-health.js';
 
 // ── Typed config surface (ADR-0013 D2/D3) ────────────────────────────────────
-export { isBackupStorePath, resolveBackupConfig, DEFAULT_BACKUP_CONFIG, resolveEnrichHealthConfig, DEFAULT_ENRICH_HEALTH_CONFIG } from './config.js';
+export { isBackupStorePath, resolveBackupConfig, DEFAULT_BACKUP_CONFIG, resolveEnrichHealthConfig, DEFAULT_ENRICH_HEALTH_CONFIG, resolveStoreVerifyConfig, DEEP_VERIFY_TIMEOUT_CONFIG_ENV } from './config.js';
 // BL-c5249cdd: store-growth gauge (memory_ping) + its typed D3 config.
 export {
   resolveStoreGrowthConfig,
@@ -64,7 +64,7 @@ export {
   _resetStoreGrowthAlarmWarningsForTest,
 } from './store-growth.js';
 export type { StoreGrowthGauge } from './store-growth.js';
-export type { BackupConfig, EnrichHealthConfig } from './config.js';
+export type { BackupConfig, EnrichHealthConfig, StoreVerifyConfig } from './config.js';
 
 // ── Writer lease (SA-8, BL-128) ───────────────────────────────────────────────
 export {
@@ -94,7 +94,7 @@ export { wrapDbError } from './errors.js';
 export type { StorageError, StorageErrorCode } from './errors.js';
 
 // ── Schema ────────────────────────────────────────────────────────────────────
-export { PRAGMAS, DDL_BASE, FTS_TRIGGERS } from './schema.js';
+export { PRAGMAS, DDL_BASE, FTS_TRIGGERS, REQUIRED_STORE_TABLES, STORE_CONTENT_TABLE, ddlTableNames } from './schema.js';
 
 // ── Embedding ─────────────────────────────────────────────────────────────────
 export {
@@ -110,6 +110,7 @@ export {
   getLastEmbedError,
   getEmbedHealth,
   warmupEmbed,
+  getConfiguredEmbedPaths,
   reinitEmbedProvider,
   reembedNodes,
   _resetEmbedSingleton,
@@ -178,8 +179,27 @@ export type {
 } from './embed-pipeline.js';
 
 // ── Deterministic test embedding provider (BL-161 seam; TEST-ONLY) ────────────
+// BL-611a711e item 3: MODEL_ID is deliberately NOT re-exported from this main barrel (it would
+// widen the package's public npm surface for a test-only constant) — it lives on the
+// `@adhd/sox-memory-core/testing` subpath instead, as DETERMINISTIC_TEST_PROVIDER_MODEL_ID. See
+// src/testing/index.ts.
 export { DeterministicTestProvider, featureHashEmbed } from './embed-test-provider.js';
 export { _setEmbedProviderForTest } from './embed.js';
+
+// ── Test-harness operator store-env scrub (BL-7e5be7e8; TEST-ONLY) ───────────
+export {
+  HOST_CONFIG_ENV_PREFIX,
+  OPERATOR_STORE_ENV_KEYS,
+  isOperatorStoreEnvKey,
+  scrubOperatorStoreEnv,
+} from './test-env-scrub.js';
+
+// ── Test-harness embed-path isolation check (BL-57ae788f; TEST-ONLY) ─────────
+// BL-611a711e: moved OUT of the main barrel — it now lives at
+// src/testing/embed-isolation.ts and is reachable cross-package only via the
+// dedicated `@adhd/sox-memory-core/testing` subpath (never via `.`), so it no
+// longer ships as part of this package's public npm surface. See
+// src/testing/embed-isolation.ts and src/testing/index.ts.
 
 // ── Outbox queue (transactional enrichment triggers — BL-172 / BL-186) ────────
 // Producers only: the consumer is memory-server's in-process periodic pass.

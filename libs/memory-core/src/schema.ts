@@ -103,5 +103,23 @@ CREATE TABLE IF NOT EXISTS enrich_poison (
  *  vec0 DDL is produced by the VectorDialect at open time. */
 export const DDL_BASE = GRAPH_DDL + '\n' + MEMORY_ONLY_DDL;
 
+/** Every `CREATE TABLE` name in a DDL string, in declaration order. */
+export function ddlTableNames(ddl: string): string[] {
+  return [...ddl.matchAll(/CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?["`]?([A-Za-z_][A-Za-z0-9_]*)["`]?/gi)].map((m) => m[1] as string);
+}
+
+/**
+ * BL-15d6300c: the tables a file must contain to be a memory store at all —
+ * the graph primitives graph-store owns (`node`, `edge`), derived from
+ * {@link GRAPH_DDL} so they cannot drift from it. Deliberately NOT every table
+ * in {@link DDL_BASE}: memory-only tables (`request_ledger`, `enrich_poison`,
+ * …) arrived by later migration, so a legitimate older backup can lack them.
+ * `memory restore` refuses a backup missing any of these.
+ */
+export const REQUIRED_STORE_TABLES: readonly string[] = Object.freeze(ddlTableNames(GRAPH_DDL));
+
+/** BL-15d6300c: the table whose row count measures a memory store's content. */
+export const STORE_CONTENT_TABLE = 'node';
+
 /** FTS5 content table trigger for auto-sync — re-exported from graph-store. */
 export const FTS_TRIGGERS = GraphFTS_TRIGGERS;

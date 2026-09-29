@@ -13,9 +13,9 @@
  *
  * The fix (plan §6e): exactly ONE quiescence-gated TRUNCATE per writable
  * close. PASSIVE always runs first (BL-330 durability backstop — copies WAL
- * frames into the main db through the fd we already hold); the clean-shutdown
- * stamp is written BEFORE the single TRUNCATE (gated `!damaged`) so the
- * stamp's single frame is flushed by the SAME truncate; then the TRUNCATE is
+ * frames into the main db through the fd we already hold) — no `_adapter_meta`
+ * clean-shutdown stamp is written any more (BL-fc5ab895: it was a contended
+ * write that failed under a peer's write lock); then the TRUNCATE is
  * issued only when `storeQuiescence` reports no other live connection — under
  * contention it is deferred (frames stay durable; the next quiescent close
  * truncates) with a `close_checkpoint_busy` warn.
@@ -66,9 +66,12 @@ interface FakeCall {
 /** A driver handle shaped like @tursodatabase/database's Database that
  *  satisfies the post-open connect ceremony AND records every SQL statement
  *  issued through `run`/`all` so the close() PRAGMA sequence is assertable.
- *  `wal_checkpoint` answers with the driver's real busy=0 row shape
- *  (`[{ busy: 0, log: 0, checkpointed: 0 }]` — the raw array, which
- *  `executeAll` wraps into `{ columns, rows }`). */
+ *  `wal_checkpoint` answers with the driver's real busy=0 row shape — the raw
+ *  array, which `executeAll` wraps into `{ columns, rows }`. PASSIVE reports
+ *  frames in the WAL (`log: 3`): every case here pins the close of a WAL that
+ *  holds frames. (BL-1010e417) A close whose PASSIVE reports `log: 0` has
+ *  nothing to truncate and issues no TRUNCATE at all — pinned in
+ *  `idle-release-writefree.bl-1010e417.spec.ts` T3. */
 function makeFakeDb(): any {
   const calls: FakeCall[] = [];
   return {
@@ -83,6 +86,9 @@ function makeFakeDb(): any {
     get: async () => null,
     all: async (sql: string) => {
       calls.push({ method: 'all', sql });
+      if (/wal_checkpoint\(PASSIVE\)/.test(sql)) {
+        return [{ busy: 0, log: 3, checkpointed: 3 }];
+      }
       if (/wal_checkpoint/.test(sql)) {
         return [{ busy: 0, log: 0, checkpointed: 0 }];
       }
@@ -148,7 +154,7 @@ function tempPath(label: string): string {
 }
 
 describe('BUG-008 — a writable close() issues exactly ONE quiescence-gated wal_checkpoint(TRUNCATE)', () => {
-  it('(1) solo close: exactly ONE TRUNCATE, preceded by PASSIVE and by the clean-shutdown stamp', async () => {
+  it('(1) solo close: exactly ONE TRUNCATE, preceded by PASSIVE, and NO _adapter_meta write (BL-fc5ab895)', async () => {
     const dbPath = tempPath('bug008-solo');
     mockDriverConnect.mockResolvedValue(makeFakeDb());
     const adapter = await connect(dbPath);
@@ -171,16 +177,17 @@ describe('BUG-008 — a writable close() issues exactly ONE quiescence-gated wal
     expect(truncates, 'exactly one TRUNCATE — the pre-fix double-truncate issued two').toHaveLength(1);
     expect(passives, 'PASSIVE must still run as the durability backstop').toHaveLength(1);
 
-    // Ordering: PASSIVE → stamp → TRUNCATE. The stamp is written BEFORE the
-    // single TRUNCATE so its single frame is flushed by the SAME truncate.
+    // Ordering: PASSIVE → TRUNCATE.
     const passiveIdx = calls.findIndex((c) => /PASSIVE/.test(c.sql));
-    const stampIdx = calls.findIndex((c) => c.method === 'run' && /INSERT INTO _adapter_meta/.test(c.sql));
     const truncateIdx = calls.findIndex((c) => /TRUNCATE/.test(c.sql));
     expect(passiveIdx).toBeGreaterThanOrEqual(0);
-    expect(stampIdx).toBeGreaterThan(passiveIdx);
-    expect(truncateIdx).toBeGreaterThan(stampIdx);
-    // And the stamp is a clean-shutdown stamp (value '1'), not just any meta write.
-    expect(stamps.length, 'the clean-shutdown stamp must be present').toBeGreaterThanOrEqual(1);
+    expect(truncateIdx).toBeGreaterThan(passiveIdx);
+    // (BL-fc5ab895) The close no longer writes the `_adapter_meta`
+    // clean-shutdown stamp: under a peer's write lock that write waited out
+    // busy_timeout on the main thread and then failed `database is locked`,
+    // making the next open read as a crash. Turso's crash signal is the
+    // per-connection open marker, a file unlink that cannot hit SQLITE_BUSY.
+    expect(stamps, 'close must issue no _adapter_meta write').toHaveLength(0);
   });
 
   it('(2) close with a peer lease: ZERO TRUNCATE, emits close_checkpoint_busy, does not throw', async () => {

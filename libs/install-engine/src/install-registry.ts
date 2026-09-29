@@ -32,6 +32,8 @@ export interface InstallRecord {
   updatedAt: string;
   /** Source URI from the lockfile entry at install time (file:// or https://) */
   source: string;
+  /** BL-cd1fe520: the locator `source`'s bytes were fetched from (LockfileEntry.origin). */
+  origin?: string | undefined;
 }
 
 export interface InstallRegistry {
@@ -85,6 +87,8 @@ export interface UpsertInstallRecordOpts {
   scope: string;
   root: string;
   source: string;
+  /** BL-cd1fe520: the locator the artifact was fetched from. */
+  origin?: string | undefined;
 }
 
 /**
@@ -112,6 +116,7 @@ export function upsertInstallRecord(opts: UpsertInstallRecordOpts): void {
       version: opts.version,
       updatedAt: now,
       source: opts.source,
+      ...(opts.origin !== undefined ? { origin: opts.origin } : {}),
     };
   } else {
     registry.installs.push({
@@ -122,6 +127,7 @@ export function upsertInstallRecord(opts: UpsertInstallRecordOpts): void {
       installedAt: now,
       updatedAt: now,
       source: opts.source,
+      ...(opts.origin !== undefined ? { origin: opts.origin } : {}),
     });
   }
 

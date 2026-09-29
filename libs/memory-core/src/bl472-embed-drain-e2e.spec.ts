@@ -175,7 +175,7 @@ describe('BL-472 — a genuine in-flight Phase-B embed survives a drained shutdo
 
     // Mirror closeAllForShutdown()'s own next step: close the WriteQueue's
     // dedicated write connection AFTER the drain has already landed the row.
-    await wq.adapter.close();
+    await wq.__adapterForTest.close();
 
     // Direct SELECT against vec_node on a connection opened BEFORE the
     // close (ctx.adapter — a separate connection from wq's dedicated one,
@@ -203,7 +203,7 @@ describe('BL-472 — a genuine in-flight Phase-B embed survives a drained shutdo
     // `closeAllForShutdown()`/`closeAllAdapters()` without ever awaiting
     // `flushPendingEmbeds()`.
     await waitFor(() => slow.reachedEmbed, 'schedulePendingEmbeds reaches embedSingle (red arm)');
-    await wq.adapter.close();
+    await wq.__adapterForTest.close();
 
     // Now let the embed resolve — its follow-up wq.enqueue() apply fires
     // against the now-closed connection.

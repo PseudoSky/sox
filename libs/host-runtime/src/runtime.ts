@@ -11,7 +11,7 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { buildFailureRecord, classifyListenError, emitListenFailure } from '@adhd/sox-listen-guard';
 import type { McpAdapterHandle } from './adapters/mcp.js';
-import { logDirFor, scopeConfigPaths, socketDir, type DataScope } from './data-paths.js';
+import { logDirFor, mkdirDataDir, scopeConfigPaths, socketDir, type DataScope } from './data-paths.js';
 import { loadFromLockfile, type LoaderResult } from './loader.js';
 import { acquireStartLock, computeSupervisorId } from './lock.js';
 import type { RuntimeLogger } from './logger-types.js';
@@ -215,10 +215,16 @@ async function _startRuntimeLocked(
   // (ADR-0004 §D2) — avoids polluting project directories and is discoverable from
   // the global supervisor registry (R1/P4).
   const sockDir = socketDir();
-  fs.mkdirSync(sockDir, { recursive: true });
+  mkdirDataDir(sockDir);
   const execSocketPath = path.join(sockDir, `${supervisorId}.sock`);
   // Remove stale socket file from a previous (unclean) shutdown.
-  try { if (fs.existsSync(execSocketPath)) fs.unlinkSync(execSocketPath); } catch { /* ignore */ }
+  try {
+    if (fs.existsSync(execSocketPath)) fs.unlinkSync(execSocketPath);
+  } catch (e) {
+    // Non-fatal: the listen below reports EADDRINUSE on its own if the stale
+    // file really is still in the way.
+    logger.warn('runtime.stale_exec_socket_unlink_failed', { socket: execSocketPath, error: String(e) });
+  }
 
   // BUG-EPIC-WIRE-INPUTS-UNBOUNDED-001 (class A): the exec-socket read buffer
   // used to grow without limit while waiting for a terminating '\n'. A peer

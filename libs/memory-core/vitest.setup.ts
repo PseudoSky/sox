@@ -20,8 +20,23 @@
 
 import { _setEmbedProviderForTest } from './src/embed.js';
 import { DeterministicTestProvider } from './src/embed-test-provider.js';
+import { scrubOperatorStoreEnv } from './src/test-env-scrub.js';
 
 _setEmbedProviderForTest(new DeterministicTestProvider());
+
+/**
+ * BL-7e5be7e8: remove the operator's host-injected store config
+ * (`SOX_CONFIG_*`, `SOX_PROXY_BACKEND*`, `SOX_AUTO_BACKUP_DIR`) before any spec
+ * loads, so neither an in-process `createStoreAdapter()` without a `dbPath`
+ * (which falls back to `SOX_CONFIG_DB_PATH`) nor a spawned child can resolve
+ * the operator's production store. Rationale: src/test-env-scrub.ts.
+ */
+const scrubbedOperatorKeys = scrubOperatorStoreEnv(process.env);
+if (scrubbedOperatorKeys.length > 0) {
+  process.stderr.write(
+    `[memory-core vitest.setup] BL-7e5be7e8: scrubbed inherited operator store config: ${scrubbedOperatorKeys.join(', ')}\n`,
+  );
+}
 
 /**
  * BL-404 universal-coverage: per-worker telemetry composition root. memory-core

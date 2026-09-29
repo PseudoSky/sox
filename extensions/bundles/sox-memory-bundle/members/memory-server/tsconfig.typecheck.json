@@ -1,0 +1,18 @@
+{
+  // BL-565d6f8c — production-only typecheck. tsconfig.json (used directly by the old
+  // typecheck-src command) has no exclude, so it compiled every src/**/*.spec.ts alongside
+  // production code and folded spec-only type errors into the production triage bucket. This
+  // config mirrors libs/memory-core/tsconfig.typecheck.json: same include, spec/test-support
+  // excluded, so a typecheck-src failure always means a production-code error.
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": true
+  },
+  "include": ["src/**/*.ts"],
+  "exclude": [
+    "src/**/*.spec.ts",
+    "src/**/*.test.ts",
+    "src/test-support/**/*.ts",
+    "node_modules"
+  ]
+}

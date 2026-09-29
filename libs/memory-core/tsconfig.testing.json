@@ -1,0 +1,37 @@
+{
+  // BL-611a711e — dedicated build for the in-repo `@adhd/sox-memory-core/testing` subpath (a
+  // tsconfig.base.json `paths` + vitest `resolve.alias` entry, NOT a published npm export — see
+  // package.json, which carries no `./testing` export or `dist-testing` in `files`). A SEPARATE
+  // tsc invocation from tsconfig.lib.json (the main `.` entry) on purpose: this compiles
+  // src/testing/embed-isolation.ts + its barrel (index.ts) — plus src/embed-test-provider.ts,
+  // whose MODEL_ID the barrel re-exports — into ITS OWN physical output directory,
+  // `dist-testing/` — deliberately NOT `dist/testing/`, because `memory-core:build` uses
+  // `@adhd/sox-nx:atomic-tsc`, which stages into a scratch dir and then atomically RENAMES it
+  // over the entire `outputPath` (`dist/`) — any file nx build wrote into `dist/` outside that
+  // staged compile (e.g. a nested `dist/testing/` from a separate tsc run) would be silently
+  // swapped away every time `memory-core:build` runs (verified: it was). A sibling
+  // `dist-testing/` directory is untouched by that swap. The test-only helper still never
+  // re-enters `dist/index.js` / `dist/index.d.ts` (the main barrel).
+  //
+  // `rootDir` is `./src` (not `./src/testing`) because `src/embed-test-provider.ts` is a
+  // production file that lives outside `src/testing/` — tsc requires every file it emits to sit
+  // under `rootDir`, and `src/testing/index.ts` imports `embed-test-provider.ts`'s `MODEL_ID`.
+  // That widens the physical output one level: the barrel lands at
+  // `dist-testing/testing/index.js` (not `dist-testing/index.js`) — see the tsconfig.base.json
+  // `paths` entry and the memory-server/memory-cli vitest `resolve.alias` entries, which all
+  // point at that path.
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "module": "CommonJS",
+    "moduleResolution": "node10",
+    "ignoreDeprecations": "6.0",
+    "outDir": "./dist-testing",
+    "rootDir": "./src",
+    "declaration": true,
+    "declarationMap": true,
+    "sourceMap": true,
+    "esModuleInterop": true
+  },
+  "include": ["src/testing/index.ts", "src/testing/embed-isolation.ts", "src/embed-test-provider.ts"],
+  "exclude": ["src/testing/**/*.spec.ts", "src/testing/**/*.test.ts", "node_modules"]
+}

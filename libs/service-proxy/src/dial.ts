@@ -10,11 +10,29 @@
  * closing the client's stdio pipe — so once the backend returns, the same shim
  * resumes with no client reconnect.
  *
- * Leaf module — node builtins only (net).
+ * BL-4041c6e0: before every dial the socket's directory must pass the privacy
+ * check (`socket-dir.ts`). An unsafe directory fast-fails pending requests with
+ * -32001 carrying `data.code: 'E_UDS_DIR_UNSAFE'` and schedules no re-dial.
+ *
+ * Leaf module — node builtins only (net, path, fs via socket-dir).
  */
 
 import * as net from 'node:net';
+import * as path from 'node:path';
 import { encodeFrame, FrameDecoder } from './framing.js';
+import { assertPrivateSocketDir, isUdsDirUnsafeError, type UdsDirUnsafeError } from './socket-dir.js';
+
+/** The structured `data` carried by a -32001 response for an unsafe socket dir. */
+function unsafeData(err: UdsDirUnsafeError): Record<string, unknown> {
+  return {
+    code: err.code,
+    dir: err.dir,
+    expectedUid: err.expectedUid,
+    actualUid: err.actualUid,
+    mode: err.mode,
+    isSymlink: err.isSymlink,
+  };
+}
 import {
   type JsonRpcId,
   type JsonRpcRequest,
@@ -101,6 +119,8 @@ export function dialBackend(opts: DialOptions): BackendConnection {
   let backoffMs = cfg.initialMs;
   let downSince: number | null = null; // ms timestamp the backend first went down
   let redialTimer: NodeJS.Timeout | null = null;
+  /** BL-4041c6e0: the last unsafe-directory verdict; suppresses re-dial while set. */
+  let unsafeDir: UdsDirUnsafeError | null = null;
 
   /** Requests awaiting a response, keyed by JSON-RPC id. */
   const pending = new Map<JsonRpcId, Pending>();
@@ -137,6 +157,34 @@ export function dialBackend(opts: DialOptions): BackendConnection {
 
   function connect(): void {
     if (closed || connecting || socket) return;
+
+    // BL-4041c6e0: never dial into a socket directory another user could have
+    // planted an impostor in. The verdict is terminal for this attempt: every
+    // outstanding request fast-fails with the coded error and NO re-dial is
+    // scheduled (backing off cannot fix a directory; it needs an operator). A
+    // later send() re-checks, so a repaired directory recovers without restart.
+    // A directory that cannot be stat'd (e.g. not created yet on first start) is
+    // not a trust verdict — fall through to the ordinary connect/re-dial path.
+    // Cleared on every attempt: only a fresh unsafe verdict may suppress re-dial.
+    // (A directory the operator removed — the remediation the error prescribes —
+    // must fall back to ordinary re-dialing, or the queued send would hang.)
+    unsafeDir = null;
+    try {
+      assertPrivateSocketDir(path.dirname(opts.socketPath));
+    } catch (err) {
+      if (isUdsDirUnsafeError(err)) {
+        unsafeDir = err;
+        diag(`[service-proxy shim] ${err.message}`);
+        if (redialTimer) {
+          clearTimeout(redialTimer);
+          redialTimer = null;
+        }
+        failAllPending(err.message, unsafeData(err));
+        return;
+      }
+      diag(`[service-proxy shim] socket dir check deferred: ${(err as Error).message}`);
+    }
+
     connecting = true;
 
     const s = net.createConnection(opts.socketPath);
@@ -195,7 +243,7 @@ export function dialBackend(opts: DialOptions): BackendConnection {
   }
 
   function scheduleRedial(): void {
-    if (closed || redialTimer || socket || connecting) return;
+    if (closed || unsafeDir || redialTimer || socket || connecting) return;
     redialTimer = setTimeout(() => {
       redialTimer = null;
       connect();
@@ -232,12 +280,12 @@ export function dialBackend(opts: DialOptions): BackendConnection {
     failAllPending('backend unavailable');
   }
 
-  function failAllPending(message: string): void {
+  function failAllPending(message: string, data?: unknown): void {
     for (const p of queue.splice(0)) {
-      p.resolve(errorResponse(p.request.id ?? null, ERR_BACKEND_UNAVAILABLE, message));
+      p.resolve(errorResponse(p.request.id ?? null, ERR_BACKEND_UNAVAILABLE, message, data));
     }
     for (const p of pending.values()) {
-      p.resolve(errorResponse(p.request.id ?? null, ERR_BACKEND_UNAVAILABLE, message));
+      p.resolve(errorResponse(p.request.id ?? null, ERR_BACKEND_UNAVAILABLE, message, data));
     }
     pending.clear();
     // Nothing is outstanding any more — release the loop if we were holding it.

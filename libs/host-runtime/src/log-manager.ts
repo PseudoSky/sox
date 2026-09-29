@@ -19,7 +19,7 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 
-import { logDirFor } from './data-paths.js';
+import { logDirFor, mkdirDataDir } from './data-paths.js';
 
 export interface LogManagerOptions {
   /** e.g. ~/.sox/logs/<supervisorId> */
@@ -180,14 +180,14 @@ export class LogManager {
 
   private _writeHistory(history: RunHistoryFile): void {
     const p = this._historyPath();
-    fs.mkdirSync(path.dirname(p), { recursive: true });
+    mkdirDataDir(path.dirname(p));
     const tmp = p + '.tmp';
     fs.writeFileSync(tmp, JSON.stringify(history, null, 2) + '\n', 'utf8');
     fs.renameSync(tmp, p);
   }
 
   private _openStream(date: string): void {
-    fs.mkdirSync(this.opts.logDir, { recursive: true });
+    mkdirDataDir(this.opts.logDir);
     const filePath = path.join(this.opts.logDir, `${this.opts.extId}-${date}.log`);
     // Append mode so log files survive across supervisor restarts.
     this._stream = fs.createWriteStream(filePath, { flags: 'a' });

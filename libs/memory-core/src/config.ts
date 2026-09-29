@@ -269,3 +269,46 @@ export function resolveStoreGrowthConfig(
     errors,
   };
 }
+
+// ── StoreVerifyConfig (BL-fc5ab895) ────────────────────────────────────────
+//
+// The out-of-process `deep` integrity pass (store-adapter `deep-verify.ts`) has
+// a wall-clock bound. It is TUNING (ADR-0013 D3): numeric, never a toggle —
+// there is no value that turns deep verification off. The host-injected
+// transport is the config cascade (ADR-0013 D5): memory-server's
+// `config_schema.deep_verify_timeout_ms` arrives as
+// `SOX_CONFIG_DEEP_VERIFY_TIMEOUT_MS`. A present-but-unparseable value THROWS
+// here, and an out-of-range one throws `EInvalidDeepVerifyConfig` at the store
+// open (store-adapter owns the range) — never a silent fallback to the default.
+
+/** Config-cascade env key carrying `deep_verify_timeout_ms`. */
+export const DEEP_VERIFY_TIMEOUT_CONFIG_ENV = 'SOX_CONFIG_DEEP_VERIFY_TIMEOUT_MS';
+
+export interface StoreVerifyConfig {
+  /** Wall-clock bound for one background deep pass, ms. `undefined` ⇒ the
+   *  store-adapter default (`DEFAULT_DEEP_VERIFY_TIMEOUT_MS`). */
+  deepVerifyTimeoutMs: number | undefined;
+}
+
+/**
+ * Resolve the store-verify config. Precedence: typed `overrides` → the
+ * config-cascade env → the store-adapter default. Throws on a present value
+ * that is not a base-10 integer.
+ */
+export function resolveStoreVerifyConfig(
+  overrides?: { deepVerifyTimeoutMs?: number },
+  env: NodeJS.ProcessEnv = process.env,
+): StoreVerifyConfig {
+  if (overrides?.deepVerifyTimeoutMs !== undefined) {
+    return { deepVerifyTimeoutMs: overrides.deepVerifyTimeoutMs };
+  }
+  const raw = env[DEEP_VERIFY_TIMEOUT_CONFIG_ENV];
+  if (raw === undefined || raw.trim() === '') return { deepVerifyTimeoutMs: undefined };
+  if (!/^\d+$/.test(raw.trim())) {
+    throw new Error(
+      `${DEEP_VERIFY_TIMEOUT_CONFIG_ENV}=${JSON.stringify(raw)} is not an integer number of milliseconds ` +
+        `(config key deep_verify_timeout_ms). Refusing to guess — fix the config (ADR-0013 D3).`,
+    );
+  }
+  return { deepVerifyTimeoutMs: Number.parseInt(raw.trim(), 10) };
+}

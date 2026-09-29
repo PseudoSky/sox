@@ -44,6 +44,36 @@
         "default",
         "{workspaceRoot}/eslint.config.js"
       ]
+    },
+    "typecheck": {
+      "cache": true,
+      "dependsOn": [
+        "^build"
+      ],
+      "inputs": [
+        "default",
+        "^production"
+      ]
+    },
+    "typecheck-tests": {
+      "cache": true,
+      "dependsOn": [
+        "^build"
+      ],
+      "inputs": [
+        "default",
+        "^production"
+      ]
+    },
+    "typecheck-src": {
+      "cache": true,
+      "dependsOn": [
+        "^build"
+      ],
+      "inputs": [
+        "default",
+        "^production"
+      ]
     }
   },
   "plugins": [],

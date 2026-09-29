@@ -860,7 +860,7 @@ describe('PERF-MEMORY-004 — importance default regression', () => {
     const content = 'analysis design implementation testing deployment'.repeat(30);
     const emb = seedEmbedding(42);
     const rowid = insertEpisode(db, 'ep-nouser', content, emb);
-    const result = await enrichOnWrite(adapter, {
+    await enrichOnWrite(adapter, {
       uid: 'ep-nouser', rowid, content, summary: undefined,
       tags: [], topic: undefined, metadata: undefined,
       project_path: '/p', derived_from_uid: undefined,
@@ -888,7 +888,7 @@ describe('PERF-MEMORY-004 — importance default regression', () => {
     const content = 'Custom importance test content.';
     const emb = seedEmbedding(43);
     const rowid = insertEpisode(db, 'ep-user', content, emb);
-    const result = await enrichOnWrite(adapter, {
+    await enrichOnWrite(adapter, {
       uid: 'ep-user', rowid, content, summary: undefined,
       tags: [], topic: undefined, metadata: undefined,
       project_path: '/p', derived_from_uid: undefined,
@@ -1090,7 +1090,7 @@ describe('runBatchEnrich', () => {
         `UPDATE node SET importance = 1.0, enrich_ver = ? WHERE rowid = ?`,
       ).run(JSON.stringify({ pass: '1.0.0', ts: now }), rowid2);
 
-      const result = await runBatchEnrich(adapter, { incrementalCluster: true });
+      await runBatchEnrich(adapter, { incrementalCluster: true });
 
       // User-override row: importance unchanged (skipped by C2.1 guard)
       const row1 = db.prepare<[number], { importance: number; enrich_ver: string | null }>(

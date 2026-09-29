@@ -118,27 +118,66 @@ export interface StaleSidecarPruneResult {
   entries: StaleSidecarEntry[];
 }
 
+// ─── Stale-sidecar naming (BL-1010e417 / 5eacd776) ────────────────────────────
+
+/**
+ * The rename target for a `-tshm`/`-shm` being moved aside:
+ * `<sidecar>.stale-YYYY-MM-DD-HHMM-SSmmm-p<pid>[-<n>]` (UTC).
+ *
+ * The stamp used to stop at the MINUTE (`YYYY-MM-DD-HHMM`), and `renameSync`
+ * silently replaces an existing target. So every rename inside one minute
+ * overwrote the previous one: the forensic record this rename exists to keep
+ * was destroyed by the next rename, and a count of `.stale-*` files could not
+ * see how many renames had actually happened (the idle-release cadence renames
+ * roughly twice a minute). Seconds + milliseconds + pid separate producers in
+ * different processes and in the same process; a `-<n>` suffix is appended if
+ * the name is still taken (same process, same millisecond). The name still
+ * begins with the minute stamp, so the legacy shape and every existing
+ * `stale-\d{4}-\d{2}-\d{2}-\d{4}` matcher keep working.
+ *
+ * `exists` is injectable for tests; the no-clobber check is check-then-rename
+ * with no lock, which is sufficient because pid + ms already separates every
+ * concurrent producer — the suffix only has to resolve a same-process repeat.
+ */
+export function staleSidecarPath(
+  sidecarPath: string,
+  opts: { now?: Date; pid?: number; exists?: (p: string) => boolean } = {},
+): string {
+  const compact = (opts.now ?? new Date()).toISOString().replace(/[:.]/g, '').replace('T', '-');
+  // compact = YYYY-MM-DD-HHMMSSmmmZ
+  const base = `${sidecarPath}.stale-${compact.slice(0, 15)}-${compact.slice(15, 20)}-p${opts.pid ?? process.pid}`;
+  const exists = opts.exists ?? existsSync;
+  if (!exists(base)) return base;
+  for (let n = 1; ; n++) {
+    const candidate = `${base}-${n}`;
+    if (!exists(candidate)) return candidate;
+  }
+}
+
 function escapeRegExp(s: string): string {
   return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
 /**
- * Matches exactly the artefact shape `recoverStaleWalIndex` /
- * `proactivelyReconcileStaleSidecar` produce: `<basename>-tshm.stale-<stamp>`
- * or `<basename>-shm.stale-<stamp>`, stamp = `YYYY-MM-DD-HHMM`. Deliberately
+ * Matches exactly the artefact shape the sidecar renames produce:
+ * `<basename>-tshm.stale-<stamp>` or `<basename>-shm.stale-<stamp>`, where
+ * stamp is the current {@link staleSidecarPath} shape
+ * `YYYY-MM-DD-HHMM-SSmmm-p<pid>[-<n>]` or the legacy minute-only
+ * `YYYY-MM-DD-HHMM` (still on disk from before BL-1010e417). Deliberately
  * anchored (`^`/`$`) and requiring the literal `.stale-` infix so this can
  * never match the live `-tshm`/`-shm`/`-wal` sidecars or the db file itself —
  * those never contain `.stale-` in their name by construction.
  */
 function staleSidecarPattern(basename: string): RegExp {
-  return new RegExp(`^${escapeRegExp(basename)}-(tshm|shm)\\.stale-\\d{4}-\\d{2}-\\d{2}-\\d{4}$`);
+  return new RegExp(
+    `^${escapeRegExp(basename)}-(tshm|shm)\\.stale-\\d{4}-\\d{2}-\\d{2}-\\d{4}(?:-\\d{5}-p\\d+(?:-\\d+)?)?$`,
+  );
 }
 
 /**
- * Extracts the RENAME time from a `.stale-<stamp>` filename, `stamp` =
- * `YYYY-MM-DD-HHMM` (minute precision, UTC — the exact format
- * `recoverStaleWalIndex`/`proactivelyReconcileStaleSidecar` stamp via
- * `new Date().toISOString().replace(/[:.]/g,'').replace('T','-').slice(0,15)`).
+ * Extracts the RENAME time from a `.stale-<stamp>` filename (UTC): millisecond
+ * precision for the current {@link staleSidecarPath} shape, minute precision
+ * for the legacy `YYYY-MM-DD-HHMM` shape.
  *
  * This is the age source the retention policy MUST use — not the file's
  * mtime. `renameSync` never touches inode mtime (POSIX rename only rewrites
@@ -156,10 +195,10 @@ function staleSidecarPattern(basename: string): RegExp {
  * validated the shape); callers fall back to mtime in that case only.
  */
 function parseStaleStamp(filename: string): number | null {
-  const m = /\.stale-(\d{4})-(\d{2})-(\d{2})-(\d{2})(\d{2})$/.exec(filename);
+  const m = /\.stale-(\d{4})-(\d{2})-(\d{2})-(\d{2})(\d{2})(?:-(\d{2})(\d{3})-p\d+(?:-\d+)?)?$/.exec(filename);
   if (!m) return null;
-  const [, y, mo, d, h, mi] = m;
-  const iso = `${y}-${mo}-${d}T${h}:${mi}:00.000Z`;
+  const [, y, mo, d, h, mi, sec, ms] = m;
+  const iso = `${y}-${mo}-${d}T${h}:${mi}:${sec ?? '00'}.${ms ?? '000'}Z`;
   const t = Date.parse(iso);
   return Number.isNaN(t) ? null : t;
 }
@@ -275,7 +314,10 @@ export function pruneStaleTshmSidecars(
     }
   }
 
-  withRenameTime.sort((a, b) => b.renamedAtMs - a.renamedAtMs); // newest first
+  // Newest first. Equal rename times (legacy minute stamps, or two renames in
+  // one millisecond) tie-break on the name — `-<n>` suffixes and pids sort
+  // deterministically — so the keep-N cut is stable across sweeps.
+  withRenameTime.sort((a, b) => b.renamedAtMs - a.renamedAtMs || (a.file < b.file ? 1 : a.file > b.file ? -1 : 0));
 
   for (let rank = 0; rank < withRenameTime.length; rank++) {
     const entry = withRenameTime[rank]!;

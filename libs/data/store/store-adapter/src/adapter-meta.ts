@@ -3,8 +3,8 @@
  *
  * Each adapter stamps an _adapter_meta table on first open, enabling
  * built-in detection when a store's adapter type changes.  The stamp
- * is idempotent (INSERT OR IGNORE) and uses BEGIN IMMEDIATE to avoid
- * races on multi-process WAL stores.
+ * is idempotent (upserts), reads before it writes, and takes BEGIN
+ * IMMEDIATE only when a value actually has to change.
  *
  * @module
  */
@@ -60,12 +60,68 @@ export async function ensureAdapterMetaTable(adapter: StoreAdapter): Promise<voi
 
 // ── stampAdapterMeta ──────────────────────────────────────────────────────────
 
+const SELECT_STAMP_SQL = `SELECT key, value FROM ${META_TABLE} WHERE key IN (?, ?, ?)`;
+
+type StampRow = { key: string; value: string };
+
+/** Which stamp values differ from what this package would write. */
+function stampDelta(
+  rows: readonly StampRow[],
+  type: 'sqlite' | 'turso',
+): { type: boolean; version: boolean; createdAt: boolean } {
+  const map = new Map(rows.map((r) => [r.key, r.value]));
+  return {
+    type: map.get(ADAPTER_META_KEYS.ADAPTER_TYPE) !== type,
+    version: map.get(ADAPTER_META_KEYS.ADAPTER_VERSION) !== PKG_VERSION,
+    createdAt: !map.has(ADAPTER_META_KEYS.CREATED_AT),
+  };
+}
+
+/**
+ * (BL-1010e417 / 595e7daf) `true` when `_adapter_meta` already holds exactly
+ * the stamp {@link stampAdapterMeta} would write: `adapter_type` and
+ * `adapter_version` equal, and `created_at` present. A plain SELECT — no
+ * transaction, no write lock, no WAL. A missing table (or any read failure)
+ * reads as `false`, so the caller falls through to create-and-stamp.
+ */
+export async function adapterMetaIsCurrent(
+  adapter: StoreAdapter,
+  type: 'sqlite' | 'turso',
+): Promise<boolean> {
+  try {
+    const { rows } = await adapter.executeAll<StampRow>(SELECT_STAMP_SQL, [
+      ADAPTER_META_KEYS.ADAPTER_TYPE,
+      ADAPTER_META_KEYS.ADAPTER_VERSION,
+      ADAPTER_META_KEYS.CREATED_AT,
+    ]);
+    const d = stampDelta(rows, type);
+    return !d.type && !d.version && !d.createdAt;
+  } catch (err) {
+    log.debug('store_adapter.meta.stamp_read_failed', {
+      db_path: adapter.config.dbPath,
+      error: err instanceof Error ? err.message : String(err),
+      reason: 'stamp state unreadable (table missing on a fresh store is the normal case); the stamp will be written',
+    });
+    return false;
+  }
+}
+
 /**
  * Stamp the store's adapter type and package version into `_adapter_meta`.
  *
- * Uses `BEGIN IMMEDIATE` to safely serialise the stamp across processes, and
- * `ON CONFLICT` upserts so a re-stamp updates in place rather than duplicating
- * a PRIMARY KEY (BL-336 — see {@link STAMP_SQL}).
+ * (BL-1010e417 / 595e7daf) Write-free when nothing changed. Every reopen of a
+ * store runs this, and a reopen happens after every idle release (about every
+ * 30 s on a live server), so an unconditional `BEGIN IMMEDIATE` here took the
+ * store's write lock on every reopen for a stamp that was already correct.
+ * Now: a plain SELECT fast path returns with no transaction when
+ * `adapter_type` and `adapter_version` match and `created_at` exists.
+ * Otherwise it takes `BEGIN IMMEDIATE`, re-reads inside the lock (another
+ * process may have stamped in between), and upserts only the values that
+ * still differ.
+ *
+ * `ON CONFLICT` upserts update in place rather than duplicating a PRIMARY KEY
+ * (BL-336 — see {@link STAMP_SQL}); `created_at` is written once and never
+ * overwritten.
  *
  * Silently no-ops when the adapter is opened read-only (the stamp is a
  * "first writer" marker, not a read requirement).
@@ -77,10 +133,20 @@ export async function stampAdapterMeta(
   // Read-only stores must not attempt to write the stamp
   if (adapter.config.readonly === true) return;
 
+  if (await adapterMetaIsCurrent(adapter, type)) return;
+
   await adapter.transaction(async (tx) => {
-    await tx.executeRun(STAMP_SQL, [ADAPTER_META_KEYS.ADAPTER_TYPE, type]);
-    await tx.executeRun(STAMP_SQL, [ADAPTER_META_KEYS.ADAPTER_VERSION, PKG_VERSION]);
-    await tx.executeRun(STAMP_ONCE_SQL, [ADAPTER_META_KEYS.CREATED_AT, new Date().toISOString()]);
+    const { rows } = await tx.executeAll<StampRow>(SELECT_STAMP_SQL, [
+      ADAPTER_META_KEYS.ADAPTER_TYPE,
+      ADAPTER_META_KEYS.ADAPTER_VERSION,
+      ADAPTER_META_KEYS.CREATED_AT,
+    ]);
+    const d = stampDelta(rows, type);
+    if (d.type) await tx.executeRun(STAMP_SQL, [ADAPTER_META_KEYS.ADAPTER_TYPE, type]);
+    if (d.version) await tx.executeRun(STAMP_SQL, [ADAPTER_META_KEYS.ADAPTER_VERSION, PKG_VERSION]);
+    if (d.createdAt) {
+      await tx.executeRun(STAMP_ONCE_SQL, [ADAPTER_META_KEYS.CREATED_AT, new Date().toISOString()]);
+    }
   }, { mode: 'immediate' });
 }
 
@@ -91,6 +157,17 @@ export const CLEAN_SHUTDOWN_KEY = 'clean_shutdown';
 
 /**
  * Read-and-clear the clean-shutdown marker.
+ *
+ * **No adapter uses this any more (BL-fc5ab895).** Both adapters take their
+ * crash signal from the per-connection dead-pid open marker
+ * (`preflight.ts` `hasUncleanShutdown`). This shared flag was wrong in both
+ * directions for any store with more than one connection: every open wrote
+ * '0', so a healthy concurrent open read "unclean"; and the close-time write
+ * back to '1' ({@link markCleanShutdown}) is a contended write that fails with
+ * `database is locked` after busy_timeout whenever a peer holds the write lock
+ * — 152 such failures on 2026-09-27 in the live service log, each one turning
+ * the next open into a forced deep verification. Kept exported for external
+ * callers of the package API.
  *
  * Returns `true` when the PREVIOUS session did not record a clean close — the
  * store came back from a crash, a kill, or a power loss, which is exactly the
@@ -111,24 +188,29 @@ export async function consumeUncleanShutdownFlag(adapter: StoreAdapter): Promise
     await adapter.executeRun(STAMP_SQL, [CLEAN_SHUTDOWN_KEY, '0']);
     return unclean;
   } catch (err) {
-    log.debug('store_adapter.meta.consume_unclean_failed', {
+    log.warn('store_adapter.meta.consume_unclean_failed', {
       db_path: adapter.config.dbPath,
-      reason: 'table missing or transient error; assuming clean shutdown',
+      error: err instanceof Error ? err.message : String(err),
+      reason: 'could not read/stamp the clean-shutdown flag; assuming clean shutdown',
     });
     return false;
   }
 }
 
-/** Record that this session is closing in an orderly fashion. */
+/** Record that this session is closing in an orderly fashion. Unused by the
+ *  adapters since BL-fc5ab895 — see {@link consumeUncleanShutdownFlag}. */
 export async function markCleanShutdown(adapter: StoreAdapter): Promise<void> {
   if (adapter.config.readonly === true) return;
   try {
     await adapter.executeRun(STAMP_SQL, [CLEAN_SHUTDOWN_KEY, '1']);
   } catch (err) {
-    // Non-fatal — a missing marker only escalates the next open's verify depth.
-    log.debug('store_adapter.meta.mark_clean_shutdown_failed', {
+    // Non-fatal — but the REAL error is logged: the old constant reason
+    // ("table missing or transient error") hid the actual cause,
+    // `database is locked` under a peer's write lock (BL-fc5ab895).
+    log.warn('store_adapter.meta.mark_clean_shutdown_failed', {
       db_path: adapter.config.dbPath,
-      reason: 'table missing or transient error; non-fatal, escalates next open verify depth',
+      error: err instanceof Error ? err.message : String(err),
+      reason: 'clean-shutdown flag write failed; a caller relying on this flag will read the next open as unclean',
     });
   }
 }

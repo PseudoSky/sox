@@ -50,6 +50,7 @@ import {
   DeterministicTestProvider,
   flushPendingEmbeds,
   WriteQueue,
+  _setEnrichHostForkResolverForTest,
 } from '@adhd/sox-memory-core';
 import {
   handleToolCall,
@@ -83,6 +84,12 @@ class GatedCountingProvider extends DeterministicTestProvider {
     return super.embedSingle(...args);
   }
 }
+
+/** BL-474: fixture fork target — see drain-wake-fake-enrich-host.cjs's own
+ *  header for why the real enrich-process-host.js is unsuitable here (its
+ *  fork overhead, 227-1784ms measured under load, is unrelated variance the
+ *  heal-vs-heal timing assertion below does not exist to cover). */
+const FAKE_ENRICH_HOST = path.join(__dirname, 'drain-wake-fake-enrich-host.cjs');
 
 const cleanups: Array<() => void> = [];
 
@@ -288,42 +295,61 @@ describe('BL-382 / BL-154 — the wake cannot deadlock the write queue', () => {
     const gated = new GatedCountingProvider();
     _setEmbedProviderForTest(gated);
 
+    // BL-474: stub the BL-348 cluster-pass fork target so runEnrichPassOnDb's
+    // 500ms race below times ONLY the heal-vs-heal yield-not-wait step this
+    // test asserts, not the real enrich-process-host.js child fork (which
+    // does unrelated clustering work and measured 227-1784ms under load —
+    // see drain-wake-fake-enrich-host.cjs's header). Restored in `finally`
+    // so later tests in this file (in particular the BL-348 slot-exclusion
+    // test just below, which DOES need the real isolated child) are
+    // unaffected.
+    _setEnrichHostForkResolverForTest(() => ({ modulePath: FAKE_ENRICH_HOST, execArgv: [] }));
+
     const drain = runDrainPassGuarded();
-    // Race-window ordering (SPEC-BL-474.md D7): wait for the drain to
-    // PROVABLY hold the slot — closes the single-microtask acquisition race
-    // before the enrich tick's try-acquire below, making it unobservable by
-    // construction, the same idiom this file already uses.
-    await waitFor(() => gated.calls >= 1, 'drain holds the slot');
-    expect(backgroundSlotHolder()).toBe('drain'); // still true post-BL-474 — the drain genuinely holds it
+    try {
+      // Race-window ordering (SPEC-BL-474.md D7): wait for the drain to
+      // PROVABLY hold the slot — closes the single-microtask acquisition race
+      // before the enrich tick's try-acquire below, making it unobservable by
+      // construction, the same idiom this file already uses.
+      await waitFor(() => gated.calls >= 1, 'drain holds the slot');
+      expect(backgroundSlotHolder()).toBe('drain'); // still true post-BL-474 — the drain genuinely holds it
 
-    // Called directly (not via the void-returning runPeriodicEnrichPassGuarded
-    // wrapper) so the structured result — heal_skipped — is inspectable, per
-    // SPEC-BL-474.md AC-3's own guidance, mirroring bl474-bgslot-priority's
-    // AC-2. Raced against a short timer, the same idiom BL-472's own
-    // waitForDrainSettled test uses (line ~349 below): the load-bearing
-    // assertion is that this resolves WELL BEFORE gated.release() ever fires,
-    // not merely that it eventually resolves.
-    const adapter = await getDb(dbPath);
-    const enrichRace = await Promise.race([
-      runEnrichPassOnDb(adapter, dbPath).then((result) => ({ kind: 'resolved' as const, result })),
-      new Promise<{ kind: 'timeout' }>((r) => setTimeout(() => r({ kind: 'timeout' }), 500)),
-    ]);
+      // Called directly (not via the void-returning runPeriodicEnrichPassGuarded
+      // wrapper) so the structured result — heal_skipped — is inspectable, per
+      // SPEC-BL-474.md AC-3's own guidance, mirroring bl474-bgslot-priority's
+      // AC-2. Raced against a short timer, the same idiom BL-472's own
+      // waitForDrainSettled test uses (line ~349 below): the load-bearing
+      // assertion is that this resolves WELL BEFORE gated.release() ever fires,
+      // not merely that it eventually resolves.
+      const adapter = await getDb(dbPath);
+      const enrichRace = await Promise.race([
+        runEnrichPassOnDb(adapter, dbPath).then((result) => ({ kind: 'resolved' as const, result })),
+        new Promise<{ kind: 'timeout' }>((r) => setTimeout(() => r({ kind: 'timeout' }), 500)),
+      ]);
 
-    // THE CORRECTED ASSERTION: the enrich tick's heal step did NOT wait for
-    // the drain's hold — it yielded and the tick resolved on its own.
-    expect(enrichRace.kind).toBe('resolved');
-    if (enrichRace.kind === 'resolved') {
-      expect(enrichRace.result.heal_skipped).toBe(true);
-      expect(enrichRace.result.healed).toBe(0);
+      // THE CORRECTED ASSERTION: the enrich tick's heal step did NOT wait for
+      // the drain's hold — it yielded and the tick resolved on its own.
+      expect(enrichRace.kind).toBe('resolved');
+      if (enrichRace.kind === 'resolved') {
+        expect(enrichRace.result.heal_skipped).toBe(true);
+        expect(enrichRace.result.healed).toBe(0);
+      }
+      // THE UNCHANGED ASSERTION (BL-346's actual safety property): the drain
+      // STILL holds the slot — enrich's heal step never touched it, exactly
+      // because it skipped instead of acquiring.
+      expect(backgroundSlotHolder()).toBe('drain');
+    } finally {
+      // BL-472 fix: release and restore the fork resolver even when an
+      // assertion above throws — otherwise a failure here leaves `drain`
+      // gated forever (latching _drainInFlight true) and the fork resolver
+      // stubbed for every LATER test, cascading one failure into unrelated
+      // ones (the exact BL-472 symptom this file's own header already
+      // documents for the mid-pass-wake test above).
+      gated.release();
+      _setEnrichHostForkResolverForTest(null);
+      _setEmbedProviderForTest(new DeterministicTestProvider());
+      await drain;
     }
-    // THE UNCHANGED ASSERTION (BL-346's actual safety property): the drain
-    // STILL holds the slot — enrich's heal step never touched it, exactly
-    // because it skipped instead of acquiring.
-    expect(backgroundSlotHolder()).toBe('drain');
-
-    gated.release();
-    _setEmbedProviderForTest(new DeterministicTestProvider());
-    await drain;
     expect(backgroundSlotHolder()).toBeNull();
   });
 

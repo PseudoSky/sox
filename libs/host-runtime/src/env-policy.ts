@@ -87,7 +87,44 @@
 /**
  * Non-`SOX_` process keys forwarded verbatim. Locale and shell fundamentals,
  * plus `XDG_CACHE_HOME` (BL-52 — the embed backend resolves its model cache
- * through it; without it the backend silently degrades).
+ * through it; without it the backend silently degrades) and `TMPDIR`
+ * (BL-2df86153 — `os.tmpdir()` in a child MUST resolve to the same per-user
+ * temp directory the parent resolves to, not fall back to the world-shared
+ * `/tmp`).
+ *
+ * `TMPDIR` is forwarded on every IN-PROCESS spawn path that goes through
+ * `scrubEnvReported` — the `soxe serve` backend
+ * (`scrubEnvReported('serve backend')` in `main.ts`), the in-process
+ * supervisor (`scrubEnvReported('supervisor')` in `supervisor.ts`),
+ * `runtime-cli.ts`'s exec path (`scrubEnvReported('runtime-cli exec')`), and
+ * `cmdExec` (`scrubEnvReported('exec')` in `main.ts`) — so a spawned child's
+ * `os.tmpdir()` resolves to the same per-user directory the parent resolves
+ * to (on darwin, macOS's `/var/folders/.../T/`, never the world-shared
+ * `/tmp`). This keeps the BL-578 fallback socket path
+ * (`libs/service-proxy/src/socket-path.ts`) resolving identically between a
+ * parent and its children, and stays consistent with ADR-0022 §5's
+ * forwarding of `TMPDIR` to the embedding host — the embed-host allowlist
+ * (`embedHostConfig.ts`'s `EMBED_HOST_ENV_FORWARD_EXACT`) is asserted to be a
+ * superset of this one by
+ * `apps/sox/src/d8769bb9-embed-host-env-superset.spec.ts` (`embedding-provider`
+ * is tagged `area:data` and this module lives in `area:platform`;
+ * `eslint.config.js`'s `@nx/enforce-module-boundaries` `depConstraints`
+ * restrict `area:data` to `onlyDependOnLibsWithTags: ['area:data',
+ * 'area:shared']`, so `embedding-provider` cannot import this module
+ * directly — the equivalence is enforced by a spec in a project that
+ * depends on both instead).
+ *
+ * `TMPDIR` in this base-allow set is deliberately spawn-time-only: it is
+ * NEVER persisted into a launchd/systemd unit's on-disk env
+ * (`buildOsUnitEnv` in `main.ts` strips it before rendering, and
+ * `deriveOsUnitSpec` in `os-unit.ts` strips it again as a hard invariant of
+ * the primitive; `isShellSourcedEnvKey` there also excludes it from the
+ * BL-375 drift guard). A unit is written once at `enable` time and stays on
+ * disk indefinitely, so a baked-in `TMPDIR` would go stale the moment its
+ * often session-scoped source (a `nix-shell`, an agent sandbox, a CI
+ * runner's `/run/user/UID`) disappears — and on darwin it is redundant
+ * regardless, since launchd already hands the unit's own process a live,
+ * correct per-user `TMPDIR` with no corresponding plist key at all.
  */
 export const ENV_BASE_ALLOW: readonly string[] = [
   'PATH',
@@ -98,6 +135,7 @@ export const ENV_BASE_ALLOW: readonly string[] = [
   'LC_ALL',
   'LC_CTYPE',
   'TZ',
+  'TMPDIR',
   'XDG_CACHE_HOME',
 ];
 

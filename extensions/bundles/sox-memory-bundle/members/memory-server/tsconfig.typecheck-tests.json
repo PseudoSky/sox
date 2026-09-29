@@ -3,6 +3,15 @@
   // for why `include` covers the whole source tree rather than only the spec glob.
   // memory-server additionally keeps cross-backend tests at the package root
   // (*.test.ts), so those are included explicitly.
+  //
+  // da25489b: this is a leaf of the `typecheck` (nx:noop) -> `typecheck-tests`
+  // -> `typecheck-src` chain — see memory-core's copy of this file for the full
+  // triage-split rationale. A failure here means specs/test-support (or a
+  // production file that only fails under bundler resolution); a failure in
+  // `typecheck-src` (`tsconfig.typecheck.json`, `--noEmit`) means production code.
+  // BL-20d01a62: this used to say `tsconfig.json` — `typecheck-src`'s actual command
+  // (project.json) invokes `tsc -p .../tsconfig.typecheck.json --noEmit`, never the bare
+  // `tsconfig.json`.
   "extends": "../../../../../tsconfig.base.json",
   "compilerOptions": {
     "module": "ESNext",
@@ -20,7 +29,9 @@
     // Run-scoped dist-freshness banner (8412f6a8). Listed explicitly for the same reason
     // vitest.setup.ts is: it is real, shipped test infrastructure that nothing else would
     // typecheck, and it imports across the repo root into tools/dist-freshness.mjs.
-    "vitest.global-setup.ts"
+    "vitest.global-setup.ts",
+    // BL-26291f21 run-scoped embed scratch root; imports scripts/lib/*.mjs via hand-written .d.mts.
+    "vitest.global-embed-scratch.ts"
   ],
   "exclude": ["node_modules", "dist"]
 }

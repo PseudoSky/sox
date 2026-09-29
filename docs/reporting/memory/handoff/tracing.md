@@ -72,9 +72,14 @@ One module: `libs/host-runtime/src/env-policy.ts`. `grep -rn allowedKeys` return
 ```
 SOX_*   forwarded, except the host-authoritative prefixes below
 NODE_*  forwarded (scrubbing NODE_OPTIONS/NODE_PATH breaks native addon loading)
-base    PATH HOME USER LOGNAME LANG LC_ALL LC_CTYPE TZ XDG_CACHE_HOME
+base    PATH HOME USER LOGNAME LANG LC_ALL LC_CTYPE TZ TMPDIR XDG_CACHE_HOME
 deny    SOX_PERM_*, SOX_CONFIG_*
 ```
+
+`TMPDIR` (BL-2df86153) is spawn-time-only: `scrubEnvReported` forwards it to every
+in-process child so `os.tmpdir()` resolves the same in parent and child, but it is never
+persisted into an OS unit's on-disk env (`os-unit.ts` strips it as a hard invariant of the
+primitive; `buildOsUnitEnv` in `main.ts` strips it before rendering).
 
 ### The deny-list is load-bearing — do not simplify it away
 

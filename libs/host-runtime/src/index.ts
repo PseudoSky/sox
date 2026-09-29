@@ -110,6 +110,7 @@ export {
   runDir,
   logDirFor,
   socketDir,
+  mkdirDataDir,
 } from './data-paths.js';
 export type { DataScope } from './data-paths.js';
 

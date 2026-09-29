@@ -15,18 +15,27 @@
  *
  * Forks the REAL `fastembedProcessHost.ts` (via tsx), following the proven
  * harness in `fastembedProcessHost-bug005-dim.spec.ts`: real fastembed
- * package, cached model (no download in the common case), execution provider
+ * package, the run's scratch-cloned model (BL-230d1d2a; never a download), execution provider
  * forced via env for determinism.
  */
 import { fork, type ChildProcess } from 'node:child_process';
-import { homedir, tmpdir } from 'node:os';
+import { tmpdir } from 'node:os';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { join, resolve } from 'node:path';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, inject, it } from 'vitest';
 import { log } from '@adhd/sox-telemetry';
+import { isModelCached } from './index.js';
+import { EMBED_SCRATCH_KEY, embedScratchOrNull } from './test-support/scratchModelCache.js';
 
 const HOST_PATH = resolve(__dirname, 'fastembedProcessHost.ts');
-const CACHE_DIR = join(process.env['XDG_CACHE_HOME'] ?? join(homedir(), '.cache'), 'sox', 'models');
+// BL-230d1d2a: the run-scoped scratch model cache (seeded by APFS clone from the
+// operator cache in vitest.global-scratch.ts) — NEVER the operator's
+// ~/.cache/sox/models, which this spec used to fork the real host at.
+const SCRATCH = embedScratchOrNull(inject(EMBED_SCRATCH_KEY));
+if (SCRATCH === null) throw new Error('run through the project vitest config: no scratch model cache was provided');
+const CACHE_DIR = SCRATCH.modelCache;
+// Skip-not-fail when nothing was seeded: the alternative is a download.
+const MODEL_SEEDED = isModelCached(CACHE_DIR, 'fast-bge-small-en-v1.5');
 const MODEL = 'bge-small-en-v1.5';
 
 let child: ChildProcess | undefined;
@@ -107,7 +116,7 @@ describe('BL-5124be6c — execution_provider persists across re-init of an alrea
   // unrelated to BL-5124be6c (no CoreML EP present, so the load either
   // throws or silently falls back). Gate to darwin so the provider name is
   // always valid on the platform running it.
-  it.runIf(process.platform === 'darwin')(
+  it.runIf(process.platform === 'darwin' && MODEL_SEEDED)(
     'second init for the SAME already-loaded model reports the ORIGINAL forced provider, not hardcoded cpu (pre-fix: always cpu)',
     async () => {
       // Force a non-cpu provider name so the pre-fix hardcoded-'cpu' default

@@ -62,6 +62,7 @@ import {
   resolveExtensionDir,
   // BL-393: singleton-violation heal marker — surfaced by `service status`.
   runDir,
+  mkdirDataDir,
   // Slice 1 (docs/spec/service-lifecycle.md): cross-scope singleton.
   resolveStoreResource,
   resolveUnitNodePath,
@@ -153,11 +154,14 @@ import {
   countUnverifiable,
   detectDrift,
   reconcile,
+  resolveDesiredPin,
+  resolveRegistryIndexForRoot,
 } from '@adhd/sox-install-engine';
 import { gateVolatileCli } from './cli-path-gate.js';
 import { registerBundleMember, resolveBundleDir } from './bundle-init.js';
 import { cliInvokedFields } from './cli-invoked-fields.js';
 import { resolveGraceMs, resolveRetentionMsFlag } from './grace-ms.js';
+import { formatUpgradeSummary } from './upgrade-summary.js';
 import { assertWithinBase, PathEscapeError } from './path-safety.js';
 import { unloadOsUnitUnlessFrontShim } from './proxy-backend-front-shim.js';
 import { determineShimIsUnit, reEnableAfterRestartGate } from './restart-proxy-backend-gate.js';
@@ -174,6 +178,7 @@ import {
 } from './serve-shutdown.js';
 import { verifyRunningArtifact } from './verify-artifact.js';
 import { initTelemetry, log, resolveProcessRole, type InitTelemetryOptions } from '@adhd/sox-telemetry';
+import { tightenSoxRunDirs } from './tighten-run-dirs.js';
 // @adhd/sox-host-registry is also lazy-required via install-engine; import it lazily here too
 // to avoid the NX "static import of lazy-loaded library" lint error.
 // [inv:host-registry-lazy]: getHost() used only in cmdInstall; require() at call site.
@@ -255,15 +260,19 @@ async function main(): Promise<void> {
       `[sox] SOX_ECOSYSTEM_HOME is set — data root: ${process.env['SOX_ECOSYSTEM_HOME']} (placement unaffected)\n`,
     );
   }
+  // BL-4041c6e0 / BL-6233c1c2: before any verb can bind or dial a socket under
+  // run/, drop a group/other write bit an older soxe (or a umask-002 host) left
+  // on our own run dirs — the socket-dir trust check refuses those otherwise.
+  tightenSoxRunDirs();
 
   // ── Command audit log (append-only JSONL) ──────────────────────────────────
   try {
-    const { appendFileSync, mkdirSync } = await import('node:fs');
+    const { appendFileSync } = await import('node:fs');
     const { join } = await import('node:path');
     const auditScope = (flags['scope'] ?? 'user') as DataScope;
     const rootDir = dataRoot(auditScope);
     const runDir = join(rootDir, 'run');
-    mkdirSync(runDir, { recursive: true });
+    mkdirDataDir(runDir);
     const entry = {
       t: new Date().toISOString(),
       pid: process.pid,
@@ -463,13 +472,23 @@ function safeResolveManifestPath(extDir: string, relPath: string): string | null
 }
 
 function loadRegistryResolved(cwdRoot: string): ReturnType<typeof loadRegistryIndex> {
+  return loadRegistryResolvedWithRoot(cwdRoot).index;
+}
+
+/**
+ * loadRegistryResolved plus the directory the index was read from, so an
+ * install can record it on the lock entry as `registry_root` (BL-cd1fe520).
+ */
+function loadRegistryResolvedWithRoot(
+  cwdRoot: string,
+): { index: ReturnType<typeof loadRegistryIndex>; root: string | undefined } {
+  const pathMod = require('node:path') as typeof import('node:path');
   try {
     const fromCwd = loadRegistryIndex(cwdRoot);
-    if (fromCwd.length > 0) return fromCwd;
-  } catch {
-    /* fall through to bundled copy */
+    if (fromCwd.length > 0) return { index: fromCwd, root: pathMod.resolve(cwdRoot) };
+  } catch (e) {
+    process.stderr.write(`${CLI}: registry at ${cwdRoot} unreadable (${String(e)}) — trying the bundled copy\n`);
   }
-  const pathMod = require('node:path') as typeof import('node:path');
   const bundledCandidates = [
     __dirname,
     // dev tsc build (`dist/apps/sox`): the embedded copy lives in the sibling
@@ -479,12 +498,12 @@ function loadRegistryResolved(cwdRoot: string): ReturnType<typeof loadRegistryIn
   for (const dir of bundledCandidates) {
     try {
       const fromBundle = loadRegistryIndex(dir);
-      if (fromBundle.length > 0) return fromBundle;
-    } catch {
-      /* try next candidate */
+      if (fromBundle.length > 0) return { index: fromBundle, root: dir };
+    } catch (e) {
+      process.stderr.write(`${CLI}: bundled registry at ${dir} unreadable (${String(e)}) — trying next candidate\n`);
     }
   }
-  return [];
+  return { index: [], root: undefined };
 }
 
 /**
@@ -1679,7 +1698,8 @@ Options:
     }
 
     // ── Build install opts and install ────────────────────────────────────────
-    const resolvedRegistryForInstall = loadRegistryResolved(process.cwd());
+    const resolvedRegistryWithRoot = loadRegistryResolvedWithRoot(process.cwd());
+    const resolvedRegistryForInstall = resolvedRegistryWithRoot.index;
 
     // BL-219: positional install must target only the named extension — derive the
     // scope config path and pass it to trigger singleScopeOnly in loadScopeCascade,
@@ -1692,7 +1712,9 @@ Options:
       root: workspaceRoot,
       configPath: configForPositional,
       ...(lockfilePathFlag !== undefined ? { lockfilePath: lockfilePathFlag } : {}),
-      ...(resolvedRegistryForInstall.length > 0 ? { registryIndex: resolvedRegistryForInstall } : {}),
+      ...(resolvedRegistryForInstall.length > 0
+        ? { registryIndex: resolvedRegistryForInstall, registryRoot: resolvedRegistryWithRoot.root }
+        : {}),
     };
 
     if (process.stdout.isTTY) {
@@ -1787,14 +1809,17 @@ Options:
 
   // --update flag: run full install with cascade for backwards compat
   if (update) {
-    const resolvedRegistryForInstall = loadRegistryResolved(process.cwd());
+    const resolvedRegistryWithRoot = loadRegistryResolvedWithRoot(process.cwd());
+    const resolvedRegistryForInstall = resolvedRegistryWithRoot.index;
     const installOpts: Parameters<typeof import('@adhd/sox-install-engine').install>[0] = {
       scope,
       mode,
       root: workspaceRoot,
       ...(configPathFlag !== undefined ? { configPath: configPathFlag } : {}),
       ...(lockfilePathFlag !== undefined ? { lockfilePath: lockfilePathFlag } : {}),
-      ...(resolvedRegistryForInstall.length > 0 ? { registryIndex: resolvedRegistryForInstall } : {}),
+      ...(resolvedRegistryForInstall.length > 0
+        ? { registryIndex: resolvedRegistryForInstall, registryRoot: resolvedRegistryWithRoot.root }
+        : {}),
     };
 
     if (process.stdout.isTTY) {
@@ -2471,7 +2496,15 @@ async function cmdUpdate(flags: Record<string, string>): Promise<void> {
   // BL-73: derive the project root from cwd (not REPO_ROOT).
   const updateRoot = require('node:path').resolve(flags['root'] ?? process.cwd()) as string;
 
-  await install({ scope, mode: 'update', root: updateRoot });
+  try {
+    await install({ scope, mode: 'update', root: updateRoot });
+  } catch (e) {
+    // BL-6e5191e4: install() in 'update' mode now throws on a fetch/checksum
+    // failure instead of calling process.exit() directly — preserve this
+    // verb's prior fail-fast CLI behavior (print + exit 1) at the boundary.
+    console.error(String(e));
+    process.exit(1);
+  }
   // BL-39 / ADR-0004 §D6: re-materialize service stores so an updated artifact is
   // re-copied into the store (a running daemon must not keep stale copied code).
   rematerializeServiceStores(scope, updateRoot, getScopePaths(scope, updateRoot).lockfile);
@@ -2487,6 +2520,72 @@ async function cmdUpdate(flags: Record<string, string>): Promise<void> {
  * user/project/local; org is repo-rooted and resolved via install-engine's
  * `getScopePath('org')`.
  */
+/**
+ * BL-cd1fe520: the AUTHORITATIVE registry for one consumer's pin — never the
+ * upgrading shell's cwd, never the CLI's bundled snapshot (an older globally
+ * installed soxe run elsewhere would otherwise re-pin newer installs to its own
+ * older rows). In order:
+ *   1. the `registry_root` recorded on the lock entry at install time;
+ *   2. the consumer root's own registry, or one recovered from its lockfile
+ *      provenance — exactly what `install()` resolves from for that root.
+ * Returns null when neither is visible: the caller reports it and never re-pins.
+ */
+function authoritativeRegistryFor(
+  id: string,
+  root: string,
+  lock: ReturnType<typeof loadLockfile>,
+): { index: ReturnType<typeof loadRegistryIndex>; root: string } | null {
+  const pinned = lock?.resolved[id]?.registry_root;
+  if (pinned !== undefined && pinned !== '') {
+    const fromPinned = loadRegistryIndex(pinned);
+    if (fromPinned.length > 0) return { index: fromPinned, root: pinned };
+  }
+  const forRoot = resolveRegistryIndexForRoot(root, lock);
+  if (forRoot.index.length > 0 && forRoot.registryRoot !== null) {
+    return { index: forRoot.index, root: forRoot.registryRoot };
+  }
+  return null;
+}
+
+/**
+ * BL-cd1fe520: can this entry be judged WITHOUT a registry? Only when its origin
+ * (or, for a legacy entry, its source) is a local file outside the content
+ * store — then re-hashing it is the whole freshness check. An npm-package /
+ * npm / https origin, or a legacy content-store copy, needs its registry.
+ */
+function judgeableWithoutRegistry(
+  entry: { source: string; origin?: string | undefined },
+  scope: string,
+  root: string,
+): boolean {
+  const pathMod = require('node:path') as typeof import('node:path');
+  const locator = entry.origin ?? entry.source;
+  if (!locator.startsWith('file://')) return false;
+  const rel = pathMod.relative(
+    pathMod.resolve(pathMod.join(dataRoot(scope as DataScope, root), 'ext')), // storeRootFor (ADR-0004 §D2)
+    pathMod.resolve(locator.slice('file://'.length)),
+  );
+  const inStore = rel === '' || (!rel.startsWith('..') && !pathMod.isAbsolute(rel));
+  return !inStore;
+}
+
+/**
+ * BL-cd1fe520: the explicit `source` a scope config pins for `id`, if any.
+ * install() honours it ahead of the registry, so upgrade must judge against it too.
+ */
+function configuredSourceFor(configPath: string, id: string): string | undefined {
+  const fsMod = require('node:fs') as typeof import('node:fs');
+  if (!fsMod.existsSync(configPath)) return undefined;
+  try {
+    const cfg = JSON.parse(fsMod.readFileSync(configPath, 'utf8')) as { install?: Array<{ id?: string; source?: string }> };
+    const found = cfg.install?.find((e) => e.id === id);
+    return typeof found?.source === 'string' && found.source !== '' ? found.source : undefined;
+  } catch (e) {
+    process.stderr.write(`${CLI} upgrade: warning: could not read ${configPath} for '${id}' source: ${String(e)}\n`);
+    return undefined;
+  }
+}
+
 function lockfilePathForRecord(scope: string, root: string): string {
   if (scope === 'org') return getScopePath('org').lockfile;
   return getScopePaths(scope, root).lockfile;
@@ -3216,7 +3315,7 @@ interface ConsumerOutcome {
   extId: string;
   scope: string;
   root: string;
-  state: 'current' | 'upgraded' | 'restarted' | 'restart-mismatch' | 'restarted-unsupervised' | 'backend-restarted' | 'backend-restart-mismatch' | 'backend-restarted-unsupervised' | 'reconnect-needed' | 'not-installed' | 'unresolvable' | 'failed';
+  state: 'current' | 'ahead' | 'no-registry' | 'upgraded' | 'restarted' | 'restart-mismatch' | 'restarted-unsupervised' | 'backend-restarted' | 'backend-restart-mismatch' | 'backend-restarted-unsupervised' | 'reconnect-needed' | 'not-installed' | 'unresolvable' | 'failed';
   detail: string;
 }
 
@@ -3280,8 +3379,11 @@ async function cmdReconcileAgentMcp(flags: Record<string, string>): Promise<void
  *   soxe upgrade --all        — upgrade EVERY consumer of EVERY id (full deploy).
  *
  * For each consumer (extId × scope × root) the flow is uniform:
- *   1. verifyIntegrity(scope, id) — the ONE is-this-current check (sha256 of the
- *      artifact at the lockfile `source` vs the recorded checksum).
+ *   1. verifyIntegrity(scope, id, { desired }) — the ONE is-this-current check:
+ *      sha256 of the artifact at the lockfile `source` vs the recorded checksum,
+ *      AND the recorded pin vs what resolution yields now (the registry row's
+ *      published checksum, a configured source, or a re-hashed `file://`
+ *      origin) — BL-cd1fe520.
  *   2. CURRENT → report current, make ZERO changes (idempotent — a fully-current
  *      system is the verification; there is no separate doctor/verify command).
  *   3. STALE → re-install (mode:'update' refreshes artifact + re-pins lockfile),
@@ -3349,7 +3451,13 @@ async function cmdUpgrade(flags: Record<string, string>): Promise<void> {
   // Snapshot all verdicts BEFORE any re-install so a bundle install that updates
   // the lockfile mid-pass can't taint subsequent consumers' is-this-current check.
   // Each consumer's verdict is computed from the lockfile as it was at pass start.
-  interface Snapshot { record: typeof consumers[0]; verdict: IntegrityResult | null; tag: string }
+  interface Snapshot {
+    record: typeof consumers[0];
+    verdict: IntegrityResult | null;
+    tag: string;
+    registryIndex: ReturnType<typeof loadRegistryIndex>;
+    registryRoot: string | undefined;
+  }
   const snapshot: Snapshot[] = [];
   for (let i = 0; i < consumers.length; i++) {
     const record = consumers[i]!;
@@ -3365,19 +3473,57 @@ async function cmdUpgrade(flags: Record<string, string>): Promise<void> {
       // not-in-lockfile is a terminal state — no re-install needed, no verdict.
       process.stdout.write(`  ${tag}\n    → not in lockfile (skipped — run ${CLI} install to re-add)\n`);
       outcomes.push({ extId: record.extId, scope: record.scope, root: record.root, state: 'not-installed', detail: 'not in lockfile' });
-      snapshot.push({ record, verdict: null, tag });
+      snapshot.push({ record, verdict: null, tag, registryIndex: [], registryRoot: undefined });
       continue;
     }
 
-    const verdict = await verifyIntegrity(record.scope as Scope, record.extId, { lockfilePath });
-    snapshot.push({ record, verdict, tag });
+    // BL-cd1fe520: judge the pin against what a fresh resolution would install
+    // NOW — the same registry the re-install below resolves from, and the
+    // consumer's explicit config source when it has one. Hashing the lock's
+    // `source` alone compares an npm-package content-store copy with a checksum
+    // taken from itself, so a newer published version was never visible.
+    const lockKeyNow = Object.keys(currentLockfile.resolved).find(
+      (k) => k === record.extId || k.startsWith(`${record.extId}@`),
+    )!;
+    const lockEntryNow = currentLockfile.resolved[lockKeyNow]!;
+    const configuredSource = configuredSourceFor(configPathForRecord(record.scope, record.root), record.extId);
+    const authoritative = authoritativeRegistryFor(lockKeyNow, record.root, currentLockfile);
+    if (authoritative === null && configuredSource === undefined
+      && !judgeableWithoutRegistry(lockEntryNow, record.scope, record.root)) {
+      // No registry the pin can be judged against is visible for THIS consumer.
+      // Never borrow the cwd's or the CLI's bundled registry, and never re-pin.
+      const where = lockEntryNow.registry_root ?? record.root;
+      process.stdout.write(
+        `  ${tag}\n    → no registry visible for this consumer (looked at ${where}) — pin kept, not re-pinned\n`,
+      );
+      outcomes.push({
+        extId: record.extId, scope: record.scope, root: record.root,
+        state: 'no-registry', detail: `no registry visible at ${where}; pin kept`,
+      });
+      snapshot.push({ record, verdict: null, tag, registryIndex: [], registryRoot: undefined });
+      continue;
+    }
+    const registryIndex = authoritative?.index ?? [];
+    const desired = resolveDesiredPin(record.extId, registryIndex, configuredSource);
+    const verdict = await verifyIntegrity(record.scope as Scope, record.extId, { lockfilePath, desired });
+    snapshot.push({ record, verdict, tag, registryIndex, registryRoot: authoritative?.root });
   }
 
   // ── Re-install pass ─────────────────────────────────────────────────────────
   // Uses the snapshot verdicts — NEVER re-reads the lockfile — so a bundle
   // install that updates the lockfile does not taint subsequent consumers.
-  for (const { record, verdict, tag } of snapshot) {
-    if (verdict === null) continue; // already emitted not-installed above
+  for (const { record, verdict, tag, registryIndex, registryRoot } of snapshot) {
+    if (verdict === null) continue; // already emitted not-installed / no-registry above
+
+    if (verdict.status === 'ahead') {
+      // BL-cd1fe520: the pin is newer than the authoritative row — never downgrade.
+      process.stdout.write(`  ${tag}\n    → ${verdict.reason ?? 'pin is newer than the registry — not downgrading'}\n`);
+      outcomes.push({
+        extId: record.extId, scope: record.scope, root: record.root,
+        state: 'ahead', detail: verdict.reason ?? 'pin newer than registry; not downgrading',
+      });
+      continue;
+    }
 
     if (verdict.status === 'current') {
       process.stdout.write(`  ${tag}\n    → current (${(verdict.actual ?? '').slice(0, 19)}…) — no change\n`);
@@ -3395,7 +3541,8 @@ async function cmdUpgrade(flags: Record<string, string>): Promise<void> {
     // STALE — re-install (refresh artifact + re-pin lockfile).
     const lockfilePath = lockfilePathForRecord(record.scope, record.root);
     process.stdout.write(
-      `  ${tag}\n    → STALE (expected ${(verdict.expected ?? '').slice(0, 19)}…, got ${(verdict.actual ?? '').slice(0, 19)}…) — re-installing\n`,
+      `  ${tag}\n    → STALE (expected ${(verdict.expected ?? '').slice(0, 19)}…, got ${(verdict.actual ?? '').slice(0, 19)}…) — re-installing\n` +
+      (verdict.reason !== undefined ? `      reason: ${verdict.reason}\n` : ''),
     );
     try {
       await install({
@@ -3404,6 +3551,8 @@ async function cmdUpgrade(flags: Record<string, string>): Promise<void> {
         root: record.root,
         configPath: configPathForRecord(record.scope, record.root),
         lockfilePath,
+        // BL-cd1fe520: re-pin from the same index the verdict was judged against.
+        ...(registryIndex.length > 0 ? { registryIndex, registryRoot } : {}),
       });
       rematerializeServiceStores(record.scope, record.root, lockfilePath);
     } catch (e) {
@@ -3595,11 +3744,9 @@ async function cmdUpgrade(flags: Record<string, string>): Promise<void> {
     );
   }
 
-  const currentCount = outcomes.filter((o) => o.state === 'current').length;
-  process.stdout.write(
-    `\n${currentCount} current, ${changed} upgraded, ${failed} failed.\n`,
-  );
-  if (changed === 0 && failed === 0) {
+  const { tally, fullyCurrent } = formatUpgradeSummary(outcomes, changed, failed);
+  process.stdout.write(`\n${tally}\n`);
+  if (fullyCurrent) {
     process.stdout.write(`${CLI} upgrade: system fully current — zero changes.\n`);
   }
   process.exit(failed > 0 ? 1 : 0);
@@ -5023,7 +5170,7 @@ async function cmdStart(flags: Record<string, string>): Promise<void> {
         supervisorPid: process.pid,
       };
       const runtimeDir = pathMod.dirname(runtimeFilePath);
-      if (!fsMod.existsSync(runtimeDir)) fsMod.mkdirSync(runtimeDir, { recursive: true });
+      if (!fsMod.existsSync(runtimeDir)) mkdirDataDir(runtimeDir);
       fsMod.writeFileSync(runtimeFilePath, JSON.stringify(record, null, 2) + '\n', 'utf8');
 
       process.stdout.write(
@@ -5455,6 +5602,22 @@ function buildOsUnitEnv(extId: string, root: string): Record<string, string> {
   // default (minus the host-authoritative `SOX_PERM_*`/`SOX_CONFIG_*`), so a
   // brake or a log control reaches the generated unit without an edit here.
   const env = scrubEnvReported('os-unit');
+  // BL-2df86153: TMPDIR is deliberately NOT persisted into the unit's
+  // EnvironmentVariables/Environment= block, even though ENV_BASE_ALLOW
+  // forwards it for a spawn-time scrub. A unit is written once at `enable`
+  // time and stays on disk indefinitely; the enabling shell's TMPDIR is
+  // frequently session-scoped (a nix-shell /tmp/nix-shell.XXXX, an agent
+  // sandbox, a CI runner, /run/user/UID wiped at logout) and would go stale
+  // — os.tmpdir() in the long-lived unit process would then point at a
+  // directory that no longer exists, breaking mkdtemp and the BL-578 socket
+  // fallback. The OS supervisor supplies a live, session-correct TMPDIR to
+  // the unit process itself (confirmed on darwin: launchd hands the unit's
+  // own process a real per-user `/var/folders/.../T/` with no TMPDIR key in
+  // the plist at all), so there is nothing to persist here. Baking TMPDIR
+  // into the unit would also make it "sticky" under the BL-375 drift guard
+  // (`isShellSourcedEnvKey` in os-unit.ts excludes it for the same reason) —
+  // any later re-enable from a shell lacking TMPDIR would otherwise block.
+  delete env['TMPDIR'];
   Object.assign(env, buildExtConfigEnv(extId, root));
   return env;
 }
@@ -9728,10 +9891,14 @@ Flags:
   const policy2 = compilePolicy(manifest2.permissions);
   let serveEnv: NodeJS.ProcessEnv;
   if (policy2.enforced) {
-    // BL-52: forward SOX_EMBED_* and XDG_CACHE_HOME so the embed backend resolves
-    // to real BGE (ONNX) instead of silently falling back to hash embedding when the
-    // served process inherits a scrubbed env. Also forward SOX_SERVE_LOG so the
-    // child's own diagnostics path is consistent if a sub-server is spawned.
+    // env-policy.ts forwards SOX_* wholesale (minus SOX_PERM_*/SOX_CONFIG_*,
+    // BL-344) plus XDG_CACHE_HOME from ENV_BASE_ALLOW, so the embed backend
+    // resolves to real BGE (ONNX) — using the right model cache dir —
+    // instead of silently falling back to hash embedding when the served
+    // process inherits a scrubbed env, and so SOX_SERVE_LOG keeps the
+    // child's own diagnostics path consistent if a sub-server is spawned.
+    // ENV_BASE_ALLOW also forwards TMPDIR (BL-2df86153, spawn-time only —
+    // never persisted into an OS unit's on-disk env).
     // BL-344/BL-339: this is the SERVE path — it builds serveEnv, which becomes
     // backendEnv for the proxy-spawned backend. It is the copy that actually
     // gates the live symptom: patching the os-unit builder alone looks like it
@@ -10444,8 +10611,12 @@ Examples:
 
   let execEnv: NodeJS.ProcessEnv;
   if (policy.enforced) {
-    // BL-52: forward SOX_EMBED_* and XDG_CACHE_HOME so the embed backend resolves
-    // to real BGE (ONNX) instead of silently falling back to hash embedding.
+    // env-policy.ts forwards SOX_* wholesale (minus SOX_PERM_*/SOX_CONFIG_*,
+    // BL-344) plus XDG_CACHE_HOME from ENV_BASE_ALLOW, so the embed backend
+    // resolves to real BGE (ONNX) — using the right model cache dir —
+    // instead of silently falling back to hash embedding. ENV_BASE_ALLOW
+    // also forwards TMPDIR (BL-2df86153, spawn-time only — never persisted
+    // into an OS unit's on-disk env).
     // BL-344: this was the THIRD copy of the allowlist in this file, and its own
     // comment recorded the defect ("Adding a tunable requires remembering every
     // one of them"). That is now structurally impossible — there is one

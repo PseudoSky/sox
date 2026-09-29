@@ -115,6 +115,7 @@ import {
   // (see its doc comment in enrich.ts) — used below so chunked writes cannot
   // drift from computeWriteEnrichment's own topic resolution.
   resolveTopicFromPrefix,
+  setDeepVerifySchedule,
 } from '@adhd/sox-memory-core';
 import type { HealResult, PendingEmbed, PhaseAOutcome, WriteError, WriteResult, EnrichAlarmRecord } from '@adhd/sox-memory-core';
 import type { StoreAdapter, VectorDialect } from '@adhd/sox-store-adapter';
@@ -127,6 +128,11 @@ import {
   readIntegrityResult,
   summarizeIntegrityForStatus,
   integrityHeadline,
+  // BL-fc5ab895: the durable deep-verify obligation + latest outcome. A deep
+  // pass that is owed and timed out / failed degrades `memory_ping.status`.
+  readDeepVerifyObligation,
+  readDeepVerifyState,
+  isDeepVerifyOwnerAlive,
 } from '@adhd/sox-store-adapter';
 // BL-401 gap 3: BL-351's stated acceptance requires every emitted metric be
 // reachable from the status surface WITHOUT reading a log file — the exact
@@ -1264,6 +1270,8 @@ async function handleToolCallImpl(name: string, args: Record<string, unknown>): 
     // state, hoisted out of the try so the top-level `status` can fold it in.
     // null when the store never opened (the verdict is then 'unhealthy' anyway).
     let pipelineVerdictState: 'idle' | 'ok' | 'regressing' | 'stalled' | null = null;
+    // BL-fc5ab895: filled from the store's deep-verify record when it opens.
+    let deepVerifyInput: { owed: boolean; status: string | null; detail: string | null; ownerAlive: boolean | null } | null = null;
     try {
       const storeArg = args['store'];
       const dbPathArg = args['db_path'];
@@ -1439,6 +1447,24 @@ async function handleToolCallImpl(name: string, args: Record<string, unknown>): 
           persisted?.runAtMs ?? null,
         );
 
+        // BL-fc5ab895: the out-of-process deep pass's durable record. Read
+        // from the store (same reason as `integrity` above). An unreadable
+        // obligation row is reported as owed — "cannot tell" is never "fine".
+        let deepOwed: { reason: string; since: string } | null;
+        try {
+          deepOwed = await readDeepVerifyObligation(adapter);
+        } catch (err) {
+          deepOwed = { reason: `obligation unreadable: ${err instanceof Error ? err.message : String(err)}`, since: '' };
+        }
+        const deepState = await readDeepVerifyState(adapter);
+        deepVerifyInput = {
+          owed: deepOwed !== null,
+          status: deepState?.status ?? null,
+          detail: deepState?.detail ?? null,
+          // (BL-9f6681ee) A `running` record whose opener died never finishes.
+          ownerAlive: deepState?.status === 'running' ? isDeepVerifyOwnerAlive(deepState) : null,
+        };
+
         // BL-413: the durable corrective-action record a stalled tick writes
         // (see enrich-stall.ts / runEnrichPassOnDb). Read-only here — this
         // call never writes; only a tick's own checkAndEscalateEnrichStall
@@ -1489,6 +1515,9 @@ async function handleToolCallImpl(name: string, args: Record<string, unknown>): 
           // the verdict is legible without expanding the block.
           integrity: integrityView,
           integrity_headline: integrityHeadline(integrityView),
+          // BL-fc5ab895: additive (HF-3). `owed` is the durable obligation;
+          // `last` is the latest attempt (running/ok/timed_out/failed/…).
+          deep_verify: { owed: deepOwed, last: deepState },
           last_checkpoint_at: lastCheckpointAt,
           enrichment_watermark: enrichmentWatermark,
           queue_depth: queueDepth,
@@ -1614,6 +1643,8 @@ async function handleToolCallImpl(name: string, args: Record<string, unknown>): 
       // pipeline downgrades `status` to 'degraded' even with store + embed
       // healthy — the exact 2026-08-26 false-positive this guards against.
       enrichmentState: pipelineVerdictState,
+      // BL-fc5ab895: an owed deep pass that timed out / failed ⇒ degraded.
+      deepVerify: deepVerifyInput,
     });
 
     return {
@@ -4058,6 +4089,74 @@ export const MEMORY_SERVER_TELEMETRY_INIT_OPTIONS: InitTelemetryOptions = {
   logSink: 'file',
 };
 
+// ── Direct-stdio pre-restart auto-backup shutdown guard (BL-e7716825) ────────
+//
+// `handleDirectStdioShutdown` is the DIRECT-STDIO MODE ONLY shutdown handler
+// (see the BL-405 comment on its call site below for why BACKEND mode never
+// registers this). It must be IDEMPOTENT: a single SIGTERM/SIGINT can arrive
+// more than once — tsx's `relaySignalToChild` (node_modules/tsx/dist/cli.mjs)
+// re-sends SIGTERM 30ms after forwarding it if the child has not yet exited
+// and escalates to SIGKILL 30ms after that, launchd can redeliver a signal to
+// a process group, and Node itself fires every listener registered for a
+// signal (never just one) — so `process.on('SIGTERM', ...)` and
+// `process.on('SIGINT', ...)` can both fire for what is, from the operator's
+// perspective, a single shutdown request. Without a guard, a second
+// invocation could start a SECOND `autoBackup()` (a VACUUM INTO) concurrently
+// with the first — two backup files, or one interrupted mid-write by the
+// process exiting out from under it.
+//
+// `_directShutdownInFlight` makes the whole sequence idempotent by sharing a
+// single in-flight promise across every entry point: the FIRST call starts
+// the sequence and every LATER call (whatever signal or entry point
+// triggered it) awaits/joins that same promise instead of re-running the
+// body — mirrors the `_shuttingDown` guard `coordinatedShutdown` in
+// backend.ts already uses for the BACKEND-mode shutdown sequence (see that
+// function's own doc comment).
+let _directShutdownInFlight: Promise<void> | null = null;
+
+/** Test-only: reset the guard between specs. */
+export function __resetDirectShutdownStateForTest(): void {
+  _directShutdownInFlight = null;
+}
+
+export async function handleDirectStdioShutdown(
+  signal: string,
+  dbPathForBackup: string | null,
+  runAutoBackup: typeof autoBackup,
+  exit: (code: number) => never,
+): Promise<void> {
+  if (_directShutdownInFlight !== null) return _directShutdownInFlight;
+  _directShutdownInFlight = (async (): Promise<void> => {
+    if (dbPathForBackup === null) {
+      process.stderr.write(
+        `[memory-server] received ${signal}; no store configured (SOX_CONFIG_DB_PATH unset) — skipping pre-restart backup\n`,
+      );
+      exit(0);
+      return;
+    }
+    process.stderr.write(`[memory-server] received ${signal}, running pre-restart backup...\n`);
+    try {
+      const result = await runAutoBackup(dbPathForBackup);
+      if (!result.skipped && result.path) {
+        process.stderr.write(`[memory-server] pre-restart backup saved: ${result.path} (${result.size} bytes)\n`);
+      }
+    } catch (err) {
+      // autoBackup() is documented to never throw (all error conditions
+      // resolve to a skipped result) — this catch is a defensive backstop
+      // against a future regression, never observed to fire, but a caught
+      // error here must never be silent.
+      log.error('shutdown.pre_restart_backup.failed', {
+        signal,
+        db_path: dbPathForBackup,
+        error: err instanceof Error ? err.message : String(err),
+      });
+      process.stderr.write(`[memory-server] pre-restart backup failed: ${err}\n`);
+    }
+    exit(0);
+  })();
+  return _directShutdownInFlight;
+}
+
 if (require.main === module) {
   // Schema emission (build step). `node dist/index.js --emit-schema` prints the
   // canonical tools/list result to stdout so gen-schema.cjs can write
@@ -4069,6 +4168,12 @@ if (require.main === module) {
     process.stdout.write(JSON.stringify(buildToolsListResult(), null, 2) + '\n');
     process.exit(0);
   }
+
+  // (BL-9f6681ee) memory-server is the long-lived store OWNER: it alone
+  // schedules the owed background deep integrity pass (and waits out a peer
+  // that holds the lock). Every one-shot opener keeps memory-core's 'never'
+  // default. Must run before the first store open.
+  setDeepVerifySchedule('owner');
 
   // BL-404: this is the telemetry composition root. Before this fix, NOTHING
   // outside a spec file ever called initTelemetry() — every emitter (memory-core,
@@ -4160,24 +4265,12 @@ if (require.main === module) {
     // BL 0c3522c2 (mirrors BL-405 in backend.ts): back up only a CONFIGURED store.
     // An unconfigured process has no store to back up — it must not guess one.
     const dbPathForBackup = resolveDbPath(undefined);
-    async function handleShutdown(signal: string): Promise<void> {
-      if (dbPathForBackup === null) {
-        process.stderr.write(`[memory-server] received ${signal}; no store configured (SOX_CONFIG_DB_PATH unset) — skipping pre-restart backup\n`);
-        process.exit(0);
-      }
-      process.stderr.write(`[memory-server] received ${signal}, running pre-restart backup...\n`);
-      try {
-        const result = await autoBackup(dbPathForBackup);
-        if (!result.skipped && result.path) {
-          process.stderr.write(`[memory-server] pre-restart backup saved: ${result.path} (${result.size} bytes)\n`);
-        }
-      } catch (err) {
-        process.stderr.write(`[memory-server] pre-restart backup failed: ${err}\n`);
-      }
-      process.exit(0);
-    }
-    process.on('SIGTERM', () => { void handleShutdown('SIGTERM'); });
-    process.on('SIGINT', () => { void handleShutdown('SIGINT'); });
+    // BL-e7716825: every entry point that can trigger a direct-stdio shutdown
+    // goes through the SAME idempotent handler (see its doc comment above) —
+    // a repeated SIGTERM/SIGINT is a no-op that joins the first invocation's
+    // in-flight promise instead of re-running the pre-restart backup.
+    process.on('SIGTERM', () => { void handleDirectStdioShutdown('SIGTERM', dbPathForBackup, autoBackup, process.exit); });
+    process.on('SIGINT', () => { void handleDirectStdioShutdown('SIGINT', dbPathForBackup, autoBackup, process.exit); });
   }
 
   if (process.env.SOX_PROXY_BACKEND === '1') {

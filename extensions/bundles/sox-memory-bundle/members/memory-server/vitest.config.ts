@@ -7,6 +7,16 @@ const SPEC_DIR = 'extensions/bundles/sox-memory-bundle/members/memory-server';
 export default defineConfig({
   resolve: {
     alias: {
+      // BL-611a711e: `@adhd/sox-memory-core/testing` is an IN-REPO-ONLY subpath — the package's
+      // `package.json` carries no `exports["./testing"]` entry and does not ship `dist-testing/`
+      // (it is not part of the published npm surface), so this alias is the ONLY way this suite
+      // resolves it at runtime (tsconfig.base.json's `paths` entry covers typecheck only, not
+      // vitest's module resolution). The MORE SPECIFIC alias MUST come first: vite's aliasing
+      // (rollup's `@rollup/plugin-alias` semantics) matches in insertion order and returns the
+      // FIRST entry whose key matches, not the longest key — swapping this order would make
+      // `@adhd/sox-memory-core/testing` imports match the plain `@adhd/sox-memory-core` alias
+      // instead and resolve to the wrong file.
+      '@adhd/sox-memory-core/testing': resolve(repoRoot, 'libs/memory-core/dist-testing/testing/index.js'),
       '@adhd/sox-memory-core': resolve(repoRoot, 'libs/memory-core/dist/index.js'),
       '@adhd/sox-service-proxy': resolve(repoRoot, 'libs/service-proxy/dist/index.js'),
     },
@@ -25,9 +35,27 @@ export default defineConfig({
     // nor `tools/check-suite-tree-state.mjs` could see a stale one; on 2026-09-22 a six-hour-old
     // memory-core build turned into a reported "main is red and shipped that way" P0 against a
     // green main. See vitest.global-setup.ts for the full incident.
-    globalSetup: [resolve(repoRoot, `${SPEC_DIR}/vitest.global-setup.ts`)],
+    //
+    // BL-26291f21: the second entry mints ONE run-scoped embed scratch root (model cache cloned
+    // from the operator's, read-only; embed-host socket dir) and pins SOX_EMBED_CACHE_DIR /
+    // XDG_CACHE_HOME / SOX_ECOSYSTEM_HOME into the env every fork worker inherits, so no worker —
+    // in particular the in-process 'real-backend' project — can resolve the operator's
+    // ~/.cache/sox/models or ~/.adhd/sox-ecosystem. Its teardown reaps the run's embed hosts.
+    globalSetup: [
+      resolve(repoRoot, `${SPEC_DIR}/vitest.global-setup.ts`),
+      resolve(repoRoot, `${SPEC_DIR}/vitest.global-embed-scratch.ts`),
+    ],
     environment: 'node',
     root: repoRoot,
+    // BL-7e5be7e8: permanent decoy operator store config, injected into every worker BEFORE
+    // setupFiles run. vitest.setup.ts must scrub it (scrubOperatorStoreEnv), so the
+    // bl-7e5be7e8 wiring spec goes red on EVERY run if that call is ever removed — not only
+    // when someone happens to export the variables. Paths are unreachable and outside any
+    // ~/.memory allowlist, so an unscrubbed decoy can never resolve a real store.
+    env: {
+      SOX_CONFIG_DB_PATH: '/nonexistent/bl-7e5be7e8-decoy/memory.db',
+      SOX_AUTO_BACKUP_DIR: '/nonexistent/bl-7e5be7e8-decoy/backups',
+    },
     // BL-567: both projects keep the 30s budgets. The 'real-backend' project
     // genuinely needs them — first embed() loads the fastembed ONNX model
     // (bge-base-en-v1.5), warmup takes several seconds even from cache. The

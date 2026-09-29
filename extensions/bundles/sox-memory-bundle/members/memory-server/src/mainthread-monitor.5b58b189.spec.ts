@@ -66,7 +66,7 @@ describe('5b58b189 — main-thread observability', () => {
         `
         const { Worker } = require('node:worker_threads');
         const src = ${JSON.stringify(MAINTHREAD_WATCHER_SOURCE)};
-        const sab = new SharedArrayBuffer(16); const hb = new Float64Array(sab); hb[0] = Date.now();
+        const sab = new SharedArrayBuffer(16); const hb = new Float64Array(sab); hb[0] = Number(process.hrtime.bigint() / 1000000n);
         const w = new Worker(src, { eval: true, workerData: { sab, stallThresholdMs: 300, pid: process.pid } });
         setTimeout(() => {
           const end = Date.now() + 1500; while (Date.now() < end) {}

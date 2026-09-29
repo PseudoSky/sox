@@ -39,7 +39,9 @@ function createStoreAdapterConfigBodies(relFile: string): string[] {
   const re = /createStoreAdapter\(\s*\{([^}]*)\}/gs;
   let m: RegExpExecArray | null;
   while ((m = re.exec(src)) !== null) {
-    bodies.push(m[1].trim());
+    // Capture group 1 always matches when the outer regex matches (it is
+    // not optional) — non-null assertion documents that, not a real gap.
+    bodies.push(m[1]!.trim());
   }
   return bodies;
 }

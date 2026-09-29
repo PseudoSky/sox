@@ -13,6 +13,7 @@ import type {
   CreateStoreOptions,
 } from './types.js';
 import type { StoreConcurrencyMode } from './concurrency-mode.js';
+import type { DeepVerifyConfig } from './deep-verify.js';
 import { resolveConcurrencyMode } from './concurrency-mode.js';
 import { SqliteAdapterImpl } from './sqlite-adapter.js';
 import { TursoAdapterImpl } from './turso-adapter.js';
@@ -38,8 +39,9 @@ export async function createStoreAdapter(
     // explicitly at the call site — declared, never the engine's implicit
     // default. SqliteAdapterImpl validates it ('single-writer' only).
     const mode: StoreConcurrencyMode = config?.concurrencyMode ?? resolveConcurrencyMode('sqlite');
-    const sqliteOpts: { dbPath: string; readonly?: boolean; statementCacheSize?: number; concurrencyMode?: StoreConcurrencyMode } = { dbPath, concurrencyMode: mode };
+    const sqliteOpts: { dbPath: string; readonly?: boolean; statementCacheSize?: number; concurrencyMode?: StoreConcurrencyMode; deepVerify?: DeepVerifyConfig } = { dbPath, concurrencyMode: mode };
     if (config?.readonly !== undefined) sqliteOpts.readonly = config.readonly;
+    if (config?.deepVerify !== undefined) sqliteOpts.deepVerify = config.deepVerify;
     adapter = createSqliteAdapter(sqliteOpts);
   } else if (adapterType === 'turso') {
     // (BUG-MEMORYCORE-MULTIPROCESS-WAL-NOT-OPTED-IN-001) Same explicit
@@ -54,6 +56,7 @@ export async function createStoreAdapter(
     if (authToken !== undefined) tursoOpts.authToken = authToken;
     if (config?.readonly !== undefined) tursoOpts.readonly = config.readonly;
     if (config?.allowFtsInReadonly !== undefined) tursoOpts.allowFtsInReadonly = config.allowFtsInReadonly;
+    if (config?.deepVerify !== undefined) tursoOpts.deepVerify = config.deepVerify;
     // (BL-508) The deliberate-migration path opens the store with the WRONG
     // adapter on purpose (source read for migrateStore) — the foreign-engine
     // refusal must not block it.
@@ -108,19 +111,20 @@ export async function createStoreAdapter(
 // ── createSqliteAdapter — explicit, narrowed return type ──────────────────────
 
 export function createSqliteAdapter(
-  opts: { dbPath: string; readonly?: boolean; statementCacheSize?: number; concurrencyMode?: StoreConcurrencyMode },
+  opts: { dbPath: string; readonly?: boolean; statementCacheSize?: number; concurrencyMode?: StoreConcurrencyMode; deepVerify?: DeepVerifyConfig },
 ): SqliteAdapter;
 export function createSqliteAdapter(
   db: import('better-sqlite3').Database,
 ): SqliteAdapter;
 export function createSqliteAdapter(
   dbOrOpts:
-    | { dbPath: string; readonly?: boolean; statementCacheSize?: number; concurrencyMode?: StoreConcurrencyMode }
+    | { dbPath: string; readonly?: boolean; statementCacheSize?: number; concurrencyMode?: StoreConcurrencyMode; deepVerify?: DeepVerifyConfig }
     | import('better-sqlite3').Database,
 ): SqliteAdapter {
   if (typeof dbOrOpts === 'object' && 'dbPath' in dbOrOpts) {
-    const ctorOpts: { readonly?: boolean; concurrencyMode?: StoreConcurrencyMode } = {};
+    const ctorOpts: { readonly?: boolean; concurrencyMode?: StoreConcurrencyMode; deepVerify?: DeepVerifyConfig } = {};
     if (dbOrOpts.readonly !== undefined) ctorOpts.readonly = dbOrOpts.readonly;
+    if (dbOrOpts.deepVerify !== undefined) ctorOpts.deepVerify = dbOrOpts.deepVerify;
     if (dbOrOpts.concurrencyMode !== undefined) ctorOpts.concurrencyMode = dbOrOpts.concurrencyMode;
     return new SqliteAdapterImpl(dbOrOpts.dbPath, ctorOpts);
   }
@@ -138,6 +142,7 @@ export async function createTursoAdapter(
     allowFtsInReadonly?: boolean;
     allowForeignEngine?: boolean;
     concurrencyMode?: StoreConcurrencyMode;
+    deepVerify?: DeepVerifyConfig;
   },
 ): Promise<TursoAdapter> {
   return TursoAdapterImpl.connect(opts);

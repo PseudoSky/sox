@@ -24,6 +24,7 @@
   },
   "devDependencies": {
     "@adhd/sox-authoring": "workspace:*",
+    "@adhd/sox-embedding-provider": "workspace:*",
     "@adhd/sox-host-registry": "workspace:*",
     "@adhd/sox-host-runtime": "workspace:*",
     "@adhd/sox-install-engine": "workspace:*",

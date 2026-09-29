@@ -15,7 +15,9 @@
     "node": ">=20"
   },
   "devDependencies": {
+    "@adhd/sox-embedding-provider": "workspace:*",
     "@adhd/sox-memory-core": "workspace:*",
+    "@adhd/sox-service-proxy": "workspace:*",
     "@adhd/sox-store-adapter": "workspace:*",
     "@adhd/sox-telemetry": "workspace:*"
   },

@@ -27,6 +27,8 @@ export * from './cold-open-lock.js';
 export * from './adapter-meta.js';
 export * from './store-rebuild.js';
 export * from './integrity.js';
+export * from './deep-verify.js';
+export * from './deep-verify-reaper.js';
 export * from './integrity-status.js';
 export * from './migration.js';
 export * from './preflight.js';

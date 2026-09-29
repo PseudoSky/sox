@@ -26,8 +26,83 @@
  * script invocation (bl266 — see SPEC-BL-466.md Decision 6 / tools/run-guards.mjs `buildBl266Args`).
  */
 
+import { execFileSync } from 'node:child_process';
+import * as path from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+
+// 3b752549 / ef033f92: the 7ff58364 guard (below) needs to re-run whenever ANY project's
+// `project.json` changes, not just the three projects it happened to be written against — a new
+// project growing a `typecheck-tests` target with no matching `typecheck-src`/noop `typecheck`
+// would otherwise ship unwatched. `run-guards.mjs`'s watch matcher only understands an exact path
+// or a directory prefix (a trailing-slash entry), not a glob (see `matchesDiff` in
+// tools/run-guards.mjs), so the watch list is still an enumerated path list — but built from
+// `git ls-files` against the real tracked tree instead of a hand-rolled `fs.readdirSync` walk
+// with its own maintained `EXCLUDE_DIRS` set. That walker duplicated the one already living in
+// tools/test-7ff58364-gate-reaches-typecheck-tests.mjs's `discoverProjectsViaFilesystem` and could
+// silently drift from it; `git ls-files` is the tracked-file truth and its result is identical on
+// every machine/checkout — no dependence on what happens to exist in a given working tree's
+// `node_modules`/`dist`/`.worktrees`.
+//
+// BL-20d01a62: the claim this comment used to make here — that `project.json`-shaped fixture
+// files under `docs/research/**/transcripts/**` are "never tracked, so they need no exclude
+// list at all" — is FALSE. At least
+// `docs/research/content-first/proxy/transcripts/file-writes/cf_pre/packages/apigen/apigen-plugin-batch/project.json`
+// IS tracked (`git ls-files` returns it) and is NOT valid JSON (it is a line-numbered transcript
+// capture — every line starts with `N:\t`, which fails `JSON.parse` at line 1). It ends up in
+// `ALL_PROJECT_JSON_PATHS` below like any other tracked `project.json` path — that is fine and
+// intentional, because nothing in this file (or in `tools/run-guards.mjs`'s exact-path/prefix
+// `matchesDiff`) ever parses the watch list as JSON; it is used purely as a set of diff-changed
+// paths to match against. The exclusion of `transcripts` that DOES matter lives in
+// `tools/test-7ff58364-gate-reaches-typecheck-tests.mjs`'s `discoverProjectsViaFilesystem`
+// (its own `EXCLUDE_DIRS`, used only on the `--code-root` red-demo fallback path, where the
+// walker DOES `JSON.parse` every `project.json` it finds and would otherwise crash on this file).
+//
+// Also widened (per BL-ef033f92) to `package.json` and `tsconfig*.json`: A7 (added to the 7ff58364
+// guard) reads the tsconfig file named by a project's `typecheck-src` command, so a change to
+// e.g. `tsconfig.typecheck.json`'s `exclude` list — with no accompanying `project.json` edit —
+// must also re-arm this guard.
+//
+// BL-20d01a62: the bare `**/project.json` pathspec (no `:(glob)` magic) is a LITERAL-with-`?`/`*`
+// pathspec, not a recursive glob — `**` has no special "any depth including zero" meaning without
+// `:(glob)`, so it never matches a top-level file. Verified live (2026-09-28): the plain pattern
+// missed the repo's own root `project.json`, `package.json`, `tsconfig.json`, and
+// `tsconfig.base.json` entirely — exactly the root config files this guard exists to watch (A6's
+// own resolver reads `nx.json.targetDefaults`, and root `tsconfig.base.json` is the thing every
+// project's `tsconfig.typecheck*.json` extends). Every pattern below is now `:(glob)`-prefixed so
+// `**` recurses through zero or more directories, root included.
+function trackedFiles(pattern) {
+  try {
+    return execFileSync('git', ['-C', REPO_ROOT, 'ls-files', '--', pattern], { encoding: 'utf8' })
+      .split('\n')
+      .filter(Boolean)
+      .sort();
+  } catch (err) {
+    // BL-20d01a62: this must fail CLOSED, not open. An earlier version of this catch degraded to
+    // an empty watch list on any `git` failure, on the theory that a guard which under-watches
+    // still runs on its own script-path change and via `--all`. That reasoning was wrong: the
+    // 7ff58364 guard's watch list is built ENTIRELY from trackedFiles() calls (ALL_PROJECT_JSON_
+    // PATHS / ALL_PACKAGE_JSON_PATHS / ALL_TSCONFIG_JSON_PATHS below) — degrading to [] there means
+    // the guard watches only 'nx.json' and its own script path, so a commit touching
+    // project.json/package.json/tsconfig anywhere in the repo is reported "N/A — not in scope" and
+    // the commit passes with NO guard coverage at all. A manifest that can't be imported runs no
+    // guards and the caller sees that failure directly; a manifest that imports successfully but
+    // silently watches nothing is far worse — it reports green while blind. Rethrow with context
+    // so run-guards.mjs and the pre-commit hook both exit non-zero instead of passing unguarded.
+    throw new Error(`guards-manifest: git ls-files -- ${pattern} failed: ${err.message ?? err}`, { cause: err });
+  }
+}
+
+// BL-20d01a62 (item 1, item 4 comment correction below): `:(glob)` pathspec magic makes `**` match
+// zero or more path segments, so these now correctly include top-level `project.json`,
+// `package.json`, `tsconfig.json`, and `tsconfig.base.json` alongside every nested one.
+const ALL_PROJECT_JSON_PATHS = trackedFiles(':(glob)**/project.json');
+const ALL_PACKAGE_JSON_PATHS = trackedFiles(':(glob)**/package.json');
+const ALL_TSCONFIG_JSON_PATHS = trackedFiles(':(glob)**/tsconfig*.json');
+
 export const GUARDS = [
-  // ---------------------------------------------------------------- Tier 1 (22) -----------
+  // ---------------------------------------------------------------- Tier 1 (34) -----------
   {
     id: 'bl222',
     tier: 1,
@@ -61,6 +136,43 @@ export const GUARDS = [
     id: 'bl456',
     tier: 1,
     script: 'test-bl456-suite-tree-state.mjs',
+    watch: ['tools/check-suite-tree-state.mjs'],
+  },
+  {
+    id: '28f22e8d',
+    tier: 1,
+    script: 'test-28f22e8d-tree-state-config-dirt.mjs',
+    // Pins that check-suite-tree-state.mjs's git-status scope is each dependency's PROJECT ROOT
+    // (project.json, tsconfig.json, vitest.config.ts, top-level test files) plus repo root config
+    // (nx.json, tsconfig.base.json, pnpm-lock.yaml, package.json, pnpm-workspace.yaml, .npmrc) —
+    // not just sourceRoot, which misses all of those — AND that a project root's `git status`
+    // pathspec correctly excludes a NESTED non-dependency nx project (item 2) and, when the repo
+    // ROOT project itself is a dependency, is scoped to the literal repo root rather than
+    // sweeping in every other project via the `.` pathspec (item 3). Most arms use a scratch
+    // fixture repo as the negative control (the authentic pre-fix sourceRoot-only scoping —
+    // buildReport() absent entirely — for arms 1-4; the authentic pre-fix buildPathspecs()-absent
+    // scoping for arms 5-6). Arm 7 is the ancestor self-cancellation arm — it goes RED only
+    // against 6b75974c (the nested/root-scoping commit before the ancestor guard in
+    // `isAncestorOfPkgRoot` landed), not against earlier history, where `buildPathspecs()` didn't
+    // exist yet either. Arm 8 [BL-48d92088] pins `--untracked-files=all` on `porcelainOver()`'s
+    // `git status` call, config-independent. The FINAL arm (9) is deliberately NOT hermetic — it
+    // spawns the CLI against this real checkout's own live git state and graph, not a scratch
+    // fixture, so it can
+    // only assert shape (non-empty projectRoots/rootConfigFiles), not exact dirty content; it
+    // stays Tier 1 on the same basis bl456's own arm 6 already established for that pattern.
+    watch: ['tools/check-suite-tree-state.mjs'],
+  },
+  {
+    id: 'aa65862e',
+    tier: 1,
+    script: 'test-aa65862e-tree-state-git-env-isolation.mjs',
+    // Pins check-suite-tree-state.mjs's gitEnv() helper: porcelainOver() must strip inherited
+    // GIT_DIR/GIT_INDEX_FILE/GIT_WORK_TREE/GIT_COMMON_DIR before every spawned `git status` call,
+    // so a value inherited from an enclosing git process (e.g. `.husky/pre-commit`'s in-progress
+    // commit index) can never redirect the report away from the scratch/real repo it was asked to
+    // scope to. The negative control is not a pinned git revision — it is a raw, un-stripped
+    // `git status` call made in the same test process, so the guard never depends on old history
+    // staying reachable.
     watch: ['tools/check-suite-tree-state.mjs'],
   },
   {
@@ -121,6 +233,98 @@ export const GUARDS = [
     // write attributed by cli_invoked verb+target is a WARNING; every leak shape stays FATAL. The
     // authentic pre-fix any-hash-mismatch-is-FATAL rule is the embedded negative control.
     watch: ['scripts/lib/isolation-guard.mjs', 'scripts/smoke-test.mjs', 'apps/sox/src/cli-invoked-fields.ts'],
+  },
+  {
+    id: '26121495',
+    tier: 1,
+    script: 'test-26121495-smoke-embed-host-isolation.mjs',
+    // Pins the smoke harness's embedding-host containment: a smoke-owned host with the operator
+    // HOME, model cache or a temp-dir socket is a breach; the harness env keeps socket + cache in
+    // the run through the product's own resolution; every memory-server leg gets the scratch HOME.
+    // e5cf17a0: also the product sources whose behaviour Part B reimplements or depends on — the
+    // embed socket dir (embedHostConfig.ts), the model-cache resolution (embedding-provider index.ts)
+    // and the `soxe serve` env scrub that drops TMPDIR (env-policy.ts).
+    watch: [
+      'scripts/lib/embed-host-isolation.mjs', 'scripts/lib/smoke-env.mjs', 'scripts/smoke-test.mjs', 'libs/service-proxy/src/socket-path.ts',
+      'libs/data/embed/embedding-provider/src/embedHostConfig.ts', 'libs/data/embed/embedding-provider/src/index.ts', 'libs/host-runtime/src/env-policy.ts',
+    ],
+  },
+  {
+    id: '97e7f214',
+    tier: 1,
+    script: 'test-97e7f214-smoke-embed-host-teardown.mjs',
+    // Pins the smoke serve legs' teardown: the detached embedding host (ADR-0022) is verified-stopped
+    // after the soxe group kill, a survivor fails the leg, and an untagged host is never signalled.
+    watch: ['scripts/lib/embed-host-isolation.mjs', 'scripts/smoke-test.mjs'],
+  },
+  {
+    id: 'df0ea359',
+    tier: 1,
+    script: 'test-df0ea359-spec-embed-isolation.mjs',
+    // Pins memory-server's bl404/bl401 real-entrypoint specs to never spawn a real
+    // embedding host sharing the operator's HOME, model cache, or embed socket dir
+    // (observed live: pids 21798/21856/22069 with HOME=/Users/nix), and to verified-stop
+    // the whole spawned process tree (the tsx wrapper's grandchild server was orphaned by a
+    // wrapper-only SIGKILL). Structural check on the spec sources plus a dynamic probe of the
+    // real helper via `node --import tsx`. `--ref 80261908` (the pre-fix base) is the pinned
+    // negative control.
+    watch: [
+      'extensions/bundles/sox-memory-bundle/members/memory-server/src/bl404-telemetry-composition-root.spec.ts',
+      'extensions/bundles/sox-memory-bundle/members/memory-server/src/bl401-stages-declared-live.spec.ts',
+      'extensions/bundles/sox-memory-bundle/members/memory-server/src/test-support/bl-df0ea359-embed-host-isolation.ts',
+    ],
+  },
+  {
+    id: '1647035b',
+    tier: 1,
+    script: 'test-1647035b-smoke-embed-evidence-per-leg.mjs',
+    // Pins that each embedding leg's requireObserved is satisfied by its OWN host: the service leg's
+    // host is verified-stopped after `service disable`, serve legs start with no smoke host alive.
+    watch: ['scripts/lib/embed-host-isolation.mjs', 'scripts/smoke-test.mjs'],
+  },
+  {
+    id: 'e5cf17a0',
+    tier: 1,
+    script: 'test-e5cf17a0-smoke-teardown-hardening.mjs',
+    // Pins the smoke teardown hardening: ordered + identity-checked verified stops, per-spawner and
+    // reparented-child attribution, signal sweep, space-safe ps parsing, alias-collision retry.
+    watch: ['scripts/lib/embed-host-isolation.mjs', 'scripts/lib/smoke-fs.mjs', 'scripts/lib/smoke-teardown.mjs', 'scripts/smoke-test.mjs', 'tools/guards-manifest.mjs'],
+  },
+  {
+    id: 'bd91334d',
+    tier: 1,
+    script: 'test-bd91334d-embed-scratch-teardown-fault.mjs',
+    // Pins memory-server's vitest.global-embed-scratch.ts teardown: a thrown exception mid-audit,
+    // or any recorded problem with no throw, must fail the run (process.exitCode = 1) and keep the
+    // scratch root — never a bare try/finally that lets vitest 4.1.8 swallow the throw and exit 0.
+    watch: [
+      'extensions/bundles/sox-memory-bundle/members/memory-server/vitest.global-embed-scratch.ts',
+      'extensions/bundles/sox-memory-bundle/members/memory-server/src/test-support/bl-26291f21-embed-scratch-env.ts',
+    ],
+  },
+  {
+    id: '8c3f8f87',
+    tier: 1,
+    script: 'test-8c3f8f87-smoke-log-reflects-exit.mjs',
+    // Pins that log.json is written after every post-run assertion and that exit 2 implies
+    // summary.failed > 0 (behavioural over every failure combination).
+    watch: ['scripts/lib/embed-host-isolation.mjs', 'scripts/lib/smoke-teardown.mjs', 'scripts/smoke-test.mjs'],
+  },
+  {
+    id: '9303b749',
+    tier: 1,
+    script: 'test-9303b749-embed-isolation-prefix-control.mjs',
+    // Pins that test-26121495's Part A pre-fix control is the real 0bb5b497 evaluateIsolation loaded
+    // from git, not a stub.
+    watch: ['tools/test-26121495-smoke-embed-host-isolation.mjs', 'scripts/lib/embed-host-isolation.mjs'],
+  },
+  {
+    id: '3ebd7ecb',
+    tier: 1,
+    script: 'test-3ebd7ecb-smoke-model-cache-seed.mjs',
+    // Pins the smoke model-cache seed: copy-on-write clone from the operator cache (read-only source,
+    // never hardlinks), download fallback, and the per-step snapshot excluding the cache and TMPDIR.
+    watch: ['scripts/lib/smoke-fs.mjs', 'scripts/smoke-test.mjs'],
   },
   {
     id: '4fc3704e',
@@ -192,6 +396,43 @@ export const GUARDS = [
     // reachable in `main`. The authentic pre-fix resolve text without the "Confirm every named ref
     // is in `main`" rule is embedded as the negative control.
     watch: ['extensions/agents/backlog-operator/backlog-operator.md'],
+  },
+  {
+    id: '7ff58364-7dd7a974-062504ba-3b752549-da25489b',
+    tier: 1,
+    script: 'test-7ff58364-gate-reaches-typecheck-tests.mjs',
+    // Pins 7ff58364/7dd7a974 (062504ba's resolution waits on this guard): every project's
+    // `typecheck` target must effectively depend on `^build`, and on `typecheck-tests` wherever
+    // that target exists, so a whole-repo `nx run-many -t typecheck` sweep never reports green
+    // while typecheck-tests silently never ran (config-merge + real task-graph proof).
+    //
+    // da25489b layered the gate further: `typecheck` (nx:noop) -> `typecheck-tests` ->
+    // `typecheck-src`, so production-only breakage is triage-distinguishable from spec breakage.
+    // BL-20d01a62: this used to claim "both are always reached by a whole-repo sweep" — false, and
+    // contradicted by docs/reporting/memory/handoff/typecheck-tests.md's own account of the chain:
+    // nx SKIPS `typecheck-tests` outright when its `typecheck-src` dependency fails, so only
+    // `typecheck-src` is guaranteed to run on every sweep. A failing `typecheck-src` still fails the
+    // sweep overall (non-green), but by itself it does not tell you whether specs would also have
+    // failed — the spec-inclusive check simply never ran. `typecheck` itself has no command of its
+    // own to short-circuit on, so the sweep can never report green while EITHER leaf silently never
+    // ran — that "never both-silently-skipped" guarantee is what's reached on every sweep, not "both
+    // leaves always run".
+    //
+    // Watch list (3b752549, widened ef033f92): every tracked project.json/package.json/
+    // tsconfig*.json in the repo, not just the three projects this guard was originally written
+    // against — any project that grows a typecheck-tests target without a matching
+    // typecheck-src/noop typecheck needs this guard to re-run, and A7 needs it to re-run on a
+    // bare tsconfig edit too. Built from `git ls-files`, see the trackedFiles() helper above.
+    // Also watches its own manifest's watch-list machinery (BL-20d01a62 item 2):
+    // tools/guards-manifest.mjs — a change to trackedFiles()/the glob patterns above changes what
+    // this guard actually watches, so the guard must re-run on its own edit too.
+    watch: [
+      'nx.json',
+      'tools/guards-manifest.mjs',
+      ...ALL_PROJECT_JSON_PATHS,
+      ...ALL_PACKAGE_JSON_PATHS,
+      ...ALL_TSCONFIG_JSON_PATHS,
+    ],
   },
 
   // ---------------------------------------------------------------- Tier 2 (5) ------------

@@ -13,5 +13,10 @@ export default defineConfig({
   test: {
     root: PKG_ROOT,
     include: ['src/**/*.{spec,test}.ts'],
+    // BL-230d1d2a / BL-0b0573f8: one run-scoped scratch root (seeded model
+    // cache, no operator-cache access) + the funnel's typed spawn guard armed
+    // in every worker. See the two files for the contract.
+    globalSetup: [resolve(PKG_ROOT, 'vitest.global-scratch.ts')],
+    setupFiles: [resolve(PKG_ROOT, 'vitest.setup-scratch.ts')],
   },
 });

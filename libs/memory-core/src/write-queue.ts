@@ -447,6 +447,18 @@ export class WriteQueue {
    *  let it outlive the adapter. */
   private _pragmaSetPromise: Promise<void> = Promise.resolve();
 
+  /**
+   * TEST-ONLY seam: exposes the dedicated write connection so a spec can
+   * close it directly (bypassing `drainAndClose()`'s own drain) to reproduce
+   * the pre-BL-472 "close before in-flight work resolves" failure mode, or
+   * to mirror `closeAllForShutdown()`'s exact close step after a real drain
+   * has already landed. Never used outside `*.spec.ts` — production code
+   * always goes through `drainAndClose()` / `closeAllForShutdown()`.
+   */
+  get __adapterForTest(): StoreAdapter {
+    return this.adapter;
+  }
+
   private constructor(adapter: StoreAdapter, dbPath: string, maxSize = DEFAULT_MAX_QUEUE_SIZE) {
     this.adapter = adapter;
     this._pragmaSetPromise = adapter.pragmaSet('busy_timeout', 3000).catch(() => {

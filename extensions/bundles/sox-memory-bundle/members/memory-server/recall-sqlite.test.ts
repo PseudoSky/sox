@@ -20,6 +20,7 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { isRealModelCached } from './src/test-support/bl-26291f21-embed-scratch.js';
 
 
 // ── Helpers ────────────────────────────────────────────────────────────────────
@@ -180,15 +181,14 @@ describe('memoryRecall — real SQLite integration', () => {
 // hook has run). The cache check mirrors embedding-provider's canonical
 // isModelCached() (src/index.ts:327): <cacheDir>/<hfRepoId>/model_optimized.onnx,
 // with memory-core's cacheDir resolution (embed.ts resolveConfig:
-// SOX_EMBED_CACHE_DIR ?? $XDG_CACHE_HOME/sox-memory/models). When the cache is
+// SOX_EMBED_CACHE_DIR ?? $XDG_CACHE_HOME/sox/models). When the cache is
 // absent the describe SKIPS — a CI box with no model cache must not fail (or
 // download) on this.
-const REAL_MODEL_CACHE_DIR =
-  process.env['SOX_EMBED_CACHE_DIR'] ??
-  path.join(process.env['XDG_CACHE_HOME'] ?? path.join(os.homedir(), '.cache'), 'sox-memory', 'models');
-const REAL_MODEL_CACHED = fs.existsSync(
-  path.join(REAL_MODEL_CACHE_DIR, 'fast-bge-base-en-v1.5', 'model_optimized.onnx'),
-);
+// BL-26291f21: the gate reads the cache dir memory-core ACTUALLY loads from
+// (`getConfiguredEmbedPaths().cacheDir` — `.../sox/models`, inside the run's embed scratch root
+// that vitest.global-embed-scratch.ts seeds by clone). It used to re-derive the path here as
+// `.../sox-memory/models`, so the gate and the load read two different directories.
+const REAL_MODEL_CACHED = isRealModelCached();
 const realEmbeddingDescribe = REAL_MODEL_CACHED ? describe : describe.skip;
 
 realEmbeddingDescribe('MCP bundle path — real embedding semantic proof', () => {

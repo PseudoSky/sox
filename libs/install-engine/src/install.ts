@@ -14,7 +14,7 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import type { ScopeConfig as CascadeScopeConfig, ResolvedConfigMap } from './cascade.js';
 import { cascade } from './cascade.js';
-import { ownershipPathFor, scopeConfigPaths, storeRootFor } from './data-paths.js';
+import { ownershipPathFor, scopeConfigPaths, storeRootFor, type DataScope } from './data-paths.js';
 import { upsertInstallRecord } from './install-registry.js';
 import { assertWithinBase } from './path-safety.js';
 import { checkProviderCapabilities } from './provider-capabilities.js';
@@ -46,10 +46,35 @@ export interface ScopeConfig {
 }
 
 export interface LockfileEntry {
+  /**
+   * The MATERIALIZED artifact the runtime loads (`file://` into a repo checkout
+   * or into the per-extension content store). Every loader/exec/reaper consumer
+   * reads this as a filesystem location — it is the runtime contract and never
+   * carries a non-path locator.
+   */
   source: string;
   checksum: string;
   resolved_at: string;
   bundle_id?: string | undefined;
+  /**
+   * BL-cd1fe520: where `source`'s bytes came FROM — the locator resolution
+   * fetched (`npm-package:<name>@<version>`, `npm:…`, `https://…`, or a
+   * `file://` repo path). For an `npm-package:` install `source` is the copy
+   * npm materialized into `<dataRoot>/ext/<id>/node_modules/…`, so hashing it
+   * only proves the copy matches itself; `origin` is what `verifyIntegrity`
+   * compares against the current registry pin to decide staleness. Absent on
+   * entries written before BL-cd1fe520 (the legacy self-referential shape).
+   */
+  origin?: string | undefined;
+  /**
+   * BL-cd1fe520: the directory whose `registry/index.json` supplied this pin
+   * (absent when the entry was not resolved from a registry row). `upgrade`
+   * judges the pin against THIS registry — never against whatever registry the
+   * upgrading shell's cwd, or the CLI's bundled copy, happens to hold.
+   */
+  registry_root?: string | undefined;
+  /** BL-cd1fe520: the registry row's display version at pin time; orders pins so upgrade never downgrades. */
+  version?: string | undefined;
 }
 
 export interface LockfileExtendsPin {
@@ -330,9 +355,17 @@ function findRegistryRootUpward(startDir: string): string | null {
  */
 function recoverRegistryRootFromLockfile(lock: Lockfile | null): string | null {
   if (!lock) return null;
+  // BL-cd1fe520: a `file://` origin points into the publishing checkout even
+  // when `source` is a content-store copy (which has no registry above it), so
+  // try every origin before any source.
+  const candidates: string[] = [];
   for (const entry of Object.values(lock.resolved)) {
-    if (!entry.source.startsWith('file://')) continue;
-    const sourcePath = entry.source.slice('file://'.length);
+    if (entry.origin !== undefined && entry.origin.startsWith('file://')) candidates.push(entry.origin);
+  }
+  for (const entry of Object.values(lock.resolved)) candidates.push(entry.source);
+  for (const candidate of candidates) {
+    if (!candidate.startsWith('file://')) continue;
+    const sourcePath = candidate.slice('file://'.length);
     // (DEBT-INSTALLENGINE-REGISTRY-RECOVERY-TOCTOU) `existsSync` followed by
     // `statSync` is two syscalls with a window between them: if the path is
     // removed in that window, `statSync` throws ENOENT and the exception
@@ -350,6 +383,98 @@ function recoverRegistryRootFromLockfile(lock: Lockfile | null): string | null {
     if (found) return found;
   }
   return null;
+}
+
+/**
+ * The registry `install()` resolves against for a consumer `root`: the root's
+ * own `registry/index.json`, else the registry recovered from the consumer's
+ * lockfile provenance (BUG-024). Exported so `upgrade` decides staleness
+ * against exactly the index its re-install will resolve from (BL-cd1fe520).
+ */
+export function resolveRegistryIndexForRoot(
+  root: string,
+  lock: Lockfile | null,
+): { index: IndexEntry[]; registryRoot: string | null; recoveredRoot: string | null } {
+  const direct = loadRegistryIndex(root);
+  if (direct.length > 0) return { index: direct, registryRoot: root, recoveredRoot: null };
+  const recoveredRoot = recoverRegistryRootFromLockfile(lock);
+  if (recoveredRoot === null) return { index: [], registryRoot: null, recoveredRoot: null };
+  const recovered = loadRegistryIndex(recoveredRoot);
+  return { index: recovered, registryRoot: recovered.length > 0 ? recoveredRoot : null, recoveredRoot };
+}
+
+/**
+ * BL-cd1fe520: merge a host-placement/materialize lock write into the entry
+ * `install()` may already have written for the same id, instead of replacing it.
+ * Replacing dropped `bundle_id` and `origin`, which put the self-referential
+ * shape straight back. The origin kept is, in order:
+ *   1. the prior origin, when the bytes are unchanged (same artifact ⇒ same provenance);
+ *   2. the caller's `origin`, unless it lies inside the content store (a copy of a
+ *      copy is never an origin);
+ *   3. nothing — an unknown origin is recorded as unknown, never as the copy itself.
+ */
+export function mergeLockEntry(
+  prev: LockfileEntry | undefined,
+  next: { source: string; checksum: string; origin?: string | undefined; storeRoot: string },
+): LockfileEntry {
+  const inStore = (loc: string): boolean => {
+    if (!loc.startsWith('file://')) return false;
+    const rel = path.relative(path.resolve(next.storeRoot), path.resolve(loc.slice('file://'.length)));
+    return rel === '' || (!rel.startsWith('..') && !path.isAbsolute(rel));
+  };
+  let origin: string | undefined;
+  if (prev?.origin !== undefined && prev.checksum === next.checksum) origin = prev.origin;
+  else if (next.origin !== undefined && !inStore(next.origin)) origin = next.origin;
+  const merged: LockfileEntry = {
+    ...(prev ?? {}),
+    source: next.source,
+    checksum: next.checksum,
+    resolved_at: new Date().toISOString(),
+  };
+  if (origin !== undefined) merged.origin = origin;
+  else delete merged.origin;
+  // BL-0ebb23c3: `version`/`registry_root` were pinned against `prev`'s bytes.
+  // When the checksum changes (the bundle was rebuilt/re-materialized), the
+  // spread of `prev` above silently carries them forward onto the NEW bytes —
+  // e.g. a host-placement install from repo bytes inheriting the npm version
+  // it happened to have last time, producing a false 'ahead' freeze or
+  // spurious re-pin on every subsequent run. Neither caller of
+  // mergeLockEntry supplies a fresh version/registry_root, so on a checksum
+  // change they must be dropped rather than carried over.
+  if (prev !== undefined && prev.checksum !== next.checksum) {
+    delete merged.version;
+    delete merged.registry_root;
+  }
+  return merged;
+}
+
+/** What a fresh resolution of `id` would install — the pin to compare a lock entry against. */
+export interface DesiredPin {
+  /** The locator install() would fetch (`npm-package:…`, `file://…`, …). */
+  source: string;
+  /** The checksum the registry publishes for it; absent for an explicit config source. */
+  checksum?: string | undefined;
+  /** The registry row's display version, when published — orders pins (never downgrade). */
+  version?: string | undefined;
+}
+
+/**
+ * BL-cd1fe520: mirror `install()`'s source precedence for one id — an explicit
+ * `source` on the scope-config entry wins, else the registry row. Returns null
+ * when neither exists (a local-checkout fallback install, whose `file://`
+ * origin is hashed directly instead).
+ */
+export function resolveDesiredPin(
+  id: string,
+  registryIndex: IndexEntry[],
+  configSource?: string | undefined,
+): DesiredPin | null {
+  if (configSource !== undefined && configSource !== '') return { source: configSource };
+  const row = resolveFromRegistry(id, registryIndex);
+  if (row === null) return null;
+  const pin: DesiredPin = { source: row.source, checksum: row.checksum };
+  if (typeof row.version === 'string' && row.version !== '') pin.version = row.version;
+  return pin;
 }
 
 /**
@@ -616,6 +741,12 @@ export interface InstallOptions {
    */
   registryIndex?: IndexEntry[] | undefined;
   /**
+   * BL-cd1fe520: the directory `registryIndex` was loaded from. Recorded on every
+   * lock entry resolved from a registry row as `registry_root`, so `upgrade`
+   * can judge the pin against the registry it actually came from.
+   */
+  registryRoot?: string | undefined;
+  /**
    * Called for each required config key that has no cascade-resolved value.
    * The CLI layer provides a readline implementation in interactive mode.
    * Return the string value to persist, or undefined to skip (with a warning).
@@ -661,25 +792,26 @@ export async function install(opts: InstallOptions): Promise<ResolvedSet> {
 
   const existingLock = loadLockfile(lockPath);
 
-  let registryIndex =
-    opts.registryIndex !== undefined && opts.registryIndex.length > 0
-      ? opts.registryIndex
-      : loadRegistryIndex(root);
+  let registryIndex: IndexEntry[];
   // BUG-024: root-relative resolution came back empty — try to recover the
   // real registry root from the consumer's own (possibly stale) lockfile
   // provenance before concluding the registry is unreachable. See
   // `recoverRegistryRootFromLockfile` for why this is sound.
   let recoveredRegistryRoot: string | null = null;
-  if (registryIndex.length === 0) {
-    recoveredRegistryRoot = recoverRegistryRootFromLockfile(existingLock);
-    if (recoveredRegistryRoot !== null) {
-      registryIndex = loadRegistryIndex(recoveredRegistryRoot);
-      if (registryIndex.length > 0) {
-        console.log(
-          `install: registry not found under root ${root} — recovered it from lockfile ` +
-          `provenance at ${recoveredRegistryRoot} (BUG-024)`,
-        );
-      }
+  let registryRootUsed: string | undefined;
+  if (opts.registryIndex !== undefined && opts.registryIndex.length > 0) {
+    registryIndex = opts.registryIndex;
+    registryRootUsed = opts.registryRoot;
+  } else {
+    const resolvedIndex = resolveRegistryIndexForRoot(root, existingLock);
+    registryIndex = resolvedIndex.index;
+    recoveredRegistryRoot = resolvedIndex.recoveredRoot;
+    registryRootUsed = resolvedIndex.registryRoot ?? undefined;
+    if (recoveredRegistryRoot !== null && registryIndex.length > 0) {
+      console.log(
+        `install: registry not found under root ${root} — recovered it from lockfile ` +
+        `provenance at ${recoveredRegistryRoot} (BUG-024)`,
+      );
     }
   }
 
@@ -769,6 +901,7 @@ export async function install(opts: InstallOptions): Promise<ResolvedSet> {
 
     let source: string;
     let expectedChecksum: string | undefined;
+    let pinnedFromRow: IndexEntry | undefined;
 
     if (entry.source !== undefined && entry.source.startsWith('file://')) {
       source = entry.source;
@@ -816,6 +949,7 @@ export async function install(opts: InstallOptions): Promise<ResolvedSet> {
       } else {
         source = indexEntry.source;
         expectedChecksum = indexEntry.checksum;
+        pinnedFromRow = indexEntry;
       }
     }
 
@@ -858,11 +992,20 @@ export async function install(opts: InstallOptions): Promise<ResolvedSet> {
       const indexEntry = resolveFromRegistry(entry.id, registryIndex);
       const lockKey = entry.id;
 
+      // BL-cd1fe520: `resolvedSource` is where the bytes now LIVE (for
+      // npm-package, a copy inside the content store); `source` is where they
+      // came FROM. Record both — dropping the origin made the lock entry
+      // self-referential and blinded `upgrade` to every later release.
       const lockEntry: LockfileEntry = {
         source: resolvedSource,
         checksum,
         resolved_at: new Date().toISOString(),
+        origin: source,
       };
+      if (pinnedFromRow !== undefined) {
+        if (registryRootUsed !== undefined) lockEntry.registry_root = path.resolve(registryRootUsed);
+        if (typeof pinnedFromRow.version === 'string' && pinnedFromRow.version !== '') lockEntry.version = pinnedFromRow.version;
+      }
       if (entry.bundleId !== undefined) {
         lockEntry.bundle_id = entry.bundleId;
       }
@@ -961,11 +1104,23 @@ export async function install(opts: InstallOptions): Promise<ResolvedSet> {
           scope: opts.scope as 'user' | 'project' | 'local',
           root,
           source: resolvedSource,
+          origin: source,
         });
       } catch (regErr) {
         console.warn(`install: warning: could not update install registry: ${String(regErr)}`);
       }
     } catch (e) {
+      // BL-6e5191e4: a fetch/checksum failure here used to call process.exit(1)
+      // directly. cmdUpgrade's per-consumer try/catch (main.ts) awaits
+      // install({mode:'update'}) expecting a rejected promise it can catch and
+      // report per-consumer — process.exit() cannot be caught, so it killed the
+      // whole `soxe upgrade --all` run and skipped every remaining consumer and
+      // the rolling restart. In update mode, throw a typed error instead so the
+      // caller can recover; other modes (a direct `soxe install`) keep the
+      // original fail-fast CLI behavior.
+      if (opts.mode === 'update') {
+        throw new Error(`install: failed for "${entry.id}": ${String(e)}`);
+      }
       console.error(String(e));
       process.exit(1);
     }
@@ -1720,6 +1875,9 @@ export async function declarativeInstall(
 
     // 1. Materialize bundle: copy <srcPath>/bundle/ → <storePath>/
     //    Fall back to <srcPath>/dist/ if no bundle dir exists yet.
+    // BL-cd1fe520: the artifact the store copy is taken FROM — recorded as the
+    // lock entry's origin so staleness is judged against the source, not the copy.
+    let materializedFrom: string | undefined;
     if (descriptor.srcPath) {
       const bundleSrcDir = path.join(descriptor.srcPath, 'bundle');
       const distSrcDir = path.join(descriptor.srcPath, 'dist');
@@ -1728,6 +1886,8 @@ export async function declarativeInstall(
           : null;
       if (materializeSrc) {
         copyDirSync(materializeSrc, storePath);
+        const fromIndex = path.join(materializeSrc, 'index.js');
+        if (fs.existsSync(fromIndex)) materializedFrom = fromIndex;
       }
       // 2. Copy extension.json to store dir, updating entrypoint to 'index.js'
       //    so that soxe exec can locate the bundle entry without knowing the source.
@@ -1819,7 +1979,12 @@ export async function declarativeInstall(
         const artBytes = fs.readFileSync(indexJs);
         const csum = crypto.createHash('sha256').update(artBytes).digest('hex');
         const existing: Lockfile = loadLockfile(lPath) ?? { lockfileVersion: LOCKFILE_VERSION, resolved: {} };
-        existing.resolved[lKey] = { source: `file://${indexJs}`, checksum: csum, resolved_at: new Date().toISOString() };
+        existing.resolved[lKey] = mergeLockEntry(existing.resolved[lKey], {
+          source: `file://${indexJs}`,
+          checksum: `sha256:${csum}`,
+          origin: materializedFrom !== undefined ? `file://${materializedFrom}` : undefined,
+          storeRoot: storeDir,
+        });
         writeLockfileAtomic(lPath, existing);
       }
     } catch (e) {
@@ -2385,7 +2550,12 @@ export async function declarativeInstall(
 
         // Merge into existing lockfile or create new.
         const existing: Lockfile = loadLockfile(lockPath) ?? { lockfileVersion: LOCKFILE_VERSION, resolved: {} };
-        existing.resolved[lockKey] = { source, checksum, resolved_at: new Date().toISOString() };
+        existing.resolved[lockKey] = mergeLockEntry(existing.resolved[lockKey], {
+          source,
+          checksum: `sha256:${checksum}`,
+          origin: source,
+          storeRoot: storeRootFor(scope as DataScope, workspaceRoot),
+        });
         writeLockfileAtomic(lockPath, existing);
       }
     } catch (e) {

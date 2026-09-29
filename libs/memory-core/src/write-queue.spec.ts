@@ -62,17 +62,21 @@ describe('WriteQueue — ordering and serialisation (WP-1)', () => {
   it('proves FIFO ordering under concurrency (queue active)', async () => {
     const queue = await WriteQueue.forPath(dbPath);
     const order: number[] = [];
+    const pending: Promise<void>[] = [];
 
     for (let i = 0; i < 20; i++) {
-      queue.enqueue(`op-${i}`, async () => {
-        // Random delay so concurrent execution would scramble order.
-        await new Promise<void>((r) => setTimeout(r, Math.floor(Math.random() * 10)));
-        order.push(i);
-      });
+      pending.push(
+        queue.enqueue(`op-${i}`, async () => {
+          // Random delay so concurrent execution would scramble order.
+          await new Promise<void>((r) => setTimeout(r, Math.floor(Math.random() * 10)));
+          order.push(i);
+        }),
+      );
     }
 
-    // Wait for the queue to drain.
-    await new Promise<void>((r) => setTimeout(r, 300));
+    // Wait for every op to settle. A fixed 300 ms sleep drained only 13/20
+    // under full run-many load (timer slip), failing on a correct FIFO prefix.
+    await Promise.all(pending);
 
     // WITH the queue: strict FIFO order.
     expect(order).toEqual([0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19]);

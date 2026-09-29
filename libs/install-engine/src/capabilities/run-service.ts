@@ -24,6 +24,7 @@
 import * as crypto from 'crypto';
 import * as fs from 'fs';
 import * as path from 'path';
+import { mkdirDataDir } from '../data-paths.js';
 
 // --- Types ---
 
@@ -95,14 +96,14 @@ export async function apply(ctx: RunServiceCtx): Promise<void> {
   const desired = JSON.stringify({ serviceId, spec }, null, 2) + '\n';
   if (!fs.existsSync(mp) || fs.readFileSync(mp, 'utf8') !== desired) {
     const dir = path.dirname(mp);
-    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+    if (!fs.existsSync(dir)) mkdirDataDir(dir);
     fs.writeFileSync(mp, desired, 'utf8');
   }
 
   // [def:store-dir]: create <dataDir>/ext/<id>/ — the materialized bundle store.
   const storeDir = path.join(scopeRoot, 'ext', serviceId);
   if (!fs.existsSync(storeDir)) {
-    fs.mkdirSync(storeDir, { recursive: true });
+    mkdirDataDir(storeDir);
   }
 
   // Write/update the global registry.json — the supervisor reads this for all services.

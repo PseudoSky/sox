@@ -147,15 +147,26 @@ const graph = {
 // Arm 6 — live, against the real repo graph. This is the form a packet quotes.
 // ---------------------------------------------------------------------------
 {
+  // [28f22e8d] Strip GIT_DIR/GIT_INDEX_FILE/GIT_WORK_TREE/GIT_COMMON_DIR before this live spawn.
+  // When this guard runs from the pre-commit hook (the normal path — it is registered in
+  // guards-manifest.mjs and invoked by `.husky/pre-commit`'s `node tools/run-guards.mjs
+  // --tier1`), git has already set GIT_INDEX_FILE to the in-progress commit's temporary
+  // `next-index-<pid>.lock` for the hook's own process tree. Inheriting that into the spawned
+  // `check-suite-tree-state.mjs`'s own `git status --porcelain` call made it read a lock file
+  // that is mid-write, not the real index — observed live 2026-09-28: the tool's subprocess
+  // crashed with `r.status !== 0`, taking this whole arm down and blocking every commit that
+  // touched `tools/check-suite-tree-state.mjs`, this guard's own watched file.
   const r = spawnSync(process.execPath, [TOOL, '--project', 'memory-server', '--json'], {
     cwd: REPO,
     encoding: 'utf8',
+    env: SAFE_GIT_ENV,
   });
   let parsed = null;
+  let parseError = null;
   try {
     parsed = JSON.parse(r.stdout);
-  } catch {
-    /* reported below */
+  } catch (e) {
+    parseError = e;
   }
   report(
     "BL-456: the real repo's graph resolves and memory-server's dependency set is enumerated",
@@ -165,7 +176,8 @@ const graph = {
       parsed.sourceRoots.length > 0,
     parsed
       ? `${parsed.dependencies.length} project(s), ${parsed.sourceRoots.length} source root(s), clean=${parsed.clean}`
-      : `exit=${r.status} stderr=${(r.stderr ?? '').trim().slice(0, 200)}`,
+      : `exit=${r.status} stderr=${(r.stderr ?? '').trim().slice(0, 200)}` +
+          (parseError ? ` jsonParseError=${parseError.message} stdout=${r.stdout.slice(0, 200)}` : ''),
   );
   report(
     'BL-456: --require-clean turns the report into a gate, and agrees with the report it printed',
@@ -173,6 +185,7 @@ const graph = {
       const g = spawnSync(process.execPath, [TOOL, '--project', 'memory-server', '--require-clean'], {
         cwd: REPO,
         encoding: 'utf8',
+        env: SAFE_GIT_ENV,
       });
       return parsed ? (parsed.clean ? g.status === 0 : g.status === 1) : false;
     })(),
