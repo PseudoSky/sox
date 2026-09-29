@@ -22,7 +22,13 @@
  *      `memory fts-optimize` (lease peers, then the `.openers` registry that
  *      sees an idle-released service, re-checked after open). The source is
  *      opened `readonly + allowFtsInReadonly`, so its bytes are never written:
- *      no engine stamp, no clean-shutdown marker, no open-time repair.
+ *      no engine stamp, no clean-shutdown marker, no open-time repair. That
+ *      soft-readonly open is a native-WRITABLE handle (BL-391 — the price of
+ *      `fts_match`), so it creates and its close leaves a `-tshm` sidecar
+ *      (BL-1010e417 skips the reconcile when nothing was truncated); every
+ *      run — `--dry-run` included — removes exactly the artifacts this open
+ *      created (BUG-2e232ee9), so a store the run must not touch is left
+ *      exactly as it was found.
  *   2. Capture the source's facts: per-table row counts, FTS sentinel tokens
  *      taken from real rows and their hit counts, page stats.
  *   3. `VACUUM INTO <db>.rebuild-<ts>` (the adapter's own `backupTo`).
@@ -670,9 +676,27 @@ export async function rebuildStoreOffline(dbPath: string, opts: StoreRebuildOpti
     return done({ status: 'failed', reason: 'not_found', db_path: dbPath, error: `db not found: ${dbPath}` });
   }
 
+  // (BUG-2e232ee9) The exclusive source open below is SOFT-readonly
+  // (`readonly + allowFtsInReadonly`, BL-391), which is a native-WRITABLE
+  // handle — the price of `fts_match` on a hard-readonly connection — so it
+  // creates the source's `-tshm` WAL-index coordination sidecar. A close that
+  // truncated nothing deliberately leaves that `-tshm` in place (BL-1010e417)
+  // and the swap path moves it aside, but a `--dry-run` (and every
+  // failure/refusal return, which also stops before the swap) left it behind:
+  // residue on a store the run promises not to touch. Snapshot the source's
+  // artifacts BEFORE the open and remove exactly what this open created after
+  // it closes — the same BL-74253544 cleanup the restore path applies to its
+  // own soft-readonly opening of a path it must not litter.
+  const canonical = canonicalDbPath(dbPath);
+  const sourceArtifactsBefore = listFileArtifacts(canonical, 'store.rebuild.cleanup_failed');
+  const cleanupSourceArtifacts = (): void =>
+    removeCreatedArtifacts(canonical, sourceArtifactsBefore, 'store.rebuild.cleanup_failed');
+
   const gate = await TursoAdapterImpl.openOfflineExclusive(dbPath, { event: 'store.rebuild', readonly: true });
-  const canonical = gate.canonical;
   if (!gate.ok) {
+    // A post-open refusal (`peers`/`openers` found after the connect) may have
+    // created the `-tshm`; a pre-open refusal created nothing.
+    cleanupSourceArtifacts();
     if (gate.reason === 'open_failed') {
       return done({ status: 'failed', reason: 'open_failed', db_path: canonical, error: gate.error });
     }
@@ -707,6 +731,11 @@ export async function rebuildStoreOffline(dbPath: string, opts: StoreRebuildOpti
     } catch (err) {
       log.error('store.rebuild.close_failed', { db_path: canonical, error: err instanceof Error ? err.message : String(err) });
     }
+    // (BUG-2e232ee9) Remove the `-tshm` (and any lease dir/marker) THIS source
+    // open created, on every path — the swap's own `-tshm` move then only
+    // concerns a `-tshm` that pre-existed this run (a foreign/peer artifact it
+    // is right to rename aside, never delete).
+    cleanupSourceArtifacts();
   }
 
   let after: StorePageStats;

@@ -140,6 +140,26 @@ describe('offline rebuild — swap safety', () => {
     expect(staleTshms(db)).toEqual(staleBefore);
   }, 120_000);
 
+  it('BUG-2e232ee9: a dry run leaves NO sidecar beside the source store', async () => {
+    const db = path.join(tmpDir(), 'store.db');
+    await seedStore(db);
+    const dir = path.dirname(db);
+    // The seed's own writable close already reconciled its `-tshm` (renamed
+    // aside, never deleted) and left the post-close sidecars — the exact
+    // pre-open state a `--dry-run` must hand back untouched.
+    expect(fs.existsSync(`${db}-tshm`)).toBe(false);
+    const before = fs.readdirSync(dir).sort();
+
+    const report = await rebuildStoreOffline(db, { dryRun: true });
+    expect(report.status, JSON.stringify({ status: report.status, reason: report.reason, error: report.error })).toBe('dry_run');
+
+    // The soft-readonly source open (BL-391) is a native-WRITABLE handle and
+    // creates a `-tshm`; the dry-run must remove exactly that. No `-tshm`, no
+    // new `.stale-*`, no `-wal` change — the directory listing is identical.
+    expect(fs.existsSync(`${db}-tshm`)).toBe(false);
+    expect(fs.readdirSync(dir).sort()).toEqual(before);
+  }, 120_000);
+
   it('BL-94bcd318: a source without _adapter_meta verifies and rebuilds', async () => {
     const db = path.join(tmpDir(), 'bare.db');
     const mod = (await import('@tursodatabase/database')) as unknown as {
