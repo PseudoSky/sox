@@ -42,7 +42,7 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { createRequire } from 'node:module';
 import { log } from '@adhd/sox-telemetry';
-import { TursoAdapterImpl } from '../turso-adapter.js';
+import { ConnectionClosedForRepairError, TursoAdapterImpl } from '../turso-adapter.js';
 import type { StoreLease } from '../store-lease.js';
 
 const require = createRequire(import.meta.url);
@@ -133,6 +133,73 @@ tursoDescribe('BL-5ee20d65 / TUR-D — off-thread idle-release regressions', () 
       openGate();
       if (releaseP !== undefined) await releaseP.catch(() => undefined);
       releaseSpy.mockRestore();
+      await a.close().catch(() => undefined);
+      rmSync(dbPath + '.sox-lease.d', { recursive: true, force: true });
+    }
+  }, 30_000);
+
+  it('8abf55de: an operation landing inside the withConnectionClosedForRepair window is REFUSED — never run on the closed host connection, never poison the adapter', async () => {
+    const dbPath = tempPath('repair-op-race');
+    const a = await TursoAdapterImpl.connect({ dbPath, idleFlushMs: 600_000 });
+    await a.exec('CREATE TABLE t (id INTEGER PRIMARY KEY, v TEXT)');
+    await a.executeRun('INSERT INTO t (v) VALUES (?)', ['before-repair']);
+    // A real open has happened, so `this.db` is a live host connection.
+    await a.executeGet<{ one: number }>('SELECT 1 AS one');
+
+    // Park the repair INSIDE its closed window: `_closeConnection()` has fully
+    // returned (so `this.db` is a CLOSED host connection while `_released`
+    // stays false and the reopen has not run). This is the exact window
+    // 8abf55de is about — the repair path calls `_closeConnection()` directly,
+    // so 5ee20d65's release barrier never covered it.
+    let entered!: () => void;
+    const atWindow = new Promise<void>((r) => {
+      entered = r;
+    });
+    let openGate!: () => void;
+    const gate = new Promise<void>((r) => {
+      openGate = r;
+    });
+
+    let repairP: Promise<void> | undefined;
+    try {
+      repairP = a.withConnectionClosedForRepair(async () => {
+        entered();
+        await gate;
+      });
+      await atWindow; // now: the host connection is closed, reopen not yet run
+
+      // A query landing in the window. On the buggy tree it ran against the
+      // closed handle and rejected FATAL (`E_TURSO_DRIVER_WORKER_EXITED`),
+      // poisoning the adapter. The fixed tree refuses it with the typed,
+      // non-fatal guard BEFORE any query reaches `this.db`.
+      const outcome = await a.executeGet<{ one: number }>('SELECT 1 AS one').then(
+        (row) => ({ kind: 'settled' as const, row }),
+        (err: unknown) => ({ kind: 'rejected' as const, err }),
+      );
+
+      expect(
+        outcome.kind,
+        'an op issued into the repair window must not execute against the closed host connection',
+      ).toBe('rejected');
+      expect(
+        outcome.kind === 'rejected' ? outcome.err : undefined,
+        'the refusal is the typed, non-fatal repair guard — not a fatal driver fault',
+      ).toBeInstanceOf(ConnectionClosedForRepairError);
+      expect(
+        (a as unknown as { _poisoned: boolean })._poisoned,
+        'a refused window op must not poison the adapter',
+      ).toBe(false);
+
+      openGate();
+      await repairP;
+
+      // After the reopen the SAME instance is healthy and serves ops again.
+      expect(a.connectionHealth).toBe('healthy');
+      expect((await a.executeGet<{ one: number }>('SELECT 1 AS one'))?.one).toBe(1);
+      expect((await a.executeGet<{ v: string }>('SELECT v FROM t'))?.v).toBe('before-repair');
+    } finally {
+      openGate();
+      if (repairP !== undefined) await repairP.catch(() => undefined);
       await a.close().catch(() => undefined);
       rmSync(dbPath + '.sox-lease.d', { recursive: true, force: true });
     }

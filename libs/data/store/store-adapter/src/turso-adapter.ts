@@ -488,6 +488,36 @@ function createNeverOpenedDb(): TursoDriverConnection {
 
 // ── TursoAdapterImpl ─────────────────────────────────────────────────────────
 
+/**
+ * (8abf55de, TUR-D3) Thrown by `_ensureHealthy()` when an operation is issued
+ * while `withConnectionClosedForRepair()` has the host connection deliberately
+ * closed — the window between that repair's driver close and its reopen.
+ *
+ * Refusing is deliberate, not a limitation: the release path offers a
+ * wait-then-reconnect barrier because its teardown completes independently of
+ * any caller, but a repair's teardown completes only when its own `fn` returns,
+ * and `fn` legitimately issues queries (`schema-row-delete.bl506.spec.ts` pins
+ * exactly that) — a promised wait would deadlock the reopen both the op and
+ * `fn` are waiting on. So the op is refused instead of allowed to run against
+ * the closed host handle, where it would reject fatal
+ * (`E_TURSO_DRIVER_WORKER_EXITED`) and poison the adapter.
+ *
+ * This is NOT a fatal connection fault — `isFatalConnectionError()` does not
+ * match it and the adapter is NOT poisoned: the very next operation after the
+ * reopen runs normally. A caller holding an op across a repair should retry;
+ * the window is short and bounded by `fn`.
+ */
+export class ConnectionClosedForRepairError extends Error {
+  readonly code = 'E_TURSO_CONNECTION_CLOSED_FOR_REPAIR';
+  constructor() {
+    super(
+      'TursoAdapter: the connection is closed for an out-of-band repair ' +
+        '(withConnectionClosedForRepair); retry after the repair completes.',
+    );
+    this.name = 'ConnectionClosedForRepairError';
+  }
+}
+
 export class TursoAdapterImpl implements TursoAdapter {
   readonly config: Readonly<AdapterConfig & { type: 'turso' }>;
 
@@ -582,6 +612,34 @@ export class TursoAdapterImpl implements TursoAdapter {
    * throwing close unblocks waiters). `null` outside an in-flight release.
    */
   private _releaseBarrier: { promise: Promise<void>; resolve: () => void } | null = null;
+
+  /**
+   * (8abf55de, TUR-D3 correction) Set by `withConnectionClosedForRepair()` for
+   * its whole close→repair→reopen window. Mirrors the ROLE of
+   * {@link _releaseRequested} — it tells `_closeConnectionBody` that a
+   * transient teardown is publishing a closed-host-connection window — but the
+   * repair path CANNOT use the release path's promise barrier: `_ensureHealthy()`
+   * awaiting a promise resolves only after the reopen, and the repair's own
+   * `fn` legitimately issues queries (`schema-row-delete.bl506.spec.ts` pins
+   * exactly that), so a promised wait would deadlock the reopen both the op and
+   * `fn` are waiting on. Instead `_closeConnectionBody` flips
+   * {@link _repairInFlight} at the driver-close point and `_ensureHealthy()`
+   * REFUSES on it. Set just before the repair's `_closeConnection()`, cleared
+   * in the repair's enclosing `finally` (so a close ceremony that throws before
+   * the driver-close point never leaves it set).
+   */
+  private _repairTeardownRequested = false;
+
+  /**
+   * (8abf55de, TUR-D3 correction) Active from the repair path's driver-close
+   * point until its fresh connection is live. `_ensureHealthy()` refuses
+   * (`ConnectionClosedForRepairError`) while it is set, so an operation landing
+   * in the window — where `this.db` is a CLOSED host connection — never issues
+   * against the dead handle and never poisons the adapter. Cleared by the repair
+   * path's enclosing `finally`, after the fresh handle is adopted (or after a
+   * failed reopen has poisoned `this` so the standard recovery path reaches it).
+   */
+  private _repairInFlight = false;
 
   /**
    * (cfed929d, TUR-D correction) Whether this adapter currently holds the
@@ -2064,6 +2122,17 @@ export class TursoAdapterImpl implements TursoAdapter {
     // raised and are therefore never blocked by it.
     const releaseBarrier = this._releaseBarrier;
     if (releaseBarrier !== null) await releaseBarrier.promise;
+    // (8abf55de, TUR-D3 correction) A repair teardown has deliberately closed the
+    // host connection and will not reopen it until its own `fn` returns. There is
+    // no safe wait here — the repair's `fn` may itself issue queries (pinned by
+    // `schema-row-delete.bl506.spec.ts`), so a promised wait would deadlock the
+    // very reopen both the op and `fn` are waiting on — so REFUSE cleanly rather
+    // than issue against the dead handle (which rejects fatal and poisons the
+    // adapter). This never fires on the repair path's OWN close ceremony: the
+    // flag is flipped at the driver-close point, after every ceremony query.
+    if (this._repairInFlight) {
+      throw new ConnectionClosedForRepairError();
+    }
     if (!this._poisoned && !this._released && !this._neverOpened) return;
     if (!this._reconnectPromise) {
       this._reconnectPromise = this._reconnect();
@@ -2444,6 +2513,15 @@ export class TursoAdapterImpl implements TursoAdapter {
     onOpStart?: (label: string) => void;
     /** (per-call DB-op tracing) see `AdapterConfig.onOpEnd`. */
     onOpEnd?: () => void;
+    /**
+     * (862129b5, TUR-D; 40ca73a8) Deadline behind {@link TursoAdapter.driverStatus}:
+     * the age of the oldest in-flight driver op at which it reports `'stalled'`.
+     * Typed tuning, never an env toggle (ADR-0013 D3). Copied verbatim onto
+     * `config.driverStallAfterMs` by `_buildConfig()` so the getter honours it;
+     * unset falls back to `DEFAULT_DRIVER_STALL_AFTER_MS` (5s) inside
+     * `getTursoDriverStatus()`. Numeric only — no value disables the verdict.
+     */
+    driverStallAfterMs?: number;
   }, internal: { reason: OpenReason; evidence?: ReleaseReopenEvidence } = { reason: 'initial' }): Promise<TursoAdapterImpl> {
     // (BL-1010e417) Phase timing — every phase below is measured, so a claim
     // about what a reopen costs is read from here, never assumed.
@@ -3500,6 +3578,14 @@ export class TursoAdapterImpl implements TursoAdapter {
     if (opts.slowOpThresholdMs !== undefined) config.slowOpThresholdMs = opts.slowOpThresholdMs;
     if (opts.onOpStart !== undefined) config.onOpStart = opts.onOpStart;
     if (opts.onOpEnd !== undefined) config.onOpEnd = opts.onOpEnd;
+    // (40ca73a8) The deadline the `driverStatus` getter reads. The documented
+    // public route is `connect({ driverStallAfterMs })`; without this copy the
+    // option was silently dropped and the getter always fell back to the 5s
+    // default (`adapter.config.driverStallAfterMs === undefined` after
+    // connect). Typed only — no env var (ADR-0013 D3).
+    if (opts.driverStallAfterMs !== undefined) {
+      config.driverStallAfterMs = opts.driverStallAfterMs;
+    }
     return config;
   }
 
@@ -4470,6 +4556,13 @@ export class TursoAdapterImpl implements TursoAdapter {
       });
       this._releaseBarrier = { promise, resolve: resolveBarrier };
     }
+    // (8abf55de, TUR-D3) The repair path publishes the same closed-host-connection
+    // window, but with a REFUSAL guard instead of a promise barrier (see
+    // `_repairTeardownRequested`): flip `_repairInFlight` at this SAME driver-close
+    // point, so `_ensureHealthy()` refuses any op landing after this instead of
+    // issuing against the dead handle. Placed after every close-ceremony query,
+    // exactly like the barrier, so those never see it.
+    if (this._repairTeardownRequested) this._repairInFlight = true;
     try {
       await this.db.close();
     } finally {
@@ -4687,6 +4780,16 @@ export class TursoAdapterImpl implements TursoAdapter {
    * `close()` (close releases it and nulls `this._lease`), so the probe
    * excludes exactly this instance's own entry. The reopen in the `finally`
    * still runs — the adapter handle stays live.
+   *
+   * (8abf55de, TUR-D3) The close→`fn`→reopen window is the SAME closed-handle
+   * race 5ee20d65 fixed for the release path, and this method calls
+   * `_closeConnection()` directly so that fix did not cover it. Covered here via
+   * `_repairTeardownRequested`/`_repairInFlight`: `_closeConnectionBody` flips
+   * the latter at its driver-close point, and `_ensureHealthy()` REFUSES
+   * (`ConnectionClosedForRepairError`, non-fatal, no poison) any operation
+   * landing in the window rather than letting it run against the dead handle.
+   * A promise barrier would deadlock a query issued from within `fn` (BL-506),
+   * hence the refusal rather than the release path's wait-then-reconnect.
    */
   async withConnectionClosedForRepair<T>(fn: () => Promise<T>): Promise<T> {
     if (this.closed) {
@@ -4713,49 +4816,84 @@ export class TursoAdapterImpl implements TursoAdapter {
       // directory no peer ever wrote to — the worst possible place for this bug.
       const repairDbPath = this.coordPath;
       const ownLeaseToken = this._lease?.token;
-      await this._closeConnection(); // full clean-close ceremony (checkpoint, driver close, marker clear); keeps the opener registration
+      // (8abf55de, TUR-D3) Request the closed-host-connection guard for this
+      // teardown. `_closeConnectionBody` flips `_repairInFlight` at its
+      // driver-close point; the `finally` just below clears it once the handle
+      // state is settled. Without this, an op landing in the window ran
+      // `_ensureHealthy()` (early-return: not poisoned / not released / not
+      // never-opened), queried the CLOSED host handle, and rejected fatal —
+      // poisoning the adapter. This is the same race 5ee20d65 fixed for the
+      // release path, in the one path that calls `_closeConnection()` directly.
+      this._repairTeardownRequested = true;
       try {
-        // (BUG-017 review fix) The quiescence probe is LOCAL-FILE-only. A
-        // URL-only connection (`dbPath === undefined`) is exempt: the exp9
-        // poisoner is a WRITABLE classic open against a LOCAL store file whose
-        // WAL/`-tshm` coordination it cannot see — a remote URL has no local
-        // store file to poison, so there is nothing for this gate to protect
-        // (and leases are never acquired for URLs; store-lease.ts:16). No
-        // production caller reaches this branch with a better-sqlite3 drop
-        // anyway — graph-store early-returns on `cfg.dbPath === undefined`
-        // (index.ts:1274) — so INV-1 is not bypassed.
-        if (repairDbPath !== undefined) {
-          const quiescence = storeQuiescence(repairDbPath, ownLeaseToken);
-          if (!quiescence.quiescent) {
-            throw new RepairDeclinedLivePeersError(repairDbPath, quiescence.livePeers);
+        await this._closeConnection(); // full clean-close ceremony (checkpoint, driver close, marker clear); keeps the opener registration
+        try {
+          // (BUG-017 review fix) The quiescence probe is LOCAL-FILE-only. A
+          // URL-only connection (`dbPath === undefined`) is exempt: the exp9
+          // poisoner is a WRITABLE classic open against a LOCAL store file whose
+          // WAL/`-tshm` coordination it cannot see — a remote URL has no local
+          // store file to poison, so there is nothing for this gate to protect
+          // (and leases are never acquired for URLs; store-lease.ts:16). No
+          // production caller reaches this branch with a better-sqlite3 drop
+          // anyway — graph-store early-returns on `cfg.dbPath === undefined`
+          // (index.ts:1274) — so INV-1 is not bypassed.
+          if (repairDbPath !== undefined) {
+            const quiescence = storeQuiescence(repairDbPath, ownLeaseToken);
+            if (!quiescence.quiescent) {
+              throw new RepairDeclinedLivePeersError(repairDbPath, quiescence.livePeers);
+            }
+          }
+          return await fn();
+        } finally {
+          // (DEBT-003, lazy-connect) Must call `_openReal()`, not the public
+          // `connect()` — `connect()` is now the LAZY entry point and would
+          // hand back a never-opened shell instead of an actually-reopened
+          // connection, which is exactly what this `finally` needs (the
+          // caller keeps using `this` immediately after this returns).
+          // (BL-1010e417) 'initial', i.e. the full ceremony: the schema was just
+          // rewritten underneath this process, so nothing may be reused.
+          try {
+            const fresh = await TursoAdapterImpl._openReal(this._connectOpts, { reason: 'initial' });
+            this.db = fresh.db;
+            this._lastOpenTiming = fresh._lastOpenTiming;
+            this._lease = fresh._lease;
+            // (BUG-STOREADAPTER-COORDINATION-PATH-ASYMMETRY) Adopt the fresh instance's
+            // canonical identity alongside its lease. The two are a pair: `_lease` was
+            // taken under `_canonicalDb`, so carrying one without the other would point
+            // this connection's coordination at a directory its own lease is not in.
+            this._canonicalDb = fresh._canonicalDb;
+            this._walBaseline = fresh._walBaseline;
+            this._softReadonly = fresh._softReadonly;
+            this._capabilities = fresh._capabilities;
+            this._poisoned = false;
+            this._released = false; // (idle-release) defense-in-depth — should already be false
+            this._releasedClean = false; // (BL-1010e417) paired with `_released`
+            this._neverOpened = false; // (DEBT-003) defense-in-depth — should already be false
+            this.closed = false; // the fresh connection is live; close() set this true
+          } catch (reopenErr) {
+            // (8abf55de, TUR-D3) A failed reopen must leave `this` reachable by
+            // the STANDARD recovery path. Poison it (exactly as `_reconnect()`
+            // does on a failed reopen) and clear `closed` — the close set it
+            // true, but this adapter object is NOT permanently closed, and
+            // leaving `closed === true` would make the next op's
+            // `_ensureHealthy()` early-return against the dead handle instead
+            // of reconnecting. The guard clear below then lets a waiter resume
+            // into that reconnect.
+            this._poisoned = true;
+            this.closed = false;
+            log.error('store_adapter.turso.repair_reopen_failed', {
+              error: reopenErr instanceof Error ? reopenErr.message : String(reopenErr),
+            });
+            throw reopenErr;
           }
         }
-        return await fn();
       } finally {
-        // (DEBT-003, lazy-connect) Must call `_openReal()`, not the public
-        // `connect()` — `connect()` is now the LAZY entry point and would
-        // hand back a never-opened shell instead of an actually-reopened
-        // connection, which is exactly what this `finally` needs (the
-        // caller keeps using `this` immediately after this returns).
-        // (BL-1010e417) 'initial', i.e. the full ceremony: the schema was just
-        // rewritten underneath this process, so nothing may be reused.
-        const fresh = await TursoAdapterImpl._openReal(this._connectOpts, { reason: 'initial' });
-        this.db = fresh.db;
-        this._lastOpenTiming = fresh._lastOpenTiming;
-        this._lease = fresh._lease;
-        // (BUG-STOREADAPTER-COORDINATION-PATH-ASYMMETRY) Adopt the fresh instance's
-        // canonical identity alongside its lease. The two are a pair: `_lease` was
-        // taken under `_canonicalDb`, so carrying one without the other would point
-        // this connection's coordination at a directory its own lease is not in.
-        this._canonicalDb = fresh._canonicalDb;
-        this._walBaseline = fresh._walBaseline;
-        this._softReadonly = fresh._softReadonly;
-        this._capabilities = fresh._capabilities;
-        this._poisoned = false;
-        this._released = false; // (idle-release) defense-in-depth — should already be false
-        this._releasedClean = false; // (BL-1010e417) paired with `_released`
-        this._neverOpened = false; // (DEBT-003) defense-in-depth — should already be false
-        this.closed = false; // the fresh connection is live; close() set this true
+        // (8abf55de, TUR-D3) Clear the guard unconditionally — a close ceremony
+        // that threw before the driver-close point (so `_repairInFlight` was
+        // never flipped) and a failed reopen both reach here. A lingering flag
+        // would refuse every later operation against a healthy store forever.
+        this._repairTeardownRequested = false;
+        this._repairInFlight = false;
       }
     } finally {
       this._inFlightOps--;

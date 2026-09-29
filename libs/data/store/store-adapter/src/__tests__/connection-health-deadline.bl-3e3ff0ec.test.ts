@@ -38,24 +38,25 @@
  * wedged native call presents. `await`ing the parked promise is the latch
  * release.
  *
- * ── Deadline configuration (and a documented gap) ──────────────────────────
+ * ── Deadline configuration ─────────────────────────────────────────────────
  * `driverStatus` reads `this.config.driverStallAfterMs`. The documented public
- * route is `connect({ driverStallAfterMs })`, but `_buildConfig`
- * (`turso-adapter.ts:3476`) does NOT copy that option onto the config, so a
- * value passed to `connect()` is dropped and the getter falls back to the
- * 5000ms default — measured: `adapter.config.driverStallAfterMs` is
- * `undefined` after `connect({ dbPath, driverStallAfterMs: 50 })`. Filed as
- * backlog item `40ca73a8-f238-4904-b217-54fb9b104d52` (dedupe scan degraded:
- * no-vector-scores). This test therefore also pins the value on
- * the field the production getter actually reads, keeping the deadline small
- * and the park short. Once that option is plumbed the pin below can be deleted
- * and `connect({ driverStallAfterMs })` alone will suffice.
+ * route is `connect({ driverStallAfterMs })`, plumbed through `_buildConfig` →
+ * `_openReal` opts by TUR-D3 (`40ca73a8-f238-4904-b217-54fb9b104d52`): a value
+ * passed to `connect()` now lands on `adapter.config.driverStallAfterMs`, so
+ * the getter honours it instead of silently falling back to the 5000ms default.
+ * Step (0) below asserts that propagation directly; steps (2)–(4) then prove the
+ * deadline verdict.
  *
  * ── BL-225 (red→green) ─────────────────────────────────────────────────────
  * RED against the pre-TUR-D tree (`ebb4125b`): `TursoAdapter` had no
  * `driverStatus` member at all — `git log -S 'get driverStatus' --
  * libs/data/store/store-adapter/src/turso-adapter.ts` shows it entered exactly
  * at `fdd2e61b` — so step 2 throws on `undefined.state`. GREEN from `fdd2e61b`.
+ *
+ * RED specifically against the pre-TUR-D3 tree for the config propagation
+ * (`40ca73a8`): `adapter.config.driverStallAfterMs` was `undefined` after
+ * `connect({ driverStallAfterMs: 50 })` (measured), so step (0) fails and the
+ * getter only flips at the 5000ms default. GREEN with the `_buildConfig` copy.
  */
 
 import { mkdtempSync, rmSync } from 'node:fs';
@@ -106,14 +107,12 @@ describe('3e3ff0ec — a hung adapter op reaches stalled with no error thrown', 
       const connectOptions = { dbPath, driverStallAfterMs: DRIVER_STALL_AFTER_MS };
       const adapter = await TursoAdapterImpl.connect(connectOptions);
       try {
+        // (0) 40ca73a8 red→green: connect()'s option reaches the field the
+        // getter reads — no workaround pin.
+        expect(adapter.config.driverStallAfterMs).toBe(DRIVER_STALL_AFTER_MS);
+
         // Force the DEBT-003 deferred open so the driver worker is live before we park.
         await adapter.executeGet('SELECT 1 AS one');
-
-        // Pin the deadline on the field the production getter reads. See the
-        // file header: connect()'s option is dropped by _buildConfig today; this
-        // makes the deadline the adapter reports equal to the one we asked for.
-        (adapter.config as { driverStallAfterMs?: number }).driverStallAfterMs =
-          DRIVER_STALL_AFTER_MS;
 
         // (1) Park a real long native step. Deliberately NOT awaited: the point
         // is a call that has neither returned nor thrown.
