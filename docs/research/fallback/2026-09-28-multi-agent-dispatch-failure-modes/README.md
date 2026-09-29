@@ -6,7 +6,7 @@ status: IN-MEMORY
 ingested_at: 2026-09-29T03:34:38Z
 ingested_into: /Users/nix/.memory/memory.db
 ingested_by: agent-manager
-ingest_note: "Written as episodes 01M3NKN3DM464REF46F0QEGQ9N … 01M3NKP7CEBWPND5WTV3YJ1KYK. Note: agent_id is null on these episodes — memory_write_batch carries no attributable author, so they are not reachable by agent_id-scoped recall."
+ingest_note: "Written as episodes 01M3NKN3DM464REF46F0QEGQ9N … 01M3NKP7CEBWPND5WTV3YJ1KYK. These episodes carry agent_id null because the ingest call OMITTED the agent_id field — memory_write_batch accepts agent_id, so this is an ingestion error, not a tool limitation. agent_id cannot be set post-hoc (memory_update has no agent_id parameter), so the affected episodes are not reachable by agent_id-scoped recall."
 engagement: "Generalize the failure modes of a multi-agent dispatch process and the cost/benefit of a dedicated research subagent; graded, sourced findings to inform a dispatcher/orchestrator agent spec."
 ---
 
