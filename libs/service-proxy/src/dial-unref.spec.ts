@@ -105,8 +105,13 @@ function spawnClient(clientPath: string, socketPath: string): {
   cleanups.push(() => {
     try {
       if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL');
-    } catch {
-      /* already gone */
+    } catch (err) {
+      // Racing the child's own exit is expected (it may have already gone
+      // between the exitCode/signalCode check and kill()) — but never
+      // silent: trace it so a genuinely unexpected kill failure is visible.
+      process.stderr.write(
+        `[dial-unref.spec] cleanup kill() failed (likely already exited): ${err instanceof Error ? err.message : String(err)}\n`,
+      );
     }
   });
   return { exit, stderr: () => stderr };
