@@ -12,6 +12,8 @@
     "validate-manifests": "npx tsx scripts/validate-manifests.ts",
     "check-nx-cache": "node tools/check-nx-cache.cjs",
     "backlog:stats": "node tools/backlog-stats.mjs --out docs/reporting/memory/FILING-STATS.md",
+    "agent:failure-report": "node tools/agent-failure-report.mjs",
+    "agent:failure-report:test": "node tools/agent-failure-report.test.mjs",
     "build-index": "npx tsx scripts/build-index.ts",
     "build-index:publish": "SOX_REGISTRY_PUBLISH=npm npx tsx scripts/build-index.ts",
     "check-publishable": "npx tsx scripts/check-publishable.ts",
