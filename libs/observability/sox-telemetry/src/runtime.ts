@@ -581,6 +581,11 @@ export function initTelemetry(opts: InitTelemetryOptions): TelemetryHandle {
         rt.state.otel = bringUpOtel({
           service: opts.service,
           role: opts.role,
+          // S3: the release identity rides every span and metric point as a
+          // RESOURCE attribute (see `bringUpOtel`). `generation.release` is the
+          // already-normalised identity for THIS configuration — no second
+          // resolution path.
+          release: generation.release,
           emit: (event, level, fields) => emitRecord(event, level, fields),
         });
         rt.state.otelState = 'ready';
@@ -702,6 +707,15 @@ function emitRecord(event: string, level: 'debug' | 'info' | 'warn' | 'error', f
       event,
       service: st.service,
       role: st.role,
+      // S3 (`5ac0a1a8…`): release identity is part of the ENVELOPE, exactly as
+      // `service`/`role` are — so EVERY durable log/span/event record names the
+      // release that produced it, and a production error or span is
+      // attributable ("which release produced this?"). Read from the runtime's
+      // already-resolved state (`initTelemetry` normalises it once) and copied
+      // verbatim, so the contract is identical to `snapshotMetrics`: unset ⇒
+      // all three fields `null`, never `''` (BL-433). No second resolution path
+      // and no new env var (ADR-0013).
+      release: { ...st.release },
       trace_id: traceId,
       pid: process.pid,
       ...fields,

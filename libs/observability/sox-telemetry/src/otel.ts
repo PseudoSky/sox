@@ -42,6 +42,11 @@ import {
 } from '@opentelemetry/sdk-metrics';
 import { resourceFromAttributes } from '@opentelemetry/resources';
 import type { OtelAttributes, OtelMetricPoint, OtelRuntime, OtelSpanHandle } from './otel-types.js';
+// Type-only import (erased at build) — the release-identity SHAPE, shared with
+// `runtime.ts` so the resource attributes and the JSONL envelope name the same
+// release. No runtime cycle: `runtime.ts` reaches this module only through a
+// dynamic `import()`.
+import type { ReleaseIdentity } from './runtime.js';
 
 /** Attribute that tells `JsonlSpanProcessor` the caller already writes its own,
  *  richer JSONL lines for this span. See `OtelRuntime.withSpan`. */
@@ -50,9 +55,18 @@ export const SUPPRESS_RECORD_ATTR = 'sox.suppress_span_record';
 export interface BringUpOtelOptions {
   service: string;
   role: string;
+  /**
+   * S3 (`5ac0a1a8…`): the running release's identity, stamped onto the OTel
+   * RESOURCE so `service.version` and the artifact-hash attribute ride every
+   * span and every metric point by construction. Optional: an unset/partial
+   * value simply omits the corresponding attribute (an OTel attribute cannot
+   * hold `null`, and `''` would be the BL-433 absent-field ambiguity — neither
+   * is ever written).
+   */
+  release?: ReleaseIdentity;
   /** Emit one JSONL record into the durable sink. Supplied by `runtime.ts` so
    *  span records inherit the exact same envelope (ts/level/event/service/role/
-   *  trace_id/pid) as every other record — `docs/observability/README.md`'s
+   *  release/trace_id/pid) as every other record — `docs/observability/README.md`'s
    *  catalog and the analysis scripts stay valid (§5.6: "the record format is
    *  unchanged"). */
   emit: (event: string, level: 'info' | 'error', fields: Record<string, unknown>) => void;
@@ -218,13 +232,27 @@ export function bringUpOtel(opts: BringUpOtelOptions): OtelRuntime {
   contextManager.enable();
   context.setGlobalContextManager(contextManager);
 
-  const resource = resourceFromAttributes({
+  // BL-353: the field whose absence made the live population and the test
+  // population indistinguishable on a shared disk. It is a resource attribute,
+  // so it is on every span and every metric point by construction.
+  // S3 (`5ac0a1a8…`): `service.version` + the artifact-hash attribute, for the
+  // SAME reason — the release must ride every span/metric, not just the JSONL
+  // envelope. Null-safe: an unresolved field is OMITTED entirely (an OTel
+  // attribute cannot be `null`, and `''` would be the BL-433 absent-field
+  // ambiguity), so an unset release adds no attribute rather than a fake one.
+  const resourceAttributes: Record<string, string> = {
     'service.name': opts.service,
-    // BL-353: the field whose absence made the live population and the test
-    // population indistinguishable on a shared disk. It is a resource
-    // attribute, so it is on every span and every metric point by construction.
     'sox.role': opts.role,
-  });
+  };
+  const release = opts.release;
+  if (typeof release?.version === 'string' && release.version.length > 0) {
+    resourceAttributes['service.version'] = release.version;
+  }
+  if (typeof release?.artifact_sha256 === 'string' && release.artifact_sha256.length > 0) {
+    resourceAttributes['sox.artifact_sha256'] = release.artifact_sha256;
+  }
+
+  const resource = resourceFromAttributes(resourceAttributes);
 
   const spanProcessor = new JsonlSpanProcessor(opts);
   const tracerProvider = new BasicTracerProvider({ resource, spanProcessors: [spanProcessor] });

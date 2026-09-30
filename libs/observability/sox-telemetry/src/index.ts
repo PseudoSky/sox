@@ -20,8 +20,10 @@
  * | `<event>.finish`            | log record                 | duration_ms (ms) | caller-supplied fields + duration_ms     |
  * | `<event>.error`             | log record                 | duration_ms (ms) | caller-supplied fields + duration_ms, error |
  *
- * Every record additionally carries `service`, `role`, `trace_id`, `pid`,
- * `ts` (ISO-8601), `level` — set once by `initTelemetry`, never per call site.
+ * Every record additionally carries `service`, `role`, `release`, `trace_id`,
+ * `pid`, `ts` (ISO-8601), `level` — set once by `initTelemetry`, never per
+ * call site. `release` is the S3 (`5ac0a1a8…`) identity `{ version,
+ * artifact_sha256, git_sha }`, each `string | null` (never `''`, BL-433).
  */
 
 import { performance } from 'node:perf_hooks';

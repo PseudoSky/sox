@@ -74,7 +74,15 @@ describe('BL-568: memory-flush telemetry composition root', () => {
         service: 'memory-flush',
         role: 'cli',
         logSink: 'file',
+        // S3 (`5ac0a1a8…`): the release identity now rides the composition root
+        // too. `version` is this member's own declared semver (a real stamp read
+        // from its sibling package.json); `artifact_sha256`/`git_sha` have no
+        // resolver in this process, so they are `null` — never `''` (BL-433).
+        release: { version: expect.any(String), artifact_sha256: null, git_sha: null },
       });
+      const relVersion = mod.MEMORY_FLUSH_TELEMETRY_INIT_OPTIONS.release?.version;
+      expect(relVersion).toMatch(/^\d+\.\d+\.\d+/);
+      expect(relVersion).not.toBe('');
     });
 
     it('durably persists a service:"memory-flush" JSONL record after fresh load', async () => {

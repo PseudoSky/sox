@@ -53,6 +53,7 @@ import type {
 type CurateOpError = { code: string; message?: string; op?: string };
 import * as crypto from 'node:crypto';
 import * as fs from 'node:fs';
+import { createRequire } from 'node:module';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { initTelemetry, resolveProcessRole, type InitTelemetryOptions } from '@adhd/sox-telemetry';
@@ -1007,10 +1008,39 @@ async function cmdPipeline(
 // Exported (not an inline literal at the call site, mirroring memory-server's
 // MEMORY_SERVER_TELEMETRY_INIT_OPTIONS) so bl501-cli-role-detection.spec.ts
 // can assert against the SAME object this composition root actually uses.
+//
+// S3 (`5ac0a1a8…`): `release` — the identity every persisted `metrics.snapshot`
+// row carries, and the envelope field on every log/span record. `version` is
+// THIS member's declared semver, resolved from its OWN sibling `package.json`
+// (a real stamp, never a guess). `artifact_sha256`/`git_sha` are `null`: unlike
+// memory-server this process computes no running-artifact byte identity and
+// carries no build-time git stamp, and `null` — never `''` (BL-433) — is the
+// honest value for "not resolvable here".
+const MEMBER_REQUIRE = createRequire(
+  typeof __filename === 'string' && __filename.length > 0 ? __filename : `${__dirname}/index.js`,
+);
+
+/** This member's declared semver, from its own `package.json` (the guaranteed
+ *  sibling of the entrypoint: deployed CJS `<member>/dist/index.js`, vitest
+ *  source `<member>/src/index.ts` — both resolve `../package.json` to
+ *  `<member>/package.json`). Anchored on `__filename` via `createRequire`
+ *  (vitest injects `__filename`; the CJS bundle always has it), so resolution
+ *  is never cwd-dependent — the same idiom `tools/bundle-extension.cjs` uses.
+ *  `null` when no version is declared, never `''`. */
+function resolveMemberVersion(): string | null {
+  const pkg = MEMBER_REQUIRE('../package.json') as { version?: string };
+  return typeof pkg.version === 'string' && pkg.version.length > 0 ? pkg.version : null;
+}
+
 export const MEMORY_CLI_TELEMETRY_INIT_OPTIONS: InitTelemetryOptions = {
   service: 'memory-cli',
   role: resolveProcessRole('cli'),
   logSink: 'file',
+  release: {
+    version: resolveMemberVersion(),
+    artifact_sha256: null,
+    git_sha: null,
+  },
 };
 
 if (require.main === module) {

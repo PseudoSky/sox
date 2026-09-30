@@ -19,6 +19,7 @@
 import { applyPromotion as memCoreApplyPromotion, exportMarkdown as memCoreExportMarkdown, openDb as memCoreOpenDb } from '@adhd/sox-memory-core';
 import type { StoreAdapter } from '@adhd/sox-store-adapter';
 import * as fs from 'node:fs';
+import { createRequire } from 'node:module';
 import { currentRuntimeState, initTelemetry, resolveProcessRole, type InitTelemetryOptions } from '@adhd/sox-telemetry';
 
 // (BL-568) COMPOSITION ROOT. Without this, `@adhd/sox-telemetry`'s gated
@@ -56,10 +57,37 @@ import { currentRuntimeState, initTelemetry, resolveProcessRole, type InitTeleme
 // invocation is the closest existing semantic — a hook handler fires once
 // per host event, not a persistent server) exactly as `resolveProcessRole`
 // already documents for exactly this kind of short-lived non-server caller.
+const MEMBER_REQUIRE = createRequire(
+  typeof __filename === 'string' && __filename.length > 0 ? __filename : `${__dirname}/index.js`,
+);
+
+/** This member's declared semver, from its own `package.json` (the guaranteed
+ *  sibling of the entrypoint: deployed CJS `<member>/dist/index.js`, vitest
+ *  source `<member>/src/index.ts` — both resolve `../package.json` to
+ *  `<member>/package.json`). Anchored on `__filename` via `createRequire`
+ *  (vitest injects `__filename`; the CJS bundle always has it), so resolution
+ *  is never cwd-dependent — the same idiom `tools/bundle-extension.cjs` uses.
+ *  `null` when no version is declared, never `''`. */
+function resolveMemberVersion(): string | null {
+  const pkg = MEMBER_REQUIRE('../package.json') as { version?: string };
+  return typeof pkg.version === 'string' && pkg.version.length > 0 ? pkg.version : null;
+}
+
+// S3 (`5ac0a1a8…`): `release` — the identity every persisted `metrics.snapshot`
+// row carries, and the envelope field on every log/span record. `version` is
+// THIS member's declared semver (a real stamp, never a guess);
+// `artifact_sha256`/`git_sha` are `null` — this in-process hook computes no
+// running-artifact byte identity and carries no build-time git stamp, and
+// `null` — never `''` (BL-433) — is the honest value for "not resolvable here".
 export const MEMORY_FLUSH_TELEMETRY_INIT_OPTIONS: InitTelemetryOptions = {
   service: 'memory-flush',
   role: resolveProcessRole('cli'),
   logSink: 'file',
+  release: {
+    version: resolveMemberVersion(),
+    artifact_sha256: null,
+    git_sha: null,
+  },
 };
 
 if (currentRuntimeState().service === 'unlabeled') {
