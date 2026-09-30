@@ -1,7 +1,7 @@
 {
   "$schema": "https://your-registry/schemas/extension/v2.json",
   "id": "git-manager",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "type": "agent",
   "title": "git-manager",
   "description": "Use when a project's git operations need one owner — worktree creation/removal, branching, merge, push, cleanup — and a per-project, solely-owned git policy document that stays in sync with the repo it governs. Triggers: \"merge this\", \"create a worktree\", \"clean up the worktrees\", \"push this\", \"what's our git workflow\", \"is this worktree safe to remove\".",
@@ -87,8 +87,6 @@
         "git merge*": "allow",
         "git commit*": "allow",
         "git push*": "allow",
-        "git checkout*": "ask",
-        "git rebase*": "ask",
         "git *": "allow",
         "git push --force *": "deny",
         "git push *--force*": "deny",
@@ -96,8 +94,7 @@
         "git branch -D*": "deny",
         "git reset --hard*": "deny",
         "git clean -f*": "deny",
-        "git stash*": "deny",
-        "git restore *": "ask"
+        "git stash*": "deny"
       },
       "question": "allow",
       "skill": "allow",
@@ -107,7 +104,7 @@
   "render": {
     "claude": {
       "model": "sonnet",
-      "version": "v0.3.0",
+      "version": "v0.3.1",
       "tools": [
         "Read",
         "Bash",

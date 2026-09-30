@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.3.1
+
+- **Every `ask` entry removed; the blanket `git *` allow now governs them (owner-directed:
+  "remove all ask permissions from git manager").** 0.3.0 left `git checkout*`, `git rebase*`
+  and a trailing `git restore *` as `ask`, so `git restore` — placed *after* the blanket allow —
+  was the live prompt under last-match-wins. All three are deleted; `git *: allow` is now their
+  effective last match, so `checkout`, `rebase` and `restore` run without a prompt.
+- **The destructive deny block is unchanged and still last.** `git push --force *`,
+  `git push *--force*`, `git push *--no-verify*`, `git branch -D*`, `git reset --hard*`,
+  `git clean -f*`, `git stash*` — verbatim, identical order, still the final seven rules, so they
+  win over the blanket allow. `git restore` was never in that block and stays absent from it:
+  it is now auto-allowed, including a whole-tree `git restore .`.
+- **The non-git catch-all `"*": "ask"` and the non-bash permissions are untouched.** The
+  directive scoped to git verbs; arbitrary non-git bash still prompts.
+- Map went 50 → 47 entries; the three removed are the only `ask`-valued git rules.
+
 ## 0.3.0
 
 - **Blanket `git *` allow (owner-directed).** The opencode `permission.bash` map gains
