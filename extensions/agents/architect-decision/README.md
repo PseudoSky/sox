@@ -28,10 +28,11 @@ lists only opencode.
 ## Source
 
 Migrated from `/Users/nix/.config/opencode/agents/architect-decision.md` (body preserved verbatim).
-That origin file was a hand-placed, unmanaged definition — never in `extensions/`, the agent-mcp
-catalog, or any lockfile/ownership record. After this extension was installed and verified, the
-origin was removed so exactly one live definition remains (backup, if taken, is beside it as
-`architect-decision.md.pre-ingest.bak`).
+That origin was a hand-placed, unmanaged definition — never in `extensions/`, the agent-mcp catalog,
+or any lockfile/ownership record — so `soxe install` refused to overwrite it until invoked with
+`--force` (the BUG-028 unowned-file guard). Its bytes are archived at
+`docs/research/architect-decision/original-user-config-architect-decision.md`; the discovery path now
+holds only the rendered extension, so exactly one live definition remains.
 
 ## Usage
 
