@@ -1,0 +1,78 @@
+{
+  "$schema": "https://your-registry/schemas/extension/v2.json",
+  "id": "architect-decision",
+  "version": "0.1.0",
+  "type": "agent",
+  "title": "architect-decision",
+  "description": "One-shot architecture decision agent (deepseek-flash, hard 4-turn cap). Dispatched SOLELY to answer one question — never implements, never produces a spec, never engages beyond the verdict. Reads the repo's ADR catalog (docs/decisions/) and refuses any request that violates an ADR; hard-rejects steering/biased questions with structured advice; when information is insufficient returns exactly what is missing for a real decision; when the question deserves a full architecture engagement, escalates to architect. Use for \"should we use X or Y\", \"is this approach sound\", \"does this violate our decisions\", \"is this the right architecture\" — one question, one verdict, no follow-up.",
+  "compatibility": {
+    "host": ">=1.0.0 <2.0.0"
+  },
+  "license": "MIT",
+  "author": "sox-ecosystem",
+  "keywords": [
+    "architect-decision",
+    "agent",
+    "declarative"
+  ],
+  "runtime": "declarative",
+  "entrypoint": "architect-decision.md",
+  "invocation": {
+    "protocol": "function-export",
+    "handler": "run",
+    "description": "Declarative agent — host reads the prose body and renders the host header from agent/render at install time."
+  },
+  "agent": {
+    "name": "architect-decision",
+    "description": "One-shot architecture decision agent (deepseek-flash, hard 4-turn cap). Dispatched SOLELY to answer one question — never implements, never produces a spec, never engages beyond the verdict. Reads the repo's ADR catalog (docs/decisions/) and refuses any request that violates an ADR; hard-rejects steering/biased questions with structured advice; when information is insufficient returns exactly what is missing for a real decision; when the question deserves a full architecture engagement, escalates to architect. Use for \"should we use X or Y\", \"is this approach sound\", \"does this violate our decisions\", \"is this the right architecture\" — one question, one verdict, no follow-up.",
+    "model": "sonnet",
+    "mode": "all",
+    "temperature": 0.1,
+    "steps": 4,
+    "tools": [
+      "read",
+      "glob",
+      "grep",
+      "bash",
+      "webfetch",
+      "skill"
+    ],
+    "permission": {
+      "read": "allow",
+      "glob": "allow",
+      "grep": "allow",
+      "bash": {
+        "git log --oneline *": "allow",
+        "git remote *": "allow",
+        "ls *": "allow",
+        "cat *": "allow",
+        "*": "deny"
+      },
+      "webfetch": "allow",
+      "websearch": "deny",
+      "edit": "deny",
+      "task": "deny",
+      "question": "deny",
+      "todowrite": "deny",
+      "skill": "allow",
+      "memory_*": "allow",
+      "mcp__backlog__*": "allow"
+    }
+  },
+  "render": {
+    "opencode": {
+      "model": "deepseek/deepseek-flash",
+      "mode": "all",
+      "temperature": 0.1
+    }
+  },
+  "install": {
+    "type": "agent",
+    "hosts": [
+      "opencode"
+    ]
+  },
+  "requires": {
+    "tool_calling": true
+  }
+}

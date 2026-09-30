@@ -1,0 +1,13 @@
+{
+  "name": "@adhd/sox-extension-architect-decision",
+  "version": "0.1.0",
+  "description": "One-shot architecture decision agent (deepseek-flash, hard 4-turn cap). Dispatched SOLELY to answer one question — never implements, never produces a spec, never engages beyond the verdict. Reads the repo's ADR catalog (docs/decisions/) and refuses any request that violates an ADR; hard-rejects steering/biased questions with structured advice; when information is insufficient returns exactly what is missing for a real decision; when the question deserves a full architecture engagement, escalates to architect. Use for \"should we use X or Y\", \"is this approach sound\", \"does this violate our decisions\", \"is this the right architecture\" — one question, one verdict, no follow-up.",
+  "private": true,
+  "license": "MIT",
+  "author": "sox-ecosystem",
+  "keywords": [
+    "architect-decision",
+    "agent",
+    "declarative"
+  ]
+}
