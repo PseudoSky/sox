@@ -42,7 +42,12 @@ export interface JsonlSinkOptions {
   component: string;
   /** Size-based rotation threshold in bytes. Default 20 MB. */
   maxBytes?: number;
-  /** Rotated files retained per component. Default 7. */
+  /** Rotated files retained per component. Default 7.
+   *
+   *  Hard-floored at prune time (`Math.max(1, maxFiles)`): a value of `0` or a
+   *  negative number keeps exactly ONE file, never zero. Pruning to zero would
+   *  unlink the file the sink is actively appending to and leave the durable
+   *  series with nothing to read. */
   maxFiles?: number;
   /** `writeSync` (true, default) vs fire-and-forget stream (false). See BL-365. */
   durable?: boolean;
@@ -255,6 +260,12 @@ export class DurableJsonlSink {
 
   private _pruneOldFiles(): void {
     const { dir, component, maxFiles } = this._opts;
+    // Durable-metrics S2: never delete the newest file. A `maxFiles` of `0` (or
+    // any value < 1) is clamped to 1 here rather than taken literally — pruning
+    // to zero would unlink the file the sink is currently appending to, so the
+    // next open would start an empty series and the just-written checkpoint
+    // would be gone. The existing "delete only the oldest" ordering is kept.
+    const cap = Math.max(1, maxFiles);
     if (!fs.existsSync(dir)) return;
     // Anchored on the FULL `<component>-<ISO-date>` shape, not a bare prefix —
     // see the class doc comment for the collision this closes (BL-351 §5.8).
@@ -269,7 +280,7 @@ export class DurableJsonlSink {
     } catch {
       return;
     }
-    while (files.length > maxFiles) {
+    while (files.length > cap) {
       const oldest = files.shift();
       if (oldest) {
         try {

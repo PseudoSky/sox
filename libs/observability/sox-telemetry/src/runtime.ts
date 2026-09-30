@@ -44,6 +44,23 @@ export interface InitTelemetryOptions {
   logDir?: string;
   maxBytes?: number;
   maxFiles?: number;
+  /**
+   * Retention cap for the SNAPSHOT component's rotated files (durable-metrics
+   * S2). Kept distinct from {@link maxFiles} (the EVENT stream's cap) so the
+   * durable `metrics.snapshot` series can span releases while the high-volume
+   * event stream stays small.
+   *
+   * Precedence — the snapshot sink resolves its cap as
+   * `snapshotMaxFiles ?? maxFiles ?? 30`. An explicit `maxFiles` still governs
+   * BOTH sinks (the pre-S2 behaviour other callers depend on); only the DEFAULT
+   * diverges — event 7, snapshot 30. The rollup sink (S8) will sit above this:
+   * `rollupMaxFiles ?? snapshotMaxFiles ?? maxFiles ?? 30`.
+   *
+   * Hard-floored at 1 by the pruner: `0` (or a negative value) keeps exactly one
+   * file — the newest is never deleted. Typed config only (ADR-0013); there is
+   * no environment override for this.
+   */
+  snapshotMaxFiles?: number;
   /** `writeSync` durability (default true — BL-365). */
   durable?: boolean;
   /**
@@ -247,6 +264,14 @@ const DEFAULT_SNAPSHOT_EVERY_RECORDS = 1000;
  *  restart-heavy release window still accumulates a durable series, and cheap
  *  enough that an idle process writes ~1.4k tiny lines/day. `0` disables. */
 const DEFAULT_SNAPSHOT_EVERY_MS = 60_000;
+
+/** Default retention cap for the SNAPSHOT component's rotated files
+ *  (durable-metrics S2). Deliberately larger than the event stream's 7
+ *  (`sink.ts`'s default): a snapshot is a CHECKPOINT the event stream is meant
+ *  to be recomputable from (§5.8), so its series must outlive the events it
+ *  covers and span several releases — the whole reason snapshots got their own
+ *  component. `0`/negative is clamped to 1 by the pruner (never zero files). */
+const DEFAULT_SNAPSHOT_MAX_FILES = 30;
 
 /** Everything mutable this module owns, in one process-global object. */
 interface TelemetryRuntime {
@@ -882,7 +907,11 @@ function configureSnapshotSink(opts: InitTelemetryOptions, logSink: LogSink): vo
   if (logSink !== 'file') return;
   const dir = opts.logDir ?? path.join(ecosystemHome(), opts.service, 'logs');
   const sinkOpts: JsonlSinkOptions = { dir, component: `${opts.service}.${opts.role}.metrics-snapshot` };
-  if (opts.maxFiles !== undefined) sinkOpts.maxFiles = opts.maxFiles;
+  // S2 retention precedence — snapshot's own cap first, then an explicit event
+  // cap, then the snapshot default (30), NOT the event sink's 7. Before S2 this
+  // forwarded `opts.maxFiles` only, so `snapshotMaxFiles` would have been
+  // silently ignored and snapshots shared the event stream's tiny budget.
+  sinkOpts.maxFiles = opts.snapshotMaxFiles ?? opts.maxFiles ?? DEFAULT_SNAPSHOT_MAX_FILES;
   rt.snapshotSink = new DurableJsonlSink(sinkOpts);
 
   stopSnapshotTimer();
