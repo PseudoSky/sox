@@ -717,6 +717,22 @@ async function cmdFtsRebuild(dbFlag: string, rest: string[], dryRun: boolean): P
   if (r.before) console.log(`  before: ${fmtStats(r.before)}`);
   if (r.after) console.log(`  after:  ${fmtStats(r.after)}`);
   if (r.verification) printVerification('fts-rebuild', r.verification);
+  // (segment B, 46748f3a) The damage-gated `_adapter_meta` sanitiser. Printed
+  // on every outcome (the dry run of a damaged store reports `failed`, so this
+  // must not sit behind the success branch).
+  if (r.adapter_meta_repair) {
+    const m = r.adapter_meta_repair;
+    const keys = m.quarantinedKeys.length > 0 ? ` (quarantined keys: ${m.quarantinedKeys.join(', ')})` : '';
+    console.log(
+      `  _adapter_meta: damaged — kept ${m.kept}, quarantined ${m.quarantined}, dropped ${m.dropped}${keys}`,
+    );
+    if (r.adapter_meta_pre_image) {
+      console.log(`  pre-repair image: ${r.adapter_meta_pre_image}`);
+      console.log(`  undo:   memory restore ${r.adapter_meta_pre_image} --db ${r.db_path}`);
+    } else {
+      console.log('  _adapter_meta: --dry-run — nothing sanitised; re-run without --dry-run to repair');
+    }
+  }
   if (r.status === 'failed') {
     console.error(`[fts-rebuild] ERROR (${r.reason ?? 'unknown'}): ${r.error ?? 'unknown'} (${r.duration_ms} ms)`);
     if (r.reason === 'verification_failed' && r.rebuild_path) {

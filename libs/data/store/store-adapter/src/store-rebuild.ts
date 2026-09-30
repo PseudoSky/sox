@@ -21,28 +21,45 @@
  *   1. Exclusivity: `TursoAdapterImpl.openOfflineExclusive` — the SAME gate as
  *      `memory fts-optimize` (lease peers, then the `.openers` registry that
  *      sees an idle-released service, re-checked after open). The source is
- *      opened `readonly + allowFtsInReadonly`, so its bytes are never written:
- *      no engine stamp, no clean-shutdown marker, no open-time repair. That
- *      soft-readonly open is a native-WRITABLE handle (BL-391 — the price of
+ *      opened `readonly + allowFtsInReadonly`. That soft-readonly open itself
+ *      writes no store bytes: no engine stamp, no clean-shutdown marker, no
+ *      open-time repair. It is a native-WRITABLE handle (BL-391 — the price of
  *      `fts_match`), so it creates and its close leaves a `-tshm` sidecar
  *      (BL-1010e417 skips the reconcile when nothing was truncated); every
  *      run — `--dry-run` included — removes exactly the artifacts this open
  *      created (BUG-2e232ee9), so a store the run must not touch is left
  *      exactly as it was found.
- *   2. Capture the source's facts: per-table row counts, FTS sentinel tokens
+ *   2. THE ONE EXCEPTION to "source bytes are never written": a damage-gated,
+ *      exclusive, pre-imaged `_adapter_meta` sanitise (segment B, 46748f3a).
+ *      Once the gate above is held and no peer/opener exists, `_adapter_meta`
+ *      is PROBED read-only (`probeAdapterMetaUnique` + `probeAdapterMetaValues`).
+ *      ONLY when it is damaged is (a) a byte-exact pre-image
+ *      `<db>.pre-repair-<ts>` taken as a reflink clone (`COPYFILE_FICLONE`),
+ *      then (b) `sanitizeAdapterMetaOffline` run on the source — the same
+ *      transactional, key-class-aware primitive the open-time repair uses. This
+ *      is what lets the `VACUUM INTO` below read a table whose damaged
+ *      autoindex otherwise aborts it with `UNIQUE constraint failed:
+ *      _adapter_meta.key`. `--dry-run` reports the counts and writes NOTHING.
+ *      A successful sanitise also CLEARS the durable open-path circuit-breaker
+ *      marker, so a suppressed store auto-repairs again once it is re-damaged.
+ *      Every other guarantee on the source is unconditional: the sanitise runs
+ *      only under the gate, only after the pre-image exists, and it is the ONLY
+ *      write this module ever makes to the source.
+ *   3. Capture the source's facts (AFTER the sanitise, so the recorded identity
+ *      is the post-sanitise file): per-table row counts, FTS sentinel tokens
  *      taken from real rows and their hit counts, page stats.
- *   3. `VACUUM INTO <db>.rebuild-<ts>` (the adapter's own `backupTo`).
- *   4. Reset the growth counter IN THE COPY (`fts_optimize_passes_since_rebuild
+ *   4. `VACUUM INTO <db>.rebuild-<ts>` (the adapter's own `backupTo`).
+ *   5. Reset the growth counter IN THE COPY (`fts_optimize_passes_since_rebuild
  *      = 0`, `last_rebuild_at`) through a raw driver handle — a writable
  *      adapter open would run open-time verify+repair, and that repair's
  *      `DROP INDEX` is exactly the operation that orphans pages. The copy is
  *      checkpointed (TRUNCATE) before its handle closes.
- *   5. Verify the copy read-only — the bytes verified are the bytes swapped in:
+ *   6. Verify the copy read-only — the bytes verified are the bytes swapped in:
  *      table set and row counts equal, every sentinel's hit count equal,
  *      `integrity_check` with no damage (the documented false positive and
  *      page-accounting noise classified, never ignored), counter reads 0.
- *   6. `--dry-run` stops here and deletes the copy.
- *   7. Swap (`swapIntoPlace`): the cold-open lock is taken (refuse if it
+ *   7. `--dry-run` stops here and deletes the copy.
+ *   8. Swap (`swapIntoPlace`): the cold-open lock is taken (refuse if it
  *      cannot be); peers and openers are re-checked; only THEN are the
  *      sidecars inspected (source `-wal` must be empty) and a stale `-tshm`
  *      moved aside (BL-2c65c6a5); the source's file identity (dev, ino, size,
@@ -84,7 +101,16 @@ import {
 } from './adapter-meta.js';
 import { acquireColdOpenLock } from './cold-open-lock.js';
 import { SOX_ENGINE_TABLE } from './engine-guard.js';
-import { classifyIntegrityMessages, parseFtsColumns, pickSentinelTokens } from './integrity.js';
+import {
+  classifyIntegrityMessages,
+  parseFtsColumns,
+  pickSentinelTokens,
+  probeAdapterMetaUnique,
+  probeAdapterMetaValues,
+  resetAdapterMetaRepairBreakerForTest,
+  sanitizeAdapterMetaOffline,
+  type AdapterMetaRepairReport,
+} from './integrity.js';
 import { canonicalDbPath } from './path-identity.js';
 import { storeOpeners, storeQuiescence } from './store-lease.js';
 import { staleSidecarPath } from './sidecar-retention.js';
@@ -253,8 +279,10 @@ export interface StoreReplacementVerification {
 }
 
 /** Tables whose content a rebuild is allowed to change (the growth keys it
- *  stamps). Every other table must match row-for-row. */
-const REBUILD_MUTABLE_TABLES = new Set(['_adapter_meta']);
+ *  stamps, and the `_adapter_meta_quarantine` table the pre-VACUUM sanitise
+ *  creates on the source — segment B, 46748f3a). Every other table must match
+ *  row-for-row. */
+const REBUILD_MUTABLE_TABLES = new Set(['_adapter_meta', '_adapter_meta_quarantine']);
 
 async function verifyReplacement(
   replacementPath: string,
@@ -608,6 +636,23 @@ async function swapIntoPlace(
 
 // ── Rebuild ──────────────────────────────────────────────────────────────────
 
+/**
+ * Segment B (46748f3a): is `_adapter_meta` damaged? The pair of read-only
+ * integrity probes the pre-VACUUM sanitiser is gated on. Both run on the
+ * already-open exclusive source handle and write NOTHING (they are SELECTs
+ * over the table btree). Damage here is exactly what makes the `VACUUM INTO`
+ * below abort with `UNIQUE constraint failed: _adapter_meta.key` / a torn
+ * value, so this gate is what decides whether the one permitted source write
+ * (the sanitise) must happen.
+ */
+async function adapterMetaIsDamaged(adapter: StoreAdapter): Promise<{ damaged: boolean; detail: string }> {
+  const findings = [
+    ...(await probeAdapterMetaUnique(adapter)),
+    ...(await probeAdapterMetaValues(adapter)),
+  ].filter((f) => f.status === 'damaged');
+  return { damaged: findings.length > 0, detail: findings.map((f) => f.detail).join(' | ') };
+}
+
 export interface StoreRebuildOptions {
   /** Stop after the verified copy exists; delete it; never swap. */
   dryRun?: boolean;
@@ -618,6 +663,14 @@ export interface StoreRebuildOptions {
    * swap — the snapshot→swap window. Production callers never pass it.
    */
   _beforeSwap?: () => Promise<void>;
+  /**
+   * Test seam (segment B, 46748f3a): skip the damage-gated pre-VACUUM
+   * `_adapter_meta` sanitise entirely, so the RED (the un-wired behaviour —
+   * `VACUUM INTO` aborting on `UNIQUE constraint failed: _adapter_meta.key`)
+   * is reproducible against a seeded corrupt store. Production callers never
+   * pass it.
+   */
+  skipAdapterMetaSanitize?: boolean;
 }
 
 export interface StoreRebuildReport {
@@ -643,6 +696,20 @@ export interface StoreRebuildReport {
   before?: StorePageStats;
   after?: StorePageStats;
   verification?: StoreReplacementVerification;
+  /**
+   * Segment B (46748f3a): what the damage-gated pre-VACUUM `_adapter_meta`
+   * sanitise did (or WOULD do, on `--dry-run`). Absent ⇒ `_adapter_meta` was
+   * healthy and nothing was probed/written. `changed: false` ⇒ the probe found
+   * damage but the rebuild computed no change (it will not appear in practice;
+   * `changed: true` is the damaged case).
+   */
+  adapter_meta_repair?: AdapterMetaRepairReport;
+  /**
+   * Segment B (46748f3a): the byte-exact pre-sanitise clone of the source
+   * (`<db>.pre-repair-<ts>`), present only when a sanitise actually ran and
+   * wrote (never on `--dry-run`, where nothing is sanitised).
+   */
+  adapter_meta_pre_image?: string;
   duration_ms: number;
   error?: string;
 }
@@ -654,8 +721,19 @@ export interface StoreRebuildReport {
 export async function rebuildStoreOffline(dbPath: string, opts: StoreRebuildOptions = {}): Promise<StoreRebuildReport> {
   const started = Date.now();
   const now = opts.now ?? (() => new Date());
+  // Segment B (46748f3a): the pre-VACUUM `_adapter_meta` sanitise outcome,
+  // threaded onto EVERY report return (they are declared here, above `done`,
+  // so the closure reads them after they are set — the early `not_found`
+  // return sees `undefined`, which is exactly "no sanitise was reached").
+  let adapterMetaRepair: AdapterMetaRepairReport | undefined;
+  let adapterMetaPreImage: string | undefined;
   const done = (r: Omit<StoreRebuildReport, 'duration_ms'>): StoreRebuildReport => {
-    const report = { ...r, duration_ms: Date.now() - started };
+    const report = {
+      ...r,
+      ...(adapterMetaRepair !== undefined ? { adapter_meta_repair: adapterMetaRepair } : {}),
+      ...(adapterMetaPreImage !== undefined ? { adapter_meta_pre_image: adapterMetaPreImage } : {}),
+      duration_ms: Date.now() - started,
+    };
     const level = report.status === 'failed' ? 'error' : report.status === 'refused' ? 'warn' : 'info';
     log[level]('store.rebuild.finish', {
       db_path: report.db_path,
@@ -665,6 +743,9 @@ export async function rebuildStoreOffline(dbPath: string, opts: StoreRebuildOpti
       after_bytes: report.after?.file_bytes ?? null,
       before_pages: report.before?.page_count ?? null,
       after_pages: report.after?.page_count ?? null,
+      adapter_meta_kept: adapterMetaRepair?.kept ?? null,
+      adapter_meta_quarantined: adapterMetaRepair?.quarantined ?? null,
+      adapter_meta_dropped: adapterMetaRepair?.dropped ?? null,
       duration_ms: report.duration_ms,
       error: report.error ?? null,
     });
@@ -712,9 +793,71 @@ export async function rebuildStoreOffline(dbPath: string, opts: StoreRebuildOpti
       return done({ status: 'failed', reason: 'error', db_path: canonical, error: `${rebuildPath} or ${backupPath} already exists` });
     }
     log.info('store.rebuild.start', { db_path: canonical, rebuild_path: rebuildPath, dry_run: opts.dryRun === true });
+
+    // ── Segment B (46748f3a): damage-gated pre-VACUUM `_adapter_meta` sanitiser ──
+    // Runs here: after the exclusive gate is held (no peer/opener), before the
+    // `VACUUM INTO` below, and before the swap identity is recorded — so the
+    // identity reflects the post-sanitise bytes and the swap's consistency check
+    // stays coherent. This is the ONE writer of source bytes in this module, and
+    // only when `_adapter_meta` is damaged (see the module header).
+    if (opts.skipAdapterMetaSanitize !== true) {
+      const damage = await adapterMetaIsDamaged(gate.adapter);
+      if (damage.damaged) {
+        const preRepairPath = `${canonical}.pre-repair-${stamp(ts)}`;
+        if (opts.dryRun === true) {
+          // Report the counts, write NOTHING to the source. The rest of the
+          // dry-run proceeds; a damaged store cannot produce a verified copy
+          // (that is the whole point), so it reports the counts alongside that
+          // outcome rather than silently claiming success.
+          adapterMetaRepair = await sanitizeAdapterMetaOffline(canonical, { dryRun: true });
+          log.info('store.rebuild.adapter_meta_damage_dry_run', {
+            db_path: canonical,
+            detail: damage.detail,
+            kept: adapterMetaRepair.kept,
+            quarantined: adapterMetaRepair.quarantined,
+            dropped: adapterMetaRepair.dropped,
+          });
+        } else {
+          if (existsSync(preRepairPath)) {
+            throw new Error(`${preRepairPath} already exists — refusing to overwrite a pre-repair image`);
+          }
+          // (a) byte-exact pre-image BEFORE any write. Reflink clone: byte-exact
+          // and independent, so the operator can always undo the sanitise.
+          copyFileSync(canonical, preRepairPath, fsConstants.COPYFILE_FICLONE);
+          adapterMetaPreImage = preRepairPath;
+          // (b) the transactional, key-class-aware sanitise on the source.
+          try {
+            adapterMetaRepair = await sanitizeAdapterMetaOffline(canonical);
+          } catch (err) {
+            // The sanitise failed; the pre-image stays as the operator's
+            // recovery point, and the failure is reported with its path.
+            log.error('store.rebuild.adapter_meta_sanitise_failed', {
+              db_path: canonical,
+              pre_image: preRepairPath,
+              error: err instanceof Error ? err.message : String(err),
+            });
+            throw err;
+          }
+          // (4) Breaker escape hatch: a SUCCESSFUL offline sanitise clears the
+          // durable open-path circuit-breaker marker, so the open path may
+          // auto-repair again if the store is re-damaged, rather than being
+          // suppressed forever by a marker a prior process left behind.
+          resetAdapterMetaRepairBreakerForTest(canonical);
+          log.info('store.rebuild.adapter_meta_sanitised', {
+            db_path: canonical,
+            pre_image: preRepairPath,
+            detail: damage.detail,
+            kept: adapterMetaRepair.kept,
+            quarantined: adapterMetaRepair.quarantined,
+            dropped: adapterMetaRepair.dropped,
+          });
+        }
+      }
+    }
+
     // BL-e92196e2: the identity the swap must still find. Recorded under the
-    // gate (no live peer/opener) and before any fact is read, so every write
-    // that could be missing from the copy lands after it.
+    // gate (no live peer/opener) and AFTER the sanitise, so the sanitise's own
+    // write is part of the baseline rather than a spurious `source_changed`.
     sourceIdentity = readFileIdentity(canonical);
     if (sourceIdentity === null) throw new Error(`could not stat ${canonical} before the snapshot`);
     before = await readStorePageStats(gate.adapter, canonical);
@@ -904,8 +1047,16 @@ export interface StoreRestoreReport {
   error?: string;
 }
 
-/** Tables the adapter itself writes into ANY store it opens writable — never user schema. */
-const ADAPTER_BOOKKEEPING_TABLES = new Set<string>([SOX_ENGINE_TABLE, '_adapter_meta']);
+/** Tables the adapter itself writes into ANY store it opens writable — never user schema.
+ *  `_adapter_meta_quarantine` is adapter bookkeeping too (the `_adapter_meta`
+ *  rebuild's quarantine side table — segment B, 46748f3a): counting its rows as
+ *  user content would make a restore's content gate read a repaired store's
+ *  quarantine rows as data. */
+const ADAPTER_BOOKKEEPING_TABLES = new Set<string>([
+  SOX_ENGINE_TABLE,
+  '_adapter_meta',
+  '_adapter_meta_quarantine',
+]);
 
 /** Rows in `table` of an open store, or the sum over user tables when `table` is null; null when `table` is absent. */
 async function contentCount(adapter: StoreAdapter, tables: string[], table: string | null): Promise<number | null> {
