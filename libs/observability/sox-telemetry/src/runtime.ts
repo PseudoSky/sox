@@ -29,6 +29,47 @@ export type Role = 'live-service' | 'test' | 'cli' | 'harness';
 export type LogSink = 'file' | 'stderr' | 'none';
 export type Outcome = 'started' | 'finished' | 'error';
 
+/**
+ * Durable-metrics S3 (`5ac0a1a8…`): the RELEASE identity stamped onto every
+ * persisted `metrics.snapshot` row, so snapshots from different releases are
+ * differentiable and programmatically comparable.
+ *
+ * Every field is `string | null` on purpose — an unavailable value is `null`,
+ * NEVER `''` (the BL-433 spirit: `''` is a legal-looking string indistinguishable
+ * from a real value, the BL-319/BL-347 absent-field ambiguity). The three
+ * resolvers answer three distinct questions:
+ *   - `version`         — the running artifact's declared semver, else null.
+ *   - `artifact_sha256` — exact byte identity of the running code, else null.
+ *   - `git_sha`         — the source revision the artifact was built from, else null.
+ */
+export interface ReleaseIdentity {
+  version: string | null;
+  artifact_sha256: string | null;
+  git_sha: string | null;
+}
+
+/** The all-absent release identity — the uninitialised/default state, and the
+ *  normalised result whenever a caller passes nothing. */
+const NULL_RELEASE: ReleaseIdentity = { version: null, artifact_sha256: null, git_sha: null };
+
+/** Normalise one release field: a non-empty string passes through, everything
+ *  else (`undefined`, `null`, `''`) becomes `null` — never `''`, never
+ *  `undefined` (S3's contract; `''` and `undefined` are not values here). */
+function releaseField(v: string | null | undefined): string | null {
+  return typeof v === 'string' && v.length > 0 ? v : null;
+}
+
+/** Normalise a caller-supplied {@link ReleaseIdentity} — per-field, so a partial
+ *  object fills the omitted fields with `null` rather than inheriting anything. */
+function resolveRelease(raw: ReleaseIdentity | undefined): ReleaseIdentity {
+  if (raw === undefined) return NULL_RELEASE;
+  return {
+    version: releaseField(raw.version),
+    artifact_sha256: releaseField(raw.artifact_sha256),
+    git_sha: releaseField(raw.git_sha),
+  };
+}
+
 export interface InitTelemetryOptions {
   /** Resource attribute on every span/metric/log record. */
   service: string;
@@ -97,6 +138,15 @@ export interface InitTelemetryOptions {
    * live handle (BL-345) — `getActiveResourcesInfo()` stays empty.
    */
   snapshotEveryMs?: number;
+  /**
+   * Durable-metrics S3 (`5ac0a1a8…`): the RELEASE identity stamped onto every
+   * persisted `metrics.snapshot` row. All three fields are `string | null` and
+   * an omitted value normalises to `null` — never `''`, never `undefined`.
+   *
+   * Typed config only (ADR-0013): there is no environment override for any of
+   * the three fields; a caller that cannot resolve one MUST pass `null`.
+   */
+  release?: ReleaseIdentity;
 }
 
 export interface TelemetryHandle {
@@ -134,6 +184,9 @@ interface RuntimeState {
   sink: DurableJsonlSink | null;
   otel: OtelRuntime;
   otelState: OtelState;
+  /** S3 (`5ac0a1a8…`): normalised release identity; always all-three-present
+   *  (each `string | null`), so the snapshot record never carries `undefined`. */
+  release: ReleaseIdentity;
 }
 
 // BL-404: previously all three branches returned 'test' unconditionally —
@@ -305,6 +358,7 @@ function defaultState(): RuntimeState {
     sink: null,
     otel: NOOP_OTEL,
     otelState: 'disabled',
+    release: NULL_RELEASE,
   };
 }
 
@@ -405,6 +459,7 @@ export function initTelemetry(opts: InitTelemetryOptions): TelemetryHandle {
     sink,
     otel: NOOP_OTEL,
     otelState: wantOtel ? 'pending' : 'disabled',
+    release: resolveRelease(opts.release),
   };
   rt.snapshotEveryRecords = opts.snapshotEveryRecords ?? resolveSnapshotEveryRecords();
   rt.snapshotEveryMs = resolveSnapshotEveryMs(opts.snapshotEveryMs);
@@ -1038,6 +1093,11 @@ export async function snapshotMetrics(
       pid: process.pid,
       trace_id: null,
       reason,
+      // S3 (`5ac0a1a8…`): the release identity this snapshot was produced by,
+      // so two snapshots a release apart are differentiable and comparable.
+      // A shallow copy, so a caller mutating a shared object cannot retroactively
+      // rewrite a line already written.
+      release: { ...rt.state.release },
       // §5.8's second consequence: a cumulative counter without its window is
       // an unfalsifiable number (the BL-334 pattern). Both windows are stated.
       window: 'since process start',

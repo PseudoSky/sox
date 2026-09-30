@@ -229,6 +229,17 @@ export const SOX_CLI_TELEMETRY_INIT_OPTIONS: InitTelemetryOptions = {
   service: 'sox',
   role: resolveProcessRole(verb === 'serve' ? 'live-service' : 'cli'),
   logSink: 'file',
+  // S3 (`5ac0a1a8…`): the release identity every persisted `metrics.snapshot`
+  // carries. `git_sha` comes from the SAME `build-info.json` stamp
+  // `warnIfDistSha()` reads (stamped by apps/sox/scripts/stamp-build.cjs) —
+  // reusing an existing resolver, not inventing one. `version`/`artifact_sha256`
+  // have no resolver in `apps/sox` today, so they are `null` (never `''`, the
+  // S3 contract).
+  release: {
+    version: null,
+    artifact_sha256: null,
+    git_sha: resolveBuildGitSha(),
+  },
 };
 initTelemetry(SOX_CLI_TELEMETRY_INIT_OPTIONS);
 // Emit unconditionally, right after init, on every invocation regardless of
@@ -2672,6 +2683,27 @@ interface BuildInfo {
   gitSha: string;
   dirty: boolean;
   builtAt: string;
+}
+
+/**
+ * S3 (`5ac0a1a8…`): the `git_sha` for the CLI's release identity, read from the
+ * same `build-info.json` stamp {@link warnIfDistSha} consumes. Returns `null`
+ * (never `''`, never the stamp's `'unknown'` sentinel) when the stamp is absent,
+ * unreadable, or carries no real sha — the S3 null contract. Best-effort: a
+ * failure is reported to stderr and must never block a `soxe` invocation.
+ */
+function resolveBuildGitSha(): string | null {
+  try {
+    const sha = readBuildInfo()?.gitSha;
+    return typeof sha === 'string' && sha.length > 0 && sha !== 'unknown' ? sha : null;
+  } catch (err) {
+    process.stderr.write(
+      `[sox] resolveBuildGitSha: build stamp unreadable (${
+        err instanceof Error ? err.message : String(err)
+      }) — release.git_sha=null\n`,
+    );
+    return null;
+  }
 }
 
 function readBuildInfo(): BuildInfo | null {

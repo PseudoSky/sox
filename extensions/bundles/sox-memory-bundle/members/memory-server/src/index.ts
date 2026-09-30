@@ -4557,6 +4557,20 @@ export const MEMORY_SERVER_TELEMETRY_INIT_OPTIONS: InitTelemetryOptions = {
   service: 'memory-server',
   role: resolveProcessRole('live-service'),
   logSink: 'file',
+  // S3 (`5ac0a1a8…`): the release identity every persisted `metrics.snapshot`
+  // carries. Both resolvers already exist for `memory_ping` — this reuses them
+  // rather than inventing new ones:
+  //   - `artifact_sha256` = the exact byte identity of the running artifact
+  //     (`getContentAddress().artifact`, a `sha256:…` string).
+  //   - `version`         = the running bundle's declared semver
+  //     (`getBundleSemver()`).
+  //   - `git_sha`         = null: this bundle carries no build-time git stamp
+  //     (only `apps/sox` does). `null`, never `''` — the S3 contract.
+  release: {
+    version: getBundleSemver(),
+    artifact_sha256: getContentAddress().artifact,
+    git_sha: null,
+  },
 };
 
 // ── Direct-stdio shutdown guard (BL-e7716825, ff7d9e24) ─────────────────────

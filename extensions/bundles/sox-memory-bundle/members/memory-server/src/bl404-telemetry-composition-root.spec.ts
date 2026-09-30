@@ -190,12 +190,25 @@ describe('BL-404: memory-server telemetry composition root', () => {
       _resetTelemetryForTest();
     });
 
-    it('is shaped service:"memory-server", role:"live-service", logSink:"file"', () => {
-      expect(MEMORY_SERVER_TELEMETRY_INIT_OPTIONS).toEqual({
+    it('is shaped service:"memory-server", role:"live-service", logSink:"file", with a release identity', () => {
+      expect(MEMORY_SERVER_TELEMETRY_INIT_OPTIONS).toMatchObject({
         service: 'memory-server',
         role: 'live-service',
         logSink: 'file',
       });
+      // S3 (`5ac0a1a8…`): no `logDir` — the `ecosystemHome()` resolver owns the
+      // path, never a hardcoded one.
+      expect('logDir' in MEMORY_SERVER_TELEMETRY_INIT_OPTIONS).toBe(false);
+
+      // S3: the release identity every persisted snapshot carries, resolved from
+      // the two existing memory_ping resolvers. Values are dynamic (they describe
+      // the running artifact), so assert their SHAPE, not a literal.
+      const release = MEMORY_SERVER_TELEMETRY_INIT_OPTIONS.release;
+      expect(release).toBeDefined();
+      expect(typeof release!.version).toBe('string');
+      expect(release!.version).not.toBe('');
+      expect(release!.artifact_sha256).toMatch(/^sha256:[0-9a-f]{64}$/);
+      expect(release!.git_sha).toBeNull();
     });
 
     it('durably persists a role:"live-service"/service:"memory-server" JSONL record when initialised with it', () => {

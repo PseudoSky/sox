@@ -46,6 +46,7 @@ export type {
   LogSink,
   Outcome,
   InitTelemetryOptions,
+  ReleaseIdentity,
   TelemetryHandle,
   LogFields,
   TelemetrySelfCheck,
