@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.3.2
+
+- **`"*": "ask"` made the agent unusable: every bash call with a segment the map did not name
+  prompted, and a call is evaluated as ONE unit** — one unnamed `echo`/`cat`/`ls` segment poisoned
+  the whole batch. Scanner (opencode 1.18.32): 59 prompts across 68 sessions, 10h42m47s wasted,
+  all 54 answered prompts approved, 0 rejected. The catch-all is now `"*": "allow"`.
+- **The guardrails the catch-all had been shadowing are restated last.** An agent map is evaluated
+  after `opencode.json`, so a leading `"*"` overrode the global denies it did not repeat —
+  `git add -A*`, `git add .`, `git add --all*`, `git clean *-f*` ran unprompted. They join the
+  seven existing denies, plus `git checkout -- *` and `rm -rf *` (`ask`), all ordered last so
+  last-match-wins keeps them winning over the allow.
+- **The redundant per-verb allowlist is deleted.** With `"*": "allow"` first, every removed entry
+  (`git status*` … `git commit*`, `git *`, `node tools/*.mjs*`) was already covered; the map is
+  now one `allow` plus 13 guardrails (50 → 14 entries).
+
 ## 0.3.1
 
 - **Every `ask` entry removed; the blanket `git *` allow now governs them (owner-directed:
