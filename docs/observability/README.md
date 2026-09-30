@@ -349,7 +349,7 @@ rotation cap in particular cannot be tuned where the volume actually accumulates
 |---|---|
 | **memory-core only** — `embedding-provider`, `store-adapter`, `graph-store`, `host-runtime` have no equivalent | BL-351 |
 | **Env controls scrubbed on the live service** | BL-344 |
-| **No metrics aggregation** — raw events only; nothing computes throughput/percentiles, and nothing surfaces them via `memory_ping` | BL-319, BL-334 |
+| **No in-file aggregation for the BL-320 `memory-core` log** — those raw events are still read only by replay. The separate `@adhd/sox-telemetry` substrate now provides continuous, durable rollup (§10) | BL-319, BL-334 |
 | **`time_to_vector_ms` exists with 0 samples** — heal path bypasses write-path instrumentation | BL-319 |
 | **wait-vs-work not a first-class primitive** — must be reconstructed by hand | BL-351, BL-322, BL-345 |
 | **Nothing reads these logs** — no alerting, no periodic analysis, no surfacing; two days of data went unexamined | BL-353 |
@@ -364,3 +364,203 @@ rotation cap in particular cannot be tuned where the volume actually accumulates
 07-31 — from **one** package. BL-351 extends instrumentation to six or more, so retention and
 rotation policy is load-bearing, not a nicety. Note this interacts with §7's warning: the
 rotation cap is one of the scrubbed variables.
+
+---
+
+## 10. The durable metrics substrate (`@adhd/sox-telemetry`)
+
+> What the telemetry **library itself** persists about a process's own operation, how the records
+> are shaped, and how to read them. This is a different subsystem from §1–§9, which document the
+> older BL-320 `memory-core` event log (`libs/memory-core/src/telemetry.ts`). The substrate here is
+> `libs/observability/sox-telemetry`; it is the only module in the repo permitted to import
+> `@opentelemetry/*`, and every other package emits through its wrapper.
+
+The substrate writes **two durable series** — point-in-time checkpoints (`metrics.snapshot`) and
+their continuously-folded aggregates (`metrics.rollup`) — plus a **derived cache** of the latter.
+It also exposes a strictly read-only CLI to consume them.
+
+### 10.1 Where the files land
+
+The data root is resolved by one function, `ecosystemHome()` (`sox-telemetry/src/runtime.ts`):
+`$SOX_ECOSYSTEM_HOME` when set and non-empty, otherwise `~/.adhd/sox-ecosystem`. The default log
+directory is `<ecosystemHome()>/<service>/logs`; `initTelemetry`'s `logDir` option overrides it.
+
+```
+~/.adhd/sox-ecosystem/<service>/logs/
+├── <service>.<role>.metrics-snapshot-<UTC-date>.jsonl        ← durable checkpoints
+└── rollup/
+    └── <service>.<role>.metrics-rollup-<UTC-date>.jsonl      ← derived aggregates (cache)
+```
+
+- The file component is `<service>.<role>`, joined with a **`.` separator, never `-`** (BL-353).
+  This is what lets the pruner anchor on one component's full `<component>-<ISO-date>` shape without
+  matching another's files.
+- Either series size-rotates its active file by renaming it to `<…>-<date>.<epoch>-<seq>.jsonl`
+  (`sink.ts`), so a date-rolled file can be recognized and pruned on rollover.
+- The rollup nests **under** the snapshot `logDir` (`rollupDir` defaults to `<resolved logDir>/rollup`).
+  Because a `rollup/` subdirectory cannot match the sink's anchored **file** regex, neither series'
+  retention pass can walk into the other's files.
+
+### 10.2 The `metrics.snapshot` record
+
+One JSON object per line, written by `snapshotMetrics(reason)` (`runtime.ts`). Top-level fields:
+
+| Field | Type | Meaning |
+|---|---|---|
+| `ts` | ISO-8601 string | write time |
+| `level` | `"info"` | — |
+| `event` | `"metrics.snapshot"` | discriminator |
+| `service`, `role` | string | the resource attributes from `initTelemetry` |
+| `pid` | number | process that wrote the row |
+| `trace_id` | `null` | snapshots are not span-scoped |
+| `reason` | `"startup"` \| `"activity"` \| `"pull"` \| `"shutdown"` \| `"interval"` | which trigger fired |
+| `release` | `{ version, artifact_sha256, git_sha }` | each `string \| null` |
+| `window` | `"since process start"` | every cumulative counter is labelled with its window |
+| `records_covered` | number | event records emitted since the previous snapshot |
+| `snapshot_seq` | number | 1-based, strictly increasing per process |
+| `self_check` | object | the `telemetrySelfCheck()` projection |
+| `otel_metrics` | array | collected OTel metric points (may be `[]`) |
+| `process` | `{ rss_bytes, heap_used_bytes, external_bytes, cpu_user_ms, cpu_system_ms, uptime_s }` | cheap always-present process census |
+| `sections` | object | named, process-local extra sections |
+
+**Release identity is null-never-`""`.** Each of `release.version`, `release.artifact_sha256`, and
+`release.git_sha` is either a non-empty string or `null`; an unavailable value is **never** the empty
+string (S3; the BL-433 contract). A caller that cannot resolve a field passes `null`.
+
+**`sections.store_metrics`** is registered by `memory-server`
+(`metrics-snapshot-section.ts`, S4). It promotes the metric families that previously existed only on
+the live `memory_ping` response into the durable row. Its flat families are:
+
+`write_latency_ms`, `apply_latency_ms`, `slow_tasks`, `recall_degradations`, `embed_backlog`,
+`embed_backlog_oldest_at`, `embeds_completed`, `embeds_failed`, `time_to_vector`, `embed_duration`,
+and `growth`; it also carries nested `write_queue.*` and `embed.*` groups plus provenance
+(`store_path`, `sample_age_ms`, `growth_error`). A provider that throws is recorded in place as
+`{ error: <message> }` and never breaks the snapshot write.
+
+### 10.3 The `metrics.rollup` record
+
+One JSON object per line, written by `rollupMetrics(reason)` (`runtime.ts`), which folds the
+`metrics.snapshot` records in a trailing window through the pure `aggregateSnapshots` function
+(`rollup.ts`). Top-level fields:
+
+| Field | Type | Meaning |
+|---|---|---|
+| `event` | `"metrics.rollup"` | discriminator |
+| `level` | `"info"` | — |
+| `ts`, `service`, `role` | — | envelope (as for snapshots) |
+| `pid` | number | the process that **wrote** this row |
+| `process_pid` | number \| null | the process **instance** the row aggregates (differs after a restart) |
+| `release` | `{ version, artifact_sha256, git_sha }` | null-never-`""` |
+| `reason` | `"interval"` \| `"shutdown"` | which rollup pass ran |
+| `window` | `{ from, to, kind: "trailing" }` | epoch-ms bounds |
+| `snapshots_in_window` | number | folded record count |
+| `series` | object | one entry per declared series (see below) |
+| `self_check` | object | folded `stages_declared` / zero-sample unions |
+| `otel` | `{ state }` | latest OTel state in the window |
+
+The `window` is **re-derived on every tick** (`from = now − windowMs`, `to = now`), so consecutive
+rows deliberately **overlap**; each row is self-describing via `window.from`/`window.to`, and a
+reader takes the **newest row per group** rather than stitching rows together.
+
+**Keying: one row per distinct `(release, process instance)`.** The window's records are grouped by
+their `release` identity *and* the writer `pid`, so a release boundary landing mid-window yields two
+rows, and a **restart of the same build** (same release, new pid) yields two rows rather than one
+blended number. `process_pid` on the row names the group's instance.
+
+**`series` is a closed set, and every entry carries an explicit `agg` tag.** Each entry has the
+shape `{ agg, samples, min, mean, p50, p99, max, sum, value }`. The declared series and their
+aggregators (from `ROLLUP_SERIES` in `rollup.ts`):
+
+| Series | `agg` |
+|---|---|
+| `process.rss_bytes`, `process.heap_used_bytes`, `cpu.percent`, `embed_backlog` | `gauge` |
+| `process.uptime_s` | `gauge_max` |
+| `cpu.user_ms`, `cpu.system_ms` | `cumulative_delta` |
+| `records_covered` | `sum` |
+| `snapshots_written`, `slow_tasks`, `embeds_completed`, `embeds_failed` | `counter_max` |
+| `write_latency_ms`, `apply_latency_ms`, `time_to_vector`, `embed_duration` | `max_of_percentiles` |
+
+Two aggregators encode a refusal to fabricate: `cumulative_delta` is `null` when the window holds
+fewer than two samples (a `max − min` over one sample would report "no work" for a process that
+plainly worked), and `max_of_percentiles` sets `sum: null` so a p99 is never summed into a
+meaningless total. `store_metrics.*` families report `samples: 0` with `null` statistics before S4
+registers that section — the honest "no samples in this window", never a fabricated zero.
+
+### 10.4 Cadence
+
+| Trigger | Default | Field / override |
+|---|---|---|
+| Startup snapshot | once, at init | automatic (deferred one `setImmediate` turn) |
+| Interval snapshot **and** rollup | every **60 000 ms** | typed `snapshotEveryMs`; `0` disables |
+| Shutdown snapshot + rollup | once, on `close()` | automatic |
+| Activity snapshot | every **1 000 records** | typed `snapshotEveryRecords`; `0` disables |
+| Pull snapshot | on each `telemetrySelfCheck()` when records are pending | automatic (opportunistic) |
+
+- The interval is a **typed `InitTelemetryOptions` field**, `snapshotEveryMs` (default 60 000;
+  `0` disables it). `SOX_TRACE_SNAPSHOT_MS` is a debug **override** that replaces the interval but is
+  never the sole trigger — the typed default always arms one.
+- The timer is **`.unref()`'d**, so it adds no live handle (`getActiveResourcesInfo()` stays empty,
+  BL-345). The rollup **piggybacks the same single timer** (`await snapshotMetrics('interval')` then
+  `await rollupMetrics('interval')`), so it introduces **no second handle and no second timer**.
+- `snapshotEveryMs: 0` disables **both** the interval snapshot and the rollup (there is nothing to
+  fold).
+- On `close()`, one `'shutdown'` snapshot is written **before** the sinks close, then one final
+  rollup folds over it, so shutdown's own data is in the last row.
+
+### 10.5 Retention — two tiers that must not be conflated
+
+| Series | Default cap | Precedence |
+|---|---|---|
+| Event stream | 7 | `maxFiles` |
+| `metrics.snapshot` | 30 | `snapshotMaxFiles ?? maxFiles ?? 30` |
+| `metrics.rollup` | 30 | `rollupMaxFiles ?? snapshotMaxFiles ?? maxFiles ?? 30` |
+
+Every cap is hard-floored at **1** by the pruner: `0` or a negative value keeps exactly one file, so
+the newest file is never deleted. The snapshot default is deliberately larger than the event
+stream's: a snapshot is a **checkpoint** that must outlive the events it covers, because past the
+event-retention horizon it is the only durable record of cumulative counters.
+
+**The rollup file is a DERIVED CACHE, not the system of record.** Every rollup row is recomputable
+from the retained `metrics.snapshot` records it was folded from, so pruning a rollup file destroys
+no information — `rollupMaxFiles` is a cache-size knob, not a retention policy for primary data.
+This is **distinct from ADR-0014's report-first / no-auto-delete rule for primary store snapshots**;
+the two must not be conflated. The snapshot stream, not the rollup, is the durable source of truth.
+
+### 10.6 Reading them — strictly read-only
+
+`tools/metrics-report.mjs` is the reader. It performs **zero writes** (the test asserts the tree is
+byte-identical before and after): there is no mutating verb and no `index.json`.
+
+```
+node tools/metrics-report.mjs [--report] [--root <dir>] [--json]
+node tools/metrics-report.mjs --compare <releaseA> <releaseB> [--root <dir>] [--json]
+node tools/metrics-report.mjs --help
+```
+
+- `--report` (default) discovers `<dataRoot>/<service>/logs/rollup/*.metrics-rollup-*.jsonl` and
+  prints one entry per `(service, role, release)`, using that group's **newest** row and surfacing
+  its trailing window plus the group's oldest rollup `ts` (the coverage horizon).
+- `--compare <A> <B>` prints the per-series delta (absolute and %) from A to B. A selector matches
+  the release `version` string exactly, else the full `artifact_sha256` with or without its
+  `sha256:` prefix. A selector naming a release with no rollup row exits non-zero rather than
+  silently comparing nothing.
+- The data root is `--root` > `$SOX_ECOSYSTEM_HOME` > `~/.adhd/sox-ecosystem`. Exit codes: `0`
+  report/comparison, `1` a compared release has no row, `2` a usage error.
+
+### 10.7 Test isolation — the temp-home sandbox
+
+A spec that calls `initTelemetry` with a file sink and **no explicit `logDir`** would otherwise
+resolve `ecosystemHome()` to the real `~/.adhd/sox-ecosystem` and write production telemetry from a
+test run — the defect tracked as **`03be90c3`**. `sox-telemetry`'s `vitest.setup.ts` closes it
+structurally:
+
+- `beforeAll` creates a per-test-file `mkdtemp` scratch root and points **both** `SOX_ECOSYSTEM_HOME`
+  and `SOX_TEST_ECOSYSTEM_HOME` at it (both are read at call time, so this redirects every in-process
+  write for the file). A guard aborts if the scratch root ever resolves to the real root.
+- `afterAll` restores the saved env, removes the scratch root, and **fails the file** if this run
+  brought the real `~/.adhd/sox-ecosystem` root into existence.
+- Individual specs add their own belt-and-braces assertions (e.g. `metrics-snapshot-cadence.spec.ts`
+  asserts the real `<homedir>/.adhd/sox-ecosystem/s1` is absent in `afterEach`).
+
+The rule for any new spec: **pin `logDir` explicitly, or rely on the sandbox — never point a test
+sink at the production root.**

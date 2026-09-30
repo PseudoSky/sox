@@ -48,9 +48,10 @@ is the only module allowed to import `@opentelemetry/*`.
 > - Spans: **every** span is written to the JSONL sink (`.start` on `onStart`, `.finish` on
 >   `onEnd`). The in-memory ring is demoted to an *index over the disk stream* — eviction is not
 >   data loss, because the span was already written.
-> - Metrics: **activity-triggered snapshots (every N records), not a timer** — this keeps the
->   `getActiveResourcesInfo() → []` zero-handle property intact at ~4.4 ms/day. Full costing of all
->   four options in §5.8.
+> - Metrics: **activity-triggered snapshots (every N records) as the primary trigger**. A typed
+>   wall-clock floor (`snapshotEveryMs`, default 60 s, `.unref()`'d) and a continuous rollup were
+>   added later (S1/S8) and keep the `getActiveResourcesInfo() → []` zero-handle property intact at
+>   ~4.4 ms/day. Full costing of all four options in §5.8.
 
 ---
 
@@ -942,16 +943,19 @@ which I do not want to give up either):
 | Option | New handles | Cost | Staleness | Verdict |
 |---|---|---|---|---|
 | **A. Snapshot on the `memory_ping` pull** | **0** | 0.635 ms, on a call already happening | = observation frequency; **zero if nobody asks** | **Adopt** — but insufficient alone, and its failure mode is the BL-353 one |
-| **B. Piggyback an existing scheduled tick** | **0** | ~0.6 ms per tick | tick interval | **Reject as primary** — the only such tick is the periodic enrich pass, which is *currently disabled by an emergency brake* (`SOX_DISABLE_PERIODIC_ENRICH`). Persistence that stops when an unrelated subsystem is braked is worse than none, because it fails silently. |
+| **B. Piggyback an existing scheduled tick** | **0** | ~0.6 ms per tick | tick interval | **Reject as primary** — the only such tick is the periodic enrich pass (the old `SOX_DISABLE_PERIODIC_ENRICH` emergency brake is gone, ADR-0013, but coupling this ledger's liveness to an unrelated subsystem's tick is still the wrong shape). Persistence that stops when an unrelated subsystem changes is worse than none, because it fails silently. |
 | **C. Activity-triggered: snapshot every N records or M bytes** | **0** | 0.635 ms per trigger; at N=1,000 and 6,800 records/day that is **7 snapshots/day ≈ 4.4 ms/day** | bounded by *work done*, not wall-clock | **Adopt as primary** |
-| **D. Opt-in interval timer** | **1** | timer + 0.635 ms | fixed | **Off by default.** Available as `SOX_TRACE_SNAPSHOT_MS` for a deliberate debugging session. |
+| **D. Interval timer (default-on wall-clock floor, S1)** | **0** (`.unref()`'d) | timer + 0.635 ms | fixed | **On by default.** A typed `snapshotEveryMs` (default 60 s) arms a `.unref()`'d wall-clock floor; `SOX_TRACE_SNAPSHOT_MS` is an override only, never the sole trigger. The rollup (S8) rides the same handle, so no second timer is added. |
 
-**Recommendation: C as primary, A opportunistically, plus a snapshot on graceful shutdown, D
-opt-in.** The reasoning for C over B and D: an activity trigger has **no timer, so the zero-handle
-property survives intact**, and its staleness is proportional to work done rather than to wall-clock
+**Recommendation: C as primary, A opportunistically, plus a snapshot at startup and on graceful
+shutdown, and D as a default-on wall-clock floor.** The reasoning for C over B: an activity trigger
+has **no timer of its own**, and its staleness is proportional to work done rather than to wall-clock
 — if the process is idle, nothing has changed and there is nothing to lose. It also degrades in the
 right direction: the busier the system (i.e. the more interesting the window), the more often it
-snapshots.
+snapshots. D is also adopted, but only as a **floor** under C: the record trigger's blind spot is a
+process that restarts before it ever accumulates N records, and such a window would otherwise leave
+**no durable series at all**. The floor is a single `.unref()`'d timer, so the zero-handle property
+survives; S8's rollup rides the same handle rather than adding a second.
 
 Option A alone is rejected for a reason worth naming: **"the data is written when somebody looks"
 is the BL-353 failure with extra steps.** Nobody looked for two days.
@@ -959,6 +963,18 @@ is the BL-353 failure with extra steps.** Nobody looked for two days.
 The snapshot is a single JSONL line (`event: "metrics.snapshot"`) into the same durable sink, so it
 inherits the `role` routing, rotation, retention, and `writeSync` durability of everything else —
 no second persistence mechanism, no second format, no second thing to remember.
+
+**Superseded framing — the rollup is library-owned and continuous, not a standalone tool.** The
+snapshot series above is a *checkpoint* stream: reading a window aggregate ("what was p99 write
+latency over the last hour") from it means replaying N rows by hand. The telemetry library now folds
+that stream continuously on its own cadence — one `metrics.rollup` row per `(release, process
+instance)` per S1 tick — so an aggregate is itself a durable artifact. This **supersedes any framing
+of the rollup as a standalone repo tool a human invokes with `--apply`**: there is no external tool
+and no human apply step. The rollup is a **derived cache** (every row is recomputable from the
+retained snapshots it folded), so its bounded retention destroys no information; it is deliberately
+**not** the system of record and is **not** subject to the report-first / no-auto-delete rule that
+governs primary store snapshots (ADR-0014). The only CLI is a strictly read-only
+`--report`/`--compare`. See ADR-0025 (Proposed).
 
 ### 5.9 Durations are wall-clock and include system sleep — annotate, never subtract (BL-369)
 
