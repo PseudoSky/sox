@@ -180,6 +180,12 @@ import {
   type OperationClass,
 } from './operation-guard.js';
 import { mainThreadMonitor } from './mainthread-monitor.js';
+// durable-metrics S4 (4436adec): the `store_metrics` durable snapshot section —
+// promotes the ping-only metric families (write/apply latency, slow_tasks,
+// recall_degradations, the Phase-B embed families and the store-growth gauge)
+// into every persisted `metrics.snapshot` line, from the SAME sources
+// `memory_ping` already reads. See the module's own header.
+import { getSampledStorePath, recordStoreMetricsSample, registerStoreMetricsSection } from './metrics-snapshot-section.js';
 import { serverLivenessWatchdog, watchdogIntervalMs } from './liveness-watchdog.js';
 // (862129b5 TUR-F) The off-thread Turso driver's stall owner — started at boot
 // below, alongside the liveness watchdog.
@@ -1357,6 +1363,38 @@ export function storeNotConfiguredError(toolName: string): ToolResult & { isErro
 }
 
 /**
+ * durable-metrics S4 (backlog 51995ade, HIGH): the ONE store resolution the
+ * `store_metrics` snapshot section's writer and reader must agree on. It wraps
+ * the exact primitives the tool path already uses — `resolveStoreOrDbPath`
+ * (`store` name → registry, `db_path` → `path.resolve(expandDbPath(...))`) and
+ * the host-config fallback (`SOX_CONFIG_DB_PATH` → `expandTilde`) — so a store
+ * is resolved ONCE and every consumer keys on the identical string.
+ *
+ * Before this existed, `memory_ping` recorded its async-probe sample under the
+ * arg/config-resolved path while the snapshot section re-derived a store path
+ * straight from `SOX_CONFIG_DB_PATH` (raw, un-expanded, ignored any arg) — two
+ * different resolutions, so an explicit `db_path` with the env unset, or a
+ * `~`-bearing config, silently read `null` for `embed_backlog`/`growth`.
+ *
+ * Returns the resolved path, or `null` when neither an explicit store/db_path
+ * nor a host config names one (and for an unknown `store` name).
+ */
+export function resolveStoreDbPath(storeArg: unknown, dbPathArg: unknown): string | null {
+  const storeResult = resolveStoreOrDbPath(storeArg, dbPathArg);
+  if (storeResult !== null) {
+    // An unknown `store` name resolves to a typed error — not a path.
+    if ('code' in storeResult) return null;
+    return storeResult.path;
+  }
+  // Neither store nor db_path: only the host-injected SOX_CONFIG_DB_PATH may
+  // supply the path (BL 0c3522c2 — no inferred default). Mirror the tool path's
+  // expansion exactly (`expandTilde`, no extra `path.resolve`).
+  const rawDbPath = resolveDbPath(undefined);
+  if (rawDbPath === null) return null;
+  return expandTilde(rawDbPath);
+}
+
+/**
  * BUG-MEMORYSERVER-WEDGES-SILENTLY-NO-SELF-RECOVERY-001: the single choke
  * point every request path funnels through (direct-stdio's `registeredTools`
  * below, AND backend mode's `handleBackendRequest` in backend.ts) — the
@@ -1513,8 +1551,14 @@ async function handleToolCallImpl(name: string, args: Record<string, unknown>): 
         const dbPathArg = args['db_path'];
         const storeResult = resolveStoreOrDbPath(storeArg, dbPathArg);
         const hasHostConfig = (process.env['SOX_CONFIG_DB_PATH'] ?? '').trim() !== '';
+        // durable-metrics S4 (51995ade): resolve the store ONCE via the shared
+        // resolver, so the path this ping records its sample under is exactly the
+        // path the `store_metrics` snapshot section later reads
+        // (getSampledStorePath) — an explicit db_path (env unset) or a
+        // `~`-bearing config can no longer split writer and reader onto two keys.
+        const resolved = resolveStoreDbPath(storeArg, dbPathArg);
 
-        if (storeResult === null && !hasHostConfig) {
+        if (resolved === null && !hasHostConfig) {
           // No explicit store/db_path AND no host-injected config — this is a
           // guess, not a resolution. Do not open anything.
           storeBlock = {
@@ -1531,10 +1575,10 @@ async function handleToolCallImpl(name: string, args: Record<string, unknown>): 
           // hasHostConfig is true: the host explicitly configured a store via
           // SOX_CONFIG_DB_PATH — this is real production config, not a guess.
           // hasHostConfig guarantees a non-null resolution (same env var, trimmed).
-          resolvedPath = expandTilde(resolveDbPath(undefined) ?? '');
+          resolvedPath = resolved ?? '';
           storeName = 'default';
         } else if (!('code' in storeResult)) {
-          resolvedPath = storeResult.path;
+          resolvedPath = resolved ?? storeResult.path;
           storeName = storeResult.name;
         }
       }
@@ -1722,6 +1766,18 @@ async function handleToolCallImpl(name: string, args: Record<string, unknown>): 
         } catch (err) {
           storeGrowthError = err instanceof Error ? err.message : String(err);
         }
+
+        // durable-metrics S4 (4436adec): record the two async-sourced families
+        // the `store_metrics` snapshot section cannot recompute synchronously
+        // (its provider runs on the sync snapshot path). This is the SAME
+        // `embedBacklogStats` / `readStoreGrowthGauge` result this ping already
+        // computed — the section projects it, it never re-probes the store.
+        recordStoreMetricsSample(resolvedPath, {
+          embed_backlog: embedBacklog.count,
+          embed_backlog_oldest_at: embedBacklog.oldest_created_at,
+          growth: storeGrowth,
+          growth_error: storeGrowthError,
+        });
 
         // The store opened AND the probe queries above succeeded — the write
         // path is reachable right now (any poisoned-connection failure would
@@ -4573,6 +4629,45 @@ export const MEMORY_SERVER_TELEMETRY_INIT_OPTIONS: InitTelemetryOptions = {
   },
 };
 
+// ── Durable-metrics S4 (4436adec): the `store_metrics` snapshot section ──────
+//
+// Registered at the composition root (below), exactly as the `mainthread`
+// section is registered by `mainThreadMonitor.start()`: entrypoint wiring, not
+// module load — so importing this module in a test never registers a section it
+// did not ask for. The section reads the SAME sources `memory_ping` reads; its
+// two async-sourced families come from the sample the ping above records.
+let _storeMetricsSectionUnregister: (() => void) | null = null;
+
+/**
+ * The store the `store_metrics` section reports on. Resolve-ONCE (backlog
+ * 51995ade): prefer the store the last `memory_ping` actually sampled — the
+ * exact path the ping recorded its async-probe sample under — and fall back to
+ * the shared `resolveStoreDbPath` (host-configured store, re-expanded per
+ * snapshot) only when this process has not pinged yet. An unset
+ * `SOX_CONFIG_DB_PATH` reads as `null`, which the provider reports verbatim.
+ */
+export function resolveStoreMetricsSectionPath(): string | null {
+  return getSampledStorePath() ?? resolveStoreDbPath(undefined, undefined);
+}
+
+/**
+ * Register the durable `store_metrics` snapshot section. Idempotent — a second
+ * call detaches the first registration rather than stacking providers.
+ */
+export function registerStoreMetricsSnapshotSection(): void {
+  _storeMetricsSectionUnregister?.();
+  _storeMetricsSectionUnregister = registerStoreMetricsSection({
+    resolveStorePath: resolveStoreMetricsSectionPath,
+    recallDegradations: () => snapshotRecallDegradations(),
+  });
+}
+
+/** Detach the `store_metrics` section (shutdown wiring). Idempotent. */
+export function unregisterStoreMetricsSnapshotSection(): void {
+  _storeMetricsSectionUnregister?.();
+  _storeMetricsSectionUnregister = null;
+}
+
 // ── Direct-stdio shutdown guard (BL-e7716825, ff7d9e24) ─────────────────────
 //
 // `handleDirectStdioShutdown` is the DIRECT-STDIO MODE ONLY shutdown handler
@@ -4689,6 +4784,11 @@ export async function handleDirectStdioShutdown(
     }
 
     clearTimeout(safetyNet);
+    // durable-metrics S4 (4436adec): detach the `store_metrics` snapshot section
+    // on shutdown (the runtime returns an unregister handle — see
+    // registerStoreMetricsSection). Cosmetic for a process that is exiting, but
+    // it keeps the registration lifecycle symmetric with its wiring.
+    unregisterStoreMetricsSnapshotSection();
     exitOnce(0);
   })();
   return _directShutdownInFlight;
@@ -4763,6 +4863,11 @@ if (require.main === module) {
   // `mainthread.stalled` report while a synchronous Turso step still holds the
   // loop. Started right after telemetry so it covers every request.
   mainThreadMonitor.start();
+
+  // durable-metrics S4 (4436adec): register the `store_metrics` snapshot section
+  // (entrypoint wiring, mirroring `mainThreadMonitor.start()` above) so every
+  // persisted `metrics.snapshot` line carries the ping-only metric families.
+  registerStoreMetricsSnapshotSection();
 
   // (862129b5 TUR-F) Start the off-thread Turso driver's stall watchdog here —
   // the real entrypoint, in BOTH run modes (backend-proxy and direct-stdio)
