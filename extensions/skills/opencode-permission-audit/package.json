@@ -1,6 +1,6 @@
 {
   "name": "@adhd/sox-extension-opencode-permission-audit",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Use this skill when an opencode agent prompts for permission on every command, when a dispatched subagent's command fails with a permission error ('The user rejected permission…' or 'The user has specified a rule which prevents you from using this specific tool call'), or when you need to audit and repair an agent's permission.bash map. Ships a scanner (scripts/opencode-permission-scan.py) that mines the opencode log and session DB for every permission ask, inferred answer, working directory, wasted time, deny catalog and auto-reject, plus a per-agent bash-map verdict with a drop-in corrected permission block. Includes the opencode inspection cheatsheet and the rules of permission resolution (merge order, last-match-wins, agent-map shadowing, atomic bash calls, non-interactive ask auto-reject).",
   "private": true,
   "license": "MIT",

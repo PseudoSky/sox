@@ -1,5 +1,24 @@
 # Changelog
 
+## 0.2.0
+
+- Scanner: per-agent **LEADERBOARD** (prompts, sessions prompted/total, asks-per-session,
+  %-sessions, wasted sum/median, low-confidence count) and **attribution confidence** per prompt
+  (`HIGH`/`LOW`) from a rolling window over each `run`'s stream agents.
+- Scanner: **triggering-segment** analysis — the segments no observed winning allow pattern covers —
+  and a **rule-suggestion engine** folded into Section 7 (suggested allow patterns by prompts
+  cleared, plus fall-through segments).
+- Scanner: new **Section 4 DENY SUMMARY** (rule × agent) split from the flat 4b DENY CATALOG, and
+  **Section 8 AGENT RULE INVENTORY** (each session's agent ruleset, from `message=created`).
+- Scanner: `--rank` (leaderboard only), `--format json`, `--since`/`--until`/`--split` windowing,
+  a parsed-log cache with `--no-cache`, and `trigger`/`confidence` export columns.
+- Scanner perf: Section 6 now derives error shapes from the already-fetched tool parts instead of a
+  full-table `LIKE '%ermission%'` scan (~35 s on a 23 GB store, for ~8 rows); all-agents `--rank
+  --format json` went from >120 s (timeout) to 19.7 s. Section 6 prints an explicit none-case when
+  the scanned sessions have no permission-family error.
+- `SKILL.md`: documents the new flags, the leaderboard, confidence, and the renumbered sections;
+  the `SECTION 7 — AGENT BASH MAP & FIX SUGGESTION` reference is unchanged.
+
 ## 0.1.0
 
 - Initial skill: `scripts/opencode-permission-scan.py` — mines the opencode log and session DB for

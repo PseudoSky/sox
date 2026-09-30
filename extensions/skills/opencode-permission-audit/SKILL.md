@@ -17,7 +17,11 @@ python3 <skill-dir>/scripts/opencode-permission-scan.py --agent <id> --out /tmp/
 
 - Omit `--agent` (or pass no names) to cover every agent. `--agents-dir` overrides
   `~/.config/opencode/agents`; `--export path.tsv` writes raw rows
-  (`agent, ts, request_id, permission, cwd, session, outcome, answer, wasted_ms, script`).
+  (`agent, ts, request_id, permission, cwd, session, outcome, answer, wasted_ms, trigger, confidence, script`).
+- `--rank` stops after the leaderboard (fast triage across many agents). `--format json` emits the
+  whole report as structured JSON. `--since`/`--until` window the events; `--split <ISO>` adds a
+  before/after leaderboard. `--no-cache` bypasses the parsed-log cache (the cache only hits on a
+  quiesced log, since its key includes the live file's mtime).
 - **Constraints:** `rg`, never grep/find. Never unbounded `select data from part` (the DB is
   ~24 GB; a single Read part is ~958 lines). Read the report the tool writes — do not re-derive
   it from the DB by hand.
@@ -26,7 +30,19 @@ python3 <skill-dir>/scripts/opencode-permission-scan.py --agent <id> --out /tmp/
 
 Read the report's **SUMMARY** table (prompt count, wasted time, sessions affected, deny/auto-reject
 counts) and **SECTION 7 — AGENT BASH MAP & FIX SUGGESTION**, which prints the agent's installed
-map, a verdict, the guardrails it fails to restate, and a drop-in `permission.bash` block.
+map, a verdict, the guardrails it fails to restate, the segments that trigger prompts, and a drop-in
+`permission.bash` block.
+
+Before the numbered sections, the report leads with a **LEADERBOARD** — per agent: prompts,
+sessions prompted/total, asks-per-session, %-sessions, wasted sum/median, and low-confidence
+attribution count. Sections: 0 WASTED TIME · 1 PROMPTS (+1b FOREIGN) · 2 SESSIONS · 3 ANSWER
+EVIDENCE · 4 DENY SUMMARY (rule × agent) · 4b DENY CATALOG · 5 AUTO-REJECTS · 6 permission-family
+error shapes · 7 BASH MAP & FIX SUGGESTION · 8 AGENT RULE INVENTORY (each session's agent ruleset,
+from `message=created`).
+
+Attribution confidence is per prompt: `HIGH` when every recent stream line in the ask's `run` named
+the same agent, else `LOW` (interleaved run) — a LOW-confidence agent row means the count may
+over-attribute.
 
 The verdict is `DEFECT` when the map's catch-all is `ask` — with `"*": "ask"` every segment the map
 does not name prompts, and because a bash call is evaluated as one unit (see dynamics below) a
