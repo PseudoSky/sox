@@ -19,15 +19,20 @@
  * JSON-RPC channel.
  */
 
+import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { DurableJsonlSink, type JsonlSinkOptions } from './sink.js';
 import { NOOP_OTEL, type OtelMetricPoint, type OtelRuntime, type OtelState } from './otel-types.js';
 import { currentTraceId } from './trace.js';
+import { aggregateSnapshots, type MetricsSnapshotRecord, type RollupRow } from './rollup.js';
 
 export type Role = 'live-service' | 'test' | 'cli' | 'harness';
 export type LogSink = 'file' | 'stderr' | 'none';
 export type Outcome = 'started' | 'finished' | 'error';
+/** When a rollup pass ran — `'interval'` on the S1 cadence tick, `'shutdown'`
+ *  once on `handle.close()` before the sinks are closed. Never human-invoked. */
+export type RollupReason = 'interval' | 'shutdown';
 
 /**
  * Durable-metrics S3 (`5ac0a1a8…`): the RELEASE identity stamped onto every
@@ -147,6 +152,40 @@ export interface InitTelemetryOptions {
    * the three fields; a caller that cannot resolve one MUST pass `null`.
    */
   release?: ReleaseIdentity;
+  /**
+   * Durable-metrics S8 (`6df0d673…`): the trailing window (ms) the continuous
+   * rollup folds over. Re-derived on every tick (`from = now − window`, `to =
+   * now`) — consecutive rows deliberately OVERLAP and each is self-describing
+   * via `window.from`/`window.to`. Default `3_600_000` (one hour): long enough
+   * to smooth a 60 s cadence, short enough to reflect the current release.
+   *
+   * Typed config only (ADR-0013): no new environment var. The rollup runs on
+   * the S1 interval (`snapshotEveryMs`); `snapshotEveryMs: 0` disables BOTH the
+   * snapshot and the rollup (there is nothing to fold).
+   */
+  rollupWindowMs?: number;
+  /**
+   * Durable-metrics S8: directory for the rollup cache. Defaults to
+   * `<resolved logDir>/rollup`, i.e. production lands at
+   * `~/.adhd/sox-ecosystem/<service>/logs/rollup/`. Nesting under `logDir`
+   * (rather than a sibling of it) transfers the test-isolation seam for free —
+   * specs pass `logDir`, production does not — and is structurally
+   * collision-safe: a `rollup/` SUBDIRECTORY cannot match `DurableJsonlSink`'s
+   * anchored FILE regex (`sink.ts`'s `_pruneOldFiles`), so neither sink's prune
+   * can ever walk into the other's files.
+   */
+  rollupDir?: string;
+  /**
+   * Durable-metrics S8: retention cap for the rollup cache's rotated files.
+   * Default `30`. A rollup file is a DERIVED CACHE — every row is recomputable
+   * from the retained snapshots it folded — so pruning a rollup destroys no
+   * information. This is a cache-size knob, NOT primary retention, and is
+   * deliberately distinct from ADR-0014's report-first/no-auto-delete rule for
+   * the primary store snapshots. Hard-floored at 1 by the pruner.
+   *
+   * Precedence: `rollupMaxFiles ?? snapshotMaxFiles ?? maxFiles ?? 30`.
+   */
+  rollupMaxFiles?: number;
 }
 
 export interface TelemetryHandle {
@@ -326,6 +365,19 @@ const DEFAULT_SNAPSHOT_EVERY_MS = 60_000;
  *  component. `0`/negative is clamped to 1 by the pruner (never zero files). */
 const DEFAULT_SNAPSHOT_MAX_FILES = 30;
 
+/** Default trailing window (ms) the continuous rollup folds over (S8). One
+ *  hour: long enough to smooth the 60 s cadence, short enough that the newest
+ *  row reflects the current release. Re-derived each tick — overlap is
+ *  deliberate and self-describing, never summed. */
+const DEFAULT_ROLLUP_WINDOW_MS = 3_600_000;
+
+/** Default retention cap for the ROLLUP cache's rotated files (S8). A rollup
+ *  file is a DERIVED CACHE (recomputable from the retained snapshots), so this
+ *  is a cache-size knob, not primary retention (ADR-0014 governs the primary
+ *  store snapshots and is untouched). Kept ≥ the snapshot horizon (30) so the
+ *  cache spans every snapshot the window could read. `0`/negative clamps to 1. */
+const DEFAULT_ROLLUP_MAX_FILES = 30;
+
 /** Everything mutable this module owns, in one process-global object. */
 interface TelemetryRuntime {
   state: RuntimeState;
@@ -348,6 +400,32 @@ interface TelemetryRuntime {
   snapshotsWritten: number;
   snapshotInFlight: boolean;
   snapshotTimer: ReturnType<typeof setInterval> | null;
+  // ── Durable-metrics S8: continuous rollup ─────────────────────────────────
+  /** The SECOND `DurableJsonlSink`, for `metrics.rollup` rows. Separate
+   *  component/dir/retention from the snapshot sink. Null when `logSink` is not
+   *  `'file'`, which makes `rollupMetrics` a no-op. */
+  rollupSink: DurableJsonlSink | null;
+  /** Re-entrancy guard, mirroring `snapshotInFlight`: an interval tick that
+   *  fires while a prior rollup pass is still reading must not stack. */
+  rollupInFlight: boolean;
+  /** Trailing window (ms) re-derived each tick; `0`-safe (no records ⇒ no rows). */
+  rollupWindowMs: number;
+  /** The resolved log dir the snapshot files live in (for `rollupMetrics`'s
+   *  read). Derived from `opts.logDir ?? ecosystemHome()/…` — never hardcoded. */
+  snapshotDir: string | null;
+  /** The snapshot component name (`<service>.<role>.metrics-snapshot`) whose
+   *  files `rollupMetrics` enumerates. */
+  snapshotComponent: string;
+  /** mtime+size-keyed parse cache: an unchanged file is not re-read/re-parsed,
+   *  so a tick over N rotating files touches only the one that changed. */
+  rollupFileCache: Map<string, RollupCachedFile>;
+}
+
+/** A parsed snapshot file, cached by its (mtimeMs, size) identity. */
+interface RollupCachedFile {
+  mtimeMs: number;
+  size: number;
+  records: MetricsSnapshotRecord[];
 }
 
 function defaultState(): RuntimeState {
@@ -383,6 +461,12 @@ function newRuntime(): TelemetryRuntime {
     snapshotsWritten: 0,
     snapshotInFlight: false,
     snapshotTimer: null,
+    rollupSink: null,
+    rollupInFlight: false,
+    rollupWindowMs: DEFAULT_ROLLUP_WINDOW_MS,
+    snapshotDir: null,
+    snapshotComponent: '',
+    rollupFileCache: new Map(),
   };
 }
 
@@ -466,6 +550,10 @@ export function initTelemetry(opts: InitTelemetryOptions): TelemetryHandle {
   rt.recordsSinceSnapshot = 0;
   resetSelfCheck();
   configureSnapshotSink(opts, logSink);
+  // S8: the rollup sink + its read coordinates are configured alongside the
+  // snapshot sink, since the interval tick drives both. Its own component/dir/
+  // retention; the same `snapshotEveryMs` cadence gate applies.
+  configureRollupSink(opts, logSink);
 
   // 979c54… S1: one snapshot at startup, before any activity can accumulate.
   // A process that restarts (everything in a release window) may never reach
@@ -524,11 +612,29 @@ export function initTelemetry(opts: InitTelemetryOptions): TelemetryHandle {
     close: () => {
       // §5.8: a snapshot on graceful shutdown, so the final window of
       // non-recomputable state (counters, sink drop counts) is not lost.
-      void snapshotMetrics('shutdown').finally(() => {
-        void rt.state.otel.shutdown();
-        rt.state.sink?.close();
-        closeSnapshotSink();
-      });
+      // S8: then fold one last rollup over the just-written final snapshot —
+      // BEFORE the sinks close — so shutdown's own data is in the final row.
+      void (async () => {
+        await snapshotMetrics('shutdown');
+        await rollupMetrics('shutdown');
+      })()
+        .catch((err: unknown) => {
+          // `snapshotMetrics`/`rollupMetrics` are written never to reject, but
+          // this chain is `void`-floating: a future edit that lets either throw
+          // must not surface as an unhandled rejection (which Node terminates
+          // the process on by default). Traced via the runtime logger — never an
+          // empty catch — and placed BEFORE `.finally` so the sinks are still
+          // open when the warning is emitted.
+          log.warn('telemetry.close.failed', {
+            error: err instanceof Error ? err.message : String(err),
+          });
+        })
+        .finally(() => {
+          void rt.state.otel.shutdown();
+          rt.state.sink?.close();
+          closeSnapshotSink();
+          closeRollupSink();
+        });
     },
   };
 }
@@ -539,6 +645,7 @@ export function _resetTelemetryForTest(): void {
   rt.state.sink?.close();
   void rt.state.otel.shutdown();
   closeSnapshotSink();
+  closeRollupSink();
   stopSnapshotTimer();
   rt.state = defaultState();
   rt.otelReady = Promise.resolve();
@@ -546,6 +653,11 @@ export function _resetTelemetryForTest(): void {
   rt.snapshotEveryMs = DEFAULT_SNAPSHOT_EVERY_MS;
   rt.snapshotsWritten = 0;
   rt.warnedUnlabeled = false;
+  rt.rollupInFlight = false;
+  rt.rollupWindowMs = DEFAULT_ROLLUP_WINDOW_MS;
+  rt.snapshotDir = null;
+  rt.snapshotComponent = '';
+  rt.rollupFileCache.clear();
   resetSelfCheck();
 }
 
@@ -977,7 +1089,23 @@ function configureSnapshotSink(opts: InitTelemetryOptions, logSink: LogSink): vo
   const everyMs = rt.snapshotEveryMs;
   if (everyMs > 0) {
     rt.snapshotTimer = setInterval(() => {
-      void snapshotMetrics('interval');
+      // S8: the SAME already-`.unref()`d S1 handle drives the rollup — NO
+      // second timer, so the zero-handle property (BL-345) is preserved. The
+      // snapshot is awaited first so the just-written checkpoint (writeSync-
+      // durable when its promise resolves) is what the rollup folds in.
+      void (async () => {
+        await snapshotMetrics('interval');
+        await rollupMetrics('interval');
+      })().catch((err: unknown) => {
+        // The tick's chain is `void`-floating, so a rejection would be an
+        // unhandled rejection that Node terminates the process on. `snapshotMetrics`
+        // /`rollupMetrics` are written never to reject; this is the guard that
+        // keeps that an invariant rather than a hope. Traced via the runtime
+        // logger — never a silent or empty catch (BL-319).
+        log.warn('telemetry.interval.failed', {
+          error: err instanceof Error ? err.message : String(err),
+        });
+      });
     }, everyMs);
     // .unref() keeps `getActiveResourcesInfo()` empty and does not hold the
     // event loop open — measured in §5.9. Without it, opting into option D
@@ -997,6 +1125,192 @@ function stopSnapshotTimer(): void {
   if (rt.snapshotTimer !== null) {
     clearInterval(rt.snapshotTimer);
     rt.snapshotTimer = null;
+  }
+}
+
+// ── Continuous rollup (durable-metrics S8, 6df0d673…) ───────────────────────
+//
+// The library OWNS continuous rollup (owner directive): the S1 interval tick
+// calls `rollupMetrics('interval')` right after `snapshotMetrics('interval')`,
+// and `close()` calls it once with `'shutdown'`. There is no external repo tool
+// and no human `--apply` step. The aggregation itself is PURE (`rollup.ts`);
+// everything filesystem-shaped — enumerating the snapshot component's files,
+// async reading, mtime caching, writing the row — lives here.
+//
+// Reads are `fs.promises`-based and NEVER throw, so the event loop is never
+// blocked by a sync directory scan and a transient I/O fault only skips a tick
+// rather than breaking the process.
+
+function resolveRollupWindowMs(configured: number | undefined): number {
+  if (configured === undefined) return DEFAULT_ROLLUP_WINDOW_MS;
+  return Number.isFinite(configured) && configured > 0 ? configured : DEFAULT_ROLLUP_WINDOW_MS;
+}
+
+/** Local copy of `sink.ts`'s anchored-regex escaper (not exported there). */
+function escapeRegExp(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function isPlainRecord(v: unknown): v is Record<string, unknown> {
+  return typeof v === 'object' && v !== null && !Array.isArray(v);
+}
+
+/**
+ * Configure the S8 rollup sink — the additive sibling of
+ * `configureSnapshotSink`. A SECOND `DurableJsonlSink` with component
+ * `<service>.<role>.metrics-rollup`, its own dir (`<resolved logDir>/rollup`,
+ * or `rollupDir`), and its own cache cap (`rollupMaxFiles`).
+ */
+function configureRollupSink(opts: InitTelemetryOptions, logSink: LogSink): void {
+  const rt = runtime();
+  closeRollupSink();
+  // Resolve the read coordinates unconditionally (the sink itself is only
+  // created for a file sink) so a non-file sink never leaves a stale dir cached.
+  const resolvedLogDir = opts.logDir ?? path.join(ecosystemHome(), opts.service, 'logs');
+  rt.snapshotDir = resolvedLogDir;
+  rt.snapshotComponent = `${opts.service}.${opts.role}.metrics-snapshot`;
+  rt.rollupWindowMs = resolveRollupWindowMs(opts.rollupWindowMs);
+  if (logSink !== 'file') return;
+  const dir = opts.rollupDir ?? path.join(resolvedLogDir, 'rollup');
+  const sinkOpts: JsonlSinkOptions = { dir, component: `${opts.service}.${opts.role}.metrics-rollup` };
+  // Precedence: the rollup's own cap, else the snapshot's, else the event cap,
+  // else the rollup default (30). A rollup file is a DERIVED CACHE, so this is
+  // a cache-size knob, never primary retention (ADR-0014 is untouched).
+  sinkOpts.maxFiles = opts.rollupMaxFiles ?? opts.snapshotMaxFiles ?? opts.maxFiles ?? DEFAULT_ROLLUP_MAX_FILES;
+  rt.rollupSink = new DurableJsonlSink(sinkOpts);
+}
+
+function closeRollupSink(): void {
+  const rt = runtime();
+  rt.rollupSink?.close();
+  rt.rollupSink = null;
+}
+
+/**
+ * Read every persisted `metrics.snapshot` record under `dir` whose file name
+ * matches the snapshot component's full anchored shape (`<component>-<date>
+ * [.<epoch>-<seq>].jsonl`). `fs.promises` only — never a sync directory scan —
+ * and mtime+size-cached, so an unchanged file is neither re-read nor re-parsed
+ * (only the current day's file changes between ticks). NEVER throws: a missing
+ * dir, an unreadable file, or a malformed line is skipped.
+ */
+async function readSnapshotRecords(
+  dir: string,
+  component: string,
+  cache: Map<string, RollupCachedFile>,
+): Promise<MetricsSnapshotRecord[]> {
+  let names: string[];
+  try {
+    names = await fs.promises.readdir(dir);
+  } catch {
+    return [];
+  }
+  const anchor = new RegExp(`^${escapeRegExp(component)}-\\d{4}-\\d{2}-\\d{2}(\\.\\d+-\\d+)?\\.jsonl$`);
+  const matching = names.filter((f) => anchor.test(f)).sort();
+  const matchingSet = new Set(matching);
+  // Evict cache entries whose file was rotated/pruned away.
+  for (const key of [...cache.keys()]) {
+    if (!matchingSet.has(key)) cache.delete(key);
+  }
+
+  const out: MetricsSnapshotRecord[] = [];
+  for (const name of matching) {
+    const full = path.join(dir, name);
+    let stat: fs.Stats;
+    try {
+      stat = await fs.promises.stat(full);
+    } catch {
+      continue;
+    }
+    const cached = cache.get(name);
+    if (cached !== undefined && cached.mtimeMs === stat.mtimeMs && cached.size === stat.size) {
+      out.push(...cached.records);
+      continue;
+    }
+    let text: string;
+    try {
+      text = await fs.promises.readFile(full, 'utf8');
+    } catch {
+      continue;
+    }
+    const records: MetricsSnapshotRecord[] = [];
+    for (const line of text.split('\n')) {
+      if (line.length === 0) continue;
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(line);
+      } catch {
+        continue;
+      }
+      if (isPlainRecord(parsed)) records.push(parsed as MetricsSnapshotRecord);
+    }
+    cache.set(name, { mtimeMs: stat.mtimeMs, size: stat.size, records });
+    out.push(...records);
+  }
+  return out;
+}
+
+/**
+ * One continuous rollup pass: enumerate + async-read the `(service, role)`
+ * snapshot component files, fold the trailing window into one row per release
+ * identity (`aggregateSnapshots`), and write the rows to the rollup sink.
+ *
+ * Never throws and never rejects (it rides the interval tick), re-entrancy-
+ * guarded against a slow read overlapping the next tick, and a no-op when no
+ * rollup sink was configured (a non-file sink, or `snapshotEveryMs: 0`).
+ */
+export async function rollupMetrics(reason: RollupReason): Promise<void> {
+  const rt = runtime();
+  if (rt.rollupInFlight) return;
+  const sink = rt.rollupSink;
+  const dir = rt.snapshotDir;
+  if (sink === null || dir === null || rt.snapshotComponent === '') return;
+  rt.rollupInFlight = true;
+  try {
+    const now = Date.now();
+    const cache = rt.rollupFileCache ?? new Map<string, RollupCachedFile>();
+    rt.rollupFileCache = cache;
+    const records = await readSnapshotRecords(dir, rt.snapshotComponent, cache);
+    const rows: RollupRow[] = aggregateSnapshots(records, {
+      windowMs: rt.rollupWindowMs ?? DEFAULT_ROLLUP_WINDOW_MS,
+      now,
+    });
+    const ts = new Date(now).toISOString();
+    for (const row of rows) {
+      const record = {
+        ts,
+        level: 'info',
+        event: 'metrics.rollup',
+        service: rt.state.service,
+        role: rt.state.role,
+        // The envelope's `pid` is the process that WROTE this row (never a
+        // group's). The row's own `process_pid` — the process instance the
+        // aggregate describes, which differs after a restart — is carried
+        // alongside so a reader comparing rows keys off the right one.
+        pid: process.pid,
+        process_pid: row.process_pid,
+        release: row.release,
+        reason,
+        window: row.window,
+        snapshots_in_window: row.snapshots_in_window,
+        series: row.series,
+        self_check: row.self_check,
+        otel: row.otel,
+      };
+      sink.write(JSON.stringify(record) + '\n');
+    }
+  } catch (err) {
+    // A rollup failure must never break or slow the interval it rides, but it
+    // is NOT swallowed silently: an unexpected fault (the per-file read/parse
+    // catches above already handle the EXPECTED churn — a missing dir, a file
+    // rotating under us, a line still in flight) is traced so a broken rollup
+    // is a signal, not a silence (the BL-319 shape).
+    log.warn('metrics.rollup.failed', {
+      reason,
+      error: err instanceof Error ? err.message : String(err),
+    });
+  } finally {
+    rt.rollupInFlight = false;
   }
 }
 

@@ -54,6 +54,7 @@ import { fileURLToPath } from 'node:url';
 import {
   initTelemetry,
   snapshotMetrics,
+  rollupMetrics,
   telemetrySelfCheck,
   _resetTelemetryForTest,
 } from './index.js';
@@ -95,6 +96,21 @@ function readSnapshots(logDir: string): Array<Record<string, unknown>> {
     .flatMap((f) =>
       fs
         .readFileSync(path.join(logDir, f), 'utf8')
+        .split('\n')
+        .filter(Boolean)
+        .map((l) => JSON.parse(l) as Record<string, unknown>),
+    );
+}
+
+/** Every persisted `metrics.rollup` row under the `rollup/` subdir of a logDir. */
+function readRollupRows(rollupDir: string): Array<Record<string, unknown>> {
+  if (!fs.existsSync(rollupDir)) return [];
+  return fs
+    .readdirSync(rollupDir)
+    .filter((f) => f.includes('.metrics-rollup-'))
+    .flatMap((f) =>
+      fs
+        .readFileSync(path.join(rollupDir, f), 'utf8')
         .split('\n')
         .filter(Boolean)
         .map((l) => JSON.parse(l) as Record<string, unknown>),
@@ -268,14 +284,40 @@ describe('S3 — release identity on every metrics.snapshot (5ac0a1a8…)', () =
     expect(added).toEqual([]);
   });
 
-  it('acceptance (5): no rollup metrics exist yet at this HEAD — S8 owns them', async () => {
-    // The rollup sink/rows are S8's deliverable. This asserts the honest current
-    // state so the spec fails loudly the moment a rollup appears without the
-    // deep-equal-to-the-snapshot `release` contract wired in.
+  it('acceptance (5): rollupMetrics exists and every rollup row carries the deep-equal-to-the-snapshot release identity (S8)', async () => {
+    // S8 (6df0d673…) lands the rollup. This is the release-contract proof: a
+    // rollup row's `release` must be DEEP-EQUAL to the snapshot's — the S3
+    // identity, consumed verbatim — and null-filled (never `''`) when unset.
     const mod = (await import('./index.js')) as Record<string, unknown>;
-    expect('rollupMetrics' in mod).toBe(false);
+    expect(typeof mod['rollupMetrics']).toBe('function');
 
     const logDir = logDirFor(scratchHome, SERVICE);
+    const rollupDir = path.join(logDir, 'rollup');
+
+    // ── WITH release: the rollup row carries it verbatim. ──
+    initTelemetry({
+      service: SERVICE,
+      role: ROLE,
+      logSink: 'file',
+      otel: false,
+      snapshotEveryRecords: 0,
+      snapshotEveryMs: 0,
+      release: RELEASE,
+      rollupWindowMs: 3_600_000,
+    });
+    await snapshotMetrics('pull');
+    await rollupMetrics('interval');
+
+    const withRelease = readRollupRows(rollupDir);
+    expect(withRelease.length).toBeGreaterThanOrEqual(1);
+    for (const row of withRelease) {
+      expect(row['event']).toBe('metrics.rollup');
+      expect(row['release']).toEqual(RELEASE);
+    }
+
+    // ── WITHOUT release: null-filled, never `''`. ──
+    _resetTelemetryForTest();
+    fs.rmSync(path.join(scratchHome, SERVICE), { recursive: true, force: true });
     initTelemetry({
       service: SERVICE,
       role: ROLE,
@@ -285,7 +327,19 @@ describe('S3 — release identity on every metrics.snapshot (5ac0a1a8…)', () =
       snapshotEveryMs: 0,
     });
     await snapshotMetrics('pull');
-    expect(readSnapshots(logDir).some((r) => r['reason'] === 'rollup')).toBe(false);
+    await rollupMetrics('interval');
+
+    const withoutRelease = readRollupRows(rollupDir);
+    expect(withoutRelease.length).toBeGreaterThanOrEqual(1);
+    for (const row of withoutRelease) {
+      const rel = row['release'] as Record<string, unknown>;
+      expect(rel['version']).toBeNull();
+      expect(rel['artifact_sha256']).toBeNull();
+      expect(rel['git_sha']).toBeNull();
+      expect(rel['version']).not.toBe('');
+      expect(rel['artifact_sha256']).not.toBe('');
+      expect(rel['git_sha']).not.toBe('');
+    }
   });
 });
 

@@ -35,6 +35,9 @@ export {
   telemetrySelfCheck,
   otelReady,
   snapshotMetrics,
+  // Durable-metrics S8: the library-owned continuous rollup over the snapshot
+  // stream. Driven by the S1 interval tick + shutdown — never human-invoked.
+  rollupMetrics,
   registerSnapshotSection,
   resolveProcessRole,
   _recordChildTelemetry,
@@ -53,7 +56,14 @@ export type {
   StageSelfCheck,
   ChildTelemetryRecord,
   ChildrenTelemetrySelfCheck,
+  RollupReason,
 } from './runtime.js';
+
+// Durable-metrics S8: the PURE aggregation types. `aggregateSnapshots` and
+// `ROLLUP_SERIES` stay internal to the package (imported from `./rollup.js`),
+// keeping the published surface to the row/series shapes the emitted records
+// carry.
+export type { RollupRow, RollupSeries } from './rollup.js';
 export type { OtelAttributes, OtelMetricPoint, OtelRuntime, OtelSpanHandle, OtelState } from './otel-types.js';
 
 export {
