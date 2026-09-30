@@ -373,6 +373,19 @@ export class MainThreadMonitor {
           },
         });
         this.watcher.unref();
+        // (BL-f03d2bb6) `Worker#unref()` called synchronously above runs before
+        // the worker's MessagePort is live, so it does NOT take: the port
+        // re-refs the event loop when the worker comes online and the process
+        // can then never exit. Verified both ways — a bare
+        // `getActiveResourcesInfo()` shows a lone 'MessagePort' pinning the loop
+        // (stdin is already released on EOF), and re-`unref`ing on 'online'
+        // releases it. Without this the off-thread watcher keeps
+        // `soxe serve <mcp-server> --no-proxy` resident forever after the MCP
+        // client closes stdin instead of exiting (spec §2 M3). Attach the
+        // 'online' unref BEFORE the message listener below.
+        this.watcher.on('online', () => {
+          this.watcher?.unref();
+        });
         this.watcher.on('error', (err) => {
           log.warn('mainthread.watcher_failed', { error: err instanceof Error ? err.message : String(err) });
         });

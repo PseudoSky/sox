@@ -314,8 +314,15 @@ export async function serve(tools: RegisteredTool[], opts: ServeOptions): Promis
     }
   }
 
-  // Graceful shutdown: drain all transports before closing
+  // Graceful shutdown: drain all transports before closing.
+  //
+  // (BL-f03d2bb6) Idempotent: SIGTERM, SIGINT and stdin EOF all funnel here,
+  // and a repeat trigger joins the first invocation rather than re-closing
+  // every transport twice.
+  let shutdownStarted = false;
   const shutdown = async () => {
+    if (shutdownStarted) return;
+    shutdownStarted = true;
     for (const h of handles) {
       await h.close();
     }
@@ -323,6 +330,33 @@ export async function serve(tools: RegisteredTool[], opts: ServeOptions): Promis
 
   process.on('SIGTERM', shutdown);
   process.on('SIGINT', shutdown);
+
+  // (BL-f03d2bb6) MCP stdio lifecycle contract —
+  // docs/spec/service-lifecycle.md §2 M3: "Client closes stdin/the pipe →
+  // process exits." The SDK's StdioServerTransport (1.29.0) attaches only
+  // 'data'/'error' to stdin, never 'end'/'close', so nothing ever closes the
+  // transport on EOF and any transport the runtime still owns (e.g. a `uds`
+  // socket or `http` listener bound alongside stdio) keeps the event loop
+  // alive forever. Route stdin EOF through the SAME graceful shutdown SIGTERM
+  // runs, which closes every bound transport so the loop can drain.
+  if (modes.includes('stdio')) {
+    const onStdinEof = (): void => {
+      shutdown().catch((err: unknown) => {
+        log.error('mcp.shutdown.stdin_eof_error', {
+          error:
+            err instanceof Error
+              ? `${err.message}${err.stack ? `\n${err.stack}` : ''}`
+              : String(err),
+        });
+      });
+    };
+    process.stdin.once('end', onStdinEof);
+    process.stdin.once('close', onStdinEof);
+    // Race guard: stdin may already have reached EOF while the transports were
+    // binding above (e.g. spawned with stdin redirected from /dev/null), in
+    // which case neither listener will ever fire.
+    if (process.stdin.readableEnded || process.stdin.destroyed) onStdinEof();
+  }
 }
 
 /**
