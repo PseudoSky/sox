@@ -67,6 +67,19 @@ export interface InitTelemetryOptions {
   /** Records written between activity-triggered metric snapshots (BL-401 gap 6,
    *  §5.8 option C). `0` disables the activity trigger. Default 1000. */
   snapshotEveryRecords?: number;
+  /**
+   * Wall-clock floor (ms) between interval-triggered metric snapshots (979c54…,
+   * durable-metrics S1). Guards against the record trigger's blind spot: a
+   * process that restarts before it ever accumulates `snapshotEveryRecords`
+   * writes NOTHING, so a release window full of restarts leaves no durable
+   * series at all. `0` disables the interval trigger. Default 60_000.
+   *
+   * Typed config only (ADR-0013). `SOX_TRACE_SNAPSHOT_MS` remains as a debug
+   * OVERRIDE that replaces this interval; it is never the sole trigger (the
+   * default above always arms one). The timer is `.unref()`'d, so it adds no
+   * live handle (BL-345) — `getActiveResourcesInfo()` stays empty.
+   */
+  snapshotEveryMs?: number;
 }
 
 export interface TelemetryHandle {
@@ -229,6 +242,12 @@ const TELEMETRY_RUNTIME_SLOT_KEY: symbol = Symbol.for('@adhd/sox-telemetry.runti
  *  Declared here, above the singleton, because `newRuntime()` seeds it. */
 const DEFAULT_SNAPSHOT_EVERY_RECORDS = 1000;
 
+/** Default wall-clock floor (ms) between interval-triggered metric snapshots
+ *  (979c54…, durable-metrics S1). One minute is frequent enough that a
+ *  restart-heavy release window still accumulates a durable series, and cheap
+ *  enough that an idle process writes ~1.4k tiny lines/day. `0` disables. */
+const DEFAULT_SNAPSHOT_EVERY_MS = 60_000;
+
 /** Everything mutable this module owns, in one process-global object. */
 interface TelemetryRuntime {
   state: RuntimeState;
@@ -245,6 +264,8 @@ interface TelemetryRuntime {
   childTelemetryRing: ChildTelemetryRecord[];
   snapshotSink: DurableJsonlSink | null;
   snapshotEveryRecords: number;
+  /** Wall-clock floor (ms) for the interval trigger; `0` disables it. */
+  snapshotEveryMs: number;
   recordsSinceSnapshot: number;
   snapshotsWritten: number;
   snapshotInFlight: boolean;
@@ -278,6 +299,7 @@ function newRuntime(): TelemetryRuntime {
     childTelemetryRing: [],
     snapshotSink: null,
     snapshotEveryRecords: DEFAULT_SNAPSHOT_EVERY_RECORDS,
+    snapshotEveryMs: DEFAULT_SNAPSHOT_EVERY_MS,
     recordsSinceSnapshot: 0,
     snapshotsWritten: 0,
     snapshotInFlight: false,
@@ -360,9 +382,26 @@ export function initTelemetry(opts: InitTelemetryOptions): TelemetryHandle {
     otelState: wantOtel ? 'pending' : 'disabled',
   };
   rt.snapshotEveryRecords = opts.snapshotEveryRecords ?? resolveSnapshotEveryRecords();
+  rt.snapshotEveryMs = resolveSnapshotEveryMs(opts.snapshotEveryMs);
   rt.recordsSinceSnapshot = 0;
   resetSelfCheck();
   configureSnapshotSink(opts, logSink);
+
+  // 979c54… S1: one snapshot at startup, before any activity can accumulate.
+  // A process that restarts (everything in a release window) may never reach
+  // `snapshotEveryRecords`, so without this it persists nothing at all.
+  //
+  // Scheduled on the next check phase rather than awaited/invoked inline: the
+  // write is one TICK behind init regardless, and deferring it keeps the
+  // composition root's own synchronous bootstrap — and any snapshot it triggers
+  // explicitly, e.g. a first `telemetrySelfCheck()` pull — ordered AHEAD of this
+  // baseline line, so the durable series opens with 'startup'. No sink (logSink
+  // 'none'/'stderr') ⇒ nothing scheduled, nothing written (acceptance (f)).
+  if (rt.snapshotSink !== null) {
+    setImmediate(() => {
+      void snapshotMetrics('startup');
+    });
+  }
 
   if (wantOtel) {
     const generation = rt.state;
@@ -424,6 +463,7 @@ export function _resetTelemetryForTest(): void {
   rt.state = defaultState();
   rt.otelReady = Promise.resolve();
   rt.recordsSinceSnapshot = 0;
+  rt.snapshotEveryMs = DEFAULT_SNAPSHOT_EVERY_MS;
   rt.snapshotsWritten = 0;
   rt.warnedUnlabeled = false;
   resetSelfCheck();
@@ -680,8 +720,17 @@ export interface TelemetrySelfCheck {
    *  is currently at risk from a SIGKILL. `every_records: 0` means the activity
    *  trigger is off and only pull/shutdown snapshots occur. */
   /** BL-433: `file` is `null` — never `''` — when no snapshot sink is configured,
-   *  and otherwise the path the next snapshot lands in, written or not. */
-  metric_persistence: { written: number; records_since: number; every_records: number; file: string | null };
+   *  and otherwise the path the next snapshot lands in, written or not.
+   *  S1 (`979c54…`): `every_ms` mirrors the resolved interval cadence — `0`
+   *  means the interval trigger is off (the typed config was `0` and no
+   *  `SOX_TRACE_SNAPSHOT_MS` override was set). */
+  metric_persistence: {
+    written: number;
+    records_since: number;
+    every_records: number;
+    every_ms: number;
+    file: string | null;
+  };
 }
 
 function summarize(stats: DurationStats): { count: number; mean: number; min: number; max: number } {
@@ -757,6 +806,7 @@ function telemetrySelfCheckCore(): TelemetrySelfCheck {
       written: rt.snapshotsWritten,
       records_since: rt.recordsSinceSnapshot,
       every_records: rt.snapshotEveryRecords,
+      every_ms: rt.snapshotEveryMs,
       file: rt.snapshotSink?.plannedPath() ?? null,
     },
   };
@@ -771,15 +821,20 @@ function telemetrySelfCheckCore(): TelemetrySelfCheck {
 // needs its own durable copy — and only as often as that state changes.
 //
 // Triggers, per §5.8's costing:
-//   C (PRIMARY)  every N records written — no timer, so the zero-handle
-//                property (§3.3/BL-345) survives intact, and staleness is
-//                bounded by WORK DONE rather than wall-clock. An idle process
-//                has nothing to lose and snapshots nothing.
+//   C (PRIMARY)  every N records written — staleness bounded by WORK DONE rather
+//                than wall-clock. An idle process has nothing to lose.
+//   S1 (floor)   a wall-clock interval (`snapshotEveryMs`, default 60 s) and one
+//                snapshot at startup. The record trigger alone leaves a
+//                restart-heavy release window (a process that never accumulates
+//                N records before it is replaced) with NO durable series at all
+//                — proven: no post-cutover `metrics.snapshot` existed. The
+//                interval is `.unref()`'d, so the zero-handle property
+//                (§3.3/BL-345) still holds.
 //   A            opportunistically on the `telemetrySelfCheck()` pull.
 //   shutdown     on `handle.close()`.
-//   D (opt-in)   `SOX_TRACE_SNAPSHOT_MS` — an .unref()'d interval for a
-//                deliberate debugging session. OFF by default: it is the only
-//                option that costs a handle.
+//   D (override) `SOX_TRACE_SNAPSHOT_MS` REPLACES the S1 interval for a
+//                deliberate debugging session. It can only change the cadence,
+//                never disable the trigger.
 //
 // Option B (piggyback the periodic enrich tick) is deliberately NOT used:
 // persistence that silently stops when an unrelated subsystem changes is worse
@@ -793,6 +848,22 @@ function resolveSnapshotEveryRecords(): number {
   if (raw === undefined || raw === '') return DEFAULT_SNAPSHOT_EVERY_RECORDS;
   const n = Number.parseInt(raw, 10);
   return Number.isFinite(n) && n >= 0 ? n : DEFAULT_SNAPSHOT_EVERY_RECORDS;
+}
+
+/**
+ * S1: resolve the interval cadence from the typed config, with
+ * `SOX_TRACE_SNAPSHOT_MS` as a debug OVERRIDE that — when it parses to a
+ * positive integer — REPLACES the typed value entirely. The override can only
+ * ever change the cadence, never disable the trigger: an unset/invalid env var
+ * falls through to the typed config, whose default arms a timer. `0` (typed, no
+ * env override) disables the interval — but the startup snapshot still fires,
+ * because that path is not gated on this value.
+ */
+function resolveSnapshotEveryMs(configured: number | undefined): number {
+  const raw = Number.parseInt(process.env['SOX_TRACE_SNAPSHOT_MS'] ?? '', 10);
+  if (Number.isFinite(raw) && raw > 0) return raw;
+  if (configured === undefined) return DEFAULT_SNAPSHOT_EVERY_MS;
+  return Number.isFinite(configured) && configured >= 0 ? configured : DEFAULT_SNAPSHOT_EVERY_MS;
 }
 
 /**
@@ -815,14 +886,18 @@ function configureSnapshotSink(opts: InitTelemetryOptions, logSink: LogSink): vo
   rt.snapshotSink = new DurableJsonlSink(sinkOpts);
 
   stopSnapshotTimer();
-  const everyMs = Number.parseInt(process.env['SOX_TRACE_SNAPSHOT_MS'] ?? '', 10);
-  if (Number.isFinite(everyMs) && everyMs > 0) {
+  // S1: the interval is armed from the resolved typed cadence (`rt.snapshotEveryMs`,
+  // which already folds in the SOX_TRACE_SNAPSHOT_MS override), never from the
+  // env var alone — the env var is an OVERRIDE of the typed floor, not the
+  // trigger itself.
+  const everyMs = rt.snapshotEveryMs;
+  if (everyMs > 0) {
     rt.snapshotTimer = setInterval(() => {
       void snapshotMetrics('interval');
     }, everyMs);
     // .unref() keeps `getActiveResourcesInfo()` empty and does not hold the
     // event loop open — measured in §5.9. Without it, opting into option D
-    // would make the process immortal.
+    // (or the S1 floor) would make the process immortal.
     rt.snapshotTimer.unref();
   }
 }
@@ -904,7 +979,9 @@ function collectSnapshotSections(): Record<string, unknown> {
   return out;
 }
 
-export async function snapshotMetrics(reason: 'activity' | 'pull' | 'shutdown' | 'interval'): Promise<void> {
+export async function snapshotMetrics(
+  reason: 'startup' | 'activity' | 'pull' | 'shutdown' | 'interval',
+): Promise<void> {
   const rt = runtime();
   if (rt.snapshotInFlight) return;
   const sink = rt.snapshotSink;
