@@ -1,5 +1,31 @@
 # @adhd/sox-store-adapter
 
+## 0.13.2
+
+### Patch Changes
+
+- Repair the `_adapter_meta` corruption class (BL-336 / BL-341), carried by two commits:
+
+  - **`614b8bbf`** — transactional, key-class-aware `_adapter_meta` rebuild (`330fff44`). The
+    open-time repair is now a single `BEGIN IMMEDIATE … COMMIT` with a pre-swap self-verify, so a
+    failed rebuild ROLLBACKs and leaves the live `_adapter_meta` byte-identical instead of leaving a
+    half-built shadow table one step from dropping the real one. Duplicate rows are collapsed by each
+    key's _write class_ (`ADAPTER_META_KEY_CLASSES` — `identity` / `first-writer` / `latest-wins` /
+    `counter` / `latest-json`) rather than "keep the first row", unknown keys are quarantined (never
+    dropped), a NULL/empty (torn) value is dropped, and two distinct values on an `identity` key abort
+    the rebuild. Adds the `adapter_meta_value_valid` integrity probe for the value-validity half of
+    BL-341.
+  - **`59db6db4`** — sanitize `_adapter_meta` offline before `fts-rebuild` (`46748f3a`). A
+    damage-gated, byte-exact pre-imaged `sanitizeAdapterMetaOffline` runs on the exclusive source
+    before `VACUUM INTO`, so a store whose damaged autoindex otherwise aborts the rebuild with
+    `UNIQUE constraint failed: _adapter_meta.key` now repairs and completes (and the successful
+    sanitise clears the durable open-path circuit-breaker marker).
+
+  The new exports (`sanitizeAdapterMetaOffline`, `rebuildAdapterMetaTable`, `probeAdapterMetaValues`,
+  `AdapterMetaRepairReport`, the `ADAPTER_META_KEY_CLASSES` family) are purely additive — no existing
+  export is removed or narrowed — so this ships as a **patch** under the additive-API exception
+  (PUBLISHING.md §"Patch-for-additive-API exception"), and the change's nature is a bug fix either way.
+
 ## 0.13.1
 
 ### Patch Changes

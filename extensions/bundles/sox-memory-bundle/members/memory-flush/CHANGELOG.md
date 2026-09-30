@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.2.7
+
+### Patch Changes
+
+- Republish to carry the `_adapter_meta` corruption fix (commits 614b8bbf, 59db6db4); store-adapter is inlined via `devDependencies`, outside the `updateInternalDependencies: "patch"` cascade.
+
 ## 0.2.6
 
 ### Patch Changes

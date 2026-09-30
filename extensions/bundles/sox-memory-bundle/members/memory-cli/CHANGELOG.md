@@ -1,5 +1,26 @@
 # Changelog
 
+## 0.3.3
+
+### Patch Changes
+
+- Republish the memory-bundle members that inline `@adhd/sox-store-adapter`, so the `_adapter_meta`
+  corruption-class repair (BL-336 / BL-341) reaches installed bundles:
+
+  - **`614b8bbf`** — transactional, key-class-aware `_adapter_meta` rebuild (`330fff44`): the
+    open-time repair can no longer leave the store with a half-built `_adapter_meta` shadow table, and
+    it collapses duplicates by key write-class instead of "keep the first row".
+  - **`59db6db4`** — sanitize `_adapter_meta` offline before `fts-rebuild` (`46748f3a`): a damaged
+    store now rebuilds instead of aborting on `UNIQUE constraint failed: _adapter_meta.key`; memory-cli's
+    `fts-rebuild` prints the pre-repair image path and the `memory restore` undo command.
+
+  These members declare their inlined `@adhd/*` libs under `devDependencies` `workspace:*`, which
+  neither the nx graph nor `.changeset/config.json`'s `updateInternalDependencies: "patch"` traverses
+  (eb3d5c71) — so a store-adapter-only changeset would leave their registry locators
+  (`npm-package:@adhd/sox-extension-memory-{server,cli}@<version>`) unchanged while the bundled bytes
+  drift, and the clean-room smoke's checksum gate would fail. These explicit changesets are required,
+  not optional.
+
 ## 0.3.2
 
 ### Patch Changes

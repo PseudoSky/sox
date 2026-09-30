@@ -1,6 +1,6 @@
 {
   "name": "@adhd/sox-extension-memory-server",
-  "version": "1.4.3",
+  "version": "1.4.4",
   "description": "sox-memory MCP server (stdio/http/sse) — 23 memory_* tools over a Turso (default, multiprocess-write) or SQLite graph store, with hybrid recall and deterministic in-process enrichment",
   "license": "MIT",
   "publishConfig": {
