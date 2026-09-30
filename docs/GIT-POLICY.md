@@ -23,6 +23,12 @@ which this policy was written.
 
 - **Integration branch.** `main`. CI runs on every push and pull request targeting `main`
   ([`.github/workflows/ci.yml`](../.github/workflows/ci.yml) `on: push/pull_request`).
+- **How `main` is advanced.** Two mechanisms are sanctioned: (a) a **direct commit** from the single
+  writer (`git-manager`) on `main` in the repository root — no branch, no worktree — for trunk-based
+  segments; and (b) a **merge** of an integrated branch. Direct commits are the dominant mechanism in
+  practice: measured 2026-09-30, `main` has 2200 commits of which 212 are merges, and the recent
+  `S1 → S2 → S5` segment is a linear chain of single-parent commits on `main`. The merge-strategy
+  bullet below governs only case (b).
 - **Where a change forks from.** From the current tip of `main`, in a dedicated worktree (§4).
   Stacked work may fork from another feature branch; long-running branches merge `main` **into**
   themselves to stay current (`git log` shows `Merge branch 'main' into feat/…`) rather than
@@ -41,8 +47,9 @@ which this policy was written.
 
 ## 2. Push & review
 
-- **`main` is shared and is pushed** to `origin` (`git@github.com:PseudoSky/sox.git`). It may only
-  be advanced by a merge of an integrated branch, never by force.
+- **`main` is shared and is pushed** to `origin` (`git@github.com:PseudoSky/sox.git`). It is advanced
+  either by a direct commit from the single writer (§1) or by a merge of an integrated branch —
+  never by force.
 - **Author ≠ merger.** The implementer of a change does not approve it. `git-manager` *performs*
   merges; the approval decision must come from outside it — a reviewer, CI, or the human. A request
   to approve and merge the same change is refused on the approval half. (Separation-of-duties rule,
@@ -175,6 +182,13 @@ Schema version **1**. Each edit appends one dated entry; entries are never rewri
   [`commitlint.config.js`](../commitlint.config.js) `scope-enum` was corrected: `git-manager`,
   `architect`, `dispatcher`, and `doc-steward` added (evidence: agent-name scopes actually used in
   `git log` subjects that were warning under the enum).
+- **2026-09-30 — corrected integration mechanism** (`git-manager`, on owner authority for the
+  durable-metrics S3 commit). *Reason:* §1/§2 claimed `main` "may only be advanced by a merge of an
+  integrated branch", which is false of the repo and omitted the dominant convention. Evidence:
+  `main` carries a linear chain of single-parent direct commits (`fc23e143` S1 → `9a9b0c6e` S2 →
+  `4435b5a5` S5), and 212 of its 2200 commits are merges — both mechanisms are used. Added the
+  "How `main` is advanced" bullet to §1 and restated §2's advance rule to name both; the
+  merge-strategy bullet now explicitly governs only the merge case. No other rule changed.
 - **Operation log.** This repository has **no dedicated operation-log file**; the tool contract
   requires one entry per git operation (timestamp, operation, target, outcome, policy revision).
   Until a location is chosen by the owner, the record for a `git-manager` operation lives in this
