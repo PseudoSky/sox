@@ -1,5 +1,12 @@
 # @adhd/sox-store-adapter
 
+## 0.13.1
+
+### Patch Changes
+
+- Updated dependencies [97e6b4a]
+  - @adhd/sox-telemetry@0.4.0
+
 ## 0.13.0
 
 ### Minor Changes

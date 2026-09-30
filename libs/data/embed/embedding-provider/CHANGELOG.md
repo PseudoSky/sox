@@ -1,5 +1,12 @@
 # @adhd/sox-embedding-provider
 
+## 0.6.3
+
+### Patch Changes
+
+- Updated dependencies [97e6b4a]
+  - @adhd/sox-telemetry@0.4.0
+
 ## 0.6.2
 
 ### Patch Changes

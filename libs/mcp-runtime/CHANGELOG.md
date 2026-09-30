@@ -1,5 +1,12 @@
 # @adhd/sox-mcp-runtime
 
+## 0.3.5
+
+### Patch Changes
+
+- Updated dependencies [97e6b4a]
+  - @adhd/sox-telemetry@0.4.0
+
 ## 0.3.4
 
 ### Patch Changes

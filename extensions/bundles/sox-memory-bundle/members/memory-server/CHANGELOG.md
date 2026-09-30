@@ -1,5 +1,31 @@
 # Changelog
 
+## 1.4.3
+
+### Patch Changes
+
+- Ship the durable-metrics substrate the memory-server bundle now inlines
+
+  The bundled `memory-server` entrypoint changed this release and must move with
+  it, but Changesets cannot derive that: `@adhd/sox-telemetry` is declared under
+  `devDependencies` (`workspace:*`), and `updateInternalDependencies: "patch"`
+  cascades only through `dependencies`/`peerDependencies`. Without an explicit
+  changeset the member's version — and therefore its `npm-package:` registry
+  locator — would stay put while its inlined `dist` drifted, and the clean-room
+  smoke would fail on a checksum mismatch (eb3d5c71).
+
+  The bundle now inlines and registers the durable-metrics substrate:
+
+  - **S1–S8** — wall-clock snapshot floor + startup snapshot, two-tier snapshot
+    retention cap, release identity on persisted snapshots, the `store_metrics`
+    snapshot section (`metrics-snapshot-section.ts` + its `index.ts`
+    registration), persisted main-thread blocking golden, read-only metrics
+    report/compare CLI, the substrate docs/ADR, and the library-owned continuous
+    rollup.
+  - **C1** — release tagging: the server resolves its own bundled release
+    (version, `artifact_sha256`, git sha) from its sibling `package.json` and
+    stamps it on the durable records it emits.
+
 ## 1.4.2
 
 ### Patch Changes
