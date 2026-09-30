@@ -1,0 +1,54 @@
+{
+  "$schema": "https://your-registry/schemas/extension/v2.json",
+  "id": "opencode-permission-audit",
+  "type": "skill",
+  "title": "opencode-permission-audit — find why an opencode agent is prompted, fix its permission map",
+  "description": "Use this skill when an opencode agent prompts for permission on every command, when a dispatched subagent's command fails with a permission error ('The user rejected permission…' or 'The user has specified a rule which prevents you from using this specific tool call'), or when you need to audit and repair an agent's permission.bash map. Ships a scanner (scripts/opencode-permission-scan.py) that mines the opencode log and session DB for every permission ask, inferred answer, working directory, wasted time, deny catalog and auto-reject, plus a per-agent bash-map verdict with a drop-in corrected permission block. Includes the opencode inspection cheatsheet and the rules of permission resolution (merge order, last-match-wins, agent-map shadowing, atomic bash calls, non-interactive ask auto-reject).",
+  "compatibility": {
+    "host": ">=1.0.0 <2.0.0"
+  },
+  "license": "MIT",
+  "author": "sox-ecosystem",
+  "keywords": [
+    "opencode",
+    "permissions",
+    "permission-audit",
+    "agent-performance",
+    "blockers",
+    "prompt-audit"
+  ],
+  "runtime": "declarative",
+  "entrypoint": "SKILL.md",
+  "run_interface": {
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "agent": {
+          "type": "string",
+          "description": "Agent id to audit (e.g. git-manager). Omit to audit every installed agent."
+        },
+        "out_path": {
+          "type": "string",
+          "description": "Path for the full report. Defaults to a temp file named opencode-perms-<agent>-*.txt."
+        },
+        "agents_dir": {
+          "type": "string",
+          "description": "Directory of installed agent .md files. Defaults to ~/.config/opencode/agents."
+        }
+      }
+    },
+    "output_schema": {
+      "type": "object",
+      "properties": {
+        "report_path": { "type": "string", "description": "Path to the written report." },
+        "permission_prompts": { "type": "integer", "description": "Number of permission prompts attributed to the agent." },
+        "verdict": { "type": "string", "description": "Section 7 verdict for the agent's bash map (e.g. DEFECT / ok)." },
+        "suggested_permission_bash": { "type": "object", "description": "Drop-in corrected permission.bash block." }
+      }
+    }
+  },
+  "install": {
+    "type": "skill",
+    "hosts": ["claude", "opencode"]
+  }
+}

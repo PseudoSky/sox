@@ -1,5 +1,24 @@
 # Changelog
 
+## 0.2.0
+
+- **`"*": "ask"` → `"*": "allow"` — the catch-all was the bug, and 0.1.10 grew the
+  allow-list without fixing it.** An agent's bash map is evaluated LAST and its own `"*"`
+  decides every segment it does not name; `ask` there means every unnamed segment prompts,
+  and since a bash call is ONE atomic unit (split on `;`/`&&`/`|`), a single unlisted
+  segment (`echo`, `tail`, `rg`) asks the WHOLE call. Non-interactively an `ask`
+  auto-rejects, so 0.1.10's 123-rule list still failed on any batch containing one new
+  command. With `"*": "allow"` first and the guardrails already ordered last, the map
+  runs the measured working set and the guardrails still win the last match. Verified on
+  real traffic with a temp probe agent: 6/6 allow-batches ran, 2/2 deny-samples blocked.
+- **§14 — permission-audit playbook.** New section: load the `opencode-permission-audit`
+  skill, run its scanner, read SECTION 7's verdict + drop-in map, apply, re-verify with the
+  temp-probe harness; the two governing dynamics (a call is one atomic unit; `"*": "ask"`
+  first is a defect) plus the leaked-ruleset diagnostic. §9's permission bullet now points
+  here instead of half-restating the rule.
+- **`dependencies: ["opencode-permission-audit"]`** — the scanning tool + cheatsheet ship as a
+  skill (an agent install places ONLY its entrypoint, so an agent cannot carry the script).
+
 ## 0.1.10
 
 - **The bash allow-list grows 11 → 123 rules, derived from the real transcript, not from guessing.**

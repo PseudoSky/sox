@@ -138,7 +138,7 @@ Implementation: use `promptfoo` (side-by-side matrix, model-graded asserts, CI g
 - Keep always-loaded surfaces minimal: agent frontmatter + short body; CLAUDE.md small.
 - Push depth into lazily-loaded artifacts: skills (metadata preloaded, body on demand), `{file:...}` prompt substitution in opencode.json, and reference files read on demand (like `agent-manager-refs.md` — deliberately in `refs/`, never in `agents/`: opencode scans `agents/` and would register it as an agent).
 - For opencode agents: never leave a legacy `tools:` field in markdown (it silently converts to permission rules and clobbers JSON `permission.task` patterns). `permission` does NOT override `opencode.json` — the maps MERGE with the agent's rules **last**, so an agent rule beats a config rule, and a rule the agent does not restate still applies.
-- **Write the agent's measured working set into its `permission.bash`, not just its guardrails.** An agent declaring no bash map inherits the config and defaults unmatched segments to `allow`; once it declares one, its own `"*"` rule decides every unmatched segment. Under `"*": "ask"` a thin list means every unlisted segment prompts — and in any non-interactive run (`opencode run`, a dispatched subagent) an `ask` is auto-rejected, so the command **fails** rather than running. Derive the allowed set from the agent's actual command stream (`agent-failure-report`, the opencode transcript store) and order guardrails last so they win the last-match.
+- **Write the agent's measured working set into its `permission.bash`, not just its guardrails** — derive it from the agent's actual command stream (`agent-failure-report`, the opencode transcript store), and order guardrails last (§14).
 - Claude Code: subagent/skill dirs hot-reload within seconds (restart only for newly created dirs); inline `mcpServers` in a subagent keeps that server's tools OUT of the parent context.
 - **Gap to design around**: opencode loads ALL enabled MCP tool schemas into context at startup (no ToolSearch). Enable few MCP servers globally; scope heavy tools to skills/subagents; use `mcp__<server>` permission patterns to trim.
 
@@ -172,3 +172,16 @@ Corollary — **a claim is decided by reading the artifact, never by a tool's re
 ## 13. Backlog traffic routes through `backlog-operator`
 
 **No agent-manager-owned process writes the backlog graph directly.** Every backlog action — scan, file, enrich, transition, claim, relate, resolve — is routed through `backlog-operator`, the fixed-playbook operator, via a `task` dispatch. You never call a backlog write verb yourself, and you never hand-edit a `BACKLOG.md`. Why: one operator owns the preconditions and the read-back checks, and the traffic stays out of your context instead of consuming it.
+
+## 14. Permission auditing — the opencode playbook
+
+When an agent prompts on commands it should run (or a dispatched subagent's command fails with a permission error), load the **`opencode-permission-audit`** skill and follow it: run its scanner → read SECTION 7's verdict + drop-in map → apply → re-verify. The cheatsheet (storage paths, DB shapes, log grammar, permission dynamics) lives in that skill's SKILL.md — read it there; do not restate it here.
+
+The two dynamics that decide every fix:
+
+- **A bash call is ONE unit.** opencode splits a compound command on `;`/`&&`/`|` and asks/denies the WHOLE call if ANY segment does — nothing partially runs. One unlisted segment (`echo`, `tail`, `rg`) poisons an otherwise-allowed batch.
+- **`"*": "ask"` first is a defect.** An agent's bash map is evaluated LAST (after the built-in `*` allow and the global `opencode.json`), last-match-wins, and its own `"*"` decides every segment it does not name. `ask` there means every unnamed segment prompts; non-interactively that is auto-rejected, so the call FAILS. The correct map is `"*": "allow"` first, the agent's own ask/deny entries, then every guardrail LAST so it still wins the last match.
+
+Cheapest diagnostic: trigger one denied command and read the error — a deny error embeds the ENTIRE merged ruleset (built-in → global → agent), i.e. the live effective config.
+
+Verify any change with the temp-probe harness, never a lint: write `~/.config/opencode/agents/<id>-probe.md` with the candidate `permission` map, `opencode run --agent <id>-probe "<commands>"` — a non-interactive `ask` auto-rejects, so the outcome is binary — then delete the probe.
