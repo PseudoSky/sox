@@ -137,11 +137,29 @@
  * @module
  */
 
-import { closeSync, openSync, readSync, renameSync, statSync } from 'node:fs';
+import {
+  closeSync,
+  mkdirSync,
+  openSync,
+  readFileSync,
+  readSync,
+  renameSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from 'node:fs';
+import { join } from 'node:path';
 import { log } from '@adhd/sox-telemetry';
 import { createFTSDialect } from './fts-dialect.js';
 import type { StoreAdapter } from './types.js';
 import { staleSidecarPath } from './sidecar-retention.js';
+import { leaseDirPath } from './store-lease.js';
+import { openTursoConnection } from './turso-driver-host.js';
+import {
+  ADAPTER_META_KEY_CLASSES,
+  JSON_ADAPTER_META_KEYS,
+  type AdapterMetaKeyClass,
+} from './adapter-meta.js';
 import {
   markDeepVerifyOwed,
   readDeepVerifyObligation,
@@ -157,6 +175,7 @@ import {
 export type IntegrityProbe =
   | 'wal_identity'
   | 'adapter_meta_unique'
+  | 'adapter_meta_value_valid'
   | 'btree_index_populated'
   | 'fts_index_live'
   | 'json_column_valid'
@@ -1814,10 +1833,110 @@ export async function probeAdapterMetaUnique(adapter: StoreAdapter): Promise<Int
         probeValidated: true,
       },
     ];
-  } catch {
-    // Table absent (fresh store) — nothing to verify.
+  } catch (err) {
+    // Table absent (fresh store) — nothing to verify. Traced rather than
+    // silent so a genuinely unreadable table is distinguishable from a fresh
+    // store in the log stream.
+    log.debug('store_adapter.meta_unique_probe.read_failed', {
+      db_path: adapter.config.dbPath,
+      error: err instanceof Error ? err.message : String(err),
+      reason: 'no _adapter_meta table (fresh store) — nothing to verify',
+    });
     return [];
   }
+}
+
+// ── Probe: _adapter_meta VALUE validity (BL-341) ─────────────────────────────
+
+/**
+ * (BL-341) `_adapter_meta` is `(key TEXT PRIMARY KEY, value TEXT NOT NULL)`,
+ * yet the live store carried a row whose `value` is **NULL**. Two consequences:
+ *
+ * 1. It is schema-impossible, and it is the reason the old
+ *    `repairAdapterMeta` failed *every* store open with
+ *    `NOT NULL constraint failed: _adapter_meta_repair.value (19)` — the copy
+ *    step inserted the NULL into the `NOT NULL` shadow table. That failure is
+ *    why the corruption could never self-heal (~1300 `repair_failed`/day).
+ * 2. A torn/truncated value on a JSON-class key (`deep_verify_state`,
+ *    `last_integrity`) parses as garbage — `Unexpected token 'i',
+ *    "ix_node_kind_live" is not valid JSON` — and is silently treated as
+ *    unset, which is why BL-341's damage left the deep-verify state unreadable.
+ *
+ * This probe is the FAST-tier trigger that lets a rebuild run on an ordinary
+ * open, without an O(database) deep pass: it flags (a) any NULL/empty value
+ * (torn row) and (b) any non-empty value on a JSON-class key that fails
+ * `json_valid`. Both are repaired by {@link rebuildAdapterMetaTable}.
+ *
+ * Deliberately NOT flagged here: duplicate keys (that is
+ * {@link probeAdapterMetaUnique}) and unknown keys (they are quarantined by the
+ * rebuild but are not, on their own, value corruption).
+ */
+export async function probeAdapterMetaValues(adapter: StoreAdapter): Promise<IntegrityFinding[]> {
+  let rows: { key: string; value: string | null; jv: number }[];
+  try {
+    // `ORDER BY rowid` forces the table btree — never the (possibly broken)
+    // autoindex (same reasoning as `probeAdapterMetaUnique`).
+    const res = await adapter.executeAll<{ key: string; value: string | null; jv: number }>(
+      `SELECT key, value, json_valid(value) AS jv FROM _adapter_meta ORDER BY rowid`,
+    );
+    rows = res.rows;
+  } catch (err) {
+    // Table absent (fresh store) — nothing to verify.
+    log.debug('store_adapter.meta_value_probe.read_failed', {
+      db_path: adapter.config.dbPath,
+      error: err instanceof Error ? err.message : String(err),
+      reason: 'no _adapter_meta table (fresh store) — nothing to verify',
+    });
+    return [];
+  }
+
+  const isTorn = (r: { value: string | null }): boolean =>
+    r.value === null || r.value === undefined || String(r.value).trim() === '';
+  const torn = rows.filter(isTorn);
+  const badJson = rows.filter((r) => {
+    if (isTorn(r)) return false;
+    return ADAPTER_META_KEY_CLASSES[r.key] === 'latest-json' && Number(r.jv) !== 1;
+  });
+
+  if (torn.length === 0 && badJson.length === 0) {
+    return [
+      {
+        probe: 'adapter_meta_value_valid',
+        object: '_adapter_meta',
+        status: 'ok',
+        detail: 'Every _adapter_meta value is non-null and JSON-class values are valid JSON.',
+        repairable: false,
+        backlog: 'BL-341',
+        probeValidated: true,
+      },
+    ];
+  }
+
+  const parts: string[] = [];
+  if (torn.length > 0) {
+    parts.push(
+      `${torn.length} torn (NULL/empty) value(s) [${torn.map((r) => r.key).join(', ')}]`,
+    );
+  }
+  if (badJson.length > 0) {
+    parts.push(
+      `${badJson.length} non-JSON value(s) in JSON-class key(s) [${badJson.map((r) => r.key).join(', ')}]`,
+    );
+  }
+  return [
+    {
+      probe: 'adapter_meta_value_valid',
+      object: '_adapter_meta',
+      status: 'damaged',
+      detail:
+        `${parts.join('; ')}. A NULL value is schema-impossible (value TEXT NOT NULL) and ` +
+        `blocks persisting the integrity verdict; both shapes are rebuilt by dropping the torn ` +
+        `row and quarantining the unparseable value.`,
+      repairable: true,
+      backlog: 'BL-341',
+      probeValidated: true,
+    },
+  ];
 }
 
 // ── Probe: JSON column validity (BL-342) ─────────────────────────────────────
@@ -2628,6 +2747,10 @@ export async function verifyStoreIntegrity(
     if (f) findings.push(f);
   }
   if (wanted('adapter_meta_unique')) findings.push(...(await probeAdapterMetaUnique(adapter)));
+  // (BL-341) FAST tier deliberately: a NULL/non-JSON `_adapter_meta` value is a
+  // one-table scan (<0.5 ms) and is the trigger that lets a rebuild heal the
+  // corruption on an ordinary open, without an O(database) deep pass.
+  if (wanted('adapter_meta_value_valid')) findings.push(...(await probeAdapterMetaValues(adapter)));
   if (wanted('btree_index_populated')) findings.push(...(await probeBtreeIndexes(adapter)));
   if (wanted('fts_index_live')) findings.push(...(await probeFtsIndexes(adapter, opts?.ftsSampleSize ?? 3)));
   // One scan serves both JSON probes — `json_empty_array_null` (BL-428) rides
@@ -2778,30 +2901,543 @@ export function summarizeBackupIntegrity(report: IntegrityReport): {
 
 // ── Repairs ──────────────────────────────────────────────────────────────────
 
-/**
- * Rebuild `_adapter_meta` from scratch, keeping the EARLIEST row per key.
- *
- * `DELETE` cannot be used: with the unique index missing the duplicate rows'
- * entries, Turso raises `Corrupt database: IdxDelete: no matching index entry
- * found` (measured). Rebuilding sidesteps the broken index entirely, and the
- * earliest `created_at` is the meaningful one (first stamp wins).
- */
-async function repairAdapterMeta(adapter: StoreAdapter): Promise<void> {
-  const res = await adapter.executeAll<{ key: string; value: string }>(
-    `SELECT key, value FROM _adapter_meta ORDER BY rowid`,
-  );
-  const keep = new Map<string, string>();
-  for (const row of res.rows) if (!keep.has(row.key)) keep.set(row.key, row.value);
+// ── Repairs: _adapter_meta rebuild (BL-336 / BL-341) ─────────────────────────
 
-  await adapter.exec(`DROP TABLE IF EXISTS _adapter_meta_repair`);
-  await adapter.exec(
-    `CREATE TABLE _adapter_meta_repair (key TEXT PRIMARY KEY, value TEXT NOT NULL)`,
-  );
-  for (const [k, v] of keep) {
-    await adapter.executeRun(`INSERT INTO _adapter_meta_repair (key, value) VALUES (?, ?)`, [k, v]);
+/**
+ * The read/write/DDL surface {@link rebuildAdapterMetaTable} needs. Deliberately
+ * narrower than `StoreAdapter`: the raw driver handle used by the offline
+ * sanitiser and a `StoreAdapter` both satisfy it through a thin shim, so the
+ * one rebuild primitive serves both the open-time repair and the offline path.
+ */
+export interface RawMetaExecutor {
+  all<T>(sql: string, args?: unknown[]): Promise<{ rows: T[] }>;
+  run(sql: string, args?: unknown[]): Promise<unknown>;
+  exec(sql: string): Promise<unknown>;
+}
+
+/** What a rebuild did. `changed: false` ⇒ the table was already healthy and
+ *  NOTHING was written (the write-free reopen behaviour is preserved). */
+export interface AdapterMetaRepairReport {
+  /** Rows carried into the rebuilt table (one per kept key). */
+  kept: number;
+  /** Rows moved to `_adapter_meta_quarantine` (unknown keys / non-JSON values). */
+  quarantined: number;
+  /** Torn rows (NULL/empty value) discarded — they carried no data. */
+  dropped: number;
+  /** `false` ⇒ healthy, no transaction and no writes at all. */
+  changed: boolean;
+  /** Distinct keys that were quarantined (for reporting). */
+  quarantinedKeys: string[];
+}
+
+/**
+ * Thrown when an IDENTITY-class `_adapter_meta` key (e.g. `adapter_type`,
+ * `migrated_from`) holds two DISTINCT non-null values. Guessing which is
+ * authoritative could open a store through the wrong engine — so the rebuild
+ * ABORTS with this typed error and writes NOTHING.
+ */
+export class EAdapterMetaIdentityConflict extends Error {
+  public readonly code = 'E_ADAPTER_META_IDENTITY_CONFLICT';
+  constructor(
+    public readonly key: string,
+    public readonly values: readonly string[],
+  ) {
+    super(
+      `_adapter_meta identity key "${key}" holds ${values.length} distinct value(s) ` +
+        `[${values.join(', ')}]; refusing to guess which is authoritative — rebuild aborted, ` +
+        `_adapter_meta left untouched.`,
+    );
+    this.name = 'EAdapterMetaIdentityConflict';
   }
-  await adapter.exec(`DROP TABLE _adapter_meta`);
-  await adapter.exec(`ALTER TABLE _adapter_meta_repair RENAME TO _adapter_meta`);
+}
+
+const ADAPTER_META_TABLE = '_adapter_meta';
+const ADAPTER_META_SHADOW_TABLE = '_adapter_meta_repair';
+const ADAPTER_META_QUARANTINE_TABLE = '_adapter_meta_quarantine';
+
+interface RawMetaRow {
+  rowid: number;
+  key: string;
+  value: string | null;
+  jv: number;
+}
+
+interface QuarantineRow {
+  rowid: number;
+  key: string;
+  value: string | null;
+  reason: 'unknown_key' | 'invalid_json';
+}
+
+/** Adapt a `StoreAdapter` to the narrow {@link RawMetaExecutor} surface. */
+function asRawMetaExecutor(adapter: StoreAdapter): RawMetaExecutor {
+  return {
+    all: <T,>(sql: string, args?: unknown[]) =>
+      adapter.executeAll<T>(sql, args) as Promise<{ rows: T[] }>,
+    run: (sql: string, args?: unknown[]) => adapter.executeRun(sql, args),
+    exec: (sql: string) => adapter.exec(sql),
+  };
+}
+
+/**
+ * Rebuild `_adapter_meta` transactionally, collapsing duplicates by key class,
+ * dropping torn (NULL/empty) rows, and quarantining unknown keys and
+ * non-JSON JSON-class values.
+ *
+ * ── Why a rebuild at all ─────────────────────────────────────────────────────
+ * `DELETE` cannot be used to remove duplicates: with the unique index missing
+ * the rows' entries, Turso raises `Corrupt database: IdxDelete: no matching
+ * index entry found` (measured). Rebuilding the table sidesteps the broken
+ * index entirely — and a fresh table gets a fresh, consistent
+ * `sqlite_autoindex__adapter_meta_1`, which is what clears BL-341's ~30
+ * missing-autoindex-entries damage as a side effect.
+ *
+ * ── Why it is transactional (BL-341) ─────────────────────────────────────────
+ * The old rebuild ran `DROP TABLE`/`CREATE`/`INSERT`/`RENAME` as five
+ * auto-committed statements with no `BEGIN`. When the INSERT hit the NULL
+ * value's `NOT NULL` constraint, the shadow table was left half-built and the
+ * real `_adapter_meta` was one step from being dropped — the process simply
+ * failed and retried on the next open, forever. Wrapping the whole sequence in
+ * ONE `BEGIN IMMEDIATE` … `COMMIT` means any throw ROLLBACKs and leaves
+ * `_adapter_meta` byte-identical (proven in
+ * `adapter-meta-repair.330fff44.spec.ts`). A **self-verify** runs before the
+ * final swap, so a malformed rebuild can never replace the live table.
+ *
+ * ── Key classes, not "keep the first row" (BL-336) ───────────────────────────
+ * "Keep the earliest row per key" is wrong for `adapter_version` (latest-wins)
+ * and would silently pin a stale version; it is right for `created_at`
+ * (first-writer). The class table in `adapter-meta.ts` is the single source of
+ * truth. An unknown key is NEVER dropped — it is quarantined — and two distinct
+ * values on an identity key ABORT the rebuild.
+ *
+ * `dryRun: true` computes and returns the report with NO write of any kind
+ * (including no quarantine-table creation).
+ */
+export async function rebuildAdapterMetaTable(
+  x: RawMetaExecutor,
+  opts?: { dryRun?: boolean },
+): Promise<AdapterMetaRepairReport> {
+  const dryRun = opts?.dryRun === true;
+
+  let rows: RawMetaRow[];
+  try {
+    // (1) Table btree, never GROUP BY / the autoindex (see probeAdapterMetaUnique).
+    const res = await x.all<RawMetaRow>(
+      `SELECT rowid AS rowid, key AS key, value AS value, json_valid(value) AS jv ` +
+        `FROM ${ADAPTER_META_TABLE} ORDER BY rowid`,
+    );
+    rows = res.rows;
+  } catch (err) {
+    // Table absent (fresh store) — nothing to rebuild, and NOT an error.
+    log.debug('store_adapter.meta_repair.table_absent', {
+      error: err instanceof Error ? err.message : String(err),
+      reason: 'no _adapter_meta table (fresh store) — nothing to rebuild',
+    });
+    return { kept: 0, quarantined: 0, dropped: 0, changed: false, quarantinedKeys: [] };
+  }
+
+  const quarantine: QuarantineRow[] = [];
+  const quarantinedKeys: string[] = [];
+  let dropped = 0;
+  // Rows collected per key, in rowid-ascending order (earliest first).
+  const perKey = new Map<string, { rowid: number; value: string }[]>();
+  // First non-null value seen per key, for the cheap changed-detection.
+  const firstSeen = new Map<string, string>();
+
+  for (const row of rows) {
+    const raw = row.value;
+    // (3) A NULL / empty value carries no data — dropped for ANY key.
+    if (raw === null || raw === undefined || String(raw).trim() === '') {
+      dropped++;
+      continue;
+    }
+    const value = String(raw);
+    const cls = ADAPTER_META_KEY_CLASSES[row.key];
+    // (2) Unknown key — quarantined, NEVER dropped.
+    if (cls === undefined) {
+      quarantine.push({ rowid: row.rowid, key: row.key, value, reason: 'unknown_key' });
+      quarantinedKeys.push(row.key);
+      continue;
+    }
+    // (3) A non-empty value on a JSON-class key that is not valid JSON is
+    // corruption — quarantined, never normalised (readers treat it as null).
+    if (cls === 'latest-json' && Number(row.jv) !== 1) {
+      quarantine.push({ rowid: row.rowid, key: row.key, value, reason: 'invalid_json' });
+      quarantinedKeys.push(row.key);
+      continue;
+    }
+    const list = perKey.get(row.key);
+    if (list === undefined) perKey.set(row.key, [{ rowid: row.rowid, value }]);
+    else list.push({ rowid: row.rowid, value });
+    if (!firstSeen.has(row.key)) firstSeen.set(row.key, value);
+  }
+
+  // (4) Resolve duplicates by class precedence.
+  const kept = new Map<string, string>();
+  for (const [key, list] of perKey) {
+    const cls = ADAPTER_META_KEY_CLASSES[key] as AdapterMetaKeyClass;
+    switch (cls) {
+      case 'identity': {
+        const distinct = [...new Set(list.map((r) => r.value))];
+        if (distinct.length > 1) throw new EAdapterMetaIdentityConflict(key, distinct);
+        kept.set(key, list[0]!.value);
+        break;
+      }
+      case 'first-writer':
+        // list is rowid-ascending, so index 0 is the earliest.
+        kept.set(key, list[0]!.value);
+        break;
+      case 'latest-wins':
+      case 'latest-json':
+        // Latest valid row wins (invalid JSON was already quarantined above).
+        kept.set(key, list[list.length - 1]!.value);
+        break;
+      case 'counter': {
+        let best: number | null = null;
+        for (const r of list) {
+          const n = Number(r.value);
+          if (Number.isInteger(n) && (best === null || n > best)) best = n;
+        }
+        if (best === null) {
+          // No value parses as an integer — keep the latest non-empty value
+          // rather than silently dropping a known key. Traced, never thrown.
+          kept.set(key, list[list.length - 1]!.value);
+          log.debug('store_adapter.meta_repair.counter_unparseable', {
+            key,
+            values: list.map((r) => r.value),
+            reason: 'counter key held no integer value; keeping the latest value',
+          });
+        } else {
+          kept.set(key, String(best));
+        }
+        break;
+      }
+    }
+  }
+
+  // (6) Healthy ⇒ no transaction, no writes at all.
+  let changed = quarantine.length > 0 || dropped > 0 || rows.length !== kept.size;
+  if (!changed) {
+    for (const [k, v] of kept) {
+      if (firstSeen.get(k) !== v) {
+        changed = true;
+        break;
+      }
+    }
+  }
+
+  const report: AdapterMetaRepairReport = {
+    kept: kept.size,
+    quarantined: quarantine.length,
+    dropped,
+    changed,
+    quarantinedKeys,
+  };
+
+  if (!changed || dryRun) return report;
+
+  // (5) ONE BEGIN IMMEDIATE transaction. Any throw ROLLBACKs; `_adapter_meta`
+  // is untouched. Self-verify runs before the final swap.
+  await x.exec('BEGIN IMMEDIATE');
+  try {
+    await x.exec(`DROP TABLE IF EXISTS ${ADAPTER_META_SHADOW_TABLE}`);
+    await x.exec(
+      `CREATE TABLE ${ADAPTER_META_SHADOW_TABLE} (key TEXT PRIMARY KEY, value TEXT NOT NULL)`,
+    );
+    for (const [k, v] of kept) {
+      await x.run(`INSERT INTO ${ADAPTER_META_SHADOW_TABLE} (key, value) VALUES (?, ?)`, [k, v]);
+    }
+
+    if (quarantine.length > 0) {
+      await x.exec(
+        `CREATE TABLE IF NOT EXISTS ${ADAPTER_META_QUARANTINE_TABLE} ` +
+          `(rowid INTEGER, key TEXT, value TEXT, reason TEXT, quarantined_at TEXT)`,
+      );
+      const at = new Date().toISOString();
+      for (const q of quarantine) {
+        await x.run(
+          `INSERT INTO ${ADAPTER_META_QUARANTINE_TABLE} ` +
+            `(rowid, key, value, reason, quarantined_at) VALUES (?, ?, ?, ?, ?)`,
+          [q.rowid, q.key, q.value, q.reason, at],
+        );
+      }
+    }
+
+    // Self-verify the rebuilt table BEFORE swapping it in.
+    const counts = await x.all<{ n: number; d: number }>(
+      `SELECT COUNT(*) AS n, COUNT(DISTINCT key) AS d FROM ${ADAPTER_META_SHADOW_TABLE}`,
+    );
+    const n = Number(counts.rows[0]?.n ?? -1);
+    const d = Number(counts.rows[0]?.d ?? -2);
+    if (n !== d || n !== kept.size) {
+      throw new Error(
+        `self-verify failed: ${ADAPTER_META_SHADOW_TABLE} holds ${n} row(s) / ${d} distinct ` +
+          `key(s), expected ${kept.size}`,
+      );
+    }
+    const nulls = await x.all<{ n: number }>(
+      `SELECT COUNT(*) AS n FROM ${ADAPTER_META_SHADOW_TABLE} WHERE value IS NULL`,
+    );
+    if (Number(nulls.rows[0]?.n ?? -1) !== 0) {
+      throw new Error(`self-verify failed: ${ADAPTER_META_SHADOW_TABLE} holds a NULL value`);
+    }
+    if (JSON_ADAPTER_META_KEYS.length > 0) {
+      const placeholders = JSON_ADAPTER_META_KEYS.map(() => '?').join(', ');
+      const badJson = await x.all<{ n: number }>(
+        `SELECT COUNT(*) AS n FROM ${ADAPTER_META_SHADOW_TABLE} ` +
+          `WHERE key IN (${placeholders}) AND json_valid(value) = 0`,
+        [...JSON_ADAPTER_META_KEYS],
+      );
+      if (Number(badJson.rows[0]?.n ?? -1) !== 0) {
+        throw new Error(
+          `self-verify failed: ${ADAPTER_META_SHADOW_TABLE} holds a non-JSON value in a ` +
+            `JSON-class key`,
+        );
+      }
+    }
+
+    await x.exec(`DROP TABLE ${ADAPTER_META_TABLE}`);
+    await x.exec(`ALTER TABLE ${ADAPTER_META_SHADOW_TABLE} RENAME TO ${ADAPTER_META_TABLE}`);
+    await x.exec('COMMIT');
+  } catch (err) {
+    // The transaction ROLLBACKs; `_adapter_meta` is left untouched. A failed
+    // ROLLBACK is itself traced (never an empty catch) — it would mean the
+    // connection is gone, and the caller must know the table state is unknown.
+    try {
+      await x.exec('ROLLBACK');
+    } catch (rbErr) {
+      log.warn('store_adapter.meta_repair.rollback_failed', {
+        error: rbErr instanceof Error ? rbErr.message : String(rbErr),
+        reason: 'ROLLBACK threw after a rebuild failure; _adapter_meta state is unknown',
+      });
+    }
+    throw err;
+  }
+
+  return report;
+}
+
+// ── Bounded attempts (BL-336 / BL-341) ───────────────────────────────────────
+
+/**
+ * Exponential backoff between automatic `_adapter_meta` rebuild attempts, in
+ * ms: 1 → 2 → 4 → 8 → 30 minutes. The cap (5 attempts) then stops the process
+ * from ever trying again — which is the whole point: the pre-fix rebuild
+ * failed on EVERY open (~1300 `repair_failed` events/day) because nothing
+ * bounded the retries.
+ */
+const ADAPTER_META_REPAIR_BACKOFF_MS: readonly number[] = [
+  60_000,
+  120_000,
+  240_000,
+  480_000,
+  1_800_000,
+];
+/** Attempts before a process stops retrying entirely. */
+const ADAPTER_META_REPAIR_MAX_ATTEMPTS = ADAPTER_META_REPAIR_BACKOFF_MS.length;
+
+interface AdapterMetaRepairBreakerState {
+  failures: number;
+  nextEligibleAt: number;
+}
+
+/** In-process breaker, keyed by dbPath. Reset per process; the durable echo is
+ *  the sidecar marker below. */
+const adapterMetaRepairBreaker = new Map<string, AdapterMetaRepairBreakerState>();
+
+/** Persisted echo of a tripped breaker, under the store's lease dir. */
+interface AdapterMetaRepairMarker {
+  failedAt: string;
+  attempts: number;
+  error: string;
+  storeIdentity: string;
+}
+
+function adapterMetaRepairMarkerPath(dbPath: string): string {
+  return join(leaseDirPath(dbPath), 'adapter-meta-repair.json');
+}
+
+/**
+ * A cheap identity for the physical store file: `dev:ino`, or `'absent'` when
+ * the file does not exist yet. A marker whose recorded identity no longer
+ * matches the file is stale (the store was rebuilt/replaced) and is ignored, so
+ * a repaired store is never suppressed by its own pre-repair marker.
+ */
+function adapterMetaStoreIdentity(dbPath: string): string {
+  try {
+    const st = statSync(dbPath);
+    return `${st.dev}:${st.ino}`;
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === 'ENOENT') return 'absent';
+    log.debug('store_adapter.meta_repair.identity_stat_failed', {
+      db_path: dbPath,
+      error: err instanceof Error ? err.message : String(err),
+      reason: 'store identity unresolvable; a marker match cannot be proven, so repair is re-attempted',
+    });
+    return 'unknown';
+  }
+}
+
+/** Best-effort marker read. Any failure reads as "no marker" (fail-open). */
+function readAdapterMetaRepairMarker(dbPath: string): AdapterMetaRepairMarker | null {
+  let raw: string;
+  try {
+    raw = readFileSync(adapterMetaRepairMarkerPath(dbPath), 'utf8');
+  } catch (err) {
+    // ENOENT is the normal case (no marker). Anything else is uncertainty; a
+    // broken marker must never fail an open, so it reads as absent.
+    if ((err as NodeJS.ErrnoException).code !== 'ENOENT') {
+      log.debug('store_adapter.meta_repair.marker_read_failed', {
+        db_path: dbPath,
+        error: err instanceof Error ? err.message : String(err),
+        reason: 'marker unreadable; treating as absent (repair may be re-attempted)',
+      });
+    }
+    return null;
+  }
+  try {
+    const parsed = JSON.parse(raw) as Partial<AdapterMetaRepairMarker>;
+    if (parsed === null || typeof parsed !== 'object' || typeof parsed.storeIdentity !== 'string') {
+      return null;
+    }
+    return {
+      failedAt: typeof parsed.failedAt === 'string' ? parsed.failedAt : '',
+      attempts: typeof parsed.attempts === 'number' ? parsed.attempts : 0,
+      error: typeof parsed.error === 'string' ? parsed.error : '',
+      storeIdentity: parsed.storeIdentity,
+    };
+  } catch (err) {
+    log.debug('store_adapter.meta_repair.marker_unparseable', {
+      db_path: dbPath,
+      error: err instanceof Error ? err.message : String(err),
+      reason: 'marker is not valid JSON; treating as absent',
+    });
+    return null;
+  }
+}
+
+/** Best-effort marker write on breaker trip. Never throws. */
+function writeAdapterMetaRepairMarker(dbPath: string, attempts: number, error: string): void {
+  try {
+    mkdirSync(leaseDirPath(dbPath), { recursive: true });
+    const marker: AdapterMetaRepairMarker = {
+      failedAt: new Date().toISOString(),
+      attempts,
+      error,
+      storeIdentity: adapterMetaStoreIdentity(dbPath),
+    };
+    writeFileSync(adapterMetaRepairMarkerPath(dbPath), JSON.stringify(marker));
+  } catch (err) {
+    log.warn('store_adapter.meta_repair.marker_write_failed', {
+      db_path: dbPath,
+      error: err instanceof Error ? err.message : String(err),
+      reason: 'could not persist the breaker marker; the in-process breaker still applies',
+    });
+  }
+}
+
+/** Best-effort marker/breaker clear on success or test reset. Never throws. */
+function clearAdapterMetaRepairMarker(dbPath: string): void {
+  try {
+    rmSync(adapterMetaRepairMarkerPath(dbPath), { force: true });
+  } catch (err) {
+    log.debug('store_adapter.meta_repair.marker_clear_failed', {
+      db_path: dbPath,
+      error: err instanceof Error ? err.message : String(err),
+      reason: 'could not remove a stale breaker marker; the in-process breaker is already cleared',
+    });
+  }
+}
+
+/**
+ * Whether an automatic `_adapter_meta` rebuild should run for `dbPath`.
+ *
+ * In-process state (once this process has attempted) governs entirely: it
+ * enforces the exponential backoff and the attempt cap. Only when this process
+ * has NO state is the durable marker consulted — a marker from a PREVIOUS
+ * process whose store identity still matches means that process exhausted its
+ * attempts, and this one should not restart the hammering on open.
+ */
+function shouldAttemptAdapterMetaRepair(dbPath: string | undefined): boolean {
+  if (dbPath === undefined || dbPath === '') return true;
+  const st = adapterMetaRepairBreaker.get(dbPath);
+  if (st !== undefined) {
+    if (st.failures >= ADAPTER_META_REPAIR_MAX_ATTEMPTS) return false;
+    return Date.now() >= st.nextEligibleAt;
+  }
+  const marker = readAdapterMetaRepairMarker(dbPath);
+  if (marker !== null && marker.storeIdentity === adapterMetaStoreIdentity(dbPath)) return false;
+  return true;
+}
+
+function recordAdapterMetaRepairFailure(dbPath: string | undefined, err: unknown): void {
+  if (dbPath === undefined || dbPath === '') return;
+  const failures = (adapterMetaRepairBreaker.get(dbPath)?.failures ?? 0) + 1;
+  const backoff =
+    ADAPTER_META_REPAIR_BACKOFF_MS[
+      Math.min(failures - 1, ADAPTER_META_REPAIR_BACKOFF_MS.length - 1)
+    ]!;
+  adapterMetaRepairBreaker.set(dbPath, { failures, nextEligibleAt: Date.now() + backoff });
+  if (failures >= ADAPTER_META_REPAIR_MAX_ATTEMPTS) {
+    writeAdapterMetaRepairMarker(
+      dbPath,
+      failures,
+      err instanceof Error ? err.message : String(err),
+    );
+  }
+}
+
+function recordAdapterMetaRepairSuccess(dbPath: string | undefined): void {
+  if (dbPath === undefined || dbPath === '') return;
+  adapterMetaRepairBreaker.delete(dbPath);
+  clearAdapterMetaRepairMarker(dbPath);
+}
+
+/** Test-only: clear the in-process breaker (all stores, or one) and drop that
+ *  store's durable marker, so a case can start from a clean slate. */
+export function resetAdapterMetaRepairBreakerForTest(dbPath?: string): void {
+  if (dbPath === undefined) {
+    adapterMetaRepairBreaker.clear();
+    return;
+  }
+  adapterMetaRepairBreaker.delete(dbPath);
+  clearAdapterMetaRepairMarker(dbPath);
+}
+
+/**
+ * Offline sanitiser (BL-341): open a RAW WRITABLE handle on `dbPath`, run the
+ * rebuild primitive against it, checkpoint the WAL into the file, and close.
+ *
+ * Segment B's store-rebuild flow calls this against a rebuilt copy before the
+ * swap; it is exported here so the primitive and its raw-handle wiring live in
+ * one place.
+ */
+export async function sanitizeAdapterMetaOffline(
+  dbPath: string,
+  opts?: { dryRun?: boolean },
+): Promise<AdapterMetaRepairReport> {
+  // Same open options every raw-handle adapter open uses (the FTS index method
+  // the store carries, the multiprocess WAL format it runs under).
+  const db = await openTursoConnection(dbPath, {
+    timeout: 5000,
+    experimental: ['index_method', 'multiprocess_wal'],
+  });
+  try {
+    const x: RawMetaExecutor = {
+      all: async <T,>(sql: string, args?: unknown[]) => ({
+        rows: (await db.all(sql, ...(args ?? []))) as T[],
+      }),
+      run: (sql: string, args?: unknown[]) => db.run(sql, ...(args ?? [])),
+      exec: (sql: string) => db.exec(sql),
+    };
+    const report = await rebuildAdapterMetaTable(x, opts);
+    // Everything committed must be IN the file the caller will swap in — a copy
+    // whose data sits in its own -wal would swap in without it.
+    await db.exec('PRAGMA wal_checkpoint(TRUNCATE)');
+    return report;
+  } finally {
+    await db.close();
+  }
 }
 
 /**
@@ -2866,6 +3502,11 @@ export async function repairStoreIntegrity(
     for (const t of await discoverFtsTargets(adapter)) ftsTargets.set(t.object, t);
   }
 
+  // BL-336 / BL-341: `adapter_meta_unique` and `adapter_meta_value_valid` are
+  // two wounds on the same table — the rebuild is shared, and it is attempted
+  // at most once per pass (the second finding is a no-op on the healed table).
+  let metaAttempted = false;
+
   for (const finding of report.damaged) {
     if (!finding.repairable || !wanted(finding.probe)) continue;
     const t0 = performance.now();
@@ -2891,9 +3532,35 @@ export async function repairStoreIntegrity(
           push('checkpointed orphaned WAL into the main database file', true);
           break;
         case 'adapter_meta_unique':
-          await repairAdapterMeta(adapter);
-          push('rebuilt _adapter_meta keeping the earliest row per key', true);
+        case 'adapter_meta_value_valid': {
+          const dbPath = adapter.config.dbPath;
+          if (metaAttempted) {
+            push('_adapter_meta already rebuilt in this pass', true);
+            break;
+          }
+          metaAttempted = true;
+          // BL-336/BL-341: bound the retries. The pre-fix rebuild ran on EVERY
+          // open and failed every time (~1300 repair_failed events/day). The
+          // breaker enforces exponential backoff and a hard cap, and a tripped
+          // breaker (in-process, or a matching durable marker from a prior
+          // process) is a skip, never a throw.
+          if (!shouldAttemptAdapterMetaRepair(dbPath)) {
+            push('_adapter_meta rebuild skipped: circuit breaker open (prior failures)', true);
+            break;
+          }
+          try {
+            const rep = await rebuildAdapterMetaTable(asRawMetaExecutor(adapter));
+            recordAdapterMetaRepairSuccess(dbPath);
+            push(
+              `rebuilt _adapter_meta (kept ${rep.kept}, quarantined ${rep.quarantined}, dropped ${rep.dropped})`,
+              true,
+            );
+          } catch (err) {
+            recordAdapterMetaRepairFailure(dbPath, err);
+            throw err; // outer catch records the failed action
+          }
           break;
+        }
         case 'btree_index_populated':
         case 'pragma_integrity_check': {
           await adapter.exec(`REINDEX "${finding.object}"`);
@@ -3302,6 +3969,7 @@ export function resolveVerifyDepth(uncleanShutdown: boolean): VerifyDepth {
 const ALL_PROBES: readonly IntegrityProbe[] = [
   'wal_identity',
   'adapter_meta_unique',
+  'adapter_meta_value_valid',
   'btree_index_populated',
   'fts_index_live',
   'json_column_valid',

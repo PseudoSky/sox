@@ -417,9 +417,15 @@ describe('BL-336 — _adapter_meta must hold exactly one row per key', () => {
     open.pop();
 
     const withDupes = track(createSqliteAdapter({ dbPath }));
+    // The duplicate carries the SAME value as the existing stamp, because a
+    // re-stamp writes the same engine/version. Two DISTINCT values on an
+    // identity key (`adapter_type`) are an unresolvable engine conflict, and
+    // the rebuild ABORTS on them by design (BL-336 — see
+    // adapter-meta-repair.330fff44.spec.ts); a same-value duplicate is the
+    // shape a real duplicate-row leaves behind, and the shape this test repairs.
     await withDupes.executeRun(`INSERT INTO _adapter_meta (key, value) VALUES (?, ?)`, [
       'adapter_type',
-      'turso',
+      'sqlite',
     ]);
     await withDupes.executeRun(`INSERT INTO _adapter_meta (key, value) VALUES (?, ?)`, [
       'adapter_version',
@@ -436,9 +442,10 @@ describe('BL-336 — _adapter_meta must hold exactly one row per key', () => {
       `SELECT key, COUNT(*) AS c FROM _adapter_meta GROUP BY key`,
     );
     for (const row of after.rows) expect(row.c).toBe(1);
-    // Earliest row per key is kept — the original stamp, not the duplicate.
+    // The identity key is unchanged; the latest-wins key keeps the LATER value.
     const meta = await readAdapterMeta(withDupes);
     expect(meta.adapter_type).toBe('sqlite');
+    expect(meta.adapter_version).toBe('9.9.9');
   });
 });
 
@@ -972,9 +979,12 @@ describe('BL-374 — a healthy index is never reported damaged, and repair clear
     seedDuplicateAdapterMeta(build); // closes the raw handle
     open.pop();
     const dupes = track(createSqliteAdapter({ dbPath }));
+    // A same-value duplicate row (a real re-stamp). A DISTINCT identity value
+    // would be an engine conflict the rebuild ABORTS on by design, which is not
+    // the damage this invariant test is about.
     await dupes.executeRun(`INSERT INTO _adapter_meta (key, value) VALUES (?, ?)`, [
       'adapter_type',
-      'turso',
+      'sqlite',
     ]);
 
     const before = await verifyStoreIntegrity(dupes);

@@ -24,6 +24,83 @@ export const ADAPTER_META_KEYS = Object.freeze({
   CREATED_AT: 'created_at',
 } as const);
 
+// ── Key classification (BL-336 / BL-341) ─────────────────────────────────────
+
+/**
+ * The *write semantics* of an `_adapter_meta` key — the load-bearing fact a
+ * rebuild needs in order to collapse duplicate rows without guessing.
+ *
+ * A duplicate-row rebuild cannot keep "the first row" or "the last row"
+ * uniformly: `adapter_type` is a first-writer IDENTITY (two disagreeing values
+ * are a genuine data conflict, never a coin toss), while `adapter_version` is
+ * latest-wins and `created_at` is first-writer. Encoding the semantics for all
+ * keys in one place means the rebuild is a pure function of the class table.
+ *
+ * These are the ONLY keys this package writes; a key absent from
+ * {@link ADAPTER_META_KEY_CLASSES} is **unknown** and is quarantined by the
+ * rebuild (never dropped, never guessed at) — see `rebuildAdapterMetaTable`.
+ */
+export type AdapterMetaKeyClass =
+  /** Exactly one value is ever meaningful; two DISTINCT values are a conflict. */
+  | 'identity'
+  /** The earliest-written value wins (never overwritten by a later stamp). */
+  | 'first-writer'
+  /** The most-recently-written value wins. */
+  | 'latest-wins'
+  /** A monotonically-increasing integer; the rebuild keeps the maximum. */
+  | 'counter'
+  /** Latest-wins, and the value must be valid JSON text. */
+  | 'latest-json';
+
+/**
+ * Class per `_adapter_meta` key. Verified against every write site in-repo:
+ * `adapter-meta.ts` (`STAMP_SQL`/`STAMP_ONCE_SQL`/`CLEAN_SHUTDOWN_KEY`/
+ * `FTS_OPTIMIZE_PASS_INCREMENT_SQL`/`STORE_GROWTH_META_UPSERT_SQL`),
+ * `deep-verify.ts` (`DEEP_VERIFY_OWED_KEY`/`DEEP_VERIFY_STATE_KEY`),
+ * `migration.ts` (`migrated_from`/`migrated_at`), and `integrity.ts`
+ * (`INTEGRITY_META_KEY`). No other key is written by this package.
+ *
+ * - `adapter_type`  — set once to the engine (`sqlite`|`turso`); a change is an
+ *   error the caller must resolve, so two distinct values ABORT the rebuild.
+ * - `adapter_version` — refreshed every stamp; latest wins.
+ * - `created_at` — stamped once and never overwritten (`STAMP_ONCE_SQL`).
+ * - `clean_shutdown` — set `'0'` on open and `'1'` on close; latest wins.
+ * - `deep_verify_owed` — the outstanding obligation; latest wins (refresh).
+ * - `deep_verify_state` / `last_integrity` — JSON envelopes; latest valid JSON.
+ * - `migrated_from` — source engine identity; two distinct values conflict.
+ * - `migrated_at` — first migration timestamp; first writer wins.
+ * - `fts_optimize_passes_since_rebuild` — a counter; the rebuild keeps the max.
+ * - `last_rebuild_at` — latest rebuild timestamp.
+ */
+export const ADAPTER_META_KEY_CLASSES: Readonly<Record<string, AdapterMetaKeyClass>> = Object.freeze({
+  adapter_type: 'identity',
+  adapter_version: 'latest-wins',
+  created_at: 'first-writer',
+  clean_shutdown: 'latest-wins',
+  deep_verify_owed: 'latest-wins',
+  deep_verify_state: 'latest-json',
+  last_integrity: 'latest-json',
+  migrated_from: 'identity',
+  migrated_at: 'first-writer',
+  fts_optimize_passes_since_rebuild: 'counter',
+  last_rebuild_at: 'latest-wins',
+});
+
+/** Every `_adapter_meta` key this package knows how to classify. A key not in
+ *  this list is quarantined by a rebuild, never dropped or guessed at. */
+export const KNOWN_ADAPTER_META_KEYS: readonly string[] = Object.freeze(
+  Object.keys(ADAPTER_META_KEY_CLASSES),
+);
+
+/** The `_adapter_meta` keys whose values must be valid JSON text (a
+ *  `latest-json` class key with a non-empty, non-JSON value is TEAR/corruption
+ *  and is quarantined, never normalised — readers already treat an unparseable
+ *  value as `null`). */
+export const JSON_ADAPTER_META_KEYS: readonly string[] = Object.freeze([
+  'deep_verify_state',
+  'last_integrity',
+]);
+
 // ── Table / statement SQL ────────────────────────────────────────────────────
 
 const META_TABLE = '_adapter_meta';
