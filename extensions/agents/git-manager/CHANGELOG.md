@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.3.0
+
+- **Blanket `git *` allow (owner-directed).** The opencode `permission.bash` map gains
+  `"git *": "allow"`, placed immediately before the deny block: every git command runs without
+  a prompt. 0.2.0's narrow per-verb allowlist stays in the map unchanged but is now redundant —
+  `git *` subsumes it; it is kept only to hold the diff to one inserted line.
+- **The destructive denies are unchanged, and still last.** `git push --force *`,
+  `git push *--force*`, `git push *--no-verify*`, `git branch -D*`, `git reset --hard*`,
+  `git clean -f*`, `git stash*` — the engine is last-match-wins, so ordering them after the
+  blanket allow is what keeps a force-push, a hard reset, or a stash refused.
+- **Consequence of the ordering: `checkout`, `rebase` and `restore` now `allow`.** A blanket
+  allow placed ahead of the deny block outranks 0.2.0's trailing `ask` entries under
+  last-match-wins, so those three verbs no longer prompt. The `ask` entries remain in the map
+  (inert) for a minimal diff; stated here so the change is not implicit.
+
 ## 0.2.0
 
 - **Every `git -C <path>` call and every repo guard tool prompted.** 0.1.1's run-permission
