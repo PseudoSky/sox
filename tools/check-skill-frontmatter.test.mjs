@@ -35,6 +35,7 @@ import {
   loadRenderer,
   MAX_DESCRIPTION_LENGTH,
   renderSkill,
+  selectSkillFiles,
   SKILL_ID_PATTERN,
 } from './check-skill-frontmatter.mjs';
 
@@ -143,4 +144,23 @@ test('SKILL_ID_PATTERN accepts kebab slugs and rejects uppercase/underscore', ()
   assert.ok(SKILL_ID_PATTERN.test('memory-usage'));
   assert.ok(SKILL_ID_PATTERN.test('dispatch-plan'));
   assert.equal(SKILL_ID_PATTERN.test('Dispatch_Plan'), false);
+});
+
+// RED→GREEN for the rename crash: a staged rename enumerates the renamed-away
+// SKILL.md (a deletion under `--no-renames`, and a `git ls-files` entry for `--all`).
+// That path is absent from the worktree, so the guard must skip it before the read
+// loop rather than throw ENOENT on readFileSync.
+test('RED: a changed SKILL.md absent from the worktree (renamed away) is not selected', () => {
+  const renamedAway = 'extensions/skills/opencode-permission-audit/SKILL.md';
+  assert.equal(
+    fs.existsSync(path.join(REPO_ROOT, renamedAway)),
+    false,
+    'fixture premise: the renamed-away path must be absent from the worktree',
+  );
+  assert.equal(selectSkillFiles([renamedAway]).has(renamedAway), false);
+});
+
+test('GREEN: a changed SKILL.md present in the worktree is still selected', () => {
+  const present = 'extensions/skills/dispatch-plan/SKILL.md';
+  assert.equal(selectSkillFiles([present]).has(present), true);
 });

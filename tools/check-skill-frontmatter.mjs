@@ -243,6 +243,14 @@ function getAllSkillFiles() {
   return out.split('\0').filter(isSourceSkillMd);
 }
 
+// A rename shows the old path as a deletion under `--no-renames` (and in `git ls-files`
+// for `--all`); that path is absent from the worktree, so drop it before the read loop
+// rather than crash. Exported so the rename regression test can exercise it directly.
+export function selectSkillFiles(changed, all = false) {
+  const base = all ? getAllSkillFiles() : (changed ?? []).filter(isSourceSkillMd);
+  return new Set(base.filter((rel) => fs.existsSync(path.join(REPO_ROOT, rel))));
+}
+
 function main() {
   const args = parseArgs(process.argv.slice(2));
   const changed = args.all ? null : getChangedFiles(args);
@@ -250,7 +258,7 @@ function main() {
   // A changed SKILL.md or a changed extension.json both select their skill dir for
   // the full leg run (a manifest edit must re-render and re-check the same skill).
   // `--all` enumerates every tracked source SKILL.md instead of the diff.
-  const skillFiles = new Set(args.all ? getAllSkillFiles() : changed.filter(isSourceSkillMd));
+  const skillFiles = selectSkillFiles(changed, args.all);
   if (!args.all) {
     for (const f of changed.filter(isSkillManifest)) {
       const skillMd = path.posix.join(path.posix.dirname(f), 'SKILL.md');
