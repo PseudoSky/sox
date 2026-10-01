@@ -273,20 +273,122 @@ def tokenize(seg: str) -> list[str]:
     return out
 
 
+HEREDOC_RE = re.compile(r"<<-?\s*['\"]?([A-Za-z_][A-Za-z0-9_]*)['\"]?")
+
+
+def strip_heredocs(cmd: str) -> str:
+    """Drop heredoc bodies — they are data, never shell operators.
+
+    A `python3 - <<'PYEOF' ... PYEOF` body is full of `>`, `->` and `rm`
+    text that is not a command; scanning it produced R7/R2 false positives.
+    """
+    lines = cmd.split("\n")
+    out, i = [], 0
+    while i < len(lines):
+        line = lines[i]
+        out.append(line)
+        m = HEREDOC_RE.search(line)
+        if m:
+            word = m.group(1)
+            i += 1
+            while i < len(lines) and lines[i].strip() != word:
+                i += 1
+            i += 1  # the terminator line itself is a delimiter, not a command
+            continue
+        i += 1
+    return "\n".join(out)
+
+
+def looks_like_path(p: str) -> bool:
+    """Reject `> 0`, `> await`, `> =` — the debris of code/text, not a path."""
+    if not p or p.startswith("&"):
+        return False
+    return bool(re.search(r"[/.~$]", p)) and not re.fullmatch(r"[\d.=+-]+", p)
+
+
+def looks_like_link_dest(p: str) -> bool:
+    """A link destination may be a bare name (`node_modules`, `skillspector`),
+    so unlike a redirect target it need not contain a path separator — only be
+    a real token (`=`, `->` debris and empty are rejected)."""
+    if not p or p.startswith("&"):
+        return False
+    return not re.fullmatch(r"[\d.=+->]+", p)
+
+
+def _scan_redirects(seg: str):
+    """Yield `>`/`>>` destination tokens that are OUTSIDE quotes.
+
+    Quote-aware so a `>` inside a JSON arg or a shell string is not an
+    operator; `->`, `2>&1` and non-path debris are skipped.
+    """
+    n, i, q = len(seg), 0, None
+    while i < n:
+        c = seg[i]
+        if q:
+            if c == "\\" and q == '"':
+                i += 2
+                continue
+            if c == q:
+                q = None
+            i += 1
+            continue
+        if c in "'\"":
+            q = c
+            i += 1
+            continue
+        if c == "\\":
+            i += 2
+            continue
+        if c == ">" and not (i and seg[i - 1] == "-") and not (i + 1 < n and seg[i + 1] == "&"):
+            j = i + 1
+            if j < n and seg[j] == ">":
+                j += 1
+            while j < n and seg[j] in " \t":
+                j += 1
+            tok, tq = [], None
+            while j < n:
+                ch = seg[j]
+                if tq:
+                    if ch == tq:
+                        tq = None
+                    else:
+                        tok.append(ch)
+                    j += 1
+                    continue
+                if ch in "'\"":
+                    tq = ch
+                    j += 1
+                    continue
+                if ch in " \t;|&":
+                    break
+                tok.append(ch)
+                j += 1
+            yield "".join(tok)
+            i = j
+            continue
+        i += 1
+
+
 def bash_links(cmd: str) -> list[tuple[str, str]]:
-    """Return (link_path, target) for each ln -s in a shell command."""
+    """Return (link_path, target) for each real `ln -s` in a shell command."""
+    cmd = strip_heredocs(cmd)
     assigns = kv_assigns(cmd)
     out = []
     for seg in SEG_SPLIT.split(cmd):
         toks = tokenize(seg)
         for i, tk in enumerate(toks):
-            if tk == "ln":
-                j = i + 1
-                while j < len(toks) and toks[j].startswith("-"):
-                    j += 1
-                if j + 1 < len(toks):
-                    dest = expand_vars(toks[j + 1], assigns)
-                    out.append((norm(dest), expand_vars(toks[j], assigns)))
+            if tk != "ln":
+                continue
+            j, has_s = i + 1, False
+            while j < len(toks) and toks[j].startswith("-"):
+                has_s = has_s or bool(re.search(r"-[a-zA-Z]*s", toks[j]))
+                j += 1
+            if not has_s or j + 1 >= len(toks):
+                continue
+            target = expand_vars(toks[j], assigns)
+            dest = norm(expand_vars(toks[j + 1], assigns))
+            if looks_like_link_dest(dest):
+                out.append((dest, target))
     return out
 
 
@@ -295,9 +397,10 @@ def redirect_dests(seg: str, assigns: dict | None = None) -> list[str]:
     if assigns is None:
         assigns = kv_assigns(seg)
     out = []
-    for m in re.finditer(r"(?<![0-9>])>>?\s*([^\s;&|]+)", seg):
-        d = expand_vars(m.group(1).strip().strip("'\""), assigns)
-        out.append(d)
+    for raw in _scan_redirects(seg):
+        d = expand_vars(raw, assigns)
+        if looks_like_path(d):
+            out.append(d)
     return out
 
 
@@ -333,6 +436,7 @@ def resolves_outside(target: str, project: str) -> bool:
 
 
 def scan_bash(cmd: str, f: Finding, project: str) -> Iterable[Finding]:
+    cmd = strip_heredocs(cmd)
     assigns = set(ASSIGN_RE.findall(cmd))
     cmd_assigns = kv_assigns(cmd)
     for seg in SEG_SPLIT.split(cmd):

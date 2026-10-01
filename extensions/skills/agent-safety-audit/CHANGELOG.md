@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.5.1
+
+- **Fixed `agent-transcript-scan.py` precision.** The first full-corpus run produced 503
+  `R7-redirect-link` findings, nearly all false positives: a `>` inside a heredoc body or a quoted
+  argument (`> 0`, `> await`, `link -> =`) was read as a redirect, and `bash_links` accepted any
+  `ln` token without requiring `-s` or a plausible destination. Those bogus links polluted the
+  cross-transcript link map R7 correlates against. `strip_heredocs()` (heredoc bodies are data),
+  a quote-aware redirect scanner, `looks_like_path`/`looks_like_link_dest`, and an `ln -s` +
+  path-token requirement bring R7 from 503 → 1 (the real incident) across the same corpus.
+- Added `scripts/test_agent_transcript_scan.py` — red→green regression cases pinning the pre-fix
+  shapes above; run `python3 scripts/test_agent_transcript_scan.py` (set `ATSCAN=<old-file>` to
+  prove red against a prior revision).
+
 ## 0.5.0
 
 - **Renamed** the skill `opencode-permission-audit` → **`agent-safety-audit`**, to reflect the
