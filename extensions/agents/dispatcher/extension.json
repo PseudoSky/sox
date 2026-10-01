@@ -72,7 +72,9 @@
         "git push --force*": "deny",
         "git push *--no-verify*": "deny",
         "git clean *-f*": "deny",
-        "rm -rf *": "deny"
+        "rm -rf *": "deny",
+        "git checkout -- *": "ask",
+        "*dot/secrets*": "deny"
       },
       "webfetch": "deny",
       "websearch": "deny",
