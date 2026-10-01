@@ -1,5 +1,25 @@
 # Changelog
 
+## 0.3.0
+
+- New scanner `scripts/agent-transcript-scan.py`: scans Claude Code transcript `.jsonl` files (a file
+  or a directory tree) for destructive and escape-the-project command patterns, with rules R1–R9
+  (`rm` with a variable target, broad/recursive `rm`, symlinks that target a binary outside the
+  project, symlink names that shadow a real `PATH` command, writes/redirects outside the project,
+  unguarded redirects into a shared scratch dir, a redirect written *through* a symlink another
+  transcript planted, destructive git, and inline path variables that hide a target).
+- **R7 (`redirect-link`, CRIT)** is the cross-agent rule: it builds a link map across every
+  transcript in the scan set and flags a write whose destination is a symlink some other agent
+  created. This is the shape that caused a machine-wide Node-binary overwrite — an `ln -sf
+  "$(which node)" …/skillspector` in one subagent and a `printf … > …/skillspector` in another, 80 s
+  apart, in a shared scratchpad; neither command alone looks destructive, so no per-command guard
+  fired.
+- CLI: positional files/dirs, `--transcripts DIR`, `--project ROOT` (resolve escapes), `--only
+  R1,R7`, `--fail-on <sev>` (CI exit 1), `--json`, `--out FILE`, `--list-rules`. Heuristic and
+  conservative — it reports, it does not block.
+- `SKILL.md`: new **Step 5 — scan agent transcripts** with the usage examples and the R1–R9 rule
+  table; the intro now names both scanners.
+
 ## 0.2.1
 
 - Corrected `SKILL.md` to match the runtime: there is **no built-in `{"*": "allow"}`** in the

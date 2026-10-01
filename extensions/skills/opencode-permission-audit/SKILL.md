@@ -1,7 +1,9 @@
 # opencode Permission Audit
 
 Audit why an opencode agent gets prompted for permission (or has calls blocked), then fix the
-agent's `permission.bash` map and prove the fix. Ships `scripts/opencode-permission-scan.py`.
+agent's `permission.bash` map and prove the fix. Ships two scanners: `scripts/opencode-permission-scan.py`
+(the permission audit) and `scripts/agent-transcript-scan.py` (destructive/escape patterns across any
+agent transcript — Claude Code or opencode).
 
 ## When to use
 
@@ -74,6 +76,38 @@ Do not trust the source; run the real runtime.
    commands fail. Expect the agent's real command batches to run unprompted and its guardrail
    patterns to still block.
 4. Delete the temp probe agent afterwards.
+
+## Step 5 — Scan agent transcripts for destructive / escape patterns
+
+When an agent damaged something, when auditing a dispatch wave, or before trusting a fleet of
+background subagents, scan the transcripts. `scripts/agent-transcript-scan.py` reads Claude Code
+`.jsonl` transcripts (a file or a directory tree) and reports command patterns that evade any single
+command's guards:
+
+```sh
+python3 <skill-dir>/scripts/agent-transcript-scan.py --project <repo-root> <transcripts-dir>
+python3 <skill-dir>/scripts/agent-transcript-scan.py --only R7 <file.jsonl>   # one rule
+python3 <skill-dir>/scripts/agent-transcript-scan.py --fail-on high <dir>     # CI gate
+```
+
+| Rule | Sev | What it catches |
+|---|---|---|
+| R1 rm-var | high | `rm` with a variable target (`-r`, inline assign, RHS not tmp, trailing slash, var unset in-cmd) |
+| R2 rm-broad | high | recursive `rm` of `/`, `$HOME`, an absolute root, or `/*`/`~/*` glob |
+| R3 symlink-external | high | `ln -s` whose target leaves the project: `$(which X)`, absolute outside, `../..` |
+| R4 symlink-shadow | high | a link name that matches a real command on `PATH` (`node`, `git`, …) |
+| R5 write-outside | med | `Write`/`Edit`, or a redirect destination, outside the project (excl. tmp/`/dev`) |
+| R6 redirect-bare | med | unguarded `>`/`>>` into a shared scratch/tmp dir |
+| R7 redirect-link | **CRIT** | a redirect written THROUGH a symlink another transcript planted — the cross-agent chain |
+| R8 git-destructive | med | `git reset --hard`, `git stash`, `git add -A` |
+| R9 var-offset | low | an inline path variable hides a target |
+
+**Why R7 is the point:** no individual command in the Node-overwrite incident looked destructive — an
+`ln -sf` in one agent and a `printf > path` in another, 80 s apart, in a shared scratchpad. The damage
+only exists as a *correlation between transcripts*. The scanner builds a link map across the whole
+scan set and flags a write whose destination is a link someone else created. Severity orders
+`low < med < high < CRIT`; `--json` for machine output; `--list-rules`. Detection is heuristic and
+conservative — it reports, it does not block.
 
 ## Cheatsheet — inspecting opencode
 
