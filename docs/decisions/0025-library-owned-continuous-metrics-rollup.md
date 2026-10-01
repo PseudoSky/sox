@@ -1,10 +1,9 @@
 # ADR-0025 — Library-owned continuous rollup of the metrics snapshot stream
 
-**Status:** PROPOSED — not ratified (2026-09-30). The mechanism this ADR governs is **implemented**
-in `libs/observability/sox-telemetry` (durable-metrics S8, `6df0d673`), but this file is a proposal:
-it records the decision and is not binding until the owner accepts it (the same posture as ADR-0014
-and ADR-0023, both PROPOSED ADRs that exist before approval).
-**Owner:** pending owner review (authored by the doc-steward agent, durable-metrics S7).
+**Status:** Accepted (2026-09-30). The mechanism this ADR governs is **implemented** in
+`libs/observability/sox-telemetry` (durable-metrics S8, `6df0d673`), and the owner has ratified this
+decision.
+**Owner:** pseudosky (authored by the doc-steward agent, durable-metrics S7).
 **Relates to:** ADR-0004 (data-root placement — `ecosystemHome()` and the adhd env), ADR-0013
 (feature switches are typed config, never env vars), ADR-0014 (pre-operation memory-snapshot
 retention — report-first / no-auto-delete; **explicitly not conflated** here), ADR-0018
@@ -42,8 +41,12 @@ not by a human step. The S1 interval tick calls `rollupMetrics('interval')` imme
 `snapshotMetrics('interval')`; `handle.close()` calls it once with `'shutdown'` after a final
 snapshot and before the sinks close. There is **no `--apply`**, no `--confirm`, and no separate
 scheduler: the aggregation is a pure function (`rollup.ts`'s `aggregateSnapshots`) driven by the
-runtime that already owns the writer. `snapshotEveryMs: 0` disables both the interval snapshot and
-the rollup, because there is nothing to fold.
+runtime that already owns the writer. `snapshotEveryMs: 0` disables only the **interval** snapshot
+tick — the `'startup'` snapshot still fires, because that path is gated on the snapshot sink
+existing (`snapshotSink !== null`), not on this value — and `close()` still writes a `'shutdown'`
+snapshot and a `'shutdown'` rollup unconditionally, before the sinks close. The rollup sink is
+created whenever `logSink` is `'file'`, so a `0` cadence removes the periodic tick, never the
+startup/shutdown fold.
 
 ### D2 — The rollup is a derived cache over the durable snapshot stream, never the system of record
 

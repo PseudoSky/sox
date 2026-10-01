@@ -156,3 +156,64 @@ opt-in (`multiprocessWal: true`) without acknowledging that the JS-side adapter
 
 **Reason:** First operation log entry. This file is the permanent audit trail for all
 documentation operations per the doc-steward framework.
+
+---
+
+## CREATE `docs/decisions/0024-turso-driver-offthread-worker.md` — 2026-09-30
+
+**Reason:** dispatch-2026-09-29-8f99, Task 1 (owner-approved). No ADR recorded the shipped
+off-thread Turso driver seam; `turso-driver-protocol.ts:6` already referenced "(ADR-0024,
+proposed)" while no such file existed. Every claim derived from shipped source
+(`turso-driver-worker.ts`, `turso-driver-host.ts`, `turso-driver-protocol.ts`, `turso-adapter.ts`,
+`errors.ts`, memory-server `driver-stall-watchdog.ts`). Status PROPOSED — not ratified; owner
+pseudosky; driving items 862129b5 / 5b58b189 / 3e3ff0ec.
+
+**Changes:** New file. No prior content removed or moved.
+
+---
+
+## REVISE `docs/decisions/0025-library-owned-continuous-metrics-rollup.md` — 2026-09-30
+
+**Reason:** dispatch-2026-09-29-8f99, Tasks 2 + 3 (owner-approved). (2) Ratify: status line
+`PROPOSED — not ratified` → `Accepted (2026-09-30)`, Owner recorded. (3) Correct a proven-false
+claim: `snapshotEveryMs: 0` does NOT disable both the interval snapshot and the rollup.
+
+**removed_or_moved (verbatim, Task 2):**
+```
+**Status:** PROPOSED — not ratified (2026-09-30). The mechanism this ADR governs is **implemented**
+in `libs/observability/sox-telemetry` (durable-metrics S8, `6df0d673`), but this file is a proposal:
+it records the decision and is not binding until the owner accepts it (the same posture as ADR-0014
+and ADR-0023, both PROPOSED ADRs that exist before approval).
+**Owner:** pending owner review (authored by the doc-steward agent, durable-metrics S7).
+```
+
+**removed_or_moved (verbatim, Task 3):**
+```
+runtime that already owns the writer. `snapshotEveryMs: 0` disables both the interval snapshot and
+the rollup, because there is nothing to fold.
+```
+
+**Replacement (Task 3):** "`snapshotEveryMs: 0` disables only the **interval** snapshot tick — the
+`'startup'` snapshot still fires, because that path is gated on the snapshot sink existing
+(`snapshotSink !== null`), not on this value — and `close()` still writes a `'shutdown'` snapshot and
+a `'shutdown'` rollup unconditionally...". Evidence: `runtime.ts:1064-1066` (code comment),
+`:568-572` (startup gate), `:1085-1129` (`configureSnapshotSink`, only `everyMs > 0` gates the timer),
+`:1178-1195` (`configureRollupSink`, gated on `logSink === 'file'` only), `:617-643` (`close()` awaits
+`rollupMetrics('shutdown')` unconditionally).
+
+---
+
+## REVISE `docs/observability/README.md` — 2026-09-30
+
+**Reason:** dispatch-2026-09-29-8f99, Task 3. §10.4 carried the same proven-false claim.
+
+**removed_or_moved (verbatim):**
+```
+- `snapshotEveryMs: 0` disables **both** the interval snapshot and the rollup (there is nothing to
+  fold).
+```
+and the §10.4 table cell `| Interval snapshot **and** rollup | every **60 000 ms** | typed `snapshotEveryMs`; `0` disables |`.
+
+**Replacement:** bullet now states only the interval tick is gated; the rollup sink is created
+whenever `logSink: 'file'` and `close()` writes the shutdown snapshot + rollup unconditionally (same
+`runtime.ts` evidence as above); table cell now reads "`0` disables the interval tick".

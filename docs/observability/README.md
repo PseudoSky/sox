@@ -491,7 +491,7 @@ registers that section — the honest "no samples in this window", never a fabri
 | Trigger | Default | Field / override |
 |---|---|---|
 | Startup snapshot | once, at init | automatic (deferred one `setImmediate` turn) |
-| Interval snapshot **and** rollup | every **60 000 ms** | typed `snapshotEveryMs`; `0` disables |
+| Interval snapshot **and** rollup | every **60 000 ms** | typed `snapshotEveryMs`; `0` disables the interval tick |
 | Shutdown snapshot + rollup | once, on `close()` | automatic |
 | Activity snapshot | every **1 000 records** | typed `snapshotEveryRecords`; `0` disables |
 | Pull snapshot | on each `telemetrySelfCheck()` when records are pending | automatic (opportunistic) |
@@ -502,8 +502,11 @@ registers that section — the honest "no samples in this window", never a fabri
 - The timer is **`.unref()`'d**, so it adds no live handle (`getActiveResourcesInfo()` stays empty,
   BL-345). The rollup **piggybacks the same single timer** (`await snapshotMetrics('interval')` then
   `await rollupMetrics('interval')`), so it introduces **no second handle and no second timer**.
-- `snapshotEveryMs: 0` disables **both** the interval snapshot and the rollup (there is nothing to
-  fold).
+- `snapshotEveryMs: 0` disables only the **interval** tick — `configureSnapshotSink` arms the timer
+  only when the cadence is `> 0`. It does **not** disable the rollup: the rollup sink is created
+  whenever `logSink: 'file'`, and `close()` unconditionally writes a `'shutdown'` snapshot and then a
+  `'shutdown'` rollup. So with `snapshotEveryMs: 0` you still get the `'startup'` snapshot and the
+  shutdown snapshot + rollup — just no periodic tick.
 - On `close()`, one `'shutdown'` snapshot is written **before** the sinks close, then one final
   rollup folds over it, so shutdown's own data is in the last row.
 
