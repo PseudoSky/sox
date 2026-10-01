@@ -28,9 +28,9 @@ USAGE
   agent-transcript-scan.py --list-rules
 
   # opencode: sessions live in one SQLite DB, not per-agent JSONL files
-  agent-transcript-scan.py --opencode-db ~/.local/share/opencode/opencode.db
+  agent-transcript-scan.py --opencode-db               # bare flag = default opencode store
   agent-transcript-scan.py --opencode-db <db> --since 2026-09-30T00:00 --agent dispatcher
-  agent-transcript-scan.py <claude-dir> --opencode-db <db> --project ~/dev/repo   # BOTH hosts
+  agent-transcript-scan.py <claude-dir> --opencode-db --project ~/dev/repo   # BOTH hosts
 
 HOSTS
   Claude Code — per-agent *.jsonl under ~/.claude*/projects/<proj>/<session>/subagents/.
@@ -93,6 +93,8 @@ EXECUTABLE_NAMES = {
 TMP_DIRS = re.compile(r"^(/tmp|/private/tmp|/var/tmp|\$TMPDIR|/private/var/folders)")
 # opencode tool ids -> the Claude Code tool names the rule engine expects.
 OPENCODE_TOOL_MAP = {"bash": "Bash", "write": "Write", "edit": "Edit"}
+# Bare `--opencode-db` (no PATH) uses the standard opencode store.
+DEFAULT_OPENCODE_DB = os.path.expanduser("~/.local/share/opencode/opencode.db")
 SEG_SPLIT = re.compile(r"&&|\|\||;|\n|\|(?!=)")
 ASSIGN_RE = re.compile(r"(?:^|[;&|\s])(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)=")
 ASSIGN_KV_RE = re.compile(r"(?:^|[;&|\s])(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)=([^\s;&|]*)")
@@ -526,7 +528,8 @@ def main(argv=None):
     ap = argparse.ArgumentParser(description="Scan agent transcripts for destructive/escape patterns.")
     ap.add_argument("paths", nargs="*", help="transcript .jsonl files, dirs, or an opencode .db")
     ap.add_argument("--transcripts", default="", help="directory to walk for *.jsonl transcripts")
-    ap.add_argument("--opencode-db", default="", help="opencode SQLite store (e.g. ~/.local/share/opencode/opencode.db)")
+    ap.add_argument("--opencode-db", nargs="?", const=DEFAULT_OPENCODE_DB, default=None,
+                    help="opencode SQLite store; bare flag = ~/.local/share/opencode/opencode.db")
     ap.add_argument("--agent", default="", help="comma list of opencode agents to include")
     ap.add_argument("--since", default="", help="ISO8601 lower bound on opencode session time")
     ap.add_argument("--until", default="", help="ISO8601 upper bound on opencode session time")
@@ -546,11 +549,12 @@ def main(argv=None):
     paths = list(args.paths)
     if args.transcripts:
         paths.append(args.transcripts)
-    if args.opencode_db:
-        paths.append(args.opencode_db)
+    if args.opencode_db is not None:
+        paths.append(os.path.expanduser(args.opencode_db))
     files, dbs = iter_inputs(paths)
     if not files and not dbs:
-        print("no transcripts found (pass .jsonl files, a dir, or --opencode-db)", file=sys.stderr)
+        print("no transcripts found (pass .jsonl files, a dir, --transcripts DIR, or --opencode-db [PATH])",
+              file=sys.stderr)
         return 2
 
     only = {x.strip() for x in args.only.split(",") if x.strip()}

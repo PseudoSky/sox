@@ -1,9 +1,10 @@
-# opencode Permission Audit
+# Agent Safety Audit
 
-Audit why an opencode agent gets prompted for permission (or has calls blocked), then fix the
-agent's `permission.bash` map and prove the fix. Ships two scanners: `scripts/opencode-permission-scan.py`
-(the permission audit) and `scripts/agent-transcript-scan.py` (destructive/escape patterns across any
-agent transcript — Claude Code or opencode).
+Audit agent safety two ways: why an opencode agent gets prompted for permission (or has calls
+blocked) — then fix the agent's `permission.bash` map and prove it — and what an agent *did* in its
+transcripts. Ships two scanners: `scripts/opencode-permission-scan.py` (the permission audit) and
+`scripts/agent-transcript-scan.py` (destructive/escape patterns across any agent transcript — Claude
+Code or opencode).
 
 ## When to use
 

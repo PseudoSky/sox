@@ -1,0 +1,16 @@
+{
+  "name": "@adhd/sox-extension-agent-safety-audit",
+  "version": "0.5.0",
+  "description": "Use this skill when an opencode agent prompts for permission on every command, when a dispatched subagent fails with a permission error, or when you need to audit and repair an agent's permission.bash map — and when an agent damaged something, when auditing a dispatch wave, or before trusting a fleet of background subagents. Ships two scanners: scripts/opencode-permission-scan.py mines the opencode log and session DB for every permission ask, with a per-agent bash-map verdict and a drop-in corrected permission block; scripts/agent-transcript-scan.py scans agent transcripts (Claude Code .jsonl and opencode's SQLite store) for destructive and escape-the-project patterns (rules R1–R9, including the cross-agent redirect-through-a-symlink chain R7). Includes the opencode inspection cheatsheet and the rules of permission resolution (merge order, last-match-wins, agent-map shadowing, atomic bash calls, non-interactive ask auto-reject).",
+  "private": true,
+  "license": "MIT",
+  "author": "sox-ecosystem",
+  "keywords": [
+    "opencode",
+    "permissions",
+    "permission-audit",
+    "agent-performance",
+    "blockers",
+    "prompt-audit"
+  ]
+}

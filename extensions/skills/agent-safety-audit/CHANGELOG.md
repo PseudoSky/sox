@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.5.0
+
+- **Renamed** the skill `opencode-permission-audit` → **`agent-safety-audit`**, to reflect the
+  increased scope: it now covers both permission-prompt auditing and destructive/escape transcript
+  scanning, on both hosts. Extension `id`, package name
+  (`@adhd/sox-extension-agent-safety-audit`), title, `README.md`, and `SKILL.md` heading all follow.
+  Re-install under the new id (`soxe install agent-safety-audit …`); the old id is retired.
+- `agent-transcript-scan.py`: `--opencode-db` is now **optional** — a bare `--opencode-db` scans the
+  default store (`~/.local/share/opencode/opencode.db`); omitting it entirely leaves the run
+  Claude-Code-only. `--opencode-db PATH` still targets a specific store.
+
 ## 0.4.0
 
 - `scripts/agent-transcript-scan.py` now reads **opencode** as well as Claude Code. opencode keeps

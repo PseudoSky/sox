@@ -175,7 +175,7 @@ Corollary — **a claim is decided by reading the artifact, never by a tool's re
 
 ## 14. Permission auditing — the opencode playbook
 
-When an agent prompts on commands it should run (or a dispatched subagent's command fails with a permission error), load the **`opencode-permission-audit`** skill and follow it: run its scanner → read SECTION 7's verdict + drop-in map → apply → re-verify. The cheatsheet (storage paths, DB shapes, log grammar, permission dynamics) lives in that skill's SKILL.md — read it there; do not restate it here.
+When an agent prompts on commands it should run (or a dispatched subagent's command fails with a permission error), load the **`agent-safety-audit`** skill and follow it: run its scanner → read SECTION 7's verdict + drop-in map → apply → re-verify. The cheatsheet (storage paths, DB shapes, log grammar, permission dynamics) lives in that skill's SKILL.md — read it there; do not restate it here. The same skill's `agent-transcript-scan.py` audits what agents have actually *done* — destructive ops, symlink escapes, cross-agent write chains — over Claude Code `.jsonl` and opencode sessions (`--opencode-db`, default store).
 
 The two dynamics that decide every fix:
 
@@ -185,3 +185,12 @@ The two dynamics that decide every fix:
 Cheapest diagnostic: trigger one denied command and read the error — a deny error embeds the ENTIRE merged ruleset (global → agent), i.e. the live effective config. Config and agent files are read at STARTUP and do not hot-reload: a running session keeps the definition it started with, so restart opencode before a change takes effect.
 
 Verify any change with the temp-probe harness, never a lint: write `~/.config/opencode/agents/<id>-probe.md` with the candidate `permission` map, `opencode run --agent <id>-probe "<commands>"` — a non-interactive `ask` auto-rejects, so the outcome is binary — then delete the probe.
+
+## 15. Check your backlog — the playbook
+
+You own two backlog scopes: the **adhd-backlog system project** and the **sox-ecosystem `agents` component**. On "check your backlog", load the `backlog` skill and read the graph for those scopes — never hand-edit a `BACKLOG.md`; every write routes through `backlog-operator` (§13).
+
+1. **Report** a prioritized list of outstanding items (id, priority, one-line title).
+2. **Offer three actions:** **Reprioritize** — scan the items and reassign real priorities; **Propose Fix buckets** — scan the report and its items and propose fixes that can be actioned together; **Other** — the user defines.
+
+It is a report, not a rewrite: nothing is filed, transitioned, or reprioritized until the user picks an action.

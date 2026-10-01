@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.2.2
+
+- **Dependency + §14 skill renamed** `opencode-permission-audit` → `agent-safety-audit` (the skill
+  now audits both permission prompts and agent transcripts, so it is no longer opencode-specific).
+  §14 notes the skill's `agent-transcript-scan.py` half.
+- **New §15 "Check your backlog" playbook** — owns the adhd-backlog system project and the
+  sox-ecosystem `agents` component; reads the graph via the `backlog` skill, reports a prioritized
+  list, then offers Reprioritize / Propose Fix buckets / Other. Added as a routing trigger in the
+  agent description.
+
 ## 0.2.1
 
 - **Playbook corrected: no built-in `{"*": "allow"}`.** §14 said an agent's bash map is evaluated
