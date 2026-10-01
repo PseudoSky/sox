@@ -5,7 +5,7 @@ schema: plan-state-machine/v1-light
 plan: turso-fts-migration
 current_state: null
 entry_blocked_on: [spike-format-compat, spike-rollback]
-authorized: false          # owner has NOT authorized the pin bump
+authorized: true           # owner AUTHORIZED the pin bump (Q1 resolved; see §8)
 authored_at: 2026-09-30
 author: architect (deepseek-flash)
 ```
@@ -16,14 +16,15 @@ author: architect (deepseek-flash)
 |---|---|
 | status | spec authored; NOT STARTED |
 | current segment | none |
-| blocked on | pre-flight spike (DESIGN §6a); owner authorization of the pin bump |
-| pin | still `^0.7.1` — NOT bumped |
+| blocked on | pre-flight spike (DESIGN §6a) |
+| pin | still `^0.7.1` — bump AUTHORIZED, not yet applied (segment s5) |
 
 ## Open questions (resolve before dispatch)
 
-- **Q1 — owner authorization.** The pin bump is the owner's decision. Spec is input only.
-  `89849d2a` is deliberately left **open** ("repo still pins ^0.7.1 so the mitigation is
-  not retirable").
+- **Q1 — owner authorization. RESOLVED (authorized).** The owner has authorized the pin bump.
+  The bump itself is still applied only in segment s5 (pin remains `^0.7.1` until then).
+  `89849d2a` remains deliberately left **open** until s5 lands the bump and the leak gate is
+  re-measured.
 - **Q2 — rollback direction (UNVERIFIED).** Can 0.7.x read an fts2 store? No primary
   source. The spike must measure it; until then no downgrade is promised.
 - **Q3 — cross-version VACUUM INTO (LOW).** Does a 0.8 `VACUUM INTO` of a v1 store
