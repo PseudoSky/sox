@@ -52,6 +52,8 @@ byte-reproducible and does not depend on how 0.8.1 happens to transcode a v1 ind
 VACUUM), **not** as a correctness necessity — the cross-version VACUUM itself is proven
 safe above.
 
+> **Fail-closed, never fail open:** every migration step must abort on error and leave the store untouched — it must never continue past a failure and report success. See `SPEC-MIGRATE-UNSAFE.md`.
+
 ## 1. What happens on first open under 0.8.x
 
 Measured upstream (PR #8517 body + regression test
