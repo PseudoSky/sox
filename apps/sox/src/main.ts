@@ -108,6 +108,9 @@ import {
   applyRetention,
   planRetention,
   sweepTrash,
+  E_CWD_SCOPE_MISMATCH,
+  CwdScopeMismatchError,
+  buildScopeDeterministicExtConfigEnv,
 } from '@adhd/sox-host-runtime';
 // NOTE: `@adhd/sox-manifest` is deliberately LAZY-LOADED in this file (see the
 // `await import('@adhd/sox-manifest')` in cmdValidate, and printHelp below).
@@ -522,14 +525,24 @@ function loadRegistryResolvedWithRoot(
  * Reads all four scopes (org→user→project→local, narrowest wins) and converts
  * each config key to SOX_CONFIG_<KEY>, with tilde and ${VAR} expansion.
  * Used by cmdStart, cmdExec (fresh-spawn), and cmdServe.
+ *
+ * BL 5f98a1ff: the persistent-unit path passes `scope`, which makes the cascade
+ * SCOPE-DETERMINISTIC (see {@link buildScopeDeterministicExtConfigEnv}) — user/org
+ * units never consult the cwd-derived project/local scopes, and project/local
+ * refuse without an explicit root. Callers that omit `scope` keep the legacy
+ * four-scope merge unchanged (non-unit paths: install/exec/serve).
  */
-function buildExtConfigEnv(extId: string, root: string): Record<string, string> {
+function buildExtConfigEnv(extId: string, root: string | undefined, scope?: DataScope): Record<string, string> {
+  if (scope !== undefined) {
+    return buildScopeDeterministicExtConfigEnv(extId, scope, root).env;
+  }
   const configEnv: Record<string, string> = {};
   const merged: Record<string, unknown> = {};
+  const legacyRoot = root ?? process.cwd();
   const { homedir } = require('node:os') as typeof import('node:os');
   for (const cs of ['org', 'user', 'project', 'local'] as const) {
     try {
-      const csp = getScopePaths(cs, root);
+      const csp = getScopePaths(cs, legacyRoot);
       const cfg = loadConfig(csp.config);
       const blk = (cfg?.config as Record<string, Record<string, unknown>> | undefined)?.[extId] ?? {};
       Object.assign(merged, blk);
@@ -5628,7 +5641,7 @@ function resolveOsUnitDir(flags: Record<string, string>, platform: OsUnitPlatfor
  * SOX_CONFIG_* cascade. Mirrored here so the OS-supervised process sees the exact
  * env the in-supervisor path would. [Never widen this silently — §13.2.5.]
  */
-function buildOsUnitEnv(extId: string, root: string): Record<string, string> {
+function buildOsUnitEnv(extId: string, scope: DataScope, root: string | undefined): Record<string, string> {
   // BL-344: was a hand-maintained allowlist; every new tunable had to be added
   // here AND in four other copies, and none ever were. `SOX_*` now forwards by
   // default (minus the host-authoritative `SOX_PERM_*`/`SOX_CONFIG_*`), so a
@@ -5650,7 +5663,7 @@ function buildOsUnitEnv(extId: string, root: string): Record<string, string> {
   // (`isShellSourcedEnvKey` in os-unit.ts excludes it for the same reason) —
   // any later re-enable from a shell lacking TMPDIR would otherwise block.
   delete env['TMPDIR'];
-  Object.assign(env, buildExtConfigEnv(extId, root));
+  Object.assign(env, buildExtConfigEnv(extId, root, scope));
   return env;
 }
 
@@ -5709,7 +5722,7 @@ function resolveOsUnitContext(
   } catch { /* best-effort */ }
 
   const manifestPath = pathM.join(resolved.extDir, 'extension.json');
-  const env = buildOsUnitEnv(extId, root);
+  const env = buildOsUnitEnv(extId, scope as DataScope, root);
   const logDir = logDirFor(`os-${scope}-${extId}`);
 
   // BL-156: a proxy-mode mcp-server with a configured port must not run the bare
@@ -5835,6 +5848,20 @@ OS units are GENERATED from the manifest; hand-editing them is unsupported.
     return;
   }
 
+  // BL 5f98a1ff: for project/local the extension-config cascade root IS where the
+  // unit's store binding comes from, and it must be STATED — never inferred from
+  // cwd. Refuse before resolving/ writing anything. (`root` keeps its cwd default
+  // below for the non-cascade uses; the cascade itself is scope-deterministic, so
+  // user/org ignore it entirely and can never bind a cwd-derived project store.)
+  if ((scope === 'project' || scope === 'local') && (flags['root'] === undefined || flags['root'] === '')) {
+    process.stderr.write(
+      `${CLI} service ${sub}: scope '${scope}' requires an explicit --root ` +
+      `(refusing to derive the extension-config cascade root from the current ` +
+      `working directory) [${E_CWD_SCOPE_MISMATCH}]\n`,
+    );
+    process.exit(1);
+  }
+
   const extId = argvIn[2] ?? flags['id'];
   if (!extId) {
     process.stderr.write(`${CLI} service ${sub}: extension id required\n`);
@@ -5842,7 +5869,19 @@ OS units are GENERATED from the manifest; hand-editing them is unsupported.
   }
 
   if (sub === 'enable') {
-    const ctx = resolveOsUnitContext(extId, scope, root, flags);
+    // BL 5f98a1ff: buildOsUnitEnv may refuse with CwdScopeMismatchError if the
+    // cascade would resolve through a non-participating scope — translate it to a
+    // typed refusal and write NOTHING (no unit file, no ownership entry).
+    let ctx: ReturnType<typeof resolveOsUnitContext>;
+    try {
+      ctx = resolveOsUnitContext(extId, scope, root, flags);
+    } catch (e) {
+      if (e instanceof CwdScopeMismatchError) {
+        process.stderr.write(`${CLI} service enable: ${e.message}\n`);
+        process.exit(1);
+      }
+      throw e;
+    }
     if (!ctx) {
       process.stderr.write(`${CLI} service enable: '${extId}' not installed at scope '${scope}', or no entrypoint\n`);
       process.exit(1);
@@ -6572,7 +6611,7 @@ async function doctorInstallTick(flags: Record<string, string>): Promise<void> {
   // the spec 1.4.0 changelog): a custom data root must be visible to the
   // scheduled reconcile or it would inspect the wrong store. This does NOT widen
   // the supervisor scrub allowlist — it is tick-unit-only.
-  const env = buildOsUnitEnv(DOCTOR_TICK_ID, root);
+  const env = buildOsUnitEnv(DOCTOR_TICK_ID, scope as DataScope, root);
   const ecoHome = process.env['SOX_ECOSYSTEM_HOME'];
   if (ecoHome !== undefined && ecoHome !== '') env['SOX_ECOSYSTEM_HOME'] = ecoHome;
 

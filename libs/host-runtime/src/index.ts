@@ -114,6 +114,17 @@ export {
 } from './data-paths.js';
 export type { DataScope } from './data-paths.js';
 
+// ─── Scope-deterministic extension-config cascade (BL 5f98a1ff) ───────────────
+export {
+  E_CWD_SCOPE_MISMATCH,
+  CwdScopeMismatchError,
+  cascadeScopesForUnitScope,
+  isRootDerivedScope,
+  assertScopeConsistent,
+  buildScopeDeterministicExtConfigEnv,
+} from './ext-config-cascade.js';
+export type { UnitScope, ExtConfigCascade } from './ext-config-cascade.js';
+
 export type {
   RuntimeEntry,
   RuntimeRecord,

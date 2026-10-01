@@ -19,12 +19,16 @@
  * all implemented in the lib's own runtime.ts / supervisor.ts.
  */
 
-import * as fs from 'node:fs';
-import * as os from 'node:os';
 import * as path from 'node:path';
 import { compilePolicy } from './policy.js';
 import { scrubEnvReported } from './env-policy.js';
 import { mkdirDataDir } from './data-paths.js';
+import {
+  CwdScopeMismatchError,
+  E_CWD_SCOPE_MISMATCH,
+  buildScopeDeterministicExtConfigEnv,
+  type UnitScope,
+} from './ext-config-cascade.js';
 import {
   getRuntimeFilePath,
   getRuntimeRecord,
@@ -39,29 +43,19 @@ import type { PermissionsBlock } from './supervisor.js';
 // dist/runtime-cli.js lives at libs/host-runtime/dist/, so three levels up is the repo root.
 const ROOT = path.resolve(__dirname, '..', '..', '..');
 
-/** Build SOX_CONFIG_* env vars from cascade-resolved config for an extension. */
-function buildExtConfigEnv(extId: string, root: string): Record<string, string> {
-  const configEnv: Record<string, string> = {};
-  const merged: Record<string, unknown> = {};
-  for (const cs of ['org', 'user', 'project', 'local'] as const) {
-    try {
-      const csp = getScopePaths(cs, root);
-      if (!fs.existsSync(csp.config)) continue;
-      const raw = JSON.parse(fs.readFileSync(csp.config, 'utf8')) as {
-        config?: Record<string, Record<string, unknown>>;
-      };
-      Object.assign(merged, raw.config?.[extId] ?? {});
-    } catch { /* skip missing scope */ }
-  }
-  const homeDir = os.homedir();
-  for (const [k, v] of Object.entries(merged)) {
-    const envKey = `SOX_CONFIG_${k.toUpperCase().replace(/[-\s]/g, '_')}`;
-    let strVal = typeof v === 'string' ? v : (v == null ? '' : JSON.stringify(v));
-    if (strVal.startsWith('~/')) strVal = homeDir + strVal.slice(1);
-    strVal = strVal.replace(/\$\{([A-Z0-9_]+)\}/g, (_m: string, n: string) => process.env[n] ?? _m);
-    configEnv[envKey] = strVal;
-  }
-  return configEnv;
+/**
+ * Build SOX_CONFIG_* env vars from the SCOPE-DETERMINISTIC cascade for an
+ * extension (BL 5f98a1ff). Was a second, inlined four-scope merge keyed on a
+ * cwd/checkout root — it is now a thin delegate to the one shared definition in
+ * ext-config-cascade.ts, so a user/org exec can never bind a project store that
+ * happens to sit at the invocation directory.
+ */
+function buildExtConfigEnv(
+  extId: string,
+  scope: UnitScope,
+  root: string | undefined,
+): Record<string, string> {
+  return buildScopeDeterministicExtConfigEnv(extId, scope, root).env;
 }
 
 /** Is a pid currently alive? (signal 0 = existence check) */
@@ -464,6 +458,23 @@ async function cmdExec(flags: Record<string, string>): Promise<void> {
     process.exit(1);
   }
 
+  // BL 5f98a1ff: the config cascade is keyed on the SCOPE, not the cwd/checkout.
+  // For project/local an explicit --root is mandatory; a missing root REFUSES
+  // rather than silently resolving the store against the invocation directory.
+  const execScope = (flags['scope'] ?? 'user') as UnitScope;
+  const execRoot = flags['root'];
+  if (
+    (execScope === 'project' || execScope === 'local') &&
+    (execRoot === undefined || execRoot === '')
+  ) {
+    process.stderr.write(
+      `soxe exec: scope '${execScope}' requires an explicit --root ` +
+      `(refusing to derive the extension-config cascade root from the current ` +
+      `working directory) [${E_CWD_SCOPE_MISMATCH}]\n`,
+    );
+    process.exit(1);
+  }
+
   let toolArgs: Record<string, unknown>;
   try {
     toolArgs = JSON.parse(argsJson) as Record<string, unknown>;
@@ -537,7 +548,16 @@ async function cmdExec(flags: Record<string, string>): Promise<void> {
   const { McpClient } = await import('./registrar.js');
 
   const policy = compilePolicy(manifestFull.permissions);
-  const extConfigEnv = buildExtConfigEnv(extId, ROOT);
+  let extConfigEnv: Record<string, string>;
+  try {
+    extConfigEnv = buildExtConfigEnv(extId, execScope, execRoot);
+  } catch (e) {
+    if (e instanceof CwdScopeMismatchError) {
+      process.stderr.write(`soxe exec: ${e.message}\n`);
+      process.exit(1);
+    }
+    throw e;
+  }
 
   let execEnv: NodeJS.ProcessEnv;
   if (policy.enforced) {
