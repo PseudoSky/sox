@@ -219,6 +219,17 @@ Schema version **1**. Each edit appends one dated entry; entries are never rewri
   fast-forwarded into `main` (`cf341864..671e136e`), and its worktree `.worktrees/spike-fts-preflight`
   was removed under the §5 predicate (clean, unlocked, branch merged) with `git branch -d`. No
   `--force`, `-D`, or break-glass bypass was used.
+- **2026-10-01 — recorded the `bl466-wire-guards` break-glass discard** (`git-manager`, run
+  `dispatch-2026-10-01-worktree-disposition`, on the operator authorisation quoted in §7).
+  *Reason:* the worktree `.worktrees/bl466-wire-guards` was **dirty** (29 modified `*/package.json`),
+  so it was not removable under §5's empty-`status` predicate; the operator authorised discarding
+  exactly those uncommitted package-metadata edits. The bypass was `git worktree remove --force` on
+  that one path; its branch was deleted with `git branch -d` (tip `88a9cee3` is an ancestor of
+  `main`, zero unique commits). Independent verification before the discard: 28 of the 29 files are
+  value-identical to `main` on `keywords`/`repository`/`homepage`, and the one delta —
+  `libs/host-registry/package.json` — is regressive (omits `agent-mcp`, `opencode`; no extras), so
+  committing it would have undone metadata already on `main`. §7 gained one entry; no other rule
+  changed.
 
 ## 7. Break-glass
 
@@ -250,3 +261,20 @@ next operation re-applies §5 in full.
   0.8.1 — 264 vs 266 — with a 0.7.1 control that still reproduces the leak) and is recorded.
 - **Scope honoured.** No other worktree, branch, or file was touched; every byte of
   `.worktrees/s1-reclaim-engine` (in-flight work) was left intact.
+
+### 2026-10-01 — discard of `bl466-wire-guards` (regressive package metadata)
+
+- **Operator authorisation.** The operator (dispatcher) directed this teardown and authorised
+  discarding the uncommitted contents of `.worktrees/bl466-wire-guards`, having verified read-only
+  that the worktree is discard-safe.
+- **Emergency / justified deviation.** §5's safe-to-remove predicate requires an **empty**
+  `git status --porcelain`; the worktree carried 29 modified `*/package.json` files, so it was not
+  removable under §5. The bypass was `git worktree remove --force` on **exactly** that one path.
+- **Why nothing of value was lost.** The worktree tip `88a9cee3` is an ancestor of `main` with zero
+  unique commits — every committed change it holds is already in `main`. Its only uncommitted work
+  was a bulk edit of `keywords`/`repository`/`homepage` across 29 `package.json` files; independent
+  value comparison against `main` found 28 value-identical and 1 regressive
+  (`libs/host-registry/package.json` omits `agent-mcp`, `opencode` relative to `main`, with no
+  extras), so committing it would have **regressed** metadata already on `main`. The branch was
+  deleted with the safe `git branch -d` (never `-D`), which succeeded because the tip is merged.
+- **Scope honoured.** No other worktree, branch, or file was touched.
