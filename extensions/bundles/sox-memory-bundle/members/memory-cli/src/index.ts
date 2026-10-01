@@ -61,6 +61,7 @@ import {
   optimizeFtsIndexes,
   rebuildStoreOffline,
   restoreStoreOffline,
+  migrateStoreFormatOffline,
   type StorePageStats,
   type StoreReplacementVerification,
 } from '@adhd/sox-store-adapter';
@@ -756,6 +757,76 @@ async function cmdFtsRebuild(dbFlag: string, rest: string[], dryRun: boolean): P
   }
 }
 
+/**
+ * (BL-89849d2a) `fts-migrate` — OFFLINE store-FORMAT migration for the Turso
+ * FTS on-disk format change (v1 / 0.7.x whole-index manifest -> v2 / 0.8.x
+ * per-segment registry). 0.8.x opens a 0.7 store but refuses FTS read/write
+ * with "FTS index … was created by an older version of Turso… rebuild it with
+ * DROP INDEX … followed by CREATE INDEX … USING fts". This verb runs
+ * `migrateStoreFormatOffline` (store-adapter/src/store-rebuild.ts): capture a
+ * reflink pre-migration image, DROP+CREATE every `USING fts` index, same-version
+ * VACUUM INTO, reset the growth counters, verify (FTS sentinel round-trip +
+ * base-table counts + integrity_check), then atomic swap. Exit 2 on refused
+ * (including `driver_not_v2_aware` under the installed 0.7.x driver, which
+ * cannot emit v2), 1 on failed. The pre-migration image is the ONLY rollback
+ * path — 0.7.x opening a migrated v2 store is CORRUPTING, never offered.
+ */
+async function cmdFtsMigrate(dbFlag: string, rest: string[], dryRun: boolean): Promise<void> {
+  const resolvedDb = resolveCliDb(dbFlag, rest[0]);
+  if (!fs.existsSync(resolvedDb)) {
+    console.error(`[fts-migrate] db not found: ${resolvedDb}`);
+    process.exit(1);
+  }
+  const r = await migrateStoreFormatOffline(resolvedDb, { dryRun });
+  if (r.status === 'refused') {
+    console.error(refusalMessage('fts-migrate', r.reason, r.peer_pids, r.db_path, r.error));
+    if (r.reason === 'driver_not_v2_aware') {
+      console.error(
+        `[fts-migrate] the installed @tursodatabase/database cannot emit the v2 FTS format; the store was NOT opened or modified. ` +
+          `Upgrade the driver pin first (a separate step — see docs/plan/turso-fts-migration/DESIGN.md), then re-run.`,
+      );
+    }
+    process.exit(2);
+  }
+  if (r.before) console.log(`  before: ${fmtStats(r.before)}`);
+  if (r.after) console.log(`  after:  ${fmtStats(r.after)}`);
+  if (r.transform && r.transform.length > 0) {
+    for (const t of r.transform) {
+      console.log(`  migrate: DROP INDEX ${t.index}; CREATE INDEX ${t.index} ON ${t.table} USING fts (${t.columns.join(', ')})`);
+    }
+  } else if (r.transform && r.transform.length === 0) {
+    console.log('  migrate: no USING fts indexes found — nothing to rewrite');
+  }
+  if (r.verification) printVerification('fts-migrate', r.verification);
+  if (r.status === 'failed') {
+    console.error(`[fts-migrate] ERROR (${r.reason ?? 'unknown'}): ${r.error ?? 'unknown'} (${r.duration_ms} ms)`);
+    if (r.reason === 'verification_failed' && r.migrate_path) {
+      console.error(`[fts-migrate] the unverified copy is kept for inspection: ${r.migrate_path} — the store was NOT swapped`);
+    }
+    process.exit(1);
+  }
+  if (r.before && r.after) {
+    const saved = r.before.file_bytes - r.after.file_bytes;
+    const pct = r.before.file_bytes > 0 ? ((saved / r.before.file_bytes) * 100).toFixed(1) : '0.0';
+    console.log(`  ${r.status === 'dry_run' ? 'would reclaim' : 'reclaimed'}: ${saved} bytes (${pct}%), ${r.before.page_count - r.after.page_count} pages`);
+  }
+  if (r.status === 'dry_run') {
+    console.log(`[fts-migrate] DRY-RUN: store opened read-write and closed; ${r.db_path} was NOT migrated (${r.duration_ms} ms)`);
+    if (r.pre_migration_image) {
+      console.log(`  no pre-migration image was captured (dry run); re-run without --dry-run to migrate`);
+    }
+    return;
+  }
+  console.log(`[fts-migrate] complete: ${r.db_path} (${r.duration_ms} ms)`);
+  if (r.pre_migration_image) {
+    console.log(`  pre-migration image: ${r.pre_migration_image}`);
+    console.log(`  rollback:   memory restore ${r.pre_migration_image} --db ${r.db_path} --allow-shrink`);
+  }
+  if (r.backup_path) {
+    console.log(`  pre-swap file: ${r.backup_path}`);
+  }
+}
+
 /** BL-15d6300c: restore refusals about the backup's content, each with its override. */
 const RESTORE_CONTENT_REFUSALS: Readonly<Record<string, string>> = {
   backup_empty: 'if an empty store is really what you want, re-run with --allow-empty-backup',
@@ -867,6 +938,9 @@ export async function runCli(argv: string[]): Promise<void> {
     case 'fts-rebuild':
       await cmdFtsRebuild(dbPathOverride, rest, dryRun);
       break;
+    case 'fts-migrate':
+      await cmdFtsMigrate(dbPathOverride, rest, dryRun);
+      break;
     case 'restore':
       await cmdRestore(dbPathOverride, rest, dryRun, { allowEmptyBackup, allowShrink });
       break;
@@ -899,6 +973,13 @@ Commands:
                                                       the pre-swap file is kept as the backup.
                                                       Same refusal rules as fts-optimize.
                                                       --dry-run verifies the copy, never swaps.
+  fts-migrate [--db <path>] [--dry-run]               OFFLINE store-FORMAT migration (Turso FTS
+                                                      v1 -> v2): DROP INDEX + CREATE INDEX USING fts
+                                                      for every FTS index, VACUUM INTO, reset the
+                                                      growth counters, verify, atomically swap. The
+                                                      pre-migration image is the only rollback path.
+                                                      Refuses under a non-v2 driver. --dry-run
+                                                      reports the rewrite plan, writes nothing.
   restore <backup> [--db <path>] [--dry-run]           OFFLINE restore of a single-file backup
           [--allow-empty-backup] [--allow-shrink]     (e.g. <db>.pre-rebuild-<ts>) over the store;
                                                       the replaced store is kept as

@@ -86,11 +86,13 @@ import {
   existsSync,
   linkSync,
   readdirSync,
+  readFileSync,
   renameSync,
   rmSync,
   statSync,
   unlinkSync,
 } from 'node:fs';
+import { createRequire } from 'node:module';
 import { basename, dirname, join } from 'node:path';
 import { log } from '@adhd/sox-telemetry';
 import {
@@ -1304,5 +1306,377 @@ export async function restoreStoreOffline(
     restored,
     content,
     verification,
+  });
+}
+
+// ── Format migration (Turso FTS v1 → v2) ────────────────────────────────────
+//
+// The `@tursodatabase/database` 0.8.0 bump replaces the FTS on-disk format: a
+// v1 whole-index Tantivy manifest B-tree vs the v2 per-segment fts2 registry.
+// 0.8.x opens a 0.7 store but refuses the first FTS read/write with an explicit
+// rebuild hint, and — measured, not merely unsupported — a 0.7.x OPEN of a v2
+// store is CORRUPTING (a 0.7 write poisons it). The migration is therefore an
+// offline, operator-invoked, fail-closed operation (ADR-0008 raw FTS DDL in the
+// versioned offline path; ADR-0013 explicit CLI; ADR-0012 reuses the existing
+// offline gate — no new WAL-checkpoint mechanism).
+
+/** The driver version at or above which the Turso engine emits the v2 (fts2)
+ *  format and refuses a v1 FTS index until it is rebuilt. */
+const TURSO_FTS_V2_MIN = '0.8.0';
+
+/** Parse a dotted semver into a numeric component list (lenient: non-numeric
+ *  fragments read as 0). */
+function semverComponents(v: string): number[] {
+  return v.split('.').map((n) => {
+    const parsed = parseInt(n, 10);
+    return Number.isFinite(parsed) ? parsed : 0;
+  });
+}
+
+/** `a >= b` on dotted semver, component-wise, padding the shorter with 0. */
+function versionAtLeast(a: string, b: string): boolean {
+  const pa = semverComponents(a);
+  const pb = semverComponents(b);
+  const len = Math.max(pa.length, pb.length);
+  for (let i = 0; i < len; i++) {
+    const x = pa[i] ?? 0;
+    const y = pb[i] ?? 0;
+    if (x !== y) return x > y;
+  }
+  return true;
+}
+
+/** The installed `@tursodatabase/database` version, resolved from its own
+ *  package.json via `require.resolve` + upward walk (the `exports` map refuses
+ *  a direct `require('…/package.json')`). `'0.0.0'` when it cannot be read —
+ *  which then fails the v2-aware gate rather than ever migrating blind. */
+function installedTursoDriverVersion(): string {
+  const req = createRequire(import.meta.url);
+  let dir = dirname(req.resolve('@tursodatabase/database'));
+  for (let i = 0; i < 10; i++) {
+    const candidate = join(dir, 'package.json');
+    if (existsSync(candidate)) {
+      try {
+        const pkg = JSON.parse(readFileSync(candidate, 'utf8')) as { name?: string; version?: string };
+        if (pkg.name === '@tursodatabase/database' && typeof pkg.version === 'string') return pkg.version;
+      } catch (err) {
+        log.warn('store.migrate.driver_version_unreadable', {
+          path: candidate,
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
+    }
+    const parent = dirname(dir);
+    if (parent === dir) break;
+    dir = parent;
+  }
+  return '0.0.0';
+}
+
+function driverIsV2Aware(version: string): boolean {
+  return versionAtLeast(version, TURSO_FTS_V2_MIN);
+}
+
+/** One FTS index the migration will drop and re-create from its base table. */
+export interface StoreFormatMigrationTransform {
+  index: string;
+  table: string;
+  columns: string[];
+}
+
+async function enumerateFtsIndexes(adapter: StoreAdapter): Promise<StoreFormatMigrationTransform[]> {
+  const { rows } = await adapter.executeAll<{ name: string; tbl_name: string; sql: string | null }>(
+    "SELECT name, tbl_name, sql FROM sqlite_master WHERE type = 'index' AND sql LIKE '%USING fts%' ORDER BY name",
+  );
+  const out: StoreFormatMigrationTransform[] = [];
+  for (const ix of rows) {
+    const columns = parseFtsColumns(ix.sql);
+    if (columns.length === 0) continue;
+    out.push({ index: ix.name, table: ix.tbl_name, columns });
+  }
+  return out;
+}
+
+/** §2.4b — the per-index format transform: `DROP INDEX` then `CREATE INDEX …
+ *  USING fts`, re-materialising each FTS index from its untouched base table.
+ *  THE ONE exception to `rebuildStoreOffline`'s "never drops anything"
+ *  invariant: it is a format-migration step, gated to fire only under a
+ *  v2-aware driver, and it immediately re-creates every index it drops. */
+async function transformFtsIndexes(adapter: StoreAdapter): Promise<StoreFormatMigrationTransform[]> {
+  const indexes = await enumerateFtsIndexes(adapter);
+  for (const ix of indexes) {
+    await adapter.executeRun(`DROP INDEX ${q(ix.index)}`);
+    await adapter.executeRun(`CREATE INDEX ${q(ix.index)} ON ${q(ix.table)} USING fts (${ix.columns.map(q).join(', ')})`);
+  }
+  return indexes;
+}
+
+export interface StoreFormatMigrationOptions {
+  /** Stop after the verified copy exists; delete it; never swap. */
+  dryRun?: boolean;
+  /** Clock seam for tests (image/migrate/backup names, `last_rebuild_at`). */
+  now?: () => Date;
+  /**
+   * Test seam: force the effective driver version, so the full pipeline is
+   * exercisable under a 0.7.x binary (which cannot itself emit v2). Production
+   * callers never pass it.
+   */
+  _tursoVersion?: string;
+  /**
+   * Test seam: skip the per-index DROP + CREATE transform (the RED arm of the
+   * migration gate — the v1 directory B-tree is preserved, so the reclaim
+   * assertion fails). Production callers never pass it.
+   */
+  _skipTransform?: boolean;
+}
+
+export interface StoreFormatMigrationReport {
+  status: 'migrated' | 'dry_run' | 'refused' | 'failed';
+  reason?:
+    | 'not_found'
+    | 'driver_not_v2_aware'
+    | 'peers'
+    | 'openers'
+    | 'no_lease'
+    | 'open_failed'
+    | 'cold_open_lock'
+    | 'sidecars_dirty'
+    | 'source_changed'
+    | 'verification_failed'
+    | 'error';
+  db_path: string;
+  peer_pids?: number[];
+  /** The v1-format pre-migration image (reflink) — the only rollback path. */
+  pre_migration_image?: string;
+  /** The verified migrated copy. Deleted on dry-run. */
+  migrate_path?: string;
+  /** The byte-exact pre-swap store (hard link). Present only when migrated. */
+  backup_path?: string;
+  before?: StorePageStats;
+  after?: StorePageStats;
+  verification?: StoreReplacementVerification;
+  /** The indexes the transform dropped and re-created (empty when skipped). */
+  transform?: StoreFormatMigrationTransform[];
+  duration_ms: number;
+  error?: string;
+}
+
+/**
+ * OFFLINE migration of a Turso store's FTS index format from v1 (0.7.x) to v2
+ * (0.8.x). Reuses {@link rebuildStoreOffline}'s offline-exclusive gate, facts
+ * capture, verified atomic swap and hard-link backup, but ADDS the one step
+ * that engine forbids: a per-`USING fts`-index `DROP INDEX` + `CREATE INDEX …
+ * USING fts` BEFORE the same-version `VACUUM INTO` — the order that both
+ * reclaims the orphaned v1 directory B-tree and leaves the output
+ * byte-reproducible (DESIGN §0/§2). Refuses (never force) under a non-v2-aware
+ * driver, since the v2 format cannot be emitted by a 0.7.x binary.
+ *
+ * Never throws for an expected outcome — refusals and failures are reported.
+ */
+export async function migrateStoreFormatOffline(
+  dbPath: string,
+  opts: StoreFormatMigrationOptions = {},
+): Promise<StoreFormatMigrationReport> {
+  const started = Date.now();
+  const now = opts.now ?? (() => new Date());
+  const effectiveVersion = opts._tursoVersion ?? installedTursoDriverVersion();
+  const done = (r: Omit<StoreFormatMigrationReport, 'duration_ms'>): StoreFormatMigrationReport => {
+    const report = { ...r, duration_ms: Date.now() - started };
+    const level = report.status === 'failed' ? 'error' : report.status === 'refused' ? 'warn' : 'info';
+    log[level]('store.migrate.finish', {
+      db_path: report.db_path,
+      status: report.status,
+      reason: report.reason ?? null,
+      before_pages: report.before?.page_count ?? null,
+      after_pages: report.after?.page_count ?? null,
+      transform_count: report.transform?.length ?? null,
+      duration_ms: report.duration_ms,
+      error: report.error ?? null,
+    });
+    return report;
+  };
+
+  if (!existsSync(dbPath)) {
+    return done({ status: 'failed', reason: 'not_found', db_path: dbPath, error: `db not found: ${dbPath}` });
+  }
+  const canonical = canonicalDbPath(dbPath);
+
+  // Gate: under a v1-format driver there is nothing to migrate TO — a
+  // DROP+CREATE would silently re-emit the same v1 format. Refuse explicitly
+  // rather than pretend to migrate (the driver bump is a separate, later,
+  // owner-authorized step — DESIGN §8).
+  if (!driverIsV2Aware(effectiveVersion)) {
+    return done({
+      status: 'refused',
+      reason: 'driver_not_v2_aware',
+      db_path: canonical,
+      error:
+        `the installed @tursodatabase/database is ${effectiveVersion}; the Turso FTS v1→v2 format migration ` +
+        `requires a 0.8.x driver to emit the v2 (fts2) format. Bump the driver first (a separate, ` +
+        `owner-authorized step — DESIGN §8), then re-run. No store was opened or modified.`,
+    });
+  }
+
+  const sourceArtifactsBefore = listFileArtifacts(canonical, 'store.migrate.cleanup_failed');
+  const cleanupSourceArtifacts = (): void =>
+    removeCreatedArtifacts(canonical, sourceArtifactsBefore, 'store.migrate.cleanup_failed');
+
+  // §2.4a — the writable offline-exclusive open (the SAME gate fts-optimize and
+  // fts-rebuild use). Writable, because the transform must DROP + CREATE on the
+  // source. No new WAL-checkpoint mechanism is introduced (ADR-0012).
+  const gate = await TursoAdapterImpl.openOfflineExclusive(dbPath, { event: 'store.migrate' });
+  if (!gate.ok) {
+    cleanupSourceArtifacts();
+    if (gate.reason === 'open_failed') {
+      return done({ status: 'failed', reason: 'open_failed', db_path: canonical, error: gate.error });
+    }
+    return done({ status: 'refused', reason: gate.reason, db_path: canonical, peer_pids: gate.pids });
+  }
+  const adapter = gate.adapter;
+
+  // `--dry-run`: report the transform plan and current footprint, write NOTHING.
+  // The transform mutates the SOURCE, so it cannot be dry-run; the plan is
+  // enumerated read-only and no image, no drop/create, no copy, no swap happen.
+  if (opts.dryRun === true) {
+    try {
+      const transform = await enumerateFtsIndexes(adapter);
+      const before = await readStorePageStats(adapter, canonical);
+      return done({ status: 'dry_run', db_path: canonical, before, transform });
+    } catch (err) {
+      return done({ status: 'failed', reason: 'error', db_path: canonical, error: err instanceof Error ? err.message : String(err) });
+    } finally {
+      try {
+        await adapter.close();
+      } catch (err) {
+        log.error('store.migrate.close_failed', { db_path: canonical, error: err instanceof Error ? err.message : String(err) });
+      }
+      cleanupSourceArtifacts();
+    }
+  }
+
+  const ts = now();
+  const migratePath = `${canonical}.migrate-${stamp(ts)}`;
+  const backupPath = `${canonical}.pre-rebuild-${stamp(ts)}`;
+  const preMigrationPath = `${canonical}.pre-migration-${stamp(ts)}`;
+  let before: StorePageStats;
+  let facts: StoreFacts;
+  let transform: StoreFormatMigrationTransform[];
+  try {
+    if (existsSync(migratePath) || existsSync(backupPath) || existsSync(preMigrationPath)) {
+      throw new Error(`an artifact of this migration already exists beside ${canonical}`);
+    }
+    log.info('store.migrate.start', { db_path: canonical, driver: effectiveVersion });
+
+    // §2.2 — the pre-migration image, captured while the store's FTS index is
+    // still v1 (a reflink clone: byte-exact, independent, copy-on-write). This
+    // is the ONLY rollback path — a 0.7.x open of a migrated v2 store is
+    // CORRUPTING (DESIGN §5/§6a), so the image is mandatory, not advisory.
+    copyFileSync(canonical, preMigrationPath, fsConstants.COPYFILE_FICLONE);
+
+    // The v1 source's footprint, against which reclaim is measured.
+    before = await readStorePageStats(adapter, canonical);
+
+    // §2.4b — the format transform (or, under the RED test seam, nothing: the
+    // v1 directory B-tree is preserved and the reclaim assertion fails).
+    transform = opts._skipTransform === true ? [] : await transformFtsIndexes(adapter);
+
+    // §2.4e — sentinel capture: the index is now re-materialised, so `fts_match`
+    // returns. Base counts and hit counts must survive the VACUUM and swap.
+    facts = await captureFacts(adapter);
+
+    // §2.4c — same-version VACUUM INTO, reclaiming the orphaned v1 directory
+    // B-tree (orphaned by the DROP above) and any already-leaked segments.
+    await adapter.backupTo(migratePath, { skipIntegrityCheck: true });
+  } catch (err) {
+    removeFileAndArtifacts(migratePath, 'store.migrate.cleanup_failed');
+    return done({ status: 'failed', reason: 'error', db_path: canonical, error: err instanceof Error ? err.message : String(err) });
+  } finally {
+    try {
+      await adapter.close();
+    } catch (err) {
+      log.error('store.migrate.close_failed', { db_path: canonical, error: err instanceof Error ? err.message : String(err) });
+    }
+    cleanupSourceArtifacts();
+  }
+
+  let after: StorePageStats;
+  let verification: StoreReplacementVerification;
+  let sourceIdentity: StoreFileIdentity | null = null;
+  try {
+    // The transform wrote the source; its identity is recorded AFTER the close
+    // (which checkpoints it) so the swap's `source_changed` check detects a
+    // CONCURRENT mutation, never our own transform.
+    sourceIdentity = readFileIdentity(canonical);
+    if (sourceIdentity === null) throw new Error(`could not stat ${canonical} after the transform`);
+    // §2.4d — reset the growth counters in the copy.
+    await stampRebuildMeta(migratePath, ts.toISOString());
+    // §2.4e — verify the copy: the bytes verified are the bytes swapped.
+    ({ stats: after, verification } = await verifyReplacement(migratePath, facts, { expectGrowthReset: true }));
+  } catch (err) {
+    removeFileAndArtifacts(migratePath, 'store.migrate.cleanup_failed');
+    return done({ status: 'failed', reason: 'error', db_path: canonical, pre_migration_image: preMigrationPath, before, error: err instanceof Error ? err.message : String(err) });
+  }
+  removeFileArtifacts(migratePath, 'store.migrate.cleanup_failed');
+  if (!verification.ok) {
+    return done({
+      status: 'failed',
+      reason: 'verification_failed',
+      db_path: canonical,
+      pre_migration_image: preMigrationPath,
+      migrate_path: migratePath,
+      before,
+      after,
+      verification,
+      transform,
+      error: verification.failures.join('; '),
+    });
+  }
+
+  let swap: SwapResult;
+  try {
+    swap = await swapIntoPlace(canonical, migratePath, backupPath, 'store.migrate', sourceIdentity);
+  } catch (err) {
+    removeFileAndArtifacts(migratePath, 'store.migrate.cleanup_failed');
+    return done({
+      status: 'failed',
+      reason: 'error',
+      db_path: canonical,
+      pre_migration_image: preMigrationPath,
+      migrate_path: migratePath,
+      before,
+      after,
+      verification,
+      transform,
+      error: err instanceof Error ? err.message : String(err),
+    });
+  }
+  if (!swap.ok) {
+    const keepCopy = swap.reason === 'source_changed';
+    if (!keepCopy) removeFileAndArtifacts(migratePath, 'store.migrate.cleanup_failed');
+    const refused = swap.reason !== 'sidecars_dirty';
+    return done({
+      status: refused ? 'refused' : 'failed',
+      reason: swap.reason,
+      db_path: canonical,
+      pre_migration_image: preMigrationPath,
+      peer_pids: swap.pids,
+      ...(keepCopy ? { migrate_path: migratePath } : {}),
+      before,
+      after,
+      verification,
+      transform,
+      error: swap.detail,
+    });
+  }
+  return done({
+    status: 'migrated',
+    db_path: canonical,
+    migrate_path: migratePath,
+    pre_migration_image: preMigrationPath,
+    ...(swap.backup_path !== null ? { backup_path: swap.backup_path } : {}),
+    before,
+    after: { ...after, file_bytes: fileSizeOrNull(canonical) ?? after.file_bytes, wal_bytes: fileSizeOrNull(`${canonical}-wal`) ?? 0 },
+    verification,
+    transform,
   });
 }
