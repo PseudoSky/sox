@@ -1,7 +1,7 @@
 {
   "$schema": "https://your-registry/schemas/extension/v2.json",
   "id": "debug",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "type": "agent",
   "title": "debug",
   "description": "Use this when you need a senior debugging specialist to diagnose complex software issues, analyze system behavior, and identify root causes from error logs and stack traces. Delegates broad discovery to `researcher` and uses GitNexus-first root-cause tracing instead of blind grepping. Differentiate from `review`: this agent chases a specific reported failure to its root cause; `review` audits code that isn't (yet) known to be broken.",
@@ -60,7 +60,9 @@
         "git push --force*": "deny",
         "git push *--no-verify*": "deny",
         "git clean *-f*": "deny",
-        "rm -rf *": "deny"
+        "rm -rf *": "deny",
+        "git checkout -- *": "ask",
+        "*dot/secrets*": "deny"
       },
       "webfetch": "allow",
       "websearch": "deny",
@@ -79,7 +81,7 @@
   "render": {
     "claude": {
       "model": "sonnet",
-      "version": "v0.1.4"
+      "version": "v0.1.5"
     },
     "opencode": {
       "model": "deepseek/deepseek-flash",

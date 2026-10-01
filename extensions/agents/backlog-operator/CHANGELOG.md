@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.3.1
+
+- **Guardrails restated after the `"*": "allow"` catch-all — probe-proven shadowing.** The agent map merges AFTER the global `opencode.json` rules and wins on last-match-wins, so any global guardrail the map does not restate is overridden. A probe agent whose bash map was a bare `{"*": "allow"}` ran `rm -rf /tmp/...` to completion, while the same command under the config alone was auto-rejected. The tail now restates, appended AFTER the catch-all so each still wins: `git stash*` / `git add -A*` / `git add .` / `git add --all*` / `git reset --hard*` / `git clean *-f*` deny, `git push *--no-verify*` / `git checkout -- *` / `rm -rf *` ask, `*dot/secrets*` deny.
+
 ## 0.3.0
 
 - **Similar-item discovery is now operator-initiated on every invocation (70f75751-8a84-47d2-99ed-83fb3bd71b3f).** The operator no longer waits for the caller to ask: every invocation discovers items similar to what the requesting agent is talking about and surfaces them in the return block as candidates for potential execution. The discovery duty is required, not optional, and is never gated on the caller requesting it — a caller who does not know a sibling exists cannot ask for it.

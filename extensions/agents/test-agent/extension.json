@@ -1,7 +1,7 @@
 {
   "$schema": "https://your-registry/schemas/extension/v2.json",
   "id": "test-runner",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "type": "agent",
   "title": "test-agent",
   "description": "Use this when you need an agent that runs test suites and reports results.",
@@ -31,7 +31,17 @@
       "edit": "deny",
       "write": "deny",
       "bash": {
-        "*": "allow"
+        "*": "allow",
+        "git stash*": "deny",
+        "git add -A*": "deny",
+        "git add .": "deny",
+        "git add --all*": "deny",
+        "git reset --hard*": "deny",
+        "git push *--no-verify*": "ask",
+        "git clean *-f*": "deny",
+        "git checkout -- *": "ask",
+        "rm -rf *": "ask",
+        "*dot/secrets*": "deny"
       },
       "glob": "allow",
       "grep": "allow"
@@ -40,7 +50,7 @@
   "render": {
     "claude": {
       "model": "sonnet",
-      "version": "v0.1.1"
+      "version": "v0.1.2"
     },
     "opencode": {
       "model": "deepseek/deepseek-flash"

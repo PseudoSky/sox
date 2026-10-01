@@ -1,7 +1,7 @@
 {
   "$schema": "https://your-registry/schemas/extension/v2.json",
   "id": "researcher",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "type": "agent",
   "title": "researcher",
   "description": "Use this when you need to discover, grade, and catalog third-party tools/patterns/use cases before building — sweeps registries and the web via the search MCP, grades sources, writes per-finding memory episodes (agent:approved/agent:blocked), and returns a build-vs-integrate verdict.",
@@ -64,7 +64,9 @@
         "git push --force*": "deny",
         "git push *--no-verify*": "deny",
         "git clean *-f*": "deny",
-        "rm -rf *": "deny"
+        "rm -rf *": "deny",
+        "git checkout -- *": "ask",
+        "*dot/secrets*": "deny"
       },
       "websearch": "deny",
       "task": "allow",
@@ -79,7 +81,7 @@
   "render": {
     "claude": {
       "model": "sonnet",
-      "version": "v0.1.4",
+      "version": "v0.1.5",
       "tools": [
         "Read",
         "Bash",

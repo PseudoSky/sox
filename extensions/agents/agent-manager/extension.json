@@ -163,7 +163,9 @@
         "git push *--no-verify*": "deny",
         "git branch -D*": "deny",
         "git clean *-f*": "deny",
-        "rm -rf *": "deny"
+        "rm -rf *": "deny",
+        "git checkout -- *": "ask",
+        "*dot/secrets*": "deny"
       },
       "webfetch": "allow",
       "websearch": "allow",
