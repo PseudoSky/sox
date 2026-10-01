@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.2.1
+
+- **Playbook corrected: no built-in `{"*": "allow"}`.** §14 said an agent's bash map is evaluated
+  "after the built-in `*` allow"; there is no such built-in. The effective order is global
+  `opencode.json` → agent map, and **when no rule matches the fall-through default is `ask`** — so
+  an agent with no `bash` map of its own (or a map without `"*": "allow"`) prompts on every unnamed
+  segment, and because a bash call is atomic the whole compound call fails non-interactively. The
+  only `ask` in this map is the deliberate guardrail set, kept last.
+- **Restart requirement stated.** Config and agent files are read at STARTUP and do not hot-reload;
+  a running server keeps the definition its sessions started with, so a corrected map still prompts
+  in any session born before the fix — restart opencode for a permission change to take effect.
+
 ## 0.2.0
 
 - **`"*": "ask"` → `"*": "allow"` — the catch-all was the bug, and 0.1.10 grew the

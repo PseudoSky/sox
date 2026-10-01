@@ -110,8 +110,10 @@ prevents…` ⇒ denied by rule).
 
 ### Permissioning — the dynamics
 
-- Effective rule list is **[built-in `{"*":"allow"}`] then [global `opencode.json`] then [agent map]**.
-  **Last match wins.**
+- Effective rule list is **[global `opencode.json`] then [agent map]** — agent rules LAST, **last match
+  wins**. There is NO built-in `{"*":"allow"}`: when no rule matches, the fall-through default is
+  **`ask`** — so an agent whose map has no `"*": "allow"` (or no `bash` map at all) prompts on every
+  unnamed segment.
 - Because the agent map comes last, an agent that declares its own `bash` map owns every segment; any
   segment it does not name falls to its own catch-all. A leading `"*"` in the map **shadows every
   global rule the map does not restate** — so an agent map must restate the global guardrails LAST.
@@ -119,5 +121,8 @@ prevents…` ⇒ denied by rule).
   resolves to `ask` or `deny`, the WHOLE call is refused and nothing runs.
 - In any non-interactive run (`opencode run`, a dispatched subagent) an `ask` is **auto-rejected**,
   so a prompt is not a pause — it is a FAILED call.
+- **Config + agent files are read at STARTUP; edits do NOT hot-reload — restart opencode for a
+  permission change to take effect.** A running server keeps the definition its sessions started with,
+  so a fixed map still prompts in a session born before the fix.
 - In 1.18.32 "Always allow" persists nowhere durable (the `permission` table stays empty); durable
   project-scoped persistence is a V2.0.x feature. Encode durable rules in `opencode.json` instead.

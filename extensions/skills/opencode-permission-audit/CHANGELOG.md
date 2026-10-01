@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.2.1
+
+- Corrected `SKILL.md` to match the runtime: there is **no built-in `{"*": "allow"}`** in the
+  permission list. The effective order is global `opencode.json` → agent map (agent last,
+  last-match-wins), and **when no rule matches the fall-through default is `ask`** — so an agent
+  with no `bash` map prompts on every unnamed segment, and because a bash call is one atomic unit
+  the whole compound call fails non-interactively.
+- Added the **restart requirement** to the dynamics: config and agent files are read at STARTUP and
+  do not hot-reload, so a running server keeps the definition its sessions started with and a fixed
+  map still prompts in a session born before the fix.
+
 ## 0.2.0
 
 - Scanner: per-agent **LEADERBOARD** (prompts, sessions prompted/total, asks-per-session,
