@@ -28,8 +28,10 @@ of an FTS index fails** with an explicit, actionable error:
 There is **no auto-migrate by design** (`format.rs:33`: "The code refuses older stores
 with a rebuild hint and never converts them"). The prescribed migration is the upstream
 one: **rebuild the index from the base table** (`DROP INDEX` then
-`CREATE INDEX ... USING fts`). `DROP INDEX` always succeeds because the destroy path
-never opens the store.
+`CREATE INDEX ... USING fts`). On 0.8.1 an in-process `DROP INDEX` is **refused** when the
+index's `_key` backing row is already missing (`Internal error: FTS backing store … not
+found`), so the destroy MUST go out of band through the better-sqlite3 hatch
+(`deleteSchemaRowsViaBetterSqlite3`) — the only route that can actually remove the rows.
 
 The migration is **narrow and in-place-safe**, but it is **offline** (the store must not
 be served while un-migrated — writes to the FTS index error) and it **must reclaim the
@@ -120,9 +122,11 @@ All steps offline-exclusive; refuse (never force) on any unmet precondition.
    b. For **each** index whose `sqlite_master.sql` matches `/\bUSING\s+fts\b/i`
       (`isFtsIndex`, `integrity.ts`; `resolveExistingFtsIndexName`, `fts-dialect.ts:115`):
       `DROP INDEX <idx>;` then `CREATE INDEX <idx> ON <table> USING fts (<cols>);`
-      (cols from `parseFtsColumns`, `integrity.ts`; DDL from `createIndexDDL`,
-      `fts-dialect.ts:252`). The base table is untouched. `DROP INDEX` succeeds
-      regardless of format because the destroy path never opens the store (HIGH).
+       (cols from `parseFtsColumns`, `integrity.ts`; DDL from `createIndexDDL`,
+       `fts-dialect.ts:252`). The base table is untouched. On 0.8.1 an in-process
+       `DROP INDEX` is **refused** when the `_key` backing row is already missing, so the
+       destroy must run **out of band** via better-sqlite3
+       (`deleteSchemaRowsViaBetterSqlite3`) — never an in-process DROP (HIGH, measured).
    c. **`VACUUM INTO <db>.migrate-<ts>`** via `adapter.backupTo` (`store-rebuild.ts:865`)
       — now a **same-version (0.8→0.8)** VACUUM of a store whose index is already v2,
       which reclaims the orphaned v1 directory B-tree and the already-leaked pages

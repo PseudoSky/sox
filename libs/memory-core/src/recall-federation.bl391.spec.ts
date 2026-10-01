@@ -18,17 +18,21 @@
  *
  * 2. A dead arm is observable, not silently swallowed: `memoryRecall`
  *    previously had `catch { /* FTS query may fail on special chars *\/ }`
- *    around the FTS query — discarding ANY failure, including the
- *    read-only one, with zero signal. This test forces exactly that failure
- *    (a hard-readonly Turso connection, i.e. `openDbReadOnly`'s pre-fix
- *    behavior recreated directly against `TursoAdapterImpl`) and asserts
- *    `response.degradations` carries the real "Resource is read-only"
- *    message through instead of vanishing.
+ *    around the FTS query — discarding ANY failure with zero signal. This
+ *    test manufactures a genuinely dead FTS arm and asserts
+ *    `response.degradations` carries the real error through instead of
+ *    vanishing. The old red arm — a native-readonly Turso connection whose
+ *    `fts_match` threw "Resource is read-only" — stopped reproducing on
+ *    0.8.1, which resolves readonly `fts_match` natively (no dead arm). The
+ *    damage shape that still makes `fts_match` throw under 0.8.1 is deleting
+ *    the Tantivy backing object (`__turso_internal_fts_dir_<idx>_key`) out of
+ *    sqlite_master, which surfaces as "FTS backing store ... not found".
  */
 import { describe, it, expect, afterAll } from 'vitest';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
+import Database from 'better-sqlite3';
 import { openDb } from './db.js';
 import { memoryWrite } from './write.js';
 import { memoryRecall, federatedRecall, closeFederationConnections } from './recall.js';
@@ -105,10 +109,31 @@ tursoDescribe('BL-391 — federated recall BM25 arm + degradation observability'
       await db.close();
     }
 
-    // Recreate the exact pre-fix symptom directly: a Turso connection opened
-    // with native readonly:true (no allowFtsInReadonly) — this is what
-    // openDbReadOnly used to produce unconditionally, and what BL-391's red
-    // arm is defined as ("Resource is read-only" on fts_match).
+    // Manufacture a genuinely dead FTS arm under the 0.8.1 Turso engine.
+    // Deleting the Tantivy backing object (`__turso_internal_fts_dir_<idx>_key`)
+    // out of sqlite_master makes `fts_match` throw "FTS backing store ... not
+    // found" (the BL-461 orphan shape) rather than panic or return empty.
+    // better-sqlite3 needs defensive mode off (`unsafeMode(true)`) — it cannot
+    // parse `CREATE INDEX ... USING fts` and defensive mode otherwise fails
+    // every statement with "malformed database schema" (db.ts ORDERING
+    // CONSTRAINT) — plus `writable_schema = ON` (BL-329: defensive mode
+    // silently no-ops writable_schema).
+    const raw = new Database(dbPath);
+    try {
+      raw.unsafeMode(true);
+      raw.pragma('writable_schema = ON');
+      raw
+        .prepare("DELETE FROM sqlite_master WHERE name = '__turso_internal_fts_dir_idx_fts_node_key'")
+        .run();
+      raw.pragma('writable_schema = RESET');
+    } finally {
+      raw.close();
+    }
+
+    // Open the damaged store read-only (as federated recall opens non-primary
+    // stores). Read-only prevents the open-time integrity pass from
+    // self-healing the missing backing, so the arm stays dead and fts_match
+    // throws through to the recall degradation channel.
     // @nx/enforce-module-boundaries: store-adapter is lazy-loaded throughout
     // memory-core — dynamic import matches that convention (see db.ts).
     const { TursoAdapterImpl } = await import('@adhd/sox-store-adapter');
@@ -121,7 +146,7 @@ tursoDescribe('BL-391 — federated recall BM25 arm + degradation observability'
       expect(response.degradations).toBeDefined();
       const ftsDegradation = response.degradations?.find((d) => d.startsWith('fts:'));
       expect(ftsDegradation).toBeDefined();
-      expect(ftsDegradation).toMatch(/read-only/i);
+      expect(ftsDegradation).toMatch(/backing store/i);
     } finally {
       await hardReadonly.close();
     }

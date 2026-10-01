@@ -51,6 +51,7 @@ import {
   guardOrphanedFtsIndexes,
   guardSucceeded,
 } from './fts-orphan-guard.js';
+import type { FtsRepairContext } from './fts-repair.js';
 import {
   isAlreadyOpenWithoutMultiprocessWal,
   isTshmCoordinationInitRace,
@@ -2522,7 +2523,14 @@ export class TursoAdapterImpl implements TursoAdapter {
      * `getTursoDriverStatus()`. Numeric only — no value disables the verdict.
      */
     driverStallAfterMs?: number;
-  }, internal: { reason: OpenReason; evidence?: ReleaseReopenEvidence } = { reason: 'initial' }): Promise<TursoAdapterImpl> {
+  }, internal: {
+    reason: OpenReason;
+    evidence?: ReleaseReopenEvidence;
+    /** (BL-461 repair reopen) Skip the in-process FTS orphan guard on this
+     *  open. The repair reopen must not re-enter the guard — a still-orphaned
+     *  store would recurse unboundedly through the guard's own repair. */
+    skipFtsOrphanGuard?: boolean;
+  } = { reason: 'initial' }): Promise<TursoAdapterImpl> {
     // (BL-1010e417) Phase timing — every phase below is measured, so a claim
     // about what a reopen costs is read from here, never assumed.
     const openStartedAt = performance.now();
@@ -3361,8 +3369,34 @@ export class TursoAdapterImpl implements TursoAdapter {
       // Repair builds the replacement BEFORE destroying the orphan (see
       // fts-orphan-guard.ts for the measurements and for why a failed build still
       // drops). Read-only opens detect and report but never write.
-      {
-        const guard = await guardOrphanedFtsIndexes(instance, { repair: opts.readonly !== true });
+      //
+      // (BL-507/BL-461) Hoist the connect state onto the instance BEFORE the
+      // guard so the guard can supply a repair context that closes-and-reopens
+      // THIS instance (`withConnectionClosedForRepair` needs `_connectOpts`/
+      // `_lease`/`_canonicalDb` already pinned). Safe: `_buildConfig` used
+      // `opts`, nothing in this span mutates `opts`, and at this point
+      // `_neverOpened`/`_poisoned`/`_released` are all false, so the repair
+      // path's `_ensureHealthy()` early-returns.
+      instance._connectOpts = Object.freeze({ ...opts, concurrencyMode: mode });
+      instance._lease = lease;
+      instance._canonicalDb = canonicalDb;
+
+      if (!internal.skipFtsOrphanGuard) {
+        const repairContext: FtsRepairContext | undefined =
+          opts.readonly !== true && canonicalDb !== undefined
+            ? {
+                dbPath: canonicalDb,
+                withConnectionClosedForRepair: <T>(fn: () => Promise<T>): Promise<T> =>
+                  instance.withConnectionClosedForRepair(fn),
+              }
+            : undefined;
+        const guardOpts: { repair: boolean; repairContext?: FtsRepairContext } = {
+          repair: opts.readonly !== true,
+        };
+        if (repairContext !== undefined) {
+          guardOpts.repairContext = repairContext;
+        }
+        const guard = await guardOrphanedFtsIndexes(instance, guardOpts);
         if (guard.orphaned.length > 0) {
           emitIntegrityReport(
             canonicalDb ?? opts.url,
@@ -3427,21 +3461,10 @@ export class TursoAdapterImpl implements TursoAdapter {
         lap('integrity');
       }
 
-      // (SPEC-CONN-RECYCLE) Capture the exact `opts` this connect() call
-      // received — never reconstructed from `config` (which drops
-      // `allowFtsInReadonly`, see the field's doc comment) — so a later
-      // reconnect can replay it verbatim through this same connect() path.
-      // (BUG-MEMORYCORE-MULTIPROCESS-WAL-NOT-OPTED-IN-001) The RESOLVED mode is
-      // stamped in so a replay re-validates the same mode rather than
-      // re-resolving (which could theoretically drift if env changed mid-process).
-      instance._connectOpts = Object.freeze({ ...opts, concurrencyMode: mode });
-
-      instance._lease = lease;
-
-      // (BUG-STOREADAPTER-COORDINATION-PATH-ASYMMETRY) Pin the canonical identity
-      // onto the instance. `config.dbPath` keeps the caller's spelling for the
-      // driver/replay; every coordination site reads `coordPath` instead.
-      instance._canonicalDb = canonicalDb;
+      // (SPEC-CONN-RECYCLE) The exact `opts` this connect() call received —
+      // and the RESOLVED concurrency mode — were pinned onto the instance
+      // ABOVE, before the BL-461 orphan guard (which needs `_connectOpts`/
+      // `_lease`/`_canonicalDb` already set to supply its repair context).
 
       // (idle-flush) Arm the adapter-owned idle WAL flush — the primary WAL
       // durability assurance every consumer inherits automatically, no
@@ -3801,9 +3824,8 @@ export class TursoAdapterImpl implements TursoAdapter {
     if (!opts.skipIntegrityCheck) {
       // Reopen the backup with the SAME experimental flags as the source —
       // `index_method` is required to even read the FTS index the copy
-      // carries. verifyStoreIntegrity's pragma_integrity_check probe already
-      // filters the known permanent Turso FTS false positive
-      // (`isKnownFalsePositive`), so a clean copy reports 'ok' here.
+      // carries. verifyStoreIntegrity's pragma_integrity_check probe reports
+      // 'ok' directly on a clean copy.
       //
       // (BL-449) `allowFtsInReadonly` is required now that the full probe set
       // runs: `fts_index_live` issues `fts_match`, which Turso's native
@@ -4066,7 +4088,20 @@ export class TursoAdapterImpl implements TursoAdapter {
     columns: string[],
     opts: FtsEnsureOptions = {},
   ): Promise<FtsEnsureResult> {
-    return ensureFtsIndexOn(this, table, columns, opts);
+    const merged: FtsEnsureOptions = { ...opts };
+    // (BL-507) Supply the out-of-band repair seam when this is a local-file
+    // connection — `ensureFtsIndex`'s verification then drops-and-recreates a
+    // damaged Tantivy index through the better-sqlite3 hatch while the
+    // connection is closed, instead of an in-place DROP INDEX the 0.8.1 driver
+    // refuses.
+    if (this._canonicalDb !== undefined) {
+      merged.repairContext = {
+        dbPath: this._canonicalDb,
+        withConnectionClosedForRepair: <T>(fn: () => Promise<T>): Promise<T> =>
+          this.withConnectionClosedForRepair(fn),
+      };
+    }
+    return ensureFtsIndexOn(this, table, columns, merged);
   }
 
   /**
@@ -4853,7 +4888,10 @@ export class TursoAdapterImpl implements TursoAdapter {
           // (BL-1010e417) 'initial', i.e. the full ceremony: the schema was just
           // rewritten underneath this process, so nothing may be reused.
           try {
-            const fresh = await TursoAdapterImpl._openReal(this._connectOpts, { reason: 'initial' });
+            const fresh = await TursoAdapterImpl._openReal(this._connectOpts, {
+              reason: 'initial',
+              skipFtsOrphanGuard: true,
+            });
             this.db = fresh.db;
             this._lastOpenTiming = fresh._lastOpenTiming;
             this._lease = fresh._lease;

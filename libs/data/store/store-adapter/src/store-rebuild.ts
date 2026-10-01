@@ -14,8 +14,8 @@
  * this module never drops anything. Plain in-place `VACUUM` is refused under
  * multiprocess WAL. `VACUUM INTO` alone compacted the production copy to
  * 160.3 MB in 5.8 s with identical node/edge/vec_node counts, identical
- * `fts_match` hit counts, and an `integrity_check` carrying only the known
- * Tantivy false positive.
+ * `fts_match` hit counts, and an `integrity_check` carrying only
+ * page-accounting noise.
  *
  * SEQUENCE (`rebuildStoreOffline`):
  *   1. Exclusivity: `TursoAdapterImpl.openOfflineExclusive` — the SAME gate as
@@ -56,8 +56,8 @@
  *      checkpointed (TRUNCATE) before its handle closes.
  *   6. Verify the copy read-only — the bytes verified are the bytes swapped in:
  *      table set and row counts equal, every sentinel's hit count equal,
- *      `integrity_check` with no damage (the documented false positive and
- *      page-accounting noise classified, never ignored), counter reads 0.
+ *      `integrity_check` with no damage (page-accounting noise classified,
+ *      never ignored), counter reads 0.
  *   7. `--dry-run` stops here and deletes the copy.
  *   8. Swap (`swapIntoPlace`): the cold-open lock is taken (refuse if it
  *      cannot be); peers and openers are re-checked; only THEN are the
@@ -121,13 +121,16 @@ import { openTursoConnection } from './turso-driver-host.js';
 import type { StoreAdapter } from './types.js';
 
 /**
- * The `@tursodatabase/database` version the FTS segment leak — and therefore
- * this module and `memory_ping`'s growth gauge — was measured against (also
- * reproduced on 0.7.2, 2026-09-27). Not a dependency pin: the upgrade-gate test
+ * The `@tursodatabase/database` version the FTS segment leak was last MEASURED
+ * against: 0.8.1, where the leak no longer reproduces (265 vs 266 pages on the
+ * gate's corpus — interleaved no longer exceeds the single-optimize control).
+ * The 0.7.1 Tantivy whole-index manifest orphaned merged-away segments on every
+ * interleaved `OPTIMIZE INDEX`; 0.8.1's v2 segment registry does not, so the
+ * leak is gone. Not a dependency pin: the upgrade-gate test
  * (`fts-optimize-leak-gate.bl-c5249cdd.spec.ts`) reads the INSTALLED driver and
  * fails when it moves off this version, forcing a re-measurement.
  */
-export const FTS_OPTIMIZE_LEAK_MEASURED_ON = '0.7.1';
+export const FTS_OPTIMIZE_LEAK_MEASURED_ON = '0.8.1';
 
 // ── Page stats ────────────────────────────────────────────────────────────────
 
@@ -269,8 +272,6 @@ export interface StoreReplacementVerification {
   integrity: {
     ok: boolean;
     damage: string[];
-    /** Documented Turso false positives (`isKnownFalsePositive`) — reported, not damage. */
-    known_false_positives: number;
     /** `Page N: …` reclaimable-space noise — reported, not damage. */
     page_accounting: number;
     truncated: boolean;
@@ -357,7 +358,6 @@ async function verifyReplacement(
         integrity: {
           ok: integrityOk,
           damage: cls.damage,
-          known_false_positives: cls.knownFalsePositives.length,
           page_accounting: cls.pageAccounting.length,
           truncated: cls.truncated,
         },
@@ -1521,10 +1521,17 @@ export async function migrateStoreFormatOffline(
   const cleanupSourceArtifacts = (): void =>
     removeCreatedArtifacts(canonical, sourceArtifactsBefore, 'store.migrate.cleanup_failed');
 
-  // §2.4a — the writable offline-exclusive open (the SAME gate fts-optimize and
-  // fts-rebuild use). Writable, because the transform must DROP + CREATE on the
-  // source. No new WAL-checkpoint mechanism is introduced (ADR-0012).
-  const gate = await TursoAdapterImpl.openOfflineExclusive(dbPath, { event: 'store.migrate' });
+  // §2.4a — the offline-exclusive open (the SAME gate fts-optimize and
+  // fts-rebuild use). Writable for the real migration, because the transform
+  // must DROP + CREATE on the source. A `--dry-run` opens READONLY instead: it
+  // only enumerates the plan + reads page stats, and a read-write open would
+  // checkpoint the WAL on close and change the store's bytes, breaking the
+  // dry-run's "write NOTHING" contract (BL-c5249cdd). No new WAL-checkpoint
+  // mechanism is introduced (ADR-0012).
+  const gate = await TursoAdapterImpl.openOfflineExclusive(dbPath, {
+    event: 'store.migrate',
+    readonly: opts.dryRun === true,
+  });
   if (!gate.ok) {
     cleanupSourceArtifacts();
     if (gate.reason === 'open_failed') {

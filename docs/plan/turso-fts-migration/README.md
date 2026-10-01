@@ -36,6 +36,11 @@ for that segment.
 - [ ] `dod.5` `fts-gate-evidence.bl-2bf0b7c8.spec.ts` written, seen RED, then GREEN.
 - [ ] `dod.6` 0.7.1 control run retained and passing.
 - [x] `dod.7` `_key`/`verifyTursoFtsMaterialization` re-leak hazard resolved.
+      **Repair path (BL-507/BL-461):** on 0.8.1 the in-process `DROP INDEX` is refused when
+      the `_key` backing row is missing, so the orphan destroy and the `ensureFtsIndex`
+      re-CREATE must both go out of band through `deleteSchemaRowsViaBetterSqlite3` (shared
+      `destroyOrphanedFtsIndex` in `fts-repair.ts`; repair context supplied by
+      `turso-adapter.ts`).
 - [ ] `dod.8` Pin bump + relock applied only on owner authorization; lockfile committed
       in the same change.
 - [ ] `dod.9` Migration verified on a production-store copy: counts equal, sentinel hits

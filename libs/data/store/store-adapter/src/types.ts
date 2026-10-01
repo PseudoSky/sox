@@ -8,6 +8,9 @@ import type { StoreConcurrencyMode } from './concurrency-mode.js';
 // erased at emit, so this does NOT pull the host (or its worker spawn) into a
 // consumer that only imports types.
 import type { TursoDriverConnection, TursoDriverStatus } from './turso-driver-host.js';
+// Type-only import: erased at emit, so this does NOT create a runtime cycle
+// with `fts-repair.ts` (which imports `StoreAdapter` from here, also as a type).
+import type { FtsRepairContext } from './fts-repair.js';
 
 // ── Adapter meta (adapter-type stamping) ────────────────────────────────────
 
@@ -285,6 +288,18 @@ export interface FtsEnsureOptions {
    *  fts5 objects (silent no-op, see `FTSDialect.dropLegacyDDL`). Default:
    *  true. */
   dropLegacyResidue?: boolean;
+  /**
+   * (BL-507) The out-of-band repair seam for a damaged Tantivy index whose
+   * `_key` backing row is missing. When supplied, `ensureFtsIndex`'s
+   * verification drops-and-recreates the index through the better-sqlite3
+   * hatch (`deleteSchemaRowsViaBetterSqlite3`) while the connection is closed,
+   * instead of an in-place `DROP INDEX` — which the 0.8.1 driver refuses. The
+   * `TursoAdapterImpl` wrapper supplies this; a bare caller that does not
+   * (e.g. a test or a hand-constructed adapter) gets the in-place attempt,
+   * whose failure on 0.8.1 surfaces as a typed `[BL-507]` error rather than a
+   * silent `ensured: true` over a panic-bomb index.
+   */
+  repairContext?: FtsRepairContext;
 }
 
 export interface FtsEnsureResult {

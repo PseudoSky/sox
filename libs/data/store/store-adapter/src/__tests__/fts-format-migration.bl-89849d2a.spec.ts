@@ -17,20 +17,16 @@
  * image is restored through `restoreStoreOffline`, and this file EXERCISES the
  * rollback (the plan's sole previously-unverified escape hatch).
  *
- * DRIVER SEAM. The installed `@tursodatabase/database` is 0.7.1, which cannot
- * emit the v2 format. The `_tursoVersion` test seam only bypasses the
- * `driverIsV2Aware` GATE — it does NOT change the driver's FTS engine. So under
- * the 0.7.1 binary the DROP+CREATE transform re-emits a v1 index (still leaked),
- * and `verifyReplacement` correctly refuses the v1-on-v1 sentinel mismatch:
- * the end-to-end chain through `swapIntoPlace` is UNREACHABLE under 0.7.1, which
- * is exactly the plan's stated boundary — "if the v2 DDL genuinely cannot be
- * emitted under 0.7.1, say so explicitly and stop — do not bump." The full
- * chain completes only under a real 0.8 pin (a separate, later step; the live
- * service must not see 0.8 bytes yet).
+ * DRIVER SEAM. The installed `@tursodatabase/database` is now 0.8.1, which IS
+ * v2-aware, so the `driverIsV2Aware` gate passes with no seam. The
+ * `_tursoVersion` test seam only bypasses the gate — it does NOT change the
+ * driver's FTS engine; it is retained to prove the RED→GREEN transform
+ * mechanic (BL-225) is the ONLY thing that rebuilds FTS indexes.
  *
- * What IS verifiable under the pin, and is asserted here:
- *   1. DRIVER-GATE refusal — the engine refuses (reason `driver_not_v2_aware`)
- *      without opening or modifying the store.
+ * What IS asserted here:
+ *   1. DRIVER-GATE — the installed 0.8.1 driver is v2-aware, so the migration
+ *      runs end-to-end to status 'migrated' (transform + image + swap), and the
+ *      migrated store still serves FTS.
  *   2. RED→GREEN transform mechanic (BL-225, names `89849d2a`) — with the
  *      transform disabled the migration never rebuilds an FTS index (empty
  *      `transform`); enabled, it records the exact DROP+CREATE for each index.
@@ -124,21 +120,32 @@ async function ftsHits(dbPath: string, token: string): Promise<number> {
 }
 
 describe(`${UID} — Turso FTS v1→v2 format migration (offline, reversible)`, () => {
-  it(`${UID}: DRIVER-GATE — refuses under the installed non-v2 driver without opening or modifying the store`, async () => {
+  it(`${UID}: DRIVER-GATE — the installed 0.8.x driver is v2-aware and the migration runs end-to-end to 'migrated'`, async () => {
     const db = path.join(tmpDir(), 'leaked.db');
     await seedLeakedStore(db);
     const before = sha(db);
 
-    // No `_tursoVersion` seam → the engine reads the INSTALLED driver (0.7.1)
-    // and refuses before opening, before any pre-migration image, before any DROP.
+    // No `_tursoVersion` seam → the engine reads the INSTALLED driver (0.8.1),
+    // which is >= TURSO_FTS_V2_MIN ('0.8.0'), so `driverIsV2Aware` passes and
+    // the migration runs the full chain: pre-migration image → DROP+CREATE →
+    // VACUUM INTO → verifyReplacement → swapIntoPlace.
     const report = await migrateStoreFormatOffline(db, {});
 
-    expect(report.status).toBe('refused');
-    expect(report.reason).toBe('driver_not_v2_aware');
-    expect(report.transform).toBeUndefined();
-    expect(report.pre_migration_image).toBeUndefined();
-    // The store was never opened, let alone modified.
-    expect(sha(db)).toBe(before);
+    expect(report.status).toBe('migrated');
+    expect(report.reason).toBeUndefined();
+    // The transform rebuilt exactly one FTS index with the exact DDL.
+    expect(report.transform).toHaveLength(1);
+    expect(report.transform?.[0]).toMatchObject({
+      index: 'idx_fts_node',
+      table: 'node',
+      columns: ['content'],
+    });
+    expect(report.pre_migration_image).toBeDefined();
+    expect(report.pre_migration_image).toBeTruthy();
+    // The store was actually migrated (bytes changed).
+    expect(sha(db)).not.toBe(before);
+    // Outcome proof, not merely non-refused: the migrated store still serves FTS.
+    expect(await ftsHits(db, 'tok0')).toBe(1);
   }, 120_000);
 
   it(`${UID}: RED→GREEN — the transform is the ONLY thing that rebuilds FTS indexes (BL-225, names ${UID})`, async () => {
@@ -167,10 +174,9 @@ describe(`${UID} — Turso FTS v1→v2 format migration (offline, reversible)`, 
     const db = path.join(tmpDir(), 'leaked.db');
     await seedLeakedStore(db);
 
-    // Under the 0.7.1 pin the migration runs the transform but `verifyReplacement`
-    // correctly refuses the v1-on-v1 leak, so the report is `failed` — yet the
-    // pre-migration v1 image was captured FIRST and is carried on the failed
-    // report precisely so rollback stays reachable.
+    // The migration runs end-to-end to 'migrated' under the installed 0.8.1
+    // driver. The pre-migration image is captured FIRST (before any DROP), so
+    // rollback stays reachable regardless of the migration's final status.
     const migrated = await migrateStoreFormatOffline(db, { _tursoVersion: '0.8.0' });
     const image = migrated.pre_migration_image;
     expect(image).toBeDefined();

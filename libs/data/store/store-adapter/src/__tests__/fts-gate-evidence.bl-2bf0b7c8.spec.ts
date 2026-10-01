@@ -71,10 +71,11 @@ describe('BL-2bf0b7c8 — the FTS leak gate always emits both page counts', () =
   it('BL-2bf0b7c8: on the A-passes/B-fails path (leak reproduces, driver moved), the thrown message contains BOTH page counts', () => {
     // Synthetic numbers: leak reproduces (interleaved > 1.1× single) but the
     // installed driver is no longer the measured one — the exact shape of a
-    // 0.8.x upgrade that fixed the leak while the version-pin anchor moved.
+    // future driver bump (past 0.8.1) that re-introduced the leak while the
+    // version-pin anchor moved.
     const interleaved = 5000;
     const single = 1000;
-    const installed = '0.8.1';
+    const installed = '0.9.0';
     const v = buildLeakGateVerdict(interleaved, single, installed, FTS_OPTIMIZE_LEAK_MEASURED_ON);
 
     // The facts are SEPARATE fields (leak true, pin false)…
@@ -88,7 +89,7 @@ describe('BL-2bf0b7c8 — the FTS leak gate always emits both page counts', () =
     // the moved version and the anchor — the numbers the operator needs.
     expect(thrown).toContain('interleaved=5000');
     expect(thrown).toContain('single=1000');
-    expect(thrown).toContain('installed=0.8.1');
+    expect(thrown).toContain('installed=0.9.0');
     expect(thrown).toContain(`measured_on=${FTS_OPTIMIZE_LEAK_MEASURED_ON}`);
   });
 

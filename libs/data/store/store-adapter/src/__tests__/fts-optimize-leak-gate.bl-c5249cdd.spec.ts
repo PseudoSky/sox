@@ -8,8 +8,7 @@
  *    reused. A FIXED-corpus optimize loop never grows (nothing new to merge),
  *    so it cannot show this — the corpus must grow between optimizes, which is
  *    exactly what the in-service idle pass does. The leak and the driver
- *    version are asserted in ONE test (the `SUPPRESSION_VALID_FOR` precedent,
- *    integrity-selfheal.test.ts): a driver bump turns this red, and the
+ *    version are asserted in ONE test: a driver bump turns this red, and the
  *    response is to re-measure — if the leak is gone, `memory fts-rebuild` and
  *    the growth gauge's pass alarm can be retired; if it persists, bump
  *    `FTS_OPTIMIZE_LEAK_MEASURED_ON`.
@@ -94,12 +93,18 @@ async function runArm(mode: 'interleaved' | 'single'): Promise<number> {
 
 describe('BL-c5249cdd — Turso FTS segment leak', () => {
   it(
-    'BL-c5249cdd upgrade gate: interleaved insert+OPTIMIZE rounds grow page_count past a single-optimize control, on the measured driver',
+    'BL-c5249cdd upgrade gate: the FTS segment leak no longer reproduces on the measured 0.8.1 driver (interleaved ≤ single)',
     async () => {
       const interleaved = await runArm('interleaved');
       const single = await runArm('single');
       const installed = installedTursoVersion();
-      // Measured 0.7.1/0.7.2 on this corpus: 2,395 vs 1,979 pages (+21%).
+      // Measured 0.8.1 on this corpus: 265 vs 266 pages. The interleaved
+      // page_count NO LONGER exceeds the single-optimize control — 0.8.1's v2
+      // segment registry does not orphan merged-away segments the way the
+      // 0.7.1 Tantivy whole-index manifest did (0.7.1/0.7.2 measured 2,395 vs
+      // 1,979 pages, +21%). `leak_reproduces` is asserted `false` here
+      // deliberately: a driver that re-introduces the leak flips it back to
+      // true and this gate goes red.
       //
       // BL-2bf0b7c8: both facts are asserted through ONE combined object —
       // vitest throws on the FIRST failing `expect`, so two separate `expect`s
@@ -118,14 +123,14 @@ describe('BL-c5249cdd — Turso FTS segment leak', () => {
           single_pages: single,
         },
         `BL-c5249cdd / BL-2bf0b7c8: interleaved=${interleaved} single=${single} installed=${installed} ` +
-          `measured_on=${measuredOn}. The interleaved page_count must exceed 110% of the single-optimize ` +
-          `control (the FTS segment leak), and the installed driver must still be the version these facts ` +
-          `were measured on. If the leak no longer reproduces, retire the pass alarm / re-evaluate memory ` +
-          `fts-rebuild; if the driver moved, re-run this gate's measurement on the new version and (leak ` +
-          `gone) retire the pass alarm or (leak persists) bump FTS_OPTIMIZE_LEAK_MEASURED_ON. Do not widen ` +
-          `this comparison.`,
+          `measured_on=${measuredOn}. The leak is GONE on 0.8.1, so the interleaved page_count must NOT ` +
+          `exceed 110% of the single-optimize control (leak_reproduces is expected false), and the ` +
+          `installed driver must still be the version these facts were measured on. If a driver ` +
+          `re-introduces the leak this gate goes red (leak_reproduces flips true) — re-measure and bump ` +
+          `FTS_OPTIMIZE_LEAK_MEASURED_ON; if only the driver moved, re-measure and bump ` +
+          `FTS_OPTIMIZE_LEAK_MEASURED_ON. Do not widen this comparison.`,
       ).toEqual({
-        leak_reproduces: true,
+        leak_reproduces: false,
         installed_matches: true,
         interleaved_pages: interleaved,
         single_pages: single,

@@ -56,6 +56,7 @@ import {
   nextShadowIndexName,
 } from '../fts-orphan-guard.js';
 import type { StoreAdapter, AllResult, RunResult } from '../types.js';
+import type { FtsRepairContext } from '../fts-repair.js';
 
 const hasTurso = (() => {
   try {
@@ -206,9 +207,33 @@ function recordingAdapter(opts: {
   failCreate?: boolean;
   /** Names that appear in `sqlite_master` once a CREATE has run. */
   materialise?: boolean;
-}): { adapter: StoreAdapter; sql: string[] } {
+}): { adapter: StoreAdapter; sql: string[]; repairContext: FtsRepairContext } {
   const sql: string[] = [];
   const rows = [...opts.master];
+  // (BL-507/BL-461) The guard now destroys the orphan through the shared
+  // `destroyOrphanedFtsIndex`, which — when a repair context is supplied —
+  // runs the better-sqlite3 hatch INSIDE `withConnectionClosedForRepair`. This
+  // stub stands in for that seam: it mutates `rows` exactly as the hatch's
+  // `DELETE FROM sqlite_master` would (removing the orphan's three rows, never
+  // the `__rN` shadow) and records an out-of-band marker, WITHOUT calling the
+  // real hatch (which would try to open a non-existent db file).
+  const repairContext: FtsRepairContext = {
+    dbPath: '/tmp/fake-bl461.db',
+    withConnectionClosedForRepair: async <T>(_fn: () => Promise<T>): Promise<T> => {
+      const orphanNames = [
+        'idx_fts_node',
+        '__turso_internal_fts_dir_idx_fts_node',
+        '__turso_internal_fts_dir_idx_fts_node_key',
+      ];
+      for (const n of orphanNames) {
+        for (let i = rows.length - 1; i >= 0; i--) {
+          if ((rows[i] as { name: string }).name === n) rows.splice(i, 1);
+        }
+      }
+      sql.push(`OUT_OF_BAND_DELETE ${orphanNames.join(',')}`);
+      return { ok: true, via: 'out-of-band', dropped: orphanNames } as unknown as T;
+    },
+  };
   const adapter = {
     config: { type: 'turso' as const },
     capabilities: { fts: true },
@@ -260,7 +285,7 @@ function recordingAdapter(opts: {
       return { rowsAffected: 0, lastInsertRowid: 0 };
     },
   } as unknown as StoreAdapter;
-  return { adapter, sql };
+  return { adapter, sql, repairContext };
 }
 
 const ORPHAN_MASTER = [
@@ -339,9 +364,9 @@ describe('BL-461 — orphan detection predicate (no store required)', () => {
 // ── Order: build, THEN destroy ───────────────────────────────────────────────
 
 describe('BL-461 — the replacement is built BEFORE the orphan is destroyed', () => {
-  it('emits CREATE INDEX before DROP INDEX, and verifies the backing objects materialised in between', async () => {
-    const { adapter, sql } = recordingAdapter({ master: ORPHAN_MASTER });
-    const result = await guardOrphanedFtsIndexes(adapter, { repair: true });
+  it('emits CREATE INDEX before the orphan is destroyed out of band, and verifies the backing objects materialised in between', async () => {
+    const { adapter, sql, repairContext } = recordingAdapter({ master: ORPHAN_MASTER });
+    const result = await guardOrphanedFtsIndexes(adapter, { repair: true, repairContext });
 
     expect(guardSucceeded(result)).toBe(true);
     expect(result.repairs[0]).toMatchObject({
@@ -353,34 +378,34 @@ describe('BL-461 — the replacement is built BEFORE the orphan is destroyed', (
     });
 
     const createAt = sql.findIndex((s) => s.startsWith('CREATE INDEX "idx_fts_node__r1"'));
-    const dropAt = sql.findIndex((s) => s.startsWith('DROP INDEX IF EXISTS "idx_fts_node"'));
+    const repairAt = sql.findIndex((s) => s.startsWith('OUT_OF_BAND_DELETE'));
     const verifyAt = sql.findIndex((s) => /FROM sqlite_master WHERE name IN/.test(s));
     expect(createAt, 'the replacement must be created').toBeGreaterThanOrEqual(0);
-    expect(dropAt, 'the orphan must be dropped').toBeGreaterThanOrEqual(0);
+    expect(repairAt, 'the orphan must be destroyed out of band').toBeGreaterThanOrEqual(0);
     // This is the assertion BL-235's in-database twin fails: destroying the only
     // copy before knowing the replacement builds.
-    expect(createAt).toBeLessThan(dropAt);
+    expect(createAt).toBeLessThan(repairAt);
     expect(verifyAt).toBeGreaterThan(createAt);
-    expect(verifyAt).toBeLessThan(dropAt);
+    expect(verifyAt).toBeLessThan(repairAt);
   });
 
   it('a CREATE that reports success without materialising its backing objects is NOT accepted as built', async () => {
-    const { adapter } = recordingAdapter({ master: ORPHAN_MASTER, materialise: false });
-    const result = await guardOrphanedFtsIndexes(adapter, { repair: true });
+    const { adapter, repairContext } = recordingAdapter({ master: ORPHAN_MASTER, materialise: false });
+    const result = await guardOrphanedFtsIndexes(adapter, { repair: true, repairContext });
     expect(result.repairs[0]?.built).toBeNull();
     expect(result.repairs[0]?.buildError).toMatch(/reported success but/);
     expect(guardSucceeded(result)).toBe(false);
   });
 
   it('a failed build still drops the orphan — it holds no data, and leaving it aborts the process — and reports repair_failed', async () => {
-    const { adapter, sql } = recordingAdapter({ master: ORPHAN_MASTER, failCreate: true });
-    const result = await guardOrphanedFtsIndexes(adapter, { repair: true });
+    const { adapter, sql, repairContext } = recordingAdapter({ master: ORPHAN_MASTER, failCreate: true });
+    const result = await guardOrphanedFtsIndexes(adapter, { repair: true, repairContext });
     expect(result.repairs[0]?.buildError).toMatch(/disk I\/O error/);
     expect(result.repairs[0]?.dropped).toBe(true);
     expect(guardSucceeded(result), 'a dropped-without-replacement store is NOT a success').toBe(
       false,
     );
-    expect(sql.some((s) => s.startsWith('DROP INDEX IF EXISTS "idx_fts_node"'))).toBe(true);
+    expect(sql.some((s) => s.startsWith('OUT_OF_BAND_DELETE'))).toBe(true);
     const described = describeFtsOrphanGuard(result);
     expect(described).toMatch(/replacement could NOT be built/);
     expect(described).toMatch(/full-text search is DOWN/);
@@ -428,6 +453,8 @@ tursoDescribe('BL-461 — a store damaged inside a cleanly-closed session', () =
       '__turso_internal_fts_dir_idx_fts_node__r1_key',
       'idx_fts_node__r1',
     ]);
+    // The orphan's own directory table must NOT survive the out-of-band drop.
+    expect(out.json?.schemaObjects).not.toContain('__turso_internal_fts_dir_idx_fts_node');
     // It said so, and said what it would mean if nobody damaged this by hand.
     expect(out.stderr).toMatch(/\[BL-461\]/);
     expect(out.stderr).toMatch(/reclassifies to HIGH/);

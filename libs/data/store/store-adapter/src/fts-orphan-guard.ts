@@ -80,6 +80,11 @@
 
 import type { StoreAdapter } from './types.js';
 import { parseFtsColumns } from './integrity.js';
+import {
+  destroyOrphanedFtsIndex,
+  tursoFtsMaterializationNames,
+  type FtsRepairContext,
+} from './fts-repair.js';
 
 /** One `sqlite_master` row, as this guard reads it. */
 interface MasterRow {
@@ -210,10 +215,14 @@ export function guardSucceeded(result: FtsOrphanGuardResult): boolean {
  * @param adapter an already-open adapter. Only `sqlite_master` is read until an
  *   orphan is actually found, so the cost on a healthy store is one schema read.
  * @param opts.repair build-and-swap when true; detect only when false.
+ * @param opts.repairContext when set, the orphan destroy runs through the
+ *   better-sqlite3 out-of-band hatch while the connection is closed (the only
+ *   route the 0.8.1 driver honours); when absent, an in-place `DROP INDEX` is
+ *   attempted and its failure surfaces as `dropError`.
  */
 export async function guardOrphanedFtsIndexes(
   adapter: StoreAdapter,
-  opts: { repair?: boolean } = {},
+  opts: { repair?: boolean; repairContext?: FtsRepairContext } = {},
 ): Promise<FtsOrphanGuardResult> {
   const result: FtsOrphanGuardResult = { ran: false, skipped: null, orphaned: [], repairs: [] };
 
@@ -290,23 +299,19 @@ export async function guardOrphanedFtsIndexes(
 
     // ── 2. Destroy the orphan. Unconditional, and the module docs say why: an
     //       orphan holds no data, and leaving it in the schema aborts this
-    //       process on the next `fts_match`. ─────────────────────────────────
-    try {
-      await adapter.exec(`DROP INDEX IF EXISTS "${orphan.index}"`);
-      const still = await adapter.executeGet<{ name: string }>(
-        `SELECT name FROM sqlite_master WHERE name = ?`,
-        [orphan.index],
-      );
-      if (still) {
-        repair.dropError =
-          `DROP INDEX "${orphan.index}" reported success but the row is still in sqlite_master — ` +
-          `the next fts_match on this store will still abort the process`;
-      } else {
-        repair.dropped = true;
-        taken.delete(orphan.index);
-      }
-    } catch (err) {
-      repair.dropError = err instanceof Error ? err.message : String(err);
+    //       process on the next `fts_match`. Routed through the shared repair
+    //       path: out-of-band (better-sqlite3) when a context is supplied,
+    //       in-place otherwise. ─────────────────────────────────────────────
+    const outcome = await destroyOrphanedFtsIndex(
+      adapter,
+      tursoFtsMaterializationNames(orphan.index),
+      opts.repairContext,
+    );
+    if (!outcome.ok) {
+      repair.dropError = `${outcome.reason}: ${outcome.error}`;
+    } else if (outcome.via !== 'nothing-to-remove') {
+      repair.dropped = true;
+      taken.delete(orphan.index);
     }
 
     result.repairs.push(repair);

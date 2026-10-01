@@ -57,8 +57,20 @@ author: architect (deepseek-flash)
 | s4 | CLI subcommand + offline-exclusive wiring (ADR-0013 D4) | s2 | pending |
 | s5 | Pin bump + relock + constant re-measurement (OWNER-GATED) | s1,s3 | pending |
 | s6 | Production-copy verification + docs + proposed ADR-0026 | s2,s4,s5 | pending |
+| s7 | In-process FTS orphan destroy goes out-of-band (BL-507/BL-461) | — | in progress (this work) |
 
 s3 is independent of s1 and may run in parallel. s1 (now complete) was entry-blocking for s2.
+
+**s7 — the repair path (dod.7, BL-507/BL-461).** On 0.8.1 every in-process route to remove
+an FTS index whose `_key` backing row is already missing is refused (`DROP INDEX` throws
+`Internal error: FTS backing store … not found`; `DROP TABLE` on the system table is a parse
+error; `DELETE FROM sqlite_master` is refused even under `writable_schema = ON`). The only
+working route is the better-sqlite3 hatch `deleteSchemaRowsViaBetterSqlite3`. s7 shares that
+hatch through a new `destroyOrphanedFtsIndex` (`fts-repair.ts`) and routes both the orphan
+guard's destroy (`fts-orphan-guard.ts`) and `ensureFtsIndex`'s re-CREATE
+(`verifyTursoFtsMaterialization`, `fts-ops.ts`) through it, supplying a repair context from
+`turso-adapter.ts`. This corrects the earlier `dod.7` assumption that the `_key` re-leak
+hazard was the only concern — the destroy path itself is the harder constraint under 0.8.1.
 
 ## Anchors (read status)
 

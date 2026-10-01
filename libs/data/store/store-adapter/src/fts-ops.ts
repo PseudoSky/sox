@@ -33,6 +33,10 @@ import {
   createFTSDialect,
   resolveExistingFtsIndexName,
 } from './fts-dialect.js';
+import {
+  destroyOrphanedFtsIndex,
+  tursoFtsMaterializationNames,
+} from './fts-repair.js';
 import { log } from '@adhd/sox-telemetry';
 import type {
   FTSDialect,
@@ -434,18 +438,6 @@ function createIndexStmts(
   return dialect.createIndexDDL(table, columns, opts.weights, opts.sqliteDDL);
 }
 
-/**
- * The three `sqlite_master` rows a Turso Tantivy FTS index materialises:
- * the index row itself, Turso's internal directory table, and the `_key`
- * backing_btree index that holds the segments. `CREATE INDEX … USING fts`
- * is only "done" when all three are present — see
- * {@link verifyTursoFtsMaterialization}.
- */
-function tursoFtsMaterializationNames(indexName: string): string[] {
-  const dir = `__turso_internal_fts_dir_${indexName}`;
-  return [indexName, dir, `${dir}_key`];
-}
-
 /** Which of the three expected rows are absent from `sqlite_master`. Never
  *  throws — an unreadable schema degrades to "all absent". */
 async function absentTursoFtsMaterialization(
@@ -507,13 +499,15 @@ async function verifyTursoFtsMaterialization(
       missing: absent.join(', '),
       detail: 'reported success it did not perform — dropping and recreating the index in-session',
     });
-    try {
-      await adapter.exec(`DROP INDEX IF EXISTS "${indexName}"`);
-    } catch (err) {
+    const destroy = await destroyOrphanedFtsIndex(
+      adapter,
+      tursoFtsMaterializationNames(indexName),
+      opts.repairContext,
+    );
+    if (!destroy.ok) {
       throw new Error(
-        `[BL-507] repair of incompletely-materialised FTS index "${indexName}" failed at DROP: ${
-          err instanceof Error ? err.message : String(err)
-        }`,
+        `[BL-507] repair of incompletely-materialised FTS index "${indexName}" failed to ` +
+          `drop (reason: ${destroy.reason}): ${destroy.error}`,
       );
     }
     for (const stmt of createIndexStmts(dialect, table, columns, opts)) {
