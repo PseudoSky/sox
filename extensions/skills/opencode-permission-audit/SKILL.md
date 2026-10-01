@@ -80,15 +80,28 @@ Do not trust the source; run the real runtime.
 ## Step 5 — Scan agent transcripts for destructive / escape patterns
 
 When an agent damaged something, when auditing a dispatch wave, or before trusting a fleet of
-background subagents, scan the transcripts. `scripts/agent-transcript-scan.py` reads Claude Code
-`.jsonl` transcripts (a file or a directory tree) and reports command patterns that evade any single
-command's guards:
+background subagents, scan the transcripts. `scripts/agent-transcript-scan.py` reads **both hosts** —
+Claude Code per-agent `.jsonl` (a file or a directory tree) and opencode's single SQLite session DB —
+and reports command patterns that evade any single command's guards:
 
 ```sh
+# Claude Code transcripts (a file, or a directory tree)
 python3 <skill-dir>/scripts/agent-transcript-scan.py --project <repo-root> <transcripts-dir>
 python3 <skill-dir>/scripts/agent-transcript-scan.py --only R7 <file.jsonl>   # one rule
 python3 <skill-dir>/scripts/agent-transcript-scan.py --fail-on high <dir>     # CI gate
+
+# opencode sessions (one Doc per session; bound the scan — the DB has no index)
+python3 <skill-dir>/scripts/agent-transcript-scan.py --project <repo-root> \
+  --opencode-db ~/.local/share/opencode/opencode.db --since 2026-10-01T06:00 --until 07:00
+
+# both at once — R7 chains span hosts and sessions
+python3 <skill-dir>/scripts/agent-transcript-scan.py --project <repo-root> \
+  <transcripts-dir> --opencode-db ~/.local/share/opencode/opencode.db --since … --until …
 ```
+
+Each opencode session becomes one `Doc` (agent + `directory` read from the `session` row), so the
+R7 link map is shared across Claude Code files and opencode sessions. The DB is ~24 GB with no index
+help, so always bound a DB scan with `--since`/`--until` and narrow with `--agent <name,…>`.
 
 | Rule | Sev | What it catches |
 |---|---|---|

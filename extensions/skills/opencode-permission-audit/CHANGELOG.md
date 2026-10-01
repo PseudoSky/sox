@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.4.0
+
+- `scripts/agent-transcript-scan.py` now reads **opencode** as well as Claude Code. opencode keeps
+  no per-agent files — every tool call is a `part` row in one SQLite DB
+  (`~/.local/share/opencode/opencode.db`) — so a new ingestion path loads `bash`/`write`/`edit` parts
+  (joined to `session` for `agent` + `directory`) and feeds the same R1–R9 engine. Each session
+  becomes one `Doc`, so **R7 chains span hosts and sessions**.
+- CLI: `--opencode-db PATH`, `--agent a,b` (narrow), `--since`/`--until` (bound the scan — the 24 GB
+  DB has no index help). A `--transcripts` dir of Claude Code `.jsonl` files and `--opencode-db` can
+  be given together.
+- Fix: tz-naive `--since`/`--until` values are now interpreted as **UTC** (they previously used local
+  time, silently shifting the window by the machine offset).
+
 ## 0.3.0
 
 - New scanner `scripts/agent-transcript-scan.py`: scans Claude Code transcript `.jsonl` files (a file

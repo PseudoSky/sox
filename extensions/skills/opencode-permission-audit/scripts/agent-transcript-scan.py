@@ -27,6 +27,21 @@ USAGE
   agent-transcript-scan.py --only R1,R7 <dir>            # filter rules
   agent-transcript-scan.py --list-rules
 
+  # opencode: sessions live in one SQLite DB, not per-agent JSONL files
+  agent-transcript-scan.py --opencode-db ~/.local/share/opencode/opencode.db
+  agent-transcript-scan.py --opencode-db <db> --since 2026-09-30T00:00 --agent dispatcher
+  agent-transcript-scan.py <claude-dir> --opencode-db <db> --project ~/dev/repo   # BOTH hosts
+
+HOSTS
+  Claude Code — per-agent *.jsonl under ~/.claude*/projects/<proj>/<session>/subagents/.
+  opencode    — one SQLite DB (~/.local/share/opencode/opencode.db); sessions/agents are
+                rows in `session`, and each tool call is a `part` row whose data carries
+                `$.tool` plus `$.state.input.command` (bash) / `$.state.input.filePath`
+                (write/edit). Each opencode SESSION becomes one Doc (agent = session.agent,
+                project = session.directory), so cross-agent R7 chains work across sessions
+                and across hosts. The DB scan gets no index help; bound it with
+                --since/--until and narrow with --agent on a large store.
+
 RULES (id — severity — what)
   R1 rm-var            high   rm with a variable target (flag: -r, inline-assign,
                               RHS not tmp, trailing slash, var not set in-cmd)
@@ -48,16 +63,19 @@ RULES (id — severity — what)
                               inline in a compound command (needless indirection
                               that hides what the target is)
 
-Only Claude Code transcript JSONL shapes are parsed (nested message.content
-tool_use blocks). Detection is heuristic and conservative: it reports, it does
-not block. Exit code is 0 unless --fail-on <severity> is given.
+Parses Claude Code transcript JSONL (nested message.content tool_use blocks) and
+opencode's SQLite session store. Both feed one rule engine. Detection is heuristic
+and conservative: it reports, it does not block. Exit code is 0 unless
+--fail-on <severity> is given.
 """
 from __future__ import annotations
 
 import argparse
+import datetime
 import json
 import os
 import re
+import subprocess
 import sys
 from collections import Counter, defaultdict
 from dataclasses import dataclass, field, asdict
@@ -73,6 +91,8 @@ EXECUTABLE_NAMES = {
     "docker", "kubectl", "jq", "sed", "awk", "curl", "wget", "skillspector",
 }
 TMP_DIRS = re.compile(r"^(/tmp|/private/tmp|/var/tmp|\$TMPDIR|/private/var/folders)")
+# opencode tool ids -> the Claude Code tool names the rule engine expects.
+OPENCODE_TOOL_MAP = {"bash": "Bash", "write": "Write", "edit": "Edit"}
 SEG_SPLIT = re.compile(r"&&|\|\||;|\n|\|(?!=)")
 ASSIGN_RE = re.compile(r"(?:^|[;&|\s])(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)=")
 ASSIGN_KV_RE = re.compile(r"(?:^|[;&|\s])(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)=([^\s;&|]*)")
@@ -144,6 +164,88 @@ def load_transcript(path: str, project_override: str = "") -> Doc:
     project = project_override or (cwds.most_common(1)[0][0] if cwds else "")
     # A cc subagent project root is the worktree, not the session dir; keep cwd.
     return Doc(path, agent, project, events, links)
+
+
+def _sqlite_json(db: str, sql: str):
+    """Run a query through the sqlite3 CLI and return parsed JSON rows (None on error)."""
+    try:
+        out = subprocess.run(["sqlite3", "-json", db, sql], capture_output=True, text=True)
+    except FileNotFoundError:
+        sys.stderr.write("sqlite3 not found on PATH (required to read an opencode DB)\n")
+        return None
+    if out.returncode != 0:
+        sys.stderr.write("sqlite3 error: %s\n" % out.stderr.strip())
+        return None
+    return json.loads(out.stdout) if out.stdout.strip() else []
+
+
+def _iso_from_ms(tc) -> str:
+    try:
+        dt = datetime.datetime.fromtimestamp(int(tc) / 1000.0, datetime.timezone.utc)
+        return dt.strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
+    except (TypeError, ValueError, OSError):
+        return ""
+
+
+def _iso_to_ms(iso: str):
+    if not iso:
+        return None
+    try:
+        dt = datetime.datetime.fromisoformat(iso.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if dt.tzinfo is None:      # tz-naive input is UTC, matching the Z-formatted output
+        dt = dt.replace(tzinfo=datetime.timezone.utc)
+    return int(dt.timestamp() * 1000)
+
+
+def load_opencode_db(db: str, project_override: str = "", since: str = "",
+                     until: str = "", agents: set | None = None) -> list:
+    """Load an opencode SQLite store as one Doc per SESSION (agent + directory).
+
+    Each `part` row of type tool becomes one event: bash -> ('Bash',{command}),
+    write/edit -> ('Write'|'Edit',{file_path}). The R1-R9 engine then runs unchanged,
+    and links feed the cross-transcript R7 chain across sessions and hosts.
+    """
+    lo, hi = _iso_to_ms(since), _iso_to_ms(until)
+    where = ["json_extract(p.data,'$.type')='tool'",
+             "json_extract(p.data,'$.tool') in ('bash','write','edit')"]
+    if lo is not None:
+        where.append("p.time_created >= %d" % lo)
+    if hi is not None:
+        where.append("p.time_created < %d" % hi)
+    sql = ("select p.session_id as sid, p.time_created as tc, "
+           "s.agent as agent, s.directory as directory, "
+           "json_extract(p.data,'$.tool') as tool, "
+           "json_extract(p.data,'$.state.input.command') as command, "
+           "json_extract(p.data,'$.state.input.filePath') as filePath "
+           "from part p join session s on s.id=p.session_id "
+           "where " + " and ".join(where) +
+           " order by p.session_id, p.time_created, p.id")
+    rows = _sqlite_json(db, sql)
+    if rows is None:
+        return []
+    by_sess: dict = {}
+    for r in rows:
+        sid = r.get("sid") or ""
+        if sid not in by_sess:
+            agent = (r.get("agent") or "").strip() or sid[:8]
+            by_sess[sid] = None if (agents and agent not in agents) else Doc(
+                f"{db}:{sid}", agent, project_override or (r.get("directory") or ""), [], {})
+        d = by_sess[sid]
+        if d is None:
+            continue
+        tool = OPENCODE_TOOL_MAP.get((r.get("tool") or "").lower())
+        if not tool:
+            continue
+        inp = {"command": r.get("command") or ""} if tool == "Bash" \
+            else {"file_path": r.get("filePath") or ""}
+        idx = len(d.events)
+        d.events.append((idx, _iso_from_ms(r.get("tc")), d.project, [(tool, inp)]))
+        if tool == "Bash":
+            for dest, target in bash_links(inp["command"]):
+                d.links[dest] = (target, idx)
+    return [d for d in by_sess.values() if d is not None]
 
 
 def norm(p: str) -> str:
@@ -375,8 +477,9 @@ def cross_chain(docs: list[Doc]) -> list[Finding]:
     return findings
 
 
-def iter_inputs(paths: list[str]) -> list[str]:
-    files = []
+def iter_inputs(paths: list[str]):
+    """Split inputs into Claude Code JSONL files and opencode SQLite DBs."""
+    files, dbs = [], []
     for p in paths:
         if os.path.isdir(p):
             for root, _, names in os.walk(p, followlinks=False):
@@ -385,7 +488,9 @@ def iter_inputs(paths: list[str]) -> list[str]:
                         files.append(os.path.join(root, n))
         elif p.endswith(".jsonl"):
             files.append(p)
-    return sorted(set(files))
+        elif p.endswith((".db", ".sqlite", ".sqlite3")):
+            dbs.append(p)
+    return sorted(set(files)), sorted(set(dbs))
 
 
 def render(findings, docs, args, out):
@@ -419,8 +524,12 @@ def render(findings, docs, args, out):
 
 def main(argv=None):
     ap = argparse.ArgumentParser(description="Scan agent transcripts for destructive/escape patterns.")
-    ap.add_argument("paths", nargs="*", help="transcript .jsonl files or directories")
+    ap.add_argument("paths", nargs="*", help="transcript .jsonl files, dirs, or an opencode .db")
     ap.add_argument("--transcripts", default="", help="directory to walk for *.jsonl transcripts")
+    ap.add_argument("--opencode-db", default="", help="opencode SQLite store (e.g. ~/.local/share/opencode/opencode.db)")
+    ap.add_argument("--agent", default="", help="comma list of opencode agents to include")
+    ap.add_argument("--since", default="", help="ISO8601 lower bound on opencode session time")
+    ap.add_argument("--until", default="", help="ISO8601 upper bound on opencode session time")
     ap.add_argument("--project", default="", help="project root used to resolve outside-writes")
     ap.add_argument("--only", default="", help="comma list of rule prefixes, e.g. R1,R7")
     ap.add_argument("--fail-on", default="", choices=["", "low", "med", "high", "CRIT"])
@@ -437,13 +546,18 @@ def main(argv=None):
     paths = list(args.paths)
     if args.transcripts:
         paths.append(args.transcripts)
-    files = iter_inputs(paths)
-    if not files:
-        print("no transcripts found (pass .jsonl files or a dir)", file=sys.stderr)
+    if args.opencode_db:
+        paths.append(args.opencode_db)
+    files, dbs = iter_inputs(paths)
+    if not files and not dbs:
+        print("no transcripts found (pass .jsonl files, a dir, or --opencode-db)", file=sys.stderr)
         return 2
 
     only = {x.strip() for x in args.only.split(",") if x.strip()}
+    agents = {x.strip() for x in args.agent.split(",") if x.strip()} or None
     docs = [load_transcript(p, args.project) for p in files]
+    for db in dbs:
+        docs.extend(load_opencode_db(db, args.project, args.since, args.until, agents))
     findings = []
     for d in docs:
         findings.extend(scan_doc(d, only))
