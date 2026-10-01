@@ -15,7 +15,9 @@ index is **refused on first read/write** until it is rebuilt. The 2026-09-30 mea
 pin move is **not** a version edit — it is a **data migration**, and a store built under
 0.7.x must have its **already-leaked pages reclaimed**, not merely stop leaking.
 
-The pin has **not** been bumped and is not authorized. This is the decision input.
+The pin remains `^0.7.1`: the bump is **authorized** (`STATE.md` Q1 resolved; commit
+`8c051cdc`) but **not yet applied** — it lands in segment s5. This is the decision input
+for that segment.
 
 ## Deliverable
 
@@ -26,14 +28,14 @@ The pin has **not** been bumped and is not authorized. This is the decision inpu
 
 ## Definition of Done
 
-- [ ] `dod.1` Pre-flight spike (§6a): rollback (0.7←fts2) and cross-version VACUUM
+- [x] `dod.1` Pre-flight spike (§6a): rollback (0.7←fts2) and cross-version VACUUM
       hazards measured, not assumed.
 - [ ] `dod.2` Gate observability fixed (`2bf0b7c8`): both page_counts always emitted.
 - [ ] `dod.3` Migration spec implemented as a CLI subcommand (ADR-0013 D4), offline-exclusive.
 - [ ] `dod.4` `fts-format-migration.bl-89849d2a.spec.ts` written, seen RED, then GREEN.
 - [ ] `dod.5` `fts-gate-evidence.bl-2bf0b7c8.spec.ts` written, seen RED, then GREEN.
 - [ ] `dod.6` 0.7.1 control run retained and passing.
-- [ ] `dod.7` `_key`/`verifyTursoFtsMaterialization` re-leak hazard resolved.
+- [x] `dod.7` `_key`/`verifyTursoFtsMaterialization` re-leak hazard resolved.
 - [ ] `dod.8` Pin bump + relock applied only on owner authorization; lockfile committed
       in the same change.
 - [ ] `dod.9` Migration verified on a production-store copy: counts equal, sentinel hits
@@ -54,6 +56,7 @@ The pin has **not** been bumped and is not authorized. This is the decision inpu
 ## Dispatch
 
 ```
-Dispatch: docs/plan/turso-fts-migration — execute s1 (pre-flight spike) first; it is
-entry-blocking. Do not dispatch s2+ until s1 returns measured results.
+Dispatch: docs/plan/turso-fts-migration — s1 (pre-flight spike) is complete (measured
+2026-09-30; findings in DESIGN §6a), so s2 is unblocked; s3 is independent of s1 and may
+run in parallel.
 ```
