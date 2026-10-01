@@ -159,6 +159,18 @@ would turn a revert bomb into real data loss.
 **Never run `git stash` (or `git stash pop/drop/clear`).** Commit to a branch instead — `stash`
 "solves" contention by destroying the other agent's work, which is the whole problem.
 
+## ⛔ AGENT CONSTRAINT — COMMIT MESSAGES MUST SATISFY COMMITLINT
+
+**Every commit message must satisfy commitlint** (`commitlint.config.js` extends
+`@commitlint/config-conventional`; enforced via `.husky/commit-msg`, installed by
+`tools/install-git-hooks.mjs`).
+
+- **Format is REJECTED by the hook on violation:** conventional commits `type(scope): subject`,
+  type from the conventional type set.
+- **Scope enum is WARN-level/advisory/non-blocking:** `nx-migration`, `manifest`, `authoring`,
+  `install-engine`, `host-runtime`, `registry`, `memory-core`, `sox`, `extensions`, `scripts`,
+  `ci`, `release`. An out-of-enum scope (e.g. `fix(data):`) warns but does not block.
+
 ---
 
 ## ⛔ AGENT CONSTRAINT — BUILD VIA NX TARGETS, NEVER BARE TOOLS
@@ -354,6 +366,14 @@ It reports `git status --porcelain` restricted to the project's transitive nx de
 elsewhere in the repo cannot reach that suite and is deliberately not reported. A dirty dependency set
 does not make the run wrong; it makes it **unattributable**. Re-run in an isolated worktree (the
 structural fix, already the dispatch default) or publish the dirt alongside the result.
+
+## ⛔ AGENT CONSTRAINT — NEVER PASS `--skip-nx-cache` WITHOUT APPROVAL
+
+**Default BANNED (user directive 2026-08-12).** Agents must NOT pass `--skip-nx-cache` to nx
+targets without explicit user/owner approval. It forces full rebuilds/re-runs from whatever source
+is on disk (expensive; BL-456-class misattribution on a dirty dependency set). If an uncached run
+is genuinely required, REQUEST approval first and quote `node tools/check-suite-tree-state.mjs`
+evidence. The default verification path uses the nx cache + tree-state quotes.
 
 ---
 
