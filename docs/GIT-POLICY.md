@@ -38,9 +38,15 @@ which this policy was written.
   `perf/`, `proof/`), or a ticket-scoped form `<ticket-id>/t<n>` (e.g. `bug017/t1`, `debt003/t2`).
   This is the pattern observed in refs; treat it as guidance, and do not assume a malformed branch
   name will be rejected — it will not be.
-- **Merge strategy.** Integration is a **merge commit** preserving branch history — not squash,
-  not fast-forward-only. Existing merges appear as either `chore: merge <branch> (…)` or
-  `Merge branch '<branch>' into <target>`.
+- **Merge strategy.** Integration preserves branch history — never a squash. The shape follows the
+  branch's relationship to `main`: an **already-based, linear** branch (its tip descends from the
+  current `main` tip) is integrated by **fast-forward**, keeping `main` linear; a branch that has
+  **diverged** from `main` is integrated by a **merge commit** (`chore: merge <branch> (…)` or
+  `Merge branch '<branch>' into <target>`). Evidence — main reflog, 2026-09-28: six `merge <branch>:
+  Fast-forward` entries for linear branches (`fix/embed-iso-611a711e`, `fix/guard-20d01a62`,
+  `fix/idle-release-writefree`, `fix/batch-clear-fixes`, `fix/memserver-wedge-fix`,
+  `fix/shutdown-bound`) and `Merge made by the 'ort' strategy` only for branches that had diverged
+  (`fix/hybrid-search-vector-eviction`, `feat/db-artifact-lifecycle`, `feat/dc-knowledge-layer`).
 - **Rebase in flight.** Permitted **only** on a branch that is solely yours and **not yet
   pushed**. Rebasing a pushed or shared branch is refused (§5 hard refusals); bring `main` in by
   merge instead.
@@ -202,6 +208,17 @@ Schema version **1**. Each edit appends one dated entry; entries are never rewri
   (`q2/fts-leak-081`, `q2/fts-leak-071`) were deleted with `git branch -d` — each tip was
   `4e975fa4`, an ancestor of `main`, with zero unique commits, so the safe `-d` (never `-D`)
   applied. §7 is a new section, not a rewrite; no other rule changed.
+- **2026-10-01 — fast-forward integration; recorded the FF-for-already-based rule** (`git-manager`,
+  run `dispatch-2026-10-01-fts-preflight-land`). *Reason:* §1's merge-strategy bullet claimed
+  "Integration is a merge commit … not fast-forward-only", which omits how the repo actually
+  integrates an **already-based, linear** branch. Evidence is the main reflog (2026-09-28): six
+  `merge <branch>: Fast-forward` entries for linear branches and `Merge made by the 'ort' strategy`
+  only for diverged ones — no FF-able branch received a merge bubble. §1's merge-strategy bullet was
+  restated to name both shapes; no other rule changed. In the same operation `spike/fts-preflight`
+  (tip `671e136e`, three docs-only commits under `docs/plan/turso-fts-migration/`) was
+  fast-forwarded into `main` (`cf341864..671e136e`), and its worktree `.worktrees/spike-fts-preflight`
+  was removed under the §5 predicate (clean, unlocked, branch merged) with `git branch -d`. No
+  `--force`, `-D`, or break-glass bypass was used.
 
 ## 7. Break-glass
 
