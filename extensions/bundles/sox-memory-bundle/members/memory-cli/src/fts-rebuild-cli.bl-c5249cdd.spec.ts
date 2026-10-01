@@ -302,4 +302,47 @@ describe('BL-c5249cdd — memory fts-rebuild / memory restore', () => {
     expect(sha(db)).toBe(rebuiltSha);
     await expect(runCli(['restore', path.join(dir, 'no-such-backup.db'), '--db', db])).rejects.toMatchObject({ code: 1 });
   }, T);
+
+  // fts-migrate is the v1→v2 store-FORMAT migration (BL-89849d2a). Its driver
+  // gate is `driverIsV2Aware` — under the installed @tursodatabase/database
+  // 0.7.1 pin, `migrateStoreFormatOffline` refuses `driver_not_v2_aware` BEFORE
+  // any open/transform/dry-run. The full transform/plan/dry-run path is covered
+  // at the store-adapter unit level (fts-format-migration.bl-89849d2a.spec.ts
+  // injects `_tursoVersion: '0.8.0'`); the CLI cannot reach it until the pin is
+  // bumped (a separate, owner-authorized step). These tests pin the refusal
+  // contract and the "writes nothing" guarantee under the installed driver.
+  it('BL-c5249cdd: fts-migrate refuses (exit 2) under the installed 0.7.x driver without opening or modifying the store', async () => {
+    const db = await seedLeakedStore();
+    const dir = path.dirname(db);
+    const preSha = sha(db);
+    const preList = listing(dir);
+
+    await expect(runCli(['fts-migrate', '--db', db])).rejects.toMatchObject({ code: 2 });
+
+    const err = errs.join('\n');
+    expect(err).toMatch(/\[fts-migrate\] REFUSED: driver_not_v2_aware/);
+    expect(err).toMatch(/NOT opened or modified/);
+    expect(sha(db)).toBe(preSha);
+    expect(listing(dir)).toEqual(preList);
+  }, T);
+
+  it('BL-c5249cdd: fts-migrate --dry-run also refuses (exit 2) under 0.7.x — the driver gate precedes the plan', async () => {
+    const db = await seedLeakedStore();
+    const dir = path.dirname(db);
+    const preSha = sha(db);
+    const preList = listing(dir);
+
+    await expect(runCli(['fts-migrate', '--db', db, '--dry-run'])).rejects.toMatchObject({ code: 2 });
+
+    expect(errs.join('\n')).toMatch(/\[fts-migrate\] REFUSED: driver_not_v2_aware/);
+    expect(sha(db)).toBe(preSha);
+    expect(listing(dir)).toEqual(preList);
+  }, T);
+
+  it('BL-c5249cdd: fts-migrate on a missing db exits 1', async () => {
+    const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'sox-bl-c5249cdd-migrate-')));
+    cleanups.push(() => fs.rmSync(dir, { recursive: true, force: true }));
+    await expect(runCli(['fts-migrate', '--db', path.join(dir, 'no-such.db')])).rejects.toMatchObject({ code: 1 });
+    expect(errs.join('\n')).toMatch(/\[fts-migrate\] db not found/);
+  }, T);
 });

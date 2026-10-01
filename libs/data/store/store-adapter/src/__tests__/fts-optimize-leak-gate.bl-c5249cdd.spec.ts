@@ -98,20 +98,38 @@ describe('BL-c5249cdd — Turso FTS segment leak', () => {
     async () => {
       const interleaved = await runArm('interleaved');
       const single = await runArm('single');
+      const installed = installedTursoVersion();
       // Measured 0.7.1/0.7.2 on this corpus: 2,395 vs 1,979 pages (+21%).
+      //
+      // BL-2bf0b7c8: both facts are asserted through ONE combined object —
+      // vitest throws on the FIRST failing `expect`, so two separate `expect`s
+      // can hide one of the two page_counts from the reported message (e.g. the
+      // leak fact passes but the version-pin fact fails, and the interleaved
+      // number never reaches the log). The combined object keeps the leak fact
+      // (`leak_reproduces`) and the version-pin fact (`installed_matches`) as
+      // SEPARATE fields, and the message embeds both raw page counts so a
+      // failure on either fact always reports both numbers.
+      const measuredOn = FTS_OPTIMIZE_LEAK_MEASURED_ON;
       expect(
-        interleaved,
-        `interleaved=${interleaved} single=${single}: the leak no longer reproduces. If the driver was ` +
-          `upgraded and fixed it, retire the pass alarm / re-evaluate memory fts-rebuild (BL-c5249cdd).`,
-      ).toBeGreaterThan(single * 1.1);
-      expect(
-        installedTursoVersion(),
-        `BL-c5249cdd: the FTS segment leak (and the rebuild + growth gauge that manage it) was measured on ` +
-          `@tursodatabase/database ${FTS_OPTIMIZE_LEAK_MEASURED_ON}; the installed driver has moved. Re-run this ` +
-          `gate's measurement on the new version: if the leak is gone, retire the pass alarm and re-evaluate ` +
-          `memory fts-rebuild; if it persists, bump FTS_OPTIMIZE_LEAK_MEASURED_ON with the new date. Do not ` +
-          `widen this comparison.`,
-      ).toBe(FTS_OPTIMIZE_LEAK_MEASURED_ON);
+        {
+          leak_reproduces: interleaved > single * 1.1,
+          installed_matches: installed === measuredOn,
+          interleaved_pages: interleaved,
+          single_pages: single,
+        },
+        `BL-c5249cdd / BL-2bf0b7c8: interleaved=${interleaved} single=${single} installed=${installed} ` +
+          `measured_on=${measuredOn}. The interleaved page_count must exceed 110% of the single-optimize ` +
+          `control (the FTS segment leak), and the installed driver must still be the version these facts ` +
+          `were measured on. If the leak no longer reproduces, retire the pass alarm / re-evaluate memory ` +
+          `fts-rebuild; if the driver moved, re-run this gate's measurement on the new version and (leak ` +
+          `gone) retire the pass alarm or (leak persists) bump FTS_OPTIMIZE_LEAK_MEASURED_ON. Do not widen ` +
+          `this comparison.`,
+      ).toEqual({
+        leak_reproduces: true,
+        installed_matches: true,
+        interleaved_pages: interleaved,
+        single_pages: single,
+      });
     },
     600_000,
   );
