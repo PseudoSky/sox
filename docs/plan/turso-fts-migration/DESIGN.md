@@ -1,10 +1,13 @@
 # DESIGN — Turso FTS 0.7.x → 0.8.x: migration, reclamation, gate, rollback
 
-> Status: **design spec, not authorized to execute.** The pin bump is the owner's
-> decision and has **not** been made (see `STATE.md`). Every `file:line` below is
-> anchored to a line this author read; anchors read only by a dispatched agent are
-> marked `(agent-read)`; anything not confirmed is marked `(UNVERIFIED)`.
-> ADR constraints are binding — a step that violates one is rejected in §9.
+> Status: **design spec; the pin bump is owner-AUTHORIZED but not yet applied**
+> (see `STATE.md`). Every `file:line` below is anchored to a line this author read;
+> anchors read only by a dispatched agent are marked `(agent-read)`; a claim that
+> remains unmeasured is marked `(UNVERIFIED)`. The five pre-flight unknowns this spec
+> carried have now been **measured** (§6a) — the result is stated inline with each
+> corrected claim, and the reproduction scripts live under
+> `/tmp/sox-fts-spike/scripts/`. ADR constraints are binding — a step that violates
+> one is rejected in §9.
 
 ## 0. TL;DR for the executor
 
@@ -37,13 +40,17 @@ pages 0.7.x already leaked**, not merely stop new leaks.
 vehicle — reuse its offline-exclusive gate, capture/verify, atomic swap, and hard-link
 backup; but its **core assumption is wrong** for a format migration. The engine
 deliberately "NEVER drops anything" (`store-rebuild.ts:5-18`) and reclaims via
-`VACUUM INTO` of the store **as-is**. A `VACUUM INTO` of a v1 store is **unverified and
-likely broken** (the v1 backing rows are copied raw; the FTS `create()` stages a fresh v2
-control row beside them — `core/vdbe/vacuum.rs`, `fts/mod.rs:2803`; LOW confidence). The
-migration therefore **adds a pre-step the current engine forbids** — per-index
+`VACUUM INTO` of the store **as-is**. **Measured (§6a):** a plain 0.8.1 `VACUUM INTO` of a
+checkpointed 0.7.2 v1 store **succeeds** — `leak07.db` `1145 pages / 4,689,920 B →
+43 pages / 176,128 B`, sentinels `{tok1:1, tok99:1, tok1999:1, alpha:831}` preserved,
+`integrity=ok` — so a cross-version `VACUUM INTO` does **not** corrupt the index. The
+migration still **adds a pre-step the current engine forbids** — per-index
 `DROP INDEX` + `CREATE INDEX ... USING fts` — and runs the `VACUUM INTO` **after** the
-index is already v2 (same-version 0.8→0.8), which sidesteps the cross-version VACUUM
-hazard entirely.
+index is already v2 (same-version 0.8→0.8). That ordering is retained as a
+**determinism** choice (a same-version rebuild is the only path whose output is
+byte-reproducible and does not depend on how 0.8.1 happens to transcode a v1 index during
+VACUUM), **not** as a correctness necessity — the cross-version VACUUM itself is proven
+safe above.
 
 ## 1. What happens on first open under 0.8.x
 
@@ -59,6 +66,13 @@ fixture `fts_pre_registry_v0.8.0-pre.7.db`) — all HIGH confidence:
 | unrelated `CREATE`/`INSERT` | OK |
 | `UPDATE node ...` (touches FTS index) | **Runtime error** |
 | `fts_match(...)` / `fts_score(...)` | **Runtime error** |
+
+Measured locally by the §6a spike on **0.8.1** against a 0.7.2-written store: opening
+succeeds and the base-table read returns the full **2000 rows**, `PRAGMA integrity_check`
+reports **ok**, and the first FTS read/write raises exactly the refusal error above —
+`FTS index idx_fts_node was created by an older version of Turso and its storage format is
+no longer supported; rebuild it with DROP INDEX … CREATE INDEX … USING fts`. The forward
+direction is verified as written.
 
 Consequences for this repo:
 
@@ -91,7 +105,11 @@ All steps offline-exclusive; refuse (never force) on any unmet precondition.
    `:1159`. This image is a **v1-format store restorable by 0.7.x** and is the *only*
    thing that makes rollback possible (§5). Record `readFileIdentity(canonical)`
    (`store-rebuild.ts:861`) so a concurrent mutation is detected later.
-   *Also verify the image is restorable by 0.7 before proceeding* (the §6 spike).
+   **Measured (§6a):** a reflink image taken with `cp -c`, then restored with `cp -f`
+   after a 0.8.1 migration, opened under **0.7.2** with `FTS_READ tok1 = 1` and 2000 rows —
+   a byte-valid v1 store. *Caveat (UNVERIFIED):* that restore was a plain file copy; the
+   `memory restore`/`restoreStoreOffline` engine path (§5) was **not** exercised and
+   remains untested.
 3. **Deploy the 0.8.x driver** (the version bump is a separate, owner-authorized change —
    §8; not part of this spec's execution).
 4. **Migrate (one offline-exclusive session, under 0.8):**
@@ -106,7 +124,8 @@ All steps offline-exclusive; refuse (never force) on any unmet precondition.
    c. **`VACUUM INTO <db>.migrate-<ts>`** via `adapter.backupTo` (`store-rebuild.ts:865`)
       — now a **same-version (0.8→0.8)** VACUUM of a store whose index is already v2,
       which reclaims the orphaned v1 directory B-tree and the already-leaked pages
-      (§3). This is the step that must **not** be run before (b).
+      (§3). Running it *before* (b) is not a correctness failure — measured safe, §0 —
+      but only *after* (b) is its output deterministic and byte-reproducible.
    d. **Reset growth counters in the copy** (`fts_optimize_passes_since_rebuild=0`,
       `last_rebuild_at`) — `stampRebuildMeta` (`store-rebuild.ts:373`), which also does
       `PRAGMA wal_checkpoint(TRUNCATE)` and refuses if the copy still has a `-wal`.
@@ -128,18 +147,20 @@ All steps offline-exclusive; refuse (never force) on any unmet precondition.
 **What proves the migrated store is whole:** identical live `node`/`edge`/`vec_node`
 counts pre/post, identical FTS sentinel hit counts (round-trip through `fts_match`),
 `integrity_check` with no new damage, `page_count`/`file_bytes` strictly down, growth
-counter 0, and a live `fts_match` on the restarted service. (This mirrors the measured
-0.7.1→VACUUM result in `89849d2a`: 436.1 MB → 160.3 MB, identical counts, integrity_check
-only the known false positive.)
+counter 0, and a live `fts_match` on the restarted service. **Measured (§6a)** on a
+real-schema migration of the live store copy: `45,662 pages / 187,031,552 B →
+43,033 pages / 176,263,168 B` (~5.8%), sentinels identical (memory 1965, the 9336,
+turso 606, node 1854), `integrity=ok`. The shrink assertion is a **direction** check —
+the figure observed on the current store is the honest one; no larger factor is promised
+(§3).
 
 ## 3. Reclaiming already-leaked pages (settle point 2)
 
 A 0.7.x store carries two classes of reclaimable bytes:
 
 1. **Leaked orphan segments** — every in-service `OPTIMIZE INDEX` round left merged-away
-   FTS segments as orphaned pages the freelist never reused (`store-rebuild.ts:5-18`;
-   `89849d2a`: 7,273 orphan segments, 216.9 MB on a 436.1 MB store). These live in the
-   **v1** FTS directory B-tree.
+   FTS segments as orphaned pages the freelist never reused (`store-rebuild.ts:5-18`).
+   These live in the **v1** FTS directory B-tree.
 2. **The orphaned v1 directory B-tree itself** — `DROP INDEX` on an FTS index orphans its
    directory B-tree (page_count unchanged, 1 page freed) — this is exactly why the
    current engine "NEVER drops anything" (`store-rebuild.ts:5-18`).
@@ -152,12 +173,23 @@ The migration reclaims **both**, in this order:
   orphaned page. Because the index was already rebuilt to v2 *before* the VACUUM, no v1
   row can survive into the copy (the hazard of §0 does not apply).
 
+**The reclaim mechanism is VERIFIED; its magnitude on a real store is UNVERIFIED, and no
+magnitude is an acceptance gate.** Measured (§6a): on a synthetic 0.7.2 leak store the
+mechanism works exactly as described — `1145 pages / 4,689,920 B → 43 pages / 176,128 B`
+with every sentinel preserved. But **no locally available real store carries the leak**:
+the live copy is `45,662 pages / 187,031,552 B / freelist 1` (not leaked) and every
+sampled backup has `freelist 0`. A real-schema migration of the live copy therefore
+reclaimed only `45,662 → 43,033 pages` (**~5.8%**, `187,031,552 → 176,263,168 B`), with
+sentinels identical (memory 1965, the 9336, turso 606, node 1854) and `integrity=ok`.
+The earlier `436.1 MB → 160.3 MB` (~2.7×) figure came from a store that *did* carry the
+leak and is **not reproducible against the current store**; the honest figure for the
+current store is **~5.8%**.
+
 **How it is verified:** compare `readStorePageStats` (`store-rebuild.ts:168`: `file_bytes`,
 `wal_bytes`, `page_count`, `page_size`, `freelist_count`) before vs after on a
-production-store copy; require `file_bytes`/`page_count` to drop by at least the measured
-leak mass (0.7.1 baseline: ~2.7× reduction) **and** every sentinel round-trip hit count
-to be unchanged. The reclaim is a page-accounting claim and a content claim — both, never
-one.
+production-store copy; require `file_bytes`/`page_count` to be **strictly down** (a
+direction, not a factor) **and** every sentinel round-trip hit count to be unchanged. The
+reclaim is a page-accounting claim and a content claim — both, never one.
 
 ## 4. Verification gate + the `2bf0b7c8` observability fix (settle point 3)
 
@@ -210,10 +242,16 @@ Two directions, two different answers.
 
 - **Before the first 0.8 write:** rollback is trivial — nothing changed. Stop, restore
   the pin, restart. No store action.
-- **After a store is written under 0.8 (fts2):** 0.7.x **cannot** read the FTS index.
-  There is **no primary source** stating otherwise (`2bf0b7c8`'s sibling `89849d2a` research
-  Q4 is explicitly UNVERIFIED/LOW); 0.7 has no control-row concept, so its Tantivy
-  `Index::open` finds no `meta.json` and fails. **Do not promise a downgrade.** Rollback
+- **After a store is written under 0.8 (fts2):** a 0.7.x open does **not** fail loudly — it
+  **silently mis-reads, and a 0.7 write corrupts the store.** Measured (spike, 0.7.2 opening
+  an 0.8.1 store): base-table reads succeed, but `FTS_READ` returns `OK` with **zero
+  results** and no error, and `integrity_check` reports `wrong # of entries in index
+  __turso_internal_fts_dir_idx_fts_node_key`. A **0.7.2 write** into the v2 store then
+  poisons it — the next 0.8.1 read throws `Corrupt database: FTS registry scan hit an
+  unrecognized row: meta.json`. **Any 0.7 open of a migrated store must therefore be treated
+  as CORRUPTING, not merely non-functional, and a downgrade must never be offered** (the
+  clean open-failure the Q4 research hypothesised is superseded by this measurement; §6a
+  item 2). Rollback
   means: stop the service, then
   `memory restore <db>.pre-migration-<ts> --db <db>` — `restoreStoreOffline`
   (`store-rebuild.ts:1159`): refuses if the backup is the target (`backup_is_target`,
@@ -223,24 +261,58 @@ Two directions, two different answers.
   and swaps. The pre-migration image therefore **must be proven restorable before the
   migration is declared safe** (§6 spike).
 
-Consequence: the §2.2 image is **mandatory**, and its restorability is a **pre-flight
-gate**, not a hope. If the image cannot be produced or verified, the migration must not
-run.
+Consequence: the §2.2 image is **mandatory** and is the **only** rollback path — because
+a 0.7 open of a migrated store is *corrupting* (§6a item 1), there is no safe "downgrade
+and carry on" option to fall back to. Its restorability is a **pre-flight gate**, not a
+hope. Measured (§6a item 5): a reflink image taken with `cp -c` and restored with `cp -f`
+after a 0.8.1 migration opened under 0.7.2 with `FTS_READ tok1 = 1` and 2000 rows — a
+byte-valid v1 store. **Caveat:** that restore was a raw file copy; the `memory restore` /
+`restoreStoreOffline` engine path is **untested** and remains to be proven. If the image
+cannot be produced or verified, the migration must not run.
 
 ## 6. Prerequisites, tests, and red→green (settle points 6 & 7)
 
-### 6a. Pre-flight spike (BLOCKING — do first)
+### 6a. Pre-flight spike — RUN, five unknowns measured
 
-A throwaway-DB spike that converts two UNVERIFIED facts into measured ones:
+The five facts the design had marked `(UNVERIFIED)` were measured on 2026-09-30 with
+throwaway stores under drivers **0.7.2** and **0.8.1**; the reproduction scripts are
+`/tmp/sox-fts-spike/scripts/*.mjs` (`q2.mjs` cross-version VACUUM, `q45.mjs` `_key` +
+rollback image, `clean.mjs` same-version ordering), each run with cwd set to a checkout
+that has the matching driver installed.
 
-1. **Rollback:** create a store under 0.8.x (fts2), open it under 0.7.1, record the exact
-   failure mode. (Converts `89849d2a`-research Q4 from LOW to verified.)
-2. **Cross-version VACUUM INTO:** confirm the §0 hazard — that a `VACUUM INTO` of a v1
-   store under 0.8.x does **not** produce a clean v2 index — and that `DROP INDEX` →
-   `CREATE INDEX` → `VACUUM` (same-version) **does**. This is the whole basis of §2's
-   ordering.
+1. **Rollback direction (0.7 ← fts2) — CORRUPTING, not merely non-functional.** A 0.7.2
+   open of a 0.8.1 store reads the base tables fine, but `FTS_READ` returns **OK with zero
+   results and no error**, and `PRAGMA integrity_check` reports `wrong # of entries in index
+   __turso_internal_fts_dir_idx_fts_node_key`. A 0.7.2 **write** into the v2 store then
+   poisons it: a subsequent 0.8.1 read throws `Corrupt database: FTS registry scan hit an
+   unrecognized row: meta.json`. Any 0.7 open of a migrated store must therefore be treated
+   as **corrupting**, and a downgrade must never be offered (see §5).
+2. **The forward direction (0.8.1 ← v1) is as documented** — see §1: base read 2000 rows,
+   `integrity_check` ok, first FTS read/write raises the rebuild hint.
+3. **Cross-version `VACUUM INTO` — the §0 hazard does NOT reproduce.** A plain 0.8.1
+   `VACUUM INTO` of a checkpointed 0.7.2 v1 store **succeeded**: `leak07.db` went **1145
+   pages / 4,689,920 B → 43 pages / 176,128 B**, sentinels `{tok1:1, tok99:1, tok1999:1,
+   alpha:831}` preserved, `integrity_check` ok. The `DROP INDEX` → `CREATE INDEX … USING
+   fts` → same-version `VACUUM` path produced the **same 43 pages** with identical
+   sentinels (a byte-different but equivalent store). The rebuild-before-VACUUM ordering in
+   §2 is therefore a **determinism** choice, not a correctness necessity.
+4. **`_key` re-leak hazard (`1a814578`) — REFUTED on 0.8.1.** After migration the
+   `__turso_internal_fts_dir_idx_fts_node_key` object **is still materialized**; two
+   consecutive opens keep `page_count` stable (**43 → 43** synthetic; **43,033 → 43,033**
+   real) and all three FTS objects remain present in `sqlite_master`. No DROP+CREATE, no
+   re-leak.
+5. **Pre-migration image — VERIFIED, with a caveat.** A reflink image taken with `cp -c`,
+   then restored with `cp -f` after a 0.8.1 migration, opened under **0.7.2** with
+   `FTS_READ tok1 = 1` and 2000 rows — a byte-valid v1 store. **Caveat (still UNVERIFIED):**
+   the restore was a raw file copy; the `memory restore` / `restoreStoreOffline` engine path
+   (`store-rebuild.ts:1159`) was **not** exercised.
 
-Both run in an isolated worktree (`BL-235`/`BL-456`: nx build/test/typecheck have no
+A real-schema migration of a copy of the **live** store (not the synthetic leak fixture)
+gave **45,662 pages / 187,031,552 B → 43,033 pages / 176,263,168 B (~5.8%)** with sentinels
+identical (memory 1965, the 9336, turso 606, node 1854) and `integrity_check` ok — see
+§2/§3 for why no larger reclaim factor may be promised.
+
+All runs were in an isolated worktree (`BL-235`/`BL-456`: nx build/test/typecheck have no
 dry-run and rebuild upstream `dist/`; quote
 `node tools/check-suite-tree-state.mjs --project store-adapter`).
 
@@ -314,35 +386,45 @@ so a missing target is a non-fatal skip.
 `SUPPRESSION_VALID_FOR` (`integrity.ts:2454`, `'0.7.1'`). No semver comparison exists
 anywhere in the repo; both are string-equality guard anchors.
 
-**FTS API/behaviour change to guard against:** the fts2 rewrite may drop the
-`__turso_internal_fts_dir_<idx>_key` sqlite_master row. The repo's
+**`_key` object under 0.8 — measured; the re-leak hazard does NOT occur.** The repo's
 `tursoFtsInternalNames` (`fts-dialect.ts:78-81`) expects **three** objects (index +
-`…_dir_<idx>` + `…_key`) and `verifyTursoFtsMaterialization` (`fts-ops.ts:346`) DROPs and
-re-CREATEs the index when any is missing (then THROWs after one retry, `BL-507`). If
-`_key` no longer exists under 0.8, **every open would DROP+CREATE the FTS index** — which
-per `store-rebuild.ts:5-18` orphans the directory B-tree on each open, i.e. **re-leaks
-pages**. This is a first-class hazard to verify in the spike and to fix before any live
-open under 0.8. The backing **table name is unchanged** (`__turso_internal_fts_dir_<idx>`).
+`…_dir_<idx>` + `…_key`), and `verifyTursoFtsMaterialization` (`fts-ops.ts:346`) DROPs and
+re-CREATEs the index when any is missing (then THROWs after one retry, `BL-507`) — which,
+per `store-rebuild.ts:5-18`, would orphan the directory B-tree and re-leak pages. Measured
+(§6a item 4): under **0.8.1** the `__turso_internal_fts_dir_<idx>_key` object **is still
+materialized** after migration, all three FTS objects remain present in `sqlite_master`, and
+two consecutive opens keep `page_count` stable (`43 → 43` synthetic; `43,033 → 43,033`
+real). The `verifyTursoFtsMaterialization` guard therefore does **not** misfire and
+`1a814578` is refuted on 0.8.1 — the guard stays as defensive cover, no longer described as
+a live re-leak hazard. The backing **table name remains unchanged**
+(`__turso_internal_fts_dir_<idx>`).
 
 ## 8. What this spec does NOT do (authorization boundary)
 
-- **It does not bump the pin.** The owner has not authorized the version change; §7 is the
-  decision input.
+- **It does not bump the pin.** The owner **has authorized** the version change (`STATE.md`
+  Q1 resolved; commit `8c051cdc`). The bump is applied only in segment s5 — the pin remains
+  `^0.7.1` in this spec. §7 is the decision input for that segment.
 - It does not edit `registry/index.json`, run `registry:sync-index`, or touch any
   `BACKLOG.md`.
 - It does not author ADR-0026; a new ADR for the migration decision is **proposed** in
   §9, to be written only on owner approval.
 
-## 9. Blockers / reasons the migration is NOT yet safe
+## 9. Blockers / residual risks to safety
 
 1. **`2bf0b7c8` observability** — the gate is blind to the "bumped but still leaking"
    case; fix (§4b) before the bump so the measurement is legible.
-2. **Rollback direction UNVERIFIED** (0.7 ← fts2). The §6a spike must convert this; until
-   then no downgrade may be promised and the pre-migration image is mandatory.
-3. **Cross-version `VACUUM INTO` UNVERIFIED** (LOW). §2 orders the VACUUM *after* the
-   index rebuild so it is same-version; the spike must confirm this is sufficient.
-4. **`_key` object / `verifyTursoFtsMaterialization` misfire** (§7) — a re-leak-on-open
-   risk under 0.8; verify in the spike.
+2. **Rollback direction — measured CORRUPTING, not merely unsupported** (0.7 ← fts2).
+   §6a item 1 shows a 0.7.2 write poisons a v2 store; no downgrade may ever be offered and
+   the pre-migration image is mandatory (§5). The one residual gap: the image was proven
+   restorable by **raw file copy**, not through the `restoreStoreOffline` engine — that
+   engine path is **UNVERIFIED** and must be exercised before rollout.
+3. **Cross-version `VACUUM INTO` — measured SAFE** (§6a item 3): a plain 0.8.1 `VACUUM
+   INTO` of a v1 store produced a clean v2 store (1145 → 43 pages, sentinels preserved,
+   integrity ok). §2 still orders the VACUUM *after* the rebuild — now for determinism, not
+   to avoid a correctness hazard.
+4. **`_key` object / `verifyTursoFtsMaterialization` misfire** — measured REFUTED (§6a
+   item 4): `_key` is still materialized under 0.8.1 and opens are page-count-stable, so the
+   guard does not misfire. Retained as defensive cover (§7).
 5. **Cross-repo blocker B1** — the backlog store is in `/Users/nix/dev/node/adhd`; the
    memory-store migration is independently safe, the backlog half is not covered here.
 6. **ADR constraint** — ADR-0013 forbids an env-var-armed migration; it must be a CLI
@@ -357,4 +439,5 @@ open under 0.8. The backing **table name is unchanged** (`__turso_internal_fts_d
 owner before writing). Decision: pin 0.8.x only with the explicit offline
 index-rebuild + same-version VACUUM migration; never auto-migrate on open; never
 env-gate; upgrade-gated by the (fixed) leak gate; hard-link pre-migration image
-mandatory; downgrade unsupported.
+mandatory; downgrade **forbidden** — a 0.7.x open of a migrated store is *corrupting*, not
+merely unsupported (§5, §6a item 1).

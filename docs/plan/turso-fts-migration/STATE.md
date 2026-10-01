@@ -4,7 +4,7 @@
 schema: plan-state-machine/v1-light
 plan: turso-fts-migration
 current_state: null
-entry_blocked_on: [spike-format-compat, spike-rollback]
+entry_blocked_on: []       # spike-format-compat + spike-rollback measured 2026-09-30 (DESIGN §6a)
 authorized: true           # owner AUTHORIZED the pin bump (Q1 resolved; see §8)
 authored_at: 2026-09-30
 author: architect (deepseek-flash)
@@ -14,9 +14,9 @@ author: architect (deepseek-flash)
 
 | field | value |
 |---|---|
-| status | spec authored; NOT STARTED |
+| status | pre-flight spike complete; migration NOT STARTED |
 | current segment | none |
-| blocked on | pre-flight spike (DESIGN §6a) |
+| blocked on | nothing — DESIGN §6a measured the five unknowns; residual = restore-engine path UNVERIFIED |
 | pin | still `^0.7.1` — bump AUTHORIZED, not yet applied (segment s5) |
 
 ## Open questions (resolve before dispatch)
@@ -25,14 +25,22 @@ author: architect (deepseek-flash)
   The bump itself is still applied only in segment s5 (pin remains `^0.7.1` until then).
   `89849d2a` remains deliberately left **open** until s5 lands the bump and the leak gate is
   re-measured.
-- **Q2 — rollback direction (UNVERIFIED).** Can 0.7.x read an fts2 store? No primary
-  source. The spike must measure it; until then no downgrade is promised.
-- **Q3 — cross-version VACUUM INTO (LOW).** Does a 0.8 `VACUUM INTO` of a v1 store
-  produce a clean v2 index? Believed NO; §2 orders DROP+CREATE before VACUUM to sidestep.
-  Spike confirms.
-- **Q4 — `_key` object.** Does 0.8 still materialise
-  `__turso_internal_fts_dir_<idx>_key`? If not, `verifyTursoFtsMaterialization`
-  (`fts-ops.ts:346`) misfires → DROP+CREATE on every open → re-leak. Spike confirms.
+- **Q2 — rollback direction. RESOLVED (measured CORRUPTING).** A 0.7.2 open of a 0.8.1
+  store reads base tables but `FTS_READ` returns **OK with zero results and no error**;
+  `integrity_check` reports `wrong # of entries in index __turso_internal_fts_dir_idx_fts_node_key`.
+  A 0.7.2 **write** poisons the store — the next 0.8.1 read throws `Corrupt database: FTS
+  registry scan hit an unrecognized row: meta.json`. Any 0.7 open is therefore *corrupting*;
+  no downgrade may ever be offered (DESIGN §5, §6a item 1). Residual: the pre-migration image
+  was proven restorable by raw file copy, **not** through `restoreStoreOffline` (UNVERIFIED).
+- **Q3 — cross-version VACUUM INTO. RESOLVED (measured SAFE).** A plain 0.8.1 `VACUUM INTO`
+  of a checkpointed 0.7.2 v1 store produced a clean v2 store (1145 → 43 pages, sentinels
+  preserved, integrity ok). §2 still orders DROP+CREATE before VACUUM — now for determinism,
+  not to avoid a correctness hazard (DESIGN §6a item 3).
+- **Q4 — `_key` object. RESOLVED (measured; hazard REFUTED).** Under 0.8.1 the
+  `__turso_internal_fts_dir_<idx>_key` object **is still materialized** after migration; two
+  consecutive opens keep `page_count` stable (43→43 synthetic; 43,033→43,033 real) and all
+  three FTS objects remain in `sqlite_master`. `verifyTursoFtsMaterialization` (`fts-ops.ts:346`)
+  does not misfire; `1a814578` is refuted on 0.8.1 (DESIGN §7, §6a item 4).
 - **Q5 — ADR number collision.** `docs/plan/store-reclaim/` references a proposed
   ADR-0026 for the reclaim engine; this plan proposes ADR-0026 for the migration.
   Reconcile numbering with the owner (next free = 0026).
@@ -43,14 +51,14 @@ author: architect (deepseek-flash)
 
 | id | segment | depends_on | status |
 |---|---|---|---|
-| s1 | Pre-flight spike (rollback + cross-version VACUUM + `_key`) | — | pending |
+| s1 | Pre-flight spike (rollback + cross-version VACUUM + `_key`) | — | done (measured 2026-09-30; findings in DESIGN §6a) |
 | s2 | Migration engine/transform (DROP+CREATE→same-version VACUUM) | s1 | pending |
 | s3 | Gate observability fix (`2bf0b7c8`) | — | pending |
 | s4 | CLI subcommand + offline-exclusive wiring (ADR-0013 D4) | s2 | pending |
 | s5 | Pin bump + relock + constant re-measurement (OWNER-GATED) | s1,s3 | pending |
 | s6 | Production-copy verification + docs + proposed ADR-0026 | s2,s4,s5 | pending |
 
-s3 is independent of s1 and may run in parallel. s1 is entry-blocking for s2.
+s3 is independent of s1 and may run in parallel. s1 (now complete) was entry-blocking for s2.
 
 ## Anchors (read status)
 
@@ -66,4 +74,6 @@ READ by author (this plan): `docs/decisions/` (catalog), `docs/plan/store-reclai
 `pnpm-lock.yaml` line numbers, `memory-cli/src/index.ts:701,778,867,870`,
 `registry/index.json` rows, `integrity.ts:2454`.
 
-UNVERIFIED: rollback direction; cross-version VACUUM; `_key` existence under 0.8.
+UNVERIFIED: `restoreStoreOffline` engine path for the pre-migration image (raw file copy was
+verified; the engine path was not exercised). Rollback direction, cross-version VACUUM, and
+`_key` existence under 0.8 are now measured (DESIGN §6a).
