@@ -194,3 +194,42 @@ Schema version **1**. Each edit appends one dated entry; entries are never rewri
   Until a location is chosen by the owner, the record for a `git-manager` operation lives in this
   section and in the operation's own report. (`extensions/agents/git-manager/README.md` specifies
   the entry's *contents* but not a path.)
+- **2026-09-30 — added §7 Break-glass; recorded the q2 worktree bypass** (`git-manager`, run
+  `dispatch-2026-09-30-q2-teardown`, on the operator authorisation quoted in §7). *Reason:* the
+  policy carried **no break-glass section** although the tool contract requires a recorded bypass;
+  and two worktrees (`q2-fts-leak-081`, `q2-fts-leak-071`) had to be removed while **dirty**, a §5
+  deviation that must be recorded, never silent. In the same operation both branches
+  (`q2/fts-leak-081`, `q2/fts-leak-071`) were deleted with `git branch -d` — each tip was
+  `4e975fa4`, an ancestor of `main`, with zero unique commits, so the safe `-d` (never `-D`)
+  applied. §7 is a new section, not a rewrite; no other rule changed.
+
+## 7. Break-glass
+
+A break-glass bypass is permitted **only** for a genuine emergency, **only** with explicit
+operator authorisation, and **only** ever with a record. The procedure:
+
+1. State the emergency.
+2. Name the operator who authorised it.
+3. Perform the **minimum** bypass operation — never wider than the authorised scope.
+4. Record it below in a dated entry: the emergency, the operator, the exact scope, and the
+   justification — including why nothing of value is lost.
+
+An **unrecorded** bypass is the failure, not the bypass. A bypass is never a precedent: the
+next operation re-applies §5 in full.
+
+### 2026-09-30 — discard of two measurement-only worktrees (`q2-fts-leak-081`, `q2-fts-leak-071`)
+
+- **Operator authorisation.** The operator (dispatcher) directed this teardown and authorised
+  *"discarding the uncommitted contents of these two named paths, and only these two"* —
+  `.worktrees/q2-fts-leak-081` and `.worktrees/q2-fts-leak-071`.
+- **Emergency / justified deviation.** §5's safe-to-remove predicate requires an **empty**
+  `git status --porcelain`; both worktrees were dirty, so neither was removable under §5. The
+  bypass was `git worktree remove --force` on **exactly** those two paths.
+- **Why nothing of value was lost.** The uncommitted content was measurement-only and its result
+  was already recorded — a temporary `console.log` instrumentation (+4 lines) in
+  `libs/data/store/store-adapter/src/__tests__/fts-optimize-leak-gate.bl-c5249cdd.spec.ts`, a
+  `@tursodatabase/database` `^0.7.1`→`0.8.1` bump in `store-adapter/package.json`, and the
+  resulting `pnpm-lock.yaml` churn. The measurement concluded (verdict: `page_count` flat on
+  0.8.1 — 264 vs 266 — with a 0.7.1 control that still reproduces the leak) and is recorded.
+- **Scope honoured.** No other worktree, branch, or file was touched; every byte of
+  `.worktrees/s1-reclaim-engine` (in-flight work) was left intact.
