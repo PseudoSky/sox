@@ -137,6 +137,8 @@ importers:
 
   extensions/agents/architect: {}
 
+  extensions/agents/architect-decision: {}
+
   extensions/agents/backlog-operator: {}
 
   extensions/agents/debug: {}
@@ -283,6 +285,8 @@ importers:
   extensions/skills/forbidden-skill: {}
 
   extensions/skills/iterative-research-refinement: {}
+
+  extensions/skills/opencode-permission-audit: {}
 
   extensions/skills/sox-ingest: {}
 
