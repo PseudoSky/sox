@@ -264,6 +264,8 @@ importers:
         specifier: workspace:^
         version: link:../../../libs/tokenguard-core
 
+  extensions/skills/agent-safety-audit: {}
+
   extensions/skills/backlog-intake: {}
 
   extensions/skills/demo-creator: {}
@@ -285,8 +287,6 @@ importers:
   extensions/skills/forbidden-skill: {}
 
   extensions/skills/iterative-research-refinement: {}
-
-  extensions/skills/opencode-permission-audit: {}
 
   extensions/skills/sox-ingest: {}
 
