@@ -234,8 +234,8 @@ Complete schema at <https://opencode.ai/config.json>. Key fields:
 ```json
 "permission": {
   "edit": "deny",
-  "bash": { "git *": "allow", "rm *": "deny", "*": "ask" },
-  "external_directory": { "~/secrets/**": "deny", "*": "allow" },
+  "bash": { "*": "allow", "git *": "allow", "rm *": "deny" },
+  "external_directory": { "*": "allow", "~/secrets/**": "deny" },
   "webfetch": "allow",
   "task": "ask"
 }
@@ -261,10 +261,10 @@ Rules are evaluated **insertion order** with **last-match wins**. Put broad rule
 
 ### Per-agent permissions
 
-Agent-level `permission` overrides the top-level `permission`. Useful patterns:
+Agent-level `permission` **merges** with the top-level `permission` — the agent's rules are evaluated **last**, so an agent rule beats a config rule, and any config guardrail the agent does not restate still applies. Useful patterns:
 
 - Plan mode agent: `{ "edit": "deny", "bash": "deny" }`
-- Code review agent: `{ "edit": "deny", "bash": "ask" }`
+- Code review agent: `{ "edit": "deny", "bash": { "*": "allow", "git push*": "deny" } }`
 - Implementation agent: `{ "edit": "allow", "bash": "allow" }`
 
 ---
