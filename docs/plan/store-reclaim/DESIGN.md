@@ -295,16 +295,64 @@ Expiry runs post-swap under the retention lock with `protectedRefs:[backupPath]`
 ### 5.5 Trigger-shape consequence
 The cold-start child that did build+swap under one exclusivity window is no longer necessary. Because the
 build is live and only the swap needs fencing, the trigger becomes **two-phase** (§6.3). **Honest caveat:**
-the swap's identity guard demands **no write in [T0, Tswap]**. Two resolutions, in order:
-1. **Preferred — a write-quiesce barrier (memory only):** memory-server pauses its write path (WriteQueue
-   barrier: stop admitting writes → drain → checkpoint WAL → hold) and the swap runs in the millisecond
-   pause **with the process alive**. New typed memory-server surface (ADR-0013 D2/D4); the clean zero-downtime
-   win. **Open question Q6** (interaction with `[contract:signal]`/`SHUTDOWN_SAFETY_NET_MS`).
-2. **Fallback — identity-guarded retry (both stores):** if a write lands in the window the swap refuses
-   `source_changed`; the design treats this as **normal**, discards the stale copy, and rebuilds at the next
-   quiesced window (the §6.3 stop→build→swap path). For backlog (bursty writes, no barrier) this is the mode.
+the swap's identity guard demands **no write in [T0, Tswap]**. Two resolutions, in order — a write-quiesce
+barrier where memory owns the write path, identity-guarded retry everywhere else. Neither is load-bearing:
+the §5.3 swap gates and the §5.2 identity fence remain the correctness boundary, because no barrier can make
+the window write-free against other processes.
 
-Neither relaxes the fence: the swap **never** proceeds across a write.
+#### 5.5.1 Write-quiesce barrier (memory only) — Q6 resolved 2026-09-30, permitted with changes
+An **asynchronous, deadline-bounded, signal-preemptible hold** is permitted (one-shot architecture ruling;
+Q6 in `STATE.md`). memory-server gates write admission and the swap runs in the pause **with the process
+alive** — the clean zero-downtime win, with no spawn and no kill. `[inv:singleton]` bounds instance count,
+not momentary quiescence; `[inv:unload-then-reap]` is about kill ordering and a hold is not a stop;
+`[contract:signal]` is the only real interface. Four constraints, each of which the naive "hook the
+WriteQueue" shape fails:
+
+1. **The gate sits at `enqueue()` entry, BEFORE the `_bypass || _noop` early return** (`write-queue.ts:745`).
+   The Turso adapter sets `needsWriteSerialization:false` ⇒ `_noop=true` ⇒ the live service takes the bypass
+   path (`write-queue.ts:751-754`); a gate on the FIFO path is a production no-op. This is the BL-394/BL-445
+   "guard past the early return reads zero" class — the same defect that leaves the size cap and deadline
+   guard reading structurally-zero on bypass.
+2. **Drain awaits *all* in-flight work, not FIFO depth alone:** `_bypassInFlight === 0`
+   (`write-queue.ts:421`; BL-445 added the counter precisely because `_processing` is a boolean set only in
+   `_enqueueQueued`) **and** `!_processing && queue.length === 0`.
+3. **No new WAL-checkpoint mechanism.** A raw `PRAGMA wal_checkpoint(TRUNCATE)` reintroduces the
+   `multiprocess_wal` TRUNCATE race ADR-0012 §1 names as having corrupted two stores and silently lost ~15
+   records (upstream #7833/#8348). Any flush is the adapter's existing public gated ceremony —
+   `closeAllForShutdown()` → `adapter.close()` (PASSIVE always, then quiescence-gated TRUNCATE); DEBT-004
+   owns checkpointing.
+4. **The hold is asynchronous, deadline-bounded and cancellable — never a synchronous spin or a
+   main-thread-blocking checkpoint.** Node timers are not blocked by a pending promise, so an async hold
+   leaves the `[contract:signal]` safety net schedulable and the sole SIGTERM/SIGINT handler
+   (`coordinatedShutdown`) runnable. A synchronous hold makes both unschedulable — the recorded ff7d9e24
+   failure, where the safety net could not fire, reaper grace expired, and SIGKILL tore the store
+   (`bl-ff7d9e24-no-vacuum-on-shutdown.spec.ts`).
+
+**SIGTERM mid-hold aborts — never completes-then-handles.** The sole SIGTERM/SIGINT handler sets the
+barrier's cancelled flag and releases waiters within one event-loop turn; the barrier must **not** await the
+swap. Parked/queued admissions are released or failed fast with retryable `E_BUSY` inside the shutdown
+budget. Correctness under signal: exit within `computeShutdownSafetyNetMs()` and before reaper grace, with
+**no SIGKILL escalation**.
+
+**Minimum safety conditions (all hold):** the hold is asynchronous, deadline-bounded, cancellable — no
+synchronous spin, no main-thread-blocking checkpoint; the hold sits strictly inside
+`computeShutdownSafetyNetMs()` with headroom and does not stack on the shutdown critical path (the arithmetic
+`bug018-shutdown-budget-headroom.spec.ts` pins); the surface is a typed config/API or explicit CLI one-shot
+(ADR-0013 D2/D4), never a feature-toggle env var; the barrier does not supersede the §5.3 swap gates or the
+§5.2 identity fence; the barrier never spawns or kills and must never be used *as* a stop.
+
+The safety net is `computeShutdownSafetyNetMs()` — derived (since BL-592) as the resolved `stop_timeout_ms`
+(`SOX_CONFIG_STOP_TIMEOUT_MS`) minus `SOX_SHUTDOWN_SAFETY_MARGIN_MS`, computed fresh inside
+`coordinatedShutdown` at the memory-server bundle's `backend.ts:169` (see `shutdown-margin.ts`); the reaper's
+SIGTERM grace is 5000 ms by default.
+
+#### 5.5.2 Identity-guarded retry (both stores) — the mandatory backstop
+If a write lands in the window the swap refuses `source_changed`; the design treats this as **normal**,
+discards the stale copy, and rebuilds at the next quiesced window (the §6.3 stop→build→swap path). For
+backlog (bursty writes, no barrier) this is the mode. It remains the mandatory backstop even when the barrier
+runs: the barrier cannot exclude writers outside memory-server (transient `memory-cli`/`memory-flush`
+openers, §4.1), so the retry — not the barrier — keeps the fence. Neither mode ever relaxes it: the swap
+**never** proceeds across a write.
 
 ---
 

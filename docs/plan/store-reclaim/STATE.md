@@ -84,10 +84,17 @@ policy, the crash-safe lock, the two-phase trigger, the memory + backlog binding
   `FTS_OPTIMIZE_LEAK_MEASURED_ON='0.7.1'` (`store-rebuild.ts:128`; upgrade-gated by
   `fts-optimize-leak-gate.bl-c5249cdd.spec.ts`). **Resolve before dispatching Segment 1** — if (a) is yes,
   the reclaim collapses to a version bump.
-- **Q6 — gates Segment 4.5.** The write-quiesce barrier introduces a memory-server pause; it must not violate
-  `[contract:signal]` (SIGTERM drains within `stop_timeout_ms`) or the `SHUTDOWN_SAFETY_NET_MS=4000` budget
-  (`backend.ts:156`). Needs the service-lifecycle owner's sign-off; if refused, fall back to §5.5.2
-  (identity-guarded retry + idle-gated restart) — the design degrades cleanly.
+- **Q6 — RESOLVED 2026-09-30, PERMITTED WITH CHANGES (one-shot architecture ruling) — gates Segment 4.5.**
+  An async, deadline-bounded, signal-preemptible hold is permitted. Required shape: gate `enqueue()` at entry
+  BEFORE the `_bypass || _noop` early return (`write-queue.ts:745`; else a production no-op on Turso's bypass
+  path); drain awaits `_bypassInFlight === 0` AND `!_processing && queue.length === 0`; no new
+  WAL-checkpoint mechanism (route flush through the adapter's gated ceremony — ADR-0012 §1's TRUNCATE race);
+  SIGTERM mid-hold aborts (releases waiters within one event-loop turn, never completes-then-handles). The
+  barrier is not load-bearing: the §5.3 gates and §5.2 identity fence stay the correctness boundary, and
+  §5.5.2 identity-guarded retry is the mandatory backstop. The safety net is derived
+  `computeShutdownSafetyNetMs()` at the memory-server bundle's `backend.ts:169` (BL-592); the ruling records
+  that `libs/service-proxy/src/backend.ts` carries no such constant, timer, or `coordinatedShutdown`. Supersedes
+  the "gated by Q6" segment-table row and acceptance bullet.
 - **Q3 —** memory self-restart UX: idle-gated auto-restart vs explicit `soxe service reclaim`. Less critical
   if Q6 lands (no restart needed).
 - **Q5 —** `1dd4c870` ↔ `b1ac8ebd`: read both bodies before relating/moving the 342 MB observation
