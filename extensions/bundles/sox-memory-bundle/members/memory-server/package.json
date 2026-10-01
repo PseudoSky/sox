@@ -22,7 +22,7 @@
     "sqlite-vec": "^0.1.9",
     "fastembed": "^2.1.0",
     "onnxruntime-node": "1.21.0",
-    "@tursodatabase/database": "^0.7.1"
+    "@tursodatabase/database": "^0.8.1"
   },
   "devDependencies": {
     "@adhd/sox-memory-core": "workspace:*",

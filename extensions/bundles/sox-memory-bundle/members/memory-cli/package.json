@@ -22,7 +22,7 @@
     "@adhd/sox-telemetry": "workspace:*"
   },
   "dependencies": {
-    "@tursodatabase/database": "^0.7.1",
+    "@tursodatabase/database": "^0.8.1",
     "better-sqlite3": "^12.10.0",
     "sqlite-vec": "^0.1.9"
   },

@@ -20,7 +20,7 @@
     "@adhd/sox-telemetry": "workspace:*"
   },
   "dependencies": {
-    "@tursodatabase/database": "^0.7.1"
+    "@tursodatabase/database": "^0.8.1"
   },
   "keywords": [
     "memory",
