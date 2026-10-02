@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.8.0
+
+- **Merge-first delivery loop — the review gate moves off the delivery path (supersedes `19434c31`).** Rule 5 replaced: code merges on its **own gates** (`pnpm test` 0 failures, `tsc --noEmit` exit 0, bundle under budget), the backlog item is `resolve`d on merge, and the review runs from `main` afterwards per ticket against the pinned sha — where the reviewer **runs the suite** instead of judging from reading. A HIGH is no longer a merge blocker: it is bucketed and dispatched as immediate follow-up implementation, still surfaced to the user by severity. Severity semantics are retained (rule 12 clause (a)) for **bucketing** only. Rails encoded in rule 5: every post-merge finding filed AND scheduled; `main`'s gates are a hard rail (a red merged state is an immediate fix, not a follow-up); branch write-scope overlaps declared in briefs up front (rule 24 gained the clause; Step 8 checklist updated). The tradeoff is recorded plainly: `main` will carry defects a pre-merge gate would have caught — the accepted price of a loop that converges. Step 5 renamed `Merge on gates, then review from main`; the playbooks list and the `Review-loop divergence` failure-mode entry (now `Review-gate deadlock`, fix superseded) updated. AC6: the superseded severity-floor approach is named as superseded so it is not resurrected alongside the inverted order.
+
 ## 1.7.2
 
 - **Fix: `git add .*` denied the `git add <path>` form that `AGENTS.md` mandates.** As a glob the

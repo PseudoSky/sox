@@ -221,8 +221,10 @@ export const GUARDS = [
     id: '19434c31',
     tier: 1,
     script: 'test-19434c31-dispatcher-review-floor.mjs',
-    // Pins a property of the dispatcher agent prose (the blind-review severity floor + round cap),
-    // not a tool script — the pre-fix shape (v1.4.0, commit 9ab825e3) is the negative control.
+    // Pins a property of the dispatcher agent prose (the merge-first delivery loop: merge on the
+    // change's own gates, review from `main` after the merge, HIGH bucketed as follow-up), not a
+    // tool script — the superseded pre-merge severity-floor shape must stay absent, and the pre-fix
+    // shape (v1.4.0, commit 9ab825e3) is the negative control.
     watch: ['extensions/agents/dispatcher/dispatcher.md'],
   },
   {
