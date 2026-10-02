@@ -401,12 +401,8 @@ export interface IntegrityVerdict {
   detail: string | null;
   /** Raw lines classified as real damage — never suppressed. */
   damage: string[];
-  /** Documented-benign lines: the Turso FTS directory count mismatch
-   *  (turso#7611) and `Page N: …` reclaimable-space noise. Reported, not
-   *  counted against the gate. */
+  /** `Page N: …` reclaimable-space noise. Reported, not counted against the gate. */
   suppressed: string[];
-  /** The driver version the suppression was measured against. */
-  suppression_valid_for: string;
   /** PRAGMA integrity_check caps its own output; true means "clean as far as
    *  we could see", which this gate treats as NOT ok. */
   truncated: boolean;
@@ -419,26 +415,21 @@ export interface IntegrityVerdict {
  * they are about to repair.
  *
  * MEASURED, and why this does NOT just test for the literal string 'ok':
- * Turso's `integrity_check` reports
- * `wrong # of entries in index __turso_internal_fts_dir_<idx>_key` on a
- * freshly created, fully working FTS index (turso#7611, still reproducing on
- * the installed 0.7.1 driver). Every store this op will ever run against
- * carries an FTS index, so a literal 'ok' test would make
- * `allow_integrity_failure: true` MANDATORY for every apply — which trains an
- * operator to pass a bypass-the-corruption-check flag as routine, and makes
- * the gate worthless on the day there is real damage. The classification is
- * delegated to the store-adapter's `classifyIntegrityMessages`, the single
- * source of truth for it.
+ * `integrity_check` reports `Page N: never used` / `Page N referenced
+ * multiple times` on any store where a `DROP INDEX` (or FTS repair) has left
+ * reclaimable free space behind — the same leaked-page noise a successful
+ * repair routinely produces. A literal 'ok' test would treat that noise as
+ * corruption, which trains an operator to pass a bypass-the-corruption-check
+ * flag as routine and makes the gate worthless on the day there is real
+ * damage. The classification is delegated to the store-adapter's
+ * `classifyIntegrityMessages`, the single source of truth for it.
  */
 export async function checkIntegrity(adapter: StoreAdapter): Promise<IntegrityVerdict> {
   // Lazy value import — see the type-only import note at the top of this file.
-  const { classifyIntegrityMessages, SUPPRESSION_VALID_FOR } = await import(
-    '@adhd/sox-store-adapter'
-  );
+  const { classifyIntegrityMessages } = await import('@adhd/sox-store-adapter');
   const base = {
     damage: [] as string[],
     suppressed: [] as string[],
-    suppression_valid_for: SUPPRESSION_VALID_FOR,
     truncated: false,
   };
   let values: string[];
@@ -467,24 +458,21 @@ export async function checkIntegrity(adapter: StoreAdapter): Promise<IntegrityVe
   // Classify the FULL raw list — never a slice. A second cap applied before
   // classification is how benign noise blinds the probe
   // (BUG-INTEGRITY-CHECK-BLINDED-BY-PAGE-NOISE-001).
-  const { damage, knownFalsePositives, pageAccounting, truncated } =
-    classifyIntegrityMessages(values);
-  const suppressed = [...knownFalsePositives, ...pageAccounting];
+  const { damage, pageAccounting, truncated } = classifyIntegrityMessages(values);
+  const suppressed = [...pageAccounting];
 
   if (damage.length > 0) {
-    return { ok: false, detail: damage.join('; '), damage, suppressed, truncated,
-      suppression_valid_for: SUPPRESSION_VALID_FOR };
+    return { ok: false, detail: damage.join('; '), damage, suppressed, truncated };
   }
   if (truncated) {
     return {
       ok: false,
       detail:
         'integrity_check output hit its message cap — clean as far as we could see is not clean',
-      damage, suppressed, truncated, suppression_valid_for: SUPPRESSION_VALID_FOR,
+      damage, suppressed, truncated,
     };
   }
-  return { ok: true, detail: null, damage, suppressed, truncated,
-    suppression_valid_for: SUPPRESSION_VALID_FOR };
+  return { ok: true, detail: null, damage, suppressed, truncated };
 }
 
 // ── Classification → policy band ──────────────────────────────────────────────
@@ -861,13 +849,12 @@ export async function curateRestoreNeardup(
     reportMeta = { path: resolved, sha256: crypto.createHash('sha256').update(raw).digest('hex') };
   }
 
-  // §6.7 precondition. Documented-benign driver artifacts (the turso#7611 FTS
-  // directory count mismatch, `Page N: …` free-space noise) are SUPPRESSED by
-  // the shared classifier and do not block — see checkIntegrity for why a
-  // literal 'ok' test would reduce the override to a routine keystroke. Real
-  // damage still blocks by default, and crossing it requires an explicit,
-  // RECORDED operator decision: the override is written into every restored
-  // row's provenance, so it is never silent.
+  // §6.7 precondition. Documented-benign page-accounting noise (`Page N: …`
+  // free-space noise) is SUPPRESSED by the shared classifier and does not
+  // block — see checkIntegrity for why a literal 'ok' test would reduce the
+  // override to a routine keystroke. Real damage still blocks by default, and
+  // crossing it requires an explicit, RECORDED operator decision: the override
+  // is written into every restored row's provenance, so it is never silent.
   const integrityCheck = await checkIntegrity(adapter);
   const integrity = { ...integrityCheck, override: !integrityCheck.ok && allowIntegrityFailure };
   if (!dryRun && !integrity.ok && !allowIntegrityFailure) {
@@ -876,8 +863,8 @@ export async function curateRestoreNeardup(
       op: 'restore_neardup',
       message:
         `integrity_check reported REAL damage (${integrity.detail ?? 'unknown'}). ` +
-        'Documented-benign driver artifacts are already suppressed, so this is not the ' +
-        'turso#7611 FTS false positive. Repair the store and take a verified `VACUUM INTO` ' +
+        'Documented-benign page-accounting noise is already suppressed, so this is real ' +
+        'damage. Repair the store and take a verified `VACUUM INTO` ' +
         'snapshot before applying a restore; dry_run remains available. ' +
         'allow_integrity_failure: true forces the run anyway and records the decision and the ' +
         'exact damage in meta.restoredFrom.integrity_at_restore on every restored row.',

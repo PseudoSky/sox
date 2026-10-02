@@ -44,7 +44,7 @@
  * SAFETY (mirrors restore_neardup):
  *   - `dry_run` DEFAULTS TO TRUE; a caller must pass `dry_run: false`.
  *   - Before any mutation: `checkIntegrity` (the shared classifier — benign
- *     turso#7611 FTS noise is suppressed, real damage aborts), then a verified
+ *     page-accounting noise is suppressed, real damage aborts), then a verified
  *     `backupStore` VACUUM INTO snapshot. Either failing aborts with zero
  *     mutation. No integrity override and no env toggle (ADR-0013).
  *   - `reverse: true` strips exactly the four keys, and only from rows whose

@@ -20,8 +20,7 @@
  *
  * Integrity verification:
  *   After the VACUUM INTO, the adapter re-opens the backup and runs its own
- *   integrity probe (`verifyStoreIntegrity`'s `pragma_integrity_check`, which
- *   already filters the known permanent Turso FTS false positive). Any
+ *   integrity probe (`verifyStoreIntegrity`'s `pragma_integrity_check`). Any
  *   non-"ok" result causes the backup file to be deleted and an E_IO error is
  *   returned, naming the backend so an operator does not chase corruption
  *   that isn't there (BL-385).

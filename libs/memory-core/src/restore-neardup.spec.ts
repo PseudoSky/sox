@@ -619,20 +619,14 @@ describe('restore_neardup — banned signals', () => {
 });
 
 describe('restore_neardup — integrity precondition', () => {
-  // MEASURED: on a Turso store with FTS, one raw node INSERT is enough to make
-  // `PRAGMA integrity_check` report
-  // `wrong # of entries in index __turso_internal_fts_dir_idx_fts_node_key` —
-  // the same string the triage saw on the live store copy, and a documented
-  // driver false positive (turso#7611). If that blocked, every apply would need
-  // allow_integrity_failure and the flag would become a routine keystroke.
-  it('does NOT block on the turso#7611 FTS false positive — no override needed', async () => {
+  // A healthy fixture store passes the integrity precondition without an
+  // override, so the apply is not gated on a bypass flag.
+  it('does NOT block on a healthy store — no override needed', async () => {
     const { report } = await buildCanonicalFixture();
 
     const dry = (await memoryCurate(db, { op: 'restore_neardup', report_path: report.path })) as any;
     expect(dry.integrity.ok).toBe(true);
     expect(dry.integrity.damage).toEqual([]);
-    expect(dry.integrity.suppressed.join(' ')).toMatch(/__turso_internal_fts_dir_/);
-    expect(dry.integrity.suppression_valid_for).toBe('0.7.1');
 
     const apply = (await memoryCurate(db, {
       op: 'restore_neardup',
