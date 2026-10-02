@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.9.1
+
+- **Post-ship research refinements (Q1/Q2/Q3).** Rule 8: size a bucket by **cohesion and separability, never maximal size** — a bigger pass does not help and degrades verification. Rule 5: review type by **changed lines of code** (~200–400 blind threshold); changed-file count (`>=8`) is a coarse secondary proxy. The `dispatch-priority` escalation targets are the full roster, not `product` alone, with the twofold purpose recorded.
+
 ## 1.9.0
 
 - **Verbatim carry + HARD-contradiction gate (rule 0).** Every execution brief now carries `user-request (verbatim):` beside `dispatcher-structuring:`, and the structuring is re-checked against the verbatim before dispatch. A **HARD contradiction** — the closed set of four (forbids what the user required, requires what the user forbade, reverses a stated order/priority/constraint, redirects target/scope to something the user did not name) — halts the dispatch for clarification; restating, disambiguating, adding acceptance criteria, choosing among options the user left open, and consistent guardrails never do. New failure mode **contradiction-inflation**.

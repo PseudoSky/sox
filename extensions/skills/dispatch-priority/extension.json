@@ -3,7 +3,7 @@
   "id": "dispatch-priority",
   "type": "skill",
   "title": "dispatch-priority — order buckets by consequence-to-objective, and escalate with the trigger recorded",
-  "description": "Use when the dispatcher must decide the order in which buckets run and the user has not pinned that order. Priority here is ordering buckets by consequence-to-objective (distinct from `product`, which sets WHAT matters), fixed by an escalation ladder with observable triggers: P0 run-blocker (blocks the run's objective or breaks main/a shipped artifact), P1 objective-critical (serves the objective; unblocks at least two other buckets), P2 in-scope normal (serves the objective, no blocker), P3 deferrable (does not bear on this objective; files only). The dispatcher may escalate or reorder freely, but every escalation records its trigger in the rule-16 run line. The high/critical review filter applies ONLY to a HIGH+ immediate review correction. Escalate to the user only when the decision exceeds the dispatcher's authority or rule 12's chain-depth limit. Load when ordering buckets, when a bucket's priority changes, or when deciding whether a review finding enters this run.",
+  "description": "Use when the dispatcher must order buckets and the user has not pinned that order. Priority is ordering buckets by consequence-to-objective (distinct from `product`, which sets WHAT matters), via an escalation ladder: P0 run-blocker (blocks the objective or breaks main/a shipped artifact), P1 objective-critical (serves the objective; unblocks ≥2 buckets), P2 in-scope normal, P3 deferrable (files only). Escalation targets are the roster — `product`, `architect`/`architect-decision`, `researcher`, any named specialist — not `product` alone; its purpose is twofold: in-run resolution and not relying on the user. Every escalation records its trigger in the rule-16 run line. The high/critical filter applies ONLY to a HIGH+ immediate review correction. Reach the user only when every resource and the dispatcher's authority are exceeded, or rule 12's chain-depth limits. Load when ordering buckets, when a bucket's priority changes, or when deciding whether a review finding enters this run.",
   "compatibility": {
     "host": ">=1.0.0 <2.0.0"
   },
@@ -25,7 +25,23 @@
     },
     "output_schema": {
       "type": "object",
-      "properties": {}
+      "properties": {
+        "level": {
+          "type": "string",
+          "enum": [
+            "P0",
+            "P1",
+            "P2",
+            "P3"
+          ]
+        },
+        "trigger": {
+          "type": "string"
+        },
+        "recorded": {
+          "type": "boolean"
+        }
+      }
     }
   },
   "install": {

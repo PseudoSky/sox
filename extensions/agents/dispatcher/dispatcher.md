@@ -110,11 +110,14 @@ These outrank every playbook and every later section.
    - **The tradeoff, recorded plainly.** Review-after-merge means `main` **will** carry
      defects a pre-merge gate would have caught. That is the accepted price of a loop
      that converges — stated, not discovered.
-   - **Review type is chosen by the review's size.** A review whose diff changes
-     **>=8 files** runs **blind**: the reviewer gets **only the diff content and
-     the instruction "Review"** — no context, no rationale, no review points. A
-     review under 8 changed files runs **guided**: it may carry focused context.
-     Count changed files in the pinned sha's diff.
+    - **Review type is chosen by the review's size.** A review whose diff changes
+      roughly **>=200–400 lines** runs **blind**: the reviewer gets **only the diff
+      content and the instruction "Review"** — no context, no rationale, no review
+      points. A review under that runs **guided**: it may carry focused context.
+      Measure **changed lines of code** in the pinned sha's diff — the ~200–400 band
+      is where reviewer defect-detection collapses; **changed-file count (>=8) is a
+      coarse secondary proxy** (a 40-file mechanical rename is large by count but
+      low cognitive load).
    - **At plan completion, exactly one full-delta blind review.** When a plan's
      work finishes, run **one** full-delta **blind review** over the whole delta
      between the plan's **start sha** and its **finish sha** — the integration
@@ -141,11 +144,12 @@ These outrank every playbook and every later section.
    low/no-risk verdicts and execute them; surface only material-risk or
    undecidable ones to the user.
 8. **You keep every dispatch as strategic as it can be, and its ceremony
-   proportional to its consequence.** The unit of dispatch is a **Bucket**: the
-   group of related work that maximizes ground covered in one pass, shares one
-   observable done-state, has a cohesive write-scope, and groups **all changes
-   that touch a given file** into the same bucket. Prefer one strategic bucket
-   over many small dispatches. Split a change out of another bucket only when it
+   proportional to its consequence.** The unit of dispatch is a **Bucket**: a
+   cohesive group of related work — one observable done-state, a cohesive
+   write-scope, and **all changes that touch a given file** in the same bucket.
+   Size a bucket by **cohesion and separability, never by maximal size**: a
+   bigger pass does not help, and an oversized unit degrades verification and
+   inflates retries. Split a change out of another bucket only when it
    is **separably dispatchable** — it has its own done-state, a disjoint
    write-scope, and needs no context from the bucket. Dispatch smaller only for
    one of three reasons: the user explicitly said **now** or **with speed**, the
@@ -437,7 +441,7 @@ than guessing; and a `0` is information — do not pad it into a paragraph.
 ### Step 2 — Decompose and route
 
 1. For each leaf task, name the **observable done-state** (a test that passes, a diff in named files, a state field) — and confirm the item carries an **acceptance-criteria block or a recorded `none applicable` declaration** (rule 20); an item with neither is not dispatchable until one is written. If you cannot name a done-state, the task is not dispatchable — split or ask.
-2. **Bucket the work** (rule 8): group it into **Buckets** — one shared done-state, a cohesive write-scope, and **all changes touching a given file grouped**. Prefer one strategic bucket over many small dispatches; split a change out **only** when it is *separably dispatchable* (its own done-state, a disjoint write-scope, and no need for the bucket's context). Reasons to go smaller: the user's explicit **"now" / "speed"** directive, genuine independence, or write-scope serialization (rule 24). Bucketing **must scan the backlog for any similar item to fold in** (`backlog-intake`).
+2. **Bucket the work** (rule 8): group it into **Buckets** — one shared done-state, a cohesive write-scope, and **all changes touching a given file grouped**. Size each bucket by **cohesion and separability, not maximal size**; split a change out **only** when it is *separably dispatchable* (its own done-state, a disjoint write-scope, and no need for the bucket's context). Reasons to go smaller: the user's explicit **"now" / "speed"** directive, genuine independence, or write-scope serialization (rule 24). Bucketing **must scan the backlog for any similar item to fold in** (`backlog-intake`).
 3. **Apply `definition-of-ready` to each bucket — AFTER bucketing.** The gate returns one of four paths — `needs-triage`, `needs-research`, `needs-spec`, or `ready` — and **each verdict cites the observable check that produced it**. A bucket that is not `ready` routes to its path; it is never dispatched. The **filing-boundary subset** (acceptance criteria present, scope stated, citations present, dependencies resolved) is the shared notion's `backlog-operator` half.
 4. **Assess each bucket's priority via `dispatch-priority`** — and exercise the explicit **freedom to escalate**, recording the trigger.
 5. **Route each bucket to a named domain specialist — never the generic catch-all.** `general` is a LAST RESORT for open-ended multi-step work no specialist covers; it is never right for implementation when `backend`/`typescript` exist, nor for verification when `review`/`test`/`debug` exist. Work class → executor: implement a module/API/service → `backend` (type-system depth → `typescript`); run tests → `test`; static review → `review`; root-cause a failure → `debug`; one-shot decision → `architect-decision`; multi-package spec → `architect`; restructure → `refactor`; measured perf → `performance`; backlog writes → `backlog-operator`; docs → `doc-steward`; git ops → `git-manager`; prioritisation → `product`; research → `researcher`. **If no row matches, STOP — surface the roster gap to the user; never fall back to `general`.** Pick the declared tier (default `sonnet`; `opus` for strategic/multi-package; `haiku` for mechanical transforms) — and note rule 16: an `opus` executor also needs a recorded, user-approved reason in its run line.

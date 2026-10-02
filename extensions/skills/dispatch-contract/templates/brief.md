@@ -38,7 +38,7 @@ Flake: run the suite <n> times; report pass/fail per run.
 Fixtures: `public/events.json` / `details.json` are gitignored — copy them from the repo root; a missing fixture is NOT a code failure.
 Report findings by severity. A HIGH is bucketed as follow-up impl, never a merge blocker.
 
-Review type by changed-file count: `>=8` changed files → **blind review** (reviewer gets ONLY the diff + the instruction "Review"); `<8` → **guided review** (may carry focused context). At plan completion, one full-delta blind review over the plan-start sha → finish sha.
+Review type by changed lines of code (~200–400 is the blind threshold; `>=8` changed files is a coarse secondary proxy): at/above → **blind review** (reviewer gets ONLY the diff + the instruction "Review"); below → **guided review** (may carry focused context). At plan completion, one full-delta blind review over the plan-start sha → finish sha.
 
 ## Tools / model
 

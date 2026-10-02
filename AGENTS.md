@@ -413,9 +413,11 @@ Agent prompts: `.opencode/agents/{pro,implement,flash}.md` and `.opencode/prompt
 The reviewer receives **only the content to review and the instruction "Review"** — no context,
 rationale, review points, or prior state.
 
-**When it applies.** A diff changing **>=8 files** is reviewed blind; smaller diffs use guided review
-(the reviewer is given the surrounding context and review points). Plan completion may use exactly
-one full-delta blind review (plan-start sha → finish sha) regardless of file count.
+**When it applies.** Review type is chosen by the review's **changed lines of code** — roughly
+**>=200–400 lines** is reviewed blind; below that uses guided review (the reviewer is given the
+surrounding context and review points). **Changed-file count (>=8) is a coarse secondary proxy** —
+a large mechanical rename is big by count but low cognitive load. Plan completion uses exactly
+one full-delta blind review (plan-start sha → finish sha) regardless of size.
 
 ## ⛔ AGENT CONSTRAINT — LIVE SHIP VERIFICATION (MANDATORY)
 

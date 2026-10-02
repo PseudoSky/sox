@@ -9,7 +9,9 @@ order is not user-pinned. It gives an explicit escalation ladder (P0 run-blocker
 objective-critical, P2 in-scope normal, P3 deferrable) with observable triggers, lists the triggers
 that raise a bucket's priority, and grants the dispatcher the freedom to escalate or reorder — every
 escalation recording its trigger in the rule-16 run line. The high/critical filter applies only to
-immediate corrections arising from reviews, and HARD contradiction is a closed set.
+immediate corrections arising from reviews, and a finding qualifies only via the four review-finding
+materiality classes. HARD contradiction — the dispatcher's structuring-vs-verbatim check — is a
+distinct term, defined canonically in dispatcher rule 0.
 
 ## When to use
 

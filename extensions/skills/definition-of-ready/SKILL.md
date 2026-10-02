@@ -26,7 +26,7 @@ Two consequences of that definition:
 
 This gate runs **after** bucketing, never before. Items are first grouped by
 cohesion into buckets — each bucket shares one file/component and one done-state, and
-is the unit of dispatch (it maximizes ground per pass across a cohesive write-scope).
+is the unit of dispatch (a cohesive write-scope; size it by cohesion and separability, never maximal size).
 Only then is each bucket classified. Classifying individual items before cohesion
 grouping produces path churn: two items in one file with one shared done-state must
 not be split because one of them happened to mention a defect.

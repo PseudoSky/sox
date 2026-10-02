@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.6.1
+
+- **Post-ship refinements.** Step 3 sizes a Bucket by **cohesion and separability, not maximal size**. Step 11 chooses review type by **changed lines of code** (~200–400); `>=8` changed files is a coarse secondary proxy.
+
 ## 1.6.0
 
 - **Step 3 bucketing.** The five-item-per-leaf cap is replaced by **Buckets** — one shared done-state, a cohesive write-scope, all changes touching a file grouped; split only when separably dispatchable. Bucketing scans the backlog to fold in similar items, then applies the `definition-of-ready` gate (`needs-triage` / `needs-research` / `needs-spec` / `ready`) and assesses priority via `dispatch-priority`.

@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.6.1
+
+- **Post-ship refinement.** §1a and `templates/brief.md` choose review type by **changed lines of code** (~200–400); `>=8` changed files is a coarse secondary proxy.
+
 ## 1.6.0
 
 - **The brief carries the verbatim user request.** §1 adds `user-request (verbatim):` and `dispatcher-structuring:`, with the HARD-contradiction closed set and the non-contradictions named — never ask on an admissible addition.

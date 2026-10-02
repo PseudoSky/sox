@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.0.1
+
+- **Consistency fix.** The bucketing sentence now sizes a bucket by cohesion and separability, never maximal size (aligned with the dispatcher rule 8 refinement).
+
 ## 1.0.0
 
 - Initial release. Routes each bucket after bucketing into `needs-triage` /

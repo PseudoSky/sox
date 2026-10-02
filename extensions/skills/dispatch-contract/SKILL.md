@@ -40,9 +40,10 @@ with these review-specific fields (`templates/brief.md` carries them):
 - **Gitignored fixtures** — `public/events.json` and `details.json` are gitignored. Copy them
   from the repo root into place before running; a missing fixture is **not** a code failure and
   must never be reported as one (this trap has taxed four dispatches).
-- **Review type is chosen by changed-file count.** `>=8` changed files → **blind review**: the
+- **Review type is chosen by the review's changed lines of code** (~200–400 is the blind threshold;
+  `>=8` changed files is a coarse secondary proxy). At/above the band → **blind review**: the
   reviewer receives ONLY the diff content and the instruction "Review" — no context, no rationale,
-  no review points. `<8` → **guided review**, which may carry focused context and review points.
+  no review points. Below → **guided review**, which may carry focused context and review points.
   At **plan completion**, run exactly one **full-delta blind review** over the plan-start sha →
   finish sha, independent of size.
 
