@@ -184,8 +184,12 @@ describe('BL-c5249cdd — memory fts-rebuild / memory restore', () => {
     expect(out).toMatch(/reclaimed: \d+ bytes/);
 
     const after = await readFacts(db);
-    expect(after.pageCount).toBeLessThan(before.pageCount * 0.6);
-    expect(fs.statSync(db).size).toBeLessThan(preBytes * 0.6);
+    // The 0.6 reclaim floor was calibrated to the 0.7.1 Tantivy segment leak
+    // (VACUUM INTO removed a whole directory of orphaned segments). On 0.8.1
+    // the leak is gone, so the reclaim is small (measured 184 → 157 pages) —
+    // the assertion is now a positive-reclaim check, not a leak-magnitude floor.
+    expect(after.pageCount).toBeLessThan(before.pageCount);
+    expect(fs.statSync(db).size).toBeLessThan(preBytes);
 
     const backup = fs.readdirSync(path.dirname(db)).find((n) => n.startsWith('memory.db.pre-rebuild-'));
     expect(backup).toBeDefined();
@@ -305,38 +309,53 @@ describe('BL-c5249cdd — memory fts-rebuild / memory restore', () => {
 
   // fts-migrate is the v1→v2 store-FORMAT migration (BL-89849d2a). Its driver
   // gate is `driverIsV2Aware` — under the installed @tursodatabase/database
-  // 0.7.1 pin, `migrateStoreFormatOffline` refuses `driver_not_v2_aware` BEFORE
-  // any open/transform/dry-run. The full transform/plan/dry-run path is covered
-  // at the store-adapter unit level (fts-format-migration.bl-89849d2a.spec.ts
-  // injects `_tursoVersion: '0.8.0'`); the CLI cannot reach it until the pin is
-  // bumped (a separate, owner-authorized step). These tests pin the refusal
-  // contract and the "writes nothing" guarantee under the installed driver.
-  it('BL-c5249cdd: fts-migrate refuses (exit 2) under the installed 0.7.x driver without opening or modifying the store', async () => {
+  // 0.8.1 the gate passes (0.8.1 >= 0.8.0), so `migrateStoreFormatOffline`
+  // runs the full chain to 'migrated'. The refusal path (`driver_not_v2_aware`)
+  // is now covered only by the store-adapter unit seam (fts-format-migration
+  // injects `_tursoVersion`); these CLI tests pin the success and dry-run
+  // OUTCOMES — the store is migrated / the plan is reported — not merely
+  // "did not refuse".
+  it('BL-c5249cdd: fts-migrate migrates the store under the installed 0.8.1 driver', async () => {
     const db = await seedLeakedStore();
     const dir = path.dirname(db);
     const preSha = sha(db);
-    const preList = listing(dir);
 
-    await expect(runCli(['fts-migrate', '--db', db])).rejects.toMatchObject({ code: 2 });
+    await runCli(['fts-migrate', '--db', db]);
 
-    const err = errs.join('\n');
-    expect(err).toMatch(/\[fts-migrate\] REFUSED: driver_not_v2_aware/);
-    expect(err).toMatch(/NOT opened or modified/);
-    expect(sha(db)).toBe(preSha);
-    expect(listing(dir)).toEqual(preList);
+    const out = logs.join('\n');
+    expect(errs.join('\n')).toBe('');
+    expect(out).toContain('[fts-migrate] complete');
+    expect(out).toContain('migrate: DROP INDEX idx_fts_node');
+    expect(out).toContain('pre-migration image:');
+    // The store was migrated (bytes changed) and a rollback image was captured.
+    expect(sha(db)).not.toBe(preSha);
+    expect(fs.readdirSync(dir).some((n) => n.startsWith('memory.db.pre-migration-'))).toBe(true);
   }, T);
 
-  it('BL-c5249cdd: fts-migrate --dry-run also refuses (exit 2) under 0.7.x — the driver gate precedes the plan', async () => {
+  it('BL-c5249cdd: fts-migrate --dry-run reports the plan and leaves the store untouched', async () => {
     const db = await seedLeakedStore();
     const dir = path.dirname(db);
     const preSha = sha(db);
     const preList = listing(dir);
 
-    await expect(runCli(['fts-migrate', '--db', db, '--dry-run'])).rejects.toMatchObject({ code: 2 });
+    await runCli(['fts-migrate', '--db', db, '--dry-run']);
 
-    expect(errs.join('\n')).toMatch(/\[fts-migrate\] REFUSED: driver_not_v2_aware/);
+    const out = logs.join('\n');
+    expect(errs.join('\n')).toBe('');
+    expect(out).toContain('[fts-migrate] DRY-RUN');
+    expect(out).toContain('migrate: DROP INDEX idx_fts_node');
+    // A `fts-migrate --dry-run` does not VACUUM, so it cannot project a reclaim:
+    // the migration transform (DROP INDEX + CREATE INDEX ... USING fts) mutates the
+    // source in place, so a write-nothing dry-run only enumerates the plan and reads
+    // the `before` stats — it has no `after` measurement. `fts-rebuild --dry-run` can
+    // project one because its VACUUM INTO is non-mutating and fully simulatable, so the
+    // two verbs legitimately differ, not disagree. Pin the "no writes" contract with a
+    // negative assertion instead of an impossible reclaim projection.
+    expect(out).not.toContain('reclaimed:');
+    // Nothing migrated: bytes and directory listing unchanged, no image captured.
     expect(sha(db)).toBe(preSha);
     expect(listing(dir)).toEqual(preList);
+    expect(fs.readdirSync(dir).some((n) => n.startsWith('memory.db.pre-migration-'))).toBe(false);
   }, T);
 
   it('BL-c5249cdd: fts-migrate on a missing db exits 1', async () => {

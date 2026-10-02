@@ -671,8 +671,8 @@ function printVerification(tag: string, v: StoreReplacementVerification): void {
   console.log(`    tables:     ${tablesOk}/${v.table_counts.length} row counts equal`);
   console.log(`    fts:        ${ftsOk}/${v.fts_round_trip.length} sentinel round-trips equal`);
   console.log(
-    `    integrity:  ${v.integrity.ok ? 'ok' : 'DAMAGED'} (known false positives ${v.integrity.known_false_positives}, ` +
-      `page-accounting ${v.integrity.page_accounting}${v.integrity.truncated ? ', TRUNCATED' : ''})`,
+    `    integrity:  ${v.integrity.ok ? 'ok' : 'DAMAGED'} (page-accounting ${v.integrity.page_accounting}` +
+      `${v.integrity.truncated ? ', TRUNCATED' : ''})`,
   );
   for (const f of v.failures) console.error(`[${tag}]   ${f}`);
 }
@@ -811,7 +811,7 @@ async function cmdFtsMigrate(dbFlag: string, rest: string[], dryRun: boolean): P
     console.log(`  ${r.status === 'dry_run' ? 'would reclaim' : 'reclaimed'}: ${saved} bytes (${pct}%), ${r.before.page_count - r.after.page_count} pages`);
   }
   if (r.status === 'dry_run') {
-    console.log(`[fts-migrate] DRY-RUN: store opened read-write and closed; ${r.db_path} was NOT migrated (${r.duration_ms} ms)`);
+    console.log(`[fts-migrate] DRY-RUN: store opened read-only and closed; ${r.db_path} was NOT migrated (${r.duration_ms} ms)`);
     if (r.pre_migration_image) {
       console.log(`  no pre-migration image was captured (dry run); re-run without --dry-run to migrate`);
     }
