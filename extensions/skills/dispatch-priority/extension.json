@@ -1,7 +1,6 @@
 {
   "$schema": "https://your-registry/schemas/extension/v2.json",
   "id": "dispatch-priority",
-  "version": "1.0.0",
   "type": "skill",
   "title": "dispatch-priority — order buckets by consequence-to-objective, and escalate with the trigger recorded",
   "description": "Use when the dispatcher must decide the order in which buckets run and the user has not pinned that order. Priority here is ordering buckets by consequence-to-objective (distinct from `product`, which sets WHAT matters), fixed by an escalation ladder with observable triggers: P0 run-blocker (blocks the run's objective or breaks main/a shipped artifact), P1 objective-critical (serves the objective; unblocks at least two other buckets), P2 in-scope normal (serves the objective, no blocker), P3 deferrable (does not bear on this objective; files only). The dispatcher may escalate or reorder freely, but every escalation records its trigger in the rule-16 run line. The high/critical review filter applies ONLY to a HIGH+ immediate review correction. Escalate to the user only when the decision exceeds the dispatcher's authority or rule 12's chain-depth limit. Load when ordering buckets, when a bucket's priority changes, or when deciding whether a review finding enters this run.",

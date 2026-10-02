@@ -1,7 +1,6 @@
 {
   "$schema": "https://your-registry/schemas/extension/v2.json",
   "id": "definition-of-ready",
-  "version": "1.0.0",
   "type": "skill",
   "title": "definition-of-ready — route each bucket by an observable check",
   "description": "Use after bucketing (items grouped by cohesion, each bucket sharing a file/component and one done-state) and before any bucket is dispatched. It classifies each BUCKET into exactly one of four handling paths by an observable check; no verdict stands without the check that produced it. needs-triage: a symptom with no established root cause, or a 'pre-existing/unrelated/skipped' claim (route dispatch-triage -> debug). needs-research: an external fact (which/does/is-it-possible) no repo artifact answers (route researcher, or a time-boxed spike). needs-spec: the done-state cannot yet be written in dispatch-contract terms and the missing ingredient is a design/contract decision (route architect -> dispatch-direct). ready: a done-state is writable as an observable action, scope is named, and no blocking unknown remains (route dispatch-direct). Size is the unknown, not the bucket's bulk. backlog-operator applies the sibling half of readiness (acceptance criteria, scope, citations, dependencies) at filing.",
