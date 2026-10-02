@@ -1,0 +1,21 @@
+# Shard L — abandoned-worktree forensics (read-only)
+
+Repo: `sox-ecosystem`. Signals are HEAD-relative only (`diff main...HEAD --stat`, `diff --stat HEAD`); `diff main` phantom files ignored (pre-refactor fork).
+Conflicts measured with `git merge-tree --write-tree --name-only main <branch>` (no trial merge, no mutation; all five returned exit 0, result-tree OID only ⇒ 0 conflicted paths).
+Stamp = identical uncommitted `package.json` metadata set (`keywords`/`repository`/`homepage`), **byte-identical to `main`** (`git diff main -- <changed package.json paths>` = 0 lines for every worktree below).
+
+| worktree | branch | ahead | main...HEAD diffstat | untracked | conflicts | backlog id | superseded? | verdict | one-line evidence |
+|---|---|---|---|---|---|---|---|---|---|
+| rf-test | **(detached HEAD @ `6de81319`)** | 0 | (empty) | none | 0 | BL-259 (cluster.ts draft) | yes — `6de81319` is ancestor of main | **needs-owner** | DETACHED + DIRTY; dirt = 28×`package.json` stamp (byte-identical to main) **+ real uncommitted `libs/memory-core/src/cluster.ts` draft (+22/−5) absent from main** |
+| staging-combined | staging/combined-merge | 0 | (empty) | none | 0 | BL-507 / BL-508 | yes — HEAD `47d46799` is ancestor of main | junk-stamp | merged staging branch (`fix/engine-guard`, `fix/c-fts-object` both in main); only dirt is redundant package metadata |
+| staging-gate | staging/gate-merge | 2 | 9 files, +910/−105 | none | 0 | BL-373, BL-507, DEBT-SOXGRAPH-002 | **yes** — `git diff main HEAD` on all 9 paths = 0; main tip already carries the work | **superseded** | 2 merge commits (`e2836e35`, `e66193ff`) are **not** ancestors of main, yet content is byte-identical to main (`7343ee0c BL-507`, `5cf35bc7`/`3fc9923b` BL-373 landed independently) |
+| state-truthtelling | feat/state-truthtelling | 0 | (empty) | none | 0 | BL-487 | yes — HEAD `2320455d` is ancestor of main | junk-stamp | merged; only dirt is redundant package metadata |
+| store-adapter-a | feat/store-adapter-a | 0 | (empty) | **15** (`libs/data/store/store-adapter/**`) | 0 | none | yes — untracked pkg `v0.1.0` ⊂ main's `v0.13.2` (~150 files) | **superseded** | early scaffold copy (7 src files, all present in main); main has the advanced package; only non-stamp dirt is scaffold-residue `@libsql/client` dep + pnpm-lock |
+
+## Useful / needs-owner detail
+
+- **rf-test — `needs-owner`.** `HEAD` is **detached** at `6de81319` ("fix(store-adapter): migrateStore() vec_node silently skipped — three bugs"), an ancestor of `main` (0 ahead / 1530 behind), so the committed work is merged. But the worktree is **dirty**: 28 modified `package.json` files that are the redundant stamp, **plus one real unlanded edit** — `libs/memory-core/src/cluster.ts` (+22/−5). The draft adds a `validMembers` loop in `buildClusterResults` that keeps only rowids carrying a vector, re-checks `<2`, and derives `communityUid(validMembers, salt)` / `member_rowids: validMembers`; comments cite **BL-259** and singleton rule **D1.6**. `main`'s `cluster.ts` still uses the unfiltered `communityUid(sortedMembers, salt)` / `member_rowids: sortedMembers` — the change is **absent from main** (main's recent cluster work is the unrelated BL-497 content-length floor). Owner decision required: keep/land the draft, or confirm BL-259's stale-member fix landed elsewhere in another form. *Cross-reference:* peer shard-E's `cf-test` is the same detached `6de81319` with a stamp + a `cluster.ts` draft (there +12/−2) — coordinate the two before discarding either.
+
+## Stamp artifact
+
+Identical uncommitted metadata edit confined to `package.json`: 29 paths, `29 files changed, 370 insertions(+), 29 deletions(-)` per worktree. Added keys (`apps/sox` example): `repository: {"type":"git","url":"git+https://github.com/PseudoSky/adhd.git"}`, `homepage: "https://github.com/PseudoSky/adhd"`. **Redundant with `main`** — `main` already carries these exact values (e.g. `apps/sox/package.json` lines 46–50) ⇒ the dirt is a `soxe upgrade` stamp. Stamp-only dirt: **staging-combined, staging-gate, state-truthtelling** (junk-stamp / superseded). `rf-test` = stamp **+** the cluster.ts draft; `store-adapter-a` = 27×stamp **+** root `package.json` + `pnpm-lock.yaml`.
