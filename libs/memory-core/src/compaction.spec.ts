@@ -42,6 +42,16 @@ function removeTempDir(dir: string): void {
   try { fs.rmSync(dir, { recursive: true, force: true }); } catch { /* ignore */ }
 }
 
+async function waitFor(predicate: () => boolean, timeoutMs: number): Promise<void> {
+  const start = Date.now();
+  while (!predicate()) {
+    if (Date.now() - start > timeoutMs) {
+      throw new Error(`waitFor timed out after ${timeoutMs}ms`);
+    }
+    await new Promise((r) => setTimeout(r, 25));
+  }
+}
+
 // ── Setup ─────────────────────────────────────────────────────────────────────
 
 let tmpDirs: string[] = [];
@@ -116,32 +126,34 @@ describe('runCompactionPass', () => {
 
 describe('startCompactionTick', () => {
   it('returns a stop function that cancels the tick', async () => {
-    vi.useFakeTimers();
     const { db } = await freshDb();
     const logs: string[] = [];
-    const intervalMs = 1000;
+    const intervalMs = 150;
 
     const stop = startCompactionTick(db, { intervalMs, log: (...args) => logs.push(args.join(' ')) });
     expect(typeof stop).toBe('function');
 
-    // No tick yet (fake timers; interval not elapsed).
+    // No tick yet.
     expect(logs.some((l) => l.includes('ANALYZE'))).toBe(false);
 
-    // Advance time — one tick fires. BL-325: startCompactionTick's setInterval
-    // callback fires `runCompactionPass` fire-and-forget, and every StoreAdapter
-    // call inside it is now async (Promise-based on both sqlite and turso —
-    // see write-pipeline.spec.ts's "fully synchronous" contract discussion).
-    // The sync `advanceTimersByTime` fires the interval callback but does not
-    // drain the microtasks the async body then queues (PRAGMA optimize, ANALYZE,
-    // the log() calls after each await) — use the async variant so those
-    // microtasks actually flush before the assertion runs.
-    await vi.advanceTimersByTimeAsync(intervalMs + 10);
+    // Real timers, not fake: the Turso store adapter hosts its driver in a
+    // worker_thread, so runCompactionPass's first `PRAGMA optimize` is a
+    // cross-thread macrotask that `advanceTimersByTimeAsync` never delivers
+    // (the tick never "fires" under fake timers). Drive the tick with real
+    // timers and a short interval, polling until the first pass logs.
+    await waitFor(
+      () => logs.some((l) => l.includes('ANALYZE') || l.includes('optimize') || l.includes('checkpoint')),
+      10_000,
+    );
     expect(logs.some((l) => l.includes('ANALYZE') || l.includes('optimize') || l.includes('checkpoint'))).toBe(true);
 
-    // Stop; advance again — no new ticks.
+    // Stop the tick; let any already-in-flight pass finish before snapshotting.
     stop();
+    await new Promise((r) => setTimeout(r, 1000));
     const logsAfterStop = logs.length;
-    await vi.advanceTimersByTimeAsync(intervalMs * 3);
+
+    // Several more intervals elapse — the tick is cancelled, so no new logs.
+    await new Promise((r) => setTimeout(r, intervalMs * 3));
     expect(logs.length).toBe(logsAfterStop);
 
     await db.close();
