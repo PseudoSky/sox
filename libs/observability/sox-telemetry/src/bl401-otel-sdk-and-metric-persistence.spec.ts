@@ -144,6 +144,10 @@ describe('BL-401 gap 4 — the real OpenTelemetry SDK is wired', () => {
     expect(inner).toBeDefined();
     expect(inner!['otel_trace_id']).toBe(outer!['otel_trace_id']);
     expect(inner!['span_id']).not.toBe(outer!['span_id']);
+    // parent_span_id: null at the root, the parent's span_id when nested —
+    // stamped by JsonlSpanProcessor, never threaded by hand (BL-401 §3.4).
+    expect(outer!['parent_span_id']).toBeNull();
+    expect(inner!['parent_span_id']).toBe(outer!['span_id']);
   });
 
   it('records a stage error onto the span and still re-throws unchanged', async () => {

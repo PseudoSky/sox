@@ -42,6 +42,7 @@ export {
   rollupMetrics,
   registerSnapshotSection,
   resolveProcessRole,
+  resolveRuntimeRelease,
   _recordChildTelemetry,
   _resetTelemetryForTest,
   _snapshotCountForTest,

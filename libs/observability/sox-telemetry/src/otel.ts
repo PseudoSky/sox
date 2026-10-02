@@ -92,6 +92,7 @@ class JsonlSpanProcessor implements SpanProcessor {
     this.opts.emit(`${span.name}.start`, 'info', {
       ...span.attributes,
       span_id: span.spanContext().spanId,
+      parent_span_id: span.parentSpanContext?.spanId ?? null,
       otel_trace_id: span.spanContext().traceId,
     });
   }
@@ -102,6 +103,7 @@ class JsonlSpanProcessor implements SpanProcessor {
     const fields: Record<string, unknown> = {
       ...span.attributes,
       span_id: span.spanContext().spanId,
+      parent_span_id: span.parentSpanContext?.spanId ?? null,
       otel_trace_id: span.spanContext().traceId,
       duration_ms: Math.round(span.duration[0] * 1000 + span.duration[1] / 1e6),
     };

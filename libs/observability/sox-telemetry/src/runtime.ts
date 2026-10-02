@@ -22,6 +22,8 @@
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
+import * as childProcess from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { DurableJsonlSink, type JsonlSinkOptions } from './sink.js';
 import { NOOP_OTEL, type OtelMetricPoint, type OtelRuntime, type OtelState } from './otel-types.js';
 import { currentTraceId } from './trace.js';
@@ -64,10 +66,68 @@ function releaseField(v: string | null | undefined): string | null {
   return typeof v === 'string' && v.length > 0 ? v : null;
 }
 
+/** Run `git rev-parse HEAD` in `cwd` (spawnSync, 2s timeout) — trimmed stdout on
+ *  success, else null. Mirrors `libs/memory-core/src/provenance.ts`; a non-repo
+ *  cwd (e.g. a deployed bundle's install dir) yields null, which is honest — never
+ *  a fabricated sha. */
+function gitRevParseHead(cwd: string): string | null {
+  try {
+    const result = childProcess.spawnSync('git', ['rev-parse', 'HEAD'], {
+      cwd,
+      encoding: 'utf8',
+      timeout: 2000,
+    });
+    if (result.status === 0 && result.stdout) {
+      const out = result.stdout.trim();
+      return out.length > 0 ? out : null;
+    }
+  } catch {
+    /* git missing / not a repo / timeout — caller stays null */
+  }
+  return null;
+}
+
+/** Exact byte identity of the running entrypoint (`process.argv[1]`), else null.
+ *  Mirrors memory-server's `getContentAddress()` (sha256 of the running script). */
+function artifactSha256(entrypoint: string | undefined): string | null {
+  if (entrypoint === undefined) return null;
+  try {
+    return `sha256:${createHash('sha256').update(fs.readFileSync(entrypoint)).digest('hex')}`;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Resolve the release identity from what the process can actually know at runtime —
+ * used ONLY as the fallback when a caller passes no `release` object at all.
+ *
+ * A caller that passes a `release` (even a partial one) is respected verbatim, and
+ * this fallback never overrides an explicit value (ADR-0013 — it also never WRITES
+ * an environment key). Under a test worker (`NODE_ENV=test` or a Vitest worker),
+ * the hermetic contract is null-when-unset, so resolution is skipped and all three
+ * fields stay null — a test worker is not a release context.
+ */
+export function resolveRuntimeRelease(
+  env: NodeJS.ProcessEnv,
+  argv: string[],
+  cwd: string
+): ReleaseIdentity {
+  if (env['NODE_ENV'] === 'test' || env['VITEST_WORKER_ID'] !== undefined) {
+    return NULL_RELEASE;
+  }
+  return {
+    version: releaseField(env['npm_package_version']),
+    artifact_sha256: artifactSha256(argv[1]),
+    git_sha: gitRevParseHead(cwd),
+  };
+}
+
 /** Normalise a caller-supplied {@link ReleaseIdentity} — per-field, so a partial
- *  object fills the omitted fields with `null` rather than inheriting anything. */
+ *  object fills the omitted fields with `null` rather than inheriting anything.
+ *  When no object is passed at all, fall back to {@link resolveRuntimeRelease}. */
 function resolveRelease(raw: ReleaseIdentity | undefined): ReleaseIdentity {
-  if (raw === undefined) return NULL_RELEASE;
+  if (raw === undefined) return resolveRuntimeRelease(process.env, process.argv, process.cwd());
   return {
     version: releaseField(raw.version),
     artifact_sha256: releaseField(raw.artifact_sha256),
