@@ -13,7 +13,7 @@ bodies never name a tool. An absent row = the capability is unavailable here.
 | backlog       | backlog | `backlog` skill |
 | memory        | memory-server | `memory-usage` skill |
 | code-intel    | gitnexus | `gitnexus-guide` skill |
-| search        | search | — |
+| search        | search | its own repo: `~/dev/ai/scratch/agent-browser/docs/agent-search/` (`mcp.md`, `cli.md`) |
 | agent-catalog | agent-mcp | — |
 
 ## Routing

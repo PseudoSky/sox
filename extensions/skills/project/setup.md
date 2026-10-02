@@ -18,7 +18,7 @@ bodies never name a tool. An absent row = the capability is unavailable here.
 | backlog       | backlog | `backlog` skill |
 | memory        | memory-server | `memory-usage` skill |
 | code-intel    | gitnexus | `gitnexus-guide` skill |
-| search        | search | — |
+| search        | search | its own repo: `<tool-repo>/docs/agent-search/` |
 | agent-catalog | agent-mcp | — |
 ```
 
@@ -32,8 +32,9 @@ Columns:
   Claude); an agent body never writes a prefix, and this column carries the bare id. (So
   `code-intel` binds to server `gitnexus`; the logical name is the capability, the server id is the
   tool.)
-- **usage** — the lazily-loaded skill that documents the verbs and calling convention; `—` when no
-  skill documents the surface.
+- **usage** — where the capability's verb surface is defined. An installed skill, or a doc in the
+  **tool's own repository** — a capability's surface belongs with the tool that implements it, not
+  with the project that consumes it. `—` only when nothing defines it.
 
 Two absence semantics, both load-bearing:
 
@@ -60,8 +61,8 @@ Two absence semantics, both load-bearing:
    `AGENTS.md`), write the identical section there. Replace an existing `## Capabilities` section
    wholesale — never append a second one; leave every other line of the file untouched.
 4. **Verify.** For each row: the `tool` id appears in the project's host config, and the `usage`
-   skill exists on the host. Re-read both files and confirm exactly one `## Capabilities` section
-   each.
+   surface is reachable — an installed skill exists on the host, or the named doc path exists in the
+   tool's repository. Re-read both files and confirm exactly one `## Capabilities` section each.
 
 ## What this playbook is not
 
