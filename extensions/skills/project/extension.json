@@ -1,0 +1,30 @@
+{
+  "$schema": "https://your-registry/schemas/extension/v2.json",
+  "id": "project",
+  "type": "skill",
+  "title": "project — capability bindings for this project",
+  "description": "Use when a project needs its capability bindings written or refreshed — onboarding, adding a capability, or changing which tool satisfies one. Agents are authored against capability names (backlog, memory, code-intel), never tool names; this skill's `setup` playbook writes the `## Capabilities` table into the project's AGENTS.md (and CLAUDE.md where it is not a symlink), binding each capability to the concrete tool that satisfies it here plus the lazily-loaded usage skill that documents its verbs. The same agent body then runs unedited here (backlog = this repo's tool) and in a project where the capability is Jira. Enforces the two absence semantics: an absent row means the capability is unavailable (surface and stop; never substitute or invent — tool-starvation b5670d03); a row with an empty tool means it does not apply here (proceed; ADR-0017). Agent bodies never name a tool; this section is the binding.",
+  "compatibility": {
+    "host": ">=1.0.0 <2.0.0"
+  },
+  "license": "MIT",
+  "author": "sox",
+  "keywords": [
+    "project",
+    "setup",
+    "onboarding",
+    "capabilities",
+    "binding",
+    "tool-agnostic",
+    "agents-md"
+  ],
+  "runtime": "declarative",
+  "entrypoint": "SKILL.md",
+  "install": {
+    "type": "skill",
+    "hosts": [
+      "claude",
+      "opencode"
+    ]
+  }
+}

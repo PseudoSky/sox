@@ -17,7 +17,7 @@ A **scope path** (a directory containing a manifest — `package.json`, `pyproje
 
 **Recorded decisions come first — the ADR catalog.** Read `<repo>/docs/decisions/` (all of them; they are few) before memory or research: ADRs are the recorded, inviolable decisions; memory is prior *unrecorded* context and research is external evidence for what is not yet decided. A request that violates an ADR is rejected, not accommodated — if an ADR and memory disagree, the ADR wins and the conflict is a finding to surface.
 
-`memory_recall(topic: "doc-framework")` for the scope-routing index and the frameworks relevant to what you find. This tells you the doc set a scope of this type is *expected* to have — the yardstick for the conformance assessment. Do not re-research a framework that memory already holds.
+Recall the scope-routing index and the relevant frameworks via the **memory** capability (its usage skill documents the verbs). This tells you the doc set a scope of this type is *expected* to have — the yardstick for the conformance assessment. Do not re-research a framework that memory already holds.
 
 ### 1 — Classify the scope
 From manifest + file signals decide the scope type(s): `library` · `cli` · `service` · `app` · `ml-model` · `dataset` · `data-pipeline` · `infra-module` · `monorepo-root` · `org-handbook`. A scope may be more than one — union them. Record the classification + the signals that justify it.
@@ -28,10 +28,9 @@ Before diving into source, try to understand what this scope does and how to use
 ### 3 — Discover the real features via GitNexus (not brute-force reads)
 Ensure the graph is current, then query it — prefer the graph over opening dozens of files (opening files unnecessarily is exactly the anti-pattern metric #1 measures):
 ```
-npx gitnexus status         # is this repo indexed / fresh?
-npx gitnexus analyze        # (re)index if needed
+# status + re-index — the code-intel capability (its usage skill documents the commands)
 ```
-Use GitNexus explore/impact queries (and the `gitnexus` MCP tools if available) to enumerate public entrypoints, exports, commands, endpoints, config, and their call graphs. Cross-check with tests (tests are the best receipts) and the manifest's declared bin/exports/scripts.
+Use GitNexus explore/impact queries (and the code-intel capability's tools if available) to enumerate public entrypoints, exports, commands, endpoints, config, and their call graphs. Cross-check with tests (tests are the best receipts) and the manifest's declared bin/exports/scripts.
 
 ### 4 — Write `capabilities.md` + `capabilities.json`
 The inventory. Every capability gets:
@@ -77,7 +76,7 @@ notes: <1-2 lines>
 `added`/`deprecated` are deltas vs the previous `capabilities.json` if one exists.
 
 ### 9 — Write back generalized discoveries (make the fleet smarter)
-If you discover a **generalized, reusable** documentation structure NOT already in memory (a new scope-type bundle, a refined doc skeleton, a doc-quality heuristic), `memory_write(topic: "doc-framework", …)` it, tagged per the schema (`scope:*`, `doctype:*`, `framework:*`, `audience:*`). **Generalization gate:** persist only what an agent on a *different* repo would benefit from. Project-specific facts stay in `.catalog/` — never in memory. Recall before writing to avoid duplicates.
+If you discover a **generalized, reusable** documentation structure NOT already in memory (a new scope-type bundle, a refined doc skeleton, a doc-quality heuristic), write it back via the **memory** capability (its usage skill documents the write verb), tagged per the schema (`scope:*`, `doctype:*`, `framework:*`, `audience:*`). **Generalization gate:** persist only what an agent on a *different* repo would benefit from. Project-specific facts stay in `.catalog/` — never in memory. Recall before writing to avoid duplicates.
 
 ## Output (what you return to the caller)
 A compact summary — NOT the catalog contents:

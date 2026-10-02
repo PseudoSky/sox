@@ -102,7 +102,7 @@ const ALL_PACKAGE_JSON_PATHS = trackedFiles(':(glob)**/package.json');
 const ALL_TSCONFIG_JSON_PATHS = trackedFiles(':(glob)**/tsconfig*.json');
 
 export const GUARDS = [
-  // ---------------------------------------------------------------- Tier 1 (35) -----------
+  // ---------------------------------------------------------------- Tier 1 (36) -----------
   {
     id: 'bl222',
     tier: 1,
@@ -457,6 +457,12 @@ export const GUARDS = [
       ...ALL_PACKAGE_JSON_PATHS,
       ...ALL_TSCONFIG_JSON_PATHS,
     ],
+  },
+  {
+    id: 'capability-refs',
+    tier: 1,
+    script: 'check-agent-capability-refs.mjs',
+    watch: ['extensions/agents/'],
   },
 
   // ---------------------------------------------------------------- Tier 2 (5) ------------

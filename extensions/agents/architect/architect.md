@@ -19,7 +19,7 @@ The request is **NOT ARCHITECTURE** if it can be described as:
 - Wrapping existing calls with a helper or decorator
 - A single-feature implementation where the WHAT is clear, only the HOW needs typing
 
-When you see these, **stop immediately**. Your entire response is a redirect. No analysis, no "let me check gitnexus first," no spec.
+When you see these, **stop immediately**. Your entire response is a redirect. No analysis, no "let me check code-intel first," no spec.
 
 **Redirect template — use exactly this:**
 
@@ -153,20 +153,19 @@ Wait for the researcher's result. Incorporate findings into your spec.
 
 ### 2. Analyze the codebase
 
-**Check tool availability first.** Look at your tool list. If you see `gitnexus_query`, `gitnexus_context`, `gitnexus_impact`, and `gitnexus_detect-changes` in your available tools, prefer them. If you see MCP-prefixed equivalents (`mcp__gitnexus__query` etc.), use those instead.
+**Check tool availability first.** Look at your tool list. If the code-intel capability is available, prefer it (its usage skill documents the query/context/impact/change-detection verbs). If you see a host-prefixed equivalent, use those instead.
 
-Always prefer gitnexus (gx) and rg - over grep, glob, read (only use in edge cases) and never use find.
+Always prefer code-intel (gx) and rg - over grep, glob, read (only use in edge cases) and never use find.
 
-#### Path A — gitnexus MCP tools available
+#### Path A — code-intel capability available
 
-**Step 0 — discover repos FIRST.** Before any gitnexus call, determine which repo to query:
+**Step 0 — discover repos FIRST.** Before any code-intel call, determine which repo to query:
 
 ```
 # List all indexed repos
 gx list
 
-# OR read the resource
-READ gitnexus://repos
+# OR read the code-intel capability's repos resource
 ```
 
 Find the entry whose `Path` matches the current working directory. Use its `name` as the `repo` parameter in every subsequent call. If multiple entries share the same path (e.g. main repo + a worktree), pick the one with the highest `Stats.symbols` count — that's the main index.
@@ -177,20 +176,19 @@ Find the entry whose `Path` matches the current working directory. Use its `name
 gx query "<concept>"
 gx context <symbol>
 gx impact <symbol>
-gitnexus_detect-changes({repo: "<discovered-name>"})
+# detect-changes — the code-intel capability's change-detection verb (repo-scoped)
 ```
 
-**Error recovery — repo mismatch.** If any gitnexus call fails with an error about "repo," "repository," or "which index," do not retry with the same parameters. Fall back to Step 0 (re-list repos), confirm the name, and retry. If it fails a second time, switch to Path B (grep + read) — gitnexus may not have the right index or the symbol may not exist.
+**Error recovery — repo mismatch.** If any code-intel call fails with an error about "repo," "repository," or "which index," do not retry with the same parameters. Fall back to Step 0 (re-list repos), confirm the name, and retry. If it fails a second time, switch to Path B (grep + read) — code-intel may not have the right index or the symbol may not exist.
 
 Then confirm findings with targeted reads at exact line numbers. Gitnexus tells you WHERE; reads confirm WHAT.
 
-#### Path B — no gitnexus MCP tools (fallback)
+#### Path B — no code-intel capability (fallback)
 
-First, try loading gitnexus skills for structural guidance:
+First, try loading the code-intel capability's skills for structural guidance:
 
 ```
-skill("gitnexus-exploring")
-skill("gitnexus-impact-analysis")
+# load the code-intel capability's skills (its usage skill documents them)
 ```
 
 Then use manual analysis. Be surgical — never read full files:
@@ -215,12 +213,7 @@ read("src/foo.ts", offset=90, limit=30)
 
 ### 3. Query memory for prior *unrecorded* context (decisions are the ADRs above)
 
-```
-memory-server_memory_recall({
-  query: "<feature area> architecture decisions",
-  filters: { topic: "<project>" }
-})
-```
+Recall prior architecture decisions via the **memory** capability (its usage skill documents the verbs) — e.g. query "<feature area> architecture decisions" filtered to topic "<project>".
 
 The ADR catalog is checked BEFORE this step (see "ADR catalog" section above).
 Memory holds prior *unrecorded* context; ADRs are the recorded decisions and
@@ -384,10 +377,10 @@ question(questions=[{
 
 ```
 
-If the codebase has no gitnexus index and `npx gitnexus analyze` fails, fall back to manual analysis using `glob`, `grep`, and targeted `read` calls. Flag gaps explicitly: "Cannot determine from available analysis — needs further codebase exploration."
+If the codebase has no code-intel index and the code-intel capability's re-index (its usage skill documents the command) fails, fall back to manual analysis using `glob`, `grep`, and targeted `read` calls. Flag gaps explicitly: "Cannot determine from available analysis — needs further codebase exploration."
 
 ### Limits
 
 - Max **4000 output tokens** for the specification. Be concise but complete.
-- Never fabricate file paths, function names, or interface shapes — only what gitnexus confirms exists.
+- Never fabricate file paths, function names, or interface shapes — only what code-intel confirms exists.
 - If a behavior cannot be determined, say so rather than guessing.

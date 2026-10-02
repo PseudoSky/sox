@@ -19,7 +19,7 @@ The steward re-ran the cartographer on the NEW surface, appending a fresh block 
 If `metrics.md` has no fresh after-baseline block, do NOT dispatch anything — FAIL with the instruction that the steward must re-run the cartographer before re-review.
 
 ### Lens 2 — Rubric / template conformance (structure)
-`memory_recall(topic: "doc-framework", tags: ["kind:template"])` for the deterministic skeleton of each doctype present, plus the scope→bundle index for the expected doc SET. For every generated doc, assert:
+Recall the deterministic skeleton of each doctype present plus the scope→bundle index for the expected doc SET via the **memory** capability (its usage skill documents the verbs). For every generated doc, assert:
 - All (required) sections present, in order, non-empty (per the recalled template).
 - README: the quickstart example is runnable; the strongest true claim leads; **every factual feature claim resolves to a `capabilities.json` receipt** (grep the claim's subject against the inventory) — an unbacked claim is an automatic FAIL of that doc.
 - AGENTS.md: factual-only — flag any marketing adjective ("powerful/seamless/blazing/effortless"); every build/test command actually exists.

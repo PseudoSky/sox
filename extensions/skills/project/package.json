@@ -1,0 +1,17 @@
+{
+  "name": "@adhd/sox-extension-project",
+  "version": "1.0.0",
+  "description": "Declare a project's capability bindings in AGENTS.md / CLAUDE.md.",
+  "private": true,
+  "license": "MIT",
+  "author": "sox",
+  "keywords": [
+    "project",
+    "setup",
+    "onboarding",
+    "capabilities",
+    "binding",
+    "tool-agnostic",
+    "agents-md"
+  ]
+}

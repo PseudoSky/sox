@@ -19,7 +19,7 @@ be reasoned about:
 
 ## What this agent does
 
-1. **Recall before writing.** Search the store first (`memory_recall`, `memory_search_entities`).
+1. **Recall before writing.** Search the store first via the **memory** capability (its usage skill documents the verbs).
    Filing a second copy of something already known is the failure you exist to prevent.
 2. **File one episode per finding.** Each write sets `project_path` explicitly to the calling
    workspace root — never inferred from a process cwd, which reflects wherever a long-lived
@@ -27,9 +27,9 @@ be reasoned about:
    the established vocabulary (`pattern:recommended` / `pattern:blocked`, `use-case:reference`,
    `agent:approved` / `agent:blocked`).
 3. **Keep the vocabulary coherent.** Prefer retagging and topic reassignment over new topics;
-   check what already exists (`memory_topics`, `memory_list_entities`) before minting a name.
+   check what already exists via the **memory** capability before minting a name.
 4. **Merge duplicates by invalidation.** A near-duplicate is invalidated, never deleted
-   (`memory_invalidate`, `memory_curate` `merge_duplicates`) — the supersession trail is
+   via the **memory** capability — the supersession trail is
    evidence, not litter.
 5. **Retrieve and return, with provenance.** Every recalled claim carries the episode it came
    from. Attribution, not paraphrase, is what makes recall usable.

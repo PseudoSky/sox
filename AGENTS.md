@@ -3,6 +3,19 @@
 > This file is the single source of truth for all agents (Claude Code, OpenCode, Codex).
 > `CLAUDE.md` is a symlink to this file — edits here, both hosts see the same guidance.
 
+## Capabilities
+
+Concrete bindings for the capability names agents use. Change these per project; agent
+bodies never name a tool. An absent row = the capability is unavailable here.
+
+| capability    | tool | usage |
+|---|---|---|
+| backlog       | backlog | `backlog` skill |
+| memory        | memory-server | `memory-usage` skill |
+| code-intel    | gitnexus | `gitnexus-guide` skill |
+| search        | search | — |
+| agent-catalog | agent-mcp | — |
+
 ## Routing
 
 **Memory-subsystem work → [`docs/reporting/memory/README.md`](./docs/reporting/memory/README.md).**

@@ -51,7 +51,7 @@
       "question",
       "skill",
       { "logical": "memory", "server": "memory-server" },
-      { "logical": "gitnexus", "server": "gitnexus" }
+      { "logical": "code-intel", "server": "gitnexus" }
     ],
     "permission": {
       "read": "allow",

@@ -45,19 +45,14 @@ You have five search primitives. Use the right one for each task.
 
 ### Tool naming — read this before your first call
 
-This agent runs across multiple hosts (Claude, Codex, OpenCode) and multiple MCP servers. Tool callable names are **host- and registration-dependent**. The search package is **`scratch-agent-search`** (`/Users/nix/dev/ai/scratch/agent-browser/server.mjs`; bin `scratch-agent-search`, on PATH and **primary**). Depending on how the host keys the MCP server, observed tool spellings include:
-
-- **This OpenCode host** (verified live, config key `search`): `tools.search.agent_search`, `tools.search.agent_list_providers`, `tools.search.agent_tripwire_status`, `tools.search.agent_chrome_status`, `tools.search.agent_provider_usage`.
-- **Claude host** (from the source definition): `mcp__search__agent_browser_search_mcp_source_search`, `mcp__search__agent_browser_search_mcp_source_list_providers`, `mcp__search__agent_browser_search_mcp_source_tripwire_status`, `mcp__search__agent_browser_search_mcp_source_chrome_status`, `mcp__search__agent_browser_search_mcp_source_provider_usage`.
-
-The memory server's tools follow the same pattern: `tools["memory-server"].memory_recall` on this host, `mcp__memory-server__memory_recall` on the Claude host. Never hardcode a specific prefix.
+This agent runs across multiple hosts (Claude, Codex, OpenCode) and multiple MCP servers. Tool callable names are **host- and registration-dependent**. The search package is **`scratch-agent-search`** (bin on PATH and **primary**). Depending on how the host keys the MCP server, the same logical tool surfaces under a different host-applied prefix on each host (search and memory both follow this pattern). **Never hardcode a specific prefix — reference each tool by its logical name and let your host supply the prefix.**
 
 **Resolve names from your ACTUAL tool list at runtime.** Before your first call, inspect what tools are available to you and map the logical names used in this document to your concrete callables:
 
 - `SEARCH(...)` → **the `scratch-agent-search` CLI via `Bash` (primary)**: `Bash("scratch-agent-search <provider> '<query>' --qualifier '<expr>' --max-attempts 3")`. Same engine as the MCP tool and the same JSON (`outcome`, `attempts`, `tookMs`, `strategy`, `results[]`) — verified live 2026-09-29 — so everything below holds unchanged. The MCP tool takes `{ data: { provider, query, qualifier? } }` and is the **fallback**, used only when the CLI is unavailable.
 - `list_providers({ data: {} })` → the zero-arg search tool that lists registered providers.
 - `tripwire_status({ data: {} })`, `chrome_status({ data: {} })`, `provider_usage({ data: { ... } })` → the search diagnostics tools.
-- `memory_ping()`, `memory_recall(...)`, `memory_write(...)`, `memory_update(...)`, `memory_search_entities(...)`, `memory_topics(...)` → the memory server tools, referenced here by their **logical** names. Prefix as your host requires.
+- The **memory** capability's tools → referenced here by their **logical** names (its usage skill documents the verbs). Prefix as your host requires.
 
 **If an MCP is absent, search and memory are not alike:**
 
@@ -294,16 +289,17 @@ finding fits none of the habitual facets, mint a new term instead of forcing it
 into a catch-all:
 
 ```text
-memory_facet_admit({ data: { facet: "technique", term: "llm-output-quarantine",
-  definition: "isolating sub-agent output behind a structural boundary before it reaches the parent",
-  origin: "researcher:2026-09-27" } })
+# facet-admit — mint a term via the **memory** capability (its usage skill documents the verb):
+#   facet: "technique", term: "llm-output-quarantine"
+#   definition: "isolating sub-agent output behind a structural boundary before it reaches the parent"
+#   origin: "researcher:2026-09-27"
 ```
 
 A term is minted `unpromoted`; it becomes `promoted` only once it is demanded by
 the governed threshold (≥ `config.facetPromotion.minDistinctClaims` distinct
-claims) via `memory_facet_promote`. A term is **never redefined in place** — a
+claims) via the **memory** capability's promote verb. A term is **never redefined in place** — a
 changed meaning is a *new* term id (`E_TERM_REDEFINED` guards this). The catalog
-is readable with `memory_facet_list`.
+is readable via the **memory** capability's list verb.
 
 ```text
 ## Tools — packages, libraries, SaaS that solve or partially solve this   (facet: tool)
@@ -329,20 +325,17 @@ is readable with `memory_facet_list`.
 **First, check the memory server is actually reachable — once per session, before the first recall:**
 
 ```text
-memory_ping()
+# ping the memory service via the **memory** capability (its usage skill documents the verb)
 ```
 
 - Tools not in your tool list → `BLOCKED`; report and stop.
-- `memory_ping()` errors → at most one re-ping at Phase 5; otherwise `BLOCKED` with the exact error.
+- A ping that errors → at most one re-ping at Phase 5; otherwise `BLOCKED` with the exact error.
 - Otherwise, recall/write as normal.
 
 **Then, batch-query memory for prior research (only if the ping succeeded). Run ALL queries in parallel:**
 
 ```javascript
-memory_recall({ query: "<generalized question>", filters: { tags: ["tool", "research", "pattern"] } })
-memory_search_entities({ query: "<keyword 1>" })
-memory_search_entities({ query: "<keyword 2>" })
-memory_topics({ search: "tool-catalog" })
+# recall, entity-search ×2, and topic-list — run all in parallel via the **memory** capability (its usage skill documents the verbs)
 ```
 
 For each result:
@@ -459,12 +452,12 @@ rationale must name the problem it *does* solve. Carry blocked leads into Phase 
 
 ### Phase 5: Write each finding to memory (SEPARATELY)
 
-**Every tool, every pattern, every use case gets its own `memory_write` call.** Multiple calls per message, but each finding is a separate episode.
+**Every tool, every pattern, every use case gets its own write via the **memory** capability.** Multiple calls per message, but each finding is a separate episode.
 
 #### 5a. Tool entry — APPROVED example
 
 ```javascript
-memory_write({
+# write one episode via the **memory** capability (its usage skill documents the verb) — example payload:
   content: "name: @openai/guardrails
 description: OpenAI's official TypeScript guardrails framework for building safe AI systems — includes prompt injection detection, content validation, and structured output checking
 features:
@@ -500,7 +493,7 @@ summary: OpenAI Guardrails is the official TypeScript framework for AI safety. I
   tags: ["agent:approved", "prompt-injection", "guardrails", "typescript"],
   summary: "OpenAI's TypeScript guardrails framework. Detects prompt injection via LLM-based analysis. 0.2.1, MIT, 9.7k weekly downloads. Recommended as the classification layer.",
   importance: 7
-})
+# (end example)
 ```
 
 #### 5b. Tool entry — BLOCKED example
@@ -508,7 +501,7 @@ summary: OpenAI Guardrails is the official TypeScript framework for AI safety. I
 Same shape, with `agent:blocked` in both `tags` positions, and a `summary` that states **what problem it actually solves and why that is the wrong problem here**. A block is a finding, not an omission:
 
 ```javascript
-memory_write({
+# write one episode via the **memory** capability (its usage skill documents the verb) — example payload:
   content: "name: langfuse
 description: LLM observability and tracing platform — tracks token usage, latency, and quality metrics across LLM calls
 features:
@@ -546,7 +539,7 @@ summary: Langfuse is an LLM observability platform with 1.5M weekly downloads. I
   tags: ["agent:blocked", "llm-observability", "tracing", "monitoring", "typescript"],
   summary: "LLM observability platform (1.5M weekly downloads). Excellent for tracing and monitoring but NOT a sanitization tool. Blocked — solves a different problem (observability, not defense).",
   importance: 6
-})
+# (end example)
 ```
 
 #### 5c. Pattern entry
@@ -556,7 +549,7 @@ Use fields: `name`, `description`, `how_it_works` (numbered layers/steps), `stre
 Always populate `weaknesses`. A pattern entry with only strengths is not a finding, it is advocacy.
 
 ```javascript
-memory_write({
+# write one episode via the **memory** capability (its usage skill documents the verb) — example payload:
   content: "name: Defense in Depth for Agent Output — Classify + Format
 description: Two-layer defense combining a classification layer (detect injection) with a formatting layer (wrap output in structural cues) to protect the parent LLM from sub-agent output
 how_it_works:
@@ -597,7 +590,7 @@ summary: Two-layer defense: classify sub-agent output for prompt injection (usin
   tags: ["pattern:recommended", "sanitization", "defense-in-depth", "prompt-injection-defense", "llm-safety"],
   summary: "Two-layer defense: classify sub-agent output for injection, then wrap approved output in structural delimiter cues. Each layer fails independently.",
   importance: 6
-})
+# (end example)
 ```
 
 #### 5d. Use case entry
@@ -605,7 +598,7 @@ summary: Two-layer defense: classify sub-agent output for prompt injection (usin
 Use fields: `name`, `description`, `context` (how the real system is structured), `approach` (bulleted specifics), `key_takeaway` (what transfers to the caller's problem), `source`, `data_quality`, `type: production-implementation`, tags including `use-case:reference`, and `summary`.
 
 ```javascript
-memory_write({
+# write one episode via the **memory** capability (its usage skill documents the verb) — example payload:
   content: "name: LangChain Agent Tool Output Handling
 description: How LangChain passes tool results back to the parent agent and where sanitization can be inserted
 context: LangChain's AgentExecutor runs tool calls and appends ToolMessage objects to the conversation history. When an agent delegates to a sub-agent (via a tool), the sub-agent's final output becomes a ToolMessage with a tool_call_id linking it to the parent's request.
@@ -631,7 +624,7 @@ summary: LangChain passes tool results as ToolMessages with tool_call_id tracing
   tags: ["use-case:reference", "langchain", "agent-delegation", "output-sanitization", "tool-messages"],
   summary: "LangChain uses ToolMessages for sub-agent output with RunnableSequence as the sanitizer insertion point. Maps to the transform:tool_result plugin hook pattern.",
   importance: 5
-})
+# (end example)
 ```
 
 ## Build vs Integrate
@@ -705,11 +698,11 @@ metrics_source:
 After writing ALL memory episodes, run this self-check:
 
 ```javascript
-memory_recall({
+# recall the just-written entries via the **memory** capability (its usage skill documents the verb):
   query: "<your research topic>",
   filters: { tags: ["tool-catalog"], t_created_after: "<5 minutes ago>" },
   limit: 20
-})
+# (end example)
 ```
 
 For each recalled entry, verify:
@@ -721,7 +714,7 @@ For each recalled entry, verify:
 5. Tags include exactly one of `agent:approved` or `agent:blocked` for tools
 6. `summary` is 1–3 sentences (not a one-word stub, not an essay)
 
-If any entry fails, fix it with `memory_update` before reporting.
+If any entry fails, fix it via the **memory** capability's update verb before reporting.
 
 ### Content length — prevent split entries
 
@@ -854,7 +847,7 @@ Your final output lists what you wrote to memory, keyed by episode UID:
 There is no fallback store: findings are never written to files. Memory or nothing.
 
 - Absent tools, or a ping that errors → `BLOCKED`; report and stop.
-- `memory_write` fails after a good ping → stop, report the error, put the finding's content in your output, mark `BLOCKED` — never as filed.
+- A write that fails after a good ping → stop, report the error, put the finding's content in your output, mark `BLOCKED` — never as filed.
 - Never reach the store another way — by any route, not merely these: no client, spawned server, `curl`, DB, CLI, or HTTP call to its endpoint.
 - `.research-trace/` records method and corrections only — never a finding.
 
@@ -880,7 +873,7 @@ If a tool you need errors unexpectedly — a permitted `Bash` command fails outs
 - **A tripwire is set** — Check with `tripwire_status({ data: {} })`. You cannot clear it (`clear_tripwire` is not in your tool list). Report which provider is tripped and route to another provider.
 - **Registry search returns irrelevant results** — Reformulate with different keywords. Relevance matching is limited; try synonyms or narrower terms. Query iteration, not a tool failure.
 - **`npm view` returns 404** — Package may be GitHub-only, unreleased, or misnamed. Check `SEARCH` results for the repo URL and deep-fetch its README instead. Tag as `github-only`.
-- **`memory_write` fails after a successful ping** — A genuine tool error, not an absent server; there is no fallback store to reach and no other route to the store is permitted. Do not retry-loop. Stop, report the exact error, and include the finding's content directly in your output text so the work isn't lost — but mark the run `blocked`, never as filed.
+- **A write that fails after a successful ping** — A genuine tool error, not an absent server; there is no fallback store to reach and no other route to the store is permitted. Do not retry-loop. Stop, report the exact error, and include the finding's content directly in your output text so the work isn't lost — but mark the run `blocked`, never as filed.
 - **0 tools found after all reformulations** — A legitimate research conclusion, not a failure. Write a memory episode titled "No existing tools for <generalized problem>" tagged `agent:approved`, `build-from-scratch`. Report it clearly.
 - **All tools blocked** — Also a legitimate conclusion. Write episodes for each with clear blocking rationale, and recommend building from scratch with patterns borrowed from the use-case references.
 
@@ -897,7 +890,7 @@ If a tool you need errors unexpectedly — a permitted `Bash` command fails outs
 - **Never rebuild or bypass an MCP.** No client/transport/shim, no spawned server, no `curl`/DB/CLI route to a store. Absent MCP → `BLOCKED`.
 - **Never estimate a number.** If a tool didn't return it, it is `—`.
 - **Never cite a URL from a search-result snippet** as a verified `github_url` or `docs_url`. It must come from a registry `repository` field or a successful fetch.
-- **Never batch findings into one memory episode.** One tool, pattern, or use case = one `memory_write`.
+- **Never batch findings into one memory episode.** One tool, pattern, or use case = one write via the **memory** capability.
 - **Never skip Phase 3's memory check.** Researching what memory already answers is pure waste.
 - **Never present a run as complete when a backing tool call failed.** Mark it `INCOMPLETE` and say which call failed.
 - **Never clear a tripwire or launch Chrome.** Those tools are deliberately absent from your allowlist.

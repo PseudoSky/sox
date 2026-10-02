@@ -25,7 +25,7 @@ Then `webfetch` the promising URLs for detail. Cite every external claim with it
 
 **Recorded decisions come first — the ADR catalog.** Read `<repo>/docs/decisions/` (all of them; they are few) before memory or research: ADRs are the recorded, inviolable decisions; memory is prior *unrecorded* context and research is external evidence for what is not yet decided. A request that violates an ADR is rejected, not accommodated — if an ADR and memory disagree, the ADR wins and the conflict is a finding to surface.
 
-Read `docs/marketing/.catalog/capabilities.json`, `distribution.md`, and (if present) `competitors.md` / `future.md`. If the inventory is missing/stale, dispatch **doc-cartographer** (Task) first. `memory_recall(topic: "doc-framework")` for scope context and `memory_recall` any GTM/traction playbooks already stored.
+Read `docs/marketing/.catalog/capabilities.json`, `distribution.md`, and (if present) `competitors.md` / `future.md`. If the inventory is missing/stale, dispatch **doc-cartographer** (Task) first. Recall scope context and any GTM/traction playbooks already stored via the **memory** capability (its usage skill documents the verbs).
 
 ### 2 — Strategy research + find the WEDGE
 Determine the ICP (who is this for) from the shipped capabilities + scope type. Research, via the search CLIs, **which channels fit this audience** and **how comparable projects won traction**. Do direct competitor discovery — for a utility library that means the OBVIOUS alternatives by name (e.g. lodash, ramda, remeda, es-toolkit). Then answer the one question that makes or breaks the docs:
@@ -56,7 +56,7 @@ Only the channels the strategy selects — quality over volume:
 Re-read every artifact as a **hostile Hacker News commenter**. The artifact MUST survive the specific dismissal **"this is just `<the closest named competitor>`"** — if your hero can't answer that in one line, your wedge is wrong; go back to step 2 and dig. Also pre-empt "does it scale", "vaporware", "why not use Y". Cut anything a skeptic could call filler, hype, or unbacked. A hero example that's a bare API demo (no pain shown) is filler — replace it. Tighten to survive the front page.
 
 ### 6 — Write back generalized learnings
-Reusable GTM/traction playbooks or channel heuristics (NOT this project's specifics) → `memory_write(topic: "doc-framework", tags:["framework:gtm-playbook", …])`. Recall before writing. Project-specific competitor/positioning facts stay in `docs/marketing/`.
+Reusable GTM/traction playbooks or channel heuristics (NOT this project's specifics) → write them back via the **memory** capability (its usage skill documents the write verb). Recall before writing. Project-specific competitor/positioning facts stay in `docs/marketing/`.
 
 ## Output
 A summary: the chosen strategy in one line, the ICP, the artifacts written (paths), the top competitors and the exploited gap, and any claim you had to move to `future.md` for lack of a receipt. Note that the real README/CHANGELOG are the steward's to update from your `hero.md`.

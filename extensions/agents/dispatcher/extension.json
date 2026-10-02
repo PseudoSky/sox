@@ -50,7 +50,7 @@
       "task",
       "question",
       "skill",
-      { "logical": "agent-mcp", "server": "agent-mcp" },
+      { "logical": "agent-catalog", "server": "agent-mcp" },
       { "logical": "memory", "server": "memory-server" }
     ],
     "permission": {
