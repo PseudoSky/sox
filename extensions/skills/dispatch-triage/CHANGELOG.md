@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.6.0
+
+- **A report/deferral claim is the `needs-triage` path.** Step 1 states it explicitly: a reported issue is routed through `definition-of-ready`'s `needs-triage` path before any dispatch, never assumed to be already understood.
+
 ## 1.5.0
 
 - **Merge-first fix loop.** The flow block's two `dispatch-direct → review → merge` chains become `→ gates → merge → resolve → post-merge review`; the description and Step 7 now say the fix merges on its own gates and is `resolve`d on merge, with the review running from `main` afterwards and a HIGH bucketed as follow-up impl rather than stalling delivery.

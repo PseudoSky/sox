@@ -1,0 +1,17 @@
+{
+  "name": "@adhd/sox-extension-definition-of-ready",
+  "version": "1.0.0",
+  "description": "Route each bucket by an observable check — after bucketing, before dispatch.",
+  "private": true,
+  "license": "MIT",
+  "author": "sox",
+  "keywords": [
+    "dispatch",
+    "orchestrator",
+    "playbook",
+    "readiness",
+    "triage",
+    "research",
+    "spec"
+  ]
+}

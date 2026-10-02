@@ -408,6 +408,15 @@ Templates: `.opencode/artifacts/DISPATCH_TEMPLATE.json`, `.opencode/artifacts/RE
 
 Agent prompts: `.opencode/agents/{pro,implement,flash}.md` and `.opencode/prompts/*-system.md`.
 
+## Blind Review
+
+The reviewer receives **only the content to review and the instruction "Review"** — no context,
+rationale, review points, or prior state.
+
+**When it applies.** A diff changing **>=8 files** is reviewed blind; smaller diffs use guided review
+(the reviewer is given the surrounding context and review points). Plan completion may use exactly
+one full-delta blind review (plan-start sha → finish sha) regardless of file count.
+
 ## ⛔ AGENT CONSTRAINT — LIVE SHIP VERIFICATION (MANDATORY)
 
 **Every agent MUST read and follow [`CONTRIBUTING.md`](./CONTRIBUTING.md) before reporting any change as complete.**

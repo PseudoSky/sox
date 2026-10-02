@@ -8,6 +8,7 @@ policy so the user is asked once, not per item.
 
 ## Steps
 
+0. **Catalogue first — never defer.** The moment a user request arrives, catalogue every user-requested item with the user's message **verbatim** and immutable. A correction appends to the existing record; new work is a new item; enrichment runs after and must never remove or alter the verbatim. A user note carries **no citation** — the user's word is truth, not evidence.
 1. **Extract the axes** from the direction: symbols (function/class/module names), paths (files and dirs that will change), error strings (verbatim), and a one-line summary.
 2. **`backlog-operator: scan-related`** with those axes (one request per distinct area of the direction). The operator returns items bucketed `same-root-cause` / `small-in-scope` / `old-unverified` / `unrelated`, each with the evidence that placed it.
 3. **Apply the policy.**
@@ -23,3 +24,4 @@ policy so the user is asked once, not per item.
 - `old-unverified` items are never corrected before the dispatcher acknowledges the executor's confirm message.
 - Never file new items here; a new defect is `dispatch-triage`'s job.
 - Never include an item the operator bucketed `unrelated`.
+- Cataloguing is never deferred, and the user's verbatim is never removed or altered by enrichment or citation — a user note carries no citation.

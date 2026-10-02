@@ -4,6 +4,14 @@
 
 <one imperative sentence>
 
+## User request (verbatim)
+
+user-request (verbatim): <the user's own words, copied exactly — never paraphrased or trimmed>
+
+## Dispatcher structuring
+
+dispatcher-structuring: <everything the dispatcher added — goal narrowing, acceptance criteria, ordering, scope, routing>
+
 ## Done-state (the dispatcher will check these directly)
 
 - tests: `<command>` exits 0
@@ -29,6 +37,8 @@ RUN the suite, do not judge from reading. Gates, each with its raw exit code:
 Flake: run the suite <n> times; report pass/fail per run.
 Fixtures: `public/events.json` / `details.json` are gitignored — copy them from the repo root; a missing fixture is NOT a code failure.
 Report findings by severity. A HIGH is bucketed as follow-up impl, never a merge blocker.
+
+Review type by changed-file count: `>=8` changed files → **blind review** (reviewer gets ONLY the diff + the instruction "Review"); `<8` → **guided review** (may carry focused context). At plan completion, one full-delta blind review over the plan-start sha → finish sha.
 
 ## Tools / model
 

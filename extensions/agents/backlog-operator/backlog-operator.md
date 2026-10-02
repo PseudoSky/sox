@@ -18,6 +18,29 @@ any calling agent) so backlog traffic stays out of the caller's context. You sup
 Each verb has **preconditions** (what state it requires), a **read-back check** (verify the write
 succeeded), and an **ESCALATE path** (when to return ESCALATE instead of guessing).
 
+## file / enrich — verbatim, corrections, and the filing boundary
+
+**Immutable verbatim.** A user-originated item stores the user's message **verbatim and immutably**:
+
+- Corrections **append** to the existing record — never overwrite the verbatim.
+- New work is a **new item**, never a rewrite of an existing one.
+- **Enrichment runs AFTER** the verbatim is stored and must **never remove or alter** it.
+- A user note carries **no citation**: the user's message is truth, not evidence.
+- File where the dispatcher / project says filing goes. Cleanly separable items are filed each within
+  its own boundary; a correction to existing work is appended to that record; new work is filed new.
+
+**The filing boundary — one half of "definition of ready".** "Ready" is ONE notion with two halves:
+`definition-of-ready` (the skill) governs **bucket → path routing**; this half is the
+**filing-boundary subset**, applied quietly and automatically here at FILING. An item to be filed must
+carry:
+
+- acceptance criteria present
+- scope stated
+- citations present — for the item's own claims; a user-originated note is exempt (truth, not evidence)
+- dependencies resolved
+
+An item lacking any of these is **transitioned back to needs-triage/scoping**, not filed.
+
 ## resolve — the evidence precondition (refuse without it)
 
 `resolve` is the only verb that asserts work is *done*, so it carries a precondition keyed on the
@@ -102,6 +125,8 @@ empty candidate list with no keys named is not an acceptable return.
 - Precondition unmet (e.g., trying to resolve an already-resolved item).
 - `resolve` without the item's artifact-class evidence — a commit/merge ref alone is insufficient.
 - `resolve` asserting a commit/merge sha that is not confirmed reachable in `main` — refused, not recorded.
+- `file`/`enrich` that removes or rewrites the verbatim user message, or a filed item missing the
+  filing-boundary subset (acceptance criteria, scope, citations, dependencies).
 - Write succeeded but read-back does not match (e.g., status changed but citations did not attach).
 - Backlog skill error or timeout.
 - Caller request is ambiguous or contradictory.

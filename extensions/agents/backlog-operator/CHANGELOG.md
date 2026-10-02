@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.4.0
+
+- **`file`/`enrich` now carry the immutable-verbatim contract.** A user-originated item stores the user's message verbatim and immutably: corrections append to the existing record (never overwrite the verbatim), new work is a new item (never a rewrite), and enrichment runs AFTER and must never remove or alter it. A user note carries no citation — the user's message is truth, not evidence. File where the dispatcher/project says filing goes; cleanly separable items file each within its own boundary, corrections append, new work files new. The verb list stays at eleven.
+- **The filing-boundary readiness subset is declared here, explicitly one half of ONE "definition of ready".** `definition-of-ready` (the skill) governs bucket → path routing; the filing-boundary subset — acceptance criteria present, scope stated, citations present, dependencies resolved — is applied quietly and automatically at FILING. An item lacking any of them is transitioned back to needs-triage/scoping, not filed. A user-originated note is exempt from the citation check (truth, not evidence).
+
 ## 0.3.1
 
 - **Guardrails restated after the `"*": "allow"` catch-all — probe-proven shadowing.** The agent map merges AFTER the global `opencode.json` rules and wins on last-match-wins, so any global guardrail the map does not restate is overridden. A probe agent whose bash map was a bare `{"*": "allow"}` ran `rm -rf /tmp/...` to completion, while the same command under the config alone was auto-rejected. The tail now restates, appended AFTER the catch-all so each still wins: `git stash*` / `git add -A*` / `git add .` / `git add --all*` / `git reset --hard*` / `git clean *-f*` deny, `git push *--no-verify*` / `git checkout -- *` / `rm -rf *` ask, `*dot/secrets*` deny.

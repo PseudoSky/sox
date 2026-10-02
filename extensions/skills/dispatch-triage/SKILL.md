@@ -18,7 +18,7 @@ report ─► debug (root-cause + evidence) ─┬─ confirmed ─► significa
 
 ## Steps
 
-1. **Capture, don't classify.** `TaskCreate` `triage: <one-line symptom>` under the current root. Do not name a cause in the task title.
+1. **Capture, don't classify.** `TaskCreate` `triage: <one-line symptom>` under the current root. Do not name a cause in the task title. A report or deferral claim is the `needs-triage` path of `definition-of-ready` — routed here before any dispatch, never assumed to be already understood.
 2. **Dedupe first.** `backlog-operator: dedupe` by symbol, path, and error text. An existing item is enriched, not re-filed; its status governs whether this is new work.
 3. **Dispatch `debug`** (model sonnet; tools Read, Grep, Glob, Bash) with a `dispatch-contract` brief whose done-state is *an evidence-backed root cause or an explicit "cannot reproduce" with what was tried*: the symptom, the exact error text, the reporter's claim verbatim (labeled as a claim), the commits in question, and how to reproduce. The brief says: rule 6 applies — a claim of "pre-existing"/"unrelated" must be proven with `git log`/`git bisect`/a failing run on the base ref, or it is not accepted.
 4. **Read the evidence yourself.** Run the reproduction the debug names. If the debug's conclusion is not reproducible from its own evidence, re-dispatch once with that gap named, then surface.

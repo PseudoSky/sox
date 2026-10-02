@@ -12,6 +12,8 @@ halves mechanical.
 Use `templates/brief.md`. Every field is required unless marked optional.
 
 - **Goal** — one sentence, imperative.
+- **User request (verbatim)** — `user-request (verbatim):` — the user's own words, copied exactly, never paraphrased or trimmed. This field is the record the dispatcher's additions are re-checked against, and the executor's ground truth for what was actually asked.
+- **Dispatcher structuring** — `dispatcher-structuring:` — everything the dispatcher added: the restatement, the decomposition, acceptance criteria, guardrails, the chosen option among ones the user left open. **Before dispatch, re-check each addition against the verbatim.** A **HARD contradiction** is the closed set — it *forbids what the user required*, *requires what the user forbade*, *reverses a stated order/priority/constraint*, or *redirects target/scope to something the user did not name*. On a HARD contradiction, **halt and ask the user before dispatching**. Restating, disambiguating, adding acceptance criteria, choosing among open options, and adding consistent guardrails are **not** contradictions — never ask on those.
 - **Done-state** — the observable evidence: `tests: <cmd> exits 0`, `diff touches only: <paths>`, `state: <file>.<field> == <value>`, `artifact: <path> exists with <shape>`. At least one; never "when you are confident".
 - **Scope** — files/dirs in scope; anything else is out of scope and must be reported, not edited.
 - **Context inline** — the file excerpts, error text, and prior findings the executor needs. Never "read `<path>` for context" for anything under 200 lines; inline it.
@@ -38,6 +40,11 @@ with these review-specific fields (`templates/brief.md` carries them):
 - **Gitignored fixtures** — `public/events.json` and `details.json` are gitignored. Copy them
   from the repo root into place before running; a missing fixture is **not** a code failure and
   must never be reported as one (this trap has taxed four dispatches).
+- **Review type is chosen by changed-file count.** `>=8` changed files → **blind review**: the
+  reviewer receives ONLY the diff content and the instruction "Review" — no context, no rationale,
+  no review points. `<8` → **guided review**, which may carry focused context and review points.
+  At **plan completion**, run exactly one **full-delta blind review** over the plan-start sha →
+  finish sha, independent of size.
 
 ## 1b. What a review finding means now (severity is for bucketing)
 
@@ -50,6 +57,17 @@ the user by severity** — only its power to stall delivery is removed. `main`'s
 **hard rail**: a red merged state is an **immediate fix, not a follow-up** — state it, do not
 let it sit. Review-after-merge means `main` **will** carry defects a pre-merge gate would have
 caught; that is the accepted price of a loop that converges — stated, not discovered.
+The high/critical filter is **narrow**: it applies ONLY to **immediate corrections arising from
+reviews** — it never stalls a fix and never filters an unrelated defect (dispatcher rule 12
+governs those).
+
+## Verification (run before returning)
+
+Do not report `done` from belief. Run each line, then put the result in `evidence:`.
+
+- Re-run the done-state checks (the `tests:`/`state:`/`artifact:` lines) and confirm each passes.
+- Re-read the `diff` and confirm it touches exactly the stated path(s) — no more.
+- If the change must be committed and is not, say so in `remaining` — an uncommitted change is not `done`.
 
 ## 2. The return block (the executor's last message, nothing after it)
 
@@ -119,6 +137,7 @@ note, and the source of the §4 row's `dur_ms`/`item`.
 
 ## Hard rules
 
+- Every brief carries the user's request `verbatim` and the dispatcher's `dispatcher-structuring`; the structuring is re-checked against the verbatim for HARD contradictions before dispatch.
 - No brief without a done-state. No return without evidence.
 - The done-state that opens a dispatch is the same line that closes it: met and read directly = verification over.
 - Never reference a file for the executor to open when it can be inlined.
