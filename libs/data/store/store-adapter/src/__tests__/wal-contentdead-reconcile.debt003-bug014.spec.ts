@@ -245,12 +245,25 @@ tursoDescribe('DEBT-003/BUG-014 — content-dead -tshm reconcile under a live pe
         }
 
         // INV-3 evidence: the content-dead tshm was renamed aside (never
-        // deleted — the forensic record), exactly once.
+        // deleted — the forensic record). The exact count is producer-dependent
+        // and therefore NOT a stable invariant: two independent content-dead
+        // generations can each be reconciled by a different actor —
+        //   (1) the CHILD's own connect reconciles the preseed's TRUNCATE-residue
+        //       `-tshm` (a content-proven-dead 86016-byte index over the 0-byte
+        //       WAL), and
+        //   (2) the parent's first fresh open reconciles the sidecar indexing
+        //       the child's 50 post-seed frames, which this test's out-of-band
+        //       WAL zero just made content-dead.
+        // Whether the preseed residue still exists when (1) runs is close-timing
+        // dependent, so an unloaded run observes 1 and a loaded run observes 2 —
+        // pinning this to exactly 1 is precisely the flake. What INV-3 guards is
+        // that reconciliation HAPPENED and kept a forensic rename record rather
+        // than deleting the sidecar; assert that, not the multiplicity.
         const stale = staleSidecars(dbPath).filter((f) => f.includes('-tshm.stale-'));
         expect(
           stale.length,
-          'DEBT-003: the content-proven-dead -tshm must have been reconciled (renamed .stale-*)',
-        ).toBe(1);
+          'DEBT-003: the content-proven-dead -tshm must have been reconciled (renamed .stale-*, never deleted)',
+        ).toBeGreaterThanOrEqual(1);
 
         // Probe D — the peer child STILL answers queries through its own
         // connection after the heal (the MCP-server incident signature: a
