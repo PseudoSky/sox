@@ -462,7 +462,7 @@ export const GUARDS = [
     id: 'capability-refs',
     tier: 1,
     script: 'check-agent-capability-refs.mjs',
-    watch: ['extensions/agents/'],
+    watch: ['extensions/agents/', 'AGENTS.md'],
   },
 
   // ---------------------------------------------------------------- Tier 2 (5) ------------
