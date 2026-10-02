@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.5.0
+
+- **Post-merge review brief (§1a) and severity-for-bucketing (§1b).** AC2: the reviewer **runs the suite**, it does not judge from reading — gates named (`pnpm test` 0 failures, `tsc --noEmit` exit 0, bundle to a TEMP outDir under the size budget), raw exit codes and **flake measurements across runs** required, and the review runs against the **merged commit by sha, per ticket, from `main`**. Records the gitignored-fixture trap (`public/events.json` / `details.json` — copy from the repo root; a missing fixture is not a code failure). §1b states the HIGH disposition (bucketed as follow-up impl, never a merge blocker), the rails (every finding filed AND scheduled; a red `main` is an immediate fix), and the tradeoff. `templates/brief.md` gains the matching `## Review target` fill-in block (AC3/AC4/AC5).
+
 ## 1.4.0
 
 - Initial release. Ingested verbatim from `claude-agents` (`categories/dispatch/skills/dispatch-contract/SKILL.md`,

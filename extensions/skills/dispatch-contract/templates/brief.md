@@ -19,6 +19,17 @@ Out of scope (report, do not edit): everything else
 
 <file excerpts / error text / prior findings — no "read <path>" pointers for anything you can paste>
 
+## Review target (post-merge review briefs only)
+
+Repo/commit: review `main` at the merged sha `<sha>` — pinned so the review is race-free while other merges land.
+RUN the suite, do not judge from reading. Gates, each with its raw exit code:
+- `pnpm test` → 0 failures
+- `tsc --noEmit` → exit 0
+- bundle to a TEMP outDir → under the size budget
+Flake: run the suite <n> times; report pass/fail per run.
+Fixtures: `public/events.json` / `details.json` are gitignored — copy them from the repo root; a missing fixture is NOT a code failure.
+Report findings by severity. A HIGH is bucketed as follow-up impl, never a merge blocker.
+
 ## Tools / model
 
 model: <sonnet|opus|haiku> · tools: <exact list>

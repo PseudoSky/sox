@@ -1,6 +1,6 @@
 # dispatch-triage — evidence before anything
 
-The dispatcher's playbook for an issue report — a bug, a red test, a reviewer finding, an executor's out-of-scope observation, or any "pre-existing / unrelated / skipped" claim. Root-cause with debug first (evidence, never the dispatcher's own guess), plan the fix with architect when the decision is technical, then implement through dispatch-direct and review-gate. Nothing is filed to the backlog or surfaced to the user as fact until triage has evidence. Load on any report; the user's explicit direction still overrides.
+The dispatcher's playbook for an issue report — a bug, a red test, a reviewer finding, an executor's out-of-scope observation, or any "pre-existing / unrelated / skipped" claim. Root-cause with debug first (evidence, never the dispatcher's own guess), plan the fix with architect when the decision is technical, then implement through dispatch-direct — which merges on the change's own gates, resolves the item on merge, and reviews from `main` after the merge. Nothing is filed to the backlog or surfaced to the user as fact until triage has evidence. Load on any report; the user's explicit direction still overrides.
 
 A report is a hypothesis. This playbook turns it into either a confirmed defect
 with a scheduled fix or a documented non-issue — and nothing in between reaches
@@ -10,8 +10,8 @@ the user or the backlog as fact.
 
 ```text
 report ─► debug (root-cause + evidence) ─┬─ confirmed ─► significance?
-                                            │                ├─ trivial ─► dispatch-direct (fix) ─► review ─► merge
-                                            │                └─ significant ─► architect (fix plan) ─► dispatch-direct ─► review ─► merge
+                                            │                ├─ trivial ─► dispatch-direct (fix) ─► gates ─► merge ─► resolve ─► post-merge review
+                                            │                └─ significant ─► architect (fix plan) ─► dispatch-direct ─► gates ─► merge ─► resolve ─► post-merge review
                                             ├─ refuted ─► record why (evidence) ─► return to reporter if it was a deflection
                                             └─ cannot determine ─► INSUFFICIENT → what evidence is needed → back to reporter or user
 ```
@@ -28,7 +28,7 @@ report ─► debug (root-cause + evidence) ─┬─ confirmed ─► significa
    - *Refuted*: record the evidence on the task; if the report was an executor's deflection, the original work returns to that executor with the refutation.
    - *Undetermined*: surface to the user as `(hypothesis, triage incomplete)` with the exact missing evidence.
 6. **File and schedule.** On confirmation: `backlog-operator: file` (or `enrich` the dedupe hit) with citations from the debug's evidence; `TaskCreate` the fix; dispatch it in this run (dispatcher rule 12). Deferral only on the user's word — then `backlog-operator: transition` with the reason.
-7. **Close the loop.** After the fix merges (via `dispatch-direct` Steps 10–11), `backlog-operator: resolve` with the commit ref and the reproduction that now passes.
+7. **Close the loop.** The fix merges on its own gates and is `resolve`d on merge (`dispatch-direct` Step 10); the post-merge review follows from `main` per ticket (`dispatch-direct` Step 11). `backlog-operator: resolve` carries the commit ref and the reproduction that now passes. A HIGH the post-merge review returns is bucketed and dispatched as follow-up implementation — it never stalls the delivery.
 
 ## Hard rules
 

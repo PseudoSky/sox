@@ -21,6 +21,36 @@ Use `templates/brief.md`. Every field is required unless marked optional.
 - **Return contract** — section 2, verbatim.
 - **Delivery** — anonymous dispatch: the return block is the final message. Named teammate: the final action is `SendMessage` to the dispatcher with the return block.
 
+## 1a. The post-merge review brief (review follows the merge)
+
+Review is dispatched **after** the change has merged on its own gates, **per ticket**, and it
+is not a delivery gate — a HIGH it returns is bucketed, not a blocker (see §1b). Fill the brief
+with these review-specific fields (`templates/brief.md` carries them):
+
+- **Review target** — the merged commit **by sha**, reviewed from `main`. Pin the sha so the
+  review is race-free while other merges land.
+- **The reviewer RUNS the suite — it does not judge from reading.** Mandatory gates, raw exit
+  codes required for each: `pnpm test` (0 failures), `tsc --noEmit` (exit 0), and the bundle
+  built to a **TEMP outDir** under the size budget.
+- **Evidence shape** — raw exit codes, file/test counts, and **flake measurements across runs**
+  (the same suite run more than once, with the pass/fail deltas). "It looks correct" is not a
+  review return.
+- **Gitignored fixtures** — `public/events.json` and `details.json` are gitignored. Copy them
+  from the repo root into place before running; a missing fixture is **not** a code failure and
+  must never be reported as one (this trap has taxed four dispatches).
+
+## 1b. What a review finding means now (severity is for bucketing)
+
+Severity is still read — it fixes the **bucket**, not the merge. The floor is at or above
+**HIGH**, applied to the defect itself (user-visible or shipped breakage), never to a review
+finding. Every post-merge finding is **filed AND scheduled** — nothing absorbed silently.
+A finding at or above HIGH is bucketed with the run's other deferrals and dispatched as
+**immediate follow-up implementation**: it stays HIGH, stays filed, and is still **surfaced to
+the user by severity** — only its power to stall delivery is removed. `main`'s gates are a
+**hard rail**: a red merged state is an **immediate fix, not a follow-up** — state it, do not
+let it sit. Review-after-merge means `main` **will** carry defects a pre-merge gate would have
+caught; that is the accepted price of a loop that converges — stated, not discovered.
+
 ## 2. The return block (the executor's last message, nothing after it)
 
 ```text

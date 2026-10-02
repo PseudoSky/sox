@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.5.0
+
+- **Merge-first execution.** Step 4 now dispatches each ready item to merge on its own gates and be `resolve`d on merge (the merge is the completion event), which is what unblocks its dependents; the review runs from `main` per ticket after the merge. Replaces the old `brief and review gate` wording.
+
 ## 1.4.5
 
 - **Fixed a silent YAML parse failure that hid this skill from every agent.** The description
