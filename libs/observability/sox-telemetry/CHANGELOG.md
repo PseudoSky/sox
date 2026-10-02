@@ -1,5 +1,22 @@
 # @adhd/sox-telemetry
 
+## 0.4.1
+
+### Patch Changes
+
+- Stamp `parent_span_id` on every span record and resolve release identity at runtime.
+
+  The durable JSONL sink now carries `parent_span_id` (`span.parentSpanContext?.spanId ?? null`)
+  on the `.start`, `.finish`, and `.error` records, so a consumer can reconstruct span nesting
+  from the durable record alone rather than only from the live OTel context.
+
+  When a caller supplies no `release` identity at all, `resolveRelease` now falls back to
+  `resolveRuntimeRelease` (new export), deriving `version` / `artifact_sha256` / `git_sha` from
+  the running process instead of emitting all-null. An explicit `release` object is still
+  respected verbatim, and under a test worker (`NODE_ENV=test` / `VITEST_WORKER_ID`) the
+  hermetic null-when-unset contract is preserved. Purely additive: no existing call site
+  changes, no exported type narrows, and every dependent's declared range still resolves.
+
 ## 0.4.0
 
 ### Minor Changes
