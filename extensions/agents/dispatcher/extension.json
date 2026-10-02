@@ -90,7 +90,7 @@
   "render": {
     "claude": {
       "model": "opus",
-      "version": "v1.9.0",
+      "version": "v1.9.2",
       "tools": [
         "Read",
         "Glob",

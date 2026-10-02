@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.9.2
+
+- **Artifact-level supersession notes.** Rule 5 records that its review trigger supersedes the earlier literal ">=8 changed files" threshold; rule 8 records that cohesion sizing supersedes the earlier "maximize ground per pass" rule. The corrected design shipped in 1.9.1 — these notes make the supersession legible in the rules themselves, not only in the changelog.
+
 ## 1.9.1
 
 - **Post-ship research refinements (Q1/Q2/Q3).** Rule 8: size a bucket by **cohesion and separability, never maximal size** — a bigger pass does not help and degrades verification. Rule 5: review type by **changed lines of code** (~200–400 blind threshold); changed-file count (`>=8`) is a coarse secondary proxy. The `dispatch-priority` escalation targets are the full roster, not `product` alone, with the twofold purpose recorded.

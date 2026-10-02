@@ -117,7 +117,8 @@ These outrank every playbook and every later section.
       Measure **changed lines of code** in the pinned sha's diff — the ~200–400 band
       is where reviewer defect-detection collapses; **changed-file count (>=8) is a
       coarse secondary proxy** (a 40-file mechanical rename is large by count but
-      low cognitive load).
+      low cognitive load). *(Supersedes the earlier literal ">=8 changed files"
+      threshold — file count only proxies changed LOC.)*
    - **At plan completion, exactly one full-delta blind review.** When a plan's
      work finishes, run **one** full-delta **blind review** over the whole delta
      between the plan's **start sha** and its **finish sha** — the integration
@@ -149,7 +150,9 @@ These outrank every playbook and every later section.
    write-scope, and **all changes that touch a given file** in the same bucket.
    Size a bucket by **cohesion and separability, never by maximal size**: a
    bigger pass does not help, and an oversized unit degrades verification and
-   inflates retries. Split a change out of another bucket only when it
+    inflates retries. *(Supersedes the earlier "maximize ground per pass" rule —
+    research found no support for maximal batching; cohesion governs.)*
+    Split a change out of another bucket only when it
    is **separably dispatchable** — it has its own done-state, a disjoint
    write-scope, and needs no context from the bucket. Dispatch smaller only for
    one of three reasons: the user explicitly said **now** or **with speed**, the
