@@ -23,7 +23,7 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { drainTouches, guardedPathArgs } from '../vitest.home-guard-setup';
-import { classifyMemoryRootDiff } from '../vitest.global-guard';
+import { classifyMemoryRootDiff, isLiveTopLevelName } from '../vitest.global-guard';
 
 const REAL_MEM = path.join(os.userInfo().homedir, '.memory');
 
@@ -114,6 +114,32 @@ describe('BL-bae70da4 global guard classifier', () => {
       // .DS_Store removed at top level
     ];
     expect(classifyMemoryRootDiff(baseline, after)).toEqual([]);
+  });
+
+  it('recognises the modern -SSmmm-p<pid>[-<n>] stale-sidecar tail as live churn, and still flags test-shaped entries', () => {
+    const modernTshm = 'memory.db-tshm.stale-2026-09-28-0846-56771-p4261';
+    const modernTshmClobber = 'memory.db-tshm.stale-2026-09-28-0846-56771-p4261-1';
+    const modernShm = 'memory.db-shm.stale-2026-09-28-0846-56771-p4261';
+    const legacyMinute = 'memory.db-tshm.stale-2026-09-28-0846';
+
+    // The live server's current rename shape (sidecar-retention.ts) and its
+    // no-clobber variant are live churn, not test leaks.
+    expect(isLiveTopLevelName(modernTshm)).toBe(true);
+    expect(isLiveTopLevelName(modernTshmClobber)).toBe(true);
+    expect(isLiveTopLevelName(modernShm)).toBe(true);
+    expect(isLiveTopLevelName(legacyMinute)).toBe(true);
+
+    // Negative control: a genuinely test-created top-level entry, and a
+    // truncated stamp, are NOT waved through — the matcher stays strict.
+    expect(isLiveTopLevelName('x.db')).toBe(false);
+    expect(isLiveTopLevelName('memory.db-tshm.stale-2026-09-28')).toBe(false);
+
+    const afterWithModernNames = [...baseline, modernTshm, modernTshmClobber];
+    expect(classifyMemoryRootDiff(baseline, afterWithModernNames)).toEqual([]);
+
+    expect(classifyMemoryRootDiff(baseline, [...baseline, 'x.db'])).toEqual([
+      { change: 'added', path: 'x.db', reason: 'unknown-top-level-entry' },
+    ]);
   });
 
   it('flags test-shaped artefacts at the top level and inside backups/, added or removed', () => {

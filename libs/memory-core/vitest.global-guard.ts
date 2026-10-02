@@ -28,9 +28,10 @@
  * fails on runs where no test did anything wrong. The live service churns:
  *   - `memory.db-wal`, `memory.db-shm`, `memory.db-tshm` appearing and
  *     disappearing on checkpoint / close;
- *   - `memory.db-tshm.stale-<YYYY-MM-DD-HHMM>` / `-shm.stale-*` sidecars
- *     created by BL-373 stale-sidecar reconciliation (about one a minute) and
- *     pruned by `sidecar-retention.ts`; `memory.db.sidecar-sweep-marker`;
+ *   - `memory.db-tshm.stale-<YYYY-MM-DD-HHMM[-SSmmm-p<pid>[-<n>]]>` /
+ *     `-shm.stale-*` sidecars created by BL-373 stale-sidecar reconciliation
+ *     (about one a minute) and pruned by `sidecar-retention.ts`;
+ *     `memory.db.sidecar-sweep-marker`;
  *   - the `memory.db.sox-lease.d/` lease directory and its per-connection
  *     entries;
  *   - `backups/memory-<ISO>.db` (+ sidecars, `.auto-backup-<hash>` markers)
@@ -109,8 +110,15 @@ export const TEST_ARTEFACT_PATTERNS: readonly RegExp[] = [
   /\.spec(\.|$)/, // anything named like a spec file
 ];
 
+// The `-(tshm|shm).stale-` tail MUST mirror `staleSidecarPattern` in
+// libs/data/store/store-adapter/src/sidecar-retention.ts (the emitter of these
+// names, which gained the `-SSmmm-p<pid>[-<n>]` suffix in e5b712d4). It is
+// duplicated inline rather than imported because store-adapter is a
+// lazy-loaded library in memory-core (its values reach native bindings) — a
+// static value import here would trip `noImportsOfLazyLoadedLibraries` and
+// eagerly load the bindings in the vitest globalSetup process.
 const DB_SIDECAR_SUFFIX =
-  /\.db(-wal|-shm|-tshm|-journal|-(tshm|shm)\.stale-\d{4}-\d{2}-\d{2}-\d{4}|\.sox-lease\.d|\.sidecar-sweep-marker)$/;
+  /\.db(-wal|-shm|-tshm|-journal|-(tshm|shm)\.stale-\d{4}-\d{2}-\d{2}-\d{4}(?:-\d{5}-p\d+(?:-\d+)?)?|\.sox-lease\.d|\.sidecar-sweep-marker)$/;
 
 /** True for a top-level entry the live server (or the OS) creates and removes on its own. */
 export function isLiveTopLevelName(name: string): boolean {
