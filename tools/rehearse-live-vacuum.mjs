@@ -127,7 +127,6 @@ async function rawIntegrityCheck(adapter) {
     total_messages: messages.length,
     hit_cap: classified.truncated,
     leaked_page_messages: classified.pageAccounting.length,
-    known_fts_false_positives: classified.knownFalsePositives.length,
     other_messages: classified.damage, // if non-empty, this is the interesting bucket
   };
 }
@@ -241,8 +240,8 @@ try {
   const fileBytesReclaimedMb = +((before.file_bytes - after.file_bytes) / (1024 * 1024)).toFixed(1);
   const payloadStable = Math.abs(before.payload_bytes - after.payload_bytes) < before.payload_bytes * 0.02; // <2% drift = same content, different layout accounting
 
-  // Any real (non-page-accounting, non-known-FP) integrity_check messages
-  // that appear only once the cap clears, on either side.
+  // Any real (non-page-accounting) integrity_check messages that appear only
+  // once the cap clears, on either side.
   const newMessagesOnceCapCleared = !before.integrity_check.hit_cap
     ? [] // cap was never hit before; nothing was hidden
     : after.integrity_check.other_messages;
