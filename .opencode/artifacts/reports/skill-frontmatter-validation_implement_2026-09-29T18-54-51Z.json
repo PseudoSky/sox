@@ -1,0 +1,85 @@
+{
+  "$schema": "agent-report-v1",
+  "agent": "implement",
+  "segment": "skill-frontmatter-validation",
+  "label": "Make skill/agent header validation a real build task; close the test-never-runs defect",
+  "completed_at": "2026-09-29T18:54:51Z",
+
+  "summary": "Wired the skill-header guard's new --all whole-tree mode into the root `lint` target (check-skill-headers + check-skill-headers-test nx targets), fixed the fail-open CLI detection, the leaked scratch dir, and the BOM/blank-line frontmatter false negative, and gave the checker's test a real runner. Also fixed the out-of-scope sox-ingest `<source>` description defect the whole-tree gate surfaces.",
+
+  "changes": [
+    {
+      "file": "tools/check-skill-frontmatter.mjs",
+      "kind": "--all whole-tree mode (git ls-files), checkSourcePurity delegates to renderer stripFrontmatter (shared detector), scratch-dir cleanup via process.on('exit'), fail-closed entrypoint detection via fileURLToPath === path.resolve",
+      "lines": "+70 / -18"
+    },
+    {
+      "file": "tools/check-skill-frontmatter.test.mjs",
+      "kind": "pass stripFrontmatter to checkSourcePurity, add BOM/leading-blank + bare-rule coverage, document the check-skill-headers-test runner",
+      "lines": "+33 / -2"
+    },
+    {
+      "file": "project.json",
+      "kind": "add check-skill-headers + check-skill-headers-test nx targets (dependsOn host-registry build); lint dependsOn both",
+      "lines": "+36"
+    },
+    {
+      "file": "extensions/skills/sox-ingest/extension.json",
+      "kind": "OUT-OF-SCOPE unblock: backtick the `<source>` placeholder in the description so skillcheck no longer reads XML markup (backlog d6f9b48f)",
+      "lines": "+1 / -1"
+    }
+  ],
+
+  "tests": {
+    "project": "sox-ecosystem",
+    "command": "node tools/check-skill-frontmatter.test.mjs  (also via nx run sox-ecosystem:check-skill-headers-test)",
+    "passed": 11,
+    "failed": 0,
+    "skipped": 0,
+    "output_snippet": "tests 11, pass 11, fail 0"
+  },
+
+  "lint": {
+    "passed": true,
+    "note": "eslint tools/check-skill-frontmatter.mjs tools/check-skill-frontmatter.test.mjs exits 0; root nx lint (with the new check-skill-headers + check-skill-headers-test deps) runs green."
+  },
+
+  "build": {
+    "passed": true,
+    "note": "No TS compilation for the .mjs tools; host-registry built via the targets' dependsOn. `node tools/check-skill-frontmatter.mjs --all` = 14/14 passed."
+  },
+
+  "issues": [
+    "sox-ingest extension.json description contained `<source>` XML-tag markup — surfaced by the new whole-tree gate; fixed in commit 923b5554 (filed + resolved backlog d6f9b48f).",
+    "CI gap (out of scope, reported): wiring check-skill-headers into lint means `nx affected -t lint` (and CI's lint step) now runs `uvx skillcheck`; GitHub's ubuntu-latest runner image does not preinstall uv/uvx, so CI needs a uv install step (edits .github/workflows/*.yml, out of file scope) or the check will fail-closed on CI."
+  ],
+
+  "handoff_notes": [
+    "checkSourcePurity(content, file, strip) now REQUIRES the renderer's stripFrontmatter as its third argument — any new caller must pass it (the test + main() do).",
+    "The whole-tree --all mode is render-then-lint (renders each skill header from extension.json, then runs `uvx skillcheck` over the rendered output) — a raw sweep would fail every prose-only source SKILL.md.",
+    "extensions/skills/sox-ingest/extension.json still carries an UNCOMMITTED version-field removal by a concurrent agent; my description fix (923b5554) deliberately did NOT sweep it."
+  ],
+
+  "backlog_entries": [
+    "d6f9b48f-afc6-4178-ac95-6f8329f5cdf2 — sox-ingest `<source>` XML-tag description defect (fixed in 923b5554)"
+  ],
+
+  "verification": {
+    "universal": {
+      "nx_affected_lint": "passed — nx run sox-ecosystem:lint ran check-skill-headers (14/14) + check-skill-headers-test (11 pass) + eslint (all files pass)",
+      "nx_affected_build": "n/a — no TS compiled for the .mjs tools; host-registry built via target dependsOn",
+      "nx_affected_test": "passed — 11 passed, 0 failed (node:test)",
+      "gitnexus_detect_changes": "low risk — 4 symbols reported, all from a concurrent agent's docs/plan/opencode-host/SCOPE.md, none from my files (.mjs tools + project.json are not symbol-indexed)",
+      "git_diff_stat": "2 commits: 923b5554 (1 file +1/-1) + 28b5b48f (3 files +121/-18)"
+    },
+    "type_specific": {
+      "playbook_section": "build-tooling / guard change (no dedicated §2 section; follows §1 universal)",
+      "whole_tree_mode_green": "node tools/check-skill-frontmatter.mjs --all → 14/14 passed (after sox-ingest fix)",
+      "negative_control_rejected": "checkSourcePurity(git show 1ceffdbf^:extensions/skills/dispatch-plan/SKILL.md) → REJECTED (frontmatter fence)",
+      "test_runner": "nx run sox-ecosystem:check-skill-headers-test → 11 passed; wired into lint",
+      "lint_includes_check": "nx run-many -t lint → sox-ecosystem:lint depends on check-skill-headers + check-skill-headers-test (demonstrated)",
+      "run_guards_tier1": "node tools/run-guards.mjs --tier1 → 0 failures",
+      "scratch_cleanup": "verified: post-fix runs leave no sox-skillcheck-* dir (own runs' dirs removed); 4 pre-existing leaked dirs predate the fix"
+    }
+  }
+}

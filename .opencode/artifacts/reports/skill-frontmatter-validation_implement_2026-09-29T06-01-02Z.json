@@ -1,0 +1,69 @@
+{
+  "$schema": "agent-report-v1",
+  "agent": "implement",
+  "segment": "skill-frontmatter-validation",
+  "label": "Wire skill/agent frontmatter validation into the existing guards pipeline",
+  "completed_at": "2026-09-29T06:01:02.000Z",
+
+  "summary": "Chose `skillcheck` (uvx) as the frontmatter validator, proved it red/green on the 1ceffdbf pre-fix bytes, and wired it as a Tier 1 guard (tools/guards-manifest.mjs) that runs on every commit touching extensions/skills/**/SKILL.md or extensions/agents/**/*.md.",
+
+  "changes": [
+    {
+      "file": "tools/check-skill-frontmatter.mjs",
+      "kind": "new guard script — runs `uvx skillcheck` over exactly the changed SKILL.md files (--skip-ref-check), fail-closed if uvx absent",
+      "lines": "+139"
+    },
+    {
+      "file": "tools/guards-manifest.mjs",
+      "kind": "registered `skill-frontmatter` Tier 1 guard watching extensions/skills/ + extensions/agents/; Tier-1 count comment 34 -> 35",
+      "lines": "+17 / -1"
+    }
+  ],
+
+  "tests": {
+    "project": "sox-ecosystem",
+    "command": "node tools/test-bl466-runner-tristate.mjs && node tools/test-run-guards-hook-index-fail-closed.mjs && node tools/test-fc2735f0-precommit-lint-scope.mjs && node tools/test-7ff58364-gate-reaches-typecheck-tests.mjs && node tools/test-e5cf17a0-smoke-teardown-hardening.mjs",
+    "passed": 5,
+    "failed": 0,
+    "skipped": 0,
+    "output_snippet": "ALL BL-466 TRISTATE ASSERTIONS PASS | ALL f1dc4926/fbdfe55e ASSERTIONS PASS | ALL fc2735f0 ASSERTIONS PASS | ALL 7ff58364 ASSERTIONS PASS | PASS e5cf17a0: all cases pass"
+  },
+
+  "lint": { "passed": true, "command": "npx nx lint sox-ecosystem" },
+  "build": { "passed": true, "command": "n/a (no buildable project changed; script + manifest are linted .mjs)" },
+
+  "verification": {
+    "tool_red_green": {
+      "tool": "skillcheck",
+      "command": "uvx skillcheck <path> --skip-ref-check --no-color",
+      "pre_fix_bytes": "1ceffdbf^:extensions/skills/dispatch-plan/SKILL.md",
+      "pre_fix_result": "FAIL exit 1 — parse.error 'mapping values are not allowed here' (line 2, column 194)",
+      "current_file_result": "PASS exit 0 (1 warning: metadata-budget, non-failing)"
+    },
+    "wiring_trigger": {
+      "command": "node tools/run-guards.mjs --tier1 (the pre-commit hook's own invocation)",
+      "staged_broken_skill": "[FAIL] skill-frontmatter — ran, exit 1",
+      "clean_tree": "[N/A] skill-frontmatter — not in scope; and [PASS] skill-frontmatter — exit 0 on its own-script commit"
+    },
+    "runtime_clean_checkout": {
+      "uv_present": "uv 0.11.7 (Homebrew) + uvx 0.11.7 — verified present; uvx skillcheck auto-installs skillcheck+py deps into an ephemeral env, no global install by hand",
+      "note": "first uvx invocation emitted a harmless one-time 'rm: /Users/nix/dot/bin/node: No such file or directory' warning; skillcheck ran correctly regardless"
+    }
+  },
+
+  "issues": [
+    "3 skills carry no YAML frontmatter at all (di-codex-skill, di-skill, sox-ingest) — skillcheck reports frontmatter.name.required / description.required. Same silent-drop class as 1ceffdbf. NOT fixed (out of scope); filed as backlog 935af7ff-f1b8-47e9-b699-ab5fd8caf1fa.",
+    "Agent source .md files in this repo are prose-only (frontmatter rendered from extension.json by libs/host-registry/src/agent-renderers.ts via yamlStringify at install). cclint (the research's agent-side candidate) targets Claude Code .claude/agents/*.md subagent files, a layout absent here, and finds 0 files against extensions/agents/. So the agent leg is a structural no-op today; the watch still arms extensions/agents/ for the future.",
+    "CI (ci.yml guards-tier1 --all) runs the guard with no staged diff, so it no-ops there; primary enforcement is the pre-commit hook. A full-sweep `--all` on the guard script would red-bar on the 3 missing-frontmatter skills, which is why the guard lints changed files only."
+  ],
+
+  "handoff_notes": [
+    "Exact wiring: .husky/pre-commit -> node tools/run-guards.mjs --tier1 -> guards-manifest.mjs entry `skill-frontmatter` -> tools/check-skill-frontmatter.mjs -> uvx skillcheck <changed SKILL.md> --skip-ref-check",
+    "Manual full-audit command: uvx skillcheck extensions/skills --skip-ref-check (flags the 3 missing-frontmatter skills + would flag ref issues without --skip-ref-check)",
+    "uv is a runtime prerequisite for the guard on machines that commit SKILL.md changes (fail-closed message if absent)"
+  ],
+
+  "backlog_entries": [
+    "935af7ff-f1b8-47e9-b699-ab5fd8caf1fa"
+  ]
+}

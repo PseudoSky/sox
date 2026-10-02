@@ -1,0 +1,113 @@
+{
+  "$schema": "agent-report-v1",
+  "agent": "implement",
+  "segment": null,
+  "label": "fix 1b42e982 — directory file-drop never deletes files removed from source",
+  "completed_at": "2026-09-29T18:49:15Z",
+
+  "summary": "Fixed the destination-side half of the silent-staleness class: non-agent directory file-drops (skill/command/hook) now mirror the source exactly via a new mirrorPathSync helper (rmSync then cpSync), so a file removed from the source is pruned from the destination on re-install and upgrade. Replaced the merge copy at the primary file-drop branch and the skip-if-exists guard at the hook-script secondary drop.",
+
+  "changes": [
+    {
+      "file": "libs/install-engine/src/install.ts",
+      "kind": "added mirrorPathSync(src,dest) helper + used it in the primary file-drop branch (was fs.cpSync merge) and the hook-script secondary drop (was !existsSync skip + fs.cpSync merge), with a BUG-028 ownership guard on the hook-script path",
+      "lines": "+61 / -19"
+    },
+    {
+      "file": "libs/install-engine/src/dir-drop-pruning.1b42e982.spec.ts",
+      "kind": "new regression spec: a removed source file is absent from the destination after re-install, for skill, command, and hook (drives the real declarativeInstall)",
+      "lines": "+207"
+    },
+    {
+      "file": "libs/install-engine/src/skill-install.spec.ts",
+      "kind": "updated the e1e98fe0 note to point at the new destination-side spec (no longer 'pre-existing defect')",
+      "lines": "+2 / -1"
+    }
+  ],
+
+  "tests": {
+    "project": "install-engine",
+    "command": "npx nx test install-engine",
+    "passed": 268,
+    "failed": 0,
+    "skipped": 0,
+    "output_snippet": "Test Files 25 passed (25); Tests 268 passed (268)"
+  },
+
+  "typecheck": {
+    "command": "npx nx typecheck install-engine",
+    "passed": true
+  },
+
+  "lint": {
+    "command": "npx nx lint install-engine",
+    "passed": true
+  },
+
+  "build": {
+    "command": "npx nx build install-engine && npx nx build sox",
+    "passed": true
+  },
+
+  "guards": {
+    "command": "node tools/run-guards.mjs --tier1",
+    "result": "0/35 guards ran, 0 passed, 0 failed, 0 skipped, 35 not-applicable (no watched files changed)"
+  },
+
+  "smoke": {
+    "command": "node scripts/smoke-test.mjs",
+    "result": "25 passed, 0 failed, 0 skipped"
+  },
+
+  "red_green": {
+    "test": "libs/install-engine/src/dir-drop-pruning.1b42e982.spec.ts",
+    "red": "with mirrorPathSync's rmSync disabled, 3/3 tests failed (AssertionError: expected true to be false — the removed file still present)",
+    "green": "with the fix restored, 3/3 tests passed"
+  },
+
+  "impact": {
+    "tool": "gitnexus impact declarativeInstall --direction upstream --repo sox-ecosystem",
+    "risk": "LOW",
+    "note": "declarativeInstall signature unchanged; behavior change is internal (directory copy mirror). gitnexus detect-changes returned 'No changes detected' (index is stale relative to uncommitted work), so the change set was verified by git diff instead: only the 3 files above."
+  },
+
+  "issues": [
+    "COMMIT BLOCKED: the pre-commit hook fails on `sox-ecosystem:check-skill-headers` → `tools/check-skill-frontmatter.mjs --all`, which rejects extensions/skills/sox-ingest's description containing '<source>' XML-tag markup. This is a KNOWN, tracked blocker (backlog d6f9b48f, priority HIGH, kind bug, status open) that is unrelated to this change and lives in another agent's in-flight work (root project.json wiring + tools/check-skill-frontmatter.mjs + sox-ingest extension.json). `git commit -- <3 paths>` was attempted with the mandated pathspec form and was aborted by the hook. The 3 files remain staged in the working tree, ready to commit once the blocker is resolved. Per AGENTS.md I did NOT skip hooks or touch the other agent's files."
+  ],
+
+  "handoff_notes": [
+    "The 3 changed files are staged in the shared index (explicit pathspec `git add`), uncommitted. Commit with: git commit -F <msg> -- libs/install-engine/src/install.ts libs/install-engine/src/skill-install.spec.ts libs/install-engine/src/dir-drop-pruning.1b42e982.spec.ts",
+    "The pre-commit gate is currently broken repo-wide by backlog d6f9b48f (sox-ingest '<source>' description). Once that lands, the same pathspec commit will pass.",
+    "Upgrade path reuses declarativeInstall (resyncDeclarativeHosts in cmdUpgrade), so the fix covers 'after upgrade' via the same code path — no separate upgrade test was needed.",
+    "Scope determination for the three cpSync sites: :2196 (primary file-drop) IN SCOPE — fixed; :2490 (hook-script secondary drop) IN SCOPE — fixed (it also removed the !existsSync skip that froze hooks at first install, with a BUG-028 ownership guard for safety); :2807 (skill staging, renderSkillForHost) OUT OF SCOPE — already fixed by c206ec5e (e1e98fe0)."
+  ],
+
+  "backlog_entries": [
+    {
+      "uid": "1b42e982-6c9c-4a86-8e4b-bd6b9cc8ef15",
+      "action": "fix implemented + red->green regression test; left OPEN (not transitioned to resolved) because the commit reference required for resolution is blocked by d6f9b48f"
+    },
+    {
+      "uid": "d6f9b48f-afc6-4178-ac95-6f8329f5cdf2",
+      "action": "pre-existing blocker that aborts this change's commit (sox-ingest '<source>' description) — not in this task's file scope"
+    }
+  ],
+
+  "verification": {
+    "universal": {
+      "nx_test_install_engine": "passed (268 passed, 0 failed)",
+      "nx_typecheck_install_engine": "passed",
+      "nx_lint_install_engine": "passed",
+      "nx_build": "passed (install-engine + sox)",
+      "guards_tier1": "0 failed",
+      "smoke_test": "passed (25 passed, 0 failed)",
+      "gitnexus_impact": "LOW (no signature change)",
+      "git_diff_stat": "3 files: install.ts +61/-19, dir-drop-pruning.1b42e982.spec.ts +207 (new), skill-install.spec.ts +2/-1"
+    },
+    "type_specific": {
+      "playbook_section": "§2.10 platform library (install-engine)",
+      "behavior_verified": "regression test drives the real declarativeInstall for skill (project), command (project), and hook (user, SOX_SANDBOX_ROOT-sandboxed); a file removed from the source is absent from the destination after re-install — red (3 failed) → green (3 passed)",
+      "commit": "blocked by d6f9b48f (see issues)"
+    }
+  }
+}
