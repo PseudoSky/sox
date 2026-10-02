@@ -30,19 +30,17 @@
  * test's actual outcome, not a side channel nobody reads.
  *
  * 4b2bcce9 red→green also surfaced a SECOND pre-existing defect in
- * `checkIntegrity()` below: this probe's `PRAGMA integrity_check` reliably
- * hits the documented-benign Turso FTS directory-index count mismatch
- * (`wrong # of entries in index __turso_internal_fts_dir_idx_fts_node_key`)
- * on every one of these three tests — a real Turso storage-layer artifact,
- * but NOT the CRITICAL ae763675 corruption ("Invalid page type: 0") these
- * tests exist to catch. See `libs/data/store/store-adapter/src/integrity.ts`'s
- * `classifyIntegrityMessages`/`isKnownFalsePositive`, the shared single
- * source of truth every other integrity caller in this repo already uses for
- * this exact distinction. `checkIntegrity()` now routes through it instead of
- * treating any non-'ok' row as damage — before this fix, asserting `corrupted`
- * at all (this item's own remediation) would have made all three tests
- * permanently, falsely RED on a benign artifact, which is likely WHY the
- * original author never added the assertion in the first place.
+ * `checkIntegrity()` below: this probe's `PRAGMA integrity_check` can report
+ * page-accounting noise (`Page N: …`) — reclaimable free space left behind by
+ * an FTS repair — which is NOT the CRITICAL ae763675 corruption ("Invalid page
+ * type: 0") these tests exist to catch. See
+ * `libs/data/store/store-adapter/src/integrity.ts`'s `classifyIntegrityMessages`,
+ * the shared single source of truth every other integrity caller in this repo
+ * already uses for this exact distinction. `checkIntegrity()` now routes
+ * through it instead of treating any non-'ok' row as damage — before this fix,
+ * asserting `corrupted` at all (this item's own remediation) would have made
+ * all three tests permanently, falsely RED on a benign artifact, which is
+ * likely WHY the original author never added the assertion in the first place.
  *
  * Gate: npx nx test memory-core --skip-nx-cache
  */
@@ -156,11 +154,10 @@ async function checkIntegrity(adapter: StoreAdapter): Promise<IntegrityVerdict> 
     const { classifyIntegrityMessages, formatIntegrityVerdictDetail } = await import('@adhd/sox-store-adapter');
     const classified = classifyIntegrityMessages(messages);
     // Only `damage` (real, unclassified rows) counts as corruption for this
-    // probe. `knownFalsePositives` (the Turso FTS dir-index count artifact —
-    // see file header, 4b2bcce9) and `pageAccounting` (reclaimable-free-space
-    // noise) are documented-benign and are NOT ae763675.
+    // probe. `pageAccounting` (reclaimable-free-space noise) is
+    // documented-benign and is NOT ae763675.
     // (8c93d821) `rows` is the verdict-consistent detail, never the raw rows:
-    // a filtered false positive is labelled as such, with its rule id.
+    // page-accounting noise is labelled as such, never as damage.
     return { ok: classified.damage.length === 0, rows: [formatIntegrityVerdictDetail(classified)] };
   } catch (err) {
     // A thrown "Corrupt database: Invalid page type: 0" from the integrity

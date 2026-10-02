@@ -24,16 +24,16 @@
  * call `runPeriodicEnrichPass()` explicitly.
  *
  * **Benign-artifact check (verified, not assumed):** the isolated `healMissingVectors`
- * probe's sibling file hits a known-benign Turso FTS dir-index count artifact
- * (`wrong # of entries in index __turso_internal_fts_dir_idx_fts_node_key`, see
- * libs/data/store/store-adapter/src/preflight.ts:56-90 and
- * store-adapter/src/integrity.ts's `classifyIntegrityMessages`) via an EXPLICIT
- * `PRAGMA integrity_check` it runs itself. This file runs no explicit integrity
- * check and calls `runOpenTimeIntegrity` only once, at `WriteQueue.forPath()` — a
- * single open, before seeding, outside the try/catch this test asserts on. Neither
- * `embed-pipeline.ts` (healMissingVectors) nor `db.ts` reference the FTS-benign
- * classifier at all (grepped, 2026-09-22). So a throw caught below cannot be that
- * benign artifact — it is a genuine exception from the heal/cluster pass.
+ * probe's sibling file hits a documented-benign page-accounting artifact
+ * (`Page N: …` free-space noise, classified by store-adapter/src/integrity.ts's
+ * `classifyIntegrityMessages`) via an EXPLICIT `PRAGMA integrity_check` it runs
+ * itself. This file runs no explicit integrity check and calls
+ * `runOpenTimeIntegrity` only once, at `WriteQueue.forPath()` — a single open,
+ * before seeding, outside the try/catch this test asserts on. Neither
+ * `embed-pipeline.ts` (healMissingVectors) nor `db.ts` reference the
+ * page-accounting classifier at all (grepped, 2026-09-22). So a throw caught
+ * below cannot be that benign artifact — it is a genuine exception from the
+ * heal/cluster pass.
  *
  * b1500aa3: the original version of this file computed `corrupted` inside the catch
  * around `runPeriodicEnrichPass()`, wrote it to a jsonl, `console.log`'d it — and never
