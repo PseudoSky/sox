@@ -49,6 +49,8 @@ extensions/**/drizzle/
 /data/
 # project-local MCP config (contains absolute machine paths)
 .mcp.json
+# timestamped local backups of the above (never committed)
+.mcp.json.bak-*
 # per-extension build/demo artifacts
 extensions/services/tokenguard/bundle/
 extensions/services/tokenguard/demo/out/
