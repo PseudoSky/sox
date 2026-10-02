@@ -52,14 +52,7 @@
  *    partial predicate AND requires `EXPLAIN QUERY PLAN` to name the index;
  *    when the plan does not name it the finding is `unknown`, never `ok`.
  *
- * 3. **`PRAGMA integrity_check` reports a PERMANENT false positive on Turso
- *    FTS stores.** `wrong # of entries in index __turso_internal_fts_dir_*_key`
- *    is emitted on a freshly created, fully working index (measured: 200/200
- *    `fts_match` hits alongside that message). Treating integrity_check as
- *    pass/fail on such a store yields "damaged" forever — see
- *    {@link isKnownFalsePositive}.
- *
- * 4. **A JSON-column sweep scoped by column NAME reproduces the defect it is
+ * 3. **A JSON-column sweep scoped by column NAME reproduces the defect it is
  *    meant to catch.** BL-342's live sweep looked only at `tags` and reported
  *    one bad row; `tags` is not the column that throws. `enrich_ver` is, via
  *    `json_extract(enrich_ver, '$.note')`. {@link probeJsonColumns} therefore
@@ -2430,58 +2423,6 @@ async function repairEmptyArrayColumn(adapter: StoreAdapter, object: string): Pr
 export const INTEGRITY_CHECK_MESSAGE_CAP = 100;
 
 /**
- * The `@tursodatabase/database` version {@link isKnownFalsePositive}'s
- * suppression was **measured** against — not a dependency pin (BL-360, PKT-68).
- *
- * A suppression is a claim about one driver's behaviour, and that claim has an
- * expiry we cannot observe: both manifests declare `^0.7.1` (root
- * `package.json`, `store-adapter/package.json`), so an ordinary caret bump can
- * move the store onto a driver this was never measured on while the filter goes
- * on silently swallowing whatever the new version emits. Editing the manifests
- * to an exact version would not fix that — it is a supply-chain decision with
- * blast radius far outside this filter, and it still would not make the
- * *suppression* honest. What makes it honest is this constant plus the guard
- * test in `integrity-selfheal.test.ts`, which reads the version actually
- * installed and fails when it moves off this one.
- *
- * On upgrade: re-run the reproduction. If the false positive is gone, delete
- * {@link isKnownFalsePositive} and its call sites rather than bumping this
- * string — that deletion is BL-360's stated acceptance. If it still reproduces,
- * bump this and record the new measurement date.
- *
- * Measured 2026-08-04 (re-measured 2026-08-05 for this constant).
- */
-export const SUPPRESSION_VALID_FOR = '0.7.1';
-
-/**
- * `wrong # of entries in index __turso_internal_fts_dir_<idx>_key` is emitted
- * by Turso's `integrity_check` on a **freshly created, fully working** FTS
- * index — measured 2026-07-31 on a clean store whose `fts_match` returned
- * 200/200. It is an unconditional false positive: treating integrity_check as
- * pass/fail on any Turso store carrying an FTS index reports damage forever.
- * Filtering it here is why {@link probeFtsIndexes} has to exist as the real
- * FTS check.
- *
- * Reported upstream: https://github.com/tursodatabase/turso/issues/7611 —
- * open, filed 2026-06-24 against 0.7.0-pre.10. Our confirmation that it still
- * reproduces on the released 0.7.1 (Node driver, darwin/arm64, 200/200
- * `fts_match` on the same store the pragma calls damaged, surviving a
- * close/reopen):
- * https://github.com/tursodatabase/turso/issues/7611#issuecomment-5195105275
- *
- * That issue closing on a version we have re-measured is the only event that
- * retires this function.
- */
-/** (8c93d821) Stable rule id for the {@link isKnownFalsePositive} filter — cited
- *  in every verdict detail that discarded a message under it, so a reader can
- *  tell "filtered as a documented false positive" from "reported and ignored". */
-export const KNOWN_FALSE_POSITIVE_RULE_ID = 'turso-7611-fts-dir-key-count';
-
-export function isKnownFalsePositive(message: string): boolean {
-  return /wrong # of entries in index __turso_internal_fts_dir_.*_key/i.test(message);
-}
-
-/**
  * `Page N: never used` / `Page N referenced multiple times` — allocated-but-
  * unreachable pages, i.e. reclaimable free space that a `DROP INDEX`
  * (including our own FTS repair) routinely leaves behind. NOT integrity
@@ -2498,12 +2439,12 @@ export function isPageAccountingMessage(message: string): boolean {
 
 /**
  * (DEBT-NO-SHARED-TURSO-INTEGRITY-FILTER-001) Classify raw `PRAGMA
- * integrity_check` message lines into damage vs. the two documented-benign
- * noise classes, so every caller shares ONE definition of "is this actually
- * damage" instead of re-deriving {@link isKnownFalsePositive}'s regex (or
- * worse, a wrong approximation of it) by hand. `probeIntegrityCheck` below is
- * itself just a caller of this function — it is the single source of truth
- * for the classification, not a second one.
+ * integrity_check` message lines into damage vs. the documented-benign
+ * page-accounting noise class, so every caller shares ONE definition of "is
+ * this actually damage" instead of re-deriving {@link isPageAccountingMessage}'s
+ * regex (or worse, a wrong approximation of it) by hand. `probeIntegrityCheck`
+ * below is itself just a caller of this function — it is the single source of
+ * truth for the classification, not a second one.
  *
  * `messages` must be the RAW list as returned by the pragma — every line,
  * unfiltered, including `'ok'`/banner lines the caller has not already
@@ -2531,9 +2472,6 @@ export function isPageAccountingMessage(message: string): boolean {
 export function classifyIntegrityMessages(messages: string[]): {
   /** Real, actionable damage — never filtered, never suppressed. */
   damage: string[];
-  /** Documented-benign driver artifacts (currently: the Tantivy FTS directory
-   *  count mismatch, {@link isKnownFalsePositive}). Not damage. */
-  knownFalsePositives: string[];
   /** `Page N: …` reclaimable-free-space noise, {@link isPageAccountingMessage}.
    *  Not damage. */
   pageAccounting: string[];
@@ -2543,25 +2481,21 @@ export function classifyIntegrityMessages(messages: string[]): {
   truncated: boolean;
 } {
   const truncated = messages.length >= INTEGRITY_CHECK_MESSAGE_CAP;
-  const knownFalsePositives: string[] = [];
   const pageAccounting: string[] = [];
   const damage: string[] = [];
   for (const m of messages) {
-    if (isKnownFalsePositive(m)) knownFalsePositives.push(m);
-    else if (isPageAccountingMessage(m)) pageAccounting.push(m);
+    if (isPageAccountingMessage(m)) pageAccounting.push(m);
     else damage.push(m);
   }
-  return { damage, knownFalsePositives, pageAccounting, truncated };
+  return { damage, pageAccounting, truncated };
 }
 
 /**
  * (8c93d821) The ONE human-readable detail for a classified integrity_check
  * result, consistent with its verdict (`ok` iff `damage` is empty and the
  * output was not truncated). A verdict of ok must never be paired with a
- * detail that merely lists the raw rows — the churn canary printed
- * `integrity_ok=true detail=wrong # of entries in index …_key`, which reads as
- * "ok while naming a defect". Here a filtered row is always labelled as a
- * known false positive with its rule id.
+ * detail that merely lists the raw rows — that reads as "ok while naming a
+ * defect". Here a filtered row is always labelled as page-accounting noise.
  */
 export function formatIntegrityVerdictDetail(
   classified: ReturnType<typeof classifyIntegrityMessages>,
@@ -2571,12 +2505,6 @@ export function formatIntegrityVerdictDetail(
     parts.push(`DAMAGE (${classified.damage.length}): ${classified.damage.join('; ')}`);
   } else {
     parts.push(classified.truncated ? 'no un-filtered damage seen (output TRUNCATED at the cap)' : 'no damage');
-  }
-  if (classified.knownFalsePositives.length > 0) {
-    parts.push(
-      `filtered ${classified.knownFalsePositives.length} known false positive(s) ` +
-        `[rule ${KNOWN_FALSE_POSITIVE_RULE_ID}]: ${classified.knownFalsePositives.join('; ')}`,
-    );
   }
   if (classified.pageAccounting.length > 0) {
     parts.push(`${classified.pageAccounting.length} page-accounting message(s) (reclaimable free space, not damage)`);
@@ -2632,8 +2560,7 @@ export async function probeIntegrityCheck(adapter: StoreAdapter): Promise<Integr
   // SUCCESSFUL repair of both real defects, 45 leaked pages kept the store
   // reporting `damaged` with `reverified: damaged` and `repair.ok: false`
   // forever, because nothing can repair them at open. A health verdict that can
-  // never return to ok after a correct repair trains operators to ignore it —
-  // the same way BL-360's unconditional Tantivy message would.
+  // never return to ok after a correct repair trains operators to ignore it.
   const classified = classifyIntegrityMessages(messages);
   const leakedPages = classified.pageAccounting;
   const real = classified.damage;
@@ -2645,14 +2572,13 @@ export async function probeIntegrityCheck(adapter: StoreAdapter): Promise<Integr
         `damage — that is reclaimable free space, recovered by an offline VACUUM.`;
 
   if (real.length === 0) {
-    const filtered = messages.length - real.length - leakedPages.length;
     // (BL-341) "No real damage among 100 messages" is NOT a clean bill of
     // health — it is the absence of a bill. The cap is a property of the
     // pragma's OUTPUT, not of the damage set, so a fully-truncated run whose
-    // visible messages all happen to be filterable (BL-360's unconditional
-    // Tantivy message, leaked free pages) tells us nothing about the messages
-    // that were never emitted. Reporting `ok` here is the exact shape that
-    // certified a backup clean over truncated output.
+    // visible messages all happen to be filterable (leaked free pages) tells
+    // us nothing about the messages that were never emitted. Reporting `ok`
+    // here is the exact shape that certified a backup clean over truncated
+    // output.
     //
     // `unknown` already carries this meaning verbatim (see IntegrityStatus:
     // "could not be shown to have exercised the artifact… NEVER treated as
@@ -2668,10 +2594,9 @@ export async function probeIntegrityCheck(adapter: StoreAdapter): Promise<Integr
           detail:
             `integrity_check output hit the ${INTEGRITY_CHECK_MESSAGE_CAP}-message cap ` +
             `(${messages.length} message(s) seen) and no un-filtered damage remained after ` +
-            `discarding ${filtered} known Turso FTS false positive(s) and ${leakedPages.length} ` +
-            `page-accounting message(s). Truncated output cannot show the store is clean — the ` +
-            `messages past the cap were never emitted. Re-run after an offline VACUUM to clear ` +
-            `the noise that filled the cap.` + pageNote,
+            `discarding ${leakedPages.length} page-accounting message(s). Truncated output ` +
+            `cannot show the store is clean — the messages past the cap were never emitted. ` +
+            `Re-run after an offline VACUUM to clear the noise that filled the cap.` + pageNote,
           repairable: false,
           backlog: 'BL-341',
           probeValidated: false,
@@ -2684,12 +2609,7 @@ export async function probeIntegrityCheck(adapter: StoreAdapter): Promise<Integr
         probe: 'pragma_integrity_check',
         object: 'main',
         status: 'ok',
-        detail:
-          (messages.length === 0
-            ? 'integrity_check clean.'
-            : `integrity_check clean after filtering ${filtered} known Turso FTS false positive(s) ` +
-              `[rule ${KNOWN_FALSE_POSITIVE_RULE_ID}].`) +
-          pageNote,
+        detail: 'integrity_check clean.' + pageNote,
         repairable: false,
         backlog: 'BL-341',
         probeValidated: true,

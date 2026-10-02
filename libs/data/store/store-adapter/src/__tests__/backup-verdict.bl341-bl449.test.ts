@@ -141,13 +141,11 @@ describe('BL-341 — a truncated integrity_check verdict says it was truncated',
 
   it('BL-341: 100+ messages with ZERO real damage is `unverified`, never `verified`', async () => {
     // The live shape: a store whose integrity_check output is filled to the cap
-    // by page-accounting noise (the production copy carried 45 such pages) and
-    // BL-360's unconditional Turso FTS false positive. Nothing un-filterable
-    // remains — but the messages PAST the cap were never emitted, so "clean"
-    // is not a conclusion the output supports.
+    // by page-accounting noise (the production copy carried 45 such pages).
+    // Nothing un-filterable remains — but the messages PAST the cap were never
+    // emitted, so "clean" is not a conclusion the output supports.
     const messages = [
       ...Array.from({ length: INTEGRITY_CHECK_MESSAGE_CAP + 5 }, (_, i) => `Page ${i + 2}: never used`),
-      'wrong # of entries in index __turso_internal_fts_dir_idx_fts_node_key',
     ];
     const { verdict, legacyString } = await verdictFor(stubIntegrityCheckAdapter({ messages }));
 
@@ -171,7 +169,6 @@ describe('BL-341 — a truncated integrity_check verdict says it was truncated',
     // or the verdict can never return to green and gets tuned out (BL-374).
     const messages = [
       ...Array.from({ length: 45 }, (_, i) => `Page ${i + 2}: never used`),
-      'wrong # of entries in index __turso_internal_fts_dir_idx_fts_node_key',
     ];
     const { verdict, legacyString } = await verdictFor(stubIntegrityCheckAdapter({ messages }));
 

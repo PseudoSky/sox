@@ -3,7 +3,7 @@
  * Plus BL-330 (unlinked WAL discards committed data), BL-335 (unpopulated
  * secondary indexes), BL-336 (duplicate `_adapter_meta` PRIMARY KEY rows),
  * BL-337 (`REINDEX <table>` impossible with a Tantivy index), BL-341
- * (`integrity_check` message cap + a Turso false positive), BL-347 (an FTS
+ * (`integrity_check` message cap), BL-347 (an FTS
  * index that exists but is empty).
  *
  * ── The shape of every test here ────────────────────────────────────────────
@@ -29,7 +29,6 @@ import {
   copyFileSync,
   writeFileSync,
   readdirSync,
-  readFileSync,
 } from 'node:fs';
 import { join, dirname, basename } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -44,8 +43,6 @@ import {
   parseFtsColumns,
   pickSentinelToken,
   pickSentinelTokens,
-  isKnownFalsePositive,
-  SUPPRESSION_VALID_FOR,
   captureWalIdentity,
   isStaleWalIndexError,
   recoverStaleWalIndex,
@@ -64,32 +61,6 @@ const hasTurso = (() => {
   }
 })();
 const tursoDescribe = hasTurso ? describe : describe.skip;
-
-/**
- * BL-360 / PKT-68 — the version of `@tursodatabase/database` this process
- * actually loaded, read from the resolved module's own `package.json`.
- *
- * Not `require('@tursodatabase/database/package.json')`: the package's
- * `exports` map publishes only `.` and `./compat`, so that subpath is blocked.
- * Resolving the entry point and walking up to the nearest `package.json` reads
- * the manifest of the copy that is genuinely on disk under this resolution,
- * which is the whole point — a caret bump that swaps the installed driver must
- * be visible here even though nothing in any manifest changed.
- */
-function installedTursoVersion(): string {
-  let dir = dirname(require.resolve('@tursodatabase/database'));
-  for (let i = 0; i < 10; i++) {
-    const candidate = join(dir, 'package.json');
-    if (existsSync(candidate)) {
-      const pkg = JSON.parse(readFileSync(candidate, 'utf8')) as { name?: string; version?: string };
-      if (pkg.name === '@tursodatabase/database' && typeof pkg.version === 'string') return pkg.version;
-    }
-    const parent = dirname(dir);
-    if (parent === dir) break;
-    dir = parent;
-  }
-  throw new Error('could not locate the installed @tursodatabase/database package.json');
-}
 
 let tmpDir: string;
 beforeAll(() => {
@@ -476,19 +447,6 @@ describe('BL-352 — probe design guards', () => {
     expect(parseFtsColumns(`CREATE INDEX ix ON node (topic)`)).toEqual([]);
   });
 
-  it('filters the Turso Tantivy integrity_check false positive, and nothing else', () => {
-    // Measured 2026-07-31 on a FRESHLY BUILT, fully working index whose
-    // fts_match returned 200/200 — the message is unconditional, so treating
-    // integrity_check as pass/fail on a Turso FTS store reports damage forever.
-    expect(
-      isKnownFalsePositive('wrong # of entries in index __turso_internal_fts_dir_idx_fts_node_key'),
-    ).toBe(true);
-    expect(isKnownFalsePositive('wrong # of entries in index ix_node_topic')).toBe(false);
-    expect(isKnownFalsePositive('row 4 missing from index sqlite_autoindex__adapter_meta_1')).toBe(
-      false,
-    );
-  });
-
   it('picks a sentinel token that a tokenizer will index as one term', () => {
     expect(pickSentinelToken('the quick brown hippopotamus jumped')).toBe('hippopotamus');
     expect(pickSentinelToken('a b c')).toBeNull();
@@ -641,26 +599,7 @@ tursoDescribe('BL-352 — Turso probe soundness', () => {
     expect(finding!.probeValidated).toBe(true);
   });
 
-  // ── BL-360 / PKT-68 ────────────────────────────────────────────────────────
-  // The two facts this suppression rests on are asserted as ONE unit, in one
-  // test, on purpose:
-  //
-  //   (a) Turso still emits the message on a healthy store, and
-  //   (b) the driver that emits it is still the version we measured.
-  //
-  // Split across two tests they drift: (a) keeps passing on a driver nobody
-  // measured, which is exactly the silent state the constant exists to
-  // prevent. Failing together means an upgrade cannot quietly inherit the
-  // filter — a bump makes this test red, and the response is to re-run the
-  // reproduction and either delete `isKnownFalsePositive` (BL-360's stated
-  // acceptance) or re-measure and bump `SUPPRESSION_VALID_FOR`.
-  //
-  // Note what this test does NOT do: it does not change any verdict. A driver
-  // this was not measured on still gets the filter at runtime. Making the
-  // suppression conditional on the version would turn every future upgrade
-  // into a store that reports permanently damaged, which is the non-convergence
-  // BL-360 is about. The signal belongs in CI, not in the health verdict.
-  it('deep verification filters the Tantivy false positive and stays green on a healthy store', async () => {
+  it('deep verification stays green on a healthy store', async () => {
     const dbPath = tempPath('turso-deep');
     const a = track(await TursoAdapterImpl.connect({ dbPath }));
     await a.exec(`CREATE TABLE node (id INTEGER PRIMARY KEY, content TEXT, name TEXT, summary TEXT)`);
@@ -673,30 +612,6 @@ tursoDescribe('BL-352 — Turso probe soundness', () => {
     await a.exec(
       `CREATE INDEX IF NOT EXISTS idx_fts_node ON "node" USING fts ("content", "name", "summary")`,
     );
-
-    const raw = await a.executeAll<Record<string, unknown>>('PRAGMA integrity_check');
-    const messages = raw.rows
-      .flatMap((r) => Object.values(r))
-      .filter((v): v is string => typeof v === 'string');
-    expect(
-      messages.some((m) => isKnownFalsePositive(m)),
-      'the false positive is expected here — if Turso stops emitting it, drop the filter',
-    ).toBe(true);
-
-    // BL-360: the suppression is a claim about ONE driver version. The
-    // manifests declare `^0.7.1`, so a caret bump can move the installed driver
-    // without any file in this repo changing. Read what is actually loaded.
-    expect(
-      installedTursoVersion(),
-      `BL-360: isKnownFalsePositive() is a suppression measured against @tursodatabase/database ` +
-        `${SUPPRESSION_VALID_FOR}, and the installed driver has moved off it. Re-run the ` +
-        `reproduction on the new version: if the false positive is gone, DELETE ` +
-        `isKnownFalsePositive() and its call sites (that deletion is BL-360's acceptance); if it ` +
-        `still reproduces, bump SUPPRESSION_VALID_FOR and record the new measurement date. ` +
-        `Do not silence this by widening the comparison — an unmeasured driver is the state ` +
-        `this assertion exists to make loud. Upstream: ` +
-        `https://github.com/tursodatabase/turso/issues/7611`,
-    ).toBe(SUPPRESSION_VALID_FOR);
 
     const report = await verifyStoreIntegrity(a, { depth: 'deep', only: ['pragma_integrity_check'] });
     expect(report.damaged, JSON.stringify(report.findings)).toEqual([]);
@@ -711,8 +626,7 @@ tursoDescribe('BL-352 — Turso probe soundness', () => {
 //   1. enumerate the table's BTREE indexes,
 //   2. REINDEX those individually, by name,
 //   3. skip the FTS index entirely, and
-//   4. leave the table at a clean `integrity_check` (filtered for BL-360's
-//      unconditional Tantivy false positive — see `isKnownFalsePositive`).
+//   4. leave the table at a clean `integrity_check`.
 //
 // Corruption seeding note: better-sqlite3 cannot even OPEN a database whose
 // `sqlite_master` already contains a `USING fts` index — "malformed database
@@ -807,8 +721,7 @@ tursoDescribe('BL-337 — unified repair helper on a table carrying a Tantivy in
         `CREATE INDEX IF NOT EXISTS idx_fts_node ON "node" USING fts ("content", "name", "summary")`,
       );
 
-      // ── ground truth: integrity_check reports BOTH the real damage and the
-      //    unconditional Tantivy false positive, side by side ───────────────
+      // ── ground truth: integrity_check reports the real damage ──────────────
       const rawBefore = await adapter.executeAll<Record<string, unknown>>('PRAGMA integrity_check');
       const messagesBefore = rawBefore.rows
         .flatMap((r) => Object.values(r))
@@ -817,10 +730,6 @@ tursoDescribe('BL-337 — unified repair helper on a table carrying a Tantivy in
       expect(
         messagesBefore.some((m) => /index\s+"?ix_node_topic"?/i.test(m)),
         `expected a real message naming ix_node_topic: ${JSON.stringify(messagesBefore)}`,
-      ).toBe(true);
-      expect(
-        messagesBefore.some((m) => isKnownFalsePositive(m)),
-        'the Tantivy false positive must also be present, proving both coexist on this table',
       ).toBe(true);
 
       // Whole-table REINDEX is still rejected — the defect this helper works
@@ -839,8 +748,8 @@ tursoDescribe('BL-337 — unified repair helper on a table carrying a Tantivy in
       expect(finding!.repairable).toBe(true);
       expect(finding!.backlog).toBe('BL-341');
       // The FTS index — and the table itself — must never surface as a
-      // separate repairable finding: the Tantivy false positive is filtered
-      // before findings are grouped, which is how the FTS index gets skipped.
+      // separate repairable finding: only the corrupted btree index is
+      // reported.
       expect(report.damaged.some((f) => f.object === 'idx_fts_node')).toBe(false);
       expect(report.damaged.some((f) => f.object === 'node')).toBe(false);
 
@@ -873,13 +782,11 @@ tursoDescribe('BL-337 — unified repair helper on a table carrying a Tantivy in
         .flatMap((v) => v.split('\n'))
         .map((v) => v.trim())
         .filter((v) => v.length > 0 && v !== 'ok' && !v.startsWith('*** in database'));
-      const realAfter = messagesAfter.filter(
-        (m) => !isKnownFalsePositive(m) && !/^Page\s+\d+/i.test(m),
-      );
+      const realAfter = messagesAfter.filter((m) => !/^Page\s+\d+/i.test(m));
       expect(
         realAfter,
-        'integrity_check must be clean (after filtering the known Tantivy false positive and ' +
-          'leaked-page accounting) post-repair: ' + JSON.stringify(messagesAfter),
+        'integrity_check must be clean (after filtering leaked-page accounting) post-repair: ' +
+          JSON.stringify(messagesAfter),
       ).toEqual([]);
 
       // ── the FTS index itself must still be intact and live — the repair
@@ -894,7 +801,7 @@ tursoDescribe('BL-337 — unified repair helper on a table carrying a Tantivy in
 // BL-374 — after a repair whose actions all succeed, reverification must AGREE
 // with ground truth. A verdict that cannot return to ok after a correct repair
 // is a permanent false alarm on the one surface built to make silent damage
-// visible, and it gets tuned out exactly like BL-360's unconditional message.
+// visible.
 //
 // Root cause of the live instance: the sentinel token picker capped tokens at
 // 20 letters and therefore TRUNCATED longer ones. Live row 9478 contains
