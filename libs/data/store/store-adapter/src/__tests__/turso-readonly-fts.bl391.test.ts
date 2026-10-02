@@ -22,12 +22,19 @@
  * (so fts_match keeps working) and instead enforces read-only at the
  * application layer — `executeRun`/`exec`/`transaction` all throw
  * immediately. This test proves:
- *   1. RED: hard readonly (`readonly: true` alone) fails fts_match with
- *      "Resource is read-only" — the exact BL-391 symptom.
- *   2. GREEN: soft readonly (`readonly: true, allowFtsInReadonly: true`)
+ *   1. GREEN: soft readonly (`readonly: true, allowFtsInReadonly: true`)
  *      makes fts_match succeed.
- *   3. Soft readonly still refuses writes — it is not a bypass of
+ *   2. Soft readonly still refuses writes — it is not a bypass of
  *      read-only semantics, just a different enforcement layer.
+ *
+ * The original RED arm (hard readonly `readonly:true` alone fails fts_match
+ * with "Resource is read-only") was REMOVED when @tursodatabase/database
+ * 0.8.1 landed: the driver now resolves `fts_match` natively under a plain
+ * readonly connection (the v2 FTS engine no longer treats it as a write-shaped
+ * statement). That is a net win — the GREEN arm below independently proves the
+ * ids are still correct — so the hazard the RED arm guarded is resolved. The
+ * soft-readonly workaround remains live (backupTo in turso-adapter.ts still
+ * relies on `allowFtsInReadonly`), so it is not dead code.
  */
 import { describe, it, expect, beforeAll, afterEach } from 'vitest';
 import { mkdtempSync } from 'node:fs';
@@ -80,24 +87,6 @@ async function seedFtsStore(dbPath: string): Promise<void> {
 }
 
 tursoDescribe('BL-391 — TursoAdapter readonly connections and fts_match', () => {
-  it('RED: hard readonly (readonly:true alone) fails fts_match with "Resource is read-only", while COUNT(*) works identically', async () => {
-    const dbPath = tempPath('hard-readonly');
-    await seedFtsStore(dbPath);
-
-    const ro = await TursoAdapterImpl.connect({ dbPath, readonly: true });
-    openAdapters.push(ro);
-
-    // Plain reads are fine under hard readonly — proves this is NOT a
-    // generic "reads are broken" problem.
-    const count = await ro.executeGet<{ c: number }>('SELECT COUNT(*) as c FROM node');
-    expect(count?.c).toBe(2);
-
-    // fts_match specifically fails.
-    await expect(
-      ro.executeAll('SELECT id FROM node WHERE fts_match(content, ?)', ['hello']),
-    ).rejects.toThrow(/read-only/i);
-  });
-
   it('GREEN: soft readonly (allowFtsInReadonly:true) makes fts_match succeed', async () => {
     const dbPath = tempPath('soft-readonly-green');
     await seedFtsStore(dbPath);

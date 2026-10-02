@@ -112,7 +112,18 @@ tursoDescribe('4cd68c4e — FTS segments are bounded by an idle-point OPTIMIZE I
       expect(typeof (finish?.[1] as { duration_ms: unknown }).duration_ms).toBe('number');
       expect(a.ftsMaintenance.last).toMatchObject({ status: 'optimized', indexes: ['idx_fts_node'] });
       // Reset by the pass; the idle release that follows writes its
-      // clean-shutdown stamp through the tracked write path (+1).
+      // clean-shutdown stamp through the tracked write path (+1). The reset
+      // is published only AFTER the off-thread pass-count RPC
+      // (_countInServiceOptimizePass), which 0.8.1 can stretch past a single
+      // poll interval under full-suite load — so wait for the reset to land
+      // rather than reading it immediately after `fts.optimize.finish` (that
+      // log is emitted BEFORE the count RPC). The invariant is unchanged:
+      // the counter MUST settle to <= 2.
+      await until(
+        () => a.ftsMaintenance.writesSinceOptimize <= 2,
+        30_000,
+        'writesSinceOptimize resets after the pass',
+      );
       expect(a.ftsMaintenance.writesSinceOptimize).toBeLessThanOrEqual(2);
 
       // Secondary (wide tolerance, loaded box): inserts against the merged

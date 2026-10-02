@@ -1,6 +1,6 @@
 /**
- * BL-361 — a Turso store whose FTS index has no Tantivy backing objects PANICS
- * the driver and ABORTS the process inside `connect()`.
+ * BL-361 — a Turso store whose FTS index lost its Tantivy backing objects
+ * used to PANIC the 0.7.1 driver and ABORT the process inside `connect()`.
  *
  * ```
  * thread '<unnamed>' panicked at core/vdbe/execute.rs:13189:51:
@@ -8,26 +8,33 @@
  * SetCookie: TransactionState::Read, should be write
  * ```
  *
+ * ── Driver hardening (0.8.1) ────────────────────────────────────────────────
+ *
+ * `@tursodatabase/database` 0.8.1 no longer aborts on this store shape: it
+ * returns a clean, catchable error (exit status 2, signal null) instead of
+ * SIGABRT. The permanent-RED arm that stood as proof the abort hazard was real
+ * is therefore removed — its premise is resolved. The pre-flight that runs on
+ * the out-of-band marker is kept: it still drops the orphaned schema rows
+ * before the driver opens, and the ordinary consumer DDL still brings
+ * full-text search back.
+ *
  * ── Why every open here happens in a child process ──────────────────────────
  *
- * The failure is `SIGABRT`, not an exception. An in-process open would kill the
- * vitest worker, so the red arm could never be *watched* failing — and BL-225
- * is explicit that an unwatchable test proves nothing. The subject therefore
- * runs in `fixtures/bl361-open-child.ts` and this suite asserts on the child's
- * exit signal and stdout.
+ * (Historical.) The 0.7.1 failure was SIGABRT, not an exception, so an
+ * in-process open would kill the vitest worker. The suite keeps the
+ * child-process fixture so the marker-present and marker-absent routes stay
+ * watchable end to end.
  *
- * ── The three arms ──────────────────────────────────────────────────────────
+ * ── The remaining arms ──────────────────────────────────────────────────────
  *
- * 1. **RED, permanently.** The raw driver on a damaged store still aborts. This
- *    arm never goes green; it is the standing proof that the hazard is real and
- *    that the fixture reproduces it.
- * 2. **GREEN.** The same store, opened through `TursoAdapterImpl.connect()`
+ * 1. **GREEN.** The damaged store, opened through `TursoAdapterImpl.connect()`
  *    with the out-of-band marker present: the pre-flight drops the orphaned
  *    schema rows out of process, the open succeeds, and the ordinary consumer
  *    `CREATE INDEX … USING fts` DDL brings full-text search back.
- * 3. **The gate's cost, stated.** Marker absent ⇒ no pre-flight ⇒ still aborts.
- *    That is the accepted trade-off of not paying for a native open on every
- *    connect, and it is asserted rather than left to a comment.
+ * 2. **The gate's cost, stated.** Marker absent ⇒ no pre-flight. On 0.7.1 that
+ *    meant an abort; on 0.8.1 the driver no longer aborts, so the marker-less
+ *    path is now covered by the in-process guard (`fts-orphan-guard.ts`) and
+ *    asserted not to abort below.
  */
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { spawnSync } from 'node:child_process';
@@ -165,38 +172,6 @@ function aborted(outcome: ChildOutcome): boolean {
 }
 
 tursoDescribe('BL-361 — panic-on-open pre-flight', () => {
-  it('RED ARM (permanent): the raw driver ABORTS the process on a store whose FTS index lost its Tantivy backing objects', async () => {
-    const dbPath = tempPath('bl361-raw-panic');
-    await seedHealthyFtsStore(dbPath);
-
-    // Control first: the healthy store opens and searches through the raw driver.
-    const healthy = openInChild(dbPath, 'raw');
-    expect(healthy.status, `healthy raw open should succeed, stderr: ${healthy.stderr}`).toBe(0);
-    expect(healthy.json).toMatchObject({ opened: true, ftsRowIds: [1] });
-
-    const before = seedOrphanedTursoFtsIndex(dbPath);
-    expect(before).toContain('__turso_internal_fts_dir_idx_fts_node');
-    expect(before).toContain('__turso_internal_fts_dir_idx_fts_node_key');
-
-    const damaged = openInChild(dbPath, 'raw');
-    expect(aborted(damaged), `expected an abort, got status=${damaged.status} signal=${damaged.signal}`).toBe(
-      true,
-    );
-    expect(damaged.stderr).toMatch(/panicked at/);
-    expect(damaged.stderr).toMatch(/unreachable code/);
-    // No catchable error was ever produced. The abort is NOT recoverable in
-    // process: there is no exception to catch, no `finally`, no exit hook.
-    expect(damaged.json).toMatchObject({ connected: true });
-    expect(damaged.json?.opened).toBeUndefined();
-    // (2026-08-05) And this is where BL-361's own account of the mechanism is
-    // wrong, which matters because it changes what a fix has to intercept:
-    // `connect()` SUCCEEDED — the child printed its post-connect line — and the
-    // process died on the `fts_match` that followed. The conclusion is
-    // unaffected: `TursoAdapterImpl.connect()` issues that query itself via
-    // `runOpenTimeIntegrity` → `probeFtsIndexes`, which the marker-absent arm
-    // below demonstrates.
-  }, 120_000);
-
   it('GREEN ARM: TursoAdapterImpl.connect() pre-flights on the out-of-band marker, opens, and the ordinary DDL restores full-text search', async () => {
     const dbPath = tempPath('bl361-preflight-green');
     await seedHealthyFtsStore(dbPath);

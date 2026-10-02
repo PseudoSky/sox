@@ -15,41 +15,45 @@
  * now runs on a `worker_threads.Worker`, so the main thread is free to turn
  * while a write is in flight.
  *
- * ── What this file pins, and why it is RED→GREEN (BL-225) ───────────────────
+ * ── What this file pins, and how it was re-measured on 0.8.1 ────────────────
  *
- * The binary invariant: 300 FTS writes through a REAL `TursoAdapterImpl` while
- * a main-thread heartbeat runs at a 10 ms period must leave the main thread
- * turning — ≥200 heartbeat ticks over the loop AND a longest between-tick gap
- * < 50 ms. Before TUR-D the adapter itself opened the native driver in-thread,
- * so the loop starved the timer queue and this assertion failed; with the
- * rewiring it passes.
+ * The binary invariant: `WRITES` FTS writes through a REAL `TursoAdapterImpl`
+ * while a main-thread heartbeat runs at a 10 ms period must leave the main
+ * thread turning — the longest between-tick gap must stay below
+ * `MAX_ADAPTER_DELAY_MS`. Before TUR-D the adapter opened the native driver
+ * in-thread, so the loop starved the timer queue; with the rewiring it passes.
  *
- * BECAUSE TUR-D IS ALREADY COMMITTED, "would this have failed before?" cannot
- * be re-observed by reverting production code. The discriminator is therefore
- * a NEGATIVE CONTROL in this SAME file: the identical 300-write loop driven
- * through a DIRECT in-thread `connect()` of the raw driver — bypassing the
- * host entirely — must show ≤2 ticks and a between-tick gap far above 50 ms.
- * If the measurement machinery could not actually detect a blocking write, the
- * control would also show hundreds of ticks and the positive assertion below
- * would be proving nothing. The two numbers together (adapter ≥200 vs direct
- * ~1) are the red→green evidence.
+ * The ORIGINAL form also asserted an ABSOLUTE tick floor (≥200 ticks) and a
+ * NEGATIVE CONTROL that ran the SAME loop through a direct in-thread
+ * `connect()` and required it to starve (≤2 ticks). BOTH were re-baselined off
+ * with the 0.8.1 driver bump, and NOT as a migration-signal label — the two
+ * premises themselves changed:
+ *   1. 0.8.1 writes the same corpus in ~778 ms (vs ~2395 ms on 0.7.1), so a
+ *      never-blocked loop only ticks ~77× and can no longer reach a 200-tick
+ *      floor derived from the 0.7.1 write duration. An absolute tick count is
+ *      duration-sensitive, not blocking-sensitive — it is retired.
+ *   2. The control's premise — "the direct in-thread driver starves the
+ *      loop" — is FALSIFIED: 0.8.1's driver no longer runs its FTS
+ *      maintenance in a way that blocks the main thread for the whole loop
+ *      (measured 33–35 ticks, longest gap 44 ms). The in-thread control no
+ *      longer blocks, so it can no longer serve as a discriminator.
+ *
+ * The redesigned form keeps the duration-INVARIANT, blocking-sensitive signal
+ * (longest heartbeat gap against a declared budget) and replaces the falsified
+ * control with a SIMULATED synchronous main-thread block: a target that blocks
+ * the thread for `BLOCK_MS` (> budget) and MUST be detected. Together the
+ * positive arm (writes don't block: gap < budget) and the discriminator (a
+ * block IS detected: gap ≥ budget) prove the measure still discriminates in
+ * both directions.
  *
  * ── Why the gap is measured from the heartbeat, not `monitorEventLoopDelay` ──
  *
- * The packet prefers `monitorEventLoopDelay` "or the tick-counter, whichever is
- * more stable". On the Node that runs this suite (v24) `monitorEventLoopDelay`
- * does NOT report a starved main thread: measured directly, a 1000 ms
- * synchronous block and a 1000 ms microtask-only loop BOTH leave
+ * On the Node that runs this suite (v24) `monitorEventLoopDelay` does NOT
+ * report a starved main thread: measured directly, a synchronous block leaves
  * `histogram.max` at ~5.7 ms, because the implementation re-baselines after a
- * long stall instead of recording it. It would have called a fully blocked
- * loop "fine". The heartbeat's own inter-fire gap DOES record it (a blocked
- * loop yields exactly one post-block fire carrying a ~2.4 s gap), so the gap
- * signal is taken from the heartbeat — and it is what makes the control bite.
- *
- * The direct control value-imports the native driver ON PURPOSE. That is a
- * TEST realm only; the realm-isolation guard
- * (`turso-adapter-offthread.bl-862129b5.test.ts`) deliberately excludes
- * `__tests__` / `*.test.ts` from its main-thread scan.
+ * long stall instead of recording it. The heartbeat's own inter-fire gap DOES
+ * record it (a blocked loop yields exactly one post-block fire carrying the
+ * whole stall), so the gap signal is taken from the heartbeat.
  */
 import { mkdtempSync, rmSync } from 'node:fs';
 import { createRequire } from 'node:module';
@@ -71,44 +75,32 @@ const hasTurso = (() => {
 /** Both cases need the real native driver; skip cleanly (never silently pass) when absent. */
 const itTurso = hasTurso ? it : it.skip;
 
-/** Writes in the FTS loop. Fixed by the packet; 300 × ~8.5 ms ≈ 2.5 s of work. */
+/** Writes in the FTS loop. Fixed by the packet; on 0.8.1 ~778 ms of work. */
 const WRITES = 300;
 /** Main-thread heartbeat period. Fixed by the packet. */
 const TICK_MS = 10;
 /**
- * An off-thread loop must let the main thread turn. 300 FTS writes take ~2.5 s
- * (~245 expected ticks at 10 ms — measured 244); ≥200 leaves a ~20 % margin and
- * still fails loudly for any in-thread regression, which collapses the count to
- * ~0. The margin is reported in the failure message, never silently relaxed.
- */
-const MIN_ADAPTER_TICKS = 200;
-/**
- * A direct in-thread connection starves the heartbeat for the whole loop; only
- * 0–1 post-block ticks can slip through. ≤2 is the "blocked" verdict,
- * deliberately nowhere near the ≥200 the adapter must clear.
- */
-const MAX_DIRECT_TICKS = 2;
-/**
  * Longest main-thread stall an off-thread FTS write loop may cause, in ms —
  * the bound at which a stall means "a write blocked the loop" rather than "the
- * OS did not run this process".
+ * OS did not run this process". A duration-INVARIANT, blocking-sensitive
+ * budget: it does not depend on how long the writes take (0.8.1's ~778 ms vs
+ * 0.7.1's ~2395 ms), only on whether any single stall crosses it.
  *
- * The packet asked for <50 ms. On this SHARED checkout that bound sits BELOW
- * the ambient main-thread jitter: the acceptance run (`npx nx test
- * store-adapter --skip-nx-cache`, all 97 files in parallel on a 10-core box at
- * loadavg ~200) measured a longest heartbeat gap of 57 ms with 1114 ticks —
- * the main thread turned >1000×, no write blocked it, but the scheduler
- * descheduled the process once for 57 ms. Quiet-machine runs measured 13–27 ms.
- *
- * 250 ms is the smallest bound that clears that ambient noise with real margin
- * while staying far below the blocking signature: the direct in-thread control
- * cannot fire its heartbeat during the loop at all, so its one post-block gap
- * is the WHOLE loop (2.7–14.6 s) — 11–58× this bound. This is a deliberate,
- * reported calibration to the shared checkout, NOT a silent loosening: the
- * tick gate (≥200, measured 275–1114 vs the control's 1) is the primary,
- * load-robust discriminator.
+ * 250 ms is the smallest bound that clears the shared checkout's ambient
+ * main-thread jitter (the acceptance run measured a 57 ms scheduler
+ * deschedule with 1114 ticks) with real margin while staying far below the
+ * blocking signature: a genuine block is at least the simulated discriminator's
+ * `BLOCK_MS` (400 ms), so a real block is 1.6×+ this bound.
  */
 const MAX_ADAPTER_DELAY_MS = 250;
+/**
+ * Synchronous main-thread block the discriminator arm imposes, in ms —
+ * deliberately > `MAX_ADAPTER_DELAY_MS` so a blocked loop MUST trip the gap
+ * bound. `Atomics.wait` sleeps the thread without yielding to the event loop
+ * (no CPU burn), exactly reproducing the symptom of a synchronous in-thread
+ * driver.
+ */
+const BLOCK_MS = 400;
 
 /** One row body per write — several searchable tokens, a realistic FTS payload. */
 function rowContent(i: number): string {
@@ -187,18 +179,17 @@ function tempDb(label: string): string {
   return join(tmpDir, `${label}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.db`);
 }
 
-/** Turso DDL for the FTS index — the exact form `fts-dialect.ts` emits. */
-const FTS_DDL = `CREATE INDEX IF NOT EXISTS idx_fts_node ON "node" USING fts ("content")`;
+/** Turso DDL for the FTS table — the exact form `fts-dialect.ts` emits. */
 const CREATE_TABLE = 'CREATE TABLE node (id INTEGER PRIMARY KEY, content TEXT)';
 
 describe('BL-5b58b189 — an FTS write does not block the Node main thread', () => {
   itTurso(
-    'runs 300 FTS writes through the adapter while the main thread keeps turning (≥200 ticks, <50 ms gap)',
+    'runs 300 FTS writes through the adapter while the main thread never stalls past the blocking budget',
     async () => {
       const dbPath = tempDb('offthread');
       const adapter = await TursoAdapterImpl.connect({ dbPath });
       try {
-        // Seed a REAL FTS-indexed table (the Turso Tantivy path, materialisation
+        // Seed a REAL FTS-indexed table (the Turso FTS path, materialisation
         // verified by ensureFtsIndex per BL-507) and prove search works before
         // measuring — an unindexed table would make the "FTS write" claim a lie.
         await adapter.exec(CREATE_TABLE);
@@ -213,14 +204,15 @@ describe('BL-5b58b189 — an FTS write does not block the Node main thread', () 
         });
         report('adapter (off-thread host)', m);
 
-        // The two binary invariants: the loop turned the main thread, and never
-        // stalled it. Reporting the measured numbers alongside means a
-        // load-sensitive failure carries its own margin, never a silent pass.
+        // The binary invariants, re-measured on 0.8.1: the main thread TURNED
+        // (at least once — no absolute tick floor, which was duration-sensitive),
+        // and it never stalled past the blocking budget. The gap bound is the
+        // real invariant; reporting the measured numbers means a failure carries
+        // its own margin.
         expect(
           m.ticks,
-          `main thread only ticked ${m.ticks}× over ${m.durationMs}ms of FTS writes ` +
-            `(expected ≥${MIN_ADAPTER_TICKS}; ~${Math.floor(m.durationMs / TICK_MS)} if never blocked)`,
-        ).toBeGreaterThanOrEqual(MIN_ADAPTER_TICKS);
+          `main thread never ticked over ${m.durationMs}ms of FTS writes`,
+        ).toBeGreaterThan(0);
         expect(
           m.maxTickGapMs,
           `longest main-thread stall was ${m.maxTickGapMs}ms (bound ${MAX_ADAPTER_DELAY_MS}ms)`,
@@ -238,58 +230,38 @@ describe('BL-5b58b189 — an FTS write does not block the Node main thread', () 
   );
 
   itTurso(
-    'negative control — the same loop on a direct in-thread connection starves the main thread (≤2 ticks)',
+    'discriminator — a simulated synchronous main-thread block is detected by the heartbeat-gap measure',
     async () => {
-      const dbPath = tempDb('direct');
-      const { connect } = (await import('@tursodatabase/database')) as unknown as {
-        connect(
-          path: string,
-          opts?: Record<string, unknown>,
-        ): Promise<{
-          exec(sql: string): Promise<unknown>;
-          all(sql: string, ...args: unknown[]): Promise<unknown[]>;
-          run(sql: string, ...args: unknown[]): Promise<unknown>;
-          close(): Promise<void>;
-        }>;
+      // A target whose first `run` blocks the main thread synchronously for
+      // BLOCK_MS, reproducing the symptom of a synchronous in-thread driver
+      // (pre-TUR-D). It never touches a real store — it exists solely to prove
+      // the heartbeat-gap measure still DETECTS a blocked loop, so the positive
+      // arm's <budget assertion is not vacuous.
+      let blocked = false;
+      const target: LoopTarget = {
+        run: async () => {
+          if (!blocked) {
+            blocked = true;
+            // `Atomics.wait` sleeps the thread without yielding to the event
+            // loop and without burning CPU — the heartbeat cannot fire during
+            // it, exactly like a synchronous native call.
+            const sab = new SharedArrayBuffer(4);
+            Atomics.wait(new Int32Array(sab), 0, 0, BLOCK_MS);
+          }
+        },
       };
-      const db = await connect(dbPath, {
-        timeout: 5_000,
-        // Same driver requirements the adapter sets internally: FTS DDL and
-        // fts_match need `index_method`; multiprocess WAL is the store's mode.
-        experimental: ['index_method', 'multiprocess_wal'],
-      });
-      try {
-        await db.exec(CREATE_TABLE);
-        await db.exec(FTS_DDL);
-        await db.run('INSERT INTO node (content) VALUES (?)', ['warmup alpha beta gamma']);
-        const seeded = await db.all('SELECT id FROM node WHERE fts_match(content, ?)', ['alpha']);
-        expect(seeded.length).toBeGreaterThan(0);
 
-        const m = await measureWriteLoop({
-          run: (sql, args) => db.run(sql, ...args),
-        });
-        report('direct in-thread driver (control)', m);
+      const m = await measureWriteLoop(target);
+      report('simulated block (discriminator)', m);
 
-        // The control MUST block: the native driver's FTS maintenance runs on
-        // the main thread here, so the heartbeat is starved for the whole loop
-        // and its one post-block fire carries a multi-second gap. If either
-        // bound failed, the off-thread assertion above would be measuring
-        // nothing.
-        expect(
-          m.ticks,
-          `direct in-thread loop let ${m.ticks} ticks through — it should be blocked (≤${MAX_DIRECT_TICKS})`,
-        ).toBeLessThanOrEqual(MAX_DIRECT_TICKS);
-        expect(
-          m.maxTickGapMs,
-          `direct in-thread loop's longest stall was only ${m.maxTickGapMs}ms — ` +
-            `the measurement failed to detect a blocking write`,
-        ).toBeGreaterThan(MAX_ADAPTER_DELAY_MS);
-
-        const count = await db.all('SELECT COUNT(*) AS n FROM node');
-        expect((count[0] as { n: number }).n).toBe(WRITES + 1);
-      } finally {
-        await db.close();
-      }
+      // The measure MUST detect the block: the longest between-tick gap
+      // reaches the block size, far above the budget. If this failed, the
+      // positive arm would be measuring nothing.
+      expect(
+        m.maxTickGapMs,
+        `simulated ${BLOCK_MS}ms block produced a longest gap of only ${m.maxTickGapMs}ms — ` +
+          `the measure failed to detect a blocking write`,
+      ).toBeGreaterThanOrEqual(MAX_ADAPTER_DELAY_MS);
     },
     60_000,
   );
