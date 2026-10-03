@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.2.1
+
+- Covered the `business-analyst` source agent, which had no home in the skill (excluded from the
+  original 32-agent corpus as internal-analysis-oriented — `researchers-digest.md`). Home chosen:
+  **P7 `general-synthesis`** — its design/analysis catch-all is the only playbook whose answer
+  categories (`design-artifact`, `enumeration`, `pattern-recommendation`, `explanation`) fit
+  requirements/process artifacts, and a new playbook would have required a 17th domain plus a
+  `P1..P7` verifier change. Added `business-analyst` to routing-table §4's P7 row and one process-merge
+  bullet to `P7-general-synthesis.md` (requirements traceability, business-rule capture, current-vs-to-be
+  gap analysis, testable acceptance criteria, process maps). §4 header de-numbered ("the 32 aggregated
+  research agents" → "the aggregated research source agents") since the source is a later addition.
+- No process change; version `0.2.0` → `0.2.1`.
+
 ## 0.2.0
 
 - Renamed the skill to `research` (`research-playbooks` → `research`): manifest id/title, package name

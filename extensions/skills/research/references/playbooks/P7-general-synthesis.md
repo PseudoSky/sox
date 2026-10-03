@@ -28,6 +28,8 @@ agent-orchestration, data-analysis, docs-writing, and anything unclassified.
 - `data-researcher` — dataset identification and provenance.
 - `support-analytics-reporter` — analytics reporting.
 - `specialized-business-strategist` — MCDA-style option scoring.
+- `business-analyst` — requirements and business rules trace to their source; gap analysis compares
+  current vs. to-be process; acceptance criteria are testable conditions; process maps name improvements.
 
 ## Fail conditions
 

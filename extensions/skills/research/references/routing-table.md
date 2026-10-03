@@ -52,8 +52,8 @@ touches, never a single forced winner. Apply the rules in order, then union the 
 
 ## 4. Agent-specificity → playbook (for playbook tuning)
 
-The 32 aggregated research agents map onto the playbooks as follows; each playbook's reference file
-carries the process merge of its column.
+The aggregated research source agents map onto the playbooks as follows; each playbook's reference
+file carries the process merge of its column.
 
 | playbook | agent specialties (source) |
 |---|---|
@@ -63,7 +63,7 @@ carries the process merge of its column.
 | P4 market-intelligence | market-researcher, competitive-analyst, trend-analyst, product-trend-researcher, finance-financial-analyst, finance-investment-researcher, finance-fpa-analyst, sales-pipeline-analyst, marketing-x-twitter-intelligence-analyst, marketing-ai-citation-strategist, specialized-pricing-analyst, specialized-cultural-intelligence-strategist, specialized-french-consulting-market |
 | P5 threat-security | security-threat-intelligence-analyst |
 | P6 user-voice | ux-researcher, design-ux-researcher, product-feedback-synthesizer |
-| P7 general-synthesis | research-analyst, workflow-researcher, data-researcher, support-analytics-reporter, specialized-business-strategist |
+| P7 general-synthesis | research-analyst, workflow-researcher, data-researcher, support-analytics-reporter, specialized-business-strategist, business-analyst |
 
 Unmapped-id guard: a research agent whose specialty is not in this table routes by its question's
 domain, defaulting to P7.
