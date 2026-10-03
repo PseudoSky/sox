@@ -1,0 +1,47 @@
+{
+  "$schema": "https://your-registry/schemas/extension/v2.json",
+  "id": "browser-testing",
+  "version": "0.1.0",
+  "type": "skill",
+  "title": "Browser Testing — Chrome DevTools MCP",
+  "description": "Use this when testing or debugging front-end UI in a live browser — interaction/smoke tests, console and network debugging, Core Web Vitals performance traces, accessibility audits, responsive/theme emulation, and visual regression — driven by the chrome-devtools MCP server.",
+  "compatibility": { "host": ">=1.0.0 <2.0.0" },
+  "license": "MIT",
+  "author": "sox-ecosystem",
+  "source": "https://github.com/ChromeDevTools/chrome-devtools-mcp",
+  "sourceVersion": "1.10.x",
+  "keywords": [
+    "browser-testing",
+    "chrome-devtools",
+    "mcp",
+    "ui-testing",
+    "debugging",
+    "performance",
+    "core-web-vitals",
+    "accessibility",
+    "lighthouse",
+    "e2e"
+  ],
+  "runtime": "declarative",
+  "entrypoint": "SKILL.md",
+  "run_interface": {
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "task": { "type": "string", "description": "The UI testing or debugging task" },
+        "url": { "type": "string", "description": "Target URL under test" }
+      },
+      "required": ["task"]
+    },
+    "output_schema": {
+      "type": "object",
+      "properties": {
+        "playbook": { "type": "string" },
+        "evidence": { "type": "array", "items": { "type": "string" } }
+      },
+      "required": ["playbook"]
+    }
+  },
+  "install": { "type": "skill", "hosts": ["claude", "opencode"] },
+  "requires": { "tool_calling": true }
+}

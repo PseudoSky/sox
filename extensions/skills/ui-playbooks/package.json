@@ -1,0 +1,19 @@
+{
+  "name": "@adhd/sox-extension-ui-playbooks",
+  "version": "0.1.0",
+  "description": "ui-playbooks skill",
+  "private": true,
+  "license": "MIT",
+  "author": "sox-ecosystem",
+  "keywords": [
+    "ui",
+    "frontend",
+    "playbook",
+    "react",
+    "vue",
+    "angular",
+    "expo",
+    "design-system",
+    "tokens"
+  ]
+}

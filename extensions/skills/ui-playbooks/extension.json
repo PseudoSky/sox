@@ -1,0 +1,68 @@
+{
+  "$schema": "https://your-registry/schemas/extension/v2.json",
+  "id": "ui-playbooks",
+  "version": "0.1.0",
+  "type": "skill",
+  "title": "UI Playbooks — React, Vue, Angular, Expo, Design System",
+  "description": "Use this when a UI task needs stack-specific depth — React/Next, Vue/Nuxt, Angular/RxJS/NgRx, Expo/React Native — or design-system work (tokens, theming, component libraries, DESIGN.md translation). Holds the per-stack playbooks as one-level-deep references; the ui agent's core prompt holds the framework-neutral capabilities, process, and bar.",
+  "compatibility": {
+    "host": ">=1.0.0 <2.0.0"
+  },
+  "license": "MIT",
+  "author": "sox-ecosystem",
+  "keywords": [
+    "ui",
+    "frontend",
+    "playbook",
+    "react",
+    "vue",
+    "angular",
+    "expo",
+    "react-native",
+    "design-system",
+    "tokens"
+  ],
+  "runtime": "declarative",
+  "entrypoint": "SKILL.md",
+  "run_interface": {
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "stack": {
+          "type": "string",
+          "description": "The stack or concern in hand: react | vue | angular | expo | design-system"
+        },
+        "task": {
+          "type": "string",
+          "description": "What the UI task needs from the playbook"
+        }
+      },
+      "required": [
+        "task"
+      ]
+    },
+    "output_schema": {
+      "type": "object",
+      "properties": {
+        "reference": {
+          "type": "string",
+          "description": "The loaded reference (references/<stack>.md)"
+        },
+        "guidance": {
+          "type": "string",
+          "description": "The stack-specific patterns, targets, and idioms for the task"
+        }
+      }
+    }
+  },
+  "install": {
+    "type": "skill",
+    "hosts": [
+      "claude",
+      "opencode"
+    ]
+  },
+  "requires": {
+    "tool_calling": true
+  }
+}

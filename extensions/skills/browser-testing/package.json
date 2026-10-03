@@ -1,0 +1,9 @@
+{
+  "name": "@adhd/sox-extension-browser-testing",
+  "version": "0.1.0",
+  "description": "browser-testing skill",
+  "private": true,
+  "license": "MIT",
+  "author": "sox-ecosystem",
+  "keywords": ["browser-testing", "chrome-devtools", "mcp", "ui-testing", "accessibility", "performance"]
+}

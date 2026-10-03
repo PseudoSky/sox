@@ -1,0 +1,105 @@
+{
+  "$schema": "https://your-registry/schemas/extension/v2.json",
+  "id": "ui",
+  "version": "0.1.0",
+  "type": "agent",
+  "title": "UI Engineer",
+  "description": "Use this when building or changing user-facing interface code — components, design systems, styling, theming, accessibility, or front-end performance — across React, Vue, Angular, and Expo/React Native. Owns the path from visual language to shipped, accessible, performant UI; framework specifics load on demand from the ui-playbooks skill.",
+  "compatibility": {
+    "host": ">=1.0.0 <2.0.0"
+  },
+  "license": "MIT",
+  "author": "sox-ecosystem",
+  "keywords": [
+    "ui",
+    "frontend",
+    "design-system",
+    "react",
+    "vue",
+    "angular",
+    "expo",
+    "accessibility",
+    "wcag"
+  ],
+  "runtime": "declarative",
+  "entrypoint": "ui.md",
+  "agent": {
+    "name": "ui",
+    "description": "Senior UI engineer: design systems, components, styling, theming, accessibility, and front-end performance across React, Vue, Angular, and Expo/React Native.",
+    "model": "sonnet",
+    "mode": "all",
+    "temperature": 0.2,
+    "tools": [
+      "read",
+      "glob",
+      "grep",
+      "bash",
+      "write",
+      "edit",
+      "webfetch",
+      "websearch",
+      "skill",
+      "todowrite",
+      "question"
+    ],
+    "permission": {
+      "read": "allow",
+      "edit": "allow",
+      "webfetch": "allow",
+      "websearch": "allow",
+      "skill": "allow",
+      "todowrite": "allow",
+      "question": "allow",
+      "bash": {
+        "*": "allow",
+        "rm -rf *": "deny",
+        "git reset --hard*": "deny",
+        "git stash*": "deny",
+        "git add -A*": "deny",
+        "git add .": "deny"
+      },
+      "external_directory": {
+        "~/.config/opencode/**": "allow",
+        "/Users/nix/dev/ai/**": "allow"
+      }
+    }
+  },
+  "render": {
+    "claude": {
+      "model": "sonnet",
+      "version": "0.1.0",
+      "tools": [
+        "Read",
+        "Glob",
+        "Grep",
+        "Bash",
+        "Write",
+        "Edit",
+        "WebFetch",
+        "WebSearch",
+        "Skill",
+        "TodoWrite",
+        "AskUserQuestion"
+      ]
+    },
+    "opencode": {
+      "model": "deepseek/deepseek-flash",
+      "mode": "all",
+      "temperature": 0.2
+    }
+  },
+  "install": {
+    "type": "agent",
+    "hosts": [
+      "claude",
+      "opencode"
+    ]
+  },
+  "dependencies": [
+    "ui-playbooks",
+    "browser-testing"
+  ],
+  "requires": {
+    "tool_calling": true
+  }
+}
