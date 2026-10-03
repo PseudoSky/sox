@@ -1,0 +1,18 @@
+{
+  "name": "@adhd/sox-extension-security",
+  "version": "0.1.0",
+  "description": "security agent",
+  "private": true,
+  "license": "MIT",
+  "author": "sox-ecosystem",
+  "keywords": [
+    "security",
+    "agent",
+    "extension",
+    "threat-modeling",
+    "penetration-testing",
+    "audit",
+    "appsec",
+    "vulnerability"
+  ]
+}

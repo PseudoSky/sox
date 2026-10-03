@@ -1,0 +1,110 @@
+{
+  "$schema": "https://your-registry/schemas/extension/v2.json",
+  "id": "security",
+  "version": "0.1.0",
+  "type": "agent",
+  "title": "security",
+  "description": "Use this when a project needs a security owner — threat modeling, secure-design review, code and configuration auditing, dependency and supply-chain risk, and authorized penetration testing. Triggers: \"threat model this\", \"audit this for security\", \"review auth and session handling\", \"is this dependency safe\", \"pentest the staging API\", \"classify these findings\", \"are we exposed to X\". Every finding carries reproduction evidence and a fix; intrusive testing requires written authorization.",
+  "compatibility": {
+    "host": ">=1.0.0 <2.0.0"
+  },
+  "license": "MIT",
+  "author": "sox-ecosystem",
+  "keywords": [
+    "security",
+    "threat-modeling",
+    "penetration-testing",
+    "audit",
+    "appsec",
+    "vulnerability",
+    "least-privilege",
+    "secrets-management",
+    "supply-chain",
+    "compliance",
+    "incident-response",
+    "cryptography"
+  ],
+  "runtime": "declarative",
+  "entrypoint": "security.md",
+  "invocation": {
+    "protocol": "function-export",
+    "handler": "run",
+    "description": "Declarative agent — host reads the prose body and renders the host header from agent/render at install time."
+  },
+  "requires": {
+    "tool_calling": true
+  },
+  "agent": {
+    "name": "security",
+    "description": "Sole owner of a project's security posture: threat models, secure-design review, code/config/dependency auditing, and authorized penetration testing. Never fabricates a finding or severity, and never tests a system without written authorization.",
+    "model": "sonnet",
+    "mode": "all",
+    "temperature": 0.2,
+    "tools": [
+      "read",
+      "glob",
+      "grep",
+      "bash",
+      "write",
+      "edit",
+      "webfetch",
+      "websearch",
+      "skill",
+      "todowrite",
+      "question"
+    ],
+    "permission": {
+      "read": "allow",
+      "edit": "allow",
+      "write": "allow",
+      "webfetch": "allow",
+      "websearch": "allow",
+      "skill": "allow",
+      "todowrite": "allow",
+      "question": "allow",
+      "bash": {
+        "*": "allow",
+        "rm -rf *": "deny",
+        "git reset --hard*": "deny",
+        "git stash*": "deny",
+        "git add -A*": "deny",
+        "git add .": "deny"
+      },
+      "external_directory": {
+        "~/.config/opencode/**": "allow",
+        "/Users/nix/dev/ai/**": "allow"
+      }
+    }
+  },
+  "render": {
+    "claude": {
+      "model": "sonnet",
+      "version": "v0.1.0",
+      "tools": [
+        "Read",
+        "Glob",
+        "Grep",
+        "Bash",
+        "Write",
+        "Edit",
+        "WebFetch",
+        "WebSearch",
+        "Skill",
+        "TodoWrite",
+        "AskUserQuestion"
+      ]
+    },
+    "opencode": {
+      "model": "deepseek/deepseek-flash",
+      "mode": "all",
+      "temperature": 0.2
+    }
+  },
+  "install": {
+    "type": "agent",
+    "hosts": [
+      "claude",
+      "opencode"
+    ]
+  }
+}
