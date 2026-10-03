@@ -354,7 +354,7 @@ describe('BL-c5249cdd — memory fts-rebuild / memory restore', () => {
     await expect(runCli(['restore', path.join(dir, 'no-such-backup.db'), '--db', db])).rejects.toMatchObject({ code: 1 });
   }, T);
 
-  it('BL-c5249cdd: restoring a previous-format (v1) backup surfaces the unverified-FTS contract', async () => {
+  it('BL-c5249cdd + BL-1dc34780: restoring a previous-format (v1) backup surfaces the unverified-FTS contract', async () => {
     const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'sox-bl-c5249cdd-v1-')));
     cleanups.push(() => fs.rmSync(dir, { recursive: true, force: true }));
     const target = path.join(dir, 'memory.db');
@@ -380,9 +380,12 @@ describe('BL-c5249cdd — memory fts-rebuild / memory restore', () => {
     // existing `0/0 sentinel round-trips equal` line is kept (and would read as
     // verified on its own), so the extra NOT-verified line is what carries the
     // signal.
-    expect(out).toContain('restored format: v1');
+    expect(out, 'BL-1dc34780: restore must name the restored v1 format').toContain('restored format: v1');
     expect(out).toMatch(/fts:\s+0\/0 sentinel round-trips equal/);
-    expect(out).toMatch(/fts:\s+NOT verified \(previous_format_unreadable_by_driver\)/);
+    expect(
+      out,
+      'BL-1dc34780: a skipped FTS verification must read as NOT verified, not as a clean pass',
+    ).toMatch(/fts:\s+NOT verified \(previous_format_unreadable_by_driver\)/);
   }, T);
 
   // fts-migrate is the v1→v2 store-FORMAT migration (BL-89849d2a). Its driver
