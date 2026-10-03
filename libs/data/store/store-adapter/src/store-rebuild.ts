@@ -1614,18 +1614,49 @@ export async function migrateStoreFormatOffline(
   const cleanupSourceArtifacts = (): void =>
     removeCreatedArtifacts(canonical, sourceArtifactsBefore, 'store.migrate.cleanup_failed');
 
-  // (BL-00296157) The pre-migration image is a MAIN-FILE-ONLY reflink captured
-  // below, after this open. If the source `-wal` still holds committed-but-not-
-  // checkpointed frames the image would silently omit them and advertise an
-  // incomplete rollback point. Refuse BEFORE the writable gate open — whose own
-  // open-time self-heal writes v2 pages into the WAL, which would otherwise make
-  // even a clean previous-format source read as dirty. No checkpoint is
-  // introduced (ADR-0012); the refusal is a typed operator action (ADR-0013 D4).
-  // `--dry-run` writes nothing and captures no image, so it is not gated here.
+  // (BL-00296157) The pre-migration image is a MAIN-FILE-ONLY reflink. If the
+  // source `-wal` still holds committed-but-not-checkpointed frames the image
+  // would silently omit them and advertise an incomplete rollback point. Refuse
+  // BEFORE the writable gate open — whose own open-time self-heal writes v2 pages
+  // into the WAL, which would otherwise make even a clean previous-format source
+  // read as dirty. No checkpoint is introduced (ADR-0012); the refusal is a typed
+  // operator action (ADR-0013 D4). `--dry-run` writes nothing and captures no
+  // image, so it is not gated here.
   if (opts.dryRun !== true) {
     const sourceWalBytes = readStoreWalBytes(canonical);
     if (sourceWalBytes > 0) throw new RollbackImageWalNotEmptyError(canonical, sourceWalBytes);
   }
+
+  // §2.2 — the pre-migration image, captured HERE: immediately after the guard
+  // above proved the source `-wal` is empty and BEFORE the writable gate open.
+  // The gate open runs the BL-347 open-time self-heal, which DROP+CREATEs the v1
+  // FTS index and writes v2 pages into the `-wal`; at a large corpus those writes
+  // can reach the WAL auto-checkpoint threshold and fold v2 pages into the main
+  // file, so an image taken AFTER that open can be neither a valid v1 nor a valid
+  // v2 store. No open and no write has happened yet at this point, so the main
+  // file is a complete, byte-exact v1 store and the image can never contain
+  // post-open writes. The copy needs no gate lock: a non-empty source `-wal`
+  // (which would be a live writer's frames) was refused just above, and the gate's
+  // peer check follows. The image is a reflink clone — byte-exact, independent,
+  // copy-on-write — and is the ONLY rollback path (a 0.7.x open of a migrated v2
+  // store is CORRUPTING, DESIGN §5/§6a), so it is mandatory, not advisory.
+  const ts = now();
+  const migratePath = `${canonical}.migrate-${stamp(ts)}`;
+  const backupPath = `${canonical}.pre-rebuild-${stamp(ts)}`;
+  const preMigrationPath = `${canonical}.pre-migration-${stamp(ts)}`;
+  if (opts.dryRun !== true) {
+    if (existsSync(migratePath) || existsSync(backupPath) || existsSync(preMigrationPath)) {
+      return done({ status: 'failed', reason: 'error', db_path: canonical, error: `an artifact of this migration already exists beside ${canonical}` });
+    }
+    try {
+      copyFileSync(canonical, preMigrationPath, fsConstants.COPYFILE_FICLONE);
+    } catch (err) {
+      return done({ status: 'failed', reason: 'error', db_path: canonical, error: err instanceof Error ? err.message : String(err) });
+    }
+  }
+  let before: StorePageStats;
+  let facts: StoreFacts;
+  let transform: StoreFormatMigrationTransform[];
 
   // §2.4a — the offline-exclusive open (the SAME gate fts-optimize and
   // fts-rebuild use). Writable for the real migration, because the transform
@@ -1640,6 +1671,9 @@ export async function migrateStoreFormatOffline(
   });
   if (!gate.ok) {
     cleanupSourceArtifacts();
+    // The image is captured before the gate now, so a refused open must not leave
+    // an orphan `.pre-migration-*` behind for a migration that never ran.
+    if (opts.dryRun !== true) removeFileAndArtifacts(preMigrationPath, 'store.migrate.cleanup_failed');
     if (gate.reason === 'open_failed') {
       return done({ status: 'failed', reason: 'open_failed', db_path: canonical, error: gate.error });
     }
@@ -1667,24 +1701,8 @@ export async function migrateStoreFormatOffline(
     }
   }
 
-  const ts = now();
-  const migratePath = `${canonical}.migrate-${stamp(ts)}`;
-  const backupPath = `${canonical}.pre-rebuild-${stamp(ts)}`;
-  const preMigrationPath = `${canonical}.pre-migration-${stamp(ts)}`;
-  let before: StorePageStats;
-  let facts: StoreFacts;
-  let transform: StoreFormatMigrationTransform[];
   try {
-    if (existsSync(migratePath) || existsSync(backupPath) || existsSync(preMigrationPath)) {
-      throw new Error(`an artifact of this migration already exists beside ${canonical}`);
-    }
     log.info('store.migrate.start', { db_path: canonical, driver: effectiveVersion });
-
-    // §2.2 — the pre-migration image, captured while the store's FTS index is
-    // still v1 (a reflink clone: byte-exact, independent, copy-on-write). This
-    // is the ONLY rollback path — a 0.7.x open of a migrated v2 store is
-    // CORRUPTING (DESIGN §5/§6a), so the image is mandatory, not advisory.
-    copyFileSync(canonical, preMigrationPath, fsConstants.COPYFILE_FICLONE);
 
     // The v1 source's footprint, against which reclaim is measured.
     before = await readStorePageStats(adapter, canonical);
@@ -1702,7 +1720,7 @@ export async function migrateStoreFormatOffline(
     await adapter.backupTo(migratePath, { skipIntegrityCheck: true });
   } catch (err) {
     removeFileAndArtifacts(migratePath, 'store.migrate.cleanup_failed');
-    return done({ status: 'failed', reason: 'error', db_path: canonical, error: err instanceof Error ? err.message : String(err) });
+    return done({ status: 'failed', reason: 'error', db_path: canonical, pre_migration_image: preMigrationPath, error: err instanceof Error ? err.message : String(err) });
   } finally {
     try {
       await adapter.close();

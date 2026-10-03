@@ -82,6 +82,53 @@ const ROUNDS = 12;
 const PER_ROUND = 100;
 const SENTINELS = [0, 377, ROUNDS * PER_ROUND - 1].map(tok);
 
+/** Raw handle for the 0.7.2 driver (same shape used elsewhere in the repo). */
+interface RawDb {
+  exec(sql: string): Promise<unknown>;
+  prepare(sql: string): Promise<{ run(...a: unknown[]): Promise<unknown> }>;
+  close(): Promise<unknown>;
+}
+
+/**
+ * The 0.7.2 driver co-located with the spike probes (the installed package is
+ * 0.8.1). It is the only way to create a genuine PREVIOUS-FORMAT (v1) store:
+ * `CREATE INDEX ... USING fts` under 0.7.2 writes the v1 index the installed
+ * driver refuses to probe.
+ */
+const V1_DRIVER_URL = new URL(
+  '../../../../../../libs/data/store/store-adapter/scripts/turso-driver-probes/researcher-exp/node_modules/@tursodatabase/database/dist/promise.js',
+  import.meta.url,
+);
+
+/**
+ * A genuine v1 backup carrying the two tables `restore` requires (`node`,
+ * `edge`) plus one `USING fts` index, checkpointed + closed so the `-wal` is
+ * empty. Restoring it must surface `fts_verified:false` — the installed 0.8.x
+ * driver cannot probe a v1 index, so the sentinel round-trips are skipped.
+ */
+async function seedV1Backup(dir: string, rows = 40): Promise<string> {
+  const { connect } = (await import(V1_DRIVER_URL.href)) as unknown as {
+    connect(p: string, o: Record<string, unknown>): Promise<RawDb>;
+  };
+  const dbPath = path.join(dir, 'v1-backup.db');
+  const d = await connect(dbPath, { timeout: 5000, experimental: ['index_method', 'multiprocess_wal'] });
+  try {
+    await d.exec(
+      'CREATE TABLE node (rowid INTEGER PRIMARY KEY, uid TEXT, kind TEXT, content TEXT, name TEXT, summary TEXT, t_created TEXT)',
+    );
+    await d.exec('CREATE TABLE edge (rowid INTEGER PRIMARY KEY, uid TEXT, kind TEXT)');
+    await d.exec('CREATE INDEX idx_fts_node ON node USING fts (content)');
+    const ins = await d.prepare('INSERT INTO node (uid, kind, content, name, summary, t_created) VALUES (?, ?, ?, ?, ?, ?)');
+    for (let i = 0; i < rows; i++) {
+      await ins.run(`u${i}`, 'episode', `alpha beta gamma ${tok(i)} epsilon`, `name ${tok(i)}`, 'summary text', new Date().toISOString());
+    }
+    await d.exec('PRAGMA wal_checkpoint(TRUNCATE)');
+  } finally {
+    await d.close();
+  }
+  return dbPath;
+}
+
 /** A leaked store: the real memory-core schema, ROUNDS × (PER_ROUND inserts + OPTIMIZE). */
 async function seedLeakedStore(): Promise<string> {
   // realpath: the store reports its canonical path (macOS /var → /private/var).
@@ -305,6 +352,37 @@ describe('BL-c5249cdd — memory fts-rebuild / memory restore', () => {
     expect(logs.join('\n')).toContain('[restore] DRY-RUN');
     expect(sha(db)).toBe(rebuiltSha);
     await expect(runCli(['restore', path.join(dir, 'no-such-backup.db'), '--db', db])).rejects.toMatchObject({ code: 1 });
+  }, T);
+
+  it('BL-c5249cdd: restoring a previous-format (v1) backup surfaces the unverified-FTS contract', async () => {
+    const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'sox-bl-c5249cdd-v1-')));
+    cleanups.push(() => fs.rmSync(dir, { recursive: true, force: true }));
+    const target = path.join(dir, 'memory.db');
+    const live = await openDb(target);
+    try {
+      for (let i = 0; i < 5; i++) {
+        await live.executeRun(
+          'INSERT INTO node (uid, kind, content, name, summary, t_created) VALUES (?, ?, ?, ?, ?, ?)',
+          [`live${i}`, 'episode', `live row ${tok(i)}`, `live ${tok(i)}`, 'summary text', new Date().toISOString()],
+        );
+      }
+    } finally {
+      await live.close();
+    }
+    const backup = await seedV1Backup(dir);
+
+    await runCli(['restore', backup, '--db', target]);
+
+    const out = logs.join('\n');
+    expect(out).toContain('[restore] complete');
+    // The restore contract is surfaced, not silently "ok": the previous format
+    // and the by-design skipped FTS verification both reach the operator. The
+    // existing `0/0 sentinel round-trips equal` line is kept (and would read as
+    // verified on its own), so the extra NOT-verified line is what carries the
+    // signal.
+    expect(out).toContain('restored format: v1');
+    expect(out).toMatch(/fts:\s+0\/0 sentinel round-trips equal/);
+    expect(out).toMatch(/fts:\s+NOT verified \(previous_format_unreadable_by_driver\)/);
   }, T);
 
   // fts-migrate is the v1→v2 store-FORMAT migration (BL-89849d2a). Its driver

@@ -64,6 +64,7 @@ import {
   migrateStoreFormatOffline,
   RollbackImageWalNotEmptyError,
   type StorePageStats,
+  type StoreFtsFormat,
   type StoreReplacementVerification,
 } from '@adhd/sox-store-adapter';
 
@@ -665,12 +666,23 @@ function fmtStats(s: StorePageStats): string {
   return `${s.file_bytes} bytes, page_count ${s.page_count} × page_size ${s.page_size}, freelist_count ${s.freelist_count}`;
 }
 
-function printVerification(tag: string, v: StoreReplacementVerification): void {
+function printVerification(
+  tag: string,
+  v: StoreReplacementVerification,
+  restoredFormat?: StoreFtsFormat,
+): void {
   const tablesOk = v.table_counts.filter((t) => t.ok).length;
   const ftsOk = v.fts_round_trip.filter((f) => f.ok).length;
   console.log(`  verification: ${v.ok ? 'ok' : 'FAILED'}`);
+  if (restoredFormat !== undefined) console.log(`  restored format: ${restoredFormat}`);
   console.log(`    tables:     ${tablesOk}/${v.table_counts.length} row counts equal`);
   console.log(`    fts:        ${ftsOk}/${v.fts_round_trip.length} sentinel round-trips equal`);
+  // A previous-format (v1) store cannot be FTS-probed by the installed 0.8.x
+  // driver, so the sentinel round-trips are skipped by design (0/0) rather than
+  // failed. Surface that explicitly: "0/0 equal" alone reads as verified.
+  if (v.fts_verified === false) {
+    console.log(`    fts:        NOT verified (${v.fts_skip_reason ?? 'unknown'})`);
+  }
   console.log(
     `    integrity:  ${v.integrity.ok ? 'ok' : 'DAMAGED'} (page-accounting ${v.integrity.page_accounting}` +
       `${v.integrity.truncated ? ', TRUNCATED' : ''})`,
@@ -898,7 +910,7 @@ async function cmdRestore(
     process.exit(2);
   }
   if (r.restored) console.log(`  restored: ${fmtStats(r.restored)}`);
-  if (r.verification) printVerification('restore', r.verification);
+  if (r.verification) printVerification('restore', r.verification, r.restored_format);
   if (r.status === 'failed') {
     console.error(`[restore] ERROR (${r.reason ?? 'unknown'}): ${r.error ?? 'unknown'} (${r.duration_ms} ms)`);
     process.exit(1);
