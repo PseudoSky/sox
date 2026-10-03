@@ -1,0 +1,80 @@
+{
+  "$schema": "https://your-registry/schemas/extension/v2.json",
+  "id": "research",
+  "version": "0.2.0",
+  "type": "skill",
+  "title": "research — multi-domain research with memory-first resolution and hardened verification",
+  "description": "Use this when a question requires external discovery across one or more domains and the answer must be graded, cited, and persisted. A domain-neutral, expansion-first research process: it generalizes a question, resolves it from memory first (answering outright when memory fully knows it), and otherwise fans the question out across every domain it touches — routing each to a pluggable playbook (7 playbooks over 16 domains) via a structured sub-researcher prompt, so many domains are covered in parallel with the minimum number of dispatches. Findings are graded and written to memory; hardened verification proves the process ran on disk, in the memory store, and by recorded tool use rather than by self-report. An optional domain_narrowing input restricts the run to caller-named domains. Tool-agnostic: bodies reference capabilities, never tool names (ADR-0026).",
+  "compatibility": {
+    "host": ">=1.0.0 <2.0.0"
+  },
+  "license": "MIT",
+  "author": "sox-ecosystem",
+  "source": "derived from extensions/agents/researcher/agent.md",
+  "sourceVersion": "0.1.5",
+  "keywords": [
+    "research",
+    "playbooks",
+    "routing",
+    "domain-neutral",
+    "expansion-first",
+    "domain-narrowing",
+    "memory-first",
+    "sub-researcher",
+    "verification",
+    "capability-referenced"
+  ],
+  "runtime": "declarative",
+  "entrypoint": "SKILL.md",
+  "run_interface": {
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "question": {
+          "type": "string",
+          "description": "The research question, or a direction that implies one or more questions."
+        },
+        "domain_narrowing": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Optional. Restrict the run to this subset of the 16 domains; absent = all domains in play. The process still fans out across every allowed domain."
+        },
+        "run_id": {
+          "type": "string",
+          "description": "Run id; defaults to <ISO-date>-<slug>. Names the on-disk run directory under .research/runs/."
+        },
+        "max_sub_researchers": {
+          "type": "integer",
+          "description": "Hard cap on concurrent dispatched sub-researchers (default 4). The parent also runs any single-playbook question inline."
+        }
+      },
+      "required": [
+        "question"
+      ]
+    },
+    "output_schema": {
+      "type": "object",
+      "properties": {
+        "run_dir": {
+          "type": "string",
+          "description": "Path to .research/runs/<run_id>/ holding the verified evidence (manifest, questions, routing, findings, memory read-back, trace)."
+        },
+        "answer": {
+          "type": "string",
+          "description": "Aggregated answer with confidence labels and citations."
+        },
+        "verification": {
+          "type": "object",
+          "description": "Result of scripts/verify-research-run.mjs: {ok, failures[]}."
+        }
+      }
+    }
+  },
+  "install": {
+    "type": "skill",
+    "hosts": [
+      "claude",
+      "opencode"
+    ]
+  }
+}
