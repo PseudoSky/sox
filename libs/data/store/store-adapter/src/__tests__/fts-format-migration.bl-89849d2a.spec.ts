@@ -81,6 +81,13 @@ const PER_ROUND = 100;
  * interleaved insert + `OPTIMIZE INDEX` loop so the FTS directory btree grows
  * orphaned segments — the same corpus shape `captureFacts`/`verifyReplacement`
  * round-trips, and the leak that `VACUUM INTO` reclaims.
+ *
+ * BL-00296157: checkpoint (TRUNCATE) before closing so the source `-wal` is
+ * empty — the clean operator state a real migration quiesces to. The "leak"
+ * this fixture models is orphaned FTS segment rows in the MAIN file, not WAL
+ * dirt; leaving committed frames in the `-wal` would trip the migration's
+ * rollback-image guard (which refuses a main-file-only image that could omit
+ * them), not exercise the segment leak.
  */
 async function seedLeakedStore(dbPath: string): Promise<void> {
   const { connect } = (await import('@tursodatabase/database')) as unknown as {
@@ -95,6 +102,7 @@ async function seedLeakedStore(dbPath: string): Promise<void> {
       for (let j = 0; j < PER_ROUND; j++) await ins.run(doc(r * PER_ROUND + j));
       await d.exec('OPTIMIZE INDEX idx_fts_node');
     }
+    await d.exec('PRAGMA wal_checkpoint(TRUNCATE)');
   } finally {
     await d.close();
   }

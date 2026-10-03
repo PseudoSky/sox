@@ -62,6 +62,7 @@ import {
   rebuildStoreOffline,
   restoreStoreOffline,
   migrateStoreFormatOffline,
+  RollbackImageWalNotEmptyError,
   type StorePageStats,
   type StoreReplacementVerification,
 } from '@adhd/sox-store-adapter';
@@ -777,7 +778,17 @@ async function cmdFtsMigrate(dbFlag: string, rest: string[], dryRun: boolean): P
     console.error(`[fts-migrate] db not found: ${resolvedDb}`);
     process.exit(1);
   }
-  const r = await migrateStoreFormatOffline(resolvedDb, { dryRun });
+  let r: Awaited<ReturnType<typeof migrateStoreFormatOffline>>;
+  try {
+    r = await migrateStoreFormatOffline(resolvedDb, { dryRun });
+  } catch (err) {
+    // BL-00296157: a typed operator-action refusal (e.g. a non-empty source
+    // `-wal` that would make the rollback image incomplete) aborts BEFORE the
+    // store is opened — surface its code + guidance and stop (ADR-0013 D4).
+    const code = err instanceof RollbackImageWalNotEmptyError ? err.code : (err as { code?: string }).code;
+    console.error(`[fts-migrate] ERROR${code ? ` (${code})` : ''}: ${err instanceof Error ? err.message : String(err)}`);
+    process.exit(1);
+  }
   if (r.status === 'refused') {
     console.error(refusalMessage('fts-migrate', r.reason, r.peer_pids, r.db_path, r.error));
     if (r.reason === 'driver_not_v2_aware') {

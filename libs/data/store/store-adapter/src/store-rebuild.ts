@@ -103,6 +103,7 @@ import {
 } from './adapter-meta.js';
 import { acquireColdOpenLock } from './cold-open-lock.js';
 import { SOX_ENGINE_TABLE } from './engine-guard.js';
+import { RollbackImageWalNotEmptyError } from './errors.js';
 import {
   classifyIntegrityMessages,
   parseFtsColumns,
@@ -169,11 +170,21 @@ async function pragmaNumber(adapter: StoreAdapter, pragma: string): Promise<numb
   return n;
 }
 
+/**
+ * Bytes in the store's write-ahead log sidecar (`<dbPath>-wal`), `0` when the
+ * sidecar is absent. The single source of truth for "is this store's WAL empty"
+ * and, crucially, for the rollback-image guard in `migrateStoreFormatOffline`
+ * (BL-00296157), which reads the SOURCE through this BEFORE opening it.
+ */
+export function readStoreWalBytes(dbPath: string): number {
+  return fileSizeOrNull(`${dbPath}-wal`) ?? 0;
+}
+
 /** Read the page stats of an open store (`dbPath` is the file it has open). */
 export async function readStorePageStats(adapter: StoreAdapter, dbPath: string): Promise<StorePageStats> {
   return {
     file_bytes: fileSizeOrNull(dbPath) ?? 0,
-    wal_bytes: fileSizeOrNull(`${dbPath}-wal`) ?? 0,
+    wal_bytes: readStoreWalBytes(dbPath),
     page_count: await pragmaNumber(adapter, 'page_count'),
     page_size: await pragmaNumber(adapter, 'page_size'),
     freelist_count: await pragmaNumber(adapter, 'freelist_count'),
@@ -194,6 +205,32 @@ export interface FtsSentinel {
 interface StoreFacts {
   tableCounts: Map<string, number>;
   sentinels: FtsSentinel[];
+  /** `'v1'` when the store's FTS index is a previous-format index the installed
+   *  driver cannot read (so `sentinels` is empty by construction against it),
+   *  else `'v2'`. See `captureFacts`'s `allowPreviousFormat`. */
+  ftsFormat: StoreFtsFormat;
+}
+
+/** The FTS on-disk format a store is in. `v1` is the 0.7.x whole-index Tantivy
+ *  manifest; `v2` is the 0.8.x per-segment registry. A 0.8.x driver opens a `v1`
+ *  store and serves its base tables, but REFUSES the FTS index itself. */
+export type StoreFtsFormat = 'v1' | 'v2';
+
+/**
+ * (BL-00296157) True when `err` is the 0.8.x driver's refusal to READ a `v1` FTS
+ * index:
+ *
+ *   FTS index <name> was created by an older version of Turso and its storage
+ *   format is no longer supported; rebuild it with DROP INDEX <name> followed by
+ *   CREATE INDEX ... USING fts
+ *
+ * The driver emits `code: 'GenericFailure'` on every error (ADR-0012 §3), so the
+ * ONLY discriminator is message text — the same convention as
+ * `isAlreadyOpenWithoutMultiprocessWal`. It matches ONLY this marker: a genuine
+ * current-format corruption raises a different message and propagates, failing
+ * the caller closed. */
+export function isPreviousFormatFtsError(err: unknown): boolean {
+  return /created by an older version of Turso/i.test(err instanceof Error ? err.message : String(err));
 }
 
 const q = (ident: string): string => `"${ident.replace(/"/g, '""')}"`;
@@ -228,7 +265,10 @@ async function countFtsHits(adapter: StoreAdapter, s: Pick<FtsSentinel, 'table' 
  * count each returns on THIS store. The replacement must return the same
  * counts.
  */
-async function captureFtsSentinels(adapter: StoreAdapter): Promise<FtsSentinel[]> {
+async function captureFtsSentinels(
+  adapter: StoreAdapter,
+  opts: { allowPreviousFormat: boolean },
+): Promise<{ sentinels: FtsSentinel[]; previousFormat: boolean }> {
   const { rows: indexes } = await adapter.executeAll<{ name: string; tbl_name: string; sql: string | null }>(
     "SELECT name, tbl_name, sql FROM sqlite_master WHERE type = 'index' AND sql LIKE '%USING fts%' ORDER BY name",
   );
@@ -250,16 +290,44 @@ async function captureFtsSentinels(adapter: StoreAdapter): Promise<FtsSentinel[]
       if (token === undefined || seen.has(token.toLowerCase())) continue;
       seen.add(token.toLowerCase());
       const probe = { index: ix.name, table, columns, token };
-      out.push({ ...probe, hits: await countFtsHits(adapter, probe) });
+      let hits: number;
+      try {
+        hits = await countFtsHits(adapter, probe);
+      } catch (err) {
+        if (opts.allowPreviousFormat && isPreviousFormatFtsError(err)) {
+          // The whole index is v1-format and the installed driver refuses to read
+          // it. The sentinel round-trip is impossible on THIS store and on any
+          // clone of it, so skip it entirely and let the caller record the format
+          // rather than fail the restore. BL-00296157.
+          return { sentinels: [], previousFormat: true };
+        }
+        throw err;
+      }
+      out.push({ ...probe, hits });
     }
   }
-  return out;
+  return { sentinels: out, previousFormat: false };
 }
 
-async function captureFacts(adapter: StoreAdapter): Promise<StoreFacts> {
+/**
+ * Capture what a replacement must preserve. `allowPreviousFormat` is set ONLY by
+ * the restore path: a rollback image may legitimately be a previous-format store
+ * the installed driver cannot read FTS from, and restoring it must still succeed
+ * (base-table counts + integrity_check) with `ftsFormat: 'v1'`. Every other
+ * caller leaves it off, so a previous-format source is a hard error there — a
+ * rebuild/migration that produces a v1 index must fail, not silently skip FTS
+ * verification. BL-00296157.
+ */
+async function captureFacts(
+  adapter: StoreAdapter,
+  opts: { allowPreviousFormat?: boolean } = {},
+): Promise<StoreFacts> {
   const tableCounts = new Map<string, number>();
   for (const t of await listUserTables(adapter)) tableCounts.set(t, await countRows(adapter, t));
-  return { tableCounts, sentinels: await captureFtsSentinels(adapter) };
+  const { sentinels, previousFormat } = await captureFtsSentinels(adapter, {
+    allowPreviousFormat: opts.allowPreviousFormat ?? false,
+  });
+  return { tableCounts, sentinels, ftsFormat: previousFormat ? 'v1' : 'v2' };
 }
 
 // ── Verification ─────────────────────────────────────────────────────────────
@@ -278,6 +346,11 @@ export interface StoreReplacementVerification {
   };
   /** Rebuild only: the copy's growth counter reads 0 and `last_rebuild_at` is set. */
   growth_meta_reset: boolean | null;
+  /** The FTS sentinel round-trip ran and matched. `false` ONLY for a
+   *  previous-format (`v1`) replacement, where the installed driver cannot read
+   *  the index at all — see `fts_skip_reason`. */
+  fts_verified: boolean;
+  fts_skip_reason: string | null;
   failures: string[];
 }
 
@@ -318,12 +391,17 @@ async function verifyReplacement(
     }
 
     const fts_round_trip: StoreReplacementVerification['fts_round_trip'] = [];
-    for (const s of facts.sentinels) {
-      const replacement_hits = await countFtsHits(adapter, s);
-      const ok = replacement_hits === s.hits;
-      if (!ok) failures.push(`fts ${s.index} '${s.token}': source=${s.hits} replacement=${replacement_hits}`);
-      fts_round_trip.push({ index: s.index, token: s.token, source_hits: s.hits, replacement_hits, ok });
+    if (facts.ftsFormat === 'v2') {
+      for (const s of facts.sentinels) {
+        const replacement_hits = await countFtsHits(adapter, s);
+        const ok = replacement_hits === s.hits;
+        if (!ok) failures.push(`fts ${s.index} '${s.token}': source=${s.hits} replacement=${replacement_hits}`);
+        fts_round_trip.push({ index: s.index, token: s.token, source_hits: s.hits, replacement_hits, ok });
+      }
     }
+    // A v1 replacement is skipped, not failed: the driver cannot read the index,
+    // so there is no round-trip to run — `fts_verified: false` records that the
+    // FTS half of the verification was NOT exercised. BL-00296157.
 
     const raw = await adapter.executeAll<Record<string, unknown>>('PRAGMA integrity_check');
     const messages = raw.rows
@@ -362,6 +440,8 @@ async function verifyReplacement(
           truncated: cls.truncated,
         },
         growth_meta_reset,
+        fts_verified: facts.ftsFormat === 'v2',
+        fts_skip_reason: facts.ftsFormat === 'v1' ? 'previous_format_unreadable_by_driver' : null,
         failures,
       },
     };
@@ -1045,6 +1125,14 @@ export interface StoreRestoreReport {
   verification?: StoreReplacementVerification;
   /** BL-15d6300c: the content measurement every restore makes before cloning. */
   content?: StoreRestoreContentCheck;
+  /**
+   * BL-00296157: the on-disk FTS format the BACKUP carried, detected at fact
+   * capture. `'v1'` means the 0.8.x driver could not read the FTS index (a
+   * pre-migration image); the FTS sentinel round-trip was skipped by design
+   * (`verification.fts_verified === false`), so the restore is a success that
+   * reports its format instead of a failure.
+   */
+  restored_format?: StoreFtsFormat;
   duration_ms: number;
   error?: string;
 }
@@ -1244,7 +1332,11 @@ export async function restoreStoreOffline(
     try {
       const src = await TursoAdapterImpl.connect({ dbPath: backup, readonly: true, allowFtsInReadonly: true, idleFlushMs: 3_600_000 });
       try {
-        facts = await captureFacts(src);
+        // BL-00296157: a pre-migration (v1) image is a SUPPORTED restore input.
+        // The 0.8.x driver refuses to read its FTS index, so capture the base
+        // facts + detect the previous format rather than failing the restore.
+        // Genuine current-format (v2) corruption still throws and fails closed.
+        facts = await captureFacts(src, { allowPreviousFormat: true });
         const tables = await listContentTables(src);
         content = {
           table: contentTable,
@@ -1286,7 +1378,7 @@ export async function restoreStoreOffline(
   }
   if (opts.dryRun === true) {
     removeFileAndArtifacts(clone, 'store.restore.cleanup_failed');
-    return done({ status: 'dry_run', restored, verification, content });
+    return done({ status: 'dry_run', restored_format: facts.ftsFormat, restored, verification, content });
   }
   let swap: SwapResult;
   try {
@@ -1303,6 +1395,7 @@ export async function restoreStoreOffline(
   return done({
     status: 'restored',
     ...(swap.backup_path !== null ? { replaced_path: swap.backup_path } : {}),
+    restored_format: facts.ftsFormat,
     restored,
     content,
     verification,
@@ -1520,6 +1613,19 @@ export async function migrateStoreFormatOffline(
   const sourceArtifactsBefore = listFileArtifacts(canonical, 'store.migrate.cleanup_failed');
   const cleanupSourceArtifacts = (): void =>
     removeCreatedArtifacts(canonical, sourceArtifactsBefore, 'store.migrate.cleanup_failed');
+
+  // (BL-00296157) The pre-migration image is a MAIN-FILE-ONLY reflink captured
+  // below, after this open. If the source `-wal` still holds committed-but-not-
+  // checkpointed frames the image would silently omit them and advertise an
+  // incomplete rollback point. Refuse BEFORE the writable gate open — whose own
+  // open-time self-heal writes v2 pages into the WAL, which would otherwise make
+  // even a clean previous-format source read as dirty. No checkpoint is
+  // introduced (ADR-0012); the refusal is a typed operator action (ADR-0013 D4).
+  // `--dry-run` writes nothing and captures no image, so it is not gated here.
+  if (opts.dryRun !== true) {
+    const sourceWalBytes = readStoreWalBytes(canonical);
+    if (sourceWalBytes > 0) throw new RollbackImageWalNotEmptyError(canonical, sourceWalBytes);
+  }
 
   // §2.4a — the offline-exclusive open (the SAME gate fts-optimize and
   // fts-rebuild use). Writable for the real migration, because the transform

@@ -472,3 +472,45 @@ export function isTshmCoordinationInitRace(err: unknown): boolean {
     /shared WAL coordination file is smaller than the coordination header/i.test(err.message)
   );
 }
+
+/**
+ * (BL-00296157) Thrown by `migrateStoreFormatOffline` — one-shot operator action,
+ * ADR-0013 D4 — when the source store's write-ahead log is NOT empty at the
+ * moment the pre-migration rollback image would be captured.
+ *
+ * The image is a MAIN-FILE-ONLY reflink (`COPYFILE_FICLONE`) of `<db>` taken
+ * while the source was on the previous FTS format. If the source `-wal` still
+ * holds committed-but-uncheckpointed frames, that clone silently captures the
+ * store WITHOUT those frames and the advertised recovery point is incomplete —
+ * the exact failure the rollback image exists to prevent. No sidecar guard fires
+ * today: the migration only removes artifacts the run itself created, so a
+ * pre-existing non-empty `-wal` passes through unremarked and the image is
+ * written as if the source were checkpointed.
+ *
+ * The guard runs BEFORE the store is opened for writing (the open-time self-heal
+ * writes into the WAL and would otherwise make every previous-format source read
+ * as dirty). Nothing is written and nothing is swapped: the refusal is surfaced
+ * by the `memory fts-migrate` subcommand (ADR-0013 D4), never an env toggle and
+ * never an automatic WAL checkpoint (ADR-0012 forbids a new checkpoint path).
+ */
+export class RollbackImageWalNotEmptyError extends Error {
+  public readonly code = 'E_ROLLBACK_IMAGE_WAL_NOT_EMPTY';
+
+  constructor(
+    public readonly dbPath: string,
+    /** `statSync` size of `<dbPath>-wal` at the refusal — always > 0 here. */
+    public readonly walBytes: number,
+  ) {
+    super(
+      `[BL-00296157] refusing the FTS-format migration: the source store's write-ahead log is not ` +
+        `empty — "${dbPath}-wal" is ${walBytes} byte(s). The pre-migration rollback image is a ` +
+        `main-file-only reflink, so it would silently capture the store WITHOUT these ` +
+        `committed-but-uncheckpointed frames, and the advertised recovery point would be incomplete. ` +
+        `The migration is refused BEFORE any image is written and BEFORE the store is opened for ` +
+        `writing: the source is untouched (no image, no swap). Make the source -wal empty first ` +
+        `(quiesce every writer and close/reopen the store so its WAL checkpoints into the main file), ` +
+        `then re-run \`memory fts-migrate\`.`,
+    );
+    this.name = 'RollbackImageWalNotEmptyError';
+  }
+}
