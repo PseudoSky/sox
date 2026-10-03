@@ -230,6 +230,23 @@ Schema version **1**. Each edit appends one dated entry; entries are never rewri
   `libs/host-registry/package.json` — is regressive (omits `agent-mcp`, `opencode`; no extras), so
   committing it would have undone metadata already on `main`. §7 gained one entry; no other rule
   changed.
+- **2026-10-02 — merged `fix/rollback-image-preopen-and-format` and reaped its worktree**
+  (`git-manager`, branch `fix/rollback-image-preopen-and-format`). *Reason:* §6's operation-log
+  convention requires one entry per git operation; no policy rule changed. The branch tip `f13c8912`
+  (based on `67f929f9`, itself already on `main`) was not fast-forwardable, so §1's diverged-branch
+  rule applied: `git merge --no-ff` into `main` produced merge commit `e330a1f9` (parents
+  `498a11ee` + `f13c8912`), carrying four files —
+  `libs/data/store/store-adapter/src/store-rebuild.ts`,
+  `libs/data/store/store-adapter/src/__tests__/store-rebuild-rollback-image.bl-00296157.spec.ts`,
+  and the two memory-cli files `…/members/memory-cli/src/index.ts` +
+  `…/members/memory-cli/src/fts-rebuild-cli.bl-c5249cdd.spec.ts`. §2's libs/data-consumed-by-bundles
+  gate was supplemented before merging: `npx nx run-many -t build` (exit 0) then
+  `node scripts/smoke-test.mjs` (exit 0 — **25 passed, 0 failed, 0 skipped**); the branch's own gates
+  were `store-adapter` 809/809, `memory-cli` 36/36, lint + typecheck green. The worktree
+  `.worktrees/rollback-image-followup` was removed under §5's three-part predicate (empty
+  `git status --porcelain`, unlocked, tip merged), with the safe `git branch -d` (never `-D`); no
+  `--force` and no §7 break-glass were used. Policy revision read from `main` @ `498a11ee`
+  (sha256 `9df92c00…`).
 
 ## 7. Break-glass
 
