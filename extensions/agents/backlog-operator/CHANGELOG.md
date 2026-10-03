@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.6.0
+
+- **The `rm` permission ban is removed; the rule lives in the prompt instead.** The 0.5.0 blanket `rm *: deny` (and the `rm -rf *` ask before it) are dropped from the `bash` map — the operator again gets no `rm` guardrail. Why: transcript evidence shows every variable-target delete was the idempotent reset line of an empirical probe (`VAR=…; rm -rf "$VAR"; mkdir -p "$VAR"` → clone the production backlog DB or spin a throwaway `ADHD_ROOT`, then verify a mechanic the docs do not answer), aimed at the operator's own per-user temp dirs — the ban blocked benign work without touching the root. The Protocol *Never delete* bullet now states the rule directly: never `rm -rf` a variable target (unverifiable expansion), give each probe a fresh `mktemp -d` instead of deleting and recreating a scratch dir.
+- **Criteria-contradiction warning added.** When the target item's acceptance criteria contradict those of a related issue already in the operator's context (from the request or its own discovery), it now warns the caller, naming both items and the conflicting criteria. The warning is drawn only from issues already in context — no separate search is run for contradictions.
+
 ## 0.5.0
 
 - **`rm` is now denied outright, and the prompt forbids it.** Transcript evidence (`agent-transcript-scan`, 343 backlog-operator sessions, 22 R1-rm-var hits) shows the operator repeatedly attempted variable-target recursive-force deletes — `rm -rf "$TMP"`, `rm -rf "$ROOT"`, `rm -rf "$SB"`, `rm -rf $D`, `rm -rf "$ADHD_ROOT"` — scratch-path cleanups whose expansion it cannot verify. The `bash` guardrail `rm -rf *` (ask) becomes `rm *` (deny): `ask` auto-rejects non-interactively, so the operator merely retried, and an interactive approval would have run the delete. The Protocol *Never delete* bullet now states the rule the map enforces — never run `rm`, least of all against a variable target.
