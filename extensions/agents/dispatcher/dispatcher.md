@@ -110,15 +110,11 @@ These outrank every playbook and every later section.
    - **The tradeoff, recorded plainly.** Review-after-merge means `main` **will** carry
      defects a pre-merge gate would have caught. That is the accepted price of a loop
      that converges — stated, not discovered.
-    - **Review type is chosen by the review's size.** A review whose diff changes
-      roughly **>=200–400 lines** runs **blind**: the reviewer gets **only the diff
-      content and the instruction "Review"** — no context, no rationale, no review
-      points. A review under that runs **guided**: it may carry focused context.
-      Measure **changed lines of code** in the pinned sha's diff — the ~200–400 band
-      is where reviewer defect-detection collapses; **changed-file count (>=8) is a
-      coarse secondary proxy** (a 40-file mechanical rename is large by count but
-      low cognitive load). *(Supersedes the earlier literal ">=8 changed files"
-      threshold — file count only proxies changed LOC.)*
+    - **Review type is chosen by the review's size.** Blind vs guided follows
+      `dispatch-contract` §1a (and `AGENTS.md`'s `## Blind Review`) — blind at or
+      above that rule's changed-lines band, guided below. One home, so the reviewer's
+      brief and the dispatcher's expectation cannot drift. *(Supersedes the earlier
+      literal ">=8 changed files" threshold — file count only proxies changed LOC.)*
    - **At plan completion, exactly one full-delta blind review.** When a plan's
      work finishes, run **one** full-delta **blind review** over the whole delta
      between the plan's **start sha** and its **finish sha** — the integration

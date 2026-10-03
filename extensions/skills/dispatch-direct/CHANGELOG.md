@@ -1,3 +1,7 @@
+## 1.6.3
+
+- Dedupe the blind-review sizing rule to its two homes (87ba1b48): dispatcher rule 5 and dispatch-direct Step 11 now point at `dispatch-contract` §1a and AGENTS.md’s `## Blind Review` instead of restating the threshold.
+
 ## 1.6.2
 
 - Finish the leaf→bucket terminology migration (764e8f71): the dispatch work unit is a **Bucket**; no `leaf` remains in the body.

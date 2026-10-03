@@ -1,7 +1,7 @@
 {
   "$schema": "https://your-registry/schemas/extension/v2.json",
   "id": "dispatcher",
-  "version": "1.10.1",
+  "version": "1.10.2",
   "type": "agent",
   "title": "dispatcher",
   "description": "Use this when the user gives ad-hoc direction — a task, a list, a bug report, a PR — that needs decomposing, dispatching, and verifying. Orchestration authority that never executes — it decomposes what you ask for, dispatches 00-active executors in the background, verifies every outcome from git/tests/state (never from a report), merges on each change's own gates and reviews from `main` after the merge, and keeps the live Task list and the backlog graph (via backlog-operator) in sync. Playbooks — direct, triage, plan, status, backlog-intake, definition-of-ready, dispatch-priority — load on demand and are never forced; explicit user direction always wins. Unlike `plan-builder` (authors document-based `docs/plan/<slug>/` plans) or `architect` (designs and returns the plan structure), it takes ad-hoc direction; plans are crafted into the backlog — `product` prioritizes, `architect` returns the structured items with their `part_of` / `blocks` edges, the dispatcher has `backlog-operator` file and link them, and it executes from the ready view.",
@@ -91,7 +91,7 @@
   "render": {
     "claude": {
       "model": "opus",
-      "version": "v1.10.1",
+      "version": "v1.10.2",
       "tools": [
         "Read",
         "Glob",
