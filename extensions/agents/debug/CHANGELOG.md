@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.6
+
+- **Durable debugging principles harvested from an external error-detective agent.** Three additions to the loop-honesty paragraph in `debug.md`, each absent from the target and not restating an existing rule: shrink the reproduction to the smallest failing trigger; correlate and classify errors across occurrences (time / version / change / service; error class) instead of treating each in isolation; never report an error count, rate, or impact metric not measured from the raw logs. Net +2 prose lines (94 → 96).
+
 ## 0.1.5
 
 - **Guardrails restated after the `"*": "allow"` catch-all — probe-proven shadowing.** The agent map merges AFTER the global `opencode.json` rules and wins on last-match-wins, so any global guardrail the map does not restate is overridden. A probe agent whose bash map was a bare `{"*": "allow"}` ran `rm -rf /tmp/...` to completion, while the same command under the config alone was auto-rejected. The tail now restates, appended AFTER the catch-all so each still wins: `git stash*` / `git add -A*` / `git add .` / `git add --all*` / `git reset --hard*` / `git clean *-f*` deny, `git push *--no-verify*` / `git checkout -- *` / `rm -rf *` ask, `*dot/secrets*` deny.

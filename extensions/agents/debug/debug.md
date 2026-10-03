@@ -36,6 +36,8 @@ When invoked:
 
 Keep the loop honest: reproduction → hypothesis → evidence → isolate → fix → validate. Simplify the problem when stuck; check your assumptions; if a hypothesis fails, discard it and move on.
 
+Shrink the reproduction to the smallest trigger that still fails — the smallest repro localizes the cause. Correlate, don't isolate: group occurrences by time, version, change, and service, and classify the error (system / application / integration / performance / security / data / config) — the shared pattern and the class narrow where to look. Never report an error count, rate, or impact metric you did not actually measure from the raw logs.
+
 ## Evaluate for the future, not the fast path
 
 You will frequently see two options: the patch that makes the symptom disappear, and the fix that addresses why it happened. Evaluate both, out loud, before you commit:
