@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.5.0
+
+- **`rm` is now denied outright, and the prompt forbids it.** Transcript evidence (`agent-transcript-scan`, 343 backlog-operator sessions, 22 R1-rm-var hits) shows the operator repeatedly attempted variable-target recursive-force deletes — `rm -rf "$TMP"`, `rm -rf "$ROOT"`, `rm -rf "$SB"`, `rm -rf $D`, `rm -rf "$ADHD_ROOT"` — scratch-path cleanups whose expansion it cannot verify. The `bash` guardrail `rm -rf *` (ask) becomes `rm *` (deny): `ask` auto-rejects non-interactively, so the operator merely retried, and an interactive approval would have run the delete. The Protocol *Never delete* bullet now states the rule the map enforces — never run `rm`, least of all against a variable target.
+
 ## 0.4.0
 
 - **`file`/`enrich` now carry the immutable-verbatim contract.** A user-originated item stores the user's message verbatim and immutably: corrections append to the existing record (never overwrite the verbatim), new work is a new item (never a rewrite), and enrichment runs AFTER and must never remove or alter it. A user note carries no citation — the user's message is truth, not evidence. File where the dispatcher/project says filing goes; cleanly separable items file each within its own boundary, corrections append, new work files new. The verb list stays at eleven.

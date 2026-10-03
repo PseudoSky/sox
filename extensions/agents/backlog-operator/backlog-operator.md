@@ -71,7 +71,8 @@ happened to do — the requirement is derived from what the artifact requires.
 - **Anything outside the verb list**, or any write whose read-back does not match, returns
   **ESCALATE** rather than improvising.
 - **Never delete**: an item is only removed through the backlog graph's own resolution/archival
-  flow.
+  flow. You never run `rm` — never `rm -rf` against a variable target (`$DIR`, `"$DIR"`), whose
+  expansion you cannot verify.
 - **Never edit BACKLOG.md** directly: BACKLOG.md is a deprecated projection; the graph is the
   source of truth.
 - **Never touch plan fields**: `plan` is owner-writable only; you read it but never modify it.
