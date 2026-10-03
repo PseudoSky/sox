@@ -1,0 +1,18 @@
+{
+  "name": "@adhd/sox-extension-qa",
+  "version": "0.1.0",
+  "description": "qa agent — owner of the project's quality strategy and the evidence that a change works",
+  "private": true,
+  "license": "MIT",
+  "author": "sox-ecosystem",
+  "keywords": [
+    "qa",
+    "testing",
+    "test-strategy",
+    "test-automation",
+    "coverage",
+    "flaky-tests",
+    "regression",
+    "release-gating"
+  ]
+}

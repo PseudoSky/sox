@@ -1,0 +1,98 @@
+{
+  "$schema": "https://your-registry/schemas/extension/v2.json",
+  "id": "qa",
+  "version": "0.1.0",
+  "type": "agent",
+  "title": "qa",
+  "description": "Use when a project needs one owner for its quality strategy and the evidence that a change works — test strategy and the test pyramid, risk-based test planning, test-case design (equivalence partitioning, boundary values, negative cases), automation architecture (page objects, screenplay), fixtures and test-data management, flake control, CI integration, contract/API testing, performance and load testing, accessibility testing, regression and release gating, defect reporting with evidence, and coverage measured rather than estimated. Triggers: \"write the test strategy\", \"what should we test\", \"why is coverage low\", \"design tests for this\", \"set up the test automation\", \"this test is flaky\", \"add a regression test\", \"is this safe to release\", \"measure coverage\", \"review this defect report\".",
+  "compatibility": {
+    "host": ">=1.0.0 <2.0.0"
+  },
+  "license": "MIT",
+  "author": "sox-ecosystem",
+  "keywords": [
+    "qa",
+    "testing",
+    "test-strategy",
+    "test-automation",
+    "test-pyramid",
+    "coverage",
+    "flaky-tests",
+    "contract-testing",
+    "performance-testing",
+    "accessibility",
+    "regression",
+    "release-gating",
+    "defect-reporting"
+  ],
+  "runtime": "declarative",
+  "entrypoint": "qa.md",
+  "invocation": {
+    "protocol": "function-export",
+    "handler": "run",
+    "description": "Declarative agent — host reads the prose body and renders the host header from agent/render at install time."
+  },
+  "requires": {
+    "tool_calling": true
+  },
+  "agent": {
+    "name": "qa",
+    "description": "Owns a project's quality strategy and the evidence that a change works. Decides what to test and at which level, designs cases (partitions, boundaries, negative cases), builds the automation and fixtures, controls flakes, integrates CI, covers contract/API, performance/load, and accessibility testing, gates regressions and releases, and reports defects with evidence. Maintains one committed test strategy it alone owns and keeps in sync, measures coverage instead of estimating it, and refuses any claim it did not produce by running the suite. Never writes product code to make a test pass, and never approves a change it authored.",
+    "model": "sonnet",
+    "mode": "all",
+    "temperature": 0.2,
+    "tools": [
+      "read",
+      "bash",
+      "edit",
+      "write",
+      "question",
+      "skill",
+      { "logical": "memory", "server": "memory-server" }
+    ],
+    "permission": {
+      "read": "allow",
+      "edit": "allow",
+      "write": "allow",
+      "bash": {
+        "*": "allow",
+        "*dot/secrets*": "deny",
+        "git reset --hard*": "deny",
+        "git stash*": "deny",
+        "git clean -f*": "deny",
+        "git add -A*": "deny",
+        "git add .": "deny",
+        "rm -rf *": "ask",
+        "npm publish*": "ask",
+        "pnpm publish*": "ask"
+      },
+      "question": "allow",
+      "skill": "allow",
+      "memory_*": "allow"
+    }
+  },
+  "render": {
+    "claude": {
+      "model": "sonnet",
+      "version": "0.1.0",
+      "tools": [
+        "Read",
+        "Bash",
+        "Edit",
+        "Write",
+        "AskUserQuestion",
+        "Skill",
+        "mcp__memory-server__*"
+      ]
+    },
+    "opencode": {
+      "model": "deepseek/deepseek-flash",
+      "mode": "all",
+      "temperature": 0.2
+    }
+  },
+  "install": {
+    "type": "agent",
+    "hosts": ["claude", "opencode"]
+  }
+}
