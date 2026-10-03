@@ -247,6 +247,26 @@ Schema version **1**. Each edit appends one dated entry; entries are never rewri
   `git status --porcelain`, unlocked, tip merged), with the safe `git branch -d` (never `-D`); no
   `--force` and no §7 break-glass were used. Policy revision read from `main` @ `498a11ee`
   (sha256 `9df92c00…`).
+- **2026-10-02 — merged `fix/deep-verify-fake-sleep-orphan` and reaped its worktree**
+  (`git-manager`, branch `fix/deep-verify-fake-sleep-orphan`). *Reason:* §6's operation-log
+  convention requires one entry per git operation; no policy rule changed. The branch tip `619e8a49`
+  was based directly on the then-current `main` tip `bd669a0b` and was therefore **fast-forwardable**
+  (`git merge-base --is-ancestor main fix/deep-verify-fake-sleep-orphan` exited 0) — §1's
+  already-based-linear rule would have integrated it by fast-forward. The operator explicitly
+  directed `git merge --no-ff` instead; that instruction was followed, producing merge commit
+  `fa93b5e4` (parents `bd669a0b` + `619e8a49`). This is a recorded deviation for this one operation,
+  not an amendment: §1's merge-strategy rule stands unchanged and the next FF-able branch fast-forwards.
+  The merge carried four files: `libs/data/store/store-adapter/src/__tests__/deep-verify-offthread.bl-fc5ab895.test.ts`,
+  `libs/data/store/store-adapter/src/__tests__/fixtures/deep-verify-fake-sleep.mjs` (deleted),
+  `libs/data/store/store-adapter/src/__tests__/fixtures/deep-verify-fake-sleep.ts` (added), and
+  `extensions/bundles/sox-memory-bundle/members/memory-cli/src/fts-rebuild-cli.bl-c5249cdd.spec.ts`.
+  §2's libs/data-consumed-by-bundles gate was supplemented before merging: `npx nx run-many -t build`
+  (exit 0) then `node scripts/smoke-test.mjs` (exit 0 — **25 passed, 0 failed, 0 skipped**); the
+  branch's own gates were `store-adapter` 811/811, `memory-cli` 36/36, lint + typecheck green. The
+  worktree `.worktrees/deep-verify-fake-sleep-orphan` was removed under §5's three-part predicate
+  (empty `git status --porcelain`, unlocked, tip `619e8a49` merged), with the safe `git branch -d`
+  (never `-D`); no `--force` and no §7 break-glass were used. Policy revision read from `main` @
+  `bd669a0b`.
 
 ## 7. Break-glass
 
