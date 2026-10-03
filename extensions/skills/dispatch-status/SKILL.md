@@ -17,7 +17,7 @@ The dispatcher's read-only playbook — answer "where are we" for the current ru
 Run <id> · playbook <name>
 | task | executor | item | dur | state | verified | note |
 |---|---|---|---|---|---|---|
-| <leaf> | <agent> | <backlog uid> | <dur_ms or running> | in_progress / done / blocked | pass / fail / partial / — | <blocker or commit> |
+| <bucket> | <agent> | <backlog uid> | <dur_ms or running> | in_progress / done / blocked | pass / fail / partial / — | <blocker or commit> |
 
 In flight: <n> · merged: <n> (<refs>) · blocked: <n>
 Backlog touched: <ids + status>

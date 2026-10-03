@@ -1,3 +1,7 @@
+## 1.4.1
+
+- Finish the leaf→bucket terminology migration (764e8f71): the dispatch work unit is a **Bucket**; no `leaf` remains in the body.
+
 # Changelog
 
 ## 1.4.0

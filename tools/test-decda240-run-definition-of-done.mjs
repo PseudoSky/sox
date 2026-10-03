@@ -16,7 +16,7 @@
  *   4. the close report states whether the run DoD is MET, and which clause is unmet
  *   5. the derivation follows `plan-builder`'s method
  *   6. Step 8 wires the check in
- *   7. the Leaf-complete, outcome-unverified failure mode is catalogued
+ *   7. the Bucket-complete, outcome-unverified failure mode is catalogued
  *
  * Usage: node tools/test-decda240-run-definition-of-done.mjs [--file <path-to-dispatcher.md>]
  * Exit 0 iff the artifact carries the run DoD AND the pre-fix negative control is rejected.
@@ -51,7 +51,7 @@ const INVARIANTS = [
   ['close report names the unmet clause', /which clause is unmet/],
   ['derivation follows plan-builder', /the way `plan-builder` derives/],
   ['Step 8 wires the run-DoD check in', /Did I check the run's own definition of done \(rule 19\) and state whether it is MET/],
-  ['Leaf-complete, outcome-unverified failure mode catalogued', /Leaf-complete, outcome-unverified/],
+  ['Bucket-complete, outcome-unverified failure mode catalogued', /Bucket-complete, outcome-unverified/],
 ];
 
 const normalise = (s) => s.replace(/\s+/g, ' ').trim();

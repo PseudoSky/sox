@@ -23,7 +23,7 @@ report ─► debug (root-cause + evidence) ─┬─ confirmed ─► significa
 3. **Dispatch `debug`** (model sonnet; tools Read, Grep, Glob, Bash) with a `dispatch-contract` brief whose done-state is *an evidence-backed root cause or an explicit "cannot reproduce" with what was tried*: the symptom, the exact error text, the reporter's claim verbatim (labeled as a claim), the commits in question, and how to reproduce. The brief says: rule 6 applies — a claim of "pre-existing"/"unrelated" must be proven with `git log`/`git bisect`/a failing run on the base ref, or it is not accepted.
 4. **Read the evidence yourself.** Run the reproduction the debug names. If the debug's conclusion is not reproducible from its own evidence, re-dispatch once with that gap named, then surface.
 5. **Branch on outcome.**
-   - *Confirmed, trivial* (single-line, compiler-obvious, no design question): straight to `dispatch-direct` as a leaf with the fix as goal.
+   - *Confirmed, trivial* (single-line, compiler-obvious, no design question): straight to `dispatch-direct` as a bucket with the fix as goal.
    - *Confirmed, significant* (root-cause spans modules, a design choice is involved, or the fix touches an interface): dispatch `architect` for the fix plan (files, sequence, executor, test); one-shot decisions inside it go to `architect-decision`. Then `dispatch-direct` per the plan.
    - *Refuted*: record the evidence on the task; if the report was an executor's deflection, the original work returns to that executor with the refutation.
    - *Undetermined*: surface to the user as `(hypothesis, triage incomplete)` with the exact missing evidence.

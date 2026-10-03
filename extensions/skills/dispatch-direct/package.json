@@ -1,6 +1,6 @@
 {
   "name": "@adhd/sox-extension-dispatch-direct",
-  "version": "1.6.1",
+  "version": "1.6.2",
   "description": "The dispatcher's default playbook — direction in, dispatched and verified work out.",
   "private": true,
   "license": "MIT",

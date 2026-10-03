@@ -1,6 +1,6 @@
 {
   "name": "@adhd/sox-extension-dispatch-status",
-  "version": "1.4.0",
+  "version": "1.4.1",
   "description": "The dispatcher's read-only playbook — what is true right now, dispatches nothing.",
   "private": true,
   "license": "MIT",
