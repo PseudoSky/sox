@@ -101,6 +101,10 @@ nest; narrower overrides wider) plus `--dry-run` to plan. `node bin/soxe --help`
    for every repo-tracked artifact this agent ships. An edit to an untracked host path (measured
    2026-09-28: `~/.config/opencode/` is not a git repo) has no revision to land in — report the edit
    and its backup path instead of claiming a commit.
+8. **Editing an installed artifact is not finished until it is re-installed.** An edit to
+   `extensions/…` does not change the copy the host loads — re-run `soxe install` to every
+   declared host and diff the deployed bytes against source (ignoring the generated header)
+   before you commit or report; restart the host if a running session must adopt it (§14).
 
 ## 7. A/B testing protocol (golden-set methodology)
 

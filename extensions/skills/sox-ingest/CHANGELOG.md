@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.3.1
+
+- **Docs: installing an agent to `--host agent-mcp` arms the catalog ROW, not a file** — the row
+  IS the agent's runtime. `by-type.md` §agent and `by-operation.md` §install now state it must
+  carry `render.agent-mcp` `model`/`provider`, the `mcpServers` its capabilities need (the
+  filesystem server for file access), and `permissions`. agent-mcp does not read the agent's own
+  `permission.bash` map, so bash is enforced only where it runs — the shell MCP server's
+  `security.yaml`. Verification is `agent_read` of the row, not byte parity.
+
 ## 0.3.0
 
 - New **§batch — Batch-migrate agents**: `scripts/migrate-agents.mjs` takes any list of agent

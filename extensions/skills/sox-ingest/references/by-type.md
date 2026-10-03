@@ -101,6 +101,24 @@ surface (`agent_read`→`agent_update`/`agent_create` / `agent_delete`), making 
 via the agent-mcp `task` tool. The `agent-catalog` capability is only defined for `type: agent`.
 See CONTRIBUTING §2.4 for the read-back verification.
 
+**The `agent-mcp` row IS the agent's runtime** — nothing is inherited from this host, so arm it in
+`extension.json` `render.agent-mcp` before installing:
+
+- `model`/`provider` — required (`AgentProviderUnderivableError` without one; otherwise the engine
+  falls back to the opencode render's model).
+- `mcpServers` — the servers the agent's capabilities need, federated INTO the row. An agent that
+  touches files needs the filesystem server (`@modelcontextprotocol/server-filesystem`, rooted at a
+  real directory, `allowedTools` for the operations it performs); without it the agent has no file
+  access however its system prompt reads.
+- `permissions` — agent-mcp enforces only the row's declared policy (tool allow/deny, filesystem
+  scopes, budgets). It does **not** read the agent's own `permission.bash` map, so that map is only
+  enforced where the command runs: the shell MCP server (`mcp-shell`, gated by its `security.yaml`
+  executable allowlist). An agent given bash but no shell server cannot execute; one given a shell
+  server whose `security.yaml` is broader than its `permission.bash` is not constrained by that map.
+
+Verify the catalog ROW, not a file: `agent_read` the id and confirm `provider`, `mcpServers`, and
+`permissions` match the manifest's `render.agent-mcp`.
+
 **CAUTION — two agent shapes:** CODE agents (`runtime: node`, entrypoint, `function-export`
 invocation) and DECLARATIVE agents (frontmatter + system prompt, `runtime: declarative`) are
 different shapes. For declarative agents, follow the `agent` guideline's declarative path;

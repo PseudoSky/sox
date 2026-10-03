@@ -219,6 +219,11 @@ paths. Not supported on the no-host config/lockfile resolver path.
   FRESH process — `opencode run "Use the skill tool to load the skill '<id>' ..."` and
   `claude -p "Load the skill '<id>' ..."` from a scratch dir. The probe must report the
   version/frontmatter that matches the extension's entrypoint. File presence alone is not proof.
+- **`--host agent-mcp` lands no file** — it upserts a catalog row, so byte parity and the
+  host-discovery load test do not apply. Verify the row instead: `agent_read` the id and confirm
+  `provider`, `mcpServers`, and `permissions` match the manifest's `render.agent-mcp`. The row IS
+  the agent's runtime — no filesystem server means no file access, and no shell server mirroring its
+  `permission.bash` means its bash permissions are unenforced (agent-mcp does not read that map).
 - No `soxe list` entry is created — declarative types activate at the host level,
   not via the soxe process registry
 

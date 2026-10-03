@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.2.3
+
+- **§6 gains a promotion step** — editing an already-installed artifact is not finished until it
+  is re-installed. An `extensions/…` edit does not change the copy the host loads: re-run
+  `soxe install` to every declared host, diff the deployed bytes against source (ignoring the
+  generated header), and restart the host if a running session must adopt it (§14). Closes the
+  live drift where three committed dispatcher changes were never re-installed (1bbc3701).
+
 ## 0.2.2
 
 - **Dependency + §14 skill renamed** `opencode-permission-audit` → `agent-safety-audit` (the skill

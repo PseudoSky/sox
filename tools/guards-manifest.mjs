@@ -382,6 +382,15 @@ export const GUARDS = [
     watch: ['extensions/agents/agent-manager/agent-manager.md'],
   },
   {
+    id: '1bbc3701',
+    tier: 1,
+    script: 'test-1bbc3701-install-promotion-clause.mjs',
+    // Pins agent-manager's promotion mandate: editing an already-installed artifact must be followed
+    // by `soxe install` to every declared host + a deployed-bytes diff + a restart, since the host
+    // loads a copy at startup. The authentic pre-fix spec tail (22b04a53) is the negative control.
+    watch: ['extensions/agents/agent-manager/agent-manager.md'],
+  },
+  {
     id: '70f75751',
     tier: 1,
     script: 'test-70f75751-operator-discovery.mjs',

@@ -1,6 +1,6 @@
 {
   "name": "@adhd/sox-extension-sox-ingest",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "Declarative skill for ingesting external sources into sox-ecosystem",
   "private": true,
   "license": "MIT"
