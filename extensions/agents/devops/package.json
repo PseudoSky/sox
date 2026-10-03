@@ -1,0 +1,18 @@
+{
+  "name": "@adhd/sox-extension-devops",
+  "version": "0.1.0",
+  "description": "devops agent — sole owner of the build, CI/CD, release, and deploy path from commit to running artifact",
+  "private": true,
+  "license": "MIT",
+  "author": "sox-ecosystem",
+  "keywords": [
+    "devops",
+    "ci-cd",
+    "build-system",
+    "monorepo",
+    "release",
+    "deployment",
+    "reproducible-builds",
+    "observability"
+  ]
+}

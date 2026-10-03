@@ -1,0 +1,97 @@
+{
+  "$schema": "https://your-registry/schemas/extension/v2.json",
+  "id": "devops",
+  "version": "0.1.0",
+  "type": "agent",
+  "title": "devops",
+  "description": "Use when a project needs one owner for the path from commit to running artifact — build systems and monorepo build graphs, CI/CD pipelines (build, test, lint, artifact, promote, deploy), containerization and reproducible builds, caching and parallelism, release and versioning automation, deploy and rollback automation, pipeline observability and performance budgets, and CI secrets handling. Triggers: \"speed up the build\", \"why is CI red\", \"set up the pipeline\", \"cut the build time\", \"make the release reproducible\", \"add a deploy stage\", \"why is the image so big\", \"roll back the deploy\", \"where do CI secrets go\".",
+  "compatibility": {
+    "host": ">=1.0.0 <2.0.0"
+  },
+  "license": "MIT",
+  "author": "sox-ecosystem",
+  "keywords": [
+    "devops",
+    "ci-cd",
+    "build-system",
+    "monorepo",
+    "release",
+    "deployment",
+    "reproducible-builds",
+    "caching",
+    "observability",
+    "secrets-management"
+  ],
+  "runtime": "declarative",
+  "entrypoint": "devops.md",
+  "invocation": {
+    "protocol": "function-export",
+    "handler": "run",
+    "description": "Declarative agent — host reads the prose body and renders the host header from agent/render at install time."
+  },
+  "requires": {
+    "tool_calling": true
+  },
+  "agent": {
+    "name": "devops",
+    "description": "Sole owner of the path from commit to running artifact. Owns the build graph, CI/CD stages, containerization and reproducible builds, caching and parallelism, release and versioning automation, deploy and rollback, pipeline observability and performance budgets, and CI secrets. Maintains one committed pipeline definition it alone owns and keeps in sync, and refuses operations that make the path unreproducible, unobservable, or irreversible. Never writes application code or approves the change it deploys.",
+    "model": "sonnet",
+    "mode": "all",
+    "temperature": 0.2,
+    "tools": [
+      "read",
+      "bash",
+      "edit",
+      "write",
+      "question",
+      "skill",
+      { "logical": "memory", "server": "memory-server" }
+    ],
+    "permission": {
+      "read": "allow",
+      "edit": "allow",
+      "write": "allow",
+      "bash": {
+        "*": "allow",
+        "*dot/secrets*": "deny",
+        "git push *--force*": "deny",
+        "git push *--no-verify*": "deny",
+        "git tag -d*": "ask",
+        "git push *--delete*": "ask",
+        "rm -rf *": "ask",
+        "npm publish*": "ask",
+        "pnpm publish*": "ask"
+      },
+      "question": "allow",
+      "skill": "allow",
+      "memory_*": "allow"
+    }
+  },
+  "render": {
+    "claude": {
+      "model": "sonnet",
+      "version": "v0.1.0",
+      "tools": [
+        "Read",
+        "Bash",
+        "Edit",
+        "Write",
+        "AskUserQuestion",
+        "Skill",
+        "mcp__memory-server__*"
+      ]
+    },
+    "opencode": {
+      "model": "deepseek/deepseek-flash",
+      "mode": "all",
+      "temperature": 0.2
+    }
+  },
+  "install": {
+    "type": "agent",
+    "hosts": [
+      "claude",
+      "opencode"
+    ]
+  }
+}
