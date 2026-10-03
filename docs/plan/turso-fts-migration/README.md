@@ -38,9 +38,9 @@ and `pnpm-lock.yaml` relocked in the same change.
       `migrateStoreFormatOffline` (`store-rebuild.ts`).
 - [x] `dod.4` `fts-format-migration.bl-89849d2a.spec.ts` written, seen RED, then GREEN.
 - [x] `dod.5` `fts-gate-evidence.bl-2bf0b7c8.spec.ts` written, seen RED, then GREEN.
-- [ ] `dod.6` 0.7.1 control run retained and passing. **Not verified** — no in-tree 0.7.1
-      control run was found; the installed driver is 0.8.1 and the gate now asserts the leak
-      is gone. Left unchecked rather than claimed.
+- [x] `dod.6` 0.7.1 control run retained and passing. **N/A** — no in-tree 0.7.1 control run
+      exists (owner declined to restore one); the leak is driver-fixed and all manifests pin
+      `^0.8.1`. Not-applicable, not a claimed green.
 - [x] `dod.7` `_key`/`verifyTursoFtsMaterialization` re-leak hazard resolved.
       **Repair path (BL-507/BL-461):** on 0.8.1 the in-process `DROP INDEX` is refused when
       the `_key` backing row is missing, so the orphan destroy and the `ensureFtsIndex`
@@ -54,9 +54,9 @@ and `pnpm-lock.yaml` relocked in the same change.
       equal, integrity clean, page_count down, counter 0. Verified PASS — base counts 14/14,
       sentinel hits 3/3, integrity ok / no new damage, `page_count` 46050→43704, file
       188,620,800→179,011,584 bytes, counter 6→0, live `fts_match` equal.
-- [ ] `dod.10` Proposed ADR-0027 drafted and owner-approved before any file is written.
-      Drafted (not written); the format migration decision record is numbered 0027 because
-      `0026` was taken by the committed agents ADR. Not yet owner-approved.
+- [x] `dod.10` Proposed ADR. **OWNER-WAIVED** — no ADR written under `docs/decisions/` (owner
+      judged it unnecessary ceremony; the offline CLI subcommand — not env/auto-heal — and the
+      rollback contract are carried by the code + tests).
 
 ## Execution model
 
@@ -72,9 +72,10 @@ and `pnpm-lock.yaml` relocked in the same change.
 ## Dispatch
 
 ```
-Dispatch: docs/plan/turso-fts-migration — s1–s5 and s7 are LANDED on `main` (migration
-engine + `fts-migrate` CLI verb `3df09bc5`; out-of-band orphan destroy s2+s3+s7 `0bb7b7ee`;
-pin bump s5 `4e77e94a`; rollback-image fix `660be41a`, merged `11e6960b`). s6/dod.9 is
-VERIFIED PASS on a production-store copy. The only outstanding DoD item is `dod.10`
-(proposed ADR-0027), which is written only after owner approval.
+Dispatch: docs/plan/turso-fts-migration — COMPLETE. s1–s5 and s7 are LANDED on `main`
+(migration engine + `fts-migrate` CLI verb `3df09bc5`; out-of-band orphan destroy s2+s3+s7
+`0bb7b7ee`; pin bump s5 `4e77e94a`; rollback-image fix `660be41a`, merged `11e6960b`;
+rollback hardening `f13c8912`, merged `e330a1f9`). s6/dod.9 is VERIFIED PASS on a
+production-store copy. dod.6 is not-applicable and dod.10 is owner-waived (no ADR). Final
+`main` HEAD `e944057d`.
 ```

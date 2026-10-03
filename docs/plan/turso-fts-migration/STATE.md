@@ -3,8 +3,8 @@
 ```yaml
 schema: plan-state-machine/v1-light
 plan: turso-fts-migration
-current_state: s6-verified; only dod.10 (proposed ADR-0027) outstanding
-entry_blocked_on: []       # nothing blocks; the ADR is owner-gated, not dependency-gated
+current_state: complete — s1–s5/s7 landed; s6/dod.9 verified PASS; dod.6 not-applicable; dod.10 owner-waived (no ADR)
+entry_blocked_on: []       # nothing blocks; plan is closed
 authorized: true           # owner AUTHORIZED the pin bump (Q1 resolved; see §8); bump LANDED in s5
 authored_at: 2026-09-30
 author: architect (deepseek-flash)
@@ -14,9 +14,9 @@ author: architect (deepseek-flash)
 
 | field | value |
 |---|---|
-| status | s1–s5 and s7 LANDED on `main`; s6/dod.9 verified PASS; only dod.10 (proposed ADR-0027) outstanding |
-| current segment | s6 (verified) — awaiting the proposed ADR |
-| blocked on | nothing — the ADR is written only after owner approval |
+| status | **complete** — s1–s5 and s7 LANDED on `main`; s6/dod.9 verified PASS; dod.6 not-applicable; dod.10 owner-waived (no ADR) |
+| current segment | none — plan closed at `main` HEAD `e944057d` |
+| blocked on | nothing |
 | pin | `^0.8.1` — applied in s5 (commit `4e77e94a`), lockfile committed in the same change |
 
 ## Open questions (resolve before dispatch)
@@ -63,12 +63,14 @@ author: architect (deepseek-flash)
 | s3 | Gate observability fix (`2bf0b7c8`) | — | done (`3df09bc5`) |
 | s4 | CLI subcommand + offline-exclusive wiring (ADR-0013 D4) | s2 | done (`3df09bc5`) |
 | s5 | Pin bump + relock + constant re-measurement (OWNER-GATED) | s1,s3 | done (`4e77e94a`; `FTS_OPTIMIZE_LEAK_MEASURED_ON='0.8.1'`) |
-| s6 | Production-copy verification + docs + proposed ADR-0027 | s2,s4,s5 | verified PASS (dod.9); ADR-0027 drafted, not written (dod.10) |
+| s6 | Production-copy verification + docs (ADR owner-waived) | s2,s4,s5 | verified PASS (dod.9); dod.10 owner-waived, no ADR |
 | s7 | In-process FTS orphan destroy goes out-of-band (BL-507/BL-461) | — | done (`0bb7b7ee`) |
 
 s3 was independent of s1 and ran in parallel. s1 was entry-blocking for s2. All segments are
 now landed; the rollback-image hardening (`660be41a`, merged `11e6960b`) closed the last
-pre-ADR gap.
+pre-ADR gap, and the follow-up rollback hardening `f13c8912` — image the rollback copy before
+the writable open and report restore format — merged as `e330a1f9`. Final `main` HEAD is
+`e944057d`.
 
 **s7 — the repair path (dod.7, BL-507/BL-461).** On 0.8.1 every in-process route to remove
 an FTS index whose `_key` backing row is already missing is refused (`DROP INDEX` throws
