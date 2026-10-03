@@ -76,6 +76,6 @@ Dispatch: docs/plan/turso-fts-migration — COMPLETE. s1–s5 and s7 are LANDED 
 (migration engine + `fts-migrate` CLI verb `3df09bc5`; out-of-band orphan destroy s2+s3+s7
 `0bb7b7ee`; pin bump s5 `4e77e94a`; rollback-image fix `660be41a`, merged `11e6960b`;
 rollback hardening `f13c8912`, merged `e330a1f9`). s6/dod.9 is VERIFIED PASS on a
-production-store copy. dod.6 is not-applicable and dod.10 is owner-waived (no ADR). Final
-`main` HEAD `e944057d`.
+production-store copy. dod.6 is not-applicable and dod.10 is owner-waived (no ADR). Closed by
+`bd669a0b` (2026-10-02); the last plan-relevant code commit is `e330a1f9`.
 ```

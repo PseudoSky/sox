@@ -8,6 +8,7 @@ entry_blocked_on: []       # nothing blocks; plan is closed
 authorized: true           # owner AUTHORIZED the pin bump (Q1 resolved; see §8); bump LANDED in s5
 authored_at: 2026-09-30
 author: architect (deepseek-flash)
+closed_at: 2026-10-02T22:58:45-04:00   # closure commit bd669a0b (author date)
 ```
 
 ## State
@@ -15,7 +16,7 @@ author: architect (deepseek-flash)
 | field | value |
 |---|---|
 | status | **complete** — s1–s5 and s7 LANDED on `main`; s6/dod.9 verified PASS; dod.6 not-applicable; dod.10 owner-waived (no ADR) |
-| current segment | none — plan closed at `main` HEAD `e944057d` |
+| current segment | none — plan closed by `bd669a0b` (2026-10-02) |
 | blocked on | nothing |
 | pin | `^0.8.1` — applied in s5 (commit `4e77e94a`), lockfile committed in the same change |
 
@@ -69,8 +70,8 @@ author: architect (deepseek-flash)
 s3 was independent of s1 and ran in parallel. s1 was entry-blocking for s2. All segments are
 now landed; the rollback-image hardening (`660be41a`, merged `11e6960b`) closed the last
 pre-ADR gap, and the follow-up rollback hardening `f13c8912` — image the rollback copy before
-the writable open and report restore format — merged as `e330a1f9`. Final `main` HEAD is
-`e944057d`.
+the writable open and report restore format — merged as `e330a1f9`. The plan is closed by
+`bd669a0b` on 2026-10-02.
 
 **s7 — the repair path (dod.7, BL-507/BL-461).** On 0.8.1 every in-process route to remove
 an FTS index whose `_key` backing row is already missing is refused (`DROP INDEX` throws
