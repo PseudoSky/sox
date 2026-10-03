@@ -32,9 +32,10 @@ The agent is multi-host: `install.hosts` covers `claude` and `opencode`.
 
 ## Dependencies
 
-Declared in `extension.json` → `dependencies`: the six dispatch skills it loads on demand —
+Declared in `extension.json` → `dependencies`: the eight dispatch skills it loads on demand —
 `dispatch-contract` (always loaded before the first dispatch), `dispatch-direct`,
-`dispatch-triage`, `dispatch-plan`, `dispatch-status`, and `backlog-intake`.
+`dispatch-triage`, `dispatch-plan`, `dispatch-status`, `backlog-intake`,
+`definition-of-ready`, and `dispatch-priority`.
 
 ## Source
 

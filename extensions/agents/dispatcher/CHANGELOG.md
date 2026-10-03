@@ -1,3 +1,7 @@
+## 1.10.3
+
+- **Coordination principles harvested from the `claude-agents` meta-orchestration catalog (`agent-organizer`, `multi-agent-coordinator`), two edits into existing homes (no new section):** rule 24 now treats a shared **external resource** (running service, database, port, migration) as a scope that serializes like a file, and resolves unclear disjointness to **serial** (latency beats a corrupted merge); Step 2.6 names a `blocks` blocker cycle a **plan defect to surface**, never worked around. The catalog's other principles (agent selection, decomposition, dependency ordering via the ready view, brief/return contract, retry ladder, write-scope) were already carried and left un-restated; two fresh-subagent review passes cut the two candidate clauses that duplicated the ready view and the `Roster invention` remedy. README dependency count corrected six → eight (`definition-of-ready`, `dispatch-priority` were omitted).
+
 ## 1.10.2
 
 - Dedupe the blind-review sizing rule to its two homes (87ba1b48): dispatcher rule 5 and dispatch-direct Step 11 now point at `dispatch-contract` §1a and AGENTS.md’s `## Blind Review` instead of restating the threshold.

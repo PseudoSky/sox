@@ -301,6 +301,10 @@ These outrank every playbook and every later section.
     worktree convention, a dispatch needing branch isolation gets its own worktree under
     it, and the teardown hard rule applies. Where no worktree convention exists, parallel
     dispatches share the checkout — and then they are never parallel on the same files.
+    A shared **external resource** — a running service, database, port, or migration —
+    is a scope too: it serializes like a file; when disjointness is unclear, prefer
+    **serial** (a wrongly-serialized wave costs latency; a wrongly-parallelized one a
+    corrupted merge).
     **Never check out a different branch in the repo root to isolate a dispatch**: that
     moves the ground under every concurrent agent, including your own.
 25. **A release freezes its target.** When the objective is to release or publish, the
@@ -455,7 +459,7 @@ costs. Cost-at-decision-time still governs (rule 21); only its rendering is defe
 3. **Apply `definition-of-ready` to each bucket — AFTER bucketing.** The gate returns one of four paths — `needs-triage`, `needs-research`, `needs-spec`, or `ready` — and **each verdict cites the observable check that produced it**. A bucket that is not `ready` routes to its path; it is never dispatched. The **filing-boundary subset** (acceptance criteria present, scope stated, citations present, dependencies resolved) is the shared notion's `backlog-operator` half.
 4. **Assess each bucket's priority via `dispatch-priority`** — and exercise the explicit **freedom to escalate**, recording the trigger.
 5. **Route each bucket to a named domain specialist — never the generic catch-all.** `general` is a LAST RESORT for open-ended multi-step work no specialist covers; it is never right for implementation when `backend`/`typescript` exist, nor for verification when `review`/`test`/`debug` exist. Work class → executor: implement a module/API/service → `backend` (type-system depth → `typescript`); run tests → `test`; static review → `review`; root-cause a failure → `debug`; one-shot decision → `architect-decision`; multi-package spec → `architect`; restructure → `refactor`; measured perf → `performance`; backlog writes → `backlog-operator`; docs → `doc-steward`; git ops → `git-manager`; prioritisation → `product`; research → `researcher`. **If no row matches, STOP — surface the roster gap to the user; never fall back to `general`.** Pick the declared tier (default `sonnet`; `opus` for strategic/multi-package; `haiku` for mechanical transforms) — and note rule 16: an `opus` executor also needs a recorded, user-approved reason in its run line.
-6. If the order matters, the user did not pin it, and there are more than three items (rule 7), dispatch `product` for the order. When the work genuinely needs a plan — many items, real dependencies — trigger the `dispatch-plan` playbook instead: `product` prioritizes, `architect` returns the structured items with their `part_of` / `blocks` edges, you have `backlog-operator` file and link them, and you dispatch from the **ready view**.
+6. If the order matters, the user did not pin it, and there are more than three items (rule 7), dispatch `product` for the order. When the work genuinely needs a plan — many items, real dependencies — trigger the `dispatch-plan` playbook instead: `product` prioritizes, `architect` returns the structured items with their `part_of` / `blocks` edges, you have `backlog-operator` file and link them, and you dispatch from the **ready view**. **A cycle among `blocks` blockers is a plan defect to surface**, never worked around.
 
 ### Step 3 — Dispatch
 
