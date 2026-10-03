@@ -29,10 +29,14 @@
  *      narrowly: only `/created by an older version of Turso/` is tolerated).
  *
  * The v1 fixture is seeded with the 0.7.2 driver that lives beside the spike
- * scripts; the installed driver is 0.8.1. Fixtures are deliberately SMALL: the
- * open-time heal's v2 pages stay in the `-wal` and are never checkpointed into
- * the main file during the heal, so the main-file-only image is a genuine v1
- * store at any corpus size.
+ * scripts; the installed driver is 0.8.1. Small fixtures keep the open-time
+ * heal's v2 pages in the `-wal`, but they are NOT a safety argument: once the
+ * heal's writes cross SQLite's WAL auto-checkpoint threshold (~1000 pages) the
+ * checkpoint folds those v2 pages into the MAIN file. The rollback image is
+ * therefore captured BEFORE the gate's writable open (whose open-time self-heal
+ * is the only writer in that window), never after it. Case (c) proves this at a
+ * corpus large enough to cross the threshold; cases (a)/(b) use a small fixture
+ * because they exercise the guard and restore contract, not the image timing.
  */
 import { afterEach, describe, expect, it } from 'vitest';
 import * as fs from 'node:fs';
@@ -69,6 +73,42 @@ function docV1(i: number): string {
   return `${s} tok${i}`;
 }
 
+/**
+ * Large corpus whose v1 FTS index is big enough that the gate's open-time
+ * self-heal (DROP + CREATE as v2) writes more than SQLite's default
+ * `wal_autocheckpoint` (~1000 pages ≈ 4 MiB), forcing a checkpoint that folds v2
+ * pages into the MAIN file. This is the corpus shape the small fixture cannot
+ * reach and the reason the image must be captured before the open.
+ *
+ * The token count, not the row count, drives the index size: each row carries
+ * 4000 DISTINCT tokens so the postings list is incompressible and the heal's WAL
+ * write comfortably exceeds the threshold. Tokens must be LONG LETTER RUNS
+ * (`pickSentinelTokens` requires ≥6 letters, unicode-alpha bounded, so the
+ * integrity probe can select one): `w123`/`tok7` yield no sentinel token, the
+ * probe reports `unknown`, and the heal is skipped — which is why an earlier
+ * version of this fixture with digit-bearing tokens was not red. Measured: a
+ * 200-row × 4000-token corpus leaves ~6.6 MiB in the WAL after the heal and the
+ * heal changes the main file in-place (the checkpoint fired). Rows are few so
+ * seeding through the slow 0.7.2 driver stays ~3 s.
+ */
+const LARGE_ROWS = 200;
+const LARGE_TOKENS = 4000;
+/** Base-26, 8-letter, unique per `n` — a token the FTS probe can see and index. */
+function letterToken(n: number): string {
+  let s = '';
+  let x = n;
+  for (let k = 0; k < 8; k++) {
+    s += String.fromCharCode(97 + (x % 26));
+    x = Math.floor(x / 26);
+  }
+  return s;
+}
+function docLarge(i: number): string {
+  let s = '';
+  for (let j = 0; j < LARGE_TOKENS; j++) s += `${letterToken(i * LARGE_TOKENS + j)} `;
+  return `${s}tok${i}`;
+}
+
 interface RawDb {
   exec(sql: string): Promise<unknown>;
   prepare(sql: string): Promise<{ run(...a: unknown[]): Promise<unknown>; get(...a: unknown[]): Promise<Record<string, unknown>> }>;
@@ -93,14 +133,18 @@ async function loadV1Driver(): Promise<{ connect(p: string, o: Record<string, un
  * closed so the source `-wal` is empty — the clean operator state the migration
  * image guard requires.
  */
-async function seedV1Store(dbPath: string): Promise<void> {
+async function seedV1Store(
+  dbPath: string,
+  rows: number = V1_ROWS,
+  doc: (i: number) => string = docV1,
+): Promise<void> {
   const { connect } = await loadV1Driver();
   const d = await connect(dbPath, { timeout: 5000, experimental: ['index_method', 'multiprocess_wal'] });
   try {
     await d.exec('CREATE TABLE node (rowid INTEGER PRIMARY KEY, content TEXT)');
     await d.exec('CREATE INDEX idx_fts_node ON node USING fts (content)');
     const ins = await d.prepare('INSERT INTO node (content) VALUES (?)');
-    for (let i = 0; i < V1_ROWS; i++) await ins.run(docV1(i));
+    for (let i = 0; i < rows; i++) await ins.run(doc(i));
     await d.exec('PRAGMA wal_checkpoint(TRUNCATE)');
   } finally {
     await d.close();
@@ -223,4 +267,32 @@ describe(`${UID} — FTS migration rollback image + previous-format restore cont
     fs.copyFileSync(db, probe07);
     expect(await v1FtsHits(probe07, 'tok0')).toBe(1);
   }, 120_000);
+
+  it(`${UID} (c): a large v1 corpus crossing the WAL auto-checkpoint threshold still yields a byte-exact pre-open image`, async () => {
+    const dir = tmpDir();
+    const db = path.join(dir, 'v1.db');
+    await seedV1Store(db, LARGE_ROWS, docLarge);
+    const sourceBefore = sha(db);
+
+    const report = await migrateStoreFormatOffline(db, {});
+    expect(
+      report.status,
+      JSON.stringify({ status: report.status, reason: report.reason, error: report.error }),
+    ).toBe('migrated');
+    const image = report.pre_migration_image;
+    expect(image).toBeTruthy();
+    expect(fs.existsSync(image as string)).toBe(true);
+
+    // The image is captured BEFORE the gate's writable open, so it is the pristine
+    // v1 source byte-for-byte — even when the heal's writes crossed the auto-
+    // checkpoint threshold and folded v2 pages into the main file. Pre-fix the
+    // image was copied after that open and this hash differed (a store that was
+    // neither valid v1 nor v2).
+    expect(sha(image as string)).toBe(sourceBefore);
+
+    // And the image is a genuine, complete v1 rollback that the 0.7.2 driver reads.
+    const probe07 = path.join(dir, 'large-image-0.7.db');
+    fs.copyFileSync(image as string, probe07);
+    expect(await v1FtsHits(probe07, 'tok0')).toBe(1);
+  }, 300_000);
 });
