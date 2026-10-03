@@ -1,6 +1,6 @@
 {
   "name": "@adhd/sox-extension-dispatch-contract",
-  "version": "1.4.0",
+  "version": "1.6.1",
   "description": "The brief every dispatcher dispatch carries and the return contract every executor must satisfy.",
   "private": true,
   "license": "MIT",

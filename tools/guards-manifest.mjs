@@ -401,6 +401,15 @@ export const GUARDS = [
     watch: ['extensions/agents/backlog-operator/backlog-operator.md'],
   },
   {
+    id: '58009d16',
+    tier: 1,
+    script: 'test-58009d16-skill-version-sync.mjs',
+    // 58009d16: a skill's package.json `version` lagged its CHANGELOG top `## <version>`
+    // heading (8/18 skills at 2026-10-02), so the manifest never carried the shipped
+    // version and nothing checked it. This guard makes the two agree.
+    watch: ['extensions/skills/'],
+  },
+  {
     id: 'skill-headers',
     tier: 1,
     script: 'check-skill-frontmatter.mjs',

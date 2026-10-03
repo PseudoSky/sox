@@ -1,6 +1,6 @@
 {
   "name": "@adhd/sox-extension-definition-of-ready",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Route each bucket by an observable check — after bucketing, before dispatch.",
   "private": true,
   "license": "MIT",

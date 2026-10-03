@@ -1,6 +1,6 @@
 {
   "name": "@adhd/sox-extension-dispatch-priority",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "The dispatcher's priority playbook — order buckets by consequence-to-objective, and escalate with the trigger recorded.",
   "private": true,
   "license": "MIT",

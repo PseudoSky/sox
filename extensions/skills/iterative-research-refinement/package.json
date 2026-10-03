@@ -1,6 +1,6 @@
 {
   "name": "@adhd/sox-extension-iterative-research-refinement",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Meta-cognitive research process (v9) that improves itself through nested feedback loops — used for research, findings, process audit, and iterative refinement of methodology. Includes the mandatory runtime-metrics companion script.",
   "private": true,
   "license": "MIT",
