@@ -63,7 +63,7 @@ const tursoDescribe = hasTurso ? describe : describe.skip;
 const HERE = dirname(fileURLToPath(import.meta.url));
 const PKG_ROOT = resolve(HERE, '..', '..');
 const HOLDER = resolve(HERE, 'fixtures', 'bug019-open-child.ts');
-const FAKE_SLEEP = resolve(HERE, 'fixtures', 'deep-verify-fake-sleep.mjs');
+const FAKE_SLEEP = resolve(HERE, 'fixtures', 'deep-verify-fake-sleep.ts');
 const FAKE_OK = resolve(HERE, 'fixtures', 'deep-verify-fake-ok.mjs');
 const REAPER_HOST = resolve(HERE, 'fixtures', 'deep-verify-reaper-host.ts');
 
@@ -160,7 +160,7 @@ tursoDescribe('BL-fc5ab895 — deep verification runs off-thread, out of process
     const dbPath = tempDb('a');
     await crashStore(dbPath);
 
-    const adapter = await connect(dbPath, { timeoutMs: 20_000, verifier: { path: FAKE_SLEEP } });
+    const adapter = await connect(dbPath, { timeoutMs: 20_000, verifier: { path: FAKE_SLEEP, execArgv: ['--import', 'tsx'] } });
     let verifierPid: number | null = null;
     try {
       const t0 = Date.now();
@@ -197,7 +197,7 @@ tursoDescribe('BL-fc5ab895 — deep verification runs off-thread, out of process
     const dbPath = tempDb('b');
     await crashStore(dbPath);
 
-    const adapter = await connect(dbPath, { timeoutMs: 1_500, verifier: { path: FAKE_SLEEP } });
+    const adapter = await connect(dbPath, { timeoutMs: 1_500, verifier: { path: FAKE_SLEEP, execArgv: ['--import', 'tsx'] } });
     try {
       await adapter.executeGet('SELECT 1');
       const run = await awaitActive(dbPath, 5_000);
@@ -243,7 +243,7 @@ tursoDescribe('BL-fc5ab895 — deep verification runs off-thread, out of process
     await crashStore(dbPath);
 
     // 1. Open after the crash; its deep pass times out.
-    const a = await connect(dbPath, { timeoutMs: 1_000, verifier: { path: FAKE_SLEEP } });
+    const a = await connect(dbPath, { timeoutMs: 1_000, verifier: { path: FAKE_SLEEP, execArgv: ['--import', 'tsx'] } });
     await a.executeGet('SELECT 1');
     const runA = await awaitActive(dbPath, 5_000);
     expect((await runA!.done)?.status).toBe('timed_out');
@@ -470,6 +470,70 @@ describe('BL-fc5ab895 — the verifier self-reaper runs off the blocked main thr
       expect(exit?.signal).toBe('SIGKILL');
     } finally {
       if (host.proc.exitCode === null && host.proc.signalCode === null) host.proc.kill('SIGKILL');
+    }
+  }, 30_000);
+
+  it('(g) the fixture self-reaps at its hard deadline instead of blocking forever', async () => {
+    // The fixture is a genuinely non-terminating child (it never replies), so
+    // the ONLY thing that can end it here is the off-thread self-reaper wired
+    // from --payload. Spawn it exactly as the adapter does — no parent-side
+    // kill path runs — and assert the child's own hard deadline fires.
+    const child = spawn(
+      process.execPath,
+      [
+        '--import', 'tsx', FAKE_SLEEP,
+        '--payload', JSON.stringify({ parentPid: process.pid, hardDeadlineMs: 1_200 }),
+      ],
+      { stdio: ['ignore', 'ignore', 'pipe'], cwd: PKG_ROOT },
+    );
+    try {
+      const exit = await waitExit(child, 8_000);
+      expect(exit).not.toBeNull();
+      expect(exit?.signal).toBe('SIGKILL');
+    } finally {
+      if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL');
+    }
+  }, 30_000);
+
+  it('(h) the fixture self-reaps when it is orphaned by a SIGKILLed parent', async () => {
+    // The real leak shape: the fixture's parent is SIGKILLed, so no finally and
+    // no adapter.close() runs and the fixture is reparented to PID 1. With a
+    // 600s hard deadline, ONLY the reparent/parent-gone triggers can save it.
+    const orphanParentSrc = [
+      "const { spawn } = require('node:child_process');",
+      'const fixture = process.argv[1];',
+      'const argv = [',
+      "  '--import', 'tsx', fixture,",
+      "  '--payload', JSON.stringify({ parentPid: process.pid, hardDeadlineMs: 600000 }),",
+      '];',
+      "const child = spawn(process.execPath, argv, { stdio: 'ignore' });",
+      "process.stdout.write('CHILD=' + child.pid + '\\n');",
+      'setInterval(() => {}, 1000);',
+    ].join('\n');
+    const parent = spawn(process.execPath, ['-e', orphanParentSrc, FAKE_SLEEP], {
+      stdio: ['ignore', 'pipe', 'pipe'],
+      cwd: PKG_ROOT,
+    });
+    let childPid: number | null = null;
+    try {
+      childPid = await new Promise<number>((resolveChild, rejectChild) => {
+        let buf = '';
+        parent.stdout?.on('data', (d: Buffer) => {
+          buf += String(d);
+          const m = buf.match(/CHILD=(\d+)/);
+          if (m) resolveChild(Number(m[1]));
+        });
+        parent.on('exit', (code, signal) => {
+          if (!/CHILD=/.test(buf)) rejectChild(new Error(`orphan parent exited early code=${code} signal=${signal}`));
+        });
+      });
+      expect(pidAlive(childPid!)).toBe(true);
+      parent.kill('SIGKILL');
+      await waitExit(parent, 5_000);
+      await waitFor(() => !pidAlive(childPid!), 8_000, 'orphaned fixture self-reaped after parent SIGKILL');
+    } finally {
+      if (childPid !== null && pidAlive(childPid)) process.kill(childPid, 'SIGKILL');
+      if (parent.exitCode === null && parent.signalCode === null) parent.kill('SIGKILL');
     }
   }, 30_000);
 });
