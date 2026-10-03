@@ -50,14 +50,18 @@ merging into), not the local file.
 
 **Required sections** — the equivalence criterion above, and the completion checklist for the
 document you create or adopt:
-- **Branching & merge** — the integration branch; branch naming; where a change forks from;
-  merge strategy (merge / squash / ff-only); whether rebase-in-flight is permitted.
+- **Branching & merge** — branching model (trunk-based / GitHub Flow / GitLab Flow / Git Flow);
+  integration branch; branch naming; fork point; merge strategy (merge / squash / ff-only);
+  rebase-in-flight; conflict prevention (small, frequently-integrated changes; clear ownership).
 - **Push & review** — who may merge (author ≠ merger); required checks; force-push scope;
-  whether merges serialize through a queue.
+  serialization queue; branch protection; auto-merge; signed commits (GPG); secret/dependency
+  scanning.
 - **Commit convention** — the machine-checkable rule set (e.g. Conventional Commits plus the
-  project's types and scopes) and the hook or CI that enforces it.
-- **Worktree layout** — the root directory, one-worktree-per-branch, provisioning steps, and
-  the reap TTL.
+  project's types and scopes) and the pre-commit / commit-msg hook or CI that enforces it.
+- **Release** — versioning and tag scheme; changelog / release-note generation; rollback; deploy
+  triggers; monorepo release coordination.
+- **Worktree layout** — root directory, one-worktree-per-branch, provisioning, reap TTL; and
+  monorepo scoping (sparse checkout, partial clone, subtree/submodule).
 - **Cleanup** — the exact safe-to-remove predicate (below) and the recovery runbook.
 - **Provenance** — a schema version, and what changed and why on every edit.
 

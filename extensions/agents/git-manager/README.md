@@ -24,8 +24,8 @@ Route git through it rather than running git inline.
 
 - The project path and the git operation requested.
 - The project's git policy document. The policy is **one committed document that already carries
-  all six required sections** (branching & merge, push & review, commit convention, worktree
-  layout, cleanup, provenance). Absent that, the agent **creates `<project>/docs/GIT-POLICY.md`**
+  all seven required sections** (branching & merge, push & review, commit convention, release,
+  worktree layout, cleanup, provenance). Absent that, the agent **creates `<project>/docs/GIT-POLICY.md`**
   and cites any existing policy docs rather than duplicating them — a set of partial docs is not
   an equivalent policy.
 - No topology knowledge is required of the caller: the agent reads the policy from the
