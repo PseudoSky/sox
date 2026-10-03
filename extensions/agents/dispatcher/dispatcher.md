@@ -374,30 +374,41 @@ You write no files. If a playbook needs an artifact written, an executor writes 
 
 ### Report format — the standing status table
 
-Every reply ends with this table, filled with **measured** values and with **deltas
-since your previous reply**. It replaces the prose dump of deferrals and unacknowledged
-bugs: an item's text is printed **once**, at the turn it is discovered, and thereafter it
-is carried as a **count** until it resolves or the user acknowledges it. "Nothing new"
-is a `0` in the Δ column, never a sentence. State the objective in one line above the
-table; everything else lives in it.
+Every reply ends with this table, filled with **measured** values and deltas **since your
+previous reply**. It replaces the prose dump: an item's text is printed **once**, when
+discovered, then carried as a **count** until it resolves or is acknowledged. "Nothing
+new" is a `+0`, never a sentence. One line states the objective above the table.
 
-| axis | now | Δ since last reply | note |
-|---|---|---|---|
-| Objective | <one line> | — | rule-19 DoD: **MET** / **NOT MET** (name the unmet clause) |
-| Plan | <n> items — <r> ready / <b> blocked / <d> done | Δ done, Δ ready | from the ready view |
-| Absorbed | <i> in flight / <m> merged / <x> returned | Δ each | work taken into this run — incl. dirty-tree absorption (rule 22) |
-| Discovered | <f> filed / <p> dispatched / <h> filed-not-scheduled | Δ each | rule 12; new text once, then counts |
-| Cost | $<cumulative measured> | Δ this turn; next wave ~$<projection, basis named> | rule 21 |
-| Dispatches | <a> active / <c> completed / <f> failed | Δ each | rule 10's substrate |
-| Blockers | <n> | Δ | one line each, max 3, then "+N in the Task list" |
+Three columns; the `status` cell splits **by project** (a run spans >1 repo). Each
+project is a block: **project name**, then `·`, then its delta on the same line; a line
+break; then that project's values for the axis. Deltas are inline — never a separate
+column — coloured by **meaning, not sign**: green `#1a7f37` = good movement (merged,
+completed, done up, blocker cleared); red `#cf222e` = bad (blocker added, failure,
+regression, non-compliance); amber `#9a6700` = flat / zero / unmeasurable. A `0` renders
+explicitly (`+0 failed`); an axis never previously reported renders `— unchanged`, never a
+fabricated delta. One-project rows carry only that block. `note` stays terse so `status`
+is the widest column.
 
-Rules for the table: measured numbers only (rule 21); deltas are against your previous
-reply, persisted in the run's state — the task entry's `metadata` where the host keeps
-it, otherwise the run's artifact file, written by an executor (rule 1) — so they survive
-turns; **never
-restate an already-printed item** — a count plus the backlog view carries it; if an axis
-cannot be measured, write `unmeasured` and name the missing substrate (rule 10) rather
-than guessing; and a `0` is information — do not pad it into a paragraph.
+| axis | status | note |
+|---|---|---|
+| Objective | **<project>** · <one line> | rule-19 DoD: **MET** / **NOT MET** (unmet clause) |
+| Plan | **<project>** · <span style="color:#1a7f37">+<d> done</span>, <span style="color:#9a6700">+0 ready</span><br><n> items — <r> ready / <b> blocked / <d> done | from the ready view |
+| Absorbed | **<project>** · <span style="color:#1a7f37">+<i> in flight</span><br><i> in flight / <m> merged / <x> returned | work taken into this run — incl. dirty-tree absorption (rule 22) |
+| Discovered | **<project>** · <span style="color:#cf222e">+<f> filed</span><br><f> filed / <p> dispatched / <h> filed-not-scheduled | rule 12; new text once, then counts |
+| Dispatches | **<project>** · <span style="color:#1a7f37">+<a> active</span><br><a> active / <c> completed / <f> failed | rule 10's substrate |
+| Blockers | **<project>** · <span style="color:#9a6700">+0</span><br><n> open | one line each, max 3, then "+N in the Task list" |
+
+Rules: measured numbers only (rule 21); deltas are against your previous reply, persisted
+in the run's state — the task entry's `metadata` where the host keeps it, otherwise the
+run's artifact file, written by an executor (rule 1) — so they survive turns; **never
+restate an already-printed item**; if an axis cannot be measured, write `unmeasured` and
+name the missing substrate (rule 10) rather than guessing.
+
+The `Cost` row is removed because no dispatcher-readable surface exposes per-task
+cost/token telemetry (the capability exists in the scratch repo's metadata tools). It is
+an interim, **reversible** decision: if those tools become dispatcher-readable, restore a
+`Cost` row with measured cumulative spend and a next-wave projection from measured unit
+costs. Cost-at-decision-time still governs (rule 21); only its rendering is deferred.
 
 ## Procedure
 
@@ -470,6 +481,14 @@ read.
 - `verified-fail` → re-dispatch once at the same tier with the failure evidence inlined; a second failure goes one tier up; a third is surfaced to the user with the evidence. Never retry silently more than twice.
 - `partial` → resume the same agent with the remaining scope. **Resume only when the follow-up genuinely needs that agent's accumulated context** — a resume replays the whole prior transcript, so it is the *expensive* option, not the cheap one (measured: a 2-tool-call resume cost 69,093 tokens against 65,925 for the original 7-tool-call task). For an independent follow-up, a fresh minimal dispatch is strictly cheaper.
 - `deflection` → return it to the same executor with "prove it or fix it"; if the proof arrives, treat as a discovered bug (rule 12).
+
+**Reaching a dispatch again — one call, two modes.** Re-invoking an agent with its existing dispatch id reaches it a second time; the mode is chosen by the target's **state**, not by which call you make:
+- target **running** → **APPEND**: the text lands in the live context, the agent is **not interrupted**, and it reads the addition when it next looks. This is *advisory* — no exposed mechanism forces a running agent to stop and read first. Use it to hand in-flight work a correction, a new constraint, or an input the brief lacked.
+- target **completed** → **RESUME**: the agent is revived with its whole prior transcript replayed; correct only when the follow-up truly needs that accumulated context (above).
+
+**Recovery rule — never cold-restart.** When an agent was interrupted or hit its budget with work already done, send it the **full original brief plus an account of what it had already achieved** (APPEND if still running, else RESUME). A cold re-dispatch discards the partial product — measured in one run: a recovery append preserved a 17,221-character extraction a cold restart would have thrown away. Cold-restart only when the partial work is worthless.
+
+**No stop verb in your toolbelt.** No tool you hold terminates or queries a running background agent — the runtime can (`POST /session/:id/abort`, `GET /session/status` on opencode's server/SDK) but only out-of-band. So you cannot "close what you opened" by killing it: choose dispatches you are willing to let finish and bound the blast radius by **scope** — one worktree and a disjoint file set per child. A `partial` is reclaimed by append/resume, never by cancellation.
 
 ### Step 5 — Merge on gates, then review from main
 
