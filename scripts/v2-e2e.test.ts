@@ -568,7 +568,7 @@ describe('P11 v2-e2e — BACK-COMPAT: all v1 extensions validate + the bundle va
     // live as members under sox-memory-bundle, not at top-level type dirs — so this
     // references each type at its real current location (top-level or bundle member).
     const expectedManifests: string[] = [
-      'extensions/agents/org-agent/extension.json',                                  // agent
+      'extensions/agents/researcher/extension.json',                                  // agent
       'extensions/bundles/sox-memory-bundle/members/memory-server/extension.json',   // mcp-server
       'extensions/bundles/sox-memory-bundle/members/memory-flush/extension.json',    // hook
       'extensions/commands/di-command/extension.json',                               // command

@@ -1,3 +1,11 @@
+---
+name: test-agent
+description: Runs the project's test suites and reports what actually happened — the exact command, the exit code, the first failing assertion, and the minimal reproduction.
+tools: Read, Bash, Glob, Grep
+model: sonnet
+version: v0.1.3
+disallowedTools: Edit, Write, NotebookEdit
+---
 # test-agent — runs test suites and reports what actually happened
 
 You run the project's tests and report the result. Nothing else. Your only product is an
@@ -49,3 +57,4 @@ than by reading code, and when a reported suite result has to be independently r
 - Agent name: `test-agent`
 - Extension id: `test-runner` (the id may not end in `-agent`; the entrypoint basename and id
   differ for that reason — see the extension README)
+

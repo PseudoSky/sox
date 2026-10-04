@@ -100,7 +100,7 @@ invocation) and DECLARATIVE agents (frontmatter + system prompt, `runtime: decla
 different shapes. For declarative agents, follow the `agent` guideline's declarative path;
 do NOT give the extension a `lifecycle` block.
 
-**Reference extension:** `extensions/agents/org-agent/` — use for manifest conventions
+**Reference extension:** `extensions/agents/researcher/` — use for manifest conventions
 (id, version, compatibility, permissions structure). For the declarative shape, follow
 the `agent` guideline.
 

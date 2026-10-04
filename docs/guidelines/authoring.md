@@ -617,7 +617,7 @@ narrowest globs that work. OS-kernel sandboxing is an explicit non-goal; enforce
   [README](../../README.md#if-youre-using-pre-built-agents--the-tools-footgun).
 - `config_schema` is supported but **not injected as env** (agents are declarative); it is reachable
   via `soxe config get/set/list`.
-- Real: [`extensions/agents/test-agent`](../../extensions/agents/test-agent). Contract audit:
+- Real: [`extensions/agents/researcher`](../../extensions/agents/researcher). Contract audit:
   [`agent.md`](./agent.md).
 
 ### skill

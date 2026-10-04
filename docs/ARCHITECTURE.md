@@ -79,7 +79,7 @@ All loadable extensions organized by type:
 |------|------|----------|
 | **Services** | `extensions/services/` | `tokenguard/` |
 | **Bundles** | `extensions/bundles/` | `sox-memory-bundle/` (contains `memory-server`, `memory-cli`, `memory-flush`) |
-| **Agents** | `extensions/agents/` | `org-agent/`, `test-agent/` |
+| **Agents** | `extensions/agents/` | `architect/`, `researcher/` |
 | **Skills** | `extensions/skills/` | `tui-design/` |
 | **Commands** | `extensions/commands/` | (custom commands) |
 | **Hooks** | `extensions/hooks/` | (lifecycle hooks) |
@@ -170,7 +170,7 @@ graph TB
     subgraph "Extensions"
         SVC["Services\ntokenguard"]
         BUND["Bundles\nsox-memory-bundle\n(memory-server,\nmemory-cli,\nmemory-flush)"]
-        AGT["Agents\norg-agent,\ntest-agent"]
+        AGT["Agents\narchitect,\nresearcher"]
         SKL["Skills\ntui-design"]
     end
 
