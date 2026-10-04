@@ -20,6 +20,16 @@
   ],
   "runtime": "declarative",
   "entrypoint": "SKILL.md",
+  "run_interface": {
+    "input_schema": {
+      "type": "object",
+      "properties": {}
+    },
+    "output_schema": {
+      "type": "object",
+      "properties": {}
+    }
+  },
   "install": {
     "type": "skill",
     "hosts": [

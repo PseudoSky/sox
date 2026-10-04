@@ -23,6 +23,11 @@
   ],
   "runtime": "declarative",
   "entrypoint": "ui.md",
+  "invocation": {
+    "protocol": "function-export",
+    "handler": "run",
+    "description": "Declarative agent — host reads the prose body and renders the host header from agent/render at install time."
+  },
   "agent": {
     "name": "ui",
     "description": "Senior UI engineer: design systems, components, styling, theming, accessibility, and front-end performance across React, Vue, Angular, and Expo/React Native.",
