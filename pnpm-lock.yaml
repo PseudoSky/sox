@@ -278,10 +278,6 @@ importers:
 
   extensions/skills/demo-creator: {}
 
-  extensions/skills/di-codex-skill: {}
-
-  extensions/skills/di-skill: {}
-
   extensions/skills/dispatch-contract: {}
 
   extensions/skills/dispatch-direct: {}
@@ -293,8 +289,6 @@ importers:
   extensions/skills/dispatch-status: {}
 
   extensions/skills/dispatch-triage: {}
-
-  extensions/skills/forbidden-skill: {}
 
   extensions/skills/iterative-research-refinement: {}
 

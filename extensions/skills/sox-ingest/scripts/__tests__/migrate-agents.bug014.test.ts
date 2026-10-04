@@ -27,13 +27,48 @@ import { manifest, parseFrontmatter, readBlockScalar } from '../migrate-agents.m
 
 describe('BUG-014 defect 1 — manifest() invocation field', () => {
   it('always sets invocation for type:agent, matching the d2d22364 hand-patch shape', () => {
-    const m = manifest('debug', 'some description', '/some/path.md');
+    const m = manifest('debug', 'some description', { name: 'debug', model: 'sonnet', mode: 'all' }, '/some/path.md');
     expect(m.type).toBe('agent');
     expect(m.invocation).toEqual({
       protocol: 'function-export',
       handler: 'run',
       description: 'Declarative agent — host reads the .md definition file directly.',
     });
+  });
+});
+
+describe('e066e361 — manifest() is born-conformant', () => {
+  const meta = { name: 'debug', model: 'sonnet', mode: 'all', temperature: '0.1' };
+
+  it('emits an agent block with identity, model, mode and temperature', () => {
+    const m = manifest('debug', 'desc', meta, '/src/debug.md');
+    expect(m.agent).toEqual({
+      name: 'debug',
+      description: 'desc',
+      model: 'sonnet',
+      mode: 'all',
+      temperature: 0.1,
+    });
+  });
+
+  it('emits a render block for every declared host (render.<host> presence rule)', () => {
+    const m = manifest('debug', 'desc', meta, '/src/debug.md');
+    for (const host of m.install.hosts) expect(m.render[host]).toBeDefined();
+    expect(m.render.claude.model).toBe('sonnet');
+    expect(m.render.opencode.model).toBe('deepseek/deepseek-flash');
+  });
+
+  it('does not emit a dead install.source pointing at the origin file', () => {
+    const m = manifest('debug', 'desc', meta, '/src/debug.md');
+    expect(m.install.source).toBeUndefined();
+  });
+
+  it('falls back to sane defaults when the source frontmatter omits scalars', () => {
+    const m = manifest('mystery', undefined, {}, '/src/mystery.md');
+    expect(m.agent.name).toBe('mystery');
+    expect(m.agent.model).toBe('sonnet');
+    expect(m.agent.mode).toBe('all');
+    expect(m.agent.temperature).toBeUndefined();
   });
 });
 

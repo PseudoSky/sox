@@ -135,8 +135,8 @@ Type-specific fields (`lifecycle`, `tools`, `members`, `events`, `order`, `invoc
 
 > **`version` is display-only.** Under [ADR-0003], identity is `id + sha256(entrypoint)`. The
 > registry's `version` is derived from `package.json` for display; the registry builder does **not**
-> require `version` in `extension.json`. Some older shipped examples (e.g.
-> `extensions/skills/di-skill`) omit it entirely and still validate.
+> require `version` in `extension.json`. Some shipped skill examples omit it entirely and
+> still validate.
 
 ---
 
@@ -386,8 +386,7 @@ soxe install commit-helper --scope user
 ls ~/.claude/skills/commit-helper/
 ```
 
-Real reference: [`extensions/skills/di-skill`](../../extensions/skills/di-skill),
-[`extensions/skills/demo-creator`](../../extensions/skills/demo-creator). For Codex placement
+Real reference: [`extensions/skills/demo-creator`](../../extensions/skills/demo-creator). For Codex placement
 (`~/.codex/skills/<id>/`), add `"hosts": ["codex"]` to `install` and install with `--host codex`.
 
 ### 8.2 Command (code)
@@ -624,7 +623,6 @@ narrowest globs that work. OS-kernel sandboxing is an explicit non-goal; enforce
 
 - **Runtime:** `declarative`. **Entrypoint:** `SKILL.md`. **Build:** none.
 - Worked example: [§8.1](#81-skill-declarative). Real:
-  [`extensions/skills/di-skill`](../../extensions/skills/di-skill),
   [`sox-ingest`](../../extensions/skills/sox-ingest),
   [`demo-creator`](../../extensions/skills/demo-creator). Contract audit: [`skill.md`](./skill.md).
 

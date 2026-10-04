@@ -275,6 +275,7 @@ function parseFrontmatter(content) {
   meta.description = scalar('description');
   meta.model = scalar('model');
   meta.mode = scalar('mode');
+  meta.temperature = scalar('temperature');
   // opencode-shaped agents carry a `permission:` block and no `name:`; Claude
   // agents carry `name:` + a `tools:` list (and often `model: sonnet/opus`).
   meta.hasPermissionBlock = /(^|\n)permission:\s*\n/.test(raw);
@@ -336,7 +337,25 @@ function normalizeForHosts(content, id, meta) {
 
 // ─── Scaffold ────────────────────────────────────────────────────────────────
 
-function manifest(id, description, sourcePath) {
+function manifest(id, description, meta, sourcePath) {
+  // e066e361: a born-conformant agent manifest carries an `agent` block (identity,
+  // model tier, mode, temperature) AND a `render` block (per-host concrete model) —
+  // the validator requires every host in install.hosts to have a render.<host>. The
+  // old shape carried neither and also wrote an install.source pointing at the origin
+  // file the documented flow later archives (dangling provenance). Scalars come from
+  // the source frontmatter where present.
+  const model = meta?.model ?? 'sonnet';
+  const mode = meta?.mode ?? 'all';
+  const agent = {
+    name: meta?.name ?? id,
+    description: description ?? `${id} agent`,
+    model,
+    mode,
+  };
+  if (meta?.temperature !== undefined) {
+    const t = Number(meta.temperature);
+    agent.temperature = Number.isNaN(t) ? meta.temperature : t;
+  }
   return {
     $schema: 'https://your-registry/schemas/extension/v2.json',
     id,
@@ -350,20 +369,17 @@ function manifest(id, description, sourcePath) {
     keywords: [id, 'agent', 'declarative'],
     runtime: 'declarative',
     entrypoint: `${id}.md`,
-    // BUG-014 defect 1: P3 makes this an error for type:'agent'; the original
-    // migration never set it. Shape matches the hand-patch in d2d22364 across
-    // all 14 repaired manifests (dispatcher/performance-engineer/researcher/
-    // agent-manager/architect/debug/doc-*/performance/product/typescript).
     invocation: {
       protocol: 'function-export',
       handler: 'run',
       description: 'Declarative agent — host reads the .md definition file directly.',
     },
-    install: {
-      type: 'agent',
-      hosts: ['claude', 'opencode'],
-      source: `file://${sourcePath}`,
+    agent,
+    render: {
+      claude: { model, version: 'v0.1.0' },
+      opencode: { model: 'deepseek/deepseek-flash', mode },
     },
+    install: { type: 'agent', hosts: ['claude', 'opencode'] },
     requires: { tool_calling: true },
   };
 }
@@ -444,7 +460,7 @@ function scaffoldAgent(filePath) {
   // a top-level <id>.md at install time, discoverable by opencode's agents/*.md
   // scan; `name:` injected for Claude frontmatter identity when absent).
   writeFileSync(join(outDir, `${id}.md`), entryContent);
-  writeFileSync(join(outDir, 'extension.json'), JSON.stringify(manifest(id, meta.description, filePath), null, 2) + '\n');
+  writeFileSync(join(outDir, 'extension.json'), JSON.stringify(manifest(id, meta.description, meta, filePath), null, 2) + '\n');
   writeFileSync(join(outDir, 'package.json'), JSON.stringify(packageJson(id, meta.description), null, 2) + '\n');
   writeFileSync(join(outDir, 'README.md'), readme(id, meta.description, filePath, formatter));
   writeFileSync(join(outDir, 'CHANGELOG.md'), changelog(id, filePath));

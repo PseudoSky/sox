@@ -122,8 +122,9 @@ extension instead.)
      entrypoint is `<id>.md` and the definition is carried verbatim.
    - **generic** — filename identity, `name:` injected.
 2. Scaffolds `extensions/agents/<id>/` with `<id>.md` (entrypoint), `extension.json`
-   (born-conformant, `install.source` pointing at the origin, hosts `[claude, opencode]`),
-   `package.json`, `README.md`, `CHANGELOG.md`.
+   (born-conformant: an `agent` block with identity/model/mode/temperature + a `render`
+   block for each declared host, hosts `[claude, opencode]`, and no dangling
+   `install.source`), `package.json`, `README.md`, `CHANGELOG.md`.
 3. **Skips** an existing `extensions/agents/<id>/` unless `--force`.
 4. **No registry step** — see [AGENTS.md § registry is release-only](../../../AGENTS.md#registry-is-release-only).
 
