@@ -131,11 +131,10 @@ the dispatcher does not aggregate or act on them.
 event=<claimed|started|dispatched|blocked|merged|resolved> agent=<type> model=<tier> id=<agent/dispatch id> start=<ISO UTC> end=<ISO UTC|running> dur_ms=<n|running> item=<backlog uid|none>
 ```
 
-`start` is taken with `date -u +%FT%TZ` at dispatch; `end` is taken with
-`date -u +%FT%TZ` at return, and `dur_ms` is computed from `start`/`end`. The
-host emits no notification `duration_ms` — never wait for one. The same line is
-the Task entry's `metadata`, the backlog transition's note, and the source of
-the §4 row's `dur_ms`/`item`.
+`start` is taken with `date -u +%FT%TZ` at dispatch; `end` and `dur_ms` come from
+the task-notification (`duration_ms`) when available, else from `date -u` at
+return. The same line is the Task entry's `metadata`, the backlog transition's
+note, and the source of the §4 row's `dur_ms`/`item`.
 
 ## Hard rules
 
