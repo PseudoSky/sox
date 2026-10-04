@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.6.1
+
+- **The operator is now maintained in the agent-mcp catalog, with the `backlog` server federated into its row.** Dispatched through agent-mcp (`task`/`agent_task` with `agent_name`), the operator runs as its catalog row — and that row had `mcpServers: {}`, so it had no `backlog_*` query surface and returned ESCALATE with zero tool calls. The IR now declares `render.agent-mcp` with `mcpServers.backlog` (the same stdio server the other catalog rows carry) and adds `agent-mcp` to `install.hosts`, so the row is rewritten from repo source and survives `soxe reconcile-agent-mcp`. Native opencode loading was already fully equipped; this closes the agent-mcp path.
+
 ## 0.6.0
 
 - **The `rm` permission ban is removed; the rule lives in the prompt instead.** The 0.5.0 blanket `rm *: deny` (and the `rm -rf *` ask before it) are dropped from the `bash` map — the operator again gets no `rm` guardrail. Why: transcript evidence shows every variable-target delete was the idempotent reset line of an empirical probe (`VAR=…; rm -rf "$VAR"; mkdir -p "$VAR"` → clone the production backlog DB or spin a throwaway `ADHD_ROOT`, then verify a mechanic the docs do not answer), aimed at the operator's own per-user temp dirs — the ban blocked benign work without touching the root. The Protocol *Never delete* bullet now states the rule directly: never `rm -rf` a variable target (unverifiable expansion), give each probe a fresh `mktemp -d` instead of deleting and recreating a scratch dir.
