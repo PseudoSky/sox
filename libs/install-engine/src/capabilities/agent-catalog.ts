@@ -103,6 +103,11 @@ export async function apply(ctx: AgentCatalogCtx): Promise<{ applied: true }> {
       file: AGENT_CATALOG_LEDGER_FILE,
       keyPath: '',
       appliedHash: sha256(payload),
+      // 6a10f744: the catalog row is named from the rendered payload name
+      // (`override.name ?? ir.name`), which may differ from the extension id
+      // (e.g. ext `memory-org` -> row `org-agent`). Record the row name so
+      // reverse deletes the row it actually created, not `ctx.ext`.
+      meta: { rowName: payload.name },
     },
   });
   ledger.save();
@@ -115,8 +120,10 @@ export async function apply(ctx: AgentCatalogCtx): Promise<{ applied: true }> {
  */
 export async function reverse(ctx: {
   ext: string;
+  /** The catalog row name recorded at apply time (6a10f744); defaults to `ext`. */
+  name?: string;
   client?: AgentCatalogClient;
 }): Promise<void> {
   const client = ctx.client ?? defaultAgentCatalogClient;
-  await client.delete(ctx.ext);
+  await client.delete(ctx.name ?? ctx.ext);
 }

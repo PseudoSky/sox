@@ -276,10 +276,15 @@ async function reverseAction(action: LedgerAction, ctx: LifecycleCtx): Promise<v
 
     case 'agent-catalog': {
       // agent-catalog: retire the row from the remote catalog over its own MCP
-      // surface. Idempotent — a missing row is success. The row name IS the
-      // extension id; the ledger's portable pseudo-path carries no extra data.
+      // surface. Idempotent — a missing row is success. The row is named from
+      // the rendered agent name, which may differ from the extension id
+      // (6a10f744); prefer the row name recorded at apply time.
       const { reverse: agentCatalogReverse } = await import('./capabilities/agent-catalog.js');
-      await agentCatalogReverse({ ext: ctx.ext });
+      const rowName = action.meta?.rowName;
+      await agentCatalogReverse({
+        ext: ctx.ext,
+        ...(typeof rowName === 'string' && rowName !== '' ? { name: rowName } : {}),
+      });
       break;
     }
 

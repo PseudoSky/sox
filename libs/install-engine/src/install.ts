@@ -1537,8 +1537,12 @@ export function findLocalExtension(root: string, id: string): string | null {
       const manifestPath = path.join(extPath, 'extension.json');
       if (!fs.existsSync(manifestPath)) continue;
       try {
-        const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8')) as { id?: string };
+        const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8')) as { id?: string; agent?: { name?: string } };
         if (manifest.id === id) return extPath;
+        // 6a10f744 (heal direction): an agent-catalog row is named from the
+        // rendered agent IR `name`, which may differ from the manifest id
+        // (e.g. row `org-agent` vs id `memory-org`). Match either identity.
+        if (manifest.agent?.name === id) return extPath;
       } catch (_e) {
         // Skip malformed manifests
       }

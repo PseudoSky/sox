@@ -86,6 +86,25 @@ describe('agent-catalog capability', () => {
     expect(actions[0]!.file).toBe(AGENT_CATALOG_LEDGER_FILE);
     expect(path.isAbsolute(actions[0]!.file)).toBe(false);
     expect(() => ledger.assertAllPortable()).not.toThrow();
+    // 6a10f744: the ledger records the ROW name so reverse can retire a row
+    // whose name differs from the extension id.
+    expect(actions[0]!.meta?.rowName).toBe('researcher');
+  });
+
+  it('records the rendered row name when it differs from the extension id (6a10f744)', async () => {
+    const { client } = fakeClient();
+    await apply({
+      host: 'agent-mcp',
+      scope: 'user',
+      scopeRoot: dataDir,
+      ext: 'memory-org',
+      target: { filePath: path.join(dataDir, 'agents.db') },
+      payload: { value: { ...PAYLOAD, name: 'org-agent' } },
+      client,
+    });
+    const ledger = Ledger.load(dataDir, { isProject: false });
+    const actions = ledger.actionsFor('memory-org', 'agent-mcp', 'user');
+    expect(actions[0]!.meta?.rowName).toBe('org-agent');
   });
 
   it('is idempotent — a second apply does not accumulate ledger actions', async () => {
@@ -112,6 +131,12 @@ describe('agent-catalog capability', () => {
     const { client, calls } = fakeClient();
     await reverse({ ext: 'researcher', client });
     expect(calls.deletes).toEqual(['researcher']);
+  });
+
+  it('reverse deletes by the recorded row name when it differs from ext (6a10f744)', async () => {
+    const { client, calls } = fakeClient();
+    await reverse({ ext: 'memory-org', name: 'org-agent', client });
+    expect(calls.deletes).toEqual(['org-agent']);
   });
 
   it('rejects a payload with no name', async () => {
