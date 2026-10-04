@@ -10,7 +10,7 @@
     {
       "id": "S1",
       "label": "Engine: Surface.mcpConfig + install.ts wiring",
-      "agent": "implement",
+      "agent": "backend",
       "spec_section": "Segment 1 in IMPL.md",
       "files": [
         "libs/host-registry/src/internal.ts",
@@ -24,7 +24,7 @@
     {
       "id": "S2",
       "label": "OpenCode host module + register",
-      "agent": "flash",
+      "agent": "typescript",
       "spec_section": "Segment 2 in IMPL.md",
       "files": [
         "libs/host-registry/src/opencode.ts",
@@ -37,7 +37,7 @@
     {
       "id": "S3",
       "label": "Manifest schema: add opencode to hosts enum",
-      "agent": "flash",
+      "agent": "typescript",
       "spec_section": "Segment 3 in IMPL.md",
       "files": [
         "libs/manifest/src/index.ts"

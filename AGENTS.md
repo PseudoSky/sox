@@ -398,28 +398,20 @@ Governed by [ADR-0006](./docs/decisions/0006-public-bundles-private-and-di-for-l
 
 ## ⛔ AGENT CONSTRAINT — PARALLEL AGENT DISPATCH SAFETY
 
-When `pro` dispatches multiple agents in parallel, these rules prevent file conflicts:
+When the `dispatcher` fans out multiple agents in parallel, these rules prevent file conflicts:
 
-1. **Disjoint file sets only**: `pro`'s `dispatch.json` `depends_on` must declare a dependency if two segments touch the same file. Segments with overlapping file sets are NEVER dispatched in parallel.
+1. **Disjoint file sets only**: the dispatcher's dependency tree must declare a dependency if two segments touch the same file. Segments with overlapping file sets are NEVER dispatched in parallel.
 2. **Read-before-edit is enforced**: The Edit tool requires reading files first — stale reads are auto-detected. If an agent's read is stale, it will re-read and retry.
 3. **Per-project test scope**: Agents run `nx test|lint <project>` for the project(s) they changed — NOT the full monorepo. This prevents test collision (two agents running the same test suite).
 4. **No git worktree needed for well-partitioned work**: The `depends_on` tree + disjoint file sets is sufficient. Worktrees are reserved for destructive/experimental work (major refactors, force-rebuilds that dirty the tree).
-5. **Pre-commit gate is serial**: The primary agent (or `pro` after all waves complete) runs `npx nx affected -t lint` across ALL changed projects before committing. This catches cross-project breakage.
+5. **Pre-commit gate is serial**: The primary agent (or the dispatcher after all waves complete) runs `npx nx affected -t lint` across ALL changed projects before committing. This catches cross-project breakage.
 6. **No stash, ever**: Already constrained above. Extends to ALL dispatched agents — if an agent needs to set work aside, it commits to a branch.
 
 ## ⛔ AGENT CONSTRAINT — DISPATCH PROTOCOL
 
-Dispatched agents (`pro`, `implement`, `flash`) coordinate through `.opencode/artifacts/`:
+Orchestration is owned by the **`dispatcher`** extension (`extensions/agents/dispatcher/`). It decomposes the direction, dispatches named registry agents in the background via the task tool, verifies each outcome from git/tests/state (never from a report), merges on each change's own gates, and keeps the Task list and the backlog graph (via `backlog-operator`) in sync. The brief/return/telemetry contract is the **`dispatch-contract`** skill.
 
-| Artifact | Writer | Reader | Purpose |
-|---|---|---|---|
-| `dispatch.json` | `pro` | all | Decomposed plan: segments, agents, files, dependency tree |
-| `reports/S{id}_{agent}_{ts}.json` | implement/flash | pro, dependents | Structured completion: changes, tests, handoff notes |
-| `handoff/` | any | dependents | Cross-segment findings (interface changes, gotchas) |
-
-Templates: `.opencode/artifacts/DISPATCH_TEMPLATE.json`, `.opencode/artifacts/REPORT_TEMPLATE.json`.
-
-Agent prompts: `.opencode/agents/{pro,implement,flash}.md` and `.opencode/prompts/*-system.md`.
+Every dispatched agent is a structured extension under `extensions/agents/`, or one of the project-scope / built-in agents opencode enumerates. The retired `pro`/`implement`/`flash` agents and the `.opencode/artifacts/` `dispatch.json` protocol they wrote are not part of this model.
 
 ## Blind Review
 

@@ -1,25 +1,22 @@
-# Inter-Agent Artifacts
+# Inter-Agent Artifacts (RETIRED)
 
-This directory is the shared coordination surface for subagent dispatches. The `pro` orchestrator writes dispatch plans here; `implement` and `flash` agents read their segments and append completion reports.
+**This directory is a retired protocol, kept for historical reference only.** It described the
+old `pro` / `implement` / `flash` dispatch model, which no longer exists — none of those agents
+is defined anywhere, and nothing reads `dispatch.json`.
 
-## Protocols
+The current model: orchestration is owned by the **`dispatcher`** extension
+(`extensions/agents/dispatcher/`), which decomposes a direction, dispatches **named registry
+agents** (structured extensions under `extensions/agents/`, plus project-scope/built-in agents
+opencode enumerates) in the background via the task tool, verifies each outcome from
+git/tests/state, and keeps the Task list and backlog graph in sync. The brief/return/telemetry
+contract is the **`dispatch-contract`** skill — not the files here.
 
-### dispatch.json — the active dispatch plan
+## Historical contents
 
-Written by `pro` before dispatching. Contains the decomposed segments, their assigned agents, dependencies, and expected files.
+- `dispatch.json` — a dispatch plan written by `pro` in the retired model.
+- `DISPATCH_TEMPLATE.json` / `REPORT_TEMPLATE.json` — templates for that retired protocol.
+- `reports/`, `handoff/`, `reviews/` — per-segment completion reports, inter-agent notes, and
+  review artifacts from that era.
 
-### reports/ — per-segment completion reports
-
-Written by `implement` or `flash` after completing a segment. Format: `{segment}_{agent}_{timestamp}.json`.
-
-### handoff/ — inter-agent notes
-
-Written by any agent that discovers something another agent needs to know (e.g., "Segment 1 changed the McpConfig interface — Segment 2 needs to re-read internal.ts before building opencode.ts").
-
-## Lifecycle
-
-1. `pro` writes `dispatch.json`
-2. `pro` dispatches segments to `implement` / `flash` with the segment spec + path to `dispatch.json`
-3. Each agent reads its segment from `dispatch.json`, does the work, writes a report to `reports/`
-4. `pro` monitors `reports/` for completions, resolves dependencies, dispatches next wave
-5. `pro` writes final `dispatch.json` with `status: "complete"` and all report references
+Do not extend this protocol; new dispatch work goes through the `dispatcher` extension and the
+`dispatch-contract` skill.

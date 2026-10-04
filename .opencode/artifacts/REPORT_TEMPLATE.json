@@ -1,6 +1,6 @@
 {
   "$schema": "agent-report-v1",
-  "agent": "flash|implement|pro",
+  "agent": "<registry-agent-id>",
   "segment": "S1",
   "label": "Engine: Surface.mcpConfig + install.ts wiring",
   "completed_at": "ISO_TIMESTAMP",

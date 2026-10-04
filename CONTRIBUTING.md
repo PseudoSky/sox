@@ -1,7 +1,7 @@
 # CONTRIBUTING.md — Live Ship Verification Playbook
 
-> **Read this before reporting any change as complete.** Every agent — human, `implement`,
-> `flash`, or `pro` — must follow this playbook after making code changes. This is not
+> **Read this before reporting any change as complete.** Every agent — human or dispatched —
+> must follow this playbook after making code changes. This is not
 > advisory. It is the minimum gate between "code written" and "change shipped."
 
 ---
@@ -119,7 +119,7 @@ rm -f opencode.json.bak .mcp.json.bak
 **Check before reporting done:**
 
 ```
-ls .opencode/agents/    # should contain ONLY .md agent definitions (pro, implement, flash)
+ls .opencode/agents/    # should contain ONLY .md agent definitions (e.g. the project-scope test-runner)
 ls .opencode/skills/    # should be empty or contain only committed skills
 ls .opencode/tools/     # should be empty or contain only committed tools
 cat opencode.json       # MCP section must match pre-test state; no orphaned test entries
@@ -902,7 +902,7 @@ For any change touching multiple hosts, verify each host independently.
 
 ### §5.1 How agents consume this document
 
-Every agent (`pro`, `implement`, `flash`) must read `CONTRIBUTING.md` at the start of
+Every agent must read `CONTRIBUTING.md` at the start of
 their session. The system prompts mandate this. The playbook is their source of truth for
 what "done" means.
 

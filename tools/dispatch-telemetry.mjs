@@ -9,7 +9,7 @@
  *
  * WHY THIS EXISTS
  * ---------------
- * The dispatcher program (`dispatch-project-orchestrator`/`pro`) routinely fans out 10+ task-tool
+ * The dispatcher routinely fans out 10+ task-tool
  * subagent calls per wave. Until now, nobody could answer "how long did that subagent actually run,
  * how many tools did it fire, what did it cost" with numbers from the real store — the reports are
  * prose, the cost comes from the provider dashboard later, and a slow/expensive agent type is a

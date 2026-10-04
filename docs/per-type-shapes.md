@@ -72,7 +72,7 @@
 
 ## agent
 
-**Entrypoint form:** `agent.md` — a markdown file with YAML frontmatter (`name`, `description`, `tools`, `model`). The real shape (`cto-agent.md`, `architect-reviewer.md`, `typescript-pro.md`) is a frontmatter-gated markdown document defining the agent's system prompt and capabilities. No `src/index.ts`, no build step. The previous template generated node source code with an `AgentDefinition` struct, which does not match reality.
+**Entrypoint form:** `agent.md` — a markdown file with YAML frontmatter (`name`, `description`, `tools`, `model`). The real shape (`dispatcher.md`, `architect.md`, `backlog-operator.md` under `extensions/agents/`) is a frontmatter-gated markdown document defining the agent's system prompt and capabilities. No `src/index.ts`, no build step. The previous template generated node source code with an `AgentDefinition` struct, which does not match reality.
 
 **Runtime:** `declarative` — no process is spawned. The host reads `agent.md`, parses the frontmatter, and injects the markdown body as the agent's system prompt when delegating. **Template changed from `runtime: node` to `runtime: declarative`.**
 

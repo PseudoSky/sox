@@ -106,7 +106,7 @@ Both forms may coexist. The config merge rules:
 - Config is **deep-merged**, not replaced wholesale. For example, `permission` is merged key-by-key.
 - If you define `prompt` in `opencode.json`, it replaces the `.md` file's body as the system prompt.
 
-**sox-ecosystem convention**: All three agents (pro, implement, flash) have both forms. The `opencode.json` inline form uses `{file:.opencode/prompts/<agent>-system.md}` for the prompt, which overrides the `.md` file body. The `.md` files exist as reference documentation for the agent's personality and conventions.
+**sox-ecosystem convention**: Project-scope agents live as `.opencode/agents/<id>.md`; an `opencode.json` `agent.<name>` block may override any of their fields. Use `{file:.opencode/prompts/<agent>-system.md}` for the prompt when it is kept in a separate file (it replaces the `.md` body).
 
 ### Built-in agents (names reserved)
 
@@ -144,7 +144,7 @@ opencode "fix the compile error in src/foo.ts"
 
 ```json
 {
-  "default_agent": "pro"
+  "default_agent": "dispatcher"
 }
 ```
 
