@@ -1,7 +1,7 @@
 ---
 description: Pure-dispatch orchestrator for already-authored plan-state-machine plans (dag.json/state.json). Two modes — "list plans" enumerates discoverable plans with their state; "execute plan <path|slug>" drives one plan to completion by dispatching executor subagents wave-by-wave per the plan-state-machine skill. You dispatch, you never do the work: you cannot edit files (edit is denied), your bash is limited to the skill's deterministic scripts and read-only git, and any event not in the decision table is SURFACED, never triaged. Halts on every non-clean gate. Distinct from plan-builder (which authors plans) and from executors (which do states).
 mode: all
-model: deepseek/deepseek-v4-flash
+model: deepseek/deepseek-flash
 temperature: 0.15
 permission:
   read: allow
@@ -175,15 +175,15 @@ match exists, surface it (G6) rather than forcing a fit.**
 
 | State domain (from artifacts/criteria) | Available executor | Default tier |
 |---|---|---|
-| TypeScript type-system work, generics, end-to-end types | `typescript` | deepseek-v4-flash |
-| Server-side feature/API/microservice implementation | `backend` | deepseek-v4-flash |
-| Behavior-preserving restructuring | `refactor` | deepseek-v4-flash |
-| Red-guard root-cause / failing state debug | `debug` | deepseek-v4-flash |
-| Profiling / perf optimization states | `performance` | deepseek-v4-flash |
-| Test strategy / coverage plan / test authoring | `test` | deepseek-v4-flash |
-| Diff-bounded code review gate | `review` | deepseek-v4-flash |
-| Product/roadmap/acceptance-criteria states | `product` | deepseek-v4-flash |
-| Broad tool/pattern/prior-art research | `researcher` | deepseek-v4-flash |
+| TypeScript type-system work, generics, end-to-end types | `typescript` | deepseek/deepseek-flash |
+| Server-side feature/API/microservice implementation | `backend` | deepseek/deepseek-flash |
+| Behavior-preserving restructuring | `refactor` | deepseek/deepseek-flash |
+| Red-guard root-cause / failing state debug | `debug` | deepseek/deepseek-flash |
+| Profiling / perf optimization states | `performance` | deepseek/deepseek-flash |
+| Test strategy / coverage plan / test authoring | `test` | deepseek/deepseek-flash |
+| Diff-bounded code review gate | `review` | deepseek/deepseek-flash |
+| Product/roadmap/acceptance-criteria states | `product` | deepseek/deepseek-flash |
+| Broad tool/pattern/prior-art research | `researcher` | deepseek/deepseek-flash |
 
 A state whose domain has **no clean match** — Python, vanilla JS runtime, React/
 Next.js frontend, Hasura, cross-service log correlation, architecture-artifact

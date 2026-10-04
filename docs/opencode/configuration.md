@@ -123,15 +123,15 @@ To override a built-in's fields, use the same key in `agent: { build: { ... } }`
 opencode
 
 # Specific agent by name
-opencode --agent flash
-opencode --agent implement
-opencode --agent pro
+opencode --agent dispatcher
+opencode --agent architect
+opencode --agent backlog-operator
 
 # Agent must have mode: primary or mode: all
 
 # With explicit model override
-opencode --model deepseek/deepseek-v4-flash
-opencode --agent flash --model deepseek/deepseek-v4-pro
+opencode --model deepseek/deepseek-flash
+opencode --agent debug --model proxy/cf
 
 # Command mode (runs a command agent)
 opencode /my-command
@@ -158,7 +158,7 @@ All fields are optional.
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `model` | `string` | Provider/model ID, e.g. `deepseek/deepseek-v4-flash` |
+| `model` | `string` | Provider/model ID, e.g. `deepseek/deepseek-flash` |
 | `variant` | `string` | Model variant override |
 | `mode` | `"primary"` \| `"subagent"` \| `"all"` | Agent availability |
 | `description` | `string` | Shown in `@` autocomplete; required for discoverability |
@@ -334,8 +334,7 @@ Model names always use the `provider/model-id` format:
 
 ```
 anthropic/claude-sonnet-4-6
-deepseek/deepseek-v4-pro
-deepseek/deepseek-v4-flash
+deepseek/deepseek-flash
 openai/gpt-4o
 google/gemini-2.5-pro
 ```
@@ -344,28 +343,31 @@ google/gemini-2.5-pro
 
 ## sox-ecosystem agent catalog
 
-Three custom agents built for the soxe monorepo workflow:
+The sox agents are authored in `extensions/agents/<id>/` and installed to
+`~/.config/opencode/agents/<id>.md` and `~/.claude/agents/<id>.md` (plus the agent-mcp
+catalog). Each agent's opencode model is rendered from `render.opencode.model`, pinned to
+the live provider id `deepseek/deepseek-flash` (no `v4`). A few opencode-only extras live
+directly in `~/.config/opencode/agents/`.
 
-| Agent | Model | Mode | Steps | Temperature | Permissions |
-|-------|-------|------|-------|-------------|-------------|
-| **pro** | `deepseek/deepseek-v4-pro` | `all` | 20 | 0 | Read/glob/grep/web, task dispatch, no edits |
-| **implement** | `deepseek/deepseek-v4-pro` | `all` | 40 | 0.1 | Full read/edit/bash, no task dispatch, no websearch |
-| **flash** | `deepseek/deepseek-v4-flash` | `all` | 30 | 0.1 | Full read/edit/bash, no task dispatch, no webfetch/search |
+| Agent | Model | Mode | Notes |
+|-------|-------|------|-------|
+| `dispatcher` | `deepseek/deepseek-flash` | `all` | Orchestrator — decomposes, dispatches, verifies; never executes |
+| `architect` | `deepseek/deepseek-flash` | `all` | Produces implementation specs; delegates research |
+| `backlog-operator` | `deepseek/deepseek-flash` | `all` | Fixed-playbook operator for the backlog graph |
+| `cf-review` | `proxy/cf` | `all` | Multi-perspective forked review (proxy rewrite) |
+| `fj-judge` | `proxy/fj` | `all` | Fork-join judge (proxy fork-join) |
+| `unbounded-thinker` | `deepseek/deepseek-flash` | `all` | Cross-discipline solution divergence |
 
-### Agent roles
-
-**pro** — Architect + orchestrator. Plans features, decomposes into dispatchable segments, researches tool choices, dispatches implement/flash agents. Never writes code directly.
-
-**implement** — Complex implementation. Multi-file changes, interface design, cross-package refactors, debugging unknown root cause, algorithm changes. Uses `gitnexus_impact` before modifying symbols.
-
-**flash** — Fast implementation. Single-file changes, manifest edits, well-specified boilerplate, exact-code-from-spec tasks. No refactoring, no interface design, no unknown-bug debugging.
+…plus the remaining domain agents (`debug`, `devops`, `typescript`, `ui`, `qa`, `security`,
+`product`, `researcher`, …), all routed on `deepseek/deepseek-flash`. Enumerate them with
+`opencode agent list`.
 
 ### Launch examples
 
 ```bash
-opencode --agent pro        # Architect mode — plan and decompose
-opencode --agent implement  # Complex implementation mode
-opencode --agent flash      # Fast implementation mode
+opencode --agent dispatcher  # Orchestrate a direction
+opencode --agent architect   # Produce an implementation spec
+opencode --agent debug       # Root-cause a failure
 ```
 
 ---

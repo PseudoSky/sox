@@ -43,7 +43,7 @@
  * ----------
  *   stored — session.cost when > 0 (falls back to SUM(message.data.cost) for sessions whose
  *            aggregate was never written; the two are equal on every sampled session).
- *   computed — only when no stored cost exists anywhere: tokens × deepseek-v4-flash rates from
+ *   computed — only when no stored cost exists anywhere: tokens × deepseek-flash rates from
  *            ~/.config/opencode/opencode.json (proxy models rf/cf/fj declare input 0.00027 / 1K,
  *            output 0.0011 / 1K; cache-read assumed 10% of input, per deepseek cache-hit pricing).
  *            Every entry states which basis produced its `cost` in `costBasis`.
@@ -209,7 +209,7 @@ const MESSAGE_COSTS_SQL =
    FROM message WHERE session_id = ?`;
 
 // Fallback rates for the computed basis (USD per 1K tokens), from the machine's
-// ~/.config/opencode/opencode.json proxy model declarations (deepseek-v4-flash family).
+// ~/.config/opencode/opencode.json proxy model declarations (DeepSeek V4 Flash family: rf/cf/fj).
 const RATES = { input: 0.00027, output: 0.0011, cacheRead: 0.000027 }; // cache-read = 10% of input
 
 // ---------------------------------------------------------------------------
@@ -274,7 +274,7 @@ function buildEntry(session, db) {
         (tokens.output / 1000) * RATES.output +
         (tokens.cacheRead / 1000) * RATES.cacheRead;
       costBasis =
-        'computed: tokens × deepseek-v4-flash rates (input 0.00027/1K, output 0.0011/1K, cache-read 0.000027/1K) per ~/.config/opencode/opencode.json; NO stored cost present';
+        'computed: tokens × deepseek-flash rates (input 0.00027/1K, output 0.0011/1K, cache-read 0.000027/1K) per ~/.config/opencode/opencode.json; NO stored cost present';
     }
   }
 
