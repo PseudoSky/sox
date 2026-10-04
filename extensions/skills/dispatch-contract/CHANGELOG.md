@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.6.2
+
+- **§5 run line: `dur_ms` is computed, not reported.** The host emits no task-notification `duration_ms`; `end` is taken with `date -u +%FT%TZ` at return and `dur_ms` derived from `start`/`end`. Drops the stale "when available, else from `date -u`" clause that made the field look host-supplied.
+
 ## 1.6.1
 
 - **Post-ship refinement.** §1a and `templates/brief.md` choose review type by **changed lines of code** (~200–400); `>=8` changed files is a coarse secondary proxy.
