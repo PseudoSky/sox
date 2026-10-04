@@ -2164,6 +2164,24 @@ export async function declarativeInstall(
         const staged = renderSkillForHost(descriptor.srcPath, descriptor.ext);
         if (staged !== null) contentPath = staged;
       }
+
+      // [dod.2] Policy check: deny an opencode agent whose rendered output still
+      // carries a `tools:` frontmatter field (f351a745). opencode's agent schema
+      // has no `tools:` key; one legacy file poisons the whole project config and
+      // opencode enumerates ZERO agents. Throw DeclarativeDeniedError BEFORE
+      // writing any file so there is no side effect.
+      if (descriptor.type === 'agent' && hostName === 'opencode' && opencodeAgentFrontmatterHasTools(contentPath)) {
+        throw new DeclarativeDeniedError(
+          'opencode agent frontmatter must not contain a `tools:` field — opencode rejects the ' +
+          'entire project agent config (enumerating zero agents) when any one project-local agent ' +
+          'carries `tools:`; remove `tools:` from the agent entrypoint and declare tools via the ' +
+          'host renderer (agent.tools / render.opencode) instead',
+          descriptor.ext,
+          hostName,
+          scope,
+        );
+      }
+
       const srcHash = hashPathForInstall(contentPath);
 
       // Determine the destination: if absTarget is a directory (or should be),
@@ -2804,6 +2822,26 @@ function renderAgentForHost(
   fs.rmSync(scratchPath, { force: true });
   fs.writeFileSync(scratchPath, result.content, 'utf8');
   return scratchPath;
+}
+
+/**
+ * f351a745 — opencode rejects the WHOLE project agent config (enumerating ZERO
+ * agents) when any single project-local agent file carries a `tools:` frontmatter
+ * field. opencode's agent frontmatter vocabulary has no `tools:` key (the
+ * opencodeRenderer never emits one), so a legacy or raw-passthrough agent whose
+ * entrypoint still carries `tools:` poisons every sibling agent. Detect it so the
+ * file-drop branch can refuse the placement before writing.
+ */
+function opencodeAgentFrontmatterHasTools(contentPath: string): boolean {
+  const text = fs.readFileSync(contentPath, 'utf8');
+  const lines = text.split(/\r?\n/);
+  if (lines[0]?.trim() !== '---') return false;
+  for (let i = 1; i < lines.length; i += 1) {
+    const line = lines[i] ?? '';
+    if (line.trim() === '---') return false;
+    if (/^\s*tools\s*:/.test(line)) return true;
+  }
+  return false;
 }
 
 /**
