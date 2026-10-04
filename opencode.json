@@ -1,29 +1,5 @@
 {
   "$schema": "https://opencode.ai/config.json",
-  "agent": {
-    "implement": {
-      "description": "Complex implementation agent (pro model) — multi-file changes, interface design, refactors, debugging. For well-specified simple tasks, use flash instead",
-      "mode": "all",
-      "model": "deepseek/deepseek-v4-pro",
-      "prompt": "{file:.opencode/prompts/implement-system.md}",
-      "temperature": 0.1,
-      "steps": 40,
-      "permission": {
-        "read": "allow",
-        "edit": "allow",
-        "glob": "allow",
-        "grep": "allow",
-        "bash": "allow",
-        "webfetch": "allow",
-        "websearch": "deny",
-        "task": "deny",
-        "todowrite": "deny",
-        "question": "deny",
-        "skill": "allow",
-        "memory_*": "allow"
-      }
-    }
-  },
   "provider": {
     "proxy": {
       "name": "CF Proxy",
