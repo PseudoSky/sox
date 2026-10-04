@@ -36,6 +36,7 @@ touches, never a single forced winner. Apply the rules in order, then union the 
 | file-paths / raw-tool-output | P3 |
 | enumeration / explanation / pattern-recommendation | the domain's playbook, else P7 |
 | design-artifact | P7 |
+| root-distillation / open-problem-landscape (what is still unsolved in a domain and why) | P8 |
 
 ## 3. Precedence rules
 
@@ -49,6 +50,9 @@ touches, never a single forced winner. Apply the rules in order, then union the 
    `not-research (ops)`.
 5. **Ties break toward the lower-numbered playbook** only if the answer-category table does not
    decide.
+6. root-distillation is an OUTPUT-SHAPING MODE reached only via the `mode: root-distillation`
+   input; when set, it overrides the domain's primary playbook. Without that input the category
+   does not trigger. It never applies to decision or eval questions.
 
 ## 4. Agent-specificity → playbook (for playbook tuning)
 

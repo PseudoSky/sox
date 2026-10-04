@@ -1,10 +1,10 @@
 {
   "$schema": "https://your-registry/schemas/extension/v2.json",
   "id": "research",
-  "version": "0.2.1",
+  "version": "0.3.0",
   "type": "skill",
   "title": "research — multi-domain research with memory-first resolution and hardened verification",
-  "description": "Use this when a question requires external discovery across one or more domains and the answer must be graded, cited, and persisted. A domain-neutral, expansion-first research process: it generalizes a question, resolves it from memory first (answering outright when memory fully knows it), and otherwise fans the question out across every domain it touches — routing each to a pluggable playbook (7 playbooks over 16 domains) via a structured sub-researcher prompt, so many domains are covered in parallel with the minimum number of dispatches. Findings are graded and written to memory; hardened verification proves the process ran on disk, in the memory store, and by recorded tool use rather than by self-report. An optional domain_narrowing input restricts the run to caller-named domains. Tool-agnostic: bodies reference capabilities, never tool names (ADR-0026).",
+  "description": "Use this when a question requires external discovery across one or more domains and the answer must be graded, cited, and persisted. A domain-neutral, expansion-first research process: it generalizes a question, resolves it from memory first (answering outright when memory fully knows it), and otherwise fans the question out across every domain it touches — routing each to a pluggable playbook (8 playbooks over 16 domains) via a structured sub-researcher prompt, so many domains are covered in parallel with the minimum number of dispatches. Findings are graded and written to memory; hardened verification proves the process ran on disk, in the memory store, and by recorded tool use rather than by self-report. An optional domain_narrowing input restricts the run to caller-named domains. Tool-agnostic: bodies reference capabilities, never tool names (ADR-0026).",
   "compatibility": {
     "host": ">=1.0.0 <2.0.0"
   },

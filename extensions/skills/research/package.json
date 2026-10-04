@@ -1,6 +1,6 @@
 {
   "name": "@adhd/sox-extension-research",
-  "version": "0.2.1",
+  "version": "0.3.0",
   "description": "Domain-neutral, expansion-first research skill: memory-first resolution, a playbook router over 16 domains, a structured sub-researcher prompt, optional domain_narrowing, and hardened on-disk/db/tool verification. Tool-agnostic per ADR-0026.",
   "private": true,
   "license": "MIT",

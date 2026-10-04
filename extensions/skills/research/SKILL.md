@@ -44,6 +44,9 @@ question is the product, not noise to be smoothed away.
   When present, Phase 1 tags only within the allowed set and Phase 3 routes only to those domains'
   playbooks; the process still fans out across **every allowed** domain. When absent, all 16 domains
   are in play. Narrowing is an input, never a default.
+- **mode** (optional) — set to `root-distillation` to shape the run as an open-problem
+  landscape distillation (P8). Absent, the run routes P1–P7 by domain/answer-category as before.
+  This mode is for "what is still unsolved in X and why", not for decision or eval questions.
 - **run_id**, **max_sub_researchers** (optional) — as recorded in the manifest.
 
 ## Memory-first, and learned techniques
@@ -226,7 +229,7 @@ in Phase 2 gets `"memory (resolved in Phase 2)"` — do not relabel it `not-rese
 as a **list** when more than one playbook applies. Set a question's `resolution` to `not-research`
 only when it actually leaves the skill.
 
-The seven playbooks — together they cover all 16 domains:
+The eight playbooks — together they cover all 16 domains:
 
 | id | playbook | covers |
 |---|---|---|
@@ -237,6 +240,7 @@ The seven playbooks — together they cover all 16 domains:
 | P5 | `threat-security` | security |
 | P6 | `user-voice` | user/product/design feedback |
 | P7 | `general-synthesis` | agent-orchestration, data-analysis, docs-writing, other (default) |
+| P8 | `root-distillation` | any domain, via `mode: root-distillation` (open-problem / landscape) |
 
 ## Phase 4 — Dispatch sub-researchers (parallel, minimum count)
 
@@ -278,9 +282,12 @@ an empty context is valid.
      permalink); for a living document with no per-revision URL use `retrieved <ISO date> from
      <URL>` and label it `living-doc`.
 3. Write each finding to memory as a **separate** episode (one finding = one write), tagged with
-   `run:<run_id>`, the question id, and exactly one of `agent:approved` / `agent:blocked`; include
-   `data_quality: verified|estimated|unknown` and the exact source per metric. Append the returned
-   `memory_uid` to the finding file.
+   `run:<run_id>` and the question id; include `data_quality: verified|estimated|unknown` and the
+   exact source per metric. Append the returned `memory_uid` to the finding file.
+   - **Default mode:** also tag exactly one of `agent:approved` / `agent:blocked`.
+   - **`mode: root-distillation`:** instead tag `pattern:open-problem` + `root-complexity` +
+     `research-space` + `residual-gap` + `domain/<name>` (no approved/blocked); see
+     `references/playbooks/P8-root-distillation.md` for the full memory-recording contract.
 4. **Read-back:** re-read what this run **wrote** — the `memory_uid:` recorded on each finding —
    and write the result to `memory-readback.json`. Uids recalled in Phase 2 for context are **not**
    re-read here; they belong to earlier runs.
@@ -349,13 +356,16 @@ The answer is ordered and closed:
 ## Not-research items   (question | reason it left the skill)
 ```
 
+Under `mode: root-distillation` (P8), `## Build-vs-integrate` is replaced by the P8 per-item table +
+synthesis + recommendation — see `references/playbooks/P8-root-distillation.md`.
+
 ## Hard rules
 
 - Never write application code or edit project source.
 - Never skip Phase 2 — memory is checked before any external search.
 - Never exceed 2 regenerations per question; never re-check memory a third time.
-- Never write a finding to memory as anything but its own episode, tagged `agent:approved` or
-  `agent:blocked`, exactly one.
+- Never write a finding to memory as anything but its own episode, tagged per Phase 5's
+  mode-dependent tag set.
 - Never reach the memory store by any path other than the memory capability (no direct store file,
   no spawned server, no HTTP).
 - Never dispatch one sub-researcher per question; dispatches equal playbooks, not questions.

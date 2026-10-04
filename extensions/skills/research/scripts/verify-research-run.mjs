@@ -108,8 +108,8 @@ if (!routing || typeof routing !== 'object') {
     }
     if (q.resolution === 'research') {
       const ids = Array.isArray(target) ? target : [target];
-      if (ids.length === 0 || !ids.every((t) => /^P[1-7]$/.test(String(t)))) {
-        fail(`${q.id}: resolution "research" must route to one or more of P1..P7, got ${JSON.stringify(target)}`);
+      if (ids.length === 0 || !ids.every((t) => /^P[1-8]$/.test(String(t)))) {
+        fail(`${q.id}: resolution "research" must route to one or more of P1..P8, got ${JSON.stringify(target)}`);
       }
     }
     if (q.resolution === 'not-research' && !/^not-research \(.+\)$/.test(String(target))) {

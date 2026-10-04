@@ -1,5 +1,28 @@
 # Changelog
 
+## 0.3.0
+
+- **New P8 `root-distillation` playbook** (`references/playbooks/P8-root-distillation.md`) — landscape
+  research for the "what is still unsolved in X, and *why* it resists engineering" question class,
+  distinct from decision research and evaluation. It enumerates a domain's open problems, derives each
+  one's **root complexity** (the structural reason it resists engineering) and **research space** (the
+  body of work attacking it), and states each one's **residual gap** (a concrete "SOTA does not solve
+  X" — where build-vs-buy lives). A synthesis collapses N problems into K root classes along a
+  **mandatory named axis**, and every item carries a confidence label with HIGH requiring triangulation
+  (an all-HIGH run is a failure signal). Recorded to memory under `pattern:open-problem` +
+  `root-complexity` + `research-space` + `residual-gap` + `domain/<name>` tags rather than
+  `agent:approved`/`agent:blocked`.
+- **New optional `mode` input** (SKILL.md): `mode: root-distillation` shapes the run as an open-problem
+  landscape distillation and routes to P8; absent, routing falls back to P1–P7 as before. The Phase-5
+  memory-tag clause is now mode-dependent, and under P8 the output contract replaces the
+  `## Build-vs-integrate` section with the P8 per-item table + synthesis + recommendation.
+- **Routing:** added the `root-distillation` / open-problem-landscape answer category to
+  `references/routing-table.md` (→ P8) with a precedence rule — the mode is reachable only via
+  `mode: root-distillation`, overrides the domain's primary playbook, and never fires for decision/eval
+  questions.
+- **Verifier:** widened `scripts/verify-research-run.mjs` accepted routing ids `/^P[1-7]$/` → `/^P[1-8]$/`.
+- No process change; version `0.2.1` → `0.3.0`.
+
 ## 0.2.1
 
 - Covered the `business-analyst` source agent, which had no home in the skill (excluded from the
