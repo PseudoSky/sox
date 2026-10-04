@@ -12,6 +12,10 @@
 
 # Changelog
 
+## 1.10.4
+
+- **All three install surfaces declared — claude, opencode, agent-mcp.** `install.hosts` gains `agent-mcp` and `render.agent-mcp` federates the uniform server set (agent, search, memory-server, gitnexus, backlog) into the catalog row, so a task dispatched through agent-mcp has the same tool surface as a native opencode run. `render.opencode` pins its model and `mode: all`.
+
 ## 1.10.0
 
 - **Status table rebuilt for multi-project runs (3-column, cost row deferred).** The standing table is now `| axis | status | note |` with rows Objective / Plan / Absorbed / Discovered / Dispatches / Blockers — the separate Δ column and the Cost row are gone. Each axis's `status` cell splits **by project**: bold project name, `·`, that project's delta inline (coloured by meaning — green `#1a7f37` good movement, red `#cf222e` bad, amber `#9a6700` flat/zero/unmeasurable), then the project's values. The Cost row is removed solely because no dispatcher-readable surface exposes per-task cost/token telemetry (the capability lives in the scratch repo's metadata tools); it is an interim, **reversible** decision — restore the row with measured cumulative spend + a next-wave projection once those tools are dispatcher-readable. Cost-at-decision-time still governs (rule 21); only its rendering is deferred.

@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.2.1
+
+- **All three install surfaces declared — claude, opencode, agent-mcp.** `install.hosts` gains `agent-mcp` and `render.agent-mcp` federates the uniform server set (agent, search, memory-server, gitnexus, backlog) into the catalog row, so a task dispatched through agent-mcp has the same tool surface as a native opencode run. `render.opencode` pins its model and `mode: all`.
+
 ## 0.2.0
 
 - **Harvested three durable documentation principles the agent lacked** (source: `claude-agents/categories/06-developer-experience/documentation-engineer.md`). No new rule homes and no physical line growth (67 → 67 lines; 1650 → 1686 words) — each addition is a clause on the line that already owns the adjacent rule:

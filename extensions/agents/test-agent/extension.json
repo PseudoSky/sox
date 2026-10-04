@@ -1,11 +1,15 @@
 {
   "$schema": "https://your-registry/schemas/extension/v2.json",
   "id": "test-runner",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "type": "agent",
   "title": "test-agent",
   "description": "Use this when you need an agent that runs test suites and reports results.",
-  "keywords": ["testing", "runner", "agent"],
+  "keywords": [
+    "testing",
+    "runner",
+    "agent"
+  ],
   "author": "sox-ecosystem",
   "compatibility": {
     "host": ">=1.0.0 <2.0.0"
@@ -25,7 +29,12 @@
     "name": "test-agent",
     "description": "Runs the project's test suites and reports what actually happened — the exact command, the exit code, the first failing assertion, and the minimal reproduction.",
     "model": "sonnet",
-    "tools": ["read", "bash", "glob", "grep"],
+    "tools": [
+      "read",
+      "bash",
+      "glob",
+      "grep"
+    ],
     "permission": {
       "read": "allow",
       "edit": "deny",
@@ -50,14 +59,69 @@
   "render": {
     "claude": {
       "model": "sonnet",
-      "version": "v0.1.2"
+      "version": "v0.1.3"
     },
     "opencode": {
-      "model": "deepseek/deepseek-flash"
+      "model": "deepseek/deepseek-flash",
+      "mode": "all"
+    },
+    "agent-mcp": {
+      "model": "deepseek/deepseek-flash",
+      "mcpServers": {
+        "agent": {
+          "transport": "stdio",
+          "command": "npx",
+          "args": [
+            "-y",
+            "@adhd/agent-mcp@latest"
+          ],
+          "env": {
+            "ADHD_AGENT_DATABASE_PATH": "/Users/nix/.adhd/agent-mcp/agents.db",
+            "ADHD_AGENT_REGISTRY_DB_PATH": "/Users/nix/.adhd/agent-mcp/registry.db"
+          }
+        },
+        "search": {
+          "transport": "stdio",
+          "command": "node",
+          "args": [
+            "/Users/nix/dev/ai/scratch/agent-browser/server.mjs",
+            "--transport",
+            "stdio",
+            "--ns",
+            "agent",
+            "--drop-file-segment"
+          ]
+        },
+        "memory-server": {
+          "transport": "sse",
+          "url": "http://localhost:3099/sse",
+          "timeoutMs": 40000
+        },
+        "gitnexus": {
+          "transport": "stdio",
+          "command": "/Users/nix/.local/bin/gitnexus-singleton.sh",
+          "args": []
+        },
+        "backlog": {
+          "transport": "stdio",
+          "command": "node",
+          "args": [
+            "/Users/nix/dev/node/adhd/entrypoint/backlog/dist/index.js",
+            "serve",
+            "--transport",
+            "mcp"
+          ],
+          "timeoutMs": 45000
+        }
+      }
     }
   },
   "install": {
     "type": "agent",
-    "hosts": ["claude", "opencode"]
+    "hosts": [
+      "claude",
+      "opencode",
+      "agent-mcp"
+    ]
   }
 }

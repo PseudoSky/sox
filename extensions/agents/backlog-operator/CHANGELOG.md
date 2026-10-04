@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.6.2
+
+- **All three install surfaces declared — claude, opencode, agent-mcp.** `install.hosts` gains `agent-mcp` and `render.agent-mcp` federates the uniform server set (agent, search, memory-server, gitnexus, backlog) into the catalog row, so a task dispatched through agent-mcp has the same tool surface as a native opencode run. `render.opencode` pins its model and `mode: all`.
+
 ## 0.6.1
 
 - **The operator is now maintained in the agent-mcp catalog, with the `backlog` server federated into its row.** Dispatched through agent-mcp (`task`/`agent_task` with `agent_name`), the operator runs as its catalog row — and that row had `mcpServers: {}`, so it had no `backlog_*` query surface and returned ESCALATE with zero tool calls. The IR now declares `render.agent-mcp` with `mcpServers.backlog` (the same stdio server the other catalog rows carry) and adds `agent-mcp` to `install.hosts`, so the row is rewritten from repo source and survives `soxe reconcile-agent-mcp`. Native opencode loading was already fully equipped; this closes the agent-mcp path.

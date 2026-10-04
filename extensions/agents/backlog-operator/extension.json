@@ -64,7 +64,7 @@
   "render": {
     "claude": {
       "model": "haiku",
-      "version": "v0.6.1"
+      "version": "v0.6.2"
     },
     "opencode": {
       "model": "deepseek/deepseek-flash",
@@ -74,6 +74,40 @@
     "agent-mcp": {
       "model": "deepseek/deepseek-flash",
       "mcpServers": {
+        "agent": {
+          "transport": "stdio",
+          "command": "npx",
+          "args": [
+            "-y",
+            "@adhd/agent-mcp@latest"
+          ],
+          "env": {
+            "ADHD_AGENT_DATABASE_PATH": "/Users/nix/.adhd/agent-mcp/agents.db",
+            "ADHD_AGENT_REGISTRY_DB_PATH": "/Users/nix/.adhd/agent-mcp/registry.db"
+          }
+        },
+        "search": {
+          "transport": "stdio",
+          "command": "node",
+          "args": [
+            "/Users/nix/dev/ai/scratch/agent-browser/server.mjs",
+            "--transport",
+            "stdio",
+            "--ns",
+            "agent",
+            "--drop-file-segment"
+          ]
+        },
+        "memory-server": {
+          "transport": "sse",
+          "url": "http://localhost:3099/sse",
+          "timeoutMs": 40000
+        },
+        "gitnexus": {
+          "transport": "stdio",
+          "command": "/Users/nix/.local/bin/gitnexus-singleton.sh",
+          "args": []
+        },
         "backlog": {
           "transport": "stdio",
           "command": "node",
@@ -98,5 +132,6 @@
   },
   "requires": {
     "tool_calling": true
-  }
+  },
+  "version": "0.6.2"
 }

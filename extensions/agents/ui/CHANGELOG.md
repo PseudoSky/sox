@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.1
+
+- **All three install surfaces declared — claude, opencode, agent-mcp.** `install.hosts` gains `agent-mcp` and `render.agent-mcp` federates the uniform server set (agent, search, memory-server, gitnexus, backlog) into the catalog row, so a task dispatched through agent-mcp has the same tool surface as a native opencode run. `render.opencode` pins its model and `mode: all`.
+
 ## 0.1.0
 
 - **Initial release.** Framework-agnostic UI engineer agent harvested from seven

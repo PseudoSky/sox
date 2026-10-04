@@ -1,6 +1,6 @@
 {
   "name": "@adhd/sox-extension-devops",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "devops agent — sole owner of the build, CI/CD, release, and deploy path from commit to running artifact",
   "private": true,
   "license": "MIT",

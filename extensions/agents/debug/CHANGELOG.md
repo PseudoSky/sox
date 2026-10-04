@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.7
+
+- **All three install surfaces declared — claude, opencode, agent-mcp.** `install.hosts` gains `agent-mcp` and `render.agent-mcp` federates the uniform server set (agent, search, memory-server, gitnexus, backlog) into the catalog row, so a task dispatched through agent-mcp has the same tool surface as a native opencode run. `render.opencode` pins its model and `mode: all`.
+
 ## 0.1.6
 
 - **Durable debugging principles harvested from an external error-detective agent.** Three additions to the loop-honesty paragraph in `debug.md`, each absent from the target and not restating an existing rule: shrink the reproduction to the smallest failing trigger; correlate and classify errors across occurrences (time / version / change / service; error class) instead of treating each in isolation; never report an error count, rate, or impact metric not measured from the raw logs. Net +2 prose lines (94 → 96).

@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.2.4
+
+- **All three install surfaces declared — claude, opencode, agent-mcp.** `install.hosts` gains `agent-mcp` and `render.agent-mcp` federates the uniform server set (agent, search, memory-server, gitnexus, backlog) into the catalog row, so a task dispatched through agent-mcp has the same tool surface as a native opencode run. `render.opencode` pins its model and `mode: all`.
+
 ## 0.2.3
 
 - **§6 gains a promotion step** — editing an already-installed artifact is not finished until it

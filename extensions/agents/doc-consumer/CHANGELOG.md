@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.4
+
+- **All three install surfaces declared — claude, opencode, agent-mcp.** `install.hosts` gains `agent-mcp` and `render.agent-mcp` federates the uniform server set (agent, search, memory-server, gitnexus, backlog) into the catalog row, so a task dispatched through agent-mcp has the same tool surface as a native opencode run. `render.opencode` pins its model and `mode: all`.
+
 ## 0.1.3
 
 - **Fix:** restore the `steps: 20` step/turn budget that 0.1.2's IR conversion silently dropped. The IR (`AgentIr`/`AgentOverride` in `libs/host-registry/src/internal.ts`) now carries a `steps` field, host-mapped at render time: opencode emits `steps:` verbatim, claude emits its own `maxTurns:` field (its harness-enforced turn cap), codex omits it (no known equivalent). `agent.steps: 20` is restored in `extension.json`.
